@@ -38,6 +38,41 @@ describe("console Host client", () => {
     expect((await readdir(directory)).sort()).toEqual(["host-11.json", "host-12.json"]);
   });
 
+  it("scopes update routing to this installation, not another or legacy newest Host", async () => {
+    const own = path.join(directory, "own"),
+      other = path.join(directory, "other");
+    await mkdir(own);
+    await mkdir(other);
+    for (const [pid, resourcesRoot, startedAt] of [
+      [21, own, 1],
+      [22, other, 2],
+    ] as const) {
+      await writeFile(
+        path.join(directory, `host-${pid}.json`),
+        JSON.stringify({
+          schemaVersion: 1,
+          pid,
+          port: 1000 + pid,
+          token: "a".repeat(64),
+          startedAt,
+          resourcesRoot,
+          launcherPid: pid + 100,
+        }),
+      );
+    }
+    await descriptor(23, 1023, 3);
+    expect((await findHost(directory, () => true, own))?.pid).toBe(21);
+    expect((await findHost(directory, () => true, other))?.pid).toBe(22);
+    expect((await findHost(directory, () => true, own, 121))?.pid).toBe(21);
+    expect(await findHost(directory, () => true, own, 122)).toBeNull();
+    expect(
+      await createConsoleHostClient(directory, {
+        isAlive: () => true,
+        resourcesRoot: path.join(directory, "missing"),
+      }).available(),
+    ).toBe(false);
+  });
+
   it("forwards a request with the Host token", async () => {
     let authorization: string | undefined;
     const server = createServer((request, response) => {

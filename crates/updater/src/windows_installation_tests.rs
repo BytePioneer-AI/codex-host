@@ -218,7 +218,7 @@ fn refuses_unverified_installer_recovery_before_handoff() {
         crate::request::UpdateRequest::parse(&request)
             .unwrap_err()
             .to_string()
-            .contains("original-channel recovery")
+            .contains("file-recovery capability")
     );
     assert!(!f.root.join("status.json").exists());
 }

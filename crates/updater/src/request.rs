@@ -141,10 +141,6 @@ impl UpdateRequest {
         require_absolute_file(path, "update request")?;
         let request = serde_json::from_slice::<Self>(&fs::read(path)?)?;
         request.validate()?;
-        #[cfg(target_os = "windows")]
-        if matches!(&request.installation, Installation::Npm(_)) {
-            return Err("Windows npm automatic updates require verified activation ownership and pre-execution whole-tree isolation; current installation preserved. Update manually through npm using the original global prefix and exact release version; do not switch installation channels.".into());
-        }
         Ok(request)
     }
 
@@ -285,7 +281,6 @@ impl UpdateRequest {
                 )?;
                 #[cfg(not(target_os = "windows"))]
                 Self::validate_installer_files(windows)?;
-                return Err("Windows installer automatic updates require verified original-channel recovery; use the manual installer in the original directory".into());
             }
             Installation::MacosDmg(macos) => {
                 if !cfg!(target_os = "macos") {

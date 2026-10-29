@@ -261,6 +261,9 @@ export interface RendererSettingsMessages {
   readonly updateRestarting: string;
   readonly updateSucceeded: string;
   readonly updateFailed: string;
+  readonly updateRestored: string;
+  readonly updateRecoveryFailed: string;
+  readonly updateStateUnknown: string;
   readonly updateRetry: string;
   readonly updateManualNpmDescription: string;
   readonly updateWindowsNpmDescription: string;
@@ -542,8 +545,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateUpToDate: "You are up to date.",
   updateAvailable: "A new version is available.",
   updateWindowsManualRequired:
-    "Automatic updates are unavailable on Windows. Update manually below.",
-  updateAndRestart: "Update",
+    "Automatic update is unavailable for this installation. Use its original channel below.",
+  updateAndRestart: "Update and restart",
   updateChecking: "Checking for updates...",
   updateDownloading: "Downloading update...",
   updatePreparing: "Preparing update...",
@@ -557,12 +560,17 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateRestarting: "Restarting to finish the update...",
   updateSucceeded: "Update installed successfully.",
   updateFailed: "Update failed.",
+  updateRestored: "Update failed. The original version was restored and is ready.",
+  updateRecoveryFailed:
+    "Update and recovery failed. Materials were retained; repair through the original installation channel.",
+  updateStateUnknown:
+    "Update state is unconfirmed. Materials were retained; check the original installation before retrying.",
   updateRetry: "Retry",
   updateManualNpmDescription: "To update manually, quit codexhost and run this command:",
   updateWindowsNpmDescription:
-    "Automatic updates are unavailable on Windows. Quit codexhost and run this command in a terminal:",
+    "Manual alternative: quit codexhost and update through npm in the original global prefix:",
   updateWindowsInstallerDescription:
-    "Automatic updates are unavailable on Windows. Download and run the installer for this system.",
+    "Manual alternative: download the installer for this system and install in the original directory.",
   updateManualTitle: "Manual update",
   updateManualFallbackDescription:
     "The automatic update did not complete. Run this command in a terminal instead, then quit Codex and relaunch it with codexhost.",
@@ -841,8 +849,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateLatestVersion: "最新版本",
   updateUpToDate: "当前已是最新版本。",
   updateAvailable: "有新版本可用。",
-  updateWindowsManualRequired: "Windows 暂不支持自动更新，请在下方手动更新。",
-  updateAndRestart: "更新",
+  updateWindowsManualRequired: "当前安装不支持自动更新，请使用下方原渠道手动更新。",
+  updateAndRestart: "更新并重启",
   updateChecking: "正在检查更新...",
   updateDownloading: "正在下载更新...",
   updatePreparing: "正在准备更新...",
@@ -854,13 +862,14 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateRestarting: "正在重启以完成更新...",
   updateSucceeded: "更新安装成功。",
   updateFailed: "更新失败。",
+  updateRestored: "更新失败，已恢复原版本并确认就绪。",
+  updateRecoveryFailed: "更新及恢复失败，已保留材料，请通过原安装渠道修复。",
+  updateStateUnknown: "更新状态未确认，已保留材料，请检查原安装后再重试。",
   updateRetry: "重试",
   updateManualNpmDescription:
     "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
-  updateWindowsNpmDescription:
-    "Windows 暂不支持自动更新。请退出 codexhost，在终端运行以下命令完成更新。",
-  updateWindowsInstallerDescription:
-    "Windows 暂不支持自动更新。请下载并运行适用于当前系统的安装包。",
+  updateWindowsNpmDescription: "手动更新备选：请退出 codexhost，通过 npm 在原全局 prefix 更新。",
+  updateWindowsInstallerDescription: "手动更新备选：请下载适用于当前系统的安装包，安装到原目录。",
   updateManualTitle: "手动更新",
   updateManualFallbackDescription:
     "自动更新未能完成，请改用下列命令在终端手动更新。完成后请退出 Codex 并通过 codexhost 重新启动。",

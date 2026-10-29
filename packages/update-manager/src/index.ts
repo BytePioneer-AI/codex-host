@@ -7,7 +7,17 @@ export {
   type InstallerFiles,
 } from "./installer-files.js";
 export { prepareInstallerRecovery, type PreparedInstallerRecovery } from "./installer-materials.js";
-export { automaticUpdateUnavailableReason } from "./support.js";
+export {
+  discoverCurrentUpdateStatus,
+  updateStatusMatchesInstallation,
+  updateRepairRequired,
+  type UpdateResultScope,
+} from "./update-result.js";
+export { installedUpdateResultScope } from "./distribution.js";
+export {
+  automaticUpdateUnavailableReason,
+  windowsInstallerRecoveryUnavailable,
+} from "./support.js";
 export { readRuntimeMetadata } from "./runtime-metadata.js";
 export type {
   ArtifactDownloadProgress,

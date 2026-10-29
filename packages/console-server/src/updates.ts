@@ -8,6 +8,10 @@ import type {
 } from "@codexhost/shared-contracts";
 import {
   automaticUpdateUnavailableReason,
+  windowsInstallerRecoveryUnavailable,
+  discoverCurrentUpdateStatus,
+  type UpdateResultScope,
+  updateRepairRequired,
   acquireUpdateOperationLock,
   cleanupTerminalUpdateState,
   compareSemanticVersions,
@@ -47,12 +51,13 @@ export interface ConsoleUpdateTarget {
   /** Launcher runtime descriptor path from `inspect --json`. */
   runtimeDescriptorPath: string | null;
   codexhostRunning: boolean;
+  launcherPid?: number;
 }
 
 export interface ConsoleUpdates {
   check(target: ConsoleUpdateTarget, signal?: AbortSignal): Promise<UpdateCheckResult>;
   start(target: ConsoleUpdateTarget): Promise<UpdateStartResult>;
-  status(): Promise<UpdateStatusResult>;
+  status(target?: ConsoleUpdateTarget): Promise<UpdateStatusResult>;
 }
 
 export interface CreateConsoleUpdatesOptions {
@@ -86,6 +91,7 @@ function publicStatus(status: BackgroundUpdateStatus, platform: NodeJS.Platform)
     installation: status.installation,
     phase: status.phase,
     updatedAt: status.updatedAt,
+    ...(status.outcome ? { outcome: status.outcome } : {}),
     ...(status.downloadedBytes === undefined ? {} : { downloadedBytes: status.downloadedBytes }),
     ...(status.totalBytes === undefined ? {} : { totalBytes: status.totalBytes }),
     error: error?.slice(0, ERROR_MAX_LENGTH) ?? null,
@@ -134,10 +140,37 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
   let handedOff = false;
 
   let currentStatusPath: string | null = null;
+  let resultScope: UpdateResultScope | undefined;
+  function rememberTarget(target: ConsoleUpdateTarget): void {
+    if (platform !== "win32" || !target.distribution || !target.runtimeDescriptorPath) return;
+    const installation = installationKind(target.distribution);
+    if (!installation) return;
+    if (
+      installation === "npm" &&
+      (!environment.CODEXHOST_NPM_LAUNCHER_PATH ||
+        !path.isAbsolute(environment.CODEXHOST_NPM_LAUNCHER_PATH))
+    )
+      return;
+    const previousRoot = resultScope?.installationRoot;
+    resultScope = {
+      installation,
+      installationRoot:
+        installation === "npm"
+          ? path.resolve(path.dirname(environment.CODEXHOST_NPM_LAUNCHER_PATH ?? ""), "../../../..")
+          : path.dirname(target.appDirectory),
+      runtimeDescriptorPath: target.runtimeDescriptorPath,
+    };
+    if (previousRoot && previousRoot !== resultScope.installationRoot) currentStatusPath = null;
+  }
 
   async function latestStatus(): Promise<UpdateStatus | null> {
     if (!currentStatusPath) {
-      const active = await discoverActiveUpdateStatus(stateDirectory());
+      const active =
+        platform === "win32"
+          ? resultScope
+            ? await discoverCurrentUpdateStatus(stateDirectory(), resultScope)
+            : null
+          : await discoverActiveUpdateStatus(stateDirectory());
       if (!active) return null;
       currentStatusPath = active.statusPath;
     }
@@ -145,9 +178,21 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
     return status ? publicStatus(status, platform) : null;
   }
 
-  function installable(metadata: DistributionMetadata, release: CodexhostLatestRelease): boolean {
+  async function installable(
+    metadata: DistributionMetadata,
+    release: CodexhostLatestRelease,
+    target: ConsoleUpdateTarget,
+  ): Promise<boolean> {
     const kind = installationKind(metadata);
     if (kind && automaticUpdateUnavailableReason(platform, kind)) return false;
+    if (
+      kind === "windows-installer" &&
+      (await windowsInstallerRecoveryUnavailable(
+        path.dirname(target.appDirectory),
+        metadata.version,
+      ))
+    )
+      return false;
     if (kind === "npm") return true;
     if (kind === null) return false;
     try {
@@ -213,6 +258,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
 
   return Object.freeze({
     async check(target: ConsoleUpdateTarget, signal?: AbortSignal): Promise<UpdateCheckResult> {
+      rememberTarget(target);
       const metadata = target.distribution;
       const runtime = metadata
         ? null
@@ -241,9 +287,20 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         const release = await fetchLatest(signal);
         candidate = release;
         const updateAvailable = compareSemanticVersions(metadata.version, release.version) < 0;
-        const installationAvailable = updateAvailable && installable(metadata, release);
+        const repair =
+          platform === "win32" && resultScope
+            ? await updateRepairRequired(stateDirectory(), resultScope)
+            : null;
+        const installationAvailable =
+          !repair && updateAvailable && (await installable(metadata, release, target));
         const unavailable = empty.installation
-          ? automaticUpdateUnavailableReason(platform, empty.installation)
+          ? (automaticUpdateUnavailableReason(platform, empty.installation) ??
+            (empty.installation === "windows-installer"
+              ? await windowsInstallerRecoveryUnavailable(
+                  path.dirname(target.appDirectory),
+                  metadata.version,
+                )
+              : null))
           : null;
         return {
           ...empty,
@@ -254,10 +311,11 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
           releaseNotesUrl: release.releaseNotesUrl,
           status,
           error:
-            updateAvailable && !installationAvailable
+            repair ??
+            (updateAvailable && !installationAvailable
               ? (unavailable ??
                 "The latest GitHub Release has no verified asset for this installation")
-              : null,
+              : null),
         };
       } catch (error) {
         return { ...empty, status, error: boundedError(error) };
@@ -265,8 +323,17 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
     },
 
     async start(target: ConsoleUpdateTarget): Promise<UpdateStartResult> {
+      rememberTarget(target);
       const kind = target.distribution && installationKind(target.distribution);
-      const unavailable = kind && automaticUpdateUnavailableReason(platform, kind);
+      const unavailable =
+        kind &&
+        (automaticUpdateUnavailableReason(platform, kind) ??
+          (kind === "windows-installer"
+            ? await windowsInstallerRecoveryUnavailable(
+                path.dirname(target.appDirectory),
+                target.distribution?.version ?? "",
+              )
+            : null));
       if (unavailable) throw new ConsoleUpdateError("unsupported", unavailable);
       if (target.codexhostRunning) {
         throw new ConsoleUpdateError(
@@ -287,10 +354,16 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
       }
       const directory = stateDirectory();
       await recoverUpdateOperationLock(directory);
+      const repair =
+        platform === "win32" && resultScope
+          ? await updateRepairRequired(directory, resultScope)
+          : null;
+      if (repair) throw new ConsoleUpdateError("failed", repair);
       const lock = await acquireUpdateOperationLock(directory);
       if (!lock) {
         const existing = await latestStatus();
-        if (existing) return { status: existing };
+        const active = await discoverActiveUpdateStatus(directory);
+        if (existing && active?.statusPath === currentStatusPath) return { status: existing };
         throw new ConsoleUpdateError("busy", "Another update operation is already active");
       }
       currentStatusPath = null;
@@ -342,7 +415,8 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
       }
     },
 
-    async status(): Promise<UpdateStatusResult> {
+    async status(target?: ConsoleUpdateTarget): Promise<UpdateStatusResult> {
+      if (target) rememberTarget(target);
       try {
         await recoverUpdateOperationLock(stateDirectory());
         return { status: await latestStatus() };

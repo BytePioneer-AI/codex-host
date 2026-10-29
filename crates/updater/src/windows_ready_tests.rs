@@ -27,6 +27,9 @@ fn fixture(mode: &str, npm_parent: bool) -> (Fixture, StartupCheck) {
     ));
     fs::create_dir_all(root.join("bin")).unwrap();
     fs::create_dir_all(root.join("app")).unwrap();
+    // Spawn from the long filesystem path so Windows image evidence and the
+    // captured Launcher path use the same spelling even under an 8.3 TEMP.
+    let root = root.canonicalize().unwrap();
     let launcher = root.join("bin/codexhost.exe");
     fs::copy(std::env::current_exe().unwrap(), &launcher).unwrap();
     fs::write(root.join("app/desktop-controller.mjs"), "fixture").unwrap();
@@ -43,9 +46,10 @@ const server=http.createServer((req,res)=>{
 });
 server.listen(0,'127.0.0.1',()=>{
  fs.mkdirSync(path.join(root,'console/hosts'),{recursive:true});
- fs.writeFileSync(path.join(root,`console/hosts/host-${process.pid}.json`),JSON.stringify({schemaVersion:1,pid:process.pid,launcherPid:Number(process.env.CODEXHOST_READY_TEST_LAUNCHER),port:server.address().port,token,startedAt:Date.now()}));
+ fs.writeFileSync(path.join(root,`console/hosts/host-${process.pid}.json`),JSON.stringify({schemaVersion:1,pid:process.pid,launcherPid:Number(process.env.CODEXHOST_READY_TEST_LAUNCHER),port:server.address().port,token,startedAt:Date.now()-Number(process.env.CODEXHOST_READY_TEST_CLOCK_OFFSET)}));
 });
 "#).unwrap();
+    #[cfg(not(target_os = "linux"))]
     let started_at = now();
     let wrapper = root.join("wrapper.cjs");
     fs::write(&wrapper, format!(r#"const cp=require('node:child_process'),fs=require('node:fs');const child=cp.spawn({},['--exact','windows_ready::tests::native_startup_child','--ignored','--nocapture'],{{env:process.env,stdio:'ignore'}});fs.writeFileSync({},String(child.pid));child.on('exit',code=>process.exit(code??1));"#, serde_json::to_string(&launcher).unwrap(), serde_json::to_string(&root.join("launcher.pid")).unwrap())).unwrap();
@@ -74,8 +78,10 @@ server.listen(0,'127.0.0.1',()=>{
     let launcher_pid = if npm_parent {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            if let Ok(value) = fs::read_to_string(root.join("launcher.pid")) {
-                break value.parse::<u32>().unwrap();
+            if let Ok(value) = fs::read_to_string(root.join("launcher.pid"))
+                && let Ok(pid) = value.trim().parse::<u32>()
+            {
+                break pid;
             }
             assert!(Instant::now() < deadline && launcher_child.try_wait().unwrap().is_none());
             std::thread::sleep(Duration::from_millis(10));
@@ -83,12 +89,25 @@ server.listen(0,'127.0.0.1',()=>{
     } else {
         launcher_child.id()
     };
-    let owned = process_snapshot(launcher_pid).into_iter().collect();
+    let launcher_process = process_snapshot(launcher_pid).unwrap();
+    // Linux snapshots use time since boot, unlike Windows FILETIME/macOS epoch
+    // time. Keep the synthetic readiness evidence in that same clock domain.
+    #[cfg(target_os = "linux")]
+    let started_at = birth_ms(&launcher_process);
+    #[cfg(target_os = "linux")]
+    let clock_offset = now().saturating_sub(started_at);
+    #[cfg(not(target_os = "linux"))]
+    let clock_offset = 0_u64;
+    let owned = vec![launcher_process];
     let host_child = Command::new("node")
         .arg(&host_entry)
         .env("CODEXHOST_READY_TEST_ROOT", &root)
         .env("CODEXHOST_READY_TEST_MODE", mode)
         .env("CODEXHOST_READY_TEST_LAUNCHER", launcher_pid.to_string())
+        .env(
+            "CODEXHOST_READY_TEST_CLOCK_OFFSET",
+            clock_offset.to_string(),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -145,8 +164,14 @@ fn native_startup_child() {
     let mode = std::env::var("CODEXHOST_READY_TEST_MODE").unwrap();
     let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     fs::create_dir_all(root.join("diagnostics")).unwrap();
-    let time = if mode == "stale-record" { 1 } else { now() };
     let process = process_snapshot(std::process::id()).unwrap();
+    let time = if mode == "stale-record" {
+        1
+    } else if cfg!(target_os = "linux") {
+        birth_ms(&process)
+    } else {
+        now()
+    };
     let parent = process_snapshot(process.parent_id).unwrap();
     fs::write(root.join("diagnostics/launcher-startup-v1.json"), serde_json::json!({"schemaVersion":1,"records":[{"pid":std::process::id(),"startedAtMicros":process.started_at_micros.to_string(),"parent":{"pid":parent.id,"startedAtMicros":parent.started_at_micros.to_string(),"executable":parent.executable},"launcherVersion":if mode=="wrong-version" {"9.9.9"}else{"1.2.3"},"startedAtMs":time,"finishedAtMs":time,"outcome":"ready"}]}).to_string()).unwrap();
     fs::write(root.join("runtime.json"), serde_json::json!({"schema_version":1,"launcher_pid":std::process::id(),"control_port":listener.local_addr().unwrap().port(),"nonce":"b".repeat(32)}).to_string()).unwrap();

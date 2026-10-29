@@ -276,12 +276,13 @@ describe("background update manager", () => {
     expect(request.installation.recovery.cli.path).toContain("npm-previous");
     const manifestPath = path.join(installation.paths.packageRoot, "package.json");
     const originalManifest = await readFile(manifestPath);
-    await expect(manager.start(prepared)).rejects.toThrow("pre-execution whole-tree isolation");
-    expect(JSON.parse(await readFile(prepared.requestPath, "utf8"))).not.toHaveProperty(
+    await expect(manager.start(prepared)).resolves.not.toHaveProperty("updaterPid");
+    expect(JSON.parse(await readFile(prepared.requestPath, "utf8"))).toHaveProperty(
       "launch_via_launcher",
+      true,
     );
     expect(spawnUpdater).not.toHaveBeenCalled();
-    expect((await manager.readStatus(prepared.statusPath))?.phase).toBe("failed");
+    expect((await manager.readStatus(prepared.statusPath))?.phase).toBe("prepared");
     expect(await readFile(manifestPath)).toEqual(originalManifest);
     expect(request.installation).toMatchObject({
       prefix: expect.stringContaining("中文 空格 prefix"),
@@ -415,7 +416,7 @@ describe("background update manager", () => {
     ]);
   });
 
-  it("downloads and verifies the Windows installer before creating a request", async () => {
+  it("rejects an installer without original-channel capability before downloading or creating a request", async () => {
     const root = await temporaryDirectory();
     const bytes = Buffer.from("signed-or-reviewed-inno-installer");
     const installation = await windowsInstallerFixture(root);
@@ -431,35 +432,19 @@ describe("background update manager", () => {
       }),
       download: downloader(bytes),
     });
-    const prepared = await manager.prepareWindowsInstaller({
-      ...(await commonOptions(root)),
-      launcherExecutable: installation.launcherExecutable,
-      artifact: {
-        url: "https://downloads.example.test/codexhost.exe",
-        sha256: sha256(bytes),
-        size: bytes.length,
-      },
-      installRoot: installation.installRoot,
-    });
-
-    const artifactPath = prepared.artifactPath;
-    expect(artifactPath).toBeDefined();
-    if (artifactPath === undefined) throw new Error("Windows artifact path is missing");
-    expect(await readFile(artifactPath)).toEqual(bytes);
-    const request = JSON.parse(await readFile(prepared.requestPath, "utf8"));
-    expect(request.installation).toEqual({
-      kind: "windows-installer",
-      installer_path: prepared.artifactPath,
-      artifact_sha256: sha256(bytes),
-      install_root: installation.installRoot,
-      installed_version: "1.2.2",
-    });
-    await expect(manager.start(prepared)).rejects.toThrow("original-channel recovery");
-    expect(JSON.parse(await readFile(prepared.requestPath, "utf8"))).not.toHaveProperty(
-      "launch_via_launcher",
-    );
+    await expect(
+      manager.prepareWindowsInstaller({
+        ...(await commonOptions(root)),
+        launcherExecutable: installation.launcherExecutable,
+        artifact: {
+          url: "https://downloads.example.test/codexhost.exe",
+          sha256: sha256(bytes),
+          size: bytes.length,
+        },
+        installRoot: installation.installRoot,
+      }),
+    ).rejects.toThrow("original directory");
     expect(spawnUpdater).not.toHaveBeenCalled();
-    expect((await manager.readStatus(prepared.statusPath))?.phase).toBe("failed");
   });
 
   it("downloads and verifies the macOS DMG before creating a request", async () => {
@@ -494,6 +479,10 @@ describe("background update manager", () => {
     const common = await commonOptions(root);
     const bytes = Buffer.from("different artifact");
     const installation = await windowsInstallerFixture(root);
+    await writeFile(
+      path.join(installation.installRoot, "app/codexhost-inno-files-v1.txt"),
+      `codexhost-inno-files-v1\n1.2.2\nwindows-x64\n${["app/codexhost-distribution.json", "app/host-runtime.mjs", "bin/codexhost.exe", "runtime/node.exe", "libexec/codexhost-updater.exe"].map((p) => `${"ab".repeat(32)} 1 ${p}`).join("\n")}\n`,
+    );
     const windows = createBackgroundUpdateManager({
       platform: "win32",
       architecture: "x64",

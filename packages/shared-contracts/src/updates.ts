@@ -21,12 +21,23 @@ export const updateStatusSchema = z
     version: updateSemanticVersionSchema,
     installation: updateInstallationSchema,
     phase: updatePhaseSchema,
+    outcome: z.enum(["updated", "restored", "recovery-failed", "unknown"]).optional(),
     updatedAt: z.number().int().nonnegative(),
     downloadedBytes: z.number().int().nonnegative().optional(),
     totalBytes: z.number().int().positive().optional(),
     error: z.string().min(1).max(UPDATE_ERROR_MAX_LENGTH).nullable(),
   })
   .superRefine((status, context) => {
+    if (
+      status.outcome &&
+      (status.outcome === "updated" ? status.phase !== "succeeded" : status.phase !== "failed")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["outcome"],
+        message: "update outcome must agree with terminal phase",
+      });
+    }
     if (
       status.downloadedBytes !== undefined &&
       status.totalBytes !== undefined &&

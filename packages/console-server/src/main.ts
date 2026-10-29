@@ -45,6 +45,13 @@ async function serve(): Promise<void> {
     paths,
     updates,
     host: createConsoleHostClient(paths.hostDescriptorDirectory),
+    ...(process.platform === "win32"
+      ? {
+          updateHost: createConsoleHostClient(paths.hostDescriptorDirectory, {
+            resourcesRoot: path.dirname(appDirectory),
+          }),
+        }
+      : {}),
     pageScript: await loadConsoleBundle(appDirectory),
     harnesses: createConsoleHarnesses(
       harnessPluginRoots(appDirectory, installation.distribution === null),

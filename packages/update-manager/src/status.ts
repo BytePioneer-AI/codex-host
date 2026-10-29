@@ -21,6 +21,13 @@ export interface BackgroundUpdateStatus {
   downloadedBytes?: number;
   totalBytes?: number;
   error?: string;
+  outcome?: "updated" | "restored" | "recovery-failed" | "unknown";
+  restart?: {
+    installationRoot: string;
+    launcherPid: number;
+    launcherStartedAtMicros: string;
+    version: string;
+  };
 }
 
 export function requireSemanticVersion(value: string): string {
@@ -56,6 +63,8 @@ export function parseUpdateStatus(value: unknown): BackgroundUpdateStatus {
     "totalBytes",
     "updatedAt",
     "version",
+    "outcome",
+    "restart",
   ];
   if (Object.keys(status).some((key) => !allowed.includes(key))) {
     throw new Error("background update status contains unknown fields");
@@ -89,6 +98,31 @@ export function parseUpdateStatus(value: unknown): BackgroundUpdateStatus {
     (status.error !== undefined && typeof status.error !== "string")
   ) {
     throw new Error("background update status is invalid");
+  }
+  if (
+    status.outcome !== undefined &&
+    (!["updated", "restored", "recovery-failed", "unknown"].includes(String(status.outcome)) ||
+      (status.outcome === "updated" ? status.phase !== "succeeded" : status.phase !== "failed"))
+  )
+    throw new Error("invalid update outcome");
+  if (status.restart !== undefined) {
+    const r = status.restart as Record<string, unknown>;
+    if (
+      !r ||
+      typeof r !== "object" ||
+      Object.keys(r).some(
+        (k) =>
+          !["installationRoot", "launcherPid", "launcherStartedAtMicros", "version"].includes(k),
+      ) ||
+      typeof r.installationRoot !== "string" ||
+      !Number.isSafeInteger(r.launcherPid) ||
+      Number(r.launcherPid) <= 0 ||
+      typeof r.launcherStartedAtMicros !== "string" ||
+      !/^[1-9][0-9]{0,19}$/u.test(r.launcherStartedAtMicros) ||
+      typeof r.version !== "string" ||
+      !SEMVER_PATTERN.test(r.version)
+    )
+      throw new Error("invalid update restart binding");
   }
   return status as unknown as BackgroundUpdateStatus;
 }

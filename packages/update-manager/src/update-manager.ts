@@ -34,9 +34,12 @@ import {
   type PreparedNpmMaterials,
 } from "./npm-materials.js";
 import { startUpdater } from "./updater-ready.js";
-import { automaticUpdateUnavailableReason } from "./support.js";
+import {
+  automaticUpdateUnavailableReason,
+  windowsInstallerRecoveryUnavailable,
+} from "./support.js";
 import { prepareInstallerRecovery, type PreparedInstallerRecovery } from "./installer-materials.js";
-import { INSTALLER_FILES_PATH, inside, resolvedFuturePath } from "./installer-files.js";
+import { inside, resolvedFuturePath } from "./installer-files.js";
 import type { CodexhostLatestRelease } from "./github-release.js";
 
 const REQUEST_SCHEMA_VERSION = 1;
@@ -509,8 +512,13 @@ export function createBackgroundUpdateManager(
           ),
         });
       } catch (error) {
-        await writeFailedStatus(common.statusPath, common.version, "npm", error);
-        throw error;
+        const failure = identity
+          ? new Error(
+              `${error instanceof Error ? error.message : String(error)}. Use npm manually with the original prefix ${identity.prefix} and exact release version; current application has not been stopped.`,
+            )
+          : error;
+        await writeFailedStatus(common.statusPath, common.version, "npm", failure);
+        throw failure;
       }
     },
 
@@ -531,6 +539,11 @@ export function createBackgroundUpdateManager(
         )
       )
         throw new Error("Installer preparation must be outside the installation");
+      const unavailable = await windowsInstallerRecoveryUnavailable(
+        options.installRoot,
+        installedVersion,
+      );
+      if (unavailable) throw new Error(unavailable);
       const common = await prepareCommon(options, "windows-installer");
       try {
         const artifact = await prepareArtifact(
@@ -539,29 +552,18 @@ export function createBackgroundUpdateManager(
           options.artifact,
           "update.exe",
         );
-        const hasCapability = await lstat(
-          path.join(options.installRoot, INSTALLER_FILES_PATH),
-        ).then(
-          () => true,
-          (error: NodeJS.ErrnoException) => {
-            if (error.code === "ENOENT") return false;
-            throw error;
-          },
-        );
-        const recovery = hasCapability
-          ? await prepareInstallerRecovery({
-              installRoot: options.installRoot,
-              operation: common.workDirectory,
-              installedVersion,
-              version: common.version,
-              architecture: dependencies.architecture ?? process.arch,
-              artifact: artifact.source,
-              ...(dependencies.installerRelease ? { release: dependencies.installerRelease } : {}),
-              ...(dependencies.environment ? { environment: dependencies.environment } : {}),
-              download: async (source, name) =>
-                (await prepareArtifact(common, "windows-installer", source, name)).artifactPath,
-            })
-          : undefined;
+        const recovery = await prepareInstallerRecovery({
+          installRoot: options.installRoot,
+          operation: common.workDirectory,
+          installedVersion,
+          version: common.version,
+          architecture: dependencies.architecture ?? process.arch,
+          artifact: artifact.source,
+          ...(dependencies.installerRelease ? { release: dependencies.installerRelease } : {}),
+          ...(dependencies.environment ? { environment: dependencies.environment } : {}),
+          download: async (source, name) =>
+            (await prepareArtifact(common, "windows-installer", source, name)).artifactPath,
+        });
         return await finalize(
           common,
           {
@@ -575,8 +577,11 @@ export function createBackgroundUpdateManager(
           artifact.artifactPath,
         );
       } catch (error) {
-        await writeFailedStatus(common.statusPath, common.version, "windows-installer", error);
-        throw error;
+        const failure = new Error(
+          `${error instanceof Error ? error.message : String(error)}. Use the original installer channel in ${options.installRoot}; current application has not been stopped.`,
+        );
+        await writeFailedStatus(common.statusPath, common.version, "windows-installer", failure);
+        throw failure;
       }
     },
 

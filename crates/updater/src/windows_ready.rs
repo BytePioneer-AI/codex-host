@@ -241,7 +241,7 @@ impl StartupCheck {
         self.spawned = Some(process);
         Ok(())
     }
-    fn launcher_ready(
+    fn launcher_instance(
         &self,
     ) -> Result<Option<(RuntimeDescriptorProbe, ProcessSnapshot)>, Box<dyn Error>> {
         let Some(bytes) = regular(&self.descriptor, 4096)? else {
@@ -281,6 +281,14 @@ impl StartupCheck {
         {
             return Ok(None);
         }
+        Ok(Some((descriptor, process)))
+    }
+    fn launcher_ready(
+        &self,
+    ) -> Result<Option<(RuntimeDescriptorProbe, ProcessSnapshot)>, Box<dyn Error>> {
+        let Some((descriptor, process)) = self.launcher_instance()? else {
+            return Ok(None);
+        };
         let Some(bytes) = regular(
             &self.data.join("diagnostics/launcher-startup-v1.json"),
             256 * 1024,
@@ -410,14 +418,30 @@ impl StartupCheck {
         }
         Ok(None)
     }
+    #[cfg(test)]
     pub(crate) fn wait(&self, timeout: Duration) -> Result<(), Box<dyn Error>> {
+        self.wait_with_launcher(timeout, |_| Ok(()))
+    }
+    pub(crate) fn wait_with_launcher(
+        &self,
+        timeout: Duration,
+        mut bind_result: impl FnMut(&ProcessSnapshot) -> Result<(), Box<dyn Error>>,
+    ) -> Result<(), Box<dyn Error>> {
         let started = Instant::now();
         let mut last_error = None;
+        let mut bound = None;
         while started.elapsed() < timeout {
             if let Some(error) = self.startup_failure() {
                 return Err(format!("target launch failed: {error}").into());
             }
             let attempt = (|| -> Result<bool, Box<dyn Error>> {
+                if let Some((_, instance)) = self.launcher_instance()? {
+                    let key = (instance.id, instance.started_at_micros);
+                    if bound != Some(key) {
+                        bind_result(&instance)?;
+                        bound = Some(key);
+                    }
+                }
                 let Some((descriptor, launcher)) = self.launcher_ready()? else {
                     return Ok(false);
                 };

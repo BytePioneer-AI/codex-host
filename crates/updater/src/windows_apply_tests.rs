@@ -354,6 +354,7 @@ fn complete_apply_success_releases_lock_only_after_target_ready() {
     };
     f.run(&mut e).unwrap();
     f.assert_end(false, false);
+    assert_eq!(f.status()["outcome"], "updated");
     assert_eq!(e.restore_calls, 0);
     assert_eq!(e.launch_versions, ["1.2.4"]);
 }
@@ -391,6 +392,7 @@ fn partial_install_and_no_child_and_owned_cleanup_each_restore_once_then_report_
                 .contains("original version restored and its Host is ready")
         );
         f.assert_end(true, false);
+        assert_eq!(f.status()["outcome"], "restored");
         assert_eq!(e.restore_calls, 1);
         assert_eq!(e.launch_versions.last().unwrap(), "1.2.3");
         assert!(
@@ -411,6 +413,7 @@ fn original_launch_failure_never_recurses_and_retains_written_protection() {
         let error = f.run(&mut e).unwrap_err().to_string();
         assert!(error.contains("original software restored"));
         assert!(error.contains("recovery is not retried"));
+        assert_eq!(f.status()["outcome"], "recovery-failed");
         f.assert_end(true, true);
         assert_eq!(e.restore_calls, 1);
         assert_eq!(e.launch_versions, ["1.2.4", "1.2.3"]);
@@ -427,6 +430,7 @@ fn capture_bind_or_cleanup_unknown_never_overwrites_the_new_installation() {
         assert!(f.run(&mut e).is_err());
         f.assert_end(true, true);
         assert_eq!(e.restore_calls, 0);
+        assert_eq!(f.status()["outcome"], "unknown");
         assert_eq!(e.launch_versions, ["1.2.4"]);
         assert_eq!(
             fs::read(f.root.join("custom install/bin/codexhost.exe")).unwrap(),
@@ -506,15 +510,11 @@ fn changed_recovery_material_after_write_blocks_restore_and_preserves_new_files(
 
 #[cfg(target_os = "windows")]
 #[test]
-fn installed_updater_entry_still_refuses_before_handoff() {
+fn valid_request_still_requires_a_live_owner_before_handoff() {
     let f = Fixture::new();
     let error = crate::apply(&f.request_path).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("automatic updates require verified")
-    );
-    assert_eq!(f.status()["phase"], "prepared");
+    assert!(error.to_string().contains("Launcher exited before"));
+    assert_eq!(f.status()["phase"], "failed");
 }
 
 #[test]

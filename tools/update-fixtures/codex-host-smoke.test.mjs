@@ -44,9 +44,9 @@ test("real smoke plan requires three exact software versions, original channel a
     expect(() => validateSmokeConfig(c)).toThrow();
   }
 });
-test("preparing smoke never opens the production policy", () => {
+test("smoke uses the same enabled Windows channel policy without an override", () => {
   for (const kind of ["npm", "windows-installer"])
-    expect(automaticUpdateUnavailableReason("win32", kind)).toContain("original");
+    expect(automaticUpdateUnavailableReason("win32", kind)).toBeNull();
 });
 test("unauthorized driver refuses before reading config, compiling or touching Desktop", async () => {
   vi.stubEnv("CODEXHOST_DISPOSABLE_WINDOWS_USER", "not-authorized");

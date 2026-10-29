@@ -6,6 +6,10 @@ import type {
 } from "@codexhost/shared-contracts";
 import {
   automaticUpdateUnavailableReason,
+  windowsInstallerRecoveryUnavailable,
+  discoverCurrentUpdateStatus,
+  installedUpdateResultScope,
+  updateRepairRequired,
   acquireUpdateOperationLock,
   cleanupTerminalUpdateState,
   compareSemanticVersions,
@@ -57,6 +61,7 @@ function publicStatus(status: BackgroundUpdateStatus, platform: NodeJS.Platform)
     installation: status.installation,
     phase: status.phase,
     updatedAt: status.updatedAt,
+    ...(status.outcome ? { outcome: status.outcome } : {}),
     ...(status.downloadedBytes === undefined ? {} : { downloadedBytes: status.downloadedBytes }),
     ...(status.totalBytes === undefined ? {} : { totalBytes: status.totalBytes }),
     error: error?.slice(0, ERROR_MAX_LENGTH) ?? null,
@@ -108,7 +113,13 @@ export function createHostUpdateCoordinator(
 
   async function latestStatus(context: InstalledUpdateContext): Promise<UpdateStatus | null> {
     if (!currentStatusPath) {
-      const active = await discoverActiveUpdateStatus(context.common.stateDirectory);
+      const active =
+        platform === "win32"
+          ? await discoverCurrentUpdateStatus(
+              context.common.stateDirectory,
+              installedUpdateResultScope(context),
+            )
+          : await discoverActiveUpdateStatus(context.common.stateDirectory);
       if (!active) return null;
       currentStatusPath = active.statusPath;
     }
@@ -121,6 +132,14 @@ export function createHostUpdateCoordinator(
     release: CodexhostLatestRelease,
   ): Promise<boolean> {
     if (automaticUpdateUnavailableReason(platform, context.installation.kind)) return false;
+    if (
+      context.installation.kind === "windows-installer" &&
+      (await windowsInstallerRecoveryUnavailable(
+        context.installation.options.installRoot,
+        context.metadata.version,
+      ))
+    )
+      return false;
     if (context.installation.kind === "npm") return true;
     const target = context.metadata.target;
     if (target === "linux-x64" || target === "linux-arm64") return false;
@@ -164,12 +183,24 @@ export function createHostUpdateCoordinator(
         const updateAvailable =
           compareSemanticVersions(context.metadata.version, release.version) < 0;
         let installationAvailable = false;
-        let error: string | null = null;
-        if (updateAvailable) {
+        let error: string | null =
+          platform === "win32"
+            ? await updateRepairRequired(
+                context.common.stateDirectory,
+                installedUpdateResultScope(context),
+              )
+            : null;
+        if (updateAvailable && !error) {
           installationAvailable = await installable(context, release);
           if (!installationAvailable) {
             error =
               automaticUpdateUnavailableReason(platform, context.installation.kind) ??
+              (context.installation.kind === "windows-installer"
+                ? await windowsInstallerRecoveryUnavailable(
+                    context.installation.options.installRoot,
+                    context.metadata.version,
+                  )
+                : null) ??
               "The latest GitHub Release has no verified asset for this installation";
           }
         }
@@ -202,13 +233,29 @@ export function createHostUpdateCoordinator(
     async start(): Promise<UpdateStartResult> {
       const context = await installedContext();
       await releaseFailedDelegation();
-      const unavailable = automaticUpdateUnavailableReason(platform, context.installation.kind);
+      const unavailable =
+        automaticUpdateUnavailableReason(platform, context.installation.kind) ??
+        (context.installation.kind === "windows-installer"
+          ? await windowsInstallerRecoveryUnavailable(
+              context.installation.options.installRoot,
+              context.metadata.version,
+            )
+          : null);
       if (unavailable) throw new Error(unavailable);
       await recoverUpdateOperationLock(context.common.stateDirectory);
+      const repair =
+        platform === "win32"
+          ? await updateRepairRequired(
+              context.common.stateDirectory,
+              installedUpdateResultScope(context),
+            )
+          : null;
+      if (repair) throw new Error(repair);
       const lock = await acquireUpdateOperationLock(context.common.stateDirectory);
       if (!lock) {
         const existing = await latestStatus(context);
-        if (existing) return { status: existing };
+        const active = await discoverActiveUpdateStatus(context.common.stateDirectory);
+        if (existing && active?.statusPath === currentStatusPath) return { status: existing };
         throw new Error("Another update operation is already active");
       }
 

@@ -2,7 +2,7 @@
 use crate::{
     operation_lock::OperationLock,
     request::{Installation, UpdateRequest},
-    status::write_status,
+    status::{Outcome, write_result, write_status},
     windows_launch::LaunchFailure,
 };
 use std::error::Error;
@@ -47,24 +47,30 @@ fn recover(
     })();
     match result {
         Ok(()) => {
+            let message =
+                format!("update failed: {reason}; original version restored and its Host is ready");
+            write_result(request, "failed", Some(&message), Outcome::Restored)?;
             ownership.finish()?;
-            Err(
-                format!("update failed: {reason}; original version restored and its Host is ready")
-                    .into(),
-            )
+            Err(message.into())
         }
-        Err(error) => Err(format!(
-            "update failed: {reason}; original-channel recovery failed: {error}; materials retained"
-        )
-        .into()),
+        Err(error) => {
+            let message = format!(
+                "update failed: {reason}; original-channel recovery failed: {error}; materials retained"
+            );
+            write_result(request, "failed", Some(&message), Outcome::RecoveryFailed)?;
+            Err(message.into())
+        }
     }
 }
 pub(super) fn execute(request: &UpdateRequest, effects: &mut impl Effects) -> Result<()> {
+    let mut installation_started = false;
     let result = (|| {
         let mut ownership = effects.handoff(request)?;
         if let Err(error) = effects.install(request, &mut || {
             write_status(request, "installing", None)?;
-            ownership.mark_installing()
+            ownership.mark_installing()?;
+            installation_started = true;
+            Ok(())
         }) {
             if stopped_install_tool(request, error.as_ref()) {
                 return recover(request, &mut ownership, &error.to_string(), effects);
@@ -78,19 +84,23 @@ pub(super) fn execute(request: &UpdateRequest, effects: &mut impl Effects) -> Re
             }
             return Err(error.into());
         }
-        write_status(request, "succeeded", None)?;
+        write_result(request, "succeeded", None, Outcome::Updated)?;
         ownership.finish()?;
         Ok(())
     })();
     if let Err(error) = &result {
-        let _ = write_status(request, "failed", Some(&error.to_string()));
+        if installation_started {
+            let _ = crate::status::write_failure(request, &error.to_string());
+        } else {
+            let _ = write_status(request, "failed", Some(&error.to_string()));
+        }
     }
     result
 }
 #[cfg(target_os = "windows")]
 pub(super) fn apply(path: &Path) -> Result<()> {
-    // Both structural/material validation and the unconditional production gates
-    // precede handoff. Effects cannot be chosen through requests or environment.
+    // Identity and prepared-material validation precede handoff.
+    // Effects cannot be chosen through requests or environment.
     let request = UpdateRequest::parse(path)?;
     execute(&request, &mut Native)
 }

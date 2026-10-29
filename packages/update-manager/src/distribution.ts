@@ -15,6 +15,26 @@ import {
 } from "./windows-installation.js";
 export { parseDistributionMetadata, type DistributionMetadata } from "./distribution-metadata.js";
 import type { ReleaseTarget } from "./github-release.js";
+import type { UpdateResultScope } from "./update-result.js";
+
+export function installedUpdateResultScope(context: InstalledUpdateContext): UpdateResultScope {
+  const i = context.installation;
+  return {
+    installation: i.kind,
+    installationRoot:
+      i.kind === "npm"
+        ? path.resolve(path.dirname(i.options.npmLauncherPath), "../../../..")
+        : i.kind === "windows-installer"
+          ? i.options.installRoot
+          : i.options.appPath,
+    runtimeDescriptorPath: context.common.runtimeDescriptorPath,
+    launcherPid: context.common.launcherPid,
+    ...(context.common.launcherStartedAtMicros
+      ? { launcherStartedAtMicros: context.common.launcherStartedAtMicros }
+      : {}),
+    version: context.metadata.version,
+  };
+}
 
 export const UPDATE_RUNTIME_ENV = Object.freeze({
   launcherPid: "CODEXHOST_LAUNCHER_PID",

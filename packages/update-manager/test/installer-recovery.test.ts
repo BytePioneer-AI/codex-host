@@ -191,7 +191,7 @@ test("rejects ambiguous/extra-field/incorrect EXE bindings", async () => {
   f.artifacts.set(descriptor.downloadUrl, Buffer.from("{}"));
   await expect(prepareInstallerRecovery(f.options)).rejects.toThrow();
 });
-test("manager publishes recovery in the existing request but keeps production start gated", async () => {
+test("manager publishes verified recovery and delegates Windows start through its Launcher", async () => {
   const f = await fixture();
   const state = path.join(f.root, "updates");
   const manager = createBackgroundUpdateManager({
@@ -222,8 +222,9 @@ test("manager publishes recovery in the existing request but keeps production st
   });
   const request = JSON.parse(await readFile(prepared.requestPath, "utf8"));
   expect(request.installation.recovery.installer_path).toContain("previous.exe");
-  await expect(manager.start(prepared)).rejects.toThrow("original-channel recovery");
-  expect(JSON.parse(await readFile(prepared.requestPath, "utf8"))).not.toHaveProperty(
+  await expect(manager.start(prepared)).resolves.not.toHaveProperty("updaterPid");
+  expect(JSON.parse(await readFile(prepared.requestPath, "utf8"))).toHaveProperty(
     "launch_via_launcher",
+    true,
   );
 });

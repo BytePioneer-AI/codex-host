@@ -2390,6 +2390,16 @@ describe("Renderer Updates page", () => {
     [updateStatus("installing", "windows-installer"), "正在安装更新..."],
     [updateStatus("restarting"), "正在重启以完成更新..."],
     [updateStatus("failed"), "更新失败。"],
+    [{ ...updateStatus("succeeded"), outcome: "updated" as const }, "更新安装成功。"],
+    [
+      { ...updateStatus("failed"), outcome: "restored" as const, error: "opaque diagnostic" },
+      "更新失败，已恢复原版本并确认就绪。",
+    ],
+    [
+      { ...updateStatus("failed"), outcome: "recovery-failed" as const },
+      "更新及恢复失败，已保留材料",
+    ],
+    [{ ...updateStatus("failed"), outcome: "unknown" as const }, "更新状态未确认，已保留材料"],
   ])("renders a distinct localized update status for $0.phase", async (status, expected) => {
     const client = {
       checkUpdate: vi.fn(async () => updateCheck(status)),
@@ -2631,59 +2641,84 @@ describe("Renderer Updates page", () => {
   });
 
   it.each([
-    ["npm" as const, "Windows 暂不支持自动更新。请退出 codexhost，在终端运行以下命令完成更新。"],
+    ["npm" as const, "手动更新备选：请退出 codexhost，通过 npm 在原全局 prefix 更新。", true],
     [
       "windows-installer" as const,
-      "Windows 暂不支持自动更新。请下载并运行适用于当前系统的安装包。",
+      "手动更新备选：请下载适用于当前系统的安装包，安装到原目录。",
+      true,
     ],
-  ])("renders manual Windows updates for %s installations", async (installation, expected) => {
-    const client = {
-      checkUpdate: vi.fn(async () => ({ ...updateCheck(), installation })),
-      startUpdate: vi.fn(),
-      readUpdateStatus: vi.fn(async () => ({ status: null })),
-    };
-    const page = createDefaultRendererSettingsPages(
-      rendererSettingsMessages("zh-CN"),
-      () => client,
-    ).find(({ id }) => id === "updates");
-    if (!page) throw new Error("Updates page is not registered");
+    ["npm" as const, "手动更新备选：请退出 codexhost，通过 npm 在原全局 prefix 更新。", false],
+    [
+      "windows-installer" as const,
+      "手动更新备选：请下载适用于当前系统的安装包，安装到原目录。",
+      false,
+    ],
+  ])(
+    "offers Windows automatic updates and a manual alternative for %s",
+    async (installation, expected, installationAvailable) => {
+      const client = {
+        checkUpdate: vi.fn(async () => ({
+          ...updateCheck(),
+          installation,
+          installationAvailable,
+          error: installationAvailable
+            ? null
+            : "Original recovery materials unavailable; use original prefix/directory",
+        })),
+        startUpdate: vi.fn(async () => ({ status: updateStatus("prepared", installation) })),
+        readUpdateStatus: vi.fn(async () => ({ status: null })),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("zh-CN"),
+        () => client,
+      ).find(({ id }) => id === "updates");
+      if (!page) throw new Error("Updates page is not registered");
 
-    const document = new FakeDocument("Win32");
-    const content = document.createElement("main");
-    const scope = new RendererSettingsPageScope();
-    const cleanup = page.mount({
-      content: content as unknown as HTMLElement,
-      signal: scope.signal,
-      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
-    });
+      const document = new FakeDocument("Win32");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
 
-    await vi.waitFor(() => {
-      expect(visibleText(content)).toContain(expected);
-      expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
-        "Windows 暂不支持自动更新",
+      await vi.waitFor(() => {
+        expect(visibleText(content)).toContain(expected);
+        expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
+          installationAvailable ? "有新版本可用" : "更新失败",
+        );
+      });
+      const button = descendants(elementWithClass(content, "settings-update-panel")).find(
+        (element) =>
+          element.tagName === "button" && visibleNotesText(element).includes("更新并重启"),
       );
-    });
-    expect(
-      descendants(elementWithClass(content, "settings-update-panel")).find(
-        ({ tagName }) => tagName === "button",
-      ),
-    ).toBeUndefined();
-    expect(client.startUpdate).not.toHaveBeenCalled();
-    if (installation === "npm") {
-      expect(visibleText(content)).toContain("npm install -g @codexhost/cli@latest");
-    } else {
-      const link = descendants(content).find(
-        ({ tagName, href }) =>
-          tagName === "a" &&
-          href ===
-            "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
-      );
-      expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
-    }
+      if (installationAvailable) {
+        expect(button).toBeDefined();
+        button?.dispatch("click");
+        await vi.waitFor(() => expect(client.startUpdate).toHaveBeenCalledOnce());
+      } else {
+        expect(button).toBeUndefined();
+        expect(client.startUpdate).not.toHaveBeenCalled();
+      }
+      if (installation === "npm") {
+        expect(visibleText(content)).toContain(
+          'npm install --global --prefix "<original-prefix>" @codexhost/cli@1.2.3',
+        );
+      } else {
+        const link = descendants(content).find(
+          ({ tagName, href }) =>
+            tagName === "a" &&
+            href ===
+              "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+        );
+        expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
+      }
 
-    cleanup?.();
-    scope.dispose();
-  });
+      cleanup?.();
+      scope.dispose();
+    },
+  );
 
   it("renders the open-source project introduction on the About page", () => {
     const page = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(

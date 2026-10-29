@@ -32,8 +32,16 @@ async function fixture() {
   const state = path.join(root, "updates");
   vi.mocked(resolveInstalledUpdateContext).mockResolvedValue({
     metadata: { version: "1.2.2", target: "windows-x64", distribution: "npm" },
-    common: { stateDirectory: state },
-    installation: { kind: "npm", options: {} },
+    common: {
+      stateDirectory: state,
+      runtimeDescriptorPath: path.join(root, "runtime.json"),
+      launcherPid: process.pid,
+      launcherStartedAtMicros: "123",
+    },
+    installation: {
+      kind: "npm",
+      options: { npmLauncherPath: path.join(root, "node_modules/@codexhost/cli/bin/codexhost.js") },
+    },
   } as unknown as InstalledUpdateContext);
   let counter = 0,
     statusPath = "";

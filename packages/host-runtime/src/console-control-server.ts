@@ -17,6 +17,7 @@ export interface ConsoleHostDescriptor {
   token: string;
   startedAt: number;
   launcherPid?: number;
+  resourcesRoot?: string;
 }
 
 export interface ConsoleControlTarget {
@@ -86,6 +87,7 @@ export async function startConsoleControlServer(options: {
   environment: NodeJS.ProcessEnv;
   pid?: number;
   now?: () => number;
+  resourcesRoot?: string;
 }): Promise<ConsoleControlServer> {
   const token = randomBytes(32).toString("hex");
   const pid = options.pid ?? process.pid;
@@ -146,6 +148,7 @@ export async function startConsoleControlServer(options: {
     token,
     startedAt: (options.now ?? Date.now)(),
     ...(Number.isSafeInteger(launcherPid) && launcherPid > 0 ? { launcherPid } : {}),
+    ...(options.resourcesRoot ? { resourcesRoot: path.resolve(options.resourcesRoot) } : {}),
   };
   try {
     await writePrivateJson(descriptorPath, descriptor);

@@ -42,6 +42,7 @@ export interface ConsoleServerOptions {
   pageScript: string;
   /** The running Host's settings channel, when codexhost runs. */
   host: ConsoleHostClient;
+  updateHost?: ConsoleHostClient;
   environment?: NodeJS.ProcessEnv;
   announcement?(): Promise<ConsoleAnnouncement | null>;
   /** Exit after this long without requests. */
@@ -164,6 +165,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       appDirectory: options.installation.appDirectory,
       runtimeDescriptorPath: document?.runtime.descriptorPath ?? null,
       codexhostRunning: document?.runtime.running ?? false,
+      ...(document?.runtime.launcherPid ? { launcherPid: document.runtime.launcherPid } : {}),
     };
   };
 
@@ -321,14 +323,21 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     ) {
       // A running codexhost updates through its Host so the Launcher can hand over.
       const target = await updateTarget();
-      if (target.codexhostRunning && (await options.host.available())) {
+      const updateHost = options.updateHost ?? options.host;
+      const launcherPid = options.updateHost ? target.launcherPid : undefined;
+      if (
+        target.codexhostRunning &&
+        (await (launcherPid ? updateHost.available(launcherPid) : updateHost.available()))
+      ) {
         const method =
           route === "POST /api/update/check"
             ? "codexhost/update/check"
             : route === "POST /api/update/start"
               ? "codexhost/update/start"
               : "codexhost/update/status";
-        const reply = await options.host.request(method, {}).catch((error: unknown) => ({
+        const reply = await (
+          launcherPid ? updateHost.request(method, {}, launcherPid) : updateHost.request(method, {})
+        ).catch((error: unknown) => ({
           error: { code: -32603, message: error instanceof Error ? error.message : String(error) },
         }));
         if ("error" in reply) sendJson(response, 500, { error: reply.error.message });
@@ -341,7 +350,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       return;
     }
     if (route === "GET /api/update/status") {
-      sendJson(response, 200, await options.updates.status());
+      sendJson(response, 200, await options.updates.status(await updateTarget()));
       return;
     }
     if (route === "POST /api/update/start") {

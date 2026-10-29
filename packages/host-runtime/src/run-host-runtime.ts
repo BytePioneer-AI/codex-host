@@ -193,9 +193,14 @@ async function runWithConsoleControl(
   host: AppServerHost,
   enabled: boolean,
   environment: NodeJS.ProcessEnv,
+  hostRuntimePath?: string,
 ): Promise<number> {
   const control = enabled
-    ? await startConsoleControlServer({ target: host, environment }).catch((error: unknown) => {
+    ? await startConsoleControlServer({
+        target: host,
+        environment,
+        ...(hostRuntimePath ? { resourcesRoot: path.dirname(path.dirname(hostRuntimePath)) } : {}),
+      }).catch((error: unknown) => {
         process.stderr.write(
           `codexhost Host Runtime: console channel unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
         );
@@ -238,7 +243,9 @@ export async function runHostRuntime(input: {
   });
   const updateCoordinator =
     input.updateCoordinator ??
-    (hostRuntimePath && hasLauncherManagedUpdateRuntime(input.environment, hostRuntimePath)
+    (hostRuntimePath &&
+    !isRemoteUnixListenerInvocation(input.arguments) &&
+    hasLauncherManagedUpdateRuntime(input.environment, hostRuntimePath)
       ? createHostUpdateCoordinator({
           hostRuntimePath,
           environment: input.environment,
@@ -310,6 +317,7 @@ export async function runHostRuntime(input: {
               host,
               consoleOpener !== undefined,
               delegationEnvironment,
+              hostRuntimePath,
             );
           } finally {
             await official.close();
@@ -360,6 +368,7 @@ export async function runHostRuntime(input: {
             host,
             consoleOpener !== undefined,
             delegationEnvironment,
+            hostRuntimePath,
           );
         } finally {
           try {

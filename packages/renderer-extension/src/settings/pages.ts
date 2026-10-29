@@ -146,7 +146,12 @@ function statusMessage(
 ): string | null {
   if (!status) return null;
   if (status.phase === "succeeded") return messages.updateSucceeded;
-  if (status.phase === "failed") return status.error ?? messages.updateFailed;
+  if (status.phase === "failed") {
+    if (status.outcome === "restored") return messages.updateRestored;
+    if (status.outcome === "recovery-failed") return messages.updateRecoveryFailed;
+    if (status.outcome === "unknown") return messages.updateStateUnknown;
+    return status.error ?? messages.updateFailed;
+  }
   if (status.phase === "waiting-for-exit") return messages.updateWaitingForExit;
   if (status.phase === "installing") {
     return status.installation === "npm" ? messages.updateInstallingNpm : messages.updateInstalling;
@@ -336,7 +341,8 @@ function updatesPage(
       const manualNpmCommandRow = document.createElement("div");
       manualNpmCommandRow.className = "settings-update-command";
       const manualNpmCommand = document.createElement("code");
-      manualNpmCommand.textContent = CODEXHOST_NPM_MANUAL_UPDATE_COMMAND;
+      let manualCommand = CODEXHOST_NPM_MANUAL_UPDATE_COMMAND;
+      manualNpmCommand.textContent = manualCommand;
       const copyCommand = document.createElement("button");
       copyCommand.type = "button";
       copyCommand.className = "settings-update-command__copy";
@@ -354,7 +360,7 @@ function updatesPage(
           restore(messages.updateCopyFailed);
           return;
         }
-        void clipboard.writeText(CODEXHOST_NPM_MANUAL_UPDATE_COMMAND).then(
+        void clipboard.writeText(manualCommand).then(
           () => restore(messages.updateCommandCopied),
           () => restore(messages.updateCopyFailed),
         );
@@ -471,11 +477,15 @@ function updatesPage(
         );
       };
 
-      const scheduleStatusPoll = (client: RendererUpdateClient, resetAttempts = false): void => {
+      const scheduleStatusPoll = (
+        client: RendererUpdateClient,
+        resetAttempts = false,
+        limit = 320,
+      ): void => {
         clearPoll();
         if (resetAttempts) pollAttempts = 0;
-        if (pollAttempts >= 320) {
-          renderPendingStatus(null, messages.updateRequestTimeout, "failed");
+        if (pollAttempts >= limit) {
+          if (limit === 320) renderPendingStatus(null, messages.updateRequestTimeout, "failed");
           return;
         }
         pollAttempts += 1;
@@ -486,13 +496,12 @@ function updatesPage(
               success(result) {
                 const message = statusMessage(result.status, messages);
                 if (message) renderPendingStatus(result.status, message);
-                if (result.status === null || isPendingStatus(result.status)) {
-                  scheduleStatusPoll(client);
-                }
+                if (result.status === null) scheduleStatusPoll(client, false, limit);
+                else if (isPendingStatus(result.status)) scheduleStatusPoll(client, limit !== 320);
               },
               failure(error) {
                 if (error instanceof RendererUpdateRequestTimeoutError) {
-                  scheduleStatusPoll(client);
+                  scheduleStatusPoll(client, false, limit);
                 } else {
                   renderRequestFailure(error);
                 }
@@ -511,6 +520,12 @@ function updatesPage(
         delete panel.dataset.inline;
         panel.replaceChildren();
         panel.append(createPanelHead(document, viewPhase, message));
+        if (status?.outcome && status.error) {
+          const detail = document.createElement("p");
+          detail.className = "settings-update-error";
+          detail.textContent = status.error;
+          panel.append(detail);
+        }
         setManualFallback(viewPhase === "failed");
         if (
           status?.phase === "downloading" &&
@@ -575,6 +590,10 @@ function updatesPage(
           : "";
         installationValue.textContent = installationLabel(result.installation, messages);
         manualNpm.hidden = result.installation !== "npm";
+        if (windows && result.installation === "npm") {
+          manualCommand = `npm install --global --prefix "<original-prefix>" @codexhost/cli@${result.latestVersion ?? "<version>"}`;
+          manualNpmCommand.textContent = manualCommand;
+        }
         manualWindowsInstaller.hidden = !windows || result.installation !== "windows-installer";
         releaseLink.hidden = windows;
         manualTitle.hidden =
@@ -592,17 +611,18 @@ function updatesPage(
           scheduleStatusPoll(client, true);
           return;
         }
-        const actionableStatus =
-          result.status?.phase === "failed" && result.status.version === result.latestVersion
-            ? result.status
-            : null;
+        // Backend status is already scoped to this operation/Launcher.
+        const actionableStatus = result.status;
         const view = result.error ? "error" : result.updateAvailable ? "available" : "current";
         panel.dataset.updateState = view;
         panel.replaceChildren();
-        setManualFallback(Boolean(result.error) || actionableStatus !== null);
+        setManualFallback(Boolean(result.error) || actionableStatus?.phase === "failed");
         // Every state gets a status line; a bare button in an empty card reads as unfinished.
         const inlineUpdate =
-          !result.error && !windows && !actionableStatus && result.updateAvailable;
+          !result.error &&
+          !actionableStatus &&
+          result.updateAvailable &&
+          result.installationAvailable;
         if (inlineUpdate) panel.dataset.inline = "";
         else delete panel.dataset.inline;
         panel.append(
@@ -614,9 +634,9 @@ function updatesPage(
               : result.error
                 ? messages.updateFailed
                 : result.updateAvailable
-                  ? windows
-                    ? messages.updateWindowsManualRequired
-                    : messages.updateAvailable
+                  ? result.installationAvailable
+                    ? messages.updateAvailable
+                    : messages.updateWindowsManualRequired
                   : messages.updateUpToDate,
           ),
         );
@@ -633,7 +653,7 @@ function updatesPage(
           panel.append(error);
         }
         const buttons: HTMLElement[] = [];
-        if (!windows && result.updateAvailable && result.installationAvailable) {
+        if (result.updateAvailable && result.installationAvailable && !result.error) {
           const update = document.createElement("button");
           update.type = "button";
           update.className = "settings-command-button";
@@ -654,6 +674,10 @@ function updatesPage(
         if (result.releaseNotes) {
           notes.append(createReleaseNotesElement(document, result.releaseNotes));
         }
+        // The new Host may serve its first check just before native restart
+        // association is committed. Briefly discover that result without
+        // turning an ordinary no-operation check into a timeout error.
+        if (windows && !result.status) scheduleStatusPoll(client, true, 5);
       };
 
       const load = (): Promise<void> => {

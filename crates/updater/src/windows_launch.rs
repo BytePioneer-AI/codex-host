@@ -43,7 +43,9 @@ pub(crate) fn launch(request: &crate::request::UpdateRequest) -> Result<(), Laun
     // Its io::Err comes from failed CreateProcess, not a later bind/wait error.
     let child = crate::install::relaunch_in_job(request, key).map_err(LaunchFailure::NoChild)?;
     startup.bind(&child).map_err(LaunchFailure::binding)?;
-    if let Err(error) = startup.wait(std::time::Duration::from_secs(30)) {
+    if let Err(error) = startup.wait_with_launcher(std::time::Duration::from_secs(30), |launcher| {
+        crate::status::bind_restart(request, launcher)
+    }) {
         return match startup.stop_failed_launch() {
             Ok(()) => Err(LaunchFailure::OwnedLaunchStopped(error.to_string())),
             Err(cleanup) => Err(LaunchFailure::Unproven(format!(

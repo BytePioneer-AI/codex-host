@@ -211,6 +211,9 @@ export async function cleanupTerminalUpdateState(
       continue;
     try {
       const status = parseUpdateStatus(JSON.parse(await readFile(statusPath, "utf8")));
+      // Keep the one result still displayed by its live restarted Launcher.
+      // PID reuse can only retain extra diagnostics, never authorize execution.
+      if (status.restart && processIsAlive(status.restart.launcherPid)) continue;
       if (TERMINAL_PHASES.has(status.phase) && now - status.updatedAt > retentionSeconds) {
         await rm(directory, { recursive: true, force: true });
       }
@@ -356,6 +359,7 @@ export async function recoverUpdateOperationLock(
             JSON.stringify({
               ...status,
               phase: "failed",
+              outcome: status.outcome ?? "unknown",
               error: `${status.error ? `${status.error.slice(0, 250)}. ` : ""}Windows installation may be incomplete; manual repair is required. Operation files are retained for manual repair.`,
             }),
           );

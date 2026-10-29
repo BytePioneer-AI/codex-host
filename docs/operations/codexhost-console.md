@@ -120,9 +120,11 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 
 ## 更新
 
-更新页面只展示当前服务实例启动或从活动更新锁恢复的任务状态，不把磁盘上最近一次历史失败或成功作为当前状态。页面刷新可继续查看同一任务；重试切换到新任务，旧错误不再展示。当前任务结束后，该服务实例仍可展示其结果；新的 Host 或控制台实例不恢复已经结束的历史任务。历史状态文件继续保留用于诊断，按原有保留策略清理。
+更新页只展示当前操作或明确绑定到本次重启的结果，不选择磁盘上“最近一次”历史记录。Windows 的现有 status 文件保存可选 `outcome` 和私有 restart 关联；请求中的渠道/安装根/descriptor、当前 Launcher PID/原生创建时间及运行版本必须一致。更新后的新 Host 和恢复后的旧 Host 即使活动锁已释放、网络不可用，也能读取本次结果；其他安装、旧 Launcher/复用 PID 或远端 Host 不认领结果。当前 Launcher 存活期间，诊断清理不删除这条结果。旧记录缺少关联字段时不冒充本次重启结果。
 
-`codexhost update` 提供不打开浏览器的终端入口，适用于非 Windows npm 和 macOS DMG。Windows npm 自动执行因候选激活归属及执行前完整进程隔离尚未通过原生验收而在交接前拒绝；Windows 安装包自动执行因原渠道恢复未验证而拒绝，需使用原渠道、原目录手动更新。普通 Inno 安装不受此限制。命令检查最新 Release，已是最新版本时成功退出；有更新时需先退出正在运行的 codexhost。命令复用控制台更新管理器和全局更新锁，等待下载、准备以及 Updater 校验旧进程身份并确认 `waiting-for-exit` 后退出，随后后台安装并重启 codexhost。创建子进程或获得 PID 不代表交接成功；启动报错、提前退出或 10 秒内未确认交接都会使操作失败，并终止未就绪的 Updater。终端显示的是交接状态，不代表安装已经完成；重新启动后应检查当前版本，历史安装结果保留在本地更新状态文件中供诊断。检查、准备或交接失败时返回非零退出码。源码构建和 Linux 非 npm 安装不支持自更新。
+`outcome` 区分更新成功（updated）、更新失败但旧版恢复且就绪（restored）、恢复失败（recovery-failed）及状态未确认（unknown）。后三者仍为 failed；后两者保留锁、材料与诊断，不从英文 error 字符串推断恢复结果。操作路径及进程关联不暴露为浏览器可传参数，没有第二份启动回执。
+
+`codexhost update` 提供不打开浏览器的终端入口，支持 Windows npm/EXE、非 Windows npm 和 macOS DMG。Windows 缺少原版恢复能力或材料、归属不明时，仍在停止应用前拒绝，并指向原 npm prefix 或原安装目录的人工路径。普通 Inno 安装不受自动更新准备流程影响。命令检查最新 Release，已是最新版本时成功退出；有更新时需先退出正在运行的 codexhost。命令复用控制台更新管理器和全局更新锁，等待下载、准备以及 Updater 校验旧进程身份并确认 `waiting-for-exit` 后退出，随后后台安装并重启 codexhost。创建子进程或获得 PID 不代表交接成功；启动报错、提前退出或 10 秒内未确认交接都会使操作失败，并终止未就绪的 Updater。终端显示的是交接状态，不代表安装已经完成；重新启动后应检查当前版本，历史安装结果保留在本地更新状态文件中供诊断。检查、准备或交接失败时返回非零退出码。源码构建和 Linux 非 npm 安装不支持自更新。
 
 - codexhost 运行中：通过 Host 的更新流程检查与安装，与 Codex 设置页一致。
 - codexhost 未运行：控制台下载并准备更新，拉起 Updater 并等待身份校验后的就绪确认才退出；Updater 等待控制台进程退出，再按原流程安装并重新启动 codexhost。
@@ -131,9 +133,9 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 
 ### Windows 更新边界
 
-Windows 内置更新页只提供手动更新入口。Host 和独立控制台的 `check` 在发现新版时均返回 `installationAvailable: false` 及原渠道手动说明；`start` 在创建准备锁、下载或停止实例前拒绝。npm 使用原全局 prefix 和精确 Release 版本，安装包使用原目录，不跨渠道。`status` 仅表示实际操作：没有操作时返回 null，不伪造失败或交接；已有失败仍保持 failed 及原诊断，在 500 字符预算内附手动说明；完整手动路径由 check/start 提供，不从错误文本推断恢复状态。Windows npm 的材料准备及底层离线安装器可用于隔离验证，但管理器在启动 Helper 前、原生请求在接管及停止旧所有者前拒绝自动执行，保留当前安装和诊断。原因是候选 MSIX 激活归属、执行前隔离及原渠道恢复尚未完成原生验收，不是下载材料不足。后台更新的归属校验要求 npm CLI、匹配平台包、版本及全局命令入口属于同一 prefix，支持 npm 的嵌套和提升平台包布局；链接、跨 prefix 或不明确的布局在交接前失败。安装执行显式指定原 npm prefix 或安装包目录，不使用当前终端的默认 prefix 或安装器记忆的其他目录。macOS npm/DMG 沿用各自的准备与启动方式。
+Windows 更新页、Host、独立控制台及终端入口已接通一键准备、安装和重启，并保留手动入口。`check` 按当前安装身份、原版恢复能力和发行资产判断可用性；`start` 进一步准备并校验目标及原版全部材料，成功接管后才停止当前实例。不存在“仅因 Windows/尚未验收”而一概拒绝的总开关。npm 使用原全局 prefix，EXE 使用原目录，不跨渠道；旧能力或材料缺失时明确拒绝。功能已实现，Windows 原生升级、恢复和进程隔离仍需用户手测，不将交叉编译当验收。后台更新的归属校验要求 npm CLI、匹配平台包、版本及全局命令入口属于同一 prefix，支持 npm 的嵌套和提升平台包布局；链接、跨 prefix 或不明确的布局在交接前失败。安装执行显式指定原 npm prefix 或安装包目录，不使用当前终端的默认 prefix 或安装器记忆的其他目录。macOS npm/DMG 沿用各自的准备与启动方式。
 
-Windows Desktop 的 Host 只在自动执行验收门通过后向既有请求发布 `launch_via_launcher` 启动意图；`prepared` 本身不触发启动，不代表已交接。Launcher 在其 Desktop Job 外启动临时 Updater，核对 Helper 不属于旧 Job，再等待同一 operationId、原生创建身份及 `waiting-for-exit`；交接失败保留旧 Desktop，并更新既有失败状态；原 Host 观察该失败后仅释放自身未转移的准备锁，允许重试，不删除 Updater 已接管或后续操作的锁。Node 的 `detached` 不用于逃离 Job。独立控制台/终端仍可直接启动并等待原生交接；继承 Desktop Job 的 Helper 在接管前拒绝，不凭包级环境获得任何清理权限。Job 提示只用于否决：命名 Job 已销毁而 Open 返回确切 NotFound 时不拒绝独立进程，其余无法判断的错误保留失败闭锁。Windows 临时 Updater 在确认旧进程的 PID、创建时间和可执行文件后接管操作锁，再报告等待退出；Launcher 还会核对活动 Helper 的实例身份。安装开始后的异常中断会保留锁和操作目录，后续入口报告需要手动修复，不自动重试覆盖。修复应使用原安装渠道及原 prefix/安装目录；仅重新启动服务或等待诊断清理不会解除这种保护。短时元数据互斥由操作系统文件句柄持有，进程退出自动释放，不按目录年龄或等待超时破锁。持久空文件 `.active-update-mutation.lock` 的存在不代表活动更新；准备记录通过临时文件原子发布，避免准备进程崩溃留下半条记录阻止重试。
+Windows Desktop 的 Host 在身份与材料准备通过后向既有请求发布 `launch_via_launcher` 启动意图；`prepared` 本身不触发启动，不代表已交接。Launcher 在其 Desktop Job 外启动临时 Updater，核对 Helper 不属于旧 Job，再等待同一 operationId、原生创建身份及 `waiting-for-exit`；交接失败保留旧 Desktop，并更新既有失败状态；原 Host 观察该失败后仅释放自身未转移的准备锁，允许重试，不删除 Updater 已接管或后续操作的锁。Node 的 `detached` 不用于逃离 Job。独立控制台/终端仍可直接启动并等待原生交接；继承 Desktop Job 的 Helper 在接管前拒绝，不凭包级环境获得任何清理权限。Job 提示只用于否决：命名 Job 已销毁而 Open 返回确切 NotFound 时不拒绝独立进程，其余无法判断的错误保留失败闭锁。Windows 临时 Updater 在确认旧进程的 PID、创建时间和可执行文件后接管操作锁，再报告等待退出；Launcher 还会核对活动 Helper 的实例身份。安装开始后的异常中断会保留锁和操作目录，后续入口报告需要手动修复，不自动重试覆盖。修复应使用原安装渠道及原 prefix/安装目录；仅重新启动服务或等待诊断清理不会解除这种保护。短时元数据互斥由操作系统文件句柄持有，进程退出自动释放，不按目录年龄或等待超时破锁。持久空文件 `.active-update-mutation.lock` 的存在不代表活动更新；准备记录通过临时文件原子发布，避免准备进程崩溃留下半条记录阻止重试。
 
 最终安装归属及 EXE 摘要校验是只读步骤，校验失败不进入可能写安装的操作，也不按半安装禁止重试。只有即将调用 npm/安装器时才设置安装写入标记；实际写入后的失败仍保留操作锁。
 
@@ -141,29 +143,39 @@ Windows npm 在旧所有者退出前，通过已验证的 Node/npm CLI 获取目
 
 正式 npm 安装只使用已准备的本地归档、隔离 cache 和空 user/global npmrc，显式指定原 prefix，使用 `--offline --ignore-scripts --omit=optional`；同时禁用 audit、fund 和 update-notifier，禁止安装时联网补包或改用浮动版本。写入前重验本地材料的 SHA-256 和归属，npm 失败或五分钟内未结束则报告失败。EXE 仍在交接前下载并校验大小/SHA-256。macOS npm 的原安装时机、参数及 DMG 流程不变。
 
-Windows EXE 的候选恢复能力为 `codexhost-inno-files-v1`。发行载荷的 `app/codexhost-inno-files-v1.txt` 记录该版本精确发行文件及摘要；同版本 Release 的 `*.installer-recovery-v1.json` 将清单绑定到原 EXE 的 SHA-256。准备取得目标/原版本的 EXE 和描述符，核对已安装清单及原文件字节、架构和版本，固定目录外暂存；每个 Windows EXE/描述符下载有两分钟传输预算。缺少旧能力、材料或匹配摘要时不停止旧实例，保留原渠道原目录人工路径。该清单不是注册表、快捷方式或安装器账本快照。
+Windows EXE 的恢复能力为 `codexhost-inno-files-v1`。发行载荷的 `app/codexhost-inno-files-v1.txt` 记录该版本精确发行文件及摘要；同版本 Release 的 `*.installer-recovery-v1.json` 将清单绑定到原 EXE 的 SHA-256。准备取得目标/原版本的 EXE 和描述符，核对已安装清单及原文件字节、架构和版本，固定目录外暂存；每个 Windows EXE/描述符下载有两分钟传输预算。缺少旧能力、材料或匹配摘要时不停止旧实例，保留原渠道原目录人工路径。该清单不是注册表、快捷方式或安装器账本快照。
 
 `app/plugins` 的发行文件由清单精确列出；默认用户插件和 Harness 启动设置位于数据目录，自定义插件/数据目录仍受保护。未知用户文件和目录不递归清理；新版路径与已有未知文件碰撞、已安装发行文件被修改、符号链接/reparse/hard-link 归属不明，或发行路径与用户数据根重叠时，准备失败。原 Inno 的显式内部 `CODEXHOSTREPLACEFILES` 参数只按已替换清单与自身内嵌清单的差集删除文件，然后用自身 `[Files]` 载荷安装；普通人工安装不传该参数，原 UI 和关闭时机不变。升级和旧版恢复使用同一原工具机制，不调用卸载器清空自定义根，不回放安装元数据。
 
-候选 EXE 执行仍固定 `/DIR`，显式禁止额外 close/restart applications，并将需重启结果映射为非零 3010。只有该次安装工具及受管后代确认退出、没有待重启写入，且本安装无活动 image 时才尝试一次本地旧版恢复；恢复后检查完整原发行文件及新版独有文件已删除，再启动该旧版自身的 Launcher/Runtime。退出或延迟写入不明、旧材料损坏、恢复失败均保留锁、材料及 Inno 日志。该生产分支已有实现，但 Windows 执行门和 UI 仍禁用，未通过真实 Inno/Host 验收。
+EXE 执行固定 `/DIR`，显式禁止额外 close/restart applications，并将需重启结果映射为非零 3010。只有该次安装工具及受管后代确认退出、没有待重启写入，且本安装无活动 image 时才尝试一次本地旧版恢复；恢复后检查完整原发行文件及新版独有文件已删除，再启动该旧版自身的 Launcher/Runtime。退出或延迟写入不明、旧材料损坏、恢复失败均保留锁、材料及 Inno 日志。该分支已接通实际入口，真实 Inno/Host 行为待用户手测。
 
 共享系统 Node 的可执行路径只用于预筛选：原生更新器还需验证实际命令行的核心脚本入口、PID 和创建时间。交接前确认这些信息可获取；原所有者退出后，仅关闭该 prefix 的 CLI、Host、Controller 和控制台进程。其他安装的控制台及相同 Node 的无关脚本不属于关闭目标。相同安装的受管 Launcher 可识别终端/控制台发起且已接管的更新，自行清理其 Desktop；关闭与文件占用处理均有界，无法确认退出时不开始安装。
 
-Windows 更新和恢复重启使用明确的 `launch --preserve-external-desktop`。不带调用方原生隔离能力的入口仍在资源解析、控制台创建、附着和平台激活前拒绝。候选原生路径另外接收内部 `--update-job`：Updater 在 spawn 前创建独有空 Job 并持有句柄，Launcher 仅打开该 Job，不附着、删除旧 descriptor 或强停其他实例。管理器及原生请求的自动执行验收门仍未解除，普通用户启动及 macOS 参数不变。已有启动确认实现关联本次直接启动的 Launcher（npm 则关联本次 wrapper 子进程）、创建时间、原安装路径及目标版本，要求新的 runtime nonce、成功启动记录、Controller 鉴权探测和对应 Host 的鉴权控制通道。Host 就绪观察既有本地 Native 生命周期 gate，不要求 Harness 登录或 Model 网络成功。旧 PID、过期记录、其他安装或其他启动的实例均不能单独满足确认。
+Windows 更新和恢复重启使用明确的 `launch --preserve-external-desktop`。不带调用方原生隔离能力的入口仍在资源解析、控制台创建、附着和平台激活前拒绝。受保护原生路径接收内部 `--update-job`：Updater 在 spawn 前创建独有空 Job 并持有句柄，Launcher 仅打开该 Job，不附着、删除旧 descriptor 或强停其他实例。管理器与原生请求均保留身份、材料及恢复能力校验；普通用户启动及 macOS 参数不变。已有启动确认实现关联本次直接启动的 Launcher（npm 则关联本次 wrapper 子进程）、创建时间、原安装路径及目标版本，要求新的 runtime nonce、成功启动记录、Controller 鉴权探测和对应 Host 的鉴权控制通道。Host 就绪观察既有本地 Native 生命周期 gate，不要求 Harness 登录或 Model 网络成功。旧 PID、过期记录、其他安装或其他启动的实例均不能单独满足确认。
 
 新版安装成功后的重启若在 Windows `Command::spawn` 处明确未创建子进程，则可在安装静止检查后进入同一原渠道恢复。capture/Job setup/bind 或清理状态不明不据空 Job 授权覆盖；已创建实例的就绪失败仍需证明自有启动已清理。旧版恢复启动使用同一边界，失败报告软件已恢复但启动未确认，不再次递归恢复。
 
-底层 npm 安装失败恢复执行器仅在确认该次工具已退出时，使用 `npm-previous` 中的旧版材料按原 prefix 有界重装；由 npm 管理全局安装元数据，不手工镜像或拷回元数据。隔离 fixture 已验证软件包恢复，但 Windows 自动执行验收门仍拒绝，不能据此报告原版 Host 可用或释放安装保护。工具退出不明、旧版材料损坏或恢复失败时，保留锁、材料和诊断，不继续覆盖。只读最终校验失败不触发恢复覆盖未知安装，也不设置安装写入标记。
+底层 npm 安装失败恢复执行器仅在确认该次工具已退出时，使用 `npm-previous` 中的旧版材料按原 prefix 有界重装；由 npm 管理全局安装元数据，不手工镜像或拷回元数据。隔离 fixture 已验证软件包恢复；实际恢复还必须通过原版 Host/控制链就绪检查，才释放安装保护。工具退出不明、旧版材料损坏或恢复失败时，保留锁、材料和诊断，不继续覆盖。只读最终校验失败不触发恢复覆盖未知安装，也不设置安装写入标记。
 
-事后按仍可见父链枚举可能漏掉已退出中间父的存活后代，不能据空 Job 推断这些未纳入的进程已退出。候选路径在 activation 参数中加入独有标记；AppX resume helper 读取被挂起进程本身的命令行，仅匹配该标记及已存在调用方 Job 时，在恢复初始线程之前赋值。包级环境不是归属证据；无标记、其他调用方、已运行线程均不能获得本次归属。激活返回 PID 若不在本 Job 中，保留该实例，错误清理也不接管或终止它。Controller 同样挂起创建、加入同一 Job 后才执行，覆盖其持有的安装资源。
+事后按仍可见父链枚举可能漏掉已退出中间父的存活后代，不能据空 Job 推断这些未纳入的进程已退出。受保护路径在 activation 参数中加入独有标记；AppX resume helper 读取被挂起进程本身的命令行，仅匹配该标记及已存在调用方 Job 时，在恢复初始线程之前赋值。包级环境不是归属证据；无标记、其他调用方、已运行线程均不能获得本次归属。激活返回 PID 若不在本 Job 中，保留该实例，错误清理也不接管或终止它。Controller 同样挂起创建、加入同一 Job 后才执行，覆盖其持有的安装资源。
 
 StartupRecord 的可选 `launchJob` 只在激活返回实例已经验证为执行前 Job 成员后记录。Updater 始终持有 spawn 前创建的原生句柄；确认本次 Launcher 创建身份及调用关系、该原生 Job 确有赋值记录（可选 `launchJob` 若存在还必须匹配）后，先用原生 active-process limit 封住新成员加入，再有界终止自有成员并等待 Job 为空、Launcher/wrapper 退出。迟到 helper 即使已打开赋值句柄，也不能在最终空检查后恢复新的进程；该 limit 行为包含在 Windows 专属回归中，尚未实际运行。恢复前还只读检查该 prefix 的原生 image 及核心 Node 入口；其他活动持有者只会阻止覆盖，不被该清理步骤杀死。原生 Job accounting 保留已退出成员的累计赋值计数，允许在发布可选字段前已退出的绑定进程被核实；一个从未赋值的空 Job 不是证据。旧 `cleanupComplete`、较新的创建时间、包级环境或返回 PID 均不能替代该证据。此路径已有源码与 Windows 专属测试，但尚无 Windows/MSIX 运行结果，不是自动更新验收。
 
-[ActivateApplication](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-iapplicationactivationmanager-activateapplication) 仅承诺返回满足激活契约的实例 PID，并不保证新建或唯一发起者归属。[Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) 的默认子进程继承发生在成员加入之后。AppX helper 的线程身份校验、命令行读取、Job 赋值及恢复时点需由真实 Windows/MSIX fixture 验证，不能以宿主测试或交叉编译代替。较 Launcher 新的并发官方进程也不能直接视作自有。EXE 原渠道离线恢复也缺原生可行性证据，尚不是完整的一键更新闭环。不能将后台交接、npm 或安装器成功退出视为一键更新验收，也不保证完整自动回退或断电恢复。Windows 更新按钮继续保持禁用。
+[ActivateApplication](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-iapplicationactivationmanager-activateapplication) 仅承诺返回满足激活契约的实例 PID，并不保证新建或唯一发起者归属。[Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) 的默认子进程继承发生在成员加入之后。AppX helper 的线程身份校验、命令行读取、Job 赋值及恢复时点需由真实 Windows/MSIX fixture 验证，不能以宿主测试或交叉编译代替。较 Launcher 新的并发官方进程也不能直接视作自有。EXE 原渠道离线恢复也缺原生可行性证据，尚不是完整的一键更新闭环。不能将后台交接、npm 或安装器成功退出视为一键更新验收，也不保证完整自动回退或断电恢复。Windows 按钮已按后端支持性开放，实际升级验收仍由用户手测完成。
 
 手动修复应先确认本次 Updater、npm 工具及目标实例均已退出，核对 `request-v1.json` 中原 prefix、旧版归档路径及 SHA-256，再通过原 Node/npm CLI 使用本节的严格离线参数恢复；保留无关全局包，不跨渠道迁移。缓存和空 npmrc 路径也记录在 `installation.recovery` 中。Windows 安装包应使用原渠道、原目录的安装器修复，不假定本地已经具备旧版 EXE。只有确认原版本、安装路径及正常启动均恢复后，才可清除相应的 `active-update-v1.lock`；不要将持久的 `.active-update-mutation.lock` 空文件当作需删除的活动锁。原渠道软件包恢复不还原用户数据、数据库迁移或外部 Harness 状态。
 
 隔离自动化检查使用 `npm run test:update-fixtures`，包括正常 registry npm 安装起点、离线两归档执行及原生 relaunch 策略 fixture；Windows CI 已接入该入口。这些测试不启动真实 Codex Desktop，不作为 MSIX 全链路或新 Updater 跨版本升级的验收证据。
+
+### Windows 手测清单
+
+- 从已包含新更新逻辑、且原版材料可获取的 npm/EXE 安装分别更新：非默认 prefix/目录不变，准备时旧实例仍运行；重启后版本正确，设置页显示本次更新成功。旧稳定版首次进入新逻辑版本仍使用原渠道人工安装。
+- 在可丢弃的测试安装中制造写入后安装失败或新版启动失败：能恢复时旧版自身 Launcher/Runtime 就绪，页面显示“更新失败，已恢复原版本”，不是更新成功。
+- 阻断原版恢复（文件持续占用、材料损坏等）：显示恢复失败/状态未确认，锁和材料保留，不自动再次覆盖。缺少原 EXE 能力标记或准备阶段缺旧材料时，旧实例不得退出。
+- 同时保留无关 Node 脚本、另一 prefix/安装目录及独立官方实例：不得误杀或覆盖；无法安全重启时应失败并保留诊断。
+- 刷新重启后的 Host/控制台，核对结果仍在；启动别的安装或新 Launcher、放入旧记录，不能串线。另回归 macOS npm/DMG 原流程。
+
+以上为待用户执行项，不是已通过的验收。
 
 ### Windows 隔离验收入口
 
@@ -181,7 +193,7 @@ StartupRecord 的可选 `launchJob` 只在激活返回实例已经验证为执�
 - 单独获准的一次性 Windows x64 **交互**用户；`CODEXHOST_DISPOSABLE_WINDOWS_USER=fixture-only`、已有 `RUNNER_TEMP`，其中已经按原渠道安装带新逻辑的 codexhost。数据/更新状态使用全新的直接子目录；安装根或 npm prefix 必须在 scratch 内。npm 初始平台包需已提升到原 prefix 的 `node_modules/@codexhost/cli-win32-x64`；嵌套到提升的软件转换另由 npm fixture 覆盖。
 - 真实 Codex Desktop 已注册且该用户可以使用现有生产 debugger/resume 激活能力；manifest 指定已有 `WindowsApps/OpenAI.Codex_*/app/ChatGPT.exe`。入口不会下载、安装或注册 Codex，不启用 Developer Mode、不导入证书。不能有需要保留的并发官方实例；初次启动也用生产 caller-held Job 保护路径，不走会强退其他实例的普通启动。
 - 三个递增精确稳定版本，分别具有同一构建产生的 Launcher、Updater、Host SHA-256。后两版必须依次能被**实际生产 GitHub latest/npm registry**发现，且原版本恢复材料齐全。入口不伪造 latest、不发布或切换 Release；私有 99.0.1/99.0.2 两安装器不是这项前提。
-- **当前生产门仍禁用，入口在创建目录/启动 Desktop 前拒绝。** 真正执行仍缺已审查的候选构建门处理，以及上述三版物料/发现顺序和交互环境。需要源码审查后准备一致构建，不允许通过 manifest、环境变量、放宽就绪条件或换 Launcher 搭配旧 Runtime 开门。初始 native helper 只是 test binary 中 ignored 的真实启动观察者，不安装软件、不替代实际更新器；更新请求仍走真实 Host 固定无参数接口和安装版自身 Updater。
+- 生产入口使用真实支持性及准备校验，不提供 manifest/环境变量跳过能力。执行该专用 smoke 仍需上述三版物料、发现顺序和交互环境；不放宽就绪条件，不混用 Launcher/Runtime。初始 native helper 只是 test binary 中 ignored 的真实启动观察者，不安装软件、不替代实际更新器；更新请求仍走真实 Host 固定无参数接口和安装版自身 Updater。
 
 配置为 JSON：`authorization: "real-codex-host-smoke"`、`installation: "npm" | "windows-installer"`、绝对 `root`（新 scratch 子目录）、`resourcesRoot`、`codexDesktopExecutable`，以及 `versions` 三项，每项含 `version`、`launcherSha256`、`updaterSha256`、`hostSha256`。npm 还需原始绝对 `nodePath`、`npmCliPath`、`npmLauncherPath`、`prefix`。摘要来自相应一致构建，不能用占位值或仅改 metadata。
 

@@ -1,4 +1,4 @@
-import { readdir, readFile, rm } from "node:fs/promises";
+import { readdir, readFile, rm, realpath } from "node:fs/promises";
 import path from "node:path";
 
 import { processIsAlive } from "./diagnostics.js";
@@ -13,6 +13,8 @@ export interface HostEndpoint {
   port: number;
   token: string;
   startedAt: number;
+  resourcesRoot?: string;
+  launcherPid?: number;
 }
 
 export class HostUnavailableError extends Error {
@@ -35,7 +37,16 @@ function parseDescriptor(value: unknown): HostEndpoint | null {
   ) {
     return null;
   }
-  return { pid: record.pid, port: record.port, token: record.token, startedAt: record.startedAt };
+  return {
+    pid: record.pid,
+    port: record.port,
+    token: record.token,
+    startedAt: record.startedAt,
+    ...(typeof record.resourcesRoot === "string" ? { resourcesRoot: record.resourcesRoot } : {}),
+    ...(Number.isSafeInteger(record.launcherPid) && Number(record.launcherPid) > 0
+      ? { launcherPid: Number(record.launcherPid) }
+      : {}),
+  };
 }
 
 /**
@@ -45,6 +56,8 @@ function parseDescriptor(value: unknown): HostEndpoint | null {
 export async function findHost(
   descriptorDirectory: string,
   isAlive: (pid: number) => boolean = processIsAlive,
+  resourcesRoot?: string,
+  launcherPid?: number,
 ): Promise<HostEndpoint | null> {
   let names: string[];
   try {
@@ -59,7 +72,14 @@ export async function findHost(
       const text = await readFile(filePath, "utf8");
       if (text.length > DESCRIPTOR_MAX_BYTES) continue;
       const endpoint = parseDescriptor(JSON.parse(text));
-      if (!endpoint) continue;
+      if (!endpoint || (launcherPid !== undefined && endpoint.launcherPid !== launcherPid))
+        continue;
+      if (resourcesRoot) {
+        if (!endpoint.resourcesRoot) continue;
+        const own = await realpath(resourcesRoot),
+          candidate = await realpath(endpoint.resourcesRoot);
+        if (path.relative(own, candidate) !== "") continue;
+      }
       if (isAlive(endpoint.pid)) hosts.push(endpoint);
       else await rm(filePath, { force: true });
     } catch {
@@ -70,21 +90,33 @@ export async function findHost(
 }
 
 export interface ConsoleHostClient {
-  available(): Promise<boolean>;
-  request(method: string, params: unknown): Promise<HostReply>;
+  available(launcherPid?: number): Promise<boolean>;
+  request(method: string, params: unknown, launcherPid?: number): Promise<HostReply>;
 }
 
 export function createConsoleHostClient(
   descriptorDirectory: string,
-  options: { isAlive?: (pid: number) => boolean; timeoutMs?: number } = {},
+  options: { isAlive?: (pid: number) => boolean; timeoutMs?: number; resourcesRoot?: string } = {},
 ): ConsoleHostClient {
   const timeoutMs = options.timeoutMs ?? 150_000;
   return {
-    async available() {
-      return (await findHost(descriptorDirectory, options.isAlive)) !== null;
+    async available(launcherPid) {
+      return (
+        (await findHost(
+          descriptorDirectory,
+          options.isAlive,
+          options.resourcesRoot,
+          launcherPid,
+        )) !== null
+      );
     },
-    async request(method, params) {
-      const host = await findHost(descriptorDirectory, options.isAlive);
+    async request(method, params, launcherPid) {
+      const host = await findHost(
+        descriptorDirectory,
+        options.isAlive,
+        options.resourcesRoot,
+        launcherPid,
+      );
       if (!host) throw new HostUnavailableError();
       const response = await fetch(`http://127.0.0.1:${host.port}/rpc`, {
         method: "POST",

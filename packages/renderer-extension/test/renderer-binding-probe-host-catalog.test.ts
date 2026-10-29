@@ -222,6 +222,9 @@ function installFakeBrowser(): void {
     addEventListener: listeners.addEventListener.bind(listeners),
     removeEventListener: listeners.removeEventListener.bind(listeners),
     dispatchEvent: listeners.dispatchEvent.bind(listeners),
+    requestAnimationFrame: (callback: FrameRequestCallback) =>
+      testState.animationFrames.push(callback),
+    cancelAnimationFrame: vi.fn(),
     setTimeout,
     clearTimeout,
     open: vi.fn(),
@@ -241,9 +244,7 @@ function installFakeBrowser(): void {
   vi.stubGlobal("document", document_);
   vi.stubGlobal("Node", { ELEMENT_NODE: 1 });
   vi.stubGlobal("Element", FakeElement);
-  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
-    testState.animationFrames.push(callback),
-  );
+  vi.stubGlobal("requestAnimationFrame", window_.requestAnimationFrame);
   vi.stubGlobal(
     "MutationObserver",
     class {

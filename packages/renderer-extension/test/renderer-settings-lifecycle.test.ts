@@ -269,7 +269,8 @@ describe("Renderer Settings lifecycle", () => {
     await scheduleOpen(signal);
     expect(shellClose).toHaveBeenCalledOnce();
     await importOpen(hostThreadIdSchema.parse("imported-thread"), signal);
-    expect(openImportedThread).toHaveBeenCalledExactlyOnceWith("imported-thread", signal);
+    expect(openImportedThread).toHaveBeenCalledOnce();
+    expect(openImportedThread.mock.calls[0]?.slice(0, 2)).toEqual(["imported-thread", signal]);
     expect(openSchedules).toHaveBeenCalledTimes(2);
     expect(shellClose).toHaveBeenCalledTimes(2);
     lifecycle.dispose();

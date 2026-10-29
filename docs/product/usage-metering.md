@@ -77,7 +77,7 @@ Copilot 的实时速度与最近缓存命中率来自原生 assistant.usage，�
 
 会话用量查询可以附带 Adapter 的账号额度缓存，但它不是该历史 Thread 实际使用的 Account/Billing Source 绑定。插件通过正式可选 `credits()` / `refreshCredits()` 提供读取与刷新；Host 校验快照并隔离失败，用 `accountCreditsSupported` 声明是否存在这项能力，客户端不维护 Harness 白名单。设置页的 `inspectAccount(s)` 仍执行新鲜账号查询，两者不互相代替。
 
-新 Thread 草稿按当前 Host 和所选 Harness 读取账号额度：Codex 使用当前账号的官方额度查询，外部 Harness 使用公共账号查询接口。切换 Harness 时先清空用量与额度，切换完成后重新读取；查询失败、不支持或没有百分比额度时隐藏额度控件。迟到响应必须匹配当前 Host、连接、Harness 和请求代次；草稿提交或绑定 Thread 后不再接收草稿查询结果。
+新 Thread 草稿按当前 Host 和所选 Harness 读取账号额度：Codex 使用当前账号的官方额度查询，外部 Harness 使用公共账号查询接口。切换 Harness 时先清空用量与额度，切换完成后重新读取；同一 Host 的连接替换时，外部草稿清空旧额度并重新查询，不依赖会话用量通知通道。查询失败、不支持或没有百分比额度时隐藏额度控件。迟到响应必须匹配当前 Host、连接、Harness 和请求代次；草稿提交或绑定 Thread 后不再接收草稿查询结果。
 
 每个额度窗口可提供独立 `periodType` 和稳定 `scope`。客户端用结构化周期/范围分组、本地化，不解析英文产品名。旧插件缺少字段时保留原文，不推断未声明的周期。原生百分比、数量、零上限、重置时间及会话计量算法不变。详细兼容边界见[插件运行时](../architecture/harness-plugin-runtime.md#插件拥有的展示元数据)。
 

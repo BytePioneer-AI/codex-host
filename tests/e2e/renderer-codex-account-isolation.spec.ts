@@ -108,7 +108,7 @@ const { outputFiles } = await build({
         inspectHarnessCommands: async () => ({ commands: [] }),
         inspectThreadCommands: async () => ({ commands: [] }),
         listThreadOwnership: async () => ({ threads: [] }),
-        subscribeThreadUsage: () => () => {},
+        subscribeThreadUsage: globalThis.noUsageNotifications ? undefined : () => () => {},
         checkUpdate: unavailable, readUpdateStatus: unavailable, startUpdate: unavailable,
       }]));
       const facade = Object.fromEntries(Object.keys(clients.local).map(method => [
@@ -268,7 +268,7 @@ async function selectOtherAccount(page: Page): Promise<void> {
   await action(page, "switchAccount", ["local", "other"]);
 }
 
-async function calls(page: Page) {
+async function calls(page: Page): Promise<Array<{ host: string; method: string }>> {
   return page.evaluate(() => Reflect.get(globalThis, "accountsFixture").calls);
 }
 
@@ -555,6 +555,56 @@ async function selectHarness(page: Page, agent: string): Promise<void> {
 }
 
 const quotaControl = "[data-codexhost-credits-control]";
+
+for (const noUsageNotifications of [false, true]) {
+  const notifications = noUsageNotifications ? "without" : "with";
+
+  test(`same-Host reconnect clears and refreshes external draft quota ${notifications} notifications`, async ({
+    page,
+  }) => {
+    await setup(page, { quotaHarnesses: true, noUsageNotifications });
+    const quota = page.locator(quotaControl);
+    await selectHarness(page, "pi");
+    await expect(quota).toHaveText("69%");
+    await action(page, "setQuota", ["pi", 51]);
+    await action(page, "pause", "local:quota:pi");
+    await action(page, "reconnectLocal");
+    await waitForPending(page, "local:quota:pi");
+    await expect(quota).toBeHidden();
+    await action(page, "release", "local:quota:pi");
+    await expect(quota).toHaveText("49%");
+    await expect(quota).toBeVisible();
+    await action(page, "focus");
+    await expect
+      .poll(() => calls(page))
+      .toContainEqual({
+        host: "local",
+        method: "replacement-accounts",
+      });
+    expect((await calls(page)).filter(({ method }) => method === "quota:pi")).toHaveLength(2);
+  });
+
+  test(`same-Host reconnect replaces an in-flight external draft quota read ${notifications} notifications`, async ({
+    page,
+  }) => {
+    await setup(page, { quotaHarnesses: true, noUsageNotifications });
+    await action(page, "pause", "local:quota:pi");
+    await selectHarness(page, "pi");
+    await waitForPending(page, "local:quota:pi");
+    await action(page, "setQuota", ["pi", 51]);
+    await action(page, "reconnectLocal");
+    await expect
+      .poll(() =>
+        page.evaluate(() => Reflect.get(globalThis, "accountsFixture").pending("local:quota:pi")),
+      )
+      .toBe(2);
+    await action(page, "releaseNext", "local:quota:pi");
+    await expect(page.locator(quotaControl)).toBeHidden();
+    await action(page, "release", "local:quota:pi");
+    await expect(page.locator(quotaControl)).toHaveText("49%");
+    await expect(page.locator(quotaControl)).toBeVisible();
+  });
+}
 
 test("draft Harness switches clear quota while loading and refresh Codex on return", async ({
   page,

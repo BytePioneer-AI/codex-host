@@ -595,6 +595,7 @@ interface MountedComposer {
   accountCreditsSupported: boolean;
   hostId: string | null;
   usageRequestGeneration: number;
+  draftUsageClient: RendererModelClient | null;
   commandRequestGeneration: number;
 }
 
@@ -1199,6 +1200,7 @@ export function installRendererBindingProbe(
     const client = composerClient(mounted);
     const hostId = mounted.hostId;
     const generation = ++mounted.usageRequestGeneration;
+    mounted.draftUsageClient = client;
     mounted.usage = null;
     mounted.accountCredits = null;
     mounted.accountCreditsSupported = false;
@@ -2593,6 +2595,15 @@ export function installRendererBindingProbe(
     // Hidden/native Composers can belong to a different Host. Never rebind
     // every Thread to the globally selected Host when navigating between them.
     reloadMountedOwnershipForHost();
+    // Draft quota reads also recover when the Host has no usage notification channel.
+    for (const mounted of mountedByComposer.values()) {
+      if (
+        controller.get(mounted.composer).agent !== "codex" &&
+        mounted.draftUsageClient !== composerClient(mounted)
+      ) {
+        void refreshDraftUsage(mounted);
+      }
+    }
     let connectionsChanged = false;
     for (const target of new Set([...mountedByComposer.values()].map((m) => m.hostId))) {
       if (!target) continue;
@@ -2832,6 +2843,7 @@ export function installRendererBindingProbe(
       accountCreditsSupported: inherited?.accountCreditsSupported ?? false,
       hostId: inherited?.hostId ?? hostId,
       usageRequestGeneration: 0,
+      draftUsageClient: null,
       commandRequestGeneration: 0,
     };
     mountedByComposer.set(composer, mounted);

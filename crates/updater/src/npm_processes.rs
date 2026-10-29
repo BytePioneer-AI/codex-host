@@ -27,12 +27,10 @@ fn entries(npm: &NpmInstallation) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     .collect()
 }
 
-pub(crate) fn script_belongs(arguments: &[OsString], entries: &[PathBuf]) -> bool {
+fn script_path(arguments: &[OsString]) -> Option<&Path> {
     let mut args = arguments.iter().skip(1);
     let script = loop {
-        let Some(argument) = args.next() else {
-            return false;
-        };
+        let argument = args.next()?;
         if argument == "--disable-warning=UNDICI-EHPA" {
             continue;
         }
@@ -40,17 +38,18 @@ pub(crate) fn script_belongs(arguments: &[OsString], entries: &[PathBuf]) -> boo
             break args.next();
         }
         if argument.to_string_lossy().starts_with('-') {
-            return false;
+            return None;
         }
         break Some(argument);
     };
-    let Some(script) = script else {
+    let path = Path::new(script?);
+    path.is_absolute().then_some(path)
+}
+
+pub(crate) fn script_belongs(arguments: &[OsString], entries: &[PathBuf]) -> bool {
+    let Some(path) = script_path(arguments) else {
         return false;
     };
-    let path = Path::new(script);
-    if !path.is_absolute() {
-        return false;
-    }
     let Ok(path) = path.canonicalize() else {
         return false;
     };
@@ -150,18 +149,105 @@ fn shutdown_shared_nodes(npm: &NpmInstallation) -> Result<(), Box<dyn Error>> {
     Err("npm installation keeps restarting owned runtime processes".into())
 }
 
+// Recovery observes both npm layouts without requiring partially replaced files
+// to exist. Existing ancestors must still be ordinary directories in this prefix.
+fn recovery_entries(npm: &NpmInstallation, arch: &str) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let prefix = npm.prefix.as_ref().ok_or("missing original prefix")?;
+    if !prefix.is_absolute() || !same_path(prefix, &prefix.canonicalize()?) {
+        return Err("npm recovery prefix identity changed".into());
+    }
+    if !matches!(arch, "x64" | "arm64") {
+        return Err("unsupported npm recovery architecture".into());
+    }
+    let cli = Path::new("node_modules/@codexhost/cli");
+    let platform = format!("@codexhost/cli-win32-{arch}");
+    let mut paths = vec![cli.join("bin/codexhost.js")];
+    for root in [
+        Path::new("node_modules").join(&platform),
+        cli.join("node_modules").join(&platform),
+    ] {
+        for entry in [
+            "host-runtime.mjs",
+            "desktop-controller.mjs",
+            "console-server.mjs",
+        ] {
+            paths.push(root.join("app").join(entry));
+        }
+    }
+    paths
+        .into_iter()
+        .map(|relative| {
+            let file = prefix.join(&relative);
+            let mut current = prefix.to_path_buf();
+            for part in std::iter::once(None).chain(relative.components().map(Some)) {
+                if let Some(part) = part {
+                    current.push(part);
+                }
+                let info = match std::fs::symlink_metadata(&current) {
+                    Ok(info) => info,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                    Err(error) => return Err(error.into()),
+                };
+                let linked = info.file_type().is_symlink();
+                #[cfg(target_os = "windows")]
+                let linked = {
+                    use std::os::windows::fs::MetadataExt;
+                    linked || info.file_attributes() & 0x400 != 0
+                };
+                if linked
+                    || (current != file && !info.is_dir())
+                    || (current == file && !info.is_file())
+                {
+                    return Err(
+                        "npm recovery script path is redirected or has the wrong file type".into(),
+                    );
+                }
+            }
+            Ok(file)
+        })
+        .collect()
+}
+
+fn recovery_script_belongs(
+    arguments: &[OsString],
+    entries: &[PathBuf],
+) -> Result<bool, Box<dyn Error>> {
+    let Some(mut path) = script_path(arguments) else {
+        return Ok(false);
+    };
+    let mut missing = Vec::new();
+    // Node can remain alive after its entry script is unlinked. Resolve its
+    // existing ancestor, retaining the missing suffix instead of ignoring it.
+    loop {
+        match path.canonicalize() {
+            Ok(mut resolved) => {
+                for part in missing.iter().rev() {
+                    resolved.push(part);
+                }
+                return Ok(entries.iter().any(|entry| same_path(&resolved, entry)));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(
+                    path.file_name()
+                        .ok_or("ambiguous Node script path")?
+                        .to_os_string(),
+                );
+                path = path
+                    .parent()
+                    .ok_or("Node script has no existing ancestor")?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub(crate) fn ensure_quiescent(npm: &NpmInstallation) -> Result<(), Box<dyn Error>> {
     let prefix = npm.prefix.as_ref().ok_or("missing original prefix")?;
     codexhost_platform::WindowsLaunchJob::ensure_no_images_under(prefix)?;
-    let mut scope = npm.clone();
-    scope.package_root = Some(prefix.join(format!(
-        "node_modules/@codexhost/cli-win32-{}",
-        crate::windows_installation::architecture()
-    )));
-    let scripts = entries(&scope)?;
+    let scripts = recovery_entries(npm, crate::windows_installation::architecture())?;
     for process in codexhost_platform::process_arguments_for_executable(&npm.node_path)? {
-        if script_belongs(&process.arguments, &scripts) {
+        if recovery_script_belongs(&process.arguments, &scripts)? {
             return Err(format!(
                 "installation script still held by PID {}; instance preserved",
                 process.id
@@ -227,6 +313,10 @@ pub(crate) fn shutdown(npm: &NpmInstallation) -> Result<(), Box<dyn Error>> {
     codexhost_platform::shutdown_processes_for_executables(&executables)?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "npm_recovery_process_tests.rs"]
+mod recovery_tests;
 
 #[cfg(test)]
 mod tests {

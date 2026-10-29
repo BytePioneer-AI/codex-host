@@ -53,6 +53,7 @@ export async function run() {
     [binaries.updater, ["npm_processes::"]],
     [binaries.updater, ["windows_launch::tests::"]],
     [binaries.updater, ["windows_apply::tests::"]],
+    [binaries.updater, ["windows_console::tests::"]],
     [binaries.updater, ["installer_recovery::tests::"]],
     ...(process.platform === "win32" ? [[binaries.updater, ["windows_handoff_tests::"]]] : []),
     ...(process.platform === "win32"

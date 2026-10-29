@@ -23,6 +23,8 @@ mod status;
 #[cfg(any(target_os = "windows", test))]
 mod windows_apply;
 #[cfg(any(target_os = "windows", test))]
+mod windows_console;
+#[cfg(any(target_os = "windows", test))]
 mod windows_installation;
 #[cfg(any(target_os = "windows", test))]
 mod windows_launch;

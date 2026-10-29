@@ -20,6 +20,13 @@ pub(super) trait Effects {
     fn quiescent(&mut self, request: &UpdateRequest) -> Result<()>;
     fn restore_files(&mut self, request: &UpdateRequest) -> Result<UpdateRequest>;
     fn launch(&mut self, request: &UpdateRequest) -> std::result::Result<(), LaunchFailure>;
+    fn start_console(&mut self, request: &UpdateRequest) -> Result<()>;
+}
+
+fn start_console(request: &UpdateRequest, effects: &mut impl Effects) {
+    if let Err(error) = effects.start_console(request) {
+        eprintln!("codexhost updater: application is ready, but console restart failed: {error}");
+    }
 }
 
 fn stopped_install_tool(request: &UpdateRequest, error: &(dyn Error + 'static)) -> bool {
@@ -39,18 +46,20 @@ fn recover(
     reason: &str,
     effects: &mut impl Effects,
 ) -> Result<()> {
-    let result = (|| {
+    let result = (|| -> Result<UpdateRequest> {
         effects.quiescent(request)?;
         let previous = effects.restore_files(request)?;
         write_status(request, "restarting", None)?;
-        effects.launch(&previous).map_err(|e| Box::<dyn Error>::from(format!("original software restored, but original-version launch failed: {e}; recovery is not retried")))
+        effects.launch(&previous).map_err(|e| Box::<dyn Error>::from(format!("original software restored, but original-version launch failed: {e}; recovery is not retried")))?;
+        Ok(previous)
     })();
     match result {
-        Ok(()) => {
+        Ok(previous) => {
             let message =
                 format!("update failed: {reason}; original version restored and its Host is ready");
             write_result(request, "failed", Some(&message), Outcome::Restored)?;
             ownership.finish()?;
+            start_console(&previous, effects);
             Err(message.into())
         }
         Err(error) => {
@@ -86,6 +95,7 @@ pub(super) fn execute(request: &UpdateRequest, effects: &mut impl Effects) -> Re
         }
         write_result(request, "succeeded", None, Outcome::Updated)?;
         ownership.finish()?;
+        start_console(request, effects);
         Ok(())
     })();
     if let Err(error) = &result {
@@ -144,6 +154,9 @@ impl Effects for Native {
     }
     fn launch(&mut self, r: &UpdateRequest) -> std::result::Result<(), LaunchFailure> {
         crate::windows_launch::launch(r)
+    }
+    fn start_console(&mut self, r: &UpdateRequest) -> Result<()> {
+        crate::windows_console::start(r)
     }
 }
 #[cfg(test)]

@@ -182,13 +182,17 @@ fn installs_real_prepared_npm_fixture() {
         let npm = crate::request::NpmInstallation {
             node_path: request.node,
             npm_cli_path: request.npm,
-            npm_launcher_path: request.operation.join("unused-cli"),
+            npm_launcher_path: request
+                .prefix
+                .join("node_modules/@codexhost/cli/bin/codexhost.js"),
             prefix: Some(request.prefix.canonicalize().unwrap()),
             package_root: None,
             installed_version: None,
             prepared: None,
             recovery: Some(Box::new(request.materials)),
         };
+        #[cfg(target_os = "windows")]
+        crate::npm_processes::ensure_quiescent(&npm).unwrap();
         crate::npm_recovery::restore(&npm, &request.operation).unwrap();
     } else {
         validate(&request.materials, &request.operation, &request.prefix).unwrap();

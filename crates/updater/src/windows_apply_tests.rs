@@ -150,6 +150,8 @@ struct TestEffects {
     install_result: InstallResult,
     launches: Vec<LaunchResult>,
     launch_versions: Vec<String>,
+    console_versions: Vec<String>,
+    console_fails: bool,
     restore_calls: usize,
     restore_fails: bool,
     quiescent_fails: bool,
@@ -295,6 +297,29 @@ impl Effects for TestEffects {
         previous.version = version;
         Ok(previous)
     }
+    fn start_console(&mut self, r: &UpdateRequest) -> Result<()> {
+        let status: Value = serde_json::from_slice(&fs::read(&r.status_path)?)?;
+        assert!(matches!(
+            status["outcome"].as_str(),
+            Some("updated" | "restored")
+        ));
+        assert!(
+            !r.status_path
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("active-update-v1.lock")
+                .exists()
+        );
+        assert_eq!(self.launch_versions.last(), Some(&r.version));
+        self.console_versions.push(r.version.clone());
+        if self.console_fails {
+            Err("console unavailable".into())
+        } else {
+            Ok(())
+        }
+    }
     fn launch(&mut self, r: &UpdateRequest) -> std::result::Result<(), LaunchFailure> {
         assert_eq!(
             serde_json::from_slice::<Value>(&fs::read(&r.status_path).unwrap()).unwrap()["phase"],
@@ -357,6 +382,34 @@ fn complete_apply_success_releases_lock_only_after_target_ready() {
     assert_eq!(f.status()["outcome"], "updated");
     assert_eq!(e.restore_calls, 0);
     assert_eq!(e.launch_versions, ["1.2.4"]);
+    assert_eq!(e.console_versions, ["1.2.4"]);
+}
+#[test]
+fn console_failure_does_not_revert_a_committed_update_or_restoration() {
+    for restore in [false, true] {
+        let f = Fixture::new();
+        let mut e = TestEffects {
+            install_result: if restore {
+                InstallResult::PartialStopped
+            } else {
+                InstallResult::Ready
+            },
+            launches: vec![LaunchResult::Ready],
+            console_fails: true,
+            ..Default::default()
+        };
+        assert_eq!(f.run(&mut e).is_err(), restore);
+        f.assert_end(restore, false);
+        assert_eq!(e.restore_calls, usize::from(restore));
+        assert_eq!(
+            f.status()["outcome"],
+            if restore { "restored" } else { "updated" }
+        );
+        assert_eq!(
+            e.console_versions,
+            [if restore { "1.2.3" } else { "1.2.4" }]
+        );
+    }
 }
 #[test]
 fn partial_install_and_no_child_and_owned_cleanup_each_restore_once_then_report_failed() {
@@ -395,6 +448,7 @@ fn partial_install_and_no_child_and_owned_cleanup_each_restore_once_then_report_
         assert_eq!(f.status()["outcome"], "restored");
         assert_eq!(e.restore_calls, 1);
         assert_eq!(e.launch_versions.last().unwrap(), "1.2.3");
+        assert_eq!(e.console_versions, ["1.2.3"]);
         assert!(
             !f.root
                 .join("custom install/app/plugins/next-only/plugin.mjs")
@@ -417,6 +471,7 @@ fn original_launch_failure_never_recurses_and_retains_written_protection() {
         f.assert_end(true, true);
         assert_eq!(e.restore_calls, 1);
         assert_eq!(e.launch_versions, ["1.2.4", "1.2.3"]);
+        assert!(e.console_versions.is_empty());
     }
 }
 #[test]
@@ -430,6 +485,7 @@ fn capture_bind_or_cleanup_unknown_never_overwrites_the_new_installation() {
         assert!(f.run(&mut e).is_err());
         f.assert_end(true, true);
         assert_eq!(e.restore_calls, 0);
+        assert!(e.console_versions.is_empty());
         assert_eq!(f.status()["outcome"], "unknown");
         assert_eq!(e.launch_versions, ["1.2.4"]);
         assert_eq!(

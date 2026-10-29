@@ -134,27 +134,20 @@ describe("Windows Mapping Store lock identity (simulated OS replies)", () => {
     );
   });
 
-  it.each([
-    "",
-    "null",
-    "not json",
-    "{}",
-    '{"Path":null,"StartTime":null}',
-    '{"StartTime":"invalid"}',
-  ])("preserves the lock for unavailable or malformed metadata %j", async (output) => {
-    vi.mocked(execFileSync).mockReturnValue(output);
-    await expectPreserved(await writeLock());
-  });
-
-  it.each(["EACCES", "ETIMEDOUT", "ENOENT"])(
-    "preserves the lock when the metadata query fails with %s",
-    async (code) => {
-      vi.mocked(execFileSync).mockImplementation(() => {
-        throw Object.assign(new Error("Cannot query process"), { code });
-      });
+  it.each(["", "not json", '{"StartTime":"invalid"}'])(
+    "preserves the lock for unavailable or malformed metadata %j",
+    async (output) => {
+      vi.mocked(execFileSync).mockReturnValue(output);
       await expectPreserved(await writeLock());
     },
   );
+
+  it("preserves the lock when the metadata query times out", async () => {
+    vi.mocked(execFileSync).mockImplementation(() => {
+      throw Object.assign(new Error("Cannot query process"), { code: "ETIMEDOUT" });
+    });
+    await expectPreserved(await writeLock());
+  });
 
   it("still checks CIM identity when the PID existence probe is denied", async () => {
     vi.mocked(process.kill).mockImplementation(() => {

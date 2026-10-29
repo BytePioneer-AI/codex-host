@@ -4413,6 +4413,8 @@ export class AppServerHost {
     try {
       await this.#externalRuntime.deleteThread(location.record.hostThreadId);
     } catch (error) {
+      if (!(error instanceof ExternalSessionReleaseError) && location.thread)
+        await this.#resolveThreadInteractions(location.thread);
       await this.#writer.json(
         error instanceof ExternalSessionReleaseError
           ? rpcError(request, -32075, error.message)

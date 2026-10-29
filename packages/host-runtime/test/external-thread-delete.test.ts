@@ -176,9 +176,14 @@ describe("external Thread local deletion", () => {
     }
   });
 
-  it.each(["approval", "question"])(
-    "resolves pending Desktop %s even when close omits interaction.closed",
-    async (kind) => {
+  it.each([
+    ["approval", false],
+    ["question", false],
+    ["approval", true],
+    ["question", true],
+  ] as const)(
+    "resolves pending Desktop %s when close omits terminal events (persistence failure: %s)",
+    async (kind, persistenceFailure) => {
       const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
       const open = adapter.open.bind(adapter);
       let closing = false;
@@ -223,14 +228,27 @@ describe("external Thread local deletion", () => {
             kind === "approval" ? "mcpServer/elicitation/request" : "item/tool/requestUserInput",
           ),
         );
-        expect(await deleteThread(fixture, threadId)).toEqual({ id: 10, result: {} });
-        await expectDeleted(fixture, threadId);
+        if (persistenceFailure) {
+          vi.spyOn(fixture.mappingStore, "removeThread").mockRejectedValueOnce(
+            new Error("disk failure"),
+          );
+          expect(await deleteThread(fixture, threadId)).toMatchObject({ error: { code: -32081 } });
+          expect(
+            await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+          ).not.toBeNull();
+          expect(
+            fixture.collector.messages.some((message) => method(message, "thread/deleted")),
+          ).toBe(false);
+        } else {
+          expect(await deleteThread(fixture, threadId)).toEqual({ id: 10, result: {} });
+          await expectDeleted(fixture, threadId);
+        }
         const resolved = await fixture.collector.waitFor((message) =>
           method(message, "serverRequest/resolved"),
         );
         expect(resolved).toMatchObject({ params: { requestId: request.id, threadId } });
         expect(fixture.collector.messages.indexOf(resolved)).toBeLessThan(
-          fixture.collector.messages.findIndex((message) => method(message, "thread/deleted")),
+          fixture.collector.messages.findIndex((message) => requestId(message, 10)),
         );
       } finally {
         await stopFixture(fixture);

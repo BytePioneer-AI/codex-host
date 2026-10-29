@@ -919,7 +919,7 @@ export function installRendererBindingProbe(
           for (const mounted of mountedByComposer.values()) {
             if (mounted.hostId !== hostId) continue;
             renderMounted(mounted);
-            void refreshDraftCodexUsage(mounted);
+            if (controller.get(mounted.composer).agent === "codex") void refreshDraftUsage(mounted);
           }
         });
       });
@@ -1184,56 +1184,72 @@ export function installRendererBindingProbe(
     }
   };
 
-  const refreshDraftCodexUsage = async (mounted: MountedComposer): Promise<void> => {
+  const refreshDraftUsage = async (mounted: MountedComposer): Promise<void> => {
     const state = controller.get(mounted.composer);
     if (
-      state.agent !== "codex" ||
       state.phase !== "draft" ||
+      controller.isSwitching(mounted.composer) ||
       controller.isSubmissionPending(mounted.composer) ||
       threadIdFromComposerModelTarget(mounted.modelTarget)
     )
       return;
-    const accounts = composerCodexAccounts(mounted.composer);
-    const client = accounts?.client;
+    const agent = state.agent;
+    const accounts = agent === "codex" ? composerCodexAccounts(mounted.composer) : null;
     const accountId = accounts?.readyAccountId;
+    const client = composerClient(mounted);
     const hostId = mounted.hostId;
     const generation = ++mounted.usageRequestGeneration;
     mounted.usage = null;
     mounted.accountCredits = null;
+    mounted.accountCreditsSupported = false;
     renderMounted(mounted);
-    if (!accountId || !client?.inspectCodexAccountUsage) return;
+    if (!client) return;
+    const isCurrent = (): boolean =>
+      !disposed &&
+      mounted.hostId === hostId &&
+      composerClient(mounted) === client &&
+      mounted.composer.isConnected &&
+      mountedByComposer.get(mounted.composer) === mounted &&
+      mounted.usageRequestGeneration === generation &&
+      controller.get(mounted.composer).agent === agent &&
+      controller.get(mounted.composer).phase === "draft" &&
+      !controller.isSwitching(mounted.composer) &&
+      !controller.isSubmissionPending(mounted.composer) &&
+      !threadIdFromComposerModelTarget(mounted.modelTarget);
     try {
-      const result = await client.inspectCodexAccountUsage({ accountId });
-      if (
-        disposed ||
-        mounted.hostId !== hostId ||
-        composerCodexAccounts(mounted.composer) !== accounts ||
-        !mounted.composer.isConnected ||
-        mountedByComposer.get(mounted.composer) !== mounted ||
-        mounted.usageRequestGeneration !== generation ||
-        controller.get(mounted.composer).agent !== "codex" ||
-        controller.get(mounted.composer).phase !== "draft" ||
-        controller.isSubmissionPending(mounted.composer) ||
-        threadIdFromComposerModelTarget(mounted.modelTarget) ||
-        accounts.readyAccountId !== accountId ||
-        result.accountId !== accountId
-      )
-        return;
-      mounted.usage = result.usage;
-      mounted.accountCredits = result.accountCredits ?? null;
+      if (agent === "codex") {
+        if (!accountId || !client.inspectCodexAccountUsage) return;
+        const result = await client.inspectCodexAccountUsage({ accountId });
+        if (
+          !isCurrent() ||
+          composerCodexAccounts(mounted.composer) !== accounts ||
+          accounts?.readyAccountId !== accountId ||
+          result.accountId !== accountId
+        )
+          return;
+        mounted.usage = result.usage;
+        mounted.accountCredits = result.accountCredits ?? null;
+      } else {
+        if (!client.inspectHarnessAccount) return;
+        const result = await client.inspectHarnessAccount({
+          harnessId: harnessIdSchema.parse(agent),
+        });
+        if (!isCurrent() || result.harnessId !== agent) return;
+        mounted.accountCredits = result.account?.credits ?? null;
+      }
       renderMounted(mounted);
     } catch {
-      // Leave unknown quota empty instead of retaining a different Account's values.
+      // Unknown quota stays empty instead of retaining another Account or Harness's values.
     }
   };
 
   const refreshThreadUsage = async (mounted: MountedComposer, refresh?: "exact"): Promise<void> => {
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
-    if (!threadId && controller.get(mounted.composer).agent === "codex") {
-      await refreshDraftCodexUsage(mounted);
+    if (!threadId) {
+      await refreshDraftUsage(mounted);
       return;
     }
-    if (!threadId || !modelControl) {
+    if (!modelControl) {
       mounted.usage = null;
       mounted.accountCredits = null;
       usageRefreshAttempts.delete(mounted.composer);
@@ -2206,8 +2222,23 @@ export function installRendererBindingProbe(
     if (agent !== "codex" && composerAvailability(mounted)[agent] !== "ready") {
       return false;
     }
+    const state = controller.get(mounted.composer);
+    if (state.phase !== "draft" || controller.isSwitching(mounted.composer)) return false;
     controller.clearPendingSubmission(mounted.composer);
-    const composerId = controller.get(mounted.composer).composerId;
+    const composerId = state.composerId;
+    for (const candidate of mountedByComposer.values()) {
+      if (controller.get(candidate.composer).composerId !== composerId) continue;
+      candidate.usageRequestGeneration += 1;
+      candidate.usage = null;
+      candidate.accountCredits = null;
+      candidate.accountCreditsSupported = false;
+      usageRefreshAttempts.delete(candidate.composer);
+      const timer = usageRefreshTimers.get(candidate.composer);
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        usageRefreshTimers.delete(candidate.composer);
+      }
+    }
     controller.invalidateModelRequests(mounted.composer);
     const switching = controller.switchAgent(mounted.composer, agent, {
       applyAgent: (nextAgent) => applyDraftAgentCarrier(mounted.composer, nextAgent),
@@ -2235,7 +2266,9 @@ export function installRendererBindingProbe(
       return false;
     } finally {
       for (const candidate of mountedByComposer.values()) {
-        if (controller.get(candidate.composer).composerId === composerId) renderMounted(candidate);
+        if (controller.get(candidate.composer).composerId !== composerId) continue;
+        renderMounted(candidate);
+        void refreshDraftUsage(candidate);
       }
     }
   };
@@ -2251,7 +2284,7 @@ export function installRendererBindingProbe(
         for (const mounted of mountedByComposer.values()) {
           if (mounted.hostId !== hostId) continue;
           renderMounted(mounted);
-          void refreshDraftCodexUsage(mounted);
+          if (controller.get(mounted.composer).agent === "codex") void refreshDraftUsage(mounted);
         }
       }),
     );
@@ -2521,6 +2554,7 @@ export function installRendererBindingProbe(
           void clearDraftPrewarm(mounted.composer).catch(() => undefined);
         }
         void loadExternalCatalog(mounted);
+        void refreshDraftUsage(mounted);
         continue;
       }
       const target = controllerTarget(mounted.modelTarget, hostId);
@@ -2824,7 +2858,7 @@ export function installRendererBindingProbe(
     ) {
       void loadExternalCatalog(mounted);
     }
-    if (!threadIdFromComposerModelTarget(modelTarget)) void refreshDraftCodexUsage(mounted);
+    if (!threadIdFromComposerModelTarget(modelTarget)) void refreshDraftUsage(mounted);
     void refreshCommands(mounted);
   };
 
@@ -3390,6 +3424,7 @@ export function installRendererBindingProbe(
       for (const mounted of mountedByComposer.values()) {
         renderMounted(mounted);
         void refreshCommands(mounted);
+        if (controller.get(mounted.composer).agent !== "codex") void refreshDraftUsage(mounted);
       }
     },
     dispose() {

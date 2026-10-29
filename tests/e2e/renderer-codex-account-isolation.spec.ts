@@ -42,6 +42,15 @@ const { outputFiles } = await build({
         });
         return result();
       };
+      const quotaUsed = { pi: 31, grok: 64 };
+      const externalInspection = {
+        status: "ready",
+        catalog: { models: [{ ref: { id: "native-model" }, label: "Native Model" }], defaultModel: { id: "native-model" }, thinkingOptions: [] },
+        capabilities: {
+          configuration: { selectModel: true, selectThinkingOption: false, selectPermissionMode: false, permissionModeScope: "live" },
+          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        },
+      };
       const clients = Object.fromEntries(["local", "remote"].map(host => [host, {
         listHarnessPlugins: async () => ({ plugins: [{ id: "pi", name: "Pi", version: "1.0.0" }] }),
         listCodexAccounts: () => request(host, "accounts", () => {
@@ -57,11 +66,26 @@ const { outputFiles } = await build({
           freshness:"live",observedAt:"2026-09-11T00:00:00.000Z",
           accountCredits: { usedPercent: host === "local" ? 17 : 83, periodType:"weekly" },
         })),
+        ...(globalThis.quotaHarnesses ? {
+          listHarnessPlugins: async () => ({ plugins: ["pi", "grok"].map(id => ({ id, name: id, version: "1.0.0" })) }),
+          ...(!globalThis.unsupportedQuota ? {
+            inspectHarnessAccount: ({ harnessId }) => {
+              const usedPercent = host === "remote" ? 81 : quotaUsed[harnessId];
+              return request(host, "quota:" + harnessId, () => {
+                if (globalThis.failedQuota) throw new Error("quota read failed");
+                return { harnessId, harnessName: harnessId, account: globalThis.noQuota ? null : {
+                  credits: { usedPercent, periodType: "weekly" },
+                } };
+              });
+            },
+          } : {}),
+        } : {}),
         inspectHarness: createRendererModelClient([{
           sendRequest: (_method, params) => request(host, "harness:" + params.harnessId, () => {
             if (host === "remote" && globalThis.remoteHarnessUnsupported) {
               throw Object.assign(new Error("Method not found"), { code: -32601 });
             }
+            if (globalThis.quotaHarnesses) return externalInspection;
             return { status: "notInstalled", error: { code: "notInstalled", message: "not installed", retryable: false } };
           }),
         }]).inspectHarness,
@@ -106,7 +130,7 @@ const { outputFiles } = await build({
       composer.setAttribute("data-codex-composer-root", "true");
       composer.style.cssText = "position:fixed;bottom:40px;left:300px;width:600px";
       composer.innerHTML = '<div data-codex-composer contenteditable="true" role="textbox"></div><button type="submit">Send</button>';
-      if (globalThis.withCredits) {
+      if (globalThis.withCredits || globalThis.quotaHarnesses) {
         const permission = document.createElement("button");
         permission.type = "button";
         permission.setAttribute("aria-haspopup", "menu");
@@ -140,7 +164,7 @@ const { outputFiles } = await build({
         calls.push({ host: hostId, method: "submit" });
       });
       document.body.append(composer);
-      const binding = installRendererBindingProbe({ enabledAgents: ["codex", "pi"], defaultAgent: "codex" });
+      const binding = installRendererBindingProbe({ enabledAgents: ["codex", "pi", "grok"], defaultAgent: "codex" });
       const adapterStatus = { state: routeReady ? "ready" : "installing", reason: "ready", modelUpdates: 0, hook: "request-bridge" };
       binding.setAdapter(
         adapterStatus,
@@ -154,6 +178,8 @@ const { outputFiles } = await build({
           window.dispatchEvent(new Event(event));
         },
         pause: (key) => paused.add(key),
+        setQuota: ([id, used]) => quotaUsed[id] = used,
+        releaseNext: (key) => pending.get(key)?.shift()?.(),
         pending: (key) => pending.get(key)?.length ?? 0,
         reconnectLocal: () => {
           clients.local = {
@@ -517,4 +543,91 @@ test("ownership errors stop spinning without permitting an unknown Thread to sub
   await action(page, "focus");
   await expect(page.locator('button[type="submit"]')).toBeEnabled();
   await expect(page.locator(trigger)).not.toHaveAttribute("title", /unable|failed|无法|失败/i);
+});
+
+async function selectHarness(page: Page, agent: string): Promise<void> {
+  await page.locator(trigger).click();
+  const item = page.locator(`button[data-agent="${agent}"]`);
+  await expect(item).toBeEnabled();
+  await item.click();
+  await expect(item).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator(trigger)).toHaveAttribute("aria-busy", "false");
+}
+
+const quotaControl = "[data-codexhost-credits-control]";
+
+test("draft Harness switches clear quota while loading and refresh Codex on return", async ({
+  page,
+}) => {
+  await setup(page, { quotaHarnesses: true });
+  const quota = page.locator(quotaControl);
+  await expect(quota).toHaveText("83%");
+  await action(page, "pause", "local:quota:pi");
+  await selectHarness(page, "pi");
+  await waitForPending(page, "local:quota:pi");
+  await expect(quota).toBeHidden();
+  await action(page, "release", "local:quota:pi");
+  await expect(quota).toHaveText("69%");
+  await expect(quota).toBeVisible();
+  await action(page, "pause", "local:usage:default");
+  await selectHarness(page, "codex");
+  await waitForPending(page, "local:usage:default");
+  await expect(quota).toBeHidden();
+  await action(page, "release", "local:usage:default");
+  await expect(quota).toHaveText("83%");
+  await expect(quota).toBeVisible();
+});
+
+test("late Codex quota cannot overwrite an external draft", async ({ page }) => {
+  await setup(page, { quotaHarnesses: true });
+  await expect(page.locator(quotaControl)).toHaveText("83%");
+  await action(page, "pause", "local:usage:default");
+  await action(page, "focus");
+  await waitForPending(page, "local:usage:default");
+  await selectHarness(page, "pi");
+  await expect(page.locator(quotaControl)).toHaveText("69%");
+  await action(page, "release", "local:usage:default");
+  await expect(page.locator(quotaControl)).toHaveText("69%");
+});
+
+test("late external quota is rejected even after switching back to the same Harness", async ({
+  page,
+}) => {
+  await setup(page, { quotaHarnesses: true });
+  await action(page, "pause", "local:quota:pi");
+  await selectHarness(page, "pi");
+  await waitForPending(page, "local:quota:pi");
+  await selectHarness(page, "grok");
+  await expect(page.locator(quotaControl)).toHaveText("36%");
+  await action(page, "setQuota", ["pi", 51]);
+  await selectHarness(page, "pi");
+  await expect
+    .poll(() =>
+      page.evaluate(() => Reflect.get(globalThis, "accountsFixture").pending("local:quota:pi")),
+    )
+    .toBe(2);
+  await action(page, "releaseNext", "local:quota:pi");
+  await expect(page.locator(quotaControl)).toBeHidden();
+  await action(page, "release", "local:quota:pi");
+  await expect(page.locator(quotaControl)).toHaveText("49%");
+});
+
+for (const flag of ["noQuota", "failedQuota", "unsupportedQuota"]) {
+  test(`drafts hide previous quota when the selected Harness has ${flag}`, async ({ page }) => {
+    await setup(page, { quotaHarnesses: true, [flag]: true });
+    await expect(page.locator(quotaControl)).toHaveText("83%");
+    await selectHarness(page, "pi");
+    await expect(page.locator(quotaControl)).toBeHidden();
+  });
+}
+
+test("external draft quota stays on its Host after switching Hosts", async ({ page }) => {
+  await setup(page, { quotaHarnesses: true });
+  await action(page, "pause", "local:quota:pi");
+  await selectHarness(page, "pi");
+  await waitForPending(page, "local:quota:pi");
+  await action(page, "switchHost", "remote");
+  await expect(page.locator(quotaControl)).toHaveText("19%");
+  await action(page, "release", "local:quota:pi");
+  await expect(page.locator(quotaControl)).toHaveText("19%");
 });

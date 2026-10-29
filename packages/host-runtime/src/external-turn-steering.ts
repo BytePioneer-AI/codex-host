@@ -24,6 +24,7 @@ import type {
 
 import { rewriteDelegationMentionText } from "./delegation-mention-rewrite.js";
 import { isExternalCommandCandidate } from "./external-command-routing.js";
+import { externalTurnInputText } from "./external-turn-input.js";
 import type { TurnProjectionGate } from "./external-thread-runtime.js";
 
 interface SteeringThread {
@@ -101,23 +102,12 @@ function parseInput(params: JsonObject): SteeringInput {
   if (typeof params.expectedTurnId !== "string" || !params.expectedTurnId.trim()) {
     throw new ExternalSteerError(-32602, "External steering requires expectedTurnId");
   }
-  if (
-    !Array.isArray(params.input) ||
-    params.input.length === 0 ||
-    params.input.some(
-      (item) =>
-        !item ||
-        typeof item !== "object" ||
-        Array.isArray(item) ||
-        item.type !== "text" ||
-        typeof item.text !== "string",
-    )
-  ) {
-    throw new ExternalSteerError(-32602, "External steering requires text input");
+  let text: string;
+  try {
+    text = externalTurnInputText(params.input);
+  } catch (error) {
+    throw new ExternalSteerError(-32602, error instanceof Error ? error.message : String(error));
   }
-  const text = params.input.map((item) => (item as JsonObject).text).join("\n");
-  if (!text.trim())
-    throw new ExternalSteerError(-32602, "External steering input must not be empty");
   const clientUserMessageId = params.clientUserMessageId;
   if (
     clientUserMessageId != null &&

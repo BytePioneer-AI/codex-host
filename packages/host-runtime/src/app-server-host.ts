@@ -18,6 +18,7 @@ import {
 import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
+import { externalTurnInputText } from "./external-turn-input.js";
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import {
@@ -567,14 +568,7 @@ function requestObject(request: JsonRpcRequest): JsonObject {
 }
 
 function requestText(params: JsonObject): string {
-  if (!Array.isArray(params.input)) throw new Error("turn/start input must be an array");
-  const text = params.input
-    .filter((item): item is JsonObject => isRecord(item) && item.type === "text")
-    .map((item) => item.text)
-    .filter((value): value is string => typeof value === "string")
-    .join("\n");
-  if (!text) throw new Error("turn/start must contain text input");
-  return text;
+  return externalTurnInputText(params.input);
 }
 
 function sandboxResult(params: JsonObject): JsonObject {

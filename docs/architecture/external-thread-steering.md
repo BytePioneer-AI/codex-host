@@ -69,7 +69,8 @@ Host 和 Renderer 接入必须配套发布；仅升级 Host、让旧 Renderer �
 
 接入点依据 Codex Desktop **26.901.51231 / build 8109** 的 `app-initial-cadb12d4a15e.js`：`steerTurn`、`startTurn`、`sendRequest`、`getTurnCoordinator()` 的 submissionHost，以及队列的 `loadMessages` / `readMessages` / `mutate`。这些是版本相关的 Desktop JavaScript 绑定，不是 Harness SDK 契约。更新 Desktop 后需重新核实。
 
-- 当前公共 Harness 输入仅支持文本。图片等非文本输入、空输入、tool response 在停止前拒绝，不静默丢弃后再取消旧轮。
+- 公共 Harness 输入保持文本。`turn/start` 与 `turn/steer` 共用附件规范化：保留 Desktop 的原生图片清单；`localImage` 缺少清单时，按明确的绝对路径补入，不读取或上传文件。内嵌 `image` 必须已有完整的原生文件路径清单，Host 不推测缺失图片的对应关系，也不把 base64 当作提示词。清单完整性不等于校验文件内容与内嵌图片一致。
+- 空输入、无有效路径的图片、未知输入类型，以及直接附图的 Harness 命令，在能力查询或停止旧轮前拒绝。命令与图片应分别提交。原始输入仍参与重试去重，不能将不同图片视为同一条消息。
 - 停止后重发复用普通输入启动路径；Harness 命令在该路径中解析执行，不作为原生 steer 文本插入。
 - 当前轮尚无确认的 Turn ID 时不猜测目标，也不把过期目标改为另一轮重试。
 - 停止后重发时，旧轮和新轮在 Native Session 历史中是两个真实 Turn，不复用旧 ID、不伪造同轮注入，不合并 Fork/Rollback 身份。

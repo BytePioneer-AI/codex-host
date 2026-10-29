@@ -1,10 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { MappingStore } from "@codexhost/mapping-store";
 import { harnessIdSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
+  closeFixture,
   createFixture,
   method,
   requestId,
@@ -100,8 +101,9 @@ describe("external Thread local deletion", () => {
       expect(open).not.toHaveBeenCalled();
       expect(readFileSync(nativeFile, "utf8")).toBe(history);
     } finally {
-      await stopFixture(fixture);
+      await closeFixture(fixture);
     }
+    expect(existsSync(mappingDirectory)).toBe(true);
     const reopened = new MappingStore({ directory: mappingDirectory });
     try {
       await reopened.initialize();

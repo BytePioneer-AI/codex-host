@@ -269,7 +269,7 @@ CodexHost 的做法不同：
   <tr>
     <td>
       <strong>微信交流群</strong><br />
-      <sub>对 CodexHost 用法、功能感兴趣的开发者可以扫码加入微信群交流。</sub>
+      <sub>对 CodexHost 用法、功能感兴趣的开发者可以扫码添加我的微信（备注“CodexHost”），我拉你进微信群交流。</sub>
       <ul>
         <li><sub>安装问题可以加群询问</sub></li>
         <li><sub>功能建议与反馈</sub></li>
@@ -279,7 +279,7 @@ CodexHost 的做法不同：
       <sub><strong>欢迎一起贡献~ </strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="微信群二维码" src="../imgs/wechat-group-4-qrcode-2026-10-17.jpg" />
+      <img width="230" alt="微信二维码" src="../imgs/wechat-contact-qrcode.jpg" />
     </td>
   </tr>
 </table>

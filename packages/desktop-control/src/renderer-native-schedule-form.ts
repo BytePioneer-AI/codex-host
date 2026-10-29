@@ -13,6 +13,10 @@ export interface NativeScheduleForm {
   readonly supportsExternal: boolean;
   readonly hasTarget: boolean;
   readonly isSaving: boolean;
+  readonly title: string;
+  readonly targetThreadId: string | null;
+  /** Attach only a confirmed native chat created for this external task draft. */
+  setTargetThread(threadId: string, expectedModel: string): void;
   /** Only changes this new task's Model; never the Composer or Account defaults. */
   setModel(selection: NativeScheduleModel): void;
 }
@@ -77,6 +81,29 @@ export function readNativeScheduleForm(form: unknown): NativeScheduleForm | null
     supportsExternal,
     hasTarget: draft.targetThreadId != null,
     isSaving: props.isSaving as boolean,
+    title:
+      (typeof draft.name === "string" ? draft.name.trim() : "") ||
+      String(draft.prompt).trim().replace(/\s+/gu, " ").slice(0, 80),
+    targetThreadId: typeof draft.targetThreadId === "string" ? draft.targetThreadId : null,
+    setTargetThread(threadId, expectedModel) {
+      if (
+        !supportsExternal ||
+        props.isSaving ||
+        draft.targetThreadId != null ||
+        !threadId ||
+        !expectedModel.startsWith("codexhost/plugin-v1@")
+      )
+        return;
+      change((current) =>
+        current.id == null &&
+        current.targetThreadId == null &&
+        current.kind === "heartbeat" &&
+        current.cloudTeam == null &&
+        current.model === expectedModel
+          ? { ...current, targetThreadId: threadId }
+          : current,
+      );
+    },
     setModel(selection) {
       if (props.isSaving || draft.targetThreadId != null) return;
       change((current) =>

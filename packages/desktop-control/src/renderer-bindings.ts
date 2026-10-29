@@ -17,3 +17,10 @@ export {
   nativeScheduleModelRows,
 } from "./renderer-native-schedule-form.js";
 export type { NativeScheduleForm, NativeScheduleModel } from "./renderer-native-schedule-form.js";
+export {
+  readNativeScheduleWorkspaces,
+  isNativeProjectThreadCreator,
+  createNativeScheduleWorkspaceThread,
+  type NativeScheduleWorkspace,
+  type NativeScheduleWorkspaceThread,
+} from "./renderer-schedule-workspace.js";

@@ -1,4 +1,9 @@
 import { createRemoteConnectionsControl } from "./remote-connections-control.js";
+import {
+  createNativeScheduleWorkspaceThread,
+  isNativeProjectThreadCreator,
+} from "@codexhost/desktop-control/renderer-bindings";
+import { loadCodexNativeServices } from "./codex-native-services.js";
 import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js";
 import { handleRemoteConnectionsRequest } from "./remote-connections-request.js";
 import {
@@ -2679,6 +2684,15 @@ export function installRendererBindingProbe(
     },
     canRouteExternal: () =>
       window.__codexhostHostRoutingV1?.forHost("local")?.policy.scopedCreation === true,
+    async createWorkspaceThread(input, signal) {
+      const routing = window.__codexhostHostRoutingV1;
+      const manager = routing?.forHost("local")?.manager;
+      const create = await loadCodexNativeServices(window, isNativeProjectThreadCreator);
+      signal.throwIfAborted();
+      if (!routing || !manager || routing.forHost("local")?.manager !== manager || !create)
+        throw new Error("Native workspace chat creation is unavailable. Reopen the task dialog.");
+      return createNativeScheduleWorkspaceThread(document, routing, create, input, signal);
+    },
     locale: () => settingsLifecycle.locale,
   });
 

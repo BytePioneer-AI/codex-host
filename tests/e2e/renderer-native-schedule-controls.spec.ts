@@ -13,7 +13,13 @@ const { outputFiles } = await build({
       const svg = fill => "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="' + fill + '"/></svg>');
       const LOGO_PI = svg("#7c3aed"), LOGO_CLAUDE = svg("#d97757");
       window.setup = (config = {}) => {
-        const starts = [], saved = [], turns = [], inspections = [], patches = [];
+        const starts = [], saved = [], turns = [], inspections = [], patches = [], workspacePreparations = [], discarded = [], inspectInputs = [];
+        let finishWorkspace;
+        const project = (id, cwd, projectKind = "local") => ({ source: "codex", group: { projectId: id, projectKind, label: id, path: cwd, rootPaths: [cwd] } });
+        const projects = new Map([["Project A", project("Project A", "/work/项目 A")], ["Project B", project("Project B", "/work/B")], ["Remote", project("Remote", "/remote", "remote")]]);
+        const aside = document.createElement("aside"), row = document.createElement("div");
+        row.dataset.sidebarCycleItem = "true"; row.__reactFiber$workspace = { memoizedProps: { projectByKey: projects } };
+        aside.append(row); document.body.append(aside);
         let props, form, owner, releaseSave, routeReady = true, currentClient, gone = false, modelCommits = 0;
         const deferred = new Map();
         let directoryRequests = 0;
@@ -37,11 +43,16 @@ const { outputFiles } = await build({
         policy.selectDraft("client-new-thread:ordinary", "codexhost/ordinary-pi");
         const client = {
           async listHarnessPlugins() { directoryRequests++; return { plugins }; },
-          async inspectHarness({ harnessId }) {
-            inspections.push(harnessId);
+          async inspectHarness(input) {
+            const { harnessId } = input;
+            inspections.push(harnessId); inspectInputs.push(input);
             if (config.delayModels) await new Promise(resolve => deferred.set(harnessId, resolve));
-            if (config.failedHarness === harnessId) throw Error("Harness unavailable");
-            return { status: "ready", catalog: { models: [{ ref: { id: harnessId + "-model" }, label: config.longModel ? harnessId + " model with an exceptionally long descriptive name that has to truncate gracefully" : harnessId + " model" }], defaultModel: { id: harnessId + "-model" } } };
+            if (config.delayWorkspaceModels && input.cwd) await new Promise(resolve => deferred.set(input.cwd, resolve));
+            if (config.failedHarness === harnessId || (config.failedWorkspace && config.failedWorkspace === input.cwd)) throw Error("Harness unavailable");
+            const id = config.workspaceModel && input.cwd === "/work/B" ? "workspace-model" : harnessId + "-model";
+            const models = [{ ref: { id }, label: config.longModel ? harnessId + " model with an exceptionally long descriptive name that has to truncate gracefully" : id === "workspace-model" ? "Workspace Model" : harnessId + " model" }];
+            if (config.extraModel) models.push({ ref: { id: harnessId + "-secondary" }, label: "Secondary Model" });
+            return { status: "ready", catalog: { models, defaultModel: { id } } };
           },
         };
         currentClient = client;
@@ -51,7 +62,7 @@ const { outputFiles } = await build({
           if (config.nativeDefaultInitiallyMissing && patches.length && props.draft.model === null)
             props.draft = { ...props.draft, model: "gpt-native", reasoningEffort: "high" };
           owner.memoizedProps = { ...props, draft: { ...props.draft } };
-          form.querySelector('[type="submit"]').disabled = props.isSaving;
+          form.querySelector('[type="submit"]').disabled = props.isSaving || !props.draft.prompt.trim();
           if (!modelOnly || !config.silentModelCommit) {
             form.dataset.commit = String(Number(form.dataset.commit ?? 0) + 1);
             form.querySelector('[data-native-model] button').textContent = props.draft.model ?? "Default";
@@ -67,7 +78,11 @@ const { outputFiles } = await build({
             onChange(update) {
               patches.push("native-draft");
               if (config.ignoreSelection) return;
-              const apply = () => { if (!gone) { props.draft = typeof update === "function" ? update(props.draft) : update; commit(true); } };
+              const apply = () => { if (!gone) {
+                const next = typeof update === "function" ? update(props.draft) : update;
+                if (config.ignoreTarget && next.targetThreadId) return;
+                props.draft = next; commit(true);
+              } };
               if (config.nativeCommitDelay) setTimeout(apply, config.nativeCommitDelay);
               else queueMicrotask(apply);
             },
@@ -88,11 +103,15 @@ const { outputFiles } = await build({
             if (props.isSaving || !props.draft.prompt.trim()) return;
             props.isSaving = true; commit();
             const draft = props.draft;
-            const result = await manager.startConversation({ input: [], cwd: "/native/workspace", collaborationMode: { mode: "default", settings: { model: draft.model, reasoning_effort: draft.reasoningEffort ?? "medium" } } }, {});
+            const createsChat = !draft.targetThreadId;
+            const result = createsChat
+              ? await manager.startConversation({ input: [], cwd: "/native/workspace", collaborationMode: { mode: "default", settings: { model: draft.model, reasoning_effort: draft.reasoningEffort ?? "medium" } } }, {})
+              : { conversationId: draft.targetThreadId };
             props.draft = { ...props.draft, targetThreadId: result.conversationId }; commit();
             if (config.holdSave) await new Promise(resolve => releaseSave = resolve);
+            if (config.failSave) { props.isSaving = false; commit(); return; }
             saved.push({ kind: draft.kind, targetThreadId: result.conversationId, model: null, reasoningEffort: null, notificationPolicy: draft.notificationPolicy, rrule: "FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=13;BYMINUTE=15", prompt: draft.prompt });
-            turns.push({ turnTrigger: "scheduled_task_setup" });
+            if (createsChat) turns.push({ turnTrigger: "scheduled_task_setup" });
             props.isSaving = false;
             gone = true; form.remove();
           });
@@ -104,9 +123,23 @@ const { outputFiles } = await build({
           getAvailablePlugins: () => currentClient === client ? plugins.filter(p => p.kind !== "usage" && availability[p.id] === "ready") : [],
           subscribeAvailability: listener => { availabilityListeners.add(listener); return () => availabilityListeners.delete(listener); },
           canRouteExternal: () => routeReady, locale: () => config.locale ?? "en",
+          async createWorkspaceThread(input, signal) {
+            workspacePreparations.push(input);
+            if (config.prepareError) throw Error("Creation outcome unknown");
+            if (config.holdWorkspace) await new Promise(resolve => finishWorkspace = resolve);
+            const result = await manager.startConversation({ input: [], cwd: input.workspace.cwd, collaborationMode: { mode: "default", settings: { model: input.model } } }, {});
+            let retained = false;
+            const discard = () => { if (!retained) { retained = true; discarded.push(result.conversationId); } };
+            signal.addEventListener("abort", discard, { once: true });
+            if (signal.aborted) discard();
+            signal.throwIfAborted();
+            return { threadId: result.conversationId, retain() { retained = true; signal.removeEventListener("abort", discard); } };
+          },
         });
         window.fixture = {
-          starts, saved, turns, patches, inspections, draft: () => props.draft, modelCommits: () => modelCommits,
+          starts, saved, turns, patches, inspections, workspacePreparations, discarded, inspectInputs, draft: () => props.draft, modelCommits: () => modelCommits,
+          finishWorkspace: () => finishWorkspace?.(), allowSave: () => { config.failSave = false; },
+          removeWorkspace: id => projects.delete(id),
           nativeModelHidden: () => form.querySelector("[data-native-model]").hidden,
           nativeEffortHidden: () => form.querySelector("[data-native-effort]").hidden,
           release: id => deferred.get(id)?.(), finish: () => releaseSave?.(),
@@ -158,14 +191,17 @@ async function state(page: Page) {
       turns: f.turns,
       patches: f.patches,
       draft: f.draft(),
+      workspacePreparations: f.workspacePreparations,
+      discarded: f.discarded,
+      inspectInputs: f.inspectInputs,
     };
   });
 }
-const trigger = (page: Page, name: "Harness" | "Model" | "模型") =>
-  page.getByLabel(name, { exact: true });
-const optionOf = (page: Page, name: "Harness" | "Model" | "模型", value: string) =>
+type PickerName = "Harness" | "Model" | "模型" | "Workspace";
+const trigger = (page: Page, name: PickerName) => page.getByLabel(name, { exact: true });
+const optionOf = (page: Page, name: PickerName, value: string) =>
   trigger(page, name).locator("..").locator(`[role="option"][data-value="${value}"]`);
-async function pick(page: Page, name: "Harness" | "Model" | "模型", value: string) {
+async function pick(page: Page, name: PickerName, value: string) {
   await expect(optionOf(page, name, value)).toBeAttached();
   await trigger(page, name).click();
   await optionOf(page, name, value).click();
@@ -175,6 +211,229 @@ async function choose(page: Page, harness = "pi") {
   await expect(trigger(page, "Model")).toHaveAttribute("data-value", `${harness}-model`);
   await expect.poll(async () => (await state(page)).draft.model).toMatch(/^codexhost\//);
 }
+
+test("workspace checks preserve the selected Model and its DOM without clearing or rewriting the draft", async ({
+  page,
+}) => {
+  await setup(page, { delayWorkspaceModels: true, extraModel: true });
+  await choose(page);
+  await pick(page, "Model", "pi-secondary");
+  await expect(trigger(page, "Model")).toBeEnabled();
+  const before = await state(page);
+  await trigger(page, "Model")
+    .locator(".label")
+    .evaluate((el) => el.setAttribute("data-preserved", "true"));
+  await pick(page, "Workspace", "Project A");
+  await expect(trigger(page, "Model")).toHaveAttribute("data-value", "pi-secondary");
+  await expect(trigger(page, "Model")).toHaveAttribute("aria-busy", "false");
+  await expect(trigger(page, "Model")).toBeEnabled();
+  await expect(trigger(page, "Model").locator(".label")).toHaveAttribute("data-preserved", "true");
+  await act(page, "submit");
+  expect((await state(page)).workspacePreparations).toEqual([]);
+  await expect(page.getByRole("status")).toContainText("Checking workspace models");
+  await act(page, "release", "/work/项目 A");
+  await expect(page.getByRole("status")).toBeHidden();
+  await expect(trigger(page, "Model").locator(".label")).toHaveAttribute("data-preserved", "true");
+  const after = await state(page);
+  expect(after.draft.model).toBe(before.draft.model);
+  expect(after.patches).toEqual(before.patches);
+  await pick(page, "Workspace", "Project A");
+  expect((await state(page)).inspectInputs).toHaveLength(2);
+  await act(page, "submit");
+  await expect.poll(async () => (await state(page)).saved.length).toBe(1);
+  expect((await state(page)).starts[0].route.model.id).toBe("pi-secondary");
+});
+
+test("missing workspace models require explicit reselection and ignore stale directory replies", async ({
+  page,
+}) => {
+  await setup(page, { delayWorkspaceModels: true, workspaceModel: true });
+  await choose(page);
+  await pick(page, "Workspace", "Project A");
+  await pick(page, "Workspace", "Project B");
+  await act(page, "release", "/work/B");
+  await expect(page.getByRole("status")).toContainText("selected Model is unavailable");
+  await expect(trigger(page, "Model")).toHaveAttribute("data-value", "pi-model");
+  await act(page, "submit");
+  expect((await state(page)).workspacePreparations).toEqual([]);
+  await pick(page, "Model", "workspace-model");
+  await expect(trigger(page, "Model")).toBeEnabled();
+  await act(page, "release", "/work/项目 A");
+  await expect(trigger(page, "Model")).toHaveAttribute("data-value", "workspace-model");
+  await act(page, "submit");
+  await expect.poll(async () => (await state(page)).saved.length).toBe(1);
+  expect((await state(page)).starts[0]).toMatchObject({
+    input: { cwd: "/work/B" },
+    route: { model: { id: "workspace-model" } },
+  });
+});
+
+test("failed background workspace checks keep the Model visible and block creation", async ({
+  page,
+}) => {
+  await setup(page, { failedWorkspace: "/work/项目 A" });
+  await choose(page);
+  await expect(trigger(page, "Model")).toBeEnabled();
+  const before = await state(page);
+  await pick(page, "Workspace", "Project A");
+  await expect(page.getByRole("status")).toContainText("Harness unavailable");
+  await expect(trigger(page, "Model")).toHaveAttribute("data-value", "pi-model");
+  await expect(trigger(page, "Model")).toHaveAttribute("aria-busy", "false");
+  expect((await state(page)).patches).toEqual(before.patches);
+  await act(page, "submit");
+  expect((await state(page)).workspacePreparations).toEqual([]);
+  await pick(page, "Workspace", "");
+  await expect(page.getByRole("status")).toBeHidden();
+});
+
+test("external workspace selection prepares one native chat then saves its target through the official form", async ({
+  page,
+}) => {
+  await setup(page, { silentModelCommit: true, nativeCommitDelay: 50 });
+  await expect(trigger(page, "Workspace")).toBeHidden();
+  await choose(page);
+  await expect(trigger(page, "Workspace")).toHaveText("Automatic");
+  await expect(optionOf(page, "Workspace", "Remote")).toHaveCount(0);
+  await pick(page, "Workspace", "Project A");
+  await expect(trigger(page, "Model")).toBeEnabled();
+  await act(page, "submit");
+  await act(page, "submit");
+  await expect.poll(async () => (await state(page)).saved.length).toBe(1);
+  const s = await state(page);
+  expect(s.workspacePreparations).toHaveLength(1);
+  expect(s.inspectInputs.at(-1)).toEqual({ harnessId: "pi", cwd: "/work/项目 A" });
+  expect(s.starts).toHaveLength(1);
+  expect(s.starts[0].input.cwd).toBe("/work/项目 A");
+  expect(s.starts[0].route).toEqual({ harnessId: "pi", model: { id: "pi-model" } });
+  expect(s.saved[0].targetThreadId).toBe("scheduled-thread");
+  expect(s.turns).toEqual([]);
+  expect(s.discarded).toEqual([]);
+});
+
+for (const reset of ["Automatic", "Codex"]) {
+  test(`selecting ${reset} leaves the original creation path untouched`, async ({ page }) => {
+    await setup(page);
+    await choose(page);
+    await pick(page, "Workspace", "Project A");
+    await expect(trigger(page, "Model")).toBeEnabled();
+    if (reset === "Codex") {
+      await pick(page, "Harness", "codex");
+      await expect(trigger(page, "Workspace")).toBeHidden();
+      await expect(trigger(page, "Harness")).toBeEnabled();
+    } else {
+      await pick(page, "Workspace", "");
+      await expect(trigger(page, "Model")).toBeEnabled();
+    }
+    await act(page, "submit");
+    await expect.poll(async () => (await state(page)).saved.length).toBe(1);
+    const s = await state(page);
+    expect(s.workspacePreparations).toEqual([]);
+    expect(s.starts[0].input.cwd).toBe("/native/workspace");
+    expect(s.starts[0].route?.harnessId ?? "codex").toBe(reset === "Codex" ? "codex" : "pi");
+    expect(s.turns).toEqual([{ turnTrigger: "scheduled_task_setup" }]);
+  });
+}
+
+test("native validation and disappeared workspaces cannot create a chat", async ({ page }) => {
+  await setup(page);
+  await choose(page);
+  await pick(page, "Workspace", "Project A");
+  await expect(trigger(page, "Model")).toBeEnabled();
+  await page.locator("textarea").fill("");
+  await act(page, "submit");
+  expect((await state(page)).workspacePreparations).toEqual([]);
+  await page.locator("textarea").fill("Task");
+  await act(page, "removeWorkspace", "Project A");
+  await act(page, "submit");
+  await expect(page.getByRole("status")).toContainText("workspace is no longer available");
+  expect((await state(page)).workspacePreparations).toEqual([]);
+});
+
+test("failed official saves reuse the prepared chat and never archive a potentially saved target", async ({
+  page,
+}) => {
+  await setup(page, { failSave: true });
+  await choose(page);
+  await pick(page, "Workspace", "Project A");
+  await expect(trigger(page, "Model")).toBeEnabled();
+  await act(page, "submit");
+  await expect.poll(async () => (await state(page)).draft.targetThreadId).toBe("scheduled-thread");
+  await expect(trigger(page, "Harness")).toBeDisabled();
+  await act(page, "allowSave");
+  await act(page, "submit");
+  await expect.poll(async () => (await state(page)).saved.length).toBe(1);
+  expect((await state(page)).workspacePreparations).toHaveLength(1);
+  expect((await state(page)).discarded).toEqual([]);
+});
+
+test("closing during native preparation cleans up only its late empty chat and never saves a task", async ({
+  page,
+}) => {
+  await setup(page, { holdWorkspace: true });
+  await choose(page);
+  await pick(page, "Workspace", "Project A");
+  await expect(trigger(page, "Model")).toBeEnabled();
+  await act(page, "submit");
+  await act(page, "close");
+  await expect(trigger(page, "Harness")).toHaveCount(0);
+  await act(page, "finishWorkspace");
+  await expect.poll(async () => (await state(page)).discarded).toEqual(["scheduled-thread"]);
+  expect((await state(page)).saved).toEqual([]);
+  await act(page, "open");
+  await choose(page);
+  await expect(trigger(page, "Workspace")).toHaveText("Automatic");
+});
+
+test("unknown creation outcomes cannot be retried by clicking Create again", async ({ page }) => {
+  await setup(page, { prepareError: true });
+  await choose(page);
+  await pick(page, "Workspace", "Project A");
+  await expect(trigger(page, "Model")).toBeEnabled();
+  await act(page, "submit");
+  await expect(page.getByRole("status")).toContainText("Check the chat list");
+  await act(page, "submit");
+  expect((await state(page)).workspacePreparations).toHaveLength(1);
+  expect((await state(page)).saved).toEqual([]);
+});
+
+test("does not save or recreate when React never confirms the prepared target", async ({
+  page,
+}) => {
+  await setup(page, { ignoreTarget: true });
+  await choose(page);
+  await pick(page, "Workspace", "Project A");
+  await expect(trigger(page, "Model")).toBeEnabled();
+  await act(page, "submit");
+  await expect(page.getByRole("status")).toContainText("target chat was not confirmed", {
+    timeout: 7000,
+  });
+  await act(page, "submit");
+  expect((await state(page)).workspacePreparations).toHaveLength(1);
+  expect((await state(page)).saved).toEqual([]);
+  await act(page, "close");
+  await expect.poll(async () => (await state(page)).discarded).toEqual(["scheduled-thread"]);
+});
+
+test("workspace picker shares the model picker's keyboard and narrow-screen layout", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await setup(page);
+  await choose(page);
+  await trigger(page, "Workspace").focus();
+  await page.keyboard.press("ArrowDown");
+  const menu = trigger(page, "Workspace").locator("..").getByRole("listbox");
+  await expect(menu).toBeVisible();
+  const bounds = await menu.boundingBox();
+  if (!bounds) throw new Error("Workspace menu has no layout bounds");
+  expect(bounds.x).toBeGreaterThanOrEqual(0);
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: testInfo.outputPath("workspace-picker.png") });
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(trigger(page, "Workspace")).toContainText("Project A");
+  await expect(menu).toBeHidden();
+});
 
 test("lists only ready Harnesses from the local cache without listing or probing plugins", async ({
   page,
@@ -310,6 +569,7 @@ for (const mode of [
   test(`blocks external submission for ${mode} without falling back to Codex`, async ({ page }) => {
     await setup(page);
     await choose(page);
+    await expect(trigger(page, "Model")).toBeEnabled();
     if (mode === "cloud") await act(page, "set", { executionLocation: "cloud" });
     if (mode === "cron") await act(page, "draftPatch", { kind: "cron" });
     if (mode === "goal") await act(page, "set", { creation: { type: "goal" } });

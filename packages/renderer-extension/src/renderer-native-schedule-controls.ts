@@ -1,6 +1,9 @@
 import {
   nativeScheduleModelRows,
   readNativeScheduleForm,
+  readNativeScheduleWorkspaces,
+  type NativeScheduleWorkspace,
+  type NativeScheduleWorkspaceThread,
   type NativeScheduleModel,
 } from "@codexhost/desktop-control/renderer-bindings";
 import {
@@ -30,11 +33,15 @@ export interface NativeScheduleControlsOptions {
   getAvailablePlugins(): readonly HarnessPluginDescriptor[];
   subscribeAvailability(listener: () => void): () => void;
   canRouteExternal(): boolean;
+  createWorkspaceThread(
+    input: { workspace: NativeScheduleWorkspace; model: string; title: string },
+    signal: AbortSignal,
+  ): Promise<NativeScheduleWorkspaceThread>;
   locale(): string;
 }
 
-/** Adds selection only. Desktop owns the form, validation, creation, setup Turn,
- * schedule writes and navigation. No interception or replay of native writes.
+/** Desktop owns task storage and navigation. Only an explicitly chosen external
+ * workspace prepares a native chat before submitting the official target form.
  */
 export function installRendererNativeScheduleControls(
   document: Document,
@@ -80,7 +87,20 @@ export function installRendererNativeScheduleControls(
     const model = createSchedulePicker(document, {
       label: text("模型", "Model"),
       listLabel: text("选择模型", "Choose a Model"),
+      retainMissing: true,
       onChange: () => applyModel(),
+    });
+    const workspace = createSchedulePicker(document, {
+      label: text("工作区", "Workspace"),
+      listLabel: text("选择工作区", "Choose a workspace"),
+      retainMissing: true,
+      onOpen: () => refreshWorkspaces(),
+      onChange: () => {
+        const next = workspaces.find(({ id }) => id === workspace.value) ?? null;
+        if (next?.id === selectedWorkspace?.id && next?.cwd === selectedWorkspace?.cwd) return;
+        selectedWorkspace = next;
+        void loadModels({ preserveSelection: models.length > 0 });
+      },
     });
     const label = (name: string, picker: { root: HTMLElement }) => {
       const row = document.createElement("div");
@@ -97,6 +117,7 @@ export function installRendererNativeScheduleControls(
     };
     label("Harness", harness);
     const modelRow = label(text("模型", "Model"), model);
+    const workspaceRow = label(text("工作区", "Workspace"), workspace);
     const status = document.createElement("p");
     status.setAttribute("role", "status");
     const retry = document.createElement("button");
@@ -121,6 +142,14 @@ export function installRendererNativeScheduleControls(
     let confirmationTimer: number | undefined;
     let error = "";
     let models: HarnessModel[] = [];
+    let workspaces: NativeScheduleWorkspace[] = [];
+    let selectedWorkspace: NativeScheduleWorkspace | null = null;
+    let workspaceCreation: {
+      controller: AbortController;
+      pending: boolean;
+      error: string;
+      thread: NativeScheduleWorkspaceThread | undefined;
+    } | null = null;
     let carrier: string | null = null;
     let original: NativeScheduleModel | null = null;
     let restoring: NativeScheduleModel | null = null;
@@ -159,6 +188,15 @@ export function installRendererNativeScheduleControls(
       // A disappeared selection is not an implicit switch to Codex.
       harness.value = selectedHarness;
     };
+    function refreshWorkspaces() {
+      workspaces = readNativeScheduleWorkspaces(document);
+      workspace.setItems([
+        { value: "", label: text("自动分配", "Automatic") },
+        ...workspaces.map(({ id, label, cwd }) => ({ value: id, label: `${label} · ${cwd}` })),
+      ]);
+      workspace.value = selectedWorkspace?.id ?? "";
+      update();
+    }
     const cancelConfirmation = () => {
       if (confirmationTimer !== undefined) view.clearTimeout(confirmationTimer);
       confirmationTimer = undefined;
@@ -206,12 +244,15 @@ export function installRendererNativeScheduleControls(
       }
       carrier = null;
       original = null;
+      selectedWorkspace = null;
+      workspace.value = "";
     };
     const applyModel = () => {
       const binding = readNativeScheduleForm(form);
       const selected = models.find((entry) => entry.ref.id === model.value);
       if (
         !external() ||
+        workspaceCreation !== null ||
         !binding?.supportsExternal ||
         !available() ||
         binding.hasTarget ||
@@ -229,13 +270,16 @@ export function installRendererNativeScheduleControls(
       confirmSelection();
       update();
     };
-    const loadModels = async () => {
+    const loadModels = async ({ preserveSelection = false } = {}) => {
       const request = ++generation;
-      cancelConfirmation();
-      models = [];
-      model.setItems([]);
-      model.value = "";
-      model.setPlaceholder(text("正在加载模型…", "Loading models…"), true);
+      const previousModel = model.value;
+      if (!preserveSelection) {
+        cancelConfirmation();
+        models = [];
+        model.setItems([]);
+        model.value = "";
+        model.setPlaceholder(text("正在加载模型…", "Loading models…"), true);
+      }
       error = "";
       loading = true;
       update();
@@ -245,25 +289,38 @@ export function installRendererNativeScheduleControls(
         if (!selectedClient) throw Error(text("本地连接不可用。", "Local connection unavailable."));
         const result = await selectedClient.inspectHarness({
           harnessId: requestedHarness as HarnessId,
+          ...(selectedWorkspace ? { cwd: selectedWorkspace.cwd } : {}),
         });
         if (retired || request !== generation || selectedClient !== options.getClient()) return;
         if (result.status !== "ready")
           throw Error(text("所选 Harness 不可用。", "The selected Harness is unavailable."));
-        models = result.catalog.models;
-        model.setItems(models.map((entry) => ({ value: entry.ref.id, label: entry.label })));
+        const selectedModel = preserveSelection ? model.value : previousModel;
+        const next = result.catalog.models;
+        const changed =
+          next.length !== models.length ||
+          next.some(
+            (entry, index) =>
+              entry.ref.id !== models[index]?.ref.id || entry.label !== models[index]?.label,
+          );
+        models = next;
+        if (changed || !preserveSelection)
+          model.setItems(models.map((entry) => ({ value: entry.ref.id, label: entry.label })));
         const defaultModel = result.catalog.defaultModel;
         model.value =
-          defaultModel && models.some((entry) => entry.ref.id === defaultModel.id)
-            ? defaultModel.id
-            : (models[0]?.ref.id ?? "");
+          preserveSelection || models.some((entry) => entry.ref.id === selectedModel)
+            ? selectedModel
+            : defaultModel && models.some((entry) => entry.ref.id === defaultModel.id)
+              ? defaultModel.id
+              : (models[0]?.ref.id ?? "");
         model.setPlaceholder("");
         if (!models.length) throw Error(text("没有可用模型。", "No models are available."));
-        applyModel();
+        // A workspace changes creation context, not the user's Model choice.
+        if (!preserveSelection) applyModel();
       } catch (cause) {
         if (retired || request !== generation) return;
         error =
           cause instanceof Error ? cause.message : text("模型读取失败。", "Could not read models.");
-        model.setPlaceholder(text("模型加载失败", "Models unavailable"));
+        if (!preserveSelection) model.setPlaceholder(text("模型加载失败", "Models unavailable"));
       } finally {
         if (!retired && request === generation) {
           loading = false;
@@ -273,7 +330,7 @@ export function installRendererNativeScheduleControls(
     };
     const onHarness = () => {
       const binding = readNativeScheduleForm(form);
-      if (binding?.hasTarget || binding?.isSaving) return;
+      if (binding?.hasTarget || binding?.isSaving || workspaceCreation) return;
       selectedHarness = harness.value;
       client = options.getClient();
       if (!external()) restore();
@@ -284,11 +341,14 @@ export function installRendererNativeScheduleControls(
       model.setPlaceholder("");
       error = "";
       loading = false;
-      if (external()) void loadModels();
+      if (external()) {
+        refreshWorkspaces();
+        void loadModels();
+      }
       update();
     };
     retry.addEventListener("click", () => {
-      if (error) void loadModels();
+      if (error) void loadModels({ preserveSelection: models.length > 0 });
       else applyModel();
     });
     function blockedReason(): string {
@@ -325,9 +385,32 @@ export function installRendererNativeScheduleControls(
           "外部 Harness 仅支持本地固定聊天：请启用“在此电脑上运行”，关闭“每次运行都开启新聊天”，并选择个人定时任务。",
           "External Harnesses require a personal local task in the same chat. Enable Run on this computer and disable Start each run in new chat.",
         );
+      if (workspaceCreation?.error) return workspaceCreation.error;
+      if (workspaceCreation?.pending)
+        return text("正在创建工作区会话…", "Creating workspace chat…");
+      const chosen = selectedWorkspace;
+      if (
+        chosen &&
+        !binding.hasTarget &&
+        !workspaces.some(({ id, cwd }) => id === chosen.id && cwd === chosen.cwd)
+      )
+        return text(
+          "所选工作区已不可用，请重新选择。",
+          "The selected workspace is no longer available. Choose another workspace.",
+        );
       if (error) return error;
-      if (loading || !carrier || !models.some((entry) => entry.ref.id === model.value))
-        return text("请等待并选择可用的 Model。", "Wait for an available Model and select it.");
+      if (loading)
+        return models.length > 0
+          ? text(
+              "正在确认工作区的模型配置，请稍后提交。",
+              "Checking workspace models. Submit again once ready.",
+            )
+          : text("请等待并选择可用的 Model。", "Wait for an available Model and select it.");
+      if (!carrier || !models.some((entry) => entry.ref.id === model.value))
+        return text(
+          "当前模型在此工作区不可用，请重新选择模型。",
+          "The selected Model is unavailable in this workspace. Choose another Model.",
+        );
       if (binding.selection.model !== carrier && confirming)
         return text("正在应用模型…", "Applying Model…");
       if (binding.selection.model !== carrier)
@@ -343,8 +426,14 @@ export function installRendererNativeScheduleControls(
       const binding = readNativeScheduleForm(form);
       const active = external();
       modelRow.hidden = !active;
-      fields.disabled = Boolean(binding?.isSaving || binding?.hasTarget);
-      const modelBusy = loading || (confirming && active);
+      workspaceRow.hidden = !active;
+      fields.disabled = Boolean(binding?.isSaving || binding?.hasTarget || workspaceCreation);
+      workspace.disabled =
+        (loading && models.length === 0) ||
+        confirming ||
+        !binding?.supportsExternal ||
+        !available();
+      const modelBusy = (loading && models.length === 0) || (confirming && active);
       model.disabled =
         modelBusy || models.length === 0 || !binding?.supportsExternal || !available();
       model.busy = modelBusy;
@@ -354,7 +443,7 @@ export function installRendererNativeScheduleControls(
       harness.setDisabledValues(externalBlocked ? (id) => id !== "codex" : () => false);
       const blocked = blockedReason();
       const message =
-        loading || confirming
+        (loading && models.length === 0) || confirming
           ? ""
           : active
             ? blocked
@@ -370,6 +459,10 @@ export function installRendererNativeScheduleControls(
       messageRow.hidden = !message;
       retry.hidden =
         !active ||
+        loading ||
+        confirming ||
+        Boolean(workspaceCreation) ||
+        (!error && models.length > 0 && !models.some((entry) => entry.ref.id === model.value)) ||
         !message ||
         !binding?.supportsExternal ||
         Boolean(binding.hasTarget || binding.isSaving) ||
@@ -394,15 +487,81 @@ export function installRendererNativeScheduleControls(
         row.style.setProperty("display", "none", "important");
       }
     }
+    async function prepareWorkspace(chosen: NativeScheduleWorkspace, routeModel: string) {
+      if (workspaceCreation) return;
+      const attempt = {
+        controller: new AbortController(),
+        pending: true,
+        error: "",
+        thread: undefined as NativeScheduleWorkspaceThread | undefined,
+      };
+      workspaceCreation = attempt;
+      update();
+      try {
+        const binding = readNativeScheduleForm(form);
+        if (!binding) throw Error("Task binding unavailable");
+        attempt.thread = await options.createWorkspaceThread(
+          { workspace: chosen, model: routeModel, title: binding.title },
+          attempt.controller.signal,
+        );
+        attempt.controller.signal.throwIfAborted();
+        if (retired || !form.isConnected) throw Error("Task dialog closed");
+        const current = readNativeScheduleForm(form);
+        if (
+          !current?.supportsExternal ||
+          current.selection.model !== routeModel ||
+          client !== options.getClient()
+        )
+          throw Error("Task configuration or connection changed. Reopen the dialog.");
+        current.setTargetThread(attempt.thread.threadId, routeModel);
+        const deadline = Date.now() + 5000;
+        while (readNativeScheduleForm(form)?.targetThreadId !== attempt.thread.threadId) {
+          attempt.controller.signal.throwIfAborted();
+          if (Date.now() >= deadline)
+            throw Error("The task's target chat was not confirmed. Reopen the dialog.");
+          await new Promise<void>((resolve) => view.setTimeout(resolve, 25));
+        }
+        attempt.controller.signal.throwIfAborted();
+        attempt.pending = false;
+        update();
+        // Continue this user submission once, after React commits the target.
+        // Further saves/retries belong to the official form and reuse that chat.
+        form.requestSubmit();
+      } catch (cause) {
+        attempt.error = `${cause instanceof Error ? cause.message : text("会话创建失败。", "Chat creation failed.")} ${text("请先检查会话列表，勿重复创建。", "Check the chat list before creating another task.")}`;
+      } finally {
+        attempt.pending = false;
+        if (!retired) update();
+      }
+    }
     const onSubmit = (event: Event) => {
+      if (external() && selectedWorkspace) refreshWorkspaces();
       const reason = blockedReason();
-      if (!reason) return;
+      if (!reason) {
+        if (external() && selectedWorkspace) {
+          const binding = readNativeScheduleForm(form);
+          const button = form.querySelector<HTMLButtonElement>('button[type="submit"]');
+          if (!button || button.matches(":disabled") || binding?.isSaving) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return;
+          }
+          if (!binding?.hasTarget && carrier) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            void prepareWorkspace(selectedWorkspace, carrier);
+            return;
+          }
+          workspaceCreation?.thread?.retain();
+        }
+        return;
+      }
       event.preventDefault();
       event.stopImmediatePropagation();
-      messageRow.hidden = loading || confirming;
+      messageRow.hidden = (loading && models.length === 0) || confirming;
       status.textContent = reason;
     };
-    // Guard before React's delegated submit handler. Never call onSubmit ourselves.
+    // Guard before React's delegated handler; do not call its callback directly.
     form.addEventListener("submit", onSubmit, true);
     update();
     return {
@@ -415,6 +574,14 @@ export function installRendererNativeScheduleControls(
         cancelConfirmation();
         harness.close();
         model.close();
+        workspace.close();
+        if (
+          form.isConnected &&
+          workspaceCreation?.thread &&
+          readNativeScheduleForm(form)?.targetThreadId === workspaceCreation.thread.threadId
+        )
+          workspaceCreation.thread.retain();
+        workspaceCreation?.controller.abort();
         for (const [row, appearance] of hiddenRows) restoreRow(row, appearance);
         form.removeEventListener("submit", onSubmit, true);
         root.remove();

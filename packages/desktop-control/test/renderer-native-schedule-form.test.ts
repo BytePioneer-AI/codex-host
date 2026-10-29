@@ -46,6 +46,37 @@ describe("native scheduled task creation binding", () => {
     expect(before.model).toBe("gpt-native");
   });
 
+  it("attaches a confirmed chat only to the matching external task draft", () => {
+    const f = fixture();
+    const model = "codexhost/plugin-v1@7069";
+    f.props.draft.model = model;
+    const before = { ...f.draft() };
+    const binding = readNativeScheduleForm(f.form);
+    if (!binding) throw new Error("Native schedule binding missing");
+    expect(binding.title).toBe("Task instructions");
+    binding.setTargetThread("prepared-thread", model);
+    expect(f.draft()).toEqual({ ...before, targetThreadId: "prepared-thread" });
+    expect(readNativeScheduleForm(f.form)?.targetThreadId).toBe("prepared-thread");
+    expect(f.props.onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("cannot attach a workspace chat to Codex, a changed Model or a saving task", () => {
+    const f = fixture();
+    readNativeScheduleForm(f.form)?.setTargetThread("thread", "gpt-native");
+    expect(f.onChange).not.toHaveBeenCalled();
+    const model = "codexhost/plugin-v1@7069";
+    f.props.draft.model = model;
+    const binding = readNativeScheduleForm(f.form);
+    if (!binding) throw new Error("Native schedule binding missing");
+    f.props.draft.model = "gpt-native";
+    binding.setTargetThread("thread", model);
+    expect(f.draft().targetThreadId).toBeNull();
+    f.props.draft.model = model;
+    f.props.isSaving = true;
+    readNativeScheduleForm(f.form)?.setTargetThread("thread", model);
+    expect(f.draft().targetThreadId).toBeNull();
+  });
+
   it("keeps Codex, cloud, cron and goal semantics distinct", () => {
     const f = fixture();
     expect(f.onChange).not.toHaveBeenCalled();

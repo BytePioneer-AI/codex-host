@@ -1,5 +1,5 @@
 /** Narrow listbox picker for the native schedule dialog. HTML option elements cannot draw a
- * Harness Logo, so the two codexhost rows use this popup instead. It owns display and keyboard
+ * Harness Logo, so the codexhost selection rows use this popup instead. It owns display and keyboard
  * interaction only; selection meaning stays with the caller. */
 export interface SchedulePickerItem {
   value: string;
@@ -57,6 +57,7 @@ export function createSchedulePicker(
     label: string;
     listLabel: string;
     onChange(value: string): void;
+    onOpen?(): void;
     /** Keep showing the selected item after it disappears from `items`. */
     retainMissing?: boolean;
   },
@@ -173,7 +174,9 @@ export function createSchedulePicker(
   const onDismiss = () => close();
 
   function open() {
-    if (isOpen || disabled || !items.length) return;
+    if (isOpen || disabled) return;
+    options.onOpen?.();
+    if (!items.length) return;
     isOpen = true;
     trigger.setAttribute("aria-expanded", "true");
     if (supportsPopover) menu.showPopover();
@@ -244,6 +247,7 @@ export function createSchedulePicker(
     },
     set value(next) {
       if (next === value) return;
+      stale = null;
       value = next;
       for (const [key, el] of optionElements)
         el.setAttribute("aria-selected", String(key === next));

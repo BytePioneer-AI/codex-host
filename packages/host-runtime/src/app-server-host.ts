@@ -4427,20 +4427,21 @@ export class AppServerHost {
     }
     this.#externalRuntime.remove(location.record.hostThreadId);
     this.#routeObservationTracker.forgetThread(location.record.hostThreadId);
-    if (!thread) {
-      await this.#writer.json(rpcEnvelope(request, { result: {} }));
-      return;
+    if (thread) {
+      thread.stateObserver.fault(new Error("External Thread was deleted"));
+      try {
+        await thread.session.close();
+        await thread.outputTask;
+      } catch (error) {
+        // The Host record is already gone; cleanup failure cannot undo this deletion.
+        this.#diagnose(`Deleted External Thread could not close: ${errorMessage(error)}`);
+      }
     }
-    thread.stateObserver.fault(new Error("External Thread was deleted"));
-    try {
-      await thread.session.close();
-      await thread.outputTask;
-      await this.#writer.json(rpcEnvelope(request, { result: {} }));
-    } catch (error) {
-      await this.#writer.json(
-        rpcError(request, -32075, `External Thread could not close: ${errorMessage(error)}`),
-      );
-    }
+    await this.#writer.json(rpcEnvelope(request, { result: {} }));
+    await this.#writer.json({
+      method: "thread/deleted",
+      params: { threadId: location.record.hostThreadId },
+    });
   }
 
   async #readExternalThreadMetadata(

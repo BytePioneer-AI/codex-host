@@ -283,6 +283,31 @@ describe("shared external Threads", () => {
     });
   });
 
+  it("broadcasts local deletion to every viewer and removes the Thread from subsequent lists", async () => {
+    const { front, adapter } = setup();
+    const ssh = front(true);
+    const desktop = front(false);
+    const threadId = await startPiThread(ssh);
+    await desktop.collector.waitFor((m) => m.method === "thread/started");
+    const close = vi.spyOn(session(adapter), "close");
+
+    expect(await rpc(desktop, 20, "thread/delete", { threadId })).toEqual({ id: 20, result: {} });
+    for (const viewer of [ssh, desktop]) {
+      expect(await viewer.collector.waitFor((m) => m.method === "thread/deleted")).toEqual({
+        method: "thread/deleted",
+        params: { threadId },
+      });
+      expect(await rpc(viewer, 21, "thread/list", {})).toMatchObject({ result: { data: [] } });
+      expect(await rpc(viewer, 22, "thread/list", { archived: true })).toMatchObject({
+        result: { data: [] },
+      });
+    }
+    expect(close).toHaveBeenCalledOnce();
+    const late = front(false);
+    expect(await rpc(late, 23, "thread/list", {})).toMatchObject({ result: { data: [] } });
+    expect(late.collector.messages.some((m) => m.method === "thread/started")).toBe(false);
+  });
+
   it("renders the same accepted user message and streamed reply in both GUIs with one Session", async () => {
     const { front, adapter, open } = setup();
     const ssh = front(true);

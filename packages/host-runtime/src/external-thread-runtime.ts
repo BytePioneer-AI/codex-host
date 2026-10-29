@@ -290,8 +290,8 @@ export class ExternalThreadRuntime {
         thread.stateObserver.fault(new Error("External Thread is being deleted"));
         await this.#lifecycle.release(hostThreadId, thread.session, thread.outputTask);
       }
-      await this.#repository.removeThread(hostThreadId);
       this.remove(hostThreadId);
+      await this.#repository.removeThread(hostThreadId);
     });
   }
 

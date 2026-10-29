@@ -81,6 +81,74 @@ describe("CodeBuddy native history and output projection", () => {
     );
   });
 
+  it("keeps WorkBuddy context-injection user rows inside the active turn (#616)", () => {
+    const snapshot = snapshotFromHistory(
+      lines([
+        {
+          ...user,
+          id: "q1",
+          providerData: {
+            conversationRequestId: "q-1",
+            startsNewUserRequest: true,
+          },
+          content: [{ type: "input_text", text: "<user_query>hi</user_query>" }],
+        },
+        {
+          ...user,
+          id: "ctx-1",
+          parentId: "q1",
+          providerData: {
+            conversationRequestId: "q-1",
+            startsNewUserRequest: false,
+          },
+          content: [
+            {
+              type: "input_text",
+              text: '<system-reminder data-role="user-context">injected</system-reminder>',
+            },
+          ],
+        },
+        {
+          ...user,
+          id: "ctx-2",
+          parentId: "ctx-1",
+          providerData: {
+            conversationRequestId: "q-1",
+            startsNewUserRequest: false,
+            isMeta: true,
+          },
+          content: [
+            {
+              type: "input_text",
+              text: '<system-reminder data-role="user-context">also meta</system-reminder>',
+            },
+          ],
+        },
+        { ...assistant, id: "a1", parentId: "ctx-2" },
+        {
+          ...user,
+          id: "q2",
+          parentId: "a1",
+          providerData: {
+            conversationRequestId: "q-2",
+            startsNewUserRequest: true,
+          },
+          content: [{ type: "input_text", text: "<user_query>next</user_query>" }],
+        },
+        { ...assistant, id: "a2", parentId: "q2" },
+      ]),
+      ref,
+      process.cwd(),
+    );
+    expect(snapshot.turns).toHaveLength(2);
+    expect(snapshot.turns[0]?.input).toEqual([
+      { type: "text", text: "<user_query>hi</user_query>" },
+    ]);
+    expect(snapshot.turns[1]?.input).toEqual([
+      { type: "text", text: "<user_query>next</user_query>" },
+    ]);
+  });
+
   it("groups native local command records and hides compaction prompts and summaries", () => {
     const snapshot = snapshotFromHistory(
       lines([

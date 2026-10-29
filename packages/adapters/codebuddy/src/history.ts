@@ -603,6 +603,20 @@ export function snapshotFromHistory(
       !manualCompactions.has(text(row.id))
     )
       continue;
+    // WorkBuddy (and similar CodeBuddy-family harnesses) appends context-injection
+    // user rows with startsNewUserRequest === false and no <user_query>. They must
+    // stay inside the active request; opening a Turn per injection yields "ghost"
+    // Turns with only system-reminder text (#616). CodeBuddy's isMeta path (#548)
+    // is covered when isMeta is set; WorkBuddy omits isMeta.
+    if (
+      row.type === "message" &&
+      row.role === "user" &&
+      data.startsNewUserRequest === false &&
+      !localCommand &&
+      data.agent !== "compact" &&
+      (data.isMeta === true || !body.includes("<user_query>"))
+    )
+      continue;
     // A cache-expired automatic compaction persists its summary as an internal user row.
     // It is not a user prompt: keep it inside the Turn it compacted and project the
     // native evidence as a compaction Item instead of a raw <cb_summary> message.

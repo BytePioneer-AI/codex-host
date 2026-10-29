@@ -25,6 +25,7 @@ export type ArtifactDownloader = (
   source: ArtifactSource,
   destination: string,
   onProgress?: (progress: ArtifactDownloadProgress) => void | Promise<void>,
+  options?: { signal?: AbortSignal },
 ) => Promise<ArtifactDownloadResult>;
 
 export function validateArtifact(source: ArtifactSource): ArtifactSource {
@@ -60,10 +61,12 @@ export async function downloadArtifact(
   source: ArtifactSource,
   destination: string,
   onProgress?: (progress: ArtifactDownloadProgress) => void | Promise<void>,
+  options: { signal?: AbortSignal } = {},
 ): Promise<ArtifactDownloadResult> {
   const response = await fetch(source.url, {
     redirect: "follow",
     headers: { "accept-encoding": "identity" },
+    ...(options.signal ? { signal: options.signal } : {}),
   });
   if (!response.ok || response.body === null) {
     throw new Error(`update artifact download failed with HTTP ${response.status}`);

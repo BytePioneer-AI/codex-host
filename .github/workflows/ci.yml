@@ -99,6 +99,99 @@ jobs:
           --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools
           -- -D warnings && npm run test:rust
 
+      # Isolated native process/npm fixtures, not installed Codex/MSIX upgrade evidence.
+      - name: Test Windows updater fixtures
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.dependencies.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          Start-Transcript -Path "$env:RUNNER_TEMP/windows-components.log"
+          try { npm run test:update-fixtures; if ($LASTEXITCODE) { throw 'Windows component fixtures failed' } }
+          finally { Stop-Transcript }
+
+      # Opt in at draft-PR creation; uses pull_request, not a not-yet-default
+      # workflow_dispatch file or privileged pull_request_target execution.
+      - name: Build source-version-matched v1 Inno fixture installers
+        if: ${{ !cancelled() && runner.os == 'Windows' && github.event_name == 'pull_request' && github.event.pull_request.draft && startsWith(github.event.pull_request.title, '[windows-fixtures]') }}
+        id: inno-v1
+        timeout-minutes: 30
+        env:
+          CODEXHOST_DISPOSABLE_WINDOWS_USER: fixture-only
+        shell: pwsh
+        run: |
+          Start-Transcript -Path "$env:RUNNER_TEMP/windows-inno-v1-build.log"
+          try {
+            npm run build:typescript
+            if ($LASTEXITCODE) { throw 'Fixture dependencies did not build' }
+            npm run test:windows-installer -- build-v1 --manifest "$env:RUNNER_TEMP/inno-v1-fixture.json"
+            if ($LASTEXITCODE) { throw 'Source-built v1 Inno material preparation failed' }
+          } finally { Stop-Transcript }
+
+      - name: Test v1 original-tool upgrade and complete-file recovery
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.inno-v1.outcome == 'success' }}
+        timeout-minutes: 15
+        env:
+          CODEXHOST_DISPOSABLE_WINDOWS_USER: fixture-only
+        shell: pwsh
+        run: |
+          Start-Transcript -Path "$env:RUNNER_TEMP/windows-inno-v1.log"
+          try { npm run test:windows-installer -- run-v1 --manifest "$env:RUNNER_TEMP/inno-v1-fixture.json"; if ($LASTEXITCODE) { throw 'V1 Inno recovery fixture failed' } }
+          finally { Stop-Transcript }
+
+      # Optional old-capability investigation, not v1 recovery acceptance.
+      - name: Prepare pinned Inno fixture materials
+        if: ${{ !cancelled() && runner.os == 'Windows' && github.event_name == 'pull_request' && github.event.pull_request.draft && startsWith(github.event.pull_request.title, '[windows-fixtures]') && contains(github.event.pull_request.body, '[run-legacy-inno]') }}
+        id: inno-materials
+        env:
+          CODEXHOST_DISPOSABLE_WINDOWS_USER: fixture-only
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory "$env:RUNNER_TEMP/inno-old", "$env:RUNNER_TEMP/inno-new" | Out-Null
+          Invoke-WebRequest 'https://github.com/BytePioneer-AI/codex-host/releases/download/v0.14.0/codexhost-0.14.0-windows-x64.exe' -OutFile "$env:RUNNER_TEMP/inno-old/old.exe"
+          Invoke-WebRequest 'https://github.com/BytePioneer-AI/codex-host/releases/download/v0.15.0/codexhost-0.15.0-windows-x64.exe' -OutFile "$env:RUNNER_TEMP/inno-new/new.exe"
+          npm run test:windows-installer -- prepare --previous "$env:RUNNER_TEMP/inno-old/old.exe" --previous-version 0.14.0 --previous-sha256 4f33cd0eda106fa7e1e5b3c67dcdfb1b7df880b30c10a8644ff2df23d39f6cd7 --next "$env:RUNNER_TEMP/inno-new/new.exe" --next-version 0.15.0 --next-sha256 9b2190ad2ea3212f64837b3d9131738273ddd2b99bae031b1e810f32d8e2e729 --root "$env:RUNNER_TEMP/codexhost-inno-isolated" --manifest "$env:RUNNER_TEMP/inno-fixture.json"
+
+      - name: Test original-tool Inno recovery and foreign lock survival
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.inno-materials.outcome == 'success' }}
+        env:
+          CODEXHOST_DISPOSABLE_WINDOWS_USER: fixture-only
+        shell: pwsh
+        run: |
+          Start-Transcript -Path "$env:RUNNER_TEMP/windows-inno.log"
+          try { npm run test:windows-installer -- run --manifest "$env:RUNNER_TEMP/inno-fixture.json"; if ($LASTEXITCODE) { throw 'Inno recovery incomplete; inspect evidence, not just version metadata' } }
+          finally { Stop-Transcript }
+
+      # Hosted Windows Server may reject AppX registration/activation. A failed
+      # probe is a platform result, not MSIX acceptance or a reason to enable UI.
+      - name: Probe actual MSIX pre-entry binding (explicit draft-PR opt-in)
+        if: ${{ !cancelled() && runner.os == 'Windows' && github.event_name == 'pull_request' && github.event.pull_request.draft && startsWith(github.event.pull_request.title, '[windows-fixtures]') && contains(github.event.pull_request.body, '[run-appx-probe]') }}
+        env:
+          CODEXHOST_DISPOSABLE_WINDOWS_USER: fixture-only
+        shell: pwsh
+        run: |
+          Start-Transcript -Path "$env:RUNNER_TEMP/windows-appx.log"
+          try { npm run test:windows-appx; if ($LASTEXITCODE) { throw 'MSIX probe failed or unsupported on this runner; no native acceptance' } }
+          finally { Stop-Transcript }
+
+      - name: Retain Windows fixture evidence
+        if: ${{ always() && runner.os == 'Windows' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-update-fixture-evidence
+          path: |
+            ${{ runner.temp }}/windows-*.log
+            ${{ runner.temp }}/codexhost-inno-isolated/*.log
+            ${{ runner.temp }}/codexhost-inno-isolated/recovery-evidence.json
+            ${{ runner.temp }}/inno-fixture.json
+            ${{ runner.temp }}/inno-v1-fixture.json
+            ${{ runner.temp }}/codexhost-inno-v1-*/**/*.log
+            ${{ runner.temp }}/codexhost-inno-v1-*/recovery-evidence.json
+            ${{ runner.temp }}/codexhost-inno-build-*/source-*/build/release/**/runtime-source-evidence.json
+            ${{ runner.temp }}/codexhost-appx-*/*.json
+            ${{ runner.temp }}/codexhost-appx-*/*.trace
+            ${{ runner.temp }}/codexhost-appx-*/*.middle
+            ${{ runner.temp }}/codexhost-appx-*/*.leaf
+            ${{ runner.temp }}/codexhost-appx-*/*.orphan
+
       - name: Setup cargo-zigbuild
         if: ${{ !cancelled() && runner.os == 'Linux' && steps.dependencies.outcome == 'success' }}
         run: |

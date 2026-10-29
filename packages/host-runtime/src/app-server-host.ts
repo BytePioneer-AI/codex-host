@@ -1107,6 +1107,16 @@ export class AppServerHost {
     return true;
   }
 
+  consoleReady(): boolean {
+    return (
+      !this.#closeRequested &&
+      !this.#desktopInputEnded &&
+      !this.#officialRuntimeScope.closed &&
+      this.#officialRuntimeScope.owner.running &&
+      this.#officialRuntimeScope.gate.phase === "ready"
+    );
+  }
+
   /**
    * Runs one console request through the same handling as Codex Desktop's
    * settings requests. Only {@link CONSOLE_HOST_METHODS} are accepted.

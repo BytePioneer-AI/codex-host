@@ -3,6 +3,7 @@ import { chmod, copyFile, lstat, mkdir, readFile, readdir, rm, writeFile } from 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { writeInstallerManifest, writeInstallerSidecar } from "./windows/manifest.mjs";
 import { writeDistributionMetadata } from "./distribution-metadata.mjs";
 import {
   buildPreinstalledHarnessPlugins,
@@ -96,6 +97,32 @@ const runtimeLicenses = [
   },
   { packageName: "ws", license: "MIT", source: "LICENSE", output: "ws-LICENSE.txt" },
   { packageName: "zod", license: "MIT", source: "LICENSE", output: "zod-LICENSE.txt" },
+  { packageName: "tar", license: "BlueOak-1.0.0", source: "LICENSE.md", output: "tar-LICENSE.md" },
+  {
+    packageName: "@isaacs/fs-minipass",
+    license: "ISC",
+    source: "LICENSE",
+    output: "fs-minipass-LICENSE.txt",
+  },
+  {
+    packageName: "chownr",
+    license: "BlueOak-1.0.0",
+    source: "LICENSE.md",
+    output: "chownr-LICENSE.md",
+  },
+  {
+    packageName: "minipass",
+    license: "BlueOak-1.0.0",
+    source: "LICENSE.md",
+    output: "minipass-LICENSE.md",
+  },
+  { packageName: "minizlib", license: "MIT", source: "LICENSE", output: "minizlib-LICENSE.txt" },
+  {
+    packageName: "yallist",
+    license: "BlueOak-1.0.0",
+    source: "LICENSE.md",
+    output: "yallist-LICENSE.md",
+  },
 ];
 
 export function npmReleaseCommand(
@@ -297,10 +324,16 @@ export function expectedPayloadPaths(target) {
     "licenses/tailwindcss-LICENSE.txt",
     "licenses/ws-LICENSE.txt",
     "licenses/zod-LICENSE.txt",
+    "licenses/tar-LICENSE.md",
+    "licenses/fs-minipass-LICENSE.txt",
+    "licenses/chownr-LICENSE.md",
+    "licenses/minipass-LICENSE.md",
+    "licenses/minizlib-LICENSE.txt",
+    "licenses/yallist-LICENSE.md",
     "THIRD_PARTY_NOTICES.txt",
   ];
   if (target.hostPlatform === "win32") {
-    paths.push(`bin/codexhost-start${target.executableSuffix}`);
+    paths.push(`bin/codexhost-start${target.executableSuffix}`, "app/codexhost-inno-files-v1.txt");
   }
   return paths.sort();
 }
@@ -467,6 +500,8 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
   });
   await extractNodeRuntime({ target, archivePath, payloadRoot });
   await writeThirdPartyNotices(root, payloadRoot);
+  if (target.hostPlatform === "win32")
+    await writeInstallerManifest(payloadRoot, version, target.id);
   await validatePayload({ payloadRoot, target, root });
   return { version, installerVersion, outputRoot, payloadRoot };
 }
@@ -526,6 +561,8 @@ export async function packageReleaseTarget({ target, root = repositoryRoot }) {
   }
 
   await requireNonEmptyArtifact(artifactPath);
+  if (target.hostPlatform === "win32")
+    await writeInstallerSidecar(artifactPath, prepared.payloadRoot);
   return { ...prepared, artifactPath };
 }
 

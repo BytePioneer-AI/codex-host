@@ -52,6 +52,22 @@ describe("Controller attachment server", () => {
     }
   });
 
+  it("authenticates a side-effect-free liveness probe without attaching or opening a page", async () => {
+    const port = await availablePort();
+    const attach = vi.fn();
+    const openLocalPage = vi.fn();
+    const server = await startControllerAttachmentServer({ port, nonce, attach, openLocalPage });
+    try {
+      expect(await request(port, `PING ${nonce}\n`)).toBe("ready\n");
+      expect(await request(port, `PING ${"0".repeat(32)}\n`)).toBe("rejected\n");
+      expect(await request(port, `PING ${nonce}\nATTACH ${nonce}\n`)).toBe("rejected\n");
+      expect(attach).not.toHaveBeenCalled();
+      expect(openLocalPage).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
   it("validates remote settings commands at the socket boundary", async () => {
     const port = await availablePort();
     const remoteConnections = vi.fn(async () => ({ result: [] }));

@@ -6,13 +6,19 @@ mod console;
 mod desktop_attachment;
 mod desktop_path_overrides;
 mod installation_layout;
+#[cfg(any(target_os = "windows", test))]
+mod launch_policy;
 mod native_harness_broker;
+#[cfg(target_os = "windows")]
+mod protected_launch;
 mod runtime_instance;
 #[cfg(target_os = "linux")]
 mod secure_storage;
 mod startup_record;
 #[cfg(target_os = "macos")]
 mod system_proxy_environment;
+#[cfg(test)]
+mod update_relaunch_tests;
 
 use std::env;
 use std::error::Error;
@@ -29,7 +35,7 @@ use std::sync::{OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use active_update::start_pending_update;
 use active_update::update_waiting_for_launcher_exit;
 #[cfg(target_os = "windows")]
@@ -326,6 +332,8 @@ fn inspect(custom_install_root: Option<&Path>, json: bool) -> Result<(), Box<dyn
 
 #[derive(Debug)]
 struct LaunchOptions {
+    update_job: Option<String>,
+    preserve_external_desktop: bool,
     shim: Option<PathBuf>,
     node: Option<PathBuf>,
     host_runtime: Option<PathBuf>,
@@ -362,9 +370,21 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
     let mut renderer_extension = None;
     let mut pi = None;
     let mut custom_install_root = None;
+    let mut preserve_external_desktop = false;
+    let mut update_job = None;
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
+            "--preserve-external-desktop" => preserve_external_desktop = true,
+            "--update-job" => {
+                index += 1;
+                update_job = Some(
+                    arguments
+                        .get(index)
+                        .ok_or("--update-job requires a key")?
+                        .clone(),
+                );
+            }
             "--shim" => shim = Some(required_path(arguments, &mut index, "--shim")?),
             "--node" => node = Some(required_path(arguments, &mut index, "--node")?),
             "--host-runtime" => {
@@ -389,7 +409,12 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
         }
         index += 1;
     }
+    if update_job.is_some() && !preserve_external_desktop {
+        return Err("--update-job requires protected launch".into());
+    }
     Ok(LaunchOptions {
+        update_job,
+        preserve_external_desktop,
         shim,
         node,
         host_runtime,
@@ -456,6 +481,7 @@ fn resolve_resource_path(
 
 impl LaunchOptions {
     fn resolve(self) -> Result<ResolvedLaunchOptions, Box<dyn Error>> {
+        let _ = (&self.update_job, self.preserve_external_desktop);
         let installed = InstalledResources::from_current_executable()?;
         Ok(ResolvedLaunchOptions {
             shim: resolve_resource_path(self.shim, &installed.shim, "--shim", "bundled Shim")?,
@@ -859,7 +885,11 @@ fn supervise_desktop(
     };
     startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
+    let mut started_update_request = None;
     loop {
+        if let Err(error) = start_pending_update(&mut started_update_request, None) {
+            eprintln!("codexhost launcher: update handoff failed; Desktop preserved: {error}");
+        }
         if should_stop_desktop_for_update(false) {
             if let Err(error) = stop_managed_desktop_for_update(&mut desktop, &mut controller) {
                 eprintln!(
@@ -934,6 +964,15 @@ fn desktop_environment(
             OsString::from(&control.nonce),
         ),
     ];
+    #[cfg(target_os = "windows")]
+    environment.push((
+        OsString::from("CODEXHOST_LAUNCHER_STARTED_AT_MICROS"),
+        OsString::from(
+            codexhost_platform::process_snapshot(std::process::id())
+                .map(|instance| instance.started_at_micros.to_string())
+                .unwrap_or_default(),
+        ),
+    ));
     if let Some(pi) = &options.pi {
         environment.push((
             OsString::from(PI_COMMAND_ENV),
@@ -1047,6 +1086,29 @@ fn force_stop_external_desktop(
 
 #[cfg(not(target_os = "linux"))]
 fn launch(
+    options: LaunchOptions,
+    _interactive_running_desktop: bool,
+) -> Result<(), Box<dyn Error>> {
+    #[cfg(target_os = "windows")]
+    {
+        if options.preserve_external_desktop {
+            if options.update_job.is_some() {
+                protected_launch::launch(options)
+            } else {
+                launch_policy::enter_desktop_launch(true, || protected_launch::launch(options))
+            }
+        } else {
+            launch_ordinary(options, _interactive_running_desktop)
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        launch_ordinary(options, _interactive_running_desktop)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn launch_ordinary(
     options: LaunchOptions,
     _interactive_running_desktop: bool,
 ) -> Result<(), Box<dyn Error>> {
@@ -1311,6 +1373,8 @@ fn is_launch_command(arguments: &[String]) -> bool {
 
 fn default_launch_options() -> LaunchOptions {
     LaunchOptions {
+        update_job: None,
+        preserve_external_desktop: false,
         shim: None,
         node: None,
         host_runtime: None,
@@ -1735,6 +1799,18 @@ mod tests {
             value(LAUNCHER_PID_ENV),
             Some(&OsString::from(std::process::id().to_string()))
         );
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            value("CODEXHOST_LAUNCHER_STARTED_AT_MICROS"),
+            Some(&OsString::from(
+                codexhost_platform::process_snapshot(std::process::id())
+                    .unwrap()
+                    .started_at_micros
+                    .to_string()
+            ))
+        );
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(value("CODEXHOST_LAUNCHER_STARTED_AT_MICROS"), None);
         assert_eq!(
             value(LAUNCHER_EXECUTABLE_ENV),
             Some(&OsString::from("/opt/codexhost"))

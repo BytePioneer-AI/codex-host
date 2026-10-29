@@ -428,6 +428,45 @@ pub fn launch_desktop(
 }
 
 #[cfg(target_os = "windows")]
+pub fn launch_desktop_in_job(
+    installation: &DesktopInstallation,
+    shim_path: &Path,
+    arguments: &[OsString],
+    environment: &[(OsString, OsString)],
+    job: &crate::WindowsLaunchJob,
+) -> Result<DesktopProcess, PlatformError> {
+    let DesktopIdentity::WindowsPackage {
+        appx_activation, ..
+    } = &installation.identity
+    else {
+        return Err(PlatformError::Invalid(
+            "protected Desktop requires Windows package identity".into(),
+        ));
+    };
+    if let Some(identity) = appx_activation {
+        let environment = managed_desktop_environment(installation, shim_path, environment)?;
+        super::windows_desktop::activate_packaged_desktop_in_job(
+            &identity.package_full_name,
+            &identity.app_user_model_id,
+            arguments,
+            &environment,
+            job,
+        )
+    } else {
+        let mut command = desktop_launch_command(
+            installation,
+            shim_path,
+            DesktopLaunchMode::DirectExecutable,
+            arguments,
+            environment,
+        )?;
+        Ok(DesktopProcess::from_child(
+            job.spawn_supervised(&mut command)?.into_job_owned_child(),
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
 pub fn launch_desktop(
     installation: &DesktopInstallation,
     shim_path: &Path,

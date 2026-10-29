@@ -178,6 +178,7 @@ describe("release Host and independent plugin Bundles", () => {
         "@deepseek-ai/cordis",
         "@deepseek-ai/cosmokit",
         "diff",
+        "tar",
         "ws",
         "zod",
       ]);

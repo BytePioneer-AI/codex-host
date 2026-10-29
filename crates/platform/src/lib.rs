@@ -5,18 +5,30 @@ use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(any(target_os = "windows", test))]
+mod activation_binding;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod background;
 #[cfg(not(target_os = "windows"))]
 mod background;
 mod desktop_launch;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+mod windows_activation_job;
+#[cfg(target_os = "windows")]
+pub use desktop_launch::launch_desktop_in_job;
+#[cfg(target_os = "windows")]
+pub use windows_activation_job::WindowsLaunchJob;
+#[cfg(target_os = "windows")]
+pub const DESKTOP_LAUNCH_JOB_ENV: &str = "CODEXHOST_DESKTOP_LAUNCH_JOB";
 mod installation;
 #[cfg(target_os = "linux")]
 mod linux_installation;
 mod macos_native_harness_broker;
 #[cfg(target_os = "macos")]
 mod macos_process_observation;
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 mod process;
 mod process_supervision;
 mod process_termination;
@@ -28,13 +40,22 @@ mod system_proxy;
 mod windows_desktop;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
+mod windows_installer;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 mod windows_process;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+mod windows_process_arguments;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod windows_proxy;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod windows_ui;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+mod windows_write_capacity;
 
 pub use background::detach_from_terminal;
 pub use desktop_launch::{
@@ -63,6 +84,7 @@ pub use macos_native_harness_broker::{
     NativeHarnessBrokerInstallOutcome, NativeHarnessBrokerStatus, inspect_native_harness_broker,
     install_native_harness_broker, stop_native_harness_broker, uninstall_native_harness_broker,
 };
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 #[cfg(target_os = "macos")]
 pub use process::force_stop_desktop;
 pub use process::{
@@ -86,9 +108,15 @@ pub use system_proxy::{SystemProxySettings, system_proxy_settings};
 #[cfg(target_os = "windows")]
 pub use windows_desktop::resume_packaged_application;
 #[cfg(target_os = "windows")]
+pub use windows_installer::shutdown_processes_for_executables;
+#[cfg(target_os = "windows")]
+pub use windows_process_arguments::{ProcessArguments, process_arguments_for_executable};
+#[cfg(target_os = "windows")]
 pub use windows_ui::{
     RunningDesktopChoice, hide_console_window, prompt_running_desktop, show_error_dialog,
 };
+#[cfg(target_os = "windows")]
+pub use windows_write_capacity::{check_directory_mutation_capacity, ensure_single_file_link};
 
 pub const CRATE_NAME: &str = "codexhost-platform";
 #[cfg(target_os = "windows")]

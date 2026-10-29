@@ -12,6 +12,16 @@ sha2 = "0.10.9"
 [lib]
 path = "src/lib.rs"
 
+[features]
+activation-fixture = []
+
+[[bin]]
+name = "codexhost-activation-fixture"
+path = "tests/fixtures/activation-main.rs"
+required-features = ["activation-fixture"]
+test = false
+bench = false
+
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 nix = { version = "0.31.3", features = ["feature", "fs", "process", "signal", "user"] }
 
@@ -25,6 +35,7 @@ plist = { version = "1.10.0", default-features = false }
 system-configuration = "0.7.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+serde_json = "1.0.145"
 windows = { version = "0.62.2", features = [
   "ApplicationModel",
   "ApplicationModel_Core",
@@ -33,8 +44,13 @@ windows = { version = "0.62.2", features = [
   "Storage_Search",
   "Win32_Foundation",
   "Win32_Networking_WinHttp",
+  "Win32_Storage_FileSystem",
+  "Win32_Storage_Packaging_Appx",
   "Win32_System_Com",
   "Win32_System_Console",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_RestartManager",
+  "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_UI_Controls",
   "Win32_UI_Shell",

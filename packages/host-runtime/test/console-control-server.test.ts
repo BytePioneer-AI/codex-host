@@ -21,11 +21,37 @@ afterEach(async () => {
 });
 
 describe("Host console channel", () => {
+  it("requires authentication and observes existing Host readiness without a settings request", async () => {
+    let ready = false;
+    const target = { consoleReady: () => ready, handleConsoleRequest: vi.fn() };
+    const server = await startConsoleControlServer({
+      target,
+      environment: { CODEXHOST_DATA_DIR: dataDirectory },
+    });
+    try {
+      const descriptor = JSON.parse(
+        await readFile(server.descriptorPath, "utf8"),
+      ) as ConsoleHostDescriptor;
+      const url = `http://127.0.0.1:${descriptor.port}/ready`;
+      expect((await fetch(url)).status).toBe(401);
+      expect(
+        (await fetch(url, { headers: { authorization: `Bearer ${"0".repeat(64)}` } })).status,
+      ).toBe(401);
+      const headers = { authorization: `Bearer ${descriptor.token}` };
+      expect(await (await fetch(url, { headers })).json()).toEqual({ ready: false });
+      ready = true;
+      expect(await (await fetch(url, { headers })).json()).toEqual({ ready: true });
+      expect(target.handleConsoleRequest).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
   it("publishes a private descriptor and forwards authorized requests", async () => {
     const target = {
       handleConsoleRequest: vi.fn(async (method: string) => ({ result: { method } })),
     };
-    const environment = { CODEXHOST_DATA_DIR: dataDirectory };
+    const environment = { CODEXHOST_DATA_DIR: dataDirectory, CODEXHOST_LAUNCHER_PID: "1234" };
     const server = await startConsoleControlServer({ target, environment, pid: 4242 });
     try {
       expect(server.descriptorPath).toBe(
@@ -34,7 +60,7 @@ describe("Host console channel", () => {
       const descriptor = JSON.parse(
         await readFile(server.descriptorPath, "utf8"),
       ) as ConsoleHostDescriptor;
-      expect(descriptor).toMatchObject({ schemaVersion: 1, pid: 4242 });
+      expect(descriptor).toMatchObject({ schemaVersion: 1, pid: 4242, launcherPid: 1234 });
       if (process.platform !== "win32") {
         expect((await stat(server.descriptorPath)).mode & 0o777).toBe(0o600);
       }

@@ -74,6 +74,10 @@ export async function startControllerAttachmentServer(
       if (newline < 0) return;
       handled = true;
       const line = request.slice(0, newline).replace(/\r$/, "");
+      if (line === `PING ${options.nonce}`) {
+        respond(socket, request.slice(newline + 1) === "" ? "ready" : "rejected");
+        return;
+      }
       const remotePrefix = `REMOTE ${options.nonce} `;
       if (options.remoteConnections && line.startsWith(remotePrefix)) {
         let input;

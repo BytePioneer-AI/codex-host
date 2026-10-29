@@ -20,11 +20,21 @@ use std::time::{Duration, Instant};
 
 use crate::runtime_instance::default_descriptor_path;
 
+#[cfg(target_os = "windows")]
+#[path = "windows_update.rs"]
+mod windows;
+#[cfg(target_os = "windows")]
+pub(crate) use windows::{start_pending_update, waiting_outside_desktop_job};
+
 const ACTIVE_UPDATE_LOCK_FILE: &str = "active-update-v1.lock";
 const STATUS_FILE: &str = "status-v1.json";
 const REQUEST_FILE: &str = "request-v1.json";
-const UPDATER_FILE: &str = "codexhost-updater";
-const MAX_STATE_FILE_BYTES: u64 = 4 * 1024;
+const UPDATER_FILE: &str = if cfg!(target_os = "windows") {
+    "codexhost-updater.exe"
+} else {
+    "codexhost-updater"
+};
+const MAX_STATE_FILE_BYTES: u64 = 64 * 1024;
 #[cfg(target_os = "macos")]
 const UPDATER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(target_os = "macos")]
@@ -35,6 +45,12 @@ const UPDATER_READY_POLL: Duration = Duration::from_millis(20);
 struct ActiveUpdateLock {
     owner_pid: u32,
     status_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner_started_at_micros: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    installation_started: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -49,7 +65,45 @@ struct UpdateRequestProbe {
     schema_version: u8,
     wait_pid: u32,
     wait_executable: PathBuf,
+    #[cfg(target_os = "windows")]
+    #[serde(default)]
+    launch_via_launcher: bool,
     status_path: PathBuf,
+    #[cfg(any(target_os = "windows", test))]
+    #[serde(default)]
+    installation: Option<InstallationProbe>,
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Deserialize)]
+struct InstallationProbe {
+    kind: String,
+    package_root: Option<PathBuf>,
+    install_root: Option<PathBuf>,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn targets_installation(
+    installation: Option<&InstallationProbe>,
+    launcher: &Path,
+) -> io::Result<bool> {
+    let Some(installation) = installation else {
+        return Ok(false);
+    };
+    let root = match installation.kind.as_str() {
+        "npm" => installation.package_root.as_deref(),
+        "windows-installer" => installation.install_root.as_deref(),
+        _ => None,
+    };
+    let Some(root) = root.filter(|root| root.is_absolute()) else {
+        return Ok(false);
+    };
+    let expected = root.join("bin/codexhost.exe");
+    match expected.canonicalize() {
+        Ok(expected) => Ok(expected == launcher.canonicalize()?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -140,10 +194,23 @@ fn pending_update_at(
     };
     let request = serde_json::from_slice::<UpdateRequestProbe>(&request_bytes)
         .map_err(|error| invalid(format!("invalid active update request: {error}")))?;
+    let direct_owner = request.wait_pid == launcher_pid
+        && request.wait_executable.canonicalize()? == launcher_executable.canonicalize()?;
+    #[cfg(target_os = "windows")]
+    if status.phase == "prepared" && !request.launch_via_launcher
+        || direct_owner && !request.launch_via_launcher
+    {
+        return Ok(None);
+    }
+    #[cfg(target_os = "windows")]
+    let scoped_owner = direct_owner
+        || (status.phase == "waiting-for-exit"
+            && targets_installation(request.installation.as_ref(), launcher_executable)?);
+    #[cfg(not(target_os = "windows"))]
+    let scoped_owner = direct_owner;
     if request.schema_version != 1
-        || request.wait_pid != launcher_pid
+        || !scoped_owner
         || request.status_path.canonicalize()? != canonical_status
-        || request.wait_executable.canonicalize()? != launcher_executable.canonicalize()?
     {
         return Err(invalid(
             "active update request does not target this Launcher",
@@ -154,6 +221,20 @@ fn pending_update_at(
     let helper_metadata = fs::symlink_metadata(&helper_path)?;
     if !helper_metadata.is_file() || helper_metadata.file_type().is_symlink() {
         return Err(invalid("active update Helper is not a regular file"));
+    }
+    #[cfg(target_os = "windows")]
+    if status.phase == "waiting-for-exit" {
+        let updater =
+            codexhost_platform::process_snapshot(lock.owner_pid).map_err(io::Error::other)?;
+        if lock.owner_pid == launcher_pid
+            || lock.owner_started_at_micros.as_deref()
+                != Some(updater.started_at_micros.to_string().as_str())
+            || updater.executable.canonicalize()? != helper_path.canonicalize()?
+        {
+            return Err(invalid(
+                "waiting Updater does not own this update operation",
+            ));
+        }
     }
     Ok(Some((
         status.phase,
@@ -261,17 +342,18 @@ fn transfer_lock_to_updater(pending: &PendingUpdate, updater_pid: u32) -> io::Re
         std::process::id()
     ));
     let result = (|| {
+        let mut lock = serde_json::from_slice::<ActiveUpdateLock>(&fs::read(&pending.lock_path)?)
+            .map_err(|error| invalid(format!("invalid active update lock: {error}")))?;
+        if lock.status_path.canonicalize()? != pending.status_path {
+            return Err(invalid("active update operation changed before transfer"));
+        }
+        lock.owner_pid = updater_pid;
+        lock.status_path = pending.status_path.clone();
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temporary)?;
-        serde_json::to_writer(
-            &mut file,
-            &ActiveUpdateLock {
-                owner_pid: updater_pid,
-                status_path: pending.status_path.clone(),
-            },
-        )?;
+        serde_json::to_writer(&mut file, &lock)?;
         file.write_all(b"\n")?;
         file.sync_all()?;
         atomic_replace_file(&temporary, &pending.lock_path).map_err(io::Error::other)?;
@@ -348,10 +430,48 @@ mod tests {
         path
     }
 
+    #[test]
+    fn installation_scope_does_not_adopt_another_launcher() {
+        let root = fixture_directory("installation-scope");
+        let platform = root.join("platform");
+        fs::create_dir_all(platform.join("bin")).unwrap();
+        let launcher = platform.join("bin/codexhost.exe");
+        let foreign = root.join("foreign.exe");
+        fs::write(&launcher, b"owned").unwrap();
+        fs::write(&foreign, b"foreign").unwrap();
+        let probe: super::UpdateRequestProbe = serde_json::from_value(json!({ "schema_version":1,"wait_pid":42,"wait_executable":foreign,"status_path":root.join("status"),
+            "installation":{"kind":"npm","package_root":platform} })).unwrap();
+        assert!(super::targets_installation(probe.installation.as_ref(), &launcher).unwrap());
+        assert!(!super::targets_installation(probe.installation.as_ref(), &foreign).unwrap());
+        assert!(!super::targets_installation(None, &launcher).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn accepts_bounded_prepared_material_requests_larger_than_four_kib() {
+        let root = fixture_directory("material-request-size");
+        let request = root.join("request.json");
+        fs::write(&request, vec![b' '; 8 * 1024]).unwrap();
+        assert_eq!(
+            super::read_bounded_regular_file(&request)
+                .unwrap()
+                .unwrap()
+                .len(),
+            8 * 1024
+        );
+        fs::write(
+            &request,
+            vec![b' '; super::MAX_STATE_FILE_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert!(super::read_bounded_regular_file(&request).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn write_pending_update(root: &Path, launcher: &Path, launcher_pid: u32) -> PendingUpdate {
         let operation = root.join("update-1.2.3-fixture");
         fs::create_dir_all(&operation).expect("create update operation fixture");
-        let helper_path = operation.join("codexhost-updater");
+        let helper_path = operation.join(super::UPDATER_FILE);
         fs::write(&helper_path, b"helper").expect("write Helper fixture");
         let status_path = operation.join("status-v1.json");
         fs::write(
@@ -378,6 +498,7 @@ mod tests {
                     "version": "1.2.3",
                     "wait_pid": launcher_pid,
                     "wait_executable": launcher,
+                    "launch_via_launcher": true,
                     "status_path": status_path,
                     "installation": { "kind": "macos-dmg" },
                 })
@@ -487,6 +608,7 @@ mod tests {
         let launcher = fixture.join("codexhost");
         fs::write(&launcher, b"launcher").expect("write Launcher fixture");
         let pending = write_pending_update(&root, &launcher, 42);
+        fs::write(root.join(ACTIVE_UPDATE_LOCK_FILE), json!({ "ownerPid": 42, "statusPath": pending.status_path, "operationId": "macos-operation" }).to_string()).unwrap();
 
         transfer_lock_to_updater(&pending, 99).expect("transfer update lock");
         let lock = serde_json::from_slice::<serde_json::Value>(
@@ -494,6 +616,7 @@ mod tests {
         )
         .expect("parse transferred lock");
         assert_eq!(lock["ownerPid"], 99);
+        assert_eq!(lock["operationId"], "macos-operation");
         assert_eq!(lock["statusPath"].as_str(), pending.status_path.to_str());
         fs::remove_dir_all(fixture).expect("remove transferred lock fixture");
     }
@@ -517,7 +640,69 @@ mod tests {
     }
 
     #[test]
-    fn treats_waiting_for_exit_as_a_managed_desktop_stop() {
+    fn resolves_the_native_helper_filename_without_starting_it() {
+        let fixture = fixture_directory("native-update-helper");
+        let launcher = fixture.join("launcher");
+        fs::write(&launcher, b"fixture").unwrap();
+        let pending = write_pending_update(&fixture, &launcher, 42);
+        let (_, resolved) = super::pending_update_at(&fixture, 42, &launcher)
+            .unwrap()
+            .unwrap();
+        let expected = if cfg!(target_os = "windows") {
+            "codexhost-updater.exe"
+        } else {
+            "codexhost-updater"
+        };
+        assert_eq!(resolved.helper_path.file_name().unwrap(), expected);
+        assert_eq!(pending, resolved);
+        fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_waiting_requires_a_live_exact_helper_instance() {
+        struct FixtureChild(std::process::Child);
+        impl Drop for FixtureChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let fixture = fixture_directory("windows-updater-instance");
+        let launcher = fixture.join("launcher.exe");
+        fs::write(&launcher, b"fixture").unwrap();
+        let pending = write_pending_update(&fixture, &launcher, 42);
+        let command =
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe");
+        fs::copy(command, &pending.helper_path).unwrap();
+        let mut child = FixtureChild(
+            std::process::Command::new(&pending.helper_path)
+                .args(["/d", "/q", "/c", "set /p codexhost_fixture_wait="])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let identity = codexhost_platform::process_snapshot(child.0.id()).unwrap();
+        let mut lock = json!({ "ownerPid": identity.id, "ownerStartedAtMicros": identity.started_at_micros.to_string(), "statusPath": pending.status_path, "operationId": "fixture", "installationStarted": false });
+        fs::write(fixture.join(ACTIVE_UPDATE_LOCK_FILE), lock.to_string()).unwrap();
+        fs::write(
+            &pending.status_path,
+            json!({"schemaVersion":1,"phase":"waiting-for-exit"}).to_string(),
+        )
+        .unwrap();
+        assert!(waiting_for_launcher_exit_at(&fixture, 42, &launcher).unwrap());
+        lock["ownerStartedAtMicros"] = json!("1");
+        fs::write(fixture.join(ACTIVE_UPDATE_LOCK_FILE), lock.to_string()).unwrap();
+        assert!(waiting_for_launcher_exit_at(&fixture, 42, &launcher).is_err());
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn checks_waiting_update_targets_the_current_launcher() {
         let fixture = fixture_directory("waiting-update");
         let root = fixture.join("updates");
         fs::create_dir(&root).expect("create update root");
@@ -544,7 +729,10 @@ mod tests {
             pending_startable_update_at(&root, 42, &launcher).expect("do not restart Helper"),
             None
         );
+        #[cfg(not(target_os = "windows"))]
         assert!(waiting_for_launcher_exit_at(&root, 42, &launcher).expect("detect waiting update"));
+        #[cfg(target_os = "windows")]
+        assert!(waiting_for_launcher_exit_at(&root, 42, &launcher).is_err());
         assert!(waiting_for_launcher_exit_at(&root, 43, &launcher).is_err());
         fs::remove_dir_all(fixture).expect("remove waiting update fixture");
     }

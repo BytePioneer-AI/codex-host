@@ -1,3 +1,13 @@
+export {
+  INSTALLER_FILES_PATH,
+  installerFilesText,
+  parseInstallerFiles,
+  parseInstallerSidecar,
+  type InstallerFile,
+  type InstallerFiles,
+} from "./installer-files.js";
+export { prepareInstallerRecovery, type PreparedInstallerRecovery } from "./installer-materials.js";
+export { automaticUpdateUnavailableReason } from "./support.js";
 export { readRuntimeMetadata } from "./runtime-metadata.js";
 export type {
   ArtifactDownloadProgress,

@@ -107,6 +107,11 @@ pub struct SupervisedChild {
 }
 
 impl SupervisedChild {
+    #[cfg(target_os = "windows")]
+    pub(crate) fn into_job_owned_child(mut self) -> Child {
+        self.guard.take();
+        self.child
+    }
     #[must_use]
     pub fn id(&self) -> u32 {
         self.child.id()
@@ -242,6 +247,84 @@ pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, Platfo
         }
     };
     Ok(SupervisedChild { child, guard })
+}
+
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)] // Scoped to pre-execution Win32 thread/Job operations.
+impl crate::WindowsLaunchJob {
+    /// Only this protected path changes creation flags. Ordinary spawning keeps
+    /// its existing behavior. Application code cannot execute before assignment.
+    pub fn spawn_supervised(
+        &self,
+        command: &mut Command,
+    ) -> Result<SupervisedChild, PlatformError> {
+        use std::os::windows::{io::AsRawHandle, process::CommandExt};
+        use windows::Win32::{
+            Foundation::{CloseHandle, HANDLE},
+            System::{
+                Diagnostics::ToolHelp::{
+                    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First,
+                    Thread32Next,
+                },
+                Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME},
+            },
+        };
+        command.creation_flags(0x0000_0004 | 0x0800_0000);
+        let mut child = command.spawn()?;
+        let result = (|| -> Result<ChildProcessGuard, PlatformError> {
+            self.job.assign(child.as_raw_handle())?;
+            let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }
+                .map_err(|e| PlatformError::Invalid(format!("snapshot initial thread: {e}")))?;
+            let mut entry = THREADENTRY32 {
+                dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+                ..Default::default()
+            };
+            let mut threads = Vec::new();
+            if unsafe { Thread32First(snapshot, &mut entry) }.is_ok() {
+                loop {
+                    if entry.th32OwnerProcessID == child.id() {
+                        threads.push(entry.th32ThreadID);
+                    }
+                    if unsafe { Thread32Next(snapshot, &mut entry) }.is_err() {
+                        break;
+                    }
+                }
+            }
+            unsafe {
+                let _ = CloseHandle(snapshot);
+            }
+            if threads.len() != 1 {
+                return Err(PlatformError::Invalid(
+                    "suspended child did not have one initial thread".into(),
+                ));
+            }
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, threads[0]) }
+                .map_err(|e| PlatformError::Invalid(format!("open initial thread: {e}")))?;
+            let resumed = unsafe { ResumeThread(thread) };
+            unsafe {
+                let _ = CloseHandle(HANDLE(thread.0));
+            }
+            if resumed != 1 {
+                return Err(PlatformError::Invalid(
+                    "initial child suspension was not exclusive".into(),
+                ));
+            }
+            Ok(ChildProcessGuard {
+                job: self.job.duplicate()?,
+            })
+        })();
+        match result {
+            Ok(guard) => Ok(SupervisedChild {
+                child,
+                guard: Some(guard),
+            }),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(error)
+            }
+        }
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

@@ -97,6 +97,19 @@ unsafe extern "system" {
         user_time: *mut FileTime,
     ) -> i32;
     fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> Handle;
+    fn OpenJobObjectW(access: u32, inherit: i32, name: *const u16) -> Handle;
+    fn GetLastError() -> u32;
+    fn IsProcessInJob(process: Handle, job: Handle, result: *mut i32) -> i32;
+    fn GetCurrentProcess() -> Handle;
+    fn DuplicateHandle(
+        source_process: Handle,
+        source: Handle,
+        target_process: Handle,
+        target: *mut Handle,
+        access: u32,
+        inherit: i32,
+        options: u32,
+    ) -> i32;
     fn SetInformationJobObject(
         job: Handle,
         information_class: i32,
@@ -125,7 +138,87 @@ pub struct ProcessEntry {
 pub struct ChildJob(Handle);
 
 impl ChildJob {
+    pub fn create_named(name: &str) -> io::Result<Self> {
+        let name: Vec<u16> = name.encode_utf16().chain([0]).collect();
+        let job = unsafe { CreateJobObjectW(null(), name.as_ptr()) };
+        if job.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { GetLastError() } == 183 {
+            unsafe {
+                CloseHandle(job);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "activation Job already exists",
+            ));
+        }
+        let job = Self(job);
+        let mut info: ExtendedLimitInformation = unsafe { zeroed() };
+        info.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if unsafe {
+            SetInformationJobObject(
+                job.0,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+                &info as *const _ as *const c_void,
+                size_of::<ExtendedLimitInformation>() as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(job)
+    }
+    pub fn open_named(name: &str) -> io::Result<Self> {
+        let name: Vec<u16> = name.encode_utf16().chain([0]).collect();
+        let job = unsafe { OpenJobObjectW(0x0001 | 0x0002 | 0x0004 | 0x0008, 0, name.as_ptr()) };
+        if job.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self(job))
+        }
+    }
+    pub fn duplicate(&self) -> io::Result<Self> {
+        let mut handle = std::ptr::null_mut();
+        if unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                self.0,
+                GetCurrentProcess(),
+                &mut handle,
+                0,
+                0,
+                2,
+            )
+        } == 0
+        {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self(handle))
+        }
+    }
+    pub fn assign(&self, process: *mut c_void) -> io::Result<()> {
+        if unsafe { AssignProcessToJobObject(self.0, process) } == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+    pub fn contains(&self, process: *mut c_void) -> io::Result<bool> {
+        let mut member = 0;
+        if unsafe { IsProcessInJob(process, self.0, &mut member) } == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(member != 0)
+        }
+    }
     pub fn has_live_processes(&self) -> io::Result<bool> {
+        Ok(self.process_counts()?.1 != 0)
+    }
+    pub fn had_processes(&self) -> io::Result<bool> {
+        Ok(self.process_counts()?.0 != 0)
+    }
+    fn process_counts(&self) -> io::Result<(u32, u32)> {
         #[repr(C)]
         struct Accounting {
             total_user_time: i64,
@@ -150,10 +243,31 @@ impl ChildJob {
         if queried == 0 {
             Err(io::Error::last_os_error())
         } else {
-            Ok(information.active_processes != 0)
+            Ok((information.total_processes, information.active_processes))
         }
     }
 
+    pub fn seal(&self) -> io::Result<()> {
+        // No new process may join after the final empty check, including an
+        // AppX helper that was delayed outside the Job. Kernel enforcement also
+        // covers helpers which already opened an assignment handle.
+        let mut info: ExtendedLimitInformation = unsafe { zeroed() };
+        info.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | 0x0000_0008;
+        info.basic_limit_information.active_process_limit = 0;
+        if unsafe {
+            SetInformationJobObject(
+                self.0,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+                &info as *const _ as *const c_void,
+                size_of::<ExtendedLimitInformation>() as u32,
+            )
+        } == 0
+        {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
     pub fn terminate(&self, exit_code: u32) -> io::Result<()> {
         let result = unsafe { TerminateJobObject(self.0, exit_code) };
         if result == 0 {

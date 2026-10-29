@@ -50,6 +50,12 @@ pub struct StartupDesktop {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartupRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_job: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_micros: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<StartupProcess>,
     pub id: String,
     pub pid: u32,
     pub launcher_version: String,
@@ -68,7 +74,27 @@ struct StartupRecordFile {
     records: Vec<StartupRecord>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupProcess {
+    pub pid: u32,
+    pub started_at_micros: String,
+    pub executable: String,
+}
+impl From<&codexhost_platform::ProcessSnapshot> for StartupProcess {
+    fn from(process: &codexhost_platform::ProcessSnapshot) -> Self {
+        Self {
+            pid: process.id,
+            started_at_micros: process.started_at_micros.to_string(),
+            executable: process.executable.display().to_string(),
+        }
+    }
+}
+
 struct ActiveStartup {
+    launch_job: Option<String>,
+    started_at_micros: Option<String>,
+    parent: Option<StartupProcess>,
     id: String,
     started: Instant,
     started_at_ms: u64,
@@ -94,7 +120,24 @@ pub fn begin() {
         return;
     }
     let started_at_ms = now_ms();
+    #[cfg(target_os = "windows")]
+    let parent = codexhost_platform::parent_process_id(std::process::id())
+        .ok()
+        .flatten()
+        .and_then(|pid| codexhost_platform::process_snapshot(pid).ok())
+        .map(|process| StartupProcess::from(&process));
+    #[cfg(not(target_os = "windows"))]
+    let parent = None;
+    #[cfg(target_os = "windows")]
+    let started_at_micros = codexhost_platform::process_snapshot(std::process::id())
+        .ok()
+        .map(|process| process.started_at_micros.to_string());
+    #[cfg(not(target_os = "windows"))]
+    let started_at_micros = None;
     *active = Some(ActiveStartup {
+        launch_job: None,
+        started_at_micros,
+        parent,
         id: format!("{started_at_ms}-{}", std::process::id()),
         started: Instant::now(),
         started_at_ms,
@@ -113,6 +156,16 @@ pub fn started_at_ms() -> Option<u64> {
         .lock()
         .ok()
         .and_then(|active| active.as_ref().map(|active| active.started_at_ms))
+}
+
+#[cfg(target_os = "windows")]
+pub fn launch_job(key: &str) {
+    if let Ok(mut active) = ACTIVE.lock()
+        && let Some(active) = active.as_mut()
+    {
+        active.launch_job = Some(key.into());
+    }
+    finish(StartupOutcome::Starting, None);
 }
 
 pub fn stage(name: &str) {
@@ -155,6 +208,9 @@ pub fn finish(outcome: StartupOutcome, error: Option<&str>) {
             return;
         };
         StartupRecord {
+            launch_job: active.launch_job.clone(),
+            started_at_micros: active.started_at_micros.clone(),
+            parent: active.parent.clone(),
             id: active.id.clone(),
             pid: std::process::id(),
             launcher_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -295,6 +351,9 @@ mod tests {
 
     fn record(id: &str, outcome: StartupOutcome) -> StartupRecord {
         StartupRecord {
+            launch_job: None,
+            started_at_micros: None,
+            parent: None,
             id: id.to_owned(),
             pid: 1,
             launcher_version: "1.2.3".into(),
@@ -308,6 +367,35 @@ mod tests {
             }],
             desktop: None,
         }
+    }
+
+    #[test]
+    fn optional_native_process_identity_round_trips_without_float_conversion() {
+        let mut value = record("fixture", StartupOutcome::Failed);
+        let process = StartupProcess {
+            pid: 42,
+            started_at_micros: "13400000000000001".into(),
+            executable: "C:\\Programs\\Codex.exe".into(),
+        };
+        value.parent = Some(process.clone());
+        value.launch_job = Some("ab".repeat(16));
+        value.started_at_micros = Some("13400000000000003".into());
+        value.desktop = Some(StartupDesktop {
+            version: "1.0.0".into(),
+            build: "fixture".into(),
+            install_root: "C:\\Programs".into(),
+        });
+        let json = serde_json::to_value(&value).unwrap();
+        assert_eq!(json["parent"]["startedAtMicros"], "13400000000000001");
+        assert_eq!(
+            serde_json::from_value::<StartupRecord>(json).unwrap(),
+            value
+        );
+        let legacy = serde_json::json!({"id":"old","pid":1,"launcherVersion":"1.0.0","startedAtMs":1,"finishedAtMs":null,"outcome":"starting","error":null,"stages":[],"desktop":null});
+        let legacy: StartupRecord = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.parent.is_none());
+        assert!(legacy.launch_job.is_none());
+        assert!(legacy.started_at_micros.is_none());
     }
 
     #[test]

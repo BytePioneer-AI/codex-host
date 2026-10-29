@@ -293,8 +293,9 @@ childProcess.spawn = (command, args, options) => {
     stdoutFd: Array.isArray(options?.stdio) ? options.stdio[1]?.fd : null,
   }) + "\\n");
   const child = new EventEmitter();
+  child.stdout = new EventEmitter(); child.stdout.setEncoding = () => {}; child.unref = () => {};
   const exitCode = exitCodes[call++] ?? 1;
-  setTimeout(() => child.emit("exit", exitCode, null), 5);
+  setTimeout(() => { if (args[0] === "launch" && exitCode === 0) child.stdout.emit("data", "ready\\n"); child.emit("exit", exitCode, null); }, 5);
   return child;
 };
 syncBuiltinESMExports();
@@ -437,6 +438,19 @@ describe("npm package release", () => {
       expect(notice).toContain("@qodercn-ai/qodercn-agent-sdk");
       expect(notice).toContain("@opencode-ai/sdk");
       expect(notice).toContain("@opencode/client");
+      for (const [name, source, outputName] of [
+        ["tar", "LICENSE.md", "tar-LICENSE.md"],
+        ["@isaacs/fs-minipass", "LICENSE", "fs-minipass-LICENSE.txt"],
+        ["chownr", "LICENSE.md", "chownr-LICENSE.md"],
+        ["minipass", "LICENSE.md", "minipass-LICENSE.md"],
+        ["minizlib", "LICENSE", "minizlib-LICENSE.txt"],
+        ["yallist", "LICENSE.md", "yallist-LICENSE.md"],
+      ]) {
+        expect(notice).toContain(`${name} `);
+        expect(await readFile(path.join(output, "licenses", outputName), "utf8")).toBe(
+          await readFile(path.join(root, "node_modules", name, source), "utf8"),
+        );
+      }
       expect(
         await readFile(path.join(output, "licenses/OpenCode-v2-Client-LICENSE.txt"), "utf8"),
       ).toContain("MIT License");
@@ -523,6 +537,19 @@ describe("npm package release", () => {
     expect(source).toContain('const readyMarker = "ready\\n"');
     expect(source).toContain("path.dirname(path.dirname(path.resolve(process.argv[1])))");
     expect(source).not.toContain("runtime/node");
+  });
+
+  it("forwards updater preservation policy through the real generated npm wrapper", async () => {
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "win32",
+      ["launch", "--preserve-external-desktop", "--update-job", "ab".repeat(16)],
+      [0],
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args[0]).toBe("launch");
+    expect(calls[0].args).toContain("--preserve-external-desktop");
+    expect(calls[0].args.slice(-2)).toEqual(["--update-job", "ab".repeat(16)]);
   });
 
   const brokerTail = [

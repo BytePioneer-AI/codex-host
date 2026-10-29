@@ -210,6 +210,7 @@ jobs:
           path: |
             build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-*.dmg
             build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-*.exe
+            build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-*.installer-recovery-v1.json
             build/npm/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-cli-*-${{ matrix.target }}.tgz
             build/npm/${{ needs.prepare.outputs.version }}/meta/codexhost-cli-${{ needs.prepare.outputs.version }}.tgz
           if-no-files-found: error
@@ -365,6 +366,8 @@ jobs:
             "codexhost-${VERSION}-macos-x64.dmg"
             "codexhost-${VERSION}-windows-x64.exe"
             "codexhost-${VERSION}-windows-arm64.exe"
+            "codexhost-${VERSION}-windows-x64.installer-recovery-v1.json"
+            "codexhost-${VERSION}-windows-arm64.installer-recovery-v1.json"
           )
           files=()
           for name in "${expected[@]}"; do

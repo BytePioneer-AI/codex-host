@@ -120,6 +120,32 @@ const runtimeLicenses = [
   },
   { packageName: "ws", license: "MIT", source: "LICENSE", output: "ws-LICENSE.txt" },
   { packageName: "zod", license: "MIT", source: "LICENSE", output: "zod-LICENSE.txt" },
+  { packageName: "tar", license: "BlueOak-1.0.0", source: "LICENSE.md", output: "tar-LICENSE.md" },
+  {
+    packageName: "@isaacs/fs-minipass",
+    license: "ISC",
+    source: "LICENSE",
+    output: "fs-minipass-LICENSE.txt",
+  },
+  {
+    packageName: "chownr",
+    license: "BlueOak-1.0.0",
+    source: "LICENSE.md",
+    output: "chownr-LICENSE.md",
+  },
+  {
+    packageName: "minipass",
+    license: "BlueOak-1.0.0",
+    source: "LICENSE.md",
+    output: "minipass-LICENSE.md",
+  },
+  { packageName: "minizlib", license: "MIT", source: "LICENSE", output: "minizlib-LICENSE.txt" },
+  {
+    packageName: "yallist",
+    license: "BlueOak-1.0.0",
+    source: "LICENSE.md",
+    output: "yallist-LICENSE.md",
+  },
 ];
 
 export function npmReleaseCommand(
@@ -264,6 +290,12 @@ export function expectedNpmPackagePaths(target) {
     "licenses/tailwindcss-LICENSE.txt",
     "licenses/ws-LICENSE.txt",
     "licenses/zod-LICENSE.txt",
+    "licenses/tar-LICENSE.md",
+    "licenses/fs-minipass-LICENSE.txt",
+    "licenses/chownr-LICENSE.md",
+    "licenses/minipass-LICENSE.md",
+    "licenses/minizlib-LICENSE.txt",
+    "licenses/yallist-LICENSE.md",
     "THIRD_PARTY_NOTICES.txt",
   ].sort();
 }

@@ -5,6 +5,7 @@ import type {
   UpdateStatusResult,
 } from "@codexhost/shared-contracts";
 import {
+  automaticUpdateUnavailableReason,
   acquireUpdateOperationLock,
   cleanupTerminalUpdateState,
   compareSemanticVersions,
@@ -20,6 +21,7 @@ import {
   type BackgroundUpdateStatus,
   type CodexhostLatestRelease,
   type InstalledUpdateContext,
+  type UpdateOperationLock,
 } from "@codexhost/update-manager";
 
 const ERROR_MAX_LENGTH = 500;
@@ -44,7 +46,12 @@ function boundedError(error: unknown): string {
   return message.slice(0, ERROR_MAX_LENGTH) || "Update operation failed";
 }
 
-function publicStatus(status: BackgroundUpdateStatus): UpdateStatus {
+function publicStatus(status: BackgroundUpdateStatus, platform: NodeJS.Platform): UpdateStatus {
+  const manual = automaticUpdateUnavailableReason(platform, status.installation);
+  const error =
+    status.phase === "failed" && manual
+      ? `${status.error ? `${status.error} ` : ""}${manual}`
+      : status.error;
   return {
     version: status.version,
     installation: status.installation,
@@ -52,7 +59,7 @@ function publicStatus(status: BackgroundUpdateStatus): UpdateStatus {
     updatedAt: status.updatedAt,
     ...(status.downloadedBytes === undefined ? {} : { downloadedBytes: status.downloadedBytes }),
     ...(status.totalBytes === undefined ? {} : { totalBytes: status.totalBytes }),
-    error: status.error?.slice(0, ERROR_MAX_LENGTH) ?? null,
+    error: error?.slice(0, ERROR_MAX_LENGTH) ?? null,
   };
 }
 
@@ -86,6 +93,18 @@ export function createHostUpdateCoordinator(
   let candidate: CodexhostLatestRelease | null = null;
 
   let currentStatusPath: string | null = null;
+  let preparationLock: UpdateOperationLock | null = null;
+
+  async function releaseFailedDelegation(): Promise<void> {
+    const lock = preparationLock;
+    const statusPath = currentStatusPath;
+    if (platform !== "win32" || !lock || !statusPath) return;
+    if ((await manager.readStatus(statusPath))?.phase !== "failed") return;
+    // release() compares the original operation bytes under the metadata guard;
+    // a transferred Updater lock or a later operation cannot be removed here.
+    await lock.release();
+    if (preparationLock === lock) preparationLock = null;
+  }
 
   async function latestStatus(context: InstalledUpdateContext): Promise<UpdateStatus | null> {
     if (!currentStatusPath) {
@@ -94,13 +113,14 @@ export function createHostUpdateCoordinator(
       currentStatusPath = active.statusPath;
     }
     const status = await manager.readStatus(currentStatusPath);
-    return status ? publicStatus(status) : null;
+    return status ? publicStatus(status, platform) : null;
   }
 
   async function installable(
     context: InstalledUpdateContext,
     release: CodexhostLatestRelease,
   ): Promise<boolean> {
+    if (automaticUpdateUnavailableReason(platform, context.installation.kind)) return false;
     if (context.installation.kind === "npm") return true;
     const target = context.metadata.target;
     if (target === "linux-x64" || target === "linux-arm64") return false;
@@ -117,6 +137,7 @@ export function createHostUpdateCoordinator(
       let context: InstalledUpdateContext;
       try {
         context = await installedContext();
+        await releaseFailedDelegation();
         await recoverUpdateOperationLock(context.common.stateDirectory);
         await cleanupTerminalUpdateState(context.common.stateDirectory);
       } catch (error) {
@@ -147,7 +168,9 @@ export function createHostUpdateCoordinator(
         if (updateAvailable) {
           installationAvailable = await installable(context, release);
           if (!installationAvailable) {
-            error = "The latest GitHub Release has no verified asset for this installation";
+            error =
+              automaticUpdateUnavailableReason(platform, context.installation.kind) ??
+              "The latest GitHub Release has no verified asset for this installation";
           }
         }
         return {
@@ -178,6 +201,9 @@ export function createHostUpdateCoordinator(
 
     async start(): Promise<UpdateStartResult> {
       const context = await installedContext();
+      await releaseFailedDelegation();
+      const unavailable = automaticUpdateUnavailableReason(platform, context.installation.kind);
+      if (unavailable) throw new Error(unavailable);
       await recoverUpdateOperationLock(context.common.stateDirectory);
       const lock = await acquireUpdateOperationLock(context.common.stateDirectory);
       if (!lock) {
@@ -186,6 +212,7 @@ export function createHostUpdateCoordinator(
         throw new Error("Another update operation is already active");
       }
 
+      if (platform === "win32") preparationLock = lock;
       currentStatusPath = null;
       let resolvePrepared!: (info: {
         version: string;
@@ -259,7 +286,7 @@ export function createHostUpdateCoordinator(
         const prepared = await preparedReady;
         const status = await manager.readStatus(prepared.statusPath);
         if (!status) throw new Error("Background update did not create status");
-        return { status: publicStatus(status) };
+        return { status: publicStatus(status, platform) };
       } catch (error) {
         await lock.release();
         throw error;
@@ -269,6 +296,7 @@ export function createHostUpdateCoordinator(
     async status(): Promise<UpdateStatusResult> {
       try {
         const context = await installedContext();
+        await releaseFailedDelegation();
         await recoverUpdateOperationLock(context.common.stateDirectory);
         return { status: await latestStatus(context) };
       } catch {

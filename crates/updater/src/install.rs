@@ -1,21 +1,21 @@
 #[cfg(target_os = "macos")]
 use std::env;
 use std::error::Error;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 use std::fs::{self, File};
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 use std::io::Read;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 use codexhost_platform::configure_background_command;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 use serde::Deserialize;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 use sha2::{Digest, Sha256};
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 use crate::request::validate_version;
 use crate::request::{
     Installation, MacOsInstallation, NpmInstallation, UpdateRequest, WindowsInstallation,
@@ -23,21 +23,22 @@ use crate::request::{
 #[cfg(target_os = "macos")]
 use crate::status::unix_seconds;
 
+#[cfg(any(not(target_os = "windows"), test))]
 const NPM_PACKAGE_NAME: &str = "@codexhost/cli";
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 const DISTRIBUTION_FILE: &str = "codexhost-distribution.json";
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DistributionMetadata {
-    schema_version: u8,
-    version: String,
-    distribution: String,
-    target: String,
+pub(crate) struct DistributionMetadata {
+    pub(crate) schema_version: u8,
+    pub(crate) version: String,
+    pub(crate) distribution: String,
+    pub(crate) target: String,
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
@@ -56,8 +57,8 @@ fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
         .collect())
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn verify_artifact(path: &Path, expected: &str) -> Result<(), Box<dyn Error>> {
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
+pub(crate) fn verify_artifact(path: &Path, expected: &str) -> Result<(), Box<dyn Error>> {
     let actual = sha256_file(path)?;
     if actual != expected {
         return Err(
@@ -67,7 +68,7 @@ fn verify_artifact(path: &Path, expected: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 fn distribution_metadata(path: &Path) -> Result<DistributionMetadata, Box<dyn Error>> {
     let metadata = serde_json::from_slice::<DistributionMetadata>(&fs::read(path)?)?;
     if metadata.schema_version != 1 || metadata.target.is_empty() {
@@ -77,7 +78,7 @@ fn distribution_metadata(path: &Path) -> Result<DistributionMetadata, Box<dyn Er
     Ok(metadata)
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 fn verify_distribution(
     path: &Path,
     version: &str,
@@ -93,6 +94,7 @@ fn verify_distribution(
     Ok(())
 }
 
+#[cfg(not(target_os = "windows"))]
 fn run_checked(command: &mut Command, label: &str) -> Result<(), Box<dyn Error>> {
     let status = command.status()?;
     if !status.success() {
@@ -101,30 +103,220 @@ fn run_checked(command: &mut Command, label: &str) -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
-fn install_npm(request: &UpdateRequest, npm: &NpmInstallation) -> Result<(), Box<dyn Error>> {
-    run_checked(
-        Command::new(&npm.node_path)
+#[cfg(any(not(target_os = "windows"), test))]
+fn npm_install_arguments(
+    version: &str,
+    prefix: Option<&std::path::Path>,
+) -> Vec<std::ffi::OsString> {
+    let mut args = ["install", "--global", "--no-audit", "--no-fund"]
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect::<Vec<_>>();
+    if let Some(prefix) = prefix {
+        args.push("--prefix".into());
+        args.push(prefix.as_os_str().to_owned());
+    }
+    args.push(format!("{NPM_PACKAGE_NAME}@{version}").into());
+    args
+}
+
+fn install_npm(
+    request: &UpdateRequest,
+    npm: &NpmInstallation,
+    before_write: &mut dyn FnMut() -> Result<(), Box<dyn Error>>,
+) -> Result<(), Box<dyn Error>> {
+    #[cfg(target_os = "windows")]
+    {
+        let arch = crate::windows_installation::architecture();
+        crate::windows_installation::validate_npm(npm, arch, &request.wait_executable)?;
+        let prefix = npm.prefix.as_deref().ok_or("missing Windows npm prefix")?;
+        let materials = npm
+            .prepared
+            .as_ref()
+            .ok_or("missing Windows npm offline materials")?;
+        crate::npm_prepared::validate(
+            materials,
+            request
+                .status_path
+                .parent()
+                .ok_or("missing operation directory")?,
+            prefix,
+        )?;
+        crate::npm_prepared::validate_recovery(
+            npm.recovery.as_ref().ok_or("missing old npm materials")?,
+            request
+                .status_path
+                .parent()
+                .ok_or("missing operation directory")?,
+            prefix,
+        )?;
+        crate::npm_prepared::preflight(npm)?;
+        crate::npm_prepared::install(
+            &npm.node_path,
+            &npm.npm_cli_path,
+            materials,
+            prefix,
+            before_write,
+        )?;
+        verify_npm_target(prefix, &request.version, arch)
+            .map_err(|error| crate::npm_prepared::install_failure(error.to_string(), true))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut command = Command::new(&npm.node_path);
+        command
             .arg(&npm.npm_cli_path)
-            .args(["install", "--global", "--no-audit", "--no-fund"])
-            .arg(format!("{NPM_PACKAGE_NAME}@{}", request.version)),
-        "npm update",
+            .args(npm_install_arguments(&request.version, None));
+        before_write()?;
+        run_checked(&mut command, "npm update")
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn verify_npm_target(
+    prefix: &Path,
+    version: &str,
+    architecture: &str,
+) -> Result<(), Box<dyn Error>> {
+    let name = format!("@codexhost/cli-win32-{architecture}");
+    for (package, expected) in [
+        (
+            prefix.join("node_modules/@codexhost/cli"),
+            "@codexhost/cli".to_owned(),
+        ),
+        (prefix.join("node_modules").join(&name), name.clone()),
+    ] {
+        let file = package.join("package.json");
+        crate::windows_installation::owned_file(prefix, &file)?;
+        let manifest: serde_json::Value = serde_json::from_slice(&fs::read(file)?)?;
+        if manifest["name"] != expected || manifest["version"] != version {
+            return Err("npm installed package version does not match the target".into());
+        }
+    }
+    crate::windows_installation::metadata(
+        &prefix.join("node_modules").join(name),
+        version,
+        "npm",
+        architecture,
     )
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn windows_installer_arguments(
+    windows: &WindowsInstallation,
+) -> Vec<std::ffi::OsString> {
+    let mut directory = std::ffi::OsString::from("/DIR=");
+    directory.push(&windows.install_root);
+    let mut args = [
+        "/VERYSILENT",
+        "/SUPPRESSMSGBOXES",
+        "/NORESTART",
+        "/NOCLOSEAPPLICATIONS",
+        "/NORESTARTAPPLICATIONS",
+        "/RESTARTEXITCODE=3010",
+        "/SP-",
+    ]
+    .into_iter()
+    .map(std::ffi::OsString::from)
+    .collect::<Vec<_>>();
+    args.push(directory);
+    args
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn install_windows_with_runner(
+    request: &UpdateRequest,
+    windows: &WindowsInstallation,
+    architecture: &str,
+    before_write: &mut dyn FnMut() -> Result<(), Box<dyn Error>>,
+    run: impl FnOnce(&mut Command, &str) -> Result<(), Box<dyn Error>>,
+) -> Result<(), Box<dyn Error>> {
+    crate::windows_installation::validate_installer(
+        windows,
+        architecture,
+        &request.wait_executable,
+    )?;
+    verify_artifact(&windows.installer_path, &windows.artifact_sha256)?;
+    if windows.recovery.is_some() {
+        crate::installer_recovery::preflight(
+            windows,
+            request
+                .status_path
+                .parent()
+                .ok_or("missing installer operation")?,
+            &request.version,
+            architecture,
+        )?;
+    }
+    let mut command = Command::new(&windows.installer_path);
+    command.args(windows_installer_arguments(windows));
+    if windows.recovery.is_some() {
+        let mut log = std::ffi::OsString::from("/LOG=");
+        log.push(
+            request
+                .status_path
+                .parent()
+                .ok_or("missing operation")?
+                .join("install-inno.log"),
+        );
+        command.arg(log);
+        command.arg(crate::installer_recovery::replacement_argument(
+            &request
+                .status_path
+                .parent()
+                .ok_or("missing operation")?
+                .join("previous-files.txt"),
+        ));
+    }
+    configure_background_command(&mut command);
+    before_write()?;
+    let result = run(&mut command, "Windows installer");
+    let tool_stopped = result.is_ok()
+        || result
+            .as_ref()
+            .err()
+            .and_then(|e| e.downcast_ref::<crate::installer_recovery::ToolFailure>())
+            .is_some_and(crate::installer_recovery::ToolFailure::may_restore);
+    let result = result.and_then(|()| {
+        verify_distribution(
+            &windows.install_root.join("app").join(DISTRIBUTION_FILE),
+            &request.version,
+            "installer",
+        )?;
+        if windows.recovery.is_some() {
+            crate::installer_recovery::verify_target(
+                windows,
+                request.status_path.parent().ok_or("missing operation")?,
+                &request.version,
+                architecture,
+            )?;
+        }
+        Ok(())
+    });
+    result.map_err(|error| {
+        if tool_stopped {
+            crate::installer_recovery::stopped_failure(error)
+        } else {
+            error
+        }
+    })
 }
 
 #[cfg(target_os = "windows")]
 fn install_windows(
     request: &UpdateRequest,
     windows: &WindowsInstallation,
+    before_write: &mut dyn FnMut() -> Result<(), Box<dyn Error>>,
 ) -> Result<(), Box<dyn Error>> {
-    verify_artifact(&windows.installer_path, &windows.artifact_sha256)?;
-    let mut command = Command::new(&windows.installer_path);
-    command.args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"]);
-    configure_background_command(&mut command);
-    run_checked(&mut command, "Windows installer")?;
-    verify_distribution(
-        &windows.install_root.join("app").join(DISTRIBUTION_FILE),
-        &request.version,
-        "installer",
+    if windows.recovery.is_none() {
+        return Err("original installer recovery capability unavailable; manual original-directory repair required".into());
+    }
+    install_windows_with_runner(
+        request,
+        windows,
+        crate::windows_installation::architecture(),
+        before_write,
+        crate::installer_recovery::run_installer,
     )
 }
 
@@ -132,6 +324,7 @@ fn install_windows(
 fn install_windows(
     _request: &UpdateRequest,
     _windows: &WindowsInstallation,
+    _before_write: &mut dyn FnMut() -> Result<(), Box<dyn Error>>,
 ) -> Result<(), Box<dyn Error>> {
     Err("Windows installer updates require Windows".into())
 }
@@ -230,23 +423,45 @@ fn install_macos(
     Err("macOS DMG updates require macOS".into())
 }
 
-pub(crate) fn install(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
+pub(crate) fn install(
+    request: &UpdateRequest,
+    mut before_write: impl FnMut() -> Result<(), Box<dyn Error>>,
+) -> Result<(), Box<dyn Error>> {
     match &request.installation {
-        Installation::Npm(npm) => install_npm(request, npm),
-        Installation::WindowsInstaller(windows) => install_windows(request, windows),
+        Installation::Npm(npm) => install_npm(request, npm, &mut before_write),
+        Installation::WindowsInstaller(windows) => {
+            install_windows(request, windows, &mut before_write)
+        }
         Installation::MacosDmg(macos) => install_macos(request, macos),
     }
 }
 
-pub(crate) fn relaunch(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn relaunch(request: &UpdateRequest) -> Result<Child, Box<dyn Error>> {
+    Ok(relaunch_command(request, cfg!(target_os = "windows")).spawn()?)
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn relaunch_in_job(request: &UpdateRequest, key: &str) -> std::io::Result<Child> {
+    relaunch_command(request, true)
+        .args(["--update-job", key])
+        .spawn()
+}
+
+fn relaunch_command(request: &UpdateRequest, windows: bool) -> Command {
     let mut command = match &request.installation {
         Installation::Npm(npm) => {
             let mut command = Command::new(&npm.node_path);
             command.arg(&npm.npm_launcher_path);
+            if windows {
+                command.args(["launch", "--preserve-external-desktop"]);
+                configure_background_command(&mut command);
+            }
             command
         }
         Installation::WindowsInstaller(windows) => {
-            let mut command = Command::new(windows.install_root.join("bin/codexhost-start.exe"));
+            let mut command = Command::new(windows.install_root.join("bin/codexhost.exe"));
+            command.args(["launch", "--preserve-external-desktop"]);
             configure_background_command(&mut command);
             command
         }
@@ -260,13 +475,41 @@ pub(crate) fn relaunch(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    command.spawn()?;
-    Ok(())
+    command
 }
+
+#[cfg(all(test, target_os = "windows"))]
+#[path = "windows_installer_recovery_tests.rs"]
+mod installer_recovery_tests;
+
+#[cfg(test)]
+#[path = "relaunch_tests.rs"]
+mod relaunch_tests;
 
 #[cfg(all(test, any(target_os = "windows", target_os = "macos")))]
 mod tests {
     use super::DistributionMetadata;
+
+    #[test]
+    fn npm_preserves_existing_unix_arguments_and_pins_windows_prefix() {
+        let unix = super::npm_install_arguments("1.2.3", None);
+        assert_eq!(
+            unix,
+            [
+                "install",
+                "--global",
+                "--no-audit",
+                "--no-fund",
+                "@codexhost/cli@1.2.3"
+            ]
+            .map(std::ffi::OsString::from)
+        );
+        let prefix = std::path::Path::new("C:/中文 空格/original-prefix");
+        let windows = super::npm_install_arguments("1.2.3", Some(prefix));
+        assert_eq!(windows[4], "--prefix");
+        assert_eq!(windows[5], prefix.as_os_str());
+        assert_eq!(windows[6], "@codexhost/cli@1.2.3");
+    }
 
     #[test]
     fn distribution_metadata_rejects_unknown_fields() {

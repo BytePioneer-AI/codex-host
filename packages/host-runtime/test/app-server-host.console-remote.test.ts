@@ -7,6 +7,32 @@ import {
 import { RuntimeMaintenance } from "../src/runtime-maintenance.js";
 import { createFixture, stopFixture } from "./app-server-host-fixture.js";
 
+it("derives update readiness from the existing native lifecycle gate and closing state", async () => {
+  const fixture = createFixture();
+  try {
+    expect(fixture.host.consoleReady()).toBe(false);
+    await fixture.ready;
+    expect(fixture.host.consoleReady()).toBe(true);
+  } finally {
+    await stopFixture(fixture);
+  }
+  expect(fixture.host.consoleReady()).toBe(false);
+});
+
+it("does not report ready when the native generation failed to start", async () => {
+  const fixture = createFixture({
+    createOfficialConnection: async () => {
+      throw new Error("fixture startup rejected");
+    },
+  });
+  try {
+    await fixture.ready;
+    expect(fixture.host.consoleReady()).toBe(false);
+  } finally {
+    await stopFixture(fixture);
+  }
+});
+
 it("limits console remote management to validated settings requests", async () => {
   const maintenance = new RuntimeMaintenance({
     runtimePath: import.meta.filename,

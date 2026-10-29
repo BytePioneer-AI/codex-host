@@ -38,6 +38,9 @@ import {
   type CommonUpdateOptions,
 } from "../src/index.js";
 
+import type { PrepareNpmMaterialsOptions, PreparedNpmMaterials } from "../src/npm-materials.js";
+import { windowsInstallerFixture, windowsNpmFixture } from "./windows-fixture.js";
+
 const roots: string[] = [];
 
 async function temporaryDirectory(): Promise<string> {
@@ -84,6 +87,28 @@ async function commonOptions(root: string): Promise<CommonUpdateOptions> {
 
 function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function npmMaterials(options: PrepareNpmMaterialsOptions): Promise<PreparedNpmMaterials> {
+  await mkdir(path.join(options.directory, "cache"), { recursive: true });
+  const cli = path.join(options.directory, "cli.tgz");
+  const platform = path.join(options.directory, "platform.tgz");
+  const user = path.join(options.directory, "user.npmrc");
+  const global = path.join(options.directory, "global.npmrc");
+  await Promise.all([
+    writeFile(cli, "CLI"),
+    writeFile(platform, "platform"),
+    writeFile(user, ""),
+    writeFile(global, ""),
+  ]);
+  return {
+    cli: { path: cli, sha256: sha256(Buffer.from("CLI")) },
+    platform: { path: platform, sha256: sha256(Buffer.from("platform")) },
+    unpacked_bytes: 1024,
+    cache_path: path.join(options.directory, "cache"),
+    user_config_path: user,
+    global_config_path: global,
+  };
 }
 
 function downloader(bytes: Buffer) {
@@ -215,6 +240,146 @@ describe("background update manager", () => {
     },
   );
 
+  it("records the Windows npm prefix and owner creation time and rejects an executable mismatch", async () => {
+    const root = await temporaryDirectory();
+    const installation = await windowsNpmFixture(root, true);
+    const common = { ...(await commonOptions(root)), ...installation.paths };
+    const prepareMaterials = vi.fn(npmMaterials);
+    const spawnUpdater = vi.fn();
+    const manager = createBackgroundUpdateManager({
+      platform: "win32",
+      architecture: "x64",
+      prepareNpmMaterials: prepareMaterials,
+      spawnUpdater,
+      readProcessIdentity: async () => ({
+        executable: installation.paths.launcherExecutable,
+        startedAtMicros: "123456789",
+      }),
+    });
+    await expect(manager.prepareNpm({ ...common, installedVersion: "1.2.1" })).rejects.toThrow(
+      "does not match",
+    );
+    await expect(
+      manager.prepareNpm({ ...common, installedVersion: "1.2.2", launcherStartedAtMicros: "999" }),
+    ).rejects.toThrow("PID was reused");
+    const prepared = await manager.prepareNpm({
+      ...common,
+      installedVersion: "1.2.2",
+      launcherStartedAtMicros: "123456789",
+    });
+    const request = JSON.parse(await readFile(prepared.requestPath, "utf8"));
+    expect(request.wait_started_at_micros).toBe("123456789");
+    expect(prepareMaterials.mock.calls.map(([options]) => options.version)).toEqual([
+      common.version,
+      "1.2.2",
+    ]);
+    expect(request.installation.recovery.cli.path).toContain("npm-previous");
+    const manifestPath = path.join(installation.paths.packageRoot, "package.json");
+    const originalManifest = await readFile(manifestPath);
+    await expect(manager.start(prepared)).rejects.toThrow("pre-execution whole-tree isolation");
+    expect(JSON.parse(await readFile(prepared.requestPath, "utf8"))).not.toHaveProperty(
+      "launch_via_launcher",
+    );
+    expect(spawnUpdater).not.toHaveBeenCalled();
+    expect((await manager.readStatus(prepared.statusPath))?.phase).toBe("failed");
+    expect(await readFile(manifestPath)).toEqual(originalManifest);
+    expect(request.installation).toMatchObject({
+      prefix: expect.stringContaining("中文 空格 prefix"),
+      package_root: installation.paths.packageRoot,
+      installed_version: "1.2.2",
+    });
+    const wrongOwner = createBackgroundUpdateManager({
+      platform: "win32",
+      architecture: "x64",
+      readProcessIdentity: async () => ({
+        executable: process.execPath,
+        startedAtMicros: "987654321",
+      }),
+    });
+    await expect(wrongOwner.prepareNpm(common)).rejects.toThrow(
+      "does not match the process identity",
+    );
+  });
+
+  it("keeps Windows npm unstartable until native package preparation completes and records preparation failures", async () => {
+    const root = await temporaryDirectory();
+    const installation = await windowsNpmFixture(root);
+    const common = { ...(await commonOptions(root)), ...installation.paths };
+    let reject!: (error: Error) => void;
+    let statusPath = "";
+    const spawnUpdater = vi.fn();
+    const manager = createBackgroundUpdateManager({
+      platform: "win32",
+      architecture: "x64",
+      spawnUpdater,
+      readProcessIdentity: async () => ({
+        executable: installation.paths.launcherExecutable,
+        startedAtMicros: "123456789",
+      }),
+      prepareNpmMaterials: async () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        }),
+    });
+    const preparing = manager.prepareNpm({
+      ...common,
+      onPrepared: (info) => {
+        statusPath = info.statusPath;
+      },
+    });
+    await vi.waitFor(() => expect(reject).toBeTypeOf("function"));
+    expect((await manager.readStatus(statusPath))?.phase).toBe("downloading");
+    await expect(
+      readFile(path.join(path.dirname(statusPath), "request-v1.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(spawnUpdater).not.toHaveBeenCalled();
+    const failure = expect(preparing).rejects.toThrow("missing platform package");
+    reject(new Error("missing platform package"));
+    await failure;
+    expect((await manager.readStatus(statusPath))?.phase).toBe("failed");
+    expect(spawnUpdater).not.toHaveBeenCalled();
+    await expect(
+      manager.prepareNpm({ ...common, stateDirectory: path.join(installation.prefix, "updates") }),
+    ).rejects.toThrow("outside");
+    await expect(readFile(path.join(installation.prefix, "updates"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("fails before handoff if the original npm version cannot be prepared", async () => {
+    const root = await temporaryDirectory();
+    const installation = await windowsNpmFixture(root);
+    const common = { ...(await commonOptions(root)), ...installation.paths };
+    let statusPath = "";
+    const spawnUpdater = vi.fn();
+    const manager = createBackgroundUpdateManager({
+      platform: "win32",
+      architecture: "x64",
+      spawnUpdater,
+      readProcessIdentity: async () => ({
+        executable: installation.paths.launcherExecutable,
+        startedAtMicros: "123456789",
+      }),
+      prepareNpmMaterials: async (options) => {
+        if (options.version === "1.2.2") throw new Error("original npm materials unavailable");
+        return npmMaterials(options);
+      },
+    });
+    await expect(
+      manager.prepareNpm({
+        ...common,
+        onPrepared: (info) => {
+          statusPath = info.statusPath;
+        },
+      }),
+    ).rejects.toThrow("original npm materials unavailable");
+    expect((await manager.readStatus(statusPath))?.phase).toBe("failed");
+    expect(spawnUpdater).not.toHaveBeenCalled();
+    await expect(
+      readFile(path.join(path.dirname(statusPath), "request-v1.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("reports artifact download progress while preparing an installer", async () => {
     const root = await temporaryDirectory();
     const bytes = Buffer.from("progress-artifact");
@@ -253,19 +418,28 @@ describe("background update manager", () => {
   it("downloads and verifies the Windows installer before creating a request", async () => {
     const root = await temporaryDirectory();
     const bytes = Buffer.from("signed-or-reviewed-inno-installer");
+    const installation = await windowsInstallerFixture(root);
+    const spawnUpdater = vi.fn();
     const manager = createBackgroundUpdateManager({
       platform: "win32",
+      spawnUpdater,
       randomId: () => "windows-fixture",
+      architecture: "x64",
+      readProcessIdentity: async () => ({
+        executable: installation.launcherExecutable,
+        startedAtMicros: "123456789",
+      }),
       download: downloader(bytes),
     });
     const prepared = await manager.prepareWindowsInstaller({
       ...(await commonOptions(root)),
+      launcherExecutable: installation.launcherExecutable,
       artifact: {
         url: "https://downloads.example.test/codexhost.exe",
         sha256: sha256(bytes),
         size: bytes.length,
       },
-      installRoot: path.join(root, "Programs", "codexhost"),
+      installRoot: installation.installRoot,
     });
 
     const artifactPath = prepared.artifactPath;
@@ -277,8 +451,15 @@ describe("background update manager", () => {
       kind: "windows-installer",
       installer_path: prepared.artifactPath,
       artifact_sha256: sha256(bytes),
-      install_root: path.join(root, "Programs", "codexhost"),
+      install_root: installation.installRoot,
+      installed_version: "1.2.2",
     });
+    await expect(manager.start(prepared)).rejects.toThrow("original-channel recovery");
+    expect(JSON.parse(await readFile(prepared.requestPath, "utf8"))).not.toHaveProperty(
+      "launch_via_launcher",
+    );
+    expect(spawnUpdater).not.toHaveBeenCalled();
+    expect((await manager.readStatus(prepared.statusPath))?.phase).toBe("failed");
   });
 
   it("downloads and verifies the macOS DMG before creating a request", async () => {
@@ -312,18 +493,25 @@ describe("background update manager", () => {
     const root = await temporaryDirectory();
     const common = await commonOptions(root);
     const bytes = Buffer.from("different artifact");
+    const installation = await windowsInstallerFixture(root);
     const windows = createBackgroundUpdateManager({
       platform: "win32",
+      architecture: "x64",
+      readProcessIdentity: async () => ({
+        executable: installation.launcherExecutable,
+        startedAtMicros: "123456789",
+      }),
       download: downloader(bytes),
     });
     await expect(
       windows.prepareWindowsInstaller({
         ...common,
+        launcherExecutable: installation.launcherExecutable,
         artifact: {
           url: "https://downloads.example.test/codexhost.exe",
           sha256: "00".repeat(32),
         },
-        installRoot: path.join(root, "install"),
+        installRoot: installation.installRoot,
       }),
     ).rejects.toThrow("SHA-256 mismatch");
 

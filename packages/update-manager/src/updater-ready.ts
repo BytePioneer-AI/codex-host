@@ -2,6 +2,28 @@ import type { ChildProcess } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { BackgroundUpdateStatus } from "./status.js";
+import { requestLauncherUpdate, type LauncherRequest } from "./launcher-update.js";
+import type { WindowsProcessIdentity } from "./windows-process-identity.js";
+
+/** Route Windows Desktop startup through the owner outside the old Job.
+ * Standalone owners and non-Windows retain direct spawn + ready handoff. */
+export async function startUpdater(options: {
+  platform: NodeJS.Platform;
+  prepared: { helperPath: string; requestPath: string };
+  owner: LauncherRequest;
+  spawnUpdater(executable: string, requestPath: string): ChildProcess;
+  readStatus(): Promise<BackgroundUpdateStatus | null>;
+  readIdentity?(pid: number): Promise<WindowsProcessIdentity>;
+}): Promise<number | undefined> {
+  if (options.platform === "win32" && options.owner.wait_pid !== process.pid) {
+    await requestLauncherUpdate(options.prepared.requestPath, options.owner, options.readIdentity);
+    return undefined; // Intent is not an acknowledgement/PID.
+  }
+  const child = options.spawnUpdater(options.prepared.helperPath, options.prepared.requestPath);
+  await waitForUpdaterReady(child, options.readStatus);
+  if (!child.pid) throw new Error("background Updater did not receive a process ID");
+  return child.pid;
+}
 
 /** Keep the owner alive until the native Updater has validated its identity. */
 export async function waitForUpdaterReady(

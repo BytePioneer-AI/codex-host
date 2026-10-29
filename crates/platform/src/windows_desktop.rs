@@ -15,8 +15,9 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Threading::{
     GetExitCodeProcess, GetProcessIdOfThread, OpenProcess, OpenThread,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, ResumeThread,
-    THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME, TerminateProcess, WaitForSingleObject,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    ResumeThread, THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME, TerminateProcess,
+    WaitForSingleObject,
 };
 use windows::Win32::UI::Shell::{
     ACTIVATEOPTIONS, ApplicationActivationManager, IApplicationActivationManager,
@@ -69,9 +70,22 @@ struct PackageEnvironment {
 
 impl PackageEnvironment {
     fn enable(package_full_name: &str, environment: &[u16]) -> Result<Self, PlatformError> {
-        let debugger_executable = std::env::current_exe().map_err(PlatformError::Io)?;
+        #[cfg(test)]
+        let debugger = std::env::var_os("CODEXHOST_APPX_TEST_DEBUGGER")
+            .map(std::path::PathBuf::from)
+            .unwrap_or(std::env::current_exe()?);
+        #[cfg(not(test))]
+        let debugger = std::env::current_exe()?;
+        Self::enable_using(package_full_name, environment, &debugger)
+    }
+
+    fn enable_using(
+        package_full_name: &str,
+        environment: &[u16],
+        debugger_executable: &std::path::Path,
+    ) -> Result<Self, PlatformError> {
         let debugger_command = windows_command_line(&[
-            debugger_executable.into_os_string(),
+            debugger_executable.as_os_str().to_owned(),
             OsString::from(APPX_RESUME_ARGUMENT),
         ]);
         let debugger_command = debugger_command
@@ -148,6 +162,15 @@ impl WindowsDesktopProcess {
     #[must_use]
     pub fn id(&self) -> u32 {
         self.process_id
+    }
+
+    pub fn is_in_job(&self, job: &crate::WindowsLaunchJob) -> Result<bool, PlatformError> {
+        use std::os::windows::io::AsRawHandle;
+        let process = match &self.process {
+            WindowsDesktopBacking::Child(child) => child.as_raw_handle(),
+            WindowsDesktopBacking::Activated(process) => process.0,
+        };
+        job.job.contains(process).map_err(PlatformError::Io)
     }
 
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
@@ -345,6 +368,18 @@ pub fn resume_packaged_application(arguments: &[String]) -> Result<(), PlatformE
             "AppX resume helper received a thread owned by another process".into(),
         ));
     }
+    // Package-wide environment is not ownership evidence. The helper examines
+    // the actual suspended process's activation arguments before any resume.
+    if let Ok(process) = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SET_QUOTA,
+            false,
+            process_id,
+        )
+    } {
+        let process = unsafe { Owned::new(process) };
+        super::windows_activation_job::bind_before_resume(*process, *thread)?;
+    }
     let previous_suspend_count = unsafe { ResumeThread(*thread) };
     if previous_suspend_count == u32::MAX {
         return Err(PlatformError::Io(io::Error::last_os_error()));
@@ -417,6 +452,122 @@ pub fn activate_packaged_desktop(
     wait_for_desktop_root(activation_process_id, Duration::from_secs(5))?;
     package_environment.disable()?;
     Ok(desktop.disarm())
+}
+
+/// Test-only activation of the uniquely registered fixture, not an official
+/// Desktop root. Wait using its package identity, exact image and trace file.
+#[cfg(test)]
+pub(crate) fn activate_packaged_fixture(
+    package_full_name: &str,
+    app_user_model_id: &str,
+    executable: &std::path::Path,
+    trace: &std::path::Path,
+    arguments: &[OsString],
+    environment: &[(OsString, OsString)],
+) -> Result<WindowsDesktopProcess, PlatformError> {
+    let _apartment = ComApartment::initialize()?;
+    let environment = windows_environment_block(environment)?;
+    let mut registration = PackageEnvironment::enable(package_full_name, &environment)?;
+    let manager: IApplicationActivationManager = unsafe {
+        CoCreateInstance(
+            &ApplicationActivationManager,
+            None,
+            CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER,
+        )
+    }
+    .map_err(|e| windows_error("create fixture activation manager", e))?;
+    let pid = unsafe {
+        manager.ActivateApplication(
+            &HSTRING::from(app_user_model_id),
+            &HSTRING::from(windows_command_line(arguments).to_string_lossy().as_ref()),
+            ACTIVATEOPTIONS(0),
+        )
+    }
+    .map_err(|e| windows_error("activate fixture package", e))?;
+    // Do not arm production's official-Desktop error cleanup on a fixture PID.
+    let mut process = supervise_desktop(pid)?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let identity = crate::process_snapshot(pid)?;
+        let WindowsDesktopBacking::Activated(handle) = &process.process else {
+            unreachable!()
+        };
+        let mut name = vec![0u16; 1024];
+        let mut length = name.len() as u32;
+        unsafe {
+            windows::Win32::Storage::Packaging::Appx::GetPackageFullName(
+                **handle,
+                &mut length,
+                Some(windows::core::PWSTR(name.as_mut_ptr())),
+            )
+            .ok()
+        }
+        .map_err(|e| windows_error("query fixture package identity", e))?;
+        let package = String::from_utf16_lossy(&name[..length.saturating_sub(1) as usize]);
+        if identity.executable.canonicalize()? != executable.canonicalize()?
+            || package != package_full_name
+        {
+            return Err(PlatformError::Invalid(
+                "fixture activation returned another identity; preserved".into(),
+            ));
+        }
+        if trace.is_file() {
+            break;
+        }
+        if process.try_wait()?.is_some() || Instant::now() >= deadline {
+            return Err(PlatformError::Invalid(
+                "fixture did not reach its entry trace".into(),
+            ));
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    registration.disable()?;
+    Ok(process)
+}
+
+pub(crate) fn activate_packaged_desktop_in_job(
+    package_full_name: &str,
+    app_user_model_id: &str,
+    arguments: &[OsString],
+    environment: &[(OsString, OsString)],
+    job: &crate::WindowsLaunchJob,
+) -> Result<WindowsDesktopProcess, PlatformError> {
+    let _apartment = ComApartment::initialize()?;
+    let mut marked = arguments.to_vec();
+    let mut probe = vec![OsString::from("Codex.exe")];
+    probe.extend_from_slice(arguments);
+    if crate::activation_binding::binding(&probe)?.is_some() {
+        return Err(PlatformError::Invalid(
+            "activation already has a caller binding".into(),
+        ));
+    }
+    marked.push(job.argument());
+    let environment = windows_environment_block(environment)?;
+    let mut registration = PackageEnvironment::enable(package_full_name, &environment)?;
+    let manager: IApplicationActivationManager = unsafe {
+        CoCreateInstance(
+            &ApplicationActivationManager,
+            None,
+            CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER,
+        )
+    }
+    .map_err(|e| windows_error("create protected activation manager", e))?;
+    let pid = unsafe {
+        manager.ActivateApplication(
+            &HSTRING::from(app_user_model_id),
+            &HSTRING::from(windows_command_line(&marked).to_string_lossy().as_ref()),
+            ACTIVATEOPTIONS(0),
+        )
+    }
+    .map_err(|e| windows_error("protected AppX activation", e))?;
+    // No ActivatedProcessGuard: this PID may name a reused, independent app.
+    // Only Job members bound by the pre-resume helper may be terminated.
+    let desktop = supervise_desktop(pid)?;
+    if !desktop.is_in_job(job)? {
+        return Err(PlatformError::Invalid("activation returned an instance without this caller's pre-execution binding; instance preserved".into()));
+    }
+    registration.disable()?;
+    Ok(desktop)
 }
 
 pub fn supervise_desktop(process_id: u32) -> Result<WindowsDesktopProcess, PlatformError> {

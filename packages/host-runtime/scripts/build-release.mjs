@@ -20,6 +20,8 @@ const allowedRuntimePackages = new Set([
   "@deepseek-ai/cordis",
   "@deepseek-ai/cosmokit",
   "diff",
+  // Offline update archive validation; payload notices include its dependencies.
+  "tar",
   "ws",
   "zod",
 ]);

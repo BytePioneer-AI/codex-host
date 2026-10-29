@@ -71,10 +71,15 @@ function releaseAsset(value: unknown): CodexhostReleaseAsset {
 }
 
 export function parseLatestGitHubRelease(value: unknown): CodexhostLatestRelease {
+  return parseGitHubRelease(value, false);
+}
+
+function parseGitHubRelease(value: unknown, allowPrerelease: boolean): CodexhostLatestRelease {
   const release = record(value, "GitHub latest Release");
   if (
     release.draft !== false ||
-    release.prerelease !== false ||
+    typeof release.prerelease !== "boolean" ||
+    (!allowPrerelease && release.prerelease) ||
     typeof release.tag_name !== "string" ||
     !release.tag_name.startsWith("v") ||
     typeof release.html_url !== "string" ||
@@ -168,7 +173,42 @@ export function selectInstallerReleaseArtifact(
   release: CodexhostLatestRelease,
   target: InstallerReleaseTarget,
 ): SelectedReleaseArtifact {
-  const name = expectedInstallerAssetName(release.version, target);
+  return selectReleaseAsset(release, expectedInstallerAssetName(release.version, target));
+}
+
+export function selectInstallerRecoveryArtifact(
+  release: CodexhostLatestRelease,
+  target: InstallerReleaseTarget,
+): SelectedReleaseArtifact {
+  const artifact = selectReleaseAsset(
+    release,
+    `codexhost-${release.version}-${target}.installer-recovery-v1.json`,
+  );
+  if ((artifact.source.size ?? Infinity) > 2 * 1024 * 1024)
+    throw new Error("Installer recovery descriptor exceeds size limit");
+  return artifact;
+}
+
+export async function fetchGitHubReleaseVersion(version: string): Promise<CodexhostLatestRelease> {
+  requireSemanticVersion(version);
+  const response = await fetch(
+    `https://api.github.com/repos/BytePioneer-AI/codex-host/releases/tags/v${encodeURIComponent(version)}`,
+    {
+      headers: { accept: "application/vnd.github+json", "user-agent": "codexhost-updater" },
+      redirect: "error",
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  if (!response.ok) throw new Error(`Original release unavailable: HTTP ${response.status}`);
+  const release = parseGitHubRelease(await response.json(), true);
+  if (release.version !== version) throw new Error("Original release version mismatch");
+  return release;
+}
+
+function selectReleaseAsset(
+  release: CodexhostLatestRelease,
+  name: string,
+): SelectedReleaseArtifact {
   const matches = release.assets.filter((asset) => asset.name === name);
   if (matches.length !== 1) throw new Error(`GitHub Release must contain exactly one ${name}`);
   const asset = matches[0];

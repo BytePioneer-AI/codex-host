@@ -7,6 +7,7 @@ import type {
   UpdateStatusResult,
 } from "@codexhost/shared-contracts";
 import {
+  automaticUpdateUnavailableReason,
   acquireUpdateOperationLock,
   cleanupTerminalUpdateState,
   compareSemanticVersions,
@@ -74,7 +75,12 @@ function boundedError(error: unknown): string {
   return message.slice(0, ERROR_MAX_LENGTH) || "Update operation failed";
 }
 
-function publicStatus(status: BackgroundUpdateStatus): UpdateStatus {
+function publicStatus(status: BackgroundUpdateStatus, platform: NodeJS.Platform): UpdateStatus {
+  const manual = automaticUpdateUnavailableReason(platform, status.installation);
+  const error =
+    status.phase === "failed" && manual
+      ? `${status.error ? `${status.error} ` : ""}${manual}`
+      : status.error;
   return {
     version: status.version,
     installation: status.installation,
@@ -82,7 +88,7 @@ function publicStatus(status: BackgroundUpdateStatus): UpdateStatus {
     updatedAt: status.updatedAt,
     ...(status.downloadedBytes === undefined ? {} : { downloadedBytes: status.downloadedBytes }),
     ...(status.totalBytes === undefined ? {} : { totalBytes: status.totalBytes }),
-    error: status.error?.slice(0, ERROR_MAX_LENGTH) ?? null,
+    error: error?.slice(0, ERROR_MAX_LENGTH) ?? null,
   };
 }
 
@@ -136,11 +142,12 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
       currentStatusPath = active.statusPath;
     }
     const status = await manager.readStatus(currentStatusPath);
-    return status ? publicStatus(status) : null;
+    return status ? publicStatus(status, platform) : null;
   }
 
   function installable(metadata: DistributionMetadata, release: CodexhostLatestRelease): boolean {
     const kind = installationKind(metadata);
+    if (kind && automaticUpdateUnavailableReason(platform, kind)) return false;
     if (kind === "npm") return true;
     if (kind === null) return false;
     try {
@@ -160,6 +167,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
     const resourcesRoot = path.dirname(target.appDirectory);
     const common: CommonUpdateOptions = {
       version: release.version,
+      ...(platform === "win32" ? { installedVersion: metadata.version } : {}),
       launcherPid: options.processId ?? process.pid,
       launcherExecutable: options.processExecutable ?? process.execPath,
       runtimeDescriptorPath: target.runtimeDescriptorPath as string,
@@ -234,6 +242,9 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         candidate = release;
         const updateAvailable = compareSemanticVersions(metadata.version, release.version) < 0;
         const installationAvailable = updateAvailable && installable(metadata, release);
+        const unavailable = empty.installation
+          ? automaticUpdateUnavailableReason(platform, empty.installation)
+          : null;
         return {
           ...empty,
           latestVersion: release.version,
@@ -244,7 +255,8 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
           status,
           error:
             updateAvailable && !installationAvailable
-              ? "The latest GitHub Release has no verified asset for this installation"
+              ? (unavailable ??
+                "The latest GitHub Release has no verified asset for this installation")
               : null,
         };
       } catch (error) {
@@ -253,6 +265,9 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
     },
 
     async start(target: ConsoleUpdateTarget): Promise<UpdateStartResult> {
+      const kind = target.distribution && installationKind(target.distribution);
+      const unavailable = kind && automaticUpdateUnavailableReason(platform, kind);
+      if (unavailable) throw new ConsoleUpdateError("unsupported", unavailable);
       if (target.codexhostRunning) {
         throw new ConsoleUpdateError(
           "codex-running",
@@ -320,7 +335,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         if (options.waitForHandoff) await completion;
         const status = await manager.readStatus(statusPath);
         if (!status) throw new Error("Background update did not create status");
-        return { status: publicStatus(status) };
+        return { status: publicStatus(status, platform) };
       } catch (error) {
         await lock.release();
         throw error;

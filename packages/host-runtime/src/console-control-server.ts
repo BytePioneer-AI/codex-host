@@ -16,9 +16,11 @@ export interface ConsoleHostDescriptor {
   port: number;
   token: string;
   startedAt: number;
+  launcherPid?: number;
 }
 
 export interface ConsoleControlTarget {
+  consoleReady?(): boolean;
   handleConsoleRequest(method: string, params: unknown): Promise<ConsoleHostReply>;
 }
 
@@ -89,6 +91,12 @@ export async function startConsoleControlServer(options: {
   const pid = options.pid ?? process.pid;
   const server = createServer((request, response) => {
     void (async () => {
+      if (request.method === "GET" && request.url === "/ready") {
+        if (!equalToken(request.headers.authorization, token)) {
+          reply(response, 401, { error: { code: -32001, message: "Unauthorized" } });
+        } else reply(response, 200, { ready: options.target.consoleReady?.() === true });
+        return;
+      }
       if (request.method !== "POST" || request.url !== "/rpc") {
         reply(response, 404, { error: { code: -32601, message: "Not found" } });
         return;
@@ -130,12 +138,14 @@ export async function startConsoleControlServer(options: {
     consoleHostDescriptorDirectory(options.environment),
     `host-${pid}.json`,
   );
+  const launcherPid = Number(options.environment.CODEXHOST_LAUNCHER_PID);
   const descriptor: ConsoleHostDescriptor = {
     schemaVersion: 1,
     pid,
     port: (server.address() as AddressInfo).port,
     token,
     startedAt: (options.now ?? Date.now)(),
+    ...(Number.isSafeInteger(launcherPid) && launcherPid > 0 ? { launcherPid } : {}),
   };
   try {
     await writePrivateJson(descriptorPath, descriptor);

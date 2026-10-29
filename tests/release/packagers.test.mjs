@@ -109,6 +109,33 @@ describe("platform packagers", () => {
     expect(releaseClient).toContain("sha256:");
   });
 
+  it("prepares Windows process shutdown only after Install, using the bundled temporary helper", async () => {
+    const installer = await readFile(
+      path.join(root, "scripts/release/windows/Installer.iss"),
+      "utf8",
+    );
+    const helper =
+      'Source: "{#PayloadRoot}\\libexec\\codexhost-updater.exe"; DestName: "codexhost-install-helper.exe"; Flags: dontcopy';
+    expect(installer).toContain(helper);
+    expect(installer.indexOf(helper)).toBeLessThan(
+      installer.indexOf('Source: "{#PayloadRoot}\\*"'),
+    );
+    const code = installer.split("[Code]")[1];
+    expect(code).toContain("function PrepareToInstall(var NeedsRestart: Boolean): String;");
+    expect(code).not.toMatch(/InitializeSetup|InitializeWizard|MsgBox|WizardForm/);
+    expect(code).toContain("ExtractTemporaryFile('codexhost-install-helper.exe')");
+    expect(code).toContain("ExpandConstant('{tmp}\\codexhost-install-helper.exe')");
+    expect(code).toContain(
+      "'prepare-install --install-root ' + AddQuotes(AddBackslash(ExpandConstant('{app}')) + '.')",
+    );
+    expect(code).toContain("ExecAndLogOutput(");
+    expect(code).toContain("ewWaitUntilTerminated, ResultCode, nil");
+    expect(code).toContain("else if ResultCode <> 0 then begin");
+    expect(code).toContain("Could not close the running codexhost installation");
+    expect(installer).not.toMatch(/CloseApplications\s*=\s*no/i);
+    expect(installer).not.toMatch(/taskkill|powershell|\[Run\]/i);
+  });
+
   it("builds a standard Inno Setup installer for both Windows architectures", async () => {
     const [script, installer] = await Promise.all([
       readFile(path.join(root, "scripts/release/windows/package.ps1"), "utf8"),

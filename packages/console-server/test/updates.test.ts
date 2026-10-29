@@ -6,7 +6,12 @@ import { EventEmitter } from "node:events";
 import { createBackgroundUpdateManager } from "@codexhost/update-manager";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createConsoleUpdates, type ConsoleUpdateTarget } from "../src/updates.js";
+import { createConsoleUpdates as createUpdates, type ConsoleUpdateTarget } from "../src/updates.js";
+
+// These fixtures model the existing non-Windows flow; Windows policy is covered
+// separately in update-support.test.ts and cannot be enabled by these options.
+const createConsoleUpdates = (options: Parameters<typeof createUpdates>[0]) =>
+  createUpdates({ platform: "linux", ...options });
 
 let root: string;
 
@@ -25,7 +30,7 @@ const release = {
   assets: [],
 };
 
-async function npmLayout(platform: NodeJS.Platform = process.platform) {
+async function npmLayout(platform: NodeJS.Platform = "linux") {
   const packageRoot = path.join(root, "package");
   const appDirectory = path.join(packageRoot, "app");
   await mkdir(path.join(packageRoot, "libexec"), { recursive: true });

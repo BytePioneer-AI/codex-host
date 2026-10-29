@@ -7,11 +7,18 @@ import type {
   NpmUpdateOptions,
   WindowsInstallerUpdateOptions,
 } from "./update-manager.js";
-import { requireSemanticVersion } from "./status.js";
+import { parseDistributionMetadata, type DistributionMetadata } from "./distribution-metadata.js";
+import {
+  sameWindowsPath,
+  validateWindowsInstallerInstallation,
+  validateWindowsNpmInstallation,
+} from "./windows-installation.js";
+export { parseDistributionMetadata, type DistributionMetadata } from "./distribution-metadata.js";
 import type { ReleaseTarget } from "./github-release.js";
 
 export const UPDATE_RUNTIME_ENV = Object.freeze({
   launcherPid: "CODEXHOST_LAUNCHER_PID",
+  launcherStartedAtMicros: "CODEXHOST_LAUNCHER_STARTED_AT_MICROS",
   launcherExecutable: "CODEXHOST_LAUNCHER_EXECUTABLE",
   runtimeDescriptorPath: "CODEXHOST_RUNTIME_DESCRIPTOR_PATH",
   controllerPort: "CODEXHOST_CONTROL_PORT",
@@ -21,13 +28,6 @@ export const UPDATE_RUNTIME_ENV = Object.freeze({
   npmLauncherPath: "CODEXHOST_NPM_LAUNCHER_PATH",
   npmPackageRoot: "CODEXHOST_NPM_PACKAGE_ROOT",
 });
-
-export interface DistributionMetadata {
-  schemaVersion: 1;
-  version: string;
-  distribution: "npm" | "installer";
-  target: ReleaseTarget;
-}
 
 export interface InstalledUpdateContext {
   metadata: DistributionMetadata;
@@ -45,42 +45,6 @@ interface ResolveInstalledUpdateContextOptions {
   platform?: NodeJS.Platform;
   architecture?: string;
   stateDirectory?: string;
-}
-
-function object(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-export function parseDistributionMetadata(value: unknown): DistributionMetadata {
-  const metadata = object(value, "distribution metadata");
-  const allowed = ["distribution", "schemaVersion", "target", "version"];
-  if (Object.keys(metadata).some((key) => !allowed.includes(key))) {
-    throw new Error("distribution metadata contains unknown fields");
-  }
-  if (
-    metadata.schemaVersion !== 1 ||
-    (metadata.distribution !== "npm" && metadata.distribution !== "installer") ||
-    ![
-      "macos-arm64",
-      "macos-x64",
-      "windows-x64",
-      "windows-arm64",
-      "linux-x64",
-      "linux-arm64",
-    ].includes(String(metadata.target)) ||
-    typeof metadata.version !== "string"
-  ) {
-    throw new Error("distribution metadata is invalid");
-  }
-  return {
-    schemaVersion: 1,
-    version: requireSemanticVersion(metadata.version),
-    distribution: metadata.distribution,
-    target: metadata.target as ReleaseTarget,
-  };
 }
 
 function absoluteEnvironmentPath(environment: NodeJS.ProcessEnv, name: string): string {
@@ -144,6 +108,15 @@ export async function resolveInstalledUpdateContext(
     throw new Error(`installed target ${metadata.target} does not match ${target}`);
   }
   const launcherPid = positiveEnvironmentInteger(environment, UPDATE_RUNTIME_ENV.launcherPid);
+  const launcherStartedAtMicros = environment[UPDATE_RUNTIME_ENV.launcherStartedAtMicros];
+  if (
+    platform === "win32" &&
+    (!launcherStartedAtMicros ||
+      !/^[1-9][0-9]{0,19}$/u.test(launcherStartedAtMicros) ||
+      BigInt(launcherStartedAtMicros) > 18446744073709551615n)
+  ) {
+    throw new Error("Windows Launcher creation time is unavailable or invalid");
+  }
   const launcherExecutable = absoluteEnvironmentPath(
     environment,
     UPDATE_RUNTIME_ENV.launcherExecutable,
@@ -165,6 +138,12 @@ export async function resolveInstalledUpdateContext(
   );
   const common = {
     version: metadata.version,
+    ...(platform === "win32"
+      ? {
+          installedVersion: metadata.version,
+          launcherStartedAtMicros: launcherStartedAtMicros as string,
+        }
+      : {}),
     launcherPid,
     launcherExecutable,
     runtimeDescriptorPath,
@@ -187,12 +166,23 @@ export async function resolveInstalledUpdateContext(
       npmLauncherPath: absoluteEnvironmentPath(environment, UPDATE_RUNTIME_ENV.npmLauncherPath),
       packageRoot: absoluteEnvironmentPath(environment, UPDATE_RUNTIME_ENV.npmPackageRoot),
     };
-    if (path.normalize(npmOptions.packageRoot) !== resourcesRoot) {
+    if (
+      platform === "win32"
+        ? !sameWindowsPath(npmOptions.packageRoot, resourcesRoot)
+        : path.normalize(npmOptions.packageRoot) !== resourcesRoot
+    ) {
       throw new Error("npm platform package root does not own the Host Runtime");
     }
+    if (platform === "win32") await validateWindowsNpmInstallation(npmOptions, architecture);
     return { metadata, common, controller, installation: { kind: "npm", options: npmOptions } };
   }
   if (platform === "win32") {
+    await validateWindowsInstallerInstallation(
+      installationRoot,
+      launcherExecutable,
+      architecture,
+      metadata.version,
+    );
     return {
       metadata,
       common,

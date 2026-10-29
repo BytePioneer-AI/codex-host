@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -9,6 +9,8 @@ import {
   parseDistributionMetadata,
   resolveInstalledUpdateContext,
 } from "@codexhost/update-manager";
+
+import { fixtureFile, windowsInstallerFixture, windowsNpmFixture } from "./windows-fixture.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true }))));
@@ -23,6 +25,7 @@ function runtimeEnvironment(root: string): NodeJS.ProcessEnv {
   return {
     HOME: path.join(root, "home"),
     [UPDATE_RUNTIME_ENV.launcherPid]: "4321",
+    [UPDATE_RUNTIME_ENV.launcherStartedAtMicros]: "123456789",
     [UPDATE_RUNTIME_ENV.launcherExecutable]: path.join(root, "bin", "codexhost"),
     [UPDATE_RUNTIME_ENV.runtimeDescriptorPath]: path.join(
       root,
@@ -161,6 +164,108 @@ describe("installed update context", () => {
       });
     },
   );
+
+  async function windowsContext(
+    root: string,
+    fixture: Awaited<ReturnType<typeof windowsNpmFixture>>,
+  ) {
+    return resolveInstalledUpdateContext({
+      hostRuntimePath: path.join(fixture.paths.packageRoot, "app", "host-runtime.mjs"),
+      platform: "win32",
+      architecture: "x64",
+      stateDirectory: path.join(root, "state"),
+      environment: {
+        ...runtimeEnvironment(root),
+        CODEXHOST_LAUNCHER_EXECUTABLE: fixture.paths.launcherExecutable,
+        CODEXHOST_NPM_NODE_PATH: fixture.paths.nodePath,
+        CODEXHOST_NPM_CLI_PATH: fixture.paths.npmCliPath,
+        CODEXHOST_NPM_LAUNCHER_PATH: fixture.paths.npmLauncherPath,
+        CODEXHOST_NPM_PACKAGE_ROOT: fixture.paths.packageRoot,
+        npm_config_prefix: path.join(root, "unrelated-prefix"),
+      },
+    });
+  }
+
+  it.each([false, true])(
+    "verifies Windows npm ownership in the running prefix (nested: %s)",
+    async (nested) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-win-ownership-"));
+      roots.push(root);
+      const fixture = await windowsNpmFixture(root, nested);
+      const second = await windowsNpmFixture(path.join(root, "second-install"));
+      await expect(windowsContext(root, fixture)).resolves.toMatchObject({
+        installation: { kind: "npm" },
+      });
+      await expect(
+        windowsContext(root, {
+          ...fixture,
+          paths: { ...fixture.paths, npmLauncherPath: second.paths.npmLauncherPath },
+        }),
+      ).rejects.toThrow("outside the CLI prefix");
+    },
+  );
+
+  it("rejects Windows npm version drift, missing global shim and package links", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-win-ownership-"));
+    roots.push(root);
+    const fixture = await windowsNpmFixture(root);
+    const manifest = path.join(fixture.paths.packageRoot, "package.json");
+    const original = await readFile(manifest, "utf8");
+    await writeFile(manifest, original.replace("1.2.2", "1.2.1"));
+    await expect(windowsContext(root, fixture)).rejects.toThrow("does not match");
+    await writeFile(manifest, original);
+    await rm(path.join(fixture.prefix, "codexhost.cmd"));
+    await expect(windowsContext(root, fixture)).rejects.toThrow();
+    await fixtureFile(
+      path.join(fixture.prefix, "codexhost.cmd"),
+      '"%dp0%\\node_modules\\@codexhost\\cli\\bin\\codexhost.js"',
+    );
+    const scope = path.join(fixture.prefix, "node_modules", "@codexhost");
+    const external = path.join(root, "external-scope");
+    await rename(scope, external);
+    await symlink(external, scope, process.platform === "win32" ? "junction" : "dir");
+    await expect(windowsContext(root, fixture)).rejects.toThrow();
+  });
+
+  it.skipIf(process.platform !== "win32")(
+    "accepts Windows case variations without changing the owned prefix",
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-win-case-"));
+      roots.push(root);
+      const fixture = await windowsNpmFixture(root);
+      fixture.paths.npmLauncherPath = fixture.paths.npmLauncherPath.toUpperCase();
+      await expect(windowsContext(root, fixture)).resolves.toMatchObject({
+        installation: { kind: "npm" },
+      });
+    },
+  );
+
+  it("pins Windows installer ownership to the current root and rejects another Launcher", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-win-installer-"));
+    roots.push(root);
+    const fixture = await windowsInstallerFixture(root);
+    const options = {
+      hostRuntimePath: path.join(fixture.installRoot, "app", "host-runtime.mjs"),
+      platform: "win32" as const,
+      architecture: "x64",
+      stateDirectory: path.join(root, "state"),
+      environment: {
+        ...runtimeEnvironment(root),
+        CODEXHOST_LAUNCHER_EXECUTABLE: fixture.launcherExecutable,
+      },
+    };
+    await expect(resolveInstalledUpdateContext(options)).resolves.toMatchObject({
+      installation: { kind: "windows-installer", options: { installRoot: fixture.installRoot } },
+    });
+    const unrelated = path.join(root, "other", "codexhost.exe");
+    await fixtureFile(unrelated);
+    await expect(
+      resolveInstalledUpdateContext({
+        ...options,
+        environment: { ...options.environment, CODEXHOST_LAUNCHER_EXECUTABLE: unrelated },
+      }),
+    ).rejects.toThrow("outside");
+  });
 
   it("rejects unknown metadata and target mismatch", async () => {
     expect(() =>

@@ -19,7 +19,25 @@ import {
   type BackgroundUpdateStatus,
 } from "./status.js";
 
-import { waitForUpdaterReady } from "./updater-ready.js";
+import {
+  validateWindowsInstallerInstallation,
+  validateWindowsNpmInstallation,
+} from "./windows-installation.js";
+import {
+  readWindowsProcessIdentity,
+  type WindowsProcessIdentity,
+} from "./windows-process-identity.js";
+import { sameWindowsPath } from "./windows-installation.js";
+import {
+  assertNpmStagingOutsidePrefix,
+  prepareNpmMaterials,
+  type PreparedNpmMaterials,
+} from "./npm-materials.js";
+import { startUpdater } from "./updater-ready.js";
+import { automaticUpdateUnavailableReason } from "./support.js";
+import { prepareInstallerRecovery, type PreparedInstallerRecovery } from "./installer-materials.js";
+import { INSTALLER_FILES_PATH, inside, resolvedFuturePath } from "./installer-files.js";
+import type { CodexhostLatestRelease } from "./github-release.js";
 
 const REQUEST_SCHEMA_VERSION = 1;
 const WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 30, 70, 150, 300] as const;
@@ -32,8 +50,11 @@ export interface PreparedUpdateInfo {
 
 export interface CommonUpdateOptions {
   version: string;
+  /** Windows version observed by the initiating runtime, before preparing the target. */
+  installedVersion?: string;
   launcherPid: number;
   launcherExecutable: string;
+  launcherStartedAtMicros?: string;
   runtimeDescriptorPath: string;
   updaterExecutable: string;
   stateDirectory: string;
@@ -67,14 +88,20 @@ export interface PreparedBackgroundUpdate {
 }
 
 export interface StartedBackgroundUpdate extends PreparedBackgroundUpdate {
-  updaterPid: number;
+  /** Absent for a Launcher-owned start request; status remains prepared until native handoff. */
+  updaterPid?: number;
 }
 
 export interface BackgroundUpdateManagerDependencies {
   platform?: NodeJS.Platform;
+  architecture?: string;
+  readProcessIdentity?(pid: number): Promise<WindowsProcessIdentity>;
   randomId?(): string;
   download?: ArtifactDownloader;
   spawnUpdater?(executable: string, requestPath: string): ChildProcess;
+  prepareNpmMaterials?: typeof prepareNpmMaterials;
+  installerRelease?(version: string): Promise<CodexhostLatestRelease>;
+  environment?: NodeJS.ProcessEnv;
   now?(): number;
 }
 
@@ -84,7 +111,7 @@ export interface BackgroundUpdateManager {
     options: WindowsInstallerUpdateOptions,
   ): Promise<PreparedBackgroundUpdate>;
   prepareMacOsDmg(options: MacOsDmgUpdateOptions): Promise<PreparedBackgroundUpdate>;
-  /** Resolves only after the Updater validates the owner and is waiting for its exit. */
+  /** Desktop Windows delegates spawn/handoff to its Launcher; direct starts await native handoff. */
   start(prepared: PreparedBackgroundUpdate): Promise<StartedBackgroundUpdate>;
   readStatus(statusPath: string): Promise<BackgroundUpdateStatus | null>;
 }
@@ -94,6 +121,7 @@ interface InternalRequest {
   version: string;
   wait_pid: number;
   wait_executable: string;
+  wait_started_at_micros?: string;
   runtime_descriptor_path: string;
   status_path: string;
   installation:
@@ -102,12 +130,19 @@ interface InternalRequest {
         node_path: string;
         npm_cli_path: string;
         npm_launcher_path: string;
+        prefix?: string;
+        package_root?: string;
+        installed_version?: string;
+        prepared?: PreparedNpmMaterials;
+        recovery?: PreparedNpmMaterials;
       }
     | {
         kind: "windows-installer";
         installer_path: string;
         artifact_sha256: string;
         install_root: string;
+        installed_version: string;
+        recovery?: PreparedInstallerRecovery;
       }
     | {
         kind: "macos-dmg";
@@ -121,6 +156,7 @@ interface PreparedCommonUpdate {
   version: string;
   launcherPid: number;
   launcherExecutable: string;
+  waitStartedAtMicros?: string;
   runtimeDescriptorPath: string;
   workDirectory: string;
   helperPath: string;
@@ -213,7 +249,7 @@ export function createBackgroundUpdateManager(
   const download = dependencies.download ?? downloadArtifact;
   const spawnUpdater = dependencies.spawnUpdater ?? defaultSpawnUpdater;
   const now = dependencies.now ?? Date.now;
-  const preparedRequests = new Set<string>();
+  const preparedRequests = new Map<string, InternalRequest>();
 
   async function writeStatusSnapshot(
     statusPath: string,
@@ -311,6 +347,18 @@ export function createBackgroundUpdateManager(
       options.launcherExecutable,
       "Launcher executable",
     );
+    const identity =
+      platform === "win32"
+        ? await (dependencies.readProcessIdentity ?? readWindowsProcessIdentity)(launcherPid)
+        : null;
+    if (
+      identity &&
+      options.launcherStartedAtMicros !== undefined &&
+      identity.startedAtMicros !== options.launcherStartedAtMicros
+    )
+      throw new Error("Windows update owner PID was reused before preparation");
+    if (identity && !sameWindowsPath(identity.executable, launcherExecutable))
+      throw new Error("Windows update owner executable does not match the process identity");
     const runtimeDescriptorPath = requireAbsolutePath(
       options.runtimeDescriptorPath,
       "runtime descriptor path",
@@ -329,12 +377,18 @@ export function createBackgroundUpdateManager(
     if (platform !== "win32") await chmod(helperPath, 0o700);
     const requestPath = path.join(workDirectory, "request-v1.json");
     const statusPath = path.join(workDirectory, "status-v1.json");
-    await writePrivateJson(statusPath, preparedStatus(version, installation, now()));
+    await writePrivateJson(
+      statusPath,
+      platform === "win32" && (installation === "npm" || installation === "windows-installer")
+        ? statusSnapshot(version, installation, "downloading")
+        : preparedStatus(version, installation, now()),
+    );
     await options.onPrepared?.({ version, installation, statusPath });
     return {
       version,
       launcherPid,
       launcherExecutable,
+      ...(identity ? { waitStartedAtMicros: identity.startedAtMicros } : {}),
       runtimeDescriptorPath,
       workDirectory,
       helperPath,
@@ -354,7 +408,12 @@ export function createBackgroundUpdateManager(
     const artifactPath = path.join(common.workDirectory, fileName);
     const progress = progressReporter(common.statusPath, common.version, installation, source.size);
     try {
-      const result = await download(source, temporaryPath, progress.update);
+      const result =
+        platform === "win32" && installation === "windows-installer"
+          ? await download(source, temporaryPath, progress.update, {
+              signal: AbortSignal.timeout(120_000),
+            })
+          : await download(source, temporaryPath, progress.update);
       progress.update({ downloadedBytes: result.bytes, totalBytes: source.size });
       await progress.flush();
       const finalUrl = new URL(result.finalUrl);
@@ -382,6 +441,7 @@ export function createBackgroundUpdateManager(
       version: common.version,
       wait_pid: common.launcherPid,
       wait_executable: common.launcherExecutable,
+      ...(common.waitStartedAtMicros ? { wait_started_at_micros: common.waitStartedAtMicros } : {}),
       runtime_descriptor_path: common.runtimeDescriptorPath,
       status_path: common.statusPath,
       installation,
@@ -391,7 +451,7 @@ export function createBackgroundUpdateManager(
       common.statusPath,
       statusSnapshot(common.version, installation.kind, "prepared"),
     );
-    preparedRequests.add(common.requestPath);
+    preparedRequests.set(common.requestPath, request);
     return Object.freeze({
       version: common.version,
       installation: installation.kind,
@@ -404,10 +464,43 @@ export function createBackgroundUpdateManager(
 
   return Object.freeze({
     async prepareNpm(options: NpmUpdateOptions): Promise<PreparedBackgroundUpdate> {
+      const identity =
+        platform === "win32"
+          ? await validateWindowsNpmInstallation(options, dependencies.architecture ?? process.arch)
+          : undefined;
+      if (identity) await assertNpmStagingOutsidePrefix(options.stateDirectory, identity.prefix);
       const common = await prepareCommon(options, "npm");
       try {
+        const deadline = AbortSignal.timeout(120_000);
+        const prepare = (version: string, directory: string, installPrefix: string) =>
+          (dependencies.prepareNpmMaterials ?? prepareNpmMaterials)(
+            {
+              nodePath: options.nodePath,
+              npmCliPath: options.npmCliPath,
+              version,
+              platform,
+              architecture: dependencies.architecture ?? process.arch,
+              directory: path.join(common.workDirectory, directory),
+              installPrefix,
+            },
+            { signal: deadline },
+          );
+        const prepared = identity
+          ? await prepare(common.version, "npm", identity.prefix)
+          : undefined;
+        const recovery = identity
+          ? await prepare(identity.installedVersion, "npm-previous", identity.prefix)
+          : undefined;
         return await finalize(common, {
           kind: "npm",
+          ...(prepared && recovery ? { prepared, recovery } : {}),
+          ...(identity
+            ? {
+                prefix: identity.prefix,
+                package_root: options.packageRoot,
+                installed_version: identity.installedVersion,
+              }
+            : {}),
           node_path: await requireRegularFile(options.nodePath, "npm Node.js executable"),
           npm_cli_path: await requireRegularFile(options.npmCliPath, "npm CLI"),
           npm_launcher_path: await requireRegularFile(
@@ -425,23 +518,66 @@ export function createBackgroundUpdateManager(
       options: WindowsInstallerUpdateOptions,
     ): Promise<PreparedBackgroundUpdate> {
       if (platform !== "win32") throw new Error("Windows installer updates require Windows");
+      const installedVersion = await validateWindowsInstallerInstallation(
+        options.installRoot,
+        options.launcherExecutable,
+        dependencies.architecture ?? process.arch,
+        options.installedVersion,
+      );
+      if (
+        inside(
+          await resolvedFuturePath(options.installRoot),
+          await resolvedFuturePath(options.stateDirectory),
+        )
+      )
+        throw new Error("Installer preparation must be outside the installation");
       const common = await prepareCommon(options, "windows-installer");
-      const artifact = await prepareArtifact(
-        common,
-        "windows-installer",
-        options.artifact,
-        "update.exe",
-      );
-      return finalize(
-        common,
-        {
-          kind: "windows-installer",
-          installer_path: artifact.artifactPath,
-          artifact_sha256: artifact.source.sha256,
-          install_root: requireAbsolutePath(options.installRoot, "Windows install root"),
-        },
-        artifact.artifactPath,
-      );
+      try {
+        const artifact = await prepareArtifact(
+          common,
+          "windows-installer",
+          options.artifact,
+          "update.exe",
+        );
+        const hasCapability = await lstat(
+          path.join(options.installRoot, INSTALLER_FILES_PATH),
+        ).then(
+          () => true,
+          (error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return false;
+            throw error;
+          },
+        );
+        const recovery = hasCapability
+          ? await prepareInstallerRecovery({
+              installRoot: options.installRoot,
+              operation: common.workDirectory,
+              installedVersion,
+              version: common.version,
+              architecture: dependencies.architecture ?? process.arch,
+              artifact: artifact.source,
+              ...(dependencies.installerRelease ? { release: dependencies.installerRelease } : {}),
+              ...(dependencies.environment ? { environment: dependencies.environment } : {}),
+              download: async (source, name) =>
+                (await prepareArtifact(common, "windows-installer", source, name)).artifactPath,
+            })
+          : undefined;
+        return await finalize(
+          common,
+          {
+            kind: "windows-installer",
+            installer_path: artifact.artifactPath,
+            artifact_sha256: artifact.source.sha256,
+            install_root: requireAbsolutePath(options.installRoot, "Windows install root"),
+            installed_version: installedVersion,
+            ...(recovery ? { recovery } : {}),
+          },
+          artifact.artifactPath,
+        );
+      } catch (error) {
+        await writeFailedStatus(common.statusPath, common.version, "windows-installer", error);
+        throw error;
+      }
     },
 
     async prepareMacOsDmg(options: MacOsDmgUpdateOptions): Promise<PreparedBackgroundUpdate> {
@@ -465,17 +601,31 @@ export function createBackgroundUpdateManager(
     },
 
     async start(prepared: PreparedBackgroundUpdate): Promise<StartedBackgroundUpdate> {
-      if (!preparedRequests.delete(prepared.requestPath)) {
+      const request = preparedRequests.get(prepared.requestPath);
+      if (!request || !preparedRequests.delete(prepared.requestPath)) {
         throw new Error(
           "background update was not prepared by this manager or was already started",
         );
       }
       try {
-        const child = spawnUpdater(prepared.helperPath, prepared.requestPath);
-        await waitForUpdaterReady(child, () => this.readStatus(prepared.statusPath));
-        if (child.pid === undefined)
-          throw new Error("background Updater did not report a process ID");
-        return Object.freeze({ ...prepared, updaterPid: child.pid });
+        if (platform === "win32" && prepared.installation === "windows-installer") {
+          if (request.installation.kind !== "windows-installer" || !request.installation.recovery) {
+            throw new Error(
+              "Windows installer original-channel recovery is unavailable for this installation; use the manual installer in the original directory",
+            );
+          }
+        }
+        const unavailable = automaticUpdateUnavailableReason(platform, prepared.installation);
+        if (unavailable) throw new Error(unavailable);
+        const updaterPid = await startUpdater({
+          platform,
+          prepared,
+          owner: request,
+          spawnUpdater,
+          readIdentity: dependencies.readProcessIdentity ?? readWindowsProcessIdentity,
+          readStatus: () => this.readStatus(prepared.statusPath),
+        });
+        return Object.freeze({ ...prepared, ...(updaterPid === undefined ? {} : { updaterPid }) });
       } catch (error) {
         await writeFailedStatus(
           prepared.statusPath,

@@ -41,6 +41,18 @@ describe("release Payload", () => {
       expect(
         await readFile(path.join(root, "licenses/Agent-Client-Protocol-SDK-LICENSE.txt"), "utf8"),
       ).toContain("Apache License");
+      for (const name of [
+        "tar-LICENSE.md",
+        "fs-minipass-LICENSE.txt",
+        "chownr-LICENSE.md",
+        "minipass-LICENSE.md",
+        "minizlib-LICENSE.txt",
+        "yallist-LICENSE.md",
+      ]) {
+        expect(await readFile(path.join(root, "licenses", name), "utf8")).not.toBe(
+          `payload:licenses/${name}\n`,
+        );
+      }
       await expect(
         validatePayload({ payloadRoot: root, target, root: "/repo/source" }),
       ).resolves.toContain("licenses/Agent-Client-Protocol-SDK-LICENSE.txt");
@@ -92,9 +104,9 @@ describe("release Payload", () => {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(31 + preinstalledHarnessPluginPaths().length);
+      expect(paths).toHaveLength(37 + preinstalledHarnessPluginPaths().length);
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
-        33 + preinstalledHarnessPluginPaths().length,
+        40 + preinstalledHarnessPluginPaths().length,
       );
       expect(paths).toContain("licenses/tailwindcss-LICENSE.txt");
       expect(paths).toContain("app/plugins/enabled.json");

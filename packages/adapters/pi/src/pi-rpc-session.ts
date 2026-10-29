@@ -34,6 +34,8 @@ export interface PiSessionState {
   sessionFile: string | null;
   provider: string | null;
   modelId: string | null;
+  /** Native reasoning capability of the effective Model when Pi reports its full Model object. */
+  modelReasoning?: boolean;
   thinkingLevel: HarnessThinkingOptionId | null;
   fast?: boolean;
   contextUsage: Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null;
@@ -255,6 +257,8 @@ function sessionStateData(response: Record<string, unknown>): Record<string, unk
 function parseSessionState(response: Record<string, unknown>): PiSessionState {
   const data = sessionStateData(response);
   const model = parseNativeModel(data.model, "state");
+  const modelReasoning =
+    isRecord(data.model) && typeof data.model.reasoning === "boolean" ? data.model.reasoning : null;
   if (!nonBlankString(data.sessionId)) {
     throw new PiRpcFaultError("protocolError", "Pi RPC state has no stable Session identity");
   }
@@ -270,6 +274,7 @@ function parseSessionState(response: Record<string, unknown>): PiSessionState {
     sessionFile: typeof data.sessionFile === "string" ? data.sessionFile : null,
     provider: model?.provider ?? null,
     modelId: model?.id ?? null,
+    ...(modelReasoning === null ? {} : { modelReasoning }),
     thinkingLevel: thinkingLevel?.data ?? null,
     contextUsage: optionalPiStateContextUsage(data.contextUsage),
   };

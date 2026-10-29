@@ -61,8 +61,6 @@ use runtime_instance::{
     remove_matching_descriptor,
 };
 use startup_record::StartupOutcome;
-#[cfg(target_os = "macos")]
-use system_proxy_environment::launcher_proxy_environment;
 
 const HOST_NODE_PATH_ENV: &str = "CODEXHOST_HOST_NODE_PATH";
 const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
@@ -1156,10 +1154,10 @@ fn launch(
                 env::var_os(REMOTE_SSH_MANAGED_ENV),
             ),
         );
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         let environment = {
             let mut environment = environment;
-            environment.extend(launcher_proxy_environment());
+            environment.extend(codexhost_platform::proxy_environment());
             environment
         };
         let result = supervise_desktop(

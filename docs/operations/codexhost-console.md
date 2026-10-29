@@ -125,7 +125,7 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 `codexhost update` 提供不打开浏览器的终端入口，适用于 npm、macOS DMG 和 Windows 安装包。命令检查最新 Release，已是最新版本时成功退出；有更新时需先退出正在运行的 codexhost。命令复用控制台更新管理器和全局更新锁，等待下载、准备以及 Updater 校验旧进程身份并确认 `waiting-for-exit` 后退出，随后后台安装并重启 codexhost。创建子进程或获得 PID 不代表交接成功；启动报错、提前退出或 10 秒内未确认交接都会使操作失败，并终止未就绪的 Updater。终端显示的是交接状态，不代表安装已经完成；重新启动后应检查当前版本，历史安装结果保留在本地更新状态文件中供诊断。检查、准备或交接失败时返回非零退出码。源码构建和 Linux 非 npm 安装不支持自更新。
 
 - codexhost 运行中：通过 Host 的更新流程检查与安装，与 Codex 设置页一致。macOS 和 Windows 上 Host 只准备更新，由 Launcher 拉起 Updater 并在确认交接后关闭 Desktop；Windows 的 Host Runtime 位于 Shim 的随关闭终止 Job 中，由它拉起的 Updater 会随 Desktop 一起被终止。
-- Windows 安装包更新以 `/DIR` 固定当前安装目录；npm 更新前关闭仍从该平台包运行的 codexhost 可执行文件，不关闭共享的系统 Node。安装器和 npm 的输出分别写入本次更新目录的 `installer.log`、`npm-install.log`。失败时不自动回滚，更新页保留手动更新入口。
+- Windows 安装包更新以 `/DIR` 固定当前安装目录，启动安装器前由 Updater 先关闭仍从该安装目录运行的 Launcher、内置 Node（包括独立控制台）、Shim 和 node_repl 包装器，规则与下文的覆盖安装相同，因此不依赖目标版本安装器是否自带关闭步骤；npm 更新前关闭仍从该平台包运行的 codexhost 可执行文件，不关闭共享的系统 Node。安装器和 npm 的输出分别写入本次更新目录的 `installer.log`、`npm-install.log`。失败时不自动回滚，更新页保留手动更新入口。
 - codexhost 未运行：控制台下载并准备更新，拉起 Updater 并等待身份校验后的就绪确认才退出；Updater 等待控制台进程退出，再按原流程安装并重新启动 codexhost。
 - npm 安装需通过 npm 命令启动的控制台（`codexhost`、`codexhost console`，或 Codex 设置页）才能更新，因为更新需要 npm 路径环境变量。
 - 源码构建不支持在控制台更新。

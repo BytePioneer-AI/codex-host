@@ -512,6 +512,48 @@ describe("UsageStatistics", () => {
     expect(missing).not.toHaveBeenCalled();
   });
 
+  it("counts cache reads with unknown writes only for the cache hit rate", async () => {
+    const entries = [
+      entry("read-only", {
+        inputTokens: 1_000,
+        cachedInputTokens: 900,
+        cacheWriteInputTokens: undefined,
+      }),
+      entry("zero-read", {
+        inputTokens: 500,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: undefined,
+      }),
+      entry("unknown", {
+        inputTokens: 250,
+        cachedInputTokens: undefined,
+        cacheWriteInputTokens: undefined,
+      }),
+    ];
+    const stats = statistics();
+    stats.attach(() => [
+      {
+        harness: "antigravity",
+        capability: new FakeStorage(new Map([["one", { fingerprint: "1", entries }]])),
+      },
+    ]);
+
+    const result = await settledGet(stats);
+
+    expect(result.totals).toMatchObject({
+      inputTokens: 1_750,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      cacheKnownInputTokens: 0,
+      cacheHitCachedInputTokens: 900,
+      cacheHitInputTokens: 1_500,
+    });
+    expect(result.byHarness[0]).toMatchObject({
+      cacheHitCachedInputTokens: 900,
+      cacheHitInputTokens: 1_500,
+    });
+  });
+
   it("does not treat unknown cache counts or cache prices as zero", () => {
     const price = { input: 1, output: 2 };
     expect(usageEntryCostUsd(price, entry("x", { cachedInputTokens: undefined }))).toBeNull();

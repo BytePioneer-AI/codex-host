@@ -320,7 +320,9 @@ pub(crate) fn start_pending_update(started_request: &mut Option<PathBuf>) -> io:
     command
         .arg("apply")
         .arg("--request")
-        .arg(&pending.request_path);
+        .arg(&pending.request_path)
+        // npm downloads the update package and needs the same proxy as the Host.
+        .envs(codexhost_platform::proxy_environment());
     detach_updater(&mut command);
     let mut child = command
         .stdin(Stdio::null())

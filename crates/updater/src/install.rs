@@ -132,6 +132,10 @@ fn install_windows(
     windows: &WindowsInstallation,
 ) -> Result<(), Box<dyn Error>> {
     verify_artifact(&windows.installer_path, &windows.artifact_sha256)?;
+    // Close the console, Node, Shim and Launcher still running from this
+    // installation. Installers released before `prepare-install` do not, and
+    // Inno aborts a silent install when Restart Manager cannot close them.
+    crate::prepare_install::prepare(&windows.install_root)?;
     let mut command = Command::new(&windows.installer_path);
     command.args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"]);
     // Keep the running installation's directory, and leave Inno's log beside the

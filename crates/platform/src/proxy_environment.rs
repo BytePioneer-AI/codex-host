@@ -14,24 +14,18 @@ pub(crate) struct ProxySettings {
 }
 
 /// Windows Desktop tool servers may retain CODEX_CLI_PATH but discard proxy
-/// variables. Restore only the current user's static system proxy in that
-/// scoped helper path; explicit environment values (including empty) win.
+/// variables. Restore the current user's static system proxy in that scoped
+/// helper path; explicit environment values (including empty) win.
 #[cfg(target_os = "windows")]
 pub fn desktop_helper_proxy_environment() -> Vec<(OsString, OsString)> {
-    let system = match crate::windows_proxy::static_proxy_settings() {
-        Ok(settings) => settings,
-        Err(_) => {
-            eprintln!("codexhost: could not read Windows helper proxy settings");
-            None
-        }
-    };
-    proxy_environment_from(env::vars_os(), system.as_ref())
+    proxy_environment()
 }
 
 /// Returns the proxy environment that should be passed to a codexhost child.
 ///
-/// Explicit environment variables always win. On macOS, missing variables are
-/// filled from the operating system's static proxy configuration. Linux does
+/// Explicit environment variables always win. On macOS and Windows, missing
+/// variables are filled from the current user's static system proxy
+/// configuration; PAC/WPAD is not flattened into a global proxy. Linux does
 /// not have one portable system-proxy API, so its environment and TUN-based
 /// proxy configurations remain authoritative.
 pub fn proxy_environment() -> Vec<(OsString, OsString)> {
@@ -51,7 +45,15 @@ pub fn proxy_environment() -> Vec<(OsString, OsString)> {
             None
         }
     };
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    let system = match crate::windows_proxy::static_proxy_settings() {
+        Ok(settings) => settings,
+        Err(_) => {
+            eprintln!("codexhost: could not read Windows system proxy settings");
+            None
+        }
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let system = None;
 
     proxy_environment_from(inherited, system.as_ref())

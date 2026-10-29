@@ -1,0 +1,62 @@
+# Temporary: builds a downgraded Windows installer for manual one-click update testing.
+# Never publishes a Release or npm package. Remove before merging.
+name: Windows update test build
+
+on:
+  push:
+    branches:
+      - test/windows-one-click-update
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build windows-x64 test installer
+    runs-on: windows-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.97.1
+      TEST_VERSION: 0.14.99
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Setup npm
+        run: npm install --global npm@11.8.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        with:
+          toolchain: 1.97.1
+          targets: x86_64-pc-windows-msvc
+
+      - name: Setup Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set test version below the latest GitHub Release
+        run: npm run release:prepare -- --version ${{ env.TEST_VERSION }}
+
+      - name: Build TypeScript prerequisites
+        run: npm run build:typescript
+
+      - name: Build installer package
+        run: npm run release:package -- --target windows-x64
+
+      - name: Upload installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codexhost-${{ env.TEST_VERSION }}-windows-x64-test
+          path: build/release/${{ env.TEST_VERSION }}/windows-x64/codexhost-*.exe
+          if-no-files-found: error

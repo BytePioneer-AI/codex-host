@@ -221,7 +221,9 @@ pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn
 mod tests {
     use std::path::Path;
 
-    use super::{NativeHarnessBrokerCliCommand, ParsedNativeHarnessBroker, parse_native_harness_broker_cli};
+    use super::{
+        NativeHarnessBrokerCliCommand, ParsedNativeHarnessBroker, parse_native_harness_broker_cli,
+    };
 
     #[test]
     fn selected_harness_is_explicit_and_defaults_to_legacy_claude() {
@@ -232,12 +234,10 @@ mod tests {
         };
         assert_eq!(status.harness_id, "claude-code");
         for id in ["codebuddy", "workbuddy", "cursor-cli"] {
-            let ParsedNativeHarnessBroker::Run(parsed) = parse_native_harness_broker_cli(&[
-                "install".into(),
-                "--harness".into(),
-                id.into(),
-            ])
-            .unwrap() else {
+            let ParsedNativeHarnessBroker::Run(parsed) =
+                parse_native_harness_broker_cli(&["install".into(), "--harness".into(), id.into()])
+                    .unwrap()
+            else {
                 panic!("expected Run");
             };
             assert_eq!(parsed.harness_id, id);

@@ -132,7 +132,11 @@ fn production_launcher_prints_help_on_stdout_with_success() {
         .arg("--help")
         .output()
         .expect("run launcher");
-    assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("codexhost inspect"));
     assert!(stdout.contains("codexhost broker"));
@@ -147,10 +151,17 @@ fn production_launcher_prints_version_on_stdout_with_success() {
         .arg("--version")
         .output()
         .expect("run launcher");
-    assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     assert!(!stdout.is_empty());
-    assert!(stdout.chars().all(|c| c.is_ascii_digit() || c == '.'), "version={stdout}");
+    assert!(
+        stdout.chars().all(|c| c.is_ascii_digit() || c == '.'),
+        "version={stdout}"
+    );
     assert!(String::from_utf8_lossy(&output.stderr).is_empty());
 }
 
@@ -160,7 +171,11 @@ fn production_launcher_broker_without_subcommand_prints_usage_on_stdout() {
         .arg("broker")
         .output()
         .expect("run launcher");
-    assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("codexhost broker"));
     assert!(stdout.contains("install|status|stop|uninstall"));
@@ -172,7 +187,11 @@ fn production_launcher_broker_help_prints_usage_on_stdout() {
         .args(["broker", "--help"])
         .output()
         .expect("run launcher");
-    assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("codexhost broker"));
 }

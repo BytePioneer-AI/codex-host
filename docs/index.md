@@ -109,6 +109,12 @@
 | --- | --- |
 | [`harnesses/zcode/zcode-harness-integration.md`](harnesses/zcode/zcode-harness-integration.md) | 直连已装 ZCode Desktop 的 Agent CLI、Start Plan／个人 Coding Plan 账号接入、自定义 Provider、常驻验证页与验证边界；安装或维护 ZCode Adapter 时阅读。 |
 
+### Qwen Code
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/qwen/qwen-code-harness-integration.md`](harnesses/qwen/qwen-code-harness-integration.md) | 官方 `@qwen-code/sdk` 的 Query 生命周期、模型与权限模式、交互投影、Transcript 恢复及当前能力边界；维护 Qwen Code Adapter 时阅读。 |
+
 ## 账号与 Desktop 产品接入
 
 | 文档 | 内容与阅读时机 |

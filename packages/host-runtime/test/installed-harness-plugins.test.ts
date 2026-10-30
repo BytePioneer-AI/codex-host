@@ -21,6 +21,7 @@ const classes = {
   opencode: "OpenCodeAdapter",
   grok: "GrokAdapter",
   omp: "OmpAdapter",
+  "qwen-code": "QwenCodeAdapter",
   antigravity: "AntigravityAdapter",
   "kimi-code": "KimiAdapter",
   "kiro-cli": "KiroAdapter",
@@ -112,6 +113,7 @@ describe("installed Harness composition", () => {
       opencode: ["/compact"],
       grok: ["/compact"],
       omp: ["/compact"],
+      "qwen-code": [],
       antigravity: [
         "/plan",
         "/goal",
@@ -159,6 +161,7 @@ describe("installed Harness composition", () => {
     ["grok", "CODEXHOST_GROK_COMMAND"],
     ["opencode", "CODEXHOST_OPENCODE_COMMAND"],
     ["omp", "CODEXHOST_OMP_COMMAND"],
+    ["qwen-code", "CODEXHOST_QWEN_COMMAND"],
     ["antigravity", "CODEXHOST_ANTIGRAVITY_COMMAND"],
     ["kiro-cli", "CODEXHOST_KIRO_COMMAND"],
     ["codebuddy", "CODEXHOST_CODEBUDDY_COMMAND"],

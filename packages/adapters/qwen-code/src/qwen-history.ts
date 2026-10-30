@@ -31,6 +31,15 @@ export function qwenCodeTurnKey(ordinal: number): string {
   return `${QWEN_CODE_TURN_KEY_PREFIX}${ordinal}`;
 }
 
+export function nextQwenCodeTurnOrdinal(knownTurnRefs: readonly NativeTurnRef[]): number {
+  let next = 0;
+  for (const ref of knownTurnRefs) {
+    const match = /^qwen-turn-(\d+)$/u.exec(ref.nativeTurnKey);
+    if (match) next = Math.max(next, Number(match[1]) + 1);
+  }
+  return next;
+}
+
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -290,6 +299,17 @@ function projectHistory(
     knownTurnRefs.length > 0 && turns.length > knownTurnRefs.length
       ? turns.slice(-knownTurnRefs.length)
       : turns;
+  if (turns.length > knownTurnRefs.length && knownTurnRefs.length > 0) {
+    const selectedKeys = selected.map((turn) => turn.nativeTurnRef.nativeTurnKey);
+    if (
+      selectedKeys.length !== knownTurnRefs.length ||
+      selectedKeys.some((key, index) => key !== knownTurnRefs[index]?.nativeTurnKey)
+    ) {
+      throw new Error(
+        "Qwen Code transcript contains Turns outside the persisted Native Turn mapping",
+      );
+    }
+  }
   const alignedTurnRefs = knownTurnRefs.slice(Math.max(0, knownTurnRefs.length - selected.length));
   return {
     turns: selected.map((turn, index) => ({
@@ -359,26 +379,34 @@ export async function readQwenCodeHistory(
     path.join(projectDir, `${sessionId}.jsonl`),
     path.join(projectDir, "archive", `${sessionId}.jsonl`),
   ];
+  let lastReadError: unknown;
   for (const filePath of paths) {
+    let content: string;
     try {
-      const content = await readFile(filePath, "utf8");
-      return mapQwenCodeHistory(
-        content.split(/\r?\n/u).flatMap((line) => {
-          try {
-            return line ? [JSON.parse(line)] : [];
-          } catch {
-            return [];
-          }
-        }),
-        harnessId,
-        sessionId,
-        cwd,
-        knownTurnRefs,
-        toolOutputLimit,
-      );
-    } catch {
-      // A missing or concurrently rotated transcript is equivalent to empty history.
+      content = await readFile(filePath, "utf8");
+    } catch (error) {
+      lastReadError = error;
+      continue;
     }
+    return mapQwenCodeHistory(
+      content.split(/\r?\n/u).flatMap((line) => {
+        try {
+          return line ? [JSON.parse(line)] : [];
+        } catch {
+          return [];
+        }
+      }),
+      harnessId,
+      sessionId,
+      cwd,
+      knownTurnRefs,
+      toolOutputLimit,
+    );
+  }
+  if (knownTurnRefs.length > 0) {
+    throw lastReadError instanceof Error
+      ? lastReadError
+      : new Error("Qwen Code transcript could not be read");
   }
   return { turns: [] };
 }

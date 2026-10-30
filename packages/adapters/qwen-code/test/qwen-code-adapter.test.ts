@@ -6,6 +6,7 @@ import {
   harnessIdSchema,
   hostInteractionIdSchema,
   hostTurnIdSchema,
+  nativeTurnRefSchema,
   type HarnessPermissionModeId,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -471,6 +472,83 @@ describe("QwenCodeAdapter", () => {
       const snapshot = await opened.value.readSnapshot();
       if (!snapshot.ok) throw new Error("snapshot failed");
       expect(snapshot.value.turns[2]?.nativeTurnRef.nativeTurnKey).toBe("qwen-turn-2");
+    } finally {
+      await adapter.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("continues Turn ordinals from the highest persisted key", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-qwen-resume-"));
+    const cwd = path.join(root, "workspace");
+    const runtimeDir = path.join(root, "qwen-runtime");
+    const projectDir = path.join(
+      runtimeDir,
+      "projects",
+      (process.platform === "win32" ? cwd.toLowerCase() : cwd).replace(/[^a-zA-Z0-9]/g, "-"),
+      "chats",
+    );
+    const transport = new FakeTransport();
+    transport.models = {
+      currentModelId: "history-model",
+      availableModels: [{ modelId: "history-model", name: "History Model" }],
+    };
+    transport.runTurnImplementation = async (onEvent) => {
+      onEvent({ type: "agent.text", text: "next reply" });
+      return { status: "succeeded" };
+    };
+    const { adapter } = adapterFor(transport);
+    const nativeRef = {
+      harnessId: harnessIdSchema.parse("qwen-code"),
+      nativeSessionId: transport.sessionId,
+      formatVersion: 1 as const,
+    };
+    const knownTurnRefs = ["qwen-turn-2", "qwen-turn-5"].map((nativeTurnKey) =>
+      nativeTurnRefSchema.parse({ ...nativeRef, nativeTurnKey }),
+    );
+
+    try {
+      await mkdir(projectDir, { recursive: true });
+      await writeFile(
+        path.join(projectDir, `${transport.sessionId}.jsonl`),
+        [
+          { type: "user", message: { role: "user", parts: [{ text: "first" }] } },
+          { type: "assistant", message: { role: "model", parts: [{ text: "reply" }] } },
+        ]
+          .map((record) => JSON.stringify(record))
+          .join("\n"),
+        "utf8",
+      );
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd,
+        environment: { QWEN_RUNTIME_DIR: runtimeDir },
+        nativeRef,
+        knownTurnRefs,
+      });
+      if (!opened.ok) throw new Error("resume failed");
+
+      const initial = await opened.value.readSnapshot();
+      if (!initial.ok) throw new Error("initial snapshot failed");
+      expect(initial.value.turns.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey)).toEqual([
+        "qwen-turn-5",
+      ]);
+
+      await opened.value.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("turn-after-gap"),
+        input: [{ type: "text", text: "next" }],
+      });
+      await vi.waitFor(async () => {
+        const snapshot = await opened.value.readSnapshot();
+        expect(snapshot.ok && snapshot.value.turns).toHaveLength(2);
+      });
+      const snapshot = await opened.value.readSnapshot();
+      if (!snapshot.ok) throw new Error("snapshot failed");
+      expect(snapshot.value.turns.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey)).toEqual([
+        "qwen-turn-5",
+        "qwen-turn-6",
+      ]);
     } finally {
       await adapter.close();
       await rm(root, { recursive: true, force: true });

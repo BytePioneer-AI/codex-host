@@ -10,7 +10,11 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
-import { mapQwenCodeHistory, readQwenCodeHistory } from "../src/qwen-history.js";
+import {
+  mapQwenCodeHistory,
+  nextQwenCodeTurnOrdinal,
+  readQwenCodeHistory,
+} from "../src/qwen-history.js";
 
 const harnessId = harnessIdSchema.parse("qwen-code");
 const sessionId = "550e8400-e29b-41d4-a716-446655440000";
@@ -137,6 +141,51 @@ describe("Qwen Code history", () => {
     ]);
   });
 
+  it("continues Turn ordinals from the highest persisted key", () => {
+    expect(nextQwenCodeTurnOrdinal([turnRef("qwen-turn-2"), turnRef("qwen-turn-5")])).toBe(6);
+    expect(nextQwenCodeTurnOrdinal([turnRef("mapped-0")])).toBe(0);
+    expect(nextQwenCodeTurnOrdinal([])).toBe(0);
+  });
+
+  it("rejects extra transcript Turns that do not match the persisted mapping suffix", () => {
+    expect(() =>
+      mapQwenCodeHistory(
+        [
+          { type: "user", message: { role: "user", parts: [{ text: "first" }] } },
+          { type: "assistant", message: { role: "model", parts: [{ text: "one" }] } },
+          { type: "user", message: { role: "user", parts: [{ text: "second" }] } },
+          { type: "assistant", message: { role: "model", parts: [{ text: "two" }] } },
+          { type: "user", message: { role: "user", parts: [{ text: "third" }] } },
+          { type: "assistant", message: { role: "model", parts: [{ text: "three" }] } },
+        ],
+        harnessId,
+        sessionId,
+        "/workspace",
+        [turnRef("qwen-turn-0")],
+      ),
+    ).toThrow("outside the persisted Native Turn mapping");
+  });
+
+  it("aligns extra transcript Turns when the persisted mapping is an exact suffix", () => {
+    const snapshot = mapQwenCodeHistory(
+      [
+        { type: "user", message: { role: "user", parts: [{ text: "first" }] } },
+        { type: "assistant", message: { role: "model", parts: [{ text: "one" }] } },
+        { type: "user", message: { role: "user", parts: [{ text: "second" }] } },
+        { type: "assistant", message: { role: "model", parts: [{ text: "two" }] } },
+        { type: "user", message: { role: "user", parts: [{ text: "third" }] } },
+        { type: "assistant", message: { role: "model", parts: [{ text: "three" }] } },
+      ],
+      harnessId,
+      sessionId,
+      "/workspace",
+      [turnRef("qwen-turn-2")],
+    );
+
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]?.nativeTurnRef.nativeTurnKey).toBe("qwen-turn-2");
+  });
+
   it("aligns a truncated transcript with the newest known Native Turn refs", () => {
     const knownTurnRefs = [turnRef("mapped-0"), turnRef("mapped-1"), turnRef("mapped-2")];
     const snapshot = mapQwenCodeHistory(
@@ -213,6 +262,75 @@ describe("Qwen Code history", () => {
       { status: "unknown", reason: "Qwen Code transcript records no Turn result" },
     ]);
   });
+  it("fails when every transcript candidate is unreadable but a mapping exists", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-qwen-history-"));
+    const cwd = path.join(root, "workspace");
+    try {
+      await expect(
+        readQwenCodeHistory(cwd, harnessId, sessionId, [turnRef("qwen-turn-0")], 64_000, {
+          QWEN_RUNTIME_DIR: path.join(root, "runtime"),
+        }),
+      ).rejects.toThrow();
+      await expect(
+        readQwenCodeHistory(cwd, harnessId, sessionId, [], 64_000, {
+          QWEN_RUNTIME_DIR: path.join(root, "runtime"),
+        }),
+      ).resolves.toEqual({ turns: [] });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns an empty snapshot for a readable but empty transcript", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-qwen-history-"));
+    const cwd = path.join(root, "workspace");
+    const runtimeDir = path.join(root, "runtime");
+    try {
+      const chats = path.join(runtimeDir, "projects", projectDirectory(cwd), "chats");
+      await mkdir(chats, { recursive: true });
+      await writeFile(path.join(chats, `${sessionId}.jsonl`), "", "utf8");
+
+      await expect(
+        readQwenCodeHistory(cwd, harnessId, sessionId, [turnRef("qwen-turn-0")], 64_000, {
+          QWEN_RUNTIME_DIR: runtimeDir,
+        }),
+      ).resolves.toEqual({ turns: [] });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the archive transcript when the main transcript is missing", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-qwen-history-"));
+    const cwd = path.join(root, "workspace");
+    const runtimeDir = path.join(root, "runtime");
+    try {
+      const archive = path.join(runtimeDir, "projects", projectDirectory(cwd), "chats", "archive");
+      await mkdir(archive, { recursive: true });
+      await writeFile(
+        path.join(archive, `${sessionId}.jsonl`),
+        [
+          { type: "user", message: { role: "user", parts: [{ text: "hello" }] } },
+          { type: "assistant", message: { role: "model", parts: [{ text: "world" }] } },
+        ]
+          .map((record) => JSON.stringify(record))
+          .join("\n"),
+        "utf8",
+      );
+
+      const snapshot = await readQwenCodeHistory(cwd, harnessId, sessionId, [], 64_000, {
+        QWEN_RUNTIME_DIR: runtimeDir,
+      });
+
+      expect(snapshot.turns[0]).toMatchObject({
+        input: [{ type: "text", text: "hello" }],
+        items: [{ item: { type: "agentMessage", text: "world" } }],
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("reads history from the Session QWEN_RUNTIME_DIR relative to cwd", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-qwen-history-"));
     const cwd = path.join(root, "workspace");

@@ -77,7 +77,7 @@ import {
   stateForQwenCodeModel,
   type QwenCodeModelState,
 } from "./qwen-models.js";
-import { qwenCodeTurnKey, readQwenCodeHistory } from "./qwen-history.js";
+import { nextQwenCodeTurnOrdinal, qwenCodeTurnKey, readQwenCodeHistory } from "./qwen-history.js";
 import {
   applyQwenCodeToolProjection,
   DEFAULT_QWEN_CODE_TOOL_OUTPUT_LIMIT,
@@ -1147,7 +1147,7 @@ export class QwenCodeAdapter implements HarnessAdapter {
           history,
           turnCount:
             input.kind === "resume"
-              ? Math.max(input.knownTurnRefs?.length ?? 0, history.length)
+              ? Math.max(nextQwenCodeTurnOrdinal(input.knownTurnRefs ?? []), history.length)
               : 0,
           initialUsage,
           initialPermissionModeId,

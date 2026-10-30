@@ -125,10 +125,16 @@ impl Display for UnmanagedDesktopConflict {
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 impl Error for UnmanagedDesktopConflict {}
 
+fn usage_text() -> &'static str {
+    "usage:\n  codexhost\n  codexhost --help\n  codexhost --version\n  codexhost inspect [--json] [--custom-install <absolute-directory>]\n  codexhost console\n  codexhost update\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect|list ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list|watch|watches ..."
+}
+
 fn usage() {
-    eprintln!(
-        "usage:\n  codexhost\n  codexhost inspect [--json] [--custom-install <absolute-directory>]\n  codexhost console\n  codexhost update\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
-    );
+    eprintln!("{}", usage_text());
+}
+
+fn print_usage() {
+    println!("{}", usage_text());
 }
 
 const LOOPBACK_URL_MAX_BYTES: u64 = 4096;
@@ -1334,6 +1340,14 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         #[cfg(target_os = "windows")]
         Some(APPX_RESUME_ARGUMENT) => {
             resume_packaged_application(&arguments[1..]).map_err(Into::into)
+        }
+        Some("--help") | Some("-h") | Some("help") if arguments.len() == 1 => {
+            print_usage();
+            Ok(())
+        }
+        Some("--version") | Some("-V") | Some("version") if arguments.len() == 1 => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            Ok(())
         }
         None => launch(default_launch_options(), false),
         Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch(default_launch_options(), true),

@@ -125,3 +125,54 @@ fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
     assert!(stderr.contains("Contents/Resources/libexec/codexhost-shim"));
     assert!(!stderr.contains("invalid launcher arguments"));
 }
+
+#[test]
+fn production_launcher_prints_help_on_stdout_with_success() {
+    let output = Command::new(launcher_path())
+        .arg("--help")
+        .output()
+        .expect("run launcher");
+    assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("codexhost inspect"));
+    assert!(stdout.contains("codexhost broker"));
+    assert!(stdout.contains("thread"));
+    assert!(stdout.contains("watch"));
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+}
+
+#[test]
+fn production_launcher_prints_version_on_stdout_with_success() {
+    let output = Command::new(launcher_path())
+        .arg("--version")
+        .output()
+        .expect("run launcher");
+    assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    assert!(!stdout.is_empty());
+    assert!(stdout.chars().all(|c| c.is_ascii_digit() || c == '.'), "version={stdout}");
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+}
+
+#[test]
+fn production_launcher_broker_without_subcommand_prints_usage_on_stdout() {
+    let output = Command::new(launcher_path())
+        .arg("broker")
+        .output()
+        .expect("run launcher");
+    assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("codexhost broker"));
+    assert!(stdout.contains("install|status|stop|uninstall"));
+}
+
+#[test]
+fn production_launcher_broker_help_prints_usage_on_stdout() {
+    let output = Command::new(launcher_path())
+        .args(["broker", "--help"])
+        .output()
+        .expect("run launcher");
+    assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("codexhost broker"));
+}

@@ -36,63 +36,95 @@ fn macos_absolute_path(value: &str, option: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(value))
 }
 
+pub const NATIVE_HARNESS_BROKER_USAGE: &str = "usage: codexhost broker install|status|stop|uninstall [--harness <id>] [--node <absolute-file> --host-runtime <absolute-file>]";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParsedNativeHarnessBroker {
+    /// No lifecycle command (or an explicit help flag): print usage and exit 0.
+    Help,
+    Run(NativeHarnessBrokerCli),
+}
+
 pub fn parse_native_harness_broker_cli(
     arguments: &[String],
-) -> Result<NativeHarnessBrokerCli, String> {
-    let Some(command) = arguments.first() else {
-        return Err(
-            "usage: codexhost broker install|status|stop|uninstall [--harness <id>] [--node <absolute-file> --host-runtime <absolute-file>]".to_owned(),
-        );
-    };
-    let command = match command.as_str() {
-        "install" => NativeHarnessBrokerCliCommand::Install,
-        "status" => NativeHarnessBrokerCliCommand::Status,
-        "stop" => NativeHarnessBrokerCliCommand::Stop,
-        "uninstall" => NativeHarnessBrokerCliCommand::Uninstall,
-        unknown => Err(format!(
-            "unknown native Harness broker command '{unknown}'; expected install, status, stop, or uninstall"
-        ))?,
-    };
+) -> Result<ParsedNativeHarnessBroker, String> {
+    let mut command = None;
     let mut node = None;
     let mut host_runtime = None;
     let mut harness_id = None;
-    let mut index = 1;
+    let mut index = 0;
     while index < arguments.len() {
-        let option = arguments[index].as_str();
-        let value = arguments
-            .get(index + 1)
-            .ok_or_else(|| format!("{option} requires a value"))?;
-        match option {
-            "--node" if node.is_none() => node = Some(macos_absolute_path(value, "--node")?),
-            "--host-runtime" if host_runtime.is_none() => {
-                host_runtime = Some(macos_absolute_path(value, "--host-runtime")?)
-            }
-            "--harness" if harness_id.is_none() => {
-                codexhost_platform::native_harness_broker_label(value)
-                    .map_err(|e| e.to_string())?;
-                harness_id = Some(value.clone());
-            }
+        let token = arguments[index].as_str();
+        match token {
+            "--help" | "-h" | "help" => return Ok(ParsedNativeHarnessBroker::Help),
             "--node" | "--host-runtime" | "--harness" => {
-                return Err(format!("duplicate option: {option}"));
+                let value = arguments
+                    .get(index + 1)
+                    .ok_or_else(|| format!("{token} requires a value"))?;
+                match token {
+                    "--node" if node.is_none() => {
+                        node = Some(macos_absolute_path(value, "--node")?)
+                    }
+                    "--host-runtime" if host_runtime.is_none() => {
+                        host_runtime = Some(macos_absolute_path(value, "--host-runtime")?)
+                    }
+                    "--harness" if harness_id.is_none() => {
+                        codexhost_platform::native_harness_broker_label(value)
+                            .map_err(|e| e.to_string())?;
+                        harness_id = Some(value.clone());
+                    }
+                    "--node" | "--host-runtime" | "--harness" => {
+                        return Err(format!("duplicate option: {token}"));
+                    }
+                    _ => unreachable!(),
+                }
+                index += 2;
+                continue;
             }
-            unknown => return Err(format!("unknown native Harness broker option: {unknown}")),
+            "install" | "status" | "stop" | "uninstall" => {
+                if command.is_some() {
+                    return Err(format!("unexpected argument: {token}"));
+                }
+                command = Some(match token {
+                    "install" => NativeHarnessBrokerCliCommand::Install,
+                    "status" => NativeHarnessBrokerCliCommand::Status,
+                    "stop" => NativeHarnessBrokerCliCommand::Stop,
+                    "uninstall" => NativeHarnessBrokerCliCommand::Uninstall,
+                    _ => unreachable!(),
+                });
+            }
+            unknown if unknown.starts_with('-') => {
+                return Err(format!("unknown native Harness broker option: {unknown}"));
+            }
+            unknown => {
+                return Err(format!(
+                    "unknown native Harness broker command '{unknown}'; expected install, status, stop, or uninstall"
+                ));
+            }
         }
-        index += 2;
+        index += 1;
     }
+    let Some(command) = command else {
+        // Bare `broker`, or npm-injected `--node` / `--host-runtime` with no subcommand.
+        return Ok(ParsedNativeHarnessBroker::Help);
+    };
     if node.is_some() != host_runtime.is_some() {
         return Err("--node and --host-runtime must be supplied together".to_owned());
     }
-    Ok(NativeHarnessBrokerCli {
+    Ok(ParsedNativeHarnessBroker::Run(NativeHarnessBrokerCli {
         command,
         harness_id: harness_id.unwrap_or_else(|| "claude-code".to_owned()),
         node,
         host_runtime,
-    })
+    }))
 }
 
 #[cfg(target_os = "macos")]
 pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
-    let cli = parse_native_harness_broker_cli(arguments)?;
+    let ParsedNativeHarnessBroker::Run(cli) = parse_native_harness_broker_cli(arguments)? else {
+        println!("{NATIVE_HARNESS_BROKER_USAGE}");
+        return Ok(());
+    };
     let bundled_resources = if cli.node.is_none() {
         Some(InstalledResources::from_current_executable()?)
     } else {
@@ -174,31 +206,41 @@ pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn
 
 #[cfg(not(target_os = "macos"))]
 pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
-    let _ = parse_native_harness_broker_cli(arguments)?;
-    Err("the native Harness broker is available only on macOS".into())
+    match parse_native_harness_broker_cli(arguments)? {
+        ParsedNativeHarnessBroker::Help => {
+            println!("{NATIVE_HARNESS_BROKER_USAGE}");
+            Ok(())
+        }
+        ParsedNativeHarnessBroker::Run(_) => {
+            Err("the native Harness broker is available only on macOS".into())
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use super::{NativeHarnessBrokerCliCommand, parse_native_harness_broker_cli};
+    use super::{NativeHarnessBrokerCliCommand, ParsedNativeHarnessBroker, parse_native_harness_broker_cli};
 
     #[test]
     fn selected_harness_is_explicit_and_defaults_to_legacy_claude() {
-        assert_eq!(
-            parse_native_harness_broker_cli(&["status".into()])
-                .unwrap()
-                .harness_id,
-            "claude-code"
-        );
+        let ParsedNativeHarnessBroker::Run(status) =
+            parse_native_harness_broker_cli(&["status".into()]).unwrap()
+        else {
+            panic!("expected Run");
+        };
+        assert_eq!(status.harness_id, "claude-code");
         for id in ["codebuddy", "workbuddy", "cursor-cli"] {
-            assert_eq!(
-                parse_native_harness_broker_cli(&["install".into(), "--harness".into(), id.into()])
-                    .unwrap()
-                    .harness_id,
-                id
-            );
+            let ParsedNativeHarnessBroker::Run(parsed) = parse_native_harness_broker_cli(&[
+                "install".into(),
+                "--harness".into(),
+                id.into(),
+            ])
+            .unwrap() else {
+                panic!("expected Run");
+            };
+            assert_eq!(parsed.harness_id, id);
         }
         assert!(
             parse_native_harness_broker_cli(&[
@@ -228,26 +270,62 @@ mod tests {
             ("stop", NativeHarnessBrokerCliCommand::Stop),
             ("uninstall", NativeHarnessBrokerCliCommand::Uninstall),
         ] {
-            assert_eq!(
-                parse_native_harness_broker_cli(&[argument.to_owned()])
-                    .expect("valid command")
-                    .command,
-                expected
-            );
+            let ParsedNativeHarnessBroker::Run(parsed) =
+                parse_native_harness_broker_cli(&[argument.to_owned()]).expect("valid command")
+            else {
+                panic!("expected Run");
+            };
+            assert_eq!(parsed.command, expected);
         }
         assert!(parse_native_harness_broker_cli(&["install".into(), "unexpected".into()]).is_err());
     }
 
     #[test]
+    fn bare_broker_or_help_prints_usage_without_a_lifecycle_command() {
+        assert_eq!(
+            parse_native_harness_broker_cli(&[]).unwrap(),
+            ParsedNativeHarnessBroker::Help
+        );
+        assert_eq!(
+            parse_native_harness_broker_cli(&["--help".into()]).unwrap(),
+            ParsedNativeHarnessBroker::Help
+        );
+        // npm wrapper injects --node/--host-runtime even when the user typed only `broker`.
+        assert_eq!(
+            parse_native_harness_broker_cli(&[
+                "--node".into(),
+                "/opt/codexhost/runtime/node".into(),
+                "--host-runtime".into(),
+                "/opt/codexhost/app/host-runtime.mjs".into(),
+            ])
+            .unwrap(),
+            ParsedNativeHarnessBroker::Help
+        );
+        let ParsedNativeHarnessBroker::Run(parsed) = parse_native_harness_broker_cli(&[
+            "--node".into(),
+            "/opt/codexhost/runtime/node".into(),
+            "--host-runtime".into(),
+            "/opt/codexhost/app/host-runtime.mjs".into(),
+            "status".into(),
+        ])
+        .unwrap() else {
+            panic!("expected Run when a lifecycle command follows injected options");
+        };
+        assert_eq!(parsed.command, NativeHarnessBrokerCliCommand::Status);
+    }
+
+    #[test]
     fn accepts_only_a_complete_absolute_runtime_pair() {
-        let parsed = parse_native_harness_broker_cli(&[
+        let ParsedNativeHarnessBroker::Run(parsed) = parse_native_harness_broker_cli(&[
             "install".into(),
             "--node".into(),
             "/opt/codexhost/runtime/node".into(),
             "--host-runtime".into(),
             "/opt/codexhost/app/host-runtime.mjs".into(),
         ])
-        .expect("absolute pair");
+        .expect("absolute pair") else {
+            panic!("expected Run");
+        };
         assert_eq!(
             parsed.node.expect("node"),
             Path::new("/opt/codexhost/runtime/node")

@@ -569,7 +569,9 @@ if (userArguments.length === 0) {
   consoleArguments = userArguments.slice(1);
 } else if (userArguments[0] === "remote") {
   launchArguments = null;
-  remoteArguments = userArguments.slice(1);
+  // The packaged resources are appended after the subcommand; without one, the
+  // first injected option would be read as the subcommand. Show usage instead.
+  remoteArguments = userArguments.length > 1 ? userArguments.slice(1) : ["help"];
 } else if (userArguments[0] === "broker") {
   launchArguments = null;
   brokerArguments = userArguments.slice(1);

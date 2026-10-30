@@ -658,6 +658,27 @@ describe("npm package release", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it.each(["darwin", "linux"])(
+    "forwards a bare remote command on %s as usage, not as an injected option",
+    async (platform) => {
+      const { result, calls } = await runGeneratedWrapperLifecycle(platform, ["remote"], [0]);
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].args).toEqual([
+        expect.stringMatching(/host-runtime\.mjs$/u),
+        "--codexhost-remote",
+        "help",
+        "--node",
+        process.execPath,
+        "--shim",
+        expect.stringMatching(/codexhost-shim$/u),
+        "--host-runtime",
+        expect.stringMatching(/host-runtime\.mjs$/u),
+      ]);
+    },
+  );
+
   it("does not install the Aqua broker when remote installation fails", async () => {
     const { result, calls } = await runGeneratedWrapperLifecycle(
       "darwin",

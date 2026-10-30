@@ -139,6 +139,8 @@ Codex 的会话用量解析已从公共协议层迁入 `codex-usage`，账户配
 
 配置按插件保存到 `${CODEXHOST_DATA_DIR}/harness-launch-settings/<id>.json`，未设置数据目录时使用 `~/.codexhost`；采用临时文件加原子替换，不写 Renderer localStorage，不改进程全局环境。下次 Host 构造插件时，经公共 `HarnessPluginContext.launchCommand` 传给声明支持的工厂。WorkBuddy 工厂将其映射到原生启动配置，优先于继承的命令环境变量；清除设置后恢复环境变量或自动发现。
 
+设置文件无法读取（非 JSON、不是字符串或不是绝对路径）时，读取错误包含文件路径；Host 不回退到自动发现，而以 `launchSettingsUnreadable` 诊断将该插件标为不可用。保存或清除设置不读取旧文件，直接替换或删除它，因此损坏的文件可在连接设置页或控制台中修复，重启 codexhost 后生效。读取失败不会被永久缓存。
+
 **修改需要重启 codexhost。** 已创建的 Adapter 与 Session 不热替换；`restartRequired` 比较当前持久化值与此 Host 构造时的值。仅刷新连接状态不会应用新路径。设置页填写应用安装目录，例如 `D:\program\WorkBuddy`，不要求用户定位 `.exe` 或脚本。WorkBuddy Adapter 定位 `WorkBuddy.exe` / `WorkBuddy AI.exe` / `WorkBuddyAI.exe` 及同目录内置脚本。目录布局不完整时检查失败，不借用其他安装的文件，也不回退到 PATH 或默认安装。底层保留原有文件入口覆盖兼容能力。注册表自动发现不在本功能范围内。
 
 ## Harness CLI 版本与更新

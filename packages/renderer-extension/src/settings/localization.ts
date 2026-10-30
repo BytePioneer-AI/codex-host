@@ -472,7 +472,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "No saved override. Uses environment configuration, then automatic discovery.",
   launchPathSaving: "Saving…",
   launchPathLoading: "Loading launch settings…",
-  launchPathLoadError: "Could not load launch settings. Reopen this detail panel to retry.",
+  launchPathLoadError:
+    "Could not load launch settings. Save an installation directory or reset to automatic discovery to replace them.",
   launchPathSaveError:
     "Could not save. Enter an existing absolute installation folder on this Host and check configuration permissions.",
   connectionOfficialWebsite: "Visit official website",
@@ -774,7 +775,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathAutomatic: "未设置自定义路径，使用环境变量配置或自动发现。",
   launchPathSaving: "正在保存…",
   launchPathLoading: "正在读取启动设置…",
-  launchPathLoadError: "无法读取启动设置，请重新打开此详情面板重试。",
+  launchPathLoadError: "无法读取启动设置。保存安装目录或恢复自动发现即可替换。",
   launchPathSaveError: "保存失败。请填写此 Host 上实际存在的安装目录绝对路径，并确认配置目录可写。",
   connectionOfficialWebsite: "访问官网",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",

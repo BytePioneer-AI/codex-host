@@ -71,6 +71,7 @@ function fakeHarnesses(): ConsoleHarnesses {
     links: null,
     icon: null,
     launchPath: null as string | null,
+    launchPathError: null as string | null,
   };
   return {
     list: vi.fn(async () => [harness]),

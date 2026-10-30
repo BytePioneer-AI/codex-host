@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Web 在已创建会话中统一发现原生命令与 Skills
-Web SHALL 在已创建、可输入的本地共享 external Thread 的 `/`、`#` 共享菜单及加号入口中展示当前 Harness 的原生命令与 Skills，并与界面操作及委派 Agent 分组区分。分类 SHALL 仅采用 Host 目录的原生元数据，缺失 Skill 标记时作为命令处理。未发送草稿、只读子会话、官方 Codex 与远程来源 MUST NOT 获得该新增入口。
+Web SHALL 在已创建、可输入的本地共享 external Thread 的 `/`、`#`、`@` 共享菜单及加号入口中展示当前 Harness 的原生命令与 Skills，并与界面操作及委派 Agent 分组区分。分类 SHALL 仅采用 Host 目录的原生元数据，缺失 Skill 标记时作为命令处理。未发送草稿、只读子会话、官方 Codex 与远程来源 MUST NOT 获得该新增入口。
 
 #### Scenario: 展示和搜索原生目录
 - **WHEN** 用户在受支持会话中打开菜单并输入查询
@@ -27,10 +27,10 @@ Web SHALL 在已创建、可输入的本地共享 external Thread 的 `/`、`#` 
 - **THEN** 用户 SHALL 能搜索、移动选择、确认及关闭菜单，并识别禁用原因
 - **AND** 关闭菜单 SHALL 保留输入内容并恢复输入焦点
 
-#### Scenario: 两种触发共享原生能力
-- **WHEN** 用户通过 `/`、词首裸 `#` 或 `#查询` 打开原生能力菜单
+#### Scenario: 三种触发共享原生能力
+- **WHEN** 用户通过 `/`、词首裸 `#`、`#查询`、裸 `@` 或 `@查询` 打开原生能力菜单
 - **THEN** 原生命令、Skills 和委派 Agent SHALL 使用相同目录、可用范围、选择、执行及错误/重连规则，不增加后端接口或第二套目录、缓存和执行引擎
-- **AND** `/` 和加号 SHALL 保留界面操作，`#` 只展示同一份原生能力分组
+- **AND** `/` 和加号 SHALL 保留界面操作，`#`、`@` 展示同一份原生能力分组，`@` 保留既有文件及会话引用语法
 - **AND** `#123`、`##`、词内或 URL 片段、转义的 `\#` MUST NOT 打开菜单
 - **AND** `#` 后继续输入空格作为 Markdown 标题时 SHALL 撤下菜单并保留全部文字；选择 SHALL 仅替换当前触发片段
 

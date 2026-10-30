@@ -171,7 +171,7 @@ it(
     await composer.fill("@");
     await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
     await menu.getByRole("option", { name: "Twin fake", exact: true }).waitFor();
-    assert.equal(await menu.locator('[id*="codexhost-native"]').count(), 0);
+    await menu.getByRole("option", { name: /^Native skill\b/ }).waitFor();
     await composer.press("Escape");
     for (const text of ["dev@codex-cli.com", "https://host/@codex-cli", "@notes.txt "]) {
       await composer.fill(text);
@@ -190,7 +190,7 @@ it(
     assert.equal(writeMethods().length, 0);
     assert.equal(
       host.requests.some((r) => r.method === "codexhost/thread/commands/inspect"),
-      false,
+      true,
     );
     await composer.press("Backspace");
     await composer.press("Backspace");

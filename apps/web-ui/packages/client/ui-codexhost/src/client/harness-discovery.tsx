@@ -179,7 +179,7 @@ export function registerHarnessDiscovery(ctx: Context): void {
     () =>
       ctx.inputTriggers.registerSource({
         trigger: "/",
-        aliases: ["#"],
+        aliases: ["#", "@"],
         name: HARNESS_COMMAND_SOURCE,
         codec: { clipboardText: (ref) => ref, serialize: async (ref) => ref },
         launcher: "command",

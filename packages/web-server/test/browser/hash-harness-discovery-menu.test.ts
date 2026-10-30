@@ -4,16 +4,21 @@ import { restoreHarnessCommandMentions } from "@codexhost/shared-contracts";
 import { defined } from "../support/defined.ts";
 import { discoveryBrowser } from "../support/discovery-browser.ts";
 
-for (const width of [390, 1280])
+for (const [trigger, width] of [
+  ["#", 390],
+  ["#", 1280],
+  ["@", 390],
+  ["@", 1280],
+] as const)
   it(
-    `hash alias shares native menu, carriers and direct execution at ${width}px`,
+    `${trigger} alias shares native menu, carriers and direct execution at ${width}px`,
     { timeout: 60_000 },
     async (t) => {
       const { host, page, composer, plus, menu, open, attach, writeMethods } =
         await discoveryBrowser(t, width, true);
       const reads = () =>
         host.requests.filter((r) => r.method === "codexhost/thread/commands/inspect");
-      await composer.fill("#");
+      await composer.fill(trigger);
       await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
       assert.equal(await menu.locator('[id*="codexhost-native"]').count(), 0);
       assert.equal(
@@ -26,7 +31,7 @@ for (const width of [390, 1280])
       await plus.click();
       await menu.getByRole("option", { name: /^Model\b/ }).waitFor();
       await open();
-      await composer.fill("#");
+      await composer.fill(trigger);
       await menu.getByRole("option", { name: /^Native skill\b/ }).waitFor();
       await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
       assert.equal(
@@ -48,7 +53,7 @@ for (const width of [390, 1280])
       assert.deepEqual(
         await native.allTextContents(),
         rows,
-        "slash and hash use the same native rows",
+        "slash and its aliases use the same native rows",
       );
       assert.equal(
         reads().length,
@@ -56,19 +61,19 @@ for (const width of [390, 1280])
         "one refresh per opening, no alias duplicate source",
       );
       await page.keyboard.press("Escape");
-      await composer.fill("before #native-skill after");
+      await composer.fill(`before ${trigger}native-skill after`);
       await composer.press("Home");
-      for (let i = 0; i < "before #native-skill".length; i++) await composer.press("ArrowRight");
-      await menu.getByRole("option", { name: /^Native skill\b/ }).waitFor();
-      await composer.press("Enter");
+      for (let i = 0; i < `before ${trigger}native-skill`.length; i++)
+        await composer.press("ArrowRight");
+      await menu.getByRole("option", { name: /^Native skill\b/ }).click();
       await composer.locator('[data-composer-chip="codexhost-native"]').waitFor();
       assert.ok((await composer.innerText()).includes("before"));
       assert.ok((await composer.innerText()).includes("after"));
-      assert.equal((await composer.innerText()).includes("#native-skill"), false);
+      assert.equal((await composer.innerText()).includes(`${trigger}native-skill`), false);
       await attach();
       await composer.press("End");
       await composer.press(" ");
-      await composer.pressSequentially("#codex-cli");
+      await composer.pressSequentially(`${trigger}codex-cli`);
       await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
       await composer.press("Enter");
       const agent = composer.locator('[data-composer-chip="codexhost-delegation"]');
@@ -87,7 +92,7 @@ for (const width of [390, 1280])
       const text = await page.evaluate(() => navigator.clipboard.readText());
       assert.ok(text.includes("subagent://codexhost-command.native-skill"));
       assert.ok(text.includes("subagent://codexhost.codex-cli"));
-      assert.equal(text.includes("#codex-cli"), false);
+      assert.equal(text.includes(`${trigger}codex-cli`), false);
       const submitted = page.waitForResponse((response) =>
         response.url().endsWith("/api/session/prompt"),
       );
@@ -105,7 +110,7 @@ for (const width of [390, 1280])
       assert.ok(restored.includes("before"));
       assert.ok(restored.includes("after"));
       assert.ok(restored.includes("subagent://codexhost.codex-cli"));
-      await composer.fill("body #compact");
+      await composer.fill(`body ${trigger}compact`);
       await attach();
       await menu.getByRole("option", { name: /^Compact\b/ }).waitFor();
       const executed = page.waitForResponse((response) =>

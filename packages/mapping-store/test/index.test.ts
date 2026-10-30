@@ -935,6 +935,34 @@ describe("mapping-store package", () => {
     await recovered.close();
   });
 
+  it("quarantines Thread metadata with a record whose primary and backup are unreadable", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    await first.updateMetadata(threadId, { projectId: "project-a", daybreakEnabled: true });
+    await first.close();
+    const metadataPath = path.join(directory, "thread-metadata", `${threadId}.json`);
+    const metadataContent = await readFile(metadataPath, "utf8");
+
+    await writeFile(path.join(directory, "threads", `${threadId}.json`), "{broken", "utf8");
+    await writeFile(path.join(directory, "backups", `${threadId}.json`), "{broken", "utf8");
+    const reopened = new MappingStore({ directory, now: () => new Date(1_700_000_000_000) });
+    await reopened.initialize();
+    await expect(reopened.getThread(threadId)).resolves.toBeNull();
+    await reopened.close();
+
+    await expect(readdir(path.join(directory, "thread-metadata"))).resolves.toEqual([]);
+    const quarantined = `${threadId}.json.1700000000000.invalid`;
+    await expect(readdir(path.join(directory, "quarantine"))).resolves.toEqual([
+      quarantined,
+      `${quarantined}.metadata`,
+    ]);
+    await expect(
+      readFile(path.join(directory, "quarantine", `${quarantined}.metadata`), "utf8"),
+    ).resolves.toBe(metadataContent);
+  });
+
   it("cleans a provisional create without Native identity on restart", async () => {
     const directory = await temporaryStoreDirectory();
     const first = new MappingStore({ directory });

@@ -191,14 +191,18 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
   #revision: number | null = null;
   #generation: number | null = null;
   #subscriptionId: string | null = null;
+  /** Thread's delegation guidance, injected as api_text on the first turn only. */
+  #delegationGuidance: string | null;
   constructor(
     readonly transport: HermesGatewayTransport,
     readonly sessionId: string,
     readonly nativeSessionId: string,
     info: GatewayRecord,
     bookkeeping: { revision?: unknown; generation?: unknown; subscriptionId?: unknown } = {},
+    delegationGuidance: string | null = null,
   ) {
     this.#info = info;
+    this.#delegationGuidance = delegationGuidance;
     if (typeof bookkeeping.revision === "number") this.#revision = bookkeeping.revision;
     if (typeof bookkeeping.generation === "number") this.#generation = bookkeeping.generation;
     if (typeof bookkeeping.subscriptionId === "string")
@@ -414,11 +418,19 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
         // clarify_batch=true routes the clarify tool's whole question set
         // through ONE `clarify` server request instead of one card per
         // question; the response handler below already speaks the batch shape.
+        // The Thread's delegation guidance rides the FIRST submit's api_text
+        // (model-facing only): the gateway process never sees the bridge env,
+        // and create's skills parameter only resolves identifiers inside the
+        // gateway's own skill roots, so api_text is the one channel that
+        // actually reaches the executing agent without touching user config.
+        const guidance = this.#delegationGuidance;
+        this.#delegationGuidance = null;
         const submitted = await this.transport.request("prompt.submit", {
           session_id: this.sessionId,
           text,
           submission_id: `codexhost-turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           clarify_batch: true,
+          ...(guidance ? { api_text: `${guidance}\n\n${text}` } : {}),
         });
         if (submitted.status !== "queued" && submitted.status !== "started")
           this.#fault(new Error(`Hermes did not accept the turn (${String(submitted.status)})`));

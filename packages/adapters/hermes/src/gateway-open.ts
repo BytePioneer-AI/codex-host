@@ -135,7 +135,6 @@ export async function openGatewaySession(
     // Canonical create/mutate run Hermes's own provider-aware model resolution
     // (switch_model) server-side, so the qualified id goes over the wire as-is
     // and no helper interpreter is spawned to pre-split it.
-    const delegationSkill = transport.delegationSkillPath;
     const response = await transport.request(
       nativeRef ? "session.resume" : "session.create",
       // Canonical wire (hermes-gateway-v1, CanonicalCreateParams/CanonicalResumeParams):
@@ -148,11 +147,6 @@ export async function openGatewaySession(
             ...(input.kind === "create" && input.thinkingOptionId
               ? { reasoning: input.thinkingOptionId }
               : {}),
-            // The executing agent is built in the GATEWAY process; the Thread's
-            // delegation preload (identity + guidance) reaches it only through
-            // canonical create's skills parameter, which the gateway resolves
-            // by path while assembling the session agent.
-            ...(delegationSkill ? { skills: [delegationSkill] } : {}),
           },
     );
     const runtimeId = gatewayString(response.session_id);
@@ -169,11 +163,18 @@ export async function openGatewaySession(
         "unsupported",
         "Hermes resumed a different native working directory",
       );
-    const bridge = new HermesGatewaySessionTransport(transport, runtimeId, storedId, info, {
-      revision: response.revision,
-      generation: response.execution_generation,
-      subscriptionId: response.subscription_id,
-    });
+    const bridge = new HermesGatewaySessionTransport(
+      transport,
+      runtimeId,
+      storedId,
+      info,
+      {
+        revision: response.revision,
+        generation: response.execution_generation,
+        subscriptionId: response.subscription_id,
+      },
+      transport.delegationGuidance,
+    );
     // An approval the gateway already waits on rides the create/resume
     // snapshot's prompts list; it is answered on the first turn context.
     bridge.adoptPendingPrompts(response.prompts);

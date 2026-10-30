@@ -722,3 +722,63 @@ describe("Hermes gateway canonical review fixes", () => {
     await expect(done).resolves.toMatchObject({ stopReason: "end_turn" });
   });
 });
+
+describe("delegation guidance via api_text", () => {
+  it("injects the guidance on the first submit only, text stays verbatim", async () => {
+    const f = fixture();
+    const bridge = new HermesGatewaySessionTransport(
+      f.raw,
+      "runtime",
+      "native",
+      { model: "test", provider: "custom", yolo: false },
+      { revision: 0, generation: 0 },
+      "GUIDANCE(probe-thread-668)",
+    );
+    const submitCalls: unknown[] = [];
+    let admissionSeq = 0;
+    f.request.mockImplementation(async (method, params) => {
+      if (method === "prompt.submit") {
+        submitCalls.push(params);
+        admissionSeq += 1;
+        return { status: "started", admission_id: `a${admissionSeq}` };
+      }
+      return {};
+    });
+    const first = bridge.runTurn(
+      "first question",
+      () => {},
+      async () => null,
+    );
+    await pause();
+    f.raw.onEvent({
+      type: "message.complete",
+      session_id: "runtime",
+      admission_id: "a1",
+      payload: { text: "ok", status: "complete" },
+    });
+    await expect(first).resolves.toMatchObject({ stopReason: "end_turn" });
+    const second = bridge.runTurn(
+      "second question",
+      () => {},
+      async () => null,
+    );
+    await pause();
+    f.raw.onEvent({
+      type: "message.complete",
+      session_id: "runtime",
+      admission_id: "a2",
+      payload: { text: "ok2", status: "complete" },
+    });
+    await expect(second).resolves.toMatchObject({ stopReason: "end_turn" });
+    expect(submitCalls).toHaveLength(2);
+    const [firstParams, secondParams] = submitCalls as [
+      { api_text?: string; text: string },
+      { api_text?: string; text: string },
+    ];
+    expect(firstParams.api_text).toContain("GUIDANCE(probe-thread-668)");
+    expect(firstParams.api_text?.endsWith("first question")).toBe(true);
+    expect(firstParams.text).toBe("first question");
+    expect(secondParams.api_text).toBeUndefined();
+    expect(secondParams.text).toBe("second question");
+  });
+});

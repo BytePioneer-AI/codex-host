@@ -139,9 +139,9 @@ export class HermesGatewayTransport {
     readonly environment: NodeJS.ProcessEnv,
     readonly timeoutMs = 30_000,
   ) {}
-  /** SKILL.md the gateway preloads for this bridge's Thread, or null without delegation. */
-  get delegationSkillPath(): string | null {
-    return this.#delegation?.skillPath ?? null;
+  /** Model-facing delegation guidance for this Thread, or null without delegation. */
+  get delegationGuidance(): string | null {
+    return this.#delegation?.guidance ?? null;
   }
   /** Whether start() already ran (a warm transport skips prepare/start on reuse). */
   get started(): boolean {

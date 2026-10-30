@@ -6,7 +6,12 @@ import {
   isQoderPlanModeId,
   mapToQoderPermissionModeExcludingPlan,
 } from "../src/qoder-permission-modes.js";
-import type { QoderOptions, QoderQuery, QoderQueryFactory, SDKMessage } from "../src/qoder-sdk-types.js";
+import type {
+  QoderOptions,
+  QoderQuery,
+  QoderQueryFactory,
+  SDKMessage,
+} from "../src/qoder-sdk-types.js";
 
 class RecordingQuery implements QoderQuery {
   readonly interrupt = vi.fn(async () => undefined);
@@ -43,9 +48,9 @@ describe("Qoder SDK 1.0.58 compatibility", () => {
     const plan = harnessPermissionModeIdSchema.parse("plan");
     expect(isQoderPlanModeId(plan)).toBe(true);
     expect(mapToQoderPermissionModeExcludingPlan(plan)).toBeUndefined();
-    expect(mapToQoderPermissionModeExcludingPlan(harnessPermissionModeIdSchema.parse("default"))).toBe(
-      "default",
-    );
+    expect(
+      mapToQoderPermissionModeExcludingPlan(harnessPermissionModeIdSchema.parse("default")),
+    ).toBe("default");
   });
 
   it("opens a plan session with planMode and uses setPlanMode on switch", async () => {

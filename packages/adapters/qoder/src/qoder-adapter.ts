@@ -155,7 +155,6 @@ export class QoderAdapter implements HarnessAdapter {
         resolveQoderExecutable({ ...input, variant: this.#variant }, dependencies));
   }
 
-
   async #ensureConfigDaemon(input: {
     environment: Record<string, string | undefined>;
     pathToQoderCLIExecutable?: string;

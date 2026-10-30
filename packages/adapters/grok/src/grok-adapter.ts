@@ -57,6 +57,7 @@ import {
   type TurnSteerAccepted,
   type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
+import { rewriteLocalMediaMarkdown } from "@codexhost/harness-adapter/local-media-markdown";
 import {
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
@@ -94,7 +95,7 @@ import {
   type GrokQuestionRequest,
   type GrokQuestionResponse,
 } from "./grok-questions.js";
-import { grokMediaResolveRoots, rewriteLocalMediaMarkdown } from "./local-media-markdown.js";
+import { grokMediaResolveRoots } from "./local-media-markdown.js";
 import { GrokSubagentLifecycle } from "./grok-subagent-lifecycle.js";
 import {
   grokNativeSubagentId,

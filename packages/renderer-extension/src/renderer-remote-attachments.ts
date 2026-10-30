@@ -1,3 +1,5 @@
+import { desktopImageAttachmentPaths } from "@codexhost/shared-contracts";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -47,22 +49,6 @@ function imageFile(value: Record<string, unknown>): { contents: Blob; extension:
   const bytes = new Uint8Array(decoded.length);
   for (let index = 0; index < decoded.length; index += 1) bytes[index] = decoded.charCodeAt(index);
   return { contents: new Blob([bytes], { type: mimeType }), extension };
-}
-
-/** Only native serialized attachment context, not arbitrary paths in the user's request. */
-function nativeImagePaths(text: string): string[] {
-  const context = text.split("## My request:")[0] ?? "";
-  const start = context.indexOf("# Files mentioned by the user:");
-  if (start < 0) return [];
-  return [
-    ...context
-      .slice(start)
-      .matchAll(
-        /(?:^|\n)## [^\r\n]+: ((?:\/|[A-Za-z]:[\\/]|\\\\)[^\r\n]+)\r?\nImage attachment: true(?=\r?\n|$)/gu,
-      ),
-  ]
-    .map((match) => match[1])
-    .filter(filePath);
 }
 
 /**
@@ -116,7 +102,7 @@ export function createRemoteAttachmentSender(
       .filter((item) => isRecord(item) && item.type === "text")
       .map((item) => (isRecord(item) && typeof item.text === "string" ? item.text : ""))
       .join("\n");
-    const existingPaths = nativeImagePaths(text);
+    const existingPaths = desktopImageAttachmentPaths(text);
     const prepare = async () => {
       // Reuse native completed uploads. With partial context there is no reliable
       // image-to-path association, so do not guess which image is missing.

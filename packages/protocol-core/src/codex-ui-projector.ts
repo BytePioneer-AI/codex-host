@@ -7,6 +7,7 @@ import type {
   HostItemSnapshot,
   HostItemUpdate,
   HostQuestionInteraction,
+  HostTextInput,
   HostTurnSnapshot,
   HistoricalTurnOutcome,
   InteractionClosedEvent,
@@ -24,7 +25,10 @@ import type {
   JsonObject,
   JsonValue,
 } from "@codexhost/shared-contracts";
-import { REASONING_TRANSCRIPT_COMMAND } from "@codexhost/shared-contracts";
+import {
+  desktopImageAttachmentPaths,
+  REASONING_TRANSCRIPT_COMMAND,
+} from "@codexhost/shared-contracts";
 import { createTwoFilesPatch } from "diff";
 import path from "node:path";
 import { summarizeFileChanges } from "./file-change-summary.js";
@@ -467,6 +471,19 @@ function collabAgentStatus(
   }
 }
 
+/**
+ * A Harness receives a turn's images only as the attachment paths in its text. Restore them as
+ * native `localImage` input, from which Desktop draws thumbnails instead of file chips.
+ */
+function projectUserInput(input: readonly HostTextInput[]): JsonObject[] {
+  return [
+    ...input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
+    ...input.flatMap(({ text }) =>
+      desktopImageAttachmentPaths(text).map((path) => ({ type: "localImage", path })),
+    ),
+  ];
+}
+
 /** `clientId` lets Desktop settle its optimistic steering message for this input. */
 function projectUserMessage(
   item: Extract<HostItem, { type: "userMessage" }>,
@@ -476,7 +493,7 @@ function projectUserMessage(
     id: item.itemId,
     type: "userMessage",
     clientId,
-    content: item.input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
+    content: projectUserInput(item.input),
   };
 }
 
@@ -705,7 +722,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         id: `${turnId}-user`,
         type: "userMessage",
         clientId: null,
-        content: snapshot.input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
+        content: projectUserInput(snapshot.input),
       },
       ...entries.flatMap(({ entry, projected }) =>
         finalAnswer && entry === lastVisible
@@ -1355,7 +1372,7 @@ export class CodexTurnProjector {
             id: `${this.#turnId}-user`,
             type: "userMessage",
             clientId: this.#clientUserMessageId,
-            content: this.#input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
+            content: projectUserInput(this.#input),
           },
         ];
   }

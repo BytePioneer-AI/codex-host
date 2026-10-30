@@ -49,7 +49,8 @@ const responseSchema = z
     cancelled: z.boolean().optional(),
   })
   .strict();
-interface BridgeOptions {
+/** Internal to the Antigravity Session; not part of the public Harness contract. */
+export interface BridgeOptions {
   /**
    * A directory the caller keeps across Turns. The bridge writes its Hook files there and leaves
    * the directory on dispose; without one it uses a private temporary directory it removes.
@@ -89,6 +90,12 @@ export class AntigravityQuestionBridge {
   readonly #pending = new Map<string, PendingQuestion>();
   readonly #seenSteps = new Set<string>();
   #stopped = false;
+  /**
+   * Bumped on every rebind. A request received before the bump is stale: it belongs to the
+   * Turn that was driving when the hook process made it, and must not be attributed to the
+   * Turn now owning the bridge.
+   */
+  #generation = 0;
   #disposal: Promise<void> | null = null;
 
   private constructor(directory: string, options: BridgeOptions) {
@@ -158,6 +165,9 @@ export class AntigravityQuestionBridge {
   }
 
   #receive(request: IncomingMessage, response: ServerResponse): void {
+    // The hook process is spawned per Turn by agy; capturing the generation here means a
+    // request that straddles a rebind cannot be answered by the next Turn.
+    const generation = this.#generation;
     const auth = Buffer.from(request.headers.authorization ?? "");
     const expected = Buffer.from(`Bearer ${this.#token}`);
     if (
@@ -198,13 +208,14 @@ export class AntigravityQuestionBridge {
         return;
       }
       const payload = parsed.data;
-      this.#options.schedule(() => this.#ask(payload, response));
+      this.#options.schedule(() => this.#ask(payload, response, generation));
     });
   }
 
-  #ask(payload: z.infer<typeof requestSchema>, response: ServerResponse): void {
+  #ask(payload: z.infer<typeof requestSchema>, response: ServerResponse, generation: number): void {
     if (
       this.#stopped ||
+      generation !== this.#generation ||
       response.destroyed ||
       payload.conversationId !== this.#options.nativeSessionId()
     ) {
@@ -372,6 +383,28 @@ export class AntigravityQuestionBridge {
           },
         },
       });
+  }
+
+  /**
+   * Hands the bridge to the next Turn of a reused native driver. Ownership, the Turn
+   * identity used in emitted Items, and the duplicate-question guard all move to the new
+   * Turn, so a question from an earlier Turn can no longer be attributed or answered.
+   */
+  rebind(options: BridgeOptions): AntigravityQuestionBridge {
+    if (this.#disposal) throw new Error("Cannot reuse a disposed Question bridge");
+    if (this.#pending.size) throw new Error("Cannot reuse a busy Question bridge");
+    if (options.directory !== this.#options.directory) {
+      throw new Error("A reused Question bridge keeps its directory");
+    }
+    this.#options.turnId = options.turnId;
+    this.#options.nativeSessionId = options.nativeSessionId;
+    this.#options.schedule = options.schedule;
+    this.#options.emit = options.emit;
+    if (options.timeoutMs !== undefined) this.#options.timeoutMs = options.timeoutMs;
+    this.#stopped = false;
+    this.#seenSteps.clear();
+    this.#generation += 1;
+    return this;
   }
 
   stop(): void {

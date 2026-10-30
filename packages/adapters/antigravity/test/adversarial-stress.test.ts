@@ -352,6 +352,8 @@ describe("Antigravity Adversarial & Stress Testing", () => {
       const runsDir = path.join(directory, "runs");
 
       const jsPath = path.join(directory, "agy.cjs");
+      // Like the real CLI, one process serves every Turn: each stdin line drives the
+      // next scripted response, so a reused driver never replays an earlier Turn.
       const scriptContent = `
 const fs = require('fs');
 const path = require('path');
@@ -363,16 +365,25 @@ if (process.argv.includes("models") || process.argv.some((arg) => arg.includes("
 }
 const runsDir = ${JSON.stringify(runsDir)};
 fs.mkdirSync(runsDir, { recursive: true });
-// Only a Turn consumes a scripted response. Quota probes also request
-// stream-json output, but unlike Turns they do not use stream-json input.
-const isTurn = process.argv.includes("--input-format");
-const counter = isTurn ? fs.readdirSync(runsDir).length : -1;
-if (isTurn) fs.writeFileSync(path.join(runsDir, "run-" + counter + ".txt"), "");
 const allResponses = JSON.parse(fs.readFileSync(${JSON.stringify(runsFile)}, 'utf8'));
-const lines = isTurn ? allResponses[counter] || allResponses[0] || [] : [];
-for (const line of lines) {
-  process.stdout.write(line + "\\n");
+let turn = 0;
+let buffer = "";
+function emit() {
+  const lines = allResponses[turn] || allResponses[allResponses.length - 1] || [];
+  turn += 1;
+  for (const line of lines) process.stdout.write(line + "\\n");
 }
+process.stdin.resume();
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let index;
+  while ((index = buffer.indexOf("\\n")) >= 0) {
+    buffer = buffer.slice(index + 1);
+    fs.writeFileSync(path.join(runsDir, "run-" + turn + ".txt"), "");
+    emit();
+  }
+});
+process.stdin.on("end", () => process.exit(0));
 `;
       await writeFile(jsPath, scriptContent);
       if (process.platform === "win32") {

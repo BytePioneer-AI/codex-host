@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { HarnessOutput, HarnessSession, HostEvent } from "@codexhost/harness-adapter";
+import type { NativeSessionRef } from "@codexhost/shared-contracts";
 import {
   accountCreditsSnapshotSchema,
   harnessModelRefSchema,
@@ -664,6 +665,15 @@ if (${keepAlive}) {
       await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
       await chmod(command, 0o755);
       return { command, cwd, cleanup };
+    }
+
+    function isProcessAlive(pid: number): boolean {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
     }
 
     async function nextEvent(iterator: AsyncIterator<HarnessOutput>): Promise<HostEvent> {
@@ -1427,21 +1437,23 @@ if (process.argv.includes("models")) {
 // The quota probe runs as --print=/usage; Turns carry --print-timeout instead.
 if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
 const addDirs = process.argv.filter((_, index, all) => all[index - 1] === "--add-dir");
-let input = "";
+let buffer = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
-  if (input.includes("\\n")) return;
-  input += chunk;
-  const newline = input.indexOf("\\n");
-  if (newline === -1) return;
-  const prompt = JSON.parse(input.slice(0, newline)).message.content;
-  fs.appendFileSync(${JSON.stringify(runs)}, JSON.stringify({ addDirs, prompt }) + "\\n");
-  const turn = fs.readFileSync(${JSON.stringify(runs)}, "utf8").trim().split("\\n").length;
-  for (const event of [
-    { event: "init", conversation_id: "conv-hooks", init: { permission_mode: "dangerously-skip-permissions" } },
-    { event: "result", result: { conversation_id: "conv-hooks", status: "SUCCESS", num_turns: turn, response: "ok" } },
-  ]) {
-    process.stdout.write(JSON.stringify(event) + "\\n");
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf("\\n")) >= 0) {
+    const line = buffer.slice(0, newline);
+    buffer = buffer.slice(newline + 1);
+    const prompt = JSON.parse(line).message.content;
+    fs.appendFileSync(${JSON.stringify(runs)}, JSON.stringify({ addDirs, prompt }) + "\\n");
+    const turn = fs.readFileSync(${JSON.stringify(runs)}, "utf8").trim().split("\\n").length;
+    for (const event of [
+      { event: "init", conversation_id: "conv-hooks", init: { permission_mode: "dangerously-skip-permissions" } },
+      { event: "result", result: { conversation_id: "conv-hooks", status: "SUCCESS", num_turns: turn, response: "ok" } },
+    ]) {
+      process.stdout.write(JSON.stringify(event) + "\\n");
+    }
   }
 });
 process.stdin.on("end", () => process.exit(0));
@@ -1553,24 +1565,32 @@ if (process.argv.includes("models")) {
   process.exit(0);
 }
 if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
-fs.appendFileSync(${JSON.stringify(runs)}, "run\\n");
-const turn = fs.readFileSync(${JSON.stringify(runs)}, "utf8").trim().split("\\n").length;
-if (turn === 1) {
-  // Detached so it outlives this process on Windows too, where a child otherwise ends with it.
-  const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], {
-    detached: true,
-    stdio: ["ignore", "inherit", "inherit"],
-    windowsHide: true,
-  });
-  fs.writeFileSync(${JSON.stringify(holderPidFile)}, String(holder.pid));
-}
-for (const event of [
-  { event: "init", conversation_id: "conv-linger", init: { permission_mode: "dangerously-skip-permissions" } },
-  { event: "result", result: { conversation_id: "conv-linger", status: "SUCCESS", num_turns: turn, response: "ok" } },
-]) {
-  process.stdout.write(JSON.stringify(event) + "\\n");
-}
+let buffer = "";
 process.stdin.resume();
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf("\\n")) >= 0) {
+    buffer = buffer.slice(newline + 1);
+    fs.appendFileSync(${JSON.stringify(runs)}, "run\\n");
+    const turn = fs.readFileSync(${JSON.stringify(runs)}, "utf8").trim().split("\\n").length;
+    if (turn === 1) {
+      // Detached so it outlives this process on Windows too, where a child otherwise ends with it.
+      const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], {
+        detached: true,
+        stdio: ["ignore", "inherit", "inherit"],
+        windowsHide: true,
+      });
+      fs.writeFileSync(${JSON.stringify(holderPidFile)}, String(holder.pid));
+    }
+    for (const event of [
+      { event: "init", conversation_id: "conv-linger", init: { permission_mode: "dangerously-skip-permissions" } },
+      { event: "result", result: { conversation_id: "conv-linger", status: "SUCCESS", num_turns: turn, response: "ok" } },
+    ]) {
+      process.stdout.write(JSON.stringify(event) + "\\n");
+    }
+  }
+});
 process.stdin.on("end", () => process.exit(0));
 `;
         const jsPath = path.join(directory, "agy.cjs");
@@ -1641,6 +1661,568 @@ process.stdin.on("end", () => process.exit(0));
       },
       20_000,
     );
+
+    it("reuses one native driver across successful Turns and releases it on model select", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-reuse-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-reuse-cwd-"));
+      const pids = path.join(directory, "pids.jsonl");
+      const cleanup = async (): Promise<void> => {
+        for (const target of [directory, cwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      // One process answers every Turn it is given, and records its own PID per Turn.
+      const scriptContent = `
+const fs = require("node:fs");
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\ngemini-3.1-pro-high\\tGemini 3.1 Pro High\\n");
+  process.exit(0);
+}
+if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
+// The Conversation keeps counting across processes, as agy reports num_turns for the
+// Conversation rather than for the process.
+let turn = fs.existsSync(${JSON.stringify(pids)})
+  ? fs.readFileSync(${JSON.stringify(pids)}, "utf8").trim().split("\\n").length
+  : 0;
+let buffer = "";
+function answer() {
+  turn += 1;
+  fs.appendFileSync(${JSON.stringify(pids)}, JSON.stringify({ pid: process.pid, turn }) + "\\n");
+  for (const event of [
+    { event: "init", conversation_id: "conv-reuse", init: { permission_mode: "dangerously-skip-permissions" } },
+    { event: "result", result: { conversation_id: "conv-reuse", status: "SUCCESS", num_turns: turn, response: "reply " + turn } },
+  ]) {
+    process.stdout.write(JSON.stringify(event) + "\\n");
+  }
+}
+process.stdin.resume();
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf("\\n")) >= 0) {
+    buffer = buffer.slice(newline + 1);
+    answer();
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      let command: string;
+      if (process.platform === "win32") {
+        command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        command = path.join(directory, "agy");
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const runTurn = async (turnId: string): Promise<void> => {
+          const started = await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse(turnId),
+            input: [{ type: "text", text: turnId }],
+          });
+          expect(started.ok).toBe(true);
+          while ((await nextEvent(iterator)).type !== "turn.completed") {
+            // Remaining events are not under test.
+          }
+        };
+
+        await runTurn("turn-reuse-1");
+        await runTurn("turn-reuse-2");
+        await runTurn("turn-reuse-3");
+        const observed = (await readFile(pids, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as { pid: number; turn: number });
+        expect(observed).toHaveLength(3);
+        expect(new Set(observed.map(({ pid }) => pid)).size).toBe(1);
+
+        // A different model needs a different invocation, so the next Turn starts a new driver.
+        await session.execute({
+          type: "model.select",
+          model: harnessModelRefSchema.parse({ id: "gemini-3.1-pro-high" }),
+        });
+        await runTurn("turn-reuse-4");
+        const afterSelect = (await readFile(pids, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as { pid: number; turn: number });
+        expect(afterSelect).toHaveLength(4);
+        expect(new Set(afterSelect.map(({ pid }) => pid)).size).toBe(2);
+
+        const snapshot = await session.readSnapshot();
+        expect(snapshot.ok).toBe(true);
+        if (snapshot.ok) expect(snapshot.value.turns).toHaveLength(4);
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("refuses a second turn.start that starts while the first is still preparing", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-race-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-race-cwd-"));
+      const cleanups = async (): Promise<void> => {
+        for (const target of [directory, cwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      const scriptContent = `
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
+let buffer = "";
+process.stdin.resume();
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf("\\n")) >= 0) {
+    buffer = buffer.slice(newline + 1);
+    process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-race", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
+    process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-race", status: "SUCCESS", num_turns: 1, response: "ok" } }) + "\\n");
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      let command: string;
+      if (process.platform === "win32") {
+        command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        command = path.join(directory, "agy");
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        // Both starts are issued before either can await anything.
+        const [first, second] = await Promise.all([
+          session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("turn-race-1"),
+            input: [{ type: "text", text: "first" }],
+          }),
+          session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("turn-race-2"),
+            input: [{ type: "text", text: "second" }],
+          }),
+        ]);
+        expect(first.ok).toBe(true);
+        expect(second).toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanups();
+      }
+    });
+
+    it("releases an idle driver that exits between turns", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-idle-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-idle-cwd-"));
+      const cleanup = async (): Promise<void> => {
+        for (const target of [directory, cwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      const scriptContent = `
+const fs = require("node:fs");
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
+// The log file is the driver's; its removal by the parent proves the release ran.
+for (const arg of process.argv) {
+  if (arg.endsWith(".log")) fs.writeFileSync(arg, "started\\n");
+}
+let served = false;
+let buffer = "";
+process.stdin.resume();
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf("\\n")) >= 0) {
+    buffer = buffer.slice(newline + 1);
+    served = true;
+    process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-idle", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
+    process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-idle", status: "SUCCESS", num_turns: 1, response: "ok" } }) + "\\n");
+    // Exit on its own once the Turn is answered, like a native driver that idles out.
+    setTimeout(() => process.exit(0), 50);
+  }
+});
+process.stdin.on("end", () => process.exit(served ? 0 : 1));
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      let command: string;
+      if (process.platform === "win32") {
+        command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        command = path.join(directory, "agy");
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-idle-1"),
+          input: [{ type: "text", text: "one" }],
+        });
+        while ((await nextEvent(iterator)).type !== "turn.completed") {
+          // Remaining events are not under test.
+        }
+        // The driver exits on its own shortly after answering; the next Turn must start a
+        // fresh one rather than write into the dead process.
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        const second = await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-idle-2"),
+          input: [{ type: "text", text: "two" }],
+        });
+        expect(second.ok).toBe(true);
+        while ((await nextEvent(iterator)).type !== "turn.completed") {
+          // The replacement driver answers the second Turn.
+        }
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    // POSIX only: simulating a driver that survives termination needs a signal it can
+    // ignore. On Windows the .cmd wrapper runs agy as a grandchild, so killing the wrapper
+    // leaves the grandchild holding the pipe and the fixture cannot model this at all —
+    // that platform gap belongs to the adapter, not to this test.
+    it.skipIf(process.platform === "win32")(
+      "refuses to copy the database while an idle driver has not confirmed exit",
+      async () => {
+        const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-exit-"));
+        const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-exit-cwd-"));
+        // Best effort: this fixture deliberately leaves a driver that had to be SIGKILLed, and
+        // Windows can keep its working directory locked a little longer than the process. The
+        // assertions above already ran; failing the test on temp-directory cleanup would only
+        // report the OS timing, and the runner's temp directory is disposable.
+        const cleanup = async (): Promise<void> => {
+          for (const target of [directory, cwd]) {
+            await rm(target, {
+              recursive: true,
+              force: true,
+              maxRetries: 20,
+              retryDelay: 250,
+            }).catch(() => undefined);
+          }
+        };
+        // The driver ignores stdin ending and SIGTERM, so its exit cannot be confirmed within
+        // the cleanup bound. It does exit on its own after a few seconds, which bounds the
+        // test and lets the temp cwd be removed; the pid is recorded so cleanup can wait.
+        const pidFile = path.join(directory, "driver.pid");
+        const scriptContent = `
+const fs = require("node:fs");
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+// Ignored where signals are distinct; on Windows kill() terminates regardless.
+process.on("SIGTERM", () => undefined);
+let buffer = "";
+process.stdin.resume();
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf("\\n")) >= 0) {
+    buffer = buffer.slice(newline + 1);
+    process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-exit", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
+    process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-exit", status: "SUCCESS", num_turns: 1, response: "ok" } }) + "\\n");
+  }
+});
+process.stdin.on("end", () => undefined);
+setInterval(() => undefined, 1000);
+`;
+        const jsPath = path.join(directory, "agy.cjs");
+        await writeFile(jsPath, scriptContent);
+        let command: string;
+        if (process.platform === "win32") {
+          command = path.join(directory, "agy.cmd");
+          await writeFile(command, `@node "${jsPath}" %*\r\n`);
+        } else {
+          command = path.join(directory, "agy");
+          await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+          await chmod(command, 0o755);
+        }
+
+        const adapter = new AntigravityAdapter({ command, turnCleanupWaitMs: 0 });
+        try {
+          const opened = await adapter.open({ kind: "create", cwd });
+          if (!opened.ok) throw new Error(opened.error.message);
+          const session = opened.value;
+          const iterator = session.outputs[Symbol.asyncIterator]();
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("turn-exit-1"),
+            input: [{ type: "text", text: "one" }],
+          });
+          while ((await nextEvent(iterator)).type !== "turn.completed") {
+            // Remaining events are not under test.
+          }
+
+          // The driver is retained and refuses to exit, so fork must not copy its database.
+          const nativeRef = (session as unknown as { nativeRef?: NativeSessionRef }).nativeRef;
+          if (!nativeRef) throw new Error("The Turn did not bind a native session");
+          // A driver whose exit cannot be confirmed must keep reporting that, not report
+          // success on the second ask while the process is still writing the database.
+          const session2 = session as unknown as { releaseIdleDriver(): Promise<boolean> };
+          const pid = Number(await readFile(pidFile, "utf8").catch(() => "0"));
+          const alive = () => Number.isInteger(pid) && pid > 0 && isProcessAlive(pid);
+
+          // The invariant, on every platform: release reports success only when the process is
+          // actually gone. On POSIX the fixture ignores SIGTERM, so the first attempt cannot
+          // confirm exit and the driver must stay reachable; on Windows kill() terminates it,
+          // so the first attempt may legitimately succeed.
+          const first = await session2.releaseIdleDriver();
+          if (first) expect(alive()).toBe(false);
+          else expect(alive()).toBe(true);
+
+          if (!first) {
+            // Unconfirmed exit must keep reporting the truth, not report release on a retry
+            // just because the first attempt already asked.
+            const retried = await session2.releaseIdleDriver();
+            if (retried) expect(alive()).toBe(false);
+            else expect(alive()).toBe(true);
+          }
+
+          // Two consecutive false results are the invariant under test. The fork below may run
+          // after the escalation finally kills the driver, so its failure code is not asserted.
+          const fork = await adapter.open({
+            kind: "fork",
+            cwd,
+            sourceRef: nativeRef,
+            checkpoint: nativeRef as never,
+          });
+          expect(fork.ok).toBe(false);
+        } finally {
+          await adapter.close();
+          // The escalation SIGKILLs the driver; give it a moment to disappear before removing
+          // its cwd, which Windows keeps locked while the process exists. Bounded and best
+          // effort: the assertions above already ran, and the runner's temp dir is disposable.
+          const pid = Number(await readFile(pidFile, "utf8").catch(() => "0"));
+          if (Number.isInteger(pid) && pid > 0) {
+            for (let attempt = 0; attempt < 80; attempt += 1) {
+              try {
+                process.kill(pid, 0);
+              } catch {
+                break;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+          }
+          await cleanup();
+        }
+      },
+      20_000,
+    );
+
+    it("drops only the replayed steps of the previous turn, whatever their numbering", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-replay-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-replay-cwd-"));
+      const cleanup = async (): Promise<void> => {
+        for (const target of [directory, cwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      // Turn 1 emits steps 1..2. Turn 2 replays those same lines and then emits its own
+      // steps starting again at 1, the numbering an agy that restarts per stdin message
+      // would use; a reused driver must keep exactly the new ones.
+      const step = (index: number, tool: string) =>
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-replay",
+            step_index: index,
+            state: "DONE",
+            step_type: "tool",
+            tool_name: tool,
+            tool_info: { parameters: { Note: tool } },
+          },
+        });
+      const turn1 = [
+        JSON.stringify({
+          event: "init",
+          conversation_id: "conv-replay",
+          init: { permission_mode: "dangerously-skip-permissions" },
+        }),
+        step(1, "first_tool"),
+        step(2, "second_tool"),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-replay",
+            status: "SUCCESS",
+            num_turns: 1,
+            response: "one",
+          },
+        }),
+      ];
+      const turn2 = [
+        JSON.stringify({
+          event: "init",
+          conversation_id: "conv-replay",
+          init: { permission_mode: "dangerously-skip-permissions" },
+        }),
+        step(1, "first_tool"),
+        step(2, "second_tool"),
+        step(1, "third_tool"),
+        step(2, "fourth_tool"),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-replay",
+            status: "SUCCESS",
+            num_turns: 2,
+            response: "two",
+          },
+        }),
+      ];
+      const turn3 = [
+        JSON.stringify({
+          event: "init",
+          conversation_id: "conv-replay",
+          init: { permission_mode: "dangerously-skip-permissions" },
+        }),
+        step(1, "third_tool"),
+        step(2, "fourth_tool"),
+        step(1, "first_tool"),
+        step(2, "fifth_tool"),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-replay",
+            status: "SUCCESS",
+            num_turns: 3,
+            response: "three",
+          },
+        }),
+      ];
+      // Turn 4 replays first_tool/fifth_tool and then emits first_tool again as its own
+      // first step. Matching a replay must consume it, or this identical new step is lost.
+      const turn4 = [
+        JSON.stringify({
+          event: "init",
+          conversation_id: "conv-replay",
+          init: { permission_mode: "dangerously-skip-permissions" },
+        }),
+        step(1, "first_tool"),
+        step(2, "fifth_tool"),
+        step(1, "first_tool"),
+        step(2, "sixth_tool"),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-replay",
+            status: "SUCCESS",
+            num_turns: 4,
+            response: "four",
+          },
+        }),
+      ];
+      const scriptContent = `
+const turns = ${JSON.stringify([turn1, turn2, turn3, turn4])};
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
+let index = 0;
+let buffer = "";
+process.stdin.resume();
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf("\\n")) >= 0) {
+    buffer = buffer.slice(newline + 1);
+    const lines = turns[index] ?? [];
+    index += 1;
+    for (const line of lines) process.stdout.write(line + "\\n");
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      let command: string;
+      if (process.platform === "win32") {
+        command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        command = path.join(directory, "agy");
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const toolNames = async (turnId: string, text: string): Promise<string[]> => {
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse(turnId),
+            input: [{ type: "text", text }],
+          });
+          const names: string[] = [];
+          while (true) {
+            const event = await nextEvent(iterator);
+            if (event.type === "item.started" && event.item.type === "toolExecution") {
+              names.push(event.item.toolName);
+            }
+            if (event.type === "turn.completed") return names;
+          }
+        };
+
+        expect(await toolNames("turn-replay-1", "one")).toEqual(["first_tool", "second_tool"]);
+        // The replayed pair is dropped; the Turn's own two steps survive despite reusing
+        // indices 1 and 2.
+        expect(await toolNames("turn-replay-2", "two")).toEqual(["third_tool", "fourth_tool"]);
+        // A third Turn replays third/fourth and then repeats first_tool verbatim as its own
+        // first step: each replay is consumed once, so this one must still be delivered.
+        expect(await toolNames("turn-replay-3", "three")).toEqual(["first_tool", "fifth_tool"]);
+        expect(await toolNames("turn-replay-4", "four")).toEqual(["first_tool", "sixth_tool"]);
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
 
     it("projects file steps as Tool Executions when the applied patch cannot be read", async () => {
       const streamLines = [
@@ -1784,11 +2366,28 @@ if (process.argv.includes("models")) {
 if (!process.argv.includes("--input-format")) process.exit(0);
 const runsDir = ${JSON.stringify(runsDir)};
 fs.mkdirSync(runsDir, { recursive: true });
-const count = fs.readdirSync(runsDir).length;
-fs.writeFileSync(path.join(runsDir, "run-" + count + ".txt"), "");
-const result = ${JSON.stringify(results)}[count];
-process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-sticky", init: { permission_mode: "default" } }) + "\\n");
-process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-sticky", ...result } }) + "\\n");
+const results = ${JSON.stringify(results)};
+// One process serves every Turn, as the real CLI does: each stdin line advances the script.
+let count = fs.readdirSync(runsDir).length;
+let buffer = "";
+function answer() {
+  fs.writeFileSync(path.join(runsDir, "run-" + count + ".txt"), "");
+  const result = results[count];
+  count += 1;
+  if (!result) return;
+  process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-sticky", init: { permission_mode: "default" } }) + "\\n");
+  process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-sticky", ...result } }) + "\\n");
+}
+process.stdin.resume();
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf("\\n")) >= 0) {
+    buffer = buffer.slice(newline + 1);
+    answer();
+  }
+});
+process.stdin.on("end", () => process.exit(0));
 `;
       const jsPath = path.join(directory, "agy.cjs");
       await writeFile(jsPath, scriptContent);

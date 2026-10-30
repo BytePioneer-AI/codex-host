@@ -141,7 +141,7 @@
 | Cursor | 打开会话时启动 CLI 进程并驻留 | 关 stdin，超时 SIGKILL |
 | Grok / Hermes / Kiro | 每会话一个 ACP 进程 | 关 stdin，超时 SIGTERM 或 SIGKILL |
 | OpenCode | 每会话独占一个 server 进程 | 结束该 server 进程 |
-| Antigravity | 无，每个 Turn 临时启动进程 | 结束进行中 Turn 的进程，flush 历史 |
+| Antigravity | 成功 Turn 之间保留一个 agy 驱动（含 Language Server 与 Hook HTTP server），切换模型/档位/权限、失败、取消或关闭时释放 | 结束进行中 Turn 的进程并释放空闲驱动，flush 历史 |
 | DeepSeek Harness | 同一 Adapter 下共用一个 `dsh web` 进程 | 不结束共用进程 |
 
 ### 5.2 Host 恢复入口

@@ -60,7 +60,9 @@ if (process.argv.includes("models") || process.argv.some((arg) => arg.includes("
 
 const runsDir = ${JSON.stringify(runsDir)};
 fs.mkdirSync(runsDir, { recursive: true });
-const count = fs.readdirSync(runsDir).length;
+// The script position is shared by every process, so a forked or resumed session picks
+// up where the previous process left off rather than replaying an earlier Turn.
+let count = fs.readdirSync(runsDir).length;
 fs.writeFileSync(path.join(runsDir, "run-" + count + ".txt"), JSON.stringify(process.argv) + "\\n");
 
 const convIdx = process.argv.indexOf("--conversation");
@@ -71,6 +73,7 @@ const delay = ${delayMs};
 
 function emit() {
   const rawLines = turnResponses[Math.min(count, turnResponses.length - 1)] || [];
+  count += 1;
   for (const rawLine of rawLines) {
     try {
       const parsed = JSON.parse(rawLine);
@@ -90,17 +93,23 @@ function emit() {
   }
 }
 
+let buffer = "";
+function emitNext() {
+  if (delay > 0) setTimeout(emit, delay);
+  else emit();
+}
 process.stdin.resume();
-process.stdin.on("data", () => {});
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let index;
+  while ((index = buffer.indexOf("\\n")) >= 0) {
+    buffer = buffer.slice(index + 1);
+    emitNext();
+  }
+});
 process.stdin.on("end", () => {
   process.exit(0);
 });
-
-if (delay > 0) {
-  setTimeout(emit, delay);
-} else {
-  emit();
-}
 `;
 
   const jsPath = path.join(directory, "agy.cjs");

@@ -24,6 +24,8 @@ vi.mock("@qoder-ai/qoder-agent-sdk", async (original) => ({
   getSessionMessages: vi.fn(),
   getSessionInfo: vi.fn(),
   forkSession: vi.fn(),
+  // Config-scoped daemon must not spawn a real CLI in unit tests.
+  initDaemon: vi.fn(async () => ({ stop: vi.fn(async () => undefined) })),
 }));
 vi.mock("@qodercn-ai/qodercn-agent-sdk", async (original) => ({
   ...(await original<typeof cnSdk>()),
@@ -31,6 +33,7 @@ vi.mock("@qodercn-ai/qodercn-agent-sdk", async (original) => ({
   getSessionMessages: vi.fn(),
   getSessionInfo: vi.fn(),
   forkSession: vi.fn(),
+  initDaemon: vi.fn(async () => ({ stop: vi.fn(async () => undefined) })),
 }));
 
 class Query implements QoderQuery {
@@ -109,6 +112,9 @@ for (const v of variants)
       vi.mocked(v.sdk.getSessionMessages).mockResolvedValue(history());
       vi.mocked(v.sdk.getSessionInfo).mockResolvedValue(undefined);
       vi.mocked(v.sdk.forkSession).mockResolvedValue({ sessionId: "derived" });
+      vi.mocked(v.sdk.initDaemon).mockResolvedValue({
+        stop: vi.fn(async () => undefined),
+      } as never);
       const resolveExecutable = vi.fn(() => v.command);
       const adapter = new QoderAdapter({ variant: v.variant, environment, resolveExecutable });
       adapters.push(adapter);

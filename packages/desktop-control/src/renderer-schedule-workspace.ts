@@ -2,6 +2,7 @@ import { decodeHarnessPluginRoute, hostThreadIdSchema } from "@codexhost/shared-
 import { committedReactAncestors } from "./renderer-react-ownership.js";
 import { discoverRendererHosts, type RendererHostRoot } from "./renderer-host-discovery.js";
 import type { RendererHostRouting } from "./renderer-host-routing.js";
+import { createRpcScheduleWorkspaceThread } from "./renderer-schedule-workspace-rpc.js";
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): value is RecordValue =>
@@ -16,6 +17,8 @@ export interface NativeScheduleWorkspaceThread {
   threadId: string;
   /** The official form may now save this Thread as its target; never archive it on dismissal. */
   retain(): void;
+  /** Awaitable cleanup for an unsubmitted RPC-created Thread. */
+  discard?(): Promise<void>;
 }
 
 /** Desktop 26.1023 sidebar project catalog includes collapsed groups. */
@@ -70,23 +73,29 @@ export type NativeProjectThreadCreator = (input: {
   title: string;
   prompt: "";
   startWithoutFirstTurn: true;
+  assertRequestCurrent?(): void;
   onSettled(result: unknown): void;
 }) => Promise<unknown>;
 
 /** The exported native createThread API supports project preparation, permissions
  * and empty-chat creation. Discover by its reviewed contract, not an export alias. */
 export function isNativeProjectThreadCreator(value: unknown): value is NativeProjectThreadCreator {
-  if (typeof value !== "function" || value.length !== 1) return false;
-  const source = Function.prototype.toString.call(value);
-  return (
-    /^async function/u.test(source) &&
-    source.includes("startWithoutFirstTurn:") &&
-    source.includes("onSettled:") &&
-    source.includes("createThread config is not supported for delegated thread creation") &&
-    source.includes(
-      "createThread serviceName is only supported for local Electron root threads outside worktrees",
-    )
-  );
+  try {
+    if (typeof value !== "function" || value.length !== 1) return false;
+    const source = Function.prototype.toString.call(value);
+    return (
+      /^async function/u.test(source) &&
+      source.includes("startWithoutFirstTurn:") &&
+      source.includes("onSettled:") &&
+      source.includes("createThread config is not supported for delegated thread creation") &&
+      source.includes(
+        "createThread serviceName is only supported for local Electron root threads outside worktrees",
+      )
+    );
+  } catch {
+    // Native toString polyfills and callable RPC proxies can reject inspection.
+    return false;
+  }
 }
 
 /** Only the explicit external-workspace branch calls this. Native createThread
@@ -100,6 +109,15 @@ export async function createNativeScheduleWorkspaceThread(
 ): Promise<NativeScheduleWorkspaceThread> {
   if (!decodeHarnessPluginRoute(input.model)) throw new Error("An external Harness is required");
   const route = routing.forHost("local");
+  if (route && Reflect.get(route.manager, "kind") === "main-process-rpc") {
+    if (
+      !readNativeScheduleWorkspaces(root).some(
+        ({ id, cwd }) => id === input.workspace.id && cwd === input.workspace.cwd,
+      )
+    )
+      throw new Error("The selected workspace is no longer available");
+    return createRpcScheduleWorkspaceThread(root, routing, route, createThread, input, signal);
+  }
   const manager = route?.manager as unknown as RecordValue | undefined;
   if (
     !route?.policy.scopedCreation ||

@@ -528,7 +528,19 @@ export function installRendererNativeScheduleControls(
         // Further saves/retries belong to the official form and reuse that chat.
         form.requestSubmit();
       } catch (cause) {
-        attempt.error = `${cause instanceof Error ? cause.message : text("会话创建失败。", "Chat creation failed.")} ${text("请先检查会话列表，勿重复创建。", "Check the chat list before creating another task.")}`;
+        let cleanupError = "";
+        if (attempt.thread?.discard) {
+          if (readNativeScheduleForm(form)?.targetThreadId === attempt.thread.threadId)
+            attempt.thread.retain();
+          else {
+            try {
+              await attempt.thread.discard();
+            } catch (error) {
+              cleanupError = ` ${text("会话清理失败：", "Chat cleanup failed:")} ${error instanceof Error ? error.message : String(error)}`;
+            }
+          }
+        }
+        attempt.error = `${cause instanceof Error ? cause.message : text("会话创建失败。", "Chat creation failed.")}${cleanupError} ${text("请先检查会话列表，勿重复创建。", "Check the chat list before creating another task.")}`;
       } finally {
         attempt.pending = false;
         if (!retired) update();

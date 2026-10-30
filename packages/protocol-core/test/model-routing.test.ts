@@ -61,6 +61,32 @@ describe("external Harness transport model routing", () => {
     expect(transportModelIdForHarness("sample-agent")).toMatch(/^codexhost\/plugin-v1@/u);
   });
 
+  it("marks a prewarm create without carrying the marker into the Thread selection", () => {
+    const selection = {
+      harnessId: "sample-agent",
+      model: harnessModelRefSchema.parse({ id: "opaque-model" }),
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    };
+    const transportModelId = encodeHarnessPluginRoute(harnessPluginRouteSchema.parse(selection));
+    const prewarmModel = encodeHarnessPluginRoute(
+      harnessPluginRouteSchema.parse({ ...selection, prewarm: true }),
+    );
+    expect(
+      decodeCreateRoute({ id: 5, method: "thread/start", params: { model: prewarmModel } }),
+    ).toEqual({
+      harnessId: "sample-agent",
+      routeMode: "native",
+      transportModelId,
+      model: selection.model,
+      thinkingOptionId: selection.thinkingOptionId,
+      prewarm: true,
+    });
+    expect(decodeExternalTransportSelection("sample-agent", prewarmModel)).toEqual({
+      model: selection.model,
+      thinkingOptionId: selection.thinkingOptionId,
+    });
+  });
+
   it.each(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp", "antigravity"])(
     "also accepts the shared codec for transitional identity %s",
     (harnessId) => {

@@ -63,6 +63,7 @@ export interface CreateRoute {
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
   permissionModeId?: HarnessPermissionModeId;
+  prewarm?: true;
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -558,10 +559,13 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
 
   const pluginRoute = decodeHarnessPluginRoute(request.params.model);
   if (pluginRoute) {
+    // The prewarm marker describes this create only; the Thread keeps its selection.
+    const { prewarm, ...selection } = pluginRoute;
     return {
       harnessId: pluginRoute.harnessId,
       routeMode: "native",
-      transportModelId: request.params.model,
+      transportModelId: prewarm ? encodeHarnessPluginRoute(selection) : request.params.model,
+      ...(prewarm ? { prewarm } : {}),
       ...(pluginRoute.model ? { model: pluginRoute.model } : {}),
       ...(pluginRoute.thinkingOptionId ? { thinkingOptionId: pluginRoute.thinkingOptionId } : {}),
       ...(pluginRoute.permissionModeId ? { permissionModeId: pluginRoute.permissionModeId } : {}),

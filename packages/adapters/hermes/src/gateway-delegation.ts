@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -11,24 +11,38 @@ const required = [
   "CODEXHOST_THREAD_ID",
 ];
 
-/** Register a private native preload Skill only in this gateway process. */
+/**
+ * Per-Thread delegation preload for the resident gateway.
+ *
+ * The executing agent lives in the gateway process, not in this bridge, so a
+ * process-local `register_skill` never reaches it. Instead the preload is a
+ * Thread-scoped SKILL.md that canonical `session.create` receives through its
+ * `skills` parameter: the gateway loads it while building the session agent
+ * (`build_preloaded_skills_prompt`), which is the process that actually runs
+ * the turns. The file carries this Thread's real CODEXHOST identities — the
+ * gateway process never sees the bridge environment — so it is written 0600
+ * inside a 0700 per-Thread directory and removed when the bridge closes.
+ */
 export async function prepareGatewayDelegation(environment: NodeJS.ProcessEnv): Promise<{
   environment: NodeJS.ProcessEnv;
   bootstrap: string;
+  /** SKILL.md path for canonical `session.create`'s `skills` parameter. */
+  skillPath: string | null;
   dispose(): Promise<void>;
 }> {
   if (!required.every((key) => environment[key]))
-    return { environment, bootstrap: "", dispose: async () => {} };
-  // A stable directory (not mkdtemp) keeps the bootstrap script byte-identical
-  // across opens, which lets the launcher-prefix cache reply without a probe
-  // spawn; concurrent writers rewrite the same immutable content.
-  const directory = path.join(os.tmpdir(), "codexhost-hermes-delegation");
+    return { environment, bootstrap: "", skillPath: null, dispose: async () => {} };
+  // One directory per Thread: the file embeds Thread-scoped identities, so a
+  // warm bridge from the pool reuses its own Thread's copy and a different
+  // Thread never reads another one's credentials.
+  const thread = String(environment.CODEXHOST_THREAD_ID).replace(/[^A-Za-z0-9._-]/gu, "_");
+  const directory = path.join(os.tmpdir(), "codexhost-hermes-delegation", thread);
   const file = path.join(directory, "SKILL.md");
   try {
-    await mkdir(directory, { recursive: true });
+    await mkdir(directory, { recursive: true, mode: 0o700 });
     await writeFile(
       file,
-      `---\nname: delegation\ndescription: Discover authorized codexhost agent collaboration.\n---\n\n${HERMES_DELEGATION_GUIDANCE}\n`,
+      `---\nname: delegation\ndescription: Discover authorized codexhost agent collaboration.\n---\n\n${HERMES_DELEGATION_GUIDANCE}\n\nRuntime identity for this Thread:\n\n- CODEXHOST_CLI_PATH: ${environment.CODEXHOST_CLI_PATH}\n- CODEXHOST_RUNTIME_ENDPOINT: ${environment.CODEXHOST_RUNTIME_ENDPOINT}\n- CODEXHOST_RUNTIME_TOKEN: ${environment.CODEXHOST_RUNTIME_TOKEN}\n- CODEXHOST_THREAD_ID: ${environment.CODEXHOST_THREAD_ID}\n`,
       { mode: 0o600 },
     );
     return {
@@ -55,14 +69,13 @@ import hermes_bootstrap
 _stdout = sys.stdout  # tui_gateway.server redirects sys.stdout to sys.stderr at import (stdio-entry protection); this bridge owns stdout as its RPC channel to the host
 from tui_gateway import server
 sys.stdout = _stdout
-from pathlib import Path
-from hermes_cli.plugins import PluginContext, PluginManifest, get_plugin_manager
-PluginContext(PluginManifest(name="codexhost-runtime"), get_plugin_manager()).register_skill(
-    "delegation", Path(${JSON.stringify(file)}))
 `,
-      // The file is intentionally left in place: warm bridge processes keep
-      // serving the registered skill path, and the next open overwrites it.
-      dispose: async () => {},
+      skillPath: file,
+      // The per-Thread file carries the Runtime token; remove it once the
+      // bridge that owns this Thread goes away (the next open rewrites it).
+      dispose: async () => {
+        await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+      },
     };
   } catch (error) {
     throw error;

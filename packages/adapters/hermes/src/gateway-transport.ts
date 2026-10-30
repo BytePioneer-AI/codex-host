@@ -65,7 +65,10 @@ async def _bridge():
             raise SystemExit("[bridge-exit] gateway protocol mismatch; update/restart required")
 
         loop = asyncio.get_running_loop()
-        reader = asyncio.StreamReader()
+        # A full prompt rides on ONE JSON-RPC line; StreamReader's default 64 KiB
+        # line limit aborts the bridge on large pastes (LimitOverrunError), so the
+        # stdin side matches the WebSocket side's 8 MiB frame ceiling.
+        reader = asyncio.StreamReader(limit=8 * 1024 * 1024)
         await loop.connect_read_pipe(
             lambda: asyncio.StreamReaderProtocol(reader), sys.stdin
         )
@@ -136,6 +139,10 @@ export class HermesGatewayTransport {
     readonly environment: NodeJS.ProcessEnv,
     readonly timeoutMs = 30_000,
   ) {}
+  /** SKILL.md the gateway preloads for this bridge's Thread, or null without delegation. */
+  get delegationSkillPath(): string | null {
+    return this.#delegation?.skillPath ?? null;
+  }
   /** Whether start() already ran (a warm transport skips prepare/start on reuse). */
   get started(): boolean {
     return this.#startRequested;

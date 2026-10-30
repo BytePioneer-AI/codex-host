@@ -609,3 +609,116 @@ describe("Hermes gateway native turn projection", () => {
     });
   });
 });
+
+describe("Hermes gateway canonical review fixes", () => {
+  it("settles a turn only on its own admission's completion (shared session)", async () => {
+    const f = fixture();
+    f.request.mockImplementation(async (method) => {
+      if (method === "prompt.submit") return { status: "started", admission_id: "mine" };
+      return {};
+    });
+    let settled: unknown = null;
+    const done = f.bridge
+      .runTurn(
+        "hello",
+        () => {},
+        async () => null,
+      )
+      .then((value) => {
+        settled = value;
+        return value;
+      });
+    await pause();
+    // Another client's admission completes in the SAME session: its text must
+    // not become this Host turn's final answer, and the turn must stay open.
+    f.raw.onEvent({
+      type: "message.complete",
+      session_id: "runtime",
+      admission_id: "other-client",
+      payload: { text: "someone else's answer", status: "complete" },
+    });
+    await pause();
+    expect(settled).toBeNull();
+    // The turn's own admission settles it.
+    f.raw.onEvent({
+      type: "message.complete",
+      session_id: "runtime",
+      admission_id: "mine",
+      payload: { text: "my answer", status: "complete" },
+    });
+    await expect(done).resolves.toMatchObject({
+      stopReason: "end_turn",
+      finalAnswerText: "my answer",
+    });
+  });
+
+  it("aborts a permission prompt when approval.cancelled arrives", async () => {
+    const f = fixture();
+    const done = f.bridge.runTurn(
+      "hello",
+      () => {},
+      (request) => {
+        return new Promise<string | null>((_resolve, reject) => {
+          request.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      },
+    );
+    await pause();
+    // The gateway asks for an approval decision.
+    void f.raw.onRequest("srq-1", "approval", {
+      session_id: "runtime",
+      request_id: "queue-1",
+      command: "rm -rf /tmp/probe",
+      description: "",
+      choices: ["once", "deny"],
+    });
+    await pause();
+    // An interrupt drops the queued approval; the permission wait must end.
+    f.emit("approval.cancelled", { request_ids: ["queue-1"], reason: "interrupt" });
+    await expect(done).rejects.toThrow();
+  });
+
+  it("reports a switched YOLO mode from openResult", async () => {
+    const f = fixture();
+    await f.bridge.setPermissionMode("dont_ask");
+    const open = await f.bridge.openResult();
+    expect(open.session.modes?.currentModeId).toBe("dont_ask");
+    await f.bridge.setPermissionMode("default");
+    const again = await f.bridge.openResult();
+    expect(again.session.modes?.currentModeId).toBe("default");
+  });
+
+  it("answers a snapshot-adopted approval through approval.respond on the first turn", async () => {
+    const f = fixture();
+    f.bridge.adoptPendingPrompts([
+      {
+        kind: "approval",
+        prompt_id: "p1",
+        execution_generation: 3,
+        choices: ["once", "deny"],
+        command: "dangerous-command",
+        description: "",
+      },
+    ]);
+    const done = f.bridge.runTurn(
+      "hello",
+      () => {},
+      async () => "once",
+    );
+    await pause();
+    await pause();
+    expect(f.request).toHaveBeenCalledWith(
+      "approval.respond",
+      {
+        session_id: "runtime",
+        execution_generation: 3,
+        prompt_id: "p1",
+        choice: "once",
+      },
+      expect.anything(),
+      false,
+    );
+    f.emit("message.complete", { text: "done", status: "complete" });
+    await expect(done).resolves.toMatchObject({ stopReason: "end_turn" });
+  });
+});

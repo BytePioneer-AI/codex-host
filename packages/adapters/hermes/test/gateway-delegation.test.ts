@@ -42,16 +42,31 @@ describe("prepareGatewayDelegation bootstrap", () => {
     // bootstrap must restore the saved stdout right after that import.
     const stdoutRestore = prepared.bootstrap.indexOf("sys.stdout = _stdout");
     expect(stdoutRestore).toBeGreaterThan(serverImport);
-    expect(prepared.bootstrap).toContain("register_skill");
-    // The registered Skill file exists while the delegation is live.
-    const match = /Path\("([^"]+)"\)/.exec(prepared.bootstrap);
-    expect(match).not.toBeNull();
-    const skillFile = match?.[1] ?? "";
+    // The bridge process no longer registers the skill itself: the executing
+    // agent lives in the GATEWAY process, which receives the preload through
+    // canonical create's `skills` parameter instead.
+    expect(prepared.bootstrap).not.toContain("register_skill");
+    // The preload SKILL.md exists while the delegation is live and carries this
+    // Thread's real identities (the gateway process never sees the bridge env).
+    expect(typeof prepared.skillPath).toBe("string");
+    const skillFile = prepared.skillPath ?? "";
     expect(skillFile).not.toBe("");
     directories.push(path.dirname(skillFile));
     const skill = await readFile(skillFile, "utf8");
     expect(skill).toContain("name: delegation");
+    expect(skill).toContain(required.CODEXHOST_RUNTIME_ENDPOINT);
+    expect(skill).toContain(required.CODEXHOST_THREAD_ID);
     await prepared.dispose();
+  });
+
+  it("scopes the preload file per Thread and removes it on dispose", async () => {
+    const first = await prepareGatewayDelegation({ ...required });
+    const second = await prepareGatewayDelegation({ ...required, CODEXHOST_THREAD_ID: "thread-2" });
+    expect(first.skillPath).not.toBe(second.skillPath);
+    await readFile(second.skillPath ?? "", "utf8");
+    await second.dispose();
+    await expect(readFile(second.skillPath ?? "", "utf8")).rejects.toThrow();
+    await first.dispose();
   });
 
   it("appends the delegation skill to HERMES_TUI_SKILLS without clobbering", async () => {

@@ -53,6 +53,8 @@ type Active = {
   streamed: string;
   reasoning: string;
   toolIds: Set<string>;
+  /** The admission this turn submitted; turn events settle only their own admission. */
+  admissionId: string | null;
 };
 
 function question(entry: GatewayRecord, fallbackId: string): HostQuestion {
@@ -138,7 +140,9 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     return this.#commands;
   }
   async getCommands(): Promise<readonly HermesNativeCommand[]> {
-    const params = { session_id: this.sessionId, cwd: this.transport.cwd };
+    // Canonical wire: complete.slash / commands.catalog reject a `cwd` param
+    // (their param whitelist is session-scoped), so only the session id goes.
+    const params = { session_id: this.sessionId };
     const [response, catalog] = await Promise.all([
       this.transport.request(
         "complete.slash",
@@ -178,6 +182,10 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
   readonly history: HermesGatewayHistory;
   #active: Active | null = null;
   #requests = new Map<string, AbortController>();
+  /** Open approval server requests by their payload request_id, for approval.cancelled. */
+  #approvalRequests = new Map<string, AbortController>();
+  /** Pending approval prompts adopted from the create/resume snapshot. */
+  #adoptedPrompts: GatewayRecord[] = [];
   #closed = false;
   #info: GatewayRecord;
   #revision: number | null = null;
@@ -304,6 +312,9 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       throw new Error(
         "Hermes effective approval policy differs from the requested mode; check native global approvals policy",
       );
+    // openResult() reports the mode from the cached session info; without this
+    // write-back a switched YOLO still shows (and persists) the old mode.
+    this.#info = { ...this.#info, yolo: modeId === "dont_ask" };
   }
   nativeCommandName(text: string): string | null {
     return hermesGatewayCommandName(text, this.#commands);
@@ -331,8 +342,14 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       streamed: "",
       reasoning: "",
       toolIds: new Set(),
+      admissionId: null,
     };
     this.#active = active;
+    // Pending prompts adopted from the create/resume snapshot (an approval the
+    // gateway still waits on) can only be answered once a turn context exists.
+    void this.#adoptedPrompts
+      .splice(0)
+      .map((prompt) => void this.#respondAdoptedApproval(prompt, active).catch(() => undefined));
     const commandText = text.trim();
     const nativeCommand = this.nativeCommandName(text);
     try {
@@ -394,13 +411,19 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
         // Canonical wire: prompt.submit requires a caller-chosen submission id
         // (idempotent retries return the same admission) and answers with an
         // AdmissionStatus ("queued"/"started"), never "streaming".
+        // clarify_batch=true routes the clarify tool's whole question set
+        // through ONE `clarify` server request instead of one card per
+        // question; the response handler below already speaks the batch shape.
         const submitted = await this.transport.request("prompt.submit", {
           session_id: this.sessionId,
           text,
           submission_id: `codexhost-turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          clarify_batch: true,
         });
         if (submitted.status !== "queued" && submitted.status !== "started")
           this.#fault(new Error(`Hermes did not accept the turn (${String(submitted.status)})`));
+        else if (active.admissionId === null && typeof submitted.admission_id === "string")
+          active.admissionId = submitted.admission_id;
       }
     } catch (error) {
       active.reject(error instanceof Error ? error : new Error(String(error)));
@@ -474,10 +497,30 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       controller?.abort(payload.reason === "timeout" ? "expired" : "cancelled");
       return;
     }
+    if (event.type === "approval.cancelled") {
+      // Interrupts/reaps drop queued gateway approvals; resolve their waits as
+      // cancelled so a permission prompt does not hang until its timeout.
+      const ids = Array.isArray(payload.request_ids)
+        ? payload.request_ids.filter((id): id is string => typeof id === "string")
+        : [];
+      for (const id of ids) {
+        this.#approvalRequests.get(id)?.abort("cancelled");
+        this.#approvalRequests.delete(id);
+      }
+      return;
+    }
     const active = this.#active;
     if (!active) {
       if (event.type === "error") this.#fault(new Error(gatewayString(payload.message)));
       return;
+    }
+    // Turn events carry the admission they belong to; a completion from the
+    // previous turn or another client's input in the SAME session must not
+    // settle this Host turn (its text would surface as the final answer).
+    const eventAdmission = gatewayString(event.admission_id);
+    const eventType = gatewayString(event.type);
+    if (eventAdmission && active.admissionId && eventAdmission !== active.admissionId) {
+      if (eventType.startsWith("message.") || eventType.startsWith("reasoning.")) return;
     }
     const text = gatewayString(payload.text);
     if (event.type === "message.delta") {
@@ -640,19 +683,85 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
                 ? [{ id: "deny", effect: "deny", label: "Deny" }]
                 : [],
         );
-        const response = await active.permission({
-          signal: controller.signal,
-          title: gatewayString(params.description) || gatewayString(params.command),
-          description: gatewayString(params.command) || gatewayString(params.description),
-          options,
-        });
-        if (!controller.signal.aborted)
-          this.transport.respond(id, {
-            choice: response ?? "deny",
+        const payloadRequestId = gatewayString(params.request_id);
+        if (payloadRequestId) this.#approvalRequests.set(payloadRequestId, controller);
+        try {
+          const response = await active.permission({
+            signal: controller.signal,
+            title: gatewayString(params.description) || gatewayString(params.command),
+            description: gatewayString(params.command) || gatewayString(params.description),
+            options,
           });
+          if (!controller.signal.aborted)
+            this.transport.respond(id, {
+              choice: response ?? "deny",
+            });
+        } finally {
+          if (payloadRequestId) this.#approvalRequests.delete(payloadRequestId);
+        }
       } else this.transport.rejectRequest(id);
     } finally {
       this.#requests.delete(id);
     }
+  }
+  /** Keep approval prompts from the create/resume snapshot for the next turn. */
+  adoptPendingPrompts(prompts: unknown): void {
+    if (!Array.isArray(prompts)) return;
+    for (const entry of prompts) {
+      const prompt = gatewayRecord(entry);
+      if (gatewayString(prompt.kind) === "approval" && gatewayString(prompt.prompt_id))
+        this.#adoptedPrompts.push(prompt);
+    }
+  }
+  /**
+   * Answer a snapshot-adopted approval through canonical `approval.respond`.
+   * Clarify prompts are deliberately not answered here: a live clarify
+   * question is served by the `clarify` server request (batch mode), and the
+   * gateway re-issues still-open server requests to an attaching client.
+   */
+  async #respondAdoptedApproval(prompt: GatewayRecord, active: Active): Promise<void> {
+    if (this.#closed) return;
+    const promptId = gatewayString(prompt.prompt_id);
+    const generation = prompt.execution_generation;
+    const choices = Array.isArray(prompt.choices)
+      ? prompt.choices.filter((choice): choice is string => typeof choice === "string")
+      : ["once", "deny"];
+    const options = choices.flatMap<HermesPermissionRequest["options"][number]>((choice) =>
+      choice === "once"
+        ? [{ id: "once", effect: "allowOnce", label: "Allow once" }]
+        : choice === "session" || choice === "always"
+          ? [
+              {
+                id: choice,
+                effect: choice === "session" ? "allowForSession" : "allowAlways",
+                label: choice === "session" ? "Allow for this session" : "Always allow",
+              },
+            ]
+          : choice === "deny"
+            ? [{ id: "deny", effect: "deny", label: "Deny" }]
+            : [],
+    );
+    const response = await active.permission({
+      signal: new AbortController().signal,
+      title:
+        gatewayString(prompt.description) ||
+        gatewayString(prompt.command) ||
+        "Hermes approval requested before this Session attached",
+      description: gatewayString(prompt.command) || gatewayString(prompt.description),
+      options,
+    });
+    if (this.#closed) return;
+    if (typeof generation === "number")
+      await this.transport.request(
+        "approval.respond",
+        {
+          session_id: this.sessionId,
+          execution_generation: generation,
+          prompt_id: promptId,
+          choice: response ?? "deny",
+        },
+        this.transport.timeoutMs,
+        false,
+      );
   }
 }

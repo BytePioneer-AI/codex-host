@@ -7,12 +7,14 @@ function fakeTransport(
   overrides: Partial<{
     closed: boolean;
     started: boolean;
+    cwd: string;
+    environment: NodeJS.ProcessEnv;
   }> = {},
 ) {
   const transport = new HermesGatewayTransport(
     typeof runtime === "string" ? runtime : runtime,
-    process.cwd(),
-    {},
+    overrides.cwd ?? process.cwd(),
+    overrides.environment ?? {},
   );
   const start = vi.spyOn(transport, "start").mockResolvedValue();
   const close = vi.spyOn(transport, "close").mockResolvedValue();
@@ -33,26 +35,26 @@ function fakeTransport(
 describe("GatewayTransportPool", () => {
   it("returns null from an empty pool", () => {
     const pool = new GatewayTransportPool();
-    expect(pool.acquire({ launcher: "/hermes" })).toBeNull();
+    expect(pool.acquire({ launcher: "/hermes" }, "/workspace", {})).toBeNull();
   });
 
   it("hands a released bridge to the next matching acquire", () => {
     const pool = new GatewayTransportPool();
-    const first = fakeTransport({ launcher: "/hermes" });
+    const first = fakeTransport({ launcher: "/hermes" }, { cwd: "/workspace" });
     pool.release(first.transport);
-    const acquired = pool.acquire({ launcher: "/hermes" });
+    const acquired = pool.acquire({ launcher: "/hermes" }, "/workspace", {});
     expect(acquired).toBe(first.transport);
     expect(first.close).not.toHaveBeenCalled();
     // Acquired once: the pool is empty again.
-    expect(pool.acquire({ launcher: "/hermes" })).toBeNull();
+    expect(pool.acquire({ launcher: "/hermes" }, "/workspace", {})).toBeNull();
   });
 
   it("discards a bridge that faulted while idle", async () => {
     const pool = new GatewayTransportPool();
-    const bridge = fakeTransport({ launcher: "/hermes" });
+    const bridge = fakeTransport({ launcher: "/hermes" }, { cwd: "/workspace" });
     pool.release(bridge.transport);
     bridge.setClosed(true);
-    expect(pool.acquire({ launcher: "/hermes" })).toBeNull();
+    expect(pool.acquire({ launcher: "/hermes" }, "/workspace", {})).toBeNull();
     // Give the discarded close a tick to run.
     await new Promise((resolve) => setImmediate(resolve));
     expect(bridge.close).toHaveBeenCalled();
@@ -60,43 +62,68 @@ describe("GatewayTransportPool", () => {
 
   it("discards a bridge that never started", async () => {
     const pool = new GatewayTransportPool();
-    const bridge = fakeTransport({ launcher: "/hermes" }, { started: false });
+    const bridge = fakeTransport({ launcher: "/hermes" }, { started: false, cwd: "/workspace" });
     pool.release(bridge.transport);
-    expect(pool.acquire({ launcher: "/hermes" })).toBeNull();
+    expect(pool.acquire({ launcher: "/hermes" }, "/workspace", {})).toBeNull();
     await new Promise((resolve) => setImmediate(resolve));
     expect(bridge.close).toHaveBeenCalled();
   });
 
   it("does not hand a bridge to a different runtime", () => {
     const pool = new GatewayTransportPool();
-    const bridge = fakeTransport({ launcher: "/hermes" });
+    const bridge = fakeTransport({ launcher: "/hermes" }, { cwd: "/workspace" });
     pool.release(bridge.transport);
-    expect(pool.acquire({ launcher: "/other" })).toBeNull();
-    expect(pool.acquire("/hermes")).toBeNull();
+    expect(pool.acquire({ launcher: "/other" }, "/workspace", {})).toBeNull();
+    expect(pool.acquire("/hermes", "/workspace", {})).toBeNull();
     // The mismatched bridge stays pooled for its own runtime.
-    expect(pool.acquire({ launcher: "/hermes" })).toBe(bridge.transport);
+    expect(pool.acquire({ launcher: "/hermes" }, "/workspace", {})).toBe(bridge.transport);
+  });
+
+  it("does not reuse a bridge across a different cwd or gateway profile", () => {
+    const pool = new GatewayTransportPool();
+    const bridge = fakeTransport(
+      { launcher: "/hermes" },
+      { cwd: "/workspace", environment: { HERMES_HOME: "/home/a" } },
+    );
+    pool.release(bridge.transport);
+    // A different project directory spawns its own bridge.
+    expect(pool.acquire({ launcher: "/hermes" }, "/other-project", {})).toBeNull();
+    // A different HERMES_HOME attaches to a different gateway profile.
+    expect(
+      pool.acquire({ launcher: "/hermes" }, "/workspace", { HERMES_HOME: "/home/b" }),
+    ).toBeNull();
+    // The exact spawn inputs still reuse the warm bridge.
+    expect(pool.acquire({ launcher: "/hermes" }, "/workspace", { HERMES_HOME: "/home/a" })).toBe(
+      bridge.transport,
+    );
   });
 
   it("closes surplus bridges beyond capacity", async () => {
     const pool = new GatewayTransportPool(1);
-    const first = fakeTransport({ launcher: "/hermes" });
-    const second = fakeTransport({ launcher: "/hermes" });
+    const first = fakeTransport({ launcher: "/hermes" }, { cwd: "/workspace" });
+    const second = fakeTransport({ launcher: "/hermes" }, { cwd: "/workspace" });
     pool.release(first.transport);
     pool.release(second.transport);
     await new Promise((resolve) => setImmediate(resolve));
     expect(second.close).toHaveBeenCalled();
-    expect(pool.acquire({ launcher: "/hermes" })).toBe(first.transport);
+    expect(pool.acquire({ launcher: "/hermes" }, "/workspace", {})).toBe(first.transport);
   });
 
-  it("close() tears down every pooled bridge", async () => {
+  it("close() tears down every pooled bridge and rejects late returns", async () => {
     const pool = new GatewayTransportPool();
-    const first = fakeTransport({ launcher: "/hermes" });
-    const second = fakeTransport({ launcher: "/hermes" });
+    const first = fakeTransport({ launcher: "/hermes" }, { cwd: "/workspace" });
+    const second = fakeTransport({ launcher: "/hermes" }, { cwd: "/workspace" });
     pool.release(first.transport);
     pool.release(second.transport);
     await pool.close();
     expect(first.close).toHaveBeenCalled();
     expect(second.close).toHaveBeenCalled();
-    expect(pool.acquire({ launcher: "/hermes" })).toBeNull();
+    expect(pool.acquire({ launcher: "/hermes" }, "/workspace", {})).toBeNull();
+    // A bridge returned after close() must not leak back into the pool.
+    const late = fakeTransport({ launcher: "/hermes" }, { cwd: "/workspace" });
+    pool.release(late.transport);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(late.close).toHaveBeenCalled();
+    expect(pool.acquire({ launcher: "/hermes" }, "/workspace", {})).toBeNull();
   });
 });

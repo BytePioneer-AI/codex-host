@@ -267,7 +267,7 @@ describe("Hermes safe dynamic command directory", () => {
     ).toBe("text");
     expect(f.request).toHaveBeenCalledWith(
       "complete.slash",
-      { session_id: "runtime", cwd: "/workspace", text: "/" },
+      { session_id: "runtime", text: "/" },
       f.raw.timeoutMs,
       false,
     );

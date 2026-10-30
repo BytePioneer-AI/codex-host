@@ -135,6 +135,7 @@ export async function openGatewaySession(
     // Canonical create/mutate run Hermes's own provider-aware model resolution
     // (switch_model) server-side, so the qualified id goes over the wire as-is
     // and no helper interpreter is spawned to pre-split it.
+    const delegationSkill = transport.delegationSkillPath;
     const response = await transport.request(
       nativeRef ? "session.resume" : "session.create",
       // Canonical wire (hermes-gateway-v1, CanonicalCreateParams/CanonicalResumeParams):
@@ -147,6 +148,11 @@ export async function openGatewaySession(
             ...(input.kind === "create" && input.thinkingOptionId
               ? { reasoning: input.thinkingOptionId }
               : {}),
+            // The executing agent is built in the GATEWAY process; the Thread's
+            // delegation preload (identity + guidance) reaches it only through
+            // canonical create's skills parameter, which the gateway resolves
+            // by path while assembling the session agent.
+            ...(delegationSkill ? { skills: [delegationSkill] } : {}),
           },
     );
     const runtimeId = gatewayString(response.session_id);
@@ -168,14 +174,21 @@ export async function openGatewaySession(
       generation: response.execution_generation,
       subscriptionId: response.subscription_id,
     });
+    // An approval the gateway already waits on rides the create/resume
+    // snapshot's prompts list; it is answered on the first turn context.
+    bridge.adoptPendingPrompts(response.prompts);
     // Canonical create persists the state.db row itself (source, cwd, frozen
     // model/reasoning policy), and a fresh session's public id IS its physical
     // id, so the create path needs no helper interpreter at all; resume/fork
-    // still reconcile through the native reader.
+    // still reconcile through the native reader. After a compaction rotation
+    // the public Native Ref and the physical transcript id legitimately
+    // diverge (the public id is stable, the physical row moves), so identity
+    // reconciliation only requires the physical row to RESOLVE — never to be
+    // equal.
     if (nativeRef) {
-      const physicalId = await bridge.history.resolvePhysicalSessionId();
-      if (storedId !== physicalId)
-        throw new Error("Hermes live Session and persisted history identities differ");
+      // Throws when the persisted row cannot be resolved at all; a resolved
+      // row that differs from the public id is a legal compaction rotation.
+      await bridge.history.resolvePhysicalSessionId();
     }
     // Every selection is confirmed by the live native agent, including persisted runtime settings.
     if (model) await bridge.setModel(model);

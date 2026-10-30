@@ -222,17 +222,21 @@ export class HermesAdapter implements HarnessAdapter {
       return failure("sessionBusy", "This Hermes Session already has an owner", true);
     if (ref) this.#openingNativeIds.add(ref.nativeSessionId);
     // Warm pool first: a settled session's bridge is a stateless pipe to the
-    // resident gateway and serves the next open without a fresh spawn.
-    let transport = this.#gatewayPool.acquire(runtime);
-    if (transport === null)
-      transport = await startGatewayTransport(
-        runtime,
-        input.cwd,
-        environment,
-        this.#options.commandTimeoutMs,
-      );
-    this.#gatewayTransports.add(transport);
+    // resident gateway and serves the next open without a fresh spawn. The
+    // acquire/start happens INSIDE the guarded region: a failed start must
+    // still release the resume ownership marker above, or every later resume
+    // of this Session reports sessionBusy forever.
+    let transport!: HermesGatewayTransport;
     try {
+      transport =
+        this.#gatewayPool.acquire(runtime, input.cwd, environment) ??
+        (await startGatewayTransport(
+          runtime,
+          input.cwd,
+          environment,
+          this.#options.commandTimeoutMs,
+        ));
+      this.#gatewayTransports.add(transport);
       let inheritedMode: string | undefined;
       if (input.kind === "fork") {
         const source = [...this.#sessions].find(
@@ -260,8 +264,10 @@ export class HermesAdapter implements HarnessAdapter {
       this.#sessions.add(session);
       return { ok: true, value: session };
     } catch (error) {
-      await transport.close().catch(() => undefined);
-      this.#gatewayTransports.delete(transport);
+      if (transport) {
+        await transport.close().catch(() => undefined);
+        this.#gatewayTransports.delete(transport);
+      }
       return failure(
         error instanceof HermesGatewayHistoryError ? error.code : "nativeFailure",
         error instanceof Error ? error.message : "Hermes gateway open failed",

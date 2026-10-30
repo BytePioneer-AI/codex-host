@@ -30,11 +30,12 @@ ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两�
 
 ## 其他 Harness 的只读账号额度
 
-统一列表中展示 Grok Build、agy（Antigravity）、Claude Code、Cursor、Kimi Code、Qoder 和 Pi 当前原生认证可读取的真实额度或预付费余额。导入 Pi 的入口位于账号信息下方，不单独占列；原生管理边界保留在账号信息的说明中。这不是多账号管理：不提供添加、删除、切换、设为默认或重置卡操作，也不修改 Codex 当前账号。搜索和已用/剩余切换作用于所有行，刷新按钮重新查询两类额度。各 Harness 独立并行查询，任一有效结果返回后立即显示，不等待其他 Harness；全局刷新期间同样逐项恢复。
+统一列表中展示 Grok Build、agy（Antigravity）、Claude Code、Cursor、Kimi Code、Qoder、DeepSeek Harness（DSH）和 Pi 当前原生认证可读取的真实额度或预付费余额。导入 Pi 的入口位于账号信息下方，不单独占列；原生管理边界保留在账号信息的说明中。这不是多账号管理：不提供添加、删除、切换、设为默认或重置卡操作，也不修改 Codex 当前账号。搜索和已用/剩余切换作用于所有行，刷新按钮重新查询两类额度。各 Harness 独立并行查询，任一有效结果返回后立即显示，不等待其他 Harness；全局刷新期间同样逐项恢复。
 
 - 仅在返回有效额度窗口或预付费余额时显示账号。API Key 或第三方 Provider 不自动代表存在套餐额度；未登录、无可用数据或查询失败时不显示占位行。Host 按 Harness 缓存完成的账号检查结果 15 秒，关闭后立即重开设置页可复用该短期结果；工具栏「刷新额度」显式绕过缓存，刷新后不复用上一份账号额度，避免退出或改变认证后展示旧账号。
 - 左侧展示各 Harness/供应商的产品 Logo；主标题优先显示邮箱或可识别名称，Harness 名称和套餐作为次级信息。没有账号身份时以 Harness 名称为主标题，不重复名称或显示「当前登录账号」，不会猜测邮箱。邮箱按列宽省略，悬停可查看完整身份。不记录或展示账号快照更新时间；原型中的示例套餐不作为真实数据来源。预付费余额没有套餐上限或重置时间，因此只显示 Provider 返回的金额和币种，不编造百分比。
 - Pi 在配置了 DeepSeek API Key 时显示该 Provider 报告的预付费余额。`models.json` 中带 API Key 和 base URL 的自定义 Provider 会向该站点自己的 `GET /v1/usage` 查询 sub2api 钱包或 Key 额度；只有响应明确给出币种和非负可用金额时才显示。Key 只发送给用户配置的站点且不跟随重定向。一个 Pi 可报告多个 Billing Source，Host 最多投影八个独立账号行。
+- DeepSeek Harness（DSH）本身没有账号，显示 DSH 所用 DeepSeek API Key 的预付费余额。Key 按以下顺序读取，不包括 DSH 调用目录中的项目 `.env`：`$DSH_HOME/.credentials.yaml`（默认 `~/.dsh`）的 `refs.DEEPSEEK_API_KEY`，其次进程环境变量 `DEEPSEEK_API_KEY`，最后 `$DSH_HOME/.env`。只向 `GET https://api.deepseek.com/user/balance` 发送且不跟随重定向，不启动 dsh 进程或模型 Turn。每个有余额的币种各一行，全部为 0 时保留第一项显示 0。自定义 `apiKeyEnv` 或 `baseURL` 代理不在查询范围内。同一余额也通过 `balance()` 缓存显示在 DSH 会话的对话框额度胶囊中，缓存最多 30 秒刷新一次。
 - Cursor 使用原生 OAuth 凭据读取 DashboardService 的 Auto 与 API 月度比例和账期结束时间；API Key 与内存凭据模式不读取无关的已保存 OAuth。Kimi Code 读取 coding usages，原生 Token 过期或接口返回 401 时通过原 refresh token 刷新并更新原生凭据文件。Qoder 通过 SDK `getUsageInfo()` 与 `accountInfo()` 读取套餐 Credits、身份以及共享资源包；不会把 Session 累计消耗冒充账号额度。
 - Grok Build 复用原生 xAI OAuth 认证和 billing 查询，展示周期、重置时间及产品用量；不将其他 issuer 的 Token 发到 xAI。套餐使用比例优先读取 `creditUsagePercent`；省略时按原生规则使用旧版套餐额度 `monthlyLimit` / `used`，没有正数套餐上限但有可识别的周/月周期及有效重置时间时，按原生零用量语义展示已用 0% / 剩余 100%，保留账号行。请求失败、空配置或异常用量字段不补成 0%；不使用 `onDemandCap` / `onDemandUsed` 的按需消费金额替代套餐比例。显式配置 `XAI_API_KEY`、`GROK_API_KEY` 或 `GROK_TOKEN` 时保守地不展示保存的 OAuth 账号。此页展示 Harness 账号额度，不判定某个 Thread 的逐模型凭据或实际 Billing Source。
 - agy 执行原生 `--print=/usage --output-format stream-json`，由 CLI 自己解析认证，展示实际模型组与窗口。当前该输出不提供账号邮箱或套餐，以 Harness 名称为主标题。

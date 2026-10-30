@@ -6,6 +6,7 @@ import type {
 } from "./agent-selection-state.js";
 import { catalogModelForRef } from "@codexhost/shared-contracts";
 import type {
+  AccountBalanceSnapshot,
   AccountCreditsSnapshot,
   CodexAccountSummary,
   HarnessPluginDescriptor,
@@ -810,6 +811,7 @@ export function renderComposerAgentControl(
   locale: RendererSettingsLocale = "en",
   currentCodexAccount: CodexAccountSummary | null = null,
   ownershipError = false,
+  accountBalance: AccountBalanceSnapshot | null = null,
 ): boolean {
   if (control.usage === null) {
     control.usage = mountRendererUsageControl(control.composerId, locale);
@@ -888,7 +890,7 @@ export function renderComposerAgentControl(
   control.harnessCommands.setLocale(locale);
   control.harnessCommands.root.hidden = state.agent === "codex";
   control.harnessCommands.root.style.display = state.agent === "codex" ? "none" : "inline-flex";
-  renderRendererCreditsControl(control.credits, accountCredits, locale);
+  renderRendererCreditsControl(control.credits, accountCredits, locale, accountBalance);
   return state.agent !== "codex" && adapterState === "ready" && !submissionBlocked;
 }
 

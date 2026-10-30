@@ -1,6 +1,7 @@
 import type { HarnessUsageStatisticsCapability } from "./usage-statistics.js";
 import type {
   HarnessAccountSnapshot,
+  AccountBalanceSnapshot,
   AccountCreditsSnapshot,
   HarnessInstallationState,
   HarnessCommandCatalog,
@@ -688,6 +689,14 @@ export interface HarnessAdapter {
    * observes a later read, does not await this call, and isolates rejection.
    */
   refreshCredits?(): Promise<AccountCreditsSnapshot | null>;
+  /** Optional cached prepaid balance for Harnesses whose Billing Source reports funds, not a
+   * percentage quota. Same contract as `credits()`: synchronous, no I/O, null when unknown.
+   */
+  balance?(): AccountBalanceSnapshot | null;
+  /** Best-effort refresh of the `balance()` cache. Must not start a model Turn; Host does
+   * not await it and isolates rejection.
+   */
+  refreshBalance?(): Promise<AccountBalanceSnapshot | null>;
   /**
    * The same read when one Harness exposes several Billing Sources. Host prefers
    * this method and retains the first snapshot as the compatibility `account`.

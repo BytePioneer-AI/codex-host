@@ -88,6 +88,7 @@ import type {
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
 import {
+  parseHarnessAccountBalance,
   parseHarnessAccountCredits,
   type HostEvent,
   type HostUsage,
@@ -147,6 +148,7 @@ import {
   updateEmptyParamsSchema,
   updateStartResultSchema,
   updateStatusResultSchema,
+  type AccountBalanceSnapshot,
   type AccountCreditsSnapshot,
   type HarnessModelRef,
   type HarnessPermissionModeId,
@@ -3433,17 +3435,29 @@ export class AppServerHost {
       void Promise.resolve()
         .then(() => adapter.refreshCredits?.())
         .catch(() => undefined);
+    if (adapter?.balance && adapter.refreshBalance)
+      void Promise.resolve()
+        .then(() => adapter.refreshBalance?.())
+        .catch(() => undefined);
     let credits: AccountCreditsSnapshot | null = null;
+    let balance: AccountBalanceSnapshot | null = null;
     try {
       credits = parseHarnessAccountCredits(adapter?.credits?.());
     } catch {
       // Optional account telemetry cannot fail the Thread's usage inspection.
     }
+    try {
+      if (!credits) balance = parseHarnessAccountBalance(adapter?.balance?.());
+    } catch {
+      // Same isolation as credits.
+    }
     const result = threadUsageInspectionSchema.parse({
       threadId: params.data.threadId,
       usage: await this.#threadUsage(resolution.thread),
-      accountCreditsSupported: typeof adapter?.credits === "function",
+      accountCreditsSupported:
+        typeof adapter?.credits === "function" || typeof adapter?.balance === "function",
       ...(credits ? { accountCredits: credits } : {}),
+      ...(balance ? { accountBalance: balance } : {}),
     });
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
   }

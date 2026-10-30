@@ -1,5 +1,6 @@
 import {
   accountCreditsWindowLabel,
+  type AccountBalanceSnapshot,
   type AccountCreditsSnapshot,
 } from "@codexhost/shared-contracts";
 
@@ -44,6 +45,8 @@ interface RendererCreditsMessages {
   readonly fiveHour: string;
   readonly sevenDay: string;
   readonly account: string;
+  readonly balance: string;
+  readonly balanceDetails: string;
 }
 
 const ENGLISH_CREDITS_MESSAGES: RendererCreditsMessages = Object.freeze({
@@ -55,6 +58,8 @@ const ENGLISH_CREDITS_MESSAGES: RendererCreditsMessages = Object.freeze({
   fiveHour: "5-hour limit",
   sevenDay: "7-day limit",
   account: "Account limit",
+  balance: "Balance",
+  balanceDetails: "Account balance details",
 });
 
 const CHINESE_CREDITS_MESSAGES: RendererCreditsMessages = Object.freeze({
@@ -66,6 +71,8 @@ const CHINESE_CREDITS_MESSAGES: RendererCreditsMessages = Object.freeze({
   fiveHour: "5 小时额度",
   sevenDay: "7 天额度",
   account: "账号额度",
+  balance: "余额",
+  balanceDetails: "账号余额详情",
 });
 
 function rendererCreditsMessages(locale: RendererSettingsLocale): RendererCreditsMessages {
@@ -461,11 +468,86 @@ export function mountRendererCreditsControl(composerId: string): RendererCredits
   return control;
 }
 
+/** Provider-reported amount with its currency; an unknown code falls back to `amount CODE`. */
+export function formatRendererBalance(
+  balance: AccountBalanceSnapshot,
+  locale: RendererSettingsLocale = "en",
+): string {
+  try {
+    return new Intl.NumberFormat(locale === "zh-CN" ? "zh-CN" : "en-US", {
+      style: "currency",
+      currency: balance.currency,
+      currencyDisplay: "narrowSymbol",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(balance.amount);
+  } catch {
+    return `${balance.amount.toFixed(2)} ${balance.currency}`;
+  }
+}
+
+function renderBalanceDetails(
+  popover: HTMLDivElement,
+  balance: AccountBalanceSnapshot,
+  locale: RendererSettingsLocale,
+): void {
+  const messages = rendererCreditsMessages(locale);
+  popover.style.backgroundImage = "";
+  popover.setAttribute("aria-label", messages.balanceDetails);
+  popover.replaceChildren();
+  const top = document.createElement("div");
+  top.style.display = "flex";
+  top.style.alignItems = "flex-start";
+  top.style.justifyContent = "space-between";
+  top.style.gap = "12px";
+  const left = document.createElement("div");
+  const label = document.createElement("div");
+  label.textContent = balance.label ?? messages.balance;
+  label.style.fontSize = "12.5px";
+  label.style.fontWeight = "600";
+  const currency = document.createElement("div");
+  currency.textContent = `${messages.balance} · ${balance.currency}`;
+  currency.style.fontSize = "11px";
+  currency.style.color = "color-mix(in srgb, currentColor 62%, transparent)";
+  left.append(label, currency);
+  const amount = document.createElement("span");
+  amount.textContent = formatRendererBalance(balance, locale);
+  amount.style.fontSize = "22px";
+  amount.style.fontWeight = "700";
+  amount.style.whiteSpace = "nowrap";
+  amount.style.fontVariantNumeric = "tabular-nums";
+  top.append(left, amount);
+  popover.append(top);
+}
+
+function renderRendererBalanceControl(
+  control: RendererCreditsControl,
+  balance: AccountBalanceSnapshot,
+  locale: RendererSettingsLocale,
+): boolean {
+  const messages = rendererCreditsMessages(locale);
+  const formatted = formatRendererBalance(balance, locale);
+  const title = `${balance.label ?? messages.balance} ${messages.balance} ${formatted}`;
+  const ringSlot = control.trigger.querySelector<HTMLElement>("[data-codexhost-credits-ring]");
+  const label = control.trigger.querySelector<HTMLElement>("[data-codexhost-credits-label]");
+  ringSlot?.replaceChildren();
+  if (label) label.textContent = formatted;
+  control.root.style.display = "inline-flex";
+  control.trigger.setAttribute("aria-label", title);
+  control.trigger.title = title;
+  renderBalanceDetails(control.popover, balance, locale);
+  return true;
+}
+
 export function renderRendererCreditsControl(
   control: RendererCreditsControl,
   accountCredits: AccountCreditsSnapshot | null,
   locale: RendererSettingsLocale = "en",
+  accountBalance: AccountBalanceSnapshot | null = null,
 ): boolean {
+  if (accountCredits === null && accountBalance !== null && control.anchor?.parentElement) {
+    return renderRendererBalanceControl(control, accountBalance, locale);
+  }
   if (accountCredits === null || !control.anchor?.parentElement) {
     control.root.style.display = "none";
     closePopover(control);

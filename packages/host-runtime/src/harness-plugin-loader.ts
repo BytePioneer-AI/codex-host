@@ -87,7 +87,7 @@ function isAdapter(value: unknown): value is HarnessAdapter {
   return (
     hasValidSessionUsage(value) &&
     ["inspect", "open", "close"].every((key) => typeof Reflect.get(value, key) === "function") &&
-    ["credits", "refreshCredits"].every(
+    ["credits", "refreshCredits", "balance", "refreshBalance"].every(
       (key) =>
         Reflect.get(value, key) === undefined || typeof Reflect.get(value, key) === "function",
     )

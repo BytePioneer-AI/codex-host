@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   creditsPeriodLabel,
+  formatRendererBalance,
   formatRendererCreditsReset,
   productLabel,
   rendererCreditsTone,
@@ -28,6 +29,79 @@ describe("Renderer credits control", () => {
       expect(trigger.setAttribute).toHaveBeenCalledWith("aria-expanded", "false");
     },
   );
+
+  it("formats a prepaid balance with its currency and falls back for unknown codes", () => {
+    expect(formatRendererBalance({ amount: 12.34, currency: "CNY" }, "zh-CN")).toBe("¥12.34");
+    expect(formatRendererBalance({ amount: 3, currency: "USD" })).toBe("$3.00");
+    expect(formatRendererBalance({ amount: 1.5, currency: "not-a-code" })).toBe("1.50 not-a-code");
+  });
+
+  it("shows a balance chip without a ring or percentage when no quota is reported", () => {
+    interface FakeElement {
+      style: Record<string, string>;
+      textContent: string;
+      children: FakeElement[];
+      attributes: Record<string, string>;
+      append(...nodes: FakeElement[]): void;
+      replaceChildren(...nodes: FakeElement[]): void;
+      setAttribute(name: string, value: string): void;
+    }
+    const element = (): FakeElement => {
+      const node: FakeElement = {
+        style: {},
+        textContent: "",
+        children: [],
+        attributes: {},
+        append: (...nodes) => node.children.push(...nodes),
+        replaceChildren: (...nodes) => {
+          node.children = [...nodes];
+        },
+        setAttribute: (name, value) => {
+          node.attributes[name] = value;
+        },
+      };
+      return node;
+    };
+    const text = (node: FakeElement): string =>
+      node.textContent + node.children.map((child) => text(child)).join("");
+    vi.stubGlobal("document", { createElement: element });
+    try {
+      const ring = element();
+      ring.children.push(element());
+      const label = element();
+      const trigger = Object.assign(element(), {
+        title: "",
+        querySelector: (selector: string) =>
+          selector.includes("ring") ? ring : selector.includes("label") ? label : null,
+      });
+      const popover = element();
+      const root = element();
+      const control = {
+        root,
+        trigger,
+        popover,
+        anchor: { parentElement: {} },
+      } as unknown as RendererCreditsControl;
+
+      expect(
+        renderRendererCreditsControl(control, null, "zh-CN", {
+          amount: 12.34,
+          currency: "CNY",
+          label: "DeepSeek API",
+        }),
+      ).toBe(true);
+      expect(root.style.display).toBe("inline-flex");
+      expect(label.textContent).toBe("¥12.34");
+      expect(ring.children).toEqual([]);
+      expect(trigger.title).toBe("DeepSeek API 余额 ¥12.34");
+      expect(popover.attributes["aria-label"]).toBe("账号余额详情");
+      expect(text(popover)).toContain("DeepSeek API");
+      expect(text(popover)).toContain("¥12.34");
+      expect(text(popover)).not.toContain("%");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 
   it("maps used percent into a status tone", () => {
     expect(rendererCreditsTone(0)).toBe("ok");

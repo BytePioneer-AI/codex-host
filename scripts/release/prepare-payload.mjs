@@ -216,7 +216,7 @@ export async function writeThirdPartyNotices(root, payloadRoot) {
   const notices = [
     "codexhost third-party notices",
     "",
-    "Node.js 24.13.1",
+    "Node.js 24.22.1",
     "License: see licenses/Node.js-LICENSE.txt",
     "",
   ];

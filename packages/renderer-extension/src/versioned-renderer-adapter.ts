@@ -1,15 +1,30 @@
+import { startAgentGroupSync } from "./agent-group-sync.js";
+import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js";
+import { getSharedAgentGroupPreferenceStore } from "./agent-group-preference.js";
 import {
+  committedReactAncestors,
+  createScopedDraftModelWriter,
+  findScopedDraftModelBinding,
+  REACT_FIBER_WALK_LIMIT_EVENT,
+  type RendererHostRoute,
+  type RendererHostRouting,
+} from "@codexhost/desktop-control/renderer-bindings";
+import { createRendererHostClients } from "./renderer-host-clients.js";
+import { installIdleReleasePreferenceSync } from "./renderer-idle-release-preference.js";
+import {
+  encodeHarnessPluginRoute,
+  harnessIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
   type ExternalThreadForkParams,
-  type HarnessInspectParams,
   type HarnessModelRef,
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
   type HostThreadId,
   type ThreadCommandExecuteParams,
+  type HarnessCommandsInspectParams,
   type ThreadCommandsInspectParams,
   type ThreadInspectionParams,
   type ThreadModelSelectParams,
@@ -23,7 +38,6 @@ import {
 import type { RendererAgent } from "./agent-selection-state.js";
 import { installRendererForkControl } from "./renderer-fork-control.js";
 import {
-  createRendererModelClient,
   createThreadUsageSubscriptionRelay,
   type RendererModelClient,
 } from "./renderer-model-client.js";
@@ -34,8 +48,6 @@ export const CLAUDE_CODE_TRANSPORT_MODEL_ID = "codexhost/claude-code-native";
 export const CLAUDE_CODE_TRANSPORT_MODEL_PREFIX = `${CLAUDE_CODE_TRANSPORT_MODEL_ID}@`;
 export const DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID = "codexhost/deepseek-harness-native";
 export const DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX = `${DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID}@`;
-export const QWEN_CODE_TRANSPORT_MODEL_ID = "codexhost/qwen-code-native";
-export const QWEN_CODE_TRANSPORT_MODEL_PREFIX = `${QWEN_CODE_TRANSPORT_MODEL_ID}@`;
 export const OPENCODE_TRANSPORT_MODEL_ID = "codexhost/opencode-native";
 export const OPENCODE_TRANSPORT_MODEL_PREFIX = `${OPENCODE_TRANSPORT_MODEL_ID}@`;
 export const GROK_TRANSPORT_MODEL_ID = "codexhost/grok-native";
@@ -44,6 +56,22 @@ export const OMP_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_TRANSPORT_MODEL_PREFIX = `${OMP_TRANSPORT_MODEL_ID}@`;
 export const ANTIGRAVITY_TRANSPORT_MODEL_ID = "codexhost/antigravity-native";
 export const ANTIGRAVITY_TRANSPORT_MODEL_PREFIX = `${ANTIGRAVITY_TRANSPORT_MODEL_ID}@`;
+
+/** Hermes rides the shared harness-plugin route codec instead of a private prefix. */
+export const HERMES_PLUGIN_ROUTE_PREFIX = "codexhost/plugin-v1@";
+
+export function hermesTransportModelId(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+): string {
+  return encodeHarnessPluginRoute({
+    harnessId: harnessIdSchema.parse("hermes"),
+    ...(model ? { model: harnessModelRefSchema.parse(model) } : {}),
+    ...(permissionModeId
+      ? { permissionModeId: harnessPermissionModeIdSchema.parse(permissionModeId) }
+      : {}),
+  });
+}
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -64,7 +92,8 @@ export interface RendererAdapterStatus {
     | "asset-import-failed"
     | "installation-failed"
     | "draft-prewarm-clear-failed"
-    | "draft-routing-policy-unavailable";
+    | "draft-routing-policy-unavailable"
+    | "react-fiber-walk-limit-exceeded";
   modelUpdates: number;
   hook: "request-bridge" | null;
 }
@@ -113,12 +142,16 @@ export interface RendererDraftPrewarmPolicy {
   state: "ready";
   hostId: string;
   readonly requestTarget?: () => unknown;
-  select(model: string | null): boolean;
+  select(
+    model: string | null,
+    draftId?: string,
+    creationModes?: readonly Record<string, unknown>[],
+  ): boolean;
   clear(): Promise<void>;
 }
 
 interface RendererDraftPrewarmPolicyTarget {
-  __codexhostDraftPrewarmPolicyV1?: RendererDraftPrewarmPolicy;
+  __codexhostHostRoutingV1?: RendererHostRouting;
   setTimeout(handler: TimerHandler, timeout?: number): number;
 }
 
@@ -129,19 +162,8 @@ declare global {
   interface Window {
     __codexhostMainProcessTitlePolicyV1?: { state: "ready" };
     __codexhostDraftPrewarmPolicyV1?: RendererDraftPrewarmPolicy;
+    __codexhostHostRoutingV1?: RendererHostRouting;
   }
-}
-
-function transportModelIdForAgent(agent: RendererAgent): string | null {
-  if (agent === "pi") return PI_TRANSPORT_MODEL_ID;
-  if (agent === "claude-code") return CLAUDE_CODE_TRANSPORT_MODEL_ID;
-  if (agent === "deepseek-harness") return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
-  if (agent === "qwen-code") return QWEN_CODE_TRANSPORT_MODEL_ID;
-  if (agent === "opencode") return OPENCODE_TRANSPORT_MODEL_ID;
-  if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
-  if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
-  if (agent === "antigravity") return ANTIGRAVITY_TRANSPORT_MODEL_ID;
-  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -266,45 +288,6 @@ export function decodeOpenCodeTransportModelId(value: unknown): {
 
 export function isOpenCodeTransportModelId(value: unknown): value is string {
   return decodeOpenCodeTransportModelId(value) !== null;
-}
-
-export function qwenCodeTransportModelId(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-): string {
-  if (!model) {
-    if (permissionModeId) {
-      throw new Error("Qwen Code transport Permission Mode requires a Model Ref");
-    }
-    return QWEN_CODE_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionMode = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  return `${QWEN_CODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
-}
-
-export function decodeQwenCodeTransportModelId(value: unknown): {
-  model?: HarnessModelRef;
-  permissionModeId?: HarnessPermissionModeId;
-} | null {
-  if (value === QWEN_CODE_TRANSPORT_MODEL_ID) return {};
-  if (typeof value !== "string" || !value.startsWith(QWEN_CODE_TRANSPORT_MODEL_PREFIX)) return null;
-  const components = value.slice(QWEN_CODE_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length < 1 || components.length > 2) return null;
-  const [modelId, permissionModeId] = components;
-  if (!modelId || (components.length === 2 && !permissionModeId)) return null;
-  const model = harnessModelRefSchema.safeParse({ id: modelId });
-  if (!model.success) return null;
-  const permissionMode = permissionModeId
-    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
-    : null;
-  if (permissionMode && !permissionMode.success) return null;
-  return {
-    model: model.data,
-    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
-  };
 }
 
 export function claudeTransportModelId(
@@ -588,6 +571,22 @@ function isCurrentRequestBridge(value: unknown): value is PrewarmTarget {
   );
 }
 
+function requestTargetOwnerFromHookState(value: unknown): PrewarmTarget | null {
+  if (!isRecord(value)) return null;
+  const ownerFrom = (candidate: unknown): PrewarmTarget | null => {
+    if (!isRecord(candidate)) return null;
+    const requestClient = candidate.requestClient;
+    const bridge = isCurrentRequestBridge(requestClient)
+      ? requestClient
+      : isCurrentRequestBridge(candidate)
+        ? candidate
+        : null;
+    if (!bridge) return null;
+    return typeof candidate.sendRequest === "function" ? (candidate as PrewarmTarget) : bridge;
+  };
+  return ownerFrom(value) ?? ownerFrom(value.manager);
+}
+
 export function findActivePrewarmTargets(root: ParentNode): PrewarmTarget[] {
   const editor = root.querySelector<HTMLElement>(
     '[data-codex-composer], [contenteditable="true"][role="textbox"]',
@@ -617,30 +616,16 @@ export function findActivePrewarmTargets(root: ParentNode): PrewarmTarget[] {
   }
 
   const targets = new Set<PrewarmTarget>();
-  let fiber = firstFiber as { return?: unknown; memoizedState?: unknown };
-  for (let depth = 0; depth < 200; depth += 1) {
+  for (const fiber of committedReactAncestors(firstFiber)) {
     let hook = fiber.memoizedState as { memoizedState?: unknown; next?: unknown } | null;
     for (let hookIndex = 0; hook && hookIndex < 100; hookIndex += 1) {
-      const hookState = hook.memoizedState;
-      if (isRecord(hookState)) {
-        const requestClient = hookState.requestClient;
-        const bridge = isCurrentRequestBridge(requestClient)
-          ? requestClient
-          : isCurrentRequestBridge(hookState)
-            ? hookState
-            : null;
-        if (bridge) {
-          targets.add(typeof hookState.sendRequest === "function" ? hookState : bridge);
-        }
-      }
+      const owner = requestTargetOwnerFromHookState(hook.memoizedState);
+      if (owner) targets.add(owner);
       hook =
         typeof hook.next === "object" && hook.next !== null
           ? (hook.next as { memoizedState?: unknown; next?: unknown })
           : null;
     }
-    const parent = fiber.return;
-    if ((typeof parent !== "object" && typeof parent !== "function") || parent === null) break;
-    fiber = parent as typeof fiber;
   }
   return [...targets];
 }
@@ -694,7 +679,7 @@ function findComposerConversationThreadId(composer?: Element): HostThreadId | nu
   return threadId;
 }
 
-function isCurrentDraftWrapper(value: unknown): value is readonly unknown[] {
+function isLegacySevenSlotDraftWrapper(value: unknown): value is readonly unknown[] {
   if (
     !Array.isArray(value) ||
     value.length !== 7 ||
@@ -712,6 +697,28 @@ function isCurrentDraftWrapper(value: unknown): value is readonly unknown[] {
   } catch {
     return false;
   }
+}
+
+function duplicatedClientNewThreadId(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  const ids = value.filter(
+    (item): item is string => typeof item === "string" && item.startsWith("client-new-thread:"),
+  );
+  if (ids.length < 2 || ids.some((id) => id !== ids[0])) return null;
+  return ids[0] ?? null;
+}
+
+function draftIdFromMemoValue(value: unknown): string | null {
+  if (
+    isLegacySevenSlotDraftWrapper(value) &&
+    typeof value[2] === "string" &&
+    value[2].startsWith("client-new-thread:")
+  ) {
+    return value[2];
+  }
+  // Codex 26.908 stores the same client-new-thread identity twice in a longer
+  // memo-cache tuple (length 13/19 observed) instead of the seven-slot atom.
+  return duplicatedClientNewThreadId(value);
 }
 
 type ComposerDomIdentity =
@@ -747,13 +754,8 @@ function findComposerDraftIds(composer: Element): Set<string> {
     const memoCache = isRecord(updateQueue) ? updateQueue.memoCache : null;
     const data = isRecord(memoCache) && Array.isArray(memoCache.data) ? memoCache.data : [];
     for (const value of data) {
-      if (
-        isCurrentDraftWrapper(value) &&
-        typeof value[2] === "string" &&
-        value[2].startsWith("client-new-thread:")
-      ) {
-        draftIds.add(value[2]);
-      }
+      const draftId = draftIdFromMemoValue(value);
+      if (draftId) draftIds.add(draftId);
     }
     const parent = fiber.return;
     fiber =
@@ -765,6 +767,7 @@ function findComposerDraftIds(composer: Element): Set<string> {
 }
 
 export function findComposerModelTarget(composer: Element): readonly unknown[] | null {
+  if (orbitComposerKind(composer) !== "codex") return null;
   const draftIds = findComposerDraftIds(composer);
   const domIdentity = findComposerDomIdentity(composer);
   if (domIdentity.kind === "ambiguous") return null;
@@ -813,122 +816,13 @@ export function isDraftPrewarmPolicyReady(value: unknown): value is RendererDraf
   );
 }
 
-export function activeRendererDraftPrewarmPolicy(
-  policy: unknown,
-  targets: readonly PrewarmTarget[],
-): RendererDraftPrewarmPolicy | null {
-  if (!isDraftPrewarmPolicyReady(policy)) return null;
-  return activeRendererDraftPrewarmTargets(policy, targets) ? policy : null;
-}
-
-function prewarmTargetHostId(target: PrewarmTarget): string | null {
-  const bridge = target.requestClient ?? target;
-  const hostId = target.getHostId?.() ?? bridge.hostId;
-  return typeof hostId === "string" && hostId.length > 0 ? hostId : null;
-}
-
-function isRendererRequestTarget(value: unknown): value is PrewarmTarget {
-  if (!isRecord(value) || typeof value.sendRequest !== "function") return false;
-  return isCurrentRequestBridge(value.requestClient ?? value);
-}
-
-function hasPolicyRequestTarget(policy: RendererDraftPrewarmPolicy): boolean {
-  return "requestTarget" in policy;
-}
-
-function exactRendererRequestTarget(
-  policy: RendererDraftPrewarmPolicy,
-): readonly PrewarmTarget[] | null {
-  if (typeof policy.requestTarget !== "function") return null;
-  try {
-    const target = policy.requestTarget();
-    if (!isRendererRequestTarget(target) || prewarmTargetHostId(target) !== policy.hostId) {
-      return null;
-    }
-    return [target];
-  } catch {
-    return null;
-  }
-}
-
-export function rendererRequestTargetsForHost(
-  targets: readonly PrewarmTarget[],
-  hostId: string,
-): readonly PrewarmTarget[] | null {
-  const matching = targets.filter((target) => prewarmTargetHostId(target) === hostId);
-  return matching.length === 1 ? matching : null;
-}
-
-function activeRendererDraftPrewarmTargets(
-  policy: unknown,
-  targets: readonly PrewarmTarget[],
-): readonly PrewarmTarget[] | null {
-  if (!isDraftPrewarmPolicyReady(policy)) return null;
-  if (hasPolicyRequestTarget(policy)) return exactRendererRequestTarget(policy);
-  return rendererRequestTargetsForHost(targets, policy.hostId);
-}
-
-export interface RendererRequestRoute {
-  readonly policy: RendererDraftPrewarmPolicy;
-  readonly targets: readonly PrewarmTarget[];
-}
-
-export function resolveRendererRequestRoute(
-  policy: unknown,
-  discoveredTargets: readonly PrewarmTarget[],
-  previous: RendererRequestRoute | null,
-): RendererRequestRoute | null {
-  const activeTargets = activeRendererDraftPrewarmTargets(policy, discoveredTargets);
-  if (isDraftPrewarmPolicyReady(policy) && activeTargets) {
-    return { policy, targets: activeTargets };
-  }
-
-  if (isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)) return null;
-
-  // Composer replacement and settings overlays can briefly remove the only
-  // Fiber path that exposes the request manager. Retain the confirmed route
-  // only while discovery is empty and the installed policy object is unchanged.
-  // Positive discovery for another Host invalidates the cache immediately;
-  // policy identity also prevents reuse across reconnects or same-id switches.
-  return discoveredTargets.length === 0 &&
-    isDraftPrewarmPolicyReady(policy) &&
-    previous?.policy === policy
-    ? previous
-    : null;
-}
-
-export function createRendererRequestRouteResolver(
-  readPolicy: () => unknown,
-  discoverTargets: () => readonly PrewarmTarget[],
-): {
-  resolve(): RendererRequestRoute | null;
-  clear(): void;
-} {
-  let route: RendererRequestRoute | null = null;
-  return {
-    resolve() {
-      // Persist null invalidations too, otherwise a later empty discovery gap
-      // could revive a request manager that belonged to the previous Host.
-      const policy = readPolicy();
-      const discoveredTargets =
-        isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)
-          ? []
-          : discoverTargets();
-      route = resolveRendererRequestRoute(policy, discoveredTargets, route);
-      return route;
-    },
-    clear() {
-      route = null;
-    },
-  };
-}
-
 export async function waitForRendererDraftPrewarmPolicy(
   target: RendererDraftPrewarmPolicyTarget,
+  composer?: Element,
 ): Promise<RendererDraftPrewarmPolicy> {
   const deadline = Date.now() + DRAFT_PREWARM_POLICY_WAIT_TIMEOUT_MS;
   while (true) {
-    const policy = target.__codexhostDraftPrewarmPolicyV1;
+    const policy = target.__codexhostHostRoutingV1?.forComposer(composer)?.policy;
     if (isDraftPrewarmPolicyReady(policy)) return policy;
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error("Renderer draft prewarm policy is unavailable");
@@ -946,25 +840,16 @@ export function modelSelectionForAgent(
   thinkingOptionId?: HarnessThinkingOptionId,
   permissionModeId?: HarnessPermissionModeId,
 ): ModelPowerSelection | null {
-  const transportModelId =
-    agent === "pi"
-      ? piTransportModelId(model, thinkingOptionId)
-      : agent === "claude-code"
-        ? claudeTransportModelId(model, permissionModeId, thinkingOptionId)
-        : agent === "deepseek-harness"
-          ? deepSeekHarnessTransportModelId(model, permissionModeId)
-          : agent === "qwen-code"
-            ? qwenCodeTransportModelId(model, permissionModeId)
-            : agent === "opencode"
-              ? openCodeTransportModelId(model, permissionModeId, thinkingOptionId)
-              : agent === "grok"
-                ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
-                : agent === "omp"
-                  ? ompTransportModelId(model, thinkingOptionId, permissionModeId)
-                  : agent === "antigravity"
-                    ? antigravityTransportModelId(model, permissionModeId, thinkingOptionId)
-                    : transportModelIdForAgent(agent);
-  return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
+  if (agent === "codex") return officialSelection;
+  return {
+    model: encodeHarnessPluginRoute({
+      harnessId: harnessIdSchema.parse(agent),
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    }),
+    reasoningEffort,
+  };
 }
 
 export function installCurrentRendererAdapter(): {
@@ -999,54 +884,93 @@ export function installCurrentRendererAdapter(): {
   };
 
   const usageSubscription = createThreadUsageSubscriptionRelay();
-  const requestRouteResolver = createRendererRequestRouteResolver(
-    () => window.__codexhostDraftPrewarmPolicyV1,
-    () => findActivePrewarmTargets(document),
+  const idleReleaseSync = installIdleReleasePreferenceSync(window);
+  const clients = createRendererHostClients(() => window.__codexhostHostRoutingV1, window);
+  const stopGroupSync = startAgentGroupSync(
+    getSharedAgentGroupPreferenceStore(),
+    () => (disposed ? null : clients.forHost("local")),
+    { migrateLegacy: true },
   );
-  const clientsByTarget = new WeakMap<PrewarmTarget, RendererModelClient>();
-  const modelClientForTargets = (targets: readonly PrewarmTarget[]): RendererModelClient | null => {
-    const target = targets[0];
-    if (targets.length !== 1 || !target) return null;
-    const cached = clientsByTarget.get(target);
-    if (cached) return cached;
-    const client = createRendererModelClient([target]);
-    if (client) clientsByTarget.set(target, client);
-    return client;
+  // Host discovery walks React fibers synchronously; a walk that hit its bound
+  // explains why no route was found, instead of a generic unavailable policy.
+  let fiberWalkLimited = false;
+  const onFiberWalkLimit = (): void => {
+    fiberWalkLimited = true;
   };
-  let activeRoutePolicy: RendererDraftPrewarmPolicy | null = null;
-  let activeRouteClient: RendererModelClient | null = null;
-  const syncActiveRoute = (route: RendererRequestRoute | null): RendererModelClient | null => {
-    const policy = route?.policy ?? null;
-    const client = route ? modelClientForTargets(route.targets) : null;
-    if (activeRoutePolicy === policy && activeRouteClient === client) return client;
-    activeRoutePolicy = policy;
-    activeRouteClient = client;
-    return client;
-  };
-  const currentRequestRoute = (): RendererRequestRoute | null => {
-    const route = requestRouteResolver.resolve();
-    syncActiveRoute(route);
+  window.addEventListener(REACT_FIBER_WALK_LIMIT_EVENT, onFiberWalkLimit);
+  const currentRequestRoute = (): RendererHostRoute | null => {
+    fiberWalkLimited = false;
+    const route = disposed ? null : (window.__codexhostHostRoutingV1?.forComposer() ?? null);
+    const client = clients.forRoute(route);
+    usageSubscription.connect(client);
+    // A ready local route already validated this connection in this operation.
+    // Remote routes still resolve the local settings owner independently.
+    const localClient = disposed
+      ? null
+      : route?.hostId === "local"
+        ? client
+        : clients.forHost("local");
+    idleReleaseSync.connect(localClient);
+    // Adapter readiness describes native connections, not a unique global
+    // Composer route. Never use this aggregate readiness to choose a request Host.
+    const connected =
+      !disposed &&
+      (client !== null ||
+        localClient !== null ||
+        (window.__codexhostHostRoutingV1?.knownHostIds?.() ?? []).some(
+          (hostId) => window.__codexhostHostRoutingV1?.forHost(hostId) != null,
+        ));
+    updateStatus(
+      connected ? "ready" : "installing",
+      connected
+        ? "ready"
+        : fiberWalkLimited
+          ? "react-fiber-walk-limit-exceeded"
+          : "draft-routing-policy-unavailable",
+      connected ? "request-bridge" : null,
+    );
     return route;
   };
   const currentModelClient = (): RendererModelClient => {
-    const client = currentRequestRoute() ? activeRouteClient : null;
+    const client = clients.forRoute(currentRequestRoute());
     if (!client) throw new Error("Renderer Model request manager is unavailable");
-    usageSubscription.connect(client);
+    return client;
+  };
+  // The Settings page can open on native pages without a Composer. Host-level
+  // settings requests keep the Composer's Host when there is one and otherwise
+  // fall back to the local Host instead of failing.
+  const settingsModelClient = (): RendererModelClient => {
+    const client =
+      clients.forRoute(currentRequestRoute()) ?? (disposed ? null : clients.forHost("local"));
+    if (!client) throw new Error("Renderer Model request manager is unavailable");
     return client;
   };
   const modelControl: RendererModelClient = Object.freeze({
-    currentHostId: () => currentRequestRoute()?.policy.hostId ?? null,
-    clientForHost(hostId: string): RendererModelClient | null {
+    currentHostId: (composer?: Element) => {
+      if (composer) {
+        return disposed
+          ? null
+          : (window.__codexhostHostRoutingV1?.hostIdForComposer(composer) ?? null);
+      }
       const route = currentRequestRoute();
-      if (route?.policy.hostId === hostId) return modelClientForTargets(route.targets);
-      const policy = window.__codexhostDraftPrewarmPolicyV1;
-      if (isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)) return null;
-      const targets = rendererRequestTargetsForHost(findActivePrewarmTargets(document), hostId);
-      return modelClientForTargets(targets ?? []);
+      // Preserve known Host identity even when its native manager is disconnected.
+      return disposed
+        ? null
+        : (route?.hostId ?? window.__codexhostHostRoutingV1?.hostIdForComposer() ?? null);
+    },
+    knownHostIds: () => (disposed ? [] : (window.__codexhostHostRoutingV1?.knownHostIds?.() ?? [])),
+    clientForHost: (hostId: string) => (disposed ? null : clients.forHost(hostId)),
+    listHarnessPlugins: async () => {
+      const client = settingsModelClient();
+      if (!client.listHarnessPlugins) throw new Error("Harness plugin directory is unavailable");
+      return client.listHarnessPlugins();
     },
     forkThread: (input: ExternalThreadForkParams) => currentModelClient().forkThread(input),
-    inspectHarness: (input: HarnessInspectParams) => currentModelClient().inspectHarness(input),
+    inspectHarness: (...args: Parameters<RendererModelClient["inspectHarness"]>) =>
+      currentModelClient().inspectHarness(...args),
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),
+    inspectHarnessCommands: (input: HarnessCommandsInspectParams) =>
+      currentModelClient().inspectHarnessCommands(input),
     inspectThreadCommands: (input: ThreadCommandsInspectParams) =>
       currentModelClient().inspectThreadCommands(input),
     executeThreadCommand: (input: ThreadCommandExecuteParams) =>
@@ -1063,9 +987,65 @@ export function installCurrentRendererAdapter(): {
       currentModelClient().selectThreadThinking(input),
     selectThreadPermissionMode: (input: ThreadPermissionModeSelectParams) =>
       currentModelClient().selectThreadPermissionMode(input),
-    checkUpdate: () => currentModelClient().checkUpdate(),
-    startUpdate: () => currentModelClient().startUpdate(),
-    readUpdateStatus: () => currentModelClient().readUpdateStatus(),
+    checkUpdate: () => settingsModelClient().checkUpdate(),
+    startUpdate: () => settingsModelClient().startUpdate(),
+    readUpdateStatus: () => settingsModelClient().readUpdateStatus(),
+    // The console lives on this machine, so it is always opened through the local Host.
+    openConsole: async () => {
+      const client = disposed ? null : clients.forHost("local");
+      if (!client?.openConsole) throw new Error("The codexhost console is unavailable");
+      return client.openConsole();
+    },
+    inspectCodexAccountUsage: (
+      input: Parameters<NonNullable<RendererModelClient["inspectCodexAccountUsage"]>>[0],
+    ) => {
+      const client = settingsModelClient();
+      if (!client.inspectCodexAccountUsage) throw new Error("Codex Account Usage is unavailable");
+      return client.inspectCodexAccountUsage(input);
+    },
+    listHarnessAccountSources: () => {
+      const client = settingsModelClient();
+      if (!client.listHarnessAccountSources) {
+        throw new Error("Harness account source discovery is unavailable");
+      }
+      return client.listHarnessAccountSources();
+    },
+    inspectHarnessAccount: (
+      input: Parameters<NonNullable<RendererModelClient["inspectHarnessAccount"]>>[0],
+    ) => {
+      const client = settingsModelClient();
+      if (!client.inspectHarnessAccount) {
+        throw new Error("Harness account inspection is unavailable");
+      }
+      return client.inspectHarnessAccount(input);
+    },
+    listHarnessAccounts: (
+      input?: Parameters<NonNullable<RendererModelClient["listHarnessAccounts"]>>[0],
+    ) => {
+      const client = settingsModelClient();
+      if (!client.listHarnessAccounts) throw new Error("Harness account inspection is unavailable");
+      return client.listHarnessAccounts(input);
+    },
+    credentialImports: (
+      request: Parameters<NonNullable<RendererModelClient["credentialImports"]>>[0],
+      targetHarnessId?: string,
+    ) => {
+      const client = settingsModelClient();
+      if (!client.credentialImports) throw new Error("Credential imports are unavailable");
+      return client.credentialImports(request, targetHarnessId);
+    },
+    listCodexAccounts: () => settingsModelClient().listCodexAccounts(),
+    refreshCodexAccounts: () => {
+      const client = settingsModelClient();
+      return client.refreshCodexAccounts?.() ?? client.listCodexAccounts();
+    },
+    subscribeCodexAccounts: (
+      listener: Parameters<NonNullable<RendererModelClient["subscribeCodexAccounts"]>>[0],
+    ) => {
+      const client = settingsModelClient();
+      if (!client.subscribeCodexAccounts) throw new Error("Codex Account updates are unavailable");
+      return client.subscribeCodexAccounts(listener);
+    },
   });
   const forkControl = installRendererForkControl({
     getClient: () => modelControl,
@@ -1077,88 +1057,22 @@ export function installCurrentRendererAdapter(): {
     },
   });
 
-  let routingPolicy: RendererDraftPrewarmPolicy | null = null;
-  let policyTimer: number | null = null;
-  let policyRecaptureObserver: MutationObserver | null = null;
-  let hasCapturedRoutingPolicy = false;
-  let selectedRoutingPolicy: RendererDraftPrewarmPolicy | null = null;
-  let selectedCarrier: string | null = null;
-  let desiredCarrier: string | null = null;
-  const stopPolicyCapture = (): void => {
-    if (policyTimer === null) return;
-    window.clearInterval(policyTimer);
-    policyTimer = null;
-  };
-  const stopPolicyRecapture = (): void => {
-    policyRecaptureObserver?.disconnect();
-    policyRecaptureObserver = null;
-  };
-  const captureRoutingPolicy = (): boolean => {
-    const route = currentRequestRoute();
-    if (!route) return false;
-    routingPolicy = route.policy;
-    stopPolicyRecapture();
-    if (selectedRoutingPolicy !== routingPolicy || selectedCarrier !== desiredCarrier) {
-      try {
-        routingPolicy.select(desiredCarrier);
-      } catch {
-        updateStatus("installing", "draft-routing-policy-unavailable", null);
-        return false;
-      }
-      selectedRoutingPolicy = routingPolicy;
-      selectedCarrier = desiredCarrier;
-    }
-    hasCapturedRoutingPolicy = true;
-    stopPolicyCapture();
-    updateStatus("ready", "ready", "request-bridge");
-    return true;
-  };
-  const startPolicyCapture = (): void => {
-    stopPolicyCapture();
-    policyTimer = window.setInterval(captureRoutingPolicy, DRAFT_PREWARM_POLICY_POLL_INTERVAL_MS);
-  };
-  const startPolicyRecapture = (): void => {
-    stopPolicyRecapture();
-    policyRecaptureObserver = new MutationObserver(() => {
-      captureRoutingPolicy();
-    });
-    policyRecaptureObserver.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["hidden", "aria-hidden", "data-codex-composer-root"],
-      characterData: true,
-      childList: true,
-      subtree: true,
-    });
-  };
-  if (!captureRoutingPolicy()) {
-    updateStatus("installing", "draft-routing-policy-unavailable", null);
-    const policy = window.__codexhostDraftPrewarmPolicyV1;
-    if (!isDraftPrewarmPolicyReady(policy) || !hasPolicyRequestTarget(policy)) {
-      startPolicyCapture();
-    }
-  }
+  const selectedPolicies = new Map<string, RendererDraftPrewarmPolicy>();
+  const draftModels = createScopedDraftModelWriter();
   const handleRoutingPolicyChange = (): void => {
-    stopPolicyRecapture();
-    if (captureRoutingPolicy()) return;
-    const policy = window.__codexhostDraftPrewarmPolicyV1;
-    if (isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)) {
-      stopPolicyCapture();
-    }
-    if (!hasCapturedRoutingPolicy) return;
-    updateStatus("installing", "draft-routing-policy-unavailable", null);
-    if (isDraftPrewarmPolicyReady(policy) && !hasPolicyRequestTarget(policy)) {
-      startPolicyRecapture();
-    }
+    currentRequestRoute();
   };
   window.addEventListener("codexhost:draft-prewarm-policy-changed", handleRoutingPolicyChange);
+  currentRequestRoute();
 
   const applyAgent = (
     agent: RendererAgent,
     model?: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
+    composer?: Element,
   ): boolean => {
-    if (disposed) return false;
+    if (disposed || (composer && isOrbitComposer(composer))) return false;
     const selection = modelSelectionForAgent(
       null,
       null,
@@ -1169,17 +1083,23 @@ export function installCurrentRendererAdapter(): {
     );
     const carrier = selection?.model;
     if (carrier !== null && carrier !== undefined && typeof carrier !== "string") return false;
-    desiredCarrier = carrier ?? null;
-    const route = currentRequestRoute();
+    const route = window.__codexhostHostRoutingV1?.forComposer(composer);
     if (!route) return false;
-    routingPolicy = route.policy;
     try {
-      if (route.policy.select(desiredCarrier)) {
+      const target = composer ? findComposerModelTarget(composer) : null;
+      if (target?.[0] === "conversation") return true;
+      if (target?.[0] !== "default" || typeof target[1] !== "string" || !composer)
+        return agent === "codex";
+      const binding = findScopedDraftModelBinding(composer, target[1]);
+      const draftKey = target[1];
+      if (!binding || !route.policy.scopedCreation)
+        return agent === "codex" && !draftModels.has(draftKey);
+      draftModels.apply(draftKey, binding, carrier ?? null);
+      if (route.policy.select(carrier ?? null, draftKey, binding.creationModes)) {
         modelUpdates += 1;
         liveStatus.modelUpdates = modelUpdates;
       }
-      selectedRoutingPolicy = route.policy;
-      selectedCarrier = desiredCarrier;
+      selectedPolicies.set(route.hostId, route.policy);
     } catch {
       updateStatus("installing", "draft-routing-policy-unavailable", null);
       return false;
@@ -1193,21 +1113,21 @@ export function installCurrentRendererAdapter(): {
     dispose() {
       if (disposed) return;
       disposed = true;
-      stopPolicyCapture();
-      stopPolicyRecapture();
+      draftModels.dispose();
       window.removeEventListener(
         "codexhost:draft-prewarm-policy-changed",
         handleRoutingPolicyChange,
       );
-      const activeRoutingPolicy = routingPolicy;
-      routingPolicy = null;
-      requestRouteResolver.clear();
+      window.removeEventListener(REACT_FIBER_WALK_LIMIT_EVENT, onFiberWalkLimit);
       const cleanups = [
-        () => activeRoutingPolicy?.select(null),
-        () => syncActiveRoute(null),
+        ...[...selectedPolicies.values()].map((policy) => () => policy.select(null)),
         () => forkControl.dispose(),
+        () => stopGroupSync(),
+        () => clients.dispose(),
         () => usageSubscription.dispose(),
+        () => idleReleaseSync.dispose(),
       ];
+      selectedPolicies.clear();
       for (const cleanup of cleanups) {
         try {
           cleanup();

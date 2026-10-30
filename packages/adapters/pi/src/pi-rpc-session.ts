@@ -11,24 +11,33 @@ import {
   type JsonValue,
 } from "@codexhost/shared-contracts";
 
+import { parsePiNativeCommands, type PiNativeCommand } from "./pi-slash-commands.js";
+import { ensurePiFastExtension, PI_FAST_ACK, PI_FAST_COMMAND } from "./pi-fast-mode.js";
+import type { PiEmptySessionConfiguration } from "./pi-empty-session.js";
 import { resolvePiExecutable, withNodeRuntimeOnPath } from "./command.js";
-import type { PiSessionHistory } from "./pi-history.js";
+import { activePiEntries, mapPiSnapshot, type PiSessionHistory } from "./pi-history.js";
 import {
   latestPiCacheHitRatePercent,
   optionalPiCacheHitRatePercent,
   optionalPiStateContextUsage,
   parsePiSessionUsage,
   parsePiStateContextUsage,
+  type PiUsageObservation,
 } from "./pi-usage.js";
 import type { PiNativeModel, PiNativeModelRef } from "./pi-model-catalog.js";
 import { verifyPiSessionCwd } from "./pi-session-file.js";
+import { PiSubagentRpc } from "./pi-subagent-rpc.js";
+import type { PiSubagentInspection, PiSubagentNode } from "./pi-subagents.js";
 
 export interface PiSessionState {
   sessionId: string;
   sessionFile: string | null;
   provider: string | null;
   modelId: string | null;
+  /** Native reasoning capability of the effective Model when Pi reports its full Model object. */
+  modelReasoning?: boolean;
   thinkingLevel: HarnessThinkingOptionId | null;
+  fast?: boolean;
   contextUsage: Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null;
 }
 
@@ -99,6 +108,17 @@ export interface PiTurnResult {
   cancelled: boolean;
 }
 
+export type PiAutonomousTurnResult =
+  | { status: "succeeded"; text: string }
+  | { status: "cancelled"; text: string; reason: string }
+  | { status: "failed"; text: string; error: Error };
+
+export interface PiAutonomousTurn {
+  nativeTurnKey: string | null;
+  events: PiTurnEvent[];
+  result: PiAutonomousTurnResult;
+}
+
 export interface PiCompactResult {
   outcome: "succeeded" | "cancelled" | "failed";
   errorMessage?: string;
@@ -131,8 +151,8 @@ export interface PiRpcSessionOptions {
   sessionFile?: string;
   forkSessionFile?: string;
   model?: PiNativeModelRef;
+  emptySessionConfiguration?: PiEmptySessionConfiguration;
   commandTimeoutMs?: number;
-  compactionTimeoutMs?: number;
   cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
   onFault?: (error: PiRpcFaultError) => void;
@@ -140,16 +160,32 @@ export interface PiRpcSessionOptions {
 
 export interface PiRpcProcessOptions {
   cwd: string;
+  fastExtension?: string;
   command?: string;
   environment: NodeJS.ProcessEnv;
   sessionFile?: string;
   forkSessionFile?: string;
   model?: PiNativeModelRef;
+  emptySessionConfiguration?: PiEmptySessionConfiguration;
 }
 
 export interface PiRpcProcessAdapter {
   spawn(options: PiRpcProcessOptions): ChildProcessWithoutNullStreams;
 }
+
+// Commands without Pi-side effects; a late answer to one of these after its timeout is harmless.
+const READ_ONLY_COMMANDS = new Set([
+  "get_state",
+  "get_commands",
+  "get_entries",
+  "get_session_stats",
+  "get_available_models",
+  "get_available_thinking_levels",
+]);
+
+// Bound on remembered expired ids, so a Pi that never answers cannot grow the set without limit.
+// Past it the oldest id is forgotten, and its late answer faults the Session as an unknown id.
+const MAX_EXPIRED_IDS = 64;
 
 interface PendingCommand {
   command: string;
@@ -165,6 +201,11 @@ interface ManualCompaction {
 }
 
 interface ActiveTurn {
+  origin: "requested" | "autonomous";
+  autonomousEvents: PiTurnEvent[] | null;
+  autonomousMessage?: Record<string, unknown>;
+  nativeTurnKey: string | null;
+  nativeCancellationObserved: boolean;
   text: string;
   assistantMessageId: string | null;
   sawStreamedMessageText: boolean;
@@ -216,6 +257,8 @@ function sessionStateData(response: Record<string, unknown>): Record<string, unk
 function parseSessionState(response: Record<string, unknown>): PiSessionState {
   const data = sessionStateData(response);
   const model = parseNativeModel(data.model, "state");
+  const modelReasoning =
+    isRecord(data.model) && typeof data.model.reasoning === "boolean" ? data.model.reasoning : null;
   if (!nonBlankString(data.sessionId)) {
     throw new PiRpcFaultError("protocolError", "Pi RPC state has no stable Session identity");
   }
@@ -231,6 +274,7 @@ function parseSessionState(response: Record<string, unknown>): PiSessionState {
     sessionFile: typeof data.sessionFile === "string" ? data.sessionFile : null,
     provider: model?.provider ?? null,
     modelId: model?.id ?? null,
+    ...(modelReasoning === null ? {} : { modelReasoning }),
     thinkingLevel: thinkingLevel?.data ?? null,
     contextUsage: optionalPiStateContextUsage(data.contextUsage),
   };
@@ -301,7 +345,11 @@ function parseAvailableModels(response: Record<string, unknown>): PiNativeModel[
         "Pi RPC catalog contains a Model without reasoning capability",
       );
     }
-    return { ...parsed, reasoning: model.reasoning };
+    return {
+      ...parsed,
+      reasoning: model.reasoning,
+      ...(typeof model.api === "string" ? { api: model.api } : {}),
+    };
   });
 }
 
@@ -393,6 +441,12 @@ export function piRpcProcessCommand(
   if (options.model && (options.sessionFile || options.forkSessionFile)) {
     throw new Error("Pi RPC cannot combine a startup Model with Session restore or Fork");
   }
+  if (
+    options.emptySessionConfiguration &&
+    (!options.sessionFile || options.model || options.forkSessionFile)
+  ) {
+    throw new Error("Pi empty Session configuration requires an exclusive Session resume");
+  }
   const platform = dependencies.platform ?? process.platform;
   const command = resolvePiExecutable(
     {
@@ -410,10 +464,21 @@ export function piRpcProcessCommand(
     : options.sessionFile
       ? ["--session", options.sessionFile]
       : [];
-  const modelArguments = options.model
-    ? ["--provider", options.model.provider, "--model", options.model.id]
+  const startupModel = options.emptySessionConfiguration?.model ?? options.model;
+  const modelArguments = startupModel
+    ? ["--provider", startupModel.provider, "--model", startupModel.id]
     : [];
-  const arguments_ = ["--mode", "rpc", ...modelArguments, ...sessionArguments];
+  const thinkingArguments = options.emptySessionConfiguration
+    ? ["--thinking", options.emptySessionConfiguration.thinkingLevel]
+    : [];
+  const arguments_ = [
+    ...(options.fastExtension ? ["--extension", options.fastExtension] : []),
+    "--mode",
+    "rpc",
+    ...modelArguments,
+    ...thinkingArguments,
+    ...sessionArguments,
+  ];
   const extension = path.win32.extname(command).toLowerCase();
   if (platform !== "win32" || ![".cmd", ".bat"].includes(extension)) {
     return { command, arguments: arguments_, windowsVerbatimArguments: false };
@@ -443,26 +508,33 @@ const nodeProcessAdapter: PiRpcProcessAdapter = {
 
 export class PiRpcSession {
   readonly #options: Required<
-    Pick<
-      PiRpcSessionOptions,
-      "commandTimeoutMs" | "compactionTimeoutMs" | "cancelTimeoutMs" | "closeTimeoutMs"
-    >
+    Pick<PiRpcSessionOptions, "commandTimeoutMs" | "cancelTimeoutMs" | "closeTimeoutMs">
   > &
     PiRpcSessionOptions;
   readonly #processAdapter: PiRpcProcessAdapter;
   #activeTurn: ActiveTurn | null = null;
-  #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+  #autonomousTurnHandler: ((turn: PiAutonomousTurn) => void) | null = null;
+  #usageHandler: ((observation: PiUsageObservation) => void) | null = null;
+  #usageRequestStartedAtMs: number | null = null;
+  // Pieces of the unterminated frame; joined once at its newline so a large frame (a long
+  // Session's get_entries) costs linear rather than quadratic copying on the Host event loop.
+  #buffer: Buffer<ArrayBufferLike>[] = [];
+  // Ids whose read-only command timed out; Pi may still answer them late.
+  #expired = new Set<string>();
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
+  #closePromise: Promise<void> | null = null;
   #compactionActive = false;
   #compactionTurn: ActiveTurn | null = null;
-  #compactionTimeout: NodeJS.Timeout | null = null;
   #failed = false;
   #pending = new Map<string, PendingCommand>();
   #state: PiSessionState | null = null;
+  #fast: Pick<PiNativeModelRef, "provider" | "id"> | null = null;
+  #fastAcknowledgement: { message: string; received: boolean } | null = null;
   #latestCacheHitRatePercent: number | null | undefined;
   #manualCompaction: ManualCompaction | null = null;
   #stderrTail = "";
+  readonly #subagents: PiSubagentRpc;
 
   constructor(
     options: PiRpcSessionOptions,
@@ -476,27 +548,91 @@ export class PiRpcSession {
     }
     this.#options = {
       commandTimeoutMs: 30_000,
-      compactionTimeoutMs: 300_000,
-      cancelTimeoutMs: 2_000,
+      // Bounds proven stable settlement (Abort acknowledgement plus agent_settled and get_state
+      // confirmation), not the RPC write round trip; must exceed the Host's 20s external steering
+      // bound so a slow cancellation times out gracefully instead of faulting the whole Session.
+      cancelTimeoutMs: 30_000,
       closeTimeoutMs: 2_000,
       ...options,
     };
     this.#processAdapter = processAdapter;
+    this.#subagents = new PiSubagentRpc(
+      (type, payload) => this.#send(type, payload),
+      this.#options.commandTimeoutMs,
+    );
   }
 
   get state(): PiSessionState {
     if (!this.#state) throw new Error("Pi RPC Session has not started");
-    return this.#state;
+    if (
+      this.#fast &&
+      (this.#fast.provider !== this.#state.provider || this.#fast.id !== this.#state.modelId)
+    )
+      this.#fast = null;
+    return this.#fast ? { ...this.#state, fast: true } : this.#state;
   }
 
   get stderrTail(): string {
     return this.#stderrTail;
   }
 
+  setSubagentStatusHandler(handler: (runs: PiSubagentNode[]) => void): void {
+    this.#subagents.setHandler(handler);
+  }
+
+  inspectSubagent(id: string): Promise<PiSubagentInspection> {
+    return this.#subagents.inspect(id);
+  }
+
+  setUsageHandler(handler: (observation: PiUsageObservation) => void): void {
+    this.#usageHandler = handler;
+  }
+
+  /** Every finished assistant message is one model request, with or without an active Turn. */
+  #observeUsage(value: Record<string, unknown>): void {
+    if (value.type === "message_start") {
+      this.#usageRequestStartedAtMs = null;
+      return;
+    }
+    // Generation starts at the first output token: the first thinking, text or tool-call block
+    // or delta. Prefill before it is excluded, as in DeepSeek dsh's decode time.
+    if (value.type === "message_update") {
+      const event = value.assistantMessageEvent;
+      if (
+        this.#usageRequestStartedAtMs === null &&
+        isRecord(event) &&
+        typeof event.type === "string" &&
+        /^(text|thinking|reasoning|thought|toolcall)_(start|delta)$/u.test(event.type)
+      ) {
+        this.#usageRequestStartedAtMs = Date.now();
+      }
+      return;
+    }
+    if (value.type === "message_end" && isRecord(value.message)) {
+      if (value.message.role !== "assistant") return;
+      const startedAtMs = this.#usageRequestStartedAtMs;
+      this.#usageRequestStartedAtMs = null;
+      this.#usageHandler?.({
+        message: value.message,
+        startedAtMs,
+        completedAtMs: Date.now(),
+      });
+    }
+  }
+
+  setAutonomousTurnHandler(handler: (turn: PiAutonomousTurn) => void): void {
+    this.#autonomousTurnHandler = handler;
+  }
+
   async start(): Promise<this> {
     if (this.#child || this.#closed) throw new Error("Pi RPC Session cannot be started twice");
+    const fastExtension =
+      this.#processAdapter === nodeProcessAdapter
+        ? await ensurePiFastExtension({ ...process.env, ...this.#options.environment })
+        : undefined;
     const child = this.#processAdapter.spawn({
       cwd: this.#options.cwd,
+      ...(fastExtension ? { fastExtension } : {}),
       ...(this.#options.command ? { command: this.#options.command } : {}),
       environment: withNodeRuntimeOnPath({
         ...process.env,
@@ -507,6 +643,9 @@ export class PiRpcSession {
       ...(this.#options.sessionFile ? { sessionFile: this.#options.sessionFile } : {}),
       ...(this.#options.forkSessionFile ? { forkSessionFile: this.#options.forkSessionFile } : {}),
       ...(this.#options.model ? { model: this.#options.model } : {}),
+      ...(this.#options.emptySessionConfiguration
+        ? { emptySessionConfiguration: this.#options.emptySessionConfiguration }
+        : {}),
     });
     this.#child = child;
     child.stdout.on("data", (chunk: Buffer) => this.#push(chunk));
@@ -558,6 +697,11 @@ export class PiRpcSession {
       throw fault;
     }
     return this;
+  }
+
+  /** Live slash commands, prompt templates and skills of the running Pi Session. */
+  async getCommands(): Promise<PiNativeCommand[]> {
+    return parsePiNativeCommands(await this.#send("get_commands", {}));
   }
 
   async getEntries(): Promise<PiSessionHistory> {
@@ -671,7 +815,47 @@ export class PiRpcSession {
     }
   }
 
+  async supportsFastMode(): Promise<boolean> {
+    return (await this.getCommands()).some(
+      (command) => command.name === PI_FAST_COMMAND && command.source === "extension",
+    );
+  }
+
+  async selectFastMode(enabled: boolean): Promise<PiSessionState> {
+    if (!enabled && !this.#fast) return this.state;
+    if (!(await this.supportsFastMode()))
+      throw new Error("Installed Pi does not support the Host Fast extension");
+    const nonce = randomUUID();
+    const mode = enabled ? "on" : "off";
+    const acknowledgement = { message: `${PI_FAST_ACK}${nonce}:${mode}`, received: false };
+    this.#fastAcknowledgement = acknowledgement;
+    try {
+      await this.#send("prompt", { message: `/${PI_FAST_COMMAND} ${mode} ${nonce}` });
+      if (!acknowledgement.received) throw new Error("Pi did not confirm the Fast selection");
+      this.#fast = enabled
+        ? { provider: this.state.provider ?? "", id: this.state.modelId ?? "" }
+        : null;
+      return this.state;
+    } catch (error) {
+      // The extension may have changed request policy before its response/notification failed.
+      // An unknown policy must never remain usable for subsequent Turns.
+      const fault =
+        error instanceof PiRpcFaultError
+          ? error
+          : new PiRpcFaultError(
+              "protocolError",
+              `Pi Fast selection could not be confirmed: ${message(error)}`,
+            );
+      this.#fail(fault);
+      await this.close().catch(() => undefined);
+      throw fault;
+    } finally {
+      this.#fastAcknowledgement = null;
+    }
+  }
+
   async selectModel(model: PiNativeModelRef): Promise<PiSessionState> {
+    if (this.#fast) await this.selectFastMode(false);
     await this.#send("set_model", { provider: model.provider, modelId: model.id });
     return this.#refreshState("Model");
   }
@@ -685,7 +869,7 @@ export class PiRpcSession {
   async #refreshState(operation: string): Promise<PiSessionState> {
     try {
       this.#state = parseSessionState(await this.#send("get_state", {}));
-      return this.#state;
+      return this.state;
     } catch (error) {
       const fault =
         error instanceof PiRpcFaultError
@@ -708,6 +892,10 @@ export class PiRpcSession {
 
     const settled = new Promise<PiTurnResult>((resolve, reject) => {
       this.#activeTurn = {
+        origin: "requested",
+        autonomousEvents: null,
+        nativeTurnKey: null,
+        nativeCancellationObserved: false,
         text: "",
         assistantMessageId: null,
         sawStreamedMessageText: false,
@@ -821,11 +1009,15 @@ export class PiRpcSession {
     void this.close().catch(() => undefined);
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#rejectAll(new Error("Pi RPC Session closed"));
-    await this.#stopProcess();
+  close(): Promise<void> {
+    if (!this.#closed) {
+      this.#closed = true;
+      this.#rejectAll(new Error("Pi RPC Session closed"));
+    }
+    // Closed admission is not proof of process exit. Every caller awaits the same cleanup,
+    // including calls racing cancellation or a timed-out Prompt.
+    this.#closePromise ??= this.#stopProcess();
+    return this.#closePromise;
   }
 
   async #stopProcess(): Promise<void> {
@@ -842,11 +1034,13 @@ export class PiRpcSession {
   }
 
   #push(chunk: Buffer<ArrayBufferLike>): void {
-    this.#buffer = this.#buffer.length === 0 ? chunk : Buffer.concat([this.#buffer, chunk]);
-    let newline = this.#buffer.indexOf(0x0a);
+    let rest = chunk;
+    let newline = rest.indexOf(0x0a);
     while (newline >= 0) {
-      const frame = this.#buffer.subarray(0, newline);
-      this.#buffer = this.#buffer.subarray(newline + 1);
+      const tail = rest.subarray(0, newline);
+      const frame = this.#buffer.length === 0 ? tail : Buffer.concat([...this.#buffer, tail]);
+      this.#buffer = [];
+      rest = rest.subarray(newline + 1);
       try {
         const value = JSON.parse(textDecoder.decode(frame));
         if (!isRecord(value) || typeof value.type !== "string") {
@@ -863,30 +1057,35 @@ export class PiRpcSession {
               ),
         );
       }
-      newline = this.#buffer.indexOf(0x0a);
+      newline = rest.indexOf(0x0a);
     }
+    if (rest.length !== 0) this.#buffer.push(rest);
   }
 
   #handle(value: Record<string, unknown>): void {
+    if (
+      value.type === "extension_ui_request" &&
+      value.method === "notify" &&
+      typeof value.message === "string" &&
+      value.message.startsWith(PI_FAST_ACK)
+    ) {
+      if (this.#fastAcknowledgement?.message === value.message)
+        this.#fastAcknowledgement.received = true;
+      return;
+    }
     if (this.#closed || this.#failed) return;
     if (value.type === "response") {
       this.#handleResponse(value);
       return;
     }
+    if (this.#subagents.handle(value)) return;
+    this.#observeUsage(value);
     if (value.type === "compaction_start") {
       this.#compactionActive = true;
       this.#compactionTurn = this.#activeTurn;
-      this.#compactionTimeout ??= setTimeout(() => {
-        this.#compactionTimeout = null;
-        this.#fail(
-          new PiRpcFaultError(
-            "protocolError",
-            `Pi RPC compaction timed out after ${this.#options.compactionTimeoutMs}ms`,
-          ),
-        );
-      }, this.#options.compactionTimeoutMs);
       const onEvent = this.#activeTurn?.onEvent ?? this.#manualCompaction?.onEvent;
       onEvent?.({ type: "compaction.started" });
+      // Pi owns compaction duration; keep Prompt/Compact correlation until its terminal event.
       for (const pending of this.#pending.values()) {
         if ((pending.command !== "prompt" && pending.command !== "compact") || !pending.timeout)
           continue;
@@ -897,8 +1096,6 @@ export class PiRpcSession {
     }
     if (value.type === "compaction_end") {
       this.#compactionActive = false;
-      if (this.#compactionTimeout) clearTimeout(this.#compactionTimeout);
-      this.#compactionTimeout = null;
       const compactionTurn = this.#compactionTurn;
       this.#compactionTurn = null;
       for (const [id, pending] of this.#pending) {
@@ -923,7 +1120,17 @@ export class PiRpcSession {
       });
       return;
     }
-    const active = this.#activeTurn;
+    let active = this.#activeTurn;
+    if (
+      !active &&
+      !this.#manualCompaction &&
+      !this.#compactionActive &&
+      this.#autonomousTurnHandler &&
+      value.type === "message_start" &&
+      assistantText(value.message) !== null
+    ) {
+      active = this.#startAutonomousTurn(value.message);
+    }
     if (!active) {
       if (value.type === "extension_ui_request" && this.#isBlockingInteraction(value)) {
         this.#fail(
@@ -936,6 +1143,15 @@ export class PiRpcSession {
       return;
     }
     if (value.type === "extension_ui_request") {
+      if (active.origin === "autonomous" && this.#isBlockingInteraction(value)) {
+        this.#fail(
+          new PiRpcFaultError(
+            "protocolError",
+            "Pi RPC requested blocking Extension UI during an autonomous Turn",
+          ),
+        );
+        return;
+      }
       this.#startInteraction(active, value);
       return;
     }
@@ -1013,6 +1229,58 @@ export class PiRpcSession {
       if (active.settlement !== "pending") return;
       active.settlement = "confirming";
       void this.#confirmSettledTurn(active);
+    }
+  }
+
+  #startAutonomousTurn(value: unknown): ActiveTurn {
+    const events: PiTurnEvent[] = [];
+    const active: ActiveTurn = {
+      origin: "autonomous",
+      autonomousEvents: events,
+      ...(isRecord(value) ? { autonomousMessage: value } : {}),
+      nativeTurnKey: null,
+      nativeCancellationObserved: false,
+      text: "",
+      assistantMessageId: null,
+      sawStreamedMessageText: false,
+      sawStreamedMessageReasoning: false,
+      lastFinalizedMessageText: null,
+      lastFinalizedMessageReasoning: null,
+      reasoningMessageOpen: false,
+      onEvent: (event) => events.push(event),
+      resolve: () => undefined,
+      reject: () => undefined,
+      failure: null,
+      sawTool: false,
+      tools: new Map(),
+      interactions: new Map(),
+      settlement: "pending",
+      cancellation: "none",
+      cancellationTimeout: null,
+      abortPromise: null,
+    };
+    this.#activeTurn = active;
+    return active;
+  }
+
+  #emitAutonomousTurn(active: ActiveTurn, result: PiAutonomousTurnResult): void {
+    const handler = this.#autonomousTurnHandler;
+    if (active.origin !== "autonomous" || !active.autonomousEvents || !handler) {
+      return;
+    }
+    try {
+      handler({
+        nativeTurnKey: active.nativeTurnKey,
+        events: [...active.autonomousEvents],
+        result,
+      });
+    } catch (error) {
+      this.#fail(
+        new PiRpcFaultError(
+          "protocolError",
+          `Pi autonomous Turn handler failed: ${message(error)}`,
+        ),
+      );
     }
   }
 
@@ -1118,6 +1386,7 @@ export class PiRpcSession {
       return;
     }
     const pending = this.#pending.get(id);
+    if (!pending && this.#expired.delete(id)) return;
     if (!pending) {
       this.#fail(new PiRpcFaultError("protocolError", "Pi RPC response id is not pending"));
       return;
@@ -1200,6 +1469,31 @@ export class PiRpcSession {
         throw new PiRpcFaultError("protocolError", "Pi RPC agent_settled state is still Streaming");
       }
       if (this.#activeTurn !== active) return;
+      if (active.origin === "autonomous") {
+        const history = await this.getEntries();
+        const snapshot = mapPiSnapshot(history, { sessionId: state.sessionId, model: null });
+        const turn = snapshot.turns.at(-1);
+        const entries = activePiEntries(history);
+        const start = entries.findIndex((entry) => entry.id === turn?.nativeTurnRef.nativeTurnKey);
+        const firstAssistant = entries
+          .slice(start + 1)
+          .find((entry) => isRecord(entry.message) && entry.message.role === "assistant")?.message;
+        const live = active.autonomousMessage;
+        const responseId = assistantMessageId(live);
+        const matches =
+          isRecord(firstAssistant) &&
+          (responseId
+            ? assistantMessageId(firstAssistant) === responseId
+            : typeof live?.timestamp === "number" && firstAssistant.timestamp === live.timestamp);
+        if (!turn || turn.input.length !== 0 || !matches) {
+          throw new PiRpcFaultError(
+            "protocolError",
+            "Pi autonomous Turn has no matching persisted custom Entry",
+          );
+        }
+        active.nativeTurnKey = turn.nativeTurnRef.nativeTurnKey;
+      }
+      if (this.#activeTurn !== active) return;
       this.#state = state;
       active.settlement = "confirmed";
       this.#finishSettledTurn(active);
@@ -1237,6 +1531,29 @@ export class PiRpcSession {
       return;
     }
     this.#activeTurn = null;
+    if (active.origin === "autonomous") {
+      if (active.failure) {
+        this.#emitAutonomousTurn(
+          active,
+          active.nativeCancellationObserved
+            ? {
+                status: "cancelled",
+                text: active.text,
+                reason: "Pi autonomous Assistant was aborted",
+              }
+            : { status: "failed", text: active.text, error: active.failure },
+        );
+      } else if (active.text.trim().length === 0 && !active.sawTool) {
+        this.#emitAutonomousTurn(active, {
+          status: "failed",
+          text: active.text,
+          error: new Error("Pi RPC autonomous Turn settled without displayable output"),
+        });
+      } else {
+        this.#emitAutonomousTurn(active, { status: "succeeded", text: active.text });
+      }
+      return;
+    }
     if (active.cancellation === "accepted") {
       active.resolve({ text: active.text, cancelled: true });
     } else if (active.failure) {
@@ -1281,6 +1598,9 @@ export class PiRpcSession {
     }
 
     active.failure = failure;
+    if (active.origin === "autonomous" && isRecord(value) && value.stopReason === "aborted") {
+      active.nativeCancellationObserved = true;
+    }
     this.#latestCacheHitRatePercent = cacheHitRatePercent;
     const messageId = this.#ensureAssistantMessage(active, value);
     if (!active.sawStreamedMessageReasoning && finalReasoning.length > 0) {
@@ -1356,6 +1676,15 @@ export class PiRpcSession {
       const error = new Error(`Pi RPC '${pending.command}' command timed out`);
       if (pending.command !== "prompt") {
         this.#pending.delete(id);
+        // The caller sees the timeout. A late answer to a read-only query is dropped; one to a
+        // state-changing command still faults the Session, since Pi may have applied a change
+        // the Host state never confirmed.
+        if (READ_ONLY_COMMANDS.has(pending.command)) {
+          this.#expired.add(id);
+          if (this.#expired.size > MAX_EXPIRED_IDS) {
+            this.#expired.delete(this.#expired.values().next().value as string);
+          }
+        }
         pending.reject(error);
         return;
       }
@@ -1374,7 +1703,7 @@ export class PiRpcSession {
     }
     let finalFault = fault;
     try {
-      await this.#stopProcess();
+      await this.close();
     } catch (error) {
       finalFault = new PiRpcFaultError(
         "processExited",
@@ -1403,12 +1732,15 @@ export class PiRpcSession {
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
     this.#closeInteractions(active, "cancelled");
     this.#activeTurn = null;
-    active.reject(error);
+    if (active.origin === "autonomous") {
+      this.#emitAutonomousTurn(active, { status: "failed", text: active.text, error });
+    } else {
+      active.reject(error);
+    }
   }
 
   #rejectAll(error: Error): void {
-    if (this.#compactionTimeout) clearTimeout(this.#compactionTimeout);
-    this.#compactionTimeout = null;
+    this.#subagents.close(error);
     for (const pending of this.#pending.values()) {
       if (pending.timeout) clearTimeout(pending.timeout);
       pending.reject(error);

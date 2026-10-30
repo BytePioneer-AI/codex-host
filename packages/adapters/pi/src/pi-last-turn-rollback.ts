@@ -13,7 +13,8 @@ interface PiLastTurnRollbackTransport {
   verifySessionCwd(expectedCwd: string): Promise<void>;
 }
 
-export type PiLastTurnRollbackResult = { ok: false; reason: "empty" } | { ok: true };
+export type PiLastTurnRollbackResult =
+  { ok: false; reason: "empty" | "unsupported" } | { ok: true; unpersisted: boolean };
 
 function modelFromState(state: PiSessionState): PiNativeModelRef | null {
   if (state.provider === null && state.modelId === null) return null;
@@ -35,6 +36,7 @@ export async function rollbackPiLastTurn(
   const copiedHistory = await transport.getEntries();
   const boundary = resolvePiLastTurnBoundary(copiedHistory);
   if (!boundary) return { ok: false, reason: "empty" };
+  if (!boundary.lastUserEntryId) return { ok: false, reason: "unsupported" };
 
   const sourceSnapshot = mapPiSnapshot(copiedHistory, {
     sessionId: startupSessionId,
@@ -74,6 +76,13 @@ export async function rollbackPiLastTurn(
   ) {
     throw new Error("Pi last-Turn rollback did not produce the exact retained history prefix");
   }
-  await transport.verifySessionCwd(cwd);
-  return { ok: true };
+  try {
+    await transport.verifySessionCwd(cwd);
+    return { ok: true, unpersisted: false };
+  } catch (error) {
+    if (snapshot.turns.length === 0 && (error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return { ok: true, unpersisted: true };
+    }
+    throw error;
+  }
 }

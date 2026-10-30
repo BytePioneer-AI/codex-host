@@ -1,15 +1,26 @@
 import { z } from "zod";
+import { harnessPluginIdSchema, type HarnessId } from "@codexhost/shared-contracts";
 
 export const HARNESS_BROKER_PROTOCOL_VERSION = 1 as const;
 export const HARNESS_BROKER_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 export const HARNESS_BROKER_MAX_PENDING_REQUESTS = 32;
 export const HARNESS_BROKER_REQUEST_TIMEOUT_MS = 15_000;
+export const HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE = 100;
+/** A broker with no open Session and no request for this long exits until next needed. */
+export const HARNESS_BROKER_IDLE_TIMEOUT_MS = 60 * 60 * 1000;
+/** Error code for a request the broker refused unprocessed because it is exiting. */
+export const HARNESS_BROKER_RETIRING_ERROR_CODE = "brokerRetiring";
 
 export const harnessBrokerMethodSchema = z.enum([
   "adapter.inspect",
+  "adapter.inspectAccount",
+  "adapter.credits",
   "adapter.open",
+  "adapter.sessionImport.list",
+  "adapter.sessionImport.resolve",
   "adapter.subagent.readSnapshot",
   "session.readSnapshot",
+  "session.readCapabilities",
   "session.refreshUsage",
   "session.execute",
   "session.commands.list",
@@ -84,7 +95,7 @@ export type HarnessBrokerServerFrame = z.infer<typeof harnessBrokerServerFrameSc
 export interface HarnessBrokerDescriptorV1 {
   schemaVersion: 1;
   protocolVersion: 1;
-  harnessId: "claude-code";
+  harnessId: HarnessId;
   generation: string;
   ownerPid: number;
   socketPath: string;
@@ -95,7 +106,7 @@ export const harnessBrokerDescriptorSchema = z
   .object({
     schemaVersion: z.literal(1),
     protocolVersion: z.literal(HARNESS_BROKER_PROTOCOL_VERSION),
-    harnessId: z.literal("claude-code"),
+    harnessId: harnessPluginIdSchema,
     generation: z.string().uuid(),
     ownerPid: z.number().int().positive(),
     socketPath: z.string().min(1).max(512),

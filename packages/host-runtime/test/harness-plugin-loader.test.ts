@@ -1,0 +1,750 @@
+import { cp, mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
+import {
+  harnessPluginDescriptorSchema,
+  harnessPluginManifestSchema,
+} from "@codexhost/shared-contracts";
+
+import { loadHarnessPlugins, type HarnessPluginDiagnostic } from "../src/harness-plugin-loader.js";
+import { HarnessPluginRegistry } from "../src/harness-plugin-registry.js";
+import { installedHarnessPluginOptions } from "../src/installed-harness-plugins.js";
+import { pluginResourcePath, readPluginIcon } from "@codexhost/harness-plugin-files";
+
+const roots: string[] = [];
+const context = {
+  environment: { PRIVATE_VALUE: "never-report-this" },
+  platform: "linux",
+  managedRemoteHost: false,
+};
+const fakeModule = pathToFileURL(path.resolve("packages/harness-adapter/dist/testing.js")).href;
+
+async function root(enabled: string[] = []): Promise<string> {
+  const directory = await mkdtemp(path.join(tmpdir(), "codexhost-plugins-"));
+  roots.push(directory);
+  await writeFile(path.join(directory, "enabled.json"), JSON.stringify({ version: 1, enabled }));
+  return directory;
+}
+
+async function plugin(
+  directory: string,
+  id: string,
+  options: {
+    directoryName?: string;
+    manifest?: Record<string, unknown>;
+    code?: string;
+  } = {},
+): Promise<string> {
+  const location = path.join(directory, options.directoryName ?? id);
+  await mkdir(location);
+  await writeFile(
+    path.join(location, "manifest.json"),
+    JSON.stringify({
+      manifestVersion: 1,
+      id,
+      name: `Plugin ${id}`,
+      version: "1.0.0",
+      adapterApiVersion: 1,
+      entry: "index.mjs",
+      ...options.manifest,
+    }),
+  );
+  await writeFile(
+    path.join(location, "index.mjs"),
+    options.code ??
+      `
+    import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+    export function createHarnessAdapter() { return new FakeHarnessAdapter(${JSON.stringify(id)}); }
+  `,
+  );
+  return location;
+}
+
+afterEach(async () => {
+  await Promise.all(
+    roots.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
+  );
+});
+
+describe("Harness plugin discovery and loading", () => {
+  it.each(["credits", "refreshCredits"])(
+    "rejects malformed optional %s capabilities",
+    async (method) => {
+      const directory = await root(["broken-quota"]);
+      await plugin(directory, "broken-quota", {
+        code: `
+      import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+      export function createHarnessAdapter() {
+        return Object.assign(new FakeHarnessAdapter("broken-quota"), { ${method}: "not-callable" });
+      }
+    `,
+      });
+      const registry = await loadHarnessPlugins({ roots: [directory], context });
+      try {
+        expect(await [...registry.adapters.values()][0]?.inspect()).toMatchObject({
+          status: "unavailable",
+        });
+      } finally {
+        await registry.close();
+      }
+    },
+  );
+  it("loads usage-only plugins without manufacturing session methods and closes them", async () => {
+    const directory = await root(["local-usage"]);
+    const marker = path.join(directory, "closed");
+    await plugin(directory, "local-usage", {
+      manifest: { kind: "usage" },
+      code: `
+        import { writeFile } from "node:fs/promises";
+        export function createUsageStatisticsAdapter() {
+          return { harnessId: "local-usage", usageStatistics: {
+            listSources: async () => [], readSource: async () => []
+          }, close: async () => writeFile(${JSON.stringify(marker)}, "closed") };
+        }
+        export function warmup() { throw new Error("usage plugins must not warm native processes"); }
+      `,
+    });
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({ roots: [directory], context, diagnose });
+    expect(registry.adapters.size).toBe(0);
+    expect(registry.usageAdapters.size).toBe(1);
+    expect(registry.list()).toMatchObject([{ id: "local-usage", kind: "usage" }]);
+    expect([...registry.usageAdapters.values()][0]).not.toHaveProperty("open");
+    expect(diagnose).not.toHaveBeenCalled();
+    await registry.close();
+    await registry.close();
+    expect(await readFile(marker, "utf8")).toBe("closed");
+  });
+
+  it("settles statistics before importing Session plugins, including failed statistics plugins", async () => {
+    const directory = await root(["usage-agent", "broken-usage", "chat-agent"]);
+    const marker = path.join(directory, "chat-imported");
+    await plugin(directory, "usage-agent", {
+      manifest: { kind: "usage" },
+      code: `export function createUsageStatisticsAdapter() { return {
+        harnessId: "usage-agent", close: async () => {},
+        usageStatistics: { listSources: async () => [], readSource: async () => [] }
+      }; }`,
+    });
+    await plugin(directory, "broken-usage", {
+      manifest: { kind: "usage" },
+      code: `export function createUsageStatisticsAdapter() { throw new Error("failed"); }`,
+    });
+    await plugin(directory, "chat-agent", {
+      code: `import { writeFileSync } from "node:fs";
+        import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+        writeFileSync(${JSON.stringify(marker)}, "started");
+        export function createHarnessAdapter() { return new FakeHarnessAdapter("chat-agent"); }`,
+    });
+    const ready = vi.fn((adapters) => {
+      expect([...adapters.keys()].sort()).toEqual(["broken-usage", "usage-agent"]);
+      expect(existsSync(marker)).toBe(false);
+    });
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      onUsageAdaptersLoaded: ready,
+    });
+    try {
+      expect(ready).toHaveBeenCalledOnce();
+      expect(existsSync(marker)).toBe(true);
+      expect([...registry.adapters.keys()]).toContain("chat-agent");
+    } finally {
+      await registry.close();
+    }
+  });
+
+  it("rejects malformed optional session usage capabilities", async () => {
+    const directory = await root(["broken-usage"]);
+    await plugin(directory, "broken-usage", {
+      manifest: { kind: "usage" },
+      code: `export function createUsageStatisticsAdapter() {
+        return { harnessId: "broken-usage", close: async () => {},
+          usageStatistics: { listSources: async () => [], readSource: async () => [] },
+          sessionUsage: { read: async () => null }
+        };
+      }`,
+    });
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({ roots: [directory], context, diagnose });
+    try {
+      expect(diagnose).toHaveBeenCalledWith({ code: "loadFailed", id: "broken-usage" });
+      expect([...registry.usageAdapters.values()][0]?.sessionUsage).toBeUndefined();
+    } finally {
+      await registry.close();
+    }
+  });
+
+  it.each(["throw", "invalid", "incompatible"])(
+    "isolates %s usage plugins without adding a chat route",
+    async (failure) => {
+      const directory = await root(["broken-usage", "healthy-agent"]);
+      await plugin(directory, "broken-usage", {
+        manifest: {
+          kind: "usage",
+          ...(failure === "incompatible" ? { adapterApiVersion: 999 } : {}),
+        },
+        code:
+          failure === "throw"
+            ? 'export function createUsageStatisticsAdapter() { throw new Error("private detail"); }'
+            : 'export function createUsageStatisticsAdapter() { return { harnessId: "broken-usage", close: async () => {} }; }',
+      });
+      await plugin(directory, "healthy-agent");
+      const registry = await loadHarnessPlugins({ roots: [directory], context });
+      try {
+        expect([...registry.adapters.keys()]).toEqual(["healthy-agent"]);
+        const broken = [...registry.usageAdapters.values()][0];
+        expect(broken).toBeDefined();
+        await expect(
+          broken?.usageStatistics.listSources(new AbortController().signal),
+        ).rejects.toThrow("unavailable");
+      } finally {
+        await registry.close();
+      }
+    },
+  );
+
+  it("passes saved commands only to opted-in local factories and exposes the setting", async () => {
+    const directory = await root(["custom-agent", "ordinary-agent"]);
+    const saved = "/custom/entry";
+    const marker = path.join(directory, "received.txt");
+    await plugin(directory, "custom-agent", {
+      manifest: { launchCommand: true },
+      code: `
+        import { writeFileSync } from "node:fs";
+        import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+        export function createHarnessAdapter(context) {
+          writeFileSync(${JSON.stringify(marker)}, JSON.stringify(context.launchCommand ?? null));
+          return new FakeHarnessAdapter("custom-agent");
+        }
+      `,
+    });
+    await plugin(directory, "ordinary-agent");
+    const launchCommandForPlugin = vi.fn(async () => saved);
+    const local = await loadHarnessPlugins({ roots: [directory], context, launchCommandForPlugin });
+    try {
+      expect(launchCommandForPlugin).toHaveBeenCalledExactlyOnceWith("custom-agent");
+      expect(JSON.parse(await readFile(marker, "utf8"))).toBe(saved);
+      expect(local.list().find(({ id }) => id === "custom-agent")?.launchCommand).toBe(true);
+      expect(local.list().find(({ id }) => id === "ordinary-agent")?.launchCommand).toBeUndefined();
+    } finally {
+      await local.close();
+    }
+    launchCommandForPlugin.mockClear();
+    const remote = await loadHarnessPlugins({
+      roots: [directory],
+      context: { ...context, managedRemoteHost: true },
+      launchCommandForPlugin,
+    });
+    try {
+      expect(launchCommandForPlugin).not.toHaveBeenCalled();
+      expect(JSON.parse(await readFile(marker, "utf8"))).toBeNull();
+      expect(remote.list().every(({ launchCommand }) => !launchCommand)).toBe(true);
+    } finally {
+      await remote.close();
+    }
+  });
+  it.each([
+    ["codebuddy", "CodeBuddy", "CODEXHOST_CODEBUDDY_COMMAND"],
+    ["workbuddy", "WorkBuddy", "CODEXHOST_WORKBUDDY_COMMAND"],
+    ["qoder", "Qoder", "CODEXHOST_QODER_COMMAND"],
+    ["qoder-cn", "Qoder CN", "CODEXHOST_QODERCN_COMMAND"],
+    ["zcode", "ZCode", "CODEXHOST_ZCODE_APP"],
+  ])(
+    "loads the relocated %s bundle without workspace dependencies and isolates factories",
+    async (id, name, commandVariable) => {
+      const directory = await root([id]);
+      await cp(path.resolve("packages/host-runtime/dist/plugins", id), path.join(directory, id), {
+        recursive: true,
+      });
+      const options = {
+        roots: [directory],
+        context: {
+          ...context,
+          environment: { [commandVariable]: path.join(directory, `missing-${id}`) },
+        },
+        warmup: false,
+      };
+      const first = await loadHarnessPlugins(options),
+        second = await loadHarnessPlugins(options);
+      try {
+        expect(first.list()).toMatchObject([{ id, name }]);
+        const adapter = [...first.adapters.values()][0],
+          independent = [...second.adapters.values()][0];
+        expect(adapter).not.toBe(independent);
+        expect(await adapter?.inspect()).toMatchObject({ status: "notInstalled" });
+        await first.close();
+        expect(await independent?.inspect()).toMatchObject({ status: "notInstalled" });
+      } finally {
+        await first.close();
+        await second.close();
+      }
+    },
+  );
+
+  it.each([
+    "pi",
+    "claude-code",
+    "deepseek-harness",
+    "opencode",
+    "grok",
+    "omp",
+    "antigravity",
+    "qoder",
+    "qoder-cn",
+  ])("ships a valid %s manifest and resolvable compiled resources", async (id) => {
+    const location = path.resolve("packages/adapters", id);
+    const manifest = harnessPluginManifestSchema.parse(
+      JSON.parse(await readFile(path.join(location, "manifest.json"), "utf8")),
+    );
+    expect(manifest.id).toBe(id);
+    await expect(pluginResourcePath(location, manifest.entry)).resolves.toMatch(/\.js$/u);
+    if (manifest.icon)
+      await expect(readPluginIcon(location, manifest.icon)).resolves.toMatch(/^data:image\//u);
+  });
+  it.each([
+    "pi",
+    "claude-code",
+    "deepseek-harness",
+    "opencode",
+    "grok",
+    "omp",
+    "antigravity",
+    "hermes",
+  ])("ships a valid %s manifest and resolvable compiled resources", async (id) => {
+    const location = path.resolve("packages/adapters", id);
+    const manifest = harnessPluginManifestSchema.parse(
+      JSON.parse(await readFile(path.join(location, "manifest.json"), "utf8")),
+    );
+    expect(manifest.id).toBe(id);
+    await expect(pluginResourcePath(location, manifest.entry)).resolves.toMatch(/\.js$/u);
+    if (manifest.icon)
+      await expect(readPluginIcon(location, manifest.icon)).resolves.toMatch(/^data:image\//u);
+  });
+
+  it("invokes optional plugin warmup without blocking loading and can request cold instances", async () => {
+    const directory = await root(["sample-agent"]);
+    const location = await plugin(directory, "sample-agent", {
+      code: `
+      import { writeFileSync } from "node:fs";
+      import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+      export function createHarnessAdapter() { return new FakeHarnessAdapter("sample-agent"); }
+      export async function warmup() {
+        writeFileSync(new URL("warmed", import.meta.url), "yes");
+        await new Promise(() => {});
+      }
+    `,
+    });
+    const registry = await loadHarnessPlugins({ roots: [directory], context });
+    expect(await readFile(path.join(location, "warmed"), "utf8")).toBe("yes");
+    await registry.close();
+    await rm(path.join(location, "warmed"));
+    const cold = await loadHarnessPlugins({ roots: [directory], context, warmup: false });
+    await expect(readFile(path.join(location, "warmed"))).rejects.toMatchObject({ code: "ENOENT" });
+    await cold.close();
+  });
+
+  it("isolates warmup failures and loads only the selected plugin for dedicated runtimes", async () => {
+    const directory = await root(["selected", "other"]);
+    await plugin(directory, "selected", {
+      code: `
+      import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+      export function createHarnessAdapter() { return new FakeHarnessAdapter("selected"); }
+      export async function warmup() { throw new Error("never-report-this"); }
+    `,
+    });
+    await plugin(directory, "other", { code: 'throw new Error("must not import")' });
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      onlyIds: new Set(["selected"]),
+      diagnose,
+    });
+    expect(registry.list().map(({ id }) => id)).toEqual(["selected"]);
+    expect(await [...registry.adapters.values()][0]?.inspect()).toMatchObject({ status: "ready" });
+    expect(diagnose).toHaveBeenCalledExactlyOnceWith({ id: "selected", code: "warmupFailed" });
+    await registry.close();
+  });
+
+  it("loads an unknown identity and clones public descriptors", async () => {
+    const directory = await root(["sample-agent"]);
+    const location = await plugin(directory, "sample-agent", {
+      manifest: { icon: "icon.svg", iconStyle: { borderRadius: 22.37 } },
+    });
+    await writeFile(
+      path.join(location, "icon.svg"),
+      '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h4v4z"/></svg>',
+    );
+    const registry = await loadHarnessPlugins({ roots: [directory], context });
+    expect([...registry.adapters.keys()]).toEqual(["sample-agent"]);
+    expect(registry.list()).toEqual([
+      expect.objectContaining({
+        id: "sample-agent",
+        name: "Plugin sample-agent",
+        icon: expect.stringMatching(/^data:image\/svg\+xml;base64,/u),
+        iconStyle: { borderRadius: 22.37 },
+      }),
+    ]);
+    const first = registry.list()[0];
+    if (!first) throw new Error("Expected loaded plugin descriptor");
+    first.name = "mutated";
+    first.iconStyle = { background: "#000000" };
+    expect(registry.list()[0]?.name).toBe("Plugin sample-agent");
+    expect(registry.list()[0]?.iconStyle).toEqual({ borderRadius: 22.37 });
+    const adapter = [...registry.adapters.values()][0];
+    if (!adapter) throw new Error("Expected loaded Adapter");
+    expect((await adapter.inspect()).status).toBe("ready");
+    const close = vi.spyOn(adapter, "close");
+    await Promise.all([registry.close(), registry.close()]);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not execute an unenabled module or a project-relative root", async () => {
+    const directory = await root();
+    const location = await plugin(directory, "sample-agent", {
+      code: `
+      import { writeFileSync } from "node:fs";
+      writeFileSync(new URL("executed", import.meta.url), "yes");
+      throw new Error("never-report-this");
+    `,
+    });
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({ roots: [directory, "."], context, diagnose });
+    expect(registry.list()).toEqual([]);
+    await expect(readFile(path.join(location, "executed"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(diagnose).toHaveBeenCalledExactlyOnceWith({ code: "invalidRoot" });
+  });
+
+  it("requires a valid explicit enablement configuration", async () => {
+    const directory = await root(["sample-agent"]);
+    await plugin(directory, "sample-agent");
+    await writeFile(
+      path.join(directory, "enabled.json"),
+      '{"version":1,"enabled":["sample-agent","sample-agent"]}',
+    );
+    const diagnose = vi.fn();
+    expect((await loadHarnessPlugins({ roots: [directory], context, diagnose })).list()).toEqual(
+      [],
+    );
+    expect(diagnose).toHaveBeenCalledExactlyOnceWith({ code: "invalidConfiguration" });
+    await rm(path.join(directory, "enabled.json"));
+    diagnose.mockClear();
+    expect((await loadHarnessPlugins({ roots: [directory], context, diagnose })).list()).toEqual(
+      [],
+    );
+    expect(diagnose).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate identities across roots before executing either module", async () => {
+    const a = await root(["duplicate"]);
+    const b = await root();
+    await plugin(a, "duplicate", { code: 'throw new Error("must not execute")' });
+    await plugin(b, "duplicate", { code: 'throw new Error("must not execute")' });
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({ roots: [a, b], context, diagnose });
+    expect(registry.list()).toEqual([]);
+    expect(diagnose).toHaveBeenCalledExactlyOnceWith({ id: "duplicate", code: "duplicateId" });
+  });
+
+  it("does not shadow a transitional built-in and rejects the official identity", async () => {
+    const directory = await root(["sample-agent"]);
+    await plugin(directory, "sample-agent");
+    await plugin(directory, "codex");
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      reservedIds: new Set(["sample-agent"]),
+      diagnose,
+    });
+    expect(registry.list()).toEqual([]);
+    expect(diagnose.mock.calls.map(([entry]) => entry.code)).toEqual([
+      "invalidManifest",
+      "duplicateId",
+    ]);
+  });
+
+  it("keeps an incompatible plugin visible but never imports its entry", async () => {
+    const directory = await root(["future-agent"]);
+    await plugin(directory, "future-agent", {
+      manifest: { adapterApiVersion: 2 },
+      code: 'throw new Error("never-report-this")',
+    });
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({ roots: [directory], context, diagnose });
+    expect(registry.list()[0]?.id).toBe("future-agent");
+    const adapter = [...registry.adapters.values()][0];
+    expect(await adapter?.inspect()).toMatchObject({
+      status: "unavailable",
+      error: { stage: "pluginLoad", retryable: false },
+    });
+    expect(diagnose).toHaveBeenCalledExactlyOnceWith({
+      id: "future-agent",
+      code: "incompatibleVersion",
+    });
+    await registry.close();
+  });
+
+  it.each(["manifest.json", "index.mjs", "icon.svg"])(
+    "rejects an escaping %s symlink",
+    async (resource) => {
+      const directory = await root(["sample-agent"]);
+      const outside = await root();
+      const location = await plugin(directory, "sample-agent", {
+        manifest: resource === "icon.svg" ? { icon: resource } : {},
+      });
+      const external = path.join(outside, resource);
+      await writeFile(
+        external,
+        resource === "manifest.json"
+          ? await readFile(path.join(location, resource))
+          : "not executed",
+      );
+      await rm(path.join(location, resource), { force: true });
+      await symlink(external, path.join(location, resource));
+      const diagnose = vi.fn();
+      const registry = await loadHarnessPlugins({ roots: [directory], context, diagnose });
+      if (resource === "manifest.json") expect(registry.list()).toEqual([]);
+      else
+        expect(await [...registry.adapters.values()][0]?.inspect()).toMatchObject({
+          status: "unavailable",
+        });
+      expect(diagnose).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: resource === "manifest.json" ? "invalidManifest" : "loadFailed",
+        }),
+      );
+      await registry.close();
+    },
+  );
+
+  it.each([
+    "<script>alert(1)</script>",
+    '<path fill="url(https://example.com/paint.svg#gradient)"/>',
+  ])("rejects active/external SVG and over-sized manifests, case %#", async (content) => {
+    const directory = await root(["sample-agent"]);
+    const location = await plugin(directory, "sample-agent", { manifest: { icon: "icon.svg" } });
+    await writeFile(
+      path.join(location, "icon.svg"),
+      `<svg xmlns="http://www.w3.org/2000/svg">${content}</svg>`,
+    );
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({ roots: [directory], context, diagnose });
+    expect(await [...registry.adapters.values()][0]?.inspect()).toMatchObject({
+      status: "unavailable",
+    });
+    await registry.close();
+    await writeFile(path.join(location, "manifest.json"), " ".repeat(32 * 1024 + 1));
+    expect((await loadHarnessPlugins({ roots: [directory], context, diagnose })).list()).toEqual(
+      [],
+    );
+    expect(diagnose).toHaveBeenCalledWith({ code: "invalidManifest" });
+  });
+
+  it("isolates load errors and never publishes plugin error details", async () => {
+    const directory = await root(["bad-agent", "good-agent"]);
+    await plugin(directory, "bad-agent", {
+      code: 'throw new Error("never-report-this /private/credentials")',
+    });
+    await plugin(directory, "good-agent");
+    const diagnostics: HarnessPluginDiagnostic[] = [];
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      diagnose: (entry) => {
+        diagnostics.push(entry);
+      },
+    });
+    expect(diagnostics).toEqual([{ id: "bad-agent", code: "loadFailed" }]);
+    expect(JSON.stringify(registry.list())).not.toContain("never-report-this");
+    expect(await [...registry.adapters.values()][1]?.inspect()).toMatchObject({ status: "ready" });
+    await registry.close();
+  });
+
+  it("closes invalid factory results and late results after a timeout", async () => {
+    const directory = await root(["wrong-agent", "slow-agent", "good-agent"]);
+    const wrong = await plugin(directory, "wrong-agent", {
+      code: `
+      import { writeFileSync } from "node:fs";
+      export function createHarnessAdapter() {
+        return { harnessId: "someone-else", close() { writeFileSync(new URL("closed", import.meta.url), "yes"); } };
+      }
+    `,
+    });
+    const slow = await plugin(directory, "slow-agent", {
+      code: `
+      import { writeFileSync } from "node:fs";
+      import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+      export async function createHarnessAdapter(context) {
+        writeFileSync(new URL("started", import.meta.url), String(Object.isFrozen(context.environment)));
+        await new Promise(resolve => setTimeout(resolve, 350));
+        const adapter = new FakeHarnessAdapter("slow-agent");
+        adapter.close = async () => { writeFileSync(new URL("closed", import.meta.url), "yes"); };
+        return adapter;
+      }
+    `,
+    });
+    await plugin(directory, "good-agent");
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      loadTimeoutMs: 200,
+      diagnose,
+    });
+    expect(diagnose).toHaveBeenCalledWith({ id: "slow-agent", code: "loadTimeout" });
+    expect(diagnose).toHaveBeenCalledWith({ id: "wrong-agent", code: "loadFailed" });
+    expect(await readFile(path.join(wrong, "closed"), "utf8")).toBe("yes");
+    expect(await readFile(path.join(slow, "started"), "utf8")).toBe("true");
+    await vi.waitFor(async () =>
+      expect(await readFile(path.join(slow, "closed"), "utf8")).toBe("yes"),
+    );
+    await registry.close();
+  });
+
+  it("gives later plugins a full timeout after earlier plugins finish", async () => {
+    const ids = ["alpha-agent", "beta-agent", "gamma-agent", "delta-agent", "epsilon-agent"];
+    const directory = await root(ids);
+    for (const id of ids) {
+      await plugin(directory, id, {
+        code: `
+      import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+      export async function createHarnessAdapter() {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        return new FakeHarnessAdapter(${JSON.stringify(id)});
+      }
+    `,
+      });
+    }
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      // Leave room for CI imports; two worker waves still exceed a shared 1300ms budget.
+      loadTimeoutMs: 1_300,
+      diagnose,
+    });
+    try {
+      expect(diagnose).not.toHaveBeenCalled();
+      const inspections = await Promise.all(
+        [...registry.adapters.values()].map((adapter) => adapter.inspect()),
+      );
+      expect(inspections).toHaveLength(ids.length);
+      expect(inspections.every((inspection) => inspection.status === "ready")).toBe(true);
+    } finally {
+      await registry.close();
+    }
+  });
+
+  it("stops taking later plugins when the load is aborted", async () => {
+    const ids = ["a-agent", "b-agent", "c-agent", "d-agent", "e-agent"];
+    const directory = await root(ids);
+    const started = path.join(directory, "started");
+    const finished = path.join(directory, "finished");
+    await mkdir(started);
+    await mkdir(finished);
+    const release = path.join(directory, "release");
+    const controller = new AbortController();
+    for (const id of ids) {
+      await plugin(directory, id, {
+        code: `
+      import { access, writeFile } from "node:fs/promises";
+      import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+      const started = ${JSON.stringify(pathToFileURL(path.join(started, id)).href)};
+      const finished = ${JSON.stringify(pathToFileURL(path.join(finished, id)).href)};
+      const release = ${JSON.stringify(pathToFileURL(release).href)};
+      export async function createHarnessAdapter() {
+        await writeFile(new URL(started), "yes");
+        try {
+          for (;;) {
+            try {
+              await access(new URL(release));
+              return new FakeHarnessAdapter(${JSON.stringify(id)});
+            } catch {
+              await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+          }
+        } finally {
+          await writeFile(new URL(finished), "yes");
+        }
+      }
+    `,
+      });
+    }
+    const pending = loadHarnessPlugins({
+      roots: [directory],
+      context,
+      loadTimeoutMs: 5_000,
+      signal: controller.signal,
+    });
+    await vi.waitFor(async () => expect(await readdir(started)).toHaveLength(4));
+    controller.abort();
+    const registry = await pending;
+    try {
+      expect((await readdir(started)).sort()).toEqual(["a-agent", "b-agent", "c-agent", "d-agent"]);
+      expect(registry.list().map(({ id }) => id)).not.toContain("e-agent");
+    } finally {
+      await writeFile(release, "ok");
+      await vi.waitFor(async () =>
+        expect((await readdir(finished)).sort()).toEqual((await readdir(started)).sort()),
+      );
+      await registry.close();
+    }
+  });
+});
+
+describe("Harness plugin registry lifetime", () => {
+  it("closes every Adapter even when one close throws synchronously", async () => {
+    const registry = new HarnessPluginRegistry();
+    const first = harnessPluginDescriptorSchema.parse({ id: "first", name: "First", version: "1" });
+    const second = harnessPluginDescriptorSchema.parse({
+      id: "second",
+      name: "Second",
+      version: "1",
+    });
+    const a = new FakeHarnessAdapter(first.id);
+    const b = new FakeHarnessAdapter(second.id);
+    const aClose = vi.spyOn(a, "close").mockImplementation(() => {
+      throw new Error("failure");
+    });
+    const bClose = vi.spyOn(b, "close");
+    await registry.register(first, a);
+    await registry.register(second, b);
+    first.name = "changed";
+    expect(registry.list()[0]?.name).toBe("First");
+    await expect(registry.close()).rejects.toBeInstanceOf(AggregateError);
+    await expect(registry.close()).rejects.toBeInstanceOf(AggregateError);
+    expect(aClose).toHaveBeenCalledTimes(1);
+    expect(bClose).toHaveBeenCalledTimes(1);
+    expect(() => registry.register(first, a)).toThrow("closed");
+  });
+
+  it("uses the configured Host data directory and omits a remote URL opener", () => {
+    const data = path.resolve("host-data");
+    expect(installedHarnessPluginOptions({ CODEXHOST_DATA_DIR: data }, true).pluginRoots[1]).toBe(
+      path.join(data, "plugins"),
+    );
+    expect(installedHarnessPluginOptions({}, true).pluginContext.openLocalUrl).toBeUndefined();
+    expect(
+      installedHarnessPluginOptions(
+        {
+          CODEXHOST_CONTROL_PORT: "43210",
+          CODEXHOST_CONTROL_NONCE: "1".repeat(32),
+        },
+        true,
+      ).pluginContext.openLocalPage,
+    ).toBeUndefined();
+    const custom = path.resolve("custom-plugins");
+    expect(
+      installedHarnessPluginOptions({ CODEXHOST_PLUGIN_DIRECTORY: custom }).pluginRoots[1],
+    ).toBe(custom);
+  });
+});

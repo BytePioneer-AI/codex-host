@@ -1,10 +1,15 @@
+import type { HarnessUsageStatisticsCapability } from "./usage-statistics.js";
 import type {
+  HarnessAccountSnapshot,
+  AccountCreditsSnapshot,
+  HarnessInstallationState,
   HarnessCommandCatalog,
   HarnessId,
   HarnessInspection,
   HarnessModelRef,
   HarnessPermissionModeId,
   HarnessSessionCapabilities,
+  HarnessSessionImportCandidate,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
   HostInteractionId,
@@ -17,7 +22,9 @@ import type {
   NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
-import type { HostUsage } from "./usage.js";
+import type { HostUsage, HostUsageRequest } from "./usage.js";
+import type { HarnessSessionUsageCapability } from "./session-usage.js";
+import type { HarnessCredentialExport, HarnessCredentialImports } from "./credential-imports.js";
 
 export type {
   HarnessInspection,
@@ -28,6 +35,7 @@ export type {
   HarnessPermissionModeCatalog,
   HarnessPermissionModeId,
   HarnessSessionCapabilities,
+  HarnessSessionImportCandidate,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
@@ -36,6 +44,7 @@ export type HarnessErrorCode =
   | "notInstalled"
   | "unavailable"
   | "authenticationRequired"
+  | "configurationRequired"
   | "sessionNotFound"
   | "sessionBusy"
   | "checkpointNotFound"
@@ -62,6 +71,13 @@ export type HarnessResult<T> = { ok: true; value: T } | { ok: false; error: Harn
 export interface InspectHarnessInput {
   cwd?: string;
   refresh?: boolean;
+  /**
+   * `availability`: the caller uses only the status and error. An Adapter may then answer
+   * without starting a native Session, so Harnesses the user has not chosen incur no Session
+   * startup work. Its catalog may omit the native default Model and Thinking option, so it must
+   * not stand in for a full inspection.
+   */
+  purpose?: "availability";
 }
 
 export type HarnessExecutionPolicy = "default" | "unattended-full-access";
@@ -77,6 +93,12 @@ export interface CreateSessionInput {
 }
 
 export interface ResumeSessionInput {
+  /** Persisted configuration hints, not new user commands. The Adapter owns restoration:
+   * initialize lazy configuration, restore a saved mode, or retain authoritative native state.
+   * Host never replays configuration commands after open; publish the confirmed state.
+   */
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
   kind: "resume";
   nativeRef: NativeSessionRef;
   cwd: string;
@@ -95,6 +117,10 @@ export interface ForkSessionInput {
 }
 
 export interface RollbackLastTurnSessionInput {
+  /** Current settings required by a derived Session before it can start native work. */
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
   kind: "rollbackLastTurn";
   sourceRef: NativeSessionRef;
   cwd: string;
@@ -120,6 +146,19 @@ export interface HostTextInput {
 
 export interface TurnStartCommand {
   type: "turn.start";
+  turnId: HostTurnId;
+  input: HostTextInput[];
+}
+
+/**
+ * Native same-Turn input. Capability inspection is advisory; the Adapter must recheck the target
+ * and native admission conditions before writing. A failure result guarantees input was not taken.
+ * Once written, an uncertain receipt must not be reported as rejection or retried automatically.
+ * The Harness takes input at its safe boundary without cancelling the Turn. The Host shows accepted
+ * input live; history snapshots group it however the native history does.
+ */
+export interface TurnSteerCommand {
+  type: "turn.steer";
   turnId: HostTurnId;
   input: HostTextInput[];
 }
@@ -238,6 +277,7 @@ export interface HarnessCommandCapability {
 
 export type HostCommand =
   | TurnStartCommand
+  | TurnSteerCommand
   | TurnCancelCommand
   | InteractionRespondCommand
   | ModelSelectCommand
@@ -246,6 +286,10 @@ export type HostCommand =
 
 export interface TurnStartAccepted {
   turnId: HostTurnId;
+}
+
+export interface TurnSteerAccepted {
+  accepted: true;
 }
 
 export interface TurnCancelAccepted {
@@ -272,6 +316,19 @@ export interface HostAgentMessageItem {
   type: "agentMessage";
   itemId: HostItemId;
   text: string;
+  /**
+   * Omit when the Harness cannot distinguish progress from its final answer; the
+   * Host then treats the message that ends a succeeded Turn as its final answer.
+   * Set `commentary` to keep such a message out of that inference.
+   */
+  phase?: "commentary" | "final_answer";
+}
+
+/** User input steered into a running Turn; the Host publishes it when the Harness accepts it. */
+export interface HostUserMessageItem {
+  type: "userMessage";
+  itemId: HostItemId;
+  input: HostTextInput[];
 }
 
 export interface HostReasoningItem {
@@ -317,12 +374,16 @@ export interface HostFileChange {
   path: string;
   kind: "add" | "update" | "delete";
   unifiedDiff: string;
+  /** Local snippets have no file coordinates and cannot be composed as whole-file patches. */
+  diffScope?: "fragment";
 }
 
 export interface HostFileChangeItem {
   type: "fileChange";
   itemId: HostItemId;
   changes: HostFileChange[];
+  /** Native results supersede inferred previews from these tool Items. */
+  sourceItemIds?: HostItemId[];
 }
 
 export type HostSubagentStatus = "pending" | "running" | "completed" | "failed" | "interrupted";
@@ -332,6 +393,10 @@ export interface HostSubagentState {
   nativeSubagentId?: string;
   description: string;
   role?: string;
+  /** Native child Model ID, when explicitly supplied or reported; not a display label. */
+  model?: string;
+  /** Native child reasoning effort, when known; do not infer from parent settings. */
+  reasoningEffort?: string;
   background: boolean;
   status: HostSubagentStatus;
   resultSummary?: string;
@@ -346,6 +411,7 @@ export interface HostSubagentDelegationItem {
 }
 
 export type HostItem =
+  | HostUserMessageItem
   | HostAgentMessageItem
   | HostReasoningItem
   | HostContextCompactionItem
@@ -384,6 +450,9 @@ export interface HostTurnSnapshot {
   items: HostItemSnapshot[];
   outcome: HistoricalTurnOutcome;
   model?: HarnessModelRef;
+  /** Native wall-clock timestamps; omit when unavailable. */
+  startedAtMs?: number;
+  completedAtMs?: number;
 }
 
 export interface HostThreadSnapshot {
@@ -406,6 +475,21 @@ export interface SessionUsageChangedEvent {
   type: "session.usage.changed";
   usage: HostUsage | null;
   observedForTurnId?: HostTurnId;
+}
+
+/** One native model request's usage; Host derives cost, cache and speed metrics from these. */
+export interface UsageRequestEvent {
+  type: "usage.request";
+  request: HostUsageRequest;
+}
+
+/**
+ * Sent after replaying native history on every open, and again with `complete: false` when a
+ * running request's usage is missing. The first one switches the Thread to Host metering.
+ */
+export interface UsageHistoryEvent {
+  type: "usage.history";
+  complete: boolean;
 }
 
 export interface SubagentStateChangedEvent {
@@ -450,10 +534,22 @@ export interface ItemCompletedEvent {
   snapshot: HostItemSnapshot;
 }
 
+/**
+ * The Item keeps running after its Turn completes (a native background command).
+ * It settles later with `item.updated` / `item.completed` on the same Turn.
+ */
+export interface ItemDetachedEvent {
+  type: "item.detached";
+  turnId: HostTurnId;
+  itemId: HostItemId;
+}
+
 export interface TurnCompletedEvent {
   type: "turn.completed";
   turnId: HostTurnId;
   nativeTurnRef?: NativeTurnRef;
+  /** Native operation completed without a history Turn; project without persisting an identity. */
+  ephemeral?: true;
   outcome: TurnOutcome;
 }
 
@@ -472,6 +568,8 @@ export interface SessionFaultedEvent {
 export type HostEvent =
   | SessionStateChangedEvent
   | SessionUsageChangedEvent
+  | UsageRequestEvent
+  | UsageHistoryEvent
   | SubagentStateChangedEvent
   | SubagentTranscriptChangedEvent
   | TurnStartedEvent
@@ -479,6 +577,7 @@ export type HostEvent =
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent
+  | ItemDetachedEvent
   | InteractionClosedEvent
   | TurnCompletedEvent
   | SessionFaultedEvent;
@@ -490,13 +589,31 @@ export interface HarnessSession {
   readonly harnessId: HarnessId;
   readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
+  /**
+   * Immutable identity reserved for this Session's native writes, when known before native
+   * creation. Not evidence of durable history: only state.nativeRef confirms resumability.
+   * An Adapter supplying this must not write to the identity during open; the caller reserves
+   * it before executing commands. Subsequent state.nativeRef must match it exactly.
+   */
+  readonly nativeWriterRef?: NativeSessionRef;
   readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly commands?: HarnessCommandCapability;
 
+  /**
+   * Fresh capabilities for transports whose synchronous property is only an open-time snapshot.
+   * Direct Adapters may omit this and expose live capabilities through the property instead.
+   * A read is advisory: turn.steer must recheck admission before handing input to the Harness.
+   */
+  readCapabilities?(): Promise<HarnessSessionCapabilities>;
   refreshUsage?(): Promise<void>;
+  /** Native background work (e.g. a background command) is still running; the Session must not be released. */
+  hasBackgroundWork?(): boolean;
+  /** Stops every running detached Item; each still settles through its own events. */
+  stopBackgroundWork?(): Promise<HarnessResult<void>>;
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -515,9 +632,67 @@ export interface HarnessSubagentCapability {
   }): Promise<HarnessResult<HostThreadSnapshot>>;
 }
 
+export interface HarnessWebUiAction {
+  open(): Promise<HarnessResult<void>>;
+}
+
+/** Fresh native metadata and the complete resumable identity; never sent to Renderer. */
+export interface HarnessSessionImportSource {
+  candidate: HarnessSessionImportCandidate;
+  nativeRef: NativeSessionRef;
+}
+
+/** Optional discovery of existing Native Sessions that codexhost can map and resume. */
+export interface HarnessSessionImportCapability {
+  listCandidates(): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>>;
+  /** Read-only revalidation. Omission keeps older discovery-only plugins valid, not importable. */
+  resolveCandidate?(nativeSessionId: string): Promise<HarnessResult<HarnessSessionImportSource>>;
+}
+
 export interface HarnessAdapter {
+  /** Native CLI version checks and explicit updates. Never updates the Host plugin,
+   * starts a model Turn, or restarts existing Sessions. Commands are Adapter-owned.
+   */
+  installation?(action: "check" | "update"): Promise<HarnessInstallationState>;
+  /** Explicit first-time CLI installation using an Adapter-owned official source. */
+  install?(): Promise<void>;
+  readonly credentialExport?: HarnessCredentialExport;
+  readonly credentialImports?: HarnessCredentialImports;
   readonly harnessId: HarnessId;
+  /** Static command metadata. Reading it must not inspect, connect to, or open a Native Session. */
+  readonly commandCatalog?: HarnessCommandCatalog;
+  /**
+   * True when a Session whose native process runs reports workspace commands
+   * and skills beyond {@link commandCatalog}. The Composer then tells a draft
+   * without them that they load after its first message.
+   */
+  readonly liveCommandCatalog?: boolean;
+  readonly sessionImport?: HarnessSessionImportCapability;
+  /** Read-only local usage for the machine-wide statistics; never starts a native process. */
+  readonly usageStatistics?: HarnessUsageStatisticsCapability;
+  /** Optional read-only usage for sessions on an already-owned native connection. */
+  readonly sessionUsage?: HarnessSessionUsageCapability;
   readonly subagents?: HarnessSubagentCapability;
+  readonly webUi?: HarnessWebUiAction;
+  /** Fresh read-only quota for current native authentication. Return null when unavailable;
+   * never return session spend, old authentication caches, or start a model Turn.
+   * Implementations must bound requests and release inspection resources on close.
+   */
+  inspectAccount?(): Promise<HarnessAccountSnapshot | null>;
+  /** Optional account-wide telemetry cache, not historical Thread billing attribution.
+   * Read synchronously without I/O; null means no reliable cached quota. Native
+   * authentication, freshness and invalidation remain Adapter-owned.
+   */
+  credits?(): AccountCreditsSnapshot | null;
+  /** Best-effort refresh of the same cache. Must not start a model Turn. Host
+   * observes a later read, does not await this call, and isolates rejection.
+   */
+  refreshCredits?(): Promise<AccountCreditsSnapshot | null>;
+  /**
+   * The same read when one Harness exposes several Billing Sources. Host prefers
+   * this method and retains the first snapshot as the compatibility `account`.
+   */
+  inspectAccounts?(): Promise<readonly HarnessAccountSnapshot[]>;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
   open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>>;

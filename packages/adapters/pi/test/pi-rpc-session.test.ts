@@ -5,22 +5,30 @@ import { PassThrough } from "node:stream";
 
 import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
+import type { PiSessionHistory } from "../src/pi-history.js";
 
 import {
   PiRpcSession,
   piRpcProcessCommand,
+  type PiAutonomousTurn,
   type PiRpcProcessAdapter,
   type PiRpcProcessOptions,
   type PiTurnEvent,
 } from "../src/pi-rpc-session.js";
+import type { PiUsageObservation } from "../src/pi-usage.js";
 
 type Scenario =
   | "final-only"
+  | "fast"
+  | "fast-no-ack"
+  | "fast-command-error"
+  | "fast-no-off-ack"
   | "reasoning"
   | "reasoning-multiple-blocks"
   | "settled-streaming"
   | "assistant-error"
   | "retry-success"
+  | "prompt-auto-compaction"
   | "prompt-preflight-compaction"
   | "prompt-preflight-compaction-timeout"
   | "manual-compaction"
@@ -30,6 +38,7 @@ type Scenario =
   | "long-running"
   | "cancel"
   | "cancel-no-settle"
+  | "cancel-slow-settle"
   | "malformed-tool"
   | "interaction"
   | "interaction-timeout"
@@ -46,6 +55,9 @@ type Scenario =
   | "stats-unsupported-mismatch"
   | "stats-error"
   | "stats-timeout"
+  | "stats-late"
+  | "model-late"
+  | "chunked-output"
   | "missing-session-id";
 
 class FakePiRpcProcess extends EventEmitter {
@@ -55,6 +67,7 @@ class FakePiRpcProcess extends EventEmitter {
   readonly pid = 42_000;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
+  fastEnabled = false;
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #promptCount = 0;
   #sessionId = "synthetic-session";
@@ -65,10 +78,17 @@ class FakePiRpcProcess extends EventEmitter {
   #modelId = "synthetic-model";
   #thinkingLevel = "high";
   readonly #scenario: Scenario;
+  readonly #compactionDelayMs: number | undefined;
 
-  constructor(scenario: Scenario) {
+  setNativeModel(provider: string, modelId: string): void {
+    this.#provider = provider;
+    this.#modelId = modelId;
+  }
+
+  constructor(scenario: Scenario, compactionDelayMs?: number) {
     super();
     this.#scenario = scenario;
+    this.#compactionDelayMs = compactionDelayMs;
     this.stdin.on("data", (chunk: Buffer) => this.#push(chunk));
     this.stdin.once("finish", () => {
       this.exitCode = 0;
@@ -77,6 +97,116 @@ class FakePiRpcProcess extends EventEmitter {
       this.emit("exit", 0, null);
     });
     queueMicrotask(() => this.emit("spawn"));
+  }
+
+  autonomousHistory: PiSessionHistory | null = null;
+
+  emitAutonomousTurn(
+    options: {
+      responseId?: string | null;
+      stopReason?: "stop" | "aborted" | "error";
+      includeTool?: boolean;
+      streamingAtSettle?: boolean;
+    } = {},
+  ): void {
+    const responseId =
+      options.responseId === undefined ? "autonomous-response" : options.responseId;
+    const stopReason = options.stopReason ?? "stop";
+    const message = {
+      role: "assistant",
+      ...(responseId ? { responseId } : {}),
+      timestamp: 123456,
+      stopReason,
+      ...(stopReason === "error" ? { errorMessage: "autonomous failure" } : {}),
+      content: [
+        { type: "thinking", thinking: "autonomous reasoning" },
+        { type: "text", text: "autonomous text" },
+      ],
+    };
+    this.autonomousHistory = {
+      entries: [
+        {
+          id: "native-custom-entry",
+          parentId: null,
+          type: "custom_message",
+          customType: "intercom_message",
+          content: "background result",
+          display: false,
+        },
+        { id: "native-assistant-entry", parentId: "native-custom-entry", type: "message", message },
+      ],
+      leafId: "native-assistant-entry",
+    };
+    this.#isStreaming = true;
+    this.#output({ type: "message_start", message });
+    this.#output({
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", delta: "autonomous reasoning" },
+      message,
+    });
+    this.#output({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "autonomous text" },
+      message,
+    });
+    if (options.includeTool) {
+      this.#output({
+        type: "tool_execution_start",
+        toolCallId: "autonomous-tool",
+        toolName: "read",
+        args: { path: "status.txt" },
+      });
+      this.#output({
+        type: "tool_execution_update",
+        toolCallId: "autonomous-tool",
+        partialResult: { content: [{ type: "text", text: "working" }] },
+      });
+      this.#output({
+        type: "tool_execution_end",
+        toolCallId: "autonomous-tool",
+        toolName: "read",
+        result: { content: [{ type: "text", text: "done" }] },
+        isError: false,
+      });
+    }
+    this.#output({ type: "message_end", message });
+    this.#isStreaming = options.streamingAtSettle === true;
+    this.#output({ type: "agent_settled" });
+  }
+
+  /** Writes one raw RPC frame, for timing tests that interleave real waits. */
+  emitFrame(value: unknown): void {
+    this.#output(value);
+  }
+
+  emitAutonomousStart(responseId = "autonomous-pending"): void {
+    this.#isStreaming = true;
+    const message = {
+      role: "assistant",
+      responseId,
+      content: [{ type: "text", text: "partial" }],
+    };
+    this.#output({ type: "message_start", message });
+    this.#output({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "partial" },
+      message,
+    });
+  }
+
+  emitBlockingInteraction(): void {
+    this.#output({
+      type: "extension_ui_request",
+      id: "autonomous-question",
+      method: "select",
+      title: "Blocked",
+      options: ["yes", "no"],
+    });
+  }
+
+  emitAgentSettled(streaming = false): void {
+    this.#isStreaming = streaming;
+    this.#output({ type: "agent_settled" });
   }
 
   #push(chunk: Buffer): void {
@@ -107,6 +237,40 @@ class FakePiRpcProcess extends EventEmitter {
       }
       return;
     }
+    if (command.type === "get_commands" && this.#scenario.startsWith("fast")) {
+      this.#respond(command, {
+        commands: [{ name: "codexhost-fast-mode", description: "Host Fast", source: "extension" }],
+      });
+      return;
+    }
+    if (
+      command.type === "prompt" &&
+      typeof command.message === "string" &&
+      command.message.startsWith("/codexhost-fast-mode ")
+    ) {
+      const [, mode, nonce] = command.message.split(" ");
+      this.fastEnabled = mode === "on";
+      if (this.#scenario === "fast-command-error") {
+        this.#output({
+          type: "response",
+          id: command.id,
+          command: "prompt",
+          success: false,
+          error: "Extension failed after activation",
+        });
+        return;
+      }
+      if (this.#scenario === "fast" || (this.#scenario === "fast-no-off-ack" && mode === "on"))
+        this.#output({
+          type: "extension_ui_request",
+          id: "fast-ack",
+          method: "notify",
+          message: `codexhost-fast-mode:${nonce}:${mode}`,
+          notifyType: "info",
+        });
+      this.#respond(command, { disposition: "handled" });
+      return;
+    }
     if (command.type === "get_state") {
       this.#stateRequestCount += 1;
       this.#respond(command, {
@@ -118,6 +282,7 @@ class FakePiRpcProcess extends EventEmitter {
             this.#scenario === "stats-unsupported-mismatch" && this.#stateRequestCount > 1
               ? "changed-model"
               : this.#modelId,
+          reasoning: true,
         },
         thinkingLevel: this.#thinkingLevel,
         isStreaming: this.#isStreaming,
@@ -127,6 +292,10 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (command.type === "get_session_stats") {
       if (this.#scenario === "stats-timeout") return;
+      if (this.#scenario === "stats-late") {
+        setTimeout(() => this.#respond(command, {}), 30);
+        return;
+      }
       if (
         this.#scenario === "stats-unsupported" ||
         this.#scenario === "stats-unsupported-mismatch"
@@ -165,6 +334,10 @@ class FakePiRpcProcess extends EventEmitter {
       return;
     }
     if (command.type === "get_entries") {
+      if (this.autonomousHistory) {
+        this.#respond(command, this.autonomousHistory);
+        return;
+      }
       const user = {
         id: "user-1",
         parentId: null,
@@ -231,6 +404,10 @@ class FakePiRpcProcess extends EventEmitter {
       return;
     }
     if (command.type === "set_model") {
+      if (this.#scenario === "model-late") {
+        setTimeout(() => this.#respond(command), 30);
+        return;
+      }
       if (typeof command.provider === "string" && typeof command.modelId === "string") {
         this.#provider = command.provider;
         this.#modelId = command.modelId;
@@ -271,14 +448,21 @@ class FakePiRpcProcess extends EventEmitter {
           tokensBefore: 275_729,
           estimatedTokensAfter: 32_000,
         });
-      }, 10);
+      }, this.#compactionDelayMs ?? 10);
       return;
     }
     if (
       command.type === "prompt" &&
-      (this.#scenario === "prompt-preflight-compaction" ||
+      this.#promptCount === 0 &&
+      (this.#scenario === "prompt-auto-compaction" ||
+        this.#scenario === "prompt-preflight-compaction" ||
         this.#scenario === "prompt-preflight-compaction-timeout")
     ) {
+      this.#promptCount += 1;
+      if (this.#scenario === "prompt-auto-compaction") {
+        this.#isStreaming = true;
+        this.#respond(command);
+      }
       this.#output({ type: "compaction_start", reason: "threshold" });
       setTimeout(() => {
         this.#output({
@@ -295,7 +479,7 @@ class FakePiRpcProcess extends EventEmitter {
         });
         if (this.#scenario === "prompt-preflight-compaction-timeout") return;
         this.#isStreaming = true;
-        this.#respond(command);
+        if (this.#scenario !== "prompt-auto-compaction") this.#respond(command);
         const message = {
           role: "assistant",
           content: [{ type: "text", text: "continued after compaction" }],
@@ -303,7 +487,7 @@ class FakePiRpcProcess extends EventEmitter {
         this.#output({ type: "message_start", message });
         this.#output({ type: "message_end", message });
         this.#settleAgent();
-      }, 20);
+      }, this.#compactionDelayMs ?? 20);
       return;
     }
     if (command.type === "prompt") this.#isStreaming = true;
@@ -317,6 +501,23 @@ class FakePiRpcProcess extends EventEmitter {
       ].includes(this.#scenario)
     ) {
       this.#startInteractionTurn(command);
+      return;
+    }
+    if (command.type === "abort" && this.#scenario === "cancel-slow-settle") {
+      // The Abort acknowledgement and settlement arrive well past the former 2s bound.
+      setTimeout(() => {
+        this.#respond(command);
+        setTimeout(() => {
+          this.#output({
+            type: "tool_execution_end",
+            toolCallId: "long-tool",
+            toolName: "gate_long_tool",
+            result: { content: [{ type: "text", text: "cancelled" }] },
+            isError: true,
+          });
+          this.#settleAgent();
+        }, 700);
+      }, 2_500);
       return;
     }
     this.#respond(command);
@@ -391,11 +592,19 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (
       this.#scenario === "final-only" ||
+      this.#scenario === "manual-compaction" ||
+      this.#scenario === "prompt-auto-compaction" ||
+      this.#scenario === "prompt-preflight-compaction" ||
       this.#scenario === "settled-streaming" ||
-      ((this.#scenario === "cancel" || this.#scenario === "long-running") && this.#promptCount > 1)
+      ((this.#scenario === "cancel" ||
+        this.#scenario === "cancel-slow-settle" ||
+        this.#scenario === "long-running") &&
+        this.#promptCount > 1)
     ) {
       const text =
-        this.#scenario === "cancel" || this.#scenario === "long-running"
+        this.#scenario === "cancel" ||
+        this.#scenario === "cancel-slow-settle" ||
+        this.#scenario === "long-running"
           ? "continued"
           : "synthetic final text";
       const message = {
@@ -486,7 +695,11 @@ class FakePiRpcProcess extends EventEmitter {
       }, 180_001);
       return;
     }
-    if (this.#scenario === "cancel" || this.#scenario === "cancel-no-settle") {
+    if (
+      this.#scenario === "cancel" ||
+      this.#scenario === "cancel-no-settle" ||
+      this.#scenario === "cancel-slow-settle"
+    ) {
       this.#output({
         type: "tool_execution_start",
         toolCallId: "long-tool",
@@ -603,7 +816,15 @@ class FakePiRpcProcess extends EventEmitter {
   }
 
   #output(value: unknown): void {
-    this.stdout.write(`${JSON.stringify(value)}\n`);
+    const frame = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+    if (this.#scenario !== "chunked-output") {
+      this.stdout.write(frame);
+      return;
+    }
+    // Pipe-sized pieces: every frame arrives split across many chunks.
+    for (let offset = 0; offset < frame.length; offset += 7) {
+      this.stdout.write(frame.subarray(offset, offset + 7));
+    }
   }
 }
 
@@ -612,26 +833,127 @@ function session(
   onFault = vi.fn(),
   options: {
     commandTimeoutMs?: number;
-    compactionTimeoutMs?: number;
-    cancelTimeoutMs?: number;
+    nativeCompactionDelayMs?: number;
+    cancelTimeoutMs?: number | "default";
   } = {},
 ): PiRpcSession {
   const processAdapter: PiRpcProcessAdapter = {
     spawn() {
-      return new FakePiRpcProcess(scenario) as unknown as ChildProcessWithoutNullStreams;
+      return new FakePiRpcProcess(
+        scenario,
+        options.nativeCompactionDelayMs,
+      ) as unknown as ChildProcessWithoutNullStreams;
     },
   };
   return new PiRpcSession(
     {
       cwd: process.cwd(),
       commandTimeoutMs: options.commandTimeoutMs ?? 2_000,
-      compactionTimeoutMs: options.compactionTimeoutMs ?? 300_000,
-      cancelTimeoutMs: options.cancelTimeoutMs ?? 500,
+      ...(options.cancelTimeoutMs === "default"
+        ? {}
+        : { cancelTimeoutMs: options.cancelTimeoutMs ?? 500 }),
       closeTimeoutMs: 500,
       onFault,
     },
     processAdapter,
   );
+}
+
+describe("Pi Fast command acknowledgement", () => {
+  it("changes only Fast and keeps the confirmed state through Thinking refresh", async () => {
+    const rpc = session("fast");
+    await rpc.start();
+    try {
+      expect(await rpc.supportsFastMode()).toBe(true);
+      expect(await rpc.selectFastMode(true)).toMatchObject({ fast: true, thinkingLevel: "high" });
+      expect(
+        await rpc.selectThinkingOption(harnessThinkingOptionIdSchema.parse("low")),
+      ).toMatchObject({ fast: true, thinkingLevel: "low" });
+      expect(await rpc.selectFastMode(false)).not.toHaveProperty("fast");
+      expect(rpc.state.thinkingLevel).toBe("low");
+    } finally {
+      await rpc.close();
+    }
+  });
+  it("clears the confirmed Fast state when a native extension switches Model", async () => {
+    const process = new FakePiRpcProcess("fast");
+    const rpc = new PiRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+      { spawn: () => process as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    try {
+      await rpc.selectFastMode(true);
+      process.setNativeModel("another-provider", "unsupported");
+      expect(
+        await rpc.selectThinkingOption(harnessThinkingOptionIdSchema.parse("low")),
+      ).not.toHaveProperty("fast");
+      process.setNativeModel("synthetic-provider", "synthetic-model");
+      expect(
+        await rpc.selectThinkingOption(harnessThinkingOptionIdSchema.parse("high")),
+      ).not.toHaveProperty("fast");
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it.each<Scenario>(["fast-no-ack", "fast-command-error", "fast-no-off-ack"])(
+    "faults and closes when request policy cannot be confirmed: %s",
+    async (scenario) => {
+      const process = new FakePiRpcProcess(scenario);
+      const onFault = vi.fn();
+      const rpc = new PiRpcSession(
+        { cwd: "/synthetic", commandTimeoutMs: 2_000, closeTimeoutMs: 500, onFault },
+        { spawn: () => process as unknown as ChildProcessWithoutNullStreams },
+      );
+      await rpc.start();
+      try {
+        if (scenario === "fast-no-off-ack") await rpc.selectFastMode(true);
+        await expect(rpc.selectFastMode(scenario !== "fast-no-off-ack")).rejects.toThrow(
+          "Fast selection could not be confirmed",
+        );
+        expect(onFault).toHaveBeenCalledOnce();
+        expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
+        // The native side can already have enabled priority despite the Host-side failure.
+        expect(process.fastEnabled).toBe(scenario !== "fast-no-off-ack");
+        expect(process.exitCode).toBe(0);
+        await expect(rpc.runTurn("must not be sent", vi.fn())).rejects.toThrow("unavailable");
+        await expect(rpc.getAvailableModels()).rejects.toThrow("unavailable");
+      } finally {
+        await rpc.close();
+      }
+    },
+  );
+});
+
+function autonomousSession(onFault = vi.fn()): {
+  rpc: PiRpcSession;
+  process(): FakePiRpcProcess;
+  onFault: ReturnType<typeof vi.fn>;
+} {
+  let fake: FakePiRpcProcess | null = null;
+  const rpc = new PiRpcSession(
+    {
+      cwd: process.cwd(),
+      commandTimeoutMs: 2_000,
+      closeTimeoutMs: 500,
+      onFault,
+    },
+    {
+      spawn() {
+        fake = new FakePiRpcProcess("final-only");
+        return fake as unknown as ChildProcessWithoutNullStreams;
+      },
+    },
+  );
+  return {
+    rpc,
+    process() {
+      if (!fake) throw new Error("Fake Pi process has not started");
+      return fake;
+    },
+    onFault,
+  };
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -643,6 +965,238 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("Pi RPC Turn aggregation", () => {
+  it("observes versioned subagent widgets outside a model Turn without starting an autonomous Turn", async () => {
+    const { rpc, process: fakeProcess, onFault } = autonomousSession();
+    await rpc.start();
+    const status = vi.fn();
+    const autonomous = vi.fn();
+    rpc.setSubagentStatusHandler(status);
+    rpc.setAutonomousTurnHandler(autonomous);
+    fakeProcess().stdout.write(
+      JSON.stringify({
+        type: "extension_ui_request",
+        method: "setWidget",
+        widgetKey: "subagent-async",
+        widgetLines: [
+          'PI_SUBAGENT_ASYNC_JSON:{"kind":"pi-subagents.async-status-snapshot","version":1,"runs":[{"id":"run-1","kind":"subagent","label":"worker","state":"complete"}]}',
+        ],
+      }) + "\n",
+    );
+    expect(status).toHaveBeenCalledWith([
+      { id: "run-1", kind: "subagent", label: "worker", state: "complete" },
+    ]);
+    expect(autonomous).not.toHaveBeenCalled();
+    expect(onFault).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
+  it("shares pending close confirmation between concurrent callers", async () => {
+    const child = new FakePiRpcProcess("final-only");
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), closeTimeoutMs: 500 },
+      {
+        spawn: () => child as unknown as ChildProcessWithoutNullStreams,
+      },
+    );
+    await rpc.start();
+    child.stdin.removeAllListeners("finish");
+    const first = rpc.close();
+    let confirmed = false;
+    const second = rpc.close().then(() => {
+      confirmed = true;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(confirmed).toBe(false);
+    } finally {
+      child.exitCode = 0;
+      child.stdout.end();
+      child.stderr.end();
+      child.emit("exit", 0, null);
+      await Promise.all([first, second]);
+    }
+  });
+
+  it("reports each finished assistant message with its request timing for usage metering", async () => {
+    const { rpc, process: fakeProcess } = autonomousSession();
+    const observations: PiUsageObservation[] = [];
+    rpc.setUsageHandler((observation) => observations.push(observation));
+    rpc.setAutonomousTurnHandler(() => undefined);
+    await rpc.start();
+    try {
+      fakeProcess().emitAutonomousTurn({ includeTool: true });
+      await waitFor(() => observations.length === 1);
+      expect(observations[0]).toMatchObject({
+        message: { role: "assistant", responseId: "autonomous-response" },
+        startedAtMs: expect.any(Number),
+        completedAtMs: expect.any(Number),
+      });
+      const [observation] = observations;
+      expect(observation?.completedAtMs).toBeGreaterThanOrEqual(
+        observation?.startedAtMs ?? Infinity,
+      );
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it("times a request from its first output token, excluding prefill", async () => {
+    const { rpc, process: fakeProcess } = autonomousSession();
+    const observations: PiUsageObservation[] = [];
+    rpc.setUsageHandler((observation) => observations.push(observation));
+    rpc.setAutonomousTurnHandler(() => undefined);
+    await rpc.start();
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    try {
+      const message = { role: "assistant", responseId: "tool-only", content: [] };
+      fakeProcess().emitFrame({ type: "message_start", message });
+      await sleep(120);
+      // A tool-call-only reply still starts generating at its tool-call block.
+      fakeProcess().emitFrame({
+        type: "message_update",
+        assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+        message,
+      });
+      await sleep(20);
+      fakeProcess().emitFrame({ type: "message_end", message });
+      fakeProcess().emitAgentSettled();
+      await waitFor(() => observations.length === 1);
+      const [observation] = observations;
+      if (!observation?.startedAtMs) throw new Error("Request timing is missing");
+      expect(observation.completedAtMs - observation.startedAtMs).toBeLessThan(100);
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it("uses the persisted custom Entry identity rather than a provider response ID", async () => {
+    const { rpc, process: fakeProcess, onFault } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+
+    fakeProcess().emitAutonomousTurn({ includeTool: true });
+    await waitFor(() => turns.length === 1);
+
+    expect(turns[0]).toMatchObject({
+      nativeTurnKey: "native-custom-entry",
+      result: { status: "succeeded", text: "autonomous text" },
+    });
+    expect(turns[0]?.events.map(({ type }) => type)).toEqual([
+      "reasoning.delta",
+      "text.delta",
+      "tool.started",
+      "tool.updated",
+      "tool.completed",
+      "reasoning.completed",
+      "message.completed",
+    ]);
+    fakeProcess().emitAgentSettled();
+    await Promise.resolve();
+    expect(turns).toHaveLength(1);
+    expect(onFault).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
+  it("keeps the native Entry key without responseId and classifies native abort", async () => {
+    const { rpc, process: fakeProcess } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+
+    fakeProcess().emitAutonomousTurn({ responseId: null, stopReason: "aborted" });
+    await waitFor(() => turns.length === 1);
+
+    expect(turns[0]?.nativeTurnKey).toBe("native-custom-entry");
+    expect(turns[0]?.result).toEqual({
+      status: "cancelled",
+      text: "autonomous text",
+      reason: "Pi autonomous Assistant was aborted",
+    });
+    await rpc.close();
+  });
+
+  it("does not reuse a stale autonomous history boundary", async () => {
+    const { rpc, process: fakeProcess, onFault } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fakeProcess().emitAutonomousTurn();
+    const history = fakeProcess().autonomousHistory;
+    if (!history) throw new Error("Missing synthetic native history");
+    const assistant = history.entries[1]?.message;
+    if (!assistant || typeof assistant !== "object" || Array.isArray(assistant))
+      throw new Error("Missing Assistant");
+    assistant.responseId = "stale-response";
+    await waitFor(() => turns.length === 1);
+    expect(turns[0]).toMatchObject({ nativeTurnKey: null, result: { status: "failed" } });
+    expect(onFault).toHaveBeenCalledOnce();
+    await rpc.close();
+  });
+
+  it("never misclassifies a requested Turn as autonomous", async () => {
+    const rpc = session("final-only");
+    const autonomous = vi.fn();
+    rpc.setAutonomousTurnHandler(autonomous);
+    await rpc.start();
+
+    await expect(rpc.runTurn("requested", () => undefined)).resolves.toEqual({
+      text: "synthetic final text",
+      cancelled: false,
+    });
+    expect(autonomous).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
+  it("fails closed for autonomous blocking UI and streaming disagreement", async () => {
+    const blocking = autonomousSession();
+    const blockedTurns: PiAutonomousTurn[] = [];
+    blocking.rpc.setAutonomousTurnHandler((turn) => blockedTurns.push(turn));
+    await blocking.rpc.start();
+    blocking.process().emitAutonomousStart();
+    blocking.process().emitBlockingInteraction();
+    await waitFor(() => blockedTurns.length === 1);
+    expect(blockedTurns[0]?.result).toMatchObject({
+      status: "failed",
+      error: { message: expect.stringContaining("blocking Extension UI") },
+    });
+    expect(blocking.onFault).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "protocolError" }),
+    );
+    await blocking.rpc.close();
+
+    const streaming = autonomousSession();
+    const streamingTurns: PiAutonomousTurn[] = [];
+    streaming.rpc.setAutonomousTurnHandler((turn) => streamingTurns.push(turn));
+    await streaming.rpc.start();
+    streaming.process().emitAutonomousTurn({ streamingAtSettle: true });
+    await waitFor(() => streamingTurns.length === 1);
+    expect(streamingTurns[0]?.result).toMatchObject({
+      status: "failed",
+      error: { message: expect.stringContaining("still Streaming") },
+    });
+    expect(streaming.onFault).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "protocolError" }),
+    );
+    await streaming.rpc.close();
+  });
+
+  it("reports an unfinished autonomous Turn as failed on close", async () => {
+    const { rpc, process: fakeProcess } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fakeProcess().emitAutonomousStart();
+
+    await rpc.close();
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.result).toMatchObject({
+      status: "failed",
+      error: { message: "Pi RPC Session closed" },
+    });
+  });
+
   it("starts the native process without a codexhost Extension option", async () => {
     const spawnProcess = vi.fn((options: PiRpcProcessOptions) => {
       expect(options.cwd).toBe(process.cwd());
@@ -911,43 +1465,73 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
-  it("does not time out the Compact RPC while native compaction is active", async () => {
-    vi.useFakeTimers();
-    const rpc = session("manual-compaction", vi.fn(), { commandTimeoutMs: 5 });
-    const events: PiTurnEvent[] = [];
+  it.each(["manual-compaction", "prompt-auto-compaction", "prompt-preflight-compaction"] as const)(
+    "allows %s beyond the former wall-clock bound and reuses the Session",
+    async (scenario) => {
+      vi.useFakeTimers();
+      const onFault = vi.fn();
+      const durationMs = 20 * 60_000;
+      const rpc = session(scenario, onFault, {
+        commandTimeoutMs: 5,
+        nativeCompactionDelayMs: durationMs,
+      });
+      const events: PiTurnEvent[] = [];
+      const onSettled = vi.fn();
 
-    try {
-      await rpc.start();
-      const compact = rpc.compact(undefined, (event) => events.push(event));
-      await vi.advanceTimersByTimeAsync(10);
-      await expect(compact).resolves.toEqual({ outcome: "succeeded" });
-      expect(events).toEqual([
-        { type: "compaction.started" },
-        { type: "compaction.completed", outcome: "succeeded" },
-      ]);
-    } finally {
-      await rpc.close();
-      vi.useRealTimers();
-    }
-  });
+      try {
+        await rpc.start();
+        const result =
+          scenario === "manual-compaction"
+            ? rpc.compact(undefined, (event) => events.push(event))
+            : rpc.runTurn("continue", (event) => events.push(event));
+        void result.then(onSettled, onSettled);
 
-  it("fails a manual Compact when native compaction never reaches a terminal event", async () => {
+        await vi.advanceTimersByTimeAsync(durationMs - 1);
+
+        expect(onFault).not.toHaveBeenCalled();
+        expect(onSettled).not.toHaveBeenCalled();
+        expect(events).toEqual([{ type: "compaction.started" }]);
+
+        await vi.advanceTimersByTimeAsync(1);
+
+        await expect(result).resolves.toEqual(
+          scenario === "manual-compaction"
+            ? { outcome: "succeeded" }
+            : { text: "continued after compaction", cancelled: false },
+        );
+        expect(events.filter(({ type }) => type.startsWith("compaction."))).toEqual([
+          { type: "compaction.started" },
+          { type: "compaction.completed", outcome: "succeeded" },
+        ]);
+        expect(onFault).not.toHaveBeenCalled();
+        await expect(rpc.runTurn("next turn", () => undefined)).resolves.toEqual({
+          text: "synthetic final text",
+          cancelled: false,
+        });
+      } finally {
+        await rpc.close();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("keeps a stalled manual Compact pending until the Session closes", async () => {
     vi.useFakeTimers();
     const onFault = vi.fn();
-    const rpc = session("manual-compaction-stalled", onFault, {
-      commandTimeoutMs: 5,
-      compactionTimeoutMs: 20,
-    });
+    const onSettled = vi.fn();
+    const rpc = session("manual-compaction-stalled", onFault, { commandTimeoutMs: 5 });
 
     try {
       await rpc.start();
       const compact = rpc.compact(undefined, () => undefined);
-      const rejected = expect(compact).rejects.toThrow("compaction timed out after 20ms");
+      void compact.then(onSettled, onSettled);
 
-      await vi.advanceTimersByTimeAsync(20);
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
 
-      await rejected;
-      expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
+      expect(onFault).not.toHaveBeenCalled();
+      expect(onSettled).not.toHaveBeenCalled();
+      await rpc.close();
+      await expect(compact).rejects.toThrow("Pi RPC Session closed");
     } finally {
       await rpc.close();
       vi.useRealTimers();
@@ -1098,7 +1682,11 @@ describe("Pi RPC Turn aggregation", () => {
     await expect(
       rpc.selectModel({ provider: "other/provider", id: "family/model" }),
     ).resolves.toMatchObject({ provider: "other/provider", modelId: "family/model" });
-    expect(rpc.state).toMatchObject({ provider: "other/provider", modelId: "family/model" });
+    expect(rpc.state).toMatchObject({
+      provider: "other/provider",
+      modelId: "family/model",
+      modelReasoning: true,
+    });
     await rpc.close();
   });
 
@@ -1163,6 +1751,65 @@ describe("Pi RPC Turn aggregation", () => {
     await expect(timedOut.getSessionUsage()).rejects.toThrow("command timed out");
     expect(onFault).not.toHaveBeenCalled();
     await timedOut.close();
+
+    // Pi answering after the Host gave up must not fault the Session.
+    const lateFault = vi.fn();
+    const late = session("stats-late", lateFault, { commandTimeoutMs: 10 });
+    await late.start();
+    await expect(late.getSessionUsage()).rejects.toThrow("command timed out");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(lateFault).not.toHaveBeenCalled();
+    await expect(late.getAvailableModels()).resolves.toHaveLength(2);
+    await late.close();
+  });
+
+  it("remembers a bounded number of expired ids", async () => {
+    for (const [count, faults] of [
+      [64, false],
+      [65, true],
+    ] as const) {
+      const onFault = vi.fn();
+      const rpc = session("stats-late", onFault, { commandTimeoutMs: 10 });
+      await rpc.start();
+      const usages = Array.from({ length: count }, () => rpc.getSessionUsage());
+      for (const usage of usages) await expect(usage).rejects.toThrow("command timed out");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      // Past the bound the oldest id is forgotten, so its late answer is an unknown id.
+      if (faults) {
+        expect(onFault).toHaveBeenCalledWith(
+          expect.objectContaining({ message: "Pi RPC response id is not pending" }),
+        );
+      } else {
+        expect(onFault).not.toHaveBeenCalled();
+      }
+      await rpc.close();
+    }
+  });
+
+  it("still faults on a late answer to a timed-out state-changing command", async () => {
+    // Pi may have applied the change after the Host gave up, so its state is unconfirmed.
+    const onFault = vi.fn();
+    const rpc = session("model-late", onFault, { commandTimeoutMs: 10 });
+    await rpc.start();
+    await expect(
+      rpc.selectModel({ provider: "synthetic-provider", id: "family/model" }),
+    ).rejects.toThrow("command timed out");
+    await vi.waitFor(() =>
+      expect(onFault).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "Pi RPC response id is not pending" }),
+      ),
+    );
+    await rpc.close();
+  });
+
+  it("assembles frames split across many stdout chunks", async () => {
+    const plain = session("final-only");
+    const chunked = session("chunked-output");
+    await plain.start();
+    await chunked.start();
+    await expect(chunked.getEntries()).resolves.toEqual(await plain.getEntries());
+    await plain.close();
+    await chunked.close();
   });
 
   it("reads actual Thinking options and corrected state after selection", async () => {
@@ -1223,6 +1870,46 @@ describe("Pi RPC Turn aggregation", () => {
       cancelled: false,
     });
     await rpc.close();
+  });
+
+  it("settles a cancellation whose Abort acknowledgement is slower than the former bound", async () => {
+    vi.useFakeTimers();
+    const onFault = vi.fn();
+    const rpc = session("cancel-slow-settle", onFault, {
+      commandTimeoutMs: 30_000,
+      cancelTimeoutMs: "default",
+    });
+    const events: PiTurnEvent[] = [];
+
+    try {
+      await rpc.start();
+      const turn = rpc.runTurn("cancel me slowly", (event) => events.push(event));
+      for (
+        let attempt = 0;
+        attempt < 10 && !events.some(({ type }) => type === "tool.started");
+        attempt += 1
+      ) {
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(events.some(({ type }) => type === "tool.started")).toBe(true);
+
+      const aborting = rpc.abort();
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(onFault).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_200);
+      await expect(aborting).resolves.toBeUndefined();
+      await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+      expect(onFault).not.toHaveBeenCalled();
+
+      await expect(rpc.runTurn("continue", (event) => events.push(event))).resolves.toEqual({
+        text: "continued",
+        cancelled: false,
+      });
+      await rpc.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("fails and closes a cancellation that does not reach stable settlement", async () => {

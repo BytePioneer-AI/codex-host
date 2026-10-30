@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import {
   harnessConfigurationStateSchema,
+  harnessSessionImportCandidateSchema,
+  harnessSessionImportIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -13,14 +15,27 @@ import {
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import type { HarnessError, HarnessOutput, HarnessSessionState } from "@codexhost/harness-adapter";
+import { HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE } from "./protocol.js";
 
 const cwdSchema = z.string().min(1).max(16_384);
+// A remote caller may propagate only the Host's scoped delegation context,
+// never change the Aqua process's HOME, PATH, loader or native credentials.
+export const brokerEnvironmentSchema = z
+  .object({
+    CODEXHOST_CLI_PATH: z.string().max(16_384).optional(),
+    CODEXHOST_CLI_NODE_PATH: z.string().max(16_384).optional(),
+    CODEXHOST_RUNTIME_ENDPOINT: z.string().max(16_384).optional(),
+    CODEXHOST_RUNTIME_TOKEN: z.string().max(16_384).optional(),
+    CODEXHOST_THREAD_ID: z.string().max(256).optional(),
+  })
+  .strict();
 
 const createSchema = z
   .object({
     kind: z.literal("create"),
     cwd: cwdSchema,
     executionPolicy: z.enum(["default", "unattended-full-access"]).optional(),
+    environment: brokerEnvironmentSchema.optional(),
     model: harnessModelRefSchema.optional(),
     thinkingOptionId: harnessThinkingOptionIdSchema.optional(),
     permissionModeId: harnessPermissionModeIdSchema.optional(),
@@ -29,6 +44,10 @@ const createSchema = z
 const resumeSchema = z
   .object({
     kind: z.literal("resume"),
+    environment: brokerEnvironmentSchema.optional(),
+    permissionModeId: harnessPermissionModeIdSchema.optional(),
+    model: harnessModelRefSchema.optional(),
+    thinkingOptionId: harnessThinkingOptionIdSchema.optional(),
     nativeRef: nativeSessionRefSchema,
     cwd: cwdSchema,
     knownTurnRefs: z.array(nativeTurnRefSchema).max(100_000).optional(),
@@ -37,6 +56,7 @@ const resumeSchema = z
 const forkSchema = z
   .object({
     kind: z.literal("fork"),
+    environment: brokerEnvironmentSchema.optional(),
     sourceRef: nativeSessionRefSchema,
     checkpoint: nativeCheckpointRefSchema,
     cwd: cwdSchema,
@@ -45,6 +65,10 @@ const forkSchema = z
 const rollbackSchema = z
   .object({
     kind: z.literal("rollbackLastTurn"),
+    environment: brokerEnvironmentSchema.optional(),
+    model: harnessModelRefSchema.optional(),
+    thinkingOptionId: harnessThinkingOptionIdSchema.optional(),
+    permissionModeId: harnessPermissionModeIdSchema.optional(),
     sourceRef: nativeSessionRefSchema,
     cwd: cwdSchema,
   })
@@ -58,8 +82,47 @@ export const brokerOpenInputSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const brokerInspectInputSchema = z
-  .object({ cwd: cwdSchema.optional(), refresh: z.boolean().optional() })
+  .object({
+    cwd: cwdSchema.optional(),
+    refresh: z.boolean().optional(),
+    purpose: z.literal("availability").optional(),
+  })
   .strict();
+
+export const brokerSessionImportListParamsSchema = z
+  .object({
+    offset: z.number().int().nonnegative().safe(),
+    limit: z.number().int().min(1).max(HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE),
+  })
+  .strict();
+
+export const brokerSessionImportResolveParamsSchema = z
+  .object({ nativeSessionId: harnessSessionImportIdSchema })
+  .strict();
+
+export const brokerSessionImportPageSchema = z
+  .object({
+    candidates: z
+      .array(harnessSessionImportCandidateSchema)
+      .max(HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE),
+    total: z.number().int().nonnegative().safe(),
+  })
+  .strict();
+
+export const brokerSessionImportSourceSchema = z
+  .object({
+    candidate: harnessSessionImportCandidateSchema,
+    nativeRef: nativeSessionRefSchema,
+  })
+  .strict()
+  .superRefine((source, context) => {
+    if (source.nativeRef.nativeSessionId !== source.candidate.nativeSessionId) {
+      context.addIssue({
+        code: "custom",
+        message: "Session import source identity does not match",
+      });
+    }
+  });
 
 const textInputSchema = z
   .object({ type: z.literal("text"), text: z.string().max(4_000_000) })
@@ -67,6 +130,13 @@ const textInputSchema = z
 const turnStartSchema = z
   .object({
     type: z.literal("turn.start"),
+    turnId: hostTurnIdSchema,
+    input: z.array(textInputSchema),
+  })
+  .strict();
+const turnSteerSchema = z
+  .object({
+    type: z.literal("turn.steer"),
     turnId: hostTurnIdSchema,
     input: z.array(textInputSchema),
   })
@@ -109,6 +179,7 @@ const permissionSelectSchema = z
 
 export const brokerHostCommandSchema = z.discriminatedUnion("type", [
   turnStartSchema,
+  turnSteerSchema,
   turnCancelSchema,
   interactionRespondSchema,
   modelSelectSchema,
@@ -196,6 +267,8 @@ export const harnessSessionStateSchema = z.custom<HarnessSessionState>((value) =
 const eventKeys = new Map<string, ReadonlySet<string>>([
   ["session.state.changed", new Set(["type", "state"])],
   ["session.usage.changed", new Set(["type", "usage", "observedForTurnId"])],
+  ["usage.request", new Set(["type", "request"])],
+  ["usage.history", new Set(["type", "complete"])],
   ["subagent.state.changed", new Set(["type", "nativeSubagentId", "status", "resultSummary"])],
   ["subagent.transcript.changed", new Set(["type", "nativeSubagentId"])],
   ["turn.started", new Set(["type", "turnId"])],
@@ -203,6 +276,7 @@ const eventKeys = new Map<string, ReadonlySet<string>>([
   ["item.started", new Set(["type", "turnId", "item"])],
   ["item.updated", new Set(["type", "turnId", "itemId", "update"])],
   ["item.completed", new Set(["type", "turnId", "snapshot"])],
+  ["item.detached", new Set(["type", "turnId", "itemId"])],
   ["interaction.closed", new Set(["type", "interactionId", "turnId", "reason"])],
   ["turn.completed", new Set(["type", "turnId", "nativeTurnRef", "outcome"])],
   ["session.faulted", new Set(["type", "error"])],
@@ -250,6 +324,7 @@ export const harnessOutputSchema = z.custom<HarnessOutput>((value) => {
     if (event.type === "session.state.changed")
       return harnessSessionStateSchema.safeParse(event.state).success;
     if (event.type === "session.faulted") return harnessErrorSchema.safeParse(event.error).success;
+    if (event.type === "usage.history") return typeof event.complete === "boolean";
     return true;
   }
   if (output.kind === "interaction") {

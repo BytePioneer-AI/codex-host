@@ -14,6 +14,7 @@ export interface GrokModelState {
   currentModel: HarnessModelRef;
   currentThinkingOptionId?: HarnessThinkingOptionId;
   contextWindowTokensByModel: ReadonlyMap<string, number>;
+  defaultContextWindowTokensByModel: ReadonlyMap<string, number>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -51,6 +52,7 @@ export function parseGrokModelState(value: unknown): GrokModelState | null {
 
   const allThinking = new Map<string, HarnessThinkingOption>();
   const contextWindowTokensByModel = new Map<string, number>();
+  const defaultContextWindowTokensByModel = new Map<string, number>();
   const models: HarnessModelCatalog["models"] = [];
   let currentThinkingOptionId: HarnessThinkingOptionId | undefined;
   for (const candidate of value.availableModels) {
@@ -59,6 +61,9 @@ export function parseGrokModelState(value: unknown): GrokModelState | null {
     if (!ref.success) continue;
     const metadata = isRecord(candidate._meta) ? candidate._meta : {};
     const options = thinkingOptions(metadata.reasoningEfforts);
+    if (Array.isArray(metadata.contextWindows) && metadata.contextWindows.includes(500_000)) {
+      defaultContextWindowTokensByModel.set(ref.data.id, 500_000);
+    }
     if (
       typeof metadata.totalContextTokens === "number" &&
       Number.isSafeInteger(metadata.totalContextTokens) &&
@@ -84,6 +89,7 @@ export function parseGrokModelState(value: unknown): GrokModelState | null {
   return {
     currentModel: currentModel.data,
     contextWindowTokensByModel,
+    defaultContextWindowTokensByModel,
     ...(currentThinkingOptionId ? { currentThinkingOptionId } : {}),
     catalog: {
       models,

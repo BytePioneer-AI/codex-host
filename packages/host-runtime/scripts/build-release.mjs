@@ -5,33 +5,23 @@ import { pathToFileURL } from "node:url";
 import { build as esbuildBuild } from "esbuild";
 
 const forbiddenInputFragments = [
-  "/node_modules/@anthropic-ai/claude-agent-sdk-",
+  "/packages/adapters/",
+  "/node_modules/@codexhost/adapter-",
+  "/node_modules/@anthropic-ai/",
+  "/node_modules/@agentclientprotocol/",
+  "/node_modules/@deepseek-ai/dsh",
+  "/node_modules/@opencode-ai/",
   "/test/",
   "/tests/",
   "/tools/",
 ];
 const forbiddenBundleReferences = ["sourceMappingURL="];
 const allowedRuntimePackages = new Set([
-  "@agentclientprotocol/sdk",
-  "@anthropic-ai/claude-agent-sdk",
+  "@deepseek-ai/cordis",
   "@deepseek-ai/cosmokit",
-  "@deepseek-ai/dsh-host-apiproxy",
-  "@deepseek-ai/schemastery",
-  "@modelcontextprotocol/sdk",
-  "@opencode-ai/sdk",
-  "@qwen-code/sdk",
-  "ajv",
-  "ajv-formats",
-  "bufferutil",
   "diff",
-  "fast-deep-equal",
-  "fast-uri",
-  "json-schema-traverse",
-  "node-gyp-build",
-  "utf-8-validate",
   "ws",
   "zod",
-  "zod-to-json-schema",
 ]);
 
 function normalizedInputPath(value) {
@@ -59,26 +49,12 @@ export function auditHostBundleMetafile(metafile) {
   for (const required of [
     "/packages/host-runtime/src/release-main.ts/",
     "/packages/host-runtime/src/app-server-host.ts/",
-    "/packages/host-runtime/src/adapter-composition.ts/",
+    "/packages/host-runtime/src/harness-plugin-loader.ts/",
+    "/packages/host-runtime/src/installed-harness-plugins.ts/",
     "/packages/host-runtime/src/remote-app-server.ts/",
     "/packages/host-runtime/src/remote-control-app-server.ts/",
     "/packages/host-runtime/src/remote-socket-lock.ts/",
     "/packages/harness-broker/",
-    "/packages/adapters/pi/",
-    "/packages/adapters/claude-code/",
-    "/packages/adapters/deepseek-harness/",
-    "/packages/adapters/opencode/",
-    "/packages/adapters/grok/",
-    "/packages/adapters/omp/",
-    "/packages/adapters/qwen-code/",
-    "/node_modules/@agentclientprotocol/sdk/",
-    "/node_modules/@modelcontextprotocol/sdk/",
-    "/node_modules/@qwen-code/sdk/",
-    "/node_modules/@anthropic-ai/claude-agent-sdk/",
-    "/node_modules/@deepseek-ai/cosmokit/",
-    "/node_modules/@deepseek-ai/dsh-host-apiproxy/",
-    "/node_modules/@deepseek-ai/schemastery/",
-    "/node_modules/@opencode-ai/sdk/",
     "/node_modules/ws/",
   ]) {
     if (!normalized.some((input) => input.includes(required))) {

@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 
+import { OfficialProcessLifecycle } from "./official-process-lifecycle.js";
+
 export interface OfficialAppServerExit {
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -15,10 +17,14 @@ export interface OfficialAppServerExit {
  * same LF-delimited byte streams to AppServerHost.
  */
 export interface OfficialAppServerConnection {
+  readonly processId?: number;
   readonly stdin: Writable;
   readonly stdout: Readable;
   readonly stderr: Readable;
+  /** Logical connection closure; for a remote socket this does not prove process exit. */
   readonly closed: Promise<OfficialAppServerExit>;
+  /** Only present when this connection owns its child process. */
+  stopProcess?(): Promise<OfficialAppServerExit>;
   close(): void;
 }
 
@@ -26,26 +32,32 @@ export function spawnOfficialAppServerConnection(input: {
   stockCodexPath: string;
   arguments: string[];
   environment: NodeJS.ProcessEnv;
+  cwd?: string;
   spawnOfficial?: typeof spawn;
+  closeTimeoutMs?: number;
 }): OfficialAppServerConnection {
   const spawnOfficial = input.spawnOfficial ?? spawn;
   const child = spawnOfficial(input.stockCodexPath, input.arguments, {
     env: input.environment,
+    ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   }) as ChildProcessWithoutNullStreams;
-  const closed = Promise.withResolvers<OfficialAppServerExit>();
-  child.once("error", (error) => closed.resolve({ code: null, signal: null, error }));
-  child.once("exit", (code, signal) => closed.resolve({ code, signal }));
+  const lifecycle = new OfficialProcessLifecycle(child, {
+    ...(input.closeTimeoutMs === undefined ? {} : { timeoutMs: input.closeTimeoutMs }),
+    endInput: () => child.stdin.end(),
+  });
 
   return {
+    ...(child.pid === undefined ? {} : { processId: child.pid }),
     stdin: child.stdin,
     stdout: child.stdout,
     stderr: child.stderr,
-    closed: closed.promise,
+    closed: lifecycle.closed,
+    stopProcess: () => lifecycle.stop(),
     close() {
       child.stdin.destroy();
-      child.kill("SIGTERM");
+      lifecycle.requestClose();
     },
   };
 }

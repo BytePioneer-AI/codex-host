@@ -3,12 +3,10 @@
 ## Purpose
 
 Define secure, isolated, and reversible execution of registered Harnesses through Codex Desktop's native SSH control transport.
-
 ## Requirements
-
 ### Requirement: Remote Host SHALL use Codex's native SSH control transport
 
-On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix://` invocation, own the resolved Unix control socket, accept Codex WebSocket connections, and create one Host session per connection. One long-lived stock Codex app-server listener SHALL serve all of those Host sessions through a private sibling Unix socket, with one independent WebSocket connection per Host session. The native Shim SHALL forward `app-server proxy` and other app-server management commands to stock Codex without entering Host Runtime.
+On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix://` invocation, own the resolved Unix control socket, accept Codex WebSocket connections, and create one Host session per connection. One long-lived stock Codex app-server listener SHALL serve all of those Host sessions through a private sibling Unix socket, with one independent WebSocket connection per Host session. If that stock listener exits or becomes unavailable while the managed listener keeps running, codexhost SHALL prove the previous process exit and start a replacement generation with bounded backoff instead of leaving a managed listener that accepts connections but cannot serve native Codex. If the Shim supervisor of the managed listener exits while the listener survives, for example because Desktop's reconnect cleanup `pkill -9 -f 'codex.* app-server.* --listen'` matches the supervisor and the stock listener but not the retitled managed listener, the listener SHALL close through its normal shutdown path and release its control socket instead of remaining unsupervised, and a closed diagnostic pipe SHALL never crash it. A managed listener whose supervisor is already gone when it starts SHALL exit without starting stock Codex or binding its control socket. An unexpected Desktop transport disconnect SHALL end that Host session's Desktop input without treating the disconnect as a user cancellation. If an official or external Harness Turn is active, or an official `turn/start` has been forwarded and is awaiting its response, the Host session SHALL retain its owned runtime resources until the work reaches a real terminal event. Explicit listener shutdown SHALL still hard-close every owned Host session. The native Shim SHALL forward `app-server proxy` and other app-server management commands to stock Codex without entering Host Runtime.
 
 #### Scenario: Desktop connects through the stock proxy
 
@@ -33,6 +31,58 @@ On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix:
 - **AND** the stock app-server attaches the second connection to its loaded Thread and native subscription state
 - **AND** codexhost does not start a competing stdio app-server or surface an `active writer` error caused by a second process
 - **AND** closing either Desktop connection does not stop the shared stock listener or the remaining connection
+
+#### Scenario: Desktop transport drops during an active Turn
+
+- **GIVEN** a remote Host session has an active native Codex or external Harness Turn
+- **WHEN** its Desktop WebSocket closes without an explicit `turn/interrupt`
+- **THEN** codexhost ends only that session's Desktop input and does not send or synthesize Turn cancellation
+- **AND** the owned official connection and Harness Session remain alive until the Turn emits its real terminal event
+- **AND** the terminal state is persisted before the disconnected Host session releases its resources
+
+#### Scenario: Desktop transport drops while official Turn start is in flight
+
+- **GIVEN** a remote Host session has forwarded an official `turn/start` request
+- **WHEN** its Desktop WebSocket closes before the response or `turn/started` event arrives
+- **THEN** codexhost retains the official connection while the start request is pending
+- **AND** a successful response keeps the session alive until `turn/completed`
+- **AND** a failed response releases the disconnected session without leaking it
+
+#### Scenario: Shared stock listener fails while the managed listener keeps running
+
+- **GIVEN** the managed remote listener has started the shared stock Codex app-server listener
+- **WHEN** that stock listener exits, or one official connection fails and makes the shared runtime unavailable
+- **THEN** codexhost proves the previous stock process exited before starting a replacement generation
+- **AND** it retries with bounded backoff that resets after a generation stays ready
+- **AND** a Desktop reconnect starts the replacement immediately instead of waiting for the remaining backoff
+- **AND** attached Host sessions reconnect and reinitialize on the replacement without restarting the managed listener or external Harness sessions
+- **AND** work in flight on the failed generation fails explicitly instead of being replayed
+
+#### Scenario: Desktop reconnect cleanup kills the listener supervisor
+
+- **GIVEN** the managed remote listener is running under its Shim supervisor
+- **WHEN** Desktop's reconnect cleanup kills the supervisor and the stock Codex listener but not the retitled managed listener
+- **THEN** the managed listener detects that its supervisor exited or that its diagnostic output reader closed
+- **AND** it closes through its normal shutdown path, stops its owned runtime resources, and removes its control socket
+- **AND** a diagnostic write to the closed pipes does not crash it or leave a stale control socket for the next bootstrap
+- **AND** the next Desktop bootstrap starts a new supervised listener instead of reusing an unsupervised one
+
+#### Scenario: Desktop repeats a matching remote listener bootstrap
+
+- **GIVEN** the installed managed Remote Host already owns a healthy control socket
+- **WHEN** Desktop invokes the same default `app-server --listen unix://` bootstrap again
+- **AND** Desktop first applies its stock-listener cleanup selector
+- **THEN** the managed listener does not advertise the stock `desktop-ssh-websocket-v0.sock` process marker and survives that cleanup
+- **AND** the Shim verifies the socket owner against the installed Node and Host Runtime paths
+- **AND** it returns success without starting a competing listener or replacing the socket identity
+- **AND** a socket owned by a different installed command is rejected instead of reused or overwritten
+
+#### Scenario: Remote listener stops with detached work
+
+- **GIVEN** a Desktop WebSocket has disconnected while its Host session is draining active work
+- **WHEN** the remote listener is explicitly stopped
+- **THEN** codexhost hard-closes the detached Host session and all of its owned resources
+- **AND** listener shutdown does not wait indefinitely for the Turn to finish
 
 ### Requirement: Remote Harness execution SHALL remain local to the SSH host
 
@@ -63,6 +113,14 @@ The Host SHALL start the selected Harness with the remote cwd, remote command, a
 - **THEN** the managed entrypoint starts the listener in a new Unix session and waits for a newly created expected control socket to accept a connection
 - **AND** the SSH bootstrap command returns successfully without waiting for the listener lifetime
 - **AND** the native listener process remains alive and owns the expected Unix control socket
+
+#### Scenario: Desktop bootstrap finds a stale control socket
+
+- **GIVEN** a previous listener exited without removing its control socket and no process owns that socket
+- **WHEN** Codex Desktop starts the managed `app-server --listen unix://` entrypoint
+- **THEN** the managed entrypoint does not use the stale socket identity as its readiness baseline
+- **AND** it reports readiness as soon as the replacement listener's socket accepts a connection, even when the filesystem reuses the stale socket's inode number
+- **AND** it does not terminate the healthy replacement listener at the startup timeout
 
 #### Scenario: Non-listener commands retain foreground ownership
 
@@ -139,3 +197,56 @@ Renderer draft routing SHALL accept any active non-empty Codex host ID, bind the
 - **WHEN** the user opens a new unsubmitted task whose scoped Composer marker has no conversation ID
 - **THEN** the Adapter keeps the task in draft routing and allows Harness selection
 - **AND** after submission, the scoped bound Thread ID takes precedence even if draft settings remain cached
+
+### Requirement: Packaged Remote Host SHALL support native ARM64 Linux
+The npm distribution SHALL provide the same managed Remote Host installation, lifecycle, Unix socket transport, Harness execution, and reversible uninstall behavior on native ARM64 Linux as on x64 Linux.
+
+#### Scenario: ARM64 SSH host installs codexhost
+- **GIVEN** an ARM64 Linux SSH host has supported Node.js and an official ARM64 Codex CLI
+- **WHEN** the user installs `@codexhost/cli` and runs `codexhost remote install` followed by `codexhost remote start`
+- **THEN** the managed entrypoint uses ARM64 codexhost Launcher and Shim binaries
+- **AND** the Remote Host accepts the existing Codex WebSocket-over-Unix-socket transport
+- **AND** Harness processes remain local to the ARM64 SSH host
+
+### Requirement: Installed Remote Hosts SHALL expose explicit lifecycle management
+On macOS and Linux, `codexhost remote start`, `stop`, and `status` SHALL manage and inspect the installed Remote Host without launching a graphical Desktop. Lifecycle operations MUST use the installation manifest as the source of executable and data paths.
+
+#### Scenario: Start replaces a conflicting installed stock listener
+- **GIVEN** the target control socket is owned by the current user's stock Codex executable recorded in the installation manifest
+- **AND** that process is running `app-server --listen unix://`
+- **WHEN** the user runs `codexhost remote start`
+- **THEN** codexhost terminates that conflicting listener and its launcher process tree
+- **AND** starts the managed codexhost Remote Host
+- **AND** returns success only after the control socket is ready
+
+#### Scenario: Start encounters an unknown socket owner
+- **WHEN** the target control socket is active but its owner cannot be verified as either the installed codexhost Remote Host or the recorded stock Codex listener
+- **THEN** `codexhost remote start` fails without terminating the owner or unlinking the socket
+
+#### Scenario: Start is repeated
+- **GIVEN** the installed codexhost Remote Host already owns the control socket
+- **WHEN** the user runs `codexhost remote start`
+- **THEN** the command returns success without starting a duplicate listener
+
+#### Scenario: Stop targets the managed Remote Host
+- **GIVEN** the installed codexhost Remote Host owns the control socket
+- **WHEN** the user runs `codexhost remote stop`
+- **THEN** codexhost terminates that listener and waits for the socket to close
+- **AND** it does not terminate unrelated Codex processes
+
+#### Scenario: Status recognizes the managed Desktop SSH WebSocket transport
+- **GIVEN** the installed codexhost Remote Host owns the control socket through its Desktop SSH WebSocket transport
+- **WHEN** the user runs `codexhost remote status`
+- **THEN** status probes the Unix WebSocket directly
+- **AND** reports the runtime as codexhost running without requiring stock Codex proxy transport
+
+#### Scenario: Status reports installation and runtime state
+- **WHEN** the user runs `codexhost remote status`
+- **THEN** the response preserves installation integrity diagnostics
+- **AND** reports the runtime as stopped, running, conflict, or unknown
+- **AND** identifies whether the active socket serves codexhost or stock Codex when that can be verified
+
+#### Scenario: Lifecycle command runs without an installation
+- **WHEN** the user runs `codexhost remote start` or `stop` before remote installation
+- **THEN** the command fails without modifying processes or socket files
+

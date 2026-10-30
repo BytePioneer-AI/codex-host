@@ -1,11 +1,15 @@
 import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
+  encodeHarnessPluginRoute,
+  harnessIdSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
+  decodeHarnessPluginRoute,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
+import { modelSelectionForAgent } from "../src/versioned-renderer-adapter.js";
 
 import {
   applyComposerModelWrite,
@@ -22,8 +26,9 @@ import {
   refreshConnectionHosts,
   restoredThreadOwnership,
   retryableHarnessAvailabilityAgents,
+  resolveCurrentCodexAccountId,
+  shouldRefreshCodexAccountsForAdapterState,
   rendererUsageRefreshDelay,
-  shouldApplyDraftAgentCarrier,
   shouldPersistNewThreadConfigurationSelection,
   shouldReloadExternalCatalogAfterAvailabilityRefresh,
   shouldRetryExternalThreadUsage,
@@ -39,6 +44,7 @@ import {
   isNativeContextUsageControlCandidate,
   nativeContextUsageControlForComposer,
   reconcileComposerNativeControls,
+  refreshSendButton,
   trailingActionAnchor,
   type ComposerAgentControl,
 } from "../src/renderer-composer-dom.js";
@@ -49,7 +55,86 @@ import {
   rendererUsageTriggerMaxWidth,
 } from "../src/renderer-usage-control.js";
 
+// Layout-only doubles represent chat Composers with no native request surface.
+const noNativeRequest = { closest: () => null, querySelector: () => null };
+
 describe("Renderer connection diagnostics", () => {
+  it.each(["kiro-cli", "codebuddy", "workbuddy"] as const)(
+    "round trips %s effort without reviving a choice cleared by the native model",
+    (agent) => {
+      const model = harnessModelRefSchema.parse({ id: "adjustable" });
+      const high = harnessThinkingOptionIdSchema.parse("high");
+      const selection = modelSelectionForAgent(null, "medium", agent, model, high);
+      if (!selection || typeof selection.model !== "string")
+        throw new Error("Missing Kiro carrier");
+      expect(decodeHarnessPluginRoute(selection.model)).toMatchObject({
+        harnessId: agent,
+        model,
+        thinkingOptionId: high,
+      });
+      const inspection = {
+        owner: "external" as const,
+        harnessId: agent,
+        transportModelId: selection.model,
+        locked: true as const,
+        effectiveModel: model,
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+      };
+      expect(
+        restoredThreadOwnership({
+          ...inspection,
+          effectiveThinkingOptionId: high,
+          availableThinkingOptions: [{ id: high, label: "High" }],
+        }).thinkingOptionId,
+      ).toBe(high);
+      expect(
+        restoredThreadOwnership({
+          ...inspection,
+          effectiveModel: harnessModelRefSchema.parse({ id: "fixed-paid" }),
+          availableThinkingOptions: [],
+        }).thinkingOptionId,
+      ).toBeUndefined();
+      expect(restoredThreadOwnership(inspection).thinkingOptionId).toBe(high);
+    },
+  );
+
+  it("round trips Qoder carrier route and restores Thread ownership", () => {
+    const model = harnessModelRefSchema.parse({ id: "qoder-default" });
+    const selection = modelSelectionForAgent(null, "medium", "qoder", model);
+    if (!selection || typeof selection.model !== "string") throw new Error("Missing Qoder carrier");
+    expect(decodeHarnessPluginRoute(selection.model)).toMatchObject({
+      harnessId: "qoder",
+      model,
+    });
+    const inspection = {
+      owner: "external" as const,
+      harnessId: "qoder",
+      transportModelId: selection.model,
+      locked: true as const,
+      effectiveModel: model,
+      history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+    };
+    expect(restoredThreadOwnership(inspection)).toMatchObject({
+      agent: "qoder",
+      model,
+    });
+  });
+
+  it("resolves only the Host-wide current Codex Account", () => {
+    const accounts = [
+      { accountId: "old", label: "Old" },
+      { accountId: "new", label: "New" },
+    ];
+    expect(resolveCurrentCodexAccountId(accounts, "new")).toBe("new");
+    expect(resolveCurrentCodexAccountId(accounts, "missing")).toBeNull();
+  });
+
+  it("retries the Codex Account list when the request adapter becomes ready", () => {
+    expect(shouldRefreshCodexAccountsForAdapterState("installing")).toBe(false);
+    expect(shouldRefreshCodexAccountsForAdapterState("unsupported")).toBe(false);
+    expect(shouldRefreshCodexAccountsForAdapterState("ready")).toBe(true);
+  });
+
   it("waits for every Host refresh before completing", async () => {
     let resolveLocal!: () => void;
     let resolveRemote!: () => void;
@@ -74,6 +159,42 @@ describe("Renderer connection diagnostics", () => {
     resolveRemote();
     await refresh;
     expect(completed).toBe(true);
+  });
+
+  it.each([false, true])(
+    "starts a new target Host inspection after pending diagnostics settle (failure=%s)",
+    async (failed) => {
+      const pending = Promise.withResolvers<undefined>();
+      const fresh = Promise.withResolvers<undefined>();
+      let observed = "notInstalled";
+      const refreshHost = vi.fn(async () => {
+        await fresh.promise;
+        observed = "ready";
+      });
+      const pendingHost = vi.fn(() => pending.promise);
+      const refresh = refreshConnectionHosts(["remote"], refreshHost, pendingHost);
+      expect(pendingHost).toHaveBeenCalledExactlyOnceWith("remote");
+      expect(refreshHost).not.toHaveBeenCalled();
+      if (failed) pending.reject(new Error("old inspection failed"));
+      else pending.resolve(undefined);
+      await vi.waitFor(() => expect(refreshHost).toHaveBeenCalledExactlyOnceWith("remote"));
+      expect(observed).toBe("notInstalled");
+      fresh.resolve(undefined);
+      await refresh;
+      expect(observed).toBe("ready");
+    },
+  );
+
+  it("propagates fresh inspection failure after draining the old request", async () => {
+    await expect(
+      refreshConnectionHosts(
+        ["local"],
+        async () => {
+          throw new Error("fresh failure");
+        },
+        () => Promise.resolve(),
+      ),
+    ).rejects.toThrow("fresh failure");
   });
 
   it("rejects when one Host refresh fails", async () => {
@@ -101,7 +222,6 @@ describe("Renderer Composer DOM behavior", () => {
         {
           pi: undefined,
           "claude-code": undefined,
-          "qwen-code": undefined,
           "deepseek-harness": {
             code: "notInstalled",
             message: "DeepSeek Harness is not installed",
@@ -111,6 +231,8 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          "kiro-cli": undefined,
+          qoder: undefined,
         },
       ),
     ).toEqual([]);
@@ -129,7 +251,6 @@ describe("Renderer Composer DOM behavior", () => {
         {
           pi: undefined,
           "claude-code": undefined,
-          "qwen-code": undefined,
           "deepseek-harness": {
             code: "internalError",
             message: "Remote request manager is temporarily unavailable",
@@ -139,6 +260,8 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          "kiro-cli": undefined,
+          qoder: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -157,7 +280,6 @@ describe("Renderer Composer DOM behavior", () => {
         {
           pi: undefined,
           "claude-code": undefined,
-          "qwen-code": undefined,
           "deepseek-harness": {
             code: "unavailable",
             message: "DeepSeek Harness is temporarily unavailable",
@@ -167,6 +289,8 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          "kiro-cli": undefined,
+          qoder: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -187,12 +311,13 @@ describe("Renderer Composer DOM behavior", () => {
         {
           pi: undefined,
           "claude-code": undefined,
-          "qwen-code": undefined,
           "deepseek-harness": undefined,
           opencode: undefined,
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          "kiro-cli": undefined,
+          qoder: undefined,
         },
       ),
     ).toEqual(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp", "antigravity"]);
@@ -211,7 +336,6 @@ describe("Renderer Composer DOM behavior", () => {
         {
           pi: undefined,
           "claude-code": undefined,
-          "qwen-code": undefined,
           "deepseek-harness": {
             code: "notInstalled",
             message: "DeepSeek Harness is not installed",
@@ -221,6 +345,8 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          "kiro-cli": undefined,
+          qoder: undefined,
         },
       ),
     ).toEqual([]);
@@ -239,7 +365,6 @@ describe("Renderer Composer DOM behavior", () => {
         {
           pi: undefined,
           "claude-code": undefined,
-          "qwen-code": undefined,
           "deepseek-harness": {
             code: "unavailable",
             message: "DeepSeek Harness is temporarily unavailable",
@@ -249,6 +374,8 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          "kiro-cli": undefined,
+          qoder: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -264,20 +391,31 @@ describe("Renderer Composer DOM behavior", () => {
   });
 
   it("keeps a ready external Model catalog stable during repeated availability checks", () => {
+    expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("checking", "ready", true)).toBe(
+      false,
+    );
+    expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("checking", "ready", false)).toBe(
+      true,
+    );
+    expect(
+      shouldReloadExternalCatalogAfterAvailabilityRefresh("checking", "ready", true, true),
+    ).toBe(true);
     expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "ready", true)).toBe(false);
     expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "ready", false)).toBe(true);
     expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("error", "ready", true)).toBe(true);
     expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "error", true)).toBe(true);
+    expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "ready", true, true)).toBe(
+      true,
+    );
   });
 
   it("retries external Usage after an early empty inspection", () => {
-    expect(shouldRetryExternalThreadUsage("pi", null)).toBe(true);
-    expect(shouldRetryExternalThreadUsage("claude-code", null)).toBe(true);
-    expect(shouldRetryExternalThreadUsage("codex", null)).toBe(true);
-    expect(shouldRetryExternalThreadUsage("codex", { totalCostUsd: 0.168 })).toBe(true);
+    expect(shouldRetryExternalThreadUsage(false, null)).toBe(true);
+    expect(shouldRetryExternalThreadUsage(true, null)).toBe(true);
+    expect(shouldRetryExternalThreadUsage(true, { totalCostUsd: 0.168 })).toBe(true);
     expect(
       shouldRetryExternalThreadUsage(
-        "codex",
+        true,
         { totalCostUsd: 0.168 },
         {
           usedPercent: 33,
@@ -285,11 +423,11 @@ describe("Renderer Composer DOM behavior", () => {
         },
       ),
     ).toBe(false);
-    expect(shouldRetryExternalThreadUsage("pi", { totalCostUsd: 0.168 })).toBe(false);
-    expect(shouldRetryExternalThreadUsage("grok", { totalCostUsd: 0.168 })).toBe(true);
+    expect(shouldRetryExternalThreadUsage(false, { totalCostUsd: 0.168 })).toBe(false);
+    expect(shouldRetryExternalThreadUsage(true, { totalCostUsd: 0.168 })).toBe(true);
     expect(
       shouldRetryExternalThreadUsage(
-        "grok",
+        true,
         { totalCostUsd: 0.168 },
         {
           usedPercent: 33,
@@ -297,13 +435,11 @@ describe("Renderer Composer DOM behavior", () => {
         },
       ),
     ).toBe(false);
-    // Same "keep retrying for Account Credits" carve-out Grok gets: without it, revisiting a
-    // Claude Code Thread whose Usage was already known (so the initial retry never engaged)
-    // would leave the credits pill permanently blank.
-    expect(shouldRetryExternalThreadUsage("claude-code", { totalCostUsd: 0.168 })).toBe(true);
+    // Any plugin advertising quota gets the same retry, even after Usage has arrived.
+    expect(shouldRetryExternalThreadUsage(true, { totalCostUsd: 0.168 })).toBe(true);
     expect(
       shouldRetryExternalThreadUsage(
-        "claude-code",
+        true,
         { totalCostUsd: 0.168 },
         { usedPercent: 62, periodType: "five_hour" },
       ),
@@ -354,6 +490,7 @@ describe("Renderer Composer DOM behavior", () => {
     replacement.setAttribute("data-codex-intelligence-trigger", "true");
     replacement.setAttribute("data-composer-navigation-target", "reasoning");
     const composer = {
+      ...noNativeRequest,
       querySelectorAll: (selector: string) =>
         selector === 'button[aria-haspopup="menu"]' ? [replacement] : [],
     } as unknown as Element;
@@ -386,6 +523,142 @@ describe("Renderer Composer DOM behavior", () => {
     expect(replacement.getAttribute("aria-hidden")).toBe("true");
     expect(control.nativeModelControl?.element).toBe(replacement);
     vi.unstubAllGlobals();
+  });
+
+  describe("stale send button after Codex re-renders the trailing actions", () => {
+    const button = (connected: boolean, disabled = false) =>
+      ({
+        closest: () => null,
+        type: "submit",
+        disabled,
+        isConnected: connected,
+        parentElement: null,
+      }) as unknown as HTMLButtonElement;
+    const fakeControl = (sendButton: HTMLButtonElement, liveButtons: HTMLButtonElement[]) => {
+      const composer = {
+        ...noNativeRequest,
+        contains: (node: unknown) =>
+          node === composer ||
+          liveButtons.includes(node as HTMLButtonElement) ||
+          node === liveParent,
+        querySelectorAll: (selector: string) => (selector === "button" ? liveButtons : []),
+      } as unknown as Element;
+      const liveParent = {
+        isConnected: true,
+        insertBefore: vi.fn(),
+        children: [] as unknown[],
+        parentElement: null,
+      };
+      const detachedParent = {
+        isConnected: false,
+        insertBefore: vi.fn(),
+        children: [] as unknown[],
+        parentElement: null,
+      };
+      for (const live of liveButtons) {
+        Object.assign(live, { parentElement: liveParent });
+        liveParent.children.push(live);
+      }
+      if (!liveButtons.includes(sendButton)) {
+        Object.assign(sendButton, { parentElement: detachedParent });
+        detachedParent.children.push(sendButton);
+      }
+      const modelRoot = { parentElement: null, nextElementSibling: null };
+      const agentRoot = { parentElement: null, nextElementSibling: null };
+      const control = {
+        composer,
+        composerId: "test-composer",
+        sendButton,
+        sendDisabledBeforeSwitch: null,
+        root: agentRoot,
+        modelPicker: { root: modelRoot },
+        nativeModelControl: null,
+        nativePermissionModeControl: null,
+        nativeContextUsageControl: null,
+        credits: { anchor: null, place: vi.fn(), root: { remove: vi.fn() } },
+        usage: null,
+      } as unknown as ComposerAgentControl;
+      return { control, liveParent, detachedParent, modelRoot, agentRoot };
+    };
+
+    it("follows the live send button and carries the switch lock over", () => {
+      const stale = button(false);
+      const live = button(true, false);
+      const { control } = fakeControl(stale, [live]);
+      control.sendDisabledBeforeSwitch = false;
+
+      expect(refreshSendButton(control)).toBe(live);
+      expect(control.sendButton).toBe(live);
+      expect(live.disabled).toBe(true);
+      expect(control.sendDisabledBeforeSwitch).toBe(false);
+    });
+
+    it("keeps the mount-time last-button fallback for unlabelled action buttons", () => {
+      const stale = { ...button(false), type: "button" } as unknown as HTMLButtonElement;
+      const owned = {
+        closest: () => null,
+        type: "button",
+        disabled: false,
+        isConnected: true,
+        hasAttribute: (name: string) => name === "data-codexhost-agent-control",
+        parentElement: null,
+      } as unknown as HTMLButtonElement;
+      const action = {
+        closest: () => null,
+        type: "button",
+        disabled: false,
+        isConnected: true,
+        hasAttribute: () => false,
+        getAttribute: () => null,
+        textContent: "",
+        parentElement: null,
+      } as unknown as HTMLButtonElement;
+      const { control } = fakeControl(stale, [action, owned]);
+
+      expect(refreshSendButton(control)).toBe(action);
+    });
+
+    it("does not mistake a Stop button for send once a labelled send button is replaced", () => {
+      const stale = button(false);
+      const stop = {
+        closest: () => null,
+        type: "button",
+        disabled: false,
+        isConnected: true,
+        hasAttribute: () => false,
+        getAttribute: (name: string) => (name === "aria-label" ? "Stop" : null),
+        textContent: "",
+        parentElement: null,
+      } as unknown as HTMLButtonElement;
+      const { control } = fakeControl(stale, [stop]);
+
+      expect(refreshSendButton(control)).toBeNull();
+      expect(control.sendButton).toBe(stale);
+    });
+
+    it("never moves owned controls into the detached trailing cluster", () => {
+      const stale = button(false);
+      const { control, detachedParent } = fakeControl(stale, []);
+
+      reconcileComposerNativeControls(control, false, false);
+
+      expect(detachedParent.insertBefore).not.toHaveBeenCalled();
+      expect(control.sendButton).toBe(stale);
+    });
+
+    it("places the Agent and Model controls beside the replacement send button", () => {
+      const stale = button(false);
+      const live = button(true);
+      const { control, liveParent, detachedParent, modelRoot, agentRoot } = fakeControl(stale, [
+        live,
+      ]);
+
+      reconcileComposerNativeControls(control, false, false);
+
+      expect(detachedParent.insertBefore).not.toHaveBeenCalled();
+      expect(liveParent.insertBefore).toHaveBeenNthCalledWith(1, modelRoot, live);
+      expect(liveParent.insertBefore).toHaveBeenNthCalledWith(2, agentRoot, live);
+    });
   });
 
   it("resolves an inner contenteditable paragraph to its editor", () => {
@@ -426,12 +699,12 @@ describe("Renderer Composer DOM behavior", () => {
 
     expect(isNativeContextUsageControlCandidate(native)).toBe(true);
     expect(nativeContextUsageControlForComposer(composer)).toBe(native);
-    expect(formatRendererCacheHitRate(99.9)).toBe("CH 99.9%");
+    expect(formatRendererCacheHitRate(99.9)).toBe("99.9%");
     expect(formatRendererCost(0.168)).toBe("$0.168");
-    expect(formatRendererTokenCount(87000)).toBe("87k");
-    expect(formatRendererTokenCount(6700)).toBe("6.7k");
-    expect(formatRendererTokenCount(375000)).toBe("375k");
-    expect(rendererUsageTriggerMaxWidth()).toBe("min(180px, 30vw)");
+    expect(formatRendererTokenCount(87000)).toBe("87K");
+    expect(formatRendererTokenCount(6700)).toBe("6.7K");
+    expect(formatRendererTokenCount(375000)).toBe("375K");
+    expect(rendererUsageTriggerMaxWidth()).toBe("min(240px, 30vw)");
   });
 
   it("places Usage beside the native context wrapper when it is present", () => {
@@ -456,6 +729,7 @@ describe("Renderer Composer DOM behavior", () => {
     const usageRoot = { remove: vi.fn() };
     const control = {
       composer: {
+        ...noNativeRequest,
         querySelectorAll: (selector: string) =>
           selector.includes("[aria-label]") ? [nativeContext] : [],
       },
@@ -489,7 +763,7 @@ describe("Renderer Composer DOM behavior", () => {
     const placeCredits = vi.fn();
     const usageRoot = { remove: vi.fn() };
     const control = {
-      composer: { querySelectorAll: () => [] },
+      composer: { ...noNativeRequest, querySelectorAll: () => [] },
       modelPicker: { root: modelRoot, trigger: {} },
       nativeModelControl: null,
       nativePermissionModeControl: null,
@@ -512,39 +786,42 @@ describe("Renderer Composer DOM behavior", () => {
     expect(placeCredits).not.toHaveBeenCalled();
   });
 
-  it("anchors credits to the permission-mode picker's own root", () => {
+  it.each([true, false])("anchors credits only in a verified permission slot (%s)", (verified) => {
     const permissionModeRoot = { parentElement: {} } as HTMLElement;
     const control = {
       permissionModePicker: { root: permissionModeRoot },
+      nativePermissionModeControlVerified: verified,
     } as unknown as ComposerAgentControl;
 
-    expect(creditsPlacementAnchor(control)).toBe(permissionModeRoot);
+    expect(creditsPlacementAnchor(control)).toBe(verified ? permissionModeRoot : null);
   });
 
   it("does not anchor credits until the permission-mode picker has been inserted into the DOM", () => {
     const permissionModeRoot = { parentElement: null } as unknown as HTMLElement;
     const control = {
       permissionModePicker: { root: permissionModeRoot },
+      nativePermissionModeControlVerified: true,
     } as unknown as ComposerAgentControl;
 
     expect(creditsPlacementAnchor(control)).toBeNull();
   });
 
-  it("places credits immediately before the permission-mode picker, independent of Usage", () => {
+  it("removes credits when the native permission slot is unavailable", () => {
     const permissionModeRoot = { parentElement: {} } as HTMLElement;
     const placeUsage = vi.fn();
     const placeCredits = vi.fn();
+    const removeCredits = vi.fn();
     const control = {
-      composer: { querySelectorAll: () => [] },
+      composer: { ...noNativeRequest, querySelectorAll: () => [] },
       modelPicker: { root: {}, trigger: {} },
       nativeModelControl: null,
       nativePermissionModeControl: null,
       nativeContextUsageControl: null,
       permissionModePicker: { root: permissionModeRoot },
       credits: {
-        anchor: null,
+        anchor: permissionModeRoot,
         place: placeCredits,
-        root: { remove: vi.fn() },
+        root: { remove: removeCredits },
       },
       usage: {
         anchor: null,
@@ -555,7 +832,9 @@ describe("Renderer Composer DOM behavior", () => {
 
     reconcileComposerNativeControls(control, true, false);
 
-    expect(placeCredits).toHaveBeenCalledWith(permissionModeRoot);
+    expect(placeCredits).not.toHaveBeenCalled();
+    expect(removeCredits).toHaveBeenCalledOnce();
+    expect(control.credits.anchor).toBeNull();
   });
 
   it("does not treat codexhost Usage controls as native anchors", () => {
@@ -760,6 +1039,7 @@ describe("Renderer Composer DOM behavior", () => {
     };
     const send = {
       type: "submit",
+      isConnected: true,
       hasAttribute: () => false,
       getAttribute: (name: string) => (name === "aria-label" ? "Send" : null),
       contains: () => false,
@@ -770,13 +1050,14 @@ describe("Renderer Composer DOM behavior", () => {
       children: [voice, send],
       querySelectorAll: () => [voice, send],
       insertBefore,
+      isConnected: true,
     };
     Object.assign(voice, { parentElement: toolbar });
     Object.assign(send, { parentElement: toolbar });
     const modelRoot = { parentElement: toolbar, nextElementSibling: send };
     const agentRoot = { parentElement: toolbar, nextElementSibling: send };
     const control = {
-      composer: { querySelectorAll: () => [] },
+      composer: { querySelectorAll: () => [], contains: () => true },
       sendButton: send,
       root: agentRoot,
       picker: { root: agentRoot },
@@ -795,6 +1076,7 @@ describe("Renderer Composer DOM behavior", () => {
       },
     } as unknown as ComposerAgentControl;
 
+    Object.assign(control.composer, noNativeRequest);
     reconcileComposerNativeControls(control, true, false);
 
     expect(insertBefore).toHaveBeenCalledWith(modelRoot, voice);
@@ -810,6 +1092,7 @@ describe("Renderer Composer DOM behavior", () => {
     };
     const send = {
       type: "submit",
+      isConnected: true,
       hasAttribute: () => false,
       getAttribute: (name: string) => (name === "aria-label" ? "Send" : null),
       contains: () => false,
@@ -818,13 +1101,14 @@ describe("Renderer Composer DOM behavior", () => {
     const toolbar = {
       children: [pause, send],
       insertBefore,
+      isConnected: true,
     };
     Object.assign(pause, { parentElement: toolbar });
     Object.assign(send, { parentElement: toolbar });
     const modelRoot = { parentElement: toolbar, nextElementSibling: send };
     const agentRoot = { parentElement: toolbar, nextElementSibling: send };
     const control = {
-      composer: { querySelectorAll: () => [] },
+      composer: { querySelectorAll: () => [], contains: () => true },
       sendButton: send,
       root: agentRoot,
       picker: { root: agentRoot },
@@ -843,6 +1127,7 @@ describe("Renderer Composer DOM behavior", () => {
       },
     } as unknown as ComposerAgentControl;
 
+    Object.assign(control.composer, noNativeRequest);
     reconcileComposerNativeControls(control, true, false);
 
     expect(insertBefore).toHaveBeenCalledWith(modelRoot, pause);
@@ -889,22 +1174,6 @@ describe("Renderer Composer DOM behavior", () => {
     expect(restoredThreadOwnership({ owner: "codex", locked: true })).toEqual({
       agent: "codex",
     });
-    expect(
-      restoredThreadOwnership({
-        owner: "external",
-        harnessId: "qwen-code",
-        transportModelId: "codexhost/qwen-code-native@qwen-max@plan",
-        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
-        effectiveModel: harnessModelRefSchema.parse({ id: "qwen-max" }),
-        effectivePermissionModeId: harnessPermissionModeIdSchema.parse("plan"),
-        locked: true,
-      }),
-    ).toEqual({
-      agent: "qwen-code",
-      model: { id: "qwen-max" },
-      permissionModeId: "plan",
-    });
-
     expect(
       restoredThreadOwnership({
         owner: "external",
@@ -1041,6 +1310,23 @@ describe("Renderer Composer DOM behavior", () => {
       thinkingOptionId: "high",
       permissionModeId: "configured",
     });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "hermes",
+        transportModelId: encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("hermes") }),
+        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        effectiveModel: harnessModelRefSchema.parse({
+          id: "hermes-model-v1.emFpOmdsbS01LXR1cmJv",
+        }),
+        effectivePermissionModeId: harnessPermissionModeIdSchema.parse("accept_edits"),
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "hermes",
+      model: { id: "hermes-model-v1.emFpOmdsbS01LXR1cmJv" },
+      permissionModeId: "accept_edits",
+    });
     expect(() =>
       restoredThreadOwnership({
         owner: "external",
@@ -1164,7 +1450,7 @@ describe("Renderer Composer DOM behavior", () => {
     expect(lateConversationTargetResolution(defaultTarget, conversationTarget, "locked")).toBe(
       "transfer",
     );
-    expect(shouldRetryExternalThreadUsage("pi", null)).toBe(true);
+    expect(shouldRetryExternalThreadUsage(false, null)).toBe(true);
     expect(lateConversationTargetResolution(defaultTarget, defaultTarget, "draft")).toBe("none");
     expect(isLateConversationTarget(conversationTarget, conversationTarget)).toBe(false);
     expect(isLateConversationTarget(conversationTarget, ["conversation", "opaque-2"])).toBe(true);
@@ -1181,6 +1467,19 @@ describe("Renderer Composer DOM behavior", () => {
     const otherConversationTarget = ["conversation", "opaque-2"];
 
     expect(shouldTransferComposerState(defaultTarget, defaultTarget, "draft")).toBe(true);
+    expect(
+      shouldTransferComposerState(["default", "draft-a"], ["default", "draft-a"], "draft"),
+    ).toBe(true);
+    expect(
+      shouldTransferComposerState(["default", "draft-a"], ["default", "draft-b"], "draft"),
+    ).toBe(false);
+    expect(
+      shouldTransferComposerState(
+        ["conversation", "opaque-1"],
+        ["conversation", "opaque-1"],
+        "locked",
+      ),
+    ).toBe(true);
     expect(shouldTransferComposerState(defaultTarget, firstConversationTarget, "draft")).toBe(
       false,
     );
@@ -1202,14 +1501,6 @@ describe("Renderer Composer DOM behavior", () => {
     expect(isComposerModelWriteAllowed(["conversation", "pi-thread"])).toBe(false);
     expect(isComposerModelWriteAllowed(["conversation", "codex-thread"])).toBe(false);
     expect(isComposerModelWriteAllowed(null)).toBe(false);
-  });
-
-  it("does not emit a base external carrier before its concrete configuration loads", () => {
-    expect(shouldApplyDraftAgentCarrier("codex", undefined)).toBe(true);
-    expect(shouldApplyDraftAgentCarrier("grok", undefined)).toBe(false);
-    expect(
-      shouldApplyDraftAgentCarrier("grok", harnessModelRefSchema.parse({ id: "grok-4.6" })),
-    ).toBe(true);
   });
 
   it("never writes the native Model while repeatedly switching existing conversations", () => {

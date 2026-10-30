@@ -32,6 +32,8 @@ pub(crate) struct NpmInstallation {
     pub(crate) node_path: PathBuf,
     pub(crate) npm_cli_path: PathBuf,
     pub(crate) npm_launcher_path: PathBuf,
+    /// The platform package whose executables Windows must close before npm replaces them.
+    pub(crate) npm_package_root: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,6 +147,7 @@ impl UpdateRequest {
                 require_absolute_file(&npm.node_path, "npm Node.js executable")?;
                 require_absolute_file(&npm.npm_cli_path, "npm CLI")?;
                 require_absolute_file(&npm.npm_launcher_path, "npm codexhost launcher")?;
+                require_absolute_path(&npm.npm_package_root, "npm platform package root")?;
             }
             Installation::WindowsInstaller(windows) => {
                 if !cfg!(target_os = "windows") {

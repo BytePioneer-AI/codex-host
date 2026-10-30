@@ -4,7 +4,11 @@
 /.pi/
 /downloads/
 /.codexhost/
-/.claude/
+/pr-triage/
+/.claude/*
+
+# Shared agent skills for Claude Code
+!/.claude/skills
 
 # Environment and secrets
 .env
@@ -21,6 +25,10 @@ node_modules/
 .vitest/
 .eslintcache
 *.tsbuildinfo
+
+# Local website draft and deployment workflow
+/website/
+/.github/workflows/deploy-website.yml
 
 # Build, test, and coverage output
 target/

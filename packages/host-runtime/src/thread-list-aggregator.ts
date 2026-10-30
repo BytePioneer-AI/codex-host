@@ -1,4 +1,4 @@
-import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
+import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   decodeOfficialThreadListPage,
   encodeHostThreadListCursor,
@@ -8,6 +8,7 @@ import {
   type OfficialThreadListPage,
   type ThreadListExternalAnchor,
   type ThreadListSortDirection,
+  type ThreadListSortKey,
 } from "@codexhost/protocol-core";
 
 import {
@@ -83,11 +84,16 @@ function cursorValue(input: {
 export async function aggregateThreadList(input: {
   query: DecodedThreadListRequest;
   records: readonly StoredThreadRecordV1[];
+  sharedThreads?: readonly JsonObject[];
   runtimeFor(threadId: string): ExternalThreadListRuntimeState | null;
+  placementOf?(threadId: string): StoredSectionPlacementV1 | undefined;
   requestOfficialPage(params: JsonObject): Promise<OfficialThreadListPage>;
 }): Promise<AggregatedThreadListPage> {
   const { query } = input;
-  if (!query.supportsExternal) throw new Error("External aggregation is not supported for query");
+  if (!query.supportsExternal || query.sortKey === "section_position") {
+    throw new Error("External aggregation is not supported for query");
+  }
+  const externalSortKey: ThreadListSortKey = query.sortKey;
   const start: HostThreadListCursor = query.cursor ?? {
     queryFingerprint: query.queryFingerprint,
     sortDirection: query.sortDirection,
@@ -100,8 +106,10 @@ export async function aggregateThreadList(input: {
     ? { data: [], hasMore: false }
     : listExternalThreadMetadata({
         records: input.records,
+        ...(input.sharedThreads ? { sharedThreads: input.sharedThreads } : {}),
         query,
         runtimeFor: input.runtimeFor,
+        ...(input.placementOf ? { placementOf: input.placementOf } : {}),
         anchor: start.externalAnchor,
         limit: query.limit,
       });
@@ -116,6 +124,7 @@ export async function aggregateThreadList(input: {
   let firstOfficialBackwardsCursor: string | null | undefined;
   let officialRequestCount = 0;
   const externalIds = new Set<string>(input.records.map((record) => record.hostThreadId));
+  for (const thread of input.sharedThreads ?? []) externalIds.add(String(thread.id));
 
   const requestOfficial = async (cursor: string | null, limit: number) => {
     officialRequestCount += 1;
@@ -142,7 +151,7 @@ export async function aggregateThreadList(input: {
         firstOfficialBackwardsCursor = page.backwardsCursor;
       }
       officialBatch = page;
-      officialEntries = page.data.map((thread) => officialThreadListEntry(thread, query.sortKey));
+      officialEntries = page.data.map((thread) => officialThreadListEntry(thread, externalSortKey));
       officialIndex = 0;
       if (officialEntries.length === 0) {
         if (page.nextCursor === null || page.nextCursor === officialCursor) {

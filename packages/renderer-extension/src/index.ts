@@ -12,11 +12,7 @@ export type {
   SetCodexLocaleOverrideOptions,
 } from "./codex-locale-adapter.js";
 
-export {
-  DEFAULT_RENDERER_AGENTS,
-  DraftAgentController,
-  KNOWN_RENDERER_AGENTS,
-} from "./agent-selection-state.js";
+export { DEFAULT_RENDERER_AGENTS, DraftAgentController } from "./agent-selection-state.js";
 export type {
   ComposerAgentPhase,
   DraftAgentControllerOptions,
@@ -30,6 +26,7 @@ export {
   HARNESS_INSPECT_METHOD,
   THREAD_FORK_METHOD,
   THREAD_INSPECT_METHOD,
+  HARNESS_COMMANDS_INSPECT_METHOD,
   THREAD_COMMANDS_INSPECT_METHOD,
   THREAD_COMMAND_EXECUTE_METHOD,
   THREAD_MODEL_SELECT_METHOD,
@@ -92,6 +89,7 @@ export {
   isOwnershipSubmissionBlocked,
   permissionModeSelectionLocked,
   restoredThreadOwnership,
+  shouldRefreshCodexAccountsForAdapterState,
   shouldTransferComposerState,
 } from "./renderer-binding-probe.js";
 export type {
@@ -108,13 +106,11 @@ export {
   CLAUDE_CODE_TRANSPORT_MODEL_PREFIX,
   GROK_TRANSPORT_MODEL_ID,
   GROK_TRANSPORT_MODEL_PREFIX,
-  QWEN_CODE_TRANSPORT_MODEL_ID,
-  QWEN_CODE_TRANSPORT_MODEL_PREFIX,
   OPENCODE_TRANSPORT_MODEL_ID,
   OPENCODE_TRANSPORT_MODEL_PREFIX,
   antigravityTransportModelId,
+  hermesTransportModelId,
   claudeTransportModelId,
-  activeRendererDraftPrewarmPolicy,
   decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
@@ -137,7 +133,6 @@ export {
   modelSelectionForAgent,
   grokTransportModelId,
   openCodeTransportModelId,
-  qwenCodeTransportModelId,
   piTransportModelId,
   PI_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_PREFIX,
@@ -211,6 +206,7 @@ export type {
   RendererConnectionDiagnostics,
   RendererConnectionHostSnapshot,
   RendererConnectionSnapshot,
+  RendererCodexAccountClient,
   RendererUpdateClient,
 } from "./settings/pages.js";
 export {
@@ -232,23 +228,18 @@ export type {
 export {
   SETTINGS_SHELL_ATTRIBUTE,
   installRendererSettingsShell,
-  isRendererSettingsDialogSupported,
   mountRendererSettingsShell,
 } from "./settings/shell.js";
 export type { RendererSettingsShell } from "./settings/shell.js";
 export {
-  SETTINGS_HEADER_SURFACE_SELECTOR,
   SETTINGS_TRIGGER_ATTRIBUTE,
   inspectRendererSettingsContract,
-  installRendererSettingsHeaderTrigger,
+  installRendererSettingsRailTrigger,
   mountRendererSettingsTrigger,
-  selectRendererSettingsHeaderSlot,
 } from "./settings/trigger.js";
 export type {
-  RendererSettingsBounds,
   RendererSettingsContractInspection,
-  RendererSettingsHeaderSlotCandidate,
-  RendererSettingsHeaderTriggerControl,
+  RendererSettingsRailTriggerControl,
   RendererSettingsTriggerControl,
 } from "./settings/trigger.js";
 export {

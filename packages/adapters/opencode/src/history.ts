@@ -291,6 +291,7 @@ export function projectOpenCodeHistory(input: OpenCodeHistoryInput): HostThreadS
       const item: HostFileChangeItem = {
         type: "fileChange",
         itemId: itemId(`opencode-diff:${userEntry.info.id}`),
+        sourceItemIds: items.map(({ item }) => item.itemId),
         changes,
       };
       items.push({ item, outcome: { status: "succeeded" } });

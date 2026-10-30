@@ -1,0 +1,501 @@
+# Codex Desktop 更新兼容性诊断手册
+
+本文总结 codexhost 遇到 Codex Desktop 更新后功能异常时的排查方法。目标是尽快回答两个问题：
+
+1. 是 Renderer 注入入口失效，还是注入已经成功但后续业务链路失败？
+2. 用户看到的 `Agent` / `Model` 不可用，实际对应哪一个请求、哪一个状态转换或哪一个 Codex 私有 API？
+
+本文基于 Codex Desktop `26.814.41407` 事故整理，后续 Codex 更新时应优先复用这套流程。
+
+相关兼容性债务记录见：
+
+- `docs/archive/codex-desktop-incidents/26.814-compatibility-debt.md`
+- `docs/archive/codex-desktop-incidents/26.908-request-manager-wrapper.md`（Fiber hook 把 Request Manager 包进 `{ hostId, manager, status }` 后，连接检查全部失败）
+
+## 一、先建立分层模型
+
+### 历史原生会话不能拖入引用或通过 `@` 搜索会话
+
+Desktop 可根据 `thread-reference-capability:<threadId>` 决定是否注册原生会话引用接收区。
+历史会话可能已经保存了 `read_thread` 工具，但本机缺少这一 UI 标记；新草稿与历史会话应分开测试。
+
+codexhost 在已有的 Thread ownership inspection 中按需请求
+`includeReferenceCapability: true`。所属 Host 只对原生 Codex Thread 验证：通过官方
+`thread/read` 取得 rollout 路径，限定到当前 Codex home 的 sessions/archived_sessions，
+最多读取首个 1 MiB 中的第一条 `session_meta`，核对 Thread ID 与 `dynamic_tools` 中的
+原生 `codex_app` 命名空间内的 `read_thread`（兼容旧式扁平工具）。官方读取请求最多等待 2 秒，超时仍继续返回归属检查。确认后返回 `supportsThreadReferences: true`，不返回会话正文。
+
+Renderer 仅补回缺失的 UI 标记，保留明确的 false；连接被替换或已有标记时不接受迟到结果。
+每个连接内每条 Thread 至多尝试一次能力恢复，旧 Host 不支持该可选参数时回退到原有检查。
+此兼容路径不为 External Harness 新增读取工具，也不修改原生拖拽、搜索或消息发送流程。
+
+不要把“注入失败”“Harness 不可用”和“Agent 切换失败”当成同一个问题。至少分为以下几层：
+
+```text
+Codex Desktop 启动
+    -> Main-process title policy
+    -> Renderer bundle 注入
+    -> Draft prewarm / Request Bridge 注入
+    -> Renderer Adapter ready
+    -> Agent 菜单状态
+    -> Agent 切换动作
+    -> prewarm 清理
+    -> Model / Harness inspection
+    -> Model 菜单渲染
+```
+
+每一层都有不同的成功信号：
+
+| 层 | 成功信号 | 不能证明什么 |
+| --- | --- | --- |
+| Title policy | 标题服务结构检查和 Renderer readiness 均成功 | 不能证明 Renderer 注入成功 |
+| Renderer bundle | `window.__codexhostRendererBindingProbeV1` 存在 | 不能证明 Request Bridge 可用 |
+| Draft routing | Adapter 为 `ready / request-bridge` | 不能证明 Agent 点击流程完整可用 |
+| Harness availability | inspection 返回 `status: ready` | 不能证明 Agent 切换清理成功 |
+| Agent 切换 | probe 的 selection agent 发生变化 | 不能证明 Model catalog 已加载 |
+| Model catalog | Model 按钮有真实模型名且未 disabled | 不能证明发送 Turn 时 Model 路由正确 |
+
+**重要：Adapter `ready` 不是最终验收标准。** 本次事故中 Adapter 已经是 `ready`，但 Agent 点击仍被旧的 prewarm 清理 RPC 中断。
+
+## 二、第一步：记录现场版本和启动方式
+
+本地 Host 的官方后端异常退出或连接异常关闭后，Host 使用与远程部署相同的退避恢复机制：确认旧进程退出，再重建后端并重新初始化已有客户端。恢复期间官方请求仍返回不可用；失败的回合或语音启动请求不会自动重放。后端就绪后，用户可以显式重试，已订阅的持久 Thread 在需要时通过原生 `thread/resume` 恢复。此过程不重启 Desktop，也不关闭外部 Harness。
+
+若语音启动提示 `Official request failed; retry explicitly`，应先检查 Host Runtime 日志是否持续出现 `Codex is unavailable`，以及是否随后记录 `official Codex is unavailable; restarting in ...ms`。该报错本身不能证明麦克风权限、网络或语音服务异常；恢复失败时继续核对真实后端启动和连接故障。
+
+先记录 Codex Desktop 和 Codex Framework 的真实版本，不要只记录项目版本：
+
+```bash
+ps -axo pid,ppid,command | rg -i 'ChatGPT.app|--inspect='
+```
+
+同时确认启动使用的是当前工作区产物：
+
+```bash
+ps -axo pid,ppid,command | rg -i 'codexhost launch|host-runtime|desktop-controller|renderer'
+```
+
+重点确认：
+
+- Codex Desktop 版本
+- Codex Framework 版本
+- Renderer bundle 路径是否指向当前工作区
+- Host Runtime 和 Desktop Controller 是否来自当前工作区
+- 是否通过 `npm start` 重新构建过
+
+不要假设 Inspector 固定在某个端口。`npm start` 会为每次启动分配新的临时 Inspector 端口。
+
+可以从运行进程动态提取端口：
+
+```js
+const { execFileSync } = require("node:child_process");
+const processes = execFileSync("ps", ["-axo", "command="], { encoding: "utf8" });
+const match = processes.match(
+  /ChatGPT\.app\/Contents\/MacOS\/ChatGPT --inspect=127\.0\.0\.1:(\d+)/,
+);
+const inspectorEndpoint = `http://127.0.0.1:${match[1]}`;
+```
+
+## 三、第二步：建立最小的真实反馈闭环
+
+排查前先建立一个能复现用户具体症状的闭环。不要只运行单元测试或只读取 Adapter status。
+
+本次事故最有效的闭环是：
+
+```text
+启动 npm start
+    -> 找到 app://-/index.html 主窗口
+    -> 读取 Renderer binding status
+    -> 点击一个外部 Agent
+    -> 读取 selection
+    -> 读取 Model 按钮的 text、aria-label、title、disabled
+```
+
+验收至少包含：
+
+- Agent selection 是否改变
+- Model 按钮是否仍为 `Models unavailable`
+- Model 按钮是否 disabled
+- `title` 是否包含真实错误文本
+- Adapter 是否在操作前后发生异常状态转换
+
+本次真正的根因直接出现在 Model 按钮的 `title` 中：
+
+```text
+Invalid request: unknown variant `clear-prewarmed-threads-for-host`
+```
+
+这比只看 `availability: error` 有用得多。
+
+### 推荐的 DOM 现场信息
+
+读取与 Agent 和 Model 相关的按钮：
+
+```js
+[...document.querySelectorAll("button")]
+  .map((button) => ({
+    text: (button.innerText || "").trim(),
+    aria: button.getAttribute("aria-label"),
+    title: button.getAttribute("title"),
+    checked: button.getAttribute("aria-checked"),
+    disabled: button.disabled,
+  }))
+  .filter((item) => /agent|model|pi|claude|deepseek|grok|qwen/i.test(
+    [item.text, item.aria, item.title].join(" "),
+  ));
+```
+
+## 四、第三步：确认是否真的注入成功
+
+### 1. 找主 Renderer，而不是 overlay
+
+Electron 可能同时有多个 `webContents`。`avatar-overlay` 等窗口不一定有 Composer，也不应该作为主 Renderer 验证目标。
+
+在 Node Inspector 中读取：
+
+```js
+webContents.getAllWebContents().map((contents) => ({
+  id: contents.id,
+  type: contents.getType(),
+  url: contents.getURL(),
+  title: contents.getTitle(),
+}));
+```
+
+优先选择：
+
+```text
+type === "window"
+url === "app://-/index.html"
+```
+
+### 2. 读取 codexhost binding
+
+```js
+window.__codexhostRendererBindingProbeV1?.status?.()
+```
+
+重点记录：
+
+```json
+{
+  "availability": {
+    "pi": "ready",
+    "claude-code": "ready"
+  },
+  "selections": [
+    {
+      "agent": "pi",
+      "phase": "draft"
+    }
+  ],
+  "adapter": {
+    "state": "ready",
+    "reason": "ready",
+    "hook": "request-bridge"
+  }
+}
+```
+
+判断规则：
+
+- binding 不存在：先排查 Renderer bundle 执行失败、标题策略阻断或注入时机。
+- Adapter 不是 `ready`：先排查 Request Bridge 和 draft routing。
+- Adapter 已 `ready`：不要再把问题笼统称为“注入失败”，继续验证 Agent 点击链路。
+
+## 五、第四步：探查当前 Composer Fiber 和 Request Bridge
+
+Codex 更新后，不能默认旧的函数名和闭包变量仍存在。应从当前 Composer 的 React Fiber 读取实际对象。
+
+需要记录以下信息：
+
+- Composer 是否存在
+- React Fiber 是否存在
+- Fiber 中请求对象的数量和对象身份
+- outer manager 与 inner request client 的关系
+- `hostId`
+- `sendRequest`
+- `prewarmThreadStart`
+- `enqueueRequest`
+- `prewarmedThreadManager`
+- 是否存在 codexhost policy
+
+当前 Codex 的实际结构是：
+
+```text
+outer manager
+  - requestClient -> inner bridge
+  - hostId: "local"
+  - prewarmedThreadManager
+  - sendRequest: 委托函数
+
+inner bridge
+  - hostId: "local"
+  - sendRequest
+  - prewarmThreadStart
+  - enqueueRequest: 原型方法
+```
+
+从 Codex Desktop `26.908.40834` 起，上述 outer manager 不一定等于 `hook.memoizedState`。现场见到的包装是：
+
+```text
+hook.memoizedState = { hostId, manager: outer manager, status }
+```
+
+查找必须先按现有 API 形状检查 hook state，再检查 `.manager`。包装对象本身不是 Request Manager；匹配 0 个时不要直接当成 Desktop 删掉了 bridge。
+
+同一版本里，Composer draft 身份也可能从七槽 atom 变成更长 memo 元组里重复的 `client-new-thread:` 字符串。只认旧七槽时会出现 Agent 能选、但模型/权限显示不可用。详见 `docs/archive/codex-desktop-incidents/26.908-request-manager-wrapper.md`。
+
+注意两点：
+
+1. `enqueueRequest` 可能在原型上，不一定出现在 `Object.keys()` 中。
+2. policy 替换 `sendRequest` 后，函数源码会改变。不能再用函数源码作为唯一身份判断。
+
+### 识别策略
+
+优先使用稳定 API 形状：
+
+```text
+hostId === "local"
+has sendRequest
+has prewarmThreadStart
+has enqueueRequest
+```
+
+当前实现不再支持旧版 `Function.prototype.toString()` 特征。API 形状不匹配时应 fail closed，不再回退到函数源码或闭包扫描。
+
+## 六、第五步：沿用户点击路径逐步验证
+
+点击外部 Agent 后，不要只看最终 UI。按以下顺序检查：
+
+```text
+1. Agent 菜单项是否存在且没有 disabled
+2. click 后 selection agent 是否改变
+3. draft prewarm policy.clear() 是否成功
+4. policy.select(model) 是否成功
+5. Harness inspection RPC 是否发送
+6. inspection 是否返回 ready
+7. Model catalog 是否写入 DOM
+```
+
+### 优先检查清理动作
+
+Agent 切换通常先清理旧的 prewarm Thread。当前版本应检查：
+
+```text
+prewarmedThreadManager.discardAllPrewarmedThreads()
+```
+
+如果看到以下错误，说明仍然走了旧版路径：
+
+```text
+unknown variant `clear-prewarmed-threads-for-host`
+```
+
+不要先增加 availability 重试。先修复切换流程中失败的请求。
+
+### 检查真实 Harness inspection
+
+如果 UI 显示 `Models unavailable`，需要区分两种情况：
+
+#### 情况 A：Harness 本身不可用
+
+直接通过真实 Renderer 的 Request Bridge 发送：
+
+```text
+codexhost/harness/inspect
+```
+
+分别测试：
+
+```text
+pi
+claude-code
+deepseek-harness
+grok
+qwen-code
+```
+
+如果 RPC 返回 `status: ready`，说明 Harness、账号和网络不是根因。
+
+#### 情况 B：Request Bridge 查找失败
+
+如果直接调用真实 bridge 可以成功，但 Renderer Model client 失败，重点检查：
+
+- `findActivePrewarmTargets()` 是否返回 0 个对象
+- policy 包装后函数源码是否改变了查找结果
+- Model client 是否每次调用重新查找 target
+- 注入的对象是否仍是当前 Fiber 中的同一个对象
+
+### 检查原生语言设置
+
+`codex-locale-adapter.ts` 分别读取语言 override 和 IDE/system locale。`appInfo.getLocaleInfo()` 成功不代表 override 已知；override 读取失败时必须保持 `fallback / unavailable`，不能推断为自动模式。
+
+语言 Adapter 仅使用 Desktop `26.1023.50603` 的原生 `settings.read("localeOverride")`、`settings.write("localeOverride", value)` 与 `appInfo.getLocaleInfo()`，不支持旧 `get-setting`、`set-setting` 或 `locale-info` fetch RPC。读取使用 `effective`，而不是 `configured`：`effective: null` 表示自动模式，`configured: undefined` 可以表示用户没有显式配置。写入限定为 `en-US`、`zh-CN`、`null`，直接等待原生调用完成。
+
+服务发现要求 registry 自有对应服务属性，并验证 callable stub 的方法；transport root 能合成任意属性路径，不是服务 registry。扫描所有允许的 modulepreload，跨模块按对象身份去重后才接受唯一 registry，多个不同候选必须 fail-closed。服务缺失、歧义或失败时，读取保留 navigator/default 用户语言降级，写入拒绝，不重试旧 RPC。相关测试统一在 `codex-locale-adapter.test.ts`。
+
+发现与原生调用共用单次请求的超时预算；取消或超时后不得发起迟到调用，迟到结果不生效。settings 和 appInfo 的 disposable RPC request 在完成、失败、取消或超时时释放。只读 smoke test 核对 Adapter 的 `status/mode/source`；设置写入需要单独获得授权，不能用读成功替代写入验证。
+
+### 检查 Codex 额度门
+
+ChatGPT 登录的 Codex 额度耗尽时，外部 Agent 的发送按钮仍为 disabled，且 Agent 控件悬停提示「无法将此 Harness 与 Codex 额度限制分离」，说明 `renderer-codex-usage-gate.ts` 没有绑定成功。API Key 登录不会触发这道门，不能用来复现。
+
+在主 Renderer 中只读检查（不修改 getSnapshot，不订阅 store）：
+
+```text
+1. 从编辑器向上找到唯一带 onLocalSubmitStart 和布尔 submitDisabled 的组件
+2. 在其 hook 链中找「subscriber memo → useSyncExternalStore inst → 订阅 effect」三连：
+   - memo 依赖为 [store, atom]，或 26.928 的 [readonly signal adapter, undefined]
+   - adapter 提供 atom/store/get/subscribe；atom 不得可写；effect 依赖 subscriber.subscribe
+   - inst.getSnapshot 可以是 subscriber.getSnapshot，也可以是 lazy createRender wrapper；
+     wrapper 的布尔快照必须与 subscriber 和原生 atom 相同，且不能产生追踪型 render
+3. 对每个布尔候选，用追踪代理重放 atom.read；26.928 的 signal 会间接读取 readonly
+   布尔 selector，需有界递归重放，拒绝循环、结果不一致和混合门：
+   - 读取 hardBlocked 但不读取 active、账号门字段：reserve 门，必须恰好 1 个
+   - 读取 authMethod 且读取 rate_limit.allowed，不读取 reserve 字段：账号门，
+     额度耗尽时必须恰好 1 个
+```
+
+任一步骤数量不对，按 Desktop 新结构修改识别条件；不要改为按 hook 序号、压缩名或写入账号数据放行。若 Desktop 改为按 Thread、Model 或 host 豁免外部 Harness，或不再在 Renderer 中拦截，删除该模块。
+
+### 输入卡顿与所有权查找的性能边界
+
+`Codex (Renderer)` 的 CPU 同时包含官方界面和 codexhost 注入逻辑；Host Runtime 进程占用低不能排除扩展开销。排查输入卡顿时，抓取主页面的 CPU profile 和包含实际输入的 Timeline，关注 `scan`、`discoverRendererHosts`、`committedReactAncestors` 以及输入事件内的同步耗时。注入脚本可能没有 URL，需结合函数、脚本 ID 和构建产物定位，不能仅按 URL 统计。
+
+当前输入路径遵守以下边界：
+
+- 编辑器内部的文字、输入法组合及富文本子节点变化不触发 binding 的全局扫描；Transcript 的纯文字、工具输出，以及原生侧栏滚动区/分区/行内的分页、图标和不含 Composer 的折叠变化也不会触发。编辑器/Composer 本身的替换、身份标记增删、inline Composer 插入/移除及包含它的祖先可见性变化仍会触发协调。输入提交校验不依赖该扫描，仍走原有输入/提交事件处理。
+- 侧边栏 DOM 观察把新增、变化和移除的行合并到待处理集合，只检查这些行；异步归属回复与重试通过 Host/Thread 行索引更新对应的当前行，不重新遍历整张列表。行复用时移除旧身份索引，移除的行清理索引和图标，同一 Thread 的多个挂载行均更新。初始化与显式刷新仍枚举全部行。
+- Composer 的 Host 与订阅连接均未变化时，协调过程不刷新侧栏；Host 切换、连接断开/替换/重连及插件目录变化仍触发必要的全量刷新。两类 DOM 扫描按 `requestAnimationFrame` 合并；同步的输入/提交校验不改为等待下一帧。
+- 侧栏图标在单轮同步扫描中按 Host 读取一次插件展示信息，而非每行重新发现原生连接；包括不可用结果在内，本轮读取结果均不跨扫描保留。本地与远程插件样式兼容逻辑不变。
+- 用量消息先检查 source、type、Host 和 method，仅相关通知才验证当前路由；实际请求发送和相关通知的连接有效性校验仍保留。
+- 恢复原生控件的 `hidden` / `aria-hidden` 时仅写入变化的值，避免属性观察器收到无意义的重复通知。
+- 查询当前 Host 时复用本次已验证路由的 Host ID；本地路由也复用同一个客户端做本地设置同步。断开时仍单独读取已知 Host 身份，不能把远程 Host 错认成本地。
+- React `return` 链只作为候选路径，从 `root.current` 沿实际 `child`/`sibling` 边逐层验证（允许对应 alternate），验证成功才返回；遇到 bailout/reparenting 等路径不符的情况，回退到有界全树查找。不能为了性能直接信任旧 `return` 链。
+- 不跨调用缓存 Fiber 路径或 Request Manager。即使根对象未改变，也必须看到原生连接替换、断开和原地树变化。
+
+回归至少覆盖连续输入、多个挂载 Composer、编辑器替换、Host 切换/重连、旧 DOM Fiber 指向 alternate，以及 bailout 子节点保留旧父指针。性能比较应在同一棵真实树上核对新旧查找结果一致，再比较耗时；局部算法加速不等于已经证明整机 CPU 或完整交互同等改善。
+
+## 七、常见误判
+
+### 误判 1：Adapter ready 就代表全部修复
+
+错误。Adapter ready 只代表 routing policy 已安装。Agent 切换中的 prewarm 清理、Model inspection 和 DOM 渲染仍可能失败。
+
+### 误判 2：availability error 就一定是 Harness 命令或账号问题
+
+错误。availability 状态可能吞掉了真实异常。必须读取真实 RPC 错误或 Model 按钮的 `title`。
+
+### 误判 3：四个 Harness 同时 error 就一定是网络问题
+
+如果所有 Harness 同时失败，优先怀疑共享链路：
+
+- Request Bridge 无法发现
+- Host Runtime RPC 不通
+- Adapter 正在切换
+- Renderer model client 使用了过时的对象识别逻辑
+
+不要一开始分别排查四个 CLI。
+
+### 误判 4：固定 Inspector 端口
+
+`npm start` 使用临时端口。每次重启都应重新发现端口。
+
+### 误判 5：只依赖单元测试
+
+旧的 mock 可能仍然接受已被 Codex 删除的 RPC。必须补充真实版本的 Renderer smoke test，至少验证一次完整 Agent 点击路径。
+
+### 误判 6：看到新字符串就直接加入白名单
+
+标题服务 identity 变化时，应先确认：
+
+- 服务结构仍然符合预期
+- 所有权判断仍然正确
+- 标题隔离仍然只作用于 codexhost 自己的 Renderer
+
+确认结构后才加入审查列表。
+
+## 八、修复原则
+
+### 1. 稳定 API 形状优先于函数源码
+
+函数名、压缩变量名、函数源码和闭包变量都属于高风险私有实现。当前 request bridge 只按已审查的 API 形状识别；形状不匹配时 fail closed。
+
+### 2. 每个 fallback 都要标记删除条件
+
+旧代码不应该无期限存在。每个 fallback 至少要记录：
+
+- 服务哪个 Codex 版本
+- 当前版本是否还会进入
+- 删除需要满足的最低支持版本
+- 对应测试文件
+
+### 3. 共享链路优先做单点验证
+
+多个 Agent 同时失败时，先测试共享的 Request Bridge 和 Host RPC，再排查具体 Harness。
+
+### 4. 以用户操作为主线做验证
+
+最终回归应该模拟用户真正的操作，而不是只检查内部状态：
+
+```text
+点击 Agent
+-> 等待切换
+-> 读取 selection
+-> 打开 Model 菜单
+-> 读取 Model catalog
+```
+
+## 九、推荐的修复后验收清单
+
+每次 Codex 更新后的兼容性修复至少完成以下检查：
+
+- [ ] 记录 Codex Desktop 和 Framework 版本
+- [ ] 动态发现当前 Inspector 端口
+- [ ] 选择正确的 `app://-/index.html` 主 Renderer
+- [ ] 标题策略无未解释的 warning
+- [ ] binding probe 存在
+- [ ] Adapter 为 `ready / request-bridge`
+- [ ] Fiber 中 active request target 数量为 1
+- [ ] policy 包装后仍能找到 active request target
+- [ ] 当前版本的 prewarm 清理 API 可用
+- [ ] 点击 Pi 后 Model catalog 可加载
+- [ ] 点击 Claude Code 后 Model catalog 可加载
+- [ ] 点击 DeepSeek Harness 后 Model catalog 可加载
+- [ ] 点击 Grok 后 Model catalog 可加载
+- [ ] 点击 Qwen Code 后 Model catalog 可加载
+- [ ] 切回 Codex 后原生 Composer 仍可用
+- [ ] ChatGPT 账号 Codex 额度耗尽时，新 Thread 和已有外部 Thread 均可发送；切回 Codex 后发送按钮恢复 disabled
+- [ ] 新 Thread 和未锁定 Thread 都完成切换验证
+- [ ] 已锁定 Thread 仍按设计保持 locked
+- [ ] 真实错误不会只被转换为笼统的 `Models unavailable`
+- [ ] 聚焦测试、TypeScript、Prettier 和 `git diff --check` 通过
+
+## 十、本次事故的最短定位路径
+
+这次问题如果重新发生，建议直接执行：
+
+```text
+1. npm start
+2. 读取动态 Inspector 端口
+3. 读取 app://-/index.html 的 binding status
+4. 点击一个外部 Agent
+5. 读取 Model 按钮 title
+6. 若出现 unknown variant，检查 prewarm 清理 API
+7. 若没有具体错误，检查 findActivePrewarmTargets 数量
+8. 直接调用 codexhost/harness/inspect 区分 Harness 问题和共享 Bridge 问题
+9. 修复后重新点击 Agent 并验证真实 Model 文本
+```
+
+本次事故的关键错误不是：
+
+```text
+Harness 不可用
+```
+
+而是：
+
+```text
+Agent 切换前仍调用了当前 Codex 已删除的旧版 prewarm 清理 RPC
+```

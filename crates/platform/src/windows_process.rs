@@ -103,6 +103,13 @@ unsafe extern "system" {
         information: *const c_void,
         information_length: u32,
     ) -> i32;
+    fn QueryInformationJobObject(
+        job: Handle,
+        information_class: i32,
+        information: *mut c_void,
+        information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
     fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
     fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
     fn TerminateProcess(process: Handle, exit_code: u32) -> i32;
@@ -118,6 +125,35 @@ pub struct ProcessEntry {
 pub struct ChildJob(Handle);
 
 impl ChildJob {
+    pub fn has_live_processes(&self) -> io::Result<bool> {
+        #[repr(C)]
+        struct Accounting {
+            total_user_time: i64,
+            total_kernel_time: i64,
+            period_user_time: i64,
+            period_kernel_time: i64,
+            page_faults: u32,
+            total_processes: u32,
+            active_processes: u32,
+            terminated_processes: u32,
+        }
+        let mut information: Accounting = unsafe { zeroed() };
+        let queried = unsafe {
+            QueryInformationJobObject(
+                self.0,
+                1,
+                &mut information as *mut _ as *mut c_void,
+                size_of::<Accounting>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        if queried == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(information.active_processes != 0)
+        }
+    }
+
     pub fn terminate(&self, exit_code: u32) -> io::Result<()> {
         let result = unsafe { TerminateJobObject(self.0, exit_code) };
         if result == 0 {

@@ -5,7 +5,6 @@ export { DeepSeekHarnessAdapter } from "./deepseek-harness-adapter.js";
 export type {
   DeepSeekHarnessAdapterDependencies,
   DeepSeekHarnessAdapterOptions,
-  DeepSeekHostConnectionLike,
 } from "./deepseek-harness-adapter.js";
 
 export const packageMetadata = {

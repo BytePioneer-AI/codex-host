@@ -50,6 +50,45 @@ function query(params: JsonObject = {}) {
 }
 
 describe("External Thread metadata catalog", () => {
+  it("lists scoped native Subagent children and descendants for Desktop summary hydration", () => {
+    const parent = record("parent");
+    const child = record("child", {
+      nativeSessionRef: parent.nativeSessionRef,
+      subagent: { parentHostThreadId: parent.hostThreadId, nativeSubagentId: "native-child" },
+    });
+    const grandchild = record("grandchild", {
+      nativeSessionRef: parent.nativeSessionRef,
+      subagent: { parentHostThreadId: child.hostThreadId, nativeSubagentId: "native-grandchild" },
+    });
+    const unrelated = record("unrelated", {
+      subagent: {
+        parentHostThreadId: hostThreadIdSchema.parse("other"),
+        nativeSubagentId: "other",
+      },
+    });
+    const records = [parent, child, grandchild, unrelated];
+    const list = (params: JsonObject) =>
+      listExternalThreadMetadata({
+        records,
+        query: query(params),
+        runtimeFor: () => null,
+      }).data.map(({ thread }) => thread);
+    expect(list({})).toMatchObject([{ id: "parent" }]);
+    expect(list({ parentThreadId: "parent", sourceKinds: ["subAgentThreadSpawn"] })).toMatchObject([
+      { id: "child", parentThreadId: "parent", sessionId: "parent", canAcceptDirectInput: false },
+    ]);
+    expect(
+      list({
+        ancestorThreadId: "parent",
+        sourceKinds: ["subAgentThreadSpawn"],
+        useStateDbOnly: true,
+      }).map(({ id }) => id),
+    ).toEqual(["child", "grandchild"]);
+    expect(list({ parentThreadId: "child" }).map(({ id }) => id)).toEqual(["grandchild"]);
+    expect(list({ ancestorThreadId: "parent", sourceKinds: ["vscode"] })).toEqual([]);
+    expect(list({ ancestorThreadId: "missing", sourceKinds: ["subAgentThreadSpawn"] })).toEqual([]);
+  });
+
   it("projects only ready records without loading Native history", () => {
     const ready = record("ready");
     const provisional = record("provisional", { state: "creating" });

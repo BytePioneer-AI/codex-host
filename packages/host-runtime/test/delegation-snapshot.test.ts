@@ -99,7 +99,57 @@ describe("delegation snapshot", () => {
         text: "Found two issues.",
       },
     ]);
+    expect(first.hasMore).toBe(true);
+    expect(second.hasMore).toBe(false);
     expect(repeated).toEqual(second);
+  });
+
+  it("filters whitespace without spending the page limit or breaking saved cursor offsets", () => {
+    const turns = [
+      {
+        id: "turn-1",
+        status: "completed",
+        items: [
+          { id: "blank", type: "agentMessage", phase: "commentary", text: "\n\n" },
+          { id: "answer", type: "agentMessage", phase: "final", text: "Answer" },
+          { id: "trailing-blank", type: "agentMessage", phase: "commentary", text: " " },
+        ],
+      },
+    ];
+    const input = {
+      threadId: "thread-1",
+      harnessId: "pi" as const,
+      thread: {},
+      turns,
+      running: false,
+    };
+    const page = projectDelegationThreadSnapshot({ ...input, view: "messages", limit: 1 });
+    expect(page.messages?.map(({ text }) => text)).toEqual(["Answer"]);
+    expect(page.progress).toEqual([]);
+    expect(page.hasMore).toBe(false);
+    const checkpoint = projectDelegationThreadSnapshot({ ...input, view: "result" });
+    const cursor = checkpoint.nextCursor;
+    if (!cursor) throw new Error("Missing incremental cursor");
+    const encoded = cursor.slice("codexhost:thread-messages:v1:".length);
+    expect(JSON.parse(Buffer.from(encoded, "base64url").toString()).offset).toBe(3);
+    turns[0]?.items.push({
+      id: "new-answer",
+      type: "agentMessage",
+      phase: "final",
+      text: "New answer",
+    });
+    const next = projectDelegationThreadSnapshot({ ...input, view: "messages", cursor, limit: 1 });
+    expect(next.messages?.map(({ text }) => text)).toEqual(["New answer"]);
+    expect(next.hasMore).toBe(false);
+    const after = projectDelegationThreadSnapshot({
+      ...input,
+      view: "messages",
+      cursor: next.nextCursor ?? "",
+      limit: 1,
+    });
+    expect(after.messages).toEqual([]);
+    expect(after.hasMore).toBe(false);
+    expect(after.nextCursor).toBe(next.nextCursor);
   });
 
   it("keeps result fields stable while message pagination advances", () => {

@@ -6,7 +6,7 @@ export interface CreateRequestRouteObservation {
   requestMethod: "thread/start";
   modelCarrier: RouteModelCarrier;
   selectedHarness: RoutedHarnessId;
-  selectionSource: "default-agent" | "official-model" | "transport-model";
+  selectionSource: "official-model" | "transport-model";
 }
 
 export type ThreadPurpose = "conversation" | "ephemeral";

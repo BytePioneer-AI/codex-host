@@ -1,3 +1,4 @@
+export { readRuntimeMetadata } from "./runtime-metadata.js";
 export type {
   ArtifactDownloadProgress,
   ArtifactDownloader,
@@ -26,8 +27,14 @@ export {
   type SelectedReleaseArtifact,
 } from "./github-release.js";
 export {
+  fetchLatestGitHubReleaseWithGitHubCli,
+  type GitHubCliReleaseFetchOptions,
+  type GitHubCliRunner,
+} from "./github-cli-release.js";
+export {
   acquireUpdateOperationLock,
   cleanupTerminalUpdateState,
+  discoverActiveUpdateStatus,
   discoverLatestUpdateStatus,
   isUpdateOperationActive,
   recoverUpdateOperationLock,

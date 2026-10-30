@@ -4,7 +4,8 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { verifyOmpSessionCwd } from "../src/omp-session-file.js";
+import { verifyOmpSessionCwd, readOmpSessionHistory } from "../src/omp-session-file.js";
+import { ompUsageHistory } from "../src/omp-usage.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -35,5 +36,67 @@ describe("OMP session files", () => {
         expectedCwd: directory,
       }),
     ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    '{"type":"message","id":"lost",',
+    JSON.stringify({ type: "message", message: { role: "assistant" } }),
+  ])(
+    "marks skipped history records incomplete without losing readable messages: %s",
+    async (bad) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-omp-session-"));
+      temporaryDirectories.push(directory);
+      const sessionFile = path.join(directory, "session.jsonl");
+      const entry = (id: string, timestamp: number) =>
+        JSON.stringify({
+          type: "message",
+          id,
+          parentId: null,
+          message: {
+            role: "assistant",
+            timestamp,
+            model: "model",
+            usage: { input: 10, output: 2, cacheRead: 5, cacheWrite: 0 },
+          },
+        });
+      await writeFile(sessionFile, `${entry("first", 1)}\n${bad}\n${entry("last", 2)}\n`);
+      const history = await readOmpSessionHistory(sessionFile);
+      expect(history.entries).toHaveLength(2);
+      expect(history.leafId).toBe("last");
+      expect(ompUsageHistory(history)).toMatchObject({
+        complete: false,
+        requests: [
+          expect.objectContaining({ requestId: "t1" }),
+          expect.objectContaining({ requestId: "t2" }),
+        ],
+      });
+    },
+  );
+
+  it("bounds the history read at the requested byte limit", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-omp-session-"));
+    temporaryDirectories.push(directory);
+    const sessionFile = path.join(directory, "session.jsonl");
+    const first = `${JSON.stringify({
+      type: "message",
+      id: "entry-1",
+      parentId: null,
+      message: { role: "user", content: [{ type: "text", text: "first" }] },
+    })}\n`;
+    const second = `${JSON.stringify({
+      type: "message",
+      id: "entry-2",
+      parentId: "entry-1",
+      message: { role: "assistant", content: [{ type: "text", text: "second" }] },
+    })}\n`;
+    await writeFile(sessionFile, `${first}${second}`);
+
+    const bounded = await readOmpSessionHistory(sessionFile, Buffer.byteLength(first));
+    expect(bounded.entries).toHaveLength(1);
+    expect(bounded.leafId).toBe("entry-1");
+
+    const unbounded = await readOmpSessionHistory(sessionFile);
+    expect(unbounded.entries).toHaveLength(2);
+    expect(unbounded.leafId).toBe("entry-2");
   });
 });

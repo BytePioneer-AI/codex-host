@@ -20,7 +20,7 @@ import {
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { OpenCodeMessageWithParts } from "../src/history.js";
 import {
@@ -31,12 +31,20 @@ import {
 } from "../src/model-catalog.js";
 import { OpenCodeAdapter, type OpenCodeAdapterDependencies } from "../src/opencode-adapter.js";
 import type {
-  OpenCodeCommandInput,
   OpenCodePromptInput,
   OpenCodeTransport,
   OpenCodeTransportListener,
 } from "../src/protocol.js";
 import type { OpenCodeServerOptions } from "../src/sdk-transport.js";
+
+// The fake retains the removed native command API so regression tests can detect calls to it.
+interface OpenCodeCommandInput {
+  sessionID: string;
+  command: string;
+  arguments: string;
+  model?: OpenCodeNativeModelRef;
+  variant?: string;
+}
 
 const cwd = "/synthetic";
 
@@ -216,6 +224,10 @@ class FakeOpenCodeTransport implements OpenCodeTransport {
     const session = await this.getSession(sessionID);
     session.permission = permission;
     return session;
+  }
+
+  async getPaths() {
+    return { directory: cwd, worktree: cwd };
   }
 
   async getMessages(sessionID: string) {
@@ -866,6 +878,9 @@ describe("OpenCode HarnessAdapter", () => {
     const model = encodeOpenCodeModelRef({ providerID: "provider-1", modelID: "model-1" });
     const thinkingOptionId = encodeOpenCodeVariant("high");
 
+    await session.execute(turn("in-progress", "before switching"));
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
+    const runningPrompt = structuredClone(transport.promptCalls.at(-1));
     await expect(session.execute({ type: "model.select", model })).resolves.toEqual({
       ok: true,
       value: { completed: true },
@@ -898,6 +913,11 @@ describe("OpenCode HarnessAdapter", () => {
       state: { effectiveModel: model, effectiveThinkingOptionId: thinkingOptionId },
     });
 
+    expect(transport.promptCalls.at(-1)).toEqual(runningPrompt);
+    appendTerminal(transport);
+    await completeAfterBusy(transport);
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed" });
+
     await expect(session.execute(turn("selected", "hello"))).resolves.toMatchObject({ ok: true });
     expect(transport.promptCalls.at(-1)).toMatchObject({
       model: { providerID: "provider-1", modelID: "model-1" },
@@ -906,7 +926,9 @@ describe("OpenCode HarnessAdapter", () => {
     expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
     appendTerminal(transport);
     await completeAfterBusy(transport);
-    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed" });
+    let event = await nextEvent(iterator);
+    while (event.type === "session.usage.changed") event = await nextEvent(iterator);
+    expect(event).toMatchObject({ type: "turn.completed" });
     await session.close();
     await adapter.close();
   });
@@ -964,7 +986,7 @@ describe("OpenCode HarnessAdapter", () => {
     await adapter.close();
   });
 
-  it("lists and executes native slash commands and context compaction", async () => {
+  it("lists only static compaction without native discovery and rejects dynamic commands", async () => {
     const transport = new FakeOpenCodeTransport();
     transport.commandsValue = [
       {
@@ -974,69 +996,27 @@ describe("OpenCode HarnessAdapter", () => {
         hints: ["focus"],
       },
     ];
+    const discover = vi
+      .spyOn(transport, "commands")
+      .mockRejectedValue(new Error("must not discover commands"));
     const { adapter, session } = await openFixture(transport);
     const commands = session.commands;
     if (!commands) throw new Error("OpenCode Session did not expose commands");
     const catalog = await commands.list();
-    if (!catalog.ok) throw new Error(catalog.error.message);
-    expect(catalog.value.commands).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: "opencode.compact", invocation: "/compact" }),
-        expect.objectContaining({ invocation: "/review", argumentMode: "text" }),
-      ]),
-    );
-    const review = catalog.value.commands.find(({ invocation }) => invocation === "/review");
-    if (!review) throw new Error("OpenCode did not publish the review command");
-    expect(review.description).toBe("Review the workspace");
-
-    transport.commandsValue = [
-      {
-        name: "long-description",
-        description: `${"x".repeat(600)}   `,
-        template: "Long $ARGUMENTS",
-        hints: [],
-      },
-    ];
-    const longCatalog = await commands.list();
-    if (!longCatalog.ok) throw new Error(longCatalog.error.message);
-    const longCommand = longCatalog.value.commands.find(
-      ({ invocation }) => invocation === "/long-description",
-    );
-    expect(longCommand?.description).toHaveLength(512);
-    expect(longCommand?.description?.endsWith("...")).toBe(true);
-    transport.commandsValue = [
-      {
-        name: "review",
-        description: "Review the workspace",
-        template: "Review $ARGUMENTS",
-        hints: ["focus"],
-      },
-    ];
-    const iterator = session.outputs[Symbol.asyncIterator]();
-
+    expect(catalog).toEqual({ ok: true, value: adapter.commandCatalog });
+    expect(adapter.commandCatalog.commands).toEqual([
+      expect.objectContaining({ id: "opencode.compact", invocation: "/compact" }),
+    ]);
     await expect(
       commands.execute({
         turnId: hostTurnIdSchema.parse("native-command"),
-        commandId: review.id,
+        commandId: "opencode.command.cmV2aWV3",
         arguments: { text: "security" },
       }),
-    ).resolves.toEqual({ ok: true, value: { turnId: "native-command" } });
-    expect(transport.commandCalls).toEqual([
-      expect.objectContaining({ command: "review", arguments: "security" }),
-    ]);
-    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
-    const command = transport.commandCalls.at(-1);
-    if (!command?.messageID) throw new Error("OpenCode native command has no Message ID");
-    transport.messages
-      .get(command.sessionID)
-      ?.push(assistantMessage("assistant-command", command.messageID));
-    transport.status = { type: "idle" };
-    transport.emit({
-      id: "command-idle",
-      type: "session.idle",
-      properties: { sessionID: command.sessionID },
-    });
-    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed" });
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(discover).not.toHaveBeenCalled();
+    expect(transport.commandCalls).toEqual([]);
+    const iterator = session.outputs[Symbol.asyncIterator]();
 
     await expect(
       commands.execute({
@@ -1259,6 +1239,111 @@ describe("OpenCode HarnessAdapter", () => {
     await session.close();
     await adapter.close();
   });
+
+  it.each(["text", "reasoning"] as const)(
+    "streams %s deltas after an empty initial Part",
+    async (type) => {
+      const { adapter, session, transport } = await openFixture();
+      const outputs: HarnessOutput[] = [];
+      const consumed = (async () => {
+        for await (const output of session.outputs) outputs.push(output);
+      })();
+      try {
+        await session.execute(turn("empty-part-stream"));
+        const promptID = transport.promptCalls.at(-1)?.messageID;
+        if (!promptID) throw new Error("OpenCode prompt has no Message ID");
+        const info = assistantMessage("assistant-live", promptID).info;
+        if (info.role !== "assistant") throw new Error("Expected an Assistant Message");
+        info.time = { created: 2 };
+        delete info.finish;
+        transport.emit({
+          id: "assistant-stream",
+          type: "message.updated",
+          properties: { sessionID: "session-1", info },
+        });
+        const part: Extract<Part, { type: "text" | "reasoning" }> = {
+          id: "empty-part",
+          sessionID: "session-1",
+          messageID: "assistant-live",
+          type,
+          text: "",
+          time: { start: 1 },
+        };
+        transport.emit({
+          id: "part-start",
+          type: "message.part.updated",
+          properties: { sessionID: "session-1", part, time: 1 },
+        });
+        for (const delta of ["first", " second"]) {
+          transport.emit({
+            id: `delta-${delta}`,
+            type: "message.part.delta",
+            properties: {
+              sessionID: "session-1",
+              messageID: "assistant-live",
+              partID: part.id,
+              field: "text",
+              delta,
+            },
+          });
+        }
+        await vi.waitFor(() =>
+          expect(
+            outputs.filter(
+              (output) => output.kind === "event" && output.event.type === "item.updated",
+            ),
+          ).toHaveLength(2),
+        );
+        expect(
+          outputs.some(
+            (output) => output.kind === "event" && output.event.type === "turn.completed",
+          ),
+        ).toBe(false);
+        expect(
+          outputs.filter(
+            (output) => output.kind === "event" && output.event.type === "item.updated",
+          ),
+        ).toMatchObject([
+          { event: { update: { type: "text.append", text: "first" } } },
+          { event: { update: { type: "text.append", text: " second" } } },
+        ]);
+        transport.emit({
+          id: "part-end",
+          type: "message.part.updated",
+          properties: {
+            sessionID: "session-1",
+            part: { ...part, text: "first second", time: { start: 1, end: 2 } },
+            time: 2,
+          },
+        });
+        await vi.waitFor(() =>
+          expect(
+            outputs.some(
+              (output) => output.kind === "event" && output.event.type === "item.completed",
+            ),
+          ).toBe(true),
+        );
+        expect(
+          outputs.filter(
+            (output) => output.kind === "event" && output.event.type === "item.updated",
+          ),
+        ).toHaveLength(2);
+        appendTerminal(transport, [{ ...part, text: "first second", time: { start: 1, end: 2 } }]);
+        await completeAfterBusy(transport);
+        await vi.waitFor(() =>
+          expect(
+            outputs.some(
+              (output) => output.kind === "event" && output.event.type === "turn.completed",
+            ),
+          ).toBe(true),
+        );
+      } finally {
+        await session.close();
+        await adapter.close();
+        await consumed;
+      }
+    },
+  );
 
   it("waits for Part identity before projecting an early delta", async () => {
     const { adapter, session, transport } = await openFixture();
@@ -1557,23 +1642,20 @@ describe("OpenCode HarnessAdapter", () => {
       sourceRef,
       cwd,
     });
-    expect(rollbackTransport.forkCalls).toEqual([]);
-    expect(rollbackTransport.revertCalls).toEqual([
-      { sessionID: "session-1", messageID: "user-2" },
-    ]);
-    expect(rollbackFixture.session.initialState.nativeRef?.nativeSessionId).toBe("session-1");
+    expect(rollbackTransport.revertCalls).toEqual([]);
+    expect(rollbackTransport.forkCalls).toEqual([{ sessionID: "session-1", messageID: "user-2" }]);
+    expect(rollbackFixture.session.initialState.nativeRef?.nativeSessionId).toBe("session-fork");
     await expect(rollbackFixture.session.readSnapshot()).resolves.toMatchObject({
       ok: true,
       value: { turns: [{ input: [{ text: "one" }] }] },
     });
-    expect(rollbackTransport.sessions.get("session-1")?.revert).toMatchObject({
-      messageID: "user-2",
-    });
+    expect(rollbackTransport.sessions.get("session-1")?.revert).toBeUndefined();
+    expect(rollbackTransport.messages.get("session-1")).toEqual(sourceMessages);
     await rollbackFixture.session.close();
     await rollbackFixture.adapter.close();
   });
 
-  it("restores a reverted source Session when attachment fails", async () => {
+  it("preserves the source and deletes only the candidate when attachment fails", async () => {
     const transport = new FakeOpenCodeTransport();
     transport.messages.set("session-1", [
       userMessage("user-1", "one"),
@@ -1593,13 +1675,236 @@ describe("OpenCode HarnessAdapter", () => {
         ok: false,
       },
     );
-    expect(transport.forkCalls).toEqual([]);
-    expect(transport.revertCalls).toEqual([{ sessionID: "session-1", messageID: "user-1" }]);
-    expect(transport.unrevertCalls).toEqual(["session-1"]);
+    expect(transport.forkCalls).toEqual([{ sessionID: "session-1", messageID: "user-1" }]);
+    expect(transport.revertCalls).toEqual([]);
+    expect(transport.unrevertCalls).toEqual([]);
+    expect(transport.sessions.has("session-fork")).toBe(false);
     expect(transport.sessions.get("session-1")?.revert).toBeUndefined();
     expect(transport.sessions.get("session-1")).not.toHaveProperty("revert");
     await adapter.close();
   });
+  for (const kind of ["fork", "rollbackLastTurn"] as const) {
+    for (const failure of [
+      "source-id",
+      "changed-source",
+      "wrong-prefix",
+      "diff-read",
+      "permission",
+      "busy",
+    ] as const) {
+      it(`rejects ${failure} during ${kind} without deleting the source`, async () => {
+        const transport = new FakeOpenCodeTransport();
+        const originalMessages = [
+          userMessage("user-1", "one"),
+          assistantMessage("assistant-1", "user-1"),
+          userMessage("user-2", "two"),
+          assistantMessage("assistant-2", "user-2"),
+        ];
+        transport.messages.set("session-1", structuredClone(originalMessages));
+        const sourceRef = nativeSessionRefSchema.parse({
+          harnessId: "opencode",
+          nativeSessionId: "session-1",
+          locator: { directory: cwd },
+          formatVersion: 1,
+        });
+        const checkpoint = nativeCheckpointRefSchema.parse({
+          harnessId: "opencode",
+          nativeSessionId: "session-1",
+          formatVersion: 1,
+          checkpointId: "assistant-1",
+        });
+        const fork = transport.forkSession.bind(transport);
+        vi.spyOn(transport, "forkSession").mockImplementation(async (...args) => {
+          if (failure === "source-id") return transport.getSession("session-1");
+          const candidate = await fork(...args);
+          if (failure === "changed-source")
+            transport.messages.get("session-1")?.push(userMessage("user-3", "external write"));
+          if (failure === "wrong-prefix")
+            transport.messages.set(candidate.id, [
+              userMessage("wrong-user", "corrupted"),
+              assistantMessage("wrong-assistant", "wrong-user"),
+            ]);
+          return candidate;
+        });
+        if (failure === "diff-read")
+          vi.spyOn(transport, "getDiff").mockRejectedValue(new Error("unreadable diff"));
+        if (failure === "permission") {
+          (await transport.getSession("session-1")).permission = [
+            { permission: "*", pattern: "*", action: "deny" },
+          ];
+          vi.spyOn(transport, "updateSessionPermission").mockImplementation(async (id) =>
+            transport.getSession(id),
+          );
+        }
+        if (failure === "busy") transport.status = { type: "busy" };
+        const adapter = adapterFor(transport);
+        const result = await adapter.open(
+          kind === "fork" ? { kind, sourceRef, checkpoint, cwd } : { kind, sourceRef, cwd },
+        );
+        expect(result.ok).toBe(false);
+        expect(transport.sessions.has("session-1")).toBe(true);
+        expect(transport.sessions.has("session-fork")).toBe(false);
+        expect(transport.revertCalls).toEqual([]);
+        if (failure !== "changed-source")
+          expect(transport.messages.get("session-1")).toEqual(originalMessages);
+        await adapter.close();
+      });
+    }
+  }
+
+  it("persists empty rollback selection and permissions across Adapter restart", async () => {
+    const transport = new FakeOpenCodeTransport();
+    transport.messages.set("session-1", [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1"),
+    ]);
+    const source = await transport.getSession("session-1");
+    source.model = { providerID: "provider-1", id: "model-1", variant: "high" };
+    source.permission = [{ permission: "*", pattern: "*", action: "allow" }];
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      locator: { directory: cwd },
+      formatVersion: 1,
+    });
+    let adapter = adapterFor(transport);
+    const result = await adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd });
+    if (!result.ok || !result.value.initialState.nativeRef) throw new Error("rollback failed");
+    const nativeRef = result.value.initialState.nativeRef;
+    const expected = {
+      effectiveModel: encodeOpenCodeModelRef({ providerID: "provider-1", modelID: "model-1" }),
+      effectiveThinkingOptionId: encodeOpenCodeVariant("high"),
+      effectivePermissionModeId: "allow",
+    };
+    expect(result.value.initialState).toMatchObject(expected);
+    await adapter.close();
+    adapter = adapterFor(transport);
+    const resumed = await adapter.open({ kind: "resume", nativeRef, cwd });
+    if (!resumed.ok) throw new Error(resumed.error.message);
+    expect(resumed.value.initialState).toMatchObject(expected);
+    await expect(resumed.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [] },
+    });
+    await adapter.close();
+  });
+
+  it("rejects turn.steer without submitting another prompt", async () => {
+    const { adapter, session, transport } = await openFixture();
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(turn("running", "work"));
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
+    expect(session.capabilities.steer).toBeUndefined();
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("running"),
+        input: [{ type: "text", text: "insert" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("other"),
+        input: [{ type: "text", text: "insert" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(transport.promptCalls).toHaveLength(1);
+    await expect(session.execute(turn("again"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    await session.close();
+    await adapter.close();
+  });
+
+  it("waits for native idle after an abort error before admitting another Turn", async () => {
+    const { adapter, session, transport } = await openFixture();
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const active = turn("cancel-busy");
+    await session.execute(active);
+    await nextEvent(iterator);
+    transport.status = { type: "busy" };
+    await session.execute({ type: "turn.cancel", turnId: active.turnId });
+    transport.emit({
+      id: "early-abort",
+      type: "session.error",
+      properties: {
+        sessionID: "session-1",
+        error: { name: "MessageAbortedError", data: { message: "aborted" } },
+      },
+    });
+    await flush();
+    await expect(session.execute(turn("too-early"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    appendTerminal(transport, [], { name: "MessageAbortedError", data: { message: "aborted" } });
+    transport.status = { type: "idle" };
+    transport.emit({ id: "settled", type: "session.idle", properties: { sessionID: "session-1" } });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
+    await expect(session.execute(turn("follow-up"))).resolves.toMatchObject({ ok: true });
+    appendTerminal(transport);
+    await completeAfterBusy(transport);
+    await session.close();
+    await adapter.close();
+  });
+  it("settles idle cancellation even before an Assistant message is persisted", async () => {
+    const { adapter, session, transport } = await openFixture();
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const active = turn("cancel-before-assistant");
+    await session.execute(active);
+    await nextEvent(iterator);
+    await session.execute({ type: "turn.cancel", turnId: active.turnId });
+    transport.emit({ id: "idle", type: "session.idle", properties: { sessionID: "session-1" } });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
+    await adapter.close();
+  });
+
+  for (const failure of ["missing-patch", "partial-diff", "wrong-worktree"] as const) {
+    it(`rejects ${failure} without manufacturing complete FileChange history`, async () => {
+      const transport = new FakeOpenCodeTransport();
+      transport.messages.set("session-1", [
+        userMessage("user-1", "one"),
+        assistantMessage("assistant-1", "user-1", [
+          {
+            id: "patch-1",
+            sessionID: "session-1",
+            messageID: "assistant-1",
+            type: "patch",
+            hash: "hash",
+            files: ["file.txt"],
+          },
+        ]),
+      ]);
+      if (failure === "partial-diff")
+        transport.diffs.set("user-1", [{ file: "file.txt", additions: 1, deletions: 1 }]);
+      if (failure === "wrong-worktree")
+        vi.spyOn(transport, "getPaths").mockResolvedValue({
+          directory: "/other",
+          worktree: "/other",
+        });
+      const adapter = adapterFor(transport);
+      const sourceRef = nativeSessionRefSchema.parse({
+        harnessId: "opencode",
+        nativeSessionId: "session-1",
+        locator: { directory: cwd },
+        formatVersion: 1,
+      });
+      await expect(
+        adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "protocolError" } });
+      expect(transport.forkCalls).toEqual([]);
+      expect(transport.sessions.has("session-1")).toBe(true);
+      await adapter.close();
+    });
+  }
 });
 
 function adapterFor(transport: FakeOpenCodeTransport): OpenCodeAdapter {

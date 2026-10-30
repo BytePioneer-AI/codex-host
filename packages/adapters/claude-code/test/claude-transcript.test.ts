@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -28,6 +28,71 @@ function message(type: "user" | "assistant", uuid: string, content: unknown) {
 }
 
 describe("Claude transcript reader", () => {
+  it.each([false, true])(
+    "normalizes repeated UUIDs before projection, retaining their order and latest record (updated=%s)",
+    async (updated) => {
+      const configDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-claude-"));
+      directories.push(configDirectory);
+      const cwd = "/work/project";
+      const transcriptDirectory = path.join(configDirectory, "projects", projectDirectoryName(cwd));
+      await mkdir(transcriptDirectory, { recursive: true });
+      const file = path.join(transcriptDirectory, "session-1.jsonl");
+      const firstUser = {
+        ...message("user", "user-1", "first prompt"),
+        slug: "original",
+        promptId: "prompt-1",
+      };
+      const firstAssistant = message("assistant", "assistant-1", "first response");
+      const latestUser = updated
+        ? { ...message("user", "user-1", "first prompt"), slug: "rewritten" }
+        : firstUser;
+      const latestAssistant = updated
+        ? message("assistant", "assistant-1", "updated response")
+        : firstAssistant;
+      const secondTurn = [
+        message("user", "user-2", "second prompt"),
+        message("assistant", "assistant-2", "second response"),
+      ];
+      // Re-appended records may follow newer messages and need not repeat in original order.
+      const contents = [firstUser, firstAssistant, ...secondTurn, latestAssistant, latestUser]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n");
+      await writeFile(file, contents, "utf8");
+      const input = {
+        cwd,
+        environment: { CLAUDE_CONFIG_DIR: configDirectory },
+        sessionId: "session-1",
+      };
+
+      const transcript = await readClaudeTranscript(input);
+
+      expect(transcript).toEqual(
+        [latestUser, latestAssistant, ...secondTurn].map((entry) => ({
+          ...entry,
+          session_id: "session-1",
+        })),
+      );
+      expect(transcript && mapClaudeSnapshot(transcript, "session-1").turns).toMatchObject([
+        {
+          nativeTurnRef: { nativeTurnKey: "user-1" },
+          input: [{ type: "text", text: "first prompt" }],
+          items: [
+            {
+              item: { type: "agentMessage", text: updated ? "updated response" : "first response" },
+            },
+          ],
+        },
+        {
+          nativeTurnRef: { nativeTurnKey: "user-2" },
+          input: [{ type: "text", text: "second prompt" }],
+          items: [{ item: { type: "agentMessage", text: "second response" } }],
+        },
+      ]);
+      expect(await readClaudeTranscript(input)).toEqual(transcript);
+      expect(await readFile(file, "utf8")).toBe(contents);
+    },
+  );
+
   it("reads all main-session messages in append order instead of following one parent branch", async () => {
     const configDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-claude-"));
     directories.push(configDirectory);

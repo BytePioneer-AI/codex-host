@@ -93,6 +93,14 @@ export function findSourceBoundaryViolations({
   const violations = [];
 
   for (const specifier of moduleSpecifiers(sourceText, filePath)) {
+    if (
+      isInside(filePath, resolve(packagesDirectory, "host-runtime", "src")) &&
+      specifier.startsWith("@codexhost/adapter-")
+    ) {
+      violations.push(
+        `${filePath}: Host Runtime must load installed plugins, not import '${specifier}'`,
+      );
+    }
     if (isInside(filePath, rendererDirectory) && isForbiddenLocalRuntimeImport(specifier)) {
       violations.push(`${filePath}: Renderer cannot import '${specifier}'`);
     }

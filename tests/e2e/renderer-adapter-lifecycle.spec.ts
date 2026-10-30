@@ -1,8 +1,18 @@
 import { expect, test, type Page } from "@playwright/test";
 import { build } from "esbuild";
 import path from "node:path";
+import {
+  encodeHarnessPluginRoute,
+  harnessIdSchema,
+  harnessModelRefSchema,
+} from "@codexhost/shared-contracts";
+import { tailwindEsbuildPlugin } from "../../packages/renderer-extension/scripts/tailwind-esbuild-plugin.mjs";
 
-const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+type RecordedRequest = {
+  method: string;
+  params: { model?: string; threadId?: string; input?: unknown[] };
+};
+
 const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
 if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecutable } });
 
@@ -10,163 +20,122 @@ const { outputFiles } = await build({
   stdin: {
     contents: `
       import { installCurrentRendererAdapter } from "./packages/renderer-extension/src/versioned-renderer-adapter.ts";
-
-      const counters = new Map();
-      const managers = new Map();
-      let managerSequence = 0;
-      let policySequence = 0;
-      let throwOnSelect = false;
-      let throwOnNonNullSelect = false;
-
-      const createManager = (hostId) => {
-        const id = \`manager-\${++managerSequence}\`;
-        const counter = { requestCalls: 0 };
-        counters.set(id, counter);
-        const manager = {
-          id,
-          hostId,
-          sendRequest: async () => {
-            counter.requestCalls += 1;
-            return {
-              threadId: "thread-lifecycle",
-              usage: { inputTokens: 1 },
-            };
-          },
-          prewarmThreadStart: () => undefined,
-          enqueueRequest: () => undefined,
-        };
-        managers.set(id, manager);
-        return manager;
-      };
-
-      const createPolicy = (hostId, requestTarget) => {
-        const id = \`policy-\${++policySequence}\`;
-        const counter = { selections: 0, requestTargetReads: 0 };
-        counters.set(id, counter);
-        const policy = {
-          id,
-          state: "ready",
-          hostId,
-          select: (selection) => {
-            counter.selections += 1;
-            if (throwOnSelect || (throwOnNonNullSelect && selection !== null)) {
-              throw new Error("synthetic policy selection failure");
-            }
-            return true;
-          },
-          clear: async () => undefined,
-        };
-        if (requestTarget !== undefined) {
-          policy.requestTarget = () => {
-            counter.requestTargetReads += 1;
-            return requestTarget;
+      import { installRendererDraftPrewarmPolicyDirect } from "./packages/desktop-control/src/renderer-draft-prewarm-policy.ts";
+      globalThis.setupHostRoutes = async (initialHostId, config = {}) => {
+        const createManager = (hostId) => {
+          const calls = [], created = [];
+          let warmed = null;
+          const pool = {
+            hasPrewarmedThread: () => warmed !== null,
+            consumePrewarmedThread: async () => { const result = warmed; warmed = null; return result; },
+            deletePrewarmedThread: () => undefined,
+            discardAllPrewarmedThreads: () => { warmed = null; },
           };
-        }
-        return policy;
-      };
-
-      globalThis.setupAdapterLifecycle = () => {
-        document.body.replaceChildren();
+          const requestClient = {
+            hostId,
+            sendRequest: async (method, params) => {
+              calls.push({ method, params });
+              if (method === "codexhost/settings/idle-release/set") return params;
+              if (method === "thread/start") {
+                const response = { thread: { id: "thread-" + calls.length }, model: params.model };
+                created.push(response);
+                return response;
+              }
+              return { threadId: "thread-test", usage: null };
+            },
+            prewarmThreadStart: () => undefined,
+            enqueueRequest: () => undefined,
+            onResult: () => undefined,
+            onError: () => undefined,
+          };
+          return {
+            calls, created, requestClient, seedPrewarm: value => { warmed = value; },
+            threadCreation: {
+              params: { prewarmedThreadManager: pool },
+              async createConversation(input) {
+                await Promise.resolve();
+                let prepared = null;
+                if (this.params.prewarmedThreadManager.hasPrewarmedThread(input.cwd))
+                  prepared = await this.params.prewarmedThreadManager.consumePrewarmedThread(input.cwd);
+                return prepared?.response ?? requestClient.sendRequest("thread/start", { model: input.collaborationMode.settings.model, cwd: input.cwd });
+              },
+            },
+            async startConversation(input, options) {
+              const response = await this.threadCreation.createConversation(input);
+              if (input.input.length) await this.sendRequest("turn/start", { threadId: response.thread.id, input: input.input, collaborationMode: input.collaborationMode });
+              return response;
+            },
+            getHostId: () => hostId,
+            sendRequest(method, params) { return this.requestClient.sendRequest(method, params); },
+            prewarmedThreadManager: pool,
+            onNotification: () => undefined,
+            onRequest: () => undefined,
+            dispatchAppServerResponse: () => undefined,
+          };
+        };
+        const local = createManager("local");
+        const remote = createManager("remote-ssh-discovered:linux");
+        const managers = new Map([["local", local], [remote.getHostId(), remote]]);
+        const registry = {
+          addManager: () => undefined,
+          getForHostId: (hostId) => managers.get(hostId),
+          waitForManagerForHostId: () => undefined,
+        };
         const editor = document.createElement("div");
         editor.setAttribute("data-codex-composer", "true");
         editor.setAttribute("data-codex-composer-root", "true");
-        editor.setAttribute("contenteditable", "true");
-        editor.setAttribute("role", "textbox");
-        const portal = document.createElement("div");
-        portal.setAttribute("data-above-composer-portal", "true");
-        portal.setAttribute("data-above-composer-conversation-id", "thread-displayed-old");
-        editor.append(portal);
-        const initialManager = createManager("remote-ssh-discovered:initial");
-        const managerHook = { memoizedState: initialManager, next: null };
-        Object.defineProperty(editor, "__reactFiber$lifecycle", {
-          configurable: true,
-          value: { memoizedState: managerHook, return: null },
+        const fiber = {
+          memoizedProps: { executionTargetHostId: initialHostId },
+          memoizedState: { memoizedState: registry, next: { memoizedState: local, next: null } },
+          return: null,
+        };
+        let draft = { modelSettings: config.emptyDraft ? null : { model: "native-model", reasoningEffort: "high" }, isManuallyChanged: false };
+        const usesAccountPreferences = config.usesAccountPreferences ?? false;
+        const updateDraft = (update) => {
+          draft = update(draft);
+          row[10] = draft;
+          row[13].draftSettings = draft;
+        };
+        const row = Array(14).fill(null);
+        Object.assign(row, { 6: "client-new-thread:fixture", 7: "client-new-thread:fixture", 9: updateDraft,
+          10: draft, 11: true, 12: updateDraft, 13: { draftSettings: draft, isNewThreadDraft: true, updateDraftSettings: updateDraft } });
+        const modelContext = { usesAccountPreferences, modelSettings: { model: "native-model", reasoningEffort: "high" } };
+        const modelRow = Array(24).fill(null);
+        const setModel = () => {};
+        Object.assign(modelRow, { 7: null, 10: true, 12: modelContext, 13: updateDraft, 14: setModel,
+          20: setModel, 21: modelContext, 23: { ...modelContext,
+            modelSettings: { ...modelContext.modelSettings, model: config.reserveActive ? "gpt-reserve" : "native-model" },
+            setModelAndReasoningEffort: setModel } });
+        const nativeMode = { mode: "default", settings: { model: config.reserveActive ? "gpt-reserve" : "native-model", reasoning_effort: "high" } };
+        const modeRow = Array(52).fill(null);
+        Object.assign(modeRow, { 39: modelRow[23].modelSettings.model, 40: modelContext.modelSettings.reasoningEffort,
+          41: nativeMode.settings, 44: nativeMode, 49: nativeMode, 51: { activeMode: nativeMode } });
+        const secondUpdate = update => updateDraft(update);
+        const secondDraftRow = Object.assign([...row], { 9: secondUpdate, 12: secondUpdate,
+          13: { draftSettings: draft, isNewThreadDraft: true, updateDraftSettings: secondUpdate } });
+        const secondModelRow = Object.assign([...modelRow], { 13: secondUpdate });
+        fiber.updateQueue = { memoCache: { data: [row, modeRow, modelRow, secondDraftRow, secondModelRow] } };
+        Object.defineProperty(editor, "__reactFiber$host", { value: fiber });
+        const form = document.createElement("form");
+        form.innerHTML = '<button type="submit">Send</button>';
+        form.prepend(editor);
+        form.addEventListener("submit", event => {
+          event.preventDefault();
+          // Desktop 26.1021 Hlo accepts a scoped Model only in its current settings mode.
+          const settings = draft.modelSettings?.usesAccountPreferences === usesAccountPreferences
+            ? draft.modelSettings : { model: "native-model", reasoningEffort: "high" };
+          const model = config.reserveActive ? "gpt-reserve" : settings.model;
+          const collaborationMode = { ...nativeMode, settings: { ...nativeMode.settings, model } };
+          void local.startConversation({ cwd: "/same-cwd", collaborationMode, input: [{ type: "text", text: "regression message" }] }, { clientThreadId: config.background ? "client-new-thread:background" : "client-new-thread:fixture" });
         });
-        document.body.append(editor);
-
-        const initialPolicy = createPolicy(initialManager.hostId);
-        window.__codexhostMainProcessTitlePolicyV1 = { state: "ready" };
-        window.__codexhostDraftPrewarmPolicyV1 = initialPolicy;
+        document.body.replaceChildren(form);
+        await installRendererDraftPrewarmPolicyDirect({ evaluate: (source) => (0, eval)(source) });
         const adapter = installCurrentRendererAdapter();
-
-        const state = {
-          adapter,
-          initialManager,
-          initialPolicy,
-          portal,
-          managerHook,
-          replacementManager: null,
-          replacementPolicy: null,
-        };
-        globalThis.__adapterLifecycleState = state;
-        return {
-          initialManagerId: initialManager.id,
-          initialPolicyId: initialPolicy.id,
-        };
+        globalThis.hostRoutes = { adapter, fiber, local, remote, managers, createManager, editor, readDraft: () => draft };
       };
-
-      globalThis.replaceAdapterRoute = (withManager) => {
-        const state = globalThis.__adapterLifecycleState;
-        const replacementManager = createManager("remote-ssh-discovered:replacement");
-        const replacementPolicy = createPolicy(replacementManager.hostId);
-        state.replacementManager = replacementManager;
-        state.replacementPolicy = replacementPolicy;
-        state.managerHook.memoizedState = withManager ? replacementManager : {};
-        window.__codexhostDraftPrewarmPolicyV1 = replacementPolicy;
-        return {
-          replacementManagerId: replacementManager.id,
-          replacementPolicyId: replacementPolicy.id,
-        };
-      };
-
-      globalThis.replaceAdapterRouteWithExactTarget = (mode) => {
-        const state = globalThis.__adapterLifecycleState;
-        const replacementManager = createManager("remote-ssh-discovered:replacement");
-        const exactTarget =
-          mode === "valid"
-            ? replacementManager
-            : mode === "host-mismatch"
-              ? createManager("remote-ssh-discovered:other")
-              : {};
-        const replacementPolicy = createPolicy(replacementManager.hostId, exactTarget);
-        state.replacementManager = replacementManager;
-        state.replacementPolicy = replacementPolicy;
-        state.managerHook.memoizedState = mode === "valid" ? {} : replacementManager;
-        window.__codexhostDraftPrewarmPolicyV1 = replacementPolicy;
-        return {
-          replacementManagerId: replacementManager.id,
-          replacementPolicyId: replacementPolicy.id,
-        };
-      };
-
-      globalThis.revealReplacementManager = () => {
-        const state = globalThis.__adapterLifecycleState;
-        state.managerHook.memoizedState = state.replacementManager;
-      };
-      globalThis.publishRendererMutation = () => {
-        const marker = document.createElement("div");
-        marker.textContent = "route discovery changed";
-        document.body.append(marker);
-      };
-
-      globalThis.readCurrentHostId = () =>
-        globalThis.__adapterLifecycleState.adapter.modelControl?.currentHostId?.() ?? null;
-      globalThis.publishRouteChange = () =>
-        window.dispatchEvent(new CustomEvent("codexhost:draft-prewarm-policy-changed"));
-      globalThis.enablePolicyCleanupFailure = () => { throwOnSelect = true; };
-      globalThis.enablePolicySelectionFailure = () => { throwOnNonNullSelect = true; };
-      globalThis.disposeAdapter = () => {
-        try {
-          globalThis.__adapterLifecycleState.adapter.dispose();
-          return null;
-        } catch (error) {
-          return error instanceof Error ? error.message : String(error);
-        }
-      };
-      globalThis.readLifecycleCounter = (id) => counters.get(id);
     `,
-    resolveDir: repositoryRoot,
-    sourcefile: "renderer-adapter-lifecycle-e2e-entry.ts",
+    resolveDir: path.resolve(import.meta.dirname, "../.."),
+    sourcefile: "renderer-host-routing-e2e.ts",
     loader: "ts",
   },
   bundle: true,
@@ -174,249 +143,385 @@ const { outputFiles } = await build({
   platform: "browser",
   target: "es2024",
   loader: { ".css": "text", ".png": "dataurl", ".svg": "dataurl" },
+  plugins: [tailwindEsbuildPlugin()],
   write: false,
 });
+const bundle = outputFiles[0]?.text;
+if (!bundle) throw new Error("Host routing browser bundle was not generated");
+const browserBundle: string = bundle;
 
-const browserBundle = outputFiles[0]?.text;
-if (!browserBundle) throw new Error("Renderer adapter lifecycle E2E bundle was not generated");
-const browserBundleText: string = browserBundle;
-
-async function setup(page: Page): Promise<{
-  initialManagerId: string;
-  initialPolicyId: string;
-}> {
-  await page.route("https://codexhost.test/**", async (route) => {
-    await route.fulfill({ contentType: "text/html", body: "<!doctype html><body></body>" });
-  });
+async function setup(
+  page: Page,
+  hostId: string,
+  config: Record<string, unknown> = {},
+): Promise<void> {
+  await page.route("https://codexhost.test/**", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><body></body>" }),
+  );
   await page.goto("https://codexhost.test/");
-  await page.addScriptTag({ content: browserBundleText });
-  return page.evaluate(() => {
-    const setupAdapterLifecycle = Reflect.get(globalThis, "setupAdapterLifecycle");
-    if (typeof setupAdapterLifecycle !== "function") {
-      throw new Error("Adapter lifecycle setup is unavailable");
-    }
-    return setupAdapterLifecycle();
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(
+    ({ hostId, config }) => Reflect.get(globalThis, "setupHostRoutes")(hostId, config),
+    { hostId, config },
+  );
+}
+
+for (const hostId of ["local", "remote-ssh-discovered:linux"]) {
+  test(`both Hosts remain usable when ${hostId} opens first`, async ({ page }) => {
+    await setup(page, hostId);
+    const result = await page.evaluate(async () => {
+      const state = Reflect.get(globalThis, "hostRoutes");
+      const control = state.adapter.modelControl;
+      const local = control.clientForHost("local");
+      const remote = control.clientForHost(state.remote.getHostId());
+      await Promise.all([
+        local.inspectThreadUsage({ threadId: "thread-test" }),
+        remote.inspectThreadUsage({ threadId: "thread-test" }),
+      ]);
+      const switched = [];
+      for (const next of ["local", state.remote.getHostId(), "local"]) {
+        state.fiber.memoizedProps.executionTargetHostId = next;
+        switched.push(control.currentHostId());
+        await control.inspectThreadUsage({ threadId: "thread-test" });
+      }
+      return {
+        switched,
+        stableLocal: local === control.clientForHost("local"),
+        stableRemote: remote === control.clientForHost(state.remote.getHostId()),
+        localCalls: state.local.calls.filter(
+          (call: RecordedRequest) => call.method === "codexhost/thread/usage/inspect",
+        ).length,
+        remoteCalls: state.remote.calls.filter(
+          (call: RecordedRequest) => call.method === "codexhost/thread/usage/inspect",
+        ).length,
+      };
+    });
+    expect(result).toEqual({
+      switched: ["local", "remote-ssh-discovered:linux", "local"],
+      stableLocal: true,
+      stableRemote: true,
+      localCalls: 3,
+      remoteCalls: 2,
+    });
   });
 }
 
-async function replaceRoute(
-  page: Page,
-  withManager: boolean,
-): Promise<{ replacementManagerId: string; replacementPolicyId: string }> {
-  return page.evaluate((managerReady) => {
-    const replaceAdapterRoute = Reflect.get(globalThis, "replaceAdapterRoute");
-    if (typeof replaceAdapterRoute !== "function") {
-      throw new Error("Adapter route replacement is unavailable");
+test("native disconnection retires only that Host, including while settings hide the Composer", async ({
+  page,
+}) => {
+  await setup(page, "remote-ssh-discovered:linux");
+  const result = await page.evaluate(async () => {
+    const state = Reflect.get(globalThis, "hostRoutes");
+    const control = state.adapter.modelControl;
+    const local = control.clientForHost("local");
+    const remote = control.clientForHost(state.remote.getHostId());
+    state.editor.remove();
+    state.managers.delete(state.remote.getHostId());
+    const missing = control.clientForHost(state.remote.getHostId());
+    let retired = false;
+    try {
+      await remote.inspectThreadUsage({ threadId: "thread-test" });
+    } catch {
+      retired = true;
     }
-    return replaceAdapterRoute(managerReady);
-  }, withManager);
-}
-
-async function counter(
-  page: Page,
-  id: string,
-): Promise<{
-  requestCalls?: number;
-  selections?: number;
-  requestTargetReads?: number;
-}> {
-  return page.evaluate((counterId) => {
-    const readLifecycleCounter = Reflect.get(globalThis, "readLifecycleCounter");
-    if (typeof readLifecycleCounter !== "function") {
-      throw new Error("Adapter lifecycle counter is unavailable");
-    }
-    return readLifecycleCounter(counterId);
-  }, id);
-}
-
-async function replaceRouteWithExactTarget(
-  page: Page,
-  mode: "valid" | "malformed" | "host-mismatch",
-): Promise<{ replacementManagerId: string; replacementPolicyId: string }> {
-  return page.evaluate((targetMode) => {
-    const replace = Reflect.get(globalThis, "replaceAdapterRouteWithExactTarget");
-    if (typeof replace !== "function") {
-      throw new Error("Adapter exact route replacement is unavailable");
-    }
-    return replace(targetMode);
-  }, mode);
-}
-
-async function publishRouteChange(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const publish = Reflect.get(globalThis, "publishRouteChange");
-    if (typeof publish !== "function") {
-      throw new Error("Adapter route-change publisher is unavailable");
-    }
-    publish();
+    await local.inspectThreadUsage({ threadId: "thread-test" });
+    state.managers.set(state.remote.getHostId(), state.createManager(state.remote.getHostId()));
+    const replacement = control.clientForHost(state.remote.getHostId());
+    await replacement.inspectThreadUsage({ threadId: "thread-test" });
+    return {
+      missing: missing === null,
+      retired,
+      replaced: replacement !== remote,
+      localStable: control.clientForHost("local") === local,
+    };
   });
+  expect(result).toEqual({ missing: true, retired: true, replaced: true, localStable: true });
+});
+
+test("switching Hosts does not send a local external carrier to stock remote Codex", async ({
+  page,
+}) => {
+  await setup(page, "local");
+  const result = await page.evaluate(async () => {
+    const state = Reflect.get(globalThis, "hostRoutes");
+    state.adapter.applyAgent("pi", undefined, undefined, undefined, state.editor);
+    state.fiber.memoizedProps.executionTargetHostId = state.remote.getHostId();
+    state.adapter.modelControl.currentHostId();
+    state.adapter.applyAgent("codex", undefined, undefined, undefined, state.editor);
+    await state.remote.requestClient.sendRequest("thread/start", { model: "native-model" });
+    await state.local.requestClient.sendRequest("thread/start", { model: "native-model" });
+    state.adapter.dispose();
+    await state.local.requestClient.sendRequest("thread/start", { model: "native-model" });
+    return {
+      restoredDraft: state.readDraft().modelSettings.model,
+      remote: state.remote.calls
+        .filter((call: RecordedRequest) => call.method === "thread/start")
+        .map((call: RecordedRequest) => call.params.model),
+      local: state.local.calls
+        .filter((call: RecordedRequest) => call.method === "thread/start")
+        .map((call: RecordedRequest) => call.params.model),
+    };
+  });
+  expect(result).toEqual({
+    restoredDraft: "native-model",
+    remote: ["native-model"],
+    local: ["native-model", "native-model"],
+  });
+});
+
+test("only the identified external draft carries its selection into native request forwarding", async ({
+  page,
+}) => {
+  await setup(page, "local");
+  const result = await page.evaluate(async () => {
+    const state = Reflect.get(globalThis, "hostRoutes");
+    const selected = state.adapter.applyAgent(
+      "pi",
+      { id: "pi-test" },
+      undefined,
+      undefined,
+      state.editor,
+    );
+    const draft = state.readDraft();
+    await Promise.all([
+      state.local.requestClient.sendRequest("thread/start", { model: "official-task-model" }),
+      state.local.requestClient.sendRequest("thread/start", { model: draft.modelSettings.model }),
+    ]);
+    state.adapter.applyAgent("codex", undefined, undefined, undefined, state.editor);
+    return {
+      selected,
+      persist: draft.modelSettingsPersistAsDefault,
+      external: draft.modelSettings.model,
+      requests: state.local.calls
+        .filter((call: RecordedRequest) => call.method === "thread/start")
+        .map((call: RecordedRequest) => call.params.model),
+      restored: state.readDraft().modelSettings.model,
+    };
+  });
+  expect(result.selected).toBe(true);
+  expect(result.persist).toBe(false);
+  expect(result.external).toMatch(/^codexhost\//u);
+  expect(result.requests).toEqual(["official-task-model", result.external]);
+  expect(result.restored).toBe("native-model");
+});
+
+for (const reserveActive of [false, true]) {
+  for (const usesAccountPreferences of [false, true]) {
+    for (const agent of ["pi", "claude-code", "opencode"]) {
+      test(`Send creates and starts ${agent} with account preferences ${usesAccountPreferences} and reserve ${reserveActive}`, async ({
+        page,
+      }) => {
+        await setup(page, "local", { emptyDraft: true, usesAccountPreferences, reserveActive });
+        const applied = await page.evaluate((agent) => {
+          const state = Reflect.get(globalThis, "hostRoutes");
+          return state.adapter.applyAgent(
+            agent,
+            { id: "regression-model" },
+            undefined,
+            undefined,
+            state.editor,
+          );
+        }, agent);
+        expect(applied).toBe(true);
+        await page.getByRole("button", { name: "Send", exact: true }).click();
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () =>
+                Reflect.get(globalThis, "hostRoutes").local.calls.filter(
+                  (call: RecordedRequest) => call.method === "turn/start",
+                ).length,
+            ),
+          )
+          .toBe(1);
+        const calls: RecordedRequest[] = await page.evaluate(() =>
+          Reflect.get(globalThis, "hostRoutes").local.calls.filter((call: RecordedRequest) =>
+            ["thread/start", "turn/start"].includes(call.method),
+          ),
+        );
+        const createdThreadId = await page.evaluate(
+          () => Reflect.get(globalThis, "hostRoutes").local.created[0].thread.id,
+        );
+        expect(calls).toEqual([
+          {
+            method: "thread/start",
+            params: {
+              model: encodeHarnessPluginRoute({
+                harnessId: harnessIdSchema.parse(agent),
+                model: harnessModelRefSchema.parse({ id: "regression-model" }),
+              }),
+              cwd: "/same-cwd",
+            },
+          },
+          {
+            method: "turn/start",
+            params: {
+              threadId: createdThreadId,
+              input: [{ type: "text", text: "regression message" }],
+              collaborationMode: {
+                mode: "default",
+                settings: {
+                  model: encodeHarnessPluginRoute({
+                    harnessId: harnessIdSchema.parse(agent),
+                    model: harnessModelRefSchema.parse({ id: "regression-model" }),
+                  }),
+                  reasoning_effort: "high",
+                },
+              },
+            },
+          },
+        ]);
+      });
+    }
+  }
 }
 
-test("an active-route read moves requests to the resolved request manager", async ({ page }) => {
-  const initial = await setup(page);
-  const replacement = await replaceRoute(page, true);
-
+test("ordinary Send, official tasks and explicit external schedules retain independent routes", async ({
+  page,
+}) => {
+  await setup(page, "local", { emptyDraft: true, usesAccountPreferences: true });
+  const result = await page.evaluate(async () => {
+    const state = Reflect.get(globalThis, "hostRoutes");
+    state.adapter.applyAgent("pi", undefined, undefined, undefined, state.editor);
+    const ordinaryModel = state.readDraft().modelSettings.model;
+    state.local.seedPrewarm({
+      response: { thread: { id: "ordinary-prewarm" }, model: ordinaryModel },
+    });
+    await state.local.startConversation({
+      cwd: "/same-cwd",
+      collaborationMode: { mode: "default", settings: { model: "codexhost/claude-code-native" } },
+      input: [],
+    });
+    state.local.seedPrewarm({
+      response: { thread: { id: "ordinary-prewarm-2" }, model: ordinaryModel },
+    });
+    // Native task creation rejects a mismatched external prewarm and uses its own Model.
+    await state.local.startConversation({
+      cwd: "/same-cwd",
+      collaborationMode: { mode: "default", settings: { model: "official-task-model" } },
+      input: [],
+    });
+    return { ordinaryModel };
+  });
+  await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect
     .poll(() =>
-      page.evaluate(() => {
-        const readCurrentHostId = Reflect.get(globalThis, "readCurrentHostId");
-        if (typeof readCurrentHostId !== "function") return null;
-        return readCurrentHostId();
-      }),
+      page.evaluate(
+        () =>
+          Reflect.get(globalThis, "hostRoutes").local.calls.filter(
+            (call: RecordedRequest) => call.method === "turn/start",
+          ).length,
+      ),
     )
-    .toBe("remote-ssh-discovered:replacement");
-  await page.evaluate(async () => {
-    const state = Reflect.get(globalThis, "__adapterLifecycleState");
-    await state.adapter.modelControl.inspectThreadUsage({ threadId: "thread-lifecycle" });
-  });
-  expect(await counter(page, initial.initialManagerId)).toMatchObject({ requestCalls: 0 });
-  expect(await counter(page, replacement.replacementManagerId)).toMatchObject({ requestCalls: 1 });
+    .toBe(1);
+  const calls: RecordedRequest[] = await page.evaluate(
+    () => Reflect.get(globalThis, "hostRoutes").local.calls,
+  );
+  expect(
+    calls
+      .filter((call: RecordedRequest) => call.method === "thread/start")
+      .map((call) => call.params.model),
+  ).toEqual(["codexhost/claude-code-native", "official-task-model", result.ordinaryModel]);
+  expect(
+    calls.filter((call: RecordedRequest) => call.method === "codexhost/thread/prewarm/discard"),
+  ).toEqual([
+    { method: "codexhost/thread/prewarm/discard", params: { threadId: "ordinary-prewarm" } },
+    { method: "codexhost/thread/prewarm/discard", params: { threadId: "ordinary-prewarm-2" } },
+  ]);
+  expect(calls.find((call: RecordedRequest) => call.method === "turn/start")?.params.input).toEqual(
+    [{ type: "text", text: "regression message" }],
+  );
 });
 
-test("one policy event reconnects an exact request target without Fiber discovery or DOM mutation", async ({
-  page,
-}) => {
-  const initial = await setup(page);
-  const replacement = await replaceRouteWithExactTarget(page, "valid");
-
-  await publishRouteChange(page);
-  await publishRouteChange(page);
-
-  await page.evaluate(async () => {
-    const state = Reflect.get(globalThis, "__adapterLifecycleState");
-    await state.adapter.modelControl.inspectThreadUsage({ threadId: "thread-lifecycle" });
+test("a draft cannot borrow a Model settings mode from an unrelated setter", async ({ page }) => {
+  await setup(page, "local", { emptyDraft: true });
+  const result = await page.evaluate(() => {
+    const state = Reflect.get(globalThis, "hostRoutes");
+    state.fiber.updateQueue.memoCache.data[2][13] = () => {};
+    state.fiber.updateQueue.memoCache.data[4][13] = () => {};
+    return {
+      applied: state.adapter.applyAgent("pi", undefined, undefined, undefined, state.editor),
+      settings: state.readDraft().modelSettings,
+    };
   });
-  expect(await counter(page, initial.initialManagerId)).toMatchObject({ requestCalls: 0 });
-  expect(await counter(page, replacement.replacementManagerId)).toMatchObject({ requestCalls: 1 });
-  expect(await counter(page, replacement.replacementPolicyId)).toMatchObject({
-    selections: 1,
-  });
+  expect(result).toEqual({ applied: false, settings: null });
 });
 
-for (const mode of ["malformed", "host-mismatch"] as const) {
-  test(`a ${mode} exact request target fails closed without falling back to Fiber discovery`, async ({
-    page,
-  }) => {
-    const initial = await setup(page);
-    const replacement = await replaceRouteWithExactTarget(page, mode);
-
-    await publishRouteChange(page);
+test("background Send retains its originating external draft in reserve mode", async ({ page }) => {
+  await setup(page, "local", {
+    emptyDraft: true,
+    usesAccountPreferences: true,
+    reserveActive: true,
+    background: true,
+  });
+  expect(
     await page.evaluate(() => {
-      const publishRendererMutation = Reflect.get(globalThis, "publishRendererMutation");
-      if (typeof publishRendererMutation !== "function") {
-        throw new Error("Renderer mutation publisher is unavailable");
-      }
-      publishRendererMutation();
-    });
-    await page.waitForTimeout(100);
+      const state = Reflect.get(globalThis, "hostRoutes");
+      return state.adapter.applyAgent("pi", undefined, undefined, undefined, state.editor);
+    }),
+  ).toBe(true);
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(globalThis, "hostRoutes").local.created[0]?.model))
+    .toBe(encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("pi") }));
+});
 
-    expect(await counter(page, replacement.replacementPolicyId)).toMatchObject({ selections: 0 });
-    expect(await counter(page, replacement.replacementManagerId)).toMatchObject({
-      requestCalls: 0,
+for (const usesAccountPreferences of [false, true]) {
+  for (const background of [false, true]) {
+    test(`switching an external draft back to Codex retains native reserve with account preferences ${usesAccountPreferences} and background ${background}`, async ({
+      page,
+    }) => {
+      await setup(page, "local", {
+        emptyDraft: true,
+        reserveActive: true,
+        usesAccountPreferences,
+        background,
+      });
+      const result = await page.evaluate(() => {
+        const state = Reflect.get(globalThis, "hostRoutes");
+        const before = structuredClone(state.readDraft());
+        const external = state.adapter.applyAgent(
+          "pi",
+          { id: "external-model" },
+          undefined,
+          undefined,
+          state.editor,
+        );
+        const official = state.adapter.applyAgent(
+          "codex",
+          undefined,
+          undefined,
+          undefined,
+          state.editor,
+        );
+        return { external, official, before, after: state.readDraft() };
+      });
+      expect(result.external).toBe(true);
+      expect(result.official).toBe(true);
+      expect(result.after).toMatchObject(result.before);
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              Reflect.get(globalThis, "hostRoutes").local.calls.filter(
+                (call: RecordedRequest) => call.method === "turn/start",
+              ).length,
+          ),
+        )
+        .toBe(1);
+      const calls = await page.evaluate(() =>
+        Reflect.get(globalThis, "hostRoutes").local.calls.filter((call: RecordedRequest) =>
+          ["thread/start", "turn/start"].includes(call.method),
+        ),
+      );
+      expect(calls).toMatchObject([
+        { method: "thread/start", params: { model: "gpt-reserve" } },
+        {
+          method: "turn/start",
+          params: { collaborationMode: { settings: { model: "gpt-reserve" } } },
+        },
+      ]);
     });
-    expect(await counter(page, initial.initialManagerId)).toMatchObject({ requestCalls: 0 });
-  });
+  }
 }
-
-test("a renderer mutation recaptures a request manager after a transient discovery gap", async ({
-  page,
-}) => {
-  await setup(page);
-  const replacement = await replaceRoute(page, false);
-  await page.evaluate(() => {
-    const publishRouteChange = Reflect.get(globalThis, "publishRouteChange");
-    if (typeof publishRouteChange !== "function") {
-      throw new Error("Adapter route-change publisher is unavailable");
-    }
-    publishRouteChange();
-  });
-  await page.waitForTimeout(100);
-  await page.evaluate(() => {
-    const revealReplacementManager = Reflect.get(globalThis, "revealReplacementManager");
-    if (typeof revealReplacementManager !== "function") {
-      throw new Error("Adapter replacement manager is unavailable");
-    }
-    revealReplacementManager();
-  });
-  await page.waitForTimeout(150);
-  expect(await counter(page, replacement.replacementPolicyId)).toMatchObject({ selections: 0 });
-  expect(await counter(page, replacement.replacementManagerId)).toMatchObject({
-    requestCalls: 0,
-  });
-  await page.evaluate(() => {
-    const publishRendererMutation = Reflect.get(globalThis, "publishRendererMutation");
-    if (typeof publishRendererMutation !== "function") {
-      throw new Error("Renderer mutation publisher is unavailable");
-    }
-    publishRendererMutation();
-  });
-  await expect
-    .poll(async () => counter(page, replacement.replacementPolicyId))
-    .toMatchObject({
-      selections: 1,
-    });
-  await page.evaluate(async () => {
-    const state = Reflect.get(globalThis, "__adapterLifecycleState");
-    await state.adapter.modelControl.inspectThreadUsage({ threadId: "thread-lifecycle" });
-  });
-  expect(await counter(page, replacement.replacementManagerId)).toMatchObject({ requestCalls: 1 });
-});
-
-test("a failed replacement selection disconnects the temporary mutation observer", async ({
-  page,
-}) => {
-  await setup(page);
-  const replacement = await replaceRoute(page, false);
-  await page.evaluate(() => {
-    const publishRouteChange = Reflect.get(globalThis, "publishRouteChange");
-    const revealReplacementManager = Reflect.get(globalThis, "revealReplacementManager");
-    const enablePolicySelectionFailure = Reflect.get(globalThis, "enablePolicySelectionFailure");
-    if (
-      typeof publishRouteChange !== "function" ||
-      typeof revealReplacementManager !== "function" ||
-      typeof enablePolicySelectionFailure !== "function"
-    ) {
-      throw new Error("Adapter selection-failure controls are unavailable");
-    }
-    publishRouteChange();
-    revealReplacementManager();
-    enablePolicySelectionFailure();
-  });
-  await page.evaluate(() => {
-    const publishRendererMutation = Reflect.get(globalThis, "publishRendererMutation");
-    if (typeof publishRendererMutation !== "function") {
-      throw new Error("Renderer mutation publisher is unavailable");
-    }
-    publishRendererMutation();
-  });
-  await expect
-    .poll(async () => counter(page, replacement.replacementPolicyId))
-    .toMatchObject({
-      selections: 1,
-    });
-
-  await page.evaluate(() => {
-    const publishRendererMutation = Reflect.get(globalThis, "publishRendererMutation");
-    if (typeof publishRendererMutation !== "function") {
-      throw new Error("Renderer mutation publisher is unavailable");
-    }
-    publishRendererMutation();
-  });
-  await page.waitForTimeout(150);
-  expect(await counter(page, replacement.replacementPolicyId)).toMatchObject({ selections: 1 });
-});
-
-test("adapter disposal continues after the routing policy rejects cleanup", async ({ page }) => {
-  await setup(page);
-  const cleanupError = await page.evaluate(() => {
-    const enablePolicyCleanupFailure = Reflect.get(globalThis, "enablePolicyCleanupFailure");
-    const disposeAdapter = Reflect.get(globalThis, "disposeAdapter");
-    if (typeof enablePolicyCleanupFailure !== "function" || typeof disposeAdapter !== "function") {
-      throw new Error("Adapter cleanup controls are unavailable");
-    }
-    enablePolicyCleanupFailure();
-    return disposeAdapter();
-  });
-
-  expect(cleanupError).toBeNull();
-});

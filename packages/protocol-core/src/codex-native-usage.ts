@@ -1,16 +1,5 @@
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
-import {
-  hostThreadIdSchema,
-  hostTurnIdSchema,
-  type AccountCreditsSnapshot,
-  type HostTurnId,
-} from "@codexhost/shared-contracts";
-
-interface CodexTokenUsageObservation {
-  threadId: string;
-  turnId: HostTurnId;
-  usage: HostUsage;
-}
+import type { AccountCreditsSnapshot } from "@codexhost/shared-contracts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -28,68 +17,6 @@ function finitePercent(value: unknown): number | undefined {
 
 function optionalReset(value: unknown): number | undefined {
   return nonNegativeSafeInteger(value);
-}
-
-function addBreakdown(
-  target: Partial<HostUsage>,
-  source: Record<string, unknown> | undefined,
-): void {
-  if (!source) return;
-  const fields = [
-    ["totalTokens", "totalTokens"],
-    ["inputTokens", "inputTokens"],
-    ["cachedInputTokens", "cachedInputTokens"],
-    ["cacheWriteInputTokens", "cacheWriteInputTokens"],
-    ["outputTokens", "outputTokens"],
-    ["reasoningOutputTokens", "reasoningOutputTokens"],
-  ] as const;
-  for (const [sourceField, targetField] of fields) {
-    const value = nonNegativeSafeInteger(source[sourceField]);
-    if (value !== undefined) target[targetField] = value;
-  }
-}
-
-export function observeCodexTokenUsage(value: unknown): CodexTokenUsageObservation | null {
-  if (!isRecord(value) || value.method !== "thread/tokenUsage/updated") return null;
-  const params = value.params;
-  if (!isRecord(params)) return null;
-  const threadId = hostThreadIdSchema.safeParse(params.threadId);
-  const turnId = hostTurnIdSchema.safeParse(params.turnId);
-  if (!threadId.success || !turnId.success) return null;
-  const tokenUsage = params.tokenUsage;
-  if (!isRecord(tokenUsage)) return null;
-
-  const total = isRecord(tokenUsage.total) ? tokenUsage.total : undefined;
-  const last = isRecord(tokenUsage.last) ? tokenUsage.last : undefined;
-  const usage: Partial<HostUsage> = {};
-  addBreakdown(usage, total);
-
-  const contextUsedTokens = nonNegativeSafeInteger(last?.totalTokens);
-  const contextWindowTokens = nonNegativeSafeInteger(tokenUsage.modelContextWindow);
-  if (
-    contextUsedTokens !== undefined &&
-    contextWindowTokens !== undefined &&
-    contextWindowTokens > 0
-  ) {
-    usage.contextUsedTokens = contextUsedTokens;
-    usage.contextWindowTokens = contextWindowTokens;
-  }
-
-  const inputTokens = nonNegativeSafeInteger(last?.inputTokens);
-  const cachedInputTokens = nonNegativeSafeInteger(last?.cachedInputTokens);
-  if (inputTokens !== undefined && cachedInputTokens !== undefined && inputTokens > 0) {
-    usage.cacheHitRatePercent = Math.min(100, (cachedInputTokens / inputTokens) * 100);
-  }
-
-  try {
-    return {
-      threadId: threadId.data,
-      turnId: turnId.data,
-      usage: parseHostUsage(usage),
-    };
-  } catch {
-    return null;
-  }
 }
 
 interface RateLimitWindow {
@@ -191,6 +118,58 @@ export function observeCodexRateLimits(value: unknown): Partial<HostUsage> | nul
   }
 }
 
+export interface CodexRateLimitResetCredits {
+  availableCount: number;
+  nextExpiresAtUnix?: number;
+  expiresAtUnix?: number[];
+}
+
+function parseAvailableCount(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+  if (typeof value === "bigint" && value >= 0n && value <= BigInt(Number.MAX_SAFE_INTEGER)) {
+    return Number(value);
+  }
+  return undefined;
+}
+
+function rateLimitResetCreditsSummary(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const result = isRecord(value.result) ? value.result : value;
+  const fromResult =
+    isRecord(result) && isRecord(result.rateLimitResetCredits)
+      ? result.rateLimitResetCredits
+      : null;
+  if (fromResult) return fromResult;
+  const params = isRecord(value.params) ? value.params : undefined;
+  return isRecord(params?.rateLimitResetCredits) ? params.rateLimitResetCredits : null;
+}
+
+export function observeCodexRateLimitResetCredits(
+  value: unknown,
+): CodexRateLimitResetCredits | null {
+  const summary = rateLimitResetCreditsSummary(value);
+  if (!summary) return null;
+  const availableCount = parseAvailableCount(summary.availableCount);
+  if (availableCount === undefined || availableCount === 0) return null;
+  const expiresAtUnix: number[] = [];
+  if (Array.isArray(summary.credits)) {
+    for (const credit of summary.credits) {
+      if (!isRecord(credit)) continue;
+      if (credit.status !== undefined && credit.status !== "available") continue;
+      const expiresAt = optionalReset(credit.expiresAt);
+      if (expiresAt === undefined) continue;
+      expiresAtUnix.push(expiresAt);
+    }
+  }
+  expiresAtUnix.sort((left, right) => left - right);
+  const nextExpiresAtUnix = expiresAtUnix[0];
+  return {
+    availableCount,
+    ...(nextExpiresAtUnix !== undefined ? { nextExpiresAtUnix } : {}),
+    ...(expiresAtUnix.length > 0 ? { expiresAtUnix } : {}),
+  };
+}
+
 function isoFromUnix(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toISOString();
 }
@@ -202,6 +181,7 @@ function isoFromUnix(unixSeconds: number): string {
  */
 export function projectCodexRateLimitsToCredits(
   usage: Partial<HostUsage> | null | undefined,
+  resetCredits?: CodexRateLimitResetCredits | null,
 ): AccountCreditsSnapshot | null {
   if (!usage) return null;
   const hasFiveHour = usage.planFiveHourUsedPercent !== undefined;
@@ -217,9 +197,22 @@ export function projectCodexRateLimitsToCredits(
     hasFiveHour && hasSevenDay && usage.planSevenDayUsedPercent !== undefined
       ? {
           product: "7-day window",
+          periodType: "seven_day" as const,
           usagePercent: usage.planSevenDayUsedPercent,
           ...(usage.planSevenDayResetsAtUnix !== undefined
             ? { resetsAt: isoFromUnix(usage.planSevenDayResetsAtUnix) }
+            : {}),
+        }
+      : undefined;
+  const projectedResetCredits =
+    resetCredits && resetCredits.availableCount > 0
+      ? {
+          availableCount: resetCredits.availableCount,
+          ...(resetCredits.nextExpiresAtUnix !== undefined
+            ? { nextExpiresAt: isoFromUnix(resetCredits.nextExpiresAtUnix) }
+            : {}),
+          ...(resetCredits.expiresAtUnix && resetCredits.expiresAtUnix.length > 0
+            ? { expiresAt: resetCredits.expiresAtUnix.map(isoFromUnix) }
             : {}),
         }
       : undefined;
@@ -229,5 +222,6 @@ export function projectCodexRateLimitsToCredits(
     periodType: hasFiveHour ? "five_hour" : "seven_day",
     ...(resetsAtUnix !== undefined ? { resetsAt: isoFromUnix(resetsAtUnix) } : {}),
     ...(secondary ? { productUsage: [secondary] } : {}),
+    ...(projectedResetCredits ? { resetCredits: projectedResetCredits } : {}),
   };
 }

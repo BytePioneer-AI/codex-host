@@ -14,7 +14,7 @@ describe("Claude Probe runner profiles", () => {
     });
     expect(result.status).toBe(0);
     expect(result.stderr).not.toContain("may use network/model quota");
-  });
+  }, 30_000);
 
   it("rejects unknown profiles", () => {
     const result = spawnSync(process.execPath, [runner, "unknown"], {

@@ -1,4 +1,4 @@
-import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
+import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import type {
   DecodedThreadListRequest,
   JsonObject,
@@ -88,10 +88,49 @@ export function externalAnchor(entry: ThreadListEntry): ThreadListExternalAnchor
 function includesExternalRecord(
   record: StoredThreadRecordV1,
   query: DecodedThreadListRequest,
+  byId: ReadonlyMap<string, StoredThreadRecordV1>,
+  sectionId: string | null,
 ): boolean {
   if (record.state !== "ready" || !record.nativeSessionRef) return false;
-  if (record.subagent) return false;
+  // Rollback retains old records for historical links, but only rebound children
+  // belong to the parent's current Native Session (including nested children).
+  let current = record;
+  const owners = new Set<string>();
+  while (current.subagent) {
+    if (owners.has(current.hostThreadId)) return false;
+    owners.add(current.hostThreadId);
+    const parent = byId.get(current.subagent.parentHostThreadId);
+    if (
+      !parent ||
+      parent.state !== "ready" ||
+      parent.harnessId !== current.harnessId ||
+      parent.nativeSessionRef?.nativeSessionId !== current.nativeSessionRef?.nativeSessionId
+    )
+      return false;
+    current = parent;
+  }
+  const sourceKind = record.subagent ? "subAgentThreadSpawn" : "vscode";
+  const scoped = query.parentThreadId !== null || query.ancestorThreadId !== null;
+  if (
+    record.subagent &&
+    !scoped &&
+    !query.sourceKinds?.some((kind) => kind === "subAgent" || kind === "subAgentThreadSpawn")
+  )
+    return false;
+  if (query.parentThreadId !== null && record.subagent?.parentHostThreadId !== query.parentThreadId)
+    return false;
+  if (query.ancestorThreadId !== null) {
+    let parentId = record.subagent?.parentHostThreadId;
+    const visited = new Set<string>([record.hostThreadId]);
+    while (parentId && parentId !== query.ancestorThreadId && !visited.has(parentId)) {
+      visited.add(parentId);
+      parentId = byId.get(parentId)?.subagent?.parentHostThreadId;
+    }
+    if (record.hostThreadId === query.ancestorThreadId || parentId !== query.ancestorThreadId)
+      return false;
+  }
   if (record.archived !== query.archived) return false;
+  if (query.projectId !== undefined && (record.projectId ?? null) !== query.projectId) return false;
   if (query.cwd !== null && !query.cwd.includes(record.cwd)) return false;
   if (
     query.modelProviders !== null &&
@@ -103,7 +142,8 @@ function includesExternalRecord(
   if (
     query.sourceKinds !== null &&
     query.sourceKinds.length > 0 &&
-    !query.sourceKinds.includes("vscode")
+    !query.sourceKinds.includes(sourceKind) &&
+    !(record.subagent && query.sourceKinds.includes("subAgent"))
   ) {
     return false;
   }
@@ -113,8 +153,8 @@ function includesExternalRecord(
   ) {
     return false;
   }
-  if (query.parentThreadId !== null || query.ancestorThreadId !== null) return false;
   if (query.isPinned === true) return false;
+  if (query.sectionId !== undefined && query.sectionId !== sectionId) return false;
   return true;
 }
 
@@ -141,7 +181,7 @@ export function resolveExternalSessionTreeIds(
       }
       visited.add(current.hostThreadId);
       path.push(current);
-      const sourceId = current.forkSource?.hostThreadId;
+      const sourceId = current.subagent?.parentHostThreadId ?? current.forkSource?.hostThreadId;
       const source = sourceId ? byId.get(sourceId) : undefined;
       if (!source) {
         const root = current.hostThreadId;
@@ -156,26 +196,37 @@ export function resolveExternalSessionTreeIds(
   return resolved;
 }
 
-export function listExternalThreadMetadata(input: {
+export interface ExternalThreadListInput {
   records: readonly StoredThreadRecordV1[];
   query: DecodedThreadListRequest;
   runtimeFor(threadId: string): ExternalThreadListRuntimeState | null;
-  anchor?: ThreadListExternalAnchor | null;
-  limit?: number;
-}): ExternalThreadListPage {
-  if (!input.query.supportsExternal) return { data: [], hasMore: false };
+  placementOf?(threadId: string): StoredSectionPlacementV1 | undefined;
+}
+
+/** External Threads that match a list query's filters, projected as list rows (unsorted). */
+export function externalThreadListEntries(input: ExternalThreadListInput): ThreadListEntry[] {
   const sessionIds = resolveExternalSessionTreeIds(input.records);
-  const entries = input.records
-    .filter((record) => includesExternalRecord(record, input.query))
+  const byId = new Map(input.records.map((record) => [record.hostThreadId, record]));
+  return input.records
+    .filter((record) =>
+      includesExternalRecord(
+        record,
+        input.query,
+        byId,
+        input.placementOf?.(record.hostThreadId)?.section.id ?? null,
+      ),
+    )
     .map((record): ThreadListEntry => {
       const runtime = input.runtimeFor(record.hostThreadId);
       const sessionId = sessionIds.get(record.hostThreadId);
       if (!sessionId) throw new Error("External Thread Session tree could not be resolved");
+      const placement = input.placementOf?.(record.hostThreadId);
       const thread = externalThreadValue({
         record,
         turns: [],
         sessionId,
         ...(runtime ? { running: runtime.running } : { loaded: false }),
+        ...(placement ? { placement } : {}),
       });
       return {
         source: "external",
@@ -185,7 +236,31 @@ export function listExternalThreadMetadata(input: {
             ? unixTimestamp(record.createdAt, "createdAt")
             : unixTimestamp(record.updatedAt, "updatedAt"),
       };
-    })
+    });
+}
+
+export function listExternalThreadMetadata(
+  input: ExternalThreadListInput & {
+    /** Already filtered by the owning Host, merged before cursor slicing. */
+    sharedThreads?: readonly JsonObject[];
+    anchor?: ThreadListExternalAnchor | null;
+    limit?: number;
+  },
+): ExternalThreadListPage {
+  if (!input.query.supportsExternal || input.query.sortKey === "section_position") {
+    return { data: [], hasMore: false };
+  }
+  const sortKey = input.query.sortKey;
+  const shared = (input.sharedThreads ?? []).map((thread): ThreadListEntry => ({
+    source: "external",
+    thread,
+    timestamp: threadListTimestamp(thread, sortKey),
+  }));
+  const sharedIds = new Set(shared.map((entry) => entry.thread.id));
+  const entries = [
+    ...externalThreadListEntries(input).filter((entry) => !sharedIds.has(entry.thread.id)),
+    ...shared,
+  ]
     .sort((left, right) => compareThreadListEntries(left, right, input.query.sortDirection))
     .filter(
       (entry) =>

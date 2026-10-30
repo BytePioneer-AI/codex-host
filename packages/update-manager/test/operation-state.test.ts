@@ -39,6 +39,24 @@ async function status(
 }
 
 describe("update operation state", () => {
+  it("recovers a crashed remote updater lock but preserves a live remote updater", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-update-remote-"));
+    roots.push(root);
+    const lock = path.join(root, "active-update-v1.lock");
+    await writeFile(
+      lock,
+      JSON.stringify({ ownerPid: process.pid, statusPath: null, remoteUpdate: true }),
+    );
+    await recoverUpdateOperationLock(root);
+    expect(await isUpdateOperationActive(root)).toBe(true);
+    await writeFile(
+      lock,
+      JSON.stringify({ ownerPid: 999_999_999, statusPath: null, remoteUpdate: true }),
+    );
+    await recoverUpdateOperationLock(root);
+    expect(await isUpdateOperationActive(root)).toBe(false);
+  });
+
   it("discovers the latest valid status and ignores malformed state", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-update-state-"));
     roots.push(root);

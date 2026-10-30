@@ -1,0 +1,9 @@
+{
+  "manifestVersion": 1,
+  "id": "codex-usage",
+  "name": "Codex",
+  "version": "0.1.0",
+  "adapterApiVersion": 1,
+  "kind": "usage",
+  "entry": "dist/plugin.js"
+}

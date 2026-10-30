@@ -5,6 +5,7 @@ import type { DelegationControlRegistration } from "../src/delegation-types.js";
 
 function registration(threadId: string): DelegationControlRegistration {
   return {
+    listHarnesses: vi.fn(async () => ({ harnesses: ["codex" as const, "pi" as const] })),
     inspect: vi.fn(async (input) => ({
       harnessId: input.harnessId,
       inspection: {
@@ -71,6 +72,85 @@ function registration(threadId: string): DelegationControlRegistration {
 }
 
 describe("DelegationControlRegistry", () => {
+  it("uses only the calling Thread's execution identity for same-Host reads", async () => {
+    const caller = registration("caller");
+    caller.executionHostId = (id) => (id === "caller" ? "ssh:mac" : undefined);
+    const target = registration("target");
+    const remoteRead = vi.fn(async (input: unknown) => {
+      void input;
+      throw new Error("remote unavailable");
+    });
+    const registry = new DelegationControlRegistry({ remoteRead });
+    registry.register(caller);
+    registry.register(target);
+    const input = {
+      threadId: "target",
+      view: "result" as const,
+      hostId: "ssh:mac",
+      callerThreadId: "caller",
+    };
+    expect(await registry.read(input)).toMatchObject({ hostId: "ssh:mac", threadId: "target" });
+    expect(target.read).toHaveBeenCalledExactlyOnceWith({ threadId: "target", view: "result" });
+    expect(remoteRead).not.toHaveBeenCalled();
+    for (const read of [
+      { threadId: input.threadId, hostId: input.hostId, view: input.view },
+      { ...input, callerThreadId: "different-client" },
+      { ...input, hostId: "ssh:other" },
+    ])
+      await expect(registry.read(read)).rejects.toThrow("remote unavailable");
+    expect(target.read).toHaveBeenCalledOnce();
+    expect(remoteRead.mock.calls.at(-1)?.[0]).not.toHaveProperty("callerThreadId");
+    registry.close();
+  });
+
+  it("fails closed on ambiguous caller context", async () => {
+    const registry = new DelegationControlRegistry();
+    for (let index = 0; index < 2; index++) {
+      const caller = registration("caller");
+      caller.executionHostId = () => "ssh:mac";
+      registry.register(caller);
+    }
+    await expect(
+      registry.read({
+        callerThreadId: "caller",
+        threadId: "target",
+        hostId: "ssh:mac",
+        view: "result",
+      }),
+    ).rejects.toMatchObject({ code: "PARENT_THREAD_AMBIGUOUS" });
+    registry.close();
+  });
+  it("uses the shared SSH catalog with multiple GUI sessions while keeping command ownership", async () => {
+    const registry = new DelegationControlRegistry();
+    const owner = registration("shared");
+    const native = registration("native");
+    const unregister = registry.register(owner, { harnessCatalog: true });
+    registry.register(native);
+    await registry.listHarnesses();
+    await registry.inspect({ harnessId: "pi" });
+    await registry.list({ sort: "updated-desc", limit: 20 });
+    expect(owner.listHarnesses).toHaveBeenCalledOnce();
+    expect(owner.inspect).toHaveBeenCalledOnce();
+    expect(owner.list).toHaveBeenCalledOnce();
+    expect(native.list).not.toHaveBeenCalled();
+    await registry.send({ threadId: "native", message: "continue" });
+    expect(native.send).toHaveBeenCalledOnce();
+    expect(owner.send).not.toHaveBeenCalled();
+    unregister();
+    await registry.listHarnesses();
+    expect(native.listHarnesses).toHaveBeenCalledOnce();
+  });
+  it("discovers targets from the active session without inspecting Models", async () => {
+    const registry = new DelegationControlRegistry();
+    const session = registration("parent");
+    registry.register(session);
+    await expect(registry.listHarnesses()).resolves.toEqual({ harnesses: ["codex", "pi"] });
+    expect(session.inspect).not.toHaveBeenCalled();
+    registry.register(registration("another-parent"));
+    await expect(registry.listHarnesses()).rejects.toMatchObject({
+      code: "PARENT_THREAD_AMBIGUOUS",
+    });
+  });
   it("routes explicit parent and Thread operations to the owning Host session", async () => {
     const registry = new DelegationControlRegistry();
     const first = registration("parent-a");
@@ -119,5 +199,53 @@ describe("DelegationControlRegistry", () => {
     await expect(registry.read({ threadId: "parent-a", view: "result" })).rejects.toMatchObject({
       code: "PARENT_THREAD_AMBIGUOUS",
     });
+  });
+
+  it("watches a Thread in one session and notifies a Thread in another", async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new DelegationControlRegistry();
+      const watched = registration("child");
+      const subscriber = registration("parent");
+      registry.register(watched);
+      registry.register(subscriber);
+      await expect(
+        registry.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 }),
+      ).resolves.toMatchObject({ state: "watching" });
+
+      vi.mocked(watched.read).mockResolvedValue({
+        threadId: "child",
+        harnessId: "pi",
+        status: "completed",
+        turn: null,
+        progress: [],
+        result: { availability: "available", text: "done" },
+        nextCursor: null,
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(subscriber.send).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(subscriber.send).mock.calls[0]?.[0]).toMatchObject({ threadId: "parent" });
+      expect(watched.send).not.toHaveBeenCalled();
+
+      // Closing drops remaining watches with the Host Runtime.
+      await registry.watch({ threadId: "parent", notifyThreadId: "child", timeoutMs: 60_000 });
+      registry.close();
+      await expect(registry.watches()).resolves.toEqual({ watches: [] });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never infers the notified Thread", async () => {
+    const registry = new DelegationControlRegistry();
+    const session = registration("child");
+    session.ownsThread = () => true;
+    registry.register(session);
+    await expect(
+      registry.watch({ threadId: "child", notifyThreadId: "", timeoutMs: 60_000 }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    expect(session.read).not.toHaveBeenCalled();
+    registry.close();
   });
 });

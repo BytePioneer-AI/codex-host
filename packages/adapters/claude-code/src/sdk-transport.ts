@@ -10,33 +10,65 @@ import {
   type SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
 import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
-import type { HarnessThinkingOptionId } from "@codexhost/shared-contracts";
+import type { HarnessAccountSnapshot, HarnessThinkingOptionId } from "@codexhost/shared-contracts";
+import {
+  parseClaudeSlashCommands,
+  type ClaudeSlashCommand,
+  type ClaudeSlashCommandSnapshot,
+} from "./slash-commands.js";
+import { projectClaudeAccountUsage } from "./account-usage.js";
 
 import { resolveClaudeCodeExecutable, withNodeRuntimeOnPath } from "./command.js";
-import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
-import { ClaudeNativeTurnAccumulator, parseClaudePlanLimitEvent } from "./native-message.js";
+import {
+  mergeClaudeModelPickerOptions,
+  readClaudeUserModelPicker,
+  type ClaudeModelInspectionSnapshot,
+} from "./model-catalog.js";
+import {
+  ClaudeNativeTurnAccumulator,
+  parseClaudePlanLimitEvent,
+  parseClaudeWorkflowAgents,
+} from "./native-message.js";
 import { isClaudePermissionMode, type ClaudePermissionMode } from "./permission-modes.js";
-import { claudeThinkingConfiguration, parseClaudeThinkingOptionId } from "./thinking-options.js";
-import type {
-  ClaudeApprovalRequest,
-  ClaudeApprovalSuggestionScope,
-  ClaudeAutonomousTurn,
-  ClaudeIdleTurnHandler,
-  ClaudeInteractionRequest,
-  ClaudeInteractionResponse,
-  ClaudeModelInspector,
-  ClaudePlanLimitEvent,
-  ClaudeQuestion,
-  ClaudeTransportContextUsage,
-  ClaudeTransportTurnResult,
-  ClaudeTurnEvent,
-  ClaudeTurnTransport,
+import { closeClaudeProcessGroup } from "./process-fence.js";
+import {
+  claudeThinkingConfiguration,
+  claudeThinkingFlagSettings,
+  parseClaudeThinkingOptionId,
+} from "./thinking-options.js";
+import {
+  ClaudeUltracodeUnavailableError,
+  claudeUltracodeActive,
+  claudeUltracodeUnavailableReason,
+} from "./ultracode.js";
+import {
+  ClaudeSteerMissedTurnError,
+  type ClaudeApprovalRequest,
+  type ClaudeApprovalSuggestionScope,
+  type ClaudeAutonomousTurnHandler,
+  type ClaudeIdleTurnHandler,
+  type ClaudeInteractionRequest,
+  type ClaudeInteractionResponse,
+  type ClaudeModelInspector,
+  type ClaudePlanLimitEvent,
+  type ClaudeQuestion,
+  type ClaudeTransportContextUsage,
+  type ClaudeTransportTurnResult,
+  type ClaudeTurnEvent,
+  type ClaudeTurnTransport,
 } from "./transport.js";
 
 const CLIENT_APP = "codexhost-claude-code-adapter/0.0.0";
+// Claude Code hides generic SDK entrypoints from its native Session picker. Keep persisted
+// CodexHost Sessions discoverable without misidentifying their transport as interactive CLI.
+const SESSION_ENTRYPOINT = "codexhost-sdk";
 const APPROVAL_TITLE_MAX_LENGTH = 120;
 const APPROVAL_DESCRIPTION_MAX_LENGTH = 500;
 const DEFAULT_ABORT_TIMEOUT_MS = 2_000;
+/** Claude Code emits `queued` as soon as it reads a steer; this only bounds a missing receipt. */
+const DEFAULT_STEER_QUEUED_TIMEOUT_MS = 5_000;
+/** Bounds the Workflow agent labels kept to name agent approvals. */
+const WORKFLOW_AGENT_LABEL_LIMIT = 1_000;
 const INTERRUPT_TIMEOUT_MESSAGE = "Claude SDK interrupt timed out";
 
 class PushableInput<T> implements AsyncIterable<T> {
@@ -70,6 +102,8 @@ class PushableInput<T> implements AsyncIterable<T> {
 }
 
 interface PendingInteraction {
+  /** Raised by a native agent; it stays pending across the Root Segment terminal. */
+  agentScoped: boolean;
   controlRequestId: string;
   input: Record<string, unknown>;
   onAbort(): void;
@@ -82,11 +116,19 @@ interface PendingInteraction {
 
 interface ActiveTurn {
   accumulator: ClaudeNativeTurnAccumulator;
-  controlRequestIds: Set<string>;
-  interactions: Map<string, PendingInteraction>;
   onEvent(event: ClaudeTurnEvent): void;
   resolve(result: ClaudeTransportTurnResult): void;
   reject(error: unknown): void;
+}
+
+/** A native Segment that no requested Turn owns. */
+interface AutonomousSegment {
+  accumulator: ClaudeNativeTurnAccumulator;
+  /** Events held until the Segment starts its autonomous Turn. */
+  events: ClaudeTurnEvent[];
+  userMessageId: string | null;
+  /** The autonomous Turn has started; later events go to it as they arrive. */
+  live: boolean;
 }
 
 export interface ClaudeSdkTransportOptions {
@@ -98,8 +140,14 @@ export interface ClaudeSdkTransportOptions {
   model?: string;
   thinkingOptionId: HarnessThinkingOptionId;
   permissionMode: ClaudePermissionMode;
+  /**
+   * Native prerequisite for a later live `bypassPermissions` selection. Callers decide it with
+   * `claudeBypassPermissionsAvailable()` because plain root makes Claude Code exit at startup.
+   */
+  allowDangerouslySkipPermissions?: boolean;
   closeTimeoutMs: number;
   abortTimeoutMs?: number;
+  steerQueuedTimeoutMs?: number;
   onPermissionModeChanged(permissionMode: ClaudePermissionMode): void;
   onFault(error: unknown): void;
   onPlanLimit(planLimit: ClaudePlanLimitEvent): void;
@@ -132,12 +180,6 @@ function rejectAfter(
       if (timeoutId !== undefined) clearTimeout(timeoutId);
     },
   };
-}
-
-export function allowsDangerouslySkipPermissions(
-  getuid: (() => number) | undefined = process.getuid,
-): boolean {
-  return getuid === undefined || getuid() !== 0;
 }
 
 function processExited(child: ChildProcessWithoutNullStreams): boolean {
@@ -296,11 +338,16 @@ function parseApprovalRequest(
   requestId: string,
   toolName: string,
   options: Parameters<CanUseTool>[2],
+  agentLabel?: string,
 ): ClaudeApprovalRequest | null {
-  const title = [options.title, options.displayName, options.description, toolName]
+  const toolTitle = [options.title, options.displayName, options.description, toolName]
     .map((value) => boundedDisplayText(value, APPROVAL_TITLE_MAX_LENGTH))
     .find((value): value is string => value !== null);
-  if (!title) return null;
+  if (!toolTitle) return null;
+  // Name the Workflow agent asking, since several agents may ask for the same tool at once.
+  const title = agentLabel
+    ? `${agentLabel}: ${toolTitle}`.slice(0, APPROVAL_TITLE_MAX_LENGTH)
+    : toolTitle;
   const description = boundedDisplayText(options.description, APPROVAL_DESCRIPTION_MAX_LENGTH);
   const suggestedScope = permissionSuggestionScope(options.suggestions);
   return {
@@ -335,6 +382,84 @@ function allowed(
   };
 }
 
+function canDeliverSettlementImmediately(
+  event: ClaudeTurnEvent,
+  pendingEvents: readonly ClaudeTurnEvent[],
+): boolean {
+  if (event.type !== "subagent.settled") return false;
+  // A notification without a continuation may never produce a Terminal. Deliver
+  // it now unless this batch still owes the task its creation/reactivation: a
+  // Subagent lifecycle, or the Tool result that moved a command to the background.
+  // Otherwise Host would discard the unknown task's terminal state and later
+  // replay its buffered lifecycle as running.
+  return !pendingEvents.some((pending) => {
+    if (pending.type === "tool.completed") {
+      return event.callId !== undefined && pending.callId === event.callId;
+    }
+    if (
+      pending.type === "workflow.started" ||
+      pending.type === "workflow.updated" ||
+      pending.type === "workflow.launched"
+    ) {
+      return (
+        (event.callId !== undefined && pending.callId === event.callId) ||
+        (pending.type !== "workflow.started" && pending.taskId === event.nativeSubagentId)
+      );
+    }
+    if (
+      pending.type !== "subagent.started" &&
+      pending.type !== "subagent.updated" &&
+      pending.type !== "subagent.completed"
+    ) {
+      return false;
+    }
+    return (
+      (event.callId !== undefined && pending.callId === event.callId) ||
+      pending.nativeSubagentId === event.nativeSubagentId
+    );
+  });
+}
+
+/**
+ * Root output means Claude itself is answering, so its native Result will follow. Task frames,
+ * settlements and live-task levels can arrive while no Root execution runs: an autonomous Turn
+ * started on them could wait for a Result that never comes.
+ */
+function isRootOutput(event: ClaudeTurnEvent): boolean {
+  switch (event.type) {
+    case "compaction.started":
+    case "compaction.completed":
+    case "text.delta":
+    case "reasoning.delta":
+    case "reasoning.completed":
+    case "message.completed":
+    case "tool.started":
+    case "tool.progress":
+    case "tool.completed":
+    case "subagent.started":
+    case "subagent.completed":
+    case "workflow.started":
+    case "workflow.launched":
+    case "interaction.requested":
+    case "interaction.closed":
+    case "usage.result":
+      return true;
+    case "usage.request":
+    case "segment.started":
+    case "subagents.live":
+    case "subagent.updated":
+    case "subagent.settled":
+    case "subagent.transcript.changed":
+    case "workflow.updated":
+    case "workflow.activity":
+      return false;
+    default:
+      // New event types must be classified above; at runtime an unknown one never starts a Turn.
+      event satisfies never;
+      return false;
+  }
+}
+
 export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly sessionId: string;
   readonly #children: ChildProcessWithoutNullStreams[] = [];
@@ -345,49 +470,72 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly #environment: NodeJS.ProcessEnv;
   readonly #input = new PushableInput<SDKUserMessage>();
   readonly #model: string | undefined;
+  /** The Model the live Session runs; `undefined` is Claude Code's default Model. */
+  #currentModel: string | undefined;
   readonly #onFault: (error: unknown) => void;
   readonly #onPermissionModeChanged: (permissionMode: ClaudePermissionMode) => void;
   readonly #onPlanLimit: (planLimit: ClaudePlanLimitEvent) => void;
   readonly #openMode: "create" | "resume";
   #permissionMode: ClaudePermissionMode;
+  readonly #allowDangerouslySkipPermissions: boolean;
   readonly #queryFactory: typeof query;
   #thinkingOptionId: HarnessThinkingOptionId;
   #active: ActiveTurn | null = null;
-  #autonomous: {
-    accumulator: ClaudeNativeTurnAccumulator;
-    events: ClaudeTurnEvent[];
-    nativeTurnKey: string | null;
-  } | null = null;
-  #autonomousTurnHandler: ((turn: ClaudeAutonomousTurn) => void) | null = null;
+  readonly #steerQueuedTimeoutMs: number;
+  #nativeSteer = false;
+  /** Root tool calls of the requested Turn that have started and not yet returned a result. */
+  readonly #rootToolCalls = new Set<string>();
+  readonly #pendingSteers = new Map<
+    string,
+    {
+      resolve(): void;
+      reject(error: Error): void;
+      timer: ReturnType<typeof setTimeout> | undefined;
+    }
+  >();
+  /** Written steers Claude has not yet drained into a native turn, by message ID. */
+  readonly #steerTakeovers = new Map<string, (started: boolean) => void>();
+  #autonomous: AutonomousSegment | null = null;
+  #autonomousTurnHandler: ClaudeAutonomousTurnHandler | null = null;
   #idleHandler: ClaudeIdleTurnHandler | null = null;
+  #threadEventHandler: ((event: ClaudeTurnEvent) => void) | null = null;
   #idleLive = false;
   #idleAccumulator: ClaudeNativeTurnAccumulator | null = null;
+  readonly #interactions = new Map<string, PendingInteraction>();
+  readonly #controlRequestIds = new Set<string>();
+  readonly #workflowAgentLabels = new Map<string, string>();
   #closePromise: Promise<void> | null = null;
   #consumeTask: Promise<void> | null = null;
   #stderrTail = "";
   #interactionOrdinal = 0;
   #provider: string | undefined;
   #query: Query | null = null;
+  #slashCommands: ClaudeSlashCommand[] | null = null;
+  #skillNames: ReadonlySet<string> = new Set();
   #started = false;
+  #backgroundTasks = new Set<string>();
 
   constructor(options: ClaudeSdkTransportOptions) {
     this.sessionId = options.sessionId;
     this.#cwd = options.cwd;
     this.#abortTimeoutMs = options.abortTimeoutMs ?? DEFAULT_ABORT_TIMEOUT_MS;
+    this.#steerQueuedTimeoutMs = options.steerQueuedTimeoutMs ?? DEFAULT_STEER_QUEUED_TIMEOUT_MS;
     this.#closeTimeoutMs = options.closeTimeoutMs;
     this.#command = options.command;
     this.#environment = options.environment ?? process.env;
     this.#model = options.model;
+    this.#currentModel = options.model;
     this.#onFault = options.onFault;
     this.#onPermissionModeChanged = options.onPermissionModeChanged;
     this.#onPlanLimit = options.onPlanLimit;
     this.#openMode = options.openMode;
     this.#permissionMode = options.permissionMode;
+    this.#allowDangerouslySkipPermissions = options.allowDangerouslySkipPermissions ?? false;
     this.#queryFactory = options.queryFactory ?? query;
     this.#thinkingOptionId = parseClaudeThinkingOptionId(options.thinkingOptionId);
   }
 
-  setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void {
+  setAutonomousTurnHandler(handler: ClaudeAutonomousTurnHandler): void {
     this.#autonomousTurnHandler = handler;
   }
 
@@ -395,9 +543,16 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#idleHandler = handler;
   }
 
+  setThreadEventHandler(handler: ((event: ClaudeTurnEvent) => void) | null): void {
+    this.#threadEventHandler = handler;
+  }
+
   setIdleLive(live: boolean): void {
     this.#idleLive = live;
-    if (!live) this.#idleAccumulator = null;
+    if (live) return;
+    this.#idleAccumulator = null;
+    // The held Host Turn is over; agent approvals have no Turn left to answer them.
+    if (!this.#active) this.#closeInteractions("all", "cancelled");
   }
 
   async start(): Promise<void> {
@@ -416,18 +571,26 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           ? { resume: this.sessionId }
           : { sessionId: this.sessionId }),
         ...(this.#model ? { model: this.#model } : {}),
-        thinking: thinking.enabled ? { type: "adaptive" } : { type: "disabled" },
+        // Adaptive Thinking is redacted by default: the API streams `thinking_delta`
+        // frames carrying only token estimates and empty text, so no Reasoning Item
+        // would ever start. Summarized display is the official channel for readable
+        // Thinking and is what Claude Code's own TUI renders.
+        thinking: thinking.enabled
+          ? { type: "adaptive", display: "summarized" }
+          : { type: "disabled" },
         ...(thinking.effort ? { effort: thinking.effort } : {}),
         pathToClaudeCodeExecutable: executable,
-        settingSources: ["user"],
+        // Omitted settingSources loads user, project and local settings like the
+        // Claude Code CLI, so project CLAUDE.md and .claude/skills apply.
         permissionMode: this.#permissionMode,
-        ...(allowsDangerouslySkipPermissions() ? { allowDangerouslySkipPermissions: true } : {}),
+        ...(this.#allowDangerouslySkipPermissions ? { allowDangerouslySkipPermissions: true } : {}),
         canUseTool: (toolName, input, options) => this.#canUseTool(toolName, input, options),
         persistSession: true,
         includePartialMessages: true,
         forwardSubagentText: true,
         env: withNodeRuntimeOnPath({
           ...this.#environment,
+          CLAUDE_CODE_ENTRYPOINT: SESSION_ENTRYPOINT,
           CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP,
         }),
         spawnClaudeCodeProcess: (options) => this.#spawn(options),
@@ -435,8 +598,17 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     });
     this.#query = activeQuery;
     try {
-      await activeQuery.initializationResult();
+      const initialization = await activeQuery.initializationResult();
+      this.#slashCommands = parseClaudeSlashCommands(
+        (initialization as { commands?: unknown }).commands,
+      );
       this.#provider = (await activeQuery.accountInfo().catch(() => undefined))?.apiProvider;
+      if (thinking.ultracode) {
+        // Ultracode is a session-scoped flag setting. It must be confirmed before the first
+        // message: Claude Code accepts the request even when the Session cannot honor it.
+        await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, null));
+        await this.#verifyUltracode(activeQuery);
+      }
     } catch (error) {
       activeQuery.close();
       this.#query = null;
@@ -446,10 +618,75 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#consumeTask = this.#consume(activeQuery);
   }
 
-  async getContextUsage(): Promise<ClaudeTransportContextUsage | null> {
+  slashCommands(): ClaudeSlashCommandSnapshot | null {
+    if (!this.#started || this.#slashCommands === null) return null;
+    return { commands: this.#slashCommands, skillNames: this.#skillNames };
+  }
+
+  supportsNativeSteer(): boolean {
+    return this.#nativeSteer;
+  }
+
+  /**
+   * `priority: "next"` joins after the current tool call, and a tool result is always followed by
+   * another model request. So a steer written while a root tool call runs folds into this Turn;
+   * one written while Claude streams its final text may instead run as the next Turn.
+   *
+   * A held Turn's continuation steers as well: while its idle stream is live, the pushed input
+   * runs as that Turn's next Segment, and the background work the Turn waits on keeps running.
+   */
+  canSteerActiveTurn(): boolean {
+    if (!this.#nativeSteer) return false;
+    if (this.#active !== null) return this.#rootToolCalls.size > 0;
+    return this.#idleLive && this.#idleHandler !== null;
+  }
+
+  #observeRootToolCalls(message: unknown): void {
+    if (!isRecord(message) || message.parent_tool_use_id != null) return;
+    if (message.type !== "assistant" && message.type !== "user") return;
+    const body = message.message;
+    if (!isRecord(body) || !Array.isArray(body.content)) return;
+    for (const block of body.content) {
+      if (!isRecord(block)) continue;
+      if (
+        message.type === "assistant" &&
+        block.type === "tool_use" &&
+        typeof block.id === "string"
+      ) {
+        this.#rootToolCalls.add(block.id);
+      } else if (
+        message.type === "user" &&
+        block.type === "tool_result" &&
+        typeof block.tool_use_id === "string"
+      ) {
+        this.#rootToolCalls.delete(block.tool_use_id);
+      }
+    }
+  }
+
+  #observeNativeCapabilities(message: unknown): void {
+    if (!isRecord(message) || message.type !== "system" || message.subtype !== "init") return;
+    this.#nativeSteer =
+      Array.isArray(message.capabilities) && message.capabilities.includes("msg_lifecycle_v1");
+  }
+
+  #observeSlashCommands(message: unknown): void {
+    if (!isRecord(message) || message.type !== "system") return;
+    if (message.subtype === "init" && Array.isArray(message.skills)) {
+      this.#skillNames = new Set(
+        message.skills.filter((name): name is string => typeof name === "string"),
+      );
+    } else if (message.subtype === "commands_changed") {
+      this.#slashCommands = parseClaudeSlashCommands(message.commands);
+    }
+  }
+
+  async getContextUsage(
+    detail: "summary" | "full" = "full",
+  ): Promise<ClaudeTransportContextUsage | null> {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) return null;
-    return parseContextUsage(await activeQuery.getContextUsage());
+    return parseContextUsage(await activeQuery.getContextUsage({ detail }));
   }
 
   getPermissionMode(): ClaudePermissionMode {
@@ -460,20 +697,89 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   async setModel(model?: string): Promise<void> {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
+    const thinking = claudeThinkingConfiguration(this.#thinkingOptionId);
+    const previousModel = this.#currentModel;
     await activeQuery.setModel(model);
+    if (thinking.ultracode) {
+      try {
+        await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, thinking));
+        await this.#verifyUltracode(activeQuery);
+      } catch (error) {
+        // Ultracode stays selected, so the Model it cannot run on is rejected instead.
+        await this.#restoreOrFault(async () => {
+          await activeQuery.setModel(previousModel);
+          await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, null));
+          // A write Claude Code accepts may still not take effect; confirm the restored state.
+          await this.#verifyUltracode(activeQuery);
+        });
+        throw error;
+      }
+    }
+    this.#currentModel = model;
   }
 
   async setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void> {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
     const id = parseClaudeThinkingOptionId(thinkingOptionId);
+    const previous = claudeThinkingConfiguration(this.#thinkingOptionId);
     const thinking = claudeThinkingConfiguration(id);
-    await activeQuery.applyFlagSettings(
-      thinking.enabled
-        ? { alwaysThinkingEnabled: true, effortLevel: thinking.effort ?? null }
-        : { alwaysThinkingEnabled: false },
-    );
+    await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, previous));
+    if (thinking.ultracode) {
+      try {
+        await this.#verifyUltracode(activeQuery);
+      } catch (error) {
+        // Restore the confirmed selection, including clearing the requested Ultracode flag.
+        await this.#restoreOrFault(async () => {
+          await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(previous, thinking));
+          await (previous.ultracode
+            ? this.#verifyUltracode(activeQuery)
+            : this.#verifyUltracodeOff(activeQuery));
+        });
+        throw error;
+      }
+    }
     this.#thinkingOptionId = id;
+  }
+
+  /** A failed restore leaves the native Model or Thinking state unknown; stop the Session. */
+  async #restoreOrFault(restore: () => Promise<void>): Promise<void> {
+    try {
+      await restore();
+    } catch (error) {
+      this.#onFault(error);
+    }
+  }
+
+  /**
+   * Claude Code accepts an Ultracode request even when the Session cannot honor it, so the
+   * effective state is read back from the native Session settings. Fails closed.
+   */
+  async #verifyUltracode(activeQuery: Query): Promise<void> {
+    const reason = claudeUltracodeUnavailableReason(
+      await this.#readSettings(activeQuery),
+      this.#environment,
+    );
+    if (reason) throw new ClaudeUltracodeUnavailableError(reason);
+  }
+
+  /** Confirms a restored selection without Ultracode left it off. */
+  async #verifyUltracodeOff(activeQuery: Query): Promise<void> {
+    if (claudeUltracodeActive(await this.#readSettings(activeQuery))) {
+      throw new Error("Claude Code kept Ultracode on after it was cleared");
+    }
+  }
+
+  async #readSettings(activeQuery: Query): Promise<unknown> {
+    // `getSettings` is a native control request the SDK implements without a public type.
+    const getSettings = (activeQuery as unknown as { getSettings?: () => Promise<unknown> })
+      .getSettings;
+    try {
+      if (typeof getSettings !== "function") throw new Error("Claude SDK cannot read settings");
+      return await getSettings.call(activeQuery);
+    } catch {
+      throw new ClaudeUltracodeUnavailableError("unverifiable");
+    }
   }
 
   async setPermissionMode(permissionMode: ClaudePermissionMode): Promise<void> {
@@ -514,22 +820,28 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
-    if (!this.#started || !this.#query) {
+    if (this.#closePromise || !this.#started || !this.#query) {
       return Promise.reject(new Error("Claude SDK transport is not started"));
     }
-    if (this.#active) return Promise.reject(new Error("Claude SDK transport is busy"));
+    if (this.#active || this.#autonomous?.live) {
+      return Promise.reject(new Error("Claude SDK transport is busy"));
+    }
+    // A Segment without Root output has no Turn yet. The requested Turn takes over the native
+    // stream, so the events that Segment still holds must not reappear in a later Turn.
+    const unclaimed = this.#autonomous?.events ?? [];
+    this.#autonomous = null;
     const promise = new Promise<ClaudeTransportTurnResult>((resolve, reject) => {
+      this.#rootToolCalls.clear();
       this.#active = {
         accumulator: new ClaudeNativeTurnAccumulator(
           this.#provider ? { provider: this.#provider } : {},
         ),
-        controlRequestIds: new Set(),
-        interactions: new Map(),
         onEvent,
         resolve,
         reject,
       };
     });
+    for (const event of unclaimed) onEvent(event);
     this.#input.push({
       type: "user",
       message: { role: "user", content: text },
@@ -541,29 +853,98 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     return promise;
   }
 
+  /**
+   * Claude accepts the input with `queued`; Claude Code 2.1.280 then emits `started` after the
+   * current tool call, when `priority: "next"` joins the running Turn. Waiting for `started` would
+   * hold the caller for a whole tool call.
+   *
+   * Once written, the input cannot be recalled: Claude delivers it in this Turn or runs it next.
+   * The Turn ending first therefore does not reject it, and a missing `queued` receipt resolves
+   * after a bounded wait so callers that serialize requests are never held indefinitely.
+   */
+  steer(text: string, messageId: string, onTakeover?: (started: boolean) => void): Promise<void> {
+    if (this.#closePromise || !this.#started || !this.#query || !this.canSteerActiveTurn()) {
+      return Promise.reject(new ClaudeSteerMissedTurnError());
+    }
+    const promise = new Promise<void>((resolve, reject) => {
+      this.#pendingSteers.set(messageId, { resolve, reject, timer: undefined });
+    });
+    try {
+      this.#input.push({
+        type: "user",
+        message: { role: "user", content: text },
+        parent_tool_use_id: null,
+        session_id: this.sessionId,
+        uuid: messageId as `${string}-${string}-${string}-${string}-${string}`,
+        origin: { kind: "human" },
+        priority: "next",
+      });
+    } catch {
+      this.#pendingSteers.delete(messageId);
+      return Promise.reject(new ClaudeSteerMissedTurnError());
+    }
+    if (onTakeover) this.#steerTakeovers.set(messageId, onTakeover);
+    const pending = this.#pendingSteers.get(messageId);
+    if (pending) {
+      pending.timer = setTimeout(() => {
+        // Without a `queued` receipt there is no evidence Claude will report this steer's fate.
+        this.#acceptSteer(messageId);
+        this.#takeOverSteer(messageId, false);
+      }, this.#steerQueuedTimeoutMs);
+      pending.timer.unref?.();
+    }
+    return promise;
+  }
+
+  #acceptSteer(messageId: string): void {
+    const pending = this.#pendingSteers.get(messageId);
+    if (!pending) return;
+    this.#pendingSteers.delete(messageId);
+    clearTimeout(pending.timer);
+    pending.resolve();
+  }
+
+  #takeOverSteer(messageId: string, started: boolean): void {
+    const onTakeover = this.#steerTakeovers.get(messageId);
+    if (!onTakeover) return;
+    this.#steerTakeovers.delete(messageId);
+    onTakeover(started);
+  }
+
   respondToInteraction(response: ClaudeInteractionResponse): Promise<void> {
-    const active = this.#active;
-    const pending = active?.interactions.get(response.requestId);
-    if (!active || !pending) {
+    const pending = this.#interactions.get(response.requestId);
+    if (!pending) {
       return Promise.reject(new Error("Claude SDK Interaction is not pending"));
     }
     if (response.type === "approval") {
-      if (pending.request.type !== "approval") {
+      if (pending.request.type !== "approval" && pending.request.type !== "planApproval") {
         return Promise.reject(new Error("Claude SDK Interaction response type does not match"));
       }
       let result: PermissionResult;
       if (response.decision === "deny") {
-        result = denied(pending.toolUseId, "User denied the Tool request");
+        result = denied(
+          pending.toolUseId,
+          pending.request.type === "planApproval"
+            ? "User chose to stay in plan mode. Do not begin implementation."
+            : "User denied the Tool request",
+        );
       } else if (response.decision === "allowOnce") {
+        if (pending.request.type === "planApproval" && !pending.request.plan) {
+          return Promise.reject(new Error("Claude SDK plan text is unavailable for approval"));
+        }
         result = allowed(pending.toolUseId, pending.input);
       } else {
         const requestedScope = response.decision === "allowForSession" ? "session" : "always";
-        if (pending.request.suggestedScope !== requestedScope || !pending.suggestions) {
+        if (
+          pending.request.type !== "approval" ||
+          pending.request.suggestedScope !== requestedScope ||
+          !pending.suggestions
+        ) {
           return Promise.reject(new Error("Claude SDK Approval scope is not pending"));
         }
         result = allowed(pending.toolUseId, pending.input, pending.suggestions);
       }
-      this.#settleInteraction(active, pending, result, "responded");
+      this.#settleInteraction(pending, result, "responded");
       return Promise.resolve();
     }
     if (pending.request.type !== "question") {
@@ -571,7 +952,6 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
     if ("cancelled" in response) {
       this.#settleInteraction(
-        active,
         pending,
         denied(pending.toolUseId, "User cancelled the Question"),
         "cancelled",
@@ -589,7 +969,6 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       return Promise.reject(new Error("Claude SDK Question answers do not match the request"));
     }
     this.#settleInteraction(
-      active,
       pending,
       {
         behavior: "allow",
@@ -603,16 +982,37 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   }
 
   async abort(): Promise<void> {
-    const active = this.#active;
+    const accumulator =
+      this.#active?.accumulator ?? (this.#autonomous?.live ? this.#autonomous.accumulator : null);
     const activeQuery = this.#query;
-    if (!active || !activeQuery) throw new Error("Claude SDK transport has no active Turn");
-    active.accumulator.requestCancel();
-    const timeout = rejectAfter(this.#abortTimeoutMs, INTERRUPT_TIMEOUT_MESSAGE);
+    if (!accumulator || !activeQuery) throw new Error("Claude SDK transport has no active Turn");
+    accumulator.requestCancel();
     try {
-      await Promise.race([activeQuery.interrupt(), timeout.promise]);
+      await this.#stopRequest(activeQuery.interrupt(), INTERRUPT_TIMEOUT_MESSAGE);
     } catch (error) {
       await this.close();
       throw error instanceof Error ? error : new Error(INTERRUPT_TIMEOUT_MESSAGE);
+    }
+  }
+
+  async abortContinuation(): Promise<void> {
+    if (this.#active) return this.abort();
+    const activeQuery = this.#query;
+    if (!activeQuery) throw new Error("Claude SDK transport is not running");
+    this.#idleAccumulator?.requestCancel();
+    try {
+      await this.#stopRequest(activeQuery.interrupt(), INTERRUPT_TIMEOUT_MESSAGE);
+    } catch (error) {
+      await this.close();
+      throw error instanceof Error ? error : new Error(INTERRUPT_TIMEOUT_MESSAGE);
+    }
+  }
+
+  /** A user stop must answer: native stop requests share the abort timeout. */
+  async #stopRequest(request: Promise<unknown>, timeoutMessage: string): Promise<void> {
+    const timeout = rejectAfter(this.#abortTimeoutMs, timeoutMessage);
+    try {
+      await Promise.race([request, timeout.promise]);
     } finally {
       timeout.cancel();
     }
@@ -628,31 +1028,46 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     input: Record<string, unknown>,
     options: Parameters<CanUseTool>[2],
   ): Promise<PermissionResult> {
-    const active = this.#active;
+    const sink = this.#interactionSink();
     const validToolName = boundedDisplayText(toolName, APPROVAL_TITLE_MAX_LENGTH);
     if (
-      !active ||
+      !sink ||
       !validToolName ||
       typeof options.requestId !== "string" ||
       options.requestId.length === 0 ||
       typeof options.toolUseID !== "string" ||
       options.toolUseID.length === 0 ||
       options.signal.aborted ||
-      active.controlRequestIds.has(options.requestId)
+      this.#controlRequestIds.has(options.requestId)
     ) {
       return Promise.resolve(
         denied(options.toolUseID, "Claude Tool permission request is invalid"),
       );
     }
 
+    const agentId =
+      typeof options.agentID === "string" && options.agentID.length > 0
+        ? options.agentID
+        : undefined;
     this.#interactionOrdinal += 1;
     const requestId = `claude-${toolName === "AskUserQuestion" ? "question" : "approval"}-${this.#interactionOrdinal}`;
     let request: ClaudeInteractionRequest | null;
     if (toolName === "AskUserQuestion") {
       const questions = parseQuestions(input);
       request = questions ? { type: "question", requestId, questions } : null;
+    } else if (toolName === "ExitPlanMode") {
+      request = {
+        type: "planApproval",
+        requestId,
+        plan: typeof input.plan === "string" && input.plan.trim().length > 0 ? input.plan : null,
+      };
     } else {
-      request = parseApprovalRequest(requestId, toolName, options);
+      request = parseApprovalRequest(
+        requestId,
+        toolName,
+        options,
+        agentId ? this.#workflowAgentLabels.get(agentId) : undefined,
+      );
     }
     if (!request) {
       return Promise.resolve(
@@ -662,6 +1077,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
 
     return new Promise<PermissionResult>((resolve) => {
       const pending: PendingInteraction = {
+        agentScoped: agentId !== undefined,
         controlRequestId: options.requestId,
         input,
         request,
@@ -673,7 +1089,6 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         toolUseId: options.toolUseID,
         onAbort: () => {
           this.#settleInteraction(
-            active,
             pending,
             denied(
               pending.toolUseId,
@@ -685,23 +1100,38 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           );
         },
       };
-      active.interactions.set(request.requestId, pending);
-      active.controlRequestIds.add(options.requestId);
+      this.#interactions.set(request.requestId, pending);
+      this.#controlRequestIds.add(options.requestId);
       options.signal.addEventListener("abort", pending.onAbort, { once: true });
-      active.onEvent({ type: "interaction.requested", request });
+      sink({
+        type: "interaction.requested",
+        request,
+        ...(pending.agentScoped ? { agentScoped: true } : {}),
+      });
     });
   }
 
+  /**
+   * Where Interaction lifecycle events go: the active Turn, else the held Turn's idle
+   * Segments. Without either there is no Host Turn that could answer a request.
+   */
+  #interactionSink(): ((event: ClaudeTurnEvent) => void) | null {
+    const active = this.#active;
+    if (active) return (event) => active.onEvent(event);
+    const idle = this.#idleHandler;
+    if (this.#idleLive && idle) return (event) => idle.onEvent(event);
+    return null;
+  }
+
   #settleInteraction(
-    active: ActiveTurn,
     pending: PendingInteraction,
     result: PermissionResult,
     reason: "responded" | "cancelled" | "superseded",
   ): void {
-    if (!active.interactions.delete(pending.request.requestId)) return;
-    active.controlRequestIds.delete(pending.controlRequestId);
+    if (!this.#interactions.delete(pending.request.requestId)) return;
+    this.#controlRequestIds.delete(pending.controlRequestId);
     pending.signal.removeEventListener("abort", pending.onAbort);
-    active.onEvent({
+    this.#interactionSink()?.({
       type: "interaction.closed",
       requestId: pending.request.requestId,
       reason,
@@ -709,10 +1139,11 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     pending.resolve(result);
   }
 
-  #closeInteractions(active: ActiveTurn, reason: "cancelled" | "superseded"): void {
-    for (const pending of [...active.interactions.values()]) {
+  /** A Root terminal settles Root requests; agent requests stay while their agent runs. */
+  #closeInteractions(scope: "root" | "all", reason: "cancelled" | "superseded"): void {
+    for (const pending of [...this.#interactions.values()]) {
+      if (scope === "root" && pending.agentScoped) continue;
       this.#settleInteraction(
-        active,
         pending,
         denied(
           pending.toolUseId,
@@ -726,35 +1157,214 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   }
 
   async #close(): Promise<void> {
-    if (this.#active) this.#closeInteractions(this.#active, "cancelled");
-    this.#input.end();
-    this.#query?.close();
-    await Promise.race([
-      this.#consumeTask?.catch(() => undefined) ?? Promise.resolve(),
-      delay(this.#closeTimeoutMs),
-    ]);
-    for (const child of this.#children) {
-      if (!processExited(child)) child.kill("SIGTERM");
+    this.#rejectPendingSteers();
+    const failures: unknown[] = [];
+    this.#closeInteractions("all", "cancelled");
+    try {
+      const timeout = rejectAfter(this.#closeTimeoutMs, "Claude background tasks did not stop");
+      try {
+        await Promise.race([this.#stopBackgroundTasks(), timeout.promise]);
+      } finally {
+        timeout.cancel();
+      }
+    } catch (error) {
+      // Confirmed process-tree shutdown below supersedes a missing task terminal. Without
+      // an owned process, closing the SDK stream alone cannot prove the task stopped.
+      if (!this.#children.some((child) => child.pid !== undefined)) failures.push(error);
     }
-    await Promise.race([
-      Promise.all(this.#children.map((child) => this.#waitForExit(child))),
-      delay(this.#closeTimeoutMs),
-    ]);
-    for (const child of this.#children) {
-      if (!processExited(child)) child.kill("SIGKILL");
+    const stopOwnedProcesses = async (): Promise<void> => {
+      const stopped = await Promise.allSettled(
+        this.#children.map((child) => closeClaudeProcessGroup(child, this.#closeTimeoutMs)),
+      );
+      for (const result of stopped) if (result.status === "rejected") failures.push(result.reason);
+    };
+    // taskkill needs a living root to enumerate the Windows tree. Unix groups remain addressable
+    // after their root exits, so let the SDK initiate its native cleanup first there.
+    if (process.platform === "win32") await stopOwnedProcesses();
+    this.#input.end();
+    try {
+      this.#query?.close();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (process.platform !== "win32") await stopOwnedProcesses();
+    const exitTimeout = rejectAfter(this.#closeTimeoutMs, "Claude SDK process did not exit");
+    try {
+      await Promise.race([
+        Promise.all(this.#children.map((child) => this.#waitForExit(child))),
+        exitTimeout.promise,
+      ]);
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      exitTimeout.cancel();
+    }
+    const drainTimeout = rejectAfter(this.#closeTimeoutMs, "Claude SDK output did not drain");
+    try {
+      await Promise.race([
+        this.#consumeTask?.catch(() => undefined) ?? Promise.resolve(),
+        drainTimeout.promise,
+      ]);
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      drainTimeout.cancel();
     }
     this.#query = null;
     const active = this.#active;
+    this.#rootToolCalls.clear();
     this.#active = null;
     this.#autonomous = null;
     this.#idleAccumulator = null;
     this.#idleLive = false;
     active?.reject(new Error("Claude SDK transport closed"));
+    if (failures.length > 0)
+      throw new AggregateError(failures, "Claude SDK shutdown could not be confirmed");
+  }
+
+  hasBackgroundTasks(): boolean {
+    return this.#backgroundTasks.size > 0;
+  }
+
+  /** The native `task_notification` that follows reports the stopped task. */
+  async stopBackgroundTask(taskId: string): Promise<void> {
+    if (!this.#query) throw new Error("Claude SDK transport is not running");
+    await this.#stopRequest(this.#query.stopTask(taskId), "Claude background task stop timed out");
+  }
+
+  async stopTasks(taskIds: readonly string[]): Promise<void> {
+    const activeQuery = this.#query;
+    if (!activeQuery) throw new Error("Claude SDK transport is not running");
+    const ids = [...new Set(taskIds)];
+    await Promise.all(
+      ids.map(async (taskId) => {
+        try {
+          await this.#stopRequest(
+            activeQuery.stopTask(taskId),
+            "Claude background task stop timed out",
+          );
+        } catch (error) {
+          // The task ended before the stop arrived.
+          if (this.#backgroundTasks.has(taskId)) throw error;
+        }
+      }),
+    );
+    // A control receipt alone is not a task terminal; wait until Claude Code reports each stop.
+    const deadline = Date.now() + this.#abortTimeoutMs;
+    while (ids.some((taskId) => this.#backgroundTasks.has(taskId))) {
+      if (Date.now() >= deadline || this.#query !== activeQuery) {
+        throw new Error("Claude background task stop was not confirmed");
+      }
+      await delay(10);
+    }
+  }
+
+  async #stopBackgroundTasks(): Promise<void> {
+    const requested = new Set<string>();
+    const deadline = Date.now() + this.#closeTimeoutMs;
+    while (this.#backgroundTasks.size > 0) {
+      if (Date.now() >= deadline || !this.#query)
+        throw new Error("Claude background tasks remain active");
+      for (const id of this.#backgroundTasks) {
+        if (requested.has(id)) continue;
+        requested.add(id);
+        await this.#query.stopTask(id);
+      }
+      // A control receipt alone is not a task terminal; consume its native stopped notification.
+      if (this.#backgroundTasks.size > 0) await delay(10);
+    }
+  }
+
+  #rejectPendingSteers(): void {
+    for (const messageId of [...this.#steerTakeovers.keys()]) {
+      this.#takeOverSteer(messageId, false);
+    }
+    const pending = [...this.#pendingSteers.values()];
+    this.#pendingSteers.clear();
+    // Written input may still be delivered. Only pre-write failures are ClaudeSteerMissedTurnError.
+    const error = new Error("Claude Code steer receipt was lost after input was written");
+    for (const entry of pending) {
+      clearTimeout(entry.timer);
+      entry.reject(error);
+    }
+  }
+
+  /**
+   * `queued` is Claude's acceptance of this message into the running Session. `started` is its
+   * drain into a native turn, folded into the running one or run as the next; a terminal state
+   * without `started` means no native turn takes it over.
+   */
+  #observeSteer(message: unknown): void {
+    if (
+      (this.#pendingSteers.size === 0 && this.#steerTakeovers.size === 0) ||
+      !isRecord(message) ||
+      message.type !== "command_lifecycle"
+    ) {
+      return;
+    }
+    if (typeof message.command_uuid !== "string" || message.command_uuid.length === 0) return;
+    if (message.state === "queued") {
+      this.#acceptSteer(message.command_uuid);
+      return;
+    }
+    if (
+      ["started", "completed", "cancelled", "discarded", "refused"].includes(String(message.state))
+    ) {
+      this.#takeOverSteer(message.command_uuid, message.state === "started");
+    }
+  }
+
+  #observeBackgroundTasks(message: unknown): void {
+    if (!isRecord(message) || message.type !== "system") return;
+    if (message.subtype === "background_tasks_changed" && Array.isArray(message.tasks)) {
+      this.#backgroundTasks = new Set(
+        message.tasks.flatMap((task) =>
+          isRecord(task) && typeof task.task_id === "string" ? [task.task_id] : [],
+        ),
+      );
+    } else if (message.subtype === "task_started" && typeof message.task_id === "string") {
+      this.#backgroundTasks.add(message.task_id);
+    } else if (
+      message.subtype === "task_notification" &&
+      typeof message.task_id === "string" &&
+      ["completed", "failed", "stopped"].includes(String(message.status))
+    ) {
+      this.#backgroundTasks.delete(message.task_id);
+    }
+  }
+
+  /** Starts the Segment's autonomous Turn and releases the events it held, in native order. */
+  #startAutonomousTurn(autonomous: AutonomousSegment, handler: ClaudeAutonomousTurnHandler): void {
+    autonomous.live = true;
+    handler.start(autonomous.userMessageId ?? `autonomous-${Date.now()}`, autonomous.userMessageId);
+    for (const event of autonomous.events.splice(0)) handler.onEvent(event);
+  }
+
+  /** Remembers Workflow agent labels so their approvals can name the agent asking. */
+  #observeWorkflowAgents(message: unknown): void {
+    if (!isRecord(message) || message.type !== "system" || message.subtype !== "task_progress") {
+      return;
+    }
+    for (const agent of parseClaudeWorkflowAgents(message.workflow_progress) ?? []) {
+      if (!agent.agentId) continue;
+      if (
+        !this.#workflowAgentLabels.has(agent.agentId) &&
+        this.#workflowAgentLabels.size >= WORKFLOW_AGENT_LABEL_LIMIT
+      ) {
+        const oldest = this.#workflowAgentLabels.keys().next();
+        if (!oldest.done) this.#workflowAgentLabels.delete(oldest.value);
+      }
+      this.#workflowAgentLabels.set(agent.agentId, agent.label);
+    }
   }
 
   async #consume(activeQuery: Query): Promise<void> {
     try {
       for await (const message of activeQuery) {
+        this.#observeBackgroundTasks(message);
+        this.#observeWorkflowAgents(message);
+        this.#observeSlashCommands(message);
+        this.#observeNativeCapabilities(message);
         const permissionMode = permissionModeFromMessage(message);
         if (permissionMode && permissionMode !== this.#permissionMode) {
           this.#permissionMode = permissionMode;
@@ -762,12 +1372,15 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         }
         const planLimit = parseClaudePlanLimitEvent(message);
         if (planLimit) this.#onPlanLimit(planLimit);
+        this.#observeSteer(message);
         const active = this.#active;
         if (active) {
+          this.#observeRootToolCalls(message);
           const interpreted = active.accumulator.consume(message);
           for (const event of interpreted.events) active.onEvent(event);
           if (interpreted.terminal) {
-            this.#closeInteractions(active, "superseded");
+            this.#closeInteractions("root", "superseded");
+            this.#rootToolCalls.clear();
             this.#active = null;
             active.resolve(interpreted.terminal);
           }
@@ -782,12 +1395,14 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           const interpreted = idle.consume(message);
           for (const event of interpreted.events) this.#idleHandler.onEvent(event);
           if (interpreted.terminal) {
+            this.#closeInteractions("root", "superseded");
             this.#idleAccumulator = null;
             this.#idleHandler.onTerminal(interpreted.terminal);
           }
           continue;
         }
-        if (!this.#autonomousTurnHandler) continue;
+        const handler = this.#autonomousTurnHandler;
+        if (!handler) continue;
         const autonomous =
           this.#autonomous ??
           (this.#autonomous = {
@@ -795,37 +1410,49 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
               this.#provider ? { provider: this.#provider } : {},
             ),
             events: [],
-            nativeTurnKey: null,
+            userMessageId: null,
+            live: false,
           });
         if (
-          autonomous.nativeTurnKey === null &&
+          autonomous.userMessageId === null &&
           isRecord(message) &&
           message.type === "user" &&
           (message.parent_tool_use_id === null || message.parent_tool_use_id === undefined) &&
           typeof message.uuid === "string" &&
           message.uuid.length > 0
         ) {
-          autonomous.nativeTurnKey = message.uuid;
+          autonomous.userMessageId = message.uuid;
         }
         const interpreted = autonomous.accumulator.consume(message);
-        autonomous.events.push(...interpreted.events);
+        for (const event of interpreted.events) {
+          if (autonomous.live) {
+            handler.onEvent(event);
+          } else if (
+            this.#threadEventHandler &&
+            canDeliverSettlementImmediately(event, autonomous.events)
+          ) {
+            this.#threadEventHandler(event);
+          } else {
+            autonomous.events.push(event);
+            if (isRootOutput(event)) this.#startAutonomousTurn(autonomous, handler);
+          }
+        }
         if (interpreted.terminal) {
+          // Clear first: settling the Turn may hold it and switch this stream to idle-live.
           this.#autonomous = null;
-          const nativeTurnKey = autonomous.nativeTurnKey ?? `autonomous-${Date.now()}`;
-          this.#autonomousTurnHandler({
-            nativeTurnKey,
-            events: autonomous.events,
-            result: interpreted.terminal,
-          });
+          if (!autonomous.live) this.#startAutonomousTurn(autonomous, handler);
+          handler.onTerminal(interpreted.terminal);
         }
       }
       if (!this.#closePromise) throw new Error("Claude SDK Query ended unexpectedly");
     } catch (error) {
       const active = this.#active;
-      if (active) this.#closeInteractions(active, "cancelled");
+      if (!this.#closePromise) this.#onFault(error);
+      this.#closeInteractions("all", "cancelled");
+      this.#rejectPendingSteers();
+      this.#rootToolCalls.clear();
       this.#active = null;
       active?.reject(error);
-      if (!this.#closePromise) this.#onFault(error);
     }
   }
 
@@ -836,6 +1463,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       signal: options.signal,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
+      detached: process.platform !== "win32",
     });
     child.stderr.on("data", (chunk: Buffer | string) => {
       this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
@@ -877,7 +1505,7 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
     this.#queryFactory = options.queryFactory ?? query;
   }
 
-  async inspect(): Promise<ClaudeModelInspectionSnapshot> {
+  #createQuery(): Query {
     if (this.#closePromise) throw new Error("Claude SDK Model inspector is closing");
     const executable = resolveClaudeCodeExecutable({
       ...(this.#command ? { command: this.#command } : {}),
@@ -901,14 +1529,42 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
       },
     });
     this.#query = activeQuery;
+    return activeQuery;
+  }
+
+  async inspectAccount(): Promise<HarnessAccountSnapshot | null> {
+    const timeout = rejectAfter(10_000, "Claude SDK account inspection timed out");
+    try {
+      const activeQuery = this.#createQuery();
+      return await Promise.race([
+        (async () => {
+          await activeQuery.initializationResult();
+          const getUsage = activeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+          if (typeof getUsage !== "function") return null;
+          const usage = await getUsage.call(activeQuery);
+          if (!usage.rate_limits_available || !usage.rate_limits) return null;
+          const account = await activeQuery.accountInfo();
+          return projectClaudeAccountUsage(usage, account);
+        })(),
+        timeout.promise,
+      ]);
+    } finally {
+      timeout.cancel();
+      await this.close();
+    }
+  }
+
+  async inspect(): Promise<ClaudeModelInspectionSnapshot> {
+    const activeQuery = this.#createQuery();
     try {
       const initialized = await activeQuery.initializationResult();
       const candidate = activeQuery as unknown as Record<string, unknown>;
       const canSelectModel =
         Array.isArray(initialized.models) && typeof candidate.setModel === "function";
       const canSelectPermissionMode = typeof candidate.setPermissionMode === "function";
+      const modelPicker = await readClaudeUserModelPicker(this.#environment);
       return {
-        models: initialized.models,
+        models: mergeClaudeModelPickerOptions(initialized.models, modelPicker),
         canSelectModel,
         canSelectPermissionMode,
       };

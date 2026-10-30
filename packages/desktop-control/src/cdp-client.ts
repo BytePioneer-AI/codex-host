@@ -18,7 +18,7 @@ export interface CdpFetchResponse {
   json(): Promise<unknown>;
 }
 
-export type CdpFetch = (url: string) => Promise<CdpFetchResponse>;
+export type CdpFetch = (url: string, init?: { signal?: AbortSignal }) => Promise<CdpFetchResponse>;
 
 interface CdpSocketEvent {
   data?: unknown;
@@ -62,6 +62,18 @@ interface CdpResponse {
   };
 }
 
+/**
+ * The thrown value's description (message and stack) when CDP provides it;
+ * `exceptionDetails.text` alone is only a summary such as "Uncaught".
+ */
+export function cdpExceptionMessage(details: Record<string, unknown>, fallback: string): string {
+  const exception = details.exception;
+  if (isRecord(exception) && typeof exception.description === "string" && exception.description) {
+    return exception.description;
+  }
+  return typeof details.text === "string" && details.text ? details.text : fallback;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -84,21 +96,37 @@ function loopbackUrl(value: string, protocols: readonly string[]): URL {
   return url;
 }
 
-function parseTarget(value: unknown): CdpTarget {
-  if (!isRecord(value)) throw new Error("CDP target must be an object");
-  const target = {
-    id: nonEmptyString(value.id, "id"),
-    type: nonEmptyString(value.type, "type"),
-    title: typeof value.title === "string" ? value.title : "",
-    url: nonEmptyString(value.url, "url"),
-    webSocketDebuggerUrl: nonEmptyString(value.webSocketDebuggerUrl, "webSocketDebuggerUrl"),
-  };
-  loopbackUrl(target.webSocketDebuggerUrl, ["ws:", "wss:"]);
-  return target;
+function optionalText(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function defaultFetch(url: string): Promise<CdpFetchResponse> {
-  return fetch(url);
+/**
+ * Chromium lists targets that cannot be attached to by URL, such as workers
+ * with an empty `url` or targets already claimed by another client (no
+ * `webSocketDebuggerUrl`). They can never be the Renderer page, so skip them
+ * instead of failing discovery: one such worker used to make every health
+ * check fail and forced a full Renderer re-injection. A target that does
+ * advertise a debugger URL must still be loopback.
+ */
+function parseTarget(value: unknown): CdpTarget | null {
+  if (!isRecord(value)) throw new Error("CDP target must be an object");
+  const id = optionalText(value.id);
+  const type = optionalText(value.type);
+  const url = optionalText(value.url);
+  const webSocketDebuggerUrl = optionalText(value.webSocketDebuggerUrl);
+  if (webSocketDebuggerUrl) loopbackUrl(webSocketDebuggerUrl, ["ws:", "wss:"]);
+  if (!id || !type || !url || !webSocketDebuggerUrl) return null;
+  return {
+    id,
+    type,
+    title: typeof value.title === "string" ? value.title : "",
+    url,
+    webSocketDebuggerUrl,
+  };
+}
+
+function defaultFetch(url: string, init?: { signal?: AbortSignal }): Promise<CdpFetchResponse> {
+  return fetch(url, init);
 }
 
 function defaultSocketFactory(url: string): CdpSocket {
@@ -150,14 +178,15 @@ export async function getCdpBrowserVersion(
 export async function listCdpTargets(
   endpoint: string,
   fetchImpl: CdpFetch = defaultFetch,
+  signal?: AbortSignal,
 ): Promise<CdpTarget[]> {
   const baseUrl = loopbackUrl(endpoint, ["http:", "https:"]);
   const targetsUrl = new URL("/json/list", baseUrl).toString();
-  const response = await fetchImpl(targetsUrl);
+  const response = await fetchImpl(targetsUrl, signal ? { signal } : undefined);
   if (!response.ok) throw new Error(`CDP target discovery failed with HTTP ${response.status}`);
   const value = await response.json();
   if (!Array.isArray(value)) throw new Error("CDP target discovery did not return an array");
-  return value.map(parseTarget);
+  return value.map(parseTarget).filter((target): target is CdpTarget => target !== null);
 }
 
 export async function waitForRendererTarget(
@@ -288,11 +317,7 @@ export class CdpClient {
     });
     if (!isRecord(response)) throw new Error("Runtime.evaluate returned an invalid result");
     if (isRecord(response.exceptionDetails)) {
-      const text =
-        typeof response.exceptionDetails.text === "string"
-          ? response.exceptionDetails.text
-          : "Renderer evaluation failed";
-      throw new Error(text);
+      throw new Error(cdpExceptionMessage(response.exceptionDetails, "Renderer evaluation failed"));
     }
     if (!isRecord(response.result) || !("value" in response.result)) {
       throw new Error("Runtime.evaluate did not return a value");

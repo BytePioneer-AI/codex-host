@@ -1,40 +1,34 @@
-# Renderer brand assets
+# Brand assets
 
-`codexhost-logo.png` is the 3:4 codexhost product logo used by the installer and
-application branding. `codexhost-icon.png` is its square crop used for the
-in-product brand mark.
+Only Codex and codexhost artwork is bundled into the Renderer. External Harness
+artwork belongs to `packages/adapters/<id>/assets/`, is declared in each plugin's
+manifest, and reaches the Renderer as a validated data URL in the Host directory.
+The Renderer uses an image element, never inline plugin SVG.
 
-`codexhost-logo-transparent.png` is the white-background-free square logo
-extracted from `codexhost-logo.png`. `codex-logo.png` is the Codex X mark
-source and `codex-logo-transparent.png` is its white-background-free square
-variant. `codex-logo-bright.png` recolors that mark in the official bright
-Codex blue so it stays visible on dark surfaces and is the Renderer settings
-brand icon (settings header mark and the application-header settings trigger
-button).
-
+`codex-logo.png` is the Codex X mark source; `codex-logo-transparent.png` removes
+its white background, and `codex-logo-bright.png` uses the official bright blue.
 `codex-agent.png` is the Codex App GA mark distributed with OpenAI's official
-`openai.chatgpt` VS Code extension. It is bundled as a data URL so the Renderer
-does not depend on a local extension path or a network request.
+`openai.chatgpt` VS Code extension.
 
-`omp-agent.svg` is the official OMP favicon mark from the Oh My Pi repository
-(`packages/collab-web/public/favicon.svg`). `opencode-agent.png` is OpenCode's
-square mark with its dark outer plate. Both are bundled locally so the Renderer
-does not depend on a network request.
+`codexhost-app-icon.svg` is the vector master of the codexhost brand icon,
+used in settings. The launcher PNG and Windows ICO are derived from it.
 
-The Agent picker uses the official Pi mark from `https://pi.dev/logo-auto.svg`
-and the Claude mark distributed in Anthropic's official `anthropic.claude-code`
-VS Code extension as inline vector paths. The DeepSeek Harness whale mark is
-the exact extract from the official `deepseek-harness` web favicon
-(`packages/client/ui-primitives/src/FishLogo.tsx` in that repo), rendered
-inline in the DeepSeek brand blue `#4D6BFE`. `grok-agent.png` is a cropped and
-resized copy of the Grok mark served by `grok.com`, provided from a captured
-first-party page asset so the Renderer does not make a network request. The
-square source is stored with transparent rounded corners so the black plate
-does not render as a hard square.
+## External artwork provenance
 
-`codexhost-readme.svg` embeds `codex-agent.png`, `claude-agent.svg`, and
-`pi-agent.svg` in a responsive vector composition. Its background is `#F2EDE7`.
-The README references this SVG through HTML because GitHub strips inline CSS
-background and border-radius declarations from Markdown HTML.
+- Pi: official `https://pi.dev/logo-auto.svg`. The original Renderer paths, viewBox
+  and `currentColor` SVG rendering are preserved in the plugin Manifest; the original
+  standalone image resource is unchanged. No light plate is added.
+- Claude Code: Anthropic's official `anthropic.claude-code` VS Code extension.
+- DeepSeek Harness: official web favicon / `FishLogo.tsx`, blue `#4D6BFE`.
+- OMP: Oh My Pi `packages/collab-web/public/favicon.svg`.
+- OpenCode: official square mark with dark outer plate.
+- Grok: cropped first-party `grok.com` mark with transparent rounded corners.
+- Kiro: official `https://kiro.dev/icon.svg`.
+- CodeBuddy and WorkBuddy: captured first-party `10001.svg` assets; original
+  backgrounds, marks, viewBoxes and clipping are preserved.
+- Cursor: official `https://cursor.com/favicon.svg` Cube with its dark plate.
+- Hermes: the original cropped/resized website favicon, unchanged; its existing light plate,
+  padding and rounded corners are declared by the plugin rather than baked into the artwork.
+- ZCode: upstream codex-host integration snapshot `b66013bb`.
 
-These product names and marks remain trademarks of their respective owners.
+Product names and marks remain trademarks of their respective owners.

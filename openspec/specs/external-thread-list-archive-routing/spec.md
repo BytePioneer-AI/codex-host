@@ -46,10 +46,20 @@ Host SHALL apply supported `thread/list` filters to External records using only 
 - **THEN** Host SHALL not treat External Fork lineage as a Codex Subagent relationship
 - **AND** it SHALL omit ordinary External records from that filtered result
 
-#### Scenario: Pinned rows are requested
+#### Scenario: Project filter is requested
+- **WHEN** `projectId` is a project ID
+- **THEN** Host SHALL include only External records whose persisted project assignment equals it
+- **AND** `projectId=null` SHALL include only unassigned External records, and omission SHALL include every project
+
+#### Scenario: Legacy pinned rows are requested
 - **WHEN** `isPinned=true`
-- **THEN** Host SHALL omit External records because External Pin is unsupported
+- **THEN** Host SHALL omit External records because the legacy `isPinned` metadata is not an External Pin surface; current Desktop pins through Thread sections
 - **AND** when pinned is false, null, or absent, returned External rows SHALL expose `isPinned=false`
+
+#### Scenario: Section filter is requested with timestamp ordering
+- **WHEN** `sectionId` is present with `created_at`, `updated_at`, or `recency_at` ordering
+- **THEN** Host SHALL include only External records whose section placement matches it, with `null` matching unsectioned records
+- **AND** every External row SHALL expose `section` and `sectionEnteredAt` from its placement, or `null` for both
 
 #### Scenario: Unknown filter semantics are received
 - **WHEN** a future `thread/list` field could change which External records match and Host cannot safely interpret it
@@ -131,17 +141,76 @@ Host SHALL preserve original official Codex behavior for Thread list and managem
 - **WHEN** the official process exits or Host closes before an internal list response arrives
 - **THEN** every pending aggregate request SHALL settle with failure in bounded time
 
+### Requirement: External Desktop metadata updates are persisted Host operations
+Host Runtime SHALL handle `thread/metadata/update` for a persisted External Thread as a Host-owned metadata patch. Project assignment, Git metadata, and the Daybreak choice are Desktop organization metadata: Host SHALL persist them only in the Mapping Store, MUST NOT open or modify the Harness Native Session, and SHALL follow current Codex patch semantics (omitted or null leaves a field unchanged, an empty `projectId` clears the assignment, and a null Git field clears that field). Host SHALL respond with the updated Metadata-only Thread, which SHALL expose the persisted `projectId`, `gitInfo`, and `daybreakEnabled`.
+
+#### Scenario: Desktop assigns a new External Thread to a project
+- **WHEN** Desktop sends `thread/metadata/update` with a non-empty `projectId` for a ready External Thread
+- **THEN** Host SHALL confirm through official `project/read` that the project exists, persist the assignment, return the updated Thread, and then emit `thread/project/updated`
+- **AND** the Thread SHALL appear in `thread/list` results filtered by that project after restart
+
+#### Scenario: Harness defers its native Session to the first Turn
+- **WHEN** Desktop updates metadata for a loaded External Thread whose record is still provisional because the Harness has not reported native identity
+- **THEN** Host SHALL persist the metadata on the provisional record and return the updated Thread
+- **AND** committing native identity later SHALL preserve the persisted metadata
+
+#### Scenario: Project is unavailable
+- **WHEN** official Codex cannot read the requested project
+- **THEN** Host SHALL return an explicit invalid-params error without changing Host state or emitting a notification
+
+#### Scenario: Git metadata or Daybreak choice is patched
+- **WHEN** the update includes `gitInfo` fields or `daybreakEnabled`
+- **THEN** Host SHALL persist only the supplied fields and return the merged values
+- **AND** it SHALL NOT emit `thread/project/updated` when the project assignment is unchanged
+
+#### Scenario: Metadata is updated for a Thread in a section
+- **WHEN** Desktop updates metadata for an External Thread with a saved section placement
+- **THEN** the response SHALL include that placement in `section` and `sectionEnteredAt`, including after Host restart
+- **AND** project filters SHALL apply to External rows in section-ordered lists
+
+#### Scenario: Official Codex deletes a project
+- **WHEN** official Codex emits `project/changed` with `changeType=deleted`
+- **THEN** Host SHALL forward the notification unchanged, clear every External assignment to that project, and emit `thread/project/updated` with `projectId=null` for each cleared Thread
+- **AND** a Thread reassigned to another project before its clear is written SHALL keep the new assignment
+
+### Requirement: External Threads join official Thread sections
+Codex Desktop pins and groups Threads through official Thread sections (`thread/section/move`, `thread/list` with `sectionId` and `section_position`). The official app-server owns section definitions and the order of official Threads. Host SHALL persist External section placements in Mapping Store separately from V1 Thread records, and SHALL present one order per section across official and External Threads.
+
+#### Scenario: External Thread is pinned or moved
+- **WHEN** `thread/section/move` references an External Thread with a section ID
+- **THEN** Host SHALL copy the section definition from official `threadSection/list` and persist the placement before the requested Thread, or last when `beforeThreadId` is null
+- **AND** it SHALL answer `{}` without forwarding the External Thread ID to official Codex
+- **AND** a missing section or a `beforeThreadId` outside the section SHALL fail with the official `-32600` messages
+
+#### Scenario: External Thread is removed from its section
+- **WHEN** `thread/section/move` references an External Thread with `sectionId: null`
+- **THEN** Host SHALL remove its placement, and later reads SHALL expose `section: null` and `sectionEnteredAt: null`
+
+#### Scenario: Official Thread is moved relative to External Threads
+- **WHEN** `thread/section/move` references an official Thread while External placements exist or `beforeThreadId` names an External Thread
+- **THEN** Host SHALL forward an official move whose `beforeThreadId` is the next official Thread in the intended order
+- **AND** after the official move succeeds, Host SHALL re-anchor affected External placements so the merged order equals the intended order
+
+#### Scenario: Official move touches no External placement
+- **WHEN** no External placement exists and `beforeThreadId` does not name an External Thread
+- **THEN** Host SHALL forward the original frame to official Codex unchanged
+
+#### Scenario: Section order is listed
+- **WHEN** `thread/list` uses `section_position` with a string `sectionId` and a listed External Thread is placed in that section
+- **THEN** Host SHALL merge External rows into the complete official section order, apply the requested direction (ascending by default), and paginate with a Host section cursor bound to the query
+- **AND** when no listed External Thread is placed there, or the request continues an official cursor, Host SHALL forward the original frame unchanged
+
+#### Scenario: Placement storage is unreadable or outlives its Thread
+- **WHEN** the placement file is invalid, or a placement references a removed Thread or an anchor that left the section
+- **THEN** Host SHALL quarantine the invalid file without blocking Thread access, ignore placements of removed Threads, and keep an orphaned placement last in its section
+
 ### Requirement: Unsupported External metadata changes fail closed
 A current or future management request that references a persisted External Thread MUST be handled by a supported Host operation or fail explicitly. It MUST NOT fall through to official Codex merely because Host does not support that metadata field.
 
-#### Scenario: External Pin update is requested
-- **WHEN** `thread/metadata/update` references an External Thread and requests `isPinned`
-- **THEN** Host SHALL return explicit unsupported
-- **AND** it SHALL not modify Mapping Store or forward the External Thread ID to official Codex
-
-#### Scenario: External Git metadata update is requested
-- **WHEN** `thread/metadata/update` references an External Thread and includes Git metadata
-- **THEN** Host SHALL return explicit unsupported without changing Native or Host state
+#### Scenario: Unsupported metadata field is requested
+- **WHEN** `thread/metadata/update` references an External Thread and includes a field outside the current Codex metadata contract, such as the retired `isPinned` or an unknown key inside `gitInfo`
+- **THEN** Host SHALL return explicit unsupported naming each such field
+- **AND** it SHALL apply none of the request's fields and SHALL not forward the External Thread ID to official Codex
 
 #### Scenario: Official metadata update is requested
 - **WHEN** `thread/metadata/update` references no persisted External Thread

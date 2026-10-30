@@ -17,7 +17,7 @@ const contracts = {
     trailingActionOwnerCount: 1,
   },
   model: { draftCount: 1, conversationCount: 0, missingCount: 0, ambiguousCount: 0 },
-  settings: { headerCount: 1, visibleHeaderCount: 1, insertionPointCount: 1 },
+  settings: { railCount: 1, visibleRailCount: 1, insertionPointCount: 1 },
   sidebar: { rowCount: 0, titleOwnerCount: 0, resolvedThreadCount: 0, ambiguousThreadCount: 0 },
   transcript: {
     turnCount: 0,
@@ -26,6 +26,7 @@ const contracts = {
     textBodyCount: 0,
     textBodyOwnerCount: 0,
   },
+  codexUsageGate: { composerCount: 1, ownerCount: 1, reserveGateCount: 1, accountGateCount: 1 },
   fork: { annotatedResponseCount: 0, candidateButtonCount: 0, verifiedButtonCount: 0 },
   production: {
     bindingPresent: false,
@@ -56,6 +57,39 @@ describe("Codex Desktop contract audit report", () => {
     expect(surfaces.find(({ id }) => id === "permission")?.verdict).toBe("unverified");
     expect(surfaces.find(({ id }) => id === "fork")?.verdict).toBe("unverified");
     expect(surfaces.find(({ id }) => id === "composer")?.verdict).toBe("no-impact");
+  });
+
+  it("classifies the Codex usage gate from owner and gate cardinality", () => {
+    const verdictFor = (gate) =>
+      buildSurfaceResults({
+        ...contracts,
+        codexUsageGate: { ...contracts.codexUsageGate, ...gate },
+      }).find(({ id }) => id === "codex-usage-gate");
+    expect(verdictFor({})?.verdict).toBe("no-impact");
+    expect(verdictFor({ reserveGateCount: 0 })).toMatchObject({
+      verdict: "confirmed-impact",
+      reason: "codex-usage-gate-cardinality",
+    });
+    expect(verdictFor({ ownerCount: 2 })?.verdict).toBe("confirmed-impact");
+    // API-key sign-in: the Account gate returns before reading usage.
+    expect(verdictFor({ accountGateCount: 0 })).toMatchObject({
+      verdict: "unverified",
+      reason: "codex-usage-account-gate-dormant",
+    });
+    expect(verdictFor({ composerCount: 0, ownerCount: 0, reserveGateCount: 0 })?.verdict).toBe(
+      "unverified",
+    );
+  });
+
+  it("accepts a reviewed baseline that predates a newer surface", () => {
+    const older = buildSurfaceResults(contracts).filter(({ id }) => id !== "codex-usage-gate");
+    expect(() => validateAuditReport(reportFor(older))).toThrow("incomplete");
+    const baseline = validateAuditReport(reportFor(older), { baseline: true });
+    const gate = buildSurfaceResults(contracts, baseline).find(
+      ({ id }) => id === "codex-usage-gate",
+    );
+    expect(gate).toMatchObject({ verdict: "no-impact", baselineChanged: false });
+    expect(gate?.evidence.static).toBe("not-run");
   });
 
   it("reports ambiguous active ownership as confirmed impact", () => {

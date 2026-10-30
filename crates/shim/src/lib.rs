@@ -2,19 +2,22 @@
 
 use std::env;
 use std::error::Error;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use codexhost_platform::discover_desktop_managed_codex_cli;
 use codexhost_platform::{
     CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV, canonical_existing_file,
     configure_background_command, node_entrypoint_path, proxy_environment, spawn_supervised,
     validate_proxy_target,
 };
 
+mod desktop_invocation;
 mod local_runtime_lease;
 mod process_identity;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -32,6 +35,8 @@ const LAUNCHER_PID_ENV: &str = "CODEXHOST_LAUNCHER_PID";
 const NPM_NODE_PATH_ENV: &str = "CODEXHOST_NPM_NODE_PATH";
 const NPM_PACKAGE_ROOT_ENV: &str = "CODEXHOST_NPM_PACKAGE_ROOT";
 const REMOTE_LISTENER_CHILD_ENV: &str = "CODEXHOST_REMOTE_LISTENER_CHILD";
+const INTERNAL_ORIGINATOR_OVERRIDE_ENV: &str = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE";
+const DESKTOP_ORIGINATOR: &str = "Codex Desktop";
 
 /// Optional lifecycle hooks for diagnostics around the byte-transparent proxy core.
 pub trait ProxyObserver {
@@ -135,7 +140,9 @@ struct ChildOutcome {
     desktop_input_closed: bool,
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
+const PROCESS_TREE_REFRESH_INTERVAL: Duration = Duration::from_millis(20);
+#[cfg(target_os = "linux")]
 const PROCESS_TREE_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -171,14 +178,25 @@ fn wait_for_child(
             root_status = child.try_wait()?;
         }
         // `has_live_processes` takes a full system process snapshot so escaped descendants can
-        // still be attributed to this launch. Keep the 20 ms root/signal poll responsive, but do
-        // not repeat that expensive snapshot on every idle iteration. Root exit and lifecycle
-        // signals still trigger immediate snapshots through this branch or the signal operations.
+        // still be attributed to this launch. Preserve the responsive macOS observation needed
+        // for descendants that create a new process group; throttle Linux snapshots to avoid the
+        // measured idle CPU regression. Root exit and lifecycle signals still trigger immediate
+        // snapshots through this branch or the signal operations.
         let now = Instant::now();
         let refresh_process_tree =
             process_tree_refresh_due(last_process_tree_refresh, now, root_status.is_some());
         let has_live_processes = if refresh_process_tree {
             let has_live_processes = child.has_live_processes()?;
+            #[cfg(all(target_os = "macos", feature = "test-utils"))]
+            if let Some(path) = env::var_os("CODEXHOST_TEST_PROCESS_OBSERVATIONS") {
+                // The stderr pump holds its output lock for the child's lifetime.
+                // Use a test-only file to acknowledge completed observations.
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)?
+                    .write_all(b".")?;
+            }
             last_process_tree_refresh = Some(now);
             has_live_processes
         } else {
@@ -320,6 +338,51 @@ pub fn app_server_subcommand_index(arguments: &[OsString]) -> Option<usize> {
     None
 }
 
+/// Returns whether the app-server invocation belongs to the Skysight memory summarizer.
+///
+/// Skysight starts a short-lived stock Codex app-server with the dedicated `openai-memgen`
+/// provider. That auxiliary server must not be replaced by the long-lived codexhost Host Runtime.
+#[must_use]
+fn is_skysight_memory_app_server(arguments: &[OsString]) -> bool {
+    const CONFIG_OPTIONS: &[&str] = &["-c", "--config"];
+
+    let mut index = 0;
+    while index < arguments.len() {
+        let Some(argument) = arguments.get(index).and_then(|value| value.to_str()) else {
+            return false;
+        };
+
+        // Read only real Codex config overrides. Codex accepts them on either side of the
+        // app-server subcommand, so scanning the complete invocation is required for Skysight.
+        // Exact key/value parsing avoids treating an unrelated mention as a memory invocation.
+        let config_value = if CONFIG_OPTIONS.contains(&argument) {
+            index += 1;
+            arguments.get(index).and_then(|value| value.to_str())
+        } else {
+            CONFIG_OPTIONS.iter().find_map(|option| {
+                argument
+                    .strip_prefix(option)
+                    .and_then(|remainder| remainder.strip_prefix('='))
+            })
+        };
+
+        if config_value.is_some_and(|value| {
+            let Some((key, configured_value)) = value.split_once('=') else {
+                return false;
+            };
+            key.trim() == "model_provider"
+                && configured_value
+                    .trim()
+                    .trim_matches(['\'', '"'])
+                    .eq("openai-memgen")
+        }) {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
 /// Returns whether this invocation starts an app-server instance owned by the Host Runtime.
 ///
 /// App-server management commands such as `proxy` and `daemon` must stay on the stock Codex CLI.
@@ -328,6 +391,21 @@ pub fn app_server_subcommand_index(arguments: &[OsString]) -> Option<usize> {
 /// would corrupt the WebSocket transport.
 #[must_use]
 pub fn should_start_host_runtime(arguments: &[OsString]) -> bool {
+    should_start_host_runtime_for_originator(
+        arguments,
+        env::var_os(INTERNAL_ORIGINATOR_OVERRIDE_ENV).as_deref(),
+    )
+}
+
+/// Applies the Host Runtime routing policy for an optional official Codex internal originator.
+///
+/// Official auxiliary services such as Skysight and Computer Use launch isolated app-servers with
+/// an internal originator override. Those one-shot servers must remain on the stock Codex CLI.
+#[must_use]
+fn should_start_host_runtime_for_originator(
+    arguments: &[OsString],
+    internal_originator: Option<&OsStr>,
+) -> bool {
     const VALUE_OPTIONS: &[&str] = &[
         "-c",
         "--config",
@@ -344,9 +422,18 @@ pub fn should_start_host_runtime(arguments: &[OsString]) -> bool {
     ];
     const FLAG_OPTIONS: &[&str] = &["--strict-config", "--stdio", "--analytics-default-enabled"];
 
-    let Some(mut index) = app_server_subcommand_index(arguments).map(|index| index + 1) else {
+    let Some(app_server_index) = app_server_subcommand_index(arguments) else {
         return false;
     };
+    // Internal Codex services own their auxiliary server lifecycle. Intercepting one of these
+    // processes causes the caller to lose its one-shot response, as seen in Skysight summaries.
+    if internal_originator.is_some_and(|originator| {
+        !originator.is_empty() && originator != OsStr::new(DESKTOP_ORIGINATOR)
+    }) || is_skysight_memory_app_server(arguments)
+    {
+        return false;
+    }
+    let mut index = app_server_index + 1;
     while let Some(argument) = arguments.get(index).and_then(|value| value.to_str()) {
         if VALUE_OPTIONS.contains(&argument) {
             if arguments.get(index + 1).is_none() {
@@ -498,7 +585,43 @@ fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
 
     let current_executable = env::current_exe()?;
     let socket_path = default_remote_socket_path()?;
-    let previous_socket = socket_identity(&socket_path);
+    let mut previous_socket = socket_identity(&socket_path);
+    if previous_socket.is_some() {
+        let stock_codex_path = env::var_os(STOCK_CODEX_PATH_ENV)
+            .map(PathBuf::from)
+            .ok_or_else(|| format!("{STOCK_CODEX_PATH_ENV} is required"))?;
+        let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
+        let (node_path, host_runtime_path) = select_host_paths(
+            env::var_os(HOST_NODE_PATH_ENV),
+            env::var_os(HOST_RUNTIME_PATH_ENV),
+            launcher_managed,
+            env::var_os(NPM_NODE_PATH_ENV),
+            env::var_os(NPM_PACKAGE_ROOT_ENV),
+        );
+        let node_path = node_path.as_deref().map(Path::new);
+        let host_runtime_path = host_runtime_path.as_deref().map(Path::new);
+        if remote_lifecycle::existing_listener_is_reusable(
+            &socket_path,
+            &stock_codex_path,
+            node_path,
+            host_runtime_path,
+        )? {
+            UnixStream::connect(&socket_path).map_err(|error| {
+                format!(
+                    "managed remote listener at {} is owned by the installed runtime but is not accepting connections: {error}",
+                    socket_path.display()
+                )
+            })?;
+            return Ok(0);
+        }
+        // No process owns the existing socket: a previous listener exited without
+        // removing it. The replacement listener removes this stale path and binds
+        // a new socket, and filesystems such as ext4 immediately hand the freed
+        // inode number to that new socket. A stale (dev, ino) baseline would then
+        // never look replaced and the healthy replacement would be terminated at
+        // the startup timeout, so a connectable socket alone proves readiness.
+        previous_socket = None;
+    }
     let mut command = Command::new(&current_executable);
     command
         .args(arguments)
@@ -593,6 +716,7 @@ fn child_command(
     arguments: &[OsString],
     current_executable: &Path,
     stock_codex_path: &Path,
+    desktop_helper: bool,
 ) -> ShimResult<Command> {
     let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
     let inherited_remote_profile = launcher_managed
@@ -610,7 +734,14 @@ fn child_command(
         } else {
             Vec::new()
         };
-    if should_start_host_runtime(arguments) {
+    #[cfg(target_os = "windows")]
+    let remote_proxy_environment = if desktop_helper || env::var_os(STOCK_CODEX_PATH_ENV).is_none()
+    {
+        codexhost_platform::desktop_helper_proxy_environment()
+    } else {
+        remote_proxy_environment
+    };
+    if !desktop_helper && should_start_host_runtime(arguments) {
         match host_paths {
             (Some(node_path), Some(runtime_path)) => {
                 let node_path =
@@ -644,6 +775,16 @@ fn child_command(
     }
 
     let mut command = Command::new(stock_codex_path);
+    if desktop_helper {
+        // Do not pass launcher/runtime credentials or npm routing back into the
+        // stock helper's descendants. The official CLI still performs policy,
+        // authentication, and tool approvals using its normal configuration.
+        for (name, _) in env::vars_os() {
+            if name.to_string_lossy().starts_with("CODEXHOST_") {
+                command.env_remove(name);
+            }
+        }
+    }
     command
         .args(arguments)
         .env_remove(CODEX_CLI_PATH_ENV)
@@ -656,21 +797,70 @@ fn child_command(
     Ok(command)
 }
 
+/// Resolve the official CLI for both the launcher-managed process tree and
+/// Desktop helpers that persist only the standard `CODEX_CLI_PATH`
+/// override.
+///
+/// The launcher-provided path remains authoritative. Discovery requires the
+/// exact self override, except for Desktop node_repl's top-level `sandbox` call:
+/// it resolves the executable before clearing both CLI overrides from the child.
+fn resolve_stock_codex_path(
+    current_executable: &Path,
+    arguments: &[OsString],
+) -> ShimResult<PathBuf> {
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let _ = arguments;
+    let stock_codex_path = match env::var_os(STOCK_CODEX_PATH_ENV) {
+        Some(configured) => PathBuf::from(configured),
+        None => {
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            return Err(format!("{STOCK_CODEX_PATH_ENV} is required").into());
+
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            {
+                if let Some(cli_override) = env::var_os(CODEX_CLI_PATH_ENV) {
+                    let cli_override = canonical_existing_file(&PathBuf::from(cli_override))?;
+                    let current_executable = canonical_existing_file(current_executable)?;
+                    if cli_override != current_executable {
+                        return Err(format!(
+                            "{STOCK_CODEX_PATH_ENV} is required when {CODEX_CLI_PATH_ENV} does not identify the running Shim"
+                        )
+                        .into());
+                    }
+                } else if arguments
+                    .first()
+                    .is_none_or(|argument| argument != "sandbox")
+                {
+                    return Err(format!("{STOCK_CODEX_PATH_ENV} is required").into());
+                }
+                discover_desktop_managed_codex_cli().map_err(|error| {
+                    format!(
+                        "{STOCK_CODEX_PATH_ENV} is unavailable and the Desktop-managed official Codex CLI could not be discovered: {error}"
+                    )
+                })?
+            }
+        }
+    };
+    Ok(validate_proxy_target(
+        current_executable,
+        &stock_codex_path,
+    )?)
+}
+
 /// Runs the byte-transparent proxy and emits optional lifecycle observations.
 pub fn run_proxy_with_observer(
     arguments: &[OsString],
     observer: &impl ProxyObserver,
 ) -> ShimResult<i32> {
     let current_executable = env::current_exe()?;
-    let stock_codex_path = env::var_os(STOCK_CODEX_PATH_ENV)
-        .map(PathBuf::from)
-        .ok_or_else(|| format!("{STOCK_CODEX_PATH_ENV} is required"))?;
-    let stock_codex_path = validate_proxy_target(&current_executable, &stock_codex_path)?;
+    let stock_codex_path = resolve_stock_codex_path(&current_executable, arguments)?;
     observer.invocation(arguments, &stock_codex_path);
 
     let started = Instant::now();
     let shutdown_signals = ShutdownSignals::install()?;
-    let local_host_runtime = should_start_host_runtime(arguments)
+    let desktop_helper = desktop_invocation::is_desktop_helper(&stock_codex_path);
+    let local_host_runtime = !desktop_helper
+        && should_start_host_runtime(arguments)
         && host_runtime_paths_are_configured()
         && !is_managed_remote_listener(arguments)
         && env::var_os(DATA_DIRECTORY_ENV).is_some();
@@ -681,7 +871,12 @@ pub fn run_proxy_with_observer(
     } else {
         None
     };
-    let mut command = child_command(arguments, &current_executable, &stock_codex_path)?;
+    let mut command = child_command(
+        arguments,
+        &current_executable,
+        &stock_codex_path,
+        desktop_helper,
+    )?;
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -788,7 +983,7 @@ mod tests {
     use super::{PROCESS_TREE_REFRESH_INTERVAL, ShutdownSignals, process_tree_refresh_due};
     use super::{
         app_server_subcommand_index, is_default_remote_unix_listener, select_host_paths,
-        should_start_host_runtime,
+        should_start_host_runtime, should_start_host_runtime_for_originator,
     };
 
     fn arguments(values: &[&str]) -> Vec<OsString> {
@@ -797,7 +992,7 @@ mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn throttles_idle_process_tree_refreshes_but_refreshes_immediately_after_root_exit() {
+    fn refreshes_process_tree_at_platform_interval_and_immediately_after_root_exit() {
         let started = Instant::now();
 
         assert!(process_tree_refresh_due(None, started, false));
@@ -870,6 +1065,57 @@ mod tests {
             "app-server",
             "generate-json-schema",
         ])));
+    }
+
+    #[test]
+    fn keeps_skysight_memory_app_servers_on_the_stock_codex_cli() {
+        assert!(!should_start_host_runtime(&arguments(&[
+            "-c",
+            "model_provider=\"openai-memgen\"",
+            "-c",
+            "model_providers.openai-memgen.name=\"OpenAI\"",
+            "app-server",
+            "--stdio",
+        ])));
+        assert!(!should_start_host_runtime(&arguments(&[
+            "app-server",
+            "--analytics-default-enabled",
+            "--config=model_provider=openai-memgen",
+        ])));
+
+        // A provider definition alone does not select the Skysight memory provider and must not
+        // disable the normal Host Runtime route.
+        assert!(should_start_host_runtime(&arguments(&[
+            "-c",
+            "model_providers.openai-memgen.name=\"OpenAI\"",
+            "app-server",
+            "--stdio",
+        ])));
+        assert!(should_start_host_runtime(&arguments(&[
+            "-c",
+            "model_provider=\"openai\"",
+            "app-server",
+            "--stdio",
+        ])));
+    }
+
+    #[test]
+    fn keeps_internal_codex_auxiliary_app_servers_on_the_stock_cli() {
+        let arguments = arguments(&["app-server", "--stdio"]);
+
+        assert!(!should_start_host_runtime_for_originator(
+            &arguments,
+            Some(std::ffi::OsStr::new("skysight")),
+        ));
+        assert!(should_start_host_runtime_for_originator(&arguments, None));
+        assert!(should_start_host_runtime_for_originator(
+            &arguments,
+            Some(std::ffi::OsStr::new("")),
+        ));
+        assert!(should_start_host_runtime_for_originator(
+            &arguments,
+            Some(std::ffi::OsStr::new("Codex Desktop")),
+        ));
     }
 
     #[test]

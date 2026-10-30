@@ -478,9 +478,8 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        ActivatedProcessGuard, WindowsDesktopProcess, quote_windows_argument,
-        resume_packaged_application, supervise_desktop, windows_command_line,
-        windows_environment_block,
+        quote_windows_argument, resume_packaged_application, supervise_desktop,
+        windows_command_line, windows_environment_block,
     };
 
     #[test]
@@ -547,19 +546,5 @@ mod tests {
         let _ = child.wait();
 
         assert_eq!(status.code(), Some(7));
-    }
-
-    #[test]
-    fn armed_activation_guard_terminates_its_process() {
-        let child = Command::new("cmd.exe")
-            .args(["/d", "/c", "ping -n 30 127.0.0.1 >nul"])
-            .spawn()
-            .expect("spawn guarded process fixture");
-        let process_id = child.id();
-        let guard = ActivatedProcessGuard::new(WindowsDesktopProcess::from_child(child));
-
-        drop(guard);
-
-        assert!(!crate::process_exists(process_id));
     }
 }

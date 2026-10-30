@@ -1,46 +1,21 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { AddressInfo, Socket } from "node:net";
+import type { AddressInfo } from "node:net";
 
 import {
   DelegationControlError,
   type DelegationControlApi,
   type DelegationStartInput,
+  type DelegationWatchApi,
   type HarnessInspectInput,
   type ThreadCancelInput,
   type ThreadListInput,
   type ThreadSendInput,
   type ThreadReadInput,
   type ThreadWaitInput,
+  type ThreadWatchInput,
 } from "./delegation-types.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
-const MAX_CONNECTIONS = 32;
-const CONNECTION_TIMEOUT_MS = 5_000;
-const LOOPBACK_PORT_MIN = 49_152;
-const LOOPBACK_PORT_COUNT = 16_384;
-const LOOPBACK_LISTEN_ATTEMPTS = 8;
-
-function listenLoopback(server: Server): Promise<void> {
-  const { promise, resolve, reject } = Promise.withResolvers<undefined>();
-  let attempts = 0;
-  const listen = (): void => {
-    const port = LOOPBACK_PORT_MIN + Math.floor(Math.random() * LOOPBACK_PORT_COUNT);
-    const onError = (error: NodeJS.ErrnoException): void => {
-      if (error.code === "EADDRINUSE" && ++attempts < LOOPBACK_LISTEN_ATTEMPTS) {
-        listen();
-        return;
-      }
-      reject(error);
-    };
-    server.once("error", onError);
-    server.listen(port, "127.0.0.1", () => {
-      server.off("error", onError);
-      resolve(undefined);
-    });
-  };
-  listen();
-  return promise;
-}
 
 function errorBody(error: unknown): {
   error: { code: string; message: string; details?: unknown };
@@ -62,12 +37,8 @@ function errorBody(error: unknown): {
   };
 }
 
-function writeJson(response: ServerResponse, status: number, value: unknown, close = false): void {
-  if (close) response.shouldKeepAlive = false;
-  response.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    ...(close ? { connection: "close" } : {}),
-  });
+function writeJson(response: ServerResponse, status: number, value: unknown): void {
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(`${JSON.stringify(value)}\n`);
 }
 
@@ -102,37 +73,71 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
+function watchApi(api: DelegationWatchApi | undefined): DelegationWatchApi {
+  if (!api)
+    throw new DelegationControlError("INVALID_ARGUMENT", "This Runtime does not support watches");
+  return api;
+}
+
+/** The Turn already started, so a watch failure is reported beside it, not thrown. */
+function watchStartedTurn(watches: DelegationWatchApi, input: ThreadWatchInput) {
+  return watches.watch(input).catch((error: unknown) => ({
+    state: "notRegistered" as const,
+    reason: error instanceof Error ? error.message : String(error),
+  }));
+}
+
+/** `delegate start --watch`: the Host-resolved parent is the notified Thread. */
+async function startWithWatch(
+  api: DelegationControlApi,
+  watches: DelegationWatchApi,
+  body: Record<string, unknown>,
+): Promise<unknown> {
+  const { watchTimeoutMs, ...start } = body;
+  const result = await api.start(start as unknown as DelegationStartInput);
+  const watch = await watchStartedTurn(watches, {
+    threadId: result.threadId,
+    notifyThreadId: result.parentThreadId ?? "",
+    timeoutMs: watchTimeoutMs as number,
+  });
+  return { ...result, watch };
+}
+
 export async function startDelegationControlServer(input: {
   token: string;
   api: DelegationControlApi;
+  watchApi?: DelegationWatchApi;
 }): Promise<DelegationControlServer> {
   const server = createServer((request, response) => {
     void (async () => {
       if (request.method !== "POST") {
-        writeJson(
-          response,
-          405,
-          { error: { code: "INVALID_ARGUMENT", message: "POST is required" } },
-          true,
-        );
+        writeJson(response, 405, {
+          error: { code: "INVALID_ARGUMENT", message: "POST is required" },
+        });
         return;
       }
       if (request.headers.authorization !== `Bearer ${input.token}`) {
-        writeJson(
-          response,
-          401,
-          { error: { code: "RUNTIME_UNREACHABLE", message: "Runtime token is invalid" } },
-          true,
-        );
+        writeJson(response, 401, {
+          error: { code: "RUNTIME_UNREACHABLE", message: "Runtime token is invalid" },
+        });
         return;
       }
       const body = await jsonBody(request);
       switch (request.url) {
+        case "/v1/harness/list":
+          writeJson(response, 200, await input.api.listHarnesses());
+          return;
         case "/v1/harness/inspect":
           writeJson(response, 200, await input.api.inspect(body as unknown as HarnessInspectInput));
           return;
         case "/v1/delegate/start":
-          writeJson(response, 200, await input.api.start(body as unknown as DelegationStartInput));
+          writeJson(
+            response,
+            200,
+            body.watchTimeoutMs === undefined
+              ? await input.api.start(body as unknown as DelegationStartInput)
+              : await startWithWatch(input.api, watchApi(input.watchApi), body),
+          );
           return;
         case "/v1/thread/send":
           writeJson(response, 200, await input.api.send(body as unknown as ThreadSendInput));
@@ -146,6 +151,16 @@ export async function startDelegationControlServer(input: {
         case "/v1/thread/wait":
           writeJson(response, 200, await input.api.wait(body as unknown as ThreadWaitInput));
           return;
+        case "/v1/thread/watch":
+          writeJson(
+            response,
+            200,
+            await watchApi(input.watchApi).watch(body as unknown as ThreadWatchInput),
+          );
+          return;
+        case "/v1/thread/watches":
+          writeJson(response, 200, await watchApi(input.watchApi).watches());
+          return;
         case "/v1/thread/list":
           writeJson(response, 200, await input.api.list(body as unknown as ThreadListInput));
           return;
@@ -156,20 +171,13 @@ export async function startDelegationControlServer(input: {
       writeJson(response, error instanceof DelegationControlError ? 400 : 500, errorBody(error));
     });
   });
-  server.headersTimeout = CONNECTION_TIMEOUT_MS;
-  server.requestTimeout = CONNECTION_TIMEOUT_MS;
-  let connections = 0;
-  server.on("connection", (socket: Socket) => {
-    if (connections >= MAX_CONNECTIONS) {
-      socket.destroy();
-      return;
-    }
-    connections += 1;
-    socket.once("close", () => {
-      connections -= 1;
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
     });
   });
-  await listenLoopback(server);
   const address = server.address() as AddressInfo;
   return {
     endpoint: `http://127.0.0.1:${address.port}`,

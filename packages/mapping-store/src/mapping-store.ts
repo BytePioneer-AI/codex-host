@@ -14,22 +14,42 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
-import type { HostThreadId, HostTurnId } from "@codexhost/shared-contracts";
+import type {
+  HarnessId,
+  HostThreadId,
+  HostTurnId,
+  NativeSessionRef,
+} from "@codexhost/shared-contracts";
 
 import {
+  THREAD_METADATA_FIELDS,
   storedDelegationRecordV1Schema,
+  storedThreadMetadataV1Schema,
   storedThreadRecordV1Schema,
   type CommitReadyThreadInput,
   type CreateDelegationInput,
   type CreateProvisionalThreadInput,
   type DelegationStatus,
   type FindRecentDelegationInput,
+  type RebindSubagentSessionInput,
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
+  type StoredThreadMetadataV1,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
+  type ThreadMetadataPatch,
 } from "./records.js";
+import {
+  readSectionPlacementsFile,
+  writeSectionPlacementsFile,
+  type StoredSectionPlacementV1,
+} from "./section-placements.js";
+import {
+  readSupersededSessionsFile,
+  writeSupersededSessionsFile,
+  type StoredSupersededSessionV1,
+} from "./superseded-sessions.js";
 
 export type MappingStoreErrorCode =
   | "STORE_LOCKED"
@@ -92,6 +112,100 @@ function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+/** Records must not persist credentials, such as a token embedded in a Git remote URL. */
+function withoutUrlCredentials(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return withoutUnparsedUrlCredentials(value);
+  }
+  // `user:token@host:path` parses as an opaque `user:` URL with no host; treat it as unparsed.
+  if (!url.host) return withoutUnparsedUrlCredentials(value);
+  // An ssh user name (usually `git`) identifies the account, not a secret.
+  const keepUser = url.protocol === "ssh:" || url.protocol === "git+ssh:";
+  if (!url.password && (keepUser || !url.username)) return value;
+  url.password = "";
+  if (!keepUser) url.username = "";
+  return url.toString();
+}
+
+/**
+ * Fallback for text the URL parser rejects (a malformed port, or an scp-style remote such as
+ * git@host:path). A user name alone is kept for ssh and scp-style remotes; any other user info
+ * in front of the authority is dropped so a malformed value cannot smuggle a token into storage.
+ */
+function withoutUnparsedUrlCredentials(value: string): string {
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value);
+  const authorityStart = scheme ? scheme[0].length : 0;
+  const authorityEnd = value.slice(authorityStart).search(scheme ? /[/?#]/ : /\//);
+  const authority =
+    authorityEnd === -1
+      ? value.slice(authorityStart)
+      : value.slice(authorityStart, authorityStart + authorityEnd);
+  // A URL password may itself contain "@"; an scp-style path may too, after the host.
+  const at = scheme ? authority.lastIndexOf("@") : authority.indexOf("@");
+  if (at === -1) return value;
+  const userInfo = authority.slice(0, at);
+  const protocol = scheme?.[1]?.toLowerCase();
+  const keepUser = scheme ? protocol === "ssh" || protocol === "git+ssh" : true;
+  const kept = keepUser && !userInfo.includes(":") ? `${userInfo}@` : "";
+  return value.slice(0, authorityStart) + kept + value.slice(authorityStart + at + 1);
+}
+
+/** The Desktop metadata file content for a record, or null when it carries none. */
+function threadMetadataOf(record: StoredThreadRecordV1): StoredThreadMetadataV1 | null {
+  const fields = Object.fromEntries(
+    THREAD_METADATA_FIELDS.filter((name) => record[name] !== undefined).map((name) => [
+      name,
+      record[name],
+    ]),
+  );
+  if (Object.keys(fields).length === 0) return null;
+  return { formatVersion: 1, hostThreadId: record.hostThreadId, ...fields };
+}
+
+/** The record as written to the Thread file, which older releases must still accept. */
+function withoutThreadMetadata(record: StoredThreadRecordV1): StoredThreadRecordV1 {
+  const { projectId, daybreakEnabled, gitInfo, ...core } = record;
+  void [projectId, daybreakEnabled, gitInfo];
+  return core;
+}
+
+function withThreadMetadata(
+  record: StoredThreadRecordV1,
+  metadata: StoredThreadMetadataV1,
+): StoredThreadRecordV1 {
+  const core = withoutThreadMetadata(record);
+  for (const name of THREAD_METADATA_FIELDS) {
+    if (metadata[name] !== undefined) Object.assign(core, { [name]: metadata[name] });
+  }
+  return core;
+}
+
+function applyThreadMetadataPatch(
+  current: StoredThreadRecordV1,
+  patch: ThreadMetadataPatch,
+): StoredThreadRecordV1 {
+  const next = { ...current };
+  if (patch.projectId !== undefined) {
+    if (patch.projectId === null) delete next.projectId;
+    else next.projectId = patch.projectId;
+  }
+  if (patch.daybreakEnabled !== undefined) next.daybreakEnabled = patch.daybreakEnabled;
+  if (patch.gitInfo !== undefined) {
+    const gitInfo: NonNullable<StoredThreadRecordV1["gitInfo"]> = {};
+    for (const name of ["branch", "originUrl", "sha"] as const) {
+      const value =
+        patch.gitInfo[name] === undefined ? current.gitInfo?.[name] : patch.gitInfo[name];
+      if (value) gitInfo[name] = name === "originUrl" ? withoutUrlCredentials(value) : value;
+    }
+    if (Object.keys(gitInfo).length === 0) delete next.gitInfo;
+    else next.gitInfo = gitInfo;
+  }
+  return next;
+}
+
 function systemErrorCode(error: unknown): string | null {
   return typeof error === "object" && error !== null && "code" in error
     ? String((error as { code: unknown }).code)
@@ -115,20 +229,44 @@ function processIdentity(pid: number): ProcessIdentity | null {
     if (systemErrorCode(error) !== "EPERM") return null;
   }
 
-  if (process.platform !== "win32") {
+  if (process.platform !== "win32" && process.platform !== "darwin") {
     return { executablePath: null, startedAt: null };
   }
 
   try {
+    if (process.platform === "darwin") {
+      // PID existence is insufficient after reuse. Query only on lock contention;
+      // lstart has second precision, covered by the existing start-time tolerance.
+      const result = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        env: { ...process.env, LC_ALL: "C" },
+        timeout: 1_000,
+      }).trim();
+      const startedAt = Date.parse(result);
+      return { executablePath: null, startedAt: Number.isFinite(startedAt) ? startedAt : null };
+    }
+    // CIM can expose CreationDate for a reused system PID even when Get-Process cannot
+    // read its Path/StartTime. Serialize UTC explicitly: Windows PowerShell's default
+    // DateTime JSON representation is not an ISO timestamp that Date.parse can read.
     const query = [
       "$ErrorActionPreference = 'Stop'",
-      `$process = Get-Process -Id ${pid}`,
-      "$process | Select-Object Path, StartTime | ConvertTo-Json -Compress",
+      `$process = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}'`,
+      "if ($null -ne $process) { [pscustomobject]@{ " +
+        "Path = $process.ExecutablePath; " +
+        "StartTime = $(if ($null -ne $process.CreationDate) { " +
+        "$process.CreationDate.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) " +
+        "} else { $null }) } | ConvertTo-Json -Compress }",
     ].join("; ");
     const result = execFileSync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", query],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+        timeout: 5_000,
+      },
     ).trim();
     if (!result) return { executablePath: null, startedAt: null };
     const parsed = JSON.parse(result) as { Path?: unknown; StartTime?: unknown };
@@ -168,7 +306,7 @@ function lockOwnerIsLive(lock: Partial<LockRecord>): boolean {
   }
   const identity = processIdentity(lock.pid);
   if (!identity) return false;
-  if (process.platform !== "win32") return true;
+  if (process.platform !== "win32" && process.platform !== "darwin") return true;
 
   if (identity.executablePath && lock.executablePath) {
     if (
@@ -203,8 +341,10 @@ export class MappingStore {
   readonly #directory: string;
   readonly #instanceId: string;
   readonly #lockPath: string;
+  readonly #metadataDirectory: string;
   readonly #now: () => Date;
   readonly #quarantineDirectory: string;
+  readonly #sectionsDirectory: string;
   readonly #threadsDirectory: string;
   readonly #records = new Map<HostThreadId, StoredThreadRecordV1>();
   readonly #delegations = new Map<HostThreadId, StoredDelegationRecordV1>();
@@ -214,7 +354,10 @@ export class MappingStore {
   readonly #nativeSessions = new Map<string, HostThreadId>();
   readonly #hostTurns = new Map<HostTurnId, HostThreadId>();
   readonly #nativeTurns = new Map<string, HostTurnId>();
-  readonly #writeTails = new Map<HostThreadId, Promise<void>>();
+  #sectionPlacements: StoredSectionPlacementV1[] = [];
+  #supersededSessions: StoredSupersededSessionV1[] = [];
+  // ponytail: A Store-wide queue caps write concurrency at one; shard only if measured throughput requires it.
+  #writeTail: Promise<void> = Promise.resolve();
   #initialized = false;
   #lockHandle: FileHandle | null = null;
 
@@ -224,6 +367,8 @@ export class MappingStore {
     this.#delegationsDirectory = path.join(this.#directory, "delegations");
     this.#backupsDirectory = path.join(this.#directory, "backups");
     this.#quarantineDirectory = path.join(this.#directory, "quarantine");
+    this.#sectionsDirectory = path.join(this.#directory, "sections");
+    this.#metadataDirectory = path.join(this.#directory, "thread-metadata");
     this.#lockPath = path.join(this.#directory, "store.lock");
     this.#instanceId = options.instanceId ?? randomUUID();
     this.#now = options.now ?? (() => new Date());
@@ -237,10 +382,12 @@ export class MappingStore {
       mkdir(this.#delegationsDirectory, { recursive: true }),
       mkdir(this.#backupsDirectory, { recursive: true }),
       mkdir(this.#quarantineDirectory, { recursive: true }),
+      mkdir(this.#sectionsDirectory, { recursive: true }),
+      mkdir(this.#metadataDirectory, { recursive: true }),
     ]);
     await this.#acquireLock();
     try {
-      await this.#cleanupTemps();
+      await this.#cleanupResidue();
       const names = (await readdir(this.#threadsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
@@ -268,10 +415,28 @@ export class MappingStore {
         if (record.state === "creating" && !record.nativeSessionRef) {
           await rm(primary, { force: true });
           await rm(backup, { force: true });
+          await rm(this.#metadataPath(record.hostThreadId), { force: true });
           continue;
+        }
+        const metadata = await this.#readMetadata(record.hostThreadId);
+        if (metadata) {
+          record = withThreadMetadata(record, metadata);
+        } else if (threadMetadataOf(record)) {
+          // Pre-release builds wrote metadata inline; move it out so older releases can load the record.
+          await this.#writeMetadataFile(record.hostThreadId, threadMetadataOf(record));
+          await this.#replaceFile(primary, record, false);
         }
         this.#records.set(record.hostThreadId, record);
       }
+      // An older release may have removed a Thread without knowing about its metadata file.
+      await Promise.all(
+        (await readdir(this.#metadataDirectory))
+          .filter(
+            (name) =>
+              name.endsWith(".json") && !this.#records.has(name.slice(0, -5) as HostThreadId),
+          )
+          .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
+      );
       const delegationNames = (await readdir(this.#delegationsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
@@ -290,6 +455,32 @@ export class MappingStore {
           );
           await rename(file, quarantine).catch(() => undefined);
         }
+      }
+      try {
+        this.#sectionPlacements = await readSectionPlacementsFile(this.#sectionPlacementsPath);
+      } catch {
+        // Placements are presentation state; losing them must not block Thread access.
+        await rename(
+          this.#sectionPlacementsPath,
+          path.join(
+            this.#quarantineDirectory,
+            `section-placements.json.${this.#now().getTime()}.invalid`,
+          ),
+        ).catch(() => undefined);
+        this.#sectionPlacements = [];
+      }
+      try {
+        this.#supersededSessions = await readSupersededSessionsFile(this.#supersededSessionsPath);
+      } catch {
+        // Only import suggestions depend on this; losing it must not block Thread access.
+        await rename(
+          this.#supersededSessionsPath,
+          path.join(
+            this.#quarantineDirectory,
+            `superseded-sessions.json.${this.#now().getTime()}.invalid`,
+          ),
+        ).catch(() => undefined);
+        this.#supersededSessions = [];
       }
       this.#rebuildIndexes();
       this.#initialized = true;
@@ -428,37 +619,43 @@ export class MappingStore {
 
   async createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
-    const existingThreadId = this.#createRequests.get(input.createRequestId);
-    if (existingThreadId) {
-      const existing = this.#records.get(existingThreadId);
-      if (!existing) throw new MappingStoreError("IO_ERROR", "Create request index is stale");
-      return cloneRecord(existing);
-    }
-    if (this.#records.has(input.hostThreadId)) {
-      throw new MappingStoreError("DUPLICATE_THREAD_ID", "Host Thread ID already exists");
-    }
-    const timestamp = this.#now().toISOString();
-    const record = storedThreadRecordV1Schema.parse({
-      formatVersion: 1,
-      revision: 1,
-      hostThreadId: input.hostThreadId,
-      createRequestId: input.createRequestId,
-      harnessId: input.harnessId,
-      state: "creating",
-      cwd: input.cwd,
-      title: input.title ?? "",
-      archived: false,
-      transportModelId: input.transportModelId,
-      ephemeral: input.ephemeral,
-      historyMode: input.historyMode,
-      ...(input.forkSource ? { forkSource: input.forkSource } : {}),
-      ...(input.subagent ? { subagent: input.subagent } : {}),
-      turnMappings: [],
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    }) as StoredThreadRecordV1;
-    await this.#writeNew(record);
-    return cloneRecord(record);
+    let result: StoredThreadRecordV1 | null = null;
+    await this.#enqueue(async () => {
+      const existingThreadId = this.#createRequests.get(input.createRequestId);
+      if (existingThreadId) {
+        const existing = this.#records.get(existingThreadId);
+        if (!existing) throw new MappingStoreError("IO_ERROR", "Create request index is stale");
+        result = cloneRecord(existing);
+        return;
+      }
+      if (this.#records.has(input.hostThreadId)) {
+        throw new MappingStoreError("DUPLICATE_THREAD_ID", "Host Thread ID already exists");
+      }
+      const timestamp = this.#now().toISOString();
+      const record = storedThreadRecordV1Schema.parse({
+        formatVersion: 1,
+        revision: 1,
+        hostThreadId: input.hostThreadId,
+        createRequestId: input.createRequestId,
+        harnessId: input.harnessId,
+        state: "creating",
+        cwd: input.cwd,
+        title: input.title ?? "",
+        archived: false,
+        transportModelId: input.transportModelId,
+        ephemeral: input.ephemeral,
+        historyMode: input.historyMode,
+        ...(input.forkSource ? { forkSource: input.forkSource } : {}),
+        ...(input.subagent ? { subagent: input.subagent } : {}),
+        turnMappings: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }) as StoredThreadRecordV1;
+      await this.#writeNew(record);
+      result = cloneRecord(record);
+    });
+    if (!result) throw new MappingStoreError("IO_ERROR", "Provisional create produced no result");
+    return result;
   }
 
   async commitReady(input: CommitReadyThreadInput): Promise<StoredThreadRecordV1> {
@@ -470,11 +667,65 @@ export class MappingStore {
     }));
   }
 
+  // Keep native ref, Turn mappings and the indexed create request in one serialized
+  // record mutation; separate setters could leave a child pointing at mixed Sessions.
+  async rebindSubagentSession(input: RebindSubagentSessionInput): Promise<StoredThreadRecordV1> {
+    return this.#update(input.hostThreadId, (current) => {
+      const parent = this.#records.get(input.parentHostThreadId);
+      if (
+        current.state !== "ready" ||
+        !current.nativeSessionRef ||
+        current.subagent?.parentHostThreadId !== input.parentHostThreadId ||
+        parent?.state !== "ready" ||
+        parent.harnessId !== current.harnessId ||
+        input.previousNativeSessionRef.harnessId !== current.harnessId ||
+        input.nativeSessionRef.harnessId !== current.harnessId ||
+        !sameJson(parent.nativeSessionRef, input.nativeSessionRef)
+      )
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Subagent replacement must belong to its current parent Session",
+        );
+      if (
+        sameJson(current.nativeSessionRef, input.nativeSessionRef) &&
+        current.createRequestId === input.createRequestId
+      )
+        return null;
+      if (!sameJson(current.nativeSessionRef, input.previousNativeSessionRef)) {
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Subagent replacement source Session is stale",
+        );
+      }
+      const nativeSessionId = input.nativeSessionRef.nativeSessionId;
+      return {
+        ...current,
+        createRequestId: input.createRequestId,
+        nativeSessionRef: input.nativeSessionRef,
+        turnMappings: current.turnMappings.map((mapping) => ({
+          ...mapping,
+          nativeTurnRef: { ...mapping.nativeTurnRef, nativeSessionId },
+          ...(mapping.nativeCheckpointRef
+            ? { nativeCheckpointRef: { ...mapping.nativeCheckpointRef, nativeSessionId } }
+            : {}),
+        })),
+      };
+    });
+  }
+
   async replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1> {
+    const replaced = await this.#replaceReadySession(input);
+    await this.#recordSuperseded(input.expectedNativeSessionRef, replaced);
+    return replaced;
+  }
+
+  #replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1> {
     return this.#update(input.hostThreadId, (current) => {
       if (
         current.state !== "ready" ||
         !current.nativeSessionRef ||
+        current.revision !== input.expectedRevision ||
+        !sameJson(current.nativeSessionRef, input.expectedNativeSessionRef) ||
         !current.forkSource ||
         current.forkSource.hostThreadId !== input.forkSource.hostThreadId ||
         current.nativeSessionRef.nativeSessionId === input.nativeSessionRef.nativeSessionId ||
@@ -486,7 +737,7 @@ export class MappingStore {
       ) {
         throw new MappingStoreError(
           "MAPPING_CONFLICT",
-          "Ready Session replacement must retain an exact shorter derived prefix",
+          "Ready Session replacement must match the expected record and retain an exact shorter derived prefix",
         );
       }
       return {
@@ -501,10 +752,20 @@ export class MappingStore {
   async replaceReadySessionAfterLastTurn(
     input: ReplaceReadySessionAfterLastTurnInput,
   ): Promise<StoredThreadRecordV1> {
+    const replaced = await this.#replaceReadySessionAfterLastTurn(input);
+    await this.#recordSuperseded(input.expectedNativeSessionRef, replaced);
+    return replaced;
+  }
+
+  #replaceReadySessionAfterLastTurn(
+    input: ReplaceReadySessionAfterLastTurnInput,
+  ): Promise<StoredThreadRecordV1> {
     return this.#update(input.hostThreadId, (current) => {
       if (
         current.state !== "ready" ||
         !current.nativeSessionRef ||
+        current.revision !== input.expectedRevision ||
+        !sameJson(current.nativeSessionRef, input.expectedNativeSessionRef) ||
         input.turnMappings.length !== current.turnMappings.length - 1 ||
         input.turnMappings.some(
           ({ hostTurnId }, index) => hostTurnId !== current.turnMappings[index]?.hostTurnId,
@@ -512,7 +773,7 @@ export class MappingStore {
       ) {
         throw new MappingStoreError(
           "MAPPING_CONFLICT",
-          "Last-Turn Session replacement must retain the exact shorter Host Turn prefix",
+          "Last-Turn Session replacement must match the expected record and retain the exact shorter Host Turn prefix",
         );
       }
       return {
@@ -599,37 +860,150 @@ export class MappingStore {
     );
   }
 
+  /**
+   * Patch Desktop metadata. With `ifProjectId`, the patch applies only while the
+   * stored assignment still equals it; otherwise the current record is returned.
+   */
+  async updateMetadata(
+    hostThreadId: HostThreadId,
+    patch: ThreadMetadataPatch,
+    options: { ifProjectId?: string } = {},
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (current) => {
+      if (options.ifProjectId !== undefined && current.projectId !== options.ifProjectId) {
+        return null;
+      }
+      const next = applyThreadMetadataPatch(current, patch);
+      return sameJson(next, current) ? null : next;
+    });
+  }
+
+  /** Section placements of stored External Threads, in insertion order. */
+  async listSectionPlacements(): Promise<StoredSectionPlacementV1[]> {
+    this.#requireInitialized();
+    // A removed Thread's placement still names its successor; Threads anchored to it
+    // follow that chain so they keep their position instead of falling to the end.
+    const removedSuccessors = new Map<string, string | null>(
+      this.#sectionPlacements
+        .filter((placement) => !this.#records.has(placement.hostThreadId))
+        .map((placement) => [placement.hostThreadId, placement.beforeThreadId]),
+    );
+    return this.#sectionPlacements
+      .filter((placement) => this.#records.has(placement.hostThreadId))
+      .map((placement) => {
+        const next = cloneRecord(placement);
+        const visited = new Set<string>();
+        while (next.beforeThreadId !== null && removedSuccessors.has(next.beforeThreadId)) {
+          if (visited.has(next.beforeThreadId)) {
+            next.beforeThreadId = null;
+            break;
+          }
+          visited.add(next.beforeThreadId);
+          next.beforeThreadId = removedSuccessors.get(next.beforeThreadId) ?? null;
+        }
+        return next;
+      });
+  }
+
+  /** Atomically replaces every section placement; placements of removed Threads are dropped. */
+  async replaceSectionPlacements(
+    placements: readonly StoredSectionPlacementV1[],
+  ): Promise<StoredSectionPlacementV1[]> {
+    this.#requireInitialized();
+    let result: StoredSectionPlacementV1[] = [];
+    await this.#enqueue(async () => {
+      const retained = placements.filter((placement) =>
+        this.#records.has(placement.hostThreadId as HostThreadId),
+      );
+      try {
+        this.#sectionPlacements = await writeSectionPlacementsFile(
+          this.#sectionPlacementsPath,
+          retained,
+        );
+      } catch (error) {
+        throw new MappingStoreError("IO_ERROR", "Section placements could not be persisted", {
+          cause: error,
+        });
+      }
+      result = this.#sectionPlacements.map((placement) => cloneRecord(placement));
+    });
+    return result;
+  }
+
   async removeProvisional(hostThreadId: HostThreadId): Promise<void> {
     this.#requireInitialized();
-    const record = this.#records.get(hostThreadId);
-    if (record?.state === "ready") {
-      throw new MappingStoreError(
-        "MAPPING_CONFLICT",
-        "Ready Thread cannot be removed as provisional",
-      );
-    }
-    await this.#remove(hostThreadId);
+    await this.#enqueue(async () => {
+      const record = this.#records.get(hostThreadId);
+      if (record?.state === "ready") {
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Ready Thread cannot be removed as provisional",
+        );
+      }
+      await this.#remove(hostThreadId);
+    });
+  }
+
+  /** Native Sessions that an existing or former Thread of this Harness moved on from. */
+  supersededNativeSessionIds(harnessId: HarnessId): string[] {
+    this.#requireInitialized();
+    return this.#supersededSessions
+      .filter((session) => session.harnessId === harnessId)
+      .map(({ nativeSessionId }) => nativeSessionId);
+  }
+
+  /**
+   * Remember the Native Session a Thread just left. Best effort by design: the replacement is
+   * already committed, and a lost entry only lets the old Session reappear as an import candidate.
+   */
+  async #recordSuperseded(
+    previous: NativeSessionRef,
+    replaced: StoredThreadRecordV1,
+  ): Promise<void> {
+    const current = replaced.nativeSessionRef?.nativeSessionId;
+    if (!current || current === previous.nativeSessionId) return;
+    const same = (session: StoredSupersededSessionV1, nativeSessionId: string) =>
+      session.harnessId === previous.harnessId && session.nativeSessionId === nativeSessionId;
+    await this.#enqueue(async () => {
+      this.#supersededSessions = await writeSupersededSessionsFile(this.#supersededSessionsPath, [
+        // A Session a Thread returned to is current again, and a repeated entry moves to the end.
+        ...this.#supersededSessions.filter(
+          (session) => !same(session, current) && !same(session, previous.nativeSessionId),
+        ),
+        {
+          harnessId: previous.harnessId,
+          nativeSessionId: previous.nativeSessionId,
+          hostThreadId: replaced.hostThreadId,
+          supersededAt: this.#now().toISOString(),
+        },
+      ]);
+    }).catch(() => undefined);
   }
 
   async removeThread(hostThreadId: HostThreadId): Promise<void> {
     this.#requireInitialized();
-    await this.#remove(hostThreadId);
+    await this.#enqueue(() => this.#remove(hostThreadId));
   }
 
   async #remove(hostThreadId: HostThreadId): Promise<void> {
-    await this.#enqueue(hostThreadId, async () => {
-      if (!this.#records.has(hostThreadId)) return;
-      await Promise.all([
-        rm(this.#recordPath(hostThreadId), { force: true }),
-        rm(this.#backupPath(hostThreadId), { force: true }),
-      ]);
-      this.#records.delete(hostThreadId);
-      this.#rebuildIndexes();
-    });
+    const current = this.#records.get(hostThreadId);
+    if (!current) return;
+    await rm(this.#recordPath(hostThreadId), { force: true });
+    try {
+      await rm(this.#backupPath(hostThreadId), { force: true });
+      // Metadata is removed last so any failed unlink leaves it intact.
+      await rm(this.#metadataPath(hostThreadId), { force: true });
+    } catch (error) {
+      // Startup discovers Threads by their primary record, not by orphan auxiliary files.
+      await this.#replaceFile(this.#recordPath(hostThreadId), current, false);
+      throw error;
+    }
+    this.#records.delete(hostThreadId);
+    this.#rebuildIndexes();
   }
 
   async close(): Promise<void> {
-    await Promise.allSettled(this.#writeTails.values());
+    await this.#writeTail;
     const handle = this.#lockHandle;
     this.#lockHandle = null;
     this.#initialized = false;
@@ -648,7 +1022,7 @@ export class MappingStore {
   ): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
     let result: StoredThreadRecordV1 | null = null;
-    await this.#enqueue(hostThreadId, async () => {
+    await this.#enqueue(async () => {
       const current = this.#records.get(hostThreadId);
       if (!current)
         throw new MappingStoreError("THREAD_NOT_FOUND", "External Thread was not found");
@@ -664,6 +1038,20 @@ export class MappingStore {
       }) as StoredThreadRecordV1;
       this.#validateGlobal(next, hostThreadId);
       await this.#replaceFile(this.#recordPath(hostThreadId), next, true);
+      const metadata = threadMetadataOf(next);
+      if (!sameJson(threadMetadataOf(current), metadata)) {
+        // Only a metadata patch changes metadata, and it changes nothing else in the record
+        // besides Revision and updatedAt. Restoring the previous record therefore makes a failed
+        // metadata write leave disk equal to memory; the metadata file itself is replaced atomically.
+        try {
+          await this.#writeMetadataFile(hostThreadId, metadata);
+        } catch (error) {
+          await this.#replaceFile(this.#recordPath(hostThreadId), current, false).catch(
+            () => undefined,
+          );
+          throw error;
+        }
+      }
       this.#records.set(hostThreadId, next);
       this.#rebuildIndexes();
       result = cloneRecord(next);
@@ -726,7 +1114,7 @@ export class MappingStore {
     try {
       await this.#beforeReplace?.(cloneRecord(record));
       handle = await open(temp, "wx", constants.S_IRUSR | constants.S_IWUSR);
-      await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+      await handle.writeFile(`${JSON.stringify(withoutThreadMetadata(record), null, 2)}\n`, "utf8");
       await handle.sync();
       await handle.close();
       handle = null;
@@ -741,6 +1129,66 @@ export class MappingStore {
       throw new MappingStoreError("IO_ERROR", "Mapping Store atomic replacement failed", {
         cause: error,
       });
+    }
+  }
+
+  /** Atomically patches owned metadata fields, retaining unknown fields on disk. */
+  async #writeMetadataFile(
+    hostThreadId: HostThreadId,
+    metadata: StoredThreadMetadataV1 | null,
+  ): Promise<void> {
+    const target = this.#metadataPath(hostThreadId);
+    const temp = `${target}.tmp-${randomUUID()}`;
+    let handle: FileHandle | null = null;
+    try {
+      const retained = Object.fromEntries(
+        Object.entries((await this.#readMetadata(hostThreadId)) ?? {}).filter(
+          ([name]) => !["formatVersion", "hostThreadId", ...THREAD_METADATA_FIELDS].includes(name),
+        ),
+      );
+      if (!metadata && Object.keys(retained).length === 0) {
+        await rm(target, { force: true });
+        return;
+      }
+      const next = { ...retained, formatVersion: 1, hostThreadId, ...metadata };
+      handle = await open(temp, "wx", constants.S_IRUSR | constants.S_IWUSR);
+      await handle.writeFile(`${JSON.stringify(next, null, 2)}\n`, "utf8");
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      await rename(temp, target);
+    } catch (error) {
+      await handle?.close().catch(() => undefined);
+      await rm(temp, { force: true }).catch(() => undefined);
+      throw new MappingStoreError("IO_ERROR", "Thread metadata atomic replacement failed", {
+        cause: error,
+      });
+    }
+  }
+
+  /** Reads a Thread's metadata file; an invalid file is quarantined rather than blocking the Thread. */
+  async #readMetadata(hostThreadId: HostThreadId): Promise<StoredThreadMetadataV1 | null> {
+    const file = this.#metadataPath(hostThreadId);
+    let text: string;
+    try {
+      text = await readFile(file, "utf8");
+    } catch (error) {
+      if (systemErrorCode(error) === "ENOENT") return null;
+      throw error;
+    }
+    try {
+      const parsed = storedThreadMetadataV1Schema.parse(JSON.parse(text));
+      if (parsed.hostThreadId !== hostThreadId) throw new Error("Thread ID mismatch");
+      return parsed;
+    } catch {
+      await rename(
+        file,
+        path.join(
+          this.#quarantineDirectory,
+          `${hostThreadId}.json.${this.#now().getTime()}.invalid-metadata`,
+        ),
+      ).catch(() => undefined);
+      return null;
     }
   }
 
@@ -781,11 +1229,15 @@ export class MappingStore {
     return parsed.data as StoredThreadRecordV1;
   }
 
-  async #cleanupTemps(): Promise<void> {
-    const [threadNames, delegationNames] = await Promise.all([
-      readdir(this.#threadsDirectory),
-      readdir(this.#delegationsDirectory),
-    ]);
+  async #cleanupResidue(): Promise<void> {
+    const [threadNames, delegationNames, sectionNames, rootNames, metadataNames] =
+      await Promise.all([
+        readdir(this.#threadsDirectory),
+        readdir(this.#delegationsDirectory),
+        readdir(this.#sectionsDirectory),
+        readdir(this.#directory),
+        readdir(this.#metadataDirectory),
+      ]);
     await Promise.all([
       ...threadNames
         .filter((name) => name.includes(".tmp-"))
@@ -793,6 +1245,16 @@ export class MappingStore {
       ...delegationNames
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#delegationsDirectory, name), { force: true })),
+      ...sectionNames
+        .filter((name) => name.includes(".tmp-"))
+        .map((name) => rm(path.join(this.#sectionsDirectory, name), { force: true })),
+      ...metadataNames
+        .filter((name) => name.includes(".tmp-"))
+        .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
+      // Renamed aside by #acquireLock; nothing reads them back, and they accumulate one per run.
+      ...rootNames
+        .filter((name) => name.startsWith(`${path.basename(this.#lockPath)}.stale-`))
+        .map((name) => rm(path.join(this.#directory, name), { force: true })),
     ]);
   }
 
@@ -892,16 +1354,10 @@ export class MappingStore {
     }
   }
 
-  async #enqueue(hostThreadId: HostThreadId, operation: () => Promise<void>): Promise<void> {
-    const prior = this.#writeTails.get(hostThreadId) ?? Promise.resolve();
-    const next = prior.then(operation, operation);
-    const settled = next.catch(() => undefined);
-    this.#writeTails.set(hostThreadId, settled);
-    try {
-      await next;
-    } finally {
-      if (this.#writeTails.get(hostThreadId) === settled) this.#writeTails.delete(hostThreadId);
-    }
+  async #enqueue(operation: () => Promise<void>): Promise<void> {
+    const next = this.#writeTail.then(operation);
+    this.#writeTail = next.catch(() => undefined);
+    await next;
   }
 
   #recordPath(hostThreadId: HostThreadId): string {
@@ -910,6 +1366,18 @@ export class MappingStore {
 
   #delegationPath(delegationId: HostThreadId): string {
     return path.join(this.#delegationsDirectory, `${delegationId}.json`);
+  }
+
+  get #sectionPlacementsPath(): string {
+    return path.join(this.#sectionsDirectory, "placements.json");
+  }
+
+  get #supersededSessionsPath(): string {
+    return path.join(this.#directory, "superseded-sessions", "sessions.json");
+  }
+
+  #metadataPath(hostThreadId: HostThreadId): string {
+    return path.join(this.#metadataDirectory, `${hostThreadId}.json`);
   }
 
   #backupPath(hostThreadId: HostThreadId): string {

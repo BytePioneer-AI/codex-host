@@ -1,4 +1,5 @@
 import {
+  catalogModelForRef,
   harnessIdSchema,
   harnessModelCatalogSchema,
   hostInteractionIdSchema,
@@ -40,6 +41,7 @@ import type {
   HostApprovalInteraction,
   HostCommand,
   HostCommandExecutionItem,
+  HostContextCompactionItem,
   HostEvent,
   HostFileChange,
   HostItem,
@@ -68,6 +70,8 @@ import type {
   TurnCancelCommand,
   TurnStartAccepted,
   TurnStartCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
 } from "./text-session.js";
 
 interface ActiveFakeTurn {
@@ -108,23 +112,21 @@ const defaultFakeCatalog = harnessModelCatalogSchema.parse({
 });
 
 function catalogHasModel(catalog: HarnessModelCatalog, model: HarnessModelRef): boolean {
-  return catalog.models.some((candidate) => candidate.ref.id === model.id);
+  return catalogModelForRef(catalog, model) !== undefined;
 }
 
 function resolvedLabelForModel(
   catalog: HarnessModelCatalog,
   model: HarnessModelRef | undefined,
 ): string | undefined {
-  return catalog.models.find((candidate) => candidate.ref.id === model?.id)?.resolvedModelLabel;
+  return catalogModelForRef(catalog, model)?.resolvedModelLabel;
 }
 
 function thinkingOptionsForModel(
   catalog: HarnessModelCatalog,
   model: HarnessModelRef | undefined,
 ): HarnessThinkingOption[] {
-  const supported = catalog.models.find(
-    (candidate) => candidate.ref.id === model?.id,
-  )?.supportedThinkingOptionIds;
+  const supported = catalogModelForRef(catalog, model)?.supportedThinkingOptionIds;
   return supported ? catalog.thinkingOptions.filter((option) => supported.includes(option.id)) : [];
 }
 
@@ -158,6 +160,8 @@ export class FakeHarnessSession implements HarnessSession {
   readonly initialUsage: HostUsage | null;
   commands?: HarnessCommandCapability;
   readonly interactionResponses: InteractionRespondCommand[] = [];
+  readonly steers: TurnSteerCommand[] = [];
+  #nextSteerRefusal: HarnessError | null = null;
   readonly outputs: AsyncIterable<HarnessOutput>;
   snapshotReads = 0;
   usageRefreshes = 0;
@@ -168,6 +172,7 @@ export class FakeHarnessSession implements HarnessSession {
   #active: ActiveFakeTurn | null = null;
   #closed = false;
   #completeCancellationDuringRequest = false;
+  #completeTurnDuringSteerAcceptance = false;
   #interactionOrdinal = 0;
   #itemOrdinal = 0;
   #nextModelRejection: HarnessError | null = null;
@@ -203,6 +208,7 @@ export class FakeHarnessSession implements HarnessSession {
     initialPermissionModeId: HarnessPermissionModeId | undefined = permissionModes?.defaultModeId,
     supportsRollbackLastTurn = false,
     permissionModeScope: HarnessPermissionModeScope = "live",
+    supportsSteer = false,
   ) {
     this.harnessId = harnessId;
     const availableThinkingOptions = thinkingOptionsForModel(catalog, initialModel);
@@ -224,6 +230,7 @@ export class FakeHarnessSession implements HarnessSession {
         rollbackLastTurn: supportsRollbackLastTurn,
       },
       subagents: { observe: false, readTranscript: false },
+      ...(supportsSteer ? { steer: true } : {}),
     };
     this.cwd = cwd;
     this.#catalog = catalog;
@@ -263,6 +270,21 @@ export class FakeHarnessSession implements HarnessSession {
       snapshot: { item, outcome: { status: "succeeded" } },
     });
     this.#event({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+  }
+
+  publishAutonomousTurn(turnId: HostTurnId, input: TurnStartCommand["input"]): void {
+    if (this.#closed) throw new Error("Fake Harness Session is closed");
+    if (this.#active) throw new Error("Fake Harness Session already has an active Turn");
+    this.#active = {
+      command: { type: "turn.start", turnId, input },
+      items: new Map(),
+      completedItems: [],
+      interactions: new Map(),
+      cancellationRequested: false,
+    };
+    this.#event({ type: "turn.autonomous.started", turnId, input });
+    this.#event({ type: "turn.started", turnId });
+    this.succeedTurn();
   }
 
   publishUsage(usage: HostUsage | null, observedForTurnId?: HostTurnId): void {
@@ -331,6 +353,10 @@ export class FakeHarnessSession implements HarnessSession {
     this.#completeCancellationDuringRequest = true;
   }
 
+  completeTurnOnNextSteerAcceptance(): void {
+    this.#completeTurnDuringSteerAcceptance = true;
+  }
+
   requestApprovalOnNextTurn(title: string, description?: string): void {
     this.#nextApproval = { title, ...(description ? { description } : {}) };
   }
@@ -343,6 +369,7 @@ export class FakeHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -355,6 +382,7 @@ export class FakeHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -363,6 +391,7 @@ export class FakeHarnessSession implements HarnessSession {
     >
   > {
     if (this.#closed) return { ok: false, error: invalidStateError };
+    if (command.type === "turn.steer") return this.#steer(command);
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
@@ -426,6 +455,46 @@ export class FakeHarnessSession implements HarnessSession {
     return { ok: true, value: { turnId: command.turnId } };
   }
 
+  /** The next native steer is refused without taking its input, as when it cannot join now. */
+  refuseNextSteer(message = "Fake Harness Session cannot take steered input now"): void {
+    this.#nextSteerRefusal = { code: "unsupported", message, retryable: false };
+  }
+
+  /** Accepts steered input into the active Turn, as a native insertion primitive would. */
+  #steer(command: TurnSteerCommand): HarnessResult<TurnSteerAccepted> {
+    if (this.#nextSteerRefusal) {
+      const error = this.#nextSteerRefusal;
+      this.#nextSteerRefusal = null;
+      return { ok: false, error };
+    }
+    if (!this.capabilities.steer) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Fake Harness Session does not steer",
+          retryable: false,
+        },
+      };
+    }
+    if (this.#active?.command.turnId !== command.turnId) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidState",
+          message: "Fake Harness steer target is not the active Turn",
+          retryable: false,
+        },
+      };
+    }
+    this.steers.push(command);
+    if (this.#completeTurnDuringSteerAcceptance) {
+      this.#completeTurnDuringSteerAcceptance = false;
+      this.succeedTurn();
+    }
+    return { ok: true, value: { accepted: true } };
+  }
+
   appendText(text: string): void {
     const active = this.#requireActive();
     const item = [...active.items.values()].find(
@@ -466,6 +535,32 @@ export class FakeHarnessSession implements HarnessSession {
     };
     this.#startItem(item);
     return item.itemId;
+  }
+
+  startContextCompaction(): HostItemId {
+    const item: HostContextCompactionItem = {
+      type: "contextCompaction",
+      itemId: this.#nextItemId(),
+    };
+    this.#startItem(item);
+    return item.itemId;
+  }
+
+  /** The command keeps running after its Turn; native history records its start result. */
+  detachItem(itemId: HostItemId): void {
+    const active = this.#requireActive();
+    const item = active.items.get(itemId);
+    if (item?.type !== "commandExecution") {
+      throw new Error("Fake Harness Item is not a Command Execution");
+    }
+    active.items.delete(itemId);
+    active.completedItems.push({ item, outcome: { status: "succeeded" } });
+    this.#event({ type: "item.detached", turnId: active.command.turnId, itemId });
+  }
+
+  /** Emits an event outside the scripted Turn, e.g. a detached Item's later output. */
+  emitEvent(event: HostEvent): void {
+    this.#event(event);
   }
 
   appendCommandOutput(itemId: HostItemId, text: string): void {
@@ -979,6 +1074,8 @@ export class FakeHarnessAdapter implements HarnessAdapter {
   readonly supportsFork: boolean;
   readonly supportsForkAcrossCwd: boolean;
   readonly supportsRollbackLastTurn: boolean;
+  /** Sessions opened after this is set declare native steering. */
+  supportsSteer = false;
   readonly permissionModeScope: HarnessPermissionModeScope;
   inspectionCalls = 0;
   #closePromise: Promise<void> | null = null;
@@ -1255,6 +1352,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       permissionModeId,
       this.supportsRollbackLastTurn,
       this.permissionModeScope,
+      this.supportsSteer,
     );
     this.sessions.push(session);
     this.#sessionsByNativeId.set(nativeRef.nativeSessionId, session);

@@ -5,23 +5,27 @@ import {
   type HarnessPermissionModeId,
 } from "@codexhost/shared-contracts";
 
-export type AntigravityPermissionMode = "configured" | "dangerously-skip-permissions";
+export type AntigravityPermissionMode = "dangerously-skip-permissions";
 
-export const ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID =
-  harnessPermissionModeIdSchema.parse("configured");
+export const ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID = harnessPermissionModeIdSchema.parse(
+  "dangerously-skip-permissions",
+);
 
 export const ANTIGRAVITY_PERMISSION_MODE_CATALOG: HarnessPermissionModeCatalog =
   harnessPermissionModeCatalogSchema.parse({
     modes: [
       {
-        id: "configured",
-        label: "Configured permissions",
-        description: "Use Antigravity CLI permission rules; headless prompts are denied safely.",
-      },
-      {
         id: "dangerously-skip-permissions",
         label: "Skip permissions",
-        description: "Auto-approve every Antigravity CLI tool action.",
+        localizations: {
+          "zh-CN": {
+            label: "跳过权限检查",
+            description:
+              "使用 --dangerously-skip-permissions 运行 Antigravity CLI；codexhost 不增加工具审批或工作区限制。",
+          },
+        },
+        description:
+          "Run Antigravity CLI with --dangerously-skip-permissions. codexhost adds no tool approval or workspace restrictions.",
         dangerous: true,
       },
     ],
@@ -32,8 +36,10 @@ export function decodeAntigravityPermissionModeId(
   value: HarnessPermissionModeId,
 ): AntigravityPermissionMode {
   const parsed = harnessPermissionModeIdSchema.parse(value);
-  if (parsed !== "configured" && parsed !== "dangerously-skip-permissions") {
-    throw new Error("Antigravity Permission Mode belongs to another Adapter");
+  if (parsed !== "dangerously-skip-permissions") {
+    throw new Error(
+      "Antigravity only supports Skip permissions (dangerous). Explicitly select Skip permissions to continue; codexhost does not enforce tool permissions.",
+    );
   }
-  return parsed as AntigravityPermissionMode;
+  return "dangerously-skip-permissions";
 }

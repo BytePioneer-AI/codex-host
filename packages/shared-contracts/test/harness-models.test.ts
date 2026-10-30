@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  catalogModelForRef,
   HARNESS_MODEL_REF_MAX_LENGTH,
   HARNESS_THINKING_OPTION_ID_MAX_LENGTH,
   THREAD_OWNERSHIP_LIST_MAX_LENGTH,
@@ -10,6 +11,8 @@ import {
   harnessModelRefSchema,
   harnessModelSelectionStateSchema,
   harnessThinkingOptionIdSchema,
+  harnessWebUiOpenParamsSchema,
+  harnessWebUiOpenResultSchema,
   threadInspectionParamsSchema,
   threadInspectionSchema,
   threadModelSelectParamsSchema,
@@ -54,6 +57,50 @@ function readyInspection() {
 }
 
 describe("Harness Model runtime contracts", () => {
+  it("resolves an advertised Fast ref to the same Model without adding a menu row", () => {
+    const fast = { id: "priority" };
+    const catalog = harnessModelCatalogSchema.parse({
+      models: [{ ref: firstRef, fastModel: fast, label: "Model" }],
+      defaultModel: fast,
+      thinkingOptions: [],
+    });
+    expect(catalog.models).toHaveLength(1);
+    expect(catalogModelForRef(catalog, harnessModelRefSchema.parse(fast))).toBe(catalog.models[0]);
+    expect(
+      catalogModelForRef(catalog, harnessModelRefSchema.parse({ id: "unknown" })),
+    ).toBeUndefined();
+    expect(
+      harnessModelCatalogSchema.safeParse({
+        ...catalog,
+        models: [{ ref: firstRef, fastModel: firstRef, label: "Model" }],
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessModelCatalogSchema.safeParse({
+        ...catalog,
+        models: [
+          { ref: firstRef, fastModel: secondRef, label: "Model" },
+          { ref: secondRef, label: "Other" },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+  it("exposes only a credential-free Harness Web UI action", () => {
+    expect(
+      harnessInspectionSchema.parse({
+        ...readyInspection(),
+        webUi: { open: true },
+      }),
+    ).toMatchObject({ webUi: { open: true } });
+    expect(harnessWebUiOpenParamsSchema.parse({ harnessId: "deepseek-harness" })).toEqual({
+      harnessId: "deepseek-harness",
+    });
+    expect(harnessWebUiOpenResultSchema.parse({})).toEqual({});
+    expect(
+      harnessWebUiOpenResultSchema.safeParse({ url: "http://127.0.0.1/?token=secret" }).success,
+    ).toBe(false);
+  });
+
   it("accepts a strict browser-safe ready inspection", () => {
     expect(harnessInspectionSchema.parse(readyInspection())).toEqual(readyInspection());
     expect(

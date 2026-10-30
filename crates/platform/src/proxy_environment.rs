@@ -6,17 +6,26 @@ use std::ffi::{OsStr, OsString};
 use crate::{SystemProxySettings, system_proxy_settings};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct ProxySettings {
-    http_proxy: Option<String>,
-    https_proxy: Option<String>,
-    all_proxy: Option<String>,
-    exceptions: Vec<String>,
+pub(crate) struct ProxySettings {
+    pub(crate) http_proxy: Option<String>,
+    pub(crate) https_proxy: Option<String>,
+    pub(crate) all_proxy: Option<String>,
+    pub(crate) exceptions: Vec<String>,
+}
+
+/// Windows Desktop tool servers may retain CODEX_CLI_PATH but discard proxy
+/// variables. Restore the current user's static system proxy in that scoped
+/// helper path; explicit environment values (including empty) win.
+#[cfg(target_os = "windows")]
+pub fn desktop_helper_proxy_environment() -> Vec<(OsString, OsString)> {
+    proxy_environment()
 }
 
 /// Returns the proxy environment that should be passed to a codexhost child.
 ///
-/// Explicit environment variables always win. On macOS, missing variables are
-/// filled from the operating system's static proxy configuration. Linux does
+/// Explicit environment variables always win. On macOS and Windows, missing
+/// variables are filled from the current user's static system proxy
+/// configuration; PAC/WPAD is not flattened into a global proxy. Linux does
 /// not have one portable system-proxy API, so its environment and TUN-based
 /// proxy configurations remain authoritative.
 pub fn proxy_environment() -> Vec<(OsString, OsString)> {
@@ -36,7 +45,15 @@ pub fn proxy_environment() -> Vec<(OsString, OsString)> {
             None
         }
     };
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    let system = match crate::windows_proxy::static_proxy_settings() {
+        Ok(settings) => settings,
+        Err(_) => {
+            eprintln!("codexhost: could not read Windows system proxy settings");
+            None
+        }
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let system = None;
 
     proxy_environment_from(inherited, system.as_ref())
@@ -212,6 +229,28 @@ mod tests {
     #[test]
     fn omits_proxy_variables_when_neither_source_has_one() {
         assert!(proxy_environment_from([], None).is_empty());
+    }
+
+    #[test]
+    fn explicit_empty_proxy_urls_disable_system_fallbacks() {
+        let environment = proxy_environment_from(
+            ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
+                .map(|name| (OsString::from(name), OsString::new())),
+            Some(&ProxySettings {
+                http_proxy: Some("http://system:3128".into()),
+                https_proxy: Some("http://system:3128".into()),
+                all_proxy: Some("socks5://system:1080".into()),
+                exceptions: vec![],
+            }),
+        );
+        for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+            assert!(environment.contains(&(OsString::from(name), OsString::new())));
+        }
+        assert!(
+            !environment
+                .iter()
+                .any(|(name, _)| name == "NODE_USE_ENV_PROXY")
+        );
     }
 
     #[test]

@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { HarnessOutput, HostUsage } from "@codexhost/harness-adapter";
+import type { HarnessOutput, HostEvent, HostUsage } from "@codexhost/harness-adapter";
 import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -25,7 +29,8 @@ import type {
   OmpTurnEvent,
   OmpTurnResult,
 } from "../src/omp-rpc-session.js";
-import type { OmpNativeModel } from "../src/omp-model-catalog.js";
+import { OmpRpcFaultError } from "../src/omp-rpc-session.js";
+import { encodeOmpModelRef, type OmpNativeModel } from "../src/omp-model-catalog.js";
 
 class FakeOmpTransport implements OmpTurnTransport {
   state: OmpSessionState = {
@@ -57,7 +62,7 @@ class FakeOmpTransport implements OmpTurnTransport {
     return [{ provider: "synthetic", id: "model", reasoning: true }];
   }
 
-  async getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[]> {
+  async getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[] | null> {
     return [harnessThinkingOptionIdSchema.parse("high")];
   }
 
@@ -145,7 +150,14 @@ class FakeOmpTransport implements OmpTurnTransport {
       ],
       leafId: "assistant-1",
     };
-    this.#resolveTurn?.({ text, cancelled: false });
+    this.#resolveTurn?.({ text, cancelled: false, agentInvoked: true });
+  }
+
+  completeWithoutHistory(result: OmpTurnResult): void {
+    if (result.text) {
+      this.event({ type: "text.delta", messageId: "prompt-request-1", delta: result.text });
+    }
+    this.#resolveTurn?.(result);
   }
 
   runTurn(_text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult> {
@@ -196,13 +208,13 @@ class FakeOmpTransport implements OmpTurnTransport {
           ],
           leafId: "assistant-1",
         };
-        this.#resolveTurn?.({ text: "done", cancelled: false });
+        this.#resolveTurn?.({ text: "done", cancelled: false, agentInvoked: true });
       });
     });
   }
 
   async abort(): Promise<void> {
-    this.#resolveTurn?.({ text: "", cancelled: true });
+    this.#resolveTurn?.({ text: "", cancelled: true, agentInvoked: true });
   }
 
   async close(): Promise<void> {}
@@ -247,7 +259,203 @@ function historyTurn(input: {
   ];
 }
 
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  while (temporaryDirectories.length > 0) {
+    const directory = temporaryDirectories.pop();
+    if (directory) await rm(directory, { recursive: true, force: true });
+  }
+});
+
 describe("OMP Adapter Session environment", () => {
+  it.each([
+    { effective: "xhigh", levels: ["low", "high", "max"], expected: "high" },
+    { effective: null, levels: ["low", "high"], expected: "high" },
+    { effective: "xhigh", levels: ["off", "low"], expected: "low" },
+  ])(
+    "reconciles requested Thinking after native selection returns $effective with $levels",
+    async ({ effective, levels, expected }) => {
+      const transport = new FakeOmpTransport();
+      const requested = harnessThinkingOptionIdSchema.parse("xhigh");
+      const supported = levels.map((level) => harnessThinkingOptionIdSchema.parse(level));
+      const fallback = harnessThinkingOptionIdSchema.parse(expected);
+      vi.spyOn(transport, "getAvailableThinkingLevels")
+        .mockResolvedValueOnce([requested])
+        .mockResolvedValue(supported);
+      const selectThinking = vi
+        .spyOn(transport as OmpTurnTransport, "selectThinkingOption")
+        .mockImplementation(async (level) => {
+          transport.state = {
+            ...transport.state,
+            thinkingLevel:
+              level === requested
+                ? effective === null
+                  ? null
+                  : harnessThinkingOptionIdSchema.parse(effective)
+                : level,
+            availableThinkingLevels: supported,
+          };
+          return transport.state;
+        });
+      const adapter = new OmpAdapter({}, { createTransport: () => transport });
+      try {
+        const opened = await adapter.open({
+          kind: "create",
+          cwd: "/synthetic",
+          thinkingOptionId: requested,
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const snapshot = await opened.value.readSnapshot();
+        expect(snapshot).toMatchObject({
+          ok: true,
+          value: {
+            state: {
+              effectiveThinkingOptionId: fallback,
+              availableThinkingOptions: supported.map((id) => ({ id })),
+            },
+          },
+        });
+        expect(selectThinking.mock.calls).toEqual([[requested], [fallback]]);
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
+  it("preserves a supported effective Thinking level after requested selection", async () => {
+    const transport = new FakeOmpTransport();
+    const requested = harnessThinkingOptionIdSchema.parse("high");
+    const effective = harnessThinkingOptionIdSchema.parse("low");
+    vi.spyOn(transport, "getAvailableThinkingLevels").mockResolvedValue([effective, requested]);
+    const selectThinking = vi
+      .spyOn(transport, "selectThinkingOption")
+      .mockImplementation(async () => {
+        transport.state = { ...transport.state, thinkingLevel: effective };
+        return transport.state;
+      });
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        thinkingOptionId: requested,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: { state: { effectiveThinkingOptionId: effective } },
+      });
+      expect(selectThinking.mock.calls).toEqual([[requested]]);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("does not reconcile a failed requested Thinking selection", async () => {
+    const transport = new FakeOmpTransport();
+    const requested = harnessThinkingOptionIdSchema.parse("xhigh");
+    const selectThinking = vi
+      .spyOn(transport, "selectThinkingOption")
+      .mockRejectedValue(new Error("Native Thinking selection failed"));
+    const closeTransport = vi.spyOn(transport, "close");
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        thinkingOptionId: requested,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "nativeFailure", message: "Native Thinking selection failed" },
+      });
+      expect(selectThinking.mock.calls).toEqual([[requested]]);
+      expect(closeTransport).toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("starts a non-reasoning Model with Off without requiring a native Thinking selector", async () => {
+    const transport = new FakeOmpTransport();
+    transport.state = {
+      ...transport.state,
+      thinkingLevel: null,
+      availableThinkingLevels: null,
+    };
+    vi.spyOn(transport, "getAvailableThinkingLevels").mockResolvedValue(null);
+    vi.spyOn(transport, "getAvailableModels").mockResolvedValue([
+      { provider: "synthetic", id: "model", reasoning: false },
+    ]);
+    const selectThinking = vi.spyOn(transport, "selectThinkingOption");
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("off"),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({ ok: true });
+      expect(selectThinking).not.toHaveBeenCalled();
+      await expect(
+        opened.value.execute({
+          type: "turn.start",
+          turnId: "non-reasoning-turn" as HostTurnId,
+          input: [{ type: "text", text: "Reply OK" }],
+        }),
+      ).resolves.toMatchObject({ ok: true });
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("accepts an already confirmed Off state when older OMP omits Thinking capabilities", async () => {
+    const transport = new FakeOmpTransport();
+    transport.state.thinkingLevel = harnessThinkingOptionIdSchema.parse("off");
+    vi.spyOn(transport, "getAvailableThinkingLevels").mockResolvedValue(null);
+    const selectThinking = vi.spyOn(transport, "selectThinkingOption");
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("off"),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({ ok: true });
+      expect(selectThinking).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each(["off", "high"])(
+    "rejects unconfirmed %s on a reasoning Model without a native Thinking selector",
+    async (level) => {
+      const transport = new FakeOmpTransport();
+      transport.state.thinkingLevel = null;
+      vi.spyOn(transport, "getAvailableThinkingLevels").mockResolvedValue(null);
+      const adapter = new OmpAdapter({}, { createTransport: () => transport });
+      try {
+        const opened = await adapter.open({
+          kind: "create",
+          cwd: "/synthetic",
+          thinkingOptionId: harnessThinkingOptionIdSchema.parse(level),
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+          ok: false,
+          error: { code: "unsupported" },
+        });
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
   it("uses OMP's native yolo default without changing ordinary create semantics", async () => {
     const transport = new FakeOmpTransport();
     const createTransport = vi.fn(() => transport);
@@ -353,6 +561,41 @@ describe("OMP Adapter Session environment", () => {
     await adapter.close();
   });
 
+  it("restores a saved Permission Mode inside Adapter resume", async () => {
+    const initial = new RestartableOmpTransport();
+    const replacement = new RestartableOmpTransport();
+    replacement.state = { ...initial.state };
+    const createTransport = vi
+      .fn()
+      .mockImplementationOnce(() => initial)
+      .mockImplementationOnce(() => replacement);
+    const adapter = new OmpAdapter({}, { createTransport });
+    try {
+      const resumed = await adapter.open({
+        kind: "resume",
+        cwd: "/synthetic",
+        nativeRef: nativeSessionRefSchema.parse({
+          formatVersion: 1,
+          harnessId: "omp",
+          nativeSessionId: initial.state.sessionId,
+          locator: { sessionFile: initial.state.sessionFile },
+        }),
+        permissionModeId: harnessPermissionModeIdSchema.parse("write"),
+      });
+      if (!resumed.ok) throw new Error(resumed.error.message);
+      expect(initial.closed).toBe(true);
+      await expect(resumed.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: { state: { effectivePermissionModeId: "write" } },
+      });
+      expect(createTransport).toHaveBeenLastCalledWith(
+        expect.objectContaining({ permissionMode: "write" }),
+      );
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("recovers the previous OMP Permission Mode when restart fails", async () => {
     const initial = new RestartableOmpTransport();
     initial.state = {
@@ -433,6 +676,36 @@ describe("OMP Adapter Session environment", () => {
 });
 
 describe("OMP Adapter inspection", () => {
+  it.each([
+    [
+      "No models available. Use /login or set an API key environment variable. Then use /model to select a model.",
+      "configurationRequired",
+    ],
+    ["No models available.", "unavailable"],
+    ["Connection timed out", "unavailable"],
+  ])("classifies startup diagnostic %j as %s", async (stderr, code) => {
+    const transport = new FakeOmpTransport();
+    Object.defineProperty(transport, "stderrTail", { value: stderr });
+    vi.spyOn(transport, "start").mockRejectedValue(new Error("Omp RPC ready signal timed out"));
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    try {
+      const inspection = await adapter.inspect({ cwd: "/synthetic", refresh: true });
+      expect(inspection).toMatchObject({
+        status: "error",
+        error: { code, stage: "startup", stderrTail: stderr },
+      });
+      if (code === "configurationRequired") {
+        expect(inspection).toMatchObject({
+          error: { message: expect.stringContaining("`/login`"), retryable: false },
+        });
+        expect(inspection).toMatchObject({
+          error: { message: expect.stringContaining("API key") },
+        });
+      }
+    } finally {
+      await adapter.close();
+    }
+  });
   it("reports a missing executable as not installed", async () => {
     const transport = new FakeOmpTransport();
     vi.spyOn(transport, "start").mockRejectedValueOnce(
@@ -447,6 +720,173 @@ describe("OMP Adapter inspection", () => {
     });
     expect(close).toHaveBeenCalledOnce();
   });
+});
+
+describe("OMP Adapter availability inspection", () => {
+  const listedModels: OmpNativeModel[] = [
+    { provider: "openai-codex", id: "gpt-5.6-luna", reasoning: true },
+  ];
+
+  it("answers from the Model list without starting a Session or caching the result", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const listModels = vi.fn().mockResolvedValue({ kind: "models", models: listedModels });
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      await expect(
+        adapter.inspect({ cwd: "/synthetic", purpose: "availability" }),
+      ).resolves.toMatchObject({
+        status: "ready",
+        catalog: { models: [expect.objectContaining({ label: "openai-codex / gpt-5.6-luna" })] },
+      });
+      expect(listModels).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/synthetic" }));
+      expect(createTransport).not.toHaveBeenCalled();
+
+      // A full inspection still starts a Session: the availability result is not its cache.
+      await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+        status: "ready",
+      });
+      expect(createTransport).toHaveBeenCalledOnce();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("reuses a cached full inspection instead of listing Models", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const listModels = vi.fn();
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      const full = await adapter.inspect({ cwd: "/synthetic" });
+      await expect(adapter.inspect({ cwd: "/synthetic", purpose: "availability" })).resolves.toBe(
+        full,
+      );
+      expect(listModels).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each([
+    [{ kind: "notInstalled", message: "omp missing" }, "notInstalled", "notInstalled", false],
+    [{ kind: "timedOut" }, "error", "unavailable", true],
+  ] as const)("reports %j without starting a Session", async (listed, status, code, retryable) => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const adapter = new OmpAdapter({}, { createTransport, listModels: async () => listed });
+    try {
+      await expect(
+        adapter.inspect({ cwd: "/synthetic", purpose: "availability" }),
+      ).resolves.toMatchObject({ status, error: { code, retryable, stage: "model-list" } });
+      expect(createTransport).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("makes an explicit availability re-check drop the cached full catalog", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const listModels = vi.fn().mockResolvedValue({ kind: "models", models: listedModels });
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      await adapter.inspect({ cwd: "/synthetic" });
+      await adapter.inspect({ cwd: "/synthetic", purpose: "availability", refresh: true });
+      expect(listModels).toHaveBeenCalledOnce();
+      await adapter.inspect({ cwd: "/synthetic" });
+      expect(createTransport).toHaveBeenCalledTimes(2);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("stops a pending Model list on close and starts no Session afterwards", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    let aborted = false;
+    const listModels = vi.fn(
+      ({ signal }: { signal?: AbortSignal }) =>
+        new Promise<{ kind: "unanswered" }>((resolve) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            resolve({ kind: "unanswered" });
+          });
+        }),
+    );
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    const pending = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+    await vi.waitFor(() => expect(listModels).toHaveBeenCalledOnce());
+    await adapter.close();
+
+    await expect(pending).resolves.toMatchObject({
+      status: "unavailable",
+      error: { code: "invalidState" },
+    });
+    expect(aborted).toBe(true);
+    expect(createTransport).not.toHaveBeenCalled();
+  });
+
+  it("shares one Model list and joins the in-flight full inspection on fallback", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    let answer: (value: { kind: "unanswered" }) => void = () => undefined;
+    const listModels = vi.fn(
+      () =>
+        new Promise<{ kind: "unanswered" }>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      const first = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+      const second = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+      await vi.waitFor(() => expect(listModels).toHaveBeenCalledOnce());
+      const full = adapter.inspect({ cwd: "/synthetic" });
+      answer({ kind: "unanswered" });
+
+      const [firstResult, secondResult, fullResult] = await Promise.all([first, second, full]);
+      expect(firstResult).toBe(fullResult);
+      expect(secondResult).toBe(fullResult);
+      expect(listModels).toHaveBeenCalledOnce();
+      expect(createTransport).toHaveBeenCalledOnce();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("reuses a full inspection that finished while the Model list ran", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    let answer: (value: { kind: "unanswered" }) => void = () => undefined;
+    const listModels = vi.fn(
+      () =>
+        new Promise<{ kind: "unanswered" }>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      const availability = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+      await vi.waitFor(() => expect(listModels).toHaveBeenCalledOnce());
+      const full = await adapter.inspect({ cwd: "/synthetic" });
+      answer({ kind: "unanswered" });
+
+      await expect(availability).resolves.toBe(full);
+      expect(createTransport).toHaveBeenCalledOnce();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each([{ kind: "unanswered" }, { kind: "models", models: [] }] as const)(
+    "falls back to Session inspection for %j",
+    async (listed) => {
+      const createTransport = vi.fn(() => new FakeOmpTransport());
+      const adapter = new OmpAdapter({}, { createTransport, listModels: async () => listed });
+      try {
+        await expect(
+          adapter.inspect({ cwd: "/synthetic", purpose: "availability" }),
+        ).resolves.toMatchObject({ status: "ready" });
+        expect(createTransport).toHaveBeenCalledOnce();
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
 });
 
 describe("OMP Adapter Fork", () => {
@@ -543,10 +983,126 @@ function outputs(session: { outputs: AsyncIterable<HarnessOutput> }): HarnessOut
   return values;
 }
 
+function isUsageMetering(output: HarnessOutput): boolean {
+  return (
+    output.kind === "event" &&
+    (output.event.type === "usage.request" || output.event.type === "usage.history")
+  );
+}
+
+describe("OMP faulted history", () => {
+  it.each(["valid", "wrong identity", "wrong cwd", "cleanup failed"])(
+    "reads durable history after a fault without reviving the source: %s",
+    async (scenario) => {
+      const directory = path.join(tmpdir(), `codexhost-omp-faulted-${randomUUID()}`);
+      await mkdir(directory, { recursive: true });
+      temporaryDirectories.push(directory);
+      const first = new FakeOmpTransport();
+      const sessionFile = path.join(directory, "session.jsonl");
+      first.state.sessionFile = sessionFile;
+      const createTransport = vi.fn((options: OmpRpcSessionOptions) => {
+        expect(options.cwd).toBe(directory);
+        return first;
+      });
+      const adapter = new OmpAdapter({}, { createTransport });
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd: directory,
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "omp",
+          nativeSessionId: first.state.sessionId,
+          locator: { sessionFile },
+          formatVersion: 1,
+        }),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const value = {
+        directory,
+        first,
+        sessionFile,
+        createTransport,
+        adapter,
+        session: opened.value,
+      };
+      const history = historyTurn({
+        userId: "user-before-fault",
+        assistantId: "assistant-before-fault",
+        parentId: null,
+        text: "Before cancellation",
+      });
+      await writeFile(
+        value.sessionFile,
+        [
+          {
+            type: "session",
+            id: scenario === "wrong identity" ? "other-session" : value.first.state.sessionId,
+            cwd: scenario === "wrong cwd" ? tmpdir() : value.directory,
+          },
+          ...history,
+        ]
+          .map((entry) => JSON.stringify(entry))
+          .join("\n") + "\n",
+      );
+      const close = vi.spyOn(value.first, "close");
+      const getEntries = vi.spyOn(value.first, "getEntries");
+      if (scenario === "cleanup failed")
+        close.mockRejectedValueOnce(new Error("Writer still running"));
+      const onFault = (value.createTransport.mock.calls[0]?.[0] as OmpRpcSessionOptions).onFault;
+      const observed = outputs(value.session);
+      try {
+        onFault?.(
+          new OmpRpcFaultError(
+            "protocolError",
+            "Omp Turn cancellation did not settle within its bound",
+          ),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const snapshot = await value.session.readSnapshot();
+        if (scenario === "valid") {
+          expect(snapshot).toMatchObject({
+            ok: true,
+            value: {
+              turns: [
+                {
+                  nativeTurnRef: { nativeTurnKey: "user-before-fault" },
+                  checkpoint: { checkpointId: "user-before-fault" },
+                },
+              ],
+            },
+          });
+        } else {
+          expect(snapshot.ok).toBe(false);
+        }
+        expect(close).toHaveBeenCalledTimes(1);
+        expect(getEntries).not.toHaveBeenCalled();
+        expect(value.createTransport).toHaveBeenCalledTimes(1);
+        await expect(
+          value.session.execute({
+            type: "turn.start",
+            turnId: "still-faulted" as HostTurnId,
+            input: [{ type: "text", text: "continue" }],
+          }),
+        ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+        expect(observed).toContainEqual(
+          expect.objectContaining({
+            kind: "event",
+            event: expect.objectContaining({ type: "session.faulted" }),
+          }),
+        );
+      } finally {
+        await value.adapter.close();
+      }
+    },
+  );
+});
+
+/** Lifecycle assertions skip Host usage metering events, which have their own tests. */
 async function nextOutput(iterator: AsyncIterator<HarnessOutput>): Promise<HarnessOutput> {
-  const result = await iterator.next();
-  if (result.done) throw new Error("Harness output stream ended unexpectedly");
-  return result.value;
+  for (;;) {
+    const result = await iterator.next();
+    if (result.done) throw new Error("Harness output stream ended unexpectedly");
+    if (!isUsageMetering(result.value)) return result.value;
+  }
 }
 
 async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
@@ -554,6 +1110,220 @@ async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
   if (output.kind !== "event") throw new Error("Expected a Harness event output");
   return output.event;
 }
+
+describe("OMP Adapter usage metering", () => {
+  it("declares empty history on create and meters live assistant messages", async () => {
+    const transport = new FakeOmpTransport();
+    let onUsage: OmpRpcSessionOptions["onUsage"];
+    const adapter = new OmpAdapter(
+      {},
+      {
+        createTransport: (options: OmpRpcSessionOptions) => {
+          onUsage = options.onUsage;
+          return transport;
+        },
+      },
+    );
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toEqual({
+      kind: "event",
+      event: { type: "usage.history", complete: true },
+    });
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "turn-usage" as HostTurnId,
+      input: [{ type: "text", text: "hi" }],
+    });
+    if (!onUsage) throw new Error("Omp transport did not receive a usage callback");
+    onUsage({
+      message: {
+        role: "assistant",
+        model: "gpt-5",
+        responseId: "resp-live",
+        usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 0 },
+      },
+      startedAtMs: 10,
+      completedAtMs: 20,
+    });
+    let event = (await iterator.next()).value;
+    while (event?.kind !== "event" || event.event.type !== "usage.request") {
+      event = (await iterator.next()).value;
+    }
+    expect(event.event).toEqual({
+      type: "usage.request",
+      request: {
+        requestId: "resp-live",
+        model: "gpt-5",
+        inputTokens: 4,
+        cachedInputTokens: 3,
+        cacheWriteInputTokens: 0,
+        outputTokens: 2,
+        startedAtMs: 10,
+        completedAtMs: 20,
+      },
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+});
+
+async function nextTurnEvents(iterator: AsyncIterator<HarnessOutput>): Promise<HostEvent[]> {
+  const events: HostEvent[] = [];
+  for (;;) {
+    const event = await nextEvent(iterator);
+    events.push(event);
+    if (event.type === "turn.completed") return events;
+  }
+}
+
+describe("OMP Adapter local command completion", () => {
+  it.each([
+    { name: "text output", text: "Context: 12% used", cancelled: false, status: "succeeded" },
+    { name: "empty output", text: "", cancelled: false, status: "succeeded" },
+    {
+      name: "native error",
+      text: "Context unavailable",
+      cancelled: true,
+      error: "Unable to read context",
+      status: "failed",
+    },
+    { name: "cancellation", text: "Cancelled", cancelled: true, status: "cancelled" },
+  ])("completes $name without native history or identity", async (testCase) => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    expect(
+      await opened.value.execute({
+        type: "turn.start",
+        turnId: "local-command" as HostTurnId,
+        input: [{ type: "text", text: "/context" }],
+      }),
+    ).toEqual({ ok: true, value: { turnId: "local-command" } });
+
+    transport.completeWithoutHistory({
+      agentInvoked: false,
+      text: testCase.text,
+      cancelled: testCase.cancelled,
+      ...("error" in testCase ? { error: testCase.error } : {}),
+    });
+    const events = await nextTurnEvents(iterator);
+    const outcome = {
+      status: testCase.status,
+      ...(testCase.status === "failed"
+        ? { error: { code: "nativeFailure", message: testCase.error, retryable: true } }
+        : testCase.status === "cancelled"
+          ? { reason: "Cancelled by user" }
+          : {}),
+    };
+    expect(events.at(-1)).toEqual({
+      type: "turn.completed",
+      turnId: "local-command",
+      outcome,
+      ephemeral: true,
+    });
+    expect(events.filter((event) => event.type === "item.completed")).toEqual([
+      {
+        type: "item.completed",
+        turnId: "local-command",
+        snapshot: {
+          item: { type: "agentMessage", itemId: expect.any(String), text: testCase.text },
+          outcome,
+        },
+      },
+    ]);
+    expect(
+      events
+        .flatMap((event) =>
+          event.type === "item.updated" && event.update.type === "text.append"
+            ? [event.update.text]
+            : [],
+        )
+        .join(""),
+    ).toBe(testCase.text);
+    expect(await transport.getEntries()).toEqual({ entries: [], leafId: null });
+    await adapter.close();
+  });
+
+  it("accepts a normal prompt after local completion and preserves its native identity", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "local-first" as HostTurnId,
+      input: [{ type: "text", text: "/context" }],
+    });
+    transport.completeWithoutHistory({
+      agentInvoked: false,
+      text: "Context: 12% used",
+      cancelled: false,
+    });
+    expect((await nextTurnEvents(iterator)).at(-1)).toMatchObject({
+      outcome: { status: "succeeded" },
+      ephemeral: true,
+    });
+
+    expect(
+      await opened.value.execute({
+        type: "turn.start",
+        turnId: "normal-next" as HostTurnId,
+        input: [{ type: "text", text: "edit" }],
+      }),
+    ).toEqual({ ok: true, value: { turnId: "normal-next" } });
+    transport.succeed("Edited");
+    const normalCompletion = (await nextTurnEvents(iterator)).at(-1);
+    expect(normalCompletion).not.toHaveProperty("ephemeral");
+    expect(normalCompletion).toMatchObject({
+      type: "turn.completed",
+      turnId: "normal-next",
+      outcome: {
+        status: "succeeded",
+        checkpoint: { nativeSessionId: "omp-parent", checkpointId: "user-1" },
+      },
+      nativeTurnRef: { nativeSessionId: "omp-parent", nativeTurnKey: "user-1" },
+    });
+    await adapter.close();
+  });
+
+  it("rejects normal success without a newly persisted native User Entry", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "missing-history" as HostTurnId,
+      input: [{ type: "text", text: "edit" }],
+    });
+    transport.completeWithoutHistory({ agentInvoked: true, text: "Edited", cancelled: false });
+    expect((await nextTurnEvents(iterator)).at(-1)).toEqual({
+      type: "turn.completed",
+      turnId: "missing-history",
+      outcome: {
+        status: "failed",
+        error: {
+          code: "protocolError",
+          message: "Omp Turn persisted 0 new User Entries; exactly one is required",
+          retryable: false,
+        },
+      },
+    });
+    await adapter.close();
+  });
+});
 
 describe("OMP Adapter Subagents", () => {
   it("projects native Subagent lifecycle into a Host delegation Item", async () => {
@@ -647,6 +1417,7 @@ describe("OMP Adapter Subagents", () => {
           {
             id: "omp.compact",
             invocation: "/compact",
+            localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
             label: "Compact context",
             description: "Compact the current conversation context",
             argumentMode: "text",
@@ -689,7 +1460,124 @@ describe("OMP Adapter Subagents", () => {
     await adapter.close();
   });
 
-  it("materializes a background Subagent that starts after the parent Turn is idle", async () => {
+  it("reads a completed Subagent transcript from disk without spawning an OMP process", async () => {
+    const root = path.join(tmpdir(), `codexhost-omp-subagent-${randomUUID()}`);
+    const parentSessionFile = path.join(root, "parent.jsonl");
+    const transcriptDirectory = path.join(root, "parent");
+    await mkdir(transcriptDirectory, { recursive: true });
+    temporaryDirectories.push(root);
+    await writeFile(
+      path.join(transcriptDirectory, "scout.jsonl"),
+      [
+        JSON.stringify({ type: "title", v: 1, title: "", updatedAt: "2026-01-01T00:00:00.000Z" }),
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: "child-session",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          cwd: "/synthetic",
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "child-user-1",
+          parentId: null,
+          message: { role: "user", content: [{ type: "text", text: "Inspect the repository" }] },
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "child-assistant-1",
+          parentId: "child-user-1",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "I inspected it." }],
+            stopReason: "stop",
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const createTransport = vi.fn();
+    const adapter = new OmpAdapter({}, { createTransport: createTransport as never });
+    const parent = nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "parent-session",
+      locator: { sessionFile: parentSessionFile },
+      formatVersion: 1,
+    });
+    const result = await adapter.subagents.readSnapshot({
+      parent,
+      nativeSubagentId: "scout",
+      cwd: "/synthetic",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.turns).toHaveLength(1);
+      expect(result.value.turns[0]?.input).toEqual([
+        { type: "text", text: "Inspect the repository" },
+      ]);
+      expect(result.value.turns[0]?.items).toContainEqual({
+        item: expect.objectContaining({ type: "agentMessage", text: "I inspected it." }),
+        outcome: { status: "succeeded" },
+      });
+    }
+    expect(createTransport).not.toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it("falls back to OMP RPC when the parent Session file has no transcript layout", async () => {
+    const transport = new FakeOmpTransport();
+    const createdOptions: OmpRpcSessionOptions[] = [];
+    const adapter = new OmpAdapter(
+      {},
+      {
+        createTransport: (options: OmpRpcSessionOptions) => {
+          createdOptions.push(options);
+          return transport;
+        },
+      },
+    );
+    const parent = nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "omp-parent",
+      locator: { sessionFile: "relative/omp-parent.session" },
+      formatVersion: 1,
+    });
+    const result = await adapter.subagents.readSnapshot({
+      parent,
+      nativeSubagentId: "subagent-1",
+      cwd: "/synthetic",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.turns).toHaveLength(1);
+    expect(createdOptions).toEqual([
+      expect.objectContaining({
+        sessionFile: "relative/omp-parent.session",
+        subscribeSubagentEvents: false,
+      }),
+    ]);
+    await adapter.close();
+  });
+
+  it("rejects Subagent IDs that cannot name a transcript file", async () => {
+    const transport = new FakeOmpTransport();
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const parent = nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "omp-parent",
+      locator: { sessionFile: "/synthetic/omp-parent.jsonl" },
+      formatVersion: 1,
+    });
+    const result = await adapter.subagents.readSnapshot({
+      parent,
+      nativeSubagentId: "../escape",
+      cwd: "/synthetic",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("protocolError");
+    await adapter.close();
+  });
+
+  it("reports idle Subagent notifications without inventing a Root Turn", async () => {
     const transport = new FakeOmpTransport();
     const dependencies: OmpAdapterDependencies = {
       createTransport: (options: OmpRpcSessionOptions) => {
@@ -709,6 +1597,16 @@ describe("OMP Adapter Subagents", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
+    const beforeBackground = await opened.value.readSnapshot();
+    expect(beforeBackground.ok).toBe(true);
+    const parentCompletion = observed.find(
+      (output) => output.kind === "event" && output.event.type === "turn.completed",
+    );
+    expect(parentCompletion).toMatchObject({
+      event: { nativeTurnRef: { nativeTurnKey: "user-1" } },
+    });
+    expect(parentCompletion).not.toHaveProperty("event.ephemeral");
+
     transport.onSubagentEvent?.({
       type: "subagent.started",
       callId: "background-tool",
@@ -725,22 +1623,12 @@ describe("OMP Adapter Subagents", () => {
       )
       .map((output) => output.event);
     const autonomous = startedEvents.find((event) => event.type === "turn.autonomous.started");
-    expect(autonomous).toMatchObject({ type: "turn.autonomous.started" });
-    expect(startedEvents).toContainEqual(
-      expect.objectContaining({
-        type: "item.started",
-        item: expect.objectContaining({
-          type: "subagentDelegation",
-          subagents: [
-            expect.objectContaining({
-              nativeSubagentId: "background-subagent",
-              status: "running",
-              background: true,
-            }),
-          ],
-        }),
-      }),
-    );
+    expect(autonomous).toBeUndefined();
+    expect(startedEvents).toContainEqual({
+      type: "subagent.state.changed",
+      nativeSubagentId: "background-subagent",
+      status: "running",
+    });
 
     transport.onSubagentEvent?.({
       type: "subagent.completed",
@@ -755,23 +1643,19 @@ describe("OMP Adapter Subagents", () => {
         (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
       )
       .map((output) => output.event);
-    expect(completedEvents).toContainEqual(
-      expect.objectContaining({
-        type: "item.completed",
-        snapshot: expect.objectContaining({
-          item: expect.objectContaining({
-            type: "subagentDelegation",
-            subagents: [expect.objectContaining({ status: "completed" })],
-          }),
-        }),
-      }),
-    );
-    expect(completedEvents.some((event) => event.type === "turn.completed")).toBe(true);
+    expect(completedEvents).toContainEqual({
+      type: "subagent.state.changed",
+      nativeSubagentId: "background-subagent",
+      status: "completed",
+      resultSummary: "finished in background",
+    });
+    expect(completedEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(await opened.value.readSnapshot()).toEqual(beforeBackground);
     await opened.value.close();
     await adapter.close();
   });
 
-  it("keeps an autonomous Turn open until all background Subagents settle", async () => {
+  it("keeps idle notifications from multiple Subagents out of Root history", async () => {
     const transport = new FakeOmpTransport();
     const dependencies: OmpAdapterDependencies = {
       createTransport: (options: OmpRpcSessionOptions) => {
@@ -823,11 +1707,14 @@ describe("OMP Adapter Subagents", () => {
           event.type === "turn.autonomous.started",
       )
       .map((event) => event.turnId);
-    expect(
-      afterFirst.filter(
-        (event) => event.type === "turn.completed" && autonomousTurnIds.includes(event.turnId),
-      ),
-    ).toHaveLength(0);
+    expect(autonomousTurnIds).toEqual([]);
+    expect(afterFirst).toContainEqual(
+      expect.objectContaining({
+        type: "subagent.state.changed",
+        nativeSubagentId: "background-subagent-1",
+        status: "completed",
+      }),
+    );
     transport.onSubagentEvent?.({
       type: "subagent.completed",
       callId: "background-tool-2",
@@ -836,17 +1723,66 @@ describe("OMP Adapter Subagents", () => {
       resultSummary: "failed",
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const completed = observed
+    const events = observed
       .filter(
         (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
       )
-      .map((output) => output.event)
-      .filter(
-        (event) => event.type === "turn.completed" && autonomousTurnIds.includes(event.turnId),
-      );
-    expect(completed).toHaveLength(1);
-    expect(completed[0]).toMatchObject({ outcome: { status: "failed" } });
+      .map((output) => output.event);
+    expect(events.filter((event) => event.type === "turn.autonomous.started")).toHaveLength(0);
+    expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(observed).toContainEqual({
+      kind: "event",
+      event: {
+        type: "subagent.state.changed",
+        nativeSubagentId: "background-subagent-2",
+        status: "failed",
+        resultSummary: "failed",
+      },
+    });
     await opened.value.close();
+    await adapter.close();
+  });
+
+  it("forwards Model and Thinking selection during a Turn without admitting another Turn", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const selectModel = vi.spyOn(transport, "selectModel");
+    const selectThinking = vi.spyOn(transport, "selectThinkingOption");
+    vi.spyOn(transport, "getAvailableThinkingLevels").mockResolvedValue([
+      harnessThinkingOptionIdSchema.parse("off"),
+      harnessThinkingOptionIdSchema.parse("high"),
+    ]);
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    await adapter.inspect({ cwd: "/synthetic" });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    await session.execute({
+      type: "turn.start",
+      turnId: "active-config" as HostTurnId,
+      input: [{ type: "text", text: "go" }],
+    });
+    const model = encodeOmpModelRef({ provider: "synthetic", id: "model" });
+    await expect(session.execute({ type: "model.select", model })).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(selectModel).toHaveBeenCalled();
+    expect(selectThinking).toHaveBeenCalled();
+    await expect(
+      session.execute({
+        type: "turn.start",
+        turnId: "duplicate-config" as HostTurnId,
+        input: [{ type: "text", text: "go" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    transport.succeed("done");
+    await session.close();
     await adapter.close();
   });
 
@@ -906,6 +1842,72 @@ describe("OMP Adapter Subagents", () => {
 
     transport.succeed("changed");
     await opened.value.close();
+    await adapter.close();
+  });
+
+  it("projects native questions with descriptions and validates answers before responding", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute({
+      type: "turn.start",
+      turnId: "question" as HostTurnId,
+      input: [{ type: "text", text: "choose" }],
+    });
+    const started = await nextEvent(iterator);
+    if (started.type === "session.state.changed") await nextEvent(iterator);
+    await nextEvent(iterator);
+    transport.event({
+      type: "interaction.requested",
+      request: {
+        requestId: "question-1",
+        method: "select",
+        title: "Storage?",
+        options: ["JSON", "SQLite"],
+        optionDetails: [{ description: "Portable file" }, {}],
+      },
+    });
+    const output = await nextOutput(iterator);
+    if (output.kind !== "interaction") throw new Error("Missing question");
+    expect(output.interaction).toMatchObject({
+      type: "question",
+      questions: [
+        {
+          type: "choice",
+          prompt: "Storage?",
+          options: [
+            { value: "JSON", label: "JSON", description: "Portable file" },
+            { value: "SQLite", label: "SQLite" },
+          ],
+        },
+      ],
+    });
+    const respond = (answers: string[]) =>
+      session.execute({
+        type: "interaction.respond",
+        interactionId: output.interaction.interactionId,
+        response: { type: "question", answers: { answer: answers } },
+      });
+    expect(await respond(["unsupported"])).toMatchObject({
+      ok: false,
+      error: { code: "invalidRequest" },
+    });
+    expect(transport.respondToInteraction).not.toHaveBeenCalled();
+    expect(await respond(["SQLite"])).toMatchObject({ ok: true });
+    expect(transport.respondToInteraction).toHaveBeenCalledWith({
+      requestId: "question-1",
+      value: "SQLite",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      reason: "responded",
+    });
+    expect(await respond(["JSON"])).toMatchObject({ ok: false, error: { code: "invalidState" } });
+    transport.succeed("chosen");
     await adapter.close();
   });
 

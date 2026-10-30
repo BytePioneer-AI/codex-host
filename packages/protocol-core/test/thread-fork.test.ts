@@ -124,6 +124,19 @@ describe("Codex thread/fork protocol boundary", () => {
     ).toEqual({ code: -32080, message: "External Fork Checkpoint is unavailable" });
   });
 
+  it("maps missing Harness configuration without exposing native diagnostics", () => {
+    expect(
+      mapExternalThreadHarnessError(
+        {
+          code: "configurationRequired",
+          message: "private model configuration",
+          retryable: false,
+        },
+        "create",
+      ),
+    ).toEqual({ code: -32077, message: "External Harness is unavailable" });
+  });
+
   it("builds the paginated ThreadRevertResponse without embedding history", () => {
     expect(threadRevertResult({ id: "thread-1", turns: [{ id: "turn-1" }] })).toEqual({
       thread: { id: "thread-1", turns: [] },

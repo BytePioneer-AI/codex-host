@@ -4,11 +4,46 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { writeDistributionMetadata } from "./distribution-metadata.mjs";
+import {
+  buildPreinstalledHarnessPlugins,
+  preinstalledHarnessPluginPaths,
+} from "./harness-plugins.mjs";
 import { ensureNodeArchive, extractNodeRuntime } from "./node-runtime.mjs";
 import { parseReleaseArguments, releaseUsage } from "./targets.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const runtimeLicenses = [
+  {
+    packageName: "@github/copilot-sdk",
+    license: "MIT",
+    source: "scripts/release/licenses/copilot-sdk-1.0.25-MIT.txt",
+    output: "Copilot-SDK-LICENSE.txt",
+  },
+  { packageName: "koffi", license: "MIT", source: "LICENSE.txt", output: "Koffi-LICENSE.txt" },
+  {
+    packageName: "vscode-jsonrpc",
+    license: "MIT",
+    source: "License.txt",
+    output: "VSCode-JSONRPC-LICENSE.txt",
+  },
+  {
+    packageName: "@deepseek-ai/cordis",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Cordis-LICENSE.txt",
+  },
+  {
+    packageName: "@deepseek-ai/cosmokit",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Cosmokit-LICENSE.txt",
+  },
+  {
+    packageName: "@agentclientprotocol/sdk",
+    license: "Apache-2.0",
+    source: "LICENSE",
+    output: "Agent-Client-Protocol-SDK-LICENSE.txt",
+  },
   {
     packageName: "@anthropic-ai/claude-agent-sdk",
     license: "SEE LICENSE IN README.md",
@@ -28,10 +63,10 @@ const runtimeLicenses = [
     output: "MCP-SDK-LICENSE.txt",
   },
   {
-    packageName: "@qwen-code/sdk",
-    license: "Apache-2.0",
-    source: "scripts/release/licenses/qwen-code-sdk-0.1.8-Apache-2.0.txt",
-    output: "Qwen-Code-SDK-LICENSE.txt",
+    packageName: "@opencode/client",
+    license: "MIT",
+    source: "scripts/release/licenses/opencode-client-2.0.16-MIT.txt",
+    output: "OpenCode-v2-Client-LICENSE.txt",
   },
   {
     packageName: "@opencode-ai/sdk",
@@ -39,8 +74,32 @@ const runtimeLicenses = [
     source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
     output: "OpenCode-SDK-LICENSE.txt",
   },
+  {
+    packageName: "@qoder-ai/qoder-agent-sdk",
+    license: "SEE LICENSE IN LICENSE",
+    source: "LICENSE",
+    output: "Qoder-Agent-SDK-LICENSE.txt",
+  },
+  {
+    packageName: "@qodercn-ai/qodercn-agent-sdk",
+    license: "SEE LICENSE IN LICENSE",
+    source: "LICENSE",
+    output: "QoderCN-Agent-SDK-LICENSE.txt",
+  },
+  {
+    packageName: "@qwen-code/sdk",
+    license: "Apache-2.0",
+    source: "scripts/release/licenses/qwen-code-sdk-0.1.26-Apache-2.0.txt",
+    output: "Qwen-Code-SDK-LICENSE.txt",
+  },
   { packageName: "diff", license: "BSD-3-Clause", source: "LICENSE", output: "diff-LICENSE.txt" },
   { packageName: "lucide", license: "ISC", source: "LICENSE", output: "lucide-LICENSE.txt" },
+  {
+    packageName: "tailwindcss",
+    license: "MIT",
+    source: "LICENSE",
+    output: "tailwindcss-LICENSE.txt",
+  },
   { packageName: "ws", license: "MIT", source: "LICENSE", output: "ws-LICENSE.txt" },
   { packageName: "zod", license: "MIT", source: "LICENSE", output: "zod-LICENSE.txt" },
 ];
@@ -179,7 +238,7 @@ export async function writeThirdPartyNotices(root, payloadRoot) {
       );
     }
     await copyReleaseFile(
-      dependency.source.startsWith("scripts/")
+      dependency.source.startsWith("scripts/release/licenses/")
         ? resolveRuntimeLicenseSource(root, dependency)
         : path.join(dependencyRoot, dependency.source),
       path.join(licensesDirectory, dependency.output),
@@ -214,21 +273,35 @@ export function expectedPayloadPaths(target) {
   const paths = [
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
+    ...(target.hostPlatform === "win32" ? ["libexec/codexhost-node-repl.exe"] : []),
     `libexec/codexhost-updater${target.executableSuffix}`,
     `runtime/node${target.executableSuffix}`,
     "app/codexhost-distribution.json",
+    "app/console-server.mjs",
+    "app/console-web.js",
     "app/desktop-controller.mjs",
     "app/host-runtime.mjs",
     "app/renderer-extension.js",
+    ...preinstalledHarnessPluginPaths(),
     "licenses/Node.js-LICENSE.txt",
+    "licenses/Copilot-SDK-LICENSE.txt",
+    "licenses/Koffi-LICENSE.txt",
+    "licenses/VSCode-JSONRPC-LICENSE.txt",
+    "licenses/Agent-Client-Protocol-SDK-LICENSE.txt",
     "licenses/Anthropic-SDK-LICENSE.txt",
     "licenses/Claude-Agent-SDK-LICENSE.md",
     "licenses/create-dmg-background-LICENSE.txt",
     "licenses/MCP-SDK-LICENSE.txt",
-    "licenses/Qwen-Code-SDK-LICENSE.txt",
     "licenses/OpenCode-SDK-LICENSE.txt",
+    "licenses/OpenCode-v2-Client-LICENSE.txt",
+    "licenses/Qoder-Agent-SDK-LICENSE.txt",
+    "licenses/QoderCN-Agent-SDK-LICENSE.txt",
+    "licenses/Qwen-Code-SDK-LICENSE.txt",
+    "licenses/Cordis-LICENSE.txt",
+    "licenses/Cosmokit-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",
+    "licenses/tailwindcss-LICENSE.txt",
     "licenses/ws-LICENSE.txt",
     "licenses/zod-LICENSE.txt",
     "THIRD_PARTY_NOTICES.txt",
@@ -271,7 +344,14 @@ export async function validatePayload({ payloadRoot, target, root }) {
   for (const file of files.filter((entry) => /\.(?:js|md|mjs|txt)$/u.test(entry.relative))) {
     const text = await readFile(file.absolute, "utf8");
     const forbiddenReferences = [root];
-    if (["app/desktop-controller.mjs", "app/renderer-extension.js"].includes(file.relative)) {
+    if (
+      [
+        "app/console-server.mjs",
+        "app/console-web.js",
+        "app/desktop-controller.mjs",
+        "app/renderer-extension.js",
+      ].includes(file.relative)
+    ) {
       forbiddenReferences.push("@anthropic-ai/", "@codexhost/adapter-claude-code");
     }
     if (forbiddenReferences.some((reference) => text.includes(reference))) {
@@ -317,6 +397,14 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     "release Shim",
     true,
   );
+  if (target.hostPlatform === "win32") {
+    await copyReleaseFile(
+      path.join(rustOutput, "codexhost-node-repl.exe"),
+      path.join(payloadRoot, "libexec", "codexhost-node-repl.exe"),
+      "release Desktop tool proxy",
+      true,
+    );
+  }
   await copyReleaseFile(
     path.join(rustOutput, `codexhost-updater${target.executableSuffix}`),
     path.join(payloadRoot, "libexec", `codexhost-updater${target.executableSuffix}`),
@@ -336,6 +424,10 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     },
     root,
   );
+  await buildPreinstalledHarnessPlugins({
+    repositoryRoot: root,
+    outputDirectory: path.join(payloadRoot, "app", "plugins"),
+  });
   await runCommand(
     {
       label: "Desktop Controller Bundle build",
@@ -348,10 +440,27 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     },
     root,
   );
+  await runCommand(
+    {
+      label: "Console Server Bundle build",
+      command: process.execPath,
+      args: [
+        "packages/console-server/scripts/build-release.mjs",
+        "--output",
+        path.join(payloadRoot, "app", "console-server.mjs"),
+      ],
+    },
+    root,
+  );
   await copyReleaseFile(
     path.join(root, "packages", "renderer-extension", "dist", "production.js"),
     path.join(payloadRoot, "app", "renderer-extension.js"),
     "production Renderer Bundle",
+  );
+  await copyReleaseFile(
+    path.join(root, "packages", "renderer-extension", "dist", "console.js"),
+    path.join(payloadRoot, "app", "console-web.js"),
+    "console page Bundle",
   );
   await writeDistributionMetadata(path.join(payloadRoot, "app", "codexhost-distribution.json"), {
     version,

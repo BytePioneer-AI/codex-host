@@ -32,8 +32,8 @@ export interface RendererContractAuditInspection {
     ambiguousCount: number;
   };
   settings: {
-    headerCount: number;
-    visibleHeaderCount: number;
+    railCount: number;
+    visibleRailCount: number;
     insertionPointCount: number;
   };
   sidebar: {
@@ -48,6 +48,12 @@ export interface RendererContractAuditInspection {
     identifiedItemCount: number;
     textBodyCount: number;
     textBodyOwnerCount: number;
+  };
+  codexUsageGate: {
+    composerCount: number;
+    ownerCount: number;
+    reserveGateCount: number;
+    accountGateCount: number;
   };
   fork: {
     annotatedResponseCount: number;
@@ -131,6 +137,7 @@ export function validateRendererContractAuditInspection(
       "settings",
       "sidebar",
       "transcript",
+      "codexUsageGate",
       "fork",
       "production",
     ],
@@ -186,7 +193,7 @@ export function validateRendererContractAuditInspection(
     ),
     settings: integerRecord(
       value.settings,
-      ["headerCount", "visibleHeaderCount", "insertionPointCount"] as const,
+      ["railCount", "visibleRailCount", "insertionPointCount"] as const,
       "Renderer settings contract",
     ),
     sidebar: integerRecord(
@@ -204,6 +211,11 @@ export function validateRendererContractAuditInspection(
         "textBodyOwnerCount",
       ] as const,
       "Renderer transcript contract",
+    ),
+    codexUsageGate: integerRecord(
+      value.codexUsageGate,
+      ["composerCount", "ownerCount", "reserveGateCount", "accountGateCount"] as const,
+      "Renderer Codex usage gate contract",
     ),
     fork: integerRecord(
       value.fork,

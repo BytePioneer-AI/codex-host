@@ -1,4 +1,6 @@
 import {
+  encodeHarnessPluginRoute,
+  harnessPluginRouteSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -13,7 +15,6 @@ import {
   GROK_NATIVE_TRANSPORT_MODEL_ID,
   OMP_NATIVE_TRANSPORT_MODEL_ID,
   OPENCODE_NATIVE_TRANSPORT_MODEL_ID,
-  QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   decodeClaudeTransportSelection,
   decodeAntigravityTransportSelection,
@@ -24,26 +25,56 @@ import {
   decodeGrokTransportSelection,
   decodeOmpTransportSelection,
   decodeOpenCodeTransportSelection,
-  decodeQwenCodeTransportSelection,
   decodePiTransportModel,
   decodePiTransportSelection,
+  encodeExternalTransportSelection,
   encodeClaudeTransportModel,
   encodeAntigravityTransportModel,
   encodeDeepSeekHarnessTransportModel,
   encodeGrokTransportModel,
   encodeOpenCodeTransportModel,
-  encodeQwenCodeTransportModel,
   encodePiTransportModel,
   encodeOmpTransportModel,
   transportModelIdForHarness,
 } from "../src/index.js";
 
 describe("external Harness transport model routing", () => {
+  it("routes arbitrary installed plugin identities with a shared configuration codec", () => {
+    const configuration = {
+      model: harnessModelRefSchema.parse({ id: "opaque-model" }),
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      permissionModeId: harnessPermissionModeIdSchema.parse("ask"),
+    };
+    const transportModelId = encodeExternalTransportSelection("sample-agent", configuration);
+    expect(
+      decodeCreateRoute({ id: 99, method: "thread/start", params: { model: transportModelId } }),
+    ).toEqual({
+      harnessId: "sample-agent",
+      routeMode: "native",
+      transportModelId,
+      ...configuration,
+    });
+    expect(decodeExternalTransportSelection("sample-agent", transportModelId)).toEqual(
+      configuration,
+    );
+    expect(decodeExternalTransportSelection("another-agent", transportModelId)).toBeNull();
+    expect(transportModelIdForHarness("sample-agent")).toMatch(/^codexhost\/plugin-v1@/u);
+  });
+
+  it.each(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp", "antigravity"])(
+    "also accepts the shared codec for transitional identity %s",
+    (harnessId) => {
+      const route = harnessPluginRouteSchema.parse({ harnessId, model: { id: "opaque-model" } });
+      expect(decodeExternalTransportSelection(harnessId, encodeHarnessPluginRoute(route))).toEqual({
+        model: route.model,
+      });
+    },
+  );
+
   it.each([
     ["pi", PI_NATIVE_TRANSPORT_MODEL_ID],
     ["claude-code", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID],
     ["deepseek-harness", DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID],
-    ["qwen-code", QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID],
     ["opencode", OPENCODE_NATIVE_TRANSPORT_MODEL_ID],
     ["grok", GROK_NATIVE_TRANSPORT_MODEL_ID],
     ["omp", OMP_NATIVE_TRANSPORT_MODEL_ID],
@@ -69,6 +100,32 @@ describe("external Harness transport model routing", () => {
     expect(decodeCreateRoute({ id: 4, method: "model/list", params: {} })).toBeNull();
   });
 
+  it.each([
+    {},
+    { model: null },
+    { model: false },
+    { model: 42 },
+    { model: [] },
+    { model: { id: "future-official-model" } },
+  ])("leaves a native Model selection unclaimed: %j", (params) => {
+    expect(decodeCreateRoute({ id: 5, method: "thread/start", params })).toBeNull();
+  });
+
+  it.each([null, [], "text", 1])("leaves native start parameters unclaimed: %j", (params) => {
+    expect(decodeCreateRoute({ id: 5, method: "thread/start", params })).toBeNull();
+    expect(decodeCreateRoute({ id: 5, method: "thread/start" })).toBeNull();
+  });
+
+  it("still rejects a malformed codexhost transport marker", () => {
+    expect(() =>
+      decodeCreateRoute({
+        id: 6,
+        method: "thread/start",
+        params: { model: `${PI_NATIVE_TRANSPORT_MODEL_ID}@` },
+      }),
+    ).toThrow();
+  });
+
   it("round-trips a bounded opaque selected Pi Model Ref", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.cHJvdmlkZXItaWQ" });
     const transportModelId = encodePiTransportModel(model);
@@ -86,20 +143,6 @@ describe("external Harness transport model routing", () => {
       routeMode: "native",
       transportModelId,
       model,
-    });
-  });
-
-  it("round-trips a Qwen Code Model and Permission Mode", () => {
-    const model = harnessModelRefSchema.parse({ id: "qwen-max" });
-    const permissionModeId = harnessPermissionModeIdSchema.parse("plan");
-    const transportModelId = encodeQwenCodeTransportModel(model, permissionModeId);
-    expect(decodeQwenCodeTransportSelection(transportModelId)).toEqual({ model, permissionModeId });
-    expect(
-      decodeCreateRoute({ id: 12, method: "thread/start", params: { model: transportModelId } }),
-    ).toMatchObject({
-      harnessId: "qwen-code",
-      model,
-      permissionModeId,
     });
   });
 

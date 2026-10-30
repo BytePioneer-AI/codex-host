@@ -24,6 +24,7 @@ const NATIVE_HARNESS_BROKER_THROTTLE_SECONDS: u32 = 10;
 
 #[derive(Debug, Clone, Copy)]
 pub struct NativeHarnessBrokerPaths<'a> {
+    pub harness_id: &'a str,
     pub home: &'a Path,
     pub node: &'a Path,
     pub host_runtime: &'a Path,
@@ -31,13 +32,13 @@ pub struct NativeHarnessBrokerPaths<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeHarnessBrokerLaunchAgentPlan {
-    pub label: &'static str,
+    pub label: String,
     pub launchctl_domain: String,
     pub launchctl_target: String,
     pub plist_path: PathBuf,
     pub broker_directory: PathBuf,
     pub descriptor_path: PathBuf,
-    pub program_arguments: [String; 3],
+    pub program_arguments: Vec<String>,
     pub plist_xml: String,
 }
 
@@ -52,7 +53,8 @@ pub struct NativeHarnessBrokerLaunchctlPlan {
     pub print: NativeHarnessBrokerCommand,
     pub bootstrap: NativeHarnessBrokerCommand,
     pub bootout: NativeHarnessBrokerCommand,
-    pub kickstart: NativeHarnessBrokerCommand,
+    /// Terminates the running process but keeps the agent registered for on-demand starts.
+    pub stop: NativeHarnessBrokerCommand,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,14 +69,15 @@ pub enum NativeHarnessBrokerInstallStep {
     Bootout,
     WritePlist,
     Bootstrap,
-    Kickstart,
+    /// Terminate a running broker so its next on-demand start loads updated code.
+    Stop,
 }
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeHarnessBrokerInstallOutcome {
-    AlreadyRunning,
-    Started,
+    AlreadyRegistered,
+    Stopped,
     Installed,
     Reinstalled,
 }
@@ -82,7 +85,7 @@ pub enum NativeHarnessBrokerInstallOutcome {
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeHarnessBrokerStatus {
-    pub label: &'static str,
+    pub label: String,
     pub launchctl_target: String,
     pub plist_path: PathBuf,
     pub observed: NativeHarnessBrokerObservedState,
@@ -113,6 +116,25 @@ fn xml_text(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+pub fn native_harness_broker_label(harness_id: &str) -> Result<String, PlatformError> {
+    if harness_id.is_empty()
+        || harness_id.len() > 64
+        || !harness_id.as_bytes()[0].is_ascii_lowercase()
+        || !harness_id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err(PlatformError::Invalid(
+            "invalid native Harness broker id".to_owned(),
+        ));
+    }
+    Ok(if harness_id == "claude-code" {
+        NATIVE_HARNESS_BROKER_LABEL.to_owned()
+    } else {
+        format!("ai.bytepioneer.codexhost.{harness_id}-broker")
+    })
 }
 
 pub fn plan_native_harness_broker_launch_agent(
@@ -190,19 +212,29 @@ pub fn plan_native_harness_broker_launch_agent_with_environment(
     required_absolute_path(paths.home, "user home")?;
     let node = required_absolute_path(paths.node, "packaged Node.js runtime")?;
     let host_runtime = required_absolute_path(paths.host_runtime, "packaged Host Runtime")?;
+    let label = native_harness_broker_label(paths.harness_id)?;
     let launchctl_domain = format!("gui/{console_uid}");
-    let launchctl_target = format!("{launchctl_domain}/{NATIVE_HARNESS_BROKER_LABEL}");
+    let launchctl_target = format!("{launchctl_domain}/{label}");
     let plist_path = paths
         .home
         .join("Library/LaunchAgents")
-        .join(format!("{NATIVE_HARNESS_BROKER_LABEL}.plist"));
+        .join(format!("{label}.plist"));
     let broker_directory = paths.home.join(".codexhost/harness-broker");
-    let descriptor_path = broker_directory.join("claude-code-broker-v1.json");
-    let program_arguments = [
+    let descriptor_path = broker_directory.join(format!("{}-broker-v1.json", paths.harness_id));
+    let mut program_arguments = vec![
         node,
         host_runtime,
         NATIVE_HARNESS_BROKER_ARGUMENT.to_owned(),
     ];
+    // Keep the legacy Claude command line byte-for-byte compatible.
+    if paths.harness_id != "claude-code" {
+        program_arguments.push(paths.harness_id.to_owned());
+    }
+    let harness_argument_xml = if paths.harness_id == "claude-code" {
+        String::new()
+    } else {
+        format!("    <string>{}</string>\n", xml_text(paths.harness_id))
+    };
     let environment_xml = launch_agent_environment_xml(environment)?;
     let plist_xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
@@ -216,11 +248,11 @@ pub fn plan_native_harness_broker_launch_agent_with_environment(
     <string>{}</string>\n\
     <string>{}</string>\n\
     <string>{}</string>\n\
-  </array>\n\
+{harness_argument_xml}  </array>\n\
   <key>LimitLoadToSessionType</key>\n\
   <string>Aqua</string>\n\
   <key>RunAtLoad</key>\n\
-  <true/>\n\
+  <false/>\n\
   <key>ThrottleInterval</key>\n\
   <integer>{NATIVE_HARNESS_BROKER_THROTTLE_SECONDS}</integer>\n\
   <key>ProcessType</key>\n\
@@ -232,14 +264,14 @@ pub fn plan_native_harness_broker_launch_agent_with_environment(
   <string>/dev/null</string>\n\
 </dict>\n\
 </plist>\n",
-        xml_text(NATIVE_HARNESS_BROKER_LABEL),
+        xml_text(&label),
         xml_text(&program_arguments[0]),
         xml_text(&program_arguments[1]),
         xml_text(&program_arguments[2]),
         environment_xml,
     );
     Ok(NativeHarnessBrokerLaunchAgentPlan {
-        label: NATIVE_HARNESS_BROKER_LABEL,
+        label,
         launchctl_domain,
         launchctl_target,
         plist_path,
@@ -254,6 +286,14 @@ pub fn plan_native_harness_broker_launchctl(
     console_uid: u32,
     plist_path: &Path,
 ) -> Result<NativeHarnessBrokerLaunchctlPlan, PlatformError> {
+    plan_native_harness_broker_launchctl_for(console_uid, plist_path, "claude-code")
+}
+
+fn plan_native_harness_broker_launchctl_for(
+    console_uid: u32,
+    plist_path: &Path,
+    harness_id: &str,
+) -> Result<NativeHarnessBrokerLaunchctlPlan, PlatformError> {
     if console_uid == 0 {
         return Err(PlatformError::Invalid(
             "the macOS Aqua console user must not be root".to_owned(),
@@ -261,7 +301,7 @@ pub fn plan_native_harness_broker_launchctl(
     }
     let plist_path = required_absolute_path(plist_path, "LaunchAgent property list")?;
     let domain = format!("gui/{console_uid}");
-    let target = format!("{domain}/{NATIVE_HARNESS_BROKER_LABEL}");
+    let target = format!("{domain}/{}", native_harness_broker_label(harness_id)?);
     let command = |arguments: Vec<String>| NativeHarnessBrokerCommand {
         program: "/bin/launchctl",
         arguments,
@@ -270,7 +310,7 @@ pub fn plan_native_harness_broker_launchctl(
         print: command(vec!["print".to_owned(), target.clone()]),
         bootstrap: command(vec!["bootstrap".to_owned(), domain, plist_path]),
         bootout: command(vec!["bootout".to_owned(), target.clone()]),
-        kickstart: command(vec!["kickstart".to_owned(), "-k".to_owned(), target]),
+        stop: command(vec!["kill".to_owned(), "SIGTERM".to_owned(), target]),
     })
 }
 
@@ -279,13 +319,13 @@ pub fn plan_native_harness_broker_install(
     plist_matches: bool,
     observed: NativeHarnessBrokerObservedState,
 ) -> Vec<NativeHarnessBrokerInstallStep> {
+    // Brokers start on demand (the managed remote Host kickstarts them) and exit when
+    // idle, so installation only registers the exact agent and never leaves it running.
     match (plist_matches, observed) {
         (true, NativeHarnessBrokerObservedState::Running) => {
-            vec![NativeHarnessBrokerInstallStep::Kickstart]
+            vec![NativeHarnessBrokerInstallStep::Stop]
         }
-        (true, NativeHarnessBrokerObservedState::LoadedStopped) => {
-            vec![NativeHarnessBrokerInstallStep::Kickstart]
-        }
+        (true, NativeHarnessBrokerObservedState::LoadedStopped) => Vec::new(),
         (true, NativeHarnessBrokerObservedState::NotLoaded) => {
             vec![NativeHarnessBrokerInstallStep::Bootstrap]
         }
@@ -496,10 +536,7 @@ fn atomic_write_plist(
         .parent()
         .ok_or_else(|| PlatformError::Invalid("LaunchAgent path has no parent".to_owned()))?;
     ensure_owned_directory(parent, uid, true)?;
-    let temporary_path = parent.join(format!(
-        ".{NATIVE_HARNESS_BROKER_LABEL}.{}.tmp",
-        std::process::id()
-    ));
+    let temporary_path = parent.join(format!(".{}.{}.tmp", plan.label, std::process::id()));
     let result = (|| -> Result<(), PlatformError> {
         let mut temporary = OpenOptions::new()
             .write(true)
@@ -598,30 +635,6 @@ fn descriptor_fingerprint(
 }
 
 #[cfg(target_os = "macos")]
-fn wait_for_ready(
-    commands: &NativeHarnessBrokerLaunchctlPlan,
-    plan: &NativeHarnessBrokerLaunchAgentPlan,
-    uid: u32,
-    previous_descriptor: Option<[u8; 32]>,
-    timeout: Duration,
-) -> Result<bool, PlatformError> {
-    let started = Instant::now();
-    loop {
-        let descriptor = descriptor_fingerprint(plan, uid)?;
-        if observed_launchctl_state(commands)? == NativeHarnessBrokerObservedState::Running
-            && descriptor.is_some()
-            && descriptor != previous_descriptor
-        {
-            return Ok(true);
-        }
-        if started.elapsed() >= timeout {
-            return Ok(false);
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-}
-
-#[cfg(target_os = "macos")]
 fn execute_required(command: &NativeHarnessBrokerCommand) -> Result<(), PlatformError> {
     let output = run_launchctl(command)?;
     if output.status.success() {
@@ -646,7 +659,8 @@ fn broker_context(
     require_executable_file(paths.node, "packaged Node.js runtime")?;
     require_regular_nonsymlink_file(paths.host_runtime, "packaged Host Runtime")?;
     let plan = plan_native_harness_broker_launch_agent_with_environment(paths, uid, environment)?;
-    let commands = plan_native_harness_broker_launchctl(uid, &plan.plist_path)?;
+    let commands =
+        plan_native_harness_broker_launchctl_for(uid, &plan.plist_path, paths.harness_id)?;
     Ok((plan, commands))
 }
 
@@ -658,7 +672,7 @@ pub fn inspect_native_harness_broker(
     let uid = require_current_aqua_uid(paths.home)?;
     let (plan, commands) = broker_context(paths, environment)?;
     Ok(NativeHarnessBrokerStatus {
-        label: plan.label,
+        label: plan.label.clone(),
         launchctl_target: plan.launchctl_target.clone(),
         plist_path: plan.plist_path.clone(),
         observed: observed_launchctl_state(&commands)?,
@@ -678,7 +692,6 @@ pub fn install_native_harness_broker(
     let uid = require_current_aqua_uid(paths.home)?;
     let matches = plist_matches(&plan, uid)?;
     let observed = observed_launchctl_state(&commands)?;
-    let previous_descriptor = descriptor_fingerprint(&plan, require_current_aqua_uid(paths.home)?)?;
     let steps = plan_native_harness_broker_install(matches, observed);
     for step in &steps {
         match step {
@@ -688,27 +701,18 @@ pub fn install_native_harness_broker(
                 validate_secure_plist(&plan, uid)?;
                 execute_required(&commands.bootstrap)?;
             }
-            NativeHarnessBrokerInstallStep::Kickstart => {
-                validate_secure_plist(&plan, uid)?;
-                execute_required(&commands.kickstart)?;
-            }
+            NativeHarnessBrokerInstallStep::Stop => terminate_running(&commands)?,
         }
     }
-    if !wait_for_ready(
-        &commands,
-        &plan,
-        require_current_aqua_uid(paths.home)?,
-        previous_descriptor,
-        Duration::from_secs(3),
-    )? {
+    if observed_launchctl_state(&commands)? == NativeHarnessBrokerObservedState::NotLoaded {
         return Err(PlatformError::Invalid(format!(
-            "native Harness broker did not enter the running state in {}",
+            "native Harness broker was not registered in {}",
             plan.launchctl_target
         )));
     }
     Ok(match steps.as_slice() {
-        [] => NativeHarnessBrokerInstallOutcome::AlreadyRunning,
-        [NativeHarnessBrokerInstallStep::Kickstart] => NativeHarnessBrokerInstallOutcome::Started,
+        [] => NativeHarnessBrokerInstallOutcome::AlreadyRegistered,
+        [NativeHarnessBrokerInstallStep::Stop] => NativeHarnessBrokerInstallOutcome::Stopped,
         [
             NativeHarnessBrokerInstallStep::WritePlist,
             NativeHarnessBrokerInstallStep::Bootstrap,
@@ -722,11 +726,28 @@ pub fn stop_native_harness_broker(
     paths: NativeHarnessBrokerPaths<'_>,
 ) -> Result<bool, PlatformError> {
     let (_plan, commands) = broker_context(paths, &[])?;
-    if observed_launchctl_state(&commands)? == NativeHarnessBrokerObservedState::NotLoaded {
+    if observed_launchctl_state(&commands)? != NativeHarnessBrokerObservedState::Running {
         return Ok(false);
     }
-    execute_required(&commands.bootout)?;
+    terminate_running(&commands)?;
     Ok(true)
+}
+
+/// Sends SIGTERM and waits for the broker to exit; the agent stays registered.
+#[cfg(target_os = "macos")]
+fn terminate_running(commands: &NativeHarnessBrokerLaunchctlPlan) -> Result<(), PlatformError> {
+    execute_required(&commands.stop)?;
+    let started = Instant::now();
+    while observed_launchctl_state(commands)? == NativeHarnessBrokerObservedState::Running {
+        if started.elapsed() >= Duration::from_secs(10) {
+            return Err(PlatformError::Invalid(format!(
+                "native Harness broker did not stop: {}",
+                commands.stop.arguments.join(" ")
+            )));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -765,9 +786,47 @@ mod tests {
     };
 
     #[test]
+    fn non_claude_brokers_have_independent_launch_agents_and_lifecycle_targets() {
+        for harness_id in ["codebuddy", "workbuddy", "cursor-cli"] {
+            let plan = plan_native_harness_broker_launch_agent(
+                NativeHarnessBrokerPaths {
+                    harness_id,
+                    home: Path::new("/Users/test"),
+                    node: Path::new("/runtime/node"),
+                    host_runtime: Path::new("/app/host-runtime.mjs"),
+                },
+                501,
+            )
+            .expect("valid Harness");
+            let label = format!("ai.bytepioneer.codexhost.{harness_id}-broker");
+            assert_eq!(plan.label, label);
+            assert_eq!(
+                plan.program_arguments.last().map(String::as_str),
+                Some(harness_id)
+            );
+            assert!(
+                plan.descriptor_path
+                    .ends_with(format!("{harness_id}-broker-v1.json"))
+            );
+            let commands =
+                super::plan_native_harness_broker_launchctl_for(501, &plan.plist_path, harness_id)
+                    .unwrap();
+            assert_eq!(commands.bootout.arguments[1], format!("gui/501/{label}"));
+            assert!(
+                plan.plist_xml
+                    .contains(&format!("<string>{harness_id}</string>"))
+            );
+        }
+        for invalid in ["../claude-code", "", "UPPER", "-dash", "a/b"] {
+            assert!(super::native_harness_broker_label(invalid).is_err());
+        }
+    }
+
+    #[test]
     fn launch_agent_plan_runs_the_packaged_broker_only_in_aqua() {
         let plan = plan_native_harness_broker_launch_agent(
             NativeHarnessBrokerPaths {
+                harness_id: "claude-code",
                 home: Path::new("/Users/moka"),
                 node: Path::new("/Applications/codexhost.app/Contents/Resources/runtime/node"),
                 host_runtime: Path::new(
@@ -793,7 +852,7 @@ mod tests {
             ]
         );
         assert!(plan.plist_xml.contains("<string>Aqua</string>"));
-        assert!(plan.plist_xml.contains("<key>RunAtLoad</key>\n<true/>"));
+        assert!(plan.plist_xml.contains("<key>RunAtLoad</key>\n<false/>"));
         assert!(plan.plist_xml.contains("<key>ThrottleInterval</key>"));
         assert!(!plan.plist_xml.contains("KeepAlive"));
         assert!(!plan.plist_xml.contains("EnvironmentVariables"));
@@ -828,10 +887,10 @@ mod tests {
             ]
         );
         assert_eq!(
-            commands.kickstart.arguments,
+            commands.stop.arguments,
             [
-                "kickstart",
-                "-k",
+                "kill",
+                "SIGTERM",
                 "gui/501/ai.bytepioneer.codexhost.native-harness-broker"
             ]
         );
@@ -840,6 +899,7 @@ mod tests {
     #[test]
     fn launch_agent_persists_only_the_normalized_proxy_allowlist() {
         let paths = NativeHarnessBrokerPaths {
+            harness_id: "claude-code",
             home: Path::new("/Users/moka"),
             node: Path::new("/opt/codexhost/node"),
             host_runtime: Path::new("/opt/codexhost/host-runtime.mjs"),
@@ -868,10 +928,10 @@ mod tests {
     }
 
     #[test]
-    fn install_restarts_the_exact_agent_to_load_updated_runtime_code() {
+    fn install_stops_the_exact_agent_so_its_next_start_loads_updated_code() {
         assert_eq!(
             plan_native_harness_broker_install(true, NativeHarnessBrokerObservedState::Running),
-            [NativeHarnessBrokerInstallStep::Kickstart]
+            [NativeHarnessBrokerInstallStep::Stop]
         );
     }
 
@@ -888,13 +948,17 @@ mod tests {
     }
 
     #[test]
-    fn install_starts_an_exact_but_stopped_agent_without_rewriting_it() {
-        assert_eq!(
+    fn install_leaves_an_exact_registered_agent_stopped_for_on_demand_starts() {
+        assert!(
             plan_native_harness_broker_install(
                 true,
                 NativeHarnessBrokerObservedState::LoadedStopped,
-            ),
-            [NativeHarnessBrokerInstallStep::Kickstart]
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            plan_native_harness_broker_install(true, NativeHarnessBrokerObservedState::NotLoaded),
+            [NativeHarnessBrokerInstallStep::Bootstrap]
         );
     }
 
@@ -950,6 +1014,7 @@ mod tests {
         let uid = Uid::effective().as_raw();
         let plan = plan_native_harness_broker_launch_agent(
             NativeHarnessBrokerPaths {
+                harness_id: "claude-code",
                 home: &home,
                 node: Path::new("/opt/codexhost/node"),
                 host_runtime: Path::new("/opt/codexhost/host-runtime.mjs"),

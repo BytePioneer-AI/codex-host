@@ -6,8 +6,11 @@ export {
   defaultHarnessBrokerDescriptorPath,
   defaultHarnessBrokerDirectory,
   defaultHarnessBrokerSocketPath,
+  harnessBrokerLaunchAgentLabel,
+  harnessBrokerLaunchAgentPlistPath,
 } from "./paths.js";
 export {
+  HARNESS_BROKER_IDLE_TIMEOUT_MS,
   HARNESS_BROKER_MAX_FRAME_BYTES,
   HARNESS_BROKER_MAX_PENDING_REQUESTS,
   HARNESS_BROKER_PROTOCOL_VERSION,

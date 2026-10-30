@@ -51,6 +51,29 @@ pub fn detach_from_terminal() -> Result<(), PlatformError> {
     Ok(())
 }
 
+/// Start a child as the leader of a new session without a controlling terminal.
+///
+/// Like `process_group(0)`, the child becomes its own process-group leader
+/// (PGID == PID), so group-based ownership and cleanup are unchanged. A new
+/// process group alone is still a background job of the invoking terminal:
+/// an interactive shell spawned inside it (for example to resolve the login
+/// environment) opens `/dev/tty` and stops its whole group with SIGTTIN or
+/// SIGTTOU. Without a controlling terminal, job control cannot suspend it.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+pub(crate) fn start_in_new_session(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+
+    // SAFETY: the hook runs in the child between fork and exec and only calls
+    // setsid(2), which is async-signal-safe and does not allocate. A freshly
+    // forked child is never a process-group leader, so setsid cannot fail
+    // with EPERM here; any error aborts the spawn instead of leaving the child
+    // attached to the terminal.
+    unsafe {
+        command.pre_exec(|| nix::unistd::setsid().map(|_| ()).map_err(io::Error::from));
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub fn detach_from_terminal() -> Result<(), PlatformError> {
     use windows::Win32::System::Console::SetConsoleCtrlHandler;

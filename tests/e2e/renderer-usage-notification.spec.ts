@@ -2,9 +2,19 @@ import { expect, test, type Page } from "@playwright/test";
 import { build } from "esbuild";
 import path from "node:path";
 
+import { tailwindEsbuildPlugin } from "../../packages/renderer-extension/scripts/tailwind-esbuild-plugin.mjs";
+
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
 if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecutable } });
+
+test.beforeEach(async ({ page }) => {
+  // The Renderer reads localStorage; about:blank does not provide an origin.
+  await page.route("http://codexhost.test/", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><body></body>" }),
+  );
+  await page.goto("http://codexhost.test/");
+});
 
 const { outputFiles } = await build({
   stdin: {
@@ -62,7 +72,10 @@ const { outputFiles } = await build({
       const send = document.createElement("button");
       send.type = "submit";
       toolbar.append(context, send);
-      composer.append(editor, toolbar);
+      const portal = document.createElement("div");
+      portal.setAttribute("data-above-composer-portal", "true");
+      portal.setAttribute("data-above-composer-conversation-id", threadId);
+      composer.append(editor, toolbar, portal);
       document.body.append(composer);
 
       const threadInspection = {
@@ -92,6 +105,7 @@ const { outputFiles } = await build({
         undefined,
         () => true,
         {
+          listHarnessPlugins: async () => ({ plugins: [{ id: "pi", name: "Pi", version: "1.0.0" }] }),
           inspectHarness: async () => inspection,
           inspectThread,
           forkThread: unavailable,
@@ -128,7 +142,8 @@ const { outputFiles } = await build({
   format: "iife",
   platform: "browser",
   target: "es2024",
-  loader: { ".css": "text", ".png": "dataurl" },
+  loader: { ".css": "text", ".png": "dataurl", ".svg": "dataurl" },
+  plugins: [tailwindEsbuildPlugin()],
   write: false,
 });
 
@@ -150,11 +165,11 @@ test("applies pushed Usage to the matching Thread without a native context mutat
   await page.addScriptTag({ content: browserBundle });
 
   const context = page.locator('[aria-label="Context usage: 20%"]');
-  await expect(page.locator("[data-codexhost-usage-control]")).toHaveText("CH 27% · $5.634");
+  await expect(page.locator("[data-codexhost-usage-control]")).toHaveText("CH 27% · $5.63");
 
   await pushUsage(page);
 
-  await expect(page.locator("[data-codexhost-usage-control]")).toHaveText("CH 97.9% · $5.913");
+  await expect(page.locator("[data-codexhost-usage-control]")).toHaveText("CH 97.9% · $5.91");
   await expect(context).toHaveAttribute("aria-label", "Context usage: 20%");
 });
 
@@ -164,7 +179,7 @@ test("does not let an older Thread inspection overwrite pushed Usage", async ({ 
   await page.addScriptTag({ content: browserBundle });
 
   await pushUsage(page);
-  await expect(page.locator("[data-codexhost-usage-control]")).toHaveText("CH 97.9% · $5.913");
+  await expect(page.locator("[data-codexhost-usage-control]")).toHaveText("CH 97.9% · $5.91");
   await page.evaluate(() => {
     const resolve = Reflect.get(globalThis, "resolveUsageInspection");
     if (typeof resolve !== "function") throw new Error("Usage inspection resolver is unavailable");
@@ -172,5 +187,5 @@ test("does not let an older Thread inspection overwrite pushed Usage", async ({ 
   });
   await page.waitForTimeout(50);
 
-  await expect(page.locator("[data-codexhost-usage-control]")).toHaveText("CH 97.9% · $5.913");
+  await expect(page.locator("[data-codexhost-usage-control]")).toHaveText("CH 97.9% · $5.91");
 });

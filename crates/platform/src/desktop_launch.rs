@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 #[cfg(not(target_os = "windows"))]
@@ -42,7 +42,10 @@ const REMOTE_PROFILE_ONLY_ENVIRONMENT: [&str; 3] = [
 
 fn remove_codexhost_environment(command: &mut Command, names: impl IntoIterator<Item = OsString>) {
     for name in names {
-        if name == CODEX_CLI_PATH_ENV || name.to_string_lossy().starts_with("CODEXHOST_") {
+        if name == CODEX_CLI_PATH_ENV
+            || (cfg!(target_os = "windows") && name == "CODEX_NODE_REPL_PATH")
+            || name.to_string_lossy().starts_with("CODEXHOST_")
+        {
             command.env_remove(name);
         }
     }
@@ -65,7 +68,132 @@ fn managed_desktop_environment(
         ),
     ];
     environment.extend_from_slice(additional_environment);
+    #[cfg(target_os = "windows")]
+    if let Some(runtime) =
+        managed_node_repl_override(&shim_path, std::env::var_os("CODEX_NODE_REPL_PATH"))
+    {
+        environment.push((OsString::from("CODEX_NODE_REPL_PATH"), runtime));
+    }
     Ok(environment)
+}
+
+#[cfg(target_os = "windows")]
+fn managed_node_repl_override(shim: &Path, existing: Option<OsString>) -> Option<OsString> {
+    const WRAPPER: &str = "codexhost-node-repl.exe";
+    if existing.as_ref().is_some_and(|value| {
+        !Path::new(value)
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(WRAPPER))
+    }) {
+        // AppX activation does not inherit the launcher's process environment.
+        // Forward custom values (including empty ones), not just non-overrides.
+        return existing;
+    }
+    canonical_existing_file(&shim.with_file_name(WRAPPER))
+        .ok()
+        .map(|path| path.into_os_string())
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod node_repl_override_tests {
+    use super::*;
+
+    #[test]
+    fn appx_environment_preserves_explicit_node_repl_override() {
+        const CHILD: &str = "CODEXHOST_TEST_APPX_NODE_REPL_ENV";
+        if std::env::var_os(CHILD).is_none() {
+            // Isolate process environment from parallel tests; never mutate the
+            // environment of the multi-threaded test runner.
+            for value in ["C:/custom tools/工具/node_repl.exe", ""] {
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        "desktop_launch::node_repl_override_tests::appx_environment_preserves_explicit_node_repl_override",
+                        "--nocapture",
+                    ])
+                    .env(CHILD, "1")
+                    .env("CODEX_NODE_REPL_PATH", value);
+                super::super::configure_background_command(&mut command);
+                let output = command.output().expect("run isolated environment test");
+                assert!(
+                    output.status.success(),
+                    "AppX override {value:?} was not preserved: {}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
+            }
+            return;
+        }
+
+        let directory =
+            std::env::temp_dir().join(format!("codexhost-appx-node-env-{}", std::process::id()));
+        std::fs::create_dir(&directory).expect("isolated AppX fixture");
+        let shim = directory.join("codexhost-shim.exe");
+        std::fs::write(&shim, b"fixture").unwrap();
+        std::fs::write(directory.join("codexhost-node-repl.exe"), b"fixture").unwrap();
+        let installation = DesktopInstallation {
+            identity: DesktopIdentity::WindowsPackage {
+                package_name: "fixture".into(),
+                package_family_name: "fixture".into(),
+                appx_activation: Some(super::super::WindowsAppxActivationIdentity {
+                    package_full_name: "fixture".into(),
+                    app_user_model_id: "fixture!App".into(),
+                }),
+            },
+            version: "1.0.0".into(),
+            build: "1".into(),
+            asar_integrity: String::new(),
+            install_root: directory.clone(),
+            desktop_launcher: directory.join("Desktop.exe"),
+            desktop_executable: directory.join("Desktop.exe"),
+            packaged_codex_cli: directory.join("codex.exe"),
+            executable_codex_cli: directory.join("codex.exe"),
+        };
+        let environment = managed_desktop_environment(&installation, &shim, &[]).unwrap();
+        let block = super::super::windows_desktop::windows_environment_block(&environment)
+            .expect("serialize the environment passed to AppX");
+        std::fs::remove_dir_all(&directory).unwrap();
+        let decoded = String::from_utf16(&block).unwrap();
+        let actual = decoded
+            .split('\0')
+            .filter(|entry| entry.starts_with("CODEX_NODE_REPL_PATH="))
+            .collect::<Vec<_>>();
+        let expected = format!(
+            "CODEX_NODE_REPL_PATH={}",
+            std::env::var("CODEX_NODE_REPL_PATH").unwrap()
+        );
+        assert_eq!(actual, [expected.as_str()]);
+    }
+
+    #[test]
+    fn uses_packaged_wrapper_and_preserves_user_override() {
+        let directory =
+            std::env::temp_dir().join(format!("codexhost-tool-override-{}", std::process::id()));
+        std::fs::create_dir(&directory).expect("isolated launcher fixture");
+        let shim = directory.join("codexhost-shim.exe");
+        let wrapper = directory.join("codexhost-node-repl.exe");
+        assert!(managed_node_repl_override(&shim, None).is_none());
+        std::fs::write(&wrapper, b"fixture").unwrap();
+        let expected = Some(canonical_existing_file(&wrapper).unwrap().into_os_string());
+        assert_eq!(managed_node_repl_override(&shim, None), expected);
+        assert_eq!(
+            managed_node_repl_override(
+                &shim,
+                Some("C:/old/libexec/codexhost-node-repl.exe".into())
+            ),
+            expected
+        );
+        assert_eq!(
+            managed_node_repl_override(&shim, Some("C:/custom/node_repl.exe".into())),
+            Some("C:/custom/node_repl.exe".into())
+        );
+        assert_eq!(
+            managed_node_repl_override(&shim, Some(OsString::new())),
+            Some(OsString::new())
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 fn configure_managed_desktop_environment(
@@ -73,6 +201,12 @@ fn configure_managed_desktop_environment(
     inherited: impl IntoIterator<Item = (OsString, OsString)>,
     managed: &[(OsString, OsString)],
 ) {
+    // Desktop is a local GUI session, even when launched over SSH. Otherwise its
+    // child shells can reapply the remote bootstrap and overwrite the Host paths.
+    // Keep SSH_AUTH_SOCK so Git and other tools can still use the user's agent.
+    for name in ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] {
+        command.env_remove(name);
+    }
     let inherited = inherited.into_iter().collect::<Vec<_>>();
     let inherited_remote_profile = inherited
         .iter()
@@ -148,26 +282,19 @@ pub fn launch_stock_desktop(
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-fn latest_release_command() -> Command {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn external_url_command(url: &str) -> Command {
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = Command::new("/usr/bin/open");
-        command.arg(CODEXHOST_RELEASES_LATEST_URL);
-        command
-    };
-
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = Command::new("explorer.exe");
-        command.arg(CODEXHOST_RELEASES_LATEST_URL);
+        command.arg(url);
         command
     };
 
     #[cfg(target_os = "linux")]
     let mut command = {
         let mut command = Command::new("xdg-open");
-        command.arg(CODEXHOST_RELEASES_LATEST_URL);
+        command.arg(url);
         command
     };
 
@@ -175,18 +302,33 @@ fn latest_release_command() -> Command {
     command
 }
 
-pub fn open_latest_codexhost_release() -> Result<(), PlatformError> {
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    return Err(PlatformError::Unsupported(
-        "opening the codexhost Releases page is supported on Windows, macOS, and Linux only",
-    ));
+#[cfg(target_os = "windows")]
+pub fn open_external_url(url: &str) -> Result<(), PlatformError> {
+    super::windows_ui::open_external_url(url).map_err(PlatformError::Io)
+}
 
-    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-    latest_release_command().spawn()?.wait()?;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn open_external_url(url: &str) -> Result<(), PlatformError> {
+    if !external_url_command(url).spawn()?.wait()?.success() {
+        return Err(PlatformError::Invalid(
+            "the operating-system URL opener exited unsuccessfully".into(),
+        ));
+    }
     Ok(())
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub fn open_external_url(_url: &str) -> Result<(), PlatformError> {
+    Err(PlatformError::Unsupported(
+        "opening an external URL is supported on Windows, macOS, and Linux only",
+    ))
+}
+
+pub fn open_latest_codexhost_release() -> Result<(), PlatformError> {
+    open_external_url(CODEXHOST_RELEASES_LATEST_URL)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn configure_external_command(command: &mut Command) {
     remove_codexhost_environment(command, std::env::vars_os().map(|(name, _)| name));
     command
@@ -248,7 +390,7 @@ fn desktop_launch_command(
         let mut command = Command::new(program);
         command.args(additional_arguments);
         #[cfg(target_os = "linux")]
-        command.process_group(0);
+        super::background::start_in_new_session(&mut command);
         command
     };
 
@@ -806,7 +948,7 @@ mod tests {
     use super::desktop_launch_command;
     use super::{
         CODEXHOST_RELEASES_LATEST_URL, DesktopSession, configure_managed_desktop_environment,
-        latest_release_command, remove_codexhost_environment,
+        external_url_command, remove_codexhost_environment,
     };
     #[cfg(target_os = "linux")]
     use super::{
@@ -927,6 +1069,20 @@ mod tests {
         )
         .expect("launch Desktop executable directly");
         assert_eq!(session.root_snapshot().executable, desktop);
+        // A background process group that keeps the invoking terminal can be
+        // stopped by job control (issue #167); the Desktop must lead its own
+        // session, which also keeps PGID == PID for group-based ownership.
+        let root = nix::unistd::Pid::from_raw(
+            i32::try_from(session.root_snapshot().id).expect("Desktop PID fits i32"),
+        );
+        assert_eq!(
+            nix::unistd::getsid(Some(root)).expect("read Desktop session"),
+            root
+        );
+        assert_eq!(
+            session.root_snapshot().process_group_id,
+            session.root_snapshot().id
+        );
         session
             .shutdown(Duration::from_secs(2))
             .expect("stop fake Desktop");
@@ -1125,7 +1281,7 @@ mod tests {
 
     #[test]
     fn latest_release_uses_only_the_fixed_github_url() {
-        let command = latest_release_command();
+        let command = external_url_command(CODEXHOST_RELEASES_LATEST_URL);
         #[cfg(target_os = "macos")]
         assert_eq!(command.get_program(), "/usr/bin/open");
         #[cfg(target_os = "linux")]
@@ -1262,6 +1418,55 @@ mod tests {
         assert!(!environment.contains("CODEX_INSTALL_DIR="));
         assert!(!environment.contains("/remote/data"));
         assert!(!environment.contains("/remote/runtime"));
+    }
+
+    #[test]
+    fn managed_launch_does_not_reactivate_remote_profile_in_child_shell() {
+        for runtime in [
+            "/source/packages/host-runtime/dist/main.js",
+            "/local/app/host-runtime.mjs",
+        ] {
+            for ssh_marker in ["SSH_CONNECTION", "SSH_CLIENT"] {
+                let inherited = [
+                    (
+                        OsString::from(ssh_marker),
+                        OsString::from("synthetic-ssh-session"),
+                    ),
+                    (OsString::from("SSH_TTY"), OsString::from("/dev/ttys001")),
+                    (
+                        OsString::from("SSH_AUTH_SOCK"),
+                        OsString::from("/local/agent.sock"),
+                    ),
+                ];
+                let mut command = Command::new("/bin/sh");
+                command.env_clear().envs(inherited.clone());
+                configure_managed_desktop_environment(
+                    &mut command,
+                    inherited,
+                    &[(
+                        OsString::from("CODEXHOST_HOST_RUNTIME_PATH"),
+                        OsString::from(runtime),
+                    )],
+                );
+                // Match the remote bootstrap guard evaluated by Desktop's child shell.
+                command.args([
+                    "-c",
+                    r#"
+                    if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_CLIENT:-}" ]; then
+                        export CODEXHOST_HOST_RUNTIME_PATH=/remote/app/host-runtime.mjs
+                    fi
+                    printf '%s\n' "$CODEXHOST_HOST_RUNTIME_PATH" "${SSH_TTY:-}" "$SSH_AUTH_SOCK"
+                "#,
+                ]);
+                let output = command.output().expect("run managed child shell");
+                assert!(output.status.success());
+                assert_eq!(
+                    String::from_utf8(output.stdout).expect("UTF-8 environment"),
+                    format!("{runtime}\n\n/local/agent.sock\n"),
+                    "remote profile reactivated through {ssh_marker}",
+                );
+            }
+        }
     }
 
     #[test]

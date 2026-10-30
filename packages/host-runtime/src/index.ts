@@ -1,10 +1,3 @@
-import { packageMetadata as claudeCodeAdapter } from "@codexhost/adapter-claude-code";
-import { packageMetadata as deepSeekHarnessAdapter } from "@codexhost/adapter-deepseek-harness";
-import { packageMetadata as grokAdapter } from "@codexhost/adapter-grok";
-import { packageMetadata as openCodeAdapter } from "@codexhost/adapter-opencode";
-import { packageMetadata as qwenCodeAdapter } from "@codexhost/adapter-qwen-code";
-import { packageMetadata as piAdapter } from "@codexhost/adapter-pi";
-import { packageMetadata as ompAdapter } from "@codexhost/adapter-omp";
 import { packageMetadata as desktopControl } from "@codexhost/desktop-control";
 import { packageMetadata as harnessAdapter } from "@codexhost/harness-adapter";
 import { packageMetadata as harnessBroker } from "@codexhost/harness-broker";
@@ -13,25 +6,22 @@ import { packageMetadata as protocolCore } from "@codexhost/protocol-core";
 import { packageMetadata as sharedContracts } from "@codexhost/shared-contracts";
 import { packageMetadata as updateManager } from "@codexhost/update-manager";
 
-export {
-  CLAUDE_CODE_COMMAND_ENV,
-  DEEPSEEK_HARNESS_COMMAND_ENV,
-  DEEPSEEK_HARNESS_ENDPOINT_ENV,
-  GROK_COMMAND_ENV,
-  OMP_COMMAND_ENV,
-  QWEN_CODE_COMMAND_ENV,
-  OPENCODE_COMMAND_ENV,
-  PI_COMMAND_ENV,
-  createExternalHarnessAdapters,
-  prefetchAntigravityModelCatalog,
-  prefetchClaudeCodeModelCatalog,
-} from "./adapter-composition.js";
+export { loadHarnessPlugins } from "./harness-plugin-loader.js";
+export type {
+  LoadHarnessPluginsOptions,
+  HarnessPluginDiagnostic,
+} from "./harness-plugin-loader.js";
+export { HarnessPluginRegistry } from "./harness-plugin-registry.js";
+export { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 export {
   AppServerHost,
   classifyCreateRequestRoute,
   officialEnvironment,
 } from "./app-server-host.js";
 export type { AppServerHostOptions } from "./app-server-host.js";
+export type { CodexAccountControl } from "./account/codex-account-control.js";
+export { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
+export { CodexRuntime } from "./codex-runtime/codex-runtime.js";
 export {
   createRemoteAppServerWebSocketListener,
   isRemoteUnixListenerInvocation,
@@ -50,6 +40,7 @@ export { startDelegationControlServer } from "./delegation-control-server.js";
 export { installDelegationSkills, CODEXHOST_DELEGATION_SKILL } from "./delegation-skill.js";
 export {
   DELEGATION_CLI_PATH_ENV,
+  DELEGATION_CLI_NODE_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
   DELEGATION_RUNTIME_TOKEN_ENV,
   DELEGATION_THREAD_ID_ENV,
@@ -118,17 +109,10 @@ export const packageMetadata = {
   name: "@codexhost/host-runtime",
   dependencies: [
     protocolCore.name,
-    claudeCodeAdapter.name,
-    deepSeekHarnessAdapter.name,
     desktopControl.name,
     harnessAdapter.name,
     harnessBroker.name,
-    grokAdapter.name,
     mappingStore.name,
-    piAdapter.name,
-    qwenCodeAdapter.name,
-    ompAdapter.name,
-    openCodeAdapter.name,
     sharedContracts.name,
     updateManager.name,
   ],

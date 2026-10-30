@@ -1,9 +1,159 @@
 import { z } from "zod";
+export * from "./delegation-read.js";
+export * from "./credential-imports.js";
+export * from "./harness-display-settings.js";
+export * from "./harness-presentation.js";
+export * from "./account-credits-presentation.js";
+export * from "./model-price-overrides.js";
+export * from "./usage-statistics.js";
+export * from "./thread-prewarm.js";
+export * from "./thread-questions.js";
+export {
+  CONSOLE_HOST_METHODS,
+  CONSOLE_OPEN_METHOD,
+  isConsoleHostMethod,
+  type ConsoleHostMethod,
+  consoleAnnouncementSchema,
+  type ConsoleAnnouncement,
+  consoleOpenParamsSchema,
+  consoleOpenResultSchema,
+  type ConsoleOpenResult,
+} from "./console.js";
 import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
+export {
+  IDLE_RELEASE_SETTINGS_METHOD,
+  IDLE_RELEASE_TIMEOUT_MINUTES_MAX,
+  IDLE_RELEASE_TIMEOUT_MINUTES_MIN,
+  DEFAULT_IDLE_RELEASE_SETTINGS,
+  idleReleaseSettingsSchema,
+  type IdleReleaseSettings,
+} from "./idle-release.js";
+export {
+  LOADED_SESSIONS_METHOD,
+  loadedSessionsSchema,
+  type LoadedSession,
+} from "./loaded-sessions.js";
+export {
+  THREAD_MANUAL_COMPACTION_STARTED_METHOD,
+  threadManualCompactionStartedSchema,
+  type ThreadManualCompactionStarted,
+} from "./manual-compaction.js";
 
+export {
+  accountBalanceSnapshotSchema,
+  harnessAccountSnapshotSchema,
+  harnessAccountSourceSchema,
+  harnessAccountSourceListParamsSchema,
+  harnessAccountSourceListResultSchema,
+  harnessAccountInspectParamsSchema,
+  harnessAccountInspectResultSchema,
+  harnessAccountListParamsSchema,
+  harnessAccountListResultSchema,
+} from "./harness-accounts.js";
+export type {
+  AccountBalanceSnapshot,
+  HarnessAccountSnapshot,
+  HarnessAccountSource,
+  HarnessAccountSourceListResult,
+  HarnessAccountInspectParams,
+  HarnessAccountInspectResult,
+  HarnessAccountListParams,
+  HarnessAccountListResult,
+} from "./harness-accounts.js";
+
+export {
+  HARNESS_PLUGIN_ROUTE_PREFIX,
+  decodeHarnessPluginRoute,
+  encodeHarnessPluginRoute,
+  harnessPluginRouteSchema,
+} from "./harness-route.js";
+export type { HarnessPluginRoute } from "./harness-route.js";
+export {
+  HARNESS_PLUGIN_API_VERSION,
+  HARNESS_PLUGIN_ICON_MAX_BYTES,
+  HARNESS_PLUGIN_LIMIT,
+  HARNESS_PLUGIN_MANIFEST_MAX_BYTES,
+  harnessPluginConfigurationSchema,
+  harnessPluginDescriptorSchema,
+  harnessPluginIconSchema,
+  harnessPluginIdSchema,
+  harnessPluginListParamsSchema,
+  harnessPluginListResultSchema,
+  harnessPluginManifestSchema,
+} from "./harness-plugins.js";
+export type {
+  HarnessPluginConfiguration,
+  HarnessPluginDescriptor,
+  HarnessPluginListResult,
+  HarnessPluginManifest,
+} from "./harness-plugins.js";
+export * from "./harness-launch-settings.js";
+export * from "./harness-installation.js";
 export { codexhostErrorSchema } from "./errors.js";
+export {
+  codexAccountUsageParamsSchema,
+  codexAccountUsageResultSchema,
+  codexAccountChangedSchema,
+  codexAccountPhaseSchema,
+  codexAccountListResultSchema,
+  codexAccountPlanTypeSchema,
+  codexAccountSchema,
+} from "./codex-accounts.js";
+export type {
+  CodexAccountUsageParams,
+  CodexAccountUsageResult,
+  CodexAccountChanged,
+  CodexAccountPhase,
+  CodexAccountListResult,
+  CodexAccountPlanType,
+  CodexAccountSummary,
+} from "./codex-accounts.js";
 export { REASONING_TRANSCRIPT_COMMAND } from "./reasoning-transcript.js";
 export type { CodexhostError } from "./errors.js";
+export {
+  HARNESS_SESSION_IMPORT_CWD_MAX_LENGTH,
+  HARNESS_SESSION_IMPORT_ID_MAX_LENGTH,
+  HARNESS_SESSION_IMPORT_LIST_MAX_LENGTH,
+  HARNESS_SESSION_IMPORT_TITLE_MAX_LENGTH,
+  HARNESS_SESSION_IMPORT_UPDATED_AT_MAX,
+  harnessSessionImportCandidateSchema,
+  HARNESS_SESSION_IMPORT_DEFAULT_PAGE_SIZE,
+  harnessSessionImportIdSchema,
+  harnessSessionImportSourcesParamsSchema,
+  harnessSessionImportSourcesResultSchema,
+  harnessSessionListParamsSchema,
+  harnessSessionListResultSchema,
+  harnessSessionImportParamsSchema,
+  harnessSessionImportResultSchema,
+} from "./harness-session-import.js";
+export type {
+  HarnessSessionImportCandidate,
+  HarnessSessionImportSourcesResult,
+  HarnessSessionListParams,
+  HarnessSessionListResult,
+  HarnessSessionImportParams,
+  HarnessSessionImportResult,
+} from "./harness-session-import.js";
+export {
+  DEEPSEEK_MODERN_HOST_THREAD_ID_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_CWD_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_ID_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_LIST_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_TITLE_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_UPDATED_AT_MAX,
+  deepSeekModernSessionCandidateSchema,
+  deepSeekModernSessionImportParamsSchema,
+  deepSeekModernSessionImportResultSchema,
+  deepSeekModernSessionListParamsSchema,
+  deepSeekModernSessionListResultSchema,
+} from "./deepseek-modern-sessions.js";
+export type {
+  DeepSeekModernSessionCandidate,
+  DeepSeekModernSessionImportParams,
+  DeepSeekModernSessionImportResult,
+  DeepSeekModernSessionListParams,
+  DeepSeekModernSessionListResult,
+} from "./deepseek-modern-sessions.js";
 export {
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
@@ -34,6 +184,7 @@ export {
   harnessInspectParamsSchema,
   harnessInspectionSchema,
   harnessModelCatalogSchema,
+  catalogModelForRef,
   harnessModelRefIdSchema,
   harnessModelRefSchema,
   harnessModelSchema,
@@ -43,6 +194,9 @@ export {
   harnessSessionCapabilitiesSchema,
   harnessThinkingOptionIdSchema,
   harnessThinkingOptionSchema,
+  harnessWebUiCapabilitySchema,
+  harnessWebUiOpenParamsSchema,
+  harnessWebUiOpenResultSchema,
   permissionModeFixedAtCreate,
   threadInspectionParamsSchema,
   threadInspectionSchema,
@@ -50,6 +204,10 @@ export {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  threadSteeringInspectParamsSchema,
+  threadSteeringInspectResultSchema,
+  THREAD_STEER_DELIVERY_PARAM,
+  threadSteerDeliverySchema,
   threadOwnershipSchema,
 } from "./harness-models.js";
 export type {
@@ -64,6 +222,9 @@ export type {
   HarnessSessionCapabilities,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
+  HarnessWebUiCapability,
+  HarnessWebUiOpenParams,
+  HarnessWebUiOpenResult,
   ThreadInspection,
   ThreadInspectionParams,
   ThreadModelSelectParams,
@@ -71,10 +232,13 @@ export type {
   ThreadOwnership,
   ThreadOwnershipListParams,
   ThreadOwnershipListResult,
+  ThreadSteeringInspectResult,
+  ThreadSteerDelivery,
 } from "./harness-models.js";
 export {
   harnessCommandCatalogSchema,
   harnessCommandDescriptorSchema,
+  harnessCommandsInspectParamsSchema,
   threadCommandExecuteParamsSchema,
   threadCommandExecuteResultSchema,
   threadCommandsInspectParamsSchema,
@@ -82,19 +246,23 @@ export {
 export type {
   HarnessCommandCatalog,
   HarnessCommandDescriptor,
+  HarnessCommandsInspectParams,
   ThreadCommandExecuteParams,
   ThreadCommandExecuteResult,
   ThreadCommandsInspectParams,
 } from "./harness-commands.js";
 export {
   accountCreditsProductUsageSchema,
+  accountResetCreditsSchema,
   accountCreditsSnapshotSchema,
+  composerIndicatorsSchema,
   threadUsageInspectionParamsSchema,
   threadUsageInspectionSchema,
   threadUsageSnapshotSchema,
 } from "./thread-usage.js";
 export type {
   AccountCreditsSnapshot,
+  AccountResetCredits,
   ThreadUsageInspection,
   ThreadUsageInspectionParams,
   ThreadUsageSnapshot,
@@ -176,3 +344,40 @@ export const packageMetadata = {
   name: "@codexhost/shared-contracts",
   contractVersion: WORKSPACE_CONTRACT_VERSION,
 } as const;
+
+export {
+  DELEGATION_MENTION_PATH_PREFIX,
+  HARNESS_COMMAND_MENTION_PATH_PREFIX,
+  delegationMentionPath,
+  harnessCommandMentionPath,
+  restoreHarnessCommandMentions,
+  formatDelegationMentionLink,
+  stripDelegationMentions,
+  type DelegationMention,
+  type DelegationMentionRewrite,
+} from "./delegation-mention.js";
+
+export {
+  REMOTE_SSH_SETUP_METHOD,
+  remoteSshSetupParamsSchema,
+  remoteSshSetupResultSchema,
+  type RemoteSshSetupParams,
+  type RemoteSshSetupResult,
+  RUNTIME_STATUS_METHOD,
+  REMOTE_UPDATE_METHOD,
+  runtimeStatusSchema,
+  remoteUpdateParamsSchema,
+  type RuntimeStatus,
+  type RemoteUpdateParams,
+} from "./remote-runtime.js";
+export {
+  CONSOLE_REMOTE_CONNECTIONS_METHOD,
+  codexSshConnectionSchema,
+  codexSshDraftSchema,
+  remoteConnectionsRequestSchema,
+  remoteConnectionsReplySchema,
+  type RemoteConnectionsRequest,
+  type RemoteConnectionsReply,
+  type CodexSshConnection,
+  type CodexSshDraft,
+} from "./remote-connections.js";

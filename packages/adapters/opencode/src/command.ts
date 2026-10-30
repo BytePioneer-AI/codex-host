@@ -65,10 +65,11 @@ export function openCodeServerInvocation(
   executable: string,
   environment: NodeJS.ProcessEnv,
   platform: NodeJS.Platform = process.platform,
+  port = 0,
 ) {
   return commandInvocation(
     executable,
-    ["serve", "--hostname=127.0.0.1", "--port=0"],
+    ["serve", "--hostname=127.0.0.1", `--port=${port}`],
     environment,
     platform,
   );

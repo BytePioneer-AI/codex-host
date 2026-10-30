@@ -1,4 +1,7 @@
 import {
+  decodeHarnessPluginRoute,
+  encodeHarnessPluginRoute,
+  harnessPluginIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -14,8 +17,6 @@ export const CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID = "codexhost/claude-code-nati
 export const CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX = `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID = "codexhost/deepseek-harness-native";
 export const DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX = `${DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID}@`;
-export const QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID = "codexhost/qwen-code-native";
-export const QWEN_CODE_NATIVE_TRANSPORT_MODEL_PREFIX = `${QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const OPENCODE_NATIVE_TRANSPORT_MODEL_ID = "codexhost/opencode-native";
 export const OPENCODE_NATIVE_TRANSPORT_MODEL_PREFIX = `${OPENCODE_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const GROK_NATIVE_TRANSPORT_MODEL_ID = "codexhost/grok-native";
@@ -28,21 +29,20 @@ export const EXTERNAL_HARNESS_IDS = [
   "pi",
   "claude-code",
   "deepseek-harness",
-  "qwen-code",
   "opencode",
   "grok",
   "omp",
   "antigravity",
 ] as const;
 
-export type ExternalHarnessId = (typeof EXTERNAL_HARNESS_IDS)[number];
+/** Open identity space; the Host Registry, not this legacy list, validates installation. */
+export type ExternalHarnessId = string;
 export type RoutedHarnessId = "codex" | ExternalHarnessId;
 
-const transportModelByHarness = {
+const transportModelByHarness: Readonly<Record<string, string>> = {
   pi: PI_NATIVE_TRANSPORT_MODEL_ID,
   "claude-code": CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   "deepseek-harness": DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
-  "qwen-code": QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID,
   opencode: OPENCODE_NATIVE_TRANSPORT_MODEL_ID,
   grok: GROK_NATIVE_TRANSPORT_MODEL_ID,
   omp: OMP_NATIVE_TRANSPORT_MODEL_ID,
@@ -56,23 +56,24 @@ const harnessByTransportModel = new Map<string, ExternalHarnessId>(
   ]),
 );
 
-export type CreateRoute =
-  | { harnessId: "codex"; transportModelId: string }
-  | {
-      harnessId: ExternalHarnessId;
-      routeMode: "native";
-      transportModelId: string;
-      model?: HarnessModelRef;
-      thinkingOptionId?: HarnessThinkingOptionId;
-      permissionModeId?: HarnessPermissionModeId;
-    };
+export interface CreateRoute {
+  harnessId: RoutedHarnessId;
+  routeMode?: "native";
+  transportModelId: string;
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
+}
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function transportModelIdForHarness(harnessId: ExternalHarnessId): string {
-  return transportModelByHarness[harnessId];
+  const legacy = Object.hasOwn(transportModelByHarness, harnessId)
+    ? transportModelByHarness[harnessId]
+    : undefined;
+  return legacy ?? encodeHarnessPluginRoute({ harnessId: harnessPluginIdSchema.parse(harnessId) });
 }
 
 export interface ExternalConfigurationSelection {
@@ -444,52 +445,6 @@ export function decodeClaudeTransportSelection(
   };
 }
 
-export function encodeQwenCodeTransportModel(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-): string {
-  if (!model) {
-    if (permissionModeId) {
-      throw new Error("Qwen Code transport Permission Mode requires a Model Ref");
-    }
-    return QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionModeId = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  return `${QWEN_CODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionModeId ? `@${parsedPermissionModeId}` : ""}`;
-}
-
-export function decodeQwenCodeTransportSelection(
-  value: unknown,
-): ExternalConfigurationSelection | null {
-  if (value === QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID) return {};
-  if (typeof value !== "string" || !value.startsWith(QWEN_CODE_NATIVE_TRANSPORT_MODEL_PREFIX)) {
-    return null;
-  }
-  const components = value.slice(QWEN_CODE_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length < 1 || components.length > 2) {
-    throw new Error("Qwen Code transport configuration has an invalid component count");
-  }
-  const [modelId, permissionModeId] = components;
-  if (components.length === 2 && !permissionModeId) {
-    throw new Error("Qwen Code transport configuration has an empty Permission Mode");
-  }
-  const model = harnessModelRefSchema.safeParse({ id: modelId });
-  if (!model.success) throw new Error("Qwen Code transport Model contains an invalid Model Ref");
-  const permissionMode = permissionModeId
-    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
-    : null;
-  if (permissionMode && !permissionMode.success) {
-    throw new Error("Qwen Code transport contains an invalid Permission Mode");
-  }
-  return {
-    model: model.data,
-    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
-  };
-}
-
 export function encodeDeepSeekHarnessTransportModel(
   model?: HarnessModelRef,
   permissionModeId?: HarnessPermissionModeId,
@@ -545,50 +500,25 @@ export function encodeExternalTransportSelection(
   harnessId: ExternalHarnessId,
   selection: ExternalConfigurationSelection,
 ): string {
-  switch (harnessId) {
-    case "pi":
-      return encodePiTransportModel(selection.model, selection.thinkingOptionId);
-    case "claude-code":
-      return encodeClaudeTransportModel(
-        selection.model,
-        selection.permissionModeId,
-        selection.thinkingOptionId,
-      );
-    case "deepseek-harness":
-      return encodeDeepSeekHarnessTransportModel(selection.model, selection.permissionModeId);
-    case "qwen-code":
-      return encodeQwenCodeTransportModel(selection.model, selection.permissionModeId);
-    case "opencode":
-      return encodeOpenCodeTransportModel(
-        selection.model,
-        selection.permissionModeId,
-        selection.thinkingOptionId,
-      );
-    case "grok":
-      return encodeGrokTransportModel(
-        selection.model,
-        selection.permissionModeId,
-        selection.thinkingOptionId,
-      );
-    case "omp":
-      return encodeOmpTransportModel(
-        selection.model,
-        selection.thinkingOptionId,
-        selection.permissionModeId,
-      );
-    case "antigravity":
-      return encodeAntigravityTransportModel(
-        selection.model,
-        selection.permissionModeId,
-        selection.thinkingOptionId,
-      );
-  }
+  return encodeHarnessPluginRoute({
+    harnessId: harnessPluginIdSchema.parse(harnessId),
+    ...selection,
+  });
 }
 
 export function decodeExternalTransportSelection(
   harnessId: ExternalHarnessId,
   value: unknown,
 ): ExternalConfigurationSelection | null {
+  const route = decodeHarnessPluginRoute(value);
+  if (route) {
+    if (route.harnessId !== harnessId) return null;
+    return {
+      ...(route.model ? { model: route.model } : {}),
+      ...(route.thinkingOptionId ? { thinkingOptionId: route.thinkingOptionId } : {}),
+      ...(route.permissionModeId ? { permissionModeId: route.permissionModeId } : {}),
+    };
+  }
   switch (harnessId) {
     case "pi":
       return decodePiTransportSelection(value);
@@ -596,8 +526,6 @@ export function decodeExternalTransportSelection(
       return decodeClaudeTransportSelection(value);
     case "deepseek-harness":
       return decodeDeepSeekHarnessTransportSelection(value);
-    case "qwen-code":
-      return decodeQwenCodeTransportSelection(value);
     case "opencode":
       return decodeOpenCodeTransportSelection(value);
     case "grok":
@@ -606,6 +534,8 @@ export function decodeExternalTransportSelection(
       return decodeOmpTransportSelection(value);
     case "antigravity":
       return decodeAntigravityTransportSelection(value);
+    default:
+      return null;
   }
 }
 
@@ -617,10 +547,25 @@ export function decodeExternalTransportModel(
   return selection === null ? null : selection.model;
 }
 
+/**
+ * Recognizes a Thread create the Host owns. Only a text Model can carry a codexhost transport
+ * marker; any other shape belongs to native Codex and is never validated here. A malformed
+ * codexhost marker still throws because the Host owns that format.
+ */
 export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
   if (request.method !== "thread/start") return null;
-  if (!isJsonObject(request.params) || typeof request.params.model !== "string") {
-    throw new Error("thread/start params.model must be text");
+  if (!isJsonObject(request.params) || typeof request.params.model !== "string") return null;
+
+  const pluginRoute = decodeHarnessPluginRoute(request.params.model);
+  if (pluginRoute) {
+    return {
+      harnessId: pluginRoute.harnessId,
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...(pluginRoute.model ? { model: pluginRoute.model } : {}),
+      ...(pluginRoute.thinkingOptionId ? { thinkingOptionId: pluginRoute.thinkingOptionId } : {}),
+      ...(pluginRoute.permissionModeId ? { permissionModeId: pluginRoute.permissionModeId } : {}),
+    };
   }
 
   const piSelection = decodePiTransportSelection(request.params.model);
@@ -650,16 +595,6 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       ...deepSeekSelection,
     };
   }
-  const qwenCodeSelection = decodeQwenCodeTransportSelection(request.params.model);
-  if (qwenCodeSelection !== null) {
-    return {
-      harnessId: "qwen-code",
-      routeMode: "native",
-      transportModelId: request.params.model,
-      ...qwenCodeSelection,
-    };
-  }
-
   const openCodeSelection = decodeOpenCodeTransportSelection(request.params.model);
   if (openCodeSelection !== null) {
     return {

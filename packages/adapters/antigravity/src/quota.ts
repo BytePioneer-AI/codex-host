@@ -14,6 +14,8 @@ export type AntigravityCommandRunner = (arguments_: readonly string[]) => Promis
 
 export interface AntigravityQuotaBucket {
   product: string;
+  periodType?: AntigravityQuotaSnapshot["periodType"];
+  scope?: { id: string; label: string };
   usagePercent: number;
   resetsAt?: string;
 }
@@ -23,10 +25,12 @@ export interface AntigravityQuotaBucket {
  * which the Host strips before validating.
  */
 export interface AntigravityQuotaSnapshot {
+  label?: string;
+  scope?: { id: string; label: string };
   usedPercent: number;
   periodType: "weekly" | "five_hour" | "unknown";
   resetsAt?: string;
-  productUsage?: readonly AntigravityQuotaBucket[];
+  productUsage?: AntigravityQuotaBucket[];
   fetchedAt: string;
 }
 
@@ -81,6 +85,8 @@ function parseBuckets(groups: readonly unknown[]): ParsedBucket[] {
       const resetsAt = nonEmptyString(bucket.reset_time);
       buckets.push({
         product: groupName ? `${groupName} · ${label}` : label,
+        periodType: periodTypeFrom(window),
+        ...(groupName ? { scope: { id: groupName, label: groupName } } : {}),
         usagePercent,
         window,
         ...(resetsAt ? { resetsAt } : {}),
@@ -91,16 +97,23 @@ function parseBuckets(groups: readonly unknown[]): ParsedBucket[] {
 }
 
 /**
- * Picks the bucket that actually constrains the next Turn: the most consumed
- * one, breaking ties toward the 5-hour window because it resets soonest.
+ * Picks the headline bucket: a 5-hour window always leads because it is the
+ * most actionable and resets soonest, even when a longer window is more
+ * consumed (those stay visible as product usage). Among 5-hour windows, or
+ * among the remaining windows when no 5-hour window exists, the most consumed
+ * bucket leads.
  */
 function leadingBucket(buckets: readonly ParsedBucket[]): ParsedBucket | undefined {
   return [...buckets].sort((left, right) => {
-    if (right.usagePercent !== left.usagePercent) return right.usagePercent - left.usagePercent;
-    return (
-      Number(periodTypeFrom(right.window) === "five_hour") -
-      Number(periodTypeFrom(left.window) === "five_hour")
-    );
+    const leftIsFiveHour = periodTypeFrom(left.window) === "five_hour";
+    const rightIsFiveHour = periodTypeFrom(right.window) === "five_hour";
+    if (leftIsFiveHour !== rightIsFiveHour) {
+      return Number(rightIsFiveHour) - Number(leftIsFiveHour);
+    }
+    if (right.usagePercent !== left.usagePercent) {
+      return right.usagePercent - left.usagePercent;
+    }
+    return 0;
   })[0];
 }
 
@@ -117,14 +130,20 @@ export function parseAntigravityUsageCommand(
   if (!leading) return null;
   const others = buckets.filter((bucket) => bucket !== leading);
   return {
+    ...(leading.scope || periodTypeFrom(leading.window) === "unknown"
+      ? { label: leading.product }
+      : {}),
+    ...(leading.scope ? { scope: leading.scope } : {}),
     usedPercent: leading.usagePercent,
     periodType: periodTypeFrom(leading.window),
     fetchedAt,
     ...(leading.resetsAt ? { resetsAt: leading.resetsAt } : {}),
     ...(others.length > 0
       ? {
-          productUsage: others.map(({ product, usagePercent, resetsAt }) => ({
+          productUsage: others.map(({ product, periodType, scope, usagePercent, resetsAt }) => ({
             product,
+            ...(periodType ? { periodType } : {}),
+            ...(scope ? { scope } : {}),
             usagePercent,
             ...(resetsAt ? { resetsAt } : {}),
           })),

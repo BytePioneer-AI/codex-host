@@ -17,6 +17,9 @@ import {
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import {
   harnessIdSchema,
+  harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
+  harnessPermissionModeIdSchema,
   harnessPermissionModeCatalogSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
@@ -41,6 +44,154 @@ afterEach(async () => {
 });
 
 describe("macOS Aqua Harness broker", () => {
+  it("explains how to restore a broker that is not running", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cx-broker-missing-"));
+    roots.push(root);
+    const client = new BrokeredHarnessAdapter({
+      harnessId: "cursor-cli",
+      descriptorPath: path.join(root, "missing.json"),
+    });
+
+    const inspection = await client.inspect();
+
+    expect(inspection.status).toBe("unavailable");
+    const message = inspection.status === "unavailable" ? inspection.error.message : "";
+    expect(message).toContain("cursor-cli Aqua Harness broker on this Mac could not be started");
+    expect(message).toContain("codexhost broker install --harness cursor-cli");
+    await client.close();
+  });
+
+  it("forwards availability inspection purpose and rejects unsupported fields", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cx-broker-inspect-"));
+    roots.push(root);
+    const descriptorPath = path.join(root, "broker.json");
+    const socketPath =
+      process.platform === "win32"
+        ? `\\\\.\\pipe\\cx-broker-${randomUUID()}`
+        : path.join(root, "b.sock");
+    const native = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const inspect = vi.spyOn(native, "inspect");
+    const server = await startHarnessBrokerServer({ descriptorPath, socketPath, adapter: native });
+    const client = new BrokeredHarnessAdapter({ descriptorPath });
+    try {
+      const input = { cwd: root, refresh: true, purpose: "availability" as const };
+      await expect(client.inspect(input)).resolves.toMatchObject({ status: "ready" });
+      expect(inspect).toHaveBeenLastCalledWith(input);
+      await expect(client.inspect({ cwd: root })).resolves.toMatchObject({ status: "ready" });
+      expect(inspect).toHaveBeenLastCalledWith({ cwd: root });
+      await expect(
+        // @ts-expect-error Invalid wire values must still be rejected at runtime.
+        client.inspect({ purpose: "unsupported" }),
+      ).resolves.toMatchObject({ status: "unavailable" });
+      await expect(
+        // @ts-expect-error Unknown wire fields must not reach the native Adapter.
+        client.inspect({ unknown: true }),
+      ).resolves.toMatchObject({ status: "unavailable" });
+      expect(inspect).toHaveBeenCalledTimes(2);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("discovers a newly started broker and reconnects on demand after its generation changes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cx-broker-restart-"));
+    roots.push(root);
+    const descriptorPath = path.join(root, "broker.json");
+    const socketPath =
+      process.platform === "win32"
+        ? `\\\\.\\pipe\\cx-broker-${randomUUID()}`
+        : path.join(root, "b.sock");
+    const client = new BrokeredHarnessAdapter({ harnessId: "codebuddy", descriptorPath });
+    expect((await client.inspect()).status).toBe("unavailable");
+    let server = await startHarnessBrokerServer({
+      descriptorPath,
+      socketPath,
+      adapter: new FakeHarnessAdapter(harnessIdSchema.parse("codebuddy")),
+    });
+    try {
+      expect((await client.inspect()).status).toBe("ready");
+      await server.close();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      server = await startHarnessBrokerServer({
+        descriptorPath,
+        socketPath,
+        adapter: new FakeHarnessAdapter(harnessIdSchema.parse("codebuddy")),
+      });
+      expect((await client.inspect({ refresh: true })).status).toBe("ready");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+  it.each(["codebuddy", "workbuddy", "cursor-cli"])(
+    "isolates %s identity and forwards only opted-in delegation environment",
+    async (id) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-broker-multi-"));
+      roots.push(root);
+      const descriptorPath = path.join(root, "broker.json");
+      const socketPath =
+        process.platform === "win32"
+          ? `\\\\.\\pipe\\codexhost-broker-${randomUUID()}`
+          : path.join(root, "broker.sock");
+      const native = new FakeHarnessAdapter(harnessIdSchema.parse(id));
+      const open = vi.spyOn(native, "open");
+      const server = await startHarnessBrokerServer({
+        descriptorPath,
+        socketPath,
+        adapter: native,
+      });
+      const client = new BrokeredHarnessAdapter({
+        descriptorPath,
+        harnessId: id,
+        forwardDelegationEnvironment: true,
+      });
+      const wrong = new BrokeredHarnessAdapter({ descriptorPath });
+      try {
+        expect(server.descriptor.harnessId).toBe(id);
+        expect(await wrong.inspect()).toMatchObject({ status: "unavailable" });
+        const created = await client.open({
+          kind: "create",
+          cwd: "/synthetic",
+          environment: {
+            CODEXHOST_THREAD_ID: "parent",
+            CODEXHOST_RUNTIME_TOKEN: "scoped-test-token",
+            PATH: "/untrusted",
+            HOME: "/another-user",
+          },
+        });
+        expect(created.ok).toBe(true);
+        if (!created.ok) throw Error(created.error.message);
+        expect(created.value.harnessId).toBe(id);
+        expect(open.mock.calls[0]?.[0]).toMatchObject({
+          environment: {
+            CODEXHOST_THREAD_ID: "parent",
+            CODEXHOST_RUNTIME_TOKEN: "scoped-test-token",
+          },
+        });
+        expect(open.mock.calls[0]?.[0].environment).not.toHaveProperty("PATH");
+        expect(open.mock.calls[0]?.[0].environment).not.toHaveProperty("HOME");
+        const rejected = await client.open({
+          kind: "resume",
+          cwd: "/synthetic",
+          nativeRef: {
+            harnessId: harnessIdSchema.parse("another-harness"),
+            nativeSessionId: "foreign",
+            formatVersion: 1,
+          },
+        });
+        expect(rejected).toMatchObject({ ok: false, error: { code: "protocolError" } });
+        expect(open).toHaveBeenCalledTimes(1);
+        const stream = created.value.outputs[Symbol.asyncIterator]();
+        await client.close();
+        await expect(stream.next()).resolves.toMatchObject({ done: true });
+      } finally {
+        await client.close();
+        await wrong.close();
+        await server.close();
+      }
+    },
+  );
   it.skipIf(process.platform === "win32")(
     "refuses to replace a non-socket entry at the broker socket path",
     async () => {
@@ -67,7 +218,13 @@ describe("macOS Aqua Harness broker", () => {
       process.platform === "win32"
         ? `\\\\.\\pipe\\codexhost-harness-broker-${process.pid}-${randomUUID()}`
         : path.join(root, "broker.sock");
-    const native = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const account = {
+      email: "broker@example.com",
+      credits: { usedPercent: 20, periodType: "five_hour" as const },
+    };
+    const native = Object.assign(new FakeHarnessAdapter(harnessIdSchema.parse("claude-code")), {
+      inspectAccount: vi.fn(async () => account),
+    });
     const nativeOpen = vi.spyOn(native, "open");
     const server = await startHarnessBrokerServer({ descriptorPath, socketPath, adapter: native });
     const adapter = new BrokeredHarnessAdapter({ descriptorPath });
@@ -75,6 +232,9 @@ describe("macOS Aqua Harness broker", () => {
     await expect(adapter.inspect({ cwd: root })).resolves.toMatchObject({
       status: "ready",
     });
+    await expect(adapter.inspectAccount()).resolves.toEqual(account);
+    expect(native.inspectAccount).toHaveBeenCalledWith();
+    expect(nativeOpen).not.toHaveBeenCalled();
     const opened = await adapter.open({
       kind: "create",
       cwd: root,
@@ -101,10 +261,170 @@ describe("macOS Aqua Harness broker", () => {
     expect(native.sessions).toHaveLength(1);
     expect(native.sessions[0]?.cwd).toBe(root);
     expect(nativeOpen).toHaveBeenCalledWith({ kind: "create", cwd: root });
+    const sourceRef = opened.value.initialState.nativeRef;
+    if (!sourceRef) throw new Error("Fixture Session has no native identity");
+    const rollback = {
+      kind: "rollbackLastTurn" as const,
+      cwd: root,
+      sourceRef: { ...sourceRef, nativeSessionId: "separate-id" },
+      model: harnessModelRefSchema.parse({ id: "custom-model" }),
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      permissionModeId: harnessPermissionModeIdSchema.parse("default"),
+    };
+    nativeOpen.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        code: "unsupported",
+        message: "Synthetic rollback",
+        retryable: false,
+      },
+    });
+    await expect(adapter.open(rollback)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unsupported" },
+    });
+    expect(nativeOpen).toHaveBeenLastCalledWith(rollback);
     await opened.value.close();
     await adapter.close();
     await server.close();
   });
+
+  it.each(["claude-code", "cursor-cli", "codebuddy", "workbuddy"])(
+    "round-trips %s Session discovery, fresh resolution, and native resume",
+    async (harnessId) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-harness-broker-"));
+      roots.push(root);
+      const descriptorPath = path.join(root, "broker-v1.json");
+      const socketPath =
+        process.platform === "win32"
+          ? `\\\\.\\pipe\\codexhost-harness-broker-${process.pid}-${randomUUID()}`
+          : path.join(root, "broker.sock");
+      const nativeBase = new FakeHarnessAdapter(harnessIdSchema.parse(harnessId));
+      const seeded = await nativeBase.open({ kind: "create", cwd: root });
+      if (!seeded.ok || !seeded.value.initialState.nativeRef) {
+        throw new Error("fixture failed to seed a resumable native Session");
+      }
+      const nativeRef = seeded.value.initialState.nativeRef;
+      const candidate = {
+        nativeSessionId: nativeRef.nativeSessionId,
+        title: "Remote Claude Session",
+        updatedAt: 1_767_225_600_000,
+        cwd: root,
+        running: null,
+      } as const;
+      const candidates = [
+        candidate,
+        ...Array.from({ length: 204 }, (_, index) => ({
+          ...candidate,
+          nativeSessionId: `native-claude-session-${index}`,
+          title: `Remote Claude Session ${index}`,
+        })),
+      ];
+      const listCandidates = vi.fn(async () => ({ ok: true as const, value: candidates }));
+      const resolveCandidate = vi.fn(async () => ({
+        ok: true as const,
+        value: { candidate, nativeRef },
+      }));
+      const native = Object.assign(nativeBase, {
+        sessionImport: { listCandidates, resolveCandidate },
+      });
+      const nativeOpen = vi.spyOn(native, "open");
+      const server = await startHarnessBrokerServer({
+        descriptorPath,
+        socketPath,
+        adapter: native,
+      });
+      const adapter = new BrokeredHarnessAdapter({
+        descriptorPath,
+        harnessId,
+        sessionImport: true,
+      });
+      const imports = adapter.sessionImport;
+      if (!imports?.resolveCandidate) throw new Error("Session import capability missing");
+
+      const listed = await imports.listCandidates();
+      expect(listed.ok).toBe(true);
+      if (listed.ok) {
+        expect(listed.value).toHaveLength(205);
+        expect(listed.value[0]).toEqual(candidate);
+        expect(listed.value.at(-1)?.nativeSessionId).toBe("native-claude-session-203");
+      }
+      await expect(imports.resolveCandidate(nativeRef.nativeSessionId)).resolves.toEqual({
+        ok: true,
+        value: { candidate, nativeRef },
+      });
+      expect(listCandidates).toHaveBeenCalledOnce();
+      expect(resolveCandidate).toHaveBeenCalledWith(nativeRef.nativeSessionId);
+
+      const opened = await adapter.open({ kind: "resume", cwd: root, nativeRef });
+      expect(opened.ok).toBe(true);
+      expect(nativeOpen).toHaveBeenCalledWith({ kind: "resume", cwd: root, nativeRef });
+      if (opened.ok) await opened.value.close();
+      await adapter.close();
+      await server.close();
+    },
+  );
+
+  it.each(["unsupported", "foreign-harness", "foreign-session"])(
+    "rejects %s import resolution without opening a native Session",
+    async (reason) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-import-invalid-"));
+      roots.push(root);
+      const descriptorPath = path.join(root, "broker-v1.json");
+      const socketPath =
+        process.platform === "win32"
+          ? `\\\\.\\pipe\\codexhost-import-${process.pid}-${randomUUID()}`
+          : path.join(root, "broker.sock");
+      const native = Object.assign(
+        new FakeHarnessAdapter(harnessIdSchema.parse("claude-code")),
+        reason === "unsupported"
+          ? {}
+          : {
+              sessionImport: {
+                listCandidates: async () => ({ ok: true as const, value: [] }),
+                resolveCandidate: async () => ({
+                  ok: true as const,
+                  value: {
+                    candidate: {
+                      nativeSessionId: "requested",
+                      cwd: root,
+                      title: null,
+                      updatedAt: 1,
+                      running: null,
+                    },
+                    nativeRef: {
+                      harnessId: harnessIdSchema.parse(
+                        reason === "foreign-harness" ? "pi" : "claude-code",
+                      ),
+                      nativeSessionId: reason === "foreign-session" ? "other" : "requested",
+                      formatVersion: 1 as const,
+                    },
+                  },
+                }),
+              },
+            },
+      );
+      const opened = vi.spyOn(native, "open");
+      const server = await startHarnessBrokerServer({
+        descriptorPath,
+        socketPath,
+        adapter: native,
+      });
+      const adapter = new BrokeredHarnessAdapter({ descriptorPath, sessionImport: true });
+      try {
+        await expect(adapter.sessionImport?.resolveCandidate?.("requested")).resolves.toMatchObject(
+          {
+            ok: false,
+            error: { code: reason === "unsupported" ? "unsupported" : "protocolError" },
+          },
+        );
+        expect(opened).not.toHaveBeenCalled();
+      } finally {
+        await adapter.close();
+        await server.close();
+      }
+    },
+  );
 
   it("isolates accepted socket errors without stopping the broker", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-harness-broker-"));
@@ -668,5 +988,72 @@ describe("macOS Aqua Harness broker", () => {
     await opened.value.close();
     await adapter.close();
     await server.close();
+  });
+
+  it("reads live capabilities and forwards steer without treating a lost reply as rejection", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-harness-broker-"));
+    roots.push(root);
+    const descriptorPath = path.join(root, "broker-v1.json");
+    const socketPath =
+      process.platform === "win32"
+        ? `\\\\.\\pipe\\codexhost-harness-broker-${process.pid}-${randomUUID()}`
+        : path.join(root, "broker.sock");
+    const native = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    native.supportsSteer = true;
+    const server = await startHarnessBrokerServer({ descriptorPath, socketPath, adapter: native });
+    const adapter = new BrokeredHarnessAdapter({ descriptorPath });
+    try {
+      const opened = await adapter.open({ kind: "create", cwd: root });
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.capabilities.steer).toBe(true);
+      const session = native.sessions[0];
+      if (!session) throw new Error("Native Session was not opened");
+      session.capabilities.steer = false;
+      await expect(opened.value.readCapabilities?.()).resolves.toMatchObject({ steer: false });
+      session.capabilities.steer = true;
+      await expect(opened.value.readCapabilities?.()).resolves.toMatchObject({ steer: true });
+      const turnId = hostTurnIdSchema.parse("broker-steer-turn");
+      await expect(
+        opened.value.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "ping" }],
+        }),
+      ).resolves.toEqual({ ok: true, value: { turnId } });
+      await expect(
+        opened.value.execute({
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "now" }],
+        }),
+      ).resolves.toEqual({ ok: true, value: { accepted: true } });
+      expect(native.sessions[0]?.steers).toEqual([
+        {
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "now" }],
+        },
+      ]);
+      const execute = session.execute.bind(session);
+      vi.spyOn(session, "execute").mockImplementationOnce(async (command: HostCommand) => {
+        if (command.type !== "turn.steer") throw new Error("expected steer");
+        await execute(command);
+        throw new Error("lost native receipt");
+      });
+      await expect(
+        opened.value.execute({
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "receipt lost" }],
+        }),
+      ).rejects.toThrow("lost native receipt");
+      expect(session.steers).toHaveLength(2);
+      await opened.value.close();
+      await expect(opened.value.readCapabilities?.()).rejects.toThrow();
+    } finally {
+      await adapter.close();
+      await server.close();
+    }
   });
 });

@@ -2,6 +2,7 @@ import { packageMetadata as harnessAdapter } from "@codexhost/harness-adapter";
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 
 export { OmpAdapter } from "./omp-adapter.js";
+export { OmpSessionImport, ompSessionImportDirectory } from "./session-import.js";
 export type { OmpAdapterOptions } from "./omp-adapter.js";
 export {
   OMP_DEFAULT_PERMISSION_MODE_ID,

@@ -109,6 +109,11 @@ export function projectCodexApprovalRequest(input: {
     throw new Error("Host Approval subject is unsupported");
   }
   validateActions(interaction);
+  if (
+    new Set(interaction.actions.map(({ effect }) => effect)).size !== interaction.actions.length
+  ) {
+    return projectApprovalChoices(input);
+  }
   const allow = requiredActionForEffect(interaction, "allowOnce");
   const allowForSession = optionalActionForEffect(interaction, "allowForSession");
   const allowAlways = optionalActionForEffect(interaction, "allowAlways");
@@ -178,6 +183,74 @@ export function projectCodexApprovalRequest(input: {
         return denyResponse;
       }
       throw responseError("contains an unsupported action");
+    },
+  };
+}
+
+// The compact approval widget only supports one action per effect. Keep distinct native
+// scopes/resources as explicit choices in Desktop's standard elicitation form instead.
+function projectApprovalChoices(input: {
+  threadId: string;
+  interaction: HostApprovalInteraction;
+  serverName: string;
+}): CodexApprovalRequestProjection {
+  const { interaction } = input;
+  const allow = actionsForEffect(interaction, "allowOnce")[0];
+  const deny = actionsForEffect(interaction, "deny")[0];
+  if (!allow || !deny) throw new Error("Host Approval must declare allowOnce and deny actions");
+  const denyResponse: HostApprovalResponse = { type: "approval", actionId: deny.id };
+  return {
+    request: {
+      method: "mcpServer/elicitation/request",
+      params: {
+        serverName: boundedText(input.serverName, "server name", SERVER_NAME_MAX_LENGTH),
+        threadId: input.threadId,
+        turnId: interaction.turnId,
+        mode: "form",
+        message: [
+          clampedText(interaction.title, "title", TITLE_MAX_LENGTH),
+          ...(interaction.description ? [interaction.description] : []),
+        ].join("\n\n"),
+        requestedSchema: {
+          type: "object",
+          properties: {
+            actionId: {
+              type: "string",
+              title: "Approval",
+              oneOf: interaction.actions.map(({ id, label }) => ({ const: id, title: label })),
+              default: allow.id,
+            },
+          },
+          required: ["actionId"],
+        },
+      },
+    },
+    denyResponse,
+    parseResponse(result) {
+      if (!isRecord(result) || typeof result.action !== "string")
+        throw responseError("missing action");
+      if (Object.keys(result).some((key) => !["action", "content", "_meta"].includes(key))) {
+        throw responseError("contains unreviewed fields");
+      }
+      if (result._meta !== undefined && result._meta !== null) {
+        throw responseError("contains unexpected persist metadata");
+      }
+      if (result.action === "decline" || result.action === "cancel") {
+        if (result.content !== undefined && result.content !== null) {
+          throw responseError("contains fields incompatible with denial");
+        }
+        return denyResponse;
+      }
+      const content = result.content;
+      if (
+        result.action !== "accept" ||
+        !isRecord(content) ||
+        Object.keys(content).length !== 1 ||
+        !interaction.actions.some(({ id }) => id === content.actionId)
+      ) {
+        throw responseError("contains an undeclared approval choice");
+      }
+      return { type: "approval", actionId: content.actionId as string };
     },
   };
 }

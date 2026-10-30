@@ -1,3 +1,8 @@
+import type { RendererUsageStatisticsRequest } from "./console/pages/usage-statistics.js";
+import type { RendererUsageStatisticsHostsProvider } from "./console/usage/usage-hosts.js";
+import type { RemoteConnectionsControl } from "./remote-connections-control.js";
+import type { LoadedSessionsClient } from "./settings/loaded-sessions-table.js";
+import type { HarnessSchedulesPageOptions } from "./settings/harness-schedules-page.js";
 import { readCodexLocaleSettings, type CodexLocaleSettings } from "./codex-locale-adapter.js";
 import {
   rendererSettingsMessages,
@@ -7,20 +12,34 @@ import {
 import {
   createDefaultRendererSettingsPages,
   type RendererConnectionDiagnostics,
+  type RendererCodexAccountClient,
   type RendererUpdateClient,
 } from "./settings/pages.js";
+import type {
+  RendererSessionImportClient,
+  RendererImportedThreadOpener,
+} from "./settings/session-import-page.js";
 import { installRendererSettingsShell, type RendererSettingsShell } from "./settings/shell.js";
 import {
-  installRendererSettingsHeaderTrigger,
-  type RendererSettingsHeaderTriggerControl,
+  installRendererSettingsRailTrigger,
+  type RendererSettingsRailTriggerControl,
 } from "./settings/trigger.js";
 
 const UPDATE_CHECK_TIMEOUT_MS = 5_000;
 const UPDATE_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000] as const;
 
 export interface RendererSettingsLifecycleOptions {
+  harnessSchedules?: HarnessSchedulesPageOptions;
   getUpdateClient?(): RendererUpdateClient | null;
   getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
+  getAccountClient?(): RendererCodexAccountClient | null;
+  getSessionImportClient?(hostId?: string): RendererSessionImportClient | null;
+  getLoadedSessionsClient?(): LoadedSessionsClient | null;
+  getRemoteConnections?(): RemoteConnectionsControl | null;
+  requestUsageStatistics?: RendererUsageStatisticsRequest;
+  /** Machines the usage statistics page may read besides the local Host. */
+  usageStatisticsHosts?: RendererUsageStatisticsHostsProvider;
+  openImportedThread?: RendererImportedThreadOpener;
   onLocaleChange?(locale: RendererSettingsLocale): void;
 }
 
@@ -37,7 +56,7 @@ export function installRendererSettingsLifecycle(
   const lifecycleController = new AbortController();
   let locale = resolveRendererSettingsLocale(ownerWindow.navigator.languages);
   let shell: RendererSettingsShell | null = null;
-  let trigger: RendererSettingsHeaderTriggerControl | null = null;
+  let trigger: RendererSettingsRailTriggerControl | null = null;
   let localeRequest: Promise<void> | null = null;
   let checkedUpdateClient: RendererUpdateClient | null = null;
   let retryUpdateClient: RendererUpdateClient | null = null;
@@ -50,20 +69,48 @@ export function installRendererSettingsLifecycle(
 
   const mount = (): {
     shell: RendererSettingsShell;
-    trigger: RendererSettingsHeaderTriggerControl;
+    trigger: RendererSettingsRailTriggerControl;
   } => {
     const messages = rendererSettingsMessages(locale);
+    const schedules = options.harnessSchedules;
     const definitions = createDefaultRendererSettingsPages(
       messages,
       options.getUpdateClient ?? (() => null),
       options.getConnectionDiagnostics ?? (() => null),
+      options.getAccountClient ?? (() => null),
+      options.getSessionImportClient ?? (() => null),
+      async (threadId, signal, hostId) => {
+        if (!options.openImportedThread) {
+          throw new Error("Imported Thread navigation is unavailable");
+        }
+        await options.openImportedThread(threadId, signal, hostId);
+        if (!disposed && !signal.aborted) shell?.close();
+      },
+      options.getLoadedSessionsClient ?? (() => null),
+      options.getRemoteConnections ?? (() => null),
+      options.requestUsageStatistics,
+      options.usageStatisticsHosts,
+      schedules
+        ? {
+            openSchedules: async (signal) => {
+              await schedules.openSchedules(signal);
+              if (!disposed && !signal.aborted) shell?.close();
+            },
+          }
+        : undefined,
     );
-    const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document);
-    const nextTrigger = installRendererSettingsHeaderTrigger({
+    const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document, {
+      onOpenChange(open) {
+        trigger?.setSelected(open);
+      },
+    });
+    const nextTrigger = installRendererSettingsRailTrigger({
       available: nextShell.supported,
       messages,
       ownerDocument: ownerWindow.document,
       onOpen(opener, pageId) {
+        // Like a native destination, the current page ignores repeat activation.
+        if (shell?.open) return;
         const generation = ++openGeneration;
         void refreshLocale().then(() => {
           if (disposed || generation !== openGeneration) return;
@@ -133,6 +180,7 @@ export function installRendererSettingsLifecycle(
     if (disposed || updateRetryTimer !== null) return;
     const delay = UPDATE_RETRY_DELAYS_MS[updateRetryAttempt];
     if (delay === undefined) return;
+    checkedUpdateClient = null;
     updateRetryAttempt += 1;
     updateRetryTimer = ownerWindow.setTimeout(() => {
       updateRetryTimer = null;
@@ -174,21 +222,19 @@ export function installRendererSettingsLifecycle(
     void checkUpdateWithTimeout(client)
       .then((result) => {
         if (disposed || generation !== updateCheckGeneration) return;
-        updateAvailable = result.updateAvailable;
+        updateAvailable = result?.updateAvailable ?? false;
         trigger?.setUpdateAvailable(updateAvailable);
-        if (result.error === null) {
+        if (result === null || result.error === null) {
           updateRetryAttempt = 0;
           clearUpdateRetry();
           return;
         }
-        checkedUpdateClient = null;
         scheduleUpdateRetry(client);
       })
       .catch(() => {
         if (disposed || generation !== updateCheckGeneration || checkedUpdateClient !== client) {
           return;
         }
-        checkedUpdateClient = null;
         scheduleUpdateRetry(client);
       });
   };

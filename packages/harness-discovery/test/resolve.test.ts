@@ -199,11 +199,11 @@ describe("command invocation", () => {
 });
 
 describe("node runtime on PATH", () => {
-  it("prepends the host runtime directory once", () => {
+  it("appends the host runtime directory once without replacing the selected Node", () => {
     const environment = withNodeRuntimeOnPath({ PATH: "/usr/bin" }, "/opt/runtime/node", "linux");
-    expect(environment.PATH).toBe("/opt/runtime:/usr/bin");
+    expect(environment.PATH).toBe("/usr/bin:/opt/runtime");
     expect(
-      withNodeRuntimeOnPath({ PATH: "/opt/runtime:/usr/bin" }, "/opt/runtime/node", "linux").PATH,
-    ).toBe("/opt/runtime:/usr/bin");
+      withNodeRuntimeOnPath({ PATH: "/usr/bin:/opt/runtime" }, "/opt/runtime/node", "linux").PATH,
+    ).toBe("/usr/bin:/opt/runtime");
   });
 });

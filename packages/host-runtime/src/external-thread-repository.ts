@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
-import type { HostThreadSnapshot } from "@codexhost/harness-adapter";
+import type { HostSubagentState, HostThreadSnapshot } from "@codexhost/harness-adapter";
 import {
   MappingStore,
   type CommitReadyThreadInput,
@@ -10,21 +10,29 @@ import {
   type CreateProvisionalThreadInput,
   type DelegationStatus,
   type FindRecentDelegationInput,
+  type RebindSubagentSessionInput,
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
+  type StoredSectionPlacementV1,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
+  type ThreadMetadataPatch,
 } from "@codexhost/mapping-store";
-import { projectHistoricalTurn, type JsonObject } from "@codexhost/protocol-core";
+import type { JsonObject } from "@codexhost/protocol-core";
 import {
   hostThreadIdSchema,
   hostTurnIdSchema,
+  type HarnessId,
   type HostThreadId,
   type NativeCheckpointRef,
   type NativeSessionRef,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
+import {
+  materializeExternalSubagent,
+  projectExternalSnapshot,
+} from "./external-subagent-threads.js";
 
 export interface ExternalThreadStore {
   initialize(): Promise<void>;
@@ -44,7 +52,10 @@ export interface ExternalThreadStore {
   removeDelegation(delegationId: HostThreadId): Promise<void>;
   createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1>;
   commitReady(input: CommitReadyThreadInput): Promise<StoredThreadRecordV1>;
+  rebindSubagentSession(input: RebindSubagentSessionInput): Promise<StoredThreadRecordV1>;
   replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1>;
+  /** Optional so a Store without this knowledge simply filters nothing. */
+  supersededNativeSessionIds?(harnessId: HarnessId): string[];
   replaceReadySessionAfterLastTurn(
     input: ReplaceReadySessionAfterLastTurnInput,
   ): Promise<StoredThreadRecordV1>;
@@ -62,8 +73,17 @@ export interface ExternalThreadStore {
     transportModelId: string,
   ): Promise<StoredThreadRecordV1>;
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1>;
+  updateMetadata(
+    hostThreadId: HostThreadId,
+    patch: ThreadMetadataPatch,
+    options?: { ifProjectId?: string },
+  ): Promise<StoredThreadRecordV1>;
   removeProvisional(hostThreadId: HostThreadId): Promise<void>;
   removeThread(hostThreadId: HostThreadId): Promise<void>;
+  listSectionPlacements(): Promise<StoredSectionPlacementV1[]>;
+  replaceSectionPlacements(
+    placements: readonly StoredSectionPlacementV1[],
+  ): Promise<StoredSectionPlacementV1[]>;
   close(): Promise<void>;
 }
 
@@ -105,6 +125,11 @@ export class ExternalThreadRepository {
     return this.store.close();
   }
 
+  /** Native Sessions a Thread of this Harness left behind when a message was edited or rolled back. */
+  supersededNativeSessionIds(harnessId: HarnessId): ReadonlySet<string> {
+    return new Set(this.store.supersededNativeSessionIds?.(harnessId) ?? []);
+  }
+
   async find(threadId: string): Promise<StoredThreadRecordV1 | null> {
     const parsed = hostThreadIdSchema.safeParse(threadId);
     return parsed.success ? this.store.getThread(parsed.data) : null;
@@ -112,6 +137,20 @@ export class ExternalThreadRepository {
 
   list(): Promise<StoredThreadRecordV1[]> {
     return this.store.listThreads();
+  }
+
+  listSectionPlacements(): Promise<StoredSectionPlacementV1[]> {
+    return this.store.listSectionPlacements();
+  }
+
+  replaceSectionPlacements(
+    placements: readonly StoredSectionPlacementV1[],
+  ): Promise<StoredSectionPlacementV1[]> {
+    return this.store.replaceSectionPlacements(placements);
+  }
+
+  materializeSubagent(parent: StoredThreadRecordV1, child: HostSubagentState) {
+    return materializeExternalSubagent(this.store, parent, child);
   }
 
   findByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null> {
@@ -180,6 +219,14 @@ export class ExternalThreadRepository {
     return this.store.setArchived(hostThreadId, archived);
   }
 
+  updateMetadata(
+    hostThreadId: HostThreadId,
+    patch: ThreadMetadataPatch,
+    options?: { ifProjectId?: string },
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.updateMetadata(hostThreadId, patch, options);
+  }
+
   removeProvisional(hostThreadId: HostThreadId): Promise<void> {
     return this.store.removeProvisional(hostThreadId);
   }
@@ -245,15 +292,7 @@ export class ExternalThreadRepository {
     });
     return {
       record: nextRecord,
-      turns: snapshot.turns.map((turn, index) => {
-        const mapping = mappings[index];
-        if (!mapping) throw new Error("Derived Snapshot mapping is incomplete");
-        return projectHistoricalTurn({
-          turnId: mapping.hostTurnId,
-          cwd: record.cwd,
-          snapshot: turn,
-        });
-      }),
+      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot),
     };
   }
 
@@ -318,6 +357,8 @@ export class ExternalThreadRepository {
     });
     const nextRecord = await this.store.replaceReadySession({
       hostThreadId: derived.hostThreadId,
+      expectedRevision: derived.revision,
+      expectedNativeSessionRef: derived.nativeSessionRef,
       nativeSessionRef,
       turnMappings: mappings,
       forkSource: {
@@ -327,15 +368,7 @@ export class ExternalThreadRepository {
     });
     return {
       record: nextRecord,
-      turns: snapshot.turns.map((turn, index) => {
-        const mapping = mappings[index];
-        if (!mapping) throw new Error("External rollback Snapshot mapping is incomplete");
-        return projectHistoricalTurn({
-          turnId: mapping.hostTurnId,
-          cwd: derived.cwd,
-          snapshot: turn,
-        });
-      }),
+      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot, derived),
     };
   }
 
@@ -372,31 +405,27 @@ export class ExternalThreadRepository {
     });
     const nextRecord = await this.store.replaceReadySessionAfterLastTurn({
       hostThreadId: current.hostThreadId,
+      expectedRevision: current.revision,
+      expectedNativeSessionRef: current.nativeSessionRef,
       nativeSessionRef,
       turnMappings: mappings,
     });
     return {
       record: nextRecord,
-      turns: snapshot.turns.map((turn, index) => {
-        const mapping = mappings[index];
-        if (!mapping) throw new Error("Last-Turn rollback Snapshot mapping is incomplete");
-        return projectHistoricalTurn({
-          turnId: mapping.hostTurnId,
-          cwd: current.cwd,
-          snapshot: turn,
-        });
-      }),
+      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot, current),
     };
   }
 
   async sessionTreeId(record: StoredThreadRecordV1): Promise<string> {
     let current = record;
     const visited = new Set<string>();
-    while (current.forkSource) {
+    while (current.subagent || current.forkSource) {
       if (visited.has(current.hostThreadId))
         throw new Error("External Thread Fork tree contains a cycle");
       visited.add(current.hostThreadId);
-      const source = await this.find(current.forkSource.hostThreadId);
+      const parentId = current.subagent?.parentHostThreadId ?? current.forkSource?.hostThreadId;
+      if (!parentId) break;
+      const source = await this.find(parentId);
       if (!source) break;
       current = source;
     }
@@ -408,6 +437,11 @@ export class ExternalThreadRepository {
     snapshot: HostThreadSnapshot,
   ): Promise<AlignedExternalSnapshot> {
     const nativeSessionRef = record.nativeSessionRef;
+    // Some Harnesses establish their native identity only on the first Turn.
+    // An unsent draft has no history to reconcile or persist yet.
+    if (record.state === "creating" && !nativeSessionRef && snapshot.turns.length === 0) {
+      return { record, turns: [] };
+    }
     if (!nativeSessionRef || record.state !== "ready") {
       throw new Error("External Thread has no committed Native Session identity");
     }
@@ -440,7 +474,7 @@ export class ExternalThreadRepository {
       return {
         snapshot: turn,
         mapping: {
-          ...mapping,
+          hostTurnId: mapping.hostTurnId,
           nativeTurnRef: turn.nativeTurnRef,
           ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
         },
@@ -459,9 +493,7 @@ export class ExternalThreadRepository {
       : record;
     return {
       record: nextRecord,
-      turns: aligned.map(({ mapping, snapshot: turn }) =>
-        projectHistoricalTurn({ turnId: mapping.hostTurnId, cwd: record.cwd, snapshot: turn }),
-      ),
+      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot),
     };
   }
 }
@@ -492,12 +524,26 @@ export function createExternalThreadRecordInput(input: {
   };
 }
 
+/** Official Thread section fields; External Threads take them from their Host placement. */
+export function threadSectionFields(placement?: StoredSectionPlacementV1): {
+  section: StoredSectionPlacementV1["section"] | null;
+  sectionEnteredAt: number | null;
+} {
+  return placement
+    ? {
+        section: placement.section,
+        sectionEnteredAt: Math.floor(Date.parse(placement.enteredAt) / 1_000),
+      }
+    : { section: null, sectionEnteredAt: null };
+}
+
 export function externalThreadValue(input: {
   record: StoredThreadRecordV1;
   turns: JsonObject[];
   sessionId: string;
   running?: boolean;
   loaded?: boolean;
+  placement?: StoredSectionPlacementV1;
 }): JsonObject {
   const { record } = input;
   const createdAt = Math.floor(Date.parse(record.createdAt) / 1_000);
@@ -560,13 +606,22 @@ export function externalThreadValue(input: {
     turns: input.turns,
     preview: previewText,
     name: record.title || null,
-    gitInfo: null,
+    gitInfo: record.gitInfo
+      ? {
+          branch: record.gitInfo.branch ?? null,
+          originUrl: record.gitInfo.originUrl ?? null,
+          sha: record.gitInfo.sha ?? null,
+        }
+      : null,
     forkedFromId: record.forkSource?.hostThreadId ?? null,
     parentThreadId: record.subagent?.parentHostThreadId ?? null,
     ephemeral: record.ephemeral,
     canAcceptDirectInput: record.subagent ? false : input.loaded === false ? null : true,
     historyMode: record.historyMode,
     isPinned: false,
+    projectId: record.projectId ?? null,
+    daybreakEnabled: record.daybreakEnabled ?? null,
+    ...threadSectionFields(input.placement),
     agentNickname: record.subagent ? record.title || null : null,
     agentRole: record.subagent?.role ?? null,
     extra: null,

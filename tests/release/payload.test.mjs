@@ -16,6 +16,7 @@ import {
   validatePayload,
 } from "../../scripts/release/prepare-payload.mjs";
 import { releaseTarget } from "../../scripts/release/targets.mjs";
+import { preinstalledHarnessPluginPaths } from "../../scripts/release/harness-plugins.mjs";
 
 async function temporaryDirectory() {
   return mkdtemp(path.join(os.tmpdir(), "codexhost-payload-"));
@@ -30,6 +31,23 @@ async function createPayload(root, target) {
 }
 
 describe("release Payload", () => {
+  it("accepts the ACP license actually written by third-party notice generation", async () => {
+    const root = await temporaryDirectory(),
+      target = releaseTarget("macos-arm64");
+    try {
+      await createPayload(root, target);
+      await rm(path.join(root, "licenses/Agent-Client-Protocol-SDK-LICENSE.txt"));
+      await writeThirdPartyNotices(process.cwd(), root);
+      expect(
+        await readFile(path.join(root, "licenses/Agent-Client-Protocol-SDK-LICENSE.txt"), "utf8"),
+      ).toContain("Apache License");
+      await expect(
+        validatePayload({ payloadRoot: root, target, root: "/repo/source" }),
+      ).resolves.toContain("licenses/Agent-Client-Protocol-SDK-LICENSE.txt");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it("runs nested npm builds through Node on Windows", () => {
     const commands = releaseBuildCommands(
       releaseTarget("windows-arm64"),
@@ -67,15 +85,28 @@ describe("release Payload", () => {
     await expect(prepareReleasePayload({ target })).rejects.toThrow("requires host platform");
   });
 
-  it("validates the platform allowlists without internal manifests", async () => {
+  it("validates the platform allowlists including preinstalled plugin resources", async () => {
     const root = await temporaryDirectory();
     const target = releaseTarget("macos-arm64");
     try {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(20);
-      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(21);
+      expect(paths).toHaveLength(32 + preinstalledHarnessPluginPaths().length);
+      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
+        34 + preinstalledHarnessPluginPaths().length,
+      );
+      expect(paths).toContain("licenses/tailwindcss-LICENSE.txt");
+      expect(paths).toContain("app/plugins/enabled.json");
+      expect(paths).toContain("app/console-server.mjs");
+      expect(paths).toContain("app/console-web.js");
+      expect(paths).toContain("app/plugins/claude-code/plugin.mjs");
+      expect(paths).toContain("app/plugins/codex-usage/plugin.mjs");
+      expect(paths).toContain("app/plugins/codex-usage/manifest.json");
+      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
+        "libexec/codexhost-node-repl.exe",
+      );
+      expect(paths).not.toContain("libexec/codexhost-node-repl");
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "bin/codexhost-start.exe",
       );
@@ -124,7 +155,7 @@ describe("release Payload", () => {
     expect(() => numericPackageVersion("256.0.0")).toThrow("version limits");
   });
 
-  it("generates the OpenCode third-party notice from the repository license asset", async () => {
+  it("generates SDK notices from repository license assets", async () => {
     const root = process.cwd();
     const output = await temporaryDirectory();
     try {
@@ -140,7 +171,20 @@ describe("release Payload", () => {
           source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
         }),
       ).toBe(path.join(root, "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt"));
+      for (const name of ["Qoder", "QoderCN"]) {
+        const licensePath = `licenses/${name}-Agent-SDK-LICENSE.txt`;
+        expect(notice).toContain(licensePath);
+        expect(await readFile(path.join(output, licensePath), "utf8")).toContain(
+          "Qoder Product Service Terms",
+        );
+      }
+      expect(notice).toContain("@qoder-ai/qoder-agent-sdk");
+      expect(notice).toContain("@qodercn-ai/qodercn-agent-sdk");
       expect(notice).toContain("@opencode-ai/sdk");
+      expect(notice).toContain("@opencode/client");
+      expect(
+        await readFile(path.join(output, "licenses/OpenCode-v2-Client-LICENSE.txt"), "utf8"),
+      ).toContain("MIT License");
       expect(notice).toContain("licenses/OpenCode-SDK-LICENSE.txt");
       expect(license).toContain("Copyright (c) 2025 opencode");
     } finally {

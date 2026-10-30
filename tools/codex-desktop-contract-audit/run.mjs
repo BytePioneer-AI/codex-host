@@ -21,7 +21,9 @@ const productionRendererAgents = Object.freeze([
   "opencode",
   "grok",
   "omp",
-  "qwen-code",
+  "qoder",
+  "qoder-cn",
+  "zcode",
 ]);
 
 function usage() {
@@ -164,7 +166,7 @@ function readDesktopIdentity(options) {
 
 function loadBaseline(pathname) {
   if (pathname === null) return null;
-  return validateAuditReport(JSON.parse(fs.readFileSync(pathname, "utf8")));
+  return validateAuditReport(JSON.parse(fs.readFileSync(pathname, "utf8")), { baseline: true });
 }
 
 function safeDirectorySegment(value) {

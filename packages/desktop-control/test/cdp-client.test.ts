@@ -93,6 +93,35 @@ describe("CDP client", () => {
     ]);
   });
 
+  it("skips targets that cannot be attached instead of failing discovery", async () => {
+    const page = {
+      id: "page-1",
+      type: "page",
+      title: "Codex",
+      url: "app://-/index.html",
+      webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/page-1",
+    };
+    const fetchImpl: CdpFetch = async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return [
+          {
+            id: "worker-1",
+            type: "worker",
+            title: "",
+            url: "",
+            webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/worker-1",
+          },
+          { id: "page-2", type: "page", title: "Claimed", url: "app://-/index.html" },
+          page,
+        ];
+      },
+    });
+
+    await expect(listCdpTargets("http://127.0.0.1:9222", fetchImpl)).resolves.toEqual([page]);
+  });
+
   it("validates browser-level discovery metadata", async () => {
     const fetchImpl: CdpFetch = async (url) => ({
       ok: true,
@@ -112,6 +141,24 @@ describe("CDP client", () => {
       protocolVersion: "1.3",
       webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/browser-1",
     });
+  });
+
+  it("forwards an abort signal to CDP target discovery", async () => {
+    const abort = new AbortController();
+    const fetchImpl: CdpFetch = async (url, init) => {
+      expect(url).toBe("http://127.0.0.1:9222/json/list");
+      expect(init?.signal).toBe(abort.signal);
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return [];
+        },
+      };
+    };
+    await expect(listCdpTargets("http://127.0.0.1:9222", fetchImpl, abort.signal)).resolves.toEqual(
+      [],
+    );
   });
 
   it("rejects non-loopback discovery and target endpoints", async () => {

@@ -23,6 +23,7 @@ import {
   type SessionUpdate,
 } from "@agentclientprotocol/sdk";
 
+import { parseGrokAvailableCommands, type GrokAvailableCommand } from "./grok-slash-commands.js";
 import { GrokExecutableError, grokInvocation, resolveGrokExecutable } from "./command.js";
 import {
   GROK_SESSION_DELETE_METHOD,
@@ -35,6 +36,7 @@ import {
   grokCompactionEventFromUpdate,
   isGrokExtensionSessionUpdateMethod,
 } from "./grok-compaction.js";
+import { grokSubagentEventFromUpdate } from "./grok-subagent.js";
 import {
   GROK_COMPACT_CONVERSATION_FALLBACK_METHOD,
   GROK_COMPACT_CONVERSATION_METHOD,
@@ -47,6 +49,18 @@ import {
   type GrokRewindParams,
 } from "./grok-rewind.js";
 import { decodeGrokPermissionModeId, grokPermissionModeSessionMeta } from "./permission-modes.js";
+import {
+  GROK_PERMISSION_MODE_METHOD,
+  GrokPermissionConfirmation,
+  grokPermissionLogFilter,
+} from "./permission-confirmation.js";
+
+import {
+  GROK_ASK_USER_QUESTION_METHOD,
+  parseGrokQuestionRequest,
+  type GrokQuestionRequest,
+  type GrokQuestionResponse,
+} from "./grok-questions.js";
 
 export type GrokTransportFaultKind =
   "notInstalled" | "authenticationRequired" | "unavailable" | "protocolError" | "processExited";
@@ -66,6 +80,7 @@ export class GrokTransportError extends Error {
 }
 
 export type GrokTransportEvent =
+  | { type: "interaction.resolved"; toolCallId: string; metadata?: Record<string, unknown> }
   | { type: "user.text"; text: string; messageId?: string; metadata?: Record<string, unknown> }
   | { type: "agent.text"; text: string; messageId?: string; metadata?: Record<string, unknown> }
   | { type: "agent.thought"; text: string; messageId?: string; metadata?: Record<string, unknown> }
@@ -94,6 +109,13 @@ export type GrokTransportEvent =
       metadata?: Record<string, unknown>;
     }
   | { type: "usage"; update: SessionUpdate; metadata?: Record<string, unknown> }
+  | { type: "tool.input.delta"; text: string; metadata?: Record<string, unknown> }
+  | {
+      type: "response.completed";
+      usage?: unknown;
+      messageId?: string;
+      metadata?: Record<string, unknown>;
+    }
   | {
       type: "turn.completed";
       nativeTurnKey: string;
@@ -115,6 +137,21 @@ export type GrokTransportEvent =
       tokensAfter?: number;
       contextWindowTokens?: number;
       errorMessage?: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      type: "subagent.spawned";
+      nativeSubagentId: string;
+      description?: string;
+      role?: string;
+      model?: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      type: "subagent.finished";
+      nativeSubagentId: string;
+      status: "completed" | "failed" | "interrupted";
+      resultSummary?: string;
       metadata?: Record<string, unknown>;
     };
 
@@ -153,7 +190,7 @@ export interface GrokNativeSessionLocation {
 }
 
 export type GrokOpenInput =
-  | { kind: "create"; permissionModeId: HarnessPermissionModeId }
+  | { kind: "create"; permissionModeId: HarnessPermissionModeId; modelId?: string }
   | { kind: "resume"; sessionId: string; permissionModeId: HarnessPermissionModeId }
   | GrokForkOpenInput
   | GrokRewindOpenInput;
@@ -166,6 +203,7 @@ export interface GrokOpenResult {
   signals?: unknown;
 }
 interface ActivePrompt {
+  onQuestion(request: GrokQuestionRequest): Promise<GrokQuestionResponse>;
   onEvent(event: GrokTransportEvent): void;
   onPermission(request: GrokPermissionRequest): Promise<RequestPermissionResponse>;
 }
@@ -177,6 +215,14 @@ interface ActiveCompact {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function acpToolName(update: unknown, metadata?: Record<string, unknown>): string | undefined {
+  if (!isRecord(update)) return undefined;
+  if (typeof update.name === "string" && update.name.length > 0) return update.name;
+  const meta = isRecord(update._meta) ? update._meta : metadata;
+  const tool = meta && isRecord(meta["x.ai/tool"]) ? meta["x.ai/tool"] : undefined;
+  return tool && typeof tool.name === "string" && tool.name.length > 0 ? tool.name : undefined;
 }
 
 function errorText(error: unknown): string {
@@ -249,6 +295,26 @@ function transportEvent(
   metadata?: Record<string, unknown>,
 ): GrokTransportEvent | null {
   const extension = update as unknown as Record<string, unknown>;
+  if (extension.sessionUpdate === "response_completed") {
+    return {
+      type: "response.completed",
+      ...(extension.usage !== undefined ? { usage: extension.usage } : {}),
+      ...(typeof extension.message_id === "string" && extension.message_id
+        ? { messageId: extension.message_id }
+        : {}),
+      ...(metadata ? { metadata } : {}),
+    };
+  }
+  if (
+    extension.sessionUpdate === "tool_call_delta_chunk" &&
+    typeof extension.arguments_delta === "string"
+  ) {
+    return {
+      type: "tool.input.delta",
+      text: extension.arguments_delta,
+      ...(metadata ? { metadata } : {}),
+    };
+  }
   if (
     extension.sessionUpdate === "turn_completed" &&
     typeof extension.prompt_id === "string" &&
@@ -281,6 +347,14 @@ function transportEvent(
   }
   const compaction = grokCompactionEventFromUpdate(extension);
   if (compaction) return compaction;
+  const subagent = grokSubagentEventFromUpdate(extension);
+  if (subagent) return subagent;
+  if (extension.sessionUpdate === "interaction_resolved") {
+    const toolCallId = extension.tool_call_id ?? extension.toolCallId;
+    return typeof toolCallId === "string" && toolCallId.trim().length > 0
+      ? { type: "interaction.resolved", toolCallId, ...(metadata ? { metadata } : {}) }
+      : null;
+  }
   switch (update.sessionUpdate) {
     case "user_message_chunk":
     case "agent_message_chunk":
@@ -296,30 +370,34 @@ function transportEvent(
         text: update.content.text,
         ...(update.messageId ? { messageId: update.messageId } : {}),
       };
-    case "tool_call":
+    case "tool_call": {
+      const name = acpToolName(update, metadata);
       return {
         type: "tool.call",
         callId: update.toolCallId,
         title: update.title,
-        ...(update.name ? { name: update.name } : {}),
+        ...(name ? { name } : {}),
         ...(update.kind ? { kind: update.kind } : {}),
         ...(update.status ? { status: update.status } : {}),
         ...(update.rawInput !== undefined ? { rawInput: update.rawInput } : {}),
         ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {}),
         ...(update.content ? { content: update.content } : {}),
       };
-    case "tool_call_update":
+    }
+    case "tool_call_update": {
+      const name = acpToolName(update, metadata);
       return {
         type: "tool.update",
         callId: update.toolCallId,
         ...(update.title !== undefined ? { title: update.title } : {}),
-        ...(update.name !== undefined ? { name: update.name } : {}),
+        ...(name ? { name } : {}),
         ...(update.kind !== undefined ? { kind: update.kind } : {}),
         ...(update.status !== undefined ? { status: update.status } : {}),
         ...(update.rawInput !== undefined ? { rawInput: update.rawInput } : {}),
         ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {}),
         ...(update.content !== undefined ? { content: update.content } : {}),
       };
+    }
     case "usage_update":
       return { type: "usage", update, ...(metadata ? { metadata } : {}) };
     default:
@@ -329,7 +407,7 @@ function transportEvent(
   }
 }
 
-function grokHomeDir(options: Pick<GrokAcpTransportOptions, "environment">): string {
+export function grokHomeDir(options: Pick<GrokAcpTransportOptions, "environment">): string {
   const environment = { ...process.env, ...options.environment };
   const home = environment.HOME ?? environment.USERPROFILE ?? os.homedir();
   return environment.GROK_HOME ?? path.join(home, ".grok");
@@ -484,10 +562,14 @@ export class GrokAcpTransport {
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
   #closing = false;
+  #closePromise: Promise<void> | null = null;
+  #permissionConfirmation: GrokPermissionConfirmation | null = null;
   #connection: ClientSideConnection | null = null;
   #initialize: InitializeResponse | null = null;
   #replay: GrokTransportEvent[] | null = null;
   #sessionId: string | null = null;
+  #availableCommands: GrokAvailableCommand[] | null = null;
+  #startupModelId: string | undefined;
   #stderrTail = "";
 
   constructor(options: GrokAcpTransportOptions) {
@@ -532,6 +614,17 @@ export class GrokAcpTransport {
     return this.readHistory(this.sessionId);
   }
 
+  /** Native cumulative usage since this process attached, not persisted Session totals. */
+  async getUsage(): Promise<unknown> {
+    if (!this.#connection) throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
+    const result = await withTimeout(
+      this.#connection.request("_x.ai/session/usage", { sessionId: this.sessionId }),
+      this.#options.commandTimeoutMs,
+      "Grok Session usage",
+    );
+    return isRecord(result) ? result.usage : undefined;
+  }
+
   async readHistory(sessionId: string, cwd = this.#options.cwd): Promise<GrokTransportEvent[]> {
     return readGrokNativeHistory({ ...this.#options, cwd }, sessionId);
   }
@@ -557,6 +650,7 @@ export class GrokAcpTransport {
     if (this.#sessionId || this.#closed)
       throw new Error("Grok ACP Transport cannot be opened twice");
     try {
+      if (input.kind === "create") this.#startupModelId = input.modelId;
       const initialize = await this.#ensureInitialized();
       const connection = this.#connection;
       if (!connection) throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
@@ -723,10 +817,16 @@ export class GrokAcpTransport {
       ...(this.#options.command ? { command: this.#options.command } : {}),
       environment: this.#options.environment ?? process.env,
     });
-    const invocation = grokInvocation(executable);
+    const invocation = grokInvocation(executable, process.platform, this.#startupModelId);
     const child = spawn(invocation.command, invocation.arguments, {
       cwd: this.#options.cwd,
-      env: { ...process.env, ...this.#options.environment },
+      env: {
+        ...process.env,
+        ...this.#options.environment,
+        RUST_LOG: grokPermissionLogFilter(
+          this.#options.environment?.RUST_LOG ?? process.env.RUST_LOG,
+        ),
+      },
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
@@ -735,6 +835,7 @@ export class GrokAcpTransport {
     this.#child = child;
     child.stderr.on("data", (chunk: Buffer | string) => {
       this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
+      this.#permissionConfirmation?.accept(chunk.toString());
     });
     await withTimeout(
       new Promise<void>((resolve, reject) => {
@@ -754,6 +855,7 @@ export class GrokAcpTransport {
           sessionUpdate: (params) => this.#handleUpdate(params),
           requestPermission: (params) => this.#handlePermission(params),
           extNotification: (method, params) => this.#handleExtensionNotification(method, params),
+          extMethod: (method, params) => this.#handleExtMethod(method, params),
         }) satisfies Client,
       stream,
     );
@@ -794,13 +896,16 @@ export class GrokAcpTransport {
     text: string,
     onEvent: ActivePrompt["onEvent"],
     onPermission: ActivePrompt["onPermission"],
+    onQuestion: ActivePrompt["onQuestion"] = async () => ({ outcome: "cancelled" }),
   ): Promise<PromptResponse> {
     const connection = this.#connection;
     if (!connection || !this.#sessionId || this.#closed || this.#closing) {
       throw new GrokTransportError("unavailable", "Grok ACP Session is unavailable");
     }
     if (this.#activePrompt) throw new Error("Grok ACP Session already has an active Prompt");
-    const active = { onEvent, onPermission };
+    if (this.#permissionConfirmation)
+      throw new GrokTransportError("unavailable", "Grok ACP Session has an active operation");
+    const active = { onEvent, onPermission, onQuestion };
     this.#activePrompt = active;
     try {
       return await connection.prompt({
@@ -808,6 +913,8 @@ export class GrokAcpTransport {
         prompt: [{ type: "text", text }],
       });
     } finally {
+      // The SDK can resolve prompt before dispatching notifications from the same read.
+      await yieldToEventLoop();
       if (this.#activePrompt === active) this.#activePrompt = null;
     }
   }
@@ -820,7 +927,7 @@ export class GrokAcpTransport {
     if (!connection || !this.#sessionId || this.#closed || this.#closing) {
       throw new GrokTransportError("unavailable", "Grok ACP Session is unavailable");
     }
-    if (this.#activePrompt || this.#activeCompact) {
+    if (this.#activePrompt || this.#activeCompact || this.#permissionConfirmation) {
       throw new GrokTransportError(
         "unavailable",
         "Grok ACP Session already has an active operation",
@@ -852,15 +959,24 @@ export class GrokAcpTransport {
       if (this.#activeCompact === active) this.#activeCompact = null;
     }
   }
-  async setModel(modelId: string, reasoningEffort?: string): Promise<void> {
+  async setModel(
+    modelId: string,
+    reasoningEffort?: string,
+    contextWindowTokens?: number,
+  ): Promise<void> {
     const connection = this.#connection;
     if (!connection || !this.#sessionId) throw new Error("Grok ACP Session is unavailable");
+    if (this.#permissionConfirmation)
+      throw new GrokTransportError("unavailable", "Grok ACP Session has an active operation");
     const response = await connection.request<unknown, Record<string, unknown>>(
       "session/set_model",
       {
         sessionId: this.#sessionId,
         modelId,
         ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(contextWindowTokens !== undefined
+          ? { _meta: { contextWindow: contextWindowTokens } }
+          : {}),
       },
     );
     if (!isRecord(response) || !isRecord(response._meta) || !isRecord(response._meta.model)) {
@@ -881,9 +997,68 @@ export class GrokAcpTransport {
     return connection.cancel({ sessionId: this.#sessionId });
   }
 
-  async close(): Promise<void> {
+  async setPermissionMode(permissionModeId: HarnessPermissionModeId): Promise<void> {
+    const mode = decodeGrokPermissionModeId(permissionModeId);
+    const connection = this.#connection;
+    const sessionId = this.#sessionId;
+    if (!connection || !sessionId || this.#closed || this.#closing) {
+      throw new GrokTransportError("unavailable", "Grok ACP Session is unavailable");
+    }
+    if (this.#activePrompt || this.#activeCompact || this.#permissionConfirmation) {
+      throw new GrokTransportError("unavailable", "Grok ACP Session has an active operation");
+    }
+    const confirmation = new GrokPermissionConfirmation(mode);
+    this.#permissionConfirmation = confirmation;
+    try {
+      await withTimeout(
+        Promise.all([
+          confirmation.completed,
+          (async () => {
+            const flags = grokPermissionModeSessionMeta(mode);
+            await connection.notify(GROK_PERMISSION_MODE_METHOD, {
+              yolo_mode: flags.yoloMode,
+              auto_mode: flags.autoMode,
+              permission_mode: mode,
+            });
+            // The actor round trip verifies that the target Session still exists
+            // and has processed its queued permission commands. Logs confirm their values.
+            const response = await connection.request("_x.ai/session/info", { sessionId });
+            if (
+              !isRecord(response) ||
+              !isRecord(response.result) ||
+              response.result.sessionId !== sessionId
+            ) {
+              throw new Error("Grok did not confirm the target Session");
+            }
+          })(),
+        ]),
+        this.#options.commandTimeoutMs,
+        "Grok Permission Mode confirmation",
+      );
+      if (this.#closed || this.#closing)
+        throw new Error("Grok Session closed during configuration");
+    } catch (cause) {
+      const error = new GrokTransportError(
+        "protocolError",
+        "Grok Permission Mode could not be confirmed; reopen the Session to continue",
+        { cause },
+      );
+      this.#fault(error);
+      await this.close();
+      throw error;
+    } finally {
+      this.#permissionConfirmation = null;
+    }
+  }
+
+  close(): Promise<void> {
+    return (this.#closePromise ??= this.#close());
+  }
+
+  async #close(): Promise<void> {
     if (this.#closed) return;
     this.#closing = true;
+    this.#permissionConfirmation?.reject(new Error("Grok Session closed during configuration"));
     const child = this.#child;
     const connection = this.#connection;
     if (
@@ -891,7 +1066,11 @@ export class GrokAcpTransport {
       this.#sessionId &&
       this.#initialize?.agentCapabilities?.sessionCapabilities?.close
     ) {
-      await connection.closeSession({ sessionId: this.#sessionId }).catch(() => undefined);
+      await withTimeout(
+        connection.closeSession({ sessionId: this.#sessionId }),
+        this.#options.closeTimeoutMs,
+        "Grok Session close",
+      ).catch(() => undefined);
     }
     if (child?.stdin.writable) child.stdin.end();
     if (child && !(await waitForExit(child, this.#options.closeTimeoutMs))) {
@@ -907,8 +1086,19 @@ export class GrokAcpTransport {
     this.#activeCompact = null;
   }
 
+  /** Latest ACP `available_commands_update` of the open Session, if any. */
+  get availableCommands(): readonly GrokAvailableCommand[] | null {
+    return this.#availableCommands;
+  }
+
   #handleUpdate(notification: SessionNotification): void {
     if (this.#sessionId && notification.sessionId !== this.#sessionId) return;
+    const update = notification.update as { sessionUpdate?: unknown; availableCommands?: unknown };
+    if (update.sessionUpdate === "available_commands_update") {
+      // Command catalog state, not Turn or replay content.
+      this.#availableCommands = parseGrokAvailableCommands(update.availableCommands);
+      return;
+    }
     const metadata = isRecord(notification._meta) ? notification._meta : undefined;
     const event = transportEvent(notification.update, metadata);
     if (!event) return;
@@ -931,7 +1121,32 @@ export class GrokAcpTransport {
     return this.#activePrompt.onPermission({ request: params, options: params.options });
   }
 
+  async #handleExtMethod(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (method !== GROK_ASK_USER_QUESTION_METHOD) throw RequestError.methodNotFound(method);
+    let request: GrokQuestionRequest;
+    try {
+      request = parseGrokQuestionRequest(params);
+    } catch (error) {
+      throw RequestError.invalidParams(undefined, errorText(error));
+    }
+    const active = this.#activePrompt;
+    if (
+      !active ||
+      this.#closed ||
+      this.#closing ||
+      this.#replay !== null ||
+      this.#activeCompact !== null ||
+      request.sessionId !== this.#sessionId
+    )
+      return { outcome: "cancelled" };
+    return { ...(await active.onQuestion(request)) };
+  }
+
   #fault(error: GrokTransportError): void {
+    this.#permissionConfirmation?.reject(error);
     if (this.#closing || this.#closed) return;
     this.#options.onFault?.(error);
   }

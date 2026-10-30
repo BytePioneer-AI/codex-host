@@ -1,4 +1,5 @@
 import {
+  decodeHarnessPluginRoute,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -7,13 +8,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ANTIGRAVITY_TRANSPORT_MODEL_ID,
-  CLAUDE_CODE_TRANSPORT_MODEL_ID,
-  DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
   GROK_TRANSPORT_MODEL_ID,
-  OPENCODE_TRANSPORT_MODEL_ID,
-  QWEN_CODE_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_ID,
-  activeRendererDraftPrewarmPolicy,
   antigravityTransportModelId,
   claudeTransportModelId,
   decodeAntigravityTransportModelId,
@@ -34,25 +30,26 @@ import {
   modelSelectionForAgent,
   deepSeekHarnessTransportModelId,
   grokTransportModelId,
+  hermesTransportModelId,
   openCodeTransportModelId,
-  qwenCodeTransportModelId,
   piTransportModelId,
   threadIdFromComposerModelTarget,
 } from "../src/index.js";
 import {
   OMP_TRANSPORT_MODEL_ID,
-  createRendererRequestRouteResolver,
   decodeOmpTransportModelId,
   isOmpTransportModelId,
   ompTransportModelId,
-  rendererRequestTargetsForHost,
-  resolveRendererRequestRoute,
   transitionRendererAdapterStatus,
   installCurrentRendererAdapter,
 } from "../src/versioned-renderer-adapter.js";
 
 function composerWithFiber(fiber: object): Element {
-  const composer = { matches: () => true, parentElement: null } as unknown as Element;
+  const composer = {
+    matches: () => true,
+    querySelector: () => null,
+    parentElement: null,
+  } as unknown as Element;
   Object.defineProperty(composer, "__reactFiber$test", {
     configurable: true,
     value: fiber,
@@ -123,175 +120,133 @@ describe("current Codex Renderer Agent adapter", () => {
     );
   });
 
-  it("keeps local and remote request targets independently addressable", () => {
-    const local = {
+  it("unwraps a Desktop 26.908 host/manager/status hook wrapper to the outer manager", () => {
+    const editor = {
+      parentElement: null,
+      querySelectorAll: () => [],
+    } as unknown as Element;
+    const root = { querySelector: () => editor } as unknown as ParentNode;
+    const addNotificationCallback = vi.fn(() => () => undefined);
+    const requestClient = {
       hostId: "local",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
+      sendRequest: vi.fn<(method: string, params: unknown) => void>(),
+      prewarmThreadStart: () => undefined,
+      enqueueRequest: () => undefined,
     };
-    const remote = {
-      hostId: "remote-ssh-discovered:mac",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-
-    expect(rendererRequestTargetsForHost([remote, local], "local")).toEqual([local]);
-    expect(rendererRequestTargetsForHost([remote, local], remote.hostId)).toEqual([remote]);
-    expect(rendererRequestTargetsForHost([local, { ...local }], "local")).toBeNull();
-  });
-
-  it("retains the confirmed request manager across transient Composer discovery gaps", () => {
     const manager = {
-      hostId: "remote-ssh-discovered:mac",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
+      requestClient,
+      sendRequest: async (method: string, params: unknown) =>
+        requestClient.sendRequest(method, params),
+      addNotificationCallback,
     };
-    const policy = {
-      state: "ready" as const,
-      hostId: "remote-ssh-discovered:mac",
-      select: vi.fn(() => true),
-      clear: vi.fn(async () => undefined),
-    };
-    const localManager = {
-      hostId: "local",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-
-    const discovered = resolveRendererRequestRoute(policy, [localManager, manager], null);
-    expect(discovered?.targets).toEqual([manager]);
-
-    const transientGap = resolveRendererRequestRoute(policy, [], discovered);
-    expect(transientGap).toBe(discovered);
-
-    const switchedHostManager = {
-      hostId: "remote-ssh-discovered:replacement",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-    expect(resolveRendererRequestRoute(policy, [switchedHostManager], discovered)).toBeNull();
-
-    const replacementPolicy = { ...policy };
-    expect(resolveRendererRequestRoute(replacementPolicy, [], discovered)).toBeNull();
-  });
-
-  it("prefers a policy-owned exact request target without Composer discovery", () => {
-    const manager = {
-      hostId: "remote-ssh-discovered:mac",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-    const policy = {
-      state: "ready" as const,
-      hostId: manager.hostId,
-      requestTarget: vi.fn(() => manager),
-      select: vi.fn(() => true),
-      clear: vi.fn(async () => undefined),
-    };
-
-    const route = resolveRendererRequestRoute(policy, [], null);
-
-    expect(route).toEqual({ policy, targets: [manager] });
-    expect(policy.requestTarget).toHaveBeenCalledOnce();
-
-    const discoverTargets = vi.fn(() => [manager]);
-    const resolver = createRendererRequestRouteResolver(() => policy, discoverTargets);
-    expect(resolver.resolve()?.targets).toEqual([manager]);
-    expect(discoverTargets).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["non-callable", {}],
-    ["malformed", () => ({})],
-    [
-      "host-mismatched",
-      () => ({
-        hostId: "remote-ssh-discovered:other",
-        sendRequest: vi.fn(),
-        prewarmThreadStart: vi.fn(),
-        enqueueRequest: vi.fn(),
-      }),
-    ],
-    [
-      "throwing",
-      () => {
-        throw new Error("synthetic target failure");
+    const wrapper = { hostId: "local", manager, status: "ready" };
+    Object.defineProperty(editor, "__reactFiber$test", {
+      configurable: true,
+      value: {
+        memoizedState: {
+          memoizedState: wrapper,
+          next: { memoizedState: wrapper, next: null },
+        },
+        return: null,
       },
-    ],
-  ])("fails closed for a %s policy-owned request target", (_name, requestTarget) => {
-    const matchingDiscoveredManager = {
-      hostId: "remote-ssh-discovered:mac",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-    const policy = {
-      state: "ready" as const,
-      hostId: matchingDiscoveredManager.hostId,
-      requestTarget,
-      select: vi.fn(() => true),
-      clear: vi.fn(async () => undefined),
-    };
-
-    expect(resolveRendererRequestRoute(policy, [matchingDiscoveredManager], null)).toBeNull();
-  });
-
-  it("keeps Fiber discovery as the fallback for a legacy policy without requestTarget", () => {
-    const manager = {
-      hostId: "remote-ssh-discovered:mac",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-    const policy = {
-      state: "ready" as const,
-      hostId: manager.hostId,
-      select: vi.fn(() => true),
-      clear: vi.fn(async () => undefined),
-    };
-
-    expect(resolveRendererRequestRoute(policy, [manager], null)).toEqual({
-      policy,
-      targets: [manager],
     });
+
+    expect(findActivePrewarmTargets(root)).toEqual([manager]);
+    expect(findActivePrewarmTargets(root)[0]?.addNotificationCallback).toBe(
+      addNotificationCallback,
+    );
   });
 
-  it("does not revive an invalidated request manager after a later discovery gap", () => {
-    const policy = {
-      state: "ready" as const,
-      hostId: "remote-ssh-discovered:mac",
-      select: vi.fn(() => true),
-      clear: vi.fn(async () => undefined),
-    };
-    const manager = {
-      hostId: policy.hostId,
+  it("routes account requests through the committed manager when the DOM retains the retired Fiber", async () => {
+    const retired = {
+      hostId: "local",
       sendRequest: vi.fn(),
       prewarmThreadStart: vi.fn(),
       enqueueRequest: vi.fn(),
     };
-    const switchedHostManager = {
-      hostId: "remote-ssh-discovered:replacement",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
+    const active = {
+      ...retired,
+      sendRequest: vi.fn().mockRejectedValue(new Error("Codex is busy")),
     };
-    let discoveredTargets = [manager];
-    const routeResolver = createRendererRequestRouteResolver(
-      () => policy,
-      () => discoveredTargets,
+    const rootState: { current?: object } = {};
+    const oldRoot = { stateNode: rootState };
+    const newRoot: { stateNode: typeof rootState; child?: object } = { stateNode: rootState };
+    const current = { memoizedState: { memoizedState: active, next: null }, return: newRoot };
+    const previous = {
+      memoizedState: { memoizedState: retired, next: null },
+      return: oldRoot,
+      alternate: current,
+    };
+    newRoot.child = current;
+    rootState.current = newRoot;
+    const editor = { parentElement: null, querySelectorAll: () => [] } as unknown as Element;
+    Object.defineProperty(editor, "__reactFiber$test", { value: previous });
+    const targets = findActivePrewarmTargets({
+      querySelector: () => editor,
+    } as unknown as ParentNode);
+    expect(targets).toEqual([active]);
+    await expect(targets[0]?.sendRequest?.("codexhost/account/switch", {})).rejects.toThrow(
+      "Codex is busy",
     );
+    expect(retired.sendRequest).not.toHaveBeenCalled();
+  });
 
-    expect(routeResolver.resolve()?.targets).toEqual([manager]);
-    discoveredTargets = [switchedHostManager];
-    expect(routeResolver.resolve()).toBeNull();
-    discoveredTargets = [];
-    expect(routeResolver.resolve()).toBeNull();
+  it("finds a nearby request manager without requiring the root within 200 ancestors", async () => {
+    const active = {
+      hostId: "local",
+      sendRequest: vi.fn().mockRejectedValue(new Error("Codex is busy")),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    const first: Record<string, unknown> = { memoizedState: { memoizedState: active, next: null } };
+    let node = first;
+    for (let depth = 1; depth < 209; depth += 1) {
+      const parent: Record<string, unknown> = { child: node };
+      node.return = parent;
+      node = parent;
+    }
+    node.stateNode = { current: node };
+    const editor = { parentElement: null, querySelectorAll: () => [] } as unknown as Element;
+    Object.defineProperty(editor, "__reactFiber$test", { value: first });
+    const targets = findActivePrewarmTargets({
+      querySelector: () => editor,
+    } as unknown as ParentNode);
+    expect(targets).toEqual([active]);
+    await expect(targets[0]?.sendRequest?.("codexhost/account/switch", {})).rejects.toThrow(
+      "Codex is busy",
+    );
+    expect(active.sendRequest).toHaveBeenCalledOnce();
+  });
+
+  it("ignores Host manager registries and unrelated nested manager fields", () => {
+    const editor = {
+      parentElement: null,
+      querySelectorAll: () => [],
+    } as unknown as Element;
+    const root = { querySelector: () => editor } as unknown as ParentNode;
+    Object.defineProperty(editor, "__reactFiber$test", {
+      configurable: true,
+      value: {
+        memoizedState: {
+          memoizedState: {
+            addManager: () => undefined,
+            getForHostId: () => undefined,
+            scope: {},
+          },
+          next: {
+            memoizedState: {
+              hostId: "local",
+              manager: { getHostId: () => "local" },
+              status: "ready",
+            },
+            next: null,
+          },
+        },
+        return: null,
+      },
+    });
+
+    expect(findActivePrewarmTargets(root)).toEqual([]);
   });
 
   it("finds the current seven-slot new Thread draft identity", () => {
@@ -317,6 +272,35 @@ describe("current Codex Renderer Agent adapter", () => {
     });
 
     expect(findComposerModelTarget(composer)).toEqual(["default", "client-new-thread:opaque"]);
+  });
+
+  it("finds the Desktop 26.908 duplicated client-new-thread memo identity", () => {
+    const nineteenSlot = Array.from({ length: 19 }, () => ({}));
+    nineteenSlot[2] = "client-new-thread:opaque-19";
+    nineteenSlot[7] = "client-new-thread:opaque-19";
+    const thirteenSlot = Array.from({ length: 13 }, () => ({}));
+    thirteenSlot[3] = "client-new-thread:opaque-13";
+    thirteenSlot[5] = "client-new-thread:opaque-13";
+    thirteenSlot[6] = "client-new-thread:opaque-13";
+    const unduplicated = Array.from({ length: 19 }, () => ({}));
+    unduplicated[2] = "client-new-thread:once";
+
+    const nineteen = composerWithFiber({
+      updateQueue: { memoCache: { data: [nineteenSlot] } },
+      return: null,
+    });
+    const thirteen = composerWithFiber({
+      updateQueue: { memoCache: { data: [thirteenSlot] } },
+      return: null,
+    });
+    const missing = composerWithFiber({
+      updateQueue: { memoCache: { data: [unduplicated] } },
+      return: null,
+    });
+
+    expect(findComposerModelTarget(nineteen)).toEqual(["default", "client-new-thread:opaque-19"]);
+    expect(findComposerModelTarget(thirteen)).toEqual(["default", "client-new-thread:opaque-13"]);
+    expect(findComposerModelTarget(missing)).toBeNull();
   });
 
   it("uses the current Composer conversation identity", () => {
@@ -406,67 +390,152 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(findComposerModelTarget(conflictingConversation)).toBeNull();
   });
 
-  it("installs without synthesizing a main-process title policy marker", () => {
-    const requestTarget = {
-      hostId: "local",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-    const policy = {
-      state: "ready" as const,
-      hostId: "local",
-      requestTarget: () => requestTarget,
-      select: vi.fn(() => true),
-      clear: vi.fn(async () => {}),
-    };
-    const listeners = new Map<string, EventListener>();
-    const fakeWindow = {
-      __codexhostDraftPrewarmPolicyV1: policy,
-      dispatchEvent: vi.fn(),
-      addEventListener: vi.fn((type: string, listener: EventListener) => {
-        listeners.set(type, listener);
-      }),
-      removeEventListener: vi.fn(),
-      setInterval: vi.fn(() => 1),
-      clearInterval: vi.fn(),
-    };
-    const fakeDocument = {
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      querySelector: vi.fn(),
-      documentElement: {},
-    };
-    const priorWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-    const priorDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
-    const priorCustomEvent = Object.getOwnPropertyDescriptor(globalThis, "CustomEvent");
-    Object.defineProperties(globalThis, {
-      window: { configurable: true, value: fakeWindow },
-      document: { configurable: true, value: fakeDocument },
-      CustomEvent: {
-        configurable: true,
-        value: class CustomEvent {
-          constructor(readonly type: string) {}
+  it.each(["local", "remote-ssh-discovered:mac"])(
+    "installs for %s and only sends resource settings to local",
+    (hostId) => {
+      const requestTarget = {
+        hostId,
+        sendRequest: vi.fn(),
+        prewarmThreadStart: vi.fn(),
+        enqueueRequest: vi.fn(),
+      };
+      const policy = {
+        state: "ready" as const,
+        hostId,
+        requestTarget: () => requestTarget,
+        select: vi.fn(() => true),
+        clear: vi.fn(async () => {}),
+      };
+      const listeners = new Map<string, EventListener>();
+      const fakeWindow = {
+        __codexhostDraftPrewarmPolicyV1: policy,
+        dispatchEvent: vi.fn(),
+        addEventListener: vi.fn((type: string, listener: EventListener) => {
+          listeners.set(type, listener);
+        }),
+        removeEventListener: vi.fn(),
+        setInterval: vi.fn(() => 1),
+        clearInterval: vi.fn(),
+      };
+      const fakeDocument = {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        querySelector: vi.fn(),
+        documentElement: {},
+      };
+      const knownPolicies = new Map([[hostId, policy]]);
+      const routes = new Map<
+        typeof policy,
+        {
+          bridge: unknown;
+          route: { hostId: string; manager: typeof requestTarget; policy: typeof policy };
+        }
+      >();
+      const routeFor = (selected: typeof policy) => {
+        const manager = selected.requestTarget();
+        const bridge = Reflect.get(manager, "requestClient");
+        const cached = routes.get(selected);
+        if (cached && cached.bridge === bridge) return cached.route;
+        const route = { hostId: selected.hostId, manager, policy: selected };
+        routes.set(selected, { bridge, route });
+        return route;
+      };
+      Object.defineProperty(fakeWindow, "__codexhostHostRoutingV1", {
+        value: {
+          hostIdForComposer: () => fakeWindow.__codexhostDraftPrewarmPolicyV1.hostId,
+          forComposer: () => {
+            const selected = fakeWindow.__codexhostDraftPrewarmPolicyV1;
+            knownPolicies.set(selected.hostId, selected);
+            return routeFor(selected);
+          },
+          forHost: (id: string) => {
+            const current = fakeWindow.__codexhostDraftPrewarmPolicyV1;
+            knownPolicies.set(current.hostId, current);
+            const selected = knownPolicies.get(id);
+            return selected ? routeFor(selected) : null;
+          },
         },
-      },
-    });
+      });
+      const priorWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+      const priorDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+      const priorCustomEvent = Object.getOwnPropertyDescriptor(globalThis, "CustomEvent");
+      Object.defineProperties(globalThis, {
+        window: { configurable: true, value: fakeWindow },
+        document: { configurable: true, value: fakeDocument },
+        CustomEvent: {
+          configurable: true,
+          value: class CustomEvent {
+            constructor(readonly type: string) {}
+          },
+        },
+      });
 
-    try {
-      const adapter = installCurrentRendererAdapter();
-      expect(adapter.status).toMatchObject({ state: "ready", reason: "ready" });
-      expect("__codexhostMainProcessTitlePolicyV1" in fakeWindow).toBe(false);
-      adapter.dispose();
-    } finally {
-      for (const [name, descriptor] of [
-        ["window", priorWindow],
-        ["document", priorDocument],
-        ["CustomEvent", priorCustomEvent],
-      ] as const) {
-        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-        else Reflect.deleteProperty(globalThis, name);
+      try {
+        const adapter = installCurrentRendererAdapter();
+        expect(adapter.status).toMatchObject({ state: "ready", reason: "ready" });
+        expect("__codexhostMainProcessTitlePolicyV1" in fakeWindow).toBe(false);
+        if (hostId === "local") {
+          expect(requestTarget.sendRequest).toHaveBeenCalledWith(
+            "codexhost/settings/idle-release/set",
+            {
+              enabled: false,
+              timeoutMinutes: 30,
+            },
+          );
+          const localClient = adapter.modelControl?.clientForHost?.("local");
+          expect(localClient).toBeTruthy();
+          // The local target remains discoverable while the remote route is active.
+          fakeDocument.querySelector.mockReturnValue({
+            querySelectorAll: () => [],
+            __reactFiber$idle: {
+              memoizedState: { memoizedState: requestTarget, next: null },
+              return: null,
+            },
+          });
+          const remoteTarget = {
+            ...requestTarget,
+            hostId: "remote-ssh-discovered:mac",
+            sendRequest: vi.fn(),
+          };
+          for (let index = 0; index < 2; index += 1) {
+            fakeWindow.__codexhostDraftPrewarmPolicyV1 = {
+              ...policy,
+              hostId: remoteTarget.hostId,
+              requestTarget: () => remoteTarget,
+            };
+            expect(adapter.modelControl?.currentHostId?.()).toBe(remoteTarget.hostId);
+            fakeWindow.__codexhostDraftPrewarmPolicyV1 = policy;
+            expect(adapter.modelControl?.clientForHost?.("local")).toBe(localClient);
+          }
+          expect(requestTarget.sendRequest).toHaveBeenCalledTimes(2);
+          expect(requestTarget.sendRequest).toHaveBeenCalledWith(
+            "codexhost/harness/display-settings/get",
+            {},
+          );
+          expect(remoteTarget.sendRequest).not.toHaveBeenCalled();
+          // Auxiliary lookups must not disable real connection or explicit policy invalidation.
+          Object.defineProperty(requestTarget, "requestClient", { value: { ...requestTarget } });
+          const reconnected = adapter.modelControl?.clientForHost?.("local");
+          expect(reconnected).toBeTruthy();
+          expect(reconnected).not.toBe(localClient);
+          fakeWindow.__codexhostDraftPrewarmPolicyV1 = { ...policy };
+          expect(adapter.modelControl?.clientForHost?.("local")).not.toBe(reconnected);
+        } else {
+          expect(requestTarget.sendRequest).not.toHaveBeenCalled();
+        }
+        adapter.dispose();
+      } finally {
+        for (const [name, descriptor] of [
+          ["window", priorWindow],
+          ["document", priorDocument],
+          ["CustomEvent", priorCustomEvent],
+        ] as const) {
+          if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+          else Reflect.deleteProperty(globalThis, name);
+        }
       }
-    }
-  });
+    },
+  );
 
   it("recognizes current-version policy readiness markers independently", () => {
     expect(isMainProcessTitlePolicyReady({ state: "ready" })).toBe(true);
@@ -485,45 +554,19 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(isDraftPrewarmPolicyReady({ state: "ready", clear: vi.fn() })).toBe(false);
   });
 
-  it("uses a draft routing policy only for the active remote Host", () => {
-    const policy = {
-      state: "ready" as const,
-      hostId: "remote-ssh-discovered:mac",
-      select: vi.fn(),
-      clear: vi.fn(),
-    };
-    const active = {
-      requestClient: {
-        hostId: "remote-ssh-discovered:mac",
-        sendRequest: vi.fn(),
-        prewarmThreadStart: vi.fn(),
-        enqueueRequest: vi.fn(),
-      },
-    };
-    const local = { requestClient: { ...active.requestClient, hostId: "local" } };
-    const duplicateActive = {
-      requestClient: {
-        ...active.requestClient,
-        sendRequest: vi.fn(),
-      },
-    };
-
-    expect(activeRendererDraftPrewarmPolicy(policy, [active])).toBe(policy);
-    expect(activeRendererDraftPrewarmPolicy(policy, [local, active])).toBe(policy);
-    expect(activeRendererDraftPrewarmPolicy(policy, [local])).toBeNull();
-    expect(activeRendererDraftPrewarmPolicy(policy, [active, duplicateActive])).toBeNull();
-  });
-
   it("creates base transport selections and clears routing for Codex", () => {
-    expect(modelSelectionForAgent(null, null, "pi")?.model).toBe(PI_TRANSPORT_MODEL_ID);
-    expect(modelSelectionForAgent(null, null, "claude-code")?.model).toBe(
-      CLAUDE_CODE_TRANSPORT_MODEL_ID,
-    );
-    expect(modelSelectionForAgent(null, null, "deepseek-harness")?.model).toBe(
-      DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
-    );
-    expect(modelSelectionForAgent(null, null, "grok")?.model).toBe(GROK_TRANSPORT_MODEL_ID);
-    expect(modelSelectionForAgent(null, null, "opencode")?.model).toBe(OPENCODE_TRANSPORT_MODEL_ID);
+    for (const agent of [
+      "pi",
+      "claude-code",
+      "deepseek-harness",
+      "grok",
+      "opencode",
+      "unknown-plugin",
+    ]) {
+      expect(decodeHarnessPluginRoute(modelSelectionForAgent(null, null, agent)?.model)).toEqual({
+        harnessId: agent,
+      });
+    }
     expect(modelSelectionForAgent(null, null, "codex")).toBeNull();
   });
 
@@ -534,9 +577,11 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(piTransportModelId(model, thinkingOptionId)).toBe(
       `${PI_TRANSPORT_MODEL_ID}@${model.id}@${thinkingOptionId}`,
     );
-    expect(modelSelectionForAgent(null, null, "pi", model, thinkingOptionId)?.model).toBe(
-      `${PI_TRANSPORT_MODEL_ID}@${model.id}@${thinkingOptionId}`,
-    );
+    expect(
+      decodeHarnessPluginRoute(
+        modelSelectionForAgent(null, null, "pi", model, thinkingOptionId)?.model,
+      ),
+    ).toEqual({ harnessId: "pi", model, thinkingOptionId });
     expect(isPiTransportModelId(`${PI_TRANSPORT_MODEL_ID}@${model.id}@${thinkingOptionId}`)).toBe(
       true,
     );
@@ -561,8 +606,10 @@ describe("current Codex Renderer Agent adapter", () => {
       thinkingOptionId,
     });
     expect(
-      modelSelectionForAgent(null, null, "omp", model, thinkingOptionId, permissionModeId)?.model,
-    ).toBe(carrier);
+      decodeHarnessPluginRoute(
+        modelSelectionForAgent(null, null, "omp", model, thinkingOptionId, permissionModeId)?.model,
+      ),
+    ).toEqual({ harnessId: "omp", model, thinkingOptionId, permissionModeId });
   });
 
   it("encodes Claude Model, Permission Mode, and Thinking in the transport carrier", () => {
@@ -578,9 +625,11 @@ describe("current Codex Renderer Agent adapter", () => {
       permissionModeId,
     });
     expect(
-      modelSelectionForAgent(null, null, "claude-code", model, thinkingOptionId, permissionModeId)
-        ?.model,
-    ).toBe(carrier);
+      decodeHarnessPluginRoute(
+        modelSelectionForAgent(null, null, "claude-code", model, thinkingOptionId, permissionModeId)
+          ?.model,
+      ),
+    ).toEqual({ harnessId: "claude-code", model, thinkingOptionId, permissionModeId });
   });
 
   it("encodes DeepSeek Harness Model and Permission Mode in the transport carrier", () => {
@@ -596,19 +645,11 @@ describe("current Codex Renderer Agent adapter", () => {
       model,
     });
     expect(
-      modelSelectionForAgent(null, null, "deepseek-harness", model, undefined, permissionModeId)
-        ?.model,
-    ).toBe(carrier);
-  });
-
-  it("encodes Qwen Code Model and Permission Mode in the transport carrier", () => {
-    const model = harnessModelRefSchema.parse({ id: "qwen-max" });
-    const permissionModeId = harnessPermissionModeIdSchema.parse("plan");
-    const carrier = qwenCodeTransportModelId(model, permissionModeId);
-    expect(carrier).toBe(`${QWEN_CODE_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}`);
-    expect(
-      modelSelectionForAgent(null, null, "qwen-code", model, undefined, permissionModeId)?.model,
-    ).toBe(carrier);
+      decodeHarnessPluginRoute(
+        modelSelectionForAgent(null, null, "deepseek-harness", model, undefined, permissionModeId)
+          ?.model,
+      ),
+    ).toEqual({ harnessId: "deepseek-harness", model, permissionModeId });
   });
 
   it("encodes Grok Model, Permission Mode, and Thinking in the transport carrier", () => {
@@ -624,8 +665,11 @@ describe("current Codex Renderer Agent adapter", () => {
       permissionModeId,
     });
     expect(
-      modelSelectionForAgent(null, null, "grok", model, thinkingOptionId, permissionModeId)?.model,
-    ).toBe(carrier);
+      decodeHarnessPluginRoute(
+        modelSelectionForAgent(null, null, "grok", model, thinkingOptionId, permissionModeId)
+          ?.model,
+      ),
+    ).toEqual({ harnessId: "grok", model, thinkingOptionId, permissionModeId });
     expect(
       decodeGrokTransportModelId(`${GROK_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`),
     ).toEqual({ model, thinkingOptionId });
@@ -646,8 +690,25 @@ describe("current Codex Renderer Agent adapter", () => {
       thinkingOptionId,
     });
     expect(
-      modelSelectionForAgent(null, null, "opencode", model, thinkingOptionId, permissionModeId)
-        ?.model,
+      decodeHarnessPluginRoute(
+        modelSelectionForAgent(null, null, "opencode", model, thinkingOptionId, permissionModeId)
+          ?.model,
+      ),
+    ).toEqual({ harnessId: "opencode", model, thinkingOptionId, permissionModeId });
+  });
+
+  it("encodes Hermes Model and Permission Mode through the shared plugin route", () => {
+    const model = harnessModelRefSchema.parse({ id: "hermes-model-v1.emFpOmdsbS01LXR1cmJv" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("accept_edits");
+    const carrier = hermesTransportModelId(model, permissionModeId);
+
+    expect(decodeHarnessPluginRoute(carrier)).toEqual({
+      harnessId: "hermes",
+      model,
+      permissionModeId,
+    });
+    expect(
+      modelSelectionForAgent(null, null, "hermes", model, undefined, permissionModeId)?.model,
     ).toBe(carrier);
   });
 
@@ -666,9 +727,11 @@ describe("current Codex Renderer Agent adapter", () => {
       thinkingOptionId,
     });
     expect(
-      modelSelectionForAgent(null, null, "antigravity", model, thinkingOptionId, permissionModeId)
-        ?.model,
-    ).toBe(carrier);
+      decodeHarnessPluginRoute(
+        modelSelectionForAgent(null, null, "antigravity", model, thinkingOptionId, permissionModeId)
+          ?.model,
+      ),
+    ).toEqual({ harnessId: "antigravity", model, thinkingOptionId, permissionModeId });
     expect(
       decodeAntigravityTransportModelId(
         `${ANTIGRAVITY_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`,

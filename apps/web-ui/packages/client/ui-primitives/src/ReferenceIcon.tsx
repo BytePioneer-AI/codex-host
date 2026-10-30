@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
-import { ICON_MEDIUM_STROKE, ICON_REGULAR_STROKE } from "./icons/index.tsx";
+import { stripDelegationMentions } from "@codexhost/shared-contracts";
+import { ICON_MEDIUM_STROKE, ICON_REGULAR_STROKE, IconDataOutlineRegular } from "./icons/index.tsx";
+import { RemotePluginIcon } from "./RemotePluginIcon.tsx";
 import type { IconProps } from "./icons/props.ts";
 import {
   BrowseOutlineArtwork,
@@ -13,6 +15,8 @@ export type ReferenceIconKind = "session" | "file" | "folder";
 /** Props shared by inline reference glyphs. */
 export interface ReferenceIconProps extends IconProps {
   kind: ReferenceIconKind;
+  /** Original reference carrier, when the session glyph can resolve a Harness identity. */
+  reference?: string | undefined;
 }
 
 interface WeightedReferenceIconProps extends ReferenceIconProps {
@@ -29,7 +33,24 @@ function ReferenceIconArtwork({
   size = 16,
   className,
   strokeWidth,
+  reference,
 }: WeightedReferenceIconProps): ReactNode {
+  if (kind === "session" && reference !== undefined) {
+    const { text, mentions } = stripDelegationMentions(reference);
+    const mention = mentions[0];
+    if (mention && mentions.length === 1 && text === `@${mention.label}`) {
+      return (
+        <RemotePluginIcon
+          id={mention.harnessId}
+          src={`/harness-icons/${encodeURIComponent(mention.harnessId)}`}
+          presentationUrl="/harness-icons/presentation.json"
+          size={size}
+          className={className}
+          fallback={<IconDataOutlineRegular size={size} className={className} />}
+        />
+      );
+    }
+  }
   switch (kind) {
     case "session":
       return (

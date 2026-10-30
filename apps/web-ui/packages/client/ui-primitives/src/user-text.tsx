@@ -5,7 +5,8 @@
  * labels within its width. Explicit CH `[@label](thread://...?hostId=...)` and
  * DSH `@[label](dsh-session:...)` forms fold to session labels; exact session labels
  * supplied by an adjacent recall decorate their bare `@label` mention; plain
- * `@name` word-boundary tokens decorate by shape alone; and a plain `/name`
+ * `@name` word-boundary tokens decorate by shape alone; explicit Harness
+ * delegation carriers fold to their name and plugin icon; and a plain `/name`
  * token decorates only when the caller names it — a skill the host actually
  * loaded for that message (ui-chat reads the step's `skill-invocation`
  * injections) or the command a command-input bubble echoes — so `/123` or a
@@ -27,6 +28,9 @@ const SESSION_WIRE_RE = /@\[([^\]\n]+)\]\(dsh-session:[^)\s]+\)/gu;
 const THREAD_WIRE_RE =
   /\[@((?:\\.|[^\\\]\r\n])+)\]\((thread:\/\/[^/?#()\s<>]+\?hostId=[^&#()\s<>]+)\)/gu;
 
+/** Explicit Harness identity; ordinary subagent links are not delegation mentions. */
+const HARNESS_WIRE_RE = /\[@([^\]\n]+)\]\(<?subagent:\/\/codexhost\.([a-z0-9][a-z0-9-]*)>?\)/gu;
+
 /** Sentence punctuation a bare `@name` token may carry without being part of the reference. */
 const TRAILING_PUNCTUATION_RE = /[.,;:!?，。；：！？]+$/u;
 
@@ -35,7 +39,7 @@ interface DecorationRange {
   readonly end: number;
   /** Matched source text (hover title). */
   readonly label: string;
-  readonly kind: "session" | "plain";
+  readonly kind: "session" | "harness" | "plain";
   /** Pre-resolved display text (wire folds); derived from label when absent. */
   readonly display?: string;
 }
@@ -67,6 +71,15 @@ export function projectUserText(
   references?: UserTextReferences,
 ): ReactNode {
   const ranges: DecorationRange[] = [];
+  for (const mention of text.matchAll(HARNESS_WIRE_RE)) {
+    ranges.push({
+      start: mention.index,
+      end: mention.index + mention[0].length,
+      label: mention[0],
+      kind: "harness",
+      display: (mention[1] as string).trim(),
+    });
+  }
   for (const mention of text.matchAll(THREAD_WIRE_RE)) {
     ranges.push({
       start: mention.index,
@@ -109,7 +122,7 @@ export function projectUserText(
     if (label.startsWith("/") && !slashNames.includes(label.slice(1))) continue;
     ranges.push({ start: tokenStart, end: tokenStart + label.length, label, kind: "plain" });
   }
-  const rankOf = (range: DecorationRange): number => (range.kind === "session" ? 0 : 1);
+  const rankOf = (range: DecorationRange): number => (range.kind === "plain" ? 1 : 0);
   ranges.sort((a, b) => a.start - b.start || rankOf(a) - rankOf(b) || b.end - a.end);
   const parts: ReactNode[] = [];
   let cursor = 0;
@@ -125,13 +138,15 @@ export function projectUserText(
     const { start: tokenStart, end, label, kind } = range;
     if (tokenStart > cursor) pushPlain(cursor, tokenStart);
     const referenceKind =
-      kind === "session"
-        ? "session"
-        : label.startsWith("@")
-          ? label.replace(/^@"|"$/gu, "").endsWith("/")
-            ? "folder"
-            : "file"
-          : undefined;
+      kind === "harness"
+        ? "harness"
+        : kind === "session"
+          ? "session"
+          : label.startsWith("@")
+            ? label.replace(/^@"|"$/gu, "").endsWith("/")
+              ? "folder"
+              : "file"
+            : undefined;
     const displayLabel =
       range.display ??
       (referenceKind === undefined
@@ -143,7 +158,12 @@ export function projectUserText(
     const contents = (
       <>
         {referenceKind !== undefined && (
-          <ReferenceIconRegular kind={referenceKind} size={16} className={css.refIcon} />
+          <ReferenceIconRegular
+            kind={referenceKind === "harness" ? "session" : referenceKind}
+            reference={label}
+            size={16}
+            className={css.refIcon}
+          />
         )}
         {displayLabel}
       </>

@@ -13,6 +13,8 @@ import referenceCss from "./composer-editor.module.css";
 /** Display inputs of one chip (the node's cached owner projections). */
 export interface ReferenceChipProps {
   readonly label: string;
+  /** Source-owned identity carrier used to resolve the reference's actual icon. */
+  readonly reference: string;
   /** Domain glyph; absent renders the trigger marker instead of an icon. */
   readonly appearance?: ReferenceIconKind | undefined;
   /** Owner-resolution failure styling bit. */
@@ -24,7 +26,12 @@ export interface ReferenceChipProps {
  * @param props - label, optional domain glyph, and the invalid bit.
  * @returns the chip body (icon + truncating label).
  */
-export function ReferenceChip({ label, appearance, invalid }: ReferenceChipProps): ReactNode {
+export function ReferenceChip({
+  label,
+  reference,
+  appearance,
+  invalid,
+}: ReferenceChipProps): ReactNode {
   return (
     <span
       className={clsx(
@@ -40,7 +47,12 @@ export function ReferenceChip({ label, appearance, invalid }: ReferenceChipProps
           @
         </span>
       ) : (
-        <ReferenceIconRegular kind={appearance} size={14} className={css.icon} />
+        <ReferenceIconRegular
+          kind={appearance}
+          reference={reference}
+          size={14}
+          className={css.icon}
+        />
       )}
       <span className={css.label}>{label}</span>
     </span>

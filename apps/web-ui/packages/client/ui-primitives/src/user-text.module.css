@@ -31,7 +31,7 @@
   font-family: var(--dsw-font-markdown-code-font-family);
 }
 
-/* Inline reference glyphs (always ReferenceIcon svgs) ride the consumer's own
+/* Inline reference glyphs and Harness icons ride the consumer's own
    font: 1em keeps the glyph at the text's size in the bubble (14px + user
    setting), the queue preview's fixed 13px line, and any future consumer — a
    px+delta size followed only the bubble axis and left the glyph oversized in

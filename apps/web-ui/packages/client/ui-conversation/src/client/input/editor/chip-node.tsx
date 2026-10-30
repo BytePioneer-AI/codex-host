@@ -191,7 +191,12 @@ export class ReferenceChipNode extends DecoratorNode<JSX.Element> {
   /** React face rendered into the host element by the decorator portal. */
   override decorate(): JSX.Element {
     return (
-      <ReferenceChip label={this.__label} appearance={this.__appearance} invalid={this.__invalid} />
+      <ReferenceChip
+        label={this.__label}
+        reference={this.__ref}
+        appearance={this.__appearance}
+        invalid={this.__invalid}
+      />
     );
   }
 }

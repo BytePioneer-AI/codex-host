@@ -65,7 +65,16 @@ for (const width of [390, 1280])
       await composer.pressSequentially("#codex-cli");
       await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
       await composer.press("Enter");
-      await composer.locator('[data-composer-chip="codexhost-delegation"]').waitFor();
+      const agent = composer.locator('[data-composer-chip="codexhost-delegation"]');
+      const icon = agent.locator('img[src="/harness-icons/codex-cli"]');
+      await icon.waitFor();
+      await page.waitForFunction(() => {
+        const image = document.querySelector<HTMLImageElement>(
+          '[data-composer-chip="codexhost-delegation"] img',
+        );
+        return image?.complete && image.naturalWidth > 0;
+      });
+      assert.equal(await agent.innerText(), "Codex");
       assert.equal(writeMethods().length, 0);
       await composer.press("ControlOrMeta+A");
       await composer.press("ControlOrMeta+C");
@@ -112,6 +121,36 @@ for (const width of [390, 1280])
       });
     },
   );
+
+it(
+  "delegation Harness icons survive undo and persisted draft restoration",
+  { timeout: 60_000 },
+  async (t) => {
+    const { page, composer, menu, open, writeMethods } = await discoveryBrowser(t, 1280, true);
+    await open();
+    await composer.fill("delegate #codex-cli");
+    await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).click();
+    const chip = composer.locator('[data-composer-chip="codexhost-delegation"]');
+    const icon = chip.locator('img[src="/harness-icons/codex-cli"]');
+    await icon.waitFor();
+    await composer.press("ControlOrMeta+Z");
+    assert.equal(await chip.count(), 0);
+    await composer.press("ControlOrMeta+Shift+Z");
+    await icon.waitFor();
+    await composer.press("ControlOrMeta+A");
+    await composer.press("ControlOrMeta+C");
+    const text = await page.evaluate(() => navigator.clipboard.readText());
+    assert.equal(text.trim(), "delegate [@Codex](subagent://codexhost.codex-cli)");
+    await page.reload();
+    await icon.waitFor();
+    assert.equal(await chip.innerText(), "Codex");
+    await composer.click();
+    await composer.press("ControlOrMeta+A");
+    await composer.press("ControlOrMeta+C");
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), text);
+    assert.equal(writeMethods().length, 0);
+  },
+);
 
 it(
   "hash boundary negatives, Markdown space and IME do not consume or send input",

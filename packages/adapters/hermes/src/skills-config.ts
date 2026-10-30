@@ -32,20 +32,32 @@ print(json.dumps(sorted(disabled)))
 
 const TIMEOUT_MS = 15_000;
 
-/** Hermes' own interpreter: the venv that carries its config writers. */
+/**
+ * Hermes' own interpreter: the venv that carries its config writers. Resolved from HERMES_HOME
+ * (default `~/.hermes`) with the platform's real layout — `venv/bin/python3`, `venv/bin/python`
+ * and Windows' `venv/Scripts/python.exe` — instead of one hard-coded POSIX path.
+ */
 export async function hermesAgentPython(
   environment: NodeJS.ProcessEnv,
 ): Promise<{ python: string; agentDirectory: string } | undefined> {
-  const home = environment["HOME"];
-  if (typeof home !== "string" || home.length === 0) return undefined;
-  const agentDirectory = `${home}/.hermes/hermes-agent`;
-  const python = `${agentDirectory}/venv/bin/python3`;
-  try {
-    await access(python);
-  } catch {
-    return undefined;
+  const hermesHome = environment["HERMES_HOME"];
+  const home = environment["HOME"] ?? environment["USERPROFILE"];
+  const base = typeof hermesHome === "string" && hermesHome ? hermesHome : home;
+  if (typeof base !== "string" || base.length === 0) return undefined;
+  const agentDirectory = `${base}/.hermes/hermes-agent`.replace("//.hermes", "/.hermes");
+  const candidates =
+    process.platform === "win32"
+      ? [`${agentDirectory}/venv/Scripts/python.exe`, `${agentDirectory}/venv/bin/python`]
+      : [`${agentDirectory}/venv/bin/python3`, `${agentDirectory}/venv/bin/python`];
+  for (const python of candidates) {
+    try {
+      await access(python);
+      return { python, agentDirectory };
+    } catch {
+      /* try the next layout */
+    }
   }
-  return { python, agentDirectory };
+  return undefined;
 }
 
 function run(
@@ -126,19 +138,20 @@ export async function setSkillDisabled(
 
 /**
  * Skill names Hermes marks as essential (`hermes-agent`): it refuses to disable them, and they must
- * never be deleted either. An unreadable list yields an empty set, so removal still defers to the
- * other guard rails rather than silently allowing everything.
+ * never be deleted either. `undefined` means the list could NOT be confirmed (no interpreter,
+ * startup failure, timeout, unparsable output) — callers must treat that as "refuse to act",
+ * never as "nothing is protected".
  */
-export async function readEssentialSkills(environment: NodeJS.ProcessEnv): Promise<Set<string>> {
+export async function readEssentialSkills(
+  environment: NodeJS.ProcessEnv,
+): Promise<Set<string> | undefined> {
   const interpreter = await hermesAgentPython(environment);
-  if (!interpreter) return new Set();
+  if (!interpreter) return undefined;
   try {
-    return (
-      parseDisabled(
-        await run(interpreter.python, interpreter.agentDirectory, environment, ["essential"]),
-      ) ?? new Set()
+    return parseDisabled(
+      await run(interpreter.python, interpreter.agentDirectory, environment, ["essential"]),
     );
   } catch {
-    return new Set();
+    return undefined;
   }
 }

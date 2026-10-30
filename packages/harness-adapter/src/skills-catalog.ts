@@ -1,11 +1,14 @@
-import { opendir } from "node:fs/promises";
+import { opendir, stat } from "node:fs/promises";
 import path from "node:path";
 
 /**
- * Optional Adapter capability for a read-only catalog of the Harness's own local skill
- * directories. It never starts a native process, opens a Session, or writes native storage; the
- * Host only displays what it returns. Mirrors {@link HarnessUsageStatisticsCapability}: the Host
- * discovers it by duck typing on `skillsCatalog`.
+ * Optional Adapter capability for the catalog of the Harness's own local skill directories.
+ * Listing and content reads stay read-only; the optional switches go through the Harness's own
+ * native mechanisms (its config writer through its interpreter, an archive move on disk), and
+ * `uninstall` removes the skill's directory after re-confirming the target on a fresh scan.
+ * Read-only roots (the cross-Harness shared directory) refuse writes at the capability level.
+ * Mirrors {@link HarnessUsageStatisticsCapability}: the Host discovers it by duck typing on
+ * `skillsCatalog`.
  */
 export interface HarnessSkillsCatalogCapability {
   /** Stable display name of the source, shown as-is in the UI (adapter-localized). */
@@ -17,17 +20,18 @@ export interface HarnessSkillsCatalogCapability {
    * an archive directory, …). Capabilities that omit it are read-only and the page shows no switch.
    */
   setEnabled?(
-    name: string,
+    ref: HarnessSkillRef,
     enabled: boolean,
     signal: AbortSignal,
   ): Promise<HarnessSkillsSetEnabledOutcome>;
   /** Optional: the skill's SKILL.md source for the detail dialog. */
-  readContent?(name: string, signal: AbortSignal): Promise<HarnessSkillsContentRead>;
+  readContent?(ref: HarnessSkillRef, signal: AbortSignal): Promise<HarnessSkillsContentRead>;
   /**
    * Optional: delete the skill's own directory. Destructive and irreversible — the page asks for
-   * confirmation first, and implementations must re-check that the target really is a skill.
+   * confirmation first, and implementations must re-check on a fresh scan that the ref (name plus
+   * the confirmed path, when given) still resolves to exactly that directory.
    */
-  uninstall?(name: string, signal: AbortSignal): Promise<HarnessSkillsUninstallOutcome>;
+  uninstall?(ref: HarnessSkillRef, signal: AbortSignal): Promise<HarnessSkillsUninstallOutcome>;
 }
 
 export interface HarnessSkillsUninstallOutcome {
@@ -56,6 +60,17 @@ export interface HarnessSkillsCatalogRead {
   skills: readonly HarnessSkill[];
   /** Directories that could not be read; the Host shows them instead of hiding the source. */
   failures?: readonly HarnessSkillFailure[];
+}
+
+/**
+ * Unambiguous skill identity. The name alone is not unique across categories, archives and the
+ * shared root; `path` is the directory the user actually saw and confirmed, so every mutating
+ * call carries it and implementations refuse when a fresh scan disagrees.
+ */
+export interface HarnessSkillRef {
+  name: string;
+  /** Absolute skill directory the page acted on; optional only for legacy callers. */
+  path?: string;
 }
 
 export interface HarnessSkill {
@@ -92,6 +107,11 @@ const MAX_PATH_LENGTH = 4096;
 /** Manifest bytes read for the frontmatter; a manifest's frontmatter never approaches this. */
 const MAX_MANIFEST_PREFIX_BYTES = 64 * 1024;
 const SKILLS_PER_ROOT_LIMIT = 4096;
+/**
+ * Directory segments the scanner reports as archived. Hidden-but-loaded conventions like Codex's
+ * `.system` deliberately stay out: "archived" is the `.archive` restore convention, not any dot.
+ */
+export const ARCHIVE_SEGMENT_NAMES = [".archive"];
 
 /** Single-line bounded display text, or undefined when nothing remains. */
 export function harnessSkillText(value: unknown, maxLength: number): string | undefined {
@@ -123,17 +143,34 @@ export function harnessSkillFrontmatter(
   const end = /^---/mu.exec(rest);
   if (!end) return undefined;
   const fields = new Map<string, string>();
-  for (const line of rest.slice(0, end.index).split(/\r?\n/u)) {
+  const lines = rest.slice(0, end.index).split(/\r?\n/u);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
     const pair = /^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/u.exec(line);
     if (!pair) continue;
+    const key = pair[1] ?? "";
     let value = pair[2]?.trim() ?? "";
-    if (
+    // Block scalars (`>`, `|` and their chomping variants) fold the indented lines that follow;
+    // descriptions written as `description: >-` would otherwise show the marker itself.
+    const block = /^([>|])([+-]?\d*|\d+[+-]?)$/u.exec(value);
+    if (block) {
+      const folded: string[] = [];
+      for (let next = index + 1; next < lines.length; next += 1) {
+        const body = lines[next] ?? "";
+        if (body.trim() === "" && folded.length === 0) continue;
+        if (body.startsWith("  ") || body.startsWith("\t")) folded.push(body.replace(/^\s+/u, ""));
+        else break;
+      }
+      while (folded.length > 0 && folded.at(-1) === "") folded.pop();
+      value = folded.join(block[1] === ">" ? " " : "\n");
+      index += folded.length;
+    } else if (
       (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
       (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
     ) {
       value = value.slice(1, -1);
     }
-    if (!fields.has(pair[1] ?? "")) fields.set(pair[1] ?? "", value);
+    if (!fields.has(key)) fields.set(key, value);
   }
   return Object.fromEntries(fields);
 }
@@ -159,10 +196,9 @@ export function harnessSkillFromDirectory(
   const relative = path.relative(root, directory);
   const inside = relative !== "" && !relative.startsWith("..");
   const parent = inside ? path.dirname(relative) : "";
-  /** A hidden segment (`.archive`, `.system`, …) means the Harness does not load this skill. */
+  /** Archived is the ARCHIVE convention only; `.system` and friends are loaded normally. */
   const archived =
-    inside &&
-    relative.split(/[\\/]/u).some((segment) => segment.startsWith(".") && segment !== ".");
+    inside && relative.split(/[\\/]/u).some((segment) => ARCHIVE_SEGMENT_NAMES.includes(segment));
   const category =
     harnessSkillText(fields[HARNESS_SKILL_CATEGORY_KEY], MAX_NAME_LENGTH) ??
     harnessSkillText(
@@ -245,7 +281,7 @@ export async function scanHarnessSkillsRoot(
 
 /** The Host's cross-Harness shared skills directory: the shared root the adapters also use. */
 export function harnessSharedSkillsDirectory(environment: NodeJS.ProcessEnv): string | undefined {
-  const home = environment["HOME"];
+  const home = environment["HOME"] ?? environment["USERPROFILE"];
   if (typeof home !== "string" || home.length === 0) return undefined;
   return `${home}/.agents/skills`;
 }
@@ -256,7 +292,16 @@ export async function readDirectories(directory: string): Promise<readonly strin
   const handle = await opendir(directory);
   try {
     for await (const entry of handle) {
+      // A skill directory may legitimately be a symlink (dotfiles-style managed skills);
+      // opendir reports those as neither file nor directory, so verify them by stat.
       if (entry.isDirectory()) entries.push(entry.name);
+      else if (entry.isSymbolicLink())
+        try {
+          if ((await stat(path.join(directory, entry.name))).isDirectory())
+            entries.push(entry.name);
+        } catch {
+          /* dangling link: skipped like an unreadable entry */
+        }
     }
   } finally {
     await handle.close().catch(() => {});

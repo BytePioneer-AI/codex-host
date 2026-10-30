@@ -8,7 +8,7 @@ import {
 export function codexSkillsRoots(environment: NodeJS.ProcessEnv): readonly HarnessSkillsRoot[] {
   const home = environment["HOME"] ?? environment["USERPROFILE"];
   if (typeof home !== "string" || home.length === 0) return [];
-  const codexHome = environment["CODE_HOME"] ?? `${home}/.codex`;
+  const codexHome = environment["CODEX_HOME"] ?? environment["CODE_HOME"] ?? `${home}/.codex`;
   const shared = harnessSharedSkillsDirectory(environment);
   return [
     { directory: `${codexHome}/skills` },

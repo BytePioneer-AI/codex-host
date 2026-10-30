@@ -28,6 +28,7 @@ export { createHarnessSkillsCatalog } from "./skills-catalog-helper.js";
 export type {
   HarnessSkill,
   HarnessSkillFailure,
+  HarnessSkillRef,
   HarnessSkillsCatalogCapability,
   HarnessSkillsCatalogRead,
   HarnessSkillsRootScan,

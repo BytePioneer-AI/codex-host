@@ -1,10 +1,13 @@
-import { opendir, readFile } from "node:fs/promises";
+import path from "node:path";
+import { readFile } from "node:fs/promises";
 
 import {
   harnessSharedSkillsDirectory,
   scanHarnessSkillsRoot,
   type HarnessSkill,
   type HarnessSkillsCatalogCapability,
+  readDirectories,
+  HARNESS_SKILL_MANIFEST,
 } from "@codexhost/harness-adapter";
 import {
   harnessSkillsListResultSchema,
@@ -21,10 +24,15 @@ import type { HarnessSkillsSource } from "./skills-source.js";
 /** How the skills list reaches the UI, parsed and bounded by the shared-contracts schema. */
 export type HarnessSkillsSnapshot = ReturnType<typeof harnessSkillsListResultSchema.parse>;
 
+/** Shared-group manifest read ceiling, mirroring the adapter-side detail dialog bound. */
+const MAX_SHARED_CONTENT = 256 * 1024;
+
 /**
  * Machine-wide skills catalog from the adapters that expose their local skill storage, plus the
- * Host's cross-Harness shared directory. Read-only: never starts a process, opens a Session, or
- * writes native storage. A failed source is reported as a group failure instead of being hidden.
+ * Host's cross-Harness shared directory. The list is read-only; the switches and removals route
+ * through the adapter's own capability (which may run the Harness's config writer or move
+ * archive directories), each re-confirmed against a fresh scan. The shared group serves content
+ * reads but never edits. A failed source is reported as a group failure instead of being hidden.
  */
 export class HarnessSkillsCatalog {
   readonly #environment: NodeJS.ProcessEnv;
@@ -60,7 +68,12 @@ export class HarnessSkillsCatalog {
     if (typeof toggle !== "function") {
       return { ok: false, reason: `${params.harness} does not expose a skill switch` };
     }
-    return toggle.call(source.capability, params.name, params.enabled, AbortSignal.timeout(60_000));
+    return toggle.call(
+      source.capability,
+      { name: params.name, ...(params.path === undefined ? {} : { path: params.path }) },
+      params.enabled,
+      AbortSignal.timeout(60_000),
+    );
   }
 
   /** One skill's SKILL.md, straight from its own directory; bounded and root-checked. */
@@ -68,6 +81,9 @@ export class HarnessSkillsCatalog {
     sources: readonly HarnessSkillsSource[],
     params: HarnessSkillContentParams,
   ): Promise<HarnessSkillsContentResult> {
+    // The shared group has no adapter behind it, but read-only must not mean unreadable: serve
+    // its manifests straight from the shared root the list already scanned.
+    if (params.harness === "shared") return this.#readSharedContent(params);
     const source = sources.find((entry) => entry.harness === params.harness);
     if (!source) {
       return {
@@ -86,7 +102,11 @@ export class HarnessSkillsCatalog {
         reason: `${params.harness} does not expose skill content`,
       };
     }
-    const result = await read.call(source.capability, params.name, AbortSignal.timeout(30_000));
+    const result = await read.call(
+      source.capability,
+      { name: params.name, ...(params.path === undefined ? {} : { path: params.path }) },
+      AbortSignal.timeout(30_000),
+    );
     return {
       ok: result.ok,
       content: result.content ?? "",
@@ -106,7 +126,11 @@ export class HarnessSkillsCatalog {
     if (typeof remove !== "function") {
       return { ok: false, reason: `${params.harness} does not allow removing skills` };
     }
-    const result = await remove.call(source.capability, params.name, AbortSignal.timeout(30_000));
+    const result = await remove.call(
+      source.capability,
+      { name: params.name, ...(params.path === undefined ? {} : { path: params.path }) },
+      AbortSignal.timeout(30_000),
+    );
     return {
       ok: result.ok,
       ...(result.path === undefined ? {} : { path: result.path }),
@@ -140,6 +164,41 @@ export class HarnessSkillsCatalog {
         skills: [],
         failures: [{ path: harness, message: boundedMessage(error) }],
       };
+    }
+  }
+
+  /** Manifest read for the shared group: the page may open details, never edits. */
+  async #readSharedContent(params: HarnessSkillContentParams): Promise<HarnessSkillsContentResult> {
+    const fail = (reason: string): HarnessSkillsContentResult => ({
+      ok: false,
+      content: "",
+      truncated: false,
+      reason,
+    });
+    try {
+      const directory = harnessSharedSkillsDirectory(this.#environment);
+      if (!directory) return fail("The shared skills directory is unavailable");
+      const scan = await scanHarnessSkillsRoot(
+        directory,
+        { readdir: readDirectories, readFile: (file) => readFile(file, "utf8") },
+        AbortSignal.timeout(30_000),
+      );
+      const byName = scan.skills.filter((entry) => entry.name === params.name);
+      const skill =
+        params.path === undefined
+          ? byName.length === 1
+            ? byName[0]
+            : undefined
+          : byName.find((entry) => entry.path === params.path);
+      if (!skill) return fail(`No shared skill named ${params.name} at ${params.path ?? "?"}`);
+      const text = await readFile(path.join(skill.path, HARNESS_SKILL_MANIFEST), "utf8");
+      return {
+        ok: true,
+        content: text.length > MAX_SHARED_CONTENT ? text.slice(0, MAX_SHARED_CONTENT) : text,
+        truncated: text.length > MAX_SHARED_CONTENT,
+      };
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -194,18 +253,4 @@ function toEntry(skill: HarnessSkill): HarnessSkillEntry {
 function boundedMessage(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
   return text.length > 0 && text.length <= 512 ? text : `${text.slice(0, 511)}…`;
-}
-
-/** Directories only; files and unreadable entries are skipped by the scanner's contract. */
-export async function readDirectories(directory: string): Promise<readonly string[]> {
-  const entries: string[] = [];
-  const handle = await opendir(directory);
-  try {
-    for await (const entry of handle) {
-      if (entry.isDirectory()) entries.push(entry.name);
-    }
-  } finally {
-    await handle.close().catch(() => {});
-  }
-  return entries.sort((a, b) => a.localeCompare(b));
 }

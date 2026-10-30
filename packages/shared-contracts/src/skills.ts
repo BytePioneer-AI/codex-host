@@ -78,6 +78,8 @@ export const HARNESS_SKILL_SET_ENABLED_METHOD = "codexhost/skills/setEnabled";
 export const harnessSkillSetEnabledParamsSchema = z.strictObject({
   harness: harnessSkillNameSchema,
   name: harnessSkillNameSchema,
+  /** Directory the user acted on; when present the Harness must re-check it still matches. */
+  path: z.string().max(4096).optional(),
   enabled: z.boolean(),
 });
 
@@ -93,6 +95,8 @@ export const HARNESS_SKILL_CONTENT_METHOD = "codexhost/skills/content";
 export const harnessSkillContentParamsSchema = z.strictObject({
   harness: harnessSkillNameSchema,
   name: harnessSkillNameSchema,
+  /** Directory the user opened; when present the read must match it, not any same-name skill. */
+  path: z.string().max(4096).optional(),
 });
 
 export const harnessSkillContentResultSchema = z.strictObject({
@@ -113,6 +117,8 @@ export const HARNESS_SKILL_UNINSTALL_METHOD = "codexhost/skills/uninstall";
 export const harnessSkillUninstallParamsSchema = z.strictObject({
   harness: harnessSkillNameSchema,
   name: harnessSkillNameSchema,
+  /** Directory the user confirmed; the Harness must refuse when the scan disagrees. */
+  path: z.string().max(4096).optional(),
 });
 
 export const harnessSkillUninstallResultSchema = z.strictObject({

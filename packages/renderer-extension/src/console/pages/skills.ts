@@ -203,8 +203,11 @@ export function createSkillsPage(
       /** The row the dialog currently shows; the remove button acts on it. */
       let detailRow: SkillRow | undefined;
 
+      /** Per-dialog open sequence: a slow response from a previous open never repaints this one. */
+      let detailSeq = 0;
       /** Opens the detail dialog and fills it with the skill's own SKILL.md. */
       const openDetail = async (row: SkillRow): Promise<void> => {
+        const seq = (detailSeq += 1);
         detailRow = row;
         dialogName.textContent = row.skill.name;
         dialogDescription.textContent = row.skill.description;
@@ -220,10 +223,13 @@ export function createSkillsPage(
           const params = harnessSkillContentParamsSchema.parse({
             harness: row.group.harness,
             name: row.skill.name,
+            path: row.skill.path,
           });
           const result = harnessSkillContentResultSchema.parse(
             await request(HARNESS_SKILL_CONTENT_METHOD, params),
           );
+          // A newer open (or a close+reopen) won the dialog: drop this stale response.
+          if (seq !== detailSeq) return;
           if (!result.ok) {
             dialogBody.replaceChildren(
               h(
@@ -242,6 +248,7 @@ export function createSkillsPage(
             );
           }
         } catch (error) {
+          if (seq !== detailSeq) return;
           dialogBody.replaceChildren(
             h(
               document,
@@ -291,6 +298,9 @@ export function createSkillsPage(
           const params = harnessSkillUninstallParamsSchema.parse({
             harness: row.group.harness,
             name: row.skill.name,
+            // The confirmed directory travels with the name: the backend refuses when its fresh
+            // scan no longer agrees, so a same-name sibling can never be removed by mistake.
+            path: row.skill.path,
           });
           const result = harnessSkillUninstallResultSchema.parse(
             await request(HARNESS_SKILL_UNINSTALL_METHOD, params),
@@ -336,6 +346,7 @@ export function createSkillsPage(
           const params = harnessSkillSetEnabledParamsSchema.parse({
             harness: row.group.harness,
             name: row.skill.name,
+            path: row.skill.path,
             enabled: next,
           });
           const result = harnessSkillsSetEnabledResultSchema.parse(

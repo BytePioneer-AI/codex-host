@@ -1,4 +1,4 @@
-import { rm, mkdtemp, mkdir, readFile, writeFile, access } from "node:fs/promises";
+import { rm, mkdtemp, mkdir, readFile, writeFile, access, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -198,22 +198,89 @@ describe("skill removal guard rails", () => {
       });
       const signal = AbortSignal.timeout(5000);
 
-      expect((await catalog.uninstall?.("temp-skill", signal))?.ok).toBe(true);
+      // Refs carry the confirmed path; the backend re-checks it against a fresh scan.
+      expect((await catalog.uninstall?.({ name: "temp-skill", path: live }, signal))?.ok).toBe(
+        true,
+      );
       await expect(access(live)).rejects.toThrow();
 
-      const hidden = await catalog.uninstall?.("old-skill", signal);
+      const hidden = await catalog.uninstall?.({ name: "old-skill", path: archived }, signal);
       expect(hidden?.ok).toBe(false);
       expect(hidden?.reason).toContain("hidden");
 
-      const tooDeep = await catalog.uninstall?.("deep-skill", signal);
+      const tooDeep = await catalog.uninstall?.({ name: "deep-skill", path: nested }, signal);
       expect(tooDeep?.ok).toBe(false);
       expect(tooDeep?.reason).toContain("nested too deep");
 
-      expect((await catalog.uninstall?.("missing-skill", signal))?.ok).toBe(false);
+      expect((await catalog.uninstall?.({ name: "missing-skill" }, signal))?.ok).toBe(false);
       // A plain directory that holds no SKILL.md is not a skill the catalog may remove.
-      expect((await catalog.uninstall?.("not-a-skill", signal))?.ok).toBe(false);
+      expect(
+        (await catalog.uninstall?.({ name: "not-a-skill", path: notASkill }, signal))?.ok,
+      ).toBe(false);
+      // A path the fresh scan no longer agrees with is refused, never resolved by name alone.
+      const moved = await catalog.uninstall?.(
+        { name: "temp-skill", path: path.join(root, "creative", "elsewhere") },
+        signal,
+      );
+      expect(moved?.ok).toBe(false);
+      // The scan finds no such skill at that path anymore (it was removed above): the refusal
+      // proves the confirmed path gates the lookup instead of falling back to the name.
+      expect(moved?.reason ?? "").toMatch(/no longer lives at|No skill named/);
     } finally {
       await removeTree(root);
+    }
+  });
+
+  it("refuses same-name ambiguity and read-only roots", async () => {
+    const own = await temporaryRoot();
+    const shared = await temporaryRoot();
+    try {
+      const left = path.join(own, "creative", "dupe");
+      const right = path.join(own, "devops", "dupe");
+      const sharedSkill = path.join(shared, "shared-demo");
+      for (const directory of [left, right, sharedSkill]) {
+        await mkdir(directory, { recursive: true });
+        await writeFile(
+          path.join(directory, "SKILL.md"),
+          `---\nname: ${path.basename(directory)}\ndescription: same name\n---\n`,
+        );
+      }
+      await writeFile(
+        path.join(right, "SKILL.md"),
+        "---\nname: dupe\ndescription: other category\n---\n",
+      );
+
+      const catalog = createHarnessSkillsCatalog({
+        environment: {},
+        roots: () => [
+          { directory: own },
+          { directory: shared, categoryFallback: "shared", readOnly: true },
+        ],
+        label: "Test",
+      });
+      const signal = AbortSignal.timeout(5000);
+
+      // Two same-name skills and no confirmed path: the backend never guesses.
+      const ambiguous = await catalog.uninstall?.({ name: "dupe" }, signal);
+      expect(ambiguous?.ok).toBe(false);
+      expect(ambiguous?.reason).toContain("ambiguous");
+
+      // The confirmed path picks the exact one even among same-name siblings.
+      expect((await catalog.uninstall?.({ name: "dupe", path: left }, signal))?.ok).toBe(true);
+      await expect(access(left)).rejects.toThrow();
+      await expect(access(right)).resolves.toBeUndefined();
+
+      // A read-only shared root is refused by the backend whatever its declared category.
+      const sharedRefusal = await catalog.uninstall?.(
+        { name: "shared-demo", path: sharedSkill },
+        signal,
+      );
+      expect(sharedRefusal?.ok).toBe(false);
+      expect(sharedRefusal?.reason).toContain("read-only");
+      await expect(access(sharedSkill)).resolves.toBeUndefined();
+    } finally {
+      await removeTree(own);
+      await removeTree(shared);
     }
   });
 });
@@ -222,5 +289,33 @@ describe("shared skills directory", () => {
   it("derives from HOME", () => {
     expect(harnessSharedSkillsDirectory({ HOME: "/home/demo" })).toBe("/home/demo/.agents/skills");
     expect(harnessSharedSkillsDirectory({})).toBeUndefined();
+  });
+});
+
+describe("frontmatter block scalars", () => {
+  it("folds > and | descriptions instead of showing the marker", () => {
+    const fields = harnessSkillFrontmatter(
+      "---\nname: blocks\ndescription: >-\n  line one\n  line two\nother: |\n  a\n  b\n---\n",
+    );
+    expect(fields?.description).toBe("line one line two");
+    expect(fields?.other).toBe("a\nb");
+  });
+});
+
+describe("readDirectories follows directory symlinks", () => {
+  it("lists symlinked skill directories and skips dangling links", async () => {
+    const root = await temporaryRoot();
+    try {
+      const real = path.join(root, "real-skill");
+      await mkdir(real, { recursive: true });
+      await symlink(real, path.join(root, "linked-skill"));
+      await symlink(path.join(root, "missing"), path.join(root, "dangling"));
+      const names = await readDirectories(root);
+      expect(names).toContain("linked-skill");
+      expect(names).toContain("real-skill");
+      expect(names).not.toContain("dangling");
+    } finally {
+      await removeTree(root);
+    }
   });
 });

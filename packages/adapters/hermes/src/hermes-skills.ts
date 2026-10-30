@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, rename } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, rename } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -6,6 +6,7 @@ import {
   harnessSharedSkillsDirectory,
   harnessSkillFrontmatter,
   type HarnessSkill,
+  type HarnessSkillRef,
   type HarnessSkillsCatalogCapability,
   type HarnessSkillsSetEnabledOutcome,
   type HarnessSkillsRoot,
@@ -21,14 +22,18 @@ export function hermesSkillsRoots(environment: NodeJS.ProcessEnv): readonly Harn
   const shared = harnessSharedSkillsDirectory(environment);
   return [
     ...(root ? [{ directory: root }] : []),
-    ...(shared ? [{ directory: shared, categoryFallback: "shared" }] : []),
+    ...(shared ? [{ directory: shared, categoryFallback: "shared", readOnly: true }] : []),
   ];
 }
 
 function hermesSkillsRoot(environment: NodeJS.ProcessEnv): string | undefined {
-  const home = environment["HERMES_HOME"] ?? environment["HOME"];
+  // HERMES_HOME is the Hermes root (~/.hermes) when set; the fallback composes it from HOME —
+  // $HOME/skills would scan a directory Hermes never loads.
+  const hermesHome = environment["HERMES_HOME"];
+  if (typeof hermesHome === "string" && hermesHome.length > 0) return `${hermesHome}/skills`;
+  const home = environment["HOME"] ?? environment["USERPROFILE"];
   if (typeof home !== "string" || home.length === 0) return undefined;
-  return `${home}/skills`;
+  return `${home}/.hermes/skills`;
 }
 
 /**
@@ -57,47 +62,76 @@ export function createHermesSkillsCatalog(
     };
   };
 
+  /** Resolves the exact Hermes skill a ref names; the confirmed path must still match. */
+  const resolveRef = async (
+    ref: HarnessSkillRef,
+    signal: AbortSignal,
+  ): Promise<{ skill: HarnessSkill } | { reason: string }> => {
+    const listing = await read(signal);
+    const byName = listing.skills.filter((entry) => entry.name === ref.name);
+    if (byName.length === 0) return { reason: `No Hermes skill named ${ref.name}` };
+    if (ref.path === undefined) {
+      if (byName.length > 1)
+        return { reason: `${ref.name} is ambiguous here; retry from the page` };
+      return { skill: byName[0]! };
+    }
+    const match = byName.find(
+      (entry) => path.resolve(entry.path) === path.resolve(ref.path as string),
+    );
+    return match
+      ? { skill: match }
+      : { reason: `${ref.name} no longer lives at ${ref.path}; reload the page` };
+  };
+
   return Object.freeze({
     ...(base.label === undefined ? {} : { label: base.label }),
     list: read,
-    readContent: (name: string, signal: AbortSignal) =>
+    readContent: (ref: HarnessSkillRef, signal: AbortSignal) =>
       base.readContent === undefined
         ? Promise.resolve({ ok: false, reason: "Hermes skills are not readable here" })
-        : base.readContent(name, signal),
-    uninstall: async (name: string, signal: AbortSignal) => {
-      const listing = await read(signal);
-      const skill = listing.skills.find((entry) => entry.name === name);
-      if (!skill) return { ok: false, reason: `No Hermes skill named ${name}` };
+        : base.readContent(ref, signal),
+    uninstall: async (ref: HarnessSkillRef, signal: AbortSignal) => {
+      const resolved = await resolveRef(ref, signal);
+      if ("reason" in resolved) return { ok: false, reason: resolved.reason };
+      const skill = resolved.skill;
       if (shared && skill.root === shared) {
         return { ok: false, reason: "Shared skills are read-only in this page" };
       }
-      if ((await readEssentialSkills(environment)).has(name)) {
-        return { ok: false, reason: `${name} is an essential Hermes skill` };
+      // An unreadable essential list must not read as "nothing is protected": refuse instead.
+      const essential = await readEssentialSkills(environment);
+      if (essential === undefined) {
+        return {
+          ok: false,
+          reason: `Hermes could not confirm its essential skills; removal of ${ref.name} refused`,
+        };
+      }
+      if (essential.has(skill.name)) {
+        return { ok: false, reason: `${skill.name} is an essential Hermes skill` };
       }
       return base.uninstall === undefined
         ? { ok: false, reason: "Hermes skills are not removable here" }
-        : base.uninstall(name, signal);
+        : base.uninstall(ref, signal);
     },
     async setEnabled(
-      name: string,
+      ref: HarnessSkillRef,
       enabled: boolean,
       signal: AbortSignal,
     ): Promise<HarnessSkillsSetEnabledOutcome> {
-      const listing = await read(signal);
-      const skill = listing.skills.find((entry) => entry.name === name);
-      if (!skill) return { ok: false, reason: `No Hermes skill named ${name}` };
+      const resolved = await resolveRef(ref, signal);
+      if ("reason" in resolved) return { ok: false, reason: resolved.reason };
+      const skill = resolved.skill;
       if (shared && skill.root === shared) {
         return { ok: false, reason: "Shared skills are read-only in this page" };
       }
       if (skill.archived) {
-        if (!enabled) return { ok: false, reason: `${name} is already archived` };
+        if (!enabled) return { ok: false, reason: `${skill.name} is already archived` };
         return restoreArchivedSkill(environment, skill);
       }
-      const disabled = await setSkillDisabled(environment, name, enabled);
+      const disabled = await setSkillDisabled(environment, skill.name, enabled);
       if (!disabled) return { ok: false, reason: "Hermes config is not writable" };
-      return disabled.has(name) === !enabled
+      return disabled.has(skill.name) === !enabled
         ? { ok: true }
-        : { ok: false, reason: `${name} cannot be disabled (essential skill)` };
+        : { ok: false, reason: `${skill.name} cannot be disabled (essential skill)` };
     },
   });
 }
@@ -123,11 +157,22 @@ async function restoreArchivedSkill(
   const directoryName = path.basename(skill.path);
   const manifest = await readFile(path.join(skill.path, MANIFEST), "utf8").catch(() => "");
   const declared = harnessSkillFrontmatter(manifest)?.["category"]?.trim();
-  // The scanner falls back to the parent directory name, so `.archive` must not become a directory.
-  const category = declared && !declared.startsWith(".") ? declared : undefined;
+  // The category becomes a real directory segment: ONE legal segment only — no separators, no
+  // `..`, no leading dot — and the final target is re-checked to stay inside the skills root.
+  const category =
+    declared && /^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(declared) ? declared : undefined;
   const target = category
     ? path.join(root, category, directoryName)
     : path.join(root, directoryName);
+  // Compare on ONE resolved basis: realpath of the root (a symlinked HOME, e.g. macOS
+  // /var -> /private/var, must not make every legal target look like an escape) with the
+  // target re-based onto it through their logical relative path.
+  const rootResolved = path.resolve(root);
+  const rootReal = await realpath(root).catch(() => rootResolved);
+  const targetReal = path.resolve(rootReal, path.relative(rootResolved, path.resolve(target)));
+  if (targetReal !== rootReal && !targetReal.startsWith(rootReal + path.sep)) {
+    return { ok: false, reason: "Restored category escapes the Hermes skills root" };
+  }
   if (await exists(target)) {
     return { ok: false, reason: `${target} already exists` };
   }

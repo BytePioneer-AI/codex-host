@@ -281,17 +281,22 @@ describe("Qwen Code history", () => {
     }
   });
 
-  it("returns an empty snapshot for a readable but empty transcript", async () => {
+  it.each(["", "{invalid-json\n"])("rejects unrecoverable mapped history (%j)", async (content) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-qwen-history-"));
     const cwd = path.join(root, "workspace");
     const runtimeDir = path.join(root, "runtime");
     try {
       const chats = path.join(runtimeDir, "projects", projectDirectory(cwd), "chats");
       await mkdir(chats, { recursive: true });
-      await writeFile(path.join(chats, `${sessionId}.jsonl`), "", "utf8");
+      await writeFile(path.join(chats, `${sessionId}.jsonl`), content, "utf8");
 
       await expect(
         readQwenCodeHistory(cwd, harnessId, sessionId, [turnRef("qwen-turn-0")], 64_000, {
+          QWEN_RUNTIME_DIR: runtimeDir,
+        }),
+      ).rejects.toThrow("no recoverable Turns for the persisted mapping");
+      await expect(
+        readQwenCodeHistory(cwd, harnessId, sessionId, [], 64_000, {
           QWEN_RUNTIME_DIR: runtimeDir,
         }),
       ).resolves.toEqual({ turns: [] });

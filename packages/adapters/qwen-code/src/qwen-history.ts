@@ -295,6 +295,9 @@ function projectHistory(
     }
   }
   finishTurn();
+  if (knownTurnRefs.length > 0 && turns.length === 0) {
+    throw new Error("Qwen Code transcript contains no recoverable Turns for the persisted mapping");
+  }
   const selected =
     knownTurnRefs.length > 0 && turns.length > knownTurnRefs.length
       ? turns.slice(-knownTurnRefs.length)

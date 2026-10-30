@@ -1,18 +1,23 @@
 /**
  * Trigger candidate menu: renders the InputTriggerService menu store into the
  * conversation.input.overlay anchor. Closed state renders null (the overlay
- * slot stays mounted); groups render in roster order under localized title
- * rows. A pending group keeps showing the items it already had (the reducer
+ * slot stays mounted); groups render in roster order under localized sticky
+ * headings. A pending group keeps showing the items it already had (the reducer
  * retains them across a query refinement) and falls back to two skeleton
  * rows only while it has none; pointer picks route back through
  * the service (combobox pattern — focus never leaves the textarea, so rows
  * are mousedown-handled and the highlight is exposed via
  * aria-activedescendant on the listbox). A row reads title, then the
- * command-name alias when the title is not the name in another letter case
- * (a localized title), then the description right-aligned. A source publishing crumbs gets a breadcrumb
+ * command-name alias when the title differs beyond letter case or a leading
+ * slash (a localized title) and the source allows it, then the description right-aligned.
+ * A source publishing crumbs gets a breadcrumb
  * header pinned above the scrolling list.
  */
-import { MenuSurface } from "@deepseek-ai/dsh-client-ui-primitives";
+import {
+  MenuGroup,
+  MenuSurface,
+  observeStickyMenuGroups,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   Fragment,
   useCallback,
@@ -81,6 +86,11 @@ export function MenuView({ menu, headers, onPick, onCrumb, onHover, onDismiss, t
   useLayoutEffect(() => {
     updateOverflowHint();
   }, [state, maxHeight, updateOverflowHint]);
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (viewport === null) return;
+    return observeStickyMenuGroups(viewport);
+  }, [state.open, state.groups]);
   const highlight = state.open ? state.highlight : null;
   // Focus stays in the textarea (combobox pattern), so the browser never
   // scrolls the active option into view on keyboard moves — do it here.
@@ -156,19 +166,23 @@ export function MenuView({ menu, headers, onPick, onCrumb, onHover, onDismiss, t
         }
         onScroll={updateOverflowHint}
       >
-        {state.groups.map((group) =>
-          group.status === "ready" && group.items.length === 0 ? null : (
-            <Fragment key={group.source}>
-              {/* Source names key the dictionary open-endedly: the lookup chain
-                  returns an unknown key verbatim, so an unregistered source
-                  shows its raw name — hence the cast past the typed key union. */}
-              {group.showGroupTitle === false ||
-              group.items.some((item) => item.section !== undefined) ? null : (
-                <div className={css.groupTitle} role="presentation" data-source={group.source}>
-                  {t(group.source as MenuKey)}
-                </div>
-              )}
-              {group.status === "pending" && group.items.length === 0 ? (
+        {state.groups.flatMap((group) => {
+          if (group.status === "ready" && group.items.length === 0) return [];
+          const sectioned = group.items.some((item) => item.section !== undefined);
+          // Unknown source names are returned verbatim by the locale lookup.
+          const sourceTitle =
+            group.showGroupTitle === false || sectioned ? undefined : t(group.source as MenuKey);
+          const sections: Array<{ label: string | undefined; start: number; end: number }> = [];
+          for (const [index, item] of group.items.entries()) {
+            const label = sectioned ? item.section : sourceTitle;
+            const previous = sections.at(-1);
+            if (previous && previous.label === label) previous.end = index + 1;
+            else sections.push({ label, start: index, end: index + 1 });
+          }
+          if (sections.length === 0) sections.push({ label: sourceTitle, start: 0, end: 0 });
+          return sections.map(({ label, start, end }) => {
+            const rows =
+              group.status === "pending" && group.items.length === 0 ? (
                 <div role="status" aria-label={t("loading")} data-source={group.source}>
                   <div className={css.skeletonRow}>
                     <span className={css.skeletonBar} style={{ width: "32%" }} />
@@ -178,100 +192,102 @@ export function MenuView({ menu, headers, onPick, onCrumb, onHover, onDismiss, t
                   </div>
                 </div>
               ) : (
-                group.items.map((item, index) => {
+                group.items.slice(start, end).map((item, offset) => {
+                  const index = start + offset;
                   const active =
                     highlight !== null &&
                     highlight.source === group.source &&
                     highlight.index === index;
                   return (
-                    <Fragment key={optionId(group.source, index)}>
-                      {item.section !== undefined &&
-                      item.section !== group.items[index - 1]?.section ? (
-                        <div className={css.sectionTitle} role="presentation">
-                          {item.section}
-                        </div>
-                      ) : null}
-                      <button
-                        id={optionId(group.source, index)}
-                        type="button"
-                        role="option"
-                        aria-selected={active}
-                        aria-disabled={item.disabledReason !== undefined || undefined}
-                        title={item.disabledReason}
-                        className={clsx(css.item, active && css.active)}
-                        // mousedown, not click: the textarea keeps focus (combobox
-                        // pattern) — preventing default stops the focus steal, and the
-                        // pick runs before any blur-driven teardown.
-                        onMouseDown={(ev) => {
-                          ev.preventDefault();
-                          onPick(group.source, index);
-                        }}
-                        // mousemove, not mouseenter: real pointer motion moves the
-                        // shared highlight; keyboard scrolling rows under a resting
-                        // pointer must not steal it back.
-                        onMouseMove={
-                          active
-                            ? undefined
-                            : () => {
-                                onHover(group.source, index);
-                              }
-                        }
-                      >
-                        {item.icon !== undefined && (
-                          <span className={css.itemIcon} aria-hidden>
-                            {typeof item.icon === "string" ? (
-                              <ReferenceIconRegular kind={item.icon} size={14} />
-                            ) : (
-                              <item.icon size={14} />
-                            )}
+                    <button
+                      key={optionId(group.source, index)}
+                      id={optionId(group.source, index)}
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      aria-disabled={item.disabledReason !== undefined || undefined}
+                      title={item.disabledReason}
+                      className={clsx(css.item, active && css.active)}
+                      // mousedown, not click: the textarea keeps focus (combobox
+                      // pattern) — preventing default stops the focus steal, and the
+                      // pick runs before any blur-driven teardown.
+                      onMouseDown={(ev) => {
+                        ev.preventDefault();
+                        onPick(group.source, index);
+                      }}
+                      // mousemove, not mouseenter: real pointer motion moves the
+                      // shared highlight; keyboard scrolling rows under a resting
+                      // pointer must not steal it back.
+                      onMouseMove={
+                        active
+                          ? undefined
+                          : () => {
+                              onHover(group.source, index);
+                            }
+                      }
+                    >
+                      {item.icon !== undefined && (
+                        <span className={css.itemIcon} aria-hidden>
+                          {typeof item.icon === "string" ? (
+                            <ReferenceIconRegular kind={item.icon} size={14} />
+                          ) : (
+                            <item.icon size={14} />
+                          )}
+                        </span>
+                      )}
+                      <span className={css.itemName}>{item.label ?? item.name}</span>
+                      {item.showAlias !== false &&
+                        item.label !== undefined &&
+                        item.label.replace(/^\//u, "").toLowerCase() !==
+                          item.name.replace(/^\//u, "").toLowerCase() && (
+                          <span className={css.itemAlias}>{item.name}</span>
+                        )}
+                      {(item.disabledReason ?? item.description) !== undefined &&
+                        (item.disabledReason ?? item.description) !== (item.label ?? item.name) && (
+                          <span className={css.itemDescription}>
+                            {item.disabledReason ?? item.description}
                           </span>
                         )}
-                        <span className={css.itemName}>{item.label ?? item.name}</span>
-                        {item.label !== undefined &&
-                          item.label.toLowerCase() !== item.name.toLowerCase() && (
-                            <span className={css.itemAlias}>{item.name}</span>
-                          )}
-                        {(item.disabledReason ?? item.description) !== undefined &&
-                          (item.disabledReason ?? item.description) !==
-                            (item.label ?? item.name) && (
-                            <span className={css.itemDescription}>
-                              {item.disabledReason ?? item.description}
-                            </span>
-                          )}
-                        {item.drill === true && (
-                          <span className={css.trailing}>
-                            {/* Visual hint only: Tab drills the highlighted row (the
+                      {item.drill === true && (
+                        <span className={css.trailing}>
+                          {/* Visual hint only: Tab drills the highlighted row (the
                                 keyboard twin of the chevron, which owns the aria label). */}
-                            <span className={css.drillHintText} aria-hidden>
-                              {t("drill.hint")}
-                            </span>
-                            <kbd className={css.drillHint} aria-hidden>
-                              {t("drill.key")}
-                            </kbd>
-                            <span
-                              role="button"
-                              aria-label={t("drill.aria")}
-                              className={css.drill}
-                              // mousedown so the composer keeps focus, same as the row;
-                              // stopPropagation keeps the row's settling pick out of it.
-                              onMouseDown={(ev) => {
-                                ev.preventDefault();
-                                ev.stopPropagation();
-                                onPick(group.source, index, "drill");
-                              }}
-                            >
-                              <IconChevronRightOutlineRegular size={12} />
-                            </span>
+                          <span className={css.drillHintText} aria-hidden>
+                            {t("drill.hint")}
                           </span>
-                        )}
-                      </button>
-                    </Fragment>
+                          <kbd className={css.drillHint} aria-hidden>
+                            {t("drill.key")}
+                          </kbd>
+                          <span
+                            role="button"
+                            aria-label={t("drill.aria")}
+                            className={css.drill}
+                            // mousedown so the composer keeps focus, same as the row;
+                            // stopPropagation keeps the row's settling pick out of it.
+                            onMouseDown={(ev) => {
+                              ev.preventDefault();
+                              ev.stopPropagation();
+                              onPick(group.source, index, "drill");
+                            }}
+                          >
+                            <IconChevronRightOutlineRegular size={12} />
+                          </span>
+                        </span>
+                      )}
+                    </button>
                   );
                 })
-              )}
-            </Fragment>
-          ),
-        )}
+              );
+            const key = `${group.source}:${start}`;
+            return label === undefined ? (
+              <Fragment key={key}>{rows}</Fragment>
+            ) : (
+              <MenuGroup key={key} label={label}>
+                {rows}
+              </MenuGroup>
+            );
+          });
+        })}
       </div>
     </MenuSurface>
   );

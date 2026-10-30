@@ -46,6 +46,8 @@
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
+  /* Keep keyboard-highlighted rows below the shared 22px sticky heading. */
+  scroll-padding-top: 22px;
 }
 
 .item {
@@ -69,20 +71,6 @@
    so there is no separate :hover tint competing with the keyboard's. */
 .item.active {
   background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.sectionTitle {
-  flex: none;
-  min-height: 23px;
-  padding: 5px 8px 2px;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 16px;
-}
-
-.sectionTitle:not(:first-child) {
-  margin-top: 3px;
 }
 
 .itemIcon {
@@ -187,15 +175,6 @@
 .drill:hover {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
-}
-
-/* Heading row above a source group: non-interactive small grey text,
- * padding aligned with items (mirrors ui-primitives Menu .label). */
-.groupTitle {
-  padding: 6px 8px;
-  font-size: 11px;
-  line-height: 15px;
-  color: var(--dsw-alias-label-tertiary);
 }
 
 /* Pending-source skeleton rows: item cell metrics around a breathing bar

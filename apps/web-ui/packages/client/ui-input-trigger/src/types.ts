@@ -61,12 +61,14 @@ export interface InputTriggerCandidate {
   /** Identity: the pick payload, the exact-match key, and the first search key. */
   readonly name: string;
   /**
-   * Display title; the name itself when absent. A label that is not the
-   * name in another letter case renders with the name as a trailing alias,
-   * and every label is the second search key (a localized title stays
-   * findable by its command name).
+   * Display title; the name itself when absent. Unless `showAlias` is false,
+   * a label that differs beyond letter case or the name's leading slash shows
+   * the name as a trailing alias. Every label is the second search key
+   * (a localized title stays findable by its command name).
    */
   readonly label?: string;
+  /** Hide the trailing name alias without changing identity or search keys. Defaults to true. */
+  readonly showAlias?: boolean;
   readonly description?: string;
   /** Reference glyph token, or an icon component from the shared icon set. */
   readonly icon?: InputTriggerCandidateIcon | ComponentType<IconProps>;

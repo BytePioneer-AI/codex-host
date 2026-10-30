@@ -217,7 +217,11 @@ export function registerHarnessDiscovery(ctx: Context): void {
                     : undefined;
                 const row: InputTriggerCandidate = {
                   name: command.invocation,
-                  label: command.label,
+                  label:
+                    command.kind === "skill"
+                      ? command.label.replace(/^\/?skill:/iu, "")
+                      : command.label,
+                  showAlias: command.kind !== "skill",
                   value: command.id,
                   section: t(command.kind === "skill" ? "discovery.skills" : "discovery.commands"),
                   description: command.description,

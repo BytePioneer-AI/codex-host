@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
-import type { DelegationControlRegistration } from "../src/delegation-types.js";
+import {
+  DelegationControlError,
+  type DelegationControlRegistration,
+} from "../src/delegation-types.js";
 
 function registration(threadId: string): DelegationControlRegistration {
   return {
@@ -72,6 +75,208 @@ function registration(threadId: string): DelegationControlRegistration {
 }
 
 describe("DelegationControlRegistry", () => {
+  it("tries connected Desktops in order only after an explicit local miss", async () => {
+    const registry = new DelegationControlRegistry();
+    const local = registration("target");
+    const first = registration("viewer-one");
+    const second = registration("viewer-two");
+    const third = registration("viewer-three");
+    const snapshot = await local.read({ threadId: "target", view: "messages" });
+    first.readConnectedDesktop = vi
+      .fn()
+      .mockRejectedValue(new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found"));
+    second.readConnectedDesktop = vi.fn().mockResolvedValue(snapshot);
+    third.readConnectedDesktop = vi.fn();
+    registry.register(local);
+    registry.register(first);
+    registry.register(second);
+    registry.register(third);
+    const input = {
+      threadId: "target",
+      hostId: "local",
+      callerThreadId: "caller",
+      view: "messages" as const,
+      limit: 2,
+      cursor: "page",
+    };
+    try {
+      await expect(registry.read(input)).resolves.toMatchObject({ threadId: "target" });
+      expect(first.readConnectedDesktop).not.toHaveBeenCalled();
+      vi.mocked(local.read).mockRejectedValue(
+        new DelegationControlError(
+          "INTERNAL_ERROR",
+          "Official Thread read failed: thread not loaded: target",
+        ),
+      );
+      await expect(registry.read(input)).resolves.toMatchObject({
+        threadId: "target",
+        hostId: "local",
+        readSource: "connected-desktop",
+      });
+      expect(first.readConnectedDesktop).toHaveBeenCalledExactlyOnceWith({
+        threadId: "target",
+        view: "messages",
+        limit: 2,
+        cursor: "page",
+      });
+      expect(second.readConnectedDesktop).toHaveBeenCalledOnce();
+      expect(third.readConnectedDesktop).not.toHaveBeenCalled();
+    } finally {
+      registry.close();
+    }
+  });
+
+  it.each(["local", "desktop"] as const)(
+    "reads an unowned Thread from %s with multiple registrations and no shared catalog",
+    async (source) => {
+      const registry = new DelegationControlRegistry();
+      const first = registration("first");
+      const second = registration("second");
+      const snapshot = await registration("target").read({ threadId: "target", view: "result" });
+      const missing = new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found");
+      vi.mocked(first.read).mockRejectedValue(missing);
+      if (source === "local") vi.mocked(second.read).mockResolvedValue(snapshot);
+      else vi.mocked(second.read).mockRejectedValue(missing);
+      first.readConnectedDesktop = vi.fn().mockResolvedValue(snapshot);
+      second.readConnectedDesktop = vi.fn();
+      registry.register(first);
+      registry.register(second);
+      const input = { threadId: "target", hostId: "local", view: "result" as const };
+      try {
+        const result = await registry.read(input);
+        expect(result).toMatchObject({ threadId: "target" });
+        expect(first.read).toHaveBeenCalledExactlyOnceWith(input);
+        expect(second.read).toHaveBeenCalledExactlyOnceWith(input);
+        if (source === "desktop") {
+          expect(result).toMatchObject({ hostId: "local", readSource: "connected-desktop" });
+          expect(first.readConnectedDesktop).toHaveBeenCalledExactlyOnceWith({
+            threadId: "target",
+            view: "result",
+          });
+          const desktopReadOrder = vi.mocked(first.readConnectedDesktop).mock
+            .invocationCallOrder[0];
+          if (desktopReadOrder === undefined) throw new Error("Desktop read did not run");
+          expect(vi.mocked(second.read).mock.invocationCallOrder[0]).toBeLessThan(desktopReadOrder);
+        } else {
+          expect(first.readConnectedDesktop).not.toHaveBeenCalled();
+        }
+        expect(second.readConnectedDesktop).not.toHaveBeenCalled();
+      } finally {
+        registry.close();
+      }
+    },
+  );
+
+  it.each([undefined, "local"])("keeps ambiguous owners closed for host %s", async (hostId) => {
+    const registry = new DelegationControlRegistry();
+    const first = registration("target");
+    const second = registration("target");
+    first.readConnectedDesktop = vi.fn();
+    registry.register(first);
+    registry.register(second);
+    try {
+      await expect(
+        registry.read({ threadId: "target", view: "result", ...(hostId ? { hostId } : {}) }),
+      ).rejects.toMatchObject({ code: "PARENT_THREAD_AMBIGUOUS" });
+      expect(first.read).not.toHaveBeenCalled();
+      expect(second.read).not.toHaveBeenCalled();
+      expect(first.readConnectedDesktop).not.toHaveBeenCalled();
+    } finally {
+      registry.close();
+    }
+  });
+
+  it("does not probe unowned bare IDs across registrations", async () => {
+    const registry = new DelegationControlRegistry();
+    const first = registration("first");
+    const second = registration("second");
+    first.readConnectedDesktop = vi.fn();
+    registry.register(first);
+    registry.register(second);
+    try {
+      await expect(registry.read({ threadId: "target", view: "result" })).rejects.toMatchObject({
+        code: "PARENT_THREAD_AMBIGUOUS",
+      });
+      expect(first.read).not.toHaveBeenCalled();
+      expect(second.read).not.toHaveBeenCalled();
+      expect(first.readConnectedDesktop).not.toHaveBeenCalled();
+    } finally {
+      registry.close();
+    }
+  });
+
+  it.each(["Permission denied", "Storage unavailable"])(
+    "stops unowned local probing on %s",
+    async (message) => {
+      const registry = new DelegationControlRegistry();
+      const first = registration("first");
+      const second = registration("second");
+      const failure = new DelegationControlError("INTERNAL_ERROR", message);
+      vi.mocked(first.read).mockRejectedValue(failure);
+      first.readConnectedDesktop = vi.fn();
+      registry.register(first);
+      registry.register(second);
+      try {
+        await expect(
+          registry.read({ threadId: "target", hostId: "local", view: "result" }),
+        ).rejects.toBe(failure);
+        expect(second.read).not.toHaveBeenCalled();
+        expect(first.readConnectedDesktop).not.toHaveBeenCalled();
+      } finally {
+        registry.close();
+      }
+    },
+  );
+
+  it.each([
+    [undefined, "THREAD_NOT_FOUND", "Thread was not found"],
+    ["local", "INTERNAL_ERROR", "Permission denied"],
+    ["local", "INTERNAL_ERROR", "Storage unavailable"],
+  ] as const)("does not probe for %s / %s / %s", async (hostId, code, message) => {
+    const registry = new DelegationControlRegistry();
+    const local = registration("target");
+    const error = new DelegationControlError(code, message);
+    vi.mocked(local.read).mockRejectedValue(error);
+    local.readConnectedDesktop = vi.fn();
+    registry.register(local);
+    try {
+      await expect(
+        registry.read({ threadId: "target", view: "result", ...(hostId ? { hostId } : {}) }),
+      ).rejects.toBe(error);
+      expect(local.readConnectedDesktop).not.toHaveBeenCalled();
+    } finally {
+      registry.close();
+    }
+  });
+
+  it("skips disconnected viewers but stops on a Desktop permission failure", async () => {
+    const registry = new DelegationControlRegistry();
+    const local = registration("target");
+    vi.mocked(local.read).mockRejectedValue(
+      new DelegationControlError("THREAD_NOT_FOUND", "missing"),
+    );
+    local.readConnectedDesktop = vi
+      .fn()
+      .mockRejectedValue(new DelegationControlError("RUNTIME_UNREACHABLE", "disconnected"));
+    const next = registration("next");
+    const failure = new DelegationControlError("INTERNAL_ERROR", "Permission denied");
+    next.readConnectedDesktop = vi.fn().mockRejectedValue(failure);
+    const last = registration("last");
+    last.readConnectedDesktop = vi.fn();
+    registry.register(local);
+    registry.register(next);
+    registry.register(last);
+    try {
+      await expect(
+        registry.read({ threadId: "target", hostId: "local", view: "result" }),
+      ).rejects.toBe(failure);
+      expect(next.readConnectedDesktop).toHaveBeenCalledOnce();
+      expect(last.readConnectedDesktop).not.toHaveBeenCalled();
+    } finally {
+      registry.close();
+    }
+  });
+
   it("uses only the calling Thread's execution identity for same-Host reads", async () => {
     const caller = registration("caller");
     caller.executionHostId = (id) => (id === "caller" ? "ssh:mac" : undefined);

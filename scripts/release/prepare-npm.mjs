@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import {
   chmod,
   copyFile,
@@ -40,6 +41,23 @@ export const NPM_RUNTIME_PLATFORM_PACKAGES = Object.freeze({
   "linux-x64": NPM_PLATFORM_PACKAGE_NAMES["linux-x64"],
   "linux-arm64": NPM_PLATFORM_PACKAGE_NAMES["linux-arm64"],
 });
+// Published packages keep the repository's minimum Node.js version but no upper
+// bound: newer host runtimes are accepted. Bundled plugins import node:sqlite,
+// which older Node.js releases do not provide.
+export function minimumNodeVersionFromEngines(range) {
+  const versions = [...String(range ?? "").matchAll(/>=\s*v?(\d+)\.(\d+)\.(\d+)/gu)].map((match) =>
+    match.slice(1, 4).map(Number),
+  );
+  if (versions.length === 0) throw new Error(`engines.node has no minimum version: ${range}`);
+  versions.sort((left, right) => left[0] - right[0] || left[1] - right[1] || left[2] - right[2]);
+  return versions[0].join(".");
+}
+
+export const NPM_MINIMUM_NODE_VERSION = minimumNodeVersionFromEngines(
+  JSON.parse(readFileSync(path.join(repositoryRoot, "package.json"), "utf8")).engines?.node,
+);
+export const NPM_NODE_ENGINE = `>=${NPM_MINIMUM_NODE_VERSION}`;
+
 export const NPM_PACKAGE_DESCRIPTION =
   "Run Pi and Claude Code as first-class external harnesses inside Codex Desktop.";
 
@@ -290,7 +308,7 @@ export function createNpmPackageManifest({ version, target }) {
       "THIRD_PARTY_NOTICES.txt",
     ],
     engines: {
-      node: ">=22",
+      node: NPM_NODE_ENGINE,
     },
     os: npmPackageOs(target),
     cpu: npmPackageCpu(target),
@@ -319,7 +337,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const version = ${JSON.stringify(version)};
+const minimumNodeVersion = ${JSON.stringify(NPM_MINIMUM_NODE_VERSION)};
 const userArguments = process.argv.slice(2);
+{
+  const current = process.versions.node.split(".").map(Number);
+  const minimum = minimumNodeVersion.split(".").map(Number);
+  const difference = current.map((part, index) => part - minimum[index]).find((part) => part !== 0);
+  if (difference !== undefined && difference < 0) {
+    console.error(
+      \`codexhost: Node.js \${process.versions.node} is not supported; ${NPM_PACKAGE_NAME} requires Node.js \${minimumNodeVersion} or later.\`,
+    );
+    process.exit(1);
+  }
+}
 const repositoryUrl = "https://github.com/BytePioneer-AI/codex-host";
 const startupTraceStartedAt = Date.now();
 function startupTrace(stage) {
@@ -856,7 +886,7 @@ The \`codexhost\` command launches the packaged Rust launcher with:
 
 ## Requirements
 
-- Node.js 22 or 24 (Node 20 and older are not supported)
+- Node.js ${NPM_MINIMUM_NODE_VERSION} or later (older releases lack the built-in \`node:sqlite\` module)
 - Official ChatGPT/Codex Desktop for macOS, Windows, or Linux
 - Pi on \`PATH\` when using the Pi agent
 - Claude Code installed when using the Claude Code adapter

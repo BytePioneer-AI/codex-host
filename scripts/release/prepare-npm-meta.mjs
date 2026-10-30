@@ -4,6 +4,8 @@ import { pathToFileURL } from "node:url";
 
 import {
   NPM_PACKAGE_DESCRIPTION,
+  NPM_MINIMUM_NODE_VERSION,
+  NPM_NODE_ENGINE,
   NPM_PACKAGE_NAME,
   NPM_PLATFORM_PACKAGE_NAMES,
   createNpmBinLauncherSource,
@@ -25,7 +27,7 @@ export function createNpmMetaPackageManifest({ version }) {
     type: "module",
     bin: { codexhost: "bin/codexhost.js" },
     files: ["bin/**", "README.md"],
-    engines: { node: ">=22" },
+    engines: { node: NPM_NODE_ENGINE },
     optionalDependencies: Object.fromEntries(
       Object.values(NPM_PLATFORM_PACKAGE_NAMES).map((packageName) => [packageName, version]),
     ),
@@ -51,7 +53,7 @@ ${NPM_PACKAGE_DESCRIPTION}
 npm install -g ${NPM_PACKAGE_NAME}@${version}
 \`\`\`
 
-npm automatically installs the matching macOS, Windows, or Linux platform package. Node.js 22 or 24 and the official ChatGPT/Codex Desktop are required.
+npm automatically installs the matching macOS, Windows, or Linux platform package. Node.js ${NPM_MINIMUM_NODE_VERSION} or later and the official ChatGPT/Codex Desktop are required.
 
 ## Usage
 

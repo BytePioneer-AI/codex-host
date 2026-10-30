@@ -18,9 +18,12 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  NPM_MINIMUM_NODE_VERSION,
+  NPM_NODE_ENGINE,
   NPM_PACKAGE_NAME,
   NPM_PLATFORM_PACKAGE_NAMES,
   createNpmBinLauncherSource,
+  createNpmReadme,
   createNpmPackageManifest,
   expectedNpmPackagePaths,
   npmPackageCpu,
@@ -31,6 +34,7 @@ import {
   writeThirdPartyNotices,
   npmReleaseBuildCommands,
   npmTarballFileName,
+  minimumNodeVersionFromEngines,
   parseNpmReleaseArguments,
   validateNpmPackage,
 } from "../../scripts/release/prepare-npm.mjs";
@@ -456,7 +460,7 @@ describe("npm package release", () => {
     expect(manifest.bin).toBeUndefined();
     expect(manifest.os).toEqual(npmPackageOs(target));
     expect(manifest.cpu).toEqual(npmPackageCpu(target));
-    expect(manifest.engines.node).toBe(">=22");
+    expect(manifest.engines.node).toBe(NPM_NODE_ENGINE);
     expect(manifest.publishConfig.access).toBe("public");
     expect(manifest.files).toEqual([
       "bin/**",
@@ -466,6 +470,69 @@ describe("npm package release", () => {
       "README.md",
       "THIRD_PARTY_NOTICES.txt",
     ]);
+  });
+
+  it("publishes the repository minimum Node.js version without an upper bound", async () => {
+    const rootManifest = JSON.parse(
+      await readFile(path.join(import.meta.dirname, "../../package.json"), "utf8"),
+    );
+    expect(NPM_MINIMUM_NODE_VERSION).toBe(minimumNodeVersionFromEngines(rootManifest.engines.node));
+    expect(minimumNodeVersionFromEngines(">=22.19.0 <23.0.0 || >=24.0.0 <25.0.0")).toBe("22.19.0");
+    expect(minimumNodeVersionFromEngines(">=24.1.0 || >=22.20.3 <23")).toBe("22.20.3");
+    expect(() => minimumNodeVersionFromEngines("^22")).toThrow("no minimum version");
+    expect(NPM_NODE_ENGINE).toBe(`>=${NPM_MINIMUM_NODE_VERSION}`);
+    expect(NPM_NODE_ENGINE).not.toContain("<");
+    expect(createNpmMetaPackageManifest({ version: "0.1.0" }).engines).toEqual({
+      node: NPM_NODE_ENGINE,
+    });
+    for (const id of Object.keys(NPM_PLATFORM_PACKAGE_NAMES)) {
+      const target = releaseTarget(id);
+      expect(createNpmPackageManifest({ version: "0.1.0", target }).engines).toEqual({
+        node: NPM_NODE_ENGINE,
+      });
+      expect(createNpmReadme({ version: "0.1.0", target })).toContain(
+        `Node.js ${NPM_MINIMUM_NODE_VERSION} or later`,
+      );
+    }
+    expect(createNpmMetaReadme({ version: "0.1.0" })).toContain(
+      `Node.js ${NPM_MINIMUM_NODE_VERSION} or later`,
+    );
+  });
+
+  it.each([
+    ["22.0.0", 1],
+    ["22.18.9", 1],
+    ["20.19.0", 1],
+    [NPM_MINIMUM_NODE_VERSION, 0],
+    ["23.11.0", 0],
+    ["25.2.1", 0],
+  ])("gates the npm wrapper on Node.js %s", async (nodeVersion, status) => {
+    const root = await temporaryDirectory();
+    const launcherPath = path.join(root, "codexhost.mjs");
+    const preloadPath = path.join(root, "node-version-preload.mjs");
+    try {
+      await writeFile(launcherPath, createNpmBinLauncherSource({ version: "1.2.3" }));
+      await writeFile(
+        preloadPath,
+        `Object.defineProperty(process.versions, "node", { configurable: true, value: ${JSON.stringify(nodeVersion)} });\n`,
+      );
+      const result = spawnSync(
+        process.execPath,
+        ["--import", pathToFileURL(preloadPath).href, launcherPath, "--version"],
+        { encoding: "utf8", windowsHide: true },
+      );
+      expect(result.status, result.stderr).toBe(status);
+      if (status === 0) {
+        expect(result.stdout).toBe("1.2.3\n");
+      } else {
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toBe(
+          `codexhost: Node.js ${nodeVersion} is not supported; ${NPM_PACKAGE_NAME} requires Node.js ${NPM_MINIMUM_NODE_VERSION} or later.\n`,
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("publishes one meta package with exact optional platform dependencies", () => {

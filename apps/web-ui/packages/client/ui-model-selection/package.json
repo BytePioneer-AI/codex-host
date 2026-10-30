@@ -20,6 +20,7 @@
     "@deepseek-ai/dsh-client-ui-primitives": "*",
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-util-values": "*",
+    "@deepseek-ai/dsh-util-crypto": "*",
     "@deepseek-ai/dsh-client-store": "*",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

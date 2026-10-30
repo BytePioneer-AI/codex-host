@@ -18,7 +18,8 @@
   },
   "dependencies": {
     "react": "^18.2.0",
-    "@deepseek-ai/dsh-client-ui-primitives": "*"
+    "@deepseek-ai/dsh-client-ui-primitives": "*",
+    "@deepseek-ai/dsh-util-crypto": "*"
   },
   "dsh": {
     "client": {

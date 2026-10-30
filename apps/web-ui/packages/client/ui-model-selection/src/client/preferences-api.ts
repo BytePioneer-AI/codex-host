@@ -1,3 +1,5 @@
+import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
+
 /** Shared preference mutations use the Web auth/same-origin RPC gate. */
 export async function preferenceCall<T>(method: string, args: Record<string, unknown>): Promise<T> {
   const response = await fetch(`api/codexhost/preferences/${method}`, {
@@ -6,7 +8,7 @@ export async function preferenceCall<T>(method: string, args: Record<string, unk
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       type: "client-request",
-      rpcId: crypto.randomUUID(),
+      rpcId: randomUUID(),
       method: `codexhost/preferences/${method}`,
       payload: { args },
     }),

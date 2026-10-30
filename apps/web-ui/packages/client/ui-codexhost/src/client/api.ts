@@ -1,4 +1,5 @@
 /** Thin client for the CodexHost server's `codexhost/*` RPC methods. */
+import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
 
 export interface ImportSource {
   harnessId: string;
@@ -21,7 +22,7 @@ async function call<T>(method: string, args: Record<string, unknown>): Promise<T
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       type: "client-request",
-      rpcId: crypto.randomUUID(),
+      rpcId: randomUUID(),
       method,
       payload: { args },
     }),

@@ -98,6 +98,47 @@ describe("read-only Harness accounts", () => {
     expect(inspectAccount).toHaveBeenCalledTimes(3);
   });
 
+  it.each(["old-first", "new-first"])(
+    "refreshes independently of an older flight without caching its late result (%s)",
+    async (order) => {
+      const oldRead = Promise.withResolvers<HarnessAccountSnapshot | null>();
+      const freshRead = Promise.withResolvers<HarnessAccountSnapshot | null>();
+      const freshSnapshot: HarnessAccountSnapshot = {
+        ...snapshot,
+        credits: { usedPercent: 51, periodType: "five_hour" },
+      };
+      const inspectAccount = vi
+        .fn<() => Promise<HarnessAccountSnapshot | null>>()
+        .mockReturnValueOnce(oldRead.promise)
+        .mockReturnValueOnce(freshRead.promise);
+      const native = Object.assign(adapter("pi"), { inspectAccount });
+      const cache = new HarnessAccountInspectionCache();
+
+      const old = cache.inspect(native, []);
+      expect(cache.inspect(native, [])).toBe(old);
+      await vi.waitFor(() => expect(inspectAccount).toHaveBeenCalledOnce());
+
+      const fresh = cache.inspect(native, [], true);
+      expect(fresh).not.toBe(old);
+      expect(cache.inspect(native, [])).toBe(fresh);
+      await vi.waitFor(() => expect(inspectAccount).toHaveBeenCalledTimes(2));
+
+      if (order === "old-first") {
+        oldRead.resolve(snapshot);
+        expect((await old).account).toEqual(snapshot);
+        expect(cache.inspect(native, [])).toBe(fresh);
+      }
+      freshRead.resolve(freshSnapshot);
+      expect((await fresh).account).toEqual(freshSnapshot);
+      if (order === "new-first") {
+        oldRead.resolve(snapshot);
+        expect((await old).account).toEqual(snapshot);
+      }
+      expect((await cache.inspect(native, [])).account).toEqual(freshSnapshot);
+      expect(inspectAccount).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("does not reuse the previous account when native authentication stops returning quota", async () => {
     const inspectAccount = vi
       .fn<() => Promise<HarnessAccountSnapshot | null>>()

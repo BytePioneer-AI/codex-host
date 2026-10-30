@@ -768,6 +768,10 @@ export function installRendererBindingProbe(
   });
   const mountedByComposer = new Map<Element, MountedComposer>();
   const catalogRequests = new WeakMap<MountedComposer, MountedCatalogRequest>();
+  const draftUsageRequests = new WeakMap<
+    MountedComposer,
+    { client: RendererModelClient | null; generation: number; pending: boolean }
+  >();
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
   const disposeReasoningSoftWrap = installReasoningTranscriptSoftWrap(document);
@@ -1199,13 +1203,22 @@ export function installRendererBindingProbe(
     const accountId = accounts?.readyAccountId;
     const client = composerClient(mounted);
     const hostId = mounted.hostId;
+    const previous = draftUsageRequests.get(mounted);
+    if (
+      agent !== "codex" &&
+      previous?.pending &&
+      previous.client === client &&
+      previous.generation === mounted.usageRequestGeneration
+    )
+      return;
     const generation = ++mounted.usageRequestGeneration;
-    mounted.draftUsageClient = client;
+    const request = { client, generation, pending: true };
+    draftUsageRequests.set(mounted, request);
+    mounted.draftUsageClient = null;
     mounted.usage = null;
     mounted.accountCredits = null;
     mounted.accountCreditsSupported = false;
     renderMounted(mounted);
-    if (!client) return;
     const isCurrent = (): boolean =>
       !disposed &&
       mounted.hostId === hostId &&
@@ -1219,6 +1232,7 @@ export function installRendererBindingProbe(
       !controller.isSubmissionPending(mounted.composer) &&
       !threadIdFromComposerModelTarget(mounted.modelTarget);
     try {
+      if (!client) return;
       if (agent === "codex") {
         if (!accountId || !client.inspectCodexAccountUsage) return;
         const result = await client.inspectCodexAccountUsage({ accountId });
@@ -1235,13 +1249,17 @@ export function installRendererBindingProbe(
         if (!client.inspectHarnessAccount) return;
         const result = await client.inspectHarnessAccount({
           harnessId: harnessIdSchema.parse(agent),
+          refresh: true,
         });
         if (!isCurrent() || result.harnessId !== agent) return;
         mounted.accountCredits = result.account?.credits ?? null;
       }
+      mounted.draftUsageClient = client;
       renderMounted(mounted);
     } catch {
       // Unknown quota stays empty instead of retaining another Account or Harness's values.
+    } finally {
+      request.pending = false;
     }
   };
 
@@ -2586,7 +2604,7 @@ export function installRendererBindingProbe(
     if (changed) sidebarAgentIcons.refresh();
   };
 
-  function reconcileHarnessAvailabilityHost(): void {
+  function reconcileHarnessAvailabilityHost(retryDraftUsage = false): void {
     // Settings lists observed Hosts even when multiple Composers make the
     // active route ambiguous. Requests still resolve each Host independently.
     for (const hostId of modelControl?.knownHostIds?.() ?? []) {
@@ -2597,9 +2615,15 @@ export function installRendererBindingProbe(
     reloadMountedOwnershipForHost();
     // Draft quota reads also recover when the Host has no usage notification channel.
     for (const mounted of mountedByComposer.values()) {
+      const client = composerClient(mounted);
+      const request = draftUsageRequests.get(mounted);
       if (
         controller.get(mounted.composer).agent !== "codex" &&
-        mounted.draftUsageClient !== composerClient(mounted)
+        mounted.draftUsageClient !== client &&
+        (!request ||
+          request.client !== client ||
+          request.generation !== mounted.usageRequestGeneration ||
+          (retryDraftUsage && !request.pending))
       ) {
         void refreshDraftUsage(mounted);
       }
@@ -3204,7 +3228,7 @@ export function installRendererBindingProbe(
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("click", onClick, true);
   const onWindowFocus = (): void => {
-    reconcileHarnessAvailabilityHost();
+    reconcileHarnessAvailabilityHost(true);
     void loadCodexAccounts();
     for (const mounted of mountedByComposer.values()) {
       if (

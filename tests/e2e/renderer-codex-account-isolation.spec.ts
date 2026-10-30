@@ -12,6 +12,7 @@ const { outputFiles } = await build({
     contents: `
       import { installRendererBindingProbe } from "./packages/renderer-extension/src/renderer-binding-probe.ts";
       import { createRendererModelClient } from "./packages/renderer-extension/src/renderer-model-client.ts";
+      import { HarnessAccountInspectionCache } from "./packages/host-runtime/src/harness-accounts.ts";
 
       let hostId = globalThis.startRemote ? "remote" : "local";
       let routeReady = !globalThis.delayedHost;
@@ -43,6 +44,8 @@ const { outputFiles } = await build({
         return result();
       };
       const quotaUsed = { pi: 31, grok: 64 };
+      const quotaCaches = Object.fromEntries(["local", "remote"].map(host => [host, new HarnessAccountInspectionCache()]));
+      let quotaRequestFailures = 0;
       const externalInspection = {
         status: "ready",
         catalog: { models: [{ ref: { id: "native-model" }, label: "Native Model" }], defaultModel: { id: "native-model" }, thinkingOptions: [] },
@@ -69,15 +72,27 @@ const { outputFiles } = await build({
         ...(globalThis.quotaHarnesses ? {
           listHarnessPlugins: async () => ({ plugins: ["pi", "grok"].map(id => ({ id, name: id, version: "1.0.0" })) }),
           ...(!globalThis.unsupportedQuota ? {
-            inspectHarnessAccount: ({ harnessId }) => {
-              const usedPercent = host === "remote" ? 81 : quotaUsed[harnessId];
-              return request(host, "quota:" + harnessId, () => {
-                if (globalThis.failedQuota) throw new Error("quota read failed");
-                return { harnessId, harnessName: harnessId, account: globalThis.noQuota ? null : {
-                  credits: { usedPercent, periodType: "weekly" },
-                } };
-              });
-            },
+            inspectHarnessAccount: createRendererModelClient([{
+              sendRequest: (_method, { harnessId, refresh }) => {
+                calls.push({ host, method: "quota-request:" + harnessId, refresh });
+                if (quotaRequestFailures > 0) {
+                  quotaRequestFailures -= 1;
+                  return Promise.reject(new Error("quota transport unavailable"));
+                }
+                return quotaCaches[host].inspect({
+                  harnessId,
+                  inspectAccount: () => {
+                    const usedPercent = host === "remote" ? 81 : quotaUsed[harnessId];
+                    return request(host, "quota:" + harnessId, () => {
+                      if (globalThis.failedQuota) throw new Error("quota read failed");
+                      return globalThis.noQuota ? null : {
+                        credits: { usedPercent, periodType: "weekly" },
+                      };
+                    });
+                  },
+                }, [], refresh);
+              },
+            }]).inspectHarnessAccount,
           } : {}),
         } : {}),
         inspectHarness: createRendererModelClient([{
@@ -179,6 +194,7 @@ const { outputFiles } = await build({
         },
         pause: (key) => paused.add(key),
         setQuota: ([id, used]) => quotaUsed[id] = used,
+        failNextQuota: () => quotaRequestFailures += 1,
         releaseNext: (key) => pending.get(key)?.shift()?.(),
         pending: (key) => pending.get(key)?.length ?? 0,
         reconnectLocal: () => {
@@ -571,6 +587,10 @@ for (const noUsageNotifications of [false, true]) {
     await action(page, "reconnectLocal");
     await waitForPending(page, "local:quota:pi");
     await expect(quota).toBeHidden();
+    await action(page, "focus");
+    expect((await calls(page)).filter(({ method }) => method === "quota-request:pi")).toHaveLength(
+      2,
+    );
     await action(page, "release", "local:quota:pi");
     await expect(quota).toHaveText("49%");
     await expect(quota).toBeVisible();
@@ -581,6 +601,28 @@ for (const noUsageNotifications of [false, true]) {
         host: "local",
         method: "replacement-accounts",
       });
+    expect((await calls(page)).filter(({ method }) => method === "quota:pi")).toHaveLength(2);
+  });
+
+  test(`failed same-Host reconnect quota reads retry on focus ${notifications} notifications`, async ({
+    page,
+  }) => {
+    await setup(page, { quotaHarnesses: true, noUsageNotifications });
+    await selectHarness(page, "pi");
+    await expect(page.locator(quotaControl)).toHaveText("69%");
+    await action(page, "setQuota", ["pi", 51]);
+    await action(page, "failNextQuota");
+    await action(page, "reconnectLocal");
+    await expect(page.locator(quotaControl)).toBeHidden();
+    expect((await calls(page)).filter(({ method }) => method === "quota-request:pi")).toHaveLength(
+      2,
+    );
+    await action(page, "focus");
+    await expect(page.locator(quotaControl)).toHaveText("49%");
+    await action(page, "focus");
+    expect((await calls(page)).filter(({ method }) => method === "quota-request:pi")).toHaveLength(
+      3,
+    );
     expect((await calls(page)).filter(({ method }) => method === "quota:pi")).toHaveLength(2);
   });
 

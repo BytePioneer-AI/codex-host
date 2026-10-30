@@ -1,4 +1,6 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -154,6 +156,42 @@ describe("pricing.json editing", () => {
       updateModelPriceOverridesFile(file, { key: "y", price: { input: 1, output: 1 } }),
     ).rejects.toThrow("was not changed");
     expect(await readFile(file, "utf8")).toBe(text);
+  });
+
+  it("keeps every update when writers do not share an in-process queue", async () => {
+    // Direct calls skip the per-process queue, as separate Host processes would.
+    const keys = Array.from({ length: 24 }, (_, index) => `model-${index}`);
+    await Promise.all(
+      keys.map((key) =>
+        updateModelPriceOverridesFile(file, { key, price: { input: 1, output: 2 } }),
+      ),
+    );
+    expect(Object.keys(JSON.parse(await readFile(file, "utf8")).models).sort()).toEqual(
+      [...keys].sort(),
+    );
+    expect(await readdir(`${file}.lock`)).toEqual([]);
+  });
+
+  it("recovers a lock register left by a process that exited", async () => {
+    const lock = `${file}.lock`;
+    await mkdir(lock, { mode: 0o700 });
+    const ownerToken = randomUUID();
+    const exited = spawnSync(process.execPath, ["-e", "process.pid"]).pid;
+    if (exited === undefined) throw new Error("Expected an exited process id");
+    await writeFile(
+      path.join(lock, `owner-${ownerToken}.json`),
+      JSON.stringify({
+        version: 2,
+        ownerToken,
+        pid: exited,
+        bootTimeSeconds: Math.round(Date.now() / 1_000 - os.uptime()),
+        choosing: false,
+        ticket: 1,
+      }),
+    );
+    await updateModelPriceOverridesFile(file, { key: "a", price: { input: 1, output: 1 } });
+    expect((await readModelPriceOverridesFile(file)).entries.map(({ key }) => key)).toEqual(["a"]);
+    expect(await readdir(lock)).toEqual([]);
   });
 
   it("is used by the next lookup without a restart", async () => {

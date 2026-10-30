@@ -15,6 +15,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { parseModelPriceOverrides, type ModelPriceCatalog } from "./model-prices.js";
+import { withFileUpdateLock } from "./remote-socket-lock.js";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -67,8 +68,17 @@ export async function readModelPriceOverridesFile(file: string): Promise<ModelPr
 /**
  * Applies one change to `file` and keeps every other entry and top-level field. An unusable
  * existing file is never overwritten, since the Host ignores it and the user's text would be lost.
+ * Every Host process shares the file, so the read-modify-write holds a cross-process lock.
  */
 export async function updateModelPriceOverridesFile(
+  file: string,
+  change: ModelPriceOverridesSet,
+): Promise<ModelPriceOverrides> {
+  await mkdir(path.dirname(file), { recursive: true });
+  return withFileUpdateLock(file, () => applyChange(file, change));
+}
+
+async function applyChange(
   file: string,
   change: ModelPriceOverridesSet,
 ): Promise<ModelPriceOverrides> {
@@ -102,7 +112,6 @@ export async function updateModelPriceOverridesFile(
   const updated = { ...document, models: next };
   // The Host must accept what it writes; this also rejects anything the contract let through.
   parseModelPriceOverrides(updated);
-  await mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, `${JSON.stringify(updated, null, 2)}\n`, { flag: "wx" });
@@ -126,7 +135,7 @@ function parsed<T>(result: { success: true; data: T } | { success: false }): T {
   return result.data;
 }
 
-/** Changes in this process apply one at a time, so concurrent saves keep each other's entries. */
+/** Changes in this process queue here before taking the cross-process file lock. */
 let pendingUpdate: Promise<unknown> = Promise.resolve();
 
 /** Serves the custom price methods from the catalog's own `pricing.json`. */

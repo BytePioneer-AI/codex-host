@@ -194,7 +194,7 @@ async function readLockEntryCatalog(lockDirectory: string): Promise<LockEntryCat
   return { entries, unsettled };
 }
 
-async function preparePrivateLockDirectory(lockDirectory: string): Promise<void> {
+async function preparePrivateLockDirectory(lockDirectory: string, name: string): Promise<void> {
   await mkdir(lockDirectory, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== "EEXIST") throw error;
   });
@@ -203,7 +203,7 @@ async function preparePrivateLockDirectory(lockDirectory: string): Promise<void>
     typeof process.getuid !== "function" || metadata.uid === process.getuid();
   if (!metadata.isDirectory() || !ownedByCurrentUser) {
     throw new Error(
-      `Remote app-server socket lock requires a private directory owned by the current user: ${lockDirectory}`,
+      `${name} lock requires a private directory owned by the current user: ${lockDirectory}`,
     );
   }
   await chmod(lockDirectory, 0o700);
@@ -307,6 +307,18 @@ function recordHasPriority(left: RemoteSocketLockRecord, right: RemoteSocketLock
   );
 }
 
+interface BakeryLockOptions {
+  /** Persistent private directory holding one register per contender. */
+  lockDirectory: string;
+  /** Version 1 single-path marker still honoured for socket initialization only. */
+  legacyPath: string | null;
+  /** Subject used in errors, e.g. "Remote app-server socket". */
+  name: string;
+  /** The path the lock protects, used in errors. */
+  target: string;
+  busyMessage: string;
+}
+
 /**
  * Serializes Unix control-socket bind and unlink operations.
  *
@@ -319,9 +331,41 @@ export async function withRemoteAppServerSocketInitializationLock<T>(
   socketPath: string,
   action: () => Promise<T>,
 ): Promise<T> {
-  const legacyPath = `${socketPath}.initializing`;
-  const lockDirectory = `${socketPath}.initializers`;
-  await preparePrivateLockDirectory(lockDirectory);
+  return withBakeryLock(
+    {
+      lockDirectory: `${socketPath}.initializers`,
+      legacyPath: `${socketPath}.initializing`,
+      name: "Remote app-server socket",
+      target: socketPath,
+      busyMessage: `Remote app-server socket initialization is already in progress at ${socketPath}`,
+    },
+    action,
+  );
+}
+
+/**
+ * Serializes a short read-modify-write of `file` across processes with the same
+ * Bakery registers, kept in the private directory `<file>.lock`. Abandoned
+ * registers (dead owner, other boot, or older than the lease) are reclaimed.
+ */
+export async function withFileUpdateLock<T>(file: string, action: () => Promise<T>): Promise<T> {
+  return withBakeryLock(
+    {
+      lockDirectory: `${file}.lock`,
+      legacyPath: null,
+      name: "File update",
+      target: file,
+      busyMessage: `Another process is still updating ${file}`,
+    },
+    action,
+  );
+}
+
+async function withBakeryLock<T>(
+  { lockDirectory, legacyPath, name, target, busyMessage }: BakeryLockOptions,
+  action: () => Promise<T>,
+): Promise<T> {
+  await preparePrivateLockDirectory(lockDirectory, name);
 
   const ownerToken = randomUUID();
   const entryPath = path.join(lockDirectory, lockEntryName(ownerToken));
@@ -344,7 +388,7 @@ export async function withRemoteAppServerSocketInitializationLock<T>(
       0,
     );
     if (maximumTicket >= Number.MAX_SAFE_INTEGER) {
-      throw new Error(`Remote app-server socket lock ticket overflow at ${socketPath}`);
+      throw new Error(`${name} lock ticket overflow at ${target}`);
     }
     const ownRecord: RemoteSocketLockRecord = {
       ...baseRecord,
@@ -359,7 +403,7 @@ export async function withRemoteAppServerSocketInitializationLock<T>(
         (entry) => entry.record?.ownerToken === ownerToken,
       );
       if (!ownsPublishedEntry) {
-        throw new Error(`Remote app-server socket lock ownership was lost at ${socketPath}`);
+        throw new Error(`${name} lock ownership was lost at ${target}`);
       }
       const blockedByBakery = catalog.entries.some((entry) => {
         const record = entry.record;
@@ -370,6 +414,7 @@ export async function withRemoteAppServerSocketInitializationLock<T>(
         );
       });
       if (!catalog.unsettled && !blockedByBakery) {
+        if (legacyPath === null) return await action();
         const legacyGuard = await tryAcquireLegacyCompatibilityGuard(legacyPath, {
           version: 1,
           ownerToken,
@@ -394,9 +439,7 @@ export async function withRemoteAppServerSocketInitializationLock<T>(
       }
       await delay(LOCK_RETRY_DELAY_MS);
     }
-    throw new Error(
-      `Remote app-server socket initialization is already in progress at ${socketPath}`,
-    );
+    throw new Error(busyMessage);
   } finally {
     await removeOwnedLockEntry(entryPath, ownerToken);
   }

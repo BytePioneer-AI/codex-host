@@ -444,6 +444,7 @@ describe("QwenCodeAdapter", () => {
         kind: "resume",
         cwd,
         environment: { QWEN_RUNTIME_DIR: runtimeDir },
+        permissionModeId: "auto-edit" as HarnessPermissionModeId,
         nativeRef: {
           harnessId: harnessIdSchema.parse("qwen-code"),
           nativeSessionId: transport.sessionId,
@@ -451,8 +452,12 @@ describe("QwenCodeAdapter", () => {
         },
       });
       if (!opened.ok) throw new Error("resume failed");
+      expect(transport.openCalls).toEqual([
+        expect.objectContaining({ kind: "resume", permissionMode: "auto-edit" }),
+      ]);
       expect(transport.setModelCalls).toEqual(["history-model"]);
       expect(opened.value.initialState.effectiveModel?.id).toBe("history-model");
+      expect(opened.value.initialState.effectivePermissionModeId).toBe("auto-edit");
 
       await opened.value.execute({
         type: "turn.start",
@@ -470,6 +475,32 @@ describe("QwenCodeAdapter", () => {
       await adapter.close();
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("rejects an invalid saved Permission Mode on resume", async () => {
+    const transport = new FakeTransport();
+    const { adapter } = adapterFor(transport);
+
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/tmp",
+      permissionModeId: "bogus" as HarnessPermissionModeId,
+      nativeRef: {
+        harnessId: harnessIdSchema.parse("qwen-code"),
+        nativeSessionId: transport.sessionId,
+        formatVersion: 1,
+      },
+    });
+
+    expect(opened).toMatchObject({
+      ok: false,
+      error: {
+        code: "invalidRequest",
+        message: "Qwen Code resume Permission Mode is invalid",
+      },
+    });
+    expect(transport.openCalls).toHaveLength(0);
+    await adapter.close();
   });
 
   it("bounds session close when SDK interrupt does not settle", async () => {

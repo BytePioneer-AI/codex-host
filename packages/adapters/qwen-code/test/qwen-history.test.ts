@@ -189,8 +189,29 @@ describe("Qwen Code history", () => {
       [{ type: "text", text: "status" }],
       [{ type: "text", text: "again" }],
     ]);
+    expect(snapshot.turns.map(({ outcome }) => outcome)).toEqual([
+      { status: "succeeded" },
+      { status: "succeeded" },
+    ]);
     expect(snapshot.turns[1]?.nativeTurnRef.nativeTurnKey).toBe("qwen-turn-1");
     expect(snapshot.turns[1]?.items[0]?.item).toMatchObject({ type: "agentMessage", text: "done" });
+  });
+
+  it("marks turns without assistant output as unknown", () => {
+    const snapshot = mapQwenCodeHistory(
+      [
+        { type: "user", message: { role: "user", parts: [{ text: "first" }] } },
+        { type: "user", message: { role: "user", parts: [{ text: "second" }] } },
+      ],
+      harnessId,
+      sessionId,
+      "/workspace",
+    );
+
+    expect(snapshot.turns.map(({ outcome }) => outcome)).toEqual([
+      { status: "unknown", reason: "Qwen Code transcript records no Turn result" },
+      { status: "unknown", reason: "Qwen Code transcript records no Turn result" },
+    ]);
   });
   it("reads history from the Session QWEN_RUNTIME_DIR relative to cwd", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-qwen-history-"));

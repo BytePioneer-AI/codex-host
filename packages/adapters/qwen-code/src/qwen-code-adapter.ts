@@ -1042,6 +1042,20 @@ export class QwenCodeAdapter implements HarnessAdapter {
         };
       }
       initialPermissionModeId = requested;
+    } else if (input.permissionModeId) {
+      try {
+        decodeQwenCodePermissionModeId(input.permissionModeId);
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Qwen Code resume Permission Mode is invalid",
+            retryable: false,
+          },
+        };
+      }
+      initialPermissionModeId = input.permissionModeId;
     }
     let parsedRef: ReturnType<typeof nativeSessionRefSchema.safeParse> | null = null;
     if (input.kind === "resume") {

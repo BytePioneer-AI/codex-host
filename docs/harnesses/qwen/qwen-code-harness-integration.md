@@ -10,7 +10,7 @@ SDK 需要 JavaScript 入口或原生可执行文件，不能直接使用 Window
 
 ## 检查、会话与配置
 
-每次 Session 使用一个 SDK Query。`inspect` 创建临时 Query 读取模型目录后立即关闭；结果按规范化 cwd 缓存，`refresh` 跳过缓存。create 使用 SDK 生成的 `sessionId`，resume 使用持久 Native Session ID 的 `resume`；最终身份以 Query 初始化后的 `getSessionId()` 为准。
+每次 Session 使用一个 SDK Query。`inspect` 创建临时 Query 读取模型目录后立即关闭；结果按规范化 cwd 缓存，`refresh` 跳过缓存。create 先生成 Host 候选 `sessionId` 并作为 `options.sessionId` 传给 `query()`，resume 使用持久 Native Session ID 的 `resume`；两种路径的最终身份都以 Query 初始化后的 `getSessionId()` 为准。
 
 模型目录来自 `getAvailableModels()` 与 `getContextUsage()`：`currentModelId` 优先采用已选择且仍可用的模型，其次采用原生上下文报告，最后取目录第一项。打开 Session 后、首个 Host Turn 前会通过 `setModel()` 固定该选择。Qwen Code 不提供 Thinking 档位，Adapter 不声明 `selectThinkingOption`。
 

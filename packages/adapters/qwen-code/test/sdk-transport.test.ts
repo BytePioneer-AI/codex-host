@@ -377,6 +377,61 @@ describe("QwenCodeSdkTransport", () => {
     await transport.close();
   });
 
+  it("does not classify a Turn file error as a missing CLI", async () => {
+    const query = new FakeQuery();
+    const transport = new QwenCodeSdkTransport({
+      cwd: process.cwd(),
+      command: process.execPath,
+      queryFactory: (() => query as unknown as Query) as unknown as typeof sdkQuery,
+    });
+    await transport.open({ kind: "create", permissionMode: "default" as never });
+
+    const turn = transport.runTurn(
+      "status",
+      vi.fn(),
+      vi.fn(async () => ({ behavior: "allow" as const })),
+    );
+    query.emit({
+      type: "result",
+      subtype: "error_during_execution",
+      uuid: "result-enoent",
+      session_id: transport.sessionId,
+      is_error: true,
+      duration_ms: 1,
+      duration_api_ms: 1,
+      num_turns: 1,
+      usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+      permission_denials: [],
+      error: { message: "ENOENT: no such file or directory, open '/tmp/missing.txt'" },
+    } as SDKMessage);
+
+    const result = await turn;
+    expect(result).toMatchObject({ status: "failed", error: { kind: "unavailable" } });
+    expect((result as { error?: { message?: string } }).error?.message).toBe(
+      "ENOENT: no such file or directory, open '/tmp/missing.txt'",
+    );
+    await transport.close();
+  });
+
+  it("classifies a startup ENOENT as a missing CLI and keeps the diagnostic", async () => {
+    const spawnError = Object.assign(new Error("spawn qwen ENOENT"), { code: "ENOENT" });
+    const transport = new QwenCodeSdkTransport({
+      cwd: process.cwd(),
+      command: process.execPath,
+      queryFactory: (() => {
+        throw spawnError;
+      }) as unknown as typeof sdkQuery,
+    });
+
+    await expect(
+      transport.open({ kind: "create", permissionMode: "default" as never }),
+    ).rejects.toMatchObject({
+      kind: "notInstalled",
+      message: "Qwen Code CLI is not installed",
+      diagnostic: "spawn qwen ENOENT",
+    });
+  });
+
   it("classifies authentication failures from SDK result messages", async () => {
     const query = new FakeQuery();
     const transport = new QwenCodeSdkTransport({

@@ -177,11 +177,15 @@ function projectHistory(
     if (reasoning && reasoning.text.length > 0) finishItem(reasoning, { status: "succeeded" });
     reasoning = null;
   };
-  const finishTurn = (outcome: HistoricalTurnOutcome): void => {
+  const finishTurn = (): void => {
     if (input.length === 0) return;
     finishReasoning();
     finishAgent();
     for (const tool of tools.values()) finishItem(tool, { status: "succeeded" });
+    const outcome: HistoricalTurnOutcome =
+      items.length > 0
+        ? { status: "succeeded" }
+        : { status: "unknown", reason: "Qwen Code transcript records no Turn result" };
     const ordinal = turns.length;
     turns.push({
       nativeTurnRef: nativeTurnRefSchema.parse({
@@ -222,7 +226,7 @@ function projectHistory(
       }
       if (subtype === "notification" || subtype === "cron" || subtype === "mid_turn_user_message")
         continue;
-      finishTurn({ status: "unknown", reason: "Qwen Code history Turn was superseded" });
+      finishTurn();
       input = messageText(record);
       continue;
     }
@@ -281,7 +285,7 @@ function projectHistory(
       }
     }
   }
-  finishTurn({ status: "succeeded" });
+  finishTurn();
   const selected =
     knownTurnRefs.length > 0 && turns.length > knownTurnRefs.length
       ? turns.slice(-knownTurnRefs.length)

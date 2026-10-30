@@ -147,13 +147,18 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function classifyError(error: unknown): QwenCodeTransportError {
+function classifyError(
+  error: unknown,
+  stage: "startup" | "turn" = "startup",
+): QwenCodeTransportError {
   if (error instanceof QwenCodeTransportError) return error;
   const text = errorText(error);
   const lower = text.toLowerCase();
-  if (lower.includes("enoent") || lower.includes("executable file not found")) {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (stage === "startup" && (code === "ENOENT" || lower.includes("executable file not found"))) {
     return new QwenCodeTransportError("notInstalled", "Qwen Code CLI is not installed", {
       cause: error,
+      diagnostic: text,
     });
   }
   if (
@@ -460,7 +465,7 @@ export class QwenCodeSdkTransport {
               typeof message.error.message === "string"
             ? message.error.message
             : `Qwen Code SDK returned ${message.subtype}`;
-      const error = message.is_error ? classifyError(errorMessage) : undefined;
+      const error = message.is_error ? classifyError(errorMessage, "turn") : undefined;
       if (!active) {
         if (error) this.#fault(error);
         return;

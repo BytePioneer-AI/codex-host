@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
+import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
@@ -2099,6 +2099,134 @@ describe("AppServerHost HarnessAdapter projection", () => {
     );
     expect(unarchiveResponseIndex).toBeLessThan(unarchiveNotificationIndex);
     expect(fixture.adapter.sessions).toHaveLength(1);
+    await stopFixture(fixture);
+  });
+
+  it("immediately releases an idle session upon thread/archive RPC and lazily restores it on unarchive", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    const closeSpy = vi.spyOn(session, "close");
+
+    // Configure adapter to allow resume
+    const nativeOpen = fixture.adapter.open.bind(fixture.adapter);
+    vi.spyOn(fixture.adapter, "open").mockImplementation(async (input) => {
+      if (input.kind === "resume") {
+        const resumed = new FakeHarnessSession(
+          fixture.adapter.harnessId,
+          fixture.adapter.catalog,
+          undefined,
+          input.nativeRef,
+        );
+        fixture.adapter.sessions.push(resumed);
+        return { ok: true, value: resumed };
+      }
+      return nativeOpen(input);
+    });
+
+    // Archive the idle thread via real RPC
+    writeRequest(fixture.desktopInput, {
+      id: 520,
+      method: "thread/archive",
+      params: { threadId },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 520))).resolves.toEqual({
+      id: 520,
+      result: {},
+    });
+    await fixture.collector.waitFor((message) => method(message, "thread/archived"));
+
+    // Verify session close was triggered via setImmediate / idle release
+    await vi.waitFor(() => expect(closeSpy).toHaveBeenCalledTimes(1));
+
+    // Mapping store retains archived=true
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({ archived: true });
+
+    // Unarchive via real RPC restores the thread
+    writeRequest(fixture.desktopInput, {
+      id: 521,
+      method: "thread/unarchive",
+      params: { threadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 521)),
+    ).resolves.toMatchObject({
+      id: 521,
+      result: { thread: { id: threadId } },
+    });
+    await fixture.collector.waitFor((message) => method(message, "thread/unarchived"));
+
+    // Starting a new turn seamlessly lazy-restores the session
+    const turnId = await startPiTurn(fixture, threadId, 522);
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    expect(fixture.adapter.sessions.length).toBeGreaterThanOrEqual(2);
+
+    await stopFixture(fixture);
+  });
+
+  it("allows unarchive, read, and delete without -32075 when archive session close rejects", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    vi.spyOn(session, "close").mockRejectedValue(new Error("Simulated close failure"));
+
+    // Archive the thread
+    writeRequest(fixture.desktopInput, {
+      id: 530,
+      method: "thread/archive",
+      params: { threadId },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 530))).resolves.toEqual({
+      id: 530,
+      result: {},
+    });
+    await fixture.collector.waitFor((message) => method(message, "thread/archived"));
+
+    // Allow setImmediate idle release to run and hit the close rejection
+    await vi.waitFor(() => expect(session.close).toHaveBeenCalledTimes(1));
+
+    // Metadata read succeeds cleanly
+    writeRequest(fixture.desktopInput, {
+      id: 531,
+      method: "thread/read",
+      params: { threadId, includeTurns: false },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 531)),
+    ).resolves.toMatchObject({
+      id: 531,
+      result: { thread: { id: threadId } },
+    });
+
+    // Unarchive succeeds cleanly
+    writeRequest(fixture.desktopInput, {
+      id: 532,
+      method: "thread/unarchive",
+      params: { threadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 532)),
+    ).resolves.toMatchObject({
+      id: 532,
+      result: { thread: { id: threadId } },
+    });
+    await fixture.collector.waitFor((message) => method(message, "thread/unarchived"));
+
+    // Delete succeeds cleanly without -32075
+    writeRequest(fixture.desktopInput, {
+      id: 533,
+      method: "thread/delete",
+      params: { threadId },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 533))).resolves.toEqual({
+      id: 533,
+      result: {},
+    });
+
     await stopFixture(fixture);
   });
 

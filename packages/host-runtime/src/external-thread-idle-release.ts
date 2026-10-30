@@ -175,11 +175,10 @@ export class ExternalThreadIdleRelease {
     });
   }
 
-  #eligible(thread: ExternalThread): boolean {
+  #safeToRelease(thread: ExternalThread): boolean {
     const state = this.#activity.get(thread);
     return (
       !this.#stopped &&
-      this.#settings.enabled &&
       !!state &&
       !state.outputFailed &&
       !state.closeFailed &&
@@ -192,35 +191,69 @@ export class ExternalThreadIdleRelease {
       !thread.persistenceError &&
       !thread.running &&
       !thread.activeTurnId &&
-      this.options.canRelease(thread) &&
+      this.options.canRelease(thread)
+    );
+  }
+
+  #eligible(thread: ExternalThread): boolean {
+    const state = this.#activity.get(thread);
+    return (
+      this.#settings.enabled &&
+      this.#safeToRelease(thread) &&
+      !!state &&
       Date.now() - state.lastActivity >= this.#settings.timeoutMinutes * 60_000
+    );
+  }
+
+  #scheduleRelease(
+    thread: ExternalThread,
+    stillEligible: () => boolean,
+    blockOnFailure: boolean,
+  ): void {
+    if (this.#scheduled.has(thread.id)) return;
+    this.#scheduled.add(thread.id);
+    const task = this.options.queue
+      .run(thread.id, async () => {
+        if (!stillEligible()) return;
+        const closing = this.#close(thread, blockOnFailure);
+        this.#closing.set(thread.id, closing);
+        try {
+          await closing;
+        } finally {
+          this.#closing.delete(thread.id);
+        }
+      })
+      .catch(this.options.diagnose)
+      .finally(() => this.#scheduled.delete(thread.id));
+    this.#pending.add(task);
+    void task.finally(() => this.#pending.delete(task));
+  }
+
+  /**
+   * Immediately releases an idle External Thread upon archive.
+   * Does not depend on the auto idle release timer setting.
+   * Best-effort: failures diagnose rather than blocking future Thread operations.
+   */
+  releaseIfIdle(threadId: string): void {
+    const thread = this.options.get(threadId);
+    if (!thread || !this.#safeToRelease(thread) || !thread.record.archived) {
+      return;
+    }
+    this.#scheduleRelease(
+      thread,
+      () => this.#safeToRelease(thread) && Boolean(thread.record.archived),
+      false,
     );
   }
 
   check(): void {
     for (const thread of this.options.threads()) {
-      if (this.#scheduled.has(thread.id) || !this.#eligible(thread)) continue;
-      this.#scheduled.add(thread.id);
-      const task = this.options.queue
-        .run(thread.id, async () => {
-          // Requests and settings may have changed while this candidate was queued.
-          if (!this.#eligible(thread)) return;
-          const closing = this.#close(thread);
-          this.#closing.set(thread.id, closing);
-          try {
-            await closing;
-          } finally {
-            this.#closing.delete(thread.id);
-          }
-        })
-        .catch(this.options.diagnose)
-        .finally(() => this.#scheduled.delete(thread.id));
-      this.#pending.add(task);
-      void task.finally(() => this.#pending.delete(task));
+      if (!this.#eligible(thread)) continue;
+      this.#scheduleRelease(thread, () => this.#eligible(thread), true);
     }
   }
 
-  async #close(thread: ExternalThread): Promise<void> {
+  async #close(thread: ExternalThread, blockOnFailure = true): Promise<void> {
     const state = this.#activity.get(thread);
     if (!state) return;
     let timeout: NodeJS.Timeout | undefined;
@@ -252,7 +285,22 @@ export class ExternalThreadIdleRelease {
       if (this.options.get(thread.id) !== thread) throw new Error("Session changed during release");
       this.options.remove(thread.id);
     } catch (error) {
-      state.closeFailed = true;
+      const isArchived = Boolean(thread.record.archived);
+      if (blockOnFailure && !isArchived) {
+        state.closeFailed = true;
+      } else {
+        // For best-effort archive release (or timer release of an archived thread),
+        // detach the instance from runtime so that failure to close the underlying
+        // session does not leave a zombie instance blocking future unarchive/read/delete.
+        if (this.options.get(thread.id) === thread) {
+          try {
+            await this.options.onClosed?.(thread);
+          } catch (cleanupError) {
+            this.options.diagnose(cleanupError);
+          }
+          this.options.remove(thread.id);
+        }
+      }
       this.options.diagnose(error);
     } finally {
       if (timeout) clearTimeout(timeout);

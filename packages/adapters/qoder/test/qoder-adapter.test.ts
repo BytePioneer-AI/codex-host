@@ -63,6 +63,7 @@ class FakeQoderQuery implements QoderQuery {
   }));
   readonly setModel = vi.fn(async () => undefined);
   readonly setPermissionMode = vi.fn(async () => undefined);
+  readonly setPlanMode = vi.fn(async () => undefined);
   readonly request = vi.fn(async () => ({}));
 
   #closed = false;

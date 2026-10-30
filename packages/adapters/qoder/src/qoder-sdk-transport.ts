@@ -79,7 +79,11 @@ import {
   QODER_DEFAULT_MODEL_REF,
   qoderAvailableThinkingOptions,
 } from "./qoder-models.js";
-import { mapToQoderPermissionMode } from "./qoder-permission-modes.js";
+import {
+  isQoderPlanModeId,
+  mapToQoderPermissionMode,
+  mapToQoderPermissionModeExcludingPlan,
+} from "./qoder-permission-modes.js";
 import type {
   CanUseToolContext,
   GetSessionMessagesOptions,
@@ -180,6 +184,8 @@ export interface QoderSessionOptions {
     options?: GetSessionMessagesOptions,
   ) => Promise<SessionMessage[]>;
   pathToQoderCLIExecutable?: string;
+  /** Config-scoped SDK daemon; avoids shared-daemon env conflicts across threads. */
+  daemon?: NonNullable<QoderOptions["daemon"]>;
   onClosed?: () => void;
 }
 
@@ -285,7 +291,8 @@ export class QoderSession implements HarnessSession {
 
     const nativeModel = options.model ? decodeQoderModelRef(options.model) : undefined;
     this.#usageTracker = new QoderUsageTracker(nativeModel ? { modelId: nativeModel } : undefined);
-    const permissionMode = mapToQoderPermissionMode(options.permissionModeId);
+    const planMode = isQoderPlanModeId(options.permissionModeId);
+    const permissionMode = mapToQoderPermissionModeExcludingPlan(options.permissionModeId);
 
     const environment = qoderEnvironment(options.environment);
     const auth = qoderAuthForEnvironment(variant, environment);
@@ -302,8 +309,10 @@ export class QoderSession implements HarnessSession {
         ? { pathToQoderCLIExecutable: options.pathToQoderCLIExecutable }
         : {}),
       env: environment,
+      ...(options.daemon ? { daemon: options.daemon } : {}),
       ...(nativeModel ? { model: nativeModel } : {}),
       ...(permissionMode ? { permissionMode } : {}),
+      ...(planMode ? { planMode: true } : {}),
       ...(permissionMode === "bypassPermissions" || permissionMode === "yolo"
         ? { allowDangerouslySkipPermissions: true }
         : {}),
@@ -1590,8 +1599,9 @@ export class QoderSession implements HarnessSession {
           };
         }
 
-        const mode = mapToQoderPermissionMode(command.permissionModeId);
-        if (!mode) {
+        const planMode = isQoderPlanModeId(command.permissionModeId);
+        const mode = mapToQoderPermissionModeExcludingPlan(command.permissionModeId);
+        if (!planMode && !mode) {
           return {
             ok: false,
             error: {
@@ -1602,15 +1612,25 @@ export class QoderSession implements HarnessSession {
           };
         }
 
-        if (this.#query.setPermissionMode) {
-          try {
-            await this.#query.setPermissionMode(mode);
-          } catch (err) {
-            return {
-              ok: false,
-              error: mapQoderException(err),
-            };
+        try {
+          const wasPlan = isQoderPlanModeId(this.#state.effectivePermissionModeId);
+          if (planMode) {
+            if (this.#query.setPlanMode) {
+              await this.#query.setPlanMode(true);
+            }
+          } else {
+            if (wasPlan && this.#query.setPlanMode) {
+              await this.#query.setPlanMode(false);
+            }
+            if (mode && this.#query.setPermissionMode) {
+              await this.#query.setPermissionMode(mode);
+            }
           }
+        } catch (err) {
+          return {
+            ok: false,
+            error: mapQoderException(err),
+          };
         }
 
         this.#state = {

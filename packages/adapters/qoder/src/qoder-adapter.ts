@@ -43,6 +43,33 @@ import { createQoderUsageStatistics } from "./qoder-usage-statistics.js";
 
 import { QODER_RUNTIMES, qoderAuthForEnvironment, type QoderVariant } from "./qoder-runtime.js";
 
+const DELEGATION_THREAD_ID_ENV = "CODEXHOST_THREAD_ID";
+
+type QoderSdkDaemon = NonNullable<import("./qoder-sdk-types.js").QoderOptions["daemon"]>;
+
+/** Daemon launch env must not include per-thread identity — that varies across sessions. */
+function daemonEnvironment(
+  environment: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const { [DELEGATION_THREAD_ID_ENV]: _threadId, ...rest } = environment;
+  return rest;
+}
+
+function daemonConfigKey(
+  pathToQoderCLIExecutable: string | undefined,
+  environment: Record<string, string | undefined>,
+  authType: string,
+): string {
+  const envEntries = Object.entries(environment)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return JSON.stringify({
+    pathToQoderCLIExecutable: pathToQoderCLIExecutable ?? null,
+    authType,
+    env: envEntries,
+  });
+}
+
 export interface QoderAdapterOptions {
   variant?: QoderVariant;
   commandOverride?: string;
@@ -93,6 +120,10 @@ export class QoderAdapter implements HarnessAdapter {
   readonly #sessions = new Set<HarnessSession>();
   readonly #inspections = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
   readonly #inFlightInspections = new Map<string, Promise<HarnessInspection>>();
+  readonly #manageSdkDaemon: boolean;
+  #ownedDaemon: QoderSdkDaemon | undefined;
+  #ownedDaemonKey: string | undefined;
+  #ownedDaemonStop: (() => Promise<void>) | undefined;
 
   constructor(options: QoderAdapterOptions = {}) {
     this.#variant = options.variant ?? "global";
@@ -106,6 +137,7 @@ export class QoderAdapter implements HarnessAdapter {
       this.#variant,
     );
     this.#platform = options.platform ?? process.platform;
+    this.#manageSdkDaemon = options.queryFactory === undefined;
     this.#queryFactory = options.queryFactory ?? ((input) => runtime.sdk.query(input));
     this.#forkSession = options.forkSession ?? runtime.sdk.forkSession;
     this.#getSessionMessages = options.getSessionMessages ?? runtime.sdk.getSessionMessages;
@@ -123,6 +155,52 @@ export class QoderAdapter implements HarnessAdapter {
         resolveQoderExecutable({ ...input, variant: this.#variant }, dependencies));
   }
 
+
+  async #ensureConfigDaemon(input: {
+    environment: Record<string, string | undefined>;
+    pathToQoderCLIExecutable?: string;
+  }): Promise<QoderSdkDaemon | undefined> {
+    if (!this.#manageSdkDaemon) return undefined;
+    const runtime = QODER_RUNTIMES[this.#variant];
+    const initDaemon = runtime.sdk.initDaemon;
+    if (typeof initDaemon !== "function") return undefined;
+
+    const daemonEnv = daemonEnvironment(input.environment);
+    const auth = qoderAuthForEnvironment(this.#variant, daemonEnv);
+    const key = daemonConfigKey(
+      input.pathToQoderCLIExecutable,
+      daemonEnv,
+      (auth as { type?: string }).type ?? "unknown",
+    );
+    if (this.#ownedDaemon && this.#ownedDaemonKey === key) {
+      return this.#ownedDaemon;
+    }
+    if (this.#ownedDaemonStop) {
+      try {
+        await this.#ownedDaemonStop();
+      } catch {
+        // Previous daemon may already be stopped.
+      }
+      this.#ownedDaemon = undefined;
+      this.#ownedDaemonKey = undefined;
+      this.#ownedDaemonStop = undefined;
+    }
+
+    const daemon = await initDaemon({
+      auth,
+      ...(input.pathToQoderCLIExecutable
+        ? { pathToQoderCLIExecutable: input.pathToQoderCLIExecutable }
+        : {}),
+      env: daemonEnv,
+    });
+    this.#ownedDaemon = daemon;
+    this.#ownedDaemonKey = key;
+    this.#ownedDaemonStop = async () => {
+      await daemon.stop();
+    };
+    return daemon;
+  }
+
   async inspectAccount() {
     let probe: QoderQuery | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -132,12 +210,17 @@ export class QoderAdapter implements HarnessAdapter {
         environment: this.#environment as NodeJS.ProcessEnv,
         platform: this.#platform,
       });
+      const daemon = await this.#ensureConfigDaemon({
+        environment: this.#environment,
+        pathToQoderCLIExecutable: executable,
+      });
       probe = this.#queryFactory({
         prompt: "",
         options: {
           cwd: process.cwd(),
           pathToQoderCLIExecutable: executable,
           ...(this.#environment ? { env: this.#environment } : {}),
+          ...(daemon ? { daemon } : {}),
           auth: qoderAuthForEnvironment(this.#variant, this.#environment),
         },
       });
@@ -193,6 +276,10 @@ export class QoderAdapter implements HarnessAdapter {
         } else {
           let stderr = "";
           try {
+            const daemon = await this.#ensureConfigDaemon({
+              environment: this.#environment,
+              pathToQoderCLIExecutable: executable,
+            });
             const probeQuery = this.#queryFactory({
               prompt: "",
               options: {
@@ -202,6 +289,7 @@ export class QoderAdapter implements HarnessAdapter {
                 },
                 pathToQoderCLIExecutable: executable,
                 ...(this.#environment ? { env: this.#environment } : {}),
+                ...(daemon ? { daemon } : {}),
                 auth: qoderAuthForEnvironment(this.#variant, this.#environment),
               },
             });
@@ -512,6 +600,10 @@ export class QoderAdapter implements HarnessAdapter {
 
     let session: QoderSession;
     try {
+      const daemon = await this.#ensureConfigDaemon({
+        environment,
+        ...(pathToQoderCLIExecutable ? { pathToQoderCLIExecutable } : {}),
+      });
       session = new QoderSession({
         variant: this.#variant,
         sessionId,
@@ -527,6 +619,7 @@ export class QoderAdapter implements HarnessAdapter {
         queryFactory: this.#queryFactory,
         getSessionMessages: this.#getSessionMessages,
         ...(pathToQoderCLIExecutable ? { pathToQoderCLIExecutable } : {}),
+        ...(daemon ? { daemon } : {}),
         onClosed: () => {
           this.#sessions.delete(session);
         },
@@ -545,5 +638,15 @@ export class QoderAdapter implements HarnessAdapter {
     this.#inspections.clear();
     this.#inFlightInspections.clear();
     await Promise.all([this.sessionImport.close(), ...sessions.map((s) => s.close())]);
+    if (this.#ownedDaemonStop) {
+      try {
+        await this.#ownedDaemonStop();
+      } catch {
+        // Best-effort release of the config-scoped daemon.
+      }
+      this.#ownedDaemon = undefined;
+      this.#ownedDaemonKey = undefined;
+      this.#ownedDaemonStop = undefined;
+    }
   }
 }

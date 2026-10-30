@@ -50,6 +50,17 @@ function render(value: ConsoleOverview): string {
   );
 }
 
+function renderOverview(value: ConsoleOverview): string {
+  const state = new ConsoleState();
+  state.overview = value;
+  const replaceChildren = vi.fn();
+  const context = {
+    content: { ownerDocument: {}, replaceChildren },
+  } as unknown as RendererSettingsPageMountContext;
+  createOverviewPage(consoleMessages("zh-CN"), state, vi.fn(), "zh-CN").mount(context);
+  return JSON.stringify(replaceChildren.mock.calls.at(-1));
+}
+
 describe("overview startup diagnostics", () => {
   it("shows starting without a launch button, and enables retry only after failure", () => {
     const state = new ConsoleState();
@@ -138,6 +149,118 @@ describe("overview startup diagnostics", () => {
     expect(render(value)).not.toContain("injection error");
     value.summary.state = "integration-unavailable";
     expect(render(value)).toContain("injection error");
+  });
+
+  it("displays portable desktop source, path, and version unknown fallback in overview", () => {
+    const state = new ConsoleState();
+    state.overview = overview();
+    state.overview.inspect = {
+      desktop: {
+        platform: "windows",
+        identity: {
+          packageName: "OpenAI.Codex",
+          packageFamilyName: "OpenAI.Codex_portable",
+          appxActivation: null,
+        },
+        version: "unknown",
+        build: "unknown",
+        installRoot: "E:\\Develop\\codex\\versions\\current",
+      },
+      desktopError: null,
+      runtime: { running: true },
+    };
+    const replaceChildren = vi.fn();
+    const context = {
+      content: { ownerDocument: {}, replaceChildren },
+    } as unknown as RendererSettingsPageMountContext;
+    createOverviewPage(consoleMessages("zh-CN"), state, vi.fn(), "zh-CN").mount(context);
+    const rendered = JSON.stringify(replaceChildren.mock.calls.at(-1));
+    expect(rendered).toContain("绿色便携版");
+    expect(rendered).toContain("版本未知");
+    expect(rendered).not.toContain("0.0.0.0");
+    expect(rendered).toContain("E:\\\\Develop\\\\codex\\\\versions\\\\current");
+  });
+
+  it("displays msix desktop source and valid version in overview", () => {
+    const state = new ConsoleState();
+    state.overview = overview();
+    state.overview.inspect = {
+      desktop: {
+        platform: "windows",
+        identity: {
+          packageName: "OpenAI.Codex",
+          packageFamilyName: "OpenAI.Codex_2p2nqsd0c76g0",
+          appxActivation: {
+            packageFullName: "OpenAI.Codex_26.1021.2667.0_x64__2p2nqsd0c76g0",
+            appUserModelId: "OpenAI.Codex_2p2nqsd0c76g0!App",
+          },
+        },
+        version: "26.1021.2667.0",
+        build: "26.1021.2667.0",
+        installRoot: "C:\\Program Files\\WindowsApps\\OpenAI.Codex",
+      },
+      desktopError: null,
+      runtime: { running: true },
+    };
+    const replaceChildren = vi.fn();
+    const context = {
+      content: { ownerDocument: {}, replaceChildren },
+    } as unknown as RendererSettingsPageMountContext;
+    createOverviewPage(consoleMessages("zh-CN"), state, vi.fn(), "zh-CN").mount(context);
+    const rendered = JSON.stringify(replaceChildren.mock.calls.at(-1));
+    expect(rendered).toContain("MSIX 已注册包");
+    expect(rendered).toContain("26.1021.2667.0");
+  });
+
+  it("omits the desktop source when an older Launcher has no appxActivation field", () => {
+    const value = overview();
+    value.inspect = {
+      desktop: {
+        platform: "windows",
+        identity: {
+          packageName: "OpenAI.Codex",
+          packageFamilyName: "OpenAI.Codex_2p2nqsd0c76g0",
+        },
+        version: "26.1021.2667.0",
+        build: "26.1021.2667.0",
+        installRoot: "C:\\Program Files\\WindowsApps\\OpenAI.Codex",
+      },
+      desktopError: null,
+      runtime: { running: true },
+    };
+    const rendered = renderOverview(value);
+    expect(rendered).toContain("26.1021.2667.0");
+    expect(rendered).not.toContain("绿色便携版");
+    expect(rendered).not.toContain("MSIX 已注册包");
+    expect(rendered).not.toContain("Codex Desktop 来源");
+
+    // A missing identity is unknown too, not a portable installation.
+    value.inspect = {
+      desktop: {
+        platform: "windows",
+        version: "26.1021.2667.0",
+        build: "26.1021.2667.0",
+        installRoot: "C:\\Program Files\\WindowsApps\\OpenAI.Codex",
+      },
+      desktopError: null,
+      runtime: { running: true },
+    };
+    expect(renderOverview(value)).not.toContain("Codex Desktop 来源");
+  });
+
+  it("replaces historical 0.0.0.0 with version unknown in diagnostics", () => {
+    const value = overview();
+    const latest = value.startup[0];
+    if (!latest) throw new Error("Missing fixture startup");
+    latest.outcome = "failed";
+    latest.desktop = {
+      version: "0.0.0.0",
+      build: "0.0.0.0",
+      installRoot: "E:\\Develop\\codex",
+    };
+    const output = render(value);
+    expect(output).toContain("版本未知");
+    expect(output).not.toContain("0.0.0.0");
   });
 });
 

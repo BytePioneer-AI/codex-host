@@ -100,7 +100,9 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
    [Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
    ```
 
-2. 完全退出 Codex Desktop，重新打开终端，再运行 `codexhost`。
+2. 完全退出运行中的 Codex Desktop 与 `codexhost` 进程（必要时检查托盘或任务管理器），重新打开终端，再运行 `codexhost`。
+
+   > CodexHost 会自动从 `AppxManifest.xml`、`resources/app.asar` 或 `package.json` 读取版本信息。控制台总览页面将清晰展示当前选中的 Desktop 版本、来源（`绿色便携版` 或 `MSIX 已注册包`）与安装路径。
 
 </details>
 

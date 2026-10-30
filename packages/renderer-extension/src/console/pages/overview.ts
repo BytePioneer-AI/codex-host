@@ -108,11 +108,46 @@ export function createOverviewPage(
           : messages.source;
         const desktop = overview.inspect?.desktop;
         const version = distribution?.version ?? overview.console.version;
-        const versionFacts = [
+
+        const desktopVersionText = !desktop
+          ? messages.missing
+          : desktop.version === "unknown" || desktop.version === "0.0.0.0"
+            ? messages.versionUnknown
+            : desktop.version;
+
+        const resolveDesktopSource = () => {
+          if (!desktop) return null;
+          const platform = desktop.platform;
+          const identity = desktop.identity;
+          if (platform === "windows" || identity?.packageFamilyName) {
+            if (identity?.appxActivation) return messages.desktopSourceMsix;
+            // An explicit null marks a portable root. An older Launcher omits the
+            // field entirely, which leaves the source unknown rather than portable.
+            if (identity?.appxActivation === null) return messages.desktopSourcePortable;
+            return null;
+          }
+          if (platform === "macos" || identity?.bundleIdentifier) {
+            return messages.desktopSourceAppBundle;
+          }
+          if (platform === "linux" || identity?.brand) {
+            return messages.desktopSourceLinuxPackage;
+          }
+          return null;
+        };
+
+        const desktopSourceText = resolveDesktopSource();
+
+        const versionFacts: [string, string][] = [
           [messages.hostVersion, version === "source" ? messages.development : version],
-          [messages.desktopVersion, desktop?.version ?? messages.missing],
-          [messages.installationType, installation],
+          [messages.desktopVersion, desktopVersionText],
         ];
+        if (desktopSourceText) {
+          versionFacts.push([messages.desktopSource, desktopSourceText]);
+        }
+        if (desktop?.installRoot) {
+          versionFacts.push([messages.desktopPath, desktop.installRoot]);
+        }
+        versionFacts.push([messages.installationType, installation]);
         const versions = h(
           document,
           "dl",

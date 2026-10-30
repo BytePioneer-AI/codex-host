@@ -7,8 +7,18 @@ import { parseDistributionMetadata, type DistributionMetadata } from "@codexhost
 
 import { LAUNCHER_EXECUTABLE_ENV } from "./paths.js";
 
+export interface InspectDesktopIdentity {
+  packageName?: string;
+  packageFamilyName?: string;
+  appxActivation?: { packageFullName: string; appUserModelId: string } | null;
+  bundleIdentifier?: string;
+  brand?: string;
+  flavor?: string;
+}
+
 export interface InspectDesktop {
   platform: string;
+  identity?: InspectDesktopIdentity;
   version: string;
   build: string;
   installRoot: string;

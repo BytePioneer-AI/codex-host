@@ -294,10 +294,19 @@ fn desktop_json(installation: &DesktopInstallation, process_ids: &[u32]) -> Valu
         DesktopIdentity::WindowsPackage {
             package_name,
             package_family_name,
-            ..
+            appx_activation,
         } => (
             "windows",
-            json!({ "packageName": package_name, "packageFamilyName": package_family_name }),
+            json!({
+                "packageName": package_name,
+                "packageFamilyName": package_family_name,
+                "appxActivation": appx_activation.as_ref().map(|identity| {
+                    json!({
+                        "packageFullName": identity.package_full_name,
+                        "appUserModelId": identity.app_user_model_id,
+                    })
+                }),
+            }),
         ),
         DesktopIdentity::MacOsBundle { bundle_identifier } => {
             ("macos", json!({ "bundleIdentifier": bundle_identifier }))
@@ -506,5 +515,84 @@ mod tests {
         assert_eq!(document["schemaVersion"], 1);
         assert!(document["desktop"].is_null());
         assert_eq!(document["desktopError"], "Codex Desktop was not found");
+    }
+
+    #[test]
+    fn desktop_json_serializes_windows_package_with_and_without_appx_activation() {
+        use codexhost_platform::WindowsAppxActivationIdentity;
+
+        let msix_installation = DesktopInstallation {
+            identity: DesktopIdentity::WindowsPackage {
+                package_name: "OpenAI.Codex".into(),
+                package_family_name: "OpenAI.Codex_2p2nqsd0c76g0".into(),
+                appx_activation: Some(WindowsAppxActivationIdentity {
+                    package_full_name: "OpenAI.Codex_26.1021.2667.0_x64__2p2nqsd0c76g0".into(),
+                    app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".into(),
+                }),
+            },
+            version: "26.1021.2667.0".into(),
+            build: "26.1021.2667.0".into(),
+            asar_integrity: "sha256:abc".into(),
+            install_root: PathBuf::from("C:\\Program Files\\WindowsApps\\OpenAI.Codex"),
+            desktop_launcher: PathBuf::from(
+                "C:\\Program Files\\WindowsApps\\OpenAI.Codex\\app\\ChatGPT.exe",
+            ),
+            desktop_executable: PathBuf::from(
+                "C:\\Program Files\\WindowsApps\\OpenAI.Codex\\app\\ChatGPT.exe",
+            ),
+            packaged_codex_cli: PathBuf::from(
+                "C:\\Program Files\\WindowsApps\\OpenAI.Codex\\app\\resources\\codex.exe",
+            ),
+            executable_codex_cli: PathBuf::from(
+                "C:\\Program Files\\WindowsApps\\OpenAI.Codex\\app\\resources\\codex.exe",
+            ),
+        };
+        let msix_json = desktop_json(&msix_installation, &[1234]);
+        assert_eq!(msix_json["platform"], "windows");
+        assert_eq!(msix_json["identity"]["packageName"], "OpenAI.Codex");
+        assert_eq!(
+            msix_json["identity"]["packageFamilyName"],
+            "OpenAI.Codex_2p2nqsd0c76g0"
+        );
+        assert_eq!(
+            msix_json["identity"]["appxActivation"]["packageFullName"],
+            "OpenAI.Codex_26.1021.2667.0_x64__2p2nqsd0c76g0"
+        );
+        assert_eq!(
+            msix_json["identity"]["appxActivation"]["appUserModelId"],
+            "OpenAI.Codex_2p2nqsd0c76g0!App"
+        );
+
+        let portable_installation = DesktopInstallation {
+            identity: DesktopIdentity::WindowsPackage {
+                package_name: "OpenAI.Codex".into(),
+                package_family_name: "OpenAI.Codex_portable".into(),
+                appx_activation: None,
+            },
+            version: "26.1021.3705.0".into(),
+            build: "26.1021.3705.0".into(),
+            asar_integrity: "sha256:def".into(),
+            install_root: PathBuf::from("E:\\Develop\\codex\\versions\\current"),
+            desktop_launcher: PathBuf::from(
+                "E:\\Develop\\codex\\versions\\current\\app\\ChatGPT.exe",
+            ),
+            desktop_executable: PathBuf::from(
+                "E:\\Develop\\codex\\versions\\current\\app\\ChatGPT.exe",
+            ),
+            packaged_codex_cli: PathBuf::from(
+                "E:\\Develop\\codex\\versions\\current\\app\\resources\\codex.exe",
+            ),
+            executable_codex_cli: PathBuf::from(
+                "E:\\Develop\\codex\\versions\\current\\app\\resources\\codex.exe",
+            ),
+        };
+        let portable_json = desktop_json(&portable_installation, &[]);
+        assert_eq!(portable_json["platform"], "windows");
+        assert_eq!(portable_json["identity"]["packageName"], "OpenAI.Codex");
+        assert_eq!(
+            portable_json["identity"]["packageFamilyName"],
+            "OpenAI.Codex_portable"
+        );
+        assert!(portable_json["identity"]["appxActivation"].is_null());
     }
 }

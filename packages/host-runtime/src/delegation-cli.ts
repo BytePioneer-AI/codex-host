@@ -137,7 +137,7 @@ async function requestRuntime(input: {
   let body: { error?: { code?: unknown; message?: unknown; details?: unknown } };
   try {
     const parsed: unknown = await response.json();
-    if (typeof parsed !== "object" || parsed === null) {
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       throw new Error("Runtime response is not a JSON object");
     }
     body = parsed as typeof body;

@@ -462,6 +462,7 @@ describe("delegation CLI", () => {
     ["non-JSON", "<html>Bad Gateway</html>"],
     ["JSON null", "null"],
     ["JSON scalar", "42"],
+    ["JSON array", "[]"],
   ])("reports a %s Runtime response as unreachable with its HTTP status", async (_name, text) => {
     const diagnosticOutput = new PassThrough();
     const fetchImpl = vi.fn(

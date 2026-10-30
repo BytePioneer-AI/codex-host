@@ -3281,6 +3281,10 @@ export class AppServerHost {
         ...(arguments_ ? { arguments: arguments_ } : {}),
       });
       if (!result.ok) throw new ExternalCommandError(-32073, result.error.message);
+      thread.clientCommand = {
+        name: descriptor.invocation.slice(1),
+        turn: projection.projector.snapshotTurn(),
+      };
       return { turnId: result.value.turnId, turn: projection.projector.pendingTurn(), gate };
     } catch (error) {
       restoreExecutionHost();

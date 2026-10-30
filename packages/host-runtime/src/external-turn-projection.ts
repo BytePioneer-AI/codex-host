@@ -167,6 +167,8 @@ export class ExternalTurnProjection {
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
       const completedAt = Math.floor(Date.now() / 1000);
       if (ephemeralTurn) {
+        if (thread.clientCommand?.turn.id === event.turnId)
+          thread.clientCommand.turn = projection.projector.snapshotTurn(result.completedTurn);
         thread.ephemeralTurnIds.delete(event.turnId);
         this.#host.manualCompactionTurns.delete(thread);
       } else {

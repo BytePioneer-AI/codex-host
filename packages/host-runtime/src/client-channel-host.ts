@@ -209,6 +209,16 @@ export class ClientChannelHost {
         JSON.stringify({
           cursor: this.clientEvents.cursor,
           activeTurnId: thread.activeTurnId,
+          command: thread.clientCommand
+            ? {
+                ...thread.clientCommand,
+                turn:
+                  thread.activeTurnId && thread.activeTurnId === thread.clientCommand.turn.id
+                    ? (thread.projectedTurns.get(thread.activeTurnId)?.projector.snapshotTurn() ??
+                      thread.clientCommand.turn)
+                    : thread.clientCommand.turn,
+              }
+            : undefined,
           thread: { ...thread.thread, turns: [] },
           turnsPage: listExternalTurns(this.#host.clientHistoryTurns(thread), {
             limit: 5,

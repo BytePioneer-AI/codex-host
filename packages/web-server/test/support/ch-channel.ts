@@ -23,6 +23,7 @@ export class FakeChChannel extends FakeChHost {
   listeners = new Set<(event: HostClientUpdate) => void>();
   pending: ClientInteraction[] = [];
   answers: ClientChannelResponse[] = [];
+  commands = new Map<string, NonNullable<ClientThreadSnapshot["command"]>>();
   delaySnapshot: (() => Promise<void>) | undefined;
   /** Options of every snapshot request, in order. */
   snapshotOptions: ClientSnapshotOptions[] = [];
@@ -100,6 +101,7 @@ export class FakeChChannel extends FakeChHost {
     if (!row) throw new Error("Unknown Thread");
     const value = clientThreadSnapshotSchema.parse({
       cursor: { epoch: this.epoch, sequence: this.sequence },
+      command: structuredClone(this.commands.get(id)),
       thread: { ...structuredClone(row), turns: [] },
       turnsPage: {
         data: structuredClone(row.turns.slice(-5).reverse()).map((turn) =>

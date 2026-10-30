@@ -852,15 +852,26 @@ export class CodexTurnProjector {
         ...this.#wireItemOrder.flatMap((itemId) => {
           const projected = this.#items.get(itemId);
           if (!projected?.wireStarted) return [];
-          return [
-            projectItem(
-              itemId === this.#fileItemId ? this.#fileSummary() : projected.item,
-              projected.outcome,
-              this.#cwd,
-              true,
-              this.#threadId,
-            ),
-          ];
+          const item = projectItem(
+            itemId === this.#fileItemId ? this.#fileSummary() : projected.item,
+            projected.outcome,
+            this.#cwd,
+            true,
+            this.#threadId,
+          );
+          // Desktop's compaction wire Item has no status; snapshot clients need
+          // its own outcome even while the containing Turn continues.
+          if (projected.item.type === "contextCompaction") {
+            item.status =
+              projected.outcome?.status === "cancelled"
+                ? "interrupted"
+                : itemStatus(projected.outcome);
+            if (projected.outcome?.status === "failed")
+              item.error = { message: projected.outcome.error.message };
+            if (projected.outcome?.status === "cancelled" && projected.outcome.reason)
+              item.error = { message: projected.outcome.reason };
+          }
+          return [item];
         }),
       ],
     };

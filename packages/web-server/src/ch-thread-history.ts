@@ -3,6 +3,7 @@ import type { ChHostClient } from "./ch-host-client.ts";
 import type { ClientThreadSnapshot } from "@codexhost/shared-contracts";
 import { ChThreadView, type ChThread, type ChTurn } from "./ch-thread-view.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
+import { ChCommandPresentation } from "./ch-command-presentation.ts";
 import type { ProjectionListener } from "./session-log.ts";
 import { RpcError } from "./transport.ts";
 
@@ -21,6 +22,7 @@ interface TurnsPage {
 
 export class ChThreadHistory extends ChThreadView {
   private loaded = false;
+  private readonly commands: ChCommandPresentation;
   ownerSnapshot: ClientThreadSnapshot | undefined;
   private lastHeadReadAt = 0;
   private prefetched = false;
@@ -48,6 +50,7 @@ export class ChThreadHistory extends ChThreadView {
       projectInput,
     );
     this.pagination = pagination;
+    this.commands = new ChCommandPresentation(this.log);
   }
 
   private async page(cursor: string | null): Promise<TurnsPage> {
@@ -145,6 +148,7 @@ export class ChThreadHistory extends ChThreadView {
       ) {
         Object.assign(this.thread, { ...thread, turns: this.thread.turns });
         this.log.setProjection("title", threadListTitle(thread));
+        this.commands.update(snapshot?.command, this.thread.turns);
         return;
       }
       const recent = snapshot ? snapshot.turnsPage : await this.page(null);
@@ -196,6 +200,7 @@ export class ChThreadHistory extends ChThreadView {
           ],
         });
       }
+      this.commands.update(snapshot?.command, this.thread.turns);
       this.lastHeadReadAt = Date.now();
     })().finally(() => {
       this.refreshing = undefined;

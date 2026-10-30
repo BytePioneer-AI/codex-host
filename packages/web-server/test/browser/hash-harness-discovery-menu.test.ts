@@ -108,10 +108,11 @@ for (const width of [390, 1280])
       await composer.fill("body #compact");
       await attach();
       await menu.getByRole("option", { name: /^Compact\b/ }).waitFor();
+      const executed = page.waitForResponse((response) =>
+        response.url().endsWith("/api/codexhost/executeThreadCommand"),
+      );
       await composer.press("Enter");
-      await page
-        .getByText("Command accepted. Follow progress in this Thread.", { exact: true })
-        .waitFor();
+      assert.equal((await executed).status(), 200);
       assert.equal(await composer.innerText(), "body ");
       await page
         .getByRole("group", { name: "Pending attachments", exact: true })
@@ -125,6 +126,15 @@ for (const width of [390, 1280])
         threadId: "existing",
         commandId: "fake.compact",
       });
+      await plus.click();
+      await menu.getByRole("option", { name: /^Compact\b/, disabled: false }).waitFor();
+      assert.equal(
+        await page
+          .getByText("Command accepted. Follow progress in this Thread.", { exact: true })
+          .count(),
+        0,
+        "aliases must not leave an acceptance banner either",
+      );
     },
   );
 

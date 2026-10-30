@@ -21,6 +21,12 @@ export function CompactionCommandCard({ node, compaction, t }: CompactionCommand
       />
     );
   }
-  if (node.outcome !== null) return <GenericCommandCard node={node} t={t} />;
-  return <GenericCommandCard node={node} t={t} runningSummary={t("message.compaction.running")} />;
+  return (
+    <GenericCommandCard
+      node={node}
+      t={t}
+      runningSummary={t("message.compaction.running")}
+      successSummary={t("message.compaction")}
+    />
+  );
 }

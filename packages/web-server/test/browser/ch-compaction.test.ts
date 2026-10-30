@@ -67,6 +67,24 @@ it(
     assert.match((await recovered.innerText()).trim(), /上下文已压缩/u);
     assert.doesNotMatch(await recovered.innerText(), /compact_context/u);
 
+    // Explicit commands are ephemeral: absent from turnsPage, present in the
+    // independent command snapshot, including after terminal notifications.
+    const manualTurn = { id: "live-manual", status: "inProgress", items: [] };
+    host.commands.set(row.id, { name: "compact", turn: manualTurn });
+    row.status = { type: "active" };
+    host.changed(row.id, "codexhost/thread/manual-compaction/started");
+    const manual = page.locator('[data-command="compact"]');
+    await page.locator('[data-command="compact"][data-state="running"]').waitFor();
+    assert.match(await manual.innerText(), /正在压缩/u);
+    await page.locator("[data-chat-running]").filter({ hasText: "正在压缩" }).waitFor();
+    manualTurn.status = "completed";
+    row.status = { type: "idle" };
+    host.changed(row.id, "turn/completed");
+    await page.locator('[data-command="compact"][data-state="ok"]').waitFor();
+    assert.match(await manual.innerText(), /上下文已压缩/u);
+    await page.locator("[data-chat-running]").waitFor({ state: "detached" });
+    assert.equal(row.turns.length, 1);
+
     const automatic = {
       id: "automatic-compaction-item",
       type: "contextCompaction",
@@ -90,6 +108,7 @@ it(
     const running = page.locator('[data-tool="compact_context"][data-state="running"]');
     await running.waitFor();
     assert.match((await running.innerText()).trim(), /正在压缩/u);
+    await page.locator("[data-chat-running]").filter({ hasText: "正在压缩" }).waitFor();
     const screenshots = process.env.CODEXHOST_TEST_SCREENSHOTS;
     if (screenshots) {
       mkdirSync(screenshots, { recursive: true });
@@ -102,6 +121,19 @@ it(
     await completed.nth(1).waitFor();
     assert.equal(await completed.count(), 2);
     assert.match((await completed.nth(1).innerText()).trim(), /上下文已压缩/u);
+    await page.locator("[data-chat-running]").filter({ hasText: "正在处理" }).waitFor();
+
+    const failedTurn = {
+      id: "failed-manual",
+      status: "failed",
+      items: [],
+      error: { message: "Native compression failed" },
+    };
+    host.commands.set(row.id, { name: "compact", turn: failedTurn });
+    host.changed(row.id, "turn/completed");
+    const failure = page.locator('[data-command="compact"][data-state="error"]');
+    await failure.waitFor();
+    assert.match(await failure.innerText(), /Native compression failed/u);
     if (screenshots) {
       await page.screenshot({ path: join(screenshots, "compaction-completed.png") });
     }

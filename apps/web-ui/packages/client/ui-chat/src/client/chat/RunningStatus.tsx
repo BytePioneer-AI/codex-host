@@ -9,6 +9,7 @@ import css from "./ChatView.module.css";
 
 interface RunningStatusProps {
   readonly startTime: number | undefined;
+  readonly compacting?: boolean;
   readonly t: ChatViewSlotProps["t"];
 }
 
@@ -17,10 +18,14 @@ interface RunningStatusProps {
  * @param props - Current Turn start time and localized copy.
  * @returns the blue running indicator; mount only while the Session is running.
  */
-export const RunningStatus = memo(function RunningStatus({ startTime, t }: RunningStatusProps) {
+export const RunningStatus = memo(function RunningStatus({
+  startTime,
+  compacting,
+  t,
+}: RunningStatusProps) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
-    if (startTime === undefined) return;
+    if (startTime === undefined || compacting) return;
     setNow(Date.now());
     const timer = setInterval(() => {
       setNow(Date.now());
@@ -28,9 +33,10 @@ export const RunningStatus = memo(function RunningStatus({ startTime, t }: Runni
     return () => {
       clearInterval(timer);
     };
-  }, [startTime]);
-  const label =
-    startTime === undefined
+  }, [startTime, compacting]);
+  const label = compacting
+    ? t("message.compaction.running")
+    : startTime === undefined
       ? t("chat.deepDiving")
       : t("chat.deepDivingFor", {
           duration: formatRunDuration(Math.max(1000, now - startTime), t)
@@ -40,7 +46,7 @@ export const RunningStatus = memo(function RunningStatus({ startTime, t }: Runni
   return (
     <div className={css.running} data-chat-running>
       <span className={a11yCss.visuallyHidden} role="status" aria-live="polite" aria-atomic="true">
-        {t("chat.deepDiving")}
+        {compacting ? t("message.compaction.running") : t("chat.deepDiving")}
       </span>
       <span className={css.runningDivider} aria-hidden="true" />
       <span className={css.runningContent}>

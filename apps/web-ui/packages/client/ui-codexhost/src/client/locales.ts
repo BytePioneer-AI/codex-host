@@ -7,7 +7,6 @@ export const en = {
   "discovery.pending": "A command request is pending",
   "discovery.busy": "Thread busy; direct commands cannot be queued",
   "discovery.stale": "The selection expired. Open the menu and select again.",
-  "discovery.accepted": "Command accepted. Follow progress in this Thread.",
   "discovery.unconfirmed":
     "Command not confirmed. Check Thread progress before retrying; no automatic resend.",
   "discovery.conflict": "Invocation conflicts with an interface command",
@@ -99,7 +98,6 @@ export const zh: Record<ImportLocaleKey, string> = {
   "discovery.pending": "命令请求正在提交",
   "discovery.busy": "会话正忙，直接命令不能排队",
   "discovery.stale": "选择已失效，请重新打开菜单选择。",
-  "discovery.accepted": "命令已接受，请在当前会话查看执行进度。",
   "discovery.unconfirmed": "命令结果未确认，请先检查会话进度再决定是否重试；不会自动重发。",
   "discovery.conflict": "调用名与界面命令冲突",
   "discovery.static": "静态目录：项目命令和 Skills 在会话启动后加载。",

@@ -434,10 +434,21 @@ export class ChThreadView {
             : item.status === "failed"
               ? {
                   status: "failed",
-                  error: { code: "nativeFailed", message: "Native tool execution failed" },
+                  error: {
+                    code: "nativeFailed",
+                    message:
+                      isRecord(item.error) && typeof item.error.message === "string"
+                        ? item.error.message
+                        : "Native tool execution failed",
+                  },
                 }
               : item.status === "declined" || item.status === "interrupted"
-                ? { status: "cancelled" }
+                ? {
+                    status: "cancelled",
+                    ...(isRecord(item.error) && typeof item.error.message === "string"
+                      ? { reason: item.error.message }
+                      : {}),
+                  }
                 : undefined;
         if (itemOutcome) {
           if (!view.started.has(item.id)) {

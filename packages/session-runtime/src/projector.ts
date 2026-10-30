@@ -695,10 +695,12 @@ export class TurnProjector {
       {
         type: "text",
         text: capText(
-          isError && text === ""
+          isError && (text === "" || item.type === "contextCompaction")
             ? outcome.status === "failed"
               ? outcome.error.message
-              : "Cancelled"
+              : outcome.status === "cancelled"
+                ? (outcome.reason ?? "Cancelled")
+                : "Cancelled"
             : text,
         ),
       },

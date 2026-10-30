@@ -23,6 +23,8 @@ export interface GenericCommandCardProps extends CommandRowOwnerProps {
   t: ChatViewSlotProps["t"];
   /** Command-specific running copy; absent uses the generic command label. */
   runningSummary?: string | undefined;
+  /** Localized success copy when the command returned no settlement text. */
+  successSummary?: string | undefined;
 }
 
 /**
@@ -34,13 +36,17 @@ export const GenericCommandCard = memo(function GenericCommandCard({
   node,
   t,
   runningSummary,
+  successSummary,
 }: GenericCommandCardProps) {
   const [expanded, setExpanded] = useState(false);
   const text = node.outcome?.text;
   const summary =
     node.outcome === null
       ? (runningSummary ?? t("command.running"))
-      : (text ?? (node.outcome.kind === "error" ? t("command.failed") : t("command.done")));
+      : (text ??
+        (node.outcome.kind === "error"
+          ? t("command.failed")
+          : (successSummary ?? t("command.done"))));
   // The summary already carries the settlement text, so the title is the bare
   // command name.
   const title = node.name ?? t("command.title");
@@ -72,7 +78,12 @@ export const GenericCommandCard = memo(function GenericCommandCard({
     [body, open, state],
   );
   return (
-    <div className={css.root} data-variant="others" data-state={state}>
+    <div
+      className={css.root}
+      data-variant="others"
+      data-command={node.name ?? undefined}
+      data-state={state}
+    >
       {state === "running" && <span className={a11yCss.visuallyHidden}>{t("row.running")}</span>}
       {state === "error" && <span className={a11yCss.visuallyHidden}>{t("row.failed")}</span>}
       <DisclosureRow

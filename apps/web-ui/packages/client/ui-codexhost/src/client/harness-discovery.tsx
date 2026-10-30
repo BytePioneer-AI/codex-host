@@ -163,13 +163,11 @@ export function registerHarnessDiscovery(ctx: Context): void {
     // Never resend after an uncertain write. Accepted is admission; the Thread renders progress.
     void harnessCommandApi
       .execute(id, commandId)
-      .then(
-        () => input(id)?.notify("info", t("discovery.accepted")),
-        (error: unknown) =>
-          notify(
-            id,
-            `${t("discovery.unconfirmed")} ${error instanceof Error ? error.message : String(error)}`,
-          ),
+      .catch((error: unknown) =>
+        notify(
+          id,
+          `${t("discovery.unconfirmed")} ${error instanceof Error ? error.message : String(error)}`,
+        ),
       )
       .finally(() => {
         pending.delete(id);

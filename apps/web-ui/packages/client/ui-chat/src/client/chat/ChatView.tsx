@@ -34,6 +34,13 @@ import { fileMediaUrl, resolveWorkspacePath } from "@deepseek-ai/dsh-util-worksp
 import { useSentMessageEditing } from "./SentMessageEditor.tsx";
 import css from "./ChatView.module.css";
 
+declare module "@deepseek-ai/dsh-session-projection/types" {
+  interface SessionProjectionMap {
+    /** Host-observed compaction activity, separate from ordinary Turn work. */
+    compacting: boolean;
+  }
+}
+
 /** Host/OS refusal text for the file-open dialog; empty throws keep a locale fallback. */
 function openFailureMessage(error: unknown, fallback: string): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -219,6 +226,7 @@ export function ChatView({
     [cwd, t],
   );
   const running = useSession((s) => s.running);
+  const compacting = useProjection("compacting");
   const openState = useSession((s) => s.openState);
   const openError = useSession((s) => s.openError);
   const hasMore = useSession((s) => s.hasMore);
@@ -423,7 +431,9 @@ export function ChatView({
                 t={t}
               />
             )}
-            {showRunningStatus && <RunningStatus startTime={runningStartTime} t={t} />}
+            {showRunningStatus && (
+              <RunningStatus startTime={runningStartTime} compacting={compacting} t={t} />
+            )}
             {/* No pending placeholders: questions (ui-user-questions) and approvals
                 (ApprovalPanel) both take over the composer, so a flow card would
                 double-render the same wait. */}

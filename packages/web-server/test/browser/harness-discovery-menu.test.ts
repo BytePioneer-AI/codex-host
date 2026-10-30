@@ -60,10 +60,11 @@ for (const width of [390, 1280])
     await page.keyboard.press("Escape");
     await composer.fill("keep body");
     await plus.click();
+    const executed = page.waitForResponse((response) =>
+      response.url().endsWith("/api/codexhost/executeThreadCommand"),
+    );
     await compact.click();
-    await page
-      .getByText("Command accepted. Follow progress in this Thread.", { exact: true })
-      .waitFor();
+    assert.equal((await executed).status(), 200);
     assert.equal(await composer.innerText(), "keep body");
     await page.getByText("kept.txt", { exact: true }).waitFor();
     assert.equal(host.requests.filter((r) => r.method === "turn/start").length, uploadsBefore);
@@ -71,6 +72,14 @@ for (const width of [390, 1280])
       ["codexhost/thread/command/execute", { threadId: "existing", commandId: "fake.compact" }],
     ]);
     await plus.click();
+    await menu.getByRole("option", { name: /^Compact\b/, disabled: false }).waitFor();
+    assert.equal(
+      await page
+        .getByText("Command accepted. Follow progress in this Thread.", { exact: true })
+        .count(),
+      0,
+      "accepted commands render progress in the Thread, not a persistent input notice",
+    );
     await menu.getByRole("option", { name: /^Native skill\b/ }).click();
     await composer
       .locator('[data-composer-chip="codexhost-native"]')

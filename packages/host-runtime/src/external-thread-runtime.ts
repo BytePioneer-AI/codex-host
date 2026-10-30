@@ -80,6 +80,8 @@ export interface ExternalThread {
   responseGates: Map<HostTurnId, TurnProjectionGate>;
   pendingSteerProjections: Set<Promise<void>>;
   ephemeralTurnIds: Set<HostTurnId>;
+  /** Latest explicit command, retained only for client lifecycle presentation. */
+  clientCommand?: { name: string; turn: JsonObject };
   persistenceError: Error | null;
   ignoredInteractionIds: Set<HostInteractionId>;
   /** Native Session faulted or closed; idle Threads should restore instead of reuse. */

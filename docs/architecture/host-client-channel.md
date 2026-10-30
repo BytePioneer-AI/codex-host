@@ -45,12 +45,12 @@ Host 只监听 `127.0.0.1`，使用随机 Bearer token，拒绝带 Origin 的直
 
 浏览器/App 使用 Web 原有 Cookie/Bearer 认证及同源防护；Host 私有 token 不下发给客户端。公网使用仍需 TLS/可信网络部署，移动端仍要实现凭据保管、挂起恢复和通知生命周期。开发用 `--no-auth` 不应暴露到不可信网络。
 
-| 操作 | Host 本地路径 | Web/App 路径 |
-| --- | --- | --- |
-| 通知 | `GET /v1/events?epoch=…&after=…` | `GET /api/ch/v1/events?epoch=…&after=…` |
-| 受限 RPC | `POST /v1/rpc` | `POST /api/ch/v1/rpc` |
-| Thread 快照 | `POST /v1/snapshot` | `POST /api/ch/v1/snapshot` |
-| 回答交互 | `POST /v1/respond` | `POST /api/ch/v1/respond` |
+| 操作        | Host 本地路径                    | Web/App 路径                            |
+| ----------- | -------------------------------- | --------------------------------------- |
+| 通知        | `GET /v1/events?epoch=…&after=…` | `GET /api/ch/v1/events?epoch=…&after=…` |
+| 受限 RPC    | `POST /v1/rpc`                   | `POST /api/ch/v1/rpc`                   |
+| Thread 快照 | `POST /v1/snapshot`              | `POST /api/ch/v1/snapshot`              |
+| 回答交互    | `POST /v1/respond`               | `POST /api/ch/v1/respond`               |
 
 服务还提供认证的 Host-private `/v1/desktop` WebSocket 和 `/v1/shutdown` 管理入口，不通过 Web 网关公开。Desktop 连接携带有界、版本化的运行时上下文，不能改写后台的存储目录、Codex home 或委派认证。Web 发行包携带原生 Launcher 和同一 Host bundle；它不是纯浏览器即可启动的后台，也不包含 Node 或 Harness CLI。
 
@@ -70,6 +70,8 @@ client channel 透传既有的 `thread/revert {threadId, beforeTurnId}`。它与
 - `changed {cursor: {epoch, sequence}, threadId, method}`。
 
 **changed 是失效通知，不是可追加的 token。** 首次先建立订阅，再取快照；读取期间收到新通知必须再校验。快照给出同一 Host 的元数据、最近 5 轮 full/desc、下一页 cursor、生效配置、当前待处理交互，以及 Shared Host 持有的绝对队列与暂停原因。热会话在不让出执行权的同步步骤中复制已接受状态及通知水位；状态可以包含尚待发出的后续通知所描述的变化，因此禁止把通知当增量再次拼接到快照上。
+
+显式 Harness 命令的临时 Turn 不进入 `turnsPage` 或原生历史。快照的可选 `command: {name, turn}` 单独提供当前 Host 进程最近一次显式命令；执行期间取实时 Item 快照，结束后保留确认的 Turn 结果，直到下一次命令覆盖或 Host/Session 重建。它不落盘，也不改变对话历史、分页或回退边界。Web 将其映射到已有命令卡，显示手动压缩进度及成功、失败、取消结果；接受回执不等于执行成功。普通 Turn 中的自动压缩仍以 `contextCompaction` Item 展示，客户端快照附带 Item 自身的 `status` 和失败原因，因此压缩结束后无需等待整轮回复结束。底部状态在明确的压缩活动期间显示“正在压缩”，其余活动显示通用处理状态；不依据缺失的手动标记猜测来源。
 
 Host 和 Node 网关分别保留最近 512 条轻量通知。游标仍在窗口中时，`hello.reset=false`，随后重放大于旧游标的通知；hello 的 cursor 是本轮重放终点，不应在处理重放前覆盖旧消费游标。窗口不足、游标超前或 epoch 不同时，`reset=true`，重新读取所需 Thread 的快照。每次重连都重新校验已关注的 Thread，包括仍待处理的交互；不需要持久事件队列。
 

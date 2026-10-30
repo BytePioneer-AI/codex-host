@@ -252,7 +252,12 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       return;
     }
     scheduleIdleExit();
-    const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
+    // A malformed request target (such as "//%%", read as an invalid authority) is the client's error.
+    const url = URL.parse(request.url ?? "/", `http://127.0.0.1:${port}`);
+    if (!url) {
+      sendJson(response, 400, { error: "Bad Request" });
+      return;
+    }
     const method = request.method ?? "GET";
     const route = `${method} ${url.pathname}`;
 

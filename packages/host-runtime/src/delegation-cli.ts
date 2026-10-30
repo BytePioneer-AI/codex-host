@@ -1,6 +1,8 @@
+import path from "node:path";
 import type { Writable } from "node:stream";
 
 import { delegationCliHelp, type DelegationCliCommand } from "./delegation-cli-help.js";
+import { parseDelegationArguments, type DelegationCliArguments } from "./delegation-cli-options.js";
 import { compactDelegationOutput } from "./delegation-cli-output.js";
 
 export { DELEGATION_HELP } from "./delegation-cli-help.js";
@@ -35,13 +37,21 @@ function readThreadReference(value: string): { threadId: string; hostId?: string
     throw new DelegationControlError("INVALID_ARGUMENT", "Thread reference is invalid");
   return {
     threadId: normalizeThreadId(match[1]),
-    ...(match[2] ? { hostId: decodeURIComponent(match[2]) } : {}),
+    ...(match[2] ? { hostId: decodeHostId(match[2]) } : {}),
   };
 }
 
+function decodeHostId(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new DelegationControlError("INVALID_ARGUMENT", "Thread reference is invalid");
+  }
+}
+
 function positiveInteger(value: string | undefined, name: string, maximum?: number): number {
-  const number = Number(value);
-  if (!value || !Number.isSafeInteger(number) || number <= 0 || (maximum && number > maximum)) {
+  const number = value && /^[0-9]+$/u.test(value) ? Number(value) : Number.NaN;
+  if (!Number.isSafeInteger(number) || number <= 0 || (maximum && number > maximum)) {
     throw new DelegationControlError(
       "INVALID_ARGUMENT",
       `${name} must be a positive integer${maximum ? ` no greater than ${maximum}` : ""}`,
@@ -50,35 +60,17 @@ function positiveInteger(value: string | undefined, name: string, maximum?: numb
   return number;
 }
 
-function options(arguments_: readonly string[]): {
-  positionals: string[];
-  options: Map<string, string>;
-} {
-  const positionals: string[] = [];
-  const parsed = new Map<string, string>();
-  for (let index = 0; index < arguments_.length; index += 1) {
-    const argument = arguments_[index];
-    if (!argument) continue;
-    if (!argument.startsWith("--")) {
-      positionals.push(argument);
-      continue;
-    }
-    if (parsed.has(argument))
-      throw new DelegationControlError("INVALID_ARGUMENT", `${argument} may only be provided once`);
-    const value = arguments_[index + 1];
-    if (!value || value.startsWith("--"))
-      throw new DelegationControlError("INVALID_ARGUMENT", `${argument} requires a value`);
-    parsed.set(argument, value);
-    index += 1;
-  }
-  return { positionals, options: parsed };
-}
-
-function value(parsed: ReturnType<typeof options>, name: string): string | undefined {
+function value(parsed: DelegationCliArguments, name: string): string | undefined {
   return parsed.options.get(name);
 }
 
-function rejectUnknown(parsed: ReturnType<typeof options>, allowed: readonly string[]): void {
+/** Resolve --cwd against the caller's cwd; the Runtime would otherwise resolve it against its own. */
+function cwdOption(parsed: DelegationCliArguments): string | undefined {
+  const cwd = value(parsed, "--cwd");
+  return cwd ? path.resolve(process.cwd(), cwd) : undefined;
+}
+
+function rejectUnknown(parsed: DelegationCliArguments, allowed: readonly string[]): void {
   const known = new Set([...allowed, "--format"]);
   for (const name of parsed.options.keys()) {
     if (!known.has(name))
@@ -173,7 +165,7 @@ export async function runDelegationCli(input: {
       output.write(help);
       return 0;
     }
-    const parsed = options(rest);
+    const parsed = parseDelegationArguments(rest);
     const format = value(parsed, "--format") ?? "json";
     if (format !== "json" && format !== "compact") {
       throw new DelegationControlError("INVALID_ARGUMENT", "--format must be json or compact");
@@ -226,7 +218,7 @@ export async function runDelegationCli(input: {
           path: "/v1/harness/inspect",
           body: {
             harnessId,
-            ...(value(parsed, "--cwd") ? { cwd: value(parsed, "--cwd") } : {}),
+            ...(cwdOption(parsed) ? { cwd: cwdOption(parsed) } : {}),
             ...(refresh !== undefined ? { refresh: refresh === "true" } : {}),
           },
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
@@ -276,7 +268,7 @@ export async function runDelegationCli(input: {
             ...(value(parsed, "--task-name") !== undefined
               ? { taskName: value(parsed, "--task-name") }
               : {}),
-            ...(value(parsed, "--cwd") ? { cwd: value(parsed, "--cwd") } : {}),
+            ...(cwdOption(parsed) ? { cwd: cwdOption(parsed) } : {}),
             ...(value(parsed, "--model") ? { model: { id: value(parsed, "--model") } } : {}),
             ...(value(parsed, "--thinking")
               ? { thinkingOptionId: value(parsed, "--thinking") }
@@ -492,7 +484,7 @@ export async function runDelegationCli(input: {
           environment,
           path: "/v1/thread/list",
           body: {
-            cwd: value(parsed, "--cwd") ?? process.cwd(),
+            cwd: cwdOption(parsed) ?? process.cwd(),
             ...(parentThread ? { parentThreadId: normalizeThreadId(parentThread) } : {}),
             limit: value(parsed, "--limit")
               ? positiveInteger(value(parsed, "--limit"), "--limit", MAX_LIMIT)

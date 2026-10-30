@@ -1,3 +1,5 @@
+import { consumesNextArgument } from "./delegation-cli-options.js";
+
 const COMMAND_HELP = {
   "harness list": `codexhost harness list [--format json|compact]
 List Harnesses available in the active Runtime.`,
@@ -9,7 +11,7 @@ Create an independent child Thread, submit the task, and return immediately.
 --task-name supplies a short subtask name (1-120 characters); otherwise the first task line is used.
 The child title is "subtask name · parent title", fixed at creation; renaming the parent does not rename existing children.
 Omit --model and --thinking to use the Harness native defaults.
---cwd overrides the child workspace. Otherwise use the resolved parent Thread workspace, then the Host Runtime process cwd.
+--cwd overrides the child workspace; a relative path resolves against the caller process cwd. Otherwise use the resolved parent Thread workspace, then the Host Runtime process cwd.
 --parent-thread overrides caller inference. PARENT_THREAD_AMBIGUOUS requires an explicit parent.
 Reuse --request-id for an idempotent retry. Identical recent parent/target/task/configuration requests are also deduplicated briefly.
 --watch true also registers thread watch on the child with the resolved parent as the notified Thread; the response's watch field reports whether it was registered.
@@ -52,6 +54,7 @@ Compact output keeps task links, Harness, status, title, and workspace.`,
 export type DelegationCliCommand = keyof typeof COMMAND_HELP;
 
 const COMMON_HELP = `Thread references accept a bare ID or codex://threads/<id>.
+Options accept --name <value> or --name=<value>. --task, --task-name, and --message take the next argument verbatim, even when it is empty or starts with --.
 --format json is the compatible full JSON output (default); --format compact returns concise JSON using task links instead of internal IDs.
 Success is written to stdout; errors {"error":{"code":"...","message":"...","details":{...}}} go to stderr with exit code 1. Exit code 0 means the command succeeded, not that the delegated task succeeded.
 read/wait are non-consuming. Native Codex callers need local Runtime access; RUNTIME_UNREACHABLE requires the Host-provided environment and a sandbox that permits that connection.
@@ -77,7 +80,7 @@ function hasHelpOption(arguments_: readonly string[]): boolean {
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
     if (argument === "--help" || argument === "-h") return true;
-    if (argument?.startsWith("--")) index += 1;
+    if (argument && consumesNextArgument(argument, arguments_[index + 1])) index += 1;
   }
   return false;
 }

@@ -10,6 +10,7 @@ import type {
   DraftPrewarmPolicyTarget,
   RendererDraftBridgePolicy,
 } from "./renderer-draft-prewarm-runtime.js";
+import type { RendererConnectionGeneration } from "./renderer-connection-generation.js";
 
 /** A main-process AppServerManager reached through its Renderer RPC client. It
  * exposes only Host requests and notifications, never native manager internals. */
@@ -66,6 +67,7 @@ export function installRendererHostRouting(
   discover: typeof discoverRendererHosts,
   resolve: typeof resolveRendererHostManager,
   createPolicy: typeof createDraftPrewarmPolicyBridge,
+  readConnection?: (hostId: string) => RendererConnectionGeneration | null | undefined,
 ): RendererHostRouting {
   const existing = target.__codexhostHostRoutingV1 as RendererHostRouting | undefined;
   if (existing) return existing;
@@ -78,6 +80,7 @@ export function installRendererHostRouting(
       route: RendererNativeHostRoute;
       bridge: RendererNativeRequestManager["requestClient"];
       prewarmed: RendererNativeRequestManager["prewarmedThreadManager"];
+      connection: RendererConnectionGeneration | undefined;
     }
   >();
   const read = (composer?: RendererHostRoot): RendererHostDiscovery => {
@@ -110,17 +113,28 @@ export function installRendererHostRouting(
     routes.delete(hostId);
     entry?.route.policy.dispose();
   };
+  const connectionFor = (hostId: string) =>
+    hostId.startsWith("remote-control:") ? readConnection?.(hostId) : undefined;
+  const sameConnection = (
+    expected: RendererConnectionGeneration | undefined,
+    current: RendererConnectionGeneration | null | undefined,
+  ): boolean =>
+    expected === undefined
+      ? current === undefined
+      : current?.owner === expected.owner && current.revision === expected.revision;
   const routeFor = (
     hostId: string,
     discovery?: RendererHostDiscovery,
   ): RendererNativeHostRoute | null => {
     const manager = lookup(hostId, discovery);
+    const connection = connectionFor(hostId);
     const previous = routes.get(hostId);
     if (
       manager &&
       previous?.route.manager === manager &&
       previous.bridge === manager.requestClient &&
       previous.prewarmed === manager.prewarmedThreadManager &&
+      sameConnection(previous.connection, connection) &&
       previous.route.policy.owns(
         manager,
         manager.requestClient,
@@ -132,7 +146,7 @@ export function installRendererHostRouting(
       return previous.route;
     }
     retire(hostId);
-    if (!manager) return null;
+    if (!manager || connection === null) return null;
     const bridge = manager.requestClient;
     const prewarmed = manager.prewarmedThreadManager;
     const policy = createPolicy(
@@ -143,11 +157,12 @@ export function installRendererHostRouting(
       prewarmed,
       () =>
         lookup(hostId) === manager &&
+        sameConnection(connection, connectionFor(hostId)) &&
         manager.requestClient === bridge &&
         manager.prewarmedThreadManager === prewarmed,
     );
     const route = { hostId, manager, policy };
-    routes.set(hostId, { route, bridge, prewarmed });
+    routes.set(hostId, { route, bridge, prewarmed, connection });
     return route;
   };
   const publish = (route: RendererHostRoute | null): void => {
@@ -212,7 +227,8 @@ export function installRendererHostRouting(
           if (
             manager !== entry.route.manager ||
             manager.requestClient !== entry.bridge ||
-            manager.prewarmedThreadManager !== entry.prewarmed
+            manager.prewarmedThreadManager !== entry.prewarmed ||
+            !sameConnection(entry.connection, connectionFor(hostId))
           )
             retire(hostId);
         }

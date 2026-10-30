@@ -16,6 +16,7 @@ import {
   resolveRendererHostRpc,
 } from "./renderer-host-rpc-discovery.js";
 import { installRendererHostRpcRouting } from "./renderer-host-rpc-routing.js";
+import { readRendererConnectionGeneration } from "./renderer-connection-generation.js";
 
 export { requestManagerFromHookState } from "./renderer-host-discovery.js";
 
@@ -40,6 +41,8 @@ function directRendererInstaller(): string {
     const retainRendererHostResponses = ${retainRendererHostResponses.toString()};
     const createDraftPrewarmPolicyBridge = ${createDraftPrewarmPolicyBridge.toString()};
     const isolateRendererPrewarmConsumption = ${isolateRendererPrewarmConsumption.toString()};
+    const findRendererAppScopeStore = ${findRendererAppScopeStore.toString()};
+    const readRendererConnectionGeneration = ${readRendererConnectionGeneration.toString()};
     const discover = (root) =>
       discoverRendererHosts(root, committedReactAncestors, requestManagerFromHookState);
     const installNative = () => (${installRendererHostRouting.toString()})(
@@ -49,6 +52,7 @@ function directRendererInstaller(): string {
         manager, bridge, hostId, target, prewarmed, isCurrent, retainRendererHostResponses,
         isolateRendererPrewarmConsumption,
       ),
+      (hostId) => readRendererConnectionGeneration(findRendererAppScopeStore(document), hostId),
     );
     const installRpc = () => typeof MessagePort !== 'function' ? null : (${installRendererHostRpcRouting.toString()})(document, window, {
       findStore: ${findRendererAppScopeStore.toString()},

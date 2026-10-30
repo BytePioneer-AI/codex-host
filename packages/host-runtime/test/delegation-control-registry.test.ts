@@ -249,3 +249,152 @@ describe("DelegationControlRegistry", () => {
     registry.close();
   });
 });
+
+describe("DelegationControlRegistry list paging across sessions", () => {
+  type Row = Awaited<ReturnType<DelegationControlRegistration["list"]>>["threads"][number];
+  type Sort = Parameters<DelegationControlRegistration["list"]>[0]["sort"];
+
+  const order = (sort: Sort) => (left: Row, right: Row) => {
+    const field = sort.startsWith("created") ? "createdAt" : "updatedAt";
+    const direction = sort.endsWith("asc") ? 1 : -1;
+    return (
+      (Date.parse(left[field] ?? "") - Date.parse(right[field] ?? "")) * direction ||
+      left.threadId.localeCompare(right.threadId)
+    );
+  };
+
+  /** A session that pages its own Threads with an opaque offset cursor, like the coordinator. */
+  function session(name: string, rows: Row[]): DelegationControlRegistration {
+    const value = registration(`parent-${name}`);
+    value.list = vi.fn(async ({ limit, cursor, sort }) => {
+      const sorted = [...rows].sort(order(sort));
+      const start = cursor ? Number(Buffer.from(cursor, "base64url").toString("utf8")) : 0;
+      const end = start + limit;
+      return {
+        threads: sorted.slice(start, end),
+        nextCursor: end < sorted.length ? Buffer.from(String(end)).toString("base64url") : null,
+      };
+    });
+    return value;
+  }
+
+  function threads(name: string, count: number, offsetMinutes: number): Row[] {
+    return Array.from({ length: count }, (_, index) => ({
+      threadId: `${name}-${String(index).padStart(2, "0")}`,
+      harnessId: "pi" as const,
+      deepLink: `codex://threads/${name}-${index}`,
+      status: "completed" as const,
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, index * 2 + offsetMinutes)).toISOString(),
+      // Reverse the update order so updated-* sorts interleave differently from created-*.
+      updatedAt: new Date(
+        Date.UTC(2026, 0, 2, 0, (count - index) * 3 + offsetMinutes),
+      ).toISOString(),
+    }));
+  }
+
+  async function pageAll(
+    registry: DelegationControlRegistry,
+    sort: Sort,
+    limits: number[],
+  ): Promise<{ ids: string[]; pages: number }> {
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const limit = limits[pages % limits.length] ?? 25;
+      const page = await registry.list({
+        cwd: "/synthetic",
+        limit,
+        sort,
+        ...(cursor ? { cursor } : {}),
+      });
+      expect(page.threads.length).toBeLessThanOrEqual(limit);
+      ids.push(...page.threads.map(({ threadId }) => threadId));
+      cursor = page.nextCursor ?? undefined;
+      pages += 1;
+      expect(pages).toBeLessThan(100);
+    } while (cursor);
+    return { ids, pages };
+  }
+
+  it.each<[Sort, number[]]>([
+    ["created-desc", [25]],
+    ["updated-asc", [7]],
+    ["created-asc", [10, 3, 17]],
+  ])("pages through 60 Threads in two sessions sorted %s", async (sort, limits) => {
+    const first = threads("a", 30, 0);
+    const second = threads("b", 30, 1);
+    const registry = new DelegationControlRegistry();
+    registry.register(session("a", first));
+    registry.register(session("b", second));
+
+    const { ids, pages } = await pageAll(registry, sort, limits);
+    const expected = [...first, ...second].sort(order(sort)).map(({ threadId }) => threadId);
+    expect(ids).toEqual(expected);
+    expect(new Set(ids).size).toBe(60);
+    if (limits.length === 1) expect(pages).toBe(Math.ceil(60 / (limits[0] ?? 1)));
+    registry.close();
+  });
+
+  it("pages through sessions of different sizes, including an empty one", async () => {
+    const registry = new DelegationControlRegistry();
+    const rows = threads("a", 9, 0);
+    registry.register(session("a", rows));
+    registry.register(session("empty", []));
+    registry.register(session("c", threads("c", 4, 1)));
+    const { ids } = await pageAll(registry, "created-desc", [4]);
+    expect(ids).toHaveLength(13);
+    expect(new Set(ids).size).toBe(13);
+    registry.close();
+  });
+
+  it("keeps the single-session cursor unchanged", async () => {
+    const registry = new DelegationControlRegistry();
+    const only = session("a", threads("a", 30, 0));
+    registry.register(only);
+    const first = await registry.list({ cwd: "/synthetic", limit: 25, sort: "created-desc" });
+    expect(first.nextCursor).toBe(Buffer.from("25").toString("base64url"));
+    await registry.list({
+      cwd: "/synthetic",
+      limit: 25,
+      sort: "created-desc",
+      cursor: first.nextCursor ?? "",
+    });
+    expect(only.list).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cursor: first.nextCursor }),
+    );
+    registry.close();
+  });
+
+  it("rejects malformed merged cursors", async () => {
+    const registry = new DelegationControlRegistry();
+    registry.register(session("a", threads("a", 30, 0)));
+    registry.register(session("b", threads("b", 30, 1)));
+    const first = await registry.list({ cwd: "/synthetic", limit: 5, sort: "created-desc" });
+    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    for (const cursor of [
+      "not a cursor",
+      Buffer.from("{").toString("base64url"),
+      encode([]),
+      encode({ v: 2, sort: "created-desc", sessions: [null, null] }),
+      encode({ v: 1, sort: "created-desc", sessions: [["", 0, 5], null] }),
+      encode({ v: 1, sort: "created-desc", sessions: [[null, -1, 5], null] }),
+      encode({ v: 1, sort: "created-desc", sessions: [[null, 0, 0], null] }),
+      encode({ v: 1, sort: "created-desc", sessions: [null] }),
+    ]) {
+      await expect(
+        registry.list({ cwd: "/synthetic", limit: 5, sort: "created-desc", cursor }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    }
+    // A cursor only continues the sort it was issued for.
+    await expect(
+      registry.list({
+        cwd: "/synthetic",
+        limit: 5,
+        sort: "updated-desc",
+        cursor: first.nextCursor ?? "",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    registry.close();
+  });
+});

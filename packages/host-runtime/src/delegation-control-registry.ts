@@ -10,6 +10,7 @@ import {
   type ThreadWaitInput,
   type ThreadWatchInput,
 } from "./delegation-types.js";
+import { mergeThreadListPages } from "./delegation-thread-list-merge.js";
 import { DelegationWatchService } from "./delegation-watch.js";
 
 function only<T>(values: readonly T[], message: string): T {
@@ -148,14 +149,12 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       );
     }
     if (registrations.length === 1) return only(registrations, "unreachable").list(input);
-    const results = await Promise.all(
-      registrations.map((registration) => registration.list(input)),
+    // Registration order is insertion order, which the merged cursor's session positions follow.
+    return mergeThreadListPages(
+      registrations.map((registration) => (page: ThreadListInput) => registration.list(page)),
+      input,
+      (left, right) => this.#compareThreads(left, right, input.sort),
     );
-    const threads = results
-      .flatMap((result) => result.threads)
-      .sort((left, right) => this.#compareThreads(left, right, input.sort))
-      .slice(0, input.limit);
-    return { threads, nextCursor: null };
   }
 
   async #registrationForStart(input: DelegationStartInput): Promise<DelegationControlRegistration> {

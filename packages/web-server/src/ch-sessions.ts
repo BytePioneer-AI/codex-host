@@ -1294,12 +1294,9 @@ export class ChSessions {
     });
   }
   registerImport(rpc: RpcRegistry): void {
-    rpc.register("codexhost/importSources", async () => {
-      const result = await this.host.request<{
-        harnesses: Array<{ harnessId: string; name: string }>;
-      }>("codexhost/harness/session-import/sources", {});
-      return result.harnesses;
-    });
+    rpc.register("codexhost/importSources", () =>
+      this.host.request("codexhost/harness/session-import/sources", {}),
+    );
     rpc.register("codexhost/importCandidates", (args) =>
       this.host.request("codexhost/harness/session-import/list", requestOf(args)),
     );
@@ -1308,8 +1305,9 @@ export class ChSessions {
         "codexhost/harness/session-import/import",
         requestOf(args),
       );
-      await this.refresh();
-      return { sessionId: result.threadId };
+      // The Host mapping is committed; a failed catalog read cannot reject that write.
+      await this.refresh().catch(() => undefined);
+      return result;
     });
   }
   async importRecent(limit: number): Promise<number> {

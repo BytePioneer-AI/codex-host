@@ -1,19 +1,16 @@
 /** Thin client for the CodexHost server's `codexhost/*` RPC methods. */
 import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
+import {
+  harnessSessionImportResultSchema,
+  harnessSessionImportSourcesResultSchema,
+  harnessSessionListResultSchema,
+  type HarnessSessionImportCandidate,
+  type HarnessSessionImportSourcesResult,
+  type HarnessSessionListParams,
+} from "@codexhost/shared-contracts";
 
-export interface ImportSource {
-  harnessId: string;
-  name: string;
-}
-
-export interface ImportCandidate {
-  harnessId: string;
-  nativeSessionId: string;
-  title: string | null;
-  cwd: string;
-  updatedAt: number;
-  imported?: string;
-}
+export type ImportSource = HarnessSessionImportSourcesResult["harnesses"][number];
+export type ImportCandidate = HarnessSessionImportCandidate;
 
 async function call<T>(method: string, args: Record<string, unknown>): Promise<T> {
   const response = await fetch(`api/${method}`, {
@@ -48,15 +45,20 @@ export const pushApi = {
 };
 
 export const importApi = {
-  sources: () => call<{ sources: ImportSource[] }>("codexhost/importSources", {}),
-  candidates: (harnessId: string, query: string, limit: number) =>
-    call<{ items: ImportCandidate[]; total: number }>("codexhost/importCandidates", {
-      request: { harnessId, query, limit },
-    }),
-  importSession: (harnessId: string, nativeSessionId: string) =>
-    call<{ sessionId: string; created: boolean }>("codexhost/import", {
-      request: { harnessId, nativeSessionId },
-    }),
+  sources: async () =>
+    harnessSessionImportSourcesResultSchema.parse(
+      await call<unknown>("codexhost/importSources", {}),
+    ),
+  candidates: async (request: HarnessSessionListParams) =>
+    harnessSessionListResultSchema.parse(
+      await call<unknown>("codexhost/importCandidates", { request }),
+    ),
+  importSession: async (harnessId: string, nativeSessionId: string) =>
+    harnessSessionImportResultSchema.parse(
+      await call<unknown>("codexhost/import", {
+        request: { harnessId, nativeSessionId },
+      }),
+    ),
 };
 
 /** Edits address a displayed occurrence; the gateway resolves its native identity. */

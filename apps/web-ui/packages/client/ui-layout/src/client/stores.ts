@@ -99,6 +99,8 @@ export function createLayoutStore(): EngineStoreHandle<LayoutState, LayoutAction
     actions: {
       selectPanel: (d, panelId: MainPanelId | null) => {
         d.panelInfo.activePanelId = panelId;
+        if (panelId !== null && d.layoutInfo.viewportWidth < SIDEBAR_AUTO_COLLAPSE)
+          d.layoutInfo.narrowExpanded = false;
       },
       retainMainPanels: (d, panelIds: readonly string[]) => {
         if (d.panelInfo.activePanelId !== null && !panelIds.includes(d.panelInfo.activePanelId)) {

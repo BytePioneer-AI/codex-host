@@ -117,7 +117,7 @@ export function apply(ctx: ClientContext): void {
       }),
     "ui-codexhost: Thread reference text codec",
   );
-  const face: ImportPageFace = {
+  const face = {
     openSession: (sessionId: string) => {
       ctx.uiWorkspace.openSession(sessionId as SessionId);
     },
@@ -128,7 +128,17 @@ export function apply(ctx: ClientContext): void {
         name: "main",
         key: PANEL_ID,
         locale: NS,
-        inject: () => face,
+        inject: (): ImportPageFace => ({
+          openSession: async (threadId, signal) => {
+            const id = threadId as SessionId;
+            if (ctx.sessions.list.getSnapshot().byId[id] === undefined)
+              await ctx.sessions.refresh();
+            signal.throwIfAborted();
+            if (ctx.sessions.list.getSnapshot().byId[id] === undefined)
+              throw new Error(t("catalogPending"));
+            face.openSession(threadId);
+          },
+        }),
       },
       ImportPage,
     ),

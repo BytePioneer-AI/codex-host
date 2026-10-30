@@ -21,7 +21,9 @@ export class RendererMethodUnavailableError extends Error {
 /** Return true only when the peer explicitly rejects this RPC method. */
 export function isUnsupportedMethod(error: unknown, method: string): boolean {
   if (typeof error !== "object" || error === null) return false;
-  const code = "code" in error ? error.code : undefined;
+  // Desktop's main-process RPC exposes the original error code as jsonRpcCode.
+  const code =
+    "code" in error ? error.code : "jsonRpcCode" in error ? error.jsonRpcCode : undefined;
   const message = "message" in error ? error.message : undefined;
   return (
     code === -32601 ||

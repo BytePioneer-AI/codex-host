@@ -458,10 +458,14 @@ describe("delegation CLI", () => {
     expect(vi.mocked(fetchImpl).mock.calls[0]?.[1]).toMatchObject({ redirect: "error" });
   });
 
-  it("reports a non-JSON Runtime response as unreachable with its HTTP status", async () => {
+  it.each([
+    ["non-JSON", "<html>Bad Gateway</html>"],
+    ["JSON null", "null"],
+    ["JSON scalar", "42"],
+  ])("reports a %s Runtime response as unreachable with its HTTP status", async (_name, text) => {
     const diagnosticOutput = new PassThrough();
     const fetchImpl = vi.fn(
-      async () => new Response("<html>Bad Gateway</html>", { status: 502 }),
+      async () => new Response(text, { status: 502 }),
     ) as unknown as typeof fetch;
     await expect(
       runDelegationCli({

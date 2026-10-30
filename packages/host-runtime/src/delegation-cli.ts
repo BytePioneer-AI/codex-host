@@ -136,7 +136,11 @@ async function requestRuntime(input: {
   }
   let body: { error?: { code?: unknown; message?: unknown; details?: unknown } };
   try {
-    body = (await response.json()) as typeof body;
+    const parsed: unknown = await response.json();
+    if (typeof parsed !== "object" || parsed === null) {
+      throw new Error("Runtime response is not a JSON object");
+    }
+    body = parsed as typeof body;
   } catch (error) {
     throw new DelegationControlError(
       "RUNTIME_UNREACHABLE",

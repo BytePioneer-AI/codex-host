@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -599,6 +599,85 @@ describe("Pi HarnessAdapter Session", () => {
       }
     }
     await adapter.close();
+  });
+
+  it("restores child cards whose status artifact records the parent's session file", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pi-adapter-subagent-"));
+    const { adapter, transports } = fixture();
+    try {
+      const asyncDir = path.join(dir, "run-1");
+      await mkdir(asyncDir);
+      await writeFile(
+        path.join(asyncDir, "status.json"),
+        JSON.stringify({
+          lifecycleArtifactVersion: 3,
+          runId: "run-1",
+          sessionId: "/synthetic/pi-session.jsonl",
+          mode: "single",
+          state: "complete",
+          steps: [{ agent: "reviewer", status: "completed" }],
+        }),
+      );
+      const session = await openSession(adapter);
+      await session.readSnapshot();
+      const transport = transports[0];
+      if (!transport) throw new Error("Missing transport");
+      transport.history = {
+        leafId: "result",
+        entries: [
+          {
+            id: "user",
+            parentId: null,
+            type: "message",
+            message: { role: "user", content: [{ type: "text", text: "review" }] },
+          },
+          {
+            id: "assistant",
+            parentId: "user",
+            type: "message",
+            message: {
+              role: "assistant",
+              stopReason: "toolUse",
+              content: [
+                {
+                  type: "toolCall",
+                  id: "call",
+                  name: "subagent",
+                  arguments: { agent: "reviewer", task: "review", async: true },
+                },
+              ],
+            },
+          },
+          {
+            id: "result",
+            parentId: "assistant",
+            type: "message",
+            message: {
+              role: "toolResult",
+              toolCallId: "call",
+              toolName: "subagent",
+              isError: false,
+              content: [{ type: "text", text: "launched" }],
+              details: { mode: "single", asyncId: "run-1", asyncDir },
+            },
+          },
+        ],
+      };
+      const snapshot = await session.readSnapshot();
+      expect(snapshot).toMatchObject({ ok: true });
+      if (!snapshot.ok) throw new Error(snapshot.error.message);
+      expect(snapshot.value.turns.flatMap((turn) => turn.items)).toContainEqual(
+        expect.objectContaining({
+          item: expect.objectContaining({
+            type: "subagentDelegation",
+            subagents: [expect.objectContaining({ status: "completed" })],
+          }),
+        }),
+      );
+    } finally {
+      await adapter.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("reads a live parent's child without opening another Pi process and rejects a different cwd", async () => {

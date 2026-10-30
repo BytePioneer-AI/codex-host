@@ -555,7 +555,12 @@ class PiHarnessSession implements HarnessSession {
     try {
       const transport = await this.#ensureTransport();
       const history = await transport.getEntries();
-      await restorePiSubagents(history, transport.state.sessionId, this.#subagents);
+      const { sessionId, sessionFile } = transport.state;
+      await restorePiSubagents(
+        history,
+        new Set(sessionFile ? [sessionId, sessionFile] : [sessionId]),
+        this.#subagents,
+      );
       return {
         ok: true,
         value: {

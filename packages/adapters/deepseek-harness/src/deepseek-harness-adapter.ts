@@ -1,3 +1,4 @@
+import { fetchDeepSeekBalances } from "./account-balance.js";
 import { createDshUsageStatistics } from "./modern/usage-statistics.js";
 import { deepSeekHarnessCommandCatalog } from "./harness-commands.js";
 
@@ -17,6 +18,7 @@ import {
   harnessIdSchema,
   nativeSessionRefSchema,
   type DeepSeekModernSessionCandidate,
+  type HarnessAccountSnapshot,
   type HarnessId,
 } from "@codexhost/shared-contracts";
 
@@ -125,6 +127,8 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
   readonly #createModernAdapter: (
     options: ModernDeepSeekHarnessAdapterOptions,
   ) => ModernDelegateAdapter;
+  /** Aborted by close() so a balance request in flight does not outlive the Adapter. */
+  readonly #accountInspection = new AbortController();
   #candidate: DelegateOwner | undefined;
   #cleanupFailedDuringClose = false;
   #closePromise: Promise<void> | undefined;
@@ -175,6 +179,20 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
   close(): Promise<void> {
     this.#closePromise ??= this.#performClose();
     return this.#closePromise;
+  }
+
+  /** DSH holds no Account; this reports the configured DeepSeek API key's prepaid balance. */
+  async inspectAccounts(): Promise<readonly HarnessAccountSnapshot[]> {
+    if (this.#closed) return [];
+    const accounts = await fetchDeepSeekBalances({
+      environment: this.#options.environment ?? process.env,
+      signal: this.#accountInspection.signal,
+    });
+    return this.#closed ? [] : accounts;
+  }
+
+  async inspectAccount(): Promise<HarnessAccountSnapshot | null> {
+    return (await this.inspectAccounts())[0] ?? null;
   }
 
   async #listSessionImportCandidates(): Promise<
@@ -344,6 +362,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
 
   async #performClose(): Promise<void> {
     this.#closed = true;
+    this.#accountInspection.abort(new Error("DeepSeek Harness account inspection closed"));
     let cleanupFailed = false;
     const selection = this.#selection;
     selection?.abort.abort(new Error("DeepSeek Harness generation selection closed"));

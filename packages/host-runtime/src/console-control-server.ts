@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { ConsoleHostReply } from "./app-server-host.js";
+import { matchesBearerToken } from "./bearer-token.js";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 export const CONSOLE_HOST_DESCRIPTOR_DIRECTORY = path.join("console", "hosts");
@@ -32,13 +33,6 @@ export function consoleHostDescriptorDirectory(environment: NodeJS.ProcessEnv): 
     ? path.resolve(environment.CODEXHOST_DATA_DIR)
     : path.join(os.homedir(), ".codexhost");
   return path.join(dataDirectory, CONSOLE_HOST_DESCRIPTOR_DIRECTORY);
-}
-
-function equalToken(candidate: string | undefined, token: string): boolean {
-  if (!candidate?.startsWith("Bearer ")) return false;
-  const left = Buffer.from(candidate.slice("Bearer ".length));
-  const right = Buffer.from(token);
-  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 async function readBody(request: IncomingMessage): Promise<unknown> {
@@ -93,7 +87,7 @@ export async function startConsoleControlServer(options: {
         reply(response, 404, { error: { code: -32601, message: "Not found" } });
         return;
       }
-      if (!equalToken(request.headers.authorization, token)) {
+      if (!matchesBearerToken(request.headers.authorization, token)) {
         reply(response, 401, { error: { code: -32001, message: "Unauthorized" } });
         return;
       }

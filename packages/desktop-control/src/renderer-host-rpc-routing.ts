@@ -25,6 +25,8 @@ interface RendererHostRpcDependencies {
   composerHostIds(composer?: RendererHostRoot): { editorCount: number; hostIds: string[] };
   /** `MessagePort.prototype`: Renderer capnweb calls to the main process leave through it. */
   portPrototype: { postMessage(this: unknown, message: unknown, ...rest: unknown[]): unknown };
+  /** Transitional Desktops expose native managers only after a Composer mounts. */
+  replaceWithNative?(dispose: () => void): RendererHostRouting | null;
 }
 
 /**
@@ -42,6 +44,7 @@ export function installRendererHostRpcRouting(
   const existing = target.__codexhostHostRoutingV1 as RendererHostRouting | undefined;
   if (existing) return existing;
   let disposed = false;
+  let replacement: RendererHostRouting | null = null;
   let discovery: RendererHostRpcDiscovery | null = null;
   const routes = new Map<string, { route: RendererHostRoute; rpc: RendererHostRpc }>();
   const read = (): RendererHostRpcDiscovery | null => {
@@ -281,15 +284,26 @@ export function installRendererHostRpcRouting(
     const hostId = hostIds.size === 1 ? hostIds.values().next().value : null;
     return typeof hostId === "string" && hostId ? hostId : null;
   };
+  const preferNative = (): RendererHostRouting | null => {
+    if (!disposed && dependencies.replaceWithNative)
+      replacement = dependencies.replaceWithNative(() => routing.dispose());
+    return replacement;
+  };
   const routing: RendererHostRouting = {
     knownHostIds() {
+      const native = preferNative();
+      if (native) return native.knownHostIds?.() ?? [];
       const current = read();
       return current ? dependencies.hostIds(current) : [];
     },
     forHost(hostId) {
+      const native = preferNative();
+      if (native) return native.forHost(hostId);
       return hostId && !disposed ? routeFor(hostId) : null;
     },
     hostIdForComposer(composer) {
+      const native = preferNative();
+      if (native) return native.hostIdForComposer(composer);
       if (disposed) return null;
       try {
         return composerHostId(composer);
@@ -298,6 +312,8 @@ export function installRendererHostRpcRouting(
       }
     },
     forComposer(composer) {
+      const native = preferNative();
+      if (native) return native.forComposer(composer);
       if (disposed) return null;
       let hostId: string | null;
       try {
@@ -310,6 +326,10 @@ export function installRendererHostRpcRouting(
       return route;
     },
     dispose() {
+      if (replacement) {
+        replacement.dispose();
+        replacement = null;
+      }
       if (disposed) return;
       disposed = true;
       for (const hostId of [...routes.keys()]) retire(hostId);

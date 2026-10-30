@@ -66,6 +66,12 @@ function directRendererInstaller(): string {
         return discover(source);
       },
       portPrototype: MessagePort.prototype,
+      replaceWithNative: (dispose) => {
+        const native = discover(document);
+        if (!native.managers.length && !native.registries.length) return null;
+        dispose();
+        return installNative();
+      },
     });
     const connected = (routing) => routing.forComposer() !== null ||
       ['local', ...(routing.knownHostIds?.() ?? [])].some((hostId) => routing.forHost(hostId) !== null);

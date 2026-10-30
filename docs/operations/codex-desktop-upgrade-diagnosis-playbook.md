@@ -61,6 +61,8 @@ Codex Desktop 启动
 
 Remote Control 重连后，原生 Renderer Manager 可能仍是同一个对象，但其 `processHandle` 已失效。若首个请求报 `no active process for process handle`，还应核对原生 app scope 的连接状态与 `revision$`。旧管理器路径在这些信号存在时按连接代次释放桥接，断开期间不发送请求，重连后的请求建立新桥接；不会自动重放已经提交的用户消息。旧版没有连接信号时保留原有管理器身份检查，SSH 路由不受此检查影响。
 
+部分过渡版本同时提供 RPC 和原生 Renderer 管理器，但后者直到 Composer 挂载才可见。启动时没有 Composer 可以先使用 RPC；后续路由访问发现原生管理器时，先释放 RPC 的请求重写与草稿策略，再由原生注册表接管，避免 Remote Control 的扩展请求被发给原生 Codex。只提供 RPC 的 Desktop 保持原有路径，不通过后台轮询等待原生管理器。
+
 本地 Host 的官方后端异常退出或连接异常关闭后，Host 使用与远程部署相同的退避恢复机制：确认旧进程退出，再重建后端并重新初始化已有客户端。恢复期间官方请求仍返回不可用；失败的回合或语音启动请求不会自动重放。后端就绪后，用户可以显式重试，已订阅的持久 Thread 在需要时通过原生 `thread/resume` 恢复。此过程不重启 Desktop，也不关闭外部 Harness。
 
 若语音启动提示 `Official request failed; retry explicitly`，应先检查 Host Runtime 日志是否持续出现 `Codex is unavailable`，以及是否随后记录 `official Codex is unavailable; restarting in ...ms`。该报错本身不能证明麦克风权限、网络或语音服务异常；恢复失败时继续核对真实后端启动和连接故障。

@@ -121,7 +121,7 @@ function setup(
       new MessagePort(),
       message,
     );
-  return { renderer, target, rpc, connections, sent, post, MessagePort };
+  return { renderer, target, rpc, connections, sent, post, MessagePort, editors, composerFiber };
 }
 
 function policyOf(route: ReturnType<Routing["forHost"]>) {
@@ -152,6 +152,26 @@ function creation(method: string, model: string, options: Record<string, unknown
     ],
   ];
 }
+
+it("switches to a late native manager after starting without a Composer", async () => {
+  const fixture = setup({ nativeManager: true });
+  const editor = fixture.editors.pop();
+  if (!editor) throw new Error("Synthetic Composer absent");
+  const originalPost = fixture.MessagePort.prototype.postMessage;
+  const routing = await install(fixture);
+  const before = routing.forHost("local");
+  expect(before?.manager).toMatchObject({ kind: "main-process-rpc" });
+  fixture.editors.push(editor);
+  try {
+    const after = routing.forComposer();
+    expect(after?.manager).toBe(fixture.composerFiber.memoizedState?.memoizedState);
+    expect(() => before?.policy.requestTarget()).toThrow("retired");
+    expect(fixture.MessagePort.prototype.postMessage).toBe(originalPost);
+    expect(routing.forHost("local")).toBe(after);
+  } finally {
+    routing.dispose();
+  }
+});
 
 it("routes Host requests through the main-process RPC client without native internals", async () => {
   const fixture = setup();

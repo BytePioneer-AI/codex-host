@@ -1,7 +1,7 @@
 import type { HarnessSessionImportSource } from "@codexhost/harness-adapter";
 import type { HarnessSessionImportCandidate, NativeSessionRef } from "@codexhost/shared-contracts";
 import { nativeSessionRefSchema } from "@codexhost/shared-contracts";
-import type { ClientSideConnection } from "@agentclientprotocol/sdk";
+import { listDevinSessions, type DevinSessionListing } from "./sessions.js";
 
 interface DevinSessionRow {
   sessionId: string;
@@ -9,10 +9,6 @@ interface DevinSessionRow {
   updatedAt?: unknown;
   cwd?: unknown;
   _meta?: unknown;
-}
-
-interface DevinListSessionsResponse {
-  sessions?: DevinSessionRow[];
 }
 
 function parseNativeRef(sessionId: string): NativeSessionRef {
@@ -48,18 +44,11 @@ function projectCandidate(row: DevinSessionRow): HarnessSessionImportCandidate |
   };
 }
 
-async function listRows(connection: ClientSideConnection): Promise<DevinSessionRow[]> {
-  const response = (await connection.request("session/list", {})) as unknown;
-  return response && typeof response === "object"
-    ? ((response as DevinListSessionsResponse).sessions ?? [])
-    : [];
-}
-
 export async function listDevinSessionCandidates(input: {
-  connection: ClientSideConnection;
+  connection: DevinSessionListing;
 }): Promise<HarnessSessionImportCandidate[]> {
   const candidates: HarnessSessionImportCandidate[] = [];
-  for (const row of await listRows(input.connection)) {
+  for (const row of await listDevinSessions(input.connection)) {
     if (typeof row.sessionId !== "string" || row.sessionId.length === 0) continue;
     const candidate = projectCandidate(row);
     if (candidate) candidates.push(candidate);
@@ -68,10 +57,10 @@ export async function listDevinSessionCandidates(input: {
 }
 
 export async function resolveDevinSessionCandidate(input: {
-  connection: ClientSideConnection;
+  connection: DevinSessionListing;
   nativeSessionId: string;
 }): Promise<HarnessSessionImportSource | null> {
-  const row = (await listRows(input.connection)).find(
+  const row = (await listDevinSessions(input.connection)).find(
     ({ sessionId }) => sessionId === input.nativeSessionId,
   );
   if (!row) return null;

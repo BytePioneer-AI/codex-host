@@ -5,12 +5,14 @@ import {
   ndJsonStream,
   type NewSessionResponse,
   type LoadSessionResponse,
+  type ListSessionsRequest,
   type SessionNotification,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import { devinInvocation } from "./command.js";
 import { devinApiKey } from "./credentials.js";
+import { listDevinSessions } from "./sessions.js";
 
 /** Devin's agent-type auth method; accepts `_meta.api_key` in place of its PKCE flow. */
 const DEVIN_API_KEY_AUTH_METHOD = "devin-browser";
@@ -42,6 +44,7 @@ export class DevinTransport {
   #collecting = false;
   #replayOverflow = false;
   #closed = false;
+  #closePromise: Promise<void> | undefined;
   #fault: Error | undefined;
   #rejectFault!: (error: Error) => void;
   readonly #failed = new Promise<never>((_, reject) => {
@@ -240,10 +243,14 @@ export class DevinTransport {
     );
   }
 
+  async listSessions(params: ListSessionsRequest = {}) {
+    if (!this.#connection || this.#closed) throw new Error("Devin connection is not open");
+    return this.#bounded(this.#connection.listSessions(params));
+  }
+
   async verifyCwd(cwd: string) {
-    if (!this.#connection || this.#closed) throw new Error("Devin session is not open");
-    const response = await this.#bounded(this.#connection.listSessions({}));
-    const rows = response.sessions.filter((row) => row.sessionId === this.sessionId);
+    const sessions = await listDevinSessions(this);
+    const rows = sessions.filter((row) => row.sessionId === this.sessionId);
     if (rows.length !== 1 || rows[0]?.cwd !== cwd)
       throw new Error("Devin native Session cwd does not match the requested directory");
   }
@@ -275,11 +282,16 @@ export class DevinTransport {
       await this.#bounded(this.#connection.cancel({ sessionId: this.sessionId }));
   }
 
-  async close() {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
     this.#fault = new Error("Devin session closed");
     this.#rejectFault(this.#fault);
+    this.#closePromise = this.#closeResources();
+    return this.#closePromise;
+  }
+
+  async #closeResources() {
     const child = this.#child;
     if (!child) return;
     child.stdin.end();

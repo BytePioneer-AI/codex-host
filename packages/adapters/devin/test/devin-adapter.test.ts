@@ -486,12 +486,11 @@ describe("Devin session import", () => {
   ];
   function stubProbe() {
     const connection = {
-      request: vi.fn(async (method: string) => {
-        if (method !== "session/list") throw new Error(`unexpected method ${method}`);
-        return { sessions: rows };
+      listSessions: vi.spyOn(DevinTransport.prototype, "listSessions").mockResolvedValue({
+        sessions: rows as never,
       }),
     };
-    vi.spyOn(DevinTransport.prototype, "probe").mockResolvedValue(connection as never);
+    vi.spyOn(DevinTransport.prototype, "probe").mockResolvedValue({} as never);
     vi.spyOn(DevinTransport.prototype, "close").mockResolvedValue();
     return connection;
   }
@@ -510,7 +509,7 @@ describe("Devin session import", () => {
         running: true,
       },
     ]);
-    expect(connection.request).toHaveBeenCalledWith("session/list", {});
+    expect(connection.listSessions).toHaveBeenCalledWith({});
     await adapter.close();
   });
   it("resolves a listed session to a Host import source", async () => {

@@ -1,6 +1,5 @@
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type { ClientSideConnection } from "@agentclientprotocol/sdk";
 import {
   HarnessOutputChannel,
   sanitizeDiagnosticTail,
@@ -94,11 +93,13 @@ export class DevinAdapter implements HarnessAdapter {
     resolveCandidate: (nativeSessionId: string) => this.#resolveImportCandidate(nativeSessionId),
   };
   readonly #sessions = new Set<DevinSession>();
+  readonly #probes = new Set<DevinTransport>();
   readonly #inspections = new Map<
     string,
     { pending: boolean; result: Promise<HarnessInspection> }
   >();
   #closed = false;
+  #closePromise: Promise<void> | undefined;
   constructor(readonly options: DevinAdapterOptions = {}) {}
   transportOptions(cwd: string, environment?: NodeJS.ProcessEnv): DevinTransportOptions {
     return {
@@ -115,9 +116,40 @@ export class DevinAdapter implements HarnessAdapter {
         error: { code: "unavailable", message: "Devin adapter is closed", retryable: false },
       };
     const cwd = path.resolve(input.cwd ?? process.cwd());
-    const cached = this.#inspections.get(cwd);
+    // Status-only observations must not replace the selected Harness's full catalog.
+    const key = input.purpose === "availability" ? JSON.stringify([cwd, input.purpose]) : cwd;
+    if (input.purpose === "availability" && input.refresh && !this.#inspections.get(cwd)?.pending)
+      this.#inspections.delete(cwd);
+    const cached = this.#inspections.get(key);
     if (cached && (cached.pending || !input.refresh)) return cached.result;
     const result = (async (): Promise<HarnessInspection> => {
+      if (input.purpose === "availability") {
+        try {
+          return await this.#withProbeConnection(async (transport) => {
+            // Listing validates the native connection without creating or loading a Session.
+            await transport.listSessions();
+            return {
+              status: "ready",
+              catalog: { models: [], thinkingOptions: [] },
+              capabilities: {
+                configuration: {
+                  selectModel: false,
+                  selectThinkingOption: false,
+                  selectPermissionMode: false,
+                  permissionModeScope: "live",
+                },
+                history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+              },
+            };
+          }, cwd);
+        } catch (error) {
+          const failure = devinError(error);
+          return {
+            status: failure.code === "notInstalled" ? "notInstalled" : "unavailable",
+            error: failure,
+          };
+        }
+      }
       const transport = new DevinTransport(this.transportOptions(cwd));
       try {
         const info = await transport.open();
@@ -139,7 +171,7 @@ export class DevinAdapter implements HarnessAdapter {
     })();
     // Keep results, including failures, until explicit refresh or Adapter shutdown.
     const entry = { pending: true, result };
-    this.#inspections.set(cwd, entry);
+    this.#inspections.set(key, entry);
     void result.finally(() => {
       entry.pending = false;
     });
@@ -295,14 +327,27 @@ export class DevinAdapter implements HarnessAdapter {
    * (initialize + session/list, no user Session creation).
    */
   async #withProbeConnection<T>(
-    action: (connection: ClientSideConnection) => Promise<T>,
+    action: (transport: DevinTransport) => Promise<T>,
+    cwd = process.cwd(),
   ): Promise<T> {
-    const transport = new DevinTransport(this.transportOptions(process.cwd()));
+    if (this.#closed) throw new DevinHistoryError("invalidState", "Devin adapter is closed");
+    const transport = new DevinTransport(this.transportOptions(cwd));
+    this.#probes.add(transport);
     try {
-      const connection = await transport.probe();
-      return await action(connection);
+      await transport.probe();
+      if (this.#closed) throw new DevinHistoryError("invalidState", "Devin adapter is closed");
+      const result = await action(transport);
+      if (this.#closed) throw new DevinHistoryError("invalidState", "Devin adapter is closed");
+      return result;
+    } catch (error) {
+      if (this.#closed) throw new DevinHistoryError("invalidState", "Devin adapter is closed");
+      throw error;
     } finally {
-      await transport.close();
+      try {
+        await transport.close();
+      } finally {
+        this.#probes.delete(transport);
+      }
     }
   }
 
@@ -332,12 +377,20 @@ export class DevinAdapter implements HarnessAdapter {
     }
   }
 
-  async close() {
+  close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
-    await Promise.allSettled([...this.#sessions].map((session) => session.close()));
-    await Promise.allSettled(
-      [...this.#inspections.values()].map((inspection) => inspection.result),
-    );
+    this.#closePromise = (async () => {
+      await Promise.allSettled([
+        ...[...this.#sessions].map((session) => session.close()),
+        ...[...this.#probes].map((transport) => transport.close()),
+      ]);
+      await Promise.allSettled(
+        [...this.#inspections.values()].map((inspection) => inspection.result),
+      );
+      this.#inspections.clear();
+    })();
+    return this.#closePromise;
   }
 }
 

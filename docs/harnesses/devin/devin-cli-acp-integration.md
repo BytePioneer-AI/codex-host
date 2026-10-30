@@ -56,9 +56,13 @@ catalog (385 entries when tested) and the permission modes `accept-edits`,
   `CODEXHOST_DEVIN_COMMAND` selects an explicit executable. No polling timers,
   provider substitution or Codex fallback.
 - Native session import through `session/list` on a sessionless probe
-  connection (`initialize` only, no user Session is created). Rows missing a
-  valid `cwd` or `updatedAt` are skipped rather than fabricated; `running`
-  reflects the native `cognition.ai/isLocked` meta flag when present.
+  connection (no user Session is created). Listing and resolution follow every
+  `nextCursor`; repeated cursors, duplicate IDs and page failures reject the read
+  instead of returning a partial list or reporting a false absence. Rows missing
+  a valid `cwd` or `updatedAt` are skipped rather than fabricated; `running`
+  reflects the native `cognition.ai/isLocked` meta flag when present. Each page
+  uses the transport request timeout, and Adapter close terminates in-flight
+  probes, including initialization, before returning.
 
 ## Thinking configuration
 
@@ -214,8 +218,15 @@ pseudonymize IDs consistently while retaining field names, types and ordering.
   prompt input is outside the current Host text contract.
 - Devin-specific extensions outside identity/tool metadata and the negotiated
   native history path (slash commands, embedded context payloads) are not surfaced.
-- Model inspection opens one empty native ACP session per cache refresh because
-  the catalog is returned by `session/new`; it submits no prompt.
+- Background `purpose: "availability"` inspection uses only initialization,
+  authentication when a key is available, and a read-only `session/list` request.
+  It never creates or loads a Session or submits a prompt. Its empty catalog and
+  unobserved selectors are status-only results, cached separately from full
+  inspection by cwd; a status refresh invalidates a completed full catalog.
+  Closing the Adapter cancels pending checks and releases their processes.
+- Full model inspection still opens one empty native ACP session per cache
+  refresh because the catalog is returned by `session/new`; it submits no prompt.
+  Persistence and cleanup of these empty native Sessions remain unverified.
 
 ## Brand assets
 

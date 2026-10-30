@@ -19,7 +19,7 @@
 |---|---|---|---|---|---|---|---|
 | A1 | Manifest | 必做 | P0 | 支持 | manifest.json | Host installed-harness-plugins.test.ts | 公共插件 schema |
 | A2 | 工厂 | 必做 | P0 | 支持 | src/plugin.ts | Host installed-harness-plugins.test.ts | 独立 Adapter |
-| A3 | 检查 | 必做 | P0 | 受限 | src/adapter.ts | test/devin-adapter.test.ts | 目录检查创建空原生 Session |
+| A3 | 检查 | 必做 | P0 | 受限 | src/adapter.ts | test/devin-adapter.test.ts、test/discovery.test.ts | availability 无 Session 副作用；完整目录检查仍创建空原生 Session |
 | A4 | 创建 Session | 必做 | P0 | 受限 | src/adapter.ts | 集成记录；test/devin-adapter.test.ts | 预热空会话持久化未验证 |
 | A5 | 执行 Turn | 必做 | P0 | 支持 | src/adapter.ts | test/devin-adapter.test.ts；集成记录 | 文本输入 |
 | A6 | 取消 | 必做 | P0 | 受限 | src/adapter.ts | test/devin-adapter.test.ts | 取消后原生恢复待实测 |
@@ -48,7 +48,7 @@
 | C3 | 版本检查与更新 | 必做 | P1 | 受限 | src/plugin.ts | 工厂未提供 installation() | 必做缺口，未实现 |
 | C4 | 首次安装 | 可选 | P2 | 不支持 | manifest.json | 仅提供原生安装脚本指引 | 无一键安装 |
 | C5 | 自定义启动路径 | 条件必做 | P1 | 受限 | src/command.ts | CODEXHOST_DEVIN_COMMAND | 无连接页路径设置 |
-| C6 | 会话导入 | 可选 | P2 | 支持 | src/import.ts | test/devin-adapter.test.ts | sessionless list |
+| C6 | 会话导入 | 可选 | P2 | 支持 | src/import.ts、src/sessions.ts、src/transport.ts | test/devin-adapter.test.ts、test/discovery.test.ts | sessionless 全分页 list/resolve；逐请求超时、关闭取消与进程清理 |
 | C7 | 全局用量统计 | 可选 | P2 | 待验证 | — | 未接入 | 不声明能力 |
 | C8 | 账号额度 | 可选 | P2 | 不支持 | src/adapter.ts | 集成记录：auth status 无有效额度百分比 | 不伪造额度 |
 | D1 | Workspace / 构建 | 预装时必做 | P1 | 支持 | package.json、tsconfig.json | 根构建配置 | ESM bundle |
@@ -59,7 +59,8 @@
 
 ## 受限与已知缺口
 
-- A3/A4：inspect 调用 session/new 获取目录；原生空 Session 的持久化和预热丢弃行为未验证，不能宣称满足无用户会话副作用要求。
+- A3/A4：后台 availability 检查仅 initialize/authenticate/session/list，不创建或加载 Session，不发 Prompt；按 cwd 独立缓存，不污染完整目录。availability 刷新会失效已完成的完整目录缓存；关闭 Adapter 会取消并回收检查进程。完整 inspect 仍调用 session/new 获取目录；原生空 Session 的持久化和预热丢弃行为未验证，不能宣称完整目录检查及 create 满足无用户会话副作用要求。
+- C6：导入 list/resolve 与历史 cwd 校验遍历全部 nextCursor；重复游标、重复 Session ID 或分页 RPC 失败返回错误，不以局部列表判定会话不存在。每页沿用 transport 超时；Adapter 持有并关闭探测连接，初始化或列表挂起时也能取消并清理。合成进程覆盖不响应 RPC 且忽略 stdin EOF 的关闭路径；不代表真实 CLI 验收。
 - A6/A8：已有取消与身份回放 mock 测试；真实取消后继续、压缩历史、重载持久性尚未验证。
 - B1/B4：活动 Turn 配置和无人值守显式权限冲突由 hermetic 回归测试覆盖；真实运行中切换及 bypass 工具执行仍需 CLI 验收。
 - B2：仅按 ACP 标准 `thought_level` select 类别发现独立 Thinking，使用原生 `id`、`currentValue`、`options[].value/name`（含分组）；未公开类别的字段不猜测。配置响应、通知和 load 的完整列表替换状态；create/resume 提示在 Model 后校验并写入。无可用 selector 时能力为 false、选择返回 unsupported；`model_config` 的 speed 不接入本任务。官方功能依据不替代实际 Devin wire 样本，3000.11.1+ 的真实 inspect、运行中选择、Model 依赖变化与冷恢复仍需作者验收。
@@ -84,9 +85,9 @@
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
-| Adapter 公共行为 | `npx vitest run --config tests/vitest.config.js packages/adapters/devin/test` | 104 项通过（6 个文件）；含 Thinking、原生历史路径、执行策略、运行中 Model、权限状态保留与故障/关闭期间 snapshot 拒绝 |
-| 原生边界 | Mock ACP；test/fixtures/configuration-acp.mjs、history-acp.mjs 合成 stdio 进程 | 请求驱动的配置通知、native history RPC wire/边界/错误与子进程退出；不读取凭据、不启动真实 Devin，非真实 CLI 验收 |
-| 整合回归 | `npx vitest run --config tests/vitest.config.js packages/adapters/devin/test packages/host-runtime/test/installed-harness-plugins.test.ts tests/release/host-bundle.test.mjs` | 136 项通过，1 项跳过（缺少 CODEXHOST_OPENCODE_REAL_COMMAND）；覆盖 Devin、公共插件 Loader 与发布 bundle |
+| Adapter 公共行为 | `npx vitest run --config tests/vitest.config.js packages/adapters/devin/test` | 118 项通过（7 个文件）；含 Thinking、原生历史路径、执行策略、运行中 Model、权限状态保留、故障/关闭期间 snapshot 拒绝，以及 sessionless availability、导入超时/进程回收和分页异常 |
+| 原生边界 | Mock ACP；test/fixtures/configuration-acp.mjs、history-acp.mjs、discovery-acp.mjs 合成 stdio 进程 | 请求驱动的配置通知、native history RPC wire/边界/错误、原生分页、挂起 RPC 与忽略 stdin EOF 的子进程回收；不读取凭据、不启动真实 Devin，非真实 CLI 验收 |
+| 整合回归 | `npx vitest run --config tests/vitest.config.js packages/adapters/devin/test packages/host-runtime/test/installed-harness-plugins.test.ts tests/release/host-bundle.test.mjs` | 150 项通过，1 项跳过（缺少 CODEXHOST_OPENCODE_REAL_COMMAND）；覆盖 Devin、公共插件 Loader 与发布 bundle |
 | 构建与静态检查 | npm run typecheck；npm run build:typescript；npm run lint；改动文件 Prettier；git diff --check | 全部通过；依赖用 npm ci --ignore-scripts 安装；未运行全量测试、真实 Devin 或 Desktop |
 | 历史能力实现 | test/history.test.ts、test/history-transport.test.ts、test/fixtures/history-acp.mjs | 原生 ID/step 对齐、中间/末尾 Fork、配置保留、多轮/单轮/空历史 rollback、旧版 unsupported、活动操作互斥、错误 ID/前缀/opaque payload/源变更与资源清理；仅 mock/synthetic，非真实 mutation 验收 |
 | 真实原生验收 | PR 集成记录中的 3000.10.31 / macOS / swe-2-high / accept-edits | 历史记录；本地未复验 |

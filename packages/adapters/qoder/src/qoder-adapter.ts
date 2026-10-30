@@ -32,6 +32,7 @@ import type {
   GetSessionInfoOptions,
   GetSessionMessagesOptions,
   QoderModelInfo,
+  QoderOptions,
   QoderQuery,
   QoderQueryFactory,
   SDKSessionInfo,
@@ -43,15 +44,14 @@ import { createQoderUsageStatistics } from "./qoder-usage-statistics.js";
 
 import { QODER_RUNTIMES, qoderAuthForEnvironment, type QoderVariant } from "./qoder-runtime.js";
 
-const DELEGATION_THREAD_ID_ENV = "CODEXHOST_THREAD_ID";
-
-type QoderSdkDaemon = NonNullable<import("./qoder-sdk-types.js").QoderOptions["daemon"]>;
+type QoderSdkDaemon = NonNullable<QoderOptions["daemon"]>;
 
 /** Daemon launch env must not include per-thread identity — that varies across sessions. */
 function daemonEnvironment(
   environment: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const { [DELEGATION_THREAD_ID_ENV]: _threadId, ...rest } = environment;
+  const rest = { ...environment };
+  delete rest.CODEXHOST_THREAD_ID;
   return rest;
 }
 

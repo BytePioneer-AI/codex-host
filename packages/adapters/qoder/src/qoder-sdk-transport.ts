@@ -81,7 +81,6 @@ import {
 } from "./qoder-models.js";
 import {
   isQoderPlanModeId,
-  mapToQoderPermissionMode,
   mapToQoderPermissionModeExcludingPlan,
 } from "./qoder-permission-modes.js";
 import type {

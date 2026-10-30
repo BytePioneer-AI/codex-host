@@ -80,6 +80,47 @@ export interface MappingStoreOptions {
   instanceId?: string;
   now?: () => Date;
   beforeReplace?: (record: StoredThreadRecordV1) => Promise<void> | void;
+  concurrency?: number;
+}
+
+const DEFAULT_CONCURRENCY = 16;
+
+async function mapConcurrent<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  let failed = false;
+  let firstError: unknown = undefined;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length && !failed) {
+      const currentIndex = nextIndex++;
+      const item = items[currentIndex];
+      if (item !== undefined) {
+        try {
+          results[currentIndex] = await fn(item, currentIndex);
+        } catch (error) {
+          if (!failed) {
+            failed = true;
+            firstError = error;
+          }
+          break;
+        }
+      }
+    }
+  });
+
+  await Promise.allSettled(workers);
+
+  if (failed) {
+    throw firstError;
+  }
+  return results;
 }
 
 interface LockRecord {
@@ -338,6 +379,7 @@ export class MappingStore {
   readonly #backupsDirectory: string;
   readonly #delegationsDirectory: string;
   readonly #beforeReplace: MappingStoreOptions["beforeReplace"];
+  readonly #concurrency: number;
   readonly #directory: string;
   readonly #instanceId: string;
   readonly #lockPath: string;
@@ -373,6 +415,12 @@ export class MappingStore {
     this.#instanceId = options.instanceId ?? randomUUID();
     this.#now = options.now ?? (() => new Date());
     this.#beforeReplace = options.beforeReplace;
+    this.#concurrency =
+      typeof options.concurrency === "number" &&
+      Number.isFinite(options.concurrency) &&
+      options.concurrency >= 1
+        ? Math.floor(options.concurrency)
+        : DEFAULT_CONCURRENCY;
   }
 
   async initialize(): Promise<void> {
@@ -391,7 +439,7 @@ export class MappingStore {
       const names = (await readdir(this.#threadsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
-      for (const name of names) {
+      await mapConcurrent(names, this.#concurrency, async (name) => {
         const primary = path.join(this.#threadsDirectory, name);
         const backup = path.join(this.#backupsDirectory, name);
         let record: StoredThreadRecordV1 | null = null;
@@ -409,14 +457,14 @@ export class MappingStore {
             await rename(primary, quarantine).catch(() => undefined);
             void primaryError;
             void backupError;
-            continue;
+            return;
           }
         }
         if (record.state === "creating" && !record.nativeSessionRef) {
           await rm(primary, { force: true });
           await rm(backup, { force: true });
           await rm(this.#metadataPath(record.hostThreadId), { force: true });
-          continue;
+          return;
         }
         const metadata = await this.#readMetadata(record.hostThreadId);
         if (metadata) {
@@ -427,20 +475,21 @@ export class MappingStore {
           await this.#replaceFile(primary, record, false);
         }
         this.#records.set(record.hostThreadId, record);
-      }
+      });
       // An older release may have removed a Thread without knowing about its metadata file.
-      await Promise.all(
-        (await readdir(this.#metadataDirectory))
-          .filter(
-            (name) =>
-              name.endsWith(".json") && !this.#records.has(name.slice(0, -5) as HostThreadId),
-          )
-          .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
+      const metadataNames = (await readdir(this.#metadataDirectory)).filter((name) =>
+        name.endsWith(".json"),
       );
+      const orphanedMetadata = metadataNames.filter(
+        (name) => !this.#records.has(name.slice(0, -5) as HostThreadId),
+      );
+      await mapConcurrent(orphanedMetadata, this.#concurrency, async (name) => {
+        await rm(path.join(this.#metadataDirectory, name), { force: true });
+      });
       const delegationNames = (await readdir(this.#delegationsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
-      for (const name of delegationNames) {
+      await mapConcurrent(delegationNames, this.#concurrency, async (name) => {
         const file = path.join(this.#delegationsDirectory, name);
         try {
           const parsed = storedDelegationRecordV1Schema.parse(
@@ -455,7 +504,7 @@ export class MappingStore {
           );
           await rename(file, quarantine).catch(() => undefined);
         }
-      }
+      });
       try {
         this.#sectionPlacements = await readSectionPlacementsFile(this.#sectionPlacementsPath);
       } catch {
@@ -1252,8 +1301,13 @@ export class MappingStore {
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
       // Renamed aside by #acquireLock; nothing reads them back, and they accumulate one per run.
+      // Also clean up any abandoned archived-threads.json files.
       ...rootNames
-        .filter((name) => name.startsWith(`${path.basename(this.#lockPath)}.stale-`))
+        .filter(
+          (name) =>
+            name.startsWith(`${path.basename(this.#lockPath)}.stale-`) ||
+            name.startsWith("archived-threads.json"),
+        )
         .map((name) => rm(path.join(this.#directory, name), { force: true })),
     ]);
   }

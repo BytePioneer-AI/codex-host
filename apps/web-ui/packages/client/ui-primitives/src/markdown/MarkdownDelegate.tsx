@@ -12,6 +12,8 @@ export type MarkdownExternalLinkHandler = (href: string) => void;
 /** Resolve an application link to a browser-safe destination and in-app navigation. */
 export interface MarkdownLinkResolver {
   (href: string): { readonly href: string; readonly open: () => void } | undefined;
+  /** Global pattern selecting bare application URLs in prose; matches still require resolution. */
+  readonly autoLinkPattern?: RegExp;
   /** Recheck destinations when the application's target directory changes. */
   readonly subscribe?: (listener: () => void) => () => void;
 }

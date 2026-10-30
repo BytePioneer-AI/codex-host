@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import {
+  THREAD_LINK_PATTERN,
   localThreadId,
   parseThreadReferenceDrag,
   threadReferenceInsert,
@@ -62,6 +63,22 @@ it("parses explicit local Thread links without normalizing their identity", () =
       `thread://${encodeURIComponent(id)}?hostId=local`,
     ])
       assert.equal(localThreadId(href), id);
+});
+
+it("finds bare Thread URLs without swallowing prose punctuation or embedded schemes", () => {
+  const text =
+    "任务 1：codex://threads/target-A，任务 2：(thread://target-B?hostId=local). " +
+    "codex://threads/encoded%2Did; prefixcodex://threads/ignored " +
+    "https://example.com/codex://threads/ignored codex://threads/target-A?";
+  const matches = () => [...text.matchAll(THREAD_LINK_PATTERN)].map(([href]) => href);
+  assert.deepEqual(matches(), [
+    "codex://threads/target-A",
+    "thread://target-B?hostId=local",
+    "codex://threads/encoded%2Did",
+    "codex://threads/target-A?",
+  ]);
+  assert.deepEqual(matches().map(localThreadId), ["target-A", "target-B", "encoded-id", undefined]);
+  assert.equal(THREAD_LINK_PATTERN.lastIndex, 0);
 });
 
 it("rejects remote, ambiguous, malformed and unrelated message destinations", () => {

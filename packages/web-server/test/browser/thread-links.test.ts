@@ -27,6 +27,17 @@ it(
       "[数据链接](data:text/html,bad)",
       "[普通网页](https://example.com/path)",
       "[邮件](mailto:someone@example.com)",
+      "- 任务 1：codex://threads/target-A，\n- 任务 2：thread://target-B?hostId=local。",
+      "编码地址：(codex://threads/target%2DB).",
+      "待出现：codex://threads/late-target",
+      "未知：codex://threads/missing",
+      "远程：thread://target-A?hostId=remote-explicit",
+      "歧义：thread://target-A?hostId=local&hostId=other",
+      "畸形：codex://threads/target-A?",
+      "嵌套地址：prefixcodex://threads/target-A",
+      "`codex://threads/target-A`",
+      "```text\ncodex://threads/target-A\n```",
+      "[codex://threads/target-A](https://example.com/label)",
     ].join("\n\n");
     const sourceAnswer = source.turns[0]?.items.at(-1);
     const firstAnswer = first.turns[0]?.items.at(-1);
@@ -71,6 +82,29 @@ it(
       assert.equal(new URL(desktopHref).searchParams.get("session"), "target-A");
       assert.equal(await desktopLink.getAttribute("target"), null);
       assert.equal(new URL(threadHref).searchParams.get("session"), "target-B");
+      for (const [name, id] of [
+        ["codex://threads/target-A", "target-A"],
+        ["thread://target-B?hostId=local", "target-B"],
+        ["codex://threads/target%2DB", "target-B"],
+      ] as const) {
+        const bareLink = page.locator(`a[href*="session=${id}"]`).filter({ hasText: name });
+        await bareLink.waitFor();
+        assert.equal(
+          await page.getByRole("link", { name, exact: true }).count(),
+          name === "codex://threads/target-A" ? 2 : 1,
+        );
+      }
+      for (const name of [
+        "codex://threads/late-target",
+        "codex://threads/missing",
+        "thread://target-A?hostId=remote-explicit",
+        "thread://target-A?hostId=local&hostId=other",
+        "codex://threads/target-A?",
+        "prefixcodex://threads/target-A",
+      ])
+        assert.equal(await page.getByRole("link", { name, exact: true }).count(), 0);
+      assert.equal(await page.locator("code a").count(), 0, "code examples stay literal");
+      assert.equal(await page.locator("a a").count(), 0, "link labels never create nested anchors");
       for (const name of [
         "远程同名 ID",
         "缺少来源",
@@ -106,6 +140,11 @@ it(
     host.add("late-target", "/computer/project", "Newly delegated Session");
     const lateLink = page.getByRole("link", { name: "新委派", exact: true });
     await lateLink.waitFor({ timeout: 15_000 });
+    const bareLateLink = page.getByRole("link", {
+      name: "codex://threads/late-target",
+      exact: true,
+    });
+    await bareLateLink.waitFor();
     assert.equal(
       host.requests.some(
         ({ method, params }) => method === "thread/turns/list" && params.threadId === "late-target",
@@ -114,19 +153,25 @@ it(
     );
     host.threads.delete("late-target");
     await lateLink.waitFor({ state: "detached", timeout: 15_000 });
+    await bareLateLink.waitFor({ state: "detached" });
     await page.getByText("新委派", { exact: true }).waitFor();
-    await page.getByRole("link", { name: "DSH 实施任务", exact: true }).click();
+    await page
+      .locator('a[href*="session=target-A"]')
+      .filter({ hasText: /^codex:\/\/threads\/target-A$/ })
+      .click();
     await page.getByText("Exact target A answer", { exact: true }).waitFor();
     assert.equal(context.pages().length, 1, "ordinary clicks stay in this Web page");
     await sourceRow.click();
-    await page.getByRole("link", { name: "另一条会话", exact: true }).click();
+    await page.getByRole("link", { name: "thread://target-B?hostId=local", exact: true }).click();
     await page.getByText("Exact target B answer", { exact: true }).waitFor();
     await sourceRow.click();
     const [tab] = await Promise.all([
       context.waitForEvent("page"),
-      page.getByRole("link", { name: "DSH 实施任务", exact: true }).click({ button: "middle" }),
+      page
+        .getByRole("link", { name: "codex://threads/target%2DB", exact: true })
+        .click({ button: "middle" }),
     ]);
-    await tab.getByText("Exact target A answer", { exact: true }).waitFor();
+    await tab.getByText("Exact target B answer", { exact: true }).waitFor();
     assert.equal(new URL(tab.url()).origin, new URL(url).origin);
     assert.equal(sourceAnswer.text, answer);
     assert.equal(

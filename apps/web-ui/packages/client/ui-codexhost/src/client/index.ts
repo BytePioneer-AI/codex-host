@@ -22,6 +22,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-ui-input-trigger/client";
 import {
   THREAD_REFERENCE_SOURCE,
+  THREAD_LINK_PATTERN,
   localThreadId,
   threadReferenceOf,
 } from "@deepseek-ai/dsh-client-ui-conversation/thread-reference";
@@ -100,7 +101,10 @@ export function apply(ctx: ClientContext): void {
           },
         };
       },
-      { subscribe: (listener: () => void) => ctx.sessions.list.subscribe(listener) },
+      {
+        autoLinkPattern: THREAD_LINK_PATTERN,
+        subscribe: (listener: () => void) => ctx.sessions.list.subscribe(listener),
+      },
     ),
   });
   ctx.effect(

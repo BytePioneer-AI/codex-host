@@ -2,6 +2,10 @@
 export const THREAD_REFERENCE_MIME = "application/x-codexhost-thread-reference";
 export const THREAD_REFERENCE_SOURCE = "codexhost-thread";
 
+/** Bare message links, excluding surrounding prose punctuation and embedded URL schemes. */
+export const THREAD_LINK_PATTERN =
+  /(?<![\w:/])(?:codex:\/\/threads\/|thread:\/\/)[^\s<>()\[\]`"'，。！？；：、]+(?<![.,;])/gu;
+
 export interface ThreadReference {
   threadId: string;
   hostId: "local";

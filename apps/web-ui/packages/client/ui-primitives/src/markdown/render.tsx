@@ -17,7 +17,7 @@
  * may add node types this renderer has no mapping for.
  */
 
-import { Fragment, createElement, useCallback, useState, useSyncExternalStore } from "react";
+import { Fragment, createElement, useCallback, useState } from "react";
 import type { Key, ReactNode } from "react";
 import clsx from "clsx";
 import type * as Md from "mdast";
@@ -29,6 +29,7 @@ import { parseFileLink } from "./file-link.ts";
 import { renderTexToReact } from "./katex.tsx";
 import { LinkIconMedium, classifyLinkPath } from "../LinkIcon.tsx";
 import { useMarkdownDelegate } from "./MarkdownDelegate.tsx";
+import { MarkdownAnchor, MarkdownTextLinks, sanitizeMarkdownUrl } from "./MarkdownAnchor.tsx";
 import { HoverCard } from "../HoverCard.tsx";
 import { ImageLightbox } from "../ImageLightbox.tsx";
 import { ImagePreview } from "../ImagePreview.tsx";
@@ -49,23 +50,6 @@ export interface MarkdownCodeLabels {
 export interface MarkdownLabels {
   code: MarkdownCodeLabels;
   footnotes: string;
-}
-
-function sanitizeUrl(url: string): string {
-  try {
-    switch (new URL(url).protocol) {
-      case "http:":
-      case "https:":
-      case "mailto:":
-        return url;
-      default:
-        return "";
-    }
-  } catch {
-    // Relative and otherwise unparsable destinations are disallowed alongside
-    // disallowed protocols; new URL() has no other failure mode for strings.
-    return "";
-  }
 }
 
 function remoteImageUrl(url: string): string | undefined {
@@ -105,7 +89,7 @@ function vocabularyImageUrl(url: string): string | undefined {
  * @returns The displayable image URL, or undefined.
  */
 function imageSource(url: string, pathImages: MarkdownPathImages | undefined): string | undefined {
-  const remote = remoteImageUrl(sanitizeUrl(normalizeUri(url)));
+  const remote = remoteImageUrl(sanitizeMarkdownUrl(normalizeUri(url)));
   if (remote !== undefined) return remote;
   const rewritten = pathImages?.resolve(url);
   return rewritten === undefined ? undefined : vocabularyImageUrl(rewritten);
@@ -277,7 +261,7 @@ function renderChildren(
 function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderContext): ReactNode {
   switch (node.type) {
     case "text":
-      return node.value;
+      return context.inLink ? node.value : <MarkdownTextLinks key={key} value={node.value} />;
     case "paragraph":
       return <p key={key}>{renderChildren(node.children, context)}</p>;
     case "heading":
@@ -565,61 +549,6 @@ function renderSafeLink(href: string, children: ReactNode[], key: Key, glyph = t
     <MarkdownAnchor key={key} href={href} glyph={glyph}>
       {children}
     </MarkdownAnchor>
-  );
-}
-
-const noLinkChanges = () => () => {};
-
-function MarkdownAnchor({
-  href,
-  glyph,
-  children,
-}: {
-  readonly href: string;
-  readonly glyph: boolean;
-  readonly children: ReactNode[];
-}): ReactNode {
-  const { openExternalLink, resolveLink } = useMarkdownDelegate();
-  const destination = () => resolveLink?.(href)?.href;
-  const resolvedHref = useSyncExternalStore(
-    resolveLink?.subscribe ?? noLinkChanges,
-    destination,
-    destination,
-  );
-  const safeHref = sanitizeUrl(resolvedHref ?? href);
-  if (safeHref === "") return <>{children}</>;
-  const external =
-    resolvedHref === undefined && ["http:", "https:"].includes(new URL(safeHref).protocol);
-  const open =
-    resolvedHref !== undefined
-      ? () => resolveLink?.(href)?.open()
-      : external && openExternalLink !== undefined
-        ? () => openExternalLink(safeHref)
-        : undefined;
-  return (
-    <a
-      href={safeHref}
-      {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
-      onClick={
-        open === undefined
-          ? undefined
-          : (event) => {
-              if (
-                event.button !== 0 ||
-                event.metaKey ||
-                event.ctrlKey ||
-                event.shiftKey ||
-                event.altKey
-              )
-                return;
-              event.preventDefault();
-              open();
-            }
-      }
-    >
-      {glyph && <LinkIconMedium kind="url" href={safeHref} className={css.linkIcon} />}
-      {children}
-    </a>
   );
 }
 

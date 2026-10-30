@@ -73,7 +73,8 @@ export function createHermesSkillsCatalog(
     if (ref.path === undefined) {
       if (byName.length > 1)
         return { reason: `${ref.name} is ambiguous here; retry from the page` };
-      return { skill: byName[0]! };
+      const only = byName[0];
+      return only ? { skill: only } : { reason: `No Hermes skill named ${ref.name}` };
     }
     const match = byName.find(
       (entry) => path.resolve(entry.path) === path.resolve(ref.path as string),

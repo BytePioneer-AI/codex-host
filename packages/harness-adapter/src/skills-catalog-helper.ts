@@ -93,15 +93,15 @@ async function resolveSkill(
   if (ref.path === undefined) {
     // Legacy caller without a path: never guess between same-name siblings.
     if (byName.length > 1) return { reason: `${ref.name} is ambiguous here; retry from the page` };
-    const only = byName[0]!;
+    const only = byName[0];
+    if (!only) return { reason: `No skill named ${ref.name}` };
     const root = roots(environment).find((entry) => entry.directory === only.root);
     return root ? { skill: only, root } : { reason: `${ref.name} sits outside every skill root` };
   }
   // The confirmed path must still be what the scan sees — it may have moved or been renamed
   // since the page listed it, or a same-name sibling may sit at the confirmed spot.
-  const match = byName.find(
-    (entry) => path.resolve(entry.path) === path.resolve(ref.path as string),
-  );
+  const confirmed = ref.path as string;
+  const match = byName.find((entry) => path.resolve(entry.path) === path.resolve(confirmed));
   if (!match) return { reason: `${ref.name} no longer lives at ${ref.path}; reload the page` };
   const root = roots(environment).find((entry) => entry.directory === match.root);
   return root ? { skill: match, root } : { reason: `${ref.name} sits outside every skill root` };

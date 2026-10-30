@@ -12,9 +12,6 @@ afterEach(async () => {
 });
 
 async function temporaryHome(): Promise<string> {
-  const home = await mkdir(path.join(os.tmpdir(), `hermes-skills-test-${Date.now()}`), {
-    recursive: true,
-  }).then(() => "");
   const dir = path.join(
     os.tmpdir(),
     `hermes-skills-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,

@@ -53,14 +53,20 @@ export function externalTurnInputText(input: unknown): string {
     }
   }
   const text = texts.join("\n");
+  const references = imageReferences(text);
+  const request = /^# Files mentioned by the user:[ \t]*\r?$/mu.test(text)
+    ? (text.split(/^## My request:[ \t]*\r?$/mu)[1] ?? text)
+    : text;
+  if (
+    (localImages.length || inlineImages || references.length) &&
+    isExternalCommandCandidate(restoreHarnessCommandMentions(request))
+  ) {
+    throw new Error("Send Harness commands and image attachments separately");
+  }
   if (!localImages.length && !inlineImages) {
     if (!text.trim()) throw new Error("External input must not be empty");
     return text;
   }
-  if (isExternalCommandCandidate(restoreHarnessCommandMentions(text))) {
-    throw new Error("Send Harness commands and image attachments separately");
-  }
-  const references = imageReferences(text);
   if (inlineImages) {
     const remaining = [...references];
     // Consume occurrences, not distinct paths: Desktop can attach the same file more than once.
@@ -70,7 +76,8 @@ export function externalTurnInputText(input: unknown): string {
       remaining.splice(index, 1);
       return true;
     });
-    if (!localPathsCovered || remaining.length !== inlineImages) {
+    // Remote fallback retains partial native context and adds paths for every inline image.
+    if (!localPathsCovered || remaining.length < inlineImages) {
       throw new Error(
         "Inline images require complete Desktop attachment paths; save the images as local files and attach them again",
       );

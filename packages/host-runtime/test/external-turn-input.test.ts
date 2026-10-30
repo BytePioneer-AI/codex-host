@@ -67,6 +67,14 @@ describe("External Turn input normalization", () => {
     ).toThrow(/complete Desktop attachment paths/);
   });
 
+  it("accepts surplus references while still rejecting incomplete mixed attachment context", () => {
+    const context = manifest([path, "/tmp/old.png", "/tmp/inline.png"]);
+    expect(externalTurnInputText([text(context), local(path), inline])).toBe(context);
+    expect(() => externalTurnInputText([text(context), local("/tmp/missing.png"), inline])).toThrow(
+      /complete Desktop attachment paths/,
+    );
+  });
+
   it("consumes duplicate native references one at a time for mixed preview types", () => {
     const context = manifest([path, path]);
     expect(externalTurnInputText([text(context), local(path), inline])).toBe(context);
@@ -84,9 +92,17 @@ describe("External Turn input normalization", () => {
   });
 
   it("does not silently turn an attached Harness command into an ordinary prompt", () => {
-    expect(() => externalTurnInputText([text("/compact"), local(path)])).toThrow(
-      /commands and image attachments separately/,
-    );
+    const context = manifest([path]).replace("Compare these images", "/compact");
+    for (const input of [
+      [text("/compact"), local(path)],
+      [text(context), local(path)],
+      [text(context.replaceAll("\n", "\r\n")), inline],
+      [text(context)],
+    ]) {
+      expect(() => externalTurnInputText(input)).toThrow(
+        /commands and image attachments separately/,
+      );
+    }
     expect(externalTurnInputText([text("/compact")])).toBe("/compact");
   });
 

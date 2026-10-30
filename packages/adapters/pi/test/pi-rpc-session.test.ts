@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream";
 
 import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
+import type { PiSessionHistory } from "../src/pi-history.js";
 
 import {
   PiRpcSession,
@@ -54,6 +55,9 @@ type Scenario =
   | "stats-unsupported-mismatch"
   | "stats-error"
   | "stats-timeout"
+  | "stats-late"
+  | "model-late"
+  | "chunked-output"
   | "missing-session-id";
 
 class FakePiRpcProcess extends EventEmitter {
@@ -95,6 +99,8 @@ class FakePiRpcProcess extends EventEmitter {
     queueMicrotask(() => this.emit("spawn"));
   }
 
+  autonomousHistory: PiSessionHistory | null = null;
+
   emitAutonomousTurn(
     options: {
       responseId?: string | null;
@@ -109,12 +115,27 @@ class FakePiRpcProcess extends EventEmitter {
     const message = {
       role: "assistant",
       ...(responseId ? { responseId } : {}),
+      timestamp: 123456,
       stopReason,
       ...(stopReason === "error" ? { errorMessage: "autonomous failure" } : {}),
       content: [
         { type: "thinking", thinking: "autonomous reasoning" },
         { type: "text", text: "autonomous text" },
       ],
+    };
+    this.autonomousHistory = {
+      entries: [
+        {
+          id: "native-custom-entry",
+          parentId: null,
+          type: "custom_message",
+          customType: "intercom_message",
+          content: "background result",
+          display: false,
+        },
+        { id: "native-assistant-entry", parentId: "native-custom-entry", type: "message", message },
+      ],
+      leafId: "native-assistant-entry",
     };
     this.#isStreaming = true;
     this.#output({ type: "message_start", message });
@@ -261,6 +282,7 @@ class FakePiRpcProcess extends EventEmitter {
             this.#scenario === "stats-unsupported-mismatch" && this.#stateRequestCount > 1
               ? "changed-model"
               : this.#modelId,
+          reasoning: true,
         },
         thinkingLevel: this.#thinkingLevel,
         isStreaming: this.#isStreaming,
@@ -270,6 +292,10 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (command.type === "get_session_stats") {
       if (this.#scenario === "stats-timeout") return;
+      if (this.#scenario === "stats-late") {
+        setTimeout(() => this.#respond(command, {}), 30);
+        return;
+      }
       if (
         this.#scenario === "stats-unsupported" ||
         this.#scenario === "stats-unsupported-mismatch"
@@ -308,6 +334,10 @@ class FakePiRpcProcess extends EventEmitter {
       return;
     }
     if (command.type === "get_entries") {
+      if (this.autonomousHistory) {
+        this.#respond(command, this.autonomousHistory);
+        return;
+      }
       const user = {
         id: "user-1",
         parentId: null,
@@ -374,6 +404,10 @@ class FakePiRpcProcess extends EventEmitter {
       return;
     }
     if (command.type === "set_model") {
+      if (this.#scenario === "model-late") {
+        setTimeout(() => this.#respond(command), 30);
+        return;
+      }
       if (typeof command.provider === "string" && typeof command.modelId === "string") {
         this.#provider = command.provider;
         this.#modelId = command.modelId;
@@ -782,7 +816,15 @@ class FakePiRpcProcess extends EventEmitter {
   }
 
   #output(value: unknown): void {
-    this.stdout.write(`${JSON.stringify(value)}\n`);
+    const frame = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+    if (this.#scenario !== "chunked-output") {
+      this.stdout.write(frame);
+      return;
+    }
+    // Pipe-sized pieces: every frame arrives split across many chunks.
+    for (let offset = 0; offset < frame.length; offset += 7) {
+      this.stdout.write(frame.subarray(offset, offset + 7));
+    }
   }
 }
 
@@ -1027,7 +1069,7 @@ describe("Pi RPC Turn aggregation", () => {
     }
   });
 
-  it("aggregates an idle autonomous Assistant/Tool Turn once with response identity", async () => {
+  it("uses the persisted custom Entry identity rather than a provider response ID", async () => {
     const { rpc, process: fakeProcess, onFault } = autonomousSession();
     const turns: PiAutonomousTurn[] = [];
     rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
@@ -1037,7 +1079,7 @@ describe("Pi RPC Turn aggregation", () => {
     await waitFor(() => turns.length === 1);
 
     expect(turns[0]).toMatchObject({
-      nativeTurnKey: "autonomous-response",
+      nativeTurnKey: "native-custom-entry",
       result: { status: "succeeded", text: "autonomous text" },
     });
     expect(turns[0]?.events.map(({ type }) => type)).toEqual([
@@ -1056,7 +1098,7 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
-  it("generates one stable autonomous key without responseId and classifies native abort", async () => {
+  it("keeps the native Entry key without responseId and classifies native abort", async () => {
     const { rpc, process: fakeProcess } = autonomousSession();
     const turns: PiAutonomousTurn[] = [];
     rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
@@ -1065,12 +1107,30 @@ describe("Pi RPC Turn aggregation", () => {
     fakeProcess().emitAutonomousTurn({ responseId: null, stopReason: "aborted" });
     await waitFor(() => turns.length === 1);
 
-    expect(turns[0]?.nativeTurnKey).toMatch(/^[0-9a-f-]{36}$/);
+    expect(turns[0]?.nativeTurnKey).toBe("native-custom-entry");
     expect(turns[0]?.result).toEqual({
       status: "cancelled",
       text: "autonomous text",
       reason: "Pi autonomous Assistant was aborted",
     });
+    await rpc.close();
+  });
+
+  it("does not reuse a stale autonomous history boundary", async () => {
+    const { rpc, process: fakeProcess, onFault } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fakeProcess().emitAutonomousTurn();
+    const history = fakeProcess().autonomousHistory;
+    if (!history) throw new Error("Missing synthetic native history");
+    const assistant = history.entries[1]?.message;
+    if (!assistant || typeof assistant !== "object" || Array.isArray(assistant))
+      throw new Error("Missing Assistant");
+    assistant.responseId = "stale-response";
+    await waitFor(() => turns.length === 1);
+    expect(turns[0]).toMatchObject({ nativeTurnKey: null, result: { status: "failed" } });
+    expect(onFault).toHaveBeenCalledOnce();
     await rpc.close();
   });
 
@@ -1622,7 +1682,11 @@ describe("Pi RPC Turn aggregation", () => {
     await expect(
       rpc.selectModel({ provider: "other/provider", id: "family/model" }),
     ).resolves.toMatchObject({ provider: "other/provider", modelId: "family/model" });
-    expect(rpc.state).toMatchObject({ provider: "other/provider", modelId: "family/model" });
+    expect(rpc.state).toMatchObject({
+      provider: "other/provider",
+      modelId: "family/model",
+      modelReasoning: true,
+    });
     await rpc.close();
   });
 
@@ -1687,6 +1751,65 @@ describe("Pi RPC Turn aggregation", () => {
     await expect(timedOut.getSessionUsage()).rejects.toThrow("command timed out");
     expect(onFault).not.toHaveBeenCalled();
     await timedOut.close();
+
+    // Pi answering after the Host gave up must not fault the Session.
+    const lateFault = vi.fn();
+    const late = session("stats-late", lateFault, { commandTimeoutMs: 10 });
+    await late.start();
+    await expect(late.getSessionUsage()).rejects.toThrow("command timed out");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(lateFault).not.toHaveBeenCalled();
+    await expect(late.getAvailableModels()).resolves.toHaveLength(2);
+    await late.close();
+  });
+
+  it("remembers a bounded number of expired ids", async () => {
+    for (const [count, faults] of [
+      [64, false],
+      [65, true],
+    ] as const) {
+      const onFault = vi.fn();
+      const rpc = session("stats-late", onFault, { commandTimeoutMs: 10 });
+      await rpc.start();
+      const usages = Array.from({ length: count }, () => rpc.getSessionUsage());
+      for (const usage of usages) await expect(usage).rejects.toThrow("command timed out");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      // Past the bound the oldest id is forgotten, so its late answer is an unknown id.
+      if (faults) {
+        expect(onFault).toHaveBeenCalledWith(
+          expect.objectContaining({ message: "Pi RPC response id is not pending" }),
+        );
+      } else {
+        expect(onFault).not.toHaveBeenCalled();
+      }
+      await rpc.close();
+    }
+  });
+
+  it("still faults on a late answer to a timed-out state-changing command", async () => {
+    // Pi may have applied the change after the Host gave up, so its state is unconfirmed.
+    const onFault = vi.fn();
+    const rpc = session("model-late", onFault, { commandTimeoutMs: 10 });
+    await rpc.start();
+    await expect(
+      rpc.selectModel({ provider: "synthetic-provider", id: "family/model" }),
+    ).rejects.toThrow("command timed out");
+    await vi.waitFor(() =>
+      expect(onFault).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "Pi RPC response id is not pending" }),
+      ),
+    );
+    await rpc.close();
+  });
+
+  it("assembles frames split across many stdout chunks", async () => {
+    const plain = session("final-only");
+    const chunked = session("chunked-output");
+    await plain.start();
+    await chunked.start();
+    await expect(chunked.getEntries()).resolves.toEqual(await plain.getEntries());
+    await plain.close();
+    await chunked.close();
   });
 
   it("reads actual Thinking options and corrected state after selection", async () => {

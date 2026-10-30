@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   parseHostUsage,
   type HarnessCommandInvocation,
@@ -14,12 +15,14 @@ import {
   type TurnOutcome,
   type HostItemOutcome,
   type TurnStartCommand,
+  type TurnSteerCommand,
   type TurnCancelCommand,
   type InteractionRespondCommand,
   type ModelSelectCommand,
   type ThinkingSelectCommand,
   type PermissionModeSelectCommand,
   type TurnStartAccepted,
+  type TurnSteerAccepted,
   type TurnCancelAccepted,
   type InteractionRespondAccepted,
   type ModelSelectCompleted,
@@ -253,6 +256,7 @@ export class ZcodeSession implements HarnessSession {
     }
   }
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -265,6 +269,7 @@ export class ZcodeSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -274,6 +279,7 @@ export class ZcodeSession implements HarnessSession {
   > {
     if (this.#closed || this.#faulted) return failure("invalidState", "ZCode session is closed");
     try {
+      if (command.type === "turn.steer") return unsupportedSteer("ZCode");
       if (command.type === "turn.start") {
         if (
           !hostTurnIdSchema.safeParse(command.turnId).success ||

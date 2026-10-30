@@ -30,6 +30,9 @@ mod system_proxy;
 mod windows_desktop;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
+mod windows_installer;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 mod windows_process;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
@@ -87,6 +90,8 @@ pub use proxy_environment::proxy_environment;
 pub use system_proxy::{SystemProxySettings, system_proxy_settings};
 #[cfg(target_os = "windows")]
 pub use windows_desktop::resume_packaged_application;
+#[cfg(target_os = "windows")]
+pub use windows_installer::shutdown_processes_for_executables;
 #[cfg(target_os = "windows")]
 pub use windows_ui::{
     RunningDesktopChoice, hide_console_window, prompt_running_desktop, show_error_dialog,

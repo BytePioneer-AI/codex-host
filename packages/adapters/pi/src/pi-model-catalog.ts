@@ -126,10 +126,11 @@ export function normalizePiModelCatalog(
   effectiveModel: PiNativeModelRef | null,
   thinkingLevels: readonly HarnessThinkingOptionId[] | null,
   effectiveThinkingOptionId: HarnessThinkingOptionId | null,
+  effectiveModelReasoning: boolean | null = null,
 ): HarnessModelCatalog {
   const byRef = new Map<
     string,
-    { model: HarnessModelCatalog["models"][number]; reasoning: boolean }
+    { model: HarnessModelCatalog["models"][number]; reasoning: boolean; synthesized: boolean }
   >();
   for (const native of nativeModels) {
     const ref = encodePiModelRef(native);
@@ -146,11 +147,27 @@ export function normalizePiModelCatalog(
         label: `${native.provider} / ${native.id}`,
       },
       reasoning: native.reasoning,
+      synthesized: false,
     });
   }
   const defaultModel = effectiveModel ? encodePiModelRef(effectiveModel) : undefined;
-  if (defaultModel && !byRef.has(defaultModel.id)) {
-    throw new Error("Pi effective Model is absent from the available Model catalog");
+  if (effectiveModel && defaultModel && !byRef.has(defaultModel.id)) {
+    // Pi resolves its effective Model from the full Model registry plus configured auth, while
+    // `get_available_models` lists only currently offered Models (a Provider may filter them, for
+    // example by subscription entitlement). The Session keeps running with that Model, so the
+    // Catalog must publish it as the current native selection instead of failing inspection.
+    const reasoning =
+      (effectiveThinkingOptionId && effectiveThinkingOptionId !== "off") ||
+      (effectiveModelReasoning ??
+        Boolean(thinkingLevels && thinkingLevels.some((level) => level !== "off")));
+    byRef.set(defaultModel.id, {
+      model: {
+        ref: defaultModel,
+        label: `${effectiveModel.provider} / ${effectiveModel.id}`,
+      },
+      reasoning,
+      synthesized: true,
+    });
   }
   if (
     thinkingLevels &&
@@ -168,11 +185,20 @@ export function normalizePiModelCatalog(
     : [];
   const allThinkingOptionIds = thinkingOptions.map(({ id }) => id);
   const offThinkingOptionId = thinkingOptions.find(({ id }) => id === "off")?.id;
+  // `thinkingLevels` are the levels Pi supports for its current Model, which is exactly the
+  // synthesized effective Model. Other Models have no per-Model evidence, so they keep the draft set.
+  // Without reported levels the Catalog offers no Thinking options at all, so the synthesized Model
+  // falls back to the same empty set as every other Model.
+  const effectiveThinkingOptionIds = thinkingLevels
+    ? allThinkingOptionIds.filter((id) => thinkingLevels.includes(id))
+    : allThinkingOptionIds;
   const models = [...byRef.values()]
-    .map(({ model, reasoning }) => ({
+    .map(({ model, reasoning, synthesized }) => ({
       ...model,
       supportedThinkingOptionIds: reasoning
-        ? allThinkingOptionIds
+        ? synthesized
+          ? effectiveThinkingOptionIds
+          : allThinkingOptionIds
         : offThinkingOptionId
           ? [offThinkingOptionId]
           : [],

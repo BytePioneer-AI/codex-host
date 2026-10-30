@@ -127,6 +127,23 @@ function targetedSubagentId(argumentsValue: unknown): string | undefined {
   );
 }
 
+/** SendMessage can refuse delivery without setting the Tool Result's is_error flag. */
+export function claudeSendMessageFailed(
+  nativeResult: unknown,
+  outputText: string | undefined,
+): boolean {
+  if (isRecord(nativeResult) && typeof nativeResult.success === "boolean") {
+    return nativeResult.success === false;
+  }
+  // SDK history may retain only the JSON text, not the structured native result.
+  try {
+    const parsed: unknown = JSON.parse(outputText ?? "");
+    return isRecord(parsed) && parsed.success === false;
+  } catch {
+    return false;
+  }
+}
+
 function includesAuthenticationFailure(errors: string[]): boolean {
   return errors.some((error) => AUTHENTICATION_ERRORS.has(error));
 }
@@ -143,12 +160,19 @@ function finiteNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-function parseResultModelUsage(
-  value: unknown,
-): Array<{ inputTokens: number; outputTokens: number }> | undefined {
+export interface ClaudeResultModelUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  /** Prompt tokens incl. cache reads/writes; used only to pick the main Model. */
+  promptTokens?: number;
+  contextWindowTokens?: number;
+}
+
+function parseResultModelUsage(value: unknown): ClaudeResultModelUsage[] | undefined {
   if (!isRecord(value)) return undefined;
-  const usage: Array<{ inputTokens: number; outputTokens: number }> = [];
-  for (const entry of Object.values(value)) {
+  const usage: ClaudeResultModelUsage[] = [];
+  for (const [model, entry] of Object.entries(value)) {
     if (
       !isRecord(entry) ||
       !safeNonNegativeInteger(entry.inputTokens) ||
@@ -156,7 +180,22 @@ function parseResultModelUsage(
     ) {
       return undefined;
     }
-    usage.push({ inputTokens: entry.inputTokens, outputTokens: entry.outputTokens });
+    const cacheRead = safeNonNegativeInteger(entry.cacheReadInputTokens)
+      ? entry.cacheReadInputTokens
+      : 0;
+    const cacheWrite = safeNonNegativeInteger(entry.cacheCreationInputTokens)
+      ? entry.cacheCreationInputTokens
+      : 0;
+    const promptTokens = entry.inputTokens + cacheRead + cacheWrite;
+    usage.push({
+      model,
+      inputTokens: entry.inputTokens,
+      outputTokens: entry.outputTokens,
+      ...(Number.isSafeInteger(promptTokens) ? { promptTokens } : {}),
+      ...(safeNonNegativeInteger(entry.contextWindow) && entry.contextWindow > 0
+        ? { contextWindowTokens: entry.contextWindow }
+        : {}),
+    });
   }
   return usage;
 }
@@ -590,6 +629,7 @@ export class ClaudeNativeTurnAccumulator {
     events.push({
       type: "message.completed",
       messageId,
+      localCommand: true,
       ...(checkpointId ? { checkpointId } : {}),
     });
   }
@@ -989,7 +1029,9 @@ export class ClaudeNativeTurnAccumulator {
         events.push({
           type: "subagent.completed",
           callId,
-          isError,
+          isError:
+            isError ||
+            (tool.name === "SendMessage" && claudeSendMessageFailed(nativeResult, outputText)),
           ...(subagentContinuesInBackground(nativeResult, outputText)
             ? { continuesInBackground: true }
             : {}),

@@ -49,3 +49,7 @@ Pi 当前 Model 同时具备 Codex OAuth、Codex API 和本地 `priority` 元数
 原生 headless 命令目录未公布 `/compact` 或 `/compress`，也没有经验证的压缩命令或自动压缩开始/完成事件。SDK/交互终端中存在压缩实现不能证明当前 CLI Session 暴露等价调用入口。后续需原生 headless/RPC 增加可确认的会话压缩操作与结果，再在 Antigravity 插件内映射为命令与 contextCompaction Item；不发送普通“请总结”Prompt 伪装上下文压缩。当前 Python SDK 的 token_threshold 控制自动阈值，官方[按需压缩请求](https://github.com/google-antigravity/antigravity-sdk-python/issues/63)仍未关闭。
 
 依据：[官方 Hooks 文档](https://antigravity.google/docs/hooks)、[官方 headless 文档](https://antigravity.google/docs/cli/headless/)、[官方权限文档](https://antigravity.google/docs/cli/permissions)、[现有插件权限边界](antigravity/antigravity-tool-approval.md)。此次 `/help` 原生探针返回 num_turns=0，没有发起模型请求。
+
+## Copilot 原生接入
+
+Copilot 使用官方 SDK 连接实际安装的 headless CLI，保留目标 Host 的原生认证和配置。本机验证为 SDK 1.0.25 / CLI 1.0.102 / macOS arm64 / gh-cli；目录为空时仍保留原生 auto，不编造 Model 或 Thinking 选项。原生会话、历史派生和公共接收委派已有实测，Desktop 及剩余自主/后台矩阵尚未完成。详见 [Copilot 接入与验证边界](copilot/copilot-harness-integration.md)。

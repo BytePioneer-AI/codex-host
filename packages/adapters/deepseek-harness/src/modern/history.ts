@@ -1486,13 +1486,26 @@ function validateInboxSplice(data: Record<string, unknown>, profile: DeepSeekMod
 }
 
 function validateApprovalAsked(data: Record<string, unknown>): void {
-  requiredOptionalKeys(data, ["id", "toolName"], ["callId", "reason"]);
+  requiredOptionalKeys(data, ["id", "toolName"], ["callId", "reason", "displayReason"]);
   requiredString(data.id, "approval/asked id");
   requiredString(data.toolName, "approval/asked toolName");
   if (data.callId !== undefined) requiredString(data.callId, "approval/asked callId");
   if (data.reason !== undefined && typeof data.reason !== "string") {
     fail("Modern history approval/asked reason is malformed");
   }
+  if (data.displayReason !== undefined && !isApprovalDisplayReason(data.displayReason)) {
+    fail("Modern history approval/asked displayReason is malformed");
+  }
+}
+
+function isApprovalDisplayReason(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const entries = Object.entries(value);
+  if (entries.length === 0) return false;
+  return entries.every(
+    ([locale, text]) =>
+      locale.length > 0 && typeof text === "string" && text.length > 0 && nonBlankString(text),
+  );
 }
 
 function validateApprovalDecided(data: Record<string, unknown>): void {

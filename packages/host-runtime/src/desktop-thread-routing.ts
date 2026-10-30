@@ -18,7 +18,12 @@ import {
   type JsonRpcRequest,
   type JsonValue,
 } from "@codexhost/protocol-core";
-import { harnessCommandsInspectParamsSchema, type HarnessId } from "@codexhost/shared-contracts";
+import {
+  THREAD_QUESTIONS_LIST_METHOD,
+  THREAD_QUESTION_RESPOND_METHOD,
+  harnessCommandsInspectParamsSchema,
+  type HarnessId,
+} from "@codexhost/shared-contracts";
 
 import {
   errorMessage,
@@ -94,6 +99,8 @@ export interface DesktopThreadRoutingHost {
   inspectThread(request: JsonRpcRequest): Promise<void>;
   inspectThreadUsage(request: JsonRpcRequest): Promise<void>;
   listThreadOwnership(request: JsonRpcRequest): Promise<void>;
+  inspectThreadSteering(request: JsonRpcRequest): Promise<void>;
+  handleSharedQuestionRequest(request: JsonRpcRequest): Promise<void>;
   selectThreadModel(request: JsonRpcRequest): Promise<void>;
   selectThreadThinking(request: JsonRpcRequest): Promise<void>;
   selectThreadPermissionMode(request: JsonRpcRequest): Promise<void>;
@@ -215,6 +222,24 @@ export class DesktopThreadRouting {
     }
     if (request.method === "codexhost/thread/ownership/list") {
       await this.#host.listThreadOwnership(request);
+      return true;
+    }
+    if (
+      request.method === THREAD_QUESTIONS_LIST_METHOD ||
+      request.method === THREAD_QUESTION_RESPOND_METHOD
+    ) {
+      const threadId = routingParams(request).threadId;
+      this.#host.dispatchReply(
+        request,
+        () => this.#host.handleSharedQuestionRequest(request),
+        request.method === THREAD_QUESTION_RESPOND_METHOD && typeof threadId === "string"
+          ? threadId
+          : undefined,
+      );
+      return true;
+    }
+    if (request.method === "codexhost/thread/steering/inspect") {
+      await this.#host.inspectThreadSteering(request);
       return true;
     }
     if (request.method === "codexhost/thread/model/select") {

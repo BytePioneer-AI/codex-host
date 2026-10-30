@@ -21,6 +21,12 @@ Adapter 优先复用正在运行的父 Pi RPC Session；父 Session 不在内存
 
 此接口提供的是**原生有界转写窗口**，不是完整可续写 Session：最多 200 条消息和 64 KiB；保留原生截断提示。原生未提供任务文本时不猜测（例如 fork 上下文）。工具转写以带角色/工具名的文本展示，不捏造缺失的工具参数。`foreign_session`、`not_found`、`stale` 等原生错误不会降级成空的成功快照。
 
+## 自主执行与历史边界
+
+前一条 Assistant 已终结后，原生 custom 消息触发的独立执行单独成轮，输入为空；实时完成和历史读取均使用该 custom Entry ID，不使用 Provider 的 response ID 或随机身份。执行中的 custom 注入、没有后续执行的状态消息不单独成轮。RPC 在稳定完成后读取原生 Entry，并核对首条 Assistant 的响应身份或原生时间戳；无法匹配时报告故障，不把旧历史认作本轮。
+
+Pi 的 Fork 只使用精确可表达的位置：下一轮是用户消息时切在该消息之前，末轮使用当前位置的原生副本。某轮之后紧跟 custom 续写时，该轮不提供 Checkpoint，也不把续写静默带入分支。末轮为 custom 自主执行时，单独撤销该轮返回 `unsupported`；末轮为用户执行时，撤销保留其前面的自主执行。
+
 ## 历史和限制
 
 - 父历史中的成功异步启动结果指向插件公开的 `status.json`。恢复时仅接受 lifecycle artifact v3，要求 run ID 和父 Session ID 精确匹配；每次最多读取最近 128 个 run，每文件最多 1 MiB，不跟随状态文件本身的符号链接。

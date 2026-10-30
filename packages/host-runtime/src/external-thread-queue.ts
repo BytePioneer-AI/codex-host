@@ -2,6 +2,15 @@ import { randomUUID } from "node:crypto";
 
 import type { JsonObject } from "@codexhost/protocol-core";
 
+export class ExternalQueueError extends Error {
+  constructor(
+    readonly code: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export type ExternalQueuePausedReason = "interrupted" | "outcome-unknown" | "failed";
 
 export interface ExternalQueuedSubmission extends JsonObject {
@@ -9,11 +18,23 @@ export interface ExternalQueuedSubmission extends JsonObject {
   clientUserMessageId: string;
   input: JsonObject[];
   presentationInput: JsonObject[] | null;
+  sourceHostId: string | null;
 }
 
 export interface ExternalThreadQueueSnapshot {
   items: ExternalQueuedSubmission[];
   pausedReason: ExternalQueuePausedReason | null;
+}
+
+export function nativeQueuedSubmission(item: ExternalQueuedSubmission): JsonObject {
+  return {
+    id: item.id,
+    clientUserMessageId: item.clientUserMessageId,
+    // Desktop's queue parser requires text_elements; preserve explicit native annotations.
+    input: item.input.map((part) =>
+      part.type === "text" ? { ...part, text_elements: part.text_elements ?? [] } : part,
+    ),
+  };
 }
 
 const MAX_QUEUED_SUBMISSIONS = 32;
@@ -38,11 +59,28 @@ export class ExternalThreadQueue {
     };
   }
 
+  list(threadId: string, params: JsonObject): JsonObject {
+    const items = this.#states.get(threadId)?.items ?? [];
+    const start = params.cursor == null ? 0 : Number(params.cursor);
+    if (!Number.isSafeInteger(start) || start < 0 || start > items.length)
+      throw new ExternalQueueError(-32602, "Invalid thread/queue/list cursor");
+    const limit =
+      typeof params.limit === "number" && Number.isSafeInteger(params.limit) && params.limit > 0
+        ? params.limit
+        : 50;
+    const end = Math.min(items.length, start + limit);
+    return {
+      data: items.slice(start, end).map((item) => nativeQueuedSubmission(structuredClone(item))),
+      nextCursor: end < items.length ? String(end) : null,
+    };
+  }
+
   add(
     threadId: string,
     input: JsonObject[],
     clientUserMessageId?: string,
     presentationInput?: JsonObject[],
+    sourceHostId?: unknown,
   ): ExternalQueuedSubmission {
     if (clientUserMessageId) {
       const existing = this.#receipts.get(this.#receiptKey(threadId, clientUserMessageId));
@@ -63,6 +101,7 @@ export class ExternalThreadQueue {
       clientUserMessageId: clientUserMessageId ?? randomUUID(),
       input: structuredClone(input),
       presentationInput: presentationInput ? structuredClone(presentationInput) : null,
+      sourceHostId: typeof sourceHostId === "string" ? sourceHostId : null,
     };
     state.items.push(item);
     if (clientUserMessageId) {
@@ -107,7 +146,7 @@ export class ExternalThreadQueue {
   reorder(threadId: string, itemIds: string[]): boolean {
     const state = this.#states.get(threadId);
     if (!state) return itemIds.length === 0;
-    if (itemIds.length !== state.items.length) return false;
+    if (itemIds.length > state.items.length) return false;
     const byId = new Map(state.items.map((item) => [item.id, item]));
     if (new Set(itemIds).size !== itemIds.length) return false;
     const reordered: ExternalQueuedSubmission[] = [];
@@ -115,8 +154,9 @@ export class ExternalThreadQueue {
       const item = byId.get(id);
       if (!item) return false;
       reordered.push(item);
+      byId.delete(id);
     }
-    state.items = reordered;
+    state.items = [...reordered, ...byId.values()];
     return true;
   }
 

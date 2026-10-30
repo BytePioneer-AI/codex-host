@@ -23,6 +23,7 @@ export const HARNESS_ID = harnessIdSchema.parse("codex-cli");
 
 import {
   HarnessOutputChannel,
+  unsupportedSteer,
   type HarnessOutput,
   type HostEvent,
   type HarnessSession,
@@ -34,6 +35,8 @@ import {
   type HarnessCommandCapability,
   type TurnStartCommand,
   type TurnStartAccepted,
+  type TurnSteerCommand,
+  type TurnSteerAccepted,
   type TurnCancelCommand,
   type TurnCancelAccepted,
   type InteractionRespondCommand,
@@ -157,6 +160,7 @@ export interface CodexSessionOptions {
 export class CodexSession implements HarnessSession {
   readonly harnessId = HARNESS_ID;
   readonly capabilities = {
+    steer: false,
     configuration: {
       selectModel: true,
       selectThinkingOption: true,
@@ -570,6 +574,7 @@ export class CodexSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<Result<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<Result<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<Result<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<Result<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<Result<ModelSelectCompleted>>;
@@ -584,6 +589,8 @@ export class CodexSession implements HarnessSession {
   > {
     try {
       switch (command.type) {
+        case "turn.steer":
+          return unsupportedSteer("Codex CLI");
         case "turn.start": {
           const hostTurnId = command.turnId;
           const input = (command.input as Array<{ type: string; text: string }>).map((part) => ({

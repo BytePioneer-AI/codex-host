@@ -497,7 +497,7 @@ export class ExternalThreadRepository {
       return {
         snapshot: turn,
         mapping: {
-          ...mapping,
+          hostTurnId: mapping.hostTurnId,
           nativeTurnRef: turn.nativeTurnRef,
           ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
         },

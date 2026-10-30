@@ -43,6 +43,7 @@ const { outputFiles } = await build({
         return result();
       };
       const clients = Object.fromEntries(["local", "remote"].map(host => [host, {
+        listHarnessPlugins: async () => ({ plugins: [{ id: "pi", name: "Pi", version: "1.0.0" }] }),
         listCodexAccounts: () => request(host, "accounts", () => {
           if (host === "remote" && globalThis.remoteUnsupported) throw new Error("Method not found");
           return accountList(host);
@@ -105,6 +106,18 @@ const { outputFiles } = await build({
       composer.setAttribute("data-codex-composer-root", "true");
       composer.style.cssText = "position:fixed;bottom:40px;left:300px;width:600px";
       composer.innerHTML = '<div data-codex-composer contenteditable="true" role="textbox"></div><button type="submit">Send</button>';
+      if (globalThis.withCredits) {
+        const permission = document.createElement("button");
+        permission.type = "button";
+        permission.setAttribute("aria-haspopup", "menu");
+        permission.setAttribute("data-composer-navigation-target", "permissions");
+        permission.textContent = "Permissions";
+        Object.defineProperty(permission, "__reactFiber$permissions", { value: {
+          memoizedProps: { "data-composer-navigation-target": "permissions", "aria-haspopup": "menu" },
+          return: { memoizedProps: { showPermissionsModeDropdown: true, permissionsHostId: hostId, permissionsCwdOverride: null }, return: null },
+        } });
+        composer.insertBefore(permission, composer.querySelector("button"));
+      }
       const editor = composer.querySelector("[role=textbox]");
       const modelState = {
         atom: {}, get: () => ({ isManuallyChanged: false, modelSettings: null, serviceTier: null }),
@@ -368,7 +381,8 @@ test("a global Account change never invokes the draft prewarm policy", async ({ 
 test("late local Account and quota responses cannot overwrite the remote Composer", async ({
   page,
 }) => {
-  await setup(page);
+  await setup(page, { withCredits: true });
+  await expect(page.locator("[data-codexhost-credits-label]")).toHaveText("83%");
   await action(page, "pause", "local:usage:default");
   await action(page, "focus");
   await waitForPending(page, "local:usage:default");
@@ -379,6 +393,7 @@ test("late local Account and quota responses cannot overwrite the remote Compose
   await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
   const credits = page.locator("[data-codexhost-credits-label]");
   await expect(credits).toHaveText("17%");
+  await expect(credits).toBeVisible();
   await action(page, "release", "local:accounts");
   await action(page, "release", "local:usage:default");
   await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);

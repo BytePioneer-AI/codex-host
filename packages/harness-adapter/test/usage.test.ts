@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import { parseHostUsage, parseHostUsageRequest } from "../src/index.js";
 
+it("preserves and validates declarative Composer countdowns", () => {
+  const composerIndicators = [{ kind: "countdown", id: "cache", expiresAtUnix: 1234 }];
+  expect(parseHostUsage({ composerIndicators })).toEqual({ composerIndicators });
+  expect(() =>
+    parseHostUsage({ composerIndicators: [{ ...composerIndicators[0], kind: "action" }] }),
+  ).toThrow();
+});
+
 describe("Harness Usage", () => {
   it("accepts complete normalized session cache totals independently of billing", () => {
     const sessionCacheUsage = { inputTokens: 100, cachedInputTokens: 40 };

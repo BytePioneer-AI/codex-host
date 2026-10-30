@@ -10,6 +10,9 @@ import {
 
 export { withNodeRuntimeOnPath } from "@codexhost/harness-discovery";
 
+const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
+const PI_PACKAGE_PATH = path.join("node_modules", "@earendil-works", "pi-coding-agent");
+
 export interface PiExecutableDependencies {
   platform: NodeJS.Platform;
   homeDirectory: string;
@@ -50,6 +53,64 @@ export function resolvePiExecutable(
     { ...(dependencies.isExecutable ? { isExecutable: dependencies.isExecutable } : {}) },
   );
   return resolution?.executable ?? input.command ?? input.environment.PI_COMMAND ?? "pi";
+}
+
+/** Find the package backing the executable selected by the Pi Harness resolver. */
+export function findPiPackageDirectory(executable: string): string | undefined {
+  let directory = path.dirname(executable);
+  while (true) {
+    for (const candidate of [directory, path.join(directory, PI_PACKAGE_PATH)]) {
+      try {
+        const manifest: unknown = JSON.parse(
+          fs.readFileSync(path.join(candidate, "package.json"), "utf8"),
+        );
+        if (
+          typeof manifest === "object" &&
+          manifest !== null &&
+          "name" in manifest &&
+          manifest.name === PI_PACKAGE_NAME
+        ) {
+          return candidate;
+        }
+      } catch {
+        // Keep looking through the executable's install roots and npm shim directories.
+      }
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
+  }
+}
+
+/** Resolve Pi's declared JavaScript CLI entry instead of trying to execute a Windows .cmd shim via Node. */
+export function findPiCliEntry(packageDirectory: string): string | undefined {
+  try {
+    const manifest: unknown = JSON.parse(
+      fs.readFileSync(path.join(packageDirectory, "package.json"), "utf8"),
+    );
+    if (typeof manifest !== "object" || manifest === null || !("bin" in manifest)) return undefined;
+    const bin = manifest.bin;
+    const entry =
+      typeof bin === "string"
+        ? bin
+        : typeof bin === "object" && bin !== null && "pi" in bin
+          ? bin.pi
+          : undefined;
+    if (typeof entry !== "string" || !entry.trim()) return undefined;
+    const resolved = path.resolve(packageDirectory, entry);
+    const relative = path.relative(packageDirectory, resolved);
+    if (
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative) ||
+      !fs.statSync(resolved).isFile()
+    ) {
+      return undefined;
+    }
+    return resolved;
+  } catch {
+    return undefined;
+  }
 }
 
 function isFilesystemRoot(cwd: string): boolean {

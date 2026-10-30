@@ -13,6 +13,8 @@ import {
   HARNESS_DISPLAY_GET_METHOD,
   HARNESS_DISPLAY_SET_METHOD,
   HARNESS_INSTALLATION_METHOD,
+  HARNESS_INSTALLATION_START_METHOD,
+  HARNESS_INSTALLATION_STATUS_METHOD,
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
   HARNESS_PREFERENCES_GET_METHOD,
@@ -48,6 +50,7 @@ import { errorMessage, rpcEnvelope, rpcError, type HostRequestOrigin } from "./d
 import { listedHarnessAccounts, listHarnessAccountSources } from "./harness-accounts.js";
 import type { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
 import { handleHarnessInstallation, HarnessInstallationError } from "./harness-installation.js";
+import { HarnessInstallationTasks } from "./harness-installation-tasks.js";
 import {
   handleModelPriceOverridesRequest,
   isModelPriceOverridesMethod,
@@ -94,6 +97,7 @@ export interface DesktopControlRequestHost {
  */
 export class DesktopControlRequests {
   readonly #host: DesktopControlRequestHost;
+  readonly #installationTasks = new HarnessInstallationTasks();
 
   constructor(host: DesktopControlRequestHost) {
     this.#host = host;
@@ -336,14 +340,21 @@ export class DesktopControlRequests {
       this.#host.dispatchReply(request, () => this.#host.inspectHarness(request));
       return true;
     }
-    if (request.method === HARNESS_INSTALLATION_METHOD) {
+    if (
+      request.method === HARNESS_INSTALLATION_METHOD ||
+      request.method === HARNESS_INSTALLATION_START_METHOD ||
+      request.method === HARNESS_INSTALLATION_STATUS_METHOD
+    ) {
       this.#host.dispatchReply(request, async () => {
-        await this.#host.waitForPlugins();
         try {
-          const result = await handleHarnessInstallation(
-            request.params,
-            this.#host.externalAdapters,
-          );
+          if (request.method !== HARNESS_INSTALLATION_STATUS_METHOD)
+            await this.#host.waitForPlugins();
+          const result =
+            request.method === HARNESS_INSTALLATION_START_METHOD
+              ? this.#installationTasks.start(request.params, this.#host.externalAdapters)
+              : request.method === HARNESS_INSTALLATION_STATUS_METHOD
+                ? this.#installationTasks.status(request.params)
+                : await handleHarnessInstallation(request.params, this.#host.externalAdapters);
           await this.#host.writeJson(
             rpcEnvelope(request, { result: jsonValueSchema.parse(result) }),
           );

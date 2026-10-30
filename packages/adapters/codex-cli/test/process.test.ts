@@ -125,6 +125,25 @@ describe("Codex CLI native process", () => {
     }
   });
 
+  it("rejects native steering without forwarding input to Codex", async () => {
+    const f = fixture();
+    const created = await f.adapter.open({ kind: "create", cwd: f.home });
+    if (!created.ok) throw new Error(created.error.message);
+    try {
+      expect(created.value.capabilities.steer).toBe(false);
+      expect(
+        await created.value.execute({
+          type: "turn.steer",
+          turnId: hostTurnIdSchema.parse("turn-1"),
+          input: [{ type: "text", text: "follow-up" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "unsupported" } });
+      expect(f.records().some(({ method }) => method === "turn/steer")).toBe(false);
+    } finally {
+      await created.value.close();
+    }
+  });
+
   it("sends no approval or sandbox parameters when no Permission Mode was chosen", async () => {
     const f = fixture();
     const created = await f.adapter.open({ kind: "create", cwd: f.home });

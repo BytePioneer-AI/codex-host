@@ -1,4 +1,6 @@
 import type { ThreadUsageSnapshot } from "@codexhost/shared-contracts";
+import createElement from "lucide/dist/esm/createElement.mjs";
+import Activity from "lucide/dist/esm/icons/activity.mjs";
 
 import type { RendererSettingsLocale } from "./settings/localization.js";
 
@@ -557,13 +559,20 @@ export function mountRendererUsageControl(
   trigger.style.fontVariantNumeric = "tabular-nums";
   trigger.style.letterSpacing = "0";
 
+  const icon = document.createElement("span");
+  icon.dataset.codexhostUsageIcon = "";
+  icon.style.display = "none";
+  icon.style.alignItems = "center";
+  icon.append(createElement(Activity, { width: 16, height: 16, "aria-hidden": "true" }));
+
   const label = document.createElement("span");
+  label.dataset.codexhostUsageLabel = "";
   label.style.display = "inline-block";
   label.style.maxWidth = "100%";
   label.style.overflow = "hidden";
   label.style.textOverflow = "ellipsis";
   label.style.whiteSpace = "nowrap";
-  trigger.append(label);
+  trigger.append(icon, label);
 
   const popover = document.createElement("div");
   popover.id = `${composerId}-usage-popover`;

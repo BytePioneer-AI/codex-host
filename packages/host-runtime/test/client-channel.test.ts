@@ -627,6 +627,43 @@ describe("public authenticated owner channel", () => {
     });
     current(fixture).succeedTurn();
   });
+  it("shares multi-select questions with Web and settles them through the shared owner", async () => {
+    const { fixture, a, b } = await setup();
+    const id = await startPiThread(fixture);
+    current(fixture).askQuestionOnNextTurn({
+      type: "choice",
+      id: "choice",
+      prompt: "Choose several",
+      options: [
+        { value: "native-a", label: "A" },
+        { value: "native-b", label: "B" },
+      ],
+      multiple: true,
+      allowOther: false,
+      optional: false,
+    });
+    await startPiTurn(fixture, id);
+    await vi.waitFor(async () => expect((await a.snapshot(id)).interactions).toHaveLength(1));
+    const snapshot = await a.snapshot(id);
+    const request = snapshot.interactions[0];
+    if (!request) throw new Error("Missing multi-select question");
+    expect(
+      fixture.collector.messages.some((message) => message.method === "item/tool/requestUserInput"),
+    ).toBe(false);
+    await a.respond({
+      epoch: snapshot.cursor.epoch,
+      threadId: id,
+      requestId: request.requestId,
+      result: { answers: { choice: { answers: ["A", "B"] } } },
+    });
+    expect(current(fixture).interactionResponses).toHaveLength(1);
+    expect(current(fixture).interactionResponses[0]).toMatchObject({
+      response: { type: "question", answers: { choice: ["native-a", "native-b"] } },
+    });
+    expect((await b.snapshot(id)).interactions).toHaveLength(0);
+    current(fixture).succeedTurn();
+  });
+
   it("deduplicates client message IDs and rejects different text under the same ID", async () => {
     const { fixture, a, b } = await setup();
     const id = await startPiThread(fixture);

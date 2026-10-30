@@ -53,6 +53,41 @@ function record(): StoredThreadRecordV1 {
   } as StoredThreadRecordV1;
 }
 
+describe("ExternalThreadRuntime delete", () => {
+  it("waits for output consumption to finish before removing the mapping and Session owner", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const close = vi.spyOn(opened.value, "close");
+    const outputDrained = Promise.withResolvers<undefined>();
+    const removeThread = vi.fn(async () => undefined);
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository: { removeThread } as unknown as ExternalThreadRepository,
+      consumeOutputs: () => outputDrained.promise,
+      diagnose: () => undefined,
+    });
+    const thread = runtime.register({
+      record: record(),
+      session: opened.value,
+      sessionId: hostThreadId,
+      thread: { id: hostThreadId },
+      turns: [],
+    });
+    const deleting = runtime.deleteThread(hostThreadId);
+    try {
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(removeThread).not.toHaveBeenCalled();
+      expect(runtime.get(hostThreadId)).toBe(thread);
+    } finally {
+      outputDrained.resolve(undefined);
+      await deleting;
+    }
+    expect(removeThread).toHaveBeenCalledWith(hostThreadId);
+    expect(runtime.get(hostThreadId)).toBeUndefined();
+  });
+});
+
 describe("ExternalThreadRuntime register", () => {
   it("exposes the requested create Model before the Session publishes state", async () => {
     const adapter = new FakeHarnessAdapter(harnessId);
@@ -400,7 +435,7 @@ describe("ExternalThreadRuntime register", () => {
         null,
         permissionModes,
         false,
-        "atCreate",
+        "live",
       );
       const model = adapter.catalog.defaultModel;
       if (!model) throw new Error("Fake Grok catalog has no default Model");
@@ -462,7 +497,7 @@ describe("ExternalThreadRuntime register", () => {
       expect(resolved.kind).toBe("external");
       if (resolved.kind !== "external") throw new Error("Grok Thread did not restore");
       expect(execute).not.toHaveBeenCalled();
-      expect(session.capabilities.configuration.permissionModeScope).toBe("atCreate");
+      expect(session.capabilities.configuration.permissionModeScope).toBe("live");
       expect(resolved.thread.stateObserver.state.effectivePermissionModeId).toBe(storedMode);
       expect(resolved.thread.record.transportModelId).toBe(
         encodeGrokTransportModel(model, storedMode),

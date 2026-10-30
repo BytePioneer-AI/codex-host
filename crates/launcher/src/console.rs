@@ -72,6 +72,8 @@ fn node_command(command: &ConsoleCommand) -> Result<Command, Box<dyn Error>> {
         .arg("--disable-warning=UNDICI-EHPA")
         .arg(node_entrypoint_path(&command.console_server))
         .env(LAUNCHER_EXECUTABLE_ENV, &launcher)
+        // The console checks and downloads updates itself when no Host is running.
+        .envs(codexhost_platform::proxy_environment())
         .stdin(Stdio::null());
     #[cfg(target_os = "windows")]
     codexhost_platform::configure_background_command(&mut process);

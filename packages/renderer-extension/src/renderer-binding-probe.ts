@@ -3,6 +3,7 @@ import {
   rendererHarnessPreferences,
 } from "./renderer-harness-preferences.js";
 import { createRemoteConnectionsControl } from "./remote-connections-control.js";
+import { installRendererQuestions } from "./renderer-questions.js";
 import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js";
 import { handleRemoteConnectionsRequest } from "./remote-connections-request.js";
 import {
@@ -39,6 +40,7 @@ import {
   EDITOR_SELECTOR,
   composerForEditor,
   composerForElement,
+  composerButtonsWithin,
   disposeComposerAgentControl,
   refreshSendButton,
   editorForElement,
@@ -53,6 +55,10 @@ import {
   type ExternalModelControlView,
   type ExternalPermissionModeControlView,
 } from "./renderer-composer-dom.js";
+import {
+  hasNativeComposerRequest,
+  NATIVE_COMPOSER_REQUEST_ATTRIBUTES,
+} from "./renderer-composer-request.js";
 import {
   rendererHarnessMessages,
   rendererLiveCommandsPendingNotice,
@@ -103,11 +109,18 @@ import {
 } from "./renderer-harness-command-claim.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
 import { installRendererSidebarThreadState } from "./renderer-sidebar-thread-state.js";
+import { createRendererUsageStatisticsSource } from "./renderer-usage-statistics-source.js";
 import {
   installRendererDelegationMention,
   type RendererDelegationMentionControl,
 } from "./renderer-delegation-mention.js";
 import { compatibleRendererPluginPresentation, rendererAgentLabel } from "./renderer-agent-icon.js";
+import {
+  createNativeScheduleWorkspaceThread,
+  isNativeProjectThreadCreator,
+} from "@codexhost/desktop-control/renderer-bindings";
+import { loadCodexNativeServices } from "./codex-native-services.js";
+import { openCodexSchedules } from "./codex-schedule-navigation.js";
 import { openRendererThread } from "./renderer-fork-control.js";
 import type {
   RendererConnectionDiagnostics,
@@ -676,10 +689,21 @@ export function mutationMayAffectComposer(mutation: MutationRecord): boolean {
     mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
   if (!target) return true;
   // Identity changes are lifecycle events even after the marker is removed.
-  if (mutation.type === "attributes" && mutation.attributeName === "data-codex-composer-root")
+  if (
+    mutation.type === "attributes" &&
+    (mutation.attributeName === "data-codex-composer-root" ||
+      NATIVE_COMPOSER_REQUEST_ATTRIBUTES.some((attribute) => attribute === mutation.attributeName))
+  )
     return true;
-  // Text/IME and rich-text changes inside an editor do not change its owner.
-  if (mutation.type !== "attributes" && editorForElement(target)) return false;
+  // Ignore ordinary typing, but not native request surfaces replacing rich-text content.
+  if (mutation.type !== "attributes" && editorForElement(target)) {
+    return (
+      mutation.type === "childList" &&
+      [...mutation.addedNodes, ...mutation.removedNodes].some(
+        (node) => node instanceof Element && hasNativeComposerRequest(node),
+      )
+    );
+  }
   if (target.closest(CODEX_COMPOSER_SELECTOR)) return true;
   if (mutation.type === "characterData") return false;
   if (
@@ -817,31 +841,39 @@ export function installRendererBindingProbe(
   });
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const remoteConnections = createRemoteConnectionsControl(window, modelClientForHost);
+  const usageStatistics = createRendererUsageStatisticsSource({
+    routing: () => window.__codexhostHostRoutingV1,
+    listConnections: () => remoteConnections.ssh.list(),
+    disposed: () => disposed,
+  });
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
+    harnessSchedules: {
+      openSchedules: (signal) => openCodexSchedules(signal),
+    },
     getRemoteConnections: () => remoteConnections,
     getUpdateClient: () => modelControl,
     getAccountClient: () => modelControl,
     getConnectionDiagnostics: () => connectionDiagnostics,
     getLoadedSessionsClient: () => modelClientForHost("local"),
-    async requestUsageStatistics(method, params) {
-      const route = window.__codexhostHostRoutingV1?.forHost("local");
-      if (disposed || !route) throw new Error("Local Host connection is unavailable");
-      return route.manager.sendRequest(method, params);
-    },
-    getSessionImportClient: () => {
-      const client = modelClientForHost("local");
+    requestUsageStatistics: usageStatistics.request,
+    usageStatisticsHosts: usageStatistics.hosts,
+    getSessionImportClient: (requestedHostId) => {
+      const hostId = requestedHostId ?? activeModelHostId();
+      if (!hostId) return null;
+      const client = modelClientForHost(hostId);
       const sources = client?.listSessionImportSources;
       const list = client?.listHarnessSessions;
       const importSession = client?.importHarnessSession;
       if (!sources || !list || !importSession) return null;
       return {
+        hostId,
         listSessionImportSources: () => sources(),
         listHarnessSessions: (input) => list(input),
         importHarnessSession: (input) => importSession(input),
       };
     },
-    openImportedThread: (threadId, signal) =>
-      openRendererThread(threadId, { hostId: "local", signal }),
+    openImportedThread: (threadId, signal, hostId) =>
+      openRendererThread(threadId, { hostId: hostId ?? "local", signal }),
     onLocaleChange() {
       for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     },
@@ -926,6 +958,7 @@ export function installRendererBindingProbe(
   const isMountedComposer = (composer: Element): boolean =>
     composer.isConnected &&
     composer.matches(CODEX_COMPOSER_SELECTOR) &&
+    !hasNativeComposerRequest(composer) &&
     orbitComposerKind(composer) === "codex" &&
     mountedByComposer.has(composer);
 
@@ -956,9 +989,11 @@ export function installRendererBindingProbe(
     const mounted = mountedByComposer.get(composer);
     if (mounted) pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
     const state = controller.recordSubmission(composer);
+    // Follow-ups in an existing Thread must not change which Agent a new Thread starts with.
+    const createsThread = state.phase === "draft";
     const preferenceStorage = rendererNewThreadPreferenceStorage(activeModelHostId(composer));
-    writeNewThreadAgentPreference(state.agent, preferenceStorage);
-    if (state.agent !== "codex") {
+    if (createsThread) writeNewThreadAgentPreference(state.agent, preferenceStorage);
+    if (createsThread && state.agent !== "codex") {
       const model = controller.modelForAgent(composer, state.agent);
       if (model) {
         writeNewThreadExternalConfigurationPreference(
@@ -2699,16 +2734,45 @@ export function installRendererBindingProbe(
     },
   };
 
+  const nativeScheduleControls = installRendererNativeScheduleControls(document, {
+    getClient: () => modelClientForHost("local"),
+    getAvailablePlugins: () => {
+      const client = modelClientForHost("local");
+      const state = hostHarnessAvailabilityState("local");
+      if (!client || state.directoryClient !== client) return [];
+      return (state.plugins ?? [])
+        .filter((plugin) => plugin.kind !== "usage" && state.availability[plugin.id] === "ready")
+        .map((plugin) => pluginForHost("local", plugin.id) ?? plugin);
+    },
+    subscribeAvailability: (listener) => {
+      connectionListeners.add(listener);
+      return () => connectionListeners.delete(listener);
+    },
+    canRouteExternal: () =>
+      window.__codexhostHostRoutingV1?.forHost("local")?.policy.scopedCreation === true,
+    async createWorkspaceThread(input, signal) {
+      const routing = window.__codexhostHostRoutingV1;
+      const manager = routing?.forHost("local")?.manager;
+      const create = await loadCodexNativeServices(window, isNativeProjectThreadCreator);
+      signal.throwIfAborted();
+      if (!routing || !manager || routing.forHost("local")?.manager !== manager || !create)
+        throw new Error("Native workspace chat creation is unavailable. Reopen the task dialog.");
+      return createNativeScheduleWorkspaceThread(document, routing, create, input, signal);
+    },
+    locale: () => settingsLifecycle.locale,
+  });
+
   const mount = (composer: Element): void => {
     if (
       mountedByComposer.has(composer) ||
       !composer.isConnected ||
+      hasNativeComposerRequest(composer) ||
       orbitComposerKind(composer) !== "codex" ||
       !composer.matches(CODEX_COMPOSER_SELECTOR)
     ) {
       return;
     }
-    const allButtons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
+    const allButtons = composerButtonsWithin(composer);
     const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
     if (!sendButton) return;
     const modelTarget = findComposerModelTarget(composer);
@@ -2832,6 +2896,7 @@ export function installRendererBindingProbe(
       const replacementTarget = findComposerModelTarget(target);
       const replacementHostId = activeModelHostId(target);
       if (
+        hasNativeComposerRequest(target) ||
         orbitComposerKind(target) !== "codex" ||
         !shouldTransferComposerState(
           replacement.sourceModelTarget,
@@ -2854,6 +2919,7 @@ export function installRendererBindingProbe(
       const kind = orbitComposerKind(composer);
       if (
         !composer.isConnected ||
+        hasNativeComposerRequest(composer) ||
         kind === "orbit" ||
         !composer.matches(CODEX_COMPOSER_SELECTOR) ||
         !mounted.control.root.isConnected
@@ -2923,6 +2989,7 @@ export function installRendererBindingProbe(
       void refreshHarnessAvailability();
     }
     pendingReplacements.clear();
+    questions.refreshContext();
   };
 
   const scheduleScan = (refreshTargets = false): void => {
@@ -3114,6 +3181,7 @@ export function installRendererBindingProbe(
   const onAdapterStatus = () => {
     publishConnectionStatus();
     if (shouldRefreshCodexAccountsForAdapterState(adapterStatus.state)) {
+      reconcileHarnessAvailabilityHost();
       void loadCodexAccounts();
       sidebarAgentIcons.refresh();
       void refreshHarnessAvailabilityForHost("local");
@@ -3133,7 +3201,12 @@ export function installRendererBindingProbe(
   };
   mutationObserver.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ["hidden", "aria-hidden", "data-codex-composer-root"],
+    attributeFilter: [
+      "hidden",
+      "aria-hidden",
+      "data-codex-composer-root",
+      ...NATIVE_COMPOSER_REQUEST_ATTRIBUTES,
+    ],
     characterData: true,
     childList: true,
     subtree: true,
@@ -3259,6 +3332,25 @@ export function installRendererBindingProbe(
       (mounted) => isMountedComposer(mounted.composer) && mounted.control.root.isConnected,
     );
 
+  const questions = installRendererQuestions(window, () => {
+    const visible = connectedComposers().filter(
+      (mounted) =>
+        mounted.composer.getClientRects().length > 0 &&
+        window.getComputedStyle(mounted.composer).visibility === "visible" &&
+        !mounted.composer.closest('[hidden], [inert], [aria-hidden="true"]') &&
+        controller.get(mounted.composer).agent !== "codex",
+    );
+    const mounted = visible.length === 1 ? visible[0] : undefined;
+    const threadId = mounted
+      ? threadIdFromComposerModelTarget(findComposerModelTarget(mounted.composer))
+      : null;
+    const hostId = mounted?.hostId;
+    const route = hostId ? window.__codexhostHostRoutingV1?.forHost(hostId) : null;
+    return mounted && threadId && hostId && route
+      ? { hostId, threadId, composer: mounted.composer, route: route.manager }
+      : null;
+  });
+
   const api: RendererBindingProbeApi = {
     remoteConnections: (request) => handleRemoteConnectionsRequest(remoteConnections, request),
     currentThreadId() {
@@ -3320,6 +3412,7 @@ export function installRendererBindingProbe(
         if (disposed || modelControl !== installedModelControl) return;
         try {
           settingsLifecycle.refresh();
+          nativeScheduleControls.refresh();
         } catch {
           // Auxiliary settings UI must not affect Agent routing compatibility.
         }
@@ -3366,6 +3459,7 @@ export function installRendererBindingProbe(
       disposed = true;
       pendingDefaultPreferences.clear();
       window.removeEventListener(HARNESS_PREFERENCES_UPDATED_EVENT, onPreferencesChanged);
+      questions.dispose();
       usageNotificationDispose();
       adapterDispose?.();
       adapterDispose = null;
@@ -3376,6 +3470,7 @@ export function installRendererBindingProbe(
       delegationMention?.dispose();
       sidebarAgentIcons.dispose();
       sidebarThreadState.dispose();
+      nativeScheduleControls.dispose();
       settingsLifecycle.dispose();
       document.removeEventListener("beforeinput", onBeforeInput, true);
       document.removeEventListener("submit", onSubmit, true);
@@ -3410,3 +3505,4 @@ export function installRendererBindingProbe(
   scan();
   return api;
 }
+import { installRendererNativeScheduleControls } from "./renderer-native-schedule-controls.js";

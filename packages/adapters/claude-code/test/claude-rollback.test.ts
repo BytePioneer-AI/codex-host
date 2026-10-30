@@ -116,6 +116,7 @@ async function fixture(turns = 1) {
         },
         setModel: async () => undefined,
         setThinkingOption: async () => undefined,
+        steer: async () => undefined,
         respondToInteraction: async () => undefined,
         compact: async () => ({ status: "succeeded" as const }),
         init: async () => ({ status: "succeeded" as const }),
@@ -250,8 +251,11 @@ describe("Claude last-Turn rollback", () => {
     });
   });
 
-  it("keeps the full prior Turn through native Fork and preserves source history", async () => {
+  it("keeps the full prior Turn through native Fork after entering a worktree", async () => {
     const f = await fixture(2);
+    vi.spyOn(f.dependencies, "getSessionInfo").mockResolvedValueOnce({
+      cwd: path.join(f.directory, ".claude", "worktrees", "topic"),
+    });
     const before = structuredClone(f.histories.get(f.sourceRef.nativeSessionId));
     const replacement = await unwrap(
       f

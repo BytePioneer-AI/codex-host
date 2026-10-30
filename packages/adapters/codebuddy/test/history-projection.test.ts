@@ -3,7 +3,7 @@ import type { HostEvent } from "@codexhost/harness-adapter";
 import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { CODEBUDDY_ID, CODEBUDDY_RUNTIME_PROFILE } from "../src/common.js";
 import { configuration, modelRef, nativeModel } from "../src/configuration.js";
-import { historyUsage, snapshotFromHistory } from "../src/history.js";
+import { historyUsage, nativeHistoryRows, snapshotFromHistory } from "../src/history.js";
 import { CodeBuddyTurnOutput } from "../src/projection.js";
 import { configOptions } from "./fixtures.js";
 
@@ -23,6 +23,22 @@ const assistant = {
   parentId: "user",
   status: "completed",
   content: [{ type: "output_text", text: "ok" }],
+};
+const preMessageCompaction = {
+  type: "message",
+  role: "user",
+  id: "cmp",
+  logicalParentId: "answer",
+  providerData: {
+    agent: "cli",
+    compactType: "pre-message-auto",
+    compactionId: "cmp",
+    isCompactInternal: true,
+    isCompacted: true,
+    compactionKind: "auto",
+    compactionTrigger: "cache_expired",
+  },
+  content: [{ type: "input_text", text: "<cb_summary>old conversation</cb_summary>" }],
 };
 const lines = (rows: unknown[]) => rows.map((row) => JSON.stringify(row)).join("\n");
 
@@ -169,6 +185,137 @@ describe("CodeBuddy native history and output projection", () => {
         { item: { type: "agentMessage", text: "ok" } },
       ],
     });
+  });
+
+  it("reads the pre-compaction history of a cache-expired auto-compaction", () => {
+    const after = {
+      ...assistant,
+      id: "after",
+      parentId: "cmp",
+      content: [{ type: "output_text", text: "resumed" }],
+    };
+    const rows = [user, assistant, preMessageCompaction, after];
+    // Administrative readers keep the physical chain, so existing derived-session
+    // provenance is unchanged.
+    expect(nativeHistoryRows(lines(rows)).map((row) => row.id)).toEqual(["cmp", "after"]);
+    const snapshot = snapshotFromHistory(lines(rows), ref, process.cwd(), nativeCommandProfile);
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "user" },
+      input: [{ text: "hi" }],
+      items: [
+        { item: { type: "agentMessage", text: "ok" } },
+        { item: { type: "contextCompaction" }, outcome: { status: "succeeded" } },
+        { item: { type: "agentMessage", text: "resumed" } },
+      ],
+      outcome: { status: "succeeded" },
+    });
+    expect(JSON.stringify(snapshot)).not.toContain("cb_summary");
+    expect(
+      snapshotFromHistory(lines(rows), ref, process.cwd(), nativeCommandProfile, {
+        includeCompactionHistory: false,
+      }).turns[0]?.nativeTurnRef.nativeTurnKey,
+    ).toBe("cmp");
+  });
+
+  it("follows consecutive cache-expired auto-compactions", () => {
+    const afterFirst = {
+      ...assistant,
+      id: "after-first",
+      parentId: "cmp",
+      content: [{ type: "output_text", text: "resumed" }],
+    };
+    const second = {
+      ...preMessageCompaction,
+      id: "cmp-2",
+      logicalParentId: "after-first",
+      providerData: { ...preMessageCompaction.providerData, compactionId: "cmp-2" },
+    };
+    const afterSecond = {
+      ...assistant,
+      id: "after-second",
+      parentId: "cmp-2",
+      content: [{ type: "output_text", text: "done" }],
+    };
+    const snapshot = snapshotFromHistory(
+      lines([user, assistant, preMessageCompaction, afterFirst, second, afterSecond]),
+      ref,
+      process.cwd(),
+      nativeCommandProfile,
+    );
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]?.items.map((item) => item.item.type)).toEqual([
+      "agentMessage",
+      "contextCompaction",
+      "agentMessage",
+      "contextCompaction",
+      "agentMessage",
+    ]);
+  });
+
+  it("keeps the next prompt after a cache-expired auto-compaction as a new Turn", () => {
+    const nextUser = {
+      ...user,
+      id: "next-user",
+      parentId: "cmp",
+      content: [{ type: "input_text", text: "continue" }],
+    };
+    const nextAnswer = {
+      ...assistant,
+      id: "next-answer",
+      parentId: "next-user",
+      content: [{ type: "output_text", text: "done" }],
+    };
+    const snapshot = snapshotFromHistory(
+      lines([user, assistant, preMessageCompaction, nextUser, nextAnswer]),
+      ref,
+      process.cwd(),
+      nativeCommandProfile,
+    );
+    expect(snapshot.turns).toHaveLength(2);
+    expect(snapshot.turns[0]).toMatchObject({
+      items: [
+        { item: { type: "agentMessage", text: "ok" } },
+        { item: { type: "contextCompaction" }, outcome: { status: "succeeded" } },
+      ],
+    });
+    expect(snapshot.turns[1]).toMatchObject({
+      input: [{ text: "continue" }],
+      items: [{ item: { type: "agentMessage", text: "done" } }],
+    });
+  });
+
+  it("reports a failed cache-expired auto-compaction without opening a user Turn", () => {
+    const failed = {
+      ...preMessageCompaction,
+      providerData: { ...preMessageCompaction.providerData, isCompacted: false },
+    };
+    const snapshot = snapshotFromHistory(
+      lines([user, assistant, failed]),
+      ref,
+      process.cwd(),
+      nativeCommandProfile,
+    );
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]?.items[1]).toMatchObject({
+      item: { type: "contextCompaction" },
+      outcome: {
+        status: "failed",
+        error: { message: "CodeBuddy: Native compaction did not complete" },
+      },
+    });
+  });
+
+  it("does not follow logicalParentId outside a compaction summary", () => {
+    const detached = {
+      ...user,
+      id: "detached",
+      logicalParentId: "answer",
+      content: [{ type: "input_text", text: "detached" }],
+    };
+    expect(nativeHistoryRows(lines([user, assistant, detached])).map((row) => row.id)).toEqual([
+      "detached",
+    ]);
   });
 
   it.each(["failed", "cancelled", "succeeded"] as const)(

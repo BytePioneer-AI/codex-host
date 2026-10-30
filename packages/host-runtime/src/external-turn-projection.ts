@@ -68,8 +68,9 @@ export interface ExternalTurnProjectionHost {
     thread: ExternalThread,
     event: Parameters<ExternalThreadRuntime["persistTerminalIdentity"]>[1],
   ): Promise<Error | null>;
-  resolveDesktopApproval(interactionId: HostInteractionId): Promise<void>;
-  resolveDesktopQuestion(interactionId: HostInteractionId): Promise<void>;
+  resolveDesktopApproval(interactionId: HostInteractionId, thread: ExternalThread): Promise<void>;
+  resolveDesktopQuestion(interactionId: HostInteractionId, thread: ExternalThread): Promise<void>;
+  retireSharedQuestions(thread: ExternalThread, turnId: HostTurnId): void;
   setThreadStatus(thread: ExternalThread, status: ExternalThreadStatus): Promise<void>;
   forgetQueuedTurnStart(threadId: string): void;
   signalActiveWorkChanged(): void;
@@ -120,6 +121,9 @@ export class ExternalTurnProjection {
       return;
     }
 
+    if (event.type === "turn.completed" && thread.pendingSteerProjections.size > 0) {
+      await Promise.allSettled([...thread.pendingSteerProjections]);
+    }
     const projection = projectedTurn(thread, event.turnId);
     await waitForTurnResponse(thread, event.turnId);
     if (
@@ -128,9 +132,10 @@ export class ExternalTurnProjection {
     ) {
       return;
     }
+    if (event.type === "turn.completed") this.#host.retireSharedQuestions(thread, event.turnId);
     if (event.type === "interaction.closed") {
-      await this.#host.resolveDesktopApproval(event.interactionId);
-      await this.#host.resolveDesktopQuestion(event.interactionId);
+      await this.#host.resolveDesktopApproval(event.interactionId, thread);
+      await this.#host.resolveDesktopQuestion(event.interactionId, thread);
     }
     const ephemeralTurn =
       event.type === "turn.completed" &&
@@ -176,6 +181,7 @@ export class ExternalTurnProjection {
       // Detached Items (native background commands) settle on this Turn later.
       if (!projection.projector.hasOpenDetachedItems) thread.projectedTurns.delete(event.turnId);
       thread.responseGates.delete(event.turnId);
+      thread.pendingSteerProjections.clear();
       this.#host.signalActiveWorkChanged();
       const delegation = await this.#host.repository.getDelegationByChild(
         thread.record.hostThreadId,

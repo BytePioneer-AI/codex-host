@@ -4,6 +4,7 @@ import {
   activePiEntries,
   mapPiSnapshot,
   resolvePiForkBoundary,
+  resolvePiLastTurnBoundary,
   type PiSessionHistory,
 } from "../src/pi-history.js";
 import { encodePiModelRef } from "../src/pi-model-catalog.js";
@@ -281,7 +282,7 @@ describe("Pi active-branch history", () => {
     ]);
   });
 
-  it("keeps control messages out of human input and folds later Assistant output into the prior Turn", () => {
+  it("splits a custom-triggered execution without exposing its control input", () => {
     const controlHistory: PiSessionHistory = {
       entries: [
         {
@@ -296,6 +297,7 @@ describe("Pi active-branch history", () => {
           type: "message",
           message: {
             role: "assistant",
+            stopReason: "stop",
             content: [{ type: "text", text: "before control" }],
           },
         },
@@ -325,18 +327,96 @@ describe("Pi active-branch history", () => {
 
     const snapshot = mapPiSnapshot(controlHistory, state);
 
-    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns).toHaveLength(2);
     expect(snapshot.turns[0]).toMatchObject({
       nativeTurnRef: { nativeTurnKey: "human-user" },
-      checkpoint: { checkpointId: "human-user" },
       input: [{ type: "text", text: "human request" }],
-      items: [
-        { item: { type: "agentMessage", text: "before control" } },
-        { item: { type: "agentMessage", text: "autonomous follow-up" } },
-      ],
+      items: [{ item: { type: "agentMessage", text: "before control" } }],
+    });
+    expect(snapshot.turns[0]).not.toHaveProperty("checkpoint");
+    expect(snapshot.turns[1]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "intercom-control" },
+      checkpoint: { checkpointId: "intercom-control" },
+      input: [],
+      items: [{ item: { type: "agentMessage", text: "autonomous follow-up" } }],
       outcome: { status: "succeeded" },
     });
-    expect(JSON.stringify(snapshot.turns[0]?.input)).not.toContain("subAgent completed");
+    expect(() => resolvePiForkBoundary(controlHistory, "human-user")).toThrow();
+    expect(resolvePiForkBoundary(controlHistory, "intercom-control")).toEqual({
+      targetTurnIndex: 1,
+      nextUserEntryId: null,
+    });
+    expect(resolvePiLastTurnBoundary(controlHistory)?.lastUserEntryId).toBeNull();
+
+    controlHistory.entries.push(
+      {
+        id: "human-next",
+        parentId: controlHistory.leafId,
+        type: "message",
+        message: { role: "user", content: "next" },
+      },
+      {
+        id: "answer-next",
+        parentId: "human-next",
+        type: "message",
+        message: { role: "assistant", content: "answer", stopReason: "stop" },
+      },
+    );
+    controlHistory.leafId = "answer-next";
+    expect(resolvePiForkBoundary(controlHistory, "intercom-control")).toEqual({
+      targetTurnIndex: 1,
+      nextUserEntryId: "human-next",
+    });
+    expect(resolvePiLastTurnBoundary(controlHistory)).toEqual({
+      lastUserEntryId: "human-next",
+      sourceTurnCount: 3,
+    });
+  });
+
+  it("does not split an in-run custom injection or an untriggered notification", () => {
+    const entries = [
+      { id: "user", parentId: null, type: "message", message: { role: "user", content: "work" } },
+      {
+        id: "tool-call",
+        parentId: "user",
+        type: "message",
+        message: { role: "assistant", stopReason: "toolUse", content: "checking" },
+      },
+      {
+        id: "injected",
+        parentId: "tool-call",
+        type: "custom_message",
+        customType: "progress",
+        content: "progress",
+        display: false,
+      },
+      {
+        id: "answer",
+        parentId: "injected",
+        type: "message",
+        message: { role: "assistant", stopReason: "stop", content: "done" },
+      },
+      {
+        id: "untriggered",
+        parentId: "answer",
+        type: "custom_message",
+        customType: "status",
+        content: "status",
+        display: false,
+      },
+    ];
+    expect(mapPiSnapshot({ entries, leafId: "untriggered" }, state).turns).toMatchObject([
+      { nativeTurnRef: { nativeTurnKey: "user" }, checkpoint: { checkpointId: "user" } },
+    ]);
+    entries.push({
+      id: "auto-answer",
+      parentId: "untriggered",
+      type: "message",
+      message: { role: "assistant", stopReason: "stop", content: "follow-up" },
+    });
+    const turns = mapPiSnapshot({ entries, leafId: "auto-answer" }, state).turns;
+    expect(turns).toHaveLength(2);
+    expect(turns[1]).toMatchObject({ nativeTurnRef: { nativeTurnKey: "untriggered" }, input: [] });
   });
 
   it("does not infer success from reasoning-only history", () => {

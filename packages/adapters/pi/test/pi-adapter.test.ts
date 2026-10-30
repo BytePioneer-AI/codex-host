@@ -199,6 +199,33 @@ class FakePiTransport implements PiTurnTransport {
 
   autonomous(turn: PiAutonomousTurn): void {
     if (!this.autonomousHandler) throw new Error("No autonomous Pi Turn handler");
+    if (!turn.nativeTurnKey) throw new Error("Fake autonomous Turn has no native Entry");
+    this.history.entries.push(
+      {
+        id: turn.nativeTurnKey,
+        parentId: this.history.leafId,
+        type: "custom_message",
+        customType: "intercom_message",
+        content: "background result",
+        display: false,
+      },
+      {
+        id: `${turn.nativeTurnKey}-answer`,
+        parentId: turn.nativeTurnKey,
+        type: "message",
+        message: {
+          role: "assistant",
+          content: turn.result.text,
+          stopReason:
+            turn.result.status === "cancelled"
+              ? "aborted"
+              : turn.result.status === "failed"
+                ? "error"
+                : "stop",
+        },
+      },
+    );
+    this.history.leafId = `${turn.nativeTurnKey}-answer`;
     this.autonomousHandler(turn);
   }
 
@@ -660,6 +687,62 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
+  it("inspects an effective Model that Pi does not list as available", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementationOnce(() => {
+      const transport = new FakePiTransport();
+      transport.state = {
+        ...transport.state,
+        provider: "synthetic-provider",
+        modelId: "retired-model",
+        modelReasoning: true,
+      };
+      transports.push(transport);
+      return transport;
+    });
+
+    const inspection = await adapter.inspect({ cwd: "/synthetic", refresh: true });
+    if (inspection.status !== "ready") throw new Error(inspection.error.message);
+    expect(inspection.catalog.models.map(({ label }) => label)).toEqual([
+      "synthetic-provider / alternate-model",
+      "synthetic-provider / retired-model",
+      "synthetic-provider / synthetic-model",
+    ]);
+    expect(inspection.catalog.defaultModel).toEqual(
+      encodePiModelRef({ provider: "synthetic-provider", id: "retired-model" }),
+    );
+    expect(
+      inspection.catalog.models.find((model) => model.label.endsWith("retired-model"))
+        ?.supportedThinkingOptionIds,
+    ).toContain("high");
+    expect(transports[0]?.close).toHaveBeenCalledOnce();
+    await adapter.close();
+  });
+
+  it("infers reasoning for an unlisted effective Model when modelReasoning is omitted but thinking is active", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    vi.mocked(dependencies.createTransport).mockImplementationOnce(() => {
+      const transport = new FakePiTransport();
+      transport.state = {
+        ...transport.state,
+        provider: "synthetic-provider",
+        modelId: "unlisted-model",
+        thinkingLevel: harnessThinkingOptionIdSchema.parse("high"),
+      };
+      transports.push(transport);
+      return transport;
+    });
+
+    const inspection = await adapter.inspect({ cwd: "/synthetic", refresh: true });
+    if (inspection.status !== "ready") throw new Error(inspection.error.message);
+    const unlisted = inspection.catalog.models.find((model) =>
+      model.label.endsWith("unlisted-model"),
+    );
+    expect(unlisted?.supportedThinkingOptionIds).toContain("high");
+    expect(transports[0]?.close).toHaveBeenCalledOnce();
+    await adapter.close();
+  });
+
   it.each(
     ["openai-codex-responses", "openai-responses"].flatMap((api) =>
       [false, true].map((liveSelection) => ({ api, liveSelection })),
@@ -1111,6 +1194,106 @@ describe("Pi HarnessAdapter Session", () => {
     }
   });
 
+  it.each([
+    { operation: "fork" as const, key: "source-user-1", nextHuman: false, ok: false },
+    { operation: "fork" as const, key: "custom-1", nextHuman: false, ok: true },
+    { operation: "fork" as const, key: "custom-1", nextHuman: true, ok: true },
+    { operation: "rollbackLastTurn" as const, key: "custom-1", nextHuman: false, ok: false },
+    { operation: "rollbackLastTurn" as const, key: "custom-1", nextHuman: true, ok: true },
+  ])(
+    "uses only exact native boundaries: $operation $key, following human=$nextHuman",
+    async ({ operation, key, nextHuman, ok }) => {
+      const { adapter, dependencies, transports } = fixture();
+      const history = sourceHistory(1);
+      history.entries.push(
+        {
+          id: "custom-1",
+          parentId: history.leafId,
+          type: "custom_message",
+          customType: "intercom_message",
+          content: "background result",
+          display: false,
+        },
+        {
+          id: "custom-answer",
+          parentId: "custom-1",
+          type: "message",
+          message: { role: "assistant", content: "follow-up", stopReason: "stop" },
+        },
+      );
+      history.leafId = "custom-answer";
+      if (nextHuman) {
+        history.entries.push(
+          {
+            id: "next-user",
+            parentId: history.leafId,
+            type: "message",
+            message: { role: "user", content: "next" },
+          },
+          {
+            id: "next-answer",
+            parentId: "next-user",
+            type: "message",
+            message: { role: "assistant", content: "next answer", stopReason: "stop" },
+          },
+        );
+        history.leafId = "next-answer";
+      }
+      const original = structuredClone(history);
+      vi.mocked(dependencies.createTransport).mockImplementationOnce(() => {
+        const transport = new FakePiTransport();
+        transport.state = { ...transport.state, sessionId: "startup-copy" };
+        transport.history = structuredClone(history);
+        transports.push(transport);
+        return transport;
+      });
+      const sourceRef = nativeSessionRefSchema.parse({
+        harnessId: "pi",
+        nativeSessionId: "source-session",
+        locator: { sessionFile: "/synthetic/source.jsonl" },
+        formatVersion: 1,
+      });
+      const opened = await adapter.open(
+        operation === "fork"
+          ? {
+              kind: "fork",
+              cwd: "/synthetic",
+              sourceRef,
+              checkpoint: nativeCheckpointRefSchema.parse({
+                harnessId: "pi",
+                nativeSessionId: "source-session",
+                checkpointId: key,
+                formatVersion: 1,
+              }),
+            }
+          : { kind: "rollbackLastTurn", cwd: "/synthetic", sourceRef },
+      );
+      expect(opened.ok).toBe(ok);
+      const transport = transports[0];
+      if (opened.ok) {
+        const snapshot = await opened.value.readSnapshot();
+        expect(snapshot).toMatchObject({
+          ok: true,
+          value: {
+            turns: [
+              { nativeTurnRef: { nativeTurnKey: "source-user-1" } },
+              { nativeTurnRef: { nativeTurnKey: "custom-1" } },
+            ],
+          },
+        });
+        if (nextHuman) expect(transport?.fork).toHaveBeenCalledWith("next-user");
+        else expect(transport?.fork).not.toHaveBeenCalled();
+        await opened.value.close();
+      } else {
+        expect(opened.error.code).toBe(operation === "fork" ? "checkpointNotFound" : "unsupported");
+        expect(transport?.fork).not.toHaveBeenCalled();
+        expect(transport?.close).toHaveBeenCalled();
+      }
+      expect(history).toEqual(original);
+      await adapter.close();
+    },
+  );
+
   it("rolls back the last Pi Turn and restores current Model and Thinking", async () => {
     const { adapter, dependencies, transports } = fixture();
     const inputHistory = sourceHistory(2);
@@ -1412,7 +1595,7 @@ describe("Pi HarnessAdapter Session", () => {
     await session.close();
   });
 
-  it("projects a lazy-transport autonomous Turn with native identity and no Checkpoint", async () => {
+  it("projects an autonomous Turn with the same identity and Checkpoint as history", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -1471,7 +1654,22 @@ describe("Pi HarnessAdapter Session", () => {
       },
       outcome: { status: "succeeded" },
     });
-    expect(completed).not.toHaveProperty("outcome.checkpoint");
+    expect(completed).toHaveProperty("outcome.checkpoint.checkpointId", "pi-autonomous-response");
+    const snapshot = await session.readSnapshot();
+    expect(snapshot).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          { nativeTurnRef: { nativeTurnKey: "synthetic-user-1" } },
+          {
+            nativeTurnRef: { nativeTurnKey: "pi-autonomous-response" },
+            input: [],
+            checkpoint: { checkpointId: "pi-autonomous-response" },
+          },
+        ],
+      },
+    });
+    if (snapshot.ok) expect(snapshot.value.turns[0]).not.toHaveProperty("checkpoint");
     await session.close();
   });
 
@@ -1506,7 +1704,7 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
-  it("projects autonomous cancellation and failure without manufacturing Checkpoints", async () => {
+  it("uses persisted autonomous boundaries for cancellation and failure", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -1545,7 +1743,7 @@ describe("Pi HarnessAdapter Session", () => {
         nativeTurnRef: { nativeTurnKey: key },
         outcome: { status: expectedStatus },
       });
-      expect(completed).not.toHaveProperty("outcome.checkpoint");
+      expect(completed).toHaveProperty("outcome.checkpoint.checkpointId", key);
     }
     await session.close();
   });

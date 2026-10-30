@@ -31,6 +31,8 @@ import {
   type GrokTransportEvent,
 } from "../src/index.js";
 
+import { parseGrokQuestionRequest } from "../src/grok-questions.js";
+
 const initialize: InitializeResponse = {
   protocolVersion: 1,
   agentCapabilities: { loadSession: true },
@@ -72,6 +74,9 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   readonly cancel = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
   readonly setModel = vi.fn(async () => undefined);
+  readonly setPermissionMode = vi.fn<GrokAcpTransportLike["setPermissionMode"]>(
+    async () => undefined,
+  );
   readonly deleteSession = vi.fn(async (sessionId: string) => {
     this.histories.delete(sessionId);
   });
@@ -164,12 +169,16 @@ class FakeGrokTransport implements GrokAcpTransportLike {
     return null;
   }
 
+  onQuestion!: Parameters<GrokAcpTransportLike["runTurn"]>[3];
+  onFault: ((error: GrokTransportError) => void) | undefined;
   lastPromptText: string | null = null;
   runTurn(
     text: string,
     onEvent: (event: GrokTransportEvent) => void,
     onPermission: (request: GrokPermissionRequest) => Promise<RequestPermissionResponse>,
+    onQuestion: Parameters<GrokAcpTransportLike["runTurn"]>[3],
   ): Promise<PromptResponse> {
+    this.onQuestion = onQuestion;
     this.lastPromptText = text;
     this.#activePromptText = text;
     this.#activePromptEvents = [];
@@ -258,7 +267,10 @@ async function openedSession(
     {},
     {
       randomUUID: () => `grok-id-${++uuid}`,
-      createTransport: () => transport,
+      createTransport: (options) => {
+        transport.onFault = options.onFault;
+        return transport;
+      },
       fetchCredits: async () => null,
     },
   );
@@ -293,6 +305,158 @@ async function nextEvent(
   if (output.kind !== "event") throw new Error("Expected Grok Event");
   return output.event;
 }
+
+describe("Grok Adapter questions", () => {
+  const request = parseGrokQuestionRequest({
+    sessionId: "grok-session",
+    toolCallId: "question-1",
+    mode: "default",
+    questions: [
+      {
+        question: "Choose",
+        multiSelect: true,
+        options: [
+          { label: "A", description: "First" },
+          { label: "B", description: "Second" },
+        ],
+      },
+    ],
+  });
+
+  it("round-trips multi-select through Session.execute without touching approvals", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    try {
+      await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("questions"),
+        input: [{ type: "text", text: "ask" }],
+      });
+      await nextEvent(iterator);
+      const pending = transport.onQuestion(request);
+      const output = await nextOutput(iterator);
+      if (output.kind !== "interaction") throw new Error("Missing question");
+      expect(output.interaction).toMatchObject({
+        type: "question",
+        questions: [{ multiple: true }],
+      });
+      const interactionId = output.interaction.interactionId;
+      expect(
+        await session.execute({
+          type: "interaction.respond",
+          interactionId,
+          response: { type: "approval", actionId: "allow-once" },
+        }),
+      ).toMatchObject({ ok: false });
+      expect(
+        await session.execute({
+          type: "interaction.respond",
+          interactionId,
+          response: { type: "question", answers: { q0: ["A", "B"] } },
+        }),
+      ).toMatchObject({ ok: true });
+      await expect(pending).resolves.toEqual({
+        outcome: "accepted",
+        answers: { Choose: ["A", "B"] },
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "interaction.closed",
+        reason: "responded",
+      });
+      expect(
+        await session.execute({
+          type: "interaction.respond",
+          interactionId,
+          response: { type: "question", answers: {} },
+        }),
+      ).toMatchObject({ ok: false });
+      transport.finish();
+      while ((await nextEvent(iterator)).type !== "turn.completed") {
+        /* drain usage */
+      }
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each(["withdraw", "cancel", "finish", "close", "fault"] as const)(
+    "retires pending questions on %s and rejects stale callbacks",
+    async (cause) => {
+      const transport = new FakeGrokTransport();
+      const { adapter, session } = await openedSession(transport);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      const turnId = hostTurnIdSchema.parse("questions");
+      try {
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "ask" }],
+        });
+        await nextEvent(iterator);
+        const ask = transport.onQuestion;
+        const pending = ask(request);
+        const output = await nextOutput(iterator);
+        if (output.kind !== "interaction") throw new Error("Missing question");
+        const interactionId = output.interaction.interactionId;
+        if (cause === "withdraw")
+          transport.event({ type: "interaction.resolved", toolCallId: request.toolCallId });
+        if (cause === "cancel") await session.execute({ type: "turn.cancel", turnId });
+        if (cause === "finish") transport.finish();
+        if (cause === "fault")
+          transport.onFault?.(new GrokTransportError("processExited", "fixture failure"));
+        if (cause === "close") {
+          transport.cancel.mockImplementation(async () => {
+            transport.finish({ stopReason: "cancelled" });
+            return undefined;
+          });
+          await session.close();
+        }
+        await expect(pending).resolves.toEqual({ outcome: "cancelled" });
+        expect(await nextEvent(iterator)).toMatchObject({
+          type: "interaction.closed",
+          interactionId,
+          reason: "cancelled",
+        });
+        expect(
+          await session.execute({
+            type: "interaction.respond",
+            interactionId,
+            response: { type: "question", answers: { q0: ["A"] } },
+          }),
+        ).toMatchObject({ ok: false });
+        if (cause === "withdraw" || cause === "cancel")
+          transport.finish({ stopReason: "cancelled" });
+        while ((await nextEvent(iterator)).type !== "turn.completed") {
+          /* drain usage */
+        }
+        await expect(ask({ ...request, toolCallId: "late" })).resolves.toEqual({
+          outcome: "cancelled",
+        });
+        if (cause !== "close" && cause !== "fault") {
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("next-turn"),
+            input: [{ type: "text", text: "next" }],
+          });
+          expect((await nextEvent(iterator)).type).toBe("turn.started");
+          await expect(ask({ ...request, toolCallId: "stale-turn" })).resolves.toEqual({
+            outcome: "cancelled",
+          });
+          const nextPending = transport.onQuestion(request);
+          expect((await nextOutput(iterator)).kind).toBe("interaction");
+          transport.finish();
+          await expect(nextPending).resolves.toEqual({ outcome: "cancelled" });
+          while ((await nextEvent(iterator)).type !== "turn.completed") {
+            /* drain closure/usage */
+          }
+        }
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+});
 
 describe("Grok Adapter ACP projection", () => {
   it("passes per-Session delegation environment to the ACP transport", async () => {
@@ -355,7 +519,7 @@ describe("Grok Adapter ACP projection", () => {
         configuration: {
           selectModel: true,
           selectPermissionMode: true,
-          permissionModeScope: "atCreate",
+          permissionModeScope: "live",
         },
       },
     });
@@ -410,18 +574,21 @@ describe("Grok Adapter ACP projection", () => {
 
     expect(transport.openCalls).toContainEqual({ kind: "create", permissionModeId: auto });
     expect(opened.value.initialState.effectivePermissionModeId).toBe(auto);
-    expect(opened.value.capabilities.configuration.permissionModeScope).toBe("atCreate");
+    expect(opened.value.capabilities.configuration.permissionModeScope).toBe("live");
+    expect(transport.setPermissionMode).toHaveBeenCalledWith(auto);
     await expect(
       opened.value.execute({ type: "permissionMode.select", permissionModeId: alwaysApprove }),
     ).resolves.toEqual({
-      ok: false,
-      error: {
-        code: "invalidRequest",
-        message: "Grok Permission Mode is fixed at Session creation",
-        retryable: false,
-      },
+      ok: true,
+      value: { completed: true },
     });
+    expect(transport.setPermissionMode).toHaveBeenLastCalledWith(alwaysApprove);
     expect(opened.value.initialState.effectivePermissionModeId).toBe(auto);
+    const snapshot = await opened.value.readSnapshot();
+    expect(snapshot).toMatchObject({
+      ok: true,
+      value: { state: { effectivePermissionModeId: alwaysApprove } },
+    });
 
     await adapter.close();
   });
@@ -457,10 +624,139 @@ describe("Grok Adapter ACP projection", () => {
         permissionModeId,
       });
       expect(opened.value.initialState.effectivePermissionModeId).toBe(permissionModeId);
+      expect(transport.setPermissionMode).toHaveBeenCalledWith(permissionModeId);
 
       await adapter.close();
     },
   );
+
+  it("publishes permission state only after native confirmation and serializes configuration", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const confirmation = Promise.withResolvers<undefined>();
+    transport.setPermissionMode.mockReturnValueOnce(confirmation.promise);
+    const events: HostEvent[] = [];
+    const collecting = (async () => {
+      for await (const output of session.outputs)
+        if (output.kind === "event") events.push(output.event);
+    })();
+    const auto = harnessPermissionModeIdSchema.parse("auto");
+    try {
+      const selection = session.execute({ type: "permissionMode.select", permissionModeId: auto });
+      await Promise.resolve();
+      expect(events.filter((e) => e.type === "session.state.changed")).toEqual([]);
+      await expect(
+        session.execute({ type: "permissionMode.select", permissionModeId: auto }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+      await expect(
+        session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("permission-pending"),
+          input: [{ type: "text", text: "wait" }],
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+      confirmation.resolve(undefined);
+      await expect(selection).resolves.toEqual({ ok: true, value: { completed: true } });
+      expect(events.filter((e) => e.type === "session.state.changed")).toMatchObject([
+        { state: { effectivePermissionModeId: auto } },
+      ]);
+    } finally {
+      confirmation.resolve(undefined);
+      await adapter.close();
+      await collecting;
+    }
+  });
+
+  it("does not publish unconfirmed permissions or accept invalid modes", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    try {
+      transport.setPermissionMode.mockRejectedValueOnce(new Error("confirmation failed"));
+      await expect(
+        session.execute({
+          type: "permissionMode.select",
+          permissionModeId: harnessPermissionModeIdSchema.parse("auto"),
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { message: "confirmation failed" } });
+      expect(await session.readSnapshot()).toMatchObject({
+        ok: true,
+        value: { state: { effectivePermissionModeId: "ask" } },
+      });
+      const calls = transport.setPermissionMode.mock.calls.length;
+      await expect(
+        session.execute({
+          type: "permissionMode.select",
+          permissionModeId: harnessPermissionModeIdSchema.parse("foreign"),
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+      expect(transport.setPermissionMode).toHaveBeenCalledTimes(calls);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("does not open a Session when its startup permissions cannot be confirmed", async () => {
+    const transport = new FakeGrokTransport();
+    transport.setPermissionMode.mockRejectedValue(
+      new GrokTransportError("protocolError", "not confirmed"),
+    );
+    const adapter = new GrokAdapter(
+      {},
+      {
+        createTransport: () => transport,
+        randomUUID: () => "grok-id",
+        fetchCredits: async () => null,
+      },
+    );
+    await expect(adapter.open({ kind: "create", cwd: "/synthetic" })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "protocolError" },
+    });
+    expect(transport.close).toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it("rejects permission changes during a Turn and does not publish after close", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const mode = harnessPermissionModeIdSchema.parse("auto");
+    const events: HostEvent[] = [];
+    const collecting = (async () => {
+      for await (const output of session.outputs)
+        if (output.kind === "event") events.push(output.event);
+    })();
+    try {
+      await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("permission-busy"),
+        input: [{ type: "text", text: "work" }],
+      });
+      await expect(
+        session.execute({ type: "permissionMode.select", permissionModeId: mode }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+      expect(transport.setPermissionMode).toHaveBeenCalledTimes(1);
+      transport.finish();
+      await vi.waitFor(() => expect(events.some((e) => e.type === "turn.completed")).toBe(true));
+      const confirmation = Promise.withResolvers<undefined>();
+      transport.setPermissionMode.mockReturnValueOnce(confirmation.promise);
+      const selection = session.execute({ type: "permissionMode.select", permissionModeId: mode });
+      await session.close();
+      confirmation.resolve(undefined);
+      await expect(selection).resolves.toMatchObject({
+        ok: false,
+        error: { code: "invalidState" },
+      });
+      expect(
+        events.some(
+          (e) => e.type === "session.state.changed" && e.state.effectivePermissionModeId === mode,
+        ),
+      ).toBe(false);
+    } finally {
+      transport.finish();
+      await adapter.close();
+      await collecting;
+    }
+  });
 
   it("passes the requested Model into Grok Session creation", async () => {
     const transport = new FakeGrokTransport();
@@ -2107,9 +2403,14 @@ describe("Grok Adapter ACP projection", () => {
     const source = await adapter.open({
       kind: "create",
       cwd: "/synthetic",
-      permissionModeId: alwaysApprove,
     });
     if (!source.ok) throw new Error(source.error.message);
+    expect(
+      await source.value.execute({
+        type: "permissionMode.select",
+        permissionModeId: alwaysApprove,
+      }),
+    ).toEqual({ ok: true, value: { completed: true } });
     const sourceRef = source.value.initialState.nativeRef;
     if (!sourceRef) throw new Error("Created Session is missing its Native reference");
     const sourceHistory: GrokTransportEvent[] = [
@@ -2137,6 +2438,7 @@ describe("Grok Adapter ACP projection", () => {
     if (!forked.ok) throw new Error(forked.error.message);
 
     expect(forked.value.initialState.effectivePermissionModeId).toBe(alwaysApprove);
+    expect(transport.setPermissionMode).toHaveBeenLastCalledWith(alwaysApprove);
     await source.value.close();
     await forked.value.close();
   });
@@ -2438,6 +2740,7 @@ describe("Grok Adapter ACP projection", () => {
     expect(transport.rewindCalls).toEqual([
       { kind: "rewind", sessionId: "source-session", targetPromptIndex: 1 },
     ]);
+    expect(transport.setPermissionMode).toHaveBeenLastCalledWith("ask");
     await opened.value.close();
   });
 

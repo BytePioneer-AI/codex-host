@@ -1,4 +1,7 @@
+import { composerIndicatorsSchema, type ThreadUsageSnapshot } from "@codexhost/shared-contracts";
+
 export interface HostUsage {
+  composerIndicators?: ThreadUsageSnapshot["composerIndicators"];
   inputTokens?: number;
   cachedInputTokens?: number;
   cacheWriteInputTokens?: number;
@@ -77,6 +80,7 @@ const usageFields = new Set<keyof HostUsage>([
   ...safeIntegerFields,
   ...percentFields,
   "sessionCacheUsage",
+  "composerIndicators",
   "totalCostUsd",
   "totalCredits",
   "contextUsagePercent",
@@ -99,6 +103,10 @@ export function parseHostUsage(value: unknown): HostUsage {
       throw new Error(`Harness Usage contains unknown field '${key}'`);
     }
   }
+  const indicators =
+    value.composerIndicators === undefined
+      ? {}
+      : { composerIndicators: composerIndicatorsSchema.parse(value.composerIndicators) };
   for (const field of [
     "totalCredits",
     "contextUsagePercent",
@@ -214,9 +222,9 @@ export function parseHostUsage(value: unknown): HostUsage {
     if (value.costSource !== "publicPrice") {
       throw new Error("Harness Usage 'unpricedModels' must be provided with a 'publicPrice' cost");
     }
-    return { ...value, unpricedModels: [...models] } as HostUsage;
+    return { ...value, ...indicators, unpricedModels: [...models] } as HostUsage;
   }
-  return { ...value } as HostUsage;
+  return { ...value, ...indicators } as HostUsage;
 }
 
 /**

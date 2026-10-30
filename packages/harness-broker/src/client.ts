@@ -16,6 +16,7 @@ import {
   type HarnessResult,
   type HarnessSession,
   type HarnessSessionCapabilities,
+  type HarnessSessionImportCapability,
   type HarnessSessionState,
   type HostCommand,
   type HostThreadSnapshot,
@@ -34,6 +35,8 @@ import {
   type TurnCancelCommand,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
   harnessPluginIdSchema,
@@ -48,6 +51,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
+import { createBrokerSessionImportCapability } from "./session-import-client.js";
 import {
   defaultHarnessBrokerDescriptorPath,
   harnessBrokerLaunchAgentLabel,
@@ -73,6 +77,7 @@ interface SessionMetadata {
   sessionId: string;
   sessionGeneration: number;
   capabilities: HarnessSessionCapabilities;
+  readCapabilities: boolean;
   initialState: HarnessSessionState;
   initialUsage: HostUsage | null;
   commands: boolean;
@@ -150,6 +155,7 @@ function parseSessionMetadata(value: unknown): SessionMetadata {
     sessionId: candidate.sessionId,
     sessionGeneration: candidate.sessionGeneration,
     capabilities: harnessSessionCapabilitiesSchema.parse(candidate.capabilities),
+    readCapabilities: candidate.readCapabilities === true,
     initialState: state,
     initialUsage: candidate.initialUsage === null ? null : parseHostUsage(candidate.initialUsage),
     commands: candidate.commands === true,
@@ -545,6 +551,14 @@ class BrokeredHarnessSession implements HarnessSession {
     });
   }
 
+  async readCapabilities(): Promise<HarnessSessionCapabilities> {
+    // Older brokers cannot revalidate a live steer capability; keep stop-then-start there.
+    if (!this.#metadata.readCapabilities) return { ...this.capabilities, steer: false };
+    return harnessSessionCapabilitiesSchema.parse(
+      await this.#request("session.readCapabilities", {}),
+    );
+  }
+
   async refreshUsage(): Promise<void> {
     await this.#request("session.refreshUsage", {});
   }
@@ -566,6 +580,7 @@ class BrokeredHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -578,6 +593,7 @@ class BrokeredHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -594,6 +610,8 @@ class BrokeredHarnessSession implements HarnessSession {
     try {
       return parseHarnessResult(await this.#request("session.execute", { command }));
     } catch (error) {
+      // A missing reply does not prove native input was rejected. Do not invite stop-and-resend.
+      if (command.type === "turn.steer") throw error;
       return {
         ok: false,
         error: unavailable(error instanceof Error ? error.message : String(error)),
@@ -703,6 +721,7 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog?: HarnessCommandCatalog;
   readonly liveCommandCatalog?: boolean;
   readonly harnessId: HarnessId;
+  readonly sessionImport?: HarnessSessionImportCapability;
   readonly credits?: () => AccountCreditsSnapshot | null;
   readonly refreshCredits?: () => Promise<AccountCreditsSnapshot | null>;
   readonly #descriptorPath: string;
@@ -734,6 +753,8 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
       harnessId?: string;
       /** Plugin-owned capability; defaults to true for existing Broker consumers. */
       accountCredits?: boolean;
+      /** Enable only when the plugin implements native Session import in its broker. */
+      sessionImport?: boolean;
       forwardDelegationEnvironment?: boolean;
       descriptorPath?: string;
       environment?: NodeJS.ProcessEnv;
@@ -750,6 +771,17 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
     } = {},
   ) {
     this.harnessId = harnessPluginIdSchema.parse(input.harnessId ?? "claude-code");
+    if (input.sessionImport) {
+      this.sessionImport = createBrokerSessionImportCapability({
+        harnessId: this.harnessId,
+        request: async (method, params) =>
+          parseHarnessResult(
+            await this.#request(method, params, method === "adapter.sessionImport.resolve"),
+          ),
+        isClosed: () => this.#closed,
+        error: (error) => this.#error(error),
+      });
+    }
     if (input.accountCredits !== false) {
       this.credits = () => this.#credits;
       this.refreshCredits = () => this.#refreshAccountCredits();

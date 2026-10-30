@@ -391,7 +391,7 @@ describe("Claude history mapping", () => {
     ]);
   });
 
-  it("omits Claude background task-notification records without hiding later human Turns", () => {
+  it("keeps independent task continuations and their checkpoints separate from human Turns", () => {
     const notification = `<task-notification>
 <task-id>a7b2e1021a9dc42e0</task-id>
 <tool-use-id>call_oIKmvIhI8V7NLb7dB7DFwZkN</tool-use-id>
@@ -418,11 +418,20 @@ describe("Claude history mapping", () => {
       {
         nativeTurnRef: { nativeTurnKey: "user-1" },
         input: [{ type: "text", text: "start three agents" }],
-        items: [
-          { item: { type: "agentMessage", text: "agents started" } },
-          { item: { type: "agentMessage", text: "first agent finished" } },
-          { item: { type: "agentMessage", text: "all agents finished" } },
-        ],
+        items: [{ item: { type: "agentMessage", text: "agents started" } }],
+        checkpoint: { checkpointId: "assistant-1" },
+      },
+      {
+        nativeTurnRef: { nativeTurnKey: "notification-origin" },
+        input: [],
+        checkpoint: { checkpointId: "assistant-2" },
+        items: [{ item: { type: "agentMessage", text: "first agent finished" } }],
+      },
+      {
+        nativeTurnRef: { nativeTurnKey: "notification-xml" },
+        input: [],
+        checkpoint: { checkpointId: "assistant-3" },
+        items: [{ item: { type: "agentMessage", text: "all agents finished" } }],
       },
       {
         nativeTurnRef: { nativeTurnKey: "user-2" },
@@ -431,6 +440,62 @@ describe("Claude history mapping", () => {
       },
     ]);
   });
+
+  it.each([true, false])(
+    "keeps an occupancy-held continuation on its original Turn (explicit background=%s)",
+    (background) => {
+      const snapshot = mapClaudeSnapshot(
+        [
+          message("user", "user-1", "delegate"),
+          message("assistant", "launch", [
+            {
+              type: "tool_use",
+              id: "agent-call",
+              name: "Agent",
+              input: { prompt: "work", run_in_background: background },
+            },
+          ]),
+          {
+            ...message("user", "launch-result", [
+              {
+                type: "tool_result",
+                tool_use_id: "agent-call",
+                content: "The agent is working in the background.",
+                is_error: false,
+              },
+            ]),
+            toolUseResult: { isAsync: true, agentId: "agent-1" },
+          },
+          message("assistant", "waiting", "waiting", "end_turn"),
+          {
+            ...message(
+              "user",
+              "notification",
+              "<task-notification><task-id>agent-1</task-id><tool-use-id>agent-call</tool-use-id><status>completed</status></task-notification>",
+            ),
+            origin: { kind: "task-notification" },
+          },
+          message("assistant", "continuation", "agent finished", "end_turn"),
+          {
+            ...message("assistant", "nested-last", "child text", "end_turn"),
+            parent_tool_use_id: "agent-call",
+          },
+        ],
+        sessionId,
+      );
+      expect(snapshot.turns).toHaveLength(1);
+      expect(snapshot.turns[0]).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "user-1" },
+        checkpoint: { checkpointId: "continuation" },
+        input: [{ type: "text", text: "delegate" }],
+      });
+      expect(snapshot.turns[0]?.items).toContainEqual(
+        expect.objectContaining({
+          item: expect.objectContaining({ type: "agentMessage", text: "agent finished" }),
+        }),
+      );
+    },
+  );
 
   it("keeps an incomplete reasoning-only historical Turn without inventing success", () => {
     expect(

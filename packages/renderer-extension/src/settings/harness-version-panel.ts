@@ -8,7 +8,7 @@ export interface HarnessVersionPanel {
   readonly element: HTMLElement;
   readonly state: HarnessInstallationState | undefined;
   readonly updating: boolean;
-  update(): void;
+  update(): Promise<boolean>;
 }
 
 /** Owned by one Connections page, reused across diagnostic renders and row switches. */
@@ -47,22 +47,43 @@ export function createHarnessVersionPanel(
   let busy = false;
   let updating = false;
   let unsupported = false;
+  let updatePromise: Promise<boolean> | null = null;
   const render = (): void => {
+    heading.textContent =
+      state?.versionKind === "application"
+        ? messages.harnessVersionApplicationTitle
+        : messages.harnessVersionTitle;
     current.textContent = `${messages.harnessVersionCurrent}: ${state?.currentVersion ?? "—"}`;
     latest.textContent = `${messages.harnessVersionLatest}: ${harnessVersionLabel(state, messages.harnessVersion)}`;
     update.disabled = busy || signal.aborted || !state?.canUpdate || !state.updateAvailable;
+    const manualUrl =
+      !state?.canUpdate && state?.updateAvailable ? state.manualUpdateUrl : undefined;
+    actions.replaceChildren(update);
+    update.hidden = !busy && !signal.aborted && Boolean(manualUrl);
+    if (update.hidden && manualUrl) {
+      const download = document.createElement("a");
+      download.className = "settings-command-button settings-command-button--secondary";
+      download.dataset.harnessVersionAction = "download-update";
+      download.textContent = messages.harnessVersionDownloadUpdate;
+      download.href = manualUrl;
+      download.target = "_blank";
+      download.rel = "noopener noreferrer";
+      actions.append(download);
+    }
     update.textContent =
       state?.canUpdate && state.latestVersion !== "Unknown" && !state.updateAvailable
         ? messages.harnessVersionUpToDate
         : messages.harnessVersionUpdate;
     const detail = harnessVersionNote(state, messages.harnessVersion);
     note.textContent = detail
-      ? `${detail} ${messages.harnessVersionNote}`
+      ? !state?.canUpdate
+        ? detail
+        : `${detail} ${messages.harnessVersionNote}`
       : messages.harnessVersionNote;
   };
-  const run = async (action: "check" | "update"): Promise<void> => {
-    if (busy || unsupported || signal.aborted) return;
-    if (action === "update" && (!state?.canUpdate || !state.updateAvailable)) return;
+  const run = async (action: "check" | "update"): Promise<boolean> => {
+    if (busy || unsupported || signal.aborted) return false;
+    if (action === "update" && (!state?.canUpdate || !state.updateAvailable)) return false;
     busy = true;
     updating = action === "update";
     onChange();
@@ -71,7 +92,7 @@ export function createHarnessVersionPanel(
     render();
     try {
       const result = await client.run(action);
-      if (signal.aborted) return;
+      if (signal.aborted) return false;
       state = result;
       status.textContent = !result.canUpdate
         ? messages.harnessVersionManual
@@ -80,8 +101,9 @@ export function createHarnessVersionPanel(
             ? messages.harnessVersionFailed
             : messages.harnessVersionUpdated
           : "";
+      return result.canUpdate && !result.updateAvailable;
     } catch (error) {
-      if (signal.aborted) return;
+      if (signal.aborted) return false;
       unsupported =
         typeof error === "object" &&
         error !== null &&
@@ -91,6 +113,7 @@ export function createHarnessVersionPanel(
         ? messages.harnessVersionUnsupported
         : messages.harnessVersionFailed;
       if (state) state = { ...state, canUpdate: false };
+      return false;
     } finally {
       busy = false;
       updating = false;
@@ -100,7 +123,13 @@ export function createHarnessVersionPanel(
       }
     }
   };
-  update.addEventListener("click", () => void run("update"));
+  const updateVersion = (): Promise<boolean> => {
+    updatePromise ??= run("update").finally(() => {
+      updatePromise = null;
+    });
+    return updatePromise;
+  };
+  update.addEventListener("click", () => void updateVersion());
   const owner = document.defaultView;
   let checkFrame: number | null = null;
   let checkTimer: number | null = null;
@@ -138,6 +167,6 @@ export function createHarnessVersionPanel(
     get updating() {
       return updating;
     },
-    update: () => void run("update"),
+    update: updateVersion,
   };
 }

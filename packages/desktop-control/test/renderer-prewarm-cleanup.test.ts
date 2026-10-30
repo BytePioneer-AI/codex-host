@@ -33,7 +33,7 @@ describe("external draft prewarm cleanup", () => {
     async (hostId) => {
       const f = fixture(hostId);
       f.policy.select("codexhost/claude-code-native");
-      await f.bridge.prewarmThreadStart({ cwd: "/project" });
+      await f.bridge.prewarmThreadStart({ cwd: "/project", model: "codexhost/claude-code-native" });
       expect(f.prepare).toHaveBeenCalledWith({
         cwd: "/project",
         model: "codexhost/claude-code-native",
@@ -53,7 +53,9 @@ describe("external draft prewarm cleanup", () => {
     const result = Promise.withResolvers<unknown>();
     f.prepare.mockReturnValueOnce(result.promise);
     f.policy.select("codexhost/claude-code-native");
-    const pending = f.bridge.prewarmThreadStart({}) as Promise<unknown>;
+    const pending = f.bridge.prewarmThreadStart({
+      model: "codexhost/claude-code-native",
+    }) as Promise<unknown>;
     f.policy.dispose();
     result.resolve({ thread: { id: "late" } });
     await expect(pending).rejects.toThrow("invalidated");
@@ -63,7 +65,7 @@ describe("external draft prewarm cleanup", () => {
   it("does not discard a prewarm already submitted", async () => {
     const f = fixture();
     f.policy.select("codexhost/claude-code-native");
-    await f.bridge.prewarmThreadStart({});
+    await f.bridge.prewarmThreadStart({ model: "codexhost/claude-code-native" });
     await f.bridge.sendRequest("turn/start", { threadId: "draft", input: [] });
     await f.policy.clear();
     expect(f.send).toHaveBeenCalledTimes(1);
@@ -88,7 +90,7 @@ describe("external draft prewarm cleanup", () => {
     const f = fixture();
     f.send.mockRejectedValue(new Error("disconnected"));
     f.policy.select("codexhost/claude-code-native");
-    await f.bridge.prewarmThreadStart({});
+    await f.bridge.prewarmThreadStart({ model: "codexhost/claude-code-native" });
     await expect(f.policy.clear()).resolves.toBeUndefined();
     f.policy.dispose();
   });

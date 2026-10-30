@@ -14,6 +14,7 @@ describe("production Controller / Renderer Agent contract", () => {
     let clock = 0;
     let ticks = 0;
     const client = {
+      on: vi.fn(() => () => {}),
       command: vi.fn<(method: string) => Promise<unknown>>(async () => ({})),
       async evaluate<T>(): Promise<T> {
         return {

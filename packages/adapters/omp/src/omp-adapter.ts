@@ -42,8 +42,6 @@ import {
   type HostItemOutcome,
   type HostQuestionInteraction,
   type HostReasoningItem,
-  type HostSubagentDelegationItem,
-  type HostSubagentState,
   type HostSubagentStatus,
   type HostToolOutput,
   type InteractionRespondAccepted,
@@ -63,6 +61,9 @@ import {
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
+  unsupportedSteer,
 } from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
@@ -72,7 +73,6 @@ import {
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
-  hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   type HarnessId,
@@ -221,11 +221,6 @@ interface ActiveTurn {
   beforeNativeTurnKeys: Set<string>;
   completion: Promise<void>;
   resolveCompletion(): void;
-}
-
-interface BackgroundSubagentDelegation {
-  item: HostSubagentDelegationItem;
-  turnId: HostTurnId;
 }
 
 type SessionPhase = "open" | "closing" | "closed" | "faulted";
@@ -695,9 +690,6 @@ class OmpHarnessSession implements HarnessSession {
   #usage: HostUsage | null;
   #usageGeneration = 0;
   #usageRefreshSequence = 0;
-  #backgroundTurnId: HostTurnId | null = null;
-  #backgroundSubagents = new Map<string, BackgroundSubagentDelegation>();
-  #backgroundTurnFailed = false;
 
   constructor(
     cwd: string,
@@ -789,55 +781,6 @@ class OmpHarnessSession implements HarnessSession {
         : status;
   }
 
-  #ensureBackgroundTurn(): HostTurnId {
-    if (this.#backgroundTurnId) return this.#backgroundTurnId;
-    const turnId = hostTurnIdSchema.parse(randomUUID());
-    this.#backgroundTurnId = turnId;
-    this.#backgroundTurnFailed = false;
-    this.#event({
-      type: "turn.autonomous.started",
-      turnId,
-      input: [],
-    });
-    return turnId;
-  }
-
-  #backgroundDelegationStart(
-    event:
-      | Extract<OmpTurnEvent, { type: "subagent.started" }>
-      | Extract<OmpTurnEvent, { type: "subagent.updated" }>
-      | Extract<OmpTurnEvent, { type: "subagent.completed" }>,
-  ): BackgroundSubagentDelegation {
-    const turnId = this.#ensureBackgroundTurn();
-    const description =
-      event.type === "subagent.started"
-        ? event.description
-        : event.type === "subagent.updated"
-          ? (event.description ?? "Background subagent")
-          : "Background subagent";
-    const role = event.type === "subagent.started" ? event.role : undefined;
-    const background = event.type === "subagent.started" ? event.background : true;
-    const state: HostSubagentState = {
-      subagentId: event.nativeSubagentId,
-      nativeSubagentId: event.nativeSubagentId,
-      description,
-      ...(role ? { role } : {}),
-      background,
-      status: "running",
-    };
-    const item: HostSubagentDelegationItem = {
-      type: "subagentDelegation",
-      itemId: this.#newItemId(),
-      operation: "spawn",
-      ...(event.type === "subagent.started" && event.prompt ? { prompt: event.prompt } : {}),
-      subagents: [state],
-    };
-    const delegation = { item, turnId };
-    this.#backgroundSubagents.set(event.callId, delegation);
-    this.#event({ type: "item.started", turnId, item });
-    return delegation;
-  }
-
   #handleBackgroundSubagentEvent(event: OmpTurnEvent): void {
     if (event.type === "subagent.transcript.changed") {
       this.#event({
@@ -853,10 +796,6 @@ class OmpHarnessSession implements HarnessSession {
     ) {
       return;
     }
-    let delegation = this.#backgroundSubagents.get(event.callId);
-    if (!delegation) delegation = this.#backgroundDelegationStart(event);
-    const current = delegation.item.subagents[0];
-    if (!current) throw new Error("Omp background delegation has no Agent state");
     if (event.type === "subagent.started") {
       this.#event({
         type: "subagent.state.changed",
@@ -867,19 +806,6 @@ class OmpHarnessSession implements HarnessSession {
     }
     if (event.type === "subagent.updated") {
       const status = this.#backgroundStatus(event.status);
-      const subagent: HostSubagentState = {
-        ...current,
-        status,
-        ...(event.description ? { description: event.description } : {}),
-        ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),
-      };
-      delegation.item = { ...delegation.item, subagents: [subagent] };
-      this.#event({
-        type: "item.updated",
-        turnId: delegation.turnId,
-        itemId: delegation.item.itemId,
-        update: { type: "subagents.replace", subagents: delegation.item.subagents },
-      });
       this.#event({
         type: "subagent.state.changed",
         nativeSubagentId: event.nativeSubagentId,
@@ -889,62 +815,12 @@ class OmpHarnessSession implements HarnessSession {
       return;
     }
     const status: HostSubagentStatus = event.isError ? "failed" : "completed";
-    const subagent: HostSubagentState = {
-      ...current,
-      status,
-      ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),
-    };
-    delegation.item = { ...delegation.item, subagents: [subagent] };
-    this.#event({
-      type: "item.updated",
-      turnId: delegation.turnId,
-      itemId: delegation.item.itemId,
-      update: { type: "subagents.replace", subagents: delegation.item.subagents },
-    });
-    this.#event({
-      type: "item.completed",
-      turnId: delegation.turnId,
-      snapshot: {
-        item: delegation.item,
-        outcome: event.isError
-          ? {
-              status: "failed",
-              error: {
-                code: "nativeFailure",
-                message: "Omp background Subagent failed",
-                retryable: false,
-              },
-            }
-          : { status: "succeeded" },
-      },
-    });
     this.#event({
       type: "subagent.state.changed",
       nativeSubagentId: event.nativeSubagentId,
       status,
       ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),
     });
-    this.#backgroundTurnFailed ||= event.isError;
-    this.#backgroundSubagents.delete(event.callId);
-    if (this.#backgroundSubagents.size === 0 && this.#backgroundTurnId === delegation.turnId) {
-      const turnId = this.#backgroundTurnId;
-      this.#backgroundTurnId = null;
-      this.#event({
-        type: "turn.completed",
-        turnId,
-        outcome: this.#backgroundTurnFailed
-          ? {
-              status: "failed",
-              error: {
-                code: "nativeFailure",
-                message: "Omp background Subagent failed",
-                retryable: false,
-              },
-            }
-          : { status: "succeeded" },
-      });
-      this.#backgroundTurnFailed = false;
-    }
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
@@ -997,6 +873,7 @@ class OmpHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -1009,6 +886,7 @@ class OmpHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -1020,6 +898,7 @@ class OmpHarnessSession implements HarnessSession {
       return { ok: false, error: invalidState("Omp Session is not open") };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
+    if (command.type === "turn.steer") return unsupportedSteer("OMP");
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);

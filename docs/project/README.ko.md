@@ -265,7 +265,7 @@ CodexHost는 다른 방식을 택합니다.
   <tr>
     <td>
       <strong>微信交流群</strong><br />
-      <sub>CodexHost 사용법과 기능에 관심 있는 개발자는 QR 코드를 스캔해 위챗 그룹에 참여할 수 있습니다.</sub>
+      <sub>CodexHost 사용법과 기능에 관심 있는 개발자는 QR 코드를 스캔해 제 위챗을 추가해 주세요(메모: “CodexHost”). 위챗 그룹에 초대해 드립니다.</sub>
       <ul>
         <li><sub>설치 문제는 그룹에서 질문할 수 있습니다</sub></li>
         <li><sub>기능 제안과 피드백</sub></li>
@@ -275,7 +275,7 @@ CodexHost는 다른 방식을 택합니다.
       <sub><strong>함께 기여해 주세요.</strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="위챗 그룹 QR 코드" src="../imgs/wechat-group-4-qrcode-2026-10-17.jpg" />
+      <img width="230" alt="위챗 QR 코드" src="../imgs/wechat-contact-qrcode.jpg" />
     </td>
   </tr>
 </table>

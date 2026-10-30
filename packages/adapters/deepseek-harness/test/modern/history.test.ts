@@ -587,6 +587,27 @@ describe("DeepSeek Harness Modern history projection", () => {
     ).not.toThrow();
   });
 
+  it("accepts approval/asked events that include DSH displayReason (#650)", () => {
+    expect(() =>
+      projectModernHistory({
+        sessionId: SESSION_ID,
+        events: [
+          event(0, "approval/asked", {
+            id: "approval-1",
+            toolName: "bash",
+            callId: "call-esc",
+            reason: "escalate sandbox to danger-full-access",
+            displayReason: {
+              en: "Allow this operation with danger-full-access permissions",
+              zh: "允许本次操作使用 danger-full-access 权限",
+            },
+          }),
+          event(1, "approval/decided", { id: "approval-1", outcome: "allowed-once" }),
+        ],
+      }),
+    ).not.toThrow();
+  });
+
   it("validates paired command lifecycle and earlier non-command source references", () => {
     expect(() =>
       projectModernHistory({

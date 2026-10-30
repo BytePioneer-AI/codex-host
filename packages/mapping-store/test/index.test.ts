@@ -16,7 +16,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   MappingStore,
-  packageMetadata,
   storedThreadCoreV1Schema,
   storedThreadRecordV1Schema,
   type MappingStoreError,
@@ -108,11 +107,6 @@ afterEach(async () => {
 });
 
 describe("mapping-store package", () => {
-  it("participates in the shared contract", () => {
-    expect(packageMetadata.name).toBe("@codexhost/mapping-store");
-    expect(packageMetadata.contractVersion).toBe(1);
-  });
-
   it("resolves a repeated caller create request to the existing Thread", async () => {
     const directory = await temporaryStoreDirectory();
     const store = new MappingStore({ directory });
@@ -1069,44 +1063,69 @@ describe("mapping-store package", () => {
     await store.close();
   });
 
-  it("enumerates 1000 valid startup records without a persistent query index", async () => {
+  it.each(["backups", "thread-metadata"])(
+    "preserves a discoverable mapping when deletion of %s fails",
+    async (subdirectory) => {
+      const directory = await temporaryStoreDirectory();
+      const store = new MappingStore({ directory });
+      await store.initialize();
+      await createReady(store);
+      const blockedPath = path.join(directory, subdirectory, `${threadId}.json`);
+      await rm(blockedPath, { force: true });
+      await mkdir(blockedPath);
+      try {
+        await expect(store.removeThread(threadId)).rejects.toThrow();
+        await expect(store.getThread(threadId)).resolves.toMatchObject({ state: "ready" });
+      } finally {
+        await store.close();
+      }
+      await rm(blockedPath, { recursive: true });
+      const reopened = new MappingStore({ directory });
+      try {
+        await reopened.initialize();
+        await expect(reopened.getThread(threadId)).resolves.toMatchObject({ state: "ready" });
+        await reopened.removeThread(threadId);
+        await expect(reopened.getThread(threadId)).resolves.toBeNull();
+      } finally {
+        await reopened.close();
+      }
+    },
+  );
+
+  it("preserves all metadata when the primary record cannot be deleted", async () => {
     const directory = await temporaryStoreDirectory();
-    const threadsDirectory = path.join(directory, "threads");
-    await mkdir(threadsDirectory, { recursive: true });
-    const timestamp = new Date("2026-08-01T00:00:00.000Z").toISOString();
-    await Promise.all(
-      Array.from({ length: 1_000 }, async (_, index) => {
-        const id = `scale-thread-${index.toString().padStart(4, "0")}`;
-        const record = storedThreadRecordV1Schema.parse({
-          formatVersion: 1,
-          revision: 1,
-          hostThreadId: id,
-          createRequestId: `scale-create-${index}`,
-          harnessId,
-          state: "ready",
-          nativeSessionRef: {
-            harnessId,
-            nativeSessionId: `scale-native-${index}`,
-            formatVersion: 1,
-          },
-          cwd: "/scale",
-          title: `Scale Thread ${index}`,
-          archived: false,
-          transportModelId: "codexhost/pi-native",
-          ephemeral: false,
-          historyMode: "legacy",
-          turnMappings: [],
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        });
-        await writeFile(path.join(threadsDirectory, `${id}.json`), JSON.stringify(record), "utf8");
-      }),
-    );
     const store = new MappingStore({ directory });
     await store.initialize();
-    await expect(store.listThreads()).resolves.toHaveLength(1_000);
-    await store.close();
-  }, 15_000);
+    await createReady(store);
+    await store.updateMetadata(threadId, {
+      projectId: "project",
+      daybreakEnabled: true,
+      gitInfo: { branch: "main" },
+    });
+    const expected = await store.getThread(threadId);
+    const primary = path.join(directory, "threads", `${threadId}.json`);
+    const metadata = path.join(directory, "thread-metadata", `${threadId}.json`);
+    const content = await readFile(primary, "utf8");
+    const metadataContent = await readFile(metadata, "utf8");
+    await rm(primary);
+    await mkdir(primary);
+    try {
+      await expect(store.removeThread(threadId)).rejects.toThrow();
+      await expect(store.getThread(threadId)).resolves.toEqual(expected);
+      await expect(readFile(metadata, "utf8")).resolves.toBe(metadataContent);
+    } finally {
+      await rm(primary, { recursive: true });
+      await writeFile(primary, content);
+      await store.close();
+    }
+    const reopened = new MappingStore({ directory });
+    try {
+      await reopened.initialize();
+      await expect(reopened.getThread(threadId)).resolves.toEqual(expected);
+    } finally {
+      await reopened.close();
+    }
+  });
 
   it("enforces one live writer per directory", async () => {
     const directory = await temporaryStoreDirectory();

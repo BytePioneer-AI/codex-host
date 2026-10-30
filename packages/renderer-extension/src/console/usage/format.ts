@@ -24,6 +24,8 @@ export function emptyTotals(): Totals {
     cachedInputTokens: 0,
     cacheWriteInputTokens: 0,
     cacheKnownInputTokens: 0,
+    cacheHitCachedInputTokens: 0,
+    cacheHitInputTokens: 0,
     outputTokens: 0,
     reasoningOutputTokens: 0,
     costUsd: 0,
@@ -38,6 +40,8 @@ export function addTotals(target: Totals, source: Totals): Totals {
   target.cachedInputTokens += source.cachedInputTokens;
   target.cacheWriteInputTokens += source.cacheWriteInputTokens;
   target.cacheKnownInputTokens += source.cacheKnownInputTokens;
+  target.cacheHitCachedInputTokens += source.cacheHitCachedInputTokens;
+  target.cacheHitInputTokens += source.cacheHitInputTokens;
   target.outputTokens += source.outputTokens;
   target.reasoningOutputTokens += source.reasoningOutputTokens;
   target.costUsd += source.costUsd;
@@ -127,10 +131,12 @@ export function tokenSummary(
   };
 }
 
-/** Cache reads over all input whose split is known, cache writes included. */
+/** Cache reads over all input whose cache read count is known. */
 export function cacheHitRate(totals: Totals): string {
-  return totals.cacheKnownInputTokens > 0
-    ? formatRendererCacheHitRate((totals.cachedInputTokens / totals.cacheKnownInputTokens) * 100)
+  return totals.cacheHitInputTokens > 0
+    ? formatRendererCacheHitRate(
+        (totals.cacheHitCachedInputTokens / totals.cacheHitInputTokens) * 100,
+      )
     : "—";
 }
 

@@ -2,12 +2,20 @@ import type { CdpClient } from "./cdp-client.js";
 import { committedReactAncestors } from "./renderer-react-ownership.js";
 import { retainRendererHostResponses } from "./renderer-host-response-ownership.js";
 import { createDraftPrewarmPolicyBridge } from "./renderer-draft-prewarm-runtime.js";
+import { isolateRendererPrewarmConsumption } from "./renderer-prewarm-consumption.js";
 import {
   discoverRendererHosts,
   requestManagerFromHookState,
   resolveRendererHostManager,
 } from "./renderer-host-discovery.js";
 import { installRendererHostRouting } from "./renderer-host-routing.js";
+import {
+  findRendererAppScopeStore,
+  findRendererHostRpcFamily,
+  rendererHostRpcHostIds,
+  resolveRendererHostRpc,
+} from "./renderer-host-rpc-discovery.js";
+import { installRendererHostRpcRouting } from "./renderer-host-rpc-routing.js";
 
 export { requestManagerFromHookState } from "./renderer-host-discovery.js";
 
@@ -31,14 +39,41 @@ function directRendererInstaller(): string {
     const resolveRendererHostManager = ${resolveRendererHostManager.toString()};
     const retainRendererHostResponses = ${retainRendererHostResponses.toString()};
     const createDraftPrewarmPolicyBridge = ${createDraftPrewarmPolicyBridge.toString()};
-    const routing = (${installRendererHostRouting.toString()})(
-      document, window,
-      (root) => discoverRendererHosts(root, committedReactAncestors, requestManagerFromHookState),
+    const isolateRendererPrewarmConsumption = ${isolateRendererPrewarmConsumption.toString()};
+    const discover = (root) =>
+      discoverRendererHosts(root, committedReactAncestors, requestManagerFromHookState);
+    const installNative = () => (${installRendererHostRouting.toString()})(
+      document, window, discover,
       (discovery, hostId) => resolveRendererHostManager(discovery, hostId, requestManagerFromHookState),
       (manager, bridge, hostId, target, prewarmed, isCurrent) => createDraftPrewarmPolicyBridge(
         manager, bridge, hostId, target, prewarmed, isCurrent, retainRendererHostResponses,
+        isolateRendererPrewarmConsumption,
       ),
     );
+    const installRpc = () => typeof MessagePort !== 'function' ? null : (${installRendererHostRpcRouting.toString()})(document, window, {
+      findStore: ${findRendererAppScopeStore.toString()},
+      findFamily: ${findRendererHostRpcFamily.toString()},
+      resolve: ${resolveRendererHostRpc.toString()},
+      hostIds: ${rendererHostRpcHostIds.toString()},
+      composerHostIds: (composer) => {
+        const source = composer?.matches?.('[data-codex-composer], [contenteditable="true"][role="textbox"]')
+          ? { querySelectorAll: () => [composer] }
+          : (composer ?? document);
+        return discover(source);
+      },
+      portPrototype: MessagePort.prototype,
+    });
+    // Desktop 26.1027 moved AppServerManagers to the main process. Older builds
+    // expose native managers in Renderer hook state; the main-process mode only
+    // applies when none is visible and its per-Host RPC store is identified.
+    const routing = (() => {
+      if (window.__codexhostHostRoutingV1) return window.__codexhostHostRoutingV1;
+      const native = discover(document);
+      if (native.managers.length || native.registries.length) return installNative();
+      const rpc = installRpc();
+      if (rpc) return rpc;
+      throw new Error('Renderer Host request manager is unavailable');
+    })();
     // Publish a default draft policy only when its Host is unambiguous. Host
     // connections can be ready even when multiple Composers coexist.
     const composerRoute = routing.forComposer();

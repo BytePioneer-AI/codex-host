@@ -253,9 +253,10 @@ export class DraftAgentController<Composer extends object> {
   clearPendingSubmission(composer: Composer): void {
     this.#pendingSubmissions.delete(this.#state(composer));
   }
+  /** Only a draft's submission creates a Thread, so only it sets the next new-Thread Agent. */
   recordSubmission(composer: Composer): Readonly<DraftComposerState> {
     const state = this.#state(composer);
-    this.#lastSubmittedAgent = state.agent;
+    if (state.phase === "draft") this.#lastSubmittedAgent = state.agent;
     return state;
   }
   transfer(

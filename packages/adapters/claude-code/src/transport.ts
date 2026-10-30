@@ -101,6 +101,8 @@ export type ClaudeTurnEvent =
   | {
       type: "message.completed";
       messageId: string;
+      /** Local slash-command output is not an assistant response. */
+      localCommand?: true;
       checkpointId?: string;
       lastRequestUsage?: ClaudeLastRequestUsage;
     }
@@ -203,7 +205,13 @@ export type ClaudeTurnEvent =
   | {
       type: "usage.result";
       totalCostUsd?: number;
-      modelUsage?: Array<{ inputTokens: number; outputTokens: number }>;
+      modelUsage?: Array<{
+        model: string;
+        inputTokens: number;
+        outputTokens: number;
+        promptTokens?: number;
+        contextWindowTokens?: number;
+      }>;
       lastRequestUsage?: ClaudeLastRequestUsage;
     };
 
@@ -242,6 +250,14 @@ export interface ClaudeAutonomousTurnHandler extends ClaudeIdleTurnHandler {
   start(nativeTurnKey: string, userMessageId: string | null): void;
 }
 
+/** No running Turn could take this steer, or the transport closed before Claude accepted it. */
+export class ClaudeSteerMissedTurnError extends Error {
+  constructor() {
+    super("Claude Code steer missed the active Turn");
+    this.name = "ClaudeSteerMissedTurnError";
+  }
+}
+
 export interface ClaudeTurnTransport {
   readonly sessionId: string;
   setAutonomousTurnHandler(handler: ClaudeAutonomousTurnHandler): void;
@@ -265,9 +281,21 @@ export interface ClaudeTurnTransport {
    */
   stopTasks(taskIds: readonly string[]): Promise<void>;
   start(): Promise<void>;
-  getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
+  getContextUsage(detail?: "summary" | "full"): Promise<ClaudeTransportContextUsage | null>;
   /** Live slash commands of the started native Session, when known. */
   slashCommands?(): ClaudeSlashCommandSnapshot | null;
+  /**
+   * True once the running CLI reports `msg_lifecycle_v1` in `system/init`: it then emits the
+   * `command_lifecycle` receipts that confirm a steer. False before init and on CLIs without it.
+   */
+  supportsNativeSteer?(): boolean;
+  /**
+   * True while a requested Turn has a root tool call running on a CLI that confirms steers, or
+   * while a held Turn's continuation is idle-live waiting on background work. A steer written
+   * in the first case joins this Turn after that tool call; in the second it runs as the held
+   * Turn's next Segment without stopping the work it waits on.
+   */
+  canSteerActiveTurn?(): boolean;
   getPermissionMode(): ClaudePermissionMode;
   setModel(model?: string): Promise<void>;
   setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void>;
@@ -295,6 +323,19 @@ export interface ClaudeTurnTransport {
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult>;
+  /**
+   * Inserts text into the active Turn at Claude's tool boundary (`priority: "next"`).
+   * Resolves when Claude emits `command_lifecycle` `queued` for that message, or after a bounded
+   * wait once it is written: from then on Claude owns its delivery, joining the running Turn after
+   * the current tool call, or running it next. The Turn ending first does not reject a written
+   * message. Rejects with {@link ClaudeSteerMissedTurnError} when no Turn is active, the message
+   * cannot be written, or the transport closes or faults before acceptance.
+   *
+   * `onTakeover` runs once for a written message: `true` when Claude drains it into a native turn
+   * (`command_lifecycle` `started`), `false` when it ends without one, the `queued` receipt never
+   * arrives, or the transport closes or faults first.
+   */
+  steer(text: string, messageId: string, onTakeover?: (started: boolean) => void): Promise<void>;
   respondToInteraction(response: ClaudeInteractionResponse): Promise<void>;
   /** Interrupts the running requested or autonomous Turn; its Terminal still follows. */
   abort(): Promise<void>;

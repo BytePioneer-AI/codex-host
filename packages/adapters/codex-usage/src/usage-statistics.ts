@@ -10,6 +10,7 @@ import type {
   HarnessUsageStatisticsCapability,
 } from "@codexhost/harness-adapter";
 import {
+  HarnessUsageSourceChangedError,
   jsonlRecords,
   nativeTimeMs,
   parseHarnessUsageEntry,
@@ -380,7 +381,9 @@ export function createCodexUsageStatistics(
       // Do not cache a parse or prefix proof spanning an append/replacement.
       for (const file of group.files)
         if ((await stamp(file.file)) !== file.fingerprint)
-          throw new Error("Codex rollout changed while reading; refresh to retry");
+          throw new HarnessUsageSourceChangedError(
+            "Codex rollout changed while reading; refresh to retry",
+          );
       const named = options.sessionId ? undefined : (await threadNames(signal)).get(group.thread);
       return named
         ? entries.map((entry) =>

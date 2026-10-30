@@ -60,6 +60,7 @@ export class OfficialRuntimeScope {
       },
       diagnosticOutput: input.diagnosticOutput,
       gate: this.gate,
+      ...(input.prepareRequest ? { prepareRequest: input.prepareRequest } : {}),
     });
     this.gate.subscribe(() => {
       if (this.#started && this.gate.phase === "unavailable") this.#generationFailed();

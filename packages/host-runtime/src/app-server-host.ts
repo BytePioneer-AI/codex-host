@@ -18,6 +18,7 @@ import {
 import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
+import { NativeProviderRestartRequiredError } from "./codex-runtime/native-voice-compatibility.js";
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import {
@@ -2243,13 +2244,19 @@ export class AppServerHost {
       }
       await this.#officialRuntime.sendFrame(frame);
       this.#markDesktopRequestAnswered(request.id);
-    } catch {
+    } catch (error) {
       if (request.method === "turn/start") {
         this.#pendingOfficialTurnStarts.delete(request.id);
         this.#signalActiveWorkChanged();
       }
       await this.#writer.json(
-        rpcError(request, -32001, "Official request failed; retry explicitly"),
+        rpcError(
+          request,
+          -32001,
+          error instanceof NativeProviderRestartRequiredError
+            ? error.message
+            : "Official request failed; retry explicitly",
+        ),
       );
     }
   }

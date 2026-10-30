@@ -10,6 +10,7 @@ import {
 import { officialEnvironment } from "./app-server-host.js";
 import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
 import { createOwnedLoopbackBackend } from "./codex-runtime/owned-official-backends.js";
+import { prepareNativeVoiceCompatibility } from "./codex-runtime/native-voice-compatibility.js";
 
 export interface PreparedLocalCodex {
   officialRuntimeScope: OfficialRuntimeScope;
@@ -39,16 +40,39 @@ export async function prepareLocalCodex(input: {
     input.environment.CODEX_HOME ?? path.join(homedir(), ".codex"),
   );
   await mkdir(home, { recursive: true });
+  const voiceCompatibility = await prepareNativeVoiceCompatibility({
+    home,
+    arguments: input.arguments,
+    environment: input.environment,
+    lookupThreadCwd: async (threadId) => {
+      const response = await scope.owner.controlRequest("thread/read", {
+        threadId,
+        includeTurns: false,
+      });
+      const result = response.result;
+      if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
+      const thread = result.thread;
+      return thread &&
+        typeof thread === "object" &&
+        !Array.isArray(thread) &&
+        typeof thread.cwd === "string"
+        ? thread.cwd
+        : undefined;
+    },
+  });
   const scope = new OfficialRuntimeScope({
     permanentHome: home,
     diagnosticOutput: input.diagnosticOutput,
     // Local Desktop connections outlive a failed official backend generation.
     recovery: {},
+    ...(voiceCompatibility.prepareRequest
+      ? { prepareRequest: voiceCompatibility.prepareRequest }
+      : {}),
     createBackend: () =>
       createOwnedLoopbackBackend({
         stockCodexPath: input.stockCodexPath,
         cwd: home,
-        arguments: input.arguments,
+        arguments: voiceCompatibility.arguments,
         environment: { ...officialEnvironment(input.environment), CODEX_HOME: home },
       }),
   });

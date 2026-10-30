@@ -288,7 +288,7 @@ CodexHost 的做法不同：
 
 提交 Issue 或 PR 前可阅读[贡献说明](../../CONTRIBUTING.md)；PR 标题标签、简短 CI 结果和发布前校验见[仓库维护自动化](../operations/repository-maintenance.md)。
 
-环境要求：官方 Codex Desktop、Node.js 22.19+ 或 24、Rust。
+环境要求：官方 Codex Desktop、Node.js 22.19+（22.x）、24 或 25、Rust。
 
 ```bash
 git clone https://github.com/BytePioneer-AI/codex-host

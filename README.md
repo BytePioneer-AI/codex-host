@@ -288,7 +288,7 @@ CodexHost does it differently:
 
 Please read the [contributing guide](CONTRIBUTING.md) before opening an issue or PR. See [repository maintenance automation](docs/operations/repository-maintenance.md) for PR title labels, CI summaries, and pre-release checks.
 
-Requirements: the official Codex Desktop, Node.js 22.19+ or 24, and Rust.
+Requirements: the official Codex Desktop, Node.js 22.19+ (22.x), 24 or 25, and Rust.
 
 ```bash
 git clone https://github.com/BytePioneer-AI/codex-host

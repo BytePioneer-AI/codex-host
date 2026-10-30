@@ -849,7 +849,7 @@ The \`codexhost\` command launches the packaged Rust launcher with:
 
 ## Requirements
 
-- Node.js 22 or 24 (Node 20 and older are not supported)
+- Node.js 22.19+ (22.x), 24 or 25
 - Official ChatGPT/Codex Desktop for macOS, Windows, or Linux
 - Pi on \`PATH\` when using the Pi agent
 - Claude Code installed when using the Claude Code adapter

@@ -81,6 +81,196 @@ describe("CodeBuddy native history and output projection", () => {
     );
   });
 
+  it("keeps WorkBuddy context-injection user rows inside the active turn (#616)", () => {
+    const snapshot = snapshotFromHistory(
+      lines([
+        {
+          ...user,
+          id: "q1",
+          providerData: {
+            conversationRequestId: "q-1",
+            startsNewUserRequest: true,
+          },
+          content: [{ type: "input_text", text: "<user_query>hi</user_query>" }],
+        },
+        {
+          ...user,
+          id: "ctx-1",
+          parentId: "q1",
+          providerData: {
+            conversationRequestId: "q-1",
+            startsNewUserRequest: false,
+          },
+          content: [
+            {
+              type: "input_text",
+              text: '<system-reminder data-role="user-context">injected</system-reminder>',
+            },
+          ],
+        },
+        {
+          ...user,
+          id: "ctx-2",
+          parentId: "ctx-1",
+          providerData: {
+            conversationRequestId: "q-1",
+            startsNewUserRequest: false,
+            isMeta: true,
+          },
+          content: [
+            {
+              type: "input_text",
+              text: '<system-reminder data-role="user-context">also meta</system-reminder>',
+            },
+          ],
+        },
+        { ...assistant, id: "a1", parentId: "ctx-2" },
+        {
+          ...user,
+          id: "q2",
+          parentId: "a1",
+          providerData: {
+            conversationRequestId: "q-2",
+            startsNewUserRequest: true,
+          },
+          content: [{ type: "input_text", text: "<user_query>next</user_query>" }],
+        },
+        { ...assistant, id: "a2", parentId: "q2" },
+      ]),
+      ref,
+      process.cwd(),
+    );
+    expect(snapshot.turns).toHaveLength(2);
+    expect(snapshot.turns[0]?.input).toEqual([
+      { type: "text", text: "<user_query>hi</user_query>" },
+    ]);
+    expect(snapshot.turns[1]?.input).toEqual([
+      { type: "text", text: "<user_query>next</user_query>" },
+    ]);
+  });
+
+  it.each([
+    "Do not delete files; only review.",
+    "<user_query>Only review.</user_query>",
+    '<system-reminder data-role="user-context">context</system-reminder>\nOnly review.',
+    '<system-reminder data-role="user-context">context</system-reminder>\n<user_query>Only review.</user_query>',
+  ])("preserves same-turn user input without changing native identity: %s", (content) => {
+    const snapshot = snapshotFromHistory(
+      lines([
+        user,
+        {
+          type: "function_call",
+          id: "call",
+          parentId: "user",
+          callId: "call-1",
+          name: "Bash",
+          arguments: { command: "pwd" },
+        },
+        {
+          ...user,
+          id: "steer",
+          parentId: "call",
+          providerData: { startsNewUserRequest: false },
+          content,
+        },
+        {
+          type: "function_call_result",
+          id: "result",
+          parentId: "steer",
+          callId: "call-1",
+          status: "completed",
+          output: "workspace",
+        },
+        { ...assistant, parentId: "result" },
+        { ...user, id: "next", parentId: "answer", content: "next request" },
+        { ...assistant, id: "next-answer", parentId: "next" },
+      ]),
+      ref,
+      process.cwd(),
+    );
+    expect(snapshot.turns).toHaveLength(2);
+    expect(snapshot.turns[0]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "user" },
+      checkpoint: { checkpointId: "user" },
+      input: [
+        { type: "text", text: "hi" },
+        { type: "text", text: content },
+      ],
+      items: [
+        {
+          item: { type: "commandExecution", output: "workspace" },
+          outcome: { status: "succeeded" },
+        },
+        { item: { type: "agentMessage", text: "ok" } },
+      ],
+      outcome: { status: "succeeded" },
+    });
+    expect(snapshot.turns[1]?.input).toEqual([{ type: "text", text: "next request" }]);
+  });
+
+  it.each([
+    '<system-reminder data-role="user-context">body.includes("<user_query>")</system-reminder>',
+    "  <system-reminder data-role='user-context'>quoted <user_query>text</user_query></system-reminder>\n",
+    '<system-reminder data-role="user-context">first</system-reminder>\n<system-reminder data-role="user-context">second <user_query></system-reminder>',
+  ])("hides context-only wrappers even when they quote user-query tags: %s", (content) => {
+    const snapshot = snapshotFromHistory(
+      lines([
+        user,
+        {
+          ...user,
+          id: "context",
+          parentId: "user",
+          providerData: { startsNewUserRequest: false },
+          content,
+        },
+        { ...assistant, parentId: "context" },
+      ]),
+      ref,
+      process.cwd(),
+    );
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "user" },
+      checkpoint: { checkpointId: "user" },
+      input: [{ type: "text", text: "hi" }],
+      items: [{ item: { type: "agentMessage", text: "ok" } }],
+      outcome: { status: "succeeded" },
+    });
+  });
+
+  it.each([false, true])(
+    "honors startsNewUserRequest=%s for meta rows containing user-query tags",
+    (startsNewUserRequest) => {
+      const snapshot = snapshotFromHistory(
+        lines([
+          user,
+          {
+            ...user,
+            id: "meta",
+            parentId: "user",
+            providerData: { startsNewUserRequest, isMeta: true },
+            content: "<user_query>quoted prompt</user_query>",
+          },
+          { ...assistant, parentId: "meta" },
+        ]),
+        ref,
+        process.cwd(),
+      );
+      expect(snapshot.turns).toHaveLength(startsNewUserRequest ? 2 : 1);
+      expect(snapshot.turns.at(-1)).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: startsNewUserRequest ? "meta" : "user" },
+        input: [
+          {
+            type: "text",
+            text: startsNewUserRequest ? "<user_query>quoted prompt</user_query>" : "hi",
+          },
+        ],
+        items: [{ item: { type: "agentMessage", text: "ok" } }],
+        outcome: { status: "succeeded" },
+      });
+    },
+  );
+
   it("groups native local command records and hides compaction prompts and summaries", () => {
     const snapshot = snapshotFromHistory(
       lines([
@@ -95,7 +285,7 @@ describe("CodeBuddy native history and output projection", () => {
           ...user,
           id: "cost",
           parentId: "caveat",
-          providerData: { skipRun: true },
+          providerData: { skipRun: true, startsNewUserRequest: false, isMeta: true },
           content: "<command-name>/cost</command-name>",
         },
         {
@@ -109,7 +299,7 @@ describe("CodeBuddy native history and output projection", () => {
           ...user,
           id: "compact",
           parentId: "cost-result",
-          providerData: { agent: "compact" },
+          providerData: { agent: "compact", startsNewUserRequest: false, isMeta: true },
           content: "Internal summary instructions",
         },
         {
@@ -213,6 +403,33 @@ describe("CodeBuddy native history and output projection", () => {
     expect(JSON.stringify(snapshot)).not.toContain("cb_summary");
     expect(
       snapshotFromHistory(lines(rows), ref, process.cwd(), nativeCommandProfile, {
+        includeCompactionHistory: false,
+      }).turns[0]?.nativeTurnRef.nativeTurnKey,
+    ).toBe("cmp");
+  });
+
+  it("preserves compaction evidence and physical boundaries on meta continuation rows", () => {
+    const rows = lines([
+      user,
+      assistant,
+      {
+        ...preMessageCompaction,
+        providerData: {
+          ...preMessageCompaction.providerData,
+          startsNewUserRequest: false,
+          isMeta: true,
+        },
+      },
+      { ...assistant, id: "after", parentId: "cmp" },
+    ]);
+    const snapshot = snapshotFromHistory(rows, ref, process.cwd(), nativeCommandProfile);
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]?.items[1]).toMatchObject({
+      item: { type: "contextCompaction" },
+      outcome: { status: "succeeded" },
+    });
+    expect(
+      snapshotFromHistory(rows, ref, process.cwd(), nativeCommandProfile, {
         includeCompactionHistory: false,
       }).turns[0]?.nativeTurnRef.nativeTurnKey,
     ).toBe("cmp");

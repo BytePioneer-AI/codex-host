@@ -603,6 +603,31 @@ export function snapshotFromHistory(
       !manualCompactions.has(text(row.id))
     )
       continue;
+    // Native continuations include both internal context and real user steer messages.
+    // Only context-only wrappers and explicit meta rows are hidden; user text stays
+    // on the active Turn without changing its native identity or pending Tools.
+    if (
+      row.type === "message" &&
+      row.role === "user" &&
+      data.startsNewUserRequest === false &&
+      !localCommand &&
+      data.agent !== "compact" &&
+      !isNativeCompactionSummary(row)
+    ) {
+      const contextOnly =
+        body.trim().length > 0 &&
+        body
+          .replace(
+            /<system-reminder\b[^>]*\sdata-role=(["'])user-context\1[^>]*>[\s\S]*?<\/system-reminder>/gu,
+            "",
+          )
+          .trim().length === 0;
+      if (data.isMeta === true || contextOnly) continue;
+      if (current) {
+        if (body) current.input.push({ type: "text", text: body });
+        continue;
+      }
+    }
     // A cache-expired automatic compaction persists its summary as an internal user row.
     // It is not a user prompt: keep it inside the Turn it compacted and project the
     // native evidence as a compaction Item instead of a raw <cb_summary> message.

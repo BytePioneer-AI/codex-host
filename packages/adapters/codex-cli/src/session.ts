@@ -247,6 +247,8 @@ export class CodexSession implements HarnessSession {
             model: string;
             reasoningEffort: string | null;
           }>("thread/resume", { threadId: this.options.threadId, ...common });
+    if (this.options.threadId !== undefined && response.thread.id !== this.options.threadId)
+      throw new Error("Codex CLI resumed a different native Session");
     this.threadId = response.thread.id;
     this.model ??= response.model;
     this.effort ??= response.reasoningEffort ?? undefined;
@@ -687,6 +689,7 @@ export class CodexSession implements HarnessSession {
     try {
       const response = await this.server.request<{
         thread: {
+          id: string;
           turns: Array<{
             id: string;
             items: CodexItem[];
@@ -697,6 +700,8 @@ export class CodexSession implements HarnessSession {
           }>;
         };
       }>("thread/read", { threadId: this.threadId, includeTurns: true });
+      if (response.thread.id !== this.threadId)
+        throw new Error("Codex CLI returned history for a different native Session");
       return {
         ok: true,
         value: {

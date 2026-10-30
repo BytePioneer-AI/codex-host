@@ -85,6 +85,135 @@ function activeTurnOf(turn: JsonObject): string {
 }
 
 describe("Codex CLI through the external Thread runtime", () => {
+  it("imports one logical Session from multiple native segments, reads its history and continues the same identity", async () => {
+    const { home, adapter, fixture, scenario } = codexCliFixture();
+    const original = {
+      id: "logical-import",
+      name: "Old segment",
+      preview: "earlier",
+      cwd: home,
+      updatedAt: 1_700_000_000,
+      ephemeral: false,
+      parentThreadId: null,
+    };
+    const continuation = { ...original, name: "Segment listing title", updatedAt: 1_700_000_100 };
+    const canonical = {
+      ...original,
+      name: "Canonical native conversation",
+      updatedAt: 1_700_000_050,
+    };
+    scenario({
+      threads: [continuation, original],
+      threadReads: { "logical-import": canonical },
+      threadTurns: {
+        "logical-import": [
+          {
+            id: "before-continuation",
+            status: "completed",
+            items: [
+              {
+                id: "old-user",
+                type: "userMessage",
+                content: [{ type: "text", text: "Before the continuation" }],
+              },
+              { id: "old-answer", type: "agentMessage", text: "Original native answer" },
+            ],
+            startedAt: 1,
+            completedAt: 2,
+            error: null,
+          },
+          {
+            id: "after-continuation",
+            status: "completed",
+            items: [
+              {
+                id: "new-user",
+                type: "userMessage",
+                content: [{ type: "text", text: "After the continuation" }],
+              },
+              { id: "new-answer", type: "agentMessage", text: "Continuation native answer" },
+            ],
+            startedAt: 3,
+            completedAt: 4,
+            error: null,
+          },
+        ],
+      },
+    });
+    try {
+      const listed = await callClient(fixture, "codexhost/harness/session-import/list", {
+        harnessId: CODEX_CLI,
+      });
+      expect(listed).toMatchObject({
+        total: 1,
+        candidates: [
+          {
+            nativeSessionId: "logical-import",
+            title: "Canonical native conversation",
+            cwd: home,
+            updatedAt: 1_700_000_050_000,
+          },
+        ],
+      });
+      const imported = await callClient(fixture, "codexhost/harness/session-import/import", {
+        harnessId: CODEX_CLI,
+        nativeSessionId: "logical-import",
+      });
+      const threadId = String(imported.threadId);
+      expect(
+        await callClient(fixture, "codexhost/harness/session-import/import", {
+          harnessId: CODEX_CLI,
+          nativeSessionId: "logical-import",
+        }),
+      ).toEqual(imported);
+      const beforeOpen = readFileSync(join(home, "rpc.jsonl"), "utf8");
+      expect(beforeOpen).not.toContain('"method":"thread/resume"');
+      expect(beforeOpen).not.toContain('"method":"turn/start"');
+      const history = await callClient(fixture, "thread/turns/list", { threadId, limit: 100 });
+      expect(history.data).toHaveLength(2);
+      expect(JSON.stringify(history)).toContain("Original native answer");
+      expect(JSON.stringify(history)).toContain("Continuation native answer");
+      expect(
+        await callClient(fixture, "codexhost/harness/session-import/list", {
+          harnessId: CODEX_CLI,
+        }),
+      ).toMatchObject({ candidates: [], total: 0 });
+      const turn = await callClient(fixture, "turn/start", {
+        threadId,
+        clientUserMessageId: "continue-imported",
+        input: [{ type: "text", text: "Continue this native conversation" }],
+      });
+      const turnId = activeTurnOf(turn);
+      await waitForSnapshot(
+        fixture,
+        threadId,
+        (snapshot) =>
+          snapshot.activeTurnId !== turnId &&
+          snapshot.turnsPage.data.some((entry) => entry.id === turnId),
+      );
+      const updated = await callClient(fixture, "thread/turns/list", { threadId, limit: 100 });
+      expect(updated.data).toHaveLength(3);
+      expect(JSON.stringify(updated)).toContain("Original native answer");
+      expect(JSON.stringify(updated)).toContain("Continuation native answer");
+      const records = readFileSync(join(home, "rpc.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { method: string; params: { threadId?: string } });
+      expect(records.some((entry) => entry.method === "thread/start")).toBe(false);
+      expect(
+        records
+          .filter((entry) => entry.method === "thread/resume")
+          .every((entry) => entry.params.threadId === "logical-import"),
+      ).toBe(true);
+      expect(records.find((entry) => entry.method === "turn/start")?.params.threadId).toBe(
+        "logical-import",
+      );
+    } finally {
+      await stopFixture(fixture);
+      await adapter.close();
+    }
+  });
+
   it("exposes native account quota through the shared usage and account routes", async () => {
     const { root, adapter, fixture, scenario } = codexCliFixture();
     scenario({

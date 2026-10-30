@@ -166,7 +166,13 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   if (request.method === "thread/start" || request.method === "thread/resume") {
     threadId =
       request.method === "thread/start" ? `native-${process.pid}` : request.params.threadId;
-    result = { thread: { id: threadId }, model: "test-model", reasoningEffort: null };
+    result = {
+      thread: {
+        id: request.method === "thread/resume" ? (config.resumeThreadId ?? threadId) : threadId,
+      },
+      model: "test-model",
+      reasoningEffort: null,
+    };
   }
   if (request.method === "turn/steer" && config.steerReject) {
     send({
@@ -179,9 +185,53 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     });
     return;
   }
-  if (request.method === "thread/read")
-    result = { thread: { turns: config.unsavedTurns === true ? [] : read("turns.json", []) } };
-  if (request.method === "thread/list") result = { data: config.threads ?? [] };
+  if (request.method === "thread/read") {
+    const id = request.params.threadId;
+    const listed = [
+      ...(config.threads ?? []),
+      ...Object.values(config.threadPages ?? {}).flatMap((page) => page.data ?? []),
+    ].find((row) => row.id === id);
+    const metadata = Object.hasOwn(config.threadReads ?? {}, id) ? config.threadReads[id] : listed;
+    const error =
+      config.threadReadErrors?.[id] ??
+      (metadata === null ? { code: -32600, message: `thread not loaded: ${id}` } : null);
+    if (error) {
+      send({ id: request.id, error });
+      return;
+    }
+    result = {
+      thread: {
+        id,
+        ...metadata,
+        turns:
+          request.params.includeTurns !== true || config.unsavedTurns === true
+            ? []
+            : [...(config.threadTurns?.[id] ?? []), ...read("turns.json", [])],
+      },
+    };
+  }
+  if (request.method === "thread/read" && config.threadReadWaitFile) {
+    const waiting = setInterval(() => {
+      if (!fs.existsSync(file(config.threadReadWaitFile))) return;
+      clearInterval(waiting);
+      send({ id: request.id, result });
+    }, 10);
+    return;
+  }
+  if (request.method === "thread/list") {
+    const cursor = request.params.cursor ?? null;
+    if (cursor !== null && cursor === config.threadListErrorCursor) {
+      send({ id: request.id, error: { code: -32000, message: "Native list unavailable" } });
+      return;
+    }
+    const threads = config.threads ?? [];
+    const offset = Number(cursor ?? 0);
+    const limit = request.params.limit ?? 200;
+    result = config.threadPages?.[cursor ?? "first"] ?? {
+      data: threads.slice(offset, offset + limit),
+      nextCursor: offset + limit < threads.length ? String(offset + limit) : null,
+    };
+  }
   if (request.method === "turn/start") {
     const id = "turn-" + process.pid + "-" + ++turn;
     const text = request.params.input.map((part) => part.text ?? "").join("");

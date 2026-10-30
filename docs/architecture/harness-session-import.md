@@ -72,6 +72,16 @@ interface HarnessSessionImportSource {
 
 Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有跨进程 Session 所有权转移协议。
 
+## Codex CLI 原生规则（Web）
+
+- 使用原生 app-server 的 `thread/list` cursor 遍历所有页面，只投影非 ephemeral 的顶层会话；页面大小不是候选总数上限。浏览器不接收原生文件路径或 locator。
+- 分页历史的多个 rollout 段可以具有同一个逻辑 Session ID。Adapter 在所有页面之间归并身份；对重复 ID 使用只读 `thread/read(includeTurns: false)` 获取权威元数据，不按首次出现、文件名或最大更新时间猜测。已消失、返回其他 ID 或不再符合顶层会话条件的重复组被排除，其他会话仍可发现；非“会话不存在”的原生读取错误明确报告，不返回空列表或部分成功。
+- 提交时重新发现所选身份，再按原生 ID 读取最新元数据。Native Ref 只包含 `codex-cli` 与逻辑 Session ID；导入只登记映射，不恢复会话、不发送 Turn、不复制或改写 rollout。
+- 打开后通过同一 CLI 的 `thread/resume` 和 `thread/read(includeTurns: true)` 恢复原生有效历史，分段引用与压缩文件由原生实现处理。Resume 和快照读取都验证返回的 Session ID，不接受另一会话或空白替代会话。
+- `running` 为 null，Host 不提供跨客户端写入互斥。Web 导入页不展示或按候选运行状态拦截；实际原生失败仍显示错误。
+
+隔离原生协议夹具覆盖同页／跨页重复、权威元数据不等于最新文件、提交前复查、重复组消失与身份不一致、读取失败、关闭取消，以及公共 Host 导入后读取两段历史并续写同一会话。macOS 的 Codex CLI `0.161.0` 本机只读验证将 231 条原生记录归并为 226 个有效候选，并使用临时 Mapping Store 验证公共 Host 列表和幂等导入；没有改变生产映射或发送真实 Model 请求。这不是生产 Thread 的 resume／续写实机验收。
+
 ## Pi 原生规则
 
 实现位于 `packages/adapters/pi/src/pi-session-import.ts`，规则核对自 Pi 官方 `sessions.md`、`session-format.md`、`environment-variables.md` 及 SessionManager 实现（本机验证版本 **0.85.0**）：

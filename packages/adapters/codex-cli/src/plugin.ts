@@ -6,6 +6,7 @@
  */
 
 import { createCodexSessionUsage } from "@codexhost/adapter-codex-usage/session-usage";
+import { listCodexImportCandidates, readCodexImportCandidate } from "./codex-session-import.js";
 
 import { projectCodexAccountCredits } from "./account-usage.ts";
 import {
@@ -388,38 +389,7 @@ class CodexAdapter implements HarnessAdapter {
       if (executable.status !== "ready") return { ok: false, error: executableFailure(executable) };
       try {
         const server = await this.controlServer();
-        const response = await server.request<{
-          data: Array<{
-            id: string;
-            name: string | null;
-            preview: string;
-            cwd: string;
-            updatedAt: number;
-            ephemeral: boolean;
-            parentThreadId: string | null;
-          }>;
-        }>("thread/list", { limit: 200, sortKey: "updated_at" });
-        return {
-          ok: true,
-          value: response.data
-            .filter((thread) => !thread.ephemeral && thread.parentThreadId === null)
-            .map((thread) => ({
-              nativeSessionId: thread.id,
-              title:
-                (
-                  thread.name ??
-                  thread.preview
-                    .split("\n")
-                    .find((line) => line.trim() !== "" && !line.startsWith("#")) ??
-                  ""
-                )
-                  .trim()
-                  .slice(0, 200) || null,
-              updatedAt: thread.updatedAt * 1000,
-              cwd: thread.cwd,
-              running: null,
-            })),
-        };
+        return { ok: true, value: await listCodexImportCandidates(server, this.usageAbort.signal) };
       } catch (error) {
         return {
           ok: false,
@@ -434,27 +404,44 @@ class CodexAdapter implements HarnessAdapter {
     resolveCandidate: async (nativeSessionId: string) => {
       const list = await this.sessionImport.listCandidates();
       if (!list.ok) return list;
-      const candidate = list.value.find((entry) => entry.nativeSessionId === nativeSessionId);
-      if (candidate === undefined)
+      try {
+        const candidate = list.value.some((entry) => entry.nativeSessionId === nativeSessionId)
+          ? await readCodexImportCandidate(
+              await this.controlServer(),
+              nativeSessionId,
+              this.usageAbort.signal,
+            )
+          : null;
+        if (!candidate)
+          return {
+            ok: false,
+            error: {
+              code: "sessionNotFound",
+              message: "Codex CLI thread not found or no longer importable",
+              retryable: false,
+            },
+          };
+        return {
+          ok: true,
+          value: {
+            candidate,
+            nativeRef: nativeSessionRefSchema.parse({
+              formatVersion: 1,
+              harnessId: HARNESS_ID,
+              nativeSessionId,
+            }),
+          },
+        };
+      } catch (error) {
         return {
           ok: false,
           error: {
-            code: "sessionNotFound",
-            message: "Codex CLI thread not found",
-            retryable: false,
+            code: "unavailable",
+            message: error instanceof Error ? error.message : String(error),
+            retryable: true,
           },
         };
-      return {
-        ok: true,
-        value: {
-          candidate,
-          nativeRef: nativeSessionRefSchema.parse({
-            formatVersion: 1,
-            harnessId: HARNESS_ID,
-            nativeSessionId,
-          }),
-        },
-      };
+      }
     },
   };
 

@@ -143,6 +143,8 @@ export function startConsoleApp(document: Document): void {
     () => null,
     () => remoteConnections,
     (method, params) => manager.sendRequest(method, params),
+    undefined,
+    undefined,
     (method, params) => manager.sendRequest(method, params),
   );
   const navigate = (pageId: string): void => {

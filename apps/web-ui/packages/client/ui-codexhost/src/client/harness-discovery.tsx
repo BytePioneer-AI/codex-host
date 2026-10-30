@@ -62,6 +62,15 @@ export function registerHarnessDiscovery(ctx: Context): void {
       ctx.sessions.subagentAddress(id) === undefined
     );
   };
+  const supportsDelegation = (id: SessionId) => {
+    const row = ctx.sessions.list.getSnapshot().byId[id];
+    return (
+      supported(id) ||
+      (row?.blank === true &&
+        row.projectionValues?.harnessIdentity != null &&
+        ctx.sessions.subagentAddress(id) === undefined)
+    );
+  };
   const reason = (id: SessionId): string | undefined => {
     const row = ctx.sessions.list.getSnapshot().byId[id];
     if (
@@ -291,7 +300,7 @@ export function registerHarnessDiscovery(ctx: Context): void {
     () =>
       ctx.inputTriggers.registerSource({
         trigger: "/",
-        aliases: ["#"],
+        aliases: ["#", "@"],
         name: AGENTS,
         launcher: "command",
         order: 10,
@@ -299,7 +308,7 @@ export function registerHarnessDiscovery(ctx: Context): void {
         codec: { clipboardText: (ref) => ref, serialize: async (ref) => ref },
         subscribeCandidates: subscribe,
         candidates: async ({ sessionId }, req) => {
-          if (!supported(sessionId)) return [];
+          if (!supportsDelegation(sessionId)) return [];
           const catalog = ctx.modelDirectories.harnessCatalog.getSnapshot().value;
           return (catalog?.groups ?? [])
             .filter((group) =>
@@ -327,7 +336,7 @@ export function registerHarnessDiscovery(ctx: Context): void {
           const group = ctx.modelDirectories.harnessCatalog
             .getSnapshot()
             .value?.groups.find((item) => item.id === pick.candidate.value);
-          if (!supported(pick.session.sessionId) || !group) {
+          if (!supportsDelegation(pick.session.sessionId) || !group) {
             notify(pick.session.sessionId, t("discovery.stale"));
             return "handled";
           }

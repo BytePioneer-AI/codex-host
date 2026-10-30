@@ -13,7 +13,7 @@ for (const width of [390, 1280])
     await plus.click();
     await menu.getByRole("option", { name: /^Model\b/ }).waitFor();
     assert.equal(await menu.getByText("Native commands", { exact: true }).count(), 0);
-    assert.equal(await menu.getByText("Delegation Agents", { exact: true }).count(), 0);
+    await menu.getByRole("option", { name: "CH Harness fake", exact: true }).waitFor();
     assert.equal(
       host.requests.some((r) => r.method === "codexhost/thread/commands/inspect"),
       false,

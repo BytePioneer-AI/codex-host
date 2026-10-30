@@ -2,6 +2,69 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { discoveryBrowser } from "../support/discovery-browser.ts";
 
+for (const width of [390, 1280])
+  it(
+    `draft delegation uses existing menus and preserves the first prompt at ${width}px`,
+    { timeout: 60_000 },
+    async (t) => {
+      const { host, page, composer, plus, menu, attach, writeMethods } = await discoveryBrowser(
+        t,
+        width,
+      );
+      const chips = composer.locator('[data-composer-chip="codexhost-delegation"]');
+      for (const trigger of ["/", "+", "#", "@"]) {
+        await composer.fill(trigger === "+" ? "First request " : `First request ${trigger}fake`);
+        if (trigger === "+") await plus.click();
+        const target = menu.getByRole("option", { name: "CH Harness fake", exact: true });
+        await target.waitFor();
+        assert.equal(await menu.locator('[id*="codexhost-native"]').count(), 0);
+        await target.click();
+        await chips.waitFor();
+        await chips.locator('img[src="/harness-icons/fake"]').waitFor();
+        assert.ok((await composer.innerText()).startsWith("First request "));
+        if (trigger === "/") await attach();
+        await page.getByText("kept.txt", { exact: true }).waitFor();
+        assert.equal(
+          writeMethods().length,
+          0,
+          "picking a draft target does not allocate or submit a Thread",
+        );
+        assert.equal(
+          host.requests.some((r) => r.method === "codexhost/thread/commands/inspect"),
+          false,
+        );
+        if (trigger !== "@") {
+          await composer.press("ControlOrMeta+Z");
+          assert.equal(await chips.count(), 0);
+        }
+      }
+      await composer.press("ControlOrMeta+A");
+      await composer.press("ControlOrMeta+C");
+      const text = await page.evaluate(() => navigator.clipboard.readText());
+      assert.equal(text.trim(), "First request [@CH Harness](subagent://codexhost.fake)");
+      const submitted = page.waitForResponse((response) =>
+        response.url().endsWith("/api/session/prompt"),
+      );
+      await page.getByRole("button", { name: "Send message", exact: true }).click();
+      await submitted;
+      await page.locator('[data-conversation-session^="canonical-"]').waitFor();
+      const creates = host.requests.filter((r) => r.method === "thread/start");
+      const turns = host.requests.filter((r) => r.method === "turn/start");
+      assert.equal(creates.length, 1);
+      assert.equal(turns.length, 1);
+      const turn = turns[0];
+      assert.ok(turn);
+      assert.match(String(turn.params.threadId), /^canonical-/u);
+      const input = JSON.stringify(turn.params.input);
+      assert.ok(input.includes(text.trim()));
+      assert.ok(input.includes("kept.txt:"));
+      assert.equal(
+        host.requests.some((r) => /delegate|watch|command\/execute/.test(r.method)),
+        false,
+      );
+    },
+  );
+
 it(
   "inserts real Harness identities at the caret, supports multiple references/undo/copy, and submits only explicitly",
   { timeout: 60_000 },
@@ -105,15 +168,30 @@ it(
       true,
     );
     await open();
+    await composer.fill("@");
+    await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
+    await menu.getByRole("option", { name: "Twin fake", exact: true }).waitFor();
+    assert.equal(await menu.locator('[id*="codexhost-native"]').count(), 0);
+    await composer.press("Escape");
+    for (const text of ["dev@codex-cli.com", "https://host/@codex-cli", "@notes.txt "]) {
+      await composer.fill(text);
+      await menu.waitFor({ state: "hidden" });
+      assert.equal(await composer.locator("[data-composer-chip]").count(), 0);
+      assert.equal(await composer.innerText(), text);
+    }
     await composer.fill("Discuss Codex @Codex");
     await composer.press("Escape");
     assert.equal(await composer.locator("[data-composer-chip]").count(), 0);
-    await composer.fill("/codex-cli");
+    await composer.fill("@codex-cli");
     await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("Enter");
     await composer.locator('[data-composer-chip="codexhost-delegation"]').waitFor();
     assert.equal(writeMethods().length, 0);
+    assert.equal(
+      host.requests.some((r) => r.method === "codexhost/thread/commands/inspect"),
+      false,
+    );
     await composer.press("Backspace");
     await composer.press("Backspace");
     assert.equal(await composer.locator('[data-composer-chip="codexhost-delegation"]').count(), 0);

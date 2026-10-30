@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Web 提供身份明确的委派 Agent 候选列表
-Web SHALL 在已创建、可输入的本地共享 external Thread 的 `/`、`#` 共享菜单中提供独立的“委派 Agent”分组。首版候选 SHALL 取自 Web 已有、已确认就绪且在当前 Web 可见范围内的会话 Harness 目录，复用其名称、图标与展示顺序，并支持按名称和 Harness ID 搜索。该列表不是 Model、Provider、原生 Subagent 角色或既有 Thread 列表，也不声称覆盖 CLI 的全部委派目标。
+Web SHALL 在未发送的 Web 草稿及已创建、可输入的本地共享 external Thread 的 `/`、`#` 共享菜单、`@` 菜单与加号入口中提供独立的“委派 Agent”分组。首版候选 SHALL 取自 Web 已有、已确认就绪且在当前 Web 可见范围内的会话 Harness 目录，复用其名称、图标与展示顺序，并支持按名称和 Harness ID 搜索。该列表不是 Model、Provider、原生 Subagent 角色或既有 Thread 列表，也不声称覆盖 CLI 的全部委派目标。
 
 #### Scenario: 列出可用目标
 - **WHEN** 用户在受支持会话中打开菜单
@@ -22,10 +22,15 @@ Web SHALL 在已创建、可输入的本地共享 external Thread 的 `/`、`#` 
 - **THEN** 同 Harness 候选 SHALL 可选，用于请求独立子 Thread，而非切换当前 Session
 - **AND** 候选 SHALL 随既有 Web 目录更新；选择已撤下的候选 MUST NOT 插入错误目标，应提示重新选择
 
-#### Scenario: 草稿与只读来源
-- **WHEN** 当前页面是未发送草稿、只读子会话、官方 Codex 或远程来源
+#### Scenario: 未发送草稿选择目标
+- **WHEN** 用户在未发送的 Web 草稿中通过 `/`、`#`、`@` 或加号打开菜单并选择目标
+- **THEN** 委派分组 SHALL 复用已有就绪 Harness 目录并仅插入目标引用，保留正文和附件
+- **AND** MUST NOT 查询原生命令目录、创建 canonical Thread、预热 Session 或发送消息
+- **AND** 原生命令与 Skills SHALL 仍不可用
+
+#### Scenario: 只读及未支持来源
+- **WHEN** 当前页面是只读子会话、官方 Codex 或远程来源
 - **THEN** 本次新增的委派分组 SHALL 不可用
-- **AND** MUST NOT 为显示候选而创建 canonical Thread 或预热 Session
 
 ### Requirement: Web 选择委派 Agent 只编辑当前输入
 选择委派 Agent SHALL 在输入位置插入可识别的 `@名称` 引用，并保留稳定 Harness 身份。引用 SHALL 可删除、撤销、复制并与正文及其他引用混排；已有正文和附件 SHALL 保留。选择动作 MUST NOT 发送消息、切换当前 Harness、创建子 Thread、预读目标历史或直接调用委派执行接口。
@@ -43,7 +48,8 @@ Web SHALL 在已创建、可输入的本地共享 external Thread 的 `/`、`#` 
 #### Scenario: 保持现有输入功能
 - **WHEN** 用户使用文件或会话引用、上传附件、打开模型或权限菜单
 - **THEN** 委派分组 MUST NOT 接管这些入口、改变其身份或破坏其编辑行为
-- **AND** 不新增第二套 `@` 发现菜单；`#` SHALL 仅为同一原生能力菜单的触发别名，共享目录、缓存、选择及提交路径
+- **AND** `@` SHALL 作为同一委派 source 的触发别名，保留既有文件及会话引用，不提供原生命令或 Skills
+- **AND** `#` SHALL 仅为同一原生能力菜单的触发别名，共享目录、缓存、选择及提交路径
 
 ### Requirement: Web 委派引用通过既有用户提交路径生效
 用户发送含委派引用的消息时，Web SHALL 通过当前 Thread 的普通消息路径提交既有身份明确的引用，由现有 Host 引用处理和当前 Agent 的委派 Skill/CLI 流程决定执行。Web MUST NOT 自行添加委派教程或指令、调用 CLI、创建任务、自动注册 watch 或把发送回执当作子任务已创建。实际目标能力及可用性仍由既有执行链路校验。
@@ -53,6 +59,11 @@ Web SHALL 在已创建、可输入的本地共享 external Thread 的 `/`、`#` 
 - **THEN** Web SHALL 将消息提交给当前 Thread，保留目标身份并沿用既有队列或 Steer 规则
 - **AND** 菜单层 MUST NOT 并行发起另一份委派、切换当前 Harness 或自行选择目标 Model/Thinking/权限
 - **AND** 子 Thread 是否建立及执行结果 SHALL 以既有委派反馈为准
+
+#### Scenario: 草稿首条消息包含委派引用
+- **WHEN** 用户显式发送包含目标引用的草稿首条消息
+- **THEN** Web SHALL 沿既有新会话路径创建当前 Thread 并提交首条消息，保留真实目标身份、正文和附件
+- **AND** 菜单层 MUST NOT 额外创建子任务、注册 watch 或提交原生命令
 
 #### Scenario: 普通文本不升级为委派选择
 - **WHEN** 用户仅讨论 Harness 名称、输入裸 `@名称` 或引用普通 Thread

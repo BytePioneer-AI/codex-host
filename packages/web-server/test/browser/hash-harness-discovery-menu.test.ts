@@ -14,9 +14,15 @@ for (const width of [390, 1280])
       const reads = () =>
         host.requests.filter((r) => r.method === "codexhost/thread/commands/inspect");
       await composer.fill("#");
-      await page.waitForTimeout(50);
-      assert.equal(await menu.count(), 0);
-      assert.equal(reads().length, 0, "draft hash does not discover or prewarm");
+      await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
+      assert.equal(await menu.locator('[id*="codexhost-native"]').count(), 0);
+      assert.equal(
+        reads().length,
+        0,
+        "draft delegation does not inspect native commands or prewarm",
+      );
+      assert.equal(writeMethods().length, 0);
+      await page.keyboard.press("Escape");
       await plus.click();
       await menu.getByRole("option", { name: /^Model\b/ }).waitFor();
       await open();

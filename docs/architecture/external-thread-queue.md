@@ -17,7 +17,7 @@ Desktop 在 Turn 运行中提交的跟进消息，经官方 app-server 的 `thre
 
 ## 执行语义
 
-- Turn 正常完成（`completed`）后，Host 自动开始队首提交，对应官方服务端队列的自动推进。
+- Turn 正常完成（`completed`）后，Host 自动开始队首提交，对应官方服务端队列的自动推进。若入队请求晚于完成事件到达，Host 在回复入队后补查：仅当前进程已投影的最近一次 Turn 正常完成、Thread 空闲且没有待处理命令时推进；恢复出的历史不作为自动执行依据。
 - Turn 被中断或失败时不自动推进；Desktop 显示“队列已暂停”，用户点击“继续”时发送 `thread/queue/start`。
 - 运行中点击“引导”时，Desktop 先发 `turn/steer`，再 `thread/queue/delete`；投递方式由外部 steering 决定，见 `external-thread-steering.md`。
 - 开始失败时，提交放回原位置并再次发出 `thread/queue/changed`。

@@ -59,7 +59,7 @@ export function installRendererHostRpcRouting(
   // Draft creation policy. Desktop's Model hook accepts only catalog Models, so a
   // codexhost carrier never reaches the native collaboration mode. The Renderer
   // still issues each creation call; the selected carrier is applied to that call.
-  const externalDrafts = new Map<string, string>();
+  const externalDrafts = new Map<string, { model: string; owner: RendererHostRoutePolicy }>();
   const selectedModels = new Map<string, string>();
   const prewarmCarrier = (carrier: string): string | null => {
     const prefix = "codexhost/plugin-v1@";
@@ -113,7 +113,7 @@ export function installRendererHostRpcRouting(
     let model: string | null = null;
     if (path[0] === "startConversation") {
       const draftId = isRecord(options) ? options.clientThreadId : null;
-      model = typeof draftId === "string" ? (externalDrafts.get(draftId) ?? null) : null;
+      model = typeof draftId === "string" ? (externalDrafts.get(draftId)?.model ?? null) : null;
     } else if (path[0] === "prewarmConversation") {
       // Desktop prewarms only local drafts; the pool is keyed by workspace, not Model.
       if (input.ephemeral !== true) publishDraftWorkspace("local", input.cwd);
@@ -188,6 +188,11 @@ export function installRendererHostRpcRouting(
         return () => target.removeEventListener?.("message", onMessage);
       },
     });
+    const clearDrafts = (): void => {
+      for (const [draftId, draft] of externalDrafts) {
+        if (draft.owner === policy) externalDrafts.delete(draftId);
+      }
+    };
     const clear = (): Promise<void> =>
       isCurrent()
         ? Promise.resolve(rpc.clearPrewarmedThreads()).then(() => undefined)
@@ -206,12 +211,13 @@ export function installRendererHostRpcRouting(
           throw new Error("Draft route Model must be a codexhost transport carrier");
         }
         if (draftId === undefined) {
-          if (model === null) externalDrafts.clear();
-        } else if (model === null) externalDrafts.delete(draftId);
-        else {
+          if (model === null) clearDrafts();
+        } else if (model === null) {
+          if (externalDrafts.get(draftId)?.owner === policy) externalDrafts.delete(draftId);
+        } else {
           if (!draftId.startsWith("client-new-thread:"))
             throw new Error("External draft route is missing its client Thread identity");
-          externalDrafts.set(draftId, model);
+          externalDrafts.set(draftId, { model, owner: policy });
         }
         if ((selectedModels.get(hostId) ?? null) === model) return false;
         if (model === null) selectedModels.delete(hostId);
@@ -223,7 +229,9 @@ export function installRendererHostRpcRouting(
       },
       clear,
       dispose() {
+        if (retired) return;
         retired = true;
+        clearDrafts();
         selectedModels.delete(hostId);
       },
     });

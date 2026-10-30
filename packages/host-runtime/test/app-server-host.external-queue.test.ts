@@ -123,6 +123,54 @@ describe("External Thread follow-up queue", () => {
     }
   });
 
+  it.each(["completed", "interrupted", "failed"])(
+    "handles a queue/add arriving after the Turn is already %s",
+    async (outcome) => {
+      const fixture = createFixture();
+      try {
+        const threadId = await startPiThread(fixture);
+        const turnId = await startPiTurn(fixture, threadId);
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Session was not opened");
+        const execute = vi.spyOn(session, "execute");
+        if (outcome === "completed") session.succeedTurn();
+        else if (outcome === "failed")
+          session.failTurn({ code: "internalError", message: "Fixture failure", retryable: false });
+        else {
+          writeRequest(fixture.desktopInput, {
+            id: 9,
+            method: "turn/interrupt",
+            params: { threadId, turnId },
+          });
+          await fixture.collector.waitFor((message) => requestId(message, 9));
+          session.completeCancellation();
+        }
+        await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+        // Let the completion handler finish its empty-queue check before the delayed request.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        writeRequest(fixture.desktopInput, {
+          id: 10,
+          method: "thread/queue/add",
+          params: { threadId, input: text("late follow-up"), clientUserMessageId: "late-message" },
+        });
+        const added = await fixture.collector.waitFor((message) => requestId(message, 10));
+        expect(added).not.toHaveProperty("error");
+        if (outcome === "completed") {
+          await vi.waitFor(() =>
+            expect(execute).toHaveBeenCalledWith(
+              expect.objectContaining({ type: "turn.start", input: text("late follow-up") }),
+            ),
+          );
+        } else {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(execute).not.toHaveBeenCalledWith(expect.objectContaining({ type: "turn.start" }));
+        }
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
   it("pauses after an interrupted Turn until Desktop starts the queued follow-up", async () => {
     const fixture = createFixture();
     try {

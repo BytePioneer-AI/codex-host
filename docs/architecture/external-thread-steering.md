@@ -77,9 +77,11 @@ Host 和 Renderer 接入必须配套发布；仅升级 Host、让旧 Renderer �
 
 ## 跟进消息队列
 
-Codex Desktop **26.903.61454 / build 8378** 在功能开关及 app-server 版本满足条件时使用服务端队列。运行中追加消息会先调用 `thread/queue/list`，再调用 `thread/queue/add`；仅让 Host 返回空列表不能恢复入队。外部 Thread 不属于官方 app-server，Host 对这些请求的拒绝仍需保留，不能透传或伪造服务端队列。
+Codex Desktop **26.903.61454 / build 8378** 在功能开关及 app-server 版本满足条件时使用服务端队列。运行中追加消息会先调用 `thread/queue/list`，再调用 `thread/queue/add`；仅让 Host 返回空列表不能恢复入队。外部 Thread 不属于官方 app-server，队列请求不能透传给官方。
 
-`renderer-external-queue.ts` 在当前 Manager 的 `getTurnCoordinator().serverQueue.isEnabled(threadId)` 上排除外部 Thread，让 Desktop 继续使用保留的本地队列：
+Manager 位于主进程的 Desktop **26.1027** 使用 Host 实现的真实服务端队列，见[外部 Thread 跟进消息队列](external-thread-queue.md)。以下本地队列补丁仅用于 Renderer 仍持有 Manager 的路径。
+
+`renderer-external-queue.ts` 在 Renderer Manager 的 `getTurnCoordinator().serverQueue.isEnabled(threadId)` 上排除外部 Thread，让 Desktop 继续使用保留的本地队列：
 
 - 只读取同一个 Manager 的 `getConversation(threadId)`，核对 Thread ID 及 Host 投影的保留标记 `modelProvider: "codexhost"`。不根据当前 Agent 选择或 Model 名称猜测，不跨 Host 缓存身份，也不增加 RPC。
 - 普通入队、编辑、重排、删除／恢复、暂停和终态后的自动执行仍由 Desktop 原有队列负责，不新增 Host 队列或 Harness 命令。

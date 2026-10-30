@@ -18,11 +18,19 @@ const carrier = encodeHarnessPluginRoute(
 
 /** Desktop 26.1027: managers live in the main process; the Renderer keeps one
  * capnweb stub per Host in a signal family of the app scope store. */
-function setup(options: { connectionFamilies?: number; nativeManager?: boolean } = {}) {
+function setup(
+  options: { connectionFamilies?: number; nativeManager?: boolean; hosts?: string[] } = {},
+) {
   const rpc = {
     sendRequest: vi.fn(async () => ({ entries: [] })),
     clearPrewarmedThreads: vi.fn(async () => undefined),
   };
+  const connections = new Map(
+    (options.hosts ?? ["local"]).map((hostId) => [
+      hostId,
+      { status: "ready", client: { hostId, rpc: { ...rpc } } },
+    ]),
+  );
   const signal = (value: unknown) => ({ value: { get: () => value, set: vi.fn() } });
   const familyBindings = new Map<unknown, Map<unknown, unknown>>([
     // Account clients share the Host key but not the connection value shape.
@@ -31,7 +39,7 @@ function setup(options: { connectionFamilies?: number; nativeManager?: boolean }
   for (let index = 0; index < (options.connectionFamilies ?? 1); index += 1) {
     familyBindings.set(
       { kind: "signal-family" },
-      new Map([["local", signal({ status: "ready", client: { hostId: "local", rpc } })]]),
+      new Map([...connections].map(([hostId, connection]) => [hostId, signal(connection)])),
     );
   }
   const store = { familyBindings, parent: undefined };
@@ -99,7 +107,7 @@ function setup(options: { connectionFamilies?: number; nativeManager?: boolean }
       new MessagePort(),
       message,
     );
-  return { renderer, target, rpc, sent, post, MessagePort };
+  return { renderer, target, rpc, connections, sent, post, MessagePort };
 }
 
 function policyOf(route: ReturnType<Routing["forHost"]>) {
@@ -182,6 +190,55 @@ it("applies an external draft's carrier only to that draft's creation call", asy
     routing.dispose();
   }
 });
+
+it.each(["disconnected", "replaced"])(
+  "clears only the retired Host's drafts when its RPC is %s",
+  async (change) => {
+    const fixture = setup({ hosts: ["local", "remote"] });
+    const routing = await install(fixture);
+    try {
+      const oldPolicy = policyOf(routing.forHost("local"));
+      oldPolicy.select(carrier, "client-new-thread:local");
+      policyOf(routing.forHost("remote")).select(carrier, "client-new-thread:remote");
+      const connection = fixture.connections.get("local");
+      if (!connection) throw new Error("Missing local fixture connection");
+      if (change === "disconnected") connection.status = "disconnected";
+      else connection.client.rpc = { ...fixture.rpc };
+      const replacement = routing.forHost("local");
+      expect(replacement === null).toBe(change === "disconnected");
+      const local = creation("startConversation", "official", {
+        clientThreadId: "client-new-thread:local",
+      });
+      fixture.post(local);
+      expect(fixture.sent.at(-1)).toEqual(local);
+      fixture.post(
+        creation("startConversation", "official", { clientThreadId: "client-new-thread:remote" }),
+      );
+      expect(fixture.sent.at(-1)).toEqual(
+        creation("startConversation", carrier, { clientThreadId: "client-new-thread:remote" }),
+      );
+      connection.status = "ready";
+      const next = policyOf(routing.forHost("local"));
+      next.select(carrier, "client-new-thread:local");
+      oldPolicy.dispose();
+      fixture.post(local);
+      expect(fixture.sent.at(-1)).toEqual(
+        creation("startConversation", carrier, { clientThreadId: "client-new-thread:local" }),
+      );
+      next.select(null);
+      fixture.post(local);
+      expect(fixture.sent.at(-1)).toEqual(local);
+      fixture.post(
+        creation("startConversation", "official", { clientThreadId: "client-new-thread:remote" }),
+      );
+      expect(fixture.sent.at(-1)).toEqual(
+        creation("startConversation", carrier, { clientThreadId: "client-new-thread:remote" }),
+      );
+    } finally {
+      routing.dispose();
+    }
+  },
+);
 
 it("marks local prewarms with the selected carrier and stops after the draft returns to Codex", async () => {
   const fixture = setup();

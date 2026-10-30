@@ -4832,6 +4832,21 @@ export class AppServerHost {
           );
       }
       await this.#writer.json(rpcEnvelope(request, { result }));
+      if (request.method === "thread/queue/add") {
+        const thread = this.#externalRuntime.get(threadId);
+        const lastTurn = thread?.turns.at(-1);
+        // The completion handler may have checked an empty queue before this add arrived.
+        // Use only a terminal Turn published here, not restored history or a failed start.
+        if (
+          thread &&
+          thread.projectedTerminalTurnId === lastTurn?.id &&
+          lastTurn?.status === "completed" &&
+          isRecord(thread.thread.status) &&
+          thread.thread.status.type === "idle"
+        ) {
+          void this.#drainExternalQueue(thread);
+        }
+      }
     } catch (error) {
       await this.#writer.json(
         rpcError(
@@ -4875,6 +4890,12 @@ export class AppServerHost {
 
   /** Desktop leaves queued follow-ups to the app-server once a Turn completes normally. */
   async #drainExternalQueue(thread: ExternalThread): Promise<void> {
+    if (
+      !this.#externalQueue.has(thread.id) ||
+      this.#externalThreadBusy(thread) ||
+      this.#pendingExternalCommandRequests.has(thread.id)
+    )
+      return;
     try {
       (await this.#startQueuedSubmission(thread)).gate.resolve();
     } catch (error) {

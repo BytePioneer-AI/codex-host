@@ -21,6 +21,7 @@ import {
   harnessIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
+  type HarnessPluginSurface,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -33,6 +34,7 @@ import {
   type DelegationThreadSnapshot,
   type HarnessInspectInput,
   type HarnessInspectResult,
+  type HarnessListInput,
   type HarnessListResult,
   type ThreadCancelInput,
   type ThreadCancelResult,
@@ -157,6 +159,8 @@ export class HarnessDelegationCoordinator {
   readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata>;
   readonly #activeOfficialParents: () => string[];
   readonly #externalThreadBusy: (thread: ExternalThread) => boolean;
+  readonly #harnessSurfaces:
+    ((harnessId: string) => ReadonlySet<HarnessPluginSurface> | undefined) | undefined;
 
   constructor(input: {
     adapters: Map<ExternalHarnessId, HarnessAdapter>;
@@ -186,6 +190,7 @@ export class HarnessDelegationCoordinator {
     officialThreadMetadata(threadId: string): Promise<ParentMetadata>;
     activeOfficialParents(): string[];
     externalThreadBusy(thread: ExternalThread): boolean;
+    harnessSurfaces?(harnessId: string): ReadonlySet<HarnessPluginSurface> | undefined;
   }) {
     this.#adapters = input.adapters;
     this.#environment = input.environment;
@@ -203,20 +208,23 @@ export class HarnessDelegationCoordinator {
     this.#officialThreadMetadata = input.officialThreadMetadata;
     this.#activeOfficialParents = input.activeOfficialParents;
     this.#externalThreadBusy = input.externalThreadBusy;
+    this.#harnessSurfaces = input.harnessSurfaces;
   }
 
-  async listHarnesses(): Promise<HarnessListResult> {
-    return { harnesses: ["codex", ...this.#adapters.keys()] };
+  async listHarnesses(input: HarnessListInput = {}): Promise<HarnessListResult> {
+    const official = await this.#callerIsOfficial(input.parentThreadId);
+    return { harnesses: ["codex", ...this.#delegatableHarnessIds(official)] };
   }
 
   async inspect(input: HarnessInspectInput): Promise<HarnessInspectResult> {
     if (input.harnessId === "codex") return this.#inspectOfficial(input);
+    const official = await this.#callerIsOfficial(input.parentThreadId);
     const adapter = this.#adapters.get(input.harnessId as ExternalHarnessId);
-    if (!adapter) {
+    if (!adapter || (official && !this.#desktopVisible(input.harnessId))) {
       throw new DelegationControlError(
         "HARNESS_NOT_FOUND",
         `Harness '${input.harnessId}' is unavailable`,
-        { validHarnessIds: ["codex", ...this.#adapters.keys()] },
+        { validHarnessIds: ["codex", ...this.#delegatableHarnessIds(official)] },
       );
     }
     return {
@@ -232,6 +240,7 @@ export class HarnessDelegationCoordinator {
     validateStart(input);
     const parentThreadId = await this.#resolveParent(input.parentThreadId);
     const parent = await this.#parentMetadata(parentThreadId);
+    const officialParent = parent.harnessId === "codex";
     const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
     const title = delegationTitle(parent.title, input);
     if (input.harnessId === "codex") {
@@ -244,11 +253,14 @@ export class HarnessDelegationCoordinator {
       return { ...result, parentThreadId, cwd: result.cwd ?? selectedCwd };
     }
     const startInput = { ...input, parentThreadId, cwd: path.resolve(selectedCwd) };
-    if (!this.#adapters.has(input.harnessId)) {
+    if (
+      !this.#adapters.has(input.harnessId) ||
+      (officialParent && !this.#desktopVisible(input.harnessId))
+    ) {
       throw new DelegationControlError(
         "HARNESS_NOT_FOUND",
         `Harness '${input.harnessId}' is unavailable`,
-        { validHarnessIds: ["codex", ...this.#adapters.keys()] },
+        { validHarnessIds: ["codex", ...this.#delegatableHarnessIds(officialParent)] },
       );
     }
     const targetHarnessId = input.harnessId as ExternalHarnessId;
@@ -702,6 +714,24 @@ export class HarnessDelegationCoordinator {
         { validThinkingOptionIds },
       );
     }
+  }
+
+  /** An identity with no external Thread record is the official Codex caller. */
+  async #callerIsOfficial(parentThreadId?: string): Promise<boolean> {
+    if (!parentThreadId) return false;
+    const parsed = hostThreadIdSchema.safeParse(parentThreadId);
+    if (!parsed.success) return false;
+    return (await this.#parentMetadata(parsed.data)).harnessId === "codex";
+  }
+
+  #desktopVisible(harnessId: string): boolean {
+    return this.#harnessSurfaces?.(harnessId)?.has("desktop") ?? true;
+  }
+
+  #delegatableHarnessIds(officialParent: boolean): ExternalHarnessId[] {
+    return [...this.#adapters.keys()].filter(
+      (harnessId) => !officialParent || this.#desktopVisible(harnessId),
+    );
   }
 
   async #parentMetadata(

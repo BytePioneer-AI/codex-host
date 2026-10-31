@@ -1,0 +1,29 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "rootDir": "src",
+    "outDir": "dist",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo",
+    "disableSourceOfProjectReferenceRedirect": true
+  },
+  "references": [
+    {
+      "path": "../session-runtime/tsconfig.json"
+    },
+    {
+      "path": "../desktop-control/tsconfig.json"
+    },
+    {
+      "path": "../shared-contracts/tsconfig.json"
+    },
+    {
+      "path": "../../apps/web-ui/packages/host/dsh-web-backend/tsconfig.build.json"
+    }
+  ],
+  "include": ["src/**/*.ts"]
+}

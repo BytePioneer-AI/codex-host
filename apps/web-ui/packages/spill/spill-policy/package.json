@@ -1,0 +1,22 @@
+{
+  "name": "@deepseek-ai/dsh-spill-policy",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./notice": {
+      "types": "./src/notice.ts",
+      "default": "./src/notice.ts"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-output-retention": "*"
+  }
+}

@@ -38,9 +38,9 @@ pub struct ConsoleCommand {
 /// How a launch shows the console once its outcome is known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Presentation {
-    /// Installer launches (Finder, Start Menu) open the default browser.
+    /// Installer launches (Finder, Start Menu) open the default browser on a problem.
     Browser,
-    /// Terminal launches (`launch`, used by npm and `npm start`) print the address.
+    /// Terminal launches (`launch`, used by npm and `npm start`) print the address on a problem.
     Print,
 }
 
@@ -48,7 +48,6 @@ struct LaunchConsole {
     command: ConsoleCommand,
     presentation: Presentation,
     ensure: Option<JoinHandle<()>>,
-    shown: bool,
 }
 
 static PRESENTATION: Mutex<Option<Presentation>> = Mutex::new(None);
@@ -81,10 +80,9 @@ fn node_command(command: &ConsoleCommand) -> Result<Command, Box<dyn Error>> {
     Ok(process)
 }
 
-/// Starts the console as part of this launch. A terminal launch starts it in
-/// the background; an installer launch waits for it and opens it before Codex
-/// Desktop starts. Resources that do not exist are ignored, so a broken
-/// installation still reports its launch error.
+/// Starts the console in the background as part of this launch, so a problem
+/// can be shown without waiting for it. Resources that do not exist are
+/// ignored, so a broken installation still reports its launch error.
 pub fn start_for_launch(command: ConsoleCommand) {
     if !console_enabled(env::var_os(CONSOLE_ENV)) || !command.console_server.is_file() {
         return;
@@ -97,33 +95,18 @@ pub fn start_for_launch(command: ConsoleCommand) {
             command: command.clone(),
             presentation,
             ensure: None,
-            shown: false,
         });
     }
     let ensure = thread::spawn(move || {
         let Ok(mut process) = node_command(&command) else {
             return;
         };
-        let Ok(output) = process.arg("ensure").stderr(Stdio::null()).output() else {
-            return;
-        };
-        // A terminal launch prints the address as soon as the console serves,
-        // instead of after Codex Desktop becomes ready.
-        if presentation == Presentation::Print
-            && output.status.success()
-            && let Some(url) = parse_console_url(&output.stdout)
-        {
-            print_once(&url);
-        }
+        let _ = process.arg("ensure").stderr(Stdio::null()).output();
     });
     if let Ok(mut slot) = LAUNCH_CONSOLE.lock()
         && let Some(console) = slot.as_mut()
     {
         console.ensure = Some(ensure);
-    }
-    // An installer launch shows the console first, then starts Codex Desktop.
-    if presentation == Presentation::Browser {
-        show(None);
     }
 }
 
@@ -134,19 +117,6 @@ fn parse_console_url(stdout: &[u8]) -> Option<String> {
         .find_map(|line| line.strip_prefix(CONSOLE_URL_PREFIX))
         .map(|url| url.trim().to_owned())
         .filter(|url| crate::validate_loopback_root_url(url).is_ok())
-}
-
-fn print_once(url: &str) {
-    let Ok(mut slot) = LAUNCH_CONSOLE.lock() else {
-        return;
-    };
-    let Some(console) = slot.as_mut() else {
-        return;
-    };
-    if !console.shown {
-        console.shown = true;
-        print_url(url);
-    }
 }
 
 /// Separated by a blank line from what the npm wrapper printed before it.
@@ -164,17 +134,17 @@ fn console_url(command: &ConsoleCommand) -> Result<String, Box<dyn Error>> {
     parse_console_url(&output.stdout).ok_or_else(|| "codexhost console returned no address".into())
 }
 
-/// Shows the console for this launch's outcome. A terminal launch prints the
-/// address. An installer launch already opened the console before starting
-/// Codex Desktop; it opens the overview again only for a problem (`reason`),
-/// and after a successful start watches for a persistent Codex UI integration
-/// failure.
+/// Shows the console only for a problem (`reason`): a terminal launch prints
+/// the address and an installer launch opens the overview. After a successful
+/// installer launch it watches for a persistent Codex UI integration failure.
 pub fn show_for_launch(reason: Option<&str>) -> bool {
-    if reason.is_none() && launch_presentation() == Some(Presentation::Browser) {
-        watch_integration();
-        return true;
+    if reason.is_some() {
+        return show();
     }
-    show(reason)
+    if launch_presentation() == Some(Presentation::Browser) {
+        watch_integration();
+    }
+    true
 }
 
 fn launch_presentation() -> Option<Presentation> {
@@ -205,7 +175,7 @@ fn watch_integration() {
                 continue;
             };
             if integration_failing(&document, launch_started, now_ms()) {
-                show(Some("integration-failure"));
+                show();
                 return;
             }
         }
@@ -232,7 +202,7 @@ fn integration_failing(document: &Value, launch_started_ms: u64, now_ms: u64) ->
     failures >= 2 || now_ms.saturating_sub(updated) >= PERSISTENT_INTEGRATION_FAILURE_MS
 }
 
-fn show(reason: Option<&str>) -> bool {
+fn show() -> bool {
     let (command, presentation, ensure) = {
         let Ok(mut slot) = LAUNCH_CONSOLE.lock() else {
             return false;
@@ -240,10 +210,6 @@ fn show(reason: Option<&str>) -> bool {
         let Some(console) = slot.as_mut() else {
             return false;
         };
-        if console.shown && reason.is_none() {
-            return true;
-        }
-        console.shown = true;
         (
             console.command.clone(),
             console.presentation,
@@ -379,7 +345,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn terminal_launch_uses_the_address_from_ensure_without_asking_again() {
+    fn successful_terminal_launch_does_not_show_the_console() {
         use std::os::unix::fs::PermissionsExt;
 
         let root = env::temp_dir().join(format!("codexhost-console-early-{}", std::process::id()));
@@ -411,16 +377,10 @@ mod tests {
             .and_then(|console| console.ensure.take())
             .expect("ensure started");
         ensure.join().expect("ensure finished");
-        let shown_early = LAUNCH_CONSOLE
-            .lock()
-            .expect("console state")
-            .as_ref()
-            .is_some_and(|console| console.shown);
         let shown_at_ready = show_for_launch(None);
         let calls = std::fs::read_to_string(&calls).unwrap_or_default();
         std::fs::remove_dir_all(&root).expect("remove fixture");
 
-        assert!(shown_early);
         assert!(shown_at_ready);
         assert_eq!(calls, "ensure\n");
     }

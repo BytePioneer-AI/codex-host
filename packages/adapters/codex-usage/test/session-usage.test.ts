@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createUsageStatisticsAdapter } from "../src/plugin.js";
+import { createCodexUsageStatistics } from "../src/usage-statistics.js";
 import { observeSessionUsage } from "../src/session-observation.js";
 
 const thread = "00000000-0000-4000-8000-000000000001";
@@ -69,6 +70,28 @@ describe("Codex session usage capability", () => {
         line("session_meta", { id: thread, session_id: thread }) + request("r1"),
       );
       expect((await capability.read(thread, signal()))?.requests).toHaveLength(1);
+    } finally {
+      await plugin.close();
+    }
+  });
+
+  it("restores turn timing when the completion marker is beyond the row head", async () => {
+    await appendFile(
+      file,
+      line("event_msg", {
+        padding: "x".repeat(4096),
+        type: "task_complete",
+        turn_id: "r1",
+        time_to_first_token_ms: 1234,
+      }),
+    );
+    const plugin = adapter();
+    try {
+      expect((await plugin.sessionUsage.read(thread, signal()))?.lastTurnTiming).toEqual({
+        turnId: "r1",
+        timeToFirstOutputMs: 1234,
+        at: Date.parse("2026-01-01T00:00:00Z"),
+      });
     } finally {
       await plugin.close();
     }
@@ -164,5 +187,118 @@ describe("Codex session usage capability", () => {
         sessionCacheUsage: { inputTokens: 100, cachedInputTokens: 80 },
       },
     });
+  });
+  it("restores the inherited prefix for session totals without changing global attribution", async () => {
+    const parent = "00000000-0000-4000-8000-000000000002";
+    const parentFile = path.join(home, "sessions", `rollout-2026-01-01T00-00-00-${parent}.jsonl`);
+    const row = (ordinal: number, type: string, payload: object) =>
+      JSON.stringify({ ordinal, timestamp: "2026-01-01T00:00:00Z", type, payload }) + "\n";
+    const parentRows = (input = 100) =>
+      row(0, "session_meta", { id: parent, session_id: parent }) +
+      row(1, "turn_context", { turn_id: "parent-turn", model: "parent-model" }) +
+      row(2, "token_usage_record", {
+        thread_id: parent,
+        session_id: parent,
+        turn_id: "parent-turn",
+        response_id: "p1",
+        usage: { input_tokens: input, output_tokens: 10, cached_input_tokens: 50 },
+      }) +
+      row(3, "event_msg", {
+        type: "task_complete",
+        turn_id: "parent-turn",
+        time_to_first_token_ms: 12,
+      }) +
+      row(4, "token_usage_record", {
+        thread_id: parent,
+        session_id: parent,
+        response_id: "after-fork",
+        usage: { input_tokens: 9000, output_tokens: 900, cached_input_tokens: 0 },
+      });
+    await writeFile(parentFile, parentRows());
+    await writeFile(
+      file,
+      line("session_meta", {
+        id: thread,
+        session_id: thread,
+        forked_from_id: parent,
+        history_base: { thread_id: parent, end_ordinal_exclusive: 4 },
+      }) +
+        request("child") +
+        line("event_msg", {
+          type: "task_complete",
+          turn_id: "child",
+          time_to_first_token_ms: 1234,
+        }),
+    );
+    const plugin = adapter();
+    try {
+      const restored = await plugin.sessionUsage.read(thread, signal());
+      expect(restored).toMatchObject({
+        complete: true,
+        usage: { inputTokens: 200, outputTokens: 30 },
+        lastTurnTiming: { turnId: "child", timeToFirstOutputMs: 1234 },
+      });
+      expect(restored?.requests.map((r) => r.model)).toEqual(["parent-model", "model-a"]);
+      expect(restored?.retainedTurnIds).toContain("child");
+      const global = createCodexUsageStatistics({ CODEX_HOME: home }, { sessionId: thread });
+      const [source] = await global.listSources(signal());
+      if (!source) throw new Error("Missing source");
+      expect((await global.readSource(source.id, signal())).map((r) => r.inputTokens)).toEqual([
+        100,
+      ]);
+      await writeFile(
+        parentFile,
+        parentRows().split("\n").slice(0, 4).join("\n") + "\n" + '{"ordinal":4,"type":',
+      );
+      expect((await plugin.sessionUsage.read(thread, signal()))?.complete).toBe(true);
+      // The child did not change: dependency fingerprints still invalidate inherited totals.
+      await writeFile(parentFile, parentRows(200));
+      expect((await plugin.sessionUsage.read(thread, signal()))?.usage?.inputTokens).toBe(300);
+      await rm(parentFile);
+      expect((await plugin.sessionUsage.read(thread, signal()))?.complete).toBe(false);
+      await writeFile(parentFile, parentRows());
+      expect((await plugin.sessionUsage.read(thread, signal()))?.complete).toBe(true);
+    } finally {
+      await plugin.close();
+    }
+  });
+
+  it("rejects unknown fork boundaries and cyclic ancestry without inventing totals", async () => {
+    const parent = "00000000-0000-4000-8000-000000000002";
+    const parentFile = path.join(home, "sessions", `rollout-2026-01-01T00-00-00-${parent}.jsonl`);
+    const metadata = {
+      id: thread,
+      session_id: thread,
+      forked_from_id: parent,
+      history_base: { thread_id: parent, end_ordinal_exclusive: 4 },
+    };
+    await writeFile(file, line("session_meta", metadata) + request("child"));
+    await writeFile(
+      parentFile,
+      line("session_meta", { id: parent, session_id: parent }) +
+        line("turn_context", { model: "parent" }),
+    );
+    const plugin = adapter();
+    try {
+      expect((await plugin.sessionUsage.read(thread, signal()))?.complete).toBe(false);
+      await writeFile(
+        parentFile,
+        JSON.stringify({
+          ordinal: 0,
+          timestamp: "2026-01-01T00:00:00Z",
+          type: "session_meta",
+          payload: {
+            id: parent,
+            session_id: parent,
+            forked_from_id: thread,
+            history_base: { thread_id: thread, end_ordinal_exclusive: 1 },
+          },
+        }) + "\n",
+      );
+      expect((await plugin.sessionUsage.read(thread, signal()))?.complete).toBe(false);
+      expect((await plugin.sessionUsage.read(thread, signal()))?.usage?.inputTokens).toBe(100);
+    } finally {
+      await plugin.close();
+    }
   });
 });

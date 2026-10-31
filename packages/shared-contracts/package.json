@@ -14,6 +14,10 @@
     "./version": {
       "types": "./dist/version.d.ts",
       "import": "./dist/version.js"
+    },
+    "./sidebar-browser": {
+      "types": "./dist/sidebar-browser.d.ts",
+      "import": "./dist/sidebar-browser.js"
     }
   },
   "scripts": {

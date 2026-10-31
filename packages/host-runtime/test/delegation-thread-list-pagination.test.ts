@@ -14,7 +14,12 @@ import type {
   OfficialAppServerConnection,
   OfficialAppServerExit,
 } from "../src/official-app-server-connection.js";
-import { closeFixture, createFixture, startPiThread } from "./app-server-host-fixture.js";
+import {
+  closeFixture,
+  createFixture,
+  startPiThread,
+  writeRequest,
+} from "./app-server-host-fixture.js";
 
 interface NativeRow {
   id: string;
@@ -141,7 +146,20 @@ async function fixture(
         registry.register(api, { harnessCatalog: options.catalog === true && index === 0 }),
     });
   });
-  await Promise.all(hosts.map((host) => host.ready));
+  await Promise.all(
+    hosts.map(async (host) => {
+      await host.ready;
+      writeRequest(host.desktopInput, {
+        id: "paging-initialize",
+        method: "initialize",
+        params: { clientInfo: { name: "paging-test", version: "1" } },
+      });
+      const initialized = await host.collector.waitFor(
+        (message) => message.id === "paging-initialize",
+      );
+      expect(initialized).not.toHaveProperty("error");
+    }),
+  );
   return {
     registry,
     hosts,

@@ -1,0 +1,29 @@
+{
+  "name": "@deepseek-ai/dsh-client-hmr",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/events.ts",
+      "default": "./src/events.ts"
+    },
+    "./client": {
+      "types": "./src/client/index.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {},
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-modules"
+      ],
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

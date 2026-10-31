@@ -16,6 +16,9 @@ import {
   type HarnessInstallationParams,
   type HarnessInstallationState,
   HARNESS_DISPLAY_GET_METHOD,
+  HARNESS_DISPLAY_CHANGED_METHOD,
+  HARNESS_DISPLAY_CAPABILITIES_METHOD,
+  harnessDisplayCapabilitiesSchema,
   HARNESS_DISPLAY_SET_METHOD,
   harnessDisplaySettingsSchema,
   type HarnessDisplaySet,
@@ -120,6 +123,16 @@ import {
 } from "./renderer-request-sender.js";
 import { verifyNativeCodexThread } from "./renderer-native-thread.js";
 import {
+  HARNESS_PREFERENCES_GET_METHOD,
+  HARNESS_PREFERENCES_PATCH_METHOD,
+  HARNESS_PREFERENCES_CHANGED_METHOD,
+  harnessPreferenceSnapshotSchema,
+  harnessPreferencePatchSchema,
+  harnessPreferenceGetSchema,
+  type HarnessPreferenceSnapshot,
+  type HarnessPreferencePatch,
+} from "@codexhost/shared-contracts";
+import {
   createRendererSessionImportClient,
   type RendererSessionImportClient,
 } from "./renderer-session-import-client.js";
@@ -201,7 +214,12 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 }
 
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
+  getHarnessPreferences?(scope?: string): Promise<HarnessPreferenceSnapshot>;
+  patchHarnessPreferences?(input: HarnessPreferencePatch): Promise<HarnessPreferenceSnapshot>;
+  subscribeHarnessPreferences?(listener: () => void): () => void;
   installation?(input: HarnessInstallationParams): Promise<HarnessInstallationState>;
+  getHarnessDisplayCapabilities?(): Promise<{ events: boolean }>;
+  subscribeHarnessDisplaySettings?(listener: () => void): () => void;
   getHarnessDisplaySettings?(): Promise<HarnessDisplaySettings>;
   setHarnessDisplaySettings?(input: HarnessDisplaySet): Promise<HarnessDisplaySettings>;
   getHarnessLaunchSettings?(input: HarnessLaunchSettingsGet): Promise<HarnessLaunchSettings>;
@@ -386,8 +404,46 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async getHarnessPreferences(scope = "external") {
+      return harnessPreferenceSnapshotSchema.parse(
+        await manager.sendRequest(
+          HARNESS_PREFERENCES_GET_METHOD,
+          harnessPreferenceGetSchema.parse({ scope }),
+        ),
+      );
+    },
+    async patchHarnessPreferences(input: HarnessPreferencePatch) {
+      return harnessPreferenceSnapshotSchema.parse(
+        await manager.sendRequest(
+          HARNESS_PREFERENCES_PATCH_METHOD,
+          harnessPreferencePatchSchema.parse(input),
+        ),
+      );
+    },
+    subscribeHarnessPreferences(listener: () => void) {
+      return (
+        notificationTarget(source)?.addNotificationCallback?.(
+          HARNESS_PREFERENCES_CHANGED_METHOD,
+          listener,
+        ) ?? (() => {})
+      );
+    },
     async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {
       return runRendererInstallation(manager.sendRequest, input);
+    },
+    async getHarnessDisplayCapabilities() {
+      if (!notificationTarget(source)) return { events: false };
+      return harnessDisplayCapabilitiesSchema.parse(
+        await manager.sendRequest(HARNESS_DISPLAY_CAPABILITIES_METHOD, {}),
+      );
+    },
+    subscribeHarnessDisplaySettings(listener: () => void) {
+      return (
+        notificationTarget(source)?.addNotificationCallback?.(
+          HARNESS_DISPLAY_CHANGED_METHOD,
+          listener,
+        ) ?? (() => {})
+      );
     },
     async getHarnessDisplaySettings() {
       return harnessDisplaySettingsSchema.parse(

@@ -40,14 +40,14 @@ type: warning
 
 | 启动方式 | 行为 |
 |---|---|
-| 安装包（macOS 打开应用、Windows 开始菜单） | 先启动控制台并在默认浏览器打开总览，再启动 Codex Desktop；启动失败或注入持续失败时另外打开总览查看原因 |
-| 终端（npm 的 `codexhost`、`codexhost launch`、`npm start`） | 控制台在后台与 Codex Desktop 一同启动，启动结束时在终端输出 `codexhost console: http://127.0.0.1:4399/` |
+| 安装包（macOS 打开应用、Windows 开始菜单） | 控制台在后台与 Codex Desktop 一同启动，默认不打开浏览器；启动失败或注入持续失败时在默认浏览器打开总览查看原因 |
+| 终端（npm 的 `codexhost`、`codexhost launch`、`npm start`） | 控制台在后台与 Codex Desktop 一同启动，成功时不输出；启动失败时在终端输出 `codexhost console: http://127.0.0.1:4399/` |
 
 控制台在校验 Shim、Host Runtime、Desktop Controller 和 Renderer 等 Codex 启动资源之前启动；这些文件缺失时，仍能提供故障恢复入口。npm 包装脚本将这部分校验交给 Launcher，不提前拦截。Launcher、Node 和控制台自身文件仍须可用，端口占用等控制台自身故障不保证能打开网页；命令参数解析失败也不进入启动流程。
 
 Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAtMs: null`）。只要该记录对应的 Launcher 仍存活，总览和侧边栏显示“正在启动”，不再提示重复启动；启动完成或失败后由同一条记录更新结果。超时沿用 Launcher 原有的超时与失败处理，不在网页额外设置倒计时。如果 Launcher 异常退出而留下未完成记录，控制台显示启动失败，不会永久停在“正在启动”。
 
-从已打开的 Web 控制台点击“启动”时，安装版调用 Launcher 的显式 `launch` 命令，npm 版通过 npm 包装脚本启动；两者都不再打开浏览器标签页。原页面通过状态轮询展示启动结果。
+从已打开的 Web 控制台点击“启动”时，安装版调用 Launcher 的显式 `launch` 命令，npm 版通过 npm 包装脚本启动；两者都不再打开浏览器标签页。原页面通过状态轮询展示启动结果。状态由 Console 全局共享：窗口可见时，稳定状态每 30 秒检查，启动中或读取失败时每 5 秒检查；隐藏暂停周期查询，恢复可见立即补读。切换到其他设置页仍检测 Host 在线状态，手动及操作后刷新继续可用；单次概览请求最多等待 8 秒，并发刷新合并。
 
 设置 `CODEXHOST_CONSOLE=0` 可关闭以上行为。其他打开方式：
 
@@ -60,6 +60,14 @@ Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAt
 地址为 `http://127.0.0.1:4399/`。命令只复用安装、构建版本和数据目录均一致的控制台；若端口上的控制台属于另一份安装（例如 npm 与安装包并存），或使用不同的 `CODEXHOST_DATA_DIR`，先让旧实例退出再以当前配置启动。控制台不需要登录，直接访问即可。
 
 源码工作区的 `npm start` 会移除继承的 `CODEXHOST_NPM_*` 更新路由，避免从已安装的 Harness 会话启动时，Shim 又选回 npm 包里的旧 Host Runtime。显式数据目录与代理配置仍保留；从远程 Host 会话启动本机 Desktop 时，应确认 `CODEXHOST_DATA_DIR` 没有指向正在使用的远程数据目录，需要本机默认目录时可用 `env -u CODEXHOST_DATA_DIR npm start`（POSIX）。
+
+### 从源码重启
+
+在仓库根目录执行 `npm start` 重启共享 Host 和 Desktop，执行 `npm start web` 重启共享 Host 和对应 Web 开发服务；两者都会中断 Host 上正在运行的任务，另一端已打开的界面按既有机制重连。无需额外的 Host 开发命令。
+
+两个入口都在构建成功、产物验证后调用原生 Launcher 的 `host restart`，在同一数据目录的生命周期锁内等待旧进程树退出，再启动当前构建并等待就绪。构建失败或产物缺失不会停止旧 Host，Host 重启失败则不继续启动界面。`--no-build` 只跳过构建，仍重启 Host 和对应界面，不重放中断的任务。
+
+Desktop 使用 `CODEXHOST_DATA_DIR`，默认 `~/.codexhost`。Web 使用 `--ch-data` 或 `--ch-control-directory` 对应的 Host 数据目录，默认同为 `~/.codexhost`；Web 自身的 `--data` 不改变 Host 位置。Web 只停止相同工作树、相同端口且进程身份匹配的旧开发服务，不关闭 Desktop；其他端口或工作树的服务保持运行。Web 开发重启要求本地共享 Host，旧 CDP 接入请直接使用打包版 preview 入口。
 
 ## 端口
 
@@ -106,11 +114,11 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 
 远程连接配置由 Codex Desktop 保存；Web 不另存一份配置。此页需要通过 codexhost 启动的桌面端：Web → 本机 Host → 带随机令牌的 Controller 通道 → Renderer 中的固定连接操作。只接受约定的操作和参数，不开放任意原生请求或脚本执行。远程状态和更新沿用桌面端的远程 Host 客户端；SSH 安装、修复和卸载沿用本机 Host 的 Rust 执行器。
 
-桌面端未运行时提示先启动 codexhost；旧版 Controller 或 Renderer 不支持此通道时提示通过 codexhost 重新启动。请求失败不自动重试写操作，避免重复安装或修改连接；超时后需刷新确认状态。
+桌面端未运行时提示先启动 codexhost；旧版 Controller 或 Renderer 不支持此通道时提示通过 codexhost 重新启动。请求失败不自动重试写操作，避免重复安装或修改连接；超时后需刷新确认状态。远程页可见且稳定时每 30 秒检查，操作、更新或检查失败时每 5 秒检查；隐藏或离页停止周期查询，恢复可见及操作结束立即核对。
 
 ## Harness 排序与分组
 
-连接页的排序、主列表 / 更多分组、恢复默认排列使用同一份本机设置，由 Host Runtime 保存到 `<数据目录>/harness-display-settings-v1.json`。Web 通过控制通道读写，Codex 界面始终通过本机 Host 读写（不随远程会话切换）；不同 Host 进程读取同一文件。两端约每 3 秒检查一次变化，不需要重启。
+连接页的排序、主列表 / 更多分组、恢复默认排列使用同一份本机设置，由 Host Runtime 保存到 `<数据目录>/harness-display-settings-v1.json`。Web 通过控制通道读写，Codex 界面始终通过本机 Host 读写（不随远程会话切换）；不同 Host 进程读取同一文件。支持事件的入口在 Host 保存成功后读取确认快照，重连或恢复可见时补读；明确缺少事件支持的旧入口保留 3 秒兼容读取，不需要重启。
 
 - 首次接入时，若共享设置不存在，迁移 Codex 界面原有的 `codexhost.agentGroupPreference.v1` 本地偏好。旧 Web 的本地排序不参与迁移；已有共享设置优先，迁移不会覆盖它。localStorage 仅作为迁移来源读取，不再持续写入或用作展示缓存；界面只保留 Host 确认后的内存状态，未连接 Host 时不接受仅本地生效的修改。
 - 修改经 Host 保存确认后才更新界面。读取或保存失败时显示提示，保留上次确认的顺序，不把本地修改伪装成成功；恢复连接后继续同步，保存失败可重试修改。

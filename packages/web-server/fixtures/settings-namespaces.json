@@ -1,0 +1,338 @@
+[
+  {
+    "ns": "ui-theme",
+    "autoGenerate": false,
+    "schema": {
+      "uid": 3742,
+      "refs": {
+        "3737": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "light"
+        },
+        "3738": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "dark"
+        },
+        "3739": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "system"
+        },
+        "3740": {
+          "type": "union",
+          "meta": {
+            "default": "system"
+          },
+          "list": [3737, 3738, 3739]
+        },
+        "3741": {
+          "type": "number",
+          "meta": {
+            "step": 1,
+            "min": 10,
+            "max": 22,
+            "default": 14
+          }
+        },
+        "3742": {
+          "type": "object",
+          "meta": {
+            "default": {}
+          },
+          "dict": {
+            "preference": 3740,
+            "fontSize": 3741
+          }
+        }
+      }
+    },
+    "value": {
+      "preference": "system",
+      "fontSize": 14
+    },
+    "base": {
+      "preference": "system",
+      "fontSize": 14
+    },
+    "user": {},
+    "applies": "live",
+    "secrets": [],
+    "revision": 0
+  },
+  {
+    "ns": "locale",
+    "autoGenerate": false,
+    "schema": {
+      "uid": 3746,
+      "refs": {
+        "3745": {
+          "type": "string",
+          "meta": {
+            "pattern": {
+              "source": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$",
+              "flags": "u"
+            },
+            "required": false
+          }
+        },
+        "3746": {
+          "type": "object",
+          "meta": {
+            "default": {}
+          },
+          "dict": {
+            "preference": 3745
+          }
+        }
+      }
+    },
+    "value": {},
+    "base": {},
+    "user": {},
+    "applies": "live",
+    "secrets": [],
+    "revision": 0
+  },
+  {
+    "ns": "ui-settings",
+    "autoGenerate": false,
+    "schema": {
+      "uid": 3749,
+      "refs": {
+        "3748": {
+          "type": "boolean",
+          "meta": {
+            "default": true
+          }
+        },
+        "3749": {
+          "type": "object",
+          "meta": {
+            "default": {}
+          },
+          "dict": {
+            "enabled": 3748
+          }
+        }
+      }
+    },
+    "value": {
+      "enabled": true
+    },
+    "base": {
+      "enabled": true
+    },
+    "user": {},
+    "applies": "live",
+    "secrets": [],
+    "revision": 0
+  },
+  {
+    "ns": "ui-settings-general",
+    "autoGenerate": false,
+    "schema": {
+      "uid": 3752,
+      "refs": {
+        "3751": {
+          "type": "string",
+          "meta": {}
+        },
+        "3752": {
+          "type": "object",
+          "meta": {
+            "default": {}
+          },
+          "dict": {
+            "welcomeNoticeVersion": 3751
+          }
+        }
+      }
+    },
+    "value": {},
+    "base": {},
+    "user": {},
+    "applies": "live",
+    "secrets": [],
+    "revision": 0
+  },
+  {
+    "ns": "ui-conversation",
+    "autoGenerate": false,
+    "schema": {
+      "uid": 3757,
+      "refs": {
+        "3754": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "queue"
+        },
+        "3755": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "steer"
+        },
+        "3756": {
+          "type": "union",
+          "meta": {
+            "default": "queue"
+          },
+          "list": [3754, 3755]
+        },
+        "3757": {
+          "type": "object",
+          "meta": {
+            "default": {}
+          },
+          "dict": {
+            "busyEnter": 3756
+          }
+        }
+      }
+    },
+    "value": {
+      "busyEnter": "queue"
+    },
+    "base": {
+      "busyEnter": "queue"
+    },
+    "user": {},
+    "applies": "live",
+    "secrets": [],
+    "revision": 0
+  },
+  {
+    "ns": "ui-chat",
+    "autoGenerate": false,
+    "schema": {
+      "uid": 3772,
+      "refs": {
+        "3759": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "compact"
+        },
+        "3760": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "standard"
+        },
+        "3761": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "detailed"
+        },
+        "3762": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "verbose"
+        },
+        "3763": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "normal"
+        },
+        "3764": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "expanded"
+        },
+        "3765": {
+          "type": "union",
+          "meta": {
+            "loose": true
+          },
+          "list": [3759, 3760, 3761, 3762, 3763, 3764]
+        },
+        "3766": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "compact"
+        },
+        "3767": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "detailed"
+        },
+        "3768": {
+          "type": "union",
+          "meta": {
+            "default": "detailed"
+          },
+          "list": [3766, 3767]
+        },
+        "3769": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "sidebar"
+        },
+        "3770": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "new-tab"
+        },
+        "3771": {
+          "type": "union",
+          "meta": {
+            "default": "sidebar"
+          },
+          "list": [3769, 3770]
+        },
+        "3772": {
+          "type": "object",
+          "meta": {
+            "default": {}
+          },
+          "dict": {
+            "transcriptView": 3765,
+            "performanceUsage": 3768,
+            "linkOpening": 3771
+          }
+        }
+      }
+    },
+    "value": {
+      "performanceUsage": "detailed",
+      "linkOpening": "sidebar"
+    },
+    "base": {
+      "performanceUsage": "detailed",
+      "linkOpening": "sidebar"
+    },
+    "user": {},
+    "applies": "live",
+    "secrets": [],
+    "revision": 0
+  }
+]

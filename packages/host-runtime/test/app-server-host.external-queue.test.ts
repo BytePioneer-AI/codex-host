@@ -39,7 +39,7 @@ describe("External Thread follow-up queue", () => {
       ).queuedSubmission;
       expect(first).toEqual({
         id: expect.any(String),
-        input: text("first"),
+        input: [{ type: "text", text: "first", text_elements: [] }],
         clientUserMessageId: "message-1",
       });
       await fixture.collector.waitFor(

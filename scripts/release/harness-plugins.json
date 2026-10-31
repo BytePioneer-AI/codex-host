@@ -18,6 +18,7 @@
     "packages/adapters/qoder-cn",
     "packages/adapters/kimi-code",
     "packages/adapters/zcode",
+    "packages/adapters/codex-cli",
     "packages/adapters/copilot",
     "packages/adapters/codex-usage"
   ],

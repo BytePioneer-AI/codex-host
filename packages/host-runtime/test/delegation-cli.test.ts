@@ -91,6 +91,27 @@ describe("delegation CLI", () => {
     });
   });
 
+  it("preserves the caller Thread while resolving a relative Harness inspection cwd", async () => {
+    const fetchImpl = successfulFetch({ harnessId: "pi", inspection: { status: "ready" } });
+    await expect(
+      runDelegationCli({
+        arguments: ["harness", "inspect", "pi", "--cwd", "."],
+        environment: {
+          [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+          [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+          [DELEGATION_THREAD_ID_ENV]: "codex://threads/inspection-parent",
+        },
+        output: new PassThrough(),
+        fetchImpl,
+      }),
+    ).resolves.toBe(0);
+    expect(JSON.parse(String(vi.mocked(fetchImpl).mock.calls[0]?.[1]?.body))).toEqual({
+      harnessId: "pi",
+      parentThreadId: "inspection-parent",
+      cwd: process.cwd(),
+    });
+  });
+
   it("normalizes deep links and sends delegate start as JSON", async () => {
     const fetchImpl = successfulFetch({ threadId: "child-1" });
     const output = new PassThrough();

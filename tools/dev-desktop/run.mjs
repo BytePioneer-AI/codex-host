@@ -2,24 +2,20 @@ import { spawn } from "node:child_process";
 import { constants, accessSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { runQuietWebBuild } from "./build.mjs";
+import { restartDevelopmentHost } from "./host.mjs";
+import { hostRestartMode } from "./host-restart.mjs";
+import {
+  windowsDesktopDetectionScript,
+  macOsDesktopDetectionScript,
+} from "./interface-processes.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 const windowsDesktopCleanupScript = String.raw`
 $ErrorActionPreference = 'Stop'
 
-function Test-CodexDesktopProcess($process) {
-  if ($null -eq $process) {
-    return $false
-  }
-
-  $executablePath = ([string]$process.ExecutablePath).Replace([char]47, [char]92).ToLowerInvariant()
-  return (
-    $process.Name -ieq 'ChatGPT.exe' -and
-    $executablePath.Contains('\windowsapps\openai.codex_') -and
-    $executablePath.EndsWith('\app\chatgpt.exe')
-  )
-}
+${windowsDesktopDetectionScript}
 
 $desktopProcesses = @(
   Get-CimInstance Win32_Process -ErrorAction Stop |
@@ -50,27 +46,8 @@ if ($remainingDesktopProcesses.Count -ne 0) {
   throw 'Codex Desktop did not exit before timeout.'
 }
 
-$graceDeadline = [DateTime]::UtcNow.AddSeconds(2)
-do {
-  $runtimeProcesses = @(Get-Process -Name 'codexhost', 'codexhost-shim' -ErrorAction SilentlyContinue)
-  if ($runtimeProcesses.Count -eq 0) {
-    break
-  }
-  if ([DateTime]::UtcNow -ge $graceDeadline) {
-    $runtimeProcessIds = @($runtimeProcesses | ForEach-Object { [int]$_.Id })
-    Stop-Process -Id $runtimeProcessIds -Force -ErrorAction SilentlyContinue
-    Wait-Process -Id $runtimeProcessIds -Timeout 10 -ErrorAction SilentlyContinue
-    break
-  }
-  Start-Sleep -Milliseconds 50
-} while ($true)
-
-$remainingRuntimeProcesses = @(
-  Get-Process -Name 'codexhost', 'codexhost-shim' -ErrorAction SilentlyContinue
-)
-if ($remainingRuntimeProcesses.Count -ne 0) {
-  throw 'The previous codexhost runtime did not exit before timeout.'
-}
+# The native Desktop Launcher owns cleanup of its process tree. Do not stop
+# codexhost by name: an independent shared Host may own running Web tasks.
 
 Write-Output "codexhost dev: stopped $($desktopProcessIds.Count) Codex Desktop process(es)"
 `;
@@ -78,14 +55,7 @@ Write-Output "codexhost dev: stopped $($desktopProcessIds.Count) Codex Desktop p
 const macOsDesktopCleanupScript = String.raw`
 set -eu
 
-# Bundled CLI and node_repl processes can belong to an independent Web Host.
-# Only the Desktop application executable is owned by this cleanup.
-system_desktop_pattern='^/Applications/(ChatGPT|Codex)\.app/Contents/MacOS/(ChatGPT|Codex)( |$)'
-user_desktop_pattern="^$HOME/Applications/(ChatGPT|Codex)\.app/Contents/MacOS/(ChatGPT|Codex)( |$)"
-desktop_running() {
-  /usr/bin/pgrep -f "$system_desktop_pattern" >/dev/null 2>&1 ||
-    /usr/bin/pgrep -f "$user_desktop_pattern" >/dev/null 2>&1
-}
+${macOsDesktopDetectionScript}
 
 if desktop_running; then
   /usr/bin/pkill -KILL -f "$system_desktop_pattern" >/dev/null 2>&1 || true
@@ -130,10 +100,11 @@ controller_pid() {
   esac
 }
 
+# The native Launcher cleans its Desktop tree while preserving transferred
+# independent services. Only the verified Desktop Controller is ours to stop;
+# never kill codexhost by name, since Web may already own a shared Host.
 runtime_running() {
-  /usr/bin/pgrep -x codexhost >/dev/null 2>&1 ||
-    /usr/bin/pgrep -x codexhost-shim >/dev/null 2>&1 ||
-    [ -n "$(controller_pid)" ]
+  [ -n "$(controller_pid)" ]
 }
 
 controller="$(controller_pid)"
@@ -151,8 +122,6 @@ if runtime_running; then
   if [ -n "$controller" ]; then
     /bin/kill -KILL "$controller" >/dev/null 2>&1 || true
   fi
-  /usr/bin/pkill -KILL -x codexhost >/dev/null 2>&1 || true
-  /usr/bin/pkill -KILL -x codexhost-shim >/dev/null 2>&1 || true
 fi
 
 attempt=0
@@ -170,14 +139,23 @@ echo 'codexhost dev: stopped the running Codex Desktop'
 
 export function usage() {
   return `usage: npm start [version] [-- --no-build]
+       npm start web [-- --port 3181] [--no-watch]
 
 Stop any running Codex Desktop, then build and run the current codexhost worktree.
+After building, reuse an unchanged shared Host; restart a changed Host unless the other interface is open.
+If the other interface is open, ask whether to keep Host (default) or restart it, interrupting tasks.
+Non-interactive prompts keep Host and warn; an absent Host is started by the interface.
+The web subcommand replaces this worktree's Web preview on the selected port without stopping Desktop.
 
 arguments:
   version            set the runtime version, e.g. npm start 0.12.0
 
 options:
   --no-build          reuse existing development artifacts
+  --restart-host      force restart of a running Host (mutually exclusive with --keep-host)
+  --keep-host         keep the running Host without asking
+  --watch             web only: enable Web UI hot reload (default)
+  --no-watch          web only: disable Web UI rebuild watching and hot reload
   --version <semver>  alternative version syntax (npm start -- --version 0.12.0)
   --help              show this help`;
 }
@@ -190,6 +168,11 @@ export function parseArguments(arguments_) {
     const argument = arguments_[index];
     if (argument === "--help" || argument === "-h") {
       options.help = true;
+      continue;
+    }
+    if (argument === "--restart-host" || argument === "--keep-host") {
+      options[argument.slice(2)] = true;
+      hostRestartMode(options);
       continue;
     }
     if (argument === "--no-build") {
@@ -299,11 +282,12 @@ export function npmBuildInvocation(
   environment = process.env,
   platform = process.platform,
   nodePath = process.execPath,
+  script = "build",
 ) {
   const npmExecPath = environment.npm_execpath;
   return npmExecPath
-    ? { command: nodePath, arguments: [npmExecPath, "run", "build"] }
-    : { command: platform === "win32" ? "npm.cmd" : "npm", arguments: ["run", "build"] };
+    ? { command: nodePath, arguments: [npmExecPath, "run", script] }
+    : { command: platform === "win32" ? "npm.cmd" : "npm", arguments: ["run", script] };
 }
 
 export function runningDesktopCleanupInvocation(platform = process.platform) {
@@ -353,6 +337,41 @@ function runChild(invocation, root, spawnImplementation = spawn, environment = p
     });
     child.once("error", reject);
     child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+}
+
+// `npm start web`: the Web UI rebuild watcher runs beside the preview, which serves
+// the rebuilt bundles from source. Either process ending stops the other.
+function runWatchedWeb(preview, watcher, root, spawnImplementation, environment) {
+  const start = (invocation) =>
+    spawnImplementation(invocation.command, invocation.arguments, {
+      cwd: root,
+      stdio: "inherit",
+      env: environment,
+      windowsHide: false,
+    });
+  return new Promise((resolve, reject) => {
+    const watchProcess = start(watcher);
+    const previewProcess = start(preview);
+    let previewExited = false;
+    let watcherExited = false;
+    watchProcess.once("error", reject);
+    previewProcess.once("error", reject);
+    watchProcess.once("exit", () => {
+      watcherExited = true;
+      if (previewExited) return;
+      console.error("codexhost web: the Web UI watcher exited; stopping the Web preview");
+      previewProcess.kill("SIGTERM");
+    });
+    previewProcess.once("exit", (code) => {
+      previewExited = true;
+      if (watcherExited) {
+        resolve(1);
+        return;
+      }
+      watchProcess.kill("SIGTERM");
+      resolve(code ?? 1);
+    });
   });
 }
 
@@ -409,6 +428,44 @@ export async function runDevelopmentDesktop({
   nodePath = process.execPath,
   spawnImplementation = spawn,
 } = {}) {
+  if (arguments_[0] === "web") {
+    const webArguments = arguments_.slice(1);
+    hostRestartMode({
+      "restart-host": webArguments.includes("--restart-host"),
+      "keep-host": webArguments.includes("--keep-host"),
+    });
+    if (webArguments.includes("--watch") && webArguments.includes("--no-watch")) {
+      throw new Error("--watch and --no-watch are mutually exclusive");
+    }
+    const watch = !webArguments.includes("--no-watch");
+    if (!webArguments.includes("--no-build")) {
+      const buildResult = await runQuietWebBuild(
+        npmBuildInvocation(environment, platform, nodePath, "build:web"),
+        { root, spawnImplementation, environment },
+      );
+      if (buildResult.code !== 0) return buildResult.code ?? 1;
+    }
+    const preview = {
+      command: nodePath,
+      arguments: [
+        "--import",
+        "tsx",
+        path.join(root, "packages/web-server/scripts/preview.ts"),
+        "--restart",
+        ...(watch ? ["--dev-web-ui", path.join(root, "apps/web-ui")] : []),
+        ...webArguments.filter(
+          (argument) => !["--no-build", "--watch", "--no-watch"].includes(argument),
+        ),
+      ],
+    };
+    if (!watch) return (await runChild(preview, root, spawnImplementation, environment)).code ?? 1;
+    const watcher = {
+      command: nodePath,
+      arguments: ["--import", "tsx", path.join(root, "apps/web-ui/scripts/build.ts"), "--watch"],
+    };
+    return runWatchedWeb(preview, watcher, root, spawnImplementation, environment);
+  }
+
   const options = parseArguments(arguments_);
   if (options.help) {
     console.log(usage());
@@ -487,6 +544,13 @@ export async function runDevelopmentDesktop({
     launchEnvironment.CODEXHOST_DEV_VERSION = options.version;
     console.log(`codexhost dev: source runtime version is ${options.version}`);
   }
+  await restartDevelopmentHost({
+    root,
+    mode: hostRestartMode(options),
+    artifacts,
+    environment: launchEnvironment,
+    run: (invocation, env) => runChild(invocation, root, spawnImplementation, env),
+  });
   const launchStartedAt = performance.now();
   const launchResult = await runLauncher(
     launcherInvocation(artifacts, piPath),

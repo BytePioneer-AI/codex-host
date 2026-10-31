@@ -23,6 +23,9 @@
 | [`architecture/harness-questions.md`](architecture/harness-questions.md) | 外部 Harness 多选提问卡片、原生单选分流、回答归属与生命周期；修改提问交互时阅读。 |
 | [`architecture/external-thread-steering.md`](architecture/external-thread-steering.md) | 外部 Thread 按 Session 能力选择原生同轮插入或停止后重发；修改 steering 时阅读。 |
 | [`architecture/external-thread-queue.md`](architecture/external-thread-queue.md) | 外部 Thread 跟进消息的 Host 原生 `thread/queue/*`、自动推进与中断暂停；修改排队或 Turn 启动时阅读。 |
+| [`architecture/host-client-channel.md`](architecture/host-client-channel.md) | GUI、Web 与 App 按需连接独立后台的生命周期、认证通道、事件驱动快照、交互仲裁及恢复边界。 |
+| [OpenSpec：状态刷新与轮询优化](../openspec/changes/reduce-redundant-state-polling/proposal.md) | Web 目录与组织状态分别校验，远程设置页和 Console 按可见性降频；查看方案、实现进度与验收边界时阅读。 |
+| [`architecture/gui-web-shared-state-design.md`](architecture/gui-web-shared-state-design.md) | 当前所有权概览：共享 Host 的外部 Thread、Codex CLI 的 Web-only 界面声明、存储分区、启动发现及简化后的生命周期边界；不提供旧 standalone 迁移。 |
 | [`architecture/delegation-titles.md`](architecture/delegation-titles.md) | 委派子会话标题、子任务显示名、创建快照与重试边界。 |
 | [`architecture/delegation-thread-list.md`](architecture/delegation-thread-list.md) | 委派 CLI 列表的共享 catalog、独立来源分页、查询绑定与活列表一致性边界。 |
 | [`architecture/thread-watch.md`](architecture/thread-watch.md) | 一次性 Thread 停下通知（`thread watch`）的模型、结果、送达与边界；修改委派跟进或通知时阅读。 |
@@ -121,6 +124,13 @@
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`harnesses/qwen/qwen-code-harness-integration.md`](harnesses/qwen/qwen-code-harness-integration.md) | 官方 `@qwen-code/sdk` 的 Query 生命周期、模型与权限模式、交互投影、Transcript 恢复及当前能力边界；维护 Qwen Code Adapter 时阅读。 |
+
+## 独立 Web 应用
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA 的共享 CH 会话、GUI/Web 共享偏好、作为普通外部 Harness 的 Codex CLI、原生项目归组、历史分页、侧栏服务器浏览器推流、源码构建、启动隔离、跨工作树停机及验收限制；开发 Web 或与 Desktop 并行运行时阅读。 |
+| [`proposals/web-remote-relay-architecture.md`](proposals/web-remote-relay-architecture.md) | 未实施的手机公网远程架构：电脑出站中继、独立设备网址、扫码授权、端到端加密、三端代码边界及分阶段验收。 |
 
 ## 账号与 Desktop 产品接入
 

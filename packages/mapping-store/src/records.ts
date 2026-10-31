@@ -1,3 +1,4 @@
+import { usageMeasurementsSchema } from "@codexhost/shared-contracts";
 import {
   harnessIdSchema,
   hostThreadIdSchema,
@@ -76,16 +77,35 @@ const storedThreadCoreV1Shape = {
   updatedAt: isoDateSchema,
 };
 
-/**
- * Desktop organization metadata, stored separately from the Thread's identity and mappings.
- */
+/** Thread presentation/organization metadata, stored separately from its identity and mappings. */
 const storedThreadMetadataFieldsShape = {
+  usageMeasurements: z
+    .object({ nativeSessionRef: nativeSessionRefSchema, values: usageMeasurementsSchema })
+    .strict()
+    .optional()
+    .catch(undefined),
+  /** Bounded first user message, independent of the official title. Empty means textless. */
+  preview: z.string().max(4_096).optional(),
   projectId: nonBlankTextSchema.max(1_024).optional(),
+  projectlessWorkspace: z
+    .object({
+      workspaceRoot: nonBlankTextSchema.max(16_384),
+      outputDirectory: nonBlankTextSchema.max(16_384),
+    })
+    .strict()
+    .optional(),
   daybreakEnabled: z.boolean().optional(),
   gitInfo: storedGitInfoV1Schema.optional(),
 };
 
-export const THREAD_METADATA_FIELDS = ["projectId", "daybreakEnabled", "gitInfo"] as const;
+export const THREAD_METADATA_FIELDS = [
+  "usageMeasurements",
+  "preview",
+  "projectId",
+  "projectlessWorkspace",
+  "daybreakEnabled",
+  "gitInfo",
+] as const;
 
 export const storedThreadMetadataV1Schema = z
   .object({
@@ -234,7 +254,9 @@ export interface FindRecentDelegationInput {
  * unchanged; `null` clears the stored value.
  */
 export interface ThreadMetadataPatch {
+  preview?: string | null;
   projectId?: string | null;
+  projectlessWorkspace?: StoredThreadRecordV1["projectlessWorkspace"] | null;
   daybreakEnabled?: boolean;
   gitInfo?: {
     branch?: string | null;
@@ -252,6 +274,7 @@ export interface CreateProvisionalThreadInput {
   transportModelId: string;
   ephemeral: boolean;
   historyMode: "legacy" | "paginated";
+  projectlessWorkspace?: StoredThreadRecordV1["projectlessWorkspace"];
   forkSource?: { hostThreadId: HostThreadId; hostTurnId: HostTurnId };
   subagent?: {
     parentHostThreadId: HostThreadId;

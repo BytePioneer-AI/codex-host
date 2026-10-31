@@ -72,6 +72,13 @@ export interface HarnessInspectInput {
   harnessId: RoutedHarnessId;
   cwd?: string;
   refresh?: boolean;
+  /** Calling Thread; an official parent cannot inspect a Harness Desktop must not present. */
+  parentThreadId?: string;
+}
+
+export interface HarnessListInput {
+  /** Calling Thread; an official parent cannot list a Harness Desktop must not present. */
+  parentThreadId?: string;
 }
 
 export interface HarnessInspectResult {
@@ -231,7 +238,7 @@ export interface DelegationWatchApi {
 }
 
 export interface DelegationControlApi {
-  listHarnesses(): Promise<HarnessListResult>;
+  listHarnesses(input?: HarnessListInput): Promise<HarnessListResult>;
   inspect(input: HarnessInspectInput): Promise<HarnessInspectResult>;
   start(input: DelegationStartInput): Promise<DelegationStartResult>;
   send(input: ThreadSendInput): Promise<ThreadSendResult>;

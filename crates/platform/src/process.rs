@@ -341,7 +341,14 @@ impl ObservedProcessTree {
         )?;
         #[cfg(target_os = "linux")]
         let snapshots = process_snapshots()?;
-        self.observe_snapshots(&snapshots)
+        let mut owned = self.observe_snapshots(&snapshots)?;
+        // A native service explicitly transfers to its own supervisor before
+        // starting children. Closing its former Desktop parent must not kill it.
+        let transferred = super::independent_service::transferred_processes(&self.root, &owned);
+        owned.retain(|process| !transferred.contains(&process.id));
+        self.known
+            .retain(|process| !transferred.contains(&process.id));
+        Ok(owned)
     }
 
     fn observe_snapshots(

@@ -14,6 +14,13 @@ import { createOwnedLoopbackBackend } from "./codex-runtime/owned-official-backe
 export interface PreparedLocalCodex {
   officialRuntimeScope: OfficialRuntimeScope;
   accountControl: CodexAccountControl;
+  /** Deferred service startup accepts Desktop's native invocation before the first
+   * backend generation. Never changes an already-owned process or replays work. */
+  configureStartup(input: {
+    stockCodexPath: string;
+    arguments: string[];
+    environment: NodeJS.ProcessEnv;
+  }): void;
   close(): Promise<void>;
 }
 
@@ -34,23 +41,33 @@ export async function prepareLocalCodex(input: {
   arguments: string[];
   environment: NodeJS.ProcessEnv;
   diagnosticOutput: Writable;
+  /** Shared service: Web-only use need not start the official Codex process. */
+  deferStart?: boolean;
 }): Promise<PreparedLocalCodex> {
   const home = await canonicalCodexHome(
     input.environment.CODEX_HOME ?? path.join(homedir(), ".codex"),
   );
   await mkdir(home, { recursive: true });
+  let startup = {
+    stockCodexPath: input.stockCodexPath,
+    arguments: input.arguments,
+    environment: input.environment,
+  };
+  let startupConfigured = false;
   const scope = new OfficialRuntimeScope({
     permanentHome: home,
     diagnosticOutput: input.diagnosticOutput,
     // Local Desktop connections outlive a failed official backend generation.
     recovery: {},
-    createBackend: () =>
-      createOwnedLoopbackBackend({
-        stockCodexPath: input.stockCodexPath,
+    createBackend: () => {
+      startupConfigured = true;
+      return createOwnedLoopbackBackend({
+        stockCodexPath: startup.stockCodexPath,
         cwd: home,
-        arguments: input.arguments,
-        environment: { ...officialEnvironment(input.environment), CODEX_HOME: home },
-      }),
+        arguments: startup.arguments,
+        environment: { ...officialEnvironment(startup.environment), CODEX_HOME: home },
+      });
+    },
   });
   // controlRequest requires an initialized client on this same owned backend.
   // This connection only reads native identity; it does not own authentication.
@@ -60,7 +77,7 @@ export async function prepareLocalCodex(input: {
     capabilities: { experimentalApi: true },
   });
   try {
-    await scope.start();
+    if (!input.deferStart) await scope.start();
   } catch (error) {
     await scope.close();
     identityReader.close();
@@ -75,17 +92,25 @@ export async function prepareLocalCodex(input: {
     accounts: current ? [current] : [],
   });
   const accounts = new SingleNativeCodexAccount(snapshot, async () => {
+    await scope.start();
     const response = await scope.owner.controlRequest("account/read", { refreshToken: false });
     if (response.error) throw new Error("Official Account read failed");
     current = currentCodexAccountFromOfficialRead(response.result);
     return snapshot();
   });
-  void accounts.refresh?.()?.catch(() => {
-    input.diagnosticOutput.write("codexhost: Codex Account identity could not be read\n");
-  });
+  if (!input.deferStart)
+    void accounts.refresh?.()?.catch(() => {
+      input.diagnosticOutput.write("codexhost: Codex Account identity could not be read\n");
+    });
   return {
     officialRuntimeScope: scope,
     accountControl: accounts,
+    configureStartup: (configuration) => {
+      if (input.deferStart && !startupConfigured && scope.owner.generation === 0 && !scope.closed) {
+        startupConfigured = true;
+        startup = { ...configuration, arguments: [...configuration.arguments] };
+      }
+    },
     close: async () => {
       await scope.close();
       identityReader.close();

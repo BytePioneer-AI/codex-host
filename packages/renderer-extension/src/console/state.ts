@@ -60,45 +60,96 @@ export interface UpdateSummary {
 
 type Listener = () => void;
 
-/** One polled view of the console state shared by the sidebar and pages. */
+/** One view of Host availability shared by the sidebar and all settings pages. */
 export class ConsoleState {
   overview: ConsoleOverview | null = null;
   update: UpdateSummary | null = null;
   offline = false;
   readonly #listeners = new Set<Listener>();
   #timer: number | undefined;
+  #running = false;
+  #generation = 0;
+  #intervalMs = 5_000;
+  #refreshing: Promise<void> | undefined;
+  readonly #visible = (): void => {
+    if (document.visibilityState === "hidden") this.#clearTimer();
+    else void this.refresh();
+  };
 
   subscribe(listener: Listener): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
 
-  async refresh(): Promise<void> {
-    try {
-      this.overview = await consoleGet<ConsoleOverview>("/api/overview");
-      this.offline = false;
-    } catch {
-      this.offline = true;
-    }
-    this.#emit();
+  refresh(): Promise<void> {
+    if (this.#refreshing) return this.#refreshing;
+    const generation = this.#generation;
+    this.#clearTimer();
+    const operation = (async () => {
+      try {
+        const overview = await consoleGet<ConsoleOverview>(
+          "/api/overview",
+          AbortSignal.timeout(8_000),
+        );
+        if (generation !== this.#generation) return;
+        this.overview = overview;
+        this.offline = false;
+      } catch {
+        if (generation !== this.#generation) return;
+        this.offline = true;
+      }
+      this.#emit();
+    })().finally(() => {
+      if (this.#refreshing !== operation) return;
+      this.#refreshing = undefined;
+      this.#schedule();
+    });
+    this.#refreshing = operation;
+    return operation;
   }
 
   async checkUpdate(): Promise<void> {
+    const generation = this.#generation;
     try {
-      this.update = await consolePost<UpdateSummary | null>("/api/update/check");
+      const update = await consolePost<UpdateSummary | null>("/api/update/check");
+      if (generation !== this.#generation) return;
+      this.update = update;
     } catch {
+      if (generation !== this.#generation) return;
       this.update = null;
     }
     this.#emit();
   }
 
   start(intervalMs = 5_000): void {
-    void this.refresh().then(() => this.checkUpdate());
-    this.#timer = window.setInterval(() => void this.refresh(), intervalMs);
+    if (this.#running) return;
+    this.#running = true;
+    this.#intervalMs = intervalMs;
+    document.addEventListener("visibilitychange", this.#visible);
+    const generation = this.#generation;
+    void this.refresh().then(() => {
+      if (this.#running && generation === this.#generation) return this.checkUpdate();
+    });
   }
 
   stop(): void {
-    if (this.#timer !== undefined) window.clearInterval(this.#timer);
+    this.#running = false;
+    this.#generation++;
+    this.#refreshing = undefined;
+    this.#clearTimer();
+    document.removeEventListener("visibilitychange", this.#visible);
+  }
+
+  #clearTimer(): void {
+    if (this.#timer !== undefined) window.clearTimeout(this.#timer);
+    this.#timer = undefined;
+  }
+
+  #schedule(): void {
+    this.#clearTimer();
+    if (!this.#running || document.visibilityState === "hidden") return;
+    const fast = this.offline || !this.overview || this.overview.summary.state === "starting";
+    this.#timer = window.setTimeout(() => void this.refresh(), fast ? this.#intervalMs : 30_000);
   }
 
   #emit(): void {

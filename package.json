@@ -10,7 +10,10 @@
   },
   "workspaces": [
     "packages/*",
-    "packages/adapters/*"
+    "packages/adapters/*",
+    "apps/web-ui",
+    "apps/web-ui/packages/*/*",
+    "apps/web-ui/vendor/*"
   ],
   "prettier": {
     "arrowParens": "always",
@@ -24,10 +27,18 @@
   },
   "scripts": {
     "start": "node --disable-warning=UNDICI-EHPA tools/dev-desktop/run.mjs",
+    "stop": "node tools/dev-desktop/stop.mjs",
     "install:local": "bash scripts/install-local.sh",
     "build": "npm run build:typescript && npm run build:renderer && npm run build:rust",
     "build:typescript": "tsc -b && npm run build:plugins",
     "build:plugins": "node scripts/release/harness-plugins.mjs --output packages/host-runtime/dist/plugins",
+    "build:web": "npm run build:typescript && npm run build:rust && npm run build:web:ui && npm run pack --workspace=@codexhost/web-server",
+    "build:web:ui": "npm run build:renderer && node --import tsx apps/web-ui/scripts/build.ts",
+    "start:web": "node --disable-warning=UNDICI-EHPA tools/dev-desktop/run.mjs web",
+    "test:web": "npm run test --workspace=@codexhost/web-server",
+    "test:web:browser": "npm run test:browser --workspace=@codexhost/web-server",
+    "test:web:distribution": "npm run test:distribution --workspace=@codexhost/web-server",
+    "test:shared-host": "npm run build:typescript && cargo build --locked --package codexhost-launcher && node --import tsx --test packages/host-runtime/test/native/*.test.ts",
     "build:renderer": "npm run build --workspace=@codexhost/renderer-extension",
     "build:rust": "cargo build --locked --package codexhost-launcher --package codexhost-platform --package codexhost-shim --package codexhost-updater",
     "release:prepare": "node scripts/release/prepare-version.mjs",
@@ -41,7 +52,7 @@
     "lint": "eslint . && node tools/check-boundaries.mjs",
     "format": "prettier --write . && cargo fmt --all",
     "format:check": "prettier --check . && cargo fmt --all --check",
-    "test:typescript": "npm run build:typescript && vitest run --config tests/vitest.config.js",
+    "test:typescript": "npm run build:typescript && vitest run --config tests/vitest.config.js && npm run test:web",
     "test:deepseek:coverage": "npm run build:typescript && vitest run --config tests/vitest.deepseek-coverage.config.js",
     "test:rust": "cargo test --workspace --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools",
     "test": "npm run test:typescript && npm run test:rust",
@@ -76,7 +87,8 @@
     "audit:codex-desktop": "npm run build:typescript && npm run build:renderer && node tools/codex-desktop-contract-audit/run.mjs",
     "check:rust": "cargo fmt --all --check && cargo clippy --workspace --all-targets --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools -- -D warnings && cargo test --workspace --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run test:typescript && npm run check:rust",
-    "clean": "node tools/clean.mjs"
+    "clean": "node tools/clean.mjs",
+    "postinstall": "node scripts/apply-dependency-patches.mjs"
   },
   "devDependencies": {
     "@agentclientprotocol/sdk": "1.3.0",
@@ -93,12 +105,15 @@
     "esbuild": "0.28.1",
     "eslint": "10.8.0",
     "globals": "17.7.0",
+    "jsdom": "^30.1.3",
     "postcss": "8.5.28",
     "prettier": "3.9.6",
     "smol-toml": "^1.8.0",
     "tailwindcss": "4.3.3",
+    "tsx": "4.22.4",
     "typescript": "6.0.3",
     "typescript-eslint": "8.65.0",
+    "vite": "8.1.5",
     "vitest": "4.1.10",
     "zod": "4.4.3"
   },

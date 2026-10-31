@@ -5,6 +5,7 @@ export {
   type InstalledHarnessPlugin,
 } from "./discovery.js";
 export { HarnessLaunchSettingsStore } from "./launch-settings.js";
+export { HarnessPreferencesStore, HarnessPreferenceConflict } from "./preferences.js";
 export {
   pluginResourcePath,
   readPluginConfiguration,

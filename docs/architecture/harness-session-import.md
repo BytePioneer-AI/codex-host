@@ -5,6 +5,7 @@
 设置 → 会话导入可登记 **Claude Code、Pi、Hermes、Cursor CLI ACP、Kiro CLI、Grok、CodeBuddy、WorkBuddy、OMP、Kimi Code、OpenCode（v2）、Qoder、Qoder CN** 和 **DSH** 的原生 Session（已验证 `0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2`；命令和限制见 [DSH 验证记录](../harnesses/deepseek/dsh-version-validation.md)）。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
 
 - Desktop 设置页提供明确的 Host 选择器。未手动选择时使用可唯一确定的 Composer Host；多个本地/远程标签页导致归属不明确时，要求先选择 Host，不显示为协议不支持。手动选择后，刷新仍使用该 Host，不随 Composer 改变。每次加载列表时捕获目标客户端，导入、打开及导航重试始终使用该列表所属 Host；切换 Host 清空旧列表并使在途结果失效，导入和导航重试期间禁止切换。目标 Host 不可用时不回退本地。独立控制台仍使用其连接的本地 Host。
+- Web 侧栏导入页使用同一共享 Host 的公共契约，并支持仅 Web 的 Codex CLI（`codex-cli`）。来源、候选列表、提交结果分别使用 `{ harnesses }`、`{ candidates, total }`、`{ threadId }`；Harness 身份来自当前列表所属来源，不从候选行推断。分页、迟到响应和导入后重试约束见[独立 Web 应用](../product/standalone-web.md#原生会话导入)。
 - 可选 Harness 来自该 Host 已加载、同时提供发现和解析能力的 Adapter，不使用 Renderer 内置 Harness 名单。
 - Desktop 内置的 `durable` Host 不作为外部 Harness 导入来源；默认客户端属于该 Host 时，导入页选择本地。此规则按完整 Host ID 匹配，不影响名称为 durable 的远程连接。
 - Host 的目录表示“实现了导入接口”，不保证当前原生运行时可用。导入页优先复用目标 Host 的连接检测缓存，隐藏确认“未安装”的 Harness。缓存缺失、目录读取失败或相关 Harness 仍在检测时，复用连接页的目标 Host 检测，等待完成后重新读取缓存再展示选项；检测结果仍不完整时显示加载失败，不直接展示全部插件。手动刷新重新检测当前 Host，搜索、翻页和切换 Harness 复用完整缓存。认证失败、协议不兼容等已返回的检测错误不等于未安装，保留其导入入口，由原生导入接口判断历史是否可读。没有连接诊断接口的客户端沿用 Host 返回的导入来源。
@@ -72,6 +73,16 @@ interface HarnessSessionImportSource {
 5. 返回 Host Thread ID。Renderer 导航失败不能回滚已提交的映射；保留项目路径、重试打开，重挂载和过期请求不能重复导航。
 
 Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有跨进程 Session 所有权转移协议。
+
+## Codex CLI 原生规则（Web）
+
+- 使用原生 app-server 的 `thread/list` cursor 遍历所有页面，只投影非 ephemeral 的顶层会话；页面大小不是候选总数上限。浏览器不接收原生文件路径或 locator。
+- 分页历史的多个 rollout 段可以具有同一个逻辑 Session ID。Adapter 在所有页面之间归并身份；对重复 ID 使用只读 `thread/read(includeTurns: false)` 获取权威元数据，不按首次出现、文件名或最大更新时间猜测。已消失、返回其他 ID 或不再符合顶层会话条件的重复组被排除，其他会话仍可发现；非“会话不存在”的原生读取错误明确报告，不返回空列表或部分成功。
+- 提交时重新发现所选身份，再按原生 ID 读取最新元数据。Native Ref 只包含 `codex-cli` 与逻辑 Session ID；导入只登记映射，不恢复会话、不发送 Turn、不复制或改写 rollout。
+- 打开后通过同一 CLI 的 `thread/resume` 和 `thread/read(includeTurns: true)` 恢复原生有效历史，分段引用与压缩文件由原生实现处理。Resume 和快照读取都验证返回的 Session ID，不接受另一会话或空白替代会话。
+- `running` 为 null，Host 不提供跨客户端写入互斥。Web 导入页不展示或按候选运行状态拦截；实际原生失败仍显示错误。
+
+隔离原生协议夹具覆盖同页／跨页重复、权威元数据不等于最新文件、提交前复查、重复组消失与身份不一致、读取失败、关闭取消，以及公共 Host 导入后读取两段历史并续写同一会话。macOS 的 Codex CLI `0.161.0` 本机只读验证将 231 条原生记录归并为 226 个有效候选，并使用临时 Mapping Store 验证公共 Host 列表和幂等导入；没有改变生产映射或发送真实 Model 请求。这不是生产 Thread 的 resume／续写实机验收。
 
 ## Pi 原生规则
 

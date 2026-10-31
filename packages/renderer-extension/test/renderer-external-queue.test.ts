@@ -20,14 +20,10 @@ function fixture() {
   ]);
   const local = new Map<string, QueuedMessage[]>();
   const remote = new Map<string, QueuedMessage[]>();
-  const rpc = vi.fn(async (method: string, params: { threadId: string }) => {
-    if (conversations.get(params.threadId)?.modelProvider === "codexhost") {
-      throw Object.assign(new Error(`External Thread does not support ${method}`), {
-        code: -32076,
-      });
-    }
-    return { data: remote.get(params.threadId) ?? [], nextCursor: null };
-  });
+  const rpc = vi.fn(async (_method: string, params: { threadId: string }) => ({
+    data: remote.get(params.threadId) ?? [],
+    nextCursor: null,
+  }));
   const queue = {
     isEnabled: vi.fn<(threadId?: unknown) => boolean>(() => true),
     read: (threadId: string) => remote.get(threadId),
@@ -149,111 +145,42 @@ function fixture() {
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("external follow-ups retain Desktop's local queue", () => {
-  it("queues another message during an external Turn without thread/queue/list or add", async () => {
-    const f = fixture();
-    const adapter = f.install();
-    try {
-      await expect(
-        f.coordinator.sendMessage({ conversationId: "external", message: f.message }),
-      ).resolves.toEqual({ status: "queued", messageId: f.message.id });
-      expect(f.coordinator.readMessages("external")).toEqual([f.message]);
-      expect(f.local.get("external")).toEqual([f.message]);
-      expect(f.rpc).not.toHaveBeenCalled();
-    } finally {
-      adapter.dispose();
-    }
-  });
+describe("external follow-ups use the Shared Host queue", () => {
+  it.each(["external", "native"])(
+    "keeps %s Threads on Desktop's enabled server queue",
+    async (threadId) => {
+      const f = fixture();
+      const adapter = f.install();
+      try {
+        await expect(
+          f.coordinator.sendMessage({ conversationId: threadId, message: f.message }),
+        ).resolves.toEqual({ status: "queued", messageId: f.message.id });
+        expect(f.rpc.mock.calls).toEqual([
+          ["thread/queue/list", { threadId }],
+          ["thread/queue/add", { threadId }],
+        ]);
+        expect(f.local.has(threadId)).toBe(false);
+        expect(f.coordinator.readMessages(threadId)).toEqual([f.message]);
+        expect(f.queue.isEnabled(threadId)).toBe(true);
+      } finally {
+        adapter.dispose();
+      }
+    },
+  );
 
-  it("preserves existing paused follow-ups and stays local after the queue drains", async () => {
-    const f = fixture();
-    const paused = {
-      ...f.message,
-      id: "paused",
-      pausedReason: "Interrupted before the steer was accepted.",
-    };
-    f.local.set("external", [paused]);
-    const adapter = f.install();
-    try {
-      await f.coordinator.sendMessage({ conversationId: "external", message: f.message });
-      expect(f.local.get("external")).toEqual([paused, f.message]);
-      f.local.delete("external");
-      await f.coordinator.sendMessage({ conversationId: "external", message: f.message });
-      expect(f.local.get("external")).toEqual([f.message]);
-      expect(f.rpc).not.toHaveBeenCalled();
-    } finally {
-      adapter.dispose();
-    }
-  });
-
-  it("keeps native Threads on the enabled server queue on the same connection", async () => {
-    const f = fixture();
-    const adapter = f.install();
-    try {
-      await f.coordinator.sendMessage({ conversationId: "native", message: f.message });
-      expect(f.rpc.mock.calls).toEqual([
-        ["thread/queue/list", { threadId: "native" }],
-        ["thread/queue/add", { threadId: "native" }],
-      ]);
-      expect(f.local.has("native")).toBe(false);
-      expect(f.coordinator.readMessages("native")).toEqual([f.message]);
-      expect(f.queue.isEnabled("external")).toBe(false);
-      expect(f.queue.isEnabled("native")).toBe(true);
-      expect(f.originalGate.mock.contexts.every((receiver) => receiver === f.queue)).toBe(true);
-    } finally {
-      adapter.dispose();
-    }
-  });
-
-  it("reads current per-manager Thread metadata rather than the selected Agent or an ID cache", () => {
-    const f = fixture();
-    const other = fixture();
-    const adapter = f.install();
-    try {
-      expect(f.queue.isEnabled("external")).toBe(false);
-      expect(other.queue.isEnabled("external")).toBe(true);
-      f.conversations.set("native", { id: "native", modelProvider: "codexhost" });
-      expect(f.queue.isEnabled("native")).toBe(false);
-      expect(f.queue.isEnabled("unloaded")).toBe(true);
-      expect(f.queue.isEnabled()).toBe(true);
-      f.originalGate.mockReturnValue(false);
-      expect(f.queue.isEnabled("unloaded")).toBe(false);
-    } finally {
-      adapter.dispose();
-    }
-  });
-
-  it("restores the original gate on uninstall and can install again", () => {
+  it("only probes the native server queue and never replaces its enablement gate", () => {
     const f = fixture();
     for (let i = 0; i < 2; i++) {
       const adapter = f.install();
-      expect(f.queue.isEnabled("external")).toBe(false);
+      expect(f.queue.isEnabled).toBe(f.originalGate);
+      expect(f.queue.isEnabled("external")).toBe(true);
       adapter.dispose();
       expect(f.queue.isEnabled).toBe(f.originalGate);
       expect(Object.hasOwn(f.manager, "getTurnCoordinator")).toBe(false);
     }
   });
 
-  it("requires matching external Thread metadata and does not overwrite a later wrapper", () => {
-    const f = fixture();
-    const adapter = f.install();
-    try {
-      f.conversations.set("native", { id: "different-thread", modelProvider: "codexhost" });
-      expect(f.queue.isEnabled("native")).toBe(true);
-      f.conversations.delete("external");
-      expect(f.queue.isEnabled("external")).toBe(true);
-      f.conversations.set("external", { id: "external", modelProvider: "codexhost" });
-      expect(f.queue.isEnabled("external")).toBe(false);
-      const replacement = vi.fn(() => false);
-      f.queue.isEnabled = replacement;
-      adapter.dispose();
-      expect(f.queue.isEnabled).toBe(replacement);
-    } finally {
-      adapter.dispose();
-    }
-  });
-
-  it("does not patch a server queue with an incompatible gate property", () => {
+  it("accepts a non-writable native queue gate because the adapter does not patch it", () => {
     const f = fixture();
     Object.defineProperty(f.queue, "isEnabled", { writable: false });
     const adapter = f.install();

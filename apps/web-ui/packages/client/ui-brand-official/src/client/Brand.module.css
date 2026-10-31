@@ -1,0 +1,12 @@
+.darkPlate {
+  display: none;
+}
+
+:global(body[data-ds-dark-theme]) .darkPlate {
+  display: inline;
+}
+
+:global(body[data-ds-dark-theme]) .otterArt {
+  transform: scale(0.9);
+  transform-origin: 192px 192px;
+}

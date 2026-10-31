@@ -16,6 +16,9 @@ import {
 } from "./delegation-types.js";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
+// Node's fetch abandons a request that sends no response headers for 300 s, so
+// longer waits are split into Runtime requests that each answer well before then.
+const MAX_WAIT_REQUEST_MS = 240_000;
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 
@@ -121,6 +124,8 @@ async function requestRuntime(input: {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify(input.body),
+      // The Runtime never redirects; following one would resend the request elsewhere.
+      redirect: "error",
     });
   } catch (error) {
     throw new DelegationControlError(
@@ -129,9 +134,24 @@ async function requestRuntime(input: {
       { cause: error instanceof Error ? error.message : String(error) },
     );
   }
-  const body = (await response.json()) as {
-    error?: { code?: unknown; message?: unknown; details?: unknown };
-  };
+  let body: { error?: { code?: unknown; message?: unknown; details?: unknown } };
+  try {
+    const parsed: unknown = await response.json();
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error("Runtime response is not a JSON object");
+    }
+    body = parsed as typeof body;
+  } catch (error) {
+    throw new DelegationControlError(
+      "RUNTIME_UNREACHABLE",
+      `Host Runtime returned an unreadable response (HTTP ${response.status}). Check that ${DELEGATION_RUNTIME_ENDPOINT_ENV} points to the Host Runtime.`,
+      {
+        reason: "invalid_runtime_response",
+        status: response.status,
+        cause: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
   if (!response.ok || body.error) {
     const code = typeof body.error?.code === "string" ? body.error.code : "INTERNAL_ERROR";
     const message =
@@ -143,6 +163,20 @@ async function requestRuntime(input: {
     );
   }
   return body;
+}
+
+/** Waits are non-consuming, so a long wait repeats bounded Runtime waits until its own deadline. */
+async function waitInSlices(
+  body: Record<string, unknown> & { timeoutMs?: number },
+  request: (body: Record<string, unknown>) => Promise<unknown>,
+): Promise<unknown> {
+  const deadline = Date.now() + (body.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS);
+  while (true) {
+    const remaining = Math.max(1, deadline - Date.now());
+    const result = await request({ ...body, timeoutMs: Math.min(remaining, MAX_WAIT_REQUEST_MS) });
+    const timedOut = (result as { timedOut?: unknown } | null)?.timedOut === true;
+    if (!timedOut || deadline - Date.now() <= 0) return result;
+  }
 }
 
 function writeJson(output: Writable, value: unknown): void {
@@ -403,14 +437,16 @@ export async function runDelegationCli(input: {
             }
           : {}),
       };
-      writeResult(
-        command === "read" ? "thread read" : "thread wait",
-        await requestRuntime({
+      const request = (requestBody: Record<string, unknown>) =>
+        requestRuntime({
           environment,
           path: command === "read" ? "/v1/thread/read" : "/v1/thread/wait",
-          body,
+          body: requestBody,
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
-        }),
+        });
+      writeResult(
+        command === "read" ? "thread read" : "thread wait",
+        command === "read" ? await request(body) : await waitInSlices(body, request),
         view,
       );
       return 0;

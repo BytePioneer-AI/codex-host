@@ -394,6 +394,99 @@ describe("delegation CLI", () => {
     });
   });
 
+  it("splits waits longer than Node's response-header limit into bounded Runtime waits", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const requested: number[] = [];
+      const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
+        const { timeoutMs } = JSON.parse(String(init?.body)) as { timeoutMs: number };
+        requested.push(timeoutMs);
+        vi.setSystemTime(Date.now() + timeoutMs);
+        return new Response(JSON.stringify({ status: "running", timedOut: true }), { status: 200 });
+      }) as unknown as typeof fetch;
+      const output = new PassThrough();
+      await expect(
+        runDelegationCli({
+          arguments: ["thread", "wait", "thread-1", "--timeout-ms", "600000"],
+          environment: {
+            [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+            [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+          },
+          output,
+          fetchImpl,
+        }),
+      ).resolves.toBe(0);
+      expect(requested).toEqual([240_000, 240_000, 120_000]);
+      expect(JSON.parse(outputText(output))).toEqual({ status: "running", timedOut: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns as soon as a sliced wait reaches a terminal state", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "running", timedOut: true })))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ status: "completed", timedOut: false })),
+      ) as unknown as typeof fetch;
+    const output = new PassThrough();
+    await runDelegationCli({
+      arguments: ["thread", "wait", "thread-1", "--timeout-ms", "3600000"],
+      environment: {
+        [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+        [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+      },
+      output,
+      fetchImpl,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(outputText(output))).toEqual({ status: "completed", timedOut: false });
+  });
+
+  it("refuses Runtime redirects", async () => {
+    const fetchImpl = successfulFetch({ harnesses: [] });
+    await runDelegationCli({
+      arguments: ["harness", "list"],
+      environment: {
+        [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+        [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+      },
+      output: new PassThrough(),
+      fetchImpl,
+    });
+    expect(vi.mocked(fetchImpl).mock.calls[0]?.[1]).toMatchObject({ redirect: "error" });
+  });
+
+  it.each([
+    ["non-JSON", "<html>Bad Gateway</html>"],
+    ["JSON null", "null"],
+    ["JSON scalar", "42"],
+    ["JSON array", "[]"],
+  ])("reports a %s Runtime response as unreachable with its HTTP status", async (_name, text) => {
+    const diagnosticOutput = new PassThrough();
+    const fetchImpl = vi.fn(
+      async () => new Response(text, { status: 502 }),
+    ) as unknown as typeof fetch;
+    await expect(
+      runDelegationCli({
+        arguments: ["harness", "list"],
+        environment: {
+          [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+          [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+        },
+        diagnosticOutput,
+        fetchImpl,
+      }),
+    ).resolves.toBe(1);
+    expect(JSON.parse(outputText(diagnosticOutput))).toMatchObject({
+      error: {
+        code: "RUNTIME_UNREACHABLE",
+        details: { reason: "invalid_runtime_response", status: 502 },
+      },
+    });
+  });
+
   it.each([
     ["invalid format", ["thread", "read", "thread-1", "--format", "text"]],
     ["invalid discovery arguments", ["harness", "list", "pi"]],

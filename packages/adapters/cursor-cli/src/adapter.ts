@@ -814,24 +814,29 @@ export class CursorSession implements HarnessSession {
       if (administrative && JSON.stringify(before) === JSON.stringify(after)) {
         // This native command returns a local message without persisting a user Turn.
       } else {
+        // Cursor appends its own user records when a background task finishes; those are not
+        // the echo of this prompt and must not make the prompt's identity ambiguous.
+        const prompted = added.filter((turn) => !turn.notification);
+        const own = prompted[0];
         if (
-          added.length !== 1 ||
-          after.length !== before.length + 1 ||
+          !own ||
+          prompted.length !== 1 ||
+          after.length !== before.length + added.length ||
           before.some((turn, index) => after[index]?.id !== turn.id) ||
-          added[0]?.text !== command.input.map((part) => part.text).join("\n")
+          own.text !== command.input.map((part) => part.text).join("\n")
         )
           throw new Error("Cursor terminal has no unique, verified native turn identity");
         nativeTurnRef = nativeTurnRefSchema.parse({
           harnessId: "cursor-cli",
           nativeSessionId: this.transport.sessionId,
-          nativeTurnKey: added[0].id,
+          nativeTurnKey: own.id,
           formatVersion: 1,
         });
         this.#fresh = false;
         if (outcome.status === "succeeded" && cursorForkAvailable())
           outcome = {
             ...outcome,
-            checkpoint: cursorCheckpoint(this.transport.sessionId, added[0].id),
+            checkpoint: cursorCheckpoint(this.transport.sessionId, own.id),
           };
       }
     } catch (error) {

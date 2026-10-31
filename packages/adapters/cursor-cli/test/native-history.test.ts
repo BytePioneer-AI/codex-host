@@ -22,7 +22,7 @@ function field(id: number, value: Buffer | string) {
   const data = Buffer.isBuffer(value) ? value : Buffer.from(value);
   return Buffer.concat([varint(id * 8 + 2), varint(data.length), data]);
 }
-function fixture(texts = ["first", "second"]) {
+function fixture(texts = ["first", "second"], notifications: number[] = []) {
   const home = mkdtempSync(path.join(os.tmpdir(), "codexhost-cursor-history-"));
   temporary.push(home);
   const sessionId = randomUUID();
@@ -38,13 +38,31 @@ function fixture(texts = ["first", "second"]) {
     db.prepare("INSERT OR IGNORE INTO blobs VALUES(?,?)").run(id.toString("hex"), data);
     return id;
   };
-  const turns = texts.map((text) => ({ id: randomUUID(), text }));
+  const turns = texts.map((text, index) => ({
+    id: randomUUID(),
+    text,
+    ...(notifications.includes(index) ? { notification: true as const } : {}),
+  }));
   const root = put(
     Buffer.concat(
       turns.map((turn) =>
         field(
           8,
-          put(field(1, field(1, put(Buffer.concat([field(1, turn.text), field(2, turn.id)]))))),
+          put(
+            field(
+              1,
+              field(
+                1,
+                put(
+                  Buffer.concat([
+                    field(1, turn.text),
+                    field(2, turn.id),
+                    ...(turn.notification ? [field(15, field(1, "background task"))] : []),
+                  ]),
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     ),
@@ -80,6 +98,13 @@ describe("Cursor read-only native identity", () => {
       JSON.stringify({ cwd: workspace }),
     );
     expect(readCursorNativeTurns(f.sessionId, requested, { HOME: f.home })).toEqual(f.turns);
+  });
+  it("marks user records Cursor wrote for finished background tasks", () => {
+    const f = fixture(["prompt", "<system_notification>task finished</system_notification>"], [1]);
+    const turns = readCursorNativeTurns(f.sessionId, f.home, { HOME: f.home });
+    expect(turns).toEqual(f.turns);
+    expect(turns[0]).not.toHaveProperty("notification");
+    expect(turns[1]).toMatchObject({ notification: true });
   });
   it("allows a new empty history without inventing IDs", () => {
     const f = fixture([]);

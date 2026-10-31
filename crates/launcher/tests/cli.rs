@@ -125,3 +125,90 @@ fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
     assert!(stderr.contains("Contents/Resources/libexec/codexhost-shim"));
     assert!(!stderr.contains("invalid launcher arguments"));
 }
+
+#[test]
+fn help_prints_usage_to_stdout_and_succeeds() {
+    for argument in ["--help", "-h", "help"] {
+        let output = Command::new(launcher_path())
+            .arg(argument)
+            .output()
+            .expect("run launcher");
+        assert!(output.status.success(), "{argument}");
+        assert!(output.stderr.is_empty(), "{argument}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.starts_with("usage:\n"), "{argument}");
+        for command in [
+            "codexhost --version",
+            "codexhost harness list|inspect ...",
+            "codexhost thread send|cancel|read|wait|watch|watches|list ...",
+            "codexhost broker install|status|stop|uninstall",
+        ] {
+            assert!(stdout.contains(command), "{argument}: {command}");
+        }
+    }
+}
+
+#[test]
+fn version_prints_the_plain_release_version() {
+    for argument in ["--version", "-V", "-v"] {
+        let output = Command::new(launcher_path())
+            .arg(argument)
+            .output()
+            .expect("run launcher");
+        assert!(output.status.success(), "{argument}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{}\n", env!("CARGO_PKG_VERSION")),
+            "{argument}"
+        );
+    }
+    let output = Command::new(launcher_path())
+        .args(["--version", "extra"])
+        .output()
+        .expect("run launcher");
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn broker_without_a_subcommand_prints_broker_usage() {
+    // The npm wrapper appends its runtime options after the user's broker arguments.
+    let injected = ["--node", "/usr/bin/node", "--host-runtime", "/opt/host.mjs"];
+    for user in [&[][..], &["--help"], &["-h"], &["help"]] {
+        for with_injected in [false, true] {
+            let mut command = Command::new(launcher_path());
+            command.arg("broker").args(user);
+            if with_injected {
+                command.args(injected);
+            }
+            let output = command.output().expect("run launcher");
+            assert!(output.status.success(), "{user:?} {with_injected}");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout.starts_with("usage: codexhost broker install|status|stop|uninstall"),
+                "{user:?} {with_injected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn unknown_commands_remain_errors() {
+    let injected = ["--node", "/usr/bin/node", "--host-runtime", "/opt/host.mjs"];
+    let bogus_option_with_injected: Vec<&str> =
+        ["broker", "--bogus"].into_iter().chain(injected).collect();
+    for arguments in [
+        &["bogus"][..],
+        &["broker", "bogus"],
+        &["broker", "nonexistent", "--help"],
+        &["broker", "nonexistent", "-h"],
+        &["broker", "--bogus"],
+        bogus_option_with_injected.as_slice(),
+    ] {
+        let output = Command::new(launcher_path())
+            .args(arguments)
+            .output()
+            .expect("run launcher");
+        assert_eq!(output.status.code(), Some(1), "{arguments:?}");
+        assert!(output.stdout.is_empty(), "{arguments:?}");
+    }
+}

@@ -415,7 +415,7 @@ describe("DelegationControlRegistry list paging across sessions", () => {
     registry.close();
   });
 
-  it("rejects a merged cursor from another Registry or with an overrun page position", async () => {
+  it("rejects a merged cursor from another Registry or with an invalid session position", async () => {
     const build = () => {
       const registry = new DelegationControlRegistry();
       registry.register(session("a", threads("a", 30, 0)));
@@ -431,11 +431,11 @@ describe("DelegationControlRegistry list paging across sessions", () => {
     ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
 
     const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
-      sessions: ([string | null, number, number] | null)[];
+      sessions: ({ cursor: string | null } | null)[];
     };
     const position = decoded.sessions.find((entry) => entry !== null);
     if (!position) throw new Error("Expected an open session position");
-    position[1] = position[2];
+    position.cursor = "";
     await expect(
       original.list({
         cwd: "/synthetic",
@@ -448,21 +448,51 @@ describe("DelegationControlRegistry list paging across sessions", () => {
     rebuilt.close();
   });
 
+  it.each(["parent", "catalog"])("does not forward merged cursors to a %s list", async (target) => {
+    const registry = new DelegationControlRegistry();
+    const a = session("a", threads("a", 10, 0));
+    const b = session("b", threads("b", 10, 1));
+    registry.register(a);
+    registry.register(b);
+    try {
+      const first = await registry.list({ cwd: "/synthetic", limit: 2, sort: "created-desc" });
+      vi.mocked(a.list).mockClear();
+      vi.mocked(b.list).mockClear();
+      if (target === "catalog") registry.register(a, { harnessCatalog: true });
+      await expect(
+        registry.list({
+          cwd: "/synthetic",
+          limit: 2,
+          sort: "created-desc",
+          cursor: first.nextCursor ?? "",
+          ...(target === "parent" ? { parentThreadId: "parent-a" } : {}),
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      expect(a.list).not.toHaveBeenCalled();
+      expect(b.list).not.toHaveBeenCalled();
+    } finally {
+      registry.close();
+    }
+  });
+
   it("rejects malformed merged cursors", async () => {
     const registry = new DelegationControlRegistry();
     registry.register(session("a", threads("a", 30, 0)));
     registry.register(session("b", threads("b", 30, 1)));
     const first = await registry.list({ cwd: "/synthetic", limit: 5, sort: "created-desc" });
     const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const issued = JSON.parse(Buffer.from(first.nextCursor ?? "", "base64url").toString("utf8"));
     for (const cursor of [
       "not a cursor",
       Buffer.from("{").toString("base64url"),
       encode([]),
-      encode({ v: 2, sort: "created-desc", sessions: [null, null] }),
-      encode({ v: 1, sort: "created-desc", sessions: [["", 0, 5], null] }),
-      encode({ v: 1, sort: "created-desc", sessions: [[null, -1, 5], null] }),
-      encode({ v: 1, sort: "created-desc", sessions: [[null, 0, 0], null] }),
-      encode({ v: 1, sort: "created-desc", sessions: [null] }),
+      encode({ ...issued, v: 1 }),
+      encode({ ...issued, cwd: undefined }),
+      encode({ ...issued, sessions: [{ cursor: "" }, null] }),
+      encode({ ...issued, sessions: [{ cursor: 1 }, null] }),
+      encode({ ...issued, sessions: [{}, null] }),
+      encode({ ...issued, sessions: [[null, 0, 5], null] }),
+      encode({ ...issued, sessions: [null] }),
     ]) {
       await expect(
         registry.list({ cwd: "/synthetic", limit: 5, sort: "created-desc", cursor }),

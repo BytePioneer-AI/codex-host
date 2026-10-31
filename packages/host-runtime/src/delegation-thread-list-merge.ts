@@ -5,29 +5,24 @@ import {
   type ThreadListInput,
 } from "./delegation-types.js";
 
-/**
- * Where one session resumes: the cursor of the page it was reading, how many rows of that page
- * were already returned, and the page size used to read it, so the same page can be read again.
- * `null` means the session has no more rows.
- */
-type SessionPosition = readonly [cursor: string | null, consumed: number, pageLimit: number] | null;
+/** A native continuation, or null for an exhausted session. A null cursor starts a session. */
+type SessionPosition = { cursor: string | null } | null;
 
 interface MergedListCursor {
-  v: 1;
+  v: 2;
+  cwd: string | null;
   sort: ThreadListInput["sort"];
   /** The Registry instance and session set the positions were issued for, by session index. */
   generation: string;
   sessions: SessionPosition[];
 }
 
-interface SessionStream {
-  pageCursor: string | null;
-  pageLimit: number;
-  rows: DelegationThreadListItem[];
-  consumed: number;
+interface SessionHead {
+  row: DelegationThreadListItem;
   nextCursor: string | null;
 }
 
+const MAX_SESSION_PAGE_REQUESTS = 256;
 type ListTimestampField = "createdAt" | "updatedAt" | "recencyAt";
 
 /**
@@ -65,19 +60,9 @@ function invalidCursor(message = "List cursor is invalid"): DelegationControlErr
 
 function validPosition(value: unknown): value is SessionPosition {
   if (value === null) return true;
-  if (!Array.isArray(value) || value.length !== 3) return false;
-  const [cursor, consumed, pageLimit] = value as unknown[];
-  return (
-    (cursor === null || (typeof cursor === "string" && cursor.length > 0)) &&
-    typeof pageLimit === "number" &&
-    Number.isSafeInteger(pageLimit) &&
-    pageLimit > 0 &&
-    typeof consumed === "number" &&
-    Number.isSafeInteger(consumed) &&
-    consumed >= 0 &&
-    // An issued position always has an unread row left on its page.
-    consumed < pageLimit
-  );
+  if (typeof value !== "object" || Array.isArray(value)) return false;
+  const { cursor } = value as { cursor?: unknown };
+  return cursor === null || (typeof cursor === "string" && cursor.length > 0);
 }
 
 function decodeCursor(
@@ -96,13 +81,11 @@ function decodeCursor(
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw invalidCursor();
   const parsed = value as Partial<MergedListCursor>;
-  if (
-    parsed.v !== 1 ||
-    parsed.sort !== input.sort ||
-    !Array.isArray(parsed.sessions) ||
-    !parsed.sessions.every(validPosition)
-  ) {
+  if (parsed.v !== 2 || !Array.isArray(parsed.sessions) || !parsed.sessions.every(validPosition)) {
     throw invalidCursor();
+  }
+  if (parsed.sort !== input.sort || parsed.cwd !== (input.cwd ?? null)) {
+    throw invalidCursor("List cursor does not match the current query");
   }
   if (parsed.sessions.length !== sessions || parsed.generation !== generation) {
     throw invalidCursor("List cursor does not match the active Host Runtime sessions");
@@ -110,41 +93,29 @@ function decodeCursor(
   return parsed.sessions;
 }
 
-/**
- * Whether `cursor` has the shape of a merged list cursor. A single session never issues one, so a
- * Registry that is down to one session uses this to reject a cursor left over from a merged list
- * instead of handing it to that session.
- */
+/** Recognizes current and retired merged cursors so neither can be forwarded to a lone session. */
 export function isMergedListCursor(cursor: string): boolean {
   try {
     const decoded = Buffer.from(cursor, "base64url").toString("utf8");
     if (Buffer.from(decoded, "utf8").toString("base64url") !== cursor) return false;
     const value: unknown = JSON.parse(decoded);
     if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-    const parsed = value as Partial<MergedListCursor>;
+    const parsed = value as { v?: unknown; generation?: unknown; sessions?: unknown };
     return (
-      parsed.v === 1 && typeof parsed.generation === "string" && Array.isArray(parsed.sessions)
+      (parsed.v === 1 || parsed.v === 2) &&
+      typeof parsed.generation === "string" &&
+      Array.isArray(parsed.sessions)
     );
   } catch {
     return false;
   }
 }
 
-function encodeCursor(
-  sort: ThreadListInput["sort"],
-  generation: string,
-  sessions: SessionPosition[],
-): string {
-  const cursor: MergedListCursor = { v: 1, sort, generation, sessions };
-  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
-}
-
 /**
- * Merges the Thread lists of several Host Runtime sessions into one page in `input.sort` order.
- * The returned cursor records each session's own position, so following it pages through every
- * Thread exactly once even though each session pages independently. `generation` identifies the
- * current session set; a cursor issued for another generation is rejected, because its positions
- * would be applied to the wrong sessions.
+ * Merges independent session lists using one-row native pages. Only an emitted row advances its
+ * session's continuation; no later request skips a prefix of a reread page. Native cursors retain
+ * their backend's live-list semantics, not snapshot semantics. The query and session generation
+ * must match, but the caller may change its output limit between pages.
  */
 export async function mergeThreadListPages(
   sessions: ReadonlyArray<(input: ThreadListInput) => Promise<DelegationThreadListResult>>,
@@ -152,74 +123,70 @@ export async function mergeThreadListPages(
   compare: (left: DelegationThreadListItem, right: DelegationThreadListItem) => number,
   generation: string,
 ): Promise<DelegationThreadListResult> {
+  if (!Number.isSafeInteger(input.limit) || input.limit <= 0 || input.limit > 100) {
+    throw invalidCursor("List limit must be between 1 and 100");
+  }
   const positions: SessionPosition[] = input.cursor
     ? decodeCursor(input.cursor, input, sessions.length, generation)
-    : sessions.map(() => [null, 0, input.limit] as const);
-  const read = (index: number, cursor: string | null, limit: number) => {
-    const request: ThreadListInput = { ...input, limit };
-    if (cursor === null) delete request.cursor;
-    else request.cursor = cursor;
-    const list = sessions[index];
-    if (!list) throw invalidCursor();
-    return list(request);
+    : sessions.map(() => ({ cursor: null }));
+  const requests = sessions.map(() => 0);
+  const readHead = async (index: number): Promise<SessionHead | null> => {
+    let position = positions[index];
+    while (position) {
+      const list = sessions[index];
+      if (!list) throw invalidCursor();
+      const count = (requests[index] ?? 0) + 1;
+      requests[index] = count;
+      if (count > MAX_SESSION_PAGE_REQUESTS) {
+        throw new DelegationControlError(
+          "INTERNAL_ERROR",
+          "Thread list exceeded its request bound",
+        );
+      }
+      const request: ThreadListInput = { ...input, limit: 1 };
+      if (position.cursor === null) delete request.cursor;
+      else request.cursor = position.cursor;
+      const page = await list(request);
+      if (
+        page.threads.length > 1 ||
+        (page.nextCursor !== null && page.nextCursor === position.cursor)
+      ) {
+        throw new DelegationControlError("INTERNAL_ERROR", "Thread list returned an invalid page");
+      }
+      const row = page.threads[0];
+      if (row) return { row, nextCursor: page.nextCursor };
+      position = page.nextCursor === null ? null : { cursor: page.nextCursor };
+      positions[index] = position;
+    }
+    return null;
   };
-  const streams = await Promise.all(
-    positions.map(async (position, index): Promise<SessionStream | null> => {
-      if (position === null) return null;
-      const [cursor, consumed, pageLimit] = position;
-      const page = await read(index, cursor, pageLimit);
-      return {
-        pageCursor: cursor,
-        pageLimit,
-        rows: page.threads,
-        consumed: Math.min(consumed, page.threads.length),
-        nextCursor: page.nextCursor,
-      };
-    }),
-  );
-
+  const heads = await Promise.all(sessions.map((_, index) => readHead(index)));
   const threads: DelegationThreadListItem[] = [];
   while (threads.length < input.limit) {
-    // A drained session may still hold the next row in sort order: read its next page first.
-    await Promise.all(
-      streams.map(async (stream, index) => {
-        while (stream && stream.consumed >= stream.rows.length && stream.nextCursor !== null) {
-          const cursor = stream.nextCursor;
-          const page = await read(index, cursor, input.limit);
-          Object.assign(stream, {
-            pageCursor: cursor,
-            pageLimit: input.limit,
-            rows: page.threads,
-            consumed: 0,
-            nextCursor: page.nextCursor,
-          });
-        }
-      }),
-    );
-    let best: SessionStream | undefined;
-    for (const stream of streams) {
-      const candidate = stream?.rows[stream.consumed];
-      if (!stream || !candidate) continue;
-      const current = best?.rows[best.consumed];
-      if (!current || compare(candidate, current) < 0) best = stream;
+    let bestIndex = -1;
+    let best: SessionHead | null = null;
+    for (const [index, head] of heads.entries()) {
+      if (head && (!best || compare(head.row, best.row) < 0)) {
+        best = head;
+        bestIndex = index;
+      }
     }
-    const next = best?.rows[best.consumed];
-    if (!best || !next) break;
-    threads.push(next);
-    best.consumed += 1;
+    if (!best) break;
+    threads.push(best.row);
+    positions[bestIndex] = best.nextCursor === null ? null : { cursor: best.nextCursor };
+    if (threads.length < input.limit) heads[bestIndex] = await readHead(bestIndex);
   }
-
-  const next: SessionPosition[] = streams.map((stream) => {
-    if (!stream) return null;
-    if (stream.consumed < stream.rows.length) {
-      return [stream.pageCursor, stream.consumed, stream.pageLimit] as const;
-    }
-    return stream.nextCursor === null ? null : ([stream.nextCursor, 0, input.limit] as const);
-  });
+  const cursor: MergedListCursor = {
+    v: 2,
+    cwd: input.cwd ?? null,
+    sort: input.sort,
+    generation,
+    sessions: positions,
+  };
   return {
     threads,
-    nextCursor: next.some((position) => position !== null)
-      ? encodeCursor(input.sort, generation, next)
+    nextCursor: positions.some((position) => position !== null)
+      ? Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url")
       : null,
   };
 }

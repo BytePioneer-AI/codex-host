@@ -735,14 +735,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
     // Each official page is already newest first; the IDs sort the other way across sessions.
     const pages = [
-      [
-        { id: "a-newest", cwd: "/synthetic", createdAt: 4_000, updatedAt: 4_000 },
-        { id: "a-oldest", cwd: "/synthetic", createdAt: 1_000, updatedAt: 1_000 },
-      ],
-      [
-        { id: "b-newer", cwd: "/synthetic", createdAt: 3_000, updatedAt: 3_000 },
-        { id: "b-older", cwd: "/synthetic", createdAt: 2_000, updatedAt: 2_000 },
-      ],
+      [{ id: "a-newest", cwd: "/synthetic", createdAt: 4_000, updatedAt: 4_000 }],
+      [{ id: "b-newer", cwd: "/synthetic", createdAt: 3_000, updatedAt: 3_000 }],
     ];
     try {
       const pending = registry.list({ cwd: "/synthetic", limit: 2, sort: "created-desc" });

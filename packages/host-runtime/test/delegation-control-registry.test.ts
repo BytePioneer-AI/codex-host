@@ -389,6 +389,32 @@ describe("DelegationControlRegistry list paging across sessions", () => {
     registry.close();
   });
 
+  it("rejects a merged cursor once only one session is left", async () => {
+    const registry = new DelegationControlRegistry();
+    const a = session("a", threads("a", 30, 0));
+    const b = session("b", threads("b", 30, 1));
+    registry.register(a);
+    const unregisterB = registry.register(b);
+    const first = await registry.list({ cwd: "/synthetic", limit: 5, sort: "created-desc" });
+    expect(first.nextCursor).not.toBeNull();
+
+    unregisterB();
+    vi.mocked(a.list).mockClear();
+    await expect(
+      registry.list({
+        cwd: "/synthetic",
+        limit: 5,
+        sort: "created-desc",
+        cursor: first.nextCursor ?? "",
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "List cursor does not match the active Host Runtime sessions",
+    });
+    expect(a.list).not.toHaveBeenCalled();
+    registry.close();
+  });
+
   it("rejects a merged cursor from another Registry or with an overrun page position", async () => {
     const build = () => {
       const registry = new DelegationControlRegistry();

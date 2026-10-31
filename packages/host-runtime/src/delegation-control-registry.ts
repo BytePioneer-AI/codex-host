@@ -12,7 +12,7 @@ import {
   type ThreadWaitInput,
   type ThreadWatchInput,
 } from "./delegation-types.js";
-import { mergeThreadListPages } from "./delegation-thread-list-merge.js";
+import { isMergedListCursor, mergeThreadListPages } from "./delegation-thread-list-merge.js";
 import { DelegationWatchService } from "./delegation-watch.js";
 
 function only<T>(values: readonly T[], message: string): T {
@@ -155,7 +155,16 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         { matchingRuntimeCount: 0 },
       );
     }
-    if (registrations.length === 1) return only(registrations, "unreachable").list(input);
+    if (registrations.length === 1) {
+      // A merged cursor was issued for several sessions; its positions mean nothing to one.
+      if (input.cursor && isMergedListCursor(input.cursor)) {
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "List cursor does not match the active Host Runtime sessions",
+        );
+      }
+      return only(registrations, "unreachable").list(input);
+    }
     // Registration order is insertion order, which the merged cursor's session positions follow.
     return mergeThreadListPages(
       registrations.map((registration) => (page: ThreadListInput) => registration.list(page)),

@@ -79,6 +79,26 @@ function decodeCursor(
   return parsed.sessions;
 }
 
+/**
+ * Whether `cursor` has the shape of a merged list cursor. A single session never issues one, so a
+ * Registry that is down to one session uses this to reject a cursor left over from a merged list
+ * instead of handing it to that session.
+ */
+export function isMergedListCursor(cursor: string): boolean {
+  try {
+    const decoded = Buffer.from(cursor, "base64url").toString("utf8");
+    if (Buffer.from(decoded, "utf8").toString("base64url") !== cursor) return false;
+    const value: unknown = JSON.parse(decoded);
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+    const parsed = value as Partial<MergedListCursor>;
+    return (
+      parsed.v === 1 && typeof parsed.generation === "string" && Array.isArray(parsed.sessions)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function encodeCursor(
   sort: ThreadListInput["sort"],
   generation: string,

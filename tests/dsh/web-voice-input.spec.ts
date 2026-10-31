@@ -74,6 +74,7 @@ it("send submits once after inserting the transcript, and never when insertion f
   await voice.start();
   voice.send();
   await vi.waitFor(() => expect(voice.getSnapshot().phase).toBe("idle"));
+  expect(actions.captureInsertion).toHaveBeenLastCalledWith("end");
   expect(actions.insertText).toHaveBeenCalledOnce();
   expect(actions.submit).toHaveBeenCalledOnce();
   expect(vi.mocked(actions.insertText).mock.invocationCallOrder[0]).toBeLessThan(
@@ -92,6 +93,31 @@ it("send submits once after inserting the transcript, and never when insertion f
   voice.stop();
   await vi.waitFor(() => expect(voice.getSnapshot().phase).toBe("idle"));
   expect(actions.submit).toHaveBeenCalledOnce();
+});
+
+it("send captures the current draft end instead of replacing the initial selection", async () => {
+  const { voice, actions } = setup();
+  await voice.start();
+  vi.mocked(actions.captureInsertion).mockReturnValue({ start: 12, end: 12, draftRev: 4 });
+  voice.send();
+  voice.send();
+  await vi.waitFor(() => expect(voice.getSnapshot().phase).toBe("idle"));
+  expect(actions.insertText).toHaveBeenCalledWith("你好", { start: 12, end: 12, draftRev: 4 });
+  expect(actions.submit).toHaveBeenCalledOnce();
+});
+
+it("does not send a recording from a locked or different conversation", async () => {
+  const { voice, actions } = setup();
+  await voice.start();
+  voice.bind(actions, true);
+  voice.send();
+  expect(voice.getSnapshot().phase).toBe("recording");
+  const next = { ...actions, submit: vi.fn() };
+  voice.bind(next, false);
+  voice.send();
+  expect(voice.getSnapshot().phase).toBe("recording");
+  expect(actions.submit).not.toHaveBeenCalled();
+  expect(next.submit).not.toHaveBeenCalled();
 });
 
 it("retains text across a conversation switch and only inserts on explicit action", async () => {

@@ -248,6 +248,12 @@ export interface DraftInitializationOptions {
 /** An initialization request never waits for a React mount or a remote catalog. */
 export type DraftInitializationResult = "applied" | "preserved" | "blocked";
 
+/** A temporary primary-send action, without changing keyboard or programmatic submission. */
+export interface ComposerPrimaryAction {
+  readonly disabled: boolean;
+  run(): void;
+}
+
 /**
  * The public input action face provided to every session-scope slot
  * component: stable-identity void callbacks, mirroring the
@@ -255,8 +261,10 @@ export type DraftInitializationResult = "applied" | "preserved" | "blocked";
  * paste/…) stay InputBar-private and never ride this face.
  */
 export interface InputActions {
-  /** @returns a revision-guarded copy of the current editor selection. */
-  captureInsertion(): TokenSpan;
+  /** @returns a revision-guarded selection, or the document end for append-only insertion. */
+  captureInsertion(placement?: "end"): TokenSpan;
+  /** Override the primary send button until the returned disposer runs. */
+  bindPrimaryAction(action: ComposerPrimaryAction): () => void;
   /**
    * Insert asynchronous text without replacing subsequent edits or reference chips.
    * @param text - plain text to insert in one undo step.
@@ -296,6 +304,8 @@ export interface InputState {
   readonly attachmentIds: readonly DraftAttachmentId[];
   /** Monotonic editor revision (span CAS compares against this). */
   readonly draftRev: number;
+  /** Mounted input extension's primary-send action; absent restores the default button. */
+  readonly primaryAction?: ComposerPrimaryAction;
   readonly phase: "plain" | "adjudicating" | "claimed" | "submitting";
   /** Present exactly while claimed/submitting (claim snapshot during flight; submit closure withheld). */
   readonly claim?: {

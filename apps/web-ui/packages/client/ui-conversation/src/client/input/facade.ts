@@ -18,6 +18,7 @@ import {
 import type { LexicalEditor } from "lexical";
 import type {
   CommandClaim,
+  ComposerPrimaryAction,
   ConsumeTokenRequest,
   DraftAttachmentId,
   DraftInitializationOptions,
@@ -153,7 +154,22 @@ export class SessionInputShell implements SessionInput {
   }
   /** The public provide-channel action face (one stable identity per session). */
   readonly actions: InputActions = {
-    captureInsertion: () => ({ ...this.caretSpan(), draftRev: this.rev }),
+    captureInsertion: (placement) => {
+      const end = this.projection.detectText.length;
+      return {
+        ...(placement === "end" ? { start: end, end } : this.caretSpan()),
+        draftRev: this.rev,
+      };
+    },
+    bindPrimaryAction: (action) => {
+      this.primaryAction = action;
+      this.publish();
+      return () => {
+        if (this.primaryAction !== action) return;
+        this.primaryAction = undefined;
+        this.publish();
+      };
+    },
     insertText: (text, span) => {
       if (
         this.snapshot.phase === "adjudicating" ||
@@ -182,6 +198,7 @@ export class SessionInputShell implements SessionInput {
     },
   };
 
+  private primaryAction: ComposerPrimaryAction | undefined;
   private readonly core = new SubmitMachine();
   private readonly draftEditor: DraftEditorRuntime;
   private get projection(): EditorProjection {
@@ -1001,6 +1018,7 @@ export class SessionInputShell implements SessionInput {
       draft: this.projection.clipboardText,
       attachmentIds: this.attachmentIds,
       draftRev: this.rev,
+      ...(this.primaryAction !== undefined ? { primaryAction: this.primaryAction } : {}),
       phase: core.phase,
       ...(core.claim !== undefined ? { claim: core.claim } : {}),
       occurrences: this.projection.occurrences,

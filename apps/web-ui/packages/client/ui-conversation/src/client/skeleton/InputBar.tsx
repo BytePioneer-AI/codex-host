@@ -390,23 +390,37 @@ export const InputBar = memo(function InputBar({
   // describes a delivery the click cannot or does not perform; every other
   // state keeps plain Send. A continuable child keeps Send primary and
   // exposes Stop independently.
-  const primaryStops = running && subagent === null && (empty || blocked !== undefined);
+  const primaryAction = input?.primaryAction;
+  const primaryStops =
+    primaryAction === undefined && running && subagent === null && (empty || blocked !== undefined);
   // Disabled native buttons may omit mouseleave; their tooltip must close from state.
   const primaryDisabled = primaryStops
     ? stop === undefined
-    : empty || disabled || machineBusy || uploadsPending;
+    : (primaryAction === undefined ? empty : primaryAction.disabled) ||
+      disabled ||
+      machineBusy ||
+      uploadsPending;
   const interruptible = running && continuable;
   const primarySubmitMode = resolveSubmitMode(busyEnter, running, "enter", steeringAvailable);
   const plainMessageDraft =
     !empty && input?.phase === "plain" && !draft.trimStart().startsWith("/");
   const primaryLabel = primaryStops
     ? t("input.stop")
-    : running && steeringAvailable && !disabled && !uploadsPending && plainMessageDraft
+    : primaryAction === undefined &&
+        running &&
+        steeringAvailable &&
+        !disabled &&
+        !uploadsPending &&
+        plainMessageDraft
       ? t(primarySubmitMode === "steer" ? "input.send.steer" : "input.send.queue")
       : t("input.send");
   const onPrimary = (): void => {
     if (primaryStops) {
       stop?.();
+      return;
+    }
+    if (primaryAction !== undefined) {
+      if (!primaryDisabled) primaryAction.run();
       return;
     }
     if (keyboard === undefined) return; // absent machine: the button is disabled

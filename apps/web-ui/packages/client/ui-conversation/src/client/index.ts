@@ -152,6 +152,7 @@ export type {
 export type {
   BeginCommandRequest,
   CommandClaim,
+  ComposerPrimaryAction,
   ConsumeTokenRequest,
   DraftAttachmentId,
   DraftInitializationOptions,

@@ -32,7 +32,11 @@ it("refreshes availability on mount/visibility, shows the entry on HTTP and expl
     voice,
     blocks: { storeFor: () => block },
     sessionId: "thread-a",
-    inputActions: { captureInsertion: () => ({ draftRev: 1 }), insertText: vi.fn() },
+    inputActions: {
+      captureInsertion: () => ({ draftRev: 1 }),
+      insertText: vi.fn(),
+      bindPrimaryAction: vi.fn(() => () => {}),
+    },
     useInput: (select: (state: object) => unknown) => select({ phase: "plain" }),
     useSession: (select: (state: object) => unknown) => select({ removed: false }),
     t: (key: keyof typeof zh) => zh[key],
@@ -101,7 +105,7 @@ async function renderRecorder() {
     voice,
     blocks: { storeFor: () => block },
     sessionId: "thread-a",
-    inputActions: {},
+    inputActions: { bindPrimaryAction: vi.fn(() => vi.fn()) },
     useInput: (select: (s: object) => unknown) => select({ phase: "plain" }),
     useSession: (select: (s: object) => unknown) => select({ removed: false }),
     t: (key: keyof typeof zh) => zh[key],
@@ -126,7 +130,7 @@ async function renderRecorder() {
       listeners.forEach((listener) => listener());
     });
   };
-  return { voice, container, button, update };
+  return { voice, container, button, update, inputActions: props.inputActions };
 }
 
 it("keeps the microphone anchor across icon-only recording states and separates done from send", async () => {
@@ -167,6 +171,28 @@ it("keeps the microphone anchor across icon-only recording states and separates 
   expect(voice.stop).toHaveBeenCalledOnce();
   expect(voice.send).toHaveBeenCalledOnce();
   expect(voice.cancel).toHaveBeenCalledOnce();
+});
+
+it("binds the primary send only while live, disabling it until recording and during transcription", async () => {
+  const { voice, inputActions, update } = await renderRecorder();
+  const bind = vi.mocked(inputActions.bindPrimaryAction);
+  expect(bind).not.toHaveBeenCalled();
+  await update({ phase: "permission", seconds: 0 });
+  expect(bind.mock.lastCall?.[0].disabled).toBe(true);
+  const releasePermission = bind.mock.results.at(-1)!.value;
+  await update({ phase: "recording", seconds: 0 });
+  expect(releasePermission).toHaveBeenCalledOnce();
+  expect(bind.mock.lastCall?.[0].disabled).toBe(false);
+  await act(async () => bind.mock.lastCall?.[0].run());
+  expect(voice.send).toHaveBeenCalledOnce();
+  const releaseRecording = bind.mock.results.at(-1)!.value;
+  await update({ phase: "transcribing", seconds: 3 });
+  expect(releaseRecording).toHaveBeenCalledOnce();
+  expect(bind.mock.lastCall?.[0].disabled).toBe(true);
+  const releaseTranscribing = bind.mock.results.at(-1)!.value;
+  await update({ phase: "idle", seconds: 0 });
+  expect(releaseTranscribing).toHaveBeenCalledOnce();
+  expect(bind).toHaveBeenCalledTimes(3);
 });
 
 it("reserves a folded tray while idle when toolbar space is insufficient, and on touch screens", async () => {

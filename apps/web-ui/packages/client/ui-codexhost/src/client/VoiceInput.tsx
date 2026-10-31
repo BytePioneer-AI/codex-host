@@ -48,7 +48,8 @@ export function VoiceInputButton({
   const [available, setAvailable] = useState(false);
   const [stacked, setStacked] = useState(false);
   const entryRef = useRef<HTMLSpanElement>(null);
-  const visible = isLive(state) || (available && state.phase === "idle");
+  const live = isLive(state);
+  const visible = live || (available && state.phase === "idle");
   const block = useMemo(() => blocks.storeFor(sessionId), [blocks, sessionId]);
   const blocked = useSyncExternalStore(block.subscribe, block.getSnapshot) !== undefined;
   const busy = useInput((s) => s.phase !== "plain");
@@ -62,6 +63,13 @@ export function VoiceInputButton({
     () => voice.bind(inputActions, locked, available),
     [voice, inputActions, locked, available],
   );
+  useLayoutEffect(() => {
+    if (!live) return;
+    return inputActions.bindPrimaryAction({
+      disabled: state.phase !== "recording",
+      run: () => voice.send(),
+    });
+  }, [voice, inputActions, live, state.phase]);
   useEffect(() => {
     let active = true;
     let revision = 0;

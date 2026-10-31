@@ -43,7 +43,7 @@ export class VoiceInput {
   private audio?: Blob;
   private abort?: AbortController;
   private generation = 0;
-  /** Set by {@link send}: submit once the transcript lands at the captured position. */
+  /** Set by {@link send}: submit once the transcript is appended to the draft. */
   private sendAfter = false;
   /** Set by {@link cancel} on a long recording: keep the audio for an undo window. */
   private cancelling = false;
@@ -228,9 +228,17 @@ export class VoiceInput {
     void this.start();
   }
 
-  /** Stop, then submit after the transcript is inserted; a failed insertion never sends. */
+  /** Append to the current draft, then submit; a failed insertion never sends. */
   send(): void {
-    if (this.recorder?.state !== "recording") return;
+    if (
+      this.recorder?.state !== "recording" ||
+      !this.binding ||
+      this.binding.locked ||
+      this.binding.actions !== this.insertion?.binding.actions
+    )
+      return;
+    const binding = this.binding;
+    this.insertion = { binding, span: binding.actions.captureInsertion("end") };
     this.sendAfter = true;
     this.stop();
   }

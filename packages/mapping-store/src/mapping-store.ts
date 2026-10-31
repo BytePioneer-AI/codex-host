@@ -391,6 +391,7 @@ export class MappingStore {
       const names = (await readdir(this.#threadsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
+      const pendingQuarantines = new Set<string>();
       for (const name of names) {
         const primary = path.join(this.#threadsDirectory, name);
         const backup = path.join(this.#backupsDirectory, name);
@@ -406,27 +407,25 @@ export class MappingStore {
               this.#quarantineDirectory,
               `${name}.${this.#now().getTime()}.invalid`,
             );
-            // Move the metadata first: once the record leaves threads/, the orphan cleanup
-            // below would delete metadata still in thread-metadata/. A failed move aborts
-            // initialization with both files in place so the next start can retry.
             const metadataSource = path.join(this.#metadataDirectory, name);
-            const metadataTarget = `${quarantine}.metadata`;
-            let metadataMoved = false;
+            pendingQuarantines.add(name);
             try {
-              await rename(metadataSource, metadataTarget);
-              metadataMoved = true;
-            } catch (error) {
-              // ENOENT also means a missing quarantine/; skip only when there is no metadata.
-              if (systemErrorCode(error) !== "ENOENT" || (await exists(metadataSource)))
-                throw error;
-            }
-            try {
+              // Preserve existing archives, including a copy left by an interrupted quarantine.
+              if (await exists(quarantine)) continue;
+              try {
+                // Keep the source metadata until the record moves; no rollback is needed if
+                // that rename fails. Orphan cleanup can remove it once the pair is archived.
+                await copyFile(metadataSource, `${quarantine}.metadata`, constants.COPYFILE_EXCL);
+              } catch (error) {
+                // ENOENT also means a missing quarantine/; skip only absent metadata.
+                if (systemErrorCode(error) !== "ENOENT" || (await exists(metadataSource)))
+                  throw error;
+              }
               await rename(primary, quarantine);
-            } catch (error) {
-              // Keep the pair together so the next start quarantines both under one name.
-              if (metadataMoved)
-                await rename(metadataTarget, metadataSource).catch(() => undefined);
-              throw error;
+              pendingQuarantines.delete(name);
+            } catch {
+              // Leave the source pair for a later startup and protect its metadata below.
+              // One failed quarantine must not block access to healthy Threads.
             }
             void primaryError;
             void backupError;
@@ -454,9 +453,14 @@ export class MappingStore {
         (await readdir(this.#metadataDirectory))
           .filter(
             (name) =>
-              name.endsWith(".json") && !this.#records.has(name.slice(0, -5) as HostThreadId),
+              name.endsWith(".json") &&
+              !this.#records.has(name.slice(0, -5) as HostThreadId) &&
+              !pendingQuarantines.has(name),
           )
-          .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
+          // Cleanup is best effort, including a source whose quarantine copy is already safe.
+          .map((name) =>
+            rm(path.join(this.#metadataDirectory, name), { force: true }).catch(() => undefined),
+          ),
       );
       const delegationNames = (await readdir(this.#delegationsDirectory)).filter((name) =>
         name.endsWith(".json"),

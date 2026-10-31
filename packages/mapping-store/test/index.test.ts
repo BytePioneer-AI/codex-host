@@ -1,4 +1,3 @@
-import type * as FsPromises from "node:fs/promises";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -13,7 +12,7 @@ import {
   type HostThreadId,
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   MappingStore,
@@ -23,20 +22,6 @@ import {
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
 } from "../src/index.js";
-
-// Directory order is filesystem-defined. A test that depends on which Thread loads first sets
-// `listing.sorted` to read directories in name order.
-const listing = vi.hoisted(() => ({ sorted: false }));
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const actual = await importOriginal<typeof FsPromises>();
-  const readdir = async (...args: unknown[]): Promise<unknown> => {
-    const entries: unknown = await (actual.readdir as (...values: unknown[]) => Promise<unknown>)(
-      ...args,
-    );
-    return listing.sorted && Array.isArray(entries) ? [...(entries as string[])].sort() : entries;
-  };
-  return { ...actual, readdir: readdir as typeof actual.readdir };
-});
 
 const temporaryDirectories: string[] = [];
 
@@ -139,7 +124,6 @@ async function createReadyThread(store: MappingStore, value: string, title: stri
 }
 
 afterEach(async () => {
-  listing.sorted = false;
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -1004,85 +988,42 @@ describe("mapping-store package", () => {
     ).resolves.toBe(metadataContent);
   });
 
-  it("keeps the record and metadata in place when quarantining the metadata fails", async () => {
+  it("reloads from disk when retrying after a partially loaded initialization fails", async () => {
     const directory = await temporaryStoreDirectory();
     const first = new MappingStore({ directory });
     await first.initialize();
     await createReady(first);
     await first.updateMetadata(threadId, { projectId: "project-a" });
-    // Both sort before the corrupt Thread, so the failed load has already loaded them.
-    const changed = await createReadyThread(first, "thread-0-changed", "Loaded title");
-    const removed = await createReadyThread(first, "thread-0-removed", "Removed Thread");
+    const changed = await createReadyThread(first, "thread-changed", "Loaded title");
+    const removed = await createReadyThread(first, "thread-removed", "Removed Thread");
     await first.close();
-    listing.sorted = true;
     const primaryPath = path.join(directory, "threads", `${threadId}.json`);
-    const metadataPath = path.join(directory, "thread-metadata", `${threadId}.json`);
-    const metadataContent = await readFile(metadataPath, "utf8");
+    const primaryContent = await readFile(primaryPath, "utf8");
+    const record = JSON.parse(primaryContent) as { createRequestId: string };
+    record.createRequestId = `create-${changed}`;
+    await writeFile(primaryPath, JSON.stringify(record), "utf8");
+    const reopened = new MappingStore({ directory });
+    await expect(reopened.initialize()).rejects.toMatchObject({
+      code: "DUPLICATE_CREATE_REQUEST",
+    });
+    await expect(readFile(path.join(directory, "store.lock"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
 
-    await writeFile(primaryPath, "{broken", "utf8");
-    await writeFile(path.join(directory, "backups", `${threadId}.json`), "{broken", "utf8");
-    // A non-empty directory at the metadata destination makes that rename fail.
-    const blocked = path.join(
-      directory,
-      "quarantine",
-      `${threadId}.json.1700000000000.invalid.metadata`,
-    );
-    await mkdir(blocked, { recursive: true });
-    await writeFile(path.join(blocked, "occupied"), "", "utf8");
-    const reopened = new MappingStore({ directory, now: () => new Date(1_700_000_000_000) });
-    await expect(reopened.initialize()).rejects.toThrow();
-
-    await expect(readFile(primaryPath, "utf8")).resolves.toBe("{broken");
-    await expect(readFile(metadataPath, "utf8")).resolves.toBe(metadataContent);
-
-    // Retrying on the same instance reloads from disk instead of reusing a partial load.
     const changedPath = path.join(directory, "threads", `${changed}.json`);
     const changedRecord = JSON.parse(await readFile(changedPath, "utf8")) as { title: string };
     changedRecord.title = "Title changed on disk";
     await writeFile(changedPath, JSON.stringify(changedRecord), "utf8");
     await rm(path.join(directory, "threads", `${removed}.json`));
     await rm(path.join(directory, "backups", `${removed}.json`), { force: true });
-    await rm(blocked, { recursive: true });
+    await writeFile(primaryPath, primaryContent, "utf8");
     await reopened.initialize();
-    await expect(reopened.getThread(threadId)).resolves.toBeNull();
+    await expect(reopened.getThread(threadId)).resolves.toMatchObject({ projectId: "project-a" });
     await expect(reopened.getThread(changed)).resolves.toMatchObject({
       title: "Title changed on disk",
     });
     await expect(reopened.getThread(removed)).resolves.toBeNull();
     await reopened.close();
-    await expect(
-      readFile(
-        path.join(directory, "quarantine", `${threadId}.json.1700000000000.invalid.metadata`),
-        "utf8",
-      ),
-    ).resolves.toBe(metadataContent);
-  });
-
-  it("puts the metadata back when quarantining the record fails", async () => {
-    const directory = await temporaryStoreDirectory();
-    const first = new MappingStore({ directory });
-    await first.initialize();
-    await createReady(first);
-    await first.updateMetadata(threadId, { projectId: "project-a" });
-    await first.close();
-    const primaryPath = path.join(directory, "threads", `${threadId}.json`);
-    const metadataPath = path.join(directory, "thread-metadata", `${threadId}.json`);
-    const metadataContent = await readFile(metadataPath, "utf8");
-
-    await writeFile(primaryPath, "{broken", "utf8");
-    await writeFile(path.join(directory, "backups", `${threadId}.json`), "{broken", "utf8");
-    // A non-empty directory at the record destination makes that rename fail.
-    const blocked = path.join(directory, "quarantine", `${threadId}.json.1700000000000.invalid`);
-    await mkdir(blocked, { recursive: true });
-    await writeFile(path.join(blocked, "occupied"), "", "utf8");
-    const reopened = new MappingStore({ directory, now: () => new Date(1_700_000_000_000) });
-    await expect(reopened.initialize()).rejects.toThrow();
-
-    await expect(readFile(primaryPath, "utf8")).resolves.toBe("{broken");
-    await expect(readFile(metadataPath, "utf8")).resolves.toBe(metadataContent);
-    await expect(readdir(path.join(directory, "quarantine"))).resolves.toEqual([
-      `${threadId}.json.1700000000000.invalid`,
-    ]);
   });
 
   it("cleans a provisional create without Native identity on restart", async () => {

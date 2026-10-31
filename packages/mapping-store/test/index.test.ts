@@ -1,3 +1,4 @@
+import type * as FsPromises from "node:fs/promises";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,7 +13,7 @@ import {
   type HostThreadId,
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   MappingStore,
@@ -22,6 +23,20 @@ import {
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
 } from "../src/index.js";
+
+// Directory order is filesystem-defined. A test that depends on which Thread loads first sets
+// `listing.sorted` to read directories in name order.
+const listing = vi.hoisted(() => ({ sorted: false }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>();
+  const readdir = async (...args: unknown[]): Promise<unknown> => {
+    const entries: unknown = await (actual.readdir as (...values: unknown[]) => Promise<unknown>)(
+      ...args,
+    );
+    return listing.sorted && Array.isArray(entries) ? [...(entries as string[])].sort() : entries;
+  };
+  return { ...actual, readdir: readdir as typeof actual.readdir };
+});
 
 const temporaryDirectories: string[] = [];
 
@@ -98,7 +113,33 @@ async function createProvisional(store: MappingStore, value: string): Promise<Ho
   return hostThreadId;
 }
 
+async function createReadyThread(store: MappingStore, value: string, title: string) {
+  const hostThreadId = hostThreadIdSchema.parse(value);
+  await store.createProvisional({
+    hostThreadId,
+    createRequestId: `create-${value}`,
+    harnessId,
+    cwd: "/synthetic",
+    title,
+    transportModelId: "codexhost/pi-native",
+    ephemeral: false,
+    historyMode: "legacy",
+  });
+  await store.commitReady({
+    hostThreadId,
+    nativeSessionRef: nativeSessionRefSchema.parse({
+      harnessId,
+      nativeSessionId: `native-${value}`,
+      locator: { sessionFile: `/synthetic/${value}.jsonl` },
+      formatVersion: 1,
+    }) as NativeSessionRef,
+    turnMappings: [],
+  });
+  return hostThreadId;
+}
+
 afterEach(async () => {
+  listing.sorted = false;
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -969,7 +1010,11 @@ describe("mapping-store package", () => {
     await first.initialize();
     await createReady(first);
     await first.updateMetadata(threadId, { projectId: "project-a" });
+    // Both sort before the corrupt Thread, so the failed load has already loaded them.
+    const changed = await createReadyThread(first, "thread-0-changed", "Loaded title");
+    const removed = await createReadyThread(first, "thread-0-removed", "Removed Thread");
     await first.close();
+    listing.sorted = true;
     const primaryPath = path.join(directory, "threads", `${threadId}.json`);
     const metadataPath = path.join(directory, "thread-metadata", `${threadId}.json`);
     const metadataContent = await readFile(metadataPath, "utf8");
@@ -991,9 +1036,19 @@ describe("mapping-store package", () => {
     await expect(readFile(metadataPath, "utf8")).resolves.toBe(metadataContent);
 
     // Retrying on the same instance reloads from disk instead of reusing a partial load.
+    const changedPath = path.join(directory, "threads", `${changed}.json`);
+    const changedRecord = JSON.parse(await readFile(changedPath, "utf8")) as { title: string };
+    changedRecord.title = "Title changed on disk";
+    await writeFile(changedPath, JSON.stringify(changedRecord), "utf8");
+    await rm(path.join(directory, "threads", `${removed}.json`));
+    await rm(path.join(directory, "backups", `${removed}.json`), { force: true });
     await rm(blocked, { recursive: true });
     await reopened.initialize();
     await expect(reopened.getThread(threadId)).resolves.toBeNull();
+    await expect(reopened.getThread(changed)).resolves.toMatchObject({
+      title: "Title changed on disk",
+    });
+    await expect(reopened.getThread(removed)).resolves.toBeNull();
     await reopened.close();
     await expect(
       readFile(

@@ -395,23 +395,40 @@ it("gives a registered external draft its carrier when the creation omits a nati
   }
 });
 
-it("marks the selected external prewarm but preserves an explicit different external prewarm", async () => {
-  const fixture = setup();
-  const routing = await install(fixture);
-  try {
-    policyOf(routing.forComposer()).select(carrier, "client-new-thread:external");
-    fixture.post(creation("prewarmConversation", carrier, {}));
-    const prewarmed = (((fixture.sent.at(-1) as unknown[])[1] as unknown[])[3] as unknown[])[0] as {
-      collaborationMode: { settings: { model: string } };
-    };
-    expect(decodeHarnessPluginRoute(prewarmed.collaborationMode.settings.model)).toEqual({
-      ...decodeHarnessPluginRoute(carrier),
-      prewarm: true,
-    });
-    const explicit = creation("prewarmConversation", "codexhost/pi-native", {});
-    fixture.post(explicit);
-    expect(fixture.sent.at(-1)).toBe(explicit);
-  } finally {
-    routing.dispose();
-  }
-});
+it.each([true, false])(
+  "marks explicit external prewarms with a local selection: %s",
+  async (selected) => {
+    const fixture = setup();
+    const routing = await install(fixture);
+    try {
+      if (selected) policyOf(routing.forComposer()).select(carrier, "client-new-thread:external");
+      fixture.post(creation("prewarmConversation", carrier, {}));
+      const prewarmed = (
+        ((fixture.sent.at(-1) as unknown[])[1] as unknown[])[3] as unknown[]
+      )[0] as {
+        collaborationMode: { settings: { model: string } };
+      };
+      expect(decodeHarnessPluginRoute(prewarmed.collaborationMode.settings.model)).toEqual({
+        ...decodeHarnessPluginRoute(carrier),
+        prewarm: true,
+      });
+      // An explicit different, unmarked carrier keeps its Harness and Model and gains the marker,
+      // so Host registers a discardable prewarm rather than publishing a Thread.
+      const pi = encodeHarnessPluginRoute(
+        harnessPluginRouteSchema.parse({ harnessId: "pi", model: { id: "pi-model-v1.native" } }),
+      );
+      fixture.post(creation("prewarmConversation", pi, {}));
+      const explicit = (
+        ((fixture.sent.at(-1) as unknown[])[1] as unknown[])[3] as unknown[]
+      )[0] as {
+        collaborationMode: { settings: { model: string } };
+      };
+      expect(decodeHarnessPluginRoute(explicit.collaborationMode.settings.model)).toEqual({
+        ...decodeHarnessPluginRoute(pi),
+        prewarm: true,
+      });
+    } finally {
+      routing.dispose();
+    }
+  },
+);

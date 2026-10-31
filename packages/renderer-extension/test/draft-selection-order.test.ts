@@ -10,6 +10,7 @@ function setup(hostId: string) {
   const original: Draft = { modelSettings: { model: "native-model" }, isManuallyChanged: false };
   let draft = original;
   let rejectNextWrite = false;
+  let rejectAfterUpdater = 0;
   const selections = new Map<string, string>();
   const commits: { model: string; selected: string | null }[] = [];
   const row = Array<unknown>(14).fill(null);
@@ -17,6 +18,12 @@ function setup(hostId: string) {
     if (rejectNextWrite) {
       rejectNextWrite = false;
       throw new Error("Draft setter is unavailable");
+    }
+    if (rejectAfterUpdater > 0) {
+      // A setter that evaluates the updater and then refuses to commit it.
+      rejectAfterUpdater -= 1;
+      update(draft);
+      throw new Error("Draft setter rejected the update");
     }
     draft = update(draft);
     row[10] = draft;
@@ -104,6 +111,9 @@ function setup(hostId: string) {
     rejectNextWrite: () => {
       rejectNextWrite = true;
     },
+    rejectAfterUpdater: (count: number) => {
+      rejectAfterUpdater = count;
+    },
   };
 }
 
@@ -160,6 +170,27 @@ it("restores the previous external selection if the setter rejects a change", ()
     // The draft still carries the first Agent, and so does its selection.
     expect(f.readDraft().modelSettings.model).toBe(first);
     expect(f.selections.get("client-new-thread:selection-order")).toBe(first);
+  } finally {
+    f.adapter.dispose();
+  }
+});
+
+it("keeps the committed carrier when the setter evaluates the updater and then rejects", () => {
+  const f = setup("local");
+  try {
+    expect(f.adapter.applyAgent("pi", undefined, undefined, undefined, f.editor)).toBe(true);
+    const committed = f.readDraft().modelSettings.model;
+    f.rejectAfterUpdater(2);
+    const b = harnessModelRefSchema.parse({ id: "model-b" });
+    const c = harnessModelRefSchema.parse({ id: "model-c" });
+    expect(f.adapter.applyAgent("pi", b, undefined, undefined, f.editor)).toBe(false);
+    expect(f.adapter.applyAgent("pi", c, undefined, undefined, f.editor)).toBe(false);
+    // Neither rejected write may become the rollback target.
+    expect(f.readDraft().modelSettings.model).toBe(committed);
+    expect(f.selections.get("client-new-thread:selection-order")).toBe(committed);
+    // Switching back to Codex restores the native draft.
+    expect(f.adapter.applyAgent("codex", undefined, undefined, undefined, f.editor)).toBe(true);
+    expect(f.readDraft()).toMatchObject(f.original);
   } finally {
     f.adapter.dispose();
   }

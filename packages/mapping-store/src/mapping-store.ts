@@ -1194,7 +1194,6 @@ export class MappingStore {
     }
   }
 
-
   /**
    * Finish or reverse a quarantine pair interrupted between the metadata rename
    * and the record rename. Orphan marker: `quarantine/<id>.json.<ms>.invalid.metadata`

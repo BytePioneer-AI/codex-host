@@ -1602,10 +1602,10 @@ class ClaudeHarnessSession implements HarnessSession {
     if (
       transport &&
       (taskIds.length > 0 ||
-        (active.held &&
-          (active.rootSegmentActive ||
-            this.#occupancy.awaitingContinuation ||
-            active.steersAwaitingNative.size > 0)))
+        // A written steer survives the interrupt and runs as Claude's next native turn, so the
+        // Turn stays open to interrupt that turn too instead of leaking it into the next one.
+        active.steersAwaitingNative.size > 0 ||
+        (active.held && (active.rootSegmentActive || this.#occupancy.awaitingContinuation)))
     ) {
       await this.#cancelBackgroundWork(active, transport, taskIds);
       return { ok: true, value: { cancellationRequested: true } };

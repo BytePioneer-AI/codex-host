@@ -1352,6 +1352,85 @@ describe("Claude Code HarnessAdapter", () => {
     await adapter.close();
   });
 
+  it("keeps a cancelled Turn open to interrupt the native turn of its written steer", async () => {
+    const { adapter, transports } = fixture({ continuationQuiescenceMs: 10 });
+    const session = await openSession(adapter);
+    const outputs: HarnessOutput[] = [];
+    const consuming = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const completed = (turnId: string) =>
+      outputs.some(
+        (output) =>
+          output.kind === "event" &&
+          output.event.type === "turn.completed" &&
+          output.event.turnId === turnId,
+      );
+    await session.execute(textTurn("turn-1"));
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    const steered = session.execute({
+      type: "turn.steer",
+      turnId: hostTurnIdSchema.parse("turn-1"),
+      input: [{ type: "text", text: "steer then stop" }],
+    });
+    await vi.waitFor(() => expect(transport.steers).toHaveLength(1));
+    const messageId = transport.steers[0]?.messageId ?? "";
+    transport.recordSteer(messageId);
+    await expect(steered).resolves.toEqual({ ok: true, value: { accepted: true } });
+
+    await expect(
+      session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("turn-1") }),
+    ).resolves.toEqual({ ok: true, value: { cancellationRequested: true } });
+    // Claude Code 2.1.316 ends the interrupted Root with its result, then still runs the
+    // written steer as its next native turn: the interrupt does not drop queued input.
+    transport.finish({ status: "cancelled", reason: "aborted_tools" });
+    await Promise.resolve();
+    expect(completed("turn-1")).toBe(false);
+    // A new Turn must not take over the stream that still owes the steer's native turn.
+    await expect(session.execute(textTurn("turn-2"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+
+    transport.startSteer(messageId);
+    await vi.waitFor(() => expect(transport.abortContinuation).toHaveBeenCalledTimes(2));
+    transport.event({ type: "segment.started" });
+    transport.delta("Stale steer answer.", "stale-steer-answer");
+    transport.finish({ status: "cancelled", reason: "aborted_streaming" });
+    await vi.waitFor(() => expect(completed("turn-1")).toBe(true));
+    expect(
+      outputs.find((output) => output.kind === "event" && output.event.type === "turn.completed"),
+    ).toMatchObject({ event: { turnId: "turn-1", outcome: { status: "cancelled" } } });
+
+    await expect(session.execute(textTurn("turn-2"))).resolves.toEqual({
+      ok: true,
+      value: { turnId: "turn-2" },
+    });
+    transport.delta("Fresh answer.", "fresh-answer");
+    transport.finish({ status: "succeeded" });
+    await vi.waitFor(() => expect(completed("turn-2")).toBe(true));
+    const turnTwoText = outputs
+      .flatMap((output) =>
+        output.kind === "event" &&
+        output.event.type === "item.completed" &&
+        output.event.turnId === "turn-2" &&
+        output.event.snapshot.item.type === "agentMessage"
+          ? [output.event.snapshot.item.text]
+          : [],
+      )
+      .join("");
+    expect(turnTwoText).toBe("Fresh answer.");
+    expect(
+      outputs.some(
+        (output) => output.kind === "event" && output.event.type === "turn.autonomous.started",
+      ),
+    ).toBe(false);
+    await session.close();
+    await consuming;
+    await adapter.close();
+  });
+
   it("omits Auto when no runtime Model explicitly supports it", async () => {
     const { adapter, dependencies } = fixture();
     vi.mocked(dependencies.createInspector).mockReturnValueOnce({

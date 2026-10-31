@@ -29,6 +29,7 @@ async function setup() {
     role: "user",
     content: '[{"type":"text","text_content":"hello"}]',
   };
+  let status = 5;
   let items: unknown[] = [
     user,
     {
@@ -53,7 +54,13 @@ async function setup() {
     })),
     call: vi.fn(async (method: string) => {
       if (method !== "snapshot") throw new Error("Unexpected native write during open");
-      return { sessionId: "native-session", projectId: "project", workspaceFolders: [cwd], items };
+      return {
+        sessionId: "native-session",
+        projectId: "project",
+        workspaceFolders: [cwd],
+        status,
+        items,
+      };
     }),
     subscribe: vi.fn(),
   };
@@ -75,6 +82,10 @@ async function setup() {
     cwd,
     pending() {
       items = [user];
+    },
+    activeWithoutHistory() {
+      items = [];
+      status = 3;
     },
     async close() {
       await adapter.close();
@@ -164,6 +175,18 @@ describe("TRAE CN public Adapter core", () => {
         }),
       ).toMatchObject({ ok: false, error: { code: "unsupported" } });
       expect(test.service.inspect).toHaveBeenCalledTimes(before);
+    } finally {
+      await test.close();
+    }
+  });
+
+  it("does not mistake an active task with uncommitted history for an empty idle Session", async () => {
+    const test = await setup();
+    try {
+      test.activeWithoutHistory();
+      expect(
+        await test.adapter.open({ kind: "resume", cwd: test.cwd, nativeRef: test.reference }),
+      ).toMatchObject({ ok: false, error: { code: "sessionBusy" } });
     } finally {
       await test.close();
     }

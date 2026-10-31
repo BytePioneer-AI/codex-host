@@ -1,6 +1,7 @@
 const { randomUUID } = require("node:crypto");
 const path = require("node:path");
 const { publicModels, nativeModel, readModels } = require("./models.cjs");
+const { questionDecision, NativeInteractions } = require("./interactions.cjs");
 
 function invalid(message) {
   return Object.assign(new Error(message), { code: "invalidRequest" });
@@ -162,12 +163,21 @@ function publicEvent(event) {
 }
 
 class DesktopService {
-  constructor(native, application, workspaceFolders, agentType = "builder_v3") {
+  constructor(
+    native,
+    application,
+    workspaceFolders,
+    agentType = "builder_v3",
+    requestSettings = async () => ({}),
+  ) {
     this.native = native;
     this.application = application;
     this.workspaceFolders = [...workspaceFolders];
     this.agentType = agentType;
     this.starting = new Set();
+    this.requestSettings = requestSettings;
+    this.responseAttempts = new Set();
+    this.interactions = new NativeInteractions();
   }
 
   async readSession(sessionId) {
@@ -216,6 +226,8 @@ class DesktopService {
   async call(method, input = {}) {
     if (!record(input)) throw invalid("Invalid bridge request");
     switch (method) {
+      case "settings":
+        return this.requestSettings();
       case "create": {
         const cwd =
           typeof input.cwd === "string"
@@ -310,6 +322,7 @@ class DesktopService {
             });
           const pool = await readModels(this.native, this.agentType);
           const model = nativeModel(pool, modelId);
+          const settings = await this.requestSettings();
           const messageId =
             typeof input.messageId === "string" && input.messageId ? input.messageId : randomUUID();
           const result = await this.native.call(
@@ -328,6 +341,9 @@ class DesktopService {
               agent_type: this.agentType,
               agent_id: this.agentType,
               is_in_code_mode: true,
+              ...(settings.ask_question_config
+                ? { ask_question_config: settings.ask_question_config }
+                : {}),
             },
             {
               chat_session_id: sessionId,
@@ -350,6 +366,47 @@ class DesktopService {
           chat_session_id: text(input.sessionId, "session ID"),
         });
       }
+      case "respond": {
+        const sessionId = text(input.sessionId, "session ID");
+        const interactionId = text(input.interactionId, "interaction ID");
+        const key = `${sessionId}:${interactionId}`;
+        if (this.responseAttempts.has(key))
+          throw Object.assign(
+            new Error(
+              "Native interaction already has a response attempt; verify its state before retrying",
+            ),
+            { code: "invalidState" },
+          );
+        const { session, projectId } = await this.readSession(sessionId);
+        if (![3, 8].includes(session.status)) {
+          this.interactions.expire(sessionId);
+          throw Object.assign(new Error("Native interaction is no longer active"), {
+            code: "invalidState",
+          });
+        }
+        const data = questionDecision(
+          this.interactions.current(sessionId, input.messageId, input.planItemId),
+          input,
+        );
+        // Recheck after asynchronous history revalidation, before the only write.
+        if (this.responseAttempts.has(key))
+          throw Object.assign(new Error("Native interaction response is already in progress"), {
+            code: "invalidState",
+          });
+        this.responseAttempts.add(key);
+        try {
+          await this.native.call("lite", "send_user_decision", data, {
+            chat_session_id: sessionId,
+            project_id: projectId,
+          });
+          return { accepted: true };
+        } catch (error) {
+          // An explicit native rejection proves non-admission. A lost receipt
+          // does not, so it must not reopen the same instance for another write.
+          if (typeof error.nativeCode === "number") this.responseAttempts.delete(key);
+          throw error;
+        }
+      }
       default:
         throw Object.assign(new Error(`Unsupported bridge method: ${method}`), {
           code: "unsupported",
@@ -360,6 +417,8 @@ class DesktopService {
   async subscribe(input, listener) {
     const sessionId = text(input?.sessionId, "session ID");
     await this.readSession(sessionId);
+    const observe = (event) => this.interactions.observe(sessionId, event);
+    const expire = () => this.interactions.expire(sessionId);
     return this.native.subscribe(
       "lite",
       "subscribe_events",
@@ -369,9 +428,20 @@ class DesktopService {
       },
       {},
       {
-        data: (event) => listener.data(publicEvent(event)),
-        error: (error) => listener.error(error),
-        end: () => listener.end(),
+        data: (event) => {
+          observe(event);
+          listener.data(publicEvent(event));
+        },
+        error: (error) => {
+          expire();
+          listener.error(error);
+        },
+        end: () => {
+          expire();
+          listener.end();
+        },
+        // Keep confirmation state current after the HTTP observer detaches.
+        drain: { data: observe, error: expire, end: expire },
       },
     );
   }

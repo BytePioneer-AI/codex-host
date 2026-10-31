@@ -119,6 +119,32 @@ describe("TRAE CN desktop bridge service", () => {
     expect(call.mock.calls.every((args) => args[1] !== "send_message")).toBe(true);
   });
 
+  it("uses the desktop-owned question settings instead of client-supplied feature flags", async () => {
+    const { native, call } = setup();
+    const settings = vi.fn(async () => ({
+      ask_question_config: { feature_available: false, ide_enable: false, solo_enable: false },
+    }));
+    const service = new DesktopService(
+      native,
+      { name: "Trae CN", version: "fixture" },
+      ["/workspace"],
+      "builder_v3",
+      settings,
+    );
+    await service.inspect();
+    expect(settings).not.toHaveBeenCalled();
+    await service.call("start", {
+      sessionId: "session",
+      modelId: "configured",
+      text: "hello",
+      ask_question_config: { feature_available: true, ide_enable: true, solo_enable: true },
+    });
+    expect(settings).toHaveBeenCalledOnce();
+    expect(call.mock.calls.find((args) => args[1] === "send_message")?.[2]).toMatchObject({
+      ask_question_config: { feature_available: false, ide_enable: false, solo_enable: false },
+    });
+  });
+
   it("does not expose model credentials from serialized history or metadata", () => {
     const context = {
       model_info: {

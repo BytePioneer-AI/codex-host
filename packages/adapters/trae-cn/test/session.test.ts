@@ -204,6 +204,10 @@ describe("TRAE CN public Session core", () => {
     const active = await setup(true, true);
     try {
       await active.session.execute(command());
+      expect(await active.session.readSnapshot()).toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
       expect(await active.session.execute(command("second"))).toMatchObject({
         ok: false,
         error: { code: "sessionBusy", retryable: true },
@@ -355,6 +359,114 @@ describe("TRAE CN public Session core", () => {
         ok: false,
         error: { code: "invalidState" },
       });
+    } finally {
+      await test.close();
+    }
+  });
+
+  it("routes an explicit public question response to the owned native instance", async () => {
+    const test = await setup(true, true);
+    const subscribe = test.service.subscribe.getMockImplementation();
+    const call = test.call.getMockImplementation();
+    if (!subscribe || !call) throw new Error("Missing fixture implementation");
+    test.service.subscribe.mockImplementation(async (input, listener) => {
+      const detach = await subscribe(input, listener);
+      const start = test.call.mock.calls.find((args) => args[0] === "start")?.[1];
+      listener.data({
+        event: "plan_item",
+        payload: {
+          id: "question-plan",
+          reply_to_message_id: start?.messageId,
+          confirm_info: {
+            confirm_status: "unconfirmed",
+            interaction_instance_id: "question-instance",
+            auto_confirm: false,
+          },
+          tool_call_info: {
+            name: "AskUserQuestion",
+            params: {
+              questions: [
+                {
+                  header: "测试",
+                  question: "请选择",
+                  options: [{ label: "继续" }, { label: "停止" }],
+                  multiSelect: false,
+                },
+              ],
+            },
+          },
+        },
+      });
+      return detach;
+    });
+    test.call.mockImplementation(async (method, input) => {
+      if (method === "respond") {
+        test.finish("completed");
+        return { accepted: true };
+      }
+      return call(method, input);
+    });
+    try {
+      await test.session.execute(command());
+      let question;
+      while (!question) {
+        const next = await test.iterator.next();
+        if (next.done) throw new Error("Missing question");
+        if (next.value.kind === "interaction") question = next.value.interaction;
+      }
+      expect(question.type).toBe("question");
+      expect(
+        await test.session.execute({
+          type: "interaction.respond",
+          interactionId: question.interactionId,
+          response: { type: "question", answers: { "question-0": ["停止"] } },
+        }),
+      ).toEqual({ ok: true, value: { accepted: true } });
+      const outputs = await completed(test.iterator);
+      expect(outputs).toContainEqual({
+        kind: "event",
+        event: {
+          type: "interaction.closed",
+          interactionId: question.interactionId,
+          turnId: command().turnId,
+          reason: "responded",
+        },
+      });
+      expect(outputs.at(-1)).toMatchObject({
+        event: { type: "turn.completed", outcome: { status: "succeeded" } },
+      });
+      const response = test.call.mock.calls.find((args) => args[0] === "respond")?.[1];
+      expect(response).toMatchObject({
+        sessionId: "native-session",
+        planItemId: "question-plan",
+        interactionId: "question-instance",
+        answers: [["停止"]],
+      });
+      expect(response?.messageId).toBe(
+        test.call.mock.calls.find((args) => args[0] === "start")?.[1].messageId,
+      );
+    } finally {
+      await test.close();
+    }
+  });
+
+  it("waits for native history visibility after stream completion without restarting the task", async () => {
+    const test = await setup();
+    const original = test.call.getMockImplementation();
+    if (!original) throw new Error("Missing fixture implementation");
+    let reads = 0;
+    test.call.mockImplementation(async (method, input) => {
+      if (method === "snapshot" && ++reads === 1) return { sessionId: "native-session", items: [] };
+      return original(method, input);
+    });
+    try {
+      await test.session.execute(command());
+      expect((await completed(test.iterator)).at(-1)).toMatchObject({
+        event: { outcome: { status: "succeeded" } },
+      });
+      expect(reads).toBe(2);
+      expect(test.call.mock.calls.filter((args) => args[0] === "start")).toHaveLength(1);
+      expect(test.service.subscribe).toHaveBeenCalledOnce();
     } finally {
       await test.close();
     }

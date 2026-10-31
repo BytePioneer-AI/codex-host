@@ -163,6 +163,47 @@ describe("TRAE CN native history projection", () => {
     ]);
   });
 
+  it("keeps mutable question answers out of admitted tool arguments", () => {
+    const pending = {
+      id: "question",
+      timing: { tool_call_started_at_ms: 1 },
+      tool_call_info: {
+        name: "AskUserQuestion",
+        params: { questions: [{ question: "choose" }], answers: [] },
+      },
+    };
+    const answered = {
+      ...pending,
+      tool_call_info: {
+        ...pending.tool_call_info,
+        params: { ...pending.tool_call_info.params, answers: [{ selected_options: ["chosen"] }] },
+      },
+    };
+    expect(projectPlanItem(pending)[0]?.item).toEqual(projectPlanItem(answered)[0]?.item);
+    expect(projectPlanItem(answered)[0]?.item).toMatchObject({
+      arguments: { questions: [{ question: "choose" }] },
+    });
+    expect(projectPlanItem(answered)[0]?.item).not.toHaveProperty("arguments.answers");
+  });
+
+  it("projects a native tool failure even when it has no execution timing", () => {
+    expect(
+      projectPlanItem({
+        id: "invalid-tool",
+        tool_call_info: {
+          name: "AskUserQuestion",
+          params: {},
+          result: { status: "failed", error_message: "Native argument validation failed" },
+        },
+      }),
+    ).toMatchObject([
+      {
+        item: { type: "toolExecution", toolName: "AskUserQuestion" },
+        outcome: { status: "failed", error: { message: "Native argument validation failed" } },
+      },
+    ]);
+  });
+
   it("rejects foreign sessions, duplicated identities and orphan replies", () => {
     expect(() =>
       projectHistory(

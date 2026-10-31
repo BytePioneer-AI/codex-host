@@ -132,7 +132,7 @@ class NativeConnection {
         throw failure("protocolError", "Missing TRAE CN stream identity");
       }
       streamId = response.streamId;
-      this.#streams.set(streamId, listener);
+      this.#streams.set(streamId, { listener, detached: false });
     });
     return () => this.#detachStream(streamId);
   }
@@ -168,7 +168,7 @@ class NativeConnection {
       }
       if (!message.method.startsWith("rpc.stream.")) return;
       const streamId = message.method.slice("rpc.stream.".length);
-      const listener = this.#streams.get(streamId);
+      const listener = this.#streams.get(streamId)?.listener;
       if (!listener) return;
       if (message.meta?.streamId !== streamId) throw new Error("Mismatched stream");
       if (message.params?.error) {
@@ -238,8 +238,11 @@ class NativeConnection {
     // Desktop treats rpc.stream.cancel as native generation cancellation. A Host
     // observer going away must only detach; drain until native EOF on the shared
     // Companion connection, leaving stop_chat_session as the explicit stop path.
-    if (this.#streams.has(streamId))
-      this.#streams.set(streamId, { data() {}, error() {}, end() {} });
+    const stream = this.#streams.get(streamId);
+    if (stream && !stream.detached) {
+      stream.detached = true;
+      stream.listener = stream.listener.drain ?? { data() {}, error() {}, end() {} };
+    }
   }
 
   #cancelStream(streamId) {
@@ -255,7 +258,7 @@ class NativeConnection {
 
   close(error = failure("invalidState", "TRAE CN connection closed")) {
     if (this.#closed) return;
-    const listeners = [...this.#streams.values()];
+    const listeners = [...this.#streams.values()].map((stream) => stream.listener);
     for (const streamId of this.#streams.keys()) {
       try {
         this.#cancelStream(streamId);

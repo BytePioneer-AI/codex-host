@@ -1,12 +1,12 @@
 # TRAE CN Desktop 原生桥接
 
-开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含桌面 Companion 扩展入口、本机传输、公共 Adapter 和普通文本 Session 核心。审批、提问、活动任务恢复、配置写入、历史派生和发行入口尚未完成，不能作为完整 CodexHost 插件启用。
+开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含桌面 Companion、本机传输、公共 Adapter、普通文本会话和结构化提问。审批、活动任务恢复、配置写入、历史派生和发行入口尚未完成，不能作为完整 CodexHost 插件启用。
 
 ## 原生边界
 
 验证环境为 TRAE CN 3.4.12、VS Code core 1.107.1、Windows x64。应用将 `harness.dll` 加载到其受管理进程中，并通过 Electron 自带的 `ahaIpc` 暴露 `ai-agent` RPC。测试扩展在应用的 Extension Host 中连接这个服务；普通 Node 进程不能据此直接加载 Electron 私有绑定。
 
-数据路径如下。公共 Adapter 的普通对话和空闲会话恢复已实测，其他能力仍在开发。
+数据路径如下。公共 Adapter 的普通对话、空闲恢复和提问答复已实测，其他能力仍在开发。
 
 ```mermaid
 flowchart LR
@@ -16,7 +16,7 @@ flowchart LR
     I --> R[应用自带 ai-agent / harness]
 ```
 
-`assets/companion/native.cjs` 实现已验证的 RPC 包格式、响应解包、流注册、反向配置回调和连接清理。流监听在处理订阅响应时注册，避免紧随响应的首条事件丢失。反向回调目前仅允许少量只读配置命令；原生文件读取工具已实测，完整工具投影、审批和提问仍待实现。
+`assets/companion/native.cjs` 实现已验证的 RPC 包格式、响应解包、流注册、反向配置回调和连接清理。流监听在处理订阅响应时注册，避免紧随响应的首条事件丢失。反向回调目前仅允许少量只读配置命令；原生文件读取和提问已实测，完整工具投影与审批仍待实现。
 
 TRAE CN 的 `rpc.stream.cancel` 会取消原生生成，因此客户端解除订阅只分离观察者，由 Companion 的共享原生连接继续接收直到原生结束。主动取消单独调用 `lite.stop_chat_session`；请求确认不代表取消完成，必须核对事件和持久历史。关闭 Companion 或桌面应用仍可能中断其原生连接。
 
@@ -42,7 +42,19 @@ TRAE CN 的 `rpc.stream.cancel` 会取消原生生成，因此客户端解除订
 
 `src/live-items.ts` 将累积文本转换为增量事件，每个 Item 只开始和完成一次。Builder 会暂时把最终文本放入 thought，然后转入 finish.summary；只有确定属于普通工具的 thought 才作为 commentary 发布，避免把同一最终答复显示两遍。EOF、关闭观察者和停止请求确认均不作为成功终态；成功需要从同一原生历史读到完成记录。
 
-当前配置写入、原生审批/提问、活动 Turn 恢复和历史派生操作明确返回未实现或受限错误，能力字段不声称支持。只完成普通会话核心不代表全部 P0 / P1 已验收。
+活动任务的 Assistant 记录可能尚未落盘，因此公开 readSnapshot 在任务活动时返回 sessionBusy，空闲恢复也拒绝原生忙碌状态。SSE 结束可以稍早于历史提交；Session 会对同一个原生身份短暂轮询，只在持久终态可读后发布完成，不重新发送输入。历史持续不可见时保留 unavailable 诊断，不能把观察超时当作原生任务失败或自动重启。
+
+当前配置写入、原生审批、活动 Turn 恢复和历史派生操作明确返回未实现或受限错误，能力字段不声称支持。已完成的核心路径不代表全部 P0 / P1 已验收。
+
+## 结构化提问
+
+`assets/companion/settings.cjs` 从桌面配置读取主动提问的 IDE / SOLO 开关和原生 featureOverride，并读取国内版的 ask_user_question_v2 实验值。发送时在应用内构造 ask_question_config；不修改用户开关，不接受客户端覆盖，也不导出其他实验数据。缺失这组请求字段会改变原生工具可用性，不能据此宣布桌面不支持提问。
+
+待回答的 AskUserQuestion 只存在于原生事件流中，get_messages 尚未返回其 Assistant 记录。Companion 按 Session、用户消息、Plan Item 和 interaction_instance_id 记录当前确认状态；观察者解除订阅后，应用仍接收原生结束和确认更新来使旧状态失效。答复前重新核对原生 Project 与运行状态，只允许当前实例写入一次。不确定回执不会触发自动重发。
+
+`src/questions.ts` 将原生问题映射为公共 Question Interaction，保留选项、多选及原生菜单的其他答案入口。模型预填的 answers 不视作用户提交；只有显式 interaction.respond 才发送答复。原生确认、取消、过期和替换关闭相应 UI 实例；已关闭实例不会被迟到的事件重新打开。其他答案沿用原生界面的 1000 字符上限。
+
+提问答案是后续写回的结果，不属于已准入工具的固定参数，因此通用工具参数排除这个可变字段，答案仍保留在原生工具结果中。参数按结构比较，JSON 对象键顺序不同不算参数更改；原生没有执行时间的参数校验失败也保留为失败工具 Item，不因最终回复成功而隐藏。
 
 ## 验证与剩余工作
 
@@ -54,4 +66,6 @@ TRAE CN 的 `rpc.stream.cancel` 会取消原生生成，因此客户端解除订
 
 公共 HarnessSession 实测完成文件读取和同一 Session 的第二轮答复 `TRAE_CN_PUBLIC_SESSION_OK`，实时及历史 NativeTurnRef 一致。随后由新 Node 进程使用 Adapter.open(resume) 恢复同一 NativeSessionRef，确认原历史前缀不变，再完成第三轮 `TRAE_CN_ADAPTER_RESUME_OK`。
 
-这些证据覆盖桌面、Companion 和公共 Adapter 核心。交付仍需审批与提问、活动任务恢复、配置写入、历史派生、Manifest、Companion 安装打包与预装发行，以及真实 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。
+公共提问验收中，原生 AskUserQuestion 产生一个公共问题，调用方显式选择“停止”；同一实例只答复一次，interaction.closed 为 responded，公共 Turn 和持久历史均为成功，最终答复为 `TRAE_CN_PUBLIC_QUESTION_OK_STOP`。这项验收没有依赖活动历史来重建问题，也没有把原生参数中的预填答案当作用户输入。
+
+这些证据覆盖桌面、Companion 和公共 Adapter 核心。交付仍需审批、活动任务恢复、配置写入、历史派生、Manifest、Companion 安装打包与预装发行，以及真实 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。

@@ -5,6 +5,7 @@ import type {
   HostItemSnapshot,
 } from "@codexhost/harness-adapter";
 import type { HostTurnId } from "@codexhost/shared-contracts";
+import { isDeepStrictEqual } from "node:util";
 import { TraeError } from "./errors.js";
 import { projectPlanItem, type ProjectedPlanItem } from "./history.js";
 
@@ -36,8 +37,8 @@ export class LiveItems {
         throw new TraeError("protocolError", "Native plan Item changed its content type");
       if (previous.outcome) {
         if (
-          JSON.stringify(previous.item) !== JSON.stringify(next.item) ||
-          (next.outcome && JSON.stringify(previous.outcome) !== JSON.stringify(next.outcome))
+          !isDeepStrictEqual(previous.item, next.item) ||
+          (next.outcome && !isDeepStrictEqual(previous.outcome, next.outcome))
         )
           throw new TraeError("protocolError", "Native plan Item changed after completion");
         return;
@@ -62,13 +63,10 @@ export class LiveItems {
       } else if (previous.item.type === "toolExecution" && next.item.type === "toolExecution") {
         if (
           previous.item.toolName !== next.item.toolName ||
-          JSON.stringify(previous.item.arguments) !== JSON.stringify(next.item.arguments)
+          !isDeepStrictEqual(previous.item.arguments, next.item.arguments)
         )
           throw new TraeError("protocolError", "Native tool changed its admitted arguments");
-        if (
-          next.item.output &&
-          JSON.stringify(previous.item.output) !== JSON.stringify(next.item.output)
-        )
+        if (next.item.output && !isDeepStrictEqual(previous.item.output, next.item.output))
           this.emit({
             type: "item.updated",
             turnId: this.turnId,

@@ -129,4 +129,36 @@ describe("TRAE CN cumulative live Item projection", () => {
     ]);
     expect(events.filter((event) => event.type === "item.started")).toHaveLength(1);
   });
+
+  it("compares native tool argument values independently of JSON object key order", () => {
+    const { items } = setup();
+    items.acceptPlan({
+      id: "tool",
+      timing: { tool_call_started_at_ms: 1 },
+      tool_call_info: {
+        name: "AskUserQuestion",
+        params: { questions: [{ options: [{ description: "detail", label: "choice" }] }] },
+      },
+    });
+    expect(() =>
+      items.acceptPlan({
+        id: "tool",
+        timing: { tool_call_started_at_ms: 1 },
+        tool_call_info: {
+          name: "AskUserQuestion",
+          params: { questions: [{ options: [{ label: "choice", description: "detail" }] }] },
+        },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      items.acceptPlan({
+        id: "tool",
+        timing: { tool_call_started_at_ms: 1 },
+        tool_call_info: {
+          name: "AskUserQuestion",
+          params: { questions: [{ options: [{ label: "changed", description: "detail" }] }] },
+        },
+      }),
+    ).toThrow("admitted arguments");
+  });
 });

@@ -223,6 +223,48 @@ describe("TRAE CN app-owned native RPC", () => {
     native.close();
   });
 
+  it("keeps app-owned confirmation tracking current after an HTTP observer detaches", async () => {
+    const { channel, native } = setup();
+    channel.handle = (message) => {
+      if (message.method === "request_stream")
+        channel.receive({ id: message.id, result: { streamId: "active" } });
+    };
+    const data = vi.fn(),
+      end = vi.fn(),
+      drainData = vi.fn(),
+      drainEnd = vi.fn();
+    const detach = await native.subscribe(
+      "lite",
+      "subscribe_events",
+      {},
+      {},
+      { data, end, error: vi.fn(), drain: { data: drainData, end: drainEnd, error: vi.fn() } },
+    );
+    detach();
+    detach();
+    channel.receive({
+      method: "rpc.stream.active",
+      meta: { streamId: "active" },
+      params: { data: { event: "done", payload: { status: "completed" } } },
+    });
+    channel.receive({
+      method: "rpc.stream.active",
+      meta: { streamId: "active", done: true },
+      params: {},
+    });
+    expect(data).not.toHaveBeenCalled();
+    expect(end).not.toHaveBeenCalled();
+    expect(drainData).toHaveBeenCalledExactlyOnceWith({
+      event: "done",
+      payload: { status: "completed" },
+    });
+    expect(drainEnd).toHaveBeenCalledOnce();
+    native.close();
+    expect(channel.sent.some((message) => message.method === "rpc.stream.cancel.active")).toBe(
+      false,
+    );
+  });
+
   it("rejects malformed native JSON instead of leaving a request pending", async () => {
     const { channel, native } = setup();
     channel.handle = () => channel.emit("message", "not-json");

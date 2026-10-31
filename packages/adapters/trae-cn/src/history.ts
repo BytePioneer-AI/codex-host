@@ -121,12 +121,21 @@ export function projectPlanItem(value: unknown, terminal?: HostItemOutcome): Pro
         ...(outcome ? { outcome } : {}),
       });
     else if (completed) throw new TraeError("protocolError", "Native final answer has no summary");
-  } else if (typeof timing?.tool_call_started_at_ms === "number" || toolFinished || terminal) {
+  } else if (
+    typeof timing?.tool_call_started_at_ms === "number" ||
+    toolFinished ||
+    terminal ||
+    ["success", "failed", "error", "canceled", "cancelled"].includes(String(toolResult?.status))
+  ) {
     const item: HostItem = {
       type: "toolExecution",
       itemId: hostItemIdSchema.parse(`${id}.tool`),
       toolName: name,
-      arguments: jsonValueSchema.parse(params ?? {}),
+      arguments: jsonValueSchema.parse(
+        name === "AskUserQuestion" && record(params)
+          ? Object.fromEntries(Object.entries(params).filter(([key]) => key !== "answers"))
+          : (params ?? {}),
+      ),
     };
     // Some native tools omit durable output entirely. Preserve that absence; do
     // not fabricate file contents or substitute call arguments as tool output.

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   HarnessOutputChannel,
   type HarnessSession,
@@ -9,6 +10,7 @@ import {
   type HostCommand,
   type HarnessResult,
   type HostThreadSnapshot,
+  type HostTurnSnapshot,
   type TurnStartCommand,
   type TurnStartAccepted,
   type TurnCancelCommand,
@@ -36,6 +38,7 @@ import { nativeModelId, confirmedModel } from "./models.js";
 import { projectHistory, TRAE_CN_ID } from "./history.js";
 import { LiveItems } from "./live-items.js";
 import { sameDirectory } from "./discovery.js";
+import { QuestionInteractions } from "./questions.js";
 
 // This initial core deliberately does not advertise configuration writes or
 // history derivation before those native operations have their own acceptance.
@@ -56,6 +59,7 @@ interface ActiveTurn {
   admitted: boolean;
   stopRequested: boolean;
   items: LiveItems;
+  interactions: QuestionInteractions | undefined;
 }
 
 export interface SessionOptions {
@@ -138,6 +142,21 @@ export class TraeCnSession implements HarnessSession {
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    if (this.#closed) return this.#snapshot();
+    if (this.#active)
+      return {
+        ok: false,
+        error: harnessError(
+          new TraeError(
+            "sessionBusy",
+            "Native pending history is not yet a complete public snapshot",
+          ),
+        ),
+      };
+    return this.#snapshot();
+  }
+
+  async #snapshot(allowPending = false): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed)
       return {
         ok: false,
@@ -149,6 +168,8 @@ export class TraeCnSession implements HarnessSession {
       const value = await this.options.client.call("snapshot", {
         sessionId: nativeRef.nativeSessionId,
       });
+      if (!allowPending && record(value) && [2, 3, 8, 9, 10].includes(Number(value.status)))
+        throw new TraeError("sessionBusy", "The native Session has active work");
       return {
         ok: true,
         value: {
@@ -198,6 +219,7 @@ export class TraeCnSession implements HarnessSession {
           admitted: false,
           stopRequested: false,
           items: new LiveItems(command.turnId, (event) => this.#emit(event)),
+          interactions: undefined,
         };
         this.#active = turn;
         queueMicrotask(() => {
@@ -212,6 +234,12 @@ export class TraeCnSession implements HarnessSession {
         turn.cancelRequested = true;
         if (turn.admitted) await this.#stop(turn);
         return { ok: true, value: { cancellationRequested: true } };
+      }
+      if (command.type === "interaction.respond") {
+        const interactions = this.#active?.interactions;
+        if (!interactions)
+          throw new TraeError("invalidState", "No native question is currently active");
+        return interactions.respond(command);
       }
       throw new TraeError("unsupported", `TRAE CN operation is not implemented: ${command.type}`);
     } catch (error) {
@@ -295,14 +323,11 @@ export class TraeCnSession implements HarnessSession {
         if (!turn.cancelRequested || !turn.stopRequested) throw error;
       }
       if (this.#closed) return;
-      const snapshot = await this.readSnapshot();
-      if (!snapshot.ok) throw new TraeError(snapshot.error.code, snapshot.error.message);
-      const completed = snapshot.value.turns.find(
-        (entry) => entry.nativeTurnRef.nativeTurnKey === turn.messageId,
-      );
-      if (!completed || completed.outcome.status === "unknown")
-        throw new TraeError("protocolError", "Native stream ended without a durable terminal Turn");
+      const completed = await this.#readTerminal(turn.messageId);
+      if (completed.outcome.status === "unknown")
+        throw new TraeError("unavailable", "Native history has not confirmed completion");
       turn.items.settle(completed.outcome);
+      turn.interactions?.close(completed.outcome.status === "cancelled" ? "cancelled" : "expired");
       this.#emit({
         type: "turn.completed",
         turnId: turn.command.turnId,
@@ -313,7 +338,7 @@ export class TraeCnSession implements HarnessSession {
       if (!this.#closed) {
         const failure = harnessError(error);
         this.#faulted = true;
-        const snapshot = turn.admitted ? await this.readSnapshot() : undefined;
+        const snapshot = turn.admitted ? await this.#snapshot(true) : undefined;
         const confirmedRef = snapshot?.ok
           ? snapshot.value.turns.find(
               (entry) => entry.nativeTurnRef.nativeTurnKey === turn.messageId,
@@ -321,6 +346,7 @@ export class TraeCnSession implements HarnessSession {
           : undefined;
         if (this.#closed) return;
         turn.items.settle({ status: "failed", error: failure });
+        turn.interactions?.close("expired");
         this.#emit({
           type: "turn.completed",
           turnId: turn.command.turnId,
@@ -337,9 +363,37 @@ export class TraeCnSession implements HarnessSession {
     }
   }
 
+  async #readTerminal(messageId: string): Promise<HostTurnSnapshot> {
+    const deadline = Date.now() + 5000;
+    while (!this.#closed) {
+      const snapshot = await this.#snapshot(true);
+      if (!snapshot.ok) throw new TraeError(snapshot.error.code, snapshot.error.message);
+      const turn = snapshot.value.turns.find(
+        (entry) => entry.nativeTurnRef.nativeTurnKey === messageId,
+      );
+      if (turn && turn.outcome.status !== "unknown") return turn;
+      if (Date.now() >= deadline)
+        throw new TraeError(
+          "unavailable",
+          "Native completion history is still pending; read the same Session before retrying",
+        );
+      // SSE EOF can precede the native history commit. Re-read this identity;
+      // never restart the task or treat the visibility delay as native failure.
+      await delay(100);
+    }
+    throw new TraeError("invalidState", "TRAE CN Session closed during history confirmation");
+  }
+
   #observe(turn: ActiveTurn, sessionId: string): Promise<void> {
     return new Promise((resolve, reject) => {
       this.#observerFail = reject;
+      turn.interactions = new QuestionInteractions(
+        { sessionId, messageId: turn.messageId, turnId: turn.command.turnId },
+        this.options.client,
+        (output) => {
+          if (!this.#closed) this.#channel.emit(output);
+        },
+      );
       let terminal = false;
       let nativeError: TraeError | undefined;
       void this.options.client
@@ -354,8 +408,10 @@ export class TraeCnSession implements HarnessSession {
                   payload.reply_to_message_id !== turn.messageId
                 )
                   throw new TraeError("protocolError", "Native event belongs to a different Turn");
-                if (event.event === "plan_item") turn.items.acceptPlan(payload);
-                else if (event.event === "metadata" || event.event === "model_config") {
+                if (event.event === "plan_item") {
+                  turn.interactions?.observe(payload);
+                  turn.items.acceptPlan(payload);
+                } else if (event.event === "metadata" || event.event === "model_config") {
                   const effectiveModel = confirmedModel(
                     event.event === "metadata" ? payload?.model : payload,
                     this.options.inspection.agentType,
@@ -409,6 +465,7 @@ export class TraeCnSession implements HarnessSession {
 
   async close(): Promise<void> {
     if (this.#closed) return;
+    this.#active?.interactions?.close("superseded");
     this.#closed = true;
     this.#observerFail?.(new TraeError("invalidState", "TRAE CN observer closed"));
     this.#observerFail = undefined;

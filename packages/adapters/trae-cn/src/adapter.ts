@@ -120,6 +120,8 @@ export class TraeCnAdapter implements HarnessAdapter {
           input.nativeRef.nativeSessionId,
           inspection.agentType,
         );
+        if ([2, 3, 8, 9, 10].includes(Number(native.status)))
+          throw new TraeError("sessionBusy", "Native active-Turn recovery is not implemented yet");
         if (snapshot.turns.some((turn) => turn.outcome.status === "unknown"))
           throw new TraeError("sessionBusy", "Native pending Turn recovery is not implemented yet");
         effectiveModel = snapshot.turns.at(-1)?.model;

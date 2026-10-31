@@ -52,7 +52,7 @@ it(
       // varies. This tests focus policy, not an emulated software keyboard.
       const context = await browser.newContext({
         viewport: { width: 1440, height: 1000 },
-        userAgent: profile.userAgent,
+        ...(profile.userAgent === undefined ? {} : { userAgent: profile.userAgent }),
         hasTouch: !profile.automatic,
       });
       try {

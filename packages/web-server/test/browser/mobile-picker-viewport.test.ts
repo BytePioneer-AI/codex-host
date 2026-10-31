@@ -99,7 +99,7 @@ it(
         viewport: { width: profile.mobile ? 390 : 1280, height: 900 },
         hasTouch: profile.mobile,
         isMobile: profile.mobile,
-        userAgent: profile.userAgent,
+        ...(profile.userAgent === undefined ? {} : { userAgent: profile.userAgent }),
       });
       try {
         if (profile.name === "iPad")

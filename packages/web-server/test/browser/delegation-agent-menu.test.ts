@@ -118,6 +118,10 @@ it(
     await composer.press("ArrowLeft");
     await composer.press("Delete");
     await page.getByText("kept.txt", { exact: true }).waitFor();
+    await page.waitForFunction((expected) => {
+      const stored = JSON.parse(localStorage.getItem("dsh.conversation.existing") ?? "null");
+      return stored?.draft?.text === expected && stored.draft.references.length === 2;
+    }, text);
     await page.reload();
     await composer.waitFor();
     await chips.first().waitFor();

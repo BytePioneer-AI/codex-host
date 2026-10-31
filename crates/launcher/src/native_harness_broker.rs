@@ -46,9 +46,10 @@ pub fn native_harness_broker_usage_requested(arguments: &[String]) -> bool {
     match arguments.first().map(String::as_str) {
         None | Some("--help" | "-h" | "help") => true,
         Some(first) if first.starts_with('-') => is_wrapper_injected_runtime_options(arguments),
-        Some(_) => arguments[1..]
+        Some("install" | "status" | "stop" | "uninstall") => arguments[1..]
             .iter()
             .any(|argument| argument == "--help" || argument == "-h"),
+        Some(_) => false,
     }
 }
 
@@ -257,6 +258,8 @@ mod tests {
                 "/opt/host.mjs",
             ],
             &["bogus"],
+            &["bogus", "--help"],
+            &["nonexistent", "-h"],
             &["--bogus"],
             &[
                 "--bogus",

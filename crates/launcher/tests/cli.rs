@@ -199,6 +199,8 @@ fn unknown_commands_remain_errors() {
     for arguments in [
         &["bogus"][..],
         &["broker", "bogus"],
+        &["broker", "nonexistent", "--help"],
+        &["broker", "nonexistent", "-h"],
         &["broker", "--bogus"],
         bogus_option_with_injected.as_slice(),
     ] {

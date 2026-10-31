@@ -56,18 +56,19 @@ export function minimumNodeVersionFromEngines(range) {
 export const NPM_MINIMUM_NODE_VERSION = minimumNodeVersionFromEngines(
   JSON.parse(readFileSync(path.join(repositoryRoot, "package.json"), "utf8")).engines?.node,
 );
-// Node.js 23.0-23.3 load node:sqlite only with --experimental-sqlite; 23.4.0 unflagged it.
-export const NPM_NODE_SQLITE_FLAGGED_RANGE = Object.freeze({ from: "23.0.0", to: "23.4.0" });
+// Node.js 23.x lacks parts of node:sqlite that bundled plugins import (the module is flagged
+// before 23.4.0 and sqlite.backup arrives in 23.8.0); the repository engines skip 23.x too.
+export const NPM_NODE_EXCLUDED_RANGE = Object.freeze({ from: "23.0.0", to: "24.0.0" });
 function compareNodeVersions(left, right) {
   const a = left.split(".").map(Number);
   const b = right.split(".").map(Number);
   return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 }
 export const NPM_NODE_ENGINE =
-  compareNodeVersions(NPM_MINIMUM_NODE_VERSION, NPM_NODE_SQLITE_FLAGGED_RANGE.from) < 0
-    ? `>=${NPM_MINIMUM_NODE_VERSION} <${NPM_NODE_SQLITE_FLAGGED_RANGE.from} || >=${NPM_NODE_SQLITE_FLAGGED_RANGE.to}`
-    : `>=${compareNodeVersions(NPM_MINIMUM_NODE_VERSION, NPM_NODE_SQLITE_FLAGGED_RANGE.to) < 0 ? NPM_NODE_SQLITE_FLAGGED_RANGE.to : NPM_MINIMUM_NODE_VERSION}`;
-export const NPM_NODE_REQUIREMENT = `Node.js ${NPM_MINIMUM_NODE_VERSION} or later, except 23.0-23.3`;
+  compareNodeVersions(NPM_MINIMUM_NODE_VERSION, NPM_NODE_EXCLUDED_RANGE.from) < 0
+    ? `>=${NPM_MINIMUM_NODE_VERSION} <${NPM_NODE_EXCLUDED_RANGE.from} || >=${NPM_NODE_EXCLUDED_RANGE.to}`
+    : `>=${compareNodeVersions(NPM_MINIMUM_NODE_VERSION, NPM_NODE_EXCLUDED_RANGE.to) < 0 ? NPM_NODE_EXCLUDED_RANGE.to : NPM_MINIMUM_NODE_VERSION}`;
+export const NPM_NODE_REQUIREMENT = `Node.js ${NPM_MINIMUM_NODE_VERSION} or later, except 23.x`;
 
 export const NPM_PACKAGE_DESCRIPTION =
   "Run Pi and Claude Code as first-class external harnesses inside Codex Desktop.";
@@ -349,7 +350,7 @@ import { fileURLToPath } from "node:url";
 
 const version = ${JSON.stringify(version)};
 const minimumNodeVersion = ${JSON.stringify(NPM_MINIMUM_NODE_VERSION)};
-const sqliteFlaggedNodeRange = ${JSON.stringify(NPM_NODE_SQLITE_FLAGGED_RANGE)};
+const excludedNodeRange = ${JSON.stringify(NPM_NODE_EXCLUDED_RANGE)};
 const userArguments = process.argv.slice(2);
 {
   const compare = (left, right) => {
@@ -360,8 +361,8 @@ const userArguments = process.argv.slice(2);
   const current = process.versions.node;
   if (
     compare(current, minimumNodeVersion) < 0 ||
-    (compare(current, sqliteFlaggedNodeRange.from) >= 0 &&
-      compare(current, sqliteFlaggedNodeRange.to) < 0)
+    (compare(current, excludedNodeRange.from) >= 0 &&
+      compare(current, excludedNodeRange.to) < 0)
   ) {
     console.error(
       \`codexhost: Node.js \${current} is not supported; ${NPM_PACKAGE_NAME} requires ${NPM_NODE_REQUIREMENT}.\`,
@@ -907,7 +908,7 @@ The \`codexhost\` command launches the packaged Rust launcher with:
 
 ## Requirements
 
-- ${NPM_NODE_REQUIREMENT} (those releases lack the unflagged built-in \`node:sqlite\` module)
+- ${NPM_NODE_REQUIREMENT} (other releases lack parts of the built-in \`node:sqlite\` module)
 - Official ChatGPT/Codex Desktop for macOS, Windows, or Linux
 - Pi on \`PATH\` when using the Pi agent
 - Claude Code installed when using the Claude Code adapter

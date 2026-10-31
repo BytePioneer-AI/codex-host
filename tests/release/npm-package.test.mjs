@@ -481,11 +481,9 @@ describe("npm package release", () => {
     expect(minimumNodeVersionFromEngines(">=22.19.0 <23.0.0 || >=24.0.0 <25.0.0")).toBe("22.19.0");
     expect(minimumNodeVersionFromEngines(">=24.1.0 || >=22.20.3 <23")).toBe("22.20.3");
     expect(() => minimumNodeVersionFromEngines("^22")).toThrow("no minimum version");
-    // No upper bound, but Node.js 23.0-23.3 still gate node:sqlite behind a flag.
-    expect(NPM_NODE_ENGINE).toBe(`>=${NPM_MINIMUM_NODE_VERSION} <23.0.0 || >=23.4.0`);
-    expect(NPM_NODE_REQUIREMENT).toBe(
-      `Node.js ${NPM_MINIMUM_NODE_VERSION} or later, except 23.0-23.3`,
-    );
+    // No upper bound, but Node.js 23.x lacks node:sqlite APIs that bundled plugins import.
+    expect(NPM_NODE_ENGINE).toBe(`>=${NPM_MINIMUM_NODE_VERSION} <23.0.0 || >=24.0.0`);
+    expect(NPM_NODE_REQUIREMENT).toBe(`Node.js ${NPM_MINIMUM_NODE_VERSION} or later, except 23.x`);
     expect(createNpmMetaPackageManifest({ version: "0.1.0" }).engines).toEqual({
       node: NPM_NODE_ENGINE,
     });
@@ -506,8 +504,9 @@ describe("npm package release", () => {
     [NPM_MINIMUM_NODE_VERSION, 0],
     ["23.0.0", 1],
     ["23.3.9", 1],
-    ["23.4.0", 0],
-    ["23.11.0", 0],
+    ["23.4.0", 1],
+    ["23.11.0", 1],
+    ["24.0.0", 0],
     ["25.2.1", 0],
   ])("gates the npm wrapper on Node.js %s", async (nodeVersion, status) => {
     const root = await temporaryDirectory();

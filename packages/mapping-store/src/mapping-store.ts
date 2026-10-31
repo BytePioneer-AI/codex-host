@@ -406,12 +406,15 @@ export class MappingStore {
               this.#quarantineDirectory,
               `${name}.${this.#now().getTime()}.invalid`,
             );
-            await rename(primary, quarantine).catch(() => undefined);
-            // Keep the Thread's metadata beside its quarantined record; the orphan
-            // cleanup below would otherwise delete it permanently.
+            // Move the metadata first: once the record leaves threads/, the orphan cleanup
+            // below would delete metadata still in thread-metadata/. A failed move aborts
+            // initialization with both files in place so the next start can retry.
             await rename(path.join(this.#metadataDirectory, name), `${quarantine}.metadata`).catch(
-              () => undefined,
+              (error: unknown) => {
+                if (systemErrorCode(error) !== "ENOENT") throw error;
+              },
             );
+            await rename(primary, quarantine).catch(() => undefined);
             void primaryError;
             void backupError;
             continue;

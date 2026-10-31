@@ -963,6 +963,34 @@ describe("mapping-store package", () => {
     ).resolves.toBe(metadataContent);
   });
 
+  it("keeps the record and metadata in place when quarantining the metadata fails", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    await first.updateMetadata(threadId, { projectId: "project-a" });
+    await first.close();
+    const primaryPath = path.join(directory, "threads", `${threadId}.json`);
+    const metadataPath = path.join(directory, "thread-metadata", `${threadId}.json`);
+    const metadataContent = await readFile(metadataPath, "utf8");
+
+    await writeFile(primaryPath, "{broken", "utf8");
+    await writeFile(path.join(directory, "backups", `${threadId}.json`), "{broken", "utf8");
+    // A non-empty directory at the metadata destination makes that rename fail.
+    const blocked = path.join(
+      directory,
+      "quarantine",
+      `${threadId}.json.1700000000000.invalid.metadata`,
+    );
+    await mkdir(blocked, { recursive: true });
+    await writeFile(path.join(blocked, "occupied"), "", "utf8");
+    const reopened = new MappingStore({ directory, now: () => new Date(1_700_000_000_000) });
+    await expect(reopened.initialize()).rejects.toThrow();
+
+    await expect(readFile(primaryPath, "utf8")).resolves.toBe("{broken");
+    await expect(readFile(metadataPath, "utf8")).resolves.toBe(metadataContent);
+  });
+
   it("cleans a provisional create without Native identity on restart", async () => {
     const directory = await temporaryStoreDirectory();
     const first = new MappingStore({ directory });

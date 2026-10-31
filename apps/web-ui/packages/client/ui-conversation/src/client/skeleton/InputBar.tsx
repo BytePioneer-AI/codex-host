@@ -16,10 +16,10 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
 import clsx from "clsx";
-import bowser from "bowser";
 import {
   IconPlusOutlineMedium,
   IconWarningOutlineRegular,
+  shouldAutoFocusTextInput,
   Toast,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
@@ -227,9 +227,7 @@ export const InputBar = memo(function InputBar({
   // scrolling the conversation.
   useEffect(() => {
     if (locked || editor === null) return;
-    const platformType = bowser.parse(navigator.userAgent).platform.type;
-    const desktopIPad = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
-    if (platformType === "mobile" || platformType === "tablet" || desktopIPad) return;
+    if (!shouldAutoFocusTextInput()) return;
     focusDraftEditor(editor, revealSelection);
   }, [locked, sessionId, editor]);
 

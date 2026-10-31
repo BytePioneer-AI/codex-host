@@ -30,7 +30,6 @@
     "@deepseek-ai/dsh-util-workspace-path": "*",
     "react": "^18.2.0",
     "clsx": "^2.0.0",
-    "bowser": "^2.14.1",
     "react-dom": "^18.2.0",
     "lexical": "^0.49.0",
     "@lexical/utils": "^0.49.0",

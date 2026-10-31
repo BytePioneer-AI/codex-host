@@ -62,6 +62,17 @@ changes. `packages/web-server/test/browser/composer-paths-focus.test.ts` covers
 paste events and mount/session-switch focus in Chromium with desktop, iPhone,
 and desktop-mode iPad identities; this does not replace real-device keyboard tests.
 
+`input/picker-focus.client.spec.ts` covers `c29a313379` + `6fbd06d845` on the
+local nested Model picker and command popup. The public `shouldAutoFocusTextInput`
+policy is shared with the Composer; automatic search focus is suppressed on mobile,
+while button focus, explicit search entry, Escape and hardware-keyboard navigation
+remain available. `input/editor-viewport.client.spec.ts` ports `c503b51a94`'s four
+Lexical caret regressions. Its dependency patch is copied byte-for-byte from DSH,
+including development and production bundles, and applied by npm postinstall.
+`packages/web-server/test/browser/mobile-picker-viewport.test.ts` checks the built
+pickers and replays the keyboard-panning coordinates in Chromium; it does not
+simulate a real mobile software keyboard.
+
 Run them alone with:
 
 ```sh

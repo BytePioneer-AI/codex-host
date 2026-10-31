@@ -28,6 +28,7 @@
     "micromark-util-classify-character": "^2.0.1",
     "micromark-util-decode-string": "^2.0.1",
     "clsx": "^2.0.0",
+    "bowser": "^2.14.1",
     "katex": "^0.16.47",
     "micromark-util-sanitize-uri": "^2.0.1",
     "simple-icons": "16.31.0",

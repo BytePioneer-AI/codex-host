@@ -153,6 +153,11 @@ pnpm applies local patches to the following packages at install time, so shipped
 - `exceljs@4.4.0` — [`patches/exceljs@4.4.0.patch`](patches/exceljs@4.4.0.patch)
 - `node-pty@1.2.0-beta.15` — [`patches/node-pty@1.2.0-beta.15.patch`](patches/node-pty@1.2.0-beta.15.patch)
 
+The CodexHost npm postinstall also applies DSH's `lexical@0.49.0` keyboard-viewport
+coordinate fix ([patch](../../patches/lexical@0.49.0.patch), upstream `c503b51a94`).
+The patch includes source, development bundles and production bundles; Lexical
+remains MIT-licensed.
+
 ## Chrome DevTools frontend
 
 The optional experimental Inspector distributes a locally compiled copy of [chrome-devtools-frontend 1.0.1638082](https://www.npmjs.com/package/chrome-devtools-frontend/v/1.0.1638082), from upstream revision [0e1186138ed519d9659c1874bf6375eca4483c72](https://chromium.googlesource.com/devtools/devtools-frontend/+/0e1186138ed519d9659c1874bf6375eca4483c72). The build includes the Chromium [BSD-3-Clause license](packages/experimental/inspector/assets/devtools/LICENSE) and the third-party license and notice files supplied by the npm source. The Chromium root license does not replace those dependencies' licenses.

@@ -43,7 +43,7 @@ export { useDismissOnOutsidePointer } from "./useDismissOnOutsidePointer.ts";
 export { HoverCard } from "./HoverCard.tsx";
 export { ShortcutKeys } from "./ShortcutKeys.tsx";
 export { observeComposition } from "./keyboard-composition.ts";
-export { focusWithoutRing } from "./focus.ts";
+export { focusWithoutRing, shouldAutoFocusTextInput } from "./focus.ts";
 export { closeTopModal, isBehindModal, modalSelector, useModalLayer } from "./useModalLayer.ts";
 export { Modal } from "./Modal.tsx";
 export { RiskConfirmation } from "./RiskConfirmation.tsx";

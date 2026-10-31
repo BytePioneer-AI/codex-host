@@ -9,7 +9,8 @@
  * ↑/↓ cycle the highlighted result; Enter and Tab accept it. Smaller model
  * catalogs and Thinking panes move focus between rows. Escape and Shift+Tab
  * leave the Model sibling first and otherwise close back to the trigger. The
- * Model pane focuses the current model or its search field. Provider headings
+ * Model pane focuses the current model or, on desktop, its search field.
+ * Phones and tablets enter search only through explicit user input. Provider headings
  * paint their background only while pinned
  * by scrolling. Clearing a query restores the full list and search focus.
  * Choosing a Model or Thinking level closes the cards and restores trigger
@@ -53,6 +54,7 @@ import {
   IconWarningOutlineRegular,
   Input,
   rankByName,
+  shouldAutoFocusTextInput,
   StateDot,
   Toast,
 } from "@deepseek-ai/dsh-client-ui-primitives";
@@ -270,7 +272,7 @@ export function ModelSelect({
     paneFocus.current = null;
     if (!open || intent === null) return;
     if (intent === "model") {
-      if (showSearch) {
+      if (showSearch && shouldAutoFocusTextInput()) {
         searchRef.current?.focus();
         return;
       }
@@ -381,7 +383,7 @@ export function ModelSelect({
     setQuery("");
     setHighlightedIndex(null);
     if (pane === "model") {
-      if (showSearch) searchRef.current?.focus();
+      if (showSearch && shouldAutoFocusTextInput()) searchRef.current?.focus();
       else
         (
           modelPanelRef.current?.querySelector<HTMLElement>(

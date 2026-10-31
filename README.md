@@ -169,6 +169,8 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 Harnesses integrate with Codex Desktop's native UI according to their capabilities; see the matrix below.
 
+An [experimental Trae CLI 2.0 plugin](docs/harnesses/trae/trae-harness-integration.md) is also included. It uses Trae's own app-server and CLI login; authenticated inference and Desktop acceptance are still pending, so it is not included in the main feature matrix below.
+
 <details>
 <summary>Show full feature matrix</summary>
 

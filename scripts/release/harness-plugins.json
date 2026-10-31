@@ -18,6 +18,7 @@
     "packages/adapters/kimi-code",
     "packages/adapters/zcode",
     "packages/adapters/copilot",
+    "packages/adapters/trae",
     "packages/adapters/codex-usage"
   ],
   "runtimePackages": [

@@ -1,0 +1,34 @@
+{
+  "manifestVersion": 1,
+  "id": "trae",
+  "name": "Trae CLI",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "icon": "./assets/trae.svg",
+  "links": {
+    "website": "https://www.trae.cn/",
+    "documentation": "https://docs.trae.cn/cli_command-line-parameters",
+    "installation": "https://docs.trae.cn/cli_get-started-with-trae-cli-2"
+  },
+  "notice": {
+    "en": "Experimental Trae CLI 2.0 app-server integration, verified with 0.213.1. Uses CLI login and model entitlements; IDE and SOLO login are separate.",
+    "zh-CN": "实验性 Trae CLI 2.0 app-server 接入，协议核对版本 0.213.1。使用 CLI 自身登录和模型权限；IDE、SOLO 登录不等同于 CLI 登录。"
+  },
+  "installation": {
+    "commands": [
+      {
+        "terminal": "Windows · PowerShell",
+        "command": "irm https://trae.cn/trae-cli/install_v2.ps1 | iex"
+      },
+      {
+        "terminal": "macOS / Linux · Terminal",
+        "command": "curl -fsSL https://trae.cn/trae-cli/install_v2.sh | sh"
+      }
+    ],
+    "after": {
+      "en": "Run traecli login and complete CLI account setup. Verify traecli app-server --help. Set CODEXHOST_TRAE_COMMAND for a nonstandard executable location.",
+      "zh-CN": "运行 traecli login 完成 CLI 账号配置，确认 traecli app-server --help 可用。非标准安装位置可用 CODEXHOST_TRAE_COMMAND 指定可执行文件。"
+    }
+  }
+}

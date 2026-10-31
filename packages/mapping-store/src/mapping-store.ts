@@ -1217,6 +1217,9 @@ export class MappingStore {
       const metadataQuarantine = path.join(this.#quarantineDirectory, metadataName);
       const recordQuarantine = path.join(this.#quarantineDirectory, recordName);
       const metadataLive = path.join(this.#metadataDirectory, threadFileName);
+      // A non-file at the orphan name (e.g. a directory used to block a rename) is not a real quarantine marker.
+      const orphanStat = await stat(metadataQuarantine).catch(() => null);
+      if (!orphanStat?.isFile()) continue;
 
       let recordReadable = false;
       try {

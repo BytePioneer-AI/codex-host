@@ -141,10 +141,12 @@ async function readLockEntrySnapshot(filePath: string): Promise<LockEntrySnapsho
     throw error;
   });
   if (metadata === null || !metadata.isFile()) return null;
-  const source = await readFile(filePath, "utf8").catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  });
+  const source = await retryWhileWindowsSharingViolation(() => readFile(filePath, "utf8")).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    },
+  );
   if (source === null) return null;
   const record = parseLockRecord(source);
   return {
@@ -235,9 +237,40 @@ async function writeLockRecordAtomic(
     await handle.close();
   }
   try {
-    await rename(temporary, entryPath);
+    await retryWhileWindowsSharingViolation(() => rename(temporary, entryPath));
   } finally {
     await rm(temporary, { force: true });
+  }
+}
+
+const WINDOWS_SHARING_RETRY_COUNT = 100;
+const WINDOWS_SHARING_RETRY_DELAY_MS = 10;
+const WINDOWS_SHARING_ERROR_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+/**
+ * Windows refuses to replace or open a register while another contender is reading
+ * it, reporting EPERM, EACCES or EBUSY until that short read ends. Other platforms
+ * never report these for a transient reader, so only Windows retries.
+ */
+export async function retryWhileWindowsSharingViolation<T>(
+  operation: () => Promise<T>,
+  platform: NodeJS.Platform = process.platform,
+): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (
+        platform !== "win32" ||
+        code === undefined ||
+        !WINDOWS_SHARING_ERROR_CODES.has(code) ||
+        attempt >= WINDOWS_SHARING_RETRY_COUNT
+      ) {
+        throw error;
+      }
+      await delay(WINDOWS_SHARING_RETRY_DELAY_MS);
+    }
   }
 }
 

@@ -4,10 +4,20 @@
   "displayName": "CodexHost TRAE CN Bridge",
   "description": "Connect CodexHost to the native Agent in TRAE CN Desktop.",
   "version": "0.1.0",
+  "license": "LGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BytePioneer-AI/codex-host.git"
+  },
   "engines": {
     "vscode": "^1.107.0"
   },
   "main": "./extension.cjs",
+  "files": [
+    "*.cjs",
+    "README.md",
+    "LICENSE"
+  ],
   "activationEvents": [
     "onStartupFinished"
   ],

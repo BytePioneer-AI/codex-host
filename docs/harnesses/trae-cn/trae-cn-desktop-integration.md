@@ -1,6 +1,21 @@
 # TRAE CN Desktop 原生桥接
 
-开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含桌面 Companion、本机传输、公共 Adapter、普通文本会话和结构化提问。审批、活动任务恢复、配置写入、历史派生和发行入口尚未完成，不能作为完整 CodexHost 插件启用。
+开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含插件 Manifest / 工厂、桌面 Companion、本机传输、公共 Adapter、普通文本会话、结构化提问和 RunCommand 单次审批。插件 Bundle 与 Companion VSIX 已验证；活动任务恢复、其他工具审批、配置写入、历史派生和预装发行尚未完成，仍为开发版本。
+
+## 构建与安装
+
+在仓库根目录安装开发依赖后运行：
+
+```sh
+npm run build:plugin --workspace=@codexhost/adapter-trae-cn
+npm run build:companion --workspace=@codexhost/adapter-trae-cn
+```
+
+第一个命令编译公共依赖，并生成 `packages/adapters/trae-cn/dist/plugin/manifest.json` 和独立的 `plugin.mjs`。第二个使用固定版本的官方 `@vscode/vsce`，生成 `packages/adapters/trae-cn/dist/trae-cn-bridge.vsix`；只打包列出的 Companion 资源、README 与仓库许可证，不发布到 Marketplace。打包工具及 ZIP 验证工具仅为开发依赖，不进入插件 Bundle 或 VSIX。
+
+在 TRAE CN 扩展面板选择 **Install from VSIX...** 安装 VSIX，按提示重新加载窗口。将 `dist/plugin` 的内容放到 CodexHost 受信任插件根中的 `trae-cn` 子目录，在该根的 `enabled.json` 中加入 `trae-cn`，保留已有条目，然后按当前 Host 的方式重启。此处是独立插件安装，尚未加入预装清单。插件展示与启动路径设置由公共 Loader 和 Manifest 驱动。
+
+TRAE CN 必须打开并信任目标工作目录，并在应用内完成登录。安装设置中的应用路径会经 `context.launchCommand` 传到工厂，优先于 `CODEXHOST_TRAE_CN_APP`；它限定允许连接的应用安装目录，不会自动启动桌面。连接页路径改变后需要重启 Host。`CODEXHOST_TRAE_CN_BRIDGE_DIR` 可以指定双方一致的绝对发现目录。
 
 ## 原生边界
 
@@ -16,7 +31,7 @@ flowchart LR
     I --> R[应用自带 ai-agent / harness]
 ```
 
-`assets/companion/native.cjs` 实现已验证的 RPC 包格式、响应解包、流注册、反向配置回调和连接清理。流监听在处理订阅响应时注册，避免紧随响应的首条事件丢失。反向回调目前仅允许少量只读配置命令；原生文件读取和提问已实测，完整工具投影与审批仍待实现。
+`assets/companion/native.cjs` 实现已验证的 RPC 包格式、响应解包、流注册、反向配置回调和连接清理。流监听在处理订阅响应时注册，避免紧随响应的首条事件丢失。反向回调目前仅允许少量只读配置命令；原生文件读取、提问和命令审批已实测，其他工具投影与审批仍待实现。
 
 TRAE CN 的 `rpc.stream.cancel` 会取消原生生成，因此客户端解除订阅只分离观察者，由 Companion 的共享原生连接继续接收直到原生结束。主动取消单独调用 `lite.stop_chat_session`；请求确认不代表取消完成，必须核对事件和持久历史。关闭 Companion 或桌面应用仍可能中断其原生连接。
 
@@ -44,7 +59,7 @@ TRAE CN 的 `rpc.stream.cancel` 会取消原生生成，因此客户端解除订
 
 活动任务的 Assistant 记录可能尚未落盘，因此公开 readSnapshot 在任务活动时返回 sessionBusy，空闲恢复也拒绝原生忙碌状态。SSE 结束可以稍早于历史提交；Session 会对同一个原生身份短暂轮询，只在持久终态可读后发布完成，不重新发送输入。历史持续不可见时保留 unavailable 诊断，不能把观察超时当作原生任务失败或自动重启。
 
-当前配置写入、原生审批、活动 Turn 恢复和历史派生操作明确返回未实现或受限错误，能力字段不声称支持。已完成的核心路径不代表全部 P0 / P1 已验收。
+当前配置写入、其他工具审批、活动 Turn 恢复和历史派生操作明确返回未实现或受限错误，能力字段不声称支持。已完成的核心路径不代表全部 P0 / P1 已验收。
 
 ## 结构化提问
 
@@ -72,4 +87,6 @@ RunCommand 投影为公共 commandExecution，保留原生输出、目录、退�
 
 公共提问验收中，原生 AskUserQuestion 产生一个公共问题，调用方显式选择“停止”；同一实例只答复一次，interaction.closed 为 responded，公共 Turn 和持久历史均为成功，最终答复为 `TRAE_CN_PUBLIC_QUESTION_OK_STOP`。这项验收没有依赖活动历史来重建问题，也没有把原生参数中的预填答案当作用户输入。
 
-这些证据覆盖桌面、Companion 和公共 Adapter 核心。交付仍需审批、活动任务恢复、配置写入、历史派生、Manifest、Companion 安装打包与预装发行，以及真实 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。
+发行测试将插件搬到仓库外，用真实 Loader 加载两个独立实例，再由独立 Node 进程导入 Bundle，确认不借用 Workspace 依赖。VSIX 由独立 ZIP 读取器核对文件清单、身份、许可证和所有 CJS 文件的原始字节。Windows 中已实际安装 VSIX，核对扩展目录、代码 SHA-256 与激活进程；仓库外插件经这份已安装的 Companion 完成 `TRAE_CN_INSTALLED_PLUGIN_OK`，持久历史与实时身份一致。
+
+这些证据覆盖插件加载、桌面 Companion 和公共 Adapter 核心，仍需其他审批、活动任务恢复、配置写入、历史派生、预装发行，以及当前 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。

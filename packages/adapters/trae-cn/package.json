@@ -4,13 +4,19 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./plugin": {
+      "types": "./dist/plugin.d.ts",
+      "import": "./dist/plugin.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
   },
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "build:plugin": "tsc -b && node scripts/build-plugin.mjs",
+    "build:companion": "node scripts/build-companion.mjs"
   },
   "dependencies": {
     "@codexhost/harness-adapter": "0.0.0",
@@ -19,7 +25,12 @@
   },
   "files": [
     "dist",
+    "manifest.json",
     "assets",
     "CAPABILITIES.md"
-  ]
+  ],
+  "devDependencies": {
+    "@vscode/vsce": "4.1.0",
+    "yauzl": "3.4.0"
+  }
 }

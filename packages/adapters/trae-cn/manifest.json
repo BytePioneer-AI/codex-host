@@ -1,0 +1,36 @@
+{
+  "manifestVersion": 1,
+  "id": "trae-cn",
+  "name": "TRAE CN",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "launchCommand": true,
+  "entry": "./dist/plugin.js",
+  "iconStyle": {
+    "vector": {
+      "viewBox": "0 0 24 24",
+      "color": "#e9513a",
+      "paths": [{ "d": "M3 4h18v4h-7v12h-4V8H3Z" }]
+    }
+  },
+  "installation": {
+    "commands": [],
+    "before": {
+      "en": "Install domestic TRAE CN Desktop and the CodexHost TRAE CN Bridge extension, then sign in inside Desktop.",
+      "zh-CN": "安装国内 TRAE CN 桌面应用和 CodexHost TRAE CN Bridge 扩展，并在桌面应用内登录。"
+    },
+    "downloads": [{ "label": "TRAE CN", "url": "https://www.trae.cn/" }],
+    "after": {
+      "en": "Keep the target workspace open and trusted in TRAE CN. Build the Companion VSIX with npm run build:companion --workspace=@codexhost/adapter-trae-cn and use Install from VSIX in Desktop. Standalone Trae CLI authentication is not used. Restart CodexHost after changing its application path.",
+      "zh-CN": "在 TRAE CN 中打开并信任目标工作目录。运行 npm run build:companion --workspace=@codexhost/adapter-trae-cn 打包 Bridge，再在桌面应用内从 VSIX 安装；不使用独立 Trae CLI 的登录。修改应用路径后重启 CodexHost。"
+    }
+  },
+  "notice": {
+    "en": "Desktop integration in development. Native IPC verified on Windows TRAE CN 3.4.12; complete support and other versions remain under validation.",
+    "zh-CN": "桌面接入开发中。原生 IPC 已在 Windows TRAE CN 3.4.12 验证；完整能力和其他版本仍待验收。"
+  },
+  "links": {
+    "website": "https://www.trae.cn/",
+    "documentation": "https://docs.trae.cn/"
+  }
+}

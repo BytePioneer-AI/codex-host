@@ -1,0 +1,19 @@
+# CodexHost TRAE CN Bridge
+
+Connects CodexHost to the native Agent bundled with domestic TRAE CN Desktop. It reuses Desktop authentication and native conversation models. Independent Trae CLI login is not used.
+
+This integration is in development and currently verified on Windows TRAE CN 3.4.12. Its private native IPC may change between application versions. Installing this extension alone does not install the separate CodexHost Harness plugin.
+
+Build the VSIX from the repository root:
+
+```sh
+npm run build:companion --workspace=@codexhost/adapter-trae-cn
+```
+
+In TRAE CN, open Extensions and choose **Install from VSIX...**, then select the generated `packages/adapters/trae-cn/dist/trae-cn-bridge.vsix`. Reload the TRAE CN window if prompted. Sign in inside TRAE CN and keep the target workspace open and trusted. Only install the extension in domestic TRAE CN; other products are rejected during activation.
+
+The Bridge listens on authenticated loopback HTTP, with private discovery metadata in `~/.codexhost/native-bridges/trae-cn`. Desktop login tokens remain inside its extension host; the local Bridge token grants access to the Agent in trusted workspaces. Do not share the discovery files. Workspace trust is checked before native operations.
+
+Use **CodexHost: Restart TRAE CN Bridge** in the command palette if the connection needs refreshing. Restarting the Bridge can interrupt its native connection; finish or cancel active work first. Closing a CodexHost observer leaves native execution running. Explicit task cancellation is separate.
+
+[Source and integration details](https://github.com/BytePioneer-AI/codex-host/blob/main/docs/harnesses/trae-cn/trae-cn-desktop-integration.md)

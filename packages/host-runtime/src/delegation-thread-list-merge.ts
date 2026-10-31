@@ -28,6 +28,37 @@ interface SessionStream {
   nextCursor: string | null;
 }
 
+type ListTimestampField = "createdAt" | "updatedAt" | "recencyAt";
+
+/**
+ * The native Unix seconds behind a native row's timestamps. They stay beside the row rather than
+ * on it, so a value too large for a Date still orders the merge without entering the list contract.
+ */
+const nativeListSeconds = new WeakMap<
+  DelegationThreadListItem,
+  Partial<Record<ListTimestampField, number>>
+>();
+
+/** Records the native seconds a row's timestamps were projected from, for the cross-session merge. */
+export function rememberNativeListSeconds<T extends DelegationThreadListItem>(
+  row: T,
+  seconds: Partial<Record<ListTimestampField, number>>,
+): T {
+  nativeListSeconds.set(row, seconds);
+  return row;
+}
+
+/** A row's timestamp in seconds for ordering: the native value when there is one, else its ISO field. */
+export function listSortSeconds(
+  row: DelegationThreadListItem,
+  field: ListTimestampField,
+): number | undefined {
+  const native = nativeListSeconds.get(row);
+  if (native) return native[field];
+  const value = row[field];
+  return value === undefined ? undefined : Date.parse(value) / 1_000;
+}
+
 function invalidCursor(message = "List cursor is invalid"): DelegationControlError {
   return new DelegationControlError("INVALID_ARGUMENT", message);
 }

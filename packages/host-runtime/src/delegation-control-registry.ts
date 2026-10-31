@@ -12,7 +12,11 @@ import {
   type ThreadWaitInput,
   type ThreadWatchInput,
 } from "./delegation-types.js";
-import { isMergedListCursor, mergeThreadListPages } from "./delegation-thread-list-merge.js";
+import {
+  isMergedListCursor,
+  listSortSeconds,
+  mergeThreadListPages,
+} from "./delegation-thread-list-merge.js";
 import { DelegationWatchService } from "./delegation-watch.js";
 
 function only<T>(values: readonly T[], message: string): T {
@@ -217,17 +221,15 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     right: Awaited<ReturnType<DelegationControlApi["list"]>>["threads"][number],
     sort: ThreadListInput["sort"],
   ): number {
-    const timestamp = (thread: typeof left): string | undefined =>
+    const seconds = (thread: typeof left): number | undefined =>
       sort.startsWith("created")
-        ? thread.createdAt
+        ? listSortSeconds(thread, "createdAt")
         : sort.startsWith("recency")
-          ? (thread.recencyAt ?? thread.updatedAt)
-          : thread.updatedAt;
+          ? (listSortSeconds(thread, "recencyAt") ?? listSortSeconds(thread, "updatedAt"))
+          : listSortSeconds(thread, "updatedAt");
     const direction = sort.endsWith("asc") ? 1 : -1;
-    const leftTimestamp = timestamp(left);
-    const rightTimestamp = timestamp(right);
-    const leftValue = leftTimestamp ? Date.parse(leftTimestamp) : 0;
-    const rightValue = rightTimestamp ? Date.parse(rightTimestamp) : 0;
+    const leftValue = seconds(left) ?? 0;
+    const rightValue = seconds(right) ?? 0;
     return (leftValue - rightValue) * direction || left.threadId.localeCompare(right.threadId);
   }
 

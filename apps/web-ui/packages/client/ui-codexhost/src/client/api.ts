@@ -2,6 +2,8 @@
 import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
 import {
   harnessSessionImportResultSchema,
+  voiceStatusResultSchema,
+  voiceTranscribeResultSchema,
   harnessSessionImportSourcesResultSchema,
   harnessSessionListResultSchema,
   type HarnessSessionImportCandidate,
@@ -31,6 +33,22 @@ async function call<T>(method: string, args: Record<string, unknown>): Promise<T
   if (!envelope.result.ok) throw new Error(envelope.result.error.message);
   return envelope.result.value;
 }
+
+export const voiceApi = {
+  status: async () =>
+    voiceStatusResultSchema.parse(await call<unknown>("codexhost/voice/status", {})),
+  transcribe: async (audio: Blob, signal: AbortSignal) => {
+    const response = await fetch("api/voice/transcribe", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": audio.type },
+      body: audio,
+      signal,
+    });
+    // Validation failures also return a typed result (e.g. HTTP 413).
+    return voiceTranscribeResultSchema.parse(await response.json());
+  },
+};
 
 export const pushApi = {
   config: () => call<{ publicKey: string; subscriptions: number }>("codexhost/pushConfig", {}),

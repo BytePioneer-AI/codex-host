@@ -48,6 +48,8 @@ export interface AskUserQuestionItem {
   options?: AskUserQuestionOption[];
   /** Whether more than one option may be selected. Defaults to single-select. */
   multiSelect?: boolean;
+  /** Whether a question with options accepts a free-text answer. Defaults to true. */
+  allowOther?: boolean;
   /** Optional presentation intent for capable UIs; absent asks for the generic option list. */
   intent?: AskUserQuestionIntent;
 }

@@ -228,7 +228,9 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
         .env("CODEXHOST_HOST_RUNTIME_PATH", &options.runtime)
         .env("CODEXHOST_CLI_NODE_PATH", &options.node)
         .env("CODEXHOST_HOST_NODE_PATH", &options.node)
-        .env("CODEXHOST_LAUNCHER_EXECUTABLE", env::current_exe()?);
+        .env("CODEXHOST_LAUNCHER_EXECUTABLE", env::current_exe()?)
+        // Host-side fetch (for example voice transcription) follows the system proxy.
+        .envs(codexhost_platform::proxy_environment());
     let mut child = spawn_supervised(&mut command)?;
     let result = (|| -> Result<(), Box<dyn Error>> {
         let mut published = false;

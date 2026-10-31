@@ -144,7 +144,7 @@ it(
           .filter({ hasText: "Shared GUI Thread" })
           .click();
         await page.getByText("existing CH answer", { exact: true }).waitFor();
-        await page.locator('[data-native-connection="connected"]').waitFor();
+        await page.locator('[data-native-connection="reconnecting"]').waitFor({ state: "hidden" });
       }
       row.turns.push({
         id: "gui-turn",
@@ -218,6 +218,8 @@ it(
         await page
           .getByRole("radio", { name: "Allow once", exact: true })
           .waitFor({ timeout: 3000 });
+      for (const page of [a, b])
+        assert.equal(await page.getByPlaceholder("Type your answer", { exact: true }).count(), 0);
       if (process.env.CODEXHOST_TEST_SCREENSHOTS) {
         mkdirSync(process.env.CODEXHOST_TEST_SCREENSHOTS, { recursive: true });
         await b.screenshot({
@@ -232,6 +234,61 @@ it(
           .waitFor({ state: "hidden", timeout: 3000 });
       assert.equal(host.answers.length, 1);
       assert.deepEqual(host.answers[0]?.result, { action: "accept", content: {} });
+      for (const [index, question] of [
+        {
+          id: "native-choice",
+          type: "choice" as const,
+          prompt: "Choose a native option",
+          multiple: false,
+          allowOther: false,
+          options: [{ value: "keep", label: "Keep" }],
+        },
+        {
+          id: "native-other",
+          type: "choice" as const,
+          prompt: "Choose or enter an answer",
+          multiple: false,
+          allowOther: true,
+          options: [{ value: "keep", label: "Keep" }],
+        },
+        { id: "native-text", type: "text" as const, prompt: "Enter a native answer" },
+      ].entries()) {
+        host.pending = [
+          {
+            requestId: -18 - index,
+            threadId: row.id,
+            kind: "question",
+            interaction: { type: "question", questions: [question] },
+            request: { method: "item/tool/requestUserInput", params: {} },
+          },
+        ];
+        host.changed(row.id, "item/tool/requestUserInput");
+        for (const page of [a, b])
+          await page.getByRole("heading", { name: question.prompt, exact: true }).waitFor();
+        const customAllowed = question.type === "text" || question.allowOther;
+        for (const page of [a, b])
+          assert.equal(
+            await page.getByPlaceholder("Type your answer", { exact: true }).count(),
+            customAllowed ? 1 : 0,
+          );
+        if (customAllowed) {
+          const input = a.getByPlaceholder("Type your answer", { exact: true });
+          await input.fill("My own answer");
+          await input.press("Enter");
+        } else {
+          const option = a.getByRole("radio", { name: "Keep", exact: true });
+          await option.click();
+          await option.press("Enter");
+        }
+        for (const page of [a, b])
+          await page
+            .getByRole("heading", { name: question.prompt, exact: true })
+            .waitFor({ state: "hidden", timeout: 3000 });
+        assert.equal(host.answers.length, index + 2);
+        assert.deepEqual(host.answers[index + 1]?.result, {
+          answers: { [question.id]: { answers: [customAllowed ? "My own answer" : "Keep"] } },
+        });
+      }
       await channel.close();
       for (const page of [a, b]) {
         await page.locator('[data-native-connection="reconnecting"]').waitFor({ timeout: 3000 });
@@ -259,7 +316,9 @@ it(
       });
       channel = await startFakeChChannel(host, directory);
       for (const page of [a, b]) {
-        await page.locator('[data-native-connection="connected"]').waitFor({ timeout: 5000 });
+        await page
+          .locator('[data-native-connection="reconnecting"]')
+          .waitFor({ state: "hidden", timeout: 5000 });
         await page
           .getByText("Recovered authoritative answer", { exact: true })
           .waitFor({ timeout: 3000 });

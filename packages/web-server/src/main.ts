@@ -41,6 +41,7 @@ import { Workspaces } from "./workspaces.ts";
 import { inspectImage, readImageFile, WebImages } from "./web-images.ts";
 import { WebFiles } from "./web-files.ts";
 import { serveFileUpload } from "./ch-file-upload-http.ts";
+import { registerVoiceStatus, serveVoiceTranscription } from "./voice-http.ts";
 import { defaultWebDataDirectory } from "./data-paths.ts";
 import { snapshotPackagedHost } from "./packaged-host.ts";
 
@@ -241,6 +242,7 @@ displaySettings.register(rpc);
 settings.register(rpc);
 push.register(rpc);
 registerMisc(rpc, { events });
+registerVoiceStatus(rpc, chHost);
 
 function send(response: ServerResponse, asset: AssetResponse | undefined, cache = false): void {
   if (asset === undefined) {
@@ -363,6 +365,10 @@ const server = createServer((request, response) => {
         response
           .writeHead(403, { "content-type": "text/plain" })
           .end("cross-origin request rejected");
+        return;
+      }
+      if (pathname === "/api/voice/transcribe") {
+        await serveVoiceTranscription(chHost, dataRoot, request, response);
         return;
       }
       if (pathname === "/api/session/uploadFileBinary") {

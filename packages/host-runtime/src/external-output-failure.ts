@@ -9,6 +9,7 @@ export async function settleExternalOutputFailure(
   diagnose: (error: unknown) => void,
 ): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
+  thread.sessionUnavailable = true;
   thread.stateObserver.fault(new Error(message));
   // Stop native work before allowing the Host Turn to leave its running state.
   // Outputs emitted by close belong to the broken stream and are not projected.

@@ -26,7 +26,8 @@ const bundles: TsdownBundle[] = [];
 // Every tsdown watcher subscribes to stdin for its keyboard shortcuts.
 if (watch) process.stdin.setMaxListeners(plugins.length + 10);
 let completedPlugins = 0;
-console.log(`codexhost web: client plugins ${completedPlugins}/${plugins.length}`);
+if (watch) console.log("codexhost web: starting Web UI watchers…");
+else console.log(`codexhost web: client plugins ${completedPlugins}/${plugins.length}`);
 for (const name of plugins) {
   const directory = directories.get(name);
   if (directory === undefined) throw new Error(`Missing browser plugin ${name}`);
@@ -37,9 +38,17 @@ for (const name of plugins) {
     .default({})
     .filter((item) => item.platform === "browser" && item.format === "cjs");
   if (browser.length !== 1) throw new Error(`Expected one browser build for ${name}`);
-  bundles.push(...(await build({ ...browser[0], cwd: directory, config: false, watch })));
+  bundles.push(
+    ...(await build({
+      ...browser[0],
+      cwd: directory,
+      config: false,
+      watch,
+      logLevel: watch ? "warn" : "info",
+    })),
+  );
   completedPlugins++;
-  console.log(`codexhost web: client plugins ${completedPlugins}/${plugins.length}`);
+  if (!watch) console.log(`codexhost web: client plugins ${completedPlugins}/${plugins.length}`);
 }
 const settingsPage = resolve(root, "../../packages/renderer-extension/dist/web-settings.js");
 const settingsTarget = resolve(root, "apps/web/dist/codexhost-settings.js");
@@ -53,6 +62,7 @@ if (!watch) {
   // the chunks an open page still references.
   const shell = await buildShell({
     root: resolve(root, "apps/web"),
+    logLevel: "warn",
     build: { watch: {}, emptyOutDir: false },
   });
   copyFileSync(settingsPage, settingsTarget);

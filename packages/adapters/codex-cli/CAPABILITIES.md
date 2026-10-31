@@ -20,7 +20,7 @@
 | A3 | 检查 | 必做 | P0 | 支持 | src/plugin.ts | test/authentication-native.test.ts | 不预检查认证 |
 | A4 | 创建 Session | 必做 | P0 | 支持 | src/session.ts | test/process.test.ts | 原生 thread/start |
 | A5 | 执行 Turn | 必做 | P0 | 支持 | src/session.ts | test/process.test.ts | 原生 turn/start |
-| A6 | 取消 | 必做 | P0 | 支持 | src/session.ts | test/authentication-native.test.ts | turn/interrupt |
+| A6 | 取消 | 必做 | P0 | 支持 | src/session.ts | test/authentication-native.test.ts | turn/interrupt；原生中断或失败终态先结算未完成 Item，保留已流出的内容 |
 | A7 | 只读快照 | 必做 | P0 | 支持 | src/session.ts | test/authentication-native.test.ts | thread/read |
 | A8 | 持久身份 + resume | 必做 | P0 | 支持 | src/plugin.ts、src/session.ts | test/process.test.ts | ID 引用，不复制原生历史 |
 | A9 | 错误与并发 | 必做 | P0 | 受限 | src/session.ts、src/rpc.ts | test/authentication-native.test.ts | 无原生 steering |
@@ -68,7 +68,7 @@
 
 ## 插件外改动
 
-- `tests/fixtures/codex-auth-peer.cjs`：隔离夹具提供原生 cursor 分页、权威元数据读取、分段逻辑历史、身份不一致与原生读取失败响应；支持服务档位目录、设置通知、设置拒绝与跨进程档位恢复。
+- `tests/fixtures/codex-auth-peer.cjs`：隔离夹具提供原生 cursor 分页、权威元数据读取、分段逻辑历史、身份不一致与原生读取失败响应；支持服务档位目录、设置通知、设置拒绝、跨进程档位恢复及 Turn 中间通知。
 - `packages/host-runtime/test/codex-cli-harness.test.ts`：公共导入事务、原生历史恢复与续写同一身份、Fast 目录和配置路由的回归测试；无 Host 生产分支。
 - `docs/architecture/harness-session-import.md`：记录 Codex CLI 的逻辑身份归并与原生恢复约束。
 - Web 通用导入页面、网关、回归测试及 `docs/product/standalone-web.md`：消费所有 Harness 共用的 session-import 契约，无 Codex 专属 Host 或 Renderer 分支。
@@ -85,4 +85,5 @@
 | Fast Host / Web | 定向 `host-runtime/test/codex-cli-harness.test.ts` 与 Web `model-selection.test.ts` 的 Fast 用例 | Host 4 项、Web 390px / 1280px 两项通过；公共目录、配置路由与通用闪电控件，不代表真实 Codex Web 端到端推理 |
 | Fast 构建与加载 | `npm run typecheck`、`npm run build:typescript`；将构建后的 Codex 插件复制到隔离根，经真实 Loader 冷加载 | 通过；隔离原生夹具验证目录 Fast 引用、Fast 创建与关闭；定向 ESLint 和格式检查覆盖改动文件 |
 | Fast 原生配置 | CLI `0.161.0`，通过 `CodexModelSelection` 连接本机 app-server；ephemeral Thread，无 Prompt | 原生目录、开启 `priority`、关闭后确认 `default` 通过；进程关闭，临时工作目录清理，无真实 Model 请求 |
+| 中断与故障恢复 | 定向 `test/authentication-native.test.ts`、`test/fast-mode.test.ts`、Host `app-server-host.output-failure.test.ts`、`client-channel-recovery.test.ts`、`external-thread-recovery.test.ts` | 31 项通过；隔离夹具覆盖缺失 Item 终态、保留部分内容、后续 Turn，以及异常关闭后配置操作恢复同一原生身份；不代表真实 Model 请求验收 |
 | Desktop / 委派 | 不改变 Desktop 原生路径 | 此次未执行 |

@@ -220,6 +220,8 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
     "conversation.input.dock": { kind: "list"; scope: "session"; owner: InputZone };
     /** Floating entries rendered inside the resident composer card. */
     "conversation.input.overlay": { kind: "list"; scope: "session" };
+    /** Full-width entries inside the composer card, above the draft (inline notices and results). */
+    "conversation.input.notice": { kind: "list"; scope: "session" };
     /** Ambient entries below the composer card. */
     "conversation.composer.dock": { kind: "list"; scope: "session" };
     /** Compact controls at the left of the composer tool row. */
@@ -464,6 +466,7 @@ export type ComposerBarProps = PropsRuntime<"conversation.composer.bar"> &
   PropsRenderSlots<
     | "conversation.input.attachments"
     | "conversation.input.overlay"
+    | "conversation.input.notice"
     | "conversation.input.permission"
     | "conversation.input.left"
     | "conversation.input.plan"

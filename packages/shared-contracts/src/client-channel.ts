@@ -6,6 +6,8 @@ import { harnessPermissionModeIdSchema } from "./harness-permission-modes.js";
  * NOT appendable transcript deltas. Clients reconcile absolute snapshots. */
 export const CLIENT_CHANNEL_VERSION = 1;
 export const CLIENT_CHANNEL_METHODS = [
+  "codexhost/voice/status",
+  "codexhost/voice/transcribe",
   "codexhost/harness/display-settings/get",
   "codexhost/harness/display-settings/set",
   "codexhost/harness/display-settings/capabilities",

@@ -35,6 +35,7 @@ function presentation(pending: ClientInteraction): {
             .join("\n\n"),
           options: labels.map((label) => ({ label })),
           multiSelect: false,
+          allowOther: false,
         },
       ],
       result(value) {
@@ -73,6 +74,7 @@ function presentation(pending: ClientInteraction): {
               description: option.description ?? "",
             })),
             multiSelect: question.multiple,
+            allowOther: question.allowOther,
           }
         : {}),
     })),

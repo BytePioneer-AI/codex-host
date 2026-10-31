@@ -276,6 +276,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     pendingTurns.add(id);
     send({ id: request.id, result: { turn: { id } } });
     notify("turn/started", { threadId, turn: { id } });
+    for (const event of config.turnEvents ?? [])
+      notify(event.method, { threadId, turnId: id, ...event.params });
     void runTurn(id, text, config);
     return;
   }

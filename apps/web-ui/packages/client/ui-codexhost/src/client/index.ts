@@ -12,7 +12,14 @@ import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import { registerHarnessDiscovery } from "./harness-discovery.tsx";
-import { sentMessageEditApi } from "./api.ts";
+import { sentMessageEditApi, voiceApi } from "./api.ts";
+import { VoiceInput } from "./voice-input.ts";
+import {
+  VoiceInputButton,
+  VoiceNotice,
+  type VoiceFace,
+  type VoiceInputFace,
+} from "./VoiceInput.tsx";
 import { ImportIcon } from "./ImportIcon.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
@@ -78,6 +85,52 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-codexhost: dictionaries");
   const t = ctx.locale.bind(NS);
   ctx.provide("chatMessageEditing", sentMessageEditApi);
+  ctx.inject(["conversation"], (scope) => {
+    const voice = new VoiceInput(voiceApi.transcribe);
+    scope.effect(() => () => voice.discard(), "ui-codexhost: release microphone");
+    scope.slots.inject("conversation.input.right", () =>
+      scope.slots.register(
+        {
+          name: "conversation.input.right",
+          id: "codexhost.voice",
+          locale: NS,
+          inject: (): VoiceInputFace => ({ voice, blocks: scope.conversation.blocks }),
+        },
+        VoiceInputButton,
+      ),
+    );
+    scope.slots.inject("conversation.input.notice", () =>
+      scope.slots.register(
+        {
+          name: "conversation.input.notice",
+          id: "codexhost.voice",
+          locale: NS,
+          inject: (): VoiceFace => ({ voice }),
+        },
+        VoiceNotice,
+      ),
+    );
+    // Mod+Shift+Space starts or finishes; Escape cancels while recording or transcribing.
+    scope.effect(() => {
+      const onKey = (event: KeyboardEvent) => {
+        const { phase } = voice.getSnapshot();
+        if (event.key === "Escape" && (phase === "recording" || phase === "transcribing")) {
+          event.preventDefault();
+          voice.cancel();
+        } else if (
+          event.code === "Space" &&
+          event.shiftKey &&
+          (event.metaKey || event.ctrlKey) &&
+          !event.altKey
+        ) {
+          event.preventDefault();
+          voice.toggle();
+        }
+      };
+      document.addEventListener("keydown", onKey);
+      return () => document.removeEventListener("keydown", onKey);
+    }, "ui-codexhost: voice shortcuts");
+  });
   ctx.inject(["connection", "modelDirectories", "commandUi"], (scope) =>
     registerHarnessDiscovery(scope),
   );

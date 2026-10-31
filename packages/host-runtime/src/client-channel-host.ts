@@ -12,6 +12,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import type { ConsoleHostReply } from "./app-server-host.js";
+import { transcribeVoice, voiceStatus } from "./voice-transcription.js";
 import type { ClientChannelEvents } from "./client-channel-events.js";
 import { ClientCommandReceipts } from "./client-command-receipts.js";
 import { compactClientSnapshot } from "./client-snapshot-compaction.js";
@@ -107,6 +108,12 @@ export class ClientChannelHost {
     if (!parsed.success || !isRecord(parsed.data.params))
       return { error: { code: -32602, message: "Invalid client parameters" } };
     const params = parsed.data.params as JsonObject;
+    if (method === "codexhost/voice/status")
+      return { result: jsonValueSchema.parse(await voiceStatus(this.#host.environment())) };
+    if (method === "codexhost/voice/transcribe")
+      return {
+        result: jsonValueSchema.parse(await transcribeVoice(params, this.#host.environment())),
+      };
     if (method === "codexhost/workspace/read") {
       await this.#host.waitForPlugins();
       return {

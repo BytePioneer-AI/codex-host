@@ -1,4 +1,4 @@
-import type { HarnessSession } from "@codexhost/harness-adapter";
+import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema, type HostTurnId } from "@codexhost/shared-contracts";
 import {
   chmodSync,
@@ -93,6 +93,136 @@ it.skipIf(process.platform === "win32")(
       await retried.value.close();
     }
     expect(f.methods().some((m) => m.startsWith("account/"))).toBe(false);
+  },
+);
+
+it.skipIf(process.platform === "win32").each(["interrupted", "failed"] as const)(
+  "settles unfinished items before a native %s Turn and keeps the Session usable",
+  async (status) => {
+    const f = fixture({
+      requireAuth: true,
+      turnDelay: status === "interrupted" ? 1000 : 20,
+      turnEvents: [
+        {
+          method: "item/started",
+          params: { item: { id: "partial", type: "agentMessage", text: "" } },
+        },
+        {
+          method: "item/agentMessage/delta",
+          params: { itemId: "partial", delta: "Partial answer" },
+        },
+        {
+          method: "item/started",
+          params: { item: { id: "command", type: "commandExecution", command: "sleep 10" } },
+        },
+        {
+          method: "item/commandExecution/outputDelta",
+          params: { itemId: "command", delta: "Started" },
+        },
+        {
+          method: "item/started",
+          params: { item: { id: "done", type: "agentMessage", text: "Done" } },
+        },
+        {
+          method: "item/completed",
+          params: { item: { id: "done", type: "agentMessage", text: "Done" } },
+        },
+      ],
+    });
+    const opened = await f.adapter.open({ kind: "create", cwd: f.home });
+    if (!opened.ok) throw Error(opened.error.message);
+    const session = opened.value;
+    const outputs: HarnessOutput[] = [];
+    const consuming = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const turnId = hostTurnIdSchema.parse("unfinished-items");
+    try {
+      expect(
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "hello" }],
+        }),
+      ).toMatchObject({ ok: true });
+      if (status === "interrupted") {
+        await expect
+          .poll(() =>
+            outputs.some(
+              (output) => output.kind === "event" && output.event.type === "item.completed",
+            ),
+          )
+          .toBe(true);
+        expect(await session.execute({ type: "turn.cancel", turnId })).toMatchObject({ ok: true });
+      }
+      await expect
+        .poll(() =>
+          outputs.some(
+            (output) => output.kind === "event" && output.event.type === "turn.completed",
+          ),
+        )
+        .toBe(true);
+      const events = outputs.flatMap((output) => (output.kind === "event" ? [output.event] : []));
+      const completed = events.filter((event) => event.type === "item.completed");
+      expect(completed).toHaveLength(3);
+      const outcome =
+        status === "interrupted"
+          ? { status: "cancelled" }
+          : { status: "failed", error: { message: "Native model unauthorized" } };
+      expect(completed.find((event) => event.snapshot.item.itemId === "partial")).toMatchObject({
+        snapshot: {
+          item: { type: "agentMessage", itemId: "partial", text: "Partial answer" },
+          outcome,
+        },
+      });
+      expect(completed.find((event) => event.snapshot.item.itemId === "command")).toMatchObject({
+        snapshot: {
+          item: {
+            type: "commandExecution",
+            itemId: "command",
+            command: "sleep 10",
+            output: "Started",
+          },
+          outcome,
+        },
+      });
+      const terminal = events.findIndex((event) => event.type === "turn.completed");
+      expect(events[terminal]).toMatchObject({ type: "turn.completed", outcome });
+      expect(events.slice(terminal + 1).some((event) => event.type.startsWith("item."))).toBe(
+        false,
+      );
+      expect(session.hasBackgroundWork?.()).toBe(false);
+      f.scenario({});
+      const nextId = hostTurnIdSchema.parse("after-terminal");
+      expect(
+        await session.execute({
+          type: "turn.start",
+          turnId: nextId,
+          input: [{ type: "text", text: "continue" }],
+        }),
+      ).toMatchObject({ ok: true });
+      await expect
+        .poll(() =>
+          outputs.some(
+            (output) =>
+              output.kind === "event" &&
+              output.event.type === "turn.completed" &&
+              output.event.turnId === nextId,
+          ),
+        )
+        .toBe(true);
+      expect(
+        outputs.filter(
+          (output) =>
+            output.kind === "event" &&
+            output.event.type === "item.completed" &&
+            output.event.turnId === turnId,
+        ),
+      ).toHaveLength(3);
+    } finally {
+      await session.close();
+      await consuming;
+    }
   },
 );
 

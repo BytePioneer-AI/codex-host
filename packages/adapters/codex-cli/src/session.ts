@@ -185,6 +185,7 @@ export class CodexSession implements HarnessSession {
   private activeCodexTurn: string | undefined;
   private readonly requests = new Map<string, PendingRequest>();
   private readonly reasoningParts = new Map<string, number>();
+  private readonly activeItems = new Map<HostTurnId, Map<string, HostItem>>();
   private closed = false;
 
   private constructor(private readonly options: CodexSessionOptions) {
@@ -280,6 +281,36 @@ export class CodexSession implements HarnessSession {
   }
 
   private emit(event: HostEvent): void {
+    if (event.type === "item.started") {
+      let items = this.activeItems.get(event.turnId);
+      if (!items) this.activeItems.set(event.turnId, (items = new Map()));
+      items.set(event.item.itemId, event.item);
+    } else if (event.type === "item.updated") {
+      const items = this.activeItems.get(event.turnId);
+      const item = items?.get(event.itemId);
+      if (
+        item &&
+        event.update.type === "text.append" &&
+        (item.type === "agentMessage" || item.type === "reasoning")
+      )
+        items?.set(event.itemId, { ...item, text: item.text + event.update.text });
+      else if (item?.type === "commandExecution" && event.update.type === "output.append")
+        items?.set(event.itemId, { ...item, output: (item.output ?? "") + event.update.text });
+    } else if (event.type === "item.completed") {
+      this.activeItems.get(event.turnId)?.delete(event.snapshot.item.itemId);
+    } else if (event.type === "turn.completed") {
+      // Codex may omit Item completion notifications when a Turn is interrupted or fails.
+      // Its terminal outcome settles those Items without inferring successful execution.
+      if (event.outcome.status !== "succeeded") {
+        for (const item of this.activeItems.get(event.turnId)?.values() ?? [])
+          this.emit({
+            type: "item.completed",
+            turnId: event.turnId,
+            snapshot: { item, outcome: event.outcome },
+          });
+      }
+      this.activeItems.delete(event.turnId);
+    }
     this.channel.emit({ kind: "event", event });
   }
 
@@ -797,6 +828,8 @@ export class CodexSession implements HarnessSession {
     this.closed = true;
     this.usage.close();
     await this.server.close();
+    this.activeCodexTurn = undefined;
+    this.activeItems.clear();
     this.channel.end();
   }
 }

@@ -656,7 +656,8 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
                 {/* A review card keeps the free-text field only when the
                     recorded answer used it; an empty disabled box with a
                     placeholder would read as somewhere to type. */}
-                {(review === undefined || draft.custom !== "") &&
+                {(!hasOptions || question.allowOther !== false) &&
+                  (review === undefined || draft.custom !== "") &&
                   (hasOptions ? (
                     <div
                       className={clsx(css.customRow, draft.custom !== "" && css.customRowActive)}

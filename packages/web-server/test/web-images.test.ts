@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import {
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -12,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { DataDir } from "../src/store.ts";
-import { WebImages, WEB_IMAGE_LIMITS } from "../src/web-images.ts";
+import { readImageFile, WebImages, WEB_IMAGE_LIMITS } from "../src/web-images.ts";
 import { ChAttachments } from "../src/ch-attachments.ts";
 
 import { PNG } from "./support/image.ts";
@@ -73,6 +75,31 @@ it("saves exact bytes and uses native path context, with restart-safe history pr
     "native whitespace normalization retains image-only history",
   );
 });
+
+it(
+  "accepts the macOS /tmp alias without allowing nested symlinks",
+  { skip: process.platform !== "darwin" },
+  (t) => {
+    const root = mkdtempSync("/tmp/web-images-alias-");
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const path = join(root, "image.png");
+    const bytes = Buffer.from(PNG, "base64");
+    writeFileSync(path, bytes);
+    assert.deepEqual(readImageFile(path), bytes);
+    assert.deepEqual(readImageFile(realpathSync(path)), bytes);
+
+    const link = join(root, "linked.png");
+    symlinkSync(path, link);
+    assert.throws(() => readImageFile(link), /unavailable/u);
+    const directory = join(root, "directory");
+    mkdirSync(directory);
+    writeFileSync(join(directory, "image.png"), bytes);
+    const linkedDirectory = join(root, "linked-directory");
+    symlinkSync(directory, linkedDirectory);
+    assert.throws(() => readImageFile(join(linkedDirectory, "image.png")), /unavailable/u);
+    assert.throws(() => readImageFile(`${directory}/../image.png`), /unavailable/u);
+  },
+);
 
 it("validates every image before any files are written", (t) => {
   const root = mkdtempSync(join(tmpdir(), "web-images-invalid-"));

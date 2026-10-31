@@ -117,9 +117,9 @@ export function readImageFile(path: string): Buffer {
     )
       throw new Error("Invalid local image path");
     let expected = resolve(path);
-    // macOS's system temp directory uses /var -> /private/var. Permit that known
-    // OS alias, not a symlink introduced within an attachment/workspace path.
-    for (const root of [tmpdir(), homedir()]) {
+    // Permit system temp/home aliases, including macOS /tmp -> /private/tmp,
+    // not symlinks introduced within an attachment/workspace path.
+    for (const root of [tmpdir(), homedir(), ...(process.platform === "darwin" ? ["/tmp"] : [])]) {
       const suffix = relative(resolve(root), expected);
       if (suffix && suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix)) {
         expected = join(realpathSync(root), suffix);

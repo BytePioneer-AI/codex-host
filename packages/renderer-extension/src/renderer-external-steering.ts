@@ -322,13 +322,22 @@ export function installRendererExternalSteering(
     if (
       !Array.isArray(input) ||
       input.length === 0 ||
-      input.some(
-        (item) => !isRecord(item) || item.type !== "text" || typeof item.text !== "string",
-      ) ||
-      !input.some((item) => isRecord(item) && typeof item.text === "string" && item.text.trim())
+      input.some((item) => {
+        if (!isRecord(item)) return true;
+        if (item.type === "text") return typeof item.text !== "string";
+        if (item.type === "localImage") return typeof item.path !== "string" || !item.path;
+        if (item.type === "image") return typeof item.url !== "string" || !item.url;
+        return true;
+      }) ||
+      !input.some(
+        (item) =>
+          isRecord(item) &&
+          (item.type !== "text" || (typeof item.text === "string" && item.text.trim())),
+      )
     ) {
-      throw new Error("External steering requires non-empty text input");
+      throw new Error("External steering requires non-empty text or image input");
     }
+    // Keep image-only follow-ups intact. Host validates saved paths before stopping the Turn.
     if (toolOutput != null) throw new Error("External steering cannot replace a tool response");
     if (!isRecord(restoreMessage) || !isRecord(restoreMessage.context)) {
       throw new Error("Desktop steering message context is unavailable");

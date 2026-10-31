@@ -136,6 +136,15 @@ describe("platform packagers", () => {
     expect(installer).not.toMatch(/taskkill|powershell|\[Run\]/i);
   });
 
+  it("statically links the MSVC runtime so Windows executables need no VC++ Redistributable", async () => {
+    const config = await readFile(path.join(root, ".cargo/config.toml"), "utf8");
+    for (const target of ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]) {
+      expect(config).toContain(
+        `[target.${target}]\nrustflags = ["-C", "target-feature=+crt-static"]`,
+      );
+    }
+  });
+
   it("builds a standard Inno Setup installer for both Windows architectures", async () => {
     const [script, installer] = await Promise.all([
       readFile(path.join(root, "scripts/release/windows/package.ps1"), "utf8"),

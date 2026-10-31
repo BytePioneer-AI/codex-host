@@ -1,6 +1,6 @@
 # ACP 层后续开发说明
 
-> 状态：尚未触发；当前仍只有 Grok 使用生产 ACP Transport。
+> 状态：进行中；Grok、Kiro CLI 和 CodeBuddy 使用生产 ACP Transport。Cursor CLI 已使用 ACP，但仍属于实验性集成。
 
 ## 背景
 
@@ -57,13 +57,16 @@ packages/adapters/grok/src/acp-transport.ts
 
 ## 为什么现在不抽取
 
-目前只有 Grok 一个生产 ACP Harness。现在抽取公共层只能依据单个实现猜测变化点，容易得到一个把 Grok 实现参数化的浅模块。
+Grok、Kiro CLI、CodeBuddy 和 Cursor CLI 都有各自的 ACP Transport，但仍保留不同的生命周期、配置和历史语义；尚未形成稳定的共享接口。现在抽取公共层容易把某个实现的细节参数化，得到一个浅模块。
 
 采用的原则是：
 
 > 一个 Adapter 只有假设中的共享接口；两个真实 Adapter 才能暴露稳定的公共部分。
 
-因此，应等第二个生产 ACP Harness 接入并完成最小实现后，再比较两套代码并抽取共同机制。
+因此，应先比较这些实现的协议机制，确认重复部分语义一致后，再抽取共同机制。
+
+> 更新（2026-09）：Qwen Code 已从 ACP Transport 迁移到官方 `@qwen-code/sdk` 的
+> `query()`，不再属于 ACP 实现。
 
 ## 抽取触发条件
 

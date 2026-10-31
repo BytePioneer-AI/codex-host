@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import {
   chmod,
   copyFile,
@@ -40,6 +41,35 @@ export const NPM_RUNTIME_PLATFORM_PACKAGES = Object.freeze({
   "linux-x64": NPM_PLATFORM_PACKAGE_NAMES["linux-x64"],
   "linux-arm64": NPM_PLATFORM_PACKAGE_NAMES["linux-arm64"],
 });
+// Published packages keep the repository's minimum Node.js version but no upper
+// bound: newer host runtimes are accepted. Bundled plugins import node:sqlite,
+// which older Node.js releases do not provide.
+export function minimumNodeVersionFromEngines(range) {
+  const versions = [...String(range ?? "").matchAll(/>=\s*v?(\d+)\.(\d+)\.(\d+)/gu)].map((match) =>
+    match.slice(1, 4).map(Number),
+  );
+  if (versions.length === 0) throw new Error(`engines.node has no minimum version: ${range}`);
+  versions.sort((left, right) => left[0] - right[0] || left[1] - right[1] || left[2] - right[2]);
+  return versions[0].join(".");
+}
+
+export const NPM_MINIMUM_NODE_VERSION = minimumNodeVersionFromEngines(
+  JSON.parse(readFileSync(path.join(repositoryRoot, "package.json"), "utf8")).engines?.node,
+);
+// Node.js 23.x lacks parts of node:sqlite that bundled plugins import (the module is flagged
+// before 23.4.0 and sqlite.backup arrives in 23.8.0); the repository engines skip 23.x too.
+export const NPM_NODE_EXCLUDED_RANGE = Object.freeze({ from: "23.0.0", to: "24.0.0" });
+function compareNodeVersions(left, right) {
+  const a = left.split(".").map(Number);
+  const b = right.split(".").map(Number);
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+export const NPM_NODE_ENGINE =
+  compareNodeVersions(NPM_MINIMUM_NODE_VERSION, NPM_NODE_EXCLUDED_RANGE.from) < 0
+    ? `>=${NPM_MINIMUM_NODE_VERSION} <${NPM_NODE_EXCLUDED_RANGE.from} || >=${NPM_NODE_EXCLUDED_RANGE.to}`
+    : `>=${compareNodeVersions(NPM_MINIMUM_NODE_VERSION, NPM_NODE_EXCLUDED_RANGE.to) < 0 ? NPM_NODE_EXCLUDED_RANGE.to : NPM_MINIMUM_NODE_VERSION}`;
+export const NPM_NODE_REQUIREMENT = `Node.js ${NPM_MINIMUM_NODE_VERSION} or later, except 23.x`;
+
 export const NPM_PACKAGE_DESCRIPTION =
   "Run Pi and Claude Code as first-class external harnesses inside Codex Desktop.";
 
@@ -109,6 +139,12 @@ const runtimeLicenses = [
     license: "SEE LICENSE IN LICENSE",
     source: "LICENSE",
     output: "QoderCN-Agent-SDK-LICENSE.txt",
+  },
+  {
+    packageName: "@qwen-code/sdk",
+    license: "Apache-2.0",
+    source: "scripts/release/licenses/qwen-code-sdk-0.1.26-Apache-2.0.txt",
+    output: "Qwen-Code-SDK-LICENSE.txt",
   },
   { packageName: "diff", license: "BSD-3-Clause", source: "LICENSE", output: "diff-LICENSE.txt" },
   { packageName: "lucide", license: "ISC", source: "LICENSE", output: "lucide-LICENSE.txt" },
@@ -257,6 +293,7 @@ export function expectedNpmPackagePaths(target) {
     "licenses/OpenCode-v2-Client-LICENSE.txt",
     "licenses/Qoder-Agent-SDK-LICENSE.txt",
     "licenses/QoderCN-Agent-SDK-LICENSE.txt",
+    "licenses/Qwen-Code-SDK-LICENSE.txt",
     "licenses/Cordis-LICENSE.txt",
     "licenses/Cosmokit-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
@@ -283,7 +320,7 @@ export function createNpmPackageManifest({ version, target }) {
       "THIRD_PARTY_NOTICES.txt",
     ],
     engines: {
-      node: ">=22",
+      node: NPM_NODE_ENGINE,
     },
     os: npmPackageOs(target),
     cpu: npmPackageCpu(target),
@@ -312,7 +349,27 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const version = ${JSON.stringify(version)};
+const minimumNodeVersion = ${JSON.stringify(NPM_MINIMUM_NODE_VERSION)};
+const excludedNodeRange = ${JSON.stringify(NPM_NODE_EXCLUDED_RANGE)};
 const userArguments = process.argv.slice(2);
+{
+  const compare = (left, right) => {
+    const a = left.split(".").map(Number);
+    const b = right.split(".").map(Number);
+    return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  };
+  const current = process.versions.node;
+  if (
+    compare(current, minimumNodeVersion) < 0 ||
+    (compare(current, excludedNodeRange.from) >= 0 &&
+      compare(current, excludedNodeRange.to) < 0)
+  ) {
+    console.error(
+      \`codexhost: Node.js \${current} is not supported; ${NPM_PACKAGE_NAME} requires ${NPM_NODE_REQUIREMENT}.\`,
+    );
+    process.exit(1);
+  }
+}
 const repositoryUrl = "https://github.com/BytePioneer-AI/codex-host";
 const startupTraceStartedAt = Date.now();
 function startupTrace(stage) {
@@ -536,7 +593,9 @@ if (userArguments.length === 0) {
   consoleArguments = userArguments.slice(1);
 } else if (userArguments[0] === "remote") {
   launchArguments = null;
-  remoteArguments = userArguments.slice(1);
+  // The packaged resources are appended after the subcommand; without one, the
+  // first injected option would be read as the subcommand. Show usage instead.
+  remoteArguments = userArguments.length > 1 ? userArguments.slice(1) : ["help"];
 } else if (userArguments[0] === "broker") {
   launchArguments = null;
   brokerArguments = userArguments.slice(1);
@@ -592,7 +651,9 @@ if (launchArguments?.[0] === "launch") {
     }
   }
   const extras = [];
-  if (!injected.has("--node")) extras.push("--node", process.execPath);
+  if (!injected.has("--node") && process.platform !== "darwin") {
+    extras.push("--node", process.execPath);
+  }
   if (!injected.has("--shim")) extras.push("--shim", shim);
   if (!injected.has("--host-runtime")) extras.push("--host-runtime", hostRuntime);
   if (!injected.has("--desktop-controller")) {
@@ -854,7 +915,7 @@ The \`codexhost\` command launches the packaged Rust launcher with:
 
 ## Requirements
 
-- Node.js 22 or 24 (Node 20 and older are not supported)
+- ${NPM_NODE_REQUIREMENT} (other releases lack parts of the built-in \`node:sqlite\` module)
 - Official ChatGPT/Codex Desktop for macOS, Windows, or Linux
 - Pi on \`PATH\` when using the Pi agent
 - Claude Code installed when using the Claude Code adapter

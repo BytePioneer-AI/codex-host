@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   DelegationControlError,
   type DelegationControlApi,
@@ -11,6 +13,11 @@ import {
   type ThreadWaitInput,
   type ThreadWatchInput,
 } from "./delegation-types.js";
+import {
+  isMergedListCursor,
+  listSortSeconds,
+  mergeThreadListPages,
+} from "./delegation-thread-list-merge.js";
 import { DelegationWatchService } from "./delegation-watch.js";
 
 function only<T>(values: readonly T[], message: string): T {
@@ -25,6 +32,10 @@ function only<T>(values: readonly T[], message: string): T {
 
 export class DelegationControlRegistry implements DelegationControlApi, DelegationWatchApi {
   readonly #registrations = new Set<DelegationControlRegistration>();
+  // Changes whenever the session set changes, so a merged list cursor cannot outlive it. The
+  // instance id keeps a cursor from matching a rebuilt Registry at the same count.
+  readonly #instanceId = randomUUID();
+  #registrationGeneration = 0;
   #harnessCatalog: DelegationControlRegistration | undefined;
   // Watches sit above the sessions so either end may belong to any registered session.
   readonly #watchService: DelegationWatchService;
@@ -51,9 +62,10 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     options: { harnessCatalog?: boolean } = {},
   ): () => void {
     this.#registrations.add(registration);
+    this.#registrationGeneration += 1;
     if (options.harnessCatalog) this.#harnessCatalog = registration;
     return () => {
-      this.#registrations.delete(registration);
+      if (this.#registrations.delete(registration)) this.#registrationGeneration += 1;
       if (this.#harnessCatalog === registration) this.#harnessCatalog = undefined;
     };
   }
@@ -134,11 +146,21 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async list(input: ThreadListInput) {
+    if (
+      (input.parentThreadId || this.#harnessCatalog) &&
+      input.cursor &&
+      isMergedListCursor(input.cursor)
+    ) {
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "List cursor does not match the current Thread list source",
+      );
+    }
     if (input.parentThreadId) {
       return (await this.#registrationForThread(input.parentThreadId)).list(input);
     }
-    // A shared SSH owner sees the same native backend plus all external
-    // Threads. Do not duplicate its rows once per attached GUI.
+    // Shared-backend catalogs see all native and external Threads. Attached
+    // clients are not independent list sources.
     if (this.#harnessCatalog) return this.#harnessCatalog.list(input);
     const registrations = [...this.#registrations];
     if (registrations.length === 0) {
@@ -148,15 +170,23 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         { matchingRuntimeCount: 0 },
       );
     }
-    if (registrations.length === 1) return only(registrations, "unreachable").list(input);
-    const results = await Promise.all(
-      registrations.map((registration) => registration.list(input)),
+    if (registrations.length === 1) {
+      // A merged cursor was issued for several sessions; its positions mean nothing to one.
+      if (input.cursor && isMergedListCursor(input.cursor)) {
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "List cursor does not match the active Host Runtime sessions",
+        );
+      }
+      return only(registrations, "unreachable").list(input);
+    }
+    // Registration order is insertion order, which the merged cursor's session positions follow.
+    return mergeThreadListPages(
+      registrations.map((registration) => (page: ThreadListInput) => registration.list(page)),
+      input,
+      (left, right) => this.#compareThreads(left, right, input.sort),
+      `${this.#instanceId}:${this.#registrationGeneration}`,
     );
-    const threads = results
-      .flatMap((result) => result.threads)
-      .sort((left, right) => this.#compareThreads(left, right, input.sort))
-      .slice(0, input.limit);
-    return { threads, nextCursor: null };
   }
 
   async #registrationForStart(input: DelegationStartInput): Promise<DelegationControlRegistration> {
@@ -202,10 +232,15 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     right: Awaited<ReturnType<DelegationControlApi["list"]>>["threads"][number],
     sort: ThreadListInput["sort"],
   ): number {
-    const field = sort.startsWith("created") ? "createdAt" : "updatedAt";
+    const seconds = (thread: typeof left): number | undefined =>
+      sort.startsWith("created")
+        ? listSortSeconds(thread, "createdAt")
+        : sort.startsWith("recency")
+          ? (listSortSeconds(thread, "recencyAt") ?? listSortSeconds(thread, "updatedAt"))
+          : listSortSeconds(thread, "updatedAt");
     const direction = sort.endsWith("asc") ? 1 : -1;
-    const leftValue = left[field] ? Date.parse(left[field]) : 0;
-    const rightValue = right[field] ? Date.parse(right[field]) : 0;
+    const leftValue = seconds(left) ?? 0;
+    const rightValue = seconds(right) ?? 0;
     return (leftValue - rightValue) * direction || left.threadId.localeCompare(right.threadId);
   }
 

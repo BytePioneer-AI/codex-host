@@ -83,7 +83,19 @@ references. This is an undocumented native format, not a supported Cursor API.
 The snapshot body comes from native ACP `session/load` and is reused only while the
 native history root is unchanged. It is accepted only
 when session, workspace, turn count, order and exact prompt text match native
-history. A successful live turn must introduce exactly one native user-turn ID.
+history. A successful live turn must introduce exactly one non-notification native
+user-turn ID whose text matches the submitted prompt, while preserving the existing
+history prefix. Both the terminal identity and an available checkpoint use that ID.
+A checkpoint is offered only when Fork is supported and the prompt is the last
+native record or the next record has a verified native rewind root, matching replay
+projection and Fork validation. Missing rewind roots do not invalidate the Turn's
+successful outcome or native identity.
+In the observed Cursor CLI `2026.10.22-27dcf5f` store, background task completion
+records carry field 15 (`simulated_message_metadata`). Records with this field are
+treated as Cursor-generated notifications for live prompt identity verification;
+they remain in the native history for replay and Fork boundaries. This field is not
+a dedicated notification flag, and other native versions or simulated message types
+are not established by this compatibility rule.
 Missing/ambiguous history is an error; generated UUIDs, array positions and text
 hashes are never used as native turn keys. The adapter keeps no shadow transcript.
 

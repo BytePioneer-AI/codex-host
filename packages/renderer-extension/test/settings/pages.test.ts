@@ -1376,6 +1376,7 @@ describe("Renderer Connections page", () => {
     ["codebuddy", "https://www.codebuddy.ai/"],
     ["workbuddy", "https://www.workbuddy.ai/"],
     ["cursor-cli", "https://cursor.com/"],
+    ["devin", "https://devin.ai/"],
     ["hermes", "https://hermes-agent.nousresearch.com/"],
     ["qoder", "https://qoder.com/"],
     ["qoder-cn", "https://qoder.cn/"],
@@ -1818,6 +1819,59 @@ describe("Renderer Connections page", () => {
       scope.dispose();
     },
   );
+  it("keeps launch settings replaceable after they fail to load", async () => {
+    const agent = "zcode";
+    const messages = rendererSettingsMessages("en");
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: [
+              { agent, plugin: pluginDescriptor(agent), availability: "notInstalled", error: null },
+            ],
+          },
+        ],
+      }),
+      refresh: vi.fn(async () => undefined),
+      getLaunchSettings: vi.fn(async () => {
+        throw new Error("unreadable");
+      }),
+      setLaunchSettings: vi.fn(async () => ({ path: null, restartRequired: true })),
+      subscribe: () => () => undefined,
+    };
+    const page = createDefaultRendererSettingsPages(
+      messages,
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Expected connections page");
+    const document = new FakeDocument("Win32");
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+    if (!row) throw new Error("Expected Harness row");
+    row.dispatch("click", { target: null });
+    const panel = elementWithClass(content, "settings-connection-inspector__body");
+    await vi.waitFor(() => expect(visibleText(panel)).toContain(messages.launchPathLoadError));
+    const reset = descendants(panel).find(
+      ({ textContent }) => textContent === messages.launchPathReset,
+    );
+    if (!reset) throw new Error("Expected reset button");
+    expect(reset.disabled).toBe(false);
+    reset.dispatch("click");
+    await vi.waitFor(() => expect(visibleText(panel)).toContain(messages.launchPathRestart));
+    expect(diagnostics.setLaunchSettings).toHaveBeenCalledExactlyOnceWith("local", agent, null);
+    cleanup?.();
+    scope.dispose();
+  });
   it("offers automatic installation only for Harnesses with an install command", () => {
     const installation = vi.fn(async () => {
       throw new Error("not expected");

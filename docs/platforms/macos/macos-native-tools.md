@@ -4,6 +4,27 @@ codexhost keeps the Desktop's main app-server on the Host Runtime while routing
 private native-tool app-servers to the official CLI. Tool policy, authentication,
 and approvals remain owned by the official CLI and Desktop.
 
+When the selected Desktop bundles `Contents/Resources/cua_node/bin/node`, the
+Launcher uses that signed Node for the Desktop bridge and Desktop Controller by default.
+The Desktop authenticates the native-tool peer, its parent and its grandparent;
+an ad-hoc-signed Host Node breaks that chain even when the tool itself uses the
+official runtime. The Launcher resolves the Node from the selected Desktop on
+each start. An explicit `--node` still takes precedence. The npm wrapper leaves
+the automatic choice to the Launcher instead of overriding it with its own Node;
+older Desktops without a bundled runtime keep the installer Node or npm Node.
+The Desktop's peer authorization remains enabled and rejects untrusted runtimes.
+The recovery console starts before Desktop discovery and uses the explicit Node
+override, installer Node, or npm Node so it can report an incomplete installation.
+
+The independent shared Host keeps the Node chosen by the caller that first
+starts it. Desktop and Web reuse an online Host without replacing its process or
+interrupting its tasks. A new Host started by the Desktop bridge inherits the
+bridge's Node; Web startup uses its own Node and does not require Desktop to be
+installed. Selecting the Desktop's signed Node for the bridge does not change an
+already-running shared Host, so it alone does not guarantee native app-tool
+compatibility when Web started the Host first. See [standalone Web](../../product/standalone-web.md)
+for shared-Host startup and explicit restart behavior.
+
 Three independent macOS helper paths need different handling:
 
 - Browser helpers may preserve only `CODEX_CLI_PATH`. When that path resolves to

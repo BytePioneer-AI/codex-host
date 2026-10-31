@@ -442,3 +442,75 @@ fn executes_initial_setup_and_refuses_an_existing_installation() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn node_version_gate_follows_the_npm_engine_range() {
+    let real_node = Command::new("/bin/sh")
+        .args(["-c", "command -v node"])
+        .output()
+        .unwrap();
+    assert!(
+        real_node.status.success(),
+        "the gate test runs the real Node.js"
+    );
+    let real_node = String::from_utf8(real_node.stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let root = std::env::temp_dir().join(format!("codexhost-ssh-gate-{}", std::process::id()));
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for tool in ["mkdir", "rmdir", "uname", "find", "dirname"] {
+        if let Some(source) = ["/bin", "/usr/bin"]
+            .iter()
+            .map(|directory| std::path::Path::new(directory).join(tool))
+            .find(|file| file.is_file())
+        {
+            std::os::unix::fs::symlink(source, bin.join(tool)).unwrap();
+        }
+    }
+    // The real Node.js evaluates the gate while reporting the version under test.
+    let shim = root.join("version.cjs");
+    std::fs::write(
+        &shim,
+        "Object.defineProperty(process, \"versions\", { value: { ...process.versions, node: process.env.GATE_NODE_VERSION } });\n",
+    )
+    .unwrap();
+    executable(
+        &bin.join("node"),
+        &format!(
+            "#!/bin/sh\nexec '{real_node}' --require '{}' \"$@\"\n",
+            shim.display()
+        ),
+    );
+    let mut r = request();
+    r.action = "install".into();
+    r.version = Some("1.2.3".into());
+    let script = script(&r).unwrap();
+    // Accepted versions pass the gate and stop at the missing npm (56); rejected ones exit 55.
+    for (version, expected) in [
+        ("22.18.9", 55),
+        ("22.19.0", 56),
+        ("22.22.1", 56),
+        ("23.0.0", 55),
+        ("23.11.1", 55),
+        ("24.0.0", 56),
+        ("25.1.0", 56),
+        ("26.0.0", 56),
+        ("20.19.0", 55),
+    ] {
+        let home = root.join(format!("home-{version}"));
+        std::fs::create_dir_all(&home).unwrap();
+        let result = Command::new("/bin/sh")
+            .args(["-c", &script])
+            .env_clear()
+            .env("HOME", &home)
+            .env("PATH", &bin)
+            .env("GATE_NODE_VERSION", version)
+            .output()
+            .unwrap();
+        assert_eq!(result.status.code(), Some(expected), "Node.js {version}");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

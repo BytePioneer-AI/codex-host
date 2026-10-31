@@ -403,6 +403,7 @@ export class MappingStore {
       const names = (await readdir(this.#threadsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
+      const pendingQuarantines = new Set<string>();
       for (const name of names) {
         const primary = path.join(this.#threadsDirectory, name);
         const backup = path.join(this.#backupsDirectory, name);
@@ -418,7 +419,26 @@ export class MappingStore {
               this.#quarantineDirectory,
               `${name}.${this.#now().getTime()}.invalid`,
             );
-            await rename(primary, quarantine).catch(() => undefined);
+            const metadataSource = path.join(this.#metadataDirectory, name);
+            pendingQuarantines.add(name);
+            try {
+              // Preserve existing archives, including a copy left by an interrupted quarantine.
+              if (await exists(quarantine)) continue;
+              try {
+                // Keep the source metadata until the record moves; no rollback is needed if
+                // that rename fails. Orphan cleanup can remove it once the pair is archived.
+                await copyFile(metadataSource, `${quarantine}.metadata`, constants.COPYFILE_EXCL);
+              } catch (error) {
+                // ENOENT also means a missing quarantine/; skip only absent metadata.
+                if (systemErrorCode(error) !== "ENOENT" || (await exists(metadataSource)))
+                  throw error;
+              }
+              await rename(primary, quarantine);
+              pendingQuarantines.delete(name);
+            } catch {
+              // Leave the source pair for a later startup and protect its metadata below.
+              // One failed quarantine must not block access to healthy Threads.
+            }
             void primaryError;
             void backupError;
             continue;
@@ -445,9 +465,14 @@ export class MappingStore {
         (await readdir(this.#metadataDirectory))
           .filter(
             (name) =>
-              name.endsWith(".json") && !this.#records.has(name.slice(0, -5) as HostThreadId),
+              name.endsWith(".json") &&
+              !this.#records.has(name.slice(0, -5) as HostThreadId) &&
+              !pendingQuarantines.has(name),
           )
-          .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
+          // Cleanup is best effort, including a source whose quarantine copy is already safe.
+          .map((name) =>
+            rm(path.join(this.#metadataDirectory, name), { force: true }).catch(() => undefined),
+          ),
       );
       const delegationNames = (await readdir(this.#delegationsDirectory)).filter((name) =>
         name.endsWith(".json"),
@@ -497,6 +522,12 @@ export class MappingStore {
       this.#rebuildIndexes();
       this.#initialized = true;
     } catch (error) {
+      // A retry on this instance must reload from disk, not reuse a partial load.
+      this.#records.clear();
+      this.#delegations.clear();
+      this.#sectionPlacements = [];
+      this.#supersededSessions = [];
+      this.#rebuildIndexes();
       await this.close().catch(() => undefined);
       throw error;
     }

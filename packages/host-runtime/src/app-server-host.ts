@@ -18,6 +18,7 @@ import {
 import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
+import { externalTurnInputText } from "./external-turn-input.js";
 import {
   HarnessLaunchSettingsStore,
   HarnessPreferencesStore,
@@ -206,6 +207,7 @@ import type {
   ThreadSendResult,
 } from "./delegation-types.js";
 import { projectDelegationThreadSnapshot } from "./delegation-snapshot.js";
+import { rememberNativeListSeconds } from "./delegation-thread-list-merge.js";
 import {
   canonicalizeOfficialCodexModelRef,
   decodeOfficialCodexModelRef,
@@ -452,6 +454,32 @@ export function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEn
   );
 }
 
+/**
+ * A native thread/list timestamp (Unix seconds) as the ISO field a delegation list row carries.
+ * Seconds outside the range a Date can hold leave the field out instead of failing the list.
+ */
+function listTimestamp(
+  field: "createdAt" | "updatedAt" | "recencyAt",
+  seconds: unknown,
+): { createdAt?: string; updatedAt?: string; recencyAt?: string } {
+  if (!Number.isSafeInteger(seconds)) return {};
+  const date = new Date((seconds as number) * 1_000);
+  return Number.isFinite(date.getTime()) ? { [field]: date.toISOString() } : {};
+}
+
+/** The native thread/list timestamps (Unix seconds) a delegation list row was projected from. */
+function nativeSeconds(entry: Record<string, unknown>): {
+  createdAt?: number;
+  updatedAt?: number;
+  recencyAt?: number;
+} {
+  return Object.fromEntries(
+    (["createdAt", "updatedAt", "recencyAt"] as const).flatMap((field) =>
+      Number.isSafeInteger(entry[field]) ? [[field, entry[field] as number]] : [],
+    ),
+  );
+}
+
 function unixSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
@@ -501,13 +529,7 @@ function requestPresentationInput(params: JsonObject): JsonObject[] | undefined 
 }
 
 function requestText(params: JsonObject): string {
-  const text = requestInput(params)
-    .filter((item) => item.type === "text")
-    .map((item) => item.text)
-    .filter((value): value is string => typeof value === "string")
-    .join("\n");
-  if (!text) throw new Error("turn/start must contain text input");
-  return text;
+  return externalTurnInputText(params.input);
 }
 
 function sandboxResult(params: JsonObject): JsonObject {
@@ -2411,18 +2433,26 @@ export class AppServerHost {
         const status =
           isRecord(entry.status) && entry.status.type === "active" ? "running" : "completed";
         return [
-          {
-            threadId: entry.id,
-            harnessId: record ? (record.harnessId as ExternalHarnessId) : "codex",
-            deepLink: `codex://threads/${entry.id}`,
-            status,
-            ...(typeof entry.cwd === "string" ? { cwd: entry.cwd } : {}),
-            ...(typeof entry.name === "string"
-              ? { title: entry.name }
-              : typeof entry.preview === "string"
-                ? { title: entry.preview }
-                : {}),
-          },
+          rememberNativeListSeconds(
+            {
+              threadId: entry.id,
+              harnessId: record ? (record.harnessId as ExternalHarnessId) : "codex",
+              deepLink: `codex://threads/${entry.id}`,
+              status,
+              ...(typeof entry.cwd === "string" ? { cwd: entry.cwd } : {}),
+              ...(typeof entry.name === "string"
+                ? { title: entry.name }
+                : typeof entry.preview === "string"
+                  ? { title: entry.preview }
+                  : {}),
+              // The Registry merges several sessions by these, so keep the fields the page sorted by.
+              ...listTimestamp("createdAt", entry.createdAt),
+              ...listTimestamp("updatedAt", entry.updatedAt),
+              ...listTimestamp("recencyAt", entry.recencyAt),
+            },
+            // Seconds a Date cannot hold are left off the row but still order the merge.
+            nativeSeconds(entry),
+          ),
         ];
       }),
       nextCursor: result.nextCursor,

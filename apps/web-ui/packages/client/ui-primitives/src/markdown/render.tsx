@@ -26,6 +26,7 @@ import { normalizeUri } from "micromark-util-sanitize-uri";
 import type { CodeToolbarLabels } from "../CodeToolbar.tsx";
 import { CodeBlock } from "./CodeBlock.tsx";
 import { parseFileLink } from "./file-link.ts";
+import { freshImageUrl, nextImageLoad } from "./image-load.ts";
 import { renderTexToReact } from "./katex.tsx";
 import { LinkIconMedium, classifyLinkPath } from "../LinkIcon.tsx";
 import { useMarkdownDelegate } from "./MarkdownDelegate.tsx";
@@ -86,13 +87,19 @@ function vocabularyImageUrl(url: string): string | undefined {
  * caller.
  * @param url - The authored markdown destination.
  * @param pathImages - Rewriting vocabulary, when the render pass has one.
+ * @param load - The mounted image's load tag for rewritten URLs.
  * @returns The displayable image URL, or undefined.
  */
-function imageSource(url: string, pathImages: MarkdownPathImages | undefined): string | undefined {
+function imageSource(
+  url: string,
+  pathImages: MarkdownPathImages | undefined,
+  load: number,
+): string | undefined {
   const remote = remoteImageUrl(sanitizeMarkdownUrl(normalizeUri(url)));
   if (remote !== undefined) return remote;
   const rewritten = pathImages?.resolve(url);
-  return rewritten === undefined ? undefined : vocabularyImageUrl(rewritten);
+  const allowed = rewritten === undefined ? undefined : vocabularyImageUrl(rewritten);
+  return allowed === undefined ? undefined : freshImageUrl(allowed, load);
 }
 
 /** Link/image reference targets collected from a document (first definition per identifier wins, as in CommonMark). */
@@ -146,7 +153,8 @@ export interface MarkdownPathImages {
    * Resolve one authored image destination.
    * @param value - The destination exactly as the markdown author wrote it.
    * @returns A displayable absolute URL, or undefined when the destination
-   * names no displayable image — it then stays inert alt text.
+   * names no displayable image — it then stays inert alt text. Non-data/blob
+   * URLs receive a per-mount `load` query parameter.
    */
   resolve(value: string): string | undefined;
 }
@@ -581,10 +589,12 @@ function MarkdownFileLink({
   readonly children: ReactNode[];
 }): ReactNode {
   const { openFile, fileImages } = useMarkdownDelegate();
+  const [load] = useState(nextImageLoad);
   if (openFile === undefined) return <>{children}</>;
   // Pure-image anchors already contain their preview and keep one navigation target.
   const preview = glyph && classifyLinkPath(file.path) === "image" ? fileImages : undefined;
-  const src = preview?.resolve(file.path);
+  const resolved = preview?.resolve(file.path);
+  const src = resolved === undefined ? undefined : freshImageUrl(resolved, load);
   const anchor = (
     <button
       type="button"
@@ -665,10 +675,13 @@ function MarkdownImage({
   inLink: boolean;
 }): ReactNode {
   const { fileImages } = useMarkdownDelegate();
+  const [load] = useState(nextImageLoad);
   const file = streaming ? undefined : parseFileLink(destination);
+  const resolved = file === undefined ? undefined : fileImages?.resolve(file.path);
   const src =
-    (file === undefined ? undefined : fileImages?.resolve(file.path)) ??
-    imageSource(destination, pathImages);
+    resolved === undefined
+      ? imageSource(destination, pathImages, load)
+      : freshImageUrl(resolved, load);
   if (src === undefined) return <span className={css.imageAlt}>{alt}</span>;
   return (
     <LoadedMarkdownImage

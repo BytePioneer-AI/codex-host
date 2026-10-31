@@ -388,6 +388,7 @@ export class MappingStore {
     await this.#acquireLock();
     try {
       await this.#cleanupResidue();
+      await this.#recoverInterruptedQuarantines();
       const names = (await readdir(this.#threadsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
@@ -1190,6 +1191,56 @@ export class MappingStore {
       throw new MappingStoreError("IO_ERROR", "Thread metadata atomic replacement failed", {
         cause: error,
       });
+    }
+  }
+
+
+  /**
+   * Finish or reverse a quarantine pair interrupted between the metadata rename
+   * and the record rename. Orphan marker: `quarantine/<id>.json.<ms>.invalid.metadata`
+   * with no matching `quarantine/<id>.json.<ms>.invalid`.
+   */
+  async #recoverInterruptedQuarantines(): Promise<void> {
+    const names = await readdir(this.#quarantineDirectory);
+    const orphanMetadata = names.filter((name) => name.endsWith(".invalid.metadata"));
+    for (const metadataName of orphanMetadata) {
+      const recordName = metadataName.slice(0, -".metadata".length);
+      if (names.includes(recordName)) continue; // pair already complete
+      // recordName is `<id>.json.<ms>.invalid`
+      if (!recordName.endsWith(".invalid")) continue;
+      const withoutInvalid = recordName.slice(0, -".invalid".length);
+      // withoutInvalid is `<id>.json.<ms>`
+      const jsonIdx = withoutInvalid.indexOf(".json.");
+      if (jsonIdx < 0) continue;
+      const threadFileName = withoutInvalid.slice(0, jsonIdx + ".json".length); // `<id>.json`
+      const primary = path.join(this.#threadsDirectory, threadFileName);
+      const metadataQuarantine = path.join(this.#quarantineDirectory, metadataName);
+      const recordQuarantine = path.join(this.#quarantineDirectory, recordName);
+      const metadataLive = path.join(this.#metadataDirectory, threadFileName);
+
+      let recordReadable = false;
+      try {
+        await this.#readRecord(primary, threadFileName);
+        recordReadable = true;
+      } catch {
+        // missing or still invalid — finish quarantine when the primary exists
+      }
+
+      if (recordReadable) {
+        // User repaired the record; put metadata back so initialize can load the pair.
+        if (!(await exists(metadataLive))) {
+          await rename(metadataQuarantine, metadataLive);
+        } else {
+          // Live metadata already present; drop the orphan quarantine copy.
+          await rm(metadataQuarantine, { force: true });
+        }
+        continue;
+      }
+
+      if (await exists(primary)) {
+        await rename(primary, recordQuarantine);
+      }
+      // If the primary is already gone, leave the orphan metadata in quarantine.
     }
   }
 

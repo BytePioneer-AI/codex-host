@@ -1,5 +1,5 @@
 import type * as FsPromises from "node:fs/promises";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -1084,6 +1084,75 @@ describe("mapping-store package", () => {
       `${threadId}.json.1700000000000.invalid`,
     ]);
   });
+
+
+  it("recovers an interrupted quarantine when the record is still unreadable", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    await first.updateMetadata(threadId, { projectId: "project-a", daybreakEnabled: true });
+    await first.close();
+    const metadataPath = path.join(directory, "thread-metadata", `${threadId}.json`);
+    const metadataContent = await readFile(metadataPath, "utf8");
+    const primaryPath = path.join(directory, "threads", `${threadId}.json`);
+
+    // Simulate interruption after metadata rename, before record rename.
+    const stamp = "1700000000000";
+    const quarantined = `${threadId}.json.${stamp}.invalid`;
+    await mkdir(path.join(directory, "quarantine"), { recursive: true });
+    await rename(metadataPath, path.join(directory, "quarantine", `${quarantined}.metadata`));
+    await writeFile(primaryPath, "{broken", "utf8");
+    await writeFile(path.join(directory, "backups", `${threadId}.json`), "{broken", "utf8");
+
+    const reopened = new MappingStore({ directory, now: () => new Date(Number(stamp) + 1) });
+    await reopened.initialize();
+    await expect(reopened.getThread(threadId)).resolves.toBeNull();
+    await reopened.close();
+
+    await expect(readdir(path.join(directory, "thread-metadata"))).resolves.toEqual([]);
+    await expect(readdir(path.join(directory, "threads"))).resolves.not.toContain(`${threadId}.json`);
+    await expect(
+      readFile(path.join(directory, "quarantine", `${quarantined}.metadata`), "utf8"),
+    ).resolves.toBe(metadataContent);
+    await expect(readdir(path.join(directory, "quarantine"))).resolves.toEqual(
+      expect.arrayContaining([quarantined, `${quarantined}.metadata`]),
+    );
+  });
+
+  it("restores quarantined metadata when the interrupted record was repaired", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    await first.updateMetadata(threadId, { projectId: "project-a", daybreakEnabled: true });
+    const recordContent = await readFile(path.join(directory, "threads", `${threadId}.json`), "utf8");
+    await first.close();
+    const metadataPath = path.join(directory, "thread-metadata", `${threadId}.json`);
+    const metadataContent = await readFile(metadataPath, "utf8");
+
+    const stamp = "1700000000000";
+    const quarantined = `${threadId}.json.${stamp}.invalid`;
+    await mkdir(path.join(directory, "quarantine"), { recursive: true });
+    await rename(metadataPath, path.join(directory, "quarantine", `${quarantined}.metadata`));
+    // Primary remains a valid record (user repaired it / interruption left it intact).
+    await writeFile(path.join(directory, "threads", `${threadId}.json`), recordContent, "utf8");
+
+    const reopened = new MappingStore({ directory, now: () => new Date(Number(stamp) + 1) });
+    await reopened.initialize();
+    await expect(reopened.getThread(threadId)).resolves.toMatchObject({
+      hostThreadId: threadId,
+      projectId: "project-a",
+      daybreakEnabled: true,
+    });
+    await reopened.close();
+
+    await expect(readFile(metadataPath, "utf8")).resolves.toBe(metadataContent);
+    await expect(readdir(path.join(directory, "quarantine"))).resolves.not.toContain(
+      `${quarantined}.metadata`,
+    );
+  });
+
 
   it("cleans a provisional create without Native identity on restart", async () => {
     const directory = await temporaryStoreDirectory();

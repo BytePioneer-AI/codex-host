@@ -139,6 +139,10 @@ export function createScopedDraftModelWriter() {
     has(key: string): boolean {
       return captured.has(key);
     },
+    /** The carrier last written to this draft, or null while it keeps its native setting. */
+    model(key: string): string | null {
+      return captured.get(key)?.model ?? null;
+    },
     apply(key: string, binding: ScopedDraftModelBinding, model: string | null): void {
       if (model === null) {
         restore(key);

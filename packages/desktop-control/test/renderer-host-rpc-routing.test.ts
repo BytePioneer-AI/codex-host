@@ -19,7 +19,12 @@ const carrier = encodeHarnessPluginRoute(
 /** Desktop 26.1027: managers live in the main process; the Renderer keeps one
  * capnweb stub per Host in a signal family of the app scope store. */
 function setup(
-  options: { connectionFamilies?: number; nativeManager?: boolean; hosts?: string[] } = {},
+  options: {
+    connectionFamilies?: number;
+    nativeManager?: boolean;
+    unavailableNativeRegistry?: boolean;
+    hosts?: string[];
+  } = {},
 ) {
   const rpc = {
     sendRequest: vi.fn(async () => ({ entries: [] })),
@@ -73,7 +78,16 @@ function setup(
           },
           next: null,
         }
-      : null,
+      : options.unavailableNativeRegistry
+        ? {
+            memoizedState: {
+              addManager: vi.fn(),
+              getForHostId: () => null,
+              waitForManagerForHostId: vi.fn(),
+            },
+            next: null,
+          }
+        : null,
     return: null,
   };
   const editors = [{ __reactFiber$app: composerFiber, parentElement: null }];
@@ -307,6 +321,96 @@ it("keeps the native manager path when Desktop exposes one in the Renderer", asy
   try {
     expect(routing.forComposer()?.manager).toHaveProperty("requestClient");
     expect((fixture.MessagePort.prototype as { postMessage: unknown }).postMessage).toBe(original);
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("uses the main-process RPC when a visible legacy registry has no ready manager", async () => {
+  const fixture = setup({ unavailableNativeRegistry: true });
+  vi.useFakeTimers();
+  try {
+    const pending = installRendererDraftPrewarmPolicyDirect(fixture.renderer);
+    const result = pending.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(await result).toEqual({ value: { state: "ready", reason: "owned-request-bridge" } });
+    const routing = fixture.target.__codexhostHostRoutingV1 as Routing;
+    expect(routing.forComposer()?.manager).toMatchObject({ kind: "main-process-rpc" });
+    routing.dispose();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("preserves an explicit different external model on a known draft", async () => {
+  const fixture = setup();
+  const routing = await install(fixture);
+  try {
+    policyOf(routing.forComposer()).select(carrier, "client-new-thread:external");
+    const explicit = creation("startConversation", "codexhost/pi-native", {
+      clientThreadId: "client-new-thread:external",
+    });
+    fixture.post(explicit);
+    expect(fixture.sent.at(-1)).toBe(explicit);
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("gives a registered external draft its carrier when the creation omits a native Model", async () => {
+  const fixture = setup();
+  const routing = await install(fixture);
+  try {
+    policyOf(routing.forComposer()).select(carrier, "client-new-thread:external");
+    for (const settings of [
+      { reasoning_effort: "high" },
+      { model: "", reasoning_effort: "high" },
+    ]) {
+      const message = creation("startConversation", "unused", {
+        clientThreadId: "client-new-thread:external",
+      });
+      const call = (message[1] as unknown[])[3] as [
+        { collaborationMode: { settings: Record<string, unknown> } },
+      ];
+      call[0].collaborationMode.settings = settings;
+      fixture.post(message);
+      const sent = fixture.sent.at(-1) as unknown[];
+      const routed = ((sent[1] as unknown[])[3] as typeof call)[0].collaborationMode.settings;
+      expect(routed).toEqual({ ...settings, model: carrier });
+    }
+    // An unregistered draft stays untouched.
+    const other = creation("startConversation", "unused", {
+      clientThreadId: "client-new-thread:x",
+    });
+    (
+      (other[1] as unknown[])[3] as [{ collaborationMode: { settings: unknown } }]
+    )[0].collaborationMode.settings = { reasoning_effort: "high" };
+    fixture.post(other);
+    expect(fixture.sent.at(-1)).toBe(other);
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("marks the selected external prewarm but preserves an explicit different external prewarm", async () => {
+  const fixture = setup();
+  const routing = await install(fixture);
+  try {
+    policyOf(routing.forComposer()).select(carrier, "client-new-thread:external");
+    fixture.post(creation("prewarmConversation", carrier, {}));
+    const prewarmed = (((fixture.sent.at(-1) as unknown[])[1] as unknown[])[3] as unknown[])[0] as {
+      collaborationMode: { settings: { model: string } };
+    };
+    expect(decodeHarnessPluginRoute(prewarmed.collaborationMode.settings.model)).toEqual({
+      ...decodeHarnessPluginRoute(carrier),
+      prewarm: true,
+    });
+    const explicit = creation("prewarmConversation", "codexhost/pi-native", {});
+    fixture.post(explicit);
+    expect(fixture.sent.at(-1)).toBe(explicit);
   } finally {
     routing.dispose();
   }

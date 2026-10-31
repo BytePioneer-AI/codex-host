@@ -63,23 +63,29 @@ function directRendererInstaller(): string {
       },
       portPrototype: MessagePort.prototype,
     });
-    // Desktop 26.1027 moved AppServerManagers to the main process. Older builds
-    // expose native managers in Renderer hook state; the main-process mode only
-    // applies when none is visible and its per-Host RPC store is identified.
+    const connected = (routing) => routing.forComposer() !== null ||
+      ['local', ...(routing.knownHostIds?.() ?? [])].some((hostId) => routing.forHost(hostId) !== null);
+    let nativeReady = false;
+    // A legacy registry can remain mounted without a usable native manager.
+    // Prefer a ready native route, then try the identified main-process RPC store.
     const routing = (() => {
       if (window.__codexhostHostRoutingV1) return window.__codexhostHostRoutingV1;
       const native = discover(document);
-      if (native.managers.length || native.registries.length) return installNative();
+      if (native.managers.length || native.registries.length) {
+        const routing = installNative();
+        if (connected(routing)) {
+          nativeReady = true;
+          return routing;
+        }
+        routing.dispose();
+      }
       const rpc = installRpc();
       if (rpc) return rpc;
       throw new Error('Renderer Host request manager is unavailable');
     })();
     // Publish a default draft policy only when its Host is unambiguous. Host
     // connections can be ready even when multiple Composers coexist.
-    const composerRoute = routing.forComposer();
-    const connected = composerRoute !== null ||
-      ['local', ...(routing.knownHostIds?.() ?? [])].some((hostId) => routing.forHost(hostId) !== null);
-    if (!connected) throw new Error('Renderer Host request manager is unavailable');
+    if (!nativeReady && !connected(routing)) throw new Error('Renderer Host request manager is unavailable');
     return { state: 'ready', reason: 'owned-request-bridge' };
   })()`;
 }

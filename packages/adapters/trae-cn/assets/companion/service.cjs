@@ -176,6 +176,8 @@ class DesktopService {
     });
     if (session.chat_session_id !== sessionId)
       throw invalid("TRAE CN returned a different session");
+    if (!Number.isInteger(session.status) || session.status < 1 || session.status > 10)
+      throw Object.assign(new Error("Invalid native Session status"), { code: "protocolError" });
     const projectId = text(session.local_project_id, "native project ID");
     const project = await this.native.call("lite", "get_or_create_project_v2", {
       project_id: projectId,
@@ -285,8 +287,24 @@ class DesktopService {
         this.starting.add(sessionId);
         try {
           const { session, projectId } = await this.readSession(sessionId);
-          // Bundled SessionStatus: Pending, Creating, Running, Waiting, Reverting and Stopping.
-          if ([1, 2, 3, 8, 9, 10].includes(session.status))
+          // A newly created empty Session is Pending too. Only an empty native
+          // history proves it has no queued user message; do not confuse this
+          // state with native work already admitted by another writer.
+          const pending =
+            session.status === 1
+              ? await this.native.call("lite", "get_messages", {
+                  chat_session_id: sessionId,
+                  page_size: 1,
+                })
+              : undefined;
+          if (pending && !Array.isArray(pending.items))
+            throw invalid("Invalid native pending history");
+          if (
+            [2, 3, 8, 9, 10].includes(session.status) ||
+            pending?.items.length ||
+            pending?.next_page_token ||
+            (typeof pending?.total === "number" && pending.total > 0)
+          )
             throw Object.assign(new Error("TRAE CN Session has an active Turn"), {
               code: "sessionBusy",
             });

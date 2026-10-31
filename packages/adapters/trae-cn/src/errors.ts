@@ -52,6 +52,7 @@ export function harnessError(error: unknown): HarnessError {
     message: value.message,
     retryable: [
       "unavailable",
+      "sessionBusy",
       "processExited",
       "authenticationRequired",
       "configurationRequired",

@@ -19,22 +19,22 @@
 |---|---|---|---|---|---|---|---|
 | A1 | Manifest | 必做 | P0 | 待验证 | — | — | |
 | A2 | 工厂 | 必做 | P0 | 待验证 | — | — | |
-| A3 | 检查 | 必做 | P0 | 待验证 | — | 原生健康检查已通过 | 不创建会话，不启动桌面窗口 |
-| A4 | 创建 Session | 必做 | P0 | 待验证 | — | 原生 lite/create_chat_session 路由 | |
-| A5 | 执行 Turn | 必做 | P0 | 待验证 | assets/companion/native.cjs | 原生 send_message、subscribe_events、get_messages 实测完成 | 尚未实现公共 Turn 投影 |
-| A6 | 取消 | 必做 | P0 | 待验证 | assets/companion/service.cjs | stop_chat_session 后持久历史 canceled；同一 Session 随后 completed | 公共 Turn 终态投影尚未实现 |
-| A7 | 只读快照 | 必做 | P0 | 待验证 | — | 原生 lite/get_chat_session 路由 | |
-| A8 | 持久身份 + resume | 必做 | P0 | 待验证 | — | 原生 lite/get_chat_session、resume_message 路由 | |
-| A9 | 错误与并发 | 必做 | P0 | 待验证 | assets/companion/native.cjs | test/native.test.ts | RPC 已覆盖；公共 Session 并发未实现 |
-| A10 | 关闭 | 必做 | P0 | 待验证 | assets/companion/native.cjs | RPC 待处理请求与订阅清理测试、原生重连读取 | 公共 Session 关闭未实现 |
-| B1 | 切换 Model | 原生有则必做 | P1 | 待验证 | assets/companion/models.cjs | 原生 model/model_list_by_function；test/models.test.ts | 与原生会话菜单一致的启用和可选规则；不自动指定默认模型 |
+| A3 | 检查 | 必做 | P0 | 支持 | src/adapter.ts | test/adapter.test.ts；真实 inspect | 不创建会话，不启动桌面窗口；同作用域目录缓存 |
+| A4 | 创建 Session | 必做 | P0 | 支持 | src/session.ts；assets/companion/service.cjs | 公共 Session 首轮真实创建及文件读取 | 延迟至首轮；原生 Project 绑定目录 |
+| A5 | 执行 Turn | 必做 | P0 | 受限 | src/session.ts；src/live-items.ts | 公共 Session 两轮对话、工具及持久历史一致 | 普通 Builder 文本与 Read 已验收；交互未完成 |
+| A6 | 取消 | 必做 | P0 | 受限 | src/session.ts；assets/companion/service.cjs | 原生 stop 后 canceled 并可续聊；公共 Session 取消测试 | 公共契约的真实取消验收尚待完成 |
+| A7 | 只读快照 | 必做 | P0 | 支持 | src/history.ts；src/session.ts | 重复读取真实历史的 Turn / Item 身份一致 | 非终态保留 unknown；未知格式显式拒绝 |
+| A8 | 持久身份 + resume | 必做 | P0 | 受限 | src/adapter.ts；src/history.ts | 新 Node 进程 Adapter.open(resume) 后完成第三轮，源前缀不变 | 支持空闲恢复；活动任务恢复待实现 |
+| A9 | 错误与并发 | 必做 | P0 | 受限 | src/session.ts；assets/companion/service.cjs | native / service / session 测试 | 本机准入串行；原生忙碌拒绝；不确定回执无自动重试；故障恢复待补 |
+| A10 | 关闭 | 必做 | P0 | 支持 | src/session.ts；assets/companion/native.cjs | 公共关闭测试；真实观察者断开后原生 completed | 不把关闭观察者当作 native cancel |
+| B1 | 切换 Model | 原生有则必做 | P1 | 受限 | assets/companion/models.cjs；src/models.ts | 原生会话目录、手动初始选择、原生模型确认 | 初始选择可用，不自动默认；model.select 写入未实现 |
 | B2 | 切换 Thinking | 原生有则必做 | P1 | 待验证 | — | — | |
 | B3 | 权限模式 | 原生有则必做 | P1 | 待验证 | — | 原生 permission_profile_id | |
 | B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 待验证 | — | — | |
 | B5 | Fork | 原生有则必做 | P1 | 待验证 | — | 原生 lite/fork_session 路由 | |
 | B6 | 跨目录 Fork | 原生有则必做 | P2 | 待验证 | — | — | |
 | B7 | 回滚最后一轮 | 原生有则必做 | P1 | 待验证 | — | 原生 lite/revert_message 路由 | |
-| B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 待验证 | assets/companion/service.cjs | 原生 Read 工具在正确目录读取验收文件并回复内容 | 公共工具投影与其他工具尚未实现 |
+| B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 受限 | src/history.ts；src/live-items.ts | 公共 toolExecution 与真实 Read 验收 | 普通工具参数和原生输出；专用命令 / Diff 投影仍待完成 |
 | B9 | 审批 | 原生有则必做 | P0 | 待验证 | — | 原生 lite/send_user_decision 路由 | |
 | B10 | 提问 | 原生有则必做 | P0 | 待验证 | — | — | |
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 待验证 | — | — | |
@@ -59,7 +59,7 @@
 
 ## 受限与已知缺口
 
-当前处于开发阶段，尚无可交付的 TRAE CN Harness。应用内 Companion 扩展、本机 HTTP 和 Node 客户端已实现；独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接直至结束。
+当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。应用内 Companion、本机 HTTP、公共 Adapter 和普通 Session 核心已实现；活动恢复、交互、配置写入、历史派生及发行尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接直至结束。
 
 原生模型管理接口 `model_list` 与会话菜单接口 `model_list_by_function` 的范围不同。模型管理接口不作为对话目录来源；目录按原生 Agent function 读取，并过滤 `status === false` 或 `selectable === false` 的模型。自定义 Provider 的失败不等于桌面登录失败；已观察到原生服务返回 Provider HTTP 401，不能用桌面登录状态代替模型调用验收。
 
@@ -71,9 +71,10 @@
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
-| Adapter 公共行为 | 待实现 | 未验证 |
+| Adapter 公共行为 | test/adapter.test.ts、test/session.test.ts、test/history.test.ts、test/live-items.test.ts | 普通创建、取消、关闭、历史与空闲恢复已覆盖；其他能力仍待实现 |
 | 原生边界 | 独立 Extension Development Host 中加载仓库 native.cjs | 应用登录、模型目录、创建、发送、事件和原生历史读取均已实测 |
 | Companion 传输 | 从独立 Node 客户端调用开发扩展的本机 HTTP | 续聊、真实文件工具、观察者断开、主动取消与取消后续聊均核对持久历史 |
+| 公共原生验收 | HarnessSession 两轮，随后新进程 Adapter.open(resume) 第三轮 | 文件工具、实时输出、持久 NativeTurnRef、源历史前缀和续聊均已实测 |
 | 插件加载 | 待实现 | 未验证 |
 | Host 集成 | 待实现 | 未验证 |
 | 真实原生验收 | TRAE CN 3.4.12 Windows，复用桌面登录，Builder / Seed-Code | 原生 done.status=completed；重连历史 finish.summary=CODEXHOST_TRAE_CN_OK；不是 Host 端验收 |

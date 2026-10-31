@@ -1,12 +1,12 @@
 # TRAE CN Desktop 原生桥接
 
-开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含桌面 Companion 扩展入口、本机传输及其 Node 客户端；公共 Harness Adapter 和预装插件尚未实现，不能在 CodexHost 中启用。
+开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含桌面 Companion 扩展入口、本机传输、公共 Adapter 和普通文本 Session 核心。审批、提问、活动任务恢复、配置写入、历史派生和发行入口尚未完成，不能作为完整 CodexHost 插件启用。
 
 ## 原生边界
 
 验证环境为 TRAE CN 3.4.12、VS Code core 1.107.1、Windows x64。应用将 `harness.dll` 加载到其受管理进程中，并通过 Electron 自带的 `ahaIpc` 暴露 `ai-agent` RPC。测试扩展在应用的 Extension Host 中连接这个服务；普通 Node 进程不能据此直接加载 Electron 私有绑定。
 
-数据路径如下。Companion 与 Node 客户端之间的本机传输已经实测；公共 Adapter 仍在开发。
+数据路径如下。公共 Adapter 的普通对话和空闲会话恢复已实测，其他能力仍在开发。
 
 ```mermaid
 flowchart LR
@@ -34,6 +34,16 @@ TRAE CN 的 `rpc.stream.cancel` 会取消原生生成，因此客户端解除订
 
 桌面登录与 Provider 鉴权分别验证。桌面接口可用不能证明某个自定义 Provider 的密钥仍有效；原生模型服务返回的 HTTP 401 应保留为该模型的调用失败，不要求用户重新登录独立 CLI。
 
+## 公共会话核心
+
+`src/adapter.ts` 提供只读检查、同作用域目录缓存、延迟创建和空闲恢复；`src/session.ts` 在首个已接受 Turn 时创建原生身份，并将原生流投影为公共输出。新会话要求调用方先手动选择模型，`initialState` 不把请求模型当作生效状态；原生 metadata / model_config 确认后才更新 effectiveModel。模型 Ref 为按原生 Agent 和模型 ID 生成的 opaque 标识，保留自定义模型中斜杠等原生身份信息而不暴露给 Host 路由。
+
+`src/history.ts` 用原生用户消息 ID 标识逻辑 Turn，原生 Assistant 的 reply_to_message_id 与其对齐；重复读取和重启后身份不变。原生 completed、failed、canceled 分别保留为成功、失败和取消；缺少终态时为 unknown。`finish.summary` 是最终答复，普通工具保留名称、参数及原生提供的结果；缺失的持久工具输出不会被补造。
+
+`src/live-items.ts` 将累积文本转换为增量事件，每个 Item 只开始和完成一次。Builder 会暂时把最终文本放入 thought，然后转入 finish.summary；只有确定属于普通工具的 thought 才作为 commentary 发布，避免把同一最终答复显示两遍。EOF、关闭观察者和停止请求确认均不作为成功终态；成功需要从同一原生历史读到完成记录。
+
+当前配置写入、原生审批/提问、活动 Turn 恢复和历史派生操作明确返回未实现或受限错误，能力字段不声称支持。只完成普通会话核心不代表全部 P0 / P1 已验收。
+
 ## 验证与剩余工作
 
 仓库中的聚焦测试覆盖原生响应、立即到达的流事件、批量消息、回调 ID 为零、回调允许列表、观察者分离、模型目录过滤、凭据隔离、本机 HTTP 授权、目录隔离、UTF-8 事件分帧、原生忙碌与并发准入。
@@ -42,4 +52,6 @@ TRAE CN 的 `rpc.stream.cancel` 会取消原生生成，因此客户端解除订
 
 完整 Companion 另已实测同一 Session 续聊，持久历史的 `finish.summary` 为 `CODEXHOST_TRAE_CN_HTTP_OK`；原生 `Read` 工具在指定工作目录读取验收文件并回复其中字符串；观察者提前断开后原生历史仍为 `completed`；主动停止后历史为 `canceled`，同一 Session 随后的回复为 `TRAE_CN_CANCEL_RECOVERY_OK`。
 
-这些证据仅证明桌面与 Companion 路径。交付仍需公共 Session / Item 投影、审批与提问、恢复和历史派生、Manifest、Companion 安装打包与预装发行，以及真实 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。
+公共 HarnessSession 实测完成文件读取和同一 Session 的第二轮答复 `TRAE_CN_PUBLIC_SESSION_OK`，实时及历史 NativeTurnRef 一致。随后由新 Node 进程使用 Adapter.open(resume) 恢复同一 NativeSessionRef，确认原历史前缀不变，再完成第三轮 `TRAE_CN_ADAPTER_RESUME_OK`。
+
+这些证据覆盖桌面、Companion 和公共 Adapter 核心。交付仍需审批与提问、活动任务恢复、配置写入、历史派生、Manifest、Companion 安装打包与预装发行，以及真实 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。

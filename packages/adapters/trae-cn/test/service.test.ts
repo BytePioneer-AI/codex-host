@@ -164,7 +164,7 @@ describe("TRAE CN desktop bridge service", () => {
     );
     call.mockImplementation(async (_service: string, method: string) =>
       method === "get_chat_session"
-        ? { chat_session_id: "session", local_project_id: "project" }
+        ? { chat_session_id: "session", local_project_id: "project", status: 6 }
         : method === "get_or_create_project_v2"
           ? { project_id: "project", workspace_folders: ["/workspace"] }
           : { items: [], next_page_token: "repeat" },
@@ -212,6 +212,28 @@ describe("TRAE CN desktop bridge service", () => {
     expect(call.mock.calls.some((args) => args[1] === "send_message")).toBe(false);
   });
 
+  it("distinguishes a fresh Pending Session from one with an already queued message", async () => {
+    const { service, call } = setup();
+    const original = call.getMockImplementation();
+    if (!original) throw new Error("Missing fixture implementation");
+    let queued = false;
+    call.mockImplementation(async (...args) =>
+      args[1] === "get_chat_session"
+        ? { chat_session_id: "session", local_project_id: "project", status: 1 }
+        : args[1] === "get_messages"
+          ? { items: queued ? [{ message_id: "queued" }] : [] }
+          : original(...args),
+    );
+    await expect(
+      service.call("start", { sessionId: "session", modelId: "configured", text: "first" }),
+    ).resolves.toMatchObject({ accepted: true });
+    queued = true;
+    await expect(
+      service.call("start", { sessionId: "session", modelId: "configured", text: "second" }),
+    ).rejects.toMatchObject({ code: "sessionBusy" });
+    expect(call.mock.calls.filter((args) => args[1] === "send_message")).toHaveLength(1);
+  });
+
   it("serializes admission before asynchronous native status checks", async () => {
     const { service, call } = setup();
     const original = call.getMockImplementation();
@@ -235,5 +257,20 @@ describe("TRAE CN desktop bridge service", () => {
     release();
     await first;
     expect(call.mock.calls.filter((args) => args[1] === "send_message")).toHaveLength(1);
+  });
+
+  it("does not treat an unknown native status as an idle Session", async () => {
+    const { service, call } = setup();
+    const original = call.getMockImplementation();
+    if (!original) throw new Error("Missing fixture implementation");
+    call.mockImplementation(async (...args) =>
+      args[1] === "get_chat_session"
+        ? { chat_session_id: "session", local_project_id: "project" }
+        : original(...args),
+    );
+    await expect(
+      service.call("start", { sessionId: "session", modelId: "configured", text: "hello" }),
+    ).rejects.toMatchObject({ code: "protocolError" });
+    expect(call.mock.calls.some((args) => args[1] === "send_message")).toBe(false);
   });
 });

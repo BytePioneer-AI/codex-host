@@ -248,7 +248,7 @@ export interface DraftInitializationOptions {
 /** An initialization request never waits for a React mount or a remote catalog. */
 export type DraftInitializationResult = "applied" | "preserved" | "blocked";
 
-/** A temporary primary-send action, without changing keyboard or programmatic submission. */
+/** A temporary primary-send and Enter action, without changing programmatic submission. */
 export interface ComposerPrimaryAction {
   readonly disabled: boolean;
   run(): void;
@@ -263,7 +263,7 @@ export interface ComposerPrimaryAction {
 export interface InputActions {
   /** @returns a revision-guarded selection, or the document end for append-only insertion. */
   captureInsertion(placement?: "end"): TokenSpan;
-  /** Override the primary send button until the returned disposer runs. */
+  /** Override the primary send button and Enter gesture until the returned disposer runs. */
   bindPrimaryAction(action: ComposerPrimaryAction): () => void;
   /**
    * Insert asynchronous text without replacing subsequent edits or reference chips.

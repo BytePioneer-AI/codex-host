@@ -104,6 +104,7 @@ export const InputBar = memo(function InputBar({
   // current; the bar renders the same DOM inert instead of a parallel tree.
   const live = input !== undefined && keyboard !== undefined && inputActions !== undefined;
   const draft = input?.draft ?? "";
+  const primaryAction = input?.primaryAction;
   const editor = keyboard?.editor ?? null;
   const attachments = useMemo(
     () =>
@@ -319,6 +320,7 @@ export const InputBar = memo(function InputBar({
   const gate = useRef({
     locked,
     machineBusy,
+    primaryAction,
     canSteerQueue,
     running,
     steeringAvailable,
@@ -332,6 +334,7 @@ export const InputBar = memo(function InputBar({
   gate.current = {
     locked,
     machineBusy,
+    primaryAction,
     canSteerQueue,
     running,
     steeringAvailable,
@@ -390,7 +393,6 @@ export const InputBar = memo(function InputBar({
   // describes a delivery the click cannot or does not perform; every other
   // state keeps plain Send. A continuable child keeps Send primary and
   // exposes Stop independently.
-  const primaryAction = input?.primaryAction;
   const primaryStops =
     primaryAction === undefined && running && subagent === null && (empty || blocked !== undefined);
   // Disabled native buttons may omit mouseleave; their tooltip must close from state.

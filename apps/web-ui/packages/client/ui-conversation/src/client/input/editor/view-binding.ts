@@ -2,6 +2,7 @@
 import type { MouseEvent, MutableRefObject, RefObject } from "react";
 import type { LexicalEditor } from "lexical";
 import type { ComposerKeyboard } from "../../contract/draft-editor.ts";
+import type { ComposerPrimaryAction } from "../../contract/input.ts";
 import type { ComposerBarProps } from "../../contract/slots.ts";
 import type { BusyEnterBehavior } from "../../contract/composer-submission.ts";
 import { resolveSubmitMode } from "../submission-policy.ts";
@@ -10,6 +11,7 @@ import { registerComposerKeymap } from "./keymap.ts";
 interface DraftViewGate {
   locked: boolean;
   machineBusy: boolean;
+  primaryAction: ComposerPrimaryAction | undefined;
   canSteerQueue: boolean;
   running: boolean;
   steeringAvailable: boolean;
@@ -115,7 +117,10 @@ export function installDraftKeymap(
   gate: MutableRefObject<DraftViewGate>,
 ): () => void {
   return registerComposerKeymap(editor, {
-    arbitrate: (key, composing) => keyboard.arbitrate(key, composing),
+    arbitrate: (key, composing) =>
+      key === "enter" && gate.current.primaryAction !== undefined
+        ? "pass"
+        : keyboard.arbitrate(key, composing),
     space: () => {
       if (gate.current.machineBusy || gate.current.locked) return false;
       return keyboard.space();
@@ -123,9 +128,16 @@ export function installDraftKeymap(
     dismissPopup: () => {
       keyboard.dismissPopup();
     },
-    canSubmit: () => !gate.current.locked && !gate.current.machineBusy,
+    canSubmit: () =>
+      !gate.current.locked &&
+      !gate.current.machineBusy &&
+      gate.current.primaryAction?.disabled !== true,
     submit: (accelerated) => {
       const g = gate.current;
+      if (g.primaryAction !== undefined) {
+        if (!g.uploadsPending) g.primaryAction.run();
+        return;
+      }
       // Empty-draft accelerated Enter acts on the queue instead of the
       // (empty) draft: the machine rejects empty drafts, so the gesture
       // steers every still-pending queued message into the running turn.

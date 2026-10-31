@@ -1,8 +1,10 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   MODEL_PRICE_DEFAULT_METHOD,
@@ -193,6 +195,62 @@ describe("pricing.json editing", () => {
     expect((await readModelPriceOverridesFile(file)).entries.map(({ key }) => key)).toEqual(["a"]);
     expect(await readdir(lock)).toEqual([]);
   });
+
+  it("keeps every update made by separate processes", async () => {
+    // Children load the built module, as separate Host processes would.
+    const moduleUrl = pathToFileURL(
+      path.resolve("packages/host-runtime/dist/model-price-overrides-file.js"),
+    ).href;
+    const script = `
+      const { updateModelPriceOverridesFile } = await import(${JSON.stringify(moduleUrl)});
+      const [file, prefix] = process.argv.slice(1);
+      for (let index = 0; index < 6; index += 1) {
+        await updateModelPriceOverridesFile(file, {
+          key: prefix + "-" + index,
+          price: { input: 1, output: 2 },
+        });
+      }
+    `;
+    const prefixes = ["p0", "p1", "p2"];
+    await Promise.all(
+      prefixes.map((prefix) =>
+        promisify(execFile)(process.execPath, ["--input-type=module", "-e", script, file, prefix]),
+      ),
+    );
+    const expected = prefixes.flatMap((prefix) =>
+      Array.from({ length: 6 }, (_, index) => `${prefix}-${index}`),
+    );
+    expect(Object.keys(JSON.parse(await readFile(file, "utf8")).models).sort()).toEqual(
+      expected.sort(),
+    );
+    expect(await readdir(`${file}.lock`)).toEqual([]);
+  }, 30_000);
+
+  it("does not reclaim a live holder's register however old it is", async () => {
+    const lock = `${file}.lock`;
+    await mkdir(lock, { mode: 0o700 });
+    const ownerToken = randomUUID();
+    const register = path.join(lock, `owner-${ownerToken}.json`);
+    await writeFile(
+      register,
+      JSON.stringify({
+        version: 2,
+        ownerToken,
+        pid: process.pid,
+        bootTimeSeconds: Math.round(Date.now() / 1_000 - os.uptime()),
+        choosing: false,
+        ticket: 1,
+      }),
+    );
+    const longAgo = new Date(Date.now() - 10 * 60_000);
+    await utimes(register, longAgo, longAgo);
+
+    await expect(
+      updateModelPriceOverridesFile(file, { key: "a", price: { input: 1, output: 1 } }),
+    ).rejects.toThrow(`Another process is still updating ${file}`);
+    expect(await readdir(lock)).toEqual([`owner-${ownerToken}.json`]);
+    await expect(readFile(file, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  }, 30_000);
 
   it("is used by the next lookup without a restart", async () => {
     const catalog = new ModelPriceCatalog({ directory });

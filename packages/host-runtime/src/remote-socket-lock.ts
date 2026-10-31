@@ -46,9 +46,11 @@ interface LockEntryCatalog {
 const LOCK_RETRY_COUNT = 200;
 const LOCK_RETRY_DELAY_MS = 25;
 const LOCK_MALFORMED_GRACE_MS = 1_000;
-// The Bakery register protects only bind/unlink operations, never Session
+// The socket Bakery register protects only bind/unlink operations, never Session
 // lifetime. A bounded lease recovers a live-PID register after PID reuse or a
 // process that stopped making progress inside this short critical section.
+// File update locks use no lease: a holder that stalls after reading could still
+// rename its stale snapshot over a newer write once it resumes.
 const LOCK_MAX_AGE_MS = 30_000;
 const LOCK_ENTRY_PREFIX = "owner-";
 const LOCK_ENTRY_SUFFIX = ".json";
@@ -115,9 +117,10 @@ function processIsRunning(pid: number): boolean {
 function ownerIsAbandoned(
   record: Pick<RemoteSocketLockRecord, "pid" | "bootTimeSeconds">,
   mtimeMs: number,
+  leaseMs: number | null,
 ): boolean {
   if (Math.abs(record.bootTimeSeconds - currentBootTimeSeconds()) > 5) return true;
-  if (Math.max(0, Date.now() - mtimeMs) >= LOCK_MAX_AGE_MS) return true;
+  if (leaseMs !== null && Math.max(0, Date.now() - mtimeMs) >= leaseMs) return true;
   return !processIsRunning(record.pid);
 }
 
@@ -150,20 +153,23 @@ async function readLockEntrySnapshot(filePath: string): Promise<LockEntrySnapsho
   };
 }
 
-function lockEntryIsAbandoned(snapshot: LockEntrySnapshot): boolean {
+function lockEntryIsAbandoned(snapshot: LockEntrySnapshot, leaseMs: number | null): boolean {
   const ageMs = Math.max(0, Date.now() - snapshot.mtimeMs);
   return snapshot.record
-    ? ownerIsAbandoned(snapshot.record, snapshot.mtimeMs)
+    ? ownerIsAbandoned(snapshot.record, snapshot.mtimeMs, leaseMs)
     : ageMs >= LOCK_MALFORMED_GRACE_MS;
 }
 
-async function removeAbandonedLockEntry(snapshot: LockEntrySnapshot): Promise<boolean> {
+async function removeAbandonedLockEntry(
+  snapshot: LockEntrySnapshot,
+  leaseMs: number | null,
+): Promise<boolean> {
   const current = await readLockEntrySnapshot(snapshot.filePath);
   if (
     current === null ||
     current.source !== snapshot.source ||
     !sameUnixFileIdentity(current.identity, snapshot.identity) ||
-    !lockEntryIsAbandoned(current)
+    !lockEntryIsAbandoned(current, leaseMs)
   ) {
     return false;
   }
@@ -173,7 +179,10 @@ async function removeAbandonedLockEntry(snapshot: LockEntrySnapshot): Promise<bo
   return true;
 }
 
-async function readLockEntryCatalog(lockDirectory: string): Promise<LockEntryCatalog> {
+async function readLockEntryCatalog(
+  lockDirectory: string,
+  leaseMs: number | null,
+): Promise<LockEntryCatalog> {
   const names = await readdir(lockDirectory);
   const entries: LockEntrySnapshot[] = [];
   let unsettled = false;
@@ -181,8 +190,8 @@ async function readLockEntryCatalog(lockDirectory: string): Promise<LockEntryCat
     if (!name.startsWith(LOCK_ENTRY_PREFIX) || !name.endsWith(LOCK_ENTRY_SUFFIX)) continue;
     const snapshot = await readLockEntrySnapshot(path.join(lockDirectory, name));
     if (snapshot === null) continue;
-    if (lockEntryIsAbandoned(snapshot)) {
-      if (!(await removeAbandonedLockEntry(snapshot))) unsettled = true;
+    if (lockEntryIsAbandoned(snapshot, leaseMs)) {
+      if (!(await removeAbandonedLockEntry(snapshot, leaseMs))) unsettled = true;
       continue;
     }
     if (snapshot.record === null) {
@@ -253,7 +262,7 @@ async function legacyLockState(legacyPath: string): Promise<"absent" | "abandone
   const ageMs = Math.max(0, Date.now() - metadata.mtimeMs);
   const record = parseLegacyLockRecord(source);
   if (record === null) return ageMs < LOCK_MALFORMED_GRACE_MS ? "blocking" : "abandoned";
-  return ownerIsAbandoned(record, metadata.mtimeMs) ? "abandoned" : "blocking";
+  return ownerIsAbandoned(record, metadata.mtimeMs, LOCK_MAX_AGE_MS) ? "abandoned" : "blocking";
 }
 
 async function tryAcquireLegacyCompatibilityGuard(
@@ -312,6 +321,8 @@ interface BakeryLockOptions {
   lockDirectory: string;
   /** Version 1 single-path marker still honoured for socket initialization only. */
   legacyPath: string | null;
+  /** Age after which a live owner's register is reclaimed; `null` reclaims only dead owners. */
+  leaseMs: number | null;
   /** Subject used in errors, e.g. "Remote app-server socket". */
   name: string;
   /** The path the lock protects, used in errors. */
@@ -335,6 +346,7 @@ export async function withRemoteAppServerSocketInitializationLock<T>(
     {
       lockDirectory: `${socketPath}.initializers`,
       legacyPath: `${socketPath}.initializing`,
+      leaseMs: LOCK_MAX_AGE_MS,
       name: "Remote app-server socket",
       target: socketPath,
       busyMessage: `Remote app-server socket initialization is already in progress at ${socketPath}`,
@@ -345,14 +357,16 @@ export async function withRemoteAppServerSocketInitializationLock<T>(
 
 /**
  * Serializes a short read-modify-write of `file` across processes with the same
- * Bakery registers, kept in the private directory `<file>.lock`. Abandoned
- * registers (dead owner, other boot, or older than the lease) are reclaimed.
+ * Bakery registers, kept in the private directory `<file>.lock`. Only registers
+ * whose owner exited or belongs to another boot are reclaimed, never a live
+ * owner's, so a stalled holder cannot rename a stale snapshot over newer data.
  */
 export async function withFileUpdateLock<T>(file: string, action: () => Promise<T>): Promise<T> {
   return withBakeryLock(
     {
       lockDirectory: `${file}.lock`,
       legacyPath: null,
+      leaseMs: null,
       name: "File update",
       target: file,
       busyMessage: `Another process is still updating ${file}`,
@@ -362,7 +376,7 @@ export async function withFileUpdateLock<T>(file: string, action: () => Promise<
 }
 
 async function withBakeryLock<T>(
-  { lockDirectory, legacyPath, name, target, busyMessage }: BakeryLockOptions,
+  { lockDirectory, legacyPath, leaseMs, name, target, busyMessage }: BakeryLockOptions,
   action: () => Promise<T>,
 ): Promise<T> {
   await preparePrivateLockDirectory(lockDirectory, name);
@@ -382,7 +396,7 @@ async function withBakeryLock<T>(
   });
 
   try {
-    const choosingCatalog = await readLockEntryCatalog(lockDirectory);
+    const choosingCatalog = await readLockEntryCatalog(lockDirectory, leaseMs);
     const maximumTicket = choosingCatalog.entries.reduce(
       (maximum, entry) => Math.max(maximum, entry.record?.ticket ?? 0),
       0,
@@ -398,7 +412,7 @@ async function withBakeryLock<T>(
     await writeLockRecordAtomic(lockDirectory, entryPath, ownRecord);
 
     for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt += 1) {
-      const catalog = await readLockEntryCatalog(lockDirectory);
+      const catalog = await readLockEntryCatalog(lockDirectory, leaseMs);
       const ownsPublishedEntry = catalog.entries.some(
         (entry) => entry.record?.ownerToken === ownerToken,
       );

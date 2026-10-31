@@ -68,8 +68,17 @@ export function codexHome(environment: NodeJS.ProcessEnv): string {
   return configured ? resolve(configured) : join(environment.HOME ?? homedir(), ".codex");
 }
 
+const CODEXHOST_SESSION_ENV = new Set([
+  "CODEXHOST_CLI_PATH",
+  "CODEXHOST_CLI_NODE_PATH",
+  "CODEXHOST_RUNTIME_ENDPOINT",
+  "CODEXHOST_RUNTIME_TOKEN",
+  "CODEXHOST_THREAD_ID",
+]);
+
 /**
  * Remove Desktop routing, Desktop identity and Node injection from the native child process.
+ * Preserve only the Host CLI connection and caller identity needed by native tools.
  * `CODEX_INTERNAL_*` (notably the originator override) would make Web sessions look like
  * Codex Desktop sessions in the user's native history.
  */
@@ -81,7 +90,7 @@ export function codexChildEnvironment(
     Object.entries(environment).filter(([key]) => {
       const name = key.toUpperCase();
       return (
-        !name.startsWith("CODEXHOST_") &&
+        (!name.startsWith("CODEXHOST_") || CODEXHOST_SESSION_ENV.has(name)) &&
         !name.startsWith("CODEX_INTERNAL_") &&
         !["CODEX_CLI_PATH", "CODEX_THREAD_ID", "NODE_OPTIONS", "NODE_PATH"].includes(name)
       );

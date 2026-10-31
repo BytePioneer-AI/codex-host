@@ -41,7 +41,7 @@
 | B13 | 会话用量 | 原生有则必做 | P1 | 支持 | src/usage.ts、src/plugin.ts | test/account-usage.test.ts | 复用 Codex 原生用量读取 |
 | B14 | 请求级计量 | 原生有则必做 | P2 | 待验证 | src/usage.ts | — | 不声称请求级验收完成 |
 | B15 | 接收委派 | 必做（验证项） | P1 | 待验证 | src/plugin.ts、src/session.ts | — | 不以普通 create/resume 测试代替完整委派 |
-| B16 | 向下委派 | 原生有则必做 | P2 | 待验证 | src/command.ts | — | 未做真实原生发现与调用验收 |
+| B16 | 向下委派 | 原生有则必做 | P2 | 待验证 | src/command.ts、src/plugin.ts | test/command.test.ts、test/delegation-environment.test.ts：创建、恢复、多会话环境隔离及 Desktop 路由清理 | 通过 Host 托管 Skill 发现 CLI；仅传递 CLI 路径、可选 Node 路径、Runtime 端点/令牌及 Host Thread ID；真实原生发现与调用验收待验证 |
 | C1 | 展示元数据 | 必做 | P1 | 支持 | manifest.json、assets/icon.png | host-runtime/test/installed-harness-plugins.test.ts | Web 展示身份 |
 | C2 | 手动安装指引 | 必做 | P1 | 受限 | manifest.json | links.installation | 官方文档链接，无内嵌安装步骤 |
 | C3 | 版本检查与更新 | 必做 | P1 | 受限 | src/plugin.ts | 无 installation 方法 | 需用户在原生 CLI 管理 |
@@ -91,4 +91,5 @@
 | 权限投影与草稿 | Adapter `process.test.ts`、`fast-mode.test.ts`、`authentication-native.test.ts`；Host `codex-cli-harness.test.ts`；Web 权限、偏好、路由、会话、实时状态和导入定向回归 | Adapter 44 项、Host 4 项、Web 网关 28 项通过；认证测试首次并行执行有进程日志时序失败，单独重跑 8 项通过；无真实 Model 请求 |
 | 权限浏览器与插件 | Web `browser/permissions.test.ts`；隔离 Bundle 经真实 Loader 冷加载并连接假原生进程 | 390px / 1280px 两项通过；未知权限展示、主动选择及原生权限回填通过，关闭后清理隔离目录 |
 | 权限静态检查 | `npm run typecheck`、`npm run build:web:ui`、定向 ESLint / Prettier、源码边界与 `git diff --check` | 类型、Web 构建、格式和修改模块的源码边界通过；ESLint 未覆盖 Web UI（无匹配配置），全仓库边界检查被已有 `dist/codexhost-web/node_modules/tslib` 声明文件阻塞 |
-| Desktop / 委派 | 不改变 Desktop 原生路径 | 此次未执行 |
+| 委派环境传递 | 定向 `test/command.test.ts`、`test/delegation-environment.test.ts`、`test/process.test.ts` | 32 项通过；隔离原生进程夹具及其子进程验证连接参数、CLI/Node 路径、创建与恢复身份、令牌更新、会话间隔离及默认环境不被修改；不代表真实 Model 驱动的委派验收 |
+| Desktop / 真实委派 | 不改变 Desktop 原生路径 | 未执行 |

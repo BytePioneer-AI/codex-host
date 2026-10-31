@@ -100,6 +100,8 @@ Host 提交成功后，目录刷新失败不改变导入成功的事实。页面
 
 Adapter 使用通用发现与持久化 launch settings 解析本地 `codex`；解析到 codexhost 代理或 shim 时报告不可用且不执行。原生 home 取自 `CODEX_HOME`，未设置时为 `~/.codex`；允许与 GUI 共用 home，由原生 CLI 直接使用本地认证和配置。子进程清理 Desktop 路由及 Node 注入环境，不复制凭据、配置或历史。
 
+创建和恢复 Session 时，Adapter 合并 Host 提供的会话级环境，在 `CODEXHOST_*` 中仅保留 `CODEXHOST_CLI_PATH`、可选的 `CODEXHOST_CLI_NODE_PATH`、`CODEXHOST_RUNTIME_ENDPOINT`、`CODEXHOST_RUNTIME_TOKEN` 和 `CODEXHOST_THREAD_ID`。每个原生进程使用自己的 Host Thread 身份，通过 Host 托管的 `codexhost-delegation` Skill 发现 CLI。本地跨会话读取与跨 Harness 委派连接共享 Host，不要求 Desktop 运行；用户自定义的 Codex shell 环境过滤仍须允许这些变量，沙箱也须允许访问本地 Runtime。插件不改写用户配置、不放宽沙箱；环境传递验证不等于真实 Model 驱动的端到端委派验收。
+
 未选择权限模式时，`thread/start`、`turn/start` 不下发审批或沙箱参数，使用用户原生配置；创建和恢复从原生响应中的审批策略与沙箱类型回填有效权限，不因读取到权限而增加本次 Session 的 Turn 参数覆盖。自定义审批策略、外部沙箱或缺失的权限响应不冒充标准档位，Web 显示“原生配置”。显式选择权限模式时只下发该模式对应的原生审批策略与沙箱模式名，不写死网络访问或可写目录；创建和恢复必须得到匹配的原生权限确认，否则拒绝打开 Session。`/compact`、`/review` 等原生能力、审批与提问交互、模型和推理强度、会话导入都按普通外部 Thread 契约提供；Fork 与回退最后一个 Turn 声明为不支持。Turn 进行中追加消息使用外部 Thread 对所有 Harness 统一的 steering 规则。
 
 原生会话通过通用导入接入：Host 通过原生 `thread/list` cursor 分页读完 Codex home 中可发现的会话，不把请求的单页 200 条当作总数上限；原生分页失败或 cursor 不前进时明确报错，不返回部分候选。同一逻辑 Session 的分页历史可以有多个 rollout 段，Adapter 按 Session ID 归并同页及跨页记录，重复项通过只读 `thread/read(includeTurns: false)` 获取权威标题、项目路径和更新时间，不按文件顺序或时间猜测当前段。已消失或身份无效的重复组不成为候选；原生读取故障明确报错，不冒充空列表。提交导入时重新发现并读取所选 ID，原生引用只保存逻辑 Session ID，不绑定某个历史文件。导入后成为可继续的 Codex CLI 外部 Thread，打开时由原生 `thread/resume` 和 `thread/read` 恢复其有效历史；返回不同的 Session ID 时拒绝，不新建空会话代替恢复。旧的 `<data>/web-codex/` 隔离来源数据不读取、不删除、不迁移，也不出现在 Web 会话列表中。同一原生会话不要在 GUI 官方 Codex 与 Web Codex CLI 中同时打开；Host 不为跨进程写入提供互斥。

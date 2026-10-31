@@ -339,10 +339,11 @@ class CodexAdapter implements HarnessAdapter {
         };
       const executable = this.executable();
       if (executable.status !== "ready") return { ok: false, error: executableFailure(executable) };
+      const environment = { ...this.environment, ...input.environment };
       const result = await CodexSession.open({
         usage: this.sessionUsage,
         command: executable.command,
-        environment: this.childEnvironment,
+        environment: codexChildEnvironment(environment, codexHome(this.environment)),
         cwd: input.cwd,
         ...(nativeSessionId?.ok ? { threadId: nativeSessionId.value } : {}),
         ...(typeof (input.model as { id?: unknown } | undefined)?.id === "string"

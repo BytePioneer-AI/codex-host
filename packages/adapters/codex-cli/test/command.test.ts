@@ -91,13 +91,22 @@ describe("Codex CLI executable discovery", () => {
     expect(codexHome({ HOME: "/home/user", CODEX_HOME: "/custom/codex" })).toBe("/custom/codex");
   });
 
-  it("removes Desktop routing and Node injection from the native child", () => {
+  it("preserves the Host CLI connection while removing Desktop routing and Node injection", () => {
+    const delegation = {
+      CODEXHOST_CLI_PATH: "/host/codexhost",
+      CODEXHOST_CLI_NODE_PATH: "/host/node",
+      CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+      CODEXHOST_RUNTIME_TOKEN: "synthetic-runtime-token",
+      CODEXHOST_THREAD_ID: "host-thread",
+    };
     const child = codexChildEnvironment(
       {
         HOME: "/home/user",
         PATH: "/usr/bin",
         CODEX_HOME: "/custom/codex",
+        ...delegation,
         CODEXHOST_HOST_RUNTIME_PATH: "/desktop/runtime",
+        CODEXHOST_UNKNOWN_SETTING: "not-a-session-variable",
         CODEX_CLI_PATH: "/desktop/shim",
         CODEX_THREAD_ID: "gui-thread",
         CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "Codex Desktop",
@@ -106,6 +115,11 @@ describe("Codex CLI executable discovery", () => {
       },
       "/custom/codex",
     );
-    expect(child).toEqual({ HOME: "/home/user", PATH: "/usr/bin", CODEX_HOME: "/custom/codex" });
+    expect(child).toEqual({
+      HOME: "/home/user",
+      PATH: "/usr/bin",
+      CODEX_HOME: "/custom/codex",
+      ...delegation,
+    });
   });
 });

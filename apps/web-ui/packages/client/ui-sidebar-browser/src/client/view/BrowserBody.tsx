@@ -127,7 +127,7 @@ export function BrowserBody(props: BrowserBodyProps): ReactNode {
   }, [mount, tab.id, tab.signal, tab.actions, viewportId, props.actions]);
 
   const unknown = frame.address === "unknown";
-  const externalUrl = unknown ? undefined : (frame.openUrl ?? target?.url);
+  const externalUrl = unknown ? undefined : target?.url;
   const sandboxed = frame.sandboxEnabled;
   const failure = state?.addressFailure;
   const error = frame.error;
@@ -241,16 +241,16 @@ export function BrowserBody(props: BrowserBodyProps): ReactNode {
       )}
       {error !== undefined && (
         <div className={css.failure} role="status">
-          {error.forward === true
-            ? error.description === "https"
-              ? t("forward.https")
-              : t("forward.failed", { description: error.description ?? "" })
-            : error.code !== undefined && error.description !== undefined
-              ? t("load.failed.detail", {
-                  code: String(error.code),
-                  description: error.description,
-                })
-              : t("load.failed")}
+          {error.disconnected === true
+            ? t("load.disconnected")
+            : error.description === undefined
+              ? t("load.failed")
+              : error.code === undefined
+                ? t("load.failed.reason", { description: error.description })
+                : t("load.failed.detail", {
+                    code: String(error.code),
+                    description: error.description,
+                  })}
         </div>
       )}
       {failure !== undefined && (

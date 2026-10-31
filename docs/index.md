@@ -116,7 +116,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA 的共享 CH 会话、GUI/Web 共享偏好、作为普通外部 Harness 的 Codex CLI、原生项目归组、历史分页、浏览器侧栏本机地址转发、源码构建、启动隔离、跨工作树停机及验收限制；开发 Web 或与 Desktop 并行运行时阅读。 |
+| [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA 的共享 CH 会话、GUI/Web 共享偏好、作为普通外部 Harness 的 Codex CLI、原生项目归组、历史分页、侧栏服务器浏览器推流、源码构建、启动隔离、跨工作树停机及验收限制；开发 Web 或与 Desktop 并行运行时阅读。 |
 | [`proposals/web-remote-relay-architecture.md`](proposals/web-remote-relay-architecture.md) | 未实施的手机公网远程架构：电脑出站中继、独立设备网址、扫码授权、端到端加密、三端代码边界及分阶段验收。 |
 
 ## 账号与 Desktop 产品接入

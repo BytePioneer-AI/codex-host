@@ -19,7 +19,8 @@ import qrcode from "qrcode-terminal";
 import { createBrowserWebSocketServer } from "./browser-websocket.ts";
 
 import { AccessAuth } from "./auth.ts";
-import { BrowserForwarding } from "./browser-forwarding.ts";
+import { SIDEBAR_BROWSER_PATH } from "@codexhost/shared-contracts/sidebar-browser";
+import { SidebarBrowser } from "./sidebar-browser.ts";
 import { registerMisc } from "./misc.ts";
 import { PushNotifier } from "./push.ts";
 import { CLIENT_GLOBALS, CLIENT_PLUGINS, HMR_CLIENT_PLUGIN } from "./plugins.ts";
@@ -240,12 +241,6 @@ displaySettings.register(rpc);
 settings.register(rpc);
 push.register(rpc);
 registerMisc(rpc, { events });
-const browserForwarding = new BrowserForwarding({
-  host: values.host as string,
-  serverPort: () => (server.address() as { port: number }).port,
-  authorized: auth === undefined ? undefined : (request) => auth.authorized(request),
-});
-browserForwarding.register(rpc);
 
 function send(response: ServerResponse, asset: AssetResponse | undefined, cache = false): void {
   if (asset === undefined) {
@@ -419,7 +414,17 @@ const server = createServer((request, response) => {
 });
 
 const wss = createBrowserWebSocketServer();
+const sidebarBrowser = new SidebarBrowser({ profileDirectory: join(dataRoot, "sidebar-browser") });
 server.on("upgrade", (request, socket, head) => {
+  if ((request.url ?? "").split("?")[0] === SIDEBAR_BROWSER_PATH) {
+    if (!sameOrigin(request) || (auth !== undefined && !auth.authorized(request))) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    sidebarBrowser.upgrade(request, socket, head);
+    return;
+  }
   if (
     (request.url ?? "").split("?")[0] !== "/api/remote.mux" ||
     !sameOrigin(request) ||
@@ -487,7 +492,7 @@ server.listen(Number(values.port), values.host, () => {
 async function shutdown(): Promise<void> {
   hmr?.close();
   server.close();
-  await browserForwarding.close();
+  await sidebarBrowser.close();
   await dsh?.close();
   await sessions.close();
   await preferences?.close();

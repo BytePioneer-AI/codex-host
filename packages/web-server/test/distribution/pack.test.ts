@@ -72,6 +72,19 @@ it(
       version: 1,
       enabled: ["fake"],
     });
+    // Playwright must retain its package assets and resolve outside the workspace.
+    const { stdout: browserRuntime } = await exec(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { existsSync } from "node:fs";
+import { chromium } from "playwright-core";
+console.log(JSON.stringify({ launch: typeof chromium.launchPersistentContext, assets: existsSync(new URL("./browsers.json", import.meta.resolve("playwright-core"))) }));`,
+      ],
+      { cwd: join(moved, "app"), env: { ...process.env, NODE_PATH: "", NODE_OPTIONS: "" } },
+    );
+    assert.deepEqual(JSON.parse(browserRuntime), { launch: "function", assets: true });
     // Exercise the installed CLI's own resource resolution, without a runtime-path override.
     const cliEnvironment = Object.fromEntries(
       Object.entries(process.env).filter(

@@ -5,6 +5,8 @@ import type { BrowserTabState } from "./BrowserPersistence.ts";
 
 /** Provider construction inputs; persistence does not enter the live navigation interface. */
 export interface BrowserPageOptions {
+  /** Sidebar tab identity, stable across reloads of the layout. */
+  readonly tabId: string;
   readonly initial: BrowserTabState | undefined;
   readonly persist: (state: BrowserTabState) => void;
   readonly openRequested: (url: string) => void;

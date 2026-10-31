@@ -11,8 +11,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { DataDir } from "./store.ts";
 
-/** HttpOnly access cookie; also scoped to forwarded-page listeners because cookies ignore ports. */
-export const ACCESS_COOKIE = "codexhost_token";
+const COOKIE = "codexhost_token";
 const FILE = "auth.json";
 
 export class AccessAuth {
@@ -43,7 +42,7 @@ export class AccessAuth {
     const cookies = request.headers.cookie ?? "";
     for (const part of cookies.split(";")) {
       const [name, ...rest] = part.trim().split("=");
-      if (name === ACCESS_COOKIE) return decodeURIComponent(rest.join("="));
+      if (name === COOKIE) return decodeURIComponent(rest.join("="));
     }
     return undefined;
   }
@@ -68,7 +67,7 @@ export class AccessAuth {
     const secure = request.headers["x-forwarded-proto"] === "https" ? "; Secure" : "";
     response
       .writeHead(302, {
-        "set-cookie": `${ACCESS_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000${secure}`,
+        "set-cookie": `${COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000${secure}`,
         location: `${url.pathname}${url.search}`,
         "cache-control": "no-store",
       })

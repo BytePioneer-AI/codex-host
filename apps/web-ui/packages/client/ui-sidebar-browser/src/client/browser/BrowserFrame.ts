@@ -6,15 +6,13 @@ import type { BrowserTarget } from "./url.ts";
 export interface BrowserLoadError {
   readonly code: number | undefined;
   readonly description: string | undefined;
-  /** The address could not be forwarded from the Web server machine, so nothing was loaded. */
-  readonly forward?: boolean;
+  /** The connection to the page's host was lost and is being retried. */
+  readonly disconnected?: boolean;
 }
 
 /** State consumed by common browser chrome, without DOM or carrier identifiers. */
 export interface BrowserFrameState {
   readonly target: BrowserTarget | undefined;
-  /** Address this viewer's browser opens for target, when the provider loads a different one. */
-  readonly openUrl?: string;
   readonly address: "empty" | "requested" | "observed" | "unknown";
   readonly loading: boolean;
   readonly canGoBack: boolean;

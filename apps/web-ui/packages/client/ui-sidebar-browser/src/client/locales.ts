@@ -26,9 +26,9 @@ export const zh = {
   "load.failed": "页面加载失败；请刷新重试或在系统浏览器中打开。",
   "load.failed.detail": "页面加载失败 ({code}): {description}",
   "address.unknown": "页面已跳转；当前载体无法读取新的 URL。",
-  "forward.failed": "无法打开运行 CodexHost 的机器上的这个地址：{description}",
-  "forward.https":
-    "通过 HTTPS 访问 CodexHost 时，暂不支持打开运行 CodexHost 的机器上的本机地址；请改用 HTTP 地址访问 CodexHost。",
+  "load.failed.reason": "页面加载失败：{description}",
+  "load.disconnected": "与 CodexHost 的连接已断开，正在重连…",
+  "remote.input": "网页输入",
 } satisfies Record<string, string>;
 
 /** Browser dictionary key union. */
@@ -64,9 +64,9 @@ export const en = {
   "load.failed": "The page could not load; reload or open it in the system browser.",
   "load.failed.detail": "Page load failed ({code}): {description}",
   "address.unknown": "The page navigated; this carrier cannot read its new URL.",
-  "forward.failed": "Cannot open this address on the CodexHost machine: {description}",
-  "forward.https":
-    "Local addresses on the CodexHost machine cannot be opened while CodexHost is accessed over HTTPS; access CodexHost over HTTP instead.",
+  "load.failed.reason": "Page load failed: {description}",
+  "load.disconnected": "Lost the connection to CodexHost; reconnecting…",
+  "remote.input": "Web page input",
 } satisfies Record<SidebarBrowserKey, string>;
 
 declare module "@deepseek-ai/dsh-client-ui-slots" {

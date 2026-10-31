@@ -15,9 +15,9 @@
       "types": "./dist/version.d.ts",
       "import": "./dist/version.js"
     },
-    "./browser-forwarding": {
-      "types": "./dist/browser-forwarding.d.ts",
-      "import": "./dist/browser-forwarding.js"
+    "./sidebar-browser": {
+      "types": "./dist/sidebar-browser.d.ts",
+      "import": "./dist/sidebar-browser.js"
     }
   },
   "scripts": {

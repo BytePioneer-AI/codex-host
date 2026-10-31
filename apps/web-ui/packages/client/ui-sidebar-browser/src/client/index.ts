@@ -10,7 +10,7 @@ import { BrowserBody, type BrowserBodyProps } from "./view/BrowserBody.tsx";
 import { BrowserTitle } from "./view/BrowserTitle.tsx";
 import { createBrowserControllers } from "./browser/BrowserController.ts";
 import type { BrowserInjected } from "./browser/BrowserController.ts";
-import { createIframePage } from "./pages.ts";
+import { createRemotePage } from "./remote/pages.ts";
 import { createElectronPage } from "./electron/pages.ts";
 import type { DesktopBrowserBridge } from "../types.ts";
 import { browserWorkspace } from "./electron/workspace.ts";
@@ -150,7 +150,12 @@ export function apply(ctx: Context): void {
       "ui-sidebar-browser.body",
     );
   };
-  if (desktop === undefined) installFrames(ctx, () => createIframePage);
+  if (desktop === undefined)
+    installFrames(
+      ctx,
+      (sessionId) => (options) =>
+        createRemotePage(options, `${String(sessionId)}:${options.tabId}`, t("remote.input")),
+    );
   else
     ctx.inject(["workspaces"], (scope) => {
       installFrames(

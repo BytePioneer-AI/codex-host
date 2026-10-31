@@ -11,19 +11,24 @@ import { FakeChHost, startFakeChDebugger } from "../support/ch-host.ts";
 import { startServer } from "../support/server.ts";
 
 it(
-  "opens a page on the Web server's loopback through its forwarding listener",
+  "streams a tab of the CodexHost machine's browser into the right Sidebar",
   { timeout: 60_000 },
   async (t) => {
     const workspace = mkdtempSync(join(tmpdir(), "codexhost-browser-tab-"));
     t.after(() => rmSync(workspace, { recursive: true, force: true }));
-    // A frame-denying local service: forwarding must still show it inside the sidebar.
-    const site = createServer((_request, response) => {
+    // Loopback-only and frame-denying: only the machine's own browser can show it.
+    const site = createServer((request, response) => {
       response.writeHead(200, {
-        "content-type": "text/html",
+        "content-type": "text/html; charset=utf-8",
         "x-frame-options": "DENY",
-        "content-security-policy": "frame-ancestors 'none'",
       });
-      response.end("<!doctype html><title>Browser fixture</title><h1>Browser body</h1>");
+      response.end(`<!doctype html><title>Browser fixture</title>
+        <style>body{margin:0;background:rgb(12,34,56)} input,button,a{position:absolute;left:20px;width:200px;height:40px}input{top:80px}button{top:140px}a{top:200px}</style>
+        ${
+          request.url === "/next"
+            ? "<h1>Next page</h1>"
+            : `<input id="text"><button onclick="document.title=document.querySelector('input').value">Update title</button><a href="/next">Next</a><a style="top:260px" href="/next" target="_blank">Popup</a>`
+        }`);
     });
     await new Promise<void>((resolve) => site.listen(0, "127.0.0.1", resolve));
     t.after(() => site.close());
@@ -50,7 +55,10 @@ it(
     );
     const browser = await chromium.launch();
     t.after(() => browser.close());
-    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const page = await browser.newPage({
+      viewport: { width: 1280, height: 900 },
+      deviceScaleFactor: 2,
+    });
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const target = new URL(url);
@@ -66,33 +74,71 @@ it(
     await input.waitFor();
     await input.fill(website);
     await input.press("Enter");
-    const frame = page.locator("[data-sidebar-right-panel] iframe").first();
-    await frame.waitFor();
-    const forwarded = await page.waitForFunction(
-      (port) => {
-        const element = document.querySelector("[data-sidebar-right-panel] iframe");
-        if (!(element instanceof HTMLIFrameElement) || element.src === "") return undefined;
-        const src = new URL(element.src);
-        return src.hostname === "127.0.0.1" && src.port !== port && src.port !== location.port
-          ? src.href
-          : undefined;
+    const canvas = page.locator('canvas[data-sidebar-browser-frame="remote"]').first();
+    await canvas.waitFor();
+    // The page background reaches the canvas, drawn at physical pixels (2x) and 1:1 in CSS.
+    await page.waitForFunction(
+      () => {
+        const element = document.querySelector<HTMLCanvasElement>(
+          'canvas[data-sidebar-browser-frame="remote"]',
+        );
+        const pixel = element?.getContext("2d")?.getImageData(4, 4, 1, 1).data;
+        return (
+          element !== null &&
+          element !== undefined &&
+          element.width === Math.round(element.getBoundingClientRect().width * 2) &&
+          pixel !== undefined &&
+          Math.abs((pixel[0] ?? 0) - 12) < 4 &&
+          Math.abs((pixel[1] ?? 0) - 34) < 4 &&
+          Math.abs((pixel[2] ?? 0) - 56) < 4
+        );
       },
-      String(address.port),
-      { timeout: 15_000 },
+      undefined,
+      { timeout: 30_000 },
     );
-    const forwardedUrl = (await forwarded.jsonValue()) as string;
-    await page
-      .frameLocator("[data-sidebar-right-panel] iframe")
-      .getByRole("heading", { name: "Browser body" })
-      .waitFor({ timeout: 15_000 });
+    assert.equal(await page.locator("[data-sidebar-right-panel] iframe").count(), 0);
     assert.equal(await input.inputValue(), website);
-    // Opening outside the sidebar uses the forwarded address, not the viewer's own loopback.
-    const [opened] = await Promise.all([
-      page.context().waitForEvent("page"),
-      page.getByRole("button", { name: "Open in system browser" }).click(),
-    ]);
-    await opened.waitForURL(forwardedUrl);
-    await opened.getByRole("heading", { name: "Browser body" }).waitFor();
+    const remote = async (x: number, y: number) => {
+      const box = await canvas.boundingBox();
+      assert.ok(box);
+      await page.mouse.click(box.x + x, box.y + y);
+    };
+    const addressIs = async (expected: string) => {
+      await page.waitForFunction(
+        (value) =>
+          document.querySelector<HTMLInputElement>('input[placeholder="Enter an HTTP(S) address"]')
+            ?.value === value,
+        expected,
+      );
+    };
+    // Text, including a committed IME result, reaches the focused remote field.
+    await remote(40, 100);
+    await page.keyboard.type("remote-");
+    await page.getByRole("textbox", { name: "Web page input" }).evaluate((element) => {
+      const textarea = element as HTMLTextAreaElement;
+      textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      textarea.value = "中文";
+      textarea.dispatchEvent(
+        new CompositionEvent("compositionend", { bubbles: true, data: "中文" }),
+      );
+    });
+    await page.keyboard.press("Backspace");
+    await remote(40, 160);
+    await page.getByRole("tab", { name: /remote-中/u }).waitFor();
+    await remote(40, 220);
+    await addressIs(`${website}next`);
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await addressIs(website);
+    // A window the page opens becomes another sidebar tab on the same address.
+    await remote(40, 280);
+    await page
+      .getByRole("tab", { name: /127\.0\.0\.1|Browser fixture|Next/u })
+      .nth(1)
+      .waitFor();
+    // The tab lives on the server: reloading the viewer reattaches to the same page.
+    await page.reload();
+    await page.locator('canvas[data-sidebar-browser-frame="remote"]').first().waitFor();
+    await page.getByRole("tab", { name: /remote-中/u }).waitFor({ timeout: 15_000 });
     assert.deepEqual(errors, []);
   },
 );

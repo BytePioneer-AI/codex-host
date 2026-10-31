@@ -118,9 +118,9 @@ await build({
   format: "esm",
   target: "node22",
   banner: { js: `#!/usr/bin/env node\n${banner}` },
-  // The Office engine is a platform-native package with worker files and a
-  // prebuilt executable; it stays a real install beside the server bundle.
-  external: ["bufferutil", "utf-8-validate", "@deepseek-ai/libreoffice-kit"],
+  // Office and Playwright resolve workers, executables and other package assets
+  // at runtime; keep their complete installations beside the server bundle.
+  external: ["bufferutil", "utf-8-validate", "@deepseek-ai/libreoffice-kit", "playwright-core"],
   logLevel: "warning",
 });
 
@@ -149,6 +149,7 @@ function copyRuntimePackage(name: string, copied: Set<string>): void {
 // files at runtime, so the current platform's engine must ship beside app/.
 copyRuntimePackage("@deepseek-ai/libreoffice-kit", new Set());
 copyRuntimePackage("node-pty", new Set());
+copyRuntimePackage("playwright-core", new Set());
 
 // The terminal provider spawns its private runner as a separate process; the
 // source-mode entry cannot run under plain Node, so ship a bundled entry.

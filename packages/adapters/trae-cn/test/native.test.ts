@@ -164,6 +164,36 @@ describe("TRAE CN app-owned native RPC", () => {
     native.close();
   });
 
+  it("detaches an observer without sending the native generation cancel notification", async () => {
+    const { channel, native } = setup();
+    channel.handle = (message) => {
+      if (message.method === "request_stream")
+        channel.receive({ id: message.id, result: { streamId: "active" } });
+    };
+    const data = vi.fn(),
+      end = vi.fn(),
+      error = vi.fn();
+    const detach = await native.subscribe("lite", "subscribe_events", {}, {}, { data, end, error });
+    detach();
+    channel.receive({
+      method: "rpc.stream.active",
+      meta: { streamId: "active" },
+      params: { data: { event: "done" } },
+    });
+    channel.receive({
+      method: "rpc.stream.active",
+      meta: { streamId: "active", done: true },
+      params: {},
+    });
+    expect(data).not.toHaveBeenCalled();
+    expect(end).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    native.close();
+    expect(channel.sent.some((message) => message.method === "rpc.stream.cancel.active")).toBe(
+      false,
+    );
+  });
+
   it("settles pending RPC and observers when closing without stopping the desktop", async () => {
     const { channel, native } = setup();
     channel.handle = (message) => {

@@ -27,9 +27,12 @@ function unwrap(packet) {
   }
   for (let i = 0; i < 3 && record(value) && typeof value.code === "number"; i++) {
     if (value.code !== 0) {
-      throw failure(
-        "nativeFailure",
-        typeof value.message === "string" ? value.message : "TRAE CN request failed",
+      throw Object.assign(
+        failure(
+          "nativeFailure",
+          typeof value.message === "string" ? value.message : "TRAE CN request failed",
+        ),
+        { nativeCode: value.code },
       );
     }
     value = value.data;
@@ -49,6 +52,10 @@ class NativeConnection {
   #onMessage;
   #onDisconnect;
   #onError;
+
+  get closed() {
+    return this.#closed;
+  }
 
   constructor(channel, vscode, identity, timeoutMs = 30000) {
     this.#channel = channel;
@@ -127,7 +134,7 @@ class NativeConnection {
       streamId = response.streamId;
       this.#streams.set(streamId, listener);
     });
-    return () => this.#cancelStream(streamId);
+    return () => this.#detachStream(streamId);
   }
 
   #request(method, packet, prepare) {
@@ -174,7 +181,7 @@ class NativeConnection {
         try {
           listener.data(unwrap(message.params.data));
         } catch (error) {
-          this.#cancelStream(streamId);
+          this.#detachStream(streamId);
           listener.error(error);
         }
       }
@@ -225,6 +232,14 @@ class NativeConnection {
         },
       }),
     );
+  }
+
+  #detachStream(streamId) {
+    // Desktop treats rpc.stream.cancel as native generation cancellation. A Host
+    // observer going away must only detach; drain until native EOF on the shared
+    // Companion connection, leaving stop_chat_session as the explicit stop path.
+    if (this.#streams.has(streamId))
+      this.#streams.set(streamId, { data() {}, error() {}, end() {} });
   }
 
   #cancelStream(streamId) {

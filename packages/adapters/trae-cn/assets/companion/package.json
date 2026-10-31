@@ -1,0 +1,31 @@
+{
+  "name": "trae-cn-bridge",
+  "publisher": "codexhost",
+  "displayName": "CodexHost TRAE CN Bridge",
+  "description": "Connect CodexHost to the native Agent in TRAE CN Desktop.",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.107.0"
+  },
+  "main": "./extension.cjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "codexhost.traeCn.restartBridge",
+        "title": "CodexHost: Restart TRAE CN Bridge"
+      }
+    ]
+  }
+}

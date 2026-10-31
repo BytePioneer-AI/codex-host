@@ -125,10 +125,22 @@ impl Display for UnmanagedDesktopConflict {
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 impl Error for UnmanagedDesktopConflict {}
 
+const USAGE: &str = "usage:
+  codexhost
+  codexhost --help
+  codexhost --version
+  codexhost inspect [--json] [--custom-install <absolute-directory>]
+  codexhost console
+  codexhost update
+  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]
+  codexhost broker install|status|stop|uninstall
+  codexhost delegate --help
+  codexhost harness list|inspect ...
+  codexhost delegate start ...
+  codexhost thread send|cancel|read|wait|watch|watches|list ...";
+
 fn usage() {
-    eprintln!(
-        "usage:\n  codexhost\n  codexhost inspect [--json] [--custom-install <absolute-directory>]\n  codexhost console\n  codexhost update\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
-    );
+    eprintln!("{USAGE}");
 }
 
 const LOOPBACK_URL_MAX_BYTES: u64 = 4096;
@@ -1336,6 +1348,15 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             resume_packaged_application(&arguments[1..]).map_err(Into::into)
         }
         None => launch(default_launch_options(), false),
+        Some("--help" | "-h" | "help") => {
+            println!("{USAGE}");
+            Ok(())
+        }
+        // Matches the npm wrapper, which prints its plain package version.
+        Some("--version" | "-V" | "-v") if arguments.len() == 1 => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch(default_launch_options(), true),
         Some("inspect") => {
             let options = parse_inspect_options(&arguments[1..])?;

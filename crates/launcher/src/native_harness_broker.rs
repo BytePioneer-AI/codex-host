@@ -36,13 +36,34 @@ fn macos_absolute_path(value: &str, option: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(value))
 }
 
+pub const NATIVE_HARNESS_BROKER_USAGE: &str = "usage: codexhost broker install|status|stop|uninstall [--harness <id>] [--node <absolute-file> --host-runtime <absolute-file>]
+The native Harness broker is available only on macOS.";
+
+/// The npm wrapper appends `--node`/`--host-runtime` after the user's arguments, so a
+/// missing subcommand reaches the launcher as a leading option rather than as nothing.
+pub fn native_harness_broker_usage_requested(arguments: &[String]) -> bool {
+    match arguments.first().map(String::as_str) {
+        None | Some("--help" | "-h" | "help") => true,
+        Some(first) if first.starts_with('-') => true,
+        Some(_) => arguments[1..]
+            .iter()
+            .any(|argument| argument == "--help" || argument == "-h"),
+    }
+}
+
+pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
+    if native_harness_broker_usage_requested(arguments) {
+        println!("{NATIVE_HARNESS_BROKER_USAGE}");
+        return Ok(());
+    }
+    run_parsed_native_harness_broker_cli(parse_native_harness_broker_cli(arguments)?)
+}
+
 pub fn parse_native_harness_broker_cli(
     arguments: &[String],
 ) -> Result<NativeHarnessBrokerCli, String> {
     let Some(command) = arguments.first() else {
-        return Err(
-            "usage: codexhost broker install|status|stop|uninstall [--harness <id>] [--node <absolute-file> --host-runtime <absolute-file>]".to_owned(),
-        );
+        return Err(NATIVE_HARNESS_BROKER_USAGE.to_owned());
     };
     let command = match command.as_str() {
         "install" => NativeHarnessBrokerCliCommand::Install,
@@ -91,8 +112,7 @@ pub fn parse_native_harness_broker_cli(
 }
 
 #[cfg(target_os = "macos")]
-pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
-    let cli = parse_native_harness_broker_cli(arguments)?;
+fn run_parsed_native_harness_broker_cli(cli: NativeHarnessBrokerCli) -> Result<(), Box<dyn Error>> {
     let bundled_resources = if cli.node.is_none() {
         Some(InstalledResources::from_current_executable()?)
     } else {
@@ -173,8 +193,7 @@ pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
-    let _ = parse_native_harness_broker_cli(arguments)?;
+fn run_parsed_native_harness_broker_cli(_: NativeHarnessBrokerCli) -> Result<(), Box<dyn Error>> {
     Err("the native Harness broker is available only on macOS".into())
 }
 
@@ -182,7 +201,69 @@ pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn
 mod tests {
     use std::path::Path;
 
-    use super::{NativeHarnessBrokerCliCommand, parse_native_harness_broker_cli};
+    use super::{
+        NativeHarnessBrokerCliCommand, native_harness_broker_usage_requested,
+        parse_native_harness_broker_cli,
+    };
+
+    fn arguments(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn usage_is_requested_without_a_subcommand_even_after_injected_runtime_options() {
+        for requested in [
+            &[][..],
+            &["--help"],
+            &["-h"],
+            &["help"],
+            &["--node", "/usr/bin/node", "--host-runtime", "/opt/host.mjs"],
+            &[
+                "--help",
+                "--node",
+                "/usr/bin/node",
+                "--host-runtime",
+                "/opt/host.mjs",
+            ],
+            &[
+                "status",
+                "--help",
+                "--node",
+                "/usr/bin/node",
+                "--host-runtime",
+                "/opt/host.mjs",
+            ],
+        ] {
+            assert!(
+                native_harness_broker_usage_requested(&arguments(requested)),
+                "{requested:?}"
+            );
+        }
+        for command in [
+            &["status"][..],
+            &[
+                "install",
+                "--node",
+                "/usr/bin/node",
+                "--host-runtime",
+                "/opt/host.mjs",
+            ],
+            &["bogus"],
+            &[
+                "bogus",
+                "--node",
+                "/usr/bin/node",
+                "--host-runtime",
+                "/opt/host.mjs",
+            ],
+        ] {
+            assert!(
+                !native_harness_broker_usage_requested(&arguments(command)),
+                "{command:?}"
+            );
+        }
+        assert!(parse_native_harness_broker_cli(&arguments(&["bogus"])).is_err());
+    }
 
     #[test]
     fn selected_harness_is_explicit_and_defaults_to_legacy_claude() {

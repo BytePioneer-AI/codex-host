@@ -106,7 +106,11 @@ export function projectPlanItem(value: unknown, terminal?: HostItemOutcome): Pro
   if (toolResult?.status === "success") outcome = { status: "succeeded" };
   else if (toolResult?.status === "failed" || toolResult?.status === "error")
     outcome = { status: "failed", error: nativeFailure({ message: toolResult.error_message }) };
-  else if (toolResult?.status === "canceled" || toolResult?.status === "cancelled")
+  else if (
+    ["canceled", "cancelled", "skipped", "skipped_run"].includes(String(toolResult?.status)) ||
+    (record(value.confirm_info) &&
+      ["skipped", "skipped_run", "canceled"].includes(String(value.confirm_info.confirm_status)))
+  )
     outcome = { status: "cancelled" };
   else outcome = terminal;
   if (name === "finish" || name === "ReplyUser") {
@@ -127,6 +131,50 @@ export function projectPlanItem(value: unknown, terminal?: HostItemOutcome): Pro
     terminal ||
     ["success", "failed", "error", "canceled", "cancelled"].includes(String(toolResult?.status))
   ) {
+    if (name === "RunCommand") {
+      if (!record(params) || typeof params.command !== "string" || !params.command.trim())
+        throw new TraeError("protocolError", "Native command has no command text");
+      const data = record(toolResult?.data) ? toolResult.data : undefined;
+      const confirmationReceipt =
+        record(call?.meta) &&
+        typeof call.meta.llm_toolcall_id === "string" &&
+        call.meta.llm_toolcall_id.endsWith("_sandbox_retry");
+      // Native sandbox retry temporarily overwrites this same plan ID with a
+      // successful interaction receipt, before restoring the command result.
+      // Its success confirms the decision, never command execution.
+      if (confirmationReceipt) {
+        if (terminal?.status === "succeeded")
+          throw new TraeError("protocolError", "Native command has only a confirmation receipt");
+        outcome = terminal;
+      }
+      const cwd = typeof params.cwd === "string" ? params.cwd : data?.cwd;
+      const item: HostItem = {
+        type: "commandExecution",
+        itemId: hostItemIdSchema.parse(`${id}.tool`),
+        command: params.command,
+        ...(typeof cwd === "string" ? { cwd } : {}),
+        ...(typeof data?.stdout === "string" ? { output: data.stdout } : {}),
+        ...(toolResult?.is_truncated === true ? { outputTruncated: true } : {}),
+        ...(typeof data?.exit_code === "number" && Number.isInteger(data.exit_code)
+          ? { exitCode: data.exit_code }
+          : {}),
+      };
+      if (
+        typeof timing?.tool_call_started_at_ms === "number" &&
+        typeof timing.tool_call_finished_at_ms === "number"
+      )
+        item.durationMs = Math.max(
+          0,
+          timing.tool_call_finished_at_ms - timing.tool_call_started_at_ms,
+        );
+      if (item.exitCode !== undefined && item.exitCode !== 0 && outcome?.status === "succeeded")
+        outcome = {
+          status: "failed",
+          error: nativeFailure({ message: `Native command exited with code ${item.exitCode}` }),
+        };
+      result.push({ item, ...(outcome ? { outcome } : {}) });
+      return result;
+    }
     const item: HostItem = {
       type: "toolExecution",
       itemId: hostItemIdSchema.parse(`${id}.tool`),

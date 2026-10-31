@@ -1,7 +1,7 @@
 const { randomUUID } = require("node:crypto");
 const path = require("node:path");
 const { publicModels, nativeModel, readModels } = require("./models.cjs");
-const { questionDecision, NativeInteractions } = require("./interactions.cjs");
+const { questionDecision, approvalDecision, NativeInteractions } = require("./interactions.cjs");
 
 function invalid(message) {
   return Object.assign(new Error(message), { code: "invalidRequest" });
@@ -341,6 +341,9 @@ class DesktopService {
               agent_type: this.agentType,
               agent_id: this.agentType,
               is_in_code_mode: true,
+              // Desktop's buildSendMessageRequest places the profile on the
+              // message itself; client_info alone does not select its policy.
+              permission_profile_id: "manual_approval",
               ...(settings.ask_question_config
                 ? { ask_question_config: settings.ask_question_config }
                 : {}),
@@ -384,7 +387,8 @@ class DesktopService {
             code: "invalidState",
           });
         }
-        const data = questionDecision(
+        const decide = input.kind === "approval" ? approvalDecision : questionDecision;
+        const data = decide(
           this.interactions.current(sessionId, input.messageId, input.planItemId),
           input,
         );

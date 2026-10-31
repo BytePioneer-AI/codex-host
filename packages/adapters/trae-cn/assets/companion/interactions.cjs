@@ -151,4 +151,40 @@ function questionDecision(current, input) {
   return { ...data, params: JSON.stringify({ questions, answers }) };
 }
 
-module.exports = { questionDecision, NativeInteractions };
+/** The native run-once action does not grant task/device rules or change global policy. */
+function approvalDecision(current, input) {
+  if (input.kind !== "approval" || !["allowOnce", "deny"].includes(input.action))
+    throw fail("invalidRequest", "Unknown native approval action");
+  const plan = current?.plan;
+  const confirm = plan?.confirm_info;
+  if (
+    !current ||
+    current.sessionId !== input.sessionId ||
+    current.messageId !== input.messageId ||
+    plan?.id !== input.planItemId ||
+    plan?.tool_call_info?.name !== "RunCommand" ||
+    confirm?.confirm_status !== "unconfirmed" ||
+    confirm.auto_confirm === true ||
+    typeof input.interactionId !== "string" ||
+    !input.interactionId ||
+    confirm.interaction_instance_id !== input.interactionId
+  )
+    throw fail("invalidState", "Native approval was closed or superseded");
+  const params = parse(plan.tool_call_info.params);
+  if (!record(params) || typeof params.command !== "string" || !params.command.trim())
+    throw fail("protocolError", "Native command approval has no command");
+  if (typeof plan.task_id !== "string" || !plan.task_id)
+    throw fail("protocolError", "Native command approval has no task identity");
+  return {
+    chat_session_id: input.sessionId,
+    task_id: plan.task_id,
+    plan_item_id: plan.id,
+    tool_name: "RunCommand",
+    interaction_instance_id: input.interactionId,
+    type: "tool_confirm",
+    decision: input.action === "allowOnce" ? "confirm" : "skip",
+    permission_scope: input.action === "allowOnce" ? "execution" : "none",
+  };
+}
+
+module.exports = { questionDecision, approvalDecision, NativeInteractions };

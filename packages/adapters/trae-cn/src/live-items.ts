@@ -40,7 +40,7 @@ export class LiveItems {
           !isDeepStrictEqual(previous.item, next.item) ||
           (next.outcome && !isDeepStrictEqual(previous.outcome, next.outcome))
         )
-          throw new TraeError("protocolError", "Native plan Item changed after completion");
+          throw new TraeError("protocolError", `Native plan Item changed after completion: ${id}`);
         return;
       }
       if (
@@ -60,6 +60,35 @@ export class LiveItems {
             itemId: id,
             update: { type: "text.append", text },
           });
+      } else if (
+        previous.item.type === "commandExecution" &&
+        next.item.type === "commandExecution"
+      ) {
+        if (
+          previous.item.command !== next.item.command ||
+          (previous.item.cwd && next.item.cwd && previous.item.cwd !== next.item.cwd)
+        )
+          throw new TraeError(
+            "protocolError",
+            "Native command changed its admitted command or directory",
+          );
+        if (!next.item.cwd && previous.item.cwd) next.item.cwd = previous.item.cwd;
+        const before = previous.item.output ?? "";
+        const after = next.item.output ?? before;
+        if (!after.startsWith(before))
+          throw new TraeError(
+            "protocolError",
+            "Native command output rewrote its published prefix",
+          );
+        if (after.length > before.length)
+          this.emit({
+            type: "item.updated",
+            turnId: this.turnId,
+            itemId: id,
+            update: { type: "output.append", text: after.slice(before.length) },
+          });
+        if (next.item.output === undefined && previous.item.output !== undefined)
+          next.item.output = previous.item.output;
       } else if (previous.item.type === "toolExecution" && next.item.type === "toolExecution") {
         if (
           previous.item.toolName !== next.item.toolName ||

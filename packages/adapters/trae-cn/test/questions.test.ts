@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { HarnessOutput, HostQuestionInteraction } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
-import { QuestionInteractions } from "../src/questions.js";
+import { NativeInteractions } from "../src/interactions.js";
 
 const plan = {
   id: "plan",
@@ -32,7 +32,7 @@ function setup() {
   const call = vi.fn<(method: string, input?: Record<string, unknown>) => Promise<unknown>>(
     async () => ({ accepted: true }),
   );
-  const interactions = new QuestionInteractions(
+  const interactions = new NativeInteractions(
     {
       sessionId: "native-session",
       messageId: "native-user",

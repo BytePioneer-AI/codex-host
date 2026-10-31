@@ -21,7 +21,7 @@
 | A2 | 工厂 | 必做 | P0 | 待验证 | — | — | |
 | A3 | 检查 | 必做 | P0 | 支持 | src/adapter.ts | test/adapter.test.ts；真实 inspect | 不创建会话，不启动桌面窗口；同作用域目录缓存 |
 | A4 | 创建 Session | 必做 | P0 | 支持 | src/session.ts；assets/companion/service.cjs | 公共 Session 首轮真实创建及文件读取 | 延迟至首轮；原生 Project 绑定目录 |
-| A5 | 执行 Turn | 必做 | P0 | 受限 | src/session.ts；src/live-items.ts | 公共普通对话、文件工具、提问及持久历史一致 | 普通 Builder、Read 和提问已验收；审批未完成 |
+| A5 | 执行 Turn | 必做 | P0 | 受限 | src/session.ts；src/live-items.ts | 公共普通对话、文件工具、提问、命令审批及持久历史一致 | Builder、Read、RunCommand 和提问已验收；其他工具语义待补 |
 | A6 | 取消 | 必做 | P0 | 支持 | src/session.ts；assets/companion/service.cjs | 公共提问等待中 turn.cancel 后，公共与持久原生均 cancelled，同 Session 随后成功续聊 | Interaction 关闭一次；过期回复拒绝；不将请求回执当终态 |
 | A7 | 只读快照 | 必做 | P0 | 支持 | src/history.ts；src/session.ts | 重复读取真实历史的 Turn / Item 身份一致；原生历史提交延迟实测 | 活动公开读取返回 sessionBusy；终态确认短暂重读同一身份 |
 | A8 | 持久身份 + resume | 必做 | P0 | 受限 | src/adapter.ts；src/history.ts | 新 Node 进程 Adapter.open(resume) 后完成第三轮，源前缀不变 | 支持空闲恢复；活动任务恢复待实现 |
@@ -34,9 +34,9 @@
 | B5 | Fork | 原生有则必做 | P1 | 待验证 | — | 原生 lite/fork_session 路由 | |
 | B6 | 跨目录 Fork | 原生有则必做 | P2 | 待验证 | — | — | |
 | B7 | 回滚最后一轮 | 原生有则必做 | P1 | 待验证 | — | 原生 lite/revert_message 路由 | |
-| B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 受限 | src/history.ts；src/live-items.ts | 公共 toolExecution 与真实 Read 验收 | 普通工具参数和原生输出；专用命令 / Diff 投影仍待完成 |
-| B9 | 审批 | 原生有则必做 | P0 | 待验证 | — | 原生 lite/send_user_decision 路由 | |
-| B10 | 提问 | 原生有则必做 | P0 | 支持 | src/questions.ts；assets/companion/interactions.cjs；settings.cjs | 公共问题只发布一次；显式答复“停止”，持久完成回复 TRAE_CN_PUBLIC_QUESTION_OK_STOP | 复用桌面开关；实例校验；不使用预填答案；单选、多选、其他及跳过映射测试 |
+| B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 受限 | src/history.ts；src/live-items.ts | 真实 Read 和 RunCommand；原生命令审批 / 拒绝事件回放 | 命令、目录、输出、退出码及结果保留；Diff 和后台命令待完成 |
+| B9 | 审批 | 原生有则必做 | P0 | 受限 | src/interactions.ts；assets/companion/interactions.cjs | 公共允许一次后原生文件生成；拒绝后文件不存在；全局权限哈希未变 | RunCommand 已验收；其他工具确认仍明确拒绝；不支持持久授权 |
+| B10 | 提问 | 原生有则必做 | P0 | 支持 | src/interactions.ts；assets/companion/interactions.cjs；settings.cjs | 公共问题只发布一次；显式答复“停止”，持久完成回复 TRAE_CN_PUBLIC_QUESTION_OK_STOP | 复用桌面开关；实例校验；不使用预填答案；单选、多选、其他及跳过映射测试 |
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 待验证 | — | — | |
 | B12 | 自主 Turn | 原生有则必做 | P1 | 待验证 | — | 原生 lite/subscribe_events 路由 | |
 | B13 | 会话用量 | 原生有则必做 | P1 | 待验证 | — | — | |
@@ -59,7 +59,7 @@
 
 ## 受限与已知缺口
 
-当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。应用内 Companion、本机 HTTP、公共 Adapter、普通 Session 与结构化提问已实现；活动恢复、审批、配置写入、历史派生及发行尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接和确认状态的更新直至结束。
+当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。应用内 Companion、本机 HTTP、公共 Adapter、普通 Session、结构化提问及 RunCommand 单次审批已实现；活动恢复、其他审批、配置写入、历史派生及发行尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接和确认状态的更新直至结束。
 
 原生模型管理接口 `model_list` 与会话菜单接口 `model_list_by_function` 的范围不同。模型管理接口不作为对话目录来源；目录按原生 Agent function 读取，并过滤 `status === false` 或 `selectable === false` 的模型。自定义 Provider 的失败不等于桌面登录失败；已观察到原生服务返回 Provider HTTP 401，不能用桌面登录状态代替模型调用验收。
 
@@ -77,6 +77,7 @@
 | 公共原生验收 | HarnessSession 两轮，随后新进程 Adapter.open(resume) 第三轮 | 文件工具、实时输出、持久 NativeTurnRef、源历史前缀和续聊均已实测 |
 | 公共提问 | Native AskUserQuestion → 公共 Interaction → interaction.respond → 原生结果与持久历史 | 显式“停止”答复，关闭一次，公共与原生 Turn 均成功；活动历史不充当确认状态来源 |
 | 公共取消 | Question 等待时 turn.cancel，核对持久 NativeTurnRef；同 Session 再发一轮 | cancelled 一致，问题关闭一次且旧回复拒绝；续聊回复 TRAE_CN_PUBLIC_CANCEL_RECOVERY_OK |
+| 公共命令审批 | 工作目录外专用验收文件的 RunCommand，分别允许一次和拒绝 | 允许后文件存在、exitCode=0；拒绝后文件不存在、保留原生沙箱 failed / exitCode=1；全局权限未改变 |
 | 插件加载 | 待实现 | 未验证 |
 | Host 集成 | 待实现 | 未验证 |
 | 真实原生验收 | TRAE CN 3.4.12 Windows，复用桌面登录，Builder / Seed-Code | 原生 done.status=completed；重连历史 finish.summary=CODEXHOST_TRAE_CN_OK；不是 Host 端验收 |

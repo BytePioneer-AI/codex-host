@@ -92,6 +92,7 @@ describe("TRAE CN desktop bridge service", () => {
       text: "hello",
       custom_model: { ak: "attacker" },
       user_info: { token: "attacker" },
+      permission_profile_id: "attacker",
     });
     const request = call.mock.calls.find((args) => args[1] === "send_message");
     expect(request).toMatchObject([
@@ -100,6 +101,7 @@ describe("TRAE CN desktop bridge service", () => {
       {
         chat_session_id: "session",
         message_id: "message",
+        permission_profile_id: "manual_approval",
         custom_model: { ak: "fixture-private-key", use_remote_service: false },
         content: [{ type: "text", text_content: "hello" }],
       },

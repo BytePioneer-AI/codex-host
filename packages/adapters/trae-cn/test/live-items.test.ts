@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import type { HostEvent } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { LiveItems } from "../src/live-items.js";
@@ -12,6 +13,90 @@ function setup() {
 }
 
 describe("TRAE CN cumulative live Item projection", () => {
+  it("waits through the real native sandbox confirmation receipt for the actual command result", () => {
+    // TRAE CN 3.4.12 Windows event sequence; identifiers/paths normalized.
+    const plans: unknown[] = JSON.parse(
+      readFileSync(new URL("./fixtures/native-command-approval.json", import.meta.url), "utf8"),
+    );
+    const { events, items } = setup();
+    for (const plan of plans) items.acceptPlan(plan);
+    const completions = events.filter((e) => e.type === "item.completed");
+    expect(completions).toHaveLength(1);
+    expect(items.snapshots).toMatchObject([
+      {
+        item: { type: "commandExecution", exitCode: 0, output: "", cwd: "/workspace" },
+        outcome: { status: "succeeded" },
+      },
+    ]);
+  });
+  it("preserves the native failed command after an explicit sandbox escape denial", () => {
+    const plans: unknown[] = JSON.parse(
+      readFileSync(new URL("./fixtures/native-command-denial.json", import.meta.url), "utf8"),
+    );
+    const { events, items } = setup();
+    for (const plan of plans) items.acceptPlan(plan);
+    expect(events.filter((e) => e.type === "item.completed")).toHaveLength(1);
+    expect(items.snapshots).toMatchObject([
+      { item: { type: "commandExecution", exitCode: 1 }, outcome: { status: "failed" } },
+    ]);
+  });
+  it("projects command output and tolerates native approval normalization of launch metadata", () => {
+    const { events, items } = setup();
+    const running = {
+      id: "command",
+      timing: { tool_call_started_at_ms: 10 },
+      tool_call_info: {
+        name: "RunCommand",
+        params: { command: "echo OK", blocking: true, requires_approval: false },
+      },
+    };
+    items.acceptPlan(running);
+    items.acceptPlan({
+      ...running,
+      confirm_info: { confirm_status: "unconfirmed" },
+      tool_call_info: { name: "RunCommand", params: { command: "echo OK", cwd: "/workspace" } },
+    });
+    items.acceptPlan({
+      ...running,
+      timing: { ...running.timing, tool_call_finished_at_ms: 30 },
+      tool_call_info: {
+        ...running.tool_call_info,
+        result: { status: "success", data: { stdout: "OK\n", exit_code: 0, cwd: "/workspace" } },
+      },
+    });
+    expect(items.snapshots).toEqual([
+      {
+        item: {
+          type: "commandExecution",
+          itemId: "command.tool",
+          command: "echo OK",
+          cwd: "/workspace",
+          output: "OK\n",
+          exitCode: 0,
+          durationMs: 20,
+        },
+        outcome: { status: "succeeded" },
+      },
+    ]);
+    expect(events.filter((e) => e.type === "item.updated")).toMatchObject([
+      { update: { type: "output.append", text: "OK\n" } },
+    ]);
+  });
+  it("preserves command rejection and nonzero exits instead of reporting a successful execution", () => {
+    for (const [result, confirm, expected] of [
+      [{ status: "skipped" }, { confirm_status: "skipped" }, "cancelled"],
+      [{ status: "success", data: { exit_code: 7, stdout: "error" } }, undefined, "failed"],
+    ] as const) {
+      const { items } = setup();
+      items.acceptPlan({
+        id: "command",
+        timing: { tool_call_started_at_ms: 1, tool_call_finished_at_ms: 2 },
+        tool_call_info: { name: "RunCommand", params: { command: "echo OK" }, result },
+        confirm_info: confirm,
+      });
+      expect(items.snapshots[0]?.outcome.status).toBe(expected);
+    }
+  });
   it("appends only the new native text suffix and completes each Item once", () => {
     const { events, items } = setup();
     items.acceptPlan({ id: "plan", reasoning_content: "你" });

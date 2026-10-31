@@ -1,0 +1,232 @@
+[
+  {
+    "id": "plan",
+    "timing": {
+      "generated_at_ms": 0,
+      "tool_call_started_at_ms": 3884
+    },
+    "tool_call_info": {
+      "id": "plan",
+      "name": "RunCommand",
+      "params": {
+        "command": "Set-Content -LiteralPath '/acceptance/marker.txt' -Value 'ACCEPTANCE_OK'",
+        "blocking": true,
+        "command_type": "short_running_process",
+        "requires_approval": true,
+        "target_terminal": "new"
+      },
+      "result": {},
+      "meta": {
+        "llm_toolcall_id": "call"
+      },
+      "already_emitted_generating_event": false,
+      "already_emitted_run_event": false
+    },
+    "agent_status": {
+      "status": "running",
+      "run_mode": "foreground"
+    }
+  },
+  {
+    "id": "plan",
+    "timing": {
+      "generated_at_ms": 0,
+      "tool_call_started_at_ms": 3884
+    },
+    "tool_call_info": {
+      "id": "plan",
+      "name": "RunCommand",
+      "params": {
+        "command": "Set-Content -LiteralPath '/acceptance/marker.txt' -Value 'ACCEPTANCE_OK'",
+        "cwd": "/workspace"
+      },
+      "result": {},
+      "meta": {
+        "llm_toolcall_id": "call_sandbox_retry"
+      },
+      "already_emitted_generating_event": true,
+      "already_emitted_run_event": false
+    },
+    "agent_status": {
+      "status": "running",
+      "run_mode": "foreground"
+    },
+    "confirm_info": {
+      "confirm_status": "unconfirmed",
+      "interaction_instance_id": "native-instance",
+      "auto_confirm": false,
+      "run_mode": null,
+      "running_command_list": null,
+      "block_level": "sandbox_execute_failure",
+      "block_command_list": null,
+      "run_mode_version": "v3",
+      "sandbox_status": null,
+      "sandbox_recovery_type": null,
+      "sandbox_config_command": null,
+      "hit_red_list": null,
+      "hit_black_list": null,
+      "now_run_mode": "manual",
+      "permission_request_reason": "sandbox_execute_failure"
+    }
+  },
+  {
+    "id": "plan",
+    "timing": {
+      "generated_at_ms": 0,
+      "tool_call_started_at_ms": 3884
+    },
+    "tool_call_info": {
+      "id": "plan",
+      "name": "RunCommand",
+      "params": {
+        "command": "Set-Content -LiteralPath '/acceptance/marker.txt' -Value 'ACCEPTANCE_OK'",
+        "cwd": "/workspace"
+      },
+      "result": {},
+      "meta": {
+        "llm_toolcall_id": "call_sandbox_retry"
+      },
+      "already_emitted_generating_event": true,
+      "already_emitted_run_event": false
+    },
+    "agent_status": {
+      "status": "running",
+      "run_mode": "foreground"
+    },
+    "confirm_info": {
+      "confirm_status": "confirmed",
+      "interaction_instance_id": "native-instance",
+      "auto_confirm": false,
+      "run_mode": null,
+      "running_command_list": null,
+      "block_level": "sandbox_execute_failure",
+      "block_command_list": null,
+      "run_mode_version": "v3",
+      "sandbox_status": null,
+      "sandbox_recovery_type": null,
+      "sandbox_config_command": null,
+      "hit_red_list": null,
+      "hit_black_list": null,
+      "now_run_mode": "manual",
+      "permission_request_reason": "sandbox_execute_failure"
+    }
+  },
+  {
+    "id": "plan",
+    "timing": {
+      "generated_at_ms": 0,
+      "tool_call_started_at_ms": 3884,
+      "tool_call_finished_at_ms": 6418
+    },
+    "tool_call_info": {
+      "id": "plan",
+      "name": "RunCommand",
+      "params": {
+        "command": "Set-Content -LiteralPath '/acceptance/marker.txt' -Value 'ACCEPTANCE_OK'",
+        "cwd": "/workspace"
+      },
+      "result": {
+        "status": "success",
+        "error_message": "",
+        "data": {
+          "status": "success",
+          "message": "User completed the interaction",
+          "history_run_mode": "manual"
+        },
+        "images": null,
+        "render": null,
+        "is_truncated": null,
+        "interrupt": null
+      },
+      "meta": {
+        "llm_toolcall_id": "call_sandbox_retry"
+      },
+      "already_emitted_generating_event": true,
+      "already_emitted_run_event": true
+    },
+    "agent_status": {
+      "status": "running",
+      "run_mode": "foreground"
+    },
+    "confirm_info": {
+      "confirm_status": "confirmed",
+      "interaction_instance_id": "native-instance",
+      "auto_confirm": false,
+      "run_mode": null,
+      "running_command_list": null,
+      "block_level": "sandbox_execute_failure",
+      "block_command_list": null,
+      "run_mode_version": "v3",
+      "sandbox_status": null,
+      "sandbox_recovery_type": null,
+      "sandbox_config_command": null,
+      "hit_red_list": null,
+      "hit_black_list": null,
+      "now_run_mode": "manual",
+      "permission_request_reason": "sandbox_execute_failure"
+    }
+  },
+  {
+    "id": "plan",
+    "timing": {
+      "generated_at_ms": 0,
+      "tool_call_started_at_ms": 3884,
+      "tool_call_finished_at_ms": 6418
+    },
+    "tool_call_info": {
+      "id": "plan",
+      "name": "RunCommand",
+      "params": {
+        "command": "Set-Content -LiteralPath '/acceptance/marker.txt' -Value 'ACCEPTANCE_OK'",
+        "blocking": true,
+        "command_type": "short_running_process",
+        "requires_approval": true,
+        "target_terminal": "new"
+      },
+      "result": {
+        "status": "success",
+        "error_message": "",
+        "data": {
+          "command_id": "native-command",
+          "status": "Exited",
+          "stdout": "",
+          "exit_code": 0,
+          "command": "Set-Content -LiteralPath '/acceptance/marker.txt' -Value 'ACCEPTANCE_OK'",
+          "cwd": "/workspace",
+          "tty_mode": false,
+          "history_run_mode": "manual"
+        },
+        "images": null,
+        "render": null,
+        "is_truncated": false,
+        "interrupt": null
+      },
+      "meta": {
+        "llm_toolcall_id": "call"
+      },
+      "already_emitted_generating_event": true,
+      "already_emitted_run_event": true
+    },
+    "agent_status": {
+      "status": "running",
+      "run_mode": "foreground"
+    },
+    "confirm_info": {
+      "confirm_status": "confirmed",
+      "interaction_instance_id": "native-instance",
+      "auto_confirm": false,
+      "run_mode": null,
+      "running_command_list": null,
+      "block_level": "sandbox_execute_failure",
+      "block_command_list": null,
+      "run_mode_version": "v3",
+      "sandbox_status": null,
+      "sandbox_recovery_type": null,
+      "sandbox_config_command": null,
+      "hit_red_list": null,
+      "hit_black_list": null,
+      "now_run_mode": "manual",
+      "permission_request_reason": "sandbox_execute_failure"
+    }
+  }
+]

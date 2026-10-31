@@ -38,7 +38,7 @@ import { nativeModelId, confirmedModel } from "./models.js";
 import { projectHistory, TRAE_CN_ID } from "./history.js";
 import { LiveItems } from "./live-items.js";
 import { sameDirectory } from "./discovery.js";
-import { QuestionInteractions } from "./questions.js";
+import { NativeInteractions } from "./interactions.js";
 
 // This initial core deliberately does not advertise configuration writes or
 // history derivation before those native operations have their own acceptance.
@@ -59,7 +59,7 @@ interface ActiveTurn {
   admitted: boolean;
   stopRequested: boolean;
   items: LiveItems;
-  interactions: QuestionInteractions | undefined;
+  interactions: NativeInteractions | undefined;
 }
 
 export interface SessionOptions {
@@ -387,7 +387,7 @@ export class TraeCnSession implements HarnessSession {
   #observe(turn: ActiveTurn, sessionId: string): Promise<void> {
     return new Promise((resolve, reject) => {
       this.#observerFail = reject;
-      turn.interactions = new QuestionInteractions(
+      turn.interactions = new NativeInteractions(
         { sessionId, messageId: turn.messageId, turnId: turn.command.turnId },
         this.options.client,
         (output) => {

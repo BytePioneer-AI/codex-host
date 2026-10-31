@@ -1,0 +1,10 @@
+{
+  "name": "@codexhost/adapter-trae-cn",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "assets",
+    "CAPABILITIES.md"
+  ]
+}

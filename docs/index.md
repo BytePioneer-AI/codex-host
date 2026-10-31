@@ -103,11 +103,11 @@
 | --- | --- |
 | [`harnesses/copilot/copilot-harness-integration.md`](harnesses/copilot/copilot-harness-integration.md) | 官方 SDK/headless stdio、原生登录、稳定历史与派生、接收委派和当前验证限制。 |
 
-### Trae CLI
+### TRAE CN（开发中）
 
-| 文档 | 内容与阅读时机 |
-| --- | --- |
-| [`harnesses/trae/trae-harness-integration.md`](harnesses/trae/trae-harness-integration.md) | Trae CLI 2.0 实验性 app-server 插件、CLI 登录、原生配置和历史、交互与真实验收缺口。 |
+| 文档 | 适用场景 |
+|---|---|
+| [`harnesses/trae-cn/trae-cn-desktop-integration.md`](harnesses/trae-cn/trae-cn-desktop-integration.md) | 国内 TRAE 桌面原生 RPC 桥接的实现边界、会话模型池、认证和开发验收；尚未提供可启用的插件。 |
 
 ### ZCode
 

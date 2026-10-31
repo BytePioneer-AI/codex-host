@@ -19,6 +19,7 @@ import qrcode from "qrcode-terminal";
 import { createBrowserWebSocketServer } from "./browser-websocket.ts";
 
 import { AccessAuth } from "./auth.ts";
+import { BrowserForwarding } from "./browser-forwarding.ts";
 import { registerMisc } from "./misc.ts";
 import { PushNotifier } from "./push.ts";
 import { CLIENT_GLOBALS, CLIENT_PLUGINS, HMR_CLIENT_PLUGIN } from "./plugins.ts";
@@ -239,6 +240,12 @@ displaySettings.register(rpc);
 settings.register(rpc);
 push.register(rpc);
 registerMisc(rpc, { events });
+const browserForwarding = new BrowserForwarding({
+  host: values.host as string,
+  serverPort: () => (server.address() as { port: number }).port,
+  authorized: auth === undefined ? undefined : (request) => auth.authorized(request),
+});
+browserForwarding.register(rpc);
 
 function send(response: ServerResponse, asset: AssetResponse | undefined, cache = false): void {
   if (asset === undefined) {
@@ -480,6 +487,7 @@ server.listen(Number(values.port), values.host, () => {
 async function shutdown(): Promise<void> {
   hmr?.close();
   server.close();
+  await browserForwarding.close();
   await dsh?.close();
   await sessions.close();
   await preferences?.close();

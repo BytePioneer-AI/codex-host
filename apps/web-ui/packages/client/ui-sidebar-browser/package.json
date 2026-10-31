@@ -21,8 +21,10 @@
     "./package.json": "./package.json"
   },
   "dependencies": {
+    "@codexhost/shared-contracts": "*",
     "@deepseek-ai/dsh-client-store": "*",
     "@deepseek-ai/dsh-client-ui-primitives": "*",
+    "@deepseek-ai/dsh-util-crypto": "*",
     "react": "^18.2.0"
   },
   "dsh": {

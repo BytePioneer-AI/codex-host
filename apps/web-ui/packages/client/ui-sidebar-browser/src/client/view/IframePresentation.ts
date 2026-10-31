@@ -9,6 +9,8 @@ export const WEB_BROWSER_SANDBOX =
 
 interface IframeDocument {
   readonly target: BrowserTarget;
+  /** Address loaded by the iframe; forwarding may differ from the target. */
+  readonly url: string;
   readonly revision: number;
   readonly sandboxed: boolean;
 }
@@ -71,7 +73,7 @@ export class IframePresentation implements BrowserPresentation {
     this.element?.remove();
     const element = document.createElement("iframe");
     element.className = css.frame as string;
-    element.src = current.target.url;
+    element.src = current.url;
     element.title = current.target.title;
     element.referrerPolicy = "no-referrer";
     element.dataset.sidebarBrowserFrame = "iframe";

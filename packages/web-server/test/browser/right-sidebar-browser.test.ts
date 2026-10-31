@@ -11,13 +11,18 @@ import { FakeChHost, startFakeChDebugger } from "../support/ch-host.ts";
 import { startServer } from "../support/server.ts";
 
 it(
-  "opens a browser tab from the right Sidebar and navigates it",
+  "opens a page on the Web server's loopback through its forwarding listener",
   { timeout: 60_000 },
   async (t) => {
     const workspace = mkdtempSync(join(tmpdir(), "codexhost-browser-tab-"));
     t.after(() => rmSync(workspace, { recursive: true, force: true }));
+    // A frame-denying local service: forwarding must still show it inside the sidebar.
     const site = createServer((_request, response) => {
-      response.writeHead(200, { "content-type": "text/html" });
+      response.writeHead(200, {
+        "content-type": "text/html",
+        "x-frame-options": "DENY",
+        "content-security-policy": "frame-ancestors 'none'",
+      });
       response.end("<!doctype html><title>Browser fixture</title><h1>Browser body</h1>");
     });
     await new Promise<void>((resolve) => site.listen(0, "127.0.0.1", resolve));
@@ -41,6 +46,7 @@ it(
         "--adapters",
         "test/fake-harness",
       ],
+      { authenticated: true },
     );
     const browser = await chromium.launch();
     t.after(() => browser.close());
@@ -62,15 +68,31 @@ it(
     await input.press("Enter");
     const frame = page.locator("[data-sidebar-right-panel] iframe").first();
     await frame.waitFor();
-    await page.waitForFunction(
-      (expected) => {
+    const forwarded = await page.waitForFunction(
+      (port) => {
         const element = document.querySelector("[data-sidebar-right-panel] iframe");
-        return element instanceof HTMLIFrameElement && element.src.startsWith(expected);
+        if (!(element instanceof HTMLIFrameElement) || element.src === "") return undefined;
+        const src = new URL(element.src);
+        return src.hostname === "127.0.0.1" && src.port !== port && src.port !== location.port
+          ? src.href
+          : undefined;
       },
-      website,
+      String(address.port),
       { timeout: 15_000 },
     );
+    const forwardedUrl = (await forwarded.jsonValue()) as string;
+    await page
+      .frameLocator("[data-sidebar-right-panel] iframe")
+      .getByRole("heading", { name: "Browser body" })
+      .waitFor({ timeout: 15_000 });
     assert.equal(await input.inputValue(), website);
+    // Opening outside the sidebar uses the forwarded address, not the viewer's own loopback.
+    const [opened] = await Promise.all([
+      page.context().waitForEvent("page"),
+      page.getByRole("button", { name: "Open in system browser" }).click(),
+    ]);
+    await opened.waitForURL(forwardedUrl);
+    await opened.getByRole("heading", { name: "Browser body" }).waitFor();
     assert.deepEqual(errors, []);
   },
 );

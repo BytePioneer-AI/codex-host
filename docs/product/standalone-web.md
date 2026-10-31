@@ -244,7 +244,7 @@ Desktop 离线时，独立后台可读取保存的置顶 ID，但尚不提供置
 
 右侧栏直接装配 DSH Web 的文件树、文档预览、终端和浏览器插件，并复用其宿主服务、限额、错误提示和恢复行为；CodexHost 只补充本地 Thread 的工作目录、沙箱策略的工作区根目录和终端所属会话适配，不新增设置项、开关或协议。文件树、预览和终端的作用域都取该 Thread 在 Host 上记录的工作目录，不采信浏览器提交的目录；未发送草稿、官方 Codex Thread、远程/未知 Thread 显示 DSH 原有的不可用状态，不会因此创建 Thread、Native Session 或提交 Turn。右侧栏请求沿用现有 Web 登录认证与同源校验；不要以 `--no-auth` 暴露到不可信网络。
 
-文件和预览请求、终端进程都以运行 Web 服务的系统用户权限执行，没有额外的 OS 用户隔离或容器边界。文件树列出目录时限制在 Thread 工作目录内，但 DSH 的文本/字节读取按文件系统读取权限运行，可读取该用户可访问的工作目录外绝对路径。终端使用系统用户默认 shell 与权限；关闭标签会结束对应进程，Web 服务退出时清理其保留的终端。浏览器标签是 Web 页面内的沙箱 iframe，只接受 HTTP(S) 地址，不启动外部浏览器进程。
+文件和预览请求、终端进程都以运行 Web 服务的系统用户权限执行，没有额外的 OS 用户隔离或容器边界。文件树列出目录时限制在 Thread 工作目录内，但 DSH 的文本/字节读取按文件系统读取权限运行，可读取该用户可访问的工作目录外绝对路径。终端使用系统用户默认 shell 与权限；关闭标签会结束对应进程，Web 服务退出时清理其保留的终端。浏览器标签是 Web 页面内的沙箱 iframe，只接受 HTTP(S) 地址，由查看者自己的浏览器渲染，不启动外部浏览器进程；运行 Web 服务那台机器上的本机地址经端口转发打开，见下文。
 
 文档预览支持文本、代码、Markdown、图片、PDF、HTML、CSV/TSV/XLSX 表格，以及经本地 LibreOffice 引擎转换的 DOC/DOCX/PPT/PPTX。Office 引擎按平台以 npm 可选依赖提供：macOS/Windows 使用原生包，Linux 使用 WASM 包；缺少对应引擎或终端原生预构建时，对应能力按 DSH 原有提示显示不可用，不回退为其他引擎，也不影响文件树、预览和浏览器。原生 Office 引擎约 150 MB，发行目录会包含当前平台引擎及其许可证；发行包因此明显增大，且必须与目标 OS/CPU 匹配，不能把 macOS 或 Windows 的发行目录直接复制到其他平台运行。终端依赖 node-pty 预构建；没有对应平台预构建的平台不提供终端。
 
@@ -257,6 +257,15 @@ node --import tsx --test packages/web-server/test/dsh-terminal.test.ts
 node --import tsx --test --test-name-pattern="right Sidebar" packages/web-server/test/browser/*.test.ts
 npm run test:web:distribution
 ```
+
+### 浏览器本机地址转发
+
+查看者的浏览器把 `localhost` 解析为查看者自己的机器，所以从另一台设备访问 Web 时，侧栏直接打开 `http://localhost:5173` 会落到错误的机器。浏览器侧栏把 loopback 地址（`localhost`、`*.localhost`、`127.0.0.0/8`、`[::1]`、`0.0.0.0`）交给 Web 服务的 `codexhost/browserForward`：Web 服务为每个目标 origin 在自己的监听地址上开一个系统分配的端口，用 [`http-proxy-3`](https://github.com/sagemathinc/http-proxy-3) 转发 HTTP 与 WebSocket（含开发服务器热更新），侧栏随后在 iframe 中加载 `http://<当前访问 CodexHost 的主机名>:<转发端口>/<原路径>`。页面由查看者本机浏览器渲染，清晰度、输入、复制、音频、下载和开发者工具与直接访问一致。其他地址不经转发，由查看者浏览器直接加载；禁止嵌入的第三方网站（如 GitHub）仍需用「在系统浏览器中打开」。
+
+- **地址与认证**：转发端口与 Web 端口不同源，被转发页面的脚本不能以同源身份调用 CodexHost 接口；Cookie 不区分端口，所以 Web 登录的 HttpOnly Cookie 也会随请求到达转发端口，转发端口据此要求与 Web 相同的认证，`--no-auth` 时同样不认证。该 Cookie 为 `SameSite=Lax`，其他网站嵌入转发端口时不带 Cookie，只得到 401。转发前移除请求中的 CodexHost 访问 Cookie，也丢弃被转发服务试图设置的同名 Cookie。
+- **改写范围**：请求的 Host、指向转发端口自身的 Origin / Referer 改为目标 origin，使开发服务器的 Host 白名单和来源检查按本机访问处理；响应中指向目标 origin 的 `Location` 改回转发端口；`Set-Cookie` 去掉 `Domain` 与 `Secure`，`SameSite=None` 改为 `Lax`，以便存储在当前主机的 HTTP 端口下；移除 `X-Frame-Options` 和 CSP 的 `frame-ancestors`，使 Django、Rails 等默认禁止嵌入的本机服务能在侧栏显示。页面正文不改写；页面内写死的 `http://localhost:…` 绝对链接仍会指向查看者的机器。HTTPS 本机服务按 HTTP 转发，不校验其（通常自签名的）证书。
+- **拒绝与限制**：不转发 Web 服务自身端口和已分配的转发端口，不转发非 loopback 地址。每个 Web 进程最多 32 个目标 origin，同一 origin 复用端口，直到 Web 退出；重启后端口重新分配，被转发页面的 localStorage 等按 origin 存储的数据随之丢失。目标未运行时返回 502 说明，启动服务后刷新即可。
+- **可达性**：转发端口监听与 Web 相同的 `--host`，查看者必须能直接访问这台机器上的任意端口，适用于 Tailscale / 局域网 IP 或本机访问。通过 HTTPS 反向代理（如 Tailscale Serve）访问 Web 时，HTTP 转发页面属于混合内容，侧栏直接提示不支持；只转发了 Web 端口的 SSH 隧道也无法访问转发端口。后续接入远程中继时，转发核心可以改为按子域名路由，无需新增监听端口。
 
 其中 `tests/dsh` 为迁入的 DSH workspace-files 与 terminal-controller 测试；浏览器测试覆盖文件树、聊天文件链接预览、DOCX/PPTX 转换、终端创建/输入/尺寸/重连/关闭和浏览器标签。自动化测试使用假 Harness 与模拟 CH Host，不替代真实 Office 文档、所有平台引擎或真机终端验收。
 

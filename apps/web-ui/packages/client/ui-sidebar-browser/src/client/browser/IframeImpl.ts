@@ -11,6 +11,7 @@ import {
 import type { BrowserPageOptions } from "./BrowserPage.ts";
 import { BrowserNavigation } from "./BrowserNavigation.ts";
 import type { BrowserTarget } from "./url.ts";
+import { BrowserForwardError, frameAddress } from "./forwarding.ts";
 
 /** Owns iframe navigation; the view reports loads without reading cross-origin content. */
 export class IframeImpl implements BrowserFrame {
@@ -23,6 +24,7 @@ export class IframeImpl implements BrowserFrame {
   private readonly store: SnapshotStore<BrowserFrameState>;
   private sandboxed = true;
   private error: BrowserLoadError | undefined;
+  private openUrl: string | undefined;
   private disposed = false;
   private disposal: Promise<void> | undefined;
 
@@ -105,12 +107,33 @@ export class IframeImpl implements BrowserFrame {
   private load(request: ReturnType<BrowserNavigation["navigate"]> | undefined): void {
     if (request === undefined) return;
     this.error = undefined;
+    this.openUrl = undefined;
     this.publish();
-    this.presentation.show({
-      target: request.target,
-      revision: request.revision,
-      sandboxed: this.sandboxed,
-    });
+    const sandboxed = this.sandboxed;
+    const current = () =>
+      !this.disposed && this.navigation.snapshot.request?.revision === request.revision;
+    frameAddress(request.target).then(
+      (url) => {
+        if (!current()) return;
+        this.openUrl = url === request.target.url ? undefined : url;
+        this.publish();
+        this.presentation.show({
+          target: request.target,
+          url,
+          revision: request.revision,
+          sandboxed,
+        });
+      },
+      (error: unknown) => {
+        if (!current()) return;
+        this.error = {
+          code: undefined,
+          description: error instanceof BrowserForwardError ? error.message : String(error),
+          forward: true,
+        };
+        this.publish();
+      },
+    );
   }
 
   private snapshot(): BrowserFrameState {
@@ -118,6 +141,7 @@ export class IframeImpl implements BrowserFrame {
     const target = BrowserNavigation.current(state);
     return {
       target,
+      ...(this.openUrl === undefined ? {} : { openUrl: this.openUrl }),
       address:
         target === undefined
           ? "empty"

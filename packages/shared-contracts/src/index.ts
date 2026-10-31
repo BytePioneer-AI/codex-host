@@ -1,5 +1,6 @@
 import { z } from "zod";
 export * from "./client-channel.js";
+export * from "./browser-forwarding.js";
 export * from "./delegation-read.js";
 export * from "./credential-imports.js";
 export * from "./harness-display-settings.js";

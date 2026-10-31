@@ -389,6 +389,39 @@ describe("DelegationControlRegistry list paging across sessions", () => {
     registry.close();
   });
 
+  it("rejects a merged cursor from another Registry or with an overrun page position", async () => {
+    const build = () => {
+      const registry = new DelegationControlRegistry();
+      registry.register(session("a", threads("a", 30, 0)));
+      registry.register(session("b", threads("b", 30, 1)));
+      return registry;
+    };
+    const original = build();
+    const first = await original.list({ cwd: "/synthetic", limit: 5, sort: "created-desc" });
+    const cursor = first.nextCursor ?? "";
+    const rebuilt = build();
+    await expect(
+      rebuilt.list({ cwd: "/synthetic", limit: 5, sort: "created-desc", cursor }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+
+    const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
+      sessions: ([string | null, number, number] | null)[];
+    };
+    const position = decoded.sessions.find((entry) => entry !== null);
+    if (!position) throw new Error("Expected an open session position");
+    position[1] = position[2];
+    await expect(
+      original.list({
+        cwd: "/synthetic",
+        limit: 5,
+        sort: "created-desc",
+        cursor: Buffer.from(JSON.stringify(decoded)).toString("base64url"),
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    original.close();
+    rebuilt.close();
+  });
+
   it("rejects malformed merged cursors", async () => {
     const registry = new DelegationControlRegistry();
     registry.register(session("a", threads("a", 30, 0)));

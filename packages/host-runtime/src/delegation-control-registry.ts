@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   DelegationControlError,
   type DelegationControlApi,
@@ -25,7 +27,9 @@ function only<T>(values: readonly T[], message: string): T {
 
 export class DelegationControlRegistry implements DelegationControlApi, DelegationWatchApi {
   readonly #registrations = new Set<DelegationControlRegistration>();
-  // Changes whenever the session set changes, so a merged list cursor cannot outlive it.
+  // Changes whenever the session set changes, so a merged list cursor cannot outlive it. The
+  // instance id keeps a cursor from matching a rebuilt Registry at the same count.
+  readonly #instanceId = randomUUID();
   #registrationGeneration = 0;
   #harnessCatalog: DelegationControlRegistration | undefined;
   // Watches sit above the sessions so either end may belong to any registered session.
@@ -157,7 +161,7 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       registrations.map((registration) => (page: ThreadListInput) => registration.list(page)),
       input,
       (left, right) => this.#compareThreads(left, right, input.sort),
-      this.#registrationGeneration,
+      `${this.#instanceId}:${this.#registrationGeneration}`,
     );
   }
 

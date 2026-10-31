@@ -20,6 +20,7 @@ import { describe, expect, it } from "vitest";
 import {
   NPM_MINIMUM_NODE_VERSION,
   NPM_NODE_ENGINE,
+  NPM_NODE_REQUIREMENT,
   NPM_PACKAGE_NAME,
   NPM_PLATFORM_PACKAGE_NAMES,
   createNpmBinLauncherSource,
@@ -480,8 +481,11 @@ describe("npm package release", () => {
     expect(minimumNodeVersionFromEngines(">=22.19.0 <23.0.0 || >=24.0.0 <25.0.0")).toBe("22.19.0");
     expect(minimumNodeVersionFromEngines(">=24.1.0 || >=22.20.3 <23")).toBe("22.20.3");
     expect(() => minimumNodeVersionFromEngines("^22")).toThrow("no minimum version");
-    expect(NPM_NODE_ENGINE).toBe(`>=${NPM_MINIMUM_NODE_VERSION}`);
-    expect(NPM_NODE_ENGINE).not.toContain("<");
+    // No upper bound, but Node.js 23.0-23.3 still gate node:sqlite behind a flag.
+    expect(NPM_NODE_ENGINE).toBe(`>=${NPM_MINIMUM_NODE_VERSION} <23.0.0 || >=23.4.0`);
+    expect(NPM_NODE_REQUIREMENT).toBe(
+      `Node.js ${NPM_MINIMUM_NODE_VERSION} or later, except 23.0-23.3`,
+    );
     expect(createNpmMetaPackageManifest({ version: "0.1.0" }).engines).toEqual({
       node: NPM_NODE_ENGINE,
     });
@@ -490,13 +494,9 @@ describe("npm package release", () => {
       expect(createNpmPackageManifest({ version: "0.1.0", target }).engines).toEqual({
         node: NPM_NODE_ENGINE,
       });
-      expect(createNpmReadme({ version: "0.1.0", target })).toContain(
-        `Node.js ${NPM_MINIMUM_NODE_VERSION} or later`,
-      );
+      expect(createNpmReadme({ version: "0.1.0", target })).toContain(NPM_NODE_REQUIREMENT);
     }
-    expect(createNpmMetaReadme({ version: "0.1.0" })).toContain(
-      `Node.js ${NPM_MINIMUM_NODE_VERSION} or later`,
-    );
+    expect(createNpmMetaReadme({ version: "0.1.0" })).toContain(NPM_NODE_REQUIREMENT);
   });
 
   it.each([
@@ -504,6 +504,9 @@ describe("npm package release", () => {
     ["22.18.9", 1],
     ["20.19.0", 1],
     [NPM_MINIMUM_NODE_VERSION, 0],
+    ["23.0.0", 1],
+    ["23.3.9", 1],
+    ["23.4.0", 0],
     ["23.11.0", 0],
     ["25.2.1", 0],
   ])("gates the npm wrapper on Node.js %s", async (nodeVersion, status) => {
@@ -527,7 +530,7 @@ describe("npm package release", () => {
       } else {
         expect(result.stdout).toBe("");
         expect(result.stderr).toBe(
-          `codexhost: Node.js ${nodeVersion} is not supported; ${NPM_PACKAGE_NAME} requires Node.js ${NPM_MINIMUM_NODE_VERSION} or later.\n`,
+          `codexhost: Node.js ${nodeVersion} is not supported; ${NPM_PACKAGE_NAME} requires ${NPM_NODE_REQUIREMENT}.\n`,
         );
       }
     } finally {

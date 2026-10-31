@@ -316,13 +316,34 @@ export class CdpClient {
       returnByValue: true,
     });
     if (!isRecord(response)) throw new Error("Runtime.evaluate returned an invalid result");
-    if (isRecord(response.exceptionDetails)) {
-      throw new Error(cdpExceptionMessage(response.exceptionDetails, "Renderer evaluation failed"));
+    try {
+      if (isRecord(response.exceptionDetails)) {
+        throw new Error(
+          cdpExceptionMessage(response.exceptionDetails, "Renderer evaluation failed"),
+        );
+      }
+      if (!isRecord(response.result) || !("value" in response.result)) {
+        throw new Error("Runtime.evaluate did not return a value");
+      }
+      return response.result.value as T;
+    } finally {
+      // returnByValue still returns remote handles for thrown objects. Both the
+      // result and exception can retain the same Error under distinct handles.
+      const objects = [
+        response.result,
+        isRecord(response.exceptionDetails) ? response.exceptionDetails.exception : undefined,
+      ];
+      const ids = new Set(
+        objects.flatMap((object) =>
+          isRecord(object) && typeof object.objectId === "string" ? [object.objectId] : [],
+        ),
+      );
+      await Promise.all(
+        [...ids].map((objectId) =>
+          this.command("Runtime.releaseObject", { objectId }).catch(() => undefined),
+        ),
+      );
     }
-    if (!isRecord(response.result) || !("value" in response.result)) {
-      throw new Error("Runtime.evaluate did not return a value");
-    }
-    return response.result.value as T;
   }
 
   close(): void {

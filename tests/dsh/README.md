@@ -41,6 +41,27 @@ preview line navigation and overwritten image bytes without reloading the page.
 assembler, including retries, sparse blocks, full-text scan work, and the existing
 argument-only Tool delta fast path.
 
+`input/claim-decor.client.spec.ts` covers DSH `92b23cb792`: repeated native
+insertions at the highlighted command boundary must not loop or desynchronize
+Lexical state from the DOM. `document-preview/reading-position.client.spec.ts`
+adapts the regression cases from `1598d8113b` to the local React/Vitest harness:
+clamped offsets, pagination, deliberate scrolling, read failures/in-flight reads,
+and renderer source-line capabilities. The production changes retain the upstream
+logic; `packages/web-server/test/browser/document-preview-refresh.test.ts` checks
+real Markdown pagination, automatic/manual refresh, scroll anchoring, and code
+line navigation against the local Web Server.
+
+`input/pasted-paths.client.spec.ts` covers whole path decoration from
+`deebbf3191`, including the prerequisite folder-boundary fixes `64f4efe31d` and
+`c403ca4d77`; the local `#` lexicon type is retained. Tests exercise both scanning
+and editable Lexical entities without changing the draft's serialized text.
+`input/mobile-focus.client.spec.ts` adapts `c99d658a9d`'s six-device focus matrix
+for the local InputBar, including mount, session changes, unlock, and explicit
+focus. It uses the upstream Bowser policy without the later post-send focus
+changes. `packages/web-server/test/browser/composer-paths-focus.test.ts` covers
+paste events and mount/session-switch focus in Chromium with desktop, iPhone,
+and desktop-mode iPad identities; this does not replace real-device keyboard tests.
+
 Run them alone with:
 
 ```sh

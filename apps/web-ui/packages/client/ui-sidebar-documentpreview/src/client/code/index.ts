@@ -20,6 +20,7 @@ export function apply(ctx: Context): void {
       title: () => t("title"),
       loading: "text-pages",
       wrap: true,
+      sourceLines: true,
     }),
   );
   ctx.effect(() =>

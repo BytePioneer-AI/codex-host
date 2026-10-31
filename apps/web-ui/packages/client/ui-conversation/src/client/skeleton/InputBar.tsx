@@ -16,6 +16,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
 import clsx from "clsx";
+import bowser from "bowser";
 import {
   IconPlusOutlineMedium,
   IconWarningOutlineRegular,
@@ -220,13 +221,15 @@ export const InputBar = memo(function InputBar({
     revealDraftSelection(scrollRef);
   };
 
-  // Unlock (mount / session switch) returns focus to the box, and owns the
-  // reveal that comes with it. Lexical's focus() suppresses the browser's
-  // scroll walk (preventScroll inside), so the reveal in our own scrollport
-  // is ours to perform — switching to a longer draft otherwise leaves the
-  // caret (restored at the draft's end) off screen.
+  // Phones and tablets require explicit composer focus. Desktop-mode iPads
+  // share the Mac platform identifier, so touch support also identifies them.
+  // Automatic desktop focus restores and reveals the draft selection without
+  // scrolling the conversation.
   useEffect(() => {
     if (locked || editor === null) return;
+    const platformType = bowser.parse(navigator.userAgent).platform.type;
+    const desktopIPad = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+    if (platformType === "mobile" || platformType === "tablet" || desktopIPad) return;
     focusDraftEditor(editor, revealSelection);
   }, [locked, sessionId, editor]);
 

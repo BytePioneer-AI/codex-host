@@ -20,6 +20,7 @@ export function textBodyDefinition(title: () => string): DocumentPreviewDefiniti
     title,
     loading: "text-pages",
     wrap: true,
+    sourceLines: true,
   };
 }
 

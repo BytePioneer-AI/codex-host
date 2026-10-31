@@ -184,21 +184,39 @@ export function TextPreview({
   ]);
 
   // Come back where the reader was once there is content to scroll: on a remount,
-  // after a reload rebuilt the content, or after the selected renderer changed.
-  // Scroll writes preserve both identities, so they never re-land.
+  // after a reload rebuilt the content, after the selected renderer changed, or
+  // after another text page arrived. The offset only moves down to the remembered
+  // one, and the next page is read while the remembered offset lies past the
+  // loaded pages. A line navigation not answered yet positions the body itself.
+  // Scroll writes preserve every identity here, so they never re-land.
   useEffect(() => {
     const body = scrollportRef.current;
-    if (hasContent && body !== null && state !== undefined) body.scrollTop = state.scrollTop;
-  }, [hasContent, selected?.id]);
+    if (!hasContent || body === null || state === undefined) return;
+    if (mode === "text-pages" && line !== undefined && current?.revision !== navigation.revision)
+      return;
+    body.scrollTop = Math.max(body.scrollTop, state.scrollTop);
+    if (
+      mode === "text-pages" &&
+      body.scrollTop + 1 < state.scrollTop &&
+      current !== undefined &&
+      !current.eof &&
+      !current.loading &&
+      current.failure === undefined &&
+      canRead
+    ) {
+      loadPage(tab.id, file, loadedThrough + 1, signal, meta.value?.version);
+    }
+  }, [hasContent, selected?.id, pages, current?.revision]);
 
   // Answer a navigation once: a line the pages do not reach yet loads the next
   // page (again, until the pages cover it or the file ends); a line they hold
-  // is scrolled to and marked. The store remembers the answer, so a remount
-  // restores the reader's place instead.
+  // is scrolled to and marked. A renderer without source-line anchors answers
+  // it without moving. The store remembers the answer, so a remount restores
+  // the reader's place instead.
   useEffect(() => {
     const body = scrollportRef.current;
     if (current === undefined || body === null || current.revision === navigation.revision) return;
-    if (line === undefined || mode !== "text-pages") {
+    if (line === undefined || mode !== "text-pages" || selected?.sourceLines !== true) {
       actions.navigated(tab.id, navigation.revision);
       return;
     }
@@ -505,7 +523,12 @@ export function TextPreview({
           /* v8 ignore next -- callback refs bind the scrollport during commit, before user input. */
           if (body === null) return;
           if (event.target !== body) return;
-          actions.scrolled(tab.id, body.scrollTop);
+          // Shorter or emptied content pins the body to its end below the remembered
+          // offset; that clamp is layout, not the reader, so the offset survives it.
+          const clamped =
+            body.scrollTop >= body.scrollHeight - body.clientHeight - 1 &&
+            body.scrollTop < state.scrollTop;
+          if (!clamped) actions.scrolled(tab.id, body.scrollTop);
           if (
             mode === "text-pages" &&
             current?.failure === undefined &&

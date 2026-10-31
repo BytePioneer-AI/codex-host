@@ -54,6 +54,7 @@
   margin: 0;
   padding: 0;
   overflow: auto;
+  overflow-anchor: none;
   /* The notice and retry surfaces in this sheet are elevated, so the file body's
      scroller rebinds the thumb indirection in a complete pair. */
   --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);

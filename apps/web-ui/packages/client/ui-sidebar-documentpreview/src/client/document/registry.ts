@@ -25,6 +25,8 @@ export interface DocumentPreviewDefinition {
   readonly loading: DocumentLoadMode;
   /** Whether the implementation consumes the document's wrap preference. */
   readonly wrap?: boolean;
+  /** Whether the implementation exposes source-line anchors for line navigation. */
+  readonly sourceLines?: boolean;
 }
 
 /**

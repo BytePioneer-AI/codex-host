@@ -4,6 +4,7 @@ import type {
 } from "@codexhost/harness-adapter/plugin";
 import { harnessIdSchema } from "@codexhost/shared-contracts";
 import { createCodexUsageStatistics } from "./usage-statistics.js";
+import { createCodexSkillsCatalog } from "./skills.js";
 import { createCodexSessionUsage } from "./session-usage.js";
 
 /** No inspect/open/warmup: native Codex session operations remain owned by Codex. */
@@ -19,6 +20,7 @@ export function createUsageStatisticsAdapter(
       listSources: (signal) => reader.listSources(AbortSignal.any([signal, abort.signal])),
       readSource: (id, signal) => reader.readSource(id, AbortSignal.any([signal, abort.signal])),
     },
+    skillsCatalog: createCodexSkillsCatalog(context.environment),
     close: async () => {
       abort.abort();
     },

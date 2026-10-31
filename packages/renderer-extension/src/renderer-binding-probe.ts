@@ -843,6 +843,12 @@ export function installRendererBindingProbe(
     listConnections: () => remoteConnections.ssh.list(),
     disposed: () => disposed,
   });
+  /** Every Settings page that talks to the Host goes through this one route. */
+  const requestLocalHost = async (method: string, params: unknown): Promise<unknown> => {
+    const route = window.__codexhostHostRoutingV1?.forHost("local");
+    if (disposed || !route) throw new Error("Local Host connection is unavailable");
+    return route.manager.sendRequest(method, params);
+  };
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     harnessSchedules: {
       openSchedules: (signal) => openCodexSchedules(signal),
@@ -854,6 +860,7 @@ export function installRendererBindingProbe(
     getLoadedSessionsClient: () => modelClientForHost("local"),
     requestUsageStatistics: usageStatistics.request,
     usageStatisticsHosts: usageStatistics.hosts,
+    requestSkills: requestLocalHost,
     getSessionImportClient: (requestedHostId) => {
       const hostId = requestedHostId ?? activeModelHostId();
       if (!hostId) return null;

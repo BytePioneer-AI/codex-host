@@ -25,6 +25,8 @@ function only<T>(values: readonly T[], message: string): T {
 
 export class DelegationControlRegistry implements DelegationControlApi, DelegationWatchApi {
   readonly #registrations = new Set<DelegationControlRegistration>();
+  // Changes whenever the session set changes, so a merged list cursor cannot outlive it.
+  #registrationGeneration = 0;
   #harnessCatalog: DelegationControlRegistration | undefined;
   // Watches sit above the sessions so either end may belong to any registered session.
   readonly #watchService: DelegationWatchService;
@@ -51,9 +53,10 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     options: { harnessCatalog?: boolean } = {},
   ): () => void {
     this.#registrations.add(registration);
+    this.#registrationGeneration += 1;
     if (options.harnessCatalog) this.#harnessCatalog = registration;
     return () => {
-      this.#registrations.delete(registration);
+      if (this.#registrations.delete(registration)) this.#registrationGeneration += 1;
       if (this.#harnessCatalog === registration) this.#harnessCatalog = undefined;
     };
   }
@@ -154,6 +157,7 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       registrations.map((registration) => (page: ThreadListInput) => registration.list(page)),
       input,
       (left, right) => this.#compareThreads(left, right, input.sort),
+      this.#registrationGeneration,
     );
   }
 

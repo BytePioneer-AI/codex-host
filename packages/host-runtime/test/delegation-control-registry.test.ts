@@ -366,6 +366,29 @@ describe("DelegationControlRegistry list paging across sessions", () => {
     registry.close();
   });
 
+  it("rejects a merged cursor after a session re-registers", async () => {
+    const registry = new DelegationControlRegistry();
+    const a = session("a", threads("a", 30, 0));
+    const b = session("b", threads("b", 30, 1));
+    const unregisterA = registry.register(a);
+    registry.register(b);
+    const first = await registry.list({ cwd: "/synthetic", limit: 5, sort: "created-desc" });
+    expect(first.nextCursor).not.toBeNull();
+
+    // Same session count, but iteration order is now b, a: the old positions would be swapped.
+    unregisterA();
+    registry.register(a);
+    await expect(
+      registry.list({
+        cwd: "/synthetic",
+        limit: 5,
+        sort: "created-desc",
+        cursor: first.nextCursor ?? "",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    registry.close();
+  });
+
   it("rejects malformed merged cursors", async () => {
     const registry = new DelegationControlRegistry();
     registry.register(session("a", threads("a", 30, 0)));

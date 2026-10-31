@@ -15,6 +15,8 @@ type SessionPosition = readonly [cursor: string | null, consumed: number, pageLi
 interface MergedListCursor {
   v: 1;
   sort: ThreadListInput["sort"];
+  /** The registration generation the positions were issued for; positions are by session index. */
+  generation: number;
   sessions: SessionPosition[];
 }
 
@@ -45,7 +47,12 @@ function validPosition(value: unknown): value is SessionPosition {
   );
 }
 
-function decodeCursor(cursor: string, input: ThreadListInput, sessions: number): SessionPosition[] {
+function decodeCursor(
+  cursor: string,
+  input: ThreadListInput,
+  sessions: number,
+  generation: number,
+): SessionPosition[] {
   let value: unknown;
   try {
     const decoded = Buffer.from(cursor, "base64url").toString("utf8");
@@ -64,29 +71,36 @@ function decodeCursor(cursor: string, input: ThreadListInput, sessions: number):
   ) {
     throw invalidCursor();
   }
-  if (parsed.sessions.length !== sessions) {
+  if (parsed.sessions.length !== sessions || parsed.generation !== generation) {
     throw invalidCursor("List cursor does not match the active Host Runtime sessions");
   }
   return parsed.sessions;
 }
 
-function encodeCursor(sort: ThreadListInput["sort"], sessions: SessionPosition[]): string {
-  const cursor: MergedListCursor = { v: 1, sort, sessions };
+function encodeCursor(
+  sort: ThreadListInput["sort"],
+  generation: number,
+  sessions: SessionPosition[],
+): string {
+  const cursor: MergedListCursor = { v: 1, sort, generation, sessions };
   return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
 
 /**
  * Merges the Thread lists of several Host Runtime sessions into one page in `input.sort` order.
  * The returned cursor records each session's own position, so following it pages through every
- * Thread exactly once even though each session pages independently.
+ * Thread exactly once even though each session pages independently. `generation` identifies the
+ * current session set; a cursor issued for another generation is rejected, because its positions
+ * would be applied to the wrong sessions.
  */
 export async function mergeThreadListPages(
   sessions: ReadonlyArray<(input: ThreadListInput) => Promise<DelegationThreadListResult>>,
   input: ThreadListInput,
   compare: (left: DelegationThreadListItem, right: DelegationThreadListItem) => number,
+  generation: number,
 ): Promise<DelegationThreadListResult> {
   const positions: SessionPosition[] = input.cursor
-    ? decodeCursor(input.cursor, input, sessions.length)
+    ? decodeCursor(input.cursor, input, sessions.length, generation)
     : sessions.map(() => [null, 0, input.limit] as const);
   const read = (index: number, cursor: string | null, limit: number) => {
     const request: ThreadListInput = { ...input, limit };
@@ -151,6 +165,8 @@ export async function mergeThreadListPages(
   });
   return {
     threads,
-    nextCursor: next.some((position) => position !== null) ? encodeCursor(input.sort, next) : null,
+    nextCursor: next.some((position) => position !== null)
+      ? encodeCursor(input.sort, generation, next)
+      : null,
   };
 }

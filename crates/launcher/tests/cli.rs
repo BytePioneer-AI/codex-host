@@ -193,7 +193,15 @@ fn broker_without_a_subcommand_prints_broker_usage() {
 
 #[test]
 fn unknown_commands_remain_errors() {
-    for arguments in [&["bogus"][..], &["broker", "bogus"]] {
+    let injected = ["--node", "/usr/bin/node", "--host-runtime", "/opt/host.mjs"];
+    let bogus_option_with_injected: Vec<&str> =
+        ["broker", "--bogus"].into_iter().chain(injected).collect();
+    for arguments in [
+        &["bogus"][..],
+        &["broker", "bogus"],
+        &["broker", "--bogus"],
+        bogus_option_with_injected.as_slice(),
+    ] {
         let output = Command::new(launcher_path())
             .args(arguments)
             .output()

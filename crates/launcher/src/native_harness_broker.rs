@@ -39,16 +39,24 @@ fn macos_absolute_path(value: &str, option: &str) -> Result<PathBuf, String> {
 pub const NATIVE_HARNESS_BROKER_USAGE: &str = "usage: codexhost broker install|status|stop|uninstall [--harness <id>] [--node <absolute-file> --host-runtime <absolute-file>]
 The native Harness broker is available only on macOS.";
 
-/// The npm wrapper appends `--node`/`--host-runtime` after the user's arguments, so a
-/// missing subcommand reaches the launcher as a leading option rather than as nothing.
+/// The npm wrapper appends exactly `--node <file> --host-runtime <file>` after the user's
+/// arguments, so a missing subcommand reaches the launcher as that sequence rather than as
+/// nothing. Any other leading option stays an unknown-command error.
 pub fn native_harness_broker_usage_requested(arguments: &[String]) -> bool {
     match arguments.first().map(String::as_str) {
         None | Some("--help" | "-h" | "help") => true,
-        Some(first) if first.starts_with('-') => true,
+        Some(first) if first.starts_with('-') => is_wrapper_injected_runtime_options(arguments),
         Some(_) => arguments[1..]
             .iter()
             .any(|argument| argument == "--help" || argument == "-h"),
     }
+}
+
+fn is_wrapper_injected_runtime_options(arguments: &[String]) -> bool {
+    matches!(
+        arguments,
+        [node, _, host_runtime, _] if node == "--node" && host_runtime == "--host-runtime"
+    )
 }
 
 pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
@@ -249,6 +257,17 @@ mod tests {
                 "/opt/host.mjs",
             ],
             &["bogus"],
+            &["--bogus"],
+            &[
+                "--bogus",
+                "--node",
+                "/usr/bin/node",
+                "--host-runtime",
+                "/opt/host.mjs",
+            ],
+            &["--node", "/usr/bin/node"],
+            &["--harness", "claude-code"],
+            &["--host-runtime", "/opt/host.mjs", "--node", "/usr/bin/node"],
             &[
                 "bogus",
                 "--node",
@@ -263,6 +282,7 @@ mod tests {
             );
         }
         assert!(parse_native_harness_broker_cli(&arguments(&["bogus"])).is_err());
+        assert!(parse_native_harness_broker_cli(&arguments(&["--bogus"])).is_err());
     }
 
     #[test]

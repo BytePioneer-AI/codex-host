@@ -18,6 +18,12 @@ import {
 import { CodexAppServer, CodexRpcError } from "./rpc.ts";
 import { CodexModelSelection, CodexSettingsUnconfirmedError } from "./model-selection.ts";
 import { CodexUsage } from "./usage.ts";
+import {
+  confirmedPermissionMode,
+  permissionMode,
+  sandboxPolicy,
+  type PermissionMode,
+} from "./permission-modes.ts";
 import type { HarnessSessionUsageCapability } from "@codexhost/harness-adapter/plugin";
 
 export const HARNESS_ID = harnessIdSchema.parse("codex-cli");
@@ -66,43 +72,6 @@ import {
 } from "@codexhost/shared-contracts";
 type Result<T> = HarnessResult<T>;
 
-export interface PermissionMode {
-  id: string;
-  label: string;
-  description: string;
-  dangerous?: boolean;
-  approvalPolicy: "untrusted" | "on-request" | "never";
-  sandbox: "read-only" | "workspace-write" | "danger-full-access";
-}
-
-/** Mode ids reuse Codex's sandbox names, which the Web UI already labels and guards. */
-export const PERMISSION_MODES: readonly PermissionMode[] = [
-  {
-    id: "read-only",
-    label: "Read only",
-    description: "Codex can read files; edits and commands need approval.",
-    approvalPolicy: "on-request",
-    sandbox: "read-only",
-  },
-  {
-    id: "workspace-write",
-    label: "Auto",
-    description: "Codex works in the workspace and asks before leaving it.",
-    approvalPolicy: "on-request",
-    sandbox: "workspace-write",
-  },
-  {
-    id: "danger-full-access",
-    label: "Full access",
-    description: "No sandbox and no approvals.",
-    dangerous: true,
-    approvalPolicy: "never",
-    sandbox: "danger-full-access",
-  },
-];
-
-export const DEFAULT_PERMISSION_MODE = "workspace-write";
-
 export const CODEX_COMMANDS = harnessCommandCatalogSchema.parse({
   commands: [
     {
@@ -121,23 +90,6 @@ export const CODEX_COMMANDS = harnessCommandCatalogSchema.parse({
     },
   ],
 }).commands;
-
-/** A Permission Mode is only sent when the user chose one; otherwise native config decides. */
-function permissionMode(id: string | undefined): PermissionMode | undefined {
-  return PERMISSION_MODES.find((mode) => mode.id === id);
-}
-
-/** Native sandbox policy names only; network and writable roots stay in user config. */
-function sandboxPolicy(mode: PermissionMode): Record<string, unknown> {
-  switch (mode.sandbox) {
-    case "read-only":
-      return { type: "readOnly" };
-    case "danger-full-access":
-      return { type: "dangerFullAccess" };
-    default:
-      return { type: "workspaceWrite" };
-  }
-}
 
 interface PendingRequest {
   rpcId: number | string;
@@ -179,6 +131,7 @@ export class CodexSession implements HarnessSession {
   private readonly modelSelection: CodexModelSelection;
   private effort: string | undefined;
   private mode: PermissionMode | undefined;
+  private effectivePermissionModeId: string | undefined;
   /** Codex turn id → Host turn id. */
   private readonly turns = new Map<string, HostTurnId>();
   private pendingHostTurn: HostTurnId | undefined;
@@ -244,12 +197,16 @@ export class CodexSession implements HarnessSession {
             model: string;
             reasoningEffort: string | null;
             serviceTier?: string | null;
+            approvalPolicy?: unknown;
+            sandbox?: unknown;
           }>("thread/start", { ...common, experimentalRawEvents: true })
         : await this.server.request<{
             thread: { id: string };
             model: string;
             reasoningEffort: string | null;
             serviceTier?: string | null;
+            approvalPolicy?: unknown;
+            sandbox?: unknown;
           }>("thread/resume", { threadId: this.options.threadId, ...common });
     if (this.options.threadId !== undefined && response.thread.id !== this.options.threadId)
       throw new Error("Codex CLI resumed a different native Session");
@@ -257,6 +214,10 @@ export class CodexSession implements HarnessSession {
     if (modelSettings.serviceTier === "priority" && response.serviceTier !== "priority")
       throw new Error("Codex did not confirm the requested Fast service tier");
     this.modelSelection.confirm(response);
+    const confirmedMode = confirmedPermissionMode(response.approvalPolicy, response.sandbox);
+    if (this.mode && confirmedMode?.id !== this.mode.id)
+      throw new Error("Codex did not confirm the requested Permission Mode");
+    this.effectivePermissionModeId = confirmedMode?.id;
     this.effort ??= response.reasoningEffort ?? undefined;
     this.initialState = this.state();
     await this.usage.refresh();
@@ -274,9 +235,13 @@ export class CodexSession implements HarnessSession {
       ...(this.effort === undefined
         ? {}
         : { effectiveThinkingOptionId: harnessThinkingOptionIdSchema.parse(this.effort) }),
-      ...(this.mode === undefined
+      ...(this.effectivePermissionModeId === undefined
         ? {}
-        : { effectivePermissionModeId: harnessPermissionModeIdSchema.parse(this.mode.id) }),
+        : {
+            effectivePermissionModeId: harnessPermissionModeIdSchema.parse(
+              this.effectivePermissionModeId,
+            ),
+          }),
     };
   }
 
@@ -695,6 +660,7 @@ export class CodexSession implements HarnessSession {
               },
             };
           this.mode = mode;
+          this.effectivePermissionModeId = mode.id;
           this.emit({ type: "session.state.changed", state: this.state() });
           return { ok: true, value: { completed: true } };
         }

@@ -17,13 +17,8 @@ import {
 } from "./command.ts";
 import { CodexAppServer } from "./rpc.ts";
 import { codexFastModel, readCodexModels } from "./model-selection.ts";
-import {
-  CODEX_COMMANDS,
-  CodexSession,
-  DEFAULT_PERMISSION_MODE,
-  HARNESS_ID,
-  PERMISSION_MODES,
-} from "./session.ts";
+import { CODEX_COMMANDS, CodexSession, HARNESS_ID } from "./session.ts";
+import { DEFAULT_PERMISSION_MODE, PERMISSION_MODES } from "./permission-modes.ts";
 
 import type {
   HarnessAdapter,

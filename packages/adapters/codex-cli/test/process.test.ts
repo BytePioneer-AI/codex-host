@@ -398,7 +398,7 @@ describe("Codex CLI native process", () => {
     const created = await f.adapter.open({ kind: "create", cwd: f.home });
     if (!created.ok) throw new Error(created.error.message);
     try {
-      expect(created.value.initialState.effectivePermissionModeId).toBeUndefined();
+      expect(created.value.initialState.effectivePermissionModeId).toBe("workspace-write");
       expect(await runTurn(created.value, hostTurnIdSchema.parse("turn-1"), "hello")).toEqual({
         status: "succeeded",
       });
@@ -438,6 +438,82 @@ describe("Codex CLI native process", () => {
     });
     expect(turnStart?.params.sandboxPolicy).not.toHaveProperty("networkAccess");
     expect(turnStart?.params.sandboxPolicy).not.toHaveProperty("writableRoots");
+  });
+
+  it.each([
+    { mode: "read-only", nativeApprovalPolicy: "on-request", nativeSandbox: { type: "readOnly" } },
+    {
+      mode: "workspace-write",
+      nativeApprovalPolicy: "on-request",
+      nativeSandbox: { type: "workspaceWrite", networkAccess: true, writableRoots: ["/extra"] },
+    },
+    {
+      mode: "danger-full-access",
+      nativeApprovalPolicy: "never",
+      nativeSandbox: { type: "dangerFullAccess" },
+    },
+  ])("observes native $mode on create and resume without adding overrides", async (scenario) => {
+    const f = fixture(scenario);
+    const created = await f.adapter.open({ kind: "create", cwd: f.home });
+    if (!created.ok) throw new Error(created.error.message);
+    expect(created.value.initialState.effectivePermissionModeId).toBe(scenario.mode);
+    const nativeRef = created.value.initialState.nativeRef;
+    if (!nativeRef) throw new Error("Missing native reference");
+    await created.value.close();
+    const resumed = await f.adapter.open({ kind: "resume", cwd: f.home, nativeRef });
+    if (!resumed.ok) throw new Error(resumed.error.message);
+    expect(resumed.value.initialState.effectivePermissionModeId).toBe(scenario.mode);
+    await runTurn(resumed.value, hostTurnIdSchema.parse("resumed-turn"), "hello");
+    await resumed.value.close();
+    for (const record of f
+      .records()
+      .filter(({ method }) => ["thread/start", "thread/resume", "turn/start"].includes(method))) {
+      expect(record.params).not.toHaveProperty("approvalPolicy");
+      expect(record.params).not.toHaveProperty("sandbox");
+      expect(record.params).not.toHaveProperty("sandboxPolicy");
+    }
+  });
+
+  it.each([
+    { omitPermissionSettings: true },
+    { nativeApprovalPolicy: "untrusted", nativeSandbox: { type: "workspaceWrite" } },
+    { nativeApprovalPolicy: "on-request", nativeSandbox: { type: "externalSandbox" } },
+    { nativeApprovalPolicy: "on-request", nativeSandbox: { type: "dangerFullAccess" } },
+    { nativeApprovalPolicy: { granular: { rules: true } }, nativeSandbox: { type: "readOnly" } },
+  ])(
+    "does not invent a standard mode for custom or missing native permissions: %j",
+    async (scenario) => {
+      const f = fixture(scenario);
+      const created = await f.adapter.open({ kind: "create", cwd: f.home });
+      if (!created.ok) throw new Error(created.error.message);
+      expect(created.value.initialState.effectivePermissionModeId).toBeUndefined();
+      const snapshot = await created.value.readSnapshot();
+      expect(snapshot.ok && snapshot.value.state?.effectivePermissionModeId).toBeUndefined();
+      await created.value.close();
+    },
+  );
+
+  it.each([
+    { omitPermissionSettings: true },
+    {
+      permissionSettingsResult: {
+        approvalPolicy: "on-request",
+        sandbox: { type: "readOnly" },
+      },
+    },
+  ])("rejects an explicit mode not confirmed by Codex: %j", async (scenario) => {
+    const f = fixture(scenario);
+    expect(
+      await f.adapter.open({
+        kind: "create",
+        cwd: f.home,
+        permissionModeId: harnessPermissionModeIdSchema.parse("danger-full-access"),
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { message: expect.stringContaining("did not confirm the requested Permission Mode") },
+    });
+    expect(f.records().some(({ method }) => method === "turn/start")).toBe(false);
   });
 
   it("reports a missing native CLI instead of starting a Session", async () => {

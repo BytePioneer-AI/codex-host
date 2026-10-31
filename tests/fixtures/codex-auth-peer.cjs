@@ -174,6 +174,31 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         ? (request.params.serviceTier ?? "default")
         : (previous.serviceTier ?? config.nativeServiceTier ?? "default"),
       effort: previous.effort ?? null,
+      approvalPolicy:
+        request.params.approvalPolicy ??
+        previous.approvalPolicy ??
+        config.nativeApprovalPolicy ??
+        "on-request",
+      sandboxPolicy: request.params.sandbox
+        ? {
+            "read-only": { type: "readOnly", networkAccess: false },
+            "workspace-write": {
+              type: "workspaceWrite",
+              writableRoots: [],
+              networkAccess: false,
+              excludeTmpdirEnvVar: false,
+              excludeSlashTmp: false,
+            },
+            "danger-full-access": { type: "dangerFullAccess" },
+          }[request.params.sandbox]
+        : (previous.sandboxPolicy ??
+          config.nativeSandbox ?? {
+            type: "workspaceWrite",
+            writableRoots: [],
+            networkAccess: false,
+            excludeTmpdirEnvVar: false,
+            excludeSlashTmp: false,
+          }),
     };
     write("thread-settings.json", { ...saved, [threadId]: settings });
     result = {
@@ -183,6 +208,13 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       model: settings.model,
       ...(config.omitServiceTier ? {} : { serviceTier: settings.serviceTier }),
       reasoningEffort: settings.effort,
+      ...(config.omitPermissionSettings
+        ? {}
+        : {
+            approvalPolicy: settings.approvalPolicy,
+            sandbox: settings.sandboxPolicy,
+            ...config.permissionSettingsResult,
+          }),
     };
   }
   if (request.method === "thread/settings/update") {

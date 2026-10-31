@@ -28,7 +28,7 @@
 | B1 | 切换 Model | 原生有则必做 | P1 | 支持 | src/session.ts | test/process.test.ts；configuration 声明 | 原生参数 |
 | B1-Fast | 原生 Fast 服务档位 | 原生有则必做 | P1 | 支持 | src/model-selection.ts、src/plugin.ts、src/session.ts | test/fast-mode.test.ts；CLI 0.161.0 原生目录与 ephemeral Thread 开关确认 | 仅原生 serviceTiers 声明 priority 时提供 fastModel；创建、恢复与 Turn 传原生 model/serviceTier；切换等待 settings 通知 |
 | B2 | 切换 Thinking | 原生有则必做 | P1 | 支持 | src/session.ts | test/process.test.ts；configuration 声明 | 原生 effort |
-| B3 | 权限模式 | 原生有则必做 | P1 | 支持 | src/session.ts | test/process.test.ts | live |
+| B3 | 权限模式 | 原生有则必做 | P1 | 支持 | src/session.ts、src/permission-modes.ts | test/process.test.ts | live；创建与恢复从原生审批策略和沙箱响应确认权限；自定义或缺失配置不冒充标准档位 |
 | B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 受限 | src/plugin.ts、src/session.ts | test/process.test.ts | 仅按所选权限模式传参，未单独验证执行策略 |
 | B5 | Fork | 原生有则必做 | P1 | 不支持 | src/plugin.ts、src/session.ts | history.fork=false；open 拒绝 | 原生精确边界尚未接入 |
 | B6 | 跨目录 Fork | 原生有则必做 | P2 | 不支持 | src/plugin.ts、src/session.ts | history.forkAcrossCwd=false | 与 B5 相同 |
@@ -59,6 +59,7 @@
 ## 受限与已知缺口
 
 - A9：原生 steering 明确拒绝；Host 使用所有外部 Harness 的队列规则。
+- B3：原生依据为 CLI `0.161.0` 生成的 `ThreadStartResponse` / `ThreadResumeResponse`：响应含 `approvalPolicy` 与 `sandbox`。仅匹配目录内的审批策略和沙箱类型；粒度化审批、外部沙箱及缺失字段不报告标准权限 ID。读取有效权限不等于选择权限，未显式选择时不追加 Turn 权限覆盖。既有 live 切换仍用于后续 Turn，未单独验证活动 Turn 内权限变化。
 - B4、B15、B16：未完成完整无人值守与双向委派验收，不声称完整委派支持。
 - B11、B12：委派 Item 和自主 Turn 事件投影不等于完整子代理历史与自主能力交付。
 - B1-Fast：没有 `serviceTiers` 元数据的旧 CLI 不提供 Fast，不从旧速度标签推导档位。普通选择显式清除 Fast；无配置提示的恢复保留原生档位。切换仅保证后续 Turn 使用确认的配置，未实测真实推理速度、计费或生产 Session 的 Fast 恢复；恢复由隔离协议夹具验证。原生设置确认超时或失效会关闭 Session，避免未知档位继续发送。
@@ -68,10 +69,11 @@
 
 ## 插件外改动
 
-- `tests/fixtures/codex-auth-peer.cjs`：隔离夹具提供原生 cursor 分页、权威元数据读取、分段逻辑历史、身份不一致与原生读取失败响应；支持服务档位目录、设置通知、设置拒绝、跨进程档位恢复及 Turn 中间通知。
+- `tests/fixtures/codex-auth-peer.cjs`：隔离夹具提供原生 cursor 分页、权威元数据读取、分段逻辑历史、身份不一致与原生读取失败响应；支持服务档位目录、设置通知、设置拒绝、跨进程档位恢复及 Turn 中间通知；权限响应覆盖原生默认、自定义、缺失及显式选择不匹配。
 - `packages/host-runtime/test/codex-cli-harness.test.ts`：公共导入事务、原生历史恢复与续写同一身份、Fast 目录和配置路由的回归测试；无 Host 生产分支。
 - `docs/architecture/harness-session-import.md`：记录 Codex CLI 的逻辑身份归并与原生恢复约束。
 - Web 通用导入页面、网关、回归测试及 `docs/product/standalone-web.md`：消费所有 Harness 共用的 session-import 契约，无 Codex 专属 Host 或 Renderer 分支。
+- `packages/web-server/src/ch-sessions.ts`、权限选择器及对应网关/浏览器回归：草稿固定展示与提交共用的权限选择；有效权限缺失时清除旧投影并显示“原生配置”。这些行为适用于全部 Harness，无公共契约扩展。
 
 ## 验证记录
 
@@ -86,4 +88,7 @@
 | Fast 构建与加载 | `npm run typecheck`、`npm run build:typescript`；将构建后的 Codex 插件复制到隔离根，经真实 Loader 冷加载 | 通过；隔离原生夹具验证目录 Fast 引用、Fast 创建与关闭；定向 ESLint 和格式检查覆盖改动文件 |
 | Fast 原生配置 | CLI `0.161.0`，通过 `CodexModelSelection` 连接本机 app-server；ephemeral Thread，无 Prompt | 原生目录、开启 `priority`、关闭后确认 `default` 通过；进程关闭，临时工作目录清理，无真实 Model 请求 |
 | 中断与故障恢复 | 定向 `test/authentication-native.test.ts`、`test/fast-mode.test.ts`、Host `app-server-host.output-failure.test.ts`、`client-channel-recovery.test.ts`、`external-thread-recovery.test.ts` | 31 项通过；隔离夹具覆盖缺失 Item 终态、保留部分内容、后续 Turn，以及异常关闭后配置操作恢复同一原生身份；不代表真实 Model 请求验收 |
+| 权限投影与草稿 | Adapter `process.test.ts`、`fast-mode.test.ts`、`authentication-native.test.ts`；Host `codex-cli-harness.test.ts`；Web 权限、偏好、路由、会话、实时状态和导入定向回归 | Adapter 44 项、Host 4 项、Web 网关 28 项通过；认证测试首次并行执行有进程日志时序失败，单独重跑 8 项通过；无真实 Model 请求 |
+| 权限浏览器与插件 | Web `browser/permissions.test.ts`；隔离 Bundle 经真实 Loader 冷加载并连接假原生进程 | 390px / 1280px 两项通过；未知权限展示、主动选择及原生权限回填通过，关闭后清理隔离目录 |
+| 权限静态检查 | `npm run typecheck`、`npm run build:web:ui`、定向 ESLint / Prettier、源码边界与 `git diff --check` | 类型、Web 构建、格式和修改模块的源码边界通过；ESLint 未覆盖 Web UI（无匹配配置），全仓库边界检查被已有 `dist/codexhost-web/node_modules/tslib` 声明文件阻塞 |
 | Desktop / 委派 | 不改变 Desktop 原生路径 | 此次未执行 |

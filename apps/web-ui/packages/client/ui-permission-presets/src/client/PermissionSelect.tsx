@@ -48,7 +48,7 @@ export function PermissionSelect({ locked, select, useProjection, t }: Permissio
 
   if (selection === undefined || !native?.selectable || native.catalog === null) return null;
   const current = native.catalog.modes.find((mode) => mode.id === selection.currentValue);
-  const label = current?.label ?? selection.currentValue;
+  const label = current?.label ?? t("native.configuration");
   const busy = pick !== null || confirmation !== null;
   const closeConfirmation = () => {
     setAcknowledged(false);
@@ -104,7 +104,13 @@ export function PermissionSelect({ locked, select, useProjection, t }: Permissio
             type="button"
             className={css.trigger}
             aria-label={t("mode", { name: label })}
-            title={native.locked ? t("native.atCreate") : current?.description}
+            title={
+              native.locked
+                ? t("native.atCreate")
+                : current
+                  ? current.description
+                  : t("native.configuration.description")
+            }
             disabled={unavailable || busy}
             onClick={() => setOpen(!open)}
           >

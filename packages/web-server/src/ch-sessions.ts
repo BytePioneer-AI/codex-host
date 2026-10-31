@@ -468,12 +468,13 @@ export class ChSessions {
               ? target.seq
               : null,
         });
+        view.log.setProjection("permissions", {
+          currentValue: owner.effectivePermissionModeId ?? "",
+        });
         view.log.setProjection(
           "nativePermissions",
           nativePermissionView(harnessId, inspection as Inspection, true),
         );
-        if (owner.effectivePermissionModeId)
-          view.log.setProjection("permissions", { currentValue: owner.effectivePermissionModeId });
         const selection = {
           provider: harnessId,
           model: owner.effectiveModel?.id ?? "harness",
@@ -558,11 +559,7 @@ export class ChSessions {
                   false,
                 ),
                 permissions: {
-                  currentValue:
-                    draft.permissionModeId ??
-                    (inspection.status === "ready"
-                      ? (inspection.permissionModes?.defaultModeId ?? "")
-                      : ""),
+                  currentValue: draft.permissionModeId ?? "",
                 },
               }
             : {}),
@@ -841,18 +838,12 @@ export class ChSessions {
           const config = await this.preferences
             ?.configuration(request.provider)
             .catch(() => undefined);
-          const inspection = config?.permissionModeId
-            ? await this.catalog.inspect(request.provider, draft.cwd)
-            : undefined;
+          const inspection = await this.catalog.inspect(request.provider, draft.cwd);
           if (draft.creating || draft.selection !== before)
             throw new RpcError("session/busy", "Draft selection changed.");
+          const permissionModeId = draftPermissionMode(inspection, config?.permissionModeId);
           delete draft.permissionModeId;
-          if (
-            config?.permissionModeId &&
-            inspection?.status === "ready" &&
-            inspection.permissionModes?.modes.some((mode) => mode.id === config.permissionModeId)
-          )
-            draft.permissionModeId = config.permissionModeId;
+          if (permissionModeId) draft.permissionModeId = permissionModeId;
         }
         draft.selection = request;
         await this.preferences

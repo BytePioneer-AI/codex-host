@@ -24,6 +24,8 @@ vi.mock("@qoder-ai/qoder-agent-sdk", async (original) => ({
   getSessionMessages: vi.fn(),
   getSessionInfo: vi.fn(),
   forkSession: vi.fn(),
+  // Config-scoped daemon must not spawn a real CLI in unit tests.
+  startDaemon: vi.fn(async () => ({ stop: vi.fn(async () => undefined) })),
 }));
 vi.mock("@qodercn-ai/qodercn-agent-sdk", async (original) => ({
   ...(await original<typeof cnSdk>()),
@@ -31,6 +33,7 @@ vi.mock("@qodercn-ai/qodercn-agent-sdk", async (original) => ({
   getSessionMessages: vi.fn(),
   getSessionInfo: vi.fn(),
   forkSession: vi.fn(),
+  startDaemon: vi.fn(async () => ({ stop: vi.fn(async () => undefined) })),
 }));
 
 class Query implements QoderQuery {
@@ -109,6 +112,9 @@ for (const v of variants)
       vi.mocked(v.sdk.getSessionMessages).mockResolvedValue(history());
       vi.mocked(v.sdk.getSessionInfo).mockResolvedValue(undefined);
       vi.mocked(v.sdk.forkSession).mockResolvedValue({ sessionId: "derived" });
+      vi.mocked(v.sdk.startDaemon).mockResolvedValue({
+        stop: vi.fn(async () => undefined),
+      } as never);
       const resolveExecutable = vi.fn(() => v.command);
       const adapter = new QoderAdapter({ variant: v.variant, environment, resolveExecutable });
       adapters.push(adapter);
@@ -179,11 +185,9 @@ for (const v of variants)
       expect(resolveExecutable).toHaveBeenCalledWith(
         expect.objectContaining({ command: v.variant === "cn" ? "cn-command" : "global-command" }),
       );
-      expect(v.sdk.query).toHaveBeenCalledWith(
+      expect(v.sdk.startDaemon).toHaveBeenCalledWith(
         expect.objectContaining({
-          options: expect.objectContaining({
-            auth: { type: "accessToken", accessToken: { envVar: v.token } },
-          }),
+          auth: { type: "accessToken", accessToken: { envVar: v.token } },
         }),
       );
       vi.mocked(v.sdk.query).mockReturnValue(
@@ -195,15 +199,18 @@ for (const v of variants)
         environment: { [v.token]: "session-token" },
       });
       expect(opened.ok).toBe(true);
-      expect(v.sdk.query).toHaveBeenLastCalledWith(
+      expect(v.sdk.startDaemon).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          options: expect.objectContaining({
-            env: expect.objectContaining({ [v.token]: "session-token" }),
-            auth: { type: "accessToken", accessToken: { envVar: v.token } },
-          }),
+          env: expect.objectContaining({ [v.token]: "session-token" }),
+          auth: { type: "accessToken", accessToken: { envVar: v.token } },
         }),
       );
+      const sessionOptions = vi.mocked(v.sdk.query).mock.lastCall?.[0].options;
+      expect(sessionOptions?.daemon).toBeDefined();
+      expect(sessionOptions).not.toHaveProperty("env");
+      expect(sessionOptions).not.toHaveProperty("auth");
       expect(v.other.query).not.toHaveBeenCalled();
+      expect(v.other.startDaemon).not.toHaveBeenCalled();
     });
 
     it("does not use the other distribution's token", async () => {
@@ -212,10 +219,8 @@ for (const v of variants)
           "other-token",
       });
       await adapter.inspect();
-      expect(v.sdk.query).toHaveBeenCalledWith(
-        expect.objectContaining({
-          options: expect.objectContaining({ auth: { type: "qodercli" } }),
-        }),
+      expect(v.sdk.startDaemon).toHaveBeenCalledWith(
+        expect.objectContaining({ auth: { type: "qodercli" } }),
       );
     });
 

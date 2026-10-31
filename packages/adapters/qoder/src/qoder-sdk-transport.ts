@@ -79,7 +79,10 @@ import {
   QODER_DEFAULT_MODEL_REF,
   qoderAvailableThinkingOptions,
 } from "./qoder-models.js";
-import { mapToQoderPermissionMode } from "./qoder-permission-modes.js";
+import {
+  isQoderPlanModeId,
+  mapToQoderPermissionModeExcludingPlan,
+} from "./qoder-permission-modes.js";
 import type {
   CanUseToolContext,
   GetSessionMessagesOptions,
@@ -180,6 +183,8 @@ export interface QoderSessionOptions {
     options?: GetSessionMessagesOptions,
   ) => Promise<SessionMessage[]>;
   pathToQoderCLIExecutable?: string;
+  /** Daemon that owns env, auth and the CLI path for this Session's launch config. */
+  daemon?: NonNullable<QoderOptions["daemon"]>;
   onClosed?: () => void;
 }
 
@@ -285,7 +290,8 @@ export class QoderSession implements HarnessSession {
 
     const nativeModel = options.model ? decodeQoderModelRef(options.model) : undefined;
     this.#usageTracker = new QoderUsageTracker(nativeModel ? { modelId: nativeModel } : undefined);
-    const permissionMode = mapToQoderPermissionMode(options.permissionModeId);
+    const planMode = isQoderPlanModeId(options.permissionModeId);
+    const permissionMode = mapToQoderPermissionModeExcludingPlan(options.permissionModeId);
 
     const environment = qoderEnvironment(options.environment);
     const auth = qoderAuthForEnvironment(variant, environment);
@@ -298,18 +304,24 @@ export class QoderSession implements HarnessSession {
     const qoderOptions: QoderOptions = {
       cwd: options.cwd,
       ...(options.resume ? {} : { sessionId: options.sessionId }),
-      ...(options.pathToQoderCLIExecutable
-        ? { pathToQoderCLIExecutable: options.pathToQoderCLIExecutable }
-        : {}),
-      env: environment,
+      // SDK 1.0.58 rejects launch options on a daemon-bound Query; the daemon owns them.
+      ...(options.daemon
+        ? { daemon: options.daemon }
+        : {
+            ...(options.pathToQoderCLIExecutable
+              ? { pathToQoderCLIExecutable: options.pathToQoderCLIExecutable }
+              : {}),
+            env: environment,
+            auth,
+          }),
       ...(nativeModel ? { model: nativeModel } : {}),
       ...(permissionMode ? { permissionMode } : {}),
+      ...(planMode ? { planMode: true } : {}),
       ...(permissionMode === "bypassPermissions" || permissionMode === "yolo"
         ? { allowDangerouslySkipPermissions: true }
         : {}),
       ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
       ...(options.resume ? { resume: options.resume } : {}),
-      auth,
       includePartialMessages: true,
       canUseTool: this.#handleCanUseTool.bind(this),
     };
@@ -1590,8 +1602,9 @@ export class QoderSession implements HarnessSession {
           };
         }
 
-        const mode = mapToQoderPermissionMode(command.permissionModeId);
-        if (!mode) {
+        const planMode = isQoderPlanModeId(command.permissionModeId);
+        const mode = mapToQoderPermissionModeExcludingPlan(command.permissionModeId);
+        if (!planMode && !mode) {
           return {
             ok: false,
             error: {
@@ -1602,15 +1615,44 @@ export class QoderSession implements HarnessSession {
           };
         }
 
-        if (this.#query.setPermissionMode) {
-          try {
-            await this.#query.setPermissionMode(mode);
-          } catch (err) {
-            return {
-              ok: false,
-              error: mapQoderException(err),
-            };
+        const wasPlan = isQoderPlanModeId(this.#state.effectivePermissionModeId);
+        if ((planMode || wasPlan) && !this.#query.setPlanMode) {
+          return {
+            ok: false,
+            error: {
+              code: "unsupported",
+              message: "This Qoder SDK does not support switching Plan mode",
+              retryable: false,
+            },
+          };
+        }
+
+        try {
+          if (planMode) {
+            await this.#query.setPlanMode?.(true);
+          } else {
+            if (wasPlan) await this.#query.setPlanMode?.(false);
+            if (mode && this.#query.setPermissionMode) {
+              try {
+                await this.#query.setPermissionMode(mode);
+              } catch (err) {
+                if (wasPlan) {
+                  try {
+                    // Keep the live Session in Plan so it matches the unchanged state.
+                    await this.#query.setPlanMode?.(true);
+                  } catch {
+                    // Report the original failure.
+                  }
+                }
+                throw err;
+              }
+            }
           }
+        } catch (err) {
+          return {
+            ok: false,
+            error: mapQoderException(err),
+          };
         }
 
         this.#state = {

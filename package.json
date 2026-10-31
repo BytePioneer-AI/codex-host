@@ -101,5 +101,9 @@
     "typescript-eslint": "8.65.0",
     "vitest": "4.1.10",
     "zod": "4.4.3"
+  },
+  "allowScripts": {
+    "@qodercn-ai/qodercn-agent-sdk@1.0.58": true,
+    "@qoder-ai/qoder-agent-sdk@1.0.58": true
   }
 }

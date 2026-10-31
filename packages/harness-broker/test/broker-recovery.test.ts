@@ -15,6 +15,7 @@ import {
   hostTurnIdSchema,
   harnessPermissionModeIdSchema,
   harnessPermissionModeCatalogSchema,
+  nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import { BrokeredHarnessAdapter, startHarnessBrokerServer } from "../src/index.js";
 import { consumeBrokerFrames } from "../src/framing.js";
@@ -40,6 +41,47 @@ async function fixture() {
 }
 const id = harnessIdSchema.parse("codebuddy");
 describe("broker recovery ownership", () => {
+  it("carries active recovery metadata, confirmed mappings and identity events across the wire", async () => {
+    const f = await fixture();
+    const native = new FakeHarnessAdapter(id);
+    const created = await native.open({ kind: "create", cwd: f.root });
+    if (!created.ok) throw new Error(created.error.message);
+    const session = native.sessions[0];
+    if (!session) throw new Error("Missing native Session");
+    const nativeRef = session.initialState.nativeRef;
+    if (!nativeRef) throw new Error("Missing native identity");
+    const known = {
+      turnId: hostTurnIdSchema.parse("original-host-turn"),
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: id,
+        nativeSessionId: nativeRef.nativeSessionId,
+        nativeTurnKey: "pending-user",
+        formatVersion: 1,
+      }),
+    };
+    const recovery = { ...known, input: [{ type: "text" as const, text: "original input" }] };
+    Object.defineProperty(session, "recoveringTurn", { value: recovery });
+    const open = vi.spyOn(native, "open").mockResolvedValue({ ok: true, value: session });
+    const server = await startHarnessBrokerServer({ ...f, adapter: native });
+    cleanup.push(() => server.close());
+    const client = new BrokeredHarnessAdapter({
+      harnessId: id,
+      descriptorPath: f.descriptorPath,
+      activeTurnRecovery: true,
+    });
+    expect(client.activeTurnRecovery).toBe(true);
+    cleanup.push(() => client.close());
+    const input = { kind: "resume" as const, cwd: f.root, nativeRef, knownTurns: [known] };
+    const opened = await client.open(input);
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(open).toHaveBeenCalledWith(input);
+    expect(opened.value.recoveringTurn).toEqual(recovery);
+    const output = opened.value.outputs[Symbol.asyncIterator]();
+    session.emitEvent({ type: "turn.identity.confirmed", ...known });
+    expect(await output.next()).toMatchObject({
+      value: { kind: "event", event: { type: "turn.identity.confirmed", ...known } },
+    });
+  });
   it("preserves the ownership error when closing a foreign Session rejects", async () => {
     const f = await fixture();
     const native = new FakeHarnessAdapter(id);

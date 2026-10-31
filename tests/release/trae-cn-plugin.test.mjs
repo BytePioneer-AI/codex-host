@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
-import test from "node:test";
+import { test } from "vitest";
 import { buildPlugin } from "../../packages/adapters/trae-cn/scripts/build-plugin.mjs";
 import { loadHarnessPlugins } from "../../packages/host-runtime/dist/index.js";
 

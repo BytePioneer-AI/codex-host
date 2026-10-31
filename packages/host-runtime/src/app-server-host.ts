@@ -5360,6 +5360,11 @@ export class AppServerHost {
       }
       return;
     }
+    if (event.type === "turn.identity.confirmed") {
+      const failure = await this.#externalRuntime.persistConfirmedTurnIdentity(thread, event);
+      if (failure) throw failure;
+      return;
+    }
     if (event.type === "session.faulted") {
       for (const pending of [...this.#pendingDesktopQuestions.values()]) {
         if (pending.shared && pending.thread === thread)

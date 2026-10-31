@@ -16,7 +16,7 @@
 | `id` | ✓ | 插件 ID，也是 Harness ID；`codex` 是保留 ID | 同上 |
 | `name` | ✓ | 显示名称 | 同上 |
 | `version` | ✓ | 插件自身的版本 | 同上 |
-| `adapterApiVersion` | ✓ | 必须等于 `HARNESS_PLUGIN_API_VERSION` | 同上 |
+| `adapterApiVersion` | ✓ | 插件所需的 API；当前 Host 接纳 1、2，拒绝更新版本 | 同上 |
 | `entry` | ✓ | 插件内的 ESM 入口相对路径 | 同上 |
 | `icon` / `iconStyle` | | 图标资源 / 受限的矢量或样式 | [连接页](spec-connections.md#manifest-展示字段) |
 | `links` | | website / documentation / installation | 同上 |
@@ -39,6 +39,7 @@
 | `harnessId` | ✓ | 与 Manifest 的 `id` 一致 | [会话核心](spec-session-core.md) |
 | `inspect(input?)` | ✓ | 检查安装、认证、Catalog 和能力；`purpose:"availability"` 是轻量模式 | [会话核心](spec-session-core.md#检查inspect) |
 | `open(input)` | ✓ | create / resume / fork / rollbackLastTurn | [会话核心](spec-session-core.md#打开open)、[历史](spec-history.md) |
+| `activeTurnRecovery` | | API 2，可设 true；resume 接收已确认的 knownTurns 映射 | [历史](spec-history.md#resume) |
 | `close()` | ✓ | 幂等地释放共享资源 | [会话核心](spec-session-core.md#命令并发与错误) |
 | `installation(action)` | | 检查或更新原生 CLI 的版本 | [连接页](spec-connections.md#版本检查与更新) |
 | `install()` | | 首次安装原生 CLI | [连接页](spec-connections.md#首次安装) |
@@ -55,6 +56,7 @@
 | `harnessId` | ✓ | 与 Adapter 的一致 | [会话核心](spec-session-core.md) |
 | `capabilities` | ✓ | `configuration`、`history`、`subagents?`、`autonomousTurns?` | [能力总表](capability-inventory.md) |
 | `initialState` | ✓ | 原生已确认的 nativeRef 和配置 | [会话核心](spec-session-core.md#配置与状态requested-不等于-effective) |
+| `recoveringTurn` | | API 2，原 Host Turn / 原生身份 / 输入；描述已有活动任务，不重新发送 | [历史](spec-history.md#resume) |
 | `initialUsage` | ✓ | 初始用量快照，没有时为 null | [用量](spec-usage-accounts.md#会话用量快照) |
 | `outputs` | ✓ | 单消费者的有序事件流 | [输出](spec-output-interactions.md) |
 | `execute(command)` | ✓ | 六条公共命令 | [会话核心](spec-session-core.md#命令并发与错误) |
@@ -81,6 +83,7 @@
 | `session.usage.changed` | 完整的用量快照 | [用量](spec-usage-accounts.md#会话用量快照) |
 | `usage.request` / `usage.history` | 请求级计量事实 / 历史回放是否完整 | [用量](spec-usage-accounts.md#请求级计量) |
 | `turn.started` / `turn.autonomous.started` | Host 发起的 / 原生自主发起的 Turn 开始 | [输出](spec-output-interactions.md#turn-生命周期) |
+| `turn.identity.confirmed` | API 2，原生准入身份提前持久化；不是终态 | [历史](spec-history.md#resume) |
 | `item.started` / `item.updated` / `item.completed` | Item 生命周期 | 同上 |
 | `interaction.closed` | 交互关闭（responded / cancelled / expired / superseded） | [输出](spec-output-interactions.md#双向-interaction) |
 | `turn.completed` | 唯一终态；附带 `nativeTurnRef?` | [输出](spec-output-interactions.md#turn-生命周期) |

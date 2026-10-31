@@ -339,7 +339,7 @@ describe("TRAE CN public Session core", () => {
     }
   });
 
-  it("closes only its own observers without issuing native stop or fabricated completion", async () => {
+  it("settles the observer scope on close without issuing native stop or claiming native success", async () => {
     const test = await setup(true, true);
     try {
       await test.session.execute(command());
@@ -352,8 +352,15 @@ describe("TRAE CN public Session core", () => {
         outputs.push(next.value);
       }
       expect(
-        outputs.some((value) => value.kind === "event" && value.event.type === "turn.completed"),
-      ).toBe(false);
+        outputs.filter((value) => value.kind === "event" && value.event.type === "turn.completed"),
+      ).toMatchObject([
+        {
+          event: {
+            turnId: command().turnId,
+            outcome: { status: "failed", error: { code: "unavailable" } },
+          },
+        },
+      ]);
       expect(test.call.mock.calls.some((args) => args[0] === "cancel")).toBe(false);
       expect(await test.session.execute(command())).toMatchObject({
         ok: false,

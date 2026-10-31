@@ -29,6 +29,7 @@
 - 完成快照与累计的流式内容一致。原生同时返回 delta 和完整消息时，避免文本重复。
 - 工具失败不自动等于 Turn 失败，Agent 恢复后仍可能成功；outcome 以原生最终状态为准。
 - 成功的 Turn 需要 `nativeTurnRef`。
+- API 2 的 `turn.identity.confirmed` 在原生准入确认后发布，供 Host 提前持久化原 Host/native 映射；不结束 Turn，不代表模型成功，终态不能改变该身份。
 - NativeTurnRef 和 checkpoint 的要求见[身份与历史](spec-history.md)。
 
 ## 取消与后续 Turn
@@ -75,7 +76,7 @@
 
 - Interaction ID 唯一，且属于当前活动上下文。迟到的、重复的、跨 Session 的或类型不对的响应都要明确拒绝。
 - 关闭原因用 `responded`、`cancelled`、`expired`、`superseded`；`expiresAt` 只在原生有超时的情况下设置，不把超时说成用户回答。
-- Turn 取消、超时、Session fault 和 close 都要关闭待处理的交互，并解除原生侧的等待。
+- Turn 取消时关闭待处理交互并解除原生等待；超时、Session fault 和 close 也必须关闭本次公共作用域的交互。原生任务由独立桌面服务持有且允许恢复时，观察作用域关闭不能隐式取消原生等待，应按[故障规则](#session-状态usage-与故障)报告并保留恢复身份。
 - 响应失败与取消发生竞态时，不能把答案交给下一次交互；每个交互只关闭一次。
 - 原生没有审批，不代表要伪造审批 UI；原生确实有交互，也不能退化成普通文本或自动作答。
 
@@ -89,7 +90,7 @@ state 和 Usage 事件是 Session 级别的完整状态，不是普通 Item，�
 2. 如果有活动 Turn，发出它唯一的失败终态。
 3. 发布唯一的 `session.faulted`，结束输出流，关闭原生资源。
 
-close 同样必须终结活动中的生命周期，并且幂等。可恢复的单次操作失败不应无条件升级为 Session fault。fault 之后，Host 会通过 resume 重建 Session，因此 fault 不能破坏原生历史。
+close 同样必须终结活动中的生命周期，并且幂等。原生任务由桌面等独立服务持有时，关闭观察者应终结本次公共观察作用域并明确原生任务可能仍运行，不把观察关闭伪造成原生取消；只在显式取消命令中停止原生任务。可恢复的单次操作失败不应无条件升级为 Session fault。fault 之后，Host 会通过 resume 重建 Session，因此 fault 不能破坏原生历史。
 
 ## Autonomous Turn 与原生 Subagent
 

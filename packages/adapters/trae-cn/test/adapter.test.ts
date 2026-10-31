@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { harnessInspectionSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
 import { TraeCnAdapter } from "../src/adapter.js";
+import { hostTurnIdSchema, nativeTurnRefSchema } from "@codexhost/shared-contracts";
 import { modelRef } from "../src/models.js";
 
 const { startServer } = createRequire(import.meta.url)("../assets/companion/server.cjs");
@@ -80,8 +81,9 @@ async function setup() {
     service,
     reference,
     cwd,
-    pending() {
+    pending(active = false) {
       items = [user];
+      if (active) status = 3;
     },
     activeWithoutHistory() {
       items = [];
@@ -96,6 +98,51 @@ async function setup() {
 }
 
 describe("TRAE CN public Adapter core", () => {
+  it("reattaches only an active native task with its confirmed original Host identity", async () => {
+    const test = await setup();
+    try {
+      test.pending(true);
+      const nativeTurnRef = nativeTurnRefSchema.parse({
+        harnessId: "trae-cn",
+        nativeSessionId: "native-session",
+        nativeTurnKey: "user",
+        formatVersion: 1,
+      });
+      expect(
+        await test.adapter.open({ kind: "resume", cwd: test.cwd, nativeRef: test.reference }),
+      ).toMatchObject({ ok: false, error: { code: "configurationRequired" } });
+      test.service.subscribe.mockImplementation(async () => () => undefined);
+      const turnId = hostTurnIdSchema.parse("original-host-turn");
+      const opened = await test.adapter.open({
+        kind: "resume",
+        cwd: test.cwd,
+        nativeRef: test.reference,
+        knownTurns: [{ turnId, nativeTurnRef }],
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.recoveringTurn).toMatchObject({
+        turnId,
+        nativeTurnRef,
+        input: [{ type: "text", text: "hello" }],
+      });
+      const snapshot = await opened.value.readSnapshot();
+      expect(snapshot).toMatchObject({
+        ok: true,
+        value: { turns: [{ nativeTurnRef, outcome: { status: "unknown" } }] },
+      });
+      await vi.waitFor(() => expect(test.service.subscribe).toHaveBeenCalledOnce());
+      expect(test.service.call.mock.calls.every((args) => args[0] === "snapshot")).toBe(true);
+      await opened.value.close();
+      const outputs = [];
+      for await (const output of opened.value.outputs) outputs.push(output);
+      expect(outputs[0]).toMatchObject({ event: { type: "turn.started", turnId } });
+      expect(outputs.at(-1)).toMatchObject({
+        event: { type: "turn.completed", turnId, nativeTurnRef, outcome: { status: "failed" } },
+      });
+    } finally {
+      await test.close();
+    }
+  });
   it("caches the observed native model catalog in its scope without creating Sessions", async () => {
     const test = await setup();
     try {

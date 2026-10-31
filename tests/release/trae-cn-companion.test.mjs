@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import { buildCompanion } from "../../packages/adapters/trae-cn/scripts/build-companion.mjs";
 
 const packageRoot = new URL("../../packages/adapters/trae-cn/", import.meta.url);

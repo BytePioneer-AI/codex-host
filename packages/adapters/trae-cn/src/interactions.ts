@@ -1,5 +1,6 @@
 import {
   validateHostQuestionResponse,
+  validateHostApprovalResponse,
   type HarnessOutput,
   type HarnessResult,
   type HostInteraction,
@@ -191,14 +192,10 @@ export class NativeInteractions {
     if (pending.interaction.type === "question" && command.response.type === "question") {
       const invalid = validateHostQuestionResponse(pending.interaction, command.response);
       if (invalid) return { ok: false, error: invalid };
-    } else if (
-      command.response.type === "approval" &&
-      !["allowOnce", "deny"].includes(command.response.actionId)
-    )
-      return {
-        ok: false,
-        error: harnessError(new TraeError("invalidRequest", "Unknown native approval action")),
-      };
+    } else if (pending.interaction.type === "approval" && command.response.type === "approval") {
+      const invalid = validateHostApprovalResponse(pending.interaction, command.response);
+      if (invalid) return { ok: false, error: invalid };
+    }
     pending.responding = true;
     try {
       const receipt = await this.client.call("respond", {

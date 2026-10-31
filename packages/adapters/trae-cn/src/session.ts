@@ -30,12 +30,14 @@ import {
   nativeSessionRefSchema,
   type HarnessModelRef,
   type NativeSessionRef,
+  type HarnessTurnRecovery,
+  harnessTurnRecoverySchema,
 } from "@codexhost/shared-contracts";
 import type { BridgeClient } from "./bridge.js";
 import type { BridgeEvent, BridgeInspection } from "./protocol.js";
 import { harnessError, record, TraeError } from "./errors.js";
 import { nativeModelId, confirmedModel } from "./models.js";
-import { projectHistory, TRAE_CN_ID } from "./history.js";
+import { projectHistory, TRAE_CN_ID, nativeTurnRef as confirmedNativeTurnRef } from "./history.js";
 import { LiveItems } from "./live-items.js";
 import { sameDirectory } from "./discovery.js";
 import { NativeInteractions } from "./interactions.js";
@@ -69,6 +71,8 @@ export interface SessionOptions {
   model?: HarnessModelRef;
   nativeRef?: NativeSessionRef;
   initialState?: HarnessSessionState;
+  recoveringTurn?: HarnessTurnRecovery;
+  recoverySnapshot?: HostThreadSnapshot;
   onClose?: () => void;
 }
 
@@ -108,6 +112,7 @@ type CommandResult =
 
 /** A session owns its HTTP observers; the desktop owns native execution. */
 export class TraeCnSession implements HarnessSession {
+  readonly recoveringTurn?: HarnessTurnRecovery;
   readonly harnessId = TRAE_CN_ID;
   readonly capabilities = SESSION_CAPABILITIES;
   readonly initialUsage = null;
@@ -120,6 +125,7 @@ export class TraeCnSession implements HarnessSession {
   #faulted = false;
   #detach: (() => void) | undefined;
   #observerFail: ((error: unknown) => void) | undefined;
+  #recoverySnapshot: HostThreadSnapshot | undefined;
 
   constructor(private readonly options: SessionOptions) {
     if (options.nativeRef) validateReference(options.nativeRef, options.inspection, options.cwd);
@@ -130,6 +136,31 @@ export class TraeCnSession implements HarnessSession {
     this.#state = this.initialState;
     this.outputs = this.#channel.outputs;
     if (options.model) nativeModelId(options.inspection, options.model);
+    if (options.recoveringTurn) {
+      const recovery = harnessTurnRecoverySchema.parse(options.recoveringTurn);
+      if (
+        !options.nativeRef ||
+        recovery.nativeTurnRef.harnessId !== this.harnessId ||
+        recovery.nativeTurnRef.nativeSessionId !== options.nativeRef.nativeSessionId ||
+        !options.recoverySnapshot
+      )
+        throw new TraeError("invalidRequest", "Recovery does not belong to this native Session");
+      this.recoveringTurn = recovery;
+      this.#recoverySnapshot = structuredClone(options.recoverySnapshot);
+      const turn: ActiveTurn = {
+        command: { type: "turn.start", turnId: recovery.turnId, input: recovery.input },
+        messageId: recovery.nativeTurnRef.nativeTurnKey,
+        cancelRequested: false,
+        admitted: true,
+        stopRequested: false,
+        items: new LiveItems(recovery.turnId, (event) => this.#emit(event)),
+        interactions: undefined,
+      };
+      this.#active = turn;
+      queueMicrotask(() => {
+        void this.#run(turn, true);
+      });
+    }
   }
 
   #emit(event: HostEvent): void {
@@ -143,6 +174,11 @@ export class TraeCnSession implements HarnessSession {
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed) return this.#snapshot();
+    if (this.#active && this.#recoverySnapshot)
+      return {
+        ok: true,
+        value: { ...structuredClone(this.#recoverySnapshot), state: this.#state },
+      };
     if (this.#active)
       return {
         ok: false,
@@ -259,68 +295,88 @@ export class TraeCnSession implements HarnessSession {
     }
   }
 
-  async #run(turn: ActiveTurn): Promise<void> {
+  async #run(turn: ActiveTurn, recovering = false): Promise<void> {
     this.#emit({ type: "turn.started", turnId: turn.command.turnId });
     try {
-      if (!this.#state.nativeRef) {
-        const created = await this.options.client.call("create", { cwd: this.options.cwd });
+      if (!recovering) {
+        if (!this.#state.nativeRef) {
+          const created = await this.options.client.call("create", { cwd: this.options.cwd });
+          if (
+            !record(created) ||
+            typeof created.sessionId !== "string" ||
+            typeof created.projectId !== "string"
+          )
+            throw new TraeError("protocolError", "Invalid native Session creation receipt");
+          const nativeRef = nativeSessionRefSchema.parse({
+            harnessId: this.harnessId,
+            nativeSessionId: created.sessionId,
+            formatVersion: 1,
+            locator: {
+              applicationRoot: this.options.inspection.application.root,
+              projectId: created.projectId,
+              cwd: this.options.cwd,
+              agentType: this.options.inspection.agentType,
+            },
+          });
+          this.#setState({ ...this.#state, nativeRef });
+        }
+        if (this.#closed) return;
+        const nativeRef = this.#state.nativeRef;
+        if (!nativeRef)
+          throw new TraeError("protocolError", "Native Session identity was not established");
+        if (turn.cancelRequested) {
+          this.#emit({
+            type: "turn.completed",
+            turnId: turn.command.turnId,
+            ephemeral: true,
+            outcome: { status: "cancelled" },
+          });
+          return;
+        }
+        const model = this.options.model;
+        if (!model) throw new TraeError("configurationRequired", "Choose a TRAE CN model");
+        const receipt = await this.options.client.call("start", {
+          sessionId: nativeRef.nativeSessionId,
+          messageId: turn.messageId,
+          modelId: nativeModelId(this.options.inspection, model),
+          text: turn.command.input.map((part) => part.text).join("\n"),
+        });
         if (
-          !record(created) ||
-          typeof created.sessionId !== "string" ||
-          typeof created.projectId !== "string"
+          !record(receipt) ||
+          receipt.accepted !== true ||
+          receipt.messageId !== turn.messageId ||
+          receipt.fromAppend === true
         )
-          throw new TraeError("protocolError", "Invalid native Session creation receipt");
-        const nativeRef = nativeSessionRefSchema.parse({
-          harnessId: this.harnessId,
-          nativeSessionId: created.sessionId,
-          formatVersion: 1,
-          locator: {
-            applicationRoot: this.options.inspection.application.root,
-            projectId: created.projectId,
-            cwd: this.options.cwd,
-            agentType: this.options.inspection.agentType,
-          },
-        });
-        this.#setState({ ...this.#state, nativeRef });
-      }
-      if (this.#closed) return;
-      const nativeRef = this.#state.nativeRef;
-      if (!nativeRef)
-        throw new TraeError("protocolError", "Native Session identity was not established");
-      if (turn.cancelRequested) {
+          throw new TraeError(
+            "protocolError",
+            "Native Turn admission is uncertain; read history before retrying",
+          );
+        turn.admitted = true;
         this.#emit({
-          type: "turn.completed",
+          type: "turn.identity.confirmed",
           turnId: turn.command.turnId,
-          ephemeral: true,
-          outcome: { status: "cancelled" },
+          nativeTurnRef: confirmedNativeTurnRef(nativeRef.nativeSessionId, turn.messageId),
         });
-        return;
       }
-      const model = this.options.model;
-      if (!model) throw new TraeError("configurationRequired", "Choose a TRAE CN model");
-      const receipt = await this.options.client.call("start", {
-        sessionId: nativeRef.nativeSessionId,
-        messageId: turn.messageId,
-        modelId: nativeModelId(this.options.inspection, model),
-        text: turn.command.input.map((part) => part.text).join("\n"),
-      });
-      if (
-        !record(receipt) ||
-        receipt.accepted !== true ||
-        receipt.messageId !== turn.messageId ||
-        receipt.fromAppend === true
-      )
-        throw new TraeError(
-          "protocolError",
-          "Native Turn admission is uncertain; read history before retrying",
-        );
-      turn.admitted = true;
+      const nativeRef = this.#state.nativeRef;
+      if (!nativeRef) throw new TraeError("protocolError", "Missing native recovery identity");
       if (this.#closed) return;
       if (turn.cancelRequested) await this.#stop(turn);
       try {
         await this.#observe(turn, nativeRef.nativeSessionId);
       } catch (error) {
-        if (!turn.cancelRequested || !turn.stopRequested) throw error;
+        if (this.#closed) return;
+        // A task can finish between the read-only resume check and attaching its
+        // stream. Native durable completion still proves its actual outcome.
+        const snapshot = await this.#snapshot(true);
+        const terminal =
+          snapshot.ok &&
+          snapshot.value.turns.some(
+            (entry) =>
+              entry.nativeTurnRef.nativeTurnKey === turn.messageId &&
+              entry.outcome.status !== "unknown",
+          );
+        if (!terminal && (!turn.cancelRequested || !turn.stopRequested)) throw error;
       }
       if (this.#closed) return;
       const completed = await this.#readTerminal(turn.messageId);
@@ -354,12 +410,14 @@ export class TraeCnSession implements HarnessSession {
           outcome: { status: "failed", error: failure },
         });
         this.#emit({ type: "session.faulted", error: failure });
+        this.#releaseObserver();
       }
     } finally {
       this.#observerFail = undefined;
       this.#detach?.();
       this.#detach = undefined;
       if (this.#active === turn) this.#active = undefined;
+      this.#recoverySnapshot = undefined;
     }
   }
 
@@ -465,7 +523,35 @@ export class TraeCnSession implements HarnessSession {
 
   async close(): Promise<void> {
     if (this.#closed) return;
-    this.#active?.interactions?.close("superseded");
+    const turn = this.#active;
+    if (turn) {
+      const error = harnessError(
+        new TraeError(
+          "unavailable",
+          "TRAE CN observer closed; admitted native work may still be running",
+        ),
+      );
+      turn.interactions?.close("superseded");
+      turn.items.settle({ status: "failed", error });
+      this.#emit({
+        type: "turn.completed",
+        turnId: turn.command.turnId,
+        ...(turn.admitted && this.#state.nativeRef
+          ? {
+              nativeTurnRef: confirmedNativeTurnRef(
+                this.#state.nativeRef.nativeSessionId,
+                turn.messageId,
+              ),
+            }
+          : {}),
+        outcome: { status: "failed", error },
+      });
+    }
+    this.#releaseObserver();
+  }
+
+  #releaseObserver(): void {
+    if (this.#closed) return;
     this.#closed = true;
     this.#observerFail?.(new TraeError("invalidState", "TRAE CN observer closed"));
     this.#observerFail = undefined;

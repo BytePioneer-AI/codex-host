@@ -13,6 +13,8 @@ import {
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
   nativeSessionRefSchema,
+  nativeTurnRefSchema,
+  hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 import {
   encodeGrokTransportModel,
@@ -89,6 +91,124 @@ describe("ExternalThreadRuntime delete", () => {
 });
 
 describe("ExternalThreadRuntime register", () => {
+  it("reattaches a confirmed original Turn without duplicating pending history", async () => {
+    const adapter = Object.assign(new FakeHarnessAdapter(harnessId), {
+      activeTurnRecovery: true as const,
+    });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const nativeRef = opened.value.initialState.nativeRef;
+    if (!nativeRef) throw new Error("Missing native identity");
+    const nativeTurnRef = nativeTurnRefSchema.parse({
+      harnessId,
+      nativeSessionId: nativeRef.nativeSessionId,
+      nativeTurnKey: "pending-user",
+      formatVersion: 1,
+    });
+    const recovery = {
+      turnId: hostTurnIdSchema.parse("original-host-turn"),
+      nativeTurnRef,
+      input: [{ type: "text" as const, text: "original input" }],
+    };
+    Object.defineProperty(opened.value, "recoveringTurn", { value: recovery });
+    const stored = {
+      ...record(),
+      nativeSessionRef: nativeRef,
+      turnMappings: [{ hostTurnId: recovery.turnId, nativeTurnRef }],
+    };
+    const persistTurn = vi.fn(async () => stored);
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository: { persistTurn } as unknown as ExternalThreadRepository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+    try {
+      const thread = runtime.register({
+        record: stored,
+        session: opened.value,
+        sessionId: hostThreadId,
+        thread: { id: hostThreadId },
+        turns: [{ id: "earlier" }, { id: recovery.turnId, status: "failed" }],
+      });
+      expect(thread.activeTurnId).toBe(recovery.turnId);
+      expect(thread.running).toBe(true);
+      expect(thread.turns.map((turn) => turn.id)).toEqual(["earlier"]);
+      expect([...thread.projectedTurns.keys()]).toEqual([recovery.turnId]);
+      expect(thread.projectedTurns.get(recovery.turnId)?.projector.pendingTurn()).toMatchObject({
+        id: recovery.turnId,
+        status: "inProgress",
+      });
+      expect(
+        await runtime.persistConfirmedTurnIdentity(thread, {
+          type: "turn.identity.confirmed",
+          turnId: recovery.turnId,
+          nativeTurnRef,
+        }),
+      ).toBeNull();
+      expect(persistTurn).toHaveBeenCalledExactlyOnceWith(stored, recovery.turnId, nativeTurnRef);
+      expect(
+        await runtime.persistConfirmedTurnIdentity(thread, {
+          type: "turn.identity.confirmed",
+          turnId: hostTurnIdSchema.parse("foreign"),
+          nativeTurnRef,
+        }),
+      ).toBeInstanceOf(Error);
+      expect(persistTurn).toHaveBeenCalledOnce();
+      expect(
+        await runtime.persistConfirmedTurnIdentity(thread, {
+          type: "turn.identity.confirmed",
+          turnId: recovery.turnId,
+          nativeTurnRef: { ...nativeTurnRef, nativeTurnKey: "replacement" },
+        }),
+      ).toBeInstanceOf(Error);
+      expect(persistTurn).toHaveBeenCalledOnce();
+      expect(thread.record.turnMappings[0]?.nativeTurnRef).toEqual(nativeTurnRef);
+    } finally {
+      await adapter.close();
+    }
+  });
+  it("refuses an active restoration without a previously confirmed Host/native mapping", async () => {
+    const adapter = Object.assign(new FakeHarnessAdapter(harnessId), {
+      activeTurnRecovery: true as const,
+    });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const nativeRef = opened.value.initialState.nativeRef;
+    if (!nativeRef) throw new Error("Missing native identity");
+    Object.defineProperty(opened.value, "recoveringTurn", {
+      value: {
+        turnId: hostTurnIdSchema.parse("unconfirmed"),
+        nativeTurnRef: nativeTurnRefSchema.parse({
+          harnessId,
+          nativeSessionId: nativeRef.nativeSessionId,
+          nativeTurnKey: "user",
+          formatVersion: 1,
+        }),
+        input: [],
+      },
+    });
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository: {} as ExternalThreadRepository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+    try {
+      expect(() =>
+        runtime.register({
+          record: { ...record(), nativeSessionRef: nativeRef },
+          session: opened.value,
+          sessionId: hostThreadId,
+          thread: { id: hostThreadId },
+          turns: [],
+        }),
+      ).toThrow("no confirmed Host identity");
+      expect(runtime.get(hostThreadId)).toBeUndefined();
+    } finally {
+      await adapter.close();
+    }
+  });
   it("exposes the requested create Model before the Session publishes state", async () => {
     const adapter = new FakeHarnessAdapter(harnessId);
     const model = adapter.catalog.models[1]?.ref;

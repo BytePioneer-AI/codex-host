@@ -24,7 +24,8 @@ describe("Kiro progress and final answer presentation", () => {
         if (
           output.kind === "event" &&
           "turnId" in output.event &&
-          output.event.type !== "turn.autonomous.started"
+          output.event.type !== "turn.autonomous.started" &&
+          output.event.type !== "turn.identity.confirmed"
         )
           messages.push(...projector.project(output.event).messages);
       });
@@ -149,7 +150,11 @@ describe("Kiro progress and final answer presentation", () => {
     });
     projector.project({ type: "turn.started", turnId }, 1_000);
     for (const event of events) {
-      if ("turnId" in event && event.type !== "turn.autonomous.started")
+      if (
+        "turnId" in event &&
+        event.type !== "turn.autonomous.started" &&
+        event.type !== "turn.identity.confirmed"
+      )
         projector.project(event, 2_000);
     }
     const completed = projector.project(

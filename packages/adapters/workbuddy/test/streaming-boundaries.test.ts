@@ -94,7 +94,12 @@ describe("WorkBuddy live reply boundaries", () => {
           if (output.kind !== "event") continue;
           const event = output.event;
           events.push(event);
-          if (!("turnId" in event) || event.type === "turn.autonomous.started") continue;
+          if (
+            !("turnId" in event) ||
+            event.type === "turn.autonomous.started" ||
+            event.type === "turn.identity.confirmed"
+          )
+            continue;
           const result = projector.project(event);
           if (result.completedTurn) completedTurn = result.completedTurn;
         }

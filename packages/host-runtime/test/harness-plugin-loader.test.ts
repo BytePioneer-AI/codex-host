@@ -9,6 +9,8 @@ import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import {
   harnessPluginDescriptorSchema,
   harnessPluginManifestSchema,
+  harnessIdSchema,
+  HARNESS_PLUGIN_API_VERSION,
 } from "@codexhost/shared-contracts";
 
 import { loadHarnessPlugins, type HarnessPluginDiagnostic } from "../src/harness-plugin-loader.js";
@@ -72,6 +74,28 @@ afterEach(async () => {
 });
 
 describe("Harness plugin discovery and loading", () => {
+  it.each([1, HARNESS_PLUGIN_API_VERSION])(
+    "loads supported API %s plugins without requiring legacy migration",
+    async (api) => {
+      const directory = await root(["sample-agent"]);
+      await plugin(directory, "sample-agent", { manifest: { adapterApiVersion: api } });
+      const diagnose = vi.fn();
+      const registry = await loadHarnessPlugins({
+        roots: [directory],
+        context,
+        diagnose,
+        warmup: false,
+      });
+      try {
+        expect(diagnose).not.toHaveBeenCalled();
+        expect(registry.adapters.get(harnessIdSchema.parse("sample-agent"))?.harnessId).toBe(
+          "sample-agent",
+        );
+      } finally {
+        await registry.close();
+      }
+    },
+  );
   it.each(["credits", "refreshCredits"])(
     "rejects malformed optional %s capabilities",
     async (method) => {
@@ -475,7 +499,7 @@ describe("Harness plugin discovery and loading", () => {
   it("keeps an incompatible plugin visible but never imports its entry", async () => {
     const directory = await root(["future-agent"]);
     await plugin(directory, "future-agent", {
-      manifest: { adapterApiVersion: 2 },
+      manifest: { adapterApiVersion: HARNESS_PLUGIN_API_VERSION + 1 },
       code: 'throw new Error("never-report-this")',
     });
     const diagnose = vi.fn();

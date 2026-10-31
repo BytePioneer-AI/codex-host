@@ -6,7 +6,12 @@ import type {
   InspectHarnessInput,
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
-import type { HarnessModelRef } from "@codexhost/shared-contracts";
+import {
+  harnessKnownTurnSchema,
+  type HarnessModelRef,
+  type HarnessTurnRecovery,
+} from "@codexhost/shared-contracts";
+import type { HostThreadSnapshot } from "@codexhost/harness-adapter";
 import { BridgeClient } from "./bridge.js";
 import { bridgeDirectory, sameDirectory, type BridgeOptions } from "./discovery.js";
 import { harnessError, record, TraeError } from "./errors.js";
@@ -18,6 +23,7 @@ import { TraeCnSession, SESSION_CAPABILITIES, validateReference } from "./sessio
 export type TraeCnAdapterOptions = Omit<BridgeOptions, "cwd"> & { cwd?: string };
 
 export class TraeCnAdapter implements HarnessAdapter {
+  readonly activeTurnRecovery = true;
   readonly harnessId = TRAE_CN_ID;
   #closed = false;
   #sessions = new Set<TraeCnSession>();
@@ -85,6 +91,8 @@ export class TraeCnAdapter implements HarnessAdapter {
       client = connected.client;
       const inspection = connected.inspection;
       let effectiveModel: HarnessModelRef | undefined;
+      let recoveringTurn: HarnessTurnRecovery | undefined;
+      let recoverySnapshot: HostThreadSnapshot | undefined;
       if (input.kind === "resume") {
         validateReference(input.nativeRef, inspection, input.cwd);
         if (
@@ -120,10 +128,43 @@ export class TraeCnAdapter implements HarnessAdapter {
           input.nativeRef.nativeSessionId,
           inspection.agentType,
         );
-        if ([2, 3, 8, 9, 10].includes(Number(native.status)))
-          throw new TraeError("sessionBusy", "Native active-Turn recovery is not implemented yet");
-        if (snapshot.turns.some((turn) => turn.outcome.status === "unknown"))
-          throw new TraeError("sessionBusy", "Native pending Turn recovery is not implemented yet");
+        const pending = snapshot.turns.filter((turn) => turn.outcome.status === "unknown");
+        const pendingTurn = pending[0];
+        if (
+          [3, 8, 10].includes(Number(native.status)) &&
+          pending.length === 1 &&
+          pendingTurn &&
+          pendingTurn === snapshot.turns.at(-1)
+        ) {
+          const parsed = harnessKnownTurnSchema.array().safeParse(input.knownTurns ?? []);
+          if (
+            !parsed.success ||
+            parsed.data.some(
+              (entry) =>
+                entry.nativeTurnRef.harnessId !== TRAE_CN_ID ||
+                entry.nativeTurnRef.nativeSessionId !== input.nativeRef.nativeSessionId,
+            ) ||
+            new Set(parsed.data.map((entry) => entry.turnId)).size !== parsed.data.length ||
+            new Set(parsed.data.map((entry) => entry.nativeTurnRef.nativeTurnKey)).size !==
+              parsed.data.length
+          )
+            throw new TraeError("invalidRequest", "Invalid confirmed Host Turn mappings");
+          const known = parsed.data.find(
+            (entry) =>
+              entry.nativeTurnRef.nativeTurnKey === pendingTurn.nativeTurnRef.nativeTurnKey,
+          );
+          if (!known)
+            throw new TraeError(
+              "configurationRequired",
+              "The native task is still active but its original Host Turn identity was not confirmed; do not send it again",
+            );
+          recoveringTurn = { ...known, input: pendingTurn.input };
+          recoverySnapshot = snapshot;
+        } else if ([2, 3, 8, 9, 10].includes(Number(native.status)) || pending.length)
+          throw new TraeError(
+            "sessionBusy",
+            "Native pending work is not ready for safe reattachment",
+          );
         effectiveModel = snapshot.turns.at(-1)?.model;
       }
       if (this.#closed) throw new TraeError("invalidState", "TRAE CN Adapter closed during open");
@@ -136,6 +177,7 @@ export class TraeCnAdapter implements HarnessAdapter {
         ...(selected ? { model: selected } : {}),
         ...(input.kind === "resume" ? { nativeRef: input.nativeRef } : {}),
         initialState: { ...(effectiveModel ? { effectiveModel } : {}) },
+        ...(recoveringTurn && recoverySnapshot ? { recoveringTurn, recoverySnapshot } : {}),
         onClose: () => this.#sessions.delete(session),
       });
       this.#sessions.add(session);

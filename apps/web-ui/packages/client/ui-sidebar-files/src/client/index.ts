@@ -22,6 +22,8 @@ import { FilesBody } from "./FilesBody.tsx";
 import { FilesTitle } from "./FilesTitle.tsx";
 import { en, zh } from "./locales.ts";
 import { createFilesStore } from "./store.ts";
+import type {} from "@deepseek-ai/dsh-client-ui-input-trigger/client";
+import { fileMentionSource } from "./file-mentions.ts";
 
 export type { SidebarFilesKey } from "./locales.ts";
 export type { DirLevel, FilesState, FilesTabState, LevelState } from "./store.ts";
@@ -64,6 +66,19 @@ export const inject = [
  */
 export function apply(ctx: ClientContext): void {
   const t = ctx.locale.bind(NS);
+  ctx.inject(["inputTriggers", "sessions", "remote.fileReferences"], (scope) => {
+    scope.effect(
+      () =>
+        scope.inputTriggers.registerSource(
+          fileMentionSource(
+            scope.remote,
+            (id) => Boolean(scope.sessions.list.getSnapshot().byId[id]?.cwd),
+            t,
+          ),
+        ),
+      "ui-sidebar-files: workspace mentions",
+    );
+  });
   ctx.inject(["shortcuts"], (ctx) => {
     ctx.effect(
       () =>

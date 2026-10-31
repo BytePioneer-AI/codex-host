@@ -14,7 +14,7 @@ for (const [trigger, width] of [
     `${trigger} alias shares native menu, carriers and direct execution at ${width}px`,
     { timeout: 60_000 },
     async (t) => {
-      const { host, page, composer, plus, menu, open, attach, writeMethods } =
+      const { host, page, composer, openCommands, menu, open, attach, writeMethods } =
         await discoveryBrowser(t, width, true);
       const reads = () =>
         host.requests.filter((r) => r.method === "codexhost/thread/commands/inspect");
@@ -28,7 +28,7 @@ for (const [trigger, width] of [
       );
       assert.equal(writeMethods().length, 0);
       await page.keyboard.press("Escape");
-      await plus.click();
+      await openCommands();
       await menu.getByRole("option", { name: /^Model\b/ }).waitFor();
       await open();
       await composer.fill(trigger);
@@ -131,7 +131,7 @@ for (const [trigger, width] of [
         threadId: "existing",
         commandId: "fake.compact",
       });
-      await plus.click();
+      await openCommands();
       await menu.getByRole("option", { name: /^Compact\b/, disabled: false }).waitFor();
       assert.equal(
         await page
@@ -180,9 +180,6 @@ it(
     const { host, page, composer, menu, open, writeMethods } = await discoveryBrowser(t);
     await open();
     for (const text of [
-      "#123",
-      "##",
-      "###native",
       "\\#native",
       "word#native",
       "https://host/#native",
@@ -247,7 +244,7 @@ it(
     };
     await composer.fill("reopen");
     await composer.fill("#");
-    await menu.locator('[role="status"]').waitFor();
+    await menu.locator('[role="status"][data-source="codexhost-native"]').waitFor();
     defined(state.catalog.commands[0]).label = "Destination compact";
     await open("destination");
     state.beforeInspect = async () => {};
@@ -297,7 +294,7 @@ it(
       await gate.promise;
     };
     await composer.fill("#");
-    await menu.locator('[role="status"]').waitFor();
+    await menu.locator('[role="status"][data-source="codexhost-native"]').waitFor();
     for (let i = 0; !waiting && i < 100; i++) await page.waitForTimeout(10);
     assert.equal(waiting, true);
     state.beforeInspect = async () => {};

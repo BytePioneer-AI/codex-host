@@ -8,12 +8,15 @@ import { discoveryBrowser } from "../support/discovery-browser.ts";
 
 for (const width of [390, 1280])
   it(`native discovery and direct/text selection at ${width}px`, { timeout: 60_000 }, async (t) => {
-    const { host, state, page, composer, plus, menu, open, attach, writeMethods } =
+    const { host, state, page, composer, openCommands, menu, open, attach, writeMethods } =
       await discoveryBrowser(t, width);
-    await plus.click();
+    await openCommands();
     await menu.getByRole("option", { name: /^Model\b/ }).waitFor();
     assert.equal(await menu.getByText("Native commands", { exact: true }).count(), 0);
-    await menu.getByRole("option", { name: "CH Harness fake", exact: true }).waitFor();
+    assert.equal(
+      await menu.getByRole("option", { name: "CH Harness fake", exact: true }).count(),
+      0,
+    );
     assert.equal(
       host.requests.some((r) => r.method === "codexhost/thread/commands/inspect"),
       false,
@@ -22,7 +25,7 @@ for (const width of [390, 1280])
     await composer.fill("keep body");
     await attach();
     const uploadsBefore = host.requests.filter((r) => r.method === "turn/start").length;
-    await plus.click();
+    await openCommands();
     const compact = menu.getByRole("option", { name: /^Compact\b/ });
     await compact.waitFor();
     assert.equal(
@@ -59,7 +62,7 @@ for (const width of [390, 1280])
     assert.ok(opened > count);
     await page.keyboard.press("Escape");
     await composer.fill("keep body");
-    await plus.click();
+    await openCommands();
     const executed = page.waitForResponse((response) =>
       response.url().endsWith("/api/codexhost/executeThreadCommand"),
     );
@@ -71,7 +74,7 @@ for (const width of [390, 1280])
     assert.deepEqual(structuredClone(writeMethods().map((r) => [r.method, r.params])), [
       ["codexhost/thread/command/execute", { threadId: "existing", commandId: "fake.compact" }],
     ]);
-    await plus.click();
+    await openCommands();
     await menu.getByRole("option", { name: /^Compact\b/, disabled: false }).waitFor();
     assert.equal(
       await page
@@ -88,8 +91,8 @@ for (const width of [390, 1280])
     assert.ok((await composer.innerText()).includes("keep body"));
     assert.equal(writeMethods().length, 1);
     await composer.press("ControlOrMeta+Z");
-    assert.equal(await composer.innerText(), "keep body", "selection is undoable");
-    await plus.click();
+    assert.equal(await composer.innerText(), "/keep body", "undo restores the typed trigger");
+    await openCommands();
     await menu.getByRole("option", { name: /^Native skill\b/ }).click();
     await composer.press("Escape");
     const submitted = page.waitForResponse((response) =>
@@ -129,7 +132,7 @@ for (const width of [390, 1280])
       1,
     );
     state.catalog.source = "static";
-    await plus.click();
+    await openCommands();
     await menu.getByText(/Static catalog:/).waitFor();
   });
 
@@ -137,10 +140,10 @@ it(
   "errors retain interface rows, allow retry, and late catalogs cannot cross sessions or reopen a closed menu",
   { timeout: 60_000 },
   async (t) => {
-    const { host, state, page, composer, plus, menu, open } = await discoveryBrowser(t);
+    const { host, state, page, composer, openCommands, menu, open } = await discoveryBrowser(t);
     await open();
     state.failure = "Catalog failed";
-    await plus.click();
+    await openCommands();
     await menu.getByRole("option", { name: /Retry native commands/ }).waitFor();
     await menu.getByRole("option", { name: /^Model\b/ }).waitFor();
     state.failure = "";
@@ -151,12 +154,12 @@ it(
     state.beforeInspect = async () => {
       await gate.promise;
     };
-    await plus.click();
+    await openCommands();
     await menu.locator('[role="status"]').waitFor();
     defined(state.catalog.commands[0]).label = "Destination compact";
     await open("destination");
     state.beforeInspect = async () => {};
-    await plus.click();
+    await openCommands();
     await menu.getByRole("option", { name: /^Destination compact\b/ }).waitFor();
     gate.resolve(undefined);
     await page.waitForTimeout(100);
@@ -175,16 +178,16 @@ it(
   "busy, duplicate and unknown direct writes preserve the draft and are not retried",
   { timeout: 60_000 },
   async (t) => {
-    const { host, state, page, composer, plus, menu, open } = await discoveryBrowser(t);
+    const { host, state, page, composer, openCommands, menu, open } = await discoveryBrowser(t);
     await open();
     await composer.fill("body survives");
     const gate = Promise.withResolvers<undefined>();
     state.beforeExecute = async () => {
       await gate.promise;
     };
-    await plus.click();
+    await openCommands();
     await menu.getByRole("option", { name: /^Bare skill\b/ }).click();
-    await plus.click();
+    await openCommands();
     await menu.getByRole("option", { name: /^Compact\b/ }).waitFor();
     assert.equal(
       await menu.getByRole("option", { name: /^Compact\b/ }).getAttribute("aria-disabled"),
@@ -193,7 +196,7 @@ it(
     state.executionFailure = "Connection lost; outcome unknown";
     gate.resolve(undefined);
     await page.getByText(/Command not confirmed.*Connection lost/).waitFor();
-    assert.equal(await composer.innerText(), "body survives");
+    assert.equal(await composer.innerText(), "/body survives");
     assert.equal(
       host.requests.filter((r) => r.method === "codexhost/thread/command/execute").length,
       1,
@@ -205,13 +208,14 @@ it(
   "an active Thread disables direct commands while keeping text selections available",
   { timeout: 60_000 },
   async (t) => {
-    const { host, page, composer, plus, menu, open, writeMethods } = await discoveryBrowser(t);
+    const { host, page, composer, openCommands, menu, open, writeMethods } =
+      await discoveryBrowser(t);
     defined(host.threads.get("existing")).status.type = "active";
     await page.reload();
-    await plus.waitFor();
+    await composer.waitFor();
     await open();
     await composer.fill("retained busy draft");
-    await plus.click();
+    await openCommands();
     const compact = menu.getByRole("option", { name: /^Compact\b/ });
     await compact.waitFor();
     assert.equal(await compact.getAttribute("aria-disabled"), "true");
@@ -229,7 +233,7 @@ it(
   "offline projection disables direct writes and browser reconnect fences an old menu read",
   { timeout: 60_000 },
   async (t) => {
-    const { host, state, page, composer, plus, menu, open, writeMethods } =
+    const { host, state, page, composer, openCommands, menu, open, writeMethods } =
       await discoveryBrowser(t);
     let offline = true;
     await page.routeWebSocket("**/api/remote.mux", (socket) => {
@@ -261,10 +265,10 @@ it(
       });
     });
     await page.reload();
-    await plus.waitFor();
+    await composer.waitFor();
     await open();
     await composer.fill("offline draft");
-    await plus.click();
+    await openCommands();
     const compact = menu.getByRole("option", { name: /^Compact\b/ });
     await compact.waitFor();
     assert.equal(await compact.getAttribute("title"), "Host disconnected");
@@ -282,7 +286,7 @@ it(
       };
     });
     await page.reload();
-    await plus.waitFor();
+    await composer.waitFor();
     await open();
     const gate = Promise.withResolvers<undefined>();
     t.after(() => gate.resolve(undefined));
@@ -291,16 +295,26 @@ it(
       blocked = true;
       await gate.promise;
     };
-    await plus.click();
+    await openCommands();
     await menu.locator('[role="status"]').waitFor();
     while (!blocked) await page.waitForTimeout(10);
     defined(state.catalog.commands[0]).label = "After reconnect";
     state.beforeInspect = async () => {};
-    await page.evaluate(() => {
+    const priorSockets = await page.evaluate(() => {
       const sockets = (window as unknown as { discoveryTestSockets: WebSocket[] })
         .discoveryTestSockets;
       for (const socket of sockets) if (socket.readyState === WebSocket.OPEN) socket.close();
+      return sockets.length;
     });
+    await page.waitForFunction(
+      (count) =>
+        (window as unknown as { discoveryTestSockets: WebSocket[] }).discoveryTestSockets
+          .slice(count)
+          .some((socket) => socket.readyState === WebSocket.OPEN),
+      priorSockets,
+    );
+    // A restored editor may place the caret after the draft; explicitly reopen its typed menu.
+    await openCommands();
     await menu.getByRole("option", { name: /^After reconnect\b/ }).waitFor();
     gate.resolve(undefined);
     await page.waitForTimeout(100);
@@ -317,23 +331,23 @@ it(
   "command carriers survive undo, copy, draft restore and rejected/unknown sends with delegation and a file",
   { timeout: 60_000 },
   async (t) => {
-    const { host, page, composer, plus, menu, open, attach, writeMethods } =
+    const { host, page, composer, openCommands, openReferences, menu, open, attach, writeMethods } =
       await discoveryBrowser(t);
     await open();
     const body = "review  attached\tfile\n  keep indentation";
     await composer.fill(body);
     await attach();
-    await plus.click();
+    await openCommands();
     await menu.getByRole("option", { name: /^Native skill\b/ }).click();
     const commands = composer.locator('[data-composer-chip="codexhost-native"]');
     await commands.waitFor();
     await composer.press("ControlOrMeta+Z");
     assert.equal(await commands.count(), 0);
-    assert.equal(await composer.innerText(), body);
+    assert.equal(await composer.innerText(), `/${body}`);
     await page.getByText("kept.txt", { exact: true }).waitFor();
-    await plus.click();
+    await openCommands();
     await menu.getByRole("option", { name: /^Native skill\b/ }).click();
-    await plus.click();
+    await openReferences();
     await menu.getByRole("option", { name: "CH Harness fake", exact: true }).click();
     const agents = composer.locator('[data-composer-chip="codexhost-delegation"]');
     await agents.waitFor();
@@ -342,7 +356,7 @@ it(
     const clipboard = await page.evaluate(() => navigator.clipboard.readText());
     assert.ok(clipboard.includes("[@/native-skill](subagent://codexhost-command.native-skill)"));
     assert.ok(clipboard.includes("subagent://codexhost.fake"));
-    assert.ok(restoreHarnessCommandMentions(clipboard).includes(body));
+    assert.ok(restoreHarnessCommandMentions(clipboard).includes(body), JSON.stringify(clipboard));
     assert.equal(writeMethods().length, 0);
     await composer.press("Backspace");
     assert.equal(await commands.count(), 0);

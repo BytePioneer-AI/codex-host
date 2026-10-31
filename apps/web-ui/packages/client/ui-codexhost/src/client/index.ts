@@ -164,6 +164,7 @@ export function apply(ctx: ClientContext): void {
     () =>
       ctx.inputTriggers.registerSource({
         trigger: "@",
+        aliases: ["#"],
         name: THREAD_REFERENCE_SOURCE,
         candidates: async () => [],
         onPick: () => undefined,

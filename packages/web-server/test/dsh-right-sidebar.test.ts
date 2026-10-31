@@ -22,6 +22,7 @@ it("serves the right Sidebar file tree from a local Thread's Host directory", as
   const workspace = mkdtempSync(join(tmpdir(), "codexhost-right-sidebar-"));
   t.after(() => rmSync(workspace, { recursive: true, force: true }));
   mkdirSync(join(workspace, "src"));
+  writeFileSync(join(workspace, "src", "config.ts"), "export default {};\n");
   writeFileSync(join(workspace, "README.md"), "line one\nline two\n");
 
   const host = new FakeChHost();
@@ -114,19 +115,50 @@ it("serves the right Sidebar file tree from a local Thread's Host directory", as
   assert.match(binary.headers.get("content-type") ?? "", /^multipart\/form-data/u);
   assert.match(await binary.text(), /line one/u);
 
-  // A draft has a browser-side cwd but no Host-confirmed Thread. An unknown
-  // identity follows the same path; neither case creates a Session.
+  // Workspace-bound drafts can browse files without creating a native Thread.
   const draft = await call("session/create", { cwd: workspace });
   assert.equal(draft.envelope?.result.ok, true);
   const draftId = String(draft.envelope?.result.value?.sessionId);
-  for (const sessionId of [draftId, "unknown-thread"]) {
+  const draftListing = await call("workspaceFiles/list", {
+    workspaceFileScopeId: draftId,
+    path: ".",
+  });
+  assert.equal(draftListing.envelope?.result.ok, true, JSON.stringify(draftListing.envelope));
+  for (const sessionId of ["local-thread", draftId]) {
+    const search = await call("fileReferences/list", { agentId: sessionId, query: "cfg" });
+    assert.deepEqual(search.envelope?.result.value, [{ path: "src/config.ts", kind: "file" }]);
+  }
+  assert.deepEqual(
+    draftListing.envelope?.result.value?.entries,
+    listing.envelope?.result.value?.entries,
+  );
+  const outside = await call("workspaceFiles/list", {
+    workspaceFileScopeId: draftId,
+    path: "../",
+  });
+  assert.equal(outside.envelope?.result.error?.code, "workspace-file/outside-workspace");
+  const terminal = await call("terminal/shells", { agentId: draftId });
+  assert.equal(terminal.envelope?.result.error?.code, "gateway/lookup-not-found");
+  const projectless = await call("session/create", {});
+  assert.equal(projectless.envelope?.result.ok, true);
+  for (const sessionId of [
+    String(projectless.envelope?.result.value?.sessionId),
+    "unknown-thread",
+  ]) {
     const missing = await call("workspaceFiles/list", {
       workspaceFileScopeId: sessionId,
       path: workspace,
     });
     assert.equal(missing.envelope?.result.ok, false);
     assert.equal(missing.envelope?.result.error?.code, "gateway/lookup-not-found");
+    const search = await call("fileReferences/list", { agentId: sessionId, query: "cfg" });
+    assert.equal(search.envelope?.result.error?.code, "gateway/lookup-not-found");
   }
+
+  assert.equal(
+    host.requests.some((request) => request.method === "thread/start"),
+    false,
+  );
 
   // The DSH stream reaches the mux only after the same authentication gate.
   assert.equal(

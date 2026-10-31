@@ -32,6 +32,7 @@ import { ChPinnedThreads } from "./ch-pinned-threads.ts";
 import { type WebImages, WEB_IMAGE_INPUT, WEB_IMAGE_LIMITS } from "./web-images.ts";
 import { ChAttachments } from "./ch-attachments.ts";
 import { ChFileInputs } from "./ch-file-inputs.ts";
+import { WebFileReferences } from "./file-references.ts";
 import { type WebFiles, WEB_FILE_INPUT } from "./web-files.ts";
 import { ChRealtime } from "./ch-realtime.ts";
 import { ChInteractions } from "./ch-interactions.ts";
@@ -59,6 +60,7 @@ interface Draft {
 }
 
 export class ChSessions {
+  private readonly fileReferences = new WebFileReferences((id) => this.fileWorkspaceRoot(id));
   readonly catalog: ChHarnessCatalog;
   private readonly editing = new ChThreadEditing();
   private readonly pins: ChPinnedThreads;
@@ -685,6 +687,12 @@ export class ChSessions {
     return this.rows.get(id)?.cwd;
   }
 
+  /** Workspace files are also available before a draft creates its native Thread. */
+  fileWorkspaceRoot(sessionId: string): string | undefined {
+    const id = this.id(sessionId);
+    return this.drafts.get(id)?.cwd ?? this.localWorkspaceRoot(id);
+  }
+
   uploadFile(id: string, chunks: AsyncIterable<Uint8Array>, name?: string) {
     if (!this.fileInputs)
       throw new RpcError("session/attachment-invalid", "File uploads are unavailable.");
@@ -729,6 +737,7 @@ export class ChSessions {
   }
 
   register(rpc: RpcRegistry, streams: StreamRegistry): void {
+    this.fileReferences.register(rpc);
     this.fileInputs?.register(rpc);
     rpc.register("codexhost/editMessage", async (args) => {
       const request = requestOf<{ sessionId: string; atSeq: number; text: string }>(args);
@@ -1306,6 +1315,7 @@ export class ChSessions {
     throw new RpcError("host/import-explicit", "CH imports must be explicitly selected.");
   }
   async close(): Promise<void> {
+    this.fileReferences.close();
     this.closed = true;
     this.pins.close();
     this.realtime?.close();

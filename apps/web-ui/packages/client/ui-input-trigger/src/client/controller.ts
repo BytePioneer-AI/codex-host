@@ -147,7 +147,7 @@ export class InputTriggerController {
     // the draft/caret changes or the input phase suppresses this trigger.
     if (
       launched &&
-      (guard.tier === "plain" || (guard.tier === "claimed" && this.hit?.trigger === "@")) &&
+      (guard.tier === "plain" || (guard.tier === "claimed" && this.hit?.trigger !== "/")) &&
       this.hit?.span.draftRev === draftRev &&
       this.hit.span.end === caret
     )
@@ -628,6 +628,7 @@ export class InputTriggerController {
   ): void {
     if (candidate.disabledReason !== undefined) return;
     const outcome = src.onPick({
+      trigger: hit.trigger,
       candidate,
       session: this.project(),
       position: hit.position,

@@ -98,7 +98,7 @@ it(
     await composer.fill("Before After");
     await composer.press("Home");
     for (let i = 0; i < 7; i++) await composer.press("ArrowRight");
-    await page.getByRole("button", { name: "Add files or run commands", exact: true }).click();
+    await page.locator("[data-composer-input]:visible").pressSequentially("/");
     const chooser = page.waitForEvent("filechooser");
     await page.getByRole("option", { name: /^File\b/u }).click();
     await (

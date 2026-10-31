@@ -17,7 +17,6 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
 import clsx from "clsx";
 import {
-  IconPlusOutlineMedium,
   IconWarningOutlineRegular,
   shouldAutoFocusTextInput,
   Toast,
@@ -59,7 +58,6 @@ export const InputBar = memo(function InputBar({
   removeAttachment,
   resolveDraftAttachments,
   retryFileUpload,
-  toggleCommandMenu,
   stop,
   t,
   renderSlot,
@@ -67,7 +65,6 @@ export const InputBar = memo(function InputBar({
   useFileUploads,
   useNotices,
   useLexicon,
-  useMenuLauncher,
   useStopShortcut,
   useProjection,
   sessionId,
@@ -84,7 +81,6 @@ export const InputBar = memo(function InputBar({
   const busyEnter = useBusyEnter((s) => s);
   const stopKeys = useStopShortcut((keys) => keys);
   void useLexicon; // hook seat stays bound by the inject compartment; text-ref decoration rides the shell's editor transforms
-  const commandMenuOpen = useMenuLauncher((source) => source === "command");
   const [activity, setActivity] = useState(false);
   useEffect(() => {
     setActivity(false);
@@ -197,13 +193,7 @@ export const InputBar = memo(function InputBar({
   const editable = live && !locked && !machineBusy;
   const steeringAvailable = subagent === null || subagent.address.mode === "continuable";
   const canSteerQueue =
-    !locked &&
-    !machineBusy &&
-    !commandMenuOpen &&
-    empty &&
-    running &&
-    steeringAvailable &&
-    input.queue.length > 0;
+    !locked && !machineBusy && empty && running && steeringAvailable && input.queue.length > 0;
 
   useEffect(() => {
     if (input === undefined || inputActions === undefined) return;
@@ -300,14 +290,6 @@ export const InputBar = memo(function InputBar({
 
   const canAcceptDrop =
     attachmentsEnabled && subagent === null && !locked && !machineBusy && addFiles !== undefined;
-  const commandMenuLabel = t(
-    !attachmentsEnabled
-      ? "input.commandsOnly"
-      : imagesOnly
-        ? "input.imagesAndCommands"
-        : "input.commands",
-  );
-
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const onPickFiles = (e: ChangeEvent<HTMLInputElement>): void => {
     const picked = e.target.files === null ? [] : [...e.target.files];
@@ -363,16 +345,6 @@ export const InputBar = memo(function InputBar({
   // not moved, and the next keystroke gets the browser's native one.
   const keepFocus = (e: MouseEvent<HTMLButtonElement>): void => {
     keepDraftFocus(e, editor);
-  };
-
-  const onToggleCommandMenu = (): void => {
-    if (keyboard === undefined) return;
-    // The menu is a combobox over the editor, so the keyboard has to be there
-    // before the launcher opens it: activating the button from the keyboard
-    // leaves focus on the button, and restoring it afterwards would re-track an
-    // empty draft and close the menu again.
-    if (editor !== null) focusDraftEditor(editor, revealSelection);
-    toggleCommandMenu?.(keyboard.caretSpan());
   };
 
   // The no-session Workspace trigger: the resident editable div acts as the
@@ -552,20 +524,6 @@ export const InputBar = memo(function InputBar({
         />
         <div ref={rowRef} className={css.row} data-composer-toolbar>
           <div className={css.tools} hidden={activity} data-composer-tools>
-            <Tooltip label={commandMenuLabel} side="top" delayMs={500}>
-              <button
-                type="button"
-                className={css.add}
-                aria-label={commandMenuLabel}
-                aria-haspopup="listbox"
-                aria-expanded={commandMenuOpen}
-                disabled={locked || toggleCommandMenu === undefined}
-                onMouseDown={keepFocus}
-                onClick={onToggleCommandMenu}
-              >
-                <IconPlusOutlineMedium size={14} />
-              </button>
-            </Tooltip>
             <input
               ref={fileInputRef}
               type="file"

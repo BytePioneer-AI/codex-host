@@ -7,14 +7,10 @@ for (const width of [390, 1280])
     `draft delegation uses existing menus and preserves the first prompt at ${width}px`,
     { timeout: 60_000 },
     async (t) => {
-      const { host, page, composer, plus, menu, attach, writeMethods } = await discoveryBrowser(
-        t,
-        width,
-      );
+      const { host, page, composer, menu, attach, writeMethods } = await discoveryBrowser(t, width);
       const chips = composer.locator('[data-composer-chip="codexhost-delegation"]');
-      for (const trigger of ["/", "+", "#", "@"]) {
-        await composer.fill(trigger === "+" ? "First request " : `First request ${trigger}fake`);
-        if (trigger === "+") await plus.click();
+      for (const trigger of ["#", "@"]) {
+        await composer.fill(`First request ${trigger}fake`);
         const target = menu.getByRole("option", { name: "CH Harness fake", exact: true });
         await target.waitFor();
         assert.equal(await menu.locator('[id*="codexhost-native"]').count(), 0);
@@ -22,7 +18,7 @@ for (const width of [390, 1280])
         await chips.waitFor();
         await chips.locator('img[src="/harness-icons/fake"]').waitFor();
         assert.ok((await composer.innerText()).startsWith("First request "));
-        if (trigger === "/") await attach();
+        if (trigger === "#") await attach();
         await page.getByText("kept.txt", { exact: true }).waitFor();
         assert.equal(
           writeMethods().length,
@@ -69,7 +65,7 @@ it(
   "inserts real Harness identities at the caret, supports multiple references/undo/copy, and submits only explicitly",
   { timeout: 60_000 },
   async (t) => {
-    const { host, state, page, composer, plus, menu, open, attach, writeMethods } =
+    const { host, state, page, composer, openReferences, menu, open, attach, writeMethods } =
       await discoveryBrowser(t, 1280, true);
     await open();
     await composer.fill("Before After");
@@ -80,7 +76,7 @@ it(
       (r) => r.method === "codexhost/harness/inspect",
     ).length;
     state.failure = "Command catalog unavailable";
-    await plus.click();
+    await composer.pressSequentially("@");
     await menu.getByRole("option", { name: /Retry native commands/ }).waitFor();
     const targets = menu.getByRole("option").filter({ hasText: /^(Codex|Twin)/ });
     assert.deepEqual(await targets.allTextContents(), ["Codexcodex-cli", "Twinfake", "Twinother"]);
@@ -96,11 +92,12 @@ it(
     );
     await composer.press("ControlOrMeta+Z");
     assert.equal(await chips.count(), 0);
-    assert.equal(await composer.innerText(), "Before After");
-    await plus.click();
+    assert.equal(await composer.innerText(), "Before @After");
+    await composer.press("Backspace");
+    await composer.pressSequentially("@");
     await menu.getByRole("option", { name: "Twin fake", exact: true }).click();
     await composer.press("End");
-    await plus.click();
+    await composer.pressSequentially(" @");
     await menu.getByRole("option", { name: "Twin other", exact: true }).click();
     assert.equal(await chips.count(), 2);
     await composer.press("ControlOrMeta+A");
@@ -111,13 +108,15 @@ it(
     assert.equal(writeMethods().length, 0);
     state.failure = "";
     await composer.press("End");
-    await plus.click();
+    await openReferences();
     await menu.getByRole("option", { name: /^Native skill\b/ }).click();
     assert.equal(await chips.count(), 2, "selecting a native command retains reference nodes");
     await composer.press("ControlOrMeta+Z");
     await composer.press("ControlOrMeta+A");
     await composer.press("ControlOrMeta+C");
-    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), text);
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), `@${text}`);
+    await composer.press("ArrowLeft");
+    await composer.press("Delete");
     await page.getByText("kept.txt", { exact: true }).waitFor();
     await page.reload();
     await composer.waitFor();
@@ -162,11 +161,8 @@ it(
   "searches real IDs, leaves bare mentions plain, and ignores targets removed by the existing catalog update",
   { timeout: 60_000 },
   async (t) => {
-    const { host, page, composer, plus, menu, open, writeMethods } = await discoveryBrowser(
-      t,
-      1280,
-      true,
-    );
+    const { host, page, composer, openReferences, menu, open, writeMethods } =
+      await discoveryBrowser(t, 1280, true);
     await open();
     await composer.fill("@");
     await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
@@ -218,7 +214,7 @@ it(
     });
     await page.reload();
     await composer.waitFor();
-    await plus.click();
+    await openReferences();
     await menu.getByRole("option", { name: "Twin fake", exact: true }).waitFor();
     assert.equal(await menu.getByRole("option", { name: "Twin other", exact: true }).count(), 0);
     assert.equal(writeMethods().length, 0);

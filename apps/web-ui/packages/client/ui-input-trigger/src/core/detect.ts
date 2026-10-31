@@ -30,12 +30,12 @@ function boundaryOk(draft: string, index: number, char: TriggerChar): boolean {
 }
 
 /**
- * Detect a trigger token at the caret. `@` first uses the shared grammar,
+ * Detect a trigger token at the caret. `@` and `#` use the same reference grammar,
  * including an open quoted token that may span whitespace. Slash detection
  * scans left to the first whitespace; slashes failing the word boundary are
  * treated as ordinary token chars and the scan continues (URL slashes).
- * Guard tiers: plain = all triggers live; claimed = '/' and '#' suppressed,
- * '@' live; frozen = none.
+ * Guard tiers: plain = all triggers live; claimed = '/' suppressed,
+ * '@' and '#' live; frozen = none.
  *
  * @param draft - Full draft text.
  * @param caret - Caret offset into `draft`.
@@ -47,38 +47,24 @@ function boundaryOk(draft: string, index: number, char: TriggerChar): boolean {
  */
 export const detectTrigger: DetectTrigger = (draft, caret, guard) => {
   if (guard.tier === "frozen") return null;
-  const at = activeAtToken(draft, caret);
-  if (at !== undefined) {
-    const start = caret - at.prefix.length;
-    return {
-      trigger: "@",
-      query: at.query,
-      quoted: at.quoted,
+  let reference: ReturnType<DetectTrigger> = null;
+  for (const trigger of ["@", "#"] as const) {
+    const token = activeAtToken(draft, caret, trigger);
+    if (token === undefined) continue;
+    const start = caret - token.prefix.length;
+    // A quoted path may contain spaces followed by the other trigger character.
+    if (reference !== null && reference.span.start <= start) continue;
+    reference = {
+      trigger,
+      query: token.query,
+      quoted: token.quoted,
       position: draft.search(/\S/) === start ? "leading" : "inline",
       span: { start, end: caret, draftRev: 0 },
     };
   }
-  // Match GUI word-start # queries without treating URL fragments or Markdown headings as menus.
-  const hashToken = /(?:^|\s)(\S*#\S*)$/u.exec(draft.slice(0, caret))?.[1];
-  if (hashToken !== undefined && !hashToken.startsWith("/")) {
-    const query = hashToken.slice(1);
-    if (
-      guard.tier !== "plain" ||
-      !hashToken.startsWith("#") ||
-      query.includes("#") ||
-      /^\d/u.test(query) ||
-      query.length > 32
-    )
-      return null;
-    const start = caret - hashToken.length;
-    return {
-      trigger: "#",
-      query,
-      quoted: false,
-      position: draft.search(/\S/) === start ? "leading" : "inline",
-      span: { start, end: caret, draftRev: 0 },
-    };
-  }
+  if (reference !== null) return reference;
+  const word = /(?:^|\s)(\S+)$/u.exec(draft.slice(0, caret))?.[1];
+  if (word !== undefined && /^[a-z][a-z\d+.-]*:\/\//iu.test(word)) return null;
   for (let i = caret - 1; i >= 0; i--) {
     const ch = draft.charAt(i);
     if (WHITESPACE.test(ch)) return null;

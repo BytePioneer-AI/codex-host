@@ -17,6 +17,8 @@ export interface DshWebServicesOptions {
   readonly workspaceRoot: string;
   /** Local working directory recorded by the Host for one Thread identity. */
   readonly threadWorkspace: (sessionId: string) => string | undefined;
+  /** File access root for a local Thread or a workspace-bound draft. */
+  readonly fileWorkspace?: (sessionId: string) => string | undefined;
 }
 
 export class DshWebServices {

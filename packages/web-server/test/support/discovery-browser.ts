@@ -5,6 +5,7 @@ import { chromium } from "playwright";
 import { FakeChHost, startFakeChDebugger } from "./ch-host.ts";
 import { withDiscovery } from "./harness-commands.ts";
 import { startServer } from "./server.ts";
+import { composerMenu } from "./composer-menu.ts";
 
 export async function discoveryBrowser(t: TestContext, width = 1280, agents = false) {
   const host = new FakeChHost();
@@ -28,16 +29,18 @@ export async function discoveryBrowser(t: TestContext, width = 1280, agents = fa
     hasTouch: width < 600,
     permissions: ["clipboard-read", "clipboard-write"],
   });
+  page.setDefaultTimeout(10_000);
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(message.text());
   });
   await page.goto(url);
-  const plus = page.getByRole("button", { name: "Add files or run commands", exact: true });
   const menu = page.getByRole("listbox", { name: "Trigger suggestions", exact: true });
   const composer = page.locator("[data-composer-input]:visible");
-  await plus.waitFor();
+  await composer.waitFor();
+  const openCommands = composerMenu(composer);
+  const openReferences = composerMenu(composer, "@");
   const open = async (id = "existing") => {
     await page.keyboard.press("Escape");
     const sidebar = page.getByRole("button", { name: "Open sidebar", exact: true }).last();
@@ -71,5 +74,16 @@ export async function discoveryBrowser(t: TestContext, width = 1280, agents = fa
       ].includes(r.method),
     );
   t.after(() => assert.deepEqual(errors, []));
-  return { host, state, page, composer, plus, menu, open, attach, writeMethods };
+  return {
+    host,
+    state,
+    page,
+    composer,
+    openCommands,
+    openReferences,
+    menu,
+    open,
+    attach,
+    writeMethods,
+  };
 }

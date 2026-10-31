@@ -140,6 +140,8 @@ export interface CandidateRequest {
 
 /** Everything a source receives on pick: candidate + session projection + the span snapshot for CAS. */
 export interface InputTriggerPick {
+  /** Trigger used to open this menu; directory descent preserves it. */
+  readonly trigger?: TriggerChar;
   readonly candidate: InputTriggerCandidate;
   readonly session: ClientSessionContext;
   readonly position: TriggerPosition;
@@ -267,6 +269,6 @@ export interface InputTriggerSource {
 
 /** Trigger availability tier, derived from the input phase by the wiring layer. */
 export interface TriggerGuard {
-  /** plain: '/', '@' and '#' live; claimed: command menus suppressed, '@' live; frozen: none. */
+  /** plain: all triggers live; claimed: '@' and '#' live; frozen: none. */
   readonly tier: "plain" | "claimed" | "frozen";
 }

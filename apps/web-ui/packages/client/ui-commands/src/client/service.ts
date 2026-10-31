@@ -299,7 +299,12 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
       });
     }
     const visible = rows.filter((c) => req.position === "leading" || c.hint === undefined);
-    return req.query === "" ? sectionRows(visible, this.t) : rankByName(visible, req.query);
+    return req.query === ""
+      ? sectionRows(visible, this.t)
+      : rankByName(visible, req.query).map((row) => ({
+          ...row,
+          section: this.t("section.interface"),
+        }));
   }
 
   /** Decision table, menu column: contribution/decorated-host → popup or action; host input → claim; host bare → detached execute. */

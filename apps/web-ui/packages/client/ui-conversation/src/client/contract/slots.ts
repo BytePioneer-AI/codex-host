@@ -26,7 +26,7 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
 import type { ComposerBlock } from "./composer-blocks.ts";
 import type { DraftAttachmentId, InputActions, InputNotice, InputState } from "./input.ts";
-import type { ComposerKeyboard, DraftSnapshot, EditSelection } from "./draft-editor.ts";
+import type { ComposerKeyboard, DraftSnapshot } from "./draft-editor.ts";
 import type { createConversationStore } from "../stores.ts";
 import type { BusyEnterBehavior } from "./composer-submission.ts";
 import type { ConversationSnapshot } from "./snapshot.ts";
@@ -431,7 +431,6 @@ export interface ComposerBarInjected {
     ((ids: readonly DraftAttachmentId[]) => readonly ComposerAttachment[]) | undefined;
   /** Restart one failed file upload; absent without a session. */
   retryFileUpload: ((id: DraftAttachmentId) => void) | undefined;
-  toggleCommandMenu: ((selection: EditSelection) => void) | undefined;
   stop: (() => void) | undefined;
   hooks: {
     /** Readable sequence while the fixed Stop command is registered. */
@@ -445,7 +444,6 @@ export interface ComposerBarInjected {
     fileUploads: ObservableSnapshot<DraftFileUploads>;
     notices: ObservableSnapshot<InputNotice | null>;
     lexicon: ObservableSnapshot<ReadonlyMap<"/" | "@" | "#", readonly string[]>>;
-    menuLauncher: ObservableSnapshot<string | null>;
   };
 }
 

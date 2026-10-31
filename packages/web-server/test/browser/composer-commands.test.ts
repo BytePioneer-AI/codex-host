@@ -48,16 +48,14 @@ for (const width of [390, 1280])
       exact: true,
     });
     const menu = page.getByRole("listbox", { name: "Trigger suggestions", exact: true });
-    const composer = page.getByRole("textbox", {
-      name: "Describe what you want to build, / commands, @ files or sessions",
-      exact: true,
-    });
-    await plus.waitFor();
+    const composer = page.locator("[data-composer-input]:visible");
+    await composer.waitFor();
+    assert.equal(await plus.count(), 0);
     await shot(page, `commands-before-${width}`);
-    await plus.click();
+    await composer.fill("/");
     await menu.getByRole("option", { name: /^Model\b/u }).waitFor();
     await shot(page, `commands-open-${width}`);
-    assert.equal(await plus.getAttribute("aria-expanded"), "true");
+
     assert.equal(await menu.getByRole("option", { name: /^Model\b/u }).count(), 1);
     assert.equal(await menu.getByRole("option", { name: /^Permission\b/u }).count(), 1);
     assert.equal(await menu.getByRole("option", { name: /^File\b/u }).count(), 1);
@@ -67,18 +65,14 @@ for (const width of [390, 1280])
       null,
       "shared picker accepts arbitrary file types",
     );
-    await plus.click();
+    await composer.press("Escape");
     await menu.waitFor({ state: "hidden" });
-    assert.equal(await plus.getAttribute("aria-expanded"), "false");
-    await plus.press("Enter");
-    await menu.waitFor();
-    await page.keyboard.press("Escape");
-    await menu.waitFor({ state: "hidden" });
-    await plus.click();
+    await composer.press("Backspace");
+    await composer.pressSequentially("/");
     await menu.waitFor();
     await composer.fill("a draft");
     await menu.waitFor({ state: "hidden" });
-    assert.equal(await plus.getAttribute("aria-expanded"), "false");
+
     await composer.fill("/");
     await menu.getByRole("option", { name: /^Model\b/u }).click();
     const models = page.getByRole("listbox", { name: "/model matches", exact: true });
@@ -91,7 +85,7 @@ for (const width of [390, 1280])
     await composer.press("ControlOrMeta+A");
     await composer.press("Backspace");
     assert.equal((await composer.innerText()).trim(), "");
-    await plus.click();
+    await composer.pressSequentially("/");
     await menu
       .getByRole("option", { name: /^Permission\b/u })
       .click({ timeout: 5_000 })
@@ -116,7 +110,7 @@ for (const width of [390, 1280])
         .filter({ hasText: "Existing commands thread" })
         .click();
       await page.getByText("existing CH answer", { exact: true }).waitFor();
-      await plus.click();
+      await composer.fill("/");
       await menu.getByRole("option", { name: /^Model\b/u }).waitFor();
       await shot(page, `commands-existing-${width}`);
       assert.equal(

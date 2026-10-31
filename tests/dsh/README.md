@@ -78,3 +78,9 @@ Run them alone with:
 ```sh
 npx vitest run --config tests/vitest.config.js tests/dsh
 ```
+
+`file-reference/search.spec.ts` adapts the upstream DSH file-reference-local search
+suite to the Web Server's imported search module: recursion, fuzzy ranking, excluded
+and hidden paths, traversal limits, cancellation, symlinks and index invalidation.
+`input/trigger-equivalence.spec.ts` checks identical @/# grammar and guard tiers;
+`sidebar-files/file-mentions.spec.ts` covers the shared file candidate source.

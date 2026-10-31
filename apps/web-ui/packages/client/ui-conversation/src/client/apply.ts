@@ -102,10 +102,6 @@ const ABSENT_LEXICON = {
   getSnapshot: () => EMPTY_LEXICON,
   subscribe: () => () => {},
 };
-const ABSENT_MENU_LAUNCHER = {
-  getSnapshot: (): string | null => null,
-  subscribe: () => () => {},
-};
 const EMPTY_FILE_UPLOADS: DraftFileUploads = {};
 const ABSENT_FILE_UPLOADS = {
   getSnapshot: () => EMPTY_FILE_UPLOADS,
@@ -572,7 +568,6 @@ export function apply(ctx: Context, config: Config = Config({})): void {
               removeAttachment: undefined,
               resolveDraftAttachments: undefined,
               retryFileUpload: undefined,
-              toggleCommandMenu: undefined,
               stop: undefined,
               hooks: {
                 stopShortcut,
@@ -580,13 +575,11 @@ export function apply(ctx: Context, config: Config = Config({})): void {
                 fileUploads: ABSENT_FILE_UPLOADS,
                 notices: ABSENT_NOTICES,
                 lexicon: ABSENT_LEXICON,
-                menuLauncher: ABSENT_MENU_LAUNCHER,
               },
             };
           }
           const conversation = concreteConversation(ctx);
           const shell = inputHub.shell(sessionId);
-          const inputTriggers = inputHub.inputTriggers(sessionId);
           const bridge = hostPathBridge();
           return {
             keyboard: shell,
@@ -652,23 +645,6 @@ export function apply(ctx: Context, config: Config = Config({})): void {
               if (sessions.binding(sessionId) !== undefined)
                 conversation.retryFileUpload(sessionId, id);
             },
-            toggleCommandMenu:
-              inputTriggers === undefined
-                ? undefined
-                : (selection) => {
-                    shell.dismissPopup();
-                    const snapshot = shell.snapshot;
-                    inputTriggers.toggleSource("command", {
-                      trigger: "/",
-                      query: "",
-                      quoted: false,
-                      position:
-                        snapshot.draft.slice(0, selection.start).trim() === ""
-                          ? "leading"
-                          : "inline",
-                      span: { ...selection, draftRev: snapshot.draftRev },
-                    });
-                  },
             stop: () => {
               stop(sessionId);
             },
@@ -678,7 +654,6 @@ export function apply(ctx: Context, config: Config = Config({})): void {
               fileUploads: conversation.fileUploads,
               notices: shell.notices,
               lexicon: shell.lexicon,
-              menuLauncher: inputTriggers?.launcher ?? ABSENT_MENU_LAUNCHER,
             },
           };
         },

@@ -7,8 +7,7 @@
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
-  "section.add": "添加",
-  "section.commands": "指令",
+  "section.interface": "界面操作",
   "label.goal": "目标",
   "label.plan": "计划",
   "label.feedback": "反馈",
@@ -42,8 +41,7 @@ export type CommandKey = keyof typeof zh;
 
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
-  "section.add": "Add",
-  "section.commands": "Commands",
+  "section.interface": "Interface actions",
   "label.goal": "Goal",
   "label.plan": "Plan",
   "label.feedback": "Feedback",

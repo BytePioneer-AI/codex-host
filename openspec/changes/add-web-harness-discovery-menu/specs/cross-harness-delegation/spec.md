@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Web 提供身份明确的委派 Agent 候选列表
-Web SHALL 在未发送的 Web 草稿及已创建、可输入的本地共享 external Thread 的 `/`、`#` 共享菜单、`@` 菜单与加号入口中提供独立的“委派 Agent”分组。首版候选 SHALL 取自 Web 已有、已确认就绪且在当前 Web 可见范围内的会话 Harness 目录，复用其名称、图标与展示顺序，并支持按名称和 Harness ID 搜索。该列表不是 Model、Provider、原生 Subagent 角色或既有 Thread 列表，也不声称覆盖 CLI 的全部委派目标。
+Web SHALL 在未发送的 Web 草稿及已创建、可输入的本地共享 external Thread 的 `@`、`#` 共享菜单中提供独立的“委派 Agent”分组。首版候选 SHALL 取自 Web 已有、已确认就绪且在当前 Web 可见范围内的会话 Harness 目录，复用其名称、图标与展示顺序，并支持按名称和 Harness ID 搜索。该列表不是 Model、Provider、原生 Subagent 角色或既有 Thread 列表，也不声称覆盖 CLI 的全部委派目标。
 
 #### Scenario: 列出可用目标
 - **WHEN** 用户在受支持会话中打开菜单
@@ -23,7 +23,7 @@ Web SHALL 在未发送的 Web 草稿及已创建、可输入的本地共享 exte
 - **AND** 候选 SHALL 随既有 Web 目录更新；选择已撤下的候选 MUST NOT 插入错误目标，应提示重新选择
 
 #### Scenario: 未发送草稿选择目标
-- **WHEN** 用户在未发送的 Web 草稿中通过 `/`、`#`、`@` 或加号打开菜单并选择目标
+- **WHEN** 用户在未发送的 Web 草稿中通过 `@` 或 `#`打开菜单并选择目标
 - **THEN** 委派分组 SHALL 复用已有就绪 Harness 目录并仅插入目标引用，保留正文和附件
 - **AND** MUST NOT 查询原生命令目录、创建 canonical Thread、预热 Session 或发送消息
 - **AND** 原生命令与 Skills SHALL 仍不可用

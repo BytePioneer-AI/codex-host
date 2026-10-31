@@ -331,30 +331,6 @@
   }
 }
 
-/* Attach circle (figma + control): 28px, selector fill, primary glyph. */
-.add {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: 999px;
-  corner-shape: round;
-  background: var(--dsw-specific-selector);
-  color: var(--dsw-alias-label-primary);
-  cursor: pointer;
-}
-
-.add:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover-solid);
-}
-
-.add:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
 /* Plan / Read-only / model — native <select>, chip-like closed chrome
    (figma ToggleButton: 13/20 medium secondary, 12px chevron). */
 .select {

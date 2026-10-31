@@ -21,15 +21,24 @@ export interface ActiveAtToken {
  * inside another token, such as an email address, is not a completion trigger.
  * @param line - current editor line.
  * @param cursorCol - cursor column within that line.
- * @returns the active token, or `undefined` outside an `@` token.
+ * @param trigger - the reference-menu prefix; hash is an equivalent UI alias.
+ * @returns the active token, or `undefined` outside a reference token.
  */
-export function activeAtToken(line: string, cursorCol: number): ActiveAtToken | undefined {
+export function activeAtToken(
+  line: string,
+  cursorCol: number,
+  trigger: "@" | "#" = "@",
+): ActiveAtToken | undefined {
   const beforeCursor = line.slice(0, cursorCol);
-  const quoted = /(?:^|\s)(@"([^"]*))$/u.exec(beforeCursor);
+  const quoted = (trigger === "@" ? /(?:^|\s)(@"([^"]*))$/u : /(?:^|\s)(#"([^"]*))$/u).exec(
+    beforeCursor,
+  );
   if (quoted?.[1] !== undefined && quoted[2] !== undefined) {
     return { prefix: quoted[1], query: quoted[2], quoted: true };
   }
-  const plain = /(?:^|\s)(@([^\s]*))$/u.exec(beforeCursor);
+  const plain = (trigger === "@" ? /(?:^|\s)(@([^\s]*))$/u : /(?:^|\s)(#([^\s]*))$/u).exec(
+    beforeCursor,
+  );
   if (plain?.[1] === undefined || plain[2] === undefined) return undefined;
   return { prefix: plain[1], query: plain[2], quoted: false };
 }

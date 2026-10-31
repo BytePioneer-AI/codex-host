@@ -301,10 +301,9 @@ export function registerHarnessDiscovery(ctx: Context): void {
   ctx.effect(
     () =>
       ctx.inputTriggers.registerSource({
-        trigger: "/",
-        aliases: ["#", "@"],
+        trigger: "@",
+        aliases: ["#"],
         name: AGENTS,
-        launcher: "command",
         order: 10,
         showGroupTitle: false,
         codec: { clipboardText: (ref) => ref, serialize: async (ref) => ref },

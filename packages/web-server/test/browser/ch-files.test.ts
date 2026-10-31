@@ -93,7 +93,7 @@ for (const mobile of [false, true])
       await page.getByText("Native Model", { exact: true }).waitFor();
       const pending = page.getByRole("group", { name: "Pending attachments", exact: true });
       const add = async () => {
-        await page.getByRole("button", { name: "Add files or run commands", exact: true }).click();
+        await page.locator("[data-composer-input]:visible").pressSequentially("/");
         const chooser = page.waitForEvent("filechooser");
         await page.getByRole("option", { name: /^File\b/u }).click();
         await (await chooser).setFiles(fixtures);

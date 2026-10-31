@@ -20,6 +20,7 @@
     "@deepseek-ai/dsh-client-store": "*",
     "@deepseek-ai/dsh-client-ui-primitives": "*",
     "@deepseek-ai/dsh-client-ui-slots": "*",
+    "@deepseek-ai/dsh-file-reference": "*",
     "@deepseek-ai/dsh-typert-protocol": "*",
     "@deepseek-ai/dsh-util-workspace-path": "*",
     "clsx": "^2.0.0",
@@ -29,6 +30,7 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-api-workspace-files",
+        "@deepseek-ai/dsh-client-ui-input-trigger",
         "@deepseek-ai/dsh-client-ui-sidebar-right",
         "@deepseek-ai/dsh-client-ui-session",
         "@deepseek-ai/dsh-api-remotes",

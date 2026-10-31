@@ -96,7 +96,7 @@ it(
     // Fixture preparation is complete. All page actions use the normal picker/editor/send controls.
     await page.goto(url);
     await page.getByText("Native Model", { exact: true }).waitFor();
-    await page.getByRole("button", { name: "Add files or run commands", exact: true }).click();
+    await page.locator("[data-composer-input]:visible").pressSequentially("/");
     const chooser = page.waitForEvent("filechooser");
     await page.getByRole("option", { name: /^File\b/u }).click();
     await (await chooser).setFiles(names.map((name) => join(root, name)));

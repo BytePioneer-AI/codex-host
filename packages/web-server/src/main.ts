@@ -195,6 +195,7 @@ const sessions = new ChSessions(
 const dsh = await DshWebServices.open({
   workspaceRoot: resolve(values.workspace as string),
   threadWorkspace: (id) => sessions.localWorkspaceRoot(id),
+  fileWorkspace: (id) => sessions.fileWorkspaceRoot(id),
 }).catch((error: unknown) => {
   console.warn(
     "[right-sidebar] unavailable:",

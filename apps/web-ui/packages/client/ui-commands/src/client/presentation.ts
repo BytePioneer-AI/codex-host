@@ -16,14 +16,8 @@ import type { CommandKey } from "./locales.ts";
 import { builtinCommandName } from "./resolution.ts";
 import type { BuiltinCommandName } from "./resolution.ts";
 
-/** The menu's two sections. */
-export type MenuSection = "add" | "commands";
-
-/** Row names per section, highest usage first; rows outside both lists close the Commands section in catalog order. */
-const SECTION_ROWS: Readonly<Record<MenuSection, readonly string[]>> = {
-  add: ["file", "goal", "plan", "feedback"],
-  commands: ["compact", "permission", "model", "export"],
-};
+/** Interface actions in display order; other rows retain catalog order. */
+const ROW_ORDER = ["file", "goal", "plan", "feedback", "compact", "permission", "model", "export"];
 
 /** The dictionary keys and glyph of one built-in Host command's client face. */
 interface HostFace {
@@ -76,9 +70,8 @@ export function builtinRowFace(
 }
 
 /**
- * Arrange the empty-query menu: the Add section, then the Commands section,
- * each in usage order, with unlisted rows closing Commands in their input
- * order; each row carries its section heading.
+ * Arrange interface actions in usage order under one section heading.
+ * Unlisted rows retain their input order.
  * @param rows - the visible candidates in catalog-then-contribution order.
  * @param t - the `command` namespace translator.
  * @returns the sectioned rows.
@@ -87,17 +80,15 @@ export function sectionRows(
   rows: readonly InputTriggerCandidate[],
   t: TranslateNS<"command">,
 ): readonly InputTriggerCandidate[] {
-  const listed = new Set([...SECTION_ROWS.add, ...SECTION_ROWS.commands]);
+  const listed = new Set(ROW_ORDER);
   const byName = new Map(rows.map((row) => [row.name, row]));
   const pick = (names: readonly string[]): InputTriggerCandidate[] =>
     names.flatMap((name) => {
       const row = byName.get(name);
       return row === undefined ? [] : [row];
     });
-  const add = pick(SECTION_ROWS.add).map((row) => ({ ...row, section: t("section.add") }));
-  const commands = [
-    ...pick(SECTION_ROWS.commands),
-    ...rows.filter((row) => !listed.has(row.name)),
-  ].map((row) => ({ ...row, section: t("section.commands") }));
-  return [...add, ...commands];
+  return [...pick(ROW_ORDER), ...rows.filter((row) => !listed.has(row.name))].map((row) => ({
+    ...row,
+    section: t("section.interface"),
+  }));
 }

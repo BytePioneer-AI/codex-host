@@ -13,3 +13,10 @@ The right Sidebar also embeds upstream host services: `packages/fs/fs`, `package
 The upstream MIT license is retained in `LICENSE`, framework package licenses remain under `vendor/`, and upstream dependency notices are retained in `THIRD_PARTY_NOTICES.md`. Local import adaptations include private npm manifests, source exports, the selected source build, and removal of the upstream standalone Web Worker preview entry. The root LGPL license does not replace these notices.
 
 See [the Web feature document](../../docs/product/standalone-web.md) for runtime isolation, commands and supported behavior.
+
+Workspace mention search adapts DSH `file-reference-local/src/search.ts` in
+`packages/web-server/src/workspace-file-search.ts`; the Web gateway binds the existing
+`fileReferences/list` contract to server-owned Thread/draft workspaces. This keeps
+bounded recursive fuzzy search and path-only results without mounting DSH's Agent
+runtime or its prompt injection. Web owns the bounded cache and periodic invalidation;
+`tests/dsh/file-reference/search.spec.ts` retains the upstream search regressions.

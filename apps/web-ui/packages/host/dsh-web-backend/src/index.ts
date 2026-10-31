@@ -34,6 +34,8 @@ export interface DshWebBackendOptions {
    * @returns the Host-recorded directory, or undefined when this Thread has none.
    */
   readonly threadWorkspace: (sessionId: string) => string | undefined;
+  /** File access root for a local Thread or a workspace-bound draft; defaults to threadWorkspace. */
+  readonly fileWorkspace?: (sessionId: string) => string | undefined;
 }
 
 /** One Remote failure in the DSH wire vocabulary. */
@@ -117,12 +119,11 @@ export async function createDshWebBackend(options: DshWebBackendOptions): Promis
   try {
     await ctx.plugin(TypertRegistry);
     await ctx.plugin(LocalFileSystem, { cwd: options.workspaceRoot });
-    // DSH resolves a Session header from its own session service. Web already
-    // owns Thread identity, so this seam answers from the Host-recorded local
-    // working directory and returns nothing for every other Thread.
+    // File scopes use Web's local Thread or draft workspace. Agent-bound
+    // services below still require a Host-recorded Thread.
     ctx.provide("sessions", {
       get(sessionId: string): { id: string; header: { cwd: string } } | undefined {
-        const cwd = options.threadWorkspace(sessionId);
+        const cwd = (options.fileWorkspace ?? options.threadWorkspace)(sessionId);
         return cwd === undefined ? undefined : sessionHeader(sessionId, cwd);
       },
     });

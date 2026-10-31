@@ -174,13 +174,19 @@ The public `/dsh-goal` invocation avoids Codex Desktop's built-in `/goal` comman
 
 ## Web discovery
 
-Web reuses one menu with `/` and `#` triggers plus the existing plus launcher.
-Interface operations stay on `/` and plus; `#` is a GUI-compatible alias for the same
-delegation Agents, native commands and Skills. Each source registers once, declaring
-`#` as a menu alias, so its catalog cache, codec, subscriptions and disposal are shared.
-A word-start `#` or `#query` follows the GUI limit of 32 query characters; digit-leading
-references, repeated hashes, escaped text and word/URL fragments do not trigger. A
-following space closes the menu for Markdown headings without editing the draft.
+Web shares one menu engine across `/`, `@` and `#`. Slash lists interface operations,
+current-Harness native commands and Skills. At and hash are equivalent: delegation
+Agents, native commands, Skills, then workspace files. There is no plus launcher;
+the slash File action, paste and drop retain attachment intake. Sources register once
+with aliases, sharing catalogs, codecs, subscriptions and disposal. At and hash use
+the same whitespace-boundary and quoted-path grammar, including numeric filenames
+and long paths; escaped text and word/URL fragments do not trigger. A following
+unquoted space closes the menu without editing the draft.
+
+File discovery uses the existing `fileReferences/list` wire contract with the server's
+local Thread or draft workspace, independently of native command discovery. The
+DSH bounded path index provides recursive fuzzy matching and directory navigation;
+selection inserts canonical `@path` text without reading contents or starting a Thread.
 
 `ChHarnessCommands` forwards the public catalog unchanged
 through `codexhost/thread/commands/inspect`; execution addresses the stable command ID

@@ -1,11 +1,13 @@
 /** Local Markdown destinations accepted by the file-preview callback. */
 
 /**
- * Decode a file destination and its optional GitHub-style line fragment.
- * Literal `?` and `#` in filenames must be percent-encoded.
+ * Decode a local file destination with a line fragment, range, or line/column suffix.
+ * Fragments take precedence over colon suffixes; invalid locations open the file
+ * without selecting a line. Columns are consumed but not selected. Literal `?`,
+ * `#`, and numeric colon suffixes in filenames must be percent-encoded.
  * @param value - Parsed Markdown link destination.
  * @returns A local path (including local file URLs) and optional first line, or undefined for other URLs,
- * fragment-only links, queries, malformed escapes, or invalid line ranges.
+ * fragment-only links, queries, network paths, or malformed escapes.
  */
 export function parseFileLink(value: string): { path: string; line?: number } | undefined {
   if (/^file:/i.test(value)) {
@@ -40,12 +42,16 @@ export function parseFileLink(value: string): { path: string; line?: number } | 
     (/^[a-z][a-z\d+.-]*:/i.test(path) && !/^[a-z]:[\\/]/i.test(path))
   )
     return undefined;
-  if (hash < 0) return { path };
-  const fragment = value.slice(hash + 1);
-  const match = /^L([1-9]\d*)(?:-L([1-9]\d*))?$/.exec(fragment);
-  if (match === null) return undefined;
+  // Identify locations in the authored destination, not decoded filename characters.
+  // Validate URL schemes first so a URL's numeric tail is never treated as a line.
+  const suffix = hash < 0 ? /:(\d+)(?::\d+|-(\d+))?$/.exec(destination) : null;
+  if (suffix !== null) path = path.slice(0, -suffix[0].length);
+  if (path.length === 0) return undefined;
+  const match = suffix ?? (hash < 0 ? null : /^L(\d+)(?:-L(\d+))?$/.exec(value.slice(hash + 1)));
+  if (match === null) return { path };
   const line = Number(match[1]);
   const end = match[2] === undefined ? line : Number(match[2]);
-  if (!Number.isSafeInteger(line) || !Number.isSafeInteger(end) || end < line) return undefined;
+  if (!Number.isSafeInteger(line) || !Number.isSafeInteger(end) || line < 1 || end < line)
+    return { path };
   return { path, line };
 }

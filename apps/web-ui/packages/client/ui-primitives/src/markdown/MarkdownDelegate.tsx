@@ -25,6 +25,7 @@ export interface MarkdownDelegate {
   /** Image previews for decoded local paths in this owner's workspace. */
   readonly fileImages?:
     | {
+        /** Absolute preview URL; non-data/blob URLs receive a per-mount `load` query parameter. */
         resolve: (path: string) => string | undefined;
         labels: ImageLightboxLabels & { open: string; loading: string; failed: string };
       }

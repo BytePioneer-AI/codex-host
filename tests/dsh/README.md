@@ -30,6 +30,17 @@ and touch/keyboard wide-table scrolling are covered by
 hover-capability change is extracted from `94ffdd2377`, with keyboard focus
 ordered after the resting rule to preserve its precedence.
 
+Additional Markdown regressions cover local line suffixes (`09d9f1152e` +
+`b1cb1f34e9`, retaining CodexHost's file URL handling and protocol/network-path
+restrictions), CJK/astral bare-URL boundaries (`bdfc0c1d12` + `ca40dc544e`), and
+per-mount local image refresh (`3b0ad0aad4` + `845c155faa`). The two autolink
+patches in `patches/` are applied by the repository's npm postinstall script.
+`packages/web-server/test/browser/markdown-links-refresh.test.ts` checks real
+preview line navigation and overwritten image bytes without reloading the page.
+`chat/assistant-visibility.spec.ts` exercises `4955eaa680` through the conversation
+assembler, including retries, sparse blocks, full-text scan work, and the existing
+argument-only Tool delta fast path.
+
 Run them alone with:
 
 ```sh

@@ -1376,6 +1376,7 @@ describe("Renderer Connections page", () => {
     ["codebuddy", "https://www.codebuddy.ai/"],
     ["workbuddy", "https://www.workbuddy.ai/"],
     ["cursor-cli", "https://cursor.com/"],
+    ["devin", "https://devin.ai/"],
     ["hermes", "https://hermes-agent.nousresearch.com/"],
     ["qoder", "https://qoder.com/"],
     ["qoder-cn", "https://qoder.cn/"],
@@ -1818,6 +1819,59 @@ describe("Renderer Connections page", () => {
       scope.dispose();
     },
   );
+  it("keeps launch settings replaceable after they fail to load", async () => {
+    const agent = "zcode";
+    const messages = rendererSettingsMessages("en");
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: [
+              { agent, plugin: pluginDescriptor(agent), availability: "notInstalled", error: null },
+            ],
+          },
+        ],
+      }),
+      refresh: vi.fn(async () => undefined),
+      getLaunchSettings: vi.fn(async () => {
+        throw new Error("unreadable");
+      }),
+      setLaunchSettings: vi.fn(async () => ({ path: null, restartRequired: true })),
+      subscribe: () => () => undefined,
+    };
+    const page = createDefaultRendererSettingsPages(
+      messages,
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Expected connections page");
+    const document = new FakeDocument("Win32");
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+    if (!row) throw new Error("Expected Harness row");
+    row.dispatch("click", { target: null });
+    const panel = elementWithClass(content, "settings-connection-inspector__body");
+    await vi.waitFor(() => expect(visibleText(panel)).toContain(messages.launchPathLoadError));
+    const reset = descendants(panel).find(
+      ({ textContent }) => textContent === messages.launchPathReset,
+    );
+    if (!reset) throw new Error("Expected reset button");
+    expect(reset.disabled).toBe(false);
+    reset.dispatch("click");
+    await vi.waitFor(() => expect(visibleText(panel)).toContain(messages.launchPathRestart));
+    expect(diagnostics.setLaunchSettings).toHaveBeenCalledExactlyOnceWith("local", agent, null);
+    cleanup?.();
+    scope.dispose();
+  });
   it("offers automatic installation only for Harnesses with an install command", () => {
     const installation = vi.fn(async () => {
       throw new Error("not expected");
@@ -2631,59 +2685,58 @@ describe("Renderer Updates page", () => {
   });
 
   it.each([
-    ["npm" as const, "Windows 暂不支持自动更新。请退出 codexhost，在终端运行以下命令完成更新。"],
-    [
-      "windows-installer" as const,
-      "Windows 暂不支持自动更新。请下载并运行适用于当前系统的安装包。",
-    ],
-  ])("renders manual Windows updates for %s installations", async (installation, expected) => {
-    const client = {
-      checkUpdate: vi.fn(async () => ({ ...updateCheck(), installation })),
-      startUpdate: vi.fn(),
-      readUpdateStatus: vi.fn(async () => ({ status: null })),
-    };
-    const page = createDefaultRendererSettingsPages(
-      rendererSettingsMessages("zh-CN"),
-      () => client,
-    ).find(({ id }) => id === "updates");
-    if (!page) throw new Error("Updates page is not registered");
+    ["npm" as const, "如需手动更新，请在终端运行以下命令。"],
+    ["windows-installer" as const, "如需手动更新，请下载并运行适用于当前系统的安装包。"],
+  ])(
+    "offers one-click and manual Windows updates for %s installations",
+    async (installation, expected) => {
+      const client = {
+        checkUpdate: vi.fn(async () => ({ ...updateCheck(), installation })),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(async () => ({ status: null })),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("zh-CN"),
+        () => client,
+      ).find(({ id }) => id === "updates");
+      if (!page) throw new Error("Updates page is not registered");
 
-    const document = new FakeDocument("Win32");
-    const content = document.createElement("main");
-    const scope = new RendererSettingsPageScope();
-    const cleanup = page.mount({
-      content: content as unknown as HTMLElement,
-      signal: scope.signal,
-      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
-    });
+      const document = new FakeDocument("Win32");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
 
-    await vi.waitFor(() => {
-      expect(visibleText(content)).toContain(expected);
-      expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
-        "Windows 暂不支持自动更新",
-      );
-    });
-    expect(
-      descendants(elementWithClass(content, "settings-update-panel")).find(
+      await vi.waitFor(() => {
+        expect(visibleText(content)).toContain(expected);
+        expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
+          "有新版本可用",
+        );
+      });
+      expect(visibleText(content)).not.toContain("暂不支持自动更新");
+      const update = descendants(elementWithClass(content, "settings-update-panel")).find(
         ({ tagName }) => tagName === "button",
-      ),
-    ).toBeUndefined();
-    expect(client.startUpdate).not.toHaveBeenCalled();
-    if (installation === "npm") {
-      expect(visibleText(content)).toContain("npm install -g @codexhost/cli@latest");
-    } else {
-      const link = descendants(content).find(
-        ({ tagName, href }) =>
-          tagName === "a" &&
-          href ===
-            "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
       );
-      expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
-    }
+      expect(update).toBeDefined();
+      if (installation === "npm") {
+        expect(visibleText(content)).toContain("npm install -g @codexhost/cli@latest");
+      } else {
+        const link = descendants(content).find(
+          ({ tagName, href }) =>
+            tagName === "a" &&
+            href ===
+              "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+        );
+        expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
+      }
 
-    cleanup?.();
-    scope.dispose();
-  });
+      cleanup?.();
+      scope.dispose();
+    },
+  );
 
   it("renders the open-source project introduction on the About page", () => {
     const page = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(
@@ -2841,6 +2894,100 @@ describe("Renderer Updates page", () => {
 });
 
 describe("Renderer Session Import page", () => {
+  it("selects an explicit Host when tabs are ambiguous and invalidates disconnected Host switches", async () => {
+    const rows = [
+      {
+        nativeSessionId: "remote-session",
+        title: "Remote session",
+        cwd: "/remote",
+        updatedAt: 1,
+        running: false,
+      },
+    ];
+    const slow = deferred<{ candidates: typeof rows; total: number }>();
+    const imported = deferred<{ threadId: ReturnType<typeof hostThreadIdSchema.parse> }>();
+    const remote = {
+      hostId: "remote-1",
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [{ harnessId: harnessIdSchema.parse("pi"), name: "Pi" }],
+      })),
+      listHarnessSessions: vi
+        .fn(async () => ({ candidates: rows, total: 1 }))
+        .mockImplementationOnce(() => slow.promise),
+      importHarnessSession: vi.fn(() => imported.promise),
+    };
+    const getClient = vi.fn((hostId?: string) => (hostId === "remote-1" ? remote : null));
+    const diagnostics = {
+      snapshot: () => ({
+        adapter: {},
+        hosts: ["local", "remote-1"].map((hostId) => ({ hostId, active: false, agents: [] })),
+      }),
+    };
+    const open = vi.fn(async () => undefined);
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => diagnostics as never,
+      () => null,
+      getClient,
+      open,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    const action = (name: string) => {
+      const control = descendants(content).find(
+        ({ dataset }) => dataset.sessionImportAction === name,
+      );
+      if (!control) throw new Error(`Missing ${name}`);
+      return control;
+    };
+    const visibleRows = () =>
+      descendants(content).filter(({ dataset }) => dataset.sessionImportId !== undefined);
+    const hostButton = (hostId: string) => {
+      const button = descendants(content).find(
+        ({ dataset }) => dataset.sessionImportHost === hostId,
+      );
+      if (!button) throw new Error(`Missing Host ${hostId}`);
+      return button;
+    };
+    expect(visibleText(content)).toContain("Select the Host to import sessions from");
+    expect(remote.listSessionImportSources).not.toHaveBeenCalled();
+    hostButton("remote-1").dispatch("click");
+    await vi.waitFor(() => expect(remote.listHarnessSessions).toHaveBeenCalledOnce());
+    hostButton("local").dispatch("click");
+    slow.resolve({ candidates: rows, total: 1 });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Session import is unavailable"));
+    expect(visibleRows()).toHaveLength(0);
+    expect(
+      descendants(content).filter(({ dataset }) => dataset.sessionImportHarnessOption),
+    ).toHaveLength(0);
+    hostButton("remote-1").dispatch("click");
+    await vi.waitFor(() => expect(visibleRows()).toHaveLength(1));
+    expect(hostButton("remote-1").getAttribute("aria-pressed")).toBe("true");
+    action("import").dispatch("click");
+    expect(hostButton("remote-1").disabled).toBe(true);
+    expect(hostButton("local").disabled).toBe(true);
+    getClient.mockClear();
+    hostButton("local").dispatch("click");
+    expect(getClient).not.toHaveBeenCalled();
+    imported.resolve({ threadId: hostThreadIdSchema.parse("imported-remote") });
+    await vi.waitFor(() =>
+      expect(open).toHaveBeenCalledWith("imported-remote", expect.any(AbortSignal), "remote-1"),
+    );
+    action("refresh").dispatch("click");
+    expect(getClient).toHaveBeenLastCalledWith("remote-1");
+    await vi.waitFor(() =>
+      expect(hostButton("remote-1").getAttribute("aria-pressed")).toBe("true"),
+    );
+    scope.dispose();
+  });
+
   it("configures page size, searches all metadata, rejects stale searches and locks controls during import", async () => {
     const rows = Array.from({ length: 45 }, (_, index) => ({
       nativeSessionId: `session-${index}`,
@@ -3069,74 +3216,82 @@ describe("Renderer Session Import page", () => {
     scope.dispose();
   });
 
-  it("hides Harnesses the local Host already reported as not installed, without inspecting again", async () => {
-    const client = {
-      listSessionImportSources: vi.fn(async () => ({
-        harnesses: ["pi", "kimi-code", "grok", "omp", "third-party"].map((id) => ({
-          harnessId: harnessIdSchema.parse(id),
-          name: id,
+  it.each(["local", "remote-1"])(
+    "filters installed Harnesses using only %s diagnostics",
+    async (hostId) => {
+      const client = {
+        hostId,
+        listSessionImportSources: vi.fn(async () => ({
+          harnesses: ["pi", "kimi-code", "grok", "omp", "third-party"].map((id) => ({
+            harnessId: harnessIdSchema.parse(id),
+            name: id,
+          })),
         })),
-      })),
-      listHarnessSessions: vi.fn(async () => ({ total: 0, candidates: [] })),
-      importHarnessSession: vi.fn(),
-    };
-    const agent = (name: string, availability: string) => ({
-      agent: name,
-      availability,
-      error: null,
-    });
-    const diagnostics = {
-      snapshot: vi.fn(() => ({
-        adapter: {},
-        hosts: [
-          {
-            hostId: "local",
-            active: false,
-            agents: [
-              agent("pi", "notInstalled"),
-              agent("kimi-code", "notInstalled"),
-              // Still being checked, failing or incompatible: its own error is shown on use.
-              agent("grok", "checking"),
-              agent("omp", "error"),
-            ],
-          },
-          // Import always uses the local Host; a remote workspace's status is irrelevant.
-          { hostId: "remote-1", active: true, agents: [agent("grok", "notInstalled")] },
-        ],
-      })),
-      refresh: vi.fn(),
-      subscribe: vi.fn(),
-    };
-    const page = createDefaultRendererSettingsPages(
-      rendererSettingsMessages("en"),
-      () => null,
-      () => diagnostics as never,
-      () => null,
-      () => client,
-      vi.fn(async () => undefined),
-    ).find(({ id }) => id === "session-import");
-    if (!page) throw new Error("Session import page missing");
-    const content = new FakeDocument().createElement("main");
-    const scope = new RendererSettingsPageScope();
-    page.mount({
-      content: content as unknown as HTMLElement,
-      signal: scope.signal,
-      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
-    });
-    // The first Harness that is not missing is selected, not the hidden one.
-    await vi.waitFor(() =>
-      expect(client.listHarnessSessions).toHaveBeenCalledWith(
-        expect.objectContaining({ harnessId: "grok" }),
-      ),
-    );
-    expect(
-      descendants(content)
-        .filter(({ dataset }) => dataset.sessionImportHarnessOption !== undefined)
-        .map(({ textContent }) => textContent),
-    ).toEqual(["grok", "omp", "third-party"]);
-    expect(diagnostics.refresh).not.toHaveBeenCalled();
-    scope.dispose();
-  });
+        listHarnessSessions: vi.fn(async () => ({ total: 0, candidates: [] })),
+        importHarnessSession: vi.fn(),
+      };
+      const agent = (name: string, availability: string) => ({
+        agent: name,
+        availability,
+        error: null,
+      });
+      const diagnostics = {
+        snapshot: vi.fn(() => ({
+          adapter: {},
+          hosts: [
+            {
+              hostId: "local",
+              active: false,
+              agents: [
+                agent("pi", "notInstalled"),
+                agent("kimi-code", "notInstalled"),
+                // Still being checked, failing or incompatible: its own error is shown on use.
+                agent("grok", "checking"),
+                agent("omp", "error"),
+              ],
+            },
+            // The non-selected Host must not affect this page's sources.
+            { hostId: "remote-1", active: true, agents: [agent("grok", "notInstalled")] },
+          ],
+        })),
+        refresh: vi.fn(),
+        subscribe: vi.fn(),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("en"),
+        () => null,
+        () => diagnostics as never,
+        () => null,
+        () => client,
+        vi.fn(async () => undefined),
+      ).find(({ id }) => id === "session-import");
+      if (!page) throw new Error("Session import page missing");
+      const content = new FakeDocument().createElement("main");
+      const scope = new RendererSettingsPageScope();
+      page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      // The first Harness that is not missing is selected, not the hidden one.
+      await vi.waitFor(() =>
+        expect(client.listHarnessSessions).toHaveBeenCalledWith(
+          expect.objectContaining({ harnessId: hostId === "local" ? "grok" : "pi" }),
+        ),
+      );
+      expect(
+        descendants(content)
+          .filter(({ dataset }) => dataset.sessionImportHarnessOption !== undefined)
+          .map(({ textContent }) => textContent),
+      ).toEqual(
+        hostId === "local"
+          ? ["grok", "omp", "third-party"]
+          : ["pi", "kimi-code", "omp", "third-party"],
+      );
+      expect(diagnostics.refresh).not.toHaveBeenCalled();
+      scope.dispose();
+    },
+  );
 
   it("shows a scroll hint only while the Harness options overflow and scrolls them with the wheel", async () => {
     const client = {
@@ -3330,7 +3485,7 @@ describe("Renderer Session Import page", () => {
       }),
     );
     await vi.waitFor(() =>
-      expect(open).toHaveBeenCalledWith("pi-imported", expect.any(AbortSignal)),
+      expect(open).toHaveBeenCalledWith("pi-imported", expect.any(AbortSignal), undefined),
     );
     scope.dispose();
   });
@@ -3381,15 +3536,17 @@ describe("Renderer Session Import page", () => {
     if (!refresh) throw new Error("Session Import Refresh is not rendered");
 
     expect(refresh.disabled).toBe(true);
-    expect(visibleNotesText(refresh)).toContain("Loading local sessions");
-    expect(visibleText(content)).toContain("Loading local sessions");
+    expect(visibleNotesText(refresh)).toContain("Loading sessions from the selected Host");
+    expect(visibleText(content)).toContain("Loading sessions from the selected Host");
 
     await vi.waitFor(() => expect(client.listHarnessSessions).toHaveBeenCalledOnce());
     // A synthetic second activation proves runLatest still rejects stale results even if
     // browser-level disabled handling is bypassed.
     refresh.dispatch("click");
     second.resolve({ candidates: [], total: 0 });
-    await vi.waitFor(() => expect(visibleText(content)).toContain("No local sessions"));
+    await vi.waitFor(() =>
+      expect(visibleText(content)).toContain("No sessions are available to import"),
+    );
     expect(refresh.disabled).toBe(false);
 
     first.resolve({
@@ -3398,7 +3555,7 @@ describe("Renderer Session Import page", () => {
     });
     await first.promise;
     await Promise.resolve();
-    expect(visibleText(content)).toContain("No local sessions");
+    expect(visibleText(content)).toContain("No sessions are available to import");
     expect(visibleText(content)).not.toContain("Ignored stale");
 
     refresh.dispatch("click");
@@ -3411,8 +3568,9 @@ describe("Renderer Session Import page", () => {
     scope.dispose();
   });
 
-  it("lists local DSH Modern sessions and imports only an idle row", async () => {
+  it("lists Host-scoped sessions and opens the imported Thread on the same Host", async () => {
     const client = {
+      hostId: "remote-1",
       listSessionImportSources: vi.fn(async () => ({
         harnesses: [
           { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
@@ -3441,13 +3599,15 @@ describe("Renderer Session Import page", () => {
         threadId: hostThreadIdSchema.parse("imported-thread"),
       })),
     };
+    const otherClient = { ...client, hostId: "remote-2", importHarnessSession: vi.fn() };
+    let selectedClient = client;
     const openImportedThread = vi.fn(async () => undefined);
     const page = createDefaultRendererSettingsPages(
       rendererSettingsMessages("zh-CN"),
       () => null,
       () => null,
       () => null,
-      () => client,
+      () => selectedClient,
       openImportedThread,
     ).find(({ id }) => id === "session-import");
     if (!page) throw new Error("Session Import page is not registered");
@@ -3481,7 +3641,7 @@ describe("Renderer Session Import page", () => {
       "会话导入",
     );
     expect(visibleText(content)).toContain(
-      "可选 Harness 来自本地 Host。运行状态未知时，请先在原生客户端关闭该会话再导入，避免同时写入。",
+      "可选 Harness 来自当前 Host。运行状态未知时，请先在原生客户端关闭该会话再导入，避免同时写入。",
     );
     const harnessSelector = descendants(content).find(
       ({ dataset }) => dataset.sessionImportHarness === "selector",
@@ -3523,6 +3683,7 @@ describe("Renderer Session Import page", () => {
     expect(actions[1]?.disabled).toBe(true);
     actions[1]?.dispatch("click");
     expect(client.importHarnessSession).not.toHaveBeenCalled();
+    selectedClient = otherClient;
     actions[0]?.dispatch("click");
     expect(descendants(content)).toContain(actions[0]);
     expect(actions[0]?.getAttribute("aria-disabled")).toBe("true");
@@ -3533,8 +3694,13 @@ describe("Renderer Session Import page", () => {
       harnessId: "deepseek-harness",
       nativeSessionId: "idle-session-identifier-that-is-long",
     });
+    expect(otherClient.importHarnessSession).not.toHaveBeenCalled();
     await vi.waitFor(() =>
-      expect(openImportedThread).toHaveBeenCalledWith("imported-thread", expect.any(AbortSignal)),
+      expect(openImportedThread).toHaveBeenCalledWith(
+        "imported-thread",
+        expect.any(AbortSignal),
+        "remote-1",
+      ),
     );
     scope.dispose();
   });
@@ -3719,8 +3885,9 @@ describe("Renderer Session Import page", () => {
     }
   });
 
-  it("keeps project recovery actions after committed import navigation fails", async () => {
+  it("keeps project recovery and the original Host after committed import navigation fails", async () => {
     const client = {
+      hostId: "remote-original",
       listSessionImportSources: vi.fn(async () => ({
         harnesses: [
           { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
@@ -3742,6 +3909,7 @@ describe("Renderer Session Import page", () => {
         threadId: hostThreadIdSchema.parse("imported-thread"),
       })),
     };
+    let selectedClient = client;
     const openImportedThread = vi
       .fn()
       .mockRejectedValueOnce(new Error("private navigation detail"))
@@ -3751,7 +3919,7 @@ describe("Renderer Session Import page", () => {
       () => null,
       () => null,
       () => null,
-      () => client,
+      () => selectedClient,
       openImportedThread,
     ).find(({ id }) => id === "session-import");
     if (!page) throw new Error("Session Import page is not registered");
@@ -3788,6 +3956,7 @@ describe("Renderer Session Import page", () => {
       ({ dataset }) => dataset.sessionImportAction === "retry-open",
     );
     if (!retry) throw new Error("Retry open action is not rendered");
+    selectedClient = { ...client, hostId: "remote-other" };
     retry.dispatch("click");
     expect(retry.disabled).toBe(true);
     expect(retry.getAttribute("aria-busy")).toBe("true");
@@ -3796,6 +3965,11 @@ describe("Renderer Session Import page", () => {
         ?.disabled,
     ).toBe(true);
     await vi.waitFor(() => expect(openImportedThread).toHaveBeenCalledTimes(2));
+    expect(openImportedThread).toHaveBeenLastCalledWith(
+      "imported-thread",
+      expect.any(AbortSignal),
+      "remote-original",
+    );
     expect(client.importHarnessSession).toHaveBeenCalledOnce();
     scope.dispose();
   });
@@ -3814,7 +3988,7 @@ describe("Renderer Session Import page", () => {
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
 
-    expect(visibleText(content)).toContain("Session import is unavailable for this local Harness");
+    expect(visibleText(content)).toContain("Session import is unavailable for this Harness");
     expect(
       descendants(content).filter(({ dataset }) => dataset.sessionImportAction === "import"),
     ).toHaveLength(0);

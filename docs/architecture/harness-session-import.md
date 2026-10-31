@@ -1,14 +1,14 @@
-# 本地 Harness 会话导入
+# Harness 原生会话导入
 
 ## 当前范围
 
 设置 → 会话导入可登记 **Claude Code、Pi、Hermes、Cursor CLI ACP、Kiro CLI、Grok、CodeBuddy、WorkBuddy、OMP、Kimi Code、OpenCode（v2）、Qoder、Qoder CN** 和 **DSH** 的原生 Session（已验证 `0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2`；命令和限制见 [DSH 验证记录](../harnesses/deepseek/dsh-version-validation.md)）。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
 
-- 设置页始终使用本地 Host，即使 Composer 当前连接远程工作区。
+- Desktop 设置页提供明确的 Host 选择器。未手动选择时使用可唯一确定的 Composer Host；多个本地/远程标签页导致归属不明确时，要求先选择 Host，不显示为协议不支持。手动选择后，刷新仍使用该 Host，不随 Composer 改变。每次加载列表时捕获目标客户端，导入、打开及导航重试始终使用该列表所属 Host；切换 Host 清空旧列表并使在途结果失效，导入和导航重试期间禁止切换。目标 Host 不可用时不回退本地。独立控制台仍使用其连接的本地 Host。
 - 可选 Harness 来自该 Host 已加载、同时提供发现和解析能力的 Adapter，不使用 Renderer 内置 Harness 名单。
-- Host 的目录表示“实现了导入接口”，不保证当前原生运行时可用。导入页另外按 Renderer 已有的连接状态隐藏本地 Host 上确认“未安装”的 Harness（该状态在启动时已批量检查，导入页不再触发任何检查）；仍在检查、检查失败、版本不兼容或 Renderer 不认识的 Harness 照常展示。
+- Host 的目录表示“实现了导入接口”，不保证当前原生运行时可用。导入页另外按 Renderer 已有的连接状态隐藏目标 Host 上确认“未安装”的 Harness（该状态在启动时已批量检查，导入页不再触发任何检查）；仍在检查、检查失败、版本不兼容或 Renderer 不认识的 Harness 照常展示。
 - DSH 仅允许本机、codexhost 托管的 Web；`0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-rc.1` 和 `0.2.1-rc.2` 已验证，低于 `0.1.7-rc.1` 的版本在启动 Web 前拒绝。其他 SemVer 版本可尝试连接及导入，须通过原生 Web 与历史协议校验；Legacy 协议与 V0/V3 已移除。不把版本号当作兼容保证。
-- 本次没有增加远程扫描、Claude Code Broker 导入，也没有完成整个 Agent Picker 的动态插件化。
+- 远程导入复用目标 Host 的公共导入 RPC，由其 Adapter 读取原生存储，不把 Transcript 复制到本机。远端需支持相应 RPC 和原生导入能力；既有 Harness 运行时限制保持不变。macOS 托管远程的 Claude Code、Cursor CLI、CodeBuddy 和 WorkBuddy 通过 Aqua Broker 转发导入能力，需同时更新远程 Host 与 Broker。
 - **Antigravity 未接入**：其 CLI 不向 headless 客户端提供已持久化的 Assistant 历史，codexhost 展示的历史来自按 Host Thread 保存的插件侧记录。导入的原生 Conversation 打开后没有可展示的历史，不满足“打开后恢复历史”的前提。
 
 ## Adapter 契约与职责
@@ -35,7 +35,7 @@ interface HarnessSessionImportSource {
 - `running: true` 表示已知忙碌，Host 拒绝；`false` 表示可可靠确认空闲；`null` 表示无法可靠确认。未知不能降为 false。
 - Adapter 关闭后不能启动新的发现；正在进行的本地扫描要取消并收尾。插件不得直接操作 Host 映射库。
 
-对于已经接入 Desktop 的 Harness，以后增加这两个方法、验证原生 resume 并补齐 Adapter 测试即可复用本地 Host/RPC/导入页面；无需再创建专属导入器或 Renderer 开关。新的插件整体产品接入仍受 [Renderer 边界](harness-plugin-runtime.md) 约束。
+对于已经接入 Desktop 的 Harness，以后增加这两个方法、验证原生 resume 并补齐 Adapter 测试即可复用目标 Host/RPC/导入页面；无需再创建专属导入器或 Renderer 开关。新的插件整体产品接入仍受 [Renderer 边界](harness-plugin-runtime.md) 约束。
 
 ### Adapter 侧公共机制
 
@@ -119,7 +119,7 @@ Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有
 - 不跟随枚举的 Session 目录及 `meta.json`、`store.db`、WAL 符号链接。元数据文件上限为 1 MiB，历史解码沿用原生读取器的记录限制；不另设候选总数上限。扫描会检查目录、元数据、数据库与 WAL 的读取前后指纹，列表跳过变化项；提交导入时只重新读取指定 Session，变化则拒绝本次操作。不缓存已解析的历史。
 - `running` 始终为 `null`，稳定读取不等于会话空闲。**导入前关闭原生客户端中的会话**，Host 不提供跨进程独占或锁接管。
 - 解析结果通过公共契约返回原生引用，明确保存 `executionPolicy: default`。原生历史不能证明以前是否用了 `--force`，所以导入不会猜测或提升权限。Host 继续负责去重、映射持久化与 `notLoaded` 状态；打开后才走正常 ACP `session/load`。
-- 发现和解析不启动 Cursor、不发送 Model Turn、不改写会话内容。Adapter 关闭会取消并等待扫描结束；存储访问错误与空目录分别报告。当前不新增远程扫描或 Broker 导入。
+- 发现和解析不启动 Cursor、不发送 Model Turn、不改写会话内容。Adapter 关闭会取消并等待扫描结束；存储访问错误与空目录分别报告。托管远程 macOS 的发现与解析经 Aqua Broker 转发，仍由 Cursor Adapter 执行相同校验。
 - 此能力仍依赖 Cursor 未公开的 ACP 存储格式；目录及指纹校验不是针对恶意本机文件替换的安全沙箱。
 
 ## 其他 Harness 的原生规则

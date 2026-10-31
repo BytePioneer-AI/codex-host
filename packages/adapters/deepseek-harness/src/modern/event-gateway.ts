@@ -9,10 +9,14 @@ import {
 
 export type ModernApprovalOutcome = "allowed-once" | "rejected" | "cancelled" | "unavailable";
 
+/** Locale → copy map from DSH sandbox escalation / auto-review approvals. */
+export type ModernApprovalDisplayReason = Readonly<Record<string, string>>;
+
 export interface ModernApprovalRequest {
   readonly toolName: string;
   readonly callId?: string;
   readonly reason?: string;
+  readonly displayReason?: ModernApprovalDisplayReason;
 }
 
 export interface ModernQuestionOption {
@@ -975,10 +979,11 @@ function attachedKnownInvocation(
 
 function parseApprovalRequest(value: Readonly<Record<string, unknown>>): ModernApprovalRequest {
   if (
-    !hasOnlyKeys(value, ["toolName"], ["callId", "reason"]) ||
+    !hasOnlyKeys(value, ["toolName"], ["callId", "reason", "displayReason"]) ||
     !nonBlankString(value.toolName) ||
     (Object.hasOwn(value, "callId") && !nonBlankString(value.callId)) ||
-    (Object.hasOwn(value, "reason") && !boundedString(value.reason))
+    (Object.hasOwn(value, "reason") && !boundedString(value.reason)) ||
+    (Object.hasOwn(value, "displayReason") && !isApprovalDisplayReason(value.displayReason))
   ) {
     throw invalidFrame();
   }
@@ -986,7 +991,19 @@ function parseApprovalRequest(value: Readonly<Record<string, unknown>>): ModernA
     toolName: value.toolName,
     ...(typeof value.callId === "string" ? { callId: value.callId } : {}),
     ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+    ...(Object.hasOwn(value, "displayReason")
+      ? { displayReason: value.displayReason as ModernApprovalDisplayReason }
+      : {}),
   };
+}
+
+function isApprovalDisplayReason(value: unknown): value is ModernApprovalDisplayReason {
+  if (!isPlainRecord(value)) return false;
+  const entries = Object.entries(value);
+  if (entries.length === 0) return false;
+  return entries.every(
+    ([locale, text]) => locale.length > 0 && nonBlankString(text) && boundedString(text),
+  );
 }
 
 function parseQuestionRequest(value: Readonly<Record<string, unknown>>): ModernQuestionRequest {

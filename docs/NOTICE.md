@@ -1,15 +1,23 @@
 ---
-enabled: false
-title: 版本兼容性提醒（示例）
-type: warning
+enabled: true
+title: Codex Desktop 兼容修复已发布
+type: info
 ---
 
-这是一条公告样例，当前已关闭，不会显示在 Web 控制台中。发布前请替换标题和正文，并将 `enabled` 改为 `true`。
+**codexhost v0.16.1 已适配 Codex Desktop 26.1027.30824，修复外部 Harness 无法创建聊天和对话的问题。**
 
-如果某个 Codex Desktop 版本出现兼容性问题，可在这里说明：
+如果你受到 10 月 30 日 Desktop 更新的影响，请将 codexhost 升级至最新版本。
 
-- 受影响的版本和具体症状。
-- 用户需要采取的临时措施。
-- 修复进度或预计恢复时间。
+欢迎加入微信群交流，添加微信 **a28417416**，我拉你入群。
 
-[查看项目发布记录](https://github.com/BytePioneer-AI/codex-host/releases)
+[下载最新版本](https://github.com/BytePioneer-AI/codex-host/releases/latest)
+
+## English
+
+**codexhost v0.16.1 restores compatibility with Codex Desktop 26.1027.30824, fixing external Harness chat creation and conversation.**
+
+If you were affected by the October 30 Desktop update, please upgrade codexhost to the latest version.
+
+To join our WeChat group, add me on WeChat at **a28417416**, and I’ll invite you.
+
+[Download the latest version](https://github.com/BytePioneer-AI/codex-host/releases/latest)

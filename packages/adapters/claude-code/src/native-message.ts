@@ -127,6 +127,23 @@ function targetedSubagentId(argumentsValue: unknown): string | undefined {
   );
 }
 
+/** SendMessage can refuse delivery without setting the Tool Result's is_error flag. */
+export function claudeSendMessageFailed(
+  nativeResult: unknown,
+  outputText: string | undefined,
+): boolean {
+  if (isRecord(nativeResult) && typeof nativeResult.success === "boolean") {
+    return nativeResult.success === false;
+  }
+  // SDK history may retain only the JSON text, not the structured native result.
+  try {
+    const parsed: unknown = JSON.parse(outputText ?? "");
+    return isRecord(parsed) && parsed.success === false;
+  } catch {
+    return false;
+  }
+}
+
 function includesAuthenticationFailure(errors: string[]): boolean {
   return errors.some((error) => AUTHENTICATION_ERRORS.has(error));
 }
@@ -1012,7 +1029,9 @@ export class ClaudeNativeTurnAccumulator {
         events.push({
           type: "subagent.completed",
           callId,
-          isError,
+          isError:
+            isError ||
+            (tool.name === "SendMessage" && claudeSendMessageFailed(nativeResult, outputText)),
           ...(subagentContinuesInBackground(nativeResult, outputText)
             ? { continuesInBackground: true }
             : {}),

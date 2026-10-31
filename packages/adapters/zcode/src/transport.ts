@@ -48,6 +48,8 @@ export class CliTransport {
   // Aborting these cancels only this transport's running and queued shared verifications.
   #headerRequests = new Map<string, AbortController>();
   #startPlan = false;
+  #signedIn = false;
+  #startPlanChecked = true;
   #codingPlan!: PersonalCodingPlanAccount;
   #fault: Error | undefined;
   #closed = false;
@@ -59,6 +61,14 @@ export class CliTransport {
   /** Whether the signed-in ZCode account contributed Start Plan providers. */
   get startPlan() {
     return this.#startPlan;
+  }
+  /** Whether ZCode Desktop is signed in to a Zhipu account, whatever that account is entitled to. */
+  get signedIn() {
+    return this.#signedIn;
+  }
+  /** False when the Start Plan balance could not be read, so its entitlement is unknown. */
+  get startPlanChecked() {
+    return this.#startPlanChecked;
   }
   constructor(readonly options: TransportOptions) {
     this.#context = {
@@ -74,10 +84,14 @@ export class CliTransport {
     const {
       params: accountParams,
       startPlan,
+      signedIn,
+      startPlanChecked,
       codingPlan,
     } = await accountConfig(installation, this.options.environment);
     this.#installation = installation;
     this.#startPlan = startPlan;
+    this.#signedIn = signedIn;
+    this.#startPlanChecked = startPlanChecked;
     this.#codingPlan = codingPlan;
     // ZCode Desktop runs its Agent CLI on its own Electron build as Node; the CLI's native
     // plugin modules are built for that runtime. Its tool children inherit the variable, as there.

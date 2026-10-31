@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   applyRendererTriggerChipSqueezeRoot,
   applyRendererTriggerChipSqueezeTrigger,
+  observeRendererCompactComposer,
   rendererCreditsTriggerMaxWidth,
   rendererModelTriggerMaxWidth,
   rendererPermissionModeTriggerMaxWidth,
@@ -26,6 +27,83 @@ function fakeElement(): HTMLElement {
 }
 
 describe("Renderer trigger chip squeeze layout", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("follows the composer width and restores the normal layout on expansion", () => {
+    let onResize: ResizeObserverCallback | undefined;
+    const disconnect = vi.fn();
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          onResize = callback;
+        }
+        observe = vi.fn();
+        disconnect = disconnect;
+      },
+    );
+    const attributes = new Set<string>();
+    let width = 360;
+    const composer = {
+      getBoundingClientRect: () => ({ width }),
+      toggleAttribute: (name: string, enabled: boolean) => {
+        if (enabled) attributes.add(name);
+        else attributes.delete(name);
+      },
+      removeAttribute: (name: string) => attributes.delete(name),
+    } as unknown as Element;
+
+    const stop = observeRendererCompactComposer(composer);
+    expect(attributes.has("data-codexhost-compact-composer")).toBe(true);
+    width = 480;
+    onResize?.([{ contentRect: { width: 480 } } as ResizeObserverEntry], {} as ResizeObserver);
+    expect(attributes.has("data-codexhost-compact-composer")).toBe(false);
+    width = 320;
+    onResize?.([{ contentRect: { width: 320 } } as ResizeObserverEntry], {} as ResizeObserver);
+    expect(attributes.has("data-codexhost-compact-composer")).toBe(true);
+    stop();
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(attributes.has("data-codexhost-compact-composer")).toBe(false);
+  });
+
+  it.each([
+    { width: 420, contentWidth: 386, compact: true },
+    { width: 421, contentWidth: 387, compact: false },
+    { width: 400, contentWidth: 500, compact: true },
+  ])(
+    "keeps the initial width decision at $width px when content width differs",
+    ({ width, contentWidth, compact }) => {
+      let onResize: ResizeObserverCallback | undefined;
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          constructor(callback: ResizeObserverCallback) {
+            onResize = callback;
+          }
+          observe = vi.fn();
+          disconnect = vi.fn();
+        },
+      );
+      const attributes = new Set<string>();
+      const composer = {
+        getBoundingClientRect: () => ({ width }),
+        toggleAttribute: (name: string, enabled: boolean) => {
+          if (enabled) attributes.add(name);
+          else attributes.delete(name);
+        },
+        removeAttribute: (name: string) => attributes.delete(name),
+      } as unknown as Element;
+      const stop = observeRendererCompactComposer(composer);
+      expect(attributes.has("data-codexhost-compact-composer")).toBe(compact);
+      onResize?.(
+        [{ target: composer, contentRect: { width: contentWidth } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+      expect(attributes.has("data-codexhost-compact-composer")).toBe(compact);
+      stop();
+    },
+  );
+
   it("exposes max-width budgets that fit a squeezed composer footer", () => {
     expect(rendererModelTriggerMaxWidth()).toBe("min(200px, 26vw)");
     expect(rendererPermissionModeTriggerMaxWidth()).toBe("min(160px, 24vw)");

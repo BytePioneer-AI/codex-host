@@ -29,7 +29,7 @@ use std::sync::{OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use active_update::start_pending_update;
 use active_update::update_waiting_for_launcher_exit;
 #[cfg(target_os = "windows")]
@@ -61,8 +61,6 @@ use runtime_instance::{
     remove_matching_descriptor,
 };
 use startup_record::StartupOutcome;
-#[cfg(target_os = "macos")]
-use system_proxy_environment::launcher_proxy_environment;
 
 const HOST_NODE_PATH_ENV: &str = "CODEXHOST_HOST_NODE_PATH";
 const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
@@ -127,10 +125,22 @@ impl Display for UnmanagedDesktopConflict {
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 impl Error for UnmanagedDesktopConflict {}
 
+const USAGE: &str = "usage:
+  codexhost
+  codexhost --help
+  codexhost --version
+  codexhost inspect [--json] [--custom-install <absolute-directory>]
+  codexhost console
+  codexhost update
+  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]
+  codexhost broker install|status|stop|uninstall
+  codexhost delegate --help
+  codexhost harness list|inspect ...
+  codexhost delegate start ...
+  codexhost thread send|cancel|read|wait|watch|watches|list ...";
+
 fn usage() {
-    eprintln!(
-        "usage:\n  codexhost\n  codexhost inspect [--json] [--custom-install <absolute-directory>]\n  codexhost console\n  codexhost update\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
-    );
+    eprintln!("{USAGE}");
 }
 
 const LOOPBACK_URL_MAX_BYTES: u64 = 4096;
@@ -881,8 +891,12 @@ fn supervise_desktop(
     };
     startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
+    let mut started_update_request = None;
     loop {
-        if should_stop_desktop_for_update(false) {
+        if let Err(error) = start_pending_update(&mut started_update_request) {
+            eprintln!("codexhost launcher: pending update could not be started: {error}");
+        }
+        if should_stop_desktop_for_update(started_update_request.is_some()) {
             if let Err(error) = stop_managed_desktop_for_update(&mut desktop, &mut controller) {
                 eprintln!(
                     "codexhost launcher: managed Desktop could not be stopped for update: {error}"
@@ -977,6 +991,12 @@ fn desktop_environment(
     environment.extend(desktop_path_overrides::forwarded(env::vars_os()));
     #[cfg(target_os = "linux")]
     environment.extend(linux_wayland_runtime_environment(env::vars_os()));
+    #[cfg(target_os = "windows")]
+    for name in ["PATH", "PATHEXT"] {
+        if let Some(value) = env::var_os(name) {
+            environment.push((OsString::from(name), value));
+        }
+    }
     environment
 }
 
@@ -1181,10 +1201,10 @@ fn launch(
                 env::var_os(REMOTE_SSH_MANAGED_ENV),
             ),
         );
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         let environment = {
             let mut environment = environment;
-            environment.extend(launcher_proxy_environment());
+            environment.extend(codexhost_platform::proxy_environment());
             environment
         };
         let result = supervise_desktop(
@@ -1368,6 +1388,15 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             resume_packaged_application(&arguments[1..]).map_err(Into::into)
         }
         None => launch(default_launch_options(), false),
+        Some("--help" | "-h" | "help") => {
+            println!("{USAGE}");
+            Ok(())
+        }
+        // Matches the npm wrapper, which prints its plain package version.
+        Some("--version" | "-V" | "-v") if arguments.len() == 1 => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch(default_launch_options(), true),
         Some("inspect") => {
             let options = parse_inspect_options(&arguments[1..])?;
@@ -1933,6 +1962,29 @@ mod tests {
             OsString::from("CODEXHOST_DATA_DIR"),
             OsString::from("/home/codex/.codexhost"),
         )));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn desktop_environment_forwards_windows_command_search_variables() {
+        let environment = desktop_environment(
+            &resolved_options(),
+            &runtime_control(),
+            Path::new(r"C:\\codexhost.exe"),
+            Path::new(r"C:\\runtime\\desktop-runtime-v1.json"),
+            None,
+        );
+
+        for name in ["PATH", "PATHEXT"] {
+            assert_eq!(
+                environment
+                    .iter()
+                    .find(|(candidate, _)| candidate == name)
+                    .map(|(_, value)| value),
+                std::env::var_os(name).as_ref(),
+                "{name} must reach the AppX-launched Host Runtime"
+            );
+        }
     }
 
     #[test]

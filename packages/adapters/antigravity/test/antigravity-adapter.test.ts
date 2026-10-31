@@ -1,8 +1,8 @@
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type { HarnessOutput, HostEvent } from "@codexhost/harness-adapter";
+import type { HarnessOutput, HarnessSession, HostEvent } from "@codexhost/harness-adapter";
 import {
   accountCreditsSnapshotSchema,
   harnessModelRefSchema,
@@ -122,6 +122,15 @@ describe("Antigravity Adapter", () => {
     (subagentObservationTimeoutMs) => {
       expect(() => new AntigravityAdapter({ subagentObservationTimeoutMs })).toThrow(
         new RangeError("subagentObservationTimeoutMs must be a finite positive number"),
+      );
+    },
+  );
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1])(
+    "rejects invalid Turn cleanup wait %s",
+    (turnCleanupWaitMs) => {
+      expect(() => new AntigravityAdapter({ turnCleanupWaitMs })).toThrow(
+        new RangeError("turnCleanupWaitMs must be a finite non-negative number"),
       );
     },
   );
@@ -1397,6 +1406,242 @@ setTimeout(() => { process.exit(0); }, 50);
       }
     });
 
+    it("keeps one Question Hook directory per Thread across Turns and a resumed Session", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-hooks-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-hooks-cwd-"));
+      const dataDir = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-hooks-data-"));
+      const runs = path.join(directory, "runs.jsonl");
+      const cleanup = async (): Promise<void> => {
+        for (const target of [directory, cwd, dataDir]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      // Records each Turn's --add-dir values and prompt, then answers like agy resuming one
+      // Conversation.
+      const scriptContent = `
+const fs = require("node:fs");
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+// The quota probe runs as --print=/usage; Turns carry --print-timeout instead.
+if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
+const addDirs = process.argv.filter((_, index, all) => all[index - 1] === "--add-dir");
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  if (input.includes("\\n")) return;
+  input += chunk;
+  const newline = input.indexOf("\\n");
+  if (newline === -1) return;
+  const prompt = JSON.parse(input.slice(0, newline)).message.content;
+  fs.appendFileSync(${JSON.stringify(runs)}, JSON.stringify({ addDirs, prompt }) + "\\n");
+  const turn = fs.readFileSync(${JSON.stringify(runs)}, "utf8").trim().split("\\n").length;
+  for (const event of [
+    { event: "init", conversation_id: "conv-hooks", init: { permission_mode: "dangerously-skip-permissions" } },
+    { event: "result", result: { conversation_id: "conv-hooks", status: "SUCCESS", num_turns: turn, response: "ok" } },
+  ]) {
+    process.stdout.write(JSON.stringify(event) + "\\n");
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      let command: string;
+      if (process.platform === "win32") {
+        command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        command = path.join(directory, "agy");
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const runTurns = async (session: HarnessSession, turnIds: readonly string[]) => {
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        for (const turnId of turnIds) {
+          const started = await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse(turnId),
+            input: [{ type: "text", text: "hello" }],
+          });
+          expect(started.ok).toBe(true);
+          while ((await nextEvent(iterator)).type !== "turn.completed") {
+            // This Turn's remaining events are not under test.
+          }
+        }
+      };
+      // The Host names the Thread when it opens or resumes the Session.
+      const threadEnvironment = { CODEXHOST_THREAD_ID: "thread-hooks" };
+      const hookDirectory = path.join(dataDir, "antigravity-history", "hooks", "thread-hooks");
+      const adapter = new AntigravityAdapter({
+        command,
+        environment: { ...process.env, CODEXHOST_DATA_DIR: dataDir },
+      });
+      try {
+        const created = await adapter.open({ kind: "create", cwd, environment: threadEnvironment });
+        if (!created.ok) throw new Error(created.error.message);
+        await runTurns(created.value, ["turn-hooks-1", "turn-hooks-2"]);
+        await created.value.close();
+        await expect(access(path.join(hookDirectory, ".agents", "hooks.json"))).resolves.toBe(
+          undefined,
+        );
+
+        const resumed = await adapter.open({
+          kind: "resume",
+          cwd,
+          environment: threadEnvironment,
+          nativeRef: nativeSessionRefSchema.parse({
+            harnessId: "antigravity",
+            nativeSessionId: "conv-hooks",
+            formatVersion: 1,
+          }),
+        });
+        if (!resumed.ok) throw new Error(resumed.error.message);
+        await runTurns(resumed.value, ["turn-hooks-3"]);
+        await resumed.value.close();
+
+        const recorded = (await readFile(runs, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as { addDirs: string[]; prompt: string });
+        expect(recorded.map(({ addDirs }) => addDirs)).toEqual([
+          [cwd, hookDirectory],
+          [cwd, hookDirectory],
+          [cwd, hookDirectory],
+        ]);
+        for (const { prompt } of recorded) {
+          expect(prompt).toContain(`The project working directory is ${JSON.stringify(cwd)}.`);
+          expect(prompt.endsWith("hello")).toBe(true);
+        }
+        await expect(access(path.join(hookDirectory, "question-hook.cjs"))).resolves.toBe(
+          undefined,
+        );
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it.each([
+      // A Thread's kept Hook directory waits for the previous cleanup, which gives up on the
+      // held output after the bound.
+      { scenario: "for a Thread", threadId: "thread-linger", turnCleanupWaitMs: 200 },
+      // A private per-Turn directory never waits, however long that cleanup may take.
+      { scenario: "without a Thread ID", threadId: undefined, turnCleanupWaitMs: 60_000 },
+    ])(
+      "starts the next Turn $scenario when the previous Turn's agy keeps its output open",
+      async ({ threadId, turnCleanupWaitMs }) => {
+        const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-linger-"));
+        const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-linger-cwd-"));
+        const dataDir = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-linger-data-"));
+        const runs = path.join(directory, "runs.txt");
+        const holderPidFile = path.join(directory, "holder.pid");
+        const cleanup = async (): Promise<void> => {
+          for (const target of [directory, cwd, dataDir]) {
+            await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+          }
+        };
+        // The first Turn leaves a child holding its output pipes, as a lingering native helper
+        // would, so that Turn's process does not report closing until the child is stopped.
+        const scriptContent = `
+const fs = require("node:fs");
+const { spawn } = require("node:child_process");
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
+fs.appendFileSync(${JSON.stringify(runs)}, "run\\n");
+const turn = fs.readFileSync(${JSON.stringify(runs)}, "utf8").trim().split("\\n").length;
+if (turn === 1) {
+  // Detached so it outlives this process on Windows too, where a child otherwise ends with it.
+  const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], {
+    detached: true,
+    stdio: ["ignore", "inherit", "inherit"],
+    windowsHide: true,
+  });
+  fs.writeFileSync(${JSON.stringify(holderPidFile)}, String(holder.pid));
+}
+for (const event of [
+  { event: "init", conversation_id: "conv-linger", init: { permission_mode: "dangerously-skip-permissions" } },
+  { event: "result", result: { conversation_id: "conv-linger", status: "SUCCESS", num_turns: turn, response: "ok" } },
+]) {
+  process.stdout.write(JSON.stringify(event) + "\\n");
+}
+process.stdin.resume();
+process.stdin.on("end", () => process.exit(0));
+`;
+        const jsPath = path.join(directory, "agy.cjs");
+        await writeFile(jsPath, scriptContent);
+        let command: string;
+        if (process.platform === "win32") {
+          command = path.join(directory, "agy.cmd");
+          await writeFile(command, `@node "${jsPath}" %*\r\n`);
+        } else {
+          command = path.join(directory, "agy");
+          await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+          await chmod(command, 0o755);
+        }
+
+        // The test process may itself run inside a Host Thread.
+        const environment = Object.fromEntries(
+          Object.entries(process.env).filter(
+            ([name]) => name !== "CODEXHOST_THREAD_ID" && name !== "CODEXHOST_DELEGATION_THREAD_ID",
+          ),
+        );
+        const adapter = new AntigravityAdapter({
+          command,
+          environment: { ...environment, CODEXHOST_DATA_DIR: dataDir },
+          turnCleanupWaitMs,
+        });
+        let holderPid: number | undefined;
+        try {
+          const opened = await adapter.open({
+            kind: "create",
+            cwd,
+            environment: threadId ? { CODEXHOST_THREAD_ID: threadId } : {},
+          });
+          if (!opened.ok) throw new Error(opened.error.message);
+          const session = opened.value;
+          const iterator = session.outputs[Symbol.asyncIterator]();
+          for (const turnId of ["turn-linger-1", "turn-linger-2"]) {
+            const started = await session.execute({
+              type: "turn.start",
+              turnId: hostTurnIdSchema.parse(turnId),
+              input: [{ type: "text", text: "hello" }],
+            });
+            expect(started.ok).toBe(true);
+            while ((await nextEvent(iterator)).type !== "turn.completed") {
+              // This Turn's remaining events are not under test.
+            }
+            holderPid ??= Number(await readFile(holderPidFile, "utf8"));
+          }
+          const holder = holderPid;
+          if (holder === undefined) throw new Error("The first Turn did not start its child");
+          // The second Turn ran while the first Turn's output was still held open.
+          expect(() => process.kill(holder, 0)).not.toThrow();
+          if (threadId) {
+            // Every queued cleanup and close() finish while that output is still held open.
+            await session.close();
+            expect(() => process.kill(holder, 0)).not.toThrow();
+          }
+        } finally {
+          if (holderPid !== undefined) {
+            try {
+              process.kill(holderPid);
+            } catch {
+              // Already stopped.
+            }
+          }
+          await adapter.close();
+          await cleanup();
+        }
+      },
+      20_000,
+    );
+
     it("projects file steps as Tool Executions when the applied patch cannot be read", async () => {
       const streamLines = [
         JSON.stringify({
@@ -1751,6 +1996,83 @@ if (count === 0) {
       }
     });
 
+    it("estimates context from the latest request's prompt, not the Conversation's result totals", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "dangerously-skip-permissions" },
+          conversation_id: "conv-context",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-context",
+            step_index: 7,
+            state: "DONE",
+            step_type: "agent_response",
+            text_delta: "Done.",
+            // agy reports the cached part of this request's prompt separately.
+            usage: {
+              input_tokens: 2_751,
+              cache_read_tokens: 80_432,
+              output_tokens: 146,
+              thinking_tokens: 0,
+              total_tokens: 83_329,
+            },
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-context",
+            status: "SUCCESS",
+            num_turns: 3,
+            response: "Done.",
+            // Totals over every request of the resumed Conversation, not one prompt.
+            usage: {
+              input_tokens: 120_418,
+              cache_read_tokens: 412_903,
+              output_tokens: 1_204,
+              thinking_tokens: 0,
+              total_tokens: 534_525,
+            },
+          },
+        }),
+      ];
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-context"),
+          input: [{ type: "text", text: "continue" }],
+        });
+        const usages: Array<Record<string, unknown>> = [];
+        while (true) {
+          const event = await nextEvent(iterator);
+          if (event.type === "session.usage.changed" && event.usage) {
+            usages.push(event.usage as Record<string, unknown>);
+          }
+          if (event.type === "turn.completed") break;
+        }
+        expect(usages.map(({ contextUsedTokens }) => contextUsedTokens)).not.toContain(120_418);
+        expect(usages.at(-1)).toMatchObject({
+          contextUsedTokens: 83_183,
+          contextWindowTokens: 1_048_576,
+          inputTokens: 120_418,
+          outputTokens: 1_204,
+        });
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
     it("formats turn prompt with workspace file instructions and leaves slash commands untouched", () => {
       const normalPrompt = "Create a hello world python file";
       const formatted = formatAntigravityTurnPrompt(normalPrompt);
@@ -1761,6 +2083,17 @@ if (count === 0) {
 
       // Idempotency: does not double-inject if instruction already present
       expect(formatAntigravityTurnPrompt(formatted)).toBe(formatted);
+
+      // The Hook directory is also a workspace, so the project directory is named explicitly.
+      const project = path.join(os.tmpdir(), "project dir");
+      const located = formatAntigravityTurnPrompt(normalPrompt, project);
+      expect(located.startsWith(ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION)).toBe(true);
+      expect(located).toContain(
+        `[System Instruction: The project working directory is ${JSON.stringify(project)}.`,
+      );
+      expect(located.endsWith(`]\n\n${normalPrompt}`)).toBe(true);
+      expect(formatAntigravityTurnPrompt(slashCommand, project)).toBe(slashCommand);
+      expect(formatAntigravityTurnPrompt(located, project)).toBe(located);
     });
   });
 });

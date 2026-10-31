@@ -58,12 +58,29 @@ describe("official Codex passthrough", () => {
     { method: "thread/list", params: { limit: "future-limit-shape" } },
     { method: "thread/archive", params: { thread: { id: "future-nested-id" } } },
     { method: "thread/unarchive" },
+    { method: "thread/delete", params: { threadId: "official-thread" } },
+    { method: "thread/delete", params: { thread: { id: "future-nested-id" } } },
     {
       method: "thread/metadata/update",
       params: { threadId: "official-thread", gitInfo: { branch: { name: "future" } } },
     },
     { method: "thread/section/move", params: { threadId: "official-thread", sectionId: 7 } },
     { method: "turn/start" },
+    {
+      method: "turn/start",
+      params: {
+        threadId: "official-thread",
+        input: [{ type: "image", url: "data:image/png;base64,aGVsbG8=" }],
+      },
+    },
+    {
+      method: "turn/steer",
+      params: {
+        threadId: "official-thread",
+        expectedTurnId: "official-turn",
+        input: [{ type: "localImage", path: "C:\\images\\截图.png" }],
+      },
+    },
     { method: "turn/interrupt", params: "future-params-shape" },
     { method: "thread/read" },
     { method: "future/method", params: { anything: [1, "two"] } },

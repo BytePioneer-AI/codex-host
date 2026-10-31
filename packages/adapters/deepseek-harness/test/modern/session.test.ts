@@ -3704,7 +3704,14 @@ describe("DeepSeek Harness Modern Session", () => {
       turnId: hostTurnId,
       input: [{ type: "text", text: "go" }],
     });
-    test.session.onDelivery(approvalDelivery("event-allow", allow));
+    test.session.onDelivery(
+      approvalDelivery("event-allow", allow, {
+        toolName: "write",
+        callId: "call-1",
+        reason: "escalate sandbox",
+        displayReason: { en: "Allow write?", zh: "允许写入？" },
+      }),
+    );
     test.feed.push(event(0, "turn/start", { turn: 1 }));
     test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
     test.feed.push(userMessage(2, "go", "request-early"));

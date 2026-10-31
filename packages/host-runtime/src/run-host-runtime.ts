@@ -335,7 +335,8 @@ export async function runHostRuntime(input: {
             usageStatistics,
             ...common,
             arguments: input.arguments,
-            onDelegationApi,
+            // Every Remote Control client shares this backend and Mapping Store.
+            onDelegationApi: (api) => registry.register(api, { harnessCatalog: true }),
           });
           listener = createRemoteAppServerWebSocketListener({
             socketPath: remoteControlPlan.pipePath,

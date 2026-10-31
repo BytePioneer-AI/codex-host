@@ -117,6 +117,7 @@ export function createRendererHostClients(
       nativeClient,
       target,
       () => !disposed && readRouting()?.forHost(route.hostId) === route,
+      messages,
     );
     entries.set(route.hostId, { route, client, cleanups });
     try {

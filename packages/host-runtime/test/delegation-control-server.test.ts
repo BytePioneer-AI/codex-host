@@ -46,6 +46,14 @@ describe("delegation control server", () => {
       await expect(unauthorized.json()).resolves.toMatchObject({
         error: { code: "RUNTIME_UNREACHABLE" },
       });
+      for (const header of [`Bearer ${token}x`, `Bearer ${token.slice(1)}`, token]) {
+        const rejected = await fetch(`${server.endpoint}/v1/delegate/start`, {
+          method: "POST",
+          headers: { authorization: header },
+          body: "{}",
+        });
+        expect(rejected.status, header).toBe(401);
+      }
 
       const response = await fetch(
         `${server.endpoint}/v1/delegate/start`,

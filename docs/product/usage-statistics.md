@@ -6,8 +6,8 @@
 
 - 统计本机原生会话，不论是否经 CodexHost 创建或导入；只统计所在 Host 的机器，远程 Host 各自统计。
 - 用量统计属于产生它的机器：页面一次只读取一个 Host，不把多台机器的数字相加。Desktop 设置页在页头提供“机器”下拉框，列出本机与 Desktop 已连接的远程 Host，可逐个查看（例如本机与一台通过 SSH 连接的远端机器）；本地控制台只有本机 Host 通道，不显示该下拉框。所选机器保存在入口自己的本地存储中；所选机器不可用时页面显示明确错误，不换用其他机器的数字。切换机器会重置 Harness、模型、项目与日期筛选（这些值属于上一台机器），时间范围、度量、粒度与自动刷新间隔保持；模型价格弹窗也作用于当前所选机器。
-- 已接线的读取器：Claude Code（含子代理与 workflows 转录）、Pi、OMP（含子代理会话）、CodeBuddy、WorkBuddy、OpenCode、ZCode、DeepSeek Harness、Grok、Qoder、Qoder CN、Hermes。Qoder 两个发行版已用本机真实会话核对：请求与原生消息一一对应，但本地记录的 Token 均为 0、只有积分，因此只计请求数，Token 与费用显示为未记录；模型以 Qoder 本地界面文字显示名称（如 `qfmodel` 显示为 Qwen3.8-Flash）。
-- 官方 Codex 通过独立预装统计插件 `codex-usage` 接入，显示名 Codex；不接管原生会话操作。Kimi Code、Antigravity、Kiro CLI、Cursor CLI 的本地数据限制见下文。
+- 已接线的读取器：Claude Code（含子代理与 workflows 转录）、Pi、OMP（含子代理会话）、CodeBuddy、WorkBuddy、OpenCode、ZCode、DeepSeek Harness、Grok、Qoder、Qoder CN、Hermes、Antigravity。Qoder 两个发行版已用本机真实会话核对：请求与原生消息一一对应，但本地记录的 Token 均为 0、只有积分，因此只计请求数，Token 与费用显示为未记录；模型以 Qoder 本地界面文字显示名称（如 `qfmodel` 显示为 Qwen3.8-Flash）。
+- 官方 Codex 通过独立预装统计插件 `codex-usage` 接入，显示名 Codex；不接管原生会话操作。Kimi Code、Kiro CLI、Cursor CLI 的本地数据限制见下文。
 - 只统计已启用的 Harness 插件；插件未实现读取能力时不出现，某个 Harness 读取失败只缺这一部分，页面会提示。
 - 页面：今天 / 7 天 / 30 天 / 90 天 / 全部，可按 Harness（分段按钮）、模型、项目（可搜索下拉框）和某一天筛选；Host 按筛选条件聚合，前端只渲染结果。
   - 卡片：费用、总 Token、缓存命中率。总 Token 主数字包含缓存，下方以三个等宽、无边框的小列显示“输入 / 输出 / 缓存”三个互斥分项，每列标签在上、数量在下，不显示斜杠分隔；缓存合并读取与写入。概览卡数量仅作展示，不设置帮助光标或悬停提示。保留三卡布局，不加口径开关、第二个总量、日均或环比。中文 Token 总量显示带千位分隔符的完整数字，达到一万时在数字后以弱化文字补充约数（如 `116,222,990 ≈ 1.16 亿`）；不足一万不附约数。中文分项、表格、Token 图表刻度和悬浮提示采用“万 / 亿”，保留最多两位小数；英文继续使用 K / M / B。分项固定三列，不把缓存项挤到下一行；极窄列中的长数值可折行，避免裁切或重叠。费用、命中率、筛选、排序及 CSV 原始分项不变。
@@ -22,8 +22,8 @@
 
 - 每条记录是一次原生模型请求，沿用单会话计量的统一口径（输入含缓存，输出含思考），由各 Adapter 解析其原生用量。能够复用时沿用现有解析函数；Host 不理解 Harness 私有格式。
 - 原生记录给出了请求但 Token 桶全为 0 时（目前为 Qoder：本地会话与日志只记积分），视为“Token 未记录”：计入请求数，不计 Token 与费用，也不算未计价；整行均为此类请求时，Token 各列与费用显示 `—`，不提供价格入口。
-- 概览“总 Token”**包含缓存读取与写入**：总量 = 规范化输入 + 输出，不能再次加上缓存或思考。下方“输入”= 规范化输入 − 缓存读取 − 缓存写入，“输出”沿用包含思考的输出桶，“缓存”= 缓存读取 + 缓存写入；已记录的三个分项之和等于总量。缓存情况未知的请求无法拆分，其输入整体保留在“输入”；全部输入均无缓存拆分时，缓存项显示 `—` 而非假定为 0。全部请求未记录 Token 时，总量与三个分项均显示 `—`。本次仅调整概览卡：趋势、按 Token 的占比与会话排名仍使用非缓存 Token（输入扣除缓存读写 + 输出），与“总 Token”不是同一度量。命中率仍为缓存读取 ÷ 缓存情况已知的全部输入（含缓存读写），计费公式不变。
-- 每条记录可带原生会话 ID、会话名和会话工作目录（项目），由 Adapter 从原生存储读出：Claude Code、CodeBuddy / WorkBuddy、Qoder 取自每行的 `sessionId`、`cwd` 以及 `custom-title` / 首条用户提示；Pi 取自会话头与 `session_info` 名称；OMP 取自文件开头的 title 行；DeepSeek Harness 取自会话头；Codex 取自线程 ID、`session_index.jsonl` 的 `thread_name`，否则取首条用户键入的提示（跳过 AGENTS.md 与环境注入）；Grok 取自会话目录及其 URL 编码的上级目录，以及 `summary.json` 的生成标题；OpenCode、ZCode 关联会话表的 `directory` 与 `title`。缺失时请求照常计入，只是不出现在会话列表并归入“未知项目”。分叉复制的历史请求按 ID 去重，归属于先读到的那份会话文件。
+- 概览“总 Token”**包含缓存读取与写入**：总量 = 规范化输入 + 输出，不能再次加上缓存或思考。下方“输入”= 规范化输入 − 缓存读取 − 缓存写入，“输出”沿用包含思考的输出桶，“缓存”= 缓存读取 + 缓存写入；已记录的三个分项之和等于总量。缓存情况未知的请求无法拆分，其输入整体保留在“输入”；全部输入均无缓存拆分时，缓存项显示 `—` 而非假定为 0。全部请求未记录 Token 时，总量与三个分项均显示 `—`。本次仅调整概览卡：趋势、按 Token 的占比与会话排名仍使用非缓存 Token（输入扣除缓存读写 + 输出），与“总 Token”不是同一度量。命中率为缓存读取 ÷ 缓存读取已知的请求的全部输入（含缓存读写）；读取明确为 0 时显示 `0%`，读取未知的请求不计入，没有读取已知的请求时显示 `—`。计费公式不变。
+- 每条记录可带原生会话 ID、会话名和会话工作目录（项目），由 Adapter 从原生存储读出：Claude Code、CodeBuddy / WorkBuddy、Qoder 取自每行的 `sessionId`、`cwd` 以及 `custom-title` / 首条用户提示；Pi 取自会话头与 `session_info` 名称；OMP 取自文件开头的 title 行；DeepSeek Harness 取自会话头；Codex 取自线程 ID、`session_index.jsonl` 的 `thread_name`，否则取首条用户键入的提示（跳过 AGENTS.md 与环境注入）；Grok 取自会话目录及其 URL 编码的上级目录，以及 `summary.json` 的生成标题；OpenCode、ZCode 关联会话表的 `directory` 与 `title`；Antigravity 只取会话目录名（原生会话 ID），转录不记录工作目录与会话名。缺失时请求照常计入，只是不出现在会话列表并归入“未知项目”。分叉复制的历史请求按 ID 去重，归属于先读到的那份会话文件。
 - 会话列表展示标题时，Host 按（Harness、原生 Session ID）精确关联本机 mapping-store 的 ready Thread，优先复用其非空 `title`（Desktop 已保存的自动标题或用户重命名），不按项目名或首条提示模糊匹配。相同原生身份有多条映射时，取最近更新的非空标题；导入会话也适用。每次统计查询读取当前映射，改名无需重读原生用量；映射缺失、标题为空或读取失败时回退原生名称，再回退“未命名”。只装饰展示结果，不改变原生 Session、请求归属或统计缓存，也不额外调用 Codex 标题生成服务。标题生成策略不变，已有标题不代表所有外部会话都经过 Codex 转写。
 - Pi / OMP 全局统计优先使用原生 responseId；缺失时用原生日志条目 ID 加消息时间，避免跨会话同毫秒碰撞，并保留分叉副本的身份。两种原生身份均缺失时跳过该条，不凭时间猜测。统计缓存版本升级后会从原生记录重建。
 - 按原生记录自带的时间戳，在查看页面的本机时区归入日期、星期与小时；“今天”、时间范围与日期筛选也使用同一时区，包含夏令时规则。页面通过统计请求的 `timeZone` 传给所选 Host，由该 Host 从原始时间戳聚合，不在前端平移已经汇总的小时桶。切换机器不改变展示时区，也不重读未变化的原生会话。未指定 `timeZone` 的协议调用仍按 Host 本地时区统计；不支持该参数的旧 Host 需更新，页面不会移除参数并静默展示另一种时间口径。
@@ -82,12 +82,20 @@
 - 会话标题取 `title`，缺失时回退 `display_name`；都没有时请求照常计入，只是不出现在会话列表。
 - 已知限制：Hermes 不保存逐请求用量，因此"每会话一条"是当前原生存储能支持的最细粒度——请求数显示的是有用量记录的会话数，不是 API 调用次数；整段会话的用量按最后活跃时间归入本地日期，不按逐请求时间拆分。混合 Anthropic 与 OpenAI wire 的会话无法在事后区分，输入归一化对两种记账一致。模型取会话最后使用的值，会话中途切换模型时全部用量记到最后一个。
 
-## 暂未接入的四个 Harness
+## Antigravity
+
+- 适配器在既有 `createHarnessAdapter` 之外实现可选 `usageStatistics` 能力；Host 不包含 Antigravity 专用分支。
+- 只读用户主目录下 `.gemini/antigravity-cli/brain/<原生会话 ID>/.system_generated/logs/transcript.jsonl`（Windows 取 `USERPROFILE`，其他平台取 `HOME`），每个原生会话一个来源，包括未经 CodexHost 创建的会话。同目录的 `transcript_full.jsonl` 与 `chunks/` 重复相同步骤，不读取；不启动 agy，也不调用其 Language Server。
+- agy 为每次模型请求写一条 `PLANNER_RESPONSE` 步骤，带 `input_tokens`、`cache_read_tokens`、`output_tokens` 与 UTC 时间 `created_at`。已用本机 Antigravity CLI 1.4.6 的转录核对：`input_tokens` 不含缓存读取（下一次请求的 `cache_read_tokens` 约等于上一次请求的完整提示词），因此输入按统一口径加上缓存读取；缺 `cache_read_tokens` 时缓存保持未知。同一步骤重复写入时取最后一条。
+- 读取后核对列举时的文件指纹：Turn 运行期间转录被追加，或已列举的转录在读取前被删除，都会报告来源变化，由 Host 重新列举后重试。会话没有日志目录时跳过；`.system_generated` 或 `logs` 是链接时同样不读取，以免读到 agy 存储之外；权限等其他访问错误不当作没有会话，而是报告读取失败。
+- 转录不记录模型、缓存写入、思考 Token 与工作目录：请求照常计入 Token，模型显示为未知且不计价，项目归入“未知项目”；会话只取目录名作为原生会话 ID。
+- 条目 ID 由 `created_at`、步骤序号与 Token 组成，不含会话 ID，派生会话（分叉、回滚）复制的历史请求因此按 ID 去重。本机现有转录未出现跨会话复制的记录，原生分叉是否复制历史步骤尚未实测。
+
+## 暂未接入的三个 Harness
 
 | Harness | 已确认的本地依据 | 当前缺口 |
 | --- | --- | --- |
 | Kimi Code | 既有 Adapter 读取 `usage.record` 的 `inputOther`、`inputCacheRead`、`inputCacheCreation`、`output`；存在 `agent.switched` 分支记录 | 本机 `.kimi-code` 没有会话日志。尚未验证每请求的时间、稳定身份、模型与跨会话分叉规则；不能只拿单会话累计值接入全局统计 |
-| Antigravity | 现有用量来自运行时事件；Host 历史镜像不是完整原生用量存储 | 本机 `.gemini/antigravity-cli/conversations` 为空，未验证可离线读取的原生请求用量；不为统计启动进程或调用运行时接口 |
 | Kiro CLI | 本机 23 份 `messages.jsonl` 的 `usage_summary` 提供 credits；`session_metadata` 有上下文占用比例 | 没有确认输入、输出与缓存 Token；credits 和上下文百分比不换算为 Token |
 | Cursor CLI | 本机 21 个 `store.db` 的 JSON 消息没有用量字段 | 尚无经验证的离线 Token 来源；不猜测 protobuf 字段含义，也不拿账户额度替代逐请求用量 |
 

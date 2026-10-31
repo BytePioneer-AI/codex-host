@@ -173,7 +173,7 @@ function copyDiagnosticsToClipboard(
   );
 }
 
-function connectionHostName(hostId: string, messages: RendererSettingsMessages): string {
+export function connectionHostName(hostId: string, messages: RendererSettingsMessages): string {
   if (hostId === "local") return messages.connectionLocalHost;
   const separator = hostId.lastIndexOf(":");
   const encodedName = separator >= 0 ? hostId.slice(separator + 1) : hostId;

@@ -974,7 +974,10 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         type: "approval",
         interactionId,
         turnId: active.turnId,
-        title: delivery.request.reason ?? `Allow ${delivery.request.toolName}?`,
+        title:
+          delivery.request.displayReason?.en ??
+          delivery.request.reason ??
+          `Allow ${delivery.request.toolName}?`,
         description: delivery.request.callId
           ? `${delivery.request.toolName} (${delivery.request.callId})`
           : delivery.request.toolName,

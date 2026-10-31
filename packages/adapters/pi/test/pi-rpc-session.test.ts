@@ -55,6 +55,9 @@ type Scenario =
   | "stats-unsupported-mismatch"
   | "stats-error"
   | "stats-timeout"
+  | "stats-late"
+  | "model-late"
+  | "chunked-output"
   | "missing-session-id";
 
 class FakePiRpcProcess extends EventEmitter {
@@ -279,6 +282,7 @@ class FakePiRpcProcess extends EventEmitter {
             this.#scenario === "stats-unsupported-mismatch" && this.#stateRequestCount > 1
               ? "changed-model"
               : this.#modelId,
+          reasoning: true,
         },
         thinkingLevel: this.#thinkingLevel,
         isStreaming: this.#isStreaming,
@@ -288,6 +292,10 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (command.type === "get_session_stats") {
       if (this.#scenario === "stats-timeout") return;
+      if (this.#scenario === "stats-late") {
+        setTimeout(() => this.#respond(command, {}), 30);
+        return;
+      }
       if (
         this.#scenario === "stats-unsupported" ||
         this.#scenario === "stats-unsupported-mismatch"
@@ -396,6 +404,10 @@ class FakePiRpcProcess extends EventEmitter {
       return;
     }
     if (command.type === "set_model") {
+      if (this.#scenario === "model-late") {
+        setTimeout(() => this.#respond(command), 30);
+        return;
+      }
       if (typeof command.provider === "string" && typeof command.modelId === "string") {
         this.#provider = command.provider;
         this.#modelId = command.modelId;
@@ -804,7 +816,15 @@ class FakePiRpcProcess extends EventEmitter {
   }
 
   #output(value: unknown): void {
-    this.stdout.write(`${JSON.stringify(value)}\n`);
+    const frame = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+    if (this.#scenario !== "chunked-output") {
+      this.stdout.write(frame);
+      return;
+    }
+    // Pipe-sized pieces: every frame arrives split across many chunks.
+    for (let offset = 0; offset < frame.length; offset += 7) {
+      this.stdout.write(frame.subarray(offset, offset + 7));
+    }
   }
 }
 
@@ -1662,7 +1682,11 @@ describe("Pi RPC Turn aggregation", () => {
     await expect(
       rpc.selectModel({ provider: "other/provider", id: "family/model" }),
     ).resolves.toMatchObject({ provider: "other/provider", modelId: "family/model" });
-    expect(rpc.state).toMatchObject({ provider: "other/provider", modelId: "family/model" });
+    expect(rpc.state).toMatchObject({
+      provider: "other/provider",
+      modelId: "family/model",
+      modelReasoning: true,
+    });
     await rpc.close();
   });
 
@@ -1727,6 +1751,65 @@ describe("Pi RPC Turn aggregation", () => {
     await expect(timedOut.getSessionUsage()).rejects.toThrow("command timed out");
     expect(onFault).not.toHaveBeenCalled();
     await timedOut.close();
+
+    // Pi answering after the Host gave up must not fault the Session.
+    const lateFault = vi.fn();
+    const late = session("stats-late", lateFault, { commandTimeoutMs: 10 });
+    await late.start();
+    await expect(late.getSessionUsage()).rejects.toThrow("command timed out");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(lateFault).not.toHaveBeenCalled();
+    await expect(late.getAvailableModels()).resolves.toHaveLength(2);
+    await late.close();
+  });
+
+  it("remembers a bounded number of expired ids", async () => {
+    for (const [count, faults] of [
+      [64, false],
+      [65, true],
+    ] as const) {
+      const onFault = vi.fn();
+      const rpc = session("stats-late", onFault, { commandTimeoutMs: 10 });
+      await rpc.start();
+      const usages = Array.from({ length: count }, () => rpc.getSessionUsage());
+      for (const usage of usages) await expect(usage).rejects.toThrow("command timed out");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      // Past the bound the oldest id is forgotten, so its late answer is an unknown id.
+      if (faults) {
+        expect(onFault).toHaveBeenCalledWith(
+          expect.objectContaining({ message: "Pi RPC response id is not pending" }),
+        );
+      } else {
+        expect(onFault).not.toHaveBeenCalled();
+      }
+      await rpc.close();
+    }
+  });
+
+  it("still faults on a late answer to a timed-out state-changing command", async () => {
+    // Pi may have applied the change after the Host gave up, so its state is unconfirmed.
+    const onFault = vi.fn();
+    const rpc = session("model-late", onFault, { commandTimeoutMs: 10 });
+    await rpc.start();
+    await expect(
+      rpc.selectModel({ provider: "synthetic-provider", id: "family/model" }),
+    ).rejects.toThrow("command timed out");
+    await vi.waitFor(() =>
+      expect(onFault).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "Pi RPC response id is not pending" }),
+      ),
+    );
+    await rpc.close();
+  });
+
+  it("assembles frames split across many stdout chunks", async () => {
+    const plain = session("final-only");
+    const chunked = session("chunked-output");
+    await plain.start();
+    await chunked.start();
+    await expect(chunked.getEntries()).resolves.toEqual(await plain.getEntries());
+    await plain.close();
+    await chunked.close();
   });
 
   it("reads actual Thinking options and corrected state after selection", async () => {

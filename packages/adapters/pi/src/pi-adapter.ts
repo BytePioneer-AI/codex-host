@@ -2075,6 +2075,7 @@ export class PiAdapter implements HarnessAdapter {
         nativeModelFromState(transport.state),
         thinkingLevels,
         transport.state.thinkingLevel,
+        transport.state.modelReasoning ?? null,
       );
       const fastModels = (await transport.supportsFastMode?.())
         ? piFastModelKeys(models)

@@ -34,6 +34,8 @@ export interface PiSessionState {
   sessionFile: string | null;
   provider: string | null;
   modelId: string | null;
+  /** Native reasoning capability of the effective Model when Pi reports its full Model object. */
+  modelReasoning?: boolean;
   thinkingLevel: HarnessThinkingOptionId | null;
   fast?: boolean;
   contextUsage: Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null;
@@ -171,6 +173,20 @@ export interface PiRpcProcessAdapter {
   spawn(options: PiRpcProcessOptions): ChildProcessWithoutNullStreams;
 }
 
+// Commands without Pi-side effects; a late answer to one of these after its timeout is harmless.
+const READ_ONLY_COMMANDS = new Set([
+  "get_state",
+  "get_commands",
+  "get_entries",
+  "get_session_stats",
+  "get_available_models",
+  "get_available_thinking_levels",
+]);
+
+// Bound on remembered expired ids, so a Pi that never answers cannot grow the set without limit.
+// Past it the oldest id is forgotten, and its late answer faults the Session as an unknown id.
+const MAX_EXPIRED_IDS = 64;
+
 interface PendingCommand {
   command: string;
   resolve(value: Record<string, unknown>): void;
@@ -241,6 +257,8 @@ function sessionStateData(response: Record<string, unknown>): Record<string, unk
 function parseSessionState(response: Record<string, unknown>): PiSessionState {
   const data = sessionStateData(response);
   const model = parseNativeModel(data.model, "state");
+  const modelReasoning =
+    isRecord(data.model) && typeof data.model.reasoning === "boolean" ? data.model.reasoning : null;
   if (!nonBlankString(data.sessionId)) {
     throw new PiRpcFaultError("protocolError", "Pi RPC state has no stable Session identity");
   }
@@ -256,6 +274,7 @@ function parseSessionState(response: Record<string, unknown>): PiSessionState {
     sessionFile: typeof data.sessionFile === "string" ? data.sessionFile : null,
     provider: model?.provider ?? null,
     modelId: model?.id ?? null,
+    ...(modelReasoning === null ? {} : { modelReasoning }),
     thinkingLevel: thinkingLevel?.data ?? null,
     contextUsage: optionalPiStateContextUsage(data.contextUsage),
   };
@@ -497,7 +516,11 @@ export class PiRpcSession {
   #autonomousTurnHandler: ((turn: PiAutonomousTurn) => void) | null = null;
   #usageHandler: ((observation: PiUsageObservation) => void) | null = null;
   #usageRequestStartedAtMs: number | null = null;
-  #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+  // Pieces of the unterminated frame; joined once at its newline so a large frame (a long
+  // Session's get_entries) costs linear rather than quadratic copying on the Host event loop.
+  #buffer: Buffer<ArrayBufferLike>[] = [];
+  // Ids whose read-only command timed out; Pi may still answer them late.
+  #expired = new Set<string>();
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
   #closePromise: Promise<void> | null = null;
@@ -1011,11 +1034,13 @@ export class PiRpcSession {
   }
 
   #push(chunk: Buffer<ArrayBufferLike>): void {
-    this.#buffer = this.#buffer.length === 0 ? chunk : Buffer.concat([this.#buffer, chunk]);
-    let newline = this.#buffer.indexOf(0x0a);
+    let rest = chunk;
+    let newline = rest.indexOf(0x0a);
     while (newline >= 0) {
-      const frame = this.#buffer.subarray(0, newline);
-      this.#buffer = this.#buffer.subarray(newline + 1);
+      const tail = rest.subarray(0, newline);
+      const frame = this.#buffer.length === 0 ? tail : Buffer.concat([...this.#buffer, tail]);
+      this.#buffer = [];
+      rest = rest.subarray(newline + 1);
       try {
         const value = JSON.parse(textDecoder.decode(frame));
         if (!isRecord(value) || typeof value.type !== "string") {
@@ -1032,8 +1057,9 @@ export class PiRpcSession {
               ),
         );
       }
-      newline = this.#buffer.indexOf(0x0a);
+      newline = rest.indexOf(0x0a);
     }
+    if (rest.length !== 0) this.#buffer.push(rest);
   }
 
   #handle(value: Record<string, unknown>): void {
@@ -1360,6 +1386,7 @@ export class PiRpcSession {
       return;
     }
     const pending = this.#pending.get(id);
+    if (!pending && this.#expired.delete(id)) return;
     if (!pending) {
       this.#fail(new PiRpcFaultError("protocolError", "Pi RPC response id is not pending"));
       return;
@@ -1649,6 +1676,15 @@ export class PiRpcSession {
       const error = new Error(`Pi RPC '${pending.command}' command timed out`);
       if (pending.command !== "prompt") {
         this.#pending.delete(id);
+        // The caller sees the timeout. A late answer to a read-only query is dropped; one to a
+        // state-changing command still faults the Session, since Pi may have applied a change
+        // the Host state never confirmed.
+        if (READ_ONLY_COMMANDS.has(pending.command)) {
+          this.#expired.add(id);
+          if (this.#expired.size > MAX_EXPIRED_IDS) {
+            this.#expired.delete(this.#expired.values().next().value as string);
+          }
+        }
         pending.reject(error);
         return;
       }

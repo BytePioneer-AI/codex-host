@@ -654,4 +654,160 @@ describe.skipIf(!RUN_REAL)("AppServerHost real Claude projection", () => {
     },
     REAL_TIMEOUT_MS,
   );
+
+  it(
+    "steers a held real Claude Turn's continuation without stopping its background Subagent",
+    async () => {
+      const workspace = path.resolve(
+        ".codexhost",
+        "claude-host-real",
+        "continuation-steer-workspace",
+      );
+      await fs.mkdir(workspace, { recursive: true });
+      const mappingStoreDirectory = await fs.mkdtemp(path.join(tmpdir(), "codexhost-cont-steer-"));
+      const desktopInput = new PassThrough();
+      const desktopOutput = new PassThrough();
+      // Claude Code runs the scripted `sleep` without an Approval in the default permission mode;
+      // decline any native action that does ask, so the test never grants extra permissions.
+      const collector = new JsonCollector(desktopOutput, (request) => {
+        if (request.method !== "mcpServer/elicitation/request") return;
+        writeRequest(desktopInput, { id: request.id ?? null, result: { action: "decline" } });
+      });
+      const official = new OfficialProcess();
+      const claudeAdapter = new ClaudeCodeAdapter({ closeTimeoutMs: 10_000 });
+      const host = new AppServerHost({
+        stockCodexPath: "/synthetic/codex",
+        arguments: [],
+        desktopInput,
+        desktopOutput,
+        diagnosticOutput: new PassThrough(),
+        externalAdapters: new Map<ExternalHarnessId, ClaudeCodeAdapter>([
+          ["claude-code", claudeAdapter],
+        ]),
+        mappingStore: new MappingStore({ directory: mappingStoreDirectory }),
+        spawnOfficial: (() =>
+          official as unknown as ChildProcessWithoutNullStreams) as unknown as typeof spawn,
+      });
+      const running = host.run();
+      const delay = (milliseconds: number) =>
+        new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+      try {
+        writeRequest(desktopInput, {
+          id: 1,
+          method: "thread/start",
+          params: {
+            model: encodeExternalTransportSelection("claude-code", {
+              permissionModeId: harnessPermissionModeIdSchema.parse("default"),
+            }),
+            cwd: workspace,
+          },
+        });
+        const started = await collector.waitFor((message) => requestId(message, 1));
+        const threadId = ((started.result as JsonObject).thread as JsonObject).id;
+        if (typeof threadId !== "string") throw new Error("Host returned no Thread ID");
+
+        writeRequest(desktopInput, {
+          id: 2,
+          method: "turn/start",
+          params: {
+            threadId,
+            input: [
+              {
+                type: "text",
+                text: "Use the Agent tool to launch exactly ONE background subagent (run_in_background: true, subagent_type: general-purpose, model: haiku). Its whole task: run the Bash command `sleep 20`, then reply done. Do NOT wait for the subagent, do not run anything else, and reply immediately with exactly DISPATCHED.",
+              },
+            ],
+          },
+        });
+        const turnResponse = await collector.waitFor((message) => requestId(message, 2));
+        const turnId = ((turnResponse.result as JsonObject).turn as JsonObject).id;
+        if (typeof turnId !== "string") throw new Error("Host returned no Turn ID");
+
+        // Wait for the main DISPATCHED reply to finish: with its root tool call returned and
+        // the Turn not completed, only the new continuation admission can report steer.
+        await expect(
+          collector.waitFor(
+            (message) =>
+              method(message, "item/completed") &&
+              (message.params as JsonObject).turnId === turnId &&
+              ((message.params as JsonObject).item as JsonObject).type === "agentMessage" &&
+              String(((message.params as JsonObject).item as JsonObject).text ?? "").includes(
+                "DISPATCHED",
+              ),
+          ),
+        ).resolves.toBeDefined();
+        await delay(1_000);
+        expect(collector.messages.some((message) => method(message, "turn/completed"))).toBe(false);
+
+        // The reply has ended and the Turn holds on the live background subagent; native
+        // steering must be available for that continuation instead of a restart.
+        let delivery = "";
+        const inspectDeadline = Date.now() + 120_000;
+        for (let inspectId = 3; Date.now() < inspectDeadline; inspectId += 1) {
+          writeRequest(desktopInput, {
+            id: inspectId,
+            method: "codexhost/thread/steering/inspect",
+            params: { threadId },
+          });
+          const inspect = await collector.waitFor((message) => requestId(message, inspectId));
+          delivery = String((inspect.result as JsonObject).delivery ?? "");
+          if (delivery === "activeTurn") break;
+          await delay(500);
+        }
+        expect(delivery).toBe("activeTurn");
+
+        writeRequest(desktopInput, {
+          id: 1000,
+          method: "turn/steer",
+          params: {
+            threadId,
+            expectedTurnId: turnId,
+            clientUserMessageId: "continuation-steer-message",
+            input: [
+              {
+                type: "text",
+                text: "Status check only: do not start or stop anything. Reply with exactly STILL_RUNNING.",
+              },
+            ],
+          },
+        });
+        await expect(
+          collector.waitFor((message) => requestId(message, 1000)),
+        ).resolves.toMatchObject({ result: { turnId, delivery: "activeTurn" } });
+
+        // The steer's answer arrives as the held Turn's next Segment, in the same Turn.
+        await expect(
+          collector.waitFor(
+            (message) =>
+              method(message, "item/completed") &&
+              (message.params as JsonObject).turnId === turnId &&
+              ((message.params as JsonObject).item as JsonObject).type === "agentMessage" &&
+              String(((message.params as JsonObject).item as JsonObject).text ?? "").includes(
+                "STILL_RUNNING",
+              ),
+          ),
+        ).resolves.toBeDefined();
+
+        // The Turn finishes only once the background subagent settles; nothing restarted it.
+        await expect(
+          collector.waitFor(
+            (message) =>
+              method(message, "turn/completed") &&
+              ((message.params as JsonObject).turn as JsonObject).id === turnId,
+          ),
+        ).resolves.toMatchObject({ params: { turn: { status: "completed" } } });
+        const turnsStarted = collector.messages.filter((message) =>
+          method(message, "turn/started"),
+        );
+        expect(turnsStarted).toHaveLength(1);
+      } finally {
+        desktopInput.end();
+        await running;
+        await claudeAdapter.close();
+        await fs.rm(mappingStoreDirectory, { recursive: true, force: true });
+      }
+    },
+    REAL_TIMEOUT_MS,
+  );
 });

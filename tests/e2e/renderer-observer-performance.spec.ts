@@ -60,7 +60,7 @@ test("transcript updates skip sidebar scans and Composer reconciliation", async 
     const query = document.querySelectorAll.bind(document);
     target.sidebarScans = 0;
     document.querySelectorAll = ((selector: string) => {
-      if (selector === "[data-app-action-sidebar-thread-row]") target.sidebarScans += 1;
+      if (selector.includes("[data-app-action-sidebar-thread-row]")) target.sidebarScans += 1;
       return query(selector);
     }) as typeof document.querySelectorAll;
     target.sidebarReads = 0;

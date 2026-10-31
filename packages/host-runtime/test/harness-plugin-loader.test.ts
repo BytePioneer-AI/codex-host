@@ -249,6 +249,42 @@ describe("Harness plugin discovery and loading", () => {
       await remote.close();
     }
   });
+  it("reports unreadable launch settings without falling back to discovery", async () => {
+    const directory = await root(["custom-agent"]);
+    const marker = path.join(directory, "created.txt");
+    await plugin(directory, "custom-agent", {
+      manifest: { launchCommand: true },
+      code: `
+        import { writeFileSync } from "node:fs";
+        import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+        export function createHarnessAdapter() {
+          writeFileSync(${JSON.stringify(marker)}, "created");
+          return new FakeHarnessAdapter("custom-agent");
+        }
+      `,
+    });
+    const diagnostics: HarnessPluginDiagnostic[] = [];
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      launchCommandForPlugin: async () => {
+        throw new Error("Could not read Harness launch settings at /settings/custom-agent.json");
+      },
+      diagnose: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    try {
+      expect(diagnostics).toEqual([{ id: "custom-agent", code: "launchSettingsUnreadable" }]);
+      expect(existsSync(marker)).toBe(false);
+      expect(registry.list().find(({ id }) => id === "custom-agent")?.launchCommand).toBe(true);
+      expect([...registry.adapters.keys()]).toEqual(["custom-agent"]);
+      await expect([...registry.adapters.values()][0]?.inspect()).resolves.toMatchObject({
+        status: "unavailable",
+        error: { message: expect.stringContaining("launchSettingsUnreadable") },
+      });
+    } finally {
+      await registry.close();
+    }
+  });
   it.each([
     ["codebuddy", "CodeBuddy", "CODEXHOST_CODEBUDDY_COMMAND"],
     ["workbuddy", "WorkBuddy", "CODEXHOST_WORKBUDDY_COMMAND"],

@@ -493,6 +493,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       timer: ReturnType<typeof setTimeout> | undefined;
     }
   >();
+  /** Written steers Claude has not yet drained into a native turn, by message ID. */
+  readonly #steerTakeovers = new Map<string, (started: boolean) => void>();
   #autonomous: AutonomousSegment | null = null;
   #autonomousTurnHandler: ClaudeAutonomousTurnHandler | null = null;
   #idleHandler: ClaudeIdleTurnHandler | null = null;
@@ -629,9 +631,14 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
    * `priority: "next"` joins after the current tool call, and a tool result is always followed by
    * another model request. So a steer written while a root tool call runs folds into this Turn;
    * one written while Claude streams its final text may instead run as the next Turn.
+   *
+   * A held Turn's continuation steers as well: while its idle stream is live, the pushed input
+   * runs as that Turn's next Segment, and the background work the Turn waits on keeps running.
    */
   canSteerActiveTurn(): boolean {
-    return this.#nativeSteer && this.#active !== null && this.#rootToolCalls.size > 0;
+    if (!this.#nativeSteer) return false;
+    if (this.#active !== null) return this.#rootToolCalls.size > 0;
+    return this.#idleLive && this.#idleHandler !== null;
   }
 
   #observeRootToolCalls(message: unknown): void {
@@ -674,10 +681,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
   }
 
-  async getContextUsage(): Promise<ClaudeTransportContextUsage | null> {
+  async getContextUsage(
+    detail: "summary" | "full" = "full",
+  ): Promise<ClaudeTransportContextUsage | null> {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) return null;
-    return parseContextUsage(await activeQuery.getContextUsage());
+    return parseContextUsage(await activeQuery.getContextUsage({ detail }));
   }
 
   getPermissionMode(): ClaudePermissionMode {
@@ -853,7 +862,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
    * The Turn ending first therefore does not reject it, and a missing `queued` receipt resolves
    * after a bounded wait so callers that serialize requests are never held indefinitely.
    */
-  steer(text: string, messageId: string): Promise<void> {
+  steer(text: string, messageId: string, onTakeover?: (started: boolean) => void): Promise<void> {
     if (this.#closePromise || !this.#started || !this.#query || !this.canSteerActiveTurn()) {
       return Promise.reject(new ClaudeSteerMissedTurnError());
     }
@@ -874,9 +883,14 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       this.#pendingSteers.delete(messageId);
       return Promise.reject(new ClaudeSteerMissedTurnError());
     }
+    if (onTakeover) this.#steerTakeovers.set(messageId, onTakeover);
     const pending = this.#pendingSteers.get(messageId);
     if (pending) {
-      pending.timer = setTimeout(() => this.#acceptSteer(messageId), this.#steerQueuedTimeoutMs);
+      pending.timer = setTimeout(() => {
+        // Without a `queued` receipt there is no evidence Claude will report this steer's fate.
+        this.#acceptSteer(messageId);
+        this.#takeOverSteer(messageId, false);
+      }, this.#steerQueuedTimeoutMs);
       pending.timer.unref?.();
     }
     return promise;
@@ -888,6 +902,13 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#pendingSteers.delete(messageId);
     clearTimeout(pending.timer);
     pending.resolve();
+  }
+
+  #takeOverSteer(messageId: string, started: boolean): void {
+    const onTakeover = this.#steerTakeovers.get(messageId);
+    if (!onTakeover) return;
+    this.#steerTakeovers.delete(messageId);
+    onTakeover(started);
   }
 
   respondToInteraction(response: ClaudeInteractionResponse): Promise<void> {
@@ -1255,6 +1276,9 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   }
 
   #rejectPendingSteers(): void {
+    for (const messageId of [...this.#steerTakeovers.keys()]) {
+      this.#takeOverSteer(messageId, false);
+    }
     const pending = [...this.#pendingSteers.values()];
     this.#pendingSteers.clear();
     // Written input may still be delivered. Only pre-write failures are ClaudeSteerMissedTurnError.
@@ -1265,18 +1289,29 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
   }
 
-  /** `queued` is Claude's acceptance of this message into the running Session. */
+  /**
+   * `queued` is Claude's acceptance of this message into the running Session. `started` is its
+   * drain into a native turn, folded into the running one or run as the next; a terminal state
+   * without `started` means no native turn takes it over.
+   */
   #observeSteer(message: unknown): void {
     if (
-      this.#pendingSteers.size === 0 ||
+      (this.#pendingSteers.size === 0 && this.#steerTakeovers.size === 0) ||
       !isRecord(message) ||
       message.type !== "command_lifecycle"
     ) {
       return;
     }
-    if (message.state !== "queued") return;
     if (typeof message.command_uuid !== "string" || message.command_uuid.length === 0) return;
-    this.#acceptSteer(message.command_uuid);
+    if (message.state === "queued") {
+      this.#acceptSteer(message.command_uuid);
+      return;
+    }
+    if (
+      ["started", "completed", "cancelled", "discarded", "refused"].includes(String(message.state))
+    ) {
+      this.#takeOverSteer(message.command_uuid, message.state === "started");
+    }
   }
 
   #observeBackgroundTasks(message: unknown): void {
@@ -1412,12 +1447,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       if (!this.#closePromise) throw new Error("Claude SDK Query ended unexpectedly");
     } catch (error) {
       const active = this.#active;
+      if (!this.#closePromise) this.#onFault(error);
       this.#closeInteractions("all", "cancelled");
       this.#rejectPendingSteers();
       this.#rootToolCalls.clear();
       this.#active = null;
       active?.reject(error);
-      if (!this.#closePromise) this.#onFault(error);
     }
   }
 

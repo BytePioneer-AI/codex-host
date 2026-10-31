@@ -11,8 +11,39 @@ import type {
   RendererDraftBridgePolicy,
 } from "./renderer-draft-prewarm-runtime.js";
 
+/** A main-process AppServerManager reached through its Renderer RPC client. It
+ * exposes only Host requests and notifications, never native manager internals. */
+export interface RendererHostRpcManager {
+  readonly kind: "main-process-rpc";
+  getHostId(): string;
+  sendRequest(method: string, params: unknown, options?: unknown): Promise<unknown>;
+  addNotificationCallback(
+    methods: string | readonly string[],
+    listener: (notification: unknown) => void,
+  ): () => void;
+}
+
+export interface RendererHostRoutePolicy {
+  readonly state: "ready";
+  readonly hostId: string;
+  readonly scopedCreation: boolean;
+  requestTarget(): unknown;
+  select(
+    model: string | null,
+    draftId?: string,
+    creationModes?: readonly Record<string, unknown>[],
+  ): boolean;
+  clear(): Promise<void>;
+  dispose(): void;
+}
+
 export interface RendererHostRoute {
   readonly hostId: string;
+  readonly manager: RendererNativeRequestManager | RendererHostRpcManager;
+  readonly policy: RendererHostRoutePolicy;
+}
+
+interface RendererNativeHostRoute extends RendererHostRoute {
   readonly manager: RendererNativeRequestManager;
   readonly policy: RendererDraftBridgePolicy;
 }
@@ -44,7 +75,7 @@ export function installRendererHostRouting(
   const routes = new Map<
     string,
     {
-      route: RendererHostRoute;
+      route: RendererNativeHostRoute;
       bridge: RendererNativeRequestManager["requestClient"];
       prewarmed: RendererNativeRequestManager["prewarmedThreadManager"];
     }
@@ -82,7 +113,7 @@ export function installRendererHostRouting(
   const routeFor = (
     hostId: string,
     discovery?: RendererHostDiscovery,
-  ): RendererHostRoute | null => {
+  ): RendererNativeHostRoute | null => {
     const manager = lookup(hostId, discovery);
     const previous = routes.get(hostId);
     if (

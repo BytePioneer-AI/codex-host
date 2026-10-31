@@ -212,7 +212,10 @@ export function retainedRowCount(
   profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
 ) {
   const rows = nativeHistoryRows(contents);
-  const turns = snapshotFromHistory(contents, input.sourceRef, sourceCwd, profile).turns;
+  // Count against the same physical chain the rows above came from.
+  const turns = snapshotFromHistory(contents, input.sourceRef, sourceCwd, profile, {
+    includeCompactionHistory: false,
+  }).turns;
   let excluded: string | undefined;
   if (input.kind === "rollbackLastTurn") {
     if (!turns.length)

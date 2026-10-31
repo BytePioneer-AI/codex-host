@@ -281,6 +281,20 @@ export class ExternalThreadRuntime {
     this.#steeredTurnIds.delete(threadId);
   }
 
+  /** Confirm release before forgetting either the Session owner or its persisted mapping. */
+  async deleteThread(hostThreadId: StoredThreadRecordV1["hostThreadId"]): Promise<void> {
+    await this.#withLifecycle(hostThreadId, async () => {
+      const thread = this.#threads.get(hostThreadId);
+      if (thread) {
+        thread.sessionUnavailable = true;
+        thread.stateObserver.fault(new Error("External Thread is being deleted"));
+        await this.#lifecycle.release(hostThreadId, thread.session, thread.outputTask);
+      }
+      this.remove(hostThreadId);
+      await this.#repository.removeThread(hostThreadId);
+    });
+  }
+
   clear(): void {
     this.#threads.clear();
     this.#steeredTurnIds.clear();

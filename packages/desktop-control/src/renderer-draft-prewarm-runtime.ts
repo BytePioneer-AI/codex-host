@@ -1,4 +1,5 @@
 import { retainRendererHostResponses } from "./renderer-host-response-ownership.js";
+import { isolateRendererPrewarmConsumption } from "./renderer-prewarm-consumption.js";
 
 export interface DraftPrewarmPolicyTarget {
   [key: string]: unknown;
@@ -39,6 +40,7 @@ export function createDraftPrewarmPolicyBridge(
   prewarmedThreadManager: RendererPrewarmedThreadManager,
   isCurrentManager?: () => boolean,
   retainResponses: typeof retainRendererHostResponses = retainRendererHostResponses,
+  isolateConsumption: typeof isolateRendererPrewarmConsumption = isolateRendererPrewarmConsumption,
 ) {
   let disposed = false;
   const originalSend = bridge.sendRequest;
@@ -490,15 +492,6 @@ export function createDraftPrewarmPolicyBridge(
       (method.startsWith("thread/") || method.startsWith("turn/") || method.startsWith("review/"))
     );
   };
-  const routeThreadStart = (parameters: unknown): unknown => {
-    if (!isRecord(parameters) || parameters.ephemeral === true) {
-      return parameters;
-    }
-    return {
-      ...parameters,
-      ...(selectedModel === null ? {} : { model: selectedModel }),
-    };
-  };
   const routedSend = (method: string, parameters: unknown, options?: unknown): unknown => {
     if (
       method === "turn/start" ||
@@ -508,16 +501,15 @@ export function createDraftPrewarmPolicyBridge(
       const threadId = threadIdFromParameters(parameters);
       if (threadId) externalPrewarms.delete(threadId);
     }
-    const routedParameters = method === "thread/start" ? routeThreadStart(parameters) : parameters;
     const sendBridged = (): Promise<unknown> =>
       initializeBridge().then(
-        () => enqueueBridgeRequest(method, routedParameters, options) as Promise<unknown>,
+        () => enqueueBridgeRequest(method, parameters, options) as Promise<unknown>,
       );
     const sendDirect = (): unknown =>
       options === undefined
-        ? originalSend.call(bridge, method, routedParameters)
-        : originalSend.call(bridge, method, routedParameters, options);
-    const unresolvedThreadId = shouldResolveThreadOwnership(method, routedParameters);
+        ? originalSend.call(bridge, method, parameters)
+        : originalSend.call(bridge, method, parameters, options);
+    const unresolvedThreadId = shouldResolveThreadOwnership(method, parameters);
     if (unresolvedThreadId) {
       return resolveThreadOwnership(unresolvedThreadId).then(
         (owner) => (owner === "external" ? sendBridged() : sendDirect()),
@@ -543,7 +535,7 @@ export function createDraftPrewarmPolicyBridge(
         },
       );
     }
-    return shouldUseBridge(method, routedParameters) ? sendBridged() : sendDirect();
+    return shouldUseBridge(method, parameters) ? sendBridged() : sendDirect();
   };
   // The draft's workspace reaches the Host only through this prewarm. Publish
   // it so the Composer can ask for that workspace's live Harness commands;
@@ -581,14 +573,14 @@ export function createDraftPrewarmPolicyBridge(
   const discardExternalPrewarms = (): void => {
     for (const threadId of externalPrewarms) discardExternalPrewarm(threadId);
   };
+  const restoreConsumption = isolateConsumption(manager, discardExternalPrewarm);
   const routedPrewarm = (parameters: unknown, options?: unknown): unknown => {
-    const routed = routeThreadStart(parameters);
     const external =
-      isRecord(routed) &&
-      routed.ephemeral !== true &&
-      typeof routed.model === "string" &&
-      routed.model.startsWith("codexhost/");
-    const routedParameters = external ? { ...routed, codexhostPrewarm: true } : routed;
+      isRecord(parameters) &&
+      parameters.ephemeral !== true &&
+      typeof parameters.model === "string" &&
+      parameters.model.startsWith("codexhost/");
+    const routedParameters = external ? { ...parameters, codexhostPrewarm: true } : parameters;
     const generation = prewarmGeneration;
     publishDraftWorkspace(routedParameters);
     const pending = shouldUseBridge("thread/start", routedParameters)
@@ -668,6 +660,7 @@ export function createDraftPrewarmPolicyBridge(
   const policy = Object.freeze({
     state: "ready" as const,
     hostId,
+    scopedCreation: restoreConsumption !== null,
     owns(
       candidateManager: RendererHostRequestManager,
       candidate: RendererHostRequestBridge,
@@ -689,12 +682,17 @@ export function createDraftPrewarmPolicyBridge(
         throw new Error("Renderer request manager is retired");
       return manager;
     },
-    select(model: string | null): boolean {
+    select(
+      model: string | null,
+      draftId?: string,
+      creationModes?: readonly Record<string, unknown>[],
+    ): boolean {
       if (disposed || (isCurrentManager && !isCurrentManager()))
         throw new Error("Renderer request manager is retired");
       if (model !== null && (typeof model !== "string" || !model.startsWith("codexhost/"))) {
         throw new Error("Draft route Model must be a codexhost transport carrier");
       }
+      restoreConsumption?.selectDraft(draftId, model, creationModes);
       if (selectedModel === model) return false;
       selectedModel = model;
       prewarmGeneration += 1;
@@ -715,6 +713,7 @@ export function createDraftPrewarmPolicyBridge(
       disposed = true;
       prewarmGeneration += 1;
       retireResponses();
+      restoreConsumption?.dispose();
       if (bridge.sendRequest === routedSend) bridge.sendRequest = originalSend;
       if (bridge.prewarmThreadStart === routedPrewarm) {
         bridge.prewarmThreadStart = originalPrewarm;

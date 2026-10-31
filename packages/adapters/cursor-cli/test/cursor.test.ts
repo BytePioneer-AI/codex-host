@@ -16,7 +16,7 @@ import { cursorSnapshot } from "../src/projection.js";
 import * as forkSupport from "../src/fork-support.js";
 
 const native = vi.hoisted(() => ({
-  turns: [] as Array<{ id: string; text: string; notification?: true }>,
+  turns: [] as Array<{ id: string; text: string; notification?: true; rewindRoot?: string }>,
 }));
 vi.mock("../src/native-history.js", () => ({
   readCursorNativeTurns: () => structuredClone(native.turns),
@@ -290,51 +290,59 @@ describe("Cursor turn lifecycle", () => {
       }),
     );
   });
-  it("keeps the prompt identity when Cursor appends background task notifications", async () => {
-    vi.spyOn(forkSupport, "cursorForkAvailable").mockReturnValue(true);
-    const f = session();
-    const notification = (id: string) =>
-      native.turns.push({
-        id: randomUUID(),
-        text: `<system_notification>\n<task>\ntask_id: ${id}\n</task>\n</system_notification>`,
-        notification: true,
-      });
-    notification("before");
-    f.transport.action = async (text, callbacks) => {
-      callbacks.update({
-        sessionId: info.sessionId,
-        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } },
-      });
-      native.turns.push({ id: randomUUID(), text });
-      notification("one");
-      notification("two");
-      return { stopReason: "end_turn" };
-    };
-    await f.session.execute(start);
-    await vi.waitFor(() =>
-      expect(f.output.some((x) => x.kind === "event" && x.event.type === "turn.completed")).toBe(
-        true,
-      ),
-    );
-    await f.session.close();
-    await f.done;
-    const terminal = f.output.filter(
-      (x) => x.kind === "event" && x.event.type === "turn.completed",
-    );
-    expect(terminal[0]).toMatchObject({
-      event: {
-        outcome: {
-          status: "succeeded",
-          checkpoint: {
-            harnessId: "cursor-cli",
-            nativeSessionId: info.sessionId,
-            checkpointId: native.turns[1]?.id,
-          },
+  it.each([true, false])(
+    "keeps prompt identity with notifications (rewind anchor=%s)",
+    async (hasRewindRoot) => {
+      vi.spyOn(forkSupport, "cursorForkAvailable").mockReturnValue(true);
+      const f = session();
+      const notification = (id: string) =>
+        native.turns.push({
+          id: randomUUID(),
+          text: `<system_notification>\n<task>\ntask_id: ${id}\n</task>\n</system_notification>`,
+          notification: true,
+          ...(hasRewindRoot ? { rewindRoot: "a".repeat(64) } : {}),
+        });
+      notification("before");
+      f.transport.action = async (text, callbacks) => {
+        callbacks.update({
+          sessionId: info.sessionId,
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } },
+        });
+        native.turns.push({ id: randomUUID(), text });
+        notification("one");
+        notification("two");
+        return { stopReason: "end_turn" };
+      };
+      await f.session.execute(start);
+      await vi.waitFor(() =>
+        expect(f.output.some((x) => x.kind === "event" && x.event.type === "turn.completed")).toBe(
+          true,
+        ),
+      );
+      await f.session.close();
+      await f.done;
+      const terminal = f.output.filter(
+        (x) => x.kind === "event" && x.event.type === "turn.completed",
+      );
+      expect(terminal[0]).toMatchObject({
+        event: {
+          outcome: { status: "succeeded" },
+          nativeTurnRef: { nativeTurnKey: native.turns[1]?.id },
         },
-        nativeTurnRef: { nativeTurnKey: native.turns[1]?.id },
-      },
-    });
-  });
+      });
+      if (hasRewindRoot) {
+        expect(terminal[0]).toHaveProperty("event.outcome.checkpoint", {
+          harnessId: "cursor-cli",
+          nativeSessionId: info.sessionId,
+          checkpointId: native.turns[1]?.id,
+          locator: { kind: "cursor-turn" },
+          formatVersion: 1,
+        });
+      } else {
+        expect(terminal[0]).not.toHaveProperty("event.outcome.checkpoint");
+      }
+    },
+  );
   it("still fails when only background task notifications were added", async () => {
     const f = session();
     f.transport.action = async () => {

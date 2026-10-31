@@ -86,6 +86,10 @@ when session, workspace, turn count, order and exact prompt text match native
 history. A successful live turn must introduce exactly one non-notification native
 user-turn ID whose text matches the submitted prompt, while preserving the existing
 history prefix. Both the terminal identity and an available checkpoint use that ID.
+A checkpoint is offered only when Fork is supported and the prompt is the last
+native record or the next record has a verified native rewind root, matching replay
+projection and Fork validation. Missing rewind roots do not invalidate the Turn's
+successful outcome or native identity.
 In the observed Cursor CLI `2026.10.22-27dcf5f` store, background task completion
 records carry field 15 (`simulated_message_metadata`). Records with this field are
 treated as Cursor-generated notifications for live prompt identity verification;

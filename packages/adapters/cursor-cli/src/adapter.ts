@@ -833,7 +833,12 @@ export class CursorSession implements HarnessSession {
           formatVersion: 1,
         });
         this.#fresh = false;
-        if (outcome.status === "succeeded" && cursorForkAvailable())
+        const ownIndex = after.findIndex((turn) => turn.id === own.id);
+        if (
+          outcome.status === "succeeded" &&
+          cursorForkAvailable() &&
+          (ownIndex === after.length - 1 || after[ownIndex + 1]?.rewindRoot)
+        )
           outcome = {
             ...outcome,
             checkpoint: cursorCheckpoint(this.transport.sessionId, own.id),

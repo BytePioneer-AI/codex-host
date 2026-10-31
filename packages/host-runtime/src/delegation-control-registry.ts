@@ -217,10 +217,17 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     right: Awaited<ReturnType<DelegationControlApi["list"]>>["threads"][number],
     sort: ThreadListInput["sort"],
   ): number {
-    const field = sort.startsWith("created") ? "createdAt" : "updatedAt";
+    const timestamp = (thread: typeof left): string | undefined =>
+      sort.startsWith("created")
+        ? thread.createdAt
+        : sort.startsWith("recency")
+          ? (thread.recencyAt ?? thread.updatedAt)
+          : thread.updatedAt;
     const direction = sort.endsWith("asc") ? 1 : -1;
-    const leftValue = left[field] ? Date.parse(left[field]) : 0;
-    const rightValue = right[field] ? Date.parse(right[field]) : 0;
+    const leftTimestamp = timestamp(left);
+    const rightTimestamp = timestamp(right);
+    const leftValue = leftTimestamp ? Date.parse(leftTimestamp) : 0;
+    const rightValue = rightTimestamp ? Date.parse(rightTimestamp) : 0;
     return (leftValue - rightValue) * direction || left.threadId.localeCompare(right.threadId);
   }
 

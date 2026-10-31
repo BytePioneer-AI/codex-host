@@ -768,6 +768,95 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
+  it("merges native recency pages from several sessions by recencyAt before updatedAt", async () => {
+    const registry = new DelegationControlRegistry();
+    const sessions = [];
+    for (let index = 0; index < 2; index++) {
+      const fixture = createFixture({
+        onDelegationApi: (api) => registry.register(api),
+      });
+      await fixture.ready;
+      await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+      sessions.push(fixture);
+    }
+    // updatedAt alone would put "b-updated" first; the native recency order is recencyAt.
+    const pages = [
+      [{ id: "a-recent", cwd: "/synthetic", createdAt: 1, updatedAt: 100, recencyAt: 300 }],
+      [{ id: "b-updated", cwd: "/synthetic", createdAt: 1, updatedAt: 400, recencyAt: 200 }],
+    ];
+    try {
+      const pending = registry.list({ cwd: "/synthetic", limit: 1, sort: "recency-desc" });
+      await Promise.all(
+        sessions.map(async (fixture, index) => {
+          const request = await readJsonLine(fixture.official.stdin);
+          expect(request).toMatchObject({
+            method: "thread/list",
+            params: { sortKey: "recency_at", sortDirection: "desc" },
+          });
+          const data = (pages[index] ?? []).map((row) => ({ ...row, status: { type: "idle" } }));
+          fixture.official.stdout.write(
+            `${JSON.stringify({ id: request.id, result: { data, nextCursor: null } })}\n`,
+          );
+        }),
+      );
+      const page = await pending;
+      expect(page.threads.map((thread) => thread.threadId)).toEqual(["a-recent"]);
+      expect(page.threads[0]).toMatchObject({
+        updatedAt: new Date(100_000).toISOString(),
+        recencyAt: new Date(300_000).toISOString(),
+      });
+    } finally {
+      registry.close();
+      for (const fixture of sessions) await stopFixture(fixture);
+    }
+  });
+
+  it("leaves out native list timestamps a Date cannot hold instead of failing the list", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+      },
+    });
+    await fixture.ready;
+    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+    try {
+      if (!delegationApi) throw new Error("Delegation API was not registered");
+      const pending = delegationApi.list({ cwd: "/synthetic", limit: 1, sort: "created-desc" });
+      const request = await readJsonLine(fixture.official.stdin);
+      // A safe integer of seconds, but past the largest time a Date can represent.
+      const outOfRange = 8_640_000_000_001;
+      fixture.official.stdout.write(
+        `${JSON.stringify({
+          id: request.id,
+          result: {
+            data: [
+              {
+                id: "far-future",
+                cwd: "/synthetic",
+                createdAt: outOfRange,
+                updatedAt: 2_000,
+                recencyAt: outOfRange,
+                status: { type: "idle" },
+              },
+            ],
+            nextCursor: null,
+          },
+        })}\n`,
+      );
+      const page = await pending;
+      expect(page.threads).toHaveLength(1);
+      expect(page.threads[0]).toMatchObject({
+        threadId: "far-future",
+        updatedAt: new Date(2_000_000).toISOString(),
+      });
+      expect(page.threads[0]).not.toHaveProperty("createdAt");
+      expect(page.threads[0]).not.toHaveProperty("recencyAt");
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("sends and cancels follow-up Turns on an external delegated Thread", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({

@@ -490,14 +490,17 @@ function rpcError(request: JsonRpcRequest, code: number, message: string): JsonO
   return rpcEnvelope(request, { error: { code, message } });
 }
 
-/** A native thread/list timestamp (Unix seconds) as the ISO field a delegation list row carries. */
+/**
+ * A native thread/list timestamp (Unix seconds) as the ISO field a delegation list row carries.
+ * Seconds outside the range a Date can hold leave the field out instead of failing the list.
+ */
 function listTimestamp(
-  field: "createdAt" | "updatedAt",
+  field: "createdAt" | "updatedAt" | "recencyAt",
   seconds: unknown,
-): { createdAt?: string; updatedAt?: string } {
-  return Number.isSafeInteger(seconds)
-    ? { [field]: new Date((seconds as number) * 1_000).toISOString() }
-    : {};
+): { createdAt?: string; updatedAt?: string; recencyAt?: string } {
+  if (!Number.isSafeInteger(seconds)) return {};
+  const date = new Date((seconds as number) * 1_000);
+  return Number.isFinite(date.getTime()) ? { [field]: date.toISOString() } : {};
 }
 
 function unixSeconds(): number {
@@ -2918,6 +2921,7 @@ export class AppServerHost {
             // The Registry merges several sessions by these, so keep the fields the page sorted by.
             ...listTimestamp("createdAt", entry.createdAt),
             ...listTimestamp("updatedAt", entry.updatedAt),
+            ...listTimestamp("recencyAt", entry.recencyAt),
           },
         ];
       }),

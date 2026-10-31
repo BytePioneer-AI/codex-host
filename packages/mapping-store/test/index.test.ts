@@ -989,6 +989,45 @@ describe("mapping-store package", () => {
 
     await expect(readFile(primaryPath, "utf8")).resolves.toBe("{broken");
     await expect(readFile(metadataPath, "utf8")).resolves.toBe(metadataContent);
+
+    // Retrying on the same instance reloads from disk instead of reusing a partial load.
+    await rm(blocked, { recursive: true });
+    await reopened.initialize();
+    await expect(reopened.getThread(threadId)).resolves.toBeNull();
+    await reopened.close();
+    await expect(
+      readFile(
+        path.join(directory, "quarantine", `${threadId}.json.1700000000000.invalid.metadata`),
+        "utf8",
+      ),
+    ).resolves.toBe(metadataContent);
+  });
+
+  it("puts the metadata back when quarantining the record fails", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    await first.updateMetadata(threadId, { projectId: "project-a" });
+    await first.close();
+    const primaryPath = path.join(directory, "threads", `${threadId}.json`);
+    const metadataPath = path.join(directory, "thread-metadata", `${threadId}.json`);
+    const metadataContent = await readFile(metadataPath, "utf8");
+
+    await writeFile(primaryPath, "{broken", "utf8");
+    await writeFile(path.join(directory, "backups", `${threadId}.json`), "{broken", "utf8");
+    // A non-empty directory at the record destination makes that rename fail.
+    const blocked = path.join(directory, "quarantine", `${threadId}.json.1700000000000.invalid`);
+    await mkdir(blocked, { recursive: true });
+    await writeFile(path.join(blocked, "occupied"), "", "utf8");
+    const reopened = new MappingStore({ directory, now: () => new Date(1_700_000_000_000) });
+    await expect(reopened.initialize()).rejects.toThrow();
+
+    await expect(readFile(primaryPath, "utf8")).resolves.toBe("{broken");
+    await expect(readFile(metadataPath, "utf8")).resolves.toBe(metadataContent);
+    await expect(readdir(path.join(directory, "quarantine"))).resolves.toEqual([
+      `${threadId}.json.1700000000000.invalid`,
+    ]);
   });
 
   it("cleans a provisional create without Native identity on restart", async () => {

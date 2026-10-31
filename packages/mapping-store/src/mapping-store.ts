@@ -409,12 +409,25 @@ export class MappingStore {
             // Move the metadata first: once the record leaves threads/, the orphan cleanup
             // below would delete metadata still in thread-metadata/. A failed move aborts
             // initialization with both files in place so the next start can retry.
-            await rename(path.join(this.#metadataDirectory, name), `${quarantine}.metadata`).catch(
-              (error: unknown) => {
-                if (systemErrorCode(error) !== "ENOENT") throw error;
-              },
-            );
-            await rename(primary, quarantine).catch(() => undefined);
+            const metadataSource = path.join(this.#metadataDirectory, name);
+            const metadataTarget = `${quarantine}.metadata`;
+            let metadataMoved = false;
+            try {
+              await rename(metadataSource, metadataTarget);
+              metadataMoved = true;
+            } catch (error) {
+              // ENOENT also means a missing quarantine/; skip only when there is no metadata.
+              if (systemErrorCode(error) !== "ENOENT" || (await exists(metadataSource)))
+                throw error;
+            }
+            try {
+              await rename(primary, quarantine);
+            } catch (error) {
+              // Keep the pair together so the next start quarantines both under one name.
+              if (metadataMoved)
+                await rename(metadataTarget, metadataSource).catch(() => undefined);
+              throw error;
+            }
             void primaryError;
             void backupError;
             continue;
@@ -493,6 +506,12 @@ export class MappingStore {
       this.#rebuildIndexes();
       this.#initialized = true;
     } catch (error) {
+      // A retry on this instance must reload from disk, not reuse a partial load.
+      this.#records.clear();
+      this.#delegations.clear();
+      this.#sectionPlacements = [];
+      this.#supersededSessions = [];
+      this.#rebuildIndexes();
       await this.close().catch(() => undefined);
       throw error;
     }

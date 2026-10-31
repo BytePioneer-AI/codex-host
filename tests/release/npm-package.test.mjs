@@ -286,6 +286,7 @@ async function runGeneratedWrapperLifecycle(platform, userArguments, exitCodes) 
 import { appendFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { syncBuiltinESMExports } from "node:module";
+import { PassThrough } from "node:stream";
 
 Object.defineProperty(process, "platform", { configurable: true, value: process.env.CODEXHOST_TEST_PLATFORM });
 Object.defineProperty(process, "arch", { configurable: true, value: "x64" });
@@ -295,9 +296,11 @@ childProcess.spawn = (command, args, options) => {
   appendFileSync(process.env.CODEXHOST_TEST_CALLS, JSON.stringify({
     command,
     args,
+    npmNodePath: options?.env?.CODEXHOST_NPM_NODE_PATH,
     stdoutFd: Array.isArray(options?.stdio) ? options.stdio[1]?.fd : null,
   }) + "\\n");
   const child = new EventEmitter();
+  child.stdout = new PassThrough();
   const exitCode = exitCodes[call++] ?? 1;
   setTimeout(() => child.emit("exit", exitCode, null), 5);
   return child;
@@ -592,6 +595,31 @@ describe("npm package release", () => {
     expect(source).toContain('const readyMarker = "ready\\n"');
     expect(source).toContain("path.dirname(path.dirname(path.resolve(process.argv[1])))");
     expect(source).not.toContain("runtime/node");
+  });
+
+  it.each(["darwin", "linux", "win32"])(
+    "keeps automatic Node selection compatible on %s",
+    async (platform) => {
+      const { result, calls } = await runGeneratedWrapperLifecycle(platform, ["launch"], [0]);
+      expect(result.status, result.stderr).toBe(0);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].npmNodePath).toBe(process.execPath);
+      const nodeIndex = calls[0].args.indexOf("--node");
+      if (platform === "darwin") expect(nodeIndex).toBe(-1);
+      else expect(calls[0].args[nodeIndex + 1]).toBe(process.execPath);
+    },
+  );
+
+  it("preserves an explicit macOS Node override", async () => {
+    const customNode = "/custom/node";
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "darwin",
+      ["launch", "--node", customNode],
+      [0],
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls[0].args.filter((argument) => argument === "--node")).toHaveLength(1);
+    expect(calls[0].args[calls[0].args.indexOf("--node") + 1]).toBe(customNode);
   });
 
   const brokerTail = [

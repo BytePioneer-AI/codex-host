@@ -315,7 +315,9 @@ fn discover_desktop(
 ) -> Result<DesktopInstallation, Box<dyn Error>> {
     match custom_install_root {
         #[cfg(target_os = "windows")]
-        Some(root) => Ok(codexhost_platform::discover_codex_desktop_from_root(root)?),
+        Some(root) => Ok(codexhost_platform::discover_codex_desktop_from_root(
+            &absolute_directory(root, "--custom-install")?,
+        )?),
         #[cfg(not(target_os = "windows"))]
         Some(_) => Err("--custom-install is supported on Windows only".into()),
         None => Ok(discover_codex_desktop()?),
@@ -353,7 +355,6 @@ struct ResolvedLaunchOptions {
     desktop_controller: PathBuf,
     renderer_extension: PathBuf,
     pi: Option<PathBuf>,
-    custom_install_root: Option<PathBuf>,
 }
 
 fn required_path(arguments: &[String], index: &mut usize, option: &str) -> Result<PathBuf, String> {
@@ -464,14 +465,39 @@ fn resolve_resource_path(
     }
 }
 
+#[cfg(target_os = "macos")]
+fn macos_default_node(
+    desktop_root: Option<&Path>,
+    bundled: PathBuf,
+    npm_node: Option<OsString>,
+) -> PathBuf {
+    // Native tools authenticate the peer, parent and grandparent, including the Host.
+    let desktop_node = desktop_root
+        .map(|root| root.join("Contents/Resources/cua_node/bin/node"))
+        .filter(|node| node.is_file());
+    if let Some(desktop_node) = desktop_node {
+        desktop_node
+    } else if bundled.is_file() {
+        bundled
+    } else {
+        npm_node.map(PathBuf::from).unwrap_or(bundled)
+    }
+}
+
 impl LaunchOptions {
-    fn resolve(self) -> Result<ResolvedLaunchOptions, Box<dyn Error>> {
+    fn resolve(self, desktop_root: Option<&Path>) -> Result<ResolvedLaunchOptions, Box<dyn Error>> {
         let installed = InstalledResources::from_current_executable()?;
+        let default_node = installed.node;
+        #[cfg(target_os = "macos")]
+        let default_node =
+            macos_default_node(desktop_root, default_node, env::var_os(NPM_NODE_PATH_ENV));
+        #[cfg(not(target_os = "macos"))]
+        let _ = desktop_root;
         Ok(ResolvedLaunchOptions {
             shim: resolve_resource_path(self.shim, &installed.shim, "--shim", "bundled Shim")?,
             node: resolve_resource_path(
                 self.node,
-                &installed.node,
+                &default_node,
                 "--node",
                 "bundled Node.js runtime",
             )?,
@@ -496,10 +522,6 @@ impl LaunchOptions {
             pi: self
                 .pi
                 .map(|path| absolute_file(&path, "--pi"))
-                .transpose()?,
-            custom_install_root: self
-                .custom_install_root
-                .map(|path| absolute_directory(&path, "--custom-install"))
                 .transpose()?,
         })
     }
@@ -1072,9 +1094,16 @@ fn launch(
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
     start_launch_console(&options);
-    let options = options.resolve()?;
+    let installation = discover_desktop(options.custom_install_root.as_deref());
+    // 优先报告安装资源缺失，避免 Desktop 探测错误遮住损坏的 Host 安装。
+    let options = options.resolve(
+        installation
+            .as_ref()
+            .ok()
+            .map(|desktop| desktop.install_root.as_path()),
+    )?;
+    let installation = installation?;
     startup_trace("resources resolved");
-    let installation = discover_desktop(options.custom_install_root.as_deref())?;
     startup_record::desktop(
         &installation.version,
         &installation.build,
@@ -1209,9 +1238,16 @@ fn launch(
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
     start_launch_console(&options);
-    let options = options.resolve()?;
+    let installation = discover_desktop(options.custom_install_root.as_deref());
+    // 优先报告安装资源缺失，避免 Desktop 探测错误遮住损坏的 Host 安装。
+    let options = options.resolve(
+        installation
+            .as_ref()
+            .ok()
+            .map(|desktop| desktop.install_root.as_path()),
+    )?;
+    let installation = installation?;
     startup_trace("resources resolved");
-    let installation = discover_desktop(options.custom_install_root.as_deref())?;
     startup_record::desktop(
         &installation.version,
         &installation.build,
@@ -1291,8 +1327,12 @@ fn start_launch_console(options: &LaunchOptions) {
     // Recovery needs only Node and the console entrypoint, not a complete
     // Desktop resource set. Resolve those paths before validating the rest.
     if let Ok(installed) = InstalledResources::from_current_executable() {
+        #[cfg(target_os = "macos")]
+        let default_node = macos_default_node(None, installed.node, env::var_os(NPM_NODE_PATH_ENV));
+        #[cfg(not(target_os = "macos"))]
+        let default_node = installed.node;
         console::start_for_launch(console::console_command_for(
-            options.node.as_deref().unwrap_or(&installed.node),
+            options.node.as_deref().unwrap_or(&default_node),
             options
                 .host_runtime
                 .as_deref()
@@ -1604,6 +1644,60 @@ mod tests {
         assert!(options.renderer_extension.is_none());
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_host_uses_the_selected_desktop_node_and_preserves_explicit_overrides() {
+        let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let root =
+            std::env::temp_dir().join(format!("codexhost-signed-node-{}", std::process::id()));
+        let desktop_node = root.join("Contents/Resources/cua_node/bin/node");
+        std::fs::create_dir_all(desktop_node.parent().unwrap()).unwrap();
+        std::fs::write(&desktop_node, b"Desktop Node fixture").unwrap();
+
+        for node in [None, Some(executable.clone())] {
+            let expected = node.clone().unwrap_or_else(|| desktop_node.clone());
+            let options = super::LaunchOptions {
+                shim: Some(executable.clone()),
+                node,
+                host_runtime: Some(executable.clone()),
+                desktop_controller: Some(executable.clone()),
+                renderer_extension: Some(executable.clone()),
+                pi: None,
+                custom_install_root: None,
+            };
+            let resolved = options.resolve(Some(&root)).unwrap();
+            assert_eq!(resolved.node, expected.canonicalize().unwrap());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_node_fallback_preserves_bundled_and_npm_runtimes() {
+        let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let missing = executable.with_file_name("missing-desktop-node");
+        assert_eq!(
+            super::macos_default_node(
+                Some(&missing),
+                executable.clone(),
+                Some(missing.clone().into())
+            ),
+            executable
+        );
+        assert_eq!(
+            super::macos_default_node(
+                Some(&missing),
+                missing.clone(),
+                Some(executable.clone().into())
+            ),
+            executable
+        );
+        assert_eq!(
+            super::macos_default_node(Some(&missing), missing.clone(), None),
+            missing
+        );
+    }
+
     #[test]
     fn explicit_development_paths_remain_supported() {
         let options = parse_launch_options(&[
@@ -1688,7 +1782,6 @@ mod tests {
             desktop_controller: PathBuf::from("/opt/desktop-controller.mjs"),
             renderer_extension: PathBuf::from("/opt/renderer-extension.js"),
             pi: None,
-            custom_install_root: None,
         }
     }
 

@@ -646,7 +646,9 @@ if (launchArguments?.[0] === "launch") {
     }
   }
   const extras = [];
-  if (!injected.has("--node")) extras.push("--node", process.execPath);
+  if (!injected.has("--node") && process.platform !== "darwin") {
+    extras.push("--node", process.execPath);
+  }
   if (!injected.has("--shim")) extras.push("--shim", shim);
   if (!injected.has("--host-runtime")) extras.push("--host-runtime", hostRuntime);
   if (!injected.has("--desktop-controller")) {

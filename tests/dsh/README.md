@@ -21,6 +21,15 @@ same Vitest pre-transform as the imported repository (`tests/vitest.config.js`).
 They are excluded from `tests/tsconfig.json`: their modules are the imported
 DSH sources, which are not part of the CodexHost Web TypeScript program.
 
+`markdown/` covers the streaming and settled grammars, including local file URL
+and bare-space image behavior. Its upstream regression cases come from DSH
+`e8fc11fcf7` (single tildes), `f723892c98` + `14ead62052` (multiline dollar math
+and parser boundaries), and `c262a09fd0` (Windows destinations). Browser rendering
+and touch/keyboard wide-table scrolling are covered by
+`packages/web-server/test/browser/markdown-compatibility.test.ts`; the table
+hover-capability change is extracted from `94ffdd2377`, with keyboard focus
+ordered after the resting rule to preserve its precedence.
+
 Run them alone with:
 
 ```sh

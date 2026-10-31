@@ -195,8 +195,8 @@
   overscroll-behavior-x: contain;
 }
 
-/* Wide tables reveal their horizontal bar on hover (or keyboard focus)
-   instead of keeping it painted. Chromium never repaints state-conditioned
+/* Hover-capable inputs reveal wide-table bars on hover or keyboard focus;
+   touch inputs retain native horizontal scrolling. Chromium never repaints state-conditioned
    scrollbar STYLES (neither hover-conditioned `::-webkit-scrollbar*` rules
    nor a :hover `scrollbar-color` change reaches the painted bar), so the
    toggle is `overflow-x` itself — a layout change repaints reliably. The
@@ -205,12 +205,20 @@
    Other engines and overlay scrollbars may reserve a different height.
    Wheel and trackpad scrolling need the pointer over the table, which is
    already the hover that re-enables scrolling. */
-.tableScroll:global(.md-table-wide) {
-  overflow-x: hidden;
-  padding-bottom: var(--dsh-scrollbar-width, 5px);
+@media (hover: hover) {
+  .tableScroll:global(.md-table-wide) {
+    overflow-x: hidden;
+    padding-bottom: var(--dsh-scrollbar-width, 5px);
+  }
+
+  .tableScroll:global(.md-table-wide):hover {
+    overflow-x: scroll;
+    padding-bottom: 0;
+  }
 }
 
-.tableScroll:global(.md-table-wide):hover,
+/* Keep this after the hover-capable resting rule so keyboard focus also wins
+   when the pointer is outside the table. */
 .tableScroll:global(.md-table-wide):focus-visible {
   overflow-x: scroll;
   padding-bottom: 0;

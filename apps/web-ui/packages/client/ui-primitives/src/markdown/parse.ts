@@ -17,6 +17,10 @@ import { gfm } from "micromark-extension-gfm";
 import { math } from "micromark-extension-math";
 import { cjkFriendlyStrong } from "./cjkFriendlyStrong.ts";
 import { mathCompatibility } from "./mathCompatibility.ts";
+import { windowsPathDestinations } from "./windows-path-destinations.ts";
+
+/** GFM strikethrough requires `~~`; a single `~` stays literal in ranges such as `10~20`. */
+const gfmOptions = { singleTilde: false };
 
 /**
  * Parse GFM markdown (the streaming arm's grammar: no math, so incomplete
@@ -27,8 +31,8 @@ import { mathCompatibility } from "./mathCompatibility.ts";
 export function parseGfm(text: string): Root {
   return recoverLocalImages(
     fromMarkdown(text, {
-      extensions: [gfm(), cjkFriendlyStrong()],
-      mdastExtensions: [gfmFromMarkdown()],
+      extensions: [gfm(gfmOptions), cjkFriendlyStrong()],
+      mdastExtensions: [gfmFromMarkdown(), windowsPathDestinations()],
     }),
     text,
   );
@@ -43,8 +47,10 @@ export function parseGfm(text: string): Root {
 export function parseGfmWithMath(text: string): Root {
   return recoverLocalImages(
     fromMarkdown(text, {
-      extensions: [gfm(), cjkFriendlyStrong(), mathCompatibility(), math()],
-      mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()],
+      // micromark dispatches the last extension first. Compatibility dollar blocks
+      // keep opening-line math as content instead of upstream's fence metadata.
+      extensions: [gfm(gfmOptions), cjkFriendlyStrong(), math(), mathCompatibility()],
+      mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown(), windowsPathDestinations()],
     }),
     text,
   );

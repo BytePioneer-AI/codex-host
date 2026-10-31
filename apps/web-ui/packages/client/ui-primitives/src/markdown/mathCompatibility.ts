@@ -1,4 +1,8 @@
-/** Extend upstream dollar-only math syntax with TeX delimiters while reusing its token vocabulary. */
+/**
+ * Extend upstream dollar-only math syntax with TeX delimiters while reusing its
+ * token vocabulary. Dollar blocks keep opening-line math as content instead of
+ * fence metadata; declined or unclosed candidates fall back to upstream math.
+ */
 
 import { factorySpace } from "micromark-factory-space";
 import type {} from "micromark-extension-math";
@@ -132,12 +136,7 @@ const tokenizeBackslashMathText: Tokenizer = function (effects, ok, nok) {
   }
 };
 
-function createMathFlow(
-  marker: number,
-  openMarker: number,
-  closeMarker: number,
-  multiline: boolean,
-): Construct {
+function createMathFlow(marker: number, openMarker: number, closeMarker: number): Construct {
   const tokenize: Tokenizer = function (effects, ok, nok) {
     const self = this;
     let oddBackslashRun = false;
@@ -179,21 +178,25 @@ function createMathFlow(
         )(code);
       }
       if (markdownLineEnding(code)) {
-        return multiline
-          ? effects.attempt(nonLazyContinuation, afterContinuation, nok)(code)
-          : nok(code);
+        // Stop a dollar block's paragraph-interruption check before the newline,
+        // so the competing upstream construct does not see a lazy next line.
+        if (self.interrupt && marker === codes.dollarSign) return ok(code);
+        return effects.attempt(nonLazyContinuation, afterContinuation, nok)(code);
       }
       return valueStart(code);
     }
 
     function afterClosingFenceAttempt(code: number | null): State | undefined {
-      return marker === codes.backslash
-        ? effects.check(
-            { partial: true, tokenize: tokenizeOpeningFence },
-            nok,
-            markerValueStart,
-          )(code)
-        : markerValueStart(code);
+      if (marker === codes.backslash) {
+        return effects.check(
+          { partial: true, tokenize: tokenizeOpeningFence },
+          nok,
+          markerValueStart,
+        )(code);
+      }
+      // A failed dollar close must not scan on and consume a later block's fence.
+      // In particular, `$$x$$ trailing` belongs to inline math and prose.
+      return nok(code);
     }
 
     function afterContinuation(code: number | null): State | undefined {
@@ -296,7 +299,7 @@ function createMathFlow(
 
   return {
     concrete: true,
-    name: marker === codes.dollarSign ? "sameLineDollarMathFlow" : "backslashMathFlow",
+    name: marker === codes.dollarSign ? "dollarMathFlow" : "backslashMathFlow",
     tokenize,
   };
 }
@@ -337,29 +340,23 @@ const backslashMathFlow = createMathFlow(
   codes.backslash,
   codes.leftSquareBracket,
   codes.rightSquareBracket,
-  true,
 );
 
-const sameLineDollarMathFlow = createMathFlow(
-  codes.dollarSign,
-  codes.dollarSign,
-  codes.dollarSign,
-  false,
-);
+const dollarMathFlow = createMathFlow(codes.dollarSign, codes.dollarSign, codes.dollarSign);
 
 const backslashMath: Extension = {
   flow: {
     [codes.backslash]: backslashMathFlow,
-    [codes.dollarSign]: sameLineDollarMathFlow,
+    [codes.dollarSign]: dollarMathFlow,
   },
   text: { [codes.backslash]: backslashMathText },
 };
 
 /**
- * TeX backslash delimiters and same-line display-dollar blocks as a micromark
- * syntax extension reusing `micromark-extension-math`'s token vocabulary; the
- * caller must also register `math()` on the same parse so the emitted tokens
- * compile to standard math nodes.
+ * TeX backslash delimiters and display-dollar blocks as a micromark syntax
+ * extension reusing `micromark-extension-math`'s token vocabulary. Register
+ * after `math()` so both same-line and multiline `$$` blocks keep their full
+ * content, including when the closing fence ends a content line.
  * @returns The micromark syntax extension.
  */
 export function mathCompatibility(): Extension {

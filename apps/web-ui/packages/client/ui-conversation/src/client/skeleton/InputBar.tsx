@@ -491,6 +491,9 @@ export const InputBar = memo(function InputBar({
           <div className={css.overlayAnchor}>{renderSlot("conversation.input.overlay", {})}</div>
         )}
         {accessory !== undefined && <div className={css.accessory}>{accessory}</div>}
+        {input === undefined || sessionId === undefined ? null : (
+          <div className={css.inlineNotices}>{renderSlot("conversation.input.notice", {})}</div>
+        )}
         {renderSlot("conversation.input.attachments", {
           attachments,
           canAcceptDrop,
@@ -530,8 +533,8 @@ export const InputBar = memo(function InputBar({
           hint={hint}
           showPlaceholder={draft === "" && attachments.length === 0 && !claimActive}
         />
-        <div ref={rowRef} className={css.row}>
-          <div className={css.tools} hidden={activity}>
+        <div ref={rowRef} className={css.row} data-composer-toolbar>
+          <div className={css.tools} hidden={activity} data-composer-tools>
             <Tooltip label={commandMenuLabel} side="top" delayMs={500}>
               <button
                 type="button"
@@ -595,7 +598,7 @@ export const InputBar = memo(function InputBar({
                   onMouseDown={keepFocus}
                   onClick={stop}
                 >
-                  <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>
+                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
                     <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" />
                   </svg>
                 </button>
@@ -617,11 +620,11 @@ export const InputBar = memo(function InputBar({
                 onClick={onPrimary}
               >
                 {primaryStops ? (
-                  <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>
+                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
                     <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" />
                   </svg>
                 ) : (
-                  <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>
+                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
                     <path
                       d="M8.3125 0.980183C8.66767 1.0531 8.97902 1.20418 9.2627 1.43233C9.48724 1.61297 9.73029 1.85793 9.97949 2.10714L14.707 6.83468L13.293 8.24874L9 3.95577V15.0417H7V3.95577L2.70703 8.24874L1.29297 6.83468L6.02051 2.10714C6.26971 1.85793 6.51277 1.61297 6.7373 1.43233C6.97662 1.23986 7.28445 1.04402 7.6875 0.980183C7.8973 0.947006 8.1031 0.95516 8.3125 0.980183Z"
                       fill="currentColor"

@@ -106,6 +106,19 @@
   color: var(--dsw-alias-state-business-primary);
 }
 
+/* Inline notice rows (feature-owned, above the draft). The slot anchor is
+   always present, so collapse when it rendered nothing. */
+.inlineNotices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 10px 0;
+}
+
+.inlineNotices:has(> [data-slot]:empty) {
+  display: none;
+}
+
 .accessory {
   display: flex;
   align-items: center;
@@ -274,6 +287,11 @@
   --dsh-composer-model-icon-display: block;
 }
 
+/* Folded accessory trays reserve their space before an interaction starts. */
+.row:has([data-composer-tray="stacked"]) {
+  padding-top: 90px;
+}
+
 .tools,
 .modes,
 .trailing {
@@ -376,8 +394,8 @@
   display: grid;
   place-items: center;
   flex: none;
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   border: none;
   border-radius: 999px;
   corner-shape: round;

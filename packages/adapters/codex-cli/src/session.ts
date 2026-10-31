@@ -16,6 +16,7 @@ import {
   type HostItem,
 } from "./items.ts";
 import { CodexAppServer, CodexRpcError } from "./rpc.ts";
+import { CodexModelSelection, CodexSettingsUnconfirmedError } from "./model-selection.ts";
 import { CodexUsage } from "./usage.ts";
 import type { HarnessSessionUsageCapability } from "@codexhost/harness-adapter/plugin";
 
@@ -53,7 +54,6 @@ import {
 import {
   harnessIdSchema,
   harnessCommandCatalogSchema,
-  harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
   harnessPermissionModeIdSchema,
   hostTurnIdSchema,
@@ -176,7 +176,7 @@ export class CodexSession implements HarnessSession {
   readonly outputs = this.channel.outputs;
   private readonly server: CodexAppServer;
   private threadId = "";
-  private model: string | undefined;
+  private readonly modelSelection: CodexModelSelection;
   private effort: string | undefined;
   private mode: PermissionMode | undefined;
   /** Codex turn id → Host turn id. */
@@ -193,13 +193,13 @@ export class CodexSession implements HarnessSession {
       cwd: options.cwd,
       environment: options.environment,
     });
-    this.model = options.model;
+    this.modelSelection = new CodexModelSelection(this.server);
     this.effort = options.effort;
     this.mode = permissionMode(options.permissionModeId);
     this.usage = new CodexUsage(
       options.usage,
       () => this.threadId,
-      () => this.model,
+      () => this.modelSelection.model,
       (event) => this.emit(event),
       options.threadId === undefined,
     );
@@ -228,12 +228,13 @@ export class CodexSession implements HarnessSession {
       });
       this.channel.end();
     });
+    const modelSettings = await this.modelSelection.initialize(this.options.model);
     const common = {
       cwd: this.options.cwd,
       ...(this.mode === undefined
         ? {}
         : { approvalPolicy: this.mode.approvalPolicy, sandbox: this.mode.sandbox }),
-      ...(this.model === undefined ? {} : { model: this.model }),
+      ...modelSettings,
     };
     const response =
       this.options.threadId === undefined
@@ -241,16 +242,20 @@ export class CodexSession implements HarnessSession {
             thread: { id: string };
             model: string;
             reasoningEffort: string | null;
+            serviceTier?: string | null;
           }>("thread/start", { ...common, experimentalRawEvents: true })
         : await this.server.request<{
             thread: { id: string };
             model: string;
             reasoningEffort: string | null;
+            serviceTier?: string | null;
           }>("thread/resume", { threadId: this.options.threadId, ...common });
     if (this.options.threadId !== undefined && response.thread.id !== this.options.threadId)
       throw new Error("Codex CLI resumed a different native Session");
     this.threadId = response.thread.id;
-    this.model ??= response.model;
+    if (modelSettings.serviceTier === "priority" && response.serviceTier !== "priority")
+      throw new Error("Codex did not confirm the requested Fast service tier");
+    this.modelSelection.confirm(response);
     this.effort ??= response.reasoningEffort ?? undefined;
     this.initialState = this.state();
     await this.usage.refresh();
@@ -264,12 +269,7 @@ export class CodexSession implements HarnessSession {
         harnessId: HARNESS_ID,
         nativeSessionId: this.threadId,
       }),
-      ...(this.model === undefined
-        ? {}
-        : {
-            effectiveModel: harnessModelRefSchema.parse({ id: this.model }),
-            resolvedModelLabel: this.model,
-          }),
+      ...this.modelSelection.state(),
       ...(this.effort === undefined
         ? {}
         : { effectiveThinkingOptionId: harnessThinkingOptionIdSchema.parse(this.effort) }),
@@ -589,6 +589,11 @@ export class CodexSession implements HarnessSession {
       TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted | ModelSelectCompleted
     >
   > {
+    if (this.closed)
+      return {
+        ok: false,
+        error: { code: "invalidState", message: "Codex CLI Session is closed", retryable: false },
+      };
     try {
       switch (command.type) {
         case "turn.steer":
@@ -610,7 +615,7 @@ export class CodexSession implements HarnessSession {
                   approvalPolicy: this.mode.approvalPolicy,
                   sandboxPolicy: sandboxPolicy(this.mode),
                 }),
-            ...(this.model === undefined ? {} : { model: this.model }),
+            ...this.modelSelection.turnParameters(),
             ...(this.effort === undefined ? {} : { effort: this.effort }),
           });
           if (!this.turns.has(response.turn.id)) {
@@ -633,10 +638,16 @@ export class CodexSession implements HarnessSession {
         }
         case "interaction.respond":
           return this.respondInteraction(command.interactionId, command.response);
-        case "model.select":
-          this.model = (command.model as { id: string }).id;
+        case "model.select": {
+          const settings = await this.modelSelection.select(
+            this.threadId,
+            command.model.id,
+            this.effort,
+          );
+          if (settings.effort !== undefined) this.effort = settings.effort ?? undefined;
           this.emit({ type: "session.state.changed", state: this.state() });
           return { ok: true, value: { completed: true } };
+        }
         case "thinking.select":
           this.effort = String(command.thinkingOptionId);
           this.emit({ type: "session.state.changed", state: this.state() });
@@ -674,6 +685,13 @@ export class CodexSession implements HarnessSession {
           : error instanceof Error
             ? error.message
             : String(error);
+      if (error instanceof CodexSettingsUnconfirmedError) {
+        this.emit({
+          type: "session.faulted",
+          error: { code: "protocolError", message, retryable: true },
+        });
+        await this.close();
+      }
       return {
         ok: false,
         error: {

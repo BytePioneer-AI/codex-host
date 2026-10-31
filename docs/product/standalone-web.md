@@ -90,6 +90,10 @@ Adapter 使用通用发现与持久化 launch settings 解析本地 `codex`；�
 
 原生会话通过通用导入接入：Host 通过原生 `thread/list` cursor 分页读完 Codex home 中可发现的会话，不把请求的单页 200 条当作总数上限；原生分页失败或 cursor 不前进时明确报错，不返回部分候选。同一逻辑 Session 的分页历史可以有多个 rollout 段，Adapter 按 Session ID 归并同页及跨页记录，重复项通过只读 `thread/read(includeTurns: false)` 获取权威标题、项目路径和更新时间，不按文件顺序或时间猜测当前段。已消失或身份无效的重复组不成为候选；原生读取故障明确报错，不冒充空列表。提交导入时重新发现并读取所选 ID，原生引用只保存逻辑 Session ID，不绑定某个历史文件。导入后成为可继续的 Codex CLI 外部 Thread，打开时由原生 `thread/resume` 和 `thread/read` 恢复其有效历史；返回不同的 Session ID 时拒绝，不新建空会话代替恢复。旧的 `<data>/web-codex/` 隔离来源数据不读取、不删除、不迁移，也不出现在 Web 会话列表中。同一原生会话不要在 GUI 官方 Codex 与 Web Codex CLI 中同时打开；Host 不为跨进程写入提供互斥。
 
+Codex CLI 的 Fast 闪电复用 Composer 的公共开关：只有原生 `model/list` 为当前 Model 声明 `serviceTiers` 中的 `priority` 档位时才显示，不按模型名或旧的 `additionalSpeedTiers` 猜测支持。Adapter 将普通 Model 与 Fast 选择映射为同一原生 Model 的不同 `serviceTier`，不把 Fast 引用作为模型名发送。创建和恢复通过原生参数与响应确认状态；未传配置提示时保留原生默认值或恢复值。显式普通引用关闭 Fast，显式 Fast 引用开启。
+
+运行中的切换调用 `thread/settings/update`，保留当前 Thinking，并等待成功响应及匹配的 `thread/settings/updated` 通知后更新开关；影响后续 Turn，不承诺改变正在执行的请求。关闭时发送 `serviceTier: null` 清除 Fast，并采用原生确认的标准档位。原生拒绝时不发布新状态；确认超时或协议失效时关闭故障 Session，不猜测档位后继续发送。没有服务档位元数据的旧 CLI 不显示闪电，普通模型选择保持下一轮传参行为。Fast 可能增加额度消耗，目录声明不保证账号额度或实际推理可用。
+
 ## Codex CLI 原生认证
 
 Codex CLI 与其他 Harness 一样，由原生 CLI 使用本地认证，不提供登录、验证码或账号管理。插件不调用 `account/read`，也不在创建会话前预检查认证。模型检查只查询原生目录，不发送测试推理；目录可读不代表认证、额度或真实推理可用。

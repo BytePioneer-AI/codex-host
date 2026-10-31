@@ -16,6 +16,7 @@ import {
   type CodexExecutable,
 } from "./command.ts";
 import { CodexAppServer } from "./rpc.ts";
+import { codexFastModel, readCodexModels } from "./model-selection.ts";
 import {
   CODEX_COMMANDS,
   CodexSession,
@@ -256,20 +257,7 @@ class CodexAdapter implements HarnessAdapter {
     this.inspections.add(server);
     try {
       await server.initialize();
-      const response = await server.request<{
-        data: Array<{
-          id: string;
-          displayName: string;
-          description: string;
-          hidden: boolean;
-          isDefault: boolean;
-          supportedReasoningEfforts: Array<{ reasoningEffort: string }>;
-          defaultReasoningEffort: string;
-        }>;
-      }>("model/list", { limit: 100 });
-      const models = response.data.filter(
-        (model) => !model.hidden && /^[A-Za-z0-9._~-]+$/u.test(model.id),
-      );
+      const models = await readCodexModels(server);
       const efforts = new Set<string>();
       for (const model of models)
         for (const option of model.supportedReasoningEfforts) efforts.add(option.reasoningEffort);
@@ -282,12 +270,19 @@ class CodexAdapter implements HarnessAdapter {
         catalog: {
           models: models.map((model) => ({
             ref: { id: model.id },
+            ...(codexFastModel(model) ? { fastModel: codexFastModel(model) } : {}),
             label: model.displayName,
             supportedThinkingOptionIds: model.supportedReasoningEfforts.map(
               (option) => option.reasoningEffort,
             ),
           })),
-          ...(defaultModel === undefined ? {} : { defaultModel: { id: defaultModel.id } }),
+          ...(defaultModel === undefined
+            ? {}
+            : {
+                defaultModel: (defaultModel.defaultServiceTier === "priority"
+                  ? codexFastModel(defaultModel)
+                  : undefined) ?? { id: defaultModel.id },
+              }),
           thinkingOptions,
           ...(defaultModel !== undefined && efforts.has(defaultModel.defaultReasoningEffort)
             ? { defaultThinkingOptionId: defaultModel.defaultReasoningEffort }

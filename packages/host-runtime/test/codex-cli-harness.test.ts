@@ -85,6 +85,72 @@ function activeTurnOf(turn: JsonObject): string {
 }
 
 describe("Codex CLI through the external Thread runtime", () => {
+  it("routes native Fast selections through the public catalog and Model commands", async () => {
+    const { root, home, adapter, fixture, scenario } = codexCliFixture();
+    scenario({
+      models: [
+        {
+          id: "test-model",
+          displayName: "Test",
+          hidden: false,
+          isDefault: true,
+          supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+          defaultReasoningEffort: "high",
+          serviceTiers: [{ id: "priority", name: "Fast", description: "Increased usage" }],
+        },
+      ],
+    });
+    try {
+      await fixture.ready;
+      const inspection = await adapter.inspect();
+      if (inspection.status !== "ready") throw new Error("Codex inspection failed");
+      const model = inspection.catalog.models[0];
+      if (!model?.fastModel) throw new Error("Native Fast was not advertised");
+      const created = await callClient(fixture, "thread/start", {
+        model: encodeHarnessPluginRoute({ harnessId: CODEX_CLI, model: model.fastModel }),
+        cwd: root,
+      });
+      const threadId = String((created.thread as JsonObject).id);
+      for (const selected of [model.ref, model.fastModel]) {
+        expect(
+          await callClient(fixture, "codexhost/thread/model/select", {
+            threadId,
+            model: selected,
+          }),
+        ).toMatchObject({ effectiveModel: selected });
+      }
+      const turn = await callClient(fixture, "turn/start", {
+        threadId,
+        clientUserMessageId: "fast-native",
+        input: [{ type: "text", text: "hello" }],
+      });
+      const turnId = activeTurnOf(turn);
+      await waitForSnapshot(
+        fixture,
+        threadId,
+        (snapshot) =>
+          snapshot.activeTurnId !== turnId &&
+          snapshot.turnsPage.data.some((entry) => entry.id === turnId),
+      );
+      const records = readFileSync(join(home, "rpc.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { method: string; params: JsonObject });
+      expect(records.find((r) => r.method === "turn/start")?.params).toMatchObject({
+        model: "test-model",
+        serviceTier: "priority",
+      });
+      expect(
+        records
+          .filter((r) => r.method === "thread/settings/update")
+          .map((r) => r.params.serviceTier),
+      ).toEqual([null, "priority"]);
+    } finally {
+      await stopFixture(fixture);
+      await adapter.close();
+    }
+  });
+
   it("imports one logical Session from multiple native segments, reads its history and continues the same identity", async () => {
     const { home, adapter, fixture, scenario } = codexCliFixture();
     const original = {

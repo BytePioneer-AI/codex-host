@@ -137,7 +137,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (request.method === "model/list")
     result = {
-      data: [
+      data: config.models ?? [
         {
           id: "test-model",
           displayName: "Test",
@@ -166,13 +166,51 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   if (request.method === "thread/start" || request.method === "thread/resume") {
     threadId =
       request.method === "thread/start" ? `native-${process.pid}` : request.params.threadId;
+    const saved = read("thread-settings.json", {});
+    const previous = saved[threadId] ?? {};
+    const settings = {
+      model: request.params.model ?? previous.model ?? config.models?.[0]?.id ?? "test-model",
+      serviceTier: Object.hasOwn(request.params, "serviceTier")
+        ? (request.params.serviceTier ?? "default")
+        : (previous.serviceTier ?? config.nativeServiceTier ?? "default"),
+      effort: previous.effort ?? null,
+    };
+    write("thread-settings.json", { ...saved, [threadId]: settings });
     result = {
       thread: {
         id: request.method === "thread/resume" ? (config.resumeThreadId ?? threadId) : threadId,
       },
-      model: "test-model",
-      reasoningEffort: null,
+      model: settings.model,
+      ...(config.omitServiceTier ? {} : { serviceTier: settings.serviceTier }),
+      reasoningEffort: settings.effort,
     };
+  }
+  if (request.method === "thread/settings/update") {
+    if (config.settingsError) {
+      send({ id: request.id, error: { code: -32000, message: "Native settings rejected" } });
+      return;
+    }
+    const saved = read("thread-settings.json", {});
+    const settings = { ...saved[threadId], ...request.params, ...config.settingsResult };
+    settings.serviceTier ??= "default";
+    delete settings.threadId;
+    write("thread-settings.json", { ...saved, [threadId]: settings });
+    if (config.settingsBefore)
+      notify("thread/settings/updated", { threadId, threadSettings: config.settingsBefore });
+    const complete = () => {
+      if (!config.settingsEventFirst) send({ id: request.id, result: {} });
+      if (!config.omitSettingsEvent)
+        notify("thread/settings/updated", { threadId, threadSettings: settings });
+      if (config.settingsEventFirst) send({ id: request.id, result: {} });
+    };
+    if (config.settingsWaitFile) {
+      const waiting = setInterval(() => {
+        if (!fs.existsSync(file(config.settingsWaitFile))) return;
+        clearInterval(waiting);
+        complete();
+      }, 10);
+    } else complete();
+    return;
   }
   if (request.method === "turn/steer" && config.steerReject) {
     send({

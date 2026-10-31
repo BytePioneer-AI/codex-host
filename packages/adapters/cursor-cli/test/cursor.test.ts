@@ -13,6 +13,7 @@ import { CursorTransport, type CursorCallbacks } from "../src/transport.js";
 import { cursorModelRef, cursorCatalog, cursorNativeModel } from "../src/models.js";
 import { CursorInteractions } from "../src/interactions.js";
 import { cursorSnapshot } from "../src/projection.js";
+import * as forkSupport from "../src/fork-support.js";
 
 const native = vi.hoisted(() => ({
   turns: [] as Array<{ id: string; text: string; notification?: true }>,
@@ -290,6 +291,7 @@ describe("Cursor turn lifecycle", () => {
     );
   });
   it("keeps the prompt identity when Cursor appends background task notifications", async () => {
+    vi.spyOn(forkSupport, "cursorForkAvailable").mockReturnValue(true);
     const f = session();
     const notification = (id: string) =>
       native.turns.push({
@@ -321,7 +323,14 @@ describe("Cursor turn lifecycle", () => {
     );
     expect(terminal[0]).toMatchObject({
       event: {
-        outcome: { status: "succeeded" },
+        outcome: {
+          status: "succeeded",
+          checkpoint: {
+            harnessId: "cursor-cli",
+            nativeSessionId: info.sessionId,
+            checkpointId: native.turns[1]?.id,
+          },
+        },
         nativeTurnRef: { nativeTurnKey: native.turns[1]?.id },
       },
     });

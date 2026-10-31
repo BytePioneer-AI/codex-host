@@ -226,7 +226,7 @@ describe("pricing.json editing", () => {
     expect(await readdir(`${file}.lock`)).toEqual([]);
   }, 30_000);
 
-  it("does not reclaim a live holder's register however old it is", async () => {
+  it("does not reclaim a live holder's register however old it looks", async () => {
     const lock = `${file}.lock`;
     await mkdir(lock, { mode: 0o700 });
     const ownerToken = randomUUID();
@@ -237,7 +237,8 @@ describe("pricing.json editing", () => {
         version: 2,
         ownerToken,
         pid: process.pid,
-        bootTimeSeconds: Math.round(Date.now() / 1_000 - os.uptime()),
+        // A wall-clock jump makes the derived boot time disagree; that alone must not reclaim it.
+        bootTimeSeconds: Math.round(Date.now() / 1_000 - os.uptime()) - 3_600,
         choosing: false,
         ticket: 1,
       }),

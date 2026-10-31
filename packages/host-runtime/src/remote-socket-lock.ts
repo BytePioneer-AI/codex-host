@@ -119,8 +119,11 @@ function ownerIsAbandoned(
   mtimeMs: number,
   leaseMs: number | null,
 ): boolean {
+  // Boot time is derived from the wall clock, so a clock jump looks like a reboot. Without a
+  // lease only an owner that is no longer running is safe to reclaim.
+  if (leaseMs === null) return !processIsRunning(record.pid);
   if (Math.abs(record.bootTimeSeconds - currentBootTimeSeconds()) > 5) return true;
-  if (leaseMs !== null && Math.max(0, Date.now() - mtimeMs) >= leaseMs) return true;
+  if (Math.max(0, Date.now() - mtimeMs) >= leaseMs) return true;
   return !processIsRunning(record.pid);
 }
 
@@ -358,8 +361,8 @@ export async function withRemoteAppServerSocketInitializationLock<T>(
 /**
  * Serializes a short read-modify-write of `file` across processes with the same
  * Bakery registers, kept in the private directory `<file>.lock`. Only registers
- * whose owner exited or belongs to another boot are reclaimed, never a live
- * owner's, so a stalled holder cannot rename a stale snapshot over newer data.
+ * whose owner process is no longer running are reclaimed, never a live owner's,
+ * so a stalled holder cannot rename a stale snapshot over newer data.
  */
 export async function withFileUpdateLock<T>(file: string, action: () => Promise<T>): Promise<T> {
   return withBakeryLock(

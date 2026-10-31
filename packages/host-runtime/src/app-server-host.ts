@@ -490,6 +490,16 @@ function rpcError(request: JsonRpcRequest, code: number, message: string): JsonO
   return rpcEnvelope(request, { error: { code, message } });
 }
 
+/** A native thread/list timestamp (Unix seconds) as the ISO field a delegation list row carries. */
+function listTimestamp(
+  field: "createdAt" | "updatedAt",
+  seconds: unknown,
+): { createdAt?: string; updatedAt?: string } {
+  return Number.isSafeInteger(seconds)
+    ? { [field]: new Date((seconds as number) * 1_000).toISOString() }
+    : {};
+}
+
 function unixSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
@@ -2905,6 +2915,9 @@ export class AppServerHost {
               : typeof entry.preview === "string"
                 ? { title: entry.preview }
                 : {}),
+            // The Registry merges several sessions by these, so keep the fields the page sorted by.
+            ...listTimestamp("createdAt", entry.createdAt),
+            ...listTimestamp("updatedAt", entry.updatedAt),
           },
         ];
       }),

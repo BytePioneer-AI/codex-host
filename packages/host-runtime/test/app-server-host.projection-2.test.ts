@@ -17,6 +17,7 @@ import {
   hostThreadIdSchema,
 } from "@codexhost/shared-contracts";
 import type { DelegationControlApi, DelegationThreadSnapshot } from "../src/delegation-types.js";
+import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
 import { DelegationWatchService } from "../src/delegation-watch.js";
 import { type CodexAccountControl } from "../src/account/codex-account-control.js";
 
@@ -719,6 +720,52 @@ describe("AppServerHost HarnessAdapter projection", () => {
       ]),
     });
     await stopFixture(fixture);
+  });
+
+  it("merges native Threads from several sessions in the order each session page is sorted by", async () => {
+    const registry = new DelegationControlRegistry();
+    const sessions = [];
+    for (let index = 0; index < 2; index++) {
+      const fixture = createFixture({
+        onDelegationApi: (api) => registry.register(api),
+      });
+      await fixture.ready;
+      await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+      sessions.push(fixture);
+    }
+    // Each official page is already newest first; the IDs sort the other way across sessions.
+    const pages = [
+      [
+        { id: "a-newest", cwd: "/synthetic", createdAt: 4_000, updatedAt: 4_000 },
+        { id: "a-oldest", cwd: "/synthetic", createdAt: 1_000, updatedAt: 1_000 },
+      ],
+      [
+        { id: "b-newer", cwd: "/synthetic", createdAt: 3_000, updatedAt: 3_000 },
+        { id: "b-older", cwd: "/synthetic", createdAt: 2_000, updatedAt: 2_000 },
+      ],
+    ];
+    try {
+      const pending = registry.list({ cwd: "/synthetic", limit: 2, sort: "created-desc" });
+      await Promise.all(
+        sessions.map(async (fixture, index) => {
+          const request = await readJsonLine(fixture.official.stdin);
+          expect(request).toMatchObject({
+            method: "thread/list",
+            params: { sortKey: "created_at", sortDirection: "desc" },
+          });
+          const data = (pages[index] ?? []).map((row) => ({ ...row, status: { type: "idle" } }));
+          fixture.official.stdout.write(
+            `${JSON.stringify({ id: request.id, result: { data, nextCursor: null } })}\n`,
+          );
+        }),
+      );
+      const page = await pending;
+      expect(page.threads.map((thread) => thread.threadId)).toEqual(["a-newest", "b-newer"]);
+      expect(page.threads[1]).toMatchObject({ createdAt: new Date(3_000_000).toISOString() });
+    } finally {
+      registry.close();
+      for (const fixture of sessions) await stopFixture(fixture);
+    }
   });
 
   it("sends and cancels follow-up Turns on an external delegated Thread", async () => {

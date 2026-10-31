@@ -38,37 +38,16 @@ import type {
   SDKSessionInfo,
   SessionMessage,
 } from "./qoder-sdk-types.js";
+import {
+  QoderDaemonPool,
+  type QoderDaemonLease,
+  type QoderStartDaemon,
+} from "./qoder-daemon-pool.js";
 import { QoderSession } from "./qoder-sdk-transport.js";
 import { QoderSessionImport } from "./qoder-session-import.js";
 import { createQoderUsageStatistics } from "./qoder-usage-statistics.js";
 
 import { QODER_RUNTIMES, qoderAuthForEnvironment, type QoderVariant } from "./qoder-runtime.js";
-
-type QoderSdkDaemon = NonNullable<QoderOptions["daemon"]>;
-
-/** Daemon launch env must not include per-thread identity — that varies across sessions. */
-function daemonEnvironment(
-  environment: Record<string, string | undefined>,
-): Record<string, string | undefined> {
-  const rest = { ...environment };
-  delete rest.CODEXHOST_THREAD_ID;
-  return rest;
-}
-
-function daemonConfigKey(
-  pathToQoderCLIExecutable: string | undefined,
-  environment: Record<string, string | undefined>,
-  authType: string,
-): string {
-  const envEntries = Object.entries(environment)
-    .filter(([, v]) => v !== undefined)
-    .sort(([a], [b]) => a.localeCompare(b));
-  return JSON.stringify({
-    pathToQoderCLIExecutable: pathToQoderCLIExecutable ?? null,
-    authType,
-    env: envEntries,
-  });
-}
 
 export interface QoderAdapterOptions {
   variant?: QoderVariant;
@@ -88,6 +67,12 @@ export interface QoderAdapterOptions {
   listSessions?: () => Promise<SDKSessionInfo[]>;
   getAvailableModels?: () => Promise<QoderModelInfo[]>;
   resolveExecutable?: typeof resolveQoderExecutable;
+  /**
+   * Starts a config-scoped SDK daemon. Defaults to the SDK's startDaemon() when no
+   * queryFactory is injected; an injected queryFactory runs without daemons unless
+   * this is also given.
+   */
+  startDaemon?: QoderStartDaemon;
 }
 
 export class QoderAdapter implements HarnessAdapter {
@@ -120,10 +105,8 @@ export class QoderAdapter implements HarnessAdapter {
   readonly #sessions = new Set<HarnessSession>();
   readonly #inspections = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
   readonly #inFlightInspections = new Map<string, Promise<HarnessInspection>>();
-  readonly #manageSdkDaemon: boolean;
-  #ownedDaemon: QoderSdkDaemon | undefined;
-  #ownedDaemonKey: string | undefined;
-  #ownedDaemonStop: (() => Promise<void>) | undefined;
+  readonly #daemons: QoderDaemonPool | undefined;
+  #closed = false;
 
   constructor(options: QoderAdapterOptions = {}) {
     this.#variant = options.variant ?? "global";
@@ -137,7 +120,12 @@ export class QoderAdapter implements HarnessAdapter {
       this.#variant,
     );
     this.#platform = options.platform ?? process.platform;
-    this.#manageSdkDaemon = options.queryFactory === undefined;
+    const startDaemon =
+      options.startDaemon ??
+      (options.queryFactory === undefined && typeof runtime.sdk.startDaemon === "function"
+        ? (config: Parameters<QoderStartDaemon>[0]) => runtime.sdk.startDaemon(config)
+        : undefined);
+    this.#daemons = startDaemon ? new QoderDaemonPool(startDaemon) : undefined;
     this.#queryFactory = options.queryFactory ?? ((input) => runtime.sdk.query(input));
     this.#forkSession = options.forkSession ?? runtime.sdk.forkSession;
     this.#getSessionMessages = options.getSessionMessages ?? runtime.sdk.getSessionMessages;
@@ -155,53 +143,37 @@ export class QoderAdapter implements HarnessAdapter {
         resolveQoderExecutable({ ...input, variant: this.#variant }, dependencies));
   }
 
-  async #ensureConfigDaemon(input: {
+  /** Leases a daemon owning this launch config, or undefined when daemons are not managed. */
+  async #leaseDaemon(input: {
     environment: Record<string, string | undefined>;
     pathToQoderCLIExecutable?: string;
-  }): Promise<QoderSdkDaemon | undefined> {
-    if (!this.#manageSdkDaemon) return undefined;
-    const runtime = QODER_RUNTIMES[this.#variant];
-    const initDaemon = runtime.sdk.initDaemon;
-    if (typeof initDaemon !== "function") return undefined;
-
-    const daemonEnv = daemonEnvironment(input.environment);
-    const auth = qoderAuthForEnvironment(this.#variant, daemonEnv);
-    const key = daemonConfigKey(
-      input.pathToQoderCLIExecutable,
-      daemonEnv,
-      (auth as { type?: string }).type ?? "unknown",
-    );
-    if (this.#ownedDaemon && this.#ownedDaemonKey === key) {
-      return this.#ownedDaemon;
-    }
-    if (this.#ownedDaemonStop) {
-      try {
-        await this.#ownedDaemonStop();
-      } catch {
-        // Previous daemon may already be stopped.
-      }
-      this.#ownedDaemon = undefined;
-      this.#ownedDaemonKey = undefined;
-      this.#ownedDaemonStop = undefined;
-    }
-
-    const daemon = await initDaemon({
-      auth,
+  }): Promise<QoderDaemonLease | undefined> {
+    if (!this.#daemons) return undefined;
+    return this.#daemons.acquire({
+      auth: qoderAuthForEnvironment(this.#variant, input.environment),
+      env: input.environment,
       ...(input.pathToQoderCLIExecutable
         ? { pathToQoderCLIExecutable: input.pathToQoderCLIExecutable }
         : {}),
-      env: daemonEnv,
     });
-    this.#ownedDaemon = daemon;
-    this.#ownedDaemonKey = key;
-    this.#ownedDaemonStop = async () => {
-      await daemon.stop();
+  }
+
+  /** Query options for a probe; launch config goes to the daemon when one is leased. */
+  #probeLaunchOptions(
+    lease: QoderDaemonLease | undefined,
+    executable: string | undefined,
+  ): Partial<QoderOptions> {
+    if (lease) return { daemon: lease.daemon };
+    return {
+      ...(executable ? { pathToQoderCLIExecutable: executable } : {}),
+      env: this.#environment,
+      auth: qoderAuthForEnvironment(this.#variant, this.#environment),
     };
-    return daemon;
   }
 
   async inspectAccount() {
     let probe: QoderQuery | undefined;
+    let lease: QoderDaemonLease | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const executable = this.#resolveExecutable({
@@ -209,7 +181,7 @@ export class QoderAdapter implements HarnessAdapter {
         environment: this.#environment as NodeJS.ProcessEnv,
         platform: this.#platform,
       });
-      const daemon = await this.#ensureConfigDaemon({
+      lease = await this.#leaseDaemon({
         environment: this.#environment,
         pathToQoderCLIExecutable: executable,
       });
@@ -217,10 +189,7 @@ export class QoderAdapter implements HarnessAdapter {
         prompt: "",
         options: {
           cwd: process.cwd(),
-          pathToQoderCLIExecutable: executable,
-          ...(this.#environment ? { env: this.#environment } : {}),
-          ...(daemon ? { daemon } : {}),
-          auth: qoderAuthForEnvironment(this.#variant, this.#environment),
+          ...this.#probeLaunchOptions(lease, executable),
         },
       });
       return await Promise.race([
@@ -240,6 +209,7 @@ export class QoderAdapter implements HarnessAdapter {
       } catch {
         // The quota probe must not leak a query process.
       }
+      await lease?.release();
     }
   }
 
@@ -274,8 +244,9 @@ export class QoderAdapter implements HarnessAdapter {
           }
         } else {
           let stderr = "";
+          let lease: QoderDaemonLease | undefined;
           try {
-            const daemon = await this.#ensureConfigDaemon({
+            lease = await this.#leaseDaemon({
               environment: this.#environment,
               pathToQoderCLIExecutable: executable,
             });
@@ -286,10 +257,7 @@ export class QoderAdapter implements HarnessAdapter {
                 stderr: (chunk) => {
                   stderr = (stderr + chunk).slice(-8192);
                 },
-                pathToQoderCLIExecutable: executable,
-                ...(this.#environment ? { env: this.#environment } : {}),
-                ...(daemon ? { daemon } : {}),
-                auth: qoderAuthForEnvironment(this.#variant, this.#environment),
+                ...this.#probeLaunchOptions(lease, executable),
               },
             });
             try {
@@ -305,7 +273,7 @@ export class QoderAdapter implements HarnessAdapter {
             }
           } catch (error) {
             const needsLogin =
-              qoderLoginRequired(stderr) ||
+              qoderLoginRequired(stderr + (lease?.stderr() ?? "")) ||
               (error instanceof Error &&
                 error.message === "Transport closed" &&
                 qoderAuthForEnvironment(this.#variant, this.#environment).type === "qodercli" &&
@@ -321,6 +289,8 @@ export class QoderAdapter implements HarnessAdapter {
                 : mapQoderException(error),
             };
             return result;
+          } finally {
+            await lease?.release();
           }
         }
 
@@ -598,11 +568,15 @@ export class QoderAdapter implements HarnessAdapter {
     const catalog = cachedInspection?.catalog;
 
     let session: QoderSession;
+    let lease: QoderDaemonLease | undefined;
     try {
-      const daemon = await this.#ensureConfigDaemon({
+      // Each distinct launch config (including CODEXHOST_THREAD_ID) gets its own daemon.
+      lease = await this.#leaseDaemon({
         environment,
         ...(pathToQoderCLIExecutable ? { pathToQoderCLIExecutable } : {}),
       });
+      if (this.#closed) throw new Error("Qoder adapter is closed");
+      const sessionLease = lease;
       session = new QoderSession({
         variant: this.#variant,
         sessionId,
@@ -618,12 +592,14 @@ export class QoderAdapter implements HarnessAdapter {
         queryFactory: this.#queryFactory,
         getSessionMessages: this.#getSessionMessages,
         ...(pathToQoderCLIExecutable ? { pathToQoderCLIExecutable } : {}),
-        ...(daemon ? { daemon } : {}),
+        ...(sessionLease ? { daemon: sessionLease.daemon } : {}),
         onClosed: () => {
           this.#sessions.delete(session);
+          void sessionLease?.release();
         },
       });
     } catch (error) {
+      await lease?.release();
       return { ok: false, error: mapQoderException(error) };
     }
 
@@ -632,20 +608,12 @@ export class QoderAdapter implements HarnessAdapter {
   }
 
   async close(): Promise<void> {
+    this.#closed = true;
     const sessions = [...this.#sessions];
     this.#sessions.clear();
     this.#inspections.clear();
     this.#inFlightInspections.clear();
     await Promise.all([this.sessionImport.close(), ...sessions.map((s) => s.close())]);
-    if (this.#ownedDaemonStop) {
-      try {
-        await this.#ownedDaemonStop();
-      } catch {
-        // Best-effort release of the config-scoped daemon.
-      }
-      this.#ownedDaemon = undefined;
-      this.#ownedDaemonKey = undefined;
-      this.#ownedDaemonStop = undefined;
-    }
+    await this.#daemons?.close();
   }
 }

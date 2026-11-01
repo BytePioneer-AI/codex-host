@@ -73,29 +73,48 @@ export interface QoderAdapterOptions {
    * this is also given.
    */
   startDaemon?: QoderStartDaemon;
+  /** Overrides how long inspect() waits for a fresh daemon's Model catalog. */
+  modelLoadRetry?: QoderModelLoadRetry;
 }
 
+/** Bounded wait for a freshly started daemon to publish its Model catalog. */
+export interface QoderModelLoadRetry {
+  readonly attempts: number;
+  readonly delayMs: number;
+}
+
+const QODER_MODEL_LOAD_RETRY: QoderModelLoadRetry = { attempts: 8, delayMs: 250 };
+
 /**
- * A freshly started daemon has an empty model cache, so a cache-only read reports no Models
- * (and the account's free native default stays hidden). Fall back to a live fetch, then to the
- * cache that fetch may have populated even when the live request itself fails.
+ * A freshly started daemon reports an empty Model cache, and a live fetch issued before its
+ * authentication settles returns no Models or fails with "Authentication changed during
+ * request". A cache-only read therefore hides the catalog (and the account's free native
+ * default). Read the cache, then fetch live, and retry briefly until either one has Models.
  */
 async function loadQoderModels(
   getAvailableModels: (options: { fetchStrategy: "live" | "cache" }) => Promise<QoderModelInfo[]>,
+  retry: QoderModelLoadRetry = QODER_MODEL_LOAD_RETRY,
 ): Promise<QoderModelInfo[]> {
   const cached = await getAvailableModels({ fetchStrategy: "cache" });
   if (Array.isArray(cached) && cached.length > 0) return cached;
-  try {
-    const live = await getAvailableModels({ fetchStrategy: "live" });
-    if (Array.isArray(live) && live.length > 0) return live;
-  } catch {
-    // A failed live refresh must not make an otherwise usable Harness unavailable.
+  for (let attempt = 0; attempt < retry.attempts; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, retry.delayMs));
+      try {
+        const reread = await getAvailableModels({ fetchStrategy: "cache" });
+        if (Array.isArray(reread) && reread.length > 0) return reread;
+      } catch {
+        // Keep trying the live fetch below.
+      }
+    }
+    try {
+      const live = await getAvailableModels({ fetchStrategy: "live" });
+      if (Array.isArray(live) && live.length > 0) return live;
+    } catch {
+      // A failed live refresh must not make an otherwise usable Harness unavailable.
+    }
   }
-  try {
-    return await getAvailableModels({ fetchStrategy: "cache" });
-  } catch {
-    return cached;
-  }
+  return cached;
 }
 
 export class QoderAdapter implements HarnessAdapter {
@@ -129,6 +148,7 @@ export class QoderAdapter implements HarnessAdapter {
   readonly #inspections = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
   readonly #inFlightInspections = new Map<string, Promise<HarnessInspection>>();
   readonly #daemons: QoderDaemonPool | undefined;
+  readonly #modelLoadRetry: QoderModelLoadRetry | undefined;
   #closed = false;
 
   constructor(options: QoderAdapterOptions = {}) {
@@ -149,6 +169,7 @@ export class QoderAdapter implements HarnessAdapter {
         ? (config: Parameters<QoderStartDaemon>[0]) => runtime.sdk.startDaemon(config)
         : undefined);
     this.#daemons = startDaemon ? new QoderDaemonPool(startDaemon) : undefined;
+    this.#modelLoadRetry = options.modelLoadRetry;
     this.#queryFactory = options.queryFactory ?? ((input) => runtime.sdk.query(input));
     this.#forkSession = options.forkSession ?? runtime.sdk.forkSession;
     this.#getSessionMessages = options.getSessionMessages ?? runtime.sdk.getSessionMessages;
@@ -285,7 +306,10 @@ export class QoderAdapter implements HarnessAdapter {
             });
             try {
               if (probeQuery.getAvailableModels) {
-                rawModels = await loadQoderModels(probeQuery.getAvailableModels.bind(probeQuery));
+                rawModels = await loadQoderModels(
+                  probeQuery.getAvailableModels.bind(probeQuery),
+                  this.#modelLoadRetry,
+                );
               }
             } finally {
               try {

@@ -116,7 +116,12 @@ for (const v of variants)
         stop: vi.fn(async () => undefined),
       } as never);
       const resolveExecutable = vi.fn(() => v.command);
-      const adapter = new QoderAdapter({ variant: v.variant, environment, resolveExecutable });
+      const adapter = new QoderAdapter({
+        variant: v.variant,
+        environment,
+        resolveExecutable,
+        modelLoadRetry: { attempts: 1, delayMs: 0 },
+      });
       adapters.push(adapter);
       return { adapter, query, resolveExecutable };
     }

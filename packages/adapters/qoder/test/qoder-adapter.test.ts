@@ -355,6 +355,7 @@ describe("QoderAdapter", () => {
       const adapter = new QoderAdapter({
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
+        modelLoadRetry: { attempts: 3, delayMs: 0 },
       });
 
       const inspection = await adapter.inspect({ cwd: "D:/project" });
@@ -363,6 +364,51 @@ describe("QoderAdapter", () => {
       if (inspection.status !== "ready") return;
       expect(fakeQuery.getAvailableModels).toHaveBeenCalledTimes(3);
       expect(inspection.catalog.defaultModel).toEqual(encodeQoderModelRef("free-model"));
+    });
+
+    it("retries until a fresh daemon finishes authenticating and publishes Models", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      fakeQuery.getAvailableModels
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          { value: "free-model", displayName: "Free", isEnabled: true, isDefault: true },
+        ]);
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+        modelLoadRetry: { attempts: 3, delayMs: 0 },
+      });
+
+      const inspection = await adapter.inspect({ cwd: "D:/project" });
+
+      expect(inspection.status).toBe("ready");
+      if (inspection.status !== "ready") return;
+      expect(fakeQuery.getAvailableModels.mock.calls.map(([options]) => options)).toEqual([
+        { fetchStrategy: "cache" },
+        { fetchStrategy: "live" },
+        { fetchStrategy: "cache" },
+        { fetchStrategy: "live" },
+      ]);
+      expect(inspection.catalog.defaultModel).toEqual(encodeQoderModelRef("free-model"));
+    });
+
+    it("stops retrying after the bounded attempts when no Models are published", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      fakeQuery.getAvailableModels.mockResolvedValue([]);
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+        modelLoadRetry: { attempts: 2, delayMs: 0 },
+      });
+
+      const inspection = await adapter.inspect({ cwd: "D:/project" });
+
+      expect(inspection.status).toBe("ready");
+      if (inspection.status !== "ready") return;
+      expect(fakeQuery.getAvailableModels).toHaveBeenCalledTimes(4);
+      expect(inspection.catalog.models).toEqual([]);
     });
 
     it("does not refetch live Models when the cache already has them", async () => {

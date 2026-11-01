@@ -216,10 +216,10 @@ function projectLocalMedia(
       continue;
     }
     const code = parseInlineCode(text, next, markerLength);
-    if (code.kind === "open" || (holdIncomplete && code.end === text.length)) {
+    if (code.kind !== "code" || (holdIncomplete && code.end === text.length)) {
       // A trailing closing run can still grow into a different-length, non-closing run.
-      if (holdIncomplete) return { text: output, consumed: next };
-      // At completion an unmatched delimiter is ordinary text; later images may still resolve.
+      if (holdIncomplete && code.kind !== "text") return { text: output, consumed: next };
+      // Once the paragraph or Item ends, an unmatched delimiter is ordinary text.
       output += text.slice(next, next + markerLength);
       index = next + markerLength;
       continue;
@@ -283,13 +283,17 @@ function earliestIndex(candidates: readonly number[]): number {
   return next;
 }
 
-type ParsedInlineCode = { kind: "code"; content: string; end: number } | { kind: "open" };
+type ParsedInlineCode =
+  { kind: "code"; content: string; end: number } | { kind: "open" } | { kind: "text" };
 
-/** Code spans can cross lines, but only an equally long backtick run closes them. */
+/** Code spans can cross lines, not blank lines; only an equally long backtick run closes them. */
 function parseInlineCode(text: string, start: number, length: number): ParsedInlineCode {
   let index = start + length;
   while (index < text.length) {
     const tick = text.indexOf("`", index);
+    if (/\n[^\S\n]*\n/u.test(text.slice(index, tick < 0 ? text.length : tick))) {
+      return { kind: "text" };
+    }
     if (tick === -1) break;
     let end = tick + 1;
     while (text[end] === "`") end += 1;

@@ -171,6 +171,9 @@ describe("LocalMediaMarkdownStream", () => {
     "`first\n![a](a.png)\nlast` after ![a](a.png)",
     "``first\n![a](a.png) `not a closer`\nlast`` after `a.png`",
     "`a.png`` and ![a](a.png)",
+    "before `unclosed\n\n![a](a.png)",
+    "before `unclosed\n \t\n![a](a.png)\n\nlast `unclosed",
+    "before ``unclosed\r\n\t\r\n![a](a.png)\r\n\r\nlast ``unclosed",
     "鱼：`a.png`。后文 [图](a.png)",
     "| `a.png` |\n# `sub/b.png`：",
     "````\n```\n`a.png`\n```\n````\nthen `a.png`",
@@ -229,6 +232,28 @@ describe("LocalMediaMarkdownStream", () => {
     expect(stream.append("` and ![a](a.png)")).toBe("");
     expect(stream.flush()).toBe(`\`a.png\`\` and ![a](${at("a.png")})`);
   });
+
+  it.each(["\n\n", "\n \t\n", "\r\n \t\r\n"])(
+    "releases an unmatched backtick at a paragraph boundary (%j)",
+    (boundary) => {
+      for (const relativeImagesOnly of [false, true]) {
+        const stream = new LocalMediaMarkdownStream(roots, exists, { relativeImagesOnly });
+        const prefix = `before \`unclosed${boundary}`;
+        const suffix = `after ![a](a.png)${boundary}last \`unclosed`;
+        const expected = `${prefix}after ![a](${at("a.png")})${boundary}last \`unclosed`;
+        expect(stream.append("before `unclosed")).toBe("before ");
+        expect(stream.append(boundary.slice(0, -1))).toBe("");
+        expect(stream.append(boundary.slice(-1))).toBe(`\`unclosed${boundary}`);
+        expect(stream.text).toBe(prefix);
+        expect(stream.append(suffix)).toBe(`after ![a](${at("a.png")})${boundary}last `);
+        expect(stream.flush()).toBe("`unclosed");
+        expect(stream.text).toBe(expected);
+        expect(
+          rewriteLocalMediaMarkdown(prefix + suffix, roots, { exists, relativeImagesOnly }),
+        ).toBe(expected);
+      }
+    },
+  );
 
   it("remembers negative and positive checks when files appear", () => {
     let present = false;

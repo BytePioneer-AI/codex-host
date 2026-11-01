@@ -8,6 +8,76 @@ import { FakeChChannel, startFakeChChannel } from "../support/ch-channel.ts";
 import { startFakeChDebugger } from "../support/ch-host.ts";
 import { startServer } from "../support/server.ts";
 
+it(
+  "archive responds before a delayed Host write and reports success or rollback asynchronously",
+  { timeout: 60_000 },
+  async (t) => {
+    const directory = mkdtempSync(join(tmpdir(), "ch-optimistic-archive-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    let gate = Promise.withResolvers<undefined>();
+    let refuse = false;
+    class DelayedArchiveHost extends FakeChChannel {
+      override async request<T>(method: string, params: Record<string, unknown>): Promise<T> {
+        if (method === "thread/archive") {
+          await gate.promise;
+          if (refuse) throw new Error("Archive write refused");
+        }
+        return super.request<T>(method, params);
+      }
+    }
+    const host = new DelayedArchiveHost();
+    host.add("slow", "/computer/generated", "Slow archive", false);
+    const channel = await startFakeChChannel(host, directory);
+    const debug = await startFakeChDebugger(host);
+    t.after(() => gate.resolve(undefined));
+    t.after(() => channel.close());
+    t.after(() => debug.close());
+    const url = await startServer(
+      t,
+      resolve(import.meta.dirname, "../.."),
+      ["--import", "tsx", "src/main.ts"],
+      [
+        "--session-source",
+        "codexhost",
+        "--ch-control-directory",
+        directory,
+        "--ch-cdp",
+        debug.endpoint,
+      ],
+    );
+    const browser = await chromium.launch();
+    t.after(() => browser.close());
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(url);
+    const row = page.locator('[data-row-key="recent:slow"]');
+    await row.waitFor();
+    const archive = async () => {
+      await row.hover();
+      await row.getByRole("button", { name: "Archive session", exact: true }).click();
+      await row.waitFor({ state: "detached", timeout: 1000 });
+      assert.equal(host.archivedIds.has("slow"), false, "UI updates before the Host commits");
+      assert.equal(await page.getByRole("button", { name: "undo", exact: true }).count(), 0);
+    };
+    await archive();
+    gate.resolve(undefined);
+    await page.getByRole("button", { name: "undo", exact: true }).waitFor();
+    assert.equal(host.archivedIds.has("slow"), true);
+    await page.getByRole("button", { name: "undo", exact: true }).click();
+    await row.waitFor();
+
+    gate = Promise.withResolvers<undefined>();
+    refuse = true;
+    await archive();
+    gate.resolve(undefined);
+    await row.waitFor();
+    await page.getByText(/Archive not confirmed.*Archive write refused/).waitFor();
+    assert.equal(host.archivedIds.has("slow"), false);
+    assert.deepEqual(errors, []);
+  },
+);
+
 for (const legacyFilter of ["show", "only"]) {
   it(
     `archive filters remain available but page loads hide archives despite saved ${legacyFilter} filter`,
@@ -90,8 +160,8 @@ for (const legacyFilter of ["show", "only"]) {
       await row("active").hover();
       await row("active").getByRole("button", { name: "Archive session", exact: true }).click();
       await row("active").waitFor({ state: "detached" });
-      assert.equal(host.archivedIds.has("active"), true);
       await page.getByRole("button", { name: "filter archived sessions", exact: true }).waitFor();
+      assert.equal(host.archivedIds.has("active"), true);
       await page.getByRole("button", { name: "undo", exact: true }).click();
       await row("active").waitFor();
       assert.equal(host.archivedIds.has("active"), false);

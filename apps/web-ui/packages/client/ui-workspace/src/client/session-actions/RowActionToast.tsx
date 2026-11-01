@@ -100,6 +100,10 @@ function plainNoticeText(
   t: RowToastProps["t"],
 ): string {
   switch (toast.kind) {
+    case "archiveFailed":
+      return t("toast.archiveFailed", { message: toast.message });
+    case "unarchiveFailed":
+      return t("toast.unarchiveFailed", { message: toast.message });
     case "pinFailed":
       return t("toast.pinFailed", { message: toast.message });
     case "unpinFailed":

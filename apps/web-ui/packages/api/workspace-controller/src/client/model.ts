@@ -36,7 +36,7 @@ export type WorkspaceListPhase = "pending" | "ready";
 export interface WorkspaceSnapshot {
   readonly canStartProjectless?: boolean;
   readonly items: readonly WorkspaceView[];
-  /** Complete registry-global archive set in Host order. */
+  /** Host archive set with pending local archives projected immediately. */
   readonly archivedSessionIds: WorkspaceArchiveValue["archivedSessionIds"];
   /** Complete registry-global pin set, most recently pinned first. */
   readonly pinnedSessionIds: WorkspacePinValue["pinnedSessionIds"];
@@ -78,8 +78,13 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   private orderFrameGeneration = 0;
   /** Last complete order accepted from a baseline, increment, or current unary echo. */
   private committedOrder: WorkspaceId[] = [];
-  /** Latest archive-set request; a later request or a pushed set supersedes it. */
+  /** Guards complete unarchive echoes against later writes and pushed sets. */
   private archiveRequestSeq = 0;
+  /** In-flight archives overlay Host state until their writes settle. */
+  private readonly pendingArchives = new Map<
+    WorkspaceArchiveSessionRequest["sessionId"],
+    { observed: boolean; promise: Promise<RemoteResult<WorkspaceArchiveValue>> }
+  >();
   /** Latest pin-set request; a later request or a pushed set supersedes it. */
   private pinRequestSeq = 0;
   /** Host Workspace ids are never reused, so delayed data cannot resurrect a removed row. */
@@ -190,28 +195,44 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   }
 
   /**
-   * Archive one Session and install the returned complete archive set.
-   * A reply superseded by a later archive request or a pushed set installs nothing.
+   * Optimistically archive one Session, rolling back to Host state on failure.
+   * Repeated clicks share a write; pushed confirmation supersedes its local overlay.
    * @param sessionId - Session to archive.
    * @param options - Whether the Host stops the Session's running work instead of refusing.
    * @returns generated Remote result.
    */
-  async archiveSession(
+  archiveSession(
     sessionId: WorkspaceArchiveSessionRequest["sessionId"],
     options: Pick<WorkspaceArchiveSessionRequest, "stopActivity"> = {},
   ): Promise<RemoteResult<WorkspaceArchiveValue>> {
-    const requestSeq = ++this.archiveRequestSeq;
-    const result = await this.remote.archiveSession({
-      sessionId,
-      ...(options.stopActivity === true ? { stopActivity: true } : {}),
-    });
-    if (result.ok && requestSeq === this.archiveRequestSeq) {
-      this.installArchived(result.value.archivedSessionIds);
-      // The Host drops an archived session's pin in the same durable write;
-      // mirror that locally so no frame shows the row both archived and pinned.
-      this.installPinned(this.pinnedSessionIds.filter((id) => id !== sessionId));
-    }
-    return result;
+    const pending = this.pendingArchives.get(sessionId);
+    if (pending !== undefined) return pending.promise;
+    this.archiveRequestSeq++;
+    const request: { observed: boolean; promise: Promise<RemoteResult<WorkspaceArchiveValue>> } = {
+      observed: false,
+      promise: Promise.resolve().then(async () => {
+        try {
+          const result = await this.remote.archiveSession({
+            sessionId,
+            ...(options.stopActivity === true ? { stopActivity: true } : {}),
+          });
+          if (result.ok && this.pendingArchives.get(sessionId) === request && !request.observed) {
+            // Apply this write only: complete unary sets can predate other writes or frames.
+            this.installArchived([...new Set([...this.archivedSessionIds, sessionId])]);
+            this.installPinned(this.pinnedSessionIds.filter((id) => id !== sessionId));
+          }
+          return result;
+        } finally {
+          if (this.pendingArchives.get(sessionId) === request) {
+            this.pendingArchives.delete(sessionId);
+            this.invalidate();
+          }
+        }
+      }),
+    };
+    this.pendingArchives.set(sessionId, request);
+    this.invalidate();
+    return request.promise;
   }
 
   /**
@@ -224,6 +245,8 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     sessionId: WorkspaceUnarchiveSessionRequest["sessionId"],
   ): Promise<RemoteResult<WorkspaceArchiveValue>> {
     const requestSeq = ++this.archiveRequestSeq;
+    this.pendingArchives.delete(sessionId);
+    this.invalidate();
     const result = await this.remote.unarchiveSession({ sessionId });
     if (result.ok && requestSeq === this.archiveRequestSeq) {
       this.installArchived(result.value.archivedSessionIds);
@@ -357,11 +380,20 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   }
 
   private buildSnapshot(): WorkspaceSnapshot {
+    const optimistic = new Set(
+      [...this.pendingArchives].filter(([, request]) => !request.observed).map(([id]) => id),
+    );
     return {
       items: this.items,
       canStartProjectless: this.canStartProjectless,
-      archivedSessionIds: this.archivedSessionIds,
-      pinnedSessionIds: this.pinnedSessionIds,
+      archivedSessionIds:
+        optimistic.size === 0
+          ? this.archivedSessionIds
+          : [...new Set([...this.archivedSessionIds, ...optimistic])],
+      pinnedSessionIds:
+        optimistic.size === 0
+          ? this.pinnedSessionIds
+          : this.pinnedSessionIds.filter((id) => !optimistic.has(id)),
       state: this.state,
       phase: this.phase,
       error: this.error,
@@ -369,6 +401,10 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   }
 
   private installArchived(archivedSessionIds: WorkspaceArchiveValue["archivedSessionIds"]): void {
+    for (const id of archivedSessionIds) {
+      const pending = this.pendingArchives.get(id);
+      if (pending !== undefined) pending.observed = true;
+    }
     if (
       archivedSessionIds.length === this.archivedSessionIds.length &&
       archivedSessionIds.every((id, index) => id === this.archivedSessionIds[index])

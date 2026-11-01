@@ -210,7 +210,10 @@ export function apply(ctx: Context): void {
   const requestSessionRename = shortcutControls.rename;
   const unarchiveSession = (sessionId: SessionId): void => {
     uiWorkspace.unarchiveSession(sessionId).catch((reason: unknown) => {
-      console.warn("session unarchive rejected:", reason);
+      notify({
+        kind: "unarchiveFailed",
+        message: reason instanceof Error ? reason.message : String(reason),
+      });
     });
   };
   const renameSession: SessionRenameDialogInjected["renameSession"] = async (sessionId, title) => {
@@ -255,7 +258,10 @@ export function apply(ctx: Context): void {
         .catch((reason: unknown) => {
           const activity = activeSessionRefusal(reason);
           if (activity === undefined) {
-            console.warn("session archive rejected:", reason);
+            notify({
+              kind: "archiveFailed",
+              message: reason instanceof Error ? reason.message : String(reason),
+            });
             return;
           }
           const displayTitle =

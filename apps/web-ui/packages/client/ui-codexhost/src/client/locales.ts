@@ -101,8 +101,6 @@ export const en = {
   "desktop.enlarge": "Enlarge desktop screenshot",
   "desktop.pending": "Capturing the desktop…",
   "desktop.captured": "Captured: {time}",
-  "desktop.privacy":
-    "Only you can view this image; it is not sent to the Agent. Other apps and notifications may be visible.",
   "desktop.stale": "The image below is the previous screenshot.",
   "desktop.error.unsupported": "Desktop screenshots support Windows and macOS computers only.",
   "desktop.error.permission-denied":
@@ -260,7 +258,6 @@ export const zh: Record<ImportLocaleKey, string> = {
   "desktop.enlarge": "放大桌面截图",
   "desktop.pending": "正在截取桌面…",
   "desktop.captured": "拍摄于：{time}",
-  "desktop.privacy": "仅你可见，不会发送给 Agent。截图可能包含其他应用、通知和敏感信息。",
   "desktop.stale": "下方保留的是上一次的旧截图。",
   "desktop.error.unsupported": "桌面截图仅支持运行 Windows 或 macOS 的电脑。",
   "desktop.error.permission-denied":

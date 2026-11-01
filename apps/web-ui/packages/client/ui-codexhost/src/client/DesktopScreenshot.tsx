@@ -111,7 +111,6 @@ export function DesktopScreenshotPreview({
           <p>{t("desktop.captured", { time: new Date(image.capturedAt).toLocaleString() })}</p>
         </>
       )}
-      <p>{t("desktop.privacy")}</p>
     </section>
   );
 }

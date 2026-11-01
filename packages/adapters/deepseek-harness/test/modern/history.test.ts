@@ -283,7 +283,7 @@ describe("DeepSeek Harness Modern history projection", () => {
       const b = path.join(shots, "b.png").replaceAll("\\", "/");
 
       expect(agentTexts(workspace)).toEqual([
-        `![a](${a})\n\n![b.png](${b})\n\n![b](b.png)`,
+        `![a](${a}) ![b.png](${b}) ![b](b.png)`,
         `![b](${b}) ![a](${a})`,
       ]);
       expect(agentTexts()).toEqual([
@@ -310,7 +310,7 @@ describe("DeepSeek Harness Modern history projection", () => {
         }).snapshot.turns.flatMap(({ items }) =>
           items.flatMap(({ item }) => (item.type === "agentMessage" ? [item.text] : [])),
         );
-      expect(liveText).toBe(`see\n\n![a.png](${a})`);
+      expect(liveText).toBe(`see ![a.png](${a})`);
       expect(reloaded(true)).toEqual([liveText]);
       // Usage projections do not ask for media and keep the native text.
       expect(reloaded()).toEqual([`see \`${absolute}\``]);

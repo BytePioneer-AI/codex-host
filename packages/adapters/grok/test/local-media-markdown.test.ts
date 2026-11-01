@@ -129,7 +129,7 @@ describe("Grok local media Markdown", () => {
       emitted = projected;
     }
     expect(emitted).toBe(
-      `影片：\n\n![usegrokbot-templates-promo-10s.mp4](${md(path.join(session, "videos/usegrokbot-templates-promo-10s.mp4"))})\n\n完成`,
+      `影片：\n\n![usegrokbot-templates-promo-10s.mp4](${md(path.join(session, "videos/usegrokbot-templates-promo-10s.mp4"))})\n完成`,
     );
   });
 

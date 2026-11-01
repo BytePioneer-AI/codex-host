@@ -366,6 +366,10 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
           ];
         }
         if (message.type !== "assistant") return [];
+        const assistantOutcome: HostItemOutcome =
+          outcome.status === "failed" && (!message.failed || message.nested)
+            ? { status: "succeeded" }
+            : itemOutcome(outcome);
         const content = message.message.content;
         const text = textParts(content).join("");
         const reasoning = thinkingParts(content).join("");
@@ -382,7 +386,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
                     ),
                     text,
                   },
-                  outcome: itemOutcome(outcome),
+                  outcome: assistantOutcome,
                 },
               ]
             : [];
@@ -399,7 +403,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
                 itemId: claudeTranscriptItemId(user.uuid, "reasoning", (reasoningOrdinal += 1)),
                 text: reasoning,
               },
-              outcome: itemOutcome(outcome),
+              outcome: assistantOutcome,
             });
             projectedReasoning = true;
             continue;
@@ -415,7 +419,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
                 ),
                 text,
               },
-              outcome: itemOutcome(outcome),
+              outcome: assistantOutcome,
             });
             projectedText = true;
             continue;

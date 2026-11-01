@@ -27,6 +27,11 @@ describe("Claude history mapping", () => {
       const snapshot = mapClaudeSnapshot(
         [
           message("user", "user-1", "continue"),
+          message("assistant", "assistant-string-progress", "preparing the export"),
+          message("assistant", "assistant-progress", [
+            { type: "thinking", thinking: "inspect the existing files" },
+            { type: "text", text: "checking the existing files" },
+          ]),
           {
             ...message("assistant", "assistant-error", [{ type: "text", text: errorText }]),
             ...failure,
@@ -41,6 +46,18 @@ describe("Claude history mapping", () => {
         {
           outcome: { status: "failed", error: { code: "nativeFailure" } },
           items: [
+            {
+              item: { type: "agentMessage", text: "preparing the export" },
+              outcome: { status: "succeeded" },
+            },
+            {
+              item: { type: "reasoning", text: "inspect the existing files" },
+              outcome: { status: "succeeded" },
+            },
+            {
+              item: { type: "agentMessage", text: "checking the existing files" },
+              outcome: { status: "succeeded" },
+            },
             {
               item: { type: "agentMessage", text: errorText },
               outcome: { status: "failed" },

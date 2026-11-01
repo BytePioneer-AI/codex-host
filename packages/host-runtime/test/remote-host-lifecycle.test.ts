@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import net, { type AddressInfo } from "node:net";
 import path from "node:path";
-import type { Duplex } from "node:stream";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";

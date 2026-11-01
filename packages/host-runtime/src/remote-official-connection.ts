@@ -3,7 +3,6 @@ import { PassThrough, Writable } from "node:stream";
 
 import WebSocket, { type RawData } from "ws";
 
-import { APP_SERVER_WEBSOCKET_CLIENT_OPTIONS } from "./app-server-websocket-options.js";
 import type {
   OfficialAppServerConnection,
   OfficialAppServerExit,
@@ -63,10 +62,10 @@ export async function createRemoteOfficialAppServerConnection(
     ) {
       throw new Error("Shared official app-server URL must use a loopback WebSocket endpoint");
     }
-    socket = new WebSocket(endpoint, APP_SERVER_WEBSOCKET_CLIENT_OPTIONS);
+    socket = new WebSocket(endpoint, webSocketOptions);
   } else {
     socket = new WebSocket("ws://localhost/", {
-      ...APP_SERVER_WEBSOCKET_CLIENT_OPTIONS,
+      ...webSocketOptions,
       createConnection: () => net.createConnection(endpoint),
     });
   }

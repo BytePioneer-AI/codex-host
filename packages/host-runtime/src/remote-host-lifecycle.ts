@@ -6,7 +6,6 @@ import { Duplex } from "node:stream";
 
 import WebSocket from "ws";
 
-import { APP_SERVER_WEBSOCKET_CLIENT_OPTIONS } from "./app-server-websocket-options.js";
 import {
   inspectRemoteHostInstallation,
   type RemoteHostInstallationStatus,
@@ -118,7 +117,7 @@ export async function probeWebSocket(input: {
   timeoutMessage: string;
 }): Promise<RemoteHostRuntimeStatus> {
   const socket = new WebSocket("ws://localhost/", {
-    ...APP_SERVER_WEBSOCKET_CLIENT_OPTIONS,
+    perMessageDeflate: false,
     createConnection: input.createConnection,
   });
   try {

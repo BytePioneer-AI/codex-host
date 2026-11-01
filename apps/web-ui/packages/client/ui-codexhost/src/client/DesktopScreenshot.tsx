@@ -2,6 +2,7 @@ import { useLayoutEffect, useState, useSyncExternalStore } from "react";
 import {
   ImageLightbox,
   IconCloseOutlineRegular,
+  IconLoadingOutlineRegular,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
@@ -28,27 +29,34 @@ export function DesktopScreenshotButton({
   );
   if (sessionId === undefined) return null;
   return (
-    <Tooltip portal side="top" label={t("desktop.label")}>
+    <Tooltip portal side="top" label={t(state.pending ? "desktop.pending" : "desktop.label")}>
       <button
         type="button"
         className={css.entry}
         aria-label={t("desktop.label")}
+        aria-busy={state.pending}
         disabled={state.pending}
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => void screenshot.refresh(sessionId)}
       >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 20 20"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          aria-hidden="true"
-        >
-          <rect x="2" y="3" width="16" height="11" rx="2" />
-          <path d="M10 14v3M6 17h8" />
-        </svg>
+        {state.pending ? (
+          <span className={css.spinner} aria-hidden="true">
+            <IconLoadingOutlineRegular size={16} />
+          </span>
+        ) : (
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 20 20"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            aria-hidden="true"
+          >
+            <rect x="2" y="3" width="16" height="11" rx="2" />
+            <path d="M10 14v3M6 17h8" />
+          </svg>
+        )}
       </button>
     </Tooltip>
   );
@@ -84,7 +92,14 @@ export function DesktopScreenshotPreview({
           </button>
         </div>
       </header>
-      {pending && <p role="status">{t("desktop.pending")}</p>}
+      {pending && (
+        <p role="status" className={css.pending}>
+          <span className={css.spinner} aria-hidden="true">
+            <IconLoadingOutlineRegular size={16} />
+          </span>
+          <span>{t("desktop.pending")}</span>
+        </p>
+      )}
       {error !== undefined && (
         <p role="status" className={css.error}>
           {t(`desktop.error.${error}`)} {image === undefined ? "" : t("desktop.stale")}

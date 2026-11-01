@@ -30,6 +30,7 @@ it(
       viewport: { width: 390, height: 844 },
       isMobile: true,
       hasTouch: true,
+      reducedMotion: "no-preference",
     });
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -91,10 +92,27 @@ it(
     await composer.fill("Keep my draft");
     assert.equal(requests, 0);
 
-    await entry.click();
+    hold = true;
+    const firstRequest = nextHeld();
+    await entry.tap();
     const preview = page.getByRole("region", { name: "Desktop screenshot", exact: true });
+    await preview.getByRole("status").getByText("Capturing the desktop…").waitFor();
+    assert.equal(await entry.getAttribute("aria-busy"), "true");
+    assert.equal(await entry.isDisabled(), true);
+    assert.equal(await entry.locator("rect").count(), 0);
+    const spinner = entry.locator('span[aria-hidden="true"]');
+    assert.notEqual(await spinner.evaluate((node) => getComputedStyle(node).animationName), "none");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    assert.equal(await spinner.evaluate((node) => getComputedStyle(node).animationName), "none");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
     const thumbnail = preview.locator("img");
+    assert.equal(await thumbnail.count(), 0);
+    const firstRoute = await firstRequest;
+    assert.equal(requests, 1);
+    hold = false;
+    await fulfill(firstRoute);
     await thumbnail.waitFor();
+    assert.equal(await entry.getAttribute("aria-busy"), "false");
     const original = await thumbnail.getAttribute("src");
     assert.ok(original);
     assert.ok(original.startsWith("blob:"));

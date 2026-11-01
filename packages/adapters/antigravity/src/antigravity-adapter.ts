@@ -184,7 +184,7 @@ function unstreamedReplyTail(streamed: string, reply: string): string | null {
   const shown = streamed.replace(/\s+/gu, "");
   if (shown === "") return null;
   const replied = reply.replace(/\s+/gu, "");
-  if (replied.endsWith(shown) || shown.endsWith(replied)) return "";
+  if (shown.endsWith(replied)) return "";
   let at = 0;
   let matched = 0;
   while (matched < shown.length && at < reply.length) {

@@ -1374,6 +1374,18 @@ if (${keepAlive}) {
         expect(texts).toEqual([progress, `${finalSegment}\nDone.`]);
       });
 
+      it.each([
+        ["OK", "OKOK"],
+        ["OK ", "OK OK "],
+      ])("preserves an unstreamed repeated suffix (%j → %j)", async (shown, reply) => {
+        const texts = await completedAgentMessages([
+          streamed[0] ?? "",
+          step(1, { step_type: "agent_response", text_delta: shown }),
+          result(reply),
+        ]);
+        expect(texts).toEqual([reply]);
+      });
+
       it("uses the result as the reply when nothing was streamed", async () => {
         const texts = await completedAgentMessages([
           streamed[0] ?? "",

@@ -238,7 +238,9 @@ export class QoderSession implements HarnessSession {
       formatVersion: 1,
     });
 
-    const effectiveModel = options.model ?? QODER_DEFAULT_MODEL_REF;
+    // Without an explicit Model the CLI runs its native default, which the catalog reports.
+    const effectiveModel =
+      options.model ?? options.catalog?.defaultModel ?? QODER_DEFAULT_MODEL_REF;
     const availableThinkingOptions = qoderAvailableThinkingOptions(options.catalog, effectiveModel);
     let effectiveThinkingOptionId: HarnessThinkingOptionId | undefined;
     if (options.thinkingOptionId) {

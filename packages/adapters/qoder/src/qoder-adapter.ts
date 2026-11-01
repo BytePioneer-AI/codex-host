@@ -75,6 +75,29 @@ export interface QoderAdapterOptions {
   startDaemon?: QoderStartDaemon;
 }
 
+/**
+ * A freshly started daemon has an empty model cache, so a cache-only read reports no Models
+ * (and the account's free native default stays hidden). Fall back to a live fetch, then to the
+ * cache that fetch may have populated even when the live request itself fails.
+ */
+async function loadQoderModels(
+  getAvailableModels: (options: { fetchStrategy: "live" | "cache" }) => Promise<QoderModelInfo[]>,
+): Promise<QoderModelInfo[]> {
+  const cached = await getAvailableModels({ fetchStrategy: "cache" });
+  if (Array.isArray(cached) && cached.length > 0) return cached;
+  try {
+    const live = await getAvailableModels({ fetchStrategy: "live" });
+    if (Array.isArray(live) && live.length > 0) return live;
+  } catch {
+    // A failed live refresh must not make an otherwise usable Harness unavailable.
+  }
+  try {
+    return await getAvailableModels({ fetchStrategy: "cache" });
+  } catch {
+    return cached;
+  }
+}
+
 export class QoderAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId;
   readonly #variant: QoderVariant;
@@ -262,7 +285,7 @@ export class QoderAdapter implements HarnessAdapter {
             });
             try {
               if (probeQuery.getAvailableModels) {
-                rawModels = await probeQuery.getAvailableModels({ fetchStrategy: "cache" });
+                rawModels = await loadQoderModels(probeQuery.getAvailableModels.bind(probeQuery));
               }
             } finally {
               try {

@@ -317,9 +317,98 @@ describe("QoderAdapter", () => {
       });
       expect(closeSpy).toHaveBeenCalledOnce();
     });
+
+    it("falls back to a live Model fetch when a fresh daemon's cache is empty", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      fakeQuery.getAvailableModels.mockImplementation(
+        async (options?: { fetchStrategy?: string }) =>
+          options?.fetchStrategy === "live"
+            ? [
+                { value: "auto", displayName: "Auto", isEnabled: false },
+                { value: "free-model", displayName: "Free", isEnabled: true, isDefault: true },
+              ]
+            : [],
+      );
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const inspection = await adapter.inspect({ cwd: "D:/project" });
+
+      expect(inspection.status).toBe("ready");
+      if (inspection.status !== "ready") return;
+      expect(fakeQuery.getAvailableModels.mock.calls.map(([options]) => options)).toEqual([
+        { fetchStrategy: "cache" },
+        { fetchStrategy: "live" },
+      ]);
+      expect(inspection.catalog.models).toHaveLength(2);
+      expect(inspection.catalog.defaultModel).toEqual(encodeQoderModelRef("free-model"));
+    });
+
+    it("stays ready and rereads the cache when the live Model fetch fails", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      fakeQuery.getAvailableModels
+        .mockResolvedValueOnce([])
+        .mockRejectedValueOnce(new Error("Authentication changed during request"))
+        .mockResolvedValueOnce([{ value: "free-model", displayName: "Free", isDefault: true }]);
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const inspection = await adapter.inspect({ cwd: "D:/project" });
+
+      expect(inspection.status).toBe("ready");
+      if (inspection.status !== "ready") return;
+      expect(fakeQuery.getAvailableModels).toHaveBeenCalledTimes(3);
+      expect(inspection.catalog.defaultModel).toEqual(encodeQoderModelRef("free-model"));
+    });
+
+    it("does not refetch live Models when the cache already has them", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const inspection = await adapter.inspect({ cwd: "D:/project" });
+
+      expect(inspection.status).toBe("ready");
+      expect(fakeQuery.getAvailableModels).toHaveBeenCalledOnce();
+      expect(fakeQuery.getAvailableModels).toHaveBeenCalledWith({ fetchStrategy: "cache" });
+    });
   });
 
   describe("open() session lifecycle", () => {
+    it("reports the native default Model when the session does not select one", async () => {
+      let capturedOptions: QoderOptions | undefined;
+      const fakeQuery = new FakeQoderQuery();
+      fakeQuery.getAvailableModels.mockResolvedValueOnce([
+        { value: "auto", displayName: "Auto", isEnabled: false },
+        { value: "free-model", displayName: "Free", isEnabled: true, isDefault: true },
+      ]);
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: (input) => {
+          capturedOptions = input.options;
+          return fakeQuery;
+        },
+        getAvailableModels: fakeQuery.getAvailableModels,
+      });
+      await adapter.inspect({ cwd: "D:/project" });
+
+      const opened = await adapter.open({ kind: "create", cwd: "D:/project" });
+
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) return;
+      expect(opened.value.initialState.effectiveModel).toEqual(encodeQoderModelRef("free-model"));
+      // The CLI keeps choosing its own default; no Model is forced onto it.
+      expect(capturedOptions?.model).toBeUndefined();
+      await opened.value.close();
+      await adapter.close();
+    });
+
     it("opens session with create and resume, and rejects rollbackLastTurn", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({

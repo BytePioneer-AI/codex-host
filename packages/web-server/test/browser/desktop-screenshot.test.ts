@@ -116,6 +116,7 @@ it(
 
     failure = true;
     await preview.getByRole("button", { name: "Take another screenshot" }).click();
+    await preview.getByText("tried to open Screen Recording settings", { exact: false }).waitFor();
     await preview.getByText("System Settings → Privacy & Security", { exact: false }).waitFor();
     await preview
       .getByText("The image below is the previous screenshot.", { exact: false })

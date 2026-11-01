@@ -106,7 +106,7 @@ export const en = {
   "desktop.stale": "The image below is the previous screenshot.",
   "desktop.error.unsupported": "Desktop screenshots support Windows and macOS computers only.",
   "desktop.error.permission-denied":
-    "On the computer running Web—not this phone—open System Settings → Privacy & Security → Screen Recording (or Screen & System Audio Recording). Allow the actual program shown by macOS, such as CodexHost, Node, or your terminal. Restart that program if macOS asks, then take another screenshot manually.",
+    "We requested permission and tried to open Screen Recording settings on the Mac running Web, not this phone. Allow the actual program listed by macOS (such as CodexHost, Node, or your terminal), then take another screenshot manually. Restart that program if macOS asks. If settings did not open, go to System Settings → Privacy & Security → Screen Recording (or Screen & System Audio Recording).",
   "desktop.error.display-unavailable":
     "The computer's main desktop is unavailable. Log in and unlock the computer, check its main display, and wait for any Windows UAC secure desktop prompt to close. Windows normally has no separate screenshot permission switch; do not disable UAC.",
   "desktop.error.capture-failed": "Could not capture the desktop. Try again manually.",
@@ -264,7 +264,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "desktop.stale": "下方保留的是上一次的旧截图。",
   "desktop.error.unsupported": "桌面截图仅支持运行 Windows 或 macOS 的电脑。",
   "desktop.error.permission-denied":
-    "请在运行 Web 服务的电脑上（不是手机）打开「系统设置 → 隐私与安全性 → 屏幕录制／屏幕与系统音频录制」，为 macOS 列出的实际启动程序授权，例如 CodexHost、Node 或终端，以系统显示为准。若系统要求，请重启对应程序，再手动重新截图。",
+    "已请求系统授权，并尝试在运行 Web 的 Mac 上打开录屏权限设置（不是手机）。请为系统列出的实际启动程序授权，例如 CodexHost、Node 或终端；若系统要求，重启对应程序，再手动重新截图。若设置未打开，请进入「系统设置 → 隐私与安全性 → 屏幕录制／屏幕与系统音频录制」。",
   "desktop.error.display-unavailable":
     "当前电脑的主屏桌面不可用。请在电脑端登录并解锁、检查主屏连接，等待 Windows UAC 安全桌面提示结束。Windows 通常没有单独的截图授权开关，请勿关闭 UAC。",
   "desktop.error.capture-failed": "桌面截图失败，可手动重试。",

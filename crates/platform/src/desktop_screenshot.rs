@@ -34,11 +34,15 @@ pub fn capture_primary_desktop() -> Result<Vec<u8>, DesktopScreenshotError> {
     use xcap::image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
 
     #[cfg(target_os = "macos")]
-    if !objc2_core_graphics::CGPreflightScreenCaptureAccess() {
-        // The explicit capture may request the OS prompt; granting remains a local user action.
-        let _ = objc2_core_graphics::CGRequestScreenCaptureAccess();
-        return Err(DesktopScreenshotError::PermissionDenied);
-    }
+    macos_capture_permission(
+        objc2_core_graphics::CGPreflightScreenCaptureAccess(),
+        || objc2_core_graphics::CGRequestScreenCaptureAccess(),
+        || {
+            let _ = super::open_external_url(
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+            );
+        },
+    )?;
     #[cfg(target_os = "windows")]
     windows::check_session()?;
 
@@ -76,6 +80,20 @@ pub fn capture_primary_desktop() -> Result<Vec<u8>, DesktopScreenshotError> {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn capture_primary_desktop() -> Result<Vec<u8>, DesktopScreenshotError> {
     Err(DesktopScreenshotError::Unsupported)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_capture_permission(
+    granted: bool,
+    request: impl FnOnce() -> bool,
+    open_settings: impl FnOnce(),
+) -> Result<(), DesktopScreenshotError> {
+    if granted || request() {
+        return Ok(());
+    }
+    // macOS may suppress the permission prompt; opening settings does not grant access.
+    open_settings();
+    Err(DesktopScreenshotError::PermissionDenied)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
@@ -179,6 +197,32 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macos_permission_requests_once_and_opens_settings_only_when_still_denied() {
+        for (granted, request_grants) in [(true, false), (false, true), (false, false)] {
+            let mut requested = false;
+            let mut opened = false;
+            let result = macos_capture_permission(
+                granted,
+                || {
+                    requested = true;
+                    request_grants
+                },
+                || opened = true,
+            );
+            assert_eq!(requested, !granted);
+            assert_eq!(opened, !granted && !request_grants);
+            assert_eq!(
+                result,
+                if granted || request_grants {
+                    Ok(())
+                } else {
+                    Err(DesktopScreenshotError::PermissionDenied)
+                }
+            );
+        }
+    }
 
     #[test]
     fn primary_selection_never_falls_back_to_an_arbitrary_monitor() {

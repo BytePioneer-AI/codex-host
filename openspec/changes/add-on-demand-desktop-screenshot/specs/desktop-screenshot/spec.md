@@ -32,7 +32,17 @@
 #### Scenario: Screen recording permission denied
 
 - **WHEN** 操作系统拒绝或尚未授予屏幕采集权限
-- **THEN** 系统说明需要在电脑端授权，不把有效图片编码或桌面背景图当作权限已满足的证明
+- **THEN** 系统说明需要在电脑端授权，不把有效图片编码或桌面背景图当作权限已满足的证明；macOS 主动请求系统授权，若申请仍未获准则尝试打开运行 Web 的 Mac 的录屏设置页并报告权限不足，不强制重复系统弹窗或替用户开启权限
+
+#### Scenario: Permission granted during the explicit macOS request
+
+- **WHEN** 用户点击取图，macOS 权限申请确认已获准
+- **THEN** 系统继续本次单张截图，不打开权限设置页
+
+#### Scenario: Permission settings opened without granting access
+
+- **WHEN** macOS 权限申请仍未获准，系统已尝试打开设置页
+- **THEN** 界面说明授权目标是运行 Web 的电脑而非手机，保留设置页未打开时的手动入口，授权后由用户手动重新截图；页面加载、重连或后台状态变化不会打开设置、轮询授权或自动重拍
 
 #### Scenario: Linux computer
 

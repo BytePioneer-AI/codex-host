@@ -28,7 +28,7 @@ export interface BridgeInspection {
   workspaceFolders: string[];
   agentType: string;
   models: BridgeModel[];
-  configuration?: { modelSelection: "per-request" };
+  configuration?: { modelSelection: "per-request"; thinkingSelection?: "per-request" };
   history?: { forkFromMessage: boolean; forkFromSession: boolean };
 }
 export interface BridgeEvent {
@@ -136,7 +136,10 @@ export function readInspection(value: unknown): BridgeInspection {
   const configuration = value.configuration;
   if (
     configuration !== undefined &&
-    (!record(configuration) || configuration.modelSelection !== "per-request")
+    (!record(configuration) ||
+      configuration.modelSelection !== "per-request" ||
+      (configuration.thinkingSelection !== undefined &&
+        configuration.thinkingSelection !== "per-request"))
   )
     throw new TraeError("protocolError", "Invalid TRAE CN configuration capabilities");
   if (
@@ -152,7 +155,16 @@ export function readInspection(value: unknown): BridgeInspection {
     application: readApplication(value.application),
     workspaceFolders: value.workspaceFolders as string[],
     models,
-    ...(configuration ? { configuration: { modelSelection: "per-request" as const } } : {}),
+    ...(record(configuration)
+      ? {
+          configuration: {
+            modelSelection: "per-request" as const,
+            ...(configuration.thinkingSelection === "per-request"
+              ? { thinkingSelection: "per-request" as const }
+              : {}),
+          },
+        }
+      : {}),
     ...(record(history)
       ? {
           history: {

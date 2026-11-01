@@ -9,9 +9,9 @@ import type { BridgeClient } from "./bridge.js";
 import type { BridgeInspection } from "./protocol.js";
 import { record, TraeError } from "./errors.js";
 import { sameDirectory } from "./discovery.js";
-import { validateReference } from "./session.js";
+import { validateReference } from "./reference.js";
 import { projectHistory, TRAE_CN_ID } from "./history.js";
-import { nativeModelId } from "./models.js";
+import { nativeModelId, nativeThinkingSelection, historyThinking } from "./models.js";
 import { hasFileEditHistory } from "./file-changes.js";
 
 function semanticTurns(snapshot: HostThreadSnapshot) {
@@ -104,6 +104,12 @@ export async function deriveSession(
   if (!model)
     throw new TraeError("configurationRequired", "The source has no confirmed model to preserve");
   nativeModelId(inspection, model);
+  const thinkingOptionId =
+    (input.kind === "rollbackLastTurn" ? input.thinkingOptionId : undefined) ??
+    (model.id === original.turns.at(-1)?.model?.id
+      ? historyThinking(source, inspection)
+      : undefined);
+  if (thinkingOptionId) nativeThinkingSelection(inspection, model, thinkingOptionId);
   const boundary = prefix.turns.at(-1)?.checkpoint;
   const result = boundary
     ? await client.call("fork", {
@@ -141,7 +147,7 @@ export async function deriveSession(
     const unchanged = await client.call("snapshot", { sessionId: sourceRef.nativeSessionId });
     if (!isDeepStrictEqual(unchanged, source))
       throw new TraeError("protocolError", "Native history derivation changed its source");
-    return { nativeRef, model };
+    return { nativeRef, model, ...(thinkingOptionId ? { thinkingOptionId } : {}) };
   } catch (error) {
     throw new TraeError(
       "nativeFailure",

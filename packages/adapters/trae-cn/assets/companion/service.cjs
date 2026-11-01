@@ -251,7 +251,7 @@ class DesktopService {
       workspaceFolders: this.workspaceFolders,
       agentType: this.agentType,
       models: publicModels(pool, await this.modelSettings()),
-      configuration: { modelSelection: "per-request" },
+      configuration: { modelSelection: "per-request", thinkingSelection: "per-request" },
       history: await this.historySettings(),
     };
   }
@@ -262,7 +262,13 @@ class DesktopService {
       case "prepareModel": {
         if (input.sessionId !== undefined)
           await this.readSession(text(input.sessionId, "session ID"));
-        return prepareModel(this.native, this.agentType, text(input.modelId, "model ID"));
+        return prepareModel(
+          this.native,
+          this.agentType,
+          text(input.modelId, "model ID"),
+          input.thinking,
+          await this.modelSettings(),
+        );
       }
       case "settings":
         return this.requestSettings();
@@ -365,7 +371,7 @@ class DesktopService {
               code: "sessionBusy",
             });
           const pool = await readModels(this.native, this.agentType);
-          const model = nativeModel(pool, modelId);
+          const model = nativeModel(pool, modelId, input.thinking, await this.modelSettings());
           const settings = await this.requestSettings();
           const messageId =
             typeof input.messageId === "string" && input.messageId ? input.messageId : randomUUID();

@@ -3,7 +3,7 @@ import { nativeSessionRefSchema, nativeCheckpointRefSchema } from "@codexhost/sh
 import type { BridgeClient } from "../src/bridge.js";
 import type { BridgeInspection } from "../src/protocol.js";
 import { deriveSession } from "../src/derivation.js";
-import { modelRef } from "../src/models.js";
+import { modelRef, thinkingOptionId } from "../src/models.js";
 const inspection: BridgeInspection = {
   instanceId: "instance",
   application: { name: "Trae CN", root: "/app", executable: "/app/trae", version: "fixture" },
@@ -92,6 +92,45 @@ function setup(count = 2) {
   return { source, call, client: { call } as unknown as BridgeClient };
 }
 describe("TRAE CN public history derivation", () => {
+  it.each([1, 2])(
+    "preserves native Thinking across a %s-Turn rollback and rejects foreign choices before writes",
+    async (count) => {
+      const test = setup(count);
+      const model = {
+        id: "configured",
+        label: "Configured",
+        provider: "native",
+        multimodal: false,
+        thinking: { field: "reasoning_effort_level" as const, options: ["light", "high"] },
+      };
+      const catalog: BridgeInspection = {
+        ...inspection,
+        configuration: { modelSelection: "per-request", thinkingSelection: "per-request" },
+        models: [model],
+      };
+      for (const item of test.source.items)
+        if (item.role === "assistant" && item.model)
+          Object.assign(item.model, { reasoning_effort_level: "high" });
+      const high = thinkingOptionId("builder_v3", model, "high");
+      expect(
+        await deriveSession(test.client, catalog, {
+          kind: "rollbackLastTurn",
+          sourceRef,
+          cwd: "/workspace",
+        }),
+      ).toMatchObject({ thinkingOptionId: high });
+      test.call.mockClear();
+      await expect(
+        deriveSession(test.client, catalog, {
+          kind: "rollbackLastTurn",
+          sourceRef,
+          cwd: "/workspace",
+          thinkingOptionId: thinkingOptionId("builder_v3", { ...model, id: "other" }, "high"),
+        }),
+      ).rejects.toMatchObject({ code: "invalidRequest" });
+      expect(test.call.mock.calls.every(([method]) => method === "snapshot")).toBe(true);
+    },
+  );
   it.each([0, 1])(
     "copies exactly the native prefix through boundary %s without changing its source",
     async (index) => {

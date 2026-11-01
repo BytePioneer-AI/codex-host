@@ -1,10 +1,105 @@
 import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
+import {
+  modelCatalog,
+  modelRef,
+  nativeThinkingSelection,
+  confirmedThinking,
+} from "../src/models.js";
+import type { BridgeInspection } from "../src/protocol.js";
+const { nativeModel, prepareModel } = createRequire(import.meta.url)(
+  "../assets/companion/models.cjs",
+);
 const { modelThinkingPolicy } = createRequire(import.meta.url)("../assets/companion/reasoning.cjs");
 const { publicModels } = createRequire(import.meta.url)("../assets/companion/models.cjs");
 const { desktopModelSettings } = createRequire(import.meta.url)("../assets/companion/settings.cjs");
 
 describe("TRAE CN native Thinking policy", () => {
+  it("uses model-scoped opaque choices and hides unimplemented Companion controls", () => {
+    const inspection: BridgeInspection = {
+      application: { name: "Trae CN", version: "fixture", root: "/app", executable: "/app/trae" },
+      instanceId: "fixture",
+      workspaceFolders: ["/workspace"],
+      agentType: "builder_v3",
+      configuration: { modelSelection: "per-request", thinkingSelection: "per-request" },
+      models: ["one", "two"].map((id) => ({
+        id,
+        label: id,
+        provider: "native",
+        multimodal: false,
+        thinking: { field: "reasoning_effort_level", options: ["light", "high"] },
+      })),
+    };
+    const catalog = modelCatalog(inspection);
+    expect(catalog.thinkingOptions).toHaveLength(4);
+    expect(new Set(catalog.thinkingOptions.map((option) => option.id)).size).toBe(4);
+    const first = catalog.models[0]?.supportedThinkingOptionIds?.[0];
+    if (!first) throw new Error("Missing fixture Thinking option");
+    expect(nativeThinkingSelection(inspection, modelRef("builder_v3", "one"), first)).toEqual({
+      field: "reasoning_effort_level",
+      level: "light",
+    });
+    expect(() => nativeThinkingSelection(inspection, modelRef("builder_v3", "two"), first)).toThrow(
+      "does not belong",
+    );
+    expect(
+      confirmedThinking({ config_name: "one", reasoning_effort_level: "light" }, inspection),
+    ).toBe(first);
+    expect(
+      confirmedThinking({ config_name: "one", reasoning_effort: "light" }, inspection),
+    ).toBeUndefined();
+    expect(
+      confirmedThinking({ config_name: "one", reasoning_effort_level: "medium" }, inspection),
+    ).toBeUndefined();
+    inspection.configuration = { modelSelection: "per-request" };
+    expect(modelCatalog(inspection).thinkingOptions).toEqual([]);
+    expect(
+      modelCatalog(inspection).models.every(
+        (model) => model.supportedThinkingOptionIds?.length === 0,
+      ),
+    ).toBe(true);
+  });
+  it("prepares exactly the requested native Thinking field without selecting a default or sending a prompt", async () => {
+    const model = {
+      name: "native",
+      config_source: 1,
+      reasoning_effort_config: {
+        support_thinking: true,
+        options: ["light", "high"],
+        default_level: "high",
+      },
+    };
+    const thinking = { field: "reasoning_effort_level", level: "light" };
+    expect(nativeModel([model], "native", thinking)).toMatchObject({
+      reasoning_effort_level: "light",
+    });
+    expect(nativeModel([model], "native").reasoning_effort_level).toBeUndefined();
+    expect(() =>
+      nativeModel([model], "native", { field: "reasoning_effort", level: "light" }),
+    ).toThrow();
+    expect(() =>
+      nativeModel([model], "native", { field: "reasoning_effort_level", level: "medium" }),
+    ).toThrow();
+    const call = vi.fn(async () => ({ list: [{ function: "builder_v3", models: [model] }] }));
+    expect(await prepareModel({ call }, "builder_v3", "native", thinking)).toEqual({
+      agentType: "builder_v3",
+      modelId: "native",
+      thinking,
+    });
+    expect(call).toHaveBeenCalledExactlyOnceWith("model", "model_list_by_function", {
+      functions: ["builder_v3"],
+      force_refresh: true,
+    });
+    const internal = { name: "internal", config_source: 1, reasoning_effort_options: ["high"] };
+    expect(
+      nativeModel(
+        [internal],
+        "internal",
+        { field: "reasoning_effort", level: "high" },
+        { internal: true },
+      ),
+    ).toMatchObject({ reasoning_effort: "high" });
+  });
   it("uses the ordinary native model's declared options only with a valid default", () => {
     const model = {
       config_source: 1,

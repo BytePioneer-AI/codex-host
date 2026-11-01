@@ -30,6 +30,7 @@ import {
 import {
   nativeSessionRefSchema,
   type HarnessModelRef,
+  type HarnessThinkingOptionId,
   type NativeSessionRef,
   type HarnessTurnRecovery,
   type HostTurnId,
@@ -38,14 +39,21 @@ import {
 import type { BridgeClient } from "./bridge.js";
 import type { BridgeEvent, BridgeInspection } from "./protocol.js";
 import { harnessError, record, TraeError } from "./errors.js";
-import { nativeModelId, confirmedModel } from "./models.js";
+import {
+  nativeModelId,
+  confirmedModel,
+  confirmedThinking,
+  modelThinkingOptions,
+  nativeThinkingSelection,
+  type NativeThinkingSelection,
+} from "./models.js";
 import { projectHistory, TRAE_CN_ID, nativeTurnRef as confirmedNativeTurnRef } from "./history.js";
 import { LiveItems } from "./live-items.js";
-import { sameDirectory } from "./discovery.js";
 import { NativeInteractions } from "./interactions.js";
 import { nativeContextUsage, contextUsageFromHistory } from "./usage.js";
 import { hasFileEditHistory } from "./file-changes.js";
-import { prepareModelSelection } from "./configuration.js";
+import { prepareSelectionChange } from "./configuration.js";
+import { validateReference } from "./reference.js";
 
 // Older Companions do not expose model preparation or history feature flags.
 // These capabilities are derived from the negotiated native bridge below.
@@ -70,6 +78,9 @@ export function sessionCapabilities(
     configuration: {
       ...SESSION_CAPABILITIES.configuration,
       selectModel: inspection.configuration?.modelSelection === "per-request",
+      selectThinkingOption:
+        inspection.configuration?.thinkingSelection === "per-request" &&
+        inspection.models.some((model) => !!model.thinking?.options.length),
     },
     history: {
       fork,
@@ -83,7 +94,9 @@ export function sessionCapabilities(
 interface ActiveTurn {
   command: TurnStartCommand;
   model: HarnessModelRef | undefined;
-  modelRevision: number;
+  configurationRevision: number;
+  thinking: NativeThinkingSelection | undefined;
+  thinkingOptionId: HarnessThinkingOptionId | undefined;
   messageId: string;
   cancelRequested: boolean;
   admitted: boolean;
@@ -97,6 +110,8 @@ export interface SessionOptions {
   inspection: BridgeInspection;
   cwd: string;
   model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+  recoveringThinkingOptionId?: HarnessThinkingOptionId;
   nativeRef?: NativeSessionRef;
   initialState?: HarnessSessionState;
   initialUsage?: HostUsage | null;
@@ -105,31 +120,6 @@ export interface SessionOptions {
   recoveringTurn?: HarnessTurnRecovery;
   recoverySnapshot?: HostThreadSnapshot;
   onClose?: () => void;
-}
-
-export function validateReference(
-  reference: NativeSessionRef,
-  inspection: BridgeInspection,
-  cwd: string,
-): void {
-  const parsed = nativeSessionRefSchema.safeParse(reference);
-  const locator = parsed.success ? parsed.data.locator : undefined;
-  if (
-    !parsed.success ||
-    parsed.data.harnessId !== TRAE_CN_ID ||
-    !record(locator) ||
-    typeof locator.applicationRoot !== "string" ||
-    !sameDirectory(locator.applicationRoot, inspection.application.root) ||
-    typeof locator.cwd !== "string" ||
-    !sameDirectory(locator.cwd, cwd) ||
-    locator.agentType !== inspection.agentType ||
-    typeof locator.projectId !== "string" ||
-    !locator.projectId
-  )
-    throw new TraeError(
-      "invalidRequest",
-      "TRAE CN reference belongs to a different application, Agent or workspace",
-    );
 }
 
 type CommandResult =
@@ -167,7 +157,8 @@ export class TraeCnSession implements HarnessSession {
   #historyHasFileEdits = false;
   #historyTurnCount = 0;
   #selectedModel: HarnessModelRef | undefined;
-  #modelRevision = 0;
+  #selectedThinking: HarnessThinkingOptionId | undefined;
+  #configurationRevision = 0;
   #configuring = false;
 
   constructor(private readonly options: SessionOptions) {
@@ -175,9 +166,21 @@ export class TraeCnSession implements HarnessSession {
     this.initialState = {
       ...(options.initialState ?? {}),
       ...(options.nativeRef ? { nativeRef: options.nativeRef } : {}),
+      ...(modelThinkingOptions(options.inspection, options.model).length
+        ? { availableThinkingOptions: modelThinkingOptions(options.inspection, options.model) }
+        : {}),
     };
     this.#state = this.initialState;
     this.#selectedModel = options.model ? { ...options.model } : undefined;
+    this.#selectedThinking = options.thinkingOptionId;
+    if (this.#selectedThinking) {
+      if (!this.#selectedModel)
+        throw new TraeError(
+          "configurationRequired",
+          "Choose a native model before selecting Thinking",
+        );
+      nativeThinkingSelection(options.inspection, this.#selectedModel, this.#selectedThinking);
+    }
     this.initialUsage = options.initialUsage ?? null;
     this.#usage = this.initialUsage;
     this.#historyHasFileEdits = options.historyHasFileEdits === true;
@@ -198,7 +201,9 @@ export class TraeCnSession implements HarnessSession {
       const turn: ActiveTurn = {
         command: { type: "turn.start", turnId: recovery.turnId, input: recovery.input },
         model: options.recoverySnapshot.turns.at(-1)?.model ?? options.model,
-        modelRevision: this.#modelRevision,
+        configurationRevision: this.#configurationRevision,
+        thinking: undefined,
+        thinkingOptionId: options.recoveringThinkingOptionId,
         messageId: recovery.nativeTurnRef.nativeTurnKey,
         cancelRequested: false,
         admitted: true,
@@ -332,7 +337,15 @@ export class TraeCnSession implements HarnessSession {
         const turn: ActiveTurn = {
           command,
           model: this.#selectedModel,
-          modelRevision: this.#modelRevision,
+          configurationRevision: this.#configurationRevision,
+          thinking: this.#selectedThinking
+            ? nativeThinkingSelection(
+                this.options.inspection,
+                this.#selectedModel,
+                this.#selectedThinking,
+              )
+            : undefined,
+          thinkingOptionId: this.#selectedThinking,
           messageId: randomUUID(),
           cancelRequested: false,
           admitted: false,
@@ -360,42 +373,53 @@ export class TraeCnSession implements HarnessSession {
           throw new TraeError("invalidState", "No native question is currently active");
         return interactions.respond(command);
       }
-      if (command.type === "model.select") return await this.#selectModel(command);
+      if (command.type === "model.select" || command.type === "thinking.select")
+        return await this.#configure(command);
       throw new TraeError("unsupported", `TRAE CN operation is not implemented: ${command.type}`);
     } catch (error) {
       return { ok: false, error: harnessError(error) };
     }
   }
 
-  async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    if (!this.capabilities.configuration.selectModel)
+  async #configure(
+    command: ModelSelectCommand | ThinkingSelectCommand,
+  ): Promise<HarnessResult<ModelSelectCompleted>> {
+    if (
+      !(command.type === "model.select"
+        ? this.capabilities.configuration.selectModel
+        : this.capabilities.configuration.selectThinkingOption)
+    )
       throw new TraeError(
         "unsupported",
-        "This TRAE CN Companion does not support model preparation",
+        "This TRAE CN Companion does not support the requested configuration",
       );
     if (this.#configuring)
       throw new TraeError("sessionBusy", "TRAE CN model configuration is already being prepared");
     this.#configuring = true;
     try {
-      const inspection = await this.options.client.inspect(true);
-      if (this.#state.nativeRef)
-        validateReference(this.#state.nativeRef, inspection, this.options.cwd);
-      if (!inspection.workspaceFolders.some((folder) => sameDirectory(folder, this.options.cwd)))
-        throw new TraeError("configurationRequired", "The TRAE CN workspace changed");
-      await prepareModelSelection(
-        this.options.client,
-        inspection,
-        command.model,
-        this.#state.nativeRef?.nativeSessionId,
-      );
+      const { inspection, model, thinking, availableThinkingOptions } =
+        await prepareSelectionChange({
+          client: this.options.client,
+          cwd: this.options.cwd,
+          nativeRef: this.#state.nativeRef,
+          currentModel: this.#selectedModel,
+          currentThinking: this.#selectedThinking,
+          command,
+        });
       if (this.#closed || this.#faulted)
         throw new TraeError("invalidState", "TRAE CN Session closed during model configuration");
       this.options.inspection = inspection;
-      this.#selectedModel = { ...command.model };
-      this.#modelRevision++;
+      this.#selectedModel = { ...model };
+      this.#selectedThinking = thinking;
+      this.#configurationRevision++;
       // The native interface takes this configuration on the next send. A
       // running Turn retains the model captured when it was accepted.
-      this.#setState({ ...this.#state, effectiveModel: this.#selectedModel });
+      const state = { ...this.#state, effectiveModel: this.#selectedModel };
+      delete state.effectiveThinkingOptionId;
+      if (thinking) state.effectiveThinkingOptionId = thinking;
+      if (inspection.configuration?.thinkingSelection === "per-request")
+        state.availableThinkingOptions = availableThinkingOptions;
+      this.#setState(state);
       return { ok: true, value: { completed: true } };
     } finally {
       this.#configuring = false;
@@ -458,6 +482,7 @@ export class TraeCnSession implements HarnessSession {
           sessionId: nativeRef.nativeSessionId,
           messageId: turn.messageId,
           modelId: nativeModelId(this.options.inspection, model),
+          ...(turn.thinking ? { thinking: turn.thinking } : {}),
           text: turn.command.input.map((part) => part.text).join("\n"),
         });
         if (
@@ -603,14 +628,43 @@ export class TraeCnSession implements HarnessSession {
                   );
                   if (
                     effectiveModel &&
-                    turn.modelRevision === this.#modelRevision &&
-                    turn.model?.id === this.#selectedModel?.id
+                    turn.configurationRevision === this.#configurationRevision &&
+                    turn.model?.id === this.#selectedModel?.id &&
+                    turn.thinkingOptionId === this.#selectedThinking
                   ) {
                     // Recovery may attach before the native model was present
                     // in history. Its first confirmed event supplies it.
-                    if (!this.#selectedModel) this.#selectedModel = effectiveModel;
-                    if (!turn.model) turn.model = effectiveModel;
-                    this.#setState({ ...this.#state, effectiveModel });
+                    if (this.#selectedModel?.id !== effectiveModel.id) {
+                      this.#selectedModel = effectiveModel;
+                      turn.model = effectiveModel;
+                      this.#selectedThinking = undefined;
+                      turn.thinkingOptionId = undefined;
+                    }
+                    const thinking = confirmedThinking(
+                      event.event === "metadata" ? payload?.model : payload,
+                      this.options.inspection,
+                    );
+                    if (thinking) {
+                      this.#selectedThinking = thinking;
+                      turn.thinkingOptionId = thinking;
+                    }
+                    const state = { ...this.#state, effectiveModel };
+                    if (
+                      this.options.inspection.configuration?.thinkingSelection === "per-request"
+                    ) {
+                      state.availableThinkingOptions = modelThinkingOptions(
+                        this.options.inspection,
+                        effectiveModel,
+                      );
+                      if (thinking) state.effectiveThinkingOptionId = thinking;
+                      else if (
+                        !state.availableThinkingOptions.some(
+                          (option) => option.id === state.effectiveThinkingOptionId,
+                        )
+                      )
+                        delete state.effectiveThinkingOptionId;
+                    }
+                    this.#setState(state);
                   }
                 } else if (event.event === "token_usage") {
                   const usage = nativeContextUsage(payload);

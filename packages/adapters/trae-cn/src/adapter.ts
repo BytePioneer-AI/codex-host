@@ -11,16 +11,18 @@ import {
   harnessKnownTurnSchema,
   type HarnessModelRef,
   type HarnessTurnRecovery,
+  type HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 import type { HostThreadSnapshot } from "@codexhost/harness-adapter";
 import { BridgeClient } from "./bridge.js";
 import { bridgeDirectory, sameDirectory, type BridgeOptions } from "./discovery.js";
 import { harnessError, record, TraeError } from "./errors.js";
 import { projectHistory, TRAE_CN_ID } from "./history.js";
-import { modelCatalog } from "./models.js";
+import { modelCatalog, historyThinking } from "./models.js";
 import type { BridgeInspection } from "./protocol.js";
 import { contextUsageFromHistory } from "./usage.js";
-import { TraeCnSession, sessionCapabilities, validateReference } from "./session.js";
+import { TraeCnSession, sessionCapabilities } from "./session.js";
+import { validateReference } from "./reference.js";
 import { deriveSession } from "./derivation.js";
 import { hasFileEditHistory } from "./file-changes.js";
 import { prepareModelSelection } from "./configuration.js";
@@ -83,10 +85,10 @@ export class TraeCnAdapter implements HarnessAdapter {
     try {
       if (this.#closed) throw new TraeError("invalidState", "TRAE CN Adapter is closed");
       if (input.kind === "fork" || input.kind === "rollbackLastTurn") {
-        if (input.kind === "rollbackLastTurn" && (input.thinkingOptionId || input.permissionModeId))
+        if (input.kind === "rollbackLastTurn" && input.permissionModeId)
           throw new TraeError(
             "unsupported",
-            "TRAE CN cannot preserve unimplemented Thinking or permission selections",
+            "TRAE CN cannot preserve unimplemented permission selections",
           );
         const options = this.#bridgeOptions(input.cwd, input.environment);
         const connected = await BridgeClient.connect(options);
@@ -97,6 +99,7 @@ export class TraeCnAdapter implements HarnessAdapter {
           nativeRef: derived.nativeRef,
           cwd: input.cwd,
           model: derived.model,
+          ...(derived.thinkingOptionId ? { thinkingOptionId: derived.thinkingOptionId } : {}),
           ...(input.environment ? { environment: input.environment } : {}),
         });
         client.close();
@@ -109,16 +112,20 @@ export class TraeCnAdapter implements HarnessAdapter {
       }
       if (input.kind === "create" && input.executionPolicy === "unattended-full-access")
         throw new TraeError("unsupported", "TRAE CN unattended permissions have not been verified");
-      if (input.thinkingOptionId || input.permissionModeId)
+      if (input.permissionModeId)
+        throw new TraeError("unsupported", "TRAE CN permission selection is not implemented");
+      if (input.kind === "create" && input.thinkingOptionId && !input.model)
         throw new TraeError(
-          "unsupported",
-          "TRAE CN Thinking and permission selection are not implemented",
+          "configurationRequired",
+          "Choose a native model before selecting Thinking",
         );
       const options = this.#bridgeOptions(input.cwd, input.environment);
       const connected = await BridgeClient.connect(options);
       client = connected.client;
       const inspection = connected.inspection;
       let effectiveModel: HarnessModelRef | undefined;
+      let effectiveThinking: HarnessThinkingOptionId | undefined;
+      let recoveringThinking: HarnessThinkingOptionId | undefined;
       let recoveringTurn: HarnessTurnRecovery | undefined;
       let recoverySnapshot: HostThreadSnapshot | undefined;
       let initialUsage: HostUsage | null = null;
@@ -200,25 +207,34 @@ export class TraeCnAdapter implements HarnessAdapter {
             "Native pending work is not ready for safe reattachment",
           );
         effectiveModel = snapshot.turns.at(-1)?.model;
+        effectiveThinking = historyThinking(native, inspection);
+        recoveringThinking = effectiveThinking;
       }
       if (this.#closed) throw new TraeError("invalidState", "TRAE CN Adapter closed during open");
       this.#catalogs.set(this.#catalogKey(options), inspection);
       const selected = input.model ?? effectiveModel;
+      const selectedThinking =
+        input.thinkingOptionId ??
+        (selected?.id === effectiveModel?.id ? effectiveThinking : undefined);
       // A saved Host selection is configuration for the next native request,
       // not a relabeling of the historical Turn that used the previous model.
       if (
-        input.model &&
-        input.kind === "resume" &&
-        input.model.id !== effectiveModel?.id &&
-        (inspection.configuration?.modelSelection === "per-request" || effectiveModel)
+        selected &&
+        (input.thinkingOptionId ||
+          (input.model &&
+            input.kind === "resume" &&
+            input.model.id !== effectiveModel?.id &&
+            (inspection.configuration?.modelSelection === "per-request" || effectiveModel)))
       ) {
         await prepareModelSelection(
           client,
           inspection,
-          input.model,
-          input.nativeRef.nativeSessionId,
+          selected,
+          input.kind === "resume" ? input.nativeRef.nativeSessionId : undefined,
+          selectedThinking,
         );
-        effectiveModel = input.model;
+        effectiveModel = selected;
+        effectiveThinking = selectedThinking;
       }
       if (this.#closed)
         throw new TraeError("invalidState", "TRAE CN Adapter closed during configuration");
@@ -227,8 +243,13 @@ export class TraeCnAdapter implements HarnessAdapter {
         inspection,
         cwd: input.cwd,
         ...(selected ? { model: selected } : {}),
+        ...(selectedThinking ? { thinkingOptionId: selectedThinking } : {}),
+        ...(recoveringThinking ? { recoveringThinkingOptionId: recoveringThinking } : {}),
         ...(input.kind === "resume" ? { nativeRef: input.nativeRef } : {}),
-        initialState: { ...(effectiveModel ? { effectiveModel } : {}) },
+        initialState: {
+          ...(effectiveModel ? { effectiveModel } : {}),
+          ...(effectiveThinking ? { effectiveThinkingOptionId: effectiveThinking } : {}),
+        },
         initialUsage,
         historyHasFileEdits,
         historyTurnCount,

@@ -1,4 +1,4 @@
-const { modelThinkingPolicy } = require("./reasoning.cjs");
+const { modelThinkingPolicy, requestedThinking } = require("./reasoning.cjs");
 
 function availableModels(models) {
   if (!Array.isArray(models)) throw new Error("TRAE CN returned an invalid model catalog");
@@ -50,9 +50,10 @@ async function readModels(native, agentType, refresh = false) {
 }
 
 /** Match the app's custom-model request DTO, including remote credential ownership. */
-function nativeModel(models, id) {
+function nativeModel(models, id, thinking, settings = {}) {
   const model = availableModels(models).find((model) => model.name === id);
   if (!model) throw new Error("The selected model is no longer available in TRAE CN");
+  const selectedThinking = requestedThinking(model, thinking, settings);
   return {
     provider: model.provider || "",
     config_name: model.name,
@@ -72,13 +73,18 @@ function nativeModel(models, id) {
     max_tokens: model.max_tokens,
     max_turn: model.max_turn,
     prompt_max_tokens: model.prompt_max_tokens,
+    ...(selectedThinking ? { [selectedThinking.field]: selectedThinking.level } : {}),
   };
 }
 
 /** Validate the exact DTO used by the next send, without submitting a Prompt. */
-async function prepareModel(native, agentType, id) {
-  const model = nativeModel(await readModels(native, agentType, true), id);
-  return { agentType, modelId: model.config_name };
+async function prepareModel(native, agentType, id, thinking, settings = {}) {
+  const model = nativeModel(await readModels(native, agentType, true), id, thinking, settings);
+  return {
+    agentType,
+    modelId: model.config_name,
+    ...(thinking ? { thinking: { field: thinking.field, level: model[thinking.field] } } : {}),
+  };
 }
 
 module.exports = { publicModels, nativeModel, readModels, prepareModel };

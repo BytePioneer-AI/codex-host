@@ -41,4 +41,24 @@ function modelThinkingPolicy(model, internal = false) {
   return { field: "reasoning_effort_level", options: [...config.options] };
 }
 
-module.exports = { modelThinkingPolicy };
+function requestedThinking(model, request, settings = {}) {
+  if (request === undefined) return undefined;
+  const policy = modelThinkingPolicy(model, settings.internal === true);
+  if (!policy)
+    throw Object.assign(new Error("This native model does not support Thinking selection"), {
+      code: "unsupported",
+    });
+  if (
+    !request ||
+    typeof request !== "object" ||
+    Array.isArray(request) ||
+    request.field !== policy.field ||
+    !policy.options.includes(request.level)
+  )
+    throw Object.assign(new Error("Thinking selection is not available for this native model"), {
+      code: "invalidRequest",
+    });
+  return { field: policy.field, level: request.level };
+}
+
+module.exports = { modelThinkingPolicy, requestedThinking };

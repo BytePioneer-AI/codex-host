@@ -12,7 +12,7 @@ import {
 import { BridgeClient } from "../src/bridge.js";
 import type { BridgeInspection, Endpoint } from "../src/protocol.js";
 import { TraeCnSession } from "../src/session.js";
-import { modelRef } from "../src/models.js";
+import { modelRef, thinkingOptionId, type NativeThinkingSelection } from "../src/models.js";
 
 const { startServer } = createRequire(import.meta.url)("../assets/companion/server.cjs");
 type Listener = { data(value: unknown): void; end(): void; error(error: unknown): void };
@@ -30,21 +30,36 @@ async function setup(
   deferred = false,
   history = false,
   configurable = false,
-  recovering = false,
+  features: { recovering?: boolean; thinking?: boolean } = {},
 ) {
+  const { recovering = false, thinking = false } = features;
   const directory = await mkdtemp(path.join(os.tmpdir(), "trae-cn-session-"));
   let messageId = recovering ? "recovering-user" : "",
     listener: Listener | undefined;
   let status = "in_progress";
   let nativeModel = "configured";
+  let nativeThinking: NativeThinkingSelection | undefined;
   const sessionInspection: BridgeInspection = {
     ...inspection,
     ...(history ? { history: { forkFromMessage: true, forkFromSession: true } } : {}),
     ...(configurable
       ? {
-          configuration: { modelSelection: "per-request" },
+          configuration: {
+            modelSelection: "per-request",
+            ...(thinking ? { thinkingSelection: "per-request" as const } : {}),
+          },
           models: [
-            ...inspection.models,
+            ...inspection.models.map((model) => ({
+              ...model,
+              ...(thinking
+                ? {
+                    thinking: {
+                      field: "reasoning_effort_level" as const,
+                      options: ["light", "high", "extra_high"],
+                    },
+                  }
+                : {}),
+            })),
             { id: "alternative", label: "Alternative", provider: "native", multimodal: false },
           ],
         }
@@ -85,7 +100,10 @@ async function setup(
         message_index: 2,
         role: "assistant",
         status,
-        model: { config_name: nativeModel },
+        model: {
+          config_name: nativeModel,
+          ...(nativeThinking ? { [nativeThinking.field]: nativeThinking.level } : {}),
+        },
         content: JSON.stringify(content),
       },
     ];
@@ -103,9 +121,15 @@ async function setup(
       if (method === "start") {
         messageId = String(input.messageId);
         nativeModel = String(input.modelId);
+        nativeThinking = input.thinking as NativeThinkingSelection | undefined;
         return { accepted: true, messageId, fromAppend: false };
       }
-      if (method === "prepareModel") return { agentType: "builder_v3", modelId: input.modelId };
+      if (method === "prepareModel")
+        return {
+          agentType: "builder_v3",
+          modelId: input.modelId,
+          ...(input.thinking ? { thinking: input.thinking } : {}),
+        };
       if (method === "snapshot")
         return { sessionId: "native-session", projectId: "project", items: messages };
       if (method === "cancel") {
@@ -125,7 +149,13 @@ async function setup(
       listener = observer;
       observer.data({
         event: "metadata",
-        payload: { reply_to_message_id: messageId, model: { config_name: nativeModel } },
+        payload: {
+          reply_to_message_id: messageId,
+          model: {
+            config_name: nativeModel,
+            ...(nativeThinking ? { [nativeThinking.field]: nativeThinking.level } : {}),
+          },
+        },
       });
       if (!deferred) finish("completed");
       return detach;
@@ -211,8 +241,150 @@ const command = (id = "host-turn") => ({
 });
 
 describe("TRAE CN public Session core", () => {
+  it("freezes Thinking per accepted Turn and clears it when switching to an unsupported model", async () => {
+    const test = await setup(true, true, false, true, { thinking: true });
+    try {
+      const options = test.session.initialState.availableThinkingOptions;
+      const light = options?.find((option) => option.label === "light")?.id;
+      const high = options?.find((option) => option.label === "high")?.id;
+      if (!light || !high) throw new Error("Missing fixture Thinking options");
+      expect(test.session.capabilities.configuration.selectThinkingOption).toBe(true);
+      expect(test.session.initialState.effectiveThinkingOptionId).toBeUndefined();
+      expect(
+        await test.session.execute({ type: "thinking.select", thinkingOptionId: light }),
+      ).toMatchObject({ ok: true });
+      expect(test.call.mock.calls.map(([method]) => method)).toEqual(["prepareModel"]);
+      await test.session.execute(command());
+      await vi.waitFor(() => expect(test.service.subscribe).toHaveBeenCalledOnce());
+      expect(
+        await test.session.execute({ type: "thinking.select", thinkingOptionId: high }),
+      ).toMatchObject({ ok: true });
+      test.service.subscribe.mock.calls[0]?.[1].data({
+        event: "model_config",
+        payload: { config_name: "configured", reasoning_effort_level: "light" },
+      });
+      test.finish("completed");
+      const outputs = await completed(test.iterator);
+      const states = outputs.flatMap((output) =>
+        output.kind === "event" && output.event.type === "session.state.changed"
+          ? [output.event.state]
+          : [],
+      );
+      expect(states.at(-1)?.effectiveThinkingOptionId).toBe(high);
+      expect(await test.session.readSnapshot()).toMatchObject({
+        ok: true,
+        value: { state: { effectiveThinkingOptionId: high } },
+      });
+      await test.session.execute(command("high"));
+      await vi.waitFor(() => expect(test.service.subscribe).toHaveBeenCalledTimes(2));
+      test.finish("completed");
+      await completed(test.iterator);
+      expect(
+        await test.session.execute({
+          type: "model.select",
+          model: modelRef("builder_v3", "alternative"),
+        }),
+      ).toMatchObject({ ok: true });
+      const snapshot = await test.session.readSnapshot();
+      expect(snapshot).toMatchObject({
+        ok: true,
+        value: { state: { availableThinkingOptions: [] } },
+      });
+      if (snapshot.ok) expect(snapshot.value.state?.effectiveThinkingOptionId).toBeUndefined();
+      await test.session.execute(command("without-thinking"));
+      await vi.waitFor(() => expect(test.service.subscribe).toHaveBeenCalledTimes(3));
+      test.finish("completed");
+      await completed(test.iterator);
+      expect(
+        test.call.mock.calls
+          .filter(([method]) => method === "start")
+          .map(([, input]) => input.thinking),
+      ).toEqual([
+        { field: "reasoning_effort_level", level: "light" },
+        { field: "reasoning_effort_level", level: "high" },
+        undefined,
+      ]);
+    } finally {
+      await test.close();
+    }
+  });
+  it("rejects foreign Thinking IDs and mismatched preparation without replacing the last choice", async () => {
+    const test = await setup(true, false, false, true, { thinking: true });
+    try {
+      const light = test.session.initialState.availableThinkingOptions?.find(
+        (option) => option.label === "light",
+      )?.id;
+      const high = test.session.initialState.availableThinkingOptions?.find(
+        (option) => option.label === "high",
+      )?.id;
+      if (!light || !high) throw new Error("Missing fixture Thinking options");
+      expect(
+        await test.session.execute({
+          type: "thinking.select",
+          thinkingOptionId: thinkingOptionId(
+            "builder_v3",
+            {
+              id: "other",
+              label: "Other",
+              provider: "native",
+              multimodal: false,
+              thinking: { field: "reasoning_effort_level", options: ["high"] },
+            },
+            "high",
+          ),
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+      expect(test.call).not.toHaveBeenCalled();
+      await test.session.execute({ type: "thinking.select", thinkingOptionId: light });
+      const original = test.call.getMockImplementation();
+      if (!original) throw new Error("Missing fixture implementation");
+      test.call.mockImplementation(async (method, input) =>
+        method === "prepareModel"
+          ? {
+              agentType: "builder_v3",
+              modelId: input.modelId,
+              thinking: { field: "reasoning_effort", level: "high" },
+            }
+          : original(method, input),
+      );
+      expect(
+        await test.session.execute({ type: "thinking.select", thinkingOptionId: high }),
+      ).toMatchObject({ ok: false, error: { code: "protocolError" } });
+      expect(await test.session.readSnapshot()).toMatchObject({
+        ok: true,
+        value: { state: { effectiveThinkingOptionId: light } },
+      });
+      await test.session.execute(command());
+      await completed(test.iterator);
+      expect(test.call.mock.calls.find(([method]) => method === "start")?.[1].thinking).toEqual({
+        field: "reasoning_effort_level",
+        level: "light",
+      });
+    } finally {
+      await test.close();
+    }
+    const empty = await setup(false, false, false, true, { thinking: true });
+    try {
+      const model = {
+        id: "configured",
+        label: "Configured",
+        provider: "native",
+        multimodal: false,
+        thinking: { field: "reasoning_effort_level" as const, options: ["light"] },
+      };
+      expect(
+        await empty.session.execute({
+          type: "thinking.select",
+          thinkingOptionId: thinkingOptionId("builder_v3", model, "light"),
+        }),
+      ).toMatchObject({ ok: false, error: { code: "configurationRequired" } });
+      expect(empty.call).not.toHaveBeenCalled();
+    } finally {
+      await empty.close();
+    }
+  });
   it("uses the native-confirmed model after recovery when pending history had no model yet", async () => {
-    const test = await setup(false, false, false, true, true);
+    const test = await setup(false, false, false, true, { recovering: true });
     try {
       expect((await completed(test.iterator)).at(-1)).toMatchObject({
         event: { turnId: "recovering-host", outcome: { status: "succeeded" } },

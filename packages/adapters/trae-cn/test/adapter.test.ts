@@ -6,11 +6,11 @@ import { describe, expect, it, vi } from "vitest";
 import { harnessInspectionSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
 import { TraeCnAdapter } from "../src/adapter.js";
 import { hostTurnIdSchema, nativeTurnRefSchema } from "@codexhost/shared-contracts";
-import { modelRef } from "../src/models.js";
+import { modelRef, thinkingOptionId } from "../src/models.js";
 
 const { startServer } = createRequire(import.meta.url)("../assets/companion/server.cjs");
 
-async function setup(configurable = false) {
+async function setup(configurable = false, thinking = false) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "trae-cn-adapter-"));
   const root = path.join(directory, "resources", "app");
   const cwd = path.join(directory, "workspace");
@@ -40,7 +40,10 @@ async function setup(configurable = false) {
       role: "assistant",
       reply_to_message_id: "user",
       status: "completed",
-      model: { config_name: "configured" },
+      model: {
+        config_name: "configured",
+        ...(thinking ? { reasoning_effort_level: "light" } : {}),
+      },
       tokenUsage: { last_turn_total_tokens: 600, max_tokens: 1000 },
       content: '{"messages":[]}',
     },
@@ -53,16 +56,35 @@ async function setup(configurable = false) {
       workspaceFolders: [cwd],
       agentType: "builder_v3",
       models: [
-        { id: "configured", label: "Configured", provider: "native", multimodal: false },
+        {
+          id: "configured",
+          label: "Configured",
+          provider: "native",
+          multimodal: false,
+          ...(thinking
+            ? { thinking: { field: "reasoning_effort_level" as const, options: ["light", "high"] } }
+            : {}),
+        },
         ...(configurable
           ? [{ id: "alternative", label: "Alternative", provider: "native", multimodal: false }]
           : []),
       ],
-      ...(configurable ? { configuration: { modelSelection: "per-request" as const } } : {}),
+      ...(configurable
+        ? {
+            configuration: {
+              modelSelection: "per-request" as const,
+              ...(thinking ? { thinkingSelection: "per-request" as const } : {}),
+            },
+          }
+        : {}),
     })),
     call: vi.fn(async (method: string, input?: Record<string, unknown>) => {
       if (method === "prepareModel" && configurable)
-        return { agentType: "builder_v3", modelId: input?.modelId };
+        return {
+          agentType: "builder_v3",
+          modelId: input?.modelId,
+          ...(input?.thinking ? { thinking: input.thinking } : {}),
+        };
       if (method !== "snapshot") throw new Error("Unexpected native write during open");
       return {
         sessionId: "native-session",
@@ -107,6 +129,49 @@ async function setup(configurable = false) {
 }
 
 describe("TRAE CN public Adapter core", () => {
+  it("restores native Thinking read-only, or prepares an explicit next-request override", async () => {
+    const test = await setup(true, true);
+    try {
+      const model = (await test.service.inspect()).models[0];
+      if (!model) throw new Error("Missing fixture model");
+      const light = thinkingOptionId("builder_v3", model, "light"),
+        high = thinkingOptionId("builder_v3", model, "high");
+      const restored = await test.adapter.open({
+        kind: "resume",
+        cwd: test.cwd,
+        nativeRef: test.reference,
+      });
+      if (!restored.ok) throw new Error(restored.error.message);
+      expect(restored.value.initialState.effectiveThinkingOptionId).toBe(light);
+      expect(test.service.call.mock.calls.every(([method]) => method === "snapshot")).toBe(true);
+      await restored.value.close();
+      const overridden = await test.adapter.open({
+        kind: "resume",
+        cwd: test.cwd,
+        nativeRef: test.reference,
+        thinkingOptionId: high,
+      });
+      if (!overridden.ok) throw new Error(overridden.error.message);
+      expect(overridden.value.initialState.effectiveThinkingOptionId).toBe(high);
+      expect(test.service.call.mock.calls.filter(([method]) => method !== "snapshot")).toEqual([
+        [
+          "prepareModel",
+          {
+            sessionId: "native-session",
+            modelId: "configured",
+            thinking: { field: "reasoning_effort_level", level: "high" },
+          },
+        ],
+      ]);
+      const before = await test.service.call("snapshot");
+      expect(before.items).toMatchObject([{}, { model: { reasoning_effort_level: "light" } }]);
+      expect(
+        await test.adapter.open({ kind: "create", cwd: test.cwd, thinkingOptionId: high }),
+      ).toMatchObject({ ok: false, error: { code: "configurationRequired" } });
+    } finally {
+      await test.close();
+    }
+  });
   it("restores a saved next-request selection without relabeling the original native Turn", async () => {
     const test = await setup(true);
     try {

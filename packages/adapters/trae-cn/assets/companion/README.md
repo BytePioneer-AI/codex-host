@@ -24,6 +24,6 @@ Companion 0.1.3 exposes native same-workspace text-history forks and the Desktop
 
 Companion 0.1.4 prepares model configuration for the next native request using the refreshed conversation catalog and the same DTO as Desktop. Model selection does not submit a Prompt or change global preferences. An already accepted Turn retains its model; saved next-request selections are validated again on resume, and historical Turns retain their actual models. Install the matching VSIX to enable this capability.
 
-Companion 0.1.5 also reads native Thinking capabilities according to the account and model policy. This metadata alone does not enable Thinking selection; public configuration writes and recovery remain under development. No synthetic levels or implicit model defaults are added.
+Companion 0.1.6 supports next-request Thinking selection using the account and model's validated native policy. Opaque choices belong to one native model and request field; unsupported or mismatched choices are rejected before a message is sent. An accepted Turn retains its captured choice, while saved future selections are prepared again on resume. Native MiniMax-M3.1-Flash Light/High requests, cold restoration, and configuration preservation over text Fork/Rollback have been verified. No synthetic levels or implicit model defaults are added.
 
 [Source and integration details](https://github.com/BytePioneer-AI/codex-host/blob/main/docs/harnesses/trae-cn/trae-cn-desktop-integration.md)

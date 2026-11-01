@@ -9,6 +9,10 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./stream-input": {
+      "types": "./lib/stream-input.d.ts",
+      "default": "./src/stream-input.ts"
+    },
     "./package.json": "./package.json"
   },
   "dependencies": {

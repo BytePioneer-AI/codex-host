@@ -11,6 +11,7 @@
     "paths": {
       "@deepseek-ai/cordis": ["./types/cordis.d.ts"],
       "@deepseek-ai/dsh-api-gateway": ["./types/gateway.d.ts"],
+      "@deepseek-ai/dsh-api-gateway/stream-server": ["./types/stream-server.d.ts"],
       "@deepseek-ai/dsh-api-workspace-files": ["./types/workspace-files.d.ts"],
       "@deepseek-ai/dsh-api-workspace-files/typert": ["./types/workspace-files-typert.d.ts"],
       "@deepseek-ai/dsh-client-connection/src/rpc-host.ts": ["./types/rpc-host.d.ts"],

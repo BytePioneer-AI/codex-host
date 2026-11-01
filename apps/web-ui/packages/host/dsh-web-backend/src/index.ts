@@ -9,8 +9,10 @@
  * Thread's working directory, the sandbox policy's workspace root, and the four
  * Agent fields the terminal controller reads.
  */
+import { stat } from "node:fs/promises";
 import { Context } from "@deepseek-ai/cordis";
 import TypertGateway from "@deepseek-ai/dsh-api-gateway";
+import type { DshStreamInput } from "./stream-input.ts";
 import WorkspaceFiles from "@deepseek-ai/dsh-api-workspace-files";
 import { TYPERT as WorkspaceFilesTypert } from "@deepseek-ai/dsh-api-workspace-files/typert";
 import { HostConnectionService } from "@deepseek-ai/dsh-client-connection/src/rpc-host.ts";
@@ -29,9 +31,9 @@ export interface DshWebBackendOptions {
   /** Absolute fallback root the DSH sandbox policy reports. */
   readonly workspaceRoot: string;
   /**
-   * Resolve one local Thread's working directory.
+   * Resolve the terminal directory for a known local Session, including drafts.
    * @param sessionId - DSH Session identity received from the browser.
-   * @returns the Host-recorded directory, or undefined when this Thread has none.
+   * @returns the saved directory or Web user's home, or undefined for an unknown Session.
    */
   readonly threadWorkspace: (sessionId: string) => string | undefined;
   /** File access root for a local Thread or a workspace-bound draft; defaults to threadWorkspace. */
@@ -64,12 +66,14 @@ export interface DshWebBackend {
    * @param endpoint - canonical `<namespace>/<method>` endpoint.
    * @param args - named wire arguments.
    * @param signal - stream cancellation.
+   * @param input - physical mux input and its encoded-frame capacity; absent for output-only callers.
    * @returns the stream's decoded values.
    */
   openStream(
     endpoint: string,
     args: Readonly<Record<string, unknown>>,
     signal: AbortSignal,
+    input?: DshStreamInput,
   ): Promise<AsyncIterable<unknown>>;
   /**
    * Convert one stream failure into the DSH wire vocabulary.
@@ -84,7 +88,7 @@ export interface DshWebBackend {
 /** Remote namespaces this context mounts; every other `/api` route stays with Web. */
 const NAMESPACES: readonly string[] = ["workspaceFiles", "officeToPdf", "terminal"];
 
-/** A fresh uplink nobody sends on: these DSH methods read no Client items. */
+/** An ended uplink for output-only in-process callers. */
 function emptyUplink(): AsyncIterable<unknown> {
   return (async function* () {})();
 }
@@ -132,6 +136,24 @@ export async function createDshWebBackend(options: DshWebBackendOptions): Promis
       workspaceRoot: options.workspaceRoot,
     };
     ctx.provide("sandboxPolicy", sandboxPolicy);
+    // Web resolves Session directories server-side. A configured but invalid
+    // directory fails validation rather than silently switching to another root.
+    const workingDirectory = {
+      get(session: { readonly id: string }): string {
+        const cwd = options.threadWorkspace(session.id);
+        if (cwd === undefined) throw new Error("Terminal requires a known local Session");
+        return cwd;
+      },
+      async ensure(agent: SessionAgent, signal: AbortSignal): Promise<string> {
+        signal.throwIfAborted();
+        const cwd = this.get(agent.session);
+        if (!(await stat(cwd)).isDirectory())
+          throw new Error("Terminal working directory is not a directory");
+        signal.throwIfAborted();
+        return cwd;
+      },
+    };
+    ctx.provide("workingDirectory", workingDirectory);
     // Web authenticates every request before forwarding it, so Connection is
     // mounted for its shared Fetch handler and Peer, not for its own auth.
     await ctx.plugin((scope: Context) => {
@@ -146,7 +168,7 @@ export async function createDshWebBackend(options: DshWebBackendOptions): Promis
     if (subprocess === undefined) throw new Error("dsh-web-backend: subprocess is unavailable");
     // Terminal methods take a DSH Agent, but use only its identity, session
     // directory, execution providers, and lifetime. One small adapter per local
-    // Thread supplies exactly those; no Agent runtime is mounted.
+    // Session supplies exactly those; no Agent runtime is mounted.
     const agentFor = (sessionId: string): SessionAgent | undefined => {
       const cwd = options.threadWorkspace(sessionId);
       if (cwd === undefined) return undefined;
@@ -161,6 +183,7 @@ export async function createDshWebBackend(options: DshWebBackendOptions): Promis
         };
         lifetime.provide("subprocess", port);
         lifetime.provide("sandboxPolicy", sandboxPolicy);
+        lifetime.provide("workingDirectory", workingDirectory);
         agentLifetimes.set(sessionId, lifetime);
       }
       return { id: sessionId, session: { id: sessionId, header: { cwd } }, ctx: lifetime };
@@ -197,8 +220,16 @@ export async function createDshWebBackend(options: DshWebBackendOptions): Promis
       endpoint: string,
       args: Readonly<Record<string, unknown>>,
       signal: AbortSignal,
+      input?: DshStreamInput,
     ): Promise<AsyncIterable<unknown>> =>
-      gateway.wireStream.open(endpoint, { args }, emptyUplink(), undefined, signal),
+      gateway.wireStream.open(
+        endpoint,
+        { args },
+        input?.items ?? emptyUplink(),
+        undefined,
+        signal,
+        input?.window,
+      ),
     failure: (error: unknown): DshRemoteFailure => gateway.wireStream.failure(error),
     close: async (): Promise<void> => {
       await ctx.fiber.dispose().catch(() => undefined);

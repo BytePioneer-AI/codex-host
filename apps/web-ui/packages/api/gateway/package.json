@@ -21,6 +21,7 @@
       "default": "./src/types.ts"
     },
     "./src/*": "./src/*",
+    "./stream-server": "./src/stream-server.ts",
     "./package.json": "./package.json",
     "./stream-protocol": {
       "types": "./src/stream-protocol.ts",

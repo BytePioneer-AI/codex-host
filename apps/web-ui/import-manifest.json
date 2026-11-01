@@ -1,6 +1,20 @@
 {
   "source": "deepseek-harness (codexhost-web fork)",
   "version": "0.2.1-alpha.1",
+  "terminalUpstream": {
+    "repository": "https://github.com/deepseek-ai/deepseek-harness",
+    "commit": "ce7073d51254c26cd63b22a60835b8f948deb447",
+    "package": "@deepseek-ai/dsh-api-terminal-controller",
+    "protocolPackageVersion": "0.2.2-alpha.2",
+    "scope": "terminal-controller source and tests; Gateway uplink window support",
+    "adaptation": "TerminalView.whenInputAcknowledged exposes native stream receipts for the local mobile textarea composer; no wire protocol changes"
+  },
+  "sidebarTouchUpstream": {
+    "repository": "https://github.com/deepseek-ai/deepseek-harness",
+    "commit": "ce7073d51254c26cd63b22a60835b8f948deb447",
+    "scope": "mobile opener footprint; coarse-pointer blocked split control; sidebar chrome hover guard",
+    "adaptation": "Reuse the existing Bowser/iPad device policy through isMobileDevice without changing automatic input focus behavior"
+  },
   "plugins": [
     "@deepseek-ai/dsh-api-gateway",
     "@deepseek-ai/dsh-client-modules",

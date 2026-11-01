@@ -412,12 +412,22 @@ export interface PeerScope {
   dispose(): Promise<void>;
 }
 
+/** Carrier capacity for complete encoded Client-to-Host frames. */
+export interface RemoteUplinkWindow {
+  /** Maximum complete encoded frame bytes waiting for the Host consumer. */
+  readonly maxBytes: number;
+  /** UTF-8 envelope bytes added to a compact JSON item with a present value field. */
+  readonly frameOverheadBytes: number;
+}
+
 /**
  * The context of one Remote call, reachable inside the receiving method as
  * `this.ctx.invocation`. The Gateway derives the receiver from a Context that
  * carries it, so no parameter is injected and nothing crosses the wire.
  */
 export interface RemoteInvocation {
+  /** Carrier frame budget; absent for carriers without an encoded-frame inbox limit. */
+  readonly uplinkWindow?: RemoteUplinkWindow | undefined;
   readonly request: {
     readonly namespace: string;
     readonly method: string;

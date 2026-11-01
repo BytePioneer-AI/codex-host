@@ -3,7 +3,7 @@
 `workspace-files/` and `terminal/` are the upstream
 `@deepseek-ai/dsh-api-workspace-files` and
 `@deepseek-ai/dsh-api-terminal-controller` test suites from
-`deepseek-harness` 0.2.1-alpha.1, with these import adaptations:
+`deepseek-harness`: workspace files retain the 0.2.1-alpha.1 baseline; terminal source and tests use official commit `ce7073d51254c26cd63b22a60835b8f948deb447`. Import adaptations:
 
 - Source imports name the vendored packages (`@deepseek-ai/dsh-api-workspace-files`,
   `@deepseek-ai/dsh-api-terminal-controller`, and their subpaths) instead of the
@@ -15,6 +15,8 @@
 - Client terminal specs run under jsdom and alias the Gateway client entry to
   its TypeScript source, because the built browser bundle registers into
   `window.__ModuleLoader__`, which the unit-test environment does not install.
+
+The terminal suite covers duplex input ordering, acknowledgement windows, byte budgets, control takeover, disconnect-without-replay, final output drainage, shared discovery and process retention. `packages/web-server/test/transport-duplex.test.ts` checks the Web mux's bounded input, half-close and cancellation behavior; `dsh-terminal.test.ts` exercises the generated codecs and a real local PTY. `browser/right-sidebar-terminal.test.ts` exercises desktop input, a 3,000-character key burst, refresh recovery and mobile home-directory drafts through the real mux. `browser/terminal-mobile-input.test.ts` covers local Chinese/English editing, Enter modes, horizontal control-key scrolling and acknowledgement failures through a real PTY. Touch emulation is not real-device IME validation.
 
 The suites use the upstream standard-decorator source, so they run through the
 same Vitest pre-transform as the imported repository (`tests/vitest.config.js`).

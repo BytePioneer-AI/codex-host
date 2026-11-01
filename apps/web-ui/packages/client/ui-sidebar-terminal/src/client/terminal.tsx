@@ -1,8 +1,12 @@
 /** Sidebar terminal screen and connection recovery. */
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { Button, IconPlusOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
+import {
+  Button,
+  IconPlusOutlineRegular,
+  isMobileDevice,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import type {
   TerminalViewState,
   TerminalView,
@@ -15,6 +19,9 @@ import "@xterm/xterm/css/xterm.css";
 import css from "./terminal.module.css";
 import { TerminalTheme } from "./terminal-theme.ts";
 import { observeTerminalCursor } from "./terminal-cursor.ts";
+import { MobileTerminalComposer } from "./MobileTerminalComposer.tsx";
+import type { MobileTerminalDraft } from "./mobile-terminal-draft.ts";
+import { observeMobileTerminalViewport } from "./mobile-terminal-viewport.ts";
 
 /** Standard sidebar owner share plus terminal model and localized copy. */
 export type TerminalBodyProps = PropsRuntime<"sidebar.right.pane.tab"> &
@@ -31,6 +38,7 @@ export function TerminalBody({
   useTerminal,
   useTheme,
   view,
+  draft,
   t,
 }: TerminalBodyProps): ReactNode {
   const { tab } = useTabInfo();
@@ -149,6 +157,8 @@ export function TerminalBody({
           visible={tab.visible}
           label={t("title")}
           theme={theme}
+          draft={draft(tab.id)}
+          t={t}
         />
       )}
       {error !== undefined && (
@@ -167,15 +177,21 @@ function TerminalScreen({
   visible,
   label,
   theme,
+  draft,
+  t,
 }: {
   state: TerminalViewState;
   model: TerminalView;
   visible: boolean;
   label: string;
   theme: ThemeSnapshot;
+  draft: MobileTerminalDraft;
+  t: TerminalBodyProps["t"];
 }): ReactNode {
+  const [mobile] = useState(isMobileDevice);
   const element = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal>();
+  const submission = useRef<AbortController>();
   const fit = useRef<FitAddon>();
   const colors = useRef<TerminalTheme>();
   const lastRevision = useRef(0);
@@ -197,6 +213,17 @@ function TerminalScreen({
     const palette = new TerminalTheme(xterm);
     colors.current = palette;
     const cursor = observeTerminalCursor(xterm, node, () => palette.cursor);
+    const viewport =
+      mobile && node.parentElement ? observeMobileTerminalViewport(node.parentElement) : undefined;
+    if (mobile) {
+      xterm.attachCustomKeyEventHandler(() => false);
+      if (xterm.textarea) {
+        xterm.textarea.readOnly = true;
+        xterm.textarea.tabIndex = -1;
+        xterm.textarea.setAttribute("inputmode", "none");
+        xterm.textarea.setAttribute("aria-hidden", "true");
+      }
+    }
     xterm.textarea?.setAttribute("aria-label", label);
     terminal.current = xterm;
     fit.current = addon;
@@ -218,14 +245,16 @@ function TerminalScreen({
     observer.observe(node);
     return () => {
       observer.disconnect();
+      submission.current?.abort();
       input.dispose();
       cursor.dispose();
+      viewport?.();
       palette.dispose();
       xterm.dispose();
       terminal.current = undefined;
       fit.current = undefined;
     };
-  }, [model]);
+  }, [model, mobile]);
 
   useLayoutEffect(() => {
     const style = getComputedStyle(element.current!);
@@ -249,18 +278,87 @@ function TerminalScreen({
   useLayoutEffect(() => {
     const xterm = terminal.current!;
     xterm.options.disableStdin = !state.writable;
+    if (mobile && xterm.textarea) xterm.textarea.readOnly = true;
     if (visible && state.writable && element.current?.clientWidth && element.current.clientHeight) {
       fitScreen(xterm, fit.current!, state, model);
     } else if (state.info !== undefined && !state.writable)
       xterm.resize(state.info.cols, state.info.rows);
-  }, [visible, state.writable, state.info?.cols, state.info?.rows, model]);
+  }, [visible, state.writable, state.info?.cols, state.info?.rows, model, mobile]);
   useEffect(() => {
     terminal.current!.textarea?.setAttribute("aria-label", label);
   }, [label]);
   useEffect(() => {
-    if (visible && state.writable) terminal.current!.focus();
-  }, [visible, state.writable]);
-  return <div className={css.screen} ref={element} />;
+    if (!mobile && visible && state.writable) terminal.current!.focus();
+  }, [visible, state.writable, mobile]);
+  const send = async (text: string, key?: string): Promise<void> => {
+    const xterm = terminal.current;
+    if (!xterm || !current.current.visible || !model.state.getSnapshot().writable)
+      throw new Error("Terminal is not writable");
+    const controller = new AbortController();
+    submission.current = controller;
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    try {
+      if (text) {
+        xterm.paste(text);
+        await model.whenInputAcknowledged(controller.signal);
+      }
+      if (key) {
+        controller.signal.throwIfAborted();
+        if (
+          terminal.current !== xterm ||
+          !current.current.visible ||
+          !model.state.getSnapshot().writable
+        )
+          throw new Error("Terminal is not writable");
+        xterm.input(key, true);
+        await model.whenInputAcknowledged(controller.signal);
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (submission.current === controller) submission.current = undefined;
+    }
+  };
+  const control = (key: string): void => {
+    const xterm = terminal.current;
+    if (!xterm || !current.current.visible || !model.state.getSnapshot().writable) return;
+    if (key === "\u0003") submission.current?.abort();
+    const arrows: Readonly<Record<string, string | undefined>> = {
+      up: "A",
+      down: "B",
+      right: "C",
+      left: "D",
+    };
+    const arrow = arrows[key];
+    xterm.input(
+      arrow ? `\x1b${xterm.modes.applicationCursorKeysMode ? "O" : "["}${arrow}` : key,
+      true,
+    );
+  };
+  return (
+    <>
+      <div
+        className={css.screen}
+        ref={element}
+        data-terminal-mobile={mobile || undefined}
+        onPasteCapture={(event) => {
+          if (!mobile) return;
+          event.preventDefault();
+          event.stopPropagation();
+          draft.edit(draft.state.getSnapshot().text + event.clipboardData.getData("text/plain"));
+        }}
+      />
+      {mobile && (
+        <MobileTerminalComposer
+          draft={draft}
+          writable={visible && state.writable}
+          bracketedPaste={() => terminal.current?.modes.bracketedPasteMode ?? false}
+          send={send}
+          control={control}
+          t={t}
+        />
+      )}
+    </>
+  );
 }
 /* oxlint-enable typescript/no-non-null-assertion */
 

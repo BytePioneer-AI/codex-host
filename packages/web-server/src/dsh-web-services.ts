@@ -15,7 +15,7 @@ import type { StreamSink } from "./transport.ts";
 export interface DshWebServicesOptions {
   /** Absolute workspace root the DSH sandbox policy reports. */
   readonly workspaceRoot: string;
-  /** Local working directory recorded by the Host for one Thread identity. */
+  /** Terminal cwd for a known local Session: saved directory or Web user's home. */
   readonly threadWorkspace: (sessionId: string) => string | undefined;
   /** File access root for a local Thread or a workspace-bound draft. */
   readonly fileWorkspace?: (sessionId: string) => string | undefined;
@@ -26,7 +26,7 @@ export class DshWebServices {
 
   /**
    * Mount the DSH services used by the right Sidebar.
-   * @param options - workspace root and the local Thread directory seam.
+   * @param options - workspace root and the local Session directory seam.
    * @returns the forwarding facade.
    */
   static async open(options: DshWebServicesOptions): Promise<DshWebServices> {
@@ -103,7 +103,7 @@ export class DshWebServices {
     sink.onClose(() => lifetime.abort(new Error("Remote stream closed")));
     void (async () => {
       try {
-        const source = await this.backend.openStream(endpoint, args, lifetime.signal);
+        const source = await this.backend.openStream(endpoint, args, lifetime.signal, sink.input);
         for await (const value of source) {
           if (sink.closed || lifetime.signal.aborted) break;
           sink.push(value);
@@ -112,7 +112,7 @@ export class DshWebServices {
       } catch (error) {
         if (sink.closed || lifetime.signal.aborted) return;
         const failure = this.backend.failure(error);
-        sink.fail(failure.code, failure.message);
+        sink.fail(failure.code, failure.message, failure.details);
       }
     })();
     return true;

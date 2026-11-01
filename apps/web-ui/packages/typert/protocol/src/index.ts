@@ -37,6 +37,7 @@ export type {
   RemoteResult,
   RemoteStream,
   RemoteStreamHandle,
+  RemoteUplinkWindow,
   TypertClientEventListener,
   TypertClientRemote,
   TypertClientContextAdapter,

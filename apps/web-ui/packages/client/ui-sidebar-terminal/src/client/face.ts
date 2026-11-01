@@ -6,6 +6,7 @@ import type {
 } from "@deepseek-ai/dsh-api-terminal-controller/client";
 import type { HostObservable } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ThemeSnapshot } from "@deepseek-ai/dsh-client-ui-theme/client";
+import type { MobileTerminalDraft } from "./mobile-terminal-draft.ts";
 
 /** The terminal's React-free model is resolved by sidebar occurrence. */
 export interface TerminalInjected {
@@ -16,6 +17,8 @@ export interface TerminalInjected {
 
 /** The terminal screen follows the resolved application theme through a framework hook. */
 export interface TerminalBodyInjected extends TerminalInjected {
+  /** @param key - sidebar occurrence. @returns its in-memory mobile editor draft. */
+  readonly draft: (key: string) => MobileTerminalDraft;
   readonly hooks: { readonly theme: HostObservable<ThemeSnapshot> };
 }
 

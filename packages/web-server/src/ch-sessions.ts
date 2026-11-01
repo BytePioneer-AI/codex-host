@@ -1,6 +1,7 @@
 import { draftPermissionMode, type DraftConfiguration } from "./draft-configuration.ts";
 /** CH-backed Web facade: canonical Threads are owned/persisted by CH, Web holds only rendering buffers. */
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import {
   encodeHarnessPluginRoute,
   harnessPluginRouteSchema,
@@ -677,7 +678,7 @@ export class ChSessions {
    * Working directory of one Host-confirmed local Thread.
    *
    * Drafts, official Codex Threads, and remote Threads have no local directory
-   * here: the right Sidebar reports them unavailable rather than inventing one.
+   * here: file access reports them unavailable rather than inventing one.
    * @param sessionId - Session identity the browser addressed.
    * @returns the Host-recorded directory, or undefined when this Thread has none.
    */
@@ -685,6 +686,19 @@ export class ChSessions {
     const id = this.id(sessionId);
     if (this.drafts.has(id)) return undefined;
     return this.rows.get(id)?.cwd;
+  }
+
+  /**
+   * Terminal cwd for a known local Session, including an unsubmitted draft.
+   * Missing cwd uses the Web service user's home without assigning a workspace
+   * or creating a Thread. Unknown identities do not acquire an execution scope.
+   * @param sessionId - Session identity the browser addressed.
+   * @returns the saved cwd or home directory, or undefined for an unknown Session.
+   */
+  terminalWorkspaceRoot(sessionId: string): string | undefined {
+    const id = this.id(sessionId);
+    const session = this.drafts.get(id) ?? this.rows.get(id);
+    return session === undefined ? undefined : session.cwd || homedir();
   }
 
   /** Workspace files are also available before a draft creates its native Thread. */

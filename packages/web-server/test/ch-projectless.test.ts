@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { ChSessions } from "../src/ch-sessions.ts";
@@ -25,7 +25,7 @@ function setup(t: TestContext) {
     assert.ok(result.ok, result.ok ? undefined : result.error.message);
     return result.value as T;
   };
-  return { root, host, workspaces, selected, rpc, call };
+  return { root, host, workspaces, selected, sessions, rpc, call };
 }
 
 it("keeps an unselected draft directory-free, commits through the owner, and never registers its cwd", async (t) => {
@@ -77,6 +77,44 @@ it("keeps an unselected draft directory-free, commits through the owner, and nev
     .filter((row) => row.workspaceKind === "projectless")
     .map((row) => row.cwd);
   assert.equal(new Set(paths).size, 2);
+});
+
+it("defaults only known local Session terminals to home without assigning a workspace", async (t) => {
+  const { root, host, sessions, selected, workspaces, call } = setup(t);
+  const noDirectory = host.add("no-directory", root, "No directory", false);
+  noDirectory.cwd = "";
+  const official = host.add("official", root);
+  official.modelProvider = "openai";
+  await call("session/list");
+  assert.equal(sessions.terminalWorkspaceRoot("selected"), root);
+  assert.equal(sessions.terminalWorkspaceRoot("no-directory"), homedir());
+  assert.equal(sessions.terminalWorkspaceRoot("official"), undefined);
+  assert.equal(sessions.terminalWorkspaceRoot("unknown"), undefined);
+
+  const draft = await call<{ sessionId: string }>("session/create");
+  assert.equal(sessions.terminalWorkspaceRoot(draft.sessionId), homedir());
+  assert.equal(sessions.fileWorkspaceRoot(draft.sessionId), undefined);
+  assert.equal(workspaces.ownerOf(draft.sessionId), undefined);
+  assert.equal(
+    host.requests.some(({ method }) => method === "thread/start"),
+    false,
+  );
+  const selectedDraft = await call<{ sessionId: string }>("session/create", {
+    workspaceId: selected.workspaceId,
+  });
+  assert.equal(sessions.terminalWorkspaceRoot(selectedDraft.sessionId), root);
+  sessions.discardUnsubmittedDraft(selectedDraft.sessionId);
+  assert.equal(sessions.terminalWorkspaceRoot(selectedDraft.sessionId), undefined);
+
+  await call("session/prompt", {
+    sessionId: draft.sessionId,
+    content: [{ type: "text", text: "Create a task" }],
+  });
+  const canonical = [...host.threads.values()].find((row) => row.workspaceKind === "projectless");
+  assert.ok(canonical);
+  assert.equal(sessions.terminalWorkspaceRoot(draft.sessionId), canonical.cwd);
+  assert.equal(sessions.terminalWorkspaceRoot(canonical.id), canonical.cwd);
+  assert.notEqual(canonical.cwd, homedir());
 });
 
 it("uses an explicitly selected workspace and rejects stale choices instead of selecting none", async (t) => {

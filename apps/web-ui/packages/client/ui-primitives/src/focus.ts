@@ -12,15 +12,22 @@ const navigationKeys = new Set([
 ]);
 
 /**
+ * Identify phones and tablets, including desktop-mode iPads, using the shared device policy.
+ * @returns true for recognized mobile devices; false for other or unrecognized devices.
+ */
+export function isMobileDevice(): boolean {
+  const platformType = bowser.parse(navigator.userAgent).platform.type;
+  const desktopIPad = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  return platformType === "mobile" || platformType === "tablet" || desktopIPad;
+}
+
+/**
  * Decide whether the current browser device permits automatic text-input focus.
- * Bowser identifies phones and tablets from the UA; MacIntel with multiple touch points identifies desktop-mode iPads.
  * This policy does not restrict focus requested by a user gesture or keyboard navigation.
  * @returns false for identified phones and tablets; true for other devices, including unrecognized UAs.
  */
 export function shouldAutoFocusTextInput(): boolean {
-  const platformType = bowser.parse(navigator.userAgent).platform.type;
-  const desktopIPad = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
-  return platformType !== "mobile" && platformType !== "tablet" && !desktopIPad;
+  return !isMobileDevice();
 }
 
 /**

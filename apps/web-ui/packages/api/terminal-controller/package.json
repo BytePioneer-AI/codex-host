@@ -1,9 +1,12 @@
 {
   "name": "@deepseek-ai/dsh-api-terminal-controller",
-  "version": "0.2.1-alpha.1",
+  "version": "0.2.2-alpha.2",
   "private": true,
   "type": "module",
   "license": "MIT",
+  "scripts": {
+    "import:protocol": "node scripts/import-protocol.mjs"
+  },
   "exports": {
     ".": {
       "types": "./src/index.ts",
@@ -34,7 +37,8 @@
   "dsh": {
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-api-gateway"
+        "@deepseek-ai/dsh-api-gateway",
+        "@deepseek-ai/dsh-client-connection"
       ],
       "external": [
         "@deepseek-ai/dsh-api-gateway/client"

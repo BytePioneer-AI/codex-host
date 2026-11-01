@@ -21,6 +21,7 @@ import { TerminalTitle } from "./TerminalTitle.tsx";
 // import { TerminalCleanup, type TerminalCleanupInjected } from './TerminalCleanup.tsx'
 import type { TerminalBodyInjected, TerminalInjected } from "./face.ts";
 import { en, zh } from "./locales.ts";
+import { MobileTerminalDraft } from "./mobile-terminal-draft.ts";
 
 /** Services needed by the terminal's two sidebar seats. */
 export const inject = [
@@ -76,6 +77,16 @@ export function apply(ctx: Context): void {
       terminalId(sessionId, key),
       params !== undefined && "shellPath" in params ? params.shellPath : undefined,
     );
+  };
+  const drafts = new WeakMap<ReturnType<typeof view>, MobileTerminalDraft>();
+  const draft = (sessionId: SessionId, key: string): MobileTerminalDraft => {
+    const model = view(sessionId, key);
+    let value = drafts.get(model);
+    if (!value) {
+      value = new MobileTerminalDraft();
+      drafts.set(model, value);
+    }
+    return value;
   };
   const namespace = "sidebarTerminal";
   const id = "@deepseek-ai/dsh-client-ui-sidebar-terminal";
@@ -175,6 +186,7 @@ export function apply(ctx: Context): void {
             locale: namespace,
             inject: (sessionId): TerminalBodyInjected => ({
               ...inject(sessionId),
+              draft: (key) => draft(sessionId, key),
               hooks: { theme },
             }),
           },

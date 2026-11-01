@@ -1,17 +1,24 @@
 /** React-free browser terminal state and reconnecting Remote-stream ownership. */
 import { preferredShell, rememberShell } from "./shell-preference.ts";
-import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
+import type { TerminalInventory } from "./inventory.ts";
 import { createSnapshotStore, type SnapshotStore } from "@deepseek-ai/dsh-client-store";
+import { Deque } from "@deepseek-ai/dsh-deque";
 import {
   RemoteStreamCarrierError,
   type ClientRemote,
   type RemoteStream,
 } from "@deepseek-ai/dsh-api-gateway/client";
-import { RemoteError, remoteErrorOf, type RemoteResult } from "@deepseek-ai/dsh-typert-protocol";
+import {
+  RemoteError,
+  remoteErrorOf,
+  type RemoteResult,
+  type RemoteStreamHandle,
+  type RemoteUplinkWindow,
+} from "@deepseek-ai/dsh-typert-protocol";
 import type {} from "@deepseek-ai/dsh-api-terminal-controller/remote";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {
-  TerminalAttachmentId,
+  TerminalInput,
   TerminalEnvironment,
   TerminalFrame,
   WebTerminalId,
@@ -65,6 +72,31 @@ export interface TerminalViewState {
   readonly issue?: TerminalViewIssue | undefined;
 }
 
+interface InputCost {
+  readonly inputBytes: number;
+  readonly frameBytes: number;
+}
+
+interface InputReceipt {
+  readonly sequence: number;
+  readonly resolve: () => void;
+  readonly reject: () => void;
+}
+
+interface TerminalInputAttachment {
+  readonly receipts: Set<InputReceipt>;
+  readonly handle: RemoteStreamHandle<TerminalFrame, TerminalInput>;
+  readonly signal: AbortSignal;
+  sequence: number;
+  acknowledged: number;
+  readonly pending: Map<number, InputCost>;
+  readonly queued: Deque<InputCost & { readonly command: TerminalInput }>;
+  window: RemoteUplinkWindow | undefined;
+  bytes: number;
+  bufferedBytes: number;
+  inFlightBytes: number;
+}
+
 /** A view survives DOM unmount; its process only ends on explicit close. */
 export class TerminalView {
   /** Observable controls, process metadata and the next screen update awaiting acknowledgement. */
@@ -75,20 +107,19 @@ export class TerminalView {
   private readonly lifetime = new AbortController();
   private stream: RemoteStream<TerminalFrame> | undefined;
   private mounted = false;
-  private attachmentId: TerminalAttachmentId | undefined;
+  private attachment: TerminalInputAttachment | undefined;
   private pendingRender: { revision: number; resolve: () => void } | undefined;
   private revision = 0;
   private creation: Promise<void> | undefined;
   private loading: Promise<void> | undefined;
   private closing: Promise<void> | undefined;
-  private writes: Promise<void> = Promise.resolve();
-  private queuedInput = 0;
   private readonly detaching = new Set<Promise<void>>();
 
   /**
    * @param sessionId - Session owning the terminal.
    * @param remote - typed terminal Remote operations.
    * @param gateway - reconnecting stream factory.
+   * @param inventory - Session-owned terminal list shared by all views.
    * @param id - Host terminal identity, reused when recovering an item from its Session list.
    * @param createWhenMissing - allow allocation only for a new tab, never a listed terminal.
    * @param shellPath - explicit shell chosen at the guide; omission uses the remembered available shell.
@@ -98,8 +129,9 @@ export class TerminalView {
     private readonly sessionId: SessionId,
     private readonly remote: TerminalRemote,
     private readonly gateway: Pick<ClientRemote, "$stream">,
+    private readonly inventory: TerminalInventory,
     readonly id: WebTerminalId,
-    private readonly createWhenMissing = true,
+    private createWhenMissing = true,
     private readonly shellPath?: string,
     private readonly retain?: (signal: AbortSignal) => Promise<void>,
   ) {}
@@ -110,8 +142,10 @@ export class TerminalView {
    */
   mount(): () => void {
     this.mounted = true;
-    if (this.state.getSnapshot().info === undefined) void this.refresh();
-    else this.connect();
+    const state = this.state.getSnapshot();
+    if (state.phase === "idle") void this.refresh();
+    else if (state.info !== undefined && state.phase !== "failed" && state.phase !== "closed")
+      this.connect();
     return () => {
       this.mounted = false;
       this.detach();
@@ -119,23 +153,24 @@ export class TerminalView {
   }
 
   /**
-   * Start or recover this tab, deduplicating mounts and retries during allocation.
-   * Only a new tab may allocate a shell; listed terminals cannot be silently replaced.
+   * Start or explicitly retry this tab, sharing Session discovery with other views.
+   * New identities allocate directly; confirmed or restored terminals cannot be replaced.
    * @returns after environment lookup and creation or recovery settle.
    */
   refresh(): Promise<void> {
     if (this.creation !== undefined) return this.creation;
     if (this.loading !== undefined) return this.loading;
     if (this.closing !== undefined || this.lifetime.signal.aborted) return Promise.resolve();
+    const retry = this.state.getSnapshot().phase !== "idle";
     this.patch({ phase: "loading", error: undefined, issue: undefined });
     this.loading = (async () => {
       const [environment, available] = await Promise.all([
         this.remote.environment(this.sessionId, this.lifetime.signal),
-        this.remote.list(this.sessionId),
+        this.createWhenMissing ? undefined : this.inventory.read(retry),
       ]);
       if (this.stopped()) return;
       this.patch({ environment: valueOf(environment) });
-      const info = valueOf(available).find((item) => item.id === this.id);
+      const info = available?.get(this.id);
       if (info !== undefined) this.adopt(info);
       else if (this.createWhenMissing) {
         let path = this.shellPath;
@@ -178,6 +213,7 @@ export class TerminalView {
         ),
       );
       if (!this.lifetime.signal.aborted) {
+        this.inventory.update(info);
         this.adopt(info);
       }
     })()
@@ -191,6 +227,7 @@ export class TerminalView {
   }
 
   private adopt(info: WebTerminalInfo): void {
+    this.createWhenMissing = false;
     this.patch({ info, title: info.title });
     if (this.retain === undefined) {
       if (this.mounted && this.closing === undefined) this.connect();
@@ -221,9 +258,30 @@ export class TerminalView {
       open: async function* (this: TerminalView, signal: AbortSignal) {
         await this.retain?.(signal);
         signal.throwIfAborted();
-        const attachmentId = randomUUID() as TerminalAttachmentId;
-        this.attachmentId = attachmentId;
-        yield* this.remote.follow(this.sessionId, info.id, attachmentId, signal);
+        const handle = this.remote.attach(this.sessionId, info.id, signal);
+        const attachment: TerminalInputAttachment = {
+          handle,
+          signal,
+          sequence: 0,
+          acknowledged: 0,
+          pending: new Map(),
+          receipts: new Set(),
+          queued: new Deque(),
+          window: undefined,
+          bytes: 0,
+          bufferedBytes: 0,
+          inFlightBytes: 0,
+        };
+        this.attachment = attachment;
+        try {
+          for await (const frame of handle) {
+            if (frame.type === "snapshot") attachment.window = frame.inputWindow;
+            yield frame;
+          }
+        } finally {
+          for (const receipt of attachment.receipts) receipt.reject();
+          if (this.attachment === attachment) this.attachment = undefined;
+        }
       }.bind(this),
       ended: () => new TerminalViewError("attachmentEnded"),
       carrierFailed: () => {
@@ -252,54 +310,132 @@ export class TerminalView {
   }
 
   /**
-   * Serialize raw input so concurrent RPC requests cannot reorder keystrokes.
-   * @param data - input from the terminal emulator.
+   * Queue input within the raw UTF-8 and encoded-frame budgets, waiting for carrier capacity.
+   * @param data - input from the terminal emulator; never replayed after disconnection.
    */
   write(data: string): void {
     const state = this.state.getSnapshot();
-    const attachmentId = this.attachmentId;
-    if (!state.writable || state.info === undefined || attachmentId === undefined) return;
+    const attachment = this.attachment;
+    if (
+      !state.writable ||
+      state.info === undefined ||
+      attachment === undefined ||
+      attachment.signal.aborted
+    )
+      return;
+    if (data.length === 0) return;
     const bytes = new TextEncoder().encode(data).byteLength;
-    if (this.queuedInput + bytes > (state.environment?.maxInputBytes ?? 0)) {
-      this.fail(new TerminalViewError("inputFull"));
+    if (attachment.bytes + bytes > (state.environment?.maxInputBytes ?? 0)) {
+      this.failInput(new TerminalViewError("inputFull"));
       return;
     }
-    this.queuedInput += bytes;
-    const id = state.info.id;
-    this.writes = this.writes
-      .then(async () => {
-        if (this.attachmentId !== attachmentId || !this.state.getSnapshot().writable) return;
-        valueOf(await this.remote.write(this.sessionId, id, attachmentId, data));
-      })
-      .catch((error: unknown) => {
-        if (this.attachmentId === attachmentId) this.fail(error);
-      })
-      .finally(() => {
-        this.queuedInput -= bytes;
-      });
+    this.send(attachment, { type: "write", sequence: attachment.sequence + 1, data }, bytes);
   }
 
   /**
-   * Resize only from the currently writable view.
+   * Wait until the provider accepts all input queued before this call. This is
+   * not command completion. A refusal, detach or timeout leaves delivery unknown;
+   * callers must retain their draft and must not automatically replay it.
+   * @param signal - caller lifetime or deadline for the receipt.
+   * @returns after the captured sequence is acknowledged by the current attachment.
+   */
+  async whenInputAcknowledged(signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    const attachment = this.attachment;
+    if (!this.state.getSnapshot().writable || !attachment || attachment.signal.aborted)
+      throw new TerminalViewError("attachmentEnded");
+    if (attachment.acknowledged >= attachment.sequence) return;
+    await new Promise<void>((resolve, reject) => {
+      const settle = (accepted: boolean): void => {
+        attachment.receipts.delete(receipt);
+        signal.removeEventListener("abort", receipt.reject);
+        attachment.signal.removeEventListener("abort", receipt.reject);
+        if (accepted) resolve();
+        else reject(new TerminalViewError("attachmentEnded"));
+      };
+      const receipt: InputReceipt = {
+        sequence: attachment.sequence,
+        resolve: () => settle(true),
+        reject: () => settle(false),
+      };
+      attachment.receipts.add(receipt);
+      signal.addEventListener("abort", receipt.reject, { once: true });
+      attachment.signal.addEventListener("abort", receipt.reject, { once: true });
+    });
+  }
+
+  /**
+   * Resize only from the currently writable view, ordered with keyboard input.
    * @param cols - measured column count.
    * @param rows - measured row count.
    */
   resize(cols: number, rows: number): void {
     const state = this.state.getSnapshot();
-    const attachmentId = this.attachmentId;
-    if (!state.writable || state.info === undefined || attachmentId === undefined) return;
+    const attachment = this.attachment;
+    if (
+      !state.writable ||
+      state.info === undefined ||
+      attachment === undefined ||
+      attachment.signal.aborted
+    )
+      return;
     if (state.info.cols === cols && state.info.rows === rows) return;
-    const id = state.info.id;
     cols = Math.min(cols, state.environment?.maxCols ?? cols);
     rows = Math.min(rows, state.environment?.maxRows ?? rows);
-    this.writes = this.writes
-      .then(async () => {
-        if (this.attachmentId !== attachmentId || !this.state.getSnapshot().writable) return;
-        valueOf(await this.remote.resize(this.sessionId, id, attachmentId, cols, rows));
-      })
-      .catch((error: unknown) => {
-        if (this.attachmentId === attachmentId) this.fail(error);
+    this.send(attachment, { type: "resize", sequence: attachment.sequence + 1, cols, rows }, 0);
+  }
+
+  private send(attachment: TerminalInputAttachment, command: TerminalInput, bytes: number): void {
+    const frameBytes =
+      new TextEncoder().encode(JSON.stringify(command)).byteLength +
+      (attachment.window?.frameOverheadBytes ?? 0);
+    if (
+      attachment.bufferedBytes + frameBytes >
+        (this.state.getSnapshot().environment?.maxBufferedBytes ?? 0) ||
+      (attachment.window !== undefined && frameBytes > attachment.window.maxBytes)
+    ) {
+      this.failInput(new TerminalViewError("inputFull"));
+      return;
+    }
+    attachment.queued.pushBack({ command, inputBytes: bytes, frameBytes });
+    attachment.sequence = command.sequence;
+    attachment.bytes += bytes;
+    attachment.bufferedBytes += frameBytes;
+    this.flushInput(attachment);
+  }
+
+  private flushInput(attachment: TerminalInputAttachment): void {
+    while (
+      this.attachment === attachment &&
+      !attachment.signal.aborted &&
+      this.state.getSnapshot().writable
+    ) {
+      const next = attachment.queued.popFront();
+      if (next === undefined) return;
+      if (
+        attachment.window !== undefined &&
+        attachment.inFlightBytes + next.frameBytes > attachment.window.maxBytes
+      ) {
+        attachment.queued.pushFront(next);
+        return;
+      }
+      try {
+        attachment.handle.send(next.command);
+      } catch (error) {
+        this.failInput(error);
+        return;
+      }
+      attachment.pending.set(next.command.sequence, {
+        inputBytes: next.inputBytes,
+        frameBytes: next.frameBytes,
       });
+      attachment.inFlightBytes += next.frameBytes;
+    }
+  }
+
+  private failInput(error: unknown): void {
+    this.fail(error);
+    this.detach();
   }
 
   /**
@@ -311,7 +447,9 @@ export class TerminalView {
     if (title.trim() === this.state.getSnapshot().title || this.lifetime.signal.aborted) return;
     try {
       valueOf(await this.remote.rename(this.sessionId, this.id, title));
+      if (this.stopped()) return;
       const current = this.state.getSnapshot().info;
+      if (current !== undefined) this.inventory.update({ ...current, title: title.trim() });
       this.patch({
         ...(current === undefined ? {} : { info: { ...current, title: title.trim() } }),
         title: title.trim(),
@@ -333,6 +471,7 @@ export class TerminalView {
       // Even a refused or lost creation response may leave an allocation to close.
       await this.creation;
       valueOf(await this.remote.close(this.sessionId, this.id));
+      this.inventory.remove(this.id);
       this.detach();
       this.patch({ phase: "closed", writable: false });
     })().catch((error: unknown) => {
@@ -357,7 +496,8 @@ export class TerminalView {
   private detach(): void {
     const previous = this.stream;
     this.stream = undefined;
-    this.attachmentId = undefined;
+    for (const receipt of this.attachment?.receipts ?? []) receipt.reject();
+    this.attachment = undefined;
     this.pendingRender?.resolve();
     this.pendingRender = undefined;
     if (previous !== undefined) {
@@ -390,13 +530,44 @@ export class TerminalView {
           sequence = frame.sequence;
         } else if (frame.type === "snapshot")
           throw new TerminalViewError("invalidOutput", "Unexpected terminal screen snapshot");
+        if (frame.type === "ack") {
+          const attachment = this.attachment;
+          /* v8 ignore next -- the physical opener retains its handle until this consumer advances. */
+          if (attachment === undefined)
+            throw new TerminalViewError(
+              "invalidOutput",
+              "Terminal acknowledgement has no attachment",
+            );
+          const pending = attachment.pending.get(frame.sequence);
+          if (frame.sequence !== attachment.acknowledged + 1 || pending === undefined)
+            throw new TerminalViewError(
+              "invalidOutput",
+              "Terminal input acknowledgement is out of order",
+            );
+          attachment.acknowledged = frame.sequence;
+          attachment.bytes -= pending.inputBytes;
+          attachment.bufferedBytes -= pending.frameBytes;
+          attachment.inFlightBytes -= pending.frameBytes;
+          attachment.pending.delete(frame.sequence);
+          if (frame.refusal !== undefined) {
+            this.patch({ writable: false });
+            for (const receipt of attachment.receipts) receipt.reject();
+          } else {
+            for (const receipt of attachment.receipts)
+              if (receipt.sequence <= attachment.acknowledged) receipt.resolve();
+          }
+          this.flushInput(attachment);
+          continue;
+        }
         if (frame.type !== "output") {
+          if (frame.info.state !== "running" || !frame.writable)
+            for (const receipt of this.attachment?.receipts ?? []) receipt.reject();
+          this.inventory.update(frame.info);
           this.patch({
             info: frame.info,
             title: frame.info.title,
             phase: "connected",
-            writable:
-              frame.info.state === "running" && frame.info.controllerId === this.attachmentId,
+            writable: frame.info.state === "running" && frame.writable,
           });
         }
         if (frame.type !== "state") {
@@ -431,11 +602,8 @@ export class TerminalView {
   }
 
   private fail(error: unknown): void {
+    for (const receipt of this.attachment?.receipts ?? []) receipt.reject();
     const failure = remoteErrorOf(error);
-    if (failure?.code === "terminal/control-unavailable") {
-      this.patch({ writable: false, error: undefined, issue: undefined });
-      return;
-    }
     const issue =
       failure?.code === "terminal/view"
         ? failure.details.issue
@@ -444,6 +612,7 @@ export class TerminalView {
           : failure?.code === "terminal/unavailable"
             ? "missingTerminal"
             : undefined;
+    if (!this.stopped() && issue === "missingTerminal") this.inventory.remove(this.id);
     this.patch({
       phase: error instanceof RemoteStreamCarrierError ? "disconnected" : "failed",
       writable: false,

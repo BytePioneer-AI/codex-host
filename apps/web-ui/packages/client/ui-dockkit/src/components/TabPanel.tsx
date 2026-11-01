@@ -441,6 +441,7 @@ export function TabStrip({ state, pane, callbacks }: TabPanelProps): ReactNode {
           delayMs={500}
         >
           <span
+            data-dockkit-split-control
             tabIndex={block === undefined ? undefined : 0}
             aria-label={
               block === undefined ? undefined : splitBlockedTitle(callbacks.labels, block)

@@ -194,7 +194,7 @@ const sessions = new ChSessions(
 // panel without taking Web down.
 const dsh = await DshWebServices.open({
   workspaceRoot: resolve(values.workspace as string),
-  threadWorkspace: (id) => sessions.localWorkspaceRoot(id),
+  threadWorkspace: (id) => sessions.terminalWorkspaceRoot(id),
   fileWorkspace: (id) => sessions.fileWorkspaceRoot(id),
 }).catch((error: unknown) => {
   console.warn(

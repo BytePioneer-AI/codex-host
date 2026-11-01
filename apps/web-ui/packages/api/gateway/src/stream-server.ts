@@ -1,9 +1,15 @@
 /** Host WebSocket owner for multiplexed Typert Remote streams. */
 
 import type { IncomingMessage } from "node:http";
+import type {} from "./remote-error-codes.ts";
 import type { Duplex } from "node:stream";
 import { Deque } from "@deepseek-ai/dsh-deque";
-import { RemoteError, remoteErrorOf, type PeerScope } from "@deepseek-ai/dsh-typert-protocol";
+import {
+  RemoteError,
+  remoteErrorOf,
+  type PeerScope,
+  type RemoteUplinkWindow,
+} from "@deepseek-ai/dsh-typert-protocol";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import {
   parseRemoteStreamClientMessage,
@@ -24,6 +30,7 @@ export type RemoteStreamOpener = (
   uplink: AsyncIterable<unknown>,
   peer: PeerScope,
   control: AbortController,
+  window: RemoteUplinkWindow,
 ) => Promise<AsyncIterable<unknown>>;
 
 /** The opener one socket uses: its Peer is fixed at upgrade time. */
@@ -32,6 +39,7 @@ type BoundStreamOpener = (
   payload: unknown,
   uplink: AsyncIterable<unknown>,
   control: AbortController,
+  window: RemoteUplinkWindow,
 ) => Promise<AsyncIterable<unknown>>;
 
 /** Convert an invocation or carrier failure to a stable wire value. */
@@ -77,8 +85,8 @@ export class RemoteStreamMuxServer {
         this.missedHeartbeats.set(websocket, 0);
       });
       this.startHeartbeat();
-      const bound: BoundStreamOpener = (endpoint, payload, uplink, control) =>
-        this.open(endpoint, payload, uplink, peer, control);
+      const bound: BoundStreamOpener = (endpoint, payload, uplink, control, window) =>
+        this.open(endpoint, payload, uplink, peer, control, window);
       const connection = new RemoteStreamMuxConnection(
         websocket,
         bound,
@@ -249,7 +257,12 @@ class RemoteStreamMuxConnection {
   ): Promise<void> {
     let outcome: { readonly failed: false } | { readonly failed: true; readonly error: unknown };
     try {
-      const source = await this.open(endpoint, payload, active.inbox, active.abort);
+      const source = await this.open(endpoint, payload, active.inbox, active.abort, {
+        maxBytes: this.streamInboxBytes,
+        frameOverheadBytes:
+          Buffer.byteLength(JSON.stringify({ type: "item", streamId, value: null }), "utf8") -
+          "null".length,
+      });
       for await (const value of source) {
         await this.send({ type: "item", streamId, value });
       }
@@ -330,7 +343,7 @@ const UPLINK_DONE: IteratorReturnResult<undefined> = { value: undefined, done: t
  * capped: overflow, and an item after the Client's `end`, fail the queue and
  * report a Remote failure that the connection uses to fail the logical stream.
  */
-class UplinkInbox implements AsyncIterable<unknown>, AsyncIterator<unknown> {
+export class UplinkInbox implements AsyncIterable<unknown>, AsyncIterator<unknown> {
   private readonly queue = new Deque<UplinkEntry>();
   private bytes = 0;
   private ended = false;

@@ -6,6 +6,11 @@
 
 import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
+import {
+  createDshStreamUplink,
+  type DshStreamInput,
+  type DshStreamUplink,
+} from "@codexhost/dsh-web-backend/stream-input";
 
 export { SessionRuntimeError as RpcError } from "@codexhost/session-runtime";
 import { SessionRuntimeError as RpcError } from "@codexhost/session-runtime";
@@ -102,9 +107,11 @@ export class RpcRegistry {
 export interface StreamSink {
   readonly id: string;
   readonly closed: boolean;
+  /** Physical mux input; absent on output-only in-process test/application sinks. */
+  readonly input?: DshStreamInput;
   push(value: unknown): void;
   end(): void;
-  fail(code: string, message: string): void;
+  fail(code: string, message: string, details?: object): void;
   onClose(listener: () => void): void;
 }
 
@@ -136,26 +143,45 @@ export class StreamRegistry {
 
   /** Attach the mux protocol to one WebSocket. */
   attach(socket: WebSocket): void {
-    const streams = new Map<string, { sink: StreamSink; close: () => void }>();
+    const inputBytes = 256 * 1024;
+    const streams = new Map<
+      string,
+      { sink: StreamSink; inbox: DshStreamUplink; close: () => void }
+    >();
     const send = (message: unknown): void => {
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
     };
     socket.on("message", (data) => {
-      let message: { type?: string; streamId?: string; endpoint?: string; payload?: unknown };
+      let message: {
+        type?: string;
+        streamId?: string;
+        endpoint?: string;
+        payload?: unknown;
+        value?: unknown;
+      };
       try {
         message = JSON.parse(String(data)) as typeof message;
       } catch {
         return;
       }
+      if (typeof message !== "object" || message === null) return;
       const streamId = String(message.streamId ?? "");
       if (message.type === "open") {
+        if (streams.has(streamId)) {
+          streams.get(streamId)?.sink.fail("gateway/protocol", "Duplicate stream identity");
+          return;
+        }
         const endpoint = String(message.endpoint ?? "");
+        const inbox = createDshStreamUplink(inputBytes, endpoint, (failure) => {
+          sink.fail(failure.code, failure.message, failure.details);
+        });
         const listeners: Array<() => void> = [];
         let closed = false;
         const close = (): void => {
           if (closed) return;
           closed = true;
           streams.delete(streamId);
+          void inbox.return();
           for (const listener of listeners.splice(0)) {
             try {
               listener();
@@ -166,6 +192,15 @@ export class StreamRegistry {
         };
         const sink: StreamSink = {
           id: streamId,
+          input: {
+            items: inbox,
+            window: {
+              maxBytes: inputBytes,
+              frameOverheadBytes:
+                Buffer.byteLength(JSON.stringify({ type: "item", streamId, value: null }), "utf8") -
+                "null".length,
+            },
+          },
           get closed() {
             return closed;
           },
@@ -177,9 +212,9 @@ export class StreamRegistry {
             send({ type: "end", streamId });
             close();
           },
-          fail(code, errorMessage) {
+          fail(code, errorMessage, details = {}) {
             if (closed) return;
-            send({ type: "error", streamId, error: { code, message: errorMessage, details: {} } });
+            send({ type: "error", streamId, error: { code, message: errorMessage, details } });
             close();
           },
           onClose(listener) {
@@ -187,7 +222,7 @@ export class StreamRegistry {
             else listeners.push(listener);
           },
         };
-        streams.set(streamId, { sink, close });
+        streams.set(streamId, { sink, inbox, close });
         const payload = message.payload as { args?: Record<string, unknown> } | undefined;
         const args = payload?.args ?? {};
         const handler = this.handlers.get(endpoint);
@@ -203,7 +238,12 @@ export class StreamRegistry {
         });
         return;
       }
-      if (message.type === "cancel" || message.type === "end") {
+      if (message.type === "item") {
+        streams.get(streamId)?.inbox.push(message.value, Buffer.byteLength(String(data), "utf8"));
+      } else if (message.type === "end") {
+        // Client end half-closes input; output can still drain and acknowledge it.
+        streams.get(streamId)?.inbox.end();
+      } else if (message.type === "cancel") {
         streams.get(streamId)?.close();
       }
     });

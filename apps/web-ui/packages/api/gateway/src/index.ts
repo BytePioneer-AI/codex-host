@@ -100,6 +100,7 @@ interface PreparedInvocation {
 
 /** Carrier inputs `GatewayInvocation.uplink()` decodes on first use. */
 interface UplinkSource {
+  readonly window?: RemoteInvocation["uplinkWindow"];
   /** Carrier items; an immediately ended iterable when the carrier has none. */
   readonly source: AsyncIterable<unknown>;
   /** Descriptor codec, or the JSON-safety codec when the descriptor declares no uplink. */
@@ -210,8 +211,8 @@ export class TypertGatewayService extends Service implements TypertGateway {
 
   /** Carrier adapter shared by the WebSocket mux and local Host transports. */
   readonly wireStream: TypertGatewayWireStream = {
-    open: (endpoint, payload, uplink, peer, signal) =>
-      this.openWireStream(endpoint, payload, uplink, peer, signal, new AbortController()),
+    open: (endpoint, payload, uplink, peer, signal, window) =>
+      this.openWireStream(endpoint, payload, uplink, peer, signal, new AbortController(), window),
     failure: (error) => rpcError(error),
   };
 
@@ -244,8 +245,8 @@ export class TypertGatewayService extends Service implements TypertGateway {
     ctx.inject(["connection", "webServer"], (webCtx) => {
       const listen = (): void => {
         const mux = new RemoteStreamMuxServer(
-          (endpoint, payload, uplink, peer, control) =>
-            this.openWireStream(endpoint, payload, uplink, peer, control.signal, control),
+          (endpoint, payload, uplink, peer, control, window) =>
+            this.openWireStream(endpoint, payload, uplink, peer, control.signal, control, window),
           this.wireStream.failure,
           resolved.websocketHeartbeatIntervalMs,
           resolved.streamInboxBytes,
@@ -464,13 +465,17 @@ export class TypertGatewayService extends Service implements TypertGateway {
     peer: PeerScope | undefined,
     signal: AbortSignal,
     control: AbortController,
+    uplinkWindow?: RemoteInvocation["uplinkWindow"],
   ): Promise<AsyncIterable<unknown>> {
     if (endpoint === REMOTE_EVENT_STREAM_ENDPOINT) {
       // A Gateway-owned stream reads no uplink: releasing it now keeps its items out of the bounded inbox.
       releaseUplink(uplink);
       return this.openRemoteEvents(payload, signal);
     }
-    return this.openStream({ ...remoteRequest(endpoint, payload, signal, peer), uplink }, control);
+    return this.openStream(
+      { ...remoteRequest(endpoint, payload, signal, peer), uplink, uplinkWindow },
+      control,
+    );
   }
 
   /**
@@ -753,6 +758,7 @@ export class TypertGatewayService extends Service implements TypertGateway {
       signal,
       {
         source: request.uplink ?? EMPTY_ASYNC_ITERABLE,
+        window: request.uplinkWindow,
         codec: descriptor.uplink?.codec ?? SRC_JSON_CODEC,
         endpoint,
         abort: (reason) => {
@@ -1406,6 +1412,10 @@ class GatewayInvocation implements RemoteInvocation {
     readonly signal: AbortSignal,
     private readonly uplink_: UplinkSource,
   ) {}
+
+  get uplinkWindow(): RemoteInvocation["uplinkWindow"] {
+    return this.uplink_.window;
+  }
 
   uplink<In = unknown>(): AsyncIterable<In> {
     if (this.taken) {

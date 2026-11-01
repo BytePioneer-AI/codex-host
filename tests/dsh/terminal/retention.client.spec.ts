@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 /** A window hold accepts each physical acknowledgement and releases pending consumers. */
 import { afterEach, expect, it, vi } from "vitest";
 import { createSnapshotStore } from "@deepseek-ai/dsh-client-store";

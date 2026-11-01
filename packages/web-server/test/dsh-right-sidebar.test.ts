@@ -138,7 +138,9 @@ it("serves the right Sidebar file tree from a local Thread's Host directory", as
   });
   assert.equal(outside.envelope?.result.error?.code, "workspace-file/outside-workspace");
   const terminal = await call("terminal/shells", { agentId: draftId });
-  assert.equal(terminal.envelope?.result.error?.code, "gateway/lookup-not-found");
+  assert.equal(terminal.envelope?.result.ok, true);
+  const terminalEnvironment = await call("terminal/environment", { agentId: draftId });
+  assert.equal(terminalEnvironment.envelope?.result.value?.cwd, workspace);
   const projectless = await call("session/create", {});
   assert.equal(projectless.envelope?.result.ok, true);
   for (const sessionId of [

@@ -226,6 +226,12 @@ for (const v of variants)
 
     it("preserves its Harness identity in live state, Turn and checkpoint refs", async () => {
       const { adapter, query } = setup();
+      vi.mocked(v.sdk.query).mockImplementation(
+        ({ prompt }) =>
+          (typeof prompt === "string" ? new Query() : query) as unknown as ReturnType<
+            typeof v.sdk.query
+          >,
+      );
       const opened = await adapter.open({ kind: "create", cwd: "/workspace" });
       if (!opened.ok) throw new Error(opened.error.message);
       const session = opened.value;

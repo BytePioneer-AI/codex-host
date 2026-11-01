@@ -20,13 +20,13 @@
 | A1 | Manifest | 必做 | P0 | 支持 | manifest.json | packages/host-runtime/test/installed-harness-plugins.test.ts（仓库根路径） | 两版独立身份 |
 | A2 | 工厂 | 必做 | P0 | 支持 | src/plugin.ts | test/qoder-variants.test.ts | 按变体选择 SDK |
 | A3 | 检查 | 必做 | P0 | 支持 | src/qoder-adapter.ts | test/qoder-model-inspection.test.ts、test/qoder-adapter.test.ts | 等待 Query 初始化，live 获取目录；按工作目录缓存成功结果 |
-| A4 | 创建 Session | 必做 | P0 | 支持 | src/qoder-adapter.ts | test/qoder-adapter.test.ts | 传播 Session 环境 |
+| A4 | 创建 Session | 必做 | P0 | 支持 | src/qoder-adapter.ts | test/qoder-adapter.test.ts、test/qoder-session-models.test.ts | 传播 Session 环境；目录按项目 cwd 获取；未显式选择 Model 时不向 CLI 强加 Model |
 | A5 | 执行 Turn | 必做 | P0 | 支持 | src/qoder-sdk-transport.ts | test/qoder-adapter.test.ts | 原生消息流 |
 | A6 | 取消 | 必做 | P0 | 支持 | src/qoder-sdk-transport.ts | test/qoder-lifecycle.test.ts | 等待原生结果后解除忙碌 |
 | A7 | 只读快照 | 必做 | P0 | 支持 | src/qoder-history.ts、src/qoder-sdk-transport.ts | test/qoder-history.test.ts | 不提交 Prompt |
 | A8 | 持久身份 + resume | 必做 | P0 | 支持 | src/qoder-adapter.ts | test/qoder-adapter.test.ts | 两版身份隔离 |
 | A9 | 错误与并发 | 必做 | P0 | 支持 | src/qoder-errors.ts、src/qoder-sdk-transport.ts | test/qoder-lifecycle.test.ts | 类型化失败、活动 Turn 互斥 |
-| A10 | 关闭 | 必做 | P0 | 支持 | src/qoder-adapter.ts、src/qoder-daemon-pool.ts | test/qoder-sdk58-compat.test.ts | daemon 引用计数释放 |
+| A10 | 关闭 | 必做 | P0 | 支持 | src/qoder-adapter.ts、src/qoder-daemon-pool.ts | test/qoder-sdk58-compat.test.ts、test/qoder-session-models.test.ts | daemon 引用计数释放；取消并排空在途模型检查 |
 | B1 | 切换 Model | 原生有则必做 | P1 | 支持 | src/qoder-models.ts、src/qoder-sdk-transport.ts | test/qoder-adapter.test.ts | 选择结果由原生接口确认 |
 | B2 | 切换 Thinking | 原生有则必做 | P1 | 支持 | src/qoder-models.ts、src/qoder-sdk-transport.ts | test/qoder-adapter.test.ts | 使用原生模型的 effort 信息 |
 | B3 | 权限模式 | 原生有则必做 | P1 | 支持 | src/qoder-permission-modes.ts、src/qoder-sdk-transport.ts | test/qoder-sdk58-compat.test.ts | Plan 使用独立原生接口 |
@@ -59,7 +59,7 @@
 
 ## 受限与已知缺口
 
-- A3：完整目录先等待 Query 初始化，再通过 SDK live 查询获取；availability 使用相同检查路径。普通读取复用 Adapter 缓存；显式刷新重新查询。
+- A3：完整目录先等待 Query 初始化，再通过一次 SDK live 查询获取，两步共用 10 秒预算，不重试；availability 使用相同检查路径。普通读取复用 Adapter 缓存；显式刷新重新查询，迟到的旧结果不覆盖新缓存。无 cwd 的检查与显式项目目录不共享缓存；open 按 input.cwd 获取目录，未显式选择 Model 时报告其原生默认值但不传 model 给 CLI。
 - B6：仅支持同工作目录 Fork。
 - B11、B12、B14、B16：不属于模型发现修复的验证范围，不能据此宣称完整支持。
 - B15：原生真实委派链路尚未验收。
@@ -80,4 +80,5 @@
 | 真实原生验收 | macOS、海外版、本机 CLI 登录、默认 Qwen3.8-Flash；模型发现，不提交 Prompt | 冷启动及刷新通过；不包含实际对话、中国版原生 CLI 或 SSH |
 | Desktop / 委派 | Desktop 可见模型选择 / 真实委派 | 未操作模型选择或发送对话；真实委派未验收 |
 | 静态检查 | `npm run build:typescript`、`npm run typecheck` | 通过 |
-| ESLint | 针对修改的 TypeScript 文件运行 | 本机依赖缺少 `ajv/lib/refs/json-schema-draft-04.json`，启动受阻 |
+| Session 目录与检查生命周期 | `npx vitest run --config tests/vitest.config.js packages/adapters/qoder/test` | 192 项通过；含不同于 Host cwd 的项目、原生默认 Model、共享超时预算、关闭取消及刷新竞态 |
+| 聚焦静态检查 | `npm run typecheck`、`npx eslint packages/adapters/qoder`、修改文件的 Prettier 检查 | 隔离 worktree 按 lockfile 安装依赖后通过；未新增原生 CLI 或 Desktop 手工验收 |

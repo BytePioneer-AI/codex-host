@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type {
   HarnessAdapter,
+  HarnessError,
   HarnessInspection,
   HarnessResult,
   HarnessSession,
@@ -44,6 +45,7 @@ import {
   type QoderStartDaemon,
 } from "./qoder-daemon-pool.js";
 import { QoderSession } from "./qoder-sdk-transport.js";
+import { loadQoderModels } from "./qoder-model-inspection.js";
 import { QoderSessionImport } from "./qoder-session-import.js";
 import { createQoderUsageStatistics } from "./qoder-usage-statistics.js";
 
@@ -75,6 +77,10 @@ export interface QoderAdapterOptions {
   startDaemon?: QoderStartDaemon;
 }
 
+type QoderInspection =
+  | Extract<HarnessInspection, { status: "ready" }>
+  | { status: "unavailable" | "notInstalled"; error: HarnessError };
+
 export class QoderAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId;
   readonly #variant: QoderVariant;
@@ -104,8 +110,10 @@ export class QoderAdapter implements HarnessAdapter {
 
   readonly #sessions = new Set<HarnessSession>();
   readonly #inspections = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
-  readonly #inFlightInspections = new Map<string, Promise<HarnessInspection>>();
+  readonly #inFlightInspections = new Map<string, Promise<QoderInspection>>();
+  readonly #inspectionTasks = new Set<Promise<QoderInspection>>();
   readonly #daemons: QoderDaemonPool | undefined;
+  readonly #inspectionController = new AbortController();
   #closed = false;
 
   constructor(options: QoderAdapterOptions = {}) {
@@ -213,8 +221,14 @@ export class QoderAdapter implements HarnessAdapter {
     }
   }
 
-  async inspect(input?: InspectHarnessInput): Promise<HarnessInspection> {
+  async inspect(input?: InspectHarnessInput): Promise<QoderInspection> {
     const cacheKey = input?.cwd ?? "";
+    if (this.#closed) {
+      return {
+        status: "unavailable",
+        error: { code: "invalidState", message: "Qoder adapter is closed", retryable: false },
+      };
+    }
 
     if (input?.refresh) {
       this.#inspections.delete(cacheKey);
@@ -227,7 +241,7 @@ export class QoderAdapter implements HarnessAdapter {
       if (inFlight) return inFlight;
     }
 
-    const task = Promise.resolve().then(async () => {
+    const task = Promise.resolve().then(async (): Promise<QoderInspection> => {
       try {
         const executable = this.#resolveExecutable({
           ...(this.#commandOverride ? { command: this.#commandOverride } : {}),
@@ -238,9 +252,13 @@ export class QoderAdapter implements HarnessAdapter {
         let rawModels: QoderModelInfo[] | undefined;
         if (this.#getAvailableModels) {
           try {
-            rawModels = await this.#getAvailableModels();
-          } catch {
-            // Keep fallback catalog on error
+            rawModels = await loadQoderModels(
+              { getAvailableModels: this.#getAvailableModels },
+              new AbortController(),
+              this.#inspectionController.signal,
+            );
+          } catch (error) {
+            return { status: "unavailable", error: mapQoderException(error) };
           }
         } else {
           let stderr = "";
@@ -250,10 +268,12 @@ export class QoderAdapter implements HarnessAdapter {
               environment: this.#environment,
               pathToQoderCLIExecutable: executable,
             });
+            const controller = new AbortController();
             const probeQuery = this.#queryFactory({
               prompt: "",
               options: {
                 cwd: input?.cwd ?? process.cwd(),
+                abortController: controller,
                 stderr: (chunk) => {
                   stderr = (stderr + chunk).slice(-8192);
                 },
@@ -262,10 +282,15 @@ export class QoderAdapter implements HarnessAdapter {
             });
             try {
               if (probeQuery.getAvailableModels) {
-                await probeQuery.initializationResult?.();
-                rawModels = await probeQuery.getAvailableModels({ fetchStrategy: "live" });
+                rawModels = await loadQoderModels(
+                  probeQuery,
+                  controller,
+                  this.#inspectionController.signal,
+                );
               }
             } finally {
+              // Stop an abandoned probe's daemon before waiting for its Session close handshake.
+              if (controller.signal.aborted) await lease?.release();
               try {
                 await probeQuery.close();
               } catch {
@@ -279,7 +304,7 @@ export class QoderAdapter implements HarnessAdapter {
                 error.message === "Transport closed" &&
                 qoderAuthForEnvironment(this.#variant, this.#environment).type === "qodercli" &&
                 (await checkQoderLogin(executable, this.#environment, input?.cwd)));
-            const result: HarnessInspection = {
+            const result: QoderInspection = {
               status: "unavailable",
               error: needsLogin
                 ? {
@@ -315,10 +340,12 @@ export class QoderAdapter implements HarnessAdapter {
           },
         };
 
-        this.#inspections.set(cacheKey, result);
+        if (!this.#closed && this.#inFlightInspections.get(cacheKey) === task) {
+          this.#inspections.set(cacheKey, result);
+        }
         return result;
       } catch {
-        const errorResult: HarnessInspection = {
+        const errorResult: QoderInspection = {
           status: "notInstalled",
           error: {
             code: "notInstalled",
@@ -328,12 +355,14 @@ export class QoderAdapter implements HarnessAdapter {
         };
         return errorResult;
       } finally {
+        this.#inspectionTasks.delete(task);
         if (this.#inFlightInspections.get(cacheKey) === task) {
           this.#inFlightInspections.delete(cacheKey);
         }
       }
     });
 
+    this.#inspectionTasks.add(task);
     this.#inFlightInspections.set(cacheKey, task);
     return task;
   }
@@ -565,8 +594,11 @@ export class QoderAdapter implements HarnessAdapter {
       };
     }
 
-    const cachedInspection = this.#inspections.get(input.cwd) ?? [...this.#inspections.values()][0];
-    const catalog = cachedInspection?.catalog;
+    // Desktop catalog discovery may omit cwd. Only a project-scoped inspection can
+    // supply the configuration for this Session; a Host-cwd catalog is not a substitute.
+    const inspection = await this.inspect({ cwd: input.cwd });
+    if (inspection.status !== "ready") return { ok: false, error: inspection.error };
+    const catalog = inspection.catalog;
 
     let session: QoderSession;
     let lease: QoderDaemonLease | undefined;
@@ -610,11 +642,14 @@ export class QoderAdapter implements HarnessAdapter {
 
   async close(): Promise<void> {
     this.#closed = true;
+    this.#inspectionController.abort(new Error("Qoder adapter is closed"));
+    const inspections = [...this.#inspectionTasks];
     const sessions = [...this.#sessions];
     this.#sessions.clear();
     this.#inspections.clear();
     this.#inFlightInspections.clear();
     await Promise.all([this.sessionImport.close(), ...sessions.map((s) => s.close())]);
     await this.#daemons?.close();
+    await Promise.all(inspections);
   }
 }

@@ -136,7 +136,8 @@ for (const scenario of [
   { name: "unchanged Host", same: true, desktop: true, restart: false },
   { name: "changed Host without Desktop", desktop: false, restart: true },
   { name: "changed Host with Desktop, Enter", desktop: true, answer: "", restart: false },
-  { name: "changed Host with Desktop, restart", desktop: true, answer: "restart", restart: true },
+  { name: "changed Host with Desktop, y", desktop: true, answer: "y", restart: true },
+  { name: "changed Host with Desktop, n", desktop: true, answer: "n", restart: false },
   { name: "no Host", absent: true, desktop: true, restart: false },
   {
     name: "no Host even with --restart-host",

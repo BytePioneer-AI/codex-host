@@ -54,9 +54,9 @@ export async function shouldRestartHost({
     if (!(await otherInterfaceRunning())) return true;
     if (interactive) {
       const answer = await ask(
-        `codexhost dev: Host changed and ${otherInterface} is running. Keep Host or restart Host? [keep/restart] (default: keep): `,
+        `codexhost dev: Host updated; ${otherInterface} is using the old Host.\nRestart Host? Running tasks will stop. [y/N]: `,
       );
-      if (answer.trim().toLowerCase() === "restart") return true;
+      if (answer.trim().toLowerCase() === "y") return true;
     } else {
       warn(
         "codexhost dev: Host changed but was not restarted (stdin is not a TTY); use --restart-host to restart it",

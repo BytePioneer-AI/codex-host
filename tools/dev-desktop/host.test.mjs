@@ -85,7 +85,7 @@ describe("development Host restart", () => {
     expect(f.webRunning).not.toHaveBeenCalled();
   });
 
-  it.each(["", "restart"])(
+  it.each(["", "y"])(
     "asks when changed with Web open (%s), keeping the old record until restart",
     async (answer) => {
       const f = await fixture();

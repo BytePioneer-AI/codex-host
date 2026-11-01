@@ -68,6 +68,8 @@ for (const id of selected.split(",")) {
   }
 }
 if (values.restart) await restartDevelopmentPreview(distribution, values, launch.env);
+// The development parent waits for the Host prompt to finish before starting watchers.
+process.send?.("ready");
 const child = spawn(process.execPath, launch.args, {
   env: launch.env,
   cwd: distribution,

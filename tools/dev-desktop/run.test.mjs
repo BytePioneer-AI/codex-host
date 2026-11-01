@@ -236,29 +236,33 @@ describe("development Desktop start", () => {
       const root = temporaryDirectory();
       const nodePath = path.join(root, "node");
       const environment = { PATH: "/fixture/bin" };
+      const preview = new EventEmitter();
       const watcher = new EventEmitter();
       watcher.kill = vi.fn();
       const spawnImplementation = vi
         .fn()
-        .mockImplementationOnce(() => watcher)
-        .mockImplementationOnce(() => exitingChild(0));
-      expect(
-        await runDevelopmentDesktop({
-          arguments_: ["web", "--no-build", ...flags, "--port", "3181"],
-          root,
-          nodePath,
-          environment,
-          spawnImplementation,
-        }),
-      ).toBe(0);
+        .mockImplementationOnce(() => preview)
+        .mockImplementationOnce(() => watcher);
+      const result = runDevelopmentDesktop({
+        arguments_: ["web", "--no-build", ...flags, "--port", "3181"],
+        root,
+        nodePath,
+        environment,
+        spawnImplementation,
+      });
+      // No watcher output may appear while the preview is still asking about Host.
+      expect(spawnImplementation).toHaveBeenCalledOnce();
+      preview.emit("message", "ready");
+      preview.emit("message", "ready");
+      expect(spawnImplementation).toHaveBeenCalledTimes(2);
       expect(spawnImplementation).toHaveBeenNthCalledWith(
-        1,
+        2,
         nodePath,
         ["--import", "tsx", path.join(root, "apps/web-ui/scripts/build.ts"), "--watch"],
         expect.objectContaining({ cwd: root, env: environment, stdio: "inherit" }),
       );
       expect(spawnImplementation).toHaveBeenNthCalledWith(
-        2,
+        1,
         nodePath,
         [
           "--import",
@@ -270,11 +274,50 @@ describe("development Desktop start", () => {
           "--port",
           "3181",
         ],
-        expect.objectContaining({ cwd: root, env: environment, stdio: "inherit" }),
+        expect.objectContaining({
+          cwd: root,
+          env: environment,
+          stdio: ["inherit", "inherit", "inherit", "ipc"],
+        }),
       );
+      preview.emit("exit", 0);
+      await expect(result).resolves.toBe(0);
       expect(watcher.kill).toHaveBeenCalledWith("SIGTERM");
     },
   );
+
+  it("does not start watchers when the preview exits before finishing the Host decision", async () => {
+    const spawnImplementation = vi.fn(() => exitingChild(1));
+    await expect(
+      runDevelopmentDesktop({
+        arguments_: ["web", "--no-build"],
+        root: temporaryDirectory(),
+        environment: {},
+        spawnImplementation,
+      }),
+    ).resolves.toBe(1);
+    expect(spawnImplementation).toHaveBeenCalledOnce();
+  });
+
+  it("stops the preview if the watcher cannot start", async () => {
+    const preview = new EventEmitter();
+    preview.kill = vi.fn();
+    const watcher = new EventEmitter();
+    const spawnImplementation = vi
+      .fn()
+      .mockImplementationOnce(() => preview)
+      .mockImplementationOnce(() => watcher);
+    const result = runDevelopmentDesktop({
+      arguments_: ["web", "--no-build"],
+      root: temporaryDirectory(),
+      environment: {},
+      spawnImplementation,
+    });
+    preview.emit("message", "ready");
+    watcher.emit("error", new Error("watcher spawn failed"));
+    await expect(result).rejects.toThrow("watcher spawn failed");
+    expect(preview.kill).toHaveBeenCalledWith("SIGTERM");
+  });
 
   it("stops the preview and fails when the Web UI watcher exits first", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -283,17 +326,17 @@ describe("development Desktop start", () => {
     preview.kill = vi.fn(() => queueMicrotask(() => preview.emit("exit", null, "SIGTERM")));
     const spawnImplementation = vi
       .fn()
-      .mockImplementationOnce(() => exitingChild(1))
-      .mockImplementationOnce(() => preview);
-    expect(
-      await runDevelopmentDesktop({
-        arguments_: ["web", "--no-build"],
-        root,
-        nodePath: path.join(root, "node"),
-        environment: {},
-        spawnImplementation,
-      }),
-    ).toBe(1);
+      .mockImplementationOnce(() => preview)
+      .mockImplementationOnce(() => exitingChild(1));
+    const result = runDevelopmentDesktop({
+      arguments_: ["web", "--no-build"],
+      root,
+      nodePath: path.join(root, "node"),
+      environment: {},
+      spawnImplementation,
+    });
+    preview.emit("message", "ready");
+    await expect(result).resolves.toBe(1);
     expect(preview.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
@@ -310,8 +353,15 @@ describe("development Desktop start", () => {
       const spawnImplementation = vi
         .fn()
         .mockImplementationOnce(() => exitingChild(code))
-        .mockImplementationOnce(() => watcher)
-        .mockImplementationOnce(() => exitingChild());
+        .mockImplementationOnce(() => {
+          const preview = new EventEmitter();
+          queueMicrotask(() => {
+            preview.emit("message", "ready");
+            preview.emit("exit", 0);
+          });
+          return preview;
+        })
+        .mockImplementationOnce(() => watcher);
       expect(
         await runDevelopmentDesktop({
           arguments_: ["web", "--port", "3181"],
@@ -330,13 +380,13 @@ describe("development Desktop start", () => {
       expect(spawnImplementation).toHaveBeenCalledTimes(code === 0 ? 3 : 1);
       if (code === 0) {
         expect(spawnImplementation).toHaveBeenNthCalledWith(
-          2,
+          3,
           nodePath,
           ["--import", "tsx", path.join(root, "apps/web-ui/scripts/build.ts"), "--watch"],
           expect.objectContaining({ cwd: root, env: environment, stdio: "inherit" }),
         );
         expect(spawnImplementation).toHaveBeenNthCalledWith(
-          3,
+          2,
           nodePath,
           [
             "--import",
@@ -348,7 +398,11 @@ describe("development Desktop start", () => {
             "--port",
             "3181",
           ],
-          expect.objectContaining({ cwd: root, env: environment, stdio: "inherit" }),
+          expect.objectContaining({
+            cwd: root,
+            env: environment,
+            stdio: ["inherit", "inherit", "inherit", "ipc"],
+          }),
         );
         expect(watcher.kill).toHaveBeenCalledWith("SIGTERM");
       }

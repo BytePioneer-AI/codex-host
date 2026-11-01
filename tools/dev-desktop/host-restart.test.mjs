@@ -37,12 +37,14 @@ describe("shared development Host decision", () => {
 
   it.each([
     ["", false],
-    ["keep", false],
-    ["restart", true],
-    [" RESTART ", true],
+    ["n", false],
+    [" N ", false],
+    ["y", true],
+    [" Y ", true],
+    ["restart", false],
     ["invalid", false],
   ])(
-    "accepts only an explicit restart, not Enter or invalid input (%s)",
+    "restarts only for explicit y; Enter, n and invalid input preserve running tasks (%s)",
     async (answer, expected) => {
       const ask = vi.fn(async () => answer);
       const log = vi.fn();
@@ -57,7 +59,9 @@ describe("shared development Host decision", () => {
           log,
         }),
       ).toBe(expected);
-      expect(ask).toHaveBeenCalledOnce();
+      expect(ask).toHaveBeenCalledExactlyOnceWith(
+        "codexhost dev: Host updated; Web is using the old Host.\nRestart Host? Running tasks will stop. [y/N]: ",
+      );
       expect(log).toHaveBeenCalledTimes(expected ? 0 : 1);
       if (!expected) expect(log.mock.calls[0][0]).toContain("old Host");
     },

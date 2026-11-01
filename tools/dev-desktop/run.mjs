@@ -340,37 +340,40 @@ function runChild(invocation, root, spawnImplementation = spawn, environment = p
   });
 }
 
-// `npm start web`: the Web UI rebuild watcher runs beside the preview, which serves
-// the rebuilt bundles from source. Either process ending stops the other.
+// Start the watcher after the preview finishes its Host decision so build logs
+// cannot obscure the prompt. Either process ending stops the other.
 function runWatchedWeb(preview, watcher, root, spawnImplementation, environment) {
-  const start = (invocation) =>
+  const start = (invocation, stdio) =>
     spawnImplementation(invocation.command, invocation.arguments, {
       cwd: root,
-      stdio: "inherit",
+      stdio,
       env: environment,
       windowsHide: false,
     });
   return new Promise((resolve, reject) => {
-    const watchProcess = start(watcher);
-    const previewProcess = start(preview);
+    const previewProcess = start(preview, ["inherit", "inherit", "inherit", "ipc"]);
+    let watchProcess;
     let previewExited = false;
     let watcherExited = false;
-    watchProcess.once("error", reject);
     previewProcess.once("error", reject);
-    watchProcess.once("exit", () => {
-      watcherExited = true;
-      if (previewExited) return;
-      console.error("codexhost web: the Web UI watcher exited; stopping the Web preview");
-      previewProcess.kill("SIGTERM");
+    previewProcess.on("message", (message) => {
+      if (message !== "ready" || watchProcess || previewExited) return;
+      watchProcess = start(watcher, "inherit");
+      watchProcess.once("error", (error) => {
+        previewProcess.kill("SIGTERM");
+        reject(error);
+      });
+      watchProcess.once("exit", () => {
+        watcherExited = true;
+        if (previewExited) return;
+        console.error("codexhost web: the Web UI watcher exited; stopping the Web preview");
+        previewProcess.kill("SIGTERM");
+      });
     });
     previewProcess.once("exit", (code) => {
       previewExited = true;
-      if (watcherExited) {
-        resolve(1);
-        return;
-      }
-      watchProcess.kill("SIGTERM");
-      resolve(code ?? 1);
+      if (!watcherExited) watchProcess?.kill("SIGTERM");
+      resolve(watcherExited ? 1 : (code ?? 1));
     });
   });
 }

@@ -31,6 +31,7 @@ import {
   nativeSessionRefSchema,
   type HarnessModelRef,
   type HarnessThinkingOptionId,
+  type HarnessPermissionModeId,
   type NativeSessionRef,
   type HarnessTurnRecovery,
   type HostTurnId,
@@ -52,7 +53,8 @@ import { LiveItems } from "./live-items.js";
 import { NativeInteractions } from "./interactions.js";
 import { nativeContextUsage, contextUsageFromHistory } from "./usage.js";
 import { hasFileEditHistory } from "./file-changes.js";
-import { prepareSelectionChange } from "./configuration.js";
+import { prepareSelectionChange, preparePermissionChange } from "./configuration.js";
+import { nativePermissionId, permissionModeRef } from "./permissions.js";
 import { validateReference } from "./reference.js";
 
 // Older Companions do not expose model preparation or history feature flags.
@@ -78,6 +80,7 @@ export function sessionCapabilities(
     configuration: {
       ...SESSION_CAPABILITIES.configuration,
       selectModel: inspection.configuration?.modelSelection === "per-request",
+      selectPermissionMode: !!inspection.permissions,
       selectThinkingOption:
         inspection.configuration?.thinkingSelection === "per-request" &&
         inspection.models.some((model) => !!model.thinking?.options.length),
@@ -97,6 +100,8 @@ interface ActiveTurn {
   configurationRevision: number;
   thinking: NativeThinkingSelection | undefined;
   thinkingOptionId: HarnessThinkingOptionId | undefined;
+  permissionModeId: string | undefined;
+  permissionRevision: number;
   messageId: string;
   cancelRequested: boolean;
   admitted: boolean;
@@ -111,6 +116,7 @@ export interface SessionOptions {
   cwd: string;
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
   recoveringThinkingOptionId?: HarnessThinkingOptionId;
   nativeRef?: NativeSessionRef;
   initialState?: HarnessSessionState;
@@ -158,6 +164,8 @@ export class TraeCnSession implements HarnessSession {
   #historyTurnCount = 0;
   #selectedModel: HarnessModelRef | undefined;
   #selectedThinking: HarnessThinkingOptionId | undefined;
+  #selectedPermission: HarnessPermissionModeId | undefined;
+  #permissionRevision = 0;
   #configurationRevision = 0;
   #configuring = false;
 
@@ -166,13 +174,15 @@ export class TraeCnSession implements HarnessSession {
     this.initialState = {
       ...(options.initialState ?? {}),
       ...(options.nativeRef ? { nativeRef: options.nativeRef } : {}),
-      ...(modelThinkingOptions(options.inspection, options.model).length
+      ...(options.inspection.configuration?.thinkingSelection === "per-request"
         ? { availableThinkingOptions: modelThinkingOptions(options.inspection, options.model) }
         : {}),
     };
     this.#state = this.initialState;
     this.#selectedModel = options.model ? { ...options.model } : undefined;
     this.#selectedThinking = options.thinkingOptionId;
+    this.#selectedPermission = options.permissionModeId;
+    if (this.#selectedPermission) nativePermissionId(options.inspection, this.#selectedPermission);
     if (this.#selectedThinking) {
       if (!this.#selectedModel)
         throw new TraeError(
@@ -204,6 +214,8 @@ export class TraeCnSession implements HarnessSession {
         configurationRevision: this.#configurationRevision,
         thinking: undefined,
         thinkingOptionId: options.recoveringThinkingOptionId,
+        permissionModeId: undefined,
+        permissionRevision: this.#permissionRevision,
         messageId: recovery.nativeTurnRef.nativeTurnKey,
         cancelRequested: false,
         admitted: true,
@@ -346,6 +358,10 @@ export class TraeCnSession implements HarnessSession {
               )
             : undefined,
           thinkingOptionId: this.#selectedThinking,
+          permissionModeId: this.#selectedPermission
+            ? nativePermissionId(this.options.inspection, this.#selectedPermission)
+            : this.options.inspection.permissions?.defaultModeId,
+          permissionRevision: this.#permissionRevision,
           messageId: randomUUID(),
           cancelRequested: false,
           admitted: false,
@@ -375,9 +391,40 @@ export class TraeCnSession implements HarnessSession {
       }
       if (command.type === "model.select" || command.type === "thinking.select")
         return await this.#configure(command);
+      if (command.type === "permissionMode.select") return await this.#configurePermission(command);
       throw new TraeError("unsupported", `TRAE CN operation is not implemented: ${command.type}`);
     } catch (error) {
       return { ok: false, error: harnessError(error) };
+    }
+  }
+
+  async #configurePermission(
+    command: PermissionModeSelectCommand,
+  ): Promise<HarnessResult<PermissionModeSelectCompleted>> {
+    if (!this.capabilities.configuration.selectPermissionMode)
+      throw new TraeError(
+        "unsupported",
+        "TRAE CN permission selection requires a newer Companion and the native feature",
+      );
+    if (this.#configuring)
+      throw new TraeError("sessionBusy", "TRAE CN configuration is already being prepared");
+    this.#configuring = true;
+    try {
+      const inspection = await preparePermissionChange({
+        client: this.options.client,
+        cwd: this.options.cwd,
+        nativeRef: this.#state.nativeRef,
+        permissionModeId: command.permissionModeId,
+      });
+      if (this.#closed || this.#faulted)
+        throw new TraeError("invalidState", "TRAE CN Session closed during permission preparation");
+      this.options.inspection = inspection;
+      this.#selectedPermission = command.permissionModeId;
+      this.#permissionRevision++;
+      this.#setState({ ...this.#state, effectivePermissionModeId: command.permissionModeId });
+      return { ok: true, value: { completed: true } };
+    } finally {
+      this.#configuring = false;
     }
   }
 
@@ -483,13 +530,16 @@ export class TraeCnSession implements HarnessSession {
           messageId: turn.messageId,
           modelId: nativeModelId(this.options.inspection, model),
           ...(turn.thinking ? { thinking: turn.thinking } : {}),
+          ...(turn.permissionModeId ? { permissionModeId: turn.permissionModeId } : {}),
           text: turn.command.input.map((part) => part.text).join("\n"),
         });
         if (
           !record(receipt) ||
           receipt.accepted !== true ||
           receipt.messageId !== turn.messageId ||
-          receipt.fromAppend === true
+          receipt.fromAppend === true ||
+          (turn.permissionModeId !== undefined &&
+            receipt.permissionModeId !== turn.permissionModeId)
         )
           throw new TraeError(
             "protocolError",
@@ -501,6 +551,10 @@ export class TraeCnSession implements HarnessSession {
           turnId: turn.command.turnId,
           nativeTurnRef: confirmedNativeTurnRef(nativeRef.nativeSessionId, turn.messageId),
         });
+        if (turn.permissionModeId && turn.permissionRevision === this.#permissionRevision) {
+          this.#selectedPermission = permissionModeRef(turn.permissionModeId);
+          this.#setState({ ...this.#state, effectivePermissionModeId: this.#selectedPermission });
+        }
       }
       const nativeRef = this.#state.nativeRef;
       if (!nativeRef) throw new TraeError("protocolError", "Missing native recovery identity");

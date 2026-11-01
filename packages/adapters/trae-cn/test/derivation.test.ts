@@ -4,6 +4,7 @@ import type { BridgeClient } from "../src/bridge.js";
 import type { BridgeInspection } from "../src/protocol.js";
 import { deriveSession } from "../src/derivation.js";
 import { modelRef, thinkingOptionId } from "../src/models.js";
+import { permissionModeRef } from "../src/permissions.js";
 const inspection: BridgeInspection = {
   instanceId: "instance",
   application: { name: "Trae CN", root: "/app", executable: "/app/trae", version: "fixture" },
@@ -92,6 +93,41 @@ function setup(count = 2) {
   return { source, call, client: { call } as unknown as BridgeClient };
 }
 describe("TRAE CN public history derivation", () => {
+  it.each([1, 2])(
+    "preserves an explicit permission mode on %s-Turn rollback and validates it before writes",
+    async (count) => {
+      const test = setup(count),
+        catalog: BridgeInspection = {
+          ...inspection,
+          permissions: {
+            modes: [
+              { id: "manual_approval", label: "Manual" },
+              { id: "full_access", label: "Full", dangerous: true },
+            ],
+            defaultModeId: "manual_approval",
+          },
+        };
+      const full = permissionModeRef("full_access");
+      expect(
+        await deriveSession(test.client, catalog, {
+          kind: "rollbackLastTurn",
+          sourceRef,
+          cwd: "/workspace",
+          permissionModeId: full,
+        }),
+      ).toMatchObject({ permissionModeId: full });
+      test.call.mockClear();
+      await expect(
+        deriveSession(test.client, catalog, {
+          kind: "rollbackLastTurn",
+          sourceRef,
+          cwd: "/workspace",
+          permissionModeId: permissionModeRef("missing"),
+        }),
+      ).rejects.toMatchObject({ code: "invalidRequest" });
+      expect(test.call.mock.calls.every(([method]) => method === "snapshot")).toBe(true);
+    },
+  );
   it.each([1, 2])(
     "preserves native Thinking across a %s-Turn rollback and rejects foreign choices before writes",
     async (count) => {

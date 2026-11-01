@@ -5,6 +5,7 @@ const { randomUUID } = require("node:crypto");
 const { NativeConnection } = require("./native.cjs");
 const { DesktopService } = require("./service.cjs");
 const { startServer } = require("./server.cjs");
+const { desktopPermissionSettings } = require("./permissions.cjs");
 const {
   desktopRequestSettings,
   desktopHistorySettings,
@@ -80,6 +81,7 @@ async function activate(context) {
         () => desktopRequestSettings(vscode),
         () => desktopHistorySettings(vscode),
         () => desktopModelSettings(vscode),
+        () => desktopPermissionSettings(vscode),
       );
       bridge = await startServer(service, directory);
       output.appendLine(`Bridge ready for ${folders.length} workspace folder(s)`);

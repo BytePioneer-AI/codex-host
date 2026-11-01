@@ -30,6 +30,47 @@ export interface BridgeInspection {
   models: BridgeModel[];
   configuration?: { modelSelection: "per-request"; thinkingSelection?: "per-request" };
   history?: { forkFromMessage: boolean; forkFromSession: boolean };
+  permissions?: BridgePermissions;
+}
+export interface BridgePermissions {
+  modes: { id: string; label: string; dangerous?: boolean }[];
+  defaultModeId: string;
+}
+
+function readPermissions(value: unknown): BridgePermissions {
+  if (
+    !record(value) ||
+    !Array.isArray(value.modes) ||
+    !value.modes.length ||
+    value.modes.length > 4 ||
+    typeof value.defaultModeId !== "string"
+  )
+    throw new TraeError("protocolError", "Invalid native permission catalog");
+  const modes = value.modes.map((mode) => {
+    if (
+      !record(mode) ||
+      !["manual_approval", "auto_approval", "full_access", "defaultCustomProfile"].includes(
+        String(mode.id),
+      ) ||
+      typeof mode.id !== "string" ||
+      typeof mode.label !== "string" ||
+      !mode.label.trim() ||
+      mode.label.length > 256 ||
+      (mode.dangerous !== undefined && typeof mode.dangerous !== "boolean")
+    )
+      throw new TraeError("protocolError", "Invalid native permission mode");
+    return {
+      id: mode.id,
+      label: mode.label,
+      ...(typeof mode.dangerous === "boolean" ? { dangerous: mode.dangerous } : {}),
+    };
+  });
+  if (
+    new Set(modes.map((mode) => mode.id)).size !== modes.length ||
+    !modes.some((mode) => mode.id === value.defaultModeId)
+  )
+    throw new TraeError("protocolError", "Invalid native default permission mode");
+  return { modes, defaultModeId: value.defaultModeId };
 }
 export interface BridgeEvent {
   event: string;
@@ -155,6 +196,7 @@ export function readInspection(value: unknown): BridgeInspection {
     application: readApplication(value.application),
     workspaceFolders: value.workspaceFolders as string[],
     models,
+    ...(value.permissions !== undefined ? { permissions: readPermissions(value.permissions) } : {}),
     ...(record(configuration)
       ? {
           configuration: {

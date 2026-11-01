@@ -39,6 +39,53 @@ function setup() {
 }
 
 describe("TRAE CN desktop bridge service", () => {
+  it("validates the scoped native permission and puts it on both request policy fields", async () => {
+    const test = setup();
+    const permissions = {
+      modes: [
+        { id: "manual_approval", label: "Manual" },
+        { id: "full_access", label: "Full", dangerous: true },
+      ],
+      defaultModeId: "manual_approval",
+    };
+    const service = new DesktopService(
+      test.native,
+      { name: "Trae CN", version: "fixture" },
+      ["/workspace"],
+      "builder_v3",
+      undefined,
+      undefined,
+      undefined,
+      async () => permissions,
+    );
+    expect((await service.inspect()).permissions).toEqual(permissions);
+    expect(
+      await service.call("preparePermission", {
+        sessionId: "session",
+        permissionModeId: "full_access",
+      }),
+    ).toEqual({ permissionModeId: "full_access" });
+    expect(test.call.mock.calls.some(([, method]) => method === "send_message")).toBe(false);
+    await expect(
+      service.call("preparePermission", { permissionModeId: "removed" }),
+    ).rejects.toMatchObject({ code: "invalidRequest" });
+    expect(
+      await service.call("start", {
+        sessionId: "session",
+        modelId: model.name,
+        text: "hello",
+        permissionModeId: "full_access",
+      }),
+    ).toMatchObject({ accepted: true, permissionModeId: "full_access" });
+    const request = test.call.mock.calls.find(([, method]) => method === "send_message");
+    expect(request?.[2]).toMatchObject({ permission_profile_id: "full_access" });
+    expect(request?.[3]).toMatchObject({ permission_profile_id: "full_access" });
+    expect(
+      test.call.mock.calls.some(([, method]) =>
+        /write|set.*permission|update.*config/i.test(method),
+      ),
+    ).toBe(false);
+  });
   it("validates scoped model preparation without creating a Session or changing native preferences", async () => {
     const { service, call } = setup();
     expect(

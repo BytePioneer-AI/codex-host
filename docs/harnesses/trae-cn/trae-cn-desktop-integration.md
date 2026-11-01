@@ -1,6 +1,6 @@
 # TRAE CN Desktop 原生桥接
 
-开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含插件 Manifest / 工厂、桌面 Companion、本机传输、公共 Adapter、文本会话、文件编辑与 Diff、结构化提问、RunCommand 单次审批、已确认身份的活动恢复、模型与 Thinking 选择及受限的 Fork / Rollback。插件 Bundle 与 Companion VSIX 已验证；其他工具审批、权限配置和预装发行尚未完成，仍为开发版本。
+开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含插件 Manifest / 工厂、桌面 Companion、本机传输、公共 Adapter、文本会话、文件编辑与 Diff、结构化提问、RunCommand 单次审批、已确认身份的活动恢复、模型 / Thinking / 本地权限选择及受限的 Fork / Rollback。插件 Bundle 与 Companion VSIX 已验证；其他工具审批、预装发行及完整 Desktop 验收尚未完成，仍为开发版本。
 
 ## 构建与安装
 
@@ -71,13 +71,23 @@ Companion 0.1.6 支持下一轮请求的 Thinking 选择。普通账号读取经
 
 原生准入后发布公共 turn.identity.confirmed，Host 在终态之前持久化原 Turn 身份；通用恢复路径校验归属后重建投影，Broker 同样转发可选恢复字段。旧 API 1 插件不接收新输入，缺省行为不变。关闭或故障结束本次观察作用域，报告原生任务可能仍运行并释放本机订阅；不会发送原生取消。只有显式取消操作会停止任务。观察超时或失败不能作为自动重启理由。
 
-当前权限配置和其他工具审批明确返回未实现或受限错误，能力字段不声称支持。已完成的核心路径不代表全部 P0 / P1 已验收。
+其他工具审批明确返回未实现或受限错误，能力字段不声称完整支持。已完成的核心路径不代表全部 P0 / P1 已验收。
+
+## 本地权限模式
+
+Companion 0.1.7 沿用 PermissionFeatureGuardService / PermissionModePort 的动态开关、用户配置、Auto 可见性、Custom Profile 存在性和默认规则。它只读应用返回的数据目录中的 permission/global.json，限制为 1 MiB；不转出资源授权或规则，不修改全局配置。远程与企业环境不声明此权限能力，未知活动 Profile 返回配置错误。
+
+preparePermission 校验会话作用域及当前可用档位，确认后才发布下一轮的 effectivePermissionModeId；发送时在消息顶层和 client_info 中设置同一 permission_profile_id。已接受的 Turn 固定原选择，活动时切换只影响后续请求。没有显式选择时沿用原生当前默认；旧 Companion 保持既有手动模式行为。原生消息历史及 Session 元数据没有提供权限档位，恢复时重新校验 Host 保存的确认提示，不推测历史权限。Rollback 在原生写入前校验并保留显式提示，Fork 沿用 Host 已有的公共权限继承流程。无人值守执行意图仍明确拒绝，与手动选择 Full Access 分开处理。
+
+实际 RunCommand 验收分别以 manual_approval / full_access 完成两条新任务，生成固定内容的两个专用文件；第一轮运行时选择 Full Access，下一轮在新进程中恢复该选择。两轮历史、源前缀和全局权限文件哈希保持不变。原生允许的命令在手动模式下也可能不弹审批，不能用是否出现弹窗代替策略核对。验收脚本先前错误要求必有审批，已保留原成功记录并只读核对，之后只发送新的 Full Access 任务，没有重发原命令。
+
+冷恢复还发现了无 Thinking 档位模型的状态差异：实时状态有空列表，初始状态却省略该字段。回归用例先复现再修复，现明确保留空列表；只读核对原两轮的完整冷快照哈希与实时结果一致，没有额外模型请求。
 
 ## Fork 与会话回退
 
 Companion 0.1.3 读取桌面 fork_chat 功能开关，使用原生 lite.fork_session 创建同一 Project 内的副本。公共 checkpoint 指向已完成 Assistant 消息；Fork 保留到该逻辑 Turn 为止的前缀，源 Session 不变。原生会重新分配消息 ID，插件验证复制后的输入、Items、结果和模型完全一致，再返回独立身份。末尾与中间边界均已实测，中间副本可继续使用继承的上下文。跨工作目录明确拒绝。
 
-Rollback 同样不修改源 Session：多轮时复制到倒数第二轮；单轮时创建独立空白 Session，交由 Host 的替换事务接管。它保留已确认的当前模型和 Thinking，或明确传入的选择；尚未实现的权限配置提示会被拒绝。历史仍保留原来的模型和 Thinking，不把后续选择改写进旧消息。空历史、活动源、非法边界、作用域改变或复制内容不一致均报错。不确定写入不自动重试；已知副本验证失败时保留并报告其 ID，不删除可能包含用户历史的资源。这些操作不回滚工作区文件。
+Rollback 同样不修改源 Session：多轮时复制到倒数第二轮；单轮时创建独立空白 Session，交由 Host 的替换事务接管。它保留已确认的当前模型和 Thinking，或明确传入的选择；显式权限提示在写入前校验并保留。历史仍保留原来的模型和 Thinking，不把后续选择改写进旧消息。空历史、活动源、非法边界、作用域改变或复制内容不一致均报错。不确定写入不自动重试；已知副本验证失败时保留并报告其 ID，不删除可能包含用户历史的资源。这些操作不回滚工作区文件。
 
 TRAE CN 3.4.12 存在文件编辑复制限制：原生 fork_session 复制消息后，对应的 before-chat-turn 快照标签不存在，读取副本文件 Diff 会失败。插件据此在写入前禁用含文件编辑历史的 Fork，以及需要保留非空前缀的文件编辑 Rollback；不以可读消息冒充完整复制。单轮文件编辑可以回退到独立空白 Session，已实测新会话续聊、模型保留、源历史及实际文件不变，并由新 Node 进程恢复两个 Session 核对。
 
@@ -125,4 +135,4 @@ RunCommand 投影为公共 commandExecution，保留原生输出、目录、退�
 
 Thinking 的真实验收使用开发 Companion 0.1.6。MiniMax-M3.1-Flash 的 Light 请求运行期间选择 High，原生持久记录仍确认第一轮 light；新进程恢复尚未发送的 High 选择后，第二轮持久记录为 high，分别回复 TRAE_CN_THINKING_LIGHT_OK / TRAE_CN_THINKING_HIGH_OK。第三个进程只读核对两轮历史，桌面模型偏好哈希不变。中间 Fork 与 Rollback 均只有第一轮 Light 历史，当前配置保留 High；源未改变，没有额外消息发送，两个派生会话冷恢复一致。
 
-这些证据覆盖插件加载、桌面 Companion、公共 Adapter 与隔离 Host 核心，仍需其他审批、权限配置、预装发行，以及用户当前 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。
+这些证据覆盖插件加载、桌面 Companion、公共 Adapter 与隔离 Host 核心，仍需其他审批、预装发行，以及用户当前 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。

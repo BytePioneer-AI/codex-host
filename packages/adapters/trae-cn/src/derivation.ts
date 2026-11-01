@@ -13,6 +13,7 @@ import { validateReference } from "./reference.js";
 import { projectHistory, TRAE_CN_ID } from "./history.js";
 import { nativeModelId, nativeThinkingSelection, historyThinking } from "./models.js";
 import { hasFileEditHistory } from "./file-changes.js";
+import { nativePermissionId } from "./permissions.js";
 
 function semanticTurns(snapshot: HostThreadSnapshot) {
   return snapshot.turns.map((turn) => ({
@@ -110,6 +111,8 @@ export async function deriveSession(
       ? historyThinking(source, inspection)
       : undefined);
   if (thinkingOptionId) nativeThinkingSelection(inspection, model, thinkingOptionId);
+  const permissionModeId = input.kind === "rollbackLastTurn" ? input.permissionModeId : undefined;
+  if (permissionModeId) nativePermissionId(inspection, permissionModeId);
   const boundary = prefix.turns.at(-1)?.checkpoint;
   const result = boundary
     ? await client.call("fork", {
@@ -147,7 +150,12 @@ export async function deriveSession(
     const unchanged = await client.call("snapshot", { sessionId: sourceRef.nativeSessionId });
     if (!isDeepStrictEqual(unchanged, source))
       throw new TraeError("protocolError", "Native history derivation changed its source");
-    return { nativeRef, model, ...(thinkingOptionId ? { thinkingOptionId } : {}) };
+    return {
+      nativeRef,
+      model,
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
   } catch (error) {
     throw new TraeError(
       "nativeFailure",

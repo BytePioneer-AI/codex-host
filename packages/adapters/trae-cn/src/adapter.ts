@@ -26,6 +26,7 @@ import { validateReference } from "./reference.js";
 import { deriveSession } from "./derivation.js";
 import { hasFileEditHistory } from "./file-changes.js";
 import { prepareModelSelection } from "./configuration.js";
+import { permissionCatalog, preparePermissionSelection } from "./permissions.js";
 
 export type TraeCnAdapterOptions = Omit<BridgeOptions, "cwd"> & { cwd?: string };
 
@@ -71,6 +72,9 @@ export class TraeCnAdapter implements HarnessAdapter {
       return {
         status: "ready",
         catalog: modelCatalog(inspection),
+        ...(permissionCatalog(inspection)
+          ? { permissionModes: permissionCatalog(inspection) }
+          : {}),
         capabilities: sessionCapabilities(inspection),
       };
     } catch (error) {
@@ -85,11 +89,6 @@ export class TraeCnAdapter implements HarnessAdapter {
     try {
       if (this.#closed) throw new TraeError("invalidState", "TRAE CN Adapter is closed");
       if (input.kind === "fork" || input.kind === "rollbackLastTurn") {
-        if (input.kind === "rollbackLastTurn" && input.permissionModeId)
-          throw new TraeError(
-            "unsupported",
-            "TRAE CN cannot preserve unimplemented permission selections",
-          );
         const options = this.#bridgeOptions(input.cwd, input.environment);
         const connected = await BridgeClient.connect(options);
         client = connected.client;
@@ -100,6 +99,7 @@ export class TraeCnAdapter implements HarnessAdapter {
           cwd: input.cwd,
           model: derived.model,
           ...(derived.thinkingOptionId ? { thinkingOptionId: derived.thinkingOptionId } : {}),
+          ...(derived.permissionModeId ? { permissionModeId: derived.permissionModeId } : {}),
           ...(input.environment ? { environment: input.environment } : {}),
         });
         client.close();
@@ -112,8 +112,6 @@ export class TraeCnAdapter implements HarnessAdapter {
       }
       if (input.kind === "create" && input.executionPolicy === "unattended-full-access")
         throw new TraeError("unsupported", "TRAE CN unattended permissions have not been verified");
-      if (input.permissionModeId)
-        throw new TraeError("unsupported", "TRAE CN permission selection is not implemented");
       if (input.kind === "create" && input.thinkingOptionId && !input.model)
         throw new TraeError(
           "configurationRequired",
@@ -238,6 +236,15 @@ export class TraeCnAdapter implements HarnessAdapter {
       }
       if (this.#closed)
         throw new TraeError("invalidState", "TRAE CN Adapter closed during configuration");
+      if (input.permissionModeId)
+        await preparePermissionSelection(
+          client,
+          inspection,
+          input.permissionModeId,
+          input.kind === "resume" ? input.nativeRef.nativeSessionId : undefined,
+        );
+      if (this.#closed)
+        throw new TraeError("invalidState", "TRAE CN Adapter closed during permission preparation");
       const session = new TraeCnSession({
         client,
         inspection,
@@ -245,10 +252,12 @@ export class TraeCnAdapter implements HarnessAdapter {
         ...(selected ? { model: selected } : {}),
         ...(selectedThinking ? { thinkingOptionId: selectedThinking } : {}),
         ...(recoveringThinking ? { recoveringThinkingOptionId: recoveringThinking } : {}),
+        ...(input.permissionModeId ? { permissionModeId: input.permissionModeId } : {}),
         ...(input.kind === "resume" ? { nativeRef: input.nativeRef } : {}),
         initialState: {
           ...(effectiveModel ? { effectiveModel } : {}),
           ...(effectiveThinking ? { effectiveThinkingOptionId: effectiveThinking } : {}),
+          ...(input.permissionModeId ? { effectivePermissionModeId: input.permissionModeId } : {}),
         },
         initialUsage,
         historyHasFileEdits,

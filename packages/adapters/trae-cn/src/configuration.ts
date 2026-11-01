@@ -2,6 +2,7 @@ import type {
   HarnessModelRef,
   HarnessThinkingOptionId,
   NativeSessionRef,
+  HarnessPermissionModeId,
 } from "@codexhost/shared-contracts";
 import type { ModelSelectCommand, ThinkingSelectCommand } from "@codexhost/harness-adapter";
 import type { BridgeClient } from "./bridge.js";
@@ -10,6 +11,26 @@ import { nativeModelId, nativeThinkingSelection, modelThinkingOptions } from "./
 import { record, TraeError } from "./errors.js";
 import { sameDirectory } from "./discovery.js";
 import { validateReference } from "./reference.js";
+import { preparePermissionSelection } from "./permissions.js";
+
+export async function preparePermissionChange(input: {
+  client: BridgeClient;
+  cwd: string;
+  nativeRef: NativeSessionRef | undefined;
+  permissionModeId: HarnessPermissionModeId;
+}) {
+  const inspection = await input.client.inspect(true);
+  if (input.nativeRef) validateReference(input.nativeRef, inspection, input.cwd);
+  if (!inspection.workspaceFolders.some((folder) => sameDirectory(folder, input.cwd)))
+    throw new TraeError("configurationRequired", "The TRAE CN workspace changed");
+  await preparePermissionSelection(
+    input.client,
+    inspection,
+    input.permissionModeId,
+    input.nativeRef?.nativeSessionId,
+  );
+  return inspection;
+}
 
 /** Desktop itself supplies model DTOs per send; this prepares the next request. */
 export async function prepareModelSelection(

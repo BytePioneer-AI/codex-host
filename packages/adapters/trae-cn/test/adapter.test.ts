@@ -7,10 +7,11 @@ import { harnessInspectionSchema, nativeSessionRefSchema } from "@codexhost/shar
 import { TraeCnAdapter } from "../src/adapter.js";
 import { hostTurnIdSchema, nativeTurnRefSchema } from "@codexhost/shared-contracts";
 import { modelRef, thinkingOptionId } from "../src/models.js";
+import { permissionModeRef } from "../src/permissions.js";
 
 const { startServer } = createRequire(import.meta.url)("../assets/companion/server.cjs");
 
-async function setup(configurable = false, thinking = false) {
+async function setup(configurable = false, thinking = false, permissions = false) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "trae-cn-adapter-"));
   const root = path.join(directory, "resources", "app");
   const cwd = path.join(directory, "workspace");
@@ -55,6 +56,17 @@ async function setup(configurable = false, thinking = false) {
       application,
       workspaceFolders: [cwd],
       agentType: "builder_v3",
+      ...(permissions
+        ? {
+            permissions: {
+              modes: [
+                { id: "manual_approval", label: "Manual" },
+                { id: "full_access", label: "Full", dangerous: true },
+              ],
+              defaultModeId: "manual_approval",
+            },
+          }
+        : {}),
       models: [
         {
           id: "configured",
@@ -79,6 +91,8 @@ async function setup(configurable = false, thinking = false) {
         : {}),
     })),
     call: vi.fn(async (method: string, input?: Record<string, unknown>) => {
+      if (method === "preparePermission" && permissions)
+        return { permissionModeId: input?.permissionModeId };
       if (method === "prepareModel" && configurable)
         return {
           agentType: "builder_v3",
@@ -129,6 +143,66 @@ async function setup(configurable = false, thinking = false) {
 }
 
 describe("TRAE CN public Adapter core", () => {
+  it("restores an explicitly empty Thinking list for a model without native choices", async () => {
+    const test = await setup(true, true);
+    try {
+      const opened = await test.adapter.open({
+        kind: "resume",
+        cwd: test.cwd,
+        nativeRef: test.reference,
+        model: modelRef("builder_v3", "alternative"),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.initialState.availableThinkingOptions).toEqual([]);
+      expect(opened.value.initialState.effectiveThinkingOptionId).toBeUndefined();
+      expect(await opened.value.readSnapshot()).toMatchObject({
+        ok: true,
+        value: { state: { availableThinkingOptions: [] } },
+      });
+    } finally {
+      await test.close();
+    }
+  });
+  it("restores an explicit permission choice without inferring an old choice from native history", async () => {
+    const test = await setup(true, false, true);
+    try {
+      const inspection = harnessInspectionSchema.parse(await test.adapter.inspect());
+      expect(inspection).toMatchObject({
+        status: "ready",
+        capabilities: { configuration: { selectPermissionMode: true } },
+        permissionModes: {
+          defaultModeId: permissionModeRef("manual_approval"),
+          modes: [
+            { localizations: { "zh-CN": { label: "手动审批" } } },
+            { localizations: { "zh-CN": { label: "完全访问" } } },
+          ],
+        },
+      });
+      const opened = await test.adapter.open({
+        kind: "resume",
+        cwd: test.cwd,
+        nativeRef: test.reference,
+        permissionModeId: permissionModeRef("full_access"),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.initialState.effectivePermissionModeId).toBe(
+        permissionModeRef("full_access"),
+      );
+      expect(test.service.call.mock.calls.filter(([method]) => method !== "snapshot")).toEqual([
+        ["preparePermission", { sessionId: "native-session", permissionModeId: "full_access" }],
+      ]);
+      await opened.value.close();
+      const nativeOnly = await test.adapter.open({
+        kind: "resume",
+        cwd: test.cwd,
+        nativeRef: test.reference,
+      });
+      if (!nativeOnly.ok) throw new Error(nativeOnly.error.message);
+      expect(nativeOnly.value.initialState.effectivePermissionModeId).toBeUndefined();
+    } finally {
+      await test.close();
+    }
+  });
   it("restores native Thinking read-only, or prepares an explicit next-request override", async () => {
     const test = await setup(true, true);
     try {

@@ -29,11 +29,11 @@
 | A10 | 关闭 | 必做 | P0 | 支持 | src/session.ts；assets/companion/native.cjs | 公共关闭测试；真实观察者断开后原生 completed | 不把关闭观察者当作 native cancel |
 | B1 | 切换 Model | 原生有则必做 | P1 | 支持 | src/configuration.ts；src/session.ts；assets/companion/models.cjs | 公共 model.select；原生 Assistant 确认 Seed-Code → Seed-2.1-Turbo → Seed-2.1-Turbo → Seed-Code；活动时切换、冷恢复、模型存储哈希不变 | 下次请求生效；按桌面原生逐轮 DTO 配置；不修改全局偏好；旧 Companion 不声明支持；不把历史 Turn 改标为新模型 |
 | B2 | 切换 Thinking | 原生有则必做 | P1 | 支持 | src/models.ts；configuration.ts；session.ts；assets/companion/reasoning.cjs；models.cjs | MiniMax-M3.1-Flash 两次真实请求的持久配置为 light / high，回复匹配；活动切换、跨进程恢复、文本 Fork / Rollback、桌面偏好哈希不变 | 使用模型原生档位及字段；无隐式默认；选项按模型隔离；接受的 Turn 固定配置；旧 Companion 不声明支持 |
-| B3 | 权限模式 | 原生有则必做 | P1 | 待验证 | — | 原生 permission_profile_id | |
+| B3 | 权限模式 | 原生有则必做 | P1 | 受限 | assets/companion/permissions.cjs；src/permissions.ts；configuration.ts；session.ts | 当前原生菜单四项与默认读取；manual_approval / full_access 各一次实际 RunCommand 完成并生成正确文件；活动切换与冷恢复；全局配置哈希未变 | 本地国内版；按动态 / 用户开关过滤 Auto / Custom；请求顶层和 client_info 同时传原生字段；原生历史未存档位，恢复 Host 确认提示，不推测旧权限；无人值守仍拒绝 |
 | B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 支持 | src/adapter.ts | test/adapter.test.ts：unattended-full-access 在连接前返回 unsupported | 通过明确拒绝满足契约；不忽略执行意图或伪造审批 |
 | B5 | Fork | 原生有则必做 | P1 | 受限 | src/derivation.ts；assets/companion/history.cjs | 真实原生 lite.fork_session；公共中间 / 末尾边界、源历史隔离、新进程恢复与继承上下文后的续聊 | 无文件编辑历史时支持；沿用桌面 Fork 开关；3.4.12 文件快照复制缺陷在写入前拒绝 |
 | B6 | 跨目录 Fork | 原生有则必做 | P2 | 不支持 | src/derivation.ts | 目标 cwd 不同在原生写入前返回 unsupported | 未证明原生跨 Project 复制；不以改变进程目录冒充支持 |
-| B7 | 回滚最后一轮 | 原生有则必做 | P1 | 受限 | src/derivation.ts；src/session.ts | 公共六轮 → 五轮、单轮 → 空白、单轮文件编辑 → 空白；源历史 / 工作区文件不变，模型保留，续聊与新进程读取成功；Thinking Light 历史与 High 后续选择独立保留 | 创建独立 Session，由 Host 替换；含文件编辑且保留非空前缀时拒绝；权限提示仍明确拒绝 |
+| B7 | 回滚最后一轮 | 原生有则必做 | P1 | 受限 | src/derivation.ts；src/session.ts | 公共六轮 → 五轮、单轮 → 空白、单轮文件编辑 → 空白；源历史 / 工作区文件不变，模型保留，续聊与新进程读取成功；Thinking Light 历史与 High 后续选择独立保留；显式权限提示的写入前校验测试 | 创建独立 Session，由 Host 替换；含文件编辑且保留非空前缀时拒绝；显式权限提示保留，不猜测原生历史未保存的权限 |
 | B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 受限 | src/history.ts；src/file-changes.ts；src/live-items.ts；assets/companion/diffs.cjs | 真实 Read、Edit 和 RunCommand；两轮文件编辑的实时 / 历史 Diff 一致，新进程恢复一致 | 消息级原生快照提供完整前后内容；2 MiB 上限明确拒绝；后台命令及其他文件操作原生验收待补 |
 | B9 | 审批 | 原生有则必做 | P0 | 受限 | src/interactions.ts；assets/companion/interactions.cjs | 公共允许一次后原生文件生成；拒绝后文件不存在；全局权限哈希未变 | RunCommand 已验收；其他工具确认仍明确拒绝；不支持持久授权 |
 | B10 | 提问 | 原生有则必做 | P0 | 支持 | src/interactions.ts；assets/companion/interactions.cjs；settings.cjs | 公共问题只发布一次；显式答复“停止”，持久完成回复 TRAE_CN_PUBLIC_QUESTION_OK_STOP | 复用桌面开关；实例校验；不使用预填答案；单选、多选、其他及跳过映射测试 |
@@ -61,7 +61,7 @@
 
 活动恢复的公共契约缺口与实现：原生实测可在断开观察者后重放同一问题实例，并继续同一用户消息；旧 Host 只在 turn.completed 持久化 NativeTurnRef，knownTurnRefs 没有原 Host Turn ID。API 2 新增可选 activeTurnRecovery、turn.identity.confirmed、knownTurns 和 recoveringTurn，Host 提前持久化原身份并按确认映射恢复原投影；Broker 转发，Renderer 沿用原公共投影，没有 TRAE 专用分支。旧 API 1 插件仍可加载且不接收新输入；TRAE 插件声明 API 2，拒绝在旧 Host 上执行。没有确认映射时不会猜测或重发任务。
 
-当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。插件 Manifest / 工厂、Bundle、Companion VSIX、本机 HTTP、公共 Adapter、普通 Session、结构化提问、RunCommand 单次审批、已确认身份的活动恢复、逐轮模型与 Thinking 选择及受限的历史派生已实现；其他审批、权限配置及预装发行尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接和确认状态的更新直至结束。
+当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。插件 Manifest / 工厂、Bundle、Companion VSIX、本机 HTTP、公共 Adapter、普通 Session、结构化提问、RunCommand 单次审批、已确认身份的活动恢复、逐轮模型 / Thinking / 本地权限选择及受限的历史派生已实现；其他审批及预装发行尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接和确认状态的更新直至结束。
 
 历史派生限制：3.4.12 的原生 fork_session 可以精确复制文本会话前缀，但不会为复制的文件编辑用户消息建立对应的快照 Git 标签。一次独立原生探测创建了可读消息但不可读文件快照的副本；源历史不变，副本已停止并保留供核查，没有重试或删除用户历史。插件在写入前拒绝含文件编辑的 Fork，以及需保留非空前缀的文件编辑 Rollback。只有一轮时，Rollback 创建独立空会话，无需复制快照。会话回退不回滚工作区文件。新会话身份、精确前缀和源历史均重新核对；不确定回执不自动重试，已知副本验证失败时报告其原生 ID。
 
@@ -69,7 +69,9 @@
 
 模型切换语义：桌面的 getModelRequestSelection / buildSendMessageRequest 为每次发送构造 custom_model DTO，并非让原生流中的活动请求换模型。Companion 0.1.4 的 prepareModel 刷新原生目录、校验原生 Session 作用域并准备同一 DTO，仅返回无凭据的标识确认；公共 model.select 更新后续请求配置并发布状态。已接受的 Turn 固定原模型和配置修订号，旧 metadata / model_config 不覆盖新的后续选择。Host 保存的选择在 resume 时重新准备，不改历史模型。桌面的 localThread.writeSelection 只支持官方模型，并在当前 Builder 目录实测返回 MODEL_UNAVAILABLE，故不依赖该前端存储命令，也不改用户全局选择。
 
-Thinking 选择：Companion 0.1.6 区分普通模型的 reasoning_effort_config、内部账号的旧 reasoning_effort_options，以及自定义模型的参数声明。只有通过原生校验的档位进入 Bridge，账号仅转出内部策略布尔值，不导出登录信息。真实普通账号 Builder 目录目前仅 MiniMax-M3.1-Flash 返回 light / high / extra_high，其他模型没有有效声明时不补造档位。公开选项按 Agent、模型、原生字段和档位隔离；prepareModel 精确确认后才发布状态，已接受 Turn 固定配置。冷恢复重新准备未来选择，保留历史原生配置；换模型整体替换列表并清除不适用档位，不指定隐式默认。
+Thinking 选择：Companion 0.1.6 区分普通模型的 reasoning_effort_config、内部账号的旧 reasoning_effort_options，以及自定义模型的参数声明。只有通过原生校验的档位进入 Bridge，账号仅转出内部策略布尔值，不导出登录信息。真实普通账号 Builder 目录目前仅 MiniMax-M3.1-Flash 返回 light / high / extra_high，其他模型没有有效声明时不补造档位。公开选项按 Agent、模型、原生字段和档位隔离；prepareModel 精确确认后才发布状态，已接受 Turn 固定配置。冷恢复重新准备未来选择，保留历史原生配置；换模型整体替换列表并清除不适用档位，不指定隐式默认。没有 Thinking 档位时，实时与冷恢复都保留明确的空列表。
+
+权限选择：Companion 0.1.7 只读动态配置、用户开关和最多 1 MiB 的本地 permission/global.json，沿用原生 Auto 可见性、Custom 存在性及默认规则，不导出授权资源或命令规则。preparePermission 验证原生作用域和档位后，公共选择配置下一轮；发送时同时设置消息顶层及 client_info 的 permission_profile_id。活动 Turn 固定原选择，不改全局配置。原生历史及 Session 元数据均未提供档位，只有 Host 已保存提示可以恢复，不以消息内容补造。远程和企业权限菜单不声明支持；未知活动 Profile 报错。手动模式也可能按原生规则直接执行允许的命令，不承诺每条命令都会弹审批。
 
 会话用量限制：已核对 3.4.12 的原生 token_usage 事件与持久历史；prompt_tokens / completion_tokens / total_tokens 是最后一次模型请求，prompt_tokens_total / completion_tokens_total 在实测中均为占位 0。当前只把 last_turn_total_tokens 和 max_tokens 映射成上下文占用及窗口，不把单次请求或格式化 input/output 字符串当作会话累计消耗。刷新失败不使普通 Turn 失败，活动时刷新不覆盖实时用量。
 
@@ -99,6 +101,10 @@ Thinking 选择：Companion 0.1.6 区分普通模型的 reasoning_effort_config�
 | Thinking 选择 | 公共 thinking.select；Light 运行中选择 High；新 Node 进程恢复后发送；第三个进程只读核对 | 原生 Assistant 持久字段 reasoning_effort_level 分别为 light / high；答复 TRAE_CN_THINKING_LIGHT_OK / TRAE_CN_THINKING_HIGH_OK；原历史不变；每进程只有一次 start；桌面偏好哈希不变 |
 | Thinking 与历史派生 | 两轮 Light / High 源的中间 Fork 和 Rollback；新进程恢复 | 两个副本都只有 Light 历史且当前选择为 High，源不变，没有额外 start/create；冷读取完全一致 |
 | Thinking 选择回归 | Adapter 全套 158 项；补充两项派生用例后的 46 项受影响回归；两个发行打包测试；typecheck、lint / boundaries、改动代码格式 | 均通过；VSIX 0.1.6 的十个 CJS 资源与源码字节一致；不同测试集合重叠，不累加计数 |
+| 权限选择与冷恢复 | manual 请求执行期间选择 full；下一条新消息在新进程中恢复 full；两次 RunCommand 实际写入；只读终态和历史核对 | 原生 Finished，准确两轮，回复 TRAE_CN_PERMISSION_MANUAL_OK / TRAE_CN_PERMISSION_FULL_OK；每轮只发送一次，源前缀和全局权限哈希不变；没有以“无审批”推断权限失效 |
+| 权限验收异常与修复 | 初次脚本错误要求手动模式必有审批；保留完成记录并只读核对后，另发 full 新任务；冷读取暴露空 Thinking 字段不一致 | 没有重发原命令；先新增失败回归再修复；修复后原两轮的完整冷快照与实时快照哈希一致，未新增任务 |
+| 权限回归与资源 | 37 项配置 / Adapter / 打包检查；14 项历史派生；18 项服务测试；typecheck、lint / boundaries、代码格式；本地化后 11 项 Adapter 检查及插件构建 | 均通过；集合重叠不累加。VSIX 0.1.7 含十一个 CJS 资源。最终源码重载后，四个原生权限选项逐项准备确认，没有发送新任务，已有两轮历史未变 |
+| Thinking 与通用持久化 CI | d768124c：GitHub Actions 41291130813 | Ubuntu、Windows、Linux ARM64、macOS 15 全部通过；后续权限改动需新 Head 的 CI |
 | 插件加载 | 真实 Loader 加载仓库外 Bundle；独立 Node 进程导入 | 身份、资源、独立实例与关闭隔离均通过；无 Workspace 运行依赖 |
 | Companion 安装包 | 官方 vsce 打包；独立 ZIP 读取；TRAE CN 本地安装 | 身份与许可证完整，7 个 CJS 文件字节一致；实际安装版本 0.1.0 |
 | 已安装插件链路 | 已安装 Companion 的进程、扩展目录和 SHA-256；仓库外插件完成原生 Turn | 同一持久身份读到 TRAE_CN_INSTALLED_PLUGIN_OK；未作为当前 CodexHost / Renderer 验收 |

@@ -13,6 +13,7 @@ import { BridgeClient } from "../src/bridge.js";
 import type { BridgeInspection, Endpoint } from "../src/protocol.js";
 import { TraeCnSession } from "../src/session.js";
 import { modelRef, thinkingOptionId, type NativeThinkingSelection } from "../src/models.js";
+import { permissionModeRef } from "../src/permissions.js";
 
 const { startServer } = createRequire(import.meta.url)("../assets/companion/server.cjs");
 type Listener = { data(value: unknown): void; end(): void; error(error: unknown): void };
@@ -30,9 +31,9 @@ async function setup(
   deferred = false,
   history = false,
   configurable = false,
-  features: { recovering?: boolean; thinking?: boolean } = {},
+  features: { recovering?: boolean; thinking?: boolean; permissions?: boolean } = {},
 ) {
-  const { recovering = false, thinking = false } = features;
+  const { recovering = false, thinking = false, permissions = false } = features;
   const directory = await mkdtemp(path.join(os.tmpdir(), "trae-cn-session-"));
   let messageId = recovering ? "recovering-user" : "",
     listener: Listener | undefined;
@@ -41,6 +42,18 @@ async function setup(
   let nativeThinking: NativeThinkingSelection | undefined;
   const sessionInspection: BridgeInspection = {
     ...inspection,
+    ...(permissions
+      ? {
+          permissions: {
+            modes: [
+              { id: "manual_approval", label: "Manual" },
+              { id: "auto_approval", label: "Auto" },
+              { id: "full_access", label: "Full", dangerous: true },
+            ],
+            defaultModeId: "auto_approval",
+          },
+        }
+      : {}),
     ...(history ? { history: { forkFromMessage: true, forkFromSession: true } } : {}),
     ...(configurable
       ? {
@@ -122,7 +135,12 @@ async function setup(
         messageId = String(input.messageId);
         nativeModel = String(input.modelId);
         nativeThinking = input.thinking as NativeThinkingSelection | undefined;
-        return { accepted: true, messageId, fromAppend: false };
+        return {
+          accepted: true,
+          messageId,
+          fromAppend: false,
+          ...(permissions ? { permissionModeId: input.permissionModeId } : {}),
+        };
       }
       if (method === "prepareModel")
         return {
@@ -130,6 +148,7 @@ async function setup(
           modelId: input.modelId,
           ...(input.thinking ? { thinking: input.thinking } : {}),
         };
+      if (method === "preparePermission") return { permissionModeId: input.permissionModeId };
       if (method === "snapshot")
         return { sessionId: "native-session", projectId: "project", items: messages };
       if (method === "cancel") {
@@ -241,6 +260,57 @@ const command = (id = "host-turn") => ({
 });
 
 describe("TRAE CN public Session core", () => {
+  it("keeps native permissions per accepted request while switching the next request", async () => {
+    const test = await setup(true, true, false, true, { permissions: true });
+    try {
+      expect(test.session.capabilities.configuration.selectPermissionMode).toBe(true);
+      expect(test.session.initialState.effectivePermissionModeId).toBeUndefined();
+      const manual = permissionModeRef("manual_approval"),
+        full = permissionModeRef("full_access");
+      expect(
+        await test.session.execute({ type: "permissionMode.select", permissionModeId: manual }),
+      ).toMatchObject({ ok: true });
+      expect(test.call.mock.calls.map(([method]) => method)).toEqual(["preparePermission"]);
+      await test.session.execute(command());
+      await vi.waitFor(() => expect(test.service.subscribe).toHaveBeenCalledOnce());
+      expect(
+        await test.session.execute({ type: "permissionMode.select", permissionModeId: full }),
+      ).toMatchObject({ ok: true });
+      test.finish("completed");
+      await completed(test.iterator);
+      expect(await test.session.readSnapshot()).toMatchObject({
+        ok: true,
+        value: { state: { effectivePermissionModeId: full } },
+      });
+      await test.session.execute(command("full"));
+      await vi.waitFor(() => expect(test.service.subscribe).toHaveBeenCalledTimes(2));
+      test.finish("completed");
+      await completed(test.iterator);
+      expect(
+        test.call.mock.calls
+          .filter(([method]) => method === "start")
+          .map(([, input]) => input.permissionModeId),
+      ).toEqual(["manual_approval", "full_access"]);
+      const count = test.call.mock.calls.length;
+      expect(
+        await test.session.execute({
+          type: "permissionMode.select",
+          permissionModeId: permissionModeRef("missing"),
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+      expect(test.call.mock.calls.length).toBe(count);
+      test.call.mockResolvedValueOnce({ permissionModeId: "full_access" });
+      expect(
+        await test.session.execute({ type: "permissionMode.select", permissionModeId: manual }),
+      ).toMatchObject({ ok: false, error: { code: "protocolError" } });
+      expect(await test.session.readSnapshot()).toMatchObject({
+        ok: true,
+        value: { state: { effectivePermissionModeId: full } },
+      });
+    } finally {
+      await test.close();
+    }
+  });
   it("freezes Thinking per accepted Turn and clears it when switching to an unsupported model", async () => {
     const test = await setup(true, true, false, true, { thinking: true });
     try {

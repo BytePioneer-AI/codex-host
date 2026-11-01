@@ -189,6 +189,8 @@ function publicEvent(event) {
   });
 }
 
+const { requestedPermission } = require("./permissions.cjs");
+
 class DesktopService {
   constructor(
     native,
@@ -198,10 +200,12 @@ class DesktopService {
     requestSettings = async () => ({}),
     historySettings = async () => ({ forkFromMessage: false, forkFromSession: false }),
     modelSettings = async () => ({ internal: false }),
+    permissionSettings = async () => undefined,
   ) {
     this.native = native;
     this.historySettings = historySettings;
     this.modelSettings = modelSettings;
+    this.permissionSettings = permissionSettings;
     this.application = application;
     this.workspaceFolders = [...workspaceFolders];
     this.agentType = agentType;
@@ -246,6 +250,7 @@ class DesktopService {
 
   async inspect(refresh = false) {
     const pool = await readModels(this.native, this.agentType, refresh);
+    const permissions = await this.permissionSettings();
     return {
       application: this.application,
       workspaceFolders: this.workspaceFolders,
@@ -253,12 +258,23 @@ class DesktopService {
       models: publicModels(pool, await this.modelSettings()),
       configuration: { modelSelection: "per-request", thinkingSelection: "per-request" },
       history: await this.historySettings(),
+      ...(permissions ? { permissions } : {}),
     };
   }
 
   async call(method, input = {}) {
     if (!record(input)) throw invalid("Invalid bridge request");
     switch (method) {
+      case "preparePermission": {
+        if (input.sessionId !== undefined)
+          await this.readSession(text(input.sessionId, "session ID"));
+        return {
+          permissionModeId: requestedPermission(
+            await this.permissionSettings(),
+            input.permissionModeId,
+          ),
+        };
+      }
       case "prepareModel": {
         if (input.sessionId !== undefined)
           await this.readSession(text(input.sessionId, "session ID"));
@@ -373,6 +389,11 @@ class DesktopService {
           const pool = await readModels(this.native, this.agentType);
           const model = nativeModel(pool, modelId, input.thinking, await this.modelSettings());
           const settings = await this.requestSettings();
+          const permissions = await this.permissionSettings();
+          const permissionModeId =
+            permissions || input.permissionModeId !== undefined
+              ? requestedPermission(permissions, input.permissionModeId)
+              : "manual_approval";
           const messageId =
             typeof input.messageId === "string" && input.messageId ? input.messageId : randomUUID();
           const result = await this.native.call(
@@ -393,7 +414,7 @@ class DesktopService {
               is_in_code_mode: true,
               // Desktop's buildSendMessageRequest places the profile on the
               // message itself; client_info alone does not select its policy.
-              permission_profile_id: "manual_approval",
+              permission_profile_id: permissionModeId,
               ...(settings.ask_question_config
                 ? { ask_question_config: settings.ask_question_config }
                 : {}),
@@ -401,6 +422,7 @@ class DesktopService {
             {
               chat_session_id: sessionId,
               project_id: projectId,
+              permission_profile_id: permissionModeId,
             },
           );
           return {
@@ -408,6 +430,7 @@ class DesktopService {
             accepted: result.accepted === true,
             status: result.status,
             fromAppend: result.from_append_msg === true,
+            ...(permissions ? { permissionModeId } : {}),
           };
         } finally {
           this.starting.delete(sessionId);

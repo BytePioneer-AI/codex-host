@@ -107,7 +107,7 @@
 
 | 文档 | 适用场景 |
 |---|---|
-| [`harnesses/trae-cn/trae-cn-desktop-integration.md`](harnesses/trae-cn/trae-cn-desktop-integration.md) | 国内 TRAE 桌面原生 RPC 桥接的实现边界、会话模型池、认证和开发验收；尚未提供可启用的插件。 |
+| [`harnesses/trae-cn/trae-cn-desktop-integration.md`](harnesses/trae-cn/trae-cn-desktop-integration.md) | 开发中的国内 TRAE 桌面插件与 Companion：原生会话、模型 / Thinking / 权限配置、认证及验收边界；完整 Desktop 接入仍待验收。 |
 
 ### ZCode
 

@@ -372,7 +372,8 @@ function mediaMarkdownImage(absolutePath: string): string {
 function markdownDestination(absolutePath: string, bracketed: boolean): string {
   // CommonMark drops a backslash before punctuation (`C:\Users\me\.codex`), and Codex reads
   // `C:/…` as absolute; other paths keep their backslashes escaped.
-  // Both Desktop's Markdown token conversion and media loader decode the local path once.
+  // Desktop decodes the local path in two stages (Markdown token conversion, then media loading),
+  // so a literal `%` must survive both: `%2525` decodes to `%25`, then to `%`.
   // Encode only the resolved filesystem path, never a file: URL's own URI escapes.
   const encoded = absolutePath.replaceAll("%", "%2525");
   const destination = /^[A-Za-z]:\\/.test(encoded)

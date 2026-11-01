@@ -1,5 +1,5 @@
 import type { HostApprovalInteraction, HostQuestionInteraction } from "@codexhost/harness-adapter";
-import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
+import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import { jsonRpcRequestSchema, type JsonObject, type JsonValue } from "@codexhost/protocol-core";
 import {
   CLIENT_CHANNEL_METHODS,
@@ -49,6 +49,7 @@ export interface ClientChannelHostDependencies {
   environment(): NodeJS.ProcessEnv;
   waitForPlugins(): Promise<void>;
   listRecords(): Promise<readonly StoredThreadRecordV1[]>;
+  listSectionPlacements(): Promise<readonly StoredSectionPlacementV1[]>;
   locateExternalThread(threadId: string): Promise<ExternalThreadLocation>;
   loadedThread(threadId: string): ExternalThread | undefined;
   /** History served to clients, including the live snapshot of a non-ephemeral active Turn. */
@@ -121,6 +122,7 @@ export class ClientChannelHost {
           await readExternalWorkspaceSnapshot(
             this.#host.environment(),
             await this.#host.listRecords(),
+            await this.#host.listSectionPlacements(),
           ),
         ),
       };

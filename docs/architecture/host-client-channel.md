@@ -23,13 +23,13 @@ Web / App → Web 网关 → 客户端通道 ───────────�
 - 同一 Host 数据目录中的 `host ensure`、`host stop`、`host restart` 共用 `shared-host-lifecycle.lock` 操作锁。`ensure` 持锁后重新检查后台是否可用；正常并发启动时，后续调用等待并复用已就绪的后台。`restart` 持锁完成停止、清理、启动和就绪确认。等待操作锁超过约 40 秒会报忙且不执行操作；启动就绪超时则表示启动结果未知，不会因此终止可能已在执行任务的后台。
 - 锁由生命周期操作进程持有，操作结束或进程退出后释放，锁文件保留；监管进程不持有该锁。它不是后台整个存活期的所有权锁，也不锁原生 Harness home 或阻止其他进程写入同一原生会话。串行化仅覆盖使用该锁、针对同一数据目录的生命周期入口，不覆盖绕过入口或不支持该锁的旧客户端。Mapping Store 保留自身的存储锁。
 - Node 后台拥有唯一生产 Mapping Store、插件注册表和 `SharedThreadOwner`。Desktop 协议前端复用同一存储对象和原生 Codex scope/account control，不通过另一份数据库或存储 RPC 合并状态。
-- 官方 Codex 延迟启动：纯 Web 外部会话不需要启动 Desktop 或 stock Codex。首个 Desktop 的原生可执行文件、app-server 参数及功能标志在首个 backend generation 前确定，之后不因客户端接入而替换进程。官方 Codex 使用仍需要已安装的原生组件；后台不会安装 CLI、切换账号或自动登录。
+- 官方 Codex 延迟启动：纯 Web 外部会话不需要启动 Desktop 或 stock Codex；原生置顶操作或非空置顶的混合顺序查询可按需启动 stock Codex，但不启动 Desktop 窗口。首个 Desktop 的原生可执行文件、app-server 参数及功能标志在首个 backend generation 前确定，之后不因客户端接入而替换进程。官方 Codex 使用仍需要已安装的原生组件；后台不会安装 CLI、切换账号或自动登录。
 - 关闭 Web 或 Desktop 只断开对应传输，不停止后台，也不把断线解释成取消。Desktop 连接若仍拥有原生执行，会在后台排空真实结束事件；其他客户端不受其退出影响。待处理交互不会自动作答。
 - 后台保持运行，最后一个界面退出不触发自动停机。显式 `codexhost host stop` 是管理操作，会停止后台及其任务，并等待所连接后台的监管进程完成正常清理后退出。优雅清理停滞时，原生层在短暂等待后终止关闭请求前记录的后台进程，由仍在运行的监管者清理子进程树。单独 `stop` 后，仍打开的客户端可能按需启动后台；保持界面打开并切换后台构建时使用 `restart`；源码入口 `npm start` 和 `npm start web` 的后台重启选择见[独立 Web 的启动说明](../product/standalone-web.md#代码与构建)。不支持生命周期锁的旧客户端需先更新或退出。不提供监管者被强杀后的安全交接保证；后台重启只恢复已有事实，不保证中断中的 Harness 任务继续执行，也不重发结果未知的命令。
 - 认证描述文件标记 `owner: service`。发现不仅校验 PID，还用认证 hello/epoch 探测端点。Web 的服务模式断线后重新发现或按需启动同一数据目录的所有者；不切换到独立插件模式。
 - 已运行的旧 Desktop-owned Host 不会被接管、停止或绕过存储锁。旧客户端通道与显式 CDP 仍可连接；切换独立后台需要用户另行更新并重启 Desktop。构建源码不等于正在运行的进程已经升级。
 
-既有 GUI 项目归属由后台只读读取 `CODEX_HOME/.codex-global-state.json`；没有文件时 GUI 集合为空，损坏文件明确失败，不写原生文件。`codexhost/workspace/read` 只投影 canonical external IDs，并合并唯一 Mapping Store 中明确记录的项目/无项目事实；生成的执行目录不凭 cwd 匹配变成项目。置顶写入仍走 Desktop 的原生服务，未接入 headless 置顶操作；保存的置顶读取不等于所有 Desktop 版本的实时分区状态。远程 SSH 的原有执行所有权保持原样，公开客户端通道仍只支持本地 external Threads；移动后台推送不是此改造的能力。
+既有 GUI 项目归属由后台只读读取 `CODEX_HOME/.codex-global-state.json`；没有文件时 GUI 集合为空，损坏文件明确失败，不写原生文件。`codexhost/workspace/read` 只投影 canonical external IDs，并合并唯一 Mapping Store 中明确记录的项目/无项目事实；生成的执行目录不凭 cwd 匹配变成项目。置顶统一通过 `codexhost/thread/pins/list` / `codexhost/thread/pins/set` 访问原生分区协议与同一 Mapping Store 的外部 Thread 分区记录，支持无 Desktop 窗口读写；查询与 Desktop 分区移动共用串行边界。`workspace/read` 的置顶成员从同一分区记录投影，不读取 GUI 全局文件中的置顶副本；原生混合顺序通过 `pins/list` 查询。不建立预置顶、补写队列或 Renderer 回退；原生能力不可用时明确失败，未知写入结果不自动重发。远程 SSH 的原有执行所有权保持原样，公开客户端通道仍只支持本地 external Threads；移动后台推送不是此改造的能力。
 
 ## Codex CLI 是普通外部 Harness
 

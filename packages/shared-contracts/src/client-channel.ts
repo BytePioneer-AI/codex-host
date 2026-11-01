@@ -35,6 +35,8 @@ export const CLIENT_CHANNEL_METHODS = [
   "thread/queue/start",
   "codexhost/thread/queue/send-now",
   "codexhost/workspace/read",
+  "codexhost/thread/pins/list",
+  "codexhost/thread/pins/set",
   "codexhost/harness/plugins/list",
   "codexhost/harness/inspect",
   "codexhost/thread/inspect",
@@ -70,6 +72,12 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/update/status",
   "codexhost/sessions/loaded/list",
 ] as const;
+/** Canonical external pin membership, shared with native Thread sections. */
+export const clientThreadPinsSchema = z.object({ threadIds: z.array(z.string().min(1)) }).strict();
+export const clientThreadPinParamsSchema = z
+  .object({ threadId: z.string().min(1).max(1_024), pinned: z.boolean() })
+  .strict();
+
 /** Explicit no-project creation; naming input is not a cwd or a project ID. */
 export const clientProjectlessWorkspaceSchema = z
   .object({
@@ -81,6 +89,7 @@ export const clientWorkspaceSnapshotSchema = z.object({
   projects: z.array(z.object({ id: z.string(), name: z.string(), rootPaths: z.array(z.string()) })),
   assignments: z.record(z.string(), z.string()),
   projectless: z.array(z.string()),
+  /** Canonical external pin membership; pins/list provides the native merged order. */
   pinned: z.array(z.string()),
 });
 export type ClientWorkspaceSnapshot = z.infer<typeof clientWorkspaceSnapshotSchema>;

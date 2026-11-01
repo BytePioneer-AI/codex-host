@@ -84,6 +84,7 @@ import {
   codexAccountUsageResultSchema,
   type HarnessPluginDescriptor,
   externalThreadForkParamsSchema,
+  clientThreadPinParamsSchema,
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
   type HarnessCommandDescriptor,
@@ -276,6 +277,7 @@ import {
   OfficialThreadListError,
 } from "./thread-list-aggregator.js";
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
+import { ExternalThreadPins } from "./external-thread-pins.js";
 import { externalThreadListEntries } from "./external-thread-list.js";
 import { ModelPriceCatalog } from "./model-prices.js";
 import { UsageMeasurementsStore } from "./usage-measurements-store.js";
@@ -632,6 +634,8 @@ export class AppServerHost {
   readonly #client: ClientChannelHost;
   readonly #desktopControl: DesktopControlRequests;
   readonly #threadRouting: DesktopThreadRouting;
+  readonly #threadPins: ExternalThreadPins;
+  #sectionOperations: Promise<unknown> = Promise.resolve();
   readonly #turnProjection: ExternalTurnProjection;
   /** Console requests share Desktop handling; their replies return to the console. */
   readonly #consoleRequestPrefix = `codexhost-console:${randomUUID()}:`;
@@ -696,6 +700,7 @@ export class AppServerHost {
       environment: () => this.#options.environment ?? process.env,
       waitForPlugins: () => this.#waitForPlugins(),
       listRecords: () => this.#repository.list(),
+      listSectionPlacements: () => this.#repository.listSectionPlacements(),
       locateExternalThread: (threadId) => this.#locateExternalThread(threadId),
       loadedThread: (threadId) => this.#externalRuntime?.get(threadId),
       clientHistoryTurns: (thread) => this.#externalHistoryTurns(thread, true),
@@ -800,6 +805,9 @@ export class AppServerHost {
     this.#repository = new ExternalThreadRepository(
       options.mappingStore ??
         createProductionExternalThreadStore(this.#options.environment ?? process.env),
+    );
+    this.#threadPins = new ExternalThreadPins(this.#repository, (method, params) =>
+      this.#requestOfficial(method, params),
     );
     this.#externalAdapters = new Map(options.externalAdapters);
     for (const [harnessId, adapter] of this.#externalAdapters) {
@@ -969,6 +977,7 @@ export class AppServerHost {
         this.#listSectionThreads(request, frame, query, origin),
       listThreads: (request, listRequest, origin) =>
         this.#listThreads(request, listRequest, origin),
+      runSectionOperation: (run) => this.#runSectionOperation(run),
       moveThreadSection: (request, frame, move) => this.#moveThreadSection(request, frame, move),
       setExternalThreadArchived: (request, location, archived) =>
         this.#setExternalThreadArchived(request, location, archived),
@@ -1692,6 +1701,13 @@ export class AppServerHost {
       return;
     }
     if (await this.#desktopControl.handle(request, origin)) return;
+    if (
+      request.method === "codexhost/thread/pins/list" ||
+      request.method === "codexhost/thread/pins/set"
+    ) {
+      this.#dispatchDesktopReply(request, () => this.#handleThreadPins(request));
+      return;
+    }
     if (await this.#threadRouting.handle(request, frame, origin)) return;
     await this.#forwardOfficialRequest(
       request,
@@ -2560,6 +2576,37 @@ export class AppServerHost {
       }
       await this.#writer.json(rpcError(request, -32082, "Thread list aggregation failed"));
       this.#diagnose(error);
+    }
+  }
+
+  #runSectionOperation<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.#sectionOperations.then(run);
+    this.#sectionOperations = next.catch(() => undefined);
+    return next;
+  }
+
+  async #handleThreadPins(request: JsonRpcRequest): Promise<void> {
+    const change =
+      request.method === "codexhost/thread/pins/set"
+        ? clientThreadPinParamsSchema.safeParse(request.params)
+        : undefined;
+    if (change && !change.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Thread pin parameters"));
+      return;
+    }
+    try {
+      await this.#waitForPlugins();
+      const threadIds = await this.#runSectionOperation(() =>
+        change?.success
+          ? this.#threadPins.set(change.data.threadId, change.data.pinned)
+          : this.#threadPins.list(),
+      );
+      await this.#writer.json(rpcEnvelope(request, { result: { threadIds } }));
+      if (change?.success)
+        this.clientEvents.changed(change.data.threadId, "codexhost/thread/pins/changed");
+    } catch (error) {
+      this.#diagnose(error);
+      await this.#writer.json(rpcError(request, -32081, errorMessage(error)));
     }
   }
 

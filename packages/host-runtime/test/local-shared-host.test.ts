@@ -174,7 +174,7 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
     projects: [{ id: "selected", name: "Project", rootPaths: ["/real/project"] }],
     assignments: { thread: "selected" },
     projectless: ["unselected"],
-    pinned: ["thread"],
+    pinned: [],
   });
   expect(readFileSync(file, "utf8")).toBe(text);
   for (const invalid of ["{bad", "[]", "null", '"wrong"', '{"project-order":[123]}']) {

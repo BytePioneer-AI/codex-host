@@ -148,9 +148,9 @@ describe("owner-allocated projectless execution directories", () => {
     await store.initialize();
     const records = await store.listThreads();
     expect(records).toHaveLength(2);
-    expect((await readExternalWorkspaceSnapshot(environment, records)).projectless.sort()).toEqual(
-      threads.map((thread) => thread.id).sort(),
-    );
+    expect(
+      (await readExternalWorkspaceSnapshot(environment, records, [])).projectless.sort(),
+    ).toEqual(threads.map((thread) => thread.id).sort());
     for (const record of records) {
       expect(record.projectId).toBeUndefined();
       expect(record.projectlessWorkspace?.outputDirectory).toBe(path.join(record.cwd, "outputs"));
@@ -161,7 +161,11 @@ describe("owner-allocated projectless execution directories", () => {
     }
     const id = hostThreadIdSchema.parse(threads[0]?.id);
     await store.updateMetadata(id, { projectId: "parent-project" });
-    const assigned = await readExternalWorkspaceSnapshot(environment, await store.listThreads());
+    const assigned = await readExternalWorkspaceSnapshot(
+      environment,
+      await store.listThreads(),
+      [],
+    );
     expect(assigned.assignments[id]).toBe("parent-project");
     expect(assigned.projectless).not.toContain(id);
     expect(await readFile(nativeFile, "utf8")).toBe(native);

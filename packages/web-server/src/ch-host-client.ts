@@ -15,19 +15,20 @@ import {
 } from "@codexhost/desktop-control";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import type {
-  ClientThreadSnapshot,
-  ClientWorkspaceSnapshot,
-  ClientChannelResponse,
-  ClientChannelCursor,
-  ClientSnapshotOptions,
+import {
+  clientThreadPinsSchema,
+  type ClientThreadSnapshot,
+  type ClientWorkspaceSnapshot,
+  type ClientChannelResponse,
+  type ClientChannelCursor,
+  type ClientSnapshotOptions,
 } from "@codexhost/shared-contracts";
 import { RpcError } from "./transport.ts";
 
 export interface ChHostClient {
   request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T>;
   projects(threadIds: string[]): Promise<ChProjectSnapshot>;
-  /** Native Desktop pin service; a change returns the confirmed complete local pin order. */
+  /** Shared Host native sections; returns the confirmed external pin order. */
   pins(change?: ChPinChange): Promise<string[]>;
   close(): void;
   readonly realtime?: {
@@ -51,6 +52,8 @@ export interface ChProjectSnapshot {
 
 const exec = promisify(execFile);
 const METHODS = new Set([
+  "codexhost/thread/pins/list",
+  "codexhost/thread/pins/set",
   "codexhost/harness/display-settings/get",
   "codexhost/harness/display-settings/set",
   "codexhost/harness/display-settings/capabilities",
@@ -90,6 +93,22 @@ const METHODS = new Set([
   "codexhost/harness/session-import/list",
   "codexhost/harness/session-import/import",
 ]);
+
+async function requestPins(
+  request: ChHostClient["request"],
+  change?: ChPinChange,
+): Promise<string[]> {
+  const value = await request(
+    change ? "codexhost/thread/pins/set" : "codexhost/thread/pins/list",
+    change ? { ...change } : {},
+  );
+  const parsed = clientThreadPinsSchema.safeParse(value);
+  if (!parsed.success)
+    throw new RpcError("host/pins-invalid", "Host returned an invalid native pin snapshot.");
+  if (change && parsed.data.threadIds.includes(change.threadId) !== change.pinned)
+    throw new RpcError("host/pins-unconfirmed", "Host did not confirm the requested pin state.");
+  return [...new Set(parsed.data.threadIds)];
+}
 
 /** Discover only an existing Codex process's debugger flag; no process is launched or signalled. */
 async function desktopEndpoints(explicit?: string): Promise<string[]> {
@@ -210,47 +229,8 @@ export class DesktopChHostClient implements ChHostClient {
     }
   }
 
-  /** Use the same service as Desktop so its section move, legacy metadata and
-   * GUI invalidation stay together. Never write global-state files or UI stores.
-   * Read-only calls preserve Desktop's selected pin source.
-   */
-  async pins(change?: ChPinChange): Promise<string[]> {
-    const client = await this.connect();
-    const expression = `(async () => {
-      const manager = window.__codexhostHostRoutingV1?.forHost('local')?.manager;
-      const service = await manager?.runtime?.pinnedThreads?.();
-      if (!service?.list || !service?.set) return {ok:false,error:'Native Desktop pin service unavailable'};
-      try {
-        const options = {hostId:'local',useAppServerPins:true,preservePinSource:true};
-        const change = ${JSON.stringify(change ?? null)};
-        let value = await service.list(options);
-        if (change && value.threadIds.includes(change.threadId) !== change.pinned) {
-          const result = await service.set({...change,hostId:'local',useAppServerPins:true});
-          if (result?.success !== true) throw new Error('Desktop did not confirm the pin change');
-          value = await service.list(options);
-          if (value.threadIds.includes(change.threadId) !== change.pinned) throw new Error('Desktop pin state changed; refresh before retrying');
-        }
-        return {ok:true,value:value.threadIds};
-      } catch(error) { return {ok:false,error:String(error?.message ?? error),code:error?.code}; }
-    })()`;
-    try {
-      const reply = await client.evaluate<{ ok: boolean; value?: unknown; error?: string }>(
-        expression,
-      );
-      if (!reply.ok)
-        throw new RpcError("host/pins-unavailable", reply.error ?? "Desktop pins unavailable.");
-      if (!Array.isArray(reply.value) || !reply.value.every((id) => typeof id === "string"))
-        throw new RpcError("host/pins-invalid", "Desktop returned an invalid pin snapshot.");
-      return [...new Set(reply.value as string[])];
-    } catch (error) {
-      if (error instanceof RpcError) throw error;
-      this.client = undefined;
-      client.close();
-      throw new RpcError(
-        "host/disconnected",
-        "Desktop pin connection lost; the outcome may be unknown. Refresh before retrying.",
-      );
-    }
+  pins(change?: ChPinChange): Promise<string[]> {
+    return requestPins((method, params) => this.request(method, params), change);
   }
 
   close(): void {
@@ -318,16 +298,7 @@ export async function createChHostClient(
       endpoint?.owner === "service"
         ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", { threadIds: ids })
         : desktop.projects(ids),
-    // Pin mutation still uses Desktop's native service; never write its global-state file.
-    pins: async (change) => {
-      try {
-        return await desktop.pins(change);
-      } catch (error) {
-        if (endpoint?.owner !== "service" || change) throw error;
-        return (await channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", {}))
-          .pinned;
-      }
-    },
+    pins: (change) => requestPins((method, params) => channel.request(method, params), change),
     close() {
       channel.close();
       desktop.close();

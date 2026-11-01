@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
 import { chromium, type Page } from "playwright";
 import { FakeChHost, startFakeChDebugger } from "../support/ch-host.ts";
 import { startServer } from "../support/server.ts";
+import { FakeChChannel, startFakeChChannel } from "../support/ch-channel.ts";
 
 async function shot(page: Page, name: string) {
   if (!process.env.CODEXHOST_TEST_SCREENSHOTS) return;
@@ -14,6 +16,54 @@ async function shot(page: Page, name: string) {
     animations: name.endsWith("refused") ? "allow" : "disabled",
   });
 }
+
+it(
+  "Web pins survive reload and can be cancelled with no Desktop or Renderer connection",
+  { timeout: 60_000 },
+  async (t) => {
+    const directory = mkdtempSync(join(tmpdir(), "ch-headless-web-pins-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const host = new FakeChChannel();
+    host.add("headless", "/computer/project", "Headless pin", false);
+    const channel = await startFakeChChannel(host, directory, "service");
+    t.after(() => channel.close());
+    const url = await startServer(
+      t,
+      resolve(import.meta.dirname, "../.."),
+      ["--import", "tsx", "src/main.ts"],
+      [
+        "--session-source",
+        "codexhost",
+        "--ch-control-directory",
+        directory,
+        "--ch-cdp",
+        "http://127.0.0.1:1",
+      ],
+    );
+    const browser = await chromium.launch();
+    t.after(() => browser.close());
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(url);
+    const row = page.locator('[data-row-key="recent:headless"]');
+    await row.waitFor();
+    await row.hover();
+    await row.getByRole("button", { name: "Pin session", exact: true }).click();
+    const pinned = page.locator('[data-sidebar-pinned] [data-row-key="session:headless"]');
+    await pinned.waitFor();
+    assert.deepEqual(host.pinnedIds, ["headless"]);
+    await page.reload();
+    await pinned.waitFor();
+    await pinned.hover();
+    await pinned.getByRole("button", { name: "Unpin session", exact: true }).click();
+    await pinned.waitFor({ state: "detached" });
+    await row.waitFor();
+    assert.deepEqual(host.pinnedIds, []);
+    assert.deepEqual(host.pinServiceCalls, [], "no Renderer pin service was contacted");
+    assert.deepEqual(errors, []);
+  },
+);
 
 for (const mobile of [false, true]) {
   it(
@@ -27,7 +77,7 @@ for (const mobile of [false, true]) {
       host.add("official", "/computer/reference", "Official Codex is not exposed").modelProvider =
         "openai";
       host.pinnedIds = ["official", "reference-pin"];
-      const debug = await startFakeChDebugger(host);
+      const debug = await startFakeChDebugger(host, { rpc: true });
       t.after(() => debug.close());
       const url = await startServer(
         t,
@@ -45,7 +95,7 @@ for (const mobile of [false, true]) {
       const errors: string[] = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.goto(url);
-      await page.getByText("Native Model", { exact: true }).waitFor();
+      await page.getByText("Native Model", { exact: true }).waitFor({ state: "attached" });
       const openSidebar = page.getByRole("button", { name: "Open sidebar", exact: true });
       if (mobile) await openSidebar.first().click();
       const pins = page.locator("[data-sidebar-pinned]");
@@ -142,7 +192,7 @@ for (const mobile of [false, true]) {
       );
       await shot(page, `pins-${mobile ? "touch" : "desktop"}-gui-change`);
       await page.reload();
-      await page.getByText("Native Model", { exact: true }).waitFor();
+      await page.getByText("Native Model", { exact: true }).waitFor({ state: "attached" });
       if (mobile) await openSidebar.first().click();
       await pins.locator('[data-row-key="session:pin-7"]').waitFor();
       const menu = pins

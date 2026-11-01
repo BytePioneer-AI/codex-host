@@ -211,7 +211,7 @@ for (const first of ["Web", "Desktop"])
         projects: [{ id: "p", name: "Existing Project", rootPaths: [root] }],
         assignments: { [id]: "p" },
         projectless: [],
-        pinned: [id],
+        pinned: [],
       });
       for (const client of clients) client.close();
       // Explicit stop waits for the fixture supervisor's normal child cleanup.

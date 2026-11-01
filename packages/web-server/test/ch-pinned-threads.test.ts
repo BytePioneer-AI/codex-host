@@ -12,7 +12,7 @@ import { Workspaces } from "../src/workspaces.ts";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
 import { FakeChChannel, startFakeChChannel } from "./support/ch-channel.ts";
 
-it("uses Desktop's local native pin service, preserves read source and does not repeat no-op writes", async (t) => {
+it("routes pins through the shared Host protocol and does not repeat no-op writes", async (t) => {
   const host = new FakeChHost();
   const debuggerServer = await startFakeChDebugger(host);
   const client = new DesktopChHostClient(debuggerServer.endpoint);
@@ -28,12 +28,69 @@ it("uses Desktop's local native pin service, preserves read source and does not 
   await client.pins({ threadId: id, pinned: true });
   assert.equal(host.pinWrites.length, 1);
   assert.deepEqual(await client.pins({ threadId: id, pinned: false }), ["other-host-pin"]);
-  for (const call of host.pinServiceCalls) {
-    assert.equal(call.params.hostId, "local");
-    assert.equal(call.params.useAppServerPins, true);
-    if (call.method === "list") assert.equal(call.params.preservePinSource, true);
-  }
-  assert.deepEqual(host.requests, [], "pin service owns native section moves and GUI invalidation");
+  assert.deepEqual(host.pinServiceCalls, [], "never invokes the Renderer pin service");
+  assert.ok(host.requests.every((call) => call.method.startsWith("codexhost/thread/pins/")));
+});
+
+it("uses Host pin RPC with a main-process request manager that has no runtime", async (t) => {
+  const host = new FakeChHost();
+  const debuggerServer = await startFakeChDebugger(host, { rpc: true });
+  const client = new DesktopChHostClient(debuggerServer.endpoint);
+  t.after(async () => {
+    client.close();
+    await debuggerServer.close();
+  });
+  host.pinnedIds = ["official"];
+  const id = 'external-";throw new Error("injected");';
+  assert.deepEqual(await client.pins(), ["official"]);
+  assert.deepEqual(await client.pins({ threadId: id, pinned: true }), ["official", id]);
+  await client.pins({ threadId: id, pinned: true });
+  assert.equal(host.pinWrites.length, 1, "already pinned must not repeat the write");
+  assert.deepEqual(await client.pins({ threadId: id, pinned: false }), ["official"]);
+  assert.deepEqual(host.pinServiceCalls, []);
+  assert.ok(host.requests.every((call) => call.method.startsWith("codexhost/thread/pins/")));
+});
+
+it("preserves RPC service refusals and never replays a write after confirmation fails", async (t) => {
+  const host = new FakeChHost();
+  const debuggerServer = await startFakeChDebugger(host, { rpc: true });
+  const client = new DesktopChHostClient(debuggerServer.endpoint);
+  t.after(async () => {
+    client.close();
+    await debuggerServer.close();
+  });
+  host.pinError = "Native pin refusal";
+  await assert.rejects(client.pins({ threadId: "external", pinned: true }), /Native pin refusal/);
+  assert.equal(host.pinWrites.length, 0);
+  host.pinError = undefined;
+  const original = host.pins.bind(host);
+  host.pins = async (change) => {
+    const ids = await original(change);
+    if (change) host.pinError = "confirmation disconnected";
+    return ids;
+  };
+  await assert.rejects(
+    client.pins({ threadId: "external", pinned: true }),
+    /confirmation disconnected/,
+  );
+  assert.equal(host.pinWrites.length, 1);
+  assert.deepEqual(host.pinnedIds, ["external"]);
+});
+
+it("does not require a Renderer pin service", async (t) => {
+  const host = new FakeChHost();
+  const debuggerServer = await startFakeChDebugger(host, {
+    rpc: true,
+    pinServiceAvailable: false,
+  });
+  const client = new DesktopChHostClient(debuggerServer.endpoint);
+  t.after(async () => {
+    client.close();
+    await debuggerServer.close();
+  });
+  assert.deepEqual(await client.pins({ threadId: "external", pinned: true }), ["external"]);
+  assert.deepEqual(host.pinWrites, [{ threadId: "external", pinned: true }]);
+  assert.deepEqual(host.pinServiceCalls, []);
 });
 
 it("does not replay a write when the confirmation snapshot fails", async (t) => {
@@ -194,18 +251,16 @@ it("serializes polling with pin changes so a slow old snapshot cannot undo a con
   assert.deepEqual(observed.at(-1), []);
 });
 
-it("keeps native Desktop pins available beside the selected realtime Host channel", async (t) => {
+it("pins and unpins through the realtime Host with no Desktop connection", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-channel-pins-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const host = new FakeChChannel();
   host.add("shared", root);
   const channel = await startFakeChChannel(host, root);
-  const debuggerServer = await startFakeChDebugger(host);
-  const client = await createChHostClient({ directory: root, cdp: debuggerServer.endpoint });
+  const client = await createChHostClient({ directory: root, cdp: "http://127.0.0.1:1" });
   t.after(async () => {
     client.close();
     await channel.close();
-    await debuggerServer.close();
   });
   assert.ok(client.realtime, "Thread traffic must retain the realtime owner");
   assert.deepEqual(await client.pins({ threadId: "shared", pinned: true }), ["shared"]);

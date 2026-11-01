@@ -1,13 +1,15 @@
 import { open } from "node:fs/promises";
 import path from "node:path";
 import { homedir } from "node:os";
-import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
+import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   clientWorkspaceSnapshotSchema,
   type ClientWorkspaceSnapshot,
 } from "@codexhost/shared-contracts";
 
-/** Read Desktop's persisted metadata, never infer projects from execution cwd or write its file. */
+import { externalPinIds } from "./external-thread-pins.js";
+
+/** Read Desktop's persisted projects, never infer them from execution cwd or write its file. */
 export async function readNativeWorkspaceSnapshot(
   environment: NodeJS.ProcessEnv,
 ): Promise<ClientWorkspaceSnapshot> {
@@ -63,7 +65,7 @@ export async function readNativeWorkspaceSnapshot(
       }),
     ),
     projectless: state["projectless-thread-ids"] ?? [],
-    pinned: state["pinned-thread-ids"] ?? [],
+    pinned: [],
   });
 }
 
@@ -71,6 +73,7 @@ export async function readNativeWorkspaceSnapshot(
 export async function readExternalWorkspaceSnapshot(
   environment: NodeJS.ProcessEnv,
   threads: readonly StoredThreadRecordV1[],
+  placements: readonly StoredSectionPlacementV1[],
 ): Promise<ClientWorkspaceSnapshot> {
   const snapshot = await readNativeWorkspaceSnapshot(environment);
   const owned = new Set(threads.map((thread) => String(thread.hostThreadId)));
@@ -92,6 +95,6 @@ export async function readExternalWorkspaceSnapshot(
     ...snapshot,
     assignments,
     projectless: [...projectless],
-    pinned: snapshot.pinned.filter((id) => owned.has(id)),
+    pinned: externalPinIds(threads, placements),
   };
 }

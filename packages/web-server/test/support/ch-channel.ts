@@ -142,7 +142,11 @@ export class FakeChChannel extends FakeChHost {
   }
 }
 
-export async function startFakeChChannel(host: FakeChChannel, directory: string) {
+export async function startFakeChChannel(
+  host: FakeChChannel,
+  directory: string,
+  owner?: "service",
+) {
   const token = randomBytes(32).toString("hex");
   const server = createServer((request, response) => {
     if (request.headers.authorization !== `Bearer ${token}`) {
@@ -189,6 +193,7 @@ export async function startFakeChChannel(host: FakeChChannel, directory: string)
     file,
     JSON.stringify({
       version: 1,
+      owner,
       pid: process.pid,
       port: (server.address() as AddressInfo).port,
       token,

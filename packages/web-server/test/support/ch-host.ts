@@ -23,7 +23,7 @@ export class FakeChHost implements ChHostClient {
   readonly pinServiceCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
   async pins(change?: ChPinChange): Promise<string[]> {
     if (this.closed || this.pinError) throw new Error(this.pinError ?? "Host offline");
-    if (change) {
+    if (change && this.pinnedIds.includes(change.threadId) !== change.pinned) {
       this.pinWrites.push(change);
       this.pinnedIds = this.pinnedIds.filter((id) => id !== change.threadId);
       if (change.pinned) this.pinnedIds.push(change.threadId);
@@ -95,6 +95,16 @@ export class FakeChHost implements ChHostClient {
     let value: unknown;
     const row = this.threads.get(String(params.threadId));
     switch (method) {
+      case "codexhost/workspace/read":
+        value = { ...structuredClone(this.projectSnapshot), pinned: [...this.pinnedIds] };
+        break;
+      case "codexhost/thread/pins/list":
+        value = { threadIds: await this.pins() };
+        break;
+      case "codexhost/thread/pins/set":
+        await this.pins({ threadId: String(params.threadId), pinned: params.pinned === true });
+        value = { threadIds: await this.pins() };
+        break;
       case "codexhost/harness/display-settings/capabilities":
         value = { events: false };
         break;
@@ -281,7 +291,10 @@ export class FakeChHost implements ChHostClient {
 }
 
 /** Browser acceptance reaches the production Desktop transport through an isolated fake CDP peer. */
-export async function startFakeChDebugger(host: FakeChHost) {
+export async function startFakeChDebugger(
+  host: FakeChHost,
+  options: { rpc?: boolean; pinServiceAvailable?: boolean } = {},
+) {
   const server = createServer((_req, res) => {
     res.setHeader("content-type", "application/json");
     res.end(
@@ -312,28 +325,34 @@ export async function startFakeChDebugger(host: FakeChHost) {
         socket.send(JSON.stringify({ id: frame.id, result: {} }));
         return;
       }
+      const pinService =
+        options.pinServiceAvailable === false
+          ? null
+          : {
+              list: async (params: Record<string, unknown>) => {
+                host.pinServiceCalls.push({ method: "list", params });
+                return { threadIds: await host.pins() };
+              },
+              set: async (params: Record<string, unknown>) => {
+                host.pinServiceCalls.push({ method: "set", params });
+                await host.pins({
+                  threadId: String(params.threadId),
+                  pinned: params.pinned === true,
+                });
+                return { success: true };
+              },
+            };
       const window = {
-        __codexhostRendererBindingProbeV1: {},
+        __codexhostRendererBindingProbeV1: options.rpc
+          ? { pinnedThreads: async () => pinService }
+          : {},
         __codexhostHostRoutingV1: {
           knownHostIds: () => ["local"],
           forHost: () => ({
             manager: {
-              runtime: {
-                pinnedThreads: async () => ({
-                  list: async (params: Record<string, unknown>) => {
-                    host.pinServiceCalls.push({ method: "list", params });
-                    return { threadIds: await host.pins() };
-                  },
-                  set: async (params: Record<string, unknown>) => {
-                    host.pinServiceCalls.push({ method: "set", params });
-                    await host.pins({
-                      threadId: String(params.threadId),
-                      pinned: params.pinned === true,
-                    });
-                    return { success: true };
-                  },
-                }),
-              },
+              ...(options.rpc
+                ? { kind: "main-process-rpc" }
+                : { runtime: { pinnedThreads: async () => pinService } }),
               threadWorkspaceStorage: {
                 storage: {
                   readGlobalState: async (key: string) => {

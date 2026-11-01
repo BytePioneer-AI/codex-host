@@ -125,6 +125,7 @@ export interface DesktopThreadRoutingHost {
     listRequest: DecodedThreadListRequest,
     origin: HostRequestOrigin,
   ): Promise<void>;
+  runSectionOperation<T>(run: () => Promise<T>): Promise<T>;
   moveThreadSection(
     request: JsonRpcRequest,
     frame: Buffer<ArrayBufferLike>,
@@ -196,7 +197,6 @@ export interface DesktopThreadRoutingHost {
  */
 export class DesktopThreadRouting {
   readonly #host: DesktopThreadRoutingHost;
-  #sectionMoves: Promise<void> = Promise.resolve();
 
   constructor(host: DesktopThreadRoutingHost) {
     this.#host = host;
@@ -366,10 +366,9 @@ export class DesktopThreadRouting {
         return true;
       }
       // Moves read and rewrite one shared order, so they apply one at a time.
-      const task = this.#sectionMoves.then(() =>
+      const task = this.#host.runSectionOperation(() =>
         this.#host.moveThreadSection(request, frame, move),
       );
-      this.#sectionMoves = task.catch(() => undefined);
       this.#host.dispatchReply(request, () => task);
       return true;
     }

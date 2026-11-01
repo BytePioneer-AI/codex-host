@@ -146,6 +146,51 @@ const command = (id = "host-turn") => ({
 });
 
 describe("TRAE CN public Session core", () => {
+  it("publishes context occupancy for its active Turn and isolates usage refresh errors", async () => {
+    const test = await setup(true, true);
+    try {
+      await test.session.execute(command());
+      await vi.waitFor(() => expect(test.service.subscribe).toHaveBeenCalledOnce());
+      const listener = test.service.subscribe.mock.calls[0]?.[1];
+      if (!listener) throw new Error("Missing live observer");
+      listener.data({
+        event: "token_usage",
+        payload: {
+          last_turn_total_tokens: 250,
+          max_tokens: 1000,
+          prompt_tokens: 200,
+          completion_tokens: 50,
+          prompt_tokens_total: 0,
+          completion_tokens_total: 0,
+        },
+      });
+      const before = test.call.mock.calls.length;
+      await test.session.refreshUsage();
+      expect(test.call).toHaveBeenCalledTimes(before);
+      test.finish("completed");
+      const outputs = await completed(test.iterator);
+      expect(
+        outputs.filter((o) => o.kind === "event" && o.event.type === "session.usage.changed"),
+      ).toMatchObject([
+        {
+          event: {
+            type: "session.usage.changed",
+            observedForTurnId: "host-turn",
+            usage: { contextUsedTokens: 250, contextWindowTokens: 1000, contextUsagePercent: 25 },
+          },
+        },
+      ]);
+      const usage = outputs.find(
+        (o) => o.kind === "event" && o.event.type === "session.usage.changed",
+      );
+      expect(JSON.stringify(usage)).not.toContain("inputTokens");
+      test.call.mockRejectedValueOnce(new Error("usage temporarily unavailable"));
+      await expect(test.session.refreshUsage()).resolves.toBeUndefined();
+      expect(await test.session.execute(command("next"))).toMatchObject({ ok: true });
+    } finally {
+      await test.close();
+    }
+  });
   it("opens lazily and publishes only native-confirmed identity and configuration", async () => {
     const test = await setup();
     try {

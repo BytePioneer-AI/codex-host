@@ -18,4 +18,6 @@ Use **CodexHost: Restart TRAE CN Bridge** in the command palette if the connecti
 
 Companion 0.1.1 reads complete native file changes from the message snapshot after execution. It does not infer a Diff from the empty file bodies in streamed tool parameters. Install the matching VSIX when upgrading the Harness plugin; older Companions cannot provide these snapshots. File content above 2 MiB per native message is rejected explicitly.
 
+Companion 0.1.2 also exports the native numeric context counters. The Harness reports context occupancy only: this Desktop version's stored counters describe the latest model request and do not establish cumulative Session token consumption or cost. Missing usage stays unknown; refreshing it does not start a model Turn.
+
 [Source and integration details](https://github.com/BytePioneer-AI/codex-host/blob/main/docs/harnesses/trae-cn/trae-cn-desktop-integration.md)

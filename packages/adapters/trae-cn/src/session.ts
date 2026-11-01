@@ -7,6 +7,7 @@ import {
   type HarnessSessionState,
   type HarnessOutput,
   type HostEvent,
+  type HostUsage,
   type HostCommand,
   type HarnessResult,
   type HostThreadSnapshot,
@@ -31,6 +32,7 @@ import {
   type HarnessModelRef,
   type NativeSessionRef,
   type HarnessTurnRecovery,
+  type HostTurnId,
   harnessTurnRecoverySchema,
 } from "@codexhost/shared-contracts";
 import type { BridgeClient } from "./bridge.js";
@@ -41,6 +43,7 @@ import { projectHistory, TRAE_CN_ID, nativeTurnRef as confirmedNativeTurnRef } f
 import { LiveItems } from "./live-items.js";
 import { sameDirectory } from "./discovery.js";
 import { NativeInteractions } from "./interactions.js";
+import { nativeContextUsage, contextUsageFromHistory } from "./usage.js";
 
 // This initial core deliberately does not advertise configuration writes or
 // history derivation before those native operations have their own acceptance.
@@ -71,6 +74,7 @@ export interface SessionOptions {
   model?: HarnessModelRef;
   nativeRef?: NativeSessionRef;
   initialState?: HarnessSessionState;
+  initialUsage?: HostUsage | null;
   recoveringTurn?: HarnessTurnRecovery;
   recoverySnapshot?: HostThreadSnapshot;
   onClose?: () => void;
@@ -115,7 +119,7 @@ export class TraeCnSession implements HarnessSession {
   readonly recoveringTurn?: HarnessTurnRecovery;
   readonly harnessId = TRAE_CN_ID;
   readonly capabilities = SESSION_CAPABILITIES;
-  readonly initialUsage = null;
+  readonly initialUsage: HostUsage | null;
   readonly initialState: HarnessSessionState;
   readonly outputs: AsyncIterable<HarnessOutput>;
   #channel = new HarnessOutputChannel<HarnessOutput>();
@@ -126,6 +130,7 @@ export class TraeCnSession implements HarnessSession {
   #detach: (() => void) | undefined;
   #observerFail: ((error: unknown) => void) | undefined;
   #recoverySnapshot: HostThreadSnapshot | undefined;
+  #usage: HostUsage | null;
 
   constructor(private readonly options: SessionOptions) {
     if (options.nativeRef) validateReference(options.nativeRef, options.inspection, options.cwd);
@@ -134,6 +139,8 @@ export class TraeCnSession implements HarnessSession {
       ...(options.nativeRef ? { nativeRef: options.nativeRef } : {}),
     };
     this.#state = this.initialState;
+    this.initialUsage = options.initialUsage ?? null;
+    this.#usage = this.initialUsage;
     this.outputs = this.#channel.outputs;
     if (options.model) nativeModelId(options.inspection, options.model);
     if (options.recoveringTurn) {
@@ -172,6 +179,30 @@ export class TraeCnSession implements HarnessSession {
     this.#emit({ type: "session.state.changed", state });
   }
 
+  #setUsage(usage: HostUsage, turnId?: HostTurnId): void {
+    if (JSON.stringify(usage) === JSON.stringify(this.#usage)) return;
+    this.#usage = usage;
+    this.#emit({
+      type: "session.usage.changed",
+      usage,
+      ...(turnId ? { observedForTurnId: turnId } : {}),
+    });
+  }
+
+  async refreshUsage(): Promise<void> {
+    if (this.#closed || this.#active || !this.#state.nativeRef) return;
+    try {
+      const value = await this.options.client.call("snapshot", {
+        sessionId: this.#state.nativeRef.nativeSessionId,
+      });
+      if (this.#closed || this.#active) return;
+      const usage = contextUsageFromHistory(value);
+      if (usage) this.#setUsage(usage);
+    } catch {
+      /* Usage refresh must not turn an otherwise usable Session into a failure. */
+    }
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed) return this.#snapshot();
     if (this.#active && this.#recoverySnapshot)
@@ -206,6 +237,8 @@ export class TraeCnSession implements HarnessSession {
       });
       if (!allowPending && record(value) && [2, 3, 8, 9, 10].includes(Number(value.status)))
         throw new TraeError("sessionBusy", "The native Session has active work");
+      const usage = contextUsageFromHistory(value, this.#active?.messageId);
+      if (usage) this.#setUsage(usage, this.#active?.command.turnId);
       return {
         ok: true,
         value: {
@@ -476,6 +509,9 @@ export class TraeCnSession implements HarnessSession {
                     this.options.inspection.agentType,
                   );
                   if (effectiveModel) this.#setState({ ...this.#state, effectiveModel });
+                } else if (event.event === "token_usage") {
+                  const usage = nativeContextUsage(payload);
+                  if (usage) this.#setUsage(usage, turn.command.turnId);
                 } else if (event.event === "done") terminal = true;
                 else if (event.event === "error")
                   nativeError = new TraeError(

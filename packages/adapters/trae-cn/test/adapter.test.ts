@@ -41,6 +41,7 @@ async function setup() {
       reply_to_message_id: "user",
       status: "completed",
       model: { config_name: "configured" },
+      tokenUsage: { last_turn_total_tokens: 600, max_tokens: 1000 },
       content: '{"messages":[]}',
     },
   ];
@@ -98,6 +99,25 @@ async function setup() {
 }
 
 describe("TRAE CN public Adapter core", () => {
+  it("restores only native context occupancy as initial Session usage", async () => {
+    const test = await setup();
+    try {
+      const opened = await test.adapter.open({
+        kind: "resume",
+        cwd: test.cwd,
+        nativeRef: test.reference,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.initialUsage).toEqual({
+        contextUsedTokens: 600,
+        contextWindowTokens: 1000,
+        contextUsagePercent: 60,
+      });
+      expect(test.service.call.mock.calls.every(([method]) => method === "snapshot")).toBe(true);
+    } finally {
+      await test.close();
+    }
+  });
   it("reattaches only an active native task with its confirmed original Host identity", async () => {
     const test = await setup();
     try {

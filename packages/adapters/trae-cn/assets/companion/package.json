@@ -3,7 +3,7 @@
   "publisher": "codexhost",
   "displayName": "CodexHost TRAE CN Bridge",
   "description": "Connect CodexHost to the native Agent in TRAE CN Desktop.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "LGPL-3.0-only",
   "repository": {
     "type": "git",

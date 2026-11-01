@@ -1,9 +1,9 @@
 import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 
-const { DesktopService, publicEvent, publicHistoryItem } = createRequire(import.meta.url)(
-  "../assets/companion/service.cjs",
-);
+const { DesktopService, publicEvent, publicHistoryItem, publicTokenUsage } = createRequire(
+  import.meta.url,
+)("../assets/companion/service.cjs");
 
 const model = {
   name: "configured",
@@ -39,6 +39,30 @@ function setup() {
 }
 
 describe("TRAE CN desktop bridge service", () => {
+  it("exports reliable numeric counters without treating native display strings as usage", () => {
+    expect(
+      publicTokenUsage({
+        prompt_tokens: 42,
+        max_tokens: 100,
+        input: "0.000",
+        output: "0.000",
+        prompt_tokens_total: 0,
+        token: "private",
+        reasoning_tokens: -1,
+        completion_tokens: 1.5,
+      }),
+    ).toEqual({ prompt_tokens: 42, prompt_tokens_total: 0, max_tokens: 100 });
+    expect(publicTokenUsage({ input: "42.000", output: "0.001" })).toBeUndefined();
+    expect(
+      publicHistoryItem({
+        token_usage: JSON.stringify({
+          last_turn_total_tokens: 10,
+          max_tokens: 100,
+          internal: "private",
+        }),
+      }),
+    ).toEqual({ tokenUsage: { last_turn_total_tokens: 10, max_tokens: 100 } });
+  });
   it("reads native message diffs using the validated project and original user message", async () => {
     const { service, call } = setup();
     const original = call.getMockImplementation();

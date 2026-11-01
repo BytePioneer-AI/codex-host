@@ -3,6 +3,7 @@ import type {
   HarnessInspection,
   HarnessResult,
   HarnessSession,
+  HostUsage,
   InspectHarnessInput,
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
@@ -18,6 +19,7 @@ import { harnessError, record, TraeError } from "./errors.js";
 import { projectHistory, TRAE_CN_ID } from "./history.js";
 import { modelCatalog } from "./models.js";
 import type { BridgeInspection } from "./protocol.js";
+import { contextUsageFromHistory } from "./usage.js";
 import { TraeCnSession, SESSION_CAPABILITIES, validateReference } from "./session.js";
 
 export type TraeCnAdapterOptions = Omit<BridgeOptions, "cwd"> & { cwd?: string };
@@ -93,6 +95,7 @@ export class TraeCnAdapter implements HarnessAdapter {
       let effectiveModel: HarnessModelRef | undefined;
       let recoveringTurn: HarnessTurnRecovery | undefined;
       let recoverySnapshot: HostThreadSnapshot | undefined;
+      let initialUsage: HostUsage | null = null;
       if (input.kind === "resume") {
         validateReference(input.nativeRef, inspection, input.cwd);
         if (
@@ -123,6 +126,7 @@ export class TraeCnAdapter implements HarnessAdapter {
             "configurationRequired",
             "Native Session Project or workspace does not match its persisted reference",
           );
+        initialUsage = contextUsageFromHistory(native);
         const snapshot = projectHistory(
           native,
           input.nativeRef.nativeSessionId,
@@ -177,6 +181,7 @@ export class TraeCnAdapter implements HarnessAdapter {
         ...(selected ? { model: selected } : {}),
         ...(input.kind === "resume" ? { nativeRef: input.nativeRef } : {}),
         initialState: { ...(effectiveModel ? { effectiveModel } : {}) },
+        initialUsage,
         ...(recoveringTurn && recoverySnapshot ? { recoveringTurn, recoverySnapshot } : {}),
         onClose: () => this.#sessions.delete(session),
       });

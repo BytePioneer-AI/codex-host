@@ -52,6 +52,29 @@ function publicModelState(value) {
   );
 }
 
+/** Only native numeric counters cross the bridge; display strings are not token facts. */
+function publicTokenUsage(value) {
+  const usage = parse(value);
+  if (!record(usage)) return undefined;
+  const result = Object.fromEntries(
+    [
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens",
+      "reasoning_tokens",
+      "cache_creation_input_tokens",
+      "cache_read_input_tokens",
+      "prompt_tokens_total",
+      "completion_tokens_total",
+      "last_turn_total_tokens",
+      "max_tokens",
+    ]
+      .filter((key) => Number.isSafeInteger(usage[key]) && usage[key] >= 0)
+      .map((key) => [key, usage[key]]),
+  );
+  return Object.keys(result).length ? result : undefined;
+}
+
 /** Native errors can embed account/config objects. Keep only the short diagnostic prefix. */
 function publicError(value) {
   const error = parse(value) ?? value;
@@ -100,6 +123,8 @@ function publicHistoryItem(item) {
   const context = parse(item.user_message_context);
   const model = publicModelState(context?.model_info);
   if (model) value.model = model;
+  const usage = publicTokenUsage(item.token_usage);
+  if (usage) value.tokenUsage = usage;
   if (item.error) value.error = publicError(item.error);
   return value;
 }
@@ -454,4 +479,4 @@ class DesktopService {
   }
 }
 
-module.exports = { DesktopService, publicEvent, publicHistoryItem, publicError };
+module.exports = { DesktopService, publicEvent, publicHistoryItem, publicError, publicTokenUsage };

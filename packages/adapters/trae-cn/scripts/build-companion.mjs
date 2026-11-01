@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -25,8 +25,11 @@ export async function buildCompanion(
 ) {
   const destination = path.resolve(outputFile);
   if (!destination.endsWith(".vsix")) throw new Error("Companion output must be a .vsix file");
-  const staging = await mkdtemp(path.join(os.tmpdir(), "codexhost-trae-companion-"));
-  const relative = path.relative(os.tmpdir(), staging);
+  // tinyglobby resolves /var to /private/var on macOS. Use the same physical
+  // root before packaging, or vsce reports escaping relative resource paths.
+  const temporaryRoot = await realpath(os.tmpdir());
+  const staging = await mkdtemp(path.join(temporaryRoot, "codexhost-trae-companion-"));
+  const relative = path.relative(temporaryRoot, staging);
   if (!relative.startsWith("codexhost-trae-companion-") || relative.includes(path.sep))
     throw new Error("Unexpected Companion staging directory");
   try {

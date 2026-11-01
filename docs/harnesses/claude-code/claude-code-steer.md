@@ -24,7 +24,9 @@ Host 在原生接受后自己发当前 Turn 的 `userMessage` Item。Adapter 不
 
 CLI 先发 `command_lifecycle` `queued`，表示 Claude 已接受这条输入；根级工具执行中插入时，工具调用结束后发 `started`，插入进入正在运行的 Turn；续态窗口插入时，`started` 在当前续态输出结束、插入作为下一原生 turn 运行之时发出。Adapter 在 `queued` 时返回 `{ accepted: true }`：此后由 Claude 负责送达，不等 `started`，否则调用方要被整段工具调用挂住（Desktop 提交约 30 秒超时）。输入一旦写入就无法撤回，所以本轮的 `result` 先于 `queued` 到达时不拒绝，仍按接受处理：此时 Turn 不结束，保持 held，插入作为该 Turn 的下一段运行，不再落入另一轮，期间 `turn.start` 返回 `sessionBusy`；`queued` 回执迟迟不到时，等待 5 秒后同样按接受处理，避免串行处理请求的调用方（如 Harness Broker）被无限期占住。只有目标不是当前 Turn、CLI 不支持、当前是自主 Turn、取消已在进行、两个可插入窗口（根级工具执行中与 held Turn 续态）都不成立，或输入写入失败时，才返回失败。写入后会话关闭或出错时抛出回执丢失异常，不返回表示未收下的拒绝结果，Host 不自动重发；Session 故障仍经原有故障路径报告。空文本返回 `invalidRequest`。忙时 `turn.start` 仍是 `sessionBusy`。
 
-插入被接受后、还没并入之前，如果用户停止了这一轮，处理取决于 Turn 是否 held。根级工具执行中、非 held 的活跃 Turn 仍按 SDK 的中断语义，仍在排队的插入会在下一轮执行：公开的 SDK 接口目前没有撤回单条排队消息的方法，Adapter 不处理这种情况，这个窗口只剩当前那次工具调用的剩余时间。held Turn（包括因存在待接管的插入而保持 held 的）则不立即结束，而是走停止后台工作并等待安静的取消流程：插入随后被接管时，它运行所在的原生段会被中断；以终态结束却未被接管时，取消随即收口；迟迟没有结果时沿用既有的取消升级，超时后关闭原生进程。续态窗口插入、尚未被接管时被停止就属于这种情况，窗口只剩插入写入到出现结果之间的短暂时间，且取消已开始后不再接受新的插入。
+用户停止 Turn 时，只要还有已写入、尚未被原生接管的插入，无论 Turn 是否 held，Adapter 都走停止后台工作并等待安静的取消流程。SDK 中断不保证丢弃排队输入，因此当前 Root 的 `result` 不会提前结束这个 Turn：插入随后发出 `started` 时，它运行所在的原生段也会被中断；以终态结束却未被接管时，取消进入安静期；迟迟没有结果时沿用既有的取消升级，超时后关闭原生进程。取消期间 `turn.start` 返回 `sessionBusy`，且不再接受新的插入；所有待接管插入已结算、后台任务已确认停止、Root 段已结束，并经过 continuation 安静期（默认 2 秒）后，Turn 才结束为 cancelled。没有待接管插入、也没有后台或续态工作的普通停止路径不变。
+
+插入的 `command_lifecycle started` 可以是 Root result 后的首个 idle 帧。Transport 在发出中断前确保该段的 accumulator 已创建并记录取消，使后续 `aborted_tools` / `aborted_streaming` 原生终态按取消处理；其他失败或无法证明中断的终态仍按失败处理。
 
 ## 版本
 
@@ -35,6 +37,8 @@ CLI 先发 `command_lifecycle` `queued`，表示 Claude 已接受这条输入；
 原生把插入记成同一条 transcript 里的 `queued_command` attachment（`commandMode: "prompt"`，`source_uuid` 是插入消息 id），不是新的 user 消息。现有历史解析忽略 attachment，所以刷新后仍是原来那一轮，插入文本不会变成单独的 Turn 或 Item。
 
 ## 验证
+
+自动化回归：`packages/adapters/claude-code/test/claude-code-adapter.test.ts` 的 `preserves cancellation when a native steer starts before its idle accumulator exists` 使用真实 `ClaudeSdkTransport` 与 `FakeQuery`，按 Root 中断结果 → 插入 `started`（首个 idle 帧）→ 插入中断结果的顺序送入 SDK 消息，断言最终为 cancelled、等待期间拒绝新 Turn、结束后可启动新 Turn，且没有自主 Turn。这是合成 SDK 流测试，不代表真实 CLI 或 Desktop 实机验收。
 
 实机：模型 `haiku`，权限 `bypassPermissions`，一轮里调用 Bash 执行 `sleep 4; echo tool-done`，工具开始后以 `priority: "next"` 插入一句。流里只有一次 `result`（`subtype: "success"`，`terminal_reason: "completed"`）。`started` 出现在工具结果之后、下一次模型请求之前，模型回复提到了插入的句子。因此实时结果处理不改：纯文本 user 回显本来就被忽略，第一个 `result` 仍是本轮结束。
 

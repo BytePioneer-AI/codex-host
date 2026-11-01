@@ -66,6 +66,21 @@ describe("official Codex passthrough", () => {
     },
     { method: "thread/section/move", params: { threadId: "official-thread", sectionId: 7 } },
     { method: "turn/start" },
+    {
+      method: "turn/start",
+      params: {
+        threadId: "official-thread",
+        input: [{ type: "image", url: "data:image/png;base64,aGVsbG8=" }],
+      },
+    },
+    {
+      method: "turn/steer",
+      params: {
+        threadId: "official-thread",
+        expectedTurnId: "official-turn",
+        input: [{ type: "localImage", path: "C:\\images\\截图.png" }],
+      },
+    },
     { method: "turn/interrupt", params: "future-params-shape" },
     { method: "thread/read" },
     { method: "future/method", params: { anything: [1, "two"] } },

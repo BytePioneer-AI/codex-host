@@ -28,6 +28,51 @@ function message(type: "user" | "assistant", uuid: string, content: unknown) {
 }
 
 describe("Claude transcript reader", () => {
+  it("preserves native API failures when restoring a Turn from the transcript", async () => {
+    const configDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-claude-"));
+    directories.push(configDirectory);
+    const cwd = "/work/project";
+    const transcriptDirectory = path.join(configDirectory, "projects", projectDirectoryName(cwd));
+    await mkdir(transcriptDirectory, { recursive: true });
+    const errorText =
+      "API Error: 400 historical encrypted reasoning belongs to multiple upstream accounts";
+    await writeFile(
+      path.join(transcriptDirectory, "session-1.jsonl"),
+      [
+        message("user", "user-1", "continue"),
+        {
+          ...message("assistant", "assistant-error", [{ type: "text", text: errorText }]),
+          error: "unknown",
+          isApiErrorMessage: true,
+          apiErrorStatus: 400,
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n"),
+      "utf8",
+    );
+
+    const transcript = await readClaudeTranscript({
+      cwd,
+      environment: { CLAUDE_CONFIG_DIR: configDirectory },
+      sessionId: "session-1",
+    });
+
+    expect(transcript).not.toBeNull();
+    expect(transcript && mapClaudeSnapshot(transcript, "session-1").turns).toMatchObject([
+      {
+        nativeTurnRef: { nativeTurnKey: "user-1" },
+        outcome: { status: "failed", error: { code: "nativeFailure" } },
+        items: [
+          {
+            item: { type: "agentMessage", text: errorText },
+            outcome: { status: "failed" },
+          },
+        ],
+      },
+    ]);
+  });
+
   it.each([false, true])(
     "normalizes repeated UUIDs before projection, retaining their order and latest record (updated=%s)",
     async (updated) => {

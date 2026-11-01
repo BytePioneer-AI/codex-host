@@ -8,6 +8,9 @@ export interface CursorNativeTurn {
   text: string;
   /** Native conversation root immediately before this user turn, when available. */
   rewindRoot?: string;
+  /** Cursor wrote this user record itself to report a finished background task (field 15),
+   * not as the echo of a prompt the Host submitted. */
+  notification?: true;
 }
 
 export function cursorConfigDirectory(environment: NodeJS.ProcessEnv): string {
@@ -140,6 +143,7 @@ export function readCursorNativeHistory(
           id,
           text: one(user, 1).toString("utf8"),
           ...(rewindRoot ? { rewindRoot } : {}),
+          ...(user.get(15)?.length ? { notification: true as const } : {}),
         });
       }
     }

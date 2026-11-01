@@ -40,6 +40,23 @@ describe("remote SSH Host CLI", () => {
     expect(stderr.text()).toBe("");
   });
 
+  it("prints usage for a help command followed by the npm wrapper's resources", async () => {
+    const help = textSink();
+    await runRemoteHostCli({ arguments: ["--help"], output: help.output });
+    const stdout = textSink();
+    const stderr = textSink();
+
+    await expect(
+      runRemoteHostCli({
+        arguments: ["help", "--node", "/node", "--shim", "/shim", "--host-runtime", "/host.mjs"],
+        output: stdout.output,
+        diagnosticOutput: stderr.output,
+      }),
+    ).resolves.toBe(0);
+    expect(stdout.text()).toBe(help.text());
+    expect(stderr.text()).toBe("");
+  });
+
   it("reports an absent installation without mutating the host", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-cli-"));
     const stdout = textSink();

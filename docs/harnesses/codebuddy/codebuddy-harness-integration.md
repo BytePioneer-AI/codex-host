@@ -147,6 +147,16 @@ a successful Item requires a newly persisted `isCompacted` summary, and native
 failure/cancellation preserves the corresponding Item outcome. Ordinary prompts still require
 exactly one persisted Native Turn.
 
+Outside command and compaction records, history rows with
+`startsNewUserRequest: false` continue the active Turn. Explicit `isMeta: true`
+rows and rows consisting entirely of `<system-reminder data-role="user-context">`
+blocks are hidden, even when their contents quote `<user_query>`. Other continuation
+text, including native steer messages, is retained in the active Turn's input
+without changing its native ID, checkpoint or pending Tools. An explicit
+`startsNewUserRequest: true` still opens a new Turn, including on meta rows;
+`<user_query>` text alone does not override continuation metadata. This is history
+projection, not support for sending Host `turn.steer` commands.
+
 Focused adapter tests cover catalog refresh, removed/invalid commands, native
 arguments, busy rejection, cancellation recovery, command histories, compaction
 projection, and per-Thread environment propagation. A real macOS CLI probe executed

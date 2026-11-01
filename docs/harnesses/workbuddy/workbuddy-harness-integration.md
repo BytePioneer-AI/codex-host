@@ -110,6 +110,10 @@ WorkBuddy 插件复用经过验证的 CodeBuddy ACP Session 语义，但保持�
 
 上述“已实现”表示 Adapter 的协议和公共契约路径已接线，不表示本轮完成了认证后的付费在线验收。尤其是 Model 目录、权限名称、历史格式和子 Agent 事件仍须在已登录的目标账号与实际 WorkBuddy 版本上复核；运行时以原生响应为准，不把 2.137.1 的观察结果硬编码为永久产品能力。
 
+### 原生历史续行
+
+共享历史投影在普通消息路径中将 `startsNewUserRequest: false` 视为当前 Turn 的续行，而非新的用户请求。`isMeta: true` 的内部行，以及正文完全由 `<system-reminder data-role="user-context">…</system-reminder>` 包装块和空白组成的行不进入用户输入；包装内引用 `<user_query>` 不改变这一判断。其他续行文本（包括原生 steer 的真实用户追加）保留在当前 Turn 的 input 中，不改变原生 Turn ID、checkpoint 或待完成工具的关联。`startsNewUserRequest: true` 仍创建新 Turn，即使同时带有 `isMeta: true`；正文中的 `<user_query>` 不覆盖续行元数据。本地命令与压缩记录继续使用各自的专用投影。这一历史读取行为不表示 Host 已支持发送 `turn.steer`。
+
 ### 流式消息身份与显示边界
 
 WorkBuddy 原生 ACP 可以在同一次 Prompt 的多次模型回复间复用顶层 `messageId`；单次模型回复的身份由 `_meta["codebuddy.ai/llmMessageId"]` 提供。共用的 CodeBuddy Adapter 优先使用后者划分回复，旧运行时依次回退到顶层 `messageId` 与 `_meta["codebuddy.ai/messageId"]`。新回复、普通工具、原生 Agent 子任务启动和原生压缩会结束前一段文本与 Reasoning；子任务内部通知、重复工具通知和已有工具的完成通知不会切断父消息。每段分配独立的公共 Item 身份，即使原生 ID 缺失或在工具前后复用，也不会把最终回答追加到已完成的过程消息中。

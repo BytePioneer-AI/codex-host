@@ -24,6 +24,7 @@ afterEach(async () => {
 async function open(query: QoderQuery = new ControlledQuery()) {
   let options: QoderOptions | undefined;
   const adapter = new QoderAdapter({
+    getAvailableModels: async () => [],
     resolveExecutable: () => "D:/tools/qodercli.exe",
     queryFactory: (input) => {
       options = input.options;
@@ -218,6 +219,7 @@ describe("Qoder unattended execution", () => {
       const query = new ControlledQuery();
       let options: QoderOptions | undefined;
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "qodercli",
         queryFactory: (input) => {
           options = input.options;

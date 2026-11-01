@@ -14,6 +14,7 @@ import {
   type ThreadWaitInput,
   type ThreadWatchInput,
 } from "./delegation-types.js";
+import { matchesBearerToken } from "./bearer-token.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
@@ -116,7 +117,7 @@ export async function startDelegationControlServer(input: {
         });
         return;
       }
-      if (request.headers.authorization !== `Bearer ${input.token}`) {
+      if (!matchesBearerToken(request.headers.authorization, input.token)) {
         writeJson(response, 401, {
           error: { code: "RUNTIME_UNREACHABLE", message: "Runtime token is invalid" },
         });

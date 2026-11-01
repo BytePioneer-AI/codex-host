@@ -10,32 +10,34 @@ import { HermesGatewaySessionTransport } from "../src/gateway-session-transport.
 import { HermesSession } from "../src/hermes-session.js";
 import type { HermesTransportEvent } from "../src/hermes-transport.js";
 
-// Stand-in for Hermes's provider-aware parse_model_input (a configured named
-// custom provider wins over the plain `provider:model` split).
-vi.mock("../src/gateway-configuration.js", () => ({
-  resolveGatewayModel: async (_transport: unknown, modelId: string) => {
-    if (modelId.startsWith("custom:omniroute:"))
-      return { provider: "custom:omniroute", model: modelId.slice("custom:omniroute:".length) };
-    const colon = modelId.indexOf(":");
-    return colon > 0
-      ? { provider: modelId.slice(0, colon), model: modelId.slice(colon + 1) }
-      : { provider: "", model: modelId };
-  },
-}));
-
 function fixture() {
   const raw = new HermesGatewayTransport("unused", process.cwd(), {});
   const info = { model: "test", provider: "custom", yolo: false };
-  const bridge = new HermesGatewaySessionTransport(raw, "runtime", "native", info);
+  // Canonical create receipts carry revision/execution_generation; the session
+  // transport needs them for the revision-fenced session.mutate model switch.
+  const bridge = new HermesGatewaySessionTransport(raw, "runtime", "native", info, {
+    revision: 0,
+    generation: 0,
+  });
   const request = vi.spyOn(raw, "request").mockImplementation(async (method, params) => {
     if (method === "complete.slash") return { items: [] };
     if (method === "commands.catalog")
       return { pairs: [], commands: {}, categories: [], skills: {} };
     if (method === "config.get") return { value: "low" };
-    if (method === "prompt.submit") return { status: "streaming" };
+    if (method === "prompt.submit") return { status: "queued" };
     if (method === "slash.exec") return { output: "Native command output" };
     if (method === "session.compress")
       return { status: "compressed", summary: { noop: true, note: "Nothing to compress" } };
+    if (method === "session.mutate") {
+      const payload = (params.payload ?? {}) as { model?: string; provider?: string };
+      return {
+        session_id: params.session_id,
+        revision: 1,
+        execution_generation: 0,
+        operation: params.operation,
+        model: payload.model ?? "",
+      };
+    }
     if (method === "config.set") {
       raw.onEvent({
         type: "session.info",
@@ -176,7 +178,9 @@ describe("Hermes gateway native interactions", () => {
     ).toBe(true);
     await s.close();
     f.emit("message.delta", { text: "late" });
-    expect(f.close).toHaveBeenCalledOnce();
+    // The bridge outlives the session (adapter warm pool owns it); a settled
+    // session must not tear the pipe down.
+    expect(f.close).not.toHaveBeenCalled();
   });
   it("preserves all native approval scopes", async () => {
     const f = fixture();
@@ -205,37 +209,44 @@ describe("Hermes gateway native interactions", () => {
     await expect(f.bridge.setThinking("low")).resolves.toBe("low");
     f.request.mockResolvedValue({ value: "different" });
     await expect(f.bridge.setThinking("high")).rejects.toThrow("confirm");
+    // The canonical model switch confirms through the session.mutate receipt;
+    // a receipt that did not carry the requested pick must fail the switch.
+    f.request.mockImplementation(async (method, params) =>
+      method === "session.mutate"
+        ? {
+            session_id: params.session_id,
+            revision: 1,
+            execution_generation: 0,
+            operation: "model",
+            model: "not-the-requested-model",
+            provider: "",
+          }
+        : { value: "different" },
+    );
     await expect(f.bridge.setModel("custom:another")).rejects.toThrow("confirm");
-    f.emit("session.info", { model: "test", provider: "custom", yolo: true });
-    f.request.mockResolvedValue({ value: "0" });
+    // The approval mode is confirmed by the config.set reply; a mismatching
+    // effective value must fail the switch.
+    f.request.mockResolvedValue({ value: "1" });
     await expect(f.bridge.setPermissionMode("default")).rejects.toThrow("effective approval");
   });
   it("passes a named custom provider to the model switch separately", async () => {
     const f = fixture();
-    f.request.mockImplementation(async (method, params) => {
-      if (method !== "config.set") return {};
-      f.emit("session.info", { model: "omni/turbo", provider: "custom:omniroute", yolo: false });
-      return { value: params.value };
-    });
     await expect(f.bridge.setModel("custom:omniroute:omni/turbo")).resolves.toBeUndefined();
-    expect(f.request).toHaveBeenCalledWith("config.set", {
-      key: "model",
-      value: "omni/turbo --provider custom:omniroute",
-      scope: "session",
+    expect(f.request).toHaveBeenCalledWith("session.mutate", {
       session_id: "runtime",
+      request_id: expect.any(String),
+      expected_revision: 0,
+      expected_generation: 0,
+      operation: "model",
+      payload: { model: "custom:omniroute:omni/turbo" },
     });
   });
   it("keeps a bare model identifier unchanged for the model switch", async () => {
     const f = fixture();
-    f.request.mockImplementation(async (method, params) => {
-      if (method !== "config.set") return {};
-      f.emit("session.info", { model: "gpt-5", provider: "openai", yolo: false });
-      return { value: params.value };
-    });
     await f.bridge.setModel("gpt-5");
     expect(f.request).toHaveBeenCalledWith(
-      "config.set",
-      expect.objectContaining({ value: "gpt-5" }),
+      "session.mutate",
+      expect.objectContaining({ payload: { model: "gpt-5" } }),
     );
   });
 });
@@ -271,7 +282,10 @@ describe("Hermes gateway native turn projection", () => {
         input: [{ type: "text", text }],
       });
       await pause();
-      expect(f.request).toHaveBeenCalledWith("prompt.submit", { session_id: "runtime", text });
+      expect(f.request).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({ session_id: "runtime", text }),
+      );
       f.emit("message.complete", { status: "complete", text: "reply" });
       const outputs = await completed;
       expect(
@@ -593,5 +607,178 @@ describe("Hermes gateway native turn projection", () => {
       stopReason: "end_turn",
       compactionOutcome: { status: "cancelled", reason: "Nothing to compress" },
     });
+  });
+});
+
+describe("Hermes gateway canonical review fixes", () => {
+  it("settles a turn only on its own admission's completion (shared session)", async () => {
+    const f = fixture();
+    f.request.mockImplementation(async (method) => {
+      if (method === "prompt.submit") return { status: "started", admission_id: "mine" };
+      return {};
+    });
+    let settled: unknown = null;
+    const done = f.bridge
+      .runTurn(
+        "hello",
+        () => {},
+        async () => null,
+      )
+      .then((value) => {
+        settled = value;
+        return value;
+      });
+    await pause();
+    // Another client's admission completes in the SAME session: its text must
+    // not become this Host turn's final answer, and the turn must stay open.
+    f.raw.onEvent({
+      type: "message.complete",
+      session_id: "runtime",
+      admission_id: "other-client",
+      payload: { text: "someone else's answer", status: "complete" },
+    });
+    await pause();
+    expect(settled).toBeNull();
+    // The turn's own admission settles it.
+    f.raw.onEvent({
+      type: "message.complete",
+      session_id: "runtime",
+      admission_id: "mine",
+      payload: { text: "my answer", status: "complete" },
+    });
+    await expect(done).resolves.toMatchObject({
+      stopReason: "end_turn",
+      finalAnswerText: "my answer",
+    });
+  });
+
+  it("aborts a permission prompt when approval.cancelled arrives", async () => {
+    const f = fixture();
+    const done = f.bridge.runTurn(
+      "hello",
+      () => {},
+      (request) => {
+        return new Promise<string | null>((_resolve, reject) => {
+          request.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      },
+    );
+    await pause();
+    // The gateway asks for an approval decision.
+    void f.raw.onRequest("srq-1", "approval", {
+      session_id: "runtime",
+      request_id: "queue-1",
+      command: "rm -rf /tmp/probe",
+      description: "",
+      choices: ["once", "deny"],
+    });
+    await pause();
+    // An interrupt drops the queued approval; the permission wait must end.
+    f.emit("approval.cancelled", { request_ids: ["queue-1"], reason: "interrupt" });
+    await expect(done).rejects.toThrow();
+  });
+
+  it("reports a switched YOLO mode from openResult", async () => {
+    const f = fixture();
+    await f.bridge.setPermissionMode("dont_ask");
+    const open = await f.bridge.openResult();
+    expect(open.session.modes?.currentModeId).toBe("dont_ask");
+    await f.bridge.setPermissionMode("default");
+    const again = await f.bridge.openResult();
+    expect(again.session.modes?.currentModeId).toBe("default");
+  });
+
+  it("answers a snapshot-adopted approval through approval.respond on the first turn", async () => {
+    const f = fixture();
+    f.bridge.adoptPendingPrompts([
+      {
+        kind: "approval",
+        prompt_id: "p1",
+        execution_generation: 3,
+        choices: ["once", "deny"],
+        command: "dangerous-command",
+        description: "",
+      },
+    ]);
+    const done = f.bridge.runTurn(
+      "hello",
+      () => {},
+      async () => "once",
+    );
+    await pause();
+    await pause();
+    expect(f.request).toHaveBeenCalledWith(
+      "approval.respond",
+      {
+        session_id: "runtime",
+        execution_generation: 3,
+        prompt_id: "p1",
+        choice: "once",
+      },
+      expect.anything(),
+      false,
+    );
+    f.emit("message.complete", { text: "done", status: "complete" });
+    await expect(done).resolves.toMatchObject({ stopReason: "end_turn" });
+  });
+});
+
+describe("delegation guidance via api_text", () => {
+  it("injects the guidance on the first submit only, text stays verbatim", async () => {
+    const f = fixture();
+    const bridge = new HermesGatewaySessionTransport(
+      f.raw,
+      "runtime",
+      "native",
+      { model: "test", provider: "custom", yolo: false },
+      { revision: 0, generation: 0 },
+      "GUIDANCE(probe-thread-668)",
+    );
+    const submitCalls: unknown[] = [];
+    let admissionSeq = 0;
+    f.request.mockImplementation(async (method, params) => {
+      if (method === "prompt.submit") {
+        submitCalls.push(params);
+        admissionSeq += 1;
+        return { status: "started", admission_id: `a${admissionSeq}` };
+      }
+      return {};
+    });
+    const first = bridge.runTurn(
+      "first question",
+      () => {},
+      async () => null,
+    );
+    await pause();
+    f.raw.onEvent({
+      type: "message.complete",
+      session_id: "runtime",
+      admission_id: "a1",
+      payload: { text: "ok", status: "complete" },
+    });
+    await expect(first).resolves.toMatchObject({ stopReason: "end_turn" });
+    const second = bridge.runTurn(
+      "second question",
+      () => {},
+      async () => null,
+    );
+    await pause();
+    f.raw.onEvent({
+      type: "message.complete",
+      session_id: "runtime",
+      admission_id: "a2",
+      payload: { text: "ok2", status: "complete" },
+    });
+    await expect(second).resolves.toMatchObject({ stopReason: "end_turn" });
+    expect(submitCalls).toHaveLength(2);
+    const [firstParams, secondParams] = submitCalls as [
+      { api_text?: string; text: string },
+      { api_text?: string; text: string },
+    ];
+    expect(firstParams.api_text).toContain("GUIDANCE(probe-thread-668)");
+    expect(firstParams.api_text?.endsWith("first question")).toBe(true);
+    expect(firstParams.text).toBe("first question");
+    expect(secondParams.api_text).toBeUndefined();
+    expect(secondParams.text).toBe("second question");
   });
 });

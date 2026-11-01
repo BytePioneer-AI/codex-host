@@ -63,6 +63,42 @@ function fixture() {
 afterEach(() => vi.useRealTimers());
 
 describe("Host stop-then-start coordination", () => {
+  it("preserves local image references when steering must stop and restart", async () => {
+    const f = fixture();
+    const input = [...f.params.input, { type: "localImage", path: "C:\\images\\second.png" }];
+    const result = f.coordinator.run(f.thread, { ...f.params, input }, f.start, f.insert);
+    await Promise.resolve();
+    f.complete();
+    await expect(result).resolves.toEqual(f.replaced);
+    expect(f.start).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("C:\\images\\second.png\nImage attachment: true"),
+      expect.any(Function),
+    );
+    expect(f.insert).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates image steers using the original input, not only its text", async () => {
+    const f = fixture();
+    f.thread.session.capabilities.steer = true;
+    const params = {
+      ...f.params,
+      input: [...f.params.input, { type: "localImage", path: "/tmp/one.png" }],
+    };
+    await f.coordinator.run(f.thread, params, f.start, f.insert);
+    await f.coordinator.run(f.thread, params, f.start, f.insert);
+    expect(f.insert).toHaveBeenCalledOnce();
+    await expect(
+      f.coordinator.run(
+        f.thread,
+        { ...params, input: [...f.params.input, { type: "localImage", path: "/tmp/two.png" }] },
+        f.start,
+        f.insert,
+      ),
+    ).rejects.toMatchObject({ code: -32602 });
+    expect(f.insert).toHaveBeenCalledOnce();
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
   it("waits for terminal projection, not cancel acknowledgement, and coalesces delivery retries", async () => {
     const f = fixture();
     const first = f.coordinator.run(f.thread, f.params, f.start, f.insert);
@@ -115,6 +151,11 @@ describe("Host stop-then-start coordination", () => {
     for (const input of [
       [],
       [{ type: "text", text: " " }],
+      [{ type: "localImage", path: "relative.png" }],
+      [
+        { type: "text", text: "/compact" },
+        { type: "localImage", path: "/tmp/image.png" },
+      ],
       [
         { type: "text", text: "valid" },
         { type: "image", url: "x" },

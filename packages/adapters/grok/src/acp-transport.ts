@@ -286,7 +286,14 @@ function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS
   try {
     process.kill(-child.pid, signal);
   } catch (error) {
-    if (!isRecord(error) || error.code !== "ESRCH") throw error;
+    if (!isRecord(error) || error.code === "ESRCH") return;
+    // macOS can reject a negative-PID signal with EPERM after the detached
+    // group leader has exited; fall back to the child handle.
+    try {
+      child.kill(signal);
+    } catch (fallback) {
+      if (!isRecord(fallback) || fallback.code !== "ESRCH") throw fallback;
+    }
   }
 }
 

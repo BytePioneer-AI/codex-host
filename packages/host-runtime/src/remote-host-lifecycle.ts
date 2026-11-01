@@ -116,7 +116,10 @@ export async function probeWebSocket(input: {
   timeoutMs: number;
   timeoutMessage: string;
 }): Promise<RemoteHostRuntimeStatus> {
-  const socket = new WebSocket("ws://localhost/", { createConnection: input.createConnection });
+  const socket = new WebSocket("ws://localhost/", {
+    perMessageDeflate: false,
+    createConnection: input.createConnection,
+  });
   try {
     return await new Promise<RemoteHostRuntimeStatus>((resolve) => {
       let settled = false;

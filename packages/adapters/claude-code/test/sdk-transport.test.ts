@@ -2803,6 +2803,39 @@ describe("ClaudeSdkTransport confirmed background stops", () => {
     }
   });
 
+  it.each(["aborted_tools", "aborted_streaming", "completed"])(
+    "records cancellation before the first idle frame without trusting an unproven stop (%s)",
+    async (terminalReason) => {
+      const { transport, fakeQuery } = fixture();
+      const terminals: ClaudeTransportTurnResult[] = [];
+      transport.setIdleTurnHandler({
+        onEvent: () => undefined,
+        onTerminal: (result) => terminals.push(result),
+      });
+      await transport.start();
+      transport.setIdleLive(true);
+      try {
+        await transport.abortContinuation();
+        expect(fakeQuery.interrupt).toHaveBeenCalledOnce();
+        fakeQuery.push({
+          type: "result",
+          subtype: terminalReason === "completed" ? "success" : "error_during_execution",
+          is_error: terminalReason !== "completed",
+          terminal_reason: terminalReason,
+        } as unknown as SDKMessage);
+        await vi.waitFor(() =>
+          expect(terminals).toEqual([
+            terminalReason === "completed"
+              ? { status: "failed", kind: "cancellationUnproven" }
+              : { status: "cancelled", reason: terminalReason },
+          ]),
+        );
+      } finally {
+        await transport.close();
+      }
+    },
+  );
+
   it("interrupts a Root continuation that runs after the requested Turn", async () => {
     const value = fixture();
     const idleEvents: ClaudeTurnEvent[] = [];

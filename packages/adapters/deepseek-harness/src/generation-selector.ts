@@ -78,7 +78,8 @@ export interface DeepSeekGenerationProbeDependencies {
   terminateProcessTree(child: ChildProcess, timeoutMs: number): void;
 }
 
-const DEFAULT_TIMEOUT_MS = 5_000;
+// `dsh --version` competes with the rest of startup for CPU and disk; 5 s was not always enough.
+const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 1_000;
 const DEFAULT_OUTPUT_LIMIT_BYTES = 16 * 1024;
 const DIAGNOSTIC_RAW_TAIL_BYTES = 16 * 1024;

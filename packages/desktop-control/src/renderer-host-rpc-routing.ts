@@ -110,6 +110,8 @@ export function installRendererHostRpcRouting(
     if (!isRecord(input) || !isRecord(input.collaborationMode)) return message;
     const settings = input.collaborationMode.settings;
     if (!isRecord(settings)) return message;
+    // A creation can omit its native Model; a registered external draft still needs its carrier.
+    const nativeModel = typeof settings.model === "string" ? settings.model : null;
     let model: string | null = null;
     if (path[0] === "startConversation") {
       const draftId = isRecord(options) ? options.clientThreadId : null;
@@ -117,10 +119,20 @@ export function installRendererHostRpcRouting(
     } else if (path[0] === "prewarmConversation") {
       // Desktop prewarms only local drafts; the pool is keyed by workspace, not Model.
       if (input.ephemeral !== true) publishDraftWorkspace("local", input.cwd);
-      const selected = selectedModels.get("local");
-      model = selected ? prewarmCarrier(selected) : null;
+      const selected = selectedModels.get("local") ?? null;
+      // A prewarm that names an external carrier keeps it; Host still needs the prewarm marker
+      // to treat it as a discardable prewarm instead of a new Thread.
+      const carrier = nativeModel?.startsWith("codexhost/") ? nativeModel : selected;
+      model = carrier ? prewarmCarrier(carrier) : null;
     }
     if (!model) return message;
+    // A creation that names a different external carrier keeps it.
+    if (
+      path[0] === "startConversation" &&
+      nativeModel?.startsWith("codexhost/") &&
+      nativeModel !== model
+    )
+      return message;
     return [
       "push",
       [

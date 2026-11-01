@@ -63,6 +63,7 @@ class FakeQoderQuery implements QoderQuery {
   }));
   readonly setModel = vi.fn(async () => undefined);
   readonly setPermissionMode = vi.fn(async () => undefined);
+  readonly setPlanMode = vi.fn(async () => undefined);
   readonly request = vi.fn(async () => ({}));
 
   #closed = false;
@@ -322,6 +323,7 @@ describe("QoderAdapter", () => {
     it("opens session with create and resume, and rejects rollbackLastTurn", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -422,6 +424,7 @@ describe("QoderAdapter", () => {
       ];
 
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
         forkSession: mockForkSession,
@@ -516,6 +519,7 @@ describe("QoderAdapter", () => {
       ]);
 
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
         forkSession: mockForkSession,
@@ -619,6 +623,7 @@ describe("QoderAdapter", () => {
       };
 
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory,
       });
@@ -707,6 +712,7 @@ describe("QoderAdapter", () => {
     it("deduplicates streamed text deltas when assistant message arrives", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -783,6 +789,7 @@ describe("QoderAdapter", () => {
     it("invokes query.interrupt() and marks turn cancelled without closing session", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -841,6 +848,7 @@ describe("QoderAdapter", () => {
     it("completes active streaming message and reasoning items on turn.cancel", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -931,6 +939,7 @@ describe("QoderAdapter", () => {
       let canUseToolCb: NonNullable<QoderOptions["canUseTool"]> | undefined;
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: (input) => {
           canUseToolCb = input.options?.canUseTool;
@@ -1022,6 +1031,7 @@ describe("QoderAdapter", () => {
       let canUseToolCb: NonNullable<QoderOptions["canUseTool"]> | undefined;
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: (input) => {
           canUseToolCb = input.options?.canUseTool;
@@ -1377,6 +1387,7 @@ describe("QoderAdapter", () => {
       let capturedOptions: QoderOptions | undefined;
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: (input) => {
           capturedOptions = input.options;
@@ -1557,6 +1568,7 @@ describe("QoderAdapter", () => {
     it("routes thinking stream events to reasoning item instead of agentMessage", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -1658,6 +1670,7 @@ describe("QoderAdapter", () => {
       async (nativeToolId) => {
         const fakeQuery = new FakeQoderQuery();
         const adapter = new QoderAdapter({
+          getAvailableModels: async () => [],
           resolveExecutable: () => "D:/tools/qodercli.exe",
           queryFactory: () => fakeQuery,
         });
@@ -1818,6 +1831,7 @@ describe("QoderAdapter", () => {
     it("tags pre-tool message as commentary and post-tool terminal message as final_answer", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -1931,6 +1945,7 @@ describe("QoderAdapter", () => {
     it("calls query.setPermissionMode and notifies session state changed", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -1973,6 +1988,7 @@ describe("QoderAdapter", () => {
     it("closes open sessions and terminates queries cleanly", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -2002,6 +2018,7 @@ describe("QoderAdapter", () => {
       const fakeQuery = new FakeQoderQuery();
       let userMessages: AsyncIterable<SDKUserMessage> | undefined;
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: ({ prompt }) => {
           if (typeof prompt !== "string") userMessages = prompt;
@@ -2049,6 +2066,7 @@ describe("QoderAdapter", () => {
     it("falls back to user message UUID when result has no uuid", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -2088,6 +2106,7 @@ describe("QoderAdapter", () => {
     it("attaches nativeTurnRef when turn is cancelled", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -2128,6 +2147,7 @@ describe("QoderAdapter", () => {
     it("attaches checkpoint with assistant UUID to turn.completed outcome", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });

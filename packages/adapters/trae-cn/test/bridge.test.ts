@@ -12,7 +12,10 @@ const { startServer } = createRequire(import.meta.url)("../assets/companion/serv
 
 async function setup() {
   const directory = await mkdtemp(path.join(os.tmpdir(), "trae-cn-client-"));
-  const appRoot = path.join(directory, "installation", "resources", "app");
+  const appRoot =
+    process.platform === "darwin"
+      ? path.join(directory, "installation", "Trae CN.app", "Contents", "Resources", "app")
+      : path.join(directory, "installation", "resources", "app");
   const workspace = path.join(directory, "workspace");
   const discovery = path.join(directory, "discovery");
   await mkdir(appRoot, { recursive: true });
@@ -26,7 +29,10 @@ async function setup() {
       name: "Trae CN",
       version: "fixture",
       root: appRoot,
-      executable: path.join(directory, "installation", "Trae CN.exe"),
+      executable:
+        process.platform === "darwin"
+          ? path.join(directory, "installation", "Trae CN.app", "Contents", "MacOS", "Trae CN")
+          : path.join(directory, "installation", "Trae CN.exe"),
     },
     workspaceFolders: [workspace],
     inspect: vi.fn(async () => ({

@@ -36,12 +36,15 @@ export async function buildCompanion(
       await copyFile(path.join(sourceRoot, file), path.join(staging, file));
     await copyFile(path.resolve(packageRoot, "../../../LICENSE"), path.join(staging, "LICENSE"));
     const manifest = JSON.parse(await readFile(path.join(staging, "package.json"), "utf8"));
-    const files = await listFiles({ cwd: staging, packagedDependencies: [] });
+    // Match createVSIX below: this extension has no packaged npm dependencies.
+    // An empty entry-point list still enables npm discovery in vsce and can
+    // collect aliased temp roots on macOS (/var versus /private/var).
+    const files = await listFiles({ cwd: staging, dependencies: false });
     if (
       files.length !== companionFiles.length + 1 ||
       files.some((file) => ![...companionFiles, "LICENSE"].includes(file))
     )
-      throw new Error("Unexpected Companion package resources");
+      throw new Error(`Unexpected Companion package resources: ${JSON.stringify(files)}`);
     await mkdir(path.dirname(destination), { recursive: true });
     await createVSIX({ cwd: staging, packagePath: destination, dependencies: false });
     return {

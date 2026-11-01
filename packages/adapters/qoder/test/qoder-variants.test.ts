@@ -116,12 +116,7 @@ for (const v of variants)
         stop: vi.fn(async () => undefined),
       } as never);
       const resolveExecutable = vi.fn(() => v.command);
-      const adapter = new QoderAdapter({
-        variant: v.variant,
-        environment,
-        resolveExecutable,
-        modelLoadRetry: { attempts: 1, delayMs: 0 },
-      });
+      const adapter = new QoderAdapter({ variant: v.variant, environment, resolveExecutable });
       adapters.push(adapter);
       return { adapter, query, resolveExecutable };
     }
@@ -158,7 +153,7 @@ for (const v of variants)
       expect(checkQoderLogin).toHaveBeenCalledWith(
         v.command,
         { QODER_SDK_CUSTOM_BASE_URL_BYOK: "1" },
-        process.cwd(),
+        undefined,
       );
     });
 
@@ -231,6 +226,12 @@ for (const v of variants)
 
     it("preserves its Harness identity in live state, Turn and checkpoint refs", async () => {
       const { adapter, query } = setup();
+      vi.mocked(v.sdk.query).mockImplementation(
+        ({ prompt }) =>
+          (typeof prompt === "string" ? new Query() : query) as unknown as ReturnType<
+            typeof v.sdk.query
+          >,
+      );
       const opened = await adapter.open({ kind: "create", cwd: "/workspace" });
       if (!opened.ok) throw new Error(opened.error.message);
       const session = opened.value;

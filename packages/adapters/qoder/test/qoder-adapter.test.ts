@@ -52,9 +52,7 @@ class FakeQoderQuery implements QoderQuery {
       waiter({ done: true, value: undefined });
     }
   });
-  readonly getAvailableModels = vi.fn<
-    (options?: { fetchStrategy?: string }) => Promise<QoderModelInfo[]>
-  >(async () => [
+  readonly getAvailableModels = vi.fn(async (): Promise<QoderModelInfo[]> => [
     { value: "default", displayName: "Default", description: "Default Qoder model" },
     { value: "qoder-fast", displayName: "Qoder Fast", description: "Fast Qoder model" },
   ]);
@@ -158,9 +156,7 @@ describe("QoderAdapter", () => {
       "keeps the %s catalog until explicit refresh, scoped by cwd",
       async (variant) => {
         const now = vi.spyOn(Date, "now").mockReturnValue(0);
-        const getAvailableModels = vi.fn(async () => [
-          { value: "free-model", displayName: "Free", description: "" },
-        ]);
+        const getAvailableModels = vi.fn(async () => []);
         const adapter = new QoderAdapter({
           variant,
           resolveExecutable: () => "qodercli",
@@ -223,7 +219,7 @@ describe("QoderAdapter", () => {
       }
     });
 
-    it("returns ready with an empty catalog without pinning it in the cache", async () => {
+    it("returns ready when executable is resolved and caches result", async () => {
       let resolveCalls = 0;
       const adapter = new QoderAdapter({
         resolveExecutable: () => {
@@ -248,14 +244,15 @@ describe("QoderAdapter", () => {
         expect(jsonValueSchema.parse(inspection1)).toEqual(inspection1);
       }
 
-      // An empty catalog is not cached, so the next call inspects again
+      // Second call uses cached inspection
       const inspection2 = await adapter.inspect({ cwd: "D:/project" });
       expect(inspection2.status).toBe("ready");
-      expect(resolveCalls).toBe(2);
+      expect(resolveCalls).toBe(1);
 
+      // Force refresh bypasses cache
       const inspection3 = await adapter.inspect({ cwd: "D:/project", refresh: true });
       expect(inspection3.status).toBe("ready");
-      expect(resolveCalls).toBe(3);
+      expect(resolveCalls).toBe(2);
     });
 
     it("dynamically returns models from queryFactory in inspect()", async () => {
@@ -320,276 +317,13 @@ describe("QoderAdapter", () => {
       });
       expect(closeSpy).toHaveBeenCalledOnce();
     });
-
-    it("falls back to a live Model fetch when a fresh daemon's cache is empty", async () => {
-      const fakeQuery = new FakeQoderQuery();
-      fakeQuery.getAvailableModels.mockImplementation(
-        async (options?: { fetchStrategy?: string }) =>
-          options?.fetchStrategy === "live"
-            ? [
-                { value: "auto", displayName: "Auto", isEnabled: false, description: "" },
-                {
-                  value: "free-model",
-                  displayName: "Free",
-                  isEnabled: true,
-                  isDefault: true,
-                  description: "",
-                },
-              ]
-            : [],
-      );
-      const adapter = new QoderAdapter({
-        resolveExecutable: () => "D:/tools/qodercli.exe",
-        queryFactory: () => fakeQuery,
-      });
-
-      const inspection = await adapter.inspect({ cwd: "D:/project" });
-
-      expect(inspection.status).toBe("ready");
-      if (inspection.status !== "ready") return;
-      expect(fakeQuery.getAvailableModels.mock.calls.map(([options]) => options)).toEqual([
-        { fetchStrategy: "cache" },
-        { fetchStrategy: "live" },
-      ]);
-      expect(inspection.catalog.models).toHaveLength(2);
-      expect(inspection.catalog.defaultModel).toEqual(encodeQoderModelRef("free-model"));
-    });
-
-    it("stays ready and rereads the cache when the live Model fetch fails", async () => {
-      const fakeQuery = new FakeQoderQuery();
-      fakeQuery.getAvailableModels
-        .mockResolvedValueOnce([])
-        .mockRejectedValueOnce(new Error("Authentication changed during request"))
-        .mockResolvedValueOnce([
-          { value: "free-model", displayName: "Free", isDefault: true, description: "" },
-        ]);
-      const adapter = new QoderAdapter({
-        resolveExecutable: () => "D:/tools/qodercli.exe",
-        queryFactory: () => fakeQuery,
-        modelLoadRetry: { attempts: 3, delayMs: 0 },
-      });
-
-      const inspection = await adapter.inspect({ cwd: "D:/project" });
-
-      expect(inspection.status).toBe("ready");
-      if (inspection.status !== "ready") return;
-      expect(fakeQuery.getAvailableModels).toHaveBeenCalledTimes(3);
-      expect(inspection.catalog.defaultModel).toEqual(encodeQoderModelRef("free-model"));
-    });
-
-    it("retries until a fresh daemon finishes authenticating and publishes Models", async () => {
-      const fakeQuery = new FakeQoderQuery();
-      fakeQuery.getAvailableModels
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([
-          {
-            value: "free-model",
-            displayName: "Free",
-            isEnabled: true,
-            isDefault: true,
-            description: "",
-          },
-        ]);
-      const adapter = new QoderAdapter({
-        resolveExecutable: () => "D:/tools/qodercli.exe",
-        queryFactory: () => fakeQuery,
-        modelLoadRetry: { attempts: 3, delayMs: 0 },
-      });
-
-      const inspection = await adapter.inspect({ cwd: "D:/project" });
-
-      expect(inspection.status).toBe("ready");
-      if (inspection.status !== "ready") return;
-      expect(fakeQuery.getAvailableModels.mock.calls.map(([options]) => options)).toEqual([
-        { fetchStrategy: "cache" },
-        { fetchStrategy: "live" },
-        { fetchStrategy: "cache" },
-        { fetchStrategy: "live" },
-      ]);
-      expect(inspection.catalog.defaultModel).toEqual(encodeQoderModelRef("free-model"));
-    });
-
-    it("stops retrying after the bounded attempts when no Models are published", async () => {
-      const fakeQuery = new FakeQoderQuery();
-      fakeQuery.getAvailableModels.mockResolvedValue([]);
-      const adapter = new QoderAdapter({
-        resolveExecutable: () => "D:/tools/qodercli.exe",
-        queryFactory: () => fakeQuery,
-        modelLoadRetry: { attempts: 2, delayMs: 0 },
-      });
-
-      const inspection = await adapter.inspect({ cwd: "D:/project" });
-
-      expect(inspection.status).toBe("ready");
-      if (inspection.status !== "ready") return;
-      expect(fakeQuery.getAvailableModels).toHaveBeenCalledTimes(4);
-      expect(inspection.catalog.models).toEqual([]);
-    });
-
-    it("does not pin an empty catalog so the next inspection loads late Models", async () => {
-      const fakeQuery = new FakeQoderQuery();
-      fakeQuery.getAvailableModels
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([
-          {
-            value: "free-model",
-            displayName: "Free",
-            isEnabled: true,
-            isDefault: true,
-            description: "",
-          },
-        ]);
-      const adapter = new QoderAdapter({
-        resolveExecutable: () => "D:/tools/qodercli.exe",
-        queryFactory: () => fakeQuery,
-        modelLoadRetry: { attempts: 1, delayMs: 0 },
-      });
-
-      const first = await adapter.inspect({ cwd: "D:/project" });
-      expect(first.status).toBe("ready");
-      if (first.status !== "ready") return;
-      expect(first.catalog.models).toEqual([]);
-
-      const second = await adapter.inspect({ cwd: "D:/project" });
-      expect(second.status).toBe("ready");
-      if (second.status !== "ready") return;
-      expect(second.catalog.defaultModel).toEqual(encodeQoderModelRef("free-model"));
-
-      const third = await adapter.inspect({ cwd: "D:/project" });
-      expect(third).toBe(second);
-    });
-
-    it("does not refetch live Models when the cache already has them", async () => {
-      const fakeQuery = new FakeQoderQuery();
-      const adapter = new QoderAdapter({
-        resolveExecutable: () => "D:/tools/qodercli.exe",
-        queryFactory: () => fakeQuery,
-      });
-
-      const inspection = await adapter.inspect({ cwd: "D:/project" });
-
-      expect(inspection.status).toBe("ready");
-      expect(fakeQuery.getAvailableModels).toHaveBeenCalledOnce();
-      expect(fakeQuery.getAvailableModels).toHaveBeenCalledWith({ fetchStrategy: "cache" });
-    });
   });
 
   describe("open() session lifecycle", () => {
-    it("reports the native default Model when the session does not select one", async () => {
-      let capturedOptions: QoderOptions | undefined;
-      const fakeQuery = new FakeQoderQuery();
-      fakeQuery.getAvailableModels.mockResolvedValueOnce([
-        { value: "auto", displayName: "Auto", isEnabled: false, description: "" },
-        {
-          value: "free-model",
-          displayName: "Free",
-          isEnabled: true,
-          isDefault: true,
-          description: "",
-        },
-      ]);
-      const adapter = new QoderAdapter({
-        resolveExecutable: () => "D:/tools/qodercli.exe",
-        queryFactory: (input) => {
-          capturedOptions = input.options;
-          return fakeQuery;
-        },
-        getAvailableModels: fakeQuery.getAvailableModels,
-      });
-      await adapter.inspect({ cwd: "D:/project" });
-
-      const opened = await adapter.open({ kind: "create", cwd: "D:/project" });
-
-      expect(opened.ok).toBe(true);
-      if (!opened.ok) return;
-      expect(opened.value.initialState.effectiveModel).toEqual(encodeQoderModelRef("free-model"));
-      // The CLI keeps choosing its own default; no Model is forced onto it.
-      expect(capturedOptions?.model).toBeUndefined();
-      await opened.value.close();
-      await adapter.close();
-    });
-
-    it.each(["global", "cn"] as const)(
-      "does not reuse another cwd's %s Model catalog when opening an empty or uninspected cwd",
-      async (variant) => {
-        const getAvailableModels = vi
-          .fn<() => Promise<QoderModelInfo[]>>()
-          .mockResolvedValueOnce([
-            { value: "project-a", displayName: "A", description: "", isDefault: true },
-          ])
-          .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([
-            { value: "project-b", displayName: "B", description: "", isDefault: true },
-          ]);
-        const adapter = new QoderAdapter({
-          variant,
-          resolveExecutable: () => "qodercli",
-          queryFactory: () => new FakeQoderQuery(),
-          getAvailableModels,
-        });
-        try {
-          await adapter.inspect({ cwd: "D:/a" });
-          await adapter.inspect({ cwd: "D:/b" });
-          for (const cwd of ["D:/b", "D:/uninspected"]) {
-            const opened = await adapter.open({ kind: "create", cwd });
-            expect(opened.ok).toBe(true);
-            if (!opened.ok) throw new Error(opened.error.message);
-            expect(opened.value.initialState.effectiveModel).toEqual(encodeQoderModelRef("auto"));
-            await opened.value.close();
-          }
-          const refreshed = await adapter.inspect({ cwd: "D:/b" });
-          expect(refreshed.status).toBe("ready");
-          if (refreshed.status !== "ready") throw new Error("Expected ready inspection");
-          expect(refreshed.catalog.defaultModel).toEqual(encodeQoderModelRef("project-b"));
-          expect(getAvailableModels).toHaveBeenCalledTimes(3);
-          const opened = await adapter.open({ kind: "create", cwd: "D:/b" });
-          expect(opened.ok).toBe(true);
-          if (!opened.ok) throw new Error(opened.error.message);
-          expect(opened.value.initialState.effectiveModel).toEqual(
-            encodeQoderModelRef("project-b"),
-          );
-          await opened.value.close();
-        } finally {
-          await adapter.close();
-        }
-      },
-    );
-
-    it.each(["global", "cn"] as const)(
-      "uses the actual cwd for an implicit %s inspection and subsequent session",
-      async (variant) => {
-        const getAvailableModels = vi.fn(async () => [
-          { value: "native-default", displayName: "Native", description: "", isDefault: true },
-        ]);
-        const adapter = new QoderAdapter({
-          variant,
-          resolveExecutable: () => "qodercli",
-          queryFactory: () => new FakeQoderQuery(),
-          getAvailableModels,
-        });
-        try {
-          const inspected = await adapter.inspect();
-          const opened = await adapter.open({ kind: "create", cwd: process.cwd() });
-          expect(opened.ok).toBe(true);
-          if (!opened.ok) throw new Error(opened.error.message);
-          expect(opened.value.initialState.effectiveModel).toEqual(
-            encodeQoderModelRef("native-default"),
-          );
-          await opened.value.close();
-          expect(await adapter.inspect({ cwd: process.cwd() })).toBe(inspected);
-          expect(getAvailableModels).toHaveBeenCalledTimes(1);
-        } finally {
-          await adapter.close();
-        }
-      },
-    );
-
     it("opens session with create and resume, and rejects rollbackLastTurn", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -690,6 +424,7 @@ describe("QoderAdapter", () => {
       ];
 
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
         forkSession: mockForkSession,
@@ -784,6 +519,7 @@ describe("QoderAdapter", () => {
       ]);
 
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
         forkSession: mockForkSession,
@@ -887,6 +623,7 @@ describe("QoderAdapter", () => {
       };
 
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory,
       });
@@ -975,6 +712,7 @@ describe("QoderAdapter", () => {
     it("deduplicates streamed text deltas when assistant message arrives", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -1051,6 +789,7 @@ describe("QoderAdapter", () => {
     it("invokes query.interrupt() and marks turn cancelled without closing session", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -1109,6 +848,7 @@ describe("QoderAdapter", () => {
     it("completes active streaming message and reasoning items on turn.cancel", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -1199,6 +939,7 @@ describe("QoderAdapter", () => {
       let canUseToolCb: NonNullable<QoderOptions["canUseTool"]> | undefined;
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: (input) => {
           canUseToolCb = input.options?.canUseTool;
@@ -1290,6 +1031,7 @@ describe("QoderAdapter", () => {
       let canUseToolCb: NonNullable<QoderOptions["canUseTool"]> | undefined;
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: (input) => {
           canUseToolCb = input.options?.canUseTool;
@@ -1645,6 +1387,7 @@ describe("QoderAdapter", () => {
       let capturedOptions: QoderOptions | undefined;
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: (input) => {
           capturedOptions = input.options;
@@ -1825,6 +1568,7 @@ describe("QoderAdapter", () => {
     it("routes thinking stream events to reasoning item instead of agentMessage", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -1926,6 +1670,7 @@ describe("QoderAdapter", () => {
       async (nativeToolId) => {
         const fakeQuery = new FakeQoderQuery();
         const adapter = new QoderAdapter({
+          getAvailableModels: async () => [],
           resolveExecutable: () => "D:/tools/qodercli.exe",
           queryFactory: () => fakeQuery,
         });
@@ -2086,6 +1831,7 @@ describe("QoderAdapter", () => {
     it("tags pre-tool message as commentary and post-tool terminal message as final_answer", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -2199,6 +1945,7 @@ describe("QoderAdapter", () => {
     it("calls query.setPermissionMode and notifies session state changed", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -2241,6 +1988,7 @@ describe("QoderAdapter", () => {
     it("closes open sessions and terminates queries cleanly", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -2270,6 +2018,7 @@ describe("QoderAdapter", () => {
       const fakeQuery = new FakeQoderQuery();
       let userMessages: AsyncIterable<SDKUserMessage> | undefined;
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: ({ prompt }) => {
           if (typeof prompt !== "string") userMessages = prompt;
@@ -2317,6 +2066,7 @@ describe("QoderAdapter", () => {
     it("falls back to user message UUID when result has no uuid", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -2356,6 +2106,7 @@ describe("QoderAdapter", () => {
     it("attaches nativeTurnRef when turn is cancelled", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -2396,6 +2147,7 @@ describe("QoderAdapter", () => {
     it("attaches checkpoint with assistant UUID to turn.completed outcome", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });

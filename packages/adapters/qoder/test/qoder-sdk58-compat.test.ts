@@ -62,6 +62,7 @@ describe("Qoder SDK 1.0.58 compatibility", () => {
       return query;
     };
     const adapter = new QoderAdapter({
+      getAvailableModels: async () => [],
       queryFactory,
       resolveExecutable: () => "/tmp/fake-qodercli",
     });
@@ -113,7 +114,7 @@ describe("Qoder SDK 1.0.58 compatibility", () => {
   it("keeps launch config on per-thread daemons and off daemon-bound queries", async () => {
     const { adapter, queries, started } = daemonHarness();
 
-    expect((await adapter.inspect()).status).toBe("ready");
+    expect((await adapter.inspect({ cwd: "/tmp" })).status).toBe("ready");
     expect(started).toHaveLength(1);
     expect(started[0]?.stop).toHaveBeenCalledOnce();
 
@@ -156,6 +157,9 @@ describe("Qoder SDK 1.0.58 compatibility", () => {
 
   it("shares one daemon start between sessions with the same config", async () => {
     const { adapter, started, startDaemon } = daemonHarness();
+    await adapter.inspect({ cwd: "/tmp" });
+    startDaemon.mockClear();
+    started.splice(0);
     const input = {
       kind: "create" as const,
       cwd: "/tmp",
@@ -195,6 +199,7 @@ describe("Qoder SDK 1.0.58 compatibility", () => {
   it("restores Plan when leaving it fails", async () => {
     const queries: RecordingQuery[] = [];
     const adapter = new QoderAdapter({
+      getAvailableModels: async () => [],
       queryFactory: (input) => {
         const query = new RecordingQuery(input.options);
         queries.push(query);
@@ -221,6 +226,7 @@ describe("Qoder SDK 1.0.58 compatibility", () => {
 
   it("reports Plan switching as unsupported without setPlanMode", async () => {
     const adapter = new QoderAdapter({
+      getAvailableModels: async () => [],
       queryFactory: (input) => {
         const query = new RecordingQuery(input.options);
         Object.defineProperty(query, "setPlanMode", { value: undefined });

@@ -512,6 +512,52 @@ describe("QoderAdapter", () => {
       await adapter.close();
     });
 
+    it.each(["global", "cn"] as const)(
+      "does not reuse another cwd's %s Model catalog when opening an empty or uninspected cwd",
+      async (variant) => {
+        const getAvailableModels = vi
+          .fn<() => Promise<QoderModelInfo[]>>()
+          .mockResolvedValueOnce([
+            { value: "project-a", displayName: "A", description: "", isDefault: true },
+          ])
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([
+            { value: "project-b", displayName: "B", description: "", isDefault: true },
+          ]);
+        const adapter = new QoderAdapter({
+          variant,
+          resolveExecutable: () => "qodercli",
+          queryFactory: () => new FakeQoderQuery(),
+          getAvailableModels,
+        });
+        try {
+          await adapter.inspect({ cwd: "D:/a" });
+          await adapter.inspect({ cwd: "D:/b" });
+          for (const cwd of ["D:/b", "D:/uninspected"]) {
+            const opened = await adapter.open({ kind: "create", cwd });
+            expect(opened.ok).toBe(true);
+            if (!opened.ok) throw new Error(opened.error.message);
+            expect(opened.value.initialState.effectiveModel).toEqual(encodeQoderModelRef("auto"));
+            await opened.value.close();
+          }
+          const refreshed = await adapter.inspect({ cwd: "D:/b" });
+          expect(refreshed.status).toBe("ready");
+          if (refreshed.status !== "ready") throw new Error("Expected ready inspection");
+          expect(refreshed.catalog.defaultModel).toEqual(encodeQoderModelRef("project-b"));
+          expect(getAvailableModels).toHaveBeenCalledTimes(3);
+          const opened = await adapter.open({ kind: "create", cwd: "D:/b" });
+          expect(opened.ok).toBe(true);
+          if (!opened.ok) throw new Error(opened.error.message);
+          expect(opened.value.initialState.effectiveModel).toEqual(
+            encodeQoderModelRef("project-b"),
+          );
+          await opened.value.close();
+        } finally {
+          await adapter.close();
+        }
+      },
+    );
+
     it("opens session with create and resume, and rejects rollbackLastTurn", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({

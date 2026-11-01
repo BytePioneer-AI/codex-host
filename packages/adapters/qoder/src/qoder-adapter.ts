@@ -613,7 +613,7 @@ export class QoderAdapter implements HarnessAdapter {
       };
     }
 
-    const cachedInspection = this.#inspections.get(input.cwd) ?? [...this.#inspections.values()][0];
+    const cachedInspection = this.#inspections.get(input.cwd);
     const catalog = cachedInspection?.catalog;
 
     let session: QoderSession;

@@ -45,9 +45,10 @@ import { sameDirectory } from "./discovery.js";
 import { NativeInteractions } from "./interactions.js";
 import { nativeContextUsage, contextUsageFromHistory } from "./usage.js";
 import { hasFileEditHistory } from "./file-changes.js";
+import { prepareModelSelection } from "./configuration.js";
 
-// History capabilities are derived per Session below. Configuration writes
-// remain disabled until their native operations are verified.
+// Older Companions do not expose model preparation or history feature flags.
+// These capabilities are derived from the negotiated native bridge below.
 export const SESSION_CAPABILITIES: HarnessSessionCapabilities = {
   configuration: {
     selectModel: false,
@@ -66,6 +67,10 @@ export function sessionCapabilities(
   const fork = inspection.history?.forkFromMessage === true && !hasFileEdits;
   return {
     ...SESSION_CAPABILITIES,
+    configuration: {
+      ...SESSION_CAPABILITIES.configuration,
+      selectModel: inspection.configuration?.modelSelection === "per-request",
+    },
     history: {
       fork,
       forkAcrossCwd: false,
@@ -77,6 +82,8 @@ export function sessionCapabilities(
 
 interface ActiveTurn {
   command: TurnStartCommand;
+  model: HarnessModelRef | undefined;
+  modelRevision: number;
   messageId: string;
   cancelRequested: boolean;
   admitted: boolean;
@@ -159,6 +166,9 @@ export class TraeCnSession implements HarnessSession {
   #usage: HostUsage | null;
   #historyHasFileEdits = false;
   #historyTurnCount = 0;
+  #selectedModel: HarnessModelRef | undefined;
+  #modelRevision = 0;
+  #configuring = false;
 
   constructor(private readonly options: SessionOptions) {
     if (options.nativeRef) validateReference(options.nativeRef, options.inspection, options.cwd);
@@ -167,6 +177,7 @@ export class TraeCnSession implements HarnessSession {
       ...(options.nativeRef ? { nativeRef: options.nativeRef } : {}),
     };
     this.#state = this.initialState;
+    this.#selectedModel = options.model ? { ...options.model } : undefined;
     this.initialUsage = options.initialUsage ?? null;
     this.#usage = this.initialUsage;
     this.#historyHasFileEdits = options.historyHasFileEdits === true;
@@ -186,6 +197,8 @@ export class TraeCnSession implements HarnessSession {
       this.#recoverySnapshot = structuredClone(options.recoverySnapshot);
       const turn: ActiveTurn = {
         command: { type: "turn.start", turnId: recovery.turnId, input: recovery.input },
+        model: options.recoverySnapshot.turns.at(-1)?.model ?? options.model,
+        modelRevision: this.#modelRevision,
         messageId: recovery.nativeTurnRef.nativeTurnKey,
         cancelRequested: false,
         admitted: true,
@@ -300,7 +313,7 @@ export class TraeCnSession implements HarnessSession {
       if (this.#closed || this.#faulted)
         throw new TraeError("invalidState", "TRAE CN Session is closed or faulted");
       if (command.type === "turn.start") {
-        if (this.#active)
+        if (this.#active || this.#configuring)
           throw new TraeError("sessionBusy", "TRAE CN Session has an active Host Turn");
         if (
           !command.turnId?.trim() ||
@@ -310,14 +323,16 @@ export class TraeCnSession implements HarnessSession {
           !command.input.some((part) => part.text.trim())
         )
           throw new TraeError("invalidRequest", "Expected a non-empty text Turn and Host Turn ID");
-        if (!this.options.model)
+        if (!this.#selectedModel)
           throw new TraeError(
             "configurationRequired",
             "Choose a TRAE CN model before starting this Session",
           );
-        nativeModelId(this.options.inspection, this.options.model);
+        nativeModelId(this.options.inspection, this.#selectedModel);
         const turn: ActiveTurn = {
           command,
+          model: this.#selectedModel,
+          modelRevision: this.#modelRevision,
           messageId: randomUUID(),
           cancelRequested: false,
           admitted: false,
@@ -345,9 +360,45 @@ export class TraeCnSession implements HarnessSession {
           throw new TraeError("invalidState", "No native question is currently active");
         return interactions.respond(command);
       }
+      if (command.type === "model.select") return await this.#selectModel(command);
       throw new TraeError("unsupported", `TRAE CN operation is not implemented: ${command.type}`);
     } catch (error) {
       return { ok: false, error: harnessError(error) };
+    }
+  }
+
+  async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
+    if (!this.capabilities.configuration.selectModel)
+      throw new TraeError(
+        "unsupported",
+        "This TRAE CN Companion does not support model preparation",
+      );
+    if (this.#configuring)
+      throw new TraeError("sessionBusy", "TRAE CN model configuration is already being prepared");
+    this.#configuring = true;
+    try {
+      const inspection = await this.options.client.inspect(true);
+      if (this.#state.nativeRef)
+        validateReference(this.#state.nativeRef, inspection, this.options.cwd);
+      if (!inspection.workspaceFolders.some((folder) => sameDirectory(folder, this.options.cwd)))
+        throw new TraeError("configurationRequired", "The TRAE CN workspace changed");
+      await prepareModelSelection(
+        this.options.client,
+        inspection,
+        command.model,
+        this.#state.nativeRef?.nativeSessionId,
+      );
+      if (this.#closed || this.#faulted)
+        throw new TraeError("invalidState", "TRAE CN Session closed during model configuration");
+      this.options.inspection = inspection;
+      this.#selectedModel = { ...command.model };
+      this.#modelRevision++;
+      // The native interface takes this configuration on the next send. A
+      // running Turn retains the model captured when it was accepted.
+      this.#setState({ ...this.#state, effectiveModel: this.#selectedModel });
+      return { ok: true, value: { completed: true } };
+    } finally {
+      this.#configuring = false;
     }
   }
 
@@ -401,7 +452,7 @@ export class TraeCnSession implements HarnessSession {
           });
           return;
         }
-        const model = this.options.model;
+        const model = turn.model;
         if (!model) throw new TraeError("configurationRequired", "Choose a TRAE CN model");
         const receipt = await this.options.client.call("start", {
           sessionId: nativeRef.nativeSessionId,
@@ -550,7 +601,17 @@ export class TraeCnSession implements HarnessSession {
                     event.event === "metadata" ? payload?.model : payload,
                     this.options.inspection.agentType,
                   );
-                  if (effectiveModel) this.#setState({ ...this.#state, effectiveModel });
+                  if (
+                    effectiveModel &&
+                    turn.modelRevision === this.#modelRevision &&
+                    turn.model?.id === this.#selectedModel?.id
+                  ) {
+                    // Recovery may attach before the native model was present
+                    // in history. Its first confirmed event supplies it.
+                    if (!this.#selectedModel) this.#selectedModel = effectiveModel;
+                    if (!turn.model) turn.model = effectiveModel;
+                    this.#setState({ ...this.#state, effectiveModel });
+                  }
                 } else if (event.event === "token_usage") {
                   const usage = nativeContextUsage(payload);
                   if (usage) this.#setUsage(usage, turn.command.turnId);

@@ -27,6 +27,7 @@ export interface BridgeInspection {
   workspaceFolders: string[];
   agentType: string;
   models: BridgeModel[];
+  configuration?: { modelSelection: "per-request" };
   history?: { forkFromMessage: boolean; forkFromSession: boolean };
 }
 export interface BridgeEvent {
@@ -112,6 +113,12 @@ export function readInspection(value: unknown): BridgeInspection {
   if (new Set(models.map((model) => model.id)).size !== models.length)
     throw new TraeError("protocolError", "Duplicate TRAE CN model identities");
   const history = value.history;
+  const configuration = value.configuration;
+  if (
+    configuration !== undefined &&
+    (!record(configuration) || configuration.modelSelection !== "per-request")
+  )
+    throw new TraeError("protocolError", "Invalid TRAE CN configuration capabilities");
   if (
     history !== undefined &&
     (!record(history) ||
@@ -125,6 +132,7 @@ export function readInspection(value: unknown): BridgeInspection {
     application: readApplication(value.application),
     workspaceFolders: value.workspaceFolders as string[],
     models,
+    ...(configuration ? { configuration: { modelSelection: "per-request" as const } } : {}),
     ...(record(history)
       ? {
           history: {

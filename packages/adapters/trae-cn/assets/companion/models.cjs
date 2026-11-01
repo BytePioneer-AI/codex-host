@@ -69,4 +69,10 @@ function nativeModel(models, id) {
   };
 }
 
-module.exports = { publicModels, nativeModel, readModels };
+/** Validate the exact DTO used by the next send, without submitting a Prompt. */
+async function prepareModel(native, agentType, id) {
+  const model = nativeModel(await readModels(native, agentType, true), id);
+  return { agentType, modelId: model.config_name };
+}
+
+module.exports = { publicModels, nativeModel, readModels, prepareModel };

@@ -23,6 +23,7 @@ import { contextUsageFromHistory } from "./usage.js";
 import { TraeCnSession, sessionCapabilities, validateReference } from "./session.js";
 import { deriveSession } from "./derivation.js";
 import { hasFileEditHistory } from "./file-changes.js";
+import { prepareModelSelection } from "./configuration.js";
 
 export type TraeCnAdapterOptions = Omit<BridgeOptions, "cwd"> & { cwd?: string };
 
@@ -203,6 +204,24 @@ export class TraeCnAdapter implements HarnessAdapter {
       if (this.#closed) throw new TraeError("invalidState", "TRAE CN Adapter closed during open");
       this.#catalogs.set(this.#catalogKey(options), inspection);
       const selected = input.model ?? effectiveModel;
+      // A saved Host selection is configuration for the next native request,
+      // not a relabeling of the historical Turn that used the previous model.
+      if (
+        input.model &&
+        input.kind === "resume" &&
+        input.model.id !== effectiveModel?.id &&
+        (inspection.configuration?.modelSelection === "per-request" || effectiveModel)
+      ) {
+        await prepareModelSelection(
+          client,
+          inspection,
+          input.model,
+          input.nativeRef.nativeSessionId,
+        );
+        effectiveModel = input.model;
+      }
+      if (this.#closed)
+        throw new TraeError("invalidState", "TRAE CN Adapter closed during configuration");
       const session = new TraeCnSession({
         client,
         inspection,

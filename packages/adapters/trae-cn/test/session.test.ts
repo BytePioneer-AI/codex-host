@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  hostTurnIdSchema,
+  nativeSessionRefSchema,
+  nativeTurnRefSchema,
+} from "@codexhost/shared-contracts";
 import { BridgeClient } from "../src/bridge.js";
 import type { BridgeInspection, Endpoint } from "../src/protocol.js";
 import { TraeCnSession } from "../src/session.js";
@@ -21,11 +25,31 @@ const inspection: BridgeInspection = {
   models: [{ id: "configured", label: "Configured", provider: "native", multimodal: false }],
 };
 
-async function setup(selected = true, deferred = false, history = false) {
+async function setup(
+  selected = true,
+  deferred = false,
+  history = false,
+  configurable = false,
+  recovering = false,
+) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "trae-cn-session-"));
-  let messageId = "",
+  let messageId = recovering ? "recovering-user" : "",
     listener: Listener | undefined;
   let status = "in_progress";
+  let nativeModel = "configured";
+  const sessionInspection: BridgeInspection = {
+    ...inspection,
+    ...(history ? { history: { forkFromMessage: true, forkFromSession: true } } : {}),
+    ...(configurable
+      ? {
+          configuration: { modelSelection: "per-request" },
+          models: [
+            ...inspection.models,
+            { id: "alternative", label: "Alternative", provider: "native", multimodal: false },
+          ],
+        }
+      : {}),
+  };
   let messages: unknown[] = [];
   const content = {
     task_id: "task",
@@ -61,6 +85,7 @@ async function setup(selected = true, deferred = false, history = false) {
         message_index: 2,
         role: "assistant",
         status,
+        model: { config_name: nativeModel },
         content: JSON.stringify(content),
       },
     ];
@@ -77,8 +102,10 @@ async function setup(selected = true, deferred = false, history = false) {
       if (method === "create") return { sessionId: "native-session", projectId: "project" };
       if (method === "start") {
         messageId = String(input.messageId);
+        nativeModel = String(input.modelId);
         return { accepted: true, messageId, fromAppend: false };
       }
+      if (method === "prepareModel") return { agentType: "builder_v3", modelId: input.modelId };
       if (method === "snapshot")
         return { sessionId: "native-session", projectId: "project", items: messages };
       if (method === "cancel") {
@@ -92,13 +119,13 @@ async function setup(selected = true, deferred = false, history = false) {
   const service = {
     application,
     workspaceFolders: ["/workspace"],
-    inspect: vi.fn(),
+    inspect: vi.fn(async () => sessionInspection),
     call,
     subscribe: vi.fn(async (_input: unknown, observer: Listener) => {
       listener = observer;
       observer.data({
         event: "metadata",
-        payload: { reply_to_message_id: messageId, model: { config_name: "configured" } },
+        payload: { reply_to_message_id: messageId, model: { config_name: nativeModel } },
       });
       if (!deferred) finish("completed");
       return detach;
@@ -108,13 +135,49 @@ async function setup(selected = true, deferred = false, history = false) {
     service,
     directory,
   );
+  sessionInspection.instanceId = server.endpoint.instanceId;
+  const reference = nativeSessionRefSchema.parse({
+    harnessId: "trae-cn",
+    nativeSessionId: "native-session",
+    formatVersion: 1,
+    locator: {
+      applicationRoot: "/app",
+      cwd: "/workspace",
+      projectId: "project",
+      agentType: "builder_v3",
+    },
+  });
+  const recovery = {
+    turnId: hostTurnIdSchema.parse("recovering-host"),
+    nativeTurnRef: nativeTurnRefSchema.parse({
+      harnessId: "trae-cn",
+      nativeSessionId: "native-session",
+      nativeTurnKey: "recovering-user",
+      formatVersion: 1,
+    }),
+    input: [{ type: "text" as const, text: "hello" }],
+  };
   const session = new TraeCnSession({
     client: new BridgeClient(server.endpoint),
-    inspection: history
-      ? { ...inspection, history: { forkFromMessage: true, forkFromSession: true } }
-      : inspection,
+    inspection: sessionInspection,
     cwd: "/workspace",
     ...(selected ? { model: modelRef("builder_v3", "configured") } : {}),
+    ...(recovering
+      ? {
+          nativeRef: reference,
+          recoveringTurn: recovery,
+          recoverySnapshot: {
+            turns: [
+              {
+                nativeTurnRef: recovery.nativeTurnRef,
+                input: recovery.input,
+                items: [],
+                outcome: { status: "unknown", reason: "Native pending task" },
+              },
+            ],
+          },
+        }
+      : {}),
   });
   const iterator = session.outputs[Symbol.asyncIterator]();
   return {
@@ -148,6 +211,169 @@ const command = (id = "host-turn") => ({
 });
 
 describe("TRAE CN public Session core", () => {
+  it("uses the native-confirmed model after recovery when pending history had no model yet", async () => {
+    const test = await setup(false, false, false, true, true);
+    try {
+      expect((await completed(test.iterator)).at(-1)).toMatchObject({
+        event: { turnId: "recovering-host", outcome: { status: "succeeded" } },
+      });
+      expect(await test.session.execute(command("continued"))).toMatchObject({ ok: true });
+      await completed(test.iterator);
+      expect(test.call.mock.calls.filter(([method]) => method === "start")).toHaveLength(1);
+      expect(test.call.mock.calls.find(([method]) => method === "start")?.[1].modelId).toBe(
+        "configured",
+      );
+      expect(test.call.mock.calls.some(([method]) => method === "create")).toBe(false);
+    } finally {
+      await test.close();
+    }
+  });
+  it("prepares a manual model choice without creating a Session, then sends that exact native DTO", async () => {
+    const test = await setup(false, false, false, true);
+    try {
+      expect(test.session.capabilities.configuration.selectModel).toBe(true);
+      const model = modelRef("builder_v3", "alternative");
+      expect(await test.session.execute({ type: "model.select", model })).toEqual({
+        ok: true,
+        value: { completed: true },
+      });
+      expect(await test.session.readSnapshot()).toMatchObject({
+        ok: true,
+        value: { turns: [], state: { effectiveModel: model } },
+      });
+      expect(test.call.mock.calls.map(([method]) => method)).toEqual(["prepareModel"]);
+      await test.session.execute(command());
+      await completed(test.iterator);
+      expect(test.call.mock.calls.find(([method]) => method === "start")?.[1].modelId).toBe(
+        "alternative",
+      );
+      expect(await test.session.readSnapshot()).toMatchObject({
+        ok: true,
+        value: { turns: [{ model }] },
+      });
+    } finally {
+      await test.close();
+    }
+  });
+  it("keeps an active Turn's model while switching the next request and ignores its stale model events", async () => {
+    const test = await setup(true, true, false, true);
+    try {
+      await test.session.execute(command());
+      await vi.waitFor(() => expect(test.service.subscribe).toHaveBeenCalledOnce());
+      const selected = modelRef("builder_v3", "alternative");
+      expect(await test.session.execute({ type: "model.select", model: selected })).toMatchObject({
+        ok: true,
+      });
+      const observer = test.service.subscribe.mock.calls[0]?.[1];
+      observer?.data({ event: "model_config", payload: { config_name: "configured" } });
+      test.finish("completed");
+      const outputs = await completed(test.iterator);
+      const states = outputs
+        .filter((o) => o.kind === "event" && o.event.type === "session.state.changed")
+        .map((o) =>
+          o.kind === "event" && o.event.type === "session.state.changed"
+            ? o.event.state.effectiveModel
+            : undefined,
+        )
+        .filter(Boolean);
+      expect(states.at(-1)).toEqual(selected);
+      expect(await test.session.readSnapshot()).toMatchObject({
+        ok: true,
+        value: {
+          state: { effectiveModel: selected },
+          turns: [{ model: modelRef("builder_v3", "configured") }],
+        },
+      });
+      await test.session.execute(command("next"));
+      await vi.waitFor(() => expect(test.service.subscribe).toHaveBeenCalledTimes(2));
+      test.finish("completed");
+      await completed(test.iterator);
+      expect(
+        test.call.mock.calls
+          .filter(([method]) => method === "start")
+          .map(([, input]) => input.modelId),
+      ).toEqual(["configured", "alternative"]);
+    } finally {
+      await test.close();
+    }
+  });
+  it("leaves the prior selection intact when native preparation fails or returns a different model", async () => {
+    const test = await setup(true, false, false, true);
+    try {
+      const original = test.call.getMockImplementation();
+      if (!original) throw new Error("Missing fixture");
+      test.call.mockImplementation(async (method, input) =>
+        method === "prepareModel"
+          ? { agentType: "builder_v3", modelId: "different" }
+          : original(method, input),
+      );
+      expect(
+        await test.session.execute({
+          type: "model.select",
+          model: modelRef("builder_v3", "alternative"),
+        }),
+      ).toMatchObject({ ok: false, error: { code: "protocolError" } });
+      expect(test.call.mock.calls.filter(([method]) => method === "prepareModel")).toHaveLength(1);
+      expect(await test.session.readSnapshot()).toMatchObject({ ok: true, value: { state: {} } });
+      await test.session.execute(command());
+      await completed(test.iterator);
+      expect(test.call.mock.calls.find(([method]) => method === "start")?.[1].modelId).toBe(
+        "configured",
+      );
+    } finally {
+      await test.close();
+    }
+    const old = await setup();
+    try {
+      expect(
+        await old.session.execute({
+          type: "model.select",
+          model: modelRef("builder_v3", "configured"),
+        }),
+      ).toMatchObject({ ok: false, error: { code: "unsupported" } });
+      expect(old.call).not.toHaveBeenCalled();
+    } finally {
+      await old.close();
+    }
+  });
+  it("serializes configuration against admission and cannot publish a late selection after close", async () => {
+    const test = await setup(true, false, false, true);
+    let release: ((value: unknown) => void) | undefined;
+    try {
+      const original = test.call.getMockImplementation();
+      if (!original) throw new Error("Missing fixture");
+      test.call.mockImplementation((method, input) =>
+        method === "prepareModel"
+          ? new Promise((resolve) => {
+              release = resolve;
+            })
+          : original(method, input),
+      );
+      const selecting = test.session.execute({
+        type: "model.select",
+        model: modelRef("builder_v3", "alternative"),
+      });
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      expect(await test.session.execute(command())).toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      expect(
+        await test.session.execute({
+          type: "model.select",
+          model: modelRef("builder_v3", "configured"),
+        }),
+      ).toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+      await test.session.close();
+      release?.({ agentType: "builder_v3", modelId: "alternative" });
+      expect(await selecting).toMatchObject({ ok: false, error: { code: "invalidState" } });
+      expect(await test.iterator.next()).toEqual({ done: true, value: undefined });
+      expect(test.call.mock.calls.every(([method]) => method === "prepareModel")).toBe(true);
+    } finally {
+      release?.({ agentType: "builder_v3", modelId: "alternative" });
+      await test.close();
+    }
+  });
   it("disables file-edit forks while retaining a rollback to an empty Session", async () => {
     const test = await setup(true, true, true);
     try {

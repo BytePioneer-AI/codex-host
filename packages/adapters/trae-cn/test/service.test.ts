@@ -39,6 +39,22 @@ function setup() {
 }
 
 describe("TRAE CN desktop bridge service", () => {
+  it("validates scoped model preparation without creating a Session or changing native preferences", async () => {
+    const { service, call } = setup();
+    expect(
+      await service.call("prepareModel", { modelId: model.name, sessionId: "session" }),
+    ).toEqual({ agentType: "builder_v3", modelId: model.name });
+    expect(call.mock.calls.map(([, method]) => method)).toEqual([
+      "get_chat_session",
+      "get_or_create_project_v2",
+      "model_list_by_function",
+    ]);
+    call.mockClear();
+    await expect(
+      service.call("prepareModel", { modelId: model.name, sessionId: "foreign" }),
+    ).rejects.toThrow("different session");
+    expect(call.mock.calls.map(([, method]) => method)).toEqual(["get_chat_session"]);
+  });
   it("exports reliable numeric counters without treating native display strings as usage", () => {
     expect(
       publicTokenUsage({

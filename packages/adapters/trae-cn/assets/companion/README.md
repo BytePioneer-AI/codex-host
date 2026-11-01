@@ -22,4 +22,6 @@ Companion 0.1.2 also exports the native numeric context counters. The Harness re
 
 Companion 0.1.3 exposes native same-workspace text-history forks and the Desktop feature flags. The Harness validates exact prefixes and keeps the source unchanged when forking or rolling back a Turn. TRAE CN 3.4.12 does not copy the file snapshot tags, so file-edit forks and rollbacks retaining a nonempty file-edit prefix are explicitly unavailable. A sole file-edit Turn can be removed by opening a separate empty Session. History rollback leaves workspace files unchanged.
 
+Companion 0.1.4 prepares model configuration for the next native request using the refreshed conversation catalog and the same DTO as Desktop. Model selection does not submit a Prompt or change global preferences. An already accepted Turn retains its model; saved next-request selections are validated again on resume, and historical Turns retain their actual models. Install the matching VSIX to enable this capability.
+
 [Source and integration details](https://github.com/BytePioneer-AI/codex-host/blob/main/docs/harnesses/trae-cn/trae-cn-desktop-integration.md)

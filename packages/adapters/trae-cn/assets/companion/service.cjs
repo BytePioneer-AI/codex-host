@@ -1,6 +1,6 @@
 const { randomUUID } = require("node:crypto");
 const path = require("node:path");
-const { publicModels, nativeModel, readModels } = require("./models.cjs");
+const { publicModels, nativeModel, readModels, prepareModel } = require("./models.cjs");
 const { questionDecision, approvalDecision, NativeInteractions } = require("./interactions.cjs");
 const { withFileDiffs } = require("./diffs.cjs");
 const { forkNativeSession } = require("./history.cjs");
@@ -249,6 +249,7 @@ class DesktopService {
       workspaceFolders: this.workspaceFolders,
       agentType: this.agentType,
       models: publicModels(pool),
+      configuration: { modelSelection: "per-request" },
       history: await this.historySettings(),
     };
   }
@@ -256,6 +257,11 @@ class DesktopService {
   async call(method, input = {}) {
     if (!record(input)) throw invalid("Invalid bridge request");
     switch (method) {
+      case "prepareModel": {
+        if (input.sessionId !== undefined)
+          await this.readSession(text(input.sessionId, "session ID"));
+        return prepareModel(this.native, this.agentType, text(input.modelId, "model ID"));
+      }
       case "settings":
         return this.requestSettings();
       case "historySettings":

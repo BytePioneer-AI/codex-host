@@ -10,7 +10,7 @@ import { modelRef } from "../src/models.js";
 
 const { startServer } = createRequire(import.meta.url)("../assets/companion/server.cjs");
 
-async function setup() {
+async function setup(configurable = false) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "trae-cn-adapter-"));
   const root = path.join(directory, "resources", "app");
   const cwd = path.join(directory, "workspace");
@@ -52,9 +52,17 @@ async function setup() {
       application,
       workspaceFolders: [cwd],
       agentType: "builder_v3",
-      models: [{ id: "configured", label: "Configured", provider: "native", multimodal: false }],
+      models: [
+        { id: "configured", label: "Configured", provider: "native", multimodal: false },
+        ...(configurable
+          ? [{ id: "alternative", label: "Alternative", provider: "native", multimodal: false }]
+          : []),
+      ],
+      ...(configurable ? { configuration: { modelSelection: "per-request" as const } } : {}),
     })),
-    call: vi.fn(async (method: string) => {
+    call: vi.fn(async (method: string, input?: Record<string, unknown>) => {
+      if (method === "prepareModel" && configurable)
+        return { agentType: "builder_v3", modelId: input?.modelId };
       if (method !== "snapshot") throw new Error("Unexpected native write during open");
       return {
         sessionId: "native-session",
@@ -99,6 +107,61 @@ async function setup() {
 }
 
 describe("TRAE CN public Adapter core", () => {
+  it("restores a saved next-request selection without relabeling the original native Turn", async () => {
+    const test = await setup(true);
+    try {
+      const model = modelRef("builder_v3", "alternative");
+      const opened = await test.adapter.open({
+        kind: "resume",
+        nativeRef: test.reference,
+        cwd: test.cwd,
+        model,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.initialState.effectiveModel).toEqual(model);
+      expect(await opened.value.readSnapshot()).toMatchObject({
+        ok: true,
+        value: {
+          state: { effectiveModel: model },
+          turns: [{ model: modelRef("builder_v3", "configured") }],
+        },
+      });
+      expect(test.service.call.mock.calls.filter(([method]) => method !== "snapshot")).toEqual([
+        ["prepareModel", { modelId: "alternative", sessionId: "native-session" }],
+      ]);
+    } finally {
+      await test.close();
+    }
+  });
+  it("does not create a live Session after the Adapter closes during configuration restoration", async () => {
+    const test = await setup(true);
+    let release: ((value: Awaited<ReturnType<typeof test.service.call>>) => void) | undefined;
+    try {
+      const original = test.service.call.getMockImplementation();
+      if (!original) throw new Error("Missing fixture");
+      test.service.call.mockImplementation((method, input) =>
+        method === "prepareModel"
+          ? new Promise((resolve) => {
+              release = resolve;
+            })
+          : original(method, input),
+      );
+      const opened = test.adapter.open({
+        kind: "resume",
+        cwd: test.cwd,
+        nativeRef: test.reference,
+        model: modelRef("builder_v3", "alternative"),
+      });
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      await test.adapter.close();
+      release?.({ agentType: "builder_v3", modelId: "alternative" });
+      expect(await opened).toMatchObject({ ok: false, error: { code: "invalidState" } });
+      expect(test.service.subscribe).not.toHaveBeenCalled();
+    } finally {
+      release?.({ agentType: "builder_v3", modelId: "alternative" });
+      await test.close();
+    }
+  });
   it("restores only native context occupancy as initial Session usage", async () => {
     const test = await setup();
     try {

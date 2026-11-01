@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 
-const { publicModels, nativeModel, readModels } = createRequire(import.meta.url)(
+const { publicModels, nativeModel, readModels, prepareModel } = createRequire(import.meta.url)(
   "../assets/companion/models.cjs",
 );
 
@@ -21,6 +21,17 @@ const model = {
 };
 
 describe("TRAE CN configured model projection", () => {
+  it("prepares an available native request DTO without exporting its credentials or sending a message", async () => {
+    const call = vi.fn(async () => ({ list: [{ function: "builder_v3", models: [model] }] }));
+    expect(await prepareModel({ call }, "builder_v3", model.name)).toEqual({
+      agentType: "builder_v3",
+      modelId: model.name,
+    });
+    expect(call).toHaveBeenCalledExactlyOnceWith("model", "model_list_by_function", {
+      functions: ["builder_v3"],
+      force_refresh: true,
+    });
+  });
   it("exposes only selectable, unique models and no provider credentials or implicit default", () => {
     const catalog = publicModels([
       model,

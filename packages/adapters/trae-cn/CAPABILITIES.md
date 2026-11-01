@@ -27,7 +27,7 @@
 | A8 | 持久身份 + resume | 必做 | P0 | 受限 | src/adapter.ts；src/session.ts；src/history.ts | 公共 Adapter 跨进程恢复；隔离真实 Host 重启恢复提问和审批，原 Turn / 唯一映射不变 | 空闲与已确认活动身份可恢复；缺映射、创建中、回退中等不确定状态明确拒绝 |
 | A9 | 错误与并发 | 必做 | P0 | 受限 | src/session.ts；assets/companion/service.cjs | native / service / session 测试；真实跨进程活动恢复 | 本机准入串行；不确定回执无自动重试；仅恢复原身份，其他工具故障待补 |
 | A10 | 关闭 | 必做 | P0 | 支持 | src/session.ts；assets/companion/native.cjs | 公共关闭测试；真实观察者断开后原生 completed | 不把关闭观察者当作 native cancel |
-| B1 | 切换 Model | 原生有则必做 | P1 | 受限 | assets/companion/models.cjs；src/models.ts | 原生会话目录、手动初始选择、原生模型确认 | 初始选择可用，不自动默认；model.select 写入未实现 |
+| B1 | 切换 Model | 原生有则必做 | P1 | 支持（下次请求生效） | src/configuration.ts；src/session.ts；assets/companion/models.cjs | 公共 model.select；原生 Assistant 确认 Seed-Code → Seed-2.1-Turbo → Seed-2.1-Turbo → Seed-Code；活动时切换、冷恢复、模型存储哈希不变 | 按桌面原生逐轮 DTO 配置；不修改全局偏好；旧 Companion 不声明支持；不把历史 Turn 改标为新模型 |
 | B2 | 切换 Thinking | 原生有则必做 | P1 | 待验证 | — | — | |
 | B3 | 权限模式 | 原生有则必做 | P1 | 待验证 | — | 原生 permission_profile_id | |
 | B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 支持（明确拒绝） | src/adapter.ts | test/adapter.test.ts：unattended-full-access 在连接前返回 unsupported | 不忽略执行意图或伪造审批 |
@@ -61,11 +61,13 @@
 
 活动恢复的公共契约缺口与实现：原生实测可在断开观察者后重放同一问题实例，并继续同一用户消息；旧 Host 只在 turn.completed 持久化 NativeTurnRef，knownTurnRefs 没有原 Host Turn ID。API 2 新增可选 activeTurnRecovery、turn.identity.confirmed、knownTurns 和 recoveringTurn，Host 提前持久化原身份并按确认映射恢复原投影；Broker 转发，Renderer 沿用原公共投影，没有 TRAE 专用分支。旧 API 1 插件仍可加载且不接收新输入；TRAE 插件声明 API 2，拒绝在旧 Host 上执行。没有确认映射时不会猜测或重发任务。
 
-当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。插件 Manifest / 工厂、Bundle、Companion VSIX、本机 HTTP、公共 Adapter、普通 Session、结构化提问、RunCommand 单次审批、已确认身份的活动恢复及受限的历史派生已实现；其他审批、配置写入及预装发行尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接和确认状态的更新直至结束。
+当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。插件 Manifest / 工厂、Bundle、Companion VSIX、本机 HTTP、公共 Adapter、普通 Session、结构化提问、RunCommand 单次审批、已确认身份的活动恢复、逐轮模型选择及受限的历史派生已实现；其他审批、Thinking / 权限配置及预装发行尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接和确认状态的更新直至结束。
 
 历史派生限制：3.4.12 的原生 fork_session 可以精确复制文本会话前缀，但不会为复制的文件编辑用户消息建立对应的快照 Git 标签。一次独立原生探测创建了可读消息但不可读文件快照的副本；源历史不变，副本已停止并保留供核查，没有重试或删除用户历史。插件在写入前拒绝含文件编辑的 Fork，以及需保留非空前缀的文件编辑 Rollback。只有一轮时，Rollback 创建独立空会话，无需复制快照。会话回退不回滚工作区文件。新会话身份、精确前缀和源历史均重新核对；不确定回执不自动重试，已知副本验证失败时报告其原生 ID。
 
 原生模型管理接口 `model_list` 与会话菜单接口 `model_list_by_function` 的范围不同。模型管理接口不作为对话目录来源；目录按原生 Agent function 读取，并过滤 `status === false` 或 `selectable === false` 的模型。自定义 Provider 的失败不等于桌面登录失败；已观察到原生服务返回 Provider HTTP 401，不能用桌面登录状态代替模型调用验收。
+
+模型切换语义：桌面的 getModelRequestSelection / buildSendMessageRequest 为每次发送构造 custom_model DTO，并非让原生流中的活动请求换模型。Companion 0.1.4 的 prepareModel 刷新原生目录、校验原生 Session 作用域并准备同一 DTO，仅返回无凭据的标识确认；公共 model.select 更新后续请求配置并发布状态。已接受的 Turn 固定原模型和配置修订号，旧 metadata / model_config 不覆盖新的后续选择。Host 保存的选择在 resume 时重新准备，不改历史模型。桌面的 localThread.writeSelection 只支持官方模型，并在当前 Builder 目录实测返回 MODEL_UNAVAILABLE，故不依赖该前端存储命令，也不改用户全局选择。
 
 会话用量限制：已核对 3.4.12 的原生 token_usage 事件与持久历史；prompt_tokens / completion_tokens / total_tokens 是最后一次模型请求，prompt_tokens_total / completion_tokens_total 在实测中均为占位 0。当前只把 last_turn_total_tokens 和 max_tokens 映射成上下文占用及窗口，不把单次请求或格式化 input/output 字符串当作会话累计消耗。刷新失败不使普通 Turn 失败，活动时刷新不覆盖实时用量。
 
@@ -88,6 +90,8 @@
 | 上下文用量 | 同一专用 Session 的原生历史；公共 initialUsage / refreshUsage；新进程只读恢复 | 上下文数值与原生一致，跨进程不变；仅有 snapshot 读取，没有 create/start；未声称总 tokens 或费用完整 |
 | 文本历史派生 | 原生整会话复制；公共中间与末尾 Fork、多轮 / 单轮 Rollback；新 Node 进程只读验证 | 精确复制 1 / 6 / 5 / 0 轮，源历史不变；中间 Fork 续聊复述原文，空白 Rollback 回复 TRAE_CN_ROLLBACK_EMPTY_OK；原生实时上下文用量已确认 |
 | 文件编辑历史限制 | 两轮文件编辑源的写入前拒绝；另建专用单轮文件编辑源，再回退为空 | 多轮源没有 fork/create/start；单轮源仅创建一个空白 Session，回复 TRAE_CN_FILE_EMPTY_ROLLBACK_OK；模型、源历史及实际文件不变；两个 Session 冷恢复一致 |
+| 模型切换 | 公共选择、冷进程恢复后发送、活动请求中选择、原生 Assistant 的 config_name / model_name、新进程最终读取 | 四次成功回复的实际模型为 Seed-Code / Seed-2.1-Turbo / Seed-2.1-Turbo / Seed-Code；原生配置名与解析模型名均匹配；所检查的桌面模型选择存储哈希不变 |
+| 模型验收异常核对 | 验收脚本重复创建输出消费者，第四轮取消；只读原生核对后另发一条新验收消息 | 原取消轮原样保留，没有重发；第五轮回复 TRAE_CN_MODEL_RECOVERY_OK；新进程读取五轮历史完全一致；原生状态 Finished，无活动遗留 |
 | 插件加载 | 真实 Loader 加载仓库外 Bundle；独立 Node 进程导入 | 身份、资源、独立实例与关闭隔离均通过；无 Workspace 运行依赖 |
 | Companion 安装包 | 官方 vsce 打包；独立 ZIP 读取；TRAE CN 本地安装 | 身份与许可证完整，7 个 CJS 文件字节一致；实际安装版本 0.1.0 |
 | 已安装插件链路 | 已安装 Companion 的进程、扩展目录和 SHA-256；仓库外插件完成原生 Turn | 同一持久身份读到 TRAE_CN_INSTALLED_PLUGIN_OK；未作为当前 CodexHost / Renderer 验收 |
@@ -98,5 +102,7 @@
 | 跨平台 CI | ad21e0d9：GitHub Actions 41268028791 | Ubuntu、Windows、Linux ARM64、macOS 14 四项通过；该结果属于历史派生之前的基线，不代表 macOS 原生桌面接口已验证 |
 | 历史派生回归检查 | typecheck（含测试类型）；lint / boundaries；Adapter 全套与两个发行测试共 136 项 | 全部通过；Companion 0.1.3 的九个 CJS 文件、许可证与搬移插件均已验证；新增原生操作在独立开发窗口验收，用户当前 Host / Desktop 未升级 |
 | 应用版本检查 | 公共插件工厂 installation(check)，显式选择实际 TRAE CN 安装目录 | 只读 appVersion=3.4.12；latestVersion=Unknown，application 口径；installation(update) 返回 unsupported；没有模型请求、安装或桌面重启 |
+| 历史与应用版本 CI | d033ae09：GitHub Actions 41270667398 | Ubuntu、Windows、Linux ARM64、macOS 15 全部通过；模型切换改动之后仍需新 Head 的 CI |
+| 模型选择回归检查 | typecheck；lint / boundaries；149 项 Adapter / 打包测试；补充恢复后配置用例后的 16 项 Session 定向回归 | 全部通过；测试集合重叠不累加。覆盖空会话手动选择、活动模型固定、失败回执、冷恢复提示、配置与准入串行、关闭竞态；实际桌面与当前 Host 验收范围仍区分 |
 | 真实原生验收 | TRAE CN 3.4.12 Windows，复用桌面登录，Builder / Seed-Code | 原生 done.status=completed；重连历史 finish.summary=CODEXHOST_TRAE_CN_OK；不是 Host 端验收 |
 | Desktop / 委派 | 待实现 | 未验证 |

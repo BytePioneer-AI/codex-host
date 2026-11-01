@@ -1,6 +1,6 @@
 # TRAE CN Desktop 原生桥接
 
-开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含插件 Manifest / 工厂、桌面 Companion、本机传输、公共 Adapter、文本会话、文件编辑与 Diff、结构化提问、RunCommand 单次审批、已确认身份的活动恢复及受限的 Fork / Rollback。插件 Bundle 与 Companion VSIX 已验证；其他工具审批、配置写入和预装发行尚未完成，仍为开发版本。
+开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含插件 Manifest / 工厂、桌面 Companion、本机传输、公共 Adapter、文本会话、文件编辑与 Diff、结构化提问、RunCommand 单次审批、已确认身份的活动恢复、模型选择及受限的 Fork / Rollback。插件 Bundle 与 Companion VSIX 已验证；其他工具审批、Thinking / 权限配置和预装发行尚未完成，仍为开发版本。
 
 ## 构建与安装
 
@@ -51,6 +51,10 @@ TRAE CN 的 `rpc.stream.cancel` 会取消原生生成，因此客户端解除订
 
 桌面登录与 Provider 鉴权分别验证。桌面接口可用不能证明某个自定义 Provider 的密钥仍有效；原生模型服务返回的 HTTP 401 应保留为该模型的调用失败，不要求用户重新登录独立 CLI。
 
+模型切换从下一次原生请求生效。桌面本身在每次发送时读取选择并构造 custom_model；Companion 0.1.4 的 prepareModel 刷新同一目录、验证目标 Session 并准备同一 DTO，只把确认的模型标识返回给插件，不发消息。公共 model.select 随后更新这份后续配置，Host 保存该选择，resume 时重新校验。正在执行的 Turn 固定其接受时的模型；旧 metadata / model_config 不覆盖新的选择，历史 Turn 仍报告实际原生模型。配置失败或关闭期间不发布新状态，配置准备与新 Turn 准入互斥；已有活动 Turn 不妨碍选择下一轮模型。旧 Companion 不声明此能力。
+
+此路径不写桌面全局模型偏好。桌面另有 localThread.readSelection / writeSelection 命令，但写入仅支持官方模型，且当前 Builder 目录的原生探测返回 MODEL_UNAVAILABLE，因此没有依赖这条前端状态路径。
+
 ## 公共会话核心
 
 `src/adapter.ts` 提供只读检查、同作用域目录缓存、延迟创建和空闲恢复；`src/session.ts` 在首个已接受 Turn 时创建原生身份，并将原生流投影为公共输出。新会话要求调用方先手动选择模型，`initialState` 不把请求模型当作生效状态；原生 metadata / model_config 确认后才更新 effectiveModel。模型 Ref 为按原生 Agent 和模型 ID 生成的 opaque 标识，保留自定义模型中斜杠等原生身份信息而不暴露给 Host 路由。
@@ -65,7 +69,7 @@ TRAE CN 的 `rpc.stream.cancel` 会取消原生生成，因此客户端解除订
 
 原生准入后发布公共 turn.identity.confirmed，Host 在终态之前持久化原 Turn 身份；通用恢复路径校验归属后重建投影，Broker 同样转发可选恢复字段。旧 API 1 插件不接收新输入，缺省行为不变。关闭或故障结束本次观察作用域，报告原生任务可能仍运行并释放本机订阅；不会发送原生取消。只有显式取消操作会停止任务。观察超时或失败不能作为自动重启理由。
 
-当前配置写入和其他工具审批明确返回未实现或受限错误，能力字段不声称支持。已完成的核心路径不代表全部 P0 / P1 已验收。
+当前 Thinking / 权限配置和其他工具审批明确返回未实现或受限错误，能力字段不声称支持。已完成的核心路径不代表全部 P0 / P1 已验收。
 
 ## Fork 与会话回退
 
@@ -115,4 +119,6 @@ RunCommand 投影为公共 commandExecution，保留原生输出、目录、退�
 
 文本历史派生已验证中间 / 末尾 Fork、多轮 / 单轮 Rollback、源历史不变和冷恢复。中间 Fork 的新消息复述了继承的原答复；回退到空白的 Session 回复 TRAE_CN_ROLLBACK_EMPTY_OK。另一次单轮文件编辑回退回复 TRAE_CN_FILE_EMPTY_ROLLBACK_OK，实际文件仍是已编辑后的内容。实时上下文数值来自原生 token_usage，不再只依赖事件 fixture。Companion 0.1.3 的 VSIX 有九个 CJS 资源；这些新增功能使用开发窗口，普通窗口已安装版本仍为 0.1.0。
 
-这些证据覆盖插件加载、桌面 Companion、公共 Adapter 与隔离 Host 核心，仍需其他审批、配置写入、预装发行，以及用户当前 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。
+模型选择实测中，成功完成的四条原生 Assistant 记录分别确认 Seed-Code、Seed-2.1-Turbo、Seed-2.1-Turbo、Seed-Code；config_name 与 model_name 同时核对。第二轮在新 Node 进程中恢复尚未发送的选择，第三轮运行中切回 Seed-Code 只影响后续请求。验收脚本重复创建输出消费者曾使第四轮取消，该取消轮经原生历史核对并保留，随后独立的新消息回复 TRAE_CN_MODEL_RECOVERY_OK，没有重发原消息。最终五轮记录由新进程只读恢复一致，所检查的桌面模型选择存储哈希未变，原生任务已结束。这些新能力使用开发 Companion 0.1.4；普通窗口仍是已安装的 0.1.0。
+
+这些证据覆盖插件加载、桌面 Companion、公共 Adapter 与隔离 Host 核心，仍需其他审批、Thinking / 权限配置、预装发行，以及用户当前 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。

@@ -52,7 +52,9 @@ class FakeQoderQuery implements QoderQuery {
       waiter({ done: true, value: undefined });
     }
   });
-  readonly getAvailableModels = vi.fn(async (): Promise<QoderModelInfo[]> => [
+  readonly getAvailableModels = vi.fn<
+    (options?: { fetchStrategy?: string }) => Promise<QoderModelInfo[]>
+  >(async () => [
     { value: "default", displayName: "Default", description: "Default Qoder model" },
     { value: "qoder-fast", displayName: "Qoder Fast", description: "Fast Qoder model" },
   ]);
@@ -324,8 +326,14 @@ describe("QoderAdapter", () => {
         async (options?: { fetchStrategy?: string }) =>
           options?.fetchStrategy === "live"
             ? [
-                { value: "auto", displayName: "Auto", isEnabled: false },
-                { value: "free-model", displayName: "Free", isEnabled: true, isDefault: true },
+                { value: "auto", displayName: "Auto", isEnabled: false, description: "" },
+                {
+                  value: "free-model",
+                  displayName: "Free",
+                  isEnabled: true,
+                  isDefault: true,
+                  description: "",
+                },
               ]
             : [],
       );
@@ -351,7 +359,9 @@ describe("QoderAdapter", () => {
       fakeQuery.getAvailableModels
         .mockResolvedValueOnce([])
         .mockRejectedValueOnce(new Error("Authentication changed during request"))
-        .mockResolvedValueOnce([{ value: "free-model", displayName: "Free", isDefault: true }]);
+        .mockResolvedValueOnce([
+          { value: "free-model", displayName: "Free", isDefault: true, description: "" },
+        ]);
       const adapter = new QoderAdapter({
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
@@ -373,7 +383,13 @@ describe("QoderAdapter", () => {
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([
-          { value: "free-model", displayName: "Free", isEnabled: true, isDefault: true },
+          {
+            value: "free-model",
+            displayName: "Free",
+            isEnabled: true,
+            isDefault: true,
+            description: "",
+          },
         ]);
       const adapter = new QoderAdapter({
         resolveExecutable: () => "D:/tools/qodercli.exe",
@@ -431,8 +447,14 @@ describe("QoderAdapter", () => {
       let capturedOptions: QoderOptions | undefined;
       const fakeQuery = new FakeQoderQuery();
       fakeQuery.getAvailableModels.mockResolvedValueOnce([
-        { value: "auto", displayName: "Auto", isEnabled: false },
-        { value: "free-model", displayName: "Free", isEnabled: true, isDefault: true },
+        { value: "auto", displayName: "Auto", isEnabled: false, description: "" },
+        {
+          value: "free-model",
+          displayName: "Free",
+          isEnabled: true,
+          isDefault: true,
+          description: "",
+        },
       ]);
       const adapter = new QoderAdapter({
         resolveExecutable: () => "D:/tools/qodercli.exe",

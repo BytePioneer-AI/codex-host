@@ -50,11 +50,13 @@ for (const width of [390, 1280])
     const menu = page.getByRole("listbox", { name: "Trigger suggestions", exact: true });
     const composer = page.locator("[data-composer-input]:visible");
     await composer.waitFor();
-    assert.equal(await plus.count(), 0);
+    await plus.waitFor();
+    assert.equal(await plus.isEnabled(), true);
     await shot(page, `commands-before-${width}`);
-    await composer.fill("/");
+    await plus.click();
     await menu.getByRole("option", { name: /^Model\b/u }).waitFor();
     await shot(page, `commands-open-${width}`);
+    assert.equal(await plus.getAttribute("aria-expanded"), "true");
 
     assert.equal(await menu.getByRole("option", { name: /^Model\b/u }).count(), 1);
     assert.equal(await menu.getByRole("option", { name: /^Permission\b/u }).count(), 1);
@@ -65,13 +67,29 @@ for (const width of [390, 1280])
       null,
       "shared picker accepts arbitrary file types",
     );
+    await plus.click();
+    await menu.waitFor({ state: "hidden" });
+    assert.equal(await plus.getAttribute("aria-expanded"), "false");
+    await plus.focus();
+    await plus.press("Enter");
+    await menu.waitFor();
     await composer.press("Escape");
     await menu.waitFor({ state: "hidden" });
-    await composer.press("Backspace");
-    await composer.pressSequentially("/");
+    assert.equal(await plus.getAttribute("aria-expanded"), "false");
+    await composer.fill("/");
     await menu.waitFor();
     await composer.fill("a draft");
     await menu.waitFor({ state: "hidden" });
+    await plus.click();
+    await menu.getByRole("option", { name: /^File\b/u }).waitFor();
+    const [picker] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      menu.getByRole("option", { name: /^File\b/u }).click(),
+    ]);
+    assert.equal(picker.isMultiple(), true);
+    await menu.waitFor({ state: "hidden" });
+    assert.equal((await composer.innerText()).trim(), "a draft");
+    assert.equal(await plus.getAttribute("aria-expanded"), "false");
 
     await composer.fill("/");
     await menu.getByRole("option", { name: /^Model\b/u }).click();

@@ -17,6 +17,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
 import clsx from "clsx";
 import {
+  IconPlusOutlineMedium,
   IconWarningOutlineRegular,
   shouldAutoFocusTextInput,
   Toast,
@@ -58,6 +59,7 @@ export const InputBar = memo(function InputBar({
   removeAttachment,
   resolveDraftAttachments,
   retryFileUpload,
+  toggleCommandMenu,
   stop,
   t,
   renderSlot,
@@ -65,6 +67,7 @@ export const InputBar = memo(function InputBar({
   useFileUploads,
   useNotices,
   useLexicon,
+  useMenuLauncher,
   useStopShortcut,
   useProjection,
   sessionId,
@@ -80,6 +83,7 @@ export const InputBar = memo(function InputBar({
   const notice = useNotices((s) => s);
   const busyEnter = useBusyEnter((s) => s);
   const stopKeys = useStopShortcut((keys) => keys);
+  const commandMenuOpen = useMenuLauncher((source) => source === "command");
   void useLexicon; // hook seat stays bound by the inject compartment; text-ref decoration rides the shell's editor transforms
   const [activity, setActivity] = useState(false);
   useEffect(() => {
@@ -290,6 +294,13 @@ export const InputBar = memo(function InputBar({
 
   const canAcceptDrop =
     attachmentsEnabled && subagent === null && !locked && !machineBusy && addFiles !== undefined;
+  const commandMenuLabel = t(
+    !attachmentsEnabled
+      ? "input.commandsOnly"
+      : imagesOnly
+        ? "input.imagesAndCommands"
+        : "input.commands",
+  );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const onPickFiles = (e: ChangeEvent<HTMLInputElement>): void => {
     const picked = e.target.files === null ? [] : [...e.target.files];
@@ -345,6 +356,13 @@ export const InputBar = memo(function InputBar({
   // not moved, and the next keystroke gets the browser's native one.
   const keepFocus = (e: MouseEvent<HTMLButtonElement>): void => {
     keepDraftFocus(e, editor);
+  };
+
+  const onToggleCommandMenu = (): void => {
+    if (keyboard === undefined) return;
+    // Keyboard activation must restore editor focus before opening its menu.
+    if (editor !== null && shouldAutoFocusTextInput()) focusDraftEditor(editor, revealSelection);
+    toggleCommandMenu?.(keyboard.caretSpan());
   };
 
   // The no-session Workspace trigger: the resident editable div acts as the
@@ -524,6 +542,20 @@ export const InputBar = memo(function InputBar({
         />
         <div ref={rowRef} className={css.row} data-composer-toolbar>
           <div className={css.tools} hidden={activity} data-composer-tools>
+            <Tooltip label={commandMenuLabel} side="top" delayMs={500}>
+              <button
+                type="button"
+                className={css.add}
+                aria-label={commandMenuLabel}
+                aria-haspopup="listbox"
+                aria-expanded={commandMenuOpen}
+                disabled={locked || machineBusy || toggleCommandMenu === undefined}
+                onMouseDown={keepFocus}
+                onClick={onToggleCommandMenu}
+              >
+                <IconPlusOutlineMedium size={14} />
+              </button>
+            </Tooltip>
             <input
               ref={fileInputRef}
               type="file"

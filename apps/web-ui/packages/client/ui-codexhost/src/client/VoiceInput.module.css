@@ -1,4 +1,4 @@
-/* A fixed microphone anchor; its inline recording bar expands into free toolbar space. */
+/* Reserve the recorder's full width so adjacent controls move with its expansion. */
 .entry {
   --voice-entry-size: 28px;
   --voice-bar-width: 229px;
@@ -7,6 +7,14 @@
   flex: none;
   width: var(--voice-entry-size);
   height: var(--voice-entry-size);
+  justify-content: flex-end;
+  overflow: clip;
+  overflow-clip-margin: 2px;
+  transition: width 180ms ease;
+}
+
+.entry[data-live] {
+  width: var(--voice-bar-width);
 }
 
 .icon {
@@ -320,6 +328,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .entry {
+    transition: none;
+  }
+
   .spinner {
     animation: none;
   }

@@ -176,8 +176,8 @@ The public `/dsh-goal` invocation avoids Codex Desktop's built-in `/goal` comman
 
 Web shares one menu engine across `/`, `@` and `#`. Slash lists interface operations,
 current-Harness native commands and Skills. At and hash are equivalent: delegation
-Agents, native commands, Skills, then workspace files. There is no plus launcher;
-the slash File action, paste and drop retain attachment intake. Sources register once
+Agents, native commands, Skills, then workspace files. The composer's plus launcher
+opens the existing slash menu; its File action, paste and drop retain attachment intake. Sources register once
 with aliases, sharing catalogs, codecs, subscriptions and disposal. At and hash use
 the same whitespace-boundary and quoted-path grammar, including numeric filenames
 and long paths; escaped text and word/URL fragments do not trigger. A following

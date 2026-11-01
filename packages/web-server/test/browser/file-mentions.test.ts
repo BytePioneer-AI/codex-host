@@ -57,7 +57,7 @@ for (const [width, trigger] of [
       const menu = page.getByRole("listbox", { name: "Trigger suggestions", exact: true });
       assert.equal(
         await page.getByRole("button", { name: "Add files or run commands", exact: true }).count(),
-        0,
+        1,
       );
       await composer.fill("/");
       await menu.getByRole("option", { name: /^Model\b/ }).waitFor();

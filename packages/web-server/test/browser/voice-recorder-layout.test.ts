@@ -13,8 +13,14 @@ const box = async (locator: Locator) => {
   return rect;
 };
 
+async function settleEntry(page: Page) {
+  await page.locator("[data-composer-tray]").evaluate(async (entry) => {
+    await Promise.all(entry.getAnimations().map((animation) => animation.finished));
+  });
+}
+
 /** Open the Session with voice reported available, then start recording. */
-async function startRecording(page: Page, url: string) {
+async function startRecording(page: Page, url: string, cardWidth?: number) {
   // Headless Chromium leaves getUserMedia pending; a generated tone drives the same recorder.
   await page.addInitScript(() => {
     navigator.mediaDevices.getUserMedia = async () => {
@@ -36,18 +42,28 @@ async function startRecording(page: Page, url: string) {
   const card = toolbar.locator("..");
   const model = page.getByRole("button", { name: /^Select model, current Native Model/u });
   await model.waitFor();
+  await page.getByRole("button", { name: "Voice input", exact: true }).waitFor();
+  if (cardWidth !== undefined) {
+    await card.evaluate((element, width) => {
+      element.style.maxWidth = `${width}px`;
+    }, cardWidth);
+  }
   const before = await box(card);
+  const screenshot = page.getByRole("button", { name: "Desktop screenshot", exact: true });
+  const screenshotBefore = await box(screenshot);
+  const modelBefore = await box(model);
   await page.getByRole("button", { name: "Voice input", exact: true }).click();
   const stop = page.getByRole("button", { name: "Stop and insert into draft", exact: true });
   await assert.doesNotReject(
     stop.and(page.locator(":enabled")).waitFor(),
     "recording must start with the generated microphone stream",
   );
-  return { card, before, model, stop };
+  await settleEntry(page);
+  return { card, before, model, stop, screenshot, screenshotBefore, modelBefore };
 }
 
 it(
-  "keeps the phone recorder inside the toolbar without growing the composer",
+  "reserves recorder space and restores toolbar controls without growing the composer",
   { timeout: 90_000 },
   async (t) => {
     const workspace = mkdtempSync(join(tmpdir(), "voice-recorder-layout-"));
@@ -81,7 +97,10 @@ it(
       const cancel = page.getByRole("button", { name: "Cancel recording", exact: true });
 
       const after = await box(card);
-      assert.ok(Math.abs(after.height - before.height) <= 1, "composer height stays unchanged");
+      assert.ok(
+        after.height <= before.height + 1,
+        "recording must not grow the composer even if idle controls wrap",
+      );
       const stripBox = await box(strip);
       const sendBox = await box(send);
       assert.ok(stripBox.x >= after.x && stripBox.x + stripBox.width <= sendBox.x);
@@ -115,17 +134,71 @@ it(
       });
       t.after(() => context.close());
       const page = await context.newPage();
-      const { card, before, model } = await startRecording(page, url);
+      const { card, before, model, stop, screenshot, screenshotBefore, modelBefore } =
+        await startRecording(page, url);
       assert.equal(await model.isVisible(), true);
       assert.equal(
         await page.getByRole("button", { name: "Transcribe and send", exact: true }).count(),
         1,
       );
       assert.ok(Math.abs((await box(card)).height - before.height) <= 1);
-      await page.keyboard.press("Escape");
+      const recorder = page.getByRole("group", { name: "Voice input", exact: true });
+      const screenshotDuring = await box(screenshot);
+      const recorderBox = await box(recorder);
+      assert.ok(screenshotDuring.x < screenshotBefore.x - 190, "left sibling moves left");
+      assert.ok(screenshotDuring.x + screenshotDuring.width <= recorderBox.x);
+      assert.ok(Math.abs(screenshotDuring.y - screenshotBefore.y) <= 1);
+      assert.ok(
+        Math.abs((await box(model)).x - modelBefore.x) <= 1,
+        "right controls stay anchored",
+      );
+      assert.equal(
+        await screenshot.evaluate((button) => {
+          const rect = button.getBoundingClientRect();
+          return (
+            document
+              .elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)
+              ?.closest("button") === button
+          );
+        }),
+        true,
+        "the left control remains clickable",
+      );
+      let finishTranscription!: () => void;
+      const transcribing = new Promise<void>((resolve) => {
+        finishTranscription = resolve;
+      });
+      await page.route("**/api/voice/transcribe", async (route) => {
+        await transcribing;
+        await route.fulfill({ json: { ok: true, text: "Voice draft" } });
+      });
+      await stop.click();
+      await recorder.getByRole("status").waitFor();
+      assert.ok(Math.abs((await box(screenshot)).x - screenshotDuring.x) <= 1);
+      finishTranscription();
       await page.getByRole("group", { name: "Voice input", exact: true }).waitFor({
         state: "detached",
       });
+      await settleEntry(page);
+      assert.ok(Math.abs((await box(screenshot)).x - screenshotBefore.x) <= 1);
+      assert.ok(Math.abs((await box(model)).x - modelBefore.x) <= 1);
+    });
+
+    await t.test("narrow desktop uses the strip when all controls cannot fit", async () => {
+      const context = await browser.newContext({ viewport: { width: 620, height: 900 } });
+      t.after(() => context.close());
+      const page = await context.newPage();
+      const { card, before, model } = await startRecording(page, url, 420);
+      assert.equal(await model.isVisible(), false);
+      const strip = await box(page.getByRole("group", { name: "Voice input", exact: true }));
+      const send = await box(page.getByRole("button", { name: "Send message", exact: true }));
+      const after = await box(card);
+      assert.ok(strip.x >= after.x && strip.x + strip.width <= send.x);
+      assert.ok(after.height <= before.height + 1);
+      await page.keyboard.press("Escape");
+      await model.waitFor();
+      await settleEntry(page);
+      assert.ok(Math.abs((await box(card)).height - before.height) <= 1);
     });
   },
 );

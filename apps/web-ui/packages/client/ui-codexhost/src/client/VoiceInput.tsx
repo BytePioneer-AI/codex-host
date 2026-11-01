@@ -126,17 +126,28 @@ export function VoiceInputButton({
     if (!entry || !row || typeof ResizeObserver === "undefined") return;
     const measure = () => {
       const anchor = entry.getBoundingClientRect();
-      const bounds = row.getBoundingClientRect();
-      const leading = row.querySelector("[data-composer-tools]")?.getBoundingClientRect();
-      const rowLeft = bounds.left + parseFloat(getComputedStyle(row).paddingLeft);
-      const left =
-        leading && leading.bottom > anchor.top && leading.top < anchor.bottom
-          ? Math.max(rowLeft, leading.right + 8)
-          : rowLeft;
-      const width = parseFloat(getComputedStyle(entry).getPropertyValue("--voice-bar-width"));
+      // The stacked activity hides the standard controls. Their zero widths
+      // cannot determine whether the inline recorder would fit.
+      if (live && anchor.width === 0) return;
+      const style = getComputedStyle(row);
+      const available =
+        row.getBoundingClientRect().width -
+        parseFloat(style.paddingLeft) -
+        parseFloat(style.paddingRight);
+      const widths = Array.from(
+        row.children,
+        (child) => child.getBoundingClientRect().width,
+      ).filter((width) => width > 0);
+      const barWidth = parseFloat(getComputedStyle(entry).getPropertyValue("--voice-bar-width"));
+      // Include every sibling, even controls before the microphone in the same
+      // slot. Subtract the current entry width to stay stable during its transition.
+      const needed =
+        widths.reduce((sum, width) => sum + width, 0) +
+        Math.max(0, widths.length - 1) * parseFloat(style.columnGap) +
+        barWidth -
+        anchor.width;
       tray.set(
-        window.matchMedia("(max-width: 600px), (pointer: coarse)").matches ||
-          anchor.right - left < width,
+        window.matchMedia("(max-width: 600px), (pointer: coarse)").matches || needed > available,
       );
     };
     const resize = new ResizeObserver(measure);
@@ -145,11 +156,16 @@ export function VoiceInputButton({
     for (const child of row.children) resize.observe(child);
     measure();
     return () => resize.disconnect();
-  }, [tray, visible]);
+  }, [tray, visible, live]);
 
   if (!visible) return null;
   return (
-    <span ref={entryRef} className={css.entry}>
+    <span
+      ref={entryRef}
+      className={css.entry}
+      data-composer-tray={stacked ? "stacked" : "inline"}
+      data-live={live && !stacked ? "" : undefined}
+    >
       {live && !stacked ? (
         <VoiceRecorder voice={voice} state={state} locked={locked} layout="inline" t={t} />
       ) : (

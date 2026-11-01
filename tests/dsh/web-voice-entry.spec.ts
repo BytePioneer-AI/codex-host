@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   VoiceInputButton,
   VoiceNotice,
+  VoiceTray,
 } from "../../apps/web-ui/packages/client/ui-codexhost/src/client/VoiceInput.tsx";
 import {
   VoiceInput,
@@ -31,6 +32,7 @@ it("refreshes availability on mount/visibility, shows the entry on HTTP and expl
   const props = {
     voice,
     blocks: { storeFor: () => block },
+    tray: new VoiceTray(),
     sessionId: "thread-a",
     inputActions: {
       captureInsertion: () => ({ draftRev: 1 }),
@@ -104,6 +106,7 @@ async function renderRecorder() {
   const props = {
     voice,
     blocks: { storeFor: () => block },
+    tray: new VoiceTray(),
     sessionId: "thread-a",
     inputActions: { bindPrimaryAction: vi.fn(() => vi.fn()) },
     useInput: (select: (s: object) => unknown) => select({ phase: "plain" }),
@@ -112,7 +115,8 @@ async function renderRecorder() {
   } as unknown as ComponentProps<typeof VoiceInputButton>;
   const row = document.createElement("div");
   row.setAttribute("data-composer-toolbar", "");
-  row.style.paddingLeft = "8px";
+  row.style.padding = "0 8px";
+  row.style.columnGap = "12px";
   row.innerHTML = "<div data-composer-tools></div><div data-trailing></div>";
   document.body.append(row);
   const container = row.querySelector<HTMLElement>("[data-trailing]")!;
@@ -209,11 +213,13 @@ it("reserves a folded tray while idle when toolbar space is insufficient, and on
   );
   let touch = false;
   vi.stubGlobal("matchMedia", () => ({ matches: touch }));
-  let anchorLeft = 500;
+  let trailingWidth = 300;
+  let entryWidth = 28;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
     if (this.hasAttribute("data-composer-toolbar")) return new DOMRect(0, 0, 720, 160);
     if (this.hasAttribute("data-composer-tools")) return new DOMRect(8, 100, 150, 28);
-    if (this.hasAttribute("data-composer-tray")) return new DOMRect(anchorLeft, 100, 28, 28);
+    if (this.hasAttribute("data-trailing")) return new DOMRect(400, 100, trailingWidth, 28);
+    if (this.hasAttribute("data-composer-tray")) return new DOMRect(500, 100, entryWidth, 28);
     return new DOMRect();
   });
   const style = document.createElement("style");
@@ -224,7 +230,7 @@ it("reserves a folded tray while idle when toolbar space is insufficient, and on
   const anchor = container.firstElementChild!;
   expect(anchor.getAttribute("data-composer-tray")).toBe("inline");
   await act(async () => {
-    anchorLeft = 250;
+    trailingWidth = 500;
     resizes.forEach((resize) => resize());
   });
   expect(anchor.getAttribute("data-composer-tray")).toBe("stacked");
@@ -232,7 +238,15 @@ it("reserves a folded tray while idle when toolbar space is insufficient, and on
   expect(container.firstElementChild).toBe(anchor);
   expect(anchor.getAttribute("data-composer-tray")).toBe("stacked");
   await act(async () => {
-    anchorLeft = 500;
+    trailingWidth = 300;
+    resizes.forEach((resize) => resize());
+  });
+  expect(anchor.getAttribute("data-composer-tray")).toBe("inline");
+  expect(anchor.hasAttribute("data-live")).toBe(true);
+  // Expanding the entry and its group by the same amount must not fold the tray.
+  await act(async () => {
+    entryWidth = 229;
+    trailingWidth += 201;
     resizes.forEach((resize) => resize());
   });
   expect(anchor.getAttribute("data-composer-tray")).toBe("inline");

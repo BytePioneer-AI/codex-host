@@ -61,6 +61,7 @@ export interface QoderContextUsage {
 export interface QoderQuery extends AsyncIterable<SDKMessage> {
   interrupt(): Promise<unknown>;
   close(): void | Promise<void>;
+  initializationResult?(): Promise<unknown>;
   getAvailableModels?(options?: {
     fetchStrategy?: "live" | "cache";
     uid?: string;

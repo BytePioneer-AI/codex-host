@@ -262,7 +262,8 @@ export class QoderAdapter implements HarnessAdapter {
             });
             try {
               if (probeQuery.getAvailableModels) {
-                rawModels = await probeQuery.getAvailableModels({ fetchStrategy: "cache" });
+                await probeQuery.initializationResult?.();
+                rawModels = await probeQuery.getAvailableModels({ fetchStrategy: "live" });
               }
             } finally {
               try {

@@ -24,6 +24,7 @@ interface ClaudeHistoryMessage {
   type: "user" | "assistant";
   uuid: string;
   message: Record<string, unknown>;
+  failed: boolean;
   /** A Subagent transcript record; live, its tools never reach the Tool lifecycle. */
   nested: boolean;
   syntheticUser: boolean;
@@ -173,6 +174,10 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
       type: value.type,
       uuid: value.uuid,
       message: value.message,
+      // Failure metadata belongs to the outer SDK/transcript record, not its Message.
+      failed:
+        value.type === "assistant" &&
+        (typeof value.error === "string" || value.isApiErrorMessage === true),
       nested: typeof value.parent_tool_use_id === "string" && value.parent_tool_use_id.length > 0,
       interrupted,
       startsTurn: false,
@@ -262,7 +267,7 @@ function turnOutcome(messages: ClaudeHistoryMessage[]): HistoricalTurnOutcome {
   if (messages.some(({ interrupted }) => interrupted))
     return { status: "cancelled", reason: "Cancelled by user" };
   const assistants = messages.filter(({ type }) => type === "assistant");
-  const failed = assistants.some(({ message }) => typeof message.error === "string");
+  const failed = assistants.some(({ failed, nested }) => failed && !nested);
   if (failed) {
     return {
       status: "failed",

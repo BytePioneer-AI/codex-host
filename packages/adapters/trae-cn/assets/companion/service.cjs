@@ -2,6 +2,7 @@ const { randomUUID } = require("node:crypto");
 const path = require("node:path");
 const { publicModels, nativeModel, readModels } = require("./models.cjs");
 const { questionDecision, approvalDecision, NativeInteractions } = require("./interactions.cjs");
+const { withFileDiffs } = require("./diffs.cjs");
 
 function invalid(message) {
   return Object.assign(new Error(message), { code: "invalidRequest" });
@@ -277,7 +278,9 @@ class DesktopService {
           for (const item of history.items) {
             if (item.chat_session_id !== sessionId)
               throw invalid("History contains a different session");
-            items.push(publicHistoryItem(item));
+            items.push(
+              await withFileDiffs(this.native, publicHistoryItem(item), sessionId, projectId),
+            );
           }
           pageToken = history.next_page_token;
           if (pageToken) {

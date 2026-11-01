@@ -1,0 +1,220 @@
+[
+  {
+    "id": "edit",
+    "timing": {
+      "generated_at_ms": 0
+    },
+    "tool_call_info": {
+      "name": "Edit",
+      "params": {},
+      "result": {}
+    }
+  },
+  {
+    "id": "edit",
+    "timing": {
+      "generated_at_ms": 0
+    },
+    "tool_call_info": {
+      "name": "Edit",
+      "params": {
+        "file_path": "/w"
+      },
+      "result": {}
+    }
+  },
+  {
+    "id": "edit",
+    "timing": {
+      "generated_at_ms": 0
+    },
+    "tool_call_info": {
+      "name": "Edit",
+      "params": {
+        "file_path": "/wor"
+      },
+      "result": {}
+    }
+  },
+  {
+    "id": "edit",
+    "timing": {
+      "generated_at_ms": 0
+    },
+    "tool_call_info": {
+      "name": "Edit",
+      "params": {
+        "file_path": "/work"
+      },
+      "result": {}
+    }
+  },
+  {
+    "id": "edit",
+    "timing": {
+      "generated_at_ms": 0
+    },
+    "tool_call_info": {
+      "name": "Edit",
+      "params": {
+        "file_path": "/workspace/f"
+      },
+      "result": {}
+    }
+  },
+  {
+    "id": "edit",
+    "timing": {
+      "generated_at_ms": 0
+    },
+    "tool_call_info": {
+      "name": "Edit",
+      "params": {
+        "file_path": "/workspace/file.txt",
+        "old_string": ""
+      },
+      "result": {}
+    }
+  },
+  {
+    "id": "edit",
+    "timing": {
+      "generated_at_ms": 0
+    },
+    "tool_call_info": {
+      "name": "Edit",
+      "params": {
+        "file_path": "/workspace/file.txt",
+        "old_string": "",
+        "new_string": ""
+      },
+      "result": {}
+    }
+  },
+  {
+    "id": "edit",
+    "timing": {
+      "generated_at_ms": 0,
+      "tool_call_started_at_ms": 1837
+    },
+    "tool_call_info": {
+      "name": "Edit",
+      "params": {
+        "file_path": "/workspace/file.txt",
+        "old_string": "",
+        "new_string": ""
+      },
+      "result": {}
+    }
+  },
+  {
+    "id": "edit",
+    "timing": {
+      "generated_at_ms": 0,
+      "tool_call_started_at_ms": 1837,
+      "tool_call_finished_at_ms": 1873
+    },
+    "tool_call_info": {
+      "name": "Edit",
+      "params": {
+        "file_path": "/workspace/file.txt",
+        "old_string": "",
+        "new_string": ""
+      },
+      "result": {
+        "status": "success",
+        "error_message": "",
+        "data": {
+          "replace_first_line": 0,
+          "replace_last_line": 0,
+          "edit_change": {
+            "file_path": "/workspace/file.txt",
+            "old_content": "",
+            "new_content": "",
+            "old_string": "",
+            "new_string": "",
+            "diff_info": {
+              "insert_line_count": 1,
+              "delete_line_count": 1
+            }
+          },
+          "changes": [
+            {
+              "file_path": "/workspace/file.txt",
+              "file_action": "modified",
+              "old_content": "",
+              "new_content": "",
+              "diff_info": {
+                "insert_line_count": 1,
+                "delete_line_count": 1
+              },
+              "linter_error_result": [],
+              "old_diagnostic_result": [],
+              "new_diagnostic_result": []
+            }
+          ],
+          "can_show_diff": true
+        },
+        "images": null,
+        "render": null,
+        "is_truncated": false,
+        "interrupt": null
+      }
+    }
+  },
+  {
+    "id": "edit",
+    "timing": {
+      "generated_at_ms": 0,
+      "tool_call_started_at_ms": 1837,
+      "tool_call_finished_at_ms": 1873
+    },
+    "tool_call_info": {
+      "name": "Edit",
+      "params": {
+        "file_path": "/workspace/file.txt",
+        "old_string": "",
+        "new_string": ""
+      },
+      "result": {
+        "status": "success",
+        "error_message": "",
+        "data": {
+          "replace_first_line": 0,
+          "replace_last_line": 0,
+          "edit_change": {
+            "file_path": "/workspace/file.txt",
+            "old_content": "",
+            "new_content": "",
+            "old_string": "",
+            "new_string": "",
+            "diff_info": {
+              "insert_line_count": 1,
+              "delete_line_count": 1
+            }
+          },
+          "changes": [
+            {
+              "file_path": "/workspace/file.txt",
+              "file_action": "modified",
+              "old_content": "",
+              "new_content": "",
+              "diff_info": {
+                "insert_line_count": 1,
+                "delete_line_count": 1
+              },
+              "linter_error_result": [],
+              "old_diagnostic_result": [],
+              "new_diagnostic_result": []
+            }
+          ],
+          "can_show_diff": true
+        },
+        "images": null,
+        "render": null,
+        "is_truncated": false,
+        "interrupt": null
+      }
+    }
+  }
+]

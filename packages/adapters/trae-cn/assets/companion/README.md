@@ -16,4 +16,6 @@ The Bridge listens on authenticated loopback HTTP, with private discovery metada
 
 Use **CodexHost: Restart TRAE CN Bridge** in the command palette if the connection needs refreshing. Restarting the Bridge can interrupt its native connection; finish or cancel active work first. Closing a CodexHost observer leaves native execution running. Explicit task cancellation is separate.
 
+Companion 0.1.1 reads complete native file changes from the message snapshot after execution. It does not infer a Diff from the empty file bodies in streamed tool parameters. Install the matching VSIX when upgrading the Harness plugin; older Companions cannot provide these snapshots. File content above 2 MiB per native message is rejected explicitly.
+
 [Source and integration details](https://github.com/BytePioneer-AI/codex-host/blob/main/docs/harnesses/trae-cn/trae-cn-desktop-integration.md)

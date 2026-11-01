@@ -9,7 +9,7 @@
 | 已验证的原生版本 | TRAE CN 3.4.12 / VS Code core 1.107.1，Windows x64 |
 | 交付范围 | 仓库内插件 + 桌面 Companion 扩展；原生接口为应用私有接口，须独立验收版本兼容性 |
 | 参考插件 | WorkBuddy 的应用发现与应用拥有的认证；公共 Harness 输出和交互契约 |
-| 最后验证 | 2026-10-31～11-01 Windows；真实普通对话、文件读取、空闲恢复与公共提问；更新后的自动检查 |
+| 最后验证 | 2026-10-31～11-01 Windows；真实对话、文件编辑与 Diff、活动恢复、提问及审批；更新后的自动检查 |
 
 ## 能力
 
@@ -21,7 +21,7 @@
 | A2 | 工厂 | 必做 | P0 | 支持 | src/plugin.ts | 真实 Loader 两个独立实例、搬移 Bundle、独立 Node 进程导入 | 冷构造；复制环境；关闭隔离；应用路径优先级 |
 | A3 | 检查 | 必做 | P0 | 支持 | src/adapter.ts | test/adapter.test.ts；真实 inspect | 不创建会话，不启动桌面窗口；同作用域目录缓存 |
 | A4 | 创建 Session | 必做 | P0 | 支持 | src/session.ts；assets/companion/service.cjs | 公共 Session 首轮真实创建及文件读取 | 延迟至首轮；原生 Project 绑定目录 |
-| A5 | 执行 Turn | 必做 | P0 | 受限 | src/session.ts；src/live-items.ts | 公共普通对话、文件工具、提问、命令审批及持久历史一致 | Builder、Read、RunCommand 和提问已验收；其他工具语义待补 |
+| A5 | 执行 Turn | 必做 | P0 | 受限 | src/session.ts；src/live-items.ts | 公共普通对话、文件工具、提问、命令审批及持久历史一致 | Builder、Read、Edit、RunCommand 和提问已验收；其他工具语义待补 |
 | A6 | 取消 | 必做 | P0 | 支持 | src/session.ts；assets/companion/service.cjs | 公共提问等待中 turn.cancel 后，公共与持久原生均 cancelled，同 Session 随后成功续聊 | Interaction 关闭一次；过期回复拒绝；不将请求回执当终态 |
 | A7 | 只读快照 | 必做 | P0 | 支持 | src/history.ts；src/session.ts | 重复读取真实历史的 Turn / Item 身份一致；恢复缓存 unknown 快照；原生历史提交延迟实测 | 普通活动读取返回 sessionBusy；终态确认短暂重读同一身份 |
 | A8 | 持久身份 + resume | 必做 | P0 | 受限 | src/adapter.ts；src/session.ts；src/history.ts | 公共 Adapter 跨进程恢复；隔离真实 Host 重启恢复提问和审批，原 Turn / 唯一映射不变 | 空闲与已确认活动身份可恢复；缺映射、创建中、回退中等不确定状态明确拒绝 |
@@ -30,11 +30,11 @@
 | B1 | 切换 Model | 原生有则必做 | P1 | 受限 | assets/companion/models.cjs；src/models.ts | 原生会话目录、手动初始选择、原生模型确认 | 初始选择可用，不自动默认；model.select 写入未实现 |
 | B2 | 切换 Thinking | 原生有则必做 | P1 | 待验证 | — | — | |
 | B3 | 权限模式 | 原生有则必做 | P1 | 待验证 | — | 原生 permission_profile_id | |
-| B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 待验证 | — | — | |
+| B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 支持（明确拒绝） | src/adapter.ts | test/adapter.test.ts：unattended-full-access 在连接前返回 unsupported | 不忽略执行意图或伪造审批 |
 | B5 | Fork | 原生有则必做 | P1 | 待验证 | — | 原生 lite/fork_session 路由 | |
 | B6 | 跨目录 Fork | 原生有则必做 | P2 | 待验证 | — | — | |
 | B7 | 回滚最后一轮 | 原生有则必做 | P1 | 待验证 | — | 原生 lite/revert_message 路由 | |
-| B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 受限 | src/history.ts；src/live-items.ts | 真实 Read 和 RunCommand；原生命令审批 / 拒绝事件回放 | 命令、目录、输出、退出码及结果保留；Diff 和后台命令待完成 |
+| B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 受限 | src/history.ts；src/file-changes.ts；src/live-items.ts；assets/companion/diffs.cjs | 真实 Read、Edit 和 RunCommand；两轮文件编辑的实时 / 历史 Diff 一致，新进程恢复一致 | 消息级原生快照提供完整前后内容；2 MiB 上限明确拒绝；后台命令及其他文件操作原生验收待补 |
 | B9 | 审批 | 原生有则必做 | P0 | 受限 | src/interactions.ts；assets/companion/interactions.cjs | 公共允许一次后原生文件生成；拒绝后文件不存在；全局权限哈希未变 | RunCommand 已验收；其他工具确认仍明确拒绝；不支持持久授权 |
 | B10 | 提问 | 原生有则必做 | P0 | 支持 | src/interactions.ts；assets/companion/interactions.cjs；settings.cjs | 公共问题只发布一次；显式答复“停止”，持久完成回复 TRAE_CN_PUBLIC_QUESTION_OK_STOP | 复用桌面开关；实例校验；不使用预填答案；单选、多选、其他及跳过映射测试 |
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 待验证 | — | — | |
@@ -80,10 +80,12 @@
 | 公共提问 | Native AskUserQuestion → 公共 Interaction → interaction.respond → 原生结果与持久历史 | 显式“停止”答复，关闭一次，公共与原生 Turn 均成功；活动历史不充当确认状态来源 |
 | 公共取消 | Question 等待时 turn.cancel，核对持久 NativeTurnRef；同 Session 再发一轮 | cancelled 一致，问题关闭一次且旧回复拒绝；续聊回复 TRAE_CN_PUBLIC_CANCEL_RECOVERY_OK |
 | 公共命令审批 | 工作目录外专用验收文件的 RunCommand，分别允许一次和拒绝 | 允许后文件存在、exitCode=0；拒绝后文件不存在、保留原生沙箱 failed / exitCode=1；全局权限未改变 |
+| 公共文件编辑与 Diff | 同一专用 Session 两轮 Read / Edit；snapshot.get_message_ai_edit_file_diff_list；新进程只读恢复 | 原生文件内容和 Diff 一致，公共 fileChange 完成一次，实时与持久身份一致；恢复后两轮 patch 不变，回复 TRAE_CN_PUBLIC_FILE_EDIT_OK |
 | 插件加载 | 真实 Loader 加载仓库外 Bundle；独立 Node 进程导入 | 身份、资源、独立实例与关闭隔离均通过；无 Workspace 运行依赖 |
 | Companion 安装包 | 官方 vsce 打包；独立 ZIP 读取；TRAE CN 本地安装 | 身份与许可证完整，7 个 CJS 文件字节一致；实际安装版本 0.1.0 |
 | 已安装插件链路 | 已安装 Companion 的进程、扩展目录和 SHA-256；仓库外插件完成原生 Turn | 同一持久身份读到 TRAE_CN_INSTALLED_PLUGIN_OK；未作为当前 CodexHost / Renderer 验收 |
 | Host 集成 | 隔离 AppServerHost + 真实 Loader / Mapping Store，提问与审批等待时关闭，再由新 Node 进程 resume | 终态之前已持久化身份；原 Turn 恢复；唯一历史与映射；thread/read 读到真实回复，官方路径未启动；未作为用户当前 Desktop 验收 |
 | API 2 回归检查 | typecheck；lint / boundaries；185 项聚焦测试；142 项受影响 Agent / 打包测试；5 项 Loader / Broker 定向检查 | 均通过；测试集合存在重叠，不累加计数。Loader 全文件另有 3 项文件符号链接用例因本机 Windows EPERM 未通过；macOS 原生接口未验证 |
+| 文件快照回归检查 | typecheck；lint / boundaries；Adapter 全套与两个发行测试共 115 项 | 全部通过；Companion 0.1.1 资源清单、八个 CJS 字节及搬移 Bundle 均已核验；真实文件编辑使用开发窗口，未升级普通窗口的 Companion |
 | 真实原生验收 | TRAE CN 3.4.12 Windows，复用桌面登录，Builder / Seed-Code | 原生 done.status=completed；重连历史 finish.summary=CODEXHOST_TRAE_CN_OK；不是 Host 端验收 |
 | Desktop / 委派 | 待实现 | 未验证 |

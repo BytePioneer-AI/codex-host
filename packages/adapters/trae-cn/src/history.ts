@@ -15,6 +15,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { confirmedModel } from "./models.js";
 import { record, TraeError } from "./errors.js";
+import { projectFileChanges } from "./file-changes.js";
 
 export const TRAE_CN_ID = harnessIdSchema.parse("trae-cn");
 
@@ -295,6 +296,27 @@ export function projectHistory(
           if (projected.outcome) items.push({ item: projected.item, outcome: projected.outcome });
         }
       }
+      if (
+        reply.fileDiffs === undefined &&
+        content.messages.some(
+          (message) =>
+            record(message) &&
+            record(message.plan_item) &&
+            record(message.plan_item.tool_call_info) &&
+            record(message.plan_item.tool_call_info.result) &&
+            record(message.plan_item.tool_call_info.result.data) &&
+            message.plan_item.tool_call_info.result.data.can_show_diff === true,
+        )
+      )
+        throw new TraeError(
+          "configurationRequired",
+          "Update the TRAE CN Companion to 0.1.1 or newer to read native file diffs",
+        );
+      const fileChanges = projectFileChanges(reply);
+      // The native snapshot confirms these edits were applied even when a later
+      // tool fails or the overall Turn is cancelled.
+      if (fileChanges && terminal)
+        items.push({ item: fileChanges, outcome: { status: "succeeded" } });
     }
     const model: HarnessModelRef | undefined = confirmedModel(
       reply?.model ?? user.value.model,

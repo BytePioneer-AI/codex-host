@@ -32,9 +32,16 @@ test("TRAE CN Companion VSIX contains the complete source resources and license"
         "extension/package.json",
         "extension/readme.md",
         "extension/license.txt",
-        ...["extension", "interactions", "models", "native", "server", "service", "settings"].map(
-          (name) => `extension/${name}.cjs`,
-        ),
+        ...[
+          "extension",
+          "interactions",
+          "models",
+          "native",
+          "server",
+          "service",
+          "settings",
+          "diffs",
+        ].map((name) => `extension/${name}.cjs`),
       ].sort(),
     );
     const manifest = JSON.parse(files.get("extension/package.json").toString("utf8"));

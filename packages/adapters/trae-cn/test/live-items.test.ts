@@ -13,6 +13,28 @@ function setup() {
 }
 
 describe("TRAE CN cumulative live Item projection", () => {
+  it("does not admit partial file-edit arguments from the real generating sequence", () => {
+    const plans: unknown[] = JSON.parse(
+      readFileSync(new URL("./fixtures/native-file-edit.json", import.meta.url), "utf8"),
+    );
+    const { events, items } = setup();
+    for (const plan of plans.slice(0, 6)) items.acceptPlan(plan);
+    expect(events).toEqual([]);
+    for (const plan of plans.slice(6)) items.acceptPlan(plan);
+    expect(events.filter((event) => event.type === "item.started")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "item.completed")).toHaveLength(1);
+    expect(items.snapshots).toMatchObject([
+      {
+        item: {
+          type: "toolExecution",
+          toolName: "Edit",
+          arguments: { file_path: "/workspace/file.txt", old_string: "", new_string: "" },
+        },
+        outcome: { status: "succeeded" },
+      },
+    ]);
+    expect(items.snapshots.some((entry) => entry.item.type === "fileChange")).toBe(false);
+  });
   it("waits through the real native sandbox confirmation receipt for the actual command result", () => {
     // TRAE CN 3.4.12 Windows event sequence; identifiers/paths normalized.
     const plans: unknown[] = JSON.parse(

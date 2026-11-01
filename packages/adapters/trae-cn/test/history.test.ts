@@ -46,6 +46,50 @@ const reply = {
 };
 const snapshot = (items: unknown[]) => ({ sessionId: "session", items });
 
+it("requires upgraded Companion snapshots and preserves applied diffs when the Turn fails later", () => {
+  const edit = {
+    ...reply,
+    status: "failed",
+    content: JSON.stringify({
+      messages: [
+        {
+          type: "plan_item",
+          plan_item: {
+            id: "edit",
+            timing: { tool_call_started_at_ms: 1, tool_call_finished_at_ms: 2 },
+            tool_call_info: {
+              name: "Edit",
+              params: { file_path: "/workspace/file" },
+              result: { status: "success", data: { can_show_diff: true } },
+            },
+          },
+        },
+      ],
+    }),
+  };
+  expect(() => projectHistory(snapshot([user, edit]), "session", "builder_v3")).toThrow(
+    "Companion to 0.1.1",
+  );
+  const enriched = {
+    ...edit,
+    fileDiffs: [
+      {
+        file_path: "/workspace/file",
+        file_action: "modified",
+        before_content: "before\n",
+        after_content: "after\n",
+      },
+    ],
+    fileDiffSourceIds: ["edit"],
+  };
+  const turn = projectHistory(snapshot([user, enriched]), "session", "builder_v3").turns[0];
+  expect(turn?.outcome.status).toBe("failed");
+  expect(turn?.items.find((entry) => entry.item.type === "fileChange")).toMatchObject({
+    item: { itemId: "native-assistant.files", changes: [{ kind: "update" }] },
+    outcome: { status: "succeeded" },
+  });
+});
+
 describe("TRAE CN native model references", () => {
   it("advertises native model selections with opaque IDs and no implicit default", () => {
     const catalog = modelCatalog(inspection);

@@ -39,6 +39,73 @@ function setup() {
 }
 
 describe("TRAE CN desktop bridge service", () => {
+  it("reads native message diffs using the validated project and original user message", async () => {
+    const { service, call } = setup();
+    const original = call.getMockImplementation();
+    call.mockImplementation(async (kind, method, ...args) => {
+      if (method === "get_messages")
+        return {
+          items: [
+            {
+              chat_session_id: "session",
+              message_id: "assistant",
+              reply_to_message_id: "user",
+              role: "assistant",
+              status: "completed",
+              content: JSON.stringify({
+                messages: [
+                  {
+                    type: "plan_item",
+                    plan_item: {
+                      id: "edit",
+                      tool_call_info: { name: "Edit", result: { data: { can_show_diff: true } } },
+                    },
+                  },
+                ],
+              }),
+            },
+          ],
+        };
+      if (method === "get_message_ai_edit_file_diff_list")
+        return {
+          file_diffs: [
+            {
+              file_path: "/workspace/file",
+              file_action: "modified",
+              before_content: "old",
+              after_content: "new",
+              internal: "not public",
+            },
+          ],
+        };
+      return original?.(kind, method, ...args);
+    });
+    const snapshot = await service.call("snapshot", { sessionId: "session" });
+    expect(snapshot.items[0]).toMatchObject({
+      fileDiffs: [
+        {
+          file_path: "/workspace/file",
+          file_action: "modified",
+          before_content: "old",
+          after_content: "new",
+        },
+      ],
+      fileDiffSourceIds: ["edit"],
+    });
+    expect(JSON.stringify(snapshot)).not.toContain("not public");
+    expect(call).toHaveBeenCalledWith("snapshot", "get_message_ai_edit_file_diff_list", {
+      project_id: "project",
+      session_id: "session",
+      message_id: "user",
+    });
+    call.mockClear();
+    await expect(service.call("snapshot", { sessionId: "foreign" })).rejects.toThrow(
+      "different session",
+    );
+    expect(
+      call.mock.calls.some(([, method]) => method === "get_message_ai_edit_file_diff_list"),
+    ).toBe(false);
+  });
   it("binds a native workspace Project before creating its Session", async () => {
     const { service, call } = setup();
     expect(await service.call("create", { cwd: "/workspace" })).toEqual({

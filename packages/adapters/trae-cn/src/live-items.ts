@@ -113,6 +113,11 @@ export class LiveItems {
       });
   }
 
+  /** Publish exact message-snapshot diffs after durable native completion. */
+  acceptFileChanges(items: readonly HostItemSnapshot[]): void {
+    for (const snapshot of items) if (snapshot.item.type === "fileChange") this.#accept(snapshot);
+  }
+
   /** Native terminal/history evidence settles open Items; EOF alone must never call this. */
   settle(outcome: HostItemOutcome): void {
     for (const item of this.#items.values()) {

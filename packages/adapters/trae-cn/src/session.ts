@@ -382,6 +382,7 @@ export class TraeCnSession implements HarnessSession {
       const completed = await this.#readTerminal(turn.messageId);
       if (completed.outcome.status === "unknown")
         throw new TraeError("unavailable", "Native history has not confirmed completion");
+      turn.items.acceptFileChanges(completed.items);
       turn.items.settle(completed.outcome);
       turn.interactions?.close(completed.outcome.status === "cancelled" ? "cancelled" : "expired");
       this.#emit({

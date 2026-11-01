@@ -16,6 +16,7 @@ const companionFiles = [
   "server.cjs",
   "settings.cjs",
   "interactions.cjs",
+  "diffs.cjs",
 ];
 
 /** Build locally with the official packager; never publish or modify source resources. */

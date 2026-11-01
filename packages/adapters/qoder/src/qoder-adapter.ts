@@ -258,7 +258,7 @@ export class QoderAdapter implements HarnessAdapter {
   }
 
   async inspect(input?: InspectHarnessInput): Promise<HarnessInspection> {
-    const cacheKey = input?.cwd ?? "";
+    const cacheKey = input?.cwd ?? process.cwd();
 
     if (input?.refresh) {
       this.#inspections.delete(cacheKey);
@@ -297,7 +297,7 @@ export class QoderAdapter implements HarnessAdapter {
             const probeQuery = this.#queryFactory({
               prompt: "",
               options: {
-                cwd: input?.cwd ?? process.cwd(),
+                cwd: cacheKey,
                 stderr: (chunk) => {
                   stderr = (stderr + chunk).slice(-8192);
                 },
@@ -324,7 +324,7 @@ export class QoderAdapter implements HarnessAdapter {
               (error instanceof Error &&
                 error.message === "Transport closed" &&
                 qoderAuthForEnvironment(this.#variant, this.#environment).type === "qodercli" &&
-                (await checkQoderLogin(executable, this.#environment, input?.cwd)));
+                (await checkQoderLogin(executable, this.#environment, cacheKey)));
             const result: HarnessInspection = {
               status: "unavailable",
               error: needsLogin

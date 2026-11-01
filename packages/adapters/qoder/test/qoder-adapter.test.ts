@@ -558,6 +558,35 @@ describe("QoderAdapter", () => {
       },
     );
 
+    it.each(["global", "cn"] as const)(
+      "uses the actual cwd for an implicit %s inspection and subsequent session",
+      async (variant) => {
+        const getAvailableModels = vi.fn(async () => [
+          { value: "native-default", displayName: "Native", description: "", isDefault: true },
+        ]);
+        const adapter = new QoderAdapter({
+          variant,
+          resolveExecutable: () => "qodercli",
+          queryFactory: () => new FakeQoderQuery(),
+          getAvailableModels,
+        });
+        try {
+          const inspected = await adapter.inspect();
+          const opened = await adapter.open({ kind: "create", cwd: process.cwd() });
+          expect(opened.ok).toBe(true);
+          if (!opened.ok) throw new Error(opened.error.message);
+          expect(opened.value.initialState.effectiveModel).toEqual(
+            encodeQoderModelRef("native-default"),
+          );
+          await opened.value.close();
+          expect(await adapter.inspect({ cwd: process.cwd() })).toBe(inspected);
+          expect(getAvailableModels).toHaveBeenCalledTimes(1);
+        } finally {
+          await adapter.close();
+        }
+      },
+    );
+
     it("opens session with create and resume, and rejects rollbackLastTurn", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({

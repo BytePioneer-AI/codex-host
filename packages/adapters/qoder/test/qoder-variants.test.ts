@@ -158,7 +158,7 @@ for (const v of variants)
       expect(checkQoderLogin).toHaveBeenCalledWith(
         v.command,
         { QODER_SDK_CUSTOM_BASE_URL_BYOK: "1" },
-        undefined,
+        process.cwd(),
       );
     });
 

@@ -148,6 +148,140 @@ describe("Grok history Fork mapping", () => {
     expect(resolveGrokTargetPromptIndex(snapshot, "4")).toBe(4);
   });
 
+  it("projects spawn_subagent as a Subagent delegation and settles on wait", () => {
+    const snapshot = mapGrokReplay(
+      [
+        { type: "user.text", text: "delegate", metadata: { eventId: "user-1" } },
+        {
+          type: "tool.call",
+          callId: "spawn-1",
+          title: "spawn_subagent",
+          name: "spawn_subagent",
+          rawInput: {
+            description: "Inspect implementation",
+            prompt: "Look at the repo",
+            subagent_type: "explore",
+            background: true,
+          },
+          status: "in_progress",
+        },
+        {
+          type: "tool.update",
+          callId: "spawn-1",
+          title: "Inspect implementation",
+          rawInput: { variant: "Task", task_id: "child-session", run_in_background: true },
+        },
+        {
+          type: "tool.update",
+          callId: "spawn-1",
+          status: "completed",
+          content: [
+            {
+              type: "content",
+              content: {
+                type: "text",
+                text: "Subagent started in background.\nsubagent_id: child-session\n",
+              },
+            },
+          ],
+        },
+        {
+          type: "tool.call",
+          callId: "wait-1",
+          title: "Wait for child",
+          name: "get_command_or_subagent_output",
+          rawInput: { task_ids: ["child-session"], timeout_ms: 30_000 },
+          status: "in_progress",
+        },
+        {
+          type: "tool.update",
+          callId: "wait-1",
+          status: "completed",
+          rawOutput: {
+            type: "TaskOutput",
+            MultiResult: {
+              mode: "wait_all",
+              results: [
+                { task_id: "child-session", status: "completed", output: "Inspection done" },
+              ],
+            },
+          },
+        },
+        { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+      ],
+      grokHarnessId,
+      "session-1",
+      "/workspace",
+    );
+
+    expect(snapshot.turns[0]?.items).toMatchObject([
+      {
+        item: {
+          type: "subagentDelegation",
+          operation: "spawn",
+          prompt: "Look at the repo",
+          subagents: [
+            {
+              nativeSubagentId: "child-session",
+              description: "Inspect implementation",
+              role: "explore",
+              background: true,
+              status: "completed",
+            },
+          ],
+        },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: {
+          type: "toolExecution",
+          toolName: "get_command_or_subagent_output",
+        },
+        outcome: { status: "succeeded" },
+      },
+    ]);
+  });
+
+  it.each([
+    { model: undefined, reportedModel: undefined },
+    { model: "grok-4.5", reportedModel: undefined },
+    { model: "grok-4.5", reportedModel: "grok-4.6" },
+    { model: undefined, reportedModel: "provider/child-model" },
+  ])("restores only explicit child Model metadata: %j", ({ model, reportedModel }) => {
+    const replay: Parameters<typeof mapGrokReplay>[0] = [
+      { type: "user.text", text: "delegate", metadata: { eventId: "user-1" } },
+      {
+        type: "tool.call",
+        callId: "spawn-1",
+        title: "spawn_subagent",
+        name: "spawn_subagent",
+        rawInput: {
+          description: "Inspect",
+          subagent_id: "child-session",
+          ...(model ? { model } : {}),
+        },
+      },
+      ...(reportedModel
+        ? [
+            {
+              type: "subagent.spawned" as const,
+              nativeSubagentId: "child-session",
+              model: reportedModel,
+            },
+          ]
+        : []),
+      { type: "subagent.finished", nativeSubagentId: "child-session", status: "completed" },
+      { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+    ];
+    const snapshot = mapGrokReplay(replay, grokHarnessId, "session-1", "/workspace");
+    expect(mapGrokReplay(replay, grokHarnessId, "session-1", "/workspace")).toEqual(snapshot);
+    const item = snapshot.turns[0]?.items[0]?.item;
+    if (item?.type !== "subagentDelegation") throw new Error("Expected Subagent delegation");
+    expect(item.subagents[0]?.model).toBe(reportedModel ?? model);
+    expect(item.subagents[0]).not.toHaveProperty("reasoningEffort");
+    if (!reportedModel && !model) expect(item.subagents[0]).not.toHaveProperty("model");
+  });
+
   it("restores Command output and Generic Tool results from Native history", () => {
     const snapshot = mapGrokReplay(
       [

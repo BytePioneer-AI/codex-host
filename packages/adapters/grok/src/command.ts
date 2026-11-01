@@ -52,10 +52,15 @@ export function resolveGrokExecutable(
 export function grokInvocation(
   command: string,
   platform = process.platform,
+  modelId?: string,
 ): {
   command: string;
   arguments: string[];
   windowsVerbatimArguments: boolean;
 } {
-  return commandInvocation(command, ["agent", "--no-leader", "stdio"], process.env, platform);
+  const arguments_ = ["agent", "--no-leader"];
+  const trimmed = modelId?.trim();
+  if (trimmed) arguments_.push("--model", trimmed);
+  arguments_.push("stdio");
+  return commandInvocation(command, arguments_, process.env, platform);
 }

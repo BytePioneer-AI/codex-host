@@ -13,20 +13,108 @@
  * behavior (`:hover`, `:disabled`, `[data-state="open"]`) that inline styles
  * cannot express, while each control still sets its own inline
  * height/padding/font-size to size itself.
+ *
+ * Squeeze adaptation: external Harnesses inject more footer chips than native
+ * Codex. When the sidebar opens or the window narrows, those chips must share
+ * the remaining row (`flex-shrink`) and ellipsis instead of overlapping. The
+ * root is a shrinkable flex item with a max width; the trigger fills that
+ * root so label truncation can take effect.
  */
 const STYLE_ATTRIBUTE = "data-codexhost-trigger-chip-style";
 export const TRIGGER_CHIP_CLASS = "codexhost-trigger-chip";
+export const TRIGGER_CHIP_ROOT_CLASS = "codexhost-trigger-chip-root";
+const COMPACT_COMPOSER_ATTRIBUTE = "data-codexhost-compact-composer";
+const COMPACT_COMPOSER_WIDTH = 420;
+
+/** Floor so a squeezed chip remains clickable. */
+export const TRIGGER_CHIP_SQUEEZE_MIN_WIDTH = "48px";
+
+export function rendererModelTriggerMaxWidth(): string {
+  return "min(200px, 26vw)";
+}
+
+export function rendererPermissionModeTriggerMaxWidth(): string {
+  return "min(160px, 24vw)";
+}
+
+export function rendererUsageTriggerMaxWidth(): string {
+  return "min(240px, 30vw)";
+}
+
+export function rendererCreditsTriggerMaxWidth(): string {
+  return "min(72px, 16vw)";
+}
+
+/**
+ * Make a composer chip root participate in footer squeeze: shrink under flex
+ * pressure, never grow past its label budget, and clip rather than paint over
+ * neighbors when the row is still too tight.
+ */
+export function applyRendererTriggerChipSqueezeRoot(
+  root: HTMLElement,
+  maxWidth: string,
+  minWidth: string = TRIGGER_CHIP_SQUEEZE_MIN_WIDTH,
+): void {
+  // Unit tests pass partial Composer control mocks; skip when style/classList
+  // are absent rather than throwing during native-control reconciliation.
+  if (!root?.style) return;
+  root.classList?.add(TRIGGER_CHIP_ROOT_CLASS);
+  root.style.flex = "0 1 auto";
+  root.style.minWidth = minWidth;
+  root.style.maxWidth = maxWidth;
+  root.style.overflow = "hidden";
+}
+
+/**
+ * Size the trigger to the squeezed root so `truncate` / ellipsis on the label
+ * can activate. Call after (re)applying `TRIGGER_CHIP_CLASS`.
+ */
+export function applyRendererTriggerChipSqueezeTrigger(trigger: HTMLElement): void {
+  if (!trigger?.style) return;
+  trigger.style.boxSizing = "border-box";
+  trigger.style.minWidth = "0";
+  trigger.style.width = "100%";
+  trigger.style.maxWidth = "100%";
+  trigger.style.overflow = "hidden";
+}
+
+/** Follow the Composer width, which also changes when a sidebar opens. */
+export function observeRendererCompactComposer(composer: Element): () => void {
+  const update = (): void => {
+    const width = composer.getBoundingClientRect().width;
+    if (width > 0) {
+      composer.toggleAttribute(COMPACT_COMPOSER_ATTRIBUTE, width <= COMPACT_COMPOSER_WIDTH);
+    }
+  };
+  update();
+  if (typeof ResizeObserver === "undefined")
+    return () => composer.removeAttribute(COMPACT_COMPOSER_ATTRIBUTE);
+  const observer = new ResizeObserver(update);
+  observer.observe(composer, { box: "border-box" });
+  return () => {
+    observer.disconnect();
+    composer.removeAttribute(COMPACT_COMPOSER_ATTRIBUTE);
+  };
+}
 
 export function ensureRendererTriggerChipStyle(ownerDocument: Document): void {
   if (ownerDocument.querySelector(`style[${STYLE_ATTRIBUTE}]`)) return;
   const style = ownerDocument.createElement("style");
   style.setAttribute(STYLE_ATTRIBUTE, "true");
   style.textContent = `
+    .${TRIGGER_CHIP_ROOT_CLASS} {
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+    }
     .${TRIGGER_CHIP_CLASS} {
       display: inline-flex;
       align-items: center;
       justify-content: center;
       box-sizing: border-box;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
       border: 0;
       border-radius: 9999px;
       background: transparent;
@@ -46,6 +134,41 @@ export function ensureRendererTriggerChipStyle(ownerDocument: Document): void {
     .${TRIGGER_CHIP_CLASS}:disabled {
       cursor: not-allowed;
       opacity: 0.4;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-model-control] [data-codexhost-model-thinking] {
+      display: none !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control] {
+      min-width: 30px !important;
+      max-width: 30px !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control] .${TRIGGER_CHIP_CLASS} {
+      padding-inline: 6px !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-label],
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-chevron],
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-credits-label],
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-usage-label] {
+      display: none !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control]:has([data-codexhost-permission-lock]:not([hidden])) [data-codexhost-permission-shield],
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control]:has([data-codexhost-permission-error]:not([hidden])) [data-codexhost-permission-shield] {
+      display: none !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-credits-control],
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-usage-control] {
+      min-width: 28px !important;
+      max-width: 28px !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-credits-control] .${TRIGGER_CHIP_CLASS},
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-usage-control] .${TRIGGER_CHIP_CLASS} {
+      padding-inline: 6px !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-usage-icon] {
+      display: inline-flex !important;
+    }
+    [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-agent-control] {
+      margin-inline: 0 !important;
     }
   `;
   (ownerDocument.head ?? ownerDocument.documentElement).append(style);

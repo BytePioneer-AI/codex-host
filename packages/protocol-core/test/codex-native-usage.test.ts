@@ -1,57 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  observeCodexRateLimitResetCredits,
   observeCodexRateLimits,
-  observeCodexTokenUsage,
   projectCodexRateLimitsToCredits,
 } from "../src/codex-native-usage.js";
 
 describe("Codex native Usage observations", () => {
-  it("maps thread token usage into the Host Usage shape", () => {
-    expect(
-      observeCodexTokenUsage({
-        method: "thread/tokenUsage/updated",
-        params: {
-          threadId: "native-thread",
-          turnId: "native-turn",
-          tokenUsage: {
-            total: {
-              totalTokens: 1_000,
-              inputTokens: 800,
-              cachedInputTokens: 600,
-              cacheWriteInputTokens: 10,
-              outputTokens: 200,
-              reasoningOutputTokens: 50,
-            },
-            last: {
-              totalTokens: 240,
-              inputTokens: 200,
-              cachedInputTokens: 150,
-              cacheWriteInputTokens: 5,
-              outputTokens: 40,
-              reasoningOutputTokens: 10,
-            },
-            modelContextWindow: 2_000,
-          },
-        },
-      }),
-    ).toEqual({
-      threadId: "native-thread",
-      turnId: "native-turn",
-      usage: {
-        totalTokens: 1_000,
-        inputTokens: 800,
-        cachedInputTokens: 600,
-        cacheWriteInputTokens: 10,
-        outputTokens: 200,
-        reasoningOutputTokens: 50,
-        contextUsedTokens: 240,
-        contextWindowTokens: 2_000,
-        cacheHitRatePercent: 75,
-      },
-    });
-  });
-
   it("maps account rate-limit windows to the existing five-hour and seven-day fields", () => {
     expect(
       observeCodexRateLimits({
@@ -143,10 +98,87 @@ describe("Codex native Usage observations", () => {
       productUsage: [
         {
           product: "7-day window",
+          periodType: "seven_day",
           usagePercent: 25,
           resetsAt: new Date(2_400 * 1000).toISOString(),
         },
       ],
+    });
+  });
+
+  it("reads banked reset cards and the soonest available expiry", () => {
+    expect(
+      observeCodexRateLimitResetCredits({
+        id: "internal",
+        result: {
+          rateLimits: { primary: { usedPercent: 2, windowDurationMins: 300 } },
+          rateLimitResetCredits: {
+            availableCount: 2,
+            credits: [
+              {
+                id: "later",
+                resetType: "codexRateLimits",
+                status: "available",
+                grantedAt: 1_000,
+                expiresAt: 4_000,
+                title: "Full reset",
+                description: null,
+              },
+              {
+                id: "soon",
+                resetType: "codexRateLimits",
+                status: "available",
+                grantedAt: 1_100,
+                expiresAt: 2_400,
+                title: "Full reset",
+                description: null,
+              },
+              {
+                id: "used",
+                resetType: "codexRateLimits",
+                status: "redeemed",
+                grantedAt: 900,
+                expiresAt: 1_200,
+                title: "Full reset",
+                description: null,
+              },
+            ],
+          },
+        },
+      }),
+    ).toEqual({
+      availableCount: 2,
+      nextExpiresAtUnix: 2_400,
+      expiresAtUnix: [2_400, 4_000],
+    });
+  });
+
+  it("omits reset cards when none are available", () => {
+    expect(
+      observeCodexRateLimitResetCredits({
+        result: { rateLimitResetCredits: { availableCount: 0, credits: [] } },
+      }),
+    ).toBeNull();
+  });
+
+  it("projects reset-card inventory onto the Credits snapshot", () => {
+    expect(
+      projectCodexRateLimitsToCredits(
+        {
+          planFiveHourUsedPercent: 15,
+          planFiveHourResetsAtUnix: 1_800,
+        },
+        { availableCount: 2, nextExpiresAtUnix: 2_400, expiresAtUnix: [2_400, 4_000] },
+      ),
+    ).toEqual({
+      usedPercent: 15,
+      periodType: "five_hour",
+      resetsAt: new Date(1_800 * 1000).toISOString(),
+      resetCredits: {
+        availableCount: 2,
+        nextExpiresAt: new Date(2_400 * 1000).toISOString(),
+        expiresAt: [new Date(2_400 * 1000).toISOString(), new Date(4_000 * 1000).toISOString()],
+      },
     });
   });
 

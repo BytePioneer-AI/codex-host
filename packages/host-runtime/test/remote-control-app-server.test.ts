@@ -216,6 +216,9 @@ describe("Remote Control app-server bridge", () => {
             output.end();
             return 0;
           },
+          disconnect() {
+            (input as PassThrough).end();
+          },
           close() {
             input.destroy();
           },

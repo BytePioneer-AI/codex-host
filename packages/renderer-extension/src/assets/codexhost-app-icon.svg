@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="CodexHost">
+  <defs>
+    <linearGradient id="codexhost-plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FAFAFA"/>
+      <stop offset="1" stop-color="#EDEDED"/>
+    </linearGradient>
+    <linearGradient id="codexhost-ink" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#363638"/>
+      <stop offset="1" stop-color="#222224"/>
+    </linearGradient>
+    <filter id="codexhost-shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="0.6" stdDeviation="0.8" flood-color="#000" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+  <rect x="4.4" y="4.4" width="55.1" height="55.1" rx="12" fill="url(#codexhost-plate)" filter="url(#codexhost-shadow)"/>
+  <g transform="translate(32.8 32.2) scale(1.2) translate(-32.8 -32.2)" fill="url(#codexhost-ink)">
+    <path d="M 46.392 22.651 A 16.669999999999998 16.669999999999998 0 1 0 46.392 41.869 L 42.592 39.189 A 12.020000000000001 12.020000000000001 0 1 1 42.592 25.331 Z" stroke="url(#codexhost-ink)" stroke-width="2.6" stroke-linejoin="round"/>
+    <rect x="26.85" y="26.05" width="12.1" height="12.1" rx="3"/>
+  </g>
+</svg>

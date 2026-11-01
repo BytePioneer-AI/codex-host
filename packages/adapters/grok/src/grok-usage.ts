@@ -1,5 +1,6 @@
-import type { PromptResponse, SessionUpdate } from "@agentclientprotocol/sdk";
+import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
+import type { GrokTransportEvent } from "./acp-transport.js";
 
 /** Grok documents `costUsdTicks` as integer ticks where 1 USD = 10^10. */
 const USD_TICKS_PER_DOLLAR = 10_000_000_000;
@@ -22,6 +23,7 @@ export function combineUsage(base: HostUsage | null, next: HostUsage | null): Ho
   return base === null ? next : parseHostUsage({ ...base, ...next });
 }
 
+// Persisted API duration includes prefill. Only live stream observations below supply TPS.
 export function usageFromNative(value: unknown): HostUsage | null {
   if (!isRecord(value)) return null;
   const inputTokens = optionalToken(value.inputTokens);
@@ -54,8 +56,118 @@ export function usageFromNative(value: unknown): HostUsage | null {
   }
 }
 
-export function usageFromPrompt(response: PromptResponse): HostUsage | null {
-  return response.usage ? usageFromNative(response.usage) : null;
+/** response_completed uses disjoint Messages-style input buckets, unlike PromptUsage. */
+function usageFromResponse(value: unknown): HostUsage | null {
+  if (!isRecord(value)) return null;
+  const buckets = [
+    value.input_tokens,
+    value.cache_read_input_tokens,
+    value.cache_creation_input_tokens,
+  ];
+  const inputTokens = buckets.every(
+    (n) => typeof n === "number" && Number.isSafeInteger(n) && n >= 0,
+  )
+    ? (buckets as number[]).reduce((sum, n) => sum + n, 0)
+    : undefined;
+  const outputTokens = optionalToken(value.output_tokens);
+  return usageFromNative({
+    inputTokens,
+    outputTokens,
+    cachedReadTokens: value.cache_read_input_tokens,
+    cacheCreationTokens: value.cache_creation_input_tokens,
+    reasoningTokens: value.reasoning_tokens,
+    ...(inputTokens !== undefined && outputTokens !== undefined
+      ? { totalTokens: inputTokens + outputTokens }
+      : {}),
+  });
+}
+
+/** Live request observations only. Never time replay, tool execution or settlement I/O. */
+export class GrokTurnUsage {
+  readonly #totals: HostUsage = {};
+  readonly #seen = new Set<string>();
+  #cacheComplete: boolean;
+  #compacting = false;
+  #startedAtMs: number | undefined;
+  #streamKey: unknown;
+  #outputTokens = 0;
+  #durationMs = 0;
+  #latestCacheHit: number | undefined;
+
+  constructor(base: HostUsage | null, emptySession = false) {
+    for (const field of summedUsageFields) {
+      const value = base?.[field];
+      if (value !== undefined) this.#totals[field] = value;
+    }
+    this.#cacheComplete = base?.sessionCacheUsage !== undefined || emptySession;
+  }
+
+  observe(event: GrokTransportEvent): HostUsage | null {
+    if (event.type === "compaction.started" || event.type === "compaction.completed") {
+      this.#startedAtMs = undefined;
+      this.#streamKey = undefined;
+      this.#compacting = event.type === "compaction.started";
+    }
+    if (this.#compacting) return null;
+    // Subagent accounting is folded into the native Turn ledger at settlement.
+    if (event.type === "subagent.spawned") this.#cacheComplete = false;
+    if (
+      event.type === "agent.text" ||
+      event.type === "agent.thought" ||
+      event.type === "tool.input.delta"
+    ) {
+      if (!event.text) return null;
+      const key = event.metadata?.streamStartMs;
+      if (key !== undefined && this.#streamKey !== undefined && key !== this.#streamKey)
+        this.#startedAtMs = undefined;
+      if (key !== undefined) this.#streamKey = key;
+      this.#startedAtMs ??= Date.now();
+    }
+    if (event.type !== "response.completed") return null;
+    if (event.messageId) {
+      if (this.#seen.has(event.messageId)) return null;
+      this.#seen.add(event.messageId);
+    }
+    const duration = this.#startedAtMs === undefined ? 0 : Date.now() - this.#startedAtMs;
+    this.#startedAtMs = undefined;
+    this.#streamKey = undefined;
+    const usage = usageFromResponse(event.usage);
+    this.#latestCacheHit = usage?.cacheHitRatePercent;
+    if (usage?.inputTokens === undefined || usage.cachedInputTokens === undefined)
+      this.#cacheComplete = false;
+    if (usage) {
+      for (const field of summedUsageFields) {
+        const value = usage[field];
+        if (value !== undefined) this.#totals[field] = (this.#totals[field] ?? 0) + value;
+      }
+      if (duration > 0 && usage.outputTokens !== undefined) {
+        this.#outputTokens += usage.outputTokens;
+        this.#durationMs += duration;
+      }
+    }
+    return this.snapshot();
+  }
+
+  metrics(): HostUsage {
+    return {
+      ...(this.#durationMs > 0
+        ? { outputTokensPerSecond: (this.#outputTokens * 1000) / this.#durationMs }
+        : {}),
+      ...(this.#latestCacheHit !== undefined ? { cacheHitRatePercent: this.#latestCacheHit } : {}),
+    };
+  }
+
+  snapshot(): HostUsage {
+    const inputTokens = this.#totals.inputTokens;
+    const cachedInputTokens = this.#totals.cachedInputTokens;
+    return {
+      ...this.#totals,
+      ...this.metrics(),
+      ...(this.#cacheComplete && inputTokens !== undefined && cachedInputTokens !== undefined
+        ? { sessionCacheUsage: { inputTokens, cachedInputTokens } }
+        : {}),
+    };
+  }
 }
 
 export function usageFromSignals(value: unknown): HostUsage | null {
@@ -86,31 +198,48 @@ function nativeCostTicks(value: unknown): number | undefined {
   return ticks;
 }
 
+/** Add the fixed history baseline once; live RPC snapshots are cumulative, not deltas. */
+export function sessionCostFromNative(value: unknown, initialCostUsd: number): number | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.costIsPartial !== undefined && value.costIsPartial !== false) return undefined;
+  if (value.usageIsIncomplete !== undefined && value.usageIsIncomplete !== false) return undefined;
+  const ticks = nativeCostTicks(value);
+  return ticks === undefined
+    ? undefined
+    : optionalCostUsd(Math.round(initialCostUsd * USD_TICKS_PER_DOLLAR) + ticks);
+}
+
 function historyTurnKey(event: { nativeTurnKey?: string }, index: number): string | null {
   const key = event.nativeTurnKey;
   if (typeof key === "string" && key.startsWith("task-completed-")) return null;
   return typeof key === "string" && key.length > 0 ? key : `anon-${index}`;
 }
 
-/** Sum persisted per-turn Grok Usage. Cache hit rate stays the latest request. */
+/** Native Turn totals restore Session cache facts and fees, not a latest-request rate or TPS. */
 export function sessionUsageFromHistory(
   events: ReadonlyArray<{ type: string; usage?: unknown; nativeTurnKey?: string }>,
 ): HostUsage | null {
-  const latestByKey = new Map<string, { usage: HostUsage; ticks?: number }>();
-  let lastCacheHitRatePercent: number | undefined;
+  const latestByKey = new Map<
+    string,
+    { usage: HostUsage | null; complete: boolean; ticks?: number }
+  >();
   let index = 0;
   for (const event of events) {
     if (event?.type !== "turn.completed") continue;
     const key = historyTurnKey(event, index);
     index += 1;
     if (key === null) continue;
+    // Duplicate terminal markers without usage do not erase a previously recorded ledger.
+    if (event.usage === undefined && latestByKey.has(key)) continue;
     const usage = usageFromNative(event.usage);
-    if (!usage) continue;
     const ticks = nativeCostTicks(event.usage);
-    latestByKey.set(key, ticks === undefined ? { usage } : { usage, ticks });
-    if (usage.cacheHitRatePercent !== undefined) {
-      lastCacheHitRatePercent = usage.cacheHitRatePercent;
-    }
+    const complete =
+      isRecord(event.usage) &&
+      (event.usage.usageIsIncomplete === undefined || event.usage.usageIsIncomplete === false) &&
+      usage?.inputTokens !== undefined &&
+      usage.cachedInputTokens !== undefined &&
+      usage.cachedInputTokens <= usage.inputTokens;
+    latestByKey.set(key, { usage, complete, ...(ticks !== undefined ? { ticks } : {}) });
   }
   if (latestByKey.size === 0) return null;
 
@@ -118,6 +247,7 @@ export function sessionUsageFromHistory(
   let ticks = 0;
   let hasTicks = false;
   for (const entry of latestByKey.values()) {
+    if (!entry.usage) continue;
     for (const field of summedUsageFields) {
       const value = entry.usage[field];
       if (value === undefined) continue;
@@ -132,8 +262,15 @@ export function sessionUsageFromHistory(
     return parseHostUsage({
       ...totals,
       ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
-      ...(lastCacheHitRatePercent !== undefined
-        ? { cacheHitRatePercent: lastCacheHitRatePercent }
+      ...([...latestByKey.values()].every((entry) => entry.complete) &&
+      totals.inputTokens !== undefined &&
+      totals.cachedInputTokens !== undefined
+        ? {
+            sessionCacheUsage: {
+              inputTokens: totals.inputTokens,
+              cachedInputTokens: totals.cachedInputTokens,
+            },
+          }
         : {}),
     });
   } catch {

@@ -36,6 +36,24 @@ describe("remote SSH Host CLI", () => {
     expect(stdout.text()).toContain("codexhost remote start");
     expect(stdout.text()).toContain("codexhost remote stop");
     expect(stdout.text()).toContain("codexhost remote uninstall");
+    expect(stdout.text()).not.toContain("--claude-command");
+    expect(stderr.text()).toBe("");
+  });
+
+  it("prints usage for a help command followed by the npm wrapper's resources", async () => {
+    const help = textSink();
+    await runRemoteHostCli({ arguments: ["--help"], output: help.output });
+    const stdout = textSink();
+    const stderr = textSink();
+
+    await expect(
+      runRemoteHostCli({
+        arguments: ["help", "--node", "/node", "--shim", "/shim", "--host-runtime", "/host.mjs"],
+        output: stdout.output,
+        diagnosticOutput: stderr.output,
+      }),
+    ).resolves.toBe(0);
+    expect(stdout.text()).toBe(help.text());
     expect(stderr.text()).toBe("");
   });
 
@@ -88,18 +106,18 @@ describe("remote SSH Host CLI", () => {
     }
   });
 
-  it("fails closed on unknown commands and options", async () => {
+  it.each(["--unknown", "--claude-command"])("rejects unsupported option %s", async (option) => {
     const stdout = textSink();
     const stderr = textSink();
 
     await expect(
       runRemoteHostCli({
-        arguments: ["install", "--unknown", "value"],
+        arguments: ["install", option, "value"],
         output: stdout.output,
         diagnosticOutput: stderr.output,
       }),
     ).resolves.toBe(1);
     expect(stdout.text()).toBe("");
-    expect(stderr.text()).toContain("Unknown remote option '--unknown'");
+    expect(stderr.text()).toContain(`Unknown remote option '${option}'`);
   });
 });

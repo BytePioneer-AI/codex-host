@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -17,9 +18,13 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  NPM_MINIMUM_NODE_VERSION,
+  NPM_NODE_ENGINE,
+  NPM_NODE_REQUIREMENT,
   NPM_PACKAGE_NAME,
   NPM_PLATFORM_PACKAGE_NAMES,
   createNpmBinLauncherSource,
+  createNpmReadme,
   createNpmPackageManifest,
   expectedNpmPackagePaths,
   npmPackageCpu,
@@ -30,6 +35,7 @@ import {
   writeThirdPartyNotices,
   npmReleaseBuildCommands,
   npmTarballFileName,
+  minimumNodeVersionFromEngines,
   parseNpmReleaseArguments,
   validateNpmPackage,
 } from "../../scripts/release/prepare-npm.mjs";
@@ -208,6 +214,12 @@ Object.defineProperty(process, "arch", {
   configurable: true,
   value: "x64",
 });
+if (process.env.CODEXHOST_TEST_TTY === "1") {
+  Object.defineProperty(process.stdout, "isTTY", {
+    configurable: true,
+    value: true,
+  });
+}
 
 childProcess.spawn = () => {
   const child = new EventEmitter();
@@ -221,31 +233,103 @@ syncBuiltinESMExports();
 `,
   );
 
-  return { launcherPath, npmCliPath, preloadPath };
+  return { launcherPath, npmCliPath, preloadPath, platformRoot };
 }
 
-async function runLauncherLifecycle(platform) {
+async function runLauncherLifecycle(
+  platform,
+  { locale = "en_US.UTF-8", noColor = false, tty = false, platformVersion = "0.1.0" } = {},
+) {
   const root = await temporaryDirectory();
   try {
-    const { launcherPath, npmCliPath, preloadPath } = await createLauncherLifecycleFixture(
-      root,
-      platform,
+    const { launcherPath, npmCliPath, preloadPath, platformRoot } =
+      await createLauncherLifecycleFixture(root, platform);
+    await writeFile(
+      path.join(platformRoot, "package.json"),
+      JSON.stringify({ name: `@codexhost/cli-${platform}-x64`, version: platformVersion }),
     );
+    const environment = {
+      ...process.env,
+      CODEXHOST_STARTUP_TRACE: "1",
+      CODEXHOST_TEST_PLATFORM: platform,
+      CODEXHOST_TEST_TTY: tty ? "1" : "0",
+      LC_ALL: locale,
+      npm_execpath: npmCliPath,
+    };
+    if (tty) environment.TERM = "xterm-256color";
+    if (noColor) environment.NO_COLOR = "1";
+    else delete environment.NO_COLOR;
     return spawnSync(
       process.execPath,
       ["--import", pathToFileURL(preloadPath).href, launcherPath],
       {
         encoding: "utf8",
+        env: environment,
+        timeout: 2_000,
+        windowsHide: true,
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function runGeneratedWrapperLifecycle(platform, userArguments, exitCodes) {
+  const root = await temporaryDirectory();
+  try {
+    const { launcherPath, npmCliPath } = await createLauncherLifecycleFixture(root, platform);
+    const preloadPath = path.join(root, "remote-broker-preload.mjs");
+    const callsPath = path.join(root, "spawn-calls.jsonl");
+    await writeFile(
+      preloadPath,
+      `import childProcess from "node:child_process";
+import { appendFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { syncBuiltinESMExports } from "node:module";
+import { PassThrough } from "node:stream";
+
+Object.defineProperty(process, "platform", { configurable: true, value: process.env.CODEXHOST_TEST_PLATFORM });
+Object.defineProperty(process, "arch", { configurable: true, value: "x64" });
+const exitCodes = JSON.parse(process.env.CODEXHOST_TEST_EXIT_CODES);
+let call = 0;
+childProcess.spawn = (command, args, options) => {
+  appendFileSync(process.env.CODEXHOST_TEST_CALLS, JSON.stringify({
+    command,
+    args,
+    npmNodePath: options?.env?.CODEXHOST_NPM_NODE_PATH,
+    stdoutFd: Array.isArray(options?.stdio) ? options.stdio[1]?.fd : null,
+  }) + "\\n");
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  const exitCode = exitCodes[call++] ?? 1;
+  setTimeout(() => child.emit("exit", exitCode, null), 5);
+  return child;
+};
+syncBuiltinESMExports();
+`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      ["--import", pathToFileURL(preloadPath).href, launcherPath, ...userArguments],
+      {
+        encoding: "utf8",
         env: {
           ...process.env,
-          CODEXHOST_STARTUP_TRACE: "1",
           CODEXHOST_TEST_PLATFORM: platform,
+          CODEXHOST_TEST_CALLS: callsPath,
+          CODEXHOST_TEST_EXIT_CODES: JSON.stringify(exitCodes),
           npm_execpath: npmCliPath,
         },
         timeout: 2_000,
         windowsHide: true,
       },
     );
+    const calls = (await readFile(callsPath, "utf8"))
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    return { result, calls };
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -306,6 +390,21 @@ describe("npm package release", () => {
     expect(commands.at(-1).args).not.toContain("codexhost-platform");
   });
 
+  it("links Linux native binaries at the glibc baseline instead of the build host's glibc", () => {
+    for (const [targetName, rustTarget] of [
+      ["linux-x64", "x86_64-unknown-linux-gnu.2.28"],
+      ["linux-arm64", "aarch64-unknown-linux-gnu.2.28"],
+    ]) {
+      const rust = npmReleaseBuildCommands(releaseTarget(targetName)).at(-1);
+      expect(rust.command).toBe("cargo");
+      expect(rust.args[0]).toBe("zigbuild");
+      expect(rust.args).toContain(rustTarget);
+      expect(rust.args).toContain("codexhost-updater");
+    }
+    const macos = npmReleaseBuildCommands(releaseTarget("macos-arm64")).at(-1);
+    expect(macos.args.slice(0, 3)).toEqual(["build", "--target", "aarch64-apple-darwin"]);
+  });
+
   it("runs npm pack through npm_execpath on Windows", () => {
     expect(
       npmPackCommand("win32", { npm_execpath: "C:\\npm\\npm-cli.js" }, "C:\\node.exe"),
@@ -319,7 +418,7 @@ describe("npm package release", () => {
     });
   });
 
-  it("generates the OpenCode third-party notice from the repository license asset", async () => {
+  it("generates SDK notices from repository license assets", async () => {
     const root = process.cwd();
     const output = await temporaryDirectory();
     try {
@@ -335,7 +434,20 @@ describe("npm package release", () => {
           source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
         }),
       ).toBe(path.join(root, "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt"));
+      for (const name of ["Qoder", "QoderCN"]) {
+        const licensePath = `licenses/${name}-Agent-SDK-LICENSE.txt`;
+        expect(notice).toContain(licensePath);
+        expect(await readFile(path.join(output, licensePath), "utf8")).toContain(
+          "Qoder Product Service Terms",
+        );
+      }
+      expect(notice).toContain("@qoder-ai/qoder-agent-sdk");
+      expect(notice).toContain("@qodercn-ai/qodercn-agent-sdk");
       expect(notice).toContain("@opencode-ai/sdk");
+      expect(notice).toContain("@opencode/client");
+      expect(
+        await readFile(path.join(output, "licenses/OpenCode-v2-Client-LICENSE.txt"), "utf8"),
+      ).toContain("MIT License");
       expect(notice).toContain("licenses/OpenCode-SDK-LICENSE.txt");
       expect(license).toContain("Copyright (c) 2025 opencode");
     } finally {
@@ -352,7 +464,7 @@ describe("npm package release", () => {
     expect(manifest.bin).toBeUndefined();
     expect(manifest.os).toEqual(npmPackageOs(target));
     expect(manifest.cpu).toEqual(npmPackageCpu(target));
-    expect(manifest.engines.node).toBe(">=22");
+    expect(manifest.engines.node).toBe(NPM_NODE_ENGINE);
     expect(manifest.publishConfig.access).toBe("public");
     expect(manifest.files).toEqual([
       "bin/**",
@@ -364,6 +476,70 @@ describe("npm package release", () => {
     ]);
   });
 
+  it("publishes the repository minimum Node.js version without an upper bound", async () => {
+    const rootManifest = JSON.parse(
+      await readFile(path.join(import.meta.dirname, "../../package.json"), "utf8"),
+    );
+    expect(NPM_MINIMUM_NODE_VERSION).toBe(minimumNodeVersionFromEngines(rootManifest.engines.node));
+    expect(minimumNodeVersionFromEngines(">=22.19.0 <23.0.0 || >=24.0.0 <25.0.0")).toBe("22.19.0");
+    expect(minimumNodeVersionFromEngines(">=24.1.0 || >=22.20.3 <23")).toBe("22.20.3");
+    expect(() => minimumNodeVersionFromEngines("^22")).toThrow("no minimum version");
+    // No upper bound, but Node.js 23.x lacks node:sqlite APIs that bundled plugins import.
+    expect(NPM_NODE_ENGINE).toBe(`>=${NPM_MINIMUM_NODE_VERSION} <23.0.0 || >=24.0.0`);
+    expect(NPM_NODE_REQUIREMENT).toBe(`Node.js ${NPM_MINIMUM_NODE_VERSION} or later, except 23.x`);
+    expect(createNpmMetaPackageManifest({ version: "0.1.0" }).engines).toEqual({
+      node: NPM_NODE_ENGINE,
+    });
+    for (const id of Object.keys(NPM_PLATFORM_PACKAGE_NAMES)) {
+      const target = releaseTarget(id);
+      expect(createNpmPackageManifest({ version: "0.1.0", target }).engines).toEqual({
+        node: NPM_NODE_ENGINE,
+      });
+      expect(createNpmReadme({ version: "0.1.0", target })).toContain(NPM_NODE_REQUIREMENT);
+    }
+    expect(createNpmMetaReadme({ version: "0.1.0" })).toContain(NPM_NODE_REQUIREMENT);
+  });
+
+  it.each([
+    ["22.0.0", 1],
+    ["22.18.9", 1],
+    ["20.19.0", 1],
+    [NPM_MINIMUM_NODE_VERSION, 0],
+    ["23.0.0", 1],
+    ["23.3.9", 1],
+    ["23.4.0", 1],
+    ["23.11.0", 1],
+    ["24.0.0", 0],
+    ["25.2.1", 0],
+  ])("gates the npm wrapper on Node.js %s", async (nodeVersion, status) => {
+    const root = await temporaryDirectory();
+    const launcherPath = path.join(root, "codexhost.mjs");
+    const preloadPath = path.join(root, "node-version-preload.mjs");
+    try {
+      await writeFile(launcherPath, createNpmBinLauncherSource({ version: "1.2.3" }));
+      await writeFile(
+        preloadPath,
+        `Object.defineProperty(process.versions, "node", { configurable: true, value: ${JSON.stringify(nodeVersion)} });\n`,
+      );
+      const result = spawnSync(
+        process.execPath,
+        ["--import", pathToFileURL(preloadPath).href, launcherPath, "--version"],
+        { encoding: "utf8", windowsHide: true },
+      );
+      expect(result.status, result.stderr).toBe(status);
+      if (status === 0) {
+        expect(result.stdout).toBe("1.2.3\n");
+      } else {
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toBe(
+          `codexhost: Node.js ${nodeVersion} is not supported; ${NPM_PACKAGE_NAME} requires ${NPM_NODE_REQUIREMENT}.\n`,
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("publishes one meta package with exact optional platform dependencies", () => {
     const manifest = createNpmMetaPackageManifest({ version: "0.1.0" });
     expect(manifest.name).toBe(NPM_PACKAGE_NAME);
@@ -373,6 +549,16 @@ describe("npm package release", () => {
     expect(manifest.optionalDependencies).toEqual(
       Object.fromEntries(Object.values(NPM_PLATFORM_PACKAGE_NAMES).map((name) => [name, "0.1.0"])),
     );
+  });
+
+  it("prints the star prompt before npm launch setup begins", () => {
+    const source = createNpmBinLauncherSource({ version: "0.1.0" });
+    const promptCall = source.indexOf("  printStarPrompt();");
+    const platformResolution = source.indexOf("const platformPackages =");
+
+    expect(promptCall).toBeGreaterThanOrEqual(0);
+    expect(promptCall).toBeLessThan(platformResolution);
+    expect(source.match(/\n {2}printStarPrompt\(\);/gu)).toHaveLength(1);
   });
 
   it("injects package resources when the user runs codexhost with no args", () => {
@@ -390,8 +576,17 @@ describe("npm package release", () => {
     expect(source).toContain('extras.push("--renderer", rendererExtension)');
     expect(source).toContain('if (launchArguments?.[0] === "launch")');
     expect(source).toContain('userArguments[0] === "remote"');
+    expect(source).toContain('userArguments[0] === "broker"');
+    expect(source).toContain("brokerArguments = userArguments.slice(1)");
+    expect(source).toContain('"--node", process.execPath, "--host-runtime", hostRuntime');
+    expect(source).toContain('remoteArguments[0] === "install"');
+    expect(source).toContain('remoteArguments[0] === "uninstall"');
+    expect(source).toContain('runNativeBroker("install"');
+    expect(source).toContain('runNativeBroker("uninstall"');
     expect(source).toContain('userArguments[0] === "delegate"');
     expect(source).toContain('userArguments[0] === "thread"');
+    expect(source).toContain('userArguments[0] === "console"');
+    expect(source).toContain('[consoleServer, userArguments[0] === "update" ? "update" : "open"]');
     expect(source).toContain('"--codexhost-delegation-cli"');
     expect(source).toContain("CODEXHOST_CLI_PATH");
     expect(source).toContain('"--codexhost-remote"');
@@ -402,6 +597,148 @@ describe("npm package release", () => {
     expect(source).not.toContain("runtime/node");
   });
 
+  it.each(["darwin", "linux", "win32"])(
+    "keeps automatic Node selection compatible on %s",
+    async (platform) => {
+      const { result, calls } = await runGeneratedWrapperLifecycle(platform, ["launch"], [0]);
+      expect(result.status, result.stderr).toBe(0);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].npmNodePath).toBe(process.execPath);
+      const nodeIndex = calls[0].args.indexOf("--node");
+      if (platform === "darwin") expect(nodeIndex).toBe(-1);
+      else expect(calls[0].args[nodeIndex + 1]).toBe(process.execPath);
+    },
+  );
+
+  it("preserves an explicit macOS Node override", async () => {
+    const customNode = "/custom/node";
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "darwin",
+      ["launch", "--node", customNode],
+      [0],
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls[0].args.filter((argument) => argument === "--node")).toHaveLength(1);
+    expect(calls[0].args[calls[0].args.indexOf("--node") + 1]).toBe(customNode);
+  });
+
+  const brokerTail = [
+    "--node",
+    process.execPath,
+    "--host-runtime",
+    expect.stringMatching(/host-runtime\.mjs$/u),
+  ];
+  const brokerHarnessArguments = [
+    [],
+    ["--harness", "codebuddy"],
+    ["--harness", "workbuddy"],
+    ["--harness", "cursor-cli"],
+  ];
+
+  it.each(["install", "stop", "uninstall"])(
+    "manages every Aqua broker after a successful macOS remote %s",
+    async (command) => {
+      const { result, calls } = await runGeneratedWrapperLifecycle(
+        "darwin",
+        ["remote", command],
+        [0, 0, 0, 0, 0],
+      );
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(calls.slice(1).map((call) => call.args)).toEqual(
+        brokerHarnessArguments.map((harness) => ["broker", command, ...harness, ...brokerTail]),
+      );
+    },
+  );
+
+  it("keeps managing later brokers and reports the first broker failure", async () => {
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "darwin",
+      ["remote", "install"],
+      [0, 0, 5, 6, 0],
+    );
+
+    expect(result.status).toBe(5);
+    expect(calls).toHaveLength(5);
+  });
+
+  it("reports a macOS broker status failure after remote status succeeds", async () => {
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "darwin",
+      ["remote", "status"],
+      [0, 0, 9, 0, 0],
+    );
+
+    expect(result.status).toBe(9);
+    expect(calls).toHaveLength(5);
+    for (const call of calls.slice(1)) {
+      expect(call.args.slice(0, 2)).toEqual(["broker", "status"]);
+      expect(call.stdoutFd).toBe(2);
+    }
+  });
+
+  it("does not manage an Aqua broker for Linux remote installs", async () => {
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "linux",
+      ["remote", "install"],
+      [0],
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each(["darwin", "linux"])(
+    "forwards a bare remote command on %s as usage, not as an injected option",
+    async (platform) => {
+      const { result, calls } = await runGeneratedWrapperLifecycle(platform, ["remote"], [0]);
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].args).toEqual([
+        expect.stringMatching(/host-runtime\.mjs$/u),
+        "--codexhost-remote",
+        "help",
+        "--node",
+        process.execPath,
+        "--shim",
+        expect.stringMatching(/codexhost-shim$/u),
+        "--host-runtime",
+        expect.stringMatching(/host-runtime\.mjs$/u),
+      ]);
+    },
+  );
+
+  it("does not install the Aqua broker when remote installation fails", async () => {
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "darwin",
+      ["remote", "install"],
+      [7],
+    );
+
+    expect(result.status).toBe(7);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("injects the npm Node and Host Runtime into direct broker status", async () => {
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "darwin",
+      ["broker", "status"],
+      [0],
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toEqual([
+      "broker",
+      "status",
+      "--node",
+      process.execPath,
+      "--host-runtime",
+      expect.stringMatching(/host-runtime\.mjs$/u),
+    ]);
+  });
+
   it("keeps Windows launcher supervision alive after the ready handshake", async () => {
     const result = await runLauncherLifecycle("win32");
     const readme = createNpmMetaReadme({ version: "0.1.0" });
@@ -410,9 +747,31 @@ describe("npm package release", () => {
     expect(result.status, result.stderr).toBe(7);
     expect(result.stderr).toContain("received Launcher ready");
     expect(result.stderr).toContain("Launcher exited after ready");
+    expect(result.stdout).toContain(
+      "⭐ If this project helps you, please give us a Star ⭐\n" +
+        "https://github.com/BytePioneer-AI/codex-host",
+    );
     expect(readme).toContain("On Windows, the command remains attached until Codex Desktop exits");
     expect(readme).toContain("process trees of completed commands");
   });
+
+  it.each(["win32", "darwin", "linux"])(
+    "rejects mismatched platform payloads before spawning on %s",
+    async (platform) => {
+      for (const platformVersion of ["0.0.9", "0.2.0", null]) {
+        const result = await runLauncherLifecycle(platform, { platformVersion });
+        expect(result.status, result.stderr).toBe(1);
+        expect(result.stderr).toContain("platform package version mismatch");
+        expect(result.stderr).toContain(`@codexhost/cli-${platform}-x64`);
+        expect(result.stderr).toContain("expected 0.1.0");
+        expect(result.stderr).toContain(
+          `npm install -g @codexhost/cli@0.1.0 @codexhost/cli-${platform}-x64@0.1.0`,
+        );
+        expect(result.stderr).not.toContain("received Launcher ready");
+        expect(result.stdout).not.toContain("startup:");
+      }
+    },
+  );
 
   it.each(["darwin", "linux"])("returns after the ready handshake on %s", async (platform) => {
     const result = await runLauncherLifecycle(platform);
@@ -421,6 +780,36 @@ describe("npm package release", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toContain("received Launcher ready");
     expect(result.stderr).not.toContain("Launcher exited after ready");
+    expect(result.stdout).toBe(
+      "⭐ If this project helps you, please give us a Star ⭐\n" +
+        "https://github.com/BytePioneer-AI/codex-host\n",
+    );
+  });
+
+  it("uses a Chinese star prompt for a Chinese locale", async () => {
+    const result = await runLauncherLifecycle("darwin", { locale: "zh_CN.UTF-8" });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(
+      "⭐ 如果这个项目对你有帮助，请给我们一个 Star ⭐\n" +
+        "https://github.com/BytePioneer-AI/codex-host\n",
+    );
+  });
+
+  it("colors the star prompt on a TTY and honors NO_COLOR", async () => {
+    const colored = await runLauncherLifecycle("darwin", { tty: true });
+    const plain = await runLauncherLifecycle("darwin", { noColor: true, tty: true });
+
+    expect(colored.status, colored.stderr).toBe(0);
+    expect(colored.stdout).toBe(
+      "\u001B[33m⭐ If this project helps you, please give us a Star ⭐\u001B[0m\n" +
+        "\u001B[36mhttps://github.com/BytePioneer-AI/codex-host\u001B[0m\n",
+    );
+    expect(plain.status, plain.stderr).toBe(0);
+    expect(plain.stdout).toBe(
+      "⭐ If this project helps you, please give us a Star ⭐\n" +
+        "https://github.com/BytePioneer-AI/codex-host\n",
+    );
   });
 
   it("does not forward remote SSH bootstrap variables into a local Desktop launch", () => {
@@ -467,6 +856,57 @@ describe("npm package release", () => {
     },
   );
 
+  it.runIf(process.platform === "darwin")(
+    "opens the packaged console with the npm update environment and the Launcher",
+    async () => {
+      const root = await temporaryDirectory();
+      try {
+        const { brewPrefix, cellarNode } = await createHomebrewNodeLayout(root);
+        const { userBin, packageRoot } = await createGlobalCodexhostInstall(brewPrefix);
+        const missing = spawnCodexhost(cellarNode, userBin, ["console"]);
+        expect(missing.status).toBe(1);
+        expect(missing.stderr).toContain("missing console");
+
+        await writeFile(
+          path.join(packageRoot, "app", "console-server.mjs"),
+          "console.log(JSON.stringify({ args: process.argv.slice(2), launcher: process.env.CODEXHOST_LAUNCHER_EXECUTABLE, packageRoot: process.env.CODEXHOST_NPM_PACKAGE_ROOT }));\n",
+        );
+        // Recovery must not depend on the resources used to launch Desktop.
+        for (const relative of [
+          "libexec/codexhost-shim",
+          "app/host-runtime.mjs",
+          "app/desktop-controller.mjs",
+          "app/renderer-extension.js",
+        ]) {
+          await rm(path.join(packageRoot, relative));
+        }
+        await writeExecutable(
+          path.join(packageRoot, "bin", "codexhost"),
+          '#!/bin/sh\necho "early-launcher-reached" >&2\nexit 23\n',
+        );
+        const launch = spawnCodexhost(cellarNode, userBin, []);
+        expect(launch.status).toBe(23);
+        expect(launch.stderr).toContain("early-launcher-reached");
+        const result = spawnCodexhost(cellarNode, userBin, ["console"]);
+        expect(result.status).toBe(0);
+        const reported = JSON.parse(result.stdout);
+        expect(reported.args).toEqual(["open"]);
+        const realPackageRoot = await realpath(packageRoot);
+        expect(reported.launcher).toBe(path.join(realPackageRoot, "bin", "codexhost"));
+        expect(reported.packageRoot).toBe(realPackageRoot);
+        expect(spawnCodexhost(cellarNode, userBin, ["console", "extra"]).status).toBe(1);
+        const update = spawnCodexhost(cellarNode, userBin, ["update"]);
+        expect(update.status).toBe(0);
+        expect(JSON.parse(update.stdout)).toEqual({ ...reported, args: ["update"] });
+        expect(spawnCodexhost(cellarNode, userBin, ["update", "extra"]).status).toBe(1);
+        await writeFile(path.join(packageRoot, "app", "console-server.mjs"), "process.exit(7);\n");
+        expect(spawnCodexhost(cellarNode, userBin, ["update"]).status).toBe(7);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each(["--version", "-v"])("prints the npm package version for %s", async (option) => {
     const root = await temporaryDirectory();
     const launcherPath = path.join(root, "codexhost.mjs");
@@ -499,6 +939,10 @@ describe("npm package release", () => {
       expect(paths).not.toContain("runtime/node");
       expect(paths).toContain("bin/codexhost");
       expect(paths).toContain("libexec/codexhost-shim");
+      expect(expectedNpmPackagePaths(releaseTarget("windows-x64"))).toContain(
+        "libexec/codexhost-node-repl.exe",
+      );
+      expect(paths).not.toContain("libexec/codexhost-node-repl");
       expect(paths).toContain("libexec/codexhost-updater");
       expect(paths).toContain("app/codexhost-distribution.json");
       await mkdir(path.join(root, "runtime"), { recursive: true });

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { isNativeModelControlCandidate } from "../src/renderer-composer-dom.js";
+import { codexAccountDisplayName } from "../src/renderer-codex-account-options.js";
 import {
   rendererAgentMenuPlacement,
+  rendererAgentPickerTooltip,
   rendererAgentPickerView,
 } from "../src/renderer-agent-picker.js";
 
@@ -14,7 +16,7 @@ describe("Renderer Agent picker presentation", () => {
         { width: 1_920, height: 1_440 },
         1.6,
       ),
-    ).toEqual({ left: 700, bottom: 86 });
+    ).toEqual({ left: 676, bottom: 86 });
   });
 
   it("falls back to unscaled positioning when the Codex window zoom is unavailable", () => {
@@ -24,7 +26,45 @@ describe("Renderer Agent picker presentation", () => {
         { width: 1_200, height: 900 },
         Number.NaN,
       ),
-    ).toEqual({ left: 700, bottom: 86 });
+    ).toEqual({ left: 676, bottom: 86 });
+  });
+
+  it("splits Codex Account email names from their muted domains", () => {
+    const account = {
+      accountId: "reviewer",
+      label: "Reviewer",
+      email: "reviewer@example.com",
+    };
+    expect(codexAccountDisplayName(account)).toEqual({
+      local: "reviewer",
+      domain: "example.com",
+      full: "reviewer@example.com",
+    });
+    expect(codexAccountDisplayName({ ...account, email: undefined })).toEqual({
+      local: "Reviewer",
+      domain: null,
+      full: "Reviewer",
+    });
+  });
+
+  it("includes the active Codex Account in the locked hover detail", () => {
+    expect(
+      rendererAgentPickerTooltip(
+        { agent: "codex", phase: "locked" },
+        {
+          accountId: "reviewer",
+          label: "Reviewer",
+          email: "reviewer@example.com",
+        },
+      ),
+    ).toBe("Agent: Codex · reviewer@example.com (locked)");
+    expect(
+      rendererAgentPickerTooltip({ agent: "claude-code", phase: "locked" }, undefined, {
+        id: "claude-code" as never,
+        name: "Claude Code",
+        version: "1",
+      }),
+    ).toBe("Agent: Claude Code (locked)");
   });
 
   it("keeps a Codex draft switchable while disabling unavailable external Agents", () => {
@@ -45,11 +85,41 @@ describe("Renderer Agent picker presentation", () => {
     });
   });
 
+  it("does not turn multiple Codex Accounts into Harness picker entries", () => {
+    expect(
+      rendererAgentPickerView({ agent: "codex", phase: "draft" }, "ready", false, ["codex"]),
+    ).toMatchObject({
+      label: "Codex",
+      triggerDisabled: true,
+      optionDisabled: { codex: false },
+    });
+  });
+
+  it("lets an unavailable saved draft explicitly switch to Codex even with an empty plugin directory", () => {
+    expect(
+      rendererAgentPickerView({ agent: "removed-plugin", phase: "draft" }, "ready", false, [
+        "codex",
+      ]),
+    ).toMatchObject({
+      label: "removed-plugin",
+      triggerDisabled: false,
+      nativeModelHidden: true,
+      optionDisabled: { codex: false },
+    });
+  });
+
   it("hides the native Model for an external Agent and locks submitted selection", () => {
     expect(
-      rendererAgentPickerView({ agent: "pi", phase: "locked" }, "ready", false, ["codex", "pi"], {
-        pi: "ready",
-      }),
+      rendererAgentPickerView(
+        { agent: "pi", phase: "locked" },
+        "ready",
+        false,
+        ["codex", "pi"],
+        {
+          pi: "ready",
+        },
+        { id: "pi" as never, name: "Pi", version: "1" },
+      ),
     ).toEqual({
       label: "Pi",
       triggerDisabled: true,

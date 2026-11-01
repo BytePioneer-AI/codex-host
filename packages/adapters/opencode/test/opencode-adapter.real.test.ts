@@ -20,6 +20,23 @@ describe.runIf(Boolean(command))("OpenCode Adapter real Server", () => {
       commandTimeoutMs: 20_000,
       environment: {
         ...process.env,
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          enabled_providers: ["codexhost-smoke"],
+          model: "codexhost-smoke/model",
+          provider: {
+            "codexhost-smoke": {
+              npm: "@ai-sdk/openai-compatible",
+              options: { apiKey: "test-only", baseURL: "http://127.0.0.1:1/v1" },
+              models: {
+                model: {
+                  name: "Smoke",
+                  variants: { high: { reasoningEffort: "high" } },
+                  limit: { context: 32000, output: 4000 },
+                },
+              },
+            },
+          },
+        }),
         OPENCODE_TEST_HOME: path.join(root, "home"),
         OPENCODE_CONFIG_DIR: path.join(root, "config"),
         OPENCODE_DISABLE_PROJECT_CONFIG: "true",
@@ -61,7 +78,11 @@ describe.runIf(Boolean(command))("OpenCode Adapter real Server", () => {
         value: { turns: [] },
       });
       const model = inspection.catalog.defaultModel ?? inspection.catalog.models[0]?.ref;
-      if (model) {
+      expect(inspection.catalog.models).toHaveLength(1);
+      if (!model) throw new Error("Native model catalog did not load");
+      const thinking = inspection.catalog.thinkingOptions.find((v) => v.label === "high");
+      if (!thinking) throw new Error("Native Thinking options did not load");
+      {
         await expect(opened.value.execute({ type: "model.select", model })).resolves.toEqual({
           ok: true,
           value: { completed: true },
@@ -71,6 +92,9 @@ describe.runIf(Boolean(command))("OpenCode Adapter real Server", () => {
           value: { state: { effectiveModel: model }, turns: [] },
         });
       }
+      await expect(
+        opened.value.execute({ type: "thinking.select", thinkingOptionId: thinking.id }),
+      ).resolves.toMatchObject({ ok: true });
       await expect(
         opened.value.execute({
           type: "permissionMode.select",
@@ -92,7 +116,8 @@ describe.runIf(Boolean(command))("OpenCode Adapter real Server", () => {
         ok: true,
         value: {
           state: {
-            ...(model ? { effectiveModel: model } : {}),
+            effectiveModel: model,
+            effectiveThinkingOptionId: thinking.id,
             effectivePermissionModeId: "ask",
           },
           turns: [],

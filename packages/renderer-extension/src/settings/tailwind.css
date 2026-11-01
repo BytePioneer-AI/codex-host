@@ -1,0 +1,29 @@
+/* Compiled by scripts/tailwind-esbuild-plugin.mjs, which also fixes the cascade layer order.
+   No preflight: settings shell.css owns the base styles. */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "./";
+
+@theme inline {
+  --color-*: initial;
+  --color-white: #ffffff;
+  --color-black: #000000;
+  --color-settings-bg: var(--settings-bg);
+  --color-settings-panel: var(--settings-panel);
+  --color-settings-surface: var(--settings-surface);
+  --color-settings-surface-hover: var(--settings-surface-hover);
+  --color-settings-inset: var(--settings-inset);
+  --color-settings-text: var(--settings-text);
+  --color-settings-muted: var(--settings-muted);
+  --color-settings-subtle: var(--settings-subtle);
+  --color-settings-border: var(--settings-border);
+  --color-settings-divider: var(--settings-divider);
+  --color-settings-hover: var(--settings-hover);
+  --color-settings-active: var(--settings-active);
+  --color-settings-focus: var(--settings-focus);
+  --color-settings-primary: var(--settings-primary);
+  --color-settings-primary-text: var(--settings-primary-text);
+  --color-settings-warning: var(--settings-warning);
+  --color-settings-danger: var(--settings-danger);
+  --color-settings-success: var(--settings-success);
+}

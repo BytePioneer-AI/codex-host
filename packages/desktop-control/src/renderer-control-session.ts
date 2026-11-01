@@ -101,10 +101,12 @@ function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function sameAgents(actual: readonly string[], expected: readonly string[]): boolean {
-  return (
-    actual.length === expected.length && actual.every((agent, index) => agent === expected[index])
-  );
+function sameAgents(actual: readonly string[], expected: readonly string[] | undefined): boolean {
+  // Production discovers plugins after mounting. Explicit tooling expectations stay exact.
+  if (!actual.includes("codex") || new Set(actual).size !== actual.length) return false;
+  if (!expected) return true;
+  const expectedSet = new Set(expected);
+  return actual.length === expected.length && actual.every((agent) => expectedSet.has(agent));
 }
 
 class RendererAdapterReadinessError extends Error {
@@ -119,7 +121,7 @@ class RendererAdapterReadinessError extends Error {
 
 function validateBindingStatus(
   value: unknown,
-  expectedAgents: readonly string[],
+  expectedAgents: readonly string[] | undefined,
 ): ProductionRendererStatus {
   if (
     !isRecord(value) ||
@@ -234,18 +236,22 @@ export async function inspectElectronWebContents(
   const value = await inspector.evaluate<unknown>(`(async () => {
     const { webContents } = ${electronModuleExpression};
     const result = await Promise.all(webContents.getAllWebContents().map(async (contents) => {
+      const type = contents.getType();
+      const surface = contents.getURL().includes('avatar-overlay') ? 'overlay' : 'primary';
       let runtime = { available: false, elementCount: null };
-      try {
-        const evaluation = contents.executeJavaScript(${JSON.stringify(webContentsRuntimeExpression)}, true);
-        const timeout = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error('Renderer inspection timed out')), 2_000);
-        });
-        runtime = { available: true, ...(await Promise.race([evaluation, timeout])) };
-      } catch {}
+      if (type === 'window' && surface === 'primary') {
+        try {
+          const evaluation = contents.executeJavaScript(${JSON.stringify(webContentsRuntimeExpression)}, true);
+          const timeout = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Renderer inspection timed out')), 2_000);
+          });
+          runtime = { available: true, ...(await Promise.race([evaluation, timeout])) };
+        } catch {}
+      }
       return {
         id: contents.id,
-        type: contents.getType(),
-        surface: contents.getURL().includes('avatar-overlay') ? 'overlay' : 'primary',
+        type,
+        surface,
         runtime,
       };
     }));
@@ -355,7 +361,7 @@ async function waitForBinding(
   inspector: RendererInspector,
   operations: RendererControlOperations,
   rendererWebContentsId: number,
-  enabledAgents: readonly string[],
+  enabledAgents: readonly string[] | undefined,
   timeoutMs: number,
   pollIntervalMs: number,
 ): Promise<ProductionRendererStatus> {
@@ -384,7 +390,7 @@ class InstalledRendererControlSession implements RendererControlSession {
   constructor(
     private readonly inspector: RendererInspector,
     private readonly rendererSource: string,
-    private readonly enabledAgents: readonly string[],
+    private readonly enabledAgents: readonly string[] | undefined,
     private readonly timeoutMs: number,
     private readonly pollIntervalMs: number,
     private readonly operations: RendererControlOperations,
@@ -504,7 +510,7 @@ function startupTrace(stage: string): void {
 export async function createRendererControlSession(
   options: CreateRendererControlOptions,
 ): Promise<RendererControlSession> {
-  const enabledAgents = options.enabledAgents ?? ["codex", "pi"];
+  const enabledAgents = options.enabledAgents;
   const timeoutMs = options.timeoutMs ?? 30_000;
   const pollIntervalMs = options.pollIntervalMs ?? 250;
   const operations = options.operations ?? defaultOperations;

@@ -6,6 +6,7 @@ import type { HostThreadSnapshot } from "@codexhost/harness-adapter";
 import { MappingStore, type StoredTurnMappingV1 } from "@codexhost/mapping-store";
 import {
   harnessIdSchema,
+  hostItemIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
   nativeSessionRefSchema,
@@ -67,6 +68,163 @@ afterEach(async () => {
 });
 
 describe("ExternalThreadRepository", () => {
+  it("does not reconcile uncommitted or mismatched native history", async () => {
+    const store = new MappingStore({ directory: await temporaryStoreDirectory() });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    try {
+      const draft = await repository.createProvisional({
+        hostThreadId,
+        createRequestId: "unsent",
+        harnessId,
+        cwd: "/synthetic",
+        transportModelId: "codexhost/claude-code-native",
+        ephemeral: false,
+        historyMode: "paginated",
+      });
+      await expect(
+        repository.alignSnapshot(draft, { turns: [snapshotTurn("turn")] }),
+      ).rejects.toThrow("no committed Native Session identity");
+      expect((await repository.find(hostThreadId))?.turnMappings).toEqual([]);
+      const ready = await repository.commitNative(hostThreadId, nativeSessionRef);
+      await expect(
+        repository.alignSnapshot(ready, {
+          turns: [
+            snapshotTurnForSession({ ...nativeSessionRef, nativeSessionId: "other" }, "turn"),
+          ],
+        }),
+      ).rejects.toThrow("does not belong");
+      expect((await repository.find(hostThreadId))?.turnMappings).toEqual([]);
+    } finally {
+      await repository.close();
+    }
+  });
+
+  it("reuses legacy child identities and deduplicates overlapping native child materialization", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    const input = {
+      harnessId,
+      cwd: "/synthetic",
+      title: "Parent",
+      transportModelId: "codexhost/claude-code-native",
+      ephemeral: false,
+      historyMode: "paginated" as const,
+    };
+    await store.createProvisional({ ...input, hostThreadId, createRequestId: "parent" });
+    const parent = await store.commitReady({ hostThreadId, nativeSessionRef });
+    try {
+      const legacyId = hostThreadIdSchema.parse("legacy-child");
+      await store.createProvisional({
+        ...input,
+        hostThreadId: legacyId,
+        createRequestId: "old-random-create",
+        subagent: { parentHostThreadId: hostThreadId, nativeSubagentId: "native-legacy" },
+      });
+      await store.commitReady({ hostThreadId: legacyId, nativeSessionRef });
+      const child = {
+        subagentId: "call-id",
+        nativeSubagentId: "native-legacy",
+        description: "Child",
+        background: false,
+        status: "running" as const,
+      };
+      expect((await repository.materializeSubagent(parent, child))?.hostThreadId).toBe(legacyId);
+      const concurrent = await Promise.all(
+        Array.from({ length: 4 }, () =>
+          repository.materializeSubagent(parent, { ...child, nativeSubagentId: "native-new" }),
+        ),
+      );
+      expect(new Set(concurrent.map((record) => record?.hostThreadId)).size).toBe(1);
+      expect((await repository.list()).filter((record) => record.subagent)).toHaveLength(2);
+      const stored = concurrent[0];
+      if (!stored) throw new Error("Missing child");
+      expect(await repository.sessionTreeId(stored)).toBe(hostThreadId);
+      expect(
+        await repository.materializeSubagent(parent, {
+          subagentId: child.subagentId,
+          description: child.description,
+          background: child.background,
+          status: child.status,
+        }),
+      ).toBeNull();
+    } finally {
+      await repository.close();
+    }
+  });
+
+  it("rehydrates native Subagent history with stable Host children and sender identity", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    await store.createProvisional({
+      hostThreadId,
+      createRequestId: "create-parent",
+      harnessId,
+      cwd: "/synthetic",
+      title: "Parent",
+      transportModelId: "codexhost/claude-code-native",
+      ephemeral: false,
+      historyMode: "paginated",
+    });
+    const parent = await store.commitReady({ hostThreadId, nativeSessionRef });
+    const turn = snapshotTurn("spawn-turn");
+    turn.items = [
+      {
+        item: {
+          type: "subagentDelegation",
+          itemId: hostItemIdSchema.parse("spawn-item"),
+          operation: "spawn",
+          prompt: "Explore the fixture",
+          subagents: [
+            {
+              subagentId: "native-child",
+              nativeSubagentId: "native-child",
+              description: "Explorer",
+              role: "explorer",
+              background: false,
+              status: "completed",
+            },
+          ],
+        },
+        outcome: { status: "succeeded" },
+      },
+    ];
+    const snapshot = { turns: [turn] };
+    const first = await repository.alignSnapshot(parent, snapshot);
+    const child = (await repository.list()).find((entry) => entry.subagent);
+    expect(child).toMatchObject({
+      state: "ready",
+      subagent: {
+        parentHostThreadId: hostThreadId,
+        nativeSubagentId: "native-child",
+        role: "explorer",
+      },
+    });
+    expect(first.turns[0]?.items).toContainEqual(
+      expect.objectContaining({
+        type: "collabAgentToolCall",
+        senderThreadId: hostThreadId,
+        receiverThreadIds: [child?.hostThreadId],
+      }),
+    );
+    await repository.close();
+    const reopened = new ExternalThreadRepository(new MappingStore({ directory }));
+    await reopened.initialize();
+    try {
+      const restored = await reopened.find(hostThreadId);
+      if (!restored) throw new Error("Missing parent");
+      const again = await reopened.alignSnapshot(restored, snapshot);
+      expect(again.turns).toEqual(first.turns);
+      expect((await reopened.list()).filter((entry) => entry.subagent)).toHaveLength(1);
+    } finally {
+      await reopened.close();
+    }
+  });
+
   it("commits a last-Turn replacement with retained Host Turn identity", async () => {
     const directory = await temporaryStoreDirectory();
     const store = new MappingStore({ directory });
@@ -192,6 +350,48 @@ describe("ExternalThreadRepository", () => {
       first.record.turnMappings.map(({ hostTurnId }) => hostTurnId),
     );
     await secondRepository.close();
+  });
+
+  it("removes a checkpoint when native history no longer has an exact cut", async () => {
+    const store = new MappingStore({ directory: await temporaryStoreDirectory() });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    try {
+      await store.createProvisional({
+        hostThreadId,
+        createRequestId: "remove-checkpoint",
+        harnessId,
+        cwd: "/synthetic",
+        transportModelId: "codexhost/claude-code-native",
+        ephemeral: false,
+        historyMode: "legacy",
+      });
+      const original = await store.commitReady({
+        hostThreadId,
+        nativeSessionRef,
+        turnMappings: [
+          {
+            ...mapping("host-a", "native-a"),
+            nativeCheckpointRef: {
+              harnessId,
+              nativeSessionId: nativeSessionRef.nativeSessionId,
+              checkpointId: "native-a",
+              formatVersion: 1,
+            },
+          },
+        ],
+      });
+      const aligned = await repository.alignSnapshot(original, {
+        turns: [snapshotTurn("native-a")],
+      });
+      expect(aligned.record.turnMappings[0]?.hostTurnId).toBe("host-a");
+      expect(aligned.record.turnMappings[0]).not.toHaveProperty("nativeCheckpointRef");
+      expect((await repository.find(hostThreadId))?.turnMappings[0]).not.toHaveProperty(
+        "nativeCheckpointRef",
+      );
+    } finally {
+      await repository.close();
+    }
   });
 
   it("adopts Native Snapshot order when persisted mappings conflict", async () => {

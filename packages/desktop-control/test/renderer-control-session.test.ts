@@ -108,7 +108,7 @@ describe("Renderer Control Session", () => {
     ]);
   });
 
-  it("checks all Electron webContents concurrently within one Inspector evaluation", async () => {
+  it("checks only primary Electron windows within one Inspector evaluation", async () => {
     const contents = [
       {
         id: 17,
@@ -121,6 +121,12 @@ describe("Renderer Control Session", () => {
         executeJavaScript: vi.fn(async () => ({ elementCount: 0 })),
         getType: () => "window",
         getURL: () => "app://-/avatar-overlay.html",
+      },
+      {
+        id: 19,
+        executeJavaScript: vi.fn(async () => ({ elementCount: 1_000 })),
+        getType: () => "webview",
+        getURL: () => "app://-/index.html",
       },
     ];
     const previousMainModule = Object.getOwnPropertyDescriptor(process, "mainModule");
@@ -144,10 +150,19 @@ describe("Renderer Control Session", () => {
 
       await expect(inspectElectronWebContents(inspector)).resolves.toEqual([
         renderer(17, "primary", 100),
-        renderer(18, "overlay", 0),
+        {
+          ...renderer(18, "overlay", 0),
+          runtime: { available: false, elementCount: null },
+        },
+        {
+          ...renderer(19, "primary", 0),
+          type: "webview",
+          runtime: { available: false, elementCount: null },
+        },
       ]);
       expect(contents[0]?.executeJavaScript).toHaveBeenCalledOnce();
-      expect(contents[1]?.executeJavaScript).toHaveBeenCalledOnce();
+      expect(contents[1]?.executeJavaScript).not.toHaveBeenCalled();
+      expect(contents[2]?.executeJavaScript).not.toHaveBeenCalled();
     } finally {
       if (previousMainModule) {
         Object.defineProperty(process, "mainModule", previousMainModule);

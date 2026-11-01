@@ -1,6 +1,4 @@
 import type {
-  AssistantMessage,
-  Command,
   Event,
   PermissionRequest,
   PermissionRuleset,
@@ -28,14 +26,6 @@ export interface OpenCodePromptInput {
   variant?: string;
 }
 
-export interface OpenCodeCommandInput {
-  sessionID: string;
-  command: string;
-  arguments: string;
-  model?: OpenCodeNativeModelRef;
-  variant?: string;
-}
-
 export interface OpenCodeTransportListener {
   onEvent(event: Event): void;
   onFault(error: OpenCodeTransportError): void;
@@ -47,7 +37,6 @@ export interface OpenCodeTransport {
 
   health(): Promise<{ healthy: true; version: string }>;
   providers(): Promise<OpenCodeProviderCatalogResponse>;
-  commands(): Promise<Command[]>;
   createSession(input?: {
     model?: OpenCodeNativeModelRef;
     variant?: string;
@@ -55,6 +44,7 @@ export interface OpenCodeTransport {
   }): Promise<Session>;
   deleteSession(sessionID: string): Promise<void>;
   getSession(sessionID: string): Promise<Session>;
+  getPaths(): Promise<{ directory: string; worktree: string }>;
   updateSessionMetadata(sessionID: string, metadata: Record<string, unknown>): Promise<Session>;
   updateSessionPermission(sessionID: string, permission: PermissionRuleset): Promise<Session>;
   getMessages(sessionID: string): Promise<OpenCodeMessageWithParts[]>;
@@ -64,9 +54,6 @@ export interface OpenCodeTransport {
   revertSession(sessionID: string, messageID: string): Promise<Session>;
   unrevertSession(sessionID: string): Promise<Session>;
   promptAsync(input: OpenCodePromptInput): Promise<void>;
-  executeCommand(
-    input: OpenCodeCommandInput,
-  ): Promise<OpenCodeMessageWithParts & { info: AssistantMessage }>;
   summarize(sessionID: string, model?: OpenCodeNativeModelRef): Promise<void>;
   abort(sessionID: string): Promise<void>;
   listQuestions(): Promise<QuestionRequest[]>;
@@ -79,7 +66,13 @@ export interface OpenCodeTransport {
 }
 
 export type OpenCodeTransportErrorCode =
-  "notInstalled" | "authenticationRequired" | "unavailable" | "protocolError" | "processExited";
+  | "notInstalled"
+  | "authenticationRequired"
+  | "unavailable"
+  | "protocolError"
+  | "processExited"
+  | "checkpointNotFound"
+  | "invalidState";
 
 export class OpenCodeTransportError extends Error {
   constructor(

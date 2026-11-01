@@ -1,10 +1,14 @@
-import { createServer, type Server } from "node:http";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import net, { type AddressInfo } from "node:net";
 import path from "node:path";
 import type { Duplex } from "node:stream";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
+
+vi.mock("node:child_process", () => ({
+  spawn: vi.fn(() => ({ unref: vi.fn() })),
+}));
 
 import type {
   RemoteHostInstallationStatus,
@@ -12,6 +16,7 @@ import type {
 } from "../src/remote-host-install.js";
 import {
   classifyRemoteHostProbeResponse,
+  probeWebSocket,
   inspectRemoteHost,
   setRemoteHostLifecycleDependenciesForTest,
   startRemoteHost,
@@ -42,6 +47,7 @@ let restore: (() => void) | undefined;
 afterEach(() => {
   restore?.();
   restore = undefined;
+  vi.mocked(spawn).mockClear();
 });
 
 function runtime(
@@ -79,6 +85,36 @@ describe("remote Host lifecycle", () => {
     ).toBeNull();
   });
 
+  it("identifies a Host that announces Threads before answering the probe", async () => {
+    const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise((resolve) => server.once("listening", resolve));
+    server.on("connection", (connection) => {
+      connection.send(JSON.stringify({ method: "thread/started", params: {} }));
+      connection.on("message", () => {
+        connection.send(JSON.stringify({ method: "thread/started", params: {} }));
+        connection.send(
+          JSON.stringify({
+            id: 1,
+            error: { code: -32090, message: "Application updates are unavailable" },
+          }),
+        );
+      });
+    });
+    const { port } = server.address() as AddressInfo;
+    try {
+      await expect(
+        probeWebSocket({
+          socketPath,
+          createConnection: () => net.createConnection(port, "127.0.0.1"),
+          timeoutMs: 2_000,
+          timeoutMessage: "timed out",
+        }),
+      ).resolves.toEqual({ state: "running", socketPath, protocol: "codexhost" });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   it("reports installation and runtime state together", async () => {
     restore = setRemoteHostLifecycleDependenciesForTest({
       inspectInstallation: vi.fn().mockResolvedValue(readyInstallation),
@@ -107,6 +143,43 @@ describe("remote Host lifecycle", () => {
     expect(launch).not.toHaveBeenCalled();
     expect(terminate).not.toHaveBeenCalled();
   });
+
+  it.each([undefined, "/custom/claude"])(
+    "leaves Claude discovery to the inherited environment (override: %s)",
+    async (command) => {
+      const environment = {
+        HOME: home,
+        PATH: "/user/bin",
+        ...(command ? { CODEXHOST_CLAUDE_COMMAND: command } : {}),
+      };
+      restore = setRemoteHostLifecycleDependenciesForTest({
+        inspectInstallation: vi.fn().mockResolvedValue({
+          ...readyInstallation,
+          claudeCommand: "/old/claude",
+        }),
+        probeProtocol: vi.fn().mockResolvedValue(runtime("stopped")),
+        waitForRuntime: vi.fn().mockResolvedValue(runtime("running", "codexhost")),
+      });
+
+      await expect(startRemoteHost({ platform: "linux", environment })).resolves.toMatchObject({
+        state: "running",
+        changed: true,
+      });
+      expect(spawn).toHaveBeenCalledOnce();
+      expect(spawn).toHaveBeenCalledWith(
+        manifest.wrapperPath,
+        ["-c", "features.code_mode_host=true", "app-server", "--listen", "unix://"],
+        expect.objectContaining({
+          detached: true,
+          env: expect.objectContaining({
+            ...environment,
+            PATH: expect.stringContaining(environment.PATH),
+          }),
+        }),
+      );
+      expect(vi.mocked(spawn).mock.calls[0]?.[2]?.env?.CODEXHOST_CLAUDE_COMMAND).toBe(command);
+    },
+  );
 
   it("uses process verification when an active listener cannot be classified", async () => {
     const operations: string[] = [];
@@ -179,77 +252,71 @@ describe("remote Host lifecycle", () => {
     );
   });
 
-  it("refuses to stop a stock listener", async () => {
+  it("allows stopping an outdated installation but still refuses to start it", async () => {
     const terminate = vi.fn();
+    const probe = vi.fn().mockResolvedValue(runtime("running", "codexhost"));
+    const launch = vi.fn();
     restore = setRemoteHostLifecycleDependenciesForTest({
-      inspectInstallation: vi.fn().mockResolvedValue(readyInstallation),
-      probeProtocol: vi.fn().mockResolvedValue(runtime("conflict", "stock-codex")),
+      inspectInstallation: vi.fn().mockResolvedValue({
+        ...readyInstallation,
+        state: "degraded",
+        issues: ["shell profile does not configure the managed native entrypoint"],
+      }),
+      probeProtocol: probe,
+      runTerminator: terminate,
+      socketExists: vi.fn().mockResolvedValue(false),
+      launch,
+    });
+    const options = { platform: "linux" as const, environment: { HOME: home } };
+
+    await expect(startRemoteHost(options)).rejects.toThrow("installation is degraded");
+    expect(probe).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+    await expect(stopRemoteHost(options)).resolves.toEqual({
+      state: "stopped",
+      changed: true,
+      socketPath,
+    });
+    expect(terminate).toHaveBeenCalledWith(
+      expect.objectContaining(manifest),
+      socketPath,
+      "managed",
+      options.environment,
+    );
+  });
+
+  it("preserves native ownership verification when stopping a degraded installation", async () => {
+    const terminate = vi.fn().mockRejectedValue(new Error("socket owner does not match"));
+    restore = setRemoteHostLifecycleDependenciesForTest({
+      inspectInstallation: vi.fn().mockResolvedValue({
+        ...readyInstallation,
+        state: "degraded",
+        issues: ["shell profile does not configure the managed native entrypoint"],
+      }),
+      probeProtocol: vi.fn().mockResolvedValue(runtime("running", "codexhost")),
       runTerminator: terminate,
     });
 
     await expect(
       stopRemoteHost({ platform: "linux", environment: { HOME: home } }),
-    ).rejects.toThrow("not owned by codexhost");
-    expect(terminate).not.toHaveBeenCalled();
+    ).rejects.toThrow("socket owner does not match");
+    expect(terminate).toHaveBeenCalledOnce();
   });
 
-  it.skipIf(process.platform === "win32")(
-    "probes a listener that rejects clients offering WebSocket extensions",
-    async () => {
-      // The stock codex app-server uses tokio-tungstenite, which supports no
-      // extension and aborts the upgrade without writing an HTTP response when a
-      // client offers one. `ws` enables permessage-deflate by default, so a probe
-      // that keeps that default hangs until its timeout and reports "unknown"
-      // instead of classifying the listener.
-      //
-      // Unix socket paths are capped near 104 bytes and the probe appends a
-      // fixed suffix to CODEX_HOME, so bind under a short base directory.
-      const codexHome = await mkdtemp("/tmp/cxh-");
-      await mkdir(path.join(codexHome, "app-server-control"), { recursive: true });
-      const listenerPath = path.join(codexHome, "app-server-control", "app-server-control.sock");
-
-      const server: Server = createServer();
-      const webSockets = new WebSocketServer({ noServer: true });
-      server.on("upgrade", (request, socket: Duplex, head) => {
-        if (request.headers["sec-websocket-extensions"]) {
-          socket.destroy();
-          return;
-        }
-        webSockets.handleUpgrade(request, socket, head, (client) => {
-          client.on("message", () =>
-            client.send(
-              JSON.stringify({
-                id: 1,
-                error: {
-                  code: -32600,
-                  message: "Invalid request: unknown variant `codexhost/update/status`",
-                },
-              }),
-            ),
-          );
-        });
-      });
-      await new Promise<void>((resolve) => server.listen(listenerPath, resolve));
-
+  it.each(["ready", "degraded"])(
+    "refuses to stop a stock listener (%s installation)",
+    async (state) => {
+      const terminate = vi.fn();
       restore = setRemoteHostLifecycleDependenciesForTest({
-        inspectInstallation: vi.fn().mockResolvedValue(readyInstallation),
+        inspectInstallation: vi.fn().mockResolvedValue({ ...readyInstallation, state }),
+        probeProtocol: vi.fn().mockResolvedValue(runtime("conflict", "stock-codex")),
+        runTerminator: terminate,
       });
 
-      try {
-        await expect(
-          inspectRemoteHost({ environment: { CODEX_HOME: codexHome } }),
-        ).resolves.toMatchObject({
-          runtime: {
-            state: "conflict",
-            protocol: "stock-codex",
-            socketPath: listenerPath,
-          },
-        });
-      } finally {
-        webSockets.close();
-        await new Promise<void>((resolve) => server.close(() => resolve()));
-        await rm(codexHome, { recursive: true, force: true });
-      }
+      await expect(
+        stopRemoteHost({ platform: "linux", environment: { HOME: home } }),
+      ).rejects.toThrow("not owned by codexhost");
+      expect(terminate).not.toHaveBeenCalled();
     },
   );
 });

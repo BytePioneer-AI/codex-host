@@ -4,9 +4,15 @@
   "private": true,
   "type": "module",
   "files": [
-    "dist"
+    "dist",
+    "manifest.json",
+    "assets"
   ],
   "exports": {
+    "./plugin": {
+      "types": "./dist/plugin.d.ts",
+      "import": "./dist/plugin.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -19,6 +25,7 @@
     "@codexhost/harness-adapter": "0.0.0",
     "@codexhost/harness-discovery": "0.0.0",
     "@codexhost/shared-contracts": "0.0.0",
-    "@opencode-ai/sdk": "1.18.25"
+    "@opencode-ai/sdk": "1.18.25",
+    "@opencode/client": "2.0.16"
   }
 }

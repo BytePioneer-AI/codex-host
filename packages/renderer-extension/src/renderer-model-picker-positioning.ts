@@ -5,6 +5,7 @@ const COLLISION_PADDING = 8;
 export const RENDERER_MODEL_PICKER_MAIN_MENU_WIDTH = 260;
 const RENDERER_MODEL_PICKER_MODEL_MENU_WIDTH = 280;
 export const RENDERER_MODEL_PICKER_MODEL_MENU_MAX_HEIGHT = 360;
+export const RENDERER_MODEL_SELECTION_NOTICE_MAX_WIDTH = 320;
 
 export interface RendererMenuRect {
   left: number;
@@ -23,6 +24,17 @@ export interface RendererMenuPlacement {
   bottom?: number;
   width: number;
   maxHeight?: number;
+}
+
+/**
+ * Right/bottom anchored so the notice can size to its text: any width up to
+ * `maxWidth` stays inside the viewport.
+ */
+export interface RendererNoticePlacement {
+  right: number;
+  bottom: number;
+  maxWidth: number;
+  maxHeight: number;
 }
 
 function clampPosition(value: number, minimum: number, maximum: number): number {
@@ -108,5 +120,28 @@ export function rendererModelPickerModelMenuPlacement(
     top,
     width,
     maxHeight,
+  };
+}
+
+/** Places the selection notice just above the Model trigger, right edges aligned like its menus. */
+export function rendererModelSelectionNoticePlacement(
+  triggerRect: RendererMenuRect,
+  viewport: RendererViewport,
+  preferredWidth = RENDERER_MODEL_SELECTION_NOTICE_MAX_WIDTH,
+): RendererNoticePlacement {
+  const maxWidth = fitWidth(preferredWidth, viewport.width);
+  const bottom = Math.max(
+    COLLISION_PADDING,
+    viewport.height - triggerRect.top + MAIN_MENU_SIDE_OFFSET,
+  );
+  return {
+    right: clampPosition(
+      viewport.width - triggerRect.right,
+      COLLISION_PADDING,
+      viewport.width - COLLISION_PADDING - maxWidth,
+    ),
+    bottom,
+    maxWidth,
+    maxHeight: Math.max(COLLISION_PADDING, viewport.height - bottom - COLLISION_PADDING),
   };
 }

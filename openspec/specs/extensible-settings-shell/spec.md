@@ -4,7 +4,7 @@
 Define the browser-safe, window-scoped codexhost settings shell, validated page extension contract, application-header trigger, lifecycle isolation, responsive presentation, and honest unavailable-state boundary for future runtime settings.
 ## Requirements
 ### Requirement: Codex Renderer exposes one codexhost settings shell
-The Renderer Extension SHALL install one window-scoped codexhost settings shell and one owned settings trigger as the first control in the verified Codex application-header right-side action group. The trigger SHALL remain present when that group has no native actions in a blank Thread and SHALL appear immediately before the native Open Location control when it is available. The shell and trigger SHALL remain independent of Composer, Thread, Harness, Model, Thinking, and submission state.
+The Renderer Extension SHALL install one window-scoped codexhost settings shell and one owned settings trigger as the first control in the verified Codex application-header right-side action group. The trigger SHALL mount immediately before that native action group so native header controls keep their own positions and owned controls extend away from them. The trigger SHALL remain present when the header renders no native action group for a blank Thread, mounting in the structurally verified right-side action position instead. The shell and trigger SHALL remain independent of Composer, Thread, Harness, Model, Thinking, and submission state.
 
 #### Scenario: User opens settings from the application header
 - **WHEN** the user activates the owned codexhost icon in the Codex application header
@@ -12,14 +12,18 @@ The Renderer Extension SHALL install one window-scoped codexhost settings shell 
 - **AND** Agent, Model, Composer phase, and native create state SHALL remain unchanged
 
 #### Scenario: Blank Thread has no native header actions
-- **WHEN** the application header does not render Open Location or the context menu for a blank Thread
+- **WHEN** the application header renders no native action group for a blank Thread
 - **THEN** the settings trigger SHALL remain mounted in the structurally verified right-side action position
-- **AND** it SHALL remain immediately before Open Location if native actions later appear
+- **AND** it SHALL move immediately before the native action group if native actions later appear
 
 #### Scenario: Codex replaces the application header
 - **WHEN** Renderer mutation scanning observes that the mounted header trigger is disconnected
-- **THEN** Renderer SHALL mount one replacement trigger immediately before Open Location in the next verified header action group
+- **THEN** Renderer SHALL mount one replacement trigger immediately before the native action group of the next verified header
 - **AND** it SHALL NOT create a second dialog, trigger, or configuration state store
+
+#### Scenario: Another extension mounts its own header control
+- **WHEN** a control that Renderer does not own is inserted between the owned trigger and the start of the header action area
+- **THEN** Renderer SHALL keep the owned trigger immediately before the native action group instead of reclaiming the first position
 
 #### Scenario: Verified header action group is unavailable
 - **WHEN** Renderer cannot identify either a visible bounded native action group or its structurally verified empty action position
@@ -44,32 +48,65 @@ The settings shell SHALL consume an immutable ordered registry of cohesive page 
 - **THEN** registry construction SHALL fail before the settings trigger becomes interactive
 
 ### Requirement: Settings shell owns responsive and isolated presentation
-The settings shell SHALL render inside an owned Shadow Root with owned CSS and bundled browser-safe icons. It SHALL provide a constrained desktop dialog, a narrow-window layout, stable navigation dimensions, scrollable page content, owned light/dark palettes, and forced-colors system fallbacks without relying on Codex private React components, color variables, utility classes, or DOM styling. Its desktop visual structure SHALL align with the reviewed Codex settings baseline through a 240px navigation rail, centered bounded content column, neutral navigation states, and grouped settings rows while retaining owned implementation and palettes.
+The settings shell SHALL render inside an owned Shadow Root with owned CSS and bundled browser-safe icons. It SHALL present settings as a non-modal page that covers the content area beside the verified Codex navigation rail, below any native titlebar overlay, with a narrow layout driven by the page's own width, stable navigation dimensions, scrollable page content, owned light/dark palettes, and forced-colors system fallbacks. Placement SHALL read only the navigation rail's geometry and SHALL NOT insert into, move, or restyle Codex's content tree. Page content SHALL NOT rely on Codex private React components, color variables, utility classes, or DOM styling.
+
+#### Scenario: Settings opens as a page
+- **WHEN** settings opens while a visible navigation rail exists
+- **THEN** the page SHALL cover the area from the rail's right edge to the window's right and bottom edges, starting no higher than the titlebar overlay
+- **AND** it SHALL NOT show a backdrop or block interaction with the navigation rail
+- **AND** it SHALL follow rail and window size changes
+
+#### Scenario: Navigation rail is unavailable
+- **WHEN** settings opens without a visible navigation rail
+- **THEN** the page SHALL cover the window below the titlebar overlay
 
 #### Scenario: Desktop-sized window opens settings
-- **WHEN** the dialog opens in a desktop-sized Renderer viewport
+- **WHEN** the page opens with enough width for the desktop layout
 - **THEN** navigation and content SHALL render as a stable two-column settings layout
-- **AND** dynamic page content SHALL scroll without resizing or shifting the dialog controls
+- **AND** dynamic page content SHALL scroll without resizing or shifting the page controls
+
+#### Scenario: Native titlebar overlays the Renderer viewport
+- **WHEN** the browser exposes a nonzero `titlebar-area-height` environment value
+- **THEN** the page SHALL start below the titlebar and its height SHALL exclude that area at desktop and narrow widths
+- **AND** the page SHALL be a non-draggable interaction region without a backdrop
+- **AND** environments without a titlebar overlay SHALL use the navigation rail's top edge or the viewport top when the rail is unavailable
 
 #### Scenario: Narrow window opens settings
-- **WHEN** available width cannot contain the two-column layout
+- **WHEN** the page width cannot contain the two-column layout
 - **THEN** navigation SHALL become a horizontally scrollable compact row and content SHALL remain readable without overlapping the close control
 
+#### Scenario: Native selection while settings is shown
+- **WHEN** the settings page is open
+- **THEN** the native rail destination highlight SHALL be hidden with scoped CSS without editing native `data-selected` or `aria-current`
+- **AND** the codexhost rail trigger SHALL show the selected treatment and expose `aria-current="page"`
+- **AND** closing SHALL remove the scoped CSS and the trigger selection
+- **AND** if Codex changes how it draws the rail highlight, settings SHALL remain functional with the native highlight visible
+
 #### Scenario: Codex visual implementation changes
-- **WHEN** a later Codex release renames or removes the private settings classes, tokens, routes, or components observed during design review
+- **WHEN** a later Codex release renames or removes private settings classes, tokens, routes, or components
 - **THEN** the codexhost settings shell SHALL continue to render from its owned DOM and CSS
-- **AND** no production selector or import SHALL depend on those private implementation details
+- **AND** no production selector or import SHALL depend on those private settings implementation details
+- **AND** navigation rail placement and highlight handling SHALL remain limited to the verified rail boundary described above
 
 #### Scenario: Codex private theme CSS changes
 - **WHEN** Codex private color variables are absent, renamed, or semantically incompatible
 - **THEN** the shell SHALL remain legible using its owned palette or forced-colors system fallback
 
 ### Requirement: Settings navigation and dialog lifecycle are accessible
-The settings trigger and dialog SHALL expose appropriate accessible names and state. Opening SHALL move focus into the dialog; Escape, the close icon, and an owned backdrop action SHALL close it; closing SHALL restore focus to the connected opener when possible. Navigation SHALL expose the active page and support keyboard activation without trapping focus after close.
+The settings trigger and page SHALL expose appropriate accessible names and state. Opening SHALL move focus into the page navigation. Escape and the close icon SHALL close the page and restore focus to the connected opener when possible; a modal owned by a settings page SHALL handle Escape before the page. Native navigation SHALL replace the page without moving focus back to the opener. Activating the trigger while the page is open SHALL keep the current settings page.
 
 #### Scenario: Keyboard user opens and closes settings
 - **WHEN** the focused settings trigger is activated and the user later presses Escape
-- **THEN** the dialog SHALL close and focus SHALL return to that trigger when it remains connected
+- **THEN** the page SHALL close and focus SHALL return to that trigger when it remains connected
+
+#### Scenario: Native navigation replaces settings
+- **WHEN** the user activates a native rail destination, the native current destination changes, or history or URL navigation occurs while settings is open
+- **THEN** the settings page SHALL close without restoring focus to the trigger
+- **AND** the native click SHALL still reach Codex
+
+#### Scenario: Page-owned modal is open
+- **WHEN** a settings page shows its own modal and the user presses Escape
+- **THEN** only that modal SHALL close and the settings page SHALL remain open
 
 #### Scenario: User changes page
 - **WHEN** the user activates another settings navigation item
@@ -77,7 +114,7 @@ The settings trigger and dialog SHALL expose appropriate accessible names and st
 - **AND** the page heading and content SHALL be replaced without opening another modal
 
 #### Scenario: Original trigger was removed
-- **WHEN** Codex replaces the application header before the dialog closes
+- **WHEN** Codex replaces the navigation rail before settings closes
 - **THEN** close SHALL complete without focusing a disconnected element or throwing
 
 ### Requirement: Page asynchronous work is current and cancellable

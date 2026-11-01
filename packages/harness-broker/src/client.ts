@@ -1,0 +1,1002 @@
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { lstat, readFile } from "node:fs/promises";
+import net, { type Socket } from "node:net";
+
+import {
+  HarnessOutputChannel,
+  parseHostUsage,
+  type HarnessAdapter,
+  type HarnessCommandAccepted,
+  type HarnessCommandCapability,
+  type HarnessCommandInvocation,
+  type HarnessError,
+  type HarnessInspection,
+  type HarnessOutput,
+  type HarnessResult,
+  type HarnessSession,
+  type HarnessSessionCapabilities,
+  type HarnessSessionImportCapability,
+  type HarnessSessionState,
+  type HostCommand,
+  type HostThreadSnapshot,
+  type HostUsage,
+  type InspectHarnessInput,
+  type InteractionRespondAccepted,
+  type InteractionRespondCommand,
+  type ModelSelectCommand,
+  type ModelSelectCompleted,
+  type OpenSessionInput,
+  type PermissionModeSelectCommand,
+  type PermissionModeSelectCompleted,
+  type ThinkingSelectCommand,
+  type ThinkingSelectCompleted,
+  type TurnCancelAccepted,
+  type TurnCancelCommand,
+  type TurnStartAccepted,
+  type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
+} from "@codexhost/harness-adapter";
+import {
+  harnessPluginIdSchema,
+  type HarnessId,
+  harnessAccountSnapshotSchema,
+  type HarnessAccountSnapshot,
+  accountCreditsSnapshotSchema,
+  type AccountCreditsSnapshot,
+  harnessInspectionSchema,
+  harnessSessionCapabilitiesSchema,
+  type HarnessCommandCatalog,
+} from "@codexhost/shared-contracts";
+
+import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
+import { createBrokerSessionImportCapability } from "./session-import-client.js";
+import {
+  defaultHarnessBrokerDescriptorPath,
+  harnessBrokerLaunchAgentLabel,
+  harnessBrokerLaunchAgentPlistPath,
+} from "./paths.js";
+import {
+  HARNESS_BROKER_MAX_PENDING_REQUESTS,
+  HARNESS_BROKER_RETIRING_ERROR_CODE,
+  HARNESS_BROKER_PROTOCOL_VERSION,
+  HARNESS_BROKER_REQUEST_TIMEOUT_MS,
+  harnessBrokerDescriptorSchema,
+  harnessBrokerServerFrameSchema,
+  type HarnessBrokerDescriptorV1,
+  type HarnessBrokerMethod,
+} from "./protocol.js";
+import {
+  harnessErrorSchema,
+  harnessOutputSchema,
+  harnessSessionStateSchema,
+} from "./validation.js";
+
+interface SessionMetadata {
+  sessionId: string;
+  sessionGeneration: number;
+  capabilities: HarnessSessionCapabilities;
+  readCapabilities: boolean;
+  initialState: HarnessSessionState;
+  initialUsage: HostUsage | null;
+  commands: boolean;
+}
+
+interface PendingRequest {
+  resolve(value: unknown): void;
+  reject(error: Error): void;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
+function unavailable(message: string, retryable = true): HarnessError {
+  return { code: "unavailable", message, retryable, stage: "harnessBroker" };
+}
+
+function failedInspection(message: string): HarnessInspection {
+  return { status: "unavailable", error: unavailable(message) };
+}
+
+function isAuthenticationTerminal(output: HarnessOutput): boolean {
+  return (
+    output.kind === "event" &&
+    output.event.type === "turn.completed" &&
+    output.event.outcome.status === "failed" &&
+    output.event.outcome.error.code === "authenticationRequired"
+  );
+}
+
+function parseHarnessResult<T>(value: unknown): HarnessResult<T> {
+  if (!value || typeof value !== "object" || !("ok" in value)) {
+    return {
+      ok: false,
+      error: {
+        ...unavailable("Harness broker returned an invalid result", false),
+        code: "protocolError",
+      },
+    };
+  }
+  const result = value as { ok: boolean; value?: T; error?: unknown };
+  if (result.ok) return { ok: true, value: result.value as T };
+  const error = harnessErrorSchema.safeParse(result.error);
+  if (!error.success) {
+    return {
+      ok: false,
+      error: {
+        ...unavailable("Harness broker returned an invalid error", false),
+        code: "protocolError",
+      },
+    };
+  }
+  const parsed = error.data;
+  return {
+    ok: false,
+    error: {
+      code: parsed.code,
+      message: parsed.message,
+      retryable: parsed.retryable,
+      ...(parsed.diagnostic ? { diagnostic: parsed.diagnostic } : {}),
+      ...(parsed.stage ? { stage: parsed.stage } : {}),
+      ...(parsed.durationMs !== undefined ? { durationMs: parsed.durationMs } : {}),
+      ...(parsed.stderrTail ? { stderrTail: parsed.stderrTail } : {}),
+    },
+  };
+}
+
+function parseSessionMetadata(value: unknown): SessionMetadata {
+  if (!value || typeof value !== "object")
+    throw new Error("Harness broker Session metadata is invalid");
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.sessionId !== "string" || typeof candidate.sessionGeneration !== "number") {
+    throw new Error("Harness broker Session identity is invalid");
+  }
+  const state = harnessSessionStateSchema.parse(candidate.initialState);
+  return {
+    sessionId: candidate.sessionId,
+    sessionGeneration: candidate.sessionGeneration,
+    capabilities: harnessSessionCapabilitiesSchema.parse(candidate.capabilities),
+    readCapabilities: candidate.readCapabilities === true,
+    initialState: state,
+    initialUsage: candidate.initialUsage === null ? null : parseHostUsage(candidate.initialUsage),
+    commands: candidate.commands === true,
+  };
+}
+
+async function readDescriptor(descriptorPath: string): Promise<HarnessBrokerDescriptorV1> {
+  const metadata = await lstat(descriptorPath);
+  if (metadata.isSymbolicLink())
+    throw new Error("Aqua Harness broker descriptor must not be a symlink");
+  if (!metadata.isFile()) throw new Error("Aqua Harness broker descriptor is not a file");
+  if (process.platform !== "win32") {
+    if ((metadata.mode & 0o077) !== 0)
+      throw new Error("Aqua Harness broker descriptor is not owner-only");
+    if (process.getuid && metadata.uid !== process.getuid()) {
+      throw new Error("Aqua Harness broker descriptor belongs to another user");
+    }
+  }
+  const descriptor = harnessBrokerDescriptorSchema.parse(
+    JSON.parse(await readFile(descriptorPath, "utf8")),
+  );
+  if (process.platform === "darwin" && Buffer.byteLength(descriptor.socketPath) > 103) {
+    throw new Error("Aqua Harness broker socket path is too long for macOS");
+  }
+  if (process.platform !== "win32") {
+    const socket = await lstat(descriptor.socketPath);
+    if (socket.isSymbolicLink() || !socket.isSocket()) {
+      throw new Error("Aqua Harness broker endpoint is not a Unix socket");
+    }
+    if ((socket.mode & 0o077) !== 0 || (process.getuid && socket.uid !== process.getuid())) {
+      throw new Error("Aqua Harness broker endpoint is not owner-only");
+    }
+  }
+  try {
+    process.kill(descriptor.ownerPid, 0);
+  } catch {
+    throw new BrokerNotRunningError("its owner process has exited");
+  }
+  return descriptor;
+}
+
+/** No broker process is serving: not started yet, exited when idle, or never registered. */
+class BrokerNotRunningError extends Error {}
+
+/** The broker refused a request unprocessed because it is exiting; it is safe to retry. */
+class BrokerRetiringError extends Error {}
+
+/** The request frame could not be written, so the broker never received it. */
+class BrokerRequestNotDeliveredError extends Error {}
+
+/** The native CLI is absent on this Mac, so no broker is started for it. */
+class HarnessNotInstalledError extends Error {}
+
+const BROKER_NOT_RUNNING_CODES = new Set(["ENOENT", "ECONNREFUSED"]);
+const BROKER_START_TIMEOUT_MS = 15_000;
+const BROKER_START_POLL_MS = 250;
+
+function classifyConnectFailure(error: unknown): Error {
+  if (error instanceof BrokerNotRunningError) return error;
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code && BROKER_NOT_RUNNING_CODES.has(code)) {
+    return new BrokerNotRunningError(
+      code === "ENOENT"
+        ? "its descriptor or socket is missing"
+        : "its socket refused the connection",
+    );
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function describeBrokerFailure(error: unknown, harnessId: HarnessId): string {
+  if (error instanceof BrokerNotRunningError) {
+    return (
+      `The ${harnessId} Aqua Harness broker on this Mac could not be started (${error.message}). ` +
+      "Keep the desktop user logged in, then repair the remote service or run on this Mac: " +
+      `codexhost broker install --harness ${harnessId}`
+    );
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+function runLaunchctl(arguments_: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile("/bin/launchctl", arguments_, { timeout: 10_000 }, (error) => resolve(!error));
+  });
+}
+
+/** Starts the registered LaunchAgent in the console user's Aqua session; idempotent. */
+async function startBrokerLaunchAgent(
+  harnessId: HarnessId,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  const uid = process.getuid?.();
+  if (uid === undefined) return;
+  const target = `gui/${uid}/${harnessBrokerLaunchAgentLabel(harnessId)}`;
+  if (await runLaunchctl(["kickstart", target])) return;
+  // Not loaded (e.g. booted out by an older release): register the installed plist
+  // again. A missing plist leaves the broker unavailable with an actionable error.
+  await runLaunchctl([
+    "bootstrap",
+    `gui/${uid}`,
+    harnessBrokerLaunchAgentPlistPath(environment, harnessId),
+  ]);
+  await runLaunchctl(["kickstart", target]);
+}
+
+class BrokerConnection {
+  #onClose: (() => void) | undefined;
+
+  onClose(callback: () => void): void {
+    this.#onClose = callback;
+    if (this.#closed) callback();
+  }
+  readonly #descriptor: HarnessBrokerDescriptorV1;
+  readonly #socket: Socket;
+  readonly #pending = new Map<string, PendingRequest>();
+  readonly #sessions = new Map<string, BrokeredHarnessSession>();
+  #inputSequence = 1;
+  #outputSequence = 0;
+  #closed = false;
+  #failed = false;
+
+  private constructor(descriptor: HarnessBrokerDescriptorV1, socket: Socket) {
+    this.#descriptor = descriptor;
+    this.#socket = socket;
+    consumeBrokerFrames(
+      socket,
+      (raw) => this.#frame(raw),
+      (error) => this.#fail(error),
+    );
+    socket.once("close", () => this.#fail(new Error("Aqua Harness broker connection closed")));
+    socket.once("error", (error) => this.#fail(error));
+  }
+
+  static async connect(descriptorPath: string, harnessId: HarnessId): Promise<BrokerConnection> {
+    let descriptor: HarnessBrokerDescriptorV1;
+    let socket: Socket;
+    let connecting: Socket | undefined;
+    try {
+      descriptor = await readDescriptor(descriptorPath);
+      if (descriptor.harnessId !== harnessId)
+        throw new Error("Aqua broker belongs to another Harness");
+      connecting = net.createConnection(descriptor.socketPath);
+      const pending = connecting;
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("Timed out connecting to Aqua Harness broker")),
+          HARNESS_BROKER_REQUEST_TIMEOUT_MS,
+        );
+        pending.once("connect", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        pending.once("error", (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+      });
+      socket = pending;
+    } catch (error) {
+      connecting?.destroy();
+      throw classifyConnectFailure(error);
+    }
+    const connection = new BrokerConnection(descriptor, socket);
+    const hello = connection.#waitForHello();
+    await writeBrokerFrame(socket, {
+      version: HARNESS_BROKER_PROTOCOL_VERSION,
+      generation: descriptor.generation,
+      sequence: 1,
+      kind: "hello",
+      token: descriptor.token,
+    });
+    await hello;
+    return connection;
+  }
+
+  #waitForHello(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const id = "__hello__";
+      const timeout = setTimeout(() => {
+        this.#pending.delete(id);
+        reject(new Error("Aqua Harness broker authentication timed out"));
+      }, HARNESS_BROKER_REQUEST_TIMEOUT_MS);
+      this.#pending.set(id, { resolve: () => resolve(), reject, timeout });
+    });
+  }
+
+  register(session: BrokeredHarnessSession): void {
+    if (this.#closed)
+      throw new Error("Aqua Harness broker connection closed while opening Session");
+    this.#sessions.set(session.sessionId, session);
+  }
+
+  get closed(): boolean {
+    return this.#closed;
+  }
+
+  unregister(sessionId: string): void {
+    this.#sessions.delete(sessionId);
+  }
+
+  async dispose(): Promise<void> {
+    await Promise.allSettled([...this.#sessions.values()].map((session) => session.close()));
+    this.close();
+  }
+
+  async request(method: HarnessBrokerMethod, params: unknown): Promise<unknown> {
+    if (this.#closed) throw new Error("Aqua Harness broker connection is closed");
+    if (this.#pending.size >= HARNESS_BROKER_MAX_PENDING_REQUESTS) {
+      throw new Error("Aqua Harness broker request limit exceeded");
+    }
+    this.#inputSequence += 1;
+    const id = randomUUID();
+    const response = new Promise<unknown>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.#pending.delete(id);
+        reject(new Error(`Aqua Harness broker ${method} timed out`));
+      }, HARNESS_BROKER_REQUEST_TIMEOUT_MS);
+      this.#pending.set(id, { resolve, reject, timeout });
+    });
+    try {
+      await writeBrokerFrame(this.#socket, {
+        version: HARNESS_BROKER_PROTOCOL_VERSION,
+        generation: this.#descriptor.generation,
+        sequence: this.#inputSequence,
+        kind: "request",
+        id,
+        method,
+        params,
+      });
+    } catch (error) {
+      const pending = this.#pending.get(id);
+      if (pending) clearTimeout(pending.timeout);
+      this.#pending.delete(id);
+      response.catch(() => undefined);
+      throw new BrokerRequestNotDeliveredError(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    return response;
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#socket.destroy();
+    this.#fail(new Error("Aqua Harness broker connection closed"));
+  }
+
+  #frame(raw: unknown): void {
+    if (this.#closed) return;
+    const frame = harnessBrokerServerFrameSchema.parse(raw);
+    if (
+      frame.generation !== this.#descriptor.generation ||
+      frame.sequence !== this.#outputSequence + 1
+    ) {
+      this.#fail(new Error("Aqua Harness broker response generation or sequence is invalid"));
+      return;
+    }
+    this.#outputSequence = frame.sequence;
+    if (frame.kind === "output") {
+      this.#sessions.get(frame.sessionId)?.acceptOutput(frame.sessionGeneration, frame.output);
+      return;
+    }
+    if (this.#outputSequence === 1) {
+      const hello = this.#pending.get("__hello__");
+      if (hello) {
+        clearTimeout(hello.timeout);
+        this.#pending.delete("__hello__");
+        if (frame.ok) hello.resolve(frame.value);
+        else hello.reject(new Error(frame.error?.message ?? "Broker authentication failed"));
+      }
+      return;
+    }
+    const pending = this.#pending.get(frame.id);
+    if (!pending) {
+      this.#fail(new Error("Aqua Harness broker returned an unknown response ID"));
+      return;
+    }
+    clearTimeout(pending.timeout);
+    this.#pending.delete(frame.id);
+    if (frame.ok) pending.resolve(frame.value);
+    else if (frame.error?.code === HARNESS_BROKER_RETIRING_ERROR_CODE)
+      pending.reject(new BrokerRetiringError(frame.error.message));
+    else pending.reject(new Error(frame.error?.message ?? "Broker request failed"));
+  }
+
+  #fail(error: Error): void {
+    if (this.#failed) return;
+    this.#failed = true;
+    if (!this.#closed) this.#closed = true;
+    this.#socket.destroy();
+    this.#onClose?.();
+    for (const pending of this.#pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(error);
+    }
+    this.#pending.clear();
+    for (const session of this.#sessions.values()) session.connectionFault(error);
+  }
+}
+
+class BrokeredHarnessSession implements HarnessSession {
+  readonly harnessId: HarnessId;
+  readonly outputs: AsyncIterable<HarnessOutput>;
+  readonly #channel = new HarnessOutputChannel<HarnessOutput>();
+  #connection: BrokerConnection;
+  readonly commands?: HarnessCommandCapability;
+  #metadata: SessionMetadata;
+  #faulted = false;
+  #closed = false;
+  #state: HarnessSessionState;
+  #recovery: Promise<HarnessResult<void>> | undefined;
+
+  constructor(
+    connection: BrokerConnection,
+    metadata: SessionMetadata,
+    harnessId: HarnessId,
+    readonly openInput: OpenSessionInput,
+    readonly reconnect: () => Promise<BrokerConnection>,
+    readonly onClose: () => void,
+  ) {
+    this.harnessId = harnessId;
+    if (metadata.initialState.nativeRef && metadata.initialState.nativeRef.harnessId !== harnessId)
+      throw new Error("Broker Session identity belongs to another Harness");
+    this.#connection = connection;
+    this.#metadata = metadata;
+    this.#state = structuredClone(metadata.initialState);
+    this.outputs = this.#channel.outputs;
+    if (metadata.commands) {
+      this.commands = {
+        list: async () => {
+          try {
+            return parseHarnessResult(await this.#request("session.commands.list", {}));
+          } catch (error) {
+            return {
+              ok: false,
+              error: unavailable(error instanceof Error ? error.message : String(error)),
+            };
+          }
+        },
+        execute: async (
+          command: HarnessCommandInvocation,
+        ): Promise<HarnessResult<HarnessCommandAccepted>> => {
+          try {
+            return parseHarnessResult(await this.#request("session.commands.execute", { command }));
+          } catch (error) {
+            return {
+              ok: false,
+              error: unavailable(error instanceof Error ? error.message : String(error)),
+            };
+          }
+        },
+      };
+    }
+    connection.register(this);
+  }
+
+  get sessionId(): string {
+    return this.#metadata.sessionId;
+  }
+  get capabilities(): HarnessSessionCapabilities {
+    return this.#metadata.capabilities;
+  }
+  get initialState(): HarnessSessionState {
+    return this.#metadata.initialState;
+  }
+  get initialUsage(): HostUsage | null {
+    return this.#metadata.initialUsage;
+  }
+  acceptOutput(generation: number, output: unknown): void {
+    if (this.#closed || generation !== this.#metadata.sessionGeneration) return;
+    const value = harnessOutputSchema.parse(output);
+    if (value.kind === "event" && value.event.type === "session.state.changed") {
+      const nativeRef = value.event.state.nativeRef ?? this.#state.nativeRef;
+      this.#state = { ...structuredClone(value.event.state), ...(nativeRef ? { nativeRef } : {}) };
+    }
+    if (
+      (value.kind === "event" && value.event.type === "session.faulted") ||
+      isAuthenticationTerminal(value)
+    ) {
+      this.#faulted = true;
+    }
+    this.#channel.emit(value);
+  }
+
+  connectionFault(error: Error): void {
+    if (this.#closed) return;
+    this.#faulted = true;
+    this.#channel.emit({
+      kind: "event",
+      event: { type: "session.faulted", error: unavailable(error.message) },
+    });
+  }
+
+  async readCapabilities(): Promise<HarnessSessionCapabilities> {
+    // Older brokers cannot revalidate a live steer capability; keep stop-then-start there.
+    if (!this.#metadata.readCapabilities) return { ...this.capabilities, steer: false };
+    return harnessSessionCapabilitiesSchema.parse(
+      await this.#request("session.readCapabilities", {}),
+    );
+  }
+
+  async refreshUsage(): Promise<void> {
+    await this.#request("session.refreshUsage", {});
+  }
+  async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    if (this.#closed)
+      return { ok: false, error: unavailable("Aqua Harness broker Session is closed", false) };
+    if (this.#connection.closed) {
+      const recovered = await this.#ensureRecovery();
+      if (!recovered.ok) return recovered;
+    }
+    try {
+      return parseHarnessResult(await this.#request("session.readSnapshot", {}));
+    } catch (error) {
+      return {
+        ok: false,
+        error: unavailable(error instanceof Error ? error.message : String(error)),
+      };
+    }
+  }
+
+  execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
+  execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
+  execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
+  execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
+  execute(command: ThinkingSelectCommand): Promise<HarnessResult<ThinkingSelectCompleted>>;
+  execute(
+    command: PermissionModeSelectCommand,
+  ): Promise<HarnessResult<PermissionModeSelectCompleted>>;
+  async execute(
+    command: HostCommand,
+  ): Promise<
+    HarnessResult<
+      | TurnStartAccepted
+      | TurnSteerAccepted
+      | TurnCancelAccepted
+      | InteractionRespondAccepted
+      | ModelSelectCompleted
+      | ThinkingSelectCompleted
+      | PermissionModeSelectCompleted
+    >
+  > {
+    if (this.#closed)
+      return { ok: false, error: unavailable("Aqua Harness broker Session is closed", false) };
+    if (this.#faulted && command.type === "turn.start") {
+      const recovered = await this.#ensureRecovery();
+      if (!recovered.ok) return recovered;
+    }
+    try {
+      return parseHarnessResult(await this.#request("session.execute", { command }));
+    } catch (error) {
+      // A missing reply does not prove native input was rejected. Do not invite stop-and-resend.
+      if (command.type === "turn.steer") throw error;
+      return {
+        ok: false,
+        error: unavailable(error instanceof Error ? error.message : String(error)),
+      };
+    }
+  }
+
+  async close(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    await this.#recovery?.catch(() => {});
+    this.#connection.unregister(this.sessionId);
+    await this.#request("session.close", {}).catch(() => undefined);
+    this.#channel.end();
+    this.onClose();
+  }
+
+  async #ensureRecovery(): Promise<HarnessResult<void>> {
+    try {
+      this.#recovery ??= this.#recover().finally(() => {
+        this.#recovery = undefined;
+      });
+      return await this.#recovery;
+    } catch (error) {
+      return {
+        ok: false,
+        error: unavailable(error instanceof Error ? error.message : String(error)),
+      };
+    }
+  }
+
+  async #recover(): Promise<HarnessResult<void>> {
+    const previous = this.#connection;
+    const connection = previous.closed ? await this.reconnect() : previous;
+    const nativeRef = this.#state.nativeRef;
+    if (!nativeRef)
+      return {
+        ok: false,
+        error: unavailable("Cannot recover a Session without confirmed native identity", false),
+      };
+    const result = parseHarnessResult<unknown>(
+      await (connection === previous
+        ? this.#request("session.reopen", {})
+        : connection.request("adapter.open", {
+            kind: "resume",
+            cwd: this.openInput.cwd,
+            nativeRef,
+            ...(this.openInput.environment ? { environment: this.openInput.environment } : {}),
+            ...(this.#state.effectiveModel ? { model: this.#state.effectiveModel } : {}),
+            ...(this.#state.effectiveThinkingOptionId
+              ? { thinkingOptionId: this.#state.effectiveThinkingOptionId }
+              : {}),
+            ...(this.#state.effectivePermissionModeId
+              ? { permissionModeId: this.#state.effectivePermissionModeId }
+              : {}),
+          })),
+    );
+    if (!result.ok) return result;
+    const metadata = parseSessionMetadata(result.value),
+      observed = metadata.initialState.nativeRef;
+    if (
+      this.#closed ||
+      connection.closed ||
+      !observed ||
+      observed.harnessId !== nativeRef.harnessId ||
+      observed.nativeSessionId !== nativeRef.nativeSessionId ||
+      observed.formatVersion !== nativeRef.formatVersion
+    ) {
+      await connection
+        .request("session.close", {
+          sessionId: metadata.sessionId,
+          sessionGeneration: metadata.sessionGeneration,
+        })
+        .catch(() => {});
+      return {
+        ok: false,
+        error: unavailable(
+          "Broker recovery did not preserve the live native Session identity",
+          false,
+        ),
+      };
+    }
+    previous.unregister(this.sessionId);
+    this.#connection = connection;
+    this.#metadata = metadata;
+    this.#state = structuredClone(metadata.initialState);
+    connection.register(this);
+    this.#faulted = false;
+    this.#channel.emit({
+      kind: "event",
+      event: { type: "session.state.changed", state: structuredClone(this.#state) },
+    });
+    return { ok: true, value: undefined };
+  }
+
+  #request(method: HarnessBrokerMethod, extra: Record<string, unknown>): Promise<unknown> {
+    return this.#connection.request(method, {
+      sessionId: this.#metadata.sessionId,
+      sessionGeneration: this.#metadata.sessionGeneration,
+      ...extra,
+    });
+  }
+}
+
+export class BrokeredHarnessAdapter implements HarnessAdapter {
+  readonly #sessions = new Set<BrokeredHarnessSession>();
+  readonly commandCatalog?: HarnessCommandCatalog;
+  readonly liveCommandCatalog?: boolean;
+  readonly harnessId: HarnessId;
+  readonly sessionImport?: HarnessSessionImportCapability;
+  readonly credits?: () => AccountCreditsSnapshot | null;
+  readonly refreshCredits?: () => Promise<AccountCreditsSnapshot | null>;
+  readonly #descriptorPath: string;
+  readonly #forwardEnvironment: boolean;
+  readonly #isInstalled: (() => boolean) | undefined;
+  readonly #startBroker: (() => Promise<void>) | undefined;
+  readonly #startTimeoutMs: number;
+  #connection: Promise<BrokerConnection> | null = null;
+  #closed = false;
+  #credits: AccountCreditsSnapshot | null = null;
+  #creditsRefresh: Promise<AccountCreditsSnapshot | null> | null = null;
+
+  readonly subagents = {
+    readSnapshot: async (
+      input: Parameters<NonNullable<HarnessAdapter["subagents"]>["readSnapshot"]>[0],
+    ) => {
+      try {
+        return parseHarnessResult<HostThreadSnapshot>(
+          await this.#request("adapter.subagent.readSnapshot", input),
+        );
+      } catch (error) {
+        return { ok: false as const, error: this.#error(error) };
+      }
+    },
+  };
+
+  constructor(
+    input: {
+      harnessId?: string;
+      /** Plugin-owned capability; defaults to true for existing Broker consumers. */
+      accountCredits?: boolean;
+      /** Enable only when the plugin implements native Session import in its broker. */
+      sessionImport?: boolean;
+      forwardDelegationEnvironment?: boolean;
+      descriptorPath?: string;
+      environment?: NodeJS.ProcessEnv;
+      commandCatalog?: HarnessCommandCatalog;
+      liveCommandCatalog?: boolean;
+      /** Cheap local check; a broker is never started for a CLI that is not installed. */
+      isInstalled?: () => boolean;
+      /**
+       * Starts the broker when none is serving. Defaults to kickstarting the registered
+       * macOS LaunchAgent unless an explicit descriptor path selects a custom broker.
+       */
+      startBroker?: (() => Promise<void>) | false;
+      startTimeoutMs?: number;
+    } = {},
+  ) {
+    this.harnessId = harnessPluginIdSchema.parse(input.harnessId ?? "claude-code");
+    if (input.sessionImport) {
+      this.sessionImport = createBrokerSessionImportCapability({
+        harnessId: this.harnessId,
+        request: async (method, params) =>
+          parseHarnessResult(
+            await this.#request(method, params, method === "adapter.sessionImport.resolve"),
+          ),
+        isClosed: () => this.#closed,
+        error: (error) => this.#error(error),
+      });
+    }
+    if (input.accountCredits !== false) {
+      this.credits = () => this.#credits;
+      this.refreshCredits = () => this.#refreshAccountCredits();
+    }
+    this.#forwardEnvironment = input.forwardDelegationEnvironment === true;
+    if (input.commandCatalog) this.commandCatalog = input.commandCatalog;
+    if (input.liveCommandCatalog) this.liveCommandCatalog = true;
+    this.#descriptorPath =
+      input.descriptorPath ?? defaultHarnessBrokerDescriptorPath(input.environment, this.harnessId);
+    this.#isInstalled = input.isInstalled;
+    const environment = input.environment ?? process.env;
+    this.#startBroker =
+      input.startBroker === false
+        ? undefined
+        : (input.startBroker ??
+          (process.platform === "darwin" && !input.descriptorPath
+            ? () => startBrokerLaunchAgent(this.harnessId, environment)
+            : undefined));
+    this.#startTimeoutMs = input.startTimeoutMs ?? BROKER_START_TIMEOUT_MS;
+  }
+
+  #refreshAccountCredits(): Promise<AccountCreditsSnapshot | null> {
+    if (this.#closed) return Promise.resolve(null);
+    if (this.#creditsRefresh) return this.#creditsRefresh;
+    this.#creditsRefresh = this.#readCredits().finally(() => {
+      this.#creditsRefresh = null;
+    });
+    return this.#creditsRefresh;
+  }
+
+  async #readCredits(): Promise<AccountCreditsSnapshot | null> {
+    try {
+      const value = await this.#request("adapter.credits", {}, true);
+      const credits = accountCreditsSnapshotSchema.nullable().parse(value);
+      if (!this.#closed) this.#credits = credits;
+    } catch {
+      // Optional telemetry: retain the last valid snapshot if the broker cannot read it.
+    }
+    return this.#credits;
+  }
+
+  async inspectAccount(): Promise<HarnessAccountSnapshot | null> {
+    if (this.#closed) return null;
+    try {
+      const value = await this.#request("adapter.inspectAccount", {}, true);
+      return harnessAccountSnapshotSchema.nullable().parse(value);
+    } catch {
+      return null;
+    }
+  }
+
+  async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
+    if (this.#closed) return failedInspection("Aqua Harness broker adapter is closed");
+    try {
+      return harnessInspectionSchema.parse(await this.#request("adapter.inspect", input, true));
+    } catch (error) {
+      this.#connection = null;
+      if (error instanceof HarnessNotInstalledError)
+        return { status: "notInstalled", error: this.#error(error) };
+      return failedInspection(describeBrokerFailure(error, this.harnessId));
+    }
+  }
+
+  async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
+    if (this.#closed)
+      return { ok: false, error: unavailable("Aqua Harness broker adapter is closed", false) };
+    const safeInput = { ...input } as OpenSessionInput & {
+      environment?: Record<string, string | undefined>;
+    };
+    delete safeInput.environment;
+    if (this.#forwardEnvironment && input.environment) {
+      const allowed = [
+        "CODEXHOST_CLI_PATH",
+        "CODEXHOST_CLI_NODE_PATH",
+        "CODEXHOST_RUNTIME_ENDPOINT",
+        "CODEXHOST_RUNTIME_TOKEN",
+        "CODEXHOST_THREAD_ID",
+      ];
+      const environment = Object.fromEntries(
+        Object.entries(input.environment).filter(
+          ([key, value]) => allowed.includes(key) && value !== undefined,
+        ),
+      );
+      if (Object.keys(environment).length) safeInput.environment = environment;
+    }
+    let connection: BrokerConnection | undefined;
+    try {
+      let value: unknown;
+      for (let attempt = 0; ; attempt += 1) {
+        connection = await this.#connect();
+        try {
+          value = await connection.request("adapter.open", safeInput);
+          break;
+        } catch (error) {
+          // Only a refusal or an undelivered frame proves the open never ran; a plain
+          // disconnect may have created a native Session, so it is reported, not repeated.
+          if (
+            attempt > 0 ||
+            !(
+              error instanceof BrokerRetiringError ||
+              error instanceof BrokerRequestNotDeliveredError
+            )
+          )
+            throw error;
+          this.#connection = null;
+        }
+      }
+      const result = parseHarnessResult<unknown>(value);
+      if (!result.ok) return result;
+      const session = new BrokeredHarnessSession(
+        connection,
+        parseSessionMetadata(result.value),
+        this.harnessId,
+        safeInput,
+        () => this.#connect(),
+        () => {
+          this.#sessions.delete(session);
+        },
+      );
+      this.#sessions.add(session);
+      return { ok: true, value: session };
+    } catch (error) {
+      connection?.close();
+      this.#connection = null;
+      return { ok: false, error: this.#error(error) };
+    }
+  }
+
+  async close(): Promise<void> {
+    this.#closed = true;
+    this.#credits = null;
+    await Promise.allSettled([...this.#sessions].map((session) => session.close()));
+    this.#sessions.clear();
+    const connection = await this.#connection?.catch(() => null);
+    await connection?.dispose();
+    this.#connection = null;
+  }
+
+  #error(error: unknown): HarnessError {
+    if (error instanceof HarnessNotInstalledError)
+      return {
+        code: "notInstalled",
+        message: error.message,
+        retryable: false,
+        stage: "harnessBroker",
+      };
+    return unavailable(describeBrokerFailure(error, this.harnessId));
+  }
+
+  /**
+   * Sends one adapter-level request. A broker that retired between requests refuses it
+   * unprocessed, so it is retried once on a fresh broker. Idempotent reads also retry
+   * once after a plain disconnect.
+   */
+  async #request(
+    method: HarnessBrokerMethod,
+    params: unknown,
+    idempotent = false,
+  ): Promise<unknown> {
+    for (let attempt = 0; ; attempt += 1) {
+      const connection = await this.#connect();
+      try {
+        return await connection.request(method, params);
+      } catch (error) {
+        const retryable =
+          error instanceof BrokerRetiringError ||
+          error instanceof BrokerRequestNotDeliveredError ||
+          (idempotent && connection.closed);
+        if (attempt > 0 || !retryable) throw error;
+        this.#connection = null;
+      }
+    }
+  }
+
+  #connect(): Promise<BrokerConnection> {
+    if (this.#closed) return Promise.reject(new Error("Aqua Harness broker adapter is closed"));
+    if (!this.#connection) {
+      // Re-read the descriptor on the next caller request after service restart, idle
+      // exit or initial unavailability. Never start a background discovery/retry loop.
+      const pending = this.#establish()
+        .then((connection) => {
+          connection.onClose(() => {
+            if (this.#connection === pending) this.#connection = null;
+          });
+          return connection;
+        })
+        .catch((error) => {
+          if (this.#connection === pending) this.#connection = null;
+          throw error;
+        });
+      this.#connection = pending;
+    }
+    return this.#connection;
+  }
+
+  async #establish(): Promise<BrokerConnection> {
+    try {
+      return await BrokerConnection.connect(this.#descriptorPath, this.harnessId);
+    } catch (error) {
+      if (!(error instanceof BrokerNotRunningError) || !this.#startBroker) throw error;
+    }
+    if (this.#isInstalled && !this.#isInstalled()) {
+      throw new HarnessNotInstalledError(`${this.harnessId} is not installed on this Mac`);
+    }
+    // Start on demand, re-issuing the idempotent start while polling: a retiring broker
+    // may still own the agent and exit only after the first start request.
+    const deadline = Date.now() + this.#startTimeoutMs;
+    for (;;) {
+      await this.#startBroker();
+      try {
+        return await BrokerConnection.connect(this.#descriptorPath, this.harnessId);
+      } catch (error) {
+        if (!(error instanceof BrokerNotRunningError) || Date.now() >= deadline) throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, BROKER_START_POLL_MS));
+    }
+  }
+}

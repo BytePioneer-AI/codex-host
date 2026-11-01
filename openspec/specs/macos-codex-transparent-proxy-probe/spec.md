@@ -10,7 +10,8 @@ macOS 平台层 MUST 只读发现目标 Codex App bundle，并 MUST 从同一 bu
 #### Scenario: 发现标准安装的官方 App
 
 - **WHEN** 受支持应用目录中存在 Bundle Identifier 为 `com.openai.codex` 且内部结构有效的 Codex App
-- **THEN** 平台层 MUST 返回规范化的 bundle root、版本、主可执行文件和 `Contents/Resources/codex` 绝对路径
+- **THEN** 平台层 MUST 返回规范化的 bundle root、版本、主可执行文件和官方 Codex CLI 绝对路径
+- **AND** CLI MUST 优先取 `Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`（Desktop 26.924 起的布局），仅当该路径不存在时回退旧布局 `Contents/Resources/codex`
 - **AND** 返回的 Desktop 与 CLI MUST 来自同一个 App bundle
 
 #### Scenario: 候选名称相同但身份不匹配

@@ -1,11 +1,5 @@
 import { Buffer } from "node:buffer";
 
-import type {
-  ModelProviderGroup,
-  ModelSelection,
-  SessionModels,
-} from "@deepseek-ai/dsh-host-apiproxy/api";
-
 import {
   HARNESS_MODEL_REF_MAX_LENGTH,
   harnessModelCatalogSchema,
@@ -17,11 +11,37 @@ import {
 } from "@codexhost/shared-contracts";
 
 const MODEL_REF_PREFIX = "deepseek-harness-model-v2.";
-const LEGACY_MODEL_REF_PREFIX = "deepseek-harness-model-v1.";
 
 export interface DeepSeekNativeModelRef {
   provider: string;
   model: string;
+}
+
+export interface DeepSeekModelSelection extends DeepSeekNativeModelRef {
+  reasoningEffort?: string;
+}
+
+export interface DeepSeekModelProviderGroup {
+  readonly id: string;
+  readonly name: string;
+  readonly models: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly description?: string;
+    readonly reasoning?: {
+      readonly efforts: readonly {
+        readonly id: string;
+        readonly name: string;
+        readonly description?: string;
+      }[];
+      readonly defaultEffort?: string;
+    };
+  }[];
+}
+
+export interface DeepSeekSessionModels {
+  readonly current: DeepSeekModelSelection;
+  readonly groups: readonly DeepSeekModelProviderGroup[];
 }
 
 export function encodeDeepSeekHarnessModelRef(model: DeepSeekNativeModelRef): HarnessModelRef {
@@ -38,12 +58,6 @@ export function encodeDeepSeekHarnessModelRef(model: DeepSeekNativeModelRef): Ha
 
 export function decodeDeepSeekHarnessModelRef(ref: HarnessModelRef): DeepSeekNativeModelRef {
   const parsed = harnessModelRefSchema.parse(ref);
-  if (parsed.id.startsWith(LEGACY_MODEL_REF_PREFIX)) {
-    const encoded = parsed.id.slice(LEGACY_MODEL_REF_PREFIX.length);
-    const model = Buffer.from(encoded, "base64url").toString("utf8");
-    if (!encoded || !model) throw new Error("DeepSeek Harness legacy Model Ref is invalid");
-    return { provider: "deepseek-official", model };
-  }
   if (!parsed.id.startsWith(MODEL_REF_PREFIX)) {
     throw new Error("DeepSeek Harness Model Ref belongs to another Adapter");
   }
@@ -79,7 +93,9 @@ export function parseDeepSeekThinkingOptionId(
 }
 
 /** Thinking options advertised by the exact Model route the Session currently serves. */
-export function normalizeDeepSeekThinkingOptions(models: SessionModels): HarnessThinkingOption[] {
+export function normalizeDeepSeekThinkingOptions(
+  models: DeepSeekSessionModels,
+): HarnessThinkingOption[] {
   const group = models.groups.find((candidate) => candidate.id === models.current.provider);
   const model = group?.models.find((candidate) => candidate.id === models.current.model);
   return (model?.reasoning?.efforts ?? []).flatMap((effort) => {
@@ -89,8 +105,8 @@ export function normalizeDeepSeekThinkingOptions(models: SessionModels): Harness
 }
 
 export function normalizeDeepSeekModelCatalog(
-  groups: readonly ModelProviderGroup[],
-  selection: ModelSelection,
+  groups: readonly DeepSeekModelProviderGroup[],
+  selection?: DeepSeekModelSelection,
 ): HarnessModelCatalog {
   const thinkingOptions: HarnessThinkingOption[] = [];
   const knownEffortIds = new Set<string>();
@@ -109,25 +125,26 @@ export function normalizeDeepSeekModelCatalog(
     group.models.map((model) => ({
       ref: encodeDeepSeekHarnessModelRef({ provider: group.id, model: model.id }),
       label: `${group.name} / ${model.name}`,
-      ...(model.description ? { description: model.description } : {}),
       ...(model.reasoning && model.reasoning.efforts.length > 0
         ? { supportedThinkingOptionIds: model.reasoning.efforts.map((effort) => effort.id) }
         : {}),
     })),
   );
-  const defaultModel = encodeDeepSeekHarnessModelRef(selection);
-  if (!models.some((model) => model.ref.id === defaultModel.id)) {
+  const defaultModel = selection ? encodeDeepSeekHarnessModelRef(selection) : undefined;
+  if (selection && defaultModel && !models.some((model) => model.ref.id === defaultModel.id)) {
     models.unshift({ ref: defaultModel, label: `${selection.provider} / ${selection.model}` });
   }
-  const defaultReasoning = groups
-    .find((group) => group.id === selection.provider)
-    ?.models.find((model) => model.id === selection.model)?.reasoning;
+  const defaultReasoning = selection
+    ? groups
+        .find((group) => group.id === selection.provider)
+        ?.models.find((model) => model.id === selection.model)?.reasoning
+    : undefined;
   const defaultThinkingOptionId = parseDeepSeekThinkingOptionId(
-    selection.reasoningEffort ?? defaultReasoning?.defaultEffort,
+    selection?.reasoningEffort ?? defaultReasoning?.defaultEffort,
   );
   return harnessModelCatalogSchema.parse({
     models,
-    defaultModel,
+    ...(defaultModel ? { defaultModel } : {}),
     thinkingOptions,
     ...(defaultThinkingOptionId &&
     defaultReasoning?.efforts.some((effort) => effort.id === defaultThinkingOptionId)

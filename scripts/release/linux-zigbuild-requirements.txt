@@ -1,0 +1,9 @@
+# zig and cargo-zigbuild link the Linux native binaries against the glibc release baseline
+# (scripts/release/linux-glibc.mjs). Hashes cover the x86_64 and aarch64 Linux wheels.
+# python3 -m pip install --require-hashes --only-binary :all: -r scripts/release/linux-zigbuild-requirements.txt
+cargo-zigbuild==0.23.4 \
+    --hash=sha256:0a149a2a07b9513d422efa9cc23e1add9741f08abe86845fa418eaeb4cca7931 \
+    --hash=sha256:9f848addf9ca16e8df52b4a86eb41f7555bb4205aea117ad521f501a307129f5
+ziglang==0.16.0 \
+    --hash=sha256:9fcda73f62b851dd72a54b710ad40a209896db14cfb13649e62191243556342b \
+    --hash=sha256:e27d409812b11e0fb89ed0200cf2e55b6464d43f9461553104e4a4f9a94a1fd5

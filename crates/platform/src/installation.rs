@@ -1,4 +1,4 @@
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::env;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::fs::File;
@@ -27,6 +27,8 @@ use super::DesktopInstallation;
 use super::PlatformError;
 #[cfg(target_os = "windows")]
 use super::WindowsAppxActivationIdentity;
+#[cfg(target_os = "windows")]
+use super::canonical_existing_file;
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 pub(super) fn sha256_file(path: &Path) -> Result<String, PlatformError> {
@@ -54,11 +56,12 @@ pub(super) fn sha256_file(path: &Path) -> Result<String, PlatformError> {
     }
     Ok(format!("sha256:{:x}", digest.finalize()))
 }
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use super::CUSTOM_INSTALL_ROOT_ENV;
 #[cfg(target_os = "windows")]
 use super::{
-    CUSTOM_INSTALL_ROOT_ENV, PROBE_APP_USER_MODEL_ID_ENV, PROBE_DESKTOP_VERSION_ENV,
-    PROBE_INSTALL_ROOT_ENV, PROBE_PACKAGE_FAMILY_ENV, PROBE_PACKAGE_FULL_NAME_ENV,
-    PROBE_PACKAGE_NAME_ENV,
+    PROBE_APP_USER_MODEL_ID_ENV, PROBE_DESKTOP_VERSION_ENV, PROBE_INSTALL_ROOT_ENV,
+    PROBE_PACKAGE_FAMILY_ENV, PROBE_PACKAGE_FULL_NAME_ENV, PROBE_PACKAGE_NAME_ENV,
 };
 
 #[cfg(target_os = "windows")]
@@ -216,8 +219,31 @@ fn discover_installed_windows_package() -> Result<WindowsPackageDetails, Platfor
 }
 
 #[cfg(target_os = "windows")]
+fn desktop_cli_candidate(
+    canonical_cache_root: &Path,
+    candidate: PathBuf,
+) -> Result<Option<(SystemTime, PathBuf)>, PlatformError> {
+    if !candidate.is_file() {
+        return Ok(None);
+    }
+    let modified = candidate
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let canonical = candidate.canonicalize().map_err(PlatformError::Io)?;
+    Ok(canonical
+        .starts_with(canonical_cache_root)
+        .then_some((modified, canonical)))
+}
+
+#[cfg(target_os = "windows")]
 fn find_desktop_cli_cache(local_app_data: &Path) -> Result<Option<PathBuf>, PlatformError> {
     let cache_root = local_app_data.join("OpenAI/Codex/bin");
+    let canonical_cache_root = match cache_root.canonicalize() {
+        Ok(root) => root,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(PlatformError::Io(error)),
+    };
     let mut candidates = vec![cache_root.join("codex.exe")];
 
     if let Ok(entries) = cache_root.read_dir() {
@@ -230,19 +256,12 @@ fn find_desktop_cli_cache(local_app_data: &Path) -> Result<Option<PathBuf>, Plat
 
     candidates
         .into_iter()
-        .filter(|candidate| candidate.is_file())
-        .map(|candidate| {
-            let modified = candidate
-                .metadata()
-                .and_then(|metadata| metadata.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            let canonical = candidate.canonicalize().map_err(PlatformError::Io)?;
-            Ok((modified, canonical))
-        })
+        .map(|candidate| desktop_cli_candidate(&canonical_cache_root, candidate))
         .collect::<Result<Vec<_>, PlatformError>>()
         .map(|candidates| {
             candidates
                 .into_iter()
+                .flatten()
                 .max_by_key(|(modified, _)| *modified)
                 .map(|(_, candidate)| candidate)
         })
@@ -299,7 +318,7 @@ fn windows_installation(
 /// This is deliberately independent of the Gate A `CODEXHOST_PROBE_*` set: it
 /// names an installation root on its own, so an unpacked Desktop can be located
 /// without supplying package identity and version as well.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn custom_install_root(
     value: impl Fn(&'static str) -> Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {
@@ -317,6 +336,91 @@ fn windows_local_app_data() -> Result<PathBuf, PlatformError> {
                 "LOCALAPPDATA is unavailable; cannot locate the Desktop CLI cache".into(),
             )
         })
+}
+
+/// Locate the executable CLI maintained by Codex Desktop without enumerating
+/// the installed AppX package.
+///
+/// Desktop helpers can preserve `CODEX_CLI_PATH` while dropping private
+/// launcher state. This focused lookup lets the Shim recover the same
+/// Desktop-managed CLI that normal installation discovery selects, without
+/// paying the PackageManager cost on every helper invocation.
+#[cfg(target_os = "windows")]
+pub fn discover_desktop_managed_codex_cli() -> Result<PathBuf, PlatformError> {
+    if let Some(root) = custom_install_root(env::var_os) {
+        let installation = discover_codex_desktop_from_root(&root)?;
+        let executable = canonical_existing_file(&installation.executable_codex_cli)?;
+        if !executable.starts_with(&installation.install_root) {
+            return Err(PlatformError::Invalid(format!(
+                "portable Codex CLI '{}' resolves outside installation root '{}'",
+                installation.executable_codex_cli.display(),
+                installation.install_root.display()
+            )));
+        }
+        return Ok(executable);
+    }
+    find_desktop_cli_cache(&windows_local_app_data()?)?.ok_or_else(|| {
+        PlatformError::NotFound(
+            "no runnable Codex CLI was found in the Desktop-managed cache; launch the official Desktop once to create it".into(),
+        )
+    })
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod desktop_managed_cli_tests {
+    use std::fs;
+
+    use super::{desktop_cli_candidate, find_desktop_cli_cache};
+
+    #[test]
+    fn focused_cli_discovery_uses_only_the_desktop_managed_cache() {
+        let root = crate::temporary_directory("desktop-managed-cli");
+        let cache = root.join("OpenAI/Codex/bin/cache-build");
+        fs::create_dir_all(&cache).expect("create Desktop-managed CLI cache");
+        let expected = cache.join("codex.exe");
+        fs::write(&expected, b"codex").expect("write cached Codex CLI");
+
+        let discovered = find_desktop_cli_cache(&root)
+            .expect("search Desktop-managed CLI cache")
+            .expect("discover cached Codex CLI");
+        assert_eq!(discovered, expected.canonicalize().expect("canonical CLI"));
+
+        fs::remove_dir_all(root).expect("remove Desktop-managed CLI fixture");
+    }
+
+    #[test]
+    fn focused_cli_discovery_does_not_consult_path() {
+        let root = crate::temporary_directory("desktop-managed-cli-missing");
+        let unrelated = root.join("path-entry");
+        fs::create_dir_all(&unrelated).expect("create unrelated PATH directory");
+        fs::write(unrelated.join("codex.exe"), b"codex").expect("write unrelated CLI");
+        let original_path = std::env::var_os("PATH");
+
+        // The lookup takes an explicit Desktop cache root and never reads PATH.
+        let discovered = find_desktop_cli_cache(&root).expect("search empty Desktop cache");
+        assert!(discovered.is_none());
+        assert_eq!(std::env::var_os("PATH"), original_path);
+
+        fs::remove_dir_all(root).expect("remove unrelated PATH fixture");
+    }
+
+    #[test]
+    fn focused_cli_discovery_rejects_candidates_outside_the_cache_root() {
+        let root = crate::temporary_directory("desktop-managed-cli-containment");
+        let cache = root.join("OpenAI/Codex/bin");
+        fs::create_dir_all(&cache).expect("create Desktop-managed CLI cache");
+        let outside = root.join("outside-codex.exe");
+        fs::write(&outside, b"codex").expect("write outside CLI");
+
+        let candidate = desktop_cli_candidate(
+            &cache.canonicalize().expect("canonical cache root"),
+            outside,
+        )
+        .expect("inspect outside CLI");
+        assert!(candidate.is_none());
+
+        fs::remove_dir_all(root).expect("remove containment fixture");
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -835,8 +939,15 @@ fn inspect_bundle(bundle: &Path) -> Result<DesktopInstallation, PlatformError> {
         &bundle.join("Contents/MacOS").join(executable_name),
         "Desktop executable",
     )?;
-    let packaged_codex_cli =
-        canonical_macho_executable(&bundle.join("Contents/Resources/codex"), "Codex CLI")?;
+    // Desktop 26.924+ packages the CLI in its own app bundle and only launches
+    // that copy; older builds ship the flat legacy CLI.
+    let mut cli_path =
+        bundle.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
+    if matches!(cli_path.symlink_metadata(), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
+        cli_path = bundle.join("Contents/Resources/codex");
+    }
+    let packaged_codex_cli = canonical_macho_executable(&cli_path, "Codex CLI")?;
     if !desktop_executable.starts_with(&bundle) || !packaged_codex_cli.starts_with(&bundle) {
         return Err(PlatformError::Invalid(format!(
             "App bundle '{}' resolves an executable outside the bundle",
@@ -895,17 +1006,47 @@ fn discover_from_candidates(
 }
 
 #[cfg(target_os = "macos")]
-pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
-    let mut candidates = vec![
-        PathBuf::from("/Applications/Codex.app"),
-        PathBuf::from("/Applications/ChatGPT.app"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        let applications = PathBuf::from(home).join("Applications");
-        candidates.push(applications.join("Codex.app"));
-        candidates.push(applications.join("ChatGPT.app"));
+fn discover_with_custom_root(
+    custom_root: Option<PathBuf>,
+    candidates: impl FnOnce() -> Vec<PathBuf>,
+) -> Result<DesktopInstallation, PlatformError> {
+    match custom_root {
+        Some(root) => inspect_bundle(&root),
+        None => discover_from_candidates(candidates()),
     }
-    discover_from_candidates(candidates)
+}
+
+#[cfg(target_os = "macos")]
+pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
+    discover_with_custom_root(custom_install_root(env::var_os), || {
+        let mut candidates = vec![
+            PathBuf::from("/Applications/Codex.app"),
+            PathBuf::from("/Applications/ChatGPT.app"),
+        ];
+        if let Some(home) = std::env::var_os("HOME") {
+            let applications = PathBuf::from(home).join("Applications");
+            candidates.push(applications.join("Codex.app"));
+            candidates.push(applications.join("ChatGPT.app"));
+        }
+        candidates
+    })
+}
+
+/// Resolve a helper's official CLI from a validated Desktop bundle, never PATH.
+/// An explicit installation root is authoritative, including when invalid.
+#[cfg(target_os = "macos")]
+pub fn discover_desktop_managed_codex_cli() -> Result<PathBuf, PlatformError> {
+    let installation = match custom_install_root(env::var_os) {
+        Some(root) => inspect_bundle(&root)?,
+        None => discover_codex_desktop()?,
+    };
+    Ok(installation.executable_codex_cli)
+}
+
+/// Inspect an explicit macOS bundle without selecting another installation.
+#[cfg(target_os = "macos")]
+pub fn discover_codex_desktop_from_root(root: &Path) -> Result<DesktopInstallation, PlatformError> {
+    inspect_bundle(root)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -921,7 +1062,9 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::PathBuf;
 
-    use super::{DesktopIdentity, PlatformError, discover_from_candidates};
+    use super::{
+        DesktopIdentity, PlatformError, discover_from_candidates, discover_with_custom_root,
+    };
     use crate::temporary_directory;
 
     fn temporary_bundle(name: &str, bundle_identifier: &str, include_cli: bool) -> PathBuf {
@@ -989,6 +1132,51 @@ mod tests {
     }
 
     #[test]
+    fn prefers_nested_cli_over_legacy_path_when_present() {
+        for include_legacy_cli in [false, true] {
+            let bundle = temporary_bundle("ChatGPT.app", "com.openai.codex", include_legacy_cli);
+            let nested_cli =
+                bundle.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
+            fs::create_dir_all(nested_cli.parent().expect("CLI parent"))
+                .expect("create nested CLI directory");
+            fs::copy(bundle.join("Contents/MacOS/ChatGPT"), &nested_cli)
+                .expect("copy executable fixture");
+            let installation = discover_from_candidates([bundle.clone()]).expect("valid bundle");
+            let expected = nested_cli.canonicalize().expect("CLI path");
+            assert_eq!(installation.packaged_codex_cli, expected);
+            assert_eq!(installation.executable_codex_cli, expected);
+        }
+    }
+
+    #[test]
+    fn explicit_install_root_is_authoritative_over_default_candidates() {
+        let default = temporary_bundle("ChatGPT.app", "com.openai.codex", true);
+        let custom = temporary_bundle("CodexSide.app", "com.openai.codex", true);
+
+        let installation = discover_with_custom_root(Some(custom.clone()), || {
+            panic!("default candidates must not be consulted")
+        })
+        .expect("custom bundle");
+        assert_eq!(
+            installation.install_root,
+            custom.canonicalize().expect("bundle")
+        );
+
+        let installation =
+            discover_with_custom_root(None, || vec![default.clone()]).expect("default bundle");
+        assert_eq!(
+            installation.install_root,
+            default.canonicalize().expect("bundle")
+        );
+
+        let invalid = temporary_bundle("Wrong.app", "example.invalid", true);
+        assert!(matches!(
+            discover_with_custom_root(Some(invalid), || vec![default]),
+            Err(PlatformError::Invalid(_))
+        ));
+    }
+
+    #[test]
     fn rejects_wrong_bundle_identity_and_missing_cli() {
         let wrong = temporary_bundle("Wrong.app", "example.invalid", true);
         let missing = temporary_bundle("Missing.app", "com.openai.codex", false);
@@ -1004,16 +1192,24 @@ mod tests {
 
     #[test]
     fn rejects_cli_symlink_outside_bundle() {
-        let bundle = temporary_bundle("Codex.app", "com.openai.codex", false);
-        let external = bundle.parent().expect("parent").join("external-codex");
-        fs::write(&external, [0xcf, 0xfa, 0xed, 0xfe]).expect("write external CLI");
-        fs::set_permissions(&external, fs::Permissions::from_mode(0o755))
-            .expect("make external CLI executable");
-        symlink(&external, bundle.join("Contents/Resources/codex")).expect("link external CLI");
-        assert!(matches!(
-            discover_from_candidates([bundle]),
-            Err(PlatformError::Invalid(_))
-        ));
+        for relative_path in [
+            "Contents/Resources/codex",
+            "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+        ] {
+            let bundle = temporary_bundle("Codex.app", "com.openai.codex", false);
+            let external = bundle.parent().expect("parent").join("external-codex");
+            fs::write(&external, [0xcf, 0xfa, 0xed, 0xfe]).expect("write external CLI");
+            fs::set_permissions(&external, fs::Permissions::from_mode(0o755))
+                .expect("make external CLI executable");
+            let cli_path = bundle.join(relative_path);
+            fs::create_dir_all(cli_path.parent().expect("CLI parent"))
+                .expect("create CLI directory");
+            symlink(&external, cli_path).expect("link external CLI");
+            assert!(matches!(
+                discover_from_candidates([bundle]),
+                Err(PlatformError::Invalid(_))
+            ));
+        }
     }
 
     #[test]

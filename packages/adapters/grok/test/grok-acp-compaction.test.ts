@@ -19,6 +19,111 @@ async function withTempDir<T>(prefix: string, run: (directory: string) => Promis
   }
 }
 
+describe("Grok ACP tool names", () => {
+  it("reads spawn_subagent from x.ai/tool metadata in Native history", async () => {
+    await withTempDir("codexhost-grok-subagent-meta-", async (grokHome) => {
+      const cwd = "/workspace";
+      const sessionId = "01a0spawn-0000-7000-8000-000000000001";
+      const sessionDir = path.join(
+        grokHome,
+        "sessions",
+        encodeURIComponent(path.resolve(cwd)),
+        sessionId,
+      );
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        path.join(sessionDir, "updates.jsonl"),
+        [
+          {
+            method: "session/update",
+            params: {
+              sessionId,
+              update: {
+                sessionUpdate: "user_message_chunk",
+                content: { type: "text", text: "delegate" },
+              },
+              _meta: { eventId: "user-1" },
+            },
+          },
+          {
+            method: "session/update",
+            params: {
+              sessionId,
+              update: {
+                sessionUpdate: "tool_call",
+                toolCallId: "spawn-1",
+                title: "Inspect implementation",
+                status: "in_progress",
+                rawInput: {
+                  description: "Inspect implementation",
+                  prompt: "Look at the repo",
+                  subagent_type: "explore",
+                  background: true,
+                },
+              },
+              _meta: { "x.ai/tool": { name: "spawn_subagent" } },
+            },
+          },
+          {
+            method: "session/update",
+            params: {
+              sessionId,
+              update: {
+                sessionUpdate: "tool_call_update",
+                toolCallId: "spawn-1",
+                status: "completed",
+                content: [
+                  {
+                    type: "content",
+                    content: {
+                      type: "text",
+                      text: "Subagent started in background.\nsubagent_id: child-session\n",
+                    },
+                  },
+                ],
+              },
+            },
+          },
+          {
+            method: "session/update",
+            params: {
+              sessionId,
+              update: {
+                sessionUpdate: "turn_completed",
+                prompt_id: "prompt-1",
+                stop_reason: "end_turn",
+              },
+            },
+          },
+        ]
+          .map((record) => JSON.stringify(record))
+          .join("\n"),
+      );
+
+      const events = await readGrokNativeHistory(
+        { cwd, environment: { GROK_HOME: grokHome } },
+        sessionId,
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "tool.call",
+          name: "spawn_subagent",
+          callId: "spawn-1",
+        }),
+      );
+      const snapshot = mapGrokReplay(events, grokHarnessId, sessionId, cwd);
+      expect(snapshot.turns[0]?.items).toMatchObject([
+        {
+          item: {
+            type: "subagentDelegation",
+            subagents: [{ nativeSubagentId: "child-session", status: "running" }],
+          },
+        },
+      ]);
+    });
+  });
+});
+
 describe("Grok ACP auto-compact without a real compact", () => {
   it("maps persisted _x.ai/session/update compact records from Native history", async () => {
     await withTempDir("codexhost-grok-compact-history-", async (grokHome) => {

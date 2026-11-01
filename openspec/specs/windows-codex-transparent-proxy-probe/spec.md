@@ -45,13 +45,20 @@ Probe SHALL 记录判断 `CODEX_CLI_PATH` 接入所需的 argv、cwd、环境键
 
 ### Requirement: 明确定位官方 Codex CLI 并阻止递归
 
-Launcher MUST 在设置 Shim 路径前解析当前 Desktop 对应的官方 Codex CLI 绝对路径，Shim MUST 使用该明确路径启动官方 CLI。Shim MUST NOT 依赖当前 `PATH` 猜测目标，并 MUST 在创建子进程前清除或重写 `CODEX_CLI_PATH`。
+Launcher MUST 在设置 Shim 路径前解析当前 Desktop 对应的官方 Codex CLI 绝对路径，Shim MUST 使用该明确路径启动官方 CLI。若 Desktop 的子工具仅保留了指向当前 Shim 的 `CODEX_CLI_PATH` 而未传播 codexhost 私有的官方 CLI 路径，Shim MAY通过 Desktop 管理的官方 CLI 缓存或显式 portable 安装恢复对应目标。Shim MUST NOT 依赖当前 `PATH` 猜测目标，并 MUST 在创建子进程前清除或重写 `CODEX_CLI_PATH`。
 
 #### Scenario: 转发已观察到的调用
 
 - **WHEN** Shim 收到 app-server 或非 app-server 调用且官方 CLI 路径有效
 - **THEN** Shim MUST 使用原 argv 启动该官方 CLI
 - **AND** 子进程环境 MUST NOT 再把 `CODEX_CLI_PATH` 指向当前 Shim
+
+#### Scenario: Desktop 子工具仅保留标准 CLI 覆盖
+
+- **WHEN** Desktop 启动的 Browser Use 等子工具通过 `CODEX_CLI_PATH` 再次调用当前 Shim，但没有传播 `CODEXHOST_STOCK_CODEX_PATH`
+- **THEN** Shim MUST通过 Desktop 管理的官方 CLI 缓存或显式 portable 安装解析目标并透明转发原始调用
+- **AND** Shim MUST仅在 `CODEX_CLI_PATH` 规范化后确实指向自身时采用该恢复路径
+- **AND** 官方 CLI 子进程 MUST不继承 `CODEX_CLI_PATH`
 
 #### Scenario: 官方 CLI 解析到 Shim 自身
 
@@ -135,4 +142,3 @@ Shim SHALL 传播官方 CLI 的正常退出和失败状态，并在取消、父�
 - **WHEN** 真实 Desktop Gate 结果为 FAIL 或 BLOCKED
 - **THEN** 结果 MUST 记录失败阶段、证据、影响和下一决策
 - **AND** 后续正式实现 MUST NOT 把 Windows 透明代理标记为已验证能力
-

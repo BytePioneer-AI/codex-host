@@ -194,6 +194,45 @@ fn run_orphan_shim_launcher() -> bool {
 #[allow(clippy::zombie_processes)]
 fn main() {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
+    #[cfg(target_os = "macos")]
+    if let Some(desktop) = env::var_os("FAKE_CODEX_DETACHED_DESKTOP") {
+        Command::new(desktop)
+            .args(&arguments)
+            .env_remove("FAKE_CODEX_DETACHED_DESKTOP")
+            .env("FAKE_CODEX_WAIT_FOR_REPARENT", "1")
+            .spawn()
+            .expect("launch detached Desktop fixture");
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if env::var_os("FAKE_CODEX_WAIT_FOR_REPARENT").is_some() {
+        for _ in 0..100 {
+            if nix::unistd::getppid().as_raw() == 1 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(nix::unistd::getppid().as_raw(), 1);
+    }
+    if let Some(shim) = env::var_os("FAKE_CODEX_HELPER_SHIM") {
+        let depth = environment_u64("FAKE_CODEX_HELPER_DEPTH", 0);
+        let mut command = Command::new(if depth == 0 {
+            PathBuf::from(shim)
+        } else {
+            env::var_os("FAKE_CODEX_HELPER_EXECUTABLE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| env::current_exe().expect("fake helper executable"))
+        });
+        command.args(&arguments);
+        command.env_remove("FAKE_CODEX_WAIT_FOR_REPARENT");
+        if depth == 0 {
+            command.env_remove("FAKE_CODEX_HELPER_SHIM");
+        } else {
+            command.env("FAKE_CODEX_HELPER_DEPTH", (depth - 1).to_string());
+        }
+        let status = command.status().expect("run fake Desktop or helper child");
+        process::exit(status.code().unwrap_or(1));
+    }
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     if env::var_os("FAKE_CODEX_CRASH").is_some() {
         use std::os::unix::process::CommandExt;
@@ -245,6 +284,9 @@ fn main() {
 
             setpgid(Pid::from_raw(0), Pid::from_raw(0)).expect("isolate fake child process group");
         }
+        if let Some(path) = env::var_os("FAKE_CODEX_CHILD_READY_PATH") {
+            write_ready_file(Path::new(&path), &process::id().to_string());
+        }
         thread::sleep(Duration::from_millis(environment_u64(
             "FAKE_CODEX_CHILD_DELAY_MS",
             60_000,
@@ -291,6 +333,18 @@ fn main() {
         }
     }
 
+    if env::var_os("FAKE_CODEX_ROUTE_RESPONSE").is_some() {
+        io::stdin().read_exact(&mut [0]).expect("routing request");
+        io::stdout()
+            .write_all(b"response")
+            .expect("routing response");
+        io::stdout().flush().expect("flush routing response");
+        io::stdin()
+            .read_to_end(&mut Vec::new())
+            .expect("routing EOF");
+        return;
+    }
+
     if env::var_os("FAKE_CODEX_SPAWN_CHILD").is_some() {
         let mut child = Command::new(env::current_exe().expect("current executable"))
             .arg("--child-sleep")
@@ -308,10 +362,16 @@ fn main() {
             );
         }
         if env::var_os("FAKE_CODEX_ROOT_EXIT").is_some() {
-            thread::sleep(Duration::from_millis(environment_u64(
-                "FAKE_CODEX_ROOT_EXIT_DELAY_MS",
-                500,
-            )));
+            if env::var_os("FAKE_CODEX_ROOT_EXIT_ON_INPUT").is_some() {
+                io::stdin()
+                    .read_exact(&mut [0])
+                    .expect("wait for root exit release");
+            } else {
+                thread::sleep(Duration::from_millis(environment_u64(
+                    "FAKE_CODEX_ROOT_EXIT_DELAY_MS",
+                    500,
+                )));
+            }
             return;
         }
         thread::sleep(Duration::from_millis(environment_u64(

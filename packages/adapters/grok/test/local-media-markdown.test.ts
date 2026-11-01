@@ -4,13 +4,16 @@ import { describe, expect, it } from "vitest";
 
 import { grokMediaResolveRoots, rewriteLocalMediaMarkdown } from "../src/local-media-markdown.js";
 
-const session = "/Users/chris/.grok/sessions/workspace/session-1";
+const workspace = path.resolve("test-fixtures/workspace");
+const home = path.resolve("test-fixtures/home");
+const session = path.join(home, ".grok/sessions/workspace/session-1");
+const downloads = path.join(home, "Downloads");
 const files = new Set([
-  `${session}/videos/usegrokbot-templates-promo-10s.mp4`,
-  "/Users/chris/Downloads/usegrokbot-templates-promo-10s.mp4",
-  "/workspace/readme.png",
+  path.join(session, "videos/usegrokbot-templates-promo-10s.mp4"),
+  path.join(downloads, "usegrokbot-templates-promo-10s.mp4"),
+  path.join(workspace, "readme.png"),
 ]);
-const roots = grokMediaResolveRoots("/workspace", session);
+const roots = grokMediaResolveRoots(workspace, session);
 const exists = (absolutePath: string) => files.has(path.resolve(absolutePath));
 
 describe("Grok local media Markdown", () => {
@@ -20,7 +23,7 @@ describe("Grok local media Markdown", () => {
         [
           "10 秒宣傳片做好了。",
           "",
-          "`/Users/chris/Downloads/usegrokbot-templates-promo-10s.mp4`",
+          `\`${path.join(downloads, "usegrokbot-templates-promo-10s.mp4")}\``,
           "",
           "![UseGrokBot Templates 10s promo](videos/usegrokbot-templates-promo-10s.mp4)",
         ].join("\n"),
@@ -31,9 +34,9 @@ describe("Grok local media Markdown", () => {
       [
         "10 秒宣傳片做好了。",
         "",
-        "![usegrokbot-templates-promo-10s.mp4](/Users/chris/Downloads/usegrokbot-templates-promo-10s.mp4)",
+        `![usegrokbot-templates-promo-10s.mp4](${path.join(downloads, "usegrokbot-templates-promo-10s.mp4")})`,
         "",
-        `![UseGrokBot Templates 10s promo](${session}/videos/usegrokbot-templates-promo-10s.mp4)`,
+        `![UseGrokBot Templates 10s promo](${path.join(session, "videos/usegrokbot-templates-promo-10s.mp4")})`,
       ].join("\n"),
     );
   });
@@ -41,8 +44,8 @@ describe("Grok local media Markdown", () => {
   it("turns Grok backtick video paths into Markdown images", () => {
     const filesWithAura = new Set([
       ...files,
-      `${session}/videos/aura-10s.mp4`,
-      "/Users/chris/Downloads/aura-product-film-10s.mp4",
+      path.join(session, "videos/aura-10s.mp4"),
+      path.join(downloads, "aura-product-film-10s.mp4"),
     ]);
     expect(
       rewriteLocalMediaMarkdown(
@@ -53,26 +56,26 @@ describe("Grok local media Markdown", () => {
           "",
           "打開這份：",
           "",
-          "`/Users/chris/Downloads/aura-product-film-10s.mp4`",
+          `\`${path.join(downloads, "aura-product-film-10s.mp4")}\``,
         ].join("\n"),
-        grokMediaResolveRoots("/workspace", session),
+        grokMediaResolveRoots(workspace, session),
         { exists: (absolutePath) => filesWithAura.has(path.resolve(absolutePath)) },
       ),
     ).toBe(
       [
         "影片在這裡：",
         "",
-        `![aura-10s.mp4](${session}/videos/aura-10s.mp4)`,
+        `![aura-10s.mp4](${path.join(session, "videos/aura-10s.mp4")})`,
         "",
         "打開這份：",
         "",
-        "![aura-product-film-10s.mp4](/Users/chris/Downloads/aura-product-film-10s.mp4)",
+        `![aura-product-film-10s.mp4](${path.join(downloads, "aura-product-film-10s.mp4")})`,
       ].join("\n"),
     );
   });
 
   it("holds an unfinished image destination so streamed deltas stay prefix-stable", () => {
-    const rootsForStream = grokMediaResolveRoots("/workspace", session);
+    const rootsForStream = grokMediaResolveRoots(workspace, session);
     let emitted = "";
     const chunks = ["影片：\n\n![clip](", "videos/usegrokbot-templates-promo-10s.mp4", ")\n完成"];
     let raw = "";
@@ -86,7 +89,7 @@ describe("Grok local media Markdown", () => {
       emitted = projected;
     }
     expect(emitted).toBe(
-      `影片：\n\n![clip](${session}/videos/usegrokbot-templates-promo-10s.mp4)\n完成`,
+      `影片：\n\n![clip](${path.join(session, "videos/usegrokbot-templates-promo-10s.mp4")})\n完成`,
     );
   });
 
@@ -123,7 +126,7 @@ describe("Grok local media Markdown", () => {
       emitted = projected;
     }
     expect(emitted).toBe(
-      `影片：\n\n![usegrokbot-templates-promo-10s.mp4](${session}/videos/usegrokbot-templates-promo-10s.mp4)\n完成`,
+      `影片：\n\n![usegrokbot-templates-promo-10s.mp4](${path.join(session, "videos/usegrokbot-templates-promo-10s.mp4")})\n完成`,
     );
   });
 

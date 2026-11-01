@@ -14,6 +14,9 @@ mod desktop_launch;
 mod installation;
 #[cfg(target_os = "linux")]
 mod linux_installation;
+mod macos_native_harness_broker;
+#[cfg(target_os = "macos")]
+mod macos_process_observation;
 mod process;
 mod process_supervision;
 mod process_termination;
@@ -25,23 +28,44 @@ mod system_proxy;
 mod windows_desktop;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
+mod windows_installer;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 mod windows_process;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+mod windows_proxy;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod windows_ui;
 
 pub use background::detach_from_terminal;
 pub use desktop_launch::{
-    DesktopProcess, launch_desktop, launch_stock_desktop, open_latest_codexhost_release,
+    DesktopProcess, launch_desktop, launch_stock_desktop, open_external_url,
+    open_latest_codexhost_release,
 };
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use desktop_launch::{DesktopSession, launch_desktop_session};
 #[cfg(not(target_os = "linux"))]
 pub use installation::discover_codex_desktop;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub use installation::discover_codex_desktop_from_root;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub use installation::discover_desktop_managed_codex_cli;
 #[cfg(target_os = "linux")]
 pub use linux_installation::discover_codex_desktop;
+pub use macos_native_harness_broker::{
+    NATIVE_HARNESS_BROKER_LABEL, NativeHarnessBrokerCommand, NativeHarnessBrokerInstallStep,
+    NativeHarnessBrokerLaunchAgentPlan, NativeHarnessBrokerLaunchctlPlan,
+    NativeHarnessBrokerObservedState, NativeHarnessBrokerPaths, native_harness_broker_label,
+    plan_native_harness_broker_install, plan_native_harness_broker_launch_agent,
+    plan_native_harness_broker_launch_agent_with_environment, plan_native_harness_broker_launchctl,
+};
+#[cfg(target_os = "macos")]
+pub use macos_native_harness_broker::{
+    NativeHarnessBrokerInstallOutcome, NativeHarnessBrokerStatus, inspect_native_harness_broker,
+    install_native_harness_broker, stop_native_harness_broker, uninstall_native_harness_broker,
+};
 #[cfg(target_os = "macos")]
 pub use process::force_stop_desktop;
 pub use process::{
@@ -57,11 +81,15 @@ pub use process::{
 };
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
 pub use process_termination::{terminate_process_group_instance, terminate_process_instance};
+#[cfg(target_os = "windows")]
+pub use proxy_environment::desktop_helper_proxy_environment;
 pub use proxy_environment::proxy_environment;
 #[cfg(target_os = "macos")]
 pub use system_proxy::{SystemProxySettings, system_proxy_settings};
 #[cfg(target_os = "windows")]
 pub use windows_desktop::resume_packaged_application;
+#[cfg(target_os = "windows")]
+pub use windows_installer::shutdown_processes_for_executables;
 #[cfg(target_os = "windows")]
 pub use windows_ui::{
     RunningDesktopChoice, hide_console_window, prompt_running_desktop, show_error_dialog,

@@ -1,14 +1,21 @@
 import nodePath from "node:path";
 
-import type { HarnessAdapter } from "@codexhost/harness-adapter";
+import type { HarnessAdapter, HarnessSession } from "@codexhost/harness-adapter";
 import {
+  decodeExternalTransportSelection,
+  encodeExternalTransportSelection,
   mapExternalThreadHarnessError,
   type DecodedThreadForkRequest,
   type ExternalHarnessId,
   type ExternalThreadRpcError,
   type JsonObject,
 } from "@codexhost/protocol-core";
-import type { NativeCheckpointRef, NativeSessionRef } from "@codexhost/shared-contracts";
+import {
+  permissionModeFixedAtCreate,
+  type HarnessPermissionModeId,
+  type NativeCheckpointRef,
+  type NativeSessionRef,
+} from "@codexhost/shared-contracts";
 
 import {
   createExternalThreadRecordInput,
@@ -88,6 +95,16 @@ export async function executeExternalThreadFork(input: {
     boundaryIndex = mappings.length - 1;
   }
   const boundary = mappings[boundaryIndex];
+  // Native history may have split this boundary Turn while Desktop still shows it whole.
+  if (boundary && source.steeredTurnIds.has(boundary.hostTurnId)) {
+    return {
+      ok: false,
+      error: {
+        code: -32080,
+        message: "This Turn took steered input; reopen the Thread before forking from it",
+      },
+    };
+  }
   if (boundaryIndex < 0 || !boundary?.nativeCheckpointRef) {
     return {
       ok: false,
@@ -147,6 +164,8 @@ export async function executeExternalThreadFork(input: {
   }
 
   const session = opened.value;
+  await inheritSourceModel(source, session);
+  const inheritedPermissionModeId = await inheritSourcePermissionMode(source, session);
   try {
     const derivedNativeRef = session.initialState.nativeRef;
     if (
@@ -160,6 +179,23 @@ export async function executeExternalThreadFork(input: {
       await session.close().catch(() => undefined);
       await repository.removeProvisional(provisional.hostThreadId).catch(() => undefined);
       return { ok: false, error: mapExternalThreadHarnessError(snapshot.error, "read") };
+    }
+    // Persist the derived Session's actual Model, not a source-only runtime selection.
+    // Do this while provisional so a persistence failure still removes the entire Fork.
+    const effectiveModel = snapshot.value.state?.effectiveModel;
+    const selection = decodeExternalTransportSelection(
+      source.harnessId,
+      provisional.transportModelId,
+    );
+    if (effectiveModel && selection && selection.model?.id !== effectiveModel.id) {
+      const transportModelId = encodeExternalTransportSelection(source.harnessId, {
+        ...selection,
+        model: effectiveModel,
+      });
+      provisional = await repository.setTransportModelId(
+        provisional.hostThreadId,
+        transportModelId,
+      );
     }
     const aligned = await repository.commitDerivedSnapshot(
       provisional,
@@ -178,6 +214,9 @@ export async function executeExternalThreadFork(input: {
       thread,
       turns: aligned.turns,
       ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
+      ...(inheritedPermissionModeId
+        ? { requestedPermissionModeId: inheritedPermissionModeId }
+        : {}),
     });
     return {
       ok: true,
@@ -193,5 +232,61 @@ export async function executeExternalThreadFork(input: {
       ok: false,
       error: { code: -32081, message: "External Fork could not be persisted" },
     };
+  }
+}
+
+/**
+ * A fork continues the source conversation. When the Harness does not confirm a Model for the
+ * derived Session (Claude Code would otherwise run its native default), it keeps the source's
+ * current Model. A Model the Harness confirms for the fork is its actual Model and stays.
+ * Failure is non-fatal: the derived Session then keeps the Model it opened with.
+ */
+async function inheritSourceModel(source: ExternalThread, session: HarnessSession): Promise<void> {
+  let persisted;
+  try {
+    persisted = decodeExternalTransportSelection(source.harnessId, source.transportModelId)?.model;
+  } catch {
+    persisted = undefined;
+  }
+  const sourceModel =
+    source.stateObserver.state.effectiveModel ?? source.requestedModel ?? persisted;
+  if (
+    !sourceModel ||
+    !session.capabilities.configuration.selectModel ||
+    session.initialState.effectiveModel !== undefined
+  ) {
+    return;
+  }
+  try {
+    await session.execute({ type: "model.select", model: sourceModel });
+  } catch {
+    // The derived Session keeps the Model it opened with.
+  }
+}
+
+/**
+ * A fork continues the source conversation, so it keeps the source's current Permission Mode
+ * instead of silently dropping back to the Harness default. Failure is non-fatal: the derived
+ * Session then keeps whatever mode the Harness opened it with.
+ */
+async function inheritSourcePermissionMode(
+  source: ExternalThread,
+  session: HarnessSession,
+): Promise<HarnessPermissionModeId | undefined> {
+  const sourceModeId =
+    source.stateObserver.state.effectivePermissionModeId ?? source.requestedPermissionModeId;
+  if (!sourceModeId) return undefined;
+  const configuration = session.capabilities.configuration;
+  if (!configuration.selectPermissionMode || permissionModeFixedAtCreate(configuration)) {
+    return undefined;
+  }
+  try {
+    const selected = await session.execute({
+      type: "permissionMode.select",
+      permissionModeId: sourceModeId,
+    });
+    return selected.ok ? sourceModeId : undefined;
+  } catch {
+    return undefined;
   }
 }

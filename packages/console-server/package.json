@@ -1,0 +1,24 @@
+{
+  "name": "@codexhost/console-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "build:release": "node scripts/build-release.mjs"
+  },
+  "dependencies": {
+    "@codexhost/harness-plugin-files": "0.0.0",
+    "@codexhost/shared-contracts": "0.0.0",
+    "@codexhost/update-manager": "0.0.0"
+  }
+}

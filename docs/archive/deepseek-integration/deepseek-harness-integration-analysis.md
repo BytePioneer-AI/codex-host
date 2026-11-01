@@ -42,7 +42,7 @@ codexhost 的 Harness 定义是拥有 Agent Loop、上下文组织、工具、�
 - `Thread -> Harness` 所有权被错误表示；
 - Provider 凭据与 Harness 安装状态被混为一谈。
 
-因此边界必须是独立的 `packages/adapters/deepseek-harness`，Harness-specific wire details 只存在于这个包内，符合仓库 [领域术语表](../../领域术语表.md) 和 Adapter 边界规则。
+因此边界必须是独立的 `packages/adapters/deepseek-harness`，Harness-specific wire details 只存在于这个包内，符合仓库 [领域术语表](../../project/领域术语表.md) 和 Adapter 边界规则。
 
 ## 3. 接口选择
 

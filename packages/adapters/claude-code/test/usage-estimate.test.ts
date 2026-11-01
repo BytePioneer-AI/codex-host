@@ -17,6 +17,24 @@ describe("Claude request cost estimate", () => {
     expect(estimateClaudeRequestCostUsd(usage)).toBeCloseTo(0.3 + 0.075 + 0.15 + 0.15, 12);
   });
 
+  it("prices Claude Opus 5 at the Opus tier", () => {
+    expect(estimateClaudeRequestCostUsd({ ...usage, model: "claude-opus-5" })).toBeCloseTo(
+      0.5 + 0.125 + 0.25 + 0.25,
+      12,
+    );
+  });
+
+  it("prices Claude Fable 5 and Claude Fable 5.1 apart on their cache read rate", () => {
+    expect(estimateClaudeRequestCostUsd({ ...usage, model: "claude-fable-5" })).toBeCloseTo(
+      1 + 0.25 + 0.5 + 0.5,
+      12,
+    );
+    expect(estimateClaudeRequestCostUsd({ ...usage, model: "claude-fable-5-1" })).toBeCloseTo(
+      1 + 0.25 + 0.125 + 0.5,
+      12,
+    );
+  });
+
   it("does not price an unknown model or third-party Provider", () => {
     const usageWithoutModel = {
       requestId: usage.requestId,

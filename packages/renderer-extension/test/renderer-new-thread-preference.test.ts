@@ -5,10 +5,13 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   RENDERER_NEW_THREAD_PREFERENCE_KEY,
+  rendererNewThreadPreferenceStorage,
+  readNewThreadAgentPreference,
+  writeNewThreadAgentPreference,
   readNewThreadExternalConfigurationPreference,
   writeNewThreadExternalConfigurationPreference,
 } from "../src/renderer-new-thread-preference.js";
@@ -46,6 +49,51 @@ const permissionModes = harnessPermissionModeCatalogSchema.parse({
 });
 
 describe("Renderer new-Thread external configuration preference", () => {
+  it("keeps unknown plugin preferences isolated by Host and retains the local v1 key", () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    try {
+      const local = rendererNewThreadPreferenceStorage("local");
+      const remote = rendererNewThreadPreferenceStorage("remote:ssh");
+      writeNewThreadAgentPreference("third-party", local);
+      writeNewThreadExternalConfigurationPreference(
+        "third-party",
+        model,
+        undefined,
+        undefined,
+        local,
+      );
+      expect(storage.values.has(RENDERER_NEW_THREAD_PREFERENCE_KEY)).toBe(true);
+      expect(readNewThreadAgentPreference(undefined, local)).toBe("third-party");
+      expect(readNewThreadAgentPreference(undefined, remote)).toBeUndefined();
+      expect(
+        readNewThreadExternalConfigurationPreference(
+          "third-party",
+          modelCatalog,
+          undefined,
+          remote,
+        ),
+      ).toBeUndefined();
+      writeNewThreadAgentPreference("other-plugin", remote);
+      expect(readNewThreadAgentPreference(undefined, remote)).toBe("other-plugin");
+      expect(readNewThreadAgentPreference(undefined, local)).toBe("third-party");
+      expect(rendererNewThreadPreferenceStorage(null)).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it("restores Model and Thinking but keeps Fast off for a new Thread", () => {
+    const storage = memoryStorage();
+    const fast = harnessModelRefSchema.parse({ id: "priority" });
+    const catalog = harnessModelCatalogSchema.parse({
+      ...modelCatalog,
+      models: modelCatalog.models.map((entry) => ({ ...entry, fastModel: fast })),
+    });
+    writeNewThreadExternalConfigurationPreference("pi", fast, thinkingOptionId, undefined, storage);
+    expect(readNewThreadExternalConfigurationPreference("pi", catalog, undefined, storage)).toEqual(
+      { model, thinkingOptionId },
+    );
+  });
   it("persists and restores the Grok Permission Mode with Model and Thinking", () => {
     const storage = memoryStorage();
     const permissionModeId = harnessPermissionModeIdSchema.parse("auto");

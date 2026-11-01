@@ -9,11 +9,12 @@ import {
   cleanupTerminalUpdateState,
   compareSemanticVersions,
   createBackgroundUpdateManager,
-  discoverLatestUpdateStatus,
+  discoverActiveUpdateStatus,
   fetchLatestGitHubRelease,
-  isUpdateOperationActive,
+  fetchLatestGitHubReleaseWithGitHubCli,
   recoverUpdateOperationLock,
   resolveInstalledUpdateContext,
+  readRuntimeMetadata,
   selectInstallerReleaseArtifact,
   type BackgroundUpdateManager,
   type BackgroundUpdateStatus,
@@ -72,21 +73,28 @@ export function createHostUpdateCoordinator(
   };
   const fetchLatest: (signal?: AbortSignal) => Promise<CodexhostLatestRelease> =
     options.fetchLatest ??
-    ((signal?: AbortSignal) =>
-      fetchLatestGitHubRelease({ signal: signal ?? AbortSignal.timeout(15_000) }));
+    (async (signal?: AbortSignal) => {
+      const timeoutSignal = AbortSignal.timeout(15_000);
+      const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      const authenticated = await fetchLatestGitHubReleaseWithGitHubCli({
+        ...(options.environment ? { environment: options.environment } : {}),
+        platform,
+        signal: requestSignal,
+      });
+      return authenticated ?? fetchLatestGitHubRelease({ signal: requestSignal });
+    });
   let candidate: CodexhostLatestRelease | null = null;
 
+  let currentStatusPath: string | null = null;
+
   async function latestStatus(context: InstalledUpdateContext): Promise<UpdateStatus | null> {
-    const discovered = await discoverLatestUpdateStatus(context.common.stateDirectory);
-    if (!discovered) return null;
-    if (
-      discovered.status.phase !== "succeeded" &&
-      discovered.status.phase !== "failed" &&
-      !(await isUpdateOperationActive(context.common.stateDirectory))
-    ) {
-      return null;
+    if (!currentStatusPath) {
+      const active = await discoverActiveUpdateStatus(context.common.stateDirectory);
+      if (!active) return null;
+      currentStatusPath = active.statusPath;
     }
-    return publicStatus(discovered.status);
+    const status = await manager.readStatus(currentStatusPath);
+    return status ? publicStatus(status) : null;
   }
 
   async function installable(
@@ -112,8 +120,12 @@ export function createHostUpdateCoordinator(
         await recoverUpdateOperationLock(context.common.stateDirectory);
         await cleanupTerminalUpdateState(context.common.stateDirectory);
       } catch (error) {
+        const runtime = await readRuntimeMetadata(
+          options.hostRuntimePath,
+          options.environment,
+        ).catch(() => null);
         return {
-          currentVersion: "0.0.0",
+          currentVersion: runtime?.distribution === "development" ? runtime.version : "0.0.0",
           installation: null,
           latestVersion: null,
           updateAvailable: false,
@@ -174,6 +186,7 @@ export function createHostUpdateCoordinator(
         throw new Error("Another update operation is already active");
       }
 
+      currentStatusPath = null;
       let resolvePrepared!: (info: {
         version: string;
         installation: BackgroundUpdateStatus["installation"];
@@ -203,6 +216,7 @@ export function createHostUpdateCoordinator(
           statusPath: string;
         }): Promise<void> => {
           await lock.setStatusPath(info.statusPath);
+          currentStatusPath = info.statusPath;
           resolvePrepared(info);
         };
         const prepareAndStart = async (): Promise<void> => {
@@ -235,7 +249,10 @@ export function createHostUpdateCoordinator(
                       onPrepared,
                     });
             }
-            if (platform !== "darwin") manager.start(prepared);
+            // The Launcher starts the Updater on macOS and Windows. On Windows the
+            // Host Runtime runs in the Shim's kill-on-close Job, so an Updater it
+            // started would be killed together with the Desktop it waits for.
+            if (platform !== "darwin" && platform !== "win32") await manager.start(prepared);
           } catch (error) {
             await lock.release();
             rejectPrepared(error);

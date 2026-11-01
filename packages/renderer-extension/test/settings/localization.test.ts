@@ -34,13 +34,14 @@ describe("Renderer settings localization", () => {
     expect(english.title).toBe("Settings");
     expect(chinese.title).toBe("设置");
     expect(chinese.openSettings).toBe("打开 codexhost 设置");
+    expect(chinese.starOnGitHub).toBe("Star 支持");
+    expect(english.starOnGitHub).toBe("Star to support");
     expect(chinese.updateInstallation).toBe("安装方式");
     expect(chinese.updateInstallationWindowsInstaller).toBe("Windows 安装程序");
     expect(english.updateInstallationMacOsDmg).toBe("macOS DMG");
     expect(chinese.updateWaitingForExit).toBe("正在等待应用退出...");
     expect(chinese.updateInstallingNpm).toBe("正在通过 npm 安装...");
     expect(chinese.updateAndRestart).toBe("更新");
-    expect(chinese.updateWindowsManualRequired).toContain("Windows 暂不支持自动更新");
     expect(chinese.updateWindowsInstallerDescription).toContain("适用于当前系统的安装包");
     expect(chinese.updateManualNpmDescription).toBe(
       "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
@@ -49,7 +50,25 @@ describe("Renderer settings localization", () => {
     expect(english.updateDownloadFromReleases).toBe("Download from GitHub Releases");
     expect(chinese.updateDownloadFromReleases).toBe("前往 GitHub Releases 下载");
     expect(chinese.updateDownloadWindowsInstaller).toBe("下载 Windows 安装包");
+    expect(chinese.updateStarCallout).toBe(
+      "如果 CodexHost 帮到了你，请在 GitHub 点个 Star，这对我们意义重大 👉",
+    );
+    expect(english.updateStarCallout).toBe(
+      "If CodexHost has helped you, please Star it on GitHub. It means a lot to us 👉",
+    );
+    expect(chinese.updateStarLink).toBe("GitHub");
     expect(chinese.pageLabels.about).toBe("关于");
+    expect(chinese.pageLabels["session-import"]).toBe("会话导入");
+    expect(chinese.sessionImportAvailabilityNote).toContain("可选 Harness 来自当前 Host");
+    expect(chinese.sessionImportAvailabilityNote).toContain("先在原生客户端关闭该会话再导入");
+    expect(chinese.sessionImportAvailabilityNote).toContain("避免同时写入");
+    expect(english.sessionImportAvailabilityNote).toContain(
+      "Available Harnesses come from the selected Host",
+    );
+    expect(english.sessionImportAvailabilityNote).toContain(
+      "close the session in its native client before importing",
+    );
+    expect(english.sessionImportAvailabilityNote).toContain("avoid concurrent writes");
     expect(chinese.aboutTagline).toBe("在 Codex Desktop 中运行 Pi 和其他 Harness");
     expect(chinese.aboutParagraphs).toHaveLength(3);
     expect(chinese.aboutStarCallout).toContain("请给我们一个 Star");
@@ -64,6 +83,6 @@ describe("Renderer settings localization", () => {
       createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).map(
         ({ label }) => label,
       ),
-    ).toEqual(["连接", "更新", "关于"]);
+    ).toEqual(["连接", "远程连接", "账号", "会话导入", "用量统计", "通用", "更新", "关于"]);
   });
 });

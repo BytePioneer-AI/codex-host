@@ -1,15 +1,27 @@
 # deepseek-harness-fast-session Specification
 
 ## Purpose
-TBD - created by archiving change integrate-deepseek-harness-fast-path. Update Purpose after archive.
+规定 DeepSeek Harness 的公共 Adapter、原生凭据复用、文本/工具输出与取消语义；当前已验证版本与格式边界见 deepseek-versioned-web-protocol。
+
 ## Requirements
+
 ### Requirement: DeepSeek Harness uses the shared Adapter contract
-The system SHALL provide a `deepseek-harness` implementation of `HarnessAdapter` and `HarnessSession`. DSH JSON-RPC methods and event names MUST remain internal to that Adapter package.
+
+The system SHALL provide one public `deepseek-harness` implementation of `HarnessAdapter` and `HarnessSession`. It SHALL use the single V4 native protocol profile for verified DSH `0.1.7-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2`, `0.2.1-rc.1`, and `0.2.1-rc.2`. Other SemVer runtimes at or above `0.1.7-rc.1` SHALL pass native protocol validation before being reported ready; runtimes below `0.1.7-rc.1` SHALL be rejected as unsupported before the managed Web starts. DSH Remote methods, event names and the protocol profile MUST remain internal to the Adapter package.
 
 #### Scenario: New DeepSeek Session opens
-- **WHEN** Host opens the DeepSeek Adapter with a create input and an available runtime
+- **WHEN** Host opens the DeepSeek Adapter with a create input and a runtime whose Web and native protocol checks pass
 - **THEN** the Adapter SHALL return a HarnessSession with a stable Native Session reference
-- **AND** resume, fork, and rollback capabilities SHALL be false
+- **AND** native resume, same-cwd fork, and last-turn rollback SHALL be available only within the V4 profile's verified boundaries
+
+#### Scenario: Runtime exposes a different Session format
+- **WHEN** the executable version is supported but the native history header or required events are not V4
+- **THEN** the Adapter SHALL fail with a protocol error and SHALL NOT report the Session as ready
+
+#### Scenario: Runtime is older than the V4 line
+- **WHEN** the executable reports a normative SemVer version below `0.1.7-rc.1`
+- **THEN** inspection and open SHALL fail with `unsupported` and an upgrade instruction
+- **AND** the Adapter SHALL NOT start the managed Web or open any Session
 
 ### Requirement: The runtime reuses the official DSH credential store
 The DeepSeek runtime SHALL resolve provider credentials through the official DSH credentials service and its standard Harness home. codexhost MUST NOT parse, copy, return, or persist credential values.
@@ -43,10 +55,3 @@ The Session SHALL map `turn.cancel` to a DSH `session/cancel` RPC and SHALL only
 - **WHEN** DSH rejects `session/cancel` as unknown
 - **THEN** the Session SHALL return a protocol or unsupported failure
 - **AND** it SHALL NOT report successful cancellation
-
-### Requirement: Unsupported DeepSeek history mutations are explicit
-The Adapter SHALL report native Session resume as supported while keeping fork and rollback capabilities false. It SHALL reject unsupported open kinds without creating another Native Session.
-
-#### Scenario: Host attempts fork or rollback
-- **WHEN** Host opens the Adapter with a fork or rollback input
-- **THEN** the Adapter SHALL return an `unsupported` error without creating a new Session

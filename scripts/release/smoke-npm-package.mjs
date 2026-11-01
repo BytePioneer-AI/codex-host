@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { verifyLinuxGlibcBaseline } from "./linux-glibc.mjs";
+import {
+  LINUX_GLIBC_BASELINE_IMAGE,
+  verifyLinuxGlibcBaseline,
+  verifyLinuxGlibcLoad,
+} from "./linux-glibc.mjs";
 import {
   NPM_PLATFORM_PACKAGE_NAMES,
   npmTarballFileName,
@@ -39,6 +43,8 @@ export async function smokeNpmPackage({ targetName, version, workDirectory }) {
     for (const result of verifyLinuxGlibcBaseline({ packageRoot: platform.packageRoot })) {
       console.log(`${result.relative}: GLIBC_${result.maximum}`);
     }
+    verifyLinuxGlibcLoad({ packageRoot: platform.packageRoot });
+    console.log(`native executables load on ${LINUX_GLIBC_BASELINE_IMAGE}`);
   }
   const platformTarball = await packNpmPackage({
     packageRoot: platform.packageRoot,

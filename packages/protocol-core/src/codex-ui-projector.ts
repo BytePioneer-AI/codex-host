@@ -1,14 +1,17 @@
 import type {
+  HarnessError,
   HostApprovalInteraction,
   HostFileChange,
   HostItem,
   HostItemOutcome,
+  HostItemSnapshot,
   HostItemUpdate,
   HostQuestionInteraction,
   HostTurnSnapshot,
   HistoricalTurnOutcome,
   InteractionClosedEvent,
   ItemCompletedEvent,
+  ItemDetachedEvent,
   ItemStartedEvent,
   ItemUpdatedEvent,
   TurnCompletedEvent,
@@ -22,6 +25,9 @@ import type {
   JsonValue,
 } from "@codexhost/shared-contracts";
 import { REASONING_TRANSCRIPT_COMMAND } from "@codexhost/shared-contracts";
+import { createTwoFilesPatch } from "diff";
+import path from "node:path";
+import { summarizeFileChanges } from "./file-change-summary.js";
 
 import {
   projectCodexApprovalRequest,
@@ -31,12 +37,14 @@ import {
   projectCodexQuestionRequest,
   type CodexQuestionRequestProjection,
 } from "./codex-question.js";
+import { inferredFinalAnswer } from "./final-answer-phase.js";
 
 export type ProjectableHostEvent =
   | TurnStartedEvent
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent
+  | ItemDetachedEvent
   | InteractionClosedEvent
   | TurnCompletedEvent;
 
@@ -55,6 +63,7 @@ export interface CodexQuestionProjection extends CodexTurnProjection {
 }
 
 export interface HistoricalTurnProjectionInput {
+  threadId?: string;
   turnId: HostTurnId;
   cwd: string;
   snapshot: HostTurnSnapshot;
@@ -97,6 +106,338 @@ function itemStatus(outcome: HostItemOutcome | null): "inProgress" | "completed"
   return outcome.status === "succeeded" ? "completed" : "failed";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nestedString(
+  value: unknown,
+  keys: readonly string[],
+  preserveText = false,
+): string | undefined {
+  if (!isRecord(value)) return undefined;
+  for (const key of keys) {
+    const field = value[key];
+    if (typeof field === "string" && (preserveText || field.trim().length > 0))
+      return preserveText ? field : field.trim();
+  }
+  for (const wrapper of ["input", "arguments", "params"] as const) {
+    const nested = nestedString(value[wrapper], keys, preserveText);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+function toolWorkingDirectory(args: JsonValue, defaultCwd: string): string {
+  const workdir = nestedString(args, ["workdir"]);
+  if (workdir === undefined) return defaultCwd;
+  const windows = /^(?:[a-z]:[/\\]|\\\\)/iu;
+  const paths = windows.test(defaultCwd) || windows.test(workdir) ? path.win32 : path.posix;
+  return paths.resolve(defaultCwd, workdir);
+}
+
+function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): string | null {
+  if (!item.output) return null;
+  const text = item.output.content
+    .filter(
+      (content): content is Extract<(typeof item.output.content)[number], { type: "text" }> =>
+        content.type === "text",
+    )
+    .map(({ text }) => text)
+    .join("");
+  return text.length > 0 ? text : null;
+}
+
+/**
+ * Codex Desktop only renders a detailed, expandable card for Command Execution.
+ * Generic `dynamicToolCall` items show the tool name with no path, pattern, or
+ * output. Lift Read/Glob/Grep/shell tools into that lane when a command line
+ * can be reconstructed from the native arguments.
+ */
+export function toolCommandLine(toolName: string, args: JsonValue): string | undefined {
+  const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
+  const command = nestedString(args, ["command", "cmd", "script", "commandLine", "command_line"]);
+  if (
+    command &&
+    ["bash", "exec", "terminal", "run", "shell", "powershell", "pwsh", "command"].includes(lower)
+  ) {
+    return command;
+  }
+  const filePath = nestedString(args, [
+    "path",
+    "file_path",
+    "filePath",
+    "file",
+    "filename",
+    "target",
+    "uri",
+  ]);
+  const pattern = nestedString(args, ["pattern", "glob", "glob_pattern", "query", "regex"]);
+  if (["read", "readfile", "fileread", "view"].includes(lower)) {
+    return filePath ? `read ${filePath}` : undefined;
+  }
+  if (["glob", "find", "findfiles"].includes(lower)) {
+    const target = pattern ?? filePath;
+    return target ? `glob ${target}` : undefined;
+  }
+  if (["grep", "grepsearch"].includes(lower)) {
+    if (!pattern) return undefined;
+    return filePath ? `grep ${pattern} ${filePath}` : `grep ${pattern}`;
+  }
+  return undefined;
+}
+
+function compactToolName(toolName: string): string {
+  return toolName.toLowerCase().replaceAll(/[_-]/g, "");
+}
+
+function isFileMutatingTool(toolName: string): boolean {
+  return [
+    "edit",
+    "editfile",
+    "fileedit",
+    "strreplace",
+    "searchreplace",
+    "applypatch",
+    "replace",
+    "multiedit",
+    "write",
+    "writefile",
+    "filewrite",
+    "create",
+    "createfile",
+  ].includes(compactToolName(toolName));
+}
+
+function isWriteTool(toolName: string): boolean {
+  return ["write", "writefile", "filewrite", "create", "createfile"].includes(
+    compactToolName(toolName),
+  );
+}
+
+function simpleUnifiedDiff(
+  displayedPath: string,
+  oldText: string,
+  newText: string,
+  kind: "add" | "update",
+): string {
+  return createTwoFilesPatch(
+    kind === "add" ? "/dev/null" : `a/${displayedPath}`,
+    `b/${displayedPath}`,
+    oldText,
+    newText,
+  );
+}
+
+export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileChange[] | null {
+  if (!isFileMutatingTool(toolName)) return null;
+  const displayedPath = nestedString(args, ["path", "file_path", "filePath", "file"]);
+  if (!displayedPath) return null;
+  if (isWriteTool(toolName)) {
+    const content = nestedString(
+      args,
+      ["content", "new_string", "newString", "newText", "file_text", "text", "new"],
+      true,
+    );
+    if (content === undefined) return null;
+    return [
+      {
+        path: displayedPath,
+        kind: "add",
+        diffScope: "fragment",
+        unifiedDiff: simpleUnifiedDiff(displayedPath, "", content, "add"),
+      },
+    ];
+  }
+  const oldText = nestedString(
+    args,
+    ["old_string", "oldString", "oldText", "old_text", "old"],
+    true,
+  );
+  const newText = nestedString(
+    args,
+    ["new_string", "newString", "newText", "new_text", "content", "new"],
+    true,
+  );
+  if (oldText === undefined || newText === undefined) return null;
+  return [
+    {
+      path: displayedPath,
+      kind: "update",
+      diffScope: "fragment",
+      unifiedDiff: simpleUnifiedDiff(displayedPath, oldText, newText, "update"),
+    },
+  ];
+}
+
+function projectFileChangeKind(kind: HostFileChange["kind"]): JsonValue {
+  if (kind === "update") return { type: "update", move_path: null };
+  return { type: kind };
+}
+
+function projectFileChanges(changes: HostFileChange[]): JsonValue[] {
+  return changes.map(({ path, kind, unifiedDiff }) => ({
+    path,
+    kind: projectFileChangeKind(kind),
+    diff: unifiedDiff,
+  }));
+}
+
+function itemFileChanges(item: HostItem): HostFileChange[] | null {
+  return item.type === "fileChange"
+    ? item.changes
+    : item.type === "toolExecution"
+      ? fileChangeFromTool(item.toolName, item.arguments)
+      : null;
+}
+
+function summarizeHostFiles(
+  items: readonly { item: HostItem; outcome: HostItemOutcome | null }[],
+  cwd: string,
+): Extract<HostItem, { type: "fileChange" }> | null {
+  const first = items.find(({ item }) => itemFileChanges(item) !== null);
+  if (!first) return null;
+  const nativeSources = new Set(
+    items.flatMap(({ item }) => (item.type === "fileChange" ? (item.sourceItemIds ?? []) : [])),
+  );
+  const changes = items.flatMap(({ item, outcome }) =>
+    (outcome && outcome.status !== "succeeded") || nativeSources.has(item.itemId)
+      ? []
+      : (itemFileChanges(item) ?? []),
+  );
+  return {
+    type: "fileChange",
+    itemId: first.item.itemId,
+    changes: summarizeFileChanges(changes, cwd),
+  };
+}
+
+type CodexPlanStepStatus = "pending" | "inProgress" | "completed";
+
+function isTodoTool(toolName: string): boolean {
+  const compact = compactToolName(toolName);
+  return compact.includes("todo") || ["updateplan", "updatetodolist"].includes(compact);
+}
+
+export function todoPlanFromTool(
+  toolName: string,
+  args: JsonValue,
+): { explanation: string | null; plan: { step: string; status: CodexPlanStepStatus }[] } | null {
+  return isTodoTool(toolName) ? planFromTodoValue(args) : null;
+}
+
+function planFromTodoValue(
+  value: unknown,
+): { explanation: string | null; plan: { step: string; status: CodexPlanStepStatus }[] } | null {
+  if (
+    value &&
+    typeof value === "object" &&
+    "content" in value &&
+    Array.isArray((value as { content: unknown }).content)
+  ) {
+    const output = value as Extract<HostItem, { type: "toolExecution" }>["output"];
+    if (output) {
+      const text = output.content
+        .flatMap((entry) => (entry.type === "text" ? [entry.text] : []))
+        .join("\n");
+      const fromText = planFromChecklistText(text);
+      if (fromText) return fromText;
+    }
+  }
+  const record = unwrapToolRecord(value);
+  if (!record) return planFromChecklistText(typeof value === "string" ? value : null);
+  if (isRecord(record.TodosUpdated)) {
+    const nested = planFromTodoValue(record.TodosUpdated);
+    if (nested) return nested;
+  }
+  const explanation = nestedString(record, ["explanation", "message", "summary"]) ?? null;
+  const list = coerceTodoList(
+    record.todos ?? record.items ?? record.plan ?? record.tasks ?? record.entries,
+  );
+  if (!list || list.length === 0) return planFromChecklistText(explanation);
+  const plan: { step: string; status: CodexPlanStepStatus }[] = [];
+  for (const entry of list) {
+    if (typeof entry === "string" && entry.trim().length > 0) {
+      plan.push({ step: entry.trim(), status: "pending" });
+      continue;
+    }
+    if (!isRecord(entry)) continue;
+    const step = nestedString(entry, ["content", "step", "text", "title", "description", "task"]);
+    if (!step) continue;
+    plan.push({ step, status: planStatus(entry.status) });
+  }
+  return plan.length > 0 ? { explanation, plan } : planFromChecklistText(explanation);
+}
+
+function coerceTodoList(value: unknown): unknown[] | null {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return parsed;
+    const record = unwrapToolRecord(parsed);
+    return record
+      ? coerceTodoList(
+          record.todos ?? record.items ?? record.plan ?? record.tasks ?? record.entries,
+        )
+      : null;
+  } catch {
+    return (
+      planFromChecklistText(trimmed)?.plan.map(({ step, status }) => ({ content: step, status })) ??
+      null
+    );
+  }
+}
+
+function planFromChecklistText(
+  value: string | null | undefined,
+): { explanation: string | null; plan: { step: string; status: CodexPlanStepStatus }[] } | null {
+  if (!value) return null;
+  const plan: { step: string; status: CodexPlanStepStatus }[] = [];
+  for (const line of value.split(/\r?\n/u)) {
+    const match = line.match(/^\s*[-*]\s*\[([^\]]+)\]\s*(?:\d+:\s*)?(.+?)\s*$/u);
+    if (!match?.[1] || !match[2]) continue;
+    const step = match[2].trim();
+    if (step.length === 0) continue;
+    plan.push({ step, status: planStatus(match[1]) });
+  }
+  return plan.length > 0 ? { explanation: null, plan } : null;
+}
+
+function unwrapToolRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) return null;
+    try {
+      return unwrapToolRecord(JSON.parse(trimmed) as unknown);
+    } catch {
+      return null;
+    }
+  }
+  if (Array.isArray(value)) return { todos: value };
+  if (!isRecord(value)) return null;
+  for (const wrapper of ["input", "arguments", "params"] as const) {
+    if (value[wrapper] === undefined) continue;
+    const nested = unwrapToolRecord(value[wrapper]);
+    if (nested) return nested;
+  }
+  return value;
+}
+
+function planStatus(value: unknown): CodexPlanStepStatus {
+  if (typeof value !== "string") return "pending";
+  const lower = value.toLowerCase().replaceAll(/[_-]/g, "");
+  if (["inprogress", "doing", "current", "active", "started", "working"].includes(lower)) {
+    return "inProgress";
+  }
+  if (["completed", "complete", "done", "finished", "x", "yes", "checked"].includes(lower)) {
+    return "completed";
+  }
+  return "pending";
+}
+
 function toolContentItems(item: Extract<HostItem, { type: "toolExecution" }>): JsonValue[] | null {
   if (!item.output) return null;
   return item.output.content.map((content) =>
@@ -126,6 +467,19 @@ function collabAgentStatus(
   }
 }
 
+/** `clientId` lets Desktop settle its optimistic steering message for this input. */
+function projectUserMessage(
+  item: Extract<HostItem, { type: "userMessage" }>,
+  clientId: string | null,
+): JsonObject {
+  return {
+    id: item.itemId,
+    type: "userMessage",
+    clientId,
+    content: item.input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
+  };
+}
+
 function projectItem(
   item: HostItem,
   outcome: HostItemOutcome | null,
@@ -134,21 +488,25 @@ function projectItem(
   senderThreadId?: string,
 ): JsonObject {
   switch (item.type) {
+    case "userMessage":
+      return projectUserMessage(item, null);
     case "agentMessage":
       return {
         id: item.itemId,
         type: "agentMessage",
         text: item.text,
-        phase: null,
+        phase: item.phase ?? null,
         memoryCitation: null,
       };
-    case "reasoning":
+    case "reasoning": {
+      const text = reasoningDisplayText(item.text);
       return {
         id: reasoningPreviewItemId(item.itemId),
         type: "reasoning",
-        summary: item.text.length > 0 ? [item.text] : [],
+        summary: text ? [text] : [],
         content: [],
       };
+    }
     case "contextCompaction":
       return { id: item.itemId, type: "contextCompaction" };
     case "commandExecution":
@@ -166,6 +524,22 @@ function projectItem(
         durationMs: item.durationMs ?? null,
       };
     case "toolExecution": {
+      const command = toolCommandLine(item.toolName, item.arguments);
+      if (command) {
+        return {
+          id: item.itemId,
+          type: "commandExecution",
+          command,
+          cwd: toolWorkingDirectory(item.arguments, defaultCwd),
+          processId: null,
+          source: "agent",
+          status: itemStatus(outcome),
+          commandActions: [],
+          aggregatedOutput: includeCommandOutput ? toolOutputText(item) : null,
+          exitCode: null,
+          durationMs: item.durationMs ?? null,
+        };
+      }
       const status = itemStatus(outcome);
       return {
         id: item.itemId,
@@ -183,14 +557,18 @@ function projectItem(
       return {
         id: item.itemId,
         type: "fileChange",
-        changes: item.changes.map(({ path, kind, unifiedDiff }) => ({
-          path,
-          kind,
-          diff: unifiedDiff,
-        })),
+        changes: projectFileChanges(item.changes),
         status: itemStatus(outcome),
       };
-    case "subagentDelegation":
+    case "subagentDelegation": {
+      const primary = item.subagents[0];
+      // Codex exposes one configuration per Item, not per receiver. Do not
+      // attribute the first child's configuration to a heterogeneous group.
+      const sameConfiguration = item.subagents.every(
+        (subagent) =>
+          subagent.model === primary?.model &&
+          subagent.reasoningEffort === primary?.reasoningEffort,
+      );
       return {
         id: item.itemId,
         type: "collabAgentToolCall",
@@ -199,8 +577,8 @@ function projectItem(
         senderThreadId: senderThreadId ?? "",
         receiverThreadIds: item.subagents.map(({ subagentId }) => subagentId),
         prompt: item.prompt ?? null,
-        model: null,
-        reasoningEffort: null,
+        model: sameConfiguration ? (primary?.model ?? null) : null,
+        reasoningEffort: sameConfiguration ? (primary?.reasoningEffort ?? null) : null,
         agentsStates: Object.fromEntries(
           item.subagents.map(({ subagentId, status, resultSummary }) => [
             subagentId,
@@ -208,6 +586,7 @@ function projectItem(
           ]),
         ),
       };
+    }
   }
 }
 
@@ -218,6 +597,10 @@ function projectItem(
  */
 export function reasoningPreviewItemId(itemId: HostItemId): string {
   return `${itemId}-summary`;
+}
+
+function reasoningDisplayText(text: string): string {
+  return text.replace(/[\r\n]+$/u, "");
 }
 
 /**
@@ -240,7 +623,7 @@ function projectReasoningTranscriptItem(
     source: "agent",
     status: itemStatus(outcome),
     commandActions: [],
-    aggregatedOutput: item.text.length > 0 ? item.text : null,
+    aggregatedOutput: reasoningDisplayText(item.text) || null,
     exitCode: outcome ? 0 : null,
     durationMs,
   };
@@ -272,6 +655,16 @@ function historicalStatus(outcome: HistoricalTurnOutcome): "completed" | "interr
 
 export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): JsonObject {
   const { turnId, cwd, snapshot } = input;
+  const files = summarizeHostFiles(snapshot.items, cwd);
+  const startedAtMs = snapshot.startedAtMs;
+  const completedAtMs = snapshot.completedAtMs;
+  const hasTiming =
+    startedAtMs !== undefined &&
+    completedAtMs !== undefined &&
+    Number.isFinite(startedAtMs) &&
+    Number.isFinite(completedAtMs) &&
+    startedAtMs >= 0 &&
+    completedAtMs >= startedAtMs;
   const error =
     snapshot.outcome.status === "failed"
       ? {
@@ -280,6 +673,30 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
           additionalDetails: null,
         }
       : null;
+  const projectEntry = ({ item, outcome }: HostItemSnapshot): JsonObject[] => {
+    if (itemFileChanges(item) !== null) {
+      return files?.itemId === item.itemId
+        ? [projectItem(files, { status: "succeeded" }, cwd)]
+        : [];
+    }
+    if (item.type === "toolExecution") {
+      if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments)) return [];
+      if (isFileMutatingTool(item.toolName)) return [];
+    }
+    if (item.type === "reasoning" && !reasoningDisplayText(item.text)) return [];
+    return item.type === "reasoning"
+      ? [
+          projectItem(item, outcome, cwd, true, input.threadId ?? ""),
+          projectReasoningTranscriptItem(item, outcome, cwd),
+        ]
+      : [projectItem(item, outcome, cwd, true, input.threadId ?? "")];
+  };
+  const entries = snapshot.items.map((entry) => ({ entry, projected: projectEntry(entry) }));
+  const lastVisible = entries.findLast(({ projected }) => projected.length > 0)?.entry;
+  const finalAnswer = inferredFinalAnswer(
+    lastVisible,
+    historicalStatus(snapshot.outcome) === "completed",
+  );
   return {
     id: turnId,
     status: historicalStatus(snapshot.outcome),
@@ -288,21 +705,18 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         id: `${turnId}-user`,
         type: "userMessage",
         clientId: null,
-        content: snapshot.input.map(({ text }) => ({ type: "text", text })),
+        content: snapshot.input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
       },
-      ...snapshot.items.flatMap(({ item, outcome }) =>
-        item.type === "reasoning"
-          ? [
-              projectItem(item, outcome, cwd, true, ""),
-              projectReasoningTranscriptItem(item, outcome, cwd),
-            ]
-          : [projectItem(item, outcome, cwd, true, "")],
+      ...entries.flatMap(({ entry, projected }) =>
+        finalAnswer && entry === lastVisible
+          ? projectEntry({ ...entry, item: finalAnswer })
+          : projected,
       ),
     ],
     error,
-    startedAt: null,
-    completedAt: null,
-    durationMs: null,
+    startedAt: hasTiming ? Math.floor(startedAtMs / 1000) : null,
+    completedAt: hasTiming ? Math.floor(completedAtMs / 1000) : null,
+    durationMs: hasTiming ? completedAtMs - startedAtMs : null,
     itemsView: "full",
   };
 }
@@ -336,16 +750,20 @@ function diffText(changes: HostFileChange[]): string {
 export class CodexTurnProjector {
   readonly #cwd: string;
   readonly #input: HostTurnSnapshot["input"];
+  readonly #clientUserMessageId: string | null;
   readonly #interactions = new Map<HostInteractionId, ProjectedInteraction>();
   readonly #items = new Map<HostItemId, ProjectedItem>();
-  readonly #itemOrder: HostItemId[] = [];
   readonly #wireItemOrder: HostItemId[] = [];
+  readonly #userMessageClientIds = new Map<HostItemId, string>();
   readonly #startedAt: number;
   readonly #startedAtMs: number;
   readonly #threadId: string;
   readonly #turnId: HostTurnId;
   #completed = false;
   #started = false;
+  /** Items allowed to outlive the Turn terminal; they settle later on this Turn. */
+  readonly #detached = new Set<HostItemId>();
+  #fileItemId: HostItemId | null = null;
 
   constructor(input: {
     threadId: string;
@@ -353,13 +771,44 @@ export class CodexTurnProjector {
     cwd: string;
     startedAtMs: number;
     initialInput?: HostTurnSnapshot["input"];
+    clientUserMessageId?: string;
   }) {
     this.#threadId = input.threadId;
     this.#turnId = input.turnId;
     this.#cwd = input.cwd;
     this.#input = input.initialInput ?? [];
+    this.#clientUserMessageId = input.clientUserMessageId ?? null;
     this.#startedAtMs = input.startedAtMs;
     this.#startedAt = Math.floor(input.startedAtMs / 1000);
+  }
+
+  get completed(): boolean {
+    return this.#completed;
+  }
+
+  /** A completed Turn still owns detached Items that have not settled. */
+  get hasOpenDetachedItems(): boolean {
+    return [...this.#detached].some((itemId) => this.#items.get(itemId)?.outcome === null);
+  }
+
+  /**
+   * Wire format of detached Items that have not settled: `inProgress` with the
+   * output accumulated so far. History projection overlays these by Item id.
+   */
+  openDetachedWireItems(): ReadonlyMap<HostItemId, JsonObject> {
+    const items = new Map<HostItemId, JsonObject>();
+    for (const itemId of this.#wireItemOrder) {
+      if (!this.#detached.has(itemId)) continue;
+      const projected = this.#items.get(itemId);
+      if (!projected || projected.outcome) continue;
+      items.set(itemId, projectItem(projected.item, null, this.#cwd, true, this.#threadId));
+    }
+    return items;
+  }
+
+  /** Associate steered input with the Desktop message that submitted it, before it is published. */
+  bindUserMessageClientId(itemId: HostItemId, clientId: string): void {
+    this.#userMessageClientIds.set(itemId, clientId);
   }
 
   pendingTurn(startedAt: number | null = null): JsonObject {
@@ -370,8 +819,13 @@ export class CodexTurnProjector {
         ...this.#projectInput(),
         ...this.#wireItemOrder.flatMap((itemId) => {
           const projected = this.#items.get(itemId);
-          return projected?.wireStarted && projected.item.type === "agentMessage"
-            ? [projectItem(projected.item, projected.outcome, this.#cwd)]
+          if (!projected?.wireStarted) return [];
+          if (projected.item.type === "userMessage") return [this.#projectItem(projected.item)];
+          if (projected.item.type === "agentMessage") {
+            return [projectItem(projected.item, projected.outcome, this.#cwd)];
+          }
+          return itemId === this.#fileItemId
+            ? [projectItem(this.#fileSummary(), null, this.#cwd)]
             : [];
         }),
       ],
@@ -383,12 +837,56 @@ export class CodexTurnProjector {
     };
   }
 
+  /**
+   * Close a failed output stream using only state already accepted by this projector.
+   * Project these events in order through the normal Host path so pending Desktop
+   * requests, Item lifecycles and Turn state settle together. No native success or
+   * checkpoint is inferred. This stays here because it must share the Item ledger.
+   */
+  failureEvents(error: HarnessError): ProjectableHostEvent[] {
+    const events: ProjectableHostEvent[] = [];
+    const turnId = this.#turnId;
+    const syntheticItems = new Set<HostItemId>();
+    if (!this.#started) events.push({ type: "turn.started", turnId });
+    for (const [interactionId, interaction] of this.#interactions) {
+      events.push({ type: "interaction.closed", turnId, interactionId, reason: "cancelled" });
+      // Closing a standalone Question also completes its synthetic Tool Item.
+      if (interaction.type === "question" && interaction.syntheticItem)
+        syntheticItems.add(interaction.itemId);
+    }
+    for (const { item, outcome } of this.#items.values()) {
+      if (outcome !== null || syntheticItems.has(item.itemId)) continue;
+      events.push({
+        type: "item.completed",
+        turnId,
+        snapshot: { item, outcome: { status: "failed", error } },
+      });
+    }
+    if (!this.#completed)
+      events.push({ type: "turn.completed", turnId, outcome: { status: "failed", error } });
+    return events;
+  }
+
   project(event: ProjectableHostEvent, emittedAtMs = Date.now()): CodexTurnProjection {
     if (event.turnId !== this.#turnId) {
       throw new Error("Host output references another Turn");
     }
-    if (this.#completed) throw new Error("Host output follows the Turn terminal event");
+    if (
+      this.#completed &&
+      !(
+        (event.type === "item.updated" && this.#detached.has(event.itemId)) ||
+        (event.type === "item.completed" && this.#detached.has(event.snapshot.item.itemId))
+      )
+    ) {
+      throw new Error("Host output follows the Turn terminal event");
+    }
     switch (event.type) {
+      case "item.detached":
+        if (this.#activeItem(event.itemId).item.type !== "commandExecution") {
+          throw new Error("Only a command Item can outlive its Turn");
+        }
+        this.#detached.add(event.itemId);
+        return { messages: [] };
       case "turn.started":
         return this.#startTurn();
       case "item.started":
@@ -488,6 +986,21 @@ export class CodexTurnProjector {
             turn: this.pendingTurn(this.#startedAt),
           },
         },
+        // Connected viewers consume item events; turn snapshots alone do not
+        // insert later user messages into an already-open conversation.
+        ...this.#projectInput().flatMap((item) =>
+          ["item/started", "item/completed"].map((method) => ({
+            method,
+            emittedAtMs: this.#startedAtMs,
+            params: {
+              threadId: this.#threadId,
+              turnId: this.#turnId,
+              startedAtMs: this.#startedAtMs,
+              ...(method === "item/completed" ? { completedAtMs: this.#startedAtMs } : {}),
+              item,
+            },
+          })),
+        ),
       ],
     };
   }
@@ -501,28 +1014,40 @@ export class CodexTurnProjector {
       reasoningPartStarted: false,
       streamedCommandOutput: false,
       wireStarted: false,
+      startedAtMs,
     };
     this.#items.set(event.item.itemId, projected);
-    this.#itemOrder.push(event.item.itemId);
     if (
       (event.item.type === "agentMessage" || event.item.type === "reasoning") &&
-      event.item.text.length === 0
+      (event.item.type === "reasoning"
+        ? reasoningDisplayText(event.item.text).length === 0
+        : event.item.text.length === 0)
     ) {
       // An empty Reasoning Item would surface as a transcript card with no
       // content, so defer the wire Item until real summary text arrives.
       return { messages: [] };
     }
+    if (event.item.type === "toolExecution") {
+      if (isTodoTool(event.item.toolName)) {
+        const plan = planFromTodoValue(event.item.arguments);
+        return { messages: plan ? [this.#planUpdated(plan)] : [] };
+      }
+      const changes = fileChangeFromTool(event.item.toolName, event.item.arguments);
+      if (changes) {
+        return { messages: this.#fileChangeUpdates(startedAtMs) };
+      }
+      if (isFileMutatingTool(event.item.toolName)) return { messages: [] };
+    }
+    if (event.item.type === "fileChange") return { messages: this.#fileChangeUpdates(startedAtMs) };
     const startedItem = event.item.type === "reasoning" ? { ...event.item, text: "" } : event.item;
     const messages = [this.#startWireItem(projected, startedItem, startedAtMs)];
     if (event.item.type === "reasoning") {
+      const text = reasoningDisplayText(event.item.text);
       messages.push(
         this.#startReasoningTranscript(event.item, startedAtMs),
-        this.#reasoningOutputDelta(event.item.itemId, event.item.text, startedAtMs),
-        ...this.#reasoningDelta(projected, event.item.text, startedAtMs),
+        this.#reasoningOutputDelta(event.item.itemId, text, startedAtMs),
+        ...this.#reasoningDelta(projected, text, startedAtMs),
       );
-    }
-    if (event.item.type === "fileChange") {
-      messages.push(...this.#fileChangeUpdates(event.item.itemId, event.item.changes));
     }
     return { messages };
   }
@@ -550,6 +1075,10 @@ export class CodexTurnProjector {
           },
         });
       } else if (next.type === "reasoning") {
+        const previousText =
+          previous.type === "reasoning" ? reasoningDisplayText(previous.text) : "";
+        const delta = reasoningDisplayText(next.text).slice(previousText.length);
+        if (!delta) return { messages };
         if (!projected.wireStarted) {
           messages.push(
             this.#startWireItem(projected, { ...next, text: "" }, emittedAtMs),
@@ -557,8 +1086,8 @@ export class CodexTurnProjector {
           );
         }
         messages.push(
-          this.#reasoningOutputDelta(event.itemId, event.update.text, emittedAtMs),
-          ...this.#reasoningDelta(projected, event.update.text, emittedAtMs),
+          this.#reasoningOutputDelta(event.itemId, delta, emittedAtMs),
+          ...this.#reasoningDelta(projected, delta, emittedAtMs),
         );
       }
     } else if (event.update.type === "output.append") {
@@ -573,8 +1102,30 @@ export class CodexTurnProjector {
           delta: event.update.text,
         },
       });
+    } else if (event.update.type === "output.replace") {
+      if (next.type === "toolExecution" && toolCommandLine(next.toolName, next.arguments)) {
+        const text = toolOutputText(next);
+        if (text) {
+          const previousText =
+            previous.type === "toolExecution" ? (toolOutputText(previous) ?? "") : "";
+          const delta = text.startsWith(previousText) ? text.slice(previousText.length) : text;
+          if (delta.length > 0) {
+            projected.streamedCommandOutput = true;
+            messages.push({
+              method: "item/commandExecution/outputDelta",
+              emittedAtMs,
+              params: {
+                threadId: this.#threadId,
+                turnId: this.#turnId,
+                itemId: event.itemId,
+                delta,
+              },
+            });
+          }
+        }
+      }
     } else if (event.update.type === "fileChanges.replace") {
-      messages.push(...this.#fileChangeUpdates(event.itemId, event.update.changes));
+      messages.push(...this.#fileChangeUpdates(emittedAtMs));
     } else if (event.update.type === "subagents.replace") {
       messages.push({
         method: "item/started",
@@ -614,12 +1165,14 @@ export class CodexTurnProjector {
     }
     projected.item = event.snapshot.item;
     projected.outcome = event.snapshot.outcome;
-    if (!projected.wireStarted) return { messages: [] };
     const startedAtMs = projected.startedAtMs;
     if (startedAtMs === undefined) throw new Error("Codex Item completed without a start time");
     const durationMs = resolvedItemDurationMs(projected.item, startedAtMs, emittedAtMs);
     projected.item = withResolvedDuration(projected.item, durationMs);
     projected.durationMs = durationMs;
+    if (itemFileChanges(projected.item) !== null) {
+      return { messages: this.#fileChangeUpdates(emittedAtMs) };
+    }
     const completedItem = (item: JsonObject): JsonObject => ({
       method: "item/completed",
       emittedAtMs,
@@ -631,15 +1184,19 @@ export class CodexTurnProjector {
         item,
       },
     });
+    if (!projected.wireStarted) {
+      if (projected.item.type === "toolExecution") {
+        if (isTodoTool(projected.item.toolName)) {
+          const plan =
+            planFromTodoValue(projected.item.arguments) ?? planFromTodoValue(projected.item.output);
+          return { messages: plan ? [this.#planUpdated(plan, emittedAtMs)] : [] };
+        }
+      }
+      return { messages: [] };
+    }
     const messages = [
       completedItem(
-        projectItem(
-          projected.item,
-          projected.outcome,
-          this.#cwd,
-          !projected.streamedCommandOutput,
-          this.#threadId,
-        ),
+        this.#projectItem(projected.item, projected.outcome, !projected.streamedCommandOutput),
       ),
     ];
     if (projected.item.type === "reasoning") {
@@ -680,11 +1237,17 @@ export class CodexTurnProjector {
     if (this.#interactions.size > 0) {
       throw new Error("Host Turn completed with pending Interactions");
     }
-    const active = [...this.#items.values()].filter(({ outcome }) => outcome === null);
+    const active = [...this.#items.values()].filter(
+      ({ item, outcome }) => outcome === null && !this.#detached.has(item.itemId),
+    );
     if (active.length > 0) throw new Error("Host Turn completed with active Items");
     this.#completed = true;
     const completedAt = Math.floor(completedAtMs / 1000);
     const error = turnError(event.outcome);
+    const lastWireItemId = this.#wireItemOrder.at(-1);
+    const lastVisible = lastWireItemId === undefined ? undefined : this.#items.get(lastWireItemId);
+    const finalAnswer = inferredFinalAnswer(lastVisible, event.outcome.status === "succeeded");
+    if (lastVisible && finalAnswer) lastVisible.item = finalAnswer;
     const turn: JsonObject = {
       id: this.#turnId,
       status: turnStatus(event.outcome),
@@ -693,7 +1256,11 @@ export class CodexTurnProjector {
         ...this.#projectInput(),
         ...this.#wireItemOrder.flatMap((itemId) => {
           const projected = this.#items.get(itemId);
-          if (!projected?.outcome) throw new Error("Host Turn contains an incomplete Item");
+          if (!projected) throw new Error("Host Turn contains an unknown Item");
+          if (!projected.outcome) {
+            if (this.#detached.has(itemId)) return [];
+            throw new Error("Host Turn contains an incomplete Item");
+          }
           if (!projected.wireStarted) return [];
           if (projected.item.type === "reasoning") {
             const reasoning = projected.item;
@@ -707,8 +1274,12 @@ export class CodexTurnProjector {
               ),
             ];
           }
-          return projected.item.type === "agentMessage"
-            ? [projectItem(projected.item, projected.outcome, this.#cwd)]
+          if (projected.item.type === "userMessage") return [this.#projectItem(projected.item)];
+          if (projected.item.type === "agentMessage") {
+            return [projectItem(projected.item, projected.outcome, this.#cwd)];
+          }
+          return itemId === this.#fileItemId
+            ? [projectItem(this.#fileSummary(), { status: "succeeded" }, this.#cwd)]
             : [];
         }),
       ],
@@ -721,6 +1292,24 @@ export class CodexTurnProjector {
     return {
       completedTurn: turn,
       messages: [
+        ...(this.#fileItemId
+          ? [
+              {
+                method: "item/completed",
+                emittedAtMs: completedAtMs,
+                params: {
+                  threadId: this.#threadId,
+                  turnId: this.#turnId,
+                  item: projectItem(this.#fileSummary(), { status: "succeeded" }, this.#cwd),
+                },
+              },
+            ]
+          : []),
+        // Desktop ignores Turn items on turn/completed and replaces an Item by id
+        // on item/completed, so the inferred phase must arrive as a replacement.
+        ...(lastVisible && finalAnswer
+          ? [this.#completedItemReplay(lastVisible, completedAtMs)]
+          : []),
         ...(error
           ? [
               {
@@ -743,6 +1332,21 @@ export class CodexTurnProjector {
     };
   }
 
+  #completedItemReplay(projected: ProjectedItem, emittedAtMs: number): JsonObject {
+    const startedAtMs = projected.startedAtMs ?? emittedAtMs;
+    return {
+      method: "item/completed",
+      emittedAtMs,
+      params: {
+        threadId: this.#threadId,
+        turnId: this.#turnId,
+        startedAtMs,
+        completedAtMs: startedAtMs + (projected.durationMs ?? 0),
+        item: projectItem(projected.item, projected.outcome, this.#cwd),
+      },
+    };
+  }
+
   #projectInput(): JsonObject[] {
     return this.#input.length === 0
       ? []
@@ -750,8 +1354,8 @@ export class CodexTurnProjector {
           {
             id: `${this.#turnId}-user`,
             type: "userMessage",
-            clientId: null,
-            content: this.#input.map(({ text }) => ({ type: "text", text })),
+            clientId: this.#clientUserMessageId,
+            content: this.#input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
           },
         ];
   }
@@ -768,9 +1372,19 @@ export class CodexTurnProjector {
         threadId: this.#threadId,
         turnId: this.#turnId,
         startedAtMs,
-        item: projectItem(item, null, this.#cwd, true, this.#threadId),
+        item: this.#projectItem(item, null),
       },
     };
+  }
+
+  #projectItem(
+    item: HostItem,
+    outcome: HostItemOutcome | null = null,
+    includeCommandOutput = true,
+  ): JsonObject {
+    return item.type === "userMessage"
+      ? projectUserMessage(item, this.#userMessageClientIds.get(item.itemId) ?? null)
+      : projectItem(item, outcome, this.#cwd, includeCommandOutput, this.#threadId);
   }
 
   #startReasoningTranscript(
@@ -834,19 +1448,50 @@ export class CodexTurnProjector {
     return messages;
   }
 
-  #fileChangeUpdates(itemId: HostItemId, changes: HostFileChange[]): JsonObject[] {
-    const projectedChanges = changes.map(({ path, kind, unifiedDiff }) => ({
-      path,
-      kind,
-      diff: unifiedDiff,
-    }));
+  #planUpdated(
+    plan: {
+      explanation: string | null;
+      plan: { step: string; status: "pending" | "inProgress" | "completed" }[];
+    },
+    emittedAtMs = this.#startedAtMs,
+  ): JsonObject {
+    return {
+      method: "turn/plan/updated",
+      emittedAtMs,
+      params: {
+        threadId: this.#threadId,
+        turnId: this.#turnId,
+        explanation: plan.explanation,
+        plan: plan.plan,
+      },
+    };
+  }
+
+  #fileSummary(): Extract<HostItem, { type: "fileChange" }> {
+    // ponytail: recompute per update; cache contributions if large Turns make this costly.
+    const summary = summarizeHostFiles([...this.#items.values()], this.#cwd);
+    if (!summary) throw new Error("File summary requested without a file Item");
+    return this.#fileItemId ? { ...summary, itemId: this.#fileItemId } : summary;
+  }
+
+  #fileChangeUpdates(emittedAtMs: number): JsonObject[] {
+    const summary = this.#fileSummary();
+    const messages: JsonObject[] = [];
+    if (!this.#fileItemId) {
+      this.#fileItemId = summary.itemId;
+      const source = this.#items.get(summary.itemId);
+      if (!source) throw new Error("File summary references an unknown Item");
+      messages.push(this.#startWireItem(source, summary, emittedAtMs));
+    }
+    const projectedChanges = projectFileChanges(summary.changes);
     return [
+      ...messages,
       {
         method: "item/fileChange/patchUpdated",
         params: {
           threadId: this.#threadId,
           turnId: this.#turnId,
-          itemId,
+          itemId: this.#fileItemId,
           changes: projectedChanges,
         },
       },
@@ -855,17 +1500,10 @@ export class CodexTurnProjector {
         params: {
           threadId: this.#threadId,
           turnId: this.#turnId,
-          diff: diffText(this.#allFileChanges()),
+          diff: diffText(summary.changes),
         },
       },
     ];
-  }
-
-  #allFileChanges(): HostFileChange[] {
-    return this.#itemOrder.flatMap((itemId) => {
-      const item = this.#items.get(itemId)?.item;
-      return item?.type === "fileChange" ? item.changes : [];
-    });
   }
 
   #activeItem(itemId: HostItemId): ProjectedItem {

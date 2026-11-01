@@ -4,6 +4,10 @@ import {
   type RendererComposerContractInspection,
 } from "./renderer-composer-dom.js";
 import {
+  inspectComposerCodexUsageGate,
+  type RendererCodexUsageGateInspection,
+} from "./renderer-codex-usage-gate.js";
+import {
   inspectRendererForkContract,
   type RendererForkContractInspection,
 } from "./renderer-fork-control.js";
@@ -42,6 +46,7 @@ export interface RendererContractAuditInspection {
   settings: RendererSettingsContractInspection;
   sidebar: RendererSidebarContractInspection;
   transcript: RendererTranscriptContractInspection;
+  codexUsageGate: RendererCodexUsageGateInspection & { composerCount: number };
   fork: RendererForkContractInspection;
   production: {
     bindingPresent: boolean;
@@ -72,6 +77,28 @@ function modelCounts(states: readonly RendererComposerModelContractState[]): {
   };
 }
 
+/** Composers with an editor; each should expose one owner and one reserve gate. */
+function codexUsageGateCounts(
+  composers: readonly Element[],
+): RendererCodexUsageGateInspection & { composerCount: number } {
+  const editable = composers.filter((composer) =>
+    composer.querySelector('[contenteditable="true"][role="textbox"]'),
+  );
+  const counts = {
+    composerCount: editable.length,
+    ownerCount: 0,
+    reserveGateCount: 0,
+    accountGateCount: 0,
+  };
+  for (const composer of editable) {
+    const inspection = inspectComposerCodexUsageGate(composer);
+    counts.ownerCount += inspection.ownerCount;
+    counts.reserveGateCount += inspection.reserveGateCount;
+    counts.accountGateCount += inspection.accountGateCount;
+  }
+  return counts;
+}
+
 export function inspectRendererContracts(
   ownerWindow: Window = window,
 ): RendererContractAuditInspection {
@@ -88,6 +115,7 @@ export function inspectRendererContracts(
     settings: inspectRendererSettingsContract(ownerWindow.document),
     sidebar: inspectRendererSidebarContract(ownerWindow.document),
     transcript: inspectRendererTranscriptContract(ownerWindow.document),
+    codexUsageGate: codexUsageGateCounts(composers),
     fork: inspectRendererForkContract(ownerWindow.document),
     production: {
       bindingPresent: binding !== undefined,

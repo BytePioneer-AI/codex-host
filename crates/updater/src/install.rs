@@ -2,7 +2,8 @@
 use std::env;
 use std::error::Error;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-use std::fs::{self, File};
+use std::fs;
+use std::fs::File;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::io::Read;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -102,13 +103,27 @@ fn run_checked(command: &mut Command, label: &str) -> Result<(), Box<dyn Error>>
 }
 
 fn install_npm(request: &UpdateRequest, npm: &NpmInstallation) -> Result<(), Box<dyn Error>> {
-    run_checked(
-        Command::new(&npm.node_path)
-            .arg(&npm.npm_cli_path)
-            .args(["install", "--global", "--no-audit", "--no-fund"])
-            .arg(format!("{NPM_PACKAGE_NAME}@{}", request.version)),
-        "npm update",
-    )
+    // The installer runs this step itself for an EXE install. npm does not, so close
+    // what still runs from the platform package (for example a Shim the stopped
+    // Desktop left behind) before npm replaces those locked executables. The shared
+    // Node runtime is not a target.
+    #[cfg(target_os = "windows")]
+    crate::prepare_install::prepare(&npm.npm_package_root)?;
+    let mut command = Command::new(&npm.node_path);
+    command
+        .arg(&npm.npm_cli_path)
+        .args(["install", "--global", "--no-audit", "--no-fund"])
+        .arg(format!("{NPM_PACKAGE_NAME}@{}", request.version));
+    configure_background_command(&mut command);
+    if let Some(log) = operation_log(request, "npm-install.log") {
+        command.stdout(log.try_clone()?).stderr(log);
+    }
+    run_checked(&mut command, "npm update")
+}
+
+/// A diagnostic log beside the operation status; updates proceed without it.
+fn operation_log(request: &UpdateRequest, name: &str) -> Option<File> {
+    File::create(request.status_path.parent()?.join(name)).ok()
 }
 
 #[cfg(target_os = "windows")]
@@ -117,8 +132,22 @@ fn install_windows(
     windows: &WindowsInstallation,
 ) -> Result<(), Box<dyn Error>> {
     verify_artifact(&windows.installer_path, &windows.artifact_sha256)?;
+    // Close the console, Node, Shim and Launcher still running from this
+    // installation. Installers released before `prepare-install` do not, and
+    // Inno aborts a silent install when Restart Manager cannot close them.
+    crate::prepare_install::prepare(&windows.install_root)?;
     let mut command = Command::new(&windows.installer_path);
     command.args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"]);
+    // Keep the running installation's directory, and leave Inno's log beside the
+    // operation status for diagnosis.
+    let mut directory = std::ffi::OsString::from("/DIR=");
+    directory.push(&windows.install_root);
+    command.arg(directory);
+    if let Some(operation) = request.status_path.parent() {
+        let mut log = std::ffi::OsString::from("/LOG=");
+        log.push(operation.join("installer.log"));
+        command.arg(log);
+    }
     configure_background_command(&mut command);
     run_checked(&mut command, "Windows installer")?;
     verify_distribution(

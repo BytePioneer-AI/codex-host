@@ -4,9 +4,15 @@
   "private": true,
   "type": "module",
   "files": [
-    "dist"
+    "dist",
+    "manifest.json",
+    "assets"
   ],
   "exports": {
+    "./plugin": {
+      "types": "./dist/plugin.d.ts",
+      "import": "./dist/plugin.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"

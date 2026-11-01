@@ -92,34 +92,19 @@ function id(value: JsonObject, name: string): string {
 }
 
 function pageEntries<T>(
-  values: T[],
+  values: Iterable<T>,
   key: (value: T) => string,
-  input: {
-    cursor: JsonValue | undefined;
-    limit: JsonValue | undefined;
-    sortDirection: JsonValue | undefined;
-  },
-  fallbackDirection: SortDirection,
-  filter: (value: T) => boolean = () => true,
+  limit: number,
 ): { data: T[]; nextCursor: string | null; backwardsCursor: string | null } {
-  const direction = sortDirection(input.sortDirection, fallbackDirection);
-  const cursor = parseCursor(input.cursor);
-  const ordered = direction === "asc" ? values : [...values].reverse();
-  let start = 0;
-  if (cursor) {
-    const anchorIndex = ordered.findIndex((value) => key(value) === cursor.anchor);
-    if (anchorIndex < 0) {
-      throw new ExternalHistoryRequestError("cursor anchor is no longer present");
+  const data: T[] = [];
+  let hasMore = false;
+  for (const value of values) {
+    if (data.length === limit) {
+      hasMore = true;
+      break;
     }
-    start = anchorIndex + (cursor.includeAnchor ? 0 : 1);
+    data.push(value);
   }
-  const limit = pageSize(input.limit);
-  // Cursors describe positions in the full Thread history. Filters such as
-  // turnId narrow the rows returned after applying that global boundary; they
-  // must not redefine the cursor's scope.
-  const eligible = ordered.slice(start).filter(filter);
-  const data = eligible.slice(0, limit);
-  const hasMore = data.length < eligible.length;
   return {
     data,
     nextCursor:
@@ -128,17 +113,36 @@ function pageEntries<T>(
   };
 }
 
+function* turnEntries(
+  turns: JsonObject[],
+  direction: SortDirection,
+  cursor: Cursor | null,
+): Generator<JsonObject> {
+  const step = direction === "asc" ? 1 : -1;
+  let start = step === 1 ? 0 : turns.length - 1;
+  if (cursor) {
+    const matches = (turn: JsonObject) => id(turn, "Turn") === cursor.anchor;
+    const anchorIndex = step === 1 ? turns.findIndex(matches) : turns.findLastIndex(matches);
+    if (anchorIndex < 0) {
+      throw new ExternalHistoryRequestError("cursor anchor is no longer present");
+    }
+    start = anchorIndex + (cursor.includeAnchor ? 0 : step);
+  }
+  for (let index = start; index >= 0 && index < turns.length; index += step) {
+    yield turns[index] as JsonObject;
+  }
+}
+
 function turnWithItemsView(turn: JsonObject, view: ItemsView): JsonObject {
-  const items = Array.isArray(turn.items)
-    ? turn.items.filter(
-        (item): item is JsonObject =>
-          typeof item === "object" && item !== null && !Array.isArray(item),
-      )
-    : [];
-  if (view === "full") return { ...turn, items, itemsView: "full" };
   if (view === "notLoaded") return { ...turn, items: [], itemsView: "notLoaded" };
-  const user = items.find((item) => item.type === "userMessage");
-  const agent = items.findLast((item) => item.type === "agentMessage");
+  const items = Array.isArray(turn.items) ? turn.items : [];
+  if (view === "full") return { ...turn, items: items.filter(isItem), itemsView: "full" };
+  const user = items.find(
+    (item): item is JsonObject => isItem(item) && item.type === "userMessage",
+  );
+  const agent = items.findLast(
+    (item): item is JsonObject => isItem(item) && item.type === "agentMessage",
+  );
   return {
     ...turn,
     items:
@@ -148,15 +152,12 @@ function turnWithItemsView(turn: JsonObject, view: ItemsView): JsonObject {
 }
 
 export function listExternalTurns(turns: JsonObject[], params: JsonObject): ExternalHistoryPage {
+  const direction = sortDirection(params.sortDirection, "desc");
+  const cursor = parseCursor(params.cursor);
   const page = pageEntries(
-    turns,
+    turnEntries(turns, direction, cursor),
     (turn) => id(turn, "Turn"),
-    {
-      cursor: params.cursor,
-      limit: params.limit,
-      sortDirection: params.sortDirection,
-    },
-    "desc",
+    pageSize(params.limit),
   );
   const view = itemsView(params.itemsView);
   return {
@@ -165,30 +166,80 @@ export function listExternalTurns(turns: JsonObject[], params: JsonObject): Exte
   };
 }
 
-function itemEntries(turns: JsonObject[]): ItemEntry[] {
-  return turns.flatMap((turn) => {
+function isItem(value: JsonValue | undefined): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function itemAnchor(
+  turns: JsonObject[],
+  cursor: Cursor,
+  direction: SortDirection,
+): { turnIndex: number; itemIndex: number } {
+  let anchor: unknown;
+  try {
+    anchor = JSON.parse(cursor.anchor);
+  } catch {
+    // An unmatched key is a stale anchor, even if it is not a JSON pair.
+  }
+  if (
+    Array.isArray(anchor) &&
+    anchor.length === 2 &&
+    anchor.every((part) => typeof part === "string" && part.length > 0) &&
+    JSON.stringify(anchor) === cursor.anchor
+  ) {
+    const matchesTurn = (turn: JsonObject) => id(turn, "Turn") === anchor[0];
+    const turnIndex =
+      direction === "asc" ? turns.findIndex(matchesTurn) : turns.findLastIndex(matchesTurn);
+    const items = turns[turnIndex]?.items;
+    if (Array.isArray(items)) {
+      const matchesItem = (item: JsonValue) => isItem(item) && id(item, "Item") === anchor[1];
+      const itemIndex =
+        direction === "asc" ? items.findIndex(matchesItem) : items.findLastIndex(matchesItem);
+      if (itemIndex >= 0) return { turnIndex, itemIndex };
+    }
+  }
+  throw new ExternalHistoryRequestError("cursor anchor is no longer present");
+}
+
+function* itemEntries(
+  turns: JsonObject[],
+  direction: SortDirection,
+  cursor: Cursor | null,
+  turnId: string | null,
+): Generator<ItemEntry> {
+  const step = direction === "asc" ? 1 : -1;
+  // Resolve the anchor in the full history before filtering by Turn. Desktop
+  // can reuse the global Item head cursor while loading individual Turns.
+  const anchor = cursor ? itemAnchor(turns, cursor, direction) : null;
+  const startTurn = anchor?.turnIndex ?? (step === 1 ? 0 : turns.length - 1);
+  for (let turnIndex = startTurn; turnIndex >= 0 && turnIndex < turns.length; turnIndex += step) {
+    const turn = turns[turnIndex] as JsonObject;
     const currentTurnId = id(turn, "Turn");
-    if (!Array.isArray(turn.items)) return [];
-    return turn.items.flatMap((item) => {
-      if (typeof item !== "object" || item === null || Array.isArray(item)) return [];
-      const itemId = id(item, "Item");
-      return [{ key: JSON.stringify([currentTurnId, itemId]), turnId: currentTurnId, item }];
-    });
-  });
+    if (turnId !== null && currentTurnId !== turnId) continue;
+    const items = turn.items;
+    if (!Array.isArray(items)) continue;
+    const startItem =
+      anchor && turnIndex === anchor.turnIndex
+        ? anchor.itemIndex + (cursor?.includeAnchor ? 0 : step)
+        : step === 1
+          ? 0
+          : items.length - 1;
+    for (let itemIndex = startItem; itemIndex >= 0 && itemIndex < items.length; itemIndex += step) {
+      const item = items[itemIndex];
+      if (!isItem(item)) continue;
+      yield { key: JSON.stringify([currentTurnId, id(item, "Item")]), turnId: currentTurnId, item };
+    }
+  }
 }
 
 export function listExternalItems(turns: JsonObject[], params: JsonObject): ExternalHistoryPage {
   const turnId = optionalText(params.turnId, "turnId");
+  const direction = sortDirection(params.sortDirection, "asc");
+  const cursor = parseCursor(params.cursor);
   const page = pageEntries(
-    itemEntries(turns),
+    itemEntries(turns, direction, cursor, turnId),
     (entry) => entry.key,
-    {
-      cursor: params.cursor,
-      limit: params.limit,
-      sortDirection: params.sortDirection,
-    },
-    "asc",
-    (entry) => turnId === null || entry.turnId === turnId,
+    pageSize(params.limit),
   );
   return {
     ...page,

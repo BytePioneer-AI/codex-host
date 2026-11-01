@@ -20,6 +20,7 @@ describe("Renderer contract audit inspectors", () => {
       ownerDocument: { defaultView: null },
     } as unknown as HTMLElement;
     const send = {
+      closest: () => null,
       type: "submit",
       parentElement: { children: [], parentElement: null },
       hasAttribute: () => false,
@@ -27,6 +28,8 @@ describe("Renderer contract audit inspectors", () => {
       querySelectorAll: () => list([]),
     } as unknown as HTMLButtonElement;
     const composer = {
+      closest: () => null,
+      querySelector: () => null,
       hidden: false,
       getAttribute: () => null,
       getBoundingClientRect: () => ({ width: 600, height: 120 }),
@@ -52,8 +55,8 @@ describe("Renderer contract audit inspectors", () => {
   it("reports inactive Settings, Sidebar, and Fork surfaces with zero counts", () => {
     const root = { querySelectorAll: () => list([]) } as unknown as Document;
     expect(inspectRendererSettingsContract(root)).toEqual({
-      headerCount: 0,
-      visibleHeaderCount: 0,
+      railCount: 0,
+      visibleRailCount: 0,
       insertionPointCount: 0,
     });
     expect(inspectRendererSidebarContract(root)).toEqual({

@@ -1,12 +1,25 @@
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 
+export type {
+  HarnessCredentialTransfer,
+  HarnessCredentialExport,
+  HarnessCredentialImports,
+} from "./credential-imports.js";
+export { parseHarnessAccountCredits } from "./account-credits.js";
 export { validateHostApprovalResponse } from "./approval.js";
 export { validateHostInteractionResponse } from "./interaction.js";
 export { HarnessOutputChannel } from "./output-channel.js";
-export { sanitizeDiagnosticTail } from "./diagnostics.js";
+export { sanitizeDiagnosticTail, filterAmbientNodeWarnings } from "./diagnostics.js";
 export { validateHostQuestionResponse } from "./question.js";
-export { parseHostUsage } from "./usage.js";
-export type { HostUsage } from "./usage.js";
+export { unsupportedSteer } from "./steer.js";
+export { hostDerivedUsageFields, parseHostUsage, parseHostUsageRequest } from "./usage.js";
+export type { HostUsage, HostUsageCostSource, HostUsageRequest } from "./usage.js";
+export type {
+  HarnessUsageEntry,
+  HarnessUsageSession,
+  HarnessUsageSource,
+  HarnessUsageStatisticsCapability,
+} from "./usage-statistics.js";
 export type {
   AutonomousTurnStartedEvent,
   CreateSessionInput,
@@ -29,7 +42,11 @@ export type {
   HarnessResult,
   HarnessSession,
   HarnessSessionCapabilities,
+  HarnessSessionImportCandidate,
+  HarnessSessionImportCapability,
+  HarnessSessionImportSource,
   HarnessSubagentCapability,
+  HarnessWebUiAction,
   HarnessSessionState,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
@@ -56,6 +73,7 @@ export type {
   HostQuestionInteraction,
   HostQuestionResponse,
   HostReasoningItem,
+  HostUserMessageItem,
   HostSubagentDelegationItem,
   HostSubagentState,
   HostSubagentStatus,
@@ -69,6 +87,7 @@ export type {
   InteractionRespondAccepted,
   InteractionRespondCommand,
   ItemCompletedEvent,
+  ItemDetachedEvent,
   ItemStartedEvent,
   InspectHarnessInput,
   ItemUpdatedEvent,
@@ -83,12 +102,16 @@ export type {
   SessionStateChangedEvent,
   SessionUsageChangedEvent,
   SubagentStateChangedEvent,
+  UsageHistoryEvent,
+  UsageRequestEvent,
   SubagentTranscriptChangedEvent,
   ThinkingSelectCommand,
   ThinkingSelectCompleted,
   TurnCompletedEvent,
   TurnCancelAccepted,
   TurnCancelCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
   TurnOutcome,
   TurnStartAccepted,
   TurnStartCommand,
@@ -99,3 +122,13 @@ export const packageMetadata = {
   name: "@codexhost/harness-adapter",
   contractVersion: WORKSPACE_CONTRACT_VERSION,
 } as const;
+export {
+  COMMON_EXCLUDED_LIVE_COMMAND_PREFIXES,
+  COMMON_EXCLUDED_LIVE_COMMANDS,
+  LiveHarnessCommandCatalog,
+  isExcludedLiveCommand,
+  liveHarnessCommandPrompt,
+  mergeLiveHarnessCommands,
+  type LiveCommandExclusions,
+  type LiveHarnessCommand,
+} from "./live-command-catalog.js";

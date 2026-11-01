@@ -1,16 +1,10 @@
 import type { OpencodeClient } from "@opencode-ai/sdk/v2/client";
-import type {
-  AssistantMessage,
-  PermissionRuleset,
-  QuestionAnswer,
-  SessionStatus,
-} from "@opencode-ai/sdk/v2";
+import type { PermissionRuleset, QuestionAnswer, SessionStatus } from "@opencode-ai/sdk/v2";
 
 import type { OpenCodeMessageWithParts } from "./history.js";
 import type { OpenCodeNativeModelRef } from "./model-catalog.js";
 import {
   OpenCodeTransportError,
-  type OpenCodeCommandInput,
   type OpenCodePromptInput,
   type OpenCodeProviderCatalogResponse,
   type OpenCodeTransport,
@@ -123,14 +117,6 @@ export class SdkOpenCodeTransport implements OpenCodeTransport {
     );
   }
 
-  async commands() {
-    const client = await this.#getClient();
-    return responseData(
-      await withTimeout(client.command.list(), this.#commandTimeoutMs, "OpenCode Command list"),
-      "Command list",
-    );
-  }
-
   async createSession(
     input: {
       model?: OpenCodeNativeModelRef;
@@ -181,6 +167,14 @@ export class SdkOpenCodeTransport implements OpenCodeTransport {
         "OpenCode Session read",
       ),
       "Session read",
+    );
+  }
+
+  async getPaths() {
+    const client = await this.#getClient();
+    return responseData(
+      await withTimeout(client.path.get(), this.#commandTimeoutMs, "OpenCode Path read"),
+      "Path read",
     );
   }
 
@@ -291,26 +285,6 @@ export class SdkOpenCodeTransport implements OpenCodeTransport {
         "OpenCode prompt admission",
       ),
       "prompt admission",
-    );
-  }
-
-  async executeCommand(
-    input: OpenCodeCommandInput,
-  ): Promise<OpenCodeMessageWithParts & { info: AssistantMessage }> {
-    const client = await this.#getClient();
-    return responseData(
-      await withTimeout(
-        client.session.command({
-          sessionID: input.sessionID,
-          command: input.command,
-          arguments: input.arguments,
-          ...(input.model ? { model: `${input.model.providerID}/${input.model.modelID}` } : {}),
-          ...(input.variant ? { variant: input.variant } : {}),
-        }),
-        this.#commandTimeoutMs,
-        "OpenCode command admission",
-      ),
-      "command admission",
     );
   }
 

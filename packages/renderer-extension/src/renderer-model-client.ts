@@ -1,10 +1,70 @@
 import {
+  DELEGATION_READ_METHOD,
+  delegationReadParamsSchema,
+  type DelegationReadParams,
+  REMOTE_SSH_SETUP_METHOD,
+  remoteSshSetupResultSchema,
+  remoteSshSetupParamsSchema,
+  type RemoteSshSetupParams,
+  type RemoteSshSetupResult,
+  RUNTIME_STATUS_METHOD,
+  REMOTE_UPDATE_METHOD,
+  runtimeStatusSchema,
+  type RuntimeStatus,
+} from "@codexhost/shared-contracts";
+import {
+  type HarnessInstallationParams,
+  type HarnessInstallationState,
+  HARNESS_DISPLAY_GET_METHOD,
+  HARNESS_DISPLAY_SET_METHOD,
+  harnessDisplaySettingsSchema,
+  type HarnessDisplaySet,
+  type HarnessDisplaySettings,
+  CONSOLE_OPEN_METHOD,
+  consoleOpenParamsSchema,
+  consoleOpenResultSchema,
+  type ConsoleOpenResult,
+  HARNESS_LAUNCH_SETTINGS_GET_METHOD,
+  HARNESS_LAUNCH_SETTINGS_SET_METHOD,
+  harnessLaunchSettingsGetSchema,
+  harnessLaunchSettingsSetSchema,
+  harnessLaunchSettingsSchema,
+  type HarnessLaunchSettings,
+  type HarnessLaunchSettingsGet,
+  type HarnessLaunchSettingsSet,
+  IDLE_RELEASE_SETTINGS_METHOD,
+  LOADED_SESSIONS_METHOD,
+  loadedSessionsSchema,
+  type LoadedSession,
+  idleReleaseSettingsSchema,
+  type IdleReleaseSettings,
+  harnessAccountInspectParamsSchema,
+  harnessAccountInspectResultSchema,
+  harnessAccountSourceListResultSchema,
+  type HarnessAccountInspectParams,
+  type HarnessAccountInspectResult,
+  type HarnessAccountSourceListResult,
+  harnessAccountListParamsSchema,
+  harnessAccountListResultSchema,
+  type HarnessAccountListParams,
+  type HarnessAccountListResult,
+  codexAccountUsageParamsSchema,
+  codexAccountUsageResultSchema,
+  type CodexAccountUsageParams,
+  type CodexAccountUsageResult,
+  codexAccountChangedSchema,
+  codexAccountListResultSchema,
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
   harnessCommandCatalogSchema,
+  harnessCommandsInspectParamsSchema,
   harnessConfigurationStateSchema,
   harnessInspectParamsSchema,
   harnessInspectionSchema,
+  harnessPluginListResultSchema,
+  type HarnessPluginListResult,
+  harnessWebUiOpenParamsSchema,
+  harnessWebUiOpenResultSchema,
   harnessModelSelectionStateSchema,
   hostThreadIdSchema,
   threadInspectionParamsSchema,
@@ -25,10 +85,14 @@ import {
   updateStatusResultSchema,
   type ExternalThreadForkParams,
   type ExternalThreadForkResult,
+  type CodexAccountChanged,
+  type CodexAccountListResult,
   type HarnessCommandCatalog,
+  type HarnessCommandsInspectParams,
   type HarnessConfigurationState,
   type HarnessInspection,
   type HarnessInspectParams,
+  type HarnessWebUiOpenParams,
   type HarnessModelSelectionState,
   type ThreadInspection,
   type ThreadInspectionParams,
@@ -46,10 +110,36 @@ import {
   type UpdateStartResult,
   type UpdateStatusResult,
 } from "@codexhost/shared-contracts";
+import { runRendererInstallation } from "./renderer-installation-client.js";
+
+import {
+  createRendererRequestSender,
+  isUnsupportedMethod,
+  RendererMethodUnavailableError,
+  type RendererRequestOptions,
+} from "./renderer-request-sender.js";
+import { verifyNativeCodexThread } from "./renderer-native-thread.js";
+import {
+  createRendererSessionImportClient,
+  type RendererSessionImportClient,
+} from "./renderer-session-import-client.js";
 
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
+export const HARNESS_PLUGIN_LIST_METHOD = "codexhost/harness/plugins/list";
+import {
+  CREDENTIAL_IMPORTS_METHOD,
+  credentialImportsParamsSchema,
+  credentialImportsResultSchema,
+  type CredentialImportsRequest,
+  type CredentialImportsResult,
+} from "@codexhost/shared-contracts";
+
+export const HARNESS_ACCOUNT_SOURCES_METHOD = "codexhost/harness/accounts/sources";
+export const HARNESS_ACCOUNT_INSPECT_METHOD = "codexhost/harness/accounts/inspect";
+export const HARNESS_WEB_UI_OPEN_METHOD = "codexhost/harness/web-ui/open";
 export const THREAD_FORK_METHOD = "codexhost/thread/fork";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
+export const HARNESS_COMMANDS_INSPECT_METHOD = "codexhost/harness/commands/inspect";
 export const THREAD_COMMANDS_INSPECT_METHOD = "codexhost/thread/commands/inspect";
 export const THREAD_COMMAND_EXECUTE_METHOD = "codexhost/thread/command/execute";
 export const THREAD_MODEL_SELECT_METHOD = "codexhost/thread/model/select";
@@ -59,9 +149,24 @@ export const THREAD_OWNERSHIP_LIST_METHOD = "codexhost/thread/ownership/list";
 export const THREAD_USAGE_INSPECT_METHOD = "codexhost/thread/usage/inspect";
 export const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
 export const THREAD_TOKEN_USAGE_UPDATED_METHOD = "thread/tokenUsage/updated";
+/**
+ * Desktop filters custom usage notifications before native manager callbacks;
+ * renderer-host-clients also observes their raw per-Host window messages.
+ * Native Token updates and Turn completion remain fallback refresh signals,
+ * including for account quota after a reply.
+ */
+export const TURN_COMPLETED_METHOD = "turn/completed";
+const THREAD_USAGE_REFRESH_METHODS = [
+  THREAD_TOKEN_USAGE_UPDATED_METHOD,
+  THREAD_USAGE_UPDATED_METHOD,
+  TURN_COMPLETED_METHOD,
+] as const;
 export const UPDATE_CHECK_METHOD = "codexhost/update/check";
 export const UPDATE_START_METHOD = "codexhost/update/start";
 export const UPDATE_STATUS_METHOD = "codexhost/update/status";
+export const CODEX_ACCOUNT_LIST_METHOD = "codexhost/account/list";
+export const CODEX_ACCOUNT_REFRESH_METHOD = "codexhost/account/refresh";
+export const CODEX_ACCOUNT_CHANGED_METHOD = "codexhost/account/changed";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -70,8 +175,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function notifiedThreadId(notification: unknown): ThreadUsageInspectionParams["threadId"] | null {
   if (
     !isRecord(notification) ||
-    (notification.method !== THREAD_TOKEN_USAGE_UPDATED_METHOD &&
-      notification.method !== THREAD_USAGE_UPDATED_METHOD)
+    !(THREAD_USAGE_REFRESH_METHODS as readonly unknown[]).includes(notification.method)
   ) {
     return null;
   }
@@ -96,12 +200,26 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
   return nested && typeof nested.addNotificationCallback === "function" ? nested : null;
 }
 
-export interface RendererModelClient {
-  currentHostId?(): string | null;
+export interface RendererModelClient extends Partial<RendererSessionImportClient> {
+  installation?(input: HarnessInstallationParams): Promise<HarnessInstallationState>;
+  getHarnessDisplaySettings?(): Promise<HarnessDisplaySettings>;
+  setHarnessDisplaySettings?(input: HarnessDisplaySet): Promise<HarnessDisplaySettings>;
+  getHarnessLaunchSettings?(input: HarnessLaunchSettingsGet): Promise<HarnessLaunchSettings>;
+  setHarnessLaunchSettings?(input: HarnessLaunchSettingsSet): Promise<HarnessLaunchSettings>;
+  setIdleReleaseSettings?(settings: IdleReleaseSettings): Promise<IdleReleaseSettings>;
+  listLoadedSessions?(): Promise<LoadedSession[]>;
+  currentHostId?(composer?: Element): string | null;
+  knownHostIds?(): readonly string[];
+  listHarnessPlugins?(): Promise<HarnessPluginListResult>;
   clientForHost?(hostId: string): RendererModelClient | null;
   forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
-  inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
+  inspectHarness(
+    input: HarnessInspectParams,
+    options?: RendererRequestOptions,
+  ): Promise<HarnessInspection>;
+  openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
+  inspectHarnessCommands(input: HarnessCommandsInspectParams): Promise<HarnessCommandCatalog>;
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
@@ -112,28 +230,57 @@ export interface RendererModelClient {
   selectThreadPermissionMode(
     input: ThreadPermissionModeSelectParams,
   ): Promise<HarnessConfigurationState>;
-  checkUpdate(): Promise<UpdateCheckResult>;
+  setupSsh?(input: RemoteSshSetupParams): Promise<RemoteSshSetupResult>;
+  readDelegationThread?(input: DelegationReadParams): Promise<unknown>;
+  runtimeStatus?(): Promise<RuntimeStatus>;
+  updateRemote?(version: string): Promise<RuntimeStatus>;
+  checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
+  openConsole?(): Promise<ConsoleOpenResult>;
+  inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
+  listHarnessAccountSources?(): Promise<HarnessAccountSourceListResult>;
+  inspectHarnessAccount?(input: HarnessAccountInspectParams): Promise<HarnessAccountInspectResult>;
+  listHarnessAccounts?(input?: HarnessAccountListParams): Promise<HarnessAccountListResult>;
+  credentialImports?(
+    request: CredentialImportsRequest,
+    targetHarnessId?: string,
+  ): Promise<CredentialImportsResult>;
+  listCodexAccounts(): Promise<CodexAccountListResult>;
+  refreshCodexAccounts(): Promise<CodexAccountListResult>;
+  subscribeCodexAccounts?(listener: (state: CodexAccountChanged) => void): () => void;
 }
 
 export function createThreadUsageSubscriptionRelay(): {
-  connect(client: Pick<RendererModelClient, "subscribeThreadUsage">): void;
+  connect(client: Pick<RendererModelClient, "subscribeThreadUsage"> | null): void;
   subscribe(listener: (update: ThreadUsageInspection) => void): () => void;
   dispose(): void;
 } {
   const listeners = new Set<(update: ThreadUsageInspection) => void>();
   let removeNotificationCallback: (() => void) | null = null;
+  let connectedClient: Pick<RendererModelClient, "subscribeThreadUsage"> | null = null;
+  let generation = 0;
+  const disconnect = (): void => {
+    generation += 1;
+    removeNotificationCallback?.();
+    removeNotificationCallback = null;
+    connectedClient = null;
+  };
   return {
     connect(client) {
-      if (removeNotificationCallback || listeners.size === 0) return;
+      if (client === connectedClient && removeNotificationCallback) return;
+      disconnect();
+      if (!client || listeners.size === 0) return;
+      connectedClient = client;
+      const subscriptionGeneration = generation;
       try {
         removeNotificationCallback =
           client.subscribeThreadUsage?.((update) => {
+            if (subscriptionGeneration !== generation) return;
             for (const listener of listeners) listener(update);
           }) ?? null;
       } catch {
-        removeNotificationCallback = null;
+        disconnect();
       }
     },
     subscribe(listener) {
@@ -141,13 +288,11 @@ export function createThreadUsageSubscriptionRelay(): {
       return () => {
         listeners.delete(listener);
         if (listeners.size > 0) return;
-        removeNotificationCallback?.();
-        removeNotificationCallback = null;
+        disconnect();
       };
     },
     dispose() {
-      removeNotificationCallback?.();
-      removeNotificationCallback = null;
+      disconnect();
       listeners.clear();
     },
   };
@@ -163,13 +308,39 @@ export function createRendererModelClient(
       Required<Pick<RequestManagerCandidate, "sendRequest">> =>
       typeof candidate.sendRequest === "function",
   );
-  const manager = managers[0];
-  if (managers.length !== 1 || !manager) return null;
+  const source = managers[0];
+  if (managers.length !== 1 || !source) return null;
+  const manager = {
+    sendRequest: createRendererRequestSender((method, params, options) =>
+      options === undefined
+        ? source.sendRequest(method, params)
+        : source.sendRequest(method, params, options),
+    ),
+  };
 
-  const inspectHarness = async (input: HarnessInspectParams): Promise<HarnessInspection> => {
+  const inspectHarness = async (
+    input: HarnessInspectParams,
+    options?: RendererRequestOptions,
+  ): Promise<HarnessInspection> => {
     const params = harnessInspectParamsSchema.parse(input);
-    const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params);
+    let result: unknown;
+    try {
+      result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params, options);
+    } catch (error) {
+      // Hosts that predate `purpose` reject it as an unknown param; they only run full inspection.
+      if (!params.purpose || !isInvalidParams(error)) throw error;
+      const full = { ...params };
+      delete full.purpose;
+      result = await manager.sendRequest(HARNESS_INSPECT_METHOD, full, options);
+    }
     return harnessInspectionSchema.parse(result);
+  };
+  const inspectHarnessCommands = async (
+    input: HarnessCommandsInspectParams,
+  ): Promise<HarnessCommandCatalog> => {
+    const params = harnessCommandsInspectParamsSchema.parse(input);
+    const result = await manager.sendRequest(HARNESS_COMMANDS_INSPECT_METHOD, params);
+    return harnessCommandCatalogSchema.parse(result);
   };
   const inspectThreadCommands = async (
     input: ThreadCommandsInspectParams,
@@ -215,17 +386,84 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {
+      return runRendererInstallation(manager.sendRequest, input);
+    },
+    async getHarnessDisplaySettings() {
+      return harnessDisplaySettingsSchema.parse(
+        await manager.sendRequest(HARNESS_DISPLAY_GET_METHOD, {}),
+      );
+    },
+    async setHarnessDisplaySettings(input: HarnessDisplaySet) {
+      return harnessDisplaySettingsSchema.parse(
+        await manager.sendRequest(HARNESS_DISPLAY_SET_METHOD, input),
+      );
+    },
+    async getHarnessLaunchSettings(
+      input: HarnessLaunchSettingsGet,
+    ): Promise<HarnessLaunchSettings> {
+      return harnessLaunchSettingsSchema.parse(
+        await manager.sendRequest(
+          HARNESS_LAUNCH_SETTINGS_GET_METHOD,
+          harnessLaunchSettingsGetSchema.parse(input),
+        ),
+      );
+    },
+    async setHarnessLaunchSettings(
+      input: HarnessLaunchSettingsSet,
+    ): Promise<HarnessLaunchSettings> {
+      return harnessLaunchSettingsSchema.parse(
+        await manager.sendRequest(
+          HARNESS_LAUNCH_SETTINGS_SET_METHOD,
+          harnessLaunchSettingsSetSchema.parse(input),
+        ),
+      );
+    },
+    async listLoadedSessions(): Promise<LoadedSession[]> {
+      return loadedSessionsSchema.parse(await manager.sendRequest(LOADED_SESSIONS_METHOD, {}));
+    },
+    async setIdleReleaseSettings(settings: IdleReleaseSettings): Promise<IdleReleaseSettings> {
+      const params = idleReleaseSettingsSchema.parse(settings);
+      return idleReleaseSettingsSchema.parse(
+        await manager.sendRequest(IDLE_RELEASE_SETTINGS_METHOD, params),
+      );
+    },
+    ...createRendererSessionImportClient(async (method, params) =>
+      manager.sendRequest(method, params),
+    ),
     async forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult> {
       const params = externalThreadForkParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_FORK_METHOD, params);
       return externalThreadForkResultSchema.parse(result);
     },
     inspectHarness,
+    async listHarnessPlugins(): Promise<HarnessPluginListResult> {
+      return harnessPluginListResultSchema.parse(
+        await manager.sendRequest(HARNESS_PLUGIN_LIST_METHOD, {}),
+      );
+    },
+    async openHarnessWebUi(input: HarnessWebUiOpenParams): Promise<void> {
+      const params = harnessWebUiOpenParamsSchema.parse(input);
+      const result = await manager.sendRequest(HARNESS_WEB_UI_OPEN_METHOD, params);
+      harnessWebUiOpenResultSchema.parse(result);
+    },
     async inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection> {
       const params = threadInspectionParamsSchema.parse(input);
-      const result = await manager.sendRequest(THREAD_INSPECT_METHOD, params);
+      let result: unknown;
+      try {
+        result = await manager.sendRequest(THREAD_INSPECT_METHOD, params);
+      } catch (error) {
+        if (!(error instanceof RendererMethodUnavailableError)) throw error;
+
+        // Stock Codex has no Host inspection API. Verify its native Thread on
+        // this same connection; neither an RPC failure nor a missing Account
+        // establishes ownership. Match the external markers used by the Host.
+        await verifyNativeCodexThread(manager.sendRequest, params.threadId);
+        return { owner: "codex", locked: true };
+      }
       return threadInspectionSchema.parse(result);
     },
+    inspectHarnessCommands,
     inspectThreadCommands,
     executeThreadCommand,
     async listThreadOwnership(
@@ -244,14 +482,14 @@ export function createRendererModelClient(
     },
     inspectThreadUsage,
     subscribeThreadUsage(listener: (update: ThreadUsageInspection) => void): () => void {
-      const notifications = notificationTarget(manager);
+      const notifications = notificationTarget(source);
       if (!notifications?.addNotificationCallback) {
         throw new Error("Renderer Usage notification callback is unavailable");
       }
       let disposed = false;
       const generations = new Map<ThreadUsageInspectionParams["threadId"], number>();
       const removeNotificationCallback = notifications.addNotificationCallback(
-        [THREAD_TOKEN_USAGE_UPDATED_METHOD, THREAD_USAGE_UPDATED_METHOD],
+        THREAD_USAGE_REFRESH_METHODS,
         (notification) => {
           const threadId = notifiedThreadId(notification);
           if (!threadId) return;
@@ -274,12 +512,35 @@ export function createRendererModelClient(
     selectThreadModel,
     selectThreadThinking,
     selectThreadPermissionMode,
-    async checkUpdate(): Promise<UpdateCheckResult> {
+    async setupSsh(input: RemoteSshSetupParams) {
+      return remoteSshSetupResultSchema.parse(
+        await manager.sendRequest(REMOTE_SSH_SETUP_METHOD, remoteSshSetupParamsSchema.parse(input)),
+      );
+    },
+    async readDelegationThread(input: DelegationReadParams) {
+      return source.sendRequest(DELEGATION_READ_METHOD, delegationReadParamsSchema.parse(input));
+    },
+    async runtimeStatus() {
+      // Asked directly rather than through the remembering sender: an outdated remote
+      // service can be updated in place, after which this method starts answering.
+      try {
+        return runtimeStatusSchema.parse(await source.sendRequest(RUNTIME_STATUS_METHOD, {}));
+      } catch (error) {
+        if (!isUnsupportedMethod(error, RUNTIME_STATUS_METHOD)) throw error;
+        throw new RendererMethodUnavailableError(RUNTIME_STATUS_METHOD, error);
+      }
+    },
+    async updateRemote(version: string) {
+      return runtimeStatusSchema.parse(
+        await manager.sendRequest(REMOTE_UPDATE_METHOD, { version }),
+      );
+    },
+    async checkUpdate(): Promise<UpdateCheckResult | null> {
       const result = await manager.sendRequest(
         UPDATE_CHECK_METHOD,
         updateEmptyParamsSchema.parse({}),
       );
-      return updateCheckResultSchema.parse(result);
+      return updateCheckResultSchema.nullable().parse(result);
     },
     async startUpdate(): Promise<UpdateStartResult> {
       const result = await manager.sendRequest(
@@ -295,5 +556,80 @@ export function createRendererModelClient(
       );
       return updateStatusResultSchema.parse(result);
     },
+    async openConsole(): Promise<ConsoleOpenResult> {
+      const result = await manager.sendRequest(
+        CONSOLE_OPEN_METHOD,
+        consoleOpenParamsSchema.parse({}),
+      );
+      return consoleOpenResultSchema.parse(result);
+    },
+    async inspectCodexAccountUsage(
+      input: CodexAccountUsageParams,
+    ): Promise<CodexAccountUsageResult> {
+      const result = await manager.sendRequest(
+        "codexhost/account/usage/inspect",
+        codexAccountUsageParamsSchema.parse(input),
+      );
+      return codexAccountUsageResultSchema.parse(result);
+    },
+    async listHarnessAccountSources(): Promise<HarnessAccountSourceListResult> {
+      return harnessAccountSourceListResultSchema.parse(
+        await manager.sendRequest(HARNESS_ACCOUNT_SOURCES_METHOD, {}),
+      );
+    },
+    async inspectHarnessAccount(
+      input: HarnessAccountInspectParams,
+    ): Promise<HarnessAccountInspectResult> {
+      return harnessAccountInspectResultSchema.parse(
+        await manager.sendRequest(
+          HARNESS_ACCOUNT_INSPECT_METHOD,
+          harnessAccountInspectParamsSchema.parse(input),
+        ),
+      );
+    },
+    async credentialImports(
+      request: CredentialImportsRequest,
+      targetHarnessId?: string,
+    ): Promise<CredentialImportsResult> {
+      return credentialImportsResultSchema.parse(
+        await manager.sendRequest(
+          CREDENTIAL_IMPORTS_METHOD,
+          credentialImportsParamsSchema.parse({ request, targetHarnessId }),
+        ),
+      );
+    },
+    async listHarnessAccounts(
+      input: HarnessAccountListParams = {},
+    ): Promise<HarnessAccountListResult> {
+      return harnessAccountListResultSchema.parse(
+        await manager.sendRequest(
+          "codexhost/harness/accounts/list",
+          harnessAccountListParamsSchema.parse(input),
+        ),
+      );
+    },
+    async listCodexAccounts(): Promise<CodexAccountListResult> {
+      const result = await manager.sendRequest(CODEX_ACCOUNT_LIST_METHOD, {});
+      return codexAccountListResultSchema.parse(result);
+    },
+    async refreshCodexAccounts(): Promise<CodexAccountListResult> {
+      const result = await manager.sendRequest(CODEX_ACCOUNT_REFRESH_METHOD, {});
+      return codexAccountListResultSchema.parse(result);
+    },
+    subscribeCodexAccounts(listener: (state: CodexAccountChanged) => void): () => void {
+      const notifications = notificationTarget(source);
+      if (!notifications?.addNotificationCallback) {
+        throw new Error("Renderer Account notification callback is unavailable");
+      }
+      return notifications.addNotificationCallback(CODEX_ACCOUNT_CHANGED_METHOD, (notification) => {
+        if (!isRecord(notification) || notification.method !== CODEX_ACCOUNT_CHANGED_METHOD) return;
+        const state = codexAccountChangedSchema.safeParse(notification.params);
+        if (state.success) listener(state.data);
+      });
+    },
   });
+}
+
+function isInvalidParams(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === -32602;
 }

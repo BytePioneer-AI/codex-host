@@ -1,14 +1,27 @@
-import { parsePatch } from "diff";
+import { createOmpUsageStatistics } from "./omp-usage-statistics.js";
+import {
+  listOmpModels,
+  type OmpModelListInput,
+  type OmpModelListResult,
+} from "./omp-model-list.js";
+import { createTwoFilesPatch, parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
+import { realpath, stat } from "node:fs/promises";
+import path from "node:path";
 
 import {
   HarnessOutputChannel,
+  liveHarnessCommandPrompt,
+  mergeLiveHarnessCommands,
+  validateHostApprovalResponse,
+  validateHostQuestionResponse,
   type HarnessAdapter,
   type HarnessCommandAccepted,
   type HarnessCommandCapability,
   type HarnessCommandInvocation,
   type HarnessError,
   type HarnessInspection,
+  type HarnessModelCatalog,
   type HarnessModelRef,
   type HarnessOutput,
   type HarnessResult,
@@ -19,6 +32,7 @@ import {
   type HarnessThinkingOptionId,
   type InspectHarnessInput,
   type HostAgentMessageItem,
+  type HostApprovalInteraction,
   type HostCommand,
   type HostCommandExecutionItem,
   type HostContextCompactionItem,
@@ -26,9 +40,8 @@ import {
   type HostFileChange,
   type HostItem,
   type HostItemOutcome,
+  type HostQuestionInteraction,
   type HostReasoningItem,
-  type HostSubagentDelegationItem,
-  type HostSubagentState,
   type HostSubagentStatus,
   type HostToolOutput,
   type InteractionRespondAccepted,
@@ -40,6 +53,7 @@ import {
   type PermissionModeSelectCompleted,
   type HostThreadSnapshot,
   type HostUsage,
+  type HostUsageRequest,
   type ThinkingSelectCommand,
   type ThinkingSelectCompleted,
   type TurnCancelAccepted,
@@ -47,18 +61,23 @@ import {
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
+  unsupportedSteer,
 } from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
+  type HarnessCommandCatalog,
   harnessIdSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
+  hostInteractionIdSchema,
   hostItemIdSchema,
-  hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   type HarnessId,
   type HarnessPermissionModeId,
+  type HostInteractionId,
   type HostItemId,
   type HostTurnId,
   type JsonValue,
@@ -67,12 +86,22 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
+import {
+  OMP_LIVE_COMMAND_ID_PREFIX,
+  ompLiveCommands,
+  type OmpAvailableCommand,
+} from "./omp-slash-commands.js";
 import { mapOmpSnapshot, resolveOmpForkBoundary, type OmpSessionHistory } from "./omp-history.js";
+import { ompUsageHistory, ompUsageRecord, type OmpUsageObservation } from "./omp-usage.js";
+import { readOmpSessionHistory, verifyOmpSessionCwd } from "./omp-session-file.js";
+import { OmpSessionImport } from "./session-import.js";
 import { rollbackOmpLastTurn } from "./omp-last-turn-rollback.js";
 import {
   OmpRpcFaultError,
   OmpRpcSession,
   OmpRpcUnsupportedCommandError,
+  type OmpInteractionRequest,
+  type OmpInteractionResponse,
   type OmpRpcSessionOptions,
   type OmpSessionState,
   type OmpCompactResult,
@@ -131,18 +160,50 @@ export interface OmpTurnTransport {
     onEvent: (event: OmpTurnEvent) => void,
   ): Promise<OmpCompactResult>;
   runTurn(text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult>;
+  respondToInteraction(response: OmpInteractionResponse): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
+  /** Latest native command list of the running process; absent on older transports. */
+  readonly availableCommands?: readonly OmpAvailableCommand[] | null;
 }
 
 export interface OmpAdapterDependencies {
   createTransport(options: OmpRpcSessionOptions): OmpTurnTransport;
+  listModels?(input: OmpModelListInput): Promise<OmpModelListResult>;
+}
+
+function closedInspection(): HarnessInspection {
+  return {
+    status: "unavailable",
+    error: { code: "invalidState", message: "Omp Adapter is closed", retryable: false },
+  };
+}
+
+function ompInspectionCapabilities(
+  selectThinkingOption: boolean,
+): Extract<HarnessInspection, { status: "ready" }>["capabilities"] {
+  return {
+    configuration: {
+      selectModel: true,
+      selectThinkingOption,
+      selectPermissionMode: true,
+      permissionModeScope: "live",
+    },
+    history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+    subagents: { observe: true, readTranscript: true },
+  };
 }
 
 interface ActiveTool {
   item: HostCommandExecutionItem;
   nativeName: string;
+  arguments: JsonValue;
   startedAtMs: number;
+}
+
+interface ActiveInteraction {
+  interaction: HostApprovalInteraction | HostQuestionInteraction;
+  nativeRequest: OmpInteractionRequest;
 }
 
 interface ActiveTurn {
@@ -153,16 +214,13 @@ interface ActiveTurn {
   sawAssistantMessage: boolean;
   reasoningItem: HostReasoningItem | null;
   tools: Map<string, ActiveTool>;
+  interactions: Map<HostInteractionId, ActiveInteraction>;
+  interactionByNativeId: Map<string, HostInteractionId>;
   subagents: OmpSubagentLifecycle;
   cancellationRequested: boolean;
   beforeNativeTurnKeys: Set<string>;
   completion: Promise<void>;
   resolveCompletion(): void;
-}
-
-interface BackgroundSubagentDelegation {
-  item: HostSubagentDelegationItem;
-  turnId: HostTurnId;
 }
 
 type SessionPhase = "open" | "closing" | "closed" | "faulted";
@@ -173,6 +231,7 @@ const ompCommandCatalog = harnessCommandCatalogSchema.parse({
     {
       id: "omp.compact",
       invocation: "/compact",
+      localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
       label: "Compact context",
       description: "Compact the current conversation context",
       argumentMode: "text",
@@ -316,6 +375,65 @@ function sessionFileFromRef(ref: NativeSessionRef): string {
   return ref.locator.sessionFile;
 }
 
+const MAX_SUBAGENT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
+
+/**
+ * OMP writes each child transcript next to its parent Session file as `<stem>/<subagentId>.jsonl`.
+ * Returns null when the parent Session file does not use that layout, so callers fall back to RPC.
+ */
+function subagentTranscriptPath(
+  parentSessionFile: string,
+  nativeSubagentId: string,
+): string | null {
+  if (
+    nativeSubagentId.includes("/") ||
+    nativeSubagentId.includes("\\") ||
+    nativeSubagentId.includes("\u0000") ||
+    nativeSubagentId === "." ||
+    nativeSubagentId === ".."
+  ) {
+    throw new Error("Omp Subagent ID is not a plain transcript file name");
+  }
+  if (!parentSessionFile.endsWith(".jsonl") || !path.isAbsolute(parentSessionFile)) {
+    return null;
+  }
+  return `${parentSessionFile.slice(0, -".jsonl".length)}/${nativeSubagentId}.jsonl`;
+}
+
+type SubagentTranscriptFile =
+  { status: "read"; history: OmpSessionHistory } | { status: "missing" };
+
+async function readSubagentTranscriptFile(
+  parentSessionFile: string,
+  nativeSubagentId: string,
+): Promise<SubagentTranscriptFile> {
+  const transcriptFile = subagentTranscriptPath(parentSessionFile, nativeSubagentId);
+  if (transcriptFile === null) return { status: "missing" };
+  const parentDirectory = path.dirname(transcriptFile);
+  let metadata;
+  try {
+    metadata = await stat(transcriptFile);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { status: "missing" };
+    throw error;
+  }
+  if (!metadata.isFile()) return { status: "missing" };
+  if (metadata.size > MAX_SUBAGENT_TRANSCRIPT_BYTES) {
+    throw new Error("Omp Subagent transcript exceeds the supported size");
+  }
+  const [resolvedTranscript, resolvedParentDirectory] = await Promise.all([
+    realpath(transcriptFile),
+    realpath(parentDirectory),
+  ]);
+  if (path.dirname(resolvedTranscript) !== resolvedParentDirectory) {
+    throw new Error("Omp Subagent transcript resolves outside its parent Session directory");
+  }
+  return {
+    status: "read",
+    history: await readOmpSessionHistory(transcriptFile, MAX_SUBAGENT_TRANSCRIPT_BYTES),
+  };
+}
+
 function toolFailure(toolName: string): HarnessError {
   return {
     code: "nativeFailure",
@@ -359,7 +477,18 @@ function outputText(output: HostToolOutput | undefined): string {
 }
 
 function stringField(value: JsonValue, key: string): string | undefined {
-  return isRecord(value) && typeof value[key] === "string" ? value[key] : undefined;
+  if (!isRecord(value)) return undefined;
+  const field = value[key];
+  if (typeof field === "string" && field.length > 0) return field;
+  if (isRecord(value.input)) {
+    const nested = value.input[key];
+    if (typeof nested === "string" && nested.length > 0) return nested;
+  }
+  if (isRecord(value.arguments)) {
+    const nested = value.arguments[key];
+    if (typeof nested === "string" && nested.length > 0) return nested;
+  }
+  return undefined;
 }
 
 function numberField(value: JsonValue, key: string): number | null | undefined {
@@ -368,15 +497,74 @@ function numberField(value: JsonValue, key: string): number | null | undefined {
   return typeof field === "number" || field === null ? field : undefined;
 }
 
-function stripDiffPrefix(path: string): string {
-  return path.startsWith("a/") || path.startsWith("b/") ? path.slice(2) : path;
+function stripDiffPrefix(pathString: string | undefined): string {
+  if (typeof pathString !== "string" || pathString.length === 0) return "";
+  return pathString.startsWith("a/") || pathString.startsWith("b/")
+    ? pathString.slice(2)
+    : pathString;
 }
 
-function reliableFileChange(result: JsonValue): HostFileChange[] | null {
-  if (!isRecord(result) || !isRecord(result.details) || typeof result.details.patch !== "string") {
-    return null;
+function displayPath(nativePath: string, cwd: string): { path: string; absolute: boolean } | null {
+  const resolvedCwd = path.resolve(cwd);
+  const resolvedPath = path.isAbsolute(nativePath)
+    ? path.resolve(nativePath)
+    : path.resolve(cwd, nativePath);
+  const relative = path.relative(resolvedCwd, resolvedPath);
+  const inside = relative.length > 0 && relative !== ".." && !relative.startsWith(`..${path.sep}`);
+  const selected = inside ? relative : resolvedPath;
+  const normalized = selected.replaceAll("\\", "/");
+  if (normalized.length === 0 || normalized === ".") return null;
+  return { path: normalized, absolute: !inside };
+}
+
+function fileMutatingKind(toolName: string): "edit" | "write" | null {
+  const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
+  if (
+    [
+      "edit",
+      "editfile",
+      "fileedit",
+      "strreplace",
+      "searchreplace",
+      "applypatch",
+      "replace",
+    ].includes(lower)
+  ) {
+    return "edit";
   }
-  const patch = result.details.patch;
+  if (["write", "writefile", "filewrite", "create", "createfile"].includes(lower)) return "write";
+  return null;
+}
+
+function nestedToolString(value: unknown, keys: readonly string[]): string | undefined {
+  if (!isRecord(value)) return undefined;
+  for (const key of keys) {
+    const field = value[key];
+    if (typeof field === "string" && field.length > 0) return field;
+  }
+  for (const wrapper of ["input", "arguments", "params", "details"] as const) {
+    const nested = nestedToolString(value[wrapper], keys);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
+function patchFromResult(result: JsonValue): string | undefined {
+  if (!isRecord(result)) return undefined;
+  for (const key of ["patch", "diff", "unifiedDiff"] as const) {
+    const field = result[key];
+    if (typeof field === "string" && field.length > 0) return field;
+  }
+  if (isRecord(result.details)) {
+    for (const key of ["patch", "diff", "unifiedDiff"] as const) {
+      const field = result.details[key];
+      if (typeof field === "string" && field.length > 0) return field;
+    }
+  }
+  return undefined;
+}
+
+function fileChangeFromPatch(patch: string, cwd: string): HostFileChange[] | null {
   let parsed: ReturnType<typeof parsePatch>;
   try {
     parsed = parsePatch(patch);
@@ -385,12 +573,89 @@ function reliableFileChange(result: JsonValue): HostFileChange[] | null {
   }
   const file = parsed[0];
   if (parsed.length !== 1 || !file) return null;
-  const oldFile = file.oldFileName;
-  const newFile = file.newFileName;
-  const kind = oldFile === "/dev/null" ? "add" : newFile === "/dev/null" ? "delete" : "update";
-  const path = stripDiffPrefix(kind === "delete" ? oldFile : newFile);
-  if (!path || path === "/dev/null") return null;
-  return [{ path, kind, unifiedDiff: patch }];
+  const oldFile = typeof file.oldFileName === "string" ? file.oldFileName : undefined;
+  const newFile = typeof file.newFileName === "string" ? file.newFileName : undefined;
+  if (!oldFile && !newFile) return null;
+  const kind =
+    oldFile === "/dev/null" || !oldFile
+      ? "add"
+      : newFile === "/dev/null" || !newFile
+        ? "delete"
+        : "update";
+  const candidate = kind === "delete" ? oldFile : (newFile ?? oldFile);
+  const rawPath = stripDiffPrefix(candidate);
+  if (!rawPath || rawPath === "/dev/null") return null;
+  const displayed = displayPath(rawPath, cwd);
+  if (!displayed) return null;
+  return [{ path: displayed.path, kind, unifiedDiff: patch }];
+}
+
+function synthesizeFileChange(
+  kind: "edit" | "write",
+  args: unknown,
+  cwd: string,
+): HostFileChange[] | null {
+  const filePath = nestedToolString(args, ["path", "file_path", "filePath", "file"]);
+  if (!filePath) return null;
+  const displayed = displayPath(filePath, cwd);
+  if (!displayed) return null;
+  if (kind === "write") {
+    const content = nestedToolString(args, [
+      "content",
+      "new_string",
+      "newString",
+      "newText",
+      "text",
+    ]);
+    if (content === undefined) return null;
+    const oldHeader = "/dev/null";
+    const newHeader = displayed.absolute ? displayed.path : `b/${displayed.path}`;
+    return [
+      {
+        path: displayed.path,
+        kind: "add",
+        unifiedDiff: createTwoFilesPatch(oldHeader, newHeader, "", content, "", "", { context: 3 }),
+        diffScope: "fragment",
+      },
+    ];
+  }
+  const oldText = nestedToolString(args, ["old_string", "oldString", "oldText", "old_text"]);
+  const newText = nestedToolString(args, [
+    "new_string",
+    "newString",
+    "newText",
+    "new_text",
+    "content",
+  ]);
+  if (oldText === undefined || newText === undefined) return null;
+  const oldHeader = displayed.absolute ? displayed.path : `a/${displayed.path}`;
+  const newHeader = displayed.absolute ? displayed.path : `b/${displayed.path}`;
+  return [
+    {
+      path: displayed.path,
+      kind: "update",
+      unifiedDiff: createTwoFilesPatch(oldHeader, newHeader, oldText, newText, "", "", {
+        context: 3,
+      }),
+      diffScope: "fragment",
+    },
+  ];
+}
+
+function reliableFileChange(
+  toolName: string,
+  args: unknown,
+  result: JsonValue,
+  cwd: string,
+): HostFileChange[] | null {
+  const kind = fileMutatingKind(toolName);
+  if (!kind) return null;
+  const patch = patchFromResult(result);
+  if (patch) {
+    const fromPatch = fileChangeFromPatch(patch, cwd);
+    if (fromPatch) return fromPatch;
+  }
+  return synthesizeFileChange(kind, args, cwd) ?? synthesizeFileChange(kind, result, cwd);
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -425,9 +690,6 @@ class OmpHarnessSession implements HarnessSession {
   #usage: HostUsage | null;
   #usageGeneration = 0;
   #usageRefreshSequence = 0;
-  #backgroundTurnId: HostTurnId | null = null;
-  #backgroundSubagents = new Map<string, BackgroundSubagentDelegation>();
-  #backgroundTurnFailed = false;
 
   constructor(
     cwd: string,
@@ -444,6 +706,7 @@ class OmpHarnessSession implements HarnessSession {
       startedTransport?: OmpTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
+      usageHistory?: { requests: HostUsageRequest[]; complete: boolean };
     },
   ) {
     this.#cwd = cwd;
@@ -466,7 +729,7 @@ class OmpHarnessSession implements HarnessSession {
       subagents: { observe: true, readTranscript: true },
     };
     this.commands = {
-      list: async () => ({ ok: true, value: ompCommandCatalog }),
+      list: async () => ({ ok: true, value: this.#liveCommandCatalog() }),
       execute: (command) => this.#executeHarnessCommand(command),
     };
     this.#transport = options.startedTransport ?? null;
@@ -481,6 +744,21 @@ class OmpHarnessSession implements HarnessSession {
     this.#usage = this.initialUsage;
     this.#state = this.initialState;
     this.outputs = this.#channel.outputs;
+    // A created Session has no native history yet; an opened one replays it for Host metering.
+    const usageHistory =
+      options.usageHistory ??
+      (options.startedTransport
+        ? { requests: [], complete: false }
+        : { requests: [], complete: true });
+    for (const request of usageHistory.requests) this.#event({ type: "usage.request", request });
+    this.#event({ type: "usage.history", complete: usageHistory.complete });
+  }
+
+  handleTransportUsage(observation: OmpUsageObservation): void {
+    if (this.#phase !== "open") return;
+    const record = ompUsageRecord(observation.message, observation);
+    if (record?.kind === "request") this.#event({ type: "usage.request", request: record.request });
+    else if (record?.kind === "missing") this.#event({ type: "usage.history", complete: false });
   }
 
   handleTransportFault(error: OmpRpcFaultError): void {
@@ -503,55 +781,6 @@ class OmpHarnessSession implements HarnessSession {
         : status;
   }
 
-  #ensureBackgroundTurn(): HostTurnId {
-    if (this.#backgroundTurnId) return this.#backgroundTurnId;
-    const turnId = hostTurnIdSchema.parse(randomUUID());
-    this.#backgroundTurnId = turnId;
-    this.#backgroundTurnFailed = false;
-    this.#event({
-      type: "turn.autonomous.started",
-      turnId,
-      input: [],
-    });
-    return turnId;
-  }
-
-  #backgroundDelegationStart(
-    event:
-      | Extract<OmpTurnEvent, { type: "subagent.started" }>
-      | Extract<OmpTurnEvent, { type: "subagent.updated" }>
-      | Extract<OmpTurnEvent, { type: "subagent.completed" }>,
-  ): BackgroundSubagentDelegation {
-    const turnId = this.#ensureBackgroundTurn();
-    const description =
-      event.type === "subagent.started"
-        ? event.description
-        : event.type === "subagent.updated"
-          ? (event.description ?? "Background subagent")
-          : "Background subagent";
-    const role = event.type === "subagent.started" ? event.role : undefined;
-    const background = event.type === "subagent.started" ? event.background : true;
-    const state: HostSubagentState = {
-      subagentId: event.nativeSubagentId,
-      nativeSubagentId: event.nativeSubagentId,
-      description,
-      ...(role ? { role } : {}),
-      background,
-      status: "running",
-    };
-    const item: HostSubagentDelegationItem = {
-      type: "subagentDelegation",
-      itemId: this.#newItemId(),
-      operation: "spawn",
-      ...(event.type === "subagent.started" && event.prompt ? { prompt: event.prompt } : {}),
-      subagents: [state],
-    };
-    const delegation = { item, turnId };
-    this.#backgroundSubagents.set(event.callId, delegation);
-    this.#event({ type: "item.started", turnId, item });
-    return delegation;
-  }
-
   #handleBackgroundSubagentEvent(event: OmpTurnEvent): void {
     if (event.type === "subagent.transcript.changed") {
       this.#event({
@@ -567,10 +796,6 @@ class OmpHarnessSession implements HarnessSession {
     ) {
       return;
     }
-    let delegation = this.#backgroundSubagents.get(event.callId);
-    if (!delegation) delegation = this.#backgroundDelegationStart(event);
-    const current = delegation.item.subagents[0];
-    if (!current) throw new Error("Omp background delegation has no Agent state");
     if (event.type === "subagent.started") {
       this.#event({
         type: "subagent.state.changed",
@@ -581,19 +806,6 @@ class OmpHarnessSession implements HarnessSession {
     }
     if (event.type === "subagent.updated") {
       const status = this.#backgroundStatus(event.status);
-      const subagent: HostSubagentState = {
-        ...current,
-        status,
-        ...(event.description ? { description: event.description } : {}),
-        ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),
-      };
-      delegation.item = { ...delegation.item, subagents: [subagent] };
-      this.#event({
-        type: "item.updated",
-        turnId: delegation.turnId,
-        itemId: delegation.item.itemId,
-        update: { type: "subagents.replace", subagents: delegation.item.subagents },
-      });
       this.#event({
         type: "subagent.state.changed",
         nativeSubagentId: event.nativeSubagentId,
@@ -603,66 +815,16 @@ class OmpHarnessSession implements HarnessSession {
       return;
     }
     const status: HostSubagentStatus = event.isError ? "failed" : "completed";
-    const subagent: HostSubagentState = {
-      ...current,
-      status,
-      ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),
-    };
-    delegation.item = { ...delegation.item, subagents: [subagent] };
-    this.#event({
-      type: "item.updated",
-      turnId: delegation.turnId,
-      itemId: delegation.item.itemId,
-      update: { type: "subagents.replace", subagents: delegation.item.subagents },
-    });
-    this.#event({
-      type: "item.completed",
-      turnId: delegation.turnId,
-      snapshot: {
-        item: delegation.item,
-        outcome: event.isError
-          ? {
-              status: "failed",
-              error: {
-                code: "nativeFailure",
-                message: "Omp background Subagent failed",
-                retryable: false,
-              },
-            }
-          : { status: "succeeded" },
-      },
-    });
     this.#event({
       type: "subagent.state.changed",
       nativeSubagentId: event.nativeSubagentId,
       status,
       ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),
     });
-    this.#backgroundTurnFailed ||= event.isError;
-    this.#backgroundSubagents.delete(event.callId);
-    if (this.#backgroundSubagents.size === 0 && this.#backgroundTurnId === delegation.turnId) {
-      const turnId = this.#backgroundTurnId;
-      this.#backgroundTurnId = null;
-      this.#event({
-        type: "turn.completed",
-        turnId,
-        outcome: this.#backgroundTurnFailed
-          ? {
-              status: "failed",
-              error: {
-                code: "nativeFailure",
-                message: "Omp background Subagent failed",
-                retryable: false,
-              },
-            }
-          : { status: "succeeded" },
-      });
-      this.#backgroundTurnFailed = false;
-    }
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
-    if (this.#phase !== "open") {
+    if (this.#phase !== "open" && this.#phase !== "faulted") {
       return { ok: false, error: invalidState("Omp Session is not open") };
     }
     if (this.#active || this.#acceptingTurn || this.#configuring) {
@@ -676,8 +838,25 @@ class OmpHarnessSession implements HarnessSession {
       };
     }
     try {
-      const transport = await this.#ensureTransport();
-      const history = await transport.getEntries();
+      const transport = this.#phase === "faulted" ? this.#transport : await this.#ensureTransport();
+      if (!transport)
+        return { ok: false, error: invalidState("Omp Session has no history transport") };
+      let history: OmpSessionHistory;
+      if (this.#phase === "faulted") {
+        // A failed writer must stop before its durable history can be forked.
+        // Read only: preserve the fault and never restart the source Session.
+        await transport.close();
+        const sessionFile = transport.state.sessionFile;
+        if (!sessionFile) throw new Error("Omp faulted Session has no persisted history");
+        await verifyOmpSessionCwd({
+          sessionFile,
+          sessionId: transport.state.sessionId,
+          expectedCwd: this.#cwd,
+        });
+        history = await readOmpSessionHistory(sessionFile);
+      } else {
+        history = await transport.getEntries();
+      }
       return {
         ok: true,
         value: {
@@ -694,6 +873,7 @@ class OmpHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -706,6 +886,7 @@ class OmpHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -717,16 +898,8 @@ class OmpHarnessSession implements HarnessSession {
       return { ok: false, error: invalidState("Omp Session is not open") };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
-    if (command.type === "interaction.respond") {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported",
-          message: "Omp does not expose Host Interactions",
-          retryable: false,
-        },
-      };
-    }
+    if (command.type === "turn.steer") return unsupportedSteer("OMP");
+    if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
     if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);
@@ -801,6 +974,8 @@ class OmpHarnessSession implements HarnessSession {
         sawAssistantMessage: false,
         reasoningItem: null,
         tools: new Map(),
+        interactions: new Map(),
+        interactionByNativeId: new Map(),
         subagents: new OmpSubagentLifecycle({
           newItemId: () => this.#newItemId(),
           emit: (event) => this.#event(event),
@@ -819,6 +994,20 @@ class OmpHarnessSession implements HarnessSession {
       void transport
         .runTurn(text, (event) => this.#handleTurnEvent(active, event))
         .then(async (result) => {
+          if (!result.agentInvoked) {
+            this.#completeTurn(
+              active,
+              result.error !== undefined
+                ? { status: "failed", error: normalizedError(result.error, "nativeFailure") }
+                : result.cancelled
+                  ? { status: "cancelled", reason: "Cancelled by user" }
+                  : { status: "succeeded" },
+              result.text,
+              undefined,
+              true,
+            );
+            return;
+          }
           try {
             const identity = await this.#completedTurnIdentity(active, transport);
             this.#completeTurn(
@@ -874,7 +1063,7 @@ class OmpHarnessSession implements HarnessSession {
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    if (this.#acceptingTurn || this.#active || this.#configuring) {
+    if (this.#acceptingTurn || this.#configuring) {
       return {
         ok: false,
         error: {
@@ -949,7 +1138,7 @@ class OmpHarnessSession implements HarnessSession {
         },
       };
     }
-    if (this.#acceptingTurn || this.#active || this.#configuring) {
+    if (this.#acceptingTurn || this.#configuring) {
       return {
         ok: false,
         error: {
@@ -1060,6 +1249,7 @@ class OmpHarnessSession implements HarnessSession {
       permissionMode: mode,
       onFault: (error) => queueMicrotask(() => this.#fault(error)),
       onSubagentEvent: (event) => this.handleTransportEvent(event),
+      onUsage: (observation) => this.handleTransportUsage(observation),
     });
     try {
       let replacement: OmpTurnTransport | null = null;
@@ -1106,6 +1296,82 @@ class OmpHarnessSession implements HarnessSession {
     }
   }
 
+  async #respond(
+    command: InteractionRespondCommand,
+  ): Promise<HarnessResult<InteractionRespondAccepted>> {
+    const active = this.#active;
+    const pending = active?.interactions.get(command.interactionId);
+    if (!active || !pending) {
+      return {
+        ok: false,
+        error: invalidState("Omp Interaction Response must reference a pending Interaction"),
+      };
+    }
+    const transport = this.#transport;
+    if (!transport) return { ok: false, error: invalidState("Omp transport is unavailable") };
+
+    let response: OmpInteractionResponse;
+    if (pending.interaction.type === "approval") {
+      if (command.response.type !== "approval") {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Omp Approval requires an Approval Response",
+            retryable: false,
+          },
+        };
+      }
+      const validation = validateHostApprovalResponse(pending.interaction, command.response);
+      if (validation) return { ok: false, error: validation };
+      response = {
+        requestId: pending.nativeRequest.requestId,
+        value: command.response.actionId === "allow-once" ? "Approve" : "Deny",
+      };
+    } else {
+      if (command.response.type !== "question") {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Omp Question requires a Question Response",
+            retryable: false,
+          },
+        };
+      }
+      const validation = validateHostQuestionResponse(pending.interaction, command.response);
+      if (validation) return { ok: false, error: validation };
+      const answers = command.response.answers.answer ?? [];
+      if (command.response.cancelled) {
+        response = { requestId: pending.nativeRequest.requestId, cancelled: true };
+      } else if (pending.nativeRequest.method === "confirm") {
+        response = {
+          requestId: pending.nativeRequest.requestId,
+          confirmed: answers[0] === "yes",
+        };
+      } else {
+        const value = answers[0];
+        if (value === undefined) {
+          return {
+            ok: false,
+            error: {
+              code: "invalidRequest",
+              message: "Omp Question Response has no answer",
+              retryable: false,
+            },
+          };
+        }
+        response = { requestId: pending.nativeRequest.requestId, value };
+      }
+    }
+    try {
+      await transport.respondToInteraction(response);
+      return { ok: true, value: { accepted: true } };
+    } catch (error) {
+      return { ok: false, error: normalizedError(error, "nativeFailure") };
+    }
+  }
+
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
@@ -1133,9 +1399,37 @@ class OmpHarnessSession implements HarnessSession {
     }
   }
 
+  /**
+   * Built-ins plus the skills and extension commands of the running process.
+   * Never starts the process just to list commands.
+   */
+  #liveCommandCatalog(): HarnessCommandCatalog {
+    const native = this.#transport?.availableCommands ?? null;
+    return mergeLiveHarnessCommands(
+      ompCommandCatalog,
+      OMP_LIVE_COMMAND_ID_PREFIX,
+      native ? ompLiveCommands(native) : null,
+    );
+  }
+
   async #executeHarnessCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    const livePrompt = liveHarnessCommandPrompt(
+      this.#liveCommandCatalog(),
+      OMP_LIVE_COMMAND_ID_PREFIX,
+      command.commandId,
+      command.arguments?.text,
+    );
+    if (livePrompt !== null) {
+      // OMP expands skill and extension commands from prompt text.
+      const started = await this.execute({
+        type: "turn.start",
+        turnId: command.turnId,
+        input: [{ type: "text", text: livePrompt }],
+      });
+      return started.ok ? { ok: true, value: { turnId: command.turnId } } : started;
+    }
     if (command.commandId !== "omp.compact") {
       return {
         ok: false,
@@ -1204,6 +1498,8 @@ class OmpHarnessSession implements HarnessSession {
         sawAssistantMessage: false,
         reasoningItem: null,
         tools: new Map(),
+        interactions: new Map(),
+        interactionByNativeId: new Map(),
         subagents: new OmpSubagentLifecycle({
           newItemId: () => this.#newItemId(),
           emit: (event) => this.#event(event),
@@ -1255,6 +1551,7 @@ class OmpHarnessSession implements HarnessSession {
       cwd: this.#cwd,
       onFault: (error) => queueMicrotask(() => this.#fault(error)),
       onSubagentEvent: (event) => this.handleTransportEvent(event),
+      onUsage: (observation) => this.handleTransportUsage(observation),
       permissionMode: this.#permissionMode,
     });
     const starting = transport
@@ -1275,19 +1572,31 @@ class OmpHarnessSession implements HarnessSession {
         }
         if (this.#requestedThinkingOptionId) {
           if (!thinkingLevels) {
-            throw new OmpAdapterFaultError({
-              code: "unsupported",
-              message: "Installed Omp does not support Thinking selection",
-              retryable: false,
-            });
+            const current = nativeModelFromState(state);
+            const thinkingAlreadyOff =
+              this.#requestedThinkingOptionId === "off" &&
+              (state.thinkingLevel === "off" ||
+                (current !== null &&
+                  (await transport.getAvailableModels()).some(
+                    (model) => sameOmpModel(model, current) && model.reasoning === false,
+                  )));
+            // A non-reasoning Model has no native Thinking selector. The
+            // catalog's Off option is already satisfied; do not send a setter.
+            if (!thinkingAlreadyOff) {
+              throw new OmpAdapterFaultError({
+                code: "unsupported",
+                message: "Installed Omp does not support Thinking selection",
+                retryable: false,
+              });
+            }
+          } else {
+            state = await transport.selectThinkingOption(this.#requestedThinkingOptionId);
+            thinkingLevels = await transport.getAvailableThinkingLevels();
           }
-          state = await transport.selectThinkingOption(this.#requestedThinkingOptionId);
-          thinkingLevels = await transport.getAvailableThinkingLevels();
-        } else {
-          const reconciled = await reconcileThinkingLevel(transport, state, thinkingLevels);
-          state = reconciled.state;
-          thinkingLevels = reconciled.thinkingLevels;
         }
+        const reconciled = await reconcileThinkingLevel(transport, state, thinkingLevels);
+        state = reconciled.state;
+        thinkingLevels = reconciled.thinkingLevels;
         this.#transport = transport;
         this.#publishTransportState(state, thinkingLevels);
         return transport;
@@ -1375,6 +1684,12 @@ class OmpHarnessSession implements HarnessSession {
       case "compaction.completed":
         this.#completeCompaction(active, event);
         return;
+      case "interaction.requested":
+        this.#startInteraction(active, event.request);
+        return;
+      case "interaction.closed":
+        this.#closeInteraction(active, event.requestId, event.reason);
+        return;
       case "tool.started":
         this.#completeReasoning(active, { status: "succeeded" });
         this.#completeAgentItem(active, { status: "succeeded" }, false);
@@ -1430,6 +1745,112 @@ class OmpHarnessSession implements HarnessSession {
           nativeSubagentId: event.nativeSubagentId,
         });
     }
+  }
+
+  #startInteraction(active: ActiveTurn, request: OmpInteractionRequest): void {
+    if (active.interactionByNativeId.has(request.requestId)) {
+      throw new Error("Omp Interaction started more than once");
+    }
+    const interactionId = hostInteractionIdSchema.parse(randomUUID());
+    let interaction: HostApprovalInteraction | HostQuestionInteraction;
+    if (
+      request.method === "select" &&
+      request.options.length === 2 &&
+      request.options[0] === "Approve" &&
+      request.options[1] === "Deny"
+    ) {
+      interaction = {
+        type: "approval",
+        interactionId,
+        turnId: active.command.turnId,
+        title: request.title,
+        subject: { type: "nativeAction" },
+        actions: [
+          { id: "allow-once", label: "Approve", effect: "allowOnce" },
+          { id: "deny", label: "Deny", effect: "deny" },
+        ],
+        ...(request.timeoutMs !== undefined
+          ? { expiresAt: new Date(Date.now() + request.timeoutMs).toISOString() }
+          : {}),
+      };
+    } else {
+      const question =
+        request.method === "select"
+          ? {
+              id: "answer",
+              type: "choice" as const,
+              prompt: request.title,
+              options: request.options.map((option, index) => ({
+                value: option,
+                label: option,
+                ...(request.optionDetails?.[index]?.description
+                  ? { description: request.optionDetails[index].description }
+                  : {}),
+              })),
+              multiple: false,
+              allowOther: false,
+              optional: false,
+            }
+          : request.method === "confirm"
+            ? {
+                id: "answer",
+                type: "choice" as const,
+                prompt: request.message || request.title,
+                options: [
+                  { value: "yes", label: "Yes" },
+                  { value: "no", label: "No" },
+                ],
+                multiple: false,
+                allowOther: false,
+                optional: false,
+              }
+            : {
+                id: "answer",
+                type: "text" as const,
+                prompt: request.title,
+                multiline: request.method === "editor",
+                secret: false,
+                optional: false,
+                ...(request.method === "input" && request.placeholder
+                  ? { placeholder: request.placeholder }
+                  : {}),
+                ...(request.method === "editor" && request.prefill
+                  ? { prefill: request.prefill }
+                  : {}),
+              };
+      const associatedTool = active.tools.size === 1 ? [...active.tools.values()][0] : undefined;
+      interaction = {
+        type: "question",
+        interactionId,
+        turnId: active.command.turnId,
+        ...(associatedTool ? { itemId: associatedTool.item.itemId } : {}),
+        title: "OMP",
+        questions: [question],
+        ...(request.timeoutMs !== undefined
+          ? { expiresAt: new Date(Date.now() + request.timeoutMs).toISOString() }
+          : {}),
+      };
+    }
+    active.interactions.set(interactionId, { interaction, nativeRequest: request });
+    active.interactionByNativeId.set(request.requestId, interactionId);
+    this.#channel.emit({ kind: "interaction", interaction });
+  }
+
+  #closeInteraction(
+    active: ActiveTurn,
+    nativeRequestId: string,
+    reason: "responded" | "cancelled" | "expired" | "superseded",
+  ): void {
+    const interactionId = active.interactionByNativeId.get(nativeRequestId);
+    if (!interactionId) throw new Error("Omp Interaction close references an unknown request");
+    active.interactionByNativeId.delete(nativeRequestId);
+    active.interactions.delete(interactionId);
+    this.#event({
+      type: "interaction.closed",
+      interactionId,
+      turnId: active.command.turnId,
+      reason,
+    });
   }
 
   #startCompaction(active: ActiveTurn): void {
@@ -1553,6 +1974,7 @@ class OmpHarnessSession implements HarnessSession {
     active.tools.set(event.callId, {
       item,
       nativeName: event.toolName,
+      arguments: event.arguments,
       startedAtMs: Date.now(),
     });
     this.#event({ type: "item.started", turnId: active.command.turnId, item });
@@ -1613,12 +2035,27 @@ class OmpHarnessSession implements HarnessSession {
         : { status: "succeeded" };
     this.#completeItem(active, tool.item, outcome);
 
-    if (!event.isError && event.toolName === "edit") {
-      const changes = reliableFileChange(event.result);
-      if (changes) {
-        const fileItem: HostItem = { type: "fileChange", itemId: this.#newItemId(), changes };
-        this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });
-        this.#completeItem(active, fileItem, { status: "succeeded" });
+    if (!event.isError) {
+      try {
+        const kind = fileMutatingKind(event.toolName);
+        const args = tool.arguments;
+        if (kind && !patchFromResult(event.result) && synthesizeFileChange(kind, args, this.#cwd)) {
+          return;
+        }
+        const changes = reliableFileChange(event.toolName, args, event.result, this.#cwd);
+        if (changes) {
+          const fileItem: HostItem = {
+            type: "fileChange",
+            itemId: this.#newItemId(),
+            sourceItemIds: [tool.item.itemId],
+            changes,
+          };
+          this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });
+          this.#completeItem(active, fileItem, { status: "succeeded" });
+        }
+      } catch {
+        // Native Edit/Write results are often numbered snippets, not unified diffs.
+        // Never let file-change projection fault the live Session.
       }
     }
   }
@@ -1657,6 +2094,7 @@ class OmpHarnessSession implements HarnessSession {
     outcome: TurnOutcome,
     finalText?: string,
     nativeTurnRef?: NativeTurnRef,
+    ephemeral?: true,
   ): void {
     if (this.#active !== active) return;
     this.#active = null;
@@ -1671,6 +2109,16 @@ class OmpHarnessSession implements HarnessSession {
       this.#completeItem(active, active.compactionItem, itemOutcome);
       active.compactionItem = null;
     }
+    for (const interactionId of active.interactions.keys()) {
+      this.#event({
+        type: "interaction.closed",
+        interactionId,
+        turnId: active.command.turnId,
+        reason: outcome.status === "cancelled" ? "cancelled" : "superseded",
+      });
+    }
+    active.interactions.clear();
+    active.interactionByNativeId.clear();
     for (const tool of active.tools.values()) this.#completeItem(active, tool.item, itemOutcome);
     active.tools.clear();
     active.subagents.finalize(active.command.turnId, itemOutcome);
@@ -1683,6 +2131,7 @@ class OmpHarnessSession implements HarnessSession {
       turnId: active.command.turnId,
       outcome,
       ...(nativeTurnRef ? { nativeTurnRef } : {}),
+      ...(ephemeral ? { ephemeral } : {}),
     });
     active.resolveCompletion();
     queueMicrotask(() => {
@@ -1739,7 +2188,11 @@ class OmpHarnessSession implements HarnessSession {
 }
 
 export class OmpAdapter implements HarnessAdapter {
+  readonly commandCatalog = ompCommandCatalog;
+  readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = ompHarnessId;
+  readonly sessionImport: OmpSessionImport;
+  readonly usageStatistics: ReturnType<typeof createOmpUsageStatistics>;
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async (input) => {
       if (
@@ -1758,9 +2211,26 @@ export class OmpAdapter implements HarnessAdapter {
       }
       let transport: OmpTurnTransport | undefined;
       try {
+        // OMP's RPC subagent registry is in-memory and only populated by live
+        // task events, so a resumed cold process cannot resolve completed
+        // children by ID. Read the on-disk transcript next to the parent
+        // Session file first; fall back to the RPC path for layouts without
+        // a readable transcript file.
+        const transcriptFile = await readSubagentTranscriptFile(
+          sessionFileFromRef(input.parent),
+          input.nativeSubagentId,
+        );
+        if (transcriptFile.status === "read") {
+          const snapshot = mapOmpSnapshot(transcriptFile.history, {
+            sessionId: input.parent.nativeSessionId,
+            model: null,
+          });
+          return { ok: true, value: snapshot };
+        }
         transport = this.#createTransport({
           cwd: input.cwd,
           sessionFile: sessionFileFromRef(input.parent),
+          subscribeSubagentEvents: false,
           onFault: () => undefined,
         });
         await transport.start();
@@ -1789,6 +2259,12 @@ export class OmpAdapter implements HarnessAdapter {
   readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
   readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
   readonly #inspections = new Set<OmpTurnTransport>();
+  readonly #availabilityInFlight = new Map<string, Promise<HarnessInspection | null>>();
+  readonly #availabilityListings = new Set<AbortController>();
+  readonly #listModels: (input: {
+    cwd: string;
+    signal: AbortSignal;
+  }) => Promise<OmpModelListResult>;
   readonly #sessions = new Set<OmpHarnessSession>();
   readonly #toolOutputLimit: number;
   #closePromise: Promise<void> | null = null;
@@ -1801,21 +2277,22 @@ export class OmpAdapter implements HarnessAdapter {
     },
   ) {
     this.#createTransport = dependencies.createTransport;
+    const listModels = dependencies.listModels ?? listOmpModels;
+    this.#listModels = ({ cwd, signal }) =>
+      listModels({
+        cwd,
+        signal,
+        ...(options.command ? { command: options.command } : {}),
+        ...(options.environment ? { environment: options.environment } : {}),
+      });
+    this.sessionImport = new OmpSessionImport({ ...process.env, ...options.environment });
+    this.usageStatistics = createOmpUsageStatistics({ ...process.env, ...options.environment });
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
-    if (this.#closePromise) {
-      return {
-        status: "unavailable",
-        error: {
-          code: "invalidState",
-          message: "Omp Adapter is closed",
-          retryable: false,
-        },
-      };
-    }
+    if (this.#closePromise) return closedInspection();
     const cwd = input.cwd ?? process.cwd();
     const inFlight = this.#inspectionInFlight.get(cwd);
     if (inFlight) return inFlight;
@@ -1823,7 +2300,40 @@ export class OmpAdapter implements HarnessAdapter {
       const cached = this.#inspectionCache.get(cwd);
       if (cached) return cached;
     }
+    if (input.purpose === "availability") return this.#inspectAvailability(cwd, input.refresh);
+    return this.#startFullInspection(cwd);
+  }
 
+  /**
+   * Availability without a Session: a Session startup runs OMP's own startup work, including
+   * Provider connection prewarm, for a Harness the user may never select. The listed result
+   * carries no native default Model or Thinking option, so it is neither cached nor used to
+   * update `#thinkingSelectionSupported`. When the list cannot answer, a full inspection answers
+   * instead, reusing one that is in flight or finished meanwhile.
+   */
+  async #inspectAvailability(cwd: string, refresh = false): Promise<HarnessInspection> {
+    // An explicit re-check must not leave an older full catalog to answer the next catalog load.
+    if (refresh) this.#inspectionCache.delete(cwd);
+    let pending = this.#availabilityInFlight.get(cwd);
+    if (!pending) {
+      const listing = this.#listAvailability(cwd);
+      pending = listing.finally(() => {
+        if (this.#availabilityInFlight.get(cwd) === pending) this.#availabilityInFlight.delete(cwd);
+      });
+      this.#availabilityInFlight.set(cwd, pending);
+    }
+    const listed = await pending;
+    if (listed) return listed;
+    if (this.#closePromise) return closedInspection();
+    // A full inspection may have started or finished while the list ran; it is newer than this check.
+    return (
+      this.#inspectionInFlight.get(cwd) ??
+      this.#inspectionCache.get(cwd) ??
+      this.#startFullInspection(cwd)
+    );
+  }
+
+  #startFullInspection(cwd: string): Promise<HarnessInspection> {
     const inspection = this.#inspectCwd(cwd).then((result) => {
       if (result.status === "ready") this.#inspectionCache.set(cwd, result);
       return result;
@@ -1836,10 +2346,67 @@ export class OmpAdapter implements HarnessAdapter {
     });
   }
 
+  /** Returns null when a Session must answer: this OMP cannot list Models, or lists none. */
+  async #listAvailability(cwd: string): Promise<HarnessInspection | null> {
+    const startedAt = Date.now();
+    const stage = "model-list";
+    const controller = new AbortController();
+    this.#availabilityListings.add(controller);
+    let listed: OmpModelListResult;
+    try {
+      listed = await this.#listModels({ cwd, signal: controller.signal });
+    } finally {
+      this.#availabilityListings.delete(controller);
+    }
+    if (listed.kind === "unanswered") return null;
+    if (listed.kind === "notInstalled") {
+      return {
+        status: "notInstalled",
+        error: {
+          code: "notInstalled",
+          message: listed.message,
+          retryable: false,
+          stage,
+          durationMs: Date.now() - startedAt,
+        },
+      };
+    }
+    if (listed.kind === "timedOut") {
+      return {
+        status: "error",
+        error: {
+          code: "unavailable",
+          message: "Oh My Pi did not list its models in time",
+          retryable: true,
+          stage,
+          durationMs: Date.now() - startedAt,
+        },
+      };
+    }
+    // An empty list alone does not prove missing configuration; the Session reports the cause.
+    if (listed.models.length === 0) return null;
+    let catalog: HarnessModelCatalog;
+    try {
+      catalog = normalizeOmpModelCatalog(listed.models, null, null, null);
+    } catch {
+      return null;
+    }
+    return {
+      status: "ready",
+      catalog,
+      permissionModes: OMP_PERMISSION_MODE_CATALOG,
+      capabilities: ompInspectionCapabilities(false),
+    };
+  }
+
   async #inspectCwd(cwd: string): Promise<HarnessInspection> {
     const startedAt = Date.now();
     let stage = "spawn";
-    const transport = this.#createTransport({ cwd, onFault: () => undefined });
+    const transport = this.#createTransport({
+      cwd,
+      subscribeSubagentEvents: false,
+      onFault: () => undefined,
+    });
     this.#inspections.add(transport);
     try {
       stage = "startup";
@@ -1860,20 +2427,22 @@ export class OmpAdapter implements HarnessAdapter {
         status: "ready",
         catalog,
         permissionModes: OMP_PERMISSION_MODE_CATALOG,
-        capabilities: {
-          configuration: {
-            selectModel: true,
-            selectThinkingOption: thinkingLevels !== null,
-            selectPermissionMode: true,
-            permissionModeScope: "live",
-          },
-          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
-          subagents: { observe: true, readTranscript: true },
-        },
+        capabilities: ompInspectionCapabilities(thinkingLevels !== null),
       };
     } catch (error) {
       await transport.close().catch(() => undefined);
-      const normalized = normalizedError(error, "unavailable");
+      const normalized =
+        stage === "startup" &&
+        /No models available\.\s*Use \/login or set an API key environment variable\./i.test(
+          transport.stderrTail ?? "",
+        )
+          ? ({
+              code: "configurationRequired",
+              message:
+                "No models are configured for use in Oh My Pi. Configure a Provider and its API key or models.yml, then run `omp` and use `/model` to select a model. For Providers that support it, `/login` configures Provider authentication, not an Oh My Pi account.",
+              retryable: false,
+            } satisfies HarnessError)
+          : normalizedError(error, "unavailable");
       return {
         status: normalized.code === "notInstalled" ? "notInstalled" : "error",
         error: {
@@ -1987,6 +2556,7 @@ export class OmpAdapter implements HarnessAdapter {
           : { forkSessionFile: sourceSessionFile }),
         onFault: (error) => session?.handleTransportFault(error),
         onSubagentEvent: (event) => session?.handleTransportEvent(event),
+        onUsage: (observation) => session?.handleTransportUsage(observation),
       });
       await transport.start();
 
@@ -2060,7 +2630,12 @@ export class OmpAdapter implements HarnessAdapter {
       startedThinkingLevels = reconciled.thinkingLevels;
       this.#thinkingSelectionSupported = startedThinkingLevels !== null;
       const initialUsage = await transport.getSessionUsage().catch(() => null);
+      const usageHistory = await transport
+        .getEntries()
+        .then(ompUsageHistory)
+        .catch(() => ({ requests: [], complete: false }));
       session = this.#trackSession(input.cwd, {
+        usageHistory,
         ...(input.environment ? { environment: input.environment } : {}),
         startedTransport: transport,
         startedThinkingLevels,
@@ -2069,6 +2644,16 @@ export class OmpAdapter implements HarnessAdapter {
         permissionMode: "yolo",
         permissionModeId: OMP_DEFAULT_PERMISSION_MODE_ID,
       });
+      if (input.kind === "resume" && input.permissionModeId) {
+        const restored = await session.execute({
+          type: "permissionMode.select",
+          permissionModeId: input.permissionModeId,
+        });
+        if (!restored.ok) {
+          await session.close();
+          return restored;
+        }
+      }
       return { ok: true, value: session };
     } catch (error) {
       await transport?.close().catch(() => undefined);
@@ -2088,6 +2673,7 @@ export class OmpAdapter implements HarnessAdapter {
       startedTransport?: OmpTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
+      usageHistory?: { requests: HostUsageRequest[]; complete: boolean };
     },
   ): OmpHarnessSession {
     const environment = options.environment;
@@ -2113,6 +2699,7 @@ export class OmpAdapter implements HarnessAdapter {
           ? { startedThinkingLevels: options.startedThinkingLevels }
           : {}),
         ...(options.initialUsage !== undefined ? { initialUsage: options.initialUsage } : {}),
+        ...(options.usageHistory ? { usageHistory: options.usageHistory } : {}),
       },
     );
     this.#sessions.add(session);
@@ -2121,7 +2708,9 @@ export class OmpAdapter implements HarnessAdapter {
 
   close(): Promise<void> {
     if (!this.#closePromise) {
+      for (const listing of this.#availabilityListings) listing.abort();
       this.#closePromise = Promise.all([
+        this.sessionImport.close(),
         ...[...this.#inspections].map((transport) => transport.close()),
         ...[...this.#sessions].map((session) => session.close()),
       ]).then(() => undefined);

@@ -1,6 +1,6 @@
 import { hostItemIdSchema, type HostItemId } from "@codexhost/shared-contracts";
 
-export type ClaudeTranscriptItemKind = "agentMessage" | "reasoning";
+export type ClaudeTranscriptItemKind = "agentMessage" | "reasoning" | "tool";
 
 /**
  * Claude preserves the caller-assigned User Message UUID in native history.

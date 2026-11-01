@@ -1,0 +1,38 @@
+import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
+
+export { QwenCodeAdapter } from "./qwen-code-adapter.js";
+export type {
+  QwenCodeAdapterDependencies,
+  QwenCodeAdapterOptions,
+  QwenCodeSdkTransportLike,
+} from "./qwen-code-adapter.js";
+export { QwenCodeSdkTransport, QwenCodeTransportError } from "./sdk-transport.js";
+export type {
+  QwenCodeSdkTransportOptions,
+  QwenCodeOpenInput,
+  QwenCodeOpenResult,
+  QwenCodePermissionRequest,
+  QwenCodePermissionResponse,
+  QwenCodeTransportEvent,
+  QwenCodeTransportFaultKind,
+} from "./sdk-transport.js";
+export {
+  QWEN_CODE_DEFAULT_PERMISSION_MODE_ID,
+  QWEN_CODE_PERMISSION_MODE_CATALOG,
+  currentQwenCodePermissionModeId,
+  decodeQwenCodePermissionModeId,
+} from "./permission-modes.js";
+export type { QwenCodePermissionMode } from "./permission-modes.js";
+export {
+  nativeModelIdForRef,
+  parseQwenCodeModelState,
+  sanitizeQwenCodeModelRefId,
+} from "./qwen-models.js";
+export type { QwenCodeModelState } from "./qwen-models.js";
+export { qwenCodeTurnKey } from "./qwen-history.js";
+export { combineUsage, usageFromMetadata } from "./qwen-usage.js";
+
+export const packageMetadata = {
+  name: "@codexhost/adapter-qwen-code",
+  contractVersion: WORKSPACE_CONTRACT_VERSION,
+} as const;

@@ -11,10 +11,11 @@ export type { CodexQuestionRequestProjection } from "./codex-question.js";
 export { projectCodexThreadUsage } from "./codex-usage.js";
 export type { CodexThreadUsageProjectionInput } from "./codex-usage.js";
 export {
+  observeCodexRateLimitResetCredits,
   observeCodexRateLimits,
-  observeCodexTokenUsage,
   projectCodexRateLimitsToCredits,
 } from "./codex-native-usage.js";
+export type { CodexRateLimitResetCredits } from "./codex-native-usage.js";
 export { CodexTurnProjector, projectHistoricalTurn } from "./codex-ui-projector.js";
 export type {
   CodexApprovalProjection,
@@ -39,24 +40,32 @@ export type {
   ExternalThreadRpcError,
 } from "./thread-fork.js";
 export {
+  carriesHostThreadListCursor,
   decodeHostThreadListCursor,
   decodeOfficialThreadListPage,
   decodeThreadArchiveRequest,
   decodeThreadListRequest,
   decodeThreadMetadataUpdateRequest,
+  observeDeletedProject,
+  decodeThreadSectionMoveRequest,
   encodeHostThreadListCursor,
+  encodeSectionThreadListCursor,
 } from "./thread-management.js";
 export type {
   DecodedThreadListRequest,
   DecodedThreadManagementRequest,
   DecodedThreadMetadataUpdateRequest,
+  DecodedThreadSectionMoveRequest,
   HostThreadListCursor,
+  OfficialThreadListSortKey,
   OfficialThreadListPage,
   ThreadListExternalAnchor,
   ThreadListSortDirection,
   ThreadListSortKey,
 } from "./thread-management.js";
 export {
+  ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID,
+  ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX,
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX,
   DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
@@ -71,6 +80,7 @@ export {
   PI_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_PREFIX,
   decodeClaudeTransportSelection,
+  decodeAntigravityTransportSelection,
   decodeCreateRoute,
   decodeDeepSeekHarnessTransportSelection,
   decodeExternalTransportModel,
@@ -81,6 +91,7 @@ export {
   decodePiTransportModel,
   decodePiTransportSelection,
   encodeClaudeTransportModel,
+  encodeAntigravityTransportModel,
   encodeDeepSeekHarnessTransportModel,
   encodeExternalTransportSelection,
   encodeGrokTransportModel,

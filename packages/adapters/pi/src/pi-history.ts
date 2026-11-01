@@ -1,5 +1,6 @@
 import type {
   HostAgentMessageItem,
+  HostFileChangeItem,
   HostItemOutcome,
   HostItemSnapshot,
   HostReasoningItem,
@@ -20,6 +21,8 @@ import {
   type NativeCheckpointRef,
 } from "@codexhost/shared-contracts";
 
+import { piNestedCallFileChanges, piToolFileChanges } from "./pi-file-change.js";
+import { PiSubagents } from "./pi-subagents.js";
 import { encodePiModelRef, type PiNativeModelRef } from "./pi-model-catalog.js";
 
 export interface PiSessionHistory {
@@ -30,6 +33,8 @@ export interface PiSessionHistory {
 export interface PiHistoryState {
   sessionId: string;
   model: PiNativeModelRef | null;
+  /** Session cwd for file change paths; snapshots used only for Turn identity omit it. */
+  cwd?: string;
 }
 
 interface PiEntry extends JsonObject {
@@ -159,7 +164,43 @@ function toolOutput(value: unknown): HostToolOutput | undefined {
   return text.length > 0 ? { content: [{ type: "text", text }] } : undefined;
 }
 
-function snapshotItems(entries: PiEntry[], outcome: HistoricalTurnOutcome): HostItemSnapshot[] {
+/** The file changes the live Turn showed for this tool call; history has no fileChange Items. */
+function historicalFileChanges(
+  call: { entryId: string; ordinal: number; name: string; arguments: JsonValue },
+  nativeMessage: Record<string, unknown>,
+  toolItemId: HostToolExecutionItem["itemId"],
+  cwd: string,
+): HostFileChangeItem[] {
+  const items: HostFileChangeItem[] = [];
+  const changes =
+    nativeMessage.isError === false
+      ? piToolFileChanges(call.name, call.arguments, nativeMessage, cwd)
+      : null;
+  if (changes) {
+    items.push({
+      type: "fileChange",
+      itemId: itemId(call.entryId, "file", call.ordinal),
+      sourceItemIds: [toolItemId],
+      changes,
+    });
+  }
+  for (const nested of piNestedCallFileChanges(nativeMessage.nestedCalls, cwd)) {
+    items.push({
+      type: "fileChange",
+      itemId: itemId(call.entryId, `nested-${nested.index}-file`, call.ordinal),
+      sourceItemIds: [toolItemId],
+      changes: nested.changes,
+    });
+  }
+  return items;
+}
+
+function snapshotItems(
+  entries: PiEntry[],
+  outcome: HistoricalTurnOutcome,
+  subagents?: PiSubagents,
+  cwd?: string,
+): HostItemSnapshot[] {
   const snapshots: HostItemSnapshot[] = [];
   const toolCalls = new Map<
     string,
@@ -232,6 +273,12 @@ function snapshotItems(entries: PiEntry[], outcome: HistoricalTurnOutcome): Host
       ...(output ? { output } : {}),
     };
     const toolSucceeded = nativeMessage.isError === false;
+    const delegation = subagents?.project(
+      call.name,
+      nativeMessage,
+      itemId(call.entryId, "subagent", call.ordinal),
+      nativeMessage.toolCallId,
+    );
     snapshots.push({
       item,
       outcome: toolSucceeded
@@ -245,6 +292,12 @@ function snapshotItems(entries: PiEntry[], outcome: HistoricalTurnOutcome): Host
             },
           },
     });
+    if (cwd) {
+      for (const fileItem of historicalFileChanges(call, nativeMessage, item.itemId, cwd)) {
+        snapshots.push({ item: fileItem, outcome: { status: "succeeded" } });
+      }
+    }
+    if (delegation) snapshots.push({ item: delegation, outcome: { status: "succeeded" } });
   }
   return snapshots;
 }
@@ -257,12 +310,38 @@ function modelChange(entry: PiEntry): PiNativeModelRef | null {
     : null;
 }
 
+function turnStarts(active: PiEntry[]): { entry: PiEntry; index: number }[] {
+  const starts: { entry: PiEntry; index: number }[] = [];
+  let terminal = true;
+  let pending: { entry: PiEntry; index: number } | null = null;
+  for (const [index, entry] of active.entries()) {
+    const role = messageRole(entry);
+    if (role === "user") {
+      starts.push({ entry, index });
+      pending = null;
+      terminal = false;
+    } else if ((entry.type === "custom_message" || role === "custom") && terminal) {
+      pending ??= { entry, index };
+    } else if (role === "assistant") {
+      // Custom messages can also be injected during a run, or appended without
+      // triggering one. Only a subsequent Assistant after a terminal starts a run.
+      if (pending) starts.push(pending);
+      pending = null;
+      terminal = ["stop", "aborted", "error"].includes(String(message(entry)?.stopReason));
+    }
+  }
+  return starts;
+}
+
 export function mapPiSnapshot(
   history: PiSessionHistory,
   state: PiHistoryState,
+  subagents: PiSubagents = new PiSubagents(() => undefined),
 ): HostThreadSnapshot {
   const active = activePiEntries(history);
   const turns: HostThreadSnapshot["turns"] = [];
+  const starts = turnStarts(active);
+  const byIndex = new Map(starts.map((start, ordinal) => [start.index, ordinal]));
   let effectiveModel = state.model;
   for (let index = 0; index < active.length;) {
     const model = modelChange(active[index] as PiEntry);
@@ -272,12 +351,13 @@ export function mapPiSnapshot(
       continue;
     }
     const user = active[index] as PiEntry;
-    if (messageRole(user) !== "user") {
+    const ordinal = byIndex.get(index);
+    if (ordinal === undefined) {
       index += 1;
       continue;
     }
-    let end = index + 1;
-    while (end < active.length && messageRole(active[end] as PiEntry) !== "user") end += 1;
+    const next = starts[ordinal + 1];
+    const end = next?.index ?? active.length;
     const entries = active.slice(index, end);
     const outcome = assistantOutcome(entries);
     const userText = textContent(message(user)?.content);
@@ -295,9 +375,9 @@ export function mapPiSnapshot(
     }) as NativeCheckpointRef;
     turns.push({
       nativeTurnRef,
-      checkpoint,
-      input: [{ type: "text", text: userText }],
-      items: snapshotItems(entries, outcome),
+      ...(!next || messageRole(next.entry) === "user" ? { checkpoint } : {}),
+      input: messageRole(user) === "user" ? [{ type: "text", text: userText }] : [],
+      items: snapshotItems(entries, outcome, subagents, state.cwd),
       outcome,
       ...(effectiveModel ? { model: encodePiModelRef(effectiveModel) } : {}),
     });
@@ -312,10 +392,15 @@ export function mapPiSnapshot(
 
 export function resolvePiLastTurnBoundary(
   history: PiSessionHistory,
-): { lastUserEntryId: string; sourceTurnCount: number } | null {
-  const users = activePiEntries(history).filter((entry) => messageRole(entry) === "user");
-  const last = users.at(-1);
-  return last ? { lastUserEntryId: last.id, sourceTurnCount: users.length } : null;
+): { lastUserEntryId: string | null; sourceTurnCount: number } | null {
+  const starts = turnStarts(activePiEntries(history));
+  const last = starts.at(-1)?.entry;
+  return last
+    ? {
+        lastUserEntryId: messageRole(last) === "user" ? last.id : null,
+        sourceTurnCount: starts.length,
+      }
+    : null;
 }
 
 export function resolvePiForkBoundary(
@@ -323,11 +408,12 @@ export function resolvePiForkBoundary(
   checkpointId: string,
 ): { targetTurnIndex: number; nextUserEntryId: string | null } {
   const active = activePiEntries(history);
-  const users = active.filter((entry) => messageRole(entry) === "user");
-  const targetTurnIndex = users.findIndex((entry) => entry.id === checkpointId);
+  const starts = turnStarts(active);
+  const targetTurnIndex = starts.findIndex(({ entry }) => entry.id === checkpointId);
   if (targetTurnIndex < 0) throw new Error("Pi Checkpoint is not on the active branch");
-  return {
-    targetTurnIndex,
-    nextUserEntryId: users[targetTurnIndex + 1]?.id ?? null,
-  };
+  const next = starts[targetTurnIndex + 1]?.entry;
+  if (next && messageRole(next) !== "user") {
+    throw new Error("Pi cannot Fork immediately before a custom-triggered Turn");
+  }
+  return { targetTurnIndex, nextUserEntryId: next?.id ?? null };
 }

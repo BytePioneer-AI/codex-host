@@ -1,0 +1,257 @@
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import { ClaudeCodeAdapter } from "../src/claude-code-adapter.js";
+import { ClaudeSessionImportIndex, claudeProjectsDirectory } from "../src/claude-session-import.js";
+
+const roots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+async function fixture() {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "codexhost-claude-import-")));
+  roots.push(root);
+  const config = path.join(root, "claude");
+  const projects = path.join(config, "projects");
+  const projectStore = path.join(projects, "-encoded-project");
+  const cwd = path.join(root, "project");
+  await mkdir(projectStore, { recursive: true });
+  await mkdir(cwd);
+  const environment = { CLAUDE_CONFIG_DIR: config };
+  const sessionId = "11111111-1111-4111-8111-111111111111";
+  const entries = (id = sessionId, entrypoint = "sdk-ts") => [
+    {
+      type: "user",
+      uuid: "22222222-2222-4222-8222-222222222222",
+      parentUuid: null,
+      isSidechain: false,
+      message: { role: "user", content: "First prompt" },
+      sessionId: id,
+      cwd,
+      entrypoint,
+      timestamp: "2026-09-16T00:00:00.000Z",
+    },
+    {
+      type: "assistant",
+      uuid: "33333333-3333-4333-8333-333333333333",
+      parentUuid: "22222222-2222-4222-8222-222222222222",
+      isSidechain: false,
+      message: { role: "assistant", content: [{ type: "text", text: "Answer" }] },
+      sessionId: id,
+      cwd,
+      entrypoint,
+      timestamp: "2026-09-16T00:00:01.000Z",
+    },
+  ];
+  const save = async (values: unknown[] = entries(), id = sessionId, directory = projectStore) => {
+    await mkdir(directory, { recursive: true });
+    const file = path.join(directory, `${id}.jsonl`);
+    await writeFile(file, values.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    return file;
+  };
+  const index = () => new ClaudeSessionImportIndex(environment);
+  const signal = () => new AbortController().signal;
+  return {
+    root,
+    config,
+    projects,
+    projectStore,
+    cwd,
+    environment,
+    sessionId,
+    entries,
+    save,
+    index,
+    signal,
+  };
+}
+
+describe("Claude Code native Session import discovery", () => {
+  it("honors CLAUDE_CONFIG_DIR and the platform home fallback", () => {
+    const home = path.resolve("synthetic-home");
+    expect(claudeProjectsDirectory({ HOME: home, USERPROFILE: home })).toBe(
+      path.join(home, ".claude", "projects"),
+    );
+    expect(claudeProjectsDirectory({ CLAUDE_CONFIG_DIR: path.join(home, "custom") })).toBe(
+      path.join(home, "custom", "projects"),
+    );
+  });
+
+  it.each(["sdk-ts", "codexhost-sdk"])(
+    "discovers %s Sessions and resolves the same resumable native identity",
+    async (entrypoint) => {
+      const f = await fixture();
+      const file = await f.save([
+        ...f.entries(f.sessionId, entrypoint),
+        { type: "ai-title", aiTitle: "Generated title", sessionId: f.sessionId },
+        { type: "custom-title", customTitle: "Renamed title", sessionId: f.sessionId },
+      ]);
+      const before = await readFile(file, "utf8");
+      const index = f.index();
+      const listed = await index.list(f.signal());
+      expect(listed).toMatchObject([
+        {
+          candidate: {
+            nativeSessionId: f.sessionId,
+            cwd: f.cwd,
+            title: "Renamed title",
+            running: null,
+          },
+          nativeRef: {
+            harnessId: "claude-code",
+            nativeSessionId: f.sessionId,
+            formatVersion: 1,
+          },
+        },
+      ]);
+      expect(listed[0]?.nativeRef).not.toHaveProperty("locator");
+      expect(await index.resolve(f.sessionId, f.signal())).toEqual(listed[0]);
+      expect(await readFile(file, "utf8")).toBe(before);
+    },
+  );
+
+  it("uses native title precedence and only extracts text from the first user prompt", async () => {
+    const f = await fixture();
+    const [user, assistant] = f.entries();
+    await f.save([
+      {
+        ...user,
+        message: {
+          role: "user",
+          content: [
+            { type: "tool_result", content: "private tool output" },
+            { type: "text", text: "Visible" },
+            { type: "text", text: "prompt" },
+          ],
+        },
+      },
+      assistant,
+    ]);
+    expect(await f.index().list(f.signal())).toMatchObject([
+      { candidate: { title: "Visible prompt" } },
+    ]);
+  });
+
+  it("does not use Claude local-command metadata as a fallback title", async () => {
+    const f = await fixture();
+    const [user, assistant] = f.entries();
+    await f.save([
+      {
+        ...user,
+        message: {
+          role: "user",
+          content:
+            "<local-command-caveat>Caveat: The messages below were generated by the user while running local commands.</local-command-caveat>",
+        },
+      },
+      {
+        ...user,
+        uuid: "99999999-9999-4999-8999-999999999999",
+        message: {
+          role: "user",
+          content:
+            "<command-name>/login</command-name><command-message>login</command-message><command-args></command-args>",
+        },
+      },
+      assistant,
+    ]);
+    const [source] = await f.index().list(f.signal());
+    expect(source?.candidate.title).toBeNull();
+  });
+
+  it("normalizes and bounds a prompt used as the fallback title", async () => {
+    const f = await fixture();
+    const [user, assistant] = f.entries();
+    await f.save([
+      {
+        ...user,
+        message: { role: "user", content: `  Real\n prompt   ${"x".repeat(200)}` },
+      },
+      assistant,
+    ]);
+    const [source] = await f.index().list(f.signal());
+    expect(source?.candidate.title).toMatch(/^Real prompt x+…$/u);
+    expect(source?.candidate.title).toHaveLength(120);
+  });
+
+  it("skips non-main, invalid, empty, nested and unavailable Sessions", async () => {
+    const f = await fixture();
+    const ids = {
+      valid: f.sessionId,
+      wrongIdentity: "44444444-4444-4444-8444-444444444444",
+      sidechain: "55555555-5555-4555-8555-555555555555",
+      empty: "66666666-6666-4666-8666-666666666666",
+      missingCwd: "77777777-7777-4777-8777-777777777777",
+      nested: "88888888-8888-4888-8888-888888888888",
+    };
+    await f.save();
+    await f.save(f.entries(f.sessionId), ids.wrongIdentity);
+    await f.save(
+      f.entries(ids.sidechain).map((entry) => ({ ...entry, isSidechain: true })),
+      ids.sidechain,
+    );
+    await f.save(
+      [{ type: "ai-title", aiTitle: "No conversation", sessionId: ids.empty }],
+      ids.empty,
+    );
+    await f.save(
+      f.entries(ids.missingCwd).map((entry) => ({
+        ...entry,
+        cwd: path.join(f.root, "missing"),
+      })),
+      ids.missingCwd,
+    );
+    await f.save(
+      f.entries(ids.nested),
+      ids.nested,
+      path.join(f.projectStore, f.sessionId, "subagents"),
+    );
+    expect(
+      (await f.index().list(f.signal())).map(({ candidate }) => candidate.nativeSessionId),
+    ).toEqual([ids.valid]);
+  });
+
+  it("revalidates at import, rejects duplicate identities and stops after Adapter close", async () => {
+    const f = await fixture();
+    const selected = await f.save();
+    const index = f.index();
+    expect(await index.list(f.signal())).toHaveLength(1);
+    await writeFile(selected, "{not-json}\n");
+    expect(await index.resolve(f.sessionId, f.signal())).toBeNull();
+
+    await f.save();
+    await f.save(f.entries(), f.sessionId, path.join(f.projects, "-other-project"));
+    await expect(index.list(f.signal())).rejects.toThrow("ambiguous");
+    await expect(index.resolve(f.sessionId, f.signal())).rejects.toThrow("ambiguous");
+
+    const adapter = new ClaudeCodeAdapter({ environment: f.environment });
+    await adapter.close();
+    expect(await adapter.sessionImport.listCandidates()).toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+  });
+
+  it("exposes only browser metadata and reports a removed Session as not found", async () => {
+    const f = await fixture();
+    const file = await f.save();
+    const adapter = new ClaudeCodeAdapter({ environment: f.environment });
+    const listed = await adapter.sessionImport.listCandidates();
+    expect(listed).toMatchObject({
+      ok: true,
+      value: [{ nativeSessionId: f.sessionId, title: "First prompt", cwd: f.cwd }],
+    });
+    expect(JSON.stringify(listed)).not.toContain(file);
+    await rm(file);
+    expect(await adapter.sessionImport.resolveCandidate(f.sessionId)).toMatchObject({
+      ok: false,
+      error: { code: "sessionNotFound" },
+    });
+    await adapter.close();
+  });
+});

@@ -4,6 +4,8 @@ import { pathToFileURL } from "node:url";
 
 import {
   NPM_PACKAGE_DESCRIPTION,
+  NPM_NODE_ENGINE,
+  NPM_NODE_REQUIREMENT,
   NPM_PACKAGE_NAME,
   NPM_PLATFORM_PACKAGE_NAMES,
   createNpmBinLauncherSource,
@@ -25,7 +27,7 @@ export function createNpmMetaPackageManifest({ version }) {
     type: "module",
     bin: { codexhost: "bin/codexhost.js" },
     files: ["bin/**", "README.md"],
-    engines: { node: ">=22" },
+    engines: { node: NPM_NODE_ENGINE },
     optionalDependencies: Object.fromEntries(
       Object.values(NPM_PLATFORM_PACKAGE_NAMES).map((packageName) => [packageName, version]),
     ),
@@ -51,18 +53,24 @@ ${NPM_PACKAGE_DESCRIPTION}
 npm install -g ${NPM_PACKAGE_NAME}@${version}
 \`\`\`
 
-npm automatically installs the matching macOS, Windows, or Linux platform package. Node.js 22 or 24 and the official ChatGPT/Codex Desktop are required.
+npm automatically installs the matching macOS, Windows, or Linux platform package. ${NPM_NODE_REQUIREMENT} and the official ChatGPT/Codex Desktop are required.
 
 ## Usage
 
 \`\`\`bash
 codexhost --version
 codexhost
+codexhost remote install
+codexhost remote status
 \`\`\`
 
 The \`codexhost\` command starts Codex Desktop. On macOS and Linux it returns immediately while the packaged Launcher keeps supervising in the background. On Windows, the command remains attached until Codex Desktop exits so shells that clean up process trees of completed commands cannot discard the supervisor. Re-running \`codexhost\` attaches to the same controlled instance.
 
+On macOS, \`remote install\` installs a current-user Aqua Harness broker so Background SSH Hosts can use native Claude Code login without reading, copying, or unlocking Keychain credentials.
+
 If installation used \`--omit=optional\`, reinstall without that option so npm can select the native package for the current architecture.
+
+If startup reports a platform package version mismatch, close Codex Desktop and run the exact reinstall command in the error. This installs both the CLI and its platform package at the same version, replacing stale independently installed payloads. \`codexhost --version\` reports the CLI package version; startup also validates the platform payload before launching it.
 `;
 }
 

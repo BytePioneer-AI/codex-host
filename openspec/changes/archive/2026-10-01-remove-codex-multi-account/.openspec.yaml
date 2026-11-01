@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-14
+goal: Delete Host-owned Codex multi-account management while retaining the
+  read-only account quota Settings page.

@@ -1,4 +1,5 @@
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
+export { createLocalPageOpener } from "./local-page-control.js";
 
 export {
   CdpClient,
@@ -26,6 +27,17 @@ export type {
   RendererContractAuditInspection,
 } from "./contract-audit.js";
 export { inspectRendererDom, validateRendererDomInspection } from "./renderer-dom.js";
+export {
+  createRendererCdpControlSession,
+  installRendererCdpControlSession,
+  selectPrimaryRendererTarget,
+} from "./renderer-cdp-control-session.js";
+export type {
+  InstallRendererCdpControlOptions,
+  ProductionRendererStatus as RendererCdpProductionStatus,
+  RendererCdpControlSession,
+  RendererCdpControlSnapshot,
+} from "./renderer-cdp-control-session.js";
 export {
   activateElectronDesktop,
   createRendererControlSession,
@@ -57,7 +69,10 @@ export type {
   MainProcessTitlePolicyStatus,
   RendererTitlePolicyReadiness,
 } from "./main-process-title-policy.js";
-export { installRendererDraftPrewarmPolicy } from "./renderer-draft-prewarm-policy.js";
+export {
+  installRendererDraftPrewarmPolicy,
+  installRendererDraftPrewarmPolicyDirect,
+} from "./renderer-draft-prewarm-policy.js";
 export type { RendererDraftPrewarmPolicyStatus } from "./renderer-draft-prewarm-policy.js";
 
 export {
@@ -75,3 +90,4 @@ export const packageMetadata = {
   name: "@codexhost/desktop-control",
   contractVersion: WORKSPACE_CONTRACT_VERSION,
 } as const;
+export { requestDesktopRemoteConnections } from "./remote-connections-control.js";

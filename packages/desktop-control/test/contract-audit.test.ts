@@ -18,7 +18,7 @@ const validInspection = {
     trailingActionOwnerCount: 1,
   },
   model: { draftCount: 1, conversationCount: 0, missingCount: 0, ambiguousCount: 0 },
-  settings: { headerCount: 1, visibleHeaderCount: 1, insertionPointCount: 1 },
+  settings: { railCount: 1, visibleRailCount: 1, insertionPointCount: 1 },
   sidebar: { rowCount: 0, titleOwnerCount: 0, resolvedThreadCount: 0, ambiguousThreadCount: 0 },
   transcript: {
     turnCount: 4,
@@ -27,6 +27,7 @@ const validInspection = {
     textBodyCount: 2,
     textBodyOwnerCount: 2,
   },
+  codexUsageGate: { composerCount: 1, ownerCount: 1, reserveGateCount: 1, accountGateCount: 1 },
   fork: { annotatedResponseCount: 0, candidateButtonCount: 0, verifiedButtonCount: 0 },
   production: {
     bindingPresent: false,

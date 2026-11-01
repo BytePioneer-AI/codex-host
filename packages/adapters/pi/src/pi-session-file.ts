@@ -7,13 +7,14 @@ interface PiSessionHeader {
   type: "session";
   id: string;
   cwd: string;
+  version?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function readPiSessionHeader(sessionFile: string): Promise<PiSessionHeader> {
+export async function readPiSessionHeader(sessionFile: string): Promise<PiSessionHeader> {
   const handle = await open(sessionFile, "r");
   try {
     const buffer = Buffer.allocUnsafe(MAX_SESSION_HEADER_BYTES);
@@ -40,7 +41,12 @@ async function readPiSessionHeader(sessionFile: string): Promise<PiSessionHeader
     ) {
       throw new Error("Pi Session header is invalid");
     }
-    return { type: "session", id: parsed.id, cwd: parsed.cwd };
+    return {
+      type: "session",
+      id: parsed.id,
+      cwd: parsed.cwd,
+      ...(typeof parsed.version === "number" ? { version: parsed.version } : {}),
+    };
   } finally {
     await handle.close();
   }

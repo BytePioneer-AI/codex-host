@@ -18,16 +18,25 @@ export const OPENCODE_PERMISSION_MODE_CATALOG: HarnessPermissionModeCatalog =
       {
         id: "default",
         label: "Default",
+        localizations: {
+          "zh-CN": { label: "默认", description: "使用 OpenCode 已配置的权限规则。" },
+        },
         description: "Use OpenCode's configured permission rules.",
       },
       {
         id: "ask",
         label: "Ask",
+        localizations: {
+          "zh-CN": { label: "询问", description: "执行受保护的 OpenCode 操作前询问。" },
+        },
         description: "Ask before protected OpenCode actions.",
       },
       {
         id: "allow",
         label: "Allow all",
+        localizations: {
+          "zh-CN": { label: "全部允许", description: "允许 OpenCode 操作，无需批准提示。" },
+        },
         description: "Allow OpenCode actions without approval prompts.",
         dangerous: true,
       },

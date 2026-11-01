@@ -5,6 +5,7 @@ const CONTINUATION_PATTERN = /^[ \t]+(.+?)\s*$/u;
 const ORDERED_ITEM_PATTERN = /^\d+[.)][ \t]+(.+?)\s*$/u;
 const FENCE_PATTERN = /^```([\w+-]*)\s*$/u;
 const THEMATIC_BREAK_PATTERN = /^(?:---|___|\*\*\*)[ \t]*$/u;
+const CJK_PATTERN = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/u;
 const INLINE_PATTERN = /(`+)((?:(?!\1).)+)\1|\*\*(.+?)\*\*|\[([^\]]+)\]\(([^)\s]+)\)/gu;
 
 type ReleaseNotesDocument = Pick<Document, "createElement">;
@@ -173,9 +174,23 @@ function appendParagraph(
     index += 1;
   }
   const paragraph = document.createElement("p");
+  // Bilingual notes put the translation on the following line(s) of the same
+  // paragraph; set it apart the same way list-item translations are.
+  const primaryIsCjk = CJK_PATTERN.test(paragraphLines[0] ?? "");
+  let previousWasTranslation = false;
   paragraphLines.forEach((line, lineIndex) => {
+    if (lineIndex > 0 && !primaryIsCjk && CJK_PATTERN.test(line)) {
+      const translation = document.createElement("span");
+      translation.className = "release-note-translation";
+      appendInline(document, translation, line);
+      paragraph.append(translation);
+      previousWasTranslation = true;
+      return;
+    }
+    // A block-level translation already ends the line; a <br> would add a blank one.
+    if (lineIndex > 0 && !previousWasTranslation) paragraph.append(document.createElement("br"));
+    previousWasTranslation = false;
     appendInline(document, paragraph, line);
-    if (lineIndex < paragraphLines.length - 1) paragraph.append(document.createElement("br"));
   });
   root.append(paragraph);
   return index;

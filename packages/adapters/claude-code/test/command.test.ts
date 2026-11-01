@@ -38,6 +38,39 @@ describe("Claude Code executable resolution", () => {
     ).toBe(executable);
   });
 
+  it("discovers another PATH installation when the previous executable is removed", () => {
+    const first = fakeExecutable();
+    const second = fakeExecutable();
+    const input = {
+      environment: {
+        PATH: [first.directory, second.directory].join(path.delimiter),
+        PATHEXT: ".exe",
+      },
+      platform: process.platform,
+    };
+
+    expect(resolveClaudeCodeExecutable(input)).toBe(first.executable);
+    fs.unlinkSync(first.executable);
+    expect(resolveClaudeCodeExecutable(input)).toBe(second.executable);
+  });
+
+  it("keeps an explicit environment override authoritative even when PATH has Claude", () => {
+    const first = fakeExecutable();
+    const second = fakeExecutable();
+    const input = {
+      environment: {
+        PATH: second.directory,
+        PATHEXT: ".exe",
+        CODEXHOST_CLAUDE_COMMAND: first.executable,
+      },
+      platform: process.platform,
+    };
+
+    expect(resolveClaudeCodeExecutable(input)).toBe(first.executable);
+    fs.unlinkSync(first.executable);
+    expect(() => resolveClaudeCodeExecutable(input)).toThrow("not installed");
+  });
+
   it("resolves the Windows npm shim to Claude Code's native executable", () => {
     const appData = String.raw`C:\Users\test\AppData\Roaming`;
     const shim = String.raw`C:\Users\test\AppData\Roaming\npm\claude.cmd`;

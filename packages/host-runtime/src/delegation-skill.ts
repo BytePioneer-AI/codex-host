@@ -3,51 +3,68 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 4;
-const SKILL_RELATIVE_PATH = path.join("skills", "codexhost-delegation", "SKILL.md");
+const SKILL_VERSION = 10;
+export const DELEGATION_SKILL_NAME = "codexhost-delegation";
+const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
+  "9d2f491850fb0b4084a31ba9b5e4a550b5e833747af322090d8ed0ff80b88c30",
+  "2bb0aebb9b06febbc6c0c0bcdb0b32506c7cdbf8dc3b734cc6b2a86621270e4e",
+  "aff258622dc8ff321f32b15620d081e578cb9c9ed1134d6a57f35ca8e7762c0a",
   "ba509f57e5448e796b3dfdd5031dcb08672eded50b61c0a54de84cfa02c49dd3",
   "d3ddf6db9bc5c5df825479c885bbbf0ca08da66f7057a12e02e1fdf57525149e",
   "15eb63519ff867e1536c97188a0c43738d7a49d38d4d6adeb7a1036726e7246d",
+  // v4, shipped in v0.4.0-v0.6.0.
+  "fa7944cd1e72ffbaf932fca2074bdb78aad4670d8990b6711220dd83c39509a0",
+  "b9c1cce41d2556e73a6514aa55618d7d3f2f9ef935f5ae50b0da5a04941514b4",
+  // v8, which ran a bare `codexhost` from PATH.
+  "ca06be59f0d47c9a54d05ed2d9588c9c737306cc155cb4dff3fe2a2a61891dde",
+  // v9, before the child-session name guidance.
+  "b72a059e139bd5b93b95f7ac02ab80f428d5a721cc67b004210d5263e75baed7",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
 name: codexhost-delegation
 version: ${SKILL_VERSION}
 description: >
-  Delegate work to another coding agent. Use when the user explicitly asks
-  Claude Code, Pi, Codex/OpenAI, OMP, Grok, another agent, or an agent mentioned
-  as @<agent> to independently review, investigate, implement, test, or verify
-  something. Do not use when the user is merely discussing, comparing, or
-  configuring agents, choosing a Model or Provider, or asking the current agent
-  to role-play as another agent.
+  Delegate tasks to other coding agents, or read and follow up on existing
+  external agent sessions. Use when the user asks another agent (including
+  @agent) to independently perform a task, or asks to view a specified external
+  session's content, progress, or results, send follow-up messages, wait, or
+  cancel a task. Not for recapping the current conversation, discussing or
+  configuring agents, or role-playing.
 ---
 
 # Execute the task
 
-Before acting, run:
+Run the CLI through the executable in CODEXHOST_CLI_PATH. Before acting, run
+help with the form for your shell:
 
-\`codexhost delegate --help\`
+- POSIX: \`"$CODEXHOST_CLI_PATH" delegate --help\`
+- PowerShell: \`& $env:CODEXHOST_CLI_PATH delegate --help\`
+- cmd: \`"%CODEXHOST_CLI_PATH%" delegate --help\`
 
-Treat its output as the sole authoritative source for:
+If CODEXHOST_CLI_PATH is unset, try \`codexhost\`; if that also fails, tell the
+user to add CODEXHOST_CLI_PATH to shell_environment_policy.include_only.
+Commands shown by help and in \`next\` begin with \`codexhost\`; run them the
+same way.
 
-- available commands;
-- command parameters;
-- available target Harness IDs;
-- Thread identifier formats;
-- waiting and reading behavior;
-- response fields;
-- errors and recovery guidance.
+Use CLI help as the authoritative source for commands and behavior. Consult
+command-specific help for options and the Harness listing command when the
+target is unknown. Prefer compact output when supported, and use its task links
+directly for subsequent commands.
 
-Do not construct commands, parameters, or Harness IDs from memory.
+Use the Harness native defaults. Inspect the target when a Model or Thinking
+selection is needed or the default is unavailable.
 
-When the user asks for a specific Model or Thinking level, inspect the target
-Harness first and use the exact opaque IDs returned by the authoritative CLI.
-When they do not specify either setting, omit it so the target keeps its default.
+For a new delegation, create an independent child session and submit the
+requested task. Give it a short task name that tells it apart from sibling
+tasks, using the help's task-name option. For an existing external session, resolve the target from the
+user-provided session link, identifier, or context and operate on that Thread
+directly; it need not have been created by the current assistant. If the target
+is ambiguous, ask the user to identify it. Keep requests to view or summarize a
+session read-only.
 
-Create an independent child session and submit the requested task.
-
-After starting the task, choose the appropriate next action based on the
+For a new or existing task, choose the appropriate next action based on the
 user’s request and the task:
 
 - send a follow-up message to the same Thread;
@@ -55,19 +72,15 @@ user’s request and the task:
 - read its current state immediately;
 - wait for a bounded period;
 - check it again later;
+- watch it, so the Host notifies this Thread once when the watched Thread stops
+  and no waiting or polling is needed meanwhile;
 - leave it running in the background.
 
-When the result is needed, explicitly read the child Thread. Report only the
-visible result returned by that Thread.
+A watch notification reports execution state only. Read the Thread before
+judging or reporting its work.
 
-Provide the user with the necessary tracking information, including:
-
-- target agent;
-- \`delegationId\`;
-- \`threadId\`;
-- \`turnId\`;
-- \`deepLink\`;
-- current or final status.
+Report the result returned by read or a completed wait, together with the target
+agent, status, and a labeled task link. Keep internal tracking IDs in tool calls.
 `;
 
 const CURRENT_DIGEST = createHash("sha256").update(CODEXHOST_DELEGATION_SKILL).digest("hex");
@@ -187,4 +200,21 @@ export async function installDelegationSkills(
     }
   }
   return results;
+}
+
+/**
+ * Path of the Codex-visible (`~/.agents`) Skill copy, only while it still holds
+ * the managed content. A user-managed conflicting copy is never referenced.
+ */
+export async function managedDelegationSkillReference(
+  input: { homeDirectory?: string } = {},
+): Promise<{ name: string; path: string } | null> {
+  const filePath = path.join(input.homeDirectory ?? os.homedir(), ".agents", SKILL_RELATIVE_PATH);
+  try {
+    return (await readOptional(filePath)) === CODEXHOST_DELEGATION_SKILL
+      ? { name: DELEGATION_SKILL_NAME, path: filePath }
+      : null;
+  } catch {
+    return null;
+  }
 }

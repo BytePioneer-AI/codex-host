@@ -1,0 +1,97 @@
+name: codexhost-lite
+version: 1
+description: codexhost 轻量工作流 - proposal（含关键决策）→ specs（行为契约）→ tasks。design.md 为按需产物，不阻塞 tasks 与 apply。
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: 一页内说明为什么改、改什么、关键决策与放弃的方案
+    template: proposal.md
+    instruction: |
+      写一页以内的提案，说明为什么要改、改什么，以及关键决策。不要写实现细节。
+
+      章节：
+      - **Why**：1-2 句，问题或动机，为什么现在做。
+      - **What Changes**：要点列表，具体到新增、修改、删除；破坏性变更标 **BREAKING**。
+      - **Decisions**：只写会影响后续维护的关键决策：选了什么、为什么、放弃了什么。没有就省略本节，不要为凑数而写。
+      - **Capabilities**：
+        - New：新增能力，每个对应 `specs/<capability-path>/spec.md`。以持久的系统行为命名（如 `harness-session-import`），不以本次工作命名。
+        - Modified：需求发生变化的既有能力，使用 `openspec/specs/` 下的完整现有路径。
+        - 先运行 `openspec list --specs` 查看已有能力，复用既有路径，不要引入近似重名。
+      - **Impact**：受影响的包、接口、依赖。
+
+      没有规格层行为变化时（纯重构、工具、文档、局部修复），在该变更的 `.openspec.yaml` 中设置 `skip_specs: true`，并不要编造需求。
+    requires: []
+
+  - id: specs
+    generates: "specs/**/*.md"
+    description: 行为契约增量
+    template: spec.md
+    instruction: |
+      定义系统**应该做什么**。规格是行为契约，不是实现方案。
+
+      写：用户或下游依赖的可观察行为、输入输出与错误条件、外部约束（安全、隐私、可靠性、兼容性）、可验证的场景。
+      不写：内部类名函数名、库与框架选择、步骤化实现、执行计划。
+      快速判断：实现改变但外部行为不变，就不该进规格。
+
+      每个在 proposal 中列出的能力对应一个 `specs/<capability-path>/spec.md`，路径沿用 proposal 中的完整路径。
+
+      增量操作（使用 `##` 标题）：
+      - **ADDED Requirements**：新增行为。
+      - **MODIFIED Requirements**：必须包含完整的更新后内容；仅追加新关注点而不改变既有行为时用 ADDED。
+      - **REMOVED Requirements**：必须写 **Reason** 与 **Migration**。
+      - **RENAMED Requirements**：仅改名，用 FROM:/TO: 格式。
+
+      格式：
+      - 每条需求 `### Requirement: <name>`，用 SHALL/MUST 表述规范性要求，描述不超过 500 字符。
+      - 每条需求至少一个场景，`#### Scenario: <name>`（必须恰好四个 `#`），用 WHEN/THEN。
+      - 新增能力的增量以 `## Purpose` 开头，1-2 句（50 字符以上）；既有能力的增量不要写 Purpose。
+
+      必须至少有一个规格文件，除非变更设置了 `skip_specs: true`。
+    requires:
+      - proposal
+
+  - id: design
+    generates: design.md
+    description: 按需的技术设计：复杂变更的决策、风险与迁移
+    template: design.md
+    instruction: |
+      **按需产物，默认不写。** 不阻塞 tasks 与 apply，也不在 propose 时自动生成；仅在下列情况显式创建：
+      - 跨多个包或 crate 的变更，或新的架构模式。
+      - 持久化、配置或协议格式变化，需要迁移或回滚方案。
+      - 安全、权限或官方流量归属相关的决策。
+      - 存在需要在编码前先拍板的歧义。
+
+      简单变更的关键决策写进 proposal 的 Decisions 一节即可，不要再建 design.md。
+
+      章节（只写有内容的）：
+      - **Context**：只写解释方案所必需的现状与约束；动机引用 proposal，不重复。
+      - **Decisions**：关键技术选择及理由，说明放弃了什么。
+      - **Risks / Trade-offs**：`[风险] → 缓解`。
+      - **Migration**：部署、回滚步骤（如适用）。
+      - **Open Questions**：可延后回答、不会改变规格与任务划分的未知项；没有就省略。
+
+      聚焦方案与决策，不逐行写实现。proposal 与 specs 已覆盖的内容用引用代替。
+    requires:
+      - proposal
+
+  - id: tasks
+    generates: tasks.md
+    description: 带验证方式的任务清单
+    template: tasks.md
+    instruction: |
+      写简短的任务清单，用于跟踪实施进度。
+
+      - 每个任务必须是复选框：`- [ ] X.Y 描述`，apply 阶段靠它解析进度。
+      - 按依赖排序，每个任务小到一次会话可完成。
+      - **每个任务写明如何验证**（测试、命令、可观察行为）。
+      - 测试与文档随各自任务一起完成，不要集中堆到最后一组。
+      - 控制数量：能用 3-8 个任务说清楚，就不要拆得更碎。
+    requires:
+      - specs
+
+apply:
+  requires: [tasks]
+  tracks: tasks.md
+  instruction: |
+    先读 proposal 与 specs，按任务顺序实施，完成一个勾选一个。
+    遇到阻塞或需要澄清时暂停，不要自行扩大范围。

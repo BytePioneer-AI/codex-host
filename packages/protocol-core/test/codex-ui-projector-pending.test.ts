@@ -14,6 +14,7 @@ describe("CodexTurnProjector pending Turn", () => {
       cwd: "/synthetic",
       startedAtMs: 1_000,
       initialInput: [{ type: "text", text: "Review auth" }],
+      clientUserMessageId: "client-1",
     });
 
     const started = projector.project({ type: "turn.started", turnId });
@@ -27,9 +28,34 @@ describe("CodexTurnProjector pending Turn", () => {
               {
                 id: `${turnId}-user`,
                 type: "userMessage",
-                content: [{ type: "text", text: "Review auth" }],
+                content: [{ type: "text", text: "Review auth", text_elements: [] }],
               },
             ],
+          },
+        },
+      },
+      {
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          turnId,
+          item: {
+            id: `${turnId}-user`,
+            type: "userMessage",
+            clientId: "client-1",
+            content: [{ type: "text", text: "Review auth", text_elements: [] }],
+          },
+        },
+      },
+      {
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          turnId,
+          item: {
+            id: `${turnId}-user`,
+            type: "userMessage",
+            clientId: "client-1",
           },
         },
       },
@@ -39,7 +65,7 @@ describe("CodexTurnProjector pending Turn", () => {
         {
           id: `${turnId}-user`,
           type: "userMessage",
-          content: [{ type: "text", text: "Review auth" }],
+          content: [{ type: "text", text: "Review auth", text_elements: [] }],
         },
       ],
     });

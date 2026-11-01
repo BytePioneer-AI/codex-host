@@ -51,7 +51,10 @@ export function bridgeDirectory(environment: NodeJS.ProcessEnv): string {
 }
 
 /** Read only owner-private metadata; never launch Desktop or create a native session. */
-export async function discoverBridges(options: BridgeOptions): Promise<Endpoint[]> {
+export async function discoverBridges(
+  options: BridgeOptions,
+  matchWorkspace = true,
+): Promise<Endpoint[]> {
   const environment = options.environment ?? process.env;
   const directory = bridgeDirectory(environment);
   const candidates: Endpoint[] = [];
@@ -68,7 +71,11 @@ export async function discoverBridges(options: BridgeOptions): Promise<Endpoint[
       )
         continue;
       const endpoint = readEndpoint(JSON.parse(await readFile(filename, "utf8")));
-      if (!endpoint.workspaceFolders.some((folder) => sameDirectory(folder, options.cwd))) continue;
+      if (
+        matchWorkspace &&
+        !endpoint.workspaceFolders.some((folder) => sameDirectory(folder, options.cwd))
+      )
+        continue;
       process.kill(endpoint.pid, 0);
       if (!(await matchesInstallation(endpoint, options.app))) continue;
       candidates.push(endpoint);

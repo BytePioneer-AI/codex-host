@@ -56,6 +56,7 @@ describe("TRAE CN plugin factory", () => {
       managedRemoteHost: false,
     });
     expect(connect).not.toHaveBeenCalled();
+    expect(typeof first.installation).toBe("function");
     environment.CODEXHOST_TRAE_CN_BRIDGE_DIR = "/changed-bridge";
     expect((await first.inspect({ cwd: "/workspace" })).status).toBe("ready");
     expect(connect).toHaveBeenNthCalledWith(1, {

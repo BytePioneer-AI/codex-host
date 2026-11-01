@@ -17,6 +17,8 @@ npm run build:companion --workspace=@codexhost/adapter-trae-cn
 
 TRAE CN 必须打开并信任目标工作目录，并在应用内完成登录。安装设置中的应用路径会经 `context.launchCommand` 传到工厂，优先于 `CODEXHOST_TRAE_CN_APP`；它限定允许连接的应用安装目录，不会自动启动桌面。连接页路径改变后需要重启 Host。`CODEXHOST_TRAE_CN_BRIDGE_DIR` 可以指定双方一致的绝对发现目录。
 
+连接页的版本检查只读已选安装的 product.json，显示 TRAE CN 的 appVersion；不会把 VS Code core 的 version 当作应用版本。未指定路径时优先使用已验证且仍运行的唯一 Bridge 安装，不要求 Host cwd 与该窗口一致；多个安装要求明确选择，缺失或错误路径不会静默回退。没有运行的 Bridge 时，只检查平台标准安装位置。当前不能可靠识别此安装渠道的最新版本，故显示 Unknown，并提供官方手动更新入口。程序化 update 明确拒绝，不启动桌面、不发送模型请求、不更新 Companion 或中断会话；Companion VSIX 另行安装。
+
 ## 原生边界
 
 验证环境为 TRAE CN 3.4.12、VS Code core 1.107.1、Windows x64。应用将 `harness.dll` 加载到其受管理进程中，并通过 Electron 自带的 `ahaIpc` 暴露 `ai-agent` RPC。测试扩展在应用的 Extension Host 中连接这个服务；普通 Node 进程不能据此直接加载 Electron 私有绑定。

@@ -45,7 +45,7 @@
 | B16 | 向下委派 | 原生有则必做 | P2 | 待验证 | — | — | |
 | C1 | 展示元数据 | 必做 | P1 | 支持 | manifest.json | schema、Loader 描述符、名称与向量图标 | 当前 CodexHost UI 验收另列；没有专用 Renderer 分支 |
 | C2 | 手动安装指引 | 必做 | P1 | 支持 | manifest.json；scripts/build-companion.mjs；assets/companion/README.md | VSIX 实际安装并激活；独立 ZIP 检验完整资源与许可证 | 应用与扩展分别安装；不使用 Agent CLI 登录 |
-| C3 | 版本检查与更新 | 必做 | P1 | 待验证 | — | — | 应用更新渠道 |
+| C3 | 版本检查与更新 | 必做 | P1 | 支持（手动更新） | src/installation.ts；src/plugin.ts | 读取实际 appVersion=3.4.12；17 项版本 / 发现 / 工厂 / 搬移测试；自动更新明确拒绝 | application 口径；最新版本 Unknown；原生桌面或官方安装器更新；不混用 VS Code core 版本，不更新其他安装，不重启活动会话 |
 | C4 | 首次安装 | 可选 | P2 | 不适用 | — | 桌面应用由官方安装器分发 | |
 | C5 | 自定义启动路径 | 条件必做 | P1 | 支持 | src/plugin.ts；src/discovery.ts | 工厂路径优先级、发现中的正确 / 错误安装过滤测试 | 只限定连接的应用，桌面需自行打开目标目录 |
 | C6 | 会话导入 | 可选 | P2 | 待验证 | — | — | |
@@ -97,5 +97,6 @@
 | 上下文用量回归检查 | typecheck；lint / boundaries；119 项 Adapter 测试及两个发行测试；真实只读跨进程验收 | 均通过；不累计重叠测试数量。Companion 0.1.2 安装包已验证，普通窗口尚未升级 |
 | 跨平台 CI | ad21e0d9：GitHub Actions 41268028791 | Ubuntu、Windows、Linux ARM64、macOS 14 四项通过；该结果属于历史派生之前的基线，不代表 macOS 原生桌面接口已验证 |
 | 历史派生回归检查 | typecheck（含测试类型）；lint / boundaries；Adapter 全套与两个发行测试共 136 项 | 全部通过；Companion 0.1.3 的九个 CJS 文件、许可证与搬移插件均已验证；新增原生操作在独立开发窗口验收，用户当前 Host / Desktop 未升级 |
+| 应用版本检查 | 公共插件工厂 installation(check)，显式选择实际 TRAE CN 安装目录 | 只读 appVersion=3.4.12；latestVersion=Unknown，application 口径；installation(update) 返回 unsupported；没有模型请求、安装或桌面重启 |
 | 真实原生验收 | TRAE CN 3.4.12 Windows，复用桌面登录，Builder / Seed-Code | 原生 done.status=completed；重连历史 finish.summary=CODEXHOST_TRAE_CN_OK；不是 Host 端验收 |
 | Desktop / 委派 | 待实现 | 未验证 |

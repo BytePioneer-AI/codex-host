@@ -14,6 +14,7 @@ import type {
 } from "@deepseek-ai/dsh-client-modules/client";
 import { bootClient } from "./boot-client.ts";
 import { BootPage } from "./boot-page.ts";
+import { preventIosFocusZoom } from "./ios-focus-zoom.ts";
 import { mountClient } from "./mount.ts";
 import { getStaticModules } from "./seed.ts";
 import { installWindowDragRecall } from "./window-drag/recall.ts";
@@ -40,6 +41,7 @@ export class AppWebEntry {
   constructor(container: HTMLElement, seams?: BootSeams) {
     this.container = container;
     this.seams = seams;
+    preventIosFocusZoom();
     this.page = new BootPage(container);
   }
 

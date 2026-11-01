@@ -1,4 +1,4 @@
-/* A fixed microphone anchor; its recording tray expands into free toolbar space. */
+/* A fixed microphone anchor; its inline recording bar expands into free toolbar space. */
 .entry {
   --voice-entry-size: 28px;
   --voice-bar-width: 229px;
@@ -185,66 +185,39 @@
   text-align: center;
 }
 
-/* The toolbar reserves 88px above its controls for this folded tray, including idle. */
-.entry[data-composer-tray="stacked"] .bar {
-  display: block;
-  top: auto;
-  bottom: 0;
-  width: 132px;
-  height: calc(88px + var(--voice-entry-size));
-  padding: 0;
-  background: transparent;
+/* Stacked recorder: one light row across the toolbar, ending before the main
+   submit action. Its 26px controls keep 44px touch targets. */
+.strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 2px;
+  border-radius: 999px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
 }
 
-.entry[data-composer-tray="stacked"] .bar::before {
+.strip .round,
+.strip .done {
+  position: relative;
+  width: 26px;
+  height: 26px;
+}
+
+.strip .round::before,
+.strip .done::before {
   content: "";
   position: absolute;
-  inset: 0 0 var(--voice-entry-size);
-  border-radius: 14px 14px 0 14px;
-  background: var(--dsw-alias-interactive-bg-hover);
+  inset: -9px;
 }
 
-.entry[data-composer-tray="stacked"] .round,
-.entry[data-composer-tray="stacked"] .send {
-  position: absolute;
-  top: 0;
-  width: 44px;
-  height: 44px;
-}
-
-.entry[data-composer-tray="stacked"] .round {
-  left: 0;
-}
-
-.entry[data-composer-tray="stacked"] .send {
-  right: 0;
-}
-
-.entry[data-composer-tray="stacked"] .meter {
-  position: absolute;
-  top: 44px;
-  left: 0;
-  width: 94px;
-  height: 44px;
-}
-
-.entry[data-composer-tray="stacked"] .timer {
-  position: absolute;
-  top: 44px;
-  right: 0;
-  display: grid;
-  place-items: center;
-  height: 44px;
-}
-
-.entry[data-composer-tray="stacked"] .done {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: var(--voice-entry-size);
-  height: var(--voice-entry-size);
-  border-radius: 0 0 14px 14px;
-  background: var(--dsw-alias-interactive-bg-hover);
+.strip .meter {
+  flex: 1;
 }
 
 .notice {
@@ -355,6 +328,11 @@
 @media (max-width: 600px), (pointer: coarse) {
   .entry {
     --voice-entry-size: 44px;
+  }
+
+  /* Occupy the row height of the 44px entry it replaces, so the card keeps its size. */
+  .strip {
+    margin-block: 7px;
   }
 
   .icon {

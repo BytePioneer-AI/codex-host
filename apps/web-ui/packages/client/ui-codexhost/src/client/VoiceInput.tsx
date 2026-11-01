@@ -14,6 +14,11 @@ import css from "./VoiceInput.module.css";
 export interface VoiceInputFace {
   voice: VoiceInput;
   blocks: ComposerBlocks;
+  tray: VoiceTray;
+}
+export interface VoiceActivityFace {
+  voice: VoiceInput;
+  tray: VoiceTray;
 }
 export interface VoiceFace {
   voice: VoiceInput;
@@ -28,6 +33,25 @@ function useVoiceState(voice: VoiceInput): VoiceInputState {
   return useSyncExternalStore(voice.subscribe, voice.getSnapshot);
 }
 
+/**
+ * The recorder layout measured by the toolbar entry. Inline keeps the bar beside
+ * the microphone; stacked hands the recorder to the toolbar activity strip.
+ */
+export class VoiceTray {
+  private stacked = false;
+  private readonly listeners = new Set<() => void>();
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+  readonly getSnapshot = (): boolean => this.stacked;
+  set(stacked: boolean): void {
+    if (stacked === this.stacked) return;
+    this.stacked = stacked;
+    for (const listener of this.listeners) listener();
+  }
+}
+
 const isLive = (state: VoiceInputState) =>
   state.phase === "permission" || state.phase === "recording" || state.phase === "transcribing";
 
@@ -38,6 +62,7 @@ const clock = (seconds: number) =>
 export function VoiceInputButton({
   voice,
   blocks,
+  tray,
   sessionId,
   inputActions,
   useInput,
@@ -46,7 +71,7 @@ export function VoiceInputButton({
 }: PropsRuntime<"conversation.input.right"> & Locale & VoiceInputFace) {
   const state = useVoiceState(voice);
   const [available, setAvailable] = useState(false);
-  const [stacked, setStacked] = useState(false);
+  const stacked = useSyncExternalStore(tray.subscribe, tray.getSnapshot);
   const entryRef = useRef<HTMLSpanElement>(null);
   const live = isLive(state);
   const visible = live || (available && state.phase === "idle");
@@ -109,7 +134,7 @@ export function VoiceInputButton({
           ? Math.max(rowLeft, leading.right + 8)
           : rowLeft;
       const width = parseFloat(getComputedStyle(entry).getPropertyValue("--voice-bar-width"));
-      setStacked(
+      tray.set(
         window.matchMedia("(max-width: 600px), (pointer: coarse)").matches ||
           anchor.right - left < width,
       );
@@ -120,13 +145,13 @@ export function VoiceInputButton({
     for (const child of row.children) resize.observe(child);
     measure();
     return () => resize.disconnect();
-  }, [visible]);
+  }, [tray, visible]);
 
   if (!visible) return null;
   return (
-    <span ref={entryRef} className={css.entry} data-composer-tray={stacked ? "stacked" : "inline"}>
-      {isLive(state) ? (
-        <VoiceRecorder voice={voice} state={state} locked={locked} t={t} />
+    <span ref={entryRef} className={css.entry}>
+      {live && !stacked ? (
+        <VoiceRecorder voice={voice} state={state} locked={locked} layout="inline" t={t} />
       ) : (
         <Tooltip portal side="top" label={t("voice.label")} shortcutKeys={VOICE_SHORTCUT_KEYS}>
           <button
@@ -145,13 +170,42 @@ export function VoiceInputButton({
   );
 }
 
-/** The recording bar grows to the left; "Done" takes the microphone's own place. */
+/**
+ * Stacked recorder: while live, it expands across the toolbar before the main
+ * submit action, which still transcribes and sends. Inline recording stays at
+ * the microphone entry.
+ */
+export function VoiceActivity({
+  voice,
+  tray,
+  onActiveChange,
+  t,
+}: PropsRuntime<"conversation.input.activity"> & Locale & VoiceActivityFace) {
+  const state = useVoiceState(voice);
+  const stacked = useSyncExternalStore(tray.subscribe, tray.getSnapshot);
+  const active = stacked && isLive(state);
+  useLayoutEffect(() => onActiveChange(active), [active, onActiveChange]);
+  useLayoutEffect(() => () => onActiveChange(false), [onActiveChange]);
+  if (!active) return null;
+  return <VoiceRecorder voice={voice} state={state} locked={false} layout="strip" t={t} />;
+}
+
+/**
+ * Inline: the bar grows to the left and "Done" takes the microphone's own place.
+ * Strip: cancel, level, timer and "Done" fill the toolbar; the main submit sends.
+ */
 function VoiceRecorder({
   voice,
   state,
   locked,
+  layout,
   t,
-}: Locale & { voice: VoiceInput; state: VoiceInputState; locked: boolean }) {
+}: Locale & {
+  voice: VoiceInput;
+  state: VoiceInputState;
+  locked: boolean;
+  layout: "inline" | "strip";
+}) {
   const recording = state.phase === "recording";
   const levels = state.levels ?? [];
   const status = t(
@@ -162,7 +216,11 @@ function VoiceRecorder({
         : "voice.transcribing",
   );
   return (
-    <span className={css.bar} role="group" aria-label={t("voice.label")}>
+    <span
+      className={layout === "inline" ? css.bar : css.strip}
+      role="group"
+      aria-label={t("voice.label")}
+    >
       <Tooltip portal side="top" label={t("voice.cancel")} shortcutKeys={["Esc"]}>
         <button
           type="button"
@@ -203,20 +261,22 @@ function VoiceRecorder({
       <span className={css.timer} role="timer">
         {clock(state.seconds)}
       </span>
-      <Tooltip portal side="top" label={t("voice.send")}>
-        <button
-          type="button"
-          className={css.send}
-          aria-label={t("voice.send")}
-          disabled={locked || !recording}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => voice.send()}
-        >
-          <span className={css.sendFace}>
-            <SendIcon />
-          </span>
-        </button>
-      </Tooltip>
+      {layout === "inline" ? (
+        <Tooltip portal side="top" label={t("voice.send")}>
+          <button
+            type="button"
+            className={css.send}
+            aria-label={t("voice.send")}
+            disabled={locked || !recording}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => voice.send()}
+          >
+            <span className={css.sendFace}>
+              <SendIcon />
+            </span>
+          </button>
+        </Tooltip>
+      ) : null}
       <Tooltip portal side="top" label={t("voice.stop")} shortcutKeys={VOICE_SHORTCUT_KEYS}>
         <button
           type="button"

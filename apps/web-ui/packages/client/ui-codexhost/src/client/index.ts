@@ -15,8 +15,11 @@ import { registerHarnessDiscovery } from "./harness-discovery.tsx";
 import { sentMessageEditApi, voiceApi } from "./api.ts";
 import { VoiceInput } from "./voice-input.ts";
 import {
+  VoiceActivity,
   VoiceInputButton,
   VoiceNotice,
+  VoiceTray,
+  type VoiceActivityFace,
   type VoiceFace,
   type VoiceInputFace,
 } from "./VoiceInput.tsx";
@@ -87,6 +90,7 @@ export function apply(ctx: ClientContext): void {
   ctx.provide("chatMessageEditing", sentMessageEditApi);
   ctx.inject(["conversation"], (scope) => {
     const voice = new VoiceInput(voiceApi.transcribe);
+    const tray = new VoiceTray();
     scope.effect(() => () => voice.discard(), "ui-codexhost: release microphone");
     scope.slots.inject("conversation.input.right", () =>
       scope.slots.register(
@@ -94,9 +98,19 @@ export function apply(ctx: ClientContext): void {
           name: "conversation.input.right",
           id: "codexhost.voice",
           locale: NS,
-          inject: (): VoiceInputFace => ({ voice, blocks: scope.conversation.blocks }),
+          inject: (): VoiceInputFace => ({ voice, blocks: scope.conversation.blocks, tray }),
         },
         VoiceInputButton,
+      ),
+    );
+    scope.slots.inject("conversation.input.activity", () =>
+      scope.slots.register(
+        {
+          name: "conversation.input.activity",
+          locale: NS,
+          inject: (): VoiceActivityFace => ({ voice, tray }),
+        },
+        VoiceActivity,
       ),
     );
     scope.slots.inject("conversation.input.notice", () =>

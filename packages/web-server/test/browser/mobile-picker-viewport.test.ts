@@ -115,6 +115,18 @@ it(
         const target = new URL(url);
         target.searchParams.set("session", "thread");
         await page.goto(target.href);
+        // iOS/iPadOS WebKit zooms into sub-16px editors on focus; only Apple touch
+        // devices get the clamp, so other platforms keep pinch zoom.
+        assert.equal(
+          await page.evaluate(() =>
+            document
+              .querySelector('meta[name="viewport"]')
+              ?.getAttribute("content")
+              ?.includes("maximum-scale=1"),
+          ),
+          profile.mobile,
+          profile.name,
+        );
         const trigger = page.getByRole("button", { name: /^Select model, current Native Model/u });
         await trigger.click();
         const thinking = page.getByRole("menu", { name: "Thinking", exact: true });

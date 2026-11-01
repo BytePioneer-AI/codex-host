@@ -262,6 +262,19 @@
   line-clamp: 2;
 }
 
+/* Phone widths: the hero drops to the docked one-line floor and placeholder;
+   typing still grows the draft up to the shared cap. */
+@media (max-width: 600px) {
+  .hero .input {
+    min-height: 36px;
+  }
+
+  .hero .placeholder {
+    display: block;
+    white-space: nowrap;
+  }
+}
+
 /* Toolbar: attach + Plan + Read-only on the left; model + send on the right
    (figma Input_Bottom chrome). */
 .row {
@@ -285,11 +298,6 @@
 .row[data-model-compact] {
   --dsh-composer-model-text-display: none;
   --dsh-composer-model-icon-display: block;
-}
-
-/* Folded accessory trays reserve their space before an interaction starts. */
-.row:has([data-composer-tray="stacked"]) {
-  padding-top: 90px;
 }
 
 .tools,

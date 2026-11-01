@@ -164,9 +164,11 @@ function projectLocalMedia(
     output += text.slice(index, next);
     index = next;
     const marker = text[next];
+    let markerLength = 1;
     if (marker === "`" || marker === "~") {
       let runEnd = next;
       while (text[runEnd] === marker) runEnd += 1;
+      markerLength = runEnd - next;
       if (runEnd === text.length && holdIncomplete) {
         // The run may still grow into a fence, or a backtick may open a media path.
         return { text: output, consumed: next };
@@ -183,7 +185,7 @@ function projectLocalMedia(
           continue;
         }
       }
-      if (marker === "~" || runEnd - next > 1) {
+      if (marker === "~") {
         output += text.slice(next, runEnd);
         index = runEnd;
         continue;
@@ -213,17 +215,19 @@ function projectLocalMedia(
       index = image.end;
       continue;
     }
-    const code = parseInlineCode(text, next);
-    if (code.kind === "text") {
-      output += "`";
-      index = next + 1;
+    const code = parseInlineCode(text, next, markerLength);
+    if (code.kind === "open" || (holdIncomplete && code.end === text.length)) {
+      // A trailing closing run can still grow into a different-length, non-closing run.
+      if (holdIncomplete) return { text: output, consumed: next };
+      // At completion an unmatched delimiter is ordinary text; later images may still resolve.
+      output += text.slice(next, next + markerLength);
+      index = next + markerLength;
       continue;
     }
-    if (code.kind === "open") {
-      if (!holdIncomplete) break;
-      return { text: output, consumed: next };
-    }
-    const resolved = relativeImagesOnly ? null : resolveLocalMediaPath(code.content, roots, exists);
+    const resolved =
+      relativeImagesOnly || markerLength !== 1 || /[\r\n]/u.test(code.content)
+        ? null
+        : resolveLocalMediaPath(code.content, roots, exists);
     output += resolved === null ? text.slice(next, code.end) : mediaMarkdownImage(resolved);
     index = code.end;
   }
@@ -279,18 +283,20 @@ function earliestIndex(candidates: readonly number[]): number {
   return next;
 }
 
-/** `text`: ordinary text through `end`. `open`: the text ends before the construct is decided. */
-type ParsedInlineCode =
-  { kind: "code"; content: string; end: number } | { kind: "open" } | { kind: "text" };
+type ParsedInlineCode = { kind: "code"; content: string; end: number } | { kind: "open" };
 
-function parseInlineCode(text: string, start: number): ParsedInlineCode {
-  for (let index = start + 1; index < text.length; index += 1) {
-    const character = text[index];
-    // A path never spans lines, so leave the tick as text rather than hold everything after it.
-    if (character === "\n") return { kind: "text" };
-    if (character === "`") {
-      return { kind: "code", content: text.slice(start + 1, index), end: index + 1 };
+/** Code spans can cross lines, but only an equally long backtick run closes them. */
+function parseInlineCode(text: string, start: number, length: number): ParsedInlineCode {
+  let index = start + length;
+  while (index < text.length) {
+    const tick = text.indexOf("`", index);
+    if (tick === -1) break;
+    let end = tick + 1;
+    while (text[end] === "`") end += 1;
+    if (end - tick === length) {
+      return { kind: "code", content: text.slice(start + length, tick), end };
     }
+    index = end;
   }
   return { kind: "open" };
 }

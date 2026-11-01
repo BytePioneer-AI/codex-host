@@ -23,14 +23,13 @@ const IMAGE_ATTACHMENT_PATTERN =
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/u;
 
 /**
- * Absolute image paths in the attachment context Desktop serialized into a prompt. Only a
- * complete context counts: it opens the prompt and ends at the request heading, so text the
- * user typed or pasted that merely looks like one is never read as attachments.
+ * Absolute image paths in the attachment context Desktop serialized into a prompt. The context
+ * opens the prompt and ends at the request heading when present, or at the end of an image-only
+ * prompt. Paths in the request body are not attachments.
  */
 export function desktopImageAttachmentPaths(text: string): string[] {
   const end = text.search(REQUEST_HEADING);
-  if (end < 0) return [];
-  const context = text.slice(0, end);
+  const context = end < 0 ? text : text.slice(0, end);
   if (!ATTACHED_FILES_HEADING.test(context)) return [];
   return [...context.matchAll(IMAGE_ATTACHMENT_PATTERN)]
     .map((match) => match[1] ?? "")

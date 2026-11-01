@@ -53,6 +53,19 @@ describe("rewriteLocalMediaMarkdown", () => {
     );
   });
 
+  it("preserves matching multi-backtick and multiline code spans", () => {
+    const spans = [
+      "``![a](a.png) `a.png` ``",
+      "`first\n![a](a.png)\nlast`",
+      "``first\n![a](a.png) `not a closer`\nlast``",
+      "``a.png``",
+      "`\na.png\n`",
+    ];
+    for (const span of spans) {
+      expect(rewrite(`${span} then \`a.png\``)).toBe(`${span} then ![a.png](${at("a.png")})`);
+    }
+  });
+
   it("keeps non-ASCII paths and brackets paths with spaces", () => {
     expect(rewrite('![e](截图/e.png) ![c](<dir with space/c.png> "title")')).toBe(
       `![e](${at("截图/e.png")}) ![c](<${at("dir with space/c.png")}> "title")`,
@@ -152,6 +165,12 @@ describe("LocalMediaMarkdownStream", () => {
     "![a]\n![c](<dir with space/c.png>)",
     "a!![b](sub/b.png)!",
     "``a.png`` and `a.png`` and ```",
+    "``![a](a.png)``",
+    "`first\n![a](a.png)\nlast`",
+    "``![a](a.png) `a.png` `` after ![a](a.png)",
+    "`first\n![a](a.png)\nlast` after ![a](a.png)",
+    "``first\n![a](a.png) `not a closer`\nlast`` after `a.png`",
+    "`a.png`` and ![a](a.png)",
     "鱼：`a.png`。后文 [图](a.png)",
     "| `a.png` |\n# `sub/b.png`：",
     "````\n```\n`a.png`\n```\n````\nthen `a.png`",
@@ -202,6 +221,13 @@ describe("LocalMediaMarkdownStream", () => {
     expect(stream.append("a.png`。 ")).toBe(`![a.png](${at("a.png")})。 `);
     expect(stream.append("![open](sub/")).toBe("![open](");
     expect(stream.flush()).toBe("sub/");
+  });
+
+  it("waits for the closing backtick run's length before rewriting a code path", () => {
+    const stream = new LocalMediaMarkdownStream(roots, exists);
+    expect(stream.append("`a.png`")).toBe("");
+    expect(stream.append("` and ![a](a.png)")).toBe("");
+    expect(stream.flush()).toBe(`\`a.png\`\` and ![a](${at("a.png")})`);
   });
 
   it("remembers negative and positive checks when files appear", () => {

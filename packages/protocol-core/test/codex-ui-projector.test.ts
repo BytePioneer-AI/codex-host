@@ -186,7 +186,7 @@ describe("Codex UI projector", () => {
     ]);
   });
 
-  it("restores Desktop image attachments as native localImage input", () => {
+  it.each([true, false])("restores Desktop image attachments (request heading: %s)", (request) => {
     const text = [
       "",
       "# Files mentioned by the user:",
@@ -196,8 +196,9 @@ describe("Codex UI projector", () => {
       "",
       "## notes.md: /work/notes.md",
       "",
-      "## My request:",
-      "Compare /work/typed.png with the screenshot",
+      ...(request
+        ? ["## My request:", "## typed.png: /work/typed.png", "Image attachment: true"]
+        : []),
     ].join("\n");
     const input = [{ type: "text" as const, text }];
     const content = [

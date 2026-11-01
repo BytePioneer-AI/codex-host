@@ -45,11 +45,23 @@ describe("desktopImageAttachmentPaths", () => {
     expect(desktopImageAttachmentPaths(typed)).toEqual([]);
   });
 
-  it("reads only a complete context that opens the prompt", () => {
+  it.each(["\n", "\r\n"])("reads an image-only context through the end (%j)", (newline) => {
+    const context = [
+      "# Files mentioned by the user:",
+      "",
+      "## a.png: /a.png",
+      "Image attachment: true",
+      "",
+    ].join(newline);
+    expect(desktopImageAttachmentPaths(context)).toEqual(["/a.png"]);
+    // An inline mention of the request heading does not end the context.
+    expect(desktopImageAttachmentPaths(`${context}${newline}## My request: inline`)).toEqual([
+      "/a.png",
+    ]);
+  });
+
+  it("reads only a context that opens the prompt", () => {
     const context = "# Files mentioned by the user:\n\n## a.png: /a.png\nImage attachment: true\n";
-    // Pasted without the request heading that ends a Desktop context.
-    expect(desktopImageAttachmentPaths(context)).toEqual([]);
-    expect(desktopImageAttachmentPaths(`${context}\n## My request: inline`)).toEqual([]);
     // Preceded by other text, so it is part of what the user typed.
     expect(desktopImageAttachmentPaths(`Look:\n${context}\n## My request:\nhi`)).toEqual([]);
     expect(desktopImageAttachmentPaths(`\n\n${context}\n## My request:\nhi`)).toEqual(["/a.png"]);

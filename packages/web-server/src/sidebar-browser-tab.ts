@@ -12,10 +12,13 @@ import {
   encodeSidebarBrowserFrameHeader,
   parseSidebarBrowserClientMessage,
   type SidebarBrowserClientMessage,
+  type SidebarBrowserEditableRegion,
   type SidebarBrowserFrameFormat,
   type SidebarBrowserServerMessage,
   type SidebarBrowserState,
 } from "@codexhost/shared-contracts/sidebar-browser";
+
+import { sidebarBrowserEditableRegions } from "./sidebar-browser-input.ts";
 
 /** Stream tuning; a relayed link can trade sharpness and frame rate for bandwidth. */
 export interface SidebarBrowserQuality {
@@ -51,7 +54,7 @@ interface Viewer {
   readonly heldButtons: Set<"left" | "middle" | "right">;
   visible: boolean;
   inFlight: boolean;
-  pending: Buffer | undefined;
+  pending: { frame: Buffer; regions: readonly SidebarBrowserEditableRegion[] } | undefined;
 }
 
 interface Viewport {
@@ -86,6 +89,8 @@ export class SidebarBrowserTab {
   /** `document.title` changes raise no CDP event; titles are re-read while someone is watching. */
   private titlePoll: ReturnType<typeof setInterval> | undefined;
   private lastAck = 0;
+  private readingInput = false;
+  private pendingImage: { image: Buffer; viewport: Viewport } | undefined;
   private input: Promise<unknown> = Promise.resolve();
   private pendingMove: { x: number; y: number } | undefined;
   private closed = false;
@@ -365,7 +370,7 @@ export class SidebarBrowserTab {
   private screencastFrame(cdp: CDPSession, frame: ScreencastFrame): void {
     const viewport = this.casting;
     if (this.cdp !== cdp || viewport === undefined) return;
-    this.deliver(Buffer.from(frame.data, "base64"), viewport);
+    void this.deliver(Buffer.from(frame.data, "base64"), viewport);
     // Chromium sends the next frame only after an ack; pacing the ack caps the frame rate.
     const delay = Math.max(0, 1000 / this.quality.maxFps - (Date.now() - this.lastAck));
     setTimeout(() => {
@@ -384,22 +389,38 @@ export class SidebarBrowserTab {
         ...(this.quality.format === "jpeg" ? { quality: this.quality.jpegQuality } : {}),
       });
       if (this.cdp === cdp && this.casting === viewport)
-        this.deliver(Buffer.from(shot.data, "base64"), viewport);
+        await this.deliver(Buffer.from(shot.data, "base64"), viewport);
     } catch {
       // The page is navigating or gone; the next screencast frame replaces this one.
     }
   }
 
   /** @param viewport - CSS size the image was rendered for; the image itself is `deviceScale`x. */
-  private deliver(image: Buffer, viewport: Viewport): void {
-    const frame = Buffer.concat([
-      encodeSidebarBrowserFrameHeader({ format: this.quality.format, ...viewport }),
-      image,
-    ]);
-    for (const viewer of this.viewers) {
-      if (!viewer.visible) continue;
-      viewer.pending = frame;
-      this.flush(viewer);
+  private async deliver(image: Buffer, viewport: Viewport): Promise<void> {
+    const page = this.page;
+    if (page === undefined) return;
+    if (this.readingInput) {
+      this.pendingImage = { image, viewport };
+      return;
+    }
+    this.readingInput = true;
+    try {
+      const regions = await sidebarBrowserEditableRegions(page);
+      if (this.page !== page || this.casting !== viewport) return;
+      const frame = Buffer.concat([
+        encodeSidebarBrowserFrameHeader({ format: this.quality.format, ...viewport }),
+        image,
+      ]);
+      for (const viewer of this.viewers) {
+        if (!viewer.visible) continue;
+        viewer.pending = { frame, regions };
+        this.flush(viewer);
+      }
+    } finally {
+      this.readingInput = false;
+      const pending = this.pendingImage;
+      this.pendingImage = undefined;
+      if (pending !== undefined) void this.deliver(pending.image, pending.viewport);
     }
   }
 
@@ -414,7 +435,8 @@ export class SidebarBrowserTab {
       return;
     viewer.pending = undefined;
     viewer.inFlight = true;
-    viewer.socket.send(frame, { binary: true });
+    this.send(viewer, { type: "editable", regions: frame.regions });
+    viewer.socket.send(frame.frame, { binary: true });
   }
 
   private dispatchInput(

@@ -3,6 +3,7 @@ import {
   SIDEBAR_BROWSER_FRAME_HEADER_BYTES,
   decodeSidebarBrowserFrameHeader,
   type SidebarBrowserClientMessage,
+  type SidebarBrowserEditableRegion,
   type SidebarBrowserMouseButton,
 } from "@codexhost/shared-contracts/sidebar-browser";
 import type { BrowserPresentation } from "../view/BrowserPresentation.ts";
@@ -27,6 +28,7 @@ export class RemotePresentation implements BrowserPresentation {
   private viewportMessage: Extract<ViewerMessage, { type: "viewport" }> | undefined;
   private visibleValue = false;
   private readonly heldKeys = new Set<string>();
+  private editableRegions: readonly SidebarBrowserEditableRegion[] = [];
 
   /**
    * @param send - forwards viewer state and input to the connection.
@@ -55,6 +57,8 @@ export class RemotePresentation implements BrowserPresentation {
     const canvas = document.createElement("canvas");
     canvas.className = css.canvas as string;
     canvas.dataset.sidebarBrowserFrame = "remote";
+    canvas.tabIndex = 0;
+    canvas.setAttribute("aria-label", this.inputLabel);
     const input = document.createElement("textarea");
     input.className = css.input as string;
     input.setAttribute("aria-label", this.inputLabel);
@@ -63,6 +67,7 @@ export class RemotePresentation implements BrowserPresentation {
     root.append(canvas, input);
     host.append(root);
     this.canvas = canvas;
+    this.editableRegions = [];
 
     const measure = (): void => {
       const bounds = root.getBoundingClientRect();
@@ -92,7 +97,7 @@ export class RemotePresentation implements BrowserPresentation {
     document.addEventListener("visibilitychange", measure, { signal });
     measure();
 
-    this.captureInput(canvas, input, signal);
+    this.captureInput(root, canvas, input, signal);
     return () => {
       lifetime.abort();
       resize.disconnect();
@@ -110,9 +115,13 @@ export class RemotePresentation implements BrowserPresentation {
   /**
    * Draw one frame at its physical resolution, sized to its CSS viewport.
    * @param frame - header and encoded image.
+   * @param regions - editable hit areas paired with this frame.
    * @returns after the frame has been drawn or discarded.
    */
-  async draw(frame: ArrayBuffer): Promise<void> {
+  async draw(
+    frame: ArrayBuffer,
+    regions: readonly SidebarBrowserEditableRegion[] = [],
+  ): Promise<void> {
     const header = decodeSidebarBrowserFrameHeader(frame);
     const image = await createImageBitmap(
       new Blob([frame.slice(SIDEBAR_BROWSER_FRAME_HEADER_BYTES)], {
@@ -127,6 +136,7 @@ export class RemotePresentation implements BrowserPresentation {
       canvas.style.width = `${String(header.width)}px`;
       canvas.style.height = `${String(header.height)}px`;
       this.size = { width: header.width, height: header.height };
+      this.editableRegions = regions;
       canvas.getContext("2d")?.drawImage(image, 0, 0);
     } finally {
       image.close();
@@ -150,6 +160,7 @@ export class RemotePresentation implements BrowserPresentation {
   }
 
   private captureInput(
+    root: HTMLElement,
     canvas: HTMLCanvasElement,
     input: HTMLTextAreaElement,
     signal: AbortSignal,
@@ -163,8 +174,21 @@ export class RemotePresentation implements BrowserPresentation {
       target.addEventListener(type, listener, { signal, passive });
     };
     let touch: { id: number; x: number; y: number; moved: number } | undefined;
+    let pointerType = "mouse";
+    const focusAt = (event: MouseEvent): void => {
+      const at = this.point(event);
+      const editable = this.editableRegions.some(
+        (region) =>
+          at.x >= region.x &&
+          at.y >= region.y &&
+          at.x < region.x + region.width &&
+          at.y < region.y + region.height,
+      );
+      // Canvas focus accepts navigation keys without opening the viewer's virtual keyboard.
+      // Editable focus must stay inside the user's gesture because iOS rejects async requests.
+      (editable ? input : canvas).focus({ preventScroll: true });
+    };
 
-    // The canvas is not focusable, so a click would move focus to the document after pointerdown.
     // Mouse events carry the browser's native double/triple-click count; pointer events do not.
     for (const action of ["down", "up"] as const)
       on(
@@ -172,7 +196,9 @@ export class RemotePresentation implements BrowserPresentation {
         `mouse${action}`,
         (event) => {
           event.preventDefault();
-          if (action === "down") input.focus({ preventScroll: true });
+          // Some touch browsers still emit compatibility mouse events after a tap.
+          if (pointerType !== "mouse") return;
+          if (action === "down") focusAt(event);
           this.send({
             type: "mouse",
             action,
@@ -187,7 +213,8 @@ export class RemotePresentation implements BrowserPresentation {
       canvas,
       "pointerdown",
       (event) => {
-        input.focus({ preventScroll: true });
+        pointerType = event.pointerType;
+        if (event.pointerType === "mouse") focusAt(event);
         canvas.setPointerCapture(event.pointerId);
         if (event.pointerType !== "mouse") {
           // Touch taps are forwarded below; suppress their compatibility mouse events.
@@ -227,6 +254,7 @@ export class RemotePresentation implements BrowserPresentation {
       touch = undefined;
       if (!tapped) return;
       const at = this.point(event);
+      focusAt(event);
       for (const action of ["down", "up"] as const)
         this.send({ type: "mouse", action, ...at, button: "left", clickCount: 1 });
     });
@@ -270,7 +298,7 @@ export class RemotePresentation implements BrowserPresentation {
       return event.key === PRIMARY_KEY ? "ControlOrMeta" : event.key;
     };
     on(
-      input,
+      root,
       "keydown",
       (event) => {
         const key = remoteKey(event);
@@ -285,7 +313,7 @@ export class RemotePresentation implements BrowserPresentation {
       false,
     );
     on(
-      input,
+      root,
       "keyup",
       (event) => {
         const key = remoteKey(event);
@@ -314,9 +342,10 @@ export class RemotePresentation implements BrowserPresentation {
       },
       false,
     );
-    on(input, "blur", () => {
-      this.releaseKeys();
-    });
+    for (const target of [canvas, input])
+      on(target, "blur", () => {
+        this.releaseKeys();
+      });
   }
 
   /** Keys held when focus leaves would otherwise stay pressed in the remote page. */

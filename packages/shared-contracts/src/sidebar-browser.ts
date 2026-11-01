@@ -66,8 +66,18 @@ export interface SidebarBrowserState {
   readonly error: string | undefined;
 }
 
+/** Editable hit area in the streamed page's CSS viewport; never includes field values. */
+export interface SidebarBrowserEditableRegion {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
 export type SidebarBrowserServerMessage =
   | SidebarBrowserState
+  /** Sent immediately before the frame whose touch-input hit areas it describes. */
+  | { readonly type: "editable"; readonly regions: readonly SidebarBrowserEditableRegion[] }
   /** The page opened a window; the viewer opens it as another tab. */
   | { readonly type: "open"; readonly url: string };
 

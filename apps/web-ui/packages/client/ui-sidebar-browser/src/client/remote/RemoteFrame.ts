@@ -4,6 +4,7 @@ import {
   SIDEBAR_BROWSER_PATH,
   SIDEBAR_BROWSER_TAB_PARAM,
   type SidebarBrowserClientMessage,
+  type SidebarBrowserEditableRegion,
   type SidebarBrowserServerMessage,
   type SidebarBrowserState,
 } from "@codexhost/shared-contracts/sidebar-browser";
@@ -30,6 +31,7 @@ export class RemoteFrame implements BrowserFrame {
   private checkpoint: BrowserTarget | undefined;
   private revision = 0;
   private drawing: Promise<void> = Promise.resolve();
+  private editableRegions: readonly SidebarBrowserEditableRegion[] = [];
   private disposed = false;
 
   /**
@@ -118,9 +120,10 @@ export class RemoteFrame implements BrowserFrame {
         return;
       }
       const frame = event.data;
+      const regions = this.editableRegions;
       // Frames arrive one at a time; the ack releases the next one.
       this.drawing = this.drawing
-        .then(() => this.presentation.draw(frame))
+        .then(() => this.presentation.draw(frame, regions))
         .catch(() => undefined)
         .then(() => {
           if (this.socket === socket) this.send({ type: "ack" });
@@ -148,6 +151,10 @@ export class RemoteFrame implements BrowserFrame {
   }
 
   private receive(message: SidebarBrowserServerMessage): void {
+    if (message.type === "editable") {
+      this.editableRegions = message.regions;
+      return;
+    }
     if (message.type === "open") {
       this.options.openRequested(message.url);
       return;

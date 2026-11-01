@@ -23,7 +23,8 @@ it(
         "x-frame-options": "DENY",
       });
       response.end(`<!doctype html><title>Browser fixture</title>
-        <style>body{margin:0;background:rgb(12,34,56)} input,button,a{position:absolute;left:20px;width:200px;height:40px}input{top:80px}button{top:140px}a{top:200px}</style>
+        <style>body{margin:0;min-height:3000px;background:rgb(12,34,56)} input,button,a{position:absolute;left:20px;width:200px;height:40px}input{top:80px}button{top:140px}a{top:200px}</style>
+        <script>addEventListener('scroll',()=>{if(document.title==='Browser fixture'||document.title.startsWith('scroll-'))document.title='scroll-'+scrollY})</script>
         ${
           request.url === "/next"
             ? "<h1>Next page</h1>"
@@ -58,6 +59,7 @@ it(
     const page = await browser.newPage({
       viewport: { width: 1280, height: 900 },
       deviceScaleFactor: 2,
+      hasTouch: true,
     });
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -111,8 +113,66 @@ it(
         expected,
       );
     };
-    // Text, including a committed IME result, reaches the focused remote field.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => {
+      const frame = document.querySelector("canvas[data-sidebar-browser-frame]");
+      return frame !== null && frame.getBoundingClientRect().width < 390;
+    });
+    const keyboard = page.getByRole("textbox", { name: "Web page input" });
+    await keyboard.evaluate((element) => {
+      element.addEventListener("focus", () => element.setAttribute("data-was-focused", "true"));
+    });
+    // A mouse-like event on a narrow/touch viewer must not request the software keyboard.
+    await remote(10, 20);
+    assert.equal(await keyboard.getAttribute("data-was-focused"), null);
+    assert.equal(await canvas.evaluate((element) => document.activeElement === element), true);
+    // Canvas focus retains navigation keys even though the IME textarea is not focused.
+    await page.keyboard.press("ArrowDown");
+    await page.getByRole("tab", { name: /scroll-[1-9]/u }).waitFor();
+    await page.keyboard.press("ArrowUp");
+    await page.getByRole("tab", { name: /scroll-0/u }).waitFor();
+    const box = await canvas.boundingBox();
+    assert.ok(box);
+    const cdp = await page.context().newCDPSession(page);
+    const swipe = async (fromY: number, toY: number) => {
+      const at = (y: number) => [{ x: box.x + 40, y: box.y + y }];
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: at(fromY) });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: at(toY) });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    };
+    // A drag beginning over an editable field still scrolls without ever focusing the IME.
+    await swipe(100, 40);
+    await page.getByRole("tab", { name: /scroll-60/u }).waitFor();
+    assert.equal(await keyboard.getAttribute("data-was-focused"), null);
+    await swipe(40, 100);
+    await page.getByRole("tab", { name: /scroll-0/u }).waitFor();
+    assert.equal(await keyboard.getAttribute("data-was-focused"), null);
+    // A tap on ordinary content does not request input either.
+    await canvas.tap({ position: { x: 10, y: 20 } });
+    // Exercise compatibility mouse events explicitly: preventDefault alone is not the guard.
+    for (const type of ["mousedown", "mouseup"])
+      await canvas.dispatchEvent(type, {
+        clientX: box.x + 10,
+        clientY: box.y + 20,
+        button: 0,
+        detail: 1,
+      });
+    assert.equal(await keyboard.getAttribute("data-was-focused"), null);
+    await canvas.tap({ position: { x: 40, y: 100 } });
+    assert.equal(await keyboard.evaluate((element) => document.activeElement === element), true);
+    await page.keyboard.type("touch-");
+    await canvas.tap({ position: { x: 40, y: 160 } });
+    await page.getByRole("tab", { name: /touch-/u }).waitFor();
+    assert.equal(await keyboard.evaluate((element) => document.activeElement === element), false);
+    await cdp.detach();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.waitForFunction(() => {
+      const frame = document.querySelector("canvas[data-sidebar-browser-frame]");
+      return frame !== null && frame.getBoundingClientRect().width > 390;
+    });
+    // Desktop text, including a committed IME result, still reaches the remote field.
     await remote(40, 100);
+    await page.keyboard.press("ControlOrMeta+A");
     await page.keyboard.type("remote-");
     await page.getByRole("textbox", { name: "Web page input" }).evaluate((element) => {
       const textarea = element as HTMLTextAreaElement;
@@ -129,11 +189,23 @@ it(
     await addressIs(`${website}next`);
     await page.getByRole("button", { name: "Back", exact: true }).click();
     await addressIs(website);
+    // The address arrives before the next streamed image; wait until the text field is painted.
+    await page.waitForFunction(() => {
+      const frame = document.querySelector<HTMLCanvasElement>("canvas[data-sidebar-browser-frame]");
+      const pixel = frame?.getContext("2d")?.getImageData(360, 200, 1, 1).data;
+      return pixel !== undefined && (pixel[0] ?? 0) > 200;
+    });
+    // Re-establish a custom title after history navigation, which may reload rather than use BFCache.
+    await remote(40, 100);
+    await page.keyboard.press("ControlOrMeta+A");
+    await page.keyboard.type("remote-中");
+    await remote(40, 160);
+    await page.getByRole("tab", { name: /remote-中/u }).waitFor();
     // A window the page opens becomes another sidebar tab on the same address.
     await remote(40, 280);
     await page
       .getByRole("tab", { name: /127\.0\.0\.1|Browser fixture|Next/u })
-      .nth(1)
+      .first()
       .waitFor();
     // The tab lives on the server: reloading the viewer reattaches to the same page.
     await page.reload();

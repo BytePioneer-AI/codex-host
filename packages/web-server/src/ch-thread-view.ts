@@ -1,10 +1,15 @@
 /** In-memory projection of the CH protocol onto the existing Web UI wire format. */
-import { REASONING_TRANSCRIPT_COMMAND } from "@codexhost/shared-contracts";
+import {
+  REASONING_TRANSCRIPT_COMMAND,
+  type ClientFileOperation,
+} from "@codexhost/shared-contracts";
+import { conversationItems } from "./ch-file-operations.ts";
 import { SessionLog, type ProjectionListener } from "./session-log.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { RpcError } from "./transport.ts";
 import {
   TurnProjector,
+  diffTexts,
   type HostFileChange,
   type HostItem,
   type HostItemOutcome,
@@ -20,6 +25,7 @@ export interface ChTurn {
   id: string;
   status: string;
   items: ChItem[];
+  codexhostFileOperations?: ClientFileOperation[] | undefined;
   /** Native Turn boundaries in Unix seconds. */
   startedAt?: number | null;
   completedAt?: number | null;
@@ -167,8 +173,6 @@ export class ChThreadView {
       items: Map<string, HostItem>;
       started: Set<string>;
       completed: Set<string>;
-      /** Last settled changes per fileChange item, to spot a summary that keeps growing. */
-      fileRevisions: Map<string, { json: string; count: number }>;
       done: boolean;
     }
   >();
@@ -276,6 +280,7 @@ export class ChThreadView {
     for (const [id, view] of page.turns) this.turns.set(id, view);
     this.turnStart = start;
     this.thread.turns = [...turns, ...this.thread.turns];
+    this.publishFileChanges();
   }
 
   update(thread: ChThread): void {
@@ -286,7 +291,7 @@ export class ChThreadView {
     for (const turn of thread.turns) {
       const view = this.turns.get(turn.id);
       if (!view || view.done) continue;
-      const ids = new Set(turn.items.map((item) => item.id));
+      const ids = new Set(conversationItems(turn).map((item) => item.id));
       if ([...view.items.keys()].some((id) => !ids.has(id)))
         throw new RpcError("host/items-replaced", "CH replaced live Items with native history.");
     }
@@ -302,6 +307,23 @@ export class ChThreadView {
       this.log.clock = undefined;
     }
     this.log.setProjection("codexhostToolOutput", Object.fromEntries(this.liveOutput));
+    this.publishFileChanges();
+  }
+
+  private publishFileChanges(): void {
+    this.log.setProjection(
+      "codexhostTurnChanges",
+      Object.fromEntries(
+        this.thread.turns.flatMap((turn) => {
+          const view = this.turns.get(turn.id);
+          if (!view) return [];
+          const diffs = turn.items.flatMap((item) =>
+            item.type === "fileChange" ? hostFileChanges(item.changes).map(diffTexts) : [],
+          );
+          return [[view.projector.turn, diffs]];
+        }),
+      ),
+    );
   }
 
   private projectTurns(thread: ChThread): void {
@@ -343,39 +365,20 @@ export class ChThreadView {
           items: new Map(),
           started: new Set(),
           completed: new Set(),
-          fileRevisions: new Map(),
           done: false,
         };
         this.turns.set(turn.id, view);
       }
       if (!complete) this.log.clock = undefined;
       if (view.done) continue;
+      const items = conversationItems(turn);
       const reasoningPreviewIds = new Set(
-        turn.items.filter((item) => item.type === "reasoning").map((item) => item.id),
+        items.filter((item) => item.type === "reasoning").map((item) => item.id),
       );
-      for (const item of turn.items) {
+      for (const item of items) {
         const projected = itemOf(item, reasoningPreviewIds);
         if (!projected) continue;
-        if (view.completed.has(item.id)) {
-          // The Host's per-Turn file summary keeps one id and grows as more files
-          // change, even after it first reports completed. Settle each growth as
-          // its own call; every one carries the cumulative changes.
-          const revision = view.fileRevisions.get(item.id);
-          if (projected.type === "fileChange" && revision !== undefined) {
-            const json = JSON.stringify(projected.changes);
-            if (json !== revision.json) {
-              const count = revision.count + 1;
-              const next = {
-                ...projected,
-                itemId: `${item.id}#${count}` as typeof projected.itemId,
-              };
-              view.projector.itemStarted(next);
-              view.projector.itemCompleted(next, { status: "succeeded" });
-              view.fileRevisions.set(item.id, { json, count });
-            }
-          }
-          continue;
-        }
+        if (view.completed.has(item.id)) continue;
         const old = view.items.get(item.id);
         if (!view.started.has(item.id)) {
           view.items.set(item.id, projected);
@@ -450,15 +453,17 @@ export class ChThreadView {
                       : {}),
                   }
                 : undefined;
-        if (itemOutcome) {
+        // Older Hosts only expose a mutable Turn summary, not individual calls.
+        // Keep that one row open until the Turn closes; never invent extra calls.
+        const legacySummary =
+          projected.type === "fileChange" && turn.codexhostFileOperations === undefined;
+        if (itemOutcome && (!legacySummary || complete)) {
           if (!view.started.has(item.id)) {
             view.projector.itemStarted(projected);
             view.started.add(item.id);
           }
           view.projector.itemCompleted(projected, itemOutcome);
           view.completed.add(item.id);
-          if (projected.type === "fileChange")
-            view.fileRevisions.set(item.id, { json: JSON.stringify(projected.changes), count: 0 });
         }
       }
       if (complete) {

@@ -40,6 +40,7 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
   renderSlot,
   t,
   useChat,
+  useProjection,
 }: TurnTailNodeViewProps) {
   const forking = useRef(false);
   const [forkPending, setForkPending] = useState(false);
@@ -89,7 +90,7 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
       data-turn-tail={data.turn}
       data-actions-reveal={endsWithResponse ? "always" : "hover"}
     >
-      <TurnChangesCard nodeStore={nodeStore} turn={data.turn} t={t} />
+      <TurnChangesCard nodeStore={nodeStore} turn={data.turn} t={t} useProjection={useProjection} />
       {tail}
       <MessageIconActions
         text={assistantText(closing.blocks)}

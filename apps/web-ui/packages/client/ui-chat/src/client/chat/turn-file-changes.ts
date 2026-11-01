@@ -1,7 +1,14 @@
-/** Per-Turn file-change totals derived from settled edit/write results. */
+/** Per-Turn file totals, separate from individual edit/write call details. */
 import { useSyncExternalStore } from "react";
 import { diffTotals, type DiffHunk } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ChatNodeStore } from "../contract/snapshot.ts";
+import type { ChatViewSlotProps } from "../contract/slots.ts";
+
+declare module "@deepseek-ai/dsh-session-projection/types" {
+  interface SessionProjectionMap {
+    codexhostTurnChanges: Readonly<Record<string, readonly DiffHunk[]>>;
+  }
+}
 
 /** One file's accumulated additions, removals and hunks. */
 export interface FileChange {
@@ -41,19 +48,31 @@ export function fileChanges(blocks: readonly unknown[]): FileChange[] {
 }
 
 /**
- * Observe one Turn's file changes; re-renders only when its tool calls change.
+ * Observe one Turn's summary, falling back to its settled tool results.
  * @param nodeStore - Chat node store.
  * @param turn - Turn number, or undefined before any Turn exists.
+ * @param useProjection - Host summary subscription, independent of tool-call updates.
  * @returns the Turn's changed files.
  */
 export function useTurnFileChanges(
   nodeStore: ChatNodeStore,
   turn: number | undefined,
+  useProjection: ChatViewSlotProps["useProjection"],
 ): readonly FileChange[] {
-  const source = turn === undefined ? EMPTY : nodeStore.turnDataSource(turn, "tool-call");
+  const summary = useProjection("codexhostTurnChanges", (turns) =>
+    turn === undefined ? undefined : turns?.[turn],
+  );
+  const source =
+    turn === undefined || summary !== undefined
+      ? EMPTY
+      : nodeStore.turnDataSource(turn, "tool-call");
   const tools = useSyncExternalStore(source.subscribe, source.getSnapshot);
   // Cheap to recompute: the source array changes only with its members.
-  return tools === undefined ? NO_FILES : fileChanges(tools.map((tool) => tool.root));
+  return summary !== undefined
+    ? fileChanges([{ meta: { diffs: summary } }])
+    : tools === undefined
+      ? NO_FILES
+      : fileChanges(tools.map((tool) => tool.root));
 }
 
 /** @param files - changed files. @returns the summed +/- across them. */

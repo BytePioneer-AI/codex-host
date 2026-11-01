@@ -13,12 +13,13 @@ import css from "./ChangesDock.module.css";
 export const ChangesDock = memo(function ChangesDock({
   useChat,
   useSession,
+  useProjection,
   t,
 }: PropsRuntime<"conversation.input.dock"> & PropsLocale<"chat">) {
   const running = useSession((s) => s.running);
   const nodeStore = useChat((s) => s.nodes);
   const turn = useChat((s) => s.navigation.items().at(-1)?.turn);
-  const files = useTurnFileChanges(nodeStore, running ? turn : undefined);
+  const files = useTurnFileChanges(nodeStore, running ? turn : undefined, useProjection);
   if (!running || files.length === 0) return null;
   const { added, removed } = sumChanges(files);
   return (

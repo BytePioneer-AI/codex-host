@@ -238,7 +238,7 @@ describe("CH file summary that grows during a live Turn", () => {
     ],
   });
 
-  it("settles each growth of a completed summary as its own call with cumulative changes", () => {
+  it("keeps one legacy summary row while publishing cumulative changes separately", () => {
     const view = new ChThreadView(
       thread([turn(["a.ts"], "completed", "inProgress")] as ChThread["turns"]),
       "pi",
@@ -247,6 +247,21 @@ describe("CH file summary that grows during a live Turn", () => {
     view.update(view.thread);
     view.update(
       thread([turn(["a.ts", "b.ts", "c.ts"], "completed", "inProgress")] as ChThread["turns"]),
+    );
+    assert.equal(
+      new Set(
+        view.log.events
+          .filter((entry) => entry.type === "tool/call")
+          .map((entry) => (entry.data as { callId: string }).callId),
+      ).size,
+      1,
+    );
+    assert.equal(view.log.events.filter((entry) => entry.type === "tool/result").length, 0);
+    assert.deepEqual(
+      (
+        view.log.projections.codexhostTurnChanges as Record<string, Array<{ path: string }>>
+      )[1]?.map((diff) => diff.path),
+      ["a.ts", "b.ts", "c.ts"],
     );
     view.update(
       thread([turn(["a.ts", "b.ts", "c.ts"], "completed", "completed")] as ChThread["turns"]),
@@ -258,6 +273,57 @@ describe("CH file summary that grows during a live Turn", () => {
           (diff) => diff.path,
         ),
       );
-    assert.deepEqual(results, [["a.ts"], ["a.ts", "b.ts", "c.ts"]]);
+    assert.deepEqual(results, [["a.ts", "b.ts", "c.ts"]]);
+  });
+
+  it("shows each original A, B, A edit once while the dock keeps cumulative totals", () => {
+    const edit = (id: string, path: string, oldText: string, newText: string) => ({
+      id,
+      type: "dynamicToolCall",
+      tool: "edit",
+      status: "completed",
+      arguments: { path, oldText, newText },
+    });
+    const current: ChThread["turns"][number] = {
+      ...turn(["a.ts"], "completed", "inProgress"),
+      codexhostFileOperations: [{ beforeItemId: null, item: edit("a1", "a.ts", "old A", "new A") }],
+    };
+    const view = new ChThreadView(thread([]), "pi", () => {});
+    const diffs = (source: ChThreadView) =>
+      source.log.events
+        .filter((event) => event.type === "tool/result")
+        .map((event) => (event.data as { meta: { diffs: unknown[] } }).meta.diffs);
+    view.update(thread([structuredClone(current)]));
+    assert.deepEqual(diffs(view), [[{ path: "a.ts", oldText: "old A", newText: "new A" }]]);
+    current.items = [
+      ...turn(["a.ts", "b.ts"], "completed", "inProgress").items,
+      { id: "reason", type: "reasoning", summary: ["Check B"] },
+      { id: "answer", type: "agentMessage", text: "Done" },
+    ];
+    current.codexhostFileOperations = [
+      { beforeItemId: "reason", item: edit("a1", "a.ts", "old A", "new A") },
+      { beforeItemId: "answer", item: edit("b1", "b.ts", "old B", "new B") },
+      { beforeItemId: "answer", item: edit("a2", "a.ts", "new A", "final A") },
+    ];
+    view.update(thread([structuredClone(current)]));
+    const expected = [
+      [{ path: "a.ts", oldText: "old A", newText: "new A" }],
+      [{ path: "b.ts", oldText: "old B", newText: "new B" }],
+      [{ path: "a.ts", oldText: "new A", newText: "final A" }],
+    ];
+    assert.deepEqual(diffs(view), expected);
+    assert.deepEqual(
+      (
+        view.log.projections.codexhostTurnChanges as Record<string, Array<{ path: string }>>
+      )[1]?.map((diff) => diff.path),
+      ["a.ts", "b.ts"],
+    );
+    current.status = "completed";
+    view.update(thread([structuredClone(current)]));
+    view.update(thread([structuredClone(current)]));
+    assert.deepEqual(diffs(view), expected);
+    const reloaded = new ChThreadView(thread([]), "pi", () => {});
+    reloaded.update(thread([current]));
+    assert.deepEqual(diffs(reloaded), expected);
   });
 });

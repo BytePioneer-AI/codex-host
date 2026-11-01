@@ -176,6 +176,18 @@ const clientTurnSchema = z
     id: z.string().min(1),
     status: z.string().min(1),
     items: z.array(z.object({ id: z.string().min(1), type: z.string().min(1) }).passthrough()),
+    /** Original file operations, independent of the cumulative Desktop fileChange card.
+     * Insert before the named non-file Item; null appends at the end of the Turn.
+     * Absence means the Host only supplies the Desktop summary representation.
+     */
+    codexhostFileOperations: z
+      .array(
+        z.object({
+          beforeItemId: z.string().nullable(),
+          item: z.object({ id: z.string().min(1), type: z.string().min(1) }).passthrough(),
+        }),
+      )
+      .optional(),
     error: z.object({ message: z.string().optional() }).passthrough().nullable().optional(),
     /** Completed Turns only, when the request carried `knownTurns`. Opaque; valid
      * only within the Host epoch that issued it. */
@@ -238,6 +250,9 @@ export const clientThreadSnapshotSchema = z.object({
   interactions: z.array(clientInteractionSchema),
 });
 export type ClientThreadSnapshot = z.infer<typeof clientThreadSnapshotSchema>;
+export type ClientFileOperation = NonNullable<
+  ClientThreadSnapshot["turnsPage"]["data"][number]["codexhostFileOperations"]
+>[number];
 export const clientChannelDescriptorSchema = z.object({
   version: z.literal(CLIENT_CHANNEL_VERSION),
   owner: z.literal("service").optional(),

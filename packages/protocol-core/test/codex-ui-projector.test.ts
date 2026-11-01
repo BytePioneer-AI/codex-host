@@ -267,6 +267,7 @@ describe("Codex UI projector", () => {
     };
 
     expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toEqual({
+      codexhostFileOperations: [],
       id: "turn-1",
       status: "completed",
       items: [

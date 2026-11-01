@@ -247,4 +247,122 @@ describe("external Harness file summaries", () => {
     expect(matchingFragments[0]?.unifiedDiff ?? "").toContain("+b");
     expect(matchingFragments[0]?.unifiedDiff ?? "").toContain("-b");
   });
+
+  it("preserves each file operation and its order independently of the cumulative card", () => {
+    const projector = new CodexTurnProjector({
+      threadId: "thread",
+      turnId,
+      cwd: "/w",
+      startedAtMs: 1000,
+    });
+    projector.project({ type: "turn.started", turnId });
+    const edit = (key: string, path: string, oldText: string, newText: string): HostItem => ({
+      type: "toolExecution",
+      itemId: id(key),
+      toolName: "edit",
+      arguments: { path, oldText, newText },
+    });
+    const items: HostItem[] = [
+      edit("a1", "a.ts", "old A", "new A"),
+      { type: "reasoning", itemId: id("reason"), text: "Check B" },
+      edit("b1", "b.ts", "old B", "new B"),
+      edit("a2", "a.ts", "new A", "final A"),
+      { type: "agentMessage", itemId: id("answer"), text: "Done" },
+    ];
+    const snapshots: HostItemSnapshot[] = items.map((item) => ({
+      item,
+      outcome: { status: "succeeded" },
+    }));
+    for (const snapshot of snapshots) {
+      projector.project({ type: "item.started", turnId, item: snapshot.item });
+      projector.project({ type: "item.completed", turnId, snapshot });
+    }
+    const expected = [
+      {
+        beforeItemId: "reason-summary",
+        item: { id: "a1", arguments: { path: "a.ts", oldText: "old A", newText: "new A" } },
+      },
+      {
+        beforeItemId: "answer",
+        item: { id: "b1", arguments: { path: "b.ts", oldText: "old B", newText: "new B" } },
+      },
+      {
+        beforeItemId: "answer",
+        item: { id: "a2", arguments: { path: "a.ts", oldText: "new A", newText: "final A" } },
+      },
+    ];
+    expect(projector.snapshotTurn().codexhostFileOperations).toMatchObject(expected);
+    expect(projector.pendingTurn()).not.toHaveProperty("codexhostFileOperations");
+    expect(files(projector.snapshotTurn())[0]?.changes.map((change) => change.path)).toEqual([
+      "a.ts",
+      "b.ts",
+    ]);
+    const completed = projector.project({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(completed.completedTurn).not.toHaveProperty("codexhostFileOperations");
+    expect(projector.snapshotTurn(completed.completedTurn).codexhostFileOperations).toMatchObject(
+      expected,
+    );
+    const snapshot: HostTurnSnapshot = {
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: "pi",
+        nativeSessionId: "session",
+        nativeTurnKey: "turn",
+        formatVersion: 1,
+      }),
+      input: [],
+      items: snapshots,
+      outcome: { status: "succeeded" },
+    };
+    expect(
+      projectHistoricalTurn({ turnId, cwd: "/w", snapshot }).codexhostFileOperations,
+    ).toMatchObject(expected);
+  });
+
+  it("does not invent extra calls for linked patches and preserves failed calls", () => {
+    const projector = new CodexTurnProjector({
+      threadId: "thread",
+      turnId,
+      cwd: "/w",
+      startedAtMs: 1000,
+    });
+    projector.project({ type: "turn.started", turnId });
+    const tool: HostItem = {
+      type: "toolExecution",
+      itemId: id("edit"),
+      toolName: "edit",
+      arguments: { path: "a.ts", oldText: "a", newText: "b" },
+    };
+    const native: HostItem = {
+      type: "fileChange",
+      itemId: id("patch"),
+      sourceItemIds: [tool.itemId],
+      changes: [change("a", "b", "a.ts")],
+    };
+    const failed: HostItem = { ...tool, itemId: id("failed") };
+    for (const item of [tool, native, failed]) {
+      projector.project({ type: "item.started", turnId, item });
+      projector.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item,
+          outcome:
+            item === failed
+              ? {
+                  status: "failed",
+                  error: { code: "nativeFailure", message: "not found", retryable: false },
+                }
+              : { status: "succeeded" },
+        },
+      });
+    }
+    expect(projector.snapshotTurn().codexhostFileOperations).toMatchObject([
+      { item: { id: "edit", status: "completed" } },
+      { item: { id: "failed", status: "failed", error: { message: "not found" } } },
+    ]);
+  });
 });

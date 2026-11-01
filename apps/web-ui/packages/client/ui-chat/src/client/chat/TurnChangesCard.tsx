@@ -17,6 +17,7 @@ interface TurnChangesCardProps {
   readonly nodeStore: ChatNodeStore;
   readonly turn: number;
   readonly t: ChatViewSlotProps["t"];
+  readonly useProjection: ChatViewSlotProps["useProjection"];
 }
 
 /**
@@ -27,8 +28,9 @@ export const TurnChangesCard = memo(function TurnChangesCard({
   nodeStore,
   turn,
   t,
+  useProjection,
 }: TurnChangesCardProps) {
-  const files = useTurnFileChanges(nodeStore, turn);
+  const files = useTurnFileChanges(nodeStore, turn, useProjection);
   const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [showAllFiles, setShowAllFiles] = useState(false);
   const labels = useMemo<DiffBlockLabels>(

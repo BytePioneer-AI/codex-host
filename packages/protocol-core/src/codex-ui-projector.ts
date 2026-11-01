@@ -28,6 +28,7 @@ import { REASONING_TRANSCRIPT_COMMAND } from "@codexhost/shared-contracts";
 import { createTwoFilesPatch } from "diff";
 import path from "node:path";
 import { summarizeFileChanges } from "./file-change-summary.js";
+import { isFileMutatingTool, projectFileOperations } from "./file-operation-projection.js";
 
 import {
   projectCodexApprovalRequest,
@@ -189,24 +190,6 @@ export function toolCommandLine(toolName: string, args: JsonValue): string | und
 
 function compactToolName(toolName: string): string {
   return toolName.toLowerCase().replaceAll(/[_-]/g, "");
-}
-
-function isFileMutatingTool(toolName: string): boolean {
-  return [
-    "edit",
-    "editfile",
-    "fileedit",
-    "strreplace",
-    "searchreplace",
-    "applypatch",
-    "replace",
-    "multiedit",
-    "write",
-    "writefile",
-    "filewrite",
-    "create",
-    "createfile",
-  ].includes(compactToolName(toolName));
 }
 
 function isWriteTool(toolName: string): boolean {
@@ -697,7 +680,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
     lastVisible,
     historicalStatus(snapshot.outcome) === "completed",
   );
-  return {
+  const turn = {
     id: turnId,
     status: historicalStatus(snapshot.outcome),
     items: [
@@ -718,6 +701,14 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
     completedAt: hasTiming ? Math.floor(completedAtMs / 1000) : null,
     durationMs: hasTiming ? completedAtMs - startedAtMs : null,
     itemsView: "full",
+  };
+  return {
+    ...turn,
+    codexhostFileOperations: projectFileOperations(
+      snapshot.items,
+      turn.items,
+      ({ item, outcome }) => projectItem(item, outcome, cwd, true, input.threadId ?? ""),
+    ),
   };
 }
 
@@ -845,7 +836,7 @@ export class CodexTurnProjector {
    * the Desktop-specific wire shape; it deliberately omits several live Items.
    */
   snapshotTurn(base: JsonObject = this.pendingTurn()): JsonObject {
-    return {
+    const turn = {
       ...base,
       items: [
         ...this.#projectInput(this.#snapshotInput),
@@ -874,6 +865,14 @@ export class CodexTurnProjector {
           return [item];
         }),
       ],
+    };
+    return {
+      ...turn,
+      codexhostFileOperations: projectFileOperations(
+        [...this.#items.values()],
+        turn.items,
+        ({ item, outcome }) => projectItem(item, outcome, this.#cwd, true, this.#threadId),
+      ),
     };
   }
 

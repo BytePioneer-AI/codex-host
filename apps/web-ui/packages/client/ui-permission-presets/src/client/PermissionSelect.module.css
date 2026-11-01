@@ -22,6 +22,16 @@
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
+.trigger.triggerDangerous:not(:disabled) {
+  /* Warm orange, not the yellowish amber warn token (matches the Codex full-access chip). */
+  color: rgb(242, 128, 72);
+}
+
+.trigger.triggerDangerous .chevron {
+  color: inherit;
+  opacity: 0.7;
+}
+
 .trigger:focus-visible {
   box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 }

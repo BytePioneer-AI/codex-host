@@ -5,6 +5,7 @@ import type { ComposerKeyboard } from "../../contract/draft-editor.ts";
 import type { ComposerPrimaryAction } from "../../contract/input.ts";
 import type { ComposerBarProps } from "../../contract/slots.ts";
 import type { BusyEnterBehavior } from "../../contract/composer-submission.ts";
+import { isMobileDevice } from "@deepseek-ai/dsh-client-ui-primitives";
 import { resolveSubmitMode } from "../submission-policy.ts";
 import { registerComposerKeymap } from "./keymap.ts";
 
@@ -170,7 +171,10 @@ export function installDraftKeymap(
 }
 
 /**
- * Keep a toolbar press from moving focus away from the draft.
+ * Keep a toolbar press from moving focus away from the draft. The press never
+ * summons focus on phones and tablets: focusing the editor there raises the
+ * on-screen keyboard, so a draft that already has focus keeps it (mousedown is
+ * cancelled) and an unfocused one stays unfocused.
  * @param event - the toolbar button's mouse event.
  * @param editor - the borrowed editor, absent in the inert view.
  */
@@ -179,5 +183,6 @@ export function keepDraftFocus(
   editor: LexicalEditor | null,
 ): void {
   event.preventDefault();
+  if (isMobileDevice()) return;
   editor?.getRootElement()?.focus({ preventScroll: true });
 }

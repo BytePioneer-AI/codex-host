@@ -925,6 +925,10 @@ export class ChSessions {
       const preparedInput = this.fileInputs
         ? await this.fileInputs.prepare(this.id(request.sessionId), request.content)
         : (this.images?.prepare(request.content) ?? request.content);
+      // Queued entries are presented from path references; base64 would exceed the Host request limit.
+      const presentation = this.images
+        ? this.images.presentation(request.content)
+        : request.content;
       // Use native text inputs so Desktop can also render queue entries when
       // connected to an older Host that forwards their shape unchanged.
       const input = preparedInput.map((part) =>
@@ -959,7 +963,7 @@ export class ChSessions {
             threadId,
             input,
             delivery: "queue",
-            presentationInput: request.content,
+            presentationInput: presentation,
             ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
           });
         }
@@ -968,7 +972,7 @@ export class ChSessions {
           threadId,
           input,
           ...(request.mode === "queue"
-            ? { delivery: "queue", presentationInput: request.content }
+            ? { delivery: "queue", presentationInput: presentation }
             : {}),
           ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
         });

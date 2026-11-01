@@ -5,6 +5,8 @@ import { harnessPermissionModeIdSchema } from "./harness-permission-modes.js";
 /** Authenticated local owner channel. Notifications invalidate state; they are
  * NOT appendable transcript deltas. Clients reconcile absolute snapshots. */
 export const CLIENT_CHANNEL_VERSION = 1;
+/** Request-body ceiling of the channel's POST routes; large enough for an inline image prompt. */
+export const CLIENT_REQUEST_LIMIT_BYTES = 128 * 1024 * 1024;
 export const CLIENT_CHANNEL_METHODS = [
   "codexhost/voice/status",
   "codexhost/voice/transcribe",

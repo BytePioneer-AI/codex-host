@@ -107,16 +107,18 @@
 }
 
 /* Inline notice rows (feature-owned, above the draft). The slot anchor is
-   always present, so collapse when it rendered nothing. */
+   always present and `display: contents`, so the notices are this flex
+   column's items. Spacing rides the notices themselves: an empty slot adds no
+   box, and no `:has()` rule has to flip the container, which iOS Safari
+   does not reliably re-evaluate when a notice mounts later. */
 .inlineNotices {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px 10px 0;
 }
 
-.inlineNotices:has(> [data-slot]:empty) {
-  display: none;
+.inlineNotices > [data-slot] > * {
+  margin: 10px 10px 0;
 }
 
 .accessory {

@@ -11,6 +11,7 @@ import {
   type HarnessSessionListParams,
 } from "@codexhost/shared-contracts";
 
+import type { DesktopScreenshotProgress } from "./desktop-screenshot.ts";
 import {
   DESKTOP_SCREENSHOT_PATH,
   DESKTOP_SCREENSHOT_TIME_HEADER,
@@ -56,14 +57,78 @@ export const voiceApi = {
   },
 };
 
+/** Longest wait for response headers: the Host's 15s native capture plus network margin. */
+const SCREENSHOT_HEADERS_TIMEOUT_MS = 25_000;
+/** Longest silence while the image streams in. */
+const SCREENSHOT_STALL_TIMEOUT_MS = 20_000;
+/** Capture slots are released a moment after an aborted request closes; retry `busy` briefly. */
+const SCREENSHOT_BUSY_RETRIES = 3;
+const SCREENSHOT_BUSY_DELAY_MS = 500;
+
+const delay = (ms: number, signal: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new Error("aborted"));
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new Error("aborted"));
+      },
+      { once: true },
+    );
+  });
+
 export const desktopScreenshotApi = {
-  capture: async (signal: AbortSignal) => {
+  capture: async (
+    signal: AbortSignal,
+    onProgress?: (progress: DesktopScreenshotProgress) => void,
+  ) => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await captureOnce(signal, onProgress);
+      } catch (error) {
+        if (!(
+          error instanceof Error &&
+          error.message === "busy" &&
+          attempt < SCREENSHOT_BUSY_RETRIES
+        ))
+          throw error;
+        await delay(SCREENSHOT_BUSY_DELAY_MS, signal);
+      }
+    }
+  },
+};
+
+/**
+ * One capture request with a progress watchdog: a phone link that stalls
+ * surfaces as `timeout` instead of an endless spinner.
+ */
+async function captureOnce(
+  signal: AbortSignal,
+  onProgress?: (progress: DesktopScreenshotProgress) => void,
+) {
+  const link = new AbortController();
+  const forward = (): void => link.abort();
+  signal.addEventListener("abort", forward, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const watch = (ms: number): void => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      timedOut = true;
+      link.abort();
+    }, ms);
+  };
+  try {
+    watch(SCREENSHOT_HEADERS_TIMEOUT_MS);
     const response = await fetch(DESKTOP_SCREENSHOT_PATH.slice(1), {
       method: "POST",
       credentials: "same-origin",
       cache: "no-store",
-      signal,
+      signal: link.signal,
     });
+    watch(SCREENSHOT_STALL_TIMEOUT_MS);
     if (!response.ok) {
       const failure = (await response.json().catch(() => undefined)) as
         { error?: unknown } | undefined;
@@ -76,9 +141,32 @@ export const desktopScreenshotApi = {
       !Number.isFinite(Date.parse(capturedAt))
     )
       throw new Error("capture-failed");
-    return { image: await response.blob(), capturedAt };
-  },
-};
+    // Headers arrive only after the Host finished capturing, so everything from
+    // here on is transfer time; report it so a slow link reads as progress.
+    const length = Number(response.headers.get("content-length"));
+    const total = Number.isFinite(length) && length > 0 ? length : undefined;
+    onProgress?.({ loaded: 0, total });
+    if (response.body === null) return { image: await response.blob(), capturedAt };
+    const reader = response.body.getReader();
+    const chunks: BlobPart[] = [];
+    let loaded = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      watch(SCREENSHOT_STALL_TIMEOUT_MS);
+      chunks.push(value);
+      loaded += value.length;
+      onProgress?.({ loaded, total });
+    }
+    return { image: new Blob(chunks, { type: "image/png" }), capturedAt };
+  } catch (error) {
+    if (timedOut && !signal.aborted) throw new Error("timeout");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", forward);
+  }
+}
 
 export const pushApi = {
   config: () => call<{ publicKey: string; subscriptions: number }>("codexhost/pushConfig", {}),

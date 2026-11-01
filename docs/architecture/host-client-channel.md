@@ -54,7 +54,7 @@ Host 只监听 `127.0.0.1`，使用随机 Bearer token，拒绝带 Origin 的直
 
 服务还提供认证的 Host-private `/v1/desktop` WebSocket 和 `/v1/shutdown` 管理入口，不通过 Web 网关公开。Desktop 连接携带有界、版本化的运行时上下文，不能改写后台的存储目录、Codex home 或委派认证。Web 发行包携带原生 Launcher 和同一 Host bundle；它不是纯浏览器即可启动的后台，也不包含 Node 或 Harness CLI。
 
-POST 使用 JSON，正文上限 1 MiB；返回 `{result: …}` 或 `{error: {code, message}}`。RPC 参数为 `{method, params}`，快照参数为 `{threadId, knownTurns?, truncateToolOutput?}`（可选项见下文“快照的可选精简”），回答参数为 `{epoch, threadId, requestId, result}`。可用 RPC 在 `CLIENT_CHANNEL_METHODS` 中；不允许 `thread/resume`、官方 Codex 创建或非本地 external Thread 操作。具体 Harness 能力仍须通过已有 inspect 契约查询，不能因 RPC 在名单内便假定该 Harness 支持它。
+POST 使用 JSON，正文上限 128 MiB（`CLIENT_REQUEST_LIMIT_BYTES`，与桌面 WebSocket 一致，可容纳内联图片）；返回 `{result: …}` 或 `{error: {code, message}}`。RPC 参数为 `{method, params}`，快照参数为 `{threadId, knownTurns?, truncateToolOutput?}`（可选项见下文“快照的可选精简”），回答参数为 `{epoch, threadId, requestId, result}`。可用 RPC 在 `CLIENT_CHANNEL_METHODS` 中；不允许 `thread/resume`、官方 Codex 创建或非本地 external Thread 操作。具体 Harness 能力仍须通过已有 inspect 契约查询，不能因 RPC 在名单内便假定该 Harness 支持它。
 
 client channel 透传既有的 `thread/revert {threadId, beforeTurnId}`。它与 GUI 共用分页历史回退路由；请求携带 canonical Turn ID，过期边界或活动 Turn 由 Host 拒绝。Web 编辑只对当前 Thread 声明 `history.rollbackLastTurn` 的最后一轮开放，回退确认后再通过 `turn/start` 重跑；这两个操作不构成新的原子编辑契约，结果未知不重试。详见[独立 Web 的已发送消息编辑](../product/standalone-web.md#编辑已发送消息)。
 

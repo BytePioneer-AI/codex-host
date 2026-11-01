@@ -230,6 +230,22 @@ export class WebImages {
     ];
   }
 
+  /**
+   * Queue-presentation form of an already prepared prompt: each image becomes a
+   * path reference to its stored object instead of its base64 bytes, so a
+   * queued message stays far below the Host request limit.
+   * @param content - the validated prompt content that `prepare` stored.
+   */
+  presentation(content: readonly unknown[]): unknown[] {
+    return content.map((part) => {
+      if (!part || typeof part !== "object" || (part as { type?: unknown }).type !== "image")
+        return part;
+      const image = part as { data: string; mediaType: string };
+      const { leaf } = inspectImage(Buffer.from(image.data, "base64"), image.mediaType);
+      return { type: "localImage", path: join(this.directory, leaf) };
+    });
+  }
+
   /** Read only an owned immutable object; never a browser-supplied filesystem path. */
   read(id: string): { attachment: WebImageRef; data: string } {
     const image = this.readBytes(id);

@@ -166,3 +166,44 @@ it("retains saved bytes after an outcome-unknown native send", async (t) => {
     "the native Turn can already reference these bytes",
   );
 });
+
+it("queued image sends present path references and stay below the Host request limit", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-image-queue-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = new FakeChChannel();
+  const data = new DataDir(root),
+    images = new WebImages(data);
+  const sessions = new ChSessions(
+    host,
+    new Workspaces(data, root, true),
+    new EventHub(root),
+    images,
+  );
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  sessions.register(rpc, new StreamRegistry());
+  const call = async <T>(method: string, request: unknown): Promise<T> => {
+    const result = await rpc.dispatch(method, { args: { request } });
+    assert.ok(result.ok, result.ok ? undefined : result.error.message);
+    return result.value as T;
+  };
+  // Bytes after IEND keep the header valid while pushing the wire form past 1 MiB.
+  const large = Buffer.concat([Buffer.from(PNG, "base64"), Buffer.alloc(1_500_000, 7)]);
+  const draft = await call<{ sessionId: string }>("session/create", { cwd: root });
+  await call("session/prompt", {
+    sessionId: draft.sessionId,
+    requestId: "queued-image",
+    mode: "queue",
+    content: [
+      { type: "image", mediaType: "image/png", data: large.toString("base64") },
+      { type: "text", text: "Inspect the image" },
+    ],
+  });
+  const sent = host.requests.find((r) => r.method === "turn/start");
+  assert.ok(sent);
+  assert.ok(JSON.stringify(sent.params).length < 1024 * 1024);
+  const presentation = sent.params.presentationInput as Array<{ type: string; path?: string }>;
+  assert.equal(presentation[0]?.type, "localImage");
+  assert.deepEqual(readFileSync(presentation[0]?.path ?? ""), large);
+  assert.deepEqual(presentation[1], { type: "text", text: "Inspect the image" });
+});

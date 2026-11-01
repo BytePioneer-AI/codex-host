@@ -34,7 +34,10 @@ import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
 import { HostConnectionStatus } from "./HostConnectionStatus.tsx";
 import { HostUsageDock } from "./HostUsageDock.tsx";
-import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
+import type {
+  ComposerAttachment,
+  ConversationController,
+} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-ui-input-trigger/client";
 import {
   THREAD_REFERENCE_SOURCE,
@@ -96,6 +99,12 @@ export function apply(ctx: ClientContext): void {
   ctx.provide("chatMessageEditing", sentMessageEditApi);
   ctx.inject(["conversation"], (scope) => {
     const screenshot = new DesktopScreenshot(desktopScreenshotApi.capture);
+    const conversation = scope.conversation as ConversationController;
+    const drafts: DesktopScreenshotFace["drafts"] = {
+      create: (sessionId, file) => conversation.createDrafts(sessionId as SessionId, [file]),
+      release: (created) =>
+        conversation.releaseDraftAttachments(created as readonly ComposerAttachment[]),
+    };
     scope.effect(() => () => screenshot.close(), "ui-codexhost: release desktop screenshot");
     scope.slots.inject("conversation.input.right", () =>
       scope.slots.register(
@@ -103,7 +112,7 @@ export function apply(ctx: ClientContext): void {
           name: "conversation.input.right",
           id: "codexhost.desktop-screenshot",
           locale: NS,
-          inject: (): DesktopScreenshotFace => ({ screenshot }),
+          inject: (): DesktopScreenshotFace => ({ screenshot, drafts }),
         },
         DesktopScreenshotButton,
       ),
@@ -114,7 +123,7 @@ export function apply(ctx: ClientContext): void {
           name: "conversation.input.notice",
           id: "codexhost.desktop-screenshot",
           locale: NS,
-          inject: (): DesktopScreenshotFace => ({ screenshot }),
+          inject: (): DesktopScreenshotFace => ({ screenshot, drafts }),
         },
         DesktopScreenshotPreview,
       ),

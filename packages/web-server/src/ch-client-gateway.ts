@@ -3,6 +3,7 @@ import {
   clientChannelCursorSchema,
   clientChannelResponseSchema,
   clientSnapshotRequestSchema,
+  CLIENT_REQUEST_LIMIT_BYTES,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient } from "./ch-host-client.ts";
 
@@ -77,7 +78,7 @@ export async function serveChClientGateway(
     for await (const chunk of request) {
       const part = Buffer.from(chunk as Uint8Array);
       size += part.length;
-      if (size > 1024 * 1024) throw new Error("Client request is too large");
+      if (size > CLIENT_REQUEST_LIMIT_BYTES) throw new Error("Client request is too large");
       chunks.push(part);
     }
     const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));

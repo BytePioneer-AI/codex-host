@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import clsx from "clsx";
 import {
   IconChevronDownOutlineRegular,
+  IconShieldOutlineRegular,
   IconWarningOutlineRegular,
   Menu,
   RiskConfirmation,
@@ -13,6 +14,20 @@ import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type { NativePermissionMode } from "./native.ts";
 import { PERMISSION_ACCESS_NS } from "./locales.ts";
 import css from "./PermissionSelect.module.css";
+
+/** Shield with an exclamation mark: the trigger glyph of a dangerous mode. */
+const ShieldAlertIcon = () => (
+  <svg width={16} height={16} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path
+      d="M8 1.75 2.75 3.6v3.9c0 3.1 2.1 5.4 5.25 6.75 3.15-1.35 5.25-3.65 5.25-6.75V3.6L8 1.75Z"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinejoin="round"
+    />
+    <path d="M8 5.6v3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+    <circle cx="8" cy="10.6" r="0.75" fill="currentColor" />
+  </svg>
+);
 
 export interface PermissionSelectInjected {
   /** Send the native mode ID through the existing command path and surface rejection. */
@@ -102,7 +117,7 @@ export function PermissionSelect({ locked, select, useProjection, t }: Permissio
         anchor={
           <button
             type="button"
-            className={css.trigger}
+            className={clsx(css.trigger, current?.dangerous && css.triggerDangerous)}
             aria-label={t("mode", { name: label })}
             title={
               native.locked
@@ -114,6 +129,9 @@ export function PermissionSelect({ locked, select, useProjection, t }: Permissio
             disabled={unavailable || busy}
             onClick={() => setOpen(!open)}
           >
+            <span className={css.triggerIcon}>
+              {current?.dangerous ? <ShieldAlertIcon /> : <IconShieldOutlineRegular />}
+            </span>
             <span className={css.triggerLabel}>{label}</span>
             <span className={clsx(css.chevron, open && css.chevronOpen)}>
               <IconChevronDownOutlineRegular />

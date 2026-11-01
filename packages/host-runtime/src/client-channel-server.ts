@@ -11,6 +11,7 @@ import {
   type ClientSnapshotOptions,
   type ClientThreadSnapshot,
   type ClientChannelResponse,
+  CLIENT_REQUEST_LIMIT_BYTES,
 } from "@codexhost/shared-contracts";
 import type { ClientChannelEvents } from "./client-channel-events.js";
 import { WebSocketServer } from "ws";
@@ -29,7 +30,7 @@ async function body(request: IncomingMessage): Promise<Record<string, unknown>> 
   for await (const part of request) {
     const buffer = Buffer.from(part as Uint8Array);
     bytes += buffer.length;
-    if (bytes > 1024 * 1024) throw new Error("Client request is too large");
+    if (bytes > CLIENT_REQUEST_LIMIT_BYTES) throw new Error("Client request is too large");
     chunks.push(buffer);
   }
   const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));

@@ -14,6 +14,8 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 
+import { GotgenesSubagents, type GotgenesRecord } from "./pi-gotgenes-subagents.js";
+
 import { piWorkflowSummary, projectPiWorkflow } from "./pi-subagent-workflow.js";
 
 const STATUS_PREFIX = "PI_SUBAGENT_ASYNC_JSON:";
@@ -203,7 +205,16 @@ export class PiSubagents {
   readonly #active = new Map<string, { turnId: HostTurnId; item: HostSubagentDelegationItem }>();
   readonly #waiting = new Map<string, { turnId: HostTurnId; itemId: HostItemId }>();
 
-  constructor(private readonly emit: (event: HostEvent) => void) {}
+  readonly gotgenes: GotgenesSubagents;
+  constructor(private readonly emit: (event: HostEvent) => void) {
+    this.gotgenes = new GotgenesSubagents(emit);
+  }
+  observeGotgenes(
+    records: GotgenesRecord[],
+    activeTurn?: { turnId: HostTurnId; nextItemId: () => HostItemId },
+  ): void {
+    this.gotgenes.observe(records, true, activeTurn, true);
+  }
 
   observe(runs: PiSubagentNode[]): void {
     this.#apply(runs, true);
@@ -266,6 +277,8 @@ export class PiSubagents {
     itemId: HostItemId,
     callId?: string,
   ): HostSubagentDelegationItem | null {
+    const gotgenes = this.gotgenes.project(toolName, result, itemId);
+    if (gotgenes) return gotgenes;
     const workflow = toolName === "subagent" ? piWorkflowSummary(result) : null;
     if (workflow && (!callId || workflow.parentToolCallId === callId))
       return projectPiWorkflow(workflow, itemId);
@@ -284,6 +297,7 @@ export class PiSubagents {
     itemId: HostItemId,
     callId?: string,
   ): void {
+    if (this.gotgenes.start(turnId, toolName, result, itemId)) return;
     const workflow = toolName === "subagent" ? piWorkflowSummary(result) : null;
     if (workflow && (!callId || workflow.parentToolCallId === callId)) {
       const key = `workflow:${workflow.workflowRunId}`;
@@ -329,6 +343,7 @@ export class PiSubagents {
   }
 
   finish(turnId: HostTurnId): void {
+    this.gotgenes.finish(turnId);
     for (const [runId, waiting] of this.#waiting) {
       if (waiting.turnId === turnId) this.#waiting.delete(runId);
     }

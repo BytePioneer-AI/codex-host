@@ -361,7 +361,9 @@ export class QoderAdapter implements HarnessAdapter {
           },
         };
 
-        this.#inspections.set(cacheKey, result);
+        // An empty catalog usually means the daemon had not published Models yet; keep the
+        // Harness ready but let the next inspection try again instead of pinning it empty.
+        if (catalog.models.length > 0) this.#inspections.set(cacheKey, result);
         return result;
       } catch {
         const errorResult: HarnessInspection = {

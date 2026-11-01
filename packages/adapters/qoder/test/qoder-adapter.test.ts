@@ -158,7 +158,9 @@ describe("QoderAdapter", () => {
       "keeps the %s catalog until explicit refresh, scoped by cwd",
       async (variant) => {
         const now = vi.spyOn(Date, "now").mockReturnValue(0);
-        const getAvailableModels = vi.fn(async () => []);
+        const getAvailableModels = vi.fn(async () => [
+          { value: "free-model", displayName: "Free", description: "" },
+        ]);
         const adapter = new QoderAdapter({
           variant,
           resolveExecutable: () => "qodercli",
@@ -221,7 +223,7 @@ describe("QoderAdapter", () => {
       }
     });
 
-    it("returns ready when executable is resolved and caches result", async () => {
+    it("returns ready with an empty catalog without pinning it in the cache", async () => {
       let resolveCalls = 0;
       const adapter = new QoderAdapter({
         resolveExecutable: () => {
@@ -246,15 +248,14 @@ describe("QoderAdapter", () => {
         expect(jsonValueSchema.parse(inspection1)).toEqual(inspection1);
       }
 
-      // Second call uses cached inspection
+      // An empty catalog is not cached, so the next call inspects again
       const inspection2 = await adapter.inspect({ cwd: "D:/project" });
       expect(inspection2.status).toBe("ready");
-      expect(resolveCalls).toBe(1);
+      expect(resolveCalls).toBe(2);
 
-      // Force refresh bypasses cache
       const inspection3 = await adapter.inspect({ cwd: "D:/project", refresh: true });
       expect(inspection3.status).toBe("ready");
-      expect(resolveCalls).toBe(2);
+      expect(resolveCalls).toBe(3);
     });
 
     it("dynamically returns models from queryFactory in inspect()", async () => {
@@ -425,6 +426,40 @@ describe("QoderAdapter", () => {
       if (inspection.status !== "ready") return;
       expect(fakeQuery.getAvailableModels).toHaveBeenCalledTimes(4);
       expect(inspection.catalog.models).toEqual([]);
+    });
+
+    it("does not pin an empty catalog so the next inspection loads late Models", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      fakeQuery.getAvailableModels
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          {
+            value: "free-model",
+            displayName: "Free",
+            isEnabled: true,
+            isDefault: true,
+            description: "",
+          },
+        ]);
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+        modelLoadRetry: { attempts: 1, delayMs: 0 },
+      });
+
+      const first = await adapter.inspect({ cwd: "D:/project" });
+      expect(first.status).toBe("ready");
+      if (first.status !== "ready") return;
+      expect(first.catalog.models).toEqual([]);
+
+      const second = await adapter.inspect({ cwd: "D:/project" });
+      expect(second.status).toBe("ready");
+      if (second.status !== "ready") return;
+      expect(second.catalog.defaultModel).toEqual(encodeQoderModelRef("free-model"));
+
+      const third = await adapter.inspect({ cwd: "D:/project" });
+      expect(third).toBe(second);
     });
 
     it("does not refetch live Models when the cache already has them", async () => {

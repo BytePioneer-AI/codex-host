@@ -1,3 +1,12 @@
+import { projectHistoricalTurn } from "@codexhost/protocol-core";
+import {
+  hostItemIdSchema,
+  hostTurnIdSchema,
+  nativeTurnRefSchema,
+} from "@codexhost/shared-contracts";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { projectDelegationThreadSnapshot } from "../src/delegation-snapshot.js";
@@ -27,6 +36,58 @@ const completedTurns = [
 ];
 
 describe("delegation snapshot", () => {
+  it("passes projected relative-image Markdown through result and message views", async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "delegation-media%41-"));
+    try {
+      await writeFile(path.join(cwd, "shot.png"), "synthetic image");
+      const turn = projectHistoricalTurn({
+        turnId: hostTurnIdSchema.parse("turn-1"),
+        cwd,
+        snapshot: {
+          nativeTurnRef: nativeTurnRefSchema.parse({
+            formatVersion: 1,
+            harnessId: "pi",
+            nativeSessionId: "session",
+            nativeTurnKey: "1",
+          }),
+          input: [],
+          outcome: { status: "succeeded" },
+          items: [
+            {
+              item: {
+                type: "agentMessage",
+                itemId: hostItemIdSchema.parse("answer"),
+                text: "![shot](shot.png)",
+              },
+              outcome: { status: "succeeded" },
+            },
+          ],
+        },
+      });
+      const text = `![shot](${path.join(cwd, "shot.png").replaceAll("\\", "/").replaceAll("%", "%2525")})`;
+      for (const view of ["result", "messages"] as const) {
+        const snapshot = projectDelegationThreadSnapshot({
+          threadId: "thread-1",
+          harnessId: "pi",
+          thread: {},
+          turns: [turn],
+          running: false,
+          view,
+        });
+        expect(snapshot).toMatchObject({
+          status: "completed",
+          result: { availability: "available", text },
+        });
+        if (view === "messages")
+          expect(snapshot.messages).toEqual([
+            { id: "answer", turnId: "turn-1", role: "agent", phase: "final", text },
+          ]);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns only visible progress and the final Agent result by default", () => {
     const snapshot = projectDelegationThreadSnapshot({
       threadId: "thread-1",

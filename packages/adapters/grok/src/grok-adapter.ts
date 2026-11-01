@@ -57,6 +57,7 @@ import {
   type TurnSteerAccepted,
   type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
+import { LocalMediaMarkdownStream } from "@codexhost/harness-adapter/local-media-markdown";
 import {
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
@@ -94,7 +95,7 @@ import {
   type GrokQuestionRequest,
   type GrokQuestionResponse,
 } from "./grok-questions.js";
-import { grokMediaResolveRoots, rewriteLocalMediaMarkdown } from "./local-media-markdown.js";
+import { grokMediaResolveRoots } from "./local-media-markdown.js";
 import { GrokSubagentLifecycle } from "./grok-subagent-lifecycle.js";
 import {
   grokNativeSubagentId,
@@ -211,8 +212,7 @@ interface ActiveTurn {
   usage?: GrokTurnUsage;
   agent: HostAgentMessageItem | null;
   agentMessageId: string | null;
-  rawAgentText: string;
-  projectedAgentText: string;
+  agentMedia: LocalMediaMarkdownStream | null;
   reasoning: HostReasoningItem | null;
   reasoningMessageId: string | null;
   compactionItem: HostContextCompactionItem | null;
@@ -530,8 +530,7 @@ class GrokHarnessSession implements HarnessSession {
       usage: new GrokTurnUsage(this.#usage, this.#snapshot.turns.length === 0),
       agent: null,
       agentMessageId: null,
-      rawAgentText: "",
-      projectedAgentText: "",
+      agentMedia: null,
       reasoning: null,
       reasoningMessageId: null,
       compactionItem: null,
@@ -659,8 +658,7 @@ class GrokHarnessSession implements HarnessSession {
       ),
       agent: null,
       agentMessageId: null,
-      rawAgentText: "",
-      projectedAgentText: "",
+      agentMedia: null,
       reasoning: null,
       reasoningMessageId: null,
       compactionItem: null,
@@ -1099,20 +1097,16 @@ class GrokHarnessSession implements HarnessSession {
         itemId: hostItemIdSchema.parse(this.#randomUUID()),
         text: "",
       };
-      active.rawAgentText = "";
-      active.projectedAgentText = "";
+      active.agentMedia = new LocalMediaMarkdownStream(this.#mediaRoots);
       this.#event({ type: "item.started", turnId: active.command.turnId, item: active.agent });
     }
-    active.rawAgentText += text;
-    const projected = rewriteLocalMediaMarkdown(active.rawAgentText, this.#mediaRoots, {
-      holdIncomplete: true,
-    });
-    const delta = projected.startsWith(active.projectedAgentText)
-      ? projected.slice(active.projectedAgentText.length)
-      : text;
-    if (delta.length === 0) return;
-    active.projectedAgentText += delta;
-    active.agent = { ...active.agent, text: active.projectedAgentText };
+    const delta = active.agentMedia?.append(text) ?? "";
+    this.#publishAgent(active, delta);
+  }
+
+  #publishAgent(active: ActiveTurn, delta: string): void {
+    if (!active.agent || !active.agentMedia || !delta) return;
+    active.agent = { ...active.agent, text: active.agentMedia.text };
     this.#event({
       type: "item.updated",
       turnId: active.command.turnId,
@@ -1380,25 +1374,11 @@ class GrokHarnessSession implements HarnessSession {
 
   #completeAgent(active: ActiveTurn, outcome: HostItemOutcome): void {
     const item = active.agent;
-    if (item && active.rawAgentText.length > 0) {
-      const flushed = rewriteLocalMediaMarkdown(active.rawAgentText, this.#mediaRoots);
-      const delta = flushed.startsWith(item.text) ? flushed.slice(item.text.length) : "";
-      if (delta.length > 0) {
-        active.projectedAgentText = flushed;
-        active.agent = { ...item, text: flushed };
-        this.#event({
-          type: "item.updated",
-          turnId: active.command.turnId,
-          itemId: item.itemId,
-          update: { type: "text.append", text: delta },
-        });
-      }
-    }
+    if (item && active.agentMedia) this.#publishAgent(active, active.agentMedia.flush());
     const completed = active.agent ?? item;
     active.agent = null;
     active.agentMessageId = null;
-    active.rawAgentText = "";
-    active.projectedAgentText = "";
+    active.agentMedia = null;
     if (completed) this.#completeItem(active, completed, outcome);
   }
 

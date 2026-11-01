@@ -186,6 +186,66 @@ describe("Codex UI projector", () => {
     ]);
   });
 
+  it.each([true, false])("restores Desktop image attachments (request heading: %s)", (request) => {
+    const text = [
+      "",
+      "# Files mentioned by the user:",
+      "",
+      "## codex-clipboard-1.png: C:/Users/me/AppData/Local/Temp/codex-clipboard-1.png",
+      "Image attachment: true",
+      "",
+      "## notes.md: /work/notes.md",
+      "",
+      ...(request
+        ? ["## My request:", "## typed.png: /work/typed.png", "Image attachment: true"]
+        : []),
+    ].join("\n");
+    const input = [{ type: "text" as const, text }];
+    const content = [
+      { type: "text", text, text_elements: [] },
+      { type: "localImage", path: "C:/Users/me/AppData/Local/Temp/codex-clipboard-1.png" },
+    ];
+
+    const live = new CodexTurnProjector({
+      threadId: "thread-1",
+      turnId,
+      cwd: "/workspace",
+      startedAtMs: 1_000,
+      initialInput: input,
+    });
+    expect(live.project({ type: "turn.started", turnId }).messages).toContainEqual(
+      expect.objectContaining({
+        method: "item/started",
+        params: expect.objectContaining({
+          item: { id: "turn-1-user", type: "userMessage", clientId: null, content },
+        }),
+      }),
+    );
+    const steered = { type: "userMessage" as const, itemId: itemId("steer-1"), input };
+    expect(live.project({ type: "item.started", turnId, item: steered }).messages).toMatchObject([
+      { method: "item/started", params: { item: { id: "steer-1", content } } },
+    ]);
+
+    const historical = projectHistoricalTurn({
+      turnId,
+      cwd: "/workspace",
+      snapshot: {
+        nativeTurnRef: nativeTurnRefSchema.parse({
+          harnessId: "claude-code",
+          nativeSessionId: "native",
+          nativeTurnKey: "user",
+          formatVersion: 1,
+        }),
+        input,
+        items: [],
+        outcome: { status: "succeeded" },
+      },
+    });
+    expect(historical.items).toEqual([
+      { id: "turn-1-user", type: "userMessage", clientId: null, content },
+    ]);
+  });
+
   it("does not invent historical duration from invalid native timing", () => {
     const snapshot: HostThreadSnapshot["turns"][number] = {
       nativeTurnRef: nativeTurnRefSchema.parse({

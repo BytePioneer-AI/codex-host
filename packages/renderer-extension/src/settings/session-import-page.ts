@@ -16,6 +16,7 @@ import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext }
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 import { createSessionImportListControls } from "./session-import-list-controls.js";
+import { loadSessionImportSources } from "./session-import-sources.js";
 
 export type RendererImportedThreadOpener = (
   threadId: HostThreadId,
@@ -52,7 +53,7 @@ export function createSessionImportSettingsPage(
   getClient: (hostId?: string) => RendererSessionImportClient | null,
   // Web imports end at a success message; Desktop supplies its native navigator.
   openImportedThread: RendererImportedThreadOpener | null,
-  // The connection status the Renderer already keeps; nothing is inspected for this page.
+  // Reuse the connection cache and its Host-scoped inspection path.
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
 ): RendererSettingsPageDefinition {
   return Object.freeze({
@@ -106,7 +107,7 @@ export function createSessionImportSettingsPage(
               .hosts.map(({ hostId }) => hostId) ?? []),
             ...(current ? [current] : []),
           ]),
-        ];
+        ].filter((hostId) => hostId !== "durable");
         displayedHostId = current;
         const scrollLeft = hostOptions.scrollLeft;
         hostOptions.replaceChildren();
@@ -481,10 +482,15 @@ export function createSessionImportSettingsPage(
         updateImportActions();
       };
 
-      const load = (): void => {
+      const load = (refreshDiagnostics = false): void => {
         if (importingId !== null || context.signal.aborted) return;
         loadedClient = null;
-        const client = getClient(selectedHostId);
+        let client = getClient(selectedHostId);
+        // Desktop's reserved durable Host cannot import external Harness sessions.
+        if (client?.hostId === "durable") {
+          selectedHostId = "local";
+          client = getClient(selectedHostId);
+        }
         renderHosts(client);
         listControls.setBusy(client !== null);
         refresh.disabled = client !== null;
@@ -497,17 +503,11 @@ export function createSessionImportSettingsPage(
         void context.runLatest(
           async (signal) => {
             if (!client) throw new RendererSessionImportUnavailableError();
-            // Only the selected Host's installation status can filter its candidates.
-            // Unknown, checking and failed diagnostics do not imply a missing Harness.
-            const missing = new Set(
-              getDiagnostics()
-                ?.snapshot()
-                .hosts.find(({ hostId }) => hostId === (client.hostId ?? "local"))
-                ?.agents.filter(({ availability }) => availability === "notInstalled")
-                .map(({ agent }): string => agent),
-            );
-            const harnesses = (await client.listSessionImportSources()).harnesses.filter(
-              ({ harnessId }) => !missing.has(harnessId),
+            const harnesses = await loadSessionImportSources(
+              client,
+              getDiagnostics(),
+              signal,
+              refreshDiagnostics,
             );
             const selected =
               harnesses.find(({ harnessId }) => harnessId === requestedHarness)?.harnessId ??
@@ -565,7 +565,7 @@ export function createSessionImportSettingsPage(
         load();
         hostButtons.find((button) => button.dataset.sessionImportHost === hostId)?.focus();
       };
-      refresh.addEventListener("click", load);
+      refresh.addEventListener("click", () => load(true));
       load();
       return undefined;
     },

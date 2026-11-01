@@ -2920,8 +2920,13 @@ describe("Renderer Session Import page", () => {
     const diagnostics = {
       snapshot: () => ({
         adapter: {},
-        hosts: ["local", "remote-1"].map((hostId) => ({ hostId, active: false, agents: [] })),
+        hosts: ["local", "remote-1"].map((hostId) => ({
+          hostId,
+          active: false,
+          agents: [{ agent: "pi", availability: "ready", error: null }],
+        })),
       }),
+      refresh: vi.fn(async () => undefined),
     };
     const open = vi.fn(async () => undefined);
     const page = createDefaultRendererSettingsPages(
@@ -3216,6 +3221,83 @@ describe("Renderer Session Import page", () => {
     scope.dispose();
   });
 
+  it.each([
+    { initialHostId: "local", localAvailable: true },
+    { initialHostId: "durable", localAvailable: true },
+    { initialHostId: "durable", localAvailable: false },
+  ])(
+    "excludes the reserved durable import Host with $initialHostId active and local available=$localAvailable",
+    async ({ initialHostId, localAvailable }) => {
+      const remoteHostId = "remote-ssh-discovered:durable";
+      const makeClient = (hostId: string) => ({
+        hostId,
+        listSessionImportSources: vi.fn(async () => ({
+          harnesses: [{ harnessId: harnessIdSchema.parse("pi"), name: "Pi" }],
+        })),
+        listHarnessSessions: vi.fn(async () => ({ candidates: [], total: 0 })),
+        importHarnessSession: vi.fn(),
+      });
+      const local = makeClient("local");
+      const durable = makeClient("durable");
+      const remote = makeClient(remoteHostId);
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+          hosts: ["local", "durable", remoteHostId].map((hostId) => ({
+            hostId,
+            active: hostId === initialHostId,
+            agents: [{ agent: "pi", availability: "ready", error: null }],
+          })),
+        }),
+        subscribe: () => () => undefined,
+        refresh: async () => undefined,
+      };
+      const getClient = vi.fn((hostId = initialHostId) => {
+        if (hostId === "local") return localAvailable ? local : null;
+        return hostId === "durable" ? durable : remote;
+      });
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("en"),
+        () => null,
+        () => diagnostics,
+        () => null,
+        getClient,
+      ).find(({ id }) => id === "session-import");
+      if (!page) throw new Error("Session import page missing");
+      const content = new FakeDocument().createElement("main");
+      const scope = new RendererSettingsPageScope();
+      page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      const hosts = () =>
+        descendants(content).filter(({ dataset }) => dataset.sessionImportHost !== undefined);
+      expect(hosts().map(({ dataset }) => dataset.sessionImportHost)).toEqual([
+        "local",
+        remoteHostId,
+      ]);
+      expect(hosts()[0]?.attributes.get("aria-pressed")).toBe("true");
+      if (localAvailable) {
+        await vi.waitFor(() => expect(local.listHarnessSessions).toHaveBeenCalledOnce());
+      } else {
+        await vi.waitFor(() =>
+          expect(visibleText(content)).toContain("Session import is unavailable"),
+        );
+        expect(local.listSessionImportSources).not.toHaveBeenCalled();
+      }
+      descendants(content)
+        .find(({ dataset }) => dataset.sessionImportAction === "refresh")
+        ?.dispatch("click");
+      expect(hosts().map(({ dataset }) => dataset.sessionImportHost)).not.toContain("durable");
+      hosts()[1]?.dispatch("click");
+      await vi.waitFor(() => expect(remote.listHarnessSessions).toHaveBeenCalledOnce());
+      expect(hosts()[1]?.attributes.get("aria-pressed")).toBe("true");
+      expect(durable.listSessionImportSources).not.toHaveBeenCalled();
+      scope.dispose();
+    },
+  );
+
   it.each(["local", "remote-1"])(
     "filters installed Harnesses using only %s diagnostics",
     async (hostId) => {
@@ -3245,13 +3327,23 @@ describe("Renderer Session Import page", () => {
               agents: [
                 agent("pi", "notInstalled"),
                 agent("kimi-code", "notInstalled"),
-                // Still being checked, failing or incompatible: its own error is shown on use.
-                agent("grok", "checking"),
+                agent("grok", "ready"),
                 agent("omp", "error"),
+                agent("third-party", "unavailable"),
               ],
             },
             // The non-selected Host must not affect this page's sources.
-            { hostId: "remote-1", active: true, agents: [agent("grok", "notInstalled")] },
+            {
+              hostId: "remote-1",
+              active: true,
+              agents: [
+                agent("pi", "ready"),
+                agent("kimi-code", "ready"),
+                agent("grok", "notInstalled"),
+                agent("omp", "error"),
+                agent("third-party", "unavailable"),
+              ],
+            },
           ],
         })),
         refresh: vi.fn(),

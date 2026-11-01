@@ -130,7 +130,16 @@ describe("Devin import query lifetime", () => {
   it.each(["list", "resolve", "availability"] as const)(
     "bounds a stalled %s query and waits for process cleanup",
     async (operation) => {
-      const value = adapter("stalled-list", 300);
+      const probe = DevinTransport.prototype.probe;
+      vi.spyOn(DevinTransport.prototype, "probe").mockImplementation(async function (
+        this: DevinTransport,
+      ) {
+        const connection = await probe.call(this);
+        // Process startup has its own budget; the short deadline tests session/list only.
+        this.options.timeoutMs = 300;
+        return connection;
+      });
+      const value = adapter("stalled-list", 10_000);
       const result = await (operation === "list"
         ? value.sessionImport.listCandidates()
         : operation === "resolve"

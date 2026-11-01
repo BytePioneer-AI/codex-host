@@ -15,6 +15,7 @@ import type {
 import { bootClient } from "./boot-client.ts";
 import { BootPage } from "./boot-page.ts";
 import { preventIosFocusZoom } from "./ios-focus-zoom.ts";
+import { guardIosComposerPageScroll } from "./ios-composer-scroll.ts";
 import { mountClient } from "./mount.ts";
 import { getStaticModules } from "./seed.ts";
 import { installWindowDragRecall } from "./window-drag/recall.ts";
@@ -42,6 +43,7 @@ export class AppWebEntry {
     this.container = container;
     this.seams = seams;
     preventIosFocusZoom();
+    guardIosComposerPageScroll();
     this.page = new BootPage(container);
   }
 

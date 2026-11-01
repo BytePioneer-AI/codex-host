@@ -137,6 +137,7 @@ async function sourceFiles(directory) {
   for (const entry of entries) {
     const entryPath = resolve(directory, entry.name);
     if (entry.isDirectory()) {
+      if (entry.name === "dist" || entry.name === "node_modules") continue;
       files.push(...(await sourceFiles(entryPath)));
     } else if (entry.isFile() && /\.tsx?$/u.test(entry.name)) {
       files.push(entryPath);

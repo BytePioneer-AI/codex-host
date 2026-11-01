@@ -32,7 +32,7 @@ PR 维护只做两件事：**明确标题自动标签、CI 结束后更新一条
 > 提交 abc1234。
 
 - 只读取 `.github/workflows/ci.yml` 中与 PR 当前 HEAD 对应的可信运行。等待工作流和所有 jobs 结束；排队、运行中或尚无运行时不新发评论。
-- 只有工作流和所有 jobs 成功，且四项基线 job 均有唯一成功证据，才报告全部通过：`Check ubuntu-22.04`、`Check macos-14`、`Check windows-latest`、`Check Linux ARM64`。
+- 只有工作流和所有 jobs 成功，且四项基线 job 均有唯一成功证据，才报告全部通过：`Check ubuntu-22.04`、`Check macos-15`、`Check windows-latest`、`Check Linux ARM64`。
 - 等待批准、取消、跳过、超时、结果不完整分别说明，不能当作通过。CI API 读取失败不发布猜测结果。
 - 每个 PR 只更新一条 `github-actions[bot]` 自有评论，兼容此前摘要标记；不会接管人工伪造的同名标记。结果未变化不重复写入，失败恢复后用成功结果替换。
 - 评论显示短提交 SHA 并链接完整 SHA，避免新提交尚在运行时把上一轮结果误当成新结果；不会为了更新结果要求作者手填 SHA。

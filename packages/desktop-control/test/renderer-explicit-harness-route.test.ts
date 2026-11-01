@@ -49,11 +49,10 @@ describe("explicit Harness routes through the Desktop request bridge", () => {
       const options = { timeoutMs: 1_000 };
       await bridge.sendRequest("thread/start", params, options);
       expect(sendRequest).toHaveBeenCalledExactlyOnceWith("thread/start", params, options);
-      // The explicit request must not change the Desktop's own draft selection.
+      // Caller-owned routes do not change the selection or rewrite official requests.
+      expect(policy.select(desktop === null ? null : route(desktop, "desktop-model"))).toBe(false);
       await bridge.sendRequest("thread/start", { model: "gpt-5" });
-      expect(sendRequest).toHaveBeenLastCalledWith("thread/start", {
-        model: desktop === null ? "gpt-5" : route(desktop, "desktop-model"),
-      });
+      expect(sendRequest).toHaveBeenLastCalledWith("thread/start", { model: "gpt-5" });
     } finally {
       policy.dispose();
     }

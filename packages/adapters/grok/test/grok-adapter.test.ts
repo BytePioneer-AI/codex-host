@@ -459,6 +459,82 @@ describe("Grok Adapter questions", () => {
 });
 
 describe("Grok Adapter ACP projection", () => {
+  it("keeps pending characters when media appears during an append-only message", async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "grok-media-stream-"));
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => crypto.randomUUID(),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    try {
+      const opened = await adapter.open({ kind: "create", cwd });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const session = opened.value;
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      const turnId = hostTurnIdSchema.parse("grok-media-stream");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "show" }],
+      });
+      expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
+      const first = "![missing](later.png) and `";
+      transport.event({ type: "agent.text", messageId: "first", text: first });
+      const started = await nextEvent(iterator);
+      const update = await nextEvent(iterator);
+      expect(started).toMatchObject({ type: "item.started", item: { type: "agentMessage" } });
+      expect(update).toMatchObject({
+        type: "item.updated",
+        update: { type: "text.append", text: first.slice(0, -1) },
+      });
+      await writeFile(path.join(cwd, "later.png"), "synthetic image");
+      transport.event({ type: "agent.text", messageId: "first", text: "later.png`。done" });
+      // A new message gets a fresh file-check cache; the earlier message keeps its decision.
+      transport.event({
+        type: "agent.text",
+        messageId: "second",
+        text: "![ready](later.png) `unfinished",
+      });
+      transport.finish();
+      const events: HostEvent[] = [started, update];
+      for (;;) {
+        const output = await nextOutput(iterator);
+        if (output.kind !== "event") continue;
+        events.push(output.event);
+        if (output.event.type === "turn.completed") break;
+      }
+      const completed = events.flatMap((event) =>
+        event.type === "item.completed" && event.snapshot.item.type === "agentMessage"
+          ? [event.snapshot.item]
+          : [],
+      );
+      expect(completed.map(({ text }) => text)).toEqual([
+        first + "later.png`。done",
+        `![ready](${path.join(cwd, "later.png").replaceAll("\\", "/")}) \`unfinished`,
+      ]);
+      for (const item of completed) {
+        expect(
+          events
+            .flatMap((event) =>
+              event.type === "item.updated" &&
+              event.itemId === item.itemId &&
+              event.update.type === "text.append"
+                ? [event.update.text]
+                : [],
+            )
+            .join(""),
+        ).toBe(item.text);
+      }
+    } finally {
+      await adapter.close();
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("passes per-Session delegation environment to the ACP transport", async () => {
     const transport = new FakeGrokTransport();
     const createTransport = vi.fn(() => transport);

@@ -32,7 +32,7 @@ jobs:
       matrix:
         os:
           - ubuntu-22.04
-          - macos-14
+          - macos-15
           - windows-latest
     steps:
       - name: Checkout

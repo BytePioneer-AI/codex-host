@@ -1298,6 +1298,103 @@ if (${keepAlive}) {
       }
     });
 
+    describe("result.response after streamed segments", () => {
+      const convId = "conv-segments";
+      const step = (stepIndex: number, fields: Record<string, unknown>): string =>
+        JSON.stringify({
+          event: "step_update",
+          step_update: { conversation_id: convId, step_index: stepIndex, state: "DONE", ...fields },
+        });
+      const progress = "Searching the catalog for candidates.\n";
+      const finalSegment = "Found 3 candidates:\n\n1. Alpha\n2. Beta\n3. Gamma\n";
+      const streamed = [
+        JSON.stringify({
+          event: "init",
+          conversation_id: convId,
+          init: { permission_mode: "default" },
+        }),
+        step(1, { step_type: "agent_response", text_delta: progress }),
+        step(2, {
+          step_type: "tool",
+          tool_name: "read_file",
+          tool_info: { name: "read_file", parameters: { Path: "/catalog.txt" }, output: "rows" },
+        }),
+        step(3, { step_type: "agent_response", text_delta: finalSegment }),
+      ];
+      const result = (response: string): string =>
+        JSON.stringify({
+          event: "result",
+          result: { conversation_id: convId, status: "SUCCESS", num_turns: 1, response },
+        });
+
+      async function completedAgentMessages(streamLines: readonly string[]): Promise<string[]> {
+        const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+        const adapter = new AntigravityAdapter({ command });
+        try {
+          const opened = await adapter.open({ kind: "create", cwd });
+          expect(opened.ok).toBe(true);
+          if (!opened.ok) return [];
+          const session = opened.value;
+          const iterator = session.outputs[Symbol.asyncIterator]();
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("turn-segments"),
+            input: [{ type: "text", text: "find candidates" }],
+          });
+          const texts: string[] = [];
+          while (true) {
+            const event = await nextEvent(iterator);
+            if (event.type === "item.completed" && event.snapshot.item.type === "agentMessage") {
+              texts.push(event.snapshot.item.text);
+            }
+            if (event.type === "turn.completed") {
+              expect(event.outcome).toMatchObject({ status: "succeeded" });
+              break;
+            }
+          }
+          await session.close();
+          return texts;
+        } finally {
+          await adapter.close();
+          await cleanup();
+        }
+      }
+
+      it("does not repeat earlier segments when the result joins every streamed segment", async () => {
+        // agy joins all agent_response segments of the Turn into result.response
+        const texts = await completedAgentMessages([...streamed, result(progress + finalSegment)]);
+        expect(texts).toEqual([progress, finalSegment]);
+      });
+
+      it("adds only the tail the stream never showed", async () => {
+        const texts = await completedAgentMessages([
+          ...streamed,
+          result(`${progress}${finalSegment}\nDone.`),
+        ]);
+        expect(texts).toEqual([progress, `${finalSegment}\nDone.`]);
+      });
+
+      it.each([
+        ["OK", "OKOK"],
+        ["OK ", "OK OK "],
+      ])("preserves an unstreamed repeated suffix (%j → %j)", async (shown, reply) => {
+        const texts = await completedAgentMessages([
+          streamed[0] ?? "",
+          step(1, { step_type: "agent_response", text_delta: shown }),
+          result(reply),
+        ]);
+        expect(texts).toEqual([reply]);
+      });
+
+      it("uses the result as the reply when nothing was streamed", async () => {
+        const texts = await completedAgentMessages([
+          streamed[0] ?? "",
+          result("Only in the result."),
+        ]);
+        expect(texts).toEqual(["Only in the result."]);
+      });
+    });
+
     it("passes --add-dir <cwd> and strictly binds child process cwd to thread project directory", async () => {
       const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-inspect-"));
       const projectCwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-proj-"));

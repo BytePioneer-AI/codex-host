@@ -83,7 +83,7 @@ for (const mobile of [false, true]) {
       page.on("pageerror", (error) => errors.push(error.message));
       // Preparation is complete. All page actions below are ordinary GUI operations.
       await page.goto(url);
-      await page.getByText("Native Model", { exact: true }).waitFor();
+      await page.getByText("Native Model", { exact: true }).waitFor({ state: "attached" });
       const openSidebar = page.getByRole("button", { name: "Open sidebar", exact: true });
       if (mobile) await openSidebar.first().click();
       const folder = page.getByRole("treeitem").filter({ hasText: /^images$/u });

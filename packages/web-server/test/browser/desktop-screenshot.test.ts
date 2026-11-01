@@ -202,7 +202,12 @@ it(
         const data = context?.getImageData(0, 0, node.width, node.height).data ?? [];
         let red = 0;
         for (let index = 0; index < data.length; index += 4)
-          if (data[index] > 200 && data[index + 1] < 90 && data[index + 2] < 90) red++;
+          if (
+            (data[index] ?? 0) > 200 &&
+            (data[index + 1] ?? 255) < 90 &&
+            (data[index + 2] ?? 255) < 90
+          )
+            red++;
         return red;
       });
     assert.equal(await pixels(), 0);

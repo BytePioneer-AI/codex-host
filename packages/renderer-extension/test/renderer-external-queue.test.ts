@@ -108,6 +108,9 @@ function fixture() {
     };
     const route = { hostId: "local", manager, policy };
     vi.stubGlobal("window", {
+      get document() {
+        return document;
+      },
       __codexhostHostRoutingV1: {
         forHost: (hostId: string) => (hostId === "local" ? route : null),
         forComposer: () => route,

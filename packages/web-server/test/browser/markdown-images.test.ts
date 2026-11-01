@@ -47,7 +47,7 @@ for (const mobile of [false, true]) {
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.goto(url);
-      await page.getByText("Native Model", { exact: true }).waitFor();
+      await page.getByText("Native Model", { exact: true }).waitFor({ state: "attached" });
       if (mobile) await page.getByRole("button", { name: "Open sidebar", exact: true }).click();
       const folder = page
         .getByRole("treeitem")

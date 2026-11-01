@@ -89,7 +89,12 @@ function itemOf(item: ChItem, reasoningPreviewIds: ReadonlySet<string>): HostIte
   const itemId = item.id;
   switch (item.type) {
     case "agentMessage":
-      return { type: "agentMessage", itemId, text: String(item.text ?? "") };
+      return {
+        type: "agentMessage",
+        itemId,
+        // Web resolves Markdown paths itself; Desktop media escaping is not its wire format.
+        text: String(item.codexhostNativeText ?? item.text ?? ""),
+      };
     case "reasoning":
       return {
         type: "reasoning",

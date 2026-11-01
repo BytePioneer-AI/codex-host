@@ -1496,8 +1496,12 @@ export class AppServerHost {
         isRecord(request.params) && typeof request.params.threadId === "string"
           ? request.params.threadId
           : undefined;
+      // Usage reads may wait on quota or history I/O. Track them for shutdown,
+      // but do not let that optional inspection hold the Thread's routing queue.
+      const queueThreadId =
+        request.method === "codexhost/thread/usage/inspect" ? undefined : threadId;
       this.#dispatchDesktopRequest(() =>
-        this.#desktopRequests.run(threadId, () =>
+        this.#desktopRequests.run(queueThreadId, () =>
           this.#externalRuntime.idleRelease.runOperation(threadId, () =>
             this.#guardReply(request, () => this.#handleDesktopRequest(request, frame, "desktop")),
           ),

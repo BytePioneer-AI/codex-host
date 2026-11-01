@@ -162,4 +162,107 @@ describe("Controller loaded Renderer module catalog", () => {
     expect([...f.listeners.values()].every((set) => set.size === 0)).toBe(true);
     expect(f.page("main").__codexhostLoadedModulesV1?.complete).toBe(false);
   });
+
+  it("skips a child-frame context destroyed while its publication was in flight and still publishes the rest", async () => {
+    vi.useFakeTimers();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const f = fixture();
+    const original = f.client.command.getMockImplementation();
+    if (!original) throw Error("Missing CDP implementation");
+    f.client.command.mockImplementation(async (method, params) => {
+      if (method === "Runtime.evaluate" && params?.uniqueContextId === "sandbox") {
+        // Chromium delivers executionContextDestroyed before the failed response.
+        f.emit("Runtime.executionContextDestroyed", {
+          executionContextId: 3,
+          executionContextUniqueId: "sandbox",
+        });
+        throw Error("uniqueContextId not found");
+      }
+      return original(method, params);
+    });
+    const dispose = await installRendererLoadedModules(f.client);
+    f.context(3, "sandbox");
+    f.parsed("app://-/assets/lazy.js");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(errors).not.toHaveBeenCalled();
+    expect(f.page("main").__codexhostLoadedModulesV1?.urls).toEqual([
+      "app://-/assets/deep.js",
+      "app://-/assets/lazy.js",
+    ]);
+    f.parsed("app://-/assets/frame.js", { executionContextId: 3 });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(
+      f.client.command.mock.calls.filter(
+        ([method, params]) =>
+          method === "Runtime.evaluate" && params?.uniqueContextId === "sandbox",
+      ),
+    ).toHaveLength(1);
+    dispose();
+  });
+
+  it("forgets a context the Renderer reports as gone even before executionContextDestroyed arrives", async () => {
+    vi.useFakeTimers();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const f = fixture();
+    const original = f.client.command.getMockImplementation();
+    if (!original) throw Error("Missing CDP implementation");
+    f.client.command.mockImplementation(async (method, params) => {
+      if (method === "Runtime.evaluate" && params?.uniqueContextId === "gone")
+        throw Error("Cannot find context with specified id");
+      return original(method, params);
+    });
+    const dispose = await installRendererLoadedModules(f.client);
+    f.context(4, "gone");
+    await vi.advanceTimersByTimeAsync(10);
+    f.parsed("app://-/assets/late.js", { executionContextId: 4 });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(errors).not.toHaveBeenCalled();
+    expect(
+      f.client.command.mock.calls.filter(([, params]) => params?.uniqueContextId === "gone"),
+    ).toHaveLength(1);
+    // A replacement frame document gets its own context and is published normally.
+    f.context(5, "replacement");
+    f.parsed("app://-/assets/frame.js", { executionContextId: 5 });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(f.page("replacement").__codexhostLoadedModulesV1?.urls).toEqual([
+      "app://-/assets/frame.js",
+    ]);
+    dispose();
+  });
+
+  it("removes a destroyed context by its unique ID when the numeric ID is absent", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const dispose = await installRendererLoadedModules(f.client);
+    f.context(6, "unique-only");
+    f.emit("Runtime.executionContextDestroyed", { executionContextUniqueId: "unique-only" });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(
+      f.client.command.mock.calls.some(([, params]) => params?.uniqueContextId === "unique-only"),
+    ).toBe(false);
+    dispose();
+  });
+
+  it("still reports genuine publication failures after publishing the other contexts", async () => {
+    vi.useFakeTimers();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const f = fixture();
+    const original = f.client.command.getMockImplementation();
+    if (!original) throw Error("Missing CDP implementation");
+    f.client.command.mockImplementation(async (method, params) => {
+      if (method === "Runtime.evaluate" && params?.uniqueContextId === "broken")
+        return { exceptionDetails: { text: "boom" } };
+      return original(method, params);
+    });
+    const dispose = await installRendererLoadedModules(f.client);
+    f.context(7, "broken");
+    f.parsed("app://-/assets/after-broken.js");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(f.page("main").__codexhostLoadedModulesV1?.urls).toContain(
+      "app://-/assets/after-broken.js",
+    );
+    expect(errors).toHaveBeenCalledTimes(1);
+    expect(String(errors.mock.calls[0]?.[1])).toContain("publication failed");
+    dispose();
+  });
 });

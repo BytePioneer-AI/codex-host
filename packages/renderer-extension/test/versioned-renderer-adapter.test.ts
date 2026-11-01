@@ -391,7 +391,7 @@ describe("current Codex Renderer Agent adapter", () => {
   });
 
   it.each(["local", "remote-ssh-discovered:mac"])(
-    "installs for %s and only sends resource settings to local",
+    "installs for %s and reads Host-owned settings without overwriting them",
     (hostId) => {
       const requestTarget = {
         hostId,
@@ -408,6 +408,9 @@ describe("current Codex Renderer Agent adapter", () => {
       };
       const listeners = new Map<string, EventListener>();
       const fakeWindow = {
+        get document() {
+          return fakeDocument;
+        },
         __codexhostDraftPrewarmPolicyV1: policy,
         dispatchEvent: vi.fn(),
         addEventListener: vi.fn((type: string, listener: EventListener) => {
@@ -470,17 +473,14 @@ describe("current Codex Renderer Agent adapter", () => {
         },
       });
 
+      const adapter = installCurrentRendererAdapter();
       try {
-        const adapter = installCurrentRendererAdapter();
         expect(adapter.status).toMatchObject({ state: "ready", reason: "ready" });
         expect("__codexhostMainProcessTitlePolicyV1" in fakeWindow).toBe(false);
         if (hostId === "local") {
           expect(requestTarget.sendRequest).toHaveBeenCalledWith(
-            "codexhost/settings/idle-release/set",
-            {
-              enabled: false,
-              timeoutMinutes: 30,
-            },
+            "codexhost/harness/preferences/get",
+            { scope: "external" },
           );
           const localClient = adapter.modelControl?.clientForHost?.("local");
           expect(localClient).toBeTruthy();
@@ -512,7 +512,10 @@ describe("current Codex Renderer Agent adapter", () => {
             "codexhost/harness/display-settings/get",
             {},
           );
-          expect(remoteTarget.sendRequest).not.toHaveBeenCalled();
+          expect(remoteTarget.sendRequest.mock.calls).toEqual([
+            ["codexhost/harness/preferences/get", { scope: "external" }],
+            ["codexhost/harness/preferences/get", { scope: "external" }],
+          ]);
           // Auxiliary lookups must not disable real connection or explicit policy invalidation.
           Object.defineProperty(requestTarget, "requestClient", { value: { ...requestTarget } });
           const reconnected = adapter.modelControl?.clientForHost?.("local");
@@ -521,10 +524,16 @@ describe("current Codex Renderer Agent adapter", () => {
           fakeWindow.__codexhostDraftPrewarmPolicyV1 = { ...policy };
           expect(adapter.modelControl?.clientForHost?.("local")).not.toBe(reconnected);
         } else {
-          expect(requestTarget.sendRequest).not.toHaveBeenCalled();
+          expect(requestTarget.sendRequest).toHaveBeenCalledExactlyOnceWith(
+            "codexhost/harness/preferences/get",
+            { scope: "external" },
+          );
         }
-        adapter.dispose();
+        expect(
+          requestTarget.sendRequest.mock.calls.some(([method]) => method.endsWith("/set")),
+        ).toBe(false);
       } finally {
+        adapter.dispose();
         for (const [name, descriptor] of [
           ["window", priorWindow],
           ["document", priorDocument],

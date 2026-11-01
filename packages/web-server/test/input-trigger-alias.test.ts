@@ -10,10 +10,16 @@ const { sourceMatchesTrigger } = await import(`${publicSource}/core/source.ts`);
 const { InputTriggerController } = await import(`${publicSource}/client/controller.ts`);
 const { InputTriggerService } = await import(`${publicSource}/client/service.ts`);
 
-it("matches GUI word-start hash queries and preserves the exact caret span", () => {
+it("matches reference hash queries and preserves the exact caret span", () => {
   for (const [text, query, start] of [
     ["#", "", 0],
     ["#native", "native", 0],
+    ["#123", "123", 0],
+    ["#1skill", "1skill", 0],
+    ["##", "#", 0],
+    ["###native", "##native", 0],
+    ["##/native", "#/native", 0],
+    ["#" + "a".repeat(80), "a".repeat(80), 0],
     ["before #fake", "fake", 7],
     ["line\n#skill", "skill", 5],
     ["#/compact", "/compact", 0],
@@ -30,12 +36,8 @@ it("matches GUI word-start hash queries and preserves the exact caret span", () 
   assert.equal(detectTrigger("#native trailing", 7, { tier: "plain" })?.span.end, 7);
 });
 
-it("leaves numbering, Markdown, escaped text, words and URL fragments alone", () => {
+it("leaves Markdown headings, escaped text, words and URL fragments alone", () => {
   for (const text of [
-    "#123",
-    "#1skill",
-    "##",
-    "###native",
     "# ",
     "# heading",
     "before#native",
@@ -44,12 +46,10 @@ it("leaves numbering, Markdown, escaped text, words and URL fragments alone", ()
     "https://host/#native",
     "https://host/#/compact",
     "path/#native",
-    "##/native",
-    "#" + "a".repeat(33),
   ])
     assert.equal(detectTrigger(text, text.length, { tier: "plain" }), null, text);
-  for (const tier of ["claimed", "frozen"])
-    assert.equal(detectTrigger("#native", 7, { tier }), null);
+  assert.equal(detectTrigger("#native", 7, { tier: "frozen" }), null);
+  assert.equal(detectTrigger("#native", 7, { tier: "claimed" })?.trigger, "#");
   assert.equal(detectTrigger("/native", 7, { tier: "plain" })?.trigger, "/");
   assert.equal(detectTrigger("/native#suffix", 14, { tier: "plain" })?.trigger, "/");
   assert.equal(detectTrigger("@file", 5, { tier: "plain" })?.trigger, "@");

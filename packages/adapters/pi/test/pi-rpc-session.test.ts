@@ -1,11 +1,16 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 
-import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
+import { harnessThinkingOptionIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import type { HostEvent } from "@codexhost/harness-adapter";
 import { describe, expect, it, vi } from "vitest";
-import type { PiSessionHistory } from "../src/pi-history.js";
+import { mapPiSnapshot, type PiSessionHistory } from "../src/pi-history.js";
+import { piMessageItemId } from "../src/pi-message-item-id.js";
+import { PiAdapter } from "../src/pi-adapter.js";
+import { CodexTurnProjector } from "@codexhost/protocol-core";
 
 import {
   PiRpcSession,
@@ -16,8 +21,14 @@ import {
   type PiTurnEvent,
 } from "../src/pi-rpc-session.js";
 import type { PiUsageObservation } from "../src/pi-usage.js";
+import { piHistoryNotices } from "../src/pi-progress.js";
 
 type Scenario =
+  | "manual-run"
+  | "compact-native-wire"
+  | "native-id-before-text"
+  | "native-id-before-reasoning"
+  | "native-id-after-text"
   | "final-only"
   | "fast"
   | "fast-no-ack"
@@ -68,6 +79,13 @@ class FakePiRpcProcess extends EventEmitter {
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   fastEnabled = false;
+  readonly commands: string[] = [];
+  holdEntries = false;
+  holdStates = false;
+  holdAborts = false;
+  #heldAborts: Record<string, unknown>[] = [];
+  #heldStates: Record<string, unknown>[] = [];
+  #heldEntries: Record<string, unknown>[] = [];
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #promptCount = 0;
   #sessionId = "synthetic-session";
@@ -80,6 +98,34 @@ class FakePiRpcProcess extends EventEmitter {
   readonly #scenario: Scenario;
   readonly #compactionDelayMs: number | undefined;
 
+  releaseAborts(): void {
+    this.holdAborts = false;
+    for (const command of this.#heldAborts.splice(0)) this.#respond(command);
+  }
+
+  releaseStates(): void {
+    this.holdStates = false;
+    for (const command of this.#heldStates.splice(0)) this.#handle(command);
+  }
+  emitAgentStart(): void {
+    this.#isStreaming = true;
+    this.#output({ type: "agent_start" });
+  }
+
+  releaseEntries(): void {
+    this.holdEntries = false;
+    for (const command of this.#heldEntries.splice(0)) this.#handle(command);
+  }
+
+  restoreNativeHistory(history: PiSessionHistory, sessionId = "synthetic-session"): void {
+    this.autonomousHistory = structuredClone(history);
+    this.#sessionId = sessionId;
+    this.#promptCount = history.entries.filter((entry) => {
+      const message = entry.message as { role?: string } | undefined;
+      return message?.role === "user";
+    }).length;
+  }
+
   setNativeModel(provider: string, modelId: string): void {
     this.#provider = provider;
     this.#modelId = modelId;
@@ -88,6 +134,7 @@ class FakePiRpcProcess extends EventEmitter {
   constructor(scenario: Scenario, compactionDelayMs?: number) {
     super();
     this.#scenario = scenario;
+    if (scenario === "compact-native-wire") this.autonomousHistory = { entries: [], leafId: null };
     this.#compactionDelayMs = compactionDelayMs;
     this.stdin.on("data", (chunk: Buffer) => this.#push(chunk));
     this.stdin.once("finish", () => {
@@ -105,6 +152,7 @@ class FakePiRpcProcess extends EventEmitter {
     options: {
       responseId?: string | null;
       stopReason?: "stop" | "aborted" | "error";
+      errorMessage?: string;
       includeTool?: boolean;
       streamingAtSettle?: boolean;
     } = {},
@@ -117,7 +165,9 @@ class FakePiRpcProcess extends EventEmitter {
       ...(responseId ? { responseId } : {}),
       timestamp: 123456,
       stopReason,
-      ...(stopReason === "error" ? { errorMessage: "autonomous failure" } : {}),
+      ...(stopReason === "error"
+        ? { errorMessage: options.errorMessage ?? "autonomous failure" }
+        : {}),
       content: [
         { type: "thinking", thinking: "autonomous reasoning" },
         { type: "text", text: "autonomous text" },
@@ -224,6 +274,19 @@ class FakePiRpcProcess extends EventEmitter {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return;
     const command = value as Record<string, unknown>;
     if (typeof command.id !== "string" || typeof command.type !== "string") return;
+    this.commands.push(command.type);
+    if (command.type === "abort" && this.holdAborts) {
+      this.#heldAborts.push(command);
+      return;
+    }
+    if (command.type === "get_state" && this.holdStates) {
+      this.#heldStates.push(command);
+      return;
+    }
+    if (command.type === "get_entries" && this.holdEntries) {
+      this.#heldEntries.push(command);
+      return;
+    }
     if (command.type === "extension_ui_response") {
       if (
         (this.#scenario === "interaction" &&
@@ -540,6 +603,70 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (command.type !== "prompt") return;
     this.#promptCount += 1;
+    if (this.#scenario === "manual-run") return;
+    if (this.#scenario === "compact-native-wire") {
+      // Captured from Pi 1.4: message_update has neither message nor partial.
+      const frames = JSON.parse(
+        readFileSync(new URL("fixtures/pi-1.4-compact-text-stream.json", import.meta.url), "utf8"),
+      ) as Record<string, unknown>[];
+      const history = this.autonomousHistory;
+      if (!history) throw new Error("Missing compact wire history");
+      const userId = `compact-user-${this.#promptCount}`;
+      const assistantId = `compact-assistant-${this.#promptCount}`;
+      history.entries.push({
+        id: userId,
+        parentId: history.leafId,
+        type: "message",
+        message: { role: "user", content: String(command.message) },
+      });
+      for (const frame of frames) {
+        const message = frame.message as Record<string, unknown> | undefined;
+        if (message?.responseId) message.responseId = `${message.responseId}-${this.#promptCount}`;
+        this.#output(frame);
+        if (frame.type === "message_end")
+          history.entries.push({
+            id: assistantId,
+            parentId: userId,
+            type: "message",
+            message: JSON.parse(JSON.stringify(message)),
+          });
+      }
+      history.leafId = assistantId;
+      this.#settleAgent();
+      return;
+    }
+    if (this.#scenario.startsWith("native-id-")) {
+      const responseId = "native-response-1";
+      const firstIsReasoning = this.#scenario === "native-id-before-reasoning";
+      const lateId = this.#scenario === "native-id-after-text";
+      this.#output({ type: "message_start", message: { role: "assistant", content: [] } });
+      this.#output({
+        type: "message_update",
+        message: { role: "assistant", ...(lateId ? {} : { responseId }) },
+        assistantMessageEvent: {
+          type: firstIsReasoning ? "thinking_delta" : "text_delta",
+          delta: firstIsReasoning ? "thinking" : "ans",
+        },
+      });
+      this.#output({
+        type: "message_update",
+        message: { role: "assistant", responseId },
+        assistantMessageEvent: { type: "text_delta", delta: firstIsReasoning ? "answer" : "wer" },
+      });
+      this.#output({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          responseId,
+          content: [
+            ...(firstIsReasoning ? [{ type: "thinking", thinking: "thinking" }] : []),
+            { type: "text", text: "answer" },
+          ],
+        },
+      });
+      this.#settleAgent();
+      return;
+    }
     if (this.#scenario === "reasoning" || this.#scenario === "reasoning-multiple-blocks") {
       const thinkingBlocks =
         this.#scenario === "reasoning"
@@ -553,7 +680,10 @@ class FakePiRpcProcess extends EventEmitter {
             thinking,
             thinkingSignature: "ignored",
           })),
-          { type: "text", text: "reasoned answer" },
+          {
+            type: "text",
+            text: this.#scenario === "reasoning" ? "streamed answer suffix" : "reasoned answer",
+          },
         ],
       };
       this.#output({ type: "message_start", message });
@@ -926,7 +1056,10 @@ describe("Pi Fast command acknowledgement", () => {
   );
 });
 
-function autonomousSession(onFault = vi.fn()): {
+function autonomousSession(
+  onFault = vi.fn(),
+  commandTimeoutMs = 2_000,
+): {
   rpc: PiRpcSession;
   process(): FakePiRpcProcess;
   onFault: ReturnType<typeof vi.fn>;
@@ -935,7 +1068,7 @@ function autonomousSession(onFault = vi.fn()): {
   const rpc = new PiRpcSession(
     {
       cwd: process.cwd(),
-      commandTimeoutMs: 2_000,
+      commandTimeoutMs,
       closeTimeoutMs: 500,
       onFault,
     },
@@ -964,7 +1097,879 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
 }
 
+function appendDeferredRun(fake: FakePiRpcProcess, key: string, text: string, settle = true): void {
+  const history = fake.autonomousHistory ?? { entries: [], leafId: null };
+  const message = {
+    role: "assistant",
+    responseId: key + "-response",
+    timestamp: 123457 + history.entries.length,
+    content: [{ type: "text", text }],
+    stopReason: "stop",
+  };
+  history.entries.push(
+    {
+      id: key,
+      parentId: history.leafId,
+      type: "custom_message",
+      customType: "subagent:notification",
+      content: "Child done",
+    },
+    { id: key + "-answer", parentId: key, type: "message", message },
+  );
+  history.leafId = key + "-answer";
+  fake.autonomousHistory = history;
+  fake.emitAgentStart();
+  fake.emitFrame({ type: "message_start", message });
+  fake.emitFrame({ type: "message_end", message });
+  if (settle) fake.emitAgentSettled();
+}
+
+async function liveAutonomousHarness() {
+  let fake: FakePiRpcProcess | undefined;
+  const adapter = new PiAdapter(
+    { closeTimeoutMs: 100 },
+    {
+      createTransport: (options) =>
+        new PiRpcSession(
+          { ...options, commandTimeoutMs: 500, cancelTimeoutMs: 100, closeTimeoutMs: 50 },
+          {
+            spawn: () => {
+              fake = new FakePiRpcProcess("manual-run");
+              fake.autonomousHistory = { entries: [], leafId: null };
+              return fake as unknown as ChildProcessWithoutNullStreams;
+            },
+          },
+        ),
+    },
+  );
+  const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+  if (!opened.ok) throw new Error(opened.error.message);
+  const session = opened.value;
+  const events: HostEvent[] = [];
+  const consumed = (async () => {
+    for await (const output of session.outputs)
+      if (output.kind === "event") events.push(output.event);
+  })();
+  const snapshot = await session.readSnapshot();
+  if (!snapshot.ok || !fake) throw new Error("Fake native Session failed to start");
+  const native = fake;
+  return {
+    session,
+    events,
+    native,
+    async close() {
+      await session.close();
+      await adapter.close();
+      await consumed;
+    },
+  };
+}
+
+function userTurn(id: string) {
+  return {
+    type: "turn.start" as const,
+    turnId: hostTurnIdSchema.parse(id),
+    input: [{ type: "text" as const, text: id }],
+  };
+}
+
+function persistFakeRun(
+  fake: FakePiRpcProcess,
+  key: string,
+  responseId: string,
+  text: string,
+  autonomous: boolean,
+) {
+  const history = fake.autonomousHistory ?? { entries: [], leafId: null };
+  const message = {
+    role: "assistant",
+    responseId,
+    content: [{ type: "text", text }],
+    stopReason: "stop",
+  };
+  history.entries.push(
+    autonomous
+      ? {
+          id: key,
+          parentId: history.leafId,
+          type: "custom_message",
+          customType: "subagent:notification",
+          display: false,
+          content: "Background update",
+        }
+      : {
+          id: key,
+          parentId: history.leafId,
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: key }] },
+        },
+    { id: `${key}-answer`, parentId: key, type: "message", message },
+  );
+  history.leafId = `${key}-answer`;
+  fake.autonomousHistory = history;
+  return message;
+}
+
+describe("Pi autonomous live admission", () => {
+  it.each(["agent_start", "message_start"] as const)(
+    "announces autonomous %s immediately and rejects overlapping user input before dispatch",
+    async (start) => {
+      const harness = await liveAutonomousHarness();
+      try {
+        if (start === "agent_start") harness.native.emitAgentStart();
+        else harness.native.emitAutonomousStart("active-autonomous");
+        await waitFor(() =>
+          harness.events.some((event) => event.type === "turn.autonomous.started"),
+        );
+        if (start === "message_start")
+          expect(
+            harness.events.some(
+              (event) =>
+                event.type === "item.updated" &&
+                event.update.type === "text.append" &&
+                event.update.text === "partial",
+            ),
+          ).toBe(true);
+        expect(harness.events.filter((event) => event.type === "turn.completed")).toHaveLength(0);
+        await expect(harness.session.execute(userTurn("overlap"))).resolves.toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy", retryable: true },
+        });
+        expect(harness.native.commands.filter((command) => command === "prompt")).toHaveLength(0);
+        expect(
+          harness.events.some(
+            (event) => event.type === "turn.started" && event.turnId === "overlap",
+          ),
+        ).toBe(false);
+        const message = persistFakeRun(
+          harness.native,
+          "native-notice",
+          "active-autonomous",
+          "partial done",
+          true,
+        );
+        if (start === "agent_start") harness.native.emitFrame({ type: "message_start", message });
+        harness.native.emitFrame({ type: "message_end", message });
+        harness.native.emitAgentSettled();
+        await waitFor(() => harness.events.some((event) => event.type === "turn.completed"));
+        expect(
+          harness.events.filter((event) => event.type === "turn.autonomous.started"),
+        ).toHaveLength(1);
+        expect(harness.events.find((event) => event.type === "turn.completed")).toMatchObject({
+          outcome: { status: "succeeded" },
+          nativeTurnRef: { nativeTurnKey: "native-notice" },
+        });
+        await expect(
+          harness.session.execute(userTurn("explicit-user-retry")),
+        ).resolves.toMatchObject({ ok: true });
+        expect(harness.native.commands.filter((command) => command === "prompt")).toHaveLength(1);
+        const requested = persistFakeRun(
+          harness.native,
+          "next-user",
+          "requested",
+          "user answer",
+          false,
+        );
+        harness.native.emitFrame({ type: "message_start", message: requested });
+        harness.native.emitFrame({ type: "message_end", message: requested });
+        harness.native.emitAgentSettled();
+        await waitFor(
+          () => harness.events.filter((event) => event.type === "turn.completed").length === 2,
+        );
+        expect(harness.events.some((event) => event.type === "session.faulted")).toBe(false);
+      } finally {
+        await harness.close();
+      }
+    },
+  );
+
+  it("arbitrates autonomous work arriving during the user history preflight", async () => {
+    const harness = await liveAutonomousHarness();
+    try {
+      const reads = harness.native.commands.filter((command) => command === "get_entries").length;
+      harness.native.holdEntries = true;
+      const accepted = harness.session.execute(userTurn("race-preflight"));
+      await waitFor(
+        () => harness.native.commands.filter((command) => command === "get_entries").length > reads,
+      );
+      harness.native.emitAgentStart();
+      harness.native.emitAutonomousStart("racing-autonomous");
+      harness.native.releaseEntries();
+      await expect(accepted).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy", retryable: true },
+      });
+      await waitFor(() => harness.events.some((event) => event.type === "turn.autonomous.started"));
+      expect(harness.native.commands.filter((command) => command === "prompt")).toHaveLength(0);
+      expect(
+        harness.events.some(
+          (event) => event.type === "turn.started" && event.turnId === "race-preflight",
+        ),
+      ).toBe(false);
+      const message = persistFakeRun(
+        harness.native,
+        "racing-notice",
+        "racing-autonomous",
+        "partial done",
+        true,
+      );
+      harness.native.emitFrame({ type: "message_end", message });
+      harness.native.emitAgentSettled();
+      await waitFor(() => harness.events.some((event) => event.type === "turn.completed"));
+      expect(harness.events.some((event) => event.type === "session.faulted")).toBe(false);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("streams the next deferred native run after the prior requested Host terminal without admitting another user prompt", async () => {
+    const harness = await liveAutonomousHarness();
+    try {
+      await expect(harness.session.execute(userTurn("first-request"))).resolves.toMatchObject({
+        ok: true,
+      });
+      const first = persistFakeRun(
+        harness.native,
+        "first-user",
+        "first-response",
+        "first complete",
+        false,
+      );
+      harness.native.emitFrame({ type: "message_start", message: first });
+      harness.native.emitFrame({ type: "message_end", message: first });
+      harness.native.holdStates = true;
+      harness.native.emitAgentSettled();
+      appendDeferredRun(harness.native, "deferred-notice", "NEXT_AUTONOMOUS_PROGRESS", false);
+      const reads = harness.native.commands.filter((command) => command === "get_entries").length;
+      harness.native.holdEntries = true;
+      harness.native.releaseStates();
+      await waitFor(
+        () => harness.native.commands.filter((command) => command === "get_entries").length > reads,
+      );
+      await expect(
+        harness.session.execute({
+          type: "turn.cancel",
+          turnId: hostTurnIdSchema.parse("first-request"),
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+      expect(harness.native.commands.filter((command) => command === "abort")).toHaveLength(0);
+      harness.native.releaseEntries();
+      await waitFor(() => harness.events.some((event) => event.type === "turn.autonomous.started"));
+      const previousEnd = harness.events.findIndex(
+        (event) => event.type === "turn.completed" && event.turnId === "first-request",
+      );
+      const nextStart = harness.events.findIndex(
+        (event) => event.type === "turn.autonomous.started",
+      );
+      expect(previousEnd).toBeGreaterThanOrEqual(0);
+      expect(nextStart).toBeGreaterThan(previousEnd);
+      expect(
+        harness.events.some(
+          (event) =>
+            event.type === "item.updated" &&
+            event.update.type === "text.append" &&
+            event.update.text === "NEXT_AUTONOMOUS_PROGRESS",
+        ),
+      ).toBe(true);
+      await expect(harness.session.execute(userTurn("must-not-send"))).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      expect(harness.native.commands.filter((command) => command === "prompt")).toHaveLength(1);
+      harness.native.emitAgentSettled();
+      await waitFor(
+        () => harness.events.filter((event) => event.type === "turn.completed").length === 2,
+      );
+      expect(harness.events.filter((event) => event.type === "turn.completed")).toMatchObject([
+        { turnId: "first-request", outcome: { status: "succeeded" } },
+        { nativeTurnRef: { nativeTurnKey: "deferred-notice" }, outcome: { status: "succeeded" } },
+      ]);
+      expect(harness.events.some((event) => event.type === "session.faulted")).toBe(false);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("cancels a visible autonomous run before its first Assistant message without faulting the Session", async () => {
+    const harness = await liveAutonomousHarness();
+    try {
+      harness.native.emitAgentStart();
+      await waitFor(() => harness.events.some((event) => event.type === "turn.autonomous.started"));
+      const started = harness.events.find((event) => event.type === "turn.autonomous.started");
+      if (!started || started.type !== "turn.autonomous.started")
+        throw new Error("Missing autonomous start");
+      await expect(
+        harness.session.execute({ type: "turn.cancel", turnId: started.turnId }),
+      ).resolves.toMatchObject({ ok: true });
+      await expect(
+        harness.session.execute(userTurn("before-cancel-settles")),
+      ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+      harness.native.emitAgentSettled();
+      await waitFor(() => harness.events.some((event) => event.type === "turn.completed"));
+      expect(harness.events.filter((event) => event.type === "turn.completed")).toMatchObject([
+        { turnId: started.turnId, outcome: { status: "cancelled" } },
+      ]);
+      expect(harness.events.some((event) => event.type === "session.faulted")).toBe(false);
+      expect(harness.native.commands.filter((command) => command === "abort")).toHaveLength(1);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("keeps retry attempts inside one visible autonomous lifecycle", async () => {
+    const harness = await liveAutonomousHarness();
+    try {
+      harness.native.emitAgentStart();
+      const failure = {
+        role: "assistant",
+        responseId: "failed-attempt",
+        content: [],
+        stopReason: "error",
+        errorMessage: "503",
+      };
+      harness.native.emitFrame({ type: "message_start", message: failure });
+      harness.native.emitFrame({ type: "message_end", message: failure });
+      harness.native.emitFrame({
+        type: "auto_retry_start",
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 100,
+        errorMessage: "503",
+      });
+      harness.native.emitAgentStart();
+      await waitFor(() =>
+        harness.events.some(
+          (event) =>
+            event.type === "item.started" &&
+            event.item.type === "agentMessage" &&
+            event.item.text.includes("Pi retry 1/3"),
+        ),
+      );
+      await expect(harness.session.execute(userTurn("during-retry"))).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      const recovered = persistFakeRun(
+        harness.native,
+        "retry-notice",
+        "recovered-attempt",
+        "recovered",
+        true,
+      );
+      const history = harness.native.autonomousHistory;
+      if (!history) throw new Error("Missing history");
+      history.entries.splice(1, 0, {
+        id: "failed-attempt-entry",
+        parentId: "retry-notice",
+        type: "message",
+        message: failure,
+      });
+      const answer = history.entries.at(-1);
+      if (!answer) throw new Error("Missing answer");
+      answer.parentId = "failed-attempt-entry";
+      harness.native.emitFrame({ type: "message_start", message: recovered });
+      harness.native.emitFrame({ type: "message_end", message: recovered });
+      harness.native.emitFrame({ type: "auto_retry_end", attempt: 1, success: true });
+      harness.native.emitAgentSettled();
+      await waitFor(() => harness.events.some((event) => event.type === "turn.completed"));
+      expect(
+        harness.events.filter((event) => event.type === "turn.autonomous.started"),
+      ).toHaveLength(1);
+      expect(harness.events.filter((event) => event.type === "turn.completed")).toMatchObject([
+        { outcome: { status: "succeeded" } },
+      ]);
+      expect(harness.events.some((event) => event.type === "session.faulted")).toBe(false);
+      expect(harness.native.commands.filter((command) => command === "prompt")).toHaveLength(0);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("records the current autonomous cancellation terminal while closing instead of waiting for a false timeout", async () => {
+    const harness = await liveAutonomousHarness();
+    try {
+      harness.native.emitAgentStart();
+      await waitFor(() => harness.events.some((event) => event.type === "turn.autonomous.started"));
+      const closing = harness.session.close();
+      await waitFor(() => harness.native.commands.includes("abort"));
+      harness.native.emitAgentSettled();
+      await closing;
+      expect(harness.events.filter((event) => event.type === "turn.completed")).toMatchObject([
+        { outcome: { status: "cancelled" } },
+      ]);
+      expect(harness.events.some((event) => event.type === "session.faulted")).toBe(false);
+      expect(harness.native.exitCode).toBe(0);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 describe("Pi RPC Turn aggregation", () => {
+  it.each([
+    { stopReason: "toolUse", phase: undefined, expected: "commentary" },
+    { stopReason: "stop", phase: "final_answer", expected: "final_answer" },
+    { stopReason: "stop", phase: "commentary", expected: "commentary" },
+  ])(
+    "preserves completed text phase before a trailing retry status: $stopReason/$phase",
+    async ({ stopReason, phase, expected }) => {
+      const fake = new FakePiRpcProcess("manual-run");
+      const rpc = new PiRpcSession(
+        { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+        { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+      );
+      await rpc.start();
+      const events: PiTurnEvent[] = [];
+      const pending = rpc.runTurn("synthetic", (event) => events.push(event));
+      const message = {
+        role: "assistant",
+        responseId: "native-phase",
+        content: [
+          {
+            type: "text",
+            text: "visible",
+            ...(phase ? { textSignature: JSON.stringify({ v: 1, id: "message", phase }) } : {}),
+          },
+        ],
+        stopReason,
+      };
+      fake.emitFrame({ type: "message_start", message });
+      fake.emitFrame({ type: "message_end", message });
+      fake.emitFrame({ type: "auto_retry_end", success: true, attempt: 1 });
+      fake.emitAgentSettled();
+      await pending;
+      expect(events).toEqual([
+        expect.objectContaining({ type: "text.delta", delta: "visible" }),
+        { type: "message.completed", messageId: "native-phase", phase: expected },
+        expect.objectContaining({ type: "progress.message", text: "Pi retry succeeded." }),
+      ]);
+      await rpc.close();
+    },
+  );
+
+  it("bounds idle progress without faulting, coalesces status and discloses omitted updates", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const onFault = vi.fn();
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500, onFault },
+      { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    for (let index = 0; index < 130; index++)
+      fake.emitFrame({
+        type: "extension_ui_request",
+        id: `notice-${index}`,
+        method: "notify",
+        message: `Update ${index}`,
+      });
+    for (let index = 0; index < 5; index++)
+      fake.emitFrame({
+        type: "extension_ui_request",
+        id: `status-${index}`,
+        method: "setStatus",
+        statusKey: "job",
+        statusText: `State ${index}`,
+      });
+    const events: PiTurnEvent[] = [];
+    const pending = rpc.runTurn("synthetic", (event) => events.push(event));
+    const progress = events.filter((event) => event.type === "progress.message");
+    expect(progress).toHaveLength(129);
+    expect(progress[0]?.text).toContain("3 earlier updates were not retained");
+    expect(progress.at(-1)?.text).toBe("Pi status (job)\n\nState 4");
+    expect(progress.some((event) => event.text.includes("Update 129"))).toBe(true);
+    expect(onFault).not.toHaveBeenCalled();
+    const message = {
+      role: "assistant",
+      responseId: "final",
+      content: [{ type: "text", text: "done" }],
+      stopReason: "stop",
+    };
+    fake.emitFrame({ type: "message_start", message });
+    fake.emitFrame({ type: "message_end", message });
+    fake.emitAgentSettled();
+    await expect(pending).resolves.toEqual({ text: "done", cancelled: false });
+    await rpc.close();
+  });
+
+  it("retains idle notices and streams visible custom/status messages exactly once in a real Turn", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const events: PiTurnEvent[] = [];
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+      {
+        spawn: () => fake as unknown as ChildProcessWithoutNullStreams,
+      },
+    );
+    await rpc.start();
+    const notice = {
+      role: "custom",
+      customType: "ad-process:notification",
+      display: true,
+      content: "Process complete",
+      timestamp: 100,
+    };
+    const send = (value: unknown) => fake.emitFrame(value);
+    send({ type: "message_start", message: notice });
+    send({ type: "message_end", message: notice });
+    send({ type: "message_end", message: notice });
+    expect(events).toEqual([]);
+    const pending = rpc.runTurn("synthetic", (event) => events.push(event));
+    send({ type: "message_end", message: { ...notice, timestamp: 101, display: false } });
+    send({ type: "message_end", message: { ...notice, timestamp: 102 } });
+    send({
+      type: "extension_ui_request",
+      id: "notify",
+      method: "notify",
+      message: "Job running",
+      notifyType: "info",
+    });
+    send({
+      type: "extension_ui_request",
+      id: "status-1",
+      method: "setStatus",
+      statusKey: "job",
+      statusText: "Waiting",
+    });
+    send({
+      type: "extension_ui_request",
+      id: "status-2",
+      method: "setStatus",
+      statusKey: "job",
+      statusText: "Waiting",
+    });
+    const progress = events.filter((event) => event.type === "progress.message");
+    expect(progress).toHaveLength(4);
+    expect(new Set(progress.map((event) => event.itemId)).size).toBe(4);
+    expect(progress.map((event) => event.text)).toEqual([
+      "Pi notification (ad-process:notification)\n\nProcess complete",
+      "Pi notification (ad-process:notification)\n\nProcess complete",
+      "Pi notification (info)\n\nJob running",
+      "Pi status (job)\n\nWaiting",
+    ]);
+    const message = {
+      role: "assistant",
+      responseId: "final",
+      content: [{ type: "text", text: "done" }],
+      stopReason: "stop",
+    };
+    send({ type: "message_start", message });
+    send({ type: "message_end", message });
+    fake.emitAgentSettled();
+    await expect(pending).resolves.toEqual({ text: "done", cancelled: false });
+    await rpc.close();
+  });
+
+  it("primes visible custom identities from the resumed native branch", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const first = {
+      id: "prior-notice",
+      parentId: null,
+      type: "custom_message",
+      customType: "progress",
+      display: true,
+      content: "Same text",
+      timestamp: "2026-01-01T00:00:00Z",
+    };
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+      {
+        spawn: () => {
+          fake.restoreNativeHistory({ entries: [first], leafId: first.id });
+          return fake as unknown as ChildProcessWithoutNullStreams;
+        },
+      },
+    );
+    await rpc.start();
+    const events: PiTurnEvent[] = [];
+    const pending = rpc.runTurn("synthetic", (event) => events.push(event));
+    fake.emitFrame({
+      type: "message_end",
+      message: {
+        role: "custom",
+        customType: "progress",
+        display: true,
+        content: "Same text",
+        timestamp: 200,
+      },
+    });
+    const expected = piHistoryNotices("synthetic-session", [
+      first,
+      { ...first, id: "new-notice", timestamp: "2026-02-01T00:00:00Z" },
+    ]);
+    expect(events[0]).toEqual(expected.notices.get("new-notice"));
+    const message = {
+      role: "assistant",
+      responseId: "final",
+      content: [{ type: "text", text: "done" }],
+      stopReason: "stop",
+    };
+    fake.emitFrame({ type: "message_start", message });
+    fake.emitFrame({ type: "message_end", message });
+    fake.emitAgentSettled();
+    await pending;
+    await rpc.close();
+  });
+
+  it("confirms an autonomous custom notice followed by the native empty-user wakeup", async () => {
+    const { rpc, process: fake, onFault } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fake().holdEntries = true;
+    fake().emitAutonomousTurn();
+    const history = fake().autonomousHistory;
+    if (!history) throw new Error("Missing history");
+    const assistant = history.entries[1];
+    if (!assistant) throw new Error("Missing assistant");
+    assistant.parentId = "empty-wakeup";
+    history.entries.splice(1, 0, {
+      id: "empty-wakeup",
+      parentId: "native-custom-entry",
+      type: "message",
+      message: { role: "user", content: [{ type: "text", text: "" }] },
+    });
+    fake().releaseEntries();
+    await waitFor(() => turns.length === 1);
+    expect(turns[0]).toMatchObject({
+      nativeTurnKey: "native-custom-entry",
+      result: { status: "succeeded" },
+    });
+    expect(onFault).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
+  it("keeps two settled generations separate when both arrive before the first state response", async () => {
+    const { rpc, process: fake, onFault } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fake().holdStates = true;
+    fake().emitAutonomousTurn();
+    appendDeferredRun(fake(), "next-control", "SECOND_RUN_MARKER");
+    expect(turns).toEqual([]);
+    fake().releaseStates();
+    await waitFor(() => turns.length === 2);
+    expect(turns.map((turn) => turn.nativeTurnKey)).toEqual([
+      "native-custom-entry",
+      "next-control",
+    ]);
+    expect(turns.map((turn) => turn.result.text)).toEqual(["autonomous text", "SECOND_RUN_MARKER"]);
+    expect(turns.every((turn) => turn.result.status === "succeeded")).toBe(true);
+    expect(onFault).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
+  it("requires an ordered new-run fence when a late get_state sees Streaming before agent_start", async () => {
+    const { rpc, process: fake, onFault } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fake().emitAutonomousTurn({ streamingAtSettle: true });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(onFault).not.toHaveBeenCalled();
+    appendDeferredRun(fake(), "deferred-control", "DEFERRED_MARKER");
+    await waitFor(() => turns.length === 2);
+    expect(turns.map((turn) => turn.result.text)).toEqual(["autonomous text", "DEFERRED_MARKER"]);
+    expect(onFault).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
+  it("keeps a late Abort acknowledgement and its timeout bound to the old requested generation", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const onFault = vi.fn();
+    const rpc = new PiRpcSession(
+      {
+        cwd: process.cwd(),
+        commandTimeoutMs: 500,
+        cancelTimeoutMs: 40,
+        closeTimeoutMs: 100,
+        onFault,
+      },
+      { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+    );
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    const oldEvents: PiTurnEvent[] = [];
+    const requested = rpc.runTurn("USER_STEER_OLD", (event) => oldEvents.push(event));
+    fake.emitAgentStart();
+    const oldMessage = {
+      role: "assistant",
+      responseId: "old-response",
+      content: [{ type: "text", text: "OLD_MARKER" }],
+      stopReason: "aborted",
+    };
+    fake.emitFrame({ type: "message_start", message: oldMessage });
+    fake.emitFrame({ type: "message_end", message: oldMessage });
+    fake.holdAborts = true;
+    const aborting = rpc.abort();
+    fake.emitAgentSettled();
+    appendDeferredRun(fake, "after-abort", "NEW_RUN_MARKER", false);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(turns).toEqual([]);
+    fake.releaseAborts();
+    await aborting;
+    await expect(requested).resolves.toEqual({ text: "OLD_MARKER", cancelled: true });
+    expect(JSON.stringify(oldEvents)).not.toContain("NEW_RUN_MARKER");
+    await new Promise((resolve) => setTimeout(resolve, 55));
+    expect(onFault).not.toHaveBeenCalled();
+    fake.emitAgentSettled();
+    await waitFor(() => turns.length === 1);
+    expect(turns[0]).toMatchObject({
+      nativeTurnKey: "after-abort",
+      result: { status: "succeeded", text: "NEW_RUN_MARKER" },
+    });
+    await rpc.close();
+  });
+
+  it("discards buffered future-generation frames and pending confirmation on close", async () => {
+    const { rpc, process: fake } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fake().holdStates = true;
+    fake().emitAutonomousTurn();
+    appendDeferredRun(fake(), "never-replay", "MUST_NOT_REPLAY");
+    await rpc.close();
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.result.status).toBe("failed");
+    expect(JSON.stringify(turns)).not.toContain("MUST_NOT_REPLAY");
+    expect(fake().exitCode).toBe(0);
+  });
+
+  it("faults and clears a future-generation queue that exceeds its byte bound", async () => {
+    const { rpc, process: fake, onFault } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fake().holdStates = true;
+    fake().emitAutonomousTurn();
+    fake().emitAgentStart();
+    fake().emitFrame({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "x".repeat(8 * 1024 * 1024) },
+    });
+    await waitFor(() => onFault.mock.calls.length === 1);
+    expect(onFault).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Pi deferred run exceeded its event buffer bound" }),
+    );
+    expect(turns).toHaveLength(1);
+    await rpc.close();
+    expect(fake().exitCode).toBe(0);
+  });
+
+  it("fences a new-run child widget and preserves its autonomous owner across synchronous replay", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 500, closeTimeoutMs: 100 },
+      { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+    );
+    rpc.setAutonomousTurnHandler(() => undefined);
+    let oldResolved = false;
+    const observed: { oldResolved: boolean; owner: string; child: string | undefined }[] = [];
+    rpc.setGotgenesStatusHandler((records, owner) =>
+      observed.push({ oldResolved, owner, child: records[0]?.id }),
+    );
+    await rpc.start();
+    const old = rpc
+      .runTurn("requested", () => undefined)
+      .then((result) => {
+        oldResolved = true;
+        return result;
+      });
+    fake.emitAgentStart();
+    const before = {
+      role: "assistant",
+      content: [{ type: "text", text: "old turn" }],
+      stopReason: "stop",
+    };
+    fake.emitFrame({ type: "message_start", message: before });
+    fake.emitFrame({ type: "message_end", message: before });
+    fake.holdStates = true;
+    fake.emitAgentSettled();
+    fake.emitAgentStart();
+    fake.emitFrame({
+      type: "message_start",
+      message: { role: "assistant", content: [], responseId: "next-run" },
+    });
+    fake.emitFrame({
+      type: "extension_ui_request",
+      method: "setWidget",
+      widgetKey: "codexhost-gotgenes-subagents",
+      widgetLines: [
+        "CODEXHOST_GOTGENES_SUBAGENTS_V1:" +
+          JSON.stringify({
+            version: 1,
+            agents: [
+              {
+                id: "new-child",
+                type: "Explore",
+                description: "Next run child",
+                status: "running",
+                isBackground: true,
+              },
+            ],
+          }),
+      ],
+    });
+    expect(observed).toEqual([]);
+    fake.releaseStates();
+    await expect(old).resolves.toEqual({ text: "old turn", cancelled: false });
+    expect(observed).toEqual([{ oldResolved: false, owner: "autonomous", child: "new-child" }]);
+    await rpc.close();
+  });
+
+  it("receives gotgenes observer snapshots independently of parent turns and drops malformed frames", async () => {
+    const { rpc, process: fakeProcess, onFault } = autonomousSession();
+    await rpc.start();
+    const status = vi.fn();
+    const autonomous = vi.fn();
+    rpc.setGotgenesStatusHandler(status);
+    rpc.setAutonomousTurnHandler(autonomous);
+    const send = (version: number) =>
+      fakeProcess().stdout.write(
+        JSON.stringify({
+          type: "extension_ui_request",
+          method: "setWidget",
+          widgetKey: "codexhost-gotgenes-subagents",
+          widgetLines: [
+            "CODEXHOST_GOTGENES_SUBAGENTS_V1:" +
+              JSON.stringify({
+                version,
+                agents: [
+                  {
+                    id: "worker",
+                    type: "Explore",
+                    description: "Review",
+                    status: "completed",
+                    isBackground: true,
+                    toolUses: 3,
+                  },
+                ],
+              }),
+          ],
+        }) + "\n",
+      );
+    send(2);
+    expect(status).not.toHaveBeenCalled();
+    send(1);
+    expect(status).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          id: "worker",
+          child: expect.objectContaining({ status: "completed", description: "Review" }),
+        }),
+      ],
+      "idle",
+    );
+    const late = vi.fn();
+    rpc.setGotgenesStatusHandler(late);
+    expect(late).toHaveBeenCalledTimes(1);
+    expect(autonomous).not.toHaveBeenCalled();
+    expect(onFault).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
   it("observes versioned subagent widgets outside a model Turn without starting an autonomous Turn", async () => {
     const { rpc, process: fakeProcess, onFault } = autonomousSession();
     await rpc.start();
@@ -1116,6 +2121,23 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
+  it("classifies Pi 1.4's error-shaped AbortSignal terminal consistently in live and history", async () => {
+    const { rpc, process: fake } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fake().emitAutonomousTurn({ stopReason: "error", errorMessage: "This operation was aborted" });
+    await waitFor(() => turns.length === 1);
+    expect(turns[0]?.result.status).toBe("cancelled");
+    const history = fake().autonomousHistory;
+    if (!history) throw new Error("Missing history");
+    expect(
+      mapPiSnapshot(history, { sessionId: "synthetic-session", model: null }).turns[0]?.outcome
+        .status,
+    ).toBe("cancelled");
+    await rpc.close();
+  });
+
   it("does not reuse a stale autonomous history boundary", async () => {
     const { rpc, process: fakeProcess, onFault } = autonomousSession();
     const turns: PiAutonomousTurn[] = [];
@@ -1165,7 +2187,7 @@ describe("Pi RPC Turn aggregation", () => {
     );
     await blocking.rpc.close();
 
-    const streaming = autonomousSession();
+    const streaming = autonomousSession(vi.fn(), 50);
     const streamingTurns: PiAutonomousTurn[] = [];
     streaming.rpc.setAutonomousTurnHandler((turn) => streamingTurns.push(turn));
     await streaming.rpc.start();
@@ -1396,31 +2418,32 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
-  it("uses streamed Assistant content without replaying the complete message", async () => {
+  it("reconciles authoritative final suffixes without replaying streamed prefixes", async () => {
     const rpc = session("reasoning");
     const events: PiTurnEvent[] = [];
     await rpc.start();
 
     await expect(rpc.runTurn("synthetic", (event) => events.push(event))).resolves.toEqual({
-      text: "streamed answer",
+      text: "streamed answer suffix",
       cancelled: false,
     });
     expect(events).toEqual([
       { type: "reasoning.delta", messageId: expect.any(String), delta: "streamed reasoning" },
       { type: "text.delta", messageId: expect.any(String), delta: "streamed answer" },
+      { type: "reasoning.delta", messageId: expect.any(String), delta: " suffix" },
       { type: "reasoning.completed", messageId: expect.any(String) },
+      { type: "text.delta", messageId: expect.any(String), delta: " suffix" },
       { type: "message.completed", messageId: expect.any(String) },
     ]);
     expect(
       new Set(events.flatMap((event) => ("messageId" in event ? [event.messageId] : []))).size,
     ).toBe(1);
-    expect(JSON.stringify(events)).not.toContain("suffix");
     expect(JSON.stringify(events)).not.toContain("reasoned answer");
     expect(JSON.stringify(events)).not.toContain("ignored");
     await rpc.close();
   });
 
-  it("does not compare streamed and complete content across thinking blocks", async () => {
+  it("reconciles thinking blocks by contentIndex without retaining removed summary separators", async () => {
     const rpc = session("reasoning-multiple-blocks");
     const events: PiTurnEvent[] = [];
     await rpc.start();
@@ -1430,15 +2453,112 @@ describe("Pi RPC Turn aggregation", () => {
       cancelled: false,
     });
     expect(
-      events.filter((event) => event.type === "reasoning.delta").map(({ delta }) => delta),
-    ).toEqual(["first block", "\n\n", "second block", "\n\n", "third block", "\n\n"]);
+      events
+        .filter((event) => event.type === "reasoning.delta")
+        .map(({ delta }) => delta)
+        .join(""),
+    ).toBe("first blocksecond blockthird block");
     expect(events.some(({ type }) => type === "reasoning.completed")).toBe(true);
     await rpc.close();
   });
 
+  it("reconciles compact block-end events and resets each Assistant message", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const events: PiTurnEvent[] = [];
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+      { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    try {
+      const turn = rpc.runTurn("synthetic", (event) => events.push(event));
+      for (const responseId of ["first-response", "second-response"]) {
+        fake.emitFrame({
+          type: "message_start",
+          message: { role: "assistant", responseId, content: [] },
+        });
+        const content = [
+          { type: "thinking", thinking: "one\n\ntwo suffix" },
+          { type: "text", text: "answer suffix" },
+          { type: "thinking", thinking: "next" },
+          { type: "text", text: " second" },
+        ];
+        const update = (assistantMessageEvent: Record<string, unknown>) =>
+          fake.emitFrame({ type: "message_update", assistantMessageEvent });
+        update({ type: "thinking_delta", contentIndex: 0, delta: "one\n\n" });
+        update({ type: "thinking_delta", contentIndex: 0, delta: "two\n\n" });
+        update({ type: "thinking_end", contentIndex: 0, content: content[0]?.thinking });
+        update({ type: "text_delta", contentIndex: 1, delta: "answer" });
+        update({ type: "text_end", contentIndex: 1, content: content[1]?.text });
+        update({ type: "thinking_delta", contentIndex: 2, delta: "next\n\n" });
+        update({ type: "thinking_end", contentIndex: 2, content: content[2]?.thinking });
+        update({ type: "text_end", contentIndex: 3, content: content[3]?.text });
+        const message = { role: "assistant", responseId, content, stopReason: "stop" };
+        fake.emitFrame({ type: "message_end", message });
+        fake.emitFrame({ type: "turn_end", message });
+      }
+      fake.emitAgentSettled();
+      await expect(turn).resolves.toEqual({
+        text: "answer suffix secondanswer suffix second",
+        cancelled: false,
+      });
+      const messages = new Set(
+        events.flatMap((event) => ("messageId" in event ? [event.messageId] : [])),
+      );
+      expect(messages.size).toBe(2);
+      for (const messageId of messages) {
+        expect(
+          events
+            .filter((event) => event.type === "reasoning.delta" && event.messageId === messageId)
+            .map((event) => ("delta" in event ? event.delta : ""))
+            .join(""),
+        ).toBe("one\n\ntwo suffixnext");
+        expect(
+          events.filter(
+            (event) => event.type === "message.completed" && event.messageId === messageId,
+          ),
+        ).toHaveLength(1);
+      }
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it("reports a protocol error when final text rewrites an already displayed prefix", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const onFault = vi.fn();
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500, onFault },
+      { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    try {
+      const turn = rpc.runTurn("synthetic", () => undefined);
+      fake.emitFrame({ type: "message_start", message: { role: "assistant", content: [] } });
+      fake.emitFrame({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: "original" },
+      });
+      fake.emitFrame({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          stopReason: "stop",
+          content: [{ type: "text", text: "replacement" }],
+        },
+      });
+      await expect(turn).rejects.toThrow(
+        "Pi text final content conflicts with already streamed content",
+      );
+      expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
+    } finally {
+      await rpc.close();
+    }
+  });
+
   it("faults when agent_settled does not agree with the native Streaming state", async () => {
     const onFault = vi.fn();
-    const rpc = session("settled-streaming", onFault);
+    const rpc = session("settled-streaming", onFault, { commandTimeoutMs: 50 });
     await rpc.start();
 
     await expect(rpc.runTurn("synthetic", () => undefined)).rejects.toThrow(
@@ -1619,8 +2739,14 @@ describe("Pi RPC Turn aggregation", () => {
     });
     expect(events).toEqual([
       { type: "message.completed", messageId: expect.any(String) },
+      {
+        type: "progress.message",
+        itemId: expect.any(String),
+        text: expect.stringContaining("Pi retry 1/3."),
+      },
       { type: "text.delta", messageId: expect.any(String), delta: "recovered" },
-      { type: "message.completed", messageId: expect.any(String) },
+      { type: "message.completed", messageId: expect.any(String), phase: "final_answer" },
+      { type: "progress.message", itemId: expect.any(String), text: "Pi retry succeeded." },
     ]);
     await rpc.close();
   });
@@ -1632,6 +2758,244 @@ describe("Pi RPC Turn aggregation", () => {
     await expect(rpc.runTurn("synthetic", () => undefined)).rejects.toThrow(
       "settled without displayable output",
     );
+    await rpc.close();
+  });
+
+  it("matches live wire and native history IDs for the captured Pi 1.4 compact stream", async () => {
+    const adapter = new PiAdapter(
+      {},
+      {
+        createTransport: (options) =>
+          new PiRpcSession(options, {
+            spawn: () =>
+              new FakePiRpcProcess(
+                "compact-native-wire",
+              ) as unknown as ChildProcessWithoutNullStreams,
+          }),
+      },
+    );
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const liveIds: string[][] = [];
+    try {
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      for (const ordinal of [1, 2]) {
+        const turnId = hostTurnIdSchema.parse(`compact-turn-${ordinal}`);
+        const projector = new CodexTurnProjector({
+          threadId: "compact-thread",
+          turnId,
+          cwd: "/synthetic",
+          startedAtMs: 0,
+        });
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "Reply exactly PI_WIRE_OK" }],
+        });
+        const ids = new Set<string>();
+        for (;;) {
+          const output = await iterator.next();
+          if (output.done) throw new Error("Turn ended without completion");
+          if (output.value.kind !== "event") continue;
+          const event = output.value.event;
+          if (
+            [
+              "turn.started",
+              "item.started",
+              "item.updated",
+              "item.completed",
+              "turn.completed",
+            ].includes(event.type)
+          ) {
+            for (const notification of projector.project(
+              event as Parameters<CodexTurnProjector["project"]>[0],
+            ).messages) {
+              if (notification.method !== "item/completed") continue;
+              const params = notification.params as {
+                item: { type: string; id: string; text?: string };
+              };
+              if (params.item.type === "agentMessage") {
+                expect(params.item.text).toBe("PI_WIRE_OK");
+                ids.add(params.item.id);
+              }
+            }
+          }
+          if (event.type === "turn.completed") break;
+        }
+        liveIds.push([...ids]);
+      }
+      const snapshot = await session.readSnapshot();
+      if (!snapshot.ok) throw new Error(snapshot.error.message);
+      expect(snapshot.value.turns.map((turn) => turn.items.map(({ item }) => item.itemId))).toEqual(
+        liveIds,
+      );
+      expect(new Set(liveIds.flat()).size).toBe(2);
+    } finally {
+      await session.close();
+      await adapter.close();
+    }
+  });
+
+  it("does not place a history-read gap between accepting a Turn and dispatching its cancellable prompt", async () => {
+    const process = new FakePiRpcProcess("compact-native-wire");
+    const rpc = new PiRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 100 },
+      {
+        spawn: () => process as unknown as ChildProcessWithoutNullStreams,
+      },
+    );
+    await rpc.start();
+    process.holdEntries = true;
+    try {
+      const running = rpc.runTurn("Reply exactly PI_WIRE_OK", () => undefined);
+      const cancelling = rpc.abort();
+      process.releaseEntries();
+      await cancelling;
+      await expect(running).resolves.toMatchObject({ cancelled: true });
+      expect(process.commands.indexOf("prompt")).toBeLessThan(process.commands.indexOf("abort"));
+    } finally {
+      process.releaseEntries();
+      await rpc.close();
+    }
+  });
+
+  it("rebuilds compact-stream identities from persisted tool/error messages on cold resume and branch rollback", async () => {
+    const timestamp = 1792994079878; // The timestamp in the captured compact RPC fixture.
+    const seed: PiSessionHistory = {
+      entries: [
+        {
+          id: "seed-user",
+          parentId: null,
+          type: "message",
+          message: { role: "user", content: "seed" },
+        },
+        {
+          id: "seed-tool",
+          parentId: "seed-user",
+          type: "message",
+          message: {
+            role: "assistant",
+            timestamp,
+            stopReason: "toolUse",
+            content: [{ type: "toolCall", id: "tool", name: "read", arguments: { path: "x" } }],
+          },
+        },
+        {
+          id: "seed-error",
+          parentId: "seed-tool",
+          type: "message",
+          message: { role: "assistant", timestamp, stopReason: "error", content: [] },
+        },
+        {
+          id: "seed-answer",
+          parentId: "seed-error",
+          type: "message",
+          message: {
+            role: "assistant",
+            timestamp,
+            stopReason: "stop",
+            content: [{ type: "text", text: "old" }],
+          },
+        },
+      ],
+      leafId: "seed-answer",
+    };
+    const create = (history: PiSessionHistory, sessionId?: string) => {
+      const process = new FakePiRpcProcess("compact-native-wire");
+      process.restoreNativeHistory(history, sessionId);
+      const rpc = new PiRpcSession(
+        { cwd: "/synthetic", commandTimeoutMs: 100 },
+        {
+          spawn: () => process as unknown as ChildProcessWithoutNullStreams,
+        },
+      );
+      return { process, rpc };
+    };
+    const run = async (rpc: PiRpcSession, occurrence: number) => {
+      const events: PiTurnEvent[] = [];
+      await rpc.runTurn("Reply exactly PI_WIRE_OK", (event) => events.push(event));
+      const delta = events.find((event) => event.type === "text.delta");
+      if (!delta || delta.type !== "text.delta") throw new Error("Missing native delta");
+      expect(delta.nativeMessageIdentity).toEqual({
+        sessionId: rpc.state.sessionId,
+        timestamp,
+        occurrence,
+      });
+      const id = piMessageItemId(delta.nativeMessageIdentity, "assistant");
+      const history = await rpc.getEntries();
+      const snapshot = mapPiSnapshot(history, { sessionId: rpc.state.sessionId, model: null });
+      expect(snapshot.turns.at(-1)?.items.at(-1)?.item.itemId).toBe(id);
+      return { id, history };
+    };
+    const first = create(seed);
+    await first.rpc.start();
+    let persisted: PiSessionHistory;
+    try {
+      persisted = (await run(first.rpc, 3)).history;
+    } finally {
+      await first.rpc.close();
+    }
+    const cold = create(persisted);
+    await cold.rpc.start();
+    try {
+      await run(cold.rpc, 4);
+      // The inactive descendants remain in the file, but no longer in the branch.
+      cold.process.restoreNativeHistory({ ...persisted, leafId: "seed-tool" });
+      // The Adapter reads the new branch before accepting the next Turn.
+      await cold.rpc.getEntries();
+      await run(cold.rpc, 1);
+    } finally {
+      await cold.rpc.close();
+    }
+    const fork = create(seed, "forked-native-session");
+    await fork.rpc.start();
+    try {
+      const { id } = await run(fork.rpc, 3);
+      expect(id).not.toBe(
+        piMessageItemId({ sessionId: "synthetic-session", timestamp, occurrence: 3 }, "assistant"),
+      );
+    } finally {
+      await fork.rpc.close();
+    }
+  });
+
+  it.each(["native-id-before-text", "native-id-before-reasoning"] as const)(
+    "adopts a native responseId before the first visible delta (%s)",
+    async (scenario) => {
+      const rpc = session(scenario);
+      const events: PiTurnEvent[] = [];
+      await rpc.start();
+      await rpc.runTurn("synthetic", (event) => events.push(event));
+      const visible = events.filter(
+        (event) => event.type === "text.delta" || event.type === "reasoning.delta",
+      );
+      expect(visible.length).toBeGreaterThan(0);
+      expect(visible.map((event) => event.messageId)).toEqual(
+        visible.map(() => "native-response-1"),
+      );
+      expect(
+        visible.every(
+          (event) =>
+            event.nativeMessageIdentity &&
+            "responseId" in event.nativeMessageIdentity &&
+            event.nativeMessageIdentity.responseId === "native-response-1",
+        ),
+      ).toBe(true);
+      await rpc.close();
+    },
+  );
+
+  it("does not change a message identity after a visible delta", async () => {
+    const rpc = session("native-id-after-text");
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+    await rpc.runTurn("synthetic", (event) => events.push(event));
+    const visible = events.filter((event) => event.type === "text.delta");
+    expect(visible).toHaveLength(2);
+    expect(visible[0]?.messageId).not.toBe("native-response-1");
+    expect(visible[1]?.messageId).toBe(visible[0]?.messageId);
+    expect(visible.every((event) => event.nativeMessageIdentity === undefined)).toBe(true);
     await rpc.close();
   });
 
@@ -1659,8 +3023,18 @@ describe("Pi RPC Turn aggregation", () => {
     ]);
     const textEvents = events.filter((event) => event.type === "text.delta");
     expect(textEvents).toEqual([
-      { type: "text.delta", messageId: "before-tools", delta: "before tools" },
-      { type: "text.delta", messageId: "after-tools", delta: "tools complete" },
+      {
+        type: "text.delta",
+        messageId: "before-tools",
+        nativeMessageIdentity: { responseId: "before-tools" },
+        delta: "before tools",
+      },
+      {
+        type: "text.delta",
+        messageId: "after-tools",
+        nativeMessageIdentity: { responseId: "after-tools" },
+        delta: "tools complete",
+      },
     ]);
     expect(
       events.filter((event) => event.type === "tool.updated" && event.callId === "custom-1"),

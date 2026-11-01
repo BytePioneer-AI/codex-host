@@ -70,7 +70,7 @@ for (const mobile of [false, true]) {
       const errors: string[] = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.goto(url);
-      await page.getByText("Native Model", { exact: true }).waitFor();
+      await page.getByText("Native Model", { exact: true }).waitFor({ state: "attached" });
       if (!mobile) {
         // Test setup only: seed this isolated browser's clipboard. The operation under test is a real keyboard paste.
         const clipboardData = await page.evaluate(async (data) => {

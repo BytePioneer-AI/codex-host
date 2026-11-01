@@ -25,4 +25,24 @@ async function desktopRequestSettings(vscode) {
   };
 }
 
-module.exports = { desktopRequestSettings };
+/** Same fallback and flags as the Desktop ForkChatService. No settings writes. */
+async function desktopHistorySettings(vscode) {
+  const defaults = {
+    enable_v2: true,
+    enable_create_from_message: true,
+    enable_create_from_session: true,
+  };
+  let config = defaults;
+  try {
+    const values = await vscode.commands.executeCommand("icube.event.getAllABTestConfigs");
+    config = values?.fork_chat?.val ?? defaults;
+  } catch {
+    /* Desktop's native fallback permits the feature when config cannot be read. */
+  }
+  return {
+    forkFromMessage: config.enable_v2 === true && config.enable_create_from_message === true,
+    forkFromSession: config.enable_v2 === true && config.enable_create_from_session === true,
+  };
+}
+
+module.exports = { desktopRequestSettings, desktopHistorySettings };

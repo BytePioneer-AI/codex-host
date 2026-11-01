@@ -20,4 +20,6 @@ Companion 0.1.1 reads complete native file changes from the message snapshot aft
 
 Companion 0.1.2 also exports the native numeric context counters. The Harness reports context occupancy only: this Desktop version's stored counters describe the latest model request and do not establish cumulative Session token consumption or cost. Missing usage stays unknown; refreshing it does not start a model Turn.
 
+Companion 0.1.3 exposes native same-workspace text-history forks and the Desktop feature flags. The Harness validates exact prefixes and keeps the source unchanged when forking or rolling back a Turn. TRAE CN 3.4.12 does not copy the file snapshot tags, so file-edit forks and rollbacks retaining a nonempty file-edit prefix are explicitly unavailable. A sole file-edit Turn can be removed by opening a separate empty Session. History rollback leaves workspace files unchanged.
+
 [Source and integration details](https://github.com/BytePioneer-AI/codex-host/blob/main/docs/harnesses/trae-cn/trae-cn-desktop-integration.md)

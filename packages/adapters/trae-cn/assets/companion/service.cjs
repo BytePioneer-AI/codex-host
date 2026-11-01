@@ -3,6 +3,7 @@ const path = require("node:path");
 const { publicModels, nativeModel, readModels } = require("./models.cjs");
 const { questionDecision, approvalDecision, NativeInteractions } = require("./interactions.cjs");
 const { withFileDiffs } = require("./diffs.cjs");
+const { forkNativeSession } = require("./history.cjs");
 
 function invalid(message) {
   return Object.assign(new Error(message), { code: "invalidRequest" });
@@ -195,8 +196,10 @@ class DesktopService {
     workspaceFolders,
     agentType = "builder_v3",
     requestSettings = async () => ({}),
+    historySettings = async () => ({ forkFromMessage: false, forkFromSession: false }),
   ) {
     this.native = native;
+    this.historySettings = historySettings;
     this.application = application;
     this.workspaceFolders = [...workspaceFolders];
     this.agentType = agentType;
@@ -246,6 +249,7 @@ class DesktopService {
       workspaceFolders: this.workspaceFolders,
       agentType: this.agentType,
       models: publicModels(pool),
+      history: await this.historySettings(),
     };
   }
 
@@ -254,6 +258,10 @@ class DesktopService {
     switch (method) {
       case "settings":
         return this.requestSettings();
+      case "historySettings":
+        return this.historySettings();
+      case "fork":
+        return forkNativeSession(this, input);
       case "create": {
         const cwd =
           typeof input.cwd === "string"

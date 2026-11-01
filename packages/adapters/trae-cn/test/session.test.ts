@@ -21,7 +21,7 @@ const inspection: BridgeInspection = {
   models: [{ id: "configured", label: "Configured", provider: "native", multimodal: false }],
 };
 
-async function setup(selected = true, deferred = false) {
+async function setup(selected = true, deferred = false, history = false) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "trae-cn-session-"));
   let messageId = "",
     listener: Listener | undefined;
@@ -110,7 +110,9 @@ async function setup(selected = true, deferred = false) {
   );
   const session = new TraeCnSession({
     client: new BridgeClient(server.endpoint),
-    inspection,
+    inspection: history
+      ? { ...inspection, history: { forkFromMessage: true, forkFromSession: true } }
+      : inspection,
     cwd: "/workspace",
     ...(selected ? { model: modelRef("builder_v3", "configured") } : {}),
   });
@@ -146,6 +148,42 @@ const command = (id = "host-turn") => ({
 });
 
 describe("TRAE CN public Session core", () => {
+  it("disables file-edit forks while retaining a rollback to an empty Session", async () => {
+    const test = await setup(true, true, true);
+    try {
+      expect(test.session.capabilities.history).toMatchObject({
+        fork: true,
+        rollbackLastTurn: true,
+      });
+      await test.session.execute(command());
+      await vi.waitFor(() => expect(test.service.subscribe).toHaveBeenCalledOnce());
+      const observer = test.service.subscribe.mock.calls[0]?.[1];
+      if (!observer) throw new Error("Missing observer");
+      observer.data({
+        event: "plan_item",
+        payload: {
+          id: "edit",
+          timing: { tool_call_started_at_ms: 1, tool_call_finished_at_ms: 2 },
+          tool_call_info: {
+            name: "Edit",
+            params: { file_path: "/workspace/file" },
+            result: { status: "success", data: { can_show_diff: true } },
+          },
+        },
+      });
+      await vi.waitFor(() =>
+        expect(test.session.capabilities.history).toMatchObject({
+          fork: false,
+          rollbackLastTurn: true,
+        }),
+      );
+      test.finish("completed");
+      await completed(test.iterator);
+      expect(test.session.capabilities.history.fork).toBe(false);
+    } finally {
+      await test.close();
+    }
+  });
   it("publishes context occupancy for its active Turn and isolates usage refresh errors", async () => {
     const test = await setup(true, true);
     try {

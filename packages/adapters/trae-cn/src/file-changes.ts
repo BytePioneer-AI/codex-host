@@ -3,6 +3,14 @@ import { hostItemIdSchema } from "@codexhost/shared-contracts";
 import { createTwoFilesPatch } from "diff";
 import { record, TraeError } from "./errors.js";
 
+export function hasFileEditHistory(value: unknown): boolean {
+  return (
+    record(value) &&
+    Array.isArray(value.items) &&
+    value.items.some((item) => record(item) && item.fileDiffs !== undefined)
+  );
+}
+
 /** A message snapshot is the complete native before/after image, not a tool preview. */
 export function projectFileChanges(
   message: Record<string, unknown>,

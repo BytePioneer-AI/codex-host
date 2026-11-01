@@ -9,7 +9,7 @@
 | 已验证的原生版本 | TRAE CN 3.4.12 / VS Code core 1.107.1，Windows x64 |
 | 交付范围 | 仓库内插件 + 桌面 Companion 扩展；原生接口为应用私有接口，须独立验收版本兼容性 |
 | 参考插件 | WorkBuddy 的应用发现与应用拥有的认证；公共 Harness 输出和交互契约 |
-| 最后验证 | 2026-10-31～11-01 Windows；真实对话、文件编辑与 Diff、活动恢复、提问及审批；更新后的自动检查 |
+| 最后验证 | 2026-10-31～11-01 Windows；真实对话、文件编辑与 Diff、活动恢复、提问及审批、文本 Fork / Rollback、单轮文件编辑回退为空；更新后的自动检查 |
 
 ## 能力
 
@@ -31,9 +31,9 @@
 | B2 | 切换 Thinking | 原生有则必做 | P1 | 待验证 | — | — | |
 | B3 | 权限模式 | 原生有则必做 | P1 | 待验证 | — | 原生 permission_profile_id | |
 | B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 支持（明确拒绝） | src/adapter.ts | test/adapter.test.ts：unattended-full-access 在连接前返回 unsupported | 不忽略执行意图或伪造审批 |
-| B5 | Fork | 原生有则必做 | P1 | 待验证 | — | 原生 lite/fork_session 路由 | |
-| B6 | 跨目录 Fork | 原生有则必做 | P2 | 待验证 | — | — | |
-| B7 | 回滚最后一轮 | 原生有则必做 | P1 | 待验证 | — | 原生 lite/revert_message 路由 | |
+| B5 | Fork | 原生有则必做 | P1 | 受限 | src/derivation.ts；assets/companion/history.cjs | 真实原生 lite.fork_session；公共中间 / 末尾边界、源历史隔离、新进程恢复与继承上下文后的续聊 | 无文件编辑历史时支持；沿用桌面 Fork 开关；3.4.12 文件快照复制缺陷在写入前拒绝 |
+| B6 | 跨目录 Fork | 原生有则必做 | P2 | 不支持 | src/derivation.ts | 目标 cwd 不同在原生写入前返回 unsupported | 未证明原生跨 Project 复制；不以改变进程目录冒充支持 |
+| B7 | 回滚最后一轮 | 原生有则必做 | P1 | 受限 | src/derivation.ts；src/session.ts | 公共六轮 → 五轮、单轮 → 空白、单轮文件编辑 → 空白；源历史 / 工作区文件不变，模型保留，续聊与新进程读取成功 | 创建独立 Session，由 Host 替换；含文件编辑且保留非空前缀时拒绝；Thinking / 权限提示仍明确拒绝 |
 | B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 受限 | src/history.ts；src/file-changes.ts；src/live-items.ts；assets/companion/diffs.cjs | 真实 Read、Edit 和 RunCommand；两轮文件编辑的实时 / 历史 Diff 一致，新进程恢复一致 | 消息级原生快照提供完整前后内容；2 MiB 上限明确拒绝；后台命令及其他文件操作原生验收待补 |
 | B9 | 审批 | 原生有则必做 | P0 | 受限 | src/interactions.ts；assets/companion/interactions.cjs | 公共允许一次后原生文件生成；拒绝后文件不存在；全局权限哈希未变 | RunCommand 已验收；其他工具确认仍明确拒绝；不支持持久授权 |
 | B10 | 提问 | 原生有则必做 | P0 | 支持 | src/interactions.ts；assets/companion/interactions.cjs；settings.cjs | 公共问题只发布一次；显式答复“停止”，持久完成回复 TRAE_CN_PUBLIC_QUESTION_OK_STOP | 复用桌面开关；实例校验；不使用预填答案；单选、多选、其他及跳过映射测试 |
@@ -61,7 +61,9 @@
 
 活动恢复的公共契约缺口与实现：原生实测可在断开观察者后重放同一问题实例，并继续同一用户消息；旧 Host 只在 turn.completed 持久化 NativeTurnRef，knownTurnRefs 没有原 Host Turn ID。API 2 新增可选 activeTurnRecovery、turn.identity.confirmed、knownTurns 和 recoveringTurn，Host 提前持久化原身份并按确认映射恢复原投影；Broker 转发，Renderer 沿用原公共投影，没有 TRAE 专用分支。旧 API 1 插件仍可加载且不接收新输入；TRAE 插件声明 API 2，拒绝在旧 Host 上执行。没有确认映射时不会猜测或重发任务。
 
-当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。插件 Manifest / 工厂、Bundle、Companion VSIX、本机 HTTP、公共 Adapter、普通 Session、结构化提问、RunCommand 单次审批及已确认身份的活动恢复已实现；其他审批、配置写入、历史派生及预装发行尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接和确认状态的更新直至结束。
+当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。插件 Manifest / 工厂、Bundle、Companion VSIX、本机 HTTP、公共 Adapter、普通 Session、结构化提问、RunCommand 单次审批、已确认身份的活动恢复及受限的历史派生已实现；其他审批、配置写入及预装发行尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接和确认状态的更新直至结束。
+
+历史派生限制：3.4.12 的原生 fork_session 可以精确复制文本会话前缀，但不会为复制的文件编辑用户消息建立对应的快照 Git 标签。一次独立原生探测创建了可读消息但不可读文件快照的副本；源历史不变，副本已停止并保留供核查，没有重试或删除用户历史。插件在写入前拒绝含文件编辑的 Fork，以及需保留非空前缀的文件编辑 Rollback。只有一轮时，Rollback 创建独立空会话，无需复制快照。会话回退不回滚工作区文件。新会话身份、精确前缀和源历史均重新核对；不确定回执不自动重试，已知副本验证失败时报告其原生 ID。
 
 原生模型管理接口 `model_list` 与会话菜单接口 `model_list_by_function` 的范围不同。模型管理接口不作为对话目录来源；目录按原生 Agent function 读取，并过滤 `status === false` 或 `selectable === false` 的模型。自定义 Provider 的失败不等于桌面登录失败；已观察到原生服务返回 Provider HTTP 401，不能用桌面登录状态代替模型调用验收。
 
@@ -84,6 +86,8 @@
 | 公共命令审批 | 工作目录外专用验收文件的 RunCommand，分别允许一次和拒绝 | 允许后文件存在、exitCode=0；拒绝后文件不存在、保留原生沙箱 failed / exitCode=1；全局权限未改变 |
 | 公共文件编辑与 Diff | 同一专用 Session 两轮 Read / Edit；snapshot.get_message_ai_edit_file_diff_list；新进程只读恢复 | 原生文件内容和 Diff 一致，公共 fileChange 完成一次，实时与持久身份一致；恢复后两轮 patch 不变，回复 TRAE_CN_PUBLIC_FILE_EDIT_OK |
 | 上下文用量 | 同一专用 Session 的原生历史；公共 initialUsage / refreshUsage；新进程只读恢复 | 上下文数值与原生一致，跨进程不变；仅有 snapshot 读取，没有 create/start；未声称总 tokens 或费用完整 |
+| 文本历史派生 | 原生整会话复制；公共中间与末尾 Fork、多轮 / 单轮 Rollback；新 Node 进程只读验证 | 精确复制 1 / 6 / 5 / 0 轮，源历史不变；中间 Fork 续聊复述原文，空白 Rollback 回复 TRAE_CN_ROLLBACK_EMPTY_OK；原生实时上下文用量已确认 |
+| 文件编辑历史限制 | 两轮文件编辑源的写入前拒绝；另建专用单轮文件编辑源，再回退为空 | 多轮源没有 fork/create/start；单轮源仅创建一个空白 Session，回复 TRAE_CN_FILE_EMPTY_ROLLBACK_OK；模型、源历史及实际文件不变；两个 Session 冷恢复一致 |
 | 插件加载 | 真实 Loader 加载仓库外 Bundle；独立 Node 进程导入 | 身份、资源、独立实例与关闭隔离均通过；无 Workspace 运行依赖 |
 | Companion 安装包 | 官方 vsce 打包；独立 ZIP 读取；TRAE CN 本地安装 | 身份与许可证完整，7 个 CJS 文件字节一致；实际安装版本 0.1.0 |
 | 已安装插件链路 | 已安装 Companion 的进程、扩展目录和 SHA-256；仓库外插件完成原生 Turn | 同一持久身份读到 TRAE_CN_INSTALLED_PLUGIN_OK；未作为当前 CodexHost / Renderer 验收 |
@@ -91,5 +95,7 @@
 | API 2 回归检查 | typecheck；lint / boundaries；185 项聚焦测试；142 项受影响 Agent / 打包测试；5 项 Loader / Broker 定向检查 | 均通过；测试集合存在重叠，不累加计数。Loader 全文件另有 3 项文件符号链接用例因本机 Windows EPERM 未通过；macOS 原生接口未验证 |
 | 文件快照回归检查 | typecheck；lint / boundaries；Adapter 全套与两个发行测试共 115 项 | 全部通过；Companion 0.1.1 资源清单、八个 CJS 字节及搬移 Bundle 均已核验；真实文件编辑使用开发窗口，未升级普通窗口的 Companion |
 | 上下文用量回归检查 | typecheck；lint / boundaries；119 项 Adapter 测试及两个发行测试；真实只读跨进程验收 | 均通过；不累计重叠测试数量。Companion 0.1.2 安装包已验证，普通窗口尚未升级 |
+| 跨平台 CI | ad21e0d9：GitHub Actions 41268028791 | Ubuntu、Windows、Linux ARM64、macOS 14 四项通过；该结果属于历史派生之前的基线，不代表 macOS 原生桌面接口已验证 |
+| 历史派生回归检查 | typecheck（含测试类型）；lint / boundaries；Adapter 全套与两个发行测试共 136 项 | 全部通过；Companion 0.1.3 的九个 CJS 文件、许可证与搬移插件均已验证；新增原生操作在独立开发窗口验收，用户当前 Host / Desktop 未升级 |
 | 真实原生验收 | TRAE CN 3.4.12 Windows，复用桌面登录，Builder / Seed-Code | 原生 done.status=completed；重连历史 finish.summary=CODEXHOST_TRAE_CN_OK；不是 Host 端验收 |
 | Desktop / 委派 | 待实现 | 未验证 |

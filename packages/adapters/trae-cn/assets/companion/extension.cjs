@@ -5,7 +5,7 @@ const { randomUUID } = require("node:crypto");
 const { NativeConnection } = require("./native.cjs");
 const { DesktopService } = require("./service.cjs");
 const { startServer } = require("./server.cjs");
-const { desktopRequestSettings } = require("./settings.cjs");
+const { desktopRequestSettings, desktopHistorySettings } = require("./settings.cjs");
 
 let current;
 
@@ -68,8 +68,13 @@ async function activate(context) {
         call: (...args) => getNative().call(...args),
         subscribe: (...args) => getNative().subscribe(...args),
       };
-      const service = new DesktopService(nativePort, application, folders, "builder_v3", () =>
-        desktopRequestSettings(vscode),
+      const service = new DesktopService(
+        nativePort,
+        application,
+        folders,
+        "builder_v3",
+        () => desktopRequestSettings(vscode),
+        () => desktopHistorySettings(vscode),
       );
       bridge = await startServer(service, directory);
       output.appendLine(`Bridge ready for ${folders.length} workspace folder(s)`);

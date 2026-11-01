@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 
-const { desktopRequestSettings } = createRequire(import.meta.url)(
+const { desktopRequestSettings, desktopHistorySettings } = createRequire(import.meta.url)(
   "../assets/companion/settings.cjs",
 );
 
@@ -20,6 +20,27 @@ function setup(values: Record<string, unknown> = {}, available = true) {
 }
 
 describe("TRAE CN app-owned request settings", () => {
+  it("honors native fork feature flags without exporting experiment metadata", async () => {
+    const executeCommand = vi.fn(async () => ({
+      fork_chat: {
+        val: {
+          enable_v2: true,
+          enable_create_from_message: false,
+          enable_create_from_session: true,
+        },
+        vid: "private",
+      },
+    }));
+    expect(await desktopHistorySettings({ commands: { executeCommand } })).toEqual({
+      forkFromMessage: false,
+      forkFromSession: true,
+    });
+    executeCommand.mockRejectedValue(new Error("unavailable"));
+    expect(await desktopHistorySettings({ commands: { executeCommand } })).toEqual({
+      forkFromMessage: true,
+      forkFromSession: true,
+    });
+  });
   it("reads the Desktop preferences and experiment without exporting unrelated values", async () => {
     const test = setup(
       {

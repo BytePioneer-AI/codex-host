@@ -44,9 +44,10 @@ import { LiveItems } from "./live-items.js";
 import { sameDirectory } from "./discovery.js";
 import { NativeInteractions } from "./interactions.js";
 import { nativeContextUsage, contextUsageFromHistory } from "./usage.js";
+import { hasFileEditHistory } from "./file-changes.js";
 
-// This initial core deliberately does not advertise configuration writes or
-// history derivation before those native operations have their own acceptance.
+// History capabilities are derived per Session below. Configuration writes
+// remain disabled until their native operations are verified.
 export const SESSION_CAPABILITIES: HarnessSessionCapabilities = {
   configuration: {
     selectModel: false,
@@ -56,6 +57,23 @@ export const SESSION_CAPABILITIES: HarnessSessionCapabilities = {
   },
   history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
 };
+
+export function sessionCapabilities(
+  inspection: BridgeInspection,
+  hasFileEdits = false,
+  turnCount = 0,
+): HarnessSessionCapabilities {
+  const fork = inspection.history?.forkFromMessage === true && !hasFileEdits;
+  return {
+    ...SESSION_CAPABILITIES,
+    history: {
+      fork,
+      forkAcrossCwd: false,
+      rollbackLastTurn:
+        inspection.history?.forkFromMessage === true && (!hasFileEdits || turnCount <= 1),
+    },
+  };
+}
 
 interface ActiveTurn {
   command: TurnStartCommand;
@@ -75,6 +93,8 @@ export interface SessionOptions {
   nativeRef?: NativeSessionRef;
   initialState?: HarnessSessionState;
   initialUsage?: HostUsage | null;
+  historyHasFileEdits?: boolean;
+  historyTurnCount?: number;
   recoveringTurn?: HarnessTurnRecovery;
   recoverySnapshot?: HostThreadSnapshot;
   onClose?: () => void;
@@ -118,7 +138,13 @@ type CommandResult =
 export class TraeCnSession implements HarnessSession {
   readonly recoveringTurn?: HarnessTurnRecovery;
   readonly harnessId = TRAE_CN_ID;
-  readonly capabilities = SESSION_CAPABILITIES;
+  get capabilities(): HarnessSessionCapabilities {
+    return sessionCapabilities(
+      this.options.inspection,
+      this.#historyHasFileEdits,
+      this.#historyTurnCount,
+    );
+  }
   readonly initialUsage: HostUsage | null;
   readonly initialState: HarnessSessionState;
   readonly outputs: AsyncIterable<HarnessOutput>;
@@ -131,6 +157,8 @@ export class TraeCnSession implements HarnessSession {
   #observerFail: ((error: unknown) => void) | undefined;
   #recoverySnapshot: HostThreadSnapshot | undefined;
   #usage: HostUsage | null;
+  #historyHasFileEdits = false;
+  #historyTurnCount = 0;
 
   constructor(private readonly options: SessionOptions) {
     if (options.nativeRef) validateReference(options.nativeRef, options.inspection, options.cwd);
@@ -141,6 +169,8 @@ export class TraeCnSession implements HarnessSession {
     this.#state = this.initialState;
     this.initialUsage = options.initialUsage ?? null;
     this.#usage = this.initialUsage;
+    this.#historyHasFileEdits = options.historyHasFileEdits === true;
+    this.#historyTurnCount = options.historyTurnCount ?? 0;
     this.outputs = this.#channel.outputs;
     if (options.model) nativeModelId(options.inspection, options.model);
     if (options.recoveringTurn) {
@@ -238,6 +268,11 @@ export class TraeCnSession implements HarnessSession {
       if (!allowPending && record(value) && [2, 3, 8, 9, 10].includes(Number(value.status)))
         throw new TraeError("sessionBusy", "The native Session has active work");
       const usage = contextUsageFromHistory(value, this.#active?.messageId);
+      this.#historyHasFileEdits ||= hasFileEditHistory(value);
+      if (record(value) && Array.isArray(value.items))
+        this.#historyTurnCount = value.items.filter(
+          (item) => record(item) && item.role === "user",
+        ).length;
       if (usage) this.#setUsage(usage, this.#active?.command.turnId);
       return {
         ok: true,
@@ -501,6 +536,13 @@ export class TraeCnSession implements HarnessSession {
                 )
                   throw new TraeError("protocolError", "Native event belongs to a different Turn");
                 if (event.event === "plan_item") {
+                  if (
+                    record(payload?.tool_call_info) &&
+                    record(payload.tool_call_info.result) &&
+                    record(payload.tool_call_info.result.data) &&
+                    payload.tool_call_info.result.data.can_show_diff === true
+                  )
+                    this.#historyHasFileEdits = true;
                   turn.interactions?.observe(payload);
                   turn.items.acceptPlan(payload);
                 } else if (event.event === "metadata" || event.event === "model_config") {

@@ -27,6 +27,7 @@ export interface BridgeInspection {
   workspaceFolders: string[];
   agentType: string;
   models: BridgeModel[];
+  history?: { forkFromMessage: boolean; forkFromSession: boolean };
 }
 export interface BridgeEvent {
   event: string;
@@ -110,11 +111,27 @@ export function readInspection(value: unknown): BridgeInspection {
   });
   if (new Set(models.map((model) => model.id)).size !== models.length)
     throw new TraeError("protocolError", "Duplicate TRAE CN model identities");
+  const history = value.history;
+  if (
+    history !== undefined &&
+    (!record(history) ||
+      typeof history.forkFromMessage !== "boolean" ||
+      typeof history.forkFromSession !== "boolean")
+  )
+    throw new TraeError("protocolError", "Invalid TRAE CN history capabilities");
   return {
     instanceId: value.instanceId,
     agentType: value.agentType,
     application: readApplication(value.application),
     workspaceFolders: value.workspaceFolders as string[],
     models,
+    ...(record(history)
+      ? {
+          history: {
+            forkFromMessage: history.forkFromMessage as boolean,
+            forkFromSession: history.forkFromSession as boolean,
+          },
+        }
+      : {}),
   };
 }

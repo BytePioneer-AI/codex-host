@@ -11,6 +11,7 @@ import {
   hostItemIdSchema,
   jsonValueSchema,
   nativeTurnRefSchema,
+  nativeCheckpointRefSchema,
   type HarnessModelRef,
 } from "@codexhost/shared-contracts";
 import { confirmedModel } from "./models.js";
@@ -327,6 +328,16 @@ export function projectHistory(
       input: inputContent(user.value.content),
       items,
       outcome,
+      ...(reply && outcome.status !== "unknown"
+        ? {
+            checkpoint: nativeCheckpointRefSchema.parse({
+              harnessId: TRAE_CN_ID,
+              nativeSessionId: sessionId,
+              checkpointId: nonempty(reply.message_id, "assistant message ID"),
+              formatVersion: 1,
+            }),
+          }
+        : {}),
       ...(model ? { model } : {}),
       ...(typeof reply?.chat_start_time === "number" ? { startedAtMs: reply.chat_start_time } : {}),
       ...(typeof reply?.chat_end_time === "number" ? { completedAtMs: reply.chat_end_time } : {}),

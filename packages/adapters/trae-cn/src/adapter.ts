@@ -20,7 +20,9 @@ import { projectHistory, TRAE_CN_ID } from "./history.js";
 import { modelCatalog } from "./models.js";
 import type { BridgeInspection } from "./protocol.js";
 import { contextUsageFromHistory } from "./usage.js";
-import { TraeCnSession, SESSION_CAPABILITIES, validateReference } from "./session.js";
+import { TraeCnSession, sessionCapabilities, validateReference } from "./session.js";
+import { deriveSession } from "./derivation.js";
+import { hasFileEditHistory } from "./file-changes.js";
 
 export type TraeCnAdapterOptions = Omit<BridgeOptions, "cwd"> & { cwd?: string };
 
@@ -66,7 +68,7 @@ export class TraeCnAdapter implements HarnessAdapter {
       return {
         status: "ready",
         catalog: modelCatalog(inspection),
-        capabilities: SESSION_CAPABILITIES,
+        capabilities: sessionCapabilities(inspection),
       };
     } catch (error) {
       return { status: "unavailable", error: harnessError(error) };
@@ -79,8 +81,31 @@ export class TraeCnAdapter implements HarnessAdapter {
     let client: BridgeClient | undefined;
     try {
       if (this.#closed) throw new TraeError("invalidState", "TRAE CN Adapter is closed");
-      if (input.kind === "fork" || input.kind === "rollbackLastTurn")
-        throw new TraeError("unsupported", "TRAE CN history derivation is not implemented");
+      if (input.kind === "fork" || input.kind === "rollbackLastTurn") {
+        if (input.kind === "rollbackLastTurn" && (input.thinkingOptionId || input.permissionModeId))
+          throw new TraeError(
+            "unsupported",
+            "TRAE CN cannot preserve unimplemented Thinking or permission selections",
+          );
+        const options = this.#bridgeOptions(input.cwd, input.environment);
+        const connected = await BridgeClient.connect(options);
+        client = connected.client;
+        const derived = await deriveSession(client, connected.inspection, input);
+        const opened = await this.open({
+          kind: "resume",
+          nativeRef: derived.nativeRef,
+          cwd: input.cwd,
+          model: derived.model,
+          ...(input.environment ? { environment: input.environment } : {}),
+        });
+        client.close();
+        if (!opened.ok)
+          throw new TraeError(
+            opened.error.code,
+            `Derived Session ${derived.nativeRef.nativeSessionId} was preserved: ${opened.error.message}`,
+          );
+        return opened;
+      }
       if (input.kind === "create" && input.executionPolicy === "unattended-full-access")
         throw new TraeError("unsupported", "TRAE CN unattended permissions have not been verified");
       if (input.thinkingOptionId || input.permissionModeId)
@@ -96,6 +121,8 @@ export class TraeCnAdapter implements HarnessAdapter {
       let recoveringTurn: HarnessTurnRecovery | undefined;
       let recoverySnapshot: HostThreadSnapshot | undefined;
       let initialUsage: HostUsage | null = null;
+      let historyHasFileEdits = false;
+      let historyTurnCount = 0;
       if (input.kind === "resume") {
         validateReference(input.nativeRef, inspection, input.cwd);
         if (
@@ -127,12 +154,14 @@ export class TraeCnAdapter implements HarnessAdapter {
             "Native Session Project or workspace does not match its persisted reference",
           );
         initialUsage = contextUsageFromHistory(native);
+        historyHasFileEdits = hasFileEditHistory(native);
         const snapshot = projectHistory(
           native,
           input.nativeRef.nativeSessionId,
           inspection.agentType,
         );
         const pending = snapshot.turns.filter((turn) => turn.outcome.status === "unknown");
+        historyTurnCount = snapshot.turns.length;
         const pendingTurn = pending[0];
         if (
           [3, 8, 10].includes(Number(native.status)) &&
@@ -182,6 +211,8 @@ export class TraeCnAdapter implements HarnessAdapter {
         ...(input.kind === "resume" ? { nativeRef: input.nativeRef } : {}),
         initialState: { ...(effectiveModel ? { effectiveModel } : {}) },
         initialUsage,
+        historyHasFileEdits,
+        historyTurnCount,
         ...(recoveringTurn && recoverySnapshot ? { recoveringTurn, recoverySnapshot } : {}),
         onClose: () => this.#sessions.delete(session),
       });

@@ -197,9 +197,11 @@ class DesktopService {
     agentType = "builder_v3",
     requestSettings = async () => ({}),
     historySettings = async () => ({ forkFromMessage: false, forkFromSession: false }),
+    modelSettings = async () => ({ internal: false }),
   ) {
     this.native = native;
     this.historySettings = historySettings;
+    this.modelSettings = modelSettings;
     this.application = application;
     this.workspaceFolders = [...workspaceFolders];
     this.agentType = agentType;
@@ -248,7 +250,7 @@ class DesktopService {
       application: this.application,
       workspaceFolders: this.workspaceFolders,
       agentType: this.agentType,
-      models: publicModels(pool),
+      models: publicModels(pool, await this.modelSettings()),
       configuration: { modelSelection: "per-request" },
       history: await this.historySettings(),
     };

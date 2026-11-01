@@ -45,4 +45,14 @@ async function desktopHistorySettings(vscode) {
   };
 }
 
-module.exports = { desktopRequestSettings, desktopHistorySettings };
+async function desktopModelSettings(vscode) {
+  const user = await vscode.commands.executeCommand("icube.common.getUserInfo");
+  if (!user?.token)
+    throw Object.assign(new Error("Sign in to TRAE CN Desktop"), {
+      code: "authenticationRequired",
+    });
+  // Only this account-policy boolean leaves the credential-owning app process.
+  return { internal: user.account?.scope === "bytedance" };
+}
+
+module.exports = { desktopRequestSettings, desktopHistorySettings, desktopModelSettings };

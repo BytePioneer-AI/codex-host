@@ -27,10 +27,10 @@
 | A8 | 持久身份 + resume | 必做 | P0 | 受限 | src/adapter.ts；src/session.ts；src/history.ts | 公共 Adapter 跨进程恢复；隔离真实 Host 重启恢复提问和审批，原 Turn / 唯一映射不变 | 空闲与已确认活动身份可恢复；缺映射、创建中、回退中等不确定状态明确拒绝 |
 | A9 | 错误与并发 | 必做 | P0 | 受限 | src/session.ts；assets/companion/service.cjs | native / service / session 测试；真实跨进程活动恢复 | 本机准入串行；不确定回执无自动重试；仅恢复原身份，其他工具故障待补 |
 | A10 | 关闭 | 必做 | P0 | 支持 | src/session.ts；assets/companion/native.cjs | 公共关闭测试；真实观察者断开后原生 completed | 不把关闭观察者当作 native cancel |
-| B1 | 切换 Model | 原生有则必做 | P1 | 支持（下次请求生效） | src/configuration.ts；src/session.ts；assets/companion/models.cjs | 公共 model.select；原生 Assistant 确认 Seed-Code → Seed-2.1-Turbo → Seed-2.1-Turbo → Seed-Code；活动时切换、冷恢复、模型存储哈希不变 | 按桌面原生逐轮 DTO 配置；不修改全局偏好；旧 Companion 不声明支持；不把历史 Turn 改标为新模型 |
-| B2 | 切换 Thinking | 原生有则必做 | P1 | 待验证 | — | — | |
+| B1 | 切换 Model | 原生有则必做 | P1 | 支持 | src/configuration.ts；src/session.ts；assets/companion/models.cjs | 公共 model.select；原生 Assistant 确认 Seed-Code → Seed-2.1-Turbo → Seed-2.1-Turbo → Seed-Code；活动时切换、冷恢复、模型存储哈希不变 | 下次请求生效；按桌面原生逐轮 DTO 配置；不修改全局偏好；旧 Companion 不声明支持；不把历史 Turn 改标为新模型 |
+| B2 | 切换 Thinking | 原生有则必做 | P1 | 受限 | assets/companion/reasoning.cjs；settings.cjs；src/protocol.ts | 真实 Builder 目录：MiniMax-M3.1-Flash 提供 light / high / extra_high；普通 / 内部 / 自定义模型规则测试 | 原生能力已读取；公共 thinking.select、请求写入与恢复尚未完成，能力仍为 false，不展示虚构档位 |
 | B3 | 权限模式 | 原生有则必做 | P1 | 待验证 | — | 原生 permission_profile_id | |
-| B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 支持（明确拒绝） | src/adapter.ts | test/adapter.test.ts：unattended-full-access 在连接前返回 unsupported | 不忽略执行意图或伪造审批 |
+| B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 支持 | src/adapter.ts | test/adapter.test.ts：unattended-full-access 在连接前返回 unsupported | 通过明确拒绝满足契约；不忽略执行意图或伪造审批 |
 | B5 | Fork | 原生有则必做 | P1 | 受限 | src/derivation.ts；assets/companion/history.cjs | 真实原生 lite.fork_session；公共中间 / 末尾边界、源历史隔离、新进程恢复与继承上下文后的续聊 | 无文件编辑历史时支持；沿用桌面 Fork 开关；3.4.12 文件快照复制缺陷在写入前拒绝 |
 | B6 | 跨目录 Fork | 原生有则必做 | P2 | 不支持 | src/derivation.ts | 目标 cwd 不同在原生写入前返回 unsupported | 未证明原生跨 Project 复制；不以改变进程目录冒充支持 |
 | B7 | 回滚最后一轮 | 原生有则必做 | P1 | 受限 | src/derivation.ts；src/session.ts | 公共六轮 → 五轮、单轮 → 空白、单轮文件编辑 → 空白；源历史 / 工作区文件不变，模型保留，续聊与新进程读取成功 | 创建独立 Session，由 Host 替换；含文件编辑且保留非空前缀时拒绝；Thinking / 权限提示仍明确拒绝 |
@@ -45,7 +45,7 @@
 | B16 | 向下委派 | 原生有则必做 | P2 | 待验证 | — | — | |
 | C1 | 展示元数据 | 必做 | P1 | 支持 | manifest.json | schema、Loader 描述符、名称与向量图标 | 当前 CodexHost UI 验收另列；没有专用 Renderer 分支 |
 | C2 | 手动安装指引 | 必做 | P1 | 支持 | manifest.json；scripts/build-companion.mjs；assets/companion/README.md | VSIX 实际安装并激活；独立 ZIP 检验完整资源与许可证 | 应用与扩展分别安装；不使用 Agent CLI 登录 |
-| C3 | 版本检查与更新 | 必做 | P1 | 支持（手动更新） | src/installation.ts；src/plugin.ts | 读取实际 appVersion=3.4.12；17 项版本 / 发现 / 工厂 / 搬移测试；自动更新明确拒绝 | application 口径；最新版本 Unknown；原生桌面或官方安装器更新；不混用 VS Code core 版本，不更新其他安装，不重启活动会话 |
+| C3 | 版本检查与更新 | 必做 | P1 | 支持 | src/installation.ts；src/plugin.ts | 读取实际 appVersion=3.4.12；17 项版本 / 发现 / 工厂 / 搬移测试；自动更新明确拒绝 | 手动更新；application 口径；最新版本 Unknown；原生桌面或官方安装器更新；不混用 VS Code core 版本，不更新其他安装，不重启活动会话 |
 | C4 | 首次安装 | 可选 | P2 | 不适用 | — | 桌面应用由官方安装器分发 | |
 | C5 | 自定义启动路径 | 条件必做 | P1 | 支持 | src/plugin.ts；src/discovery.ts | 工厂路径优先级、发现中的正确 / 错误安装过滤测试 | 只限定连接的应用，桌面需自行打开目标目录 |
 | C6 | 会话导入 | 可选 | P2 | 待验证 | — | — | |
@@ -68,6 +68,8 @@
 原生模型管理接口 `model_list` 与会话菜单接口 `model_list_by_function` 的范围不同。模型管理接口不作为对话目录来源；目录按原生 Agent function 读取，并过滤 `status === false` 或 `selectable === false` 的模型。自定义 Provider 的失败不等于桌面登录失败；已观察到原生服务返回 Provider HTTP 401，不能用桌面登录状态代替模型调用验收。
 
 模型切换语义：桌面的 getModelRequestSelection / buildSendMessageRequest 为每次发送构造 custom_model DTO，并非让原生流中的活动请求换模型。Companion 0.1.4 的 prepareModel 刷新原生目录、校验原生 Session 作用域并准备同一 DTO，仅返回无凭据的标识确认；公共 model.select 更新后续请求配置并发布状态。已接受的 Turn 固定原模型和配置修订号，旧 metadata / model_config 不覆盖新的后续选择。Host 保存的选择在 resume 时重新准备，不改历史模型。桌面的 localThread.writeSelection 只支持官方模型，并在当前 Builder 目录实测返回 MODEL_UNAVAILABLE，故不依赖该前端存储命令，也不改用户全局选择。
+
+Thinking 能力读取限制：Companion 0.1.5 区分普通模型的 reasoning_effort_config、内部账号的旧 reasoning_effort_options，以及自定义模型的参数声明。只有通过原生校验的档位进入 Bridge，账号仅转出内部策略布尔值，不导出登录信息。真实普通账号 Builder 目录目前仅 MiniMax-M3.1-Flash 返回 light / high / extra_high，其他模型没有有效声明时不补造档位。公共 Catalog / Session 尚未启用 Thinking 控件，下一步仍需请求配置、确认和冷恢复验收。
 
 会话用量限制：已核对 3.4.12 的原生 token_usage 事件与持久历史；prompt_tokens / completion_tokens / total_tokens 是最后一次模型请求，prompt_tokens_total / completion_tokens_total 在实测中均为占位 0。当前只把 last_turn_total_tokens 和 max_tokens 映射成上下文占用及窗口，不把单次请求或格式化 input/output 字符串当作会话累计消耗。刷新失败不使普通 Turn 失败，活动时刷新不覆盖实时用量。
 
@@ -104,5 +106,8 @@
 | 应用版本检查 | 公共插件工厂 installation(check)，显式选择实际 TRAE CN 安装目录 | 只读 appVersion=3.4.12；latestVersion=Unknown，application 口径；installation(update) 返回 unsupported；没有模型请求、安装或桌面重启 |
 | 历史与应用版本 CI | d033ae09：GitHub Actions 41270667398 | Ubuntu、Windows、Linux ARM64、macOS 15 全部通过；模型切换改动之后仍需新 Head 的 CI |
 | 模型选择回归检查 | typecheck；lint / boundaries；149 项 Adapter / 打包测试；补充恢复后配置用例后的 16 项 Session 定向回归 | 全部通过；测试集合重叠不累加。覆盖空会话手动选择、活动模型固定、失败回执、冷恢复提示、配置与准入串行、关闭竞态；实际桌面与当前 Host 验收范围仍区分 |
+| Thinking 能力读取 | TRAE CN 3.4.12 开发窗口，只读原生会话目录；规则、模型、设置、Service 与 VSIX 35 项聚焦测试 | 读取到 MiniMax-M3.1-Flash 的三档原生能力；未发送模型请求。新增 reasoning.cjs 已加入 VSIX 资源审计；不作为 Thinking 切换完成证据 |
+| 模型选择 CI | d335ae18：GitHub Actions 41272342868 | Ubuntu、Windows、Linux ARM64、macOS 15 全部通过；后续 Thinking 读取改动需新 Head 的 CI |
+| Thinking 读取回归检查 | typecheck（含测试类型）；Adapter 全套及两个发行测试共 155 项 | 全部通过；Companion 0.1.5 的十个 CJS 资源、许可证与插件搬移均已验证；原生能力读取不等于 Thinking 配置写入已实现 |
 | 真实原生验收 | TRAE CN 3.4.12 Windows，复用桌面登录，Builder / Seed-Code | 原生 done.status=completed；重连历史 finish.summary=CODEXHOST_TRAE_CN_OK；不是 Host 端验收 |
 | Desktop / 委派 | 待实现 | 未验证 |

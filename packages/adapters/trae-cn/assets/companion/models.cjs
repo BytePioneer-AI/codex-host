@@ -1,3 +1,5 @@
+const { modelThinkingPolicy } = require("./reasoning.cjs");
+
 function availableModels(models) {
   if (!Array.isArray(models)) throw new Error("TRAE CN returned an invalid model catalog");
   const seen = new Set();
@@ -17,16 +19,20 @@ function availableModels(models) {
 }
 
 /** A public projection; provider credentials never leave the desktop extension. */
-function publicModels(models) {
-  return availableModels(models).map((model) => ({
-    id: model.name,
-    label:
-      typeof model.display_name === "string" && model.display_name
-        ? model.display_name
-        : model.name,
-    multimodal: model.multimodal === true,
-    provider: typeof model.provider === "string" ? model.provider : "",
-  }));
+function publicModels(models, settings = {}) {
+  return availableModels(models).map((model) => {
+    const thinking = modelThinkingPolicy(model, settings.internal === true);
+    return {
+      id: model.name,
+      label:
+        typeof model.display_name === "string" && model.display_name
+          ? model.display_name
+          : model.name,
+      multimodal: model.multimodal === true,
+      provider: typeof model.provider === "string" ? model.provider : "",
+      ...(thinking ? { thinking } : {}),
+    };
+  });
 }
 
 /** The model-management list is not the conversation picker catalog. */

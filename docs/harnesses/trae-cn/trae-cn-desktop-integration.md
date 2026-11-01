@@ -55,6 +55,8 @@ TRAE CN 的 `rpc.stream.cancel` 会取消原生生成，因此客户端解除订
 
 此路径不写桌面全局模型偏好。桌面另有 localThread.readSelection / writeSelection 命令，但写入仅支持官方模型，且当前 Builder 目录的原生探测返回 MODEL_UNAVAILABLE，因此没有依赖这条前端状态路径。
 
+Companion 0.1.5 已读取模型原生 Thinking 能力，尚未启用公共切换控件。普通账号读取经过原生规则校验的 reasoning_effort_config，内部账号沿用其旧字段，自定义模型还要有有效的参数声明。只有策略布尔值离开凭据读取路径，登录信息始终留在应用内。实测普通账号 Builder 目录中 MiniMax-M3.1-Flash 提供 light / high / extra_high；其他模型不凭名称推测档位。下一步仍需将这些能力连接到请求写入、状态确认和恢复。
+
 ## 公共会话核心
 
 `src/adapter.ts` 提供只读检查、同作用域目录缓存、延迟创建和空闲恢复；`src/session.ts` 在首个已接受 Turn 时创建原生身份，并将原生流投影为公共输出。新会话要求调用方先手动选择模型，`initialState` 不把请求模型当作生效状态；原生 metadata / model_config 确认后才更新 effectiveModel。模型 Ref 为按原生 Agent 和模型 ID 生成的 opaque 标识，保留自定义模型中斜杠等原生身份信息而不暴露给 Host 路由。

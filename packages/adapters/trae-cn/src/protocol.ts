@@ -20,6 +20,7 @@ export interface BridgeModel {
   label: string;
   provider: string;
   multimodal: boolean;
+  thinking?: { field: "reasoning_effort" | "reasoning_effort_level"; options: string[] };
 }
 export interface BridgeInspection {
   instanceId: string;
@@ -103,11 +104,30 @@ export function readInspection(value: unknown): BridgeInspection {
       typeof model.multimodal !== "boolean"
     )
       throw new TraeError("protocolError", "Invalid TRAE CN conversation model");
+    const thinking = model.thinking;
+    if (
+      thinking !== undefined &&
+      (!record(thinking) ||
+        !["reasoning_effort", "reasoning_effort_level"].includes(String(thinking.field)) ||
+        !Array.isArray(thinking.options) ||
+        thinking.options.length === 0 ||
+        !thinking.options.every((option) => typeof option === "string" && option.trim()) ||
+        new Set(thinking.options).size !== thinking.options.length)
+    )
+      throw new TraeError("protocolError", "Invalid native Thinking capability");
     return {
       id: model.id,
       label: model.label,
       provider: model.provider,
       multimodal: model.multimodal,
+      ...(record(thinking)
+        ? {
+            thinking: {
+              field: thinking.field as "reasoning_effort" | "reasoning_effort_level",
+              options: thinking.options as string[],
+            },
+          }
+        : {}),
     };
   });
   if (new Set(models.map((model) => model.id)).size !== models.length)

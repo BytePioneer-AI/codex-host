@@ -130,6 +130,7 @@
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA 的共享 CH 会话、GUI/Web 共享偏好、作为普通外部 Harness 的 Codex CLI、原生项目归组、历史分页、Windows/macOS 按需桌面截图、侧栏服务器浏览器推流、源码构建、启动隔离、跨工作树停机及验收限制；开发 Web 或与 Desktop 并行运行时阅读。 |
+| [`product/web-ios-keyboard-composer-alignment.md`](product/web-ios-keyboard-composer-alignment.md) | 待解决问题：iOS Safari 软键盘下输入框与屏幕底部不贴合的实测数据、根因（页面被 iOS 多滚、`visualViewport` 不可用）、无效做法与备选方向；处理手机键盘布局前阅读。 |
 | [`proposals/web-remote-relay-architecture.md`](proposals/web-remote-relay-architecture.md) | 未实施的手机公网远程架构：电脑出站中继、独立设备网址、扫码授权、端到端加密、三端代码边界及分阶段验收。 |
 | [`proposals/herdr-core-terminal-backend.md`](proposals/herdr-core-terminal-backend.md) | 暂缓实施的终端后台调研：现有 DSH/xterm 路径、Alma 证据、Herdr Core 原生契约、输入确认缺口、独立进程生命周期及候选迁移与验收边界。 |
 

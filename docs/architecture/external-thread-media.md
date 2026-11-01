@@ -6,13 +6,20 @@
 
 Agent 消息中的 Markdown 图片（`![alt](目标)`）只有在目标是绝对路径（`/…`、`C:\…`、`C:/…`、UNC）或 `file:` URL 时，才会被当作本地文件，经 app-server 读取后显示。其他目标按 Desktop 页面自身地址解析，加载失败后显示“Image unavailable”占位框。只有预览 `.md` 文件时，Desktop 才会按该文件所在目录补全相对路径；对话消息没有这个基准目录。
 
-Harness 常按工作目录写相对路径，因此需要由 Adapter 改写。
+Harness 常按工作目录写相对路径，因此由 Host 共享投影层补全为绝对路径。
 
 用户消息气泡中的缩略图只来自消息 `content` 里的 `image` / `localImage` 条目。Desktop 同时把附件清单（`# Files mentioned by the user:`）解析成文件标签；只有消息带图片条目时，才把对应图片从标签中移除。消息没有图片条目时，所贴图片只显示为文件名标签。
 
 ## Agent 消息：改写本地媒体路径
 
-`@codexhost/harness-adapter/local-media-markdown` 提供共用的改写：
+共享投影层对**所有外部 Harness** 的 `agentMessage` 生效，覆盖实时输出与历史重放，不修改 Adapter 交付的原始文本：
+
+- 只处理单行显式 Markdown 图片（`![alt](目标)`）中的相对路径，不提升行内代码路径，普通链接保持原样。
+- 唯一基准是 **Thread cwd**，不猜子目录、会话目录或工具命令中的 `cd`。如果图片实际基于另一个目录，可能找不到；若 Thread cwd 下恰有同名文件，也可能显示错图。此规则不保证解析所有原生工作目录下的相对路径。
+- 解析出目的地后，在 resolve、文件检查及 percent 编码之前，跳过 POSIX 绝对路径、盘符、UNC、`file:` 及任何 URL，保持其原文。Grok/DSH Adapter 已改成绝对路径的目标不会再次编码。
+- reasoning、工具输出、官方 Codex Thread 不进入这项改写。delegation 读取既有的已投影可见消息，因此也会读到改写后的 Markdown。
+
+`@codexhost/harness-adapter/local-media-markdown` 的 `relativeImagesOnly` 模式提供上述窄范围；默认行为保持不变，供 Grok/DSH Adapter 处理额外目录与行内路径：
 
 - 改写单行 Markdown 图片目标中的本地媒体路径，以及只包含一个媒体路径的单反引号行内代码（转成图片）。普通链接保持原样；不搬移标点、不增删段落或周围空白。
 - 顺序固定为：相对路径解析或 `fileURLToPath()` → `path.resolve()` → 校验最终目标的扩展名与文件是否存在 → 保护字面 `%` → Markdown destination 格式化。不是先检查原文里 `?` / `#` 前面的伪扩展名，再访问规范化后的另一个文件。
@@ -36,16 +43,18 @@ Desktop 的 Markdown 图片 token 转换器和媒体加载组件各归一化一�
 
 本模块不重建 CommonMark 的容器嵌套。在引用块、无序/有序列表前缀后发现围栏，或发现任何缩进/Tab 后的围栏式标记时，从该标记到消息末尾都保持原样；即使后面还有普通媒体路径也不改写，以免错误判断容器结束后修改代码。这是保守支持范围，不是完整 CommonMark 解析器。
 
-实时输出保持追加式，完成全文必须等于初始文本加所有增量。Grok 与 DSH 均使用 `LocalMediaMarkdownStream`：只暂缓结尾未决的图片、行内路径或可能增长的围栏标记，不等待整行、不等待后续标点。Item 结束前补发暂缓原文；不完整的单反引号路径遇到换行后不再扣住后面的文字。同一条消息内缓存每个候选路径的存在性检查，包括未找到的结果，避免文件出现或根目录命中变化导致已发布文本需要撤回；新的消息使用新的缓存。
+实时输出保持追加式，原始完成全文必须等于原始初始文本加所有增量。共享投影层为每个 Agent Item 创建独立的 `LocalMediaMarkdownStream`，不把显示文本写回原始账本；显示完成文本同样等于已发布的初始显示文本加增量。pending、terminal 和 final-answer phase replay 读取缓存显示文本，不重新检查文件；历史用同一 stream 消费全文并 flush。
 
-接入的 Harness：
+共享投影层、Grok 与 DSH 均使用 `LocalMediaMarkdownStream`：只暂缓结尾未决的图片、代码跨度或可能增长的围栏标记，不等待整行、不等待后续标点。Item 结束前补发暂缓原文；不完整的单反引号路径遇到换行后不再扣住后面的文字。同一条消息内缓存每个候选路径的存在性检查，包括未找到的结果，避免文件出现或根目录命中变化导致已发布文本需要撤回；新的消息使用新的缓存。文件变化后历史重载的显示结果可能不同。每次增量仍会重扫累计文本，超长回复与细粒度增量会增加 CPU 开销。
+
+Grok/DSH 的额外目录仍由各自 Adapter 处理，优先于共享层：
 
 | Harness | 根目录 | 范围 |
 | --- | --- | --- |
 | Grok | 工作目录、Grok 会话目录及其 `videos/`、`images/`、用户 `Downloads/` | 实时输出与历史 |
 | DeepSeek Harness | 消息产生时 Agent 的工作目录（按事件顺序随 `working-directory/change` 更新，恢复未完成的 Turn 时也一样），再到 Session 工作目录 | 实时输出与历史（`readSnapshot`）；用量刷新不做改写 |
 
-其他 Harness 的 Agent 文本仍原样转发；它们输出相对路径时，图片仍显示为占位框。
+其他外部 Harness 不需要专属媒体接入代码，统一使用 Thread cwd 的相对图片规则。远程或容器文件系统与 Host 不一致时，不保证可用；SSH 媒体读取链及 Windows 实际文件系统行为仍需平台验证。
 
 ## 用户消息：还原图片附件
 

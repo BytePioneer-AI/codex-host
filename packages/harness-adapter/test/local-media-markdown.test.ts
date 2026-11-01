@@ -160,8 +160,8 @@ describe("LocalMediaMarkdownStream", () => {
     ...containerCode,
   ];
 
-  function streamed(text: string, cuts: readonly number[]): string {
-    const stream = new LocalMediaMarkdownStream(roots, exists);
+  function streamed(text: string, cuts: readonly number[], relativeImagesOnly = false): string {
+    const stream = new LocalMediaMarkdownStream(roots, exists, { relativeImagesOnly });
     let start = 0;
     let result = "";
     for (const end of [...cuts, text.length]) {
@@ -174,19 +174,25 @@ describe("LocalMediaMarkdownStream", () => {
   }
 
   it("matches one-shot output at every pair of cuts and for character-sized chunks", () => {
-    for (const sample of samples) {
-      const expected = rewrite(sample);
-      for (let first = 0; first <= sample.length; first += 1) {
-        for (let second = first; second <= sample.length; second += 1) {
-          expect(streamed(sample, [first, second]), `${sample} @${first},${second}`).toBe(expected);
+    for (const relativeImagesOnly of [false, true]) {
+      for (const sample of samples) {
+        const expected = rewriteLocalMediaMarkdown(sample, roots, { exists, relativeImagesOnly });
+        for (let first = 0; first <= sample.length; first += 1) {
+          for (let second = first; second <= sample.length; second += 1) {
+            expect(
+              streamed(sample, [first, second], relativeImagesOnly),
+              `${sample} @${first},${second}`,
+            ).toBe(expected);
+          }
         }
+        expect(
+          streamed(
+            sample,
+            Array.from({ length: sample.length }, (_, i) => i),
+            relativeImagesOnly,
+          ),
+        ).toBe(expected);
       }
-      expect(
-        streamed(
-          sample,
-          Array.from({ length: sample.length }, (_, i) => i),
-        ),
-      ).toBe(expected);
     }
   });
 
@@ -211,6 +217,78 @@ describe("LocalMediaMarkdownStream", () => {
       path.join(workspace, "later.png"),
       path.join(workspace, "a.png"),
     ]);
+  });
+});
+
+describe("relative Markdown images only", () => {
+  it("publishes ordinary text immediately and flushes an unfinished image without losing bytes", () => {
+    const stream = new LocalMediaMarkdownStream(roots, exists, { relativeImagesOnly: true });
+    expect(stream.append("ordinary text ")).toBe("ordinary text ");
+    expect(stream.append("![shot](sho")).toBe("![shot](");
+    expect(stream.flush()).toBe("sho");
+    expect(stream.text).toBe("ordinary text ![shot](sho");
+  });
+
+  it("rewrites only relative image destinations, leaving links, code and missing files alone", () => {
+    const text = "![a](./a.png) [link](a.png) `a.png` `![code](a.png)` ![missing](missing.png)";
+    expect(rewriteLocalMediaMarkdown(text, roots, { exists, relativeImagesOnly: true })).toBe(
+      `![a](${at("a.png")}) [link](a.png) \`a.png\` \`![code](a.png)\` ![missing](missing.png)`,
+    );
+  });
+
+  it("skips absolute, drive, UNC and all URI targets before checking the filesystem", () => {
+    const check = vi.fn(() => true);
+    const targets = [
+      path.join(workspace, "a.png"),
+      "/var/x%41.png",
+      "C:/x%41.png",
+      String.raw`C:\images\a.png`,
+      String.raw`\\server\share\a.png`,
+      String.raw`\images\a.png`,
+      "//server/share/a.png",
+      "file:///tmp/a%20b.png",
+      "FILE:///%ZZ.png",
+      "https://example.com/a.png",
+      "ftp://host/a.png",
+      "data:image/png;base64,AA",
+      "blob:opaque.png",
+      "app:a.png",
+      "custom+v1://host/a.png",
+      "mailto:a.png",
+    ];
+    for (const target of targets) {
+      const text = `![x](<${target}>)`;
+      expect(
+        rewriteLocalMediaMarkdown(text, roots, { exists: check, relativeImagesOnly: true }),
+      ).toBe(text);
+      const stream = new LocalMediaMarkdownStream(roots, check, { relativeImagesOnly: true });
+      expect([...text].map((c) => stream.append(c)).join("") + stream.flush()).toBe(text);
+    }
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it("does not encode an Adapter's absolute output again when a protected-name file also exists", () => {
+    const check = (p: string) =>
+      ["x%41.png", "x%252541.png"].some((name) => p === path.join(workspace, name));
+    const raw = "![x](x%41.png)";
+    const expected = `![x](${at("x%252541.png")})`;
+    expect(rewriteLocalMediaMarkdown(raw, roots, { exists: check })).toBe(expected);
+    expect(rewriteLocalMediaMarkdown(raw, roots, { exists: check, relativeImagesOnly: true })).toBe(
+      expected,
+    );
+    expect(
+      rewriteLocalMediaMarkdown(expected, roots, { exists: check, relativeImagesOnly: true }),
+    ).toBe(expected);
+    const adapter = new LocalMediaMarkdownStream(roots, check);
+    const outerCheck = vi.fn(check);
+    const projection = new LocalMediaMarkdownStream(roots, outerCheck, {
+      relativeImagesOnly: true,
+    });
+    let text = "";
+    for (const c of raw) text += projection.append(adapter.append(c));
+    text += projection.append(adapter.flush()) + projection.flush();
+    expect(text).toBe(expected);
+    expect(outerCheck).not.toHaveBeenCalled();
   });
 });
 

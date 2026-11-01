@@ -25,6 +25,8 @@ export type LocalMediaExists = (absolutePath: string) => boolean;
 
 export interface RewriteLocalMediaMarkdownOptions {
   exists?: LocalMediaExists;
+  /** Only rewrite relative Markdown image destinations; leave code spans and absolute/URL targets alone. */
+  relativeImagesOnly?: boolean;
   /**
    * Hold back a trailing construct that later text could still complete or invalidate
    * (an open image or inline code span), so a growing text projects prefix-stably.
@@ -49,6 +51,7 @@ export function rewriteLocalMediaMarkdown(
     roots,
     options.exists ?? mediaFileExists,
     options.holdIncomplete === true,
+    options.relativeImagesOnly === true,
   ).text;
 }
 
@@ -60,14 +63,20 @@ export function rewriteLocalMediaMarkdown(
 export class LocalMediaMarkdownStream {
   readonly #roots: readonly string[];
   readonly #exists: LocalMediaExists;
+  readonly #relativeImagesOnly: boolean;
   #native = "";
   #text = "";
   /** Native text length represented by `#text`; the rest is held. */
   #consumed = 0;
   #verbatim = false;
 
-  constructor(roots: readonly string[], exists: LocalMediaExists = mediaFileExists) {
+  constructor(
+    roots: readonly string[],
+    exists: LocalMediaExists = mediaFileExists,
+    options: { relativeImagesOnly?: boolean } = {},
+  ) {
     this.#roots = [...roots];
+    this.#relativeImagesOnly = options.relativeImagesOnly === true;
     const known = new Map<string, boolean>();
     this.#exists = (absolutePath) => {
       let found = known.get(absolutePath);
@@ -98,7 +107,13 @@ export class LocalMediaMarkdownStream {
   #advance(holdIncomplete: boolean): string {
     const next = this.#verbatim
       ? undefined
-      : projectLocalMedia(this.#native, this.#roots, this.#exists, holdIncomplete);
+      : projectLocalMedia(
+          this.#native,
+          this.#roots,
+          this.#exists,
+          holdIncomplete,
+          this.#relativeImagesOnly,
+        );
     let delta: string;
     if (next?.text.startsWith(this.#text)) {
       delta = next.text.slice(this.#text.length);
@@ -125,6 +140,7 @@ function projectLocalMedia(
   roots: readonly string[],
   exists: LocalMediaExists,
   holdIncomplete: boolean,
+  relativeImagesOnly: boolean,
 ): LocalMediaProjection {
   let output = "";
   let index = 0;
@@ -184,7 +200,10 @@ function projectLocalMedia(
         if (!holdIncomplete) break;
         return { text: output + text.slice(next, image.holdFrom), consumed: image.holdFrom };
       }
-      const resolved = resolveLocalMediaPath(image.destination, roots, exists);
+      const resolved =
+        relativeImagesOnly && /^(?:[\\/]|[a-z][a-z\d+.-]*:)/i.test(image.destination.trim())
+          ? null
+          : resolveLocalMediaPath(image.destination, roots, exists);
       output +=
         resolved === null
           ? text.slice(next, image.end)
@@ -204,7 +223,7 @@ function projectLocalMedia(
       if (!holdIncomplete) break;
       return { text: output, consumed: next };
     }
-    const resolved = resolveLocalMediaPath(code.content, roots, exists);
+    const resolved = relativeImagesOnly ? null : resolveLocalMediaPath(code.content, roots, exists);
     output += resolved === null ? text.slice(next, code.end) : mediaMarkdownImage(resolved);
     index = code.end;
   }

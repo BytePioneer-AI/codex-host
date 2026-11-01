@@ -3826,13 +3826,21 @@ export class AppServerHost {
       if (!projected.effectiveModel) {
         throw new Error("Harness Session did not report an effective Model");
       }
-      // Resume and Fork read the saved selection, so keep it on the confirmed Model.
-      const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
+      // A Model change can replace or clear Thinking. Resume and Fork must use
+      // the complete confirmed selection instead of reviving the old hint.
+      const selection = {
         ...(decodeExternalTransportSelection(thread.harnessId, thread.transportModelId) ?? {}),
         model: projected.effectiveModel,
-      });
+      };
+      if (projected.effectiveThinkingOptionId)
+        selection.thinkingOptionId = projected.effectiveThinkingOptionId;
+      else delete selection.thinkingOptionId;
+      const transportModelId = encodeExternalTransportSelection(thread.harnessId, selection);
       thread.transportModelId = transportModelId;
       thread.requestedModel = projected.effectiveModel;
+      if (projected.effectiveThinkingOptionId)
+        thread.requestedThinkingOptionId = projected.effectiveThinkingOptionId;
+      else delete thread.requestedThinkingOptionId;
       try {
         thread.record = await this.#repository.setTransportModelId(
           thread.record.hostThreadId,

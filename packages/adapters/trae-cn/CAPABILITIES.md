@@ -79,6 +79,8 @@ Thinking 能力读取限制：Companion 0.1.5 区分普通模型的 reasoning_ef
 
 ## 验证记录
 
+公共配置持久化修复：Host 的模型切换路径现按拥有该 Session 的完整确认状态更新或清除 Thinking 提示，避免恢复时复活旧模型档位。这是既有契约的通用修复，没有 TRAE 专用分支。两个故障用例已先复现，再通过修复；模型 / Thinking 投影、Fork 与预热共 66 项回归以及 typecheck、lint / boundaries 通过。
+
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
 | Adapter 公共行为 | test/adapter.test.ts、test/session.test.ts、test/history.test.ts、test/live-items.test.ts | 普通创建、取消、关闭、历史与空闲恢复已覆盖；其他能力仍待实现 |

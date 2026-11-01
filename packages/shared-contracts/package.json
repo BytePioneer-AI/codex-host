@@ -15,6 +15,10 @@
       "types": "./dist/version.d.ts",
       "import": "./dist/version.js"
     },
+    "./desktop-screenshot": {
+      "types": "./dist/desktop-screenshot.d.ts",
+      "import": "./dist/desktop-screenshot.js"
+    },
     "./sidebar-browser": {
       "types": "./dist/sidebar-browser.d.ts",
       "import": "./dist/sidebar-browser.js"

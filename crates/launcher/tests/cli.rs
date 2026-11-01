@@ -192,6 +192,7 @@ fn help_prints_usage_to_stdout_and_succeeds() {
         assert!(stdout.starts_with("usage:\n"), "{argument}");
         for command in [
             "codexhost --version",
+            "codexhost desktop-screenshot",
             "codexhost harness list|inspect ...",
             "codexhost thread send|cancel|read|wait|watch|watches|list ...",
             "codexhost broker install|status|stop|uninstall",
@@ -199,6 +200,19 @@ fn help_prints_usage_to_stdout_and_succeeds() {
             assert!(stdout.contains(command), "{argument}: {command}");
         }
     }
+}
+
+#[test]
+fn desktop_screenshot_rejects_arguments_before_capturing() {
+    let output = Command::new(launcher_path())
+        .args(["desktop-screenshot", "--output", "untrusted.png"])
+        .output()
+        .expect("run launcher");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("desktop-screenshot accepts no arguments")
+    );
 }
 
 #[test]

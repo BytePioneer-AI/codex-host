@@ -19,6 +19,8 @@ import qrcode from "qrcode-terminal";
 import { createBrowserWebSocketServer } from "./browser-websocket.ts";
 
 import { AccessAuth } from "./auth.ts";
+import { DESKTOP_SCREENSHOT_PATH } from "@codexhost/shared-contracts/desktop-screenshot";
+import { DesktopScreenshots } from "./desktop-screenshot.ts";
 import { SIDEBAR_BROWSER_PATH } from "@codexhost/shared-contracts/sidebar-browser";
 import { SidebarBrowser } from "./sidebar-browser.ts";
 import { registerMisc } from "./misc.ts";
@@ -132,22 +134,20 @@ const packagedHost =
     ? await snapshotPackagedHost(DISTRIBUTION_ROOT, displayDirectory)
     : DISTRIBUTION_ROOT;
 const pluginSource = resolve(values["ch-plugins"] ?? values.adapters ?? defaultAdapterRoots());
+const launcher = resolve(
+  values["ch-launcher"] ??
+    (PACKED
+      ? join(packagedHost, "native", process.platform === "win32" ? "codexhost.exe" : "codexhost")
+      : join(
+          REPO_ROOT,
+          "target/debug",
+          process.platform === "win32" ? "codexhost.exe" : "codexhost",
+        )),
+);
+const desktopScreenshots = new DesktopScreenshots([launcher]);
 const chHost = await createChHostClient({
   launch: {
-    launcher: resolve(
-      values["ch-launcher"] ??
-        (PACKED
-          ? join(
-              packagedHost,
-              "native",
-              process.platform === "win32" ? "codexhost.exe" : "codexhost",
-            )
-          : join(
-              REPO_ROOT,
-              "target/debug",
-              process.platform === "win32" ? "codexhost.exe" : "codexhost",
-            )),
-    ),
+    launcher,
     runtime: resolve(
       values["ch-host-runtime"] ??
         (PACKED
@@ -368,6 +368,10 @@ const server = createServer((request, response) => {
           .end("cross-origin request rejected");
         return;
       }
+      if (pathname === DESKTOP_SCREENSHOT_PATH) {
+        await desktopScreenshots.serve(request, response);
+        return;
+      }
       if (pathname === "/api/voice/transcribe") {
         await serveVoiceTranscription(chHost, dataRoot, request, response);
         return;
@@ -499,6 +503,7 @@ server.listen(Number(values.port), values.host, () => {
 async function shutdown(): Promise<void> {
   hmr?.close();
   server.close();
+  desktopScreenshots.close();
   await sidebarBrowser.close();
   await dsh?.close();
   await sessions.close();

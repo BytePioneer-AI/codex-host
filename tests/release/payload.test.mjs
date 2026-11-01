@@ -92,9 +92,9 @@ describe("release Payload", () => {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(32 + preinstalledHarnessPluginPaths().length);
+      expect(paths).toHaveLength(33 + preinstalledHarnessPluginPaths().length);
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
-        34 + preinstalledHarnessPluginPaths().length,
+        35 + preinstalledHarnessPluginPaths().length,
       );
       expect(paths).toContain("licenses/tailwindcss-LICENSE.txt");
       expect(paths).toContain("app/plugins/enabled.json");
@@ -187,6 +187,13 @@ describe("release Payload", () => {
       ).toContain("MIT License");
       expect(notice).toContain("licenses/OpenCode-SDK-LICENSE.txt");
       expect(license).toContain("Copyright (c) 2025 opencode");
+      expect(notice).toContain("licenses/DesktopScreenshot-NOTICES.txt");
+      const nativeNotices = await readFile(
+        path.join(output, "licenses/DesktopScreenshot-NOTICES.txt"),
+        "utf8",
+      );
+      expect(nativeNotices).toContain("xcap 0.9.8");
+      expect(nativeNotices).toContain("Apache License");
     } finally {
       await rm(output, { recursive: true, force: true });
     }

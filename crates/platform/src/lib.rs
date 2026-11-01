@@ -11,6 +11,8 @@ mod background;
 #[cfg(not(target_os = "windows"))]
 mod background;
 mod desktop_launch;
+mod desktop_screenshot;
+pub use desktop_screenshot::{DesktopScreenshotError, capture_primary_desktop};
 mod independent_service;
 mod installation;
 #[cfg(target_os = "linux")]

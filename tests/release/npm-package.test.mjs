@@ -450,6 +450,13 @@ describe("npm package release", () => {
       ).toContain("MIT License");
       expect(notice).toContain("licenses/OpenCode-SDK-LICENSE.txt");
       expect(license).toContain("Copyright (c) 2025 opencode");
+      expect(notice).toContain("licenses/DesktopScreenshot-NOTICES.txt");
+      const nativeNotices = await readFile(
+        path.join(output, "licenses/DesktopScreenshot-NOTICES.txt"),
+        "utf8",
+      );
+      expect(nativeNotices).toContain("xcap 0.9.8");
+      expect(nativeNotices).toContain("Apache License");
     } finally {
       await rm(output, { recursive: true, force: true });
     }

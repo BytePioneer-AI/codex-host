@@ -12,7 +12,13 @@ import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import { registerHarnessDiscovery } from "./harness-discovery.tsx";
-import { sentMessageEditApi, voiceApi } from "./api.ts";
+import { desktopScreenshotApi, sentMessageEditApi, voiceApi } from "./api.ts";
+import { DesktopScreenshot } from "./desktop-screenshot.ts";
+import {
+  DesktopScreenshotButton,
+  DesktopScreenshotPreview,
+  type DesktopScreenshotFace,
+} from "./DesktopScreenshot.tsx";
 import { VoiceInput } from "./voice-input.ts";
 import {
   VoiceActivity,
@@ -89,6 +95,30 @@ export function apply(ctx: ClientContext): void {
   const t = ctx.locale.bind(NS);
   ctx.provide("chatMessageEditing", sentMessageEditApi);
   ctx.inject(["conversation"], (scope) => {
+    const screenshot = new DesktopScreenshot(desktopScreenshotApi.capture);
+    scope.effect(() => () => screenshot.close(), "ui-codexhost: release desktop screenshot");
+    scope.slots.inject("conversation.input.right", () =>
+      scope.slots.register(
+        {
+          name: "conversation.input.right",
+          id: "codexhost.desktop-screenshot",
+          locale: NS,
+          inject: (): DesktopScreenshotFace => ({ screenshot }),
+        },
+        DesktopScreenshotButton,
+      ),
+    );
+    scope.slots.inject("conversation.input.notice", () =>
+      scope.slots.register(
+        {
+          name: "conversation.input.notice",
+          id: "codexhost.desktop-screenshot",
+          locale: NS,
+          inject: (): DesktopScreenshotFace => ({ screenshot }),
+        },
+        DesktopScreenshotPreview,
+      ),
+    );
     const voice = new VoiceInput(voiceApi.transcribe);
     const tray = new VoiceTray();
     scope.effect(() => () => voice.discard(), "ui-codexhost: release microphone");

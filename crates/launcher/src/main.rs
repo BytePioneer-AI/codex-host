@@ -134,6 +134,7 @@ const USAGE: &str = "usage:
   codexhost console
   codexhost update
   codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]
+  codexhost desktop-screenshot
   codexhost broker install|status|stop|uninstall
   codexhost delegate --help
   codexhost harness list|inspect ...
@@ -1417,6 +1418,12 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             codexhost_platform::open_external_url(&url).map_err(Into::into)
         }
         Some("open-loopback-url") => Err("open-loopback-url accepts no arguments".into()),
+        Some("desktop-screenshot") if arguments.len() == 1 => {
+            let image = codexhost_platform::capture_primary_desktop()?;
+            std::io::stdout().lock().write_all(&image)?;
+            Ok(())
+        }
+        Some("desktop-screenshot") => Err("desktop-screenshot accepts no arguments".into()),
         Some("host") => host_service::run(&arguments[1..]),
         Some("broker") => run_native_harness_broker_cli(&arguments[1..]),
         Some("harness") | Some("delegate") | Some("thread") => run_delegation_cli(arguments),

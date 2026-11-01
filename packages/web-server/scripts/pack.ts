@@ -207,6 +207,10 @@ cpSync(join(repoRoot, "LICENSE"), join(out, "LICENSE"));
 mkdirSync(join(out, "licenses"), { recursive: true });
 cpSync(join(frontendRoot, "LICENSE"), join(out, "licenses/DSH-MIT.txt"));
 cpSync(
+  join(repoRoot, "scripts/release/licenses/desktop-screenshot-NOTICES.txt"),
+  join(out, "licenses/DesktopScreenshot-NOTICES.txt"),
+);
+cpSync(
   resolve(dirname(fileURLToPath(import.meta.resolve("image-size"))), "../LICENSE"),
   join(out, "licenses/image-size-MIT.txt"),
 );

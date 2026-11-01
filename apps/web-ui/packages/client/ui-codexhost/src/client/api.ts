@@ -11,6 +11,12 @@ import {
   type HarnessSessionListParams,
 } from "@codexhost/shared-contracts";
 
+import {
+  DESKTOP_SCREENSHOT_PATH,
+  DESKTOP_SCREENSHOT_TIME_HEADER,
+  isDesktopScreenshotError,
+} from "@codexhost/shared-contracts/desktop-screenshot";
+
 export type ImportSource = HarnessSessionImportSourcesResult["harnesses"][number];
 export type ImportCandidate = HarnessSessionImportCandidate;
 
@@ -47,6 +53,30 @@ export const voiceApi = {
     });
     // Validation failures also return a typed result (e.g. HTTP 413).
     return voiceTranscribeResultSchema.parse(await response.json());
+  },
+};
+
+export const desktopScreenshotApi = {
+  capture: async (signal: AbortSignal) => {
+    const response = await fetch(DESKTOP_SCREENSHOT_PATH.slice(1), {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      signal,
+    });
+    if (!response.ok) {
+      const failure = (await response.json().catch(() => undefined)) as
+        { error?: unknown } | undefined;
+      throw new Error(isDesktopScreenshotError(failure?.error) ? failure.error : "unavailable");
+    }
+    const capturedAt = response.headers.get(DESKTOP_SCREENSHOT_TIME_HEADER);
+    if (
+      response.headers.get("content-type") !== "image/png" ||
+      capturedAt === null ||
+      !Number.isFinite(Date.parse(capturedAt))
+    )
+      throw new Error("capture-failed");
+    return { image: await response.blob(), capturedAt };
   },
 };
 

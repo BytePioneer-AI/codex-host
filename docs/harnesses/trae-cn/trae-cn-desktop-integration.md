@@ -119,6 +119,8 @@ RunCommand 投影为公共 commandExecution，保留原生输出、目录、退�
 
 ## 验证与剩余工作
 
+后台命令尚不支持完整观察。TRAE CN 3.4.13 的桌面通过原生后台注册表、poll_pending_wakeups 及隐藏的 /background_command_completed 消息继续任务。插件对 blocking=false、后台状态、转后台原因及 skipped_run 返回明确的 unsupported，不把启动回执当成执行成功，也不把转后台当作取消；父 Turn 的成功不能替仍运行的命令补终态。此时原生命令可能仍运行，需到原生桌面核对。该保护不取消、重发或控制原生后台任务；自主 Turn 仍待实现和验收。
+
 仓库中的聚焦测试覆盖原生响应、立即到达的流事件、批量消息、回调 ID 为零、回调允许列表、观察者分离、模型目录过滤、凭据隔离、本机 HTTP 授权、目录隔离、UTF-8 事件分帧、原生忙碌与并发准入。
 
 真实桌面验收已完成一条最小对话：通过 `lite.create_chat_session` 创建专用 Session，使用 Builder 与 Seed-Code 调用 `lite.send_message`，经 `lite.subscribe_events` 收到原生完成事件；随后建立新连接，通过 `lite.get_messages` 读到同一条 `completed` 消息，其 `finish.summary` 为 `CODEXHOST_TRAE_CN_OK`。测试没有使用独立 CLI 账号。

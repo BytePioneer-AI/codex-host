@@ -34,11 +34,11 @@
 | B5 | Fork | 原生有则必做 | P1 | 受限 | src/derivation.ts；assets/companion/history.cjs | 真实原生 lite.fork_session；公共中间 / 末尾边界、源历史隔离、新进程恢复与继承上下文后的续聊 | 无文件编辑历史时支持；沿用桌面 Fork 开关；3.4.12 文件快照复制缺陷在写入前拒绝 |
 | B6 | 跨目录 Fork | 原生有则必做 | P2 | 不支持 | src/derivation.ts | 目标 cwd 不同在原生写入前返回 unsupported | 未证明原生跨 Project 复制；不以改变进程目录冒充支持 |
 | B7 | 回滚最后一轮 | 原生有则必做 | P1 | 受限 | src/derivation.ts；src/session.ts | 公共六轮 → 五轮、单轮 → 空白、单轮文件编辑 → 空白；源历史 / 工作区文件不变，模型保留，续聊与新进程读取成功；Thinking Light 历史与 High 后续选择独立保留；显式权限提示的写入前校验测试 | 创建独立 Session，由 Host 替换；含文件编辑且保留非空前缀时拒绝；显式权限提示保留，不猜测原生历史未保存的权限 |
-| B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 受限 | src/history.ts；src/file-changes.ts；src/live-items.ts；assets/companion/diffs.cjs | 真实 Read、Edit 和 RunCommand；两轮文件编辑的实时 / 历史 Diff 一致，新进程恢复一致 | 消息级原生快照提供完整前后内容；2 MiB 上限明确拒绝；后台命令及其他文件操作原生验收待补 |
+| B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 受限 | src/history.ts；src/commands.ts；src/file-changes.ts；src/live-items.ts；assets/companion/diffs.cjs | 真实 Read、Edit 和 RunCommand；两轮文件编辑的实时 / 历史 Diff 一致，新进程恢复一致；后台回执误判由回归先复现再修复 | 消息级原生快照提供完整前后内容；2 MiB 上限明确拒绝；后台命令结果明确返回 unsupported，不当成成功或取消；原生工作可能仍运行，其他文件操作验收待补 |
 | B9 | 审批 | 原生有则必做 | P0 | 受限 | src/interactions.ts；src/approvals.ts；assets/companion/interactions.cjs | RunCommand 与 Edit 允许 / 拒绝原生验收；文件作用、四轮原历史及冷恢复一致，全局权限未变；MCP、资源读取及删除确认格式的原生界面源码与测试 | 文件允许使用事件拥有的 toolcall_id，命令 / MCP 使用 tool_name；仅允许一次 / 拒绝；旧 Companion 缺能力标记时明确提示升级；MCP 与删除审批的实时验收尚未完成；不支持持久授权 |
 | B10 | 提问 | 原生有则必做 | P0 | 支持 | src/interactions.ts；assets/companion/interactions.cjs；settings.cjs | 公共问题只发布一次；显式答复“停止”，持久完成回复 TRAE_CN_PUBLIC_QUESTION_OK_STOP | 复用桌面开关；实例校验；不使用预填答案；单选、多选、其他及跳过映射测试 |
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 待验证 | — | — | |
-| B12 | 自主 Turn | 原生有则必做 | P1 | 待验证 | — | 原生 lite/subscribe_events 路由 | |
+| B12 | 自主 Turn | 原生有则必做 | P1 | 待验证 | src/commands.ts 仅提供结果保护 | 3.4.13 原生桌面通过 poll_pending_wakeups 和隐藏 /background_command_completed 用户消息启动后台完成续轮 | 插件尚未接入该唤醒 / 自主观察链路；不以父 Turn 完成冒充后台结果；Ralph / Goal 未启用 |
 | B13 | 会话用量 | 原生有则必做 | P1 | 受限 | src/usage.ts；src/session.ts；assets/companion/service.cjs | 原生历史数值白名单；同 Session / 新进程恢复的 initialUsage 一致；只读刷新仅调用 snapshot；实时映射测试 | 仅上下文占用 / 窗口；原生历史只保留末次请求，累计字段为占位 0，故不显示会话累计 tokens、费用或估算价格 |
 | B14 | 请求级计量 | 原生有则必做 | P2 | 待验证 | — | — | |
 | B15 | 接收委派 | 必做（验证项） | P1 | 受限 | src/adapter.ts | 3.4.13 真实 Host Coordinator.start 经已加载插件返回 DELEGATION_FAILED，未改变父会话历史；普通 Thread 跨进程可续聊 | 当前委派固定使用 unattended-full-access，插件明确拒绝；不能作为可接收无人值守任务的 Harness |
@@ -58,6 +58,8 @@
 | D5 | 其他 | 可选 | P2 | 不适用 | — | — | |
 
 ## 受限与已知缺口
+
+后台命令限制：3.4.13 的桌面运行注册表把 blocking=false、后台状态、转后台原因和 skipped_run 识别为后台命令，并在父任务之外轮询唤醒及发送隐藏续轮。插件尚未实现此完整观察链路。实时与历史投影遇到这些形态会返回 unsupported，并说明原生工作可能仍运行；不会把启动成功当作命令成功，也不会把转后台误标为用户取消。普通运行中的命令也不能因父 Turn 成功结束就被补为成功。这只是结果真实性保护，未阻止原生执行或实现后台控制；需在原生桌面核对。源码对应的回归先复现了九个错误，再通过修复；没有将合成数据声称为真实后台运行验收。
 
 活动恢复的公共契约缺口与实现：原生实测可在断开观察者后重放同一问题实例，并继续同一用户消息；旧 Host 只在 turn.completed 持久化 NativeTurnRef，knownTurnRefs 没有原 Host Turn ID。API 2 新增可选 activeTurnRecovery、turn.identity.confirmed、knownTurns 和 recoveringTurn，Host 提前持久化原身份并按确认映射恢复原投影；Broker 转发，Renderer 沿用原公共投影，没有 TRAE 专用分支。旧 API 1 插件仍可加载且不接收新输入；TRAE 插件声明 API 2，拒绝在旧 Host 上执行。没有确认映射时不会猜测或重发任务。
 
@@ -84,6 +86,8 @@ Edit 参数清空：原生执行结束会清空 old_string / new_string。工具
 预装清单、完整集合加载测试和搬移 Host 发行测试已加入 trae-cn。公共 API 2 扩展涉及 shared-contracts、harness-adapter、Host Runtime、Broker 及对应测试和文档；缺省兼容 API 1，无 Harness 专用公共分支。`package-lock.json` 注册 Workspace、三个公共契约依赖以及 Companion 打包 / ZIP 验证开发工具；根 `tsconfig.json` 加入该包的构建引用；`eslint.config.js` 为应用内 CommonJS 资源加入通用检查；`docs/index.md` 添加开发说明入口；`tests/release` 新增插件搬移和 VSIX 资源验证。开发工具不进入运行时 Bundle。先前独立 CLI 原型已从最终变更中撤回。
 
 ## 验证记录
+
+后台结果保护检查：11 项源码对应的后台 / 前台边界用例；修复前其中 9 项失败，补充一项 running 数据状态后全通过。完整 Adapter、独立插件 / VSIX 与搬移 Host 发行检查共 208 项通过；typecheck、lint / boundaries 及改动代码格式通过。没有执行原生后台任务，故不作为后台控制或自主 Turn 的真实验收。
 
 公共配置持久化修复：Host 的模型切换路径现按拥有该 Session 的完整确认状态更新或清除 Thinking 提示，避免恢复时复活旧模型档位。这是既有契约的通用修复，没有 TRAE 专用分支。两个故障用例已先复现，再通过修复；模型 / Thinking 投影、Fork 与预热共 66 项回归以及 typecheck、lint / boundaries 通过。
 

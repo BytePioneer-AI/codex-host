@@ -17,6 +17,7 @@ import {
 import { confirmedModel } from "./models.js";
 import { record, TraeError } from "./errors.js";
 import { projectFileChanges } from "./file-changes.js";
+import { assertObservedCommand } from "./commands.js";
 
 export const TRAE_CN_ID = harnessIdSchema.parse("trae-cn");
 
@@ -148,6 +149,7 @@ export function projectPlanItem(value: unknown, terminal?: HostItemOutcome): Pro
     if (name === "RunCommand") {
       if (!record(params) || typeof params.command !== "string" || !params.command.trim())
         throw new TraeError("protocolError", "Native command has no command text");
+      assertObservedCommand(params, toolResult, value.confirm_info, terminal);
       const data = record(toolResult?.data) ? toolResult.data : undefined;
       const confirmationReceipt =
         record(call?.meta) &&

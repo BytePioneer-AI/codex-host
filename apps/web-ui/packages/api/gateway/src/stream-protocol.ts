@@ -245,7 +245,8 @@ export type RemoteStreamClientMessage =
     }
   | { readonly type: "item"; readonly streamId: string; readonly value?: unknown }
   | { readonly type: "end"; readonly streamId: string }
-  | { readonly type: "cancel"; readonly streamId: string };
+  | { readonly type: "cancel"; readonly streamId: string }
+  | { readonly type: "ping"; readonly streamId: string };
 
 /** Carrier-safe failure delivered by the Host. */
 export interface RemoteStreamFailure {
@@ -258,7 +259,8 @@ export interface RemoteStreamFailure {
 export type RemoteStreamServerMessage =
   | { readonly type: "item"; readonly streamId: string; readonly value?: unknown }
   | { readonly type: "error"; readonly streamId: string; readonly error: RemoteStreamFailure }
-  | { readonly type: "end"; readonly streamId: string };
+  | { readonly type: "end"; readonly streamId: string }
+  | { readonly type: "pong"; readonly streamId: string };
 
 /**
  * Parse and validate one browser-to-Host text message.
@@ -268,7 +270,7 @@ export type RemoteStreamServerMessage =
 export function parseRemoteStreamClientMessage(text: string): RemoteStreamClientMessage {
   return parseMessage(text, (value) => {
     if (
-      (value.type === "cancel" || value.type === "end") &&
+      (value.type === "cancel" || value.type === "end" || value.type === "ping") &&
       exactKeys(value, ["type", "streamId"]) &&
       validId(value.streamId)
     ) {
@@ -309,7 +311,11 @@ export function parseRemoteStreamServerMessage(text: string): RemoteStreamServer
     ) {
       return value as RemoteStreamServerMessage;
     }
-    if (value.type === "end" && exactKeys(value, ["type", "streamId"]) && validId(value.streamId)) {
+    if (
+      (value.type === "end" || value.type === "pong") &&
+      exactKeys(value, ["type", "streamId"]) &&
+      validId(value.streamId)
+    ) {
       return value as RemoteStreamServerMessage;
     }
     if (

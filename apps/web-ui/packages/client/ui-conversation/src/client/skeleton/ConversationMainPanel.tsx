@@ -51,6 +51,7 @@ export function ConversationMainPanel(props: ConversationSlotProps) {
   return (
     <div className={css.root} data-phase={phase}>
       {renderSlot("conversation.header", {})}
+      {renderSlot("conversation.header.notice", {})}
       {renderFactorySlot(
         "conversation.content",
         {

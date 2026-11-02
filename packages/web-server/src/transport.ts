@@ -166,6 +166,11 @@ export class StreamRegistry {
       }
       if (typeof message !== "object" || message === null) return;
       const streamId = String(message.streamId ?? "");
+      if (message.type === "ping") {
+        if (typeof message.streamId === "string" && message.streamId.length > 0)
+          send({ type: "pong", streamId: message.streamId });
+        return;
+      }
       if (message.type === "open") {
         if (streams.has(streamId)) {
           streams.get(streamId)?.sink.fail("gateway/protocol", "Duplicate stream identity");

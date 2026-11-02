@@ -782,6 +782,9 @@ export class SessionManager {
    * Opened Session follow streams resume independently through API Gateway.
    */
   handleConnected(): void {
+    for (const session of this.sessions.values()) {
+      if (session.getSnapshot().openState === "error") void session.resync();
+    }
     for (const store of this.projectionStores.values()) store.clear();
     this.listMutations = null;
     this.listInflight = null;

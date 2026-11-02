@@ -77,6 +77,10 @@ export interface SessionSnapshot {
   } | null;
   readonly removed: boolean;
   readonly openState: OpenState;
+  /** The retained history is waiting for a fresh follow baseline after connection loss. */
+  readonly synchronizing?: boolean;
+  /** Client wall-clock time when the current history last accepted an update. */
+  readonly lastSyncedAt?: number;
   readonly openError: RemoteFailure | null;
   readonly hasMore: boolean;
   readonly loadingOlder: boolean;

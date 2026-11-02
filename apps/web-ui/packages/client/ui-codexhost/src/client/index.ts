@@ -4,6 +4,7 @@
  * native session into a Web session; its history is replayed when the conversation opens.
  */
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
+import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
 import type {} from "@deepseek-ai/dsh-client-locale/client";
 import type { MainPanelId } from "@deepseek-ai/dsh-client-ui-layout/client";
 import type {} from "@deepseek-ai/dsh-client-ui-sidebar/client";
@@ -77,6 +78,7 @@ export const inject = [
   "remote",
   "inputTriggers",
   "theme",
+  "connection",
 ];
 
 /** Console settings pages shown in Web settings, after General. */
@@ -313,13 +315,16 @@ export function apply(ctx: ClientContext): void {
     ),
   );
 
-  ctx.slots.inject("conversation.session.header.utilities", () =>
+  ctx.slots.inject("conversation.header.notice", () =>
     ctx.slots.register(
       {
-        name: "conversation.session.header.utilities",
+        name: "conversation.header.notice",
         id: "codexhost.connection",
         locale: NS,
-        inject: () => ({ list: ctx.sessions.list }),
+        inject: () => ({
+          list: ctx.sessions.list,
+          connection: ctx.get("connection") as ConnectionHandle,
+        }),
       },
       HostConnectionStatus,
     ),

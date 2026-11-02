@@ -166,6 +166,9 @@ class ClientRemoteService extends Service implements ClientRemote {
         onReconnectRequested: () => {
           if (connection.rpc.open === undefined) this.streams.reconnect();
         },
+        onStateChange: (state) => {
+          if (state !== "connected" && connection.rpc.open === undefined) this.streams.disconnect();
+        },
       });
     };
     const loader = ctx.get("loader") as LoaderReadiness | undefined;

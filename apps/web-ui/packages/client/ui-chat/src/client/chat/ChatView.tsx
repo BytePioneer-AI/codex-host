@@ -226,6 +226,7 @@ export function ChatView({
     [cwd, t],
   );
   const running = useSession((s) => s.running);
+  const synchronizing = useSession((s) => s.synchronizing || s.openState === "error");
   const compacting = useProjection("compacting");
   const openState = useSession((s) => s.openState);
   const openError = useSession((s) => s.openError);
@@ -432,7 +433,12 @@ export function ChatView({
               />
             )}
             {showRunningStatus && (
-              <RunningStatus startTime={runningStartTime} compacting={compacting} t={t} />
+              <RunningStatus
+                startTime={runningStartTime}
+                compacting={compacting}
+                stale={synchronizing}
+                t={t}
+              />
             )}
             {/* No pending placeholders: questions (ui-user-questions) and approvals
                 (ApprovalPanel) both take over the composer, so a flow card would

@@ -191,6 +191,12 @@ class RemoteStreamMuxConnection {
   private receive(text: string): void {
     const message = parseRemoteStreamClientMessage(text);
     switch (message.type) {
+      case "ping": {
+        void this.send({ type: "pong", streamId: message.streamId }).catch(() => {
+          this.socket.close(1011, "heartbeat reply failed");
+        });
+        return;
+      }
       case "open": {
         this.openStream(message);
         return;
@@ -209,7 +215,7 @@ class RemoteStreamMuxConnection {
         this.streams.get(message.streamId)?.stop(new Error("Remote stream cancelled"));
         return;
       }
-      /* v8 ignore next 4 -- parseRemoteStreamClientMessage admits only the four frame types above. */
+      /* v8 ignore next 4 -- parseRemoteStreamClientMessage admits only the frame types above. */
       default: {
         const unknown: never = message;
         throw new Error(

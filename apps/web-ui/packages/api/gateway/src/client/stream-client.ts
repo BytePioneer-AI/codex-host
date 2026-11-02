@@ -1,4 +1,5 @@
 import { RemoteError } from "@deepseek-ai/dsh-typert-protocol";
+import { StreamHeartbeat, type StreamHeartbeatOptions } from "./stream-heartbeat.ts";
 /** Browser owner for the Gateway multiplexed Remote stream socket. */
 
 import {
@@ -57,6 +58,9 @@ export class RemoteStreamMuxClient {
   private readonly waiters = new Set<SocketWaiter>();
   private running = false;
   private disposed = false;
+  private heartbeat: StreamHeartbeat | undefined;
+
+  constructor(private readonly heartbeatOptions: StreamHeartbeatOptions = {}) {}
 
   /** Ensure a physical attempt exists, following the current attempt once if needed. */
   start(): void {
@@ -76,19 +80,24 @@ export class RemoteStreamMuxClient {
     if (!this.running || this.disposed) return;
     const failure = new RemoteStreamCarrierError("api gateway: Remote stream reconnect requested");
     const pending = this.keepAlive;
-    this.revision++;
-    this.cancelCandidate?.(failure);
-    const socket = this.socket;
-    if (socket !== undefined) {
-      this.socket = undefined;
-      this.failAll(failure);
-      socket.close(4000, "reconnect requested");
-    }
+    this.disconnect(failure);
     if (pending === undefined) this.maintain();
     else
       void pending.then(() => {
         this.maintain();
       });
+  }
+
+  /** Withdraw a stale carrier immediately; Connection owns the next physical attempt. */
+  disconnect(error = new RemoteStreamCarrierError("api gateway: connection unavailable")): void {
+    this.revision++;
+    this.heartbeat?.stop();
+    this.heartbeat = undefined;
+    this.cancelCandidate?.(error);
+    const socket = this.socket;
+    this.socket = undefined;
+    this.failAll(error);
+    socket?.close(4000, "connection unavailable");
   }
 
   /**
@@ -228,6 +237,8 @@ export class RemoteStreamMuxClient {
     if (!this.disposed) {
       this.disposed = true;
       this.running = false;
+      this.heartbeat?.stop();
+      this.heartbeat = undefined;
       const error = new Error("api gateway: Remote stream client disposed");
       this.failAll(error);
       for (const waiter of [...this.waiters]) waiter.reject(error);
@@ -257,6 +268,14 @@ export class RemoteStreamMuxClient {
         settled = true;
         this.cancelCandidate = undefined;
         this.socket = socket;
+        this.heartbeat = new StreamHeartbeat(
+          (id) => this.send(socket, { type: "ping", streamId: id }),
+          () => {
+            this.lost(socket, new RemoteStreamCarrierError("api gateway: heartbeat timed out"));
+            socket.close(4000, "heartbeat timed out");
+          },
+          this.heartbeatOptions,
+        );
         for (const waiter of [...this.waiters]) waiter.resolve(socket);
         resolve(socket);
       };
@@ -333,6 +352,8 @@ export class RemoteStreamMuxClient {
       if (typeof data !== "string")
         throw new Error("api gateway: Remote stream WebSocket requires text messages");
       const frame = parseRemoteStreamServerMessage(data);
+      this.heartbeat?.received(frame.type === "pong" ? frame.streamId : undefined);
+      if (frame.type === "pong") return;
       const stream = this.streams.get(frame.streamId);
       if (stream === undefined) return;
       stream.inbox.push(frame);
@@ -355,6 +376,8 @@ export class RemoteStreamMuxClient {
     ),
   ): void {
     if (this.socket !== socket) return;
+    this.heartbeat?.stop();
+    this.heartbeat = undefined;
     this.socket = undefined;
     this.failAll(error);
   }

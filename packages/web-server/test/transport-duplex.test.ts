@@ -40,6 +40,22 @@ async function connect(t: TestContext, handler: StreamHandler) {
   return { socket, send, open, frames, wait };
 }
 
+it("answers application heartbeats without opening a logical stream or invoking a handler", async (t) => {
+  let called = false;
+  const h = await connect(t, () => {
+    called = true;
+  });
+  h.send({ type: "ping", streamId: "probe-1" });
+  await h.wait(() => h.frames.length === 1);
+  assert.deepEqual(h.frames[0], { type: "pong", streamId: "probe-1" });
+  assert.equal(called, false);
+  h.open("healthy");
+  await h.wait(() => called);
+  h.send({ type: "ping", streamId: "probe-2" });
+  await h.wait(() => h.frames.length === 2);
+  assert.deepEqual(h.frames[1], { type: "pong", streamId: "probe-2" });
+});
+
 it("buffers ordered input while a consumer is paused and half-closes without dropping output", async (t) => {
   const release = Promise.withResolvers<undefined>();
   const received: unknown[] = [];

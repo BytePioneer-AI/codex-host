@@ -180,8 +180,16 @@ interface ConnectionOwner {
 
 interface BrowserNetworkTarget {
   readonly navigator?: { readonly onLine?: boolean };
-  addEventListener(type: "online" | "offline", listener: () => void): void;
-  removeEventListener(type: "online" | "offline", listener: () => void): void;
+  readonly document?: {
+    readonly visibilityState: string;
+    addEventListener(type: "visibilitychange", listener: () => void): void;
+    removeEventListener(type: "visibilitychange", listener: () => void): void;
+  };
+  addEventListener(type: "online" | "offline" | "pageshow", listener: (event: Event) => void): void;
+  removeEventListener(
+    type: "online" | "offline" | "pageshow",
+    listener: (event: Event) => void,
+  ): void;
 }
 
 function watchBrowserNetwork(controller: ConnectionController): () => void {
@@ -194,12 +202,41 @@ function watchBrowserNetwork(controller: ConnectionController): () => void {
   const offline = (): void => {
     controller.setNetworkAvailable(false);
   };
+  const document = browser.document;
+  let wasHidden = document?.visibilityState === "hidden";
+  let restoreTimer: ReturnType<typeof setTimeout> | undefined;
+  const restore = (): void => {
+    if (document?.visibilityState === "hidden" || restoreTimer !== undefined) return;
+    const available = browser.navigator?.onLine !== false;
+    controller.setNetworkAvailable(available);
+    if (!available) return;
+    restoreTimer = setTimeout(() => {
+      restoreTimer = undefined;
+      if (document?.visibilityState !== "hidden" && browser.navigator?.onLine !== false)
+        controller.reconnect();
+    }, 0);
+  };
+  const visible = (): void => {
+    if (document?.visibilityState === "hidden") wasHidden = true;
+    else if (wasHidden) {
+      wasHidden = false;
+      restore();
+    }
+  };
+  const shown = (event: Event): void => {
+    if ((event as PageTransitionEvent).persisted) restore();
+  };
   controller.setNetworkAvailable(initiallyAvailable);
   browser.addEventListener("online", online);
   browser.addEventListener("offline", offline);
+  browser.addEventListener("pageshow", shown);
+  document?.addEventListener("visibilitychange", visible);
   return () => {
+    clearTimeout(restoreTimer);
     browser.removeEventListener("online", online);
     browser.removeEventListener("offline", offline);
+    browser.removeEventListener("pageshow", shown);
+    document?.removeEventListener("visibilitychange", visible);
   };
 }
 

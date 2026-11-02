@@ -2,6 +2,14 @@
 
 Web 与 Codex Desktop 在同一仓库开发，浏览器通过 `packages/web-server` 的独立 Node 服务访问。默认 `codexhost` 会话来源按需启动或连接独立的本地 CH 后台，复用 CH 的 Thread 目录、创建、读取和操作；Web 网关不直接读写 Mapping Store、不为外部 Threads 启动第二份 Adapter，也不登记 Desktop 进程所有权。默认启用所有打包的会话 Harness，包括 Codex CLI（`codex-cli`）；它们都由共享后台的外部 Thread 运行时执行，Web 网关只连接 Host，不在本地执行 Harness。Web/PWA 共用响应式界面；尚无 iOS/Android 原生封装。
 
+## 手机连接与恢复
+
+聊天标题下方的状态条独立显示浏览器到 Web 网关的连接，以及网关到 Host 的可用性；手机收起侧栏、未选择会话时也能看到浏览器连接提示。断线保留已显示的正文和草稿，提示上次历史同步时间；运行提示改为任务状态待确认，不把手机断线解释成后台任务停止。
+
+浏览器 WebSocket 在前台空闲 25 秒后发送应用层心跳，10 秒内没有匹配回复即撤下该连接，交给已有退避机制重连。心跳只由网关回应，不读取历史、不调用 Harness；有效消息会推迟空闲探测。页面隐藏时不以延迟执行的计时器判定断线；切回可见或从页面缓存恢复时合并请求一个新连接代次，重新订阅并读取当前事实。浏览器的在线／离线事件用于辅助判断，设备在线不等于服务器可达。
+
+连接建立后，当前会话仍显示“正在同步最新消息”，直到新的历史 follow 基线完成校验和发布；同步错误保留旧内容并提供重试连接。恢复不整页刷新、不重启 Host，也不自动重发发送、停止或其他结果未知的操作。主屏幕 Web App 的后台执行受浏览器与系统限制，不保证锁屏期间保持连接；真实 iOS／Android 的后台恢复和弱网体验仍需真机验收。
+
 ## 代码与构建
 
 - `packages/adapters/*`：唯一的 Harness 接入实现。既有插件保持当前 CH 源码；`packages/adapters/codex-cli` 是 Codex CLI 的 app-server Adapter，作为预装外部 Harness 声明仅 Web，不改变 Desktop 原生 Codex 路径。

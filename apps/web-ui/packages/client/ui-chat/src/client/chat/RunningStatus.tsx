@@ -10,6 +10,7 @@ import css from "./ChatView.module.css";
 interface RunningStatusProps {
   readonly startTime: number | undefined;
   readonly compacting?: boolean;
+  readonly stale?: boolean;
   readonly t: ChatViewSlotProps["t"];
 }
 
@@ -21,11 +22,12 @@ interface RunningStatusProps {
 export const RunningStatus = memo(function RunningStatus({
   startTime,
   compacting,
+  stale,
   t,
 }: RunningStatusProps) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
-    if (startTime === undefined || compacting) return;
+    if (startTime === undefined || compacting || stale) return;
     setNow(Date.now());
     const timer = setInterval(() => {
       setNow(Date.now());
@@ -33,25 +35,31 @@ export const RunningStatus = memo(function RunningStatus({
     return () => {
       clearInterval(timer);
     };
-  }, [startTime, compacting]);
-  const label = compacting
-    ? t("message.compaction.running")
-    : startTime === undefined
-      ? t("chat.deepDiving")
-      : t("chat.deepDivingFor", {
-          duration: formatRunDuration(Math.max(1000, now - startTime), t)
-            .map((part) => part.text)
-            .join(""),
-        });
+  }, [startTime, compacting, stale]);
+  const label = stale
+    ? t("chat.statusUnconfirmed")
+    : compacting
+      ? t("message.compaction.running")
+      : startTime === undefined
+        ? t("chat.deepDiving")
+        : t("chat.deepDivingFor", {
+            duration: formatRunDuration(Math.max(1000, now - startTime), t)
+              .map((part) => part.text)
+              .join(""),
+          });
   return (
     <div className={css.running} data-chat-running>
       <span className={a11yCss.visuallyHidden} role="status" aria-live="polite" aria-atomic="true">
-        {compacting ? t("message.compaction.running") : t("chat.deepDiving")}
+        {stale
+          ? t("chat.statusUnconfirmed")
+          : compacting
+            ? t("message.compaction.running")
+            : t("chat.deepDiving")}
       </span>
       <span className={css.runningDivider} aria-hidden="true" />
       <span className={css.runningContent}>
-        <RunningIndicator />
-        <TextShimmer active className={css.runningText}>
+        {stale ? null : <RunningIndicator />}
+        <TextShimmer active={!stale} className={css.runningText}>
           {label}
         </TextShimmer>
       </span>

@@ -1,7 +1,7 @@
 import { useState, useSyncExternalStore } from "react";
 import type { SessionListState } from "@deepseek-ai/dsh-api-session-controller/client";
-import type { HostObservable, PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
-import type { SessionId } from "@deepseek-ai/dsh-session/types";
+import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
+import type { HostObservable, PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import { Toast } from "@deepseek-ai/dsh-client-ui-primitives";
 import css from "./HostConnectionStatus.module.css";
 
@@ -14,36 +14,77 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
 
 export function HostConnectionStatus({
   sessionId,
+  useSession,
   list,
+  connection,
   t,
-}: {
-  sessionId: SessionId;
+}: PropsRuntime<"conversation.header.notice"> & {
   list: HostObservable<SessionListState>;
+  connection: Pick<ConnectionHandle, "state" | "reconnect">;
 } & PropsLocale<"codexhostImport">) {
-  const state = useSyncExternalStore(
+  const carrier = useSyncExternalStore(connection.state.subscribe, connection.state.getSnapshot);
+  const host = useSyncExternalStore(
     (fn) => list.subscribe(fn),
-    () => list.getSnapshot().byId[sessionId]?.projectionValues?.nativeConnection?.state,
+    () =>
+      sessionId === undefined
+        ? undefined
+        : list.getSnapshot().byId[sessionId]?.projectionValues?.nativeConnection?.state,
   );
   const error = useSyncExternalStore(
     (fn) => list.subscribe(fn),
-    () =>
-      list.getSnapshot().byId[sessionId]?.projectionValues?.nativeInteractionError ??
-      list.getSnapshot().byId[sessionId]?.projectionValues?.nativeConnection?.message,
+    () => {
+      const values =
+        sessionId === undefined ? undefined : list.getSnapshot().byId[sessionId]?.projectionValues;
+      return values?.nativeInteractionError ?? values?.nativeConnection?.message;
+    },
   );
+  const synchronizing = useSession((session) => session.synchronizing);
+  const openState = useSession((session) => session.openState);
   const [dismissed, setDismissed] = useState("");
   const key = `${sessionId}:${error ?? ""}`;
-  if (!state) return null;
+  const state =
+    carrier === "disconnected"
+      ? "offline"
+      : carrier === undefined
+        ? "checking"
+        : carrier !== "connected"
+          ? "reconnecting"
+          : host === "reconnecting"
+            ? "host"
+            : openState === "error"
+              ? "error"
+              : synchronizing
+                ? "syncing"
+                : undefined;
+  const lastSyncedAt = useSession((session) =>
+    state === undefined ? undefined : session.lastSyncedAt,
+  );
   return (
     <>
-      {state === "reconnecting" ? (
-        <span
+      {state ? (
+        <div
           className={css.status}
           role="status"
-          data-native-connection={state}
-          title={t("connection.reconnectingHint")}
+          data-web-connection={state}
+          data-native-connection={host === "reconnecting" ? host : undefined}
         >
-          {t("connection.reconnecting")}
-        </span>
+          <div className={css.copy}>
+            <span>{t(`connection.${state}`)}</span>
+            {lastSyncedAt !== undefined ? (
+              <span className={css.detail}>
+                {t("connection.lastSynced", {
+                  time: new Date(lastSyncedAt).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  }),
+                })}
+              </span>
+            ) : null}
+          </div>
+          <button type="button" className={css.retry} onClick={() => connection.reconnect()}>
+            {t("connection.retry")}
+          </button>
+        </div>
       ) : null}
       {error && dismissed !== key ? (
         <Toast key={key} text={error} holdMs={8000} onDone={() => setDismissed(key)} />

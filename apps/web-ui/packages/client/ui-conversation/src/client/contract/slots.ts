@@ -150,6 +150,8 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
     };
     /** Resident navigation container, including when no Session is selected. */
     "conversation.header": { kind: "single"; scope: "session-maybe" };
+    /** Persistent product notices below navigation, including without a selected Session. */
+    "conversation.header.notice": { kind: "list"; scope: "session-maybe" };
     /** Strict per-Session title, actions, and View navigation. */
     "conversation.session.header": {
       kind: "single";
@@ -499,7 +501,7 @@ export interface HeroBrandMarkOwnerProps {
 
 /** Full props of the resident optional-Session Conversation shell. */
 export type ConversationSlotProps = PropsRuntime<"main.conversation"> &
-  PropsRenderSlots<"conversation.header"> &
+  PropsRenderSlots<"conversation.header" | "conversation.header.notice"> &
   PropsRenderFactories;
 
 /** Inputs shared by main and embedded Conversation content occurrences. */

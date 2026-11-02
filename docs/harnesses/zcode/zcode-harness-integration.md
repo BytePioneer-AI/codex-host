@@ -65,7 +65,7 @@ CLI 发来的反向请求（`src/transport.ts`）：
 - **请求**：CLI 的 `interaction/requestProviderRuntimeHeaders` 必须匹配检测时已授权的 Provider、家族与 Model Provider；每次请求重新读取账号、选择及 Key，确认仍是该 Transport 的账号，旧版返回 `{headersApplied:true, requestAuth:{apiKey}}`，新版的 requestAuth 同时携带项目令牌、apiKeyId 与 accountScope，均不调用验证码。Coding Plan 的客户端签名、签名配置查询与握手仍由原生 CLI 负责，不由 Adapter 仿造或关闭。
 - **切换与失败**：权益查询结束后复核账号身份、选择与 Key，拒绝发布跨账号的过期结果；查询结果的 revision 包含不携带凭据的连接摘要。当前 Transport 中账号切换、退出或连接不再匹配时拒绝请求，不复用旧账号 Key。账号配置不做热更新；重新打开 Thread 会按新的 Desktop 连接重新检测。不承诺跨重开固定旧账号或旧计费来源。恢复会话、Model 选择和持久化仍归原生 CLI，Host 不另存套餐选择。
 
-项目令牌返回前再次核对账号、登录、选择与项目定位；校验 CLI 的 expectedAccountScope，并按 rejectedProjectTokenFingerprint 按需更新已拒绝的令牌。凭据读取或验证失败会显示个人套餐连接诊断，不再笼统断言未购买套餐。
+项目令牌返回前再次核对账号、登录、选择与项目定位；校验 CLI 的 expectedAccountScope，并按 rejectedProjectTokenFingerprint 按需更新已拒绝的令牌。仅在当前选择为个人 Coding Plan 时显示其凭据读取或验证诊断，避免覆盖 Start Plan 的引导。调用方取消时保留取消原因，在请求 Header 边界返回未应用 Header 且不附认证错误文本；项目令牌请求超时映射为可重试的 `unavailable` 错误，不提示重新登录。
 
 ## 账号验证页
 

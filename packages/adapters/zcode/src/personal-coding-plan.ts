@@ -196,8 +196,9 @@ export class PersonalCodingPlanAccount {
         .digest("hex");
       const base = { current, connectionKey };
       if (!context.apiKey) {
-        this.issue =
-          "ZCode is signed in, but its Personal Coding Plan credentials are not initialized. Open the personal plan in ZCode Desktop, then re-detect ZCode. This does not mean the subscription is inactive.";
+        if (current)
+          this.issue =
+            "ZCode is signed in, but its Personal Coding Plan credentials are not initialized. Open the personal plan in ZCode Desktop, then re-detect ZCode. This does not mean the subscription is inactive.";
         return {
           ...base,
           availability: "unavailable",
@@ -220,10 +221,11 @@ export class PersonalCodingPlanAccount {
         if (current) this.#authorized.set(providerId, { family, identity: context.identity });
         return { ...base, availability: "available", entitled: true };
       }
-      this.issue =
-        entitlement === "unavailable"
-          ? "ZCode Personal Coding Plan subscription check found no active subscription. Check the selected account in ZCode Desktop, then re-detect ZCode."
-          : "ZCode Personal Coding Plan credentials or subscription could not be verified. Open the personal plan in ZCode Desktop, then re-detect ZCode; subscription status is unknown.";
+      if (current)
+        this.issue =
+          entitlement === "unavailable"
+            ? "ZCode Personal Coding Plan subscription check found no active subscription. Check the selected account in ZCode Desktop, then re-detect ZCode."
+            : "ZCode Personal Coding Plan credentials or subscription could not be verified. Open the personal plan in ZCode Desktop, then re-detect ZCode; subscription status is unknown.";
       return {
         ...base,
         availability: entitlement === "unknown" ? "unknown" : "unavailable",
@@ -238,8 +240,11 @@ export class PersonalCodingPlanAccount {
             }),
       };
     } catch {
-      this.issue =
-        "ZCode Personal Coding Plan credentials could not be read or verified. Open the personal plan in ZCode Desktop, then re-detect ZCode; subscription status is unknown.";
+      // Credential/profile reads can fail before #context returns its selection snapshot.
+      current = await readSelection(this.environment, family).catch(() => false);
+      if (current)
+        this.issue =
+          "ZCode Personal Coding Plan credentials could not be read or verified. Open the personal plan in ZCode Desktop, then re-detect ZCode; subscription status is unknown.";
       // An unreadable personal key/profile/settings must not break Start or personal Providers.
       return { availability: "unknown", entitled: false, current };
     }

@@ -110,7 +110,15 @@ export class ProjectToken {
         fingerprint: createHash("sha256").update(data.accessToken).digest("hex"),
       };
       return data.accessToken;
-    } catch {
+    } catch (error) {
+      signal.throwIfAborted();
+      if (error instanceof ZcodeError) throw error;
+      if (error instanceof Error && error.name === "TimeoutError")
+        throw new ZcodeError(
+          "unavailable",
+          "ZCode project token request timed out. Try again.",
+          true,
+        );
       // Native errors and response bodies may contain a credential or access-bearing URL.
       throw projectCredentialError();
     }

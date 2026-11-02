@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectToken, type ProjectCredential } from "../src/project-token.js";
+import { ZcodeError } from "../src/errors.js";
 
 const credential: ProjectCredential = {
   origin: "https://business.invalid",
@@ -80,15 +81,36 @@ describe("ZCode request-time project token", () => {
 
   it("aborts the token request and never caches a response after cancellation", async () => {
     const controller = new AbortController();
+    const reason = new Error("synthetic-cancellation-reason");
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
-      controller.abort();
+      controller.abort(reason);
       expect(init?.signal?.aborted).toBe(true);
       return response();
     });
     const tokens = new ProjectToken();
-    await expect(tokens.resolve(credential, "3.16.3", controller.signal)).rejects.toThrow();
+    await expect(tokens.resolve(credential, "3.16.3", controller.signal)).rejects.toBe(reason);
     fetch.mockImplementation(async () => response());
     await tokens.resolve(credential, "3.16.3", new AbortController().signal);
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports deadline expiry as retryable unavailability without leaking the native message", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(
+      new DOMException("synthetic-login", "TimeoutError"),
+    );
+    const result = new ProjectToken().resolve(credential, "3.16.3", new AbortController().signal);
+    await expect(result).rejects.toMatchObject({
+      code: "unavailable",
+      retryable: true,
+      message: "ZCode project token request timed out. Try again.",
+    });
+  });
+
+  it("preserves an existing adapter error classification", async () => {
+    const error = new ZcodeError("unavailable", "Sanitized adapter failure", true);
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(error);
+    await expect(
+      new ProjectToken().resolve(credential, "3.16.3", new AbortController().signal),
+    ).rejects.toBe(error);
   });
 });

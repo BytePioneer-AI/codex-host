@@ -166,6 +166,29 @@ describe("Personal Coding Plan read-only account integration", () => {
   const LOGIN = "synthetic-oauth-login";
   const TOKEN = "synthetic-project-token";
   const location = { organizationId: "org/one", projectId: "project/one", apiKeyId: "key/one" };
+  it.each(
+    ["start-plan", "individual-coding-plan"].flatMap((selection) =>
+      ["missing-key", "no-subscription", "unreadable-profile"].map((failure) => ({
+        selection,
+        failure,
+      })),
+    ),
+  )(
+    "keeps $failure diagnostics scoped to the $selection selection",
+    async ({ selection, failure }) => {
+      await select("zai", selection);
+      if (failure === "missing-key") Reflect.deleteProperty(credentials, keyName("zai"));
+      if (failure === "unreadable-profile") credentials["oauth:zai:user_info"] = "invalid-json";
+      await saveCredentials();
+      if (failure === "no-subscription")
+        vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify({ data: [] })));
+      const config = await accountConfig(installation, environment);
+      expect(config.params.states[id("zai")]).toMatchObject({ entitled: false });
+      if (selection === "individual-coding-plan")
+        expect(config.codingPlan.issue).toContain("Personal Coding Plan");
+      else expect(config.codingPlan.issue).toBeUndefined();
+    },
+  );
   function locationKey(family: string, user = userId) {
     return `project-key-location:v1:${encodeURIComponent(
       JSON.stringify([
@@ -204,6 +227,27 @@ describe("Personal Coding Plan read-only account integration", () => {
         ),
     );
   }
+
+  it.each(["before", "during"])(
+    "returns no authentication diagnostic when cancelled %s token exchange",
+    async (when) => {
+      await projectLogin();
+      const config = await accountConfig(installation, environment);
+      const controller = new AbortController();
+      const reason = new Error(LOGIN);
+      vi.mocked(fetch)
+        .mockClear()
+        .mockImplementation(async () => {
+          controller.abort(reason);
+          throw reason;
+        });
+      if (when === "before") controller.abort(reason);
+      expect(await auth(config, request("bigmodel"), controller.signal)).toEqual({
+        headersApplied: false,
+      });
+      expect(fetch).toHaveBeenCalledTimes(when === "before" ? 0 : 1);
+    },
+  );
 
   it.each(["zai", "bigmodel"] as const)(
     "recognizes %s project credentials and authenticates without a legacy key",

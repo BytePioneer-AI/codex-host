@@ -13,6 +13,50 @@ function setup() {
 }
 
 describe("TRAE CN cumulative live Item projection", () => {
+  it("continues to reject a changed Edit path after normalizing native replacement text", () => {
+    const { items } = setup();
+    const plan = {
+      id: "edit",
+      timing: { tool_call_started_at_ms: 1 },
+      tool_call_info: {
+        name: "Edit",
+        params: { file_path: "/workspace/one", old_string: "BEFORE", new_string: "AFTER" },
+      },
+    };
+    items.acceptPlan(plan);
+    expect(() =>
+      items.acceptPlan({
+        ...plan,
+        tool_call_info: {
+          ...plan.tool_call_info,
+          params: { file_path: "/workspace/two", old_string: "", new_string: "" },
+        },
+      }),
+    ).toThrow("admitted arguments");
+  });
+  it("keeps an approved Edit stable when native execution clears its replacement text", () => {
+    // TRAE CN 3.4.12 Windows approval sequence; private IDs, paths and content normalized.
+    const plans: unknown[] = JSON.parse(
+      readFileSync(
+        new URL("./fixtures/native-edit-approval-redaction.json", import.meta.url),
+        "utf8",
+      ),
+    );
+    const { events, items } = setup();
+    for (const plan of plans) items.acceptPlan(plan);
+    expect(events.filter((event) => event.type === "item.started")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "item.completed")).toHaveLength(1);
+    expect(items.snapshots).toMatchObject([
+      {
+        item: { toolName: "Edit", arguments: { file_path: "/workspace/owned.txt" } },
+        outcome: { status: "succeeded" },
+      },
+    ]);
+    const item = items.snapshots[0]?.item;
+    if (!item || item.type !== "toolExecution") throw new Error("Missing native Edit");
+    expect(item.arguments).not.toHaveProperty("old_string");
+    expect(item.arguments).not.toHaveProperty("new_string");
+  });
   it("does not admit partial file-edit arguments from the real generating sequence", () => {
     const plans: unknown[] = JSON.parse(
       readFileSync(new URL("./fixtures/native-file-edit.json", import.meta.url), "utf8"),
@@ -28,7 +72,7 @@ describe("TRAE CN cumulative live Item projection", () => {
         item: {
           type: "toolExecution",
           toolName: "Edit",
-          arguments: { file_path: "/workspace/file.txt", old_string: "", new_string: "" },
+          arguments: { file_path: "/workspace/file.txt" },
         },
         outcome: { status: "succeeded" },
       },

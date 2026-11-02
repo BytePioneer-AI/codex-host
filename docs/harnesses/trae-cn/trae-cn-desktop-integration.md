@@ -1,6 +1,6 @@
 # TRAE CN Desktop 原生桥接
 
-开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含插件 Manifest / 工厂、桌面 Companion、本机传输、公共 Adapter、文本会话、文件编辑与 Diff、结构化提问、RunCommand 单次审批、已确认身份的活动恢复、模型 / Thinking / 本地权限选择及受限的 Fork / Rollback。插件 Bundle 与 Companion VSIX 已验证；其他工具审批、预装发行及完整 Desktop 验收尚未完成，仍为开发版本。
+开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含插件 Manifest / 工厂、桌面 Companion、本机传输、公共 Adapter、文本会话、文件编辑与 Diff、结构化提问、命令 / 文件 / MCP 单次审批映射、已确认身份的活动恢复、模型 / Thinking / 本地权限选择及受限的 Fork / Rollback。插件 Bundle 与 Companion VSIX 已验证；审批覆盖、预装发行及完整 Desktop 验收尚未完成，仍为开发版本。
 
 ## 构建与安装
 
@@ -71,7 +71,7 @@ Companion 0.1.6 支持下一轮请求的 Thinking 选择。普通账号读取经
 
 原生准入后发布公共 turn.identity.confirmed，Host 在终态之前持久化原 Turn 身份；通用恢复路径校验归属后重建投影，Broker 同样转发可选恢复字段。旧 API 1 插件不接收新输入，缺省行为不变。关闭或故障结束本次观察作用域，报告原生任务可能仍运行并释放本机订阅；不会发送原生取消。只有显式取消操作会停止任务。观察超时或失败不能作为自动重启理由。
 
-其他工具审批明确返回未实现或受限错误，能力字段不声称完整支持。已完成的核心路径不代表全部 P0 / P1 已验收。
+文件 / MCP 审批通过 Companion 能力标记协商；未知确认格式仍明确返回未实现或受限错误。已完成的核心路径不代表全部 P0 / P1 已验收，实时覆盖范围见下文。
 
 ## 本地权限模式
 
@@ -105,11 +105,17 @@ Companion 0.1.2 只转出 token_usage 中的非负安全整数计数，不转出
 
 `src/interactions.ts` 将原生问题映射为公共 Question Interaction，保留选项、多选及原生菜单的其他答案入口。模型预填的 answers 不视作用户提交；只有显式 interaction.respond 才发送答复。原生确认、取消、过期和替换关闭相应 UI 实例；已关闭实例不会被迟到的事件重新打开。其他答案沿用原生界面的 1000 字符上限。
 
-RunCommand 的确认实例也来自原生事件流，显示命令和工作目录，提供允许一次与拒绝。Companion 重新核对 Session、任务、Plan Item 和确认实例后，通过原生 `lite.send_user_decision` 传 `permission_scope: execution` 或 `none`；不修改任务或全局授权。未实现的其他工具确认明确报 unsupported。发送请求在消息顶层使用原生 `permission_profile_id: manual_approval`；这不是已实现的权限模式切换。
+RunCommand 的确认实例也来自原生事件流，显示命令和工作目录，提供允许一次与拒绝。Companion 重新核对 Session、任务、Plan Item 和确认实例后，通过原生 `lite.send_user_decision` 写回；新权限系统使用 `permission_scope: execution` 或 `none`，旧权限系统省略该字段，不修改任务或全局授权。发送请求中的权限档位由前述本地权限配置决定。
+
+Companion 0.1.8 通过 `interactions.fileAndMcpApprovals` 明确声明新增确认能力；旧 Companion 缺少标记时不生成无法执行的文件 / MCP 审批按钮，而是提示升级。文件操作的允许动作使用原生事件拥有的 `toolcall_id`，拒绝沿用工具名；删除沿用原生无新增权限范围的格式。MCP 和 ReadMcpResource 使用原生工具名，仅在对应新权限请求元数据存在时传 execution / none。界面保留文件及资源目标、MCP 服务器 / 工具 / 参数；超限或未知格式明确拒绝。不提供任务级或永久授权。
+
+文件审批已在 3.4.12 做真实允许与拒绝验收：允许后目标内容准确改变，拒绝时另一份文件保持原样。允许路径还暴露了原生 Edit 的参数清空行为：执行完成后 old_string / new_string 从完整正文变为空串。插件将这两个原生可变字段排除在固定工具参数之外，实时与历史继续保留路径及其他稳定参数，实际改动来自原生消息快照 Diff。规范化真实序列先复现故障再通过修复；新的一次不同内容修改回复 TRAE_CN_FILE_EDIT_VERIFIED_OK，四轮历史、取消轮、源前缀和新进程冷快照均保留。没有重发旧任务，全局权限配置哈希未变。
+
+MCP 与删除确认的决策格式目前由原生界面源码和聚焦测试覆盖，尚未完成真实审批验收。一次原生 DeleteFile 删除确已完成，但该操作没有产生审批，因此不能据此声称删除确认已验收。
 
 RunCommand 投影为公共 commandExecution，保留原生输出、目录、退出码、耗时与失败；后台命令仍待验收。沙箱重试可能把同一个 Plan Item 暂时覆盖成 `_sandbox_retry` 确认回执，之后才恢复真正命令结果。确认回执不结束命令，也不当作执行成功。真实允许与拒绝序列已加入回放用例。拒绝沙箱外执行可能保留原生 `failed` 和 exitCode=1，不能强改为整轮 cancelled。
 
-提问答案是后续写回的结果，不属于已准入工具的固定参数，因此通用工具参数排除这个可变字段，答案仍保留在原生工具结果中。参数按结构比较，JSON 对象键顺序不同不算参数更改；原生没有执行时间的参数校验失败也保留为失败工具 Item，不因最终回复成功而隐藏。
+提问答案是后续写回的结果，不属于已准入工具的固定参数，因此通用工具参数排除这个可变字段，答案仍保留在原生工具结果中。Edit 的原生可变正文同样不参与固定参数身份，完整修改由消息 Diff 表达。其余参数按结构比较，JSON 对象键顺序不同不算参数更改；原生没有执行时间的参数校验失败也保留为失败工具 Item，不因最终回复成功而隐藏。
 
 ## 验证与剩余工作
 
@@ -135,4 +141,6 @@ RunCommand 投影为公共 commandExecution，保留原生输出、目录、退�
 
 Thinking 的真实验收使用开发 Companion 0.1.6。MiniMax-M3.1-Flash 的 Light 请求运行期间选择 High，原生持久记录仍确认第一轮 light；新进程恢复尚未发送的 High 选择后，第二轮持久记录为 high，分别回复 TRAE_CN_THINKING_LIGHT_OK / TRAE_CN_THINKING_HIGH_OK。第三个进程只读核对两轮历史，桌面模型偏好哈希不变。中间 Fork 与 Rollback 均只有第一轮 Light 历史，当前配置保留 High；源未改变，没有额外消息发送，两个派生会话冷恢复一致。
 
-这些证据覆盖插件加载、桌面 Companion、公共 Adapter 与隔离 Host 核心，仍需其他审批、预装发行，以及用户当前 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。
+2026-11-02 本机应用已更新至 3.4.13。新 PID 的开发 Companion 0.1.8 已通过只读兼容检查，提供 9 个模型、4 个权限选项及文件 / MCP 审批能力标记；原四轮会话为 Finished，完整冷状态哈希不变。这次只调用 snapshot / preparePermission，没有创建 Session 或发送消息，不能替代新版本的实际推理与审批验收。
+
+这些证据覆盖插件加载、桌面 Companion、公共 Adapter 与隔离 Host 核心，仍需审批覆盖、自主 / 后台行为、委派、预装发行，以及用户当前 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。

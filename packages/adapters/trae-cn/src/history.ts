@@ -70,6 +70,18 @@ export interface ProjectedPlanItem {
   outcome?: HostItemOutcome;
 }
 
+function toolArguments(name: string, params: unknown): unknown {
+  if (!record(params)) return params ?? {};
+  // Native Edit clears these strings after execution; AskUserQuestion fills
+  // answers after confirmation. Only stable arguments belong to the Item.
+  // Applied file contents come from the native message snapshot instead.
+  const mutable =
+    name === "AskUserQuestion" ? ["answers"] : name === "Edit" ? ["old_string", "new_string"] : [];
+  return mutable.length
+    ? Object.fromEntries(Object.entries(params).filter(([key]) => !mutable.includes(key)))
+    : params;
+}
+
 /** One native plan_item can contain separate reasoning, commentary and tool/answer Items. */
 export function projectPlanItem(value: unknown, terminal?: HostItemOutcome): ProjectedPlanItem[] {
   if (!record(value)) throw new TraeError("protocolError", "Invalid TRAE CN plan item");
@@ -181,11 +193,7 @@ export function projectPlanItem(value: unknown, terminal?: HostItemOutcome): Pro
       type: "toolExecution",
       itemId: hostItemIdSchema.parse(`${id}.tool`),
       toolName: name,
-      arguments: jsonValueSchema.parse(
-        name === "AskUserQuestion" && record(params)
-          ? Object.fromEntries(Object.entries(params).filter(([key]) => key !== "answers"))
-          : (params ?? {}),
-      ),
+      arguments: jsonValueSchema.parse(toolArguments(name, params)),
     };
     // Some native tools omit durable output entirely. Preserve that absence; do
     // not fabricate file contents or substitute call arguments as tool output.

@@ -31,6 +31,7 @@ export interface BridgeInspection {
   configuration?: { modelSelection: "per-request"; thinkingSelection?: "per-request" };
   history?: { forkFromMessage: boolean; forkFromSession: boolean };
   permissions?: BridgePermissions;
+  interactions?: { fileAndMcpApprovals: boolean };
 }
 export interface BridgePermissions {
   modes: { id: string; label: string; dangerous?: boolean }[];
@@ -174,6 +175,12 @@ export function readInspection(value: unknown): BridgeInspection {
   if (new Set(models.map((model) => model.id)).size !== models.length)
     throw new TraeError("protocolError", "Duplicate TRAE CN model identities");
   const history = value.history;
+  const interactions = value.interactions;
+  if (
+    interactions !== undefined &&
+    (!record(interactions) || typeof interactions.fileAndMcpApprovals !== "boolean")
+  )
+    throw new TraeError("protocolError", "Invalid native approval capabilities");
   const configuration = value.configuration;
   if (
     configuration !== undefined &&
@@ -196,6 +203,9 @@ export function readInspection(value: unknown): BridgeInspection {
     application: readApplication(value.application),
     workspaceFolders: value.workspaceFolders as string[],
     models,
+    ...(record(interactions)
+      ? { interactions: { fileAndMcpApprovals: interactions.fileAndMcpApprovals as boolean } }
+      : {}),
     ...(value.permissions !== undefined ? { permissions: readPermissions(value.permissions) } : {}),
     ...(record(configuration)
       ? {

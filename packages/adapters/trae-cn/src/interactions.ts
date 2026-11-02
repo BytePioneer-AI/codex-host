@@ -7,6 +7,7 @@ import {
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
 } from "@codexhost/harness-adapter";
+import { approvalDescription, supportsApprovalTool } from "./approvals.js";
 import { hostInteractionIdSchema, type HostTurnId } from "@codexhost/shared-contracts";
 import type { BridgeClient } from "./bridge.js";
 import { harnessError, record, TraeError } from "./errors.js";
@@ -27,6 +28,7 @@ export class NativeInteractions {
     private readonly owner: { sessionId: string; messageId: string; turnId: HostTurnId },
     private readonly client: Pick<BridgeClient, "call">,
     private readonly emit: (output: HarnessOutput) => void,
+    private readonly fileAndMcpApprovals = false,
   ) {}
 
   observe(value: unknown): void {
@@ -39,9 +41,22 @@ export class NativeInteractions {
     const old = [...this.#pending.values()].find((entry) => entry.planItemId === value.id);
     const tool = record(value.tool_call_info) ? value.tool_call_info : undefined;
     const confirm = record(value.confirm_info) ? value.confirm_info : undefined;
-    if (!tool || !["AskUserQuestion", "RunCommand"].includes(String(tool.name))) {
+    if (!tool || (tool.name !== "AskUserQuestion" && !supportsApprovalTool(tool.name))) {
       if (confirm?.confirm_status === "unconfirmed" && confirm.auto_confirm !== true)
         throw new TraeError("unsupported", "This native tool confirmation is not implemented");
+      if (old) this.#close(old, "superseded");
+      return;
+    }
+    if (
+      tool.name !== "AskUserQuestion" &&
+      tool.name !== "RunCommand" &&
+      !this.fileAndMcpApprovals
+    ) {
+      if (confirm?.confirm_status === "unconfirmed" && confirm.auto_confirm !== true)
+        throw new TraeError(
+          "unsupported",
+          "Update the TRAE CN Companion to respond to file or MCP approvals",
+        );
       if (old) this.#close(old, "superseded");
       return;
     }
@@ -75,23 +90,15 @@ export class NativeInteractions {
     const interactionId = hostInteractionIdSchema.parse(
       `trae-cn.${confirm.interaction_instance_id}`,
     );
-    if (tool.name === "RunCommand") {
-      if (typeof params.command !== "string" || !params.command.trim())
-        throw new TraeError("protocolError", "Native command approval has no command");
+    if (tool.name !== "AskUserQuestion") {
+      const description = approvalDescription(tool, params, confirm);
+      if (!description)
+        throw new TraeError("unsupported", "This native tool confirmation is not implemented");
       interaction = {
         type: "approval",
         interactionId,
         turnId: this.owner.turnId,
-        title: "TRAE CN 请求执行命令",
-        description: [
-          params.command,
-          typeof params.cwd === "string" ? `cwd: ${params.cwd}` : "",
-          typeof confirm.permission_request_reason === "string"
-            ? confirm.permission_request_reason
-            : "",
-        ]
-          .filter(Boolean)
-          .join("\n"),
+        ...description,
         subject: { type: "nativeAction" },
         actions: [
           { id: "allowOnce", label: "允许一次", effect: "allowOnce" },

@@ -257,6 +257,7 @@ class DesktopService {
       agentType: this.agentType,
       models: publicModels(pool, await this.modelSettings()),
       configuration: { modelSelection: "per-request", thinkingSelection: "per-request" },
+      interactions: { fileAndMcpApprovals: true },
       history: await this.historySettings(),
       ...(permissions ? { permissions } : {}),
     };
@@ -461,9 +462,11 @@ class DesktopService {
           });
         }
         const decide = input.kind === "approval" ? approvalDecision : questionDecision;
+        const nativePermissions = input.kind === "approval" && !!(await this.permissionSettings());
         const data = decide(
           this.interactions.current(sessionId, input.messageId, input.planItemId),
           input,
+          nativePermissions,
         );
         // Recheck after asynchronous history revalidation, before the only write.
         if (this.responseAttempts.has(key))

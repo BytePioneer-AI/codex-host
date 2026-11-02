@@ -50,6 +50,7 @@ class NativeInteractions {
         task_id: payload.task_id,
         confirm_info: confirm,
         tool_call_info: {
+          id: payload.tool_call_info.id,
           name: payload.tool_call_info.name,
           params: payload.tool_call_info.params,
         },
@@ -151,8 +152,65 @@ function questionDecision(current, input) {
   return { ...data, params: JSON.stringify({ questions, answers }) };
 }
 
-/** The native run-once action does not grant task/device rules or change global policy. */
-function approvalDecision(current, input) {
+const fileTools = new Set([
+  "create_file",
+  "edit_file_search_replace",
+  "Edit",
+  "MultiEdit",
+  "SearchReplace",
+  "write_to_file",
+  "Write",
+  "NotebookEdit",
+  "Read",
+  "view_file",
+  "view_files",
+  "delete_file",
+  "DeleteFile",
+]);
+
+function approvalKind(tool, params) {
+  if (!record(params)) throw fail("protocolError", "Invalid native approval parameters");
+  if (tool?.name === "RunCommand") {
+    if (typeof params.command !== "string" || !params.command.trim())
+      throw fail("protocolError", "Native command approval has no command");
+    return "command";
+  }
+  if (["run_mcp", "ReadMcpResource"].includes(tool?.name)) {
+    const server = tool.name === "ReadMcpResource" ? params.server : params.server_name;
+    const target = tool.name === "ReadMcpResource" ? params.uri : params.tool_name;
+    if (
+      typeof server !== "string" ||
+      !server.trim() ||
+      typeof target !== "string" ||
+      !target.trim()
+    )
+      throw fail("protocolError", "Native MCP approval has no server or target");
+    if (params.args !== undefined && Buffer.byteLength(JSON.stringify(params.args), "utf8") > 16384)
+      throw fail("unsupported", "Native MCP approval arguments exceed 16 KiB");
+    return "mcp";
+  }
+  if (fileTools.has(tool?.name)) {
+    const paths =
+      params.file_paths ??
+      [params.file_path ?? params.path ?? params.notebook_path, params.renameFilePath].filter(
+        Boolean,
+      );
+    if (
+      !Array.isArray(paths) ||
+      !paths.length ||
+      paths.length > 100 ||
+      !paths.every((path) => typeof path === "string" && path.trim() && path.length <= 4096)
+    )
+      throw fail("protocolError", "Native file approval has no valid paths");
+    if (typeof tool.id !== "string" || !tool.id.trim())
+      throw fail("protocolError", "Native file approval has no tool-call identity");
+    return ["delete_file", "DeleteFile"].includes(tool.name) ? "delete" : "file";
+  }
+  throw fail("unsupported", "This native tool confirmation is not implemented");
+}
+
+/** Per-execution confirmation only; never grant task/device rules or change global policy. */
+function approvalDecision(current, input, nativePermissions = true) {
   if (input.kind !== "approval" || !["allowOnce", "deny"].includes(input.action))
     throw fail("invalidRequest", "Unknown native approval action");
   const plan = current?.plan;
@@ -162,7 +220,7 @@ function approvalDecision(current, input) {
     current.sessionId !== input.sessionId ||
     current.messageId !== input.messageId ||
     plan?.id !== input.planItemId ||
-    plan?.tool_call_info?.name !== "RunCommand" ||
+    !record(plan?.tool_call_info) ||
     confirm?.confirm_status !== "unconfirmed" ||
     confirm.auto_confirm === true ||
     typeof input.interactionId !== "string" ||
@@ -171,19 +229,29 @@ function approvalDecision(current, input) {
   )
     throw fail("invalidState", "Native approval was closed or superseded");
   const params = parse(plan.tool_call_info.params);
-  if (!record(params) || typeof params.command !== "string" || !params.command.trim())
-    throw fail("protocolError", "Native command approval has no command");
+  const kind = approvalKind(plan.tool_call_info, params);
   if (typeof plan.task_id !== "string" || !plan.task_id)
-    throw fail("protocolError", "Native command approval has no task identity");
+    throw fail("protocolError", "Native approval has no task identity");
+  const allowed = input.action === "allowOnce";
+  const scoped =
+    nativePermissions &&
+    (kind === "command" ||
+      kind === "file" ||
+      (kind === "mcp" &&
+        ["mcp_rule_ask", "mcp_tool_execution"].includes(confirm.permission_request_reason) &&
+        Array.isArray(confirm.permission_request_mcp_tools) &&
+        confirm.permission_request_mcp_tools.length > 0));
   return {
     chat_session_id: input.sessionId,
     task_id: plan.task_id,
     plan_item_id: plan.id,
-    tool_name: "RunCommand",
+    ...(allowed && ["file", "delete"].includes(kind)
+      ? { toolcall_id: plan.tool_call_info.id }
+      : { tool_name: plan.tool_call_info.name }),
     interaction_instance_id: input.interactionId,
     type: "tool_confirm",
-    decision: input.action === "allowOnce" ? "confirm" : "skip",
-    permission_scope: input.action === "allowOnce" ? "execution" : "none",
+    decision: allowed ? "confirm" : "skip",
+    ...(scoped ? { permission_scope: allowed ? "execution" : "none" } : {}),
   };
 }
 

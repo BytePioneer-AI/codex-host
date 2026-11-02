@@ -650,6 +650,7 @@ export class TraeCnSession implements HarnessSession {
         (output) => {
           if (!this.#closed) this.#channel.emit(output);
         },
+        this.options.inspection.interactions?.fileAndMcpApprovals === true,
       );
       let terminal = false;
       let nativeError: TraeError | undefined;

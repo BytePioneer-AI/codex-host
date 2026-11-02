@@ -234,4 +234,74 @@ describe("External Thread follow-up queue", () => {
       await stopFixture(fixture);
     }
   });
+
+  it("projects the submitted input of a Desktop turn/start that carries a clientUserMessageId", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      // Desktop 26.1027's main-process queue manager submits follow-ups with a
+      // clientUserMessageId but no longer renders the input locally in the
+      // Renderer; the Host must project the user message with that clientId.
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "turn/start",
+        params: {
+          threadId,
+          input: text("follow-up from the main-process queue"),
+          clientUserMessageId: "desktop-follow-up-1",
+        },
+      });
+      const started = await fixture.collector.waitFor((message) => requestId(message, 2));
+      expect(started).toMatchObject({ result: { turn: { status: "inProgress" } } });
+      await expect(
+        fixture.collector.waitFor(
+          (message) =>
+            method(message, "item/started") &&
+            (messageParams(message).item as JsonObject).type === "userMessage",
+        ),
+      ).resolves.toMatchObject({
+        params: {
+          item: {
+            clientId: "desktop-follow-up-1",
+            content: [{ type: "text", text: "follow-up from the main-process queue" }],
+          },
+        },
+      });
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      session.succeedTurn();
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("does not project a synthetic user message for starts without a clientUserMessageId", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId, input: text("host-only start") },
+      });
+      const started = await fixture.collector.waitFor((message) => requestId(message, 2));
+      const turn = (started.result as JsonObject)?.turn as JsonObject | undefined;
+      const turnId = typeof turn?.id === "string" ? turn.id : undefined;
+      if (!turnId) throw new Error("Synthetic turn response has no ID");
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      session.appendText("ack");
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      // No userMessage item may be projected for a start Desktop still renders itself.
+      const userMessages = fixture.collector.messages.filter(
+        (message) =>
+          method(message, "item/started") &&
+          (messageParams(message).item as JsonObject)?.type === "userMessage",
+      );
+      expect(userMessages).toEqual([]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
 });

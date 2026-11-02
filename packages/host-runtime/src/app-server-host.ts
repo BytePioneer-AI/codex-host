@@ -4769,13 +4769,20 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
     }
+    const clientUserMessageId =
+      typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined;
     try {
       const started = await this.#beginExternalInputTurn(
         thread,
         text,
         undefined,
-        typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined,
+        clientUserMessageId,
         params[THREAD_REFERENCE_SOURCE_HOST_PARAM],
+        // Desktop 26.1027 routes follow-up submissions through its main-process
+        // queue manager, which no longer renders the submitted input locally in
+        // the Renderer. Project the user message so the Turn visibly carries its
+        // input; the clientId lets a Renderer that still renders optimally dedupe.
+        clientUserMessageId !== undefined,
       );
       try {
         await this.#writer.json(rpcEnvelope(request, { result: { turn: started.turn } }));

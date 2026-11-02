@@ -98,6 +98,45 @@ describe("KimiAdapter", () => {
     expect(adapter.harnessId).toBe("kimi-code");
   });
 
+  it.each([undefined, "yolo"] as const)(
+    "confirms native yolo mode for unattended creation with mode %s",
+    async (mode) => {
+      const adapter = new KimiAdapter(
+        { homeDirectory: tempDir },
+        { resolveExecutable: () => "kimi", createTransport: () => fakeTransport },
+      );
+      const result = await adapter.open({
+        kind: "create",
+        cwd: tempDir,
+        executionPolicy: "unattended-full-access",
+        ...(mode ? { permissionModeId: harnessPermissionModeIdSchema.parse(mode) } : {}),
+      });
+      expect(result.ok).toBe(true);
+      expect(fakeTransport.configOptionsSet).toEqual([{ configId: "mode", value: "yolo" }]);
+      if (result.ok) expect(result.value.initialState.effectivePermissionModeId).toBe("yolo");
+      await adapter.close();
+    },
+  );
+
+  it.each(["default", "plan", "auto"])(
+    "rejects conflicting unattended permission mode %s before opening a session",
+    async (mode) => {
+      const adapter = new KimiAdapter(
+        { homeDirectory: tempDir },
+        { resolveExecutable: () => "kimi", createTransport: () => fakeTransport },
+      );
+      const result = await adapter.open({
+        kind: "create",
+        cwd: tempDir,
+        executionPolicy: "unattended-full-access",
+        permissionModeId: harnessPermissionModeIdSchema.parse(mode),
+      });
+      expect(result).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+      expect(fakeTransport.openSession).not.toHaveBeenCalled();
+      await adapter.close();
+    },
+  );
+
   describe("inspect()", () => {
     it("returns notInstalled when executable cannot be resolved", async () => {
       const adapter = new KimiAdapter(

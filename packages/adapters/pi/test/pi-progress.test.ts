@@ -39,7 +39,7 @@ describe("Pi visible progress", () => {
     expect(counts.size).toBe(0);
   });
 
-  it("labels real retry and extension status without fabricating Assistant text", () => {
+  it("labels real retry and extension notifications without fabricating Assistant text", () => {
     expect(
       piStatusText({
         type: "auto_retry_start",
@@ -68,10 +68,10 @@ describe("Pi visible progress", () => {
         statusKey: "job",
         statusText: "Running",
       }),
-    ).toBe("Pi status (job)\n\nRunning");
+    ).toBeNull();
     expect(
       piStatusText({ type: "extension_ui_request", method: "setStatus", statusKey: "job" }),
-    ).toBe("Pi status (job) cleared.");
+    ).toBeNull();
   });
 
   it("renders native process summaries and outcomes instead of hiding XML as Markdown HTML", () => {

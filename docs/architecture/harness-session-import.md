@@ -6,7 +6,8 @@
 
 - Desktop 设置页提供明确的 Host 选择器。未手动选择时使用可唯一确定的 Composer Host；多个本地/远程标签页导致归属不明确时，要求先选择 Host，不显示为协议不支持。手动选择后，刷新仍使用该 Host，不随 Composer 改变。每次加载列表时捕获目标客户端，导入、打开及导航重试始终使用该列表所属 Host；切换 Host 清空旧列表并使在途结果失效，导入和导航重试期间禁止切换。目标 Host 不可用时不回退本地。独立控制台仍使用其连接的本地 Host。
 - 可选 Harness 来自该 Host 已加载、同时提供发现和解析能力的 Adapter，不使用 Renderer 内置 Harness 名单。
-- Host 的目录表示“实现了导入接口”，不保证当前原生运行时可用。导入页另外按 Renderer 已有的连接状态隐藏目标 Host 上确认“未安装”的 Harness（该状态在启动时已批量检查，导入页不再触发任何检查）；仍在检查、检查失败、版本不兼容或 Renderer 不认识的 Harness 照常展示。
+- Desktop 内置的 `durable` Host 不作为外部 Harness 导入来源；默认客户端属于该 Host 时，导入页选择本地。此规则按完整 Host ID 匹配，不影响名称为 durable 的远程连接。
+- Host 的目录表示“实现了导入接口”，不保证当前原生运行时可用。导入页优先复用目标 Host 的连接检测缓存，隐藏确认“未安装”的 Harness。缓存缺失、目录读取失败或相关 Harness 仍在检测时，复用连接页的目标 Host 检测，等待完成后重新读取缓存再展示选项；检测结果仍不完整时显示加载失败，不直接展示全部插件。手动刷新重新检测当前 Host，搜索、翻页和切换 Harness 复用完整缓存。认证失败、协议不兼容等已返回的检测错误不等于未安装，保留其导入入口，由原生导入接口判断历史是否可读。没有连接诊断接口的客户端沿用 Host 返回的导入来源。
 - DSH 仅允许本机、codexhost 托管的 Web；`0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-rc.1` 和 `0.2.1-rc.2` 已验证，低于 `0.1.7-rc.1` 的版本在启动 Web 前拒绝。其他 SemVer 版本可尝试连接及导入，须通过原生 Web 与历史协议校验；Legacy 协议与 V0/V3 已移除。不把版本号当作兼容保证。
 - 远程导入复用目标 Host 的公共导入 RPC，由其 Adapter 读取原生存储，不把 Transcript 复制到本机。远端需支持相应 RPC 和原生导入能力；既有 Harness 运行时限制保持不变。macOS 托管远程的 Claude Code、Cursor CLI、CodeBuddy 和 WorkBuddy 通过 Aqua Broker 转发导入能力，需同时更新远程 Host 与 Broker。
 - **Antigravity 未接入**：其 CLI 不向 headless 客户端提供已持久化的 Assistant 历史，codexhost 展示的历史来自按 Host Thread 保存的插件侧记录。导入的原生 Conversation 打开后没有可展示的历史，不满足“打开后恢复历史”的前提。

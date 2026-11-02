@@ -13,6 +13,7 @@
     "packages/adapters/workbuddy",
     "packages/adapters/trae-cn",
     "packages/adapters/cursor-cli",
+    "packages/adapters/devin",
     "packages/adapters/hermes",
     "packages/adapters/qoder",
     "packages/adapters/qoder-cn",

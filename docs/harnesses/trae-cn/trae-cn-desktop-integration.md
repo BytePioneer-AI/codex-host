@@ -113,6 +113,8 @@ Companion 0.1.8 通过 `interactions.fileAndMcpApprovals` 明确声明新增确�
 
 DeleteFile 已用工作区外专用文件完成单次允许 / 拒绝真实审批：允许后文件删除，拒绝后原内容不变，Interaction 各关闭一次，全局权限未修改，新进程恢复两条原历史。工作区内另一次直接删除未产生审批，不将它计入审批证明。MCP 确认的决策格式有原生界面源码和聚焦测试，实时审批仍待验收。
 
+MCP 服务就绪不等于原生 Agent 可调用。3.4.13 的独立项目 Echo MCP 已通过协议自测，用户开启项目级 MCP 后，桌面日志和工具目录均确认其已加载；实际 Builder 首轮仍返回工具不可用，没有工具执行或审批。只读 agent/get_agents 读取的内置 builder_v3.mcp_list 为空，原任务为 Finished。需继续核实原生 Agent 绑定 / 调用路径；未重发原任务，也未修改原生 Agent 配置或权限规则。
+
 Companion 0.1.10 补齐删除历史快照：终态 DeleteFile / delete_file 即使没有 can_show_diff 也按原用户消息读取快照。原生 deleted.after_content=null（以及 added.before_content=null）仅表示该侧不存在，可归一为空字符串；不把其他缺失内容补成空值。真实工作区删除已恢复完整删除 Diff，并在新 Node 进程中精确读取，原工具与回复未变。工作区外测试文件的原生快照返回空列表，故仅显示实际工具结果，不从当前磁盘补造历史 Diff；旧 Companion 漏失删除快照时明确提示升级。
 
 RunCommand 投影为公共 commandExecution，保留原生输出、目录、退出码、耗时与失败；后台结果观察及其限制见下文。沙箱重试可能把同一个 Plan Item 暂时覆盖成 `_sandbox_retry` 确认回执，之后才恢复真正命令结果。确认回执不结束命令，也不当作执行成功。真实允许与拒绝序列已加入回放用例。拒绝沙箱外执行可能保留原生 `failed` 和 exitCode=1，不能强改为整轮 cancelled。

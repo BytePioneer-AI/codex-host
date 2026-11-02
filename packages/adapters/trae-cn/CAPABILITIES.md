@@ -77,6 +77,8 @@ Thinking 选择：Companion 0.1.6 区分普通模型的 reasoning_effort_config�
 
 审批覆盖：Companion 0.1.8 明确声明文件 / MCP 审批能力，旧 Companion 不提供不可执行的按钮。文件操作的允许决策沿用原生 toolcall_id，拒绝使用 tool_name；删除沿用其无新增权限范围的专用格式。MCP / ReadMcpResource 沿用工具名，仅按原生新权限开关和请求元数据使用 execution / none，旧权限系统省略该字段。不提供 task / device 授权，不修改规则。界面保留目标文件、资源和 MCP 参数；未知格式或超限参数明确拒绝。文件修改和删除的允许及拒绝均已做真实验收；MCP 目前只有源码依据及回归测试。
 
+MCP 原生前提（2026-11-03）：已在独立项目准备无网络、无命令执行的本地 Echo MCP，协议自测通过；用户在原生安全确认后开启了项目级 MCP。TRAE CN 桌面日志确认该项目的测试服务及工具已加载，Native 也生成了工具目录。然而实际 Builder 首轮返回工具不可用，未调用 MCP、未产生审批；随后只读 agent/get_agents 确认当前内置 builder_v3 的 mcp_list 为空，原任务为 Finished。尚需核实原生 Agent 绑定 / 调用路径，不以服务已加载、工具目录可见或模型回复代替 MCP 执行与审批验收；原任务保留且未重发。
+
 删除快照：Companion 0.1.10 对终态 DeleteFile / delete_file 读取原用户消息快照，不依赖原生未提供的 can_show_diff。仅将 deleted.after_content=null 和 added.before_content=null 解释为不存在的一侧，其他缺失正文仍拒绝。真实工作区内删除的完整 before_content 已恢复成 fileChange，并通过新进程精确冷读；原工具与回复未变，没有重发删除。工作区外专用文件通过原生单次允许后确实删除、拒绝后保持原内容；该外部文件的原生快照返回空列表，因此只保留实际工具结果，不从当前文件系统补造历史 Diff。旧 Companion 缺少删除快照时明确要求升级。
 
 Edit 参数清空：原生执行结束会清空 old_string / new_string。工具 Item 的固定参数排除这两个原生可变字段，实际改动仍来自消息快照 Diff；路径与其他稳定参数继续校验。真实允许后曾触发参数不变保护，已用规范化原生序列复现并修复；新一轮不同内容的修改完成后，四轮历史与冷快照一致。旧成功轮、拒绝轮和取消轮均保留，没有重发原任务。
@@ -92,6 +94,8 @@ Edit 参数清空：原生执行结束会清空 old_string / new_string。工具
 后台观察（2026-11-03）：最终完整 Adapter / VSIX / 插件 / 搬移 Host 族 236 项通过；typecheck、lint / boundaries 与改动格式通过。覆盖拒绝启动、执行身份变化、终态输出仍在刷新、后续轮并行、观察关闭及后台中冷恢复。真实 3.4.13 + 开发 Companion 0.1.9：在原专用 Thread 中完成后台新轮与后续纯文本轮，父轮 / 后续轮先结束，原命令随后输出 TRAE_CN_HOST_BACKGROUND_NEXT_DONE、exitCode=0；历史进行中叠加正确。Companion 进程退出后重建，两个新 Host 精确读取同一三轮历史，原前缀和三条唯一映射不变，Native Finished。先前脚本分别误选 thinking 兼容 Item、误读完成帧中的省略输出，保留失败记录后按真实增量和历史核对；没有重发旧命令。安装包包含十二个 CJS 资源。
 
 删除补验（2026-11-03）：TRAE CN 3.4.13 / 开发 Companion 0.1.10。原工作区删除在只读快照中确认完整旧内容和 null 新内容，经公共 Adapter 及新 Node 进程恢复出相同删除 Diff。另用两个工作区外专用文件分别验收 DeleteFile 单次允许 / 拒绝，文件系统结果与决定一致，Interaction 各关闭一次，全局权限哈希不变；新进程原样恢复两条历史。外部文件无原生 Diff 的限制单列；没有重发原删除。Adapter / 插件 / VSIX / 搬移 Host 族 241 项、根构建、typecheck 和改动文件 ESLint 通过。上一 Head ed6719b7 的四平台 CI 全部通过；删除修复 Head 的 CI 需另行检查。
+
+0.17.0 基线（2026-11-03）：91c9cd95 的四平台 CI 全部通过，run 41487098357。补丁分支随后合入上游 b3094d5a（0.17.0），保留上游新增 Harness 与功能，不用旧 Host 覆盖日常运行时。根 build:typescript、build:renderer、typecheck、lint / boundaries 通过；Adapter / 插件 / VSIX / 搬移 Host 与完整预装组合 264 项通过、1 项跳过；API 2 恢复、Runtime、Loader、Broker 和恢复 Schema 聚焦集 142 项通过、4 项跳过（含本机无法建立的符号链接用例）。没有合并为累计测试数；合入后的新 Head 需单独 CI。当前用户窗口仍未替换或重启。
 
 后台结果保护检查：11 项源码对应的后台 / 前台边界用例；修复前其中 9 项失败，补充一项 running 数据状态后全通过。完整 Adapter、独立插件 / VSIX 与搬移 Host 发行检查共 208 项通过；typecheck、lint / boundaries 及改动代码格式通过。没有执行原生后台任务，故不作为后台控制或自主 Turn 的真实验收。
 

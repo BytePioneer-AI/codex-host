@@ -37,6 +37,16 @@ describe("workflow and form contracts", () => {
     expect(workflow).toContain("name: Check Linux ARM64");
   });
 
+  it("builds macOS packages on supported runners with matching architectures", async () => {
+    const workflow = await read(".github/workflows/release-packages.yml");
+    expect(workflow).toMatch(
+      /- target: macos-arm64\s+runner: macos-15\s+rustTarget: aarch64-apple-darwin/u,
+    );
+    expect(workflow).toMatch(
+      /- target: macos-x64\s+runner: macos-15-intel\s+rustTarget: x86_64-apple-darwin/u,
+    );
+  });
+
   it("cancels superseded PR runs without cancelling main release evidence", async () => {
     const workflow = await read(".github/workflows/ci.yml");
     expect(workflow).toContain(

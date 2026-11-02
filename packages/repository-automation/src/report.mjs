@@ -49,7 +49,7 @@ export function renderReport({ item, ci, errors = new Map() }) {
     );
     const names = {
       "Check windows-latest": "Windows",
-      "Check macos-14": "macOS",
+      "Check macos-15": "macOS",
       "Check ubuntu-22.04": "Linux x64",
       "Check Linux ARM64": "Linux ARM64",
     };

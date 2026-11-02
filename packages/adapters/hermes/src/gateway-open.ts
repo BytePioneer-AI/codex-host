@@ -10,7 +10,6 @@ import { type HermesGatewayTransport, gatewayString, gatewayRecord } from "./gat
 import { HermesGatewayHistory, HermesGatewayHistoryError } from "./gateway-history.js";
 import { HermesGatewaySessionTransport } from "./gateway-session-transport.js";
 import { decodeHermesModelRefId } from "./hermes-models.js";
-import { resolveGatewayModel } from "./gateway-configuration.js";
 import { HermesSession } from "./hermes-session.js";
 
 async function sameDirectory(left: string, right: string): Promise<boolean> {
@@ -116,8 +115,12 @@ export async function openGatewaySession(
   let nativeRef = source;
   let sourceHistory: HermesGatewayHistory | undefined;
   try {
-    await transport.prepareSession();
-    await transport.start();
+    // A warm transport from the pool already prepared (delegation skill) and
+    // started (bridge + capabilities); skip straight to the session RPCs.
+    if (!transport.started) {
+      await transport.prepareSession();
+      await transport.start();
+    }
     if (source && (input.kind === "fork" || input.kind === "rollbackLastTurn")) {
       sourceHistory = new HermesGatewayHistory({
         python: transport.runtime,
@@ -129,42 +132,65 @@ export async function openGatewaySession(
         input.kind === "fork" ? { checkpoint: input.checkpoint } : { rollbackLastTurn: true },
       );
     }
-    const choice = model ? await resolveGatewayModel(transport, model) : null;
+    // Canonical create/mutate run Hermes's own provider-aware model resolution
+    // (switch_model) server-side, so the qualified id goes over the wire as-is
+    // and no helper interpreter is spawned to pre-split it.
     const response = await transport.request(
       nativeRef ? "session.resume" : "session.create",
+      // Canonical wire (hermes-gateway-v1, CanonicalCreateParams/CanonicalResumeParams):
+      // no close_on_disconnect / eager_build keys, and the effort key is "reasoning".
       nativeRef
-        ? { session_id: nativeRef.nativeSessionId, eager_build: true, omit_messages: true }
+        ? { session_id: nativeRef.nativeSessionId, omit_messages: true }
         : {
             cwd: input.cwd,
-            close_on_disconnect: true,
-            ...(choice ? choice : {}),
+            ...(model ? { model } : {}),
             ...(input.kind === "create" && input.thinkingOptionId
-              ? { reasoning_effort: input.thinkingOptionId }
+              ? { reasoning: input.thinkingOptionId }
               : {}),
           },
     );
     const runtimeId = gatewayString(response.session_id);
     const storedId = nativeRef?.nativeSessionId || gatewayString(response.stored_session_id);
     if (!runtimeId || !storedId) throw new Error("Hermes gateway did not return Session identity");
-    let info = gatewayRecord(response.info);
-    if (info.lazy === true) info = await transport.waitForSession(runtimeId);
+    const info = gatewayRecord(response.info);
+    // Canonical lazy sessions build their agent on the first prompt and never emit
+    // a non-lazy session.info event (the official TUI renders lazy info with
+    // placeholders), so waiting here always times out. The lazy snapshot carries
+    // cwd/model/provider already.
     const nativeCwd = gatewayString(info.cwd);
     if (nativeCwd && !(await sameDirectory(nativeCwd, input.cwd)))
       throw new HermesGatewayHistoryError(
         "unsupported",
         "Hermes resumed a different native working directory",
       );
-    const bridge = new HermesGatewaySessionTransport(transport, runtimeId, storedId, info);
-    if (!nativeRef)
-      await bridge.history.ensureCreated({
-        cwd: input.cwd,
-        model: gatewayString(info.model),
-        provider: gatewayString(info.provider),
-        reasoningEffort: gatewayString(info.reasoning_effort),
-      });
-    const physicalId = await bridge.history.resolvePhysicalSessionId();
-    if (gatewayString(info.stored_session_id) !== physicalId)
-      throw new Error("Hermes live Session and persisted history identities differ");
+    const bridge = new HermesGatewaySessionTransport(
+      transport,
+      runtimeId,
+      storedId,
+      info,
+      {
+        revision: response.revision,
+        generation: response.execution_generation,
+        subscriptionId: response.subscription_id,
+      },
+      transport.delegationGuidance,
+    );
+    // An approval the gateway already waits on rides the create/resume
+    // snapshot's prompts list; it is answered on the first turn context.
+    bridge.adoptPendingPrompts(response.prompts);
+    // Canonical create persists the state.db row itself (source, cwd, frozen
+    // model/reasoning policy), and a fresh session's public id IS its physical
+    // id, so the create path needs no helper interpreter at all; resume/fork
+    // still reconcile through the native reader. After a compaction rotation
+    // the public Native Ref and the physical transcript id legitimately
+    // diverge (the public id is stable, the physical row moves), so identity
+    // reconciliation only requires the physical row to RESOLVE — never to be
+    // equal.
+    if (nativeRef) {
+      // Throws when the persisted row cannot be resolved at all; a resolved
+      // row that differs from the public id is a legal compaction rotation.
+      await bridge.history.resolvePhysicalSessionId();
+    }
     // Every selection is confirmed by the live native agent, including persisted runtime settings.
     if (model) await bridge.setModel(model);
     if (input.kind !== "fork" && input.thinkingOptionId)

@@ -32,6 +32,7 @@ export type HarnessPluginDiagnosticCode =
   | "notFound"
   | "incompatibleVersion"
   | "loadFailed"
+  | "launchSettingsUnreadable"
   | "loadTimeout"
   | "warmupFailed"
   | "cleanupFailed";
@@ -230,6 +231,7 @@ async function loadAdapter(
 
 class PluginLoadTimeout extends Error {}
 class PluginLoadCancelled extends Error {}
+class PluginLaunchSettingsUnreadable extends Error {}
 
 /** Discover all manifests before importing any module, so duplicate IDs never win a race. */
 export async function loadHarnessPlugins(
@@ -314,7 +316,10 @@ export async function loadHarnessPlugins(
         try {
           if (manifest.icon) descriptor.icon = await readPluginIcon(candidate.root, manifest.icon);
           const launchCommand = descriptor.launchCommand
-            ? await options.launchCommandForPlugin?.(manifest.id)
+            ? await options.launchCommandForPlugin?.(manifest.id).catch((error: unknown) => {
+                // Do not fall back to discovery: the saved installation path was explicit.
+                throw new PluginLaunchSettingsUnreadable(undefined, { cause: error });
+              })
             : undefined;
           adapter = await loadAdapter(
             candidate,
@@ -330,7 +335,12 @@ export async function loadHarnessPlugins(
           }
         } catch (error) {
           if (error instanceof PluginLoadCancelled) return;
-          failure = error instanceof PluginLoadTimeout ? "loadTimeout" : "loadFailed";
+          failure =
+            error instanceof PluginLoadTimeout
+              ? "loadTimeout"
+              : error instanceof PluginLaunchSettingsUnreadable
+                ? "launchSettingsUnreadable"
+                : "loadFailed";
           adapter = unavailableAdapter(descriptor, failure);
         }
       }

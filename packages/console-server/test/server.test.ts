@@ -71,6 +71,7 @@ function fakeHarnesses(): ConsoleHarnesses {
     links: null,
     icon: null,
     launchPath: null as string | null,
+    launchPathError: null as string | null,
   };
   return {
     list: vi.fn(async () => [harness]),
@@ -123,6 +124,22 @@ function rawRequest(port: number, host: string): Promise<number> {
   });
 }
 
+function rawGet(port: number, requestPath: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(
+      { host: "127.0.0.1", port, path: requestPath, headers: { host: `127.0.0.1:${port}` } },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => (body += chunk));
+        response.on("end", () => resolve({ status: response.statusCode ?? 0, body }));
+      },
+    );
+    request.on("error", reject);
+    request.end();
+  });
+}
+
 beforeEach(async () => {
   directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-console-server-"));
 });
@@ -142,6 +159,16 @@ describe("console server", () => {
       appDirectory: "/opt/codexhost/app",
     });
     expect(await rawRequest(port, `attacker.example:${port}`)).toBe(421);
+  });
+
+  it("rejects a malformed request target as a bad request", async () => {
+    const { port } = await start();
+    await expect(rawGet(port, "//%%")).resolves.toEqual({
+      status: 400,
+      body: `${JSON.stringify({ error: "Bad Request" })}\n`,
+    });
+    await expect(rawGet(port, "/%%")).resolves.toMatchObject({ status: 404 });
+    await expect(rawGet(port, "/api/health")).resolves.toMatchObject({ status: 200 });
   });
 
   it("serves the overview without a login", async () => {

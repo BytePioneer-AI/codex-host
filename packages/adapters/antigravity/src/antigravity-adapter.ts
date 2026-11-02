@@ -138,6 +138,11 @@ interface ActiveTurn {
   logPath: string;
   agentItem: HostAgentMessageItem | null;
   agentText: string;
+  /**
+   * Every agent text shown this Turn, across the messages that tool and
+   * Subagent steps split it into. agy's `result.response` joins those segments.
+   */
+  turnAgentText: string;
   tools: Map<number, HostItem>;
   completedItems: HostItemSnapshot[];
   stderr: string;
@@ -166,6 +171,37 @@ interface ActiveTurn {
    * its parameters when the step opens, not when it ends. */
   pendingSteps: Map<number, AntigravityStepUpdateEvent["step_update"]>;
   httpsPort: number | null;
+}
+
+/**
+ * agy's `result.response` is the Turn's agent text with every segment joined,
+ * including the ones shown before tool steps. Compared with what the stream
+ * already showed (ignoring whitespace, which agy may join differently), returns
+ * the tail the stream never showed: `""` when the reply holds nothing new, or
+ * `null` when the stream showed nothing or the reply does not match it.
+ */
+function unstreamedReplyTail(streamed: string, reply: string): string | null {
+  const shown = streamed.replace(/\s+/gu, "");
+  if (shown === "") return null;
+  const replied = reply.replace(/\s+/gu, "");
+  if (shown.endsWith(replied)) return "";
+  let at = 0;
+  let matched = 0;
+  while (matched < shown.length && at < reply.length) {
+    const char = reply[at] ?? "";
+    if (/\s/u.test(char)) {
+      at += 1;
+      continue;
+    }
+    if (char !== shown[matched]) return null;
+    at += 1;
+    matched += 1;
+  }
+  if (matched < shown.length) return null;
+  // Whitespace the stream already ended with is not part of the tail.
+  const tail = reply.slice(at);
+  const shownTrailing = /\s*$/u.exec(streamed)?.[0] ?? "";
+  return tail.startsWith(shownTrailing) ? tail.slice(shownTrailing.length) : tail;
 }
 
 const antigravityHarnessId = harnessIdSchema.parse("antigravity");
@@ -816,6 +852,7 @@ class AntigravitySession implements HarnessSession {
       logPath,
       agentItem: null,
       agentText: "",
+      turnAgentText: "",
       tools: new Map(),
       completedItems: [],
       stderr: "",
@@ -1013,7 +1050,13 @@ class AntigravitySession implements HarnessSession {
       : response;
     const repliedThisTurn = Boolean(active.agentItem) || turnReply.trim() !== "";
     if (response) this.#lastResultResponse = response;
-    if (turnReply.trim() !== "") this.#appendOrSyncAgentText(active, turnReply, false);
+    if (turnReply.trim() !== "") {
+      // The streamed segments are already on screen as separate messages, so
+      // only text the stream never showed is added to the last one.
+      const unshown = unstreamedReplyTail(active.turnAgentText, turnReply);
+      if (unshown === null) this.#appendOrSyncAgentText(active, turnReply, false);
+      else if (unshown.trim() !== "") this.#appendAgentText(active, unshown);
+    }
     const safeTurnId =
       event.result.num_turns !== undefined && event.result.num_turns !== null
         ? `turn:${event.result.num_turns}`
@@ -1257,6 +1300,7 @@ class AntigravitySession implements HarnessSession {
   }
 
   #appendAgentText(active: ActiveTurn, text: string): void {
+    active.turnAgentText += text;
     if (!active.agentItem) {
       active.agentItem = { type: "agentMessage", itemId: this.#newItemId(), text };
       active.agentText = text;

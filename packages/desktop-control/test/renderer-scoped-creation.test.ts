@@ -196,6 +196,51 @@ it("keeps drafts independent and restores native settings without default persis
   expect(b.modelSettings).toBe(original.modelSettings);
 });
 
+it.each(["restore", "dispose"])(
+  "restores native settings when %s precedes queued draft updaters",
+  (operation) => {
+    const writer = createScopedDraftModelWriter();
+    const original = { modelSettings: { model: "native-model" }, isManuallyChanged: false };
+    let draft: Record<string, unknown> = original;
+    const queued: ((current: typeof draft) => typeof draft)[] = [];
+    const binding = {
+      usesAccountPreferences: false,
+      update: (updater: (current: typeof draft) => typeof draft) => {
+        queued.push(updater);
+      },
+    };
+    writer.apply("draft", binding, "codexhost/pi-native");
+    writer.apply("draft", binding, "codexhost/claude-code-native");
+    if (operation === "restore") writer.apply("draft", binding, null);
+    else writer.dispose();
+    for (const updater of queued) draft = updater(draft);
+    expect(draft).toEqual(original);
+    expect(writer.has("draft")).toBe(false);
+    expect(writer.model("draft")).toBeNull();
+  },
+);
+
+it("keeps the original native settings across queued external selections", () => {
+  const writer = createScopedDraftModelWriter();
+  const original = { modelSettings: { model: "native-model" }, isManuallyChanged: false };
+  let draft: Record<string, unknown> = original;
+  const queued: ((current: typeof draft) => typeof draft)[] = [];
+  const binding = {
+    usesAccountPreferences: false,
+    update: (updater: (current: typeof draft) => typeof draft) => {
+      queued.push(updater);
+    },
+  };
+  writer.apply("draft", binding, "codexhost/pi-native");
+  writer.apply("draft", binding, "codexhost/claude-code-native");
+  for (const updater of queued.splice(0)) draft = updater(draft);
+  expect(draft.modelSettings).toMatchObject({ model: "codexhost/claude-code-native" });
+  writer.apply("draft", binding, null);
+  for (const updater of queued) draft = updater(draft);
+  expect(draft).toEqual(original);
+  expect(writer.has("draft")).toBe(false);
+});
+
 it.each([false, true])(
   "updates the native settings mode even when the transport Model is unchanged (%s)",
   (usesAccountPreferences) => {

@@ -98,6 +98,31 @@ async function createProvisional(store: MappingStore, value: string): Promise<Ho
   return hostThreadId;
 }
 
+async function createReadyThread(store: MappingStore, value: string, title: string) {
+  const hostThreadId = hostThreadIdSchema.parse(value);
+  await store.createProvisional({
+    hostThreadId,
+    createRequestId: `create-${value}`,
+    harnessId,
+    cwd: "/synthetic",
+    title,
+    transportModelId: "codexhost/pi-native",
+    ephemeral: false,
+    historyMode: "legacy",
+  });
+  await store.commitReady({
+    hostThreadId,
+    nativeSessionRef: nativeSessionRefSchema.parse({
+      harnessId,
+      nativeSessionId: `native-${value}`,
+      locator: { sessionFile: `/synthetic/${value}.jsonl` },
+      formatVersion: 1,
+    }) as NativeSessionRef,
+    turnMappings: [],
+  });
+  return hostThreadId;
+}
+
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories
@@ -933,6 +958,72 @@ describe("mapping-store package", () => {
       title: "External Thread",
     });
     await recovered.close();
+  });
+
+  it("quarantines Thread metadata with a record whose primary and backup are unreadable", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    await first.updateMetadata(threadId, { projectId: "project-a", daybreakEnabled: true });
+    await first.close();
+    const metadataPath = path.join(directory, "thread-metadata", `${threadId}.json`);
+    const metadataContent = await readFile(metadataPath, "utf8");
+
+    await writeFile(path.join(directory, "threads", `${threadId}.json`), "{broken", "utf8");
+    await writeFile(path.join(directory, "backups", `${threadId}.json`), "{broken", "utf8");
+    const reopened = new MappingStore({ directory, now: () => new Date(1_700_000_000_000) });
+    await reopened.initialize();
+    await expect(reopened.getThread(threadId)).resolves.toBeNull();
+    await reopened.close();
+
+    await expect(readdir(path.join(directory, "thread-metadata"))).resolves.toEqual([]);
+    const quarantined = `${threadId}.json.1700000000000.invalid`;
+    await expect(readdir(path.join(directory, "quarantine"))).resolves.toEqual([
+      quarantined,
+      `${quarantined}.metadata`,
+    ]);
+    await expect(
+      readFile(path.join(directory, "quarantine", `${quarantined}.metadata`), "utf8"),
+    ).resolves.toBe(metadataContent);
+  });
+
+  it("reloads from disk when retrying after a partially loaded initialization fails", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    await first.updateMetadata(threadId, { projectId: "project-a" });
+    const changed = await createReadyThread(first, "thread-changed", "Loaded title");
+    const removed = await createReadyThread(first, "thread-removed", "Removed Thread");
+    await first.close();
+    const primaryPath = path.join(directory, "threads", `${threadId}.json`);
+    const primaryContent = await readFile(primaryPath, "utf8");
+    const record = JSON.parse(primaryContent) as { createRequestId: string };
+    record.createRequestId = `create-${changed}`;
+    await writeFile(primaryPath, JSON.stringify(record), "utf8");
+    const reopened = new MappingStore({ directory });
+    await expect(reopened.initialize()).rejects.toMatchObject({
+      code: "DUPLICATE_CREATE_REQUEST",
+    });
+    await expect(readFile(path.join(directory, "store.lock"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+
+    const changedPath = path.join(directory, "threads", `${changed}.json`);
+    const changedRecord = JSON.parse(await readFile(changedPath, "utf8")) as { title: string };
+    changedRecord.title = "Title changed on disk";
+    await writeFile(changedPath, JSON.stringify(changedRecord), "utf8");
+    await rm(path.join(directory, "threads", `${removed}.json`));
+    await rm(path.join(directory, "backups", `${removed}.json`), { force: true });
+    await writeFile(primaryPath, primaryContent, "utf8");
+    await reopened.initialize();
+    await expect(reopened.getThread(threadId)).resolves.toMatchObject({ projectId: "project-a" });
+    await expect(reopened.getThread(changed)).resolves.toMatchObject({
+      title: "Title changed on disk",
+    });
+    await expect(reopened.getThread(removed)).resolves.toBeNull();
+    await reopened.close();
   });
 
   it("cleans a provisional create without Native identity on restart", async () => {

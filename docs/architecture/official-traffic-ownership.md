@@ -21,6 +21,10 @@ Renderer 请求桥不使用 Host 上最后一次选择覆盖 `thread/start`。�
 
 Desktop 26.1027 的主进程 Manager 通过 Renderer app scope 中按 Host 发布的 RPC 连接发现。存在可用的旧 Renderer Manager 时保留旧路径；仅看到旧注册表但没有可用 Manager 时，释放临时旧路由并尝试已识别的主进程 RPC。没有可用连接时仍保持不可用，不以挂载注册表本身作为就绪依据。
 
+RPC 布局下的 Windows Remote Control 复用已加载模块中的原生 Manager 工厂、RPC 会话与界面控制器。Controller 通过结构契约及工厂调用关系发现引用，不依赖混淆符号名，不复制 Desktop 实现，不修改签名应用。作用域和服务必须具有已验证的自身属性，不能把可动态生成任意成员的 RPC Proxy 当作作用域。引用仅用于当前 Renderer 文档，发现结束释放 CDP 对象组；不支持的模块目录只探测一次，目录变化后才可重新探测。
+
+界面控制器的服务入口为 Windows Remote Control 提供独立原生 Manager，其余 Host 委托官方服务。仅改写公开连接信号不能接入界面的历史订阅、审批和重放协调，因此使用原生控制器维护这些关系。每次物理连接世代变化或订阅租约释放都淘汰旧 Manager 和桥接，延迟平台探测不得发布到新连接。控制帧直接使用保留的上游 RPC，避免与等待控制帧响应的逻辑请求争用同一队列；清理完成后才释放上游句柄。
+
 该版本的官方模型目录可能过滤草稿中的外部 transport Model。RPC 路由依据已登记的 `clientThreadId`，在本次 `startConversation` 发出时把官方回退模型替换为外部 carrier（创建参数没有 Model 时同样写入 carrier），保留输入、工作区、Thinking、原生回调及传输参数；不修改原始模式对象。不属于已登记草稿的创建、无法识别的参数和明确指定另一个外部 carrier 的创建保持原样。可识别的外部预热请求一律带上预热标记：请求本身指定了外部 carrier 时保留其 Harness 与 Model，否则使用当前已选择的 carrier；Host 据此把它登记为可丢弃的预热，而不是发布新 Thread。没有外部选择的官方预热及无法识别的 carrier 保持原样。
 
 普通草稿的 transport Model 同时按本地 Host 连接和 `client-new-thread` 身份登记。原生 `startConversation` 进入时读取本次创建的 `clientThreadId`，在异步准备前捕获对应的路由，只替换这次创建的 Model，保留权限、工作区、输入、Thinking 和原生回调。后台发送派生新客户端身份时，通过同一草稿的原生 collaboration-mode 对象关联来源；该关联使用不进入 JSON 协议的 Symbol，并随原生浅复制保留。Codex 的备用额度模式不能改变外部 Thread 的 Harness。官方创建、其他草稿与显式定时任务没有该草稿关联时，保持传入配置；切回 Codex、Adapter 卸载和连接释放会清理路由。

@@ -150,6 +150,7 @@
 | [`platforms/macos/macos-native-tools.md`](platforms/macos/macos-native-tools.md) | macOS Browser 与 Computer Use 辅助 app-server 路由；修改原生工具兼容性时阅读。 |
 | [`platforms/macos/native-aqua-broker.md`](platforms/macos/native-aqua-broker.md) | 在 macOS Aqua 会话运行远程原生 Harness 插件的 Broker；修改 Broker 时阅读。 |
 | [`platforms/macos/macos-process-observation.md`](platforms/macos/macos-process-observation.md) | macOS shim 进程树观察、路径读取优化与安全不变量；修改进程监管时阅读。 |
+| [`platforms/macos/cold-start-automation.md`](platforms/macos/cold-start-automation.md) | 可选 macOS 冷启动自动化：保留原 App 入口，通过后台通知静默调用既有 launcher；包含安装、移除及重启限制。 |
 | [`platforms/windows/windows-tool-compatibility.md`](platforms/windows/windows-tool-compatibility.md) | Windows Browser Use、Computer Use 和辅助进程路由；修改 Windows 原生工具支持时阅读。 |
 
 ## 维护

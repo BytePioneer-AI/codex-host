@@ -44,6 +44,7 @@
     "test:typescript": "npm run build:typescript && vitest run --config tests/vitest.config.js",
     "test:deepseek:coverage": "npm run build:typescript && vitest run --config tests/vitest.deepseek-coverage.config.js",
     "test:rust": "cargo test --workspace --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools",
+    "test:macos:auto-launch": "python3 tools/macos-auto-launch/test.py",
     "test": "npm run test:typescript && npm run test:rust",
     "test:e2e": "playwright test --config tests/e2e/playwright.config.js",
     "gate:a:preflight": "node tools/gate-a/run.mjs preflight",

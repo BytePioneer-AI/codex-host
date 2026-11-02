@@ -69,6 +69,17 @@ function directRendererInstaller(): string {
       replaceWithNative: (dispose) => {
         const native = discover(document);
         if (!native.managers.length && !native.registries.length) return null;
+        // Keep 0.17's RPC fallback while a visible legacy registry has no usable manager.
+        const hosts = new Set(['local', ...native.hostIds]);
+        for (const manager of native.managers) hosts.add(manager.getHostId());
+        const ready = [...hosts].some((hostId) => {
+          try {
+            return resolveRendererHostManager(native, hostId, requestManagerFromHookState) !== null &&
+              (!hostId.startsWith('remote-control:') ||
+                readRendererConnectionGeneration(findRendererAppScopeStore(document), hostId) !== null);
+          } catch { return false; }
+        });
+        if (!ready) return null;
         dispose();
         return installNative();
       },

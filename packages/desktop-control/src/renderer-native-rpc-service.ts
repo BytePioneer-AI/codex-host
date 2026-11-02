@@ -99,9 +99,12 @@ export function createNativeRpcService(
             listener({ status: "ready", manager: owner });
             return;
           }
-          remote = createRemote(hostId, owner);
-          routes.set(hostId, remote.route);
-          listener({ status: "ready", manager: remote.rpc });
+          const created = createRemote(hostId, owner);
+          remote = created;
+          await created.ready;
+          if (!active || current !== generation || owner !== upstream) return;
+          routes.set(hostId, created.route);
+          listener({ status: "ready", manager: created.rpc });
         } catch {
           if (active && current === generation) {
             // A discovery/construction failure leaves native Codex usable. No

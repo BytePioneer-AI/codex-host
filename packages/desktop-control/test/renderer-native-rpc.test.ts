@@ -110,6 +110,9 @@ function fixture() {
     [Symbol.dispose]: vi.fn(),
     getCodexHome: vi.fn(() => rpcResult(Promise.resolve("C:\\Users\\tester\\.codex"))),
     sendRequest: vi.fn(() => rpcResult(Promise.resolve({}))),
+    getConversation: vi.fn(() => rpcResult(Promise.resolve(null))),
+    getWorkInProgress: vi.fn(() => rpcResult(Promise.resolve([]))),
+    subscribe: vi.fn(() => rpcResult(Promise.resolve(lease))),
   };
   const scope = {
     node: {
@@ -162,8 +165,7 @@ function fixture() {
   };
 }
 const settle = async () => {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 5; i++) await Promise.resolve();
 };
 
 describe("native RPC remote service", () => {
@@ -239,6 +241,47 @@ describe("native RPC remote service", () => {
     f.connection("connected");
     await settle();
     expect(f.create).toHaveBeenCalledOnce();
+    (await pending)[Symbol.dispose]();
+    f.adapted.service[Symbol.dispose]();
+  });
+
+  it("does not publish a manager whose interaction subscriptions finish after disconnect", async () => {
+    const f = fixture();
+    let resolve: () => void = () => {};
+    const create = f.create.getMockImplementation();
+    if (!create) throw new Error("Missing fixture factory");
+    f.create.mockImplementation(() => ({
+      ...create(),
+      ready: new Promise<void>((done) => {
+        resolve = done;
+      }),
+    }));
+    const pending = f.subscribe();
+    f.ready();
+    await settle();
+    expect(f.adapted.route(f.hostId)).toBeNull();
+    f.connection("disconnected");
+    resolve();
+    await settle();
+    expect(f.adapted.route(f.hostId)).toBeNull();
+    expect(f.contexts[0]?.dispose).toHaveBeenCalledOnce();
+    (await pending)[Symbol.dispose]();
+    f.adapted.service[Symbol.dispose]();
+  });
+
+  it("restores the native service when interaction subscriptions cannot be established", async () => {
+    const f = fixture();
+    const create = f.create.getMockImplementation();
+    if (!create) throw new Error("Missing fixture factory");
+    f.create.mockImplementation(() => ({
+      ...create(),
+      ready: Promise.reject(new Error("Unsupported subscription")),
+    }));
+    const pending = f.subscribe();
+    f.ready();
+    await settle();
+    expect(f.updates.at(-1)).toEqual({ status: "ready", manager: f.manager });
+    expect(f.contexts[0]?.dispose).toHaveBeenCalledOnce();
     (await pending)[Symbol.dispose]();
     f.adapted.service[Symbol.dispose]();
   });

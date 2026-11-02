@@ -11,6 +11,13 @@ export interface NativeRpcManager extends NativeRpcLease {
   dup(): NativeRpcManager;
   getCodexHome(): NativeRpcResult<string>;
   sendRequest(method: string, params: unknown, options?: unknown): NativeRpcResult<unknown>;
+  getConversation(threadId: string): NativeRpcResult<unknown>;
+  getWorkInProgress(): NativeRpcResult<unknown>;
+  subscribe(
+    input: { key: { hostId: string }; listener(value: unknown): void } & (
+      { type: "event"; event: string } | { type: "notification"; methods: readonly string[] }
+    ),
+  ): NativeRpcResult<NativeRpcLease>;
 }
 export type NativeRpcState =
   | { status: "ready"; manager: NativeRpcManager }

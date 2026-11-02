@@ -9,6 +9,7 @@ import type {
   DraftPrewarmPolicyTarget,
 } from "./renderer-draft-prewarm-runtime.js";
 import type { createNativeRpcChannel } from "./renderer-native-rpc-channel.js";
+import type { retainNativeRpcInteractions } from "./renderer-native-rpc-interactions.js";
 
 /** Own one native Renderer manager and one bridge for a physical connection.
  * Logical requests use Desktop's queue; tunnel control must bypass that queue. */
@@ -19,11 +20,13 @@ export function createNativeRemoteManager(
   target: DraftPrewarmPolicyTarget,
   createPolicy: typeof createDraftPrewarmPolicyBridge,
   createChannel: typeof createNativeRpcChannel,
+  retainInteractions: typeof retainNativeRpcInteractions,
 ) {
   const source = components.scope.get(components.requestDefinition, hostId) as NativeRequestClient;
   const upstream = original.dup();
   let manager: NativeOwnedManager | undefined;
   let policy: ReturnType<typeof createPolicy> | undefined;
+  let interactions: ReturnType<typeof retainInteractions> | undefined;
   let disposed = false;
   const pending = new Set<Promise<unknown>>();
   const send = (method: string, params: unknown, options?: unknown): Promise<unknown> => {
@@ -104,6 +107,8 @@ export function createNativeRemoteManager(
     policy = ownedPolicy;
     owned.sendAppServerResponse = (...args) => owned.dispatchAppServerResponse(...args);
     const channel = createChannel(components, owned);
+    const nativeInteractions = retainInteractions(upstream, owned, hostId);
+    interactions = nativeInteractions;
     const notify = (event: Event): void => {
       const { data, source, origin } = event as Event & {
         data?: unknown;
@@ -133,10 +138,12 @@ export function createNativeRemoteManager(
     return {
       route: { hostId, manager: owned, policy: ownedPolicy },
       rpc: channel.rpc,
+      ready: nativeInteractions.ready,
       dispose() {
         if (disposed) return;
         disposed = true;
         target.removeEventListener?.("message", notify);
+        nativeInteractions.dispose();
         ownedPolicy.dispose();
         client.queuedRequests.length = 0;
         for (const id of [...client.requestPromises.keys()])
@@ -149,6 +156,7 @@ export function createNativeRemoteManager(
       },
     };
   } catch (error) {
+    interactions?.dispose();
     policy?.dispose();
     if (manager) components.Manager.dispose(manager);
     upstream[Symbol.dispose]();

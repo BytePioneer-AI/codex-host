@@ -3,6 +3,7 @@ import { installNativeRpcRemoteControl } from "./renderer-native-rpc-runtime.js"
 import { createNativeRemoteManager } from "./renderer-native-remote-manager.js";
 import { createNativeRpcChannel } from "./renderer-native-rpc-channel.js";
 import { createNativeRpcService } from "./renderer-native-rpc-service.js";
+import { retainNativeRpcInteractions } from "./renderer-native-rpc-interactions.js";
 import { createDraftPrewarmPolicyBridge } from "./renderer-draft-prewarm-runtime.js";
 import { retainRendererHostResponses } from "./renderer-host-response-ownership.js";
 import { isolateRendererPrewarmConsumption } from "./renderer-prewarm-consumption.js";
@@ -43,6 +44,7 @@ export async function installNativeRpcRemoteControlDirect(
             createManager: ${createNativeRemoteManager.toString()},
             createChannel: ${createNativeRpcChannel.toString()},
             createService: ${createNativeRpcService.toString()},
+            retainInteractions: ${retainNativeRpcInteractions.toString()},
           });
         }`,
         returnByValue: true,

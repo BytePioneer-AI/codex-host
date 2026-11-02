@@ -64,6 +64,7 @@ describe("native Remote Control preload messages", () => {
       target,
       () => policy,
       () => ({ rpc: upstream, dispose: vi.fn() }),
+      () => ({ ready: Promise.resolve(), dispose: vi.fn() }),
     );
     const notify = {
       type: "mcp-notification",

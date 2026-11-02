@@ -7,6 +7,7 @@ import type {
 import type { createNativeRemoteManager } from "./renderer-native-remote-manager.js";
 import type { createNativeRpcChannel } from "./renderer-native-rpc-channel.js";
 import type { createNativeRpcService } from "./renderer-native-rpc-service.js";
+import type { retainNativeRpcInteractions } from "./renderer-native-rpc-interactions.js";
 
 /** Reuse Desktop's controller for history, replay admission, subscriptions and
  * approvals. Replacing the published connection signal alone misses UI calls. */
@@ -18,6 +19,7 @@ export function installNativeRpcRemoteControl(
     createManager: typeof createNativeRemoteManager;
     createChannel: typeof createNativeRpcChannel;
     createService: typeof createNativeRpcService;
+    retainInteractions: typeof retainNativeRpcInteractions;
   },
 ): boolean {
   if (target.__codexhostNativeRpcRemoteControlV1) return true;
@@ -31,6 +33,7 @@ export function installNativeRpcRemoteControl(
       target,
       dependencies.createPolicy,
       dependencies.createChannel,
+      dependencies.retainInteractions,
     ),
   );
   const controller = components.controller;

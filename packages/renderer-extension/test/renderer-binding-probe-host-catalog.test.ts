@@ -114,6 +114,10 @@ vi.mock("../src/renderer-sidebar-agent-icons.js", () => ({
   },
 }));
 
+vi.mock("../src/renderer-sidebar-thread-tree.js", () => ({
+  installRendererSidebarThreadTree: () => ({ refresh: vi.fn(), dispose: vi.fn() }),
+}));
+
 vi.mock("../src/renderer-settings-lifecycle.js", () => ({
   installRendererSettingsLifecycle: (
     _window: unknown,

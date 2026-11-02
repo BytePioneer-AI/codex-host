@@ -441,6 +441,95 @@ describe("OMP RPC session", () => {
     },
   );
 
+  it("waits for background work instead of faulting when agent_end lands while a background job still streams", async () => {
+    vi.useFakeTimers();
+    const process = new FakeOmpProcess();
+    const onFault = vi.fn();
+    let streaming = true;
+    let settled = false;
+    process.handleCommand = (command) => {
+      if (command.type === "prompt") {
+        process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+        const message = {
+          role: "assistant",
+          responseId: "assistant-1",
+          content: [{ type: "text", text: "PONG" }],
+        };
+        process.sendFrame({ type: "message_start", message });
+        process.sendFrame({
+          type: "message_update",
+          message,
+          assistantMessageEvent: { type: "text_delta", delta: "PONG" },
+        });
+        process.sendFrame({ type: "message_end", message: { ...message, stopReason: "stop" } });
+        // A native background job is still polling: agent_end is terminal, yet
+        // get_state keeps reporting isStreaming until the job settles.
+        process.sendFrame({ type: "agent_end", isTerminal: true });
+        return true;
+      }
+      if (command.type === "get_state") {
+        process.sendFrame({
+          type: "response",
+          id: command.id,
+          command: "get_state",
+          success: true,
+          data: {
+            sessionId: "omp-session",
+            model: { provider: "synthetic", id: "omp-model" },
+            isStreaming: streaming,
+            isSettled: settled,
+            hasPendingAsyncWork: streaming,
+          },
+        });
+        return true;
+      }
+      return false;
+    };
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", onFault },
+      { spawn: () => process as never },
+    );
+    try {
+      await session.start();
+      let result: unknown;
+      const turn = session.runTurn("background job keeps streaming", () => undefined);
+      void turn.then(
+        (value) => {
+          result = value;
+        },
+        () => undefined,
+      );
+      // First settle check observes the still-running background job.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(result).toBeUndefined();
+      expect(onFault).not.toHaveBeenCalled();
+      // The background job settles natively; session_settled reconfirms.
+      streaming = false;
+      settled = true;
+      process.sendFrame({ type: "session_settled" });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(
+        () =>
+          expect(result).toEqual({
+            text: "PONG",
+            cancelled: false,
+            agentInvoked: true,
+          }),
+        { timeout: 200 },
+      );
+      expect(onFault).not.toHaveBeenCalled();
+      process.handleCommand = null;
+      await expect(session.runTurn("ping", () => undefined)).resolves.toEqual({
+        text: "PONG",
+        cancelled: false,
+        agentInvoked: true,
+      });
+    } finally {
+      vi.useRealTimers();
+      await session.close();
+    }
+  });
+
   it("waits through slow native cancellation and accepts another Turn afterwards", async () => {
     vi.useFakeTimers();
     const process = new FakeOmpProcess();

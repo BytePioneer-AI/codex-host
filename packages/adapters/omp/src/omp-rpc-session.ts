@@ -1194,6 +1194,14 @@ export class OmpRpcSession {
       void this.#confirmCancelledTurn(active);
       return;
     }
+    if (value.type === "session_settled" && active?.settlement === "pending") {
+      // A terminal agent_end can arrive while a native background job keeps the
+      // session Streaming. That blocked the first confirmation; the native
+      // settle notification is the retry signal. Reconfirm serially through the
+      // same path so a still-busy session never settles the Turn early.
+      void this.#confirmSettledTurn(active);
+      return;
+    }
     if (!active) {
       if (value.type === "extension_ui_request" && this.#isBlockingInteraction(value)) {
         this.#fail(
@@ -1807,10 +1815,13 @@ export class OmpRpcSession {
         return;
       }
       if (parseSessionStreaming(response)) {
-        throw new OmpRpcFaultError(
-          "protocolError",
-          "Omp RPC completed Turn state is still Streaming",
-        );
+        // A terminal agent_end can precede native background work draining:
+        // isStreaming stays true while those jobs run even though the Turn's
+        // own run ended. Waiting for the native session_settled notification
+        // (which reconfirms here) is correct; faulting would kill a healthy
+        // Turn whose queued follow-ups then pause forever.
+        active.settlement = "pending";
+        return;
       }
       this.#state = state;
       active.settlement = "confirmed";

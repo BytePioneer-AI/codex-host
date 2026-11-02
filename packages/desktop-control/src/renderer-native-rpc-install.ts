@@ -13,23 +13,30 @@ interface RendererClient {
   command(method: string, params?: Record<string, unknown>): Promise<unknown>;
 }
 
-/** Optional Desktop contract discovery runs once per loaded-module catalog.
+/** Optional discovery has a bounded retry budget per catalog/RPC owner.
  * A missing contract never prevents official Codex or SSH from becoming ready. */
 export async function installNativeRpcRemoteControlDirect(
   renderer: RendererClient,
 ): Promise<boolean> {
   let attempt: string | null;
+  const probeId = crypto.randomUUID();
   try {
     attempt = await renderer.evaluate<string | null>(`(() => {
     if (window.__codexhostNativeRpcRemoteControlV1) return null;
     const routing = window.__codexhostHostRoutingV1;
-    if (routing?.forHost('local')?.manager?.kind !== 'main-process-rpc') return null;
+    const owner = routing?.forHost('local')?.manager;
+    if (owner?.kind !== 'main-process-rpc') return null;
     const catalog = window.__codexhostLoadedModulesV1;
     if (!catalog?.complete) return null;
-    const key = JSON.stringify(catalog.urls.filter(url => /renderer-app-server-managers|app-shared/.test(url)).sort());
-    if (window.__codexhostNativeRpcDiscoveryV1?.key === key) return null;
-    window.__codexhostNativeRpcDiscoveryV1 = { key, state: 'discovering' };
-    return key;
+    const key = JSON.stringify([catalog.owner, catalog.urls.filter(url => /renderer-app-server-managers|app-shared/.test(url)).sort()]);
+    const previous = window.__codexhostNativeRpcDiscoveryV1;
+    const sameOwner = previous?.key === key && previous.owner === owner;
+    if (sameOwner && (previous.state !== 'unavailable' || previous.attempts >= 3 || Date.now() < previous.nextRetryAt)) return null;
+    const token = ${JSON.stringify(probeId)};
+    window.__codexhostNativeRpcDiscoveryV1 = {
+      key, owner, token, state: 'discovering', attempts: sameOwner ? previous.attempts + 1 : 1,
+    };
+    return token;
     })()`);
   } catch {
     return false;
@@ -64,7 +71,10 @@ export async function installNativeRpcRemoteControlDirect(
       .evaluate(
         `(() => {
       const status = window.__codexhostNativeRpcDiscoveryV1;
-      if (status?.key === ${JSON.stringify(attempt)}) status.state = ${JSON.stringify(installed ? "ready" : "unavailable")};
+      if (status?.token === ${JSON.stringify(attempt)}) {
+        status.state = ${JSON.stringify(installed ? "ready" : "unavailable")};
+        status.nextRetryAt = Date.now() + 5000 * 2 ** (status.attempts - 1);
+      }
     })()`,
       )
       .catch(() => undefined);

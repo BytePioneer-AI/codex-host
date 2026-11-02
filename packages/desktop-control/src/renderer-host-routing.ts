@@ -68,10 +68,12 @@ export function installRendererHostRouting(
   resolve: typeof resolveRendererHostManager,
   createPolicy: typeof createDraftPrewarmPolicyBridge,
   readConnection?: (hostId: string) => RendererConnectionGeneration | null | undefined,
+  publishRouting = true,
 ): RendererHostRouting {
   const existing = target.__codexhostHostRoutingV1 as RendererHostRouting | undefined;
-  if (existing) return existing;
-  (target.__codexhostDraftPrewarmPolicyV1 as RendererDraftBridgePolicy | undefined)?.dispose?.();
+  if (publishRouting && existing) return existing;
+  if (publishRouting)
+    (target.__codexhostDraftPrewarmPolicyV1 as RendererDraftBridgePolicy | undefined)?.dispose?.();
   let disposed = false;
   let lastDiscovery: RendererHostDiscovery | null = null;
   const routes = new Map<
@@ -113,8 +115,14 @@ export function installRendererHostRouting(
     routes.delete(hostId);
     entry?.route.policy.dispose();
   };
-  const connectionFor = (hostId: string) =>
-    hostId.startsWith("remote-control:") ? readConnection?.(hostId) : undefined;
+  const connectionFor = (hostId: string): RendererConnectionGeneration | null | undefined => {
+    if (!hostId.startsWith("remote-control:")) return undefined;
+    try {
+      return readConnection?.(hostId);
+    } catch {
+      return null;
+    }
+  };
   const sameConnection = (
     expected: RendererConnectionGeneration | undefined,
     current: RendererConnectionGeneration | null | undefined,
@@ -166,6 +174,7 @@ export function installRendererHostRouting(
     return route;
   };
   const publish = (route: RendererHostRoute | null): void => {
+    if (!publishRouting) return;
     const policy = route?.policy;
     if (target.__codexhostDraftPrewarmPolicyV1 === policy) return;
     Object.defineProperty(target, "__codexhostDraftPrewarmPolicyV1", {
@@ -249,6 +258,10 @@ export function installRendererHostRouting(
       }
     },
   };
-  Object.defineProperty(target, "__codexhostHostRoutingV1", { configurable: true, value: routing });
+  if (publishRouting)
+    Object.defineProperty(target, "__codexhostHostRoutingV1", {
+      configurable: true,
+      value: routing,
+    });
   return routing;
 }

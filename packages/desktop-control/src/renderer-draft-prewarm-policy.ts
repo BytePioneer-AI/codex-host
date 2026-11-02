@@ -45,7 +45,7 @@ function directRendererInstaller(): string {
     const readRendererConnectionGeneration = ${readRendererConnectionGeneration.toString()};
     const discover = (root) =>
       discoverRendererHosts(root, committedReactAncestors, requestManagerFromHookState);
-    const installNative = () => (${installRendererHostRouting.toString()})(
+    const installNative = (publishRouting = true) => (${installRendererHostRouting.toString()})(
       document, window, discover,
       (discovery, hostId) => resolveRendererHostManager(discovery, hostId, requestManagerFromHookState),
       (manager, bridge, hostId, target, prewarmed, isCurrent) => createDraftPrewarmPolicyBridge(
@@ -53,6 +53,7 @@ function directRendererInstaller(): string {
         isolateRendererPrewarmConsumption,
       ),
       (hostId) => readRendererConnectionGeneration(findRendererAppScopeStore(document), hostId),
+      publishRouting,
     );
     const installRpc = () => typeof MessagePort !== 'function' ? null : (${installRendererHostRpcRouting.toString()})(document, window, {
       findStore: ${findRendererAppScopeStore.toString()},
@@ -66,38 +67,21 @@ function directRendererInstaller(): string {
         return discover(source);
       },
       portPrototype: MessagePort.prototype,
-      replaceWithNative: (dispose) => {
+      nativeRouting: () => {
         const native = discover(document);
-        if (!native.managers.length && !native.registries.length) return null;
-        // Keep 0.17's RPC fallback while a visible legacy registry has no usable manager.
-        const hosts = new Set(['local', ...native.hostIds]);
-        for (const manager of native.managers) {
-          try {
-            const hostId = manager.getHostId?.() ?? manager.requestClient.hostId;
-            if (typeof hostId === 'string' && hostId) hosts.add(hostId);
-          } catch {
-            // A transient native owner must not disable the usable RPC route.
-          }
-        }
-        const ready = [...hosts].some((hostId) => {
-          try {
-            return resolveRendererHostManager(native, hostId, requestManagerFromHookState) !== null &&
-              (!hostId.startsWith('remote-control:') ||
-                readRendererConnectionGeneration(findRendererAppScopeStore(document), hostId) !== null);
-          } catch { return false; }
-        });
-        if (!ready) return null;
-        dispose();
-        return installNative();
+        return native.managers.length || native.registries.length ? installNative(false) : null;
       },
+      readConnection: (hostId) => readRendererConnectionGeneration(findRendererAppScopeStore(document), hostId),
     });
     const connected = (routing) => routing.forComposer() !== null ||
       ['local', ...(routing.knownHostIds?.() ?? [])].some((hostId) => routing.forHost(hostId) !== null);
     let nativeReady = false;
-    // A legacy registry can remain mounted without a usable native manager.
-    // Prefer a ready native route, then try the identified main-process RPC store.
+    // Mixed layouts can expose native managers for only some Hosts. Keep one
+    // router that selects a native owner or the current ready RPC peer per Host.
     const routing = (() => {
       if (window.__codexhostHostRoutingV1) return window.__codexhostHostRoutingV1;
+      const rpc = installRpc();
+      if (rpc) return rpc;
       const native = discover(document);
       if (native.managers.length || native.registries.length) {
         const routing = installNative();
@@ -107,8 +91,6 @@ function directRendererInstaller(): string {
         }
         routing.dispose();
       }
-      const rpc = installRpc();
-      if (rpc) return rpc;
       throw new Error('Renderer Host request manager is unavailable');
     })();
     // Publish a default draft policy only when its Host is unambiguous. Host

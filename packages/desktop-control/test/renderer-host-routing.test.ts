@@ -118,6 +118,30 @@ it("replaces a Remote Control bridge after reconnect even when the native manage
   }
 });
 
+it("retires a native Remote Control route when reading its connection store throws", async () => {
+  const hostId = "remote-control:unreadable";
+  const f = setup(hostId, { remoteHostId: hostId });
+  await installRendererDraftPrewarmPolicyDirect(f.renderer);
+  const routing = f.target.__codexhostHostRoutingV1 as Routing;
+  const before = routing.forHost(hostId);
+  const bindings = f.store.familyBindings;
+  try {
+    Object.defineProperty(f.store, "familyBindings", {
+      configurable: true,
+      get() {
+        throw new Error("Scope unavailable");
+      },
+    });
+    expect(() => before?.policy.requestTarget()).toThrow("retired");
+    expect(routing.forHost(hostId)).toBeNull();
+    Object.defineProperty(f.store, "familyBindings", { configurable: true, value: bindings });
+    expect(routing.forHost(hostId)?.manager).toBe(f.remote);
+    expect(routing.forHost(hostId)).not.toBe(before);
+  } finally {
+    routing.dispose();
+  }
+});
+
 it("detects a completed reconnect between reads and leaves SSH routes unchanged", async () => {
   const hostId = "remote-control:synthetic";
   const f = setup(hostId, { remoteHostId: hostId });

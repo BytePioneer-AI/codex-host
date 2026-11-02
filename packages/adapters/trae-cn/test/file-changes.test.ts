@@ -4,7 +4,11 @@ import type { HostEvent } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { projectFileChanges } from "../src/file-changes.js";
 import { LiveItems } from "../src/live-items.js";
-const { withFileDiffs } = createRequire(import.meta.url)("../assets/companion/diffs.cjs");
+import { projectHistory } from "../src/history.js";
+const require = createRequire(import.meta.url);
+const { withFileDiffs } = require("../assets/companion/diffs.cjs");
+// Normalized from a real 3.4.13 deletion history and a readonly snapshot query.
+const deletion = require("./fixtures/native-file-delete.json");
 const fileDiffs = [
   {
     file_path: "C:\\workspace\\file.txt",
@@ -32,6 +36,83 @@ const message = {
 };
 
 describe("native message file snapshots", () => {
+  it("restores a real deletion with no can_show_diff flag and a null absent side", async () => {
+    const native = { call: vi.fn(async () => deletion.snapshot) };
+    const enriched = await withFileDiffs(native, deletion.message, "session", "project");
+    expect(native.call).toHaveBeenCalledExactlyOnceWith(
+      "snapshot",
+      "get_message_ai_edit_file_diff_list",
+      { project_id: "project", session_id: "session", message_id: "user" },
+    );
+    const items = [
+      {
+        chat_session_id: "session",
+        message_index: 1,
+        role: "user",
+        message_id: "user",
+        content: [{ type: "text", text_content: "delete the fixture" }],
+      },
+      enriched,
+    ];
+    const history = projectHistory({ sessionId: "session", items }, "session", "builder_v3");
+    const file = history.turns[0]?.items.find((entry) => entry.item.type === "fileChange");
+    expect(file).toMatchObject({
+      item: {
+        itemId: "assistant.files",
+        sourceItemIds: ["delete.tool"],
+        changes: [{ kind: "delete", path: "/workspace/delete-fixture.txt" }],
+      },
+      outcome: { status: "succeeded" },
+    });
+    if (file?.item.type !== "fileChange") throw new Error("Missing deletion diff");
+    expect(file.item.changes[0]?.unifiedDiff).toContain("+++ /dev/null");
+    expect(file.item.changes[0]?.unifiedDiff).toContain("-TRAE_CN_DELETE_FIXTURE_0");
+    expect(projectHistory({ sessionId: "session", items }, "session", "builder_v3")).toEqual(
+      history,
+    );
+    expect(() =>
+      projectHistory(
+        { sessionId: "session", items: [items[0], deletion.message] },
+        "session",
+        "builder_v3",
+      ),
+    ).toThrow("Companion to 0.1.10");
+  });
+  it.each(["failed", "canceled", "cancelled"])(
+    "queries deletion snapshots after %s results for partial changes",
+    async (status) => {
+      const message = structuredClone(deletion.message);
+      message.content.messages[0].plan_item.tool_call_info.result.status = status;
+      const native = { call: vi.fn(async () => deletion.snapshot) };
+      const enriched = await withFileDiffs(native, message, "session", "project");
+      expect(projectFileChanges(enriched)?.changes[0]?.kind).toBe("delete");
+      expect(native.call).toHaveBeenCalledOnce();
+    },
+  );
+  it("normalizes only the native action's explicit absent side", async () => {
+    const native = {
+      call: vi.fn(async () => ({
+        file_diffs: [{ ...fileDiffs[0], file_action: "added", before_content: null }],
+      })),
+    };
+    const enriched = await withFileDiffs(native, message, "session", "project");
+    expect(projectFileChanges(enriched)?.changes[0]?.unifiedDiff).toContain("--- /dev/null");
+    for (const diff of [
+      { ...fileDiffs[0], before_content: null },
+      { ...fileDiffs[0], after_content: null },
+      { ...deletion.snapshot.file_diffs[0], before_content: null },
+      { ...deletion.snapshot.file_diffs[0], after_content: undefined },
+    ]) {
+      await expect(
+        withFileDiffs(
+          { call: async () => ({ file_diffs: [diff] }) },
+          message,
+          "session",
+          "project",
+        ),
+      ).rejects.toThrow("complete contents");
+    }
+  });
   it.each(["added", "deleted"])(
     "retains native %s boundaries without reconstructing contents from the filesystem",
     (action) => {

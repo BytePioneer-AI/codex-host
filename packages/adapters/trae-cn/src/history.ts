@@ -400,21 +400,33 @@ export function projectHistory(
       }
       if (commandStatuses.size)
         throw new TraeError("protocolError", "Observed command has no owning native plan Item");
+      const deletionHistory = content.messages.some(
+        (message) =>
+          record(message) &&
+          record(message.plan_item) &&
+          record(message.plan_item.tool_call_info) &&
+          ["DeleteFile", "delete_file"].includes(String(message.plan_item.tool_call_info.name)) &&
+          record(message.plan_item.tool_call_info.result) &&
+          ["success", "failed", "canceled", "cancelled"].includes(
+            String(message.plan_item.tool_call_info.result.status),
+          ),
+      );
       if (
         reply.fileDiffs === undefined &&
-        content.messages.some(
-          (message) =>
-            record(message) &&
-            record(message.plan_item) &&
-            record(message.plan_item.tool_call_info) &&
-            record(message.plan_item.tool_call_info.result) &&
-            record(message.plan_item.tool_call_info.result.data) &&
-            message.plan_item.tool_call_info.result.data.can_show_diff === true,
-        )
+        (deletionHistory ||
+          content.messages.some(
+            (message) =>
+              record(message) &&
+              record(message.plan_item) &&
+              record(message.plan_item.tool_call_info) &&
+              record(message.plan_item.tool_call_info.result) &&
+              record(message.plan_item.tool_call_info.result.data) &&
+              message.plan_item.tool_call_info.result.data.can_show_diff === true,
+          ))
       )
         throw new TraeError(
           "configurationRequired",
-          "Update the TRAE CN Companion to 0.1.1 or newer to read native file diffs",
+          `Update the TRAE CN Companion to ${deletionHistory ? "0.1.10" : "0.1.1"} or newer to read native file diffs`,
         );
       const fileChanges = projectFileChanges(reply);
       // The native snapshot confirms these edits were applied even when a later

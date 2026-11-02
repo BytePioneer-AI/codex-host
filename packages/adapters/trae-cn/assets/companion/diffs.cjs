@@ -17,7 +17,11 @@ async function withFileDiffs(native, message, sessionId, projectId) {
     ?.filter(
       (entry) =>
         entry.type === "plan_item" &&
-        entry.plan_item?.tool_call_info?.result?.data?.can_show_diff === true,
+        (entry.plan_item?.tool_call_info?.result?.data?.can_show_diff === true ||
+          (["DeleteFile", "delete_file"].includes(entry.plan_item?.tool_call_info?.name) &&
+            ["success", "failed", "canceled", "cancelled"].includes(
+              entry.plan_item?.tool_call_info?.result?.status,
+            ))),
     )
     .map((entry) => entry.plan_item);
   if (!plans?.length) return message;
@@ -34,21 +38,27 @@ async function withFileDiffs(native, message, sessionId, projectId) {
   });
   if (!Array.isArray(result?.file_diffs)) throw failure("Invalid native message file diffs");
   const fileDiffs = result.file_diffs.map((diff) => {
+    // Native deletion snapshots use null for the absent side, and creation may
+    // do the same. Only that action's absent side can mean an empty document.
+    const before =
+      diff?.file_action === "added" && diff.before_content === null ? "" : diff?.before_content;
+    const after =
+      diff?.file_action === "deleted" && diff.after_content === null ? "" : diff?.after_content;
     if (
       !diff ||
       typeof diff.file_path !== "string" ||
       !diff.file_path.trim() ||
       !["added", "modified", "deleted"].includes(diff.file_action) ||
-      typeof diff.before_content !== "string" ||
-      typeof diff.after_content !== "string"
+      typeof before !== "string" ||
+      typeof after !== "string"
     )
       throw failure("Native file diff is missing its action or complete contents");
-    return Object.fromEntries(
-      ["file_path", "file_action", "before_content", "after_content"].map((key) => [
-        key,
-        diff[key],
-      ]),
-    );
+    return {
+      file_path: diff.file_path,
+      file_action: diff.file_action,
+      before_content: before,
+      after_content: after,
+    };
   });
   const bytes = fileDiffs.reduce(
     (total, diff) =>

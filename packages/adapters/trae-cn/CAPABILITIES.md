@@ -35,7 +35,7 @@
 | B6 | 跨目录 Fork | 原生有则必做 | P2 | 不支持 | src/derivation.ts | 目标 cwd 不同在原生写入前返回 unsupported | 未证明原生跨 Project 复制；不以改变进程目录冒充支持 |
 | B7 | 回滚最后一轮 | 原生有则必做 | P1 | 受限 | src/derivation.ts；src/session.ts | 文本多轮 / 单轮及单轮文件编辑回退的原生证据；后台前缀拒绝与单轮回退为空的回归 | 独立 Session；保留非空文件编辑或后台命令前缀时拒绝；不回滚工作区或取消源命令 |
 | B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 受限 | src/background.ts；commands.ts；history.ts；live-items.ts；assets/companion/commands.cjs、diffs.cjs | Read / Edit / RunCommand；3.4.13 真实 Host 中后台命令先 detached，父轮及后续聊天完成后按原退出码与输出结算；进行中历史叠加及桥接 / Host 冷恢复一致 | 仅 RunCommand；按原 Session / 消息 / Plan / command ID 查询；16,384 字符窗口，实时溢出明确故障；后台中冷恢复暂缓；无独立命令停止控件，其他工具待补 |
-| B9 | 审批 | 原生有则必做 | P0 | 受限 | src/interactions.ts；src/approvals.ts；assets/companion/interactions.cjs | RunCommand 与 Edit 允许 / 拒绝原生验收；文件作用、四轮原历史及冷恢复一致，全局权限未变；MCP、资源读取及删除确认格式的原生界面源码与测试 | 文件允许使用事件拥有的 toolcall_id，命令 / MCP 使用 tool_name；仅允许一次 / 拒绝；旧 Companion 缺能力标记时明确提示升级；MCP 与删除审批的实时验收尚未完成；不支持持久授权 |
+| B9 | 审批 | 原生有则必做 | P0 | 受限 | src/interactions.ts；src/approvals.ts；assets/companion/interactions.cjs | RunCommand、Edit 与 DeleteFile 允许 / 拒绝原生验收；实际文件作用、原历史及新进程冷恢复一致，全局权限未变；MCP 与资源读取确认有原生界面源码与测试 | 文件允许使用事件拥有的 toolcall_id，命令 / MCP 使用 tool_name；仅允许一次 / 拒绝；旧 Companion 缺能力标记时明确提示升级；MCP 实时审批仍待验收；不支持持久授权 |
 | B10 | 提问 | 原生有则必做 | P0 | 支持 | src/interactions.ts；assets/companion/interactions.cjs；settings.cjs | 公共问题只发布一次；显式答复“停止”，持久完成回复 TRAE_CN_PUBLIC_QUESTION_OK_STOP | 复用桌面开关；实例校验；不使用预填答案；单选、多选、其他及跳过映射测试 |
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 待验证 | — | — | |
 | B12 | 自主 Turn | 原生有则必做 | P1 | 受限 | src/session.ts；src/background.ts | 3.4.13 原生 command 状态从 running 到 completed；toolcall/poll_pending_wakeups 实际返回 unknown route；后台结果未生成新用户消息 | autonomousTurns.observe=false；普通 Builder 当前后端无可用唤醒路由；不发送隐藏普通消息模拟自主续轮；Ralph / Goal 不在接入范围 |
@@ -75,7 +75,9 @@ Thinking 选择：Companion 0.1.6 区分普通模型的 reasoning_effort_config�
 
 权限选择：Companion 0.1.7 只读动态配置、用户开关和最多 1 MiB 的本地 permission/global.json，沿用原生 Auto 可见性、Custom 存在性及默认规则，不导出授权资源或命令规则。preparePermission 验证原生作用域和档位后，公共选择配置下一轮；发送时同时设置消息顶层及 client_info 的 permission_profile_id。活动 Turn 固定原选择，不改全局配置。原生历史及 Session 元数据均未提供档位，只有 Host 已保存提示可以恢复，不以消息内容补造。远程和企业权限菜单不声明支持；未知活动 Profile 报错。手动模式也可能按原生规则直接执行允许的命令，不承诺每条命令都会弹审批。
 
-审批覆盖：Companion 0.1.8 明确声明文件 / MCP 审批能力，旧 Companion 不提供不可执行的按钮。文件操作的允许决策沿用原生 toolcall_id，拒绝使用 tool_name；删除沿用其无新增权限范围的专用格式。MCP / ReadMcpResource 沿用工具名，仅按原生新权限开关和请求元数据使用 execution / none，旧权限系统省略该字段。不提供 task / device 授权，不修改规则。界面保留目标文件、资源和 MCP 参数；未知格式或超限参数明确拒绝。文件允许及拒绝已做真实验收；MCP 和删除确认目前只有源码依据及回归测试，不能当作实时审批已验证。
+审批覆盖：Companion 0.1.8 明确声明文件 / MCP 审批能力，旧 Companion 不提供不可执行的按钮。文件操作的允许决策沿用原生 toolcall_id，拒绝使用 tool_name；删除沿用其无新增权限范围的专用格式。MCP / ReadMcpResource 沿用工具名，仅按原生新权限开关和请求元数据使用 execution / none，旧权限系统省略该字段。不提供 task / device 授权，不修改规则。界面保留目标文件、资源和 MCP 参数；未知格式或超限参数明确拒绝。文件修改和删除的允许及拒绝均已做真实验收；MCP 目前只有源码依据及回归测试。
+
+删除快照：Companion 0.1.10 对终态 DeleteFile / delete_file 读取原用户消息快照，不依赖原生未提供的 can_show_diff。仅将 deleted.after_content=null 和 added.before_content=null 解释为不存在的一侧，其他缺失正文仍拒绝。真实工作区内删除的完整 before_content 已恢复成 fileChange，并通过新进程精确冷读；原工具与回复未变，没有重发删除。工作区外专用文件通过原生单次允许后确实删除、拒绝后保持原内容；该外部文件的原生快照返回空列表，因此只保留实际工具结果，不从当前文件系统补造历史 Diff。旧 Companion 缺少删除快照时明确要求升级。
 
 Edit 参数清空：原生执行结束会清空 old_string / new_string。工具 Item 的固定参数排除这两个原生可变字段，实际改动仍来自消息快照 Diff；路径与其他稳定参数继续校验。真实允许后曾触发参数不变保护，已用规范化原生序列复现并修复；新一轮不同内容的修改完成后，四轮历史与冷快照一致。旧成功轮、拒绝轮和取消轮均保留，没有重发原任务。
 
@@ -88,6 +90,8 @@ Edit 参数清空：原生执行结束会清空 old_string / new_string。工具
 ## 验证记录
 
 后台观察（2026-11-03）：最终完整 Adapter / VSIX / 插件 / 搬移 Host 族 236 项通过；typecheck、lint / boundaries 与改动格式通过。覆盖拒绝启动、执行身份变化、终态输出仍在刷新、后续轮并行、观察关闭及后台中冷恢复。真实 3.4.13 + 开发 Companion 0.1.9：在原专用 Thread 中完成后台新轮与后续纯文本轮，父轮 / 后续轮先结束，原命令随后输出 TRAE_CN_HOST_BACKGROUND_NEXT_DONE、exitCode=0；历史进行中叠加正确。Companion 进程退出后重建，两个新 Host 精确读取同一三轮历史，原前缀和三条唯一映射不变，Native Finished。先前脚本分别误选 thinking 兼容 Item、误读完成帧中的省略输出，保留失败记录后按真实增量和历史核对；没有重发旧命令。安装包包含十二个 CJS 资源。
+
+删除补验（2026-11-03）：TRAE CN 3.4.13 / 开发 Companion 0.1.10。原工作区删除在只读快照中确认完整旧内容和 null 新内容，经公共 Adapter 及新 Node 进程恢复出相同删除 Diff。另用两个工作区外专用文件分别验收 DeleteFile 单次允许 / 拒绝，文件系统结果与决定一致，Interaction 各关闭一次，全局权限哈希不变；新进程原样恢复两条历史。外部文件无原生 Diff 的限制单列；没有重发原删除。Adapter / 插件 / VSIX / 搬移 Host 族 241 项、根构建、typecheck 和改动文件 ESLint 通过。上一 Head ed6719b7 的四平台 CI 全部通过；删除修复 Head 的 CI 需另行检查。
 
 后台结果保护检查：11 项源码对应的后台 / 前台边界用例；修复前其中 9 项失败，补充一项 running 数据状态后全通过。完整 Adapter、独立插件 / VSIX 与搬移 Host 发行检查共 208 项通过；typecheck、lint / boundaries 及改动代码格式通过。没有执行原生后台任务，故不作为后台控制或自主 Turn 的真实验收。
 

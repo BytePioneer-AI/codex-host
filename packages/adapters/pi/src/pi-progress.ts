@@ -121,5 +121,12 @@ export function piStatusText(value: Record<string, unknown>): string | null {
     const level = typeof value.notifyType === "string" ? ` (${value.notifyType})` : "";
     return boundedPiProgress(`Pi notification${level}\n\n${visibleText(value.message)}`);
   }
+  if (value.method === "setStatus" && typeof value.statusKey === "string") {
+    return typeof value.statusText === "string" && value.statusText.trim()
+      ? boundedPiProgress(
+          `Pi status (${visibleText(value.statusKey)})\n\n${visibleText(value.statusText)}`,
+        )
+      : `Pi status (${visibleText(value.statusKey)}) cleared.`;
+  }
   return null;
 }

@@ -605,8 +605,9 @@ export class PiRpcSession {
   #manualCompaction: ManualCompaction | null = null;
   #noticeOccurrences = new Map<string, number>();
   #seenNoticeFrames = new Set<string>();
-  #pendingProgress: PiProgressMessage[] = [];
+  #pendingProgress: { event: PiProgressMessage; statusKey?: string }[] = [];
   #omittedProgress = 0;
+  #extensionStatuses = new Map<string, string>();
   #stderrTail = "";
   readonly #subagents: PiSubagentRpc;
   #gotgenesHandler:
@@ -1144,6 +1145,7 @@ export class PiRpcSession {
     this.#pendingProgress = [];
     this.#omittedProgress = 0;
     this.#seenNoticeFrames.clear();
+    this.#extensionStatuses.clear();
     if (!this.#closed) {
       this.#closed = true;
       this.#rejectAll(new Error("Pi RPC Session closed"));
@@ -1477,9 +1479,18 @@ export class PiRpcSession {
       if (progress) this.#publishProgress(progress);
       return true;
     }
-    // Native footer updates are ephemeral and may arrive on every token.
-    // The public progress event creates a permanent transcript Item, not a status slot.
-    if (value.type === "extension_ui_request" && value.method === "setStatus") return true;
+    if (value.type === "extension_ui_request" && value.method === "setStatus") {
+      if (typeof value.statusKey !== "string") return true;
+      if (typeof value.statusText !== "string" || !value.statusText.trim()) {
+        if (!this.#extensionStatuses.has(value.statusKey)) return true;
+        this.#extensionStatuses.delete(value.statusKey);
+      } else {
+        if (this.#extensionStatuses.get(value.statusKey) === value.statusText) return true;
+        this.#extensionStatuses.set(value.statusKey, value.statusText);
+      }
+      // Native footer updates are ephemeral; progress messages create permanent Items.
+      return true;
+    }
     const text = piStatusText(value);
     if (!text) return false;
     if (
@@ -1488,11 +1499,16 @@ export class PiRpcSession {
       !this.#acceptNoticeFrame(JSON.stringify([value.type, value.id]))
     )
       return true;
-    this.#publishProgress({
-      type: "progress.message",
-      itemId: hostItemIdSchema.parse(`pi-progress-${randomUUID()}`),
-      text,
-    });
+    this.#publishProgress(
+      {
+        type: "progress.message",
+        itemId: hostItemIdSchema.parse(`pi-progress-${randomUUID()}`),
+        text,
+      },
+      value.method === "setStatus" && typeof value.statusKey === "string"
+        ? value.statusKey
+        : undefined,
+    );
     return true;
   }
 
@@ -1504,17 +1520,26 @@ export class PiRpcSession {
     return true;
   }
 
-  #publishProgress(progress: PiProgressMessage): void {
+  #publishProgress(progress: PiProgressMessage, statusKey?: string): void {
     if (this.#activeTurn?.settlement === "pending") {
       this.#activeTurn.onEvent(progress);
       return;
     }
     // Session-level notices have no public Item owner. Retain them until a real Turn opens.
+    if (statusKey !== undefined) {
+      const previous = this.#pendingProgress.findIndex(
+        (pending) => pending.statusKey === statusKey,
+      );
+      if (previous >= 0) this.#pendingProgress.splice(previous, 1);
+    }
     if (this.#pendingProgress.length >= 128) {
       this.#pendingProgress.shift();
       this.#omittedProgress += 1;
     }
-    this.#pendingProgress.push(progress);
+    this.#pendingProgress.push({
+      event: progress,
+      ...(statusKey !== undefined ? { statusKey } : {}),
+    });
   }
 
   #drainProgress(onEvent: (event: PiTurnEvent) => void): void {
@@ -1526,7 +1551,7 @@ export class PiRpcSession {
       });
       this.#omittedProgress = 0;
     }
-    for (const pending of this.#pendingProgress.splice(0)) onEvent(pending);
+    for (const pending of this.#pendingProgress.splice(0)) onEvent(pending.event);
   }
 
   #emitAutonomousTurn(active: ActiveTurn, result: PiAutonomousTurnResult): void {

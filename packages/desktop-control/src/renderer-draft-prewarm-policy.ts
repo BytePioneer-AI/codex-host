@@ -71,7 +71,14 @@ function directRendererInstaller(): string {
         if (!native.managers.length && !native.registries.length) return null;
         // Keep 0.17's RPC fallback while a visible legacy registry has no usable manager.
         const hosts = new Set(['local', ...native.hostIds]);
-        for (const manager of native.managers) hosts.add(manager.getHostId());
+        for (const manager of native.managers) {
+          try {
+            const hostId = manager.getHostId?.() ?? manager.requestClient.hostId;
+            if (typeof hostId === 'string' && hostId) hosts.add(hostId);
+          } catch {
+            // A transient native owner must not disable the usable RPC route.
+          }
+        }
         const ready = [...hosts].some((hostId) => {
           try {
             return resolveRendererHostManager(native, hostId, requestManagerFromHookState) !== null &&

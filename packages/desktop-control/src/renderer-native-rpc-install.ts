@@ -18,7 +18,9 @@ interface RendererClient {
 export async function installNativeRpcRemoteControlDirect(
   renderer: RendererClient,
 ): Promise<boolean> {
-  const attempt = await renderer.evaluate<string | null>(`(() => {
+  let attempt: string | null;
+  try {
+    attempt = await renderer.evaluate<string | null>(`(() => {
     if (window.__codexhostNativeRpcRemoteControlV1) return null;
     const routing = window.__codexhostHostRoutingV1;
     if (routing?.forHost('local')?.manager?.kind !== 'main-process-rpc') return null;
@@ -28,7 +30,10 @@ export async function installNativeRpcRemoteControlDirect(
     if (window.__codexhostNativeRpcDiscoveryV1?.key === key) return null;
     window.__codexhostNativeRpcDiscoveryV1 = { key, state: 'discovering' };
     return key;
-  })()`);
+    })()`);
+  } catch {
+    return false;
+  }
   if (attempt === null) return false;
   let installed = false;
   try {

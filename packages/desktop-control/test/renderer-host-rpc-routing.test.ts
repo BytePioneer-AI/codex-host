@@ -173,6 +173,66 @@ it("switches to a late native manager after starting without a Composer", async 
   }
 });
 
+it.each(["missing", "null", "undefined"])(
+  "adopts a late manager using its request client Host when getHostId is %s",
+  async (mode) => {
+    const fixture = setup({ nativeManager: true });
+    const editor = fixture.editors.pop();
+    const manager = fixture.composerFiber.memoizedState?.memoizedState;
+    if (!editor || !manager || !("requestClient" in manager))
+      throw new Error("Missing fixture manager");
+    Reflect.deleteProperty(fixture.composerFiber.memoizedProps, "executionTargetHostId");
+    Object.assign(manager.requestClient, { hostId: "ssh:remote" });
+    if (mode === "missing") Reflect.deleteProperty(manager, "getHostId");
+    else
+      Object.defineProperty(manager, "getHostId", {
+        value: () => (mode === "null" ? null : undefined),
+      });
+    const originalPost = fixture.MessagePort.prototype.postMessage;
+    const routing = await install(fixture);
+    const before = routing.forHost("local");
+    fixture.editors.push(editor);
+    try {
+      expect(routing.forHost("ssh:remote")?.manager).toBe(manager);
+      expect(routing.forComposer()?.hostId).toBe("ssh:remote");
+      expect(() => before?.policy.requestTarget()).toThrow("retired");
+      expect(fixture.MessagePort.prototype.postMessage).toBe(originalPost);
+    } finally {
+      routing.dispose();
+    }
+  },
+);
+
+it.each(["throws", "empty", "non-string"])(
+  "keeps every RPC routing entry point usable when a late native Host getter %s",
+  async (mode) => {
+    const fixture = setup({ nativeManager: true });
+    const editor = fixture.editors.pop();
+    const manager = fixture.composerFiber.memoizedState?.memoizedState;
+    if (!editor || !manager || !("requestClient" in manager))
+      throw new Error("Missing fixture manager");
+    Object.defineProperty(manager, "getHostId", {
+      get() {
+        if (mode === "throws") throw new Error("Native Host owner unavailable");
+        return () => (mode === "empty" ? "" : 42);
+      },
+    });
+    const routing = await install(fixture);
+    const before = routing.forHost("local");
+    fixture.editors.push(editor);
+    try {
+      expect(routing.knownHostIds?.()).toEqual(["local"]);
+      expect(routing.hostIdForComposer()).toBe("local");
+      expect(routing.forComposer()).toBe(before);
+      expect(routing.forHost("local")).toBe(before);
+      await before?.manager.sendRequest("model/list", {});
+      expect(fixture.rpc.sendRequest).toHaveBeenCalledExactlyOnceWith("model/list", {});
+    } finally {
+      routing.dispose();
+    }
+  },
+);
+
 it("routes Host requests through the main-process RPC client without native internals", async () => {
   const fixture = setup();
   const routing = await install(fixture);

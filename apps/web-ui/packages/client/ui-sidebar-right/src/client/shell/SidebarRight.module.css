@@ -61,6 +61,16 @@
   transition: transform var(--ds-transition-duration-slow) var(--ds-ease-in-out);
 }
 
+/* Expansion can seed a new dock host without a previously rendered transform.
+   Only panel entry gets a starting style; tab switches in an open panel stay instant. */
+@starting-style {
+  .panel[data-sidebar-right-opening] :global([data-dockkit-host="dock"]),
+  .panel[data-sidebar-right-opening] :global([data-dockkit-empty]),
+  .panel[data-sidebar-right-opening] :global([data-dockkit-divider]) {
+    transform: translateX(var(--dsh-sidebar-width));
+  }
+}
+
 .panel[data-sidebar-right-panel="fullscreen"] {
   --dsh-dockkit-dock-layer: 40;
 }
@@ -112,7 +122,10 @@
 @media (prefers-reduced-motion: reduce) {
   .panel :global([data-dockkit-host="dock"]),
   .panel :global([data-dockkit-empty]),
-  .panel :global([data-dockkit-divider]) {
+  .panel :global([data-dockkit-divider]),
+  .panel[data-sidebar-right-open] :global([data-dockkit-host="dock"]),
+  .panel[data-sidebar-right-open] :global([data-dockkit-empty]),
+  .panel[data-sidebar-right-open] :global([data-dockkit-divider]) {
     transition: none;
   }
 }

@@ -282,6 +282,13 @@ export function apply(ctx: ClientContext): void {
           inject: (): RightbarRootInjected => ({
             hooks: { views: views.source },
             mountView: (reference) => views.mount(reference),
+            setExpandedFromSwipe: (expanded) => {
+              if (
+                controller.commandTarget(null) !== undefined &&
+                controller.isExpanded() !== expanded
+              )
+                controller.toggleExpanded();
+            },
           }),
         },
         RightbarRoot,

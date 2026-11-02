@@ -35,6 +35,7 @@ import {
   SIDEBAR_DEFAULT,
 } from "./columns.ts";
 import { DocumentTitle } from "./DocumentTitle.tsx";
+import { bindPhoneSidebarSwipe } from "./phone-sidebar-swipe.ts";
 import type { createLayoutStore } from "./stores.ts";
 import css from "./AppFrame.module.css";
 
@@ -167,6 +168,16 @@ export function AppFrame({
   const layoutInfo = useStore((state) => state.layoutInfo);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const viewport = layoutInfo.viewportWidth;
+  const bindSwipeNavigation = useCallback((open: () => void, close: () => void) => {
+    const frame = frameRef.current;
+    if (frame === null) return () => {};
+    const offOpen = bindPhoneSidebarSwipe(frame, "left", open);
+    const offClose = bindPhoneSidebarSwipe(frame, "right", close, "rightbar");
+    return () => {
+      offOpen();
+      offClose();
+    };
+  }, []);
 
   // Track the frame's own box (not the window): rAF-throttled ResizeObserver.
   useLayoutEffect(() => {
@@ -199,6 +210,11 @@ export function AppFrame({
   // Phone frames keep no icon rail: the sidebar opens as a drawer over the conversation.
   const phone = viewport < PHONE_BREAKPOINT;
   const sidebarCollapsed = narrow ? !layoutInfo.narrowExpanded : layoutInfo.sidebar === 0;
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!phone || !sidebarCollapsed || frame === null) return;
+    return bindPhoneSidebarSwipe(frame, "right", () => actions.toggleSidebar());
+  }, [actions, phone, sidebarCollapsed]);
   const sidebarPreference = sidebarCollapsed
     ? 0
     : layoutInfo.sidebar === 0
@@ -384,6 +400,7 @@ export function AppFrame({
           )}
           <div
             className={css.phoneDrawer}
+            data-phone-drawer
             data-open={!sidebarCollapsed || undefined}
             style={{ width: drawerWidth }}
           >
@@ -399,6 +416,7 @@ export function AppFrame({
           {renderSlot("rightbar", {
             width: normal.rightbar,
             viewportWidth: viewport,
+            bindSwipeNavigation,
             canShow: normal.rightbar > 0,
           })}
         </RightbarColumn>

@@ -1,5 +1,5 @@
 /** Root-scoped controller for the right Sidebar's Session content. */
-import { useLayoutEffect } from "react";
+import { useEffect, useLayoutEffect } from "react";
 import type {
   HostObservable,
   InjectFace,
@@ -15,6 +15,8 @@ import css from "./SidebarRight.module.css";
 export interface RightbarRootInjected {
   readonly hooks: { readonly views: HostObservable<readonly SidebarSessionViewSnapshot[]> };
   readonly mountView: (reference: SessionReference) => () => void;
+  /** Change the current Session's panel visibility without closing its tabs or resources. */
+  readonly setExpandedFromSwipe: (expanded: boolean) => void;
 }
 
 type RootProps = PropsRuntime<"rightbar"> &
@@ -29,10 +31,17 @@ function SessionView({
   mountView,
   width,
   viewportWidth,
+  bindSwipeNavigation,
   canShow,
 }: Pick<
   RootProps,
-  "SessionProvider" | "renderSlot" | "mountView" | "width" | "viewportWidth" | "canShow"
+  | "SessionProvider"
+  | "renderSlot"
+  | "mountView"
+  | "width"
+  | "viewportWidth"
+  | "bindSwipeNavigation"
+  | "canShow"
 > & { readonly view: SidebarSessionViewSnapshot; readonly visible: boolean }) {
   useLayoutEffect(() => mountView(view.reference), [mountView, view.reference]);
   const active = visible && view.selected;
@@ -42,6 +51,7 @@ function SessionView({
         {renderSlot("rightbar.session", {
           width,
           viewportWidth,
+          bindSwipeNavigation,
           canShow,
           active,
           retainTab: view.retainTab,
@@ -59,6 +69,14 @@ function SessionView({
 export function RightbarRoot({ usePanelInfo, useViews, ...props }: RootProps) {
   const visible = usePanelInfo((info) => info.activePanelId === null);
   const views = useViews((value) => value);
+  const { bindSwipeNavigation, setExpandedFromSwipe } = props;
+  useEffect(() => {
+    if (!visible) return;
+    return bindSwipeNavigation(
+      () => setExpandedFromSwipe(true),
+      () => setExpandedFromSwipe(false),
+    );
+  }, [visible, bindSwipeNavigation, setExpandedFromSwipe]);
   return (
     <>
       {views.map((view) => (

@@ -452,6 +452,11 @@ function SidebarPanel(
     panelRef,
   } = panel;
   const { expanded } = surface.layout;
+  const previousExpanded = useRef(expanded);
+  const opening = expanded && !previousExpanded.current;
+  useLayoutEffect(() => {
+    previousExpanded.current = expanded;
+  }, [expanded]);
   const types = panel.useTabTypes((value) => value);
   return (
     <div
@@ -466,6 +471,7 @@ function SidebarPanel(
       data-sidebar-right-session={sessionId}
       data-sidebar-right-panel={fullscreen ? "fullscreen" : "push"}
       data-sidebar-right-open={expanded || undefined}
+      data-sidebar-right-opening={opening || undefined}
       // Dockkit hides individual docked hosts; floating descendants remain accessible.
       aria-hidden={(!expanded && surface.layout.floats.length === 0) || undefined}
     >

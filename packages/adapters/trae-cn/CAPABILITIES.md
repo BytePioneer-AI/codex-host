@@ -6,7 +6,7 @@
 |---|---|
 | Harness ID | trae-cn |
 | 原生接口与传输方式 | TRAE CN 桌面扩展桥接 `electron.ahaIpc`，调用应用自带 `harness.dll` / `ai-agent` JSON-RPC；复用应用登录 |
-| 已验证的原生版本 | Windows x64：TRAE CN 3.4.12 原生执行；3.4.13 桥接及历史只读兼容；VS Code core 1.107.1 |
+| 已验证的原生版本 | Windows x64：TRAE CN 3.4.12 原生执行；3.4.13 预装插件经隔离 Host 实际对话及冷恢复续聊；VS Code core 1.107.1 |
 | 交付范围 | 仓库内插件 + 桌面 Companion 扩展；原生接口为应用私有接口，须独立验收版本兼容性 |
 | 参考插件 | WorkBuddy 的应用发现与应用拥有的认证；公共 Harness 输出和交互契约 |
 | 最后验证 | 2026-10-31～11-02 Windows；真实对话、文件编辑与 Diff、活动恢复、提问及审批、文本 Fork / Rollback、单轮文件编辑回退为空；3.4.13 只读兼容和更新后的自动检查 |
@@ -41,7 +41,7 @@
 | B12 | 自主 Turn | 原生有则必做 | P1 | 待验证 | — | 原生 lite/subscribe_events 路由 | |
 | B13 | 会话用量 | 原生有则必做 | P1 | 受限 | src/usage.ts；src/session.ts；assets/companion/service.cjs | 原生历史数值白名单；同 Session / 新进程恢复的 initialUsage 一致；只读刷新仅调用 snapshot；实时映射测试 | 仅上下文占用 / 窗口；原生历史只保留末次请求，累计字段为占位 0，故不显示会话累计 tokens、费用或估算价格 |
 | B14 | 请求级计量 | 原生有则必做 | P2 | 待验证 | — | — | |
-| B15 | 接收委派 | 必做（验证项） | P1 | 待验证 | — | — | |
+| B15 | 接收委派 | 必做（验证项） | P1 | 受限 | src/adapter.ts | 3.4.13 真实 Host Coordinator.start 经已加载插件返回 DELEGATION_FAILED，未改变父会话历史；普通 Thread 跨进程可续聊 | 当前委派固定使用 unattended-full-access，插件明确拒绝；不能作为可接收无人值守任务的 Harness |
 | B16 | 向下委派 | 原生有则必做 | P2 | 待验证 | — | — | |
 | C1 | 展示元数据 | 必做 | P1 | 支持 | manifest.json | schema、Loader 描述符、名称与向量图标 | 当前 CodexHost UI 验收另列；没有专用 Renderer 分支 |
 | C2 | 手动安装指引 | 必做 | P1 | 支持 | manifest.json；scripts/build-companion.mjs；assets/companion/README.md | VSIX 实际安装并激活；独立 ZIP 检验完整资源与许可证 | 应用与扩展分别安装；不使用 Agent CLI 登录 |
@@ -51,17 +51,17 @@
 | C6 | 会话导入 | 可选 | P2 | 待验证 | — | — | |
 | C7 | 全局用量统计 | 可选 | P2 | 待验证 | — | — | |
 | C8 | 账号额度 | 可选 | P2 | 待验证 | — | — | |
-| D1 | Workspace / 构建 | 预装时必做 | P1 | 受限 | package.json；scripts/build-plugin.mjs；scripts/build-companion.mjs | 插件与 VSIX 构建、公开导出、根构建引用 | 单独构建已通过；预装 payload 待接入 |
-| D2 | 预装清单 | 预装时必做 | P1 | 待验证 | — | — | |
-| D3 | 加载测试 | 预装时必做 | P1 | 受限 | tests/release/trae-cn-plugin.test.mjs；trae-cn-companion.test.mjs | 仓库外 Loader、独立 Node 导入、VSIX 检验及已安装 Companion 的真实对话 | 用户插件已验证；完整预装发行待完成 |
-| D4 | 文档 | 预装时必做 | P1 | 受限 | docs/harnesses/trae-cn/trae-cn-desktop-integration.md；assets/companion/README.md | 当前架构、构建、安装与能力限制已同步 | 预装能力表待最终状态更新 |
+| D1 | Workspace / 构建 | 预装时必做 | P1 | 支持 | package.json；scripts/build-plugin.mjs；scripts/build-companion.mjs | 根 build:typescript 生成预装插件；搬移 Host / 插件独立运行；payload / npm 文件集验证 | Companion 为单独安装的前提，不自动安装或随 Host 激活；本机一项 payload 符号链接用例受 Windows EPERM 限制 |
+| D2 | 预装清单 | 预装时必做 | P1 | 支持 | scripts/release/harness-plugins.json | 相邻插件根的启用列表、真实 Loader 和搬移发行 Host 目录均含 trae-cn | 不增加 Host / Renderer 静态注册 |
+| D3 | 加载测试 | 预装时必做 | P1 | 支持 | installed-harness-plugins.test.ts；tests/release/host-bundle.test.mjs；trae-cn-plugin.test.mjs；trae-cn-companion.test.mjs | 完整预装集合、仓库外 Host / Bundle、缺 Companion 的可重试 configurationRequired、独立实例和 VSIX 检验 | 3.4.13 预装插件经隔离 Host 完成两轮真实对话，第二轮由新进程恢复后复述原答复；不代表用户日常窗口已加载 |
+| D4 | 文档 | 预装时必做 | P1 | 支持 | docs/harnesses/trae-cn/trae-cn-desktop-integration.md；README 与中韩入口；capability-boundaries.md；assets/companion/README.md | 构建、预装 / 独立安装、API 版本、Companion 前提及实验性边界一致 | 完整 Desktop、审批和自主 / 后台能力的未验收状态仍保留 |
 | D5 | 其他 | 可选 | P2 | 不适用 | — | — | |
 
 ## 受限与已知缺口
 
 活动恢复的公共契约缺口与实现：原生实测可在断开观察者后重放同一问题实例，并继续同一用户消息；旧 Host 只在 turn.completed 持久化 NativeTurnRef，knownTurnRefs 没有原 Host Turn ID。API 2 新增可选 activeTurnRecovery、turn.identity.confirmed、knownTurns 和 recoveringTurn，Host 提前持久化原身份并按确认映射恢复原投影；Broker 转发，Renderer 沿用原公共投影，没有 TRAE 专用分支。旧 API 1 插件仍可加载且不接收新输入；TRAE 插件声明 API 2，拒绝在旧 Host 上执行。没有确认映射时不会猜测或重发任务。
 
-当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。插件 Manifest / 工厂、Bundle、Companion VSIX、本机 HTTP、公共 Adapter、普通 Session、结构化提问、命令 / 文件 / MCP 单次审批映射、已确认身份的活动恢复、逐轮模型 / Thinking / 本地权限选择及受限的历史派生已实现；审批覆盖、其余能力验收及预装发行尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接和确认状态的更新直至结束。
+当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。插件 Manifest / 工厂、Bundle、Companion VSIX、本机 HTTP、公共 Adapter、普通 Session、结构化提问、命令 / 文件 / MCP 单次审批映射、已确认身份的活动恢复、逐轮模型 / Thinking / 本地权限选择及受限的历史派生已实现；预装发行接线与搬移验证已通过；审批覆盖、其余能力及当前用户 Desktop 验收尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接和确认状态的更新直至结束。
 
 历史派生限制：3.4.12 的原生 fork_session 可以精确复制文本会话前缀，但不会为复制的文件编辑用户消息建立对应的快照 Git 标签。一次独立原生探测创建了可读消息但不可读文件快照的副本；源历史不变，副本已停止并保留供核查，没有重试或删除用户历史。插件在写入前拒绝含文件编辑的 Fork，以及需保留非空前缀的文件编辑 Rollback。只有一轮时，Rollback 创建独立空会话，无需复制快照。会话回退不回滚工作区文件。新会话身份、精确前缀和源历史均重新核对；不确定回执不自动重试，已知副本验证失败时报告其原生 ID。
 
@@ -81,7 +81,7 @@ Edit 参数清空：原生执行结束会清空 old_string / new_string。工具
 
 ## 插件外改动
 
-尚未接入预装发行。公共 API 2 扩展涉及 shared-contracts、harness-adapter、Host Runtime、Broker 及对应测试和文档；缺省兼容 API 1，无 Harness 专用公共分支。`package-lock.json` 注册 Workspace、三个公共契约依赖以及 Companion 打包 / ZIP 验证开发工具；根 `tsconfig.json` 加入该包的构建引用；`eslint.config.js` 为应用内 CommonJS 资源加入通用检查；`docs/index.md` 添加开发说明入口；`tests/release` 新增插件搬移和 VSIX 资源验证。开发工具不进入运行时 Bundle。先前独立 CLI 原型已从最终变更中撤回。
+预装清单、完整集合加载测试和搬移 Host 发行测试已加入 trae-cn。公共 API 2 扩展涉及 shared-contracts、harness-adapter、Host Runtime、Broker 及对应测试和文档；缺省兼容 API 1，无 Harness 专用公共分支。`package-lock.json` 注册 Workspace、三个公共契约依赖以及 Companion 打包 / ZIP 验证开发工具；根 `tsconfig.json` 加入该包的构建引用；`eslint.config.js` 为应用内 CommonJS 资源加入通用检查；`docs/index.md` 添加开发说明入口；`tests/release` 新增插件搬移和 VSIX 资源验证。开发工具不进入运行时 Bundle。先前独立 CLI 原型已从最终变更中撤回。
 
 ## 验证记录
 
@@ -129,4 +129,7 @@ Edit 参数清空：原生执行结束会清空 old_string / new_string。工具
 | 模型选择 CI | d335ae18：GitHub Actions 41272342868 | Ubuntu、Windows、Linux ARM64、macOS 15 全部通过；后续 Thinking 读取改动需新 Head 的 CI |
 | Thinking 读取回归检查 | typecheck（含测试类型）；Adapter 全套及两个发行测试共 155 项 | 全部通过；Companion 0.1.5 的十个 CJS 资源、许可证与插件搬移均已验证；原生能力读取不等于 Thinking 配置写入已实现 |
 | 真实原生验收 | TRAE CN 3.4.12 Windows，复用桌面登录，Builder / Seed-Code | 原生 done.status=completed；重连历史 finish.summary=CODEXHOST_TRAE_CN_OK；不是 Host 端验收 |
-| Desktop / 委派 | 待实现 | 未验证 |
+| 预装发行与 3.4.13 执行 | 根 build:typescript；完整集合 Loader；搬移发行 Host；两进程真实会话 | 预装目录 / 启用 / 缺 Companion 诊断通过；3.4.13 两轮真实对话，冷恢复精确且上下文续聊成功；当前用户窗口仍未验收 |
+| 发行检查 | 46 项 Host Bundle / npm 检查；8 项 payload 检查；完整集合 Loader、独立插件 / VSIX 和工厂检查；typecheck、lint / boundaries | 均通过；初次两项 npm stderr 断言受到环境 UNDICI-EHPA 警告影响，关闭该警告后通过；payload 一项符号链接验证因本机 EPERM 未通过，定向检查中排除并单独记录 |
+| 扩展审批 CI | f298d2aa：GitHub Actions 41469773726 | Ubuntu、Windows、Linux ARM64、macOS 15 全部通过；预装接线之后需新 Head 的 CI |
+| Desktop / 委派 | 当前日常 Runtime 0.17.0 仍为插件 API 1；真实 Coordinator.start 使用 unattended-full-access | 旧 Host 无法加载 API 2 插件；无人值守委派明确拒绝；普通 Thread 的两轮与冷恢复已验证，不能据此声称完整 Desktop / 委派支持 |

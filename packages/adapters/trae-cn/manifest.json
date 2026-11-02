@@ -26,8 +26,8 @@
     }
   },
   "notice": {
-    "en": "Desktop integration in development. Native IPC verified on Windows TRAE CN 3.4.12; complete support and other versions remain under validation.",
-    "zh-CN": "桌面接入开发中。原生 IPC 已在 Windows TRAE CN 3.4.12 验证；完整能力和其他版本仍待验收。"
+    "en": "Desktop integration in development. Native execution verified on Windows TRAE CN 3.4.12; 3.4.13 passed text and cold-resume acceptance through an isolated Host. Install the Companion separately; complete support remains under validation.",
+    "zh-CN": "桌面接入开发中。Windows TRAE CN 3.4.12 已验证原生执行，3.4.13 已通过隔离 Host 的文本对话与冷恢复验收。Companion 需单独安装，完整能力仍待验收。"
   },
   "links": {
     "website": "https://www.trae.cn/",

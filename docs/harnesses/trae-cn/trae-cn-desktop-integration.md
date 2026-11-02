@@ -1,6 +1,6 @@
 # TRAE CN Desktop 原生桥接
 
-开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含插件 Manifest / 工厂、桌面 Companion、本机传输、公共 Adapter、文本会话、文件编辑与 Diff、结构化提问、命令 / 文件 / MCP 单次审批映射、已确认身份的活动恢复、模型 / Thinking / 本地权限选择及受限的 Fork / Rollback。插件 Bundle 与 Companion VSIX 已验证；审批覆盖、预装发行及完整 Desktop 验收尚未完成，仍为开发版本。
+开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含插件 Manifest / 工厂、桌面 Companion、本机传输、公共 Adapter、文本会话、文件编辑与 Diff、结构化提问、命令 / 文件 / MCP 单次审批映射、已确认身份的活动恢复、模型 / Thinking / 本地权限选择及受限的 Fork / Rollback。插件 Bundle 与 Companion VSIX 已验证；预装清单、搬移 Host 与插件加载已验证；审批覆盖及完整 Desktop 验收尚未完成，仍为开发版本。
 
 ## 构建与安装
 
@@ -13,7 +13,7 @@ npm run build:companion --workspace=@codexhost/adapter-trae-cn
 
 第一个命令编译公共依赖，并生成 `packages/adapters/trae-cn/dist/plugin/manifest.json` 和独立的 `plugin.mjs`。第二个使用固定版本的官方 `@vscode/vsce`，生成 `packages/adapters/trae-cn/dist/trae-cn-bridge.vsix`；只打包列出的 Companion 资源、README 与仓库许可证，不发布到 Marketplace。打包工具及 ZIP 验证工具仅为开发依赖，不进入插件 Bundle 或 VSIX。
 
-在 TRAE CN 扩展面板选择 **Install from VSIX...** 安装 VSIX，按提示重新加载窗口。将 `dist/plugin` 的内容放到 CodexHost 受信任插件根中的 `trae-cn` 子目录，在该根的 `enabled.json` 中加入 `trae-cn`，保留已有条目，然后按当前 Host 的方式重启。插件要求包含公共活动恢复扩展的 API 2 Host；旧 API 1 Host 会拒绝加载。此处是独立插件安装，尚未加入预装清单。插件展示与启动路径设置由公共 Loader 和 Manifest 驱动。
+在 TRAE CN 扩展面板选择 **Install from VSIX...** 安装 VSIX，按提示重新加载窗口。Companion 需要单独构建和安装，不随 Host 的插件 Bundle 自动激活。发行清单已包含 `trae-cn`，`npm run build:typescript` 将生成相邻的预装插件和启用配置；Installer 与 npm 发行复用该清单。仅独立安装插件时，将 `dist/plugin` 的内容放到 CodexHost 受信任插件根中的 `trae-cn` 子目录，在该根的 `enabled.json` 中加入 `trae-cn`，保留已有条目，然后按当前 Host 的方式重启。不要同时在预装根和用户根安装同一 ID。插件要求包含公共活动恢复扩展的 API 2 Host；旧 API 1 Host 会拒绝加载。插件展示与启动路径设置由公共 Loader 和 Manifest 驱动。
 
 TRAE CN 必须打开并信任目标工作目录，并在应用内完成登录。安装设置中的应用路径会经 `context.launchCommand` 传到工厂，优先于 `CODEXHOST_TRAE_CN_APP`；它限定允许连接的应用安装目录，不会自动启动桌面。连接页路径改变后需要重启 Host。`CODEXHOST_TRAE_CN_BRIDGE_DIR` 可以指定双方一致的绝对发现目录。
 
@@ -143,4 +143,8 @@ Thinking 的真实验收使用开发 Companion 0.1.6。MiniMax-M3.1-Flash 的 Li
 
 2026-11-02 本机应用已更新至 3.4.13。新 PID 的开发 Companion 0.1.8 已通过只读兼容检查，提供 9 个模型、4 个权限选项及文件 / MCP 审批能力标记；原四轮会话为 Finished，完整冷状态哈希不变。这次只调用 snapshot / preparePermission，没有创建 Session 或发送消息，不能替代新版本的实际推理与审批验收。
 
-这些证据覆盖插件加载、桌面 Companion、公共 Adapter 与隔离 Host 核心，仍需审批覆盖、自主 / 后台行为、委派、预装发行，以及用户当前 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。
+预装发行验收中，完整集合的真实 Loader、仓库外 Host / 插件以及 npm 文件集检查均通过，缺 Companion 时返回可重试的 configurationRequired。TRAE CN 3.4.13 的两轮实际对话通过预装插件进入隔离 AppServerHost；第二轮由新进程恢复同一 Thread / Native Session，精确读取原历史后复述第一轮的 TRAE_CN_3413_PREINSTALLED_OK。两轮各有唯一映射，原生状态为 Finished。Host 的真实委派入口则因固定要求 unattended-full-access 被插件明确拒绝，未改变父会话历史；该结果不代表可接收无人值守任务。
+
+当前日常 CodexHost 安装为 0.17.0，其实际 Runtime 仍为插件 API 1，且预装清单没有 trae-cn。开发插件要求 API 2，因此不能仅复制插件到这份运行中的 Host，也不降级 Manifest 绕过校验。未替换或强制重启用户的活动 Desktop。
+
+这些证据覆盖预装插件加载、桌面 Companion、公共 Adapter 与隔离 Host 核心，仍需审批覆盖、自主 / 后台行为、完整委派，以及用户当前 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。

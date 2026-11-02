@@ -192,6 +192,8 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 ## 跨 Agent 协作
 
+预装的 **[TRAE CN 桌面桥接](../harnesses/trae-cn/trae-cn-desktop-integration.md)** 为实验性接入，需要单独安装 Companion 扩展。它复用国内桌面的登录、会话模型和原生 Session，不使用独立 Trae CLI。文本、文件编辑、提问、单次审批和受限历史操作已有原生证据；完整审批覆盖、委派及当前 Desktop 验收仍见[能力清单](../../packages/adapters/trae-cn/CAPABILITIES.md)，尚未列入上方的完整支持表。
+
 在聊天输入框输入 `#`，可以选择要委派任务的 Agent，也可以查找当前所选 Harness 可用的命令和技能。
 
 你可以让当前 Agent 把独立任务交给另一个 Harness。例如：

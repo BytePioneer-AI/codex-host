@@ -188,6 +188,8 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 ## Agent 간 협업
 
+사전 설치된 **[TRAE CN Desktop 브리지](../harnesses/trae-cn/trae-cn-desktop-integration.md)**는 실험적 통합이며 Companion 확장을 별도로 설치해야 합니다. 중국 국내 Desktop의 로그인, 대화 모델 및 네이티브 Session을 재사용하며 독립 Trae CLI 인증은 사용하지 않습니다. 텍스트, 파일 편집, 질문, 일회성 승인 및 제한된 이력 작업은 네이티브 환경에서 검증했습니다. 남은 승인 범위, 위임 및 현재 Desktop 검증은 [기능 목록](../../packages/adapters/trae-cn/CAPABILITIES.md)에 기록되어 있으며 위의 전체 지원 표에는 포함되지 않습니다.
+
 채팅 입력창에 `#`을 입력하면 작업을 위임할 Agent를 선택하거나 현재 선택한 Harness에서 사용할 수 있는 명령과 스킬을 찾을 수 있습니다.
 
 현재 Agent에게 독립 작업을 다른 Harness로 넘기도록 요청할 수 있습니다. 예를 들면 다음과 같습니다.

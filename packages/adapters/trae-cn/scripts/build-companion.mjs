@@ -20,6 +20,7 @@ const companionFiles = [
   "history.cjs",
   "reasoning.cjs",
   "permissions.cjs",
+  "commands.cjs",
 ];
 
 /** Build locally with the official packager; never publish or modify source resources. */

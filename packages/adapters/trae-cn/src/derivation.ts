@@ -14,6 +14,7 @@ import { projectHistory, TRAE_CN_ID } from "./history.js";
 import { nativeModelId, nativeThinkingSelection, historyThinking } from "./models.js";
 import { hasFileEditHistory } from "./file-changes.js";
 import { nativePermissionId } from "./permissions.js";
+import { hasBackgroundCommandHistory } from "./commands.js";
 
 function semanticTurns(snapshot: HostThreadSnapshot) {
   return snapshot.turns.map((turn) => ({
@@ -102,6 +103,16 @@ export async function deriveSession(
   }
   const model =
     (input.kind === "rollbackLastTurn" ? input.model : undefined) ?? original.turns.at(-1)?.model;
+  if (
+    hasBackgroundCommandHistory(
+      source,
+      new Set(prefix.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)),
+    )
+  )
+    throw new TraeError(
+      "unsupported",
+      "Native background command executions cannot be copied into a derived Session",
+    );
   if (!model)
     throw new TraeError("configurationRequired", "The source has no confirmed model to preserve");
   nativeModelId(inspection, model);

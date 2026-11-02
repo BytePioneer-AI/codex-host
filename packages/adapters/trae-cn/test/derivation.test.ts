@@ -93,6 +93,66 @@ function setup(count = 2) {
   return { source, call, client: { call } as unknown as BridgeClient };
 }
 describe("TRAE CN public history derivation", () => {
+  it("rejects copying background executions before writes but permits a sole-Turn empty rollback", async () => {
+    for (const count of [1, 2]) {
+      const test = setup(count);
+      const reply = test.source.items[1];
+      if (!reply) throw new Error("Missing fixture reply");
+      const plan = {
+        id: "background",
+        reply_to_message_id: "u0",
+        tool_call_info: {
+          name: "RunCommand",
+          params: { command: "echo OK", cwd: "/workspace", blocking: false },
+          result: { status: "success", data: { command_id: "background-command" } },
+        },
+      };
+      Object.assign(reply, {
+        content: JSON.stringify({ messages: [{ type: "plan_item", plan_item: plan }] }),
+        commandStatuses: [
+          {
+            messageId: "u0",
+            planItemId: "background",
+            commandId: "background-command",
+            status: "succeeded",
+            output: "OK",
+            outputTruncated: false,
+            exitCode: 0,
+          },
+        ],
+      });
+      await expect(
+        deriveSession(test.client, inspection, {
+          kind: "fork",
+          sourceRef,
+          checkpoint: checkpoint("a0"),
+          cwd: "/workspace",
+        }),
+      ).rejects.toMatchObject({ code: "unsupported" });
+      expect(test.call.mock.calls.every(([method]) => method === "snapshot")).toBe(true);
+      if (count === 1) {
+        expect(
+          await deriveSession(test.client, inspection, {
+            kind: "rollbackLastTurn",
+            sourceRef,
+            cwd: "/workspace",
+          }),
+        ).toMatchObject({ nativeRef: { nativeSessionId: "derived" } });
+        expect(test.call.mock.calls.filter(([method]) => method !== "snapshot")).toEqual([
+          ["create", { cwd: "/workspace", title: "CodexHost rollback" }],
+        ]);
+      } else {
+        await expect(
+          deriveSession(test.client, inspection, {
+            kind: "rollbackLastTurn",
+            sourceRef,
+            cwd: "/workspace",
+          }),
+        ).rejects.toMatchObject({ code: "unsupported" });
+        expect(test.call.mock.calls.every(([method]) => method === "snapshot")).toBe(true);
+      }
+    }
+  });
   it.each([1, 2])(
     "preserves an explicit permission mode on %s-Turn rollback and validates it before writes",
     async (count) => {

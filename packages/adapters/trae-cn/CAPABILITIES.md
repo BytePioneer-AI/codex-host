@@ -24,21 +24,21 @@
 | A5 | 执行 Turn | 必做 | P0 | 受限 | src/session.ts；src/live-items.ts | 公共普通对话、文件工具、提问、命令审批及持久历史一致 | Builder、Read、Edit、RunCommand 和提问已验收；其他工具语义待补 |
 | A6 | 取消 | 必做 | P0 | 支持 | src/session.ts；assets/companion/service.cjs | 公共提问等待中 turn.cancel 后，公共与持久原生均 cancelled，同 Session 随后成功续聊 | Interaction 关闭一次；过期回复拒绝；不将请求回执当终态 |
 | A7 | 只读快照 | 必做 | P0 | 支持 | src/history.ts；src/session.ts | 重复读取真实历史的 Turn / Item 身份一致；恢复缓存 unknown 快照；原生历史提交延迟实测 | 普通活动读取返回 sessionBusy；终态确认短暂重读同一身份 |
-| A8 | 持久身份 + resume | 必做 | P0 | 受限 | src/adapter.ts；src/session.ts；src/history.ts | 公共 Adapter 跨进程恢复；隔离真实 Host 重启恢复提问和审批，原 Turn / 唯一映射不变 | 空闲与已确认活动身份可恢复；缺映射、创建中、回退中等不确定状态明确拒绝 |
+| A8 | 持久身份 + resume | 必做 | P0 | 受限 | src/adapter.ts；src/session.ts；src/history.ts | 跨进程普通恢复、活动提问 / 审批恢复；后台命令完成后，重建 Companion 与两个新 Host 的三轮完整冷读一致 | 后台仍运行时冷恢复明确返回 sessionBusy；不丢弃命令、不重发原任务；缺映射及不确定状态拒绝 |
 | A9 | 错误与并发 | 必做 | P0 | 受限 | src/session.ts；assets/companion/service.cjs | native / service / session 测试；真实跨进程活动恢复 | 本机准入串行；不确定回执无自动重试；仅恢复原身份，其他工具故障待补 |
 | A10 | 关闭 | 必做 | P0 | 支持 | src/session.ts；assets/companion/native.cjs | 公共关闭测试；真实观察者断开后原生 completed | 不把关闭观察者当作 native cancel |
 | B1 | 切换 Model | 原生有则必做 | P1 | 支持 | src/configuration.ts；src/session.ts；assets/companion/models.cjs | 公共 model.select；原生 Assistant 确认 Seed-Code → Seed-2.1-Turbo → Seed-2.1-Turbo → Seed-Code；活动时切换、冷恢复、模型存储哈希不变 | 下次请求生效；按桌面原生逐轮 DTO 配置；不修改全局偏好；旧 Companion 不声明支持；不把历史 Turn 改标为新模型 |
 | B2 | 切换 Thinking | 原生有则必做 | P1 | 支持 | src/models.ts；configuration.ts；session.ts；assets/companion/reasoning.cjs；models.cjs | MiniMax-M3.1-Flash 两次真实请求的持久配置为 light / high，回复匹配；活动切换、跨进程恢复、文本 Fork / Rollback、桌面偏好哈希不变 | 使用模型原生档位及字段；无隐式默认；选项按模型隔离；接受的 Turn 固定配置；旧 Companion 不声明支持 |
 | B3 | 权限模式 | 原生有则必做 | P1 | 受限 | assets/companion/permissions.cjs；src/permissions.ts；configuration.ts；session.ts | 当前原生菜单四项与默认读取；manual_approval / full_access 各一次实际 RunCommand 完成并生成正确文件；活动切换与冷恢复；全局配置哈希未变 | 本地国内版；按动态 / 用户开关过滤 Auto / Custom；请求顶层和 client_info 同时传原生字段；原生历史未存档位，恢复 Host 确认提示，不推测旧权限；无人值守仍拒绝 |
 | B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 支持 | src/adapter.ts | test/adapter.test.ts：unattended-full-access 在连接前返回 unsupported | 通过明确拒绝满足契约；不忽略执行意图或伪造审批 |
-| B5 | Fork | 原生有则必做 | P1 | 受限 | src/derivation.ts；assets/companion/history.cjs | 真实原生 lite.fork_session；公共中间 / 末尾边界、源历史隔离、新进程恢复与继承上下文后的续聊 | 无文件编辑历史时支持；沿用桌面 Fork 开关；3.4.12 文件快照复制缺陷在写入前拒绝 |
+| B5 | Fork | 原生有则必做 | P1 | 受限 | src/derivation.ts；assets/companion/history.cjs | 原生文本 Fork、精确前缀与源隔离；后台命令前缀的写入前拒绝回归 | 保留文件编辑或后台执行身份的前缀不能复制；不复用源 Session 的命令 ID |
 | B6 | 跨目录 Fork | 原生有则必做 | P2 | 不支持 | src/derivation.ts | 目标 cwd 不同在原生写入前返回 unsupported | 未证明原生跨 Project 复制；不以改变进程目录冒充支持 |
-| B7 | 回滚最后一轮 | 原生有则必做 | P1 | 受限 | src/derivation.ts；src/session.ts | 公共六轮 → 五轮、单轮 → 空白、单轮文件编辑 → 空白；源历史 / 工作区文件不变，模型保留，续聊与新进程读取成功；Thinking Light 历史与 High 后续选择独立保留；显式权限提示的写入前校验测试 | 创建独立 Session，由 Host 替换；含文件编辑且保留非空前缀时拒绝；显式权限提示保留，不猜测原生历史未保存的权限 |
-| B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 受限 | src/history.ts；src/commands.ts；src/file-changes.ts；src/live-items.ts；assets/companion/diffs.cjs | 真实 Read、Edit 和 RunCommand；两轮文件编辑的实时 / 历史 Diff 一致，新进程恢复一致；后台回执误判由回归先复现再修复 | 消息级原生快照提供完整前后内容；2 MiB 上限明确拒绝；后台命令结果明确返回 unsupported，不当成成功或取消；原生工作可能仍运行，其他文件操作验收待补 |
+| B7 | 回滚最后一轮 | 原生有则必做 | P1 | 受限 | src/derivation.ts；src/session.ts | 文本多轮 / 单轮及单轮文件编辑回退的原生证据；后台前缀拒绝与单轮回退为空的回归 | 独立 Session；保留非空文件编辑或后台命令前缀时拒绝；不回滚工作区或取消源命令 |
+| B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 受限 | src/background.ts；commands.ts；history.ts；live-items.ts；assets/companion/commands.cjs、diffs.cjs | Read / Edit / RunCommand；3.4.13 真实 Host 中后台命令先 detached，父轮及后续聊天完成后按原退出码与输出结算；进行中历史叠加及桥接 / Host 冷恢复一致 | 仅 RunCommand；按原 Session / 消息 / Plan / command ID 查询；16,384 字符窗口，实时溢出明确故障；后台中冷恢复暂缓；无独立命令停止控件，其他工具待补 |
 | B9 | 审批 | 原生有则必做 | P0 | 受限 | src/interactions.ts；src/approvals.ts；assets/companion/interactions.cjs | RunCommand 与 Edit 允许 / 拒绝原生验收；文件作用、四轮原历史及冷恢复一致，全局权限未变；MCP、资源读取及删除确认格式的原生界面源码与测试 | 文件允许使用事件拥有的 toolcall_id，命令 / MCP 使用 tool_name；仅允许一次 / 拒绝；旧 Companion 缺能力标记时明确提示升级；MCP 与删除审批的实时验收尚未完成；不支持持久授权 |
 | B10 | 提问 | 原生有则必做 | P0 | 支持 | src/interactions.ts；assets/companion/interactions.cjs；settings.cjs | 公共问题只发布一次；显式答复“停止”，持久完成回复 TRAE_CN_PUBLIC_QUESTION_OK_STOP | 复用桌面开关；实例校验；不使用预填答案；单选、多选、其他及跳过映射测试 |
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 待验证 | — | — | |
-| B12 | 自主 Turn | 原生有则必做 | P1 | 待验证 | src/commands.ts 仅提供结果保护 | 3.4.13 原生桌面通过 poll_pending_wakeups 和隐藏 /background_command_completed 用户消息启动后台完成续轮 | 插件尚未接入该唤醒 / 自主观察链路；不以父 Turn 完成冒充后台结果；Ralph / Goal 未启用 |
+| B12 | 自主 Turn | 原生有则必做 | P1 | 受限 | src/session.ts；src/background.ts | 3.4.13 原生 command 状态从 running 到 completed；toolcall/poll_pending_wakeups 实际返回 unknown route；后台结果未生成新用户消息 | autonomousTurns.observe=false；普通 Builder 当前后端无可用唤醒路由；不发送隐藏普通消息模拟自主续轮；Ralph / Goal 不在接入范围 |
 | B13 | 会话用量 | 原生有则必做 | P1 | 受限 | src/usage.ts；src/session.ts；assets/companion/service.cjs | 原生历史数值白名单；同 Session / 新进程恢复的 initialUsage 一致；只读刷新仅调用 snapshot；实时映射测试 | 仅上下文占用 / 窗口；原生历史只保留末次请求，累计字段为占位 0，故不显示会话累计 tokens、费用或估算价格 |
 | B14 | 请求级计量 | 原生有则必做 | P2 | 待验证 | — | — | |
 | B15 | 接收委派 | 必做（验证项） | P1 | 受限 | src/adapter.ts | 3.4.13 真实 Host Coordinator.start 经已加载插件返回 DELEGATION_FAILED，未改变父会话历史；普通 Thread 跨进程可续聊 | 当前委派固定使用 unattended-full-access，插件明确拒绝；不能作为可接收无人值守任务的 Harness |
@@ -59,7 +59,7 @@
 
 ## 受限与已知缺口
 
-后台命令限制：3.4.13 的桌面运行注册表把 blocking=false、后台状态、转后台原因和 skipped_run 识别为后台命令，并在父任务之外轮询唤醒及发送隐藏续轮。插件尚未实现此完整观察链路。实时与历史投影遇到这些形态会返回 unsupported，并说明原生工作可能仍运行；不会把启动成功当作命令成功，也不会把转后台误标为用户取消。普通运行中的命令也不能因父 Turn 成功结束就被补为成功。这只是结果真实性保护，未阻止原生执行或实现后台控制；需在原生桌面核对。源码对应的回归先复现了九个错误，再通过修复；没有将合成数据声称为真实后台运行验收。
+后台命令：Companion 0.1.9 用原消息拥有的 plan ID、llm tool-call ID 与 command ID 调用 check_toolhost_command_status，校验 Session / Project / 命令 / cwd，并白名单转出结果。已通过原生 running → completed、输出和退出码验证；不是以工具启动成功推定执行成功。公共 Item 通过 item.detached 继续存活，父轮和后续前台轮均可先完成，再由只读轮询终结原 Item；hasBackgroundWork 阻止空闲释放。只跟踪当前观察作用域已准入的命令，关闭或故障结束观察，不隐式取消原生进程。后台仍运行时冷恢复返回 sessionBusy，完成后可正常恢复；保留后台执行身份的历史派生在写入前拒绝。Native 输出窗口为 16,384 字符，实时窗口溢出明确故障，冷历史保留截断标志。普通 Builder 的后台唤醒路由在 3.4.13 实际返回 unknown route，故自主 Turn 保持关闭，不发送普通 Prompt 冒充原生唤醒。
 
 活动恢复的公共契约缺口与实现：原生实测可在断开观察者后重放同一问题实例，并继续同一用户消息；旧 Host 只在 turn.completed 持久化 NativeTurnRef，knownTurnRefs 没有原 Host Turn ID。API 2 新增可选 activeTurnRecovery、turn.identity.confirmed、knownTurns 和 recoveringTurn，Host 提前持久化原身份并按确认映射恢复原投影；Broker 转发，Renderer 沿用原公共投影，没有 TRAE 专用分支。旧 API 1 插件仍可加载且不接收新输入；TRAE 插件声明 API 2，拒绝在旧 Host 上执行。没有确认映射时不会猜测或重发任务。
 
@@ -86,6 +86,8 @@ Edit 参数清空：原生执行结束会清空 old_string / new_string。工具
 预装清单、完整集合加载测试和搬移 Host 发行测试已加入 trae-cn。公共 API 2 扩展涉及 shared-contracts、harness-adapter、Host Runtime、Broker 及对应测试和文档；缺省兼容 API 1，无 Harness 专用公共分支。`package-lock.json` 注册 Workspace、三个公共契约依赖以及 Companion 打包 / ZIP 验证开发工具；根 `tsconfig.json` 加入该包的构建引用；`eslint.config.js` 为应用内 CommonJS 资源加入通用检查；`docs/index.md` 添加开发说明入口；`tests/release` 新增插件搬移和 VSIX 资源验证。开发工具不进入运行时 Bundle。先前独立 CLI 原型已从最终变更中撤回。
 
 ## 验证记录
+
+后台观察（2026-11-03）：最终完整 Adapter / VSIX / 插件 / 搬移 Host 族 236 项通过；typecheck、lint / boundaries 与改动格式通过。覆盖拒绝启动、执行身份变化、终态输出仍在刷新、后续轮并行、观察关闭及后台中冷恢复。真实 3.4.13 + 开发 Companion 0.1.9：在原专用 Thread 中完成后台新轮与后续纯文本轮，父轮 / 后续轮先结束，原命令随后输出 TRAE_CN_HOST_BACKGROUND_NEXT_DONE、exitCode=0；历史进行中叠加正确。Companion 进程退出后重建，两个新 Host 精确读取同一三轮历史，原前缀和三条唯一映射不变，Native Finished。先前脚本分别误选 thinking 兼容 Item、误读完成帧中的省略输出，保留失败记录后按真实增量和历史核对；没有重发旧命令。安装包包含十二个 CJS 资源。
 
 后台结果保护检查：11 项源码对应的后台 / 前台边界用例；修复前其中 9 项失败，补充一项 running 数据状态后全通过。完整 Adapter、独立插件 / VSIX 与搬移 Host 发行检查共 208 项通过；typecheck、lint / boundaries 及改动代码格式通过。没有执行原生后台任务，故不作为后台控制或自主 Turn 的真实验收。
 

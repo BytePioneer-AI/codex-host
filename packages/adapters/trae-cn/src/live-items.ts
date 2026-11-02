@@ -8,10 +8,13 @@ import type { HostTurnId } from "@codexhost/shared-contracts";
 import { isDeepStrictEqual } from "node:util";
 import { TraeError } from "./errors.js";
 import { projectPlanItem, type ProjectedPlanItem } from "./history.js";
+import { type NativeBackgroundCommand, type NativeCommandStatus } from "./commands.js";
 
 interface LiveItem {
   item: HostItem;
   outcome?: HostItemOutcome;
+  detached?: boolean;
+  background?: NativeBackgroundCommand;
 }
 
 /** Projects cumulative native plan updates into ordered public Item lifecycles. */
@@ -20,10 +23,14 @@ export class LiveItems {
   constructor(
     private readonly turnId: HostTurnId,
     private readonly emit: (event: HostEvent) => void,
+    private readonly background?: {
+      follow(ref: NativeBackgroundCommand, update: (status: NativeCommandStatus) => void): void;
+    },
   ) {}
 
   acceptPlan(value: unknown): void {
-    for (const projected of projectPlanItem(value)) this.#accept(projected);
+    for (const projected of projectPlanItem(value, undefined, undefined, !!this.background))
+      this.#accept(projected);
   }
 
   #accept(next: ProjectedPlanItem): void {
@@ -35,7 +42,24 @@ export class LiveItems {
     } else {
       if (previous.item.type !== next.item.type)
         throw new TraeError("protocolError", "Native plan Item changed its content type");
+      if (
+        previous.background &&
+        next.background &&
+        !isDeepStrictEqual(previous.background, next.background)
+      )
+        throw new TraeError("protocolError", "Native background execution changed identity");
       if (previous.outcome) {
+        if (
+          previous.detached &&
+          next.background &&
+          previous.background &&
+          isDeepStrictEqual(previous.background, next.background) &&
+          previous.item.type === "commandExecution" &&
+          next.item.type === "commandExecution" &&
+          previous.item.command === next.item.command &&
+          previous.item.cwd === next.item.cwd
+        )
+          return;
         if (
           !isDeepStrictEqual(previous.item, next.item) ||
           (next.outcome && !isDeepStrictEqual(previous.outcome, next.outcome))
@@ -103,7 +127,17 @@ export class LiveItems {
             update: { type: "output.replace", output: next.item.output },
           });
       }
-      this.#items.set(id, { ...next });
+      this.#items.set(id, {
+        ...next,
+        ...(previous.detached ? { detached: true } : {}),
+        ...(previous.background ? { background: previous.background } : {}),
+      });
+    }
+    const current = this.#items.get(id);
+    if (next.background && current && !current.detached && !current.outcome) {
+      this.background?.follow(next.background, (status) => this.#backgroundStatus(id, status));
+      current.detached = true;
+      this.emit({ type: "item.detached", turnId: this.turnId, itemId: id });
     }
     if (next.outcome)
       this.emit({
@@ -113,15 +147,48 @@ export class LiveItems {
       });
   }
 
+  get hasDetachedWork(): boolean {
+    return [...this.#items.values()].some((item) => item.detached && !item.outcome);
+  }
+
+  #backgroundStatus(id: string, status: NativeCommandStatus): void {
+    const current = this.#items.get(id);
+    if (!current || current.item.type !== "commandExecution" || current.outcome) return;
+    const outcome: HostItemOutcome | undefined =
+      status.status === "running"
+        ? undefined
+        : status.status === "succeeded"
+          ? { status: "succeeded" }
+          : status.status === "cancelled"
+            ? { status: "cancelled", reason: "Native background command stopped" }
+            : {
+                status: "failed",
+                error: {
+                  code: "nativeFailure",
+                  message: "Native background command failed",
+                  retryable: false,
+                },
+              };
+    this.#accept({
+      item: {
+        ...current.item,
+        output: status.output,
+        outputTruncated: status.outputTruncated,
+        ...(status.exitCode !== undefined ? { exitCode: status.exitCode } : {}),
+      },
+      ...(outcome ? { outcome } : {}),
+    });
+  }
+
   /** Publish exact message-snapshot diffs after durable native completion. */
   acceptFileChanges(items: readonly HostItemSnapshot[]): void {
     for (const snapshot of items) if (snapshot.item.type === "fileChange") this.#accept(snapshot);
   }
 
   /** Native terminal/history evidence settles open Items; EOF alone must never call this. */
-  settle(outcome: HostItemOutcome): void {
+  settle(outcome: HostItemOutcome, includeDetached = false): void {
     for (const item of this.#items.values()) {
-      if (item.outcome) continue;
+      if (item.outcome || (item.detached && !includeDetached)) continue;
       item.outcome = outcome;
       this.emit({
         type: "item.completed",

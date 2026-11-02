@@ -32,6 +32,7 @@ export interface BridgeInspection {
   history?: { forkFromMessage: boolean; forkFromSession: boolean };
   permissions?: BridgePermissions;
   interactions?: { fileAndMcpApprovals: boolean };
+  backgroundCommands?: { observe: boolean };
 }
 export interface BridgePermissions {
   modes: { id: string; label: string; dangerous?: boolean }[];
@@ -176,6 +177,12 @@ export function readInspection(value: unknown): BridgeInspection {
     throw new TraeError("protocolError", "Duplicate TRAE CN model identities");
   const history = value.history;
   const interactions = value.interactions;
+  const backgroundCommands = value.backgroundCommands;
+  if (
+    backgroundCommands !== undefined &&
+    (!record(backgroundCommands) || typeof backgroundCommands.observe !== "boolean")
+  )
+    throw new TraeError("protocolError", "Invalid native background capabilities");
   if (
     interactions !== undefined &&
     (!record(interactions) || typeof interactions.fileAndMcpApprovals !== "boolean")
@@ -203,6 +210,9 @@ export function readInspection(value: unknown): BridgeInspection {
     application: readApplication(value.application),
     workspaceFolders: value.workspaceFolders as string[],
     models,
+    ...(record(backgroundCommands)
+      ? { backgroundCommands: { observe: backgroundCommands.observe as boolean } }
+      : {}),
     ...(record(interactions)
       ? { interactions: { fileAndMcpApprovals: interactions.fileAndMcpApprovals as boolean } }
       : {}),

@@ -27,6 +27,7 @@ import { deriveSession } from "./derivation.js";
 import { hasFileEditHistory } from "./file-changes.js";
 import { prepareModelSelection } from "./configuration.js";
 import { permissionCatalog, preparePermissionSelection } from "./permissions.js";
+import { hasBackgroundCommandHistory } from "./commands.js";
 
 export type TraeCnAdapterOptions = Omit<BridgeOptions, "cwd"> & { cwd?: string };
 
@@ -128,6 +129,7 @@ export class TraeCnAdapter implements HarnessAdapter {
       let recoverySnapshot: HostThreadSnapshot | undefined;
       let initialUsage: HostUsage | null = null;
       let historyHasFileEdits = false;
+      let historyHasBackgroundCommands = false;
       let historyTurnCount = 0;
       if (input.kind === "resume") {
         validateReference(input.nativeRef, inspection, input.cwd);
@@ -161,6 +163,7 @@ export class TraeCnAdapter implements HarnessAdapter {
           );
         initialUsage = contextUsageFromHistory(native);
         historyHasFileEdits = hasFileEditHistory(native);
+        historyHasBackgroundCommands = hasBackgroundCommandHistory(native);
         const snapshot = projectHistory(
           native,
           input.nativeRef.nativeSessionId,
@@ -261,6 +264,7 @@ export class TraeCnAdapter implements HarnessAdapter {
         },
         initialUsage,
         historyHasFileEdits,
+        historyHasBackgroundCommands,
         historyTurnCount,
         ...(recoveringTurn && recoverySnapshot ? { recoveringTurn, recoverySnapshot } : {}),
         onClose: () => this.#sessions.delete(session),

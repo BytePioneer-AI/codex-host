@@ -4,6 +4,7 @@ const { publicModels, nativeModel, readModels, prepareModel } = require("./model
 const { questionDecision, approvalDecision, NativeInteractions } = require("./interactions.cjs");
 const { withFileDiffs } = require("./diffs.cjs");
 const { forkNativeSession } = require("./history.cjs");
+const { withCommandStatuses } = require("./commands.cjs");
 
 function invalid(message) {
   return Object.assign(new Error(message), { code: "invalidRequest" });
@@ -258,6 +259,7 @@ class DesktopService {
       models: publicModels(pool, await this.modelSettings()),
       configuration: { modelSelection: "per-request", thinkingSelection: "per-request" },
       interactions: { fileAndMcpApprovals: true },
+      backgroundCommands: { observe: true },
       history: await this.historySettings(),
       ...(permissions ? { permissions } : {}),
     };
@@ -343,7 +345,12 @@ class DesktopService {
             if (item.chat_session_id !== sessionId)
               throw invalid("History contains a different session");
             items.push(
-              await withFileDiffs(this.native, publicHistoryItem(item), sessionId, projectId),
+              await withCommandStatuses(
+                this.native,
+                await withFileDiffs(this.native, publicHistoryItem(item), sessionId, projectId),
+                sessionId,
+                projectId,
+              ),
             );
           }
           pageToken = history.next_page_token;

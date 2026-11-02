@@ -143,6 +143,91 @@ async function setup(configurable = false, thinking = false, permissions = false
 }
 
 describe("TRAE CN public Adapter core", () => {
+  it("defers cold restoration of a running background command and restores its terminal history without writes", async () => {
+    const test = await setup();
+    try {
+      const plan = {
+        id: "background",
+        reply_to_message_id: "user",
+        tool_call_info: {
+          name: "RunCommand",
+          params: { command: "echo OK", cwd: test.cwd, blocking: false },
+          result: { status: "success", data: { command_id: "command" } },
+        },
+      };
+      const status = {
+        messageId: "user",
+        planItemId: "background",
+        commandId: "command",
+        status: "running",
+        output: "",
+        outputTruncated: false,
+      };
+      const raw = {
+        sessionId: "native-session",
+        projectId: "project",
+        workspaceFolders: [test.cwd],
+        status: 5,
+        items: [
+          {
+            chat_session_id: "native-session",
+            message_id: "user",
+            message_index: 1,
+            role: "user",
+            content: JSON.stringify([{ type: "text", text_content: "background" }]),
+          },
+          {
+            chat_session_id: "native-session",
+            message_id: "assistant",
+            reply_to_message_id: "user",
+            message_index: 2,
+            role: "assistant",
+            status: "completed",
+            model: { config_name: "configured" },
+            content: JSON.stringify({ messages: [{ type: "plan_item", plan_item: plan }] }),
+            commandStatuses: [status],
+          },
+        ],
+      };
+      test.service.call.mockResolvedValue(raw);
+      expect(
+        await test.adapter.open({ kind: "resume", cwd: test.cwd, nativeRef: test.reference }),
+      ).toMatchObject({ ok: false, error: { code: "sessionBusy", retryable: true } });
+      const completed = structuredClone(raw);
+      Object.assign(completed.items[1]?.commandStatuses?.[0] ?? {}, {
+        status: "succeeded",
+        output: "OK",
+        exitCode: 0,
+      });
+      test.service.call.mockResolvedValue(completed);
+      const opened = await test.adapter.open({
+        kind: "resume",
+        cwd: test.cwd,
+        nativeRef: test.reference,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(await opened.value.readSnapshot()).toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            {
+              items: [
+                {
+                  item: { type: "commandExecution", output: "OK", exitCode: 0 },
+                  outcome: { status: "succeeded" },
+                },
+              ],
+            },
+          ],
+        },
+      });
+      expect(test.service.call.mock.calls.every(([method]) => method === "snapshot")).toBe(true);
+      expect(test.service.subscribe).not.toHaveBeenCalled();
+      await opened.value.close();
+    } finally {
+      await test.close();
+    }
+  });
   it("restores an explicitly empty Thinking list for a model without native choices", async () => {
     const test = await setup(true, true);
     try {

@@ -26,6 +26,7 @@ import {
   type ThinkingSelectCompleted,
   type PermissionModeSelectCommand,
   type PermissionModeSelectCompleted,
+  type HarnessError,
 } from "@codexhost/harness-adapter";
 import {
   nativeSessionRefSchema,
@@ -56,6 +57,8 @@ import { hasFileEditHistory } from "./file-changes.js";
 import { prepareSelectionChange, preparePermissionChange } from "./configuration.js";
 import { nativePermissionId, permissionModeRef } from "./permissions.js";
 import { validateReference } from "./reference.js";
+import { BackgroundCommands } from "./background.js";
+import { hasBackgroundCommandHistory } from "./commands.js";
 
 // Older Companions do not expose model preparation or history feature flags.
 // These capabilities are derived from the negotiated native bridge below.
@@ -67,14 +70,17 @@ export const SESSION_CAPABILITIES: HarnessSessionCapabilities = {
     permissionModeScope: "live",
   },
   history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+  autonomousTurns: { observe: false },
 };
 
 export function sessionCapabilities(
   inspection: BridgeInspection,
   hasFileEdits = false,
   turnCount = 0,
+  hasBackgroundCommands = false,
 ): HarnessSessionCapabilities {
-  const fork = inspection.history?.forkFromMessage === true && !hasFileEdits;
+  const fork =
+    inspection.history?.forkFromMessage === true && !hasFileEdits && !hasBackgroundCommands;
   return {
     ...SESSION_CAPABILITIES,
     configuration: {
@@ -89,7 +95,8 @@ export function sessionCapabilities(
       fork,
       forkAcrossCwd: false,
       rollbackLastTurn:
-        inspection.history?.forkFromMessage === true && (!hasFileEdits || turnCount <= 1),
+        inspection.history?.forkFromMessage === true &&
+        ((!hasFileEdits && !hasBackgroundCommands) || turnCount <= 1),
     },
   };
 }
@@ -122,6 +129,7 @@ export interface SessionOptions {
   initialState?: HarnessSessionState;
   initialUsage?: HostUsage | null;
   historyHasFileEdits?: boolean;
+  historyHasBackgroundCommands?: boolean;
   historyTurnCount?: number;
   recoveringTurn?: HarnessTurnRecovery;
   recoverySnapshot?: HostThreadSnapshot;
@@ -146,6 +154,7 @@ export class TraeCnSession implements HarnessSession {
       this.options.inspection,
       this.#historyHasFileEdits,
       this.#historyTurnCount,
+      this.#historyHasBackgroundCommands,
     );
   }
   readonly initialUsage: HostUsage | null;
@@ -161,6 +170,7 @@ export class TraeCnSession implements HarnessSession {
   #recoverySnapshot: HostThreadSnapshot | undefined;
   #usage: HostUsage | null;
   #historyHasFileEdits = false;
+  #historyHasBackgroundCommands = false;
   #historyTurnCount = 0;
   #selectedModel: HarnessModelRef | undefined;
   #selectedThinking: HarnessThinkingOptionId | undefined;
@@ -168,8 +178,16 @@ export class TraeCnSession implements HarnessSession {
   #permissionRevision = 0;
   #configurationRevision = 0;
   #configuring = false;
+  #background: BackgroundCommands;
+  #backgroundItems = new Set<LiveItems>();
 
   constructor(private readonly options: SessionOptions) {
+    this.#background = new BackgroundCommands({
+      snapshot: () =>
+        options.client.call("snapshot", { sessionId: this.#state.nativeRef?.nativeSessionId }),
+      sessionId: () => this.#state.nativeRef?.nativeSessionId,
+      fault: (error) => this.#endObservation(harnessError(error), true),
+    });
     if (options.nativeRef) validateReference(options.nativeRef, options.inspection, options.cwd);
     this.initialState = {
       ...(options.initialState ?? {}),
@@ -194,6 +212,7 @@ export class TraeCnSession implements HarnessSession {
     this.initialUsage = options.initialUsage ?? null;
     this.#usage = this.initialUsage;
     this.#historyHasFileEdits = options.historyHasFileEdits === true;
+    this.#historyHasBackgroundCommands = options.historyHasBackgroundCommands === true;
     this.#historyTurnCount = options.historyTurnCount ?? 0;
     this.outputs = this.#channel.outputs;
     if (options.model) nativeModelId(options.inspection, options.model);
@@ -220,7 +239,7 @@ export class TraeCnSession implements HarnessSession {
         cancelRequested: false,
         admitted: true,
         stopRequested: false,
-        items: new LiveItems(recovery.turnId, (event) => this.#emit(event)),
+        items: this.#liveItems(recovery.turnId, recovery.nativeTurnRef.nativeTurnKey),
         interactions: undefined,
       };
       this.#active = turn;
@@ -228,6 +247,34 @@ export class TraeCnSession implements HarnessSession {
         void this.#run(turn, true);
       });
     }
+  }
+
+  #liveItems(turnId: HostTurnId, messageId: string): LiveItems {
+    const items = new LiveItems(
+      turnId,
+      (event) => this.#emit(event),
+      this.options.inspection.backgroundCommands?.observe
+        ? {
+            follow: (ref, update) => {
+              if (ref.messageId !== messageId)
+                throw new TraeError(
+                  "protocolError",
+                  "Background command belongs to another native Turn",
+                );
+              this.#backgroundItems.add(items);
+              this.#background.follow(ref, turnId, (status) => {
+                update(status);
+                if (!items.hasDetachedWork) this.#backgroundItems.delete(items);
+              });
+            },
+          }
+        : undefined,
+    );
+    return items;
+  }
+
+  hasBackgroundWork(): boolean {
+    return !this.#closed && this.#background.hasWork;
   }
 
   #emit(event: HostEvent): void {
@@ -295,10 +342,12 @@ export class TraeCnSession implements HarnessSession {
       const value = await this.options.client.call("snapshot", {
         sessionId: nativeRef.nativeSessionId,
       });
+      this.#background.observe(value);
       if (!allowPending && record(value) && [2, 3, 8, 9, 10].includes(Number(value.status)))
         throw new TraeError("sessionBusy", "The native Session has active work");
       const usage = contextUsageFromHistory(value, this.#active?.messageId);
       this.#historyHasFileEdits ||= hasFileEditHistory(value);
+      this.#historyHasBackgroundCommands ||= hasBackgroundCommandHistory(value);
       if (record(value) && Array.isArray(value.items))
         this.#historyTurnCount = value.items.filter(
           (item) => record(item) && item.role === "user",
@@ -307,7 +356,9 @@ export class TraeCnSession implements HarnessSession {
       return {
         ok: true,
         value: {
-          ...projectHistory(value, nativeRef.nativeSessionId, this.options.inspection.agentType),
+          ...projectHistory(value, nativeRef.nativeSessionId, this.options.inspection.agentType, {
+            allowPendingCommands: this.#background.hasWork,
+          }),
           state: this.#state,
         },
       };
@@ -346,6 +397,7 @@ export class TraeCnSession implements HarnessSession {
             "Choose a TRAE CN model before starting this Session",
           );
         nativeModelId(this.options.inspection, this.#selectedModel);
+        const messageId = randomUUID();
         const turn: ActiveTurn = {
           command,
           model: this.#selectedModel,
@@ -362,11 +414,11 @@ export class TraeCnSession implements HarnessSession {
             ? nativePermissionId(this.options.inspection, this.#selectedPermission)
             : this.options.inspection.permissions?.defaultModeId,
           permissionRevision: this.#permissionRevision,
-          messageId: randomUUID(),
+          messageId,
           cancelRequested: false,
           admitted: false,
           stopRequested: false,
-          items: new LiveItems(command.turnId, (event) => this.#emit(event)),
+          items: this.#liveItems(command.turnId, messageId),
           interactions: undefined,
         };
         this.#active = turn;
@@ -589,6 +641,7 @@ export class TraeCnSession implements HarnessSession {
         nativeTurnRef: completed.nativeTurnRef,
         outcome: completed.outcome,
       });
+      this.#background.activate(turn.command.turnId);
     } catch (error) {
       if (!this.#closed) {
         const failure = harnessError(error);
@@ -609,7 +662,7 @@ export class TraeCnSession implements HarnessSession {
           outcome: { status: "failed", error: failure },
         });
         this.#emit({ type: "session.faulted", error: failure });
-        this.#releaseObserver();
+        this.#releaseObserver(failure);
       }
     } finally {
       this.#observerFail = undefined;
@@ -771,17 +824,23 @@ export class TraeCnSession implements HarnessSession {
   }
 
   async close(): Promise<void> {
-    if (this.#closed) return;
-    const turn = this.#active;
-    if (turn) {
-      const error = harnessError(
+    this.#endObservation(
+      harnessError(
         new TraeError(
           "unavailable",
           "TRAE CN observer closed; admitted native work may still be running",
         ),
-      );
+      ),
+      false,
+    );
+  }
+
+  #endObservation(error: HarnessError, fault: boolean): void {
+    if (this.#closed) return;
+    const turn = this.#active;
+    if (turn) {
       turn.interactions?.close("superseded");
-      turn.items.settle({ status: "failed", error });
+      turn.items.settle({ status: "failed", error }, true);
       this.#emit({
         type: "turn.completed",
         turnId: turn.command.turnId,
@@ -796,11 +855,24 @@ export class TraeCnSession implements HarnessSession {
         outcome: { status: "failed", error },
       });
     }
-    this.#releaseObserver();
+    if (fault) this.#emit({ type: "session.faulted", error });
+    this.#releaseObserver(error);
   }
 
-  #releaseObserver(): void {
+  #releaseObserver(error?: HarnessError): void {
     if (this.#closed) return;
+    const failure =
+      error ??
+      harnessError(
+        new TraeError(
+          "unavailable",
+          "Background observation closed; native commands may still be running",
+        ),
+      );
+    for (const items of this.#backgroundItems)
+      items.settle({ status: "failed", error: failure }, true);
+    this.#backgroundItems.clear();
+    this.#background.close();
     this.#closed = true;
     this.#observerFail?.(new TraeError("invalidState", "TRAE CN observer closed"));
     this.#observerFail = undefined;

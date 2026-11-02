@@ -17,7 +17,14 @@ import {
 import { confirmedModel } from "./models.js";
 import { record, TraeError } from "./errors.js";
 import { projectFileChanges } from "./file-changes.js";
-import { assertObservedCommand } from "./commands.js";
+import {
+  assertObservedCommand,
+  readCommandStatus,
+  isBackgroundCommand,
+  backgroundCommandReference,
+  type NativeCommandStatus,
+  type NativeBackgroundCommand,
+} from "./commands.js";
 
 export const TRAE_CN_ID = harnessIdSchema.parse("trae-cn");
 
@@ -69,6 +76,7 @@ export interface ProjectedPlanItem {
   item: HostItem;
   /** Absent while the native Item is still running. */
   outcome?: HostItemOutcome;
+  background?: NativeBackgroundCommand;
 }
 
 function toolArguments(name: string, params: unknown): unknown {
@@ -84,12 +92,19 @@ function toolArguments(name: string, params: unknown): unknown {
 }
 
 /** One native plan_item can contain separate reasoning, commentary and tool/answer Items. */
-export function projectPlanItem(value: unknown, terminal?: HostItemOutcome): ProjectedPlanItem[] {
+export function projectPlanItem(
+  value: unknown,
+  terminal?: HostItemOutcome,
+  observedCommand?: NativeCommandStatus,
+  allowBackground = false,
+): ProjectedPlanItem[] {
   if (!record(value)) throw new TraeError("protocolError", "Invalid TRAE CN plan item");
   const id = nonempty(value.id, "plan item ID");
   const result: ProjectedPlanItem[] = [];
   const call = record(value.tool_call_info) ? value.tool_call_info : undefined;
   const name = typeof call?.name === "string" ? call.name : "";
+  if (observedCommand && name !== "RunCommand")
+    throw new TraeError("protocolError", "Observed command belongs to a different native tool");
   const toolResult = record(call?.result) ? call.result : undefined;
   const timing = record(value.timing) ? value.timing : undefined;
   const toolFinished = typeof timing?.tool_call_finished_at_ms === "number";
@@ -149,7 +164,36 @@ export function projectPlanItem(value: unknown, terminal?: HostItemOutcome): Pro
     if (name === "RunCommand") {
       if (!record(params) || typeof params.command !== "string" || !params.command.trim())
         throw new TraeError("protocolError", "Native command has no command text");
-      assertObservedCommand(params, toolResult, value.confirm_info, terminal);
+      if (
+        observedCommand &&
+        (observedCommand.planItemId !== id ||
+          observedCommand.commandId !== (record(toolResult?.data) && toolResult.data.command_id) ||
+          (typeof value.reply_to_message_id === "string" &&
+            observedCommand.messageId !== value.reply_to_message_id))
+      )
+        throw new TraeError(
+          "protocolError",
+          "Observed command belongs to another native execution",
+        );
+      const background = isBackgroundCommand(params, toolResult, value.confirm_info);
+      if (observedCommand && !background)
+        throw new TraeError("protocolError", "Observed command is not a background execution");
+      const pendingBackground =
+        allowBackground &&
+        background &&
+        observedCommand?.status !== "succeeded" &&
+        observedCommand?.status !== "failed" &&
+        observedCommand?.status !== "cancelled";
+      if (!pendingBackground)
+        assertObservedCommand(params, toolResult, value.confirm_info, terminal, observedCommand);
+      if (pendingBackground) outcome = undefined;
+      else if (observedCommand)
+        outcome =
+          observedCommand.status === "succeeded"
+            ? { status: "succeeded" }
+            : observedCommand.status === "cancelled"
+              ? { status: "cancelled", reason: "Native background command stopped" }
+              : { status: "failed", error: nativeFailure({ message: "Native command failed" }) };
       const data = record(toolResult?.data) ? toolResult.data : undefined;
       const confirmationReceipt =
         record(call?.meta) &&
@@ -169,13 +213,26 @@ export function projectPlanItem(value: unknown, terminal?: HostItemOutcome): Pro
         itemId: hostItemIdSchema.parse(`${id}.tool`),
         command: params.command,
         ...(typeof cwd === "string" ? { cwd } : {}),
-        ...(typeof data?.stdout === "string" ? { output: data.stdout } : {}),
-        ...(toolResult?.is_truncated === true ? { outputTruncated: true } : {}),
-        ...(typeof data?.exit_code === "number" && Number.isInteger(data.exit_code)
-          ? { exitCode: data.exit_code }
+        ...(observedCommand
+          ? { output: observedCommand.output, outputTruncated: observedCommand.outputTruncated }
+          : !background && typeof data?.stdout === "string"
+            ? { output: data.stdout }
+            : {}),
+        ...(!background && !observedCommand && toolResult?.is_truncated === true
+          ? { outputTruncated: true }
           : {}),
+        ...(observedCommand?.exitCode !== undefined
+          ? { exitCode: observedCommand.exitCode }
+          : !background &&
+              !observedCommand &&
+              typeof data?.exit_code === "number" &&
+              Number.isInteger(data.exit_code)
+            ? { exitCode: data.exit_code }
+            : {}),
       };
       if (
+        !background &&
+        !observedCommand &&
         typeof timing?.tool_call_started_at_ms === "number" &&
         typeof timing.tool_call_finished_at_ms === "number"
       )
@@ -188,7 +245,13 @@ export function projectPlanItem(value: unknown, terminal?: HostItemOutcome): Pro
           status: "failed",
           error: nativeFailure({ message: `Native command exited with code ${item.exitCode}` }),
         };
-      result.push({ item, ...(outcome ? { outcome } : {}) });
+      result.push({
+        item,
+        ...(outcome ? { outcome } : {}),
+        ...(pendingBackground && record(data) && data.command_id !== undefined
+          ? { background: backgroundCommandReference(value) }
+          : {}),
+      });
       return result;
     }
     const item: HostItem = {
@@ -248,6 +311,7 @@ export function projectHistory(
   value: unknown,
   sessionId: string,
   agentType: string,
+  options: { allowPendingCommands?: boolean } = {},
 ): HostThreadSnapshot {
   if (!record(value) || value.sessionId !== sessionId || !Array.isArray(value.items))
     throw new TraeError("protocolError", "Invalid TRAE CN history snapshot");
@@ -297,16 +361,45 @@ export function projectHistory(
       if (!record(content) || !Array.isArray(content.messages))
         throw new TraeError("unsupported", "Unsupported native assistant history format");
       const itemIds = new Set<string>();
+      const commandStatuses = new Map<string, NativeCommandStatus>();
+      if (reply.commandStatuses !== undefined) {
+        if (!Array.isArray(reply.commandStatuses) || reply.commandStatuses.length > 100)
+          throw new TraeError("protocolError", "Invalid observed command history");
+        for (const entry of reply.commandStatuses) {
+          const status = readCommandStatus(entry);
+          const ownsPlan = content.messages.some(
+            (message) =>
+              record(message) &&
+              record(message.plan_item) &&
+              message.plan_item.id === status.planItemId &&
+              record(message.plan_item.tool_call_info) &&
+              message.plan_item.tool_call_info.name === "RunCommand",
+          );
+          if (!ownsPlan || status.messageId !== user.id || commandStatuses.has(status.planItemId))
+            throw new TraeError("protocolError", "Duplicate or foreign observed command history");
+          commandStatuses.set(status.planItemId, status);
+        }
+      }
       for (const message of content.messages) {
         if (!record(message) || message.type !== "plan_item")
           throw new TraeError("unsupported", "Unsupported native task history Item");
-        for (const projected of projectPlanItem(message.plan_item, terminal)) {
+        const planId = record(message.plan_item) ? message.plan_item.id : undefined;
+        const status = typeof planId === "string" ? commandStatuses.get(planId) : undefined;
+        if (status) commandStatuses.delete(status.planItemId);
+        for (const projected of projectPlanItem(
+          message.plan_item,
+          terminal,
+          status,
+          options.allowPendingCommands,
+        )) {
           if (itemIds.has(projected.item.itemId))
             throw new TraeError("protocolError", "Duplicate native plan item identity");
           itemIds.add(projected.item.itemId);
           if (projected.outcome) items.push({ item: projected.item, outcome: projected.outcome });
         }
       }
+      if (commandStatuses.size)
+        throw new TraeError("protocolError", "Observed command has no owning native plan Item");
       if (
         reply.fileDiffs === undefined &&
         content.messages.some(

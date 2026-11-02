@@ -119,7 +119,9 @@ RunCommand 投影为公共 commandExecution，保留原生输出、目录、退�
 
 ## 验证与剩余工作
 
-后台命令尚不支持完整观察。TRAE CN 3.4.13 的桌面通过原生后台注册表、poll_pending_wakeups 及隐藏的 /background_command_completed 消息继续任务。插件对 blocking=false、后台状态、转后台原因及 skipped_run 返回明确的 unsupported，不把启动回执当成执行成功，也不把转后台当作取消；父 Turn 的成功不能替仍运行的命令补终态。此时原生命令可能仍运行，需到原生桌面核对。该保护不取消、重发或控制原生后台任务；自主 Turn 仍待实现和验收。
+Companion 0.1.9 支持 RunCommand 后台结果观察。沿原 Session、原用户消息、Plan、llm tool-call 和 command ID 查询 check_toolhost_command_status，验证命令与目录后只转出输出和真实状态；不使用启动回执作为完成证据。命令通过公共 item.detached 保留，父轮及下一轮可先完成，再向原 Item 追加输出和真实终态。hasBackgroundWork 防止空闲释放；关闭观察者结束公共观察，不取消原生后台命令。后台中冷恢复明确返回 sessionBusy，完成后恢复完整历史；不复制派生前缀中的后台执行身份。Native 查询窗口最多 16,384 字符，实时超限会明确故障，冷读保留截断标志；目前没有独立的后台命令停止控件。
+
+3.4.13 前端虽有 poll_pending_wakeups 和隐藏续轮代码，实际 Builder 后端对该路由返回 unknown route。插件保持 autonomousTurns.observe=false，不发送普通用户消息模拟唤醒。真实 Host 验收已确认后台结果在父轮及后续聊天之后返回；重建开发桥接及新 Host 后，同一三轮历史、命令输出 / 退出码和原前缀均精确恢复。
 
 仓库中的聚焦测试覆盖原生响应、立即到达的流事件、批量消息、回调 ID 为零、回调允许列表、观察者分离、模型目录过滤、凭据隔离、本机 HTTP 授权、目录隔离、UTF-8 事件分帧、原生忙碌与并发准入。
 

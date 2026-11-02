@@ -44,6 +44,7 @@ test("TRAE CN Companion VSIX contains the complete source resources and license"
           "history",
           "reasoning",
           "permissions",
+          "commands",
         ].map((name) => `extension/${name}.cjs`),
       ].sort(),
     );

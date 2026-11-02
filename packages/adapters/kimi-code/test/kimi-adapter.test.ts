@@ -98,6 +98,39 @@ describe("KimiAdapter", () => {
     expect(adapter.harnessId).toBe("kimi-code");
   });
 
+  it.each(
+    ([undefined, "default"] as const).flatMap((executionPolicy) =>
+      ([undefined, "default", "plan", "auto", "yolo"] as const).map((mode) => ({
+        executionPolicy,
+        mode,
+      })),
+    ),
+  )(
+    "preserves ordinary creation with policy $executionPolicy and mode $mode",
+    async ({ executionPolicy, mode }) => {
+      const adapter = new KimiAdapter(
+        { homeDirectory: tempDir },
+        { resolveExecutable: () => "kimi", createTransport: () => fakeTransport },
+      );
+      try {
+        const result = await adapter.open({
+          kind: "create",
+          cwd: tempDir,
+          ...(executionPolicy ? { executionPolicy } : {}),
+          ...(mode ? { permissionModeId: harnessPermissionModeIdSchema.parse(mode) } : {}),
+        });
+        expect(result.ok).toBe(true);
+        expect(fakeTransport.configOptionsSet).toEqual(
+          mode ? [{ configId: "mode", value: mode }] : [],
+        );
+        if (result.ok)
+          expect(result.value.initialState.effectivePermissionModeId).toBe(mode ?? "default");
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
   it.each([undefined, "yolo"] as const)(
     "confirms native yolo mode for unattended creation with mode %s",
     async (mode) => {

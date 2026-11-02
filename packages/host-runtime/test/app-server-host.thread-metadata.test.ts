@@ -126,6 +126,42 @@ describe("External Thread metadata updates", () => {
     await stopFixture(fixture);
   });
 
+  it("archives a loaded Thread whose deferred native Session never arrived", async () => {
+    const adapter = new DeferredNativeSessionAdapter(harnessIdSchema.parse("pi"));
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    answerOfficial(fixture, new Set());
+    const threadId = await startPiThread(fixture);
+    const hostThreadId = hostThreadIdSchema.parse(threadId);
+    await expect(fixture.mappingStore.getThread(hostThreadId)).resolves.toMatchObject({
+      state: "creating",
+    });
+
+    writeRequest(fixture.desktopInput, { id: 20, method: "thread/archive", params: { threadId } });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 20)),
+    ).resolves.toMatchObject({ result: {} });
+    await expect(
+      fixture.collector.waitFor((message) => method(message, "thread/archived")),
+    ).resolves.toEqual({ method: "thread/archived", params: { threadId } });
+    await expect(fixture.mappingStore.getThread(hostThreadId)).resolves.toMatchObject({
+      state: "creating",
+      archived: true,
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 21,
+      method: "thread/unarchive",
+      params: { threadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 21)),
+    ).resolves.toMatchObject({ result: { thread: { id: threadId } } });
+    await expect(fixture.mappingStore.getThread(hostThreadId)).resolves.toMatchObject({
+      archived: false,
+    });
+    await stopFixture(fixture);
+  });
+
   it("patches Git metadata and the Daybreak choice across a restart", async () => {
     const first = createFixture();
     answerOfficial(first, new Set());

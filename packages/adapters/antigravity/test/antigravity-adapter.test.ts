@@ -940,6 +940,72 @@ if (${keepAlive}) {
     });
 
     it.each([
+      [
+        "ERROR",
+        {
+          code: "nativeFailure",
+          message: "Antigravity Turn ended with status ERROR: Synthetic startup failure",
+        },
+      ],
+      [
+        "SUCCESS",
+        {
+          code: "protocolError",
+          message: "Antigravity finished the Turn without a Conversation identity",
+        },
+      ],
+    ] as const)(
+      "completes a %s Turn that never named a Conversation without inventing a native identity",
+      async (status, error) => {
+        const streamLines = [
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "",
+              status,
+              ...(status === "ERROR" ? { error: "Synthetic startup failure" } : {}),
+              num_turns: 1,
+            },
+          }),
+        ];
+
+        const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+        const adapter = new AntigravityAdapter({ command });
+        try {
+          const opened = await adapter.open({ kind: "create", cwd });
+          expect(opened.ok).toBe(true);
+          if (!opened.ok) return;
+
+          const session = opened.value;
+          const iterator = session.outputs[Symbol.asyncIterator]();
+          const turnId = hostTurnIdSchema.parse("turn-identityless");
+
+          await session.execute({
+            type: "turn.start",
+            turnId,
+            input: [{ type: "text", text: "hello" }],
+          });
+
+          expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+          const completed = await nextEvent(iterator);
+          expect(completed).toMatchObject({
+            type: "turn.completed",
+            turnId,
+            outcome: { status: "failed", error },
+          });
+          expect(completed).not.toHaveProperty("nativeTurnRef");
+          expect(completed).not.toHaveProperty("outcome.checkpoint");
+          expect(JSON.stringify(completed)).not.toContain("unknown-session");
+
+          await session.close();
+        } finally {
+          await adapter.close();
+          await cleanup();
+        }
+      },
+    );
+
+    it.each([
       ["create", "ERROR"],
       ["create", "SUCCESS"],
       ["resume", "ERROR"],

@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { protobufBytes, readCursorNativeTurns } from "../src/native-history.js";
+import {
+  cursorCliApprovalModeIsUnrestricted,
+  protobufBytes,
+  readCursorNativeTurns,
+} from "../src/native-history.js";
 
 const temporary: string[] = [];
 afterEach(() => {
@@ -130,4 +134,33 @@ describe("Cursor read-only native identity", () => {
       expect(() => protobufBytes(Buffer.from(bytes))).toThrow();
     },
   );
+});
+
+describe("Cursor CLI approvalMode", () => {
+  it("detects unrestricted and stays false for missing or other modes", () => {
+    const missing = mkdtempSync(path.join(os.tmpdir(), "codexhost-cursor-approval-"));
+    temporary.push(missing);
+    expect(cursorCliApprovalModeIsUnrestricted({ CURSOR_CONFIG_DIR: missing })).toBe(false);
+
+    const allowlist = mkdtempSync(path.join(os.tmpdir(), "codexhost-cursor-approval-"));
+    temporary.push(allowlist);
+    writeFileSync(
+      path.join(allowlist, "cli-config.json"),
+      JSON.stringify({ version: 1, approvalMode: "allowlist" }),
+    );
+    expect(cursorCliApprovalModeIsUnrestricted({ CURSOR_CONFIG_DIR: allowlist })).toBe(false);
+
+    const unrestricted = mkdtempSync(path.join(os.tmpdir(), "codexhost-cursor-approval-"));
+    temporary.push(unrestricted);
+    writeFileSync(
+      path.join(unrestricted, "cli-config.json"),
+      JSON.stringify({ version: 1, approvalMode: "unrestricted" }),
+    );
+    expect(cursorCliApprovalModeIsUnrestricted({ CURSOR_CONFIG_DIR: unrestricted })).toBe(true);
+
+    const broken = mkdtempSync(path.join(os.tmpdir(), "codexhost-cursor-approval-"));
+    temporary.push(broken);
+    writeFileSync(path.join(broken, "cli-config.json"), "{");
+    expect(cursorCliApprovalModeIsUnrestricted({ CURSOR_CONFIG_DIR: broken })).toBe(false);
+  });
 });

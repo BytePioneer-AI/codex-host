@@ -28,18 +28,19 @@ Host 拉起的进程 ── 内部令牌 ──▶ 内部控制服务（随机�
 
 ### 2. 客户端登记与令牌
 
-令牌由 32 字节随机数编码而成，只在 `client add` 时输出一次。存储只保留加盐哈希、名称和登记时间，放在 Runtime 私有状态目录，权限 0600。比对使用恒定时间比较。CLI 从 `CODEXHOST_CLIENT_TOKEN` 或 `--client-token-file` 读取令牌，不接受命令行明文参数，以免进入 shell 历史。本提案中所有客户端拥有完整权限，权限范围留给远程提案。
+令牌由 32 字节随机数编码而成，只在 `client add` 时输出一次。存储只保留加盐哈希、名称和登记时间，放在 Runtime 私有状态目录，权限 0600。比对使用恒定时间比较。CLI 从 `CODEXHOST_CLIENT_TOKEN` 或 `CODEXHOST_CLIENT_TOKEN_FILE` 读取令牌，不接受命令行参数，以免进入 shell 历史。本提案中所有客户端拥有完整权限，权限范围留给远程提案。
 
-### 3. 来源与引用另存
+### 3. 客户端作为父来源，引用另存
 
-新增映射存储下的 `origins/` 目录，每个子 Thread 一个文件：
+客户端发起的无父委派以 `client:<name>` 作为父标识，写入普通的 v1 Delegation 关系。这样：
 
-```json
-{ "formatVersion": 1, "childHostThreadId": "…", "origin": { "kind": "client", "client": "grok-bot" },
-  "refs": ["https://github.com/o/r/issues/12"], "requestId": "…", "taskDigest": "…", "createdAt": "…" }
-```
+- 幂等（Request ID 与时间窗去重）、`thread list --client <name>`（等价于按该父标识列举）、重复请求返回原结果都沿用既有路径；
+- Delegation 记录格式不变。标识是不透明字符串，旧版本只把它当作一个不存在的父 Thread，回滚不会丢弃记录；
+- 同一个标识也是客户端 watch 的被通知方（见决策 5）。
 
-`origin.kind` 为 `thread` 时只存引用，父子关系仍以 Delegation 记录为准。旧版本不扫描 `origins/`，回滚时 Delegation 记录不受影响。无父 Thread 的客户端委派只写 origin 记录，不写 Delegation 记录。
+`client:` 前缀不会与真实 Thread 标识冲突。外部监听只允许客户端以自己的名称作为来源或被通知方。
+
+引用需要新字段，按 Thread 另存于 `<数据目录>/thread-refs/`，以 Thread 标识的摘要命名文件；Registry 在 `start`/`read`/`wait`/`list` 的结果中附加，没有引用时不加字段，既有输出不变。最初设想的 `origins/` 记录因此不再需要。
 
 ### 4. 无父委派的路由
 
@@ -53,7 +54,7 @@ SSE（`GET /v1/events`）与 long-poll（`POST /v1/events/poll`）都只是这�
 
 ### 6. MCP
 
-使用 Streamable HTTP 传输，挂在外部监听的 `/mcp`。工具名使用下划线风格（`delegate_start`、`thread_read`、`events_poll` 等），输入 schema 与 CLI 参数一一对应，结果直接返回 CLI 的 JSON 输出。服务端不依赖 MCP 的服务端推送来交付事件，因为多数 MCP 客户端不处理这类通知；需要实时事件的客户端使用 SSE。
+使用 Streamable HTTP 传输，挂在外部监听的 `/mcp`，按最小子集自行实现（`initialize`、`ping`、`tools/list`、`tools/call`；`GET` 返回 405，`DELETE` 结束会话），不引入 SDK。工具名使用下划线风格（`delegate_start`、`thread_read`、`events_poll` 等），输入 schema 与 CLI 参数一一对应，结果直接返回 CLI 的 JSON 输出。服务端不依赖 MCP 的服务端推送来交付事件，因为多数 MCP 客户端不处理这类通知；需要实时事件的客户端使用 SSE。
 
 ## Risks / Trade-offs
 
@@ -64,4 +65,4 @@ SSE（`GET /v1/events`）与 long-poll（`POST /v1/events/poll`）都只是这�
 
 ## Migration
 
-无需迁移：没有 `origins/` 的 Thread 视为没有引用、来源为既有 Delegation 关系。回滚时 `origins/`、事件日志和客户端登记文件被旧版本忽略；重新升级后继续可用。
+无需迁移：没有引用记录的 Thread 视为没有引用。回滚时引用存储、事件日志和客户端登记文件被旧版本忽略；以 `client:<name>` 为父的 Delegation 关系仍是有效的 v1 记录。重新升级后继续可用。

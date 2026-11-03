@@ -58,6 +58,7 @@
 1. `delegate start --watch`：使用委派已经解析出的父 Thread；没有父 Thread 时报告 `notRegistered`。
 2. `thread watch`：显式 `--notify`，否则使用 Host 提供给外部 Harness 的 `CODEXHOST_THREAD_ID`。
 3. 两者都没有（原生 Codex）时返回 `INVALID_ARGUMENT`，要求显式 `--notify`。原生 Codex 可使用 `delegate start` 响应中返回的 parent 作为自己的 Thread。
+4. 经外部客户端监听调用时，未给 `--notify` 即通知调用客户端自身（`client:<name>`）。此时“投递”是向该客户端的事件日志追加一条事件，不启动 Turn；追加失败在投递期限内重试。见 [外部客户端](external-clients.md)。
 
 ## 实现与边界
 

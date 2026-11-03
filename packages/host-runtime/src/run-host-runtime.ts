@@ -25,6 +25,7 @@ import {
   defaultExternalClientsPath,
 } from "./external-clients.js";
 import { ClientEventLog, eventRetentionDays } from "./external-client-events.js";
+import { externalClientMcp } from "./external-client-mcp.js";
 import { externalClientEventStream, externalClientRouter } from "./external-client-routes.js";
 import { FileThreadRefsStore } from "./thread-refs.js";
 import {
@@ -233,11 +234,15 @@ async function startExternalClients(
   const port = externalClientPort(environment);
   if (port === undefined) return undefined;
   const clients = new ExternalClientRegistry(defaultExternalClientsPath(environment));
+  const route = externalClientRouter({ api: registry, watchApi: registry, events });
   return startExternalClientServer({
     port,
     clients,
-    route: externalClientRouter({ api: registry, watchApi: registry, events }),
-    streams: { "/v1/events": externalClientEventStream(events, clients) },
+    route,
+    streams: {
+      "/v1/events": externalClientEventStream(events, clients),
+      "/mcp": externalClientMcp(route),
+    },
     descriptorPath: externalClientDescriptorPath(environment),
     diagnose: (message) => process.stderr.write(`codexhost external clients: ${message}\n`),
   });

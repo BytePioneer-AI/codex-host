@@ -221,6 +221,7 @@ interface ActiveTurn {
   interactionByNativeId: Map<string, HostInteractionId>;
   subagents: OmpSubagentLifecycle;
   cancellationRequested: boolean;
+  settling: boolean;
   beforeNativeTurnKeys: Set<string>;
   completion: Promise<void>;
   resolveCompletion(): void;
@@ -730,12 +731,13 @@ class OmpHarnessSession implements HarnessSession {
       },
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
       subagents: { observe: true, readTranscript: true },
-      // Read live: OMP's `steer` RPC delivers mid-Turn input into the same
-      // native run. A Turn whose cancellation is in flight must not take
-      // more input; every other case stops and restarts.
+      // Native input is unavailable during cancellation or completion settlement.
       get steer(): boolean {
         return (
-          session.#transport?.steer !== undefined && session.#active?.cancellationRequested !== true
+          session.#transport?.steer !== undefined &&
+          session.#active !== null &&
+          !session.#active.cancellationRequested &&
+          !session.#active.settling
         );
       },
     }))(this);
@@ -992,6 +994,7 @@ class OmpHarnessSession implements HarnessSession {
           emit: (event) => this.#event(event),
         }),
         cancellationRequested: false,
+        settling: false,
         beforeNativeTurnKeys: new Set(
           beforeHistory.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey),
         ),
@@ -1005,6 +1008,7 @@ class OmpHarnessSession implements HarnessSession {
       void transport
         .runTurn(text, (event) => this.#handleTurnEvent(active, event))
         .then(async (result) => {
+          active.settling = true;
           if (!result.agentInvoked) {
             this.#completeTurn(
               active,
@@ -1041,6 +1045,7 @@ class OmpHarnessSession implements HarnessSession {
           }
         })
         .catch(async (error: unknown) => {
+          active.settling = true;
           let identity:
             { nativeTurnRef: NativeTurnRef; checkpoint: NativeCheckpointRef } | undefined;
           try {
@@ -1404,6 +1409,9 @@ class OmpHarnessSession implements HarnessSession {
         error: invalidState("Omp steer target is being cancelled"),
       };
     }
+    if (active.settling) {
+      return { ok: false, error: invalidState("Omp steer target is recording its completion") };
+    }
     const text = command.input.map((input) => input.text).join("\n");
     if (text.length === 0) {
       return {
@@ -1568,6 +1576,7 @@ class OmpHarnessSession implements HarnessSession {
           emit: (event) => this.#event(event),
         }),
         cancellationRequested: false,
+        settling: false,
         beforeNativeTurnKeys: new Set(),
         completion,
         resolveCompletion,
@@ -2139,16 +2148,13 @@ class OmpHarnessSession implements HarnessSession {
       sessionId: transport.state.sessionId,
       model: nativeModelForHistory(transport.state),
     });
-    const created = snapshot.turns.filter(
+    // The active branch is ordered: the first User Entry after startup is the prompt
+    // that started this run. Native steers append more Users without changing that identity.
+    const turn = snapshot.turns.find(
       (turn) => !active.beforeNativeTurnKeys.has(turn.nativeTurnRef.nativeTurnKey),
     );
-    if (created.length !== 1) {
-      throw new Error(
-        `Omp Turn persisted ${created.length} new User Entries; exactly one is required`,
-      );
-    }
-    const turn = created[0];
-    if (!turn?.checkpoint) throw new Error("Omp Turn has no terminal Checkpoint identity");
+    if (!turn) throw new Error("Omp Turn has no newly persisted User Entry");
+    if (!turn.checkpoint) throw new Error("Omp Turn has no terminal Checkpoint identity");
     return { nativeTurnRef: turn.nativeTurnRef, checkpoint: turn.checkpoint };
   }
 

@@ -4194,6 +4194,153 @@ describe("Pi HarnessAdapter Session", () => {
 });
 
 describe("Pi native steer delivery", () => {
+  it("rejects completion without a newly persisted User Entry", async () => {
+    const f = fixture();
+    try {
+      const session = await openSession(f.adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("missing-history"));
+      const transport = f.transports[0];
+      if (!transport) throw new Error("Fake transport was not opened");
+      transport.resolveTurn?.({ text: "done", cancelled: false });
+      for (;;) {
+        const event = await nextEvent(iterator);
+        if (event.type !== "turn.completed") continue;
+        expect(event).toMatchObject({
+          outcome: {
+            status: "failed",
+            error: { code: "protocolError", message: "Pi Turn has no newly persisted User Entry" },
+          },
+        });
+        expect(event).not.toHaveProperty("nativeTurnRef");
+        break;
+      }
+    } finally {
+      await f.adapter.close();
+    }
+  });
+
+  it.each([false, true])(
+    "keeps the starting identity after two native steers (cancelled=%s)",
+    async (cancelled) => {
+      const f = fixture();
+      try {
+        const session = await openSession(f.adapter);
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        await session.execute(textTurn("previous"));
+        const transport = f.transports[0];
+        if (!transport) throw new Error("Fake transport was not opened");
+        const completed = async () => {
+          for (;;) {
+            const event = await nextEvent(iterator);
+            if (event.type === "turn.completed") return event;
+          }
+        };
+        transport.succeed("previous answer");
+        await completed();
+        await session.execute(textTurn("steered"));
+        const steer = vi.fn(async () => undefined);
+        Object.assign(transport, { steer });
+        for (const [index, text] of ["first", "second", "third"].entries()) {
+          if (index > 0)
+            expect(
+              await session.execute({
+                type: "turn.steer",
+                turnId: hostTurnIdSchema.parse("steered"),
+                input: [{ type: "text", text }],
+              }),
+            ).toEqual({ ok: true, value: { accepted: true } });
+          const id = `current-user-${index}`;
+          transport.history.entries.push({
+            id,
+            parentId: transport.history.leafId,
+            type: "message",
+            message: { role: "user", content: [{ type: "text", text }] },
+          });
+          transport.history.leafId = id;
+        }
+        transport.history.entries.push({
+          id: "current-answer",
+          parentId: transport.history.leafId,
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "done" }],
+            stopReason: cancelled ? "aborted" : "stop",
+          },
+        });
+        transport.history.leafId = "current-answer";
+        transport.resolveTurn?.({ text: "done", cancelled });
+        expect(await completed()).toMatchObject({
+          type: "turn.completed",
+          turnId: "steered",
+          nativeTurnRef: { nativeTurnKey: "current-user-0" },
+          outcome: {
+            status: cancelled ? "cancelled" : "succeeded",
+            checkpoint: { checkpointId: "current-user-0" },
+          },
+        });
+        expect(steer).toHaveBeenCalledTimes(2);
+        const snapshot = await session.readSnapshot();
+        expect(snapshot).toMatchObject({
+          ok: true,
+          value: {
+            turns: [
+              expect.anything(),
+              ...["first", "second", "third"].map((text, index) => ({
+                nativeTurnRef: { nativeTurnKey: `current-user-${index}` },
+                input: [{ type: "text", text }],
+              })),
+            ],
+          },
+        });
+        expect(await session.readSnapshot()).toEqual(snapshot);
+      } finally {
+        await f.adapter.close();
+      }
+    },
+  );
+
+  it("rejects steering while native completion history is being read", async () => {
+    const f = fixture();
+    const gate = Promise.withResolvers<undefined>();
+    try {
+      const session = await openSession(f.adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("settling"));
+      const transport = f.transports[0];
+      if (!transport) throw new Error("Fake transport was not opened");
+      const steer = vi.fn(async () => undefined);
+      Object.assign(transport, { steer });
+      transport.getEntries.mockClear().mockImplementationOnce(async () => {
+        await gate.promise;
+        return structuredClone(transport.history);
+      });
+      transport.succeed("done");
+      await vi.waitFor(() => expect(transport.getEntries).toHaveBeenCalled());
+      expect(session.capabilities.steer).toBe(false);
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: hostTurnIdSchema.parse("settling"),
+          input: [{ type: "text", text: "too late" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+      expect(steer).not.toHaveBeenCalled();
+      gate.resolve(undefined);
+      for (;;) {
+        const event = await nextEvent(iterator);
+        if (event.type === "turn.completed") {
+          expect(event.outcome.status).toBe("succeeded");
+          break;
+        }
+      }
+    } finally {
+      gate.resolve(undefined);
+      await f.adapter.close();
+    }
+  });
+
   it("propagates an unconfirmed delivery instead of reporting that input was refused", async () => {
     const f = fixture();
     const session = await openSession(f.adapter);

@@ -305,6 +305,65 @@ describe("External Thread follow-up queue", () => {
     }
   });
 
+  it("drains the queue when a steer replacement fails to start its replacement Turn", async () => {
+    const fixture = createFixture();
+    // No native steer: turn/steer takes the stop-then-start path.
+    fixture.adapter.supportsSteer = false;
+    try {
+      const threadId = await startPiThread(fixture);
+      const runningTurnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
+
+      // A follow-up queues while the Turn is running.
+      writeRequest(fixture.desktopInput, {
+        id: 10,
+        method: "thread/queue/add",
+        params: { threadId, input: text("queued during failed steer"), clientUserMessageId: "q-1" },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 10));
+
+      // The user steers, but the session refuses the replacement start.
+      session.failNextStart({
+        code: "invalidState",
+        message: "Session refused the replacement start",
+        retryable: false,
+      });
+      writeRequest(fixture.desktopInput, {
+        id: 11,
+        method: "turn/steer",
+        params: {
+          threadId,
+          expectedTurnId: runningTurnId,
+          clientUserMessageId: "steer-1",
+          input: text("replacement that will not start"),
+        },
+      });
+      // turn.cancel arrives; the Fake session completes the cancellation on request.
+      session.completeCancellationOnRequest();
+      // The steer request settles as an error (replacement refused).
+      const reply = await fixture.collector.waitFor((message) => requestId(message, 11));
+      expect(reply).toHaveProperty("error");
+      // The interrupted Turn is the Thread's last word and no replacement runs.
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", runningTurnId),
+      );
+      // The queued follow-up must still be delivered: a failed steer is not a
+      // stop the queue should pause behind.
+      await vi.waitFor(() =>
+        expect(execute).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "turn.start",
+            input: text("queued during failed steer"),
+          }),
+        ),
+      );
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("keeps the queue flowing after a steer replacement interrupts the running Turn", async () => {
     const fixture = createFixture();
     // No native steer: turn/steer takes the stop-then-start path.

@@ -4985,6 +4985,11 @@ export class AppServerHost {
           errorMessage(error),
         ),
       );
+      // A steer that could not start its replacement leaves the interrupted
+      // terminal as the Thread's last word: the queued follow-ups would wait
+      // for a "继续" that no one will press. The steer reservation is gone,
+      // so the queue can flow again.
+      void this.#drainExternalQueue(thread);
     } finally {
       this.#signalActiveWorkChanged();
     }

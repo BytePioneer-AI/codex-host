@@ -1057,21 +1057,27 @@ class AntigravitySession implements HarnessSession {
       if (unshown === null) this.#appendOrSyncAgentText(active, turnReply, false);
       else if (unshown.trim() !== "") this.#appendAgentText(active, unshown);
     }
+    if (!convId) {
+      // agy ended before it ever named a Conversation (no `init`, empty result id), so no
+      // native Turn exists to map. A placeholder identity would only be rejected by the Host
+      // and mask the native outcome, so the Turn completes without one.
+      this.#completeIdentitylessTurn(active, event);
+      return;
+    }
     const safeTurnId =
       event.result.num_turns !== undefined && event.result.num_turns !== null
         ? `turn:${event.result.num_turns}`
         : `turn:${this.#history.snapshot().length + 1}`;
-    const safeSessionId = convId || this.#nativeRef?.nativeSessionId || "unknown-session";
 
     const nativeTurnRef = nativeTurnRefSchema.parse({
       harnessId: this.harnessId,
-      nativeSessionId: safeSessionId,
+      nativeSessionId: convId,
       nativeTurnKey: safeTurnId,
       formatVersion: 1,
     });
     const checkpoint = nativeCheckpointRefSchema.parse({
       harnessId: this.harnessId,
-      nativeSessionId: safeSessionId,
+      nativeSessionId: convId,
       checkpointId: safeTurnId,
       formatVersion: 1,
     });
@@ -1096,14 +1102,8 @@ class AntigravitySession implements HarnessSession {
         this.#completeTurn(active, { status: "succeeded", checkpoint }, nativeTurnRef);
       }
     } else {
-      const nativeError = event.result.error?.trim();
-      const errorDetail = nativeError || active.stderr;
-      const error = normalizedProcessError(
-        errorDetail,
-        `Antigravity Turn ended with status ${event.result.status}`,
-        nativeError !== undefined,
-      );
-      if (repliedThisTurn && nativeError && this.#reportedEarlier(error)) {
+      const error = this.#resultError(active, event);
+      if (repliedThisTurn && event.result.error?.trim() && this.#reportedEarlier(error)) {
         // agy keeps a Conversation's first failure and repeats it in the result
         // of every later Turn, even when that Turn answered without error. A
         // Turn that replied and only repeats an error an earlier Turn of this
@@ -1113,6 +1113,34 @@ class AntigravitySession implements HarnessSession {
         this.#completeTurn(active, { status: "failed", error, checkpoint }, nativeTurnRef);
       }
     }
+  }
+
+  /** A Turn agy ended without a Conversation keeps its native outcome but no native identity. */
+  #completeIdentitylessTurn(active: ActiveTurn, event: AntigravityResultEvent): void {
+    if (active.cancellationRequested) {
+      this.#completeTurn(active, { status: "cancelled", reason: "Cancelled by user" });
+      return;
+    }
+    this.#completeTurn(active, {
+      status: "failed",
+      error:
+        event.result.status === "SUCCESS"
+          ? {
+              code: "protocolError",
+              message: "Antigravity finished the Turn without a Conversation identity",
+              retryable: true,
+            }
+          : this.#resultError(active, event),
+    });
+  }
+
+  #resultError(active: ActiveTurn, event: AntigravityResultEvent): HarnessError {
+    const nativeError = event.result.error?.trim();
+    return normalizedProcessError(
+      nativeError || active.stderr,
+      `Antigravity Turn ended with status ${event.result.status}`,
+      nativeError !== undefined,
+    );
   }
 
   #reportedEarlier(error: HarnessError): boolean {

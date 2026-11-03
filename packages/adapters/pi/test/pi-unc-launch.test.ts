@@ -3,7 +3,11 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSy
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { piRpcProcessCommand, type PiRpcProcessOptions } from "../src/pi-rpc-session.js";
+import {
+  PiRpcFaultError,
+  piRpcProcessCommand,
+  type PiRpcProcessOptions,
+} from "../src/pi-rpc-session.js";
 import { isWindowsUncDirectory } from "../src/pi-unc-launch.js";
 
 const unc = String.raw`\\wsl.localhost\Ubuntu\home\dev\项目 space`;
@@ -28,9 +32,9 @@ const probe = `console.log(JSON.stringify({
   cwd: process.cwd(), args: process.argv.slice(2), thread: process.env.CODEXHOST_THREAD_ID,
   managedRoot: process.env.PI_MANAGED_INSTALL_ROOT, agentDir: process.env.PI_CODING_AGENT_DIR
 }));`;
-function npmInstallation() {
+function npmInstallation(shim = "pi-npm.cmd") {
   const directory = path.join(root(), "npm space %literal%");
-  const command = file(path.join(directory, "pi.cmd"), fixture("pi-npm.cmd"));
+  const command = file(path.join(directory, "pi.cmd"), fixture(shim));
   const packageDirectory = path.join(
     directory,
     "node_modules",
@@ -119,15 +123,34 @@ describe("Windows UNC directory classification", () => {
 });
 
 describe("Pi UNC process invocation", () => {
-  it("launches the same npm package directly without CMD or shell quoting", () => {
-    const { command, entry } = npmInstallation();
-    const result = invocation(command);
-    expect(result).toEqual({
-      command: process.execPath,
-      arguments: [entry, "--mode", "rpc"],
-      windowsVerbatimArguments: false,
-    });
-  });
+  it.each(["pi-npm.cmd", "pi-npm-12.cmd"])(
+    "launches the same npm package directly without CMD or shell quoting: %s",
+    (shim) => {
+      const { command, entry } = npmInstallation(shim);
+      const result = invocation(command);
+      expect(result).toEqual({
+        command: process.execPath,
+        arguments: [entry, "--mode", "rpc"],
+        windowsVerbatimArguments: false,
+      });
+    },
+  );
+  it.each(["pi-npm.cmd", "pi-npm-12.cmd"])(
+    "rejects extra environment setup or arguments in %s",
+    (shim) => {
+      const { command } = npmInstallation(shim);
+      const source = fixture(shim);
+      for (const modified of [
+        "SET EXTRA=custom\n" + source,
+        source.replace(" %*", " --custom %*"),
+      ]) {
+        file(command, modified);
+        expect(() => invocation(command)).toThrowError(
+          expect.objectContaining({ name: "PiRpcFaultError", kind: "unavailable" }),
+        );
+      }
+    },
+  );
   it("preserves extension and model arguments as literal argv", () => {
     const { command, entry } = npmInstallation();
     const result = invocation(command, {
@@ -202,7 +225,9 @@ describe("Pi UNC process invocation", () => {
   it("keeps npm's adjacent Node preference", () => {
     const { command, directory } = npmInstallation();
     const node = file(path.join(directory, "node.exe"));
-    expect(invocation(command).command).toBe(node);
+    const nodeShims = root();
+    file(path.join(nodeShims, "node.cmd"));
+    expect(invocation(command, { environment: { PATH: nodeShims } }).command).toBe(node);
   });
   it("keeps Node selected from the session PATH", () => {
     const { command } = npmInstallation();
@@ -210,6 +235,58 @@ describe("Pi UNC process invocation", () => {
     const node = file(path.join(directory, "node.exe"));
     expect(invocation(command, { environment: { PATH: directory } }).command).toBe(node);
   });
+  describe.each(["npm", "npm-12", "managed", "managed-standalone"])(
+    "%s PATH Node selection",
+    (kind) => {
+      function installation() {
+        return kind.startsWith("npm")
+          ? npmInstallation(kind === "npm-12" ? "pi-npm-12.cmd" : "pi-npm.cmd")
+          : managedInstallation(kind === "managed-standalone");
+      }
+      it.each([".cmd", ".bat"])("refuses a Node %s preferred by PATHEXT", (extension) => {
+        const { command } = installation();
+        const directory = root();
+        file(path.join(directory, "node" + extension), "@echo off\nset EXTRA=custom\n");
+        file(path.join(directory, "node.exe"));
+        expect(() =>
+          invocation(command, {
+            environment: { Path: directory, pathext: `${extension};.EXE` },
+          }),
+        ).toThrowError(
+          expect.objectContaining({
+            name: "PiRpcFaultError",
+            kind: "unavailable",
+            message: expect.stringContaining("PATH Node batch launchers are not bypassed"),
+          }),
+        );
+      });
+      it("does not skip an earlier PATH Node batch shim for a later executable", () => {
+        const { command } = installation();
+        const first = root();
+        const second = root();
+        file(path.join(first, "node.cmd"), "@echo off\nset EXTRA=custom\n");
+        file(path.join(second, "node.exe"));
+        expect(() =>
+          invocation(command, {
+            environment: { PATH: `${first};${second}`, PATHEXT: ".EXE;.CMD" },
+          }),
+        ).toThrow(PiRpcFaultError);
+      });
+      it.each([".EXE;.CMD", ".COM;.EXE;.CMD"])(
+        "keeps the native Node selected by PATHEXT=%s",
+        (pathext) => {
+          const { command } = installation();
+          const directory = root();
+          file(path.join(directory, "node.cmd"));
+          const executable = file(path.join(directory, "node.exe"));
+          const com = file(path.join(directory, "node.com"));
+          expect(
+            invocation(command, { environment: { PATH: directory, PATHEXT: pathext } }).command,
+          ).toBe(pathext.startsWith(".COM") ? com : executable);
+        },
+      );
+    },
+  );
   it.each([false, true])(
     "runs the native managed launcher (standalone Node setup: %s)",
     (standalone) => {
@@ -225,7 +302,11 @@ describe("Pi UNC process invocation", () => {
     const { command } = managedInstallation(true);
     const localAppData = root();
     const node = file(path.join(localAppData, "pi-node", "current", "node.exe"));
-    expect(invocation(command, { environment: { localappdata: localAppData } }).command).toBe(node);
+    const nodeShims = root();
+    file(path.join(nodeShims, "node.cmd"));
+    expect(
+      invocation(command, { environment: { localappdata: localAppData, PATH: nodeShims } }).command,
+    ).toBe(node);
   });
   it("does not force dedicated Node on a managed launcher that uses PATH", () => {
     const { command } = managedInstallation();
@@ -315,10 +396,13 @@ describe("Pi UNC process invocation", () => {
       windowsVerbatimArguments: false,
     });
   });
-  it.each(["npm", "managed"] as const)(
+  it.each(["npm", "npm-12", "managed"] as const)(
     "executes the %s Node entry with literal argv, cwd and session environment",
     (kind) => {
-      const installation = kind === "npm" ? npmInstallation() : managedInstallation();
+      const installation =
+        kind === "managed"
+          ? managedInstallation()
+          : npmInstallation(kind === "npm-12" ? "pi-npm-12.cmd" : "pi-npm.cmd");
       const result = invocation(installation.command, {
         sessionFile: 'source %literal% & "quoted".jsonl',
       });

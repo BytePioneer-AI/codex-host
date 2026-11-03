@@ -3,7 +3,8 @@ import path from "node:path";
 
 import {
   environmentValue,
-  resolveHarnessExecutable,
+  executableExtensions,
+  pathDirectories,
   type CommandInvocation,
 } from "@codexhost/harness-discovery";
 import { findPiCliEntry } from "./command.js";
@@ -35,14 +36,23 @@ function isFile(file: string): boolean {
 }
 
 function nodeOnPath(environment: NodeJS.ProcessEnv): string {
-  return (
-    resolveHarnessExecutable({ id: "node", command: "node.exe" }, { environment })?.executable ??
-    process.execPath
-  );
+  for (const directory of pathDirectories(environment, "win32")) {
+    for (const extension of executableExtensions("node", "win32", environment)) {
+      const suffix = extension.toLowerCase();
+      const candidate = path.join(directory, `node${suffix}`);
+      if (!isFile(candidate)) continue;
+      // Bare node must not skip a preferred batch shim or file association for another runtime.
+      if (suffix !== ".exe" && suffix !== ".com") {
+        throw new Error("Pi PATH Node launcher cannot safely bypass CMD in a UNC directory");
+      }
+      return candidate;
+    }
+  }
+  return process.execPath;
 }
 
 // Match the full generated wrappers so custom environment setup or arguments cannot be skipped.
-function npmShim(target: string): string {
+function npmShim(target: string, pathExtFix = false): string {
   return `@ECHO off
 GOTO start
 :find_dp0
@@ -56,10 +66,9 @@ IF EXIST "%dp0%\\node.exe" (
   SET "_prog=%dp0%\\node.exe"
 ) ELSE (
   SET "_prog=node"
-  SET PATHEXT=%PATHEXT:;.JS;=;%
-)
+${pathExtFix ? "" : "  SET PATHEXT=%PATHEXT:;.JS;=;%\n"})
 
-endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\${target}" %*`;
+endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & ${pathExtFix ? "set PATHEXT=%PATHEXT:;.JS;=;% & " : ""}"%_prog%"  "%dp0%\\${target}" %*`;
 }
 
 const standaloneNodeSetup =
@@ -111,7 +120,8 @@ export function piUncNodeInvocation(
         manifest.name === "@earendil-works/pi-coding-agent"
       ) {
         const entry = findPiCliEntry(packageDirectory);
-        if (entry && source === npmShim(path.relative(directory, entry).replaceAll("/", "\\"))) {
+        const target = entry && path.relative(directory, entry).replaceAll("/", "\\");
+        if (entry && target && [npmShim(target), npmShim(target, true)].includes(source)) {
           const localNode = path.join(directory, "node.exe");
           return {
             command: isFile(localNode) ? localNode : nodeOnPath(environment),
@@ -121,7 +131,7 @@ export function piUncNodeInvocation(
         }
       }
     } catch {
-      // A managed launcher has no adjacent npm package.
+      // Malformed npm installations and unsafe PATH Node launchers cannot bypass CMD.
     }
 
     const launcher = path.join(directory, "pi-launcher.js");
@@ -170,6 +180,6 @@ export function piUncNodeInvocation(
     }
   }
   throw new Error(
-    "Pi batch launcher cannot safely start in a UNC working directory. Use a standard npm or managed Pi installation, a native Pi executable, or a Host running inside WSL; custom batch launchers are not bypassed.",
+    "Pi batch launcher cannot safely start in a UNC working directory. Use a standard npm or managed Pi installation, a native Pi executable, or a Host running inside WSL; custom Pi or PATH Node batch launchers are not bypassed.",
   );
 }

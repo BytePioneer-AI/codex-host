@@ -3106,6 +3106,9 @@ export class AppServerHost {
       location,
       (hostThreadId) => this.#repository.setArchived(hostThreadId, archived),
       "External Thread archive state could not be persisted",
+      // A loaded Thread whose deferred native Session never arrived (its first Turn
+      // failed first) is still on Desktop's list and must remain archivable.
+      true,
     );
     if (!updated) return;
     await this.#writer.json(

@@ -15,6 +15,7 @@ import {
   installRendererLoadedModules,
   type RendererModuleCdpClient,
 } from "./renderer-loaded-modules.js";
+import { installNativeRpcRemoteControlDirect } from "./renderer-native-rpc-install.js";
 
 export interface ProductionRendererStatus {
   version: 2;
@@ -381,7 +382,11 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
 const defaultOperations: RendererCdpControlOperations = {
   listTargets: (endpoint, signal) => listCdpTargets(endpoint, fetch, signal),
   connect: (webSocketDebuggerUrl) => CdpClient.connect(webSocketDebuggerUrl),
-  installDraftPrewarmPolicy: installRendererDraftPrewarmPolicyDirect,
+  async installDraftPrewarmPolicy(renderer) {
+    const status = await installRendererDraftPrewarmPolicyDirect(renderer);
+    await installNativeRpcRemoteControlDirect(renderer);
+    return status;
+  },
 };
 
 export async function createRendererCdpControlSession(

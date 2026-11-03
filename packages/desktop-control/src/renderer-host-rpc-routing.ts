@@ -9,6 +9,7 @@ import type {
 } from "./renderer-host-rpc-discovery.js";
 import type { DraftPrewarmPolicyTarget } from "./renderer-draft-prewarm-runtime.js";
 import type { RendererHostRoot } from "./renderer-host-discovery.js";
+import type { RendererConnectionGeneration } from "./renderer-connection-generation.js";
 import type {
   RendererHostRoute,
   RendererHostRouting,
@@ -25,6 +26,9 @@ interface RendererHostRpcDependencies {
   composerHostIds(composer?: RendererHostRoot): { editorCount: number; hostIds: string[] };
   /** `MessagePort.prototype`: Renderer capnweb calls to the main process leave through it. */
   portPrototype: { postMessage(this: unknown, message: unknown, ...rest: unknown[]): unknown };
+  /** Transitional Desktops expose native managers only after a Composer mounts. */
+  nativeRouting?(): RendererHostRouting | null;
+  readConnection?(hostId: string): RendererConnectionGeneration | null | undefined;
 }
 
 /**
@@ -42,17 +46,52 @@ export function installRendererHostRpcRouting(
   const existing = target.__codexhostHostRoutingV1 as RendererHostRouting | undefined;
   if (existing) return existing;
   let disposed = false;
+  let nativeRouting: RendererHostRouting | null = null;
   let discovery: RendererHostRpcDiscovery | null = null;
-  const routes = new Map<string, { route: RendererHostRoute; rpc: RendererHostRpc }>();
+  const routes = new Map<
+    string,
+    {
+      route: RendererHostRoute;
+      rpc: RendererHostRpc;
+      connection: RendererConnectionGeneration | undefined;
+    }
+  >();
   const read = (): RendererHostRpcDiscovery | null => {
     if (disposed) return null;
-    if (!discovery) {
+    try {
       const store = dependencies.findStore(root);
       discovery = store ? dependencies.findFamily(store) : null;
+    } catch {
+      discovery = null;
     }
     return discovery;
   };
   if (!read()) return null;
+
+  const native = (): RendererHostRouting | null => {
+    if (disposed) return null;
+    try {
+      nativeRouting ??= dependencies.nativeRouting?.() ?? null;
+    } catch {
+      /* Keep RPC available during native discovery. */
+    }
+    return nativeRouting;
+  };
+  const connectionFor = (hostId: string): RendererConnectionGeneration | null | undefined => {
+    if (!hostId.startsWith("remote-control:")) return undefined;
+    try {
+      return dependencies.readConnection?.(hostId);
+    } catch {
+      return null;
+    }
+  };
+  const sameConnection = (
+    previous: RendererConnectionGeneration | undefined,
+    current: RendererConnectionGeneration | null | undefined,
+  ): boolean =>
+    previous === undefined
+      ? current === undefined
+      : current?.owner === previous.owner && current.revision === previous.revision;
 
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
@@ -154,7 +193,7 @@ export function installRendererHostRpcRouting(
   const postMessage = function (this: unknown, message: unknown, ...rest: unknown[]): unknown {
     let routed = message;
     try {
-      routed = disposed ? message : routeCreationCall(message);
+      routed = disposed || routes.size === 0 ? message : routeCreationCall(message);
     } catch {
       routed = message;
     }
@@ -162,9 +201,27 @@ export function installRendererHostRpcRouting(
   };
   port.postMessage = postMessage;
 
-  const createRoute = (hostId: string, rpc: RendererHostRpc): RendererHostRoute => {
+  const createRoute = (
+    hostId: string,
+    rpc: RendererHostRpc,
+    connection: RendererConnectionGeneration | undefined,
+  ): RendererHostRoute => {
     let retired = false;
-    const isCurrent = (): boolean => !retired && !disposed && routes.get(hostId)?.rpc === rpc;
+    const isCurrent = (): boolean => {
+      if (
+        retired ||
+        disposed ||
+        routes.get(hostId)?.rpc !== rpc ||
+        !sameConnection(connection, connectionFor(hostId))
+      )
+        return false;
+      try {
+        const current = read();
+        return !!current && dependencies.resolve(current, hostId) === rpc;
+      } catch {
+        return false;
+      }
+    };
     const manager: RendererHostRpcManager = Object.freeze({
       kind: "main-process-rpc" as const,
       getHostId: () => hostId,
@@ -254,15 +311,26 @@ export function installRendererHostRpcRouting(
     routes.delete(hostId);
     entry?.route.policy.dispose();
   };
-  const routeFor = (hostId: string): RendererHostRoute | null => {
+  const routeFor = (
+    hostId: string,
+    nativeRoute?: RendererHostRoute | null,
+  ): RendererHostRoute | null => {
+    if (disposed) return null;
+    const connection = connectionFor(hostId);
+    const preferred = nativeRoute === undefined ? native()?.forHost(hostId) : nativeRoute;
+    if (connection === null || preferred) {
+      retire(hostId);
+      return connection === null ? null : (preferred ?? null);
+    }
     const current = read();
     const rpc = current ? dependencies.resolve(current, hostId) : null;
     const previous = routes.get(hostId);
-    if (rpc && previous?.rpc === rpc) return previous.route;
+    if (rpc && previous?.rpc === rpc && sameConnection(previous.connection, connection))
+      return previous.route;
     retire(hostId);
     if (!rpc) return null;
-    const route = createRoute(hostId, rpc);
-    routes.set(hostId, { route, rpc });
+    const route = createRoute(hostId, rpc, connection);
+    routes.set(hostId, { route, rpc, connection });
     return route;
   };
   const publish = (route: RendererHostRoute | null): void => {
@@ -277,14 +345,22 @@ export function installRendererHostRpcRouting(
     }
   };
   const composerHostId = (composer?: RendererHostRoot): string | null => {
+    const nativeHostId = native()?.hostIdForComposer(composer);
+    if (nativeHostId) return nativeHostId;
     const hostIds = new Set(dependencies.composerHostIds(composer).hostIds);
     const hostId = hostIds.size === 1 ? hostIds.values().next().value : null;
     return typeof hostId === "string" && hostId ? hostId : null;
   };
   const routing: RendererHostRouting = {
     knownHostIds() {
+      if (disposed) return [];
       const current = read();
-      return current ? dependencies.hostIds(current) : [];
+      return [
+        ...new Set([
+          ...(current ? dependencies.hostIds(current) : []),
+          ...(native()?.knownHostIds?.() ?? []),
+        ]),
+      ];
     },
     forHost(hostId) {
       return hostId && !disposed ? routeFor(hostId) : null;
@@ -300,18 +376,24 @@ export function installRendererHostRpcRouting(
     forComposer(composer) {
       if (disposed) return null;
       let hostId: string | null;
+      let preferred: RendererHostRoute | null = null;
       try {
-        hostId = composerHostId(composer);
+        // Native reconciliation also retires hooks for other disconnected Hosts.
+        // Its private router cannot publish over this shared routing owner.
+        preferred = native()?.forComposer(composer) ?? null;
+        hostId = preferred?.hostId ?? composerHostId(composer);
       } catch {
         hostId = null;
       }
-      const route = hostId ? routeFor(hostId) : null;
+      const route = hostId ? routeFor(hostId, preferred) : null;
       if (!composer) publish(route);
       return route;
     },
     dispose() {
       if (disposed) return;
       disposed = true;
+      nativeRouting?.dispose();
+      nativeRouting = null;
       for (const hostId of [...routes.keys()]) retire(hostId);
       discovery = null;
       externalDrafts.clear();

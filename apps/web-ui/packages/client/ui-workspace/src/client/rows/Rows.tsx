@@ -21,7 +21,6 @@ import {
   IconFolderCloseRegular,
   IconFolderOpenRegular,
   IconNewChatOutlineRegular,
-  IconPinFillRegular,
   IconTrashOutlineRegular,
   IconUnarchiveOutlineRegular,
   Menu,
@@ -391,16 +390,6 @@ function SessionStatusDots({
   );
 }
 
-/** Non-interactive pinned-row marker; the enclosing row remains the only action. */
-function PinnedIndicator({ t }: { t: RowTranslate }) {
-  const label = t("row.pinned");
-  return (
-    <span className={css.pinIndicator} role="img" aria-label={label} title={label}>
-      <IconPinFillRegular size={16} />
-    </span>
-  );
-}
-
 /**
  * Hover-card body: full title, relative time, the Session's own scheduled-task
  * section, and every relevant live status. The task section sits above the
@@ -725,9 +714,6 @@ export function SessionNodeItem({
             )}
           </span>
         )}
-        {/* Trails the time so the marker occupies the same right-edge cell as
-          the hover pin button that replaces it. */}
-        {row.pinned && !row.archived && <PinnedIndicator t={t} />}
         {/* The strip's clicks stay in the strip: the trigger and every
           row.action entry act without also opening the row, so an entry's
           button needs no propagation handling of its own. */}

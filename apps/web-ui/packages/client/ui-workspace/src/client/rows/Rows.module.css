@@ -300,21 +300,6 @@
   visibility: visible;
 }
 
-.trailing:has(.pinIndicator) .time {
-  padding-inline-end: 22px;
-}
-
-.pinIndicator {
-  display: inline-flex;
-  flex: none;
-  width: 16px;
-  height: 20px;
-  align-items: center;
-  justify-content: center;
-  margin-left: 6px;
-  color: var(--dsw-alias-label-caption);
-}
-
 /* Archived rows stay in place but read as inactive: titles drop to
    the caption label step (one step above dimmed, which reads as too faint
    over the sidebar fill). Archived search rows drop their meta line to the
@@ -360,8 +345,7 @@
   margin-left: auto;
 }
 
-.sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .time,
-.sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .pinIndicator {
+.sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .time {
   visibility: hidden;
 }
 
@@ -518,8 +502,7 @@
     gap: 4px;
   }
 
-  .sessionRow .time:not(.timeStatus),
-  .sessionRow .pinIndicator {
+  .sessionRow .time:not(.timeStatus) {
     display: none;
   }
 

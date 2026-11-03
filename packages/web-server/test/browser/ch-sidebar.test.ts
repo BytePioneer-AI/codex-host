@@ -50,7 +50,7 @@ for (const mobile of [false, true]) {
       await page.goto(url);
       await page.waitForLoadState("networkidle");
       // Default draft selection/configuration must settle before opening the drawer.
-      await page.getByText("Native Model", { exact: true }).waitFor();
+      await page.getByText("Native Model", { exact: true }).waitFor({ state: "attached" });
       const openSidebar = page.getByRole("button", { name: "Open sidebar", exact: true });
       if (mobile) await openSidebar.first().click();
       const folder = page.getByRole("treeitem").filter({ hasText: /^product$/ });
@@ -216,7 +216,12 @@ for (const mobile of [false, true]) {
           "top-level pins must not inherit project indentation",
         );
         await page.mouse.move(800, 800);
-        await row.getByRole("img", { name: "Pinned", exact: true }).waitFor();
+        assert.equal(await row.getByRole("img", { name: "Pinned", exact: true }).count(), 0);
+        assert.equal(
+          await row.getByRole("button", { name: "Unpin session", exact: true }).isVisible(),
+          false,
+          "pinned rows do not show a resting shortcut",
+        );
         await shot(page, "sidebar-desktop-pinned");
         await row.hover();
         await row.getByRole("button", { name: "Unpin session", exact: true }).click();

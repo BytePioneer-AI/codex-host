@@ -143,7 +143,7 @@ for (const dark of [false, true]) {
         // Preparation ends here. Only normal GUI actions and read-only page
         // inspection follow; state changes below are events from the fake owner.
         await page.goto(url);
-        await page.getByText("Native Model", { exact: true }).waitFor();
+        await page.getByText("Native Model", { exact: true }).waitFor({ state: "attached" });
         if (dark) await page.locator("body[data-ds-dark-theme]").waitFor();
         const openSidebar = page.getByRole("button", { name: "Open sidebar", exact: true });
         if (mobile) await openSidebar.first().click();
@@ -155,9 +155,11 @@ for (const dark of [false, true]) {
         if (!mobile) await page.mouse.move(1100, 700);
         for (const id of [pinned.id, project.id, recent.id])
           await rightStatus(row(id), "ongoing", mobile);
-        const pin = row(pinned.id).getByRole("img", { name: "Pinned", exact: true });
-        if (!mobile)
-          assert.ok(await pin.isVisible(), "a running pinned row retains its independent pin");
+        assert.equal(
+          await row(pinned.id).getByRole("img", { name: "Pinned", exact: true }).count(),
+          0,
+          "running pinned rows show status without a resting pin marker",
+        );
         const variant = `${dark ? "dark" : "light"}-${mobile ? "touch" : "desktop"}`;
         await shot(page, `status-${variant}-running`);
 

@@ -160,6 +160,8 @@ export interface OmpTurnTransport {
     onEvent: (event: OmpTurnEvent) => void,
   ): Promise<OmpCompactResult>;
   runTurn(text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult>;
+  /** Native same-Turn input; present on transports backed by OMP's `steer` RPC. */
+  steer?(text: string): Promise<void>;
   respondToInteraction(response: OmpInteractionResponse): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
@@ -718,16 +720,24 @@ class OmpHarnessSession implements HarnessSession {
     this.#toolOutputLimit = options.toolOutputLimit;
     this.#permissionMode = options.permissionMode;
     this.#permissionModeId = options.permissionModeId;
-    this.capabilities = {
+    this.capabilities = ((session) => ({
       configuration: {
         selectModel: true,
         selectThinkingOption: options.supportsThinkingSelection,
         selectPermissionMode: true,
-        permissionModeScope: "live",
+        permissionModeScope: "live" as const,
       },
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
       subagents: { observe: true, readTranscript: true },
-    };
+      // Read live: OMP's `steer` RPC delivers mid-Turn input into the same
+      // native run. A Turn whose cancellation is in flight must not take
+      // more input; every other case stops and restarts.
+      get steer(): boolean {
+        return (
+          session.#transport?.steer !== undefined && session.#active?.cancellationRequested !== true
+        );
+      },
+    }))(this);
     this.commands = {
       list: async () => ({ ok: true, value: this.#liveCommandCatalog() }),
       execute: (command) => this.#executeHarnessCommand(command),
@@ -898,7 +908,7 @@ class OmpHarnessSession implements HarnessSession {
       return { ok: false, error: invalidState("Omp Session is not open") };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
-    if (command.type === "turn.steer") return unsupportedSteer("OMP");
+    if (command.type === "turn.steer") return this.#steer(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
@@ -1370,6 +1380,51 @@ class OmpHarnessSession implements HarnessSession {
     } catch (error) {
       return { ok: false, error: normalizedError(error, "nativeFailure") };
     }
+  }
+
+  /**
+   * Native same-Turn steering through OMP's `steer` RPC. OMP refuses a plain
+   * `prompt` while the agent runs, so without this a mid-Turn follow-up had to
+   * stop and restart the Turn, which surfaced as an interrupted Turn in the
+   * Desktop queue UI. The steered text arrives as a user message of the same
+   * native run; the turn keeps its identity.
+   */
+  async #steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+    const active = this.#active;
+    if (!active || active.command.turnId !== command.turnId) {
+      return {
+        ok: false,
+        error: invalidState("Omp steer must reference the active Turn"),
+      };
+    }
+    if (active.cancellationRequested) {
+      return {
+        ok: false,
+        error: invalidState("Omp steer target is being cancelled"),
+      };
+    }
+    const text = command.input.map((input) => input.text).join("\n");
+    if (text.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Omp steer text must not be empty",
+          retryable: false,
+        },
+      };
+    }
+    const transport = this.#transport;
+    if (!transport?.steer) return unsupportedSteer("OMP");
+    try {
+      await transport.steer(text);
+    } catch (error) {
+      return {
+        ok: false,
+        error: invalidState(`Omp native steer failed: ${errorMessage(error)}`),
+      };
+    }
+    return { ok: true, value: { accepted: true } };
   }
 
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {

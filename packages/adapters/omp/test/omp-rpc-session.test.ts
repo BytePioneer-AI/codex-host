@@ -202,6 +202,7 @@ class FakeOmpProcess extends EventEmitter {
     }
     if (command.type === "negotiate_protocol")
       return this.#response(command, { protocolVersion: 2 });
+    if (command.type === "steer") return this.#response(command);
     if (command.type === "get_state") return this.#response(command, this.#state());
     if (command.type === "get_messages")
       return this.#response(command, { messages: this.messages });
@@ -1280,6 +1281,54 @@ describe("OMP RPC session", () => {
       await expect(session.start()).rejects.toMatchObject({
         kind: "processExited",
         diagnostic: expect.stringContaining("No models available"),
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("delivers a native steer into the running Turn without stopping it", async () => {
+    const process = new FakeOmpProcess();
+    // Keep the first Turn running: no automatic PONG stream, we settle it manually.
+    process.promptHandler = (command) => {
+      process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+    };
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const session = new OmpRpcSession({ cwd: "/synthetic", commandTimeoutMs: 2_000 }, adapter);
+    try {
+      await session.start();
+      const turn = session.runTurn("first", () => undefined);
+      await vi.waitFor(() => expect(process.commands.some((c) => c.type === "prompt")).toBe(true));
+      // A steer while the Turn runs goes through OMP's `steer` RPC; the Turn
+      // itself keeps running (no abort, no second prompt).
+      await expect(session.steer("changed my mind")).resolves.toBeUndefined();
+      const steerCommand = process.commands.find((c) => c.type === "steer");
+      expect(steerCommand).toMatchObject({ message: "changed my mind" });
+      expect(process.commands.filter((c) => c.type === "prompt")).toHaveLength(1);
+      expect(process.commands.some((c) => c.type === "abort")).toBe(false);
+      // The Turn settles normally afterwards.
+      process.sendFrame({
+        type: "message_start",
+        message: {
+          role: "assistant",
+          responseId: "steered",
+          content: [{ type: "text", text: "steered answer" }],
+        },
+      });
+      process.sendFrame({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          responseId: "steered",
+          content: [{ type: "text", text: "steered answer" }],
+          stopReason: "stop",
+        },
+      });
+      process.sendFrame({ type: "agent_end", isTerminal: true });
+      await expect(turn).resolves.toEqual({
+        text: "steered answer",
+        cancelled: false,
+        agentInvoked: true,
       });
     } finally {
       await session.close();

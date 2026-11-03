@@ -952,6 +952,23 @@ export class OmpRpcSession {
     return settled;
   }
 
+  /**
+   * Native same-Turn input through OMP's `steer` RPC. OMP itself refuses a plain
+   * `prompt` while an agent runs ("Use steer() or followUp()"), so this is the
+   * only way to deliver mid-Turn input without stopping the Turn.
+   */
+  async steer(text: string): Promise<void> {
+    if (!this.#child || !this.#state || this.#closed || this.#failed) {
+      throw new Error("Omp RPC Session is unavailable");
+    }
+    if (text.length === 0) throw new Error("Omp steer text must not be empty");
+    try {
+      await this.#send("steer", { message: text });
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(message(error));
+    }
+  }
+
   respondToInteraction(response: OmpInteractionResponse): Promise<void> {
     return this.#resolveInteraction(response, "cancelled" in response ? "cancelled" : "responded");
   }

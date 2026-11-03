@@ -4804,6 +4804,12 @@ export class AppServerHost {
 
   async #handleExternalQueueRequest(request: JsonRpcRequest, threadId: string): Promise<void> {
     const queue = this.#externalQueue;
+    // Queue diagnostics: every Desktop queue request lands in the runtime log,
+    // which is the only observer of the follow-up pipeline when Desktop's own
+    // queue UI disagrees with what actually runs.
+    this.#options.diagnosticOutput.write(
+      `codexhost Host Runtime: queue ${request.method} thread=${threadId.slice(0, 8)} running=${this.#externalRuntime.get(threadId)?.running ?? "unknown"} queued=${queue.has(threadId)}\n`,
+    );
     try {
       const params = requestObject(request);
       const input = (): JsonValue[] => {
@@ -5571,6 +5577,9 @@ export class AppServerHost {
       // the user changing direction, not a stop Desktop chose to pause behind.
       const replacedBySteer = this.#externalSteering.isReplacing(thread.id, event.turnId);
       this.#externalSteering.terminal(thread.id, event.turnId, event.outcome);
+      this.#options.diagnosticOutput.write(
+        `codexhost Host Runtime: turn terminal thread=${thread.id.slice(0, 8)} status=${result.completedTurn?.status} steerReplacing=${replacedBySteer} queued=${this.#externalQueue.has(thread.id)}\n`,
+      );
       // Interrupted and failed Turns pause the queue until Desktop starts it again —
       // except when the interruption is the steer replacement itself, which immediately
       // starts the user's new input as the next Turn and must keep the queue flowing.
@@ -5580,6 +5589,9 @@ export class AppServerHost {
         (result.completedTurn?.status === "completed" ||
           (replacedBySteer && result.completedTurn?.status === "interrupted"))
       ) {
+        this.#options.diagnosticOutput.write(
+          `codexhost Host Runtime: draining queue thread=${thread.id.slice(0, 8)}\n`,
+        );
         void this.#drainExternalQueue(thread);
       }
     }

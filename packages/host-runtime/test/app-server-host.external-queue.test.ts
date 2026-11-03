@@ -304,4 +304,58 @@ describe("External Thread follow-up queue", () => {
       await stopFixture(fixture);
     }
   });
+
+  it("keeps the queue flowing after a steer replacement interrupts the running Turn", async () => {
+    const fixture = createFixture();
+    // No native steer: turn/steer takes the stop-then-start path.
+    fixture.adapter.supportsSteer = false;
+    try {
+      const threadId = await startPiThread(fixture);
+      const runningTurnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
+
+      // A follow-up queues while the Turn is running.
+      writeRequest(fixture.desktopInput, {
+        id: 10,
+        method: "thread/queue/add",
+        params: { threadId, input: text("queued during steer"), clientUserMessageId: "q-1" },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 10));
+
+      // The user steers: the running Turn is interrupted and the new input replaces it.
+      writeRequest(fixture.desktopInput, {
+        id: 11,
+        method: "turn/steer",
+        params: {
+          threadId,
+          expectedTurnId: runningTurnId,
+          clientUserMessageId: "steer-1",
+          input: text("replacement direction"),
+        },
+      });
+      // turn.cancel arrives; the Fake session completes the cancellation on request.
+      session.completeCancellationOnRequest();
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", runningTurnId),
+      );
+      // The replacement Turn starts and finishes normally.
+      await vi.waitFor(() =>
+        expect(execute).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "turn.start", input: text("replacement direction") }),
+        ),
+      );
+      if (!session) throw new Error("Replacement session was not opened");
+      session.succeedTurn();
+      // The queued follow-up must still be delivered after the replacement Turn completes.
+      await vi.waitFor(() =>
+        expect(execute).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "turn.start", input: text("queued during steer") }),
+        ),
+      );
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
 });

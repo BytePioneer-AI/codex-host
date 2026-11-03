@@ -218,6 +218,15 @@ export class ExternalTurnSteering {
     return threadId === undefined ? this.#pending.size > 0 : this.#pending.has(threadId);
   }
 
+  /**
+   * Whether a stop-then-start replacement is cancelling this exact Turn right now.
+   * The interrupted terminal such a replacement produces is the user changing
+   * direction, not a failure: the queue must not stay paused for it.
+   */
+  isReplacing(threadId: string, turnId: string): boolean {
+    return this.#pending.get(threadId)?.turnId === turnId;
+  }
+
   run(
     thread: SteeringThread,
     params: JsonObject,

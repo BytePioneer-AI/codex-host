@@ -5567,12 +5567,18 @@ export class AppServerHost {
           ? { type: "active", activeFlags: [] }
           : { type: "idle" },
       );
+      // A stop-then-start steer cancels this Turn itself; the terminal it produces is
+      // the user changing direction, not a stop Desktop chose to pause behind.
+      const replacedBySteer = this.#externalSteering.isReplacing(thread.id, event.turnId);
       this.#externalSteering.terminal(thread.id, event.turnId, event.outcome);
-      // Interrupted and failed Turns pause the queue until Desktop starts it again.
+      // Interrupted and failed Turns pause the queue until Desktop starts it again —
+      // except when the interruption is the steer replacement itself, which immediately
+      // starts the user's new input as the next Turn and must keep the queue flowing.
       if (
         !ephemeralTurn &&
-        result.completedTurn?.status === "completed" &&
-        this.#externalQueue.has(thread.id)
+        this.#externalQueue.has(thread.id) &&
+        (result.completedTurn?.status === "completed" ||
+          (replacedBySteer && result.completedTurn?.status === "interrupted"))
       ) {
         void this.#drainExternalQueue(thread);
       }

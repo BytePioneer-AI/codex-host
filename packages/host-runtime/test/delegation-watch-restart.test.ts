@@ -59,7 +59,7 @@ function runtime(threads: Record<string, { status: DelegationThreadStatus; turnI
       next: { read: "read", wait: "wait" },
     };
   });
-  const update = (threadId: string, patch: { status: DelegationThreadStatus }) =>
+  const update = (threadId: string, patch: { status: DelegationThreadStatus; turnId?: string }) =>
     Object.assign(threads[threadId] ?? {}, patch);
   return { threads, sent, state, read, send, update };
 }
@@ -110,6 +110,9 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     const second = service(after, store);
     await expect(second.watches()).resolves.toEqual(listed);
 
+    // The Turn survived the restart (its Thread is held elsewhere), then finished.
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(after.sent).toEqual([]);
     after.update("child", { status: "completed" });
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(after.sent).toHaveLength(1);
@@ -118,7 +121,7 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     expect(store.records.size).toBe(0);
   });
 
-  it("reports the terminal state reached during downtime rather than timedOut", async () => {
+  it("reports a later Turn's terminal state reached during downtime rather than timedOut", async () => {
     const store = memoryStore();
     const first = service(
       runtime({ child: { status: "running" }, parent: { status: "completed" } }),
@@ -129,10 +132,57 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
 
     // The Runtime stays down past the watch deadline; the child finishes meanwhile.
     vi.setSystemTime(Date.now() + 60_000);
-    const after = runtime({ child: { status: "failed" }, parent: { status: "completed" } });
+    const after = runtime({
+      child: { status: "failed", turnId: "turn-2" },
+      parent: { status: "completed" },
+    });
     service(after, store);
     await vi.advanceTimersByTimeAsync(POLL_MS);
-    expect(after.sent[0]?.message).toContain("codex://threads/child: failed");
+    expect(after.sent[0]?.message).toContain("codex://threads/child: failed (Turn turn-2).");
+  });
+
+  it("reports the Turn a restart cut off as interrupted, not completed", async () => {
+    const store = memoryStore();
+    const first = service(
+      runtime({ child: { status: "running", turnId: "turn-1" }, parent: { status: "completed" } }),
+      store,
+    );
+    await first.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 });
+    expect([...store.records.values()]).toMatchObject([{ runningTurnId: "turn-1" }]);
+    first.close();
+
+    // The restart ended the Harness process; the cut-off Turn now reads as completed.
+    const after = runtime({
+      child: { status: "completed", turnId: "turn-1" },
+      parent: { status: "completed" },
+    });
+    service(after, store);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(after.sent).toHaveLength(1);
+    expect(after.sent[0]?.message).toContain("codex://threads/child: interrupted (Turn turn-1).");
+    expect(after.sent[0]?.message).toContain("Host Runtime restarted while this Turn ran");
+  });
+
+  it("follows the running Turn so a later Turn cut off by a restart is recognized", async () => {
+    const store = memoryStore();
+    const before = runtime({
+      child: { status: "running", turnId: "turn-1" },
+      parent: { status: "completed" },
+    });
+    const first = service(before, store);
+    await first.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 });
+    before.update("child", { status: "running", turnId: "turn-2" });
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect([...store.records.values()]).toMatchObject([{ runningTurnId: "turn-2" }]);
+    first.close();
+
+    const after = runtime({
+      child: { status: "completed", turnId: "turn-2" },
+      parent: { status: "completed" },
+    });
+    service(after, store);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(after.sent[0]?.message).toContain("interrupted (Turn turn-2)");
   });
 
   it("reports timedOut when the deadline passed during downtime and the Thread still runs", async () => {
@@ -168,10 +218,10 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     expect(after.sent).toEqual([]);
 
     after.state.offline = false;
-    after.update("child", { status: "completed" });
+    after.update("child", { status: "completed", turnId: "turn-2" });
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(after.sent).toHaveLength(1);
-    expect(after.sent[0]?.message).toContain("completed");
+    expect(after.sent[0]?.message).toContain("completed (Turn turn-2)");
   });
 
   it("starts the unreadable window once the restore grace ends", async () => {

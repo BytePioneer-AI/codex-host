@@ -29,6 +29,10 @@ interface Watch extends PersistedWatch {
   observeGraceUntil?: number;
   /** Restored watch: deliver only once the notified Thread is readable again. */
   deliverGraceUntil?: number;
+  /** Restored while watching: the Turn that was running may have been cut off by the restart. */
+  crossedRestart?: boolean;
+  /** The terminal state was a Turn ended by the restart, not by its Harness. */
+  endedByRestart?: boolean;
 }
 
 function persisted(watch: Watch): PersistedWatch {
@@ -45,6 +49,7 @@ function persisted(watch: Watch): PersistedWatch {
     deadline,
     deliveryDeadline,
     delivering,
+    runningTurnId,
   } = watch;
   return {
     id,
@@ -59,6 +64,7 @@ function persisted(watch: Watch): PersistedWatch {
     ...(reason ? { reason } : {}),
     ...(deliveryDeadline !== undefined ? { deliveryDeadline } : {}),
     ...(delivering ? { delivering } : {}),
+    ...(runningTurnId ? { runningTurnId } : {}),
   };
 }
 
@@ -98,6 +104,8 @@ function duration(milliseconds: number): string {
 
 function describe(watch: Watch): string {
   const link = threadLink(watch.threadId);
+  if (watch.outcome === "interrupted" && watch.endedByRestart)
+    return `${link}: interrupted (Turn ${watch.turnId ?? "unknown"}). The Host Runtime restarted while this Turn ran, so it did not finish; continue it or start it again.`;
   switch (watch.outcome) {
     case "timedOut":
       return `${link} has not reached a terminal state after ${duration(watch.timeoutMs)}; this watch expired. Run 'codexhost thread watch' again to keep waiting.`;
@@ -197,6 +205,7 @@ export class DelegationWatchService {
       registeredAt: new Date().toISOString(),
       timeoutMs: input.timeoutMs,
       deadline: Date.now() + input.timeoutMs,
+      ...(target.turn ? { runningTurnId: target.turn.turnId } : {}),
     };
     this.#watches.push(watch);
     await this.#persist(watch);
@@ -244,7 +253,10 @@ export class DelegationWatchService {
       const watch: Watch = { ...record };
       // The send may or may not have started a Turn before the restart; deliver again.
       delete watch.delivering;
-      if (watch.state === "watching") watch.observeGraceUntil = graceUntil;
+      if (watch.state === "watching") {
+        watch.observeGraceUntil = graceUntil;
+        watch.crossedRestart = true;
+      }
       if (watch.state === "pendingDelivery" && now >= (watch.deliveryDeadline ?? 0)) {
         watch.state = "undeliverable";
         watch.reason = "The delivery window ended while the Host Runtime was stopped";
@@ -254,6 +266,7 @@ export class DelegationWatchService {
       if (record.delivering || watch.state !== record.state) void this.#persist(watch);
     }
     this.#trimUndeliverable();
+    if (records.length > 0) this.#diagnose(`restored ${records.length} watch(es) after a restart`);
     this.#schedule();
   }
 
@@ -278,7 +291,8 @@ export class DelegationWatchService {
       if (watch.state !== "watching") continue;
       const observed = await this.#observe(watch);
       if (!observed) continue;
-      const { outcome, turnId } = observed;
+      const { outcome, turnId, endedByRestart } = observed;
+      if (endedByRestart) watch.endedByRestart = true;
       watch.state = "pendingDelivery";
       watch.outcome = outcome;
       if (turnId) watch.turnId = turnId;
@@ -298,15 +312,28 @@ export class DelegationWatchService {
 
   async #observe(
     watch: Watch,
-  ): Promise<{ outcome: ThreadWatchOutcome; turnId?: string } | undefined> {
+  ): Promise<
+    { outcome: ThreadWatchOutcome; turnId?: string; endedByRestart?: boolean } | undefined
+  > {
     try {
       const snapshot = await this.#api.read({ threadId: watch.threadId, view: "result" });
       delete watch.observeGraceUntil;
+      const turnId = snapshot.turn?.turnId;
+      const crossedRestart = watch.crossedRestart === true;
+      delete watch.crossedRestart;
       if (terminal(snapshot.status)) {
+        // A restart ends the Harness processes it owned, and a Turn that was running before it
+        // can then read as completed. Report it as interrupted so the parent does not trust it.
+        if (crossedRestart && turnId !== undefined && turnId === watch.runningTurnId)
+          return { outcome: "interrupted", turnId, endedByRestart: true };
         return {
           outcome: snapshot.status as ThreadWatchOutcome,
-          ...(snapshot.turn ? { turnId: snapshot.turn.turnId } : {}),
+          ...(turnId ? { turnId } : {}),
         };
+      }
+      if (turnId && turnId !== watch.runningTurnId) {
+        watch.runningTurnId = turnId;
+        void this.#persist(watch);
       }
       delete watch.unreadableSince;
     } catch (error) {

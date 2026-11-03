@@ -66,6 +66,7 @@
 - watch 持久保存在 `<数据目录>/delegation-watches/`（默认 `~/.codexhost`），每个 watch 一个仅当前用户可读写的记录，只含 Thread 标识、状态、期限与原因。Runtime 重启后恢复观察与投递，调用方无需重新注册；期限按绝对时间计算，停机时间计入。
 - 多个 Runtime 进程可共用数据目录（例如 Desktop 与远程监听同时运行）。每个进程只写自己的记录；启动时接管已退出进程（或上次开机遗留）的记录，以原子重命名认领，同一记录只被一个进程接管。
 - 恢复后的 watch 最多等待 5 分钟让持有 Thread 的会话重新注册：这期间读取失败不计入 60 秒 `unreadable` 宽限，也不报告 `notFound` 或 `timedOut`；待投递通知要等被通知 Thread 可读后再发送。
+- Host Runtime 重启会结束它持有的 Harness 进程，正在运行的 Turn 随之中断，之后读取时可能显示为已完成。watch 记录最近看到的运行中 Turn；恢复后第一次读取若发现同一 Turn 已是终态，报告为 `interrupted` 并说明原因。代价是：由长期运行的远程监听持有、在停机期间真正完成的同一 Turn 也会被报告为 `interrupted`；被通知方本来就要先读取 Thread 再行动。
 - 发送前先把通知记为“投递中”。Runtime 在发送途中退出时，恢复后再投一次，因此重启可能重复通知，但不会丢失。运行期间“投递结果未知”仍标记为 `undeliverable`，不重试。
 - 原生 Codex 的 `thread/read` 只有返回“Thread 不存在”类错误时才报告 `notFound`；其他读取错误按读取失败处理，持续 60 秒才报告 `unreadable`。
 - 忙碌判断统一为 `running || 存在待处理的调整方向`。它同时作用于普通 `thread read`/`wait`/`send` 和委派状态，避免停止后重发的空档被读成 `interrupted`。

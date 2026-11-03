@@ -97,7 +97,7 @@ export class CursorTransport {
     // change Host executionPolicy or the unattended cancel-and-fail approval path.
     const useForce =
       this.options.executionPolicy === "unattended-full-access" ||
-      cursorCliApprovalModeIsUnrestricted(this.options.environment);
+      cursorCliApprovalModeIsUnrestricted(this.options.environment, this.options.cwd);
     const invocation = cursorInvocation(
       this.options.environment,
       this.options.command,

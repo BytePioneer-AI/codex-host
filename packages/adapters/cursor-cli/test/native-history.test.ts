@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync 
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   cursorCliApprovalModeIsUnrestricted,
   protobufBytes,
@@ -12,6 +12,8 @@ import {
 
 const temporary: string[] = [];
 afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   for (const directory of temporary.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 function varint(value: number): Buffer {
@@ -137,6 +139,56 @@ describe("Cursor read-only native identity", () => {
 });
 
 describe("Cursor CLI approvalMode", () => {
+  function config(directory: string, approvalMode: string) {
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, "cli-config.json"), JSON.stringify({ approvalMode }));
+  }
+  it.each(["allowlist", "unrestricted"])(
+    "uses Windows USERPROFILE rather than HOME when its mode is %s",
+    (mode) => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "codexhost-cursor-approval-"));
+      temporary.push(root);
+      const environment = {
+        HOME: path.join(root, "home"),
+        USERPROFILE: path.join(root, "profile"),
+      };
+      config(
+        path.join(environment.HOME, ".cursor"),
+        mode === "allowlist" ? "unrestricted" : "allowlist",
+      );
+      config(path.join(environment.USERPROFILE, ".cursor"), mode);
+      vi.stubGlobal("process", { ...process, platform: "win32" });
+      expect(cursorCliApprovalModeIsUnrestricted(environment)).toBe(mode === "unrestricted");
+    },
+  );
+  it.each(["darwin", "linux", "win32"])(
+    "keeps absolute override precedence and native default paths on %s",
+    (platform) => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "codexhost-cursor-approval-"));
+      temporary.push(root);
+      const environment = {
+        HOME: path.join(root, "home"),
+        USERPROFILE: path.join(root, "profile"),
+      };
+      config(
+        path.join(platform === "win32" ? environment.USERPROFILE : environment.HOME, ".cursor"),
+        "unrestricted",
+      );
+      vi.stubGlobal("process", { ...process, platform });
+      expect(cursorCliApprovalModeIsUnrestricted(environment)).toBe(true);
+      vi.spyOn(os, "homedir").mockReturnValue(path.join(root, "parent-home"));
+      vi.spyOn(os, "userInfo").mockReturnValue({ ...os.userInfo(), homedir: environment.HOME });
+      config(path.join(environment.HOME, ".cursor"), "unrestricted");
+      expect(cursorCliApprovalModeIsUnrestricted({})).toBe(true);
+
+      const xdg = { ...environment, XDG_CONFIG_HOME: path.join(root, "xdg") };
+      config(path.join(xdg.XDG_CONFIG_HOME, "cursor"), "allowlist");
+      expect(cursorCliApprovalModeIsUnrestricted(xdg)).toBe(false);
+      const cursor = { ...xdg, CURSOR_CONFIG_DIR: path.join(root, "cursor") };
+      config(cursor.CURSOR_CONFIG_DIR, "unrestricted");
+      expect(cursorCliApprovalModeIsUnrestricted(cursor)).toBe(true);
+    },
+  );
   it("detects unrestricted and stays false for missing or other modes", () => {
     const missing = mkdtempSync(path.join(os.tmpdir(), "codexhost-cursor-approval-"));
     temporary.push(missing);

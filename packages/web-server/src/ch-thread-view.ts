@@ -476,7 +476,11 @@ export class ChThreadView {
         for (const item of view.items.values())
           if (!view.completed.has(item.itemId))
             view.projector.itemCompleted(item, { status: "succeeded" });
-        view.projector.finish(outcome(turn));
+        // Protocol Core already resolves native and inferred phases for Desktop and Web.
+        const answer = items.findLast(
+          (item) => item.type === "agentMessage" && item.phase === "final_answer",
+        );
+        view.projector.finish(outcome(turn), answer?.id ?? null);
         view.done = true;
       }
     }

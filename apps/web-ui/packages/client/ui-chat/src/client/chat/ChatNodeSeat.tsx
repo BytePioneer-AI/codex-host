@@ -113,18 +113,6 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
     foldCompleted &&
     processPresentation.turn === processSpec.turn &&
     (processPresentation.turnStarted || processPresentation.turnClosed);
-  const processMember =
-    routedNode !== undefined &&
-    processWindowReady &&
-    !TURN_PROCESS_INDEPENDENT_KINDS.has(routedNode.kind) &&
-    !isIndependentProcessToolNode(routedNode) &&
-    routedNode.anchorSeq >= processSpec.processStartSeq &&
-    (liveProcess ||
-      processSpec.answerAnchorSeq === null ||
-      routedNode.anchorSeq < processSpec.answerAnchorSeq ||
-      (groupPart === "reasoning" &&
-        routedNode.kind === "assistant-step" &&
-        routedNode.data.step === processSpec.answerStep));
   const processAnswer =
     routedNode !== undefined &&
     processWindowReady &&
@@ -132,6 +120,14 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
     groupPart !== "reasoning" &&
     routedNode.kind === "assistant-step" &&
     routedNode.data.step === processSpec.answerStep;
+  // Live rows retain their first-token anchor, not their later settlement seq.
+  const processMember =
+    routedNode !== undefined &&
+    processWindowReady &&
+    !processAnswer &&
+    !TURN_PROCESS_INDEPENDENT_KINDS.has(routedNode.kind) &&
+    !isIndependentProcessToolNode(routedNode) &&
+    routedNode.anchorSeq >= processSpec.processStartSeq;
   const ownsDisclosure = routedNode?.kind === "turn-process" || processAnswer;
   const foldable = processWindowReady && (liveProcess || processMember || ownsDisclosure);
   const turnProcess = useMemo(

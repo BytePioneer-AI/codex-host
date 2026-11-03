@@ -295,7 +295,12 @@ export interface SessionEventMap {
    * `whenIdle()` flush themselves. Success commits the turn; rejection is
    * reported live and does not prevent later work.
    */
-  "turn/end": { turn: number; reason: TurnEndReason };
+  "turn/end": {
+    turn: number;
+    reason: TurnEndReason;
+    /** Source-confirmed final reply Step; null means none, absent uses structural inference. */
+    finalAssistantStep?: number | null;
+  };
   /** Opens step `step` of turn `turn` — one model call plus the tool executions it requested. */
   "step/start": { turn: number; step: number };
   /** Closes step `step` of turn `turn`. */

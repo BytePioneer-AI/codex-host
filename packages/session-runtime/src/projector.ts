@@ -399,7 +399,7 @@ export class TurnProjector {
   private blocks: NarrationBlock[] = [];
   private blockByItem = new Map<string, NarrationBlock>();
   /** Narration Items seen in this Turn: their kind and the text already projected. */
-  private readonly narration = new Map<string, { kind: BlockKind; text: string }>();
+  private readonly narration = new Map<string, { kind: BlockKind; text: string; step?: number }>();
   private readonly tools = new Map<string, ToolState>();
   /** Output that arrived before its tool's `item.started` (Harnesses may race the two). */
   private readonly earlyOutput = new Map<string, string>();
@@ -563,11 +563,19 @@ export class TurnProjector {
     const existing = this.blockByItem.get(itemId);
     if (existing !== undefined && !existing.ended && !this.messageCommitted && !this.stepHasTools)
       return existing;
-    if (!this.stepOpen || this.stepHasTools || this.messageCommitted) {
+    const narration = this.narration.get(itemId);
+    const kind = narration?.kind ?? "text";
+    if (
+      !this.stepOpen ||
+      this.stepHasTools ||
+      this.messageCommitted ||
+      (kind === "text" &&
+        this.blocks.some((block) => block.kind === "text" && block.itemId !== itemId))
+    ) {
       this.closeStep();
       this.openStep();
     }
-    const kind = this.narration.get(itemId)?.kind ?? "text";
+    if (narration !== undefined) narration.step = this.step;
     const block: NarrationBlock = {
       itemId,
       kind,
@@ -746,8 +754,8 @@ export class TurnProjector {
     );
   }
 
-  /** Close the Turn. */
-  finish(outcome: TurnOutcomeShape): void {
+  /** Close the Turn, optionally carrying the source's final reply identity. */
+  finish(outcome: TurnOutcomeShape, finalAnswerItemId?: string | null): void {
     if (this.finished) return;
     // Settle tools the Harness never completed so the client does not show them running forever.
     for (const tool of [...this.tools.values()]) {
@@ -776,7 +784,18 @@ export class TurnProjector {
           : outcome.status === "failed"
             ? { kind: "error", error: { message: outcome.error.message, code: outcome.error.code } }
             : { kind: "interrupted" };
-    this.log.append("turn/end", { turn: this.turn, reason });
+    this.log.append("turn/end", {
+      turn: this.turn,
+      reason,
+      ...(finalAnswerItemId === undefined
+        ? {}
+        : {
+            finalAssistantStep:
+              finalAnswerItemId === null
+                ? null
+                : (this.narration.get(finalAnswerItemId)?.step ?? null),
+          }),
+    });
   }
 
   get isFinished(): boolean {

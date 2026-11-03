@@ -28,7 +28,12 @@ it(
           status: "completed",
           aggregatedOutput: "ready",
         },
-        { id: "live-answer", type: "agentMessage", text: "The final answer" },
+        {
+          id: "live-answer",
+          type: "agentMessage",
+          text: "The final answer",
+          phase: "final_answer",
+        },
       ],
     };
     row.turns = [turn];
@@ -72,8 +77,10 @@ it(
     row.status = { type: "idle" };
     host.changed(row.id, "turn/completed");
 
-    const process = page.getByRole("button", { name: /Completed in/u });
+    const process = page.locator("button[data-turn-process]");
     await process.waitFor({ timeout: 5000 });
+    assert.equal(await process.getAttribute("aria-expanded"), "false");
+    assert.equal(await answer.isVisible(), true);
     await process.click();
     assert.equal(await answer.count(), 1);
     assert.equal(await answer.isVisible(), true);

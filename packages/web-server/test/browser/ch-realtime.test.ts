@@ -79,6 +79,7 @@ it(
       status: "completed",
       aggregatedOutput: "private analysis",
     });
+    defined(turn.items.find((item) => item.id === "late-answer")).phase = "final_answer";
     turn.status = "completed";
     row.status = { type: "idle" };
     host.changed(row.id, "turn/completed");

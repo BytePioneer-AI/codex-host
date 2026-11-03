@@ -69,11 +69,7 @@ function derivePresentation(
       if (spec.answerAnchorSeq === null || node.anchorSeq < spec.answerAnchorSeq)
         compactAnswer = false;
     }
-    if (
-      TURN_PROCESS_INDEPENDENT_KINDS.has(node.kind) ||
-      node.anchorSeq < spec.processStartSeq ||
-      (spec.answerAnchorSeq !== null && node.anchorSeq >= spec.answerAnchorSeq)
-    )
+    if (TURN_PROCESS_INDEPENDENT_KINDS.has(node.kind) || node.anchorSeq < spec.processStartSeq)
       continue;
     if (
       node.kind !== "assistant-step" ||

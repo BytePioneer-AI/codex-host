@@ -9,7 +9,7 @@ export interface TurnProcessSpec {
   readonly answerAnchorSeq: number | null;
   readonly answerStep: number | null;
   readonly inlineReasoning: boolean;
-  /** Reply-bearing durable Assistant messages before the final answer. */
+  /** Reply-bearing durable Assistant messages outside the final answer Step. */
   readonly messageCount: number;
   /** Durable non-subagent Tool calls recorded by this Turn. */
   readonly toolCallCount: number;
@@ -73,7 +73,7 @@ export function isIndependentProcessTool(name: string): boolean {
 }
 
 /**
- * Keep live, stopped, and failed Turns open.
+ * Keep live, stopped, failed, and source-unconfirmed Turns open.
  * @param node - Node carrying the owning Turn.
  * @returns whether whole-Turn collapse is unavailable.
  */
@@ -81,5 +81,10 @@ export function turnProcessAlwaysOpen(node: ChatNode | undefined): boolean {
   const location = node?.location;
   if (location?.kind !== "turn" && location?.kind !== "step") return false;
   const reason = location.turn.end?.data.reason.kind;
-  return location.turn.status === "open" || reason === "aborted" || reason === "error";
+  return (
+    location.turn.status === "open" ||
+    location.turn.end?.data.finalAssistantStep === null ||
+    reason === "aborted" ||
+    reason === "error"
+  );
 }

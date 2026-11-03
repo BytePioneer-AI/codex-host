@@ -155,10 +155,22 @@ function isFinalAssistant(
 }
 
 function latestAnswer(turn: TurnLocation): Readonly<FinalAssistantChatData> | null {
-  const latestStep = turn.steps.at(-1);
-  const data: Readonly<AssistantChatData> | undefined = latestStep?.data.get("assistant-step");
-  if (!isFinalAssistant(data) || !hasAssistantReplyContent(data.blocks)) return null;
-  return data.blocks.some((block) => block.kind === "tool-call") ? null : data;
+  const confirmedStep = turn.end?.data.finalAssistantStep;
+  if (confirmedStep === null) return null;
+  const step =
+    confirmedStep === undefined
+      ? turn.steps.at(-1)
+      : turn.steps.find((candidate) => candidate.step === confirmedStep);
+  const data: Readonly<AssistantChatData> | undefined = step?.data.get("assistant-step");
+  if (
+    !isFinalAssistant(data) ||
+    data.finalNode.interrupted === true ||
+    !hasAssistantReplyContent(data.blocks)
+  )
+    return null;
+  return confirmedStep === undefined && data.blocks.some((block) => block.kind === "tool-call")
+    ? null
+    : data;
 }
 
 function processSpec(state: TurnProcessState, turn: TurnLocation): TurnProcessSpec | null {
@@ -170,7 +182,7 @@ function processSpec(state: TurnProcessState, turn: TurnLocation): TurnProcessSp
       answer === null
         ? state.messageCount
         : [...state.messageCountByStep]
-            .filter(([step]) => step < answer.step)
+            .filter(([step]) => step !== answer.step)
             .reduce((total, [, count]) => total + count, 0),
     toolCallCount: state.toolCallCount,
     subagentCount: state.subagentCount,

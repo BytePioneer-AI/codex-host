@@ -210,6 +210,7 @@ export const ChatGroupSeat = memo(function ChatGroupSeat({
   const alwaysOpen =
     presentation?.turnClosed === false ||
     presentation?.hasInterleavedInput === true ||
+    turnLocation?.end?.data.finalAssistantStep === null ||
     reason === "aborted" ||
     reason === "error";
   const spec = presentation?.spec;

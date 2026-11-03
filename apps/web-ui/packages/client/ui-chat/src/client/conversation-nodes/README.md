@@ -86,12 +86,13 @@ Trigger titles and icons use the recorded `source.kind`: `schedule`, `tool-jobs`
 | Stopped or failed | Keep process content open; whole-Turn collapse is unavailable. |
 | Visible input after the first process evidence | Whole-Turn collapse is unavailable. Preserve process segments, intermediate replies, and input order; group disclosures remain available. Consecutive opening inputs do not qualify. |
 | Other closed Turn with loaded process content | Initially collapse the process; allow manual opening and closing. Neither the Turn start nor the rest of Session history must already be loaded. |
-| Closed Turn with no final answer | Collapse all process rows when otherwise eligible. |
+| Source explicitly confirms no final answer | Keep the process open. |
+| Other closed Turn with no final answer | Collapse all process rows when otherwise eligible. |
 | End is loaded but start is absent | Apply the closed-Turn rules above to loaded content. Show no elapsed duration; do not use the first loaded tool/message time as the start. |
 | Neither start nor end is loaded | Keep process rows visible and withhold the whole-Turn control. |
 | A Turn control exists, but there is no process content | Retain its title, without a collapse action. |
 
-The final answer is the latest Step's settled Assistant reply, provided it has visible reply content and no tool-call block. Its response remains outside whole-Turn folding; its reasoning remains process content. User and steering inputs, trigger notices, terminal errors, max-token notices, and the completed-turn footer remain independent. Secondary grouping treats model retries as separators, but whole-Turn folding still includes retry rows.
+When `turn/end.finalAssistantStep` is present, it identifies the source-confirmed final reply; `null` means no final reply is confirmed. Without that field, the final answer is the latest Step's settled Assistant reply, provided it has visible reply content and no tool-call block. Final responses stay visible by Step identity and response part, independently of their first-token sorting anchor; reasoning and ordinary tools, including later process records, remain foldable. User and steering inputs, trigger notices, terminal errors, max-token notices, and the completed-turn footer remain independent. Secondary grouping treats model retries as separators, but whole-Turn folding still includes retry rows.
 
 Loading an older page preserves the reader's group-opening choices. Newly loaded process content follows the same Turn state while the final answer is unchanged and whole-Turn folding remains eligible. If the page reveals an intervening input, individual group disclosures replace whole-Turn hiding. When the real start arrives, the duration becomes available; loading all history is not an additional folding condition. When new content only extends an existing group at its beginning, that group and its old message rows retain their identities and opening choices. Replies, steering, and other real boundaries in the new page still separate groups; not every new row joins the old group.
 

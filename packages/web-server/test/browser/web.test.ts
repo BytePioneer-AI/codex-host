@@ -57,6 +57,50 @@ for (const viewport of [
       }
       assert.equal(await brandMark.first().locator("path").first().getAttribute("fill"), "#082e59");
       assert.equal(await brandMark.first().locator("circle").isVisible(), false);
+      const wordmark = page.locator('svg[data-codexhost-wordmark="codexhost"]');
+      await wordmark.waitFor();
+      assert.equal(await wordmark.getAttribute("aria-label"), "CodexHost");
+      assert.equal(await wordmark.getAttribute("viewBox"), "0 0 102 17");
+      const codexWord = wordmark.locator('g[data-codexhost-word="codex"]');
+      const hostWord = wordmark.locator('g[data-codexhost-word="host"]');
+      assert.equal(await codexWord.locator("path").count(), 5);
+      const hostPlate = hostWord.locator("rect");
+      const hostLabel = hostWord.locator("text");
+      assert.equal(await hostWord.locator("path").count(), 0);
+      assert.equal(await hostPlate.count(), 1);
+      assert.equal(await hostPlate.getAttribute("rx"), "2");
+      assert.equal(await hostLabel.textContent(), "HOST");
+      assert.equal(await wordmark.locator("image").count(), 0);
+      await wordmark.scrollIntoViewIfNeeded();
+      const wordmarkBox = await wordmark.boundingBox();
+      assert.ok(wordmarkBox && wordmarkBox.width === 127);
+      assert.ok(wordmarkBox.x >= 0 && wordmarkBox.x + wordmarkBox.width <= viewport.width);
+      const codexBox = await codexWord.boundingBox();
+      const hostBox = await hostWord.boundingBox();
+      assert.ok(codexBox && hostBox);
+      const wordGap = hostBox.x - (codexBox.x + codexBox.width);
+      assert.ok(wordGap > 10 && wordGap < 12, "the badge is separated from the codex wordmark");
+      const plateBox = await hostPlate.boundingBox();
+      const labelBox = await hostLabel.boundingBox();
+      assert.ok(plateBox && labelBox);
+      assert.ok(plateBox.y >= codexBox.y, "HOST stays beside codex rather than above it");
+      assert.ok(plateBox.height / codexBox.height > 0.99, "HOST retains its full badge size");
+      assert.ok(labelBox.x >= plateBox.x);
+      assert.ok(labelBox.x + labelBox.width <= plateBox.x + plateBox.width);
+      const lightInk = await wordmark.evaluate((element) => getComputedStyle(element).fill);
+      assert.equal(lightInk, await wordmark.evaluate((element) => getComputedStyle(element).color));
+      for (const path of await codexWord.locator("path").all()) {
+        assert.equal(await path.evaluate((element) => getComputedStyle(element).fill), lightInk);
+      }
+      assert.equal(
+        await hostPlate.evaluate((element) => getComputedStyle(element).fill),
+        "rgb(17, 19, 24)",
+      );
+      assert.equal(
+        await hostLabel.evaluate((element) => getComputedStyle(element).fill),
+        "rgb(255, 255, 255)",
+      );
+      await screenshot(page, `brand-${viewport.width}`);
       await page.getByRole("button", { name: "Settings", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
       await dialog.getByRole("button", { name: "English", exact: true }).waitFor();
@@ -85,6 +129,21 @@ for (const viewport of [
       await dialog.waitFor({ state: "hidden" });
       assert.equal(await brandMark.first().locator("circle").isVisible(), true);
       assert.equal(await brandMark.first().locator("path").first().getAttribute("fill"), "#082e59");
+      const darkInk = await wordmark.evaluate((element) => getComputedStyle(element).fill);
+      assert.notEqual(darkInk, lightInk);
+      assert.equal(darkInk, await wordmark.evaluate((element) => getComputedStyle(element).color));
+      for (const path of await codexWord.locator("path").all()) {
+        assert.equal(await path.evaluate((element) => getComputedStyle(element).fill), darkInk);
+      }
+      assert.equal(
+        await hostPlate.evaluate((element) => getComputedStyle(element).fill),
+        "rgb(242, 243, 245)",
+      );
+      assert.equal(
+        await hostLabel.evaluate((element) => getComputedStyle(element).fill),
+        "rgb(21, 21, 23)",
+      );
+      await screenshot(page, `brand-dark-${viewport.width}`);
       await page.reload();
       await page.getByRole("textbox", { name: composerLabel, exact: true }).waitFor();
       if (viewport.width < 600)

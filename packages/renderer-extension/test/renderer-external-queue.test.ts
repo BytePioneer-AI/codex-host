@@ -21,7 +21,10 @@ function fixture() {
   const local = new Map<string, QueuedMessage[]>();
   const remote = new Map<string, QueuedMessage[]>();
   const rpc = vi.fn(async (method: string, params: { threadId: string }) => {
-    if (conversations.get(params.threadId)?.modelProvider === "codexhost") {
+    // Desktop 26.1027 routes external Threads to the codexhost Host, which
+    // implements `thread/queue/*` natively — these requests succeed. Only a
+    // stock app-server connection would reject them (-32076).
+    if (conversations.get(params.threadId)?.modelProvider === "closed-source-only") {
       throw Object.assign(new Error(`External Thread does not support ${method}`), {
         code: -32076,
       });
@@ -149,8 +152,8 @@ function fixture() {
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("external follow-ups retain Desktop's local queue", () => {
-  it("queues another message during an external Turn without thread/queue/list or add", async () => {
+describe("external follow-ups use the Host-served queue", () => {
+  it("queues another message during an external Turn through the Host queue", async () => {
     const f = fixture();
     const adapter = f.install();
     try {
@@ -158,14 +161,17 @@ describe("external follow-ups retain Desktop's local queue", () => {
         f.coordinator.sendMessage({ conversationId: "external", message: f.message }),
       ).resolves.toEqual({ status: "queued", messageId: f.message.id });
       expect(f.coordinator.readMessages("external")).toEqual([f.message]);
-      expect(f.local.get("external")).toEqual([f.message]);
-      expect(f.rpc).not.toHaveBeenCalled();
+      expect(f.rpc.mock.calls).toEqual([
+        ["thread/queue/list", { threadId: "external" }],
+        ["thread/queue/add", { threadId: "external" }],
+      ]);
+      expect(f.local.has("external")).toBe(false);
     } finally {
       adapter.dispose();
     }
   });
 
-  it("preserves existing paused follow-ups and stays local after the queue drains", async () => {
+  it("keeps local paused follow-ups until they drain, then uses the Host queue", async () => {
     const f = fixture();
     const paused = {
       ...f.message,
@@ -175,12 +181,18 @@ describe("external follow-ups retain Desktop's local queue", () => {
     f.local.set("external", [paused]);
     const adapter = f.install();
     try {
+      // A non-empty legacy local queue still routes to Desktop's local queue:
+      // paused entries must not be abandoned on the Host-side queue.
       await f.coordinator.sendMessage({ conversationId: "external", message: f.message });
       expect(f.local.get("external")).toEqual([paused, f.message]);
       f.local.delete("external");
+      // Once the local queue is empty, the Host-served queue takes over.
       await f.coordinator.sendMessage({ conversationId: "external", message: f.message });
-      expect(f.local.get("external")).toEqual([f.message]);
-      expect(f.rpc).not.toHaveBeenCalled();
+      expect(f.rpc.mock.calls).toEqual([
+        ["thread/queue/list", { threadId: "external" }],
+        ["thread/queue/add", { threadId: "external" }],
+      ]);
+      expect(f.local.has("external")).toBe(false);
     } finally {
       adapter.dispose();
     }
@@ -197,7 +209,7 @@ describe("external follow-ups retain Desktop's local queue", () => {
       ]);
       expect(f.local.has("native")).toBe(false);
       expect(f.coordinator.readMessages("native")).toEqual([f.message]);
-      expect(f.queue.isEnabled("external")).toBe(false);
+      expect(f.queue.isEnabled("external")).toBe(true);
       expect(f.queue.isEnabled("native")).toBe(true);
       expect(f.originalGate.mock.contexts.every((receiver) => receiver === f.queue)).toBe(true);
     } finally {
@@ -210,10 +222,11 @@ describe("external follow-ups retain Desktop's local queue", () => {
     const other = fixture();
     const adapter = f.install();
     try {
-      expect(f.queue.isEnabled("external")).toBe(false);
+      expect(f.queue.isEnabled("external")).toBe(true);
       expect(other.queue.isEnabled("external")).toBe(true);
       f.conversations.set("native", { id: "native", modelProvider: "codexhost" });
-      expect(f.queue.isEnabled("native")).toBe(false);
+      expect(f.queue.isEnabled("native")).toBe(true);
+      expect(other.queue.isEnabled("native")).toBe(true);
       expect(f.queue.isEnabled("unloaded")).toBe(true);
       expect(f.queue.isEnabled()).toBe(true);
       f.originalGate.mockReturnValue(false);
@@ -227,7 +240,7 @@ describe("external follow-ups retain Desktop's local queue", () => {
     const f = fixture();
     for (let i = 0; i < 2; i++) {
       const adapter = f.install();
-      expect(f.queue.isEnabled("external")).toBe(false);
+      expect(f.queue.isEnabled("external")).toBe(true);
       adapter.dispose();
       expect(f.queue.isEnabled).toBe(f.originalGate);
       expect(Object.hasOwn(f.manager, "getTurnCoordinator")).toBe(false);
@@ -243,7 +256,7 @@ describe("external follow-ups retain Desktop's local queue", () => {
       f.conversations.delete("external");
       expect(f.queue.isEnabled("external")).toBe(true);
       f.conversations.set("external", { id: "external", modelProvider: "codexhost" });
-      expect(f.queue.isEnabled("external")).toBe(false);
+      expect(f.queue.isEnabled("external")).toBe(true);
       const replacement = vi.fn(() => false);
       f.queue.isEnabled = replacement;
       adapter.dispose();

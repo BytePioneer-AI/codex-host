@@ -4772,13 +4772,20 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
     }
+    const clientUserMessageId =
+      typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined;
     try {
       const started = await this.#beginExternalInputTurn(
         thread,
         text,
         undefined,
-        typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined,
+        clientUserMessageId,
         params[THREAD_REFERENCE_SOURCE_HOST_PARAM],
+        // Desktop 26.1027 routes follow-up submissions through its main-process
+        // queue manager, which no longer renders the submitted input locally in
+        // the Renderer. Project the user message so the Turn visibly carries its
+        // input; the clientId lets a Renderer that still renders optimally dedupe.
+        clientUserMessageId !== undefined,
       );
       try {
         await this.#writer.json(rpcEnvelope(request, { result: { turn: started.turn } }));
@@ -4800,6 +4807,12 @@ export class AppServerHost {
 
   async #handleExternalQueueRequest(request: JsonRpcRequest, threadId: string): Promise<void> {
     const queue = this.#externalQueue;
+    // Queue diagnostics: every Desktop queue request lands in the runtime log,
+    // which is the only observer of the follow-up pipeline when Desktop's own
+    // queue UI disagrees with what actually runs.
+    this.#options.diagnosticOutput.write(
+      `codexhost Host Runtime: queue ${request.method} thread=${threadId.slice(0, 8)} running=${this.#externalRuntime.get(threadId)?.running ?? "unknown"} queued=${queue.has(threadId)}\n`,
+    );
     try {
       const params = requestObject(request);
       const input = (): JsonValue[] => {
@@ -4940,20 +4953,29 @@ export class AppServerHost {
   }
 
   async #steerExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+    let replacementStartFailed = false;
     try {
       const started = await this.#externalSteering.run(
         thread,
         requestObject(request),
-        (text, assertActive) =>
-          this.#beginExternalInputTurn(
-            thread,
-            text,
-            assertActive,
-            typeof requestObject(request).clientUserMessageId === "string"
-              ? (requestObject(request).clientUserMessageId as string)
-              : undefined,
-            requestObject(request)[THREAD_REFERENCE_SOURCE_HOST_PARAM],
-          ),
+        async (text, assertActive) => {
+          try {
+            return await this.#beginExternalInputTurn(
+              thread,
+              text,
+              assertActive,
+              typeof requestObject(request).clientUserMessageId === "string"
+                ? (requestObject(request).clientUserMessageId as string)
+                : undefined,
+              requestObject(request)[THREAD_REFERENCE_SOURCE_HOST_PARAM],
+            );
+          } catch (error) {
+            // A stop or Session fault while command discovery was pending keeps the queue paused.
+            assertActive();
+            replacementStartFailed = true;
+            throw error;
+          }
+        },
         (input) => this.#insertExternalInput(thread, input),
       );
       try {
@@ -4975,6 +4997,7 @@ export class AppServerHost {
           errorMessage(error),
         ),
       );
+      if (replacementStartFailed) void this.#drainExternalQueue(thread);
     } finally {
       this.#signalActiveWorkChanged();
     }
@@ -5563,13 +5586,25 @@ export class AppServerHost {
           ? { type: "active", activeFlags: [] }
           : { type: "idle" },
       );
+      // A stop-then-start steer cancels this Turn itself; the terminal it produces is
+      // the user changing direction, not a stop Desktop chose to pause behind.
+      const replacedBySteer = this.#externalSteering.isReplacing(thread.id, event.turnId);
       this.#externalSteering.terminal(thread.id, event.turnId, event.outcome);
-      // Interrupted and failed Turns pause the queue until Desktop starts it again.
+      this.#options.diagnosticOutput.write(
+        `codexhost Host Runtime: turn terminal thread=${thread.id.slice(0, 8)} status=${result.completedTurn?.status} steerReplacing=${replacedBySteer} queued=${this.#externalQueue.has(thread.id)}\n`,
+      );
+      // Interrupted and failed Turns pause the queue until Desktop starts it again —
+      // except when the interruption is the steer replacement itself, which immediately
+      // starts the user's new input as the next Turn and must keep the queue flowing.
       if (
         !ephemeralTurn &&
-        result.completedTurn?.status === "completed" &&
-        this.#externalQueue.has(thread.id)
+        this.#externalQueue.has(thread.id) &&
+        (result.completedTurn?.status === "completed" ||
+          (replacedBySteer && result.completedTurn?.status === "interrupted"))
       ) {
+        this.#options.diagnosticOutput.write(
+          `codexhost Host Runtime: draining queue thread=${thread.id.slice(0, 8)}\n`,
+        );
         void this.#drainExternalQueue(thread);
       }
     }

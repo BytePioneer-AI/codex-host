@@ -234,4 +234,282 @@ describe("External Thread follow-up queue", () => {
       await stopFixture(fixture);
     }
   });
+
+  it("projects the submitted input of a Desktop turn/start that carries a clientUserMessageId", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      // Desktop 26.1027's main-process queue manager submits follow-ups with a
+      // clientUserMessageId but no longer renders the input locally in the
+      // Renderer; the Host must project the user message with that clientId.
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "turn/start",
+        params: {
+          threadId,
+          input: text("follow-up from the main-process queue"),
+          clientUserMessageId: "desktop-follow-up-1",
+        },
+      });
+      const started = await fixture.collector.waitFor((message) => requestId(message, 2));
+      expect(started).toMatchObject({ result: { turn: { status: "inProgress" } } });
+      await expect(
+        fixture.collector.waitFor(
+          (message) =>
+            method(message, "item/started") &&
+            (messageParams(message).item as JsonObject).type === "userMessage",
+        ),
+      ).resolves.toMatchObject({
+        params: {
+          item: {
+            clientId: "desktop-follow-up-1",
+            content: [{ type: "text", text: "follow-up from the main-process queue" }],
+          },
+        },
+      });
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      session.succeedTurn();
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("does not project a synthetic user message for starts without a clientUserMessageId", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId, input: text("host-only start") },
+      });
+      const started = await fixture.collector.waitFor((message) => requestId(message, 2));
+      const turn = (started.result as JsonObject)?.turn as JsonObject | undefined;
+      const turnId = typeof turn?.id === "string" ? turn.id : undefined;
+      if (!turnId) throw new Error("Synthetic turn response has no ID");
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      session.appendText("ack");
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      // No userMessage item may be projected for a start Desktop still renders itself.
+      const userMessages = fixture.collector.messages.filter(
+        (message) =>
+          method(message, "item/started") &&
+          (messageParams(message).item as JsonObject)?.type === "userMessage",
+      );
+      expect(userMessages).toEqual([]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("drains the queue when a steer replacement fails to start its replacement Turn", async () => {
+    const fixture = createFixture();
+    // No native steer: turn/steer takes the stop-then-start path.
+    fixture.adapter.supportsSteer = false;
+    try {
+      const threadId = await startPiThread(fixture);
+      const runningTurnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
+
+      // A follow-up queues while the Turn is running.
+      writeRequest(fixture.desktopInput, {
+        id: 10,
+        method: "thread/queue/add",
+        params: { threadId, input: text("queued during failed steer"), clientUserMessageId: "q-1" },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 10));
+
+      // The user steers, but the session refuses the replacement start.
+      session.failNextStart({
+        code: "invalidState",
+        message: "Session refused the replacement start",
+        retryable: false,
+      });
+      writeRequest(fixture.desktopInput, {
+        id: 11,
+        method: "turn/steer",
+        params: {
+          threadId,
+          expectedTurnId: runningTurnId,
+          clientUserMessageId: "steer-1",
+          input: text("replacement that will not start"),
+        },
+      });
+      // turn.cancel arrives; the Fake session completes the cancellation on request.
+      session.completeCancellationOnRequest();
+      // The steer request settles as an error (replacement refused).
+      const reply = await fixture.collector.waitFor((message) => requestId(message, 11));
+      expect(reply).toHaveProperty("error");
+      // The interrupted Turn is the Thread's last word and no replacement runs.
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", runningTurnId),
+      );
+      // The queued follow-up must still be delivered: a failed steer is not a
+      // stop the queue should pause behind.
+      await vi.waitFor(() =>
+        expect(execute).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "turn.start",
+            input: text("queued during failed steer"),
+          }),
+        ),
+      );
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("keeps the queue flowing after a steer replacement interrupts the running Turn", async () => {
+    const fixture = createFixture();
+    // No native steer: turn/steer takes the stop-then-start path.
+    fixture.adapter.supportsSteer = false;
+    try {
+      const threadId = await startPiThread(fixture);
+      const runningTurnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
+
+      // A follow-up queues while the Turn is running.
+      writeRequest(fixture.desktopInput, {
+        id: 10,
+        method: "thread/queue/add",
+        params: { threadId, input: text("queued during steer"), clientUserMessageId: "q-1" },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 10));
+
+      // The user steers: the running Turn is interrupted and the new input replaces it.
+      writeRequest(fixture.desktopInput, {
+        id: 11,
+        method: "turn/steer",
+        params: {
+          threadId,
+          expectedTurnId: runningTurnId,
+          clientUserMessageId: "steer-1",
+          input: text("replacement direction"),
+        },
+      });
+      // turn.cancel arrives; the Fake session completes the cancellation on request.
+      session.completeCancellationOnRequest();
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", runningTurnId),
+      );
+      // The replacement Turn starts and finishes normally.
+      await vi.waitFor(() =>
+        expect(execute).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "turn.start", input: text("replacement direction") }),
+        ),
+      );
+      if (!session) throw new Error("Replacement session was not opened");
+      session.succeedTurn();
+      // The queued follow-up must still be delivered after the replacement Turn completes.
+      await vi.waitFor(() =>
+        expect(execute).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "turn.start", input: text("queued during steer") }),
+        ),
+      );
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+});
+
+describe("Steering failure queue boundaries", () => {
+  it("keeps queued input paused when a replacement is stopped during command discovery", async () => {
+    const fixture = createFixture();
+    fixture.adapter.supportsSteer = false;
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
+      writeRequest(fixture.desktopInput, {
+        id: 80,
+        method: "thread/queue/add",
+        params: { threadId, input: text("remain paused"), clientUserMessageId: "paused-1" },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 80));
+      session.completeCancellationOnRequest();
+      const catalog = Promise.withResolvers<{ ok: true; value: { commands: [] } }>();
+      const list = vi.fn(() => catalog.promise);
+      session.commands = { list, execute: vi.fn() };
+      writeRequest(fixture.desktopInput, {
+        id: 81,
+        method: "turn/steer",
+        params: { threadId, expectedTurnId: turnId, input: text("/unknown") },
+      });
+      await vi.waitFor(() => expect(list).toHaveBeenCalled());
+      writeRequest(fixture.desktopInput, {
+        id: 82,
+        method: "turn/interrupt",
+        params: { threadId, turnId },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 82));
+      catalog.resolve({ ok: true, value: { commands: [] } });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 81)),
+      ).resolves.toHaveProperty("error");
+      writeRequest(fixture.desktopInput, {
+        id: 83,
+        method: "thread/queue/list",
+        params: { threadId },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 83)),
+      ).resolves.toMatchObject({ result: { data: [{ input: text("remain paused") }] } });
+      expect(execute).not.toHaveBeenCalledWith(expect.objectContaining({ type: "turn.start" }));
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("does not resume a stopped queue for a stale steer request", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
+      writeRequest(fixture.desktopInput, {
+        id: 90,
+        method: "thread/queue/add",
+        params: { threadId, input: text("remain paused"), clientUserMessageId: "paused-2" },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 90));
+      session.completeCancellationOnRequest();
+      writeRequest(fixture.desktopInput, {
+        id: 91,
+        method: "turn/interrupt",
+        params: { threadId, turnId },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 91));
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      writeRequest(fixture.desktopInput, {
+        id: 92,
+        method: "turn/steer",
+        params: { threadId, expectedTurnId: turnId, input: text("stale input") },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 92)),
+      ).resolves.toHaveProperty("error");
+      writeRequest(fixture.desktopInput, {
+        id: 93,
+        method: "thread/queue/list",
+        params: { threadId },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 93)),
+      ).resolves.toMatchObject({ result: { data: [{ input: text("remain paused") }] } });
+      expect(execute).not.toHaveBeenCalledWith(expect.objectContaining({ type: "turn.start" }));
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
 });

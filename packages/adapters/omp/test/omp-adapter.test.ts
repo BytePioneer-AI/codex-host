@@ -29,7 +29,11 @@ import type {
   OmpTurnEvent,
   OmpTurnResult,
 } from "../src/omp-rpc-session.js";
-import { OmpRpcFaultError } from "../src/omp-rpc-session.js";
+import {
+  OmpRpcFaultError,
+  OmpRpcSteerRejectedError,
+  OmpRpcUnsupportedCommandError,
+} from "../src/omp-rpc-session.js";
 import { encodeOmpModelRef, type OmpNativeModel } from "../src/omp-model-catalog.js";
 
 class FakeOmpTransport implements OmpTurnTransport {
@@ -1316,7 +1320,7 @@ describe("OMP Adapter local command completion", () => {
         status: "failed",
         error: {
           code: "protocolError",
-          message: "Omp Turn persisted 0 new User Entries; exactly one is required",
+          message: "Omp Turn has no newly persisted User Entry",
           retryable: false,
         },
       },
@@ -1999,4 +2003,206 @@ describe("OMP Adapter Subagents", () => {
     await opened.value.close();
     await adapter.close();
   });
+});
+
+describe("OMP native steer delivery", () => {
+  it.each([false, true])(
+    "keeps the starting identity after two native steers (cancelled=%s)",
+    async (cancelled) => {
+      const transport = new FakeOmpTransport();
+      transport.autoCompleteTurn = false;
+      const steer = vi.fn(async () => undefined);
+      const adapter = new OmpAdapter(
+        {},
+        { createTransport: () => Object.assign(transport, { steer }) },
+      );
+      try {
+        const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        await session.execute({
+          type: "turn.start",
+          turnId: "previous" as HostTurnId,
+          input: [{ type: "text", text: "previous" }],
+        });
+        transport.succeed("previous answer");
+        await nextTurnEvents(iterator);
+        await session.execute({
+          type: "turn.start",
+          turnId: "steered" as HostTurnId,
+          input: [{ type: "text", text: "first" }],
+        });
+        for (const [index, text] of ["first", "second", "third"].entries()) {
+          if (index > 0)
+            expect(
+              await session.execute({
+                type: "turn.steer",
+                turnId: "steered" as HostTurnId,
+                input: [{ type: "text", text }],
+              }),
+            ).toEqual({ ok: true, value: { accepted: true } });
+          const id = `current-user-${index}`;
+          transport.history.entries.push({
+            id,
+            parentId: transport.history.leafId,
+            type: "message",
+            message: {
+              role: "user",
+              content: [{ type: "text", text }],
+              ...(index > 0 ? { steering: true } : {}),
+            },
+          });
+          transport.history.leafId = id;
+        }
+        transport.history.entries.push({
+          id: "current-answer",
+          parentId: transport.history.leafId,
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "done" }],
+            stopReason: cancelled ? "aborted" : "stop",
+          },
+        });
+        transport.history.leafId = "current-answer";
+        transport.completeWithoutHistory({ agentInvoked: true, text: "done", cancelled });
+        expect((await nextTurnEvents(iterator)).at(-1)).toMatchObject({
+          type: "turn.completed",
+          turnId: "steered",
+          nativeTurnRef: { nativeTurnKey: "current-user-0" },
+          outcome: {
+            status: cancelled ? "cancelled" : "succeeded",
+            checkpoint: { checkpointId: "current-user-0" },
+          },
+        });
+        expect(steer).toHaveBeenCalledTimes(2);
+        const snapshot = await session.readSnapshot();
+        expect(snapshot).toMatchObject({
+          ok: true,
+          value: {
+            turns: [
+              expect.anything(),
+              ...["first", "second", "third"].map((text, index) => ({
+                nativeTurnRef: { nativeTurnKey: `current-user-${index}` },
+                input: [{ type: "text", text }],
+              })),
+            ],
+          },
+        });
+        expect(await session.readSnapshot()).toEqual(snapshot);
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
+  it("rejects steering while native completion history is being read", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const steer = vi.fn(async () => undefined);
+    const adapter = new OmpAdapter(
+      {},
+      { createTransport: () => Object.assign(transport, { steer }) },
+    );
+    const gate = Promise.withResolvers<undefined>();
+    try {
+      const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const session = opened.value;
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute({
+        type: "turn.start",
+        turnId: "settling" as HostTurnId,
+        input: [{ type: "text", text: "first" }],
+      });
+      const getEntries = vi.spyOn(transport, "getEntries").mockImplementationOnce(async () => {
+        await gate.promise;
+        return structuredClone(transport.history);
+      });
+      transport.succeed("done");
+      await vi.waitFor(() => expect(getEntries).toHaveBeenCalled());
+      expect(session.capabilities.steer).toBe(false);
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: "settling" as HostTurnId,
+          input: [{ type: "text", text: "too late" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+      expect(steer).not.toHaveBeenCalled();
+      gate.resolve(undefined);
+      expect((await nextTurnEvents(iterator)).at(-1)).toMatchObject({
+        outcome: { status: "succeeded" },
+      });
+    } finally {
+      gate.resolve(undefined);
+      await adapter.close();
+    }
+  });
+
+  it("propagates an unconfirmed delivery instead of reporting that input was refused", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const timeout = new Error("Omp RPC 'steer' command timed out");
+    const steer = vi.fn<NonNullable<OmpTurnTransport["steer"]>>(async () => {
+      throw timeout;
+    });
+    const native: OmpTurnTransport = Object.assign(transport, { steer });
+    const abort = vi.spyOn(transport, "abort");
+    const adapter = new OmpAdapter({}, { createTransport: () => native });
+    try {
+      const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const session = opened.value;
+      const turnId = "steer-timeout" as HostTurnId;
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "first" }],
+      });
+      await expect(
+        session.execute({
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "already written" }],
+        }),
+      ).rejects.toBe(timeout);
+      expect(steer).toHaveBeenCalledExactlyOnceWith("already written");
+      expect(abort).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+});
+
+it.each([
+  { label: "accepted", error: null },
+  { label: "refused", error: new OmpRpcSteerRejectedError("Native steer refused") },
+  { label: "unsupported", error: new OmpRpcUnsupportedCommandError("steer") },
+])("classifies native Omp steer $label responses", async ({ error }) => {
+  const transport = new FakeOmpTransport();
+  transport.autoCompleteTurn = false;
+  const steer = vi.fn<NonNullable<OmpTurnTransport["steer"]>>(async () => {
+    if (error) throw error;
+  });
+  const native: OmpTurnTransport = Object.assign(transport, { steer });
+  const adapter = new OmpAdapter({}, { createTransport: () => native });
+  const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+  if (!opened.ok) throw new Error(opened.error.message);
+  const session = opened.value;
+  const turnId = "native-steer" as HostTurnId;
+  await session.execute({ type: "turn.start", turnId, input: [{ type: "text", text: "first" }] });
+  try {
+    const result = await session.execute({
+      type: "turn.steer",
+      turnId,
+      input: [{ type: "text", text: "second" }],
+    });
+    if (error) expect(result).toMatchObject({ ok: false, error: { code: "invalidState" } });
+    else expect(result).toEqual({ ok: true, value: { accepted: true } });
+    expect(steer).toHaveBeenCalledExactlyOnceWith("second");
+  } finally {
+    await adapter.close();
+  }
 });

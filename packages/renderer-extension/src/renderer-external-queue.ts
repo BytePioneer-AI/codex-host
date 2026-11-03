@@ -3,9 +3,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Desktop 26.903.61454 still owns the local follow-up queue and its execution.
- * Its serverQueue.isEnabled(threadId) gate must exclude Host-projected external
- * Threads: the official app-server queue cannot execute a Harness Turn.
+ * Desktop 26.1027 manages the follow-up queue in its main process and serves
+ * Host-projected external Threads from the Host's native `thread/queue/*`
+ * implementation. The legacy `serverQueue.isEnabled(threadId)` gate must let
+ * those Threads through (the stock app-server cannot execute a Harness Turn,
+ * but the codexhost Host answers the same protocol natively); excluding them
+ * strands every follow-up in a queue Desktop can no longer execute locally.
  */
 export function installRendererExternalQueue(target: unknown): (() => void) | null {
   if (
@@ -35,7 +38,7 @@ export function installRendererExternalQueue(target: unknown): (() => void) | nu
         // Desktop in both newly created and hydrated conversation metadata.
         conversation.modelProvider === "codexhost"
       ) {
-        return false;
+        return true;
       }
     }
     // Preserve native/unknown Threads, feature flags, and no-argument probes.

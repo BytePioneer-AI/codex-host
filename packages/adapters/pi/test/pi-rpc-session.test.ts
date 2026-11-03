@@ -14,6 +14,7 @@ import { CodexTurnProjector } from "@codexhost/protocol-core";
 
 import {
   PiRpcSession,
+  PiRpcSteerRejectedError,
   piRpcProcessCommand,
   type PiAutonomousTurn,
   type PiRpcProcessAdapter,
@@ -80,6 +81,8 @@ class FakePiRpcProcess extends EventEmitter {
   signalCode: NodeJS.Signals | null = null;
   fastEnabled = false;
   readonly commands: string[] = [];
+  readonly commandFrames: Record<string, unknown>[] = [];
+  steerReply: Record<string, unknown> | null = { success: true, data: { disposition: "queued" } };
   holdEntries = false;
   holdStates = false;
   holdAborts = false;
@@ -275,8 +278,14 @@ class FakePiRpcProcess extends EventEmitter {
     const command = value as Record<string, unknown>;
     if (typeof command.id !== "string" || typeof command.type !== "string") return;
     this.commands.push(command.type);
+    this.commandFrames.push(command);
     if (command.type === "abort" && this.holdAborts) {
       this.#heldAborts.push(command);
+      return;
+    }
+    if (command.type === "steer") {
+      if (this.steerReply)
+        this.#output({ type: "response", id: command.id, command: "steer", ...this.steerReply });
       return;
     }
     if (command.type === "get_state" && this.holdStates) {
@@ -1546,6 +1555,42 @@ describe("Pi RPC Turn aggregation", () => {
       await rpc.close();
     },
   );
+
+  it("delivers a native steer into the running Turn without stopping it", async () => {
+    const fake = new FakePiRpcProcess("manual-run");
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+      { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    try {
+      const pending = rpc.runTurn("synthetic", () => undefined);
+      await vi.waitFor(() => expect(fake.commands.filter((c) => c === "prompt")).toHaveLength(1));
+      // The Turn is running; a native steer goes through Pi's `steer` RPC and
+      // reports a queued disposition. No abort, no second prompt.
+      await expect(rpc.steer("changed my mind")).resolves.toBeUndefined();
+      const steer = fake.commandFrames.find((c) => c.type === "steer");
+      expect(steer).toMatchObject({ message: "changed my mind" });
+      expect(fake.commands.filter((c) => c === "prompt")).toHaveLength(1);
+      expect(fake.commands.some((c) => c === "abort")).toBe(false);
+      // The Turn settles normally afterwards.
+      const message = {
+        role: "assistant",
+        responseId: "steered",
+        content: [{ type: "text", text: "steered answer" }],
+        stopReason: "stop",
+      };
+      fake.emitFrame({ type: "message_start", message });
+      fake.emitFrame({ type: "message_end", message });
+      fake.emitAgentSettled();
+      await expect(pending).resolves.toMatchObject({
+        text: "steered answer",
+        cancelled: false,
+      });
+    } finally {
+      await rpc.close();
+    }
+  });
 
   it("bounds idle notices without faulting and ignores ephemeral footer updates", async () => {
     const fake = new FakePiRpcProcess("manual-run");
@@ -3445,4 +3490,33 @@ describe("Pi RPC Turn aggregation", () => {
     );
     await rpc.close();
   });
+});
+
+it.each([
+  { label: "explicit native refusal", response: { success: false, error: "Busy" }, refused: true },
+  { label: "lost acknowledgement", response: null, refused: false },
+  {
+    label: "mismatched command",
+    response: { command: "prompt", success: false, error: "Busy" },
+    refused: false,
+  },
+  { label: "missing failure status", response: { error: "Busy" }, refused: false },
+])("Pi steer distinguishes $label from confirmed non-delivery", async ({ response, refused }) => {
+  const fake = new FakePiRpcProcess("manual-run");
+  fake.steerReply = response;
+  const session = new PiRpcSession(
+    { cwd: process.cwd(), commandTimeoutMs: 20 },
+    { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+  );
+  try {
+    await session.start();
+    void session.runTurn("first", () => undefined).catch(() => undefined);
+    const error = await session.steer("second").catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(Error);
+    if (refused) expect(error).toBeInstanceOf(PiRpcSteerRejectedError);
+    else expect(error).not.toBeInstanceOf(PiRpcSteerRejectedError);
+    expect(fake.commandFrames.filter((command) => command.type === "steer")).toHaveLength(1);
+  } finally {
+    await session.close();
+  }
 });

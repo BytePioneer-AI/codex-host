@@ -171,6 +171,14 @@ export class OmpRpcUnsupportedCommandError extends Error {
   }
 }
 
+/** The native RPC explicitly refused steering without accepting its input. */
+export class OmpRpcSteerRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OmpRpcSteerRejectedError";
+  }
+}
+
 export interface OmpRpcSessionOptions {
   cwd: string;
   command?: string;
@@ -547,6 +555,19 @@ export class OmpRpcSession {
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
+  /**
+   * A native session_settled notification arrived and has not driven a
+   * confirmation pass yet. Session-level: it must survive the gap between a
+   * notification and the state response that reflects it, and must never be
+   * dropped just because a confirmation is already in flight.
+   */
+  #settledNotice = false;
+  /**
+   * Confirmation passes triggered by a consumed settled notice, so a notice
+   * that outran the state snapshot rechecks once instead of waiting forever
+   * for a second notification that already fired.
+   */
+  #noticeConfirmations = 0;
   #closePromise: Promise<void> | null = null;
   #compactionActive = false;
   #compactionTurn: ActiveTurn | null = null;
@@ -952,6 +973,23 @@ export class OmpRpcSession {
     return settled;
   }
 
+  /**
+   * Native same-Turn input through OMP's `steer` RPC. OMP itself refuses a plain
+   * `prompt` while an agent runs ("Use steer() or followUp()"), so this is the
+   * only way to deliver mid-Turn input without stopping the Turn.
+   */
+  async steer(text: string): Promise<void> {
+    if (!this.#child || !this.#state || this.#closed || this.#failed) {
+      throw new Error("Omp RPC Session is unavailable");
+    }
+    if (text.length === 0) throw new Error("Omp steer text must not be empty");
+    try {
+      await this.#send("steer", { message: text });
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(message(error));
+    }
+  }
+
   respondToInteraction(response: OmpInteractionResponse): Promise<void> {
     return this.#resolveInteraction(response, "cancelled" in response ? "cancelled" : "responded");
   }
@@ -1192,6 +1230,31 @@ export class OmpRpcSession {
       active?.cancellation === "accepted"
     ) {
       void this.#confirmCancelledTurn(active);
+      return;
+    }
+    if (value.type === "session_settled") {
+      // Session-level notice: record it even while a confirmation is in
+      // flight — the state snapshot that confirmation reads can still show
+      // streaming when the notice outran it, and no further notification may
+      // arrive. The in-flight pass consumes the notice and rechecks.
+      this.#settledNotice = true;
+      const turn = active;
+      if (
+        turn &&
+        (turn.settlement === "pending" || turn.settlement === "confirming") &&
+        // Completion fact binding: only a Turn that has seen its own terminal
+        // agent_end (or settled locally) may be settled by this notice. A
+        // stale notice from the previous Turn must not confirm a new Turn
+        // still waiting for native admission (it has no terminalEnd yet).
+        (turn.terminalEnd || turn.localResult !== null)
+      ) {
+        if (turn.settlement === "pending") void this.#confirmSettledTurn(turn);
+      }
+      if (!turn) {
+        // No active Turn owns the notice; it stays recorded for the next
+        // confirmation pass (a new Turn's terminal agent_end path).
+        return;
+      }
       return;
     }
     if (!active) {
@@ -1596,8 +1659,18 @@ export class OmpRpcSession {
       pending.resolve(value);
     } else {
       const error = typeof value.error === "string" ? value.error : "Omp RPC command failed";
-      if (value.command === pending.command && error === `Unknown command: ${pending.command}`) {
+      if (
+        value.success === false &&
+        value.command === pending.command &&
+        error === `Unknown command: ${pending.command}`
+      ) {
         pending.reject(new OmpRpcUnsupportedCommandError(pending.command));
+      } else if (
+        value.success === false &&
+        pending.command === "steer" &&
+        value.command === pending.command
+      ) {
+        pending.reject(new OmpRpcSteerRejectedError(error));
       } else {
         pending.reject(new Error(error));
       }
@@ -1807,12 +1880,30 @@ export class OmpRpcSession {
         return;
       }
       if (parseSessionStreaming(response)) {
-        throw new OmpRpcFaultError(
-          "protocolError",
-          "Omp RPC completed Turn state is still Streaming",
-        );
+        // A terminal agent_end can precede native background work draining:
+        // isStreaming stays true while those jobs run even though the Turn's
+        // own run ended. Waiting for the native session_settled notification
+        // (which reconfirms here) is correct; faulting would kill a healthy
+        // Turn whose queued follow-ups then pause forever.
+        active.settlement = "pending";
+        // Consume the notice NOW, at response time: one can land while this
+        // pass was suspended awaiting the snapshot (the snapshot predates the
+        // settle), and no further notification may arrive. The bounded recheck
+        // replaces the retry that dropped notice would have driven.
+        const noticeDriven = this.#settledNotice;
+        this.#settledNotice = false;
+        this.#noticeConfirmations = noticeDriven ? this.#noticeConfirmations + 1 : 0;
+        if (noticeDriven && this.#noticeConfirmations <= 2) {
+          setTimeout(() => {
+            if (this.#activeTurn === active && active.settlement === "pending")
+              void this.#confirmSettledTurn(active);
+          }, 50);
+        }
+        return;
       }
+      this.#settledNotice = false;
       this.#state = state;
+      this.#noticeConfirmations = 0;
       active.settlement = "confirmed";
       this.#finishSettledTurn(active);
     } catch (error) {

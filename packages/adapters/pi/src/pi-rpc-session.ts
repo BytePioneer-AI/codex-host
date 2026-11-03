@@ -196,6 +196,14 @@ export class PiRpcUnsupportedCommandError extends Error {
   }
 }
 
+/** The native RPC explicitly refused steering without accepting its input. */
+export class PiRpcSteerRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PiRpcSteerRejectedError";
+  }
+}
+
 export interface PiRpcSessionOptions {
   cwd: string;
   command?: string;
@@ -1064,6 +1072,27 @@ export class PiRpcSession {
     return settled;
   }
 
+  /**
+   * Native same-Turn input through Pi's `steer` RPC. The response carries an
+   * admission disposition ("queued"); the steered text joins the running native
+   * run as its next user message without starting a new run.
+   */
+  async steer(text: string): Promise<void> {
+    if (!this.#child || !this.#state || this.#closed || this.#failed) {
+      throw new Error("Pi RPC Session is unavailable");
+    }
+    if (text.length === 0) throw new Error("Pi steer text must not be empty");
+    const active = this.#activeTurn;
+    if (!active || active.origin !== "requested") {
+      throw new Error("Pi steer must reference the active Turn");
+    }
+    try {
+      await this.#send("steer", { message: text });
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(message(error));
+    }
+  }
+
   respondToInteraction(response: PiInteractionResponse): Promise<void> {
     return this.#resolveInteraction(response, "cancelled" in response ? "cancelled" : "responded");
   }
@@ -1702,8 +1731,18 @@ export class PiRpcSession {
     if (value.success === true) pending.resolve(value);
     else {
       const error = typeof value.error === "string" ? value.error : "Pi RPC command failed";
-      if (value.command === pending.command && error === `Unknown command: ${pending.command}`) {
+      if (
+        value.success === false &&
+        value.command === pending.command &&
+        error === `Unknown command: ${pending.command}`
+      ) {
         pending.reject(new PiRpcUnsupportedCommandError(pending.command));
+      } else if (
+        value.success === false &&
+        pending.command === "steer" &&
+        value.command === pending.command
+      ) {
+        pending.reject(new PiRpcSteerRejectedError(error));
       } else {
         pending.reject(new Error(error));
       }

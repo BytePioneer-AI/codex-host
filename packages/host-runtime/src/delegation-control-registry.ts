@@ -17,7 +17,7 @@ import {
   listSortSeconds,
   mergeThreadListPages,
 } from "./delegation-thread-list-merge.js";
-import { DelegationWatchService } from "./delegation-watch.js";
+import { DelegationWatchService, type ClientEventSink } from "./delegation-watch.js";
 import type { DelegationWatchStore } from "./delegation-watch-store.js";
 import { clientOrigin, originClientName } from "./external-client-origin.js";
 import { mergeRefs, normalizeRefs, type ThreadRefsStore } from "./thread-refs.js";
@@ -59,6 +59,7 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       remoteRead?: (input: ThreadReadInput) => ReturnType<DelegationControlApi["read"]>;
       watchStore?: DelegationWatchStore;
       refs?: ThreadRefsStore;
+      clientEvents?: ClientEventSink;
     } = {},
   ) {
     this.#remoteRead = options.remoteRead;
@@ -66,6 +67,7 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     this.#watchService = new DelegationWatchService(this, {
       ...(options.diagnose ? { diagnose: options.diagnose } : {}),
       ...(options.watchStore ? { store: options.watchStore } : {}),
+      ...(options.clientEvents ? { clientEvents: options.clientEvents } : {}),
     });
   }
 

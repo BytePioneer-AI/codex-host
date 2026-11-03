@@ -23,6 +23,10 @@ interface ClientsFile {
 }
 
 const CLIENT_NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
+
+export function isValidClientName(name: string): boolean {
+  return CLIENT_NAME.test(name);
+}
 const TOKEN_PREFIX = "chc_";
 
 export function codexhostDataDirectory(environment: NodeJS.ProcessEnv): string {

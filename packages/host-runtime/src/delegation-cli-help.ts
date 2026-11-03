@@ -5,6 +5,11 @@ const COMMAND_HELP = {
 Register an external client: a process the Host did not start, such as a script, a desktop app, or a bot's local agent. Prints the client token once; it is not stored in a readable form and cannot be shown again.
 The client sets CODEXHOST_CLIENT_TOKEN (or CODEXHOST_CLIENT_TOKEN_FILE) and then uses the same delegate, thread and harness commands, or the MCP endpoint, against the external client listener (127.0.0.1:4398 unless CODEXHOST_EXTERNAL_CLIENT_PORT says otherwise).
 Names use lowercase letters, digits and hyphens.`,
+  events: `codexhost events [--after <id>] [--limit <n>] [--follow true|false]
+For external clients: read the client's event log. An event reports that a Thread the client watches stopped (outcome, Thread, Turn, Harness, deep link, references); it never carries Thread content, so read the Thread for results.
+Without --follow, prints {events, cursor} once; pass cursor back as --after. With --follow true, prints one JSON line per event until interrupted.
+Events are kept for 7 days (CODEXHOST_CLIENT_EVENT_RETENTION_DAYS). CURSOR_EXPIRED means older events were removed: reconcile with thread list --client <name>.
+The listener also serves GET /v1/events as server-sent events (resume with Last-Event-ID) and POST /v1/events/poll for long-polling.`,
   "client list": `codexhost client list
 List registered external clients with their registration time. Tokens are never shown.`,
   "client remove": `codexhost client remove <name>
@@ -46,7 +51,7 @@ timedOut=true is a running checkpoint: the child keeps running. The response alr
 Message pagination uses --view messages, default limit 25, maximum 100. hasMore is for current pages; nextCursor also supports future incremental reads.`,
   "thread watch": `codexhost thread watch <thread> [--notify <thread>] [--timeout-ms <n>] [--format json|compact]
 Ask the Host to notify one Thread, once, when the watched Thread stops. Returns immediately; no waiting or polling by the caller is needed, and the caller may end its Turn.
---notify defaults to the calling Thread when it is identified (CODEXHOST_THREAD_ID, or CODEX_THREAD_ID in native Codex); otherwise it is required. delegate start reports the caller as its parent.
+--notify defaults to the calling Thread when it is identified (CODEXHOST_THREAD_ID, or CODEX_THREAD_ID in native Codex); for an external client it defaults to the client, and the notification becomes an event in its log (see codexhost events). Otherwise it is required. delegate start reports the caller as its parent.
 The notification starts a new Turn in the notified Thread with the watched Thread's link and outcome: completed, failed, interrupted, timedOut, unreadable, or notFound; a terminal outcome names the Turn it came from. It reports execution state only; read the Thread to judge the work.
 --timeout-ms defaults to 1740000 (29 min). timedOut means the Thread had not reached a terminal state, which also covers a Harness that stopped without reporting it; watch again to keep waiting. unreadable means reads failed for 60 s, so the state is unknown.
 state=watching means registered. state=alreadyTerminal means the Thread was not running: nothing was registered and nothing will be sent.
@@ -98,6 +103,8 @@ function hasHelpOption(arguments_: readonly string[]): boolean {
 export function delegationCliHelp(arguments_: readonly string[]): string | undefined {
   const [group, command, ...rest] = arguments_;
   if (!group || group === "--help" || group === "-h") return DELEGATION_HELP;
+  if (group === "events" && hasHelpOption([command ?? "", ...rest]))
+    return `${COMMAND_HELP.events}\n\n${COMMON_HELP}\n`;
   if (!command || command === "--help" || command === "-h" || command === "help") {
     if (group === "delegate") return DELEGATION_HELP;
     if (group === "harness" || group === "thread" || group === "client") {

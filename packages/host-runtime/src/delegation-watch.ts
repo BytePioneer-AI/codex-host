@@ -11,6 +11,14 @@ import {
   type ThreadWatchResult,
 } from "./delegation-types.js";
 import type { DelegationWatchStore, PersistedWatch } from "./delegation-watch-store.js";
+import type { NewClientEvent } from "./external-client-events.js";
+import { originClientName } from "./external-client-origin.js";
+import { isValidClientName } from "./external-clients.js";
+
+/** Where notifications for an external client go instead of a new Turn. */
+export interface ClientEventSink {
+  append(client: string, events: readonly NewClientEvent[]): Promise<unknown>;
+}
 
 export { DEFAULT_WATCH_TIMEOUT_MS };
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
@@ -48,6 +56,8 @@ function persisted(watch: Watch): PersistedWatch {
     deliveryDeadline,
     delivering,
     restartNote,
+    harnessId,
+    refs,
   } = watch;
   return {
     id,
@@ -63,6 +73,8 @@ function persisted(watch: Watch): PersistedWatch {
     ...(deliveryDeadline !== undefined ? { deliveryDeadline } : {}),
     ...(delivering ? { delivering } : {}),
     ...(restartNote ? { restartNote } : {}),
+    ...(harnessId ? { harnessId } : {}),
+    ...(refs?.length ? { refs } : {}),
   };
 }
 
@@ -138,6 +150,7 @@ export class DelegationWatchService {
   readonly #pollIntervalMs: number;
   readonly #diagnose: (error: unknown) => void;
   readonly #store: DelegationWatchStore | undefined;
+  readonly #clientEvents: ClientEventSink | undefined;
   readonly #restoreGraceMs: number;
   readonly #ready: Promise<void>;
   readonly #watches: Watch[] = [];
@@ -151,6 +164,7 @@ export class DelegationWatchService {
       pollIntervalMs?: number;
       diagnose?: (error: unknown) => void;
       store?: DelegationWatchStore;
+      clientEvents?: ClientEventSink;
       restoreGraceMs?: number;
     } = {},
   ) {
@@ -158,6 +172,7 @@ export class DelegationWatchService {
     this.#pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.#diagnose = options.diagnose ?? (() => undefined);
     this.#store = options.store;
+    this.#clientEvents = options.clientEvents;
     this.#restoreGraceMs = options.restoreGraceMs ?? DEFAULT_RESTORE_GRACE_MS;
     this.#ready = this.#store ? this.#restore(this.#store) : Promise.resolve();
   }
@@ -177,9 +192,16 @@ export class DelegationWatchService {
     if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs <= 0)
       throw new DelegationControlError("INVALID_ARGUMENT", "timeoutMs must be a positive integer");
 
+    const client = originClientName(input.notifyThreadId);
+    if (client !== undefined && (!isValidClientName(client) || !this.#clientEvents))
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "The notified client is invalid or this Runtime keeps no client events",
+      );
     // Both reads reject unknown Threads, so a watch is never reported for a missing end.
     const target = await this.#api.read({ threadId: input.threadId, view: "result" });
-    await this.#api.read({ threadId: input.notifyThreadId, view: "result" });
+    if (client === undefined)
+      await this.#api.read({ threadId: input.notifyThreadId, view: "result" });
     const result = {
       threadId: input.threadId,
       notifyThreadId: input.notifyThreadId,
@@ -316,6 +338,8 @@ export class DelegationWatchService {
       const turnId = snapshot.turn?.turnId;
       const crossedRestart = watch.crossedRestart === true;
       delete watch.crossedRestart;
+      watch.harnessId = snapshot.harnessId;
+      if (snapshot.refs?.length) watch.refs = snapshot.refs;
       if (terminal(snapshot.status)) {
         // A restart ends the Harness processes it owned. The Turn that was running can then read
         // as completed, sometimes under a new Turn id, so a Thread that was running before the
@@ -361,6 +385,11 @@ export class DelegationWatchService {
     const pending = this.#watches.filter(
       (watch) => watch.state === "pendingDelivery" && watch.notifyThreadId === notifyThreadId,
     );
+    const client = originClientName(notifyThreadId);
+    if (client !== undefined) {
+      await this.#deliverToClient(client, pending);
+      return;
+    }
     if (!(await this.#subscriberReady(notifyThreadId, pending))) return;
     for (const watch of pending) watch.delivering = true;
     // Recorded before sending, so a restart during the send delivers again instead of losing it.
@@ -381,6 +410,39 @@ export class DelegationWatchService {
               ? `Delivery outcome unknown; the notification may already have started a Turn, so it is not retried (${message})`
               : message;
         }
+        void this.#persist(watch);
+      }
+      this.#trimUndeliverable();
+    }
+  }
+
+  /**
+   * A client's notification is an event appended to its log. The append either
+   * lands or fails locally, so a failure is retried within the delivery window.
+   */
+  async #deliverToClient(client: string, pending: readonly Watch[]): Promise<void> {
+    for (const watch of pending) delete watch.deliverGraceUntil;
+    try {
+      if (!this.#clientEvents) throw new Error("This Runtime keeps no client events");
+      await this.#clientEvents.append(
+        client,
+        pending.map((watch) => ({
+          type: "watch" as const,
+          threadId: watch.threadId,
+          outcome: watch.outcome ?? "notFound",
+          deepLink: threadLink(watch.threadId),
+          ...(watch.turnId ? { turnId: watch.turnId } : {}),
+          ...(watch.harnessId ? { harnessId: watch.harnessId } : {}),
+          ...(watch.refs?.length ? { refs: watch.refs } : {}),
+        })),
+      );
+      for (const watch of pending) this.#remove(watch);
+    } catch (error) {
+      this.#diagnose(error);
+      for (const watch of pending) {
+        if (Date.now() < (watch.deliveryDeadline ?? 0)) continue;
+        watch.state = "undeliverable";
+        watch.reason = error instanceof Error ? error.message : String(error);
         void this.#persist(watch);
       }
       this.#trimUndeliverable();

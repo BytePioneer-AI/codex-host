@@ -24,7 +24,8 @@ import {
   codexhostDataDirectory,
   defaultExternalClientsPath,
 } from "./external-clients.js";
-import { externalClientRouter } from "./external-client-routes.js";
+import { ClientEventLog, eventRetentionDays } from "./external-client-events.js";
+import { externalClientEventStream, externalClientRouter } from "./external-client-routes.js";
 import { FileThreadRefsStore } from "./thread-refs.js";
 import {
   externalClientDescriptorPath,
@@ -172,6 +173,10 @@ async function prepareDelegationRuntime(input: {
     process.stderr.write(
       `codexhost delegation watch: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
     );
+  const events = new ClientEventLog({
+    directory: path.join(codexhostDataDirectory(input.environment), "client-events"),
+    retentionDays: eventRetentionDays(input.environment),
+  });
   const registry = new DelegationControlRegistry({
     remoteRead: (request) => readRemoteDelegationThread(input.environment, request),
     diagnose: diagnoseWatch,
@@ -182,11 +187,12 @@ async function prepareDelegationRuntime(input: {
     refs: new FileThreadRefsStore(
       path.join(codexhostDataDirectory(input.environment), "thread-refs"),
     ),
+    clientEvents: events,
   });
   const token = randomBytes(32).toString("hex");
   const server = await startDelegationControlServer({ token, api: registry, watchApi: registry });
   const externalServer = input.externalClients
-    ? await startExternalClients(input.environment, registry).catch((error: unknown) => {
+    ? await startExternalClients(input.environment, registry, events).catch((error: unknown) => {
         process.stderr.write(`codexhost external clients: ${String(error)}\n`);
         return undefined;
       })
@@ -222,13 +228,16 @@ async function prepareDelegationRuntime(input: {
 async function startExternalClients(
   environment: NodeJS.ProcessEnv,
   registry: DelegationControlRegistry,
+  events: ClientEventLog,
 ): Promise<ExternalClientServer | undefined> {
   const port = externalClientPort(environment);
   if (port === undefined) return undefined;
+  const clients = new ExternalClientRegistry(defaultExternalClientsPath(environment));
   return startExternalClientServer({
     port,
-    clients: new ExternalClientRegistry(defaultExternalClientsPath(environment)),
-    route: externalClientRouter({ api: registry, watchApi: registry }),
+    clients,
+    route: externalClientRouter({ api: registry, watchApi: registry, events }),
+    streams: { "/v1/events": externalClientEventStream(events, clients) },
     descriptorPath: externalClientDescriptorPath(environment),
     diagnose: (message) => process.stderr.write(`codexhost external clients: ${message}\n`),
   });

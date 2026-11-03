@@ -16,6 +16,9 @@ export interface PersistedWatch extends ThreadWatchEntry {
   delivering?: boolean;
   /** Why an `interrupted` outcome was decided after a restart, for the notification. */
   restartNote?: string;
+  /** Recorded when the watched Thread stops, for client events. */
+  harnessId?: string;
+  refs?: string[];
 }
 
 export interface DelegationWatchStore {
@@ -108,7 +111,10 @@ function parseWatchFile(text: string): WatchFile {
     !Number.isFinite(watch.deadline) ||
     !optionalNumber(watch.deliveryDeadline) ||
     (watch.delivering !== undefined && typeof watch.delivering !== "boolean") ||
-    !optionalString(watch.restartNote)
+    !optionalString(watch.restartNote) ||
+    !optionalString(watch.harnessId) ||
+    (watch.refs !== undefined &&
+      (!Array.isArray(watch.refs) || watch.refs.some((ref) => typeof ref !== "string")))
   ) {
     throw new Error("unrecognized watch record");
   }

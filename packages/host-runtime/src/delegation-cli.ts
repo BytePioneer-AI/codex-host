@@ -6,6 +6,7 @@ import { parseDelegationArguments, type DelegationCliArguments } from "./delegat
 import { compactDelegationOutput } from "./delegation-cli-output.js";
 import { resolveRuntimeConnection, usesExternalClient } from "./delegation-runtime-connection.js";
 import { runClientCommand } from "./external-client-cli.js";
+import { originClientName } from "./external-client-origin.js";
 
 export { DELEGATION_HELP } from "./delegation-cli-help.js";
 
@@ -23,6 +24,7 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 // longer waits are split into Runtime requests that each answer well before then.
 const MAX_WAIT_REQUEST_MS = 240_000;
 const DEFAULT_LIMIT = 25;
+const EVENT_FOLLOW_POLL_MS = 55_000;
 const MAX_LIMIT = 100;
 
 function normalizeThreadId(value: string): string {
@@ -156,6 +158,11 @@ function writeJson(output: Writable, value: unknown): void {
   output.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+/** A Thread, or `client:<name>` for an external client's own event log. */
+function normalizeNotifyTarget(value: string): string {
+  return originClientName(value) !== undefined ? value : normalizeThreadId(value);
+}
+
 /** The calling Thread: Host-provided for External Harnesses, Codex-provided for native Codex. */
 function callerThreadId(environment: NodeJS.ProcessEnv): string | undefined {
   return (
@@ -191,6 +198,47 @@ export async function runDelegationCli(input: {
       view: "result" | "messages" = "result",
     ): void =>
       writeJson(output, format === "json" ? body : compactDelegationOutput(name, body, view));
+    if (group === "events") {
+      // events has no subcommand, so its options start right after the group.
+      const options = parseDelegationArguments(input.arguments.slice(1));
+      rejectUnknown(options, ["--after", "--limit", "--follow"]);
+      if (options.positionals.length > 0)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "events accepts no positional arguments",
+        );
+      if (!usesExternalClient(environment))
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "events are kept for external clients; set CODEXHOST_CLIENT_TOKEN to a token from 'codexhost client add'",
+        );
+      const follow = value(options, "--follow");
+      if (follow !== undefined && follow !== "true" && follow !== "false")
+        throw new DelegationControlError("INVALID_ARGUMENT", "--follow must be true or false");
+      let after = value(options, "--after") ? Number(value(options, "--after")) : 0;
+      if (!Number.isSafeInteger(after) || after < 0)
+        throw new DelegationControlError("INVALID_ARGUMENT", "--after must be an event id");
+      const limit = value(options, "--limit")
+        ? positiveInteger(value(options, "--limit"), "--limit", MAX_LIMIT)
+        : MAX_LIMIT;
+      const poll = (timeoutMs: number) =>
+        requestRuntime({
+          environment,
+          path: "/v1/events/poll",
+          body: { after, limit, timeoutMs },
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }) as Promise<{ events: Array<{ id: number }>; cursor: number }>;
+      if (follow !== "true") {
+        writeJson(output, await poll(0));
+        return 0;
+      }
+      // One JSON line per event until interrupted; the last id printed is the cursor to resume from.
+      while (true) {
+        const page = await poll(EVENT_FOLLOW_POLL_MS);
+        for (const event of page.events) output.write(`${JSON.stringify(event)}\n`);
+        after = page.cursor;
+      }
+    }
     if (group === "client") {
       rejectUnknown(parsed, []);
       writeJson(output, await runClientCommand(command, parsed.positionals, environment));
@@ -442,7 +490,9 @@ export async function runDelegationCli(input: {
       if (!threadId)
         throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is required");
       const notifyThread = value(parsed, "--notify") ?? callerThreadId(environment);
-      if (!notifyThread)
+      // An external client is notified itself; the Runtime fills that in.
+      const external = usesExternalClient(environment);
+      if (!notifyThread && !external)
         throw new DelegationControlError(
           "INVALID_ARGUMENT",
           "--notify <thread> is required when the caller Thread is unknown; delegate start reports it as parent",
@@ -454,7 +504,7 @@ export async function runDelegationCli(input: {
           path: "/v1/thread/watch",
           body: {
             threadId: normalizeThreadId(threadId),
-            notifyThreadId: normalizeThreadId(notifyThread),
+            ...(notifyThread ? { notifyThreadId: normalizeNotifyTarget(notifyThread) } : {}),
             timeoutMs: value(parsed, "--timeout-ms")
               ? positiveInteger(value(parsed, "--timeout-ms"), "--timeout-ms")
               : DEFAULT_WATCH_TIMEOUT_MS,

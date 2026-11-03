@@ -99,6 +99,10 @@ import {
   installRendererSidebarAgentIcons,
   SIDEBAR_THREAD_ROW_SELECTOR,
 } from "./renderer-sidebar-agent-icons.js";
+import {
+  installRendererSidebarArchiveChildren,
+  type RendererSidebarArchiveChildren,
+} from "./renderer-sidebar-archive-children.js";
 import { installRendererSidebarThreadTree } from "./renderer-sidebar-thread-tree.js";
 import {
   rendererHarnessCommandExecutesDirectly,
@@ -837,8 +841,11 @@ export function installRendererBindingProbe(
     },
     getLocalAgent: localAgentForSidebarThread,
   });
+  // Installed after the settings lifecycle, which owns the locale its dialog uses.
+  let sidebarArchiveChildren: RendererSidebarArchiveChildren | null = null;
   const sidebarThreadTree = installRendererSidebarThreadTree({
     getClient: (hostId) => modelClientForHost(hostId),
+    onHosts: (hostIds) => sidebarArchiveChildren?.observeHosts(hostIds),
   });
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const remoteConnections = createRemoteConnectionsControl(window, modelClientForHost);
@@ -878,6 +885,12 @@ export function installRendererBindingProbe(
     onLocaleChange() {
       for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     },
+  });
+  sidebarArchiveChildren = installRendererSidebarArchiveChildren({
+    ownerWindow: window,
+    tree: sidebarThreadTree,
+    getClient: (hostId) => modelClientForHost(hostId),
+    locale: () => settingsLifecycle.locale,
   });
   let adapterStatus: RendererAdapterStatus = {
     state: "installing",
@@ -3494,6 +3507,7 @@ export function installRendererBindingProbe(
       disposeReasoningSoftWrap();
       delegationMention?.dispose();
       sidebarAgentIcons.dispose();
+      sidebarArchiveChildren?.dispose();
       sidebarThreadTree.dispose();
       nativeScheduleControls.dispose();
       settingsLifecycle.dispose();

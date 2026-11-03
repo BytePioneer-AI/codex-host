@@ -444,6 +444,7 @@ describe("Renderer fixed Model request client", () => {
       "setupSsh",
       "startUpdate",
       "subscribeCodexAccounts",
+      "subscribeThreadArchived",
       "subscribeThreadUsage",
       "updateRemote",
     ]);

@@ -12,6 +12,7 @@ import {
   installRendererSidebarThreadTree,
   layoutSidebarThreadTree,
   planSidebarThreadForest,
+  sidebarThreadDescendantKeys,
   type SidebarThreadTreeDom,
   type SidebarThreadTreeItem,
   type SidebarThreadTreeLayout,
@@ -234,6 +235,26 @@ describe("layoutSidebarThreadTree", () => {
       [true, false],
       [true, false],
     ]);
+  });
+});
+
+describe("sidebarThreadDescendantKeys", () => {
+  it("keeps listed descendants at any depth, through unlisted parents, in list order", () => {
+    const parents: Record<string, string> = {
+      child: "root",
+      grandchild: "archived-middle",
+      "archived-middle": "root",
+      unrelated: "other",
+      loop: "loop-b",
+      "loop-b": "loop",
+    };
+    expect(
+      sidebarThreadDescendantKeys(
+        "root",
+        ["grandchild", "root", "unrelated", "child", "loop", "child"],
+        (key) => parents[key] ?? null,
+      ),
+    ).toEqual(["grandchild", "child"]);
   });
 });
 
@@ -514,6 +535,41 @@ describe("Renderer sidebar Thread tree", () => {
     expect(dom.cleared).toBe(true);
     expect(items.map((item) => item.layout)).toEqual([null, null]);
     expect(dom.listeners.size).toBe(0);
+  });
+
+  it("lists live descendants per Host and reports listed Hosts after a scan", async () => {
+    const items = [
+      new FakeItem("grandchild"),
+      new FakeItem("child"),
+      new FakeItem("root"),
+      new FakeItem("sibling"),
+      new FakeItem("child", "remote"),
+    ];
+    const list = new FakeList(items);
+    const dom = new FakeDom([list]);
+    const client = clientWith({
+      relations: { child: { parent: "root" }, grandchild: { parent: "child" } },
+      forks: { sibling: "elsewhere" },
+    });
+    const remote = clientWith({});
+    const hosts: string[][] = [];
+    const tree = installRendererSidebarThreadTree({
+      getClient: (hostId) => (hostId === "local" ? client : remote),
+      dom,
+      onHosts: (ids) => hosts.push([...ids].sort()),
+    });
+    await settle();
+
+    expect(tree.liveDescendants("local", id("root"))).toEqual(["grandchild", "child"]);
+    expect(tree.liveDescendants("remote", id("root"))).toEqual([]);
+    expect(hosts.at(-1)).toEqual(["local", "remote"]);
+
+    // An archived intermediate parent leaves its row; the grandchild still counts.
+    list.mounted = items.filter((item) => item.threadId !== "child");
+    expect(tree.liveDescendants("local", id("root"))).toEqual(["grandchild"]);
+
+    tree.dispose();
+    expect(tree.liveDescendants("local", id("root"))).toEqual([]);
   });
 });
 

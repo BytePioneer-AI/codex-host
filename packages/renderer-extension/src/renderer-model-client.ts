@@ -173,6 +173,7 @@ export const UPDATE_STATUS_METHOD = "codexhost/update/status";
 export const CODEX_ACCOUNT_LIST_METHOD = "codexhost/account/list";
 export const CODEX_ACCOUNT_REFRESH_METHOD = "codexhost/account/refresh";
 export const CODEX_ACCOUNT_CHANGED_METHOD = "codexhost/account/changed";
+export const THREAD_ARCHIVED_METHOD = "thread/archived";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -235,6 +236,8 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   readNativeThreadForkSource?(threadId: HostThreadId): Promise<HostThreadId | null>;
   inspectThreadUsage(input: ThreadUsageInspectionParams): Promise<ThreadUsageInspection>;
   subscribeThreadUsage?(listener: (update: ThreadUsageInspection) => void): () => void;
+  /** App-server `thread/archived` notifications, from every archive entry point. */
+  subscribeThreadArchived?(listener: (threadId: HostThreadId) => void): () => void;
   selectThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadThinking(input: ThreadThinkingSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadPermissionMode(
@@ -563,6 +566,18 @@ export function createRendererModelClient(
         generations.clear();
         removeNotificationCallback();
       };
+    },
+    subscribeThreadArchived(listener: (threadId: HostThreadId) => void): () => void {
+      const notifications = notificationTarget(source);
+      if (!notifications?.addNotificationCallback) {
+        throw new Error("Renderer archive notification callback is unavailable");
+      }
+      return notifications.addNotificationCallback(THREAD_ARCHIVED_METHOD, (notification) => {
+        if (!isRecord(notification) || notification.method !== THREAD_ARCHIVED_METHOD) return;
+        const params = notification.params;
+        const threadId = hostThreadIdSchema.safeParse(isRecord(params) ? params.threadId : null);
+        if (threadId.success) listener(threadId.data);
+      });
     },
     selectThreadModel,
     selectThreadThinking,

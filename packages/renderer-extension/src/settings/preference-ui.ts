@@ -133,3 +133,25 @@ export function createNumberField(
   field.append(control, unit);
   return { field, control };
 }
+
+export function createPreferenceSelect<T extends string>(
+  document: Document,
+  input: {
+    id: string;
+    describedBy: string;
+    options: readonly { value: T; label: string }[];
+  },
+): HTMLSelectElement {
+  const control = document.createElement("select");
+  control.id = input.id;
+  control.setAttribute("aria-describedby", input.describedBy);
+  control.className =
+    "h-8 max-w-[220px] shrink-0 cursor-pointer rounded-md border border-settings-border bg-settings-surface px-2.5 text-[13px] leading-5 text-settings-text transition-colors outline-none focus-visible:border-settings-focus";
+  for (const entry of input.options) {
+    const option = document.createElement("option");
+    option.value = entry.value;
+    option.textContent = entry.label;
+    control.append(option);
+  }
+  return control;
+}

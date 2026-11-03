@@ -244,8 +244,40 @@ export interface SidebarThreadTreeDom {
 }
 
 export interface RendererSidebarThreadTree {
+  /**
+   * Sidebar Threads still listed under `threadId`, at any depth, in list order.
+   * Uses the same Delegation and Fork relations as nesting; a listed row is an
+   * unarchived Thread, so archived intermediate parents do not break the chain.
+   */
+  liveDescendants(hostId: string, threadId: HostThreadId): HostThreadId[];
   refresh(): void;
   dispose(): void;
+}
+
+const SIDEBAR_THREAD_TREE_MAX_ANCESTRY = 64;
+
+/** Keys from `liveKeys` whose parent chain reaches `rootKey`, in input order. */
+export function sidebarThreadDescendantKeys(
+  rootKey: string,
+  liveKeys: Iterable<string>,
+  parentKeyOf: (key: string) => string | null,
+): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const key of liveKeys) {
+    if (key === rootKey || seen.has(key)) continue;
+    seen.add(key);
+    let parent = parentKeyOf(key);
+    for (let depth = 0; parent !== null && depth < SIDEBAR_THREAD_TREE_MAX_ANCESTRY; depth += 1) {
+      if (parent === key) break;
+      if (parent === rootKey) {
+        result.push(key);
+        break;
+      }
+      parent = parentKeyOf(parent);
+    }
+  }
+  return result;
 }
 
 interface SavedItemStyle {
@@ -724,6 +756,8 @@ class BrowserSidebarThreadTreeDom implements SidebarThreadTreeDom {
 export function installRendererSidebarThreadTree(options: {
   getClient(hostId: string): RendererModelClient | null;
   dom?: SidebarThreadTreeDom;
+  /** Called after each layout pass with every Host that has a listed Thread. */
+  onHosts?(hostIds: ReadonlySet<string>): void;
 }): RendererSidebarThreadTree {
   const dom = options.dom ?? new BrowserSidebarThreadTreeDom(document);
   /** Host-persisted relation; `null` parent means none is recorded yet. */
@@ -878,6 +912,7 @@ export function installRendererSidebarThreadTree(options: {
     scanScheduled = false;
     if (disposed) return;
     const unresolved = new Map<string, Set<HostThreadId>>();
+    const hostIds = new Set<string>();
     const lists = dom.lists();
     const listItems = lists.map((list) => list.items());
     const entries = listItems.map((items) =>
@@ -885,6 +920,7 @@ export function installRendererSidebarThreadTree(options: {
         const thread = item.thread();
         if (!thread) return { key: null, parentKey: null };
         const key = threadKey(thread.hostId, thread.threadId);
+        hostIds.add(thread.hostId);
         if (!hostRelations.has(key) && !pending.has(key) && !failed.has(key)) {
           let ids = unresolved.get(thread.hostId);
           if (!ids) unresolved.set(thread.hostId, (ids = new Set()));
@@ -944,12 +980,30 @@ export function installRendererSidebarThreadTree(options: {
         );
       }
     }
+    options.onHosts?.(hostIds);
   };
 
   const stopObserving = dom.observe(scheduleScan);
   scan();
 
   return {
+    liveDescendants(hostId, threadId) {
+      if (disposed) return [];
+      const ids = new Map<string, HostThreadId>();
+      for (const list of dom.lists()) {
+        for (const item of list.items()) {
+          const thread = item.thread();
+          if (thread?.hostId === hostId)
+            ids.set(threadKey(hostId, thread.threadId), thread.threadId);
+        }
+      }
+      return sidebarThreadDescendantKeys(threadKey(hostId, threadId), ids.keys(), (key) =>
+        parentKeyOf(hostId, key),
+      ).flatMap((key) => {
+        const id = ids.get(key);
+        return id ? [id] : [];
+      });
+    },
     refresh() {
       if (disposed) return;
       failed.clear();

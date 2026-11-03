@@ -1,14 +1,16 @@
+import { randomUUID } from "node:crypto";
+
 import {
   DEFAULT_WATCH_TIMEOUT_MS,
   DelegationControlError,
   type DelegationControlApi,
   type DelegationThreadSnapshot,
-  type ThreadWatchEntry,
   type ThreadWatchInput,
   type ThreadWatchListResult,
   type ThreadWatchOutcome,
   type ThreadWatchResult,
 } from "./delegation-types.js";
+import type { DelegationWatchStore, PersistedWatch } from "./delegation-watch-store.js";
 
 export { DEFAULT_WATCH_TIMEOUT_MS };
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
@@ -17,13 +19,47 @@ const DELIVERY_WINDOW_MS = 6 * 60 * 60_000;
 const MAX_UNDELIVERABLE_ENTRIES = 50;
 /** Reads failing for this long are reported instead of waiting for the timeout. */
 const UNREADABLE_GRACE_MS = 60_000;
+/** After a restart, how long restored watches wait for their Host sessions to register again. */
+const DEFAULT_RESTORE_GRACE_MS = 5 * 60_000;
 
-interface Watch extends ThreadWatchEntry {
-  timeoutMs: number;
-  deadline: number;
-  deliveryDeadline?: number;
+interface Watch extends PersistedWatch {
   unreadableSince?: number;
   lastReadError?: string;
+  /** Restored watch: read failures mean the owning session is not back yet. */
+  observeGraceUntil?: number;
+  /** Restored watch: deliver only once the notified Thread is readable again. */
+  deliverGraceUntil?: number;
+}
+
+function persisted(watch: Watch): PersistedWatch {
+  const {
+    id,
+    threadId,
+    notifyThreadId,
+    state,
+    outcome,
+    turnId,
+    reason,
+    registeredAt,
+    timeoutMs,
+    deadline,
+    deliveryDeadline,
+    delivering,
+  } = watch;
+  return {
+    id,
+    threadId,
+    notifyThreadId,
+    state,
+    registeredAt,
+    timeoutMs,
+    deadline,
+    ...(outcome ? { outcome } : {}),
+    ...(turnId ? { turnId } : {}),
+    ...(reason ? { reason } : {}),
+    ...(deliveryDeadline !== undefined ? { deliveryDeadline } : {}),
+    ...(delivering ? { delivering } : {}),
+  };
 }
 
 function terminal(status: DelegationThreadSnapshot["status"]): boolean {
@@ -87,27 +123,41 @@ function notification(watches: readonly Watch[]): string {
 /**
  * One-shot notifications when a watched Thread stops, built only on the public
  * `read` and `send` operations, so it is independent of Harness, Desktop and
- * delegation lineage. State is in memory: watches do not survive a Host Runtime
- * restart.
+ * delegation lineage. With a store, watches survive a Host Runtime restart: a
+ * send whose outcome was not recorded before the restart is made again, so a
+ * restart may repeat a notification but does not lose one.
  */
 export class DelegationWatchService {
   readonly #api: Pick<DelegationControlApi, "read" | "send">;
   readonly #pollIntervalMs: number;
   readonly #diagnose: (error: unknown) => void;
+  readonly #store: DelegationWatchStore | undefined;
+  readonly #restoreGraceMs: number;
+  readonly #ready: Promise<void>;
   readonly #watches: Watch[] = [];
+  #writes: Promise<void> = Promise.resolve();
   #timer: ReturnType<typeof setTimeout> | undefined;
   #closed = false;
 
   constructor(
     api: Pick<DelegationControlApi, "read" | "send">,
-    options: { pollIntervalMs?: number; diagnose?: (error: unknown) => void } = {},
+    options: {
+      pollIntervalMs?: number;
+      diagnose?: (error: unknown) => void;
+      store?: DelegationWatchStore;
+      restoreGraceMs?: number;
+    } = {},
   ) {
     this.#api = api;
     this.#pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.#diagnose = options.diagnose ?? (() => undefined);
+    this.#store = options.store;
+    this.#restoreGraceMs = options.restoreGraceMs ?? DEFAULT_RESTORE_GRACE_MS;
+    this.#ready = this.#store ? this.#restore(this.#store) : Promise.resolve();
   }
 
   async watch(input: ThreadWatchInput): Promise<ThreadWatchResult> {
+    await this.#ready;
     if (this.#closed) throw new DelegationControlError("INTERNAL_ERROR", "Host Runtime is closing");
     if (typeof input.threadId !== "string" || !input.threadId.trim())
       throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is required");
@@ -139,19 +189,23 @@ export class DelegationWatchService {
     );
     if (existing) return { ...result, state: "watching", timeoutMs: existing.timeoutMs };
     if (this.#closed) throw new DelegationControlError("INTERNAL_ERROR", "Host Runtime is closing");
-    this.#watches.push({
+    const watch: Watch = {
+      id: randomUUID(),
       threadId: input.threadId,
       notifyThreadId: input.notifyThreadId,
       state: "watching",
       registeredAt: new Date().toISOString(),
       timeoutMs: input.timeoutMs,
       deadline: Date.now() + input.timeoutMs,
-    });
+    };
+    this.#watches.push(watch);
+    await this.#persist(watch);
     this.#schedule();
     return { ...result, state: "watching" };
   }
 
   async watches(): Promise<ThreadWatchListResult> {
+    await this.#ready;
     return {
       watches: this.#watches.map(
         ({ threadId, notifyThreadId, state, outcome, turnId, reason, registeredAt }) => ({
@@ -167,11 +221,40 @@ export class DelegationWatchService {
     };
   }
 
+  /** Stops work in this process. Stored watches stay on disk for the next Runtime. */
   close(): void {
     this.#closed = true;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = undefined;
     this.#watches.length = 0;
+  }
+
+  async #restore(store: DelegationWatchStore): Promise<void> {
+    let records: PersistedWatch[];
+    try {
+      records = await store.adopt();
+    } catch (error) {
+      this.#diagnose(error);
+      return;
+    }
+    if (this.#closed) return;
+    const now = Date.now();
+    const graceUntil = now + this.#restoreGraceMs;
+    for (const record of records) {
+      const watch: Watch = { ...record };
+      // The send may or may not have started a Turn before the restart; deliver again.
+      delete watch.delivering;
+      if (watch.state === "watching") watch.observeGraceUntil = graceUntil;
+      if (watch.state === "pendingDelivery" && now >= (watch.deliveryDeadline ?? 0)) {
+        watch.state = "undeliverable";
+        watch.reason = "The delivery window ended while the Host Runtime was stopped";
+      }
+      if (watch.state !== "undeliverable") watch.deliverGraceUntil = graceUntil;
+      this.#watches.push(watch);
+      if (record.delivering || watch.state !== record.state) void this.#persist(watch);
+    }
+    this.#trimUndeliverable();
+    this.#schedule();
   }
 
   #schedule(): void {
@@ -200,6 +283,7 @@ export class DelegationWatchService {
       watch.outcome = outcome;
       if (turnId) watch.turnId = turnId;
       watch.deliveryDeadline = Date.now() + DELIVERY_WINDOW_MS;
+      await this.#persist(watch);
     }
     const subscribers = new Set(
       this.#watches
@@ -217,6 +301,7 @@ export class DelegationWatchService {
   ): Promise<{ outcome: ThreadWatchOutcome; turnId?: string } | undefined> {
     try {
       const snapshot = await this.#api.read({ threadId: watch.threadId, view: "result" });
+      delete watch.observeGraceUntil;
       if (terminal(snapshot.status)) {
         return {
           outcome: snapshot.status as ThreadWatchOutcome,
@@ -225,6 +310,11 @@ export class DelegationWatchService {
       }
       delete watch.unreadableSince;
     } catch (error) {
+      if (watch.observeGraceUntil !== undefined) {
+        // Until the session that owns the Thread registers again, a failed read says nothing.
+        if (Date.now() < watch.observeGraceUntil) return undefined;
+        delete watch.observeGraceUntil;
+      }
       if (errorCode(error) === "THREAD_NOT_FOUND") return { outcome: "notFound" };
       // Other read failures may be transient, so only a sustained failure is reported.
       watch.unreadableSince ??= Date.now();
@@ -240,6 +330,10 @@ export class DelegationWatchService {
     const pending = this.#watches.filter(
       (watch) => watch.state === "pendingDelivery" && watch.notifyThreadId === notifyThreadId,
     );
+    if (!(await this.#subscriberReady(notifyThreadId, pending))) return;
+    for (const watch of pending) watch.delivering = true;
+    // Recorded before sending, so a restart during the send delivers again instead of losing it.
+    await Promise.all(pending.map((watch) => this.#persist(watch)));
     try {
       await this.#api.send({ threadId: notifyThreadId, message: notification(pending) });
       for (const watch of pending) this.#remove(watch);
@@ -247,6 +341,7 @@ export class DelegationWatchService {
       const failure = deliveryFailure(error);
       const message = error instanceof Error ? error.message : String(error);
       for (const watch of pending) {
+        delete watch.delivering;
         // A rejected send is retried and never treated as delivered.
         if (failure !== "rejected" || Date.now() >= (watch.deliveryDeadline ?? 0)) {
           watch.state = "undeliverable";
@@ -255,14 +350,47 @@ export class DelegationWatchService {
               ? `Delivery outcome unknown; the notification may already have started a Turn, so it is not retried (${message})`
               : message;
         }
+        void this.#persist(watch);
       }
       this.#trimUndeliverable();
     }
   }
 
+  /** Restored notifications wait until the notified Thread can be reached again. */
+  async #subscriberReady(notifyThreadId: string, pending: readonly Watch[]): Promise<boolean> {
+    const restored = pending.filter((watch) => watch.deliverGraceUntil !== undefined);
+    if (restored.length === 0) return true;
+    if (restored.some((watch) => Date.now() < (watch.deliverGraceUntil ?? 0))) {
+      try {
+        await this.#api.read({ threadId: notifyThreadId, view: "result" });
+      } catch {
+        return false;
+      }
+    }
+    for (const watch of restored) delete watch.deliverGraceUntil;
+    return true;
+  }
+
+  #persist(watch: Watch): Promise<void> {
+    const record = persisted(watch);
+    return this.#write((store) => store.save(record));
+  }
+
+  #write(operation: (store: DelegationWatchStore) => Promise<void>): Promise<void> {
+    const store = this.#store;
+    if (!store) return Promise.resolve();
+    // Writes run in order, so a later state of a watch is never overwritten by an earlier one.
+    const next = this.#writes
+      .then(() => operation(store))
+      .catch((error: unknown) => this.#diagnose(error));
+    this.#writes = next;
+    return next;
+  }
+
   #remove(watch: Watch): void {
     const index = this.#watches.indexOf(watch);
     if (index >= 0) this.#watches.splice(index, 1);
+    void this.#write((store) => store.remove(watch.id));
   }
 
   #trimUndeliverable(): void {

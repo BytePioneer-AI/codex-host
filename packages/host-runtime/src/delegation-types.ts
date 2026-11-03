@@ -12,6 +12,11 @@ export const DELEGATION_CLI_PATH_ENV = "CODEXHOST_CLI_PATH";
 /** Node for the Launcher's delegation CLI in npm installations; read only by the Launcher. */
 export const DELEGATION_CLI_NODE_PATH_ENV = "CODEXHOST_CLI_NODE_PATH";
 export const DELEGATION_THREAD_ID_ENV = "CODEXHOST_THREAD_ID";
+/** An external client token from `codexhost client add`, used when no Host connection is provided. */
+export const EXTERNAL_CLIENT_TOKEN_ENV = "CODEXHOST_CLIENT_TOKEN";
+export const EXTERNAL_CLIENT_TOKEN_FILE_ENV = "CODEXHOST_CLIENT_TOKEN_FILE";
+/** Port of the external client listener; `off` disables it. */
+export const EXTERNAL_CLIENT_PORT_ENV = "CODEXHOST_EXTERNAL_CLIENT_PORT";
 /**
  * Native Codex shares one app-server across Threads, so the Host cannot set
  * CODEXHOST_THREAD_ID per Thread; Codex exports the calling Thread here instead.
@@ -256,6 +261,10 @@ export type DelegationControlErrorCode =
   | "RESPONSE_TOO_LARGE"
   | "RUNTIME_UNREACHABLE"
   | "DELEGATION_FAILED"
+  /** The external client token is missing, unknown, or revoked. */
+  | "UNAUTHORIZED"
+  /** The event cursor is older than the oldest retained event. */
+  | "CURSOR_EXPIRED"
   | "INTERNAL_ERROR";
 
 export class DelegationControlError extends Error {

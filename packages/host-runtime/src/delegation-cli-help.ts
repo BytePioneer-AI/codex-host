@@ -1,6 +1,14 @@
 import { consumesNextArgument } from "./delegation-cli-options.js";
 
 const COMMAND_HELP = {
+  "client add": `codexhost client add <name>
+Register an external client: a process the Host did not start, such as a script, a desktop app, or a bot's local agent. Prints the client token once; it is not stored in a readable form and cannot be shown again.
+The client sets CODEXHOST_CLIENT_TOKEN (or CODEXHOST_CLIENT_TOKEN_FILE) and then uses the same delegate, thread and harness commands, or the MCP endpoint, against the external client listener (127.0.0.1:4398 unless CODEXHOST_EXTERNAL_CLIENT_PORT says otherwise).
+Names use lowercase letters, digits and hyphens.`,
+  "client list": `codexhost client list
+List registered external clients with their registration time. Tokens are never shown.`,
+  "client remove": `codexhost client remove <name>
+Revoke a client immediately. Its later requests are rejected with UNAUTHORIZED and its open event streams are closed. Threads it started remain.`,
   "harness list": `codexhost harness list [--format json|compact]
 List Harnesses available in the active Runtime.`,
   "harness inspect": `codexhost harness inspect <harness> [--cwd <path>] [--refresh true|false] [--format json|compact]
@@ -90,7 +98,7 @@ export function delegationCliHelp(arguments_: readonly string[]): string | undef
   if (!group || group === "--help" || group === "-h") return DELEGATION_HELP;
   if (!command || command === "--help" || command === "-h" || command === "help") {
     if (group === "delegate") return DELEGATION_HELP;
-    if (group === "harness" || group === "thread") {
+    if (group === "harness" || group === "thread" || group === "client") {
       const usages = Object.entries(COMMAND_HELP)
         .filter(([name]) => name.startsWith(`${group} `))
         .map(([, help]) => help.split("\n")[0]);

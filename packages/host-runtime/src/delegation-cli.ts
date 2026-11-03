@@ -4,13 +4,14 @@ import type { Writable } from "node:stream";
 import { delegationCliHelp, type DelegationCliCommand } from "./delegation-cli-help.js";
 import { parseDelegationArguments, type DelegationCliArguments } from "./delegation-cli-options.js";
 import { compactDelegationOutput } from "./delegation-cli-output.js";
+import { resolveRuntimeConnection } from "./delegation-runtime-connection.js";
+import { runClientCommand } from "./external-client-cli.js";
 
 export { DELEGATION_HELP } from "./delegation-cli-help.js";
 
 import {
   DEFAULT_WATCH_TIMEOUT_MS,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
-  DELEGATION_RUNTIME_TOKEN_ENV,
   DELEGATION_THREAD_ID_ENV,
   NATIVE_CODEX_THREAD_ID_ENV,
   DelegationControlError,
@@ -87,29 +88,7 @@ async function requestRuntime(input: {
   body: Record<string, unknown>;
   fetchImpl?: typeof fetch;
 }): Promise<unknown> {
-  const endpoint = input.environment[DELEGATION_RUNTIME_ENDPOINT_ENV];
-  const token = input.environment[DELEGATION_RUNTIME_TOKEN_ENV];
-  if (!endpoint || !token) {
-    const missingEnvironmentVariables = [
-      ...(!endpoint ? [DELEGATION_RUNTIME_ENDPOINT_ENV] : []),
-      ...(!token ? [DELEGATION_RUNTIME_TOKEN_ENV] : []),
-    ];
-    throw new DelegationControlError(
-      "RUNTIME_UNREACHABLE",
-      `${missingEnvironmentVariables.join(" and ")} ${missingEnvironmentVariables.length === 1 ? "is" : "are"} required. If this command runs inside native Codex, shell_environment_policy may have filtered the Host-provided CODEXHOST_* variables. Prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only allowlist that contains "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools; do not use unconstrained inherit = "all".`,
-      {
-        reason: "missing_runtime_environment",
-        missingEnvironmentVariables,
-        nativeCodexRecovery: {
-          recommendedPolicy: {
-            inherit: "all",
-            ignoreDefaultExcludes: true,
-            includeOnlyMustContain: [DELEGATION_RUNTIME_ENDPOINT_ENV, DELEGATION_RUNTIME_TOKEN_ENV],
-          },
-        },
-      },
-    );
-  }
+  const { endpoint, token, kind } = await resolveRuntimeConnection(input.environment);
   let response: Response;
   try {
     response = await (input.fetchImpl ?? fetch)(new URL(input.path, endpoint), {
@@ -122,7 +101,9 @@ async function requestRuntime(input: {
   } catch (error) {
     throw new DelegationControlError(
       "RUNTIME_UNREACHABLE",
-      "Host Runtime could not be reached. If this command runs inside native Codex, use a session sandbox that permits local Runtime connections or run the command explicitly outside the sandbox.",
+      kind === "client"
+        ? "Host Runtime could not be reached through the external client listener. Check that codexhost is running and the listener port is not turned off."
+        : "Host Runtime could not be reached. If this command runs inside native Codex, use a session sandbox that permits local Runtime connections or run the command explicitly outside the sandbox.",
       { cause: error instanceof Error ? error.message : String(error) },
     );
   }
@@ -210,6 +191,11 @@ export async function runDelegationCli(input: {
       view: "result" | "messages" = "result",
     ): void =>
       writeJson(output, format === "json" ? body : compactDelegationOutput(name, body, view));
+    if (group === "client") {
+      rejectUnknown(parsed, []);
+      writeJson(output, await runClientCommand(command, parsed.positionals, environment));
+      return 0;
+    }
     if (group === "harness" && command === "list") {
       rejectUnknown(parsed, []);
       if (parsed.positionals.length > 0) {

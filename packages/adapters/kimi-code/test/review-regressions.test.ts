@@ -311,7 +311,7 @@ describe("Kimi PR review regressions", () => {
     expect(createTransport).not.toHaveBeenCalled();
   });
 
-  it("rejects an unverified unattended execution policy before creating a session", async () => {
+  it("rejects unattended execution when the native mode is not confirmed", async () => {
     const transport = new Transport();
     const adapter = new KimiAdapter(
       {},
@@ -323,8 +323,9 @@ describe("Kimi PR review regressions", () => {
         cwd: process.cwd(),
         executionPolicy: "unattended-full-access",
       }),
-    ).toMatchObject({ ok: false, error: { code: "unsupported" } });
-    expect(transport.openSession).not.toHaveBeenCalled();
+    ).toMatchObject({ ok: false, error: { code: "nativeFailure" } });
+    expect(transport.setConfigOption).toHaveBeenCalledWith("mode", "yolo");
+    expect(transport.isClosed).toBe(true);
   });
 
   it.each(["old-incomplete", "new-incomplete", "unrelated"])(

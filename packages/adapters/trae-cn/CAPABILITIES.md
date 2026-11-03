@@ -97,6 +97,8 @@ Edit 参数清空：原生执行结束会清空 old_string / new_string。工具
 
 0.17.0 基线（2026-11-03）：91c9cd95 的四平台 CI 全部通过，run 41487098357。补丁分支随后合入上游 b3094d5a（0.17.0），保留上游新增 Harness 与功能，不用旧 Host 覆盖日常运行时。根 build:typescript、build:renderer、typecheck、lint / boundaries 通过；Adapter / 插件 / VSIX / 搬移 Host 与完整预装组合 264 项通过、1 项跳过；API 2 恢复、Runtime、Loader、Broker 和恢复 Schema 聚焦集 142 项通过、4 项跳过（含本机无法建立的符号链接用例）。没有合并为累计测试数；合入后的新 Head 需单独 CI。当前用户窗口仍未替换或重启。
 
+0.17.1 基线：后续合入上游 cf2c6d0c（0.17.1），解决其无原生身份历史保留与 API 2 活动恢复的同处冲突。只读刷新先保留尚无原生身份的本地失败 / 取消历史，再排除由活动 Projector 持有的 Turn，避免刷新后重新加入其旧失败副本。新增刷新期间仍保留原活动身份与 inProgress 状态的回归；上游历史元数据用例、恢复用例与 Adapter / 插件 / VSIX / 搬移 Host 族共 267 项通过。根构建、Renderer 构建、typecheck、冲突文件 ESLint / 格式和 boundaries 通过。新 Head 的 CI 独立检查；本机已更新至 TRAE CN 3.4.14，先前原生执行证据仍只按其实际 3.4.12 / 3.4.13 版本标注。
+
 后台结果保护检查：11 项源码对应的后台 / 前台边界用例；修复前其中 9 项失败，补充一项 running 数据状态后全通过。完整 Adapter、独立插件 / VSIX 与搬移 Host 发行检查共 208 项通过；typecheck、lint / boundaries 及改动代码格式通过。没有执行原生后台任务，故不作为后台控制或自主 Turn 的真实验收。
 
 公共配置持久化修复：Host 的模型切换路径现按拥有该 Session 的完整确认状态更新或清除 Thinking 提示，避免恢复时复活旧模型档位。这是既有契约的通用修复，没有 TRAE 专用分支。两个故障用例已先复现，再通过修复；模型 / Thinking 投影、Fork 与预热共 66 项回归以及 typecheck、lint / boundaries 通过。

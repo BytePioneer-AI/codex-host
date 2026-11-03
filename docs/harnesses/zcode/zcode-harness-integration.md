@@ -8,7 +8,7 @@ Adapter 拥有每个 Session 的 CLI 进程、原 ZCode Services 在转发之外
 
 ## 安装
 
-安装 ZCode Desktop，并在其中登录 Start Plan、连接个人 Coding Plan，或配置个人自定义 Provider，然后在 codexhost 中重新检测。个人 Coding Plan 必须先在 Desktop 选择该连接并完成账号 Key 初始化；codexhost 不代为登录、刷新 OAuth 或创建 Key。各平台默认安装位置如下：
+安装 ZCode Desktop，并在其中登录 Start Plan、连接个人 Coding Plan，或配置个人自定义 Provider，然后在 codexhost 中重新检测。个人 Coding Plan 必须先在 Desktop 选择该连接并完成账号凭据初始化；codexhost 不代为登录、刷新 OAuth 或创建 Key。各平台默认安装位置如下：
 
 - macOS (`darwin`): `/Applications/ZCode.app`
 - Windows (`win32`): NSIS assisted installer 提供每用户安装路径 `%LOCALAPPDATA%\Programs\ZCode` 与每机器安装路径 `%ProgramFiles%\ZCode`，默认按此顺序检测
@@ -16,7 +16,7 @@ Adapter 拥有每个 Session 的 CLI 进程、原 ZCode Services 在转发之外
 
 AppImage 格式因没有固定安装路径而不作自动检测；用户可自行解压 AppImage 并将解压目录保存在连接设置中作为应用路径使用。
 
-可以在连接设置中保存应用位置（插件启动路径），或设置 `CODEXHOST_ZCODE_APP`，保存的路径优先。Windows 和 Linux 的支持遵循 ZCode 的打包结构（Packaging Layout），但尚未在真实 Windows/Linux 机器上进行验证。
+可以在本地连接设置中保存应用位置（插件启动路径），或设置 `CODEXHOST_ZCODE_APP`，保存的路径优先。SSH 管理的 Host 不读取桌面连接页的启动路径；非默认安装位置应在远端 Host 的环境中设置 `CODEXHOST_ZCODE_APP`，再重启该 Host。Windows 和 Linux 遵循 ZCode 的打包结构（Packaging Layout）。
 
 连接页不提供自动安装或更新：CLI 随 ZCode Desktop 发布，未安装时只给出下载链接和本机的应用路径输入框（保存后重启 codexhost 生效）；已安装时版本面板只显示 `app.asar` 中的 App 版本，最新版本为未知，更新由 ZCode Desktop 自己完成。插件因此只实现 `installation("check")`，不实现 `install`。
 
@@ -55,14 +55,17 @@ CLI 发来的反向请求（`src/transport.ts`）：
 
 ### 个人 Coding Plan
 
-实现位于 `src/personal-coding-plan.ts`，原生依据为 ZCode 3.14.4 及官方仓库 `29628c9acdb81b703bbd4080c207a0e7ce5e276e` 的 `accountProviderCredentialKey`、`accountProviderConnectionResolver`、`codingPlanProviderAvailability` 与 `accountProviderRequestAuthService`。
+实现位于 `src/personal-coding-plan.ts` 与 `src/project-token.ts`。项目令牌路径依据已安装的 ZCode 3.16.3 的 `ProjectAccessTokenClient`、`ProjectAccessTokenCache` 与 `AccountProviderRequestAuthService`；旧版 Key 路径依据为 ZCode 3.14.4 及官方仓库 `29628c9acdb81b703bbd4080c207a0e7ce5e276e` 的 `accountProviderCredentialKey`、`accountProviderConnectionResolver`、`codingPlanProviderAvailability` 与 `accountProviderRequestAuthService`。
 
 - **账号与连接**：活动账号家族取 `oauth:active_provider`，账号身份按 Desktop 的规则读取 `oauth:<family>:user_info`（标准 OAuth Profile 的 `id`，或 Z.AI 原始 Profile 的 `user_id`）。套餐选择只读 `{ZCODE_DESKTOP_HOME_DIR || HOME || USERPROFILE || homedir()}/.zcode/v2/setting.json` 的 `providerFamilyDomain`、`providerFamilyConnectionSelections`；设置目录与凭据目录的环境覆盖规则不同。只有活动家族一致且选择 `individual-coding-plan` 才标记 `current: true`。兼容旧版个人套餐选择字段，但不写入迁移结果，也不猜测团队身份。
-- **Key**：按 `account-provider:coding-plan:<providerId>:account:<encodeURIComponent(accountId)>:api-key` 精确读取并解密 Desktop 缓存。不搜索其他账号的 Key，不用 Start Plan JWT 或 OAuth Access Token 代替，不创建远端 Key。缓存缺失或失效时需回 Desktop 完成个人 Coding Plan 连接，再重新检测、重新打开 Thread。
-- **权益**：以个人 API Key 作为 `Authorization`，GET `/api/biz/subscription/list`，15 秒超时、禁止重定向。业务域名沿用原生规则：Z.AI 默认 `https://api.z.ai`，BigModel 默认 `https://bigmodel.cn`；支持 `ZAI_BUSINESS_BASE_URL` / `BIGMODEL_API_BASE_URL` 及 `ZCODE_ENV` 对应的 `*_TEST_*`、`*_PRODUCTION_*` 覆盖，不能把 Start Plan 的 `ZCODE_BASE_URL` 当成 Coding Plan 业务域名。有效订阅要求 `productId` 或 `productName` 含 Coding、`status === "VALID"`、`inCurrentPeriod === true`。无有效订阅为 `not-entitled`；HTTP 401/403 或缺失 Key 为凭据失败；网络、格式或无法判定的业务错误为 `unknown`，不伪装成未购买。首次未知结果不放行，不影响独立的 Start Plan 与自定义 Provider。
+- **旧版 Key**：按 `account-provider:coding-plan:<providerId>:account:<encodeURIComponent(accountId)>:api-key` 精确读取并解密 Desktop 缓存。不搜索其他账号的 Key，不用 Start Plan JWT 或 OAuth Access Token 代替，不创建远端 Key。缓存缺失或失效时需回 Desktop 完成个人 Coding Plan 连接，再重新检测、重新打开 Thread。
+- **项目凭据**：新版 Desktop 只保存 `project-key-location:v1:<encodeURIComponent(JSON.stringify([origin, family, accountId, null, 1, "non-team"]))>`，包含 organizationId、projectId、apiKeyId。Adapter 精确读取当前账号的个人项目定位，不搜索其他账号或团队，不创建 API Key，不写入凭据。缺少定位时需先在 Desktop 打开个人套餐。请求时以当前 OAuth 登录令牌向该业务域名的 `/api/biz/v1/organization/<organizationId>/projects/<projectId>/api_keys/<apiKeyId>/access_tokens` 发起 POST，使用 Desktop 版本作为 clientVersion；禁止重定向、15 秒超时并跟随请求取消。短期令牌只留在 Transport 内存中，按登录、项目及到期时间隔离，临近到期时按需刷新，没有后台轮询。
+- **权益**：旧版使用个人 API Key，新版使用 OAuth 登录令牌作为 `Authorization`（仅用于业务接口，不把它当作模型 API Key），GET `/api/biz/subscription/list`，15 秒超时、禁止重定向。业务域名沿用原生规则：Z.AI 默认 `https://api.z.ai`，BigModel 默认 `https://bigmodel.cn`；支持 `ZAI_BUSINESS_BASE_URL` / `BIGMODEL_API_BASE_URL` 及 `ZCODE_ENV` 对应的 `*_TEST_*`、`*_PRODUCTION_*` 覆盖，不能把 Start Plan 的 `ZCODE_BASE_URL` 当成 Coding Plan 业务域名。有效订阅要求 `productId` 或 `productName` 含 Coding、`status === "VALID"`、`inCurrentPeriod === true`。无有效订阅为 `not-entitled`；HTTP 401/403 或缺失 Key 为凭据失败；网络、格式或无法判定的业务错误为 `unknown`，不伪装成未购买。首次未知结果不放行，不影响独立的 Start Plan 与自定义 Provider。
 - **配置**：通过已有 `provider/updateAccountConfig` 发布权益及账号状态，不在 Overlay 放 Key。模型与能力沿用安装包的内置 Coding Plan Provider 配置，不从 Start Plan 余额推导，不硬编码模型。官方个人套餐的显示前缀缩为 `Z.AI` / `BigModel`，避免遮住模型名；Provider/Model 身份与自定义名称不变。`entitled` 与 `current` 分开表达；Start Plan、当前个人 Coding Plan、自定义 Provider 可共存。
-- **请求**：CLI 的 `interaction/requestProviderRuntimeHeaders` 必须匹配检测时已授权的 Provider、家族与 Model Provider；每次请求重新读取账号、选择及 Key，确认仍是该 Transport 的账号，返回 `{headersApplied:true, requestAuth:{apiKey}}`，不调用验证码。Coding Plan 的客户端签名、签名配置查询与握手仍由原生 CLI 负责，不由 Adapter 仿造或关闭。
+- **请求**：CLI 的 `interaction/requestProviderRuntimeHeaders` 必须匹配检测时已授权的 Provider、家族与 Model Provider；每次请求重新读取账号、选择及 Key，确认仍是该 Transport 的账号，旧版返回 `{headersApplied:true, requestAuth:{apiKey}}`，新版的 requestAuth 同时携带项目令牌、apiKeyId 与 accountScope，均不调用验证码。Coding Plan 的客户端签名、签名配置查询与握手仍由原生 CLI 负责，不由 Adapter 仿造或关闭。
 - **切换与失败**：权益查询结束后复核账号身份、选择与 Key，拒绝发布跨账号的过期结果；查询结果的 revision 包含不携带凭据的连接摘要。当前 Transport 中账号切换、退出或连接不再匹配时拒绝请求，不复用旧账号 Key。账号配置不做热更新；重新打开 Thread 会按新的 Desktop 连接重新检测。不承诺跨重开固定旧账号或旧计费来源。恢复会话、Model 选择和持久化仍归原生 CLI，Host 不另存套餐选择。
+
+项目令牌返回前再次核对账号、登录、选择与项目定位；校验 CLI 的 expectedAccountScope，并按 rejectedProjectTokenFingerprint 按需更新已拒绝的令牌。仅在当前选择为个人 Coding Plan 时显示其凭据读取或验证诊断，避免覆盖 Start Plan 的引导。调用方取消时保留取消原因，在请求 Header 边界返回未应用 Header 且不附认证错误文本；项目令牌请求超时映射为可重试的 `unavailable` 错误，不提示重新登录。
 
 ## 账号验证页
 
@@ -99,7 +102,7 @@ ZCode 3.14.4 已接入 Host 请求级计量，规则见[会话用量计量](../.
 
 ## 验证
 
-个人 Coding Plan 聚焦测试为 `test/personal-coding-plan.test.ts` 与 `test/personal-coding-plan.native.test.ts`。前者覆盖两个账号家族、权益边界、只读凭据、精确账号 Key、设置目录与旧版选择、账号变更、错误脱敏及取消。后者需设置 `CODEXHOST_TEST_ZCODE_APP` 并安装 `openssl`：用隔离目录、合成凭据、原生 CLI 和本地 HTTPS 模型服务，验证仅有个人 Coding Plan 时的模型发现、默认选择、请求鉴权、多轮、恢复，以及与自定义 Provider 的切换。临时证书仅通过子进程 `NODE_EXTRA_CA_CERTS` 信任，不关闭 TLS 验证；模拟服务将签名开关设为关闭，因此不覆盖真实签名握手、真实付费账号或真实扣费。macOS / ZCode 3.14.4 上这两种账号家族的原生测试已通过；正式服务端的订阅响应和真实账号调用仍需单独验收。
+个人 Coding Plan 聚焦测试为 `test/personal-coding-plan.test.ts`、`test/project-token.test.ts` 与 `test/personal-coding-plan.native.test.ts`。前两者覆盖两个账号家族、权益边界、只读凭据、精确账号 Key / 项目定位、设置目录与旧版选择、账号变更、令牌到期和拒绝后的按需刷新、错误脱敏及取消。原生测试分别使用旧版 Key 和项目令牌，需设置 `CODEXHOST_TEST_ZCODE_APP` 并安装 `openssl`：用隔离目录、合成凭据、原生 CLI 和本地 HTTPS 模型服务，验证仅有个人 Coding Plan 时的模型发现、默认选择、请求鉴权、多轮、恢复，以及与自定义 Provider 的切换。临时证书仅通过子进程 `NODE_EXTRA_CA_CERTS` 信任，不关闭 TLS 验证；模拟服务兼容旧版签名开关，并为新版签名握手返回服务不可用，使用 CLI 原生的回退路径；因此不覆盖真实签名握手、真实付费账号或真实扣费。ZCode 3.16.3 上的四组原生测试（Z.AI / BigModel × 旧版 Key / 项目令牌）已在 Windows、macOS 和 Linux 通过。真实 BigModel 个人套餐在三平台通过了模型发现、首轮、恢复后续轮以及 build / edit / yolo 权限切换；Windows 客户端通过 SSH 访问 macOS、Linux 时，也验证了连接断开后恢复同一 ZCode 会话、上下文与两轮历史。
 
 原生测试运行已装 CLI，`HOME` 与 `ZCODE_DATA_BASE_DIR` 指向临时目录，模型请求指向本地模拟 Provider，Start Plan 用例使用自行加密的合成凭据、指向本地的内置配置副本和假验证器，不读取真实 `~/.zcode`：
 
@@ -107,4 +110,4 @@ ZCode 3.14.4 已接入 Host 请求级计量，规则见[会话用量计量](../.
 CODEXHOST_TEST_ZCODE_APP=/Applications/ZCode.app npx vitest run --config tests/vitest.config.js packages/adapters/zcode/test/native.test.ts packages/host-runtime/test/app-server-host.zcode.real.test.ts
 ```
 
-Host 集成测试需要先 `npm run build:typescript` 生成插件包。2026-09-28 在 macOS arm64 / ZCode 3.14.3（CLI 0.16.9）上，Host 分别使用 Node 22.22 与 Node 24 均通过：目录、检测不留会话、多轮/恢复、取消后继续、并行工作区工具环境、原生提问、审批、配置、文件差异，以及 Start Plan 的 JWT 与验证码 Header 注入、多个 Session 共用一个验证器且只预热一次；真实 Loader → Host 路由 → 原生 Turn → 历史路径另有集成测试。验证页的共享队列、取消隔离、预热、每次验证新实例、过期回调隔离、F008 与“`show()` 后再次 `getInstance` 再 success”另有单元测试和使用合成 SDK 的浏览器测试（`tests/e2e/zcode-verification.spec.ts`，可用 `CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH` 指定本机 Chrome）。真实 Start Plan 验收见上文“账号验证页”。2026-09-30 在 macOS arm64 / ZCode 3.14.4 上实测：CLI 及其 MCP 子进程以 Helper 运行，登记为 `UIElement`，Dock 无图标；服务端配置 `skip_model_request: true` 时多步工具任务的 6 次模型请求均未触发验证；目录只列出套餐允许的 Start Plan 模型；自定义 Provider 会话正常；恢复后的会话立即给出已用上下文与缓存用量。Windows、Linux 的安装识别只有模拟目录结构的单元测试，未在真机验证；SSH 未验证。
+Host 集成测试需要先 `npm run build:typescript` 生成插件包。2026-09-28 在 macOS arm64 / ZCode 3.14.3（CLI 0.16.9）上，Host 分别使用 Node 22.22 与 Node 24 均通过：目录、检测不留会话、多轮/恢复、取消后继续、并行工作区工具环境、原生提问、审批、配置、文件差异，以及 Start Plan 的 JWT 与验证码 Header 注入、多个 Session 共用一个验证器且只预热一次；真实 Loader → Host 路由 → 原生 Turn → 历史路径另有集成测试。验证页的共享队列、取消隔离、预热、每次验证新实例、过期回调隔离、F008 与“`show()` 后再次 `getInstance` 再 success”另有单元测试和使用合成 SDK 的浏览器测试（`tests/e2e/zcode-verification.spec.ts`，可用 `CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH` 指定本机 Chrome）。真实 Start Plan 验收见上文“账号验证页”。2026-09-30 在 macOS arm64 / ZCode 3.14.4 上实测：CLI 及其 MCP 子进程以 Helper 运行，登记为 `UIElement`，Dock 无图标；服务端配置 `skip_model_request: true` 时多步工具任务的 6 次模型请求均未触发验证；目录只列出套餐允许的 Start Plan 模型；自定义 Provider 会话正常；恢复后的会话立即给出已用上下文与缓存用量。这些历史验证针对 Start Plan 与通用 CLI 能力；ZCode 3.16.3 的三平台个人 Coding Plan 和 SSH 验证范围见本节开头。

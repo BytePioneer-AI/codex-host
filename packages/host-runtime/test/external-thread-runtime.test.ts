@@ -117,9 +117,13 @@ describe("ExternalThreadRuntime register", () => {
       turnMappings: [{ hostTurnId: recovery.turnId, nativeTurnRef }],
     };
     const persistTurn = vi.fn(async () => stored);
+    const alignSnapshot = vi.fn(async () => ({
+      record: stored,
+      turns: [{ id: "earlier" }, { id: recovery.turnId, status: "failed" }],
+    }));
     const runtime = new ExternalThreadRuntime({
       adapters: new Map([["pi", adapter]]),
-      repository: { persistTurn } as unknown as ExternalThreadRepository,
+      repository: { persistTurn, alignSnapshot } as unknown as ExternalThreadRepository,
       consumeOutputs: async () => undefined,
       diagnose: () => undefined,
     });
@@ -135,6 +139,15 @@ describe("ExternalThreadRuntime register", () => {
       expect(thread.running).toBe(true);
       expect(thread.turns.map((turn) => turn.id)).toEqual(["earlier"]);
       expect([...thread.projectedTurns.keys()]).toEqual([recovery.turnId]);
+      expect(thread.projectedTurns.get(recovery.turnId)?.projector.pendingTurn()).toMatchObject({
+        id: recovery.turnId,
+        status: "inProgress",
+      });
+      // A readonly refresh may align the retained pre-recovery failure again.
+      // The active projector owns this Turn until its real terminal event.
+      expect(await runtime.refresh(thread)).toBeNull();
+      expect(alignSnapshot).toHaveBeenCalledOnce();
+      expect(thread.turns.map((turn) => turn.id)).toEqual(["earlier"]);
       expect(thread.projectedTurns.get(recovery.turnId)?.projector.pendingTurn()).toMatchObject({
         id: recovery.turnId,
         status: "inProgress",

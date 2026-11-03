@@ -86,6 +86,12 @@ Windows 当前覆盖常见的：
 - `commandInvocation()`：封装 Windows `.cmd`/`.bat` 的 `cmd.exe` 调用和参数转义；
 - `withNodeRuntimeOnPath()`：把 codexhost 当前 Node Runtime 所在目录加入 Harness 子进程的 `PATH`。
 
+### Pi 的 Windows UNC 工作目录
+
+Pi RPC 在 Windows UNC 工作目录（例如 `\\wsl.localhost\Ubuntu\home\user\project`）下不能经过 `cmd.exe`：CMD 会把不支持的当前目录替换为 Windows 目录。Pi Adapter 仅在 UNC 目录与 batch 入口同时出现时处理此边界：标准 npm `pi.cmd` 直接执行所选安装声明的 JavaScript 入口；官方 managed `releases-v1` 安装执行同一安装的 `pi-launcher.js`，由原生 launcher 选择当前版本并设置 managed 环境。
+
+识别同时核对启动脚本与安装元数据，保留相邻 Node、managed 专用 Node 或 PATH Node 的选择。无法识别、被修改的 Pi batch launcher，以及 PATH/PATHEXT 优先选中的 Node batch shim 或文件关联入口，均明确拒绝；不擅自跳过用户脚本，也不尝试另一份 Pi 或 PATH 中更靠后的 Node。普通盘符目录、原生可执行文件和 macOS/Linux 的启动方式不变。此处理只保证 Windows Pi 的启动目录，不会把执行环境自动切换到 WSL，也不改写既有 Native Session 的目录。
+
 ## 当前接入情况
 
 | Harness | 公共可执行文件发现 | 公共 Windows invocation | Node Runtime PATH 补全 | 说明 |

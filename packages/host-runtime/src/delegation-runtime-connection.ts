@@ -63,6 +63,17 @@ function missingHostEnvironment(missing: string[], outsideHost: boolean): Delega
   );
 }
 
+/** Whether the CLI will connect as an external client; decided from the environment alone. */
+export function usesExternalClient(environment: NodeJS.ProcessEnv): boolean {
+  return (
+    !environment[DELEGATION_RUNTIME_ENDPOINT_ENV] &&
+    !environment[DELEGATION_RUNTIME_TOKEN_ENV] &&
+    Boolean(
+      environment[EXTERNAL_CLIENT_TOKEN_ENV]?.trim() || environment[EXTERNAL_CLIENT_TOKEN_FILE_ENV],
+    )
+  );
+}
+
 /**
  * Host-provided parameters win, so processes the Host started behave as before.
  * Only without them does a client token select the external client listener.

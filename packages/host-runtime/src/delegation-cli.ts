@@ -4,7 +4,7 @@ import type { Writable } from "node:stream";
 import { delegationCliHelp, type DelegationCliCommand } from "./delegation-cli-help.js";
 import { parseDelegationArguments, type DelegationCliArguments } from "./delegation-cli-options.js";
 import { compactDelegationOutput } from "./delegation-cli-output.js";
-import { resolveRuntimeConnection } from "./delegation-runtime-connection.js";
+import { resolveRuntimeConnection, usesExternalClient } from "./delegation-runtime-connection.js";
 import { runClientCommand } from "./external-client-cli.js";
 
 export { DELEGATION_HELP } from "./delegation-cli-help.js";
@@ -258,6 +258,7 @@ export async function runDelegationCli(input: {
         "--request-id",
         "--watch",
         "--watch-timeout-ms",
+        "--ref",
       ]);
       if (parsed.positionals.length > 0)
         throw new DelegationControlError(
@@ -295,6 +296,7 @@ export async function runDelegationCli(input: {
               : {}),
             ...(parentThread ? { parentThreadId: normalizeThreadId(parentThread) } : {}),
             ...(value(parsed, "--request-id") ? { requestId: value(parsed, "--request-id") } : {}),
+            ...(parsed.repeated.get("--ref") ? { refs: parsed.repeated.get("--ref") } : {}),
             ...(watch === "true"
               ? {
                   watchTimeoutMs: value(parsed, "--watch-timeout-ms")
@@ -481,7 +483,15 @@ export async function runDelegationCli(input: {
       return 0;
     }
     if (group === "thread" && command === "list") {
-      rejectUnknown(parsed, ["--cwd", "--parent", "--limit", "--cursor", "--sort"]);
+      rejectUnknown(parsed, [
+        "--cwd",
+        "--parent",
+        "--client",
+        "--ref",
+        "--limit",
+        "--cursor",
+        "--sort",
+      ]);
       if (parsed.positionals.length > 0)
         throw new DelegationControlError(
           "INVALID_ARGUMENT",
@@ -500,14 +510,21 @@ export async function runDelegationCli(input: {
       )
         throw new DelegationControlError("INVALID_ARGUMENT", "--sort is invalid");
       const parentThread = value(parsed, "--parent");
+      const client = value(parsed, "--client");
+      const ref = value(parsed, "--ref");
+      // An external client has no workspace of its own, so it lists every workspace by default.
+      const external = usesExternalClient(environment);
+      const cwd = cwdOption(parsed) ?? (external || client || ref ? undefined : process.cwd());
       writeResult(
         "thread list",
         await requestRuntime({
           environment,
           path: "/v1/thread/list",
           body: {
-            cwd: cwdOption(parsed) ?? process.cwd(),
+            ...(cwd ? { cwd } : {}),
             ...(parentThread ? { parentThreadId: normalizeThreadId(parentThread) } : {}),
+            ...(client ? { client } : {}),
+            ...(ref ? { ref } : {}),
             limit: value(parsed, "--limit")
               ? positiveInteger(value(parsed, "--limit"), "--limit", MAX_LIMIT)
               : DEFAULT_LIMIT,

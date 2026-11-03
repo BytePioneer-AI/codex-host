@@ -59,6 +59,8 @@ export interface DelegationThreadSnapshot {
   messages?: DelegationMessage[];
   hasMore?: boolean;
   nextCursor: string | null;
+  /** Omitted when the Thread carries no references. */
+  refs?: string[];
 }
 
 export interface DelegationStartInput {
@@ -71,6 +73,8 @@ export interface DelegationStartInput {
   requestId?: string;
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
+  /** Absolute URIs of where the work came from; children inherit them. */
+  refs?: string[];
 }
 
 export interface HarnessInspectInput {
@@ -106,6 +110,8 @@ export interface DelegationStartResult {
   cwd?: string;
   parentThreadId?: string;
   configuration?: DelegationConfigurationResult;
+  /** References the child carries, inherited ones first; omitted when there are none. */
+  refs?: string[];
   /** Present only when the caller asked `delegate start` to also watch the child. */
   watch?: ThreadWatchResult | { state: "notRegistered"; reason: string };
   next: { read: string; wait: string };
@@ -153,6 +159,10 @@ export interface ThreadWaitInput extends ThreadReadInput {
 export interface ThreadListInput {
   cwd?: string;
   parentThreadId?: string;
+  /** Threads an external client started without a parent Thread. */
+  client?: string;
+  /** Threads that carry this reference. */
+  ref?: string;
   limit: number;
   cursor?: string;
   sort:
@@ -175,6 +185,7 @@ export interface DelegationThreadListItem {
   updatedAt?: string;
   /** Set by native rows; recency-* sorts order by it, falling back to updatedAt. */
   recencyAt?: string;
+  refs?: string[];
 }
 
 export interface DelegationThreadListResult {

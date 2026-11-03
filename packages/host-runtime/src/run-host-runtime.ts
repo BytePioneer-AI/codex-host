@@ -18,11 +18,14 @@ import {
   defaultDelegationWatchDirectory,
 } from "./delegation-watch-store.js";
 import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
+import { startDelegationControlServer } from "./delegation-control-server.js";
 import {
-  routeDelegationRequest,
-  startDelegationControlServer,
-} from "./delegation-control-server.js";
-import { ExternalClientRegistry, defaultExternalClientsPath } from "./external-clients.js";
+  ExternalClientRegistry,
+  codexhostDataDirectory,
+  defaultExternalClientsPath,
+} from "./external-clients.js";
+import { externalClientRouter } from "./external-client-routes.js";
+import { FileThreadRefsStore } from "./thread-refs.js";
 import {
   externalClientDescriptorPath,
   externalClientPort,
@@ -176,6 +179,9 @@ async function prepareDelegationRuntime(input: {
       defaultDelegationWatchDirectory(input.environment),
       diagnoseWatch,
     ),
+    refs: new FileThreadRefsStore(
+      path.join(codexhostDataDirectory(input.environment), "thread-refs"),
+    ),
   });
   const token = randomBytes(32).toString("hex");
   const server = await startDelegationControlServer({ token, api: registry, watchApi: registry });
@@ -222,8 +228,7 @@ async function startExternalClients(
   return startExternalClientServer({
     port,
     clients: new ExternalClientRegistry(defaultExternalClientsPath(environment)),
-    route: (_call, route, body) =>
-      routeDelegationRequest({ api: registry, watchApi: registry }, route, body),
+    route: externalClientRouter({ api: registry, watchApi: registry }),
     descriptorPath: externalClientDescriptorPath(environment),
     diagnose: (message) => process.stderr.write(`codexhost external clients: ${message}\n`),
   });

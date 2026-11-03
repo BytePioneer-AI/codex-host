@@ -42,6 +42,7 @@ import {
   type ThreadSendResult,
   type ThreadWaitInput,
 } from "./delegation-types.js";
+import { originClientName } from "./external-client-origin.js";
 import { projectDelegationThreadSnapshot, validateReadOptions } from "./delegation-snapshot.js";
 import {
   createExternalThreadRecordInput,
@@ -230,6 +231,12 @@ export class HarnessDelegationCoordinator {
 
   async start(input: DelegationStartInput): Promise<DelegationStartResult> {
     validateStart(input);
+    // An external client has no workspace of its own for the child to inherit.
+    if (originClientName(input.parentThreadId) && !input.cwd)
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "--cwd is required when an external client starts work without a parent Thread",
+      );
     const parentThreadId = await this.#resolveParent(input.parentThreadId);
     const parent = await this.#parentMetadata(parentThreadId);
     const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
@@ -707,6 +714,8 @@ export class HarnessDelegationCoordinator {
   async #parentMetadata(
     parentThreadId: string,
   ): Promise<ParentMetadata & { harnessId: RoutedHarnessId }> {
+    // A client origin is no Thread; the stored source Harness keeps the native default.
+    if (originClientName(parentThreadId)) return { harnessId: "codex" };
     const record = await this.#repository.find(parentThreadId);
     if (record)
       return {

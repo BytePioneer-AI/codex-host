@@ -4950,20 +4950,29 @@ export class AppServerHost {
   }
 
   async #steerExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+    let replacementStartFailed = false;
     try {
       const started = await this.#externalSteering.run(
         thread,
         requestObject(request),
-        (text, assertActive) =>
-          this.#beginExternalInputTurn(
-            thread,
-            text,
-            assertActive,
-            typeof requestObject(request).clientUserMessageId === "string"
-              ? (requestObject(request).clientUserMessageId as string)
-              : undefined,
-            requestObject(request)[THREAD_REFERENCE_SOURCE_HOST_PARAM],
-          ),
+        async (text, assertActive) => {
+          try {
+            return await this.#beginExternalInputTurn(
+              thread,
+              text,
+              assertActive,
+              typeof requestObject(request).clientUserMessageId === "string"
+                ? (requestObject(request).clientUserMessageId as string)
+                : undefined,
+              requestObject(request)[THREAD_REFERENCE_SOURCE_HOST_PARAM],
+            );
+          } catch (error) {
+            // A stop or Session fault while command discovery was pending keeps the queue paused.
+            assertActive();
+            replacementStartFailed = true;
+            throw error;
+          }
+        },
         (input) => this.#insertExternalInput(thread, input),
       );
       try {
@@ -4985,11 +4994,7 @@ export class AppServerHost {
           errorMessage(error),
         ),
       );
-      // A steer that could not start its replacement leaves the interrupted
-      // terminal as the Thread's last word: the queued follow-ups would wait
-      // for a "继续" that no one will press. The steer reservation is gone,
-      // so the queue can flow again.
-      void this.#drainExternalQueue(thread);
+      if (replacementStartFailed) void this.#drainExternalQueue(thread);
     } finally {
       this.#signalActiveWorkChanged();
     }

@@ -418,3 +418,98 @@ describe("External Thread follow-up queue", () => {
     }
   });
 });
+
+describe("Steering failure queue boundaries", () => {
+  it("keeps queued input paused when a replacement is stopped during command discovery", async () => {
+    const fixture = createFixture();
+    fixture.adapter.supportsSteer = false;
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
+      writeRequest(fixture.desktopInput, {
+        id: 80,
+        method: "thread/queue/add",
+        params: { threadId, input: text("remain paused"), clientUserMessageId: "paused-1" },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 80));
+      session.completeCancellationOnRequest();
+      const catalog = Promise.withResolvers<{ ok: true; value: { commands: [] } }>();
+      const list = vi.fn(() => catalog.promise);
+      session.commands = { list, execute: vi.fn() };
+      writeRequest(fixture.desktopInput, {
+        id: 81,
+        method: "turn/steer",
+        params: { threadId, expectedTurnId: turnId, input: text("/unknown") },
+      });
+      await vi.waitFor(() => expect(list).toHaveBeenCalled());
+      writeRequest(fixture.desktopInput, {
+        id: 82,
+        method: "turn/interrupt",
+        params: { threadId, turnId },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 82));
+      catalog.resolve({ ok: true, value: { commands: [] } });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 81)),
+      ).resolves.toHaveProperty("error");
+      writeRequest(fixture.desktopInput, {
+        id: 83,
+        method: "thread/queue/list",
+        params: { threadId },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 83)),
+      ).resolves.toMatchObject({ result: { data: [{ input: text("remain paused") }] } });
+      expect(execute).not.toHaveBeenCalledWith(expect.objectContaining({ type: "turn.start" }));
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("does not resume a stopped queue for a stale steer request", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
+      writeRequest(fixture.desktopInput, {
+        id: 90,
+        method: "thread/queue/add",
+        params: { threadId, input: text("remain paused"), clientUserMessageId: "paused-2" },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 90));
+      session.completeCancellationOnRequest();
+      writeRequest(fixture.desktopInput, {
+        id: 91,
+        method: "turn/interrupt",
+        params: { threadId, turnId },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 91));
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      writeRequest(fixture.desktopInput, {
+        id: 92,
+        method: "turn/steer",
+        params: { threadId, expectedTurnId: turnId, input: text("stale input") },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 92)),
+      ).resolves.toHaveProperty("error");
+      writeRequest(fixture.desktopInput, {
+        id: 93,
+        method: "thread/queue/list",
+        params: { threadId },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 93)),
+      ).resolves.toMatchObject({ result: { data: [{ input: text("remain paused") }] } });
+      expect(execute).not.toHaveBeenCalledWith(expect.objectContaining({ type: "turn.start" }));
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+});

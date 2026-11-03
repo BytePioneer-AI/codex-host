@@ -4,8 +4,10 @@
 
 ## 0. 前置验证（先于第 2、4 组）
 
-- [ ] 0.1 用一个临时 MCP 服务经 Tailscale Funnel 暴露，从真实 Grok Bot 添加为自定义 connector，记录它支持的认证方式（静态 header、OAuth 及所需端点）、超时和工具调用行为。结论写入 design 的 Open Questions，只取“成立 / 不成立 / 无法验证”之一并附证据。
-- [ ] 0.2 在 Grok Bot 中创建 webhook 触发器，向它发送一次请求，记录 URL 形式、payload 约束、签名或密钥要求，以及触发后 bot 能读取到哪些字段。结论同上。
+结论见 [design](design.md) 决策 3–5：Grok Bot 先以静态 Bearer 接入；webhook 为静态 Bearer、无签名、无去重，body 保持在 4 KB 内。
+
+- [x] 0.1 用一个临时 MCP 服务经 Tailscale Funnel 暴露，从真实 Grok Bot 添加为自定义 connector，记录它支持的认证方式（静态 header、OAuth 及所需端点）、超时和工具调用行为。结论写入 design 的 Open Questions，只取“成立 / 不成立 / 无法验证”之一并附证据。
+- [x] 0.2 在 Grok Bot 中创建 webhook 触发器，向它发送一次请求，记录 URL 形式、payload 约束、签名或密钥要求，以及触发后 bot 能读取到哪些字段。结论同上。
 
 ## 1. 范围
 
@@ -18,7 +20,7 @@
 
 ## 3. OAuth
 
-- [ ] 3.1 依据 0.1 的结论实现 OAuth 最小集与 `client pair`。验证：用官方 MCP inspector 走通授权码 + PKCE；配对码过期、重用和 5 次失败失效；吊销客户端后访问令牌与刷新令牌立即失效；授权页不泄露任何列表。
+- [ ] 3.1 OAuth 最小集（含 401 + `WWW-Authenticate` 发现入口与 DCR）与 `client pair`；完成后用真实 Grok Bot 以 OAuth 方式复测一次。验证：用官方 MCP inspector 走通授权码 + PKCE；配对码过期、重用和 5 次失败失效；吊销客户端后访问令牌与刷新令牌立即失效；授权页不泄露任何列表。
 
 ## 4. webhook
 

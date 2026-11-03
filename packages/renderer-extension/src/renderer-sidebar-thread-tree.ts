@@ -286,6 +286,31 @@ interface SavedItemStyle {
   display: string;
 }
 
+const SIDEBAR_THREAD_TREE_TOGGLE_SIZE_PX = 14;
+const SIDEBAR_THREAD_TREE_TOGGLE_GAP_PX = 4;
+
+/**
+ * Inline styles for the expand/collapse toggle. The toggle is taken out of
+ * flow and pulled into the row's leading padding, so a parent's icon and title
+ * stay aligned with siblings that have no toggle. With no insets set, the
+ * absolutely positioned toggle keeps its static position at the start of the
+ * title trigger (vertically aligned like the icon), and the negative start
+ * margin moves it left of the icon.
+ */
+export const SIDEBAR_THREAD_TREE_TOGGLE_STYLE = {
+  position: "absolute",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: `${SIDEBAR_THREAD_TREE_TOGGLE_SIZE_PX}px`,
+  height: `${SIDEBAR_THREAD_TREE_TOGGLE_SIZE_PX}px`,
+  marginInlineStart: `-${SIDEBAR_THREAD_TREE_TOGGLE_SIZE_PX + SIDEBAR_THREAD_TREE_TOGGLE_GAP_PX}px`,
+  flex: "none",
+  cursor: "pointer",
+  borderRadius: "3px",
+  opacity: "0.75",
+} as const satisfies Partial<Record<keyof CSSStyleDeclaration, string>>;
+
 const savedItemStyles = new WeakMap<HTMLElement, SavedItemStyle>();
 const toggleHandlers = new WeakMap<HTMLElement, () => void>();
 
@@ -317,15 +342,7 @@ function createToggle(document: Document): HTMLElement {
   toggle.setAttribute(SIDEBAR_THREAD_TREE_TOGGLE_ATTRIBUTE, "");
   toggle.setAttribute("role", "button");
   toggle.tabIndex = 0;
-  toggle.style.display = "inline-flex";
-  toggle.style.alignItems = "center";
-  toggle.style.justifyContent = "center";
-  toggle.style.width = "14px";
-  toggle.style.height = "14px";
-  toggle.style.flex = "none";
-  toggle.style.cursor = "pointer";
-  toggle.style.borderRadius = "3px";
-  toggle.style.opacity = "0.75";
+  Object.assign(toggle.style, SIDEBAR_THREAD_TREE_TOGGLE_STYLE);
   toggle.append(chevronIcon(document));
   for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "dblclick"]) {
     toggle.addEventListener(type, stopRowEvent);

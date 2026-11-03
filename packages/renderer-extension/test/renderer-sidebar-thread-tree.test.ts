@@ -12,6 +12,8 @@ import {
   installRendererSidebarThreadTree,
   layoutSidebarThreadTree,
   planSidebarThreadForest,
+  SIDEBAR_THREAD_TREE_INDENT_PX,
+  SIDEBAR_THREAD_TREE_TOGGLE_STYLE,
   type SidebarThreadTreeDom,
   type SidebarThreadTreeItem,
   type SidebarThreadTreeLayout,
@@ -588,5 +590,18 @@ describe("planSidebarThreadForest", () => {
       { items: null, mirrors: [] },
       { items: null, mirrors: [] },
     ]);
+  });
+});
+
+describe("sidebar Thread tree toggle style", () => {
+  it("keeps the toggle out of the row's inline layout", () => {
+    // An in-flow toggle shifted a parent's icon right of its siblings' icons.
+    expect(SIDEBAR_THREAD_TREE_TOGGLE_STYLE.position).toBe("absolute");
+    const width = Number.parseFloat(SIDEBAR_THREAD_TREE_TOGGLE_STYLE.width);
+    const margin = Number.parseFloat(SIDEBAR_THREAD_TREE_TOGGLE_STYLE.marginInlineStart);
+    expect(margin).toBeLessThan(-width);
+    // The toggle stays within one indent level left of the icon, so it never
+    // overlaps the parent's own icon or reaches past the row's leading gutter.
+    expect(-margin).toBeLessThanOrEqual(SIDEBAR_THREAD_TREE_INDENT_PX + 4);
   });
 });

@@ -26,7 +26,7 @@ Codex Desktop 左侧边栏把 CodexHost 委派出的子 Thread 和 Fork 出的 T
 - 跨列表嵌套：Desktop 把每个 Thread 只放进一个列表，新 Fork 不继承置顶，所以置顶 Thread 的 Fork 出现在“最近”或项目列表里，与父 Thread 不在同一列表。所有列表一起规划（`planSidebarThreadForest`）：同列表内的父 Thread 优先；否则子 Thread 及其子树显示在根祖先所在的列表中。原生子行在原列表中以 `display: none` 隐藏，父列表末尾追加一个 CodexHost 自有的镜像节点（`data-codexhost-sidebar-thread-mirror`），用 CSS `order` 和缩进排到父 Thread 下面。
 - 镜像是原生列表项的深拷贝，去掉 `id`、`draggable`、行识别属性（`data-app-action-sidebar-thread-row`／`-id`／`-host-id`）、键盘循环和拖放属性，保留选中、置顶等视觉属性；原生行标记或内容变化时重新拷贝。镜像上的 click、dblclick、auxclick、contextmenu 及 Enter／空格键在原生子行的对应节点上重放，导航、右键菜单和行内按钮仍由 Desktop 处理。只有在全部列表中只出现一次的 Thread 才会跨列表移动；跨列表的环保持原位。
 - 只有值变化时才写样式或属性，扫描是幂等的，自身写入不会形成观察循环。
-- 展开／折叠按钮插入在 `[data-thread-title-trigger]` 最前面，阻止事件冒泡到原生行，避免触发导航。折叠状态只保存在当前 Renderer 内存中。
+- 展开／折叠按钮插入在 `[data-thread-title-trigger]` 最前面，绝对定位并用负的行首外边距放到图标左侧的行首留白中，不占行内宽度，所以有子 Thread 的行与同层级行的图标对齐，子 Thread 相对父 Thread 图标恰好缩进一级（14 px）。按钮阻止事件冒泡到原生行，避免触发导航。折叠状态只保存在当前 Renderer 内存中。
 - 关系结果按 Host 批量请求，单批最多 100 个。委派记录可能晚于子行出现，没有父 Thread 的结果在 1 s、3 s、10 s 后各重试一次；读取失败的行保持顶层。native Fork 读取并发上限为 4，结果在 Renderer 生命周期内缓存。
 - Renderer 绑定刷新时，清除失败和“尚无父 Thread”的缓存；释放时恢复所有原始样式并移除按钮。
 

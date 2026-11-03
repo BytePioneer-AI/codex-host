@@ -624,12 +624,20 @@ export class ExternalThreadRuntime {
     }
     try {
       const aligned = await this.#repository.alignSnapshot(thread.record, snapshot.value);
+      // Before native identity exists, an empty Snapshot cannot reconcile the
+      // failed or cancelled Turns retained only in this loaded Host Thread.
+      const turns =
+        aligned.record.state === "creating" &&
+        !aligned.record.nativeSessionRef &&
+        snapshot.value.turns.length === 0
+          ? thread.turns
+          : aligned.turns;
       thread.record = aligned.record;
-      thread.turns = aligned.turns;
+      thread.turns = turns;
       thread.historyHydrated = true;
       thread.thread = externalThreadValue({
         record: aligned.record,
-        turns: aligned.turns,
+        turns,
         sessionId: thread.sessionId,
         running: thread.running,
       });

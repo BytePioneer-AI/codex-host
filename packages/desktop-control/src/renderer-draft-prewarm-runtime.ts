@@ -41,9 +41,16 @@ export function createDraftPrewarmPolicyBridge(
   isCurrentManager?: () => boolean,
   retainResponses: typeof retainRendererHostResponses = retainRendererHostResponses,
   isolateConsumption: typeof isolateRendererPrewarmConsumption = isolateRendererPrewarmConsumption,
+  sendControlRequest?: (method: string, parameters: unknown) => unknown,
 ) {
   let disposed = false;
   const originalSend = bridge.sendRequest;
+  // A local RPC manager queues logical requests itself. Its tunnel writes must
+  // use a separate transport or a full logical queue can block its own replies.
+  const controlSend = (method: string, parameters: unknown): unknown =>
+    sendControlRequest
+      ? sendControlRequest(method, parameters)
+      : originalSend.call(bridge, method, parameters);
   const originalPrewarm = bridge.prewarmThreadStart;
   const originalOnNotification = manager.onNotification;
   const originalDispatchAppServerResponse = manager.dispatchAppServerResponse;
@@ -136,7 +143,7 @@ export function createDraftPrewarmPolicyBridge(
     bridgeRequests.clear();
     if (isRemoteControlHost && terminate) {
       void Promise.resolve(
-        originalSend.call(bridge, "process/kill", { processHandle: failedProcessHandle }),
+        controlSend("process/kill", { processHandle: failedProcessHandle }),
       ).catch(() => undefined);
     }
   };
@@ -341,7 +348,7 @@ export function createDraftPrewarmPolicyBridge(
     ];
     const startedProcessHandle = bridgeProcessHandle;
     try {
-      const started = originalSend.call(bridge, "process/spawn", {
+      const started = controlSend("process/spawn", {
         command,
         processHandle: startedProcessHandle,
         cwd: "C:\\",
@@ -362,7 +369,7 @@ export function createDraftPrewarmPolicyBridge(
     const operation = async (): Promise<void> => {
       await startBridge();
       if (bridgeState !== "ready") throw transportError("is not ready");
-      await originalSend.call(bridge, "process/writeStdin", {
+      await controlSend("process/writeStdin", {
         processHandle: bridgeProcessHandle,
         deltaBase64: utf8Base64(`${JSON.stringify(value)}\n`),
       });
@@ -730,7 +737,7 @@ export function createDraftPrewarmPolicyBridge(
       bridgeReadyTimeout = null;
       if (isRemoteControlHost && (bridgeState === "starting" || bridgeState === "ready")) {
         void Promise.resolve(
-          originalSend.call(bridge, "process/kill", { processHandle: bridgeProcessHandle }),
+          controlSend("process/kill", { processHandle: bridgeProcessHandle }),
         ).catch(() => undefined);
       }
       bridgeState = "disposed";

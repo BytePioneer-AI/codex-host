@@ -8,7 +8,7 @@ import type { RendererHostRouting as Routing } from "../src/renderer-host-routin
 
 function setup(
   initialHostId: string,
-  options: { withWaitFor?: boolean; throwingHostId?: string } = {},
+  options: { withWaitFor?: boolean; throwingHostId?: string; remoteHostId?: string } = {},
 ) {
   const manager = (hostId: string) => ({
     getHostId: () => hostId,
@@ -27,7 +27,7 @@ function setup(
     dispatchAppServerResponse: vi.fn(),
   });
   const local = manager("local");
-  const remote = manager("remote-ssh-discovered:linux");
+  const remote = manager(options.remoteHostId ?? "remote-ssh-discovered:linux");
   const managers = new Map([
     ["local", local],
     [remote.getHostId(), remote],
@@ -47,11 +47,22 @@ function setup(
   };
   const editor = { __reactFiber$host: fiber, parentElement: null };
   const editors = [editor];
+  const store = { familyBindings: new Map<unknown, Map<string, { value: unknown }>>() };
+  const appRoot = {
+    __reactContainer$test: {
+      memoizedState: {
+        memoizedState: {
+          current: { node: store, chain: {}, scope: {}, get() {}, set() {}, watch() {} },
+        },
+        next: null,
+      },
+    },
+  };
   const target: Record<string, unknown> = {};
   const renderer = {
     async evaluate<T>(expression: string): Promise<T> {
       return await runInNewContext(expression, {
-        document: { querySelectorAll: () => editors },
+        document: { querySelectorAll: () => editors, getElementById: () => appRoot },
         window: target,
         crypto: globalThis.crypto,
         TextEncoder,
@@ -62,8 +73,106 @@ function setup(
       });
     },
   };
-  return { renderer, target, local, remote, managers, manager, fiber, editors };
+  return { renderer, target, local, remote, managers, manager, fiber, editors, store };
 }
+
+it("replaces a Remote Control bridge after reconnect even when the native manager is reused", async () => {
+  const hostId = "remote-control:synthetic";
+  const f = setup(hostId, { remoteHostId: hostId });
+  const originalSend = f.remote.requestClient.sendRequest;
+  let state = "connected";
+  let revision = 1;
+  f.store.familyBindings.set(
+    {},
+    new Map([
+      [
+        hostId,
+        {
+          value: {
+            state$: { get: () => state },
+            revision$: { get: () => revision },
+            appServerVersion$: { get: () => "synthetic" },
+          },
+        },
+      ],
+    ]),
+  );
+  await installRendererDraftPrewarmPolicyDirect(f.renderer);
+  const routing = f.target.__codexhostHostRoutingV1 as Routing;
+  try {
+    const first = routing.forHost(hostId);
+    expect(first?.manager).toBe(f.remote);
+    expect(routing.forHost(hostId)).toBe(first);
+    state = "disconnected";
+    revision++;
+    expect(routing.forHost(hostId)).toBeNull();
+    state = "connected";
+    revision++;
+    const next = routing.forHost(hostId);
+    expect(next?.manager).toBe(f.remote);
+    expect(next).not.toBe(first);
+    expect(() => first?.policy.requestTarget()).toThrow("retired");
+    expect(originalSend).not.toHaveBeenCalled();
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("retires a native Remote Control route when reading its connection store throws", async () => {
+  const hostId = "remote-control:unreadable";
+  const f = setup(hostId, { remoteHostId: hostId });
+  await installRendererDraftPrewarmPolicyDirect(f.renderer);
+  const routing = f.target.__codexhostHostRoutingV1 as Routing;
+  const before = routing.forHost(hostId);
+  const bindings = f.store.familyBindings;
+  try {
+    Object.defineProperty(f.store, "familyBindings", {
+      configurable: true,
+      get() {
+        throw new Error("Scope unavailable");
+      },
+    });
+    expect(() => before?.policy.requestTarget()).toThrow("retired");
+    expect(routing.forHost(hostId)).toBeNull();
+    Object.defineProperty(f.store, "familyBindings", { configurable: true, value: bindings });
+    expect(routing.forHost(hostId)?.manager).toBe(f.remote);
+    expect(routing.forHost(hostId)).not.toBe(before);
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("detects a completed reconnect between reads and leaves SSH routes unchanged", async () => {
+  const hostId = "remote-control:synthetic";
+  const f = setup(hostId, { remoteHostId: hostId });
+  let revision = 1;
+  const connection = {
+    state$: { get: () => "connected" },
+    revision$: { get: () => revision },
+    appServerVersion$: { get: () => "synthetic" },
+  };
+  const sshId = "remote-ssh-discovered:gateway";
+  const ssh = f.manager(sshId);
+  f.managers.set(sshId, ssh);
+  f.store.familyBindings.set(
+    {},
+    new Map([
+      [hostId, { value: connection }],
+      [sshId, { value: connection }],
+    ]),
+  );
+  await installRendererDraftPrewarmPolicyDirect(f.renderer);
+  const routing = f.target.__codexhostHostRoutingV1 as Routing;
+  try {
+    const first = routing.forHost(hostId);
+    const sshRoute = routing.forHost(sshId);
+    revision += 2;
+    expect(routing.forHost(hostId)).not.toBe(first);
+    expect(routing.forHost(sshId)).toBe(sshRoute);
+  } finally {
+    routing.dispose();
+  }
+});
 
 it.each(["local", "remote-ssh-discovered:linux"])(
   "keeps both Hosts addressable and switches immediately from %s without a Controller poll",

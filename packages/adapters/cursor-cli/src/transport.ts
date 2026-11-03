@@ -12,6 +12,7 @@ import {
   type SessionConfigOption,
 } from "@agentclientprotocol/sdk";
 import { cursorInvocation } from "./command.js";
+import { cursorCliApprovalModeIsUnrestricted } from "./native-history.js";
 import { parseCursorNativeModels } from "./models.js";
 import type { HarnessExecutionPolicy } from "@codexhost/harness-adapter";
 
@@ -20,7 +21,7 @@ export interface CursorTransportOptions {
   environment: NodeJS.ProcessEnv;
   command?: string;
   timeoutMs?: number;
-  /** Native `--force` is requested only for delegated unattended full access. */
+  /** Native `--force` is requested for delegated unattended full access, and for interactive sessions when the user's Cursor CLI config already asks for Run Everything. */
   executionPolicy?: HarnessExecutionPolicy;
   /** History replay needs session/load, not the account model catalog. */
   loadModelCatalog?: boolean;
@@ -91,10 +92,16 @@ export class CursorTransport {
 
   async #prepare(): Promise<void> {
     // Program options must precede the `acp` subcommand; --force also trusts the workspace.
+    // Unattended full access always requests Run Everything. Interactive sessions only do so
+    // when the user's own CLI config already set approvalMode to unrestricted; that does not
+    // change Host executionPolicy or the unattended cancel-and-fail approval path.
+    const useForce =
+      this.options.executionPolicy === "unattended-full-access" ||
+      cursorCliApprovalModeIsUnrestricted(this.options.environment, this.options.cwd);
     const invocation = cursorInvocation(
       this.options.environment,
       this.options.command,
-      this.options.executionPolicy === "unattended-full-access" ? ["--force", "acp"] : ["acp"],
+      useForce ? ["--force", "acp"] : ["acp"],
     );
     const child = spawn(invocation.command, invocation.arguments, {
       cwd: this.options.cwd,

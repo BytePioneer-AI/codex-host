@@ -12,6 +12,10 @@
 
 以上实现归各 Harness 插件所有，不在公共 Adapter、Host 或 Renderer 中添加 Harness 专用分支。跨插件参考实现不等于共用原生协议；各自保留配置确认、取消、持久化和权限语义。
 
+## Kimi 接收委派
+
+委派创建会话时的 `unattended-full-access` 映射到 Kimi ACP 原生 `mode=yolo`，并核对 `set_config_option` 返回的 `currentValue`。原生未确认时关闭 Transport 并返回错误；显式指定其他权限模式时拒绝创建。普通会话未指定权限模式时保留原生默认值。CLI 启动参数与 ACP 模式 ID 分别遵守各自接口，不互相替代。
+
 ## Kimi 计划审批
 
 Kimi Code ACP 的 `ExitPlanMode` 请求包含原生 `plan_approve` / `plan_opt_N`、`plan_revise` 和 `plan_reject_and_exit` 选项时，Adapter 使用公共 Question 交互投影到 Codex 原生选择界面。计划正文、选项顺序和标签保留，选中结果原样回传 ACP `optionId`；修改计划、拒绝并退出和取消保持各自语义，不合并成同一个拒绝动作。

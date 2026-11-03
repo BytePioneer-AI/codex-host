@@ -98,6 +98,7 @@ import { OmpSessionImport } from "./session-import.js";
 import { rollbackOmpLastTurn } from "./omp-last-turn-rollback.js";
 import {
   OmpRpcFaultError,
+  OmpRpcSteerRejectedError,
   OmpRpcSession,
   OmpRpcUnsupportedCommandError,
   type OmpInteractionRequest,
@@ -160,7 +161,7 @@ export interface OmpTurnTransport {
     onEvent: (event: OmpTurnEvent) => void,
   ): Promise<OmpCompactResult>;
   runTurn(text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult>;
-  /** Native same-Turn input; present on transports backed by OMP's `steer` RPC. */
+  /** Native same-Turn input; unconfirmed delivery errors must propagate to the caller. */
   steer?(text: string): Promise<void>;
   respondToInteraction(response: OmpInteractionResponse): Promise<void>;
   abort(): Promise<void>;
@@ -1419,10 +1420,17 @@ class OmpHarnessSession implements HarnessSession {
     try {
       await transport.steer(text);
     } catch (error) {
-      return {
-        ok: false,
-        error: invalidState(`Omp native steer failed: ${errorMessage(error)}`),
-      };
+      if (
+        error instanceof OmpRpcSteerRejectedError ||
+        error instanceof OmpRpcUnsupportedCommandError
+      ) {
+        return {
+          ok: false,
+          error: invalidState(`Omp native steer failed: ${errorMessage(error)}`),
+        };
+      }
+      // An unconfirmed write may already have delivered input; it cannot authorize a resend.
+      throw error;
     }
     return { ok: true, value: { accepted: true } };
   }

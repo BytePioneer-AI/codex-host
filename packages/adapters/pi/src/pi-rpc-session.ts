@@ -195,6 +195,14 @@ export class PiRpcUnsupportedCommandError extends Error {
   }
 }
 
+/** The native RPC explicitly refused steering without accepting its input. */
+export class PiRpcSteerRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PiRpcSteerRejectedError";
+  }
+}
+
 export interface PiRpcSessionOptions {
   cwd: string;
   command?: string;
@@ -1713,8 +1721,18 @@ export class PiRpcSession {
     if (value.success === true) pending.resolve(value);
     else {
       const error = typeof value.error === "string" ? value.error : "Pi RPC command failed";
-      if (value.command === pending.command && error === `Unknown command: ${pending.command}`) {
+      if (
+        value.success === false &&
+        value.command === pending.command &&
+        error === `Unknown command: ${pending.command}`
+      ) {
         pending.reject(new PiRpcUnsupportedCommandError(pending.command));
+      } else if (
+        value.success === false &&
+        pending.command === "steer" &&
+        value.command === pending.command
+      ) {
+        pending.reject(new PiRpcSteerRejectedError(error));
       } else {
         pending.reject(new Error(error));
       }

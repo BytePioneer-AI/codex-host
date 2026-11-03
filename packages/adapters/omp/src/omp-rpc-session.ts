@@ -171,6 +171,14 @@ export class OmpRpcUnsupportedCommandError extends Error {
   }
 }
 
+/** The native RPC explicitly refused steering without accepting its input. */
+export class OmpRpcSteerRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OmpRpcSteerRejectedError";
+  }
+}
+
 export interface OmpRpcSessionOptions {
   cwd: string;
   command?: string;
@@ -1651,8 +1659,18 @@ export class OmpRpcSession {
       pending.resolve(value);
     } else {
       const error = typeof value.error === "string" ? value.error : "Omp RPC command failed";
-      if (value.command === pending.command && error === `Unknown command: ${pending.command}`) {
+      if (
+        value.success === false &&
+        value.command === pending.command &&
+        error === `Unknown command: ${pending.command}`
+      ) {
         pending.reject(new OmpRpcUnsupportedCommandError(pending.command));
+      } else if (
+        value.success === false &&
+        pending.command === "steer" &&
+        value.command === pending.command
+      ) {
+        pending.reject(new OmpRpcSteerRejectedError(error));
       } else {
         pending.reject(new Error(error));
       }

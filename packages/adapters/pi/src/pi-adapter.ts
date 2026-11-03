@@ -105,6 +105,7 @@ import { PiSessionImportIndex } from "./pi-session-import.js";
 import { SessionImportScope } from "@codexhost/harness-adapter/session-import";
 import {
   PiRpcFaultError,
+  PiRpcSteerRejectedError,
   PiRpcBusyError,
   PiRpcSession,
   PiRpcUnsupportedCommandError,
@@ -175,7 +176,7 @@ export interface PiTurnTransport {
     onEvent: (event: PiTurnEvent) => void,
   ): Promise<PiCompactResult>;
   runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult>;
-  /** Native same-Turn input; present on transports backed by Pi's `steer` RPC. */
+  /** Native same-Turn input; unconfirmed delivery errors must propagate to the caller. */
   steer?(text: string): Promise<void>;
   respondToInteraction(response: PiInteractionResponse): Promise<void>;
   abort(): Promise<void>;
@@ -994,10 +995,17 @@ class PiHarnessSession implements HarnessSession {
     try {
       await transport.steer(text);
     } catch (error) {
-      return {
-        ok: false,
-        error: invalidState(`Pi native steer failed: ${errorMessage(error)}`),
-      };
+      if (
+        error instanceof PiRpcSteerRejectedError ||
+        error instanceof PiRpcUnsupportedCommandError
+      ) {
+        return {
+          ok: false,
+          error: invalidState(`Pi native steer failed: ${errorMessage(error)}`),
+        };
+      }
+      // An unconfirmed write may already have delivered input; it cannot authorize a resend.
+      throw error;
     }
     return { ok: true, value: { accepted: true } };
   }

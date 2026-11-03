@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   OmpRpcSession,
+  OmpRpcSteerRejectedError,
   ompRpcProcessCommand,
   type OmpRpcProcessAdapter,
   type OmpTurnEvent,
@@ -2473,4 +2474,40 @@ describe("OMP RPC session", () => {
     );
     await session.close();
   });
+});
+
+it.each([
+  { label: "explicit native refusal", response: { success: false, error: "Busy" }, refused: true },
+  { label: "lost acknowledgement", response: null, refused: false },
+  {
+    label: "mismatched command",
+    response: { command: "prompt", success: false, error: "Busy" },
+    refused: false,
+  },
+  { label: "missing failure status", response: { error: "Busy" }, refused: false },
+])("Omp steer distinguishes $label from confirmed non-delivery", async ({ response, refused }) => {
+  const fake = new FakeOmpProcess();
+  fake.promptHandler = (command) =>
+    fake.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+  fake.handleCommand = (command) => {
+    if (command.type !== "steer") return false;
+    if (response)
+      fake.sendFrame({ type: "response", id: command.id, command: "steer", ...response });
+    return true;
+  };
+  const session = new OmpRpcSession(
+    { cwd: "/synthetic", commandTimeoutMs: 20 },
+    { spawn: () => fake as never },
+  );
+  try {
+    await session.start();
+    void session.runTurn("first", () => undefined).catch(() => undefined);
+    const error = await session.steer("second").catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(Error);
+    if (refused) expect(error).toBeInstanceOf(OmpRpcSteerRejectedError);
+    else expect(error).not.toBeInstanceOf(OmpRpcSteerRejectedError);
+    expect(fake.commands.filter((command) => command.type === "steer")).toHaveLength(1);
+  } finally {
+    await session.close();
+  }
 });

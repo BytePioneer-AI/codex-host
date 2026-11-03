@@ -44,6 +44,8 @@ import { encodePiModelRef } from "../src/pi-model-catalog.js";
 import type { PiNativeCommand } from "../src/pi-slash-commands.js";
 import {
   PiRpcFaultError,
+  PiRpcSteerRejectedError,
+  PiRpcUnsupportedCommandError,
   type PiAutonomousTurn,
   type PiCompactResult,
   type PiInteractionResponse,
@@ -4189,4 +4191,61 @@ describe("Pi HarnessAdapter Session", () => {
       undefined,
     ]);
   });
+});
+
+describe("Pi native steer delivery", () => {
+  it("propagates an unconfirmed delivery instead of reporting that input was refused", async () => {
+    const f = fixture();
+    const session = await openSession(f.adapter);
+    try {
+      await session.execute(textTurn("steer-timeout"));
+      const transport = f.transports[0];
+      if (!transport) throw new Error("Fake transport was not opened");
+      const timeout = new Error("Pi RPC 'steer' command timed out");
+      const steer = vi.fn<NonNullable<PiTurnTransport["steer"]>>(async () => {
+        throw timeout;
+      });
+      Object.assign(transport, { steer });
+      await expect(
+        session.execute({
+          type: "turn.steer",
+          turnId: hostTurnIdSchema.parse("steer-timeout"),
+          input: [{ type: "text", text: "already written" }],
+        }),
+      ).rejects.toBe(timeout);
+      expect(steer).toHaveBeenCalledExactlyOnceWith("already written");
+      expect(transport.abort).not.toHaveBeenCalled();
+    } finally {
+      await f.adapter.close();
+    }
+  });
+});
+
+it.each([
+  { label: "accepted", error: null },
+  { label: "refused", error: new PiRpcSteerRejectedError("Native steer refused") },
+  { label: "unsupported", error: new PiRpcUnsupportedCommandError("steer") },
+])("classifies native Pi steer $label responses", async ({ error }) => {
+  const f = fixture();
+  const session = await openSession(f.adapter);
+  const turnId = hostTurnIdSchema.parse("native-steer");
+  await session.execute(textTurn("native-steer"));
+  const transport = f.transports[0];
+  if (!transport) throw new Error("Fake transport was not opened");
+  const steer = vi.fn<NonNullable<PiTurnTransport["steer"]>>(async () => {
+    if (error) throw error;
+  });
+  Object.assign(transport, { steer });
+  try {
+    const result = await session.execute({
+      type: "turn.steer",
+      turnId,
+      input: [{ type: "text", text: "second" }],
+    });
+    if (error) expect(result).toMatchObject({ ok: false, error: { code: "invalidState" } });
+    else expect(result).toEqual({ ok: true, value: { accepted: true } });
+    expect(steer).toHaveBeenCalledExactlyOnceWith("second");
+  } finally {
+    await f.adapter.close();
+  }
 });

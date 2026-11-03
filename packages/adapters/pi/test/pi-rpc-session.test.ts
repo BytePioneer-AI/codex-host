@@ -14,6 +14,7 @@ import { CodexTurnProjector } from "@codexhost/protocol-core";
 
 import {
   PiRpcSession,
+  PiRpcSteerRejectedError,
   piRpcProcessCommand,
   type PiAutonomousTurn,
   type PiRpcProcessAdapter,
@@ -81,6 +82,7 @@ class FakePiRpcProcess extends EventEmitter {
   fastEnabled = false;
   readonly commands: string[] = [];
   readonly commandFrames: Record<string, unknown>[] = [];
+  steerReply: Record<string, unknown> | null = { success: true, data: { disposition: "queued" } };
   holdEntries = false;
   holdStates = false;
   holdAborts = false;
@@ -282,7 +284,8 @@ class FakePiRpcProcess extends EventEmitter {
       return;
     }
     if (command.type === "steer") {
-      this.#respond(command, { disposition: "queued" });
+      if (this.steerReply)
+        this.#output({ type: "response", id: command.id, command: "steer", ...this.steerReply });
       return;
     }
     if (command.type === "get_state" && this.holdStates) {
@@ -3479,4 +3482,33 @@ describe("Pi RPC Turn aggregation", () => {
     );
     await rpc.close();
   });
+});
+
+it.each([
+  { label: "explicit native refusal", response: { success: false, error: "Busy" }, refused: true },
+  { label: "lost acknowledgement", response: null, refused: false },
+  {
+    label: "mismatched command",
+    response: { command: "prompt", success: false, error: "Busy" },
+    refused: false,
+  },
+  { label: "missing failure status", response: { error: "Busy" }, refused: false },
+])("Pi steer distinguishes $label from confirmed non-delivery", async ({ response, refused }) => {
+  const fake = new FakePiRpcProcess("manual-run");
+  fake.steerReply = response;
+  const session = new PiRpcSession(
+    { cwd: process.cwd(), commandTimeoutMs: 20 },
+    { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+  );
+  try {
+    await session.start();
+    void session.runTurn("first", () => undefined).catch(() => undefined);
+    const error = await session.steer("second").catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(Error);
+    if (refused) expect(error).toBeInstanceOf(PiRpcSteerRejectedError);
+    else expect(error).not.toBeInstanceOf(PiRpcSteerRejectedError);
+    expect(fake.commandFrames.filter((command) => command.type === "steer")).toHaveLength(1);
+  } finally {
+    await session.close();
+  }
 });

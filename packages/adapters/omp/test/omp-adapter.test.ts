@@ -29,7 +29,11 @@ import type {
   OmpTurnEvent,
   OmpTurnResult,
 } from "../src/omp-rpc-session.js";
-import { OmpRpcFaultError } from "../src/omp-rpc-session.js";
+import {
+  OmpRpcFaultError,
+  OmpRpcSteerRejectedError,
+  OmpRpcUnsupportedCommandError,
+} from "../src/omp-rpc-session.js";
 import { encodeOmpModelRef, type OmpNativeModel } from "../src/omp-model-catalog.js";
 
 class FakeOmpTransport implements OmpTurnTransport {
@@ -1999,4 +2003,71 @@ describe("OMP Adapter Subagents", () => {
     await opened.value.close();
     await adapter.close();
   });
+});
+
+describe("OMP native steer delivery", () => {
+  it("propagates an unconfirmed delivery instead of reporting that input was refused", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const timeout = new Error("Omp RPC 'steer' command timed out");
+    const steer = vi.fn<NonNullable<OmpTurnTransport["steer"]>>(async () => {
+      throw timeout;
+    });
+    const native: OmpTurnTransport = Object.assign(transport, { steer });
+    const abort = vi.spyOn(transport, "abort");
+    const adapter = new OmpAdapter({}, { createTransport: () => native });
+    try {
+      const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const session = opened.value;
+      const turnId = "steer-timeout" as HostTurnId;
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "first" }],
+      });
+      await expect(
+        session.execute({
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "already written" }],
+        }),
+      ).rejects.toBe(timeout);
+      expect(steer).toHaveBeenCalledExactlyOnceWith("already written");
+      expect(abort).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+});
+
+it.each([
+  { label: "accepted", error: null },
+  { label: "refused", error: new OmpRpcSteerRejectedError("Native steer refused") },
+  { label: "unsupported", error: new OmpRpcUnsupportedCommandError("steer") },
+])("classifies native Omp steer $label responses", async ({ error }) => {
+  const transport = new FakeOmpTransport();
+  transport.autoCompleteTurn = false;
+  const steer = vi.fn<NonNullable<OmpTurnTransport["steer"]>>(async () => {
+    if (error) throw error;
+  });
+  const native: OmpTurnTransport = Object.assign(transport, { steer });
+  const adapter = new OmpAdapter({}, { createTransport: () => native });
+  const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+  if (!opened.ok) throw new Error(opened.error.message);
+  const session = opened.value;
+  const turnId = "native-steer" as HostTurnId;
+  await session.execute({ type: "turn.start", turnId, input: [{ type: "text", text: "first" }] });
+  try {
+    const result = await session.execute({
+      type: "turn.steer",
+      turnId,
+      input: [{ type: "text", text: "second" }],
+    });
+    if (error) expect(result).toMatchObject({ ok: false, error: { code: "invalidState" } });
+    else expect(result).toEqual({ ok: true, value: { accepted: true } });
+    expect(steer).toHaveBeenCalledExactlyOnceWith("second");
+  } finally {
+    await adapter.close();
+  }
 });

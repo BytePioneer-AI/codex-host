@@ -231,8 +231,14 @@ Thread 观察命令 SHALL 接受裸 Thread 标识与 Codex 深度链接，并可
 
 #### Scenario: 恢复后会话尚未就绪
 - **WHEN** Host Runtime 刚恢复 watch，持有被观察 Thread 的会话尚未重新注册
-- **THEN** 这期间的读取失败 MUST NOT 计入 60 秒 `unreadable` 宽限
-- **AND** 宽限 SHALL 从 Runtime 重新具备读取该 Thread 的会话后开始计算
+- **THEN** 这期间的读取失败 MUST NOT 计入 60 秒 `unreadable` 宽限，也 MUST NOT 报告 `notFound` 或 `timedOut`
+- **AND** 宽限 SHALL 从 Runtime 重新具备读取该 Thread 的会话后开始计算；会话 5 分钟内仍未注册时，从 5 分钟期满起计算
+- **AND** 恢复的待投递通知 SHALL 等被通知 Thread 可读后再投递
+
+#### Scenario: 多个 Runtime 共用数据目录
+- **WHEN** 同一 OS 用户同时运行多个 Host Runtime 进程，例如 Desktop 与远程监听
+- **THEN** 每个 watch SHALL 只由一个 Runtime 观察和投递
+- **AND** 某个 Runtime 退出后，它的 watch SHALL 由之后启动的 Runtime 接管，且只被接管一次
 
 #### Scenario: 停机时投递正在进行
 - **WHEN** Host Runtime 在一次投递已开始、结果尚未记录时退出

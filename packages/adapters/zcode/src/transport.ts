@@ -70,6 +70,9 @@ export class CliTransport {
   get startPlanChecked() {
     return this.#startPlanChecked;
   }
+  get codingPlanIssue() {
+    return this.#codingPlan?.issue;
+  }
   constructor(readonly options: TransportOptions) {
     this.#context = {
       workspace: { workspacePath: options.cwd, workspaceKey: options.cwd },

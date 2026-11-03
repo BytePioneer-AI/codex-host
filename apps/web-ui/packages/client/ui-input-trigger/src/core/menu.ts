@@ -109,7 +109,7 @@ const allReadyEmpty = (groups: MenuState["groups"]): boolean =>
  * @param ev - Menu event.
  * @returns Next state; the same reference when stale or a no-op.
  */
-export const menuReduce: MenuReduce = (state, ev) => {
+export const menuReduce: MenuReduce = (state, ev, keepEmptyOpen = false) => {
   switch (ev.type) {
     case "hit": {
       if (ev.hit === null) return closed(state);
@@ -134,7 +134,7 @@ export const menuReduce: MenuReduce = (state, ev) => {
       const groups = state.groups.map((g, i) =>
         i === idx ? { ...g, status: "ready" as const, items } : g,
       );
-      if (allReadyEmpty(groups)) return closed(state);
+      if (allReadyEmpty(groups) && !keepEmptyOpen) return closed(state);
       const highlight = validHighlight(state.highlight, groups) ?? firstHighlight(groups);
       return { ...state, groups, highlight };
     }
@@ -142,7 +142,7 @@ export const menuReduce: MenuReduce = (state, ev) => {
       if (!state.open || ev.generation !== state.generation) return state;
       if (!state.groups.some((g) => g.source === ev.source)) return state;
       const groups = state.groups.filter((g) => g.source !== ev.source);
-      if (groups.length === 0 || allReadyEmpty(groups)) return closed(state);
+      if ((groups.length === 0 || allReadyEmpty(groups)) && !keepEmptyOpen) return closed(state);
       const highlight = validHighlight(state.highlight, groups) ?? firstHighlight(groups);
       return { ...state, groups, highlight };
     }

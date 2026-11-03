@@ -224,9 +224,7 @@ export class InputTriggerController {
     this.stopFetch();
     this.hit = hit;
     this.launcher.set(source);
-    const roster = this.deps.roster
-      .sources(hit.trigger)
-      .filter((item) => item === match || item.launcher === source);
+    const roster = this.menuSources(hit);
     this.menuEpoch = {};
     this.menu.set(seedGroups(this.menu.getSnapshot(), roster));
     this.reduce({ type: "hit", hit });
@@ -249,7 +247,7 @@ export class InputTriggerController {
     const candidate =
       group !== undefined && group.status === "ready" ? group.items[index] : undefined;
     if (candidate === undefined) return;
-    const src = this.deps.roster.sources(hit.trigger).find((s) => s.name === source);
+    const src = this.menuSources(hit).find((s) => s.name === source);
     if (src === undefined) return;
     this.settle(src, candidate, hit, action);
   }
@@ -266,7 +264,7 @@ export class InputTriggerController {
     if (this.disposed || !this.menu.getSnapshot().open || hit === null) return;
     const crumb = this.headers.getSnapshot().get(source)?.[index];
     if (crumb === undefined || crumb.current === true) return;
-    const src = this.deps.roster.sources(hit.trigger).find((s) => s.name === source);
+    const src = this.menuSources(hit).find((s) => s.name === source);
     if (src === undefined) return;
     this.settle(src, { name: crumb.label, value: crumb.value }, hit, "drill");
   }
@@ -444,7 +442,12 @@ export class InputTriggerController {
    */
   sourceRemoved(source: InputTriggerSource): void {
     const state = this.menu.getSnapshot();
-    if (state.open && state.hit !== null && sourceMatchesTrigger(source, state.hit.trigger)) {
+    if (
+      state.open &&
+      state.hit !== null &&
+      (sourceMatchesTrigger(source, state.hit.trigger) ||
+        source.launcher === this.launcher.getSnapshot())
+    ) {
       this.reduce({ type: "source-failed", generation: state.generation, source: source.name });
     }
     this.lexiconOffs.get(source)?.();
@@ -477,14 +480,32 @@ export class InputTriggerController {
   /** Re-fetch the currently open menu without changing its hit or visible rows. */
   refreshOpenMenu(): void {
     if (this.disposed || !this.menu.getSnapshot().open || this.hit === null) return;
-    const launched = this.launcher.getSnapshot();
-    const roster = this.deps.roster
-      .sources(this.hit.trigger)
-      .filter(
-        (source) => launched === null || source.name === launched || source.launcher === launched,
-      );
+    const roster = this.menuSources(this.hit);
     if (roster.length === 0) return;
     this.fetchCandidates(this.hit, roster);
+  }
+
+  /** Filter a launcher menu without changing the Composer selection or draft. */
+  searchLauncher(query: string): void {
+    if (this.disposed || this.launcher.getSnapshot() === null || this.hit === null) return;
+    if (this.hit.query === query) return;
+    const hit = { ...this.hit, query };
+    this.hit = hit;
+    this.reduce({ type: "hit", hit });
+    const roster = this.menuSources(hit);
+    this.refreshHeaders(hit, roster);
+    this.fetchCandidates(hit, roster);
+  }
+
+  /** Launcher membership is independent of a source's typed trigger aliases. */
+  private menuSources(hit: TriggerHit): readonly InputTriggerSource[] {
+    const launcher = this.launcher.getSnapshot();
+    if (launcher === null) return this.deps.roster.sources(hit.trigger);
+    const owner = this.deps.roster.sources(hit.trigger).find((source) => source.name === launcher);
+    return this.deps.roster
+      .all()
+      .filter((source) => source === owner || source.launcher === launcher)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   }
 
   /** Scope teardown: close and abort (the service deletes the map entry). */
@@ -560,14 +581,14 @@ export class InputTriggerController {
         if (
           hit === null ||
           !this.menu.getSnapshot().open ||
-          !sourceMatchesTrigger(source, hit.trigger)
+          !this.menuSources(hit).includes(source)
         )
           return;
         // Let every source process the same invalidation before rebuilding the
         // open menu, so one source cannot contribute its previous catalog.
         void Promise.resolve().then(() => {
           if (this.disposed || this.hit !== hit || !this.menu.getSnapshot().open) return;
-          this.fetchCandidates(hit, this.deps.roster.sources(hit.trigger));
+          this.fetchCandidates(hit, this.menuSources(hit));
         });
       }),
     );
@@ -711,7 +732,7 @@ export class InputTriggerController {
 
   private reduce(ev: MenuEvent): void {
     const cur = this.menu.getSnapshot();
-    const next = menuReduce(cur, ev);
+    const next = menuReduce(cur, ev, this.launcher.getSnapshot() !== null);
     if (next !== cur) this.menu.set(next);
     if (next.open) return;
     this.clearLauncher();

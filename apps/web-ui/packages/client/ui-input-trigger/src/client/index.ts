@@ -104,6 +104,14 @@ export function apply(ctx: ClientContext): void {
             const controller = inputTriggers.sessionOf(actx);
             return {
               menu: controller.menu,
+              launcher: controller.launcher,
+              onSearch: (query) => controller.searchLauncher(query),
+              onSearchKey: (key, composing) => {
+                const outcome = controller.arbitrate(key, composing);
+                if ((key === "escape" || key === "tabBack") && outcome !== "pass")
+                  actx.get("conversation")?.input.for(actx).focus();
+                return outcome;
+              },
               headers: controller.headers,
               onPick: (source, index, action) => {
                 controller.pick(source, index, action);

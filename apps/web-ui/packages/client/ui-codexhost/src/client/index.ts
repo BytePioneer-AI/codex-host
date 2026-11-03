@@ -13,6 +13,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import { registerHarnessDiscovery } from "./harness-discovery.tsx";
+import { registerThreadReferenceDiscovery } from "./thread-reference-discovery.ts";
 import { desktopScreenshotApi, sentMessageEditApi, voiceApi } from "./api.ts";
 import { DesktopScreenshot } from "./desktop-screenshot.ts";
 import {
@@ -41,7 +42,6 @@ import type {
 } from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-ui-input-trigger/client";
 import {
-  THREAD_REFERENCE_SOURCE,
   THREAD_LINK_PATTERN,
   localThreadId,
   threadReferenceOf,
@@ -74,6 +74,7 @@ export const inject = [
   "locale",
   "layout",
   "uiWorkspace",
+  "workspaces",
   "sessions",
   "remote",
   "inputTriggers",
@@ -215,21 +216,7 @@ export function apply(ctx: ClientContext): void {
       },
     ),
   });
-  ctx.effect(
-    () =>
-      ctx.inputTriggers.registerSource({
-        trigger: "@",
-        aliases: ["#"],
-        name: THREAD_REFERENCE_SOURCE,
-        candidates: async () => [],
-        onPick: () => undefined,
-        codec: {
-          clipboardText: (ref) => ref,
-          serialize: async (ref) => ref,
-        },
-      }),
-    "ui-codexhost: Thread reference text codec",
-  );
+  registerThreadReferenceDiscovery(ctx);
   const face = {
     openSession: (sessionId: string) => {
       ctx.uiWorkspace.openSession(sessionId as SessionId);

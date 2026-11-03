@@ -39,7 +39,7 @@ export type DetectTrigger = (
   guard: TriggerGuard,
 ) => TriggerHit | null;
 
-/** Menu state: one group per source; empty ready groups auto-close the menu. */
+/** Menu state: one group per source; typed menus auto-close when all ready groups are empty. */
 export interface MenuState {
   readonly open: boolean;
   readonly hit: TriggerHit | null;
@@ -69,8 +69,8 @@ export type MenuEvent =
   | { readonly type: "hover"; readonly source: string; readonly index: number }
   | { readonly type: "close" };
 
-/** Pure menu reducer; returns the same reference when the event is stale or a no-op. */
-export type MenuReduce = (state: MenuState, ev: MenuEvent) => MenuState;
+/** Pure menu reducer; launcher search can stay open with no matches. */
+export type MenuReduce = (state: MenuState, ev: MenuEvent, keepEmptyOpen?: boolean) => MenuState;
 
 /**
  * Exact-name lookup in one source's ready group; null when absent or the

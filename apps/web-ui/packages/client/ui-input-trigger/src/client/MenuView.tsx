@@ -7,7 +7,8 @@
  * rows only while it has none; pointer picks route back through
  * the service (combobox pattern — focus never leaves the textarea, so rows
  * are mousedown-handled and the highlight is exposed via
- * aria-activedescendant on the listbox). A row reads title, then the
+ * aria-activedescendant on the listbox). Programmatic launchers also offer
+ * a search field that filters candidates without editing the Composer. A row reads title, then the
  * command-name alias when the title differs beyond letter case or a leading
  * slash (a localized title) and the source allows it, then the description right-aligned.
  * A source publishing crumbs gets a breadcrumb
@@ -22,6 +23,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -30,6 +32,7 @@ import {
 import clsx from "clsx";
 import {
   IconChevronRightOutlineRegular,
+  IconSearchOutlineRegular,
   ReferenceIconRegular,
   useAnchoredMaxHeight,
 } from "@deepseek-ai/dsh-client-ui-primitives";
@@ -61,7 +64,22 @@ function optionId(source: string, index: number): string {
  * @param props - injected face (the menu store and the pick route); `t` rides the standard locale seat.
  * @returns the dropdown while open; null while closed.
  */
-export function MenuView({ menu, headers, onPick, onCrumb, onHover, onDismiss, t }: MenuViewProps) {
+export function MenuView({
+  menu,
+  launcher,
+  onSearch,
+  onSearchKey,
+  headers,
+  onPick,
+  onCrumb,
+  onHover,
+  onDismiss,
+  t,
+}: MenuViewProps) {
+  const activeLauncher = useSyncExternalStore(
+    (fn) => launcher.subscribe(fn),
+    () => launcher.getSnapshot(),
+  );
   const state = useSyncExternalStore(
     (fn) => menu.subscribe(fn),
     () => menu.getSnapshot(),
@@ -70,6 +88,7 @@ export function MenuView({ menu, headers, onPick, onCrumb, onHover, onDismiss, t
     (fn) => headers.subscribe(fn),
     () => headers.getSnapshot(),
   );
+  const listboxId = useId();
   const listRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const [hasOverflowBelow, setHasOverflowBelow] = useState(false);
@@ -127,6 +146,45 @@ export function MenuView({ menu, headers, onPick, onCrumb, onHover, onDismiss, t
       data-trigger-menu=""
       data-overflow-below={hasOverflowBelow || undefined}
     >
+      {activeLauncher !== null && (
+        <label className={css.search}>
+          <IconSearchOutlineRegular size={16} />
+          <input
+            type="search"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls={listboxId}
+            aria-activedescendant={
+              highlight === null ? undefined : optionId(highlight.source, highlight.index)
+            }
+            aria-label={t("search.aria")}
+            placeholder={t("search.placeholder")}
+            value={state.hit?.query ?? ""}
+            onChange={(event) => onSearch(event.target.value)}
+            onKeyDown={(event) => {
+              const key =
+                event.key === "ArrowUp"
+                  ? "up"
+                  : event.key === "ArrowDown"
+                    ? "down"
+                    : event.key === "Enter"
+                      ? "enter"
+                      : event.key === "Escape"
+                        ? "escape"
+                        : event.key === "Tab"
+                          ? event.shiftKey
+                            ? "tabBack"
+                            : "tab"
+                          : undefined;
+              if (key === undefined) return;
+              if (onSearchKey(key, event.nativeEvent.isComposing) !== "pass") {
+                event.preventDefault();
+                event.stopPropagation();
+              }
+            }}
+          />
+        </label>
+      )}
       {state.groups.map((group) => {
         const trail = crumbs.get(group.source);
         return trail === undefined ? null : (
@@ -158,6 +216,7 @@ export function MenuView({ menu, headers, onPick, onCrumb, onHover, onDismiss, t
       })}
       <div
         ref={viewportRef}
+        id={listboxId}
         className={css.viewport}
         role="listbox"
         aria-label={t("suggestions.aria")}
@@ -166,6 +225,12 @@ export function MenuView({ menu, headers, onPick, onCrumb, onHover, onDismiss, t
         }
         onScroll={updateOverflowHint}
       >
+        {activeLauncher !== null &&
+          state.groups.every((group) => group.status === "ready" && group.items.length === 0) && (
+            <div className={css.empty} role="status">
+              {t("search.empty")}
+            </div>
+          )}
         {state.groups.flatMap((group) => {
           if (group.status === "ready" && group.items.length === 0) return [];
           const sectioned = group.items.some((item) => item.section !== undefined);

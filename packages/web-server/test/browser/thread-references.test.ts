@@ -5,8 +5,9 @@ import { it, type TestContext } from "node:test";
 import { chromium, type Page } from "playwright";
 import { FakeChHost, startFakeChDebugger } from "../support/ch-host.ts";
 import { startServer } from "../support/server.ts";
+import { discoveryBrowser } from "../support/discovery-browser.ts";
 
-async function setup(t: TestContext) {
+async function setup(t: TestContext, width = 1280) {
   const host = new FakeChHost();
   host.add("reference-a", "/computer/project", "Same title");
   host.add("reference-b", "/computer/project", "Same title");
@@ -30,15 +31,17 @@ async function setup(t: TestContext) {
   const browser = await chromium.launch();
   t.after(() => browser.close());
   const page = await browser.newPage({
-    viewport: { width: 1280, height: 900 },
+    viewport: { width, height: 900 },
     permissions: ["clipboard-read", "clipboard-write"],
   });
-  await page.goto(url);
-  await page.getByText("Native Model", { exact: true }).waitFor();
-  const folder = page.locator('[data-row-key^="workspace:"]').filter({ hasText: /^project$/ });
-  if ((await folder.getAttribute("aria-expanded")) === "false") await folder.click();
-  await page.locator('[data-row-key="session:destination"]').click();
+  const destination = new URL(url);
+  destination.searchParams.set("session", "destination");
+  await page.goto(destination.href);
   await page.locator('[data-conversation-session="destination"] [data-composer-input]').waitFor();
+  if (width >= 640) {
+    const folder = page.locator('[data-row-key^="workspace:"]').filter({ hasText: /^project$/ });
+    if ((await folder.getAttribute("aria-expanded")) === "false") await folder.click();
+  }
   return { host, page };
 }
 
@@ -50,6 +53,273 @@ async function shot(page: Page, name: string) {
     animations: "disabled",
   });
 }
+
+for (const [trigger, width] of [
+  ["@", 1280],
+  ["@", 390],
+  ["#", 1280],
+  ["#", 390],
+] as const)
+  it(
+    `${trigger} searches refreshed Threads and inserts drag-equivalent references at ${width}px`,
+    { timeout: 60_000 },
+    async (t) => {
+      const { page, host } = await setup(t, width);
+      const composer = page.locator("[data-composer-input]");
+      const menu = page.getByRole("listbox", { name: "Trigger suggestions", exact: true });
+      const options = menu.locator('[role="option"][id*="codexhost-thread"]');
+      const chip = composer.locator('[data-composer-chip="codexhost-thread"]');
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      // These are added after the browser baseline, with no catalog notification.
+      host.add("late-reference-a", "/computer/another", "Mention target [one]");
+      host.add("late-reference-b", "/computer/another", "Mention target [one]");
+      const listReads: string[] = [];
+      page.on("request", (request) => {
+        if (request.url().endsWith("/api/session/list")) listReads.push(request.url());
+      });
+      await composer.fill(`before ${trigger}Mention`);
+      await options.filter({ hasText: "late-reference-a" }).waitFor();
+      await page.waitForFunction(
+        () => document.querySelectorAll('[role="option"][id*="codexhost-thread"]').length === 2,
+      );
+      assert.equal(await options.count(), 2, "same titles retain distinct identities");
+      await composer.pressSequentially(" target");
+      // An unquoted space closes the token; quoted queries support titles with spaces.
+      await menu.waitFor({ state: "hidden" });
+      await composer.fill(`before ${trigger}\"Mention target`);
+      await options.filter({ hasText: "late-reference-a" }).waitFor();
+      const reads = listReads.length;
+      await composer.pressSequentially(" [one]");
+      await options.filter({ hasText: "late-reference-a" }).waitFor();
+      assert.equal(listReads.length, reads, "typing shares this opening's catalog refresh");
+      await shot(page, `thread-reference-mention-${trigger === "@" ? "at" : "hash"}-${width}`);
+      await options.filter({ hasText: "late-reference-b" }).click();
+      await chip.waitFor();
+      assert.equal(await chip.innerText(), "Mention target [one]");
+      assert.equal(
+        (await composer.innerText()).replace(/\s+/gu, " ").trim(),
+        "before Mention target [one]",
+      );
+      assert.equal(await composer.evaluate((element) => element === document.activeElement), true);
+      assert.equal(host.requests.filter((request) => request.method === "turn/start").length, 0);
+      await composer.press("ControlOrMeta+z");
+      await chip.waitFor({ state: "detached" });
+      await composer.press("ControlOrMeta+Shift+z");
+      await chip.waitFor();
+      await composer.pressSequentially("after");
+      assert.equal(
+        (await composer.innerText()).replace(/\s+/gu, " "),
+        "before Mention target [one] after",
+      );
+      await composer.press("ControlOrMeta+a");
+      await composer.press("ControlOrMeta+c");
+      const text = await page.evaluate(() => navigator.clipboard.readText());
+      assert.equal(
+        text.trim(),
+        "before [@Mention target \\[one\\]](thread://late-reference-b?hostId=local) after",
+      );
+      await page.reload();
+      await chip.waitFor();
+      const submitted = page.waitForResponse((response) =>
+        response.url().endsWith("/api/session/prompt"),
+      );
+      await page.getByRole("button", { name: "Send message", exact: true }).click();
+      assert.equal((await submitted).status(), 200);
+      await chip.waitFor({ state: "detached" });
+      const sent = host.requests.find((request) => request.method === "turn/start");
+      assert.ok(sent);
+      assert.deepEqual(structuredClone(sent.params.input), [
+        { type: "text", text: text.trim(), text_elements: [] },
+      ]);
+      assert.deepEqual(errors, []);
+    },
+  );
+
+for (const trigger of ["@", "#"])
+  it(
+    `${trigger} shows five recent Thread suggestions, searches all matches and excludes unsupported Threads`,
+    { timeout: 60_000 },
+    async (t) => {
+      const { page, host } = await setup(t);
+      const composer = page.locator("[data-composer-input]");
+      const options = page.locator('[role="option"][id*="codexhost-thread"]');
+      host.add("archived-reference", "/computer/project", "Archived");
+      host.archivedIds.add("archived-reference");
+      host.add("official-reference", "/computer/project", "Official").modelProvider = "openai";
+      for (let i = 0; i < 25; i++)
+        host.add(`bounded-${i}`, "/computer/mention-workspace", `Other ${i}`).updatedAt = 3000 + i;
+      await composer.fill(trigger);
+      await options.first().waitFor();
+      assert.equal(await options.count(), 5);
+      const recent = await options.allTextContents();
+      for (let i = 0; i < 5; i++) assert.ok(recent[i]?.includes(`bounded-${24 - i}`));
+      await composer.fill(`${trigger}mention-workspace`);
+      await page.waitForFunction(
+        () => document.querySelectorAll('[role="option"][id*="codexhost-thread"]').length === 25,
+      );
+      assert.equal(await options.count(), 25);
+      assert.ok(
+        (await options.allTextContents()).every((text) => text.includes("mention-workspace")),
+      );
+      await composer.fill(trigger);
+      await page.waitForFunction(
+        () => document.querySelectorAll('[role="option"][id*="codexhost-thread"]').length === 5,
+      );
+      assert.equal(await options.count(), 5, "clearing the query restores the recent limit");
+      await composer.fill(`${trigger}project`);
+      await options.filter({ hasText: "reference-a" }).waitFor();
+      assert.equal(await options.count(), 2);
+      assert.equal(await options.filter({ hasText: "destination" }).count(), 0);
+      assert.equal(await options.filter({ hasText: "archived-reference" }).count(), 0);
+      assert.equal(await options.filter({ hasText: "official-reference" }).count(), 0);
+      await composer.fill("/");
+      await page.getByRole("option", { name: /^File\b/u }).waitFor();
+      assert.equal(await options.count(), 0, "slash does not offer Thread references");
+      assert.equal(host.requests.filter((request) => request.method === "turn/start").length, 0);
+    },
+  );
+
+for (const width of [390, 1280])
+  it(
+    `plus menu searches and inserts Thread references at ${width}px`,
+    { timeout: 60_000 },
+    async (t) => {
+      const { page, host, composer, menu, attach, writeMethods } = await discoveryBrowser(
+        t,
+        width,
+        true,
+      );
+      for (let i = 0; i < 25; i++)
+        host.add(`plus-reference-${i}`, "/computer/another", `Plus target ${i}`).updatedAt =
+          3000 + i;
+      await composer.fill("before after");
+      await attach();
+      await composer.press("Home");
+      for (let i = 0; i < 7; i++) await composer.press("ArrowRight");
+      const plus = page.getByRole("button", { name: "Add files or run commands", exact: true });
+      const options = menu.locator('[role="option"][id*="codexhost-thread"]');
+      const search = page.getByRole("combobox", { name: "Search menu", exact: true });
+      await plus.click();
+      await options.first().waitFor();
+      assert.equal(await options.count(), 5);
+      await menu.getByRole("option", { name: /^File\b/u }).waitFor();
+      assert.equal(await menu.locator('[id*="codexhost-delegation"]').count(), 0);
+      assert.equal(await composer.innerText(), "before after");
+      await search.fill("Plus target");
+      await page.waitForFunction(
+        () => document.querySelectorAll('[role="option"][id*="codexhost-thread"]').length === 25,
+      );
+      assert.equal(await composer.innerText(), "before after", "search does not edit the draft");
+      await search.fill("");
+      await page.waitForFunction(
+        () => document.querySelectorAll('[role="option"][id*="codexhost-thread"]').length === 5,
+      );
+      await search.fill("no-such-thread-or-command");
+      await page.getByText("No matches", { exact: true }).waitFor();
+      assert.equal(await search.isVisible(), true, "empty search stays editable");
+      await search.press("Escape");
+      await menu.waitFor({ state: "hidden" });
+      assert.equal(await composer.evaluate((element) => element === document.activeElement), true);
+      await plus.click();
+      await options.first().waitFor();
+      assert.equal(await search.inputValue(), "");
+      await search.fill("Plus target 24");
+      await options.filter({ hasText: "plus-reference-24" }).waitFor();
+      await shot(page, `thread-reference-plus-${width}`);
+      if (width === 1280) await search.press("Enter");
+      else await options.filter({ hasText: "plus-reference-24" }).click();
+      const chip = composer.locator('[data-composer-chip="codexhost-thread"]');
+      await chip.waitFor();
+      assert.equal(
+        (await composer.innerText()).replace(/\s+/gu, " "),
+        "before Plus target 24 after",
+      );
+      assert.equal(await plus.getAttribute("aria-expanded"), "false");
+      await page
+        .getByRole("group", { name: "Pending attachments", exact: true })
+        .getByText("kept.txt", { exact: true })
+        .waitFor();
+      assert.equal(writeMethods().length, 0);
+      await composer.press("ControlOrMeta+a");
+      await composer.press("ControlOrMeta+c");
+      assert.equal(
+        (await page.evaluate(() => navigator.clipboard.readText())).trim(),
+        "before [@Plus target 24](thread://plus-reference-24?hostId=local) after",
+      );
+      await composer.fill("/");
+      await menu.getByRole("option", { name: /^File\b/u }).waitFor();
+      assert.equal(await options.count(), 0, "typed slash does not acquire launcher-only sources");
+      assert.equal(await search.count(), 0);
+      await page.close();
+    },
+  );
+
+it(
+  "draft Thread mentions support keyboard selection and retain attachments without starting a task",
+  { timeout: 60_000 },
+  async (t) => {
+    const { page, composer, menu, attach, writeMethods, host } = await discoveryBrowser(
+      t,
+      390,
+      true,
+    );
+    await composer.fill('@"Discovery source');
+    const options = menu.locator('[role="option"][id*="codexhost-thread"]');
+    await options.filter({ hasText: "existing" }).waitFor();
+    assert.equal(await options.count(), 1);
+    await attach();
+    await composer.press("Enter");
+    const chip = composer.locator('[data-composer-chip="codexhost-thread"]');
+    await chip.waitFor();
+    assert.equal(await chip.innerText(), "Discovery source");
+    assert.equal(writeMethods().length, 0);
+    await page
+      .getByRole("group", { name: "Pending attachments", exact: true })
+      .getByText("kept.txt", { exact: true })
+      .waitFor();
+    const sent = page.waitForResponse((response) => response.url().endsWith("/api/session/prompt"));
+    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    assert.equal((await sent).status(), 200);
+    const turn = host.requests.find((request) => request.method === "turn/start");
+    assert.ok(turn);
+    const text = (turn.params.input as Array<{ text: string }>).map((part) => part.text).join("\n");
+    assert.ok(text.includes("[@Discovery source](thread://existing?hostId=local)"));
+    assert.ok(text.includes("kept.txt:"));
+    await page.close();
+  },
+);
+
+it(
+  "Thread mention query changes ignore a superseded catalog result and reuse the in-flight refresh",
+  { timeout: 60_000 },
+  async (t) => {
+    const { page } = await setup(t);
+    const composer = page.locator("[data-composer-input]");
+    const options = page.locator('[role="option"][id*="codexhost-thread"]');
+    const started = Promise.withResolvers<undefined>();
+    const gate = Promise.withResolvers<undefined>();
+    t.after(() => gate.resolve(undefined));
+    let reads = 0;
+    await page.route("**/api/session/list", async (route) => {
+      reads++;
+      started.resolve(undefined);
+      await gate.promise;
+      await route.continue();
+    });
+    await composer.fill("@Same");
+    await started.promise;
+    await composer.fill("@Recent");
+    gate.resolve(undefined);
+    await options.filter({ hasText: "Recent title" }).waitFor();
+    assert.equal(await options.count(), 1);
+    assert.equal(await options.filter({ hasText: "Same title" }).count(), 0);
+    assert.equal(reads, 1);
+    await composer.press("Escape");
+    assert.equal(await composer.innerText(), "@Recent");
+    assert.equal(await options.count(), 0);
+  },
+);
 
 it(
   "shared Recents can drag a local canonical reference without enabling sorting",

@@ -1,6 +1,6 @@
 /** Slash-menu props for the Conversation-owned input overlay. */
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
-import type { InputTriggerCrumb, PickAction } from "../types.ts";
+import type { ArbitrateKey, ArbitrateOutcome, InputTriggerCrumb, PickAction } from "../types.ts";
 import type { SnapshotStore } from "@deepseek-ai/dsh-client-store";
 import type { MenuState } from "../core/contract.ts";
 
@@ -8,6 +8,10 @@ import type { MenuState } from "../core/contract.ts";
 export interface MenuViewInjected {
   /** The service's menu state store (read-only here; MenuView subscribes). */
   menu: SnapshotStore<MenuState>;
+  /** Active programmatic launcher; typed-trigger menus have no search field. */
+  launcher: SnapshotStore<string | null>;
+  onSearch: (query: string) => void;
+  onSearchKey: (key: ArbitrateKey, composing: boolean) => ArbitrateOutcome;
   /** Crumbs published per source for the open menu; sources without a header never appear. */
   headers: SnapshotStore<ReadonlyMap<string, readonly InputTriggerCrumb[]>>;
   /**

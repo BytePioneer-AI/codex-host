@@ -442,6 +442,152 @@ describe("OMP RPC session", () => {
     },
   );
 
+  it("rechecks once when the settle notice shares the moment with a still-streaming state", async () => {
+    const process = new FakeOmpProcess();
+    const onFault = vi.fn();
+    // The settle notice arrives while the get_state snapshot still shows the
+    // background job streaming; the state flips idle just after the chunk.
+    let streaming = true;
+    let turnSeen = false;
+    process.handleCommand = (command) => {
+      if (command.type === "prompt") {
+        turnSeen = true;
+        process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+        const message = {
+          role: "assistant",
+          responseId: "assistant-1",
+          content: [{ type: "text", text: "PONG" }],
+        };
+        process.sendFrame({ type: "message_start", message });
+        process.sendFrame({ type: "message_end", message: { ...message, stopReason: "stop" } });
+        process.sendFrame({ type: "agent_end", isTerminal: true });
+        return true;
+      }
+      if (command.type === "get_state") {
+        // The notice and the busy snapshot ride the same stdout chunk, with
+        // the notice FIRST: it lands while the Turn's confirmation is still
+        // in "confirming" awaiting this very response — whose snapshot was
+        // taken BEFORE the settle and must still say streaming. Without the
+        // notice latch, the dropped notification leaves the Turn waiting
+        // forever. Only the Turn's own confirmation queries participate
+        // (start() probes state too).
+        const snapshotStreaming = streaming;
+        if (turnSeen && streaming) {
+          process.sendFrame({ type: "session_settled" });
+          streaming = false;
+        }
+        process.sendFrame({
+          type: "response",
+          id: command.id,
+          command: "get_state",
+          success: true,
+          data: {
+            sessionId: "omp-session",
+            model: { provider: "synthetic", id: "omp-model" },
+            isStreaming: snapshotStreaming,
+            hasPendingAsyncWork: snapshotStreaming,
+          },
+        });
+        return true;
+      }
+      return false;
+    };
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", onFault },
+      { spawn: () => process as never },
+    );
+    try {
+      await session.start();
+      let result: unknown;
+      void session
+        .runTurn("notice outruns state", () => undefined)
+        .then(
+          (value) => {
+            result = value;
+          },
+          () => undefined,
+        );
+      // The consumed notice drives one bounded recheck; no further
+      // notification arrives, and the Turn must still settle.
+      await vi.waitFor(
+        () => expect(result).toEqual({ text: "PONG", cancelled: false, agentInvoked: true }),
+        { timeout: 2_000 },
+      );
+      expect(onFault).not.toHaveBeenCalled();
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("ignores a stale settle notice so a freshly admitted Turn is not settled early", async () => {
+    const process = new FakeOmpProcess();
+    const onFault = vi.fn();
+    // Session state is idle from the start (previous Turn fully drained); the
+    // stale notice belongs to that previous Turn.
+    process.handleCommand = (command) => {
+      if (command.type === "prompt") {
+        // Admission only: no assistant output, no agent_end for this Turn yet.
+        process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+        return true;
+      }
+      if (command.type === "get_state") {
+        process.sendFrame({
+          type: "response",
+          id: command.id,
+          command: "get_state",
+          success: true,
+          data: {
+            sessionId: "omp-session",
+            model: { provider: "synthetic", id: "omp-model" },
+            isStreaming: false,
+            isSettled: true,
+            hasPendingAsyncWork: false,
+          },
+        });
+        return true;
+      }
+      return false;
+    };
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", onFault },
+      { spawn: () => process as never },
+    );
+    try {
+      await session.start();
+      let result: unknown;
+      void session
+        .runTurn("fresh turn", () => undefined)
+        .then(
+          (value) => {
+            result = value;
+          },
+          () => undefined,
+        );
+      // The stale notice from the previous Turn: the fresh Turn has neither a
+      // terminal agent_end nor a local result, so it must NOT be confirmed —
+      // not now, and not after the bounded recheck window.
+      process.sendFrame({ type: "session_settled" });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(result).toBeUndefined();
+      expect(onFault).not.toHaveBeenCalled();
+      // The Turn's own terminal agent_end is the fact that may settle it.
+      const message = {
+        role: "assistant",
+        responseId: "assistant-1",
+        content: [{ type: "text", text: "PONG" }],
+      };
+      process.sendFrame({ type: "message_start", message });
+      process.sendFrame({ type: "message_end", message: { ...message, stopReason: "stop" } });
+      process.sendFrame({ type: "agent_end", isTerminal: true });
+      await vi.waitFor(
+        () => expect(result).toEqual({ text: "PONG", cancelled: false, agentInvoked: true }),
+        { timeout: 2_000 },
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
   it("waits for background work instead of faulting when agent_end lands while a background job still streams", async () => {
     vi.useFakeTimers();
     const process = new FakeOmpProcess();

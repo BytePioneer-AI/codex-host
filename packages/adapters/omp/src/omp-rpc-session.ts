@@ -547,6 +547,19 @@ export class OmpRpcSession {
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
+  /**
+   * A native session_settled notification arrived and has not driven a
+   * confirmation pass yet. Session-level: it must survive the gap between a
+   * notification and the state response that reflects it, and must never be
+   * dropped just because a confirmation is already in flight.
+   */
+  #settledNotice = false;
+  /**
+   * Confirmation passes triggered by a consumed settled notice, so a notice
+   * that outran the state snapshot rechecks once instead of waiting forever
+   * for a second notification that already fired.
+   */
+  #noticeConfirmations = 0;
   #closePromise: Promise<void> | null = null;
   #compactionActive = false;
   #compactionTurn: ActiveTurn | null = null;
@@ -1211,12 +1224,29 @@ export class OmpRpcSession {
       void this.#confirmCancelledTurn(active);
       return;
     }
-    if (value.type === "session_settled" && active?.settlement === "pending") {
-      // A terminal agent_end can arrive while a native background job keeps the
-      // session Streaming. That blocked the first confirmation; the native
-      // settle notification is the retry signal. Reconfirm serially through the
-      // same path so a still-busy session never settles the Turn early.
-      void this.#confirmSettledTurn(active);
+    if (value.type === "session_settled") {
+      // Session-level notice: record it even while a confirmation is in
+      // flight — the state snapshot that confirmation reads can still show
+      // streaming when the notice outran it, and no further notification may
+      // arrive. The in-flight pass consumes the notice and rechecks.
+      this.#settledNotice = true;
+      const turn = active;
+      if (
+        turn &&
+        (turn.settlement === "pending" || turn.settlement === "confirming") &&
+        // Completion fact binding: only a Turn that has seen its own terminal
+        // agent_end (or settled locally) may be settled by this notice. A
+        // stale notice from the previous Turn must not confirm a new Turn
+        // still waiting for native admission (it has no terminalEnd yet).
+        (turn.terminalEnd || turn.localResult !== null)
+      ) {
+        if (turn.settlement === "pending") void this.#confirmSettledTurn(turn);
+      }
+      if (!turn) {
+        // No active Turn owns the notice; it stays recorded for the next
+        // confirmation pass (a new Turn's terminal agent_end path).
+        return;
+      }
       return;
     }
     if (!active) {
@@ -1838,9 +1868,24 @@ export class OmpRpcSession {
         // (which reconfirms here) is correct; faulting would kill a healthy
         // Turn whose queued follow-ups then pause forever.
         active.settlement = "pending";
+        // Consume the notice NOW, at response time: one can land while this
+        // pass was suspended awaiting the snapshot (the snapshot predates the
+        // settle), and no further notification may arrive. The bounded recheck
+        // replaces the retry that dropped notice would have driven.
+        const noticeDriven = this.#settledNotice;
+        this.#settledNotice = false;
+        this.#noticeConfirmations = noticeDriven ? this.#noticeConfirmations + 1 : 0;
+        if (noticeDriven && this.#noticeConfirmations <= 2) {
+          setTimeout(() => {
+            if (this.#activeTurn === active && active.settlement === "pending")
+              void this.#confirmSettledTurn(active);
+          }, 50);
+        }
         return;
       }
+      this.#settledNotice = false;
       this.#state = state;
+      this.#noticeConfirmations = 0;
       active.settlement = "confirmed";
       this.#finishSettledTurn(active);
     } catch (error) {

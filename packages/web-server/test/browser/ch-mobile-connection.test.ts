@@ -10,7 +10,7 @@ import { startFakeChDebugger } from "../support/ch-host.ts";
 import { startServer } from "../support/server.ts";
 
 it(
-  "shows offline, reconnect and synchronization on mobile while retaining history and drafts",
+  "keeps history synchronization quiet while showing connection failures and retaining drafts",
   { timeout: 40_000 },
   async (t) => {
     const directory = mkdtempSync(join(tmpdir(), "ch-mobile-connection-"));
@@ -45,6 +45,8 @@ it(
     page.on("pageerror", (error) => errors.push(error.message));
     let holdHistory = false;
     let failHistory = false;
+    let endHistory: (() => void) | undefined;
+    let historyHeld = Promise.withResolvers<void>();
     const pending: Array<() => void> = [];
     await page.routeWebSocket("**/api/remote.mux", (socket) => {
       const server = socket.connectToServer();
@@ -52,8 +54,10 @@ it(
       const rejected = new Set<string>();
       socket.onMessage((message) => {
         const frame = JSON.parse(String(message));
-        if (frame.type === "open" && frame.endpoint === "session/follow")
+        if (frame.type === "open" && frame.endpoint === "session/follow") {
           follows.add(frame.streamId);
+          endHistory = () => socket.send(JSON.stringify({ type: "end", streamId: frame.streamId }));
+        }
         server.send(message);
       });
       server.onMessage((message) => {
@@ -69,9 +73,10 @@ it(
               error: { code: "gateway/internal", message: "Test history failure", details: {} },
             }),
           );
-        } else if (holdHistory && follows.has(frame.streamId))
+        } else if (holdHistory && follows.has(frame.streamId)) {
           pending.push(() => socket.send(message));
-        else socket.send(message);
+          historyHeld.resolve();
+        } else socket.send(message);
       });
     });
     await page.goto(url);
@@ -91,6 +96,21 @@ it(
     });
     const composer = page.locator("[data-composer-input]");
     await composer.fill("Keep this mobile draft");
+    // Native history replacement ends only the follow stream, not the connection.
+    // Hold each new baseline so even a short-lived synchronization banner is detected.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      historyHeld = Promise.withResolvers<void>();
+      holdHistory = true;
+      assert.ok(endHistory);
+      endHistory();
+      await historyHeld.promise;
+      await page.waitForTimeout(100);
+      assert.equal(await page.locator("[data-web-connection]").count(), 0);
+      assert.equal(await page.getByText("existing CH answer", { exact: true }).count(), 1);
+      assert.equal(await composer.innerText(), "Keep this mobile draft");
+      holdHistory = false;
+      pending.splice(0).forEach((send) => send());
+    }
     await page.context().setOffline(true);
     const offline = page.locator('[data-web-connection="offline"]');
     await offline.waitFor({ timeout: 3000 });
@@ -104,10 +124,11 @@ it(
       .waitFor();
     assert.equal(await page.getByText("existing CH answer", { exact: true }).count(), 1);
     assert.equal(await composer.innerText(), "Keep this mobile draft");
+    historyHeld = Promise.withResolvers<void>();
     holdHistory = true;
     await page.context().setOffline(false);
-    await page.locator('[data-web-connection="syncing"]').waitFor({ timeout: 5000 });
-    await page.waitForTimeout(100);
+    await historyHeld.promise;
+    await page.locator("[data-web-connection]").waitFor({ state: "hidden", timeout: 5000 });
     assert.ok(pending.length > 0);
     assert.equal(await composer.innerText(), "Keep this mobile draft");
     holdHistory = false;

@@ -38,7 +38,6 @@ export function HostConnectionStatus({
       return values?.nativeInteractionError ?? values?.nativeConnection?.message;
     },
   );
-  const synchronizing = useSession((session) => session.synchronizing);
   const openState = useSession((session) => session.openState);
   const [dismissed, setDismissed] = useState("");
   const key = `${sessionId}:${error ?? ""}`;
@@ -53,9 +52,7 @@ export function HostConnectionStatus({
             ? "host"
             : openState === "error"
               ? "error"
-              : synchronizing
-                ? "syncing"
-                : undefined;
+              : undefined;
   const lastSyncedAt = useSession((session) =>
     state === undefined ? undefined : session.lastSyncedAt,
   );

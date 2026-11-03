@@ -55,6 +55,15 @@
 | D4 | 文档 | 预装时必做 | P1 | 待验证 | 既有 Adapter | 本次未重验 | 只验 B11 及受影响路径 |
 | D5 | 其他 | 可选 | P2 | 待验证 | 既有 Adapter | 本次未重验 | 只验 B11 及受影响路径 |
 
+## Windows UNC 启动验证范围
+
+- 范围：A4、A8、B5、C5 的进程启动边界；仅处理 Windows UNC 工作目录与标准 Pi CMD launcher 的组合，不改 RPC、Model、Thinking、扩展或历史语义。
+- 优先级：P0；结论：受限。`pi-unc-launch.ts` 识别标准 npm 与官方 managed launcher，直接执行同一安装的 Node 入口；无法识别的 batch launcher 明确拒绝，不能静默在 Windows 目录启动。
+- 证据：`pi-unc-launch.test.ts` 的 39 项回归覆盖入口与安装归属、Node 选择、原参数与环境、普通目录不变、UNC 新建／恢复／Fork 参数；真实 Node 子进程验证字面 argv、工作目录及 managed 版本与环境选择。Pi command / RPC / Adapter 合计 4 文件 212 项通过。
+- 构建与加载：Pi 生产构建、完整类型检查、定向 ESLint / Prettier、boundary 检查通过；候选 Bundle 在临时隔离根经公共 Loader 冷加载，创建／关闭未启动原生进程或请求模型。
+- 限制：本地为 macOS / Node 24.18.0；Windows／WSL 实机验证未执行，跨平台合成回放不作为实机通过。保留既有 Native Session 的目录，不把 Windows Pi 自动切换为 WSL 内的 Pi。
+- 插件外改动：`docs/architecture/harness-executable-discovery.md` 补充此启动边界；无 Host、Renderer、共享契约或其他 Adapter 改动。
+
 ## 受限与已知缺口
 
 本清单补记于既有 Adapter 修复；未影响的能力本轮不重新验收，因此明确列为待验证，不代表原实现不支持。声明子代理修复及下述输出修复实际覆盖范围。Desktop 应用待空闲时重启并验收，不把候选插件通过验证当作已生效。

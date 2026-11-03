@@ -474,7 +474,7 @@ describe("TRAE CN public Adapter core", () => {
       await test.close();
     }
   });
-  it("caches the observed native model catalog in its scope without creating Sessions", async () => {
+  it("reads the current scoped native model catalog without creating Sessions", async () => {
     const test = await setup();
     try {
       const first = harnessInspectionSchema.parse(await test.adapter.inspect());
@@ -483,9 +483,39 @@ describe("TRAE CN public Adapter core", () => {
       expect(first.catalog.defaultModel).toBeUndefined();
       expect(first.catalog.models[0]?.ref).toEqual(modelRef("builder_v3", "configured"));
       expect(await test.adapter.inspect()).toEqual(first);
-      expect(test.service.inspect).toHaveBeenCalledOnce();
+      expect(test.service.inspect).toHaveBeenCalledTimes(2);
       await test.adapter.inspect({ refresh: true });
-      expect(test.service.inspect).toHaveBeenCalledTimes(3);
+      expect(test.service.inspect).toHaveBeenCalledTimes(4);
+      expect(test.service.call).not.toHaveBeenCalled();
+      expect(test.service.subscribe).not.toHaveBeenCalled();
+    } finally {
+      await test.close();
+    }
+  });
+
+  it("follows native Agent changes and does not mask lost authentication with an old catalog", async () => {
+    const test = await setup();
+    try {
+      const initial = await test.service.inspect();
+      const configured = initial.models[0];
+      if (!configured) throw new Error("Fixture model is missing");
+      expect(await test.adapter.inspect()).toMatchObject({ status: "ready" });
+      test.service.inspect.mockResolvedValue({
+        ...initial,
+        agentType: "solo_agent",
+        models: [{ ...configured, id: "solo-choice", label: "SOLO choice" }],
+      });
+      expect(await test.adapter.inspect()).toMatchObject({
+        status: "ready",
+        catalog: { models: [{ ref: modelRef("solo_agent", "solo-choice"), label: "SOLO choice" }] },
+      });
+      test.service.inspect.mockRejectedValueOnce(
+        Object.assign(new Error("Sign in again"), { code: "authenticationRequired" }),
+      );
+      expect(await test.adapter.inspect()).toMatchObject({
+        status: "unavailable",
+        error: { code: "authenticationRequired" },
+      });
       expect(test.service.call).not.toHaveBeenCalled();
       expect(test.service.subscribe).not.toHaveBeenCalled();
     } finally {

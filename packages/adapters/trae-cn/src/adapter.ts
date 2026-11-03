@@ -15,11 +15,10 @@ import {
 } from "@codexhost/shared-contracts";
 import type { HostThreadSnapshot } from "@codexhost/harness-adapter";
 import { BridgeClient } from "./bridge.js";
-import { bridgeDirectory, sameDirectory, type BridgeOptions } from "./discovery.js";
+import { sameDirectory, type BridgeOptions } from "./discovery.js";
 import { harnessError, record, TraeError } from "./errors.js";
 import { projectHistory, TRAE_CN_ID } from "./history.js";
 import { modelCatalog, historyThinking } from "./models.js";
-import type { BridgeInspection } from "./protocol.js";
 import { contextUsageFromHistory } from "./usage.js";
 import { TraeCnSession, sessionCapabilities } from "./session.js";
 import { validateReference } from "./reference.js";
@@ -36,7 +35,6 @@ export class TraeCnAdapter implements HarnessAdapter {
   readonly harnessId = TRAE_CN_ID;
   #closed = false;
   #sessions = new Set<TraeCnSession>();
-  #catalogs = new Map<string, BridgeInspection>();
   constructor(private readonly options: TraeCnAdapterOptions = {}) {}
 
   #bridgeOptions(cwd?: string, environment?: Record<string, string | undefined>): BridgeOptions {
@@ -47,29 +45,16 @@ export class TraeCnAdapter implements HarnessAdapter {
     };
   }
 
-  #catalogKey(options: BridgeOptions): string {
-    return JSON.stringify([
-      options.cwd,
-      bridgeDirectory(options.environment ?? process.env),
-      options.app,
-    ]);
-  }
-
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     let client: BridgeClient | undefined;
     try {
       if (this.#closed) throw new TraeError("invalidState", "TRAE CN Adapter is closed");
       const options = this.#bridgeOptions(input.cwd);
-      const key = this.#catalogKey(options);
-      let inspection = input.refresh ? undefined : this.#catalogs.get(key);
-      if (!inspection) {
-        const connected = await BridgeClient.connect(options);
-        client = connected.client;
-        inspection = input.refresh ? await client.inspect(true) : connected.inspection;
-        if (this.#closed)
-          throw new TraeError("invalidState", "TRAE CN Adapter closed during inspection");
-        this.#catalogs.set(key, inspection);
-      }
+      const connected = await BridgeClient.connect(options);
+      client = connected.client;
+      const inspection = input.refresh ? await client.inspect(true) : connected.inspection;
+      if (this.#closed)
+        throw new TraeError("invalidState", "TRAE CN Adapter closed during inspection");
       return {
         status: "ready",
         catalog: modelCatalog(inspection),
@@ -212,7 +197,6 @@ export class TraeCnAdapter implements HarnessAdapter {
         recoveringThinking = effectiveThinking;
       }
       if (this.#closed) throw new TraeError("invalidState", "TRAE CN Adapter closed during open");
-      this.#catalogs.set(this.#catalogKey(options), inspection);
       const selected = input.model ?? effectiveModel;
       const selectedThinking =
         input.thinkingOptionId ??
@@ -273,7 +257,6 @@ export class TraeCnAdapter implements HarnessAdapter {
       return { ok: true, value: session };
     } catch (error) {
       client?.close();
-      this.#catalogs.clear();
       return { ok: false, error: harnessError(error) };
     }
   }
@@ -283,6 +266,5 @@ export class TraeCnAdapter implements HarnessAdapter {
     this.#closed = true;
     await Promise.allSettled([...this.#sessions].map((session) => session.close()));
     this.#sessions.clear();
-    this.#catalogs.clear();
   }
 }

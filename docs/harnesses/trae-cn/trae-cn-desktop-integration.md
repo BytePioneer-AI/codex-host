@@ -65,7 +65,7 @@ Companion 0.1.6 支持下一轮请求的 Thinking 选择。普通账号读取经
 
 ## 公共会话核心
 
-`src/adapter.ts` 提供只读检查、同作用域目录缓存、延迟创建和空闲恢复；`src/session.ts` 在首个已接受 Turn 时创建原生身份，并将原生流投影为公共输出。新会话要求调用方先手动选择模型；单独传入请求模型不视为已生效，显式配置准备成功或原生 metadata / model_config 确认后才发布 effectiveModel。模型 Ref 为按原生 Agent 和模型 ID 生成的 opaque 标识，保留自定义模型中斜杠等原生身份信息而不暴露给 Host 路由。
+`src/adapter.ts` 提供只读检查、延迟创建和空闲恢复。检查每次重新发现并读取当前 Bridge，避免重启、切换原生 Agent 或登录失效后仍返回旧目录和 ready；原生自己的模型缓存及显式 refresh 语义仍保留，不创建 Session。`src/session.ts` 在首个已接受 Turn 时创建原生身份，并将原生流投影为公共输出。新会话要求调用方先手动选择模型；单独传入请求模型不视为已生效，显式配置准备成功或原生 metadata / model_config 确认后才发布 effectiveModel。模型 Ref 为按原生 Agent 和模型 ID 生成的 opaque 标识，保留自定义模型中斜杠等原生身份信息而不暴露给 Host 路由。
 
 `src/history.ts` 用原生用户消息 ID 标识逻辑 Turn，原生 Assistant 的 reply_to_message_id 与其对齐；重复读取和重启后身份不变。原生 completed、failed、canceled 分别保留为成功、失败和取消；缺少终态时为 unknown。`finish.summary` 是最终答复，普通工具保留名称、参数及原生提供的结果；缺失的持久工具输出不会被补造。
 

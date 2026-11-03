@@ -19,7 +19,7 @@
 |---|---|---|---|---|---|---|---|
 | A1 | Manifest | 必做 | P0 | 支持 | manifest.json | schema 与真实 Loader 目录描述符校验 | 开发状态、桌面依赖及中英安装说明 |
 | A2 | 工厂 | 必做 | P0 | 支持 | src/plugin.ts | 真实 Loader 两个独立实例、搬移 Bundle、独立 Node 进程导入 | 冷构造；复制环境；关闭隔离；应用路径优先级 |
-| A3 | 检查 | 必做 | P0 | 支持 | src/adapter.ts | test/adapter.test.ts；真实 inspect | 不创建会话，不启动桌面窗口；同作用域目录缓存 |
+| A3 | 检查 | 必做 | P0 | 支持 | src/adapter.ts | test/adapter.test.ts；真实 inspect | 不创建会话，不启动桌面窗口；每次只读当前 Bridge 的目录和状态，不缓存跨重启的 readiness |
 | A4 | 创建 Session | 必做 | P0 | 支持 | src/session.ts；assets/companion/service.cjs | 公共 Session 首轮真实创建及文件读取 | 延迟至首轮；原生 Project 绑定目录 |
 | A5 | 执行 Turn | 必做 | P0 | 受限 | src/session.ts；src/live-items.ts；assets/companion/mcp.cjs | 公共普通对话、文件工具、提问、命令审批及持久历史一致；3.4.14 SOLO 的 run_mcp 实际执行一次并精确冷恢复 | Builder、Read、Edit、RunCommand、提问及 SOLO MCP 已验收；其他工具语义待补 |
 | A6 | 取消 | 必做 | P0 | 支持 | src/session.ts；assets/companion/service.cjs | 公共提问等待中 turn.cancel 后，公共与持久原生均 cancelled，同 Session 随后成功续聊 | Interaction 关闭一次；过期回复拒绝；不将请求回执当终态 |
@@ -108,6 +108,8 @@ Desktop 工作区缺口：同一真实 Renderer Host 请求带 cwd 时 TRAE 返�
 MCP 补验（2026-11-04）：3.4.14 / SOLO Agent / Seed-Code，最终源码 Companion 0.1.11 的十三个 CJS 与 Manifest 哈希一致；原生 Agent 由专用工作区设置选择，没有改写扩展源码中的类型。原生 run_mcp 调用 Echo 一次、返回固定标记，服务审计恰好新增一条，全局权限哈希不变，原生没有额外审批。原脚本误将首条 commentary 当成最终答案而失败；保留该记录后核对实际 final_answer、工具结果及审计，没有重发。测试窗口关闭后重新打开同一工作区并绑定新端点，两个独立 Node 进程精确冷读同一原生 Session 和快照哈希。先前回调缺失的失败任务也保留。最终源码证据为本地 mcp-final-source-verification-v2.json；Adapter / 插件 / VSIX / 搬移 Host 族 258 项通过，根构建、测试类型检查、改动 ESLint / 格式与 boundaries 通过。
 
 MCP Head 9a19320c 的 Ubuntu / Windows / Linux ARM64 / macOS CI 全部通过，run 41710377413。随后在完全独立的官方 Desktop 副本、Chromium profile、CODEX_HOME、APPDATA / LOCALAPPDATA 和 Host 数据目录中加载源代码 Host / Controller / Renderer；用户已完成该副本登录，Renderer installed，实际插件目录包含 trae-cn。原日常 Desktop 保持运行。真实 Renderer RPC 复现了缺 cwd 时 unavailable、指定已打开 MCP 项目时 ready / 19 模型的差异，据此完成上述通用作用域修复；新补丁需独立 CI，隔离窗口最终 UI 验收及日常部署仍未完成。
+
+目录作用域 Head 1ec1aa1f 的四平台 CI 全部通过，run 41715883427。后续检查发现 Adapter 的进程内目录缓存会掩盖原生 Agent 切换或登录失效，新增回归先复现返回旧模型，再移除该缓存。检查每次只读当前 Bridge；原生自身的模型缓存与 force_refresh 语义保留，不创建 Session。14 项 Adapter 用例及完整 Adapter / 插件 / VSIX / 搬移 Host 族 259 项通过；根构建、typecheck、改动 ESLint / 格式通过。3.4.14 / SOLO 实测两次普通检查与一次强制刷新共四次真实 Bridge inspection，均返回相同的 19 模型，未指定默认模型，没有其他调用；证据 current-inspection-verification.json。缓存修复 Head 需要自己的 CI。
 
 后台结果保护检查：11 项源码对应的后台 / 前台边界用例；修复前其中 9 项失败，补充一项 running 数据状态后全通过。完整 Adapter、独立插件 / VSIX 与搬移 Host 发行检查共 208 项通过；typecheck、lint / boundaries 及改动代码格式通过。没有执行原生后台任务，故不作为后台控制或自主 Turn 的真实验收。
 

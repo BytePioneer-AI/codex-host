@@ -205,26 +205,37 @@ function watchBrowserNetwork(controller: ConnectionController): () => void {
   const document = browser.document;
   let wasHidden = document?.visibilityState === "hidden";
   let restoreTimer: ReturnType<typeof setTimeout> | undefined;
-  const restore = (): void => {
-    if (document?.visibilityState === "hidden" || restoreTimer !== undefined) return;
+  let replace = false;
+  // Hidden pages keep running, so a visible page only needs its socket checked. A page
+  // restored from the back/forward cache was frozen, and its connections are replaced.
+  const restore = (cached: boolean): void => {
+    if (document?.visibilityState === "hidden") return;
+    replace ||= cached;
+    if (restoreTimer !== undefined) return;
     const available = browser.navigator?.onLine !== false;
     controller.setNetworkAvailable(available);
-    if (!available) return;
+    if (!available) {
+      replace = false;
+      return;
+    }
     restoreTimer = setTimeout(() => {
       restoreTimer = undefined;
-      if (document?.visibilityState !== "hidden" && browser.navigator?.onLine !== false)
-        controller.reconnect();
+      const replacing = replace;
+      replace = false;
+      if (document?.visibilityState === "hidden" || browser.navigator?.onLine === false) return;
+      if (replacing) controller.reconnect();
+      else controller.revalidate();
     }, 0);
   };
   const visible = (): void => {
     if (document?.visibilityState === "hidden") wasHidden = true;
     else if (wasHidden) {
       wasHidden = false;
-      restore();
+      restore(false);
     }
   };
   const shown = (event: Event): void => {
-    if ((event as PageTransitionEvent).persisted) restore();
+    if ((event as PageTransitionEvent).persisted) restore(true);
   };
   controller.setNetworkAvailable(initiallyAvailable);
   browser.addEventListener("online", online);

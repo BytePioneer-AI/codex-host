@@ -55,6 +55,33 @@ it("does not mistake a suspended background timer for a failed connection", () =
   heartbeat.stop();
 });
 
+it("checks now on request, with a shorter deadline and only the newest reply counting", () => {
+  const send = vi.fn();
+  const failed = vi.fn();
+  const heartbeat = new StreamHeartbeat(send, failed, {
+    intervalMs: 100,
+    timeoutMs: 50,
+    restoreTimeoutMs: 20,
+  });
+  heartbeat.probe();
+  expect(send).toHaveBeenLastCalledWith("heartbeat-1");
+  heartbeat.probe();
+  expect(send).toHaveBeenLastCalledWith("heartbeat-2");
+  heartbeat.received("heartbeat-1");
+  vi.advanceTimersByTime(19);
+  expect(failed).not.toHaveBeenCalled();
+  heartbeat.received("heartbeat-2");
+  vi.advanceTimersByTime(99);
+  expect(failed).not.toHaveBeenCalled();
+  expect(send).toHaveBeenCalledTimes(2);
+  heartbeat.probe();
+  vi.advanceTimersByTime(20);
+  expect(failed).toHaveBeenCalledOnce();
+  heartbeat.probe();
+  expect(send).toHaveBeenCalledTimes(3);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
 class Socket extends EventTarget {
   static OPEN = 1;
   static instances: Socket[] = [];
@@ -106,4 +133,25 @@ it("fails logical streams on a silent half-open socket and only reconnects when 
   socket.receive({ type: "pong", streamId: "heartbeat-1" });
   await client.close();
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it("probes only an open socket and withdraws it after a missed reply", async () => {
+  Socket.instances = [];
+  vi.stubGlobal("WebSocket", Socket);
+  const client = new RemoteStreamMuxClient({ intervalMs: 100, restoreTimeoutMs: 20 });
+  client.start();
+  expect(client.probe()).toBe(false);
+  const socket = Socket.instances[0]!;
+  socket.open();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(client.probe()).toBe(true);
+  expect(socket.sent.at(-1)).toEqual({ type: "ping", streamId: "heartbeat-1" });
+  socket.receive({ type: "pong", streamId: "heartbeat-1" });
+  await vi.advanceTimersByTimeAsync(20);
+  expect(socket.close).not.toHaveBeenCalled();
+  expect(client.probe()).toBe(true);
+  await vi.advanceTimersByTimeAsync(20);
+  expect(socket.close).toHaveBeenCalledWith(4000, "heartbeat timed out");
+  expect(client.probe()).toBe(false);
+  await client.close();
 });

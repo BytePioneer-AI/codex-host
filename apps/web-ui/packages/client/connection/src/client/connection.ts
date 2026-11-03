@@ -56,6 +56,8 @@ export interface ConnectionSinks {
   onStateChange?: (state: ConnectionState) => void;
   /** Start one fresh physical-carrier attempt before each logical retry. */
   onReconnectRequested?: () => void;
+  /** Check the established carrier without replacing it. Returns false when it cannot be checked. */
+  onProbeRequested?: () => boolean;
 }
 
 /**
@@ -121,6 +123,18 @@ export class ConnectionController {
     if (!this.isRunning()) return;
     this.current?.abort(MANUAL_RECONNECT);
     this.retryDelay?.abort(MANUAL_RECONNECT);
+  }
+
+  /** Keep a connection that can still answer; anything else retries immediately. */
+  revalidate(): void {
+    if (!this.running) return;
+    let probing = false;
+    if (this.lastState === "connected") {
+      this.callSink(() => {
+        probing = this.sinks.onProbeRequested?.() === true;
+      });
+    }
+    if (!probing) this.reconnect();
   }
 
   /**

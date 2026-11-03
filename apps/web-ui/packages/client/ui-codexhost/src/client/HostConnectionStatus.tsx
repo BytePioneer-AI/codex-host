@@ -2,7 +2,7 @@ import { useState, useSyncExternalStore } from "react";
 import type { SessionListState } from "@deepseek-ai/dsh-api-session-controller/client";
 import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
 import type { HostObservable, PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
-import { Toast } from "@deepseek-ai/dsh-client-ui-primitives";
+import { Toast, useSustainedRecovery } from "@deepseek-ai/dsh-client-ui-primitives";
 import css from "./HostConnectionStatus.module.css";
 
 declare module "@deepseek-ai/dsh-session-projection/types" {
@@ -41,18 +41,22 @@ export function HostConnectionStatus({
   const openState = useSession((session) => session.openState);
   const [dismissed, setDismissed] = useState("");
   const key = `${sessionId}:${error ?? ""}`;
+  const recovering = carrier === undefined || carrier === "connecting";
+  const noticeRecovery = useSustainedRecovery(recovering);
   const state =
     carrier === "disconnected"
       ? "offline"
-      : carrier === undefined
-        ? "checking"
-        : carrier !== "connected"
-          ? "reconnecting"
-          : host === "reconnecting"
-            ? "host"
-            : openState === "error"
-              ? "error"
-              : undefined;
+      : recovering
+        ? noticeRecovery
+          ? carrier === undefined
+            ? "checking"
+            : "reconnecting"
+          : undefined
+        : host === "reconnecting"
+          ? "host"
+          : openState === "error"
+            ? "error"
+            : undefined;
   const lastSyncedAt = useSession((session) =>
     state === undefined ? undefined : session.lastSyncedAt,
   );

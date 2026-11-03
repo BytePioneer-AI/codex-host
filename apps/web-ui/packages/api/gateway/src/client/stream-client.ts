@@ -88,6 +88,16 @@ export class RemoteStreamMuxClient {
       });
   }
 
+  /**
+   * Check the open socket without replacing it; a missed reply withdraws it like any silent loss.
+   * @returns whether a socket is open to answer.
+   */
+  probe(): boolean {
+    if (this.socket?.readyState !== WebSocket.OPEN || this.heartbeat === undefined) return false;
+    this.heartbeat.probe();
+    return true;
+  }
+
   /** Withdraw a stale carrier immediately; Connection owns the next physical attempt. */
   disconnect(error = new RemoteStreamCarrierError("api gateway: connection unavailable")): void {
     this.revision++;

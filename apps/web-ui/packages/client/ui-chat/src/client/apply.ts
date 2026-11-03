@@ -2,6 +2,7 @@
 import { ChangesDock } from "./chat/ChangesDock.tsx";
 import type {} from "@deepseek-ai/dsh-client-product-analytics/client";
 import type { Context } from "@deepseek-ai/cordis";
+import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
 import type { ImageAttachmentRef } from "@deepseek-ai/dsh-attachment";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import type { SessionBinding } from "@deepseek-ai/dsh-api-session-controller/client";
@@ -228,6 +229,7 @@ export function apply(ctx: Context): void {
           const conversation = ctx.uiConversation.binding(binding);
           const messageEditing = ctx.get("chatMessageEditing");
           return {
+            connection: ctx.get("connection") as ConnectionHandle,
             hooks: { presentation },
             keyedHooks: {
               chatNode: (key) => chat.getSnapshot().nodes.source(key),

@@ -110,7 +110,6 @@ export class Session implements SessionFace {
   private baseSeq = SessionLogOffset(0);
   private hasMore = false;
   private openState: OpenState = "cold";
-  private synchronizing = true;
   private lastSyncedAt: number | undefined;
   private openError: RemoteFailure | null = null;
   private openPromise: Promise<void> | null = null;
@@ -672,7 +671,6 @@ export class Session implements SessionFace {
   /** @param generation - openGeneration at launch; stale passes cannot publish after replacement. */
   private async doOpen(generation: number): Promise<void> {
     this.openState = "loading";
-    this.synchronizing = true;
     this.openError = null;
     this.olderError = null;
     this.loadingOlder = false;
@@ -681,11 +679,6 @@ export class Session implements SessionFace {
       publish: (change) => {
         if (generation !== this.openGeneration || this.events !== events) return;
         this.acceptEventChange(change);
-      },
-      carrierFailed: () => {
-        if (generation !== this.openGeneration || this.events !== events) return;
-        this.synchronizing = true;
-        this.notifier.markDirty();
       },
       failed: (error) => {
         this.failEventStream(events, generation, error);
@@ -719,7 +712,6 @@ export class Session implements SessionFace {
             : projectionsBaseline(change.page.projections),
           change.page.assistantStream,
         );
-        this.synchronizing = false;
         break;
       case "prepend":
         this.prependWindow(change.entries, change.hasMore);
@@ -1012,7 +1004,6 @@ export class Session implements SessionFace {
             },
       removed: this.removed,
       openState: this.openState,
-      synchronizing: this.synchronizing,
       ...(this.lastSyncedAt === undefined ? {} : { lastSyncedAt: this.lastSyncedAt }),
       openError: this.openError,
       hasMore: this.hasMore,

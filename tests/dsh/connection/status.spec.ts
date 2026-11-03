@@ -13,6 +13,7 @@ const cleanup: Array<() => void> = [];
 afterEach(() => {
   cleanup.splice(0).forEach((dispose) => dispose());
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 function mount() {
@@ -27,14 +28,15 @@ function mount() {
   return { container, root };
 }
 
-it("keeps the main-view notice until history catches up, with independent Host failures and retry", () => {
+it("hides brief recovery and keeps offline, sustained recovery and Host failures visible", () => {
+  vi.useFakeTimers();
   const { container, root } = mount();
   const state = createSnapshotStore<ConnectionState | undefined>("disconnected");
   const list = createSnapshotStore({
     byId: { thread: { projectionValues: { nativeConnection: { state: "connected" } } } },
   });
   const reconnect = vi.fn();
-  let session = { synchronizing: true, openState: "open", lastSyncedAt: 1_700_000_000_000 };
+  const session = { openState: "open", lastSyncedAt: 1_700_000_000_000 };
   const props = {
     sessionId: "thread",
     useSession: (select: (value: typeof session) => unknown) => select(session),
@@ -43,18 +45,21 @@ it("keeps the main-view notice until history catches up, with independent Host f
     t: (key: keyof typeof en, args?: { time: string }) =>
       en[key].replace("{time}", args?.time ?? ""),
   } as unknown as ComponentProps<typeof HostConnectionStatus>;
-  const render = () => act(() => root.render(createElement(HostConnectionStatus, props)));
-  render();
+  act(() => root.render(createElement(HostConnectionStatus, props)));
   expect(container.querySelector('[data-web-connection="offline"]')).not.toBeNull();
   expect(container.textContent).toContain("Last synced at");
   act(() => container.querySelector("button")!.click());
   expect(reconnect).toHaveBeenCalledOnce();
   act(() => state.set("connecting"));
+  act(() => vi.advanceTimersByTime(999));
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  act(() => state.set("connected"));
+  act(() => state.set("connecting"));
+  act(() => vi.advanceTimersByTime(999));
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  act(() => vi.advanceTimersByTime(1));
   expect(container.querySelector('[data-web-connection="reconnecting"]')).not.toBeNull();
   act(() => state.set("connected"));
-  expect(container.querySelector('[data-web-connection="syncing"]')).not.toBeNull();
-  session = { ...session, synchronizing: false };
-  render();
   expect(container.querySelector('[role="status"]')).toBeNull();
   act(() =>
     list.set({

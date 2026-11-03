@@ -24,6 +24,7 @@ import type {
   SlotHookFactory,
   SnapshotSelectorHook,
 } from "@deepseek-ai/dsh-client-ui-slots";
+import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
 import type { ObservableSnapshot } from "@deepseek-ai/dsh-client-store";
 import type {
   MarkdownFileMentions,
@@ -279,6 +280,7 @@ export interface ChatScrollPosition {
 
 /** Business callbacks injected into the Chat view. */
 export interface ChatViewInjected {
+  connection: Pick<ConnectionHandle, "state">;
   hooks: {
     /** Live presentation policy derived from the accepted work-details mode. */
     presentation: ObservableSnapshot<ChatPresentationPolicy>;

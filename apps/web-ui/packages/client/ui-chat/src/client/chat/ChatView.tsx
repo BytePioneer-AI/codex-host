@@ -1,7 +1,15 @@
 // An enclosing `[data-conversation-scroll]` owns scrolling when present;
 // otherwise this view owns it. Each row subscribes to one stable node key.
 
-import { memo, useCallback, useMemo, useRef, useState, type ComponentProps } from "react";
+import {
+  memo,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ComponentProps,
+} from "react";
 import type {
   NodeKey,
   RenderEntry,
@@ -14,6 +22,7 @@ import {
   IconChevronDownOutlineRegular,
   MarkdownDelegateProvider,
   Modal,
+  useSustainedRecovery,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ChatViewSlotProps, OpenFileOptions } from "../contract/slots.ts";
 import type { ChatSnapshot } from "../contract/snapshot.ts";
@@ -155,6 +164,7 @@ const ChatNodeList = memo(function ChatNodeList({
  * ordered business Node crosses the keyed renderer seat.
  */
 export function ChatView({
+  connection,
   useSession,
   useChat,
   useChatNode,
@@ -226,9 +236,11 @@ export function ChatView({
     [cwd, t],
   );
   const running = useSession((s) => s.running);
-  const synchronizing = useSession((s) => s.synchronizing || s.openState === "error");
+  const carrier = useSyncExternalStore(connection.state.subscribe, connection.state.getSnapshot);
+  const recoveryLasting = useSustainedRecovery(carrier !== "connected");
   const compacting = useProjection("compacting");
   const openState = useSession((s) => s.openState);
+  const statusUnconfirmed = carrier === "disconnected" || recoveryLasting || openState === "error";
   const openError = useSession((s) => s.openError);
   const hasMore = useSession((s) => s.hasMore);
   const loadingOlder = useSession((s) => s.loadingOlder);
@@ -436,7 +448,7 @@ export function ChatView({
               <RunningStatus
                 startTime={runningStartTime}
                 compacting={compacting}
-                stale={synchronizing}
+                stale={statusUnconfirmed}
                 t={t}
               />
             )}

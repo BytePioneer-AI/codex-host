@@ -376,6 +376,9 @@ export class ChSessions {
         error instanceof RpcError &&
         (error.code === "host/history-changed" || error.code === "host/items-replaced")
       ) {
+        console.warn(
+          `[ch] rebuilding history follow: thread=${id} harness=${harnessId} reason=${String(error.code)}`,
+        );
         // Browsers retain per-key projection watermarks across Thread reopening.
         // Rebuilt history must not make fresh queue/control values look stale.
         this.threads.discardView(id, view);

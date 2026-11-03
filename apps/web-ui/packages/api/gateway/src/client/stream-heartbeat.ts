@@ -4,6 +4,8 @@ export interface StreamHeartbeatOptions {
   readonly intervalMs?: number;
   /** Deadline for the matching reply. Default: 10000ms. */
   readonly timeoutMs?: number;
+  /** Deadline for a probe requested when the page returns to the foreground. Default: 2000ms. */
+  readonly restoreTimeoutMs?: number;
 }
 
 export class StreamHeartbeat {
@@ -14,6 +16,7 @@ export class StreamHeartbeat {
   private stopped = false;
   private readonly interval: number;
   private readonly timeout: number;
+  private readonly restoreTimeout: number;
 
   constructor(
     private readonly send: (id: string) => void,
@@ -22,6 +25,7 @@ export class StreamHeartbeat {
   ) {
     this.interval = options.intervalMs ?? 25_000;
     this.timeout = options.timeoutMs ?? 10_000;
+    this.restoreTimeout = options.restoreTimeoutMs ?? 2_000;
     this.schedule(this.interval);
   }
 
@@ -33,6 +37,11 @@ export class StreamHeartbeat {
       this.pending = undefined;
       this.schedule(this.interval);
     }
+  }
+
+  /** Check the socket now. A reply to any earlier probe no longer counts. */
+  probe(): void {
+    if (!this.stopped) this.sendProbe(this.restoreTimeout);
   }
 
   stop(): void {
@@ -48,7 +57,7 @@ export class StreamHeartbeat {
 
   private tick(): void {
     if (this.stopped) return;
-    // Background timers may be frozen. Foreground restoration establishes a fresh generation.
+    // Background timers may be frozen. Foreground restoration requests its own probe.
     if (typeof document !== "undefined" && document.visibilityState === "hidden") {
       this.pending = undefined;
       this.lastActivity = Date.now();
@@ -65,8 +74,12 @@ export class StreamHeartbeat {
       this.schedule(remaining);
       return;
     }
+    this.sendProbe(this.timeout);
+  }
+
+  private sendProbe(timeout: number): void {
     this.pending = `heartbeat-${String(++this.sequence)}`;
-    this.schedule(this.timeout);
+    this.schedule(timeout);
     try {
       this.send(this.pending);
     } catch {

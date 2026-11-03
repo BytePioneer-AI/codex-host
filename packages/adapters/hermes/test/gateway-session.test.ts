@@ -229,6 +229,41 @@ describe("Hermes gateway native interactions", () => {
     f.request.mockResolvedValue({ value: "1" });
     await expect(f.bridge.setPermissionMode("default")).rejects.toThrow("effective approval");
   });
+  it("restores the provider from a model-switch receipt for a legacy bare-id session", async () => {
+    // A session created before qualified model ids carries gateway info without
+    // a provider. Reopening it replays the saved bare id through setModel; the
+    // mutation receipt resolves the provider, and openResult must project the
+    // qualified id instead of the bare one.
+    const raw = new HermesGatewayTransport("unused", process.cwd(), {});
+    const legacyInfo = { model: "glm-5.3", yolo: false };
+    const bridge = new HermesGatewaySessionTransport(raw, "runtime", "native", legacyInfo, {
+      revision: 0,
+      generation: 0,
+    });
+    vi.spyOn(raw, "request").mockImplementation(async (method, params) => {
+      if (method === "config.get") return { value: "low" };
+      if (method === "session.mutate") {
+        const payload = (params.payload ?? {}) as { model?: string };
+        return {
+          session_id: params.session_id,
+          revision: 1,
+          execution_generation: 0,
+          operation: params.operation,
+          model: payload.model ?? "",
+          provider: "zai",
+        };
+      }
+      return {};
+    });
+    await expect(bridge.setModel("glm-5.3")).resolves.toBeUndefined();
+    const open = await bridge.openResult();
+    expect(open.session.models?.currentModelId).toBe("zai:glm-5.3");
+    expect(open.session.models?.availableModels[0]).toMatchObject({
+      modelId: "zai:glm-5.3",
+      name: "zai / glm-5.3",
+    });
+  });
+
   it("passes a named custom provider to the model switch separately", async () => {
     const f = fixture();
     await expect(f.bridge.setModel("custom:omniroute:omni/turbo")).resolves.toBeUndefined();

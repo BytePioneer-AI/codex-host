@@ -47,6 +47,26 @@ export function catalogAlignedModelLabel(name: string): string {
   return name.replace(/\s+·\s+/g, " / ");
 }
 
+/**
+ * Resolves the catalog entry a current-model id names. Older Hermes installs
+ * persisted bare model ids (`glm-5.3`) before ids gained their provider
+ * prefix (`zai:glm-5.3`); Threads restored from that era carry the bare id in
+ * their saved selection. A bare id resolves through a unique `:id` suffix
+ * match so a restored Thread still lands on its real catalog entry instead of
+ * projecting no effective Model at all (which surfaces in Desktop as an
+ * unusable model picker).
+ */
+function resolveHermesModelChoice(
+  models: readonly HermesModelChoice[],
+  modelId: string,
+): HermesModelChoice | undefined {
+  const exact = models.find(({ modelId: candidate }) => candidate === modelId);
+  if (exact) return exact;
+  if (modelId.includes(":")) return undefined;
+  const bySuffix = models.filter(({ modelId: candidate }) => candidate.endsWith(`:${modelId}`));
+  return bySuffix.length === 1 ? bySuffix[0] : undefined;
+}
+
 export function projectHermesModelState(
   models: { availableModels: HermesModelChoice[]; currentModelId?: string } | null,
 ): HermesSessionModelStateProjection {
@@ -54,7 +74,7 @@ export function projectHermesModelState(
     return { effectiveModel: null, resolvedModelLabel: null };
   }
   const current = models.currentModelId
-    ? models.availableModels.find(({ modelId }) => modelId === models.currentModelId)
+    ? resolveHermesModelChoice(models.availableModels, models.currentModelId)
     : undefined;
   if (!current) return { effectiveModel: null, resolvedModelLabel: null };
   return {

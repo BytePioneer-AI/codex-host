@@ -301,6 +301,14 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     const actualProvider = gatewayString(result.provider);
     if (modelId !== actualModel && modelId !== `${actualProvider}:${actualModel}`)
       throw new Error("Hermes did not confirm the requested Model");
+    // The receipt is also the one channel that can restore the provider for a
+    // resumed legacy Session: sessions created before qualified model ids keep
+    // their gateway info without a provider, which would project the bare model
+    // id again. Commit the resolved pair so openResult and later session.info
+    // frames read the fully qualified pick.
+    if (actualModel && actualProvider) {
+      this.#info = { ...this.#info, model: actualModel, provider: actualProvider };
+    }
   }
   async setPermissionMode(modeId: string): Promise<void> {
     if (modeId !== "default" && modeId !== "dont_ask")

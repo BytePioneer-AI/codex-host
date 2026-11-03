@@ -183,4 +183,30 @@ describe("Hermes Session Model projection", () => {
       resolvedModelLabel: "Z.AI / GLM / glm-5.3",
     });
   });
+
+  it("resolves a legacy bare model id to its unique provider-prefixed entry", () => {
+    // Threads persisted before ids gained the provider prefix carry the bare
+    // id; a unique `:id` suffix match must still land on the real entry.
+    expect(
+      projectHermesModelState({
+        availableModels: [{ modelId: "zai:glm-5.3", name: "Z.AI · GLM · glm-5.3" }],
+        currentModelId: "glm-5.3",
+      }),
+    ).toEqual({
+      effectiveModel: encodeHermesModelRef("zai:glm-5.3"),
+      resolvedModelLabel: "Z.AI / GLM / glm-5.3",
+    });
+  });
+
+  it("does not guess a legacy bare id against ambiguous provider matches", () => {
+    expect(
+      projectHermesModelState({
+        availableModels: [
+          { modelId: "zai:glm-5.3", name: "Z.AI GLM" },
+          { modelId: "magpie:glm-5.3", name: "Magpie GLM" },
+        ],
+        currentModelId: "glm-5.3",
+      }),
+    ).toEqual({ effectiveModel: null, resolvedModelLabel: null });
+  });
 });

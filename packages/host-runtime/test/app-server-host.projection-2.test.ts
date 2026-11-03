@@ -84,6 +84,45 @@ async function expectNoFurtherOfficialRequest(stream: PassThrough): Promise<void
 }
 
 describe("AppServerHost HarnessAdapter projection", () => {
+  it("inspects an owned Thread in its persisted workspace and rejects foreign scope", async () => {
+    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["pi", pi],
+        ["claude-code", claude],
+      ]),
+    });
+    try {
+      const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+        cwd: "/thread-owned",
+      });
+      const inspect = vi.spyOn(pi, "inspect");
+      writeRequest(fixture.desktopInput, {
+        id: 31,
+        method: "codexhost/harness/inspect",
+        params: { harnessId: "pi", threadId },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 31)),
+      ).resolves.toMatchObject({ result: { status: "ready" } });
+      expect(inspect).toHaveBeenLastCalledWith({ cwd: "/thread-owned" });
+      const calls = inspect.mock.calls.length;
+      for (const [id, params] of [
+        [32, { harnessId: "claude-code", threadId }],
+        [33, { harnessId: "pi", threadId, cwd: "/other-draft" }],
+      ] as const) {
+        writeRequest(fixture.desktopInput, { id, method: "codexhost/harness/inspect", params });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, id)),
+        ).resolves.toMatchObject({ error: { code: -32602 } });
+      }
+      expect(inspect.mock.calls).toHaveLength(calls);
+      expect(claude.inspectionCalls).toBe(0);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
   it("dispatches inspection by registered Harness ID and rejects unknown Harnesses", async () => {
     const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
     const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));

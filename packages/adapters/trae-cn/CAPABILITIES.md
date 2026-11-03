@@ -89,6 +89,8 @@ Edit 参数清空：原生执行结束会清空 old_string / new_string。工具
 
 ## 插件外改动
 
+Desktop 工作区缺口：同一真实 Renderer Host 请求带 cwd 时 TRAE 返回 ready 与 19 个模型，省略时返回工作区未打开。现有 Harness inspect 契约已有 cwd，但新建页可用性及模型目录请求未传已发布的草稿工作区，目录切换也只刷新命令。现已将通用 Renderer 的草稿检查绑定已有工作区事件；为 Harness inspect 增加可选 threadId，由 Host 校验 Harness 归属并使用该 Thread 的持久 cwd，不让当前草稿目录覆盖已有会话。目录切换废弃旧响应；已有会话自身的目录可用时，其控件不跟随其他草稿报错。旧 Host 明确拒绝新参数时，沿用其原来未按 Thread 定位的检查行为。没有 TRAE 专用 Renderer / Host 分支。166 项聚焦回归、4 项浏览器检查、根构建、Renderer 构建、测试类型检查、改动 ESLint / 格式与 boundaries 通过；真实 Desktop 项目选择后的最终验收仍待完成。
+
 预装清单、完整集合加载测试和搬移 Host 发行测试已加入 trae-cn。公共 API 2 扩展涉及 shared-contracts、harness-adapter、Host Runtime、Broker 及对应测试和文档；缺省兼容 API 1，无 Harness 专用公共分支。`package-lock.json` 注册 Workspace、三个公共契约依赖以及 Companion 打包 / ZIP 验证开发工具；根 `tsconfig.json` 加入该包的构建引用；`eslint.config.js` 为应用内 CommonJS 资源加入通用检查；`docs/index.md` 添加开发说明入口；`tests/release` 新增插件搬移和 VSIX 资源验证。开发工具不进入运行时 Bundle。先前独立 CLI 原型已从最终变更中撤回。
 
 ## 验证记录
@@ -104,6 +106,8 @@ Edit 参数清空：原生执行结束会清空 old_string / new_string。工具
 0.17.1 合并 Head fea5abf2 的四平台 CI 全部通过，run 41704276210。后续 MCP / 原生 Agent 选择补丁需要独立 CI。
 
 MCP 补验（2026-11-04）：3.4.14 / SOLO Agent / Seed-Code，最终源码 Companion 0.1.11 的十三个 CJS 与 Manifest 哈希一致；原生 Agent 由专用工作区设置选择，没有改写扩展源码中的类型。原生 run_mcp 调用 Echo 一次、返回固定标记，服务审计恰好新增一条，全局权限哈希不变，原生没有额外审批。原脚本误将首条 commentary 当成最终答案而失败；保留该记录后核对实际 final_answer、工具结果及审计，没有重发。测试窗口关闭后重新打开同一工作区并绑定新端点，两个独立 Node 进程精确冷读同一原生 Session 和快照哈希。先前回调缺失的失败任务也保留。最终源码证据为本地 mcp-final-source-verification-v2.json；Adapter / 插件 / VSIX / 搬移 Host 族 258 项通过，根构建、测试类型检查、改动 ESLint / 格式与 boundaries 通过。
+
+MCP Head 9a19320c 的 Ubuntu / Windows / Linux ARM64 / macOS CI 全部通过，run 41710377413。随后在完全独立的官方 Desktop 副本、Chromium profile、CODEX_HOME、APPDATA / LOCALAPPDATA 和 Host 数据目录中加载源代码 Host / Controller / Renderer；用户已完成该副本登录，Renderer installed，实际插件目录包含 trae-cn。原日常 Desktop 保持运行。真实 Renderer RPC 复现了缺 cwd 时 unavailable、指定已打开 MCP 项目时 ready / 19 模型的差异，据此完成上述通用作用域修复；新补丁需独立 CI，隔离窗口最终 UI 验收及日常部署仍未完成。
 
 后台结果保护检查：11 项源码对应的后台 / 前台边界用例；修复前其中 9 项失败，补充一项 running 数据状态后全通过。完整 Adapter、独立插件 / VSIX 与搬移 Host 发行检查共 208 项通过；typecheck、lint / boundaries 及改动代码格式通过。没有执行原生后台任务，故不作为后台控制或自主 Turn 的真实验收。
 

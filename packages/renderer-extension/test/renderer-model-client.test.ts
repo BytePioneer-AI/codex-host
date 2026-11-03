@@ -934,6 +934,28 @@ describe("Renderer fixed Model request client", () => {
     ]);
   });
 
+  it("preserves legacy inspection on an older Host that rejects Thread scope", async () => {
+    const sendRequest = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("Invalid params"), { code: -32602 }))
+      .mockResolvedValueOnce(inspection);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Renderer client was not created");
+    await expect(
+      client.inspectHarness({
+        harnessId: piHarnessId,
+        threadId: hostThreadIdSchema.parse("thread-owned"),
+      }),
+    ).resolves.toEqual(inspection);
+    expect(sendRequest).toHaveBeenNthCalledWith(1, HARNESS_INSPECT_METHOD, {
+      harnessId: piHarnessId,
+      threadId: "thread-owned",
+    });
+    expect(sendRequest).toHaveBeenNthCalledWith(2, HARNESS_INSPECT_METHOD, {
+      harnessId: piHarnessId,
+    });
+  });
+
   it("does not retry a full inspection rejected for its params", async () => {
     const sendRequest = vi
       .fn()

@@ -90,6 +90,8 @@ plugins/
 - `codexhost/harness/inspect` 可带 `purpose: "availability"`，表示调用方只使用状态和错误。Renderer 启动时对所有已注册 Harness 的后台可用性检测使用该标记；用户选中 Harness 后加载 Model 目录仍做完整 inspection。Adapter 可据此不启动原生 Session 回答，避免用户未选用的 Harness 执行 Session 启动副作用；这种结果可以缺少原生默认 Model 和 Thinking 选项，不得写入完整 inspection 的缓存。未处理该标记的 Adapter 照常做完整 inspection。旧版 Host 按未知参数以 -32602 拒绝时，Renderer 去掉该标记重试一次。目前 OMP 用 `omp models --json` 回答（不创建 Session，因此不触发 OMP 的 Provider 连接预热）；命令不可用、输出无法识别或列表为空时回到 Session inspection，由原生启动报告原因。
 - 命令目录由可选的静态 `HarnessAdapter.commandCatalog` 声明，通过 `codexhost/harness/commands/inspect` 查询；读取目录不检查原生运行时、不连接原生服务、不创建或恢复 Session。未声明时返回空目录，不通过启动会话回退发现。执行仍走 `session.commands`。
 
+Harness inspection 的工作区由请求作用域决定：新建页将已发布的草稿 cwd 传给可用性和模型目录检查；目录改变时废弃旧检查与旧模型请求，刷新新目录的可用性和模型。已有外部 Thread 可传可选 threadId，Host 校验其 Harness 归属后使用持久记录中的 cwd；显式 cwd 冲突、官方 Thread 或其他 Harness 的 Thread 均拒绝，不将当前草稿目录借给已有会话。省略 threadId 保持原有请求行为；旧 Host 明确以 -32602 拒绝该字段时，Renderer 去掉可选选择器重试一次，沿用旧版本未按 Thread 定位目录的行为，不声称它提供了新的作用域保证。当前 Thread 自己的目录检查成功后，其控件不受同一 Host 上其他草稿目录不可用的影响；插件目录缺失仍为不可用。
+
 ### 活动 Turn 恢复（API 2）
 
 公共可选扩展允许插件重新观察已准入的原生任务，不重新发送输入。Adapter 声明 `activeTurnRecovery: true` 后，Host 才在 resume 时传入 `knownTurns: [{ turnId, nativeTurnRef }]`；未声明的插件保留原有输入和行为。

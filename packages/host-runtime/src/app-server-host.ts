@@ -3318,10 +3318,29 @@ export class AppServerHost {
       );
       return;
     }
+    let inspectionCwd = params.data.cwd;
+    if (params.data.threadId) {
+      const resolution = await this.#resolveExternalThread(params.data.threadId);
+      if (resolution.kind === "error") {
+        await this.#writer.json(rpcError(request, resolution.error.code, resolution.error.message));
+        return;
+      }
+      if (
+        resolution.kind !== "external" ||
+        resolution.thread.harnessId !== params.data.harnessId ||
+        (inspectionCwd !== undefined && inspectionCwd !== resolution.thread.record.cwd)
+      ) {
+        await this.#writer.json(
+          rpcError(request, -32602, "Harness inspection scope does not match the Thread"),
+        );
+        return;
+      }
+      inspectionCwd = resolution.thread.record.cwd;
+    }
     let inspection: unknown;
     try {
       inspection = await adapter.inspect({
-        ...(params.data.cwd ? { cwd: params.data.cwd } : {}),
+        ...(inspectionCwd ? { cwd: inspectionCwd } : {}),
         ...(params.data.refresh !== undefined ? { refresh: params.data.refresh } : {}),
         ...(params.data.purpose ? { purpose: params.data.purpose } : {}),
       });

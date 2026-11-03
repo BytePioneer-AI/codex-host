@@ -37,7 +37,7 @@
 | 成员 | 必需 | 语义 | 规范 |
 |---|---|---|---|
 | `harnessId` | ✓ | 与 Manifest 的 `id` 一致 | [会话核心](spec-session-core.md) |
-| `inspect(input?)` | ✓ | 检查安装、认证、Catalog 和能力；`purpose:"availability"` 是轻量模式 | [会话核心](spec-session-core.md#检查inspect) |
+| `inspect(input?)` | ✓ | 检查安装、认证、Catalog 和能力；按 cwd 隔离目录；`purpose:"availability"` 是轻量模式。公共 Harness inspect 可用 threadId 由 Host 推导所属会话的 cwd，不向 Adapter 传 Thread 身份 | [会话核心](spec-session-core.md#检查inspect) |
 | `open(input)` | ✓ | create / resume / fork / rollbackLastTurn | [会话核心](spec-session-core.md#打开open)、[历史](spec-history.md) |
 | `activeTurnRecovery` | | API 2，可设 true；resume 接收已确认的 knownTurns 映射 | [历史](spec-history.md#resume) |
 | `close()` | ✓ | 幂等地释放共享资源 | [会话核心](spec-session-core.md#命令并发与错误) |

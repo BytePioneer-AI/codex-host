@@ -23,6 +23,7 @@ const testState = vi.hoisted(() => ({
   editor: null as unknown as Element,
   sendButton: null as unknown as HTMLButtonElement,
   renderedModelViews: [] as RendererModelControlView[],
+  renderedAvailability: [] as Record<string, string>[],
   selectModel: null as null | ((modelId: string) => void),
   selectThinking: null as null | ((thinkingOptionId: string) => void),
   getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
@@ -84,6 +85,7 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
       modelView: RendererModelControlView,
     ) => {
       testState.renderedModelViews.push({ ...modelView });
+      testState.renderedAvailability.push({ ...(_availability as Record<string, string>) });
     },
     reconcileComposerNativeControls: vi.fn(),
     disposeComposerAgentControl: vi.fn(),
@@ -214,6 +216,7 @@ function installFakeBrowser(): void {
   testState.editor = editor;
   testState.sendButton = sendButton;
   testState.renderedModelViews = [];
+  testState.renderedAvailability = [];
   testState.selectModel = null;
   testState.selectThinking = null;
   testState.getConnectionDiagnostics = null;
@@ -274,6 +277,9 @@ function installFakeBrowser(): void {
       ) {
         super(type);
       }
+      get detail(): unknown {
+        return this.init?.detail;
+      }
     },
   );
 }
@@ -290,6 +296,121 @@ afterEach(() => {
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {
+  it("keeps a Thread's own catalog usable when a different draft workspace is unavailable", async () => {
+    installFakeBrowser();
+    Reflect.set(window, "__codexhostDraftWorkspacesV1", { local: "/other-draft" });
+    const local = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(async (input: { threadId?: string }) =>
+        input.threadId === "thread-a"
+          ? readyInspection()
+          : {
+              status: "unavailable",
+              error: {
+                code: "configurationRequired",
+                message: "Wrong draft workspace",
+                retryable: true,
+              },
+            },
+      ),
+      inspectThread: vi.fn(async () => ({
+        owner: "external",
+        harnessId: "claude-code",
+        transportModelId:
+          "codexhost/claude-code-native@claude-model-v1.b3B1cw@bypassPermissions@auto",
+        effectiveModel: harnessModelRefSchema.parse({ id: "claude-model-v1.b3B1cw" }),
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+        locked: true,
+      })),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(async () => ({ threadId: "thread-a", usage: null })),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({ enabledAgents: ["codex", "claude-code"] });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      {
+        currentHostId: () => "local",
+        clientForHost: () => local,
+        subscribeThreadUsage: () => () => undefined,
+      } as never,
+    );
+    try {
+      await vi.waitFor(() =>
+        expect(probe.status().availability["claude-code"]).toBe("unavailable"),
+      );
+      await vi.waitFor(() => expect(testState.renderedModelViews.at(-1)?.status).toBe("ready"));
+      expect(local.inspectHarness).toHaveBeenCalledWith({
+        harnessId: "claude-code",
+        threadId: "thread-a",
+      });
+      expect(testState.renderedAvailability.at(-1)?.["claude-code"]).toBe("ready");
+    } finally {
+      probe.dispose();
+    }
+  });
+  it("uses the published draft workspace and ignores a late catalog after switching folders", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    Reflect.set(window, "__codexhostDraftWorkspacesV1", { local: "/draft-a" });
+    const previous = Promise.withResolvers<ReturnType<typeof readyInspection>>();
+    const nextModel = "claude-model-v1.next-workspace";
+    const inspectHarness = vi.fn(async (input: { cwd?: string; purpose?: string }) => {
+      if (input.purpose === "availability") return readyInspection();
+      return input.cwd === "/draft-a" ? previous.promise : readyInspection(nextModel);
+    });
+    const local = { listHarnessPlugins, inspectHarness };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "claude-code",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      {
+        currentHostId: () => "local",
+        clientForHost: (id: string) => (id === "local" ? local : null),
+      } as never,
+    );
+    try {
+      await vi.waitFor(() =>
+        expect(inspectHarness).toHaveBeenCalledWith({ harnessId: "claude-code", cwd: "/draft-a" }),
+      );
+      window.dispatchEvent(
+        new CustomEvent("codexhost:draft-workspace", {
+          detail: { hostId: "local", cwd: "/draft-b" },
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(inspectHarness).toHaveBeenCalledWith({ harnessId: "claude-code", cwd: "/draft-b" }),
+      );
+      await vi.waitFor(() =>
+        expect(testState.renderedModelViews.at(-1)).toMatchObject({
+          status: "ready",
+          catalog: { models: [{ ref: { id: nextModel } }] },
+        }),
+      );
+      previous.resolve(readyInspection("claude-model-v1.stale-workspace"));
+      await previous.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({
+        status: "ready",
+        catalog: { models: [{ ref: { id: nextModel } }] },
+      });
+      expect(
+        inspectHarness.mock.calls
+          .filter(([input]) => input.purpose === "availability")
+          .every(([input]) => input.cwd === "/draft-a" || input.cwd === "/draft-b"),
+      ).toBe(true);
+    } finally {
+      previous.resolve(readyInspection());
+      probe.dispose();
+    }
+  });
   it("loads remote sidebar artwork before any Composer opens on that Host", async () => {
     installFakeBrowser();
     const plugin = harnessPluginDescriptorSchema.parse({
@@ -510,7 +631,10 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
         );
         await vi.waitFor(() => {
           expect(probe.lockedSelection()?.agent).toBe("claude-code");
-          expect(remote.inspectHarness).toHaveBeenCalledWith({ harnessId: "claude-code" });
+          expect(remote.inspectHarness).toHaveBeenCalledWith({
+            harnessId: "claude-code",
+            threadId: "thread-a",
+          });
           expect(testState.renderedModelViews.at(-1)).toMatchObject({
             status: modelFirst ? "ready" : "loading",
           });

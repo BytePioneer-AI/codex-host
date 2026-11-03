@@ -6,6 +6,7 @@ import {
   catalogModelForRef,
   decodeHarnessPluginRoute,
   harnessIdSchema,
+  hostThreadIdSchema,
   permissionModeFixedAtCreate,
   type HarnessCommandDescriptor,
   type HarnessPluginDescriptor,
@@ -1027,10 +1028,18 @@ export function installRendererBindingProbe(
   const composerAvailability = (mounted: MountedComposer) => {
     if (!mounted.hostId) return {};
     const state = hostHarnessAvailabilityState(mounted.hostId);
-    const agent = controller.get(mounted.composer).agent;
-    return state.plugins && agent !== "codex" && !state.plugins.some(({ id }) => id === agent)
-      ? { ...state.availability, [agent]: "unavailable" as const }
-      : state.availability;
+    const selection = controller.get(mounted.composer);
+    const agent = selection.agent;
+    if (state.plugins && agent !== "codex" && !state.plugins.some(({ id }) => id === agent))
+      return { ...state.availability, [agent]: "unavailable" as const };
+    if (
+      selection.phase === "locked" &&
+      agent !== "codex" &&
+      mounted.ownershipStatus === "ready" &&
+      mounted.modelView.status === "ready"
+    )
+      return { ...state.availability, [agent]: "ready" as const };
+    return state.availability;
   };
   const composerAdapterState = (mounted: MountedComposer): RendererAdapterStatus["state"] =>
     composerClient(mounted) ? "ready" : "installing";
@@ -1553,7 +1562,7 @@ export function installRendererBindingProbe(
       hostState.availability[agent] ?? (hostState.plugins ? "unavailable" : "checking");
     // The selected Harness inspection already validates availability. Waiting
     // for its background discovery first would defeat interactive scheduling.
-    if (availability !== "ready" && availability !== "checking") {
+    if (isDraft && availability !== "ready" && availability !== "checking") {
       mounted.modelView = {
         status: composerAdapterState(mounted) === "ready" ? "error" : "waitingForAdapter",
         thinkingSelectionSupported: false,
@@ -1584,6 +1593,15 @@ export function installRendererBindingProbe(
       catalogRequests.set(mounted, catalogRequest);
       const inspection = await client.inspectHarness({
         harnessId: harnessIdSchema.parse(agent),
+        ...(isDraft
+          ? draftWorkspaces.has(requestHostId)
+            ? { cwd: draftWorkspaces.get(requestHostId) }
+            : {}
+          : {
+              threadId: hostThreadIdSchema.parse(
+                threadIdFromComposerModelTarget(mounted.modelTarget),
+              ),
+            }),
       });
       if (
         !isCurrentModelRequest(mounted, generation) ||
@@ -2467,7 +2485,12 @@ export function installRendererBindingProbe(
             // to identify the visible Thread and load its selected configuration.
             // Availability only: the selected Harness loads its catalog through full inspection.
             const inspection = await client.inspectHarness(
-              { harnessId: harnessIdSchema.parse(agent), refresh, purpose: "availability" },
+              {
+                harnessId: harnessIdSchema.parse(agent),
+                refresh,
+                purpose: "availability",
+                ...(draftWorkspaces.has(hostId) ? { cwd: draftWorkspaces.get(hostId) } : {}),
+              },
               { priority: "background" },
             );
             status = inspection.status === "ready" ? "ready" : inspection.status;
@@ -3255,13 +3278,26 @@ export function installRendererBindingProbe(
     if (typeof detail !== "object" || detail === null) return;
     const { hostId, cwd } = detail as { hostId?: unknown; cwd?: unknown };
     if (typeof hostId !== "string" || typeof cwd !== "string" || cwd.length === 0) return;
+    if (draftWorkspaces.get(hostId) === cwd) return;
     draftWorkspaces.set(hostId, cwd);
+    const availability = hostHarnessAvailabilityState(hostId);
+    availability.requestGeneration += 1;
+    availability.request = null;
+    availability.availability = Object.fromEntries(
+      (availability.plugins ?? []).map(({ id }) => [id, "checking"]),
+    );
+    availability.errors = {};
+    availability.webUi = {};
+    void refreshHarnessAvailabilityForHost(hostId, true, false, true);
     for (const mounted of mountedByComposer.values()) {
       if (
         !threadIdFromComposerModelTarget(mounted.modelTarget) &&
         activeModelHostId(mounted.composer) === hostId &&
         controller.get(mounted.composer).agent !== "codex"
       ) {
+        controller.beginModelRequest(mounted.composer);
+        controller.clearConfiguration(mounted.composer);
+        void loadExternalCatalog(mounted);
         void refreshCommands(mounted, { keepCurrent: true });
       }
     }

@@ -55,4 +55,18 @@ async function desktopModelSettings(vscode) {
   return { internal: user.account?.scope === "bytedance" };
 }
 
-module.exports = { desktopRequestSettings, desktopHistorySettings, desktopModelSettings };
+function desktopNativeAgent(vscode) {
+  const selected = vscode.workspace.getConfiguration().get("codexhost.traeCn.nativeAgent");
+  if (selected === undefined) return "builder_v3";
+  if (selected === "builder_v3" || selected === "solo_agent") return selected;
+  throw Object.assign(new Error("Select Builder or SOLO Agent in CodexHost TRAE CN settings"), {
+    code: "configurationRequired",
+  });
+}
+
+module.exports = {
+  desktopRequestSettings,
+  desktopHistorySettings,
+  desktopModelSettings,
+  desktopNativeAgent,
+};

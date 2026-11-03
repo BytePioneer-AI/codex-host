@@ -21,6 +21,12 @@ TRAE CN 必须打开并信任目标工作目录，并在应用内完成登录。
 
 ## 原生边界
 
+Companion 0.1.11 在 TRAE CN 设置中提供 **CodexHost TRAE CN: Native Agent**（`codexhost.traeCn.nativeAgent`）。默认沿用 Builder (`builder_v3`)，可选择 SOLO Agent (`solo_agent`)；两者按原生 function 分别读取模型池。本机 3.4.14 分别返回 9 / 19 个可选模型，不将两套目录合并，也不指定默认模型。完成活动工作后运行 **CodexHost: Restart TRAE CN Bridge** 生效；不自动重启活动连接。已有 Session 必须使用原来的 Agent，不匹配时在历史读取或发送前返回配置错误。
+
+SOLO 的原生 MCP 执行通过 `icube.common.commands.tooling.runAgentExtension` 回调进入桌面。`mcp.cjs` 将执行限制到已观察的原 Session、用户消息、Plan / tool-call、工作区、已加载 extension / server / tool 及原参数。等待原生审批、终态、重复、外部身份、未知别名或附加执行字段均拒绝。执行前占用身份，失败或丢失回执不重新开放；其他可执行桌面命令和 MCP 资源读取回调不在白名单内。分离 HTTP 观察者仍保留同一原生观察作用域，流结束后过期。
+
+3.4.14 / SOLO / Seed-Code 的最终开发源码已实际调用专用 Echo MCP 一次，工具结果与服务审计一致。重开工作区及 Bridge 后，两个新 Node 进程精确读取同一 Session 和快照哈希，十三个 CJS 和 Manifest 哈希与源码一致，全局权限未变。本机原生策略没有额外审批，不能据此声称 MCP 允许 / 拒绝验收完成。该结果仍不是用户日常 Host / Desktop 部署验收。
+
 验证环境为 TRAE CN 3.4.12、VS Code core 1.107.1、Windows x64。应用将 `harness.dll` 加载到其受管理进程中，并通过 Electron 自带的 `ahaIpc` 暴露 `ai-agent` RPC。测试扩展在应用的 Extension Host 中连接这个服务；普通 Node 进程不能据此直接加载 Electron 私有绑定。
 
 数据路径如下。公共 Adapter 的普通对话、空闲恢复和提问答复已实测，其他能力仍在开发。

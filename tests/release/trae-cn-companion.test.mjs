@@ -37,6 +37,7 @@ test("TRAE CN Companion VSIX contains the complete source resources and license"
           "interactions",
           "models",
           "native",
+          "mcp",
           "server",
           "service",
           "settings",

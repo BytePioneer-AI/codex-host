@@ -6,10 +6,10 @@
 |---|---|
 | Harness ID | trae-cn |
 | 原生接口与传输方式 | TRAE CN 桌面扩展桥接 `electron.ahaIpc`，调用应用自带 `harness.dll` / `ai-agent` JSON-RPC；复用应用登录 |
-| 已验证的原生版本 | Windows x64：TRAE CN 3.4.12 原生执行；3.4.13 预装插件经隔离 Host 实际对话及冷恢复续聊；VS Code core 1.107.1 |
+| 已验证的原生版本 | Windows x64：TRAE CN 3.4.12 原生执行；3.4.13 预装插件经隔离 Host 实际对话及冷恢复续聊；3.4.14 SOLO 原生 MCP 执行与 Bridge 重建后的精确冷读；VS Code core 1.107.1 |
 | 交付范围 | 仓库内插件 + 桌面 Companion 扩展；原生接口为应用私有接口，须独立验收版本兼容性 |
 | 参考插件 | WorkBuddy 的应用发现与应用拥有的认证；公共 Harness 输出和交互契约 |
-| 最后验证 | 2026-10-31～11-02 Windows；真实对话、文件编辑与 Diff、活动恢复、提问及审批、文本 Fork / Rollback、单轮文件编辑回退为空；3.4.13 只读兼容和更新后的自动检查 |
+| 最后验证 | 2026-10-31～11-04 Windows；真实对话、文件编辑与 Diff、活动恢复、提问及审批、文本 Fork / Rollback、单轮文件编辑回退为空；3.4.14 SOLO MCP 执行、源码哈希与跨进程冷读 |
 
 ## 能力
 
@@ -21,7 +21,7 @@
 | A2 | 工厂 | 必做 | P0 | 支持 | src/plugin.ts | 真实 Loader 两个独立实例、搬移 Bundle、独立 Node 进程导入 | 冷构造；复制环境；关闭隔离；应用路径优先级 |
 | A3 | 检查 | 必做 | P0 | 支持 | src/adapter.ts | test/adapter.test.ts；真实 inspect | 不创建会话，不启动桌面窗口；同作用域目录缓存 |
 | A4 | 创建 Session | 必做 | P0 | 支持 | src/session.ts；assets/companion/service.cjs | 公共 Session 首轮真实创建及文件读取 | 延迟至首轮；原生 Project 绑定目录 |
-| A5 | 执行 Turn | 必做 | P0 | 受限 | src/session.ts；src/live-items.ts | 公共普通对话、文件工具、提问、命令审批及持久历史一致 | Builder、Read、Edit、RunCommand 和提问已验收；其他工具语义待补 |
+| A5 | 执行 Turn | 必做 | P0 | 受限 | src/session.ts；src/live-items.ts；assets/companion/mcp.cjs | 公共普通对话、文件工具、提问、命令审批及持久历史一致；3.4.14 SOLO 的 run_mcp 实际执行一次并精确冷恢复 | Builder、Read、Edit、RunCommand、提问及 SOLO MCP 已验收；其他工具语义待补 |
 | A6 | 取消 | 必做 | P0 | 支持 | src/session.ts；assets/companion/service.cjs | 公共提问等待中 turn.cancel 后，公共与持久原生均 cancelled，同 Session 随后成功续聊 | Interaction 关闭一次；过期回复拒绝；不将请求回执当终态 |
 | A7 | 只读快照 | 必做 | P0 | 支持 | src/history.ts；src/session.ts | 重复读取真实历史的 Turn / Item 身份一致；恢复缓存 unknown 快照；原生历史提交延迟实测 | 普通活动读取返回 sessionBusy；终态确认短暂重读同一身份 |
 | A8 | 持久身份 + resume | 必做 | P0 | 受限 | src/adapter.ts；src/session.ts；src/history.ts | 跨进程普通恢复、活动提问 / 审批恢复；后台命令完成后，重建 Companion 与两个新 Host 的三轮完整冷读一致 | 后台仍运行时冷恢复明确返回 sessionBusy；不丢弃命令、不重发原任务；缺映射及不确定状态拒绝 |
@@ -75,9 +75,11 @@ Thinking 选择：Companion 0.1.6 区分普通模型的 reasoning_effort_config�
 
 权限选择：Companion 0.1.7 只读动态配置、用户开关和最多 1 MiB 的本地 permission/global.json，沿用原生 Auto 可见性、Custom 存在性及默认规则，不导出授权资源或命令规则。preparePermission 验证原生作用域和档位后，公共选择配置下一轮；发送时同时设置消息顶层及 client_info 的 permission_profile_id。活动 Turn 固定原选择，不改全局配置。原生历史及 Session 元数据均未提供档位，只有 Host 已保存提示可以恢复，不以消息内容补造。远程和企业权限菜单不声明支持；未知活动 Profile 报错。手动模式也可能按原生规则直接执行允许的命令，不承诺每条命令都会弹审批。
 
-审批覆盖：Companion 0.1.8 明确声明文件 / MCP 审批能力，旧 Companion 不提供不可执行的按钮。文件操作的允许决策沿用原生 toolcall_id，拒绝使用 tool_name；删除沿用其无新增权限范围的专用格式。MCP / ReadMcpResource 沿用工具名，仅按原生新权限开关和请求元数据使用 execution / none，旧权限系统省略该字段。不提供 task / device 授权，不修改规则。界面保留目标文件、资源和 MCP 参数；未知格式或超限参数明确拒绝。文件修改和删除的允许及拒绝均已做真实验收；MCP 目前只有源码依据及回归测试。
+审批覆盖：Companion 0.1.8 明确声明文件 / MCP 审批能力，旧 Companion 不提供不可执行的按钮。文件操作的允许决策沿用原生 toolcall_id，拒绝使用 tool_name；删除沿用其无新增权限范围的专用格式。MCP / ReadMcpResource 沿用工具名，仅按原生新权限开关和请求元数据使用 execution / none，旧权限系统省略该字段。不提供 task / device 授权，不修改规则。界面保留目标文件、资源和 MCP 参数；未知格式或超限参数明确拒绝。文件修改和删除的允许及拒绝均已做真实验收。3.4.14 SOLO 的 MCP 执行已实测，本机原生策略没有要求额外审批；MCP 允许 / 拒绝与资源读取确认仍只有源码依据及回归测试。
 
-MCP 原生前提（2026-11-03）：已在独立项目准备无网络、无命令执行的本地 Echo MCP，协议自测通过；用户在原生安全确认后开启了项目级 MCP。TRAE CN 桌面日志确认该项目的测试服务及工具已加载，Native 也生成了工具目录。然而实际 Builder 首轮返回工具不可用，未调用 MCP、未产生审批；随后只读 agent/get_agents 确认当前内置 builder_v3 的 mcp_list 为空，原任务为 Finished。尚需核实原生 Agent 绑定 / 调用路径，不以服务已加载、工具目录可见或模型回复代替 MCP 执行与审批验收；原任务保留且未重发。
+原生 Agent 与 MCP：Companion 0.1.11 在 TRAE CN 设置中提供 codexhost.traeCn.nativeAgent，默认沿用 builder_v3，可显式选择 solo_agent。完成活动工作后手动重启 Bridge 生效；已有 Session 必须使用其原生 Agent，类型不匹配在读取或写入前返回 configurationRequired，不自动改写会话。本机 3.4.14 的 Builder / SOLO 对话模型池分别为 9 / 19 项，不混合目录，不指定默认模型。先前两个 Builder 测试没有调用 MCP；raw agent/get_agents 的空 mcp_list 不能代表前端合成后的能力。SOLO 的独立测试实际触发 runAgentExtension，确认只读回调白名单缺少执行路径。
+
+MCP 执行回调：mcp.cjs 只接收已订阅的 Session 中观察到的 run_mcp，核对原消息、Plan / tool-call 身份、当前工作区、已加载目录中的 extension / server / tool 与原参数。原生仍待审批、已终结、重复或外部身份均拒绝；执行前占用身份，即使调用失败或回执丢失也不重试。getAllAgentExtensions 只缓存当前 Session / 工作区的目录。HTTP 观察者分离后仍跟踪原作用域，流结束或关闭后过期。未识别的别名、回调字段和其他可执行桌面命令不开放；资源读取回调尚未实现。
 
 删除快照：Companion 0.1.10 对终态 DeleteFile / delete_file 读取原用户消息快照，不依赖原生未提供的 can_show_diff。仅将 deleted.after_content=null 和 added.before_content=null 解释为不存在的一侧，其他缺失正文仍拒绝。真实工作区内删除的完整 before_content 已恢复成 fileChange，并通过新进程精确冷读；原工具与回复未变，没有重发删除。工作区外专用文件通过原生单次允许后确实删除、拒绝后保持原内容；该外部文件的原生快照返回空列表，因此只保留实际工具结果，不从当前文件系统补造历史 Diff。旧 Companion 缺少删除快照时明确要求升级。
 
@@ -98,6 +100,10 @@ Edit 参数清空：原生执行结束会清空 old_string / new_string。工具
 0.17.0 基线（2026-11-03）：91c9cd95 的四平台 CI 全部通过，run 41487098357。补丁分支随后合入上游 b3094d5a（0.17.0），保留上游新增 Harness 与功能，不用旧 Host 覆盖日常运行时。根 build:typescript、build:renderer、typecheck、lint / boundaries 通过；Adapter / 插件 / VSIX / 搬移 Host 与完整预装组合 264 项通过、1 项跳过；API 2 恢复、Runtime、Loader、Broker 和恢复 Schema 聚焦集 142 项通过、4 项跳过（含本机无法建立的符号链接用例）。没有合并为累计测试数；合入后的新 Head 需单独 CI。当前用户窗口仍未替换或重启。
 
 0.17.1 基线：后续合入上游 cf2c6d0c（0.17.1），解决其无原生身份历史保留与 API 2 活动恢复的同处冲突。只读刷新先保留尚无原生身份的本地失败 / 取消历史，再排除由活动 Projector 持有的 Turn，避免刷新后重新加入其旧失败副本。新增刷新期间仍保留原活动身份与 inProgress 状态的回归；上游历史元数据用例、恢复用例与 Adapter / 插件 / VSIX / 搬移 Host 族共 267 项通过。根构建、Renderer 构建、typecheck、冲突文件 ESLint / 格式和 boundaries 通过。新 Head 的 CI 独立检查；本机已更新至 TRAE CN 3.4.14，先前原生执行证据仍只按其实际 3.4.12 / 3.4.13 版本标注。
+
+0.17.1 合并 Head fea5abf2 的四平台 CI 全部通过，run 41704276210。后续 MCP / 原生 Agent 选择补丁需要独立 CI。
+
+MCP 补验（2026-11-04）：3.4.14 / SOLO Agent / Seed-Code，最终源码 Companion 0.1.11 的十三个 CJS 与 Manifest 哈希一致；原生 Agent 由专用工作区设置选择，没有改写扩展源码中的类型。原生 run_mcp 调用 Echo 一次、返回固定标记，服务审计恰好新增一条，全局权限哈希不变，原生没有额外审批。原脚本误将首条 commentary 当成最终答案而失败；保留该记录后核对实际 final_answer、工具结果及审计，没有重发。测试窗口关闭后重新打开同一工作区并绑定新端点，两个独立 Node 进程精确冷读同一原生 Session 和快照哈希。先前回调缺失的失败任务也保留。最终源码证据为本地 mcp-final-source-verification-v2.json；Adapter / 插件 / VSIX / 搬移 Host 族 258 项通过，根构建、测试类型检查、改动 ESLint / 格式与 boundaries 通过。
 
 后台结果保护检查：11 项源码对应的后台 / 前台边界用例；修复前其中 9 项失败，补充一项 running 数据状态后全通过。完整 Adapter、独立插件 / VSIX 与搬移 Host 发行检查共 208 项通过；typecheck、lint / boundaries 及改动代码格式通过。没有执行原生后台任务，故不作为后台控制或自主 Turn 的真实验收。
 

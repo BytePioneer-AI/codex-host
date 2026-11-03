@@ -143,6 +143,30 @@ async function setup(configurable = false, thinking = false, permissions = false
 }
 
 describe("TRAE CN public Adapter core", () => {
+  it("requires the original native Agent before reading or writing a saved Session", async () => {
+    const test = await setup();
+    try {
+      const reference = nativeSessionRefSchema.parse({
+        ...test.reference,
+        locator: {
+          applicationRoot: test.service.application.root,
+          cwd: test.cwd,
+          projectId: "project",
+          agentType: "solo_agent",
+        },
+      });
+      expect(
+        await test.adapter.open({ kind: "resume", cwd: test.cwd, nativeRef: reference }),
+      ).toMatchObject({
+        ok: false,
+        error: { code: "configurationRequired", message: expect.stringContaining("solo_agent") },
+      });
+      expect(test.service.call).not.toHaveBeenCalled();
+      expect(test.service.subscribe).not.toHaveBeenCalled();
+    } finally {
+      await test.close();
+    }
+  });
   it("defers cold restoration of a running background command and restores its terminal history without writes", async () => {
     const test = await setup();
     try {

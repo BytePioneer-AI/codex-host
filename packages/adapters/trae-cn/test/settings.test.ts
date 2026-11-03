@@ -1,9 +1,9 @@
 import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 
-const { desktopRequestSettings, desktopHistorySettings } = createRequire(import.meta.url)(
-  "../assets/companion/settings.cjs",
-);
+const { desktopRequestSettings, desktopHistorySettings, desktopNativeAgent } = createRequire(
+  import.meta.url,
+)("../assets/companion/settings.cjs");
 
 function setup(values: Record<string, unknown> = {}, available = true) {
   const executeCommand = vi.fn(async () => ({
@@ -20,6 +20,15 @@ function setup(values: Record<string, unknown> = {}, available = true) {
 }
 
 describe("TRAE CN app-owned request settings", () => {
+  it("selects a native Agent without inventing a model or changing its existing default", () => {
+    expect(desktopNativeAgent(setup().vscode)).toBe("builder_v3");
+    expect(desktopNativeAgent(setup({ "codexhost.traeCn.nativeAgent": "solo_agent" }).vscode)).toBe(
+      "solo_agent",
+    );
+    expect(() =>
+      desktopNativeAgent(setup({ "codexhost.traeCn.nativeAgent": "unknown" }).vscode),
+    ).toThrow();
+  });
   it("honors native fork feature flags without exporting experiment metadata", async () => {
     const executeCommand = vi.fn(async () => ({
       fork_chat: {

@@ -10,6 +10,7 @@ const {
   desktopRequestSettings,
   desktopHistorySettings,
   desktopModelSettings,
+  desktopNativeAgent,
 } = require("./settings.cjs");
 
 let current;
@@ -77,7 +78,7 @@ async function activate(context) {
         nativePort,
         application,
         folders,
-        "builder_v3",
+        desktopNativeAgent(vscode),
         () => desktopRequestSettings(vscode),
         () => desktopHistorySettings(vscode),
         () => desktopModelSettings(vscode),

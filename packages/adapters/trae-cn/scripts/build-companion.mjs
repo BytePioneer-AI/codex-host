@@ -11,6 +11,7 @@ const companionFiles = [
   "README.md",
   "extension.cjs",
   "native.cjs",
+  "mcp.cjs",
   "models.cjs",
   "service.cjs",
   "server.cjs",

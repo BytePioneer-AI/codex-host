@@ -18,12 +18,18 @@ export function validateReference(
     !sameDirectory(locator.applicationRoot, inspection.application.root) ||
     typeof locator.cwd !== "string" ||
     !sameDirectory(locator.cwd, cwd) ||
-    locator.agentType !== inspection.agentType ||
+    typeof locator.agentType !== "string" ||
+    !["builder_v3", "solo_agent"].includes(locator.agentType) ||
     typeof locator.projectId !== "string" ||
     !locator.projectId
   )
     throw new TraeError(
       "invalidRequest",
       "TRAE CN reference belongs to a different application, Agent or workspace",
+    );
+  if (locator.agentType !== inspection.agentType)
+    throw new TraeError(
+      "configurationRequired",
+      `This Session requires native ${locator.agentType}. Select its original Agent in the TRAE CN Companion settings and restart the Bridge after finishing active work`,
     );
 }

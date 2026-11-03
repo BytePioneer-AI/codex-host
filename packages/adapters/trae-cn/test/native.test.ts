@@ -33,10 +33,11 @@ class Channel extends EventEmitter {
 
 function setup(timeoutMs = 1000) {
   const channel = new Channel();
-  const executeCommand = vi.fn(async (name: string) =>
-    name === "icube.common.getUserInfo"
-      ? { token: "fixture-token", userId: "fixture-user", account: { scope: "marscode" } }
-      : { configuration: true },
+  const executeCommand = vi.fn<(name: string, ...args: unknown[]) => Promise<unknown>>(
+    async (name: string) =>
+      name === "icube.common.getUserInfo"
+        ? { token: "fixture-token", userId: "fixture-user", account: { scope: "marscode" } }
+        : { configuration: true },
   );
   const vscode = {
     commands: { executeCommand },
@@ -192,6 +193,93 @@ describe("TRAE CN app-owned native RPC", () => {
     expect(channel.sent.some((message) => message.method === "rpc.stream.cancel.active")).toBe(
       false,
     );
+  });
+
+  it("executes an owned MCP callback once, including after HTTP observation detaches", async () => {
+    const { channel, executeCommand, native } = setup();
+    executeCommand.mockImplementation(async (name: string) => {
+      if (name === "icube.common.getUserInfo") return { token: "fixture-token" };
+      if (name === "icube.common.commands.tooling.getAllAgentExtensions")
+        return {
+          code: 0,
+          data: [{ id: "mcp.config.ws0.echo", label: "echo", tools: [{ name: "echo" }] }],
+        };
+      return { code: 0, data: { marker: "owned" } };
+    });
+    channel.handle = (message) => {
+      if (message.method === "request_stream")
+        channel.receive({ id: message.id, result: { streamId: "active" } });
+    };
+    const detach = await native.subscribe(
+      "lite",
+      "subscribe_events",
+      { chat_session_id: "session" },
+      {},
+      { data: vi.fn(), end: vi.fn(), error: vi.fn() },
+    );
+    const callback = (id: number, command: string, input: unknown) =>
+      channel.receive({
+        id,
+        method: "execute_command",
+        params: [
+          {
+            channel_id: "callback",
+            params: { command_id: command, args: [JSON.stringify(input)] },
+          },
+        ],
+      });
+    callback(1, "icube.common.commands.tooling.getAllAgentExtensions", {
+      chatSessionId: "session",
+      workspaceFolders: ["/workspace"],
+    });
+    await vi.waitFor(() => expect(channel.sent).toHaveLength(2));
+    detach();
+    channel.receive({
+      method: "rpc.stream.active",
+      meta: { streamId: "active" },
+      params: {
+        data: {
+          event: "plan_item",
+          payload: {
+            id: "plan",
+            reply_to_message_id: "user",
+            tool_call_info: {
+              id: "plan",
+              name: "run_mcp",
+              params: { server_name: "mcp_echo", tool_name: "echo", args: { marker: "owned" } },
+              result: {},
+              meta: { llm_toolcall_id: "call" },
+            },
+          },
+        },
+      },
+    });
+    const input = {
+      chatSessionId: "session",
+      messageId: "user",
+      toolcallId: "call",
+      extensionId: "mcp.config.ws0.echo",
+      toolName: "echo",
+      args: { marker: "owned" },
+      workspaceFolders: ["/workspace"],
+    };
+    callback(2, "icube.common.commands.tooling.runAgentExtension", input);
+    await vi.waitFor(() => expect(channel.sent).toHaveLength(3));
+    expect(channel.sent[2]).toMatchObject({
+      id: 2,
+      result: { results: { payload: '{"code":0,"data":{"marker":"owned"}}' } },
+    });
+    callback(3, "icube.common.commands.tooling.runAgentExtension", input);
+    await vi.waitFor(() => expect(channel.sent).toHaveLength(4));
+    expect(channel.sent[3]).toMatchObject({
+      result: { results: { error: "Desktop callback is not supported by this bridge" } },
+    });
+    expect(
+      executeCommand.mock.calls.filter(
+        ([name]) => name === "icube.common.commands.tooling.runAgentExtension",
+      ),
+    ).toHaveLength(1);
+    native.close();
   });
 
   it("settles pending RPC and observers when closing without stopping the desktop", async () => {

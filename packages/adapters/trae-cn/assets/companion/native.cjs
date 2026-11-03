@@ -1,4 +1,5 @@
 const { randomUUID } = require("node:crypto");
+const { NativeMcpExecutions } = require("./mcp.cjs");
 
 const READ_CALLBACKS = new Set([
   "icube.common.getDynamicConfig",
@@ -52,6 +53,7 @@ class NativeConnection {
   #onMessage;
   #onDisconnect;
   #onError;
+  #mcp = new NativeMcpExecutions();
 
   get closed() {
     return this.#closed;
@@ -126,14 +128,23 @@ class NativeConnection {
 
   async subscribe(service, method, data, context, listener) {
     const packet = await this.#packet(service, method, data, context);
+    const mcpObserver =
+      service === "lite" && method === "subscribe_events"
+        ? this.#mcp.watch(data?.chat_session_id, packet.params.client_info.workspace_folders)
+        : undefined;
     let streamId;
-    await this.#request("request_stream", packet, (response) => {
-      if (typeof response?.streamId !== "string" || !response.streamId) {
-        throw failure("protocolError", "Missing TRAE CN stream identity");
-      }
-      streamId = response.streamId;
-      this.#streams.set(streamId, { listener, detached: false });
-    });
+    try {
+      await this.#request("request_stream", packet, (response) => {
+        if (typeof response?.streamId !== "string" || !response.streamId) {
+          throw failure("protocolError", "Missing TRAE CN stream identity");
+        }
+        streamId = response.streamId;
+        this.#streams.set(streamId, { listener, detached: false, mcpObserver });
+      });
+    } catch (error) {
+      this.#mcp.unwatch(mcpObserver);
+      throw error;
+    }
     return () => this.#detachStream(streamId);
   }
 
@@ -168,18 +179,23 @@ class NativeConnection {
       }
       if (!message.method.startsWith("rpc.stream.")) return;
       const streamId = message.method.slice("rpc.stream.".length);
-      const listener = this.#streams.get(streamId)?.listener;
+      const stream = this.#streams.get(streamId);
+      const listener = stream?.listener;
       if (!listener) return;
       if (message.meta?.streamId !== streamId) throw new Error("Mismatched stream");
       if (message.params?.error) {
         this.#streams.delete(streamId);
+        this.#mcp.unwatch(stream.mcpObserver);
         listener.error(failure("nativeFailure", "TRAE CN stream failed"));
       } else if (message.meta.done) {
         this.#streams.delete(streamId);
+        this.#mcp.unwatch(stream.mcpObserver);
         listener.end();
       } else if (message.params?.data !== undefined) {
         try {
-          listener.data(unwrap(message.params.data));
+          const event = unwrap(message.params.data);
+          this.#mcp.observe(stream.mcpObserver, event);
+          listener.data(event);
         } catch (error) {
           this.#detachStream(streamId);
           listener.error(error);
@@ -207,12 +223,16 @@ class NativeConnection {
     let payload;
     let error;
     try {
-      if (!READ_CALLBACKS.has(command?.command_id))
-        throw new Error("Desktop callback is not supported by this bridge");
       const args = (command.args ?? []).map((arg) => JSON.parse(arg));
-      payload = JSON.stringify(
-        await this.#vscode.commands.executeCommand(command.command_id, ...args),
-      );
+      if (command?.command_id === "icube.common.commands.tooling.runAgentExtension") {
+        if (args.length !== 1) throw new Error("Invalid native MCP callback");
+        this.#mcp.claim(args[0]);
+      } else if (!READ_CALLBACKS.has(command?.command_id))
+        throw new Error("Desktop callback is not supported by this bridge");
+      const result = await this.#vscode.commands.executeCommand(command.command_id, ...args);
+      if (command.command_id === "icube.common.commands.tooling.getAllAgentExtensions")
+        this.#mcp.catalog(args[0], result);
+      payload = JSON.stringify(result);
     } catch {
       error = "Desktop callback is not supported by this bridge";
     }
@@ -246,6 +266,7 @@ class NativeConnection {
   }
 
   #cancelStream(streamId) {
+    this.#mcp.unwatch(this.#streams.get(streamId)?.mcpObserver);
     if (!this.#streams.delete(streamId) || this.#closed) return;
     this.#channel.send(
       JSON.stringify({

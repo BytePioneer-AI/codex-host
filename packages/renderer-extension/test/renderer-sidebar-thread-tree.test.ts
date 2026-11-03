@@ -11,10 +11,12 @@ import { RendererMethodUnavailableError } from "../src/renderer-request-sender.j
 import {
   installRendererSidebarThreadTree,
   layoutSidebarThreadTree,
+  planSidebarThreadForest,
   type SidebarThreadTreeDom,
   type SidebarThreadTreeItem,
   type SidebarThreadTreeLayout,
   type SidebarThreadTreeList,
+  type SidebarThreadTreeMirror,
 } from "../src/renderer-sidebar-thread-tree.js";
 
 const id = (value: string): HostThreadId => hostThreadIdSchema.parse(value);
@@ -39,11 +41,32 @@ class FakeItem implements SidebarThreadTreeItem {
 }
 
 class FakeList implements SidebarThreadTreeList {
+  mirrors: readonly SidebarThreadTreeMirror[] = [];
+
   constructor(public mounted: FakeItem[]) {}
 
   items(): readonly SidebarThreadTreeItem[] {
     return this.mounted;
   }
+
+  mirror(mirrors: readonly SidebarThreadTreeMirror[]): void {
+    this.mirrors = mirrors;
+  }
+}
+
+const forkKey = JSON.stringify(["local", "fork"]);
+
+function mirrorSummary(list: FakeList): unknown[] {
+  return list.mirrors.map(({ key, source, layout }) => [
+    key,
+    (source as FakeItem).threadId,
+    layout.order,
+    layout.depth,
+    layout.hidden,
+    layout.toggle
+      ? { collapsed: layout.toggle.collapsed, children: layout.toggle.childCount }
+      : null,
+  ]);
 }
 
 class FakeDom implements SidebarThreadTreeDom {
@@ -63,7 +86,10 @@ class FakeDom implements SidebarThreadTreeDom {
 
   clear(): void {
     this.cleared = true;
-    for (const list of this.mounted) for (const item of list.mounted) item.apply(null);
+    for (const list of this.mounted) {
+      list.mirror([]);
+      for (const item of list.mounted) item.apply(null);
+    }
   }
 
   change(): void {
@@ -295,17 +321,99 @@ describe("Renderer sidebar Thread tree", () => {
     control.dispose();
   });
 
-  it("does not nest a child whose parent is in another list", async () => {
-    const first = new FakeList([new FakeItem("parent")]);
-    const second = new FakeList([new FakeItem("child")]);
-    const dom = new FakeDom([first, second]);
-    const client = clientWith({ relations: { child: { parent: "parent" } } });
+  it("mirrors the Fork of a pinned Thread under its parent and hides it in Recents", async () => {
+    const pinned = new FakeList([new FakeItem("pinned-a"), new FakeItem("parent")]);
+    const recents = new FakeList([new FakeItem("recent-a"), new FakeItem("fork")]);
+    const dom = new FakeDom([pinned, recents]);
+    const client = clientWith({ forks: { fork: "parent" } });
     const control = installRendererSidebarThreadTree({ getClient: () => client, dom });
     await settle();
 
-    expect(first.mounted[0]?.layout).toBeNull();
-    expect(second.mounted[0]?.layout).toBeNull();
+    expect(summary(pinned.mounted)).toEqual([
+      ["pinned-a", 0, 0, false, null],
+      ["parent", 1, 0, false, { collapsed: false, children: 1 }],
+    ]);
+    expect(mirrorSummary(pinned)).toEqual([[forkKey, "fork", 2, 1, false, null]]);
+    expect(summary(recents.mounted)).toEqual([
+      ["recent-a", 0, 0, false, null],
+      ["fork", 0, 0, true, null],
+    ]);
+    expect(recents.mirrors).toEqual([]);
     control.dispose();
+  });
+
+  it("nests a Fork that appears after its pinned parent was already laid out", async () => {
+    const pinned = new FakeList([new FakeItem("parent")]);
+    const recents = new FakeList([new FakeItem("recent-a")]);
+    const dom = new FakeDom([pinned, recents]);
+    const client = clientWith({ relations: { fork: { parent: "parent", relation: "fork" } } });
+    const control = installRendererSidebarThreadTree({ getClient: () => client, dom });
+    await settle();
+    expect(pinned.mirrors).toEqual([]);
+
+    recents.mounted.unshift(new FakeItem("fork"));
+    dom.change();
+    await settle();
+
+    expect(mirrorSummary(pinned)).toEqual([[forkKey, "fork", 1, 1, false, null]]);
+    expect(summary(recents.mounted)).toEqual([
+      ["fork", 0, 0, true, null],
+      ["recent-a", 0, 0, false, null],
+    ]);
+    control.dispose();
+  });
+
+  it("collapses a mirrored child with its pinned parent", async () => {
+    const pinned = new FakeList([new FakeItem("parent")]);
+    const recents = new FakeList([new FakeItem("fork")]);
+    const dom = new FakeDom([pinned, recents]);
+    const client = clientWith({ forks: { fork: "parent" } });
+    const control = installRendererSidebarThreadTree({ getClient: () => client, dom });
+    await settle();
+
+    pinned.mounted[0]?.layout?.toggle?.onToggle();
+    await settle();
+
+    expect(summary(pinned.mounted)).toEqual([
+      ["parent", 0, 0, false, { collapsed: true, children: 1 }],
+    ]);
+    expect(mirrorSummary(pinned)).toEqual([[forkKey, "fork", 1, 1, true, null]]);
+    expect(summary(recents.mounted)).toEqual([["fork", 0, 0, true, null]]);
+    control.dispose();
+  });
+
+  it("returns a mirrored child to its own list when the parent leaves the sidebar", async () => {
+    const pinned = new FakeList([new FakeItem("parent")]);
+    const recents = new FakeList([new FakeItem("fork")]);
+    const dom = new FakeDom([pinned, recents]);
+    const client = clientWith({ forks: { fork: "parent" } });
+    const control = installRendererSidebarThreadTree({ getClient: () => client, dom });
+    await settle();
+    expect(pinned.mirrors).toHaveLength(1);
+
+    pinned.mounted = [];
+    dom.change();
+    await settle();
+
+    expect(pinned.mirrors).toEqual([]);
+    expect(recents.mounted[0]?.layout).toBeNull();
+    control.dispose();
+  });
+
+  it("removes mirrors on dispose", async () => {
+    const pinned = new FakeList([new FakeItem("parent")]);
+    const recents = new FakeList([new FakeItem("fork")]);
+    const dom = new FakeDom([pinned, recents]);
+    const client = clientWith({ relations: { fork: { parent: "parent", relation: "fork" } } });
+    const control = installRendererSidebarThreadTree({ getClient: () => client, dom });
+    await settle();
+    expect(pinned.mirrors).toHaveLength(1);
+
+    control.dispose();
+
+    expect(dom.cleared).toBe(true);
+    expect(pinned.mirrors).toEqual([]);
+    expect(recents.mounted[0]?.layout).toBeNull();
   });
 
   it("keys relations by Host so equal Thread ids on different Hosts stay apart", async () => {
@@ -406,5 +514,79 @@ describe("Renderer sidebar Thread tree", () => {
     expect(dom.cleared).toBe(true);
     expect(items.map((item) => item.layout)).toEqual([null, null]);
     expect(dom.listeners.size).toBe(0);
+  });
+});
+
+describe("planSidebarThreadForest", () => {
+  const entry = (key: string, parentKey: string | null = null) => ({ key, parentKey });
+
+  it("keeps lists native when nothing nests", () => {
+    expect(planSidebarThreadForest([[entry("a")], [entry("b")]])).toEqual([
+      { items: null, mirrors: [] },
+      { items: null, mirrors: [] },
+    ]);
+  });
+
+  it("moves a child and its subtree under a parent in another list", () => {
+    const [pinned, recents] = planSidebarThreadForest([
+      [entry("parent"), entry("other")],
+      [entry("grandchild", "child"), entry("recent"), entry("child", "parent")],
+    ]);
+
+    expect(
+      pinned?.items?.map(({ order, depth, hidden, mirrored }) => [order, depth, hidden, mirrored]),
+    ).toEqual([
+      [0, 0, false, false],
+      [3, 0, false, false],
+    ]);
+    expect(
+      pinned?.mirrors.map(({ list, index, plan }) => [list, index, plan.order, plan.depth]),
+    ).toEqual([
+      [1, 0, 2, 2],
+      [1, 2, 1, 1],
+    ]);
+    expect(recents?.items?.map(({ order, hidden, mirrored }) => [order, hidden, mirrored])).toEqual(
+      [
+        [0, true, true],
+        [0, false, false],
+        [0, true, true],
+      ],
+    );
+    expect(recents?.mirrors).toEqual([]);
+  });
+
+  it("prefers a parent in the same list", () => {
+    const [first, second] = planSidebarThreadForest([
+      [entry("parent")],
+      [entry("parent"), entry("child", "parent")],
+    ]);
+
+    expect(first).toEqual({ items: null, mirrors: [] });
+    expect(second?.mirrors).toEqual([]);
+    expect(second?.items?.map(({ depth, mirrored }) => [depth, mirrored])).toEqual([
+      [0, false],
+      [1, false],
+    ]);
+  });
+
+  it("does not move a Thread that Desktop shows in more than one list", () => {
+    expect(
+      planSidebarThreadForest([
+        [entry("parent")],
+        [entry("child", "parent")],
+        [entry("child", "parent")],
+      ]),
+    ).toEqual([
+      { items: null, mirrors: [] },
+      { items: null, mirrors: [] },
+      { items: null, mirrors: [] },
+    ]);
+  });
+
+  it("keeps a cross-list cycle in place", () => {
+    expect(planSidebarThreadForest([[entry("a", "b")], [entry("b", "a")]])).toEqual([
+      { items: null, mirrors: [] },
+      { items: null, mirrors: [] },
+    ]);
   });
 });

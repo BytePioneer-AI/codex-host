@@ -23,6 +23,8 @@ Codex Desktop 左侧边栏把 CodexHost 委派出的子 Thread 和 Fork 出的 T
 - 用 Fiber 中与行属性一致的 `conversationId` 识别 Thread（`threadIdFromSidebarRowElement`），按 Host 区分相同 ID。
 - `MutationObserver` 只在侧边栏行、列表或本功能标记的节点变化时调度一次 `requestAnimationFrame` 全量扫描。React 重渲染或替换节点后，下一次扫描重新应用布局，不依赖一次性 DOM 修改。
 - 不移动、不包裹、不删除原生节点。只在原生 `role="listitem"` 上设置 CSS `order`、行首缩进和折叠时的 `display: none`，并保存原值；没有嵌套的列表不改样式。React 的节点协调和原生点击导航保持不变。
+- 跨列表嵌套：Desktop 把每个 Thread 只放进一个列表，新 Fork 不继承置顶，所以置顶 Thread 的 Fork 出现在“最近”或项目列表里，与父 Thread 不在同一列表。所有列表一起规划（`planSidebarThreadForest`）：同列表内的父 Thread 优先；否则子 Thread 及其子树显示在根祖先所在的列表中。原生子行在原列表中以 `display: none` 隐藏，父列表末尾追加一个 CodexHost 自有的镜像节点（`data-codexhost-sidebar-thread-mirror`），用 CSS `order` 和缩进排到父 Thread 下面。
+- 镜像是原生列表项的深拷贝，去掉 `id`、`draggable`、行识别属性（`data-app-action-sidebar-thread-row`／`-id`／`-host-id`）、键盘循环和拖放属性，保留选中、置顶等视觉属性；原生行标记或内容变化时重新拷贝。镜像上的 click、dblclick、auxclick、contextmenu 及 Enter／空格键在原生子行的对应节点上重放，导航、右键菜单和行内按钮仍由 Desktop 处理。只有在全部列表中只出现一次的 Thread 才会跨列表移动；跨列表的环保持原位。
 - 只有值变化时才写样式或属性，扫描是幂等的，自身写入不会形成观察循环。
 - 展开／折叠按钮插入在 `[data-thread-title-trigger]` 最前面，阻止事件冒泡到原生行，避免触发导航。折叠状态只保存在当前 Renderer 内存中。
 - 关系结果按 Host 批量请求，单批最多 100 个。委派记录可能晚于子行出现，没有父 Thread 的结果在 1 s、3 s、10 s 后各重试一次；读取失败的行保持顶层。native Fork 读取并发上限为 4，结果在 Renderer 生命周期内缓存。
@@ -30,11 +32,12 @@ Codex Desktop 左侧边栏把 CodexHost 委派出的子 Thread 和 Fork 出的 T
 
 ## 已知边界
 
-- 父子必须在同一个原生列表中才会嵌套。父 Thread 在其他项目分组、置顶列表或尚未加载到当前页时，子 Thread 留在原位置。
+- 父 Thread 尚未渲染（未加载到当前页，或所在分组已折叠）时，子 Thread 留在原位置；父 Thread 再次出现后自动嵌套。
+- 镜像不承接拖放、悬停卡片和只响应 pointerdown 的交互。
 - 视觉顺序由 CSS `order` 决定；依赖 DOM 顺序的键盘循环仍按原生顺序。
 - 层级缩进最多 6 级，更深的层级按第 6 级显示。
 - 新增 Host 方法需要重启 CodexHost 后生效；只更新 Renderer 时只有 native Fork 嵌套。
 
 ## 验证
 
-`renderer-sidebar-thread-tree.test.ts` 覆盖布局、环、跨列表、折叠、重渲染、Host 区分、旧 Host 回退、迟到委派重试和释放；`renderer-model-client.test.ts` 覆盖方法结果校验和回退；`thread-relation-list.test.ts` 与 `app-server-host.thread-relations.test.ts` 覆盖 Host 关系读取、参数校验、存储失败和不写官方 stdin。
+`renderer-sidebar-thread-tree.test.ts` 覆盖布局、环、置顶父 Thread 的跨列表 Fork（含后出现的 Fork、折叠、父 Thread 消失和释放镜像）、跨列表的子树、同列表优先、重复 Thread 和跨列表环、折叠、重渲染、Host 区分、旧 Host 回退、迟到委派重试和释放；`renderer-model-client.test.ts` 覆盖方法结果校验和回退；`thread-relation-list.test.ts` 与 `app-server-host.thread-relations.test.ts` 覆盖 Host 关系读取、参数校验、存储失败和不写官方 stdin。

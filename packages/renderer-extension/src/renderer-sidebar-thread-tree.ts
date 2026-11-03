@@ -8,12 +8,15 @@ import type { RendererModelClient } from "./renderer-model-client.js";
 import { RendererMethodUnavailableError } from "./renderer-request-sender.js";
 import {
   SIDEBAR_THREAD_HOST_ID_ATTRIBUTE,
+  SIDEBAR_THREAD_ID_ATTRIBUTE,
+  SIDEBAR_THREAD_ROW_ATTRIBUTE,
   SIDEBAR_THREAD_ROW_SELECTOR,
   threadIdFromSidebarRowElement,
 } from "./renderer-sidebar-agent-icons.js";
 
 export const SIDEBAR_THREAD_TREE_ITEM_ATTRIBUTE = "data-codexhost-sidebar-thread-tree";
 export const SIDEBAR_THREAD_TREE_TOGGLE_ATTRIBUTE = "data-codexhost-sidebar-thread-toggle";
+export const SIDEBAR_THREAD_TREE_MIRROR_ATTRIBUTE = "data-codexhost-sidebar-thread-mirror";
 export const SIDEBAR_THREAD_TREE_INDENT_PX = 14;
 const SIDEBAR_THREAD_TREE_MAX_INDENT_DEPTH = 6;
 const RELATION_RETRY_DELAYS_MS = [1_000, 3_000, 10_000] as const;
@@ -102,15 +105,135 @@ export function layoutSidebarThreadTree(
   return plans;
 }
 
+export interface SidebarThreadForestMirrorPlan {
+  /** Position of the mirrored entry in its own native list. */
+  list: number;
+  index: number;
+  plan: SidebarThreadTreeLayoutPlan;
+}
+
+export interface SidebarThreadForestListPlan {
+  /**
+   * One plan per native entry, or null when the list keeps its native layout.
+   * A `mirrored` entry is hidden because it is shown under its parent in another list.
+   */
+  items: (SidebarThreadTreeLayoutPlan & { mirrored: boolean })[] | null;
+  /** Entries of other lists shown in this list, under a parent that lives here. */
+  mirrors: SidebarThreadForestMirrorPlan[];
+}
+
+/**
+ * Lay out all native lists together. Desktop files every Thread in exactly one
+ * list, and a new Fork is not pinned, so the Fork of a pinned Thread lands in
+ * Recents while its parent stays in Pinned. Such a child, with its own
+ * subtree, is mirrored into the list that shows its root ancestor and hidden
+ * where Desktop placed it; inside each list `layoutSidebarThreadTree` applies.
+ * A parent in the same list wins over one elsewhere. Only a key shown once
+ * across all lists can move, and a cross-list cycle keeps its entries in place.
+ */
+export function planSidebarThreadForest(
+  lists: readonly (readonly SidebarThreadTreeEntry[])[],
+  collapsed: ReadonlySet<string> = new Set(),
+): SidebarThreadForestListPlan[] {
+  const counts = new Map<string, number>();
+  const first = new Map<string, { list: number; index: number }>();
+  const indexByKey = lists.map((entries, list) => {
+    const indexes = new Map<string, number>();
+    entries.forEach(({ key }, index) => {
+      if (key === null) return;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      if (!first.has(key)) first.set(key, { list, index });
+      if (!indexes.has(key)) indexes.set(key, index);
+    });
+    return indexes;
+  });
+  const parentOf = (list: number, index: number): { list: number; index: number } | null => {
+    const entry = lists[list]?.[index];
+    if (!entry || entry.key === null || entry.parentKey === null) return null;
+    if (entry.parentKey === entry.key || indexByKey[list]?.get(entry.key) !== index) return null;
+    const sameList = indexByKey[list]?.get(entry.parentKey);
+    if (sameList !== undefined) return { list, index: sameList };
+    if (counts.get(entry.key) !== 1) return null;
+    return first.get(entry.parentKey) ?? null;
+  };
+  const displayList = (list: number, index: number): number => {
+    const seen = new Set<string>();
+    let at = { list, index };
+    for (;;) {
+      seen.add(`${at.list}:${at.index}`);
+      const parent = parentOf(at.list, at.index);
+      if (!parent) return at.list;
+      if (seen.has(`${parent.list}:${parent.index}`)) return list;
+      at = parent;
+    }
+  };
+  const display = lists.map((entries, list) => entries.map((_, index) => displayList(list, index)));
+
+  return lists.map((entries, list): SidebarThreadForestListPlan => {
+    const shown: { list: number; index: number }[] = [];
+    entries.forEach((_, index) => {
+      if (display[list]?.[index] === list) shown.push({ list, index });
+    });
+    const kept = shown.length;
+    lists.forEach((other, otherList) => {
+      if (otherList === list) return;
+      other.forEach((_, index) => {
+        if (display[otherList]?.[index] === list) shown.push({ list: otherList, index });
+      });
+    });
+    const shownEntries = shown.map(
+      (source) => lists[source.list]?.[source.index] ?? { key: null, parentKey: null },
+    );
+    const plans =
+      layoutSidebarThreadTree(shownEntries, collapsed) ??
+      (kept < entries.length || shown.length > kept
+        ? shownEntries.map((_, order) => ({
+            order,
+            depth: 0,
+            hidden: false,
+            childCount: 0,
+            collapsed: false,
+          }))
+        : null);
+    if (!plans) return { items: null, mirrors: [] };
+    const items = entries.map(() => ({
+      order: 0,
+      depth: 0,
+      hidden: true,
+      childCount: 0,
+      collapsed: false,
+      mirrored: true,
+    }));
+    const mirrors: SidebarThreadForestMirrorPlan[] = [];
+    shown.forEach((source, position) => {
+      const plan = plans[position];
+      if (!plan) return;
+      if (source.list === list) items[source.index] = { ...plan, mirrored: false };
+      else mirrors.push({ list: source.list, index: source.index, plan });
+    });
+    return { items, mirrors };
+  });
+}
+
 export interface SidebarThreadTreeItem {
   /** The Host Thread shown by this list item, or null for any other entry. */
   thread(): { hostId: string; threadId: HostThreadId } | null;
   apply(layout: SidebarThreadTreeLayout | null): void;
 }
 
+export interface SidebarThreadTreeMirror {
+  /** Thread key of the mirrored entry; one mirror per key and list. */
+  key: string;
+  /** The native entry, in another list, that the mirror shows and forwards input to. */
+  source: SidebarThreadTreeItem;
+  layout: SidebarThreadTreeLayout;
+}
+
 export interface SidebarThreadTreeList {
-  /** Every direct native list entry, in DOM order. */
+  /** Every direct native list entry, in DOM order, without mirrors. */
   items(): readonly SidebarThreadTreeItem[];
+  /** Show exactly these mirrors in this list; mirrors not listed are removed. */
+  mirror(mirrors: readonly SidebarThreadTreeMirror[]): void;
 }
 
 export interface SidebarThreadTreeDom {
@@ -193,8 +316,56 @@ function setStyle(element: HTMLElement, property: keyof SavedItemStyle, value: s
   if (element.style[property] !== value) element.style[property] = value;
 }
 
+function applyItemLayout(
+  element: HTMLElement,
+  layout: SidebarThreadTreeLayout,
+  saved: SavedItemStyle | undefined,
+): void {
+  setStyle(element, "order", String(layout.order));
+  const indent = Math.min(layout.depth, SIDEBAR_THREAD_TREE_MAX_INDENT_DEPTH);
+  setStyle(
+    element,
+    "marginInlineStart",
+    indent > 0 ? `${indent * SIDEBAR_THREAD_TREE_INDENT_PX}px` : (saved?.marginInlineStart ?? ""),
+  );
+  setStyle(element, "display", layout.hidden ? "none" : (saved?.display ?? ""));
+}
+
+function applyToggle(
+  element: HTMLElement,
+  titleTrigger: HTMLElement | null,
+  toggle: SidebarThreadTreeToggle | null,
+): void {
+  const existing = [
+    ...element.querySelectorAll<HTMLElement>(`[${SIDEBAR_THREAD_TREE_TOGGLE_ATTRIBUTE}]`),
+  ];
+  if (!toggle || !titleTrigger) {
+    for (const node of existing) node.remove();
+    return;
+  }
+  let node = existing.find((candidate) => candidate.parentElement === titleTrigger);
+  for (const stale of existing) if (stale !== node) stale.remove();
+  if (!node) {
+    node = createToggle(element.ownerDocument);
+    titleTrigger.prepend(node);
+  }
+  toggleHandlers.set(node, toggle.onToggle);
+  const expanded = toggle.collapsed ? "false" : "true";
+  if (node.getAttribute("aria-expanded") !== expanded) node.setAttribute("aria-expanded", expanded);
+  const label = `${toggle.collapsed ? "Expand" : "Collapse"} ${toggle.childCount} child ${
+    toggle.childCount === 1 ? "thread" : "threads"
+  }`;
+  if (node.getAttribute("aria-label") !== label) {
+    node.setAttribute("aria-label", label);
+    node.title = label;
+  }
+  const svg = node.querySelector<SVGElement>("svg");
+  const transform = toggle.collapsed ? "" : "rotate(90deg)";
+  if (svg && svg.style.transform !== transform) svg.style.transform = transform;
+}
+
 class BrowserSidebarThreadTreeItem implements SidebarThreadTreeItem {
-  constructor(private readonly element: HTMLElement) {}
+  constructor(readonly element: HTMLElement) {}
 
   #row(): HTMLElement | null {
     const rows = this.element.querySelectorAll<HTMLElement>(SIDEBAR_THREAD_ROW_SELECTOR);
@@ -221,49 +392,14 @@ class BrowserSidebarThreadTreeItem implements SidebarThreadTreeItem {
         display: element.style.display,
       });
     }
-    const saved = savedItemStyles.get(element);
     if (!element.hasAttribute(SIDEBAR_THREAD_TREE_ITEM_ATTRIBUTE))
       element.setAttribute(SIDEBAR_THREAD_TREE_ITEM_ATTRIBUTE, "");
-    setStyle(element, "order", String(layout.order));
-    const indent = Math.min(layout.depth, SIDEBAR_THREAD_TREE_MAX_INDENT_DEPTH);
-    setStyle(
+    applyItemLayout(element, layout, savedItemStyles.get(element));
+    applyToggle(
       element,
-      "marginInlineStart",
-      indent > 0 ? `${indent * SIDEBAR_THREAD_TREE_INDENT_PX}px` : (saved?.marginInlineStart ?? ""),
+      this.#row()?.querySelector<HTMLElement>("[data-thread-title-trigger]") ?? null,
+      layout.toggle,
     );
-    setStyle(element, "display", layout.hidden ? "none" : (saved?.display ?? ""));
-    this.#applyToggle(layout.toggle);
-  }
-
-  #applyToggle(toggle: SidebarThreadTreeToggle | null): void {
-    const existing = [
-      ...this.element.querySelectorAll<HTMLElement>(`[${SIDEBAR_THREAD_TREE_TOGGLE_ATTRIBUTE}]`),
-    ];
-    const titleTrigger = this.#row()?.querySelector<HTMLElement>("[data-thread-title-trigger]");
-    if (!toggle || !titleTrigger) {
-      for (const node of existing) node.remove();
-      return;
-    }
-    let node = existing.find((candidate) => candidate.parentElement === titleTrigger);
-    for (const stale of existing) if (stale !== node) stale.remove();
-    if (!node) {
-      node = createToggle(this.element.ownerDocument);
-      titleTrigger.prepend(node);
-    }
-    toggleHandlers.set(node, toggle.onToggle);
-    const expanded = toggle.collapsed ? "false" : "true";
-    if (node.getAttribute("aria-expanded") !== expanded)
-      node.setAttribute("aria-expanded", expanded);
-    const label = `${toggle.collapsed ? "Expand" : "Collapse"} ${toggle.childCount} child ${
-      toggle.childCount === 1 ? "thread" : "threads"
-    }`;
-    if (node.getAttribute("aria-label") !== label) {
-      node.setAttribute("aria-label", label);
-      node.title = label;
-    }
-    const svg = node.querySelector<SVGElement>("svg");
-    const transform = toggle.collapsed ? "" : "rotate(90deg)";
-    if (svg && svg.style.transform !== transform) svg.style.transform = transform;
   }
 }
 
@@ -280,20 +416,218 @@ function clearSidebarThreadTreeItem(element: HTMLElement): void {
   savedItemStyles.delete(element);
 }
 
+/**
+ * Attributes a mirror must not carry: they identify the native row to Desktop
+ * (selection, keyboard cycling, drag and drop) and to CodexHost bindings.
+ */
+const MIRROR_STRIPPED_ATTRIBUTES = [
+  "id",
+  "draggable",
+  SIDEBAR_THREAD_ROW_ATTRIBUTE,
+  SIDEBAR_THREAD_ID_ATTRIBUTE,
+  SIDEBAR_THREAD_HOST_ID_ATTRIBUTE,
+  SIDEBAR_THREAD_TREE_ITEM_ATTRIBUTE,
+  "data-sidebar-cycle-item",
+  "data-pinned-content-tab-drop-key",
+  "data-codex-tab-conversation-drop-target",
+] as const;
+const MIRROR_FORWARDED_EVENTS = [
+  "click",
+  "dblclick",
+  "auxclick",
+  "contextmenu",
+  "keydown",
+] as const;
+
+interface MirrorState {
+  source: HTMLElement;
+  /** Source markup the mirror was cloned from; a change re-clones it. */
+  signature: string;
+}
+
+const mirrorStates = new WeakMap<HTMLElement, MirrorState>();
+
+/** Element children that also exist in the source; toggles are mirror-only. */
+function mirroredChildren(element: Element): Element[] {
+  return [...element.children].filter(
+    (child) => !child.hasAttribute(SIDEBAR_THREAD_TREE_TOGGLE_ATTRIBUTE),
+  );
+}
+
+/** The source node at the same position as `target` inside the mirror. */
+function mirrorCounterpart(
+  mirror: HTMLElement,
+  source: HTMLElement,
+  target: EventTarget | null,
+): Element | null {
+  let node: Element | null =
+    target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+  const path: number[] = [];
+  while (node && node !== mirror) {
+    const parent: Element | null = node.parentElement;
+    if (!parent) return null;
+    path.push(mirroredChildren(parent).indexOf(node));
+    node = parent;
+  }
+  if (node !== mirror) return null;
+  let match: Element | undefined = source;
+  for (const index of path.reverse()) {
+    match = index < 0 ? undefined : mirroredChildren(match).at(index);
+    if (!match) return null;
+  }
+  return match;
+}
+
+/**
+ * Replay activation input on the hidden native entry so navigation, the
+ * context menu, and row actions stay Desktop's own. Pointer-only gestures
+ * such as drag and drop and hover cards are not forwarded.
+ */
+function forwardMirrorEvent(event: Event): void {
+  const mirror = event.currentTarget;
+  if (!(mirror instanceof HTMLElement)) return;
+  if (event instanceof KeyboardEvent && event.key !== "Enter" && event.key !== " ") return;
+  const source = mirrorStates.get(mirror)?.source;
+  if (!source?.isConnected) return;
+  const target =
+    mirrorCounterpart(mirror, source, event.target) ??
+    source.querySelector(SIDEBAR_THREAD_ROW_SELECTOR) ??
+    source;
+  const modifiers = {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    metaKey: false,
+  };
+  let forwarded: Event | null = null;
+  if (event instanceof KeyboardEvent) {
+    forwarded = new KeyboardEvent(event.type, {
+      ...modifiers,
+      ctrlKey: event.ctrlKey,
+      shiftKey: event.shiftKey,
+      altKey: event.altKey,
+      metaKey: event.metaKey,
+      key: event.key,
+      code: event.code,
+      repeat: event.repeat,
+    });
+  } else if (event instanceof MouseEvent) {
+    forwarded = new MouseEvent(event.type, {
+      ...modifiers,
+      ctrlKey: event.ctrlKey,
+      shiftKey: event.shiftKey,
+      altKey: event.altKey,
+      metaKey: event.metaKey,
+      detail: event.detail,
+      screenX: event.screenX,
+      screenY: event.screenY,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      button: event.button,
+      buttons: event.buttons,
+    });
+  }
+  if (!forwarded) return;
+  event.preventDefault();
+  event.stopPropagation();
+  target.dispatchEvent(forwarded);
+}
+
+function createMirror(source: HTMLElement, key: string, signature: string): HTMLElement {
+  const mirror = source.cloneNode(true);
+  if (!(mirror instanceof HTMLElement))
+    throw new Error("Sidebar list item clone is not an element");
+  for (const node of mirror.querySelectorAll(`[${SIDEBAR_THREAD_TREE_TOGGLE_ATTRIBUTE}]`)) {
+    node.remove();
+  }
+  for (const element of [mirror, ...mirror.querySelectorAll("*")]) {
+    for (const name of MIRROR_STRIPPED_ATTRIBUTES) element.removeAttribute(name);
+  }
+  mirror.setAttribute(SIDEBAR_THREAD_TREE_MIRROR_ATTRIBUTE, key);
+  for (const type of MIRROR_FORWARDED_EVENTS) mirror.addEventListener(type, forwardMirrorEvent);
+  mirrorStates.set(mirror, { source, signature });
+  return mirror;
+}
+
 function sidebarListItem(row: Element): HTMLElement | null {
   const item = row.closest<HTMLElement>('[role="listitem"]');
   return item?.parentElement?.getAttribute("role") === "list" ? item : null;
 }
 
+class BrowserSidebarThreadTreeList implements SidebarThreadTreeList {
+  constructor(
+    private readonly element: HTMLElement,
+    private readonly itemFor: (element: HTMLElement) => BrowserSidebarThreadTreeItem,
+  ) {}
+
+  items(): readonly SidebarThreadTreeItem[] {
+    return [...this.element.children]
+      .filter(
+        (child): child is HTMLElement =>
+          child instanceof HTMLElement && !child.hasAttribute(SIDEBAR_THREAD_TREE_MIRROR_ATTRIBUTE),
+      )
+      .map((child) => this.itemFor(child));
+  }
+
+  mirror(mirrors: readonly SidebarThreadTreeMirror[]): void {
+    const existing = new Map<string, HTMLElement>();
+    for (const child of [...this.element.children]) {
+      const key = child.getAttribute(SIDEBAR_THREAD_TREE_MIRROR_ATTRIBUTE);
+      if (key === null || !(child instanceof HTMLElement)) continue;
+      if (existing.has(key)) child.remove();
+      else existing.set(key, child);
+    }
+    for (const { key, source, layout } of mirrors) {
+      if (!(source instanceof BrowserSidebarThreadTreeItem)) continue;
+      let mirror = existing.get(key);
+      existing.delete(key);
+      const signature = source.element.innerHTML;
+      const state = mirror && mirrorStates.get(mirror);
+      if (!mirror || state?.source !== source.element || state.signature !== signature) {
+        const next = createMirror(source.element, key, signature);
+        if (mirror) mirror.replaceWith(next);
+        else this.element.append(next);
+        mirror = next;
+      }
+      // The source is hidden by layout; show the mirror with its original display.
+      applyItemLayout(mirror, layout, savedItemStyles.get(source.element));
+      applyToggle(
+        mirror,
+        mirror.querySelector<HTMLElement>("[data-thread-title-trigger]"),
+        layout.toggle,
+      );
+    }
+    for (const stale of existing.values()) stale.remove();
+  }
+}
+
+/** Row attributes whose change alters what a mirror must show. */
+const MIRRORED_ROW_ATTRIBUTES = new Set([
+  "data-app-action-sidebar-thread-active",
+  "data-app-action-sidebar-thread-selected",
+  "data-app-action-sidebar-thread-title",
+]);
+
 class BrowserSidebarThreadTreeDom implements SidebarThreadTreeDom {
   readonly #items = new WeakMap<HTMLElement, BrowserSidebarThreadTreeItem>();
+  readonly #lists = new WeakMap<HTMLElement, BrowserSidebarThreadTreeList>();
 
   constructor(private readonly root: ParentNode & Node) {}
 
-  #item(element: HTMLElement): BrowserSidebarThreadTreeItem {
+  #item = (element: HTMLElement): BrowserSidebarThreadTreeItem => {
     let item = this.#items.get(element);
     if (!item) this.#items.set(element, (item = new BrowserSidebarThreadTreeItem(element)));
     return item;
+  };
+
+  #list(element: HTMLElement): BrowserSidebarThreadTreeList {
+    let list = this.#lists.get(element);
+    if (!list)
+      this.#lists.set(element, (list = new BrowserSidebarThreadTreeList(element, this.#item)));
+    return list;
   }
 
   lists(): readonly SidebarThreadTreeList[] {
@@ -302,38 +636,45 @@ class BrowserSidebarThreadTreeDom implements SidebarThreadTreeDom {
       const list = sidebarListItem(row)?.parentElement;
       if (list) lists.add(list);
     }
-    // Lists that lost their last thread row must still drop old layout.
+    // Lists that lost their last thread row must still drop old layout and mirrors.
     for (const item of this.root.querySelectorAll<HTMLElement>(
-      `[${SIDEBAR_THREAD_TREE_ITEM_ATTRIBUTE}]`,
+      `[${SIDEBAR_THREAD_TREE_ITEM_ATTRIBUTE}], [${SIDEBAR_THREAD_TREE_MIRROR_ATTRIBUTE}]`,
     )) {
       if (item.parentElement) lists.add(item.parentElement);
       else clearSidebarThreadTreeItem(item);
     }
-    return [...lists].map((list) => ({
-      items: () =>
-        [...list.children]
-          .filter((child): child is HTMLElement => child instanceof HTMLElement)
-          .map((child) => this.#item(child)),
-    }));
+    return [...lists].map((list) => this.#list(list));
   }
 
   observe(onChange: () => void): () => void {
+    const marked = `[${SIDEBAR_THREAD_TREE_ITEM_ATTRIBUTE}], [${SIDEBAR_THREAD_TREE_MIRROR_ATTRIBUTE}]`;
     const affectsSidebar = (node: Node | null): boolean => {
       if (!(node instanceof Element)) return false;
       if (node.closest(SIDEBAR_THREAD_ROW_SELECTOR)) return true;
-      if (node.closest(`[${SIDEBAR_THREAD_TREE_ITEM_ATTRIBUTE}]`)) return true;
+      if (node.closest(marked)) return true;
       if (
         node.matches(SIDEBAR_THREAD_ROW_SELECTOR) ||
         node.querySelector(SIDEBAR_THREAD_ROW_SELECTOR)
       )
         return true;
-      return (
-        node.getAttribute("role") === "list" &&
-        node.querySelector(`[${SIDEBAR_THREAD_TREE_ITEM_ATTRIBUTE}]`) !== null
-      );
+      return node.getAttribute("role") === "list" && node.querySelector(marked) !== null;
     };
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
+        if (
+          mutation.type === "attributes" &&
+          MIRRORED_ROW_ATTRIBUTES.has(mutation.attributeName ?? "")
+        ) {
+          // Only rows carry these; a cheap ancestor check keeps busy pages fast.
+          if (
+            mutation.target instanceof Element &&
+            mutation.target.closest(SIDEBAR_THREAD_ROW_SELECTOR)
+          ) {
+            onChange();
+            return;
+          }
+          continue;
+        }
         if (
           affectsSidebar(mutation.target) ||
           [...mutation.addedNodes].some(affectsSidebar) ||
@@ -347,9 +688,10 @@ class BrowserSidebarThreadTreeDom implements SidebarThreadTreeDom {
     observer.observe(this.root, {
       attributes: true,
       attributeFilter: [
-        "data-app-action-sidebar-thread-row",
-        "data-app-action-sidebar-thread-id",
+        SIDEBAR_THREAD_ROW_ATTRIBUTE,
+        SIDEBAR_THREAD_ID_ATTRIBUTE,
         SIDEBAR_THREAD_HOST_ID_ATTRIBUTE,
+        ...MIRRORED_ROW_ATTRIBUTES,
         "role",
         "style",
       ],
@@ -360,6 +702,9 @@ class BrowserSidebarThreadTreeDom implements SidebarThreadTreeDom {
   }
 
   clear(): void {
+    for (const mirror of this.root.querySelectorAll(`[${SIDEBAR_THREAD_TREE_MIRROR_ATTRIBUTE}]`)) {
+      mirror.remove();
+    }
     for (const item of this.root.querySelectorAll<HTMLElement>(
       `[${SIDEBAR_THREAD_TREE_ITEM_ATTRIBUTE}]`,
     )) {
@@ -533,9 +878,10 @@ export function installRendererSidebarThreadTree(options: {
     scanScheduled = false;
     if (disposed) return;
     const unresolved = new Map<string, Set<HostThreadId>>();
-    for (const list of dom.lists()) {
-      const items = list.items();
-      const entries = items.map((item): SidebarThreadTreeEntry => {
+    const lists = dom.lists();
+    const listItems = lists.map((list) => list.items());
+    const entries = listItems.map((items) =>
+      items.map((item): SidebarThreadTreeEntry => {
         const thread = item.thread();
         if (!thread) return { key: null, parentKey: null };
         const key = threadKey(thread.hostId, thread.threadId);
@@ -545,35 +891,47 @@ export function installRendererSidebarThreadTree(options: {
           ids.add(thread.threadId);
         }
         return { key, parentKey: parentKeyOf(thread.hostId, key) };
-      });
-      const plans = layoutSidebarThreadTree(entries, collapsed);
+      }),
+    );
+    const layoutOf = (
+      plan: SidebarThreadTreeLayoutPlan,
+      key: string | null,
+    ): SidebarThreadTreeLayout => ({
+      order: plan.order,
+      depth: plan.depth,
+      hidden: plan.hidden,
+      toggle:
+        plan.childCount > 0 && key !== null
+          ? {
+              collapsed: plan.collapsed,
+              childCount: plan.childCount,
+              onToggle: () => {
+                if (disposed) return;
+                if (collapsed.has(key)) collapsed.delete(key);
+                else collapsed.add(key);
+                scheduleScan();
+              },
+            }
+          : null,
+    });
+    const plans = planSidebarThreadForest(entries, collapsed);
+    // Lay out native entries first so every mirror clones its settled source.
+    listItems.forEach((items, listIndex) => {
+      const listPlan = plans[listIndex]?.items ?? null;
       items.forEach((item, index) => {
-        const plan = plans?.[index];
-        const key = entries[index]?.key ?? null;
-        item.apply(
-          plan
-            ? {
-                order: plan.order,
-                depth: plan.depth,
-                hidden: plan.hidden,
-                toggle:
-                  plan.childCount > 0 && key !== null
-                    ? {
-                        collapsed: plan.collapsed,
-                        childCount: plan.childCount,
-                        onToggle: () => {
-                          if (disposed) return;
-                          if (collapsed.has(key)) collapsed.delete(key);
-                          else collapsed.add(key);
-                          scheduleScan();
-                        },
-                      }
-                    : null,
-              }
-            : null,
-        );
+        const plan = listPlan?.[index];
+        item.apply(plan ? layoutOf(plan, entries[listIndex]?.[index]?.key ?? null) : null);
       });
-    }
+    });
+    lists.forEach((list, listIndex) => {
+      list.mirror(
+        (plans[listIndex]?.mirrors ?? []).flatMap(({ list: from, index, plan }) => {
+          const source = listItems[from]?.[index];
+          const key = entries[from]?.[index]?.key;
+          return source && key ? [{ key, source, layout: layoutOf(plan, key) }] : [];
+        }),
+      );
+    });
     for (const [hostId, ids] of unresolved) {
       const client = options.getClient(hostId);
       if (!client) continue;

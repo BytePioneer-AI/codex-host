@@ -1056,6 +1056,27 @@ export class PiRpcSession {
     return settled;
   }
 
+  /**
+   * Native same-Turn input through Pi's `steer` RPC. The response carries an
+   * admission disposition ("queued"); the steered text joins the running native
+   * run as its next user message without starting a new run.
+   */
+  async steer(text: string): Promise<void> {
+    if (!this.#child || !this.#state || this.#closed || this.#failed) {
+      throw new Error("Pi RPC Session is unavailable");
+    }
+    if (text.length === 0) throw new Error("Pi steer text must not be empty");
+    const active = this.#activeTurn;
+    if (!active || active.origin !== "requested") {
+      throw new Error("Pi steer must reference the active Turn");
+    }
+    try {
+      await this.#send("steer", { message: text });
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(message(error));
+    }
+  }
+
   respondToInteraction(response: PiInteractionResponse): Promise<void> {
     return this.#resolveInteraction(response, "cancelled" in response ? "cancelled" : "responded");
   }

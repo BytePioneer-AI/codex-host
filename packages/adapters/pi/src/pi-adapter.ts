@@ -175,6 +175,8 @@ export interface PiTurnTransport {
     onEvent: (event: PiTurnEvent) => void,
   ): Promise<PiCompactResult>;
   runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult>;
+  /** Native same-Turn input; present on transports backed by Pi's `steer` RPC. */
+  steer?(text: string): Promise<void>;
   respondToInteraction(response: PiInteractionResponse): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
@@ -453,17 +455,25 @@ class PiHarnessSession implements HarnessSession {
     this.#requestedThinkingOptionId = options.thinkingOptionId;
     this.#toolOutputLimit = options.toolOutputLimit;
     this.#isFastSupported = options.isFastSupported;
-    this.capabilities = {
+    this.capabilities = ((session) => ({
       configuration: {
         selectModel: true,
         selectThinkingOption: options.supportsThinkingSelection,
         selectPermissionMode: false,
-        permissionModeScope: "live",
+        permissionModeScope: "live" as const,
       },
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
       autonomousTurns: { observe: true },
       subagents: { observe: true, readTranscript: true },
-    };
+      // Read live: Pi's `steer` RPC delivers mid-Turn input into the same
+      // native run. A Turn whose cancellation is in flight must not take more
+      // input; every other case stops and restarts.
+      get steer(): boolean {
+        return (
+          session.#transport?.steer !== undefined && session.#active?.cancellationRequested !== true
+        );
+      },
+    }))(this);
     this.commands = {
       list: async () => ({ ok: true, value: await this.#refreshLiveCommands() }),
       execute: (command) => this.#executeHarnessCommand(command),
@@ -587,7 +597,7 @@ class PiHarnessSession implements HarnessSession {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Pi Session is not open") };
     }
-    if (command.type === "turn.steer") return unsupportedSteer("Pi");
+    if (command.type === "turn.steer") return this.#steer(command);
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
@@ -953,6 +963,43 @@ class PiHarnessSession implements HarnessSession {
       this.#configuring = false;
       if (this.#transport) this.#drainPendingAutonomousTurns(this.#transport);
     }
+  }
+
+  /**
+   * Native same-Turn steering through Pi's `steer` RPC. The steered text joins
+   * the running native run as its next user message; the Turn keeps its
+   * identity, matching native Codex threads under Desktop's steer setting.
+   */
+  async #steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+    const active = this.#active;
+    if (!active || active.command.turnId !== command.turnId) {
+      return { ok: false, error: invalidState("Pi steer must reference the active Turn") };
+    }
+    if (active.cancellationRequested) {
+      return { ok: false, error: invalidState("Pi steer target is being cancelled") };
+    }
+    const text = command.input.map((input) => input.text).join("\n");
+    if (text.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Pi steer text must not be empty",
+          retryable: false,
+        },
+      };
+    }
+    const transport = this.#transport;
+    if (!transport?.steer) return unsupportedSteer("Pi");
+    try {
+      await transport.steer(text);
+    } catch (error) {
+      return {
+        ok: false,
+        error: invalidState(`Pi native steer failed: ${errorMessage(error)}`),
+      };
+    }
+    return { ok: true, value: { accepted: true } };
   }
 
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {

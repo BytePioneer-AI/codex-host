@@ -193,10 +193,17 @@ async function prepareDelegationRuntime(input: {
   const token = randomBytes(32).toString("hex");
   const server = await startDelegationControlServer({ token, api: registry, watchApi: registry });
   const externalServer = input.externalClients
-    ? await startExternalClients(input.environment, registry, events).catch((error: unknown) => {
-        process.stderr.write(`codexhost external clients: ${String(error)}\n`);
-        return undefined;
-      })
+    ? await startExternalClients(input.environment, registry, events).then(
+        (started) => {
+          if (started)
+            process.stderr.write(`codexhost external clients: listening on ${started.endpoint}\n`);
+          return started;
+        },
+        (error: unknown) => {
+          process.stderr.write(`codexhost external clients: ${String(error)}\n`);
+          return undefined;
+        },
+      )
     : undefined;
   const environment = {
     ...input.environment,

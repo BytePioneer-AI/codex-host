@@ -5,6 +5,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runDelegationCli } from "../src/delegation-cli.js";
+import { DELEGATION_HELP } from "../src/delegation-cli-help.js";
+import { compactDelegationOutput } from "../src/delegation-cli-output.js";
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
 import type {
   DelegationControlRegistration,
@@ -45,6 +47,7 @@ function session(): DelegationControlRegistration & { starts: DelegationStartInp
         harnessId: "pi" as const,
         deepLink: `codex://threads/${threadId}`,
         status: "running" as const,
+        ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
         next: { read: "read", wait: "wait" },
       };
@@ -116,8 +119,8 @@ describe("Thread references", () => {
     }
     await expect(store.get("b")).resolves.toEqual([ISSUE, SPEC]);
     await expect(store.get("missing")).resolves.toEqual([]);
-    await expect(store.find(ISSUE)).resolves.toEqual(["b", "a"]);
-    await expect(store.find(SPEC)).resolves.toEqual(["b"]);
+    await expect(store.find(ISSUE)).resolves.toEqual([{ threadId: "b" }, { threadId: "a" }]);
+    await expect(store.find(SPEC)).resolves.toEqual([{ threadId: "b" }]);
   });
 
   it("records references on start, inherits them, and returns them on read, wait and list", async () => {
@@ -261,5 +264,34 @@ describe("Thread references", () => {
     expect(bodies[1]?.url).toBe("http://127.0.0.1:4398/v1/thread/list");
     expect(bodies[1]?.body).toMatchObject({ client: "grok-bot" });
     expect(bodies[1]?.body).not.toHaveProperty("cwd");
+  });
+  it("shows where a Thread works when listing by reference", async () => {
+    const registry = new DelegationControlRegistry({ refs: store });
+    registry.register(session());
+    await registry.start({
+      harnessId: "pi",
+      task: "t",
+      cwd: "/repo",
+      parentThreadId: "root",
+      refs: [ISSUE],
+    });
+    await expect(
+      registry.list({ ref: ISSUE, limit: 5, sort: "created-desc" }),
+    ).resolves.toMatchObject({
+      threads: [{ threadId: "child-1", cwd: "/repo", refs: [ISSUE] }],
+    });
+  });
+
+  it("shows a client parent as is in compact output and lists client commands in help", () => {
+    const compact = compactDelegationOutput("delegate start", {
+      threadId: "t1",
+      harnessId: "pi",
+      status: "running",
+      parentThreadId: "client:grok-bot",
+      next: { read: "r", wait: "w" },
+    }) as Record<string, unknown>;
+    expect(compact.parent).toBe("client:grok-bot");
+    expect(DELEGATION_HELP).toContain("codexhost client add|list|remove");
+    expect(DELEGATION_HELP).toContain("codexhost events");
   });
 });

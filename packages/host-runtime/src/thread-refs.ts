@@ -54,15 +54,17 @@ export function mergeRefs(inherited: readonly string[], own: readonly string[]):
 
 export interface ThreadRefsStore {
   get(threadId: string): Promise<string[]>;
-  set(threadId: string, refs: readonly string[]): Promise<void>;
+  /** `cwd` is kept so a listing by reference can show where each Thread works. */
+  set(threadId: string, refs: readonly string[], cwd?: string): Promise<void>;
   /** Threads that carry the reference, most recently set first. */
-  find(ref: string): Promise<string[]>;
+  find(ref: string): Promise<Array<{ threadId: string; cwd?: string }>>;
 }
 
 interface RefsFile {
   formatVersion: 1;
   threadId: string;
   refs: string[];
+  cwd?: string;
   updatedAt: string;
 }
 
@@ -96,12 +98,13 @@ export class FileThreadRefsStore implements ThreadRefsStore {
     }
   }
 
-  async set(threadId: string, refs: readonly string[]): Promise<void> {
+  async set(threadId: string, refs: readonly string[], cwd?: string): Promise<void> {
     await mkdir(this.#directory, { recursive: true, mode: 0o700 });
     const file: RefsFile = {
       formatVersion: 1,
       threadId,
       refs: [...refs],
+      ...(cwd ? { cwd } : {}),
       updatedAt: new Date().toISOString(),
     };
     const target = this.#path(threadId);
@@ -114,7 +117,7 @@ export class FileThreadRefsStore implements ThreadRefsStore {
     }
   }
 
-  async find(ref: string): Promise<string[]> {
+  async find(ref: string): Promise<Array<{ threadId: string; cwd?: string }>> {
     let names: string[];
     try {
       names = await readdir(this.#directory);
@@ -131,7 +134,10 @@ export class FileThreadRefsStore implements ThreadRefsStore {
     }
     return matches
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .map((file) => file.threadId);
+      .map((file) => ({
+        threadId: file.threadId,
+        ...(typeof file.cwd === "string" ? { cwd: file.cwd } : {}),
+      }));
   }
 
   #path(threadId: string): string {

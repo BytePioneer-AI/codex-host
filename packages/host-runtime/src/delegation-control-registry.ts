@@ -114,7 +114,7 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     const parent = result.parentThreadId ?? start.parentThreadId;
     const inherited = parent && !originClientName(parent) ? await this.#refs.get(parent) : [];
     const refs = mergeRefs(inherited, own);
-    if (refs.length > 0) await this.#refs.set(result.threadId, refs);
+    if (refs.length > 0) await this.#refs.set(result.threadId, refs, result.cwd);
     return withRefs(result, refs);
   }
 
@@ -202,7 +202,7 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   /** Threads carrying a reference, newest first; each row is read from its owning session. */
   async #listByRef(ref: string, input: Omit<ThreadListInput, "client" | "ref">) {
     const [normalized] = normalizeRefs([ref]);
-    const ids = normalized && this.#refs ? await this.#refs.find(normalized) : [];
+    const matches = normalized && this.#refs ? await this.#refs.find(normalized) : [];
     let offset = 0;
     if (input.cursor) {
       const value = input.cursor.startsWith(REF_CURSOR_PREFIX)
@@ -212,9 +212,9 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         throw new DelegationControlError("INVALID_ARGUMENT", "List cursor is invalid");
       offset = value;
     }
-    const window = ids.slice(offset, offset + input.limit);
+    const window = matches.slice(offset, offset + input.limit);
     const rows = await Promise.all(
-      window.map((threadId) =>
+      window.map(({ threadId, cwd }) =>
         this.read({ threadId, view: "result" })
           .then((snapshot) =>
             withRefs(
@@ -223,6 +223,7 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
                 harnessId: snapshot.harnessId,
                 deepLink: `codex://threads/${threadId}`,
                 status: snapshot.status,
+                ...(cwd ? { cwd } : {}),
               },
               snapshot.refs ?? [],
             ),
@@ -234,7 +235,7 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     const next = offset + window.length;
     return {
       threads: rows.filter((row) => row !== undefined),
-      nextCursor: next < ids.length ? `${REF_CURSOR_PREFIX}${next}` : null,
+      nextCursor: next < matches.length ? `${REF_CURSOR_PREFIX}${next}` : null,
     };
   }
 

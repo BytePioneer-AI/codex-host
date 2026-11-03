@@ -10,6 +10,7 @@ import {
   type ThreadWatchListResult,
   type ThreadWatchResult,
 } from "./delegation-types.js";
+import { originClientName } from "./external-client-origin.js";
 
 export type DelegationCliFormat = "json" | "compact";
 
@@ -110,7 +111,15 @@ export function compactDelegationOutput(
         harnessId: result.harnessId,
         status: result.status,
         ...(result.cwd ? { cwd: result.cwd } : {}),
-        ...(result.parentThreadId ? { parent: threadLink(result.parentThreadId) } : {}),
+        ...(result.parentThreadId
+          ? {
+              // A client origin is no Thread, so it is shown as is rather than as a Thread link.
+              parent:
+                originClientName(result.parentThreadId) !== undefined
+                  ? result.parentThreadId
+                  : threadLink(result.parentThreadId),
+            }
+          : {}),
         ...(effective?.resolvedModelLabel ? { model: effective.resolvedModelLabel } : {}),
         ...(effective?.effectiveThinkingOptionId
           ? { thinking: effective.effectiveThinkingOptionId }

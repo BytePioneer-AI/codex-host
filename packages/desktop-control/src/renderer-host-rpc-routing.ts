@@ -138,6 +138,16 @@ export function installRendererHostRpcRouting(
       );
     }
   };
+  const refreshDraftWorkspace = (hostId: string | null): void => {
+    if (hostId !== "local") return;
+    try {
+      const cwd = dependencies.localDraftWorkspace?.();
+      if (cwd !== undefined) publishDraftWorkspace("local", cwd);
+    } catch {
+      // An unreadable native selection must not retain another project's path.
+      publishDraftWorkspace("local", null);
+    }
+  };
   /** Rewrites only the Model of a Renderer-issued capnweb creation call. */
   const routeCreationCall = (message: unknown): unknown => {
     if (!Array.isArray(message) || message.length !== 2 || message[0] !== "push") return message;
@@ -369,7 +379,11 @@ export function installRendererHostRpcRouting(
     hostIdForComposer(composer) {
       if (disposed) return null;
       try {
-        return composerHostId(composer);
+        const hostId = composerHostId(composer);
+        // Native replay routing resolves identity without calling this router's
+        // forComposer, so project publication must also follow that path.
+        refreshDraftWorkspace(hostId);
+        return hostId;
       } catch {
         return null;
       }
@@ -387,15 +401,7 @@ export function installRendererHostRpcRouting(
         hostId = null;
       }
       const route = hostId ? routeFor(hostId, preferred) : null;
-      if (route?.hostId === "local") {
-        try {
-          const cwd = dependencies.localDraftWorkspace?.();
-          if (cwd !== undefined) publishDraftWorkspace("local", cwd);
-        } catch {
-          // An unreadable native selection must not retain another project's path.
-          publishDraftWorkspace("local", null);
-        }
-      }
+      refreshDraftWorkspace(route?.hostId ?? null);
       if (!composer) publish(route);
       return route;
     },

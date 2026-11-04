@@ -7,6 +7,7 @@ import {
 import { expect, it, vi } from "vitest";
 import { installRendererDraftPrewarmPolicyDirect } from "../src/renderer-draft-prewarm-policy.js";
 import type { RendererHostRouting as Routing } from "../src/renderer-host-routing.js";
+import { installNativeRpcRemoteControl } from "../src/renderer-native-rpc-runtime.js";
 
 const carrier = encodeHarnessPluginRoute(
   harnessPluginRouteSchema.parse({
@@ -193,6 +194,59 @@ function policyOf(route: ReturnType<Routing["forHost"]>) {
   if (!route) throw new Error("Host route is unavailable");
   return route.policy;
 }
+
+it("refreshes the native project after replay routing takes over the Composer", async () => {
+  const f = setup();
+  Object.assign(f.composerFiber.memoizedProps, {
+    browserConversationId: "client-new-thread:replay",
+    selectedProject: { type: "local", projectId: "a" },
+  });
+  const group = {
+    projectKind: "local",
+    projectId: "a",
+    label: "A",
+    path: "/project/a",
+    rootPaths: ["/project/a"],
+  };
+  f.sidebar.push({
+    __reactFiber$project: { memoizedProps: { project: { source: "codex", group } } },
+  });
+  const routing = await install(f);
+  const originalComposer = vi.spyOn(routing, "forComposer");
+  const replayRoute = { hostId: "local", manager: { kind: "replay" }, policy: {} };
+  const controller = {
+    dispose: vi.fn(),
+    forHost: vi.fn(),
+    collectAppStateSnapshot: vi.fn(),
+    getReviewPaneSnapshotMetrics: vi.fn(),
+  };
+  expect(
+    installNativeRpcRemoteControl(
+      {
+        controller,
+        scope: {},
+        services: { appServerManagers: {} },
+        createController: () => ({ ...controller }),
+      } as never,
+      f.target,
+      {
+        createService: () => ({ service: { [Symbol.dispose]() {} }, route: () => replayRoute }),
+        createManager: vi.fn(),
+        createPolicy: vi.fn(),
+        createChannel: vi.fn(),
+        retainInteractions: vi.fn(),
+      } as never,
+    ),
+  ).toBe(true);
+  Object.assign(group, { path: "/project/moved", rootPaths: ["/project/moved"] });
+  expect(routing.forComposer()).toBe(replayRoute);
+  expect(originalComposer).not.toHaveBeenCalled();
+  expect(f.target.__codexhostDraftWorkspacesV1).toEqual({ local: "/project/moved" });
+  Object.assign(f.composerFiber.memoizedProps, { selectedProject: null });
+  expect(routing.forComposer()).toBe(replayRoute);
+  expect(f.target.__codexhostDraftWorkspacesV1).toEqual({ local: null });
+  routing.dispose();
+});
 
 async function install(fixture: ReturnType<typeof setup>): Promise<Routing> {
   await installRendererDraftPrewarmPolicyDirect(fixture.renderer);

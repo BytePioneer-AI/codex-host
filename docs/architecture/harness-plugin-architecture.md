@@ -345,7 +345,7 @@ Renderer 只从当前目标 Host 获取可序列化插件描述、能力和公�
 
 - Agent Picker、名称、图标、安装链接和专属翻译来自插件。
 - 草稿和配置按目标 Host 与 Harness ID 组织，不再定义 `piModel` 等字段。
-- 草稿检查使用实际项目路径。尚未发出 prewarm 的本地新建页，从已提交的 Composer 项目 ID 与原生侧栏项目目录交叉解析；无选择、缺失或歧义会撤销旧路径，不按可见名称猜测目录，也不借用其他 Host 的项目。
+- 草稿检查使用实际项目路径。尚未发出 prewarm 的本地新建页，从已提交的 Composer 项目 ID 与原生侧栏项目目录交叉解析；原生 RPC 接管后的 Host 身份查询也刷新路径。无选择、缺失或歧义会撤销旧路径，不按可见名称猜测目录，也不借用其他 Host 的项目。
 - Model/Thinking/Permission Mode 来自实际检查结果；不可选择 Model 或空目录不能被伪造 Model 绕过。
 - Thread 恢复使用 Host 返回的结构化 ownership/configuration，不再逐 Harness 解码。Codex Thread inspection 的可选 `accountId` 来自持久化账号绑定；Renderer 的 locked 账号提示使用该绑定，新提交的 Thread 在绑定返回前保留提交时选择的账号，不回退到全局默认账号。
 - 固定权限提示使用通用措辞或插件提供的描述，不在公共文案中写死 Grok。

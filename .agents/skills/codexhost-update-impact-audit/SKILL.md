@@ -62,7 +62,7 @@ Inventory contracts by surface:
 | Surface | Primary evidence |
 | --- | --- |
 | Composer identity | `data-codex-composer-root`, `data-above-composer-portal`, `data-above-composer-conversation-id` |
-| Model | `data-codex-intelligence-trigger`, `data-composer-navigation-target="reasoning"`, owning Fiber props |
+| Model | `data-composer-navigation-target="reasoning"`, owning Fiber props (`onSelectModel` + `reasoningEffort` + a power signal: `onSelectReasoningEffort`/`fallbackPowerSelection` ≤ 26.1027, `onCommitPower`/`powerSelections` from 26.1029). `data-codex-intelligence-trigger` existed ≤ 26.1027 only — do not treat it as required |
 | Permission | `data-composer-navigation-target="permissions"`, `permissionsHostId`, permission-state Fiber props |
 | Request/prewarm | `executionTargetHostId`, `permissionsHostId`, request-client and prewarm-manager API shape |
 | Footer/layout | `FooterInlineControls`, Context radial indicator shape, trailing action ownership |

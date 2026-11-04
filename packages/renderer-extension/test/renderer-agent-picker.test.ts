@@ -187,7 +187,7 @@ describe("Renderer Agent picker presentation", () => {
     const element = (
       ownAttributes: readonly string[],
       matches: boolean,
-      modelProps: boolean,
+      modelProps: Readonly<Record<string, unknown>> | null,
       attributes: Readonly<Record<string, string>> = {},
     ) => {
       const candidate = {
@@ -196,33 +196,79 @@ describe("Renderer Agent picker presentation", () => {
         matches: () => matches,
       } as unknown as Element;
       Object.defineProperty(candidate, "__reactFiber$test", {
-        value: {
-          memoizedProps: modelProps
-            ? {
-                onSelectModel: () => undefined,
-                onSelectReasoningEffort: () => undefined,
-                reasoningEffort: "medium",
-                fallbackPowerSelection: {},
-              }
-            : {},
-        },
+        value: { memoizedProps: modelProps ?? {} },
       });
       return candidate;
     };
+    // Desktop <= 26.1027: owning component carried onSelectReasoningEffort.
+    const legacyModelProps = {
+      onSelectModel: () => undefined,
+      onSelectReasoningEffort: () => undefined,
+      reasoningEffort: "medium",
+      fallbackPowerSelection: {},
+    };
+    // Desktop 26.1029: the two legacy props are gone, power selection arrives
+    // through powerSelections / onCommitPower on the same owning component.
+    const currentModelProps = {
+      onSelectModel: () => undefined,
+      reasoningEffort: "high",
+      powerSelections: [{ id: "gpt-6.1-terra:high" }],
+      onCommitPower: () => undefined,
+      selectionMode: "model",
+    };
 
-    expect(isNativeModelControlCandidate(element([], true, true))).toBe(true);
+    expect(isNativeModelControlCandidate(element([], true, legacyModelProps))).toBe(true);
+    expect(isNativeModelControlCandidate(element([], true, currentModelProps))).toBe(true);
+    // Each release's own marker on its own is enough, and neither marker is
+    // required once the owning props identify the trigger.
     expect(
       isNativeModelControlCandidate(
-        element([], true, false, {
+        element([], true, null, {
           "data-codex-intelligence-trigger": "true",
           "data-composer-navigation-target": "reasoning",
         }),
       ),
     ).toBe(true);
-    expect(isNativeModelControlCandidate(element([], true, false))).toBe(false);
-    expect(isNativeModelControlCandidate(element([], false, true))).toBe(false);
     expect(
-      isNativeModelControlCandidate(element(["data-codexhost-agent-control"], true, true)),
+      isNativeModelControlCandidate(
+        element([], true, null, { "data-composer-navigation-target": "reasoning" }),
+      ),
+    ).toBe(true);
+    expect(isNativeModelControlCandidate(element([], true, null))).toBe(false);
+    expect(isNativeModelControlCandidate(element([], false, currentModelProps))).toBe(false);
+    expect(
+      isNativeModelControlCandidate(
+        element(["data-codexhost-agent-control"], true, currentModelProps),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not treat a partial Model props signature as the native Model menu", () => {
+    const element = (props: Readonly<Record<string, unknown>>) => {
+      const candidate = {
+        getAttribute: () => null,
+        hasAttribute: () => false,
+        matches: () => true,
+      } as unknown as Element;
+      Object.defineProperty(candidate, "__reactFiber$test", {
+        value: { memoizedProps: props },
+      });
+      return candidate;
+    };
+
+    // A bare reasoning effort is not enough: unrelated menus also carry one.
+    expect(isNativeModelControlCandidate(element({ reasoningEffort: "high" }))).toBe(false);
+    // onSelectModel without any power-selection signal is not the Model menu.
+    expect(
+      isNativeModelControlCandidate(
+        element({ onSelectModel: () => undefined, reasoningEffort: "high" }),
+      ),
+    ).toBe(false);
+    // A non-callable onSelectModel is not a Model selector either.
+    expect(
+      isNativeModelControlCandidate(
+        element({ onSelectModel: "model", reasoningEffort: "high", powerSelections: [] }),
+      ),
     ).toBe(false);
   });
 });

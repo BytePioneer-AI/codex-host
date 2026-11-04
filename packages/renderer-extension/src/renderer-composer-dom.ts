@@ -239,6 +239,39 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Codex moved the Model trigger's identity marker between Desktop releases:
+ * 26.1029 stopped emitting `data-codex-intelligence-trigger` and dropped the
+ * `onSelectReasoningEffort` / `fallbackPowerSelection` props from the owning
+ * component, replacing them with `onCommitPower` / `powerSelections` /
+ * `selectionMode`. Recognize either generation so a Host update cannot silently
+ * stop us from hiding the native Codex Model chip inside an external Harness
+ * Composer. Matching was previously an `&&` chain over props that 26.1029
+ * removed together, which fail-opened: the stale chip stayed visible and
+ * clickable, so it still edited Codex's Model from a Pi Thread.
+ *
+ * Tiers, strongest first: the `navigation-target="reasoning"` marker Codex
+ * already uses for the Permission trigger (unchanged by 26.1029), then the
+ * owning Fiber props, which need `onSelectModel` + `reasoningEffort` plus any
+ * one power-selection signal from either generation.
+ */
+const NATIVE_MODEL_OWNING_PROPS_REQUIRED = ["onSelectModel", "reasoningEffort"] as const;
+const NATIVE_MODEL_OWNING_PROPS_ANY = [
+  "onSelectReasoningEffort",
+  "fallbackPowerSelection",
+  "onCommitPower",
+  "powerSelections",
+] as const;
+
+function nativeModelOwningProps(props: Record<string, unknown>): boolean {
+  if (!NATIVE_MODEL_OWNING_PROPS_REQUIRED.every((key) => key in props)) return false;
+  if (typeof props.onSelectModel !== "function") return false;
+  return NATIVE_MODEL_OWNING_PROPS_ANY.some((key) => {
+    const value = props[key];
+    return typeof value === "function" || isRecord(value) || Array.isArray(value);
+  });
+}
+
 export function isNativeModelControlCandidate(element: Element): boolean {
   if (
     element.hasAttribute(CONTROL_ATTRIBUTE) ||
@@ -247,9 +280,11 @@ export function isNativeModelControlCandidate(element: Element): boolean {
   ) {
     return false;
   }
+  // Semantic tier: the same navigation marker Codex uses for the Permission
+  // trigger. It survived 26.1029 while `data-codex-intelligence-trigger` did not.
   if (
-    element.getAttribute("data-codex-intelligence-trigger") === "true" &&
-    element.getAttribute("data-composer-navigation-target") === "reasoning"
+    element.getAttribute("data-composer-navigation-target") === "reasoning" ||
+    element.getAttribute("data-codex-intelligence-trigger") === "true"
   ) {
     return true;
   }
@@ -264,15 +299,7 @@ export function isNativeModelControlCandidate(element: Element): boolean {
     : null;
   for (let depth = 0; fiber && depth < 60; depth += 1) {
     const props = fiber.memoizedProps;
-    if (
-      isRecord(props) &&
-      typeof props.onSelectModel === "function" &&
-      typeof props.onSelectReasoningEffort === "function" &&
-      "reasoningEffort" in props &&
-      isRecord(props.fallbackPowerSelection)
-    ) {
-      return true;
-    }
+    if (isRecord(props) && nativeModelOwningProps(props)) return true;
     const parent = fiber.return;
     fiber =
       (typeof parent === "object" || typeof parent === "function") && parent !== null

@@ -289,6 +289,27 @@ React 根 useRef -> app scope handle { node, chain, scope, get, set, watch }
 - 主进程的服务端队列对所有非 ephemeral Thread 启用，外部 Thread 的跟进消息由 Host 原生实现的 `thread/queue/*` 承接，见 `docs/architecture/external-thread-queue.md`。
 - 依赖旧 manager 内部成员的 Renderer 补丁在该路由下不安装；排查时先确认对应能力是否已迁到 Host 协议或出站 capnweb 层，不要恢复旧补丁。
 
+### Desktop 26.1029 起：原生 Model 触发器的 identity 换了
+
+`26.1029` 删除了 Model 触发器上的 `data-codex-intelligence-trigger`，并把 owning
+component 的 `onSelectReasoningEffort` / `fallbackPowerSelection` 换成
+`onCommitPower` / `powerSelections` / `selectionMode`。旧的 `&&` 串联判据因此整体不匹配，
+`nativeModelControlForComposer()` 返回 `null`，`setNativeControlHidden()` 拿到 `null`
+后直接返回——原生 Codex Model chip 在外部 Harness 的 Composer 里残留，并且仍然可点，
+会把 Codex 的 Model 改掉。
+
+同样的升级里 Permission 触发器没受影响，因为它的判据用
+`data-composer-navigation-target="permissions"` 与 `permissionsHostId`。Model 现在也以
+`data-composer-navigation-target="reasoning"` 为首选判据（`isNativeModelControlCandidate()`
+in `packages/renderer-extension/src/renderer-composer-dom.ts`），Fiber props 只作兜底且
+接受两代信号。
+
+排查启示：这类事故在单元测试里看不出来，必须在存活 Renderer 上验证。只确认属性“存在”
+不够，要确认 `isNativeModelControlCandidate()` 对真实按钮的实际返回值——Fiber 层判据只有
+运行时才暴露。`inspectRendererComposerContract()` 的
+`modelCandidateCount` / `verifiedModelCandidateCount` 是最快的读数：后者为 0 而前者非 0
+即说明契约失联。
+
 ## 六、第五步：沿用户点击路径逐步验证
 
 点击外部 Agent 后，不要只看最终 UI。按以下顺序检查：

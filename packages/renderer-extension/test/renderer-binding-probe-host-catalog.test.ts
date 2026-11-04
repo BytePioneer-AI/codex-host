@@ -406,6 +406,14 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
           .filter(([input]) => input.purpose === "availability")
           .every(([input]) => input.cwd === "/draft-a" || input.cwd === "/draft-b"),
       ).toBe(true);
+      window.dispatchEvent(
+        new CustomEvent("codexhost:draft-workspace", {
+          detail: { hostId: "local", cwd: null },
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(inspectHarness).toHaveBeenCalledWith({ harnessId: "claude-code" }),
+      );
     } finally {
       previous.resolve(readyInspection());
       probe.dispose();

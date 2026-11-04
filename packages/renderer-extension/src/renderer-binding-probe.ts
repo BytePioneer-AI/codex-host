@@ -3277,9 +3277,14 @@ export function installRendererBindingProbe(
     const detail: unknown = (event as CustomEvent).detail;
     if (typeof detail !== "object" || detail === null) return;
     const { hostId, cwd } = detail as { hostId?: unknown; cwd?: unknown };
-    if (typeof hostId !== "string" || typeof cwd !== "string" || cwd.length === 0) return;
-    if (draftWorkspaces.get(hostId) === cwd) return;
-    draftWorkspaces.set(hostId, cwd);
+    if (
+      typeof hostId !== "string" ||
+      (cwd !== null && (typeof cwd !== "string" || cwd.length === 0))
+    )
+      return;
+    if (cwd === null ? !draftWorkspaces.has(hostId) : draftWorkspaces.get(hostId) === cwd) return;
+    if (cwd === null) draftWorkspaces.delete(hostId);
+    else draftWorkspaces.set(hostId, cwd);
     const availability = hostHarnessAvailabilityState(hostId);
     availability.requestGeneration += 1;
     availability.request = null;

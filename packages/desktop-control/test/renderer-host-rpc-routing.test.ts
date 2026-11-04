@@ -91,6 +91,7 @@ function setup(
     return: null,
   };
   const editors = [{ __reactFiber$app: composerFiber, parentElement: null }];
+  const sidebar: unknown[] = [];
   const sent: unknown[] = [];
   class MessagePort {
     postMessage(message: unknown): void {
@@ -102,7 +103,8 @@ function setup(
     async evaluate<T>(expression: string): Promise<T> {
       return await runInNewContext(expression, {
         document: {
-          querySelectorAll: () => editors,
+          querySelectorAll: (selector: string) =>
+            selector.startsWith("aside ") ? sidebar : editors,
           getElementById: (id: string) => (id === "root" ? container : null),
         },
         window: target,
@@ -113,6 +115,7 @@ function setup(
         Uint8Array,
         setTimeout,
         clearTimeout,
+        CustomEvent,
       });
     },
   };
@@ -132,8 +135,59 @@ function setup(
     editors,
     composerFiber,
     familyBindings,
+    sidebar,
   };
 }
+
+it("publishes and revokes the selected native project before a prewarm is dispatched", async () => {
+  const fixture = setup();
+  const project = (id: string, cwd: string) => ({
+    source: "codex",
+    group: {
+      projectKind: "local",
+      projectId: id,
+      label: id,
+      path: cwd,
+      rootPaths: [cwd],
+    },
+  });
+  Object.assign(fixture.composerFiber.memoizedProps, {
+    browserConversationId: "client-new-thread:draft",
+    selectedProject: { type: "local", projectId: "a" },
+  });
+  const projectFiber = { memoizedProps: { project: project("a", "/project/a") }, return: null };
+  fixture.sidebar.push({ __reactFiber$project: projectFiber });
+  const events: unknown[] = [];
+  fixture.target.dispatchEvent = (e: CustomEvent) => {
+    if (e.type === "codexhost:draft-workspace") events.push(e.detail);
+    return true;
+  };
+  const routing = await install(fixture);
+  expect(fixture.target.__codexhostDraftWorkspacesV1).toEqual({ local: "/project/a" });
+  expect(fixture.sent).toEqual([]);
+  Object.assign(fixture.composerFiber.memoizedProps, {
+    selectedProject: { type: "local", projectId: "b" },
+  });
+  projectFiber.memoizedProps.project = project("b", "/project/b");
+  routing.forComposer();
+  expect(fixture.target.__codexhostDraftWorkspacesV1).toEqual({ local: "/project/b" });
+  Object.assign(fixture.composerFiber.memoizedProps, { selectedProject: null });
+  routing.forComposer();
+  expect(fixture.target.__codexhostDraftWorkspacesV1).toEqual({ local: null });
+  expect(events).toEqual([
+    { hostId: "local", cwd: "/project/a" },
+    { hostId: "local", cwd: "/project/b" },
+    { hostId: "local", cwd: null },
+  ]);
+  Object.defineProperty(fixture.composerFiber.memoizedProps, "selectedProject", {
+    get() {
+      throw new Error("Native selection unavailable");
+    },
+  });
+  expect(() => routing.forComposer()).not.toThrow();
+  expect(fixture.target.__codexhostDraftWorkspacesV1).toEqual({ local: null });
+  routing.dispose();
+});
 
 function policyOf(route: ReturnType<Routing["forHost"]>) {
   if (!route) throw new Error("Host route is unavailable");

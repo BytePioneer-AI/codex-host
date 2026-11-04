@@ -17,6 +17,8 @@ import {
 } from "./renderer-host-rpc-discovery.js";
 import { installRendererHostRpcRouting } from "./renderer-host-rpc-routing.js";
 import { readRendererConnectionGeneration } from "./renderer-connection-generation.js";
+import { readRendererLocalDraftWorkspace } from "./renderer-draft-workspace.js";
+import { readNativeScheduleWorkspaces } from "./renderer-schedule-workspace.js";
 
 export { requestManagerFromHookState } from "./renderer-host-discovery.js";
 
@@ -35,6 +37,8 @@ const REQUEST_MANAGER_POLL_INTERVAL_MS = 25;
 function directRendererInstaller(): string {
   return `(() => {
     const committedReactAncestors = ${committedReactAncestors.toString()};
+    const readNativeScheduleWorkspaces = ${readNativeScheduleWorkspaces.toString()};
+    const readRendererLocalDraftWorkspace = ${readRendererLocalDraftWorkspace.toString()};
     const requestManagerFromHookState = ${requestManagerFromHookState.toString()};
     const discoverRendererHosts = ${discoverRendererHosts.toString()};
     const resolveRendererHostManager = ${resolveRendererHostManager.toString()};
@@ -66,6 +70,10 @@ function directRendererInstaller(): string {
           : (composer ?? document);
         return discover(source);
       },
+      localDraftWorkspace: () => readRendererLocalDraftWorkspace(
+        document, committedReactAncestors,
+        (root) => readNativeScheduleWorkspaces(root, committedReactAncestors),
+      ),
       portPrototype: MessagePort.prototype,
       nativeRouting: () => {
         const native = discover(document);

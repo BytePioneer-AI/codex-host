@@ -24,6 +24,7 @@ interface RendererHostRpcDependencies {
   hostIds: typeof rendererHostRpcHostIds;
   /** Host identities named by the given Composer (or every mounted Composer). */
   composerHostIds(composer?: RendererHostRoot): { editorCount: number; hostIds: string[] };
+  localDraftWorkspace?(): string | null | undefined;
   /** `MessagePort.prototype`: Renderer capnweb calls to the main process leave through it. */
   portPrototype: { postMessage(this: unknown, message: unknown, ...rest: unknown[]): unknown };
   /** Transitional Desktops expose native managers only after a Composer mounts. */
@@ -118,10 +119,10 @@ export function installRendererHostRpcRouting(
       return null;
     }
   };
-  // The draft's workspace reaches the Host only through its prewarm. Publish it
-  // so the Composer can ask for that workspace's live Harness commands.
+  // Publish the observed native project or prewarm path so draft inspection does
+  // not depend on Desktop having already prepared a native Session.
   const publishDraftWorkspace = (hostId: string, cwd: unknown): void => {
-    if (typeof cwd !== "string" || cwd.length === 0) return;
+    if (cwd !== null && (typeof cwd !== "string" || cwd.length === 0)) return;
     const drafts = isRecord(target.__codexhostDraftWorkspacesV1)
       ? target.__codexhostDraftWorkspacesV1
       : {};
@@ -386,6 +387,15 @@ export function installRendererHostRpcRouting(
         hostId = null;
       }
       const route = hostId ? routeFor(hostId, preferred) : null;
+      if (route?.hostId === "local") {
+        try {
+          const cwd = dependencies.localDraftWorkspace?.();
+          if (cwd !== undefined) publishDraftWorkspace("local", cwd);
+        } catch {
+          // An unreadable native selection must not retain another project's path.
+          publishDraftWorkspace("local", null);
+        }
+      }
       if (!composer) publish(route);
       return route;
     },

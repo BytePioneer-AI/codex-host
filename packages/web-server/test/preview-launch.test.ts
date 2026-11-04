@@ -76,6 +76,14 @@ it("forwards trusted proxies only when explicitly configured", () => {
   assert.equal(args[args.indexOf("--trusted-proxy") + 1], "10.0.0.1,10.0.0.2");
 });
 
+it("forwards safe mode without changing authentication or requesting a Host restart", () => {
+  assert.equal(previewLaunch("/packed", {}, {}).args.includes("--safe-mode"), false);
+  const { args } = previewLaunch("/packed", { "safe-mode": true }, {});
+  assert.equal(args.includes("--safe-mode"), true);
+  assert.equal(args.includes("--no-auth"), false);
+  assert.equal(args.includes("--restart-host"), false);
+});
+
 it("accepts an explicit port instead of the default", () => {
   const { args } = previewLaunch("/packed", { port: "4401" }, {});
   assert.equal(args[args.indexOf("--port") + 1], "4401");

@@ -25,6 +25,8 @@ export interface PreviewOptions extends HostRestartOptions {
   "ch-plugins"?: string;
   /** Serve the Web UI from this source checkout and reload rebuilt bundles (development only). */
   "dev-web-ui"?: string;
+  /** Start Web with built-in UI plugins only, leaving saved choices intact. */
+  "safe-mode"?: boolean;
 }
 
 /**
@@ -91,6 +93,7 @@ export function previewLaunch(
       "--workspace",
       resolve(options.workspace ?? join(homedir(), "codexhost-web-preview-workspace")),
       ...(options["dev-web-ui"] ? ["--dev-web-ui", resolve(options["dev-web-ui"])] : []),
+      ...(options["safe-mode"] ? ["--safe-mode"] : []),
     ],
   };
 }

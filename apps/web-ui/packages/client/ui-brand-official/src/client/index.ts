@@ -8,19 +8,19 @@ import { CodexHostMark, CodexHostName } from "./Brand.tsx";
 export const inject = ["slots"];
 
 /**
- * Fill the sidebar brand slots and the empty-conversation hero mark.
+ * Supply fallback occupants so themes can contribute their own brand at the default priority.
  * @param ctx - Client root context.
  */
 export function apply(ctx: ClientContext): void {
   ctx.slots.inject("sidebar.brand.mark", () =>
     ctx.slots.inject("sidebar.brand.name", function* () {
-      yield ctx.slots.register({ name: "sidebar.brand.mark" }, CodexHostMark);
-      yield ctx.slots.register({ name: "sidebar.brand.name" }, CodexHostName);
+      yield ctx.slots.register({ name: "sidebar.brand.mark", priority: 1 }, CodexHostMark);
+      yield ctx.slots.register({ name: "sidebar.brand.name", priority: 1 }, CodexHostName);
     }),
   );
   ctx.slots.inject("conversation.hero.brand.mark" as "sidebar.brand.mark", () =>
     ctx.slots.register(
-      { name: "conversation.hero.brand.mark" as "sidebar.brand.mark" },
+      { name: "conversation.hero.brand.mark" as "sidebar.brand.mark", priority: 1 },
       CodexHostMark,
     ),
   );

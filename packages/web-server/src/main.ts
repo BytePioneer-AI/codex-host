@@ -20,6 +20,9 @@ import qrcode from "qrcode-terminal";
 import { createBrowserWebSocketServer } from "./browser-websocket.ts";
 
 import { registerAccessTokenRpc } from "./access-token-rpc.ts";
+import { registerUiExtensionRpc } from "./ui-extension-rpc.ts";
+import { UI_EXTENSION_PAGE } from "./ui-extension-page.ts";
+import { WebUiExtensions } from "./ui-extensions.ts";
 import { AccessTokenStore } from "./access-tokens.ts";
 import { SWITCH_TOKEN_SCRIPT } from "./auth-page.ts";
 import { AccessAuth, CredentialConnections, LOCAL_CREDENTIAL, type RequestAuth } from "./auth.ts";
@@ -43,7 +46,7 @@ import { Settings } from "./settings.ts";
 import { formatWebStartup } from "./startup-display.ts";
 import { DataDir } from "./store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "./transport.ts";
-import { WebAssets, type AssetResponse } from "./web-assets.ts";
+import { WebAssets, type AssetResponse, type WebAssetOptions } from "./web-assets.ts";
 import { HMR_EVENTS_PATH, WebHmr } from "./web-hmr.ts";
 import { Workspaces } from "./workspaces.ts";
 import { inspectImage, readImageFile, WebImages } from "./web-images.ts";
@@ -97,6 +100,7 @@ const { values } = parseArgs({
     "no-auth": { type: "boolean", default: false },
     "import-recent": { type: "string", default: process.env.CODEXHOST_IMPORT_RECENT },
     "dev-web-ui": { type: "string" },
+    "safe-mode": { type: "boolean", default: false },
   },
   allowPositionals: false,
 });
@@ -230,20 +234,48 @@ sessions.notifier = (notification) => {
   });
 };
 const devWebUi = values["dev-web-ui"] === undefined ? undefined : resolve(values["dev-web-ui"]);
-const assets =
+const assetOptions: WebAssetOptions =
   PACKED && devWebUi === undefined
-    ? new WebAssets({
+    ? {
         packedRoot: PACKED_WEB,
         plugins: [],
         globals: CLIENT_GLOBALS,
         title: "CodexHost",
-      })
-    : new WebAssets({
+      }
+    : {
         repoRoot: devWebUi ?? resolve(REPO_ROOT, "apps/web-ui"),
         plugins: devWebUi === undefined ? CLIENT_PLUGINS : [...CLIENT_PLUGINS, HMR_CLIENT_PLUGIN],
         globals: CLIENT_GLOBALS,
         title: "CodexHost",
+      };
+const builtInAssets = new WebAssets(assetOptions);
+const recoveryAssets =
+  devWebUi === undefined
+    ? builtInAssets
+    : new WebAssets({
+        ...assetOptions,
+        plugins: CLIENT_PLUGINS,
       });
+const extensions = new WebUiExtensions(data, {
+  safeMode: values["safe-mode"],
+  validate: (externalPlugins) => {
+    new WebAssets({ ...assetOptions, externalPlugins });
+  },
+});
+let assets = builtInAssets;
+if (!values["safe-mode"]) {
+  try {
+    const externalPlugins = extensions.plugins();
+    if (externalPlugins.length > 0) assets = new WebAssets({ ...assetOptions, externalPlugins });
+    extensions.composed(externalPlugins.map((plugin) => plugin.id));
+  } catch (error) {
+    extensions.composed(
+      [],
+      error instanceof Error ? error.message : "Extension composition failed.",
+    );
+    console.warn("[extensions] using built-in UI; manage extensions at /extensions");
+  }
+}
 const hmr = devWebUi === undefined ? undefined : new WebHmr(assets);
 
 streams.register("$events", events.handler);
@@ -261,6 +293,9 @@ registerAccessTokenRpc(rpc, accessTokens, {
     networkAccessUrls(values.host as string, (server.address() as { port: number }).port),
 });
 registerMisc(rpc, { events });
+registerUiExtensionRpc(rpc, extensions, {
+  port: () => (server.address() as { port: number }).port,
+});
 registerVoiceStatus(rpc, chHost);
 
 function send(response: ServerResponse, asset: AssetResponse | undefined, cache = false): void {
@@ -376,8 +411,16 @@ const server = createServer((request, response) => {
         .end(reply);
       return;
     }
+    if (pathname === "/extensions") {
+      send(response, {
+        contentType: "text/html; charset=utf-8",
+        body: Buffer.from(UI_EXTENSION_PAGE),
+      });
+      return;
+    }
     if (pathname === "/" || pathname === "/index.html") {
-      const index = assets.index();
+      const builtInOnly = new URL(url, "http://localhost").searchParams.get("extensions") === "off";
+      const index = (builtInOnly ? recoveryAssets : assets).index();
       send(
         response,
         auth === undefined

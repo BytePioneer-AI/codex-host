@@ -49,6 +49,7 @@ import {
 import type {} from "@deepseek-ai/dsh-client-ui-chat/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { AccessTokensSection } from "./AccessTokensSection.tsx";
+import { WebExtensionsSection } from "./WebExtensionsSection.tsx";
 import { watchAuthentication } from "./auth-watch.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
@@ -277,7 +278,19 @@ export function apply(ctx: ClientContext): void {
     get: () => ctx.theme.getTheme().active.colorScheme,
     subscribe: (listener) => ctx.on("theme/change", listener),
   };
-  // Always listed: non-local access sees the same entry, with guidance instead of the tokens.
+  // Local management entries stay visible to remote users with access guidance.
+  ctx.slots.inject("settings.section", () =>
+    ctx.slots.register(
+      {
+        name: "settings.section",
+        id: "codexhost-ui-extensions",
+        order: 8,
+        label: () => t("settings.extensions"),
+        locale: NS,
+      },
+      WebExtensionsSection,
+    ),
+  );
   ctx.slots.inject("settings.section", () =>
     ctx.slots.register(
       {

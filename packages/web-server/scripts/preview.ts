@@ -20,6 +20,7 @@ const { values } = parseArgs({
     "ch-codex-home": { type: "string" },
     "ch-plugins": { type: "string" },
     "dev-web-ui": { type: "string" },
+    "safe-mode": { type: "boolean" },
     host: { type: "string" },
     port: { type: "string" },
     "trusted-proxy": { type: "string" },

@@ -131,6 +131,8 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
+| [`product/web-ui-extensions.md`](product/web-ui-extensions.md) | DSH 前端插件的包名/GitHub/本机目录安装、安装源选择、启停、版本检查、独立恢复与原包验证边界；使用或维护界面扩展时阅读。 |
+| [`proposals/ui-extension-plugins.md`](proposals/ui-extension-plugins.md) | 界面扩展目标方案与分步状态：Harness 与界面插件分类、统一管理、DSH 纯 Web 首期范围，以及待实现的原生插件和 Codex GUI 分端接入边界。 |
 | [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA 的共享 CH 会话、GUI/Web 共享偏好、作为普通外部 Harness 的 Codex CLI、原生项目归组、历史分页、Windows/macOS 按需桌面截图、侧栏服务器浏览器推流、源码构建、启动隔离、跨工作树停机及验收限制；开发 Web 或与 Desktop 并行运行时阅读。 |
 | [`product/web-ios-keyboard-composer-alignment.md`](product/web-ios-keyboard-composer-alignment.md) | 待解决问题：iOS Safari 软键盘下输入框与屏幕底部不贴合的实测数据、根因（页面被 iOS 多滚、`visualViewport` 不可用）、无效做法与备选方向；处理手机键盘布局前阅读。 |
 | [`proposals/web-remote-relay-architecture.md`](proposals/web-remote-relay-architecture.md) | 未实施的 Web 远程访问总体设计：五种访问方式（局域网、Tailscale、官方中转、自托管中转、自备隧道）、Token 认证、SNI 转发架构及信任边界；编写远程访问 Spec 前阅读。 |

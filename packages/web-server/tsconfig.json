@@ -12,6 +12,7 @@
     "disableSourceOfProjectReferenceRedirect": true
   },
   "references": [
+    { "path": "../harness-discovery/tsconfig.json" },
     {
       "path": "../session-runtime/tsconfig.json"
     },

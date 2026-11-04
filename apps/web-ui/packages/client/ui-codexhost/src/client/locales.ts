@@ -17,6 +17,7 @@ export const en = {
   "discovery.failed": "Native command catalog unavailable:",
 
   "settings.accessTokens": "Access tokens",
+  "settings.extensions": "Interface extensions",
   "settings.connections": "Connections",
   "settings.resources": "Resources",
   "settings.accounts": "Accounts",
@@ -129,6 +130,61 @@ export const en = {
     "HTTP on these addresses is not encrypted. Use them only on networks you trust.",
   "accessTokens.localListener":
     "Web is listening only on this computer. To allow other devices on your network, start it with --host 0.0.0.0.",
+
+  "extensions.description":
+    "Add DSH themes and panels to Web. Extensions are shared by everyone connected to this Web service. After installing, enable the extension here.",
+  "extensions.localOnly":
+    "Extensions can only be managed on the computer running Web. Open {url} on that computer to manage them.",
+  "extensions.loading": "Loading extensions…",
+  "extensions.loadFailed": "Could not load extensions: {message}",
+  "extensions.actionFailed": "That did not work: {message}",
+  "extensions.add": "Add extension",
+  "extensions.close": "Close",
+  "extensions.sourceLabel": "Package name or address",
+  "extensions.sourcePlaceholder": "npm package name, GitHub URL or local directory",
+  "extensions.sourceHint":
+    "Enter the extension's package name, GitHub repository address or local directory path.",
+  "extensions.scope":
+    "Supports prebuilt DSH themes, sidebar panels and display components. Extensions requiring backend services or a build step are not supported. After installing, enable the extension in the list.",
+  "extensions.guide": "Installation guide and examples",
+  "extensions.guideNpm": "npm package name; a version is optional. Format examples:",
+  "extensions.guideGitHub":
+    "Public GitHub repository; replace this example with the actual address:",
+  "extensions.guideDirectory":
+    "Absolute directory or archive path on the computer running Web. Format examples:",
+  "extensions.registry": "Installation source",
+  "extensions.registryOfficial": "Official npm registry",
+  "extensions.registryMirror": "China mainland mirror",
+  "extensions.registryCustom": "Custom registry",
+  "extensions.registryCustomUrl": "Custom registry URL",
+  "extensions.registryInvalid":
+    "Enter an HTTP(S) registry URL without a username, password, query or fragment.",
+  "extensions.registryHint":
+    "The registry downloads npm packages and dependencies. GitHub addresses connect to GitHub directly. Private registry authentication uses the Web computer's npm configuration.",
+  "extensions.install": "Install",
+  "extensions.installing": "Installing…",
+  "extensions.restart":
+    "After enabling, disabling or removing extensions, restart Web and refresh open pages. Restarting Web disconnects its pages and closes its terminals.",
+  "extensions.safeMode": "Web started with built-in extensions only. Your saved choices are kept.",
+  "extensions.storeError": "Could not read saved extensions: {message}",
+  "extensions.empty": "No interface extensions installed.",
+  "extensions.enabled": "Enabled for Web",
+  "extensions.disabled": "Disabled",
+  "extensions.source": "Source: {source}",
+  "extensions.pendingRestart": "Restart Web to apply this change.",
+  "extensions.includedAtStartup":
+    "Included when Web started. Refresh the page to see the extension.",
+  "extensions.extensionError": "Could not prepare this extension: {message}",
+  "extensions.enable": "Enable",
+  "extensions.disable": "Disable",
+  "extensions.remove": "Uninstall",
+  "extensions.confirmRemove":
+    "Uninstall “{name}”? Restart Web and refresh its pages to finish removing it.",
+  "extensions.cancel": "Cancel",
+  "extensions.refresh": "Refresh list",
+  "extensions.retry": "Retry",
+  "extensions.recovery": "Open recovery page",
+  "extensions.builtinsOnly": "Open with built-in extensions only",
 
   "notifications.title": "Notifications",
   "notifications.on":
@@ -247,6 +303,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "discovery.failed": "原生命令目录不可用：",
 
   "settings.accessTokens": "访问令牌",
+  "settings.extensions": "界面扩展",
   "settings.connections": "连接",
   "settings.resources": "资源管理",
   "settings.accounts": "账号",
@@ -355,6 +412,54 @@ export const zh: Record<ImportLocaleKey, string> = {
   "accessTokens.plaintext": "这些地址使用未加密的 HTTP，请只在你信任的网络中使用。",
   "accessTokens.localListener":
     "Web 目前只监听这台电脑。要允许局域网中的其他设备访问，请用 --host 0.0.0.0 启动。",
+
+  "extensions.description":
+    "为 Web 添加 DSH 主题和面板。扩展对连接此 Web 服务的所有页面生效，安装后可在这里启用。",
+  "extensions.localOnly": "界面扩展只能在运行 Web 的电脑上管理。请在该电脑上打开 {url}。",
+  "extensions.loading": "正在加载界面扩展…",
+  "extensions.loadFailed": "无法加载界面扩展：{message}",
+  "extensions.actionFailed": "操作失败：{message}",
+  "extensions.add": "添加扩展",
+  "extensions.close": "关闭",
+  "extensions.sourceLabel": "包名或地址",
+  "extensions.sourcePlaceholder": "npm 包名、GitHub 地址或本地目录",
+  "extensions.sourceHint": "输入扩展的包名、GitHub 仓库地址或本地目录路径。",
+  "extensions.scope":
+    "支持已构建的 DSH 主题、侧栏面板和展示组件。暂不支持需要后台服务或构建步骤的扩展。安装完成后，可在列表中启用。",
+  "extensions.guide": "安装引导和示例",
+  "extensions.guideNpm": "npm 包名，无需指定版本。格式示例：",
+  "extensions.guideGitHub": "公开 GitHub 仓库，请将示例替换为实际地址：",
+  "extensions.guideDirectory": "运行 Web 的电脑上的目录或安装包绝对路径。格式示例：",
+  "extensions.registry": "安装源",
+  "extensions.registryOfficial": "npm 官方源",
+  "extensions.registryMirror": "中国大陆镜像源",
+  "extensions.registryCustom": "自定义安装源",
+  "extensions.registryCustomUrl": "自定义安装源地址",
+  "extensions.registryInvalid": "请输入 HTTP(S) 安装源地址，不要包含用户名、密码、查询参数或片段。",
+  "extensions.registryHint":
+    "安装源用于下载 npm 包和依赖；GitHub 地址仍直接连接 GitHub。私有源认证沿用运行 Web 的电脑上的 npm 配置。",
+  "extensions.install": "安装",
+  "extensions.installing": "正在安装…",
+  "extensions.restart":
+    "启用、禁用或卸载后，请重启 Web 并刷新已打开的页面。重启会断开 Web 连接并关闭其终端。",
+  "extensions.safeMode": "Web 本次仅加载内置扩展，已保存的启用选择仍会保留。",
+  "extensions.storeError": "无法读取已保存的扩展：{message}",
+  "extensions.empty": "还没有安装界面扩展。",
+  "extensions.enabled": "已启用 Web",
+  "extensions.disabled": "已禁用",
+  "extensions.source": "来源：{source}",
+  "extensions.pendingRestart": "重启 Web 后生效。",
+  "extensions.includedAtStartup": "本次 Web 启动已包含此扩展，请刷新页面查看。",
+  "extensions.extensionError": "此扩展暂不可加载：{message}",
+  "extensions.enable": "启用",
+  "extensions.disable": "禁用",
+  "extensions.remove": "卸载",
+  "extensions.confirmRemove": "卸载“{name}”？重启 Web 并刷新页面后完成移除。",
+  "extensions.cancel": "取消",
+  "extensions.refresh": "刷新列表",
+  "extensions.retry": "重试",
+  "extensions.recovery": "打开恢复页面",
+  "extensions.builtinsOnly": "仅使用内置扩展打开",
 
   "notifications.title": "通知",
   "notifications.on": "一轮结束、需要审批或回答问题时，会通知这台设备。",

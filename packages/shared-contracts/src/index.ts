@@ -396,3 +396,15 @@ export {
 } from "./remote-connections.js";
 
 export { usageMeasurementsSchema, type UsageMeasurementsSnapshot } from "./thread-usage.js";
+
+export {
+  webUiExtensionIdSchema,
+  webUiExtensionSchema,
+  webUiExtensionsStateSchema,
+  webUiExtensionRegistrySchema,
+  webUiExtensionInstallSchema,
+  webUiExtensionEnabledSchema,
+  webUiExtensionRemoveSchema,
+  type WebUiExtension,
+  type WebUiExtensionsState,
+} from "./web-ui-extensions.js";

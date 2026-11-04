@@ -2,7 +2,7 @@
  * Browser asset composition for the DSH-derived Web UI.
  *
  * The DSH Host composes the client plugin graph at runtime from its Loader tree. This module
- * replaces that with an explicit plugin list: it reads each package's `dsh.client` manifest,
+ * composes the built-in list and selected external packages: it reads each `dsh.client` manifest,
  * orders the rows by their module graph, renders the boot injections into the Vite shell's
  * index.html, and answers the `/plugins/??a,b&rev=x` combo route the module system expects.
  */
@@ -18,17 +18,26 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import {
+  checkExternalClientDependencies,
+  readExternalClientAssets,
+  EXTERNAL_CLIENT_PLATFORM_MODULES,
+  type ClientAssetManifest as ClientManifest,
+  type ExternalClientAssets,
+  type ExternalClientPluginSource,
+} from "./external-client-assets.ts";
+import {
+  checkClientRuntimeVersions,
+  CLIENT_RUNTIME_VERSIONS_FILE,
+  packedClientRuntimeVersions,
+  sourceClientRuntimeVersions,
+  type ClientRuntimeVersions,
+} from "./client-runtime-versions.ts";
 
 const CLIENT_MODULES_ID = "@deepseek-ai/dsh-client-modules";
 const CLIENT_CHUNK = /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/;
 const SOURCE_MAP_TRAILER = /(?:\r?\n)?\/\/# sourceMappingURL=[^\r\n]*(?:\r?\n)?$/;
 const SOURCE_URL_TRAILER = /(?:\r?\n)?\/\/# sourceURL=([^\r\n]+)(?:\r?\n)?$/;
-
-interface ClientManifest {
-  inject?: string[];
-  external?: string[];
-  immediately?: boolean;
-}
 
 interface PluginRecord {
   id: string;
@@ -36,6 +45,7 @@ interface PluginRecord {
   clientPath: string;
   manifest: ClientManifest;
   rev: string;
+  external?: ExternalClientAssets;
 }
 
 interface BootEntry {
@@ -75,6 +85,8 @@ export interface WebAssetOptions {
   packedRoot?: string;
   /** Ordered client plugin package names to compose. */
   plugins: readonly string[];
+  /** Installed precompiled browser packages; their Host entry points are never imported. */
+  externalPlugins?: readonly ExternalClientPluginSource[];
   /** Global configuration objects injected before the shell runs. */
   globals: Readonly<Record<string, unknown>>;
   /** Document title. */
@@ -178,6 +190,19 @@ function prepareSource(bundle: string): string {
   return source;
 }
 
+function pluginSource(record: PluginRecord): string {
+  return prepareSource(record.external?.source ?? readFileSync(record.clientPath, "utf8"));
+}
+
+/** A versioned external asset URL never serves bytes from another installed revision. */
+function matchesRevision(url: URL, allowed: readonly string[]): boolean {
+  const requested = url.searchParams.getAll("rev");
+  return (
+    requested.length === 0 ||
+    (requested.length === 1 && requested.some((rev) => allowed.includes(rev)))
+  );
+}
+
 function scriptTag(text: string): string {
   return `<script>${text.replace(/<\/script/giu, "<\\/script")}</script>`;
 }
@@ -236,6 +261,7 @@ export class WebAssets {
   private readonly byId: Map<string, PluginRecord>;
   private readonly combos = new Map<string, AssetResponse>();
   private indexHtml: Buffer;
+  private readonly runtimeVersions: ClientRuntimeVersions | undefined;
 
   constructor(private readonly options: WebAssetOptions) {
     if (options.packedRoot !== undefined) {
@@ -257,7 +283,8 @@ export class WebAssets {
             rev: bundleRev(plugin.id, clientPath),
           };
         });
-      this.records = orderByModuleGraph(records);
+      this.runtimeVersions = packedClientRuntimeVersions(this.distRoot);
+      this.records = this.composeRecords(records);
       this.byId = new Map(this.records.map((record) => [record.id, record]));
       this.current = this.composeGraph();
       this.indexHtml = this.renderIndex();
@@ -267,6 +294,12 @@ export class WebAssets {
       throw new Error("web-assets: repoRoot or packedRoot is required");
     this.distRoot = resolve(options.repoRoot, "apps/web/dist");
     const packages = scanWorkspacePackages(options.repoRoot);
+    this.runtimeVersions = sourceClientRuntimeVersions(
+      options.repoRoot,
+      packages,
+      options.plugins,
+      EXTERNAL_CLIENT_PLATFORM_MODULES,
+    );
     const records: PluginRecord[] = [];
     for (const id of options.plugins) {
       const dir = packages.get(id);
@@ -305,10 +338,33 @@ export class WebAssets {
         `web-assets: plugins inject packages outside the composed set:\n  ${missing.join("\n  ")}`,
       );
     }
-    this.records = orderByModuleGraph(records);
+    this.records = this.composeRecords(records);
     this.byId = new Map(this.records.map((record) => [record.id, record]));
     this.current = this.composeGraph();
     this.indexHtml = this.renderIndex();
+  }
+
+  private composeRecords(builtins: PluginRecord[]): PluginRecord[] {
+    const ids = new Set<string>();
+    for (const { id } of [...builtins, ...(this.options.externalPlugins ?? [])]) {
+      if (ids.has(id)) throw new Error(`web-assets: duplicate browser plugin ${id}`);
+      ids.add(id);
+    }
+    const external = (this.options.externalPlugins ?? []).map(readExternalClientAssets);
+    checkExternalClientDependencies(external, ids);
+    for (const plugin of external)
+      checkClientRuntimeVersions(plugin.id, plugin.requirements, this.runtimeVersions);
+    return orderByModuleGraph([
+      ...builtins,
+      ...external.map((plugin) => ({
+        id: plugin.id,
+        dir: plugin.directory,
+        clientPath: plugin.clientPath,
+        manifest: plugin.manifest,
+        rev: plugin.rev,
+        external: plugin,
+      })),
+    ]);
   }
 
   /** Boot graph rendered into the document as `__DSH_BOOT__`. */
@@ -318,7 +374,9 @@ export class WebAssets {
 
   /** Composed client bundles, for development rebuild polling. */
   bundles(): { id: string; path: string }[] {
-    return this.records.map((record) => ({ id: record.id, path: record.clientPath }));
+    return this.records
+      .filter((record) => record.external === undefined)
+      .map((record) => ({ id: record.id, path: record.clientPath }));
   }
 
   /** The Vite shell document the served index is rendered from. */
@@ -333,7 +391,7 @@ export class WebAssets {
    */
   rebuilt(id: string): string | undefined {
     const record = this.byId.get(id);
-    if (record === undefined) return undefined;
+    if (record === undefined || record.external !== undefined) return undefined;
     const rev = bundleRev(id, record.clientPath);
     if (rev === record.rev) return undefined;
     record.rev = rev;
@@ -373,9 +431,7 @@ export class WebAssets {
     ] as const) {
       if (group.length === 0) continue;
       const ids = group.map((record) => record.id);
-      const body = Buffer.from(
-        group.map((record) => prepareSource(readFileSync(record.clientPath, "utf8"))).join(""),
-      );
+      const body = Buffer.from(group.map(pluginSource).join(""));
       const rev = shortHash(body);
       const url = `plugins/??${ids.map((id) => `${id}/client.js`).join(",")}&rev=${rev}`;
       this.combos.set(this.comboKey(ids), { body, contentType: "text/javascript; charset=utf-8" });
@@ -438,14 +494,18 @@ export class WebAssets {
       }
       const ids = resources.map((resource) => resource.replace(/\/client\.js$/u, ""));
       const cached = this.combos.get(this.comboKey(ids));
-      if (cached !== undefined) return cached;
       const records = ids.map((id) => this.byId.get(id));
       if (records.some((record) => record === undefined)) return undefined;
-      const body = Buffer.from(
-        records
-          .map((record) => prepareSource(readFileSync((record as PluginRecord).clientPath, "utf8")))
-          .join(""),
-      );
+      const body =
+        cached?.body ??
+        Buffer.from(records.map((record) => pluginSource(record as PluginRecord)).join(""));
+      if (records.some((record) => record?.external !== undefined)) {
+        const revisions = [shortHash(body)];
+        // One package can be requested either by its graph row or as a one-row batch.
+        if (records.length === 1 && records[0] !== undefined) revisions.push(records[0].rev);
+        if (!matchesRevision(url, revisions)) return undefined;
+      }
+      if (cached !== undefined) return cached;
       const response = { body, contentType: "text/javascript; charset=utf-8" };
       this.combos.set(this.comboKey(ids), response);
       return response;
@@ -465,6 +525,16 @@ export class WebAssets {
       };
     }
     if (!CLIENT_CHUNK.test(fileName)) return undefined;
+    if (record.external !== undefined) {
+      if (!matchesRevision(url, [record.rev])) return undefined;
+      const source = record.external.chunks.get(fileName);
+      return source === undefined
+        ? undefined
+        : {
+            body: Buffer.from(prepareSource(source)),
+            contentType: "text/javascript; charset=utf-8",
+          };
+    }
     const chunkPath = join(dirname(record.clientPath), fileName);
     if (!existsSync(chunkPath)) return undefined;
     return {
@@ -474,12 +544,13 @@ export class WebAssets {
   }
 
   /**
-   * Write a self-contained copy of the composed plugins for a packed distribution.
+   * Copy built-in plugins for a distribution. Installed packages stay in the Web plugin profile.
    * @param outDir - the distribution's `web/` directory.
    */
   exportPlugins(outDir: string): PackedPlugin[] {
     const rows: PackedPlugin[] = [];
     for (const record of this.records) {
+      if (record.external !== undefined) continue;
       const dir = record.id.replace(/^@/u, "").replace(/\//gu, "__");
       const target = join(outDir, "plugins", dir);
       mkdirSync(target, { recursive: true });
@@ -491,6 +562,11 @@ export class WebAssets {
       rows.push({ id: record.id, dir, manifest: record.manifest });
     }
     writeFileSync(join(outDir, "plugins.json"), `${JSON.stringify(rows, null, 2)}\n`);
+    if (this.runtimeVersions !== undefined)
+      writeFileSync(
+        join(outDir, CLIENT_RUNTIME_VERSIONS_FILE),
+        `${JSON.stringify(this.runtimeVersions, null, 2)}\n`,
+      );
     return rows;
   }
 

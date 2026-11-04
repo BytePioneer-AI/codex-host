@@ -16,6 +16,8 @@ Right Sidebar touch controls follow the scoped revision in `sidebarTouchUpstream
 
 The upstream MIT license is retained in `LICENSE`, framework package licenses remain under `vendor/`, and upstream dependency notices are retained in `THIRD_PARTY_NOTICES.md`. Local import adaptations include private npm manifests, source exports, the selected source build, and removal of the upstream standalone Web Worker preview entry. The root LGPL license does not replace these notices.
 
+The Web interface extension installer adapts the upstream `ui-plugin-manager` install dialog structure and styles, using the imported `ui-primitives` Modal and Button. Package/address input and npm registry selection call the CodexHost Web extension API; the upstream plugin-manager store, Host runtime and bundle configuration are not mounted. The source revision is recorded under `extensionInstallUpstream` in `import-manifest.json`.
+
 See [the Web feature document](../../docs/product/standalone-web.md) for runtime isolation, commands and supported behavior.
 
 Workspace mention search adapts DSH `file-reference-local/src/search.ts` in

@@ -92,6 +92,15 @@ export class BootPage {
     report.append(div(css.failedTitle, "Failed to load plugins"));
     for (const id of failed) report.append(div(css.failedItem, id));
     if (this.failure !== undefined) report.append(div(css.failedItem, this.failure));
+    const recovery = document.createElement("p");
+    const manage = document.createElement("a");
+    manage.href = "./extensions";
+    manage.textContent = "管理扩展 / Manage extensions";
+    const builtIn = document.createElement("a");
+    builtIn.href = "./?extensions=off";
+    builtIn.textContent = "仅加载内置界面 / Open built-in UI";
+    recovery.append(manage, " · ", builtIn);
+    report.append(recovery);
     this.card.replaceChildren(this.wordmark, report);
   }
 

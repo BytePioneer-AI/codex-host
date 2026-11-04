@@ -1,6 +1,12 @@
 {
   "source": "deepseek-harness (codexhost-web fork)",
   "version": "0.2.1-alpha.1",
+  "extensionInstallUpstream": {
+    "source": "codexhost-web fork",
+    "commit": "a28f8758b4579787e8511a2a45401e2c29ba2199",
+    "scope": "ui-plugin-manager install dialog structure and styles; plugin-manager install-spec parser",
+    "adaptation": "Web-only prebuilt extension validation and installation; existing Modal/Button primitives; public GitHub archives, local directory snapshots and explicit npm registry selection"
+  },
   "terminalUpstream": {
     "repository": "https://github.com/deepseek-ai/deepseek-harness",
     "commit": "ce7073d51254c26cd63b22a60835b8f948deb447",

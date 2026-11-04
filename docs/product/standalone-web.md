@@ -88,9 +88,13 @@ Web 按内容寻址快照的 runtime 路径（或 `--ch-host-runtime` 覆盖值�
 
 Web 网关自有数据默认位于 `~/.codexhost/web/`，源码入口与打包预览使用相同默认值；指定 `--ch-data <root>` 或对应的 `--ch-control-directory <root>/client-hosts` 时，默认跟随为 `<root>/web`。显式 `--data`（直接 server 入口也支持 `CODEXHOST_WEB_DATA`）仍可选择独立目录，不修改 Host 的 Mapping Store 位置。
 
-该目录包含访问令牌、设置、Push 密钥/订阅、上传附件。用户项目代码、GUI 官方 Codex home、Codex CLI 与其他 Harness 的原生数据保持原位。旧的 `<ch-data>/web-codex/` 隔离来源数据不再读取，也不由 Web 删除或迁移；原生会话仍在各自的 Codex home 中，可通过通用导入重新接入。
+该目录包含访问令牌、设置、Push 密钥/订阅、上传附件和界面扩展的安装包、启用记录。用户项目代码、GUI 官方 Codex home、Codex CLI 与其他 Harness 的原生数据保持原位。旧的 `<ch-data>/web-codex/` 隔离来源数据不再读取，也不由 Web 删除或迁移；原生会话仍在各自的 Codex home 中，可通过通用导入重新接入。
 
 启动使用当前数据目录，不探测、合并或迁移旧 Web profile，也不解析旧根目录迁移标记或附件兼容链接。旧目录与用户文件保持原位。图片读取继续校验本 profile 自有内容寻址对象，拒绝符号链接和任意路径读取。未发送上传回执不跨网关重启恢复。备份该目录含敏感令牌和密钥，应离线停写并安全保存；只备份 codexhost 目录不等于备份全部原生会话或项目。
+
+## 界面扩展
+
+设置中的「界面扩展」支持在本机登录后安装、启停和卸载预构建的 DSH Web 客户端包，作用于当前 Web 服务的所有页面。「添加扩展」接受 npm 包名、GitHub 仓库地址、本机绝对目录或安装包，并提供官方、镜像和自定义 npm 源选择。启停后重启 Web 并刷新页面生效，无须重启 CH Host；`/extensions`、`/?extensions=off` 和 `--safe-mode` 提供独立管理、单页恢复和整服务仅内置模式。当前支持边界、真实主题样本与验收限制见 [Web 界面扩展](web-ui-extensions.md)；codexhost 原生格式、完整主题配置和 GUI 插件运行时仍属后续范围。
 
 ## GUI / Web 共享偏好
 

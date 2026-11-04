@@ -267,9 +267,12 @@ export function isNativeModelControlCandidate(element: Element): boolean {
     if (
       isRecord(props) &&
       typeof props.onSelectModel === "function" &&
-      typeof props.onSelectReasoningEffort === "function" &&
       "reasoningEffort" in props &&
-      isRecord(props.fallbackPowerSelection)
+      ((typeof props.onSelectReasoningEffort === "function" &&
+        isRecord(props.fallbackPowerSelection)) ||
+        (element.getAttribute("data-composer-navigation-target") === "reasoning" &&
+          typeof props.onCommitPower === "function" &&
+          Array.isArray(props.powerSelections)))
     ) {
       return true;
     }

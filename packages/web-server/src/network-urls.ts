@@ -1,5 +1,5 @@
 /** Addresses other devices can use to reach this server; they never carry a token. */
-import { networkInterfaces } from "node:os";
+import { networkInterfaces, type NetworkInterfaceInfo } from "node:os";
 
 import type { WebNetworkAccessUrl } from "@codexhost/shared-contracts";
 
@@ -9,6 +9,17 @@ function isTailscale(ip: string): boolean {
   return a === 100 && b !== undefined && b >= 64 && b <= 127;
 }
 
+/** Host-side ends of VM and container networks; macOS names VM and Internet Sharing bridges `bridge*`. */
+const VIRTUAL_INTERFACE =
+  /^(?:docker|br-|virbr|vmnet|vboxnet|veth|lxcbr|cni|flannel|cali|bridge)|^vEthernet \((?:Default Switch|WSL)|VMware Network Adapter|VirtualBox Host-Only/u;
+
+const KIND_ORDER: Record<WebNetworkAccessUrl["kind"], number> = {
+  "tailscale-https": 0,
+  tailscale: 1,
+  lan: 2,
+  virtual: 3,
+};
+
 export function isWildcardHost(host: string): boolean {
   return host === "0.0.0.0" || host === "::";
 }
@@ -17,24 +28,41 @@ export function isLoopbackHost(host: string): boolean {
   return host === "localhost" || host === "::1" || host.startsWith("127.");
 }
 
+function kindOf(address: string, interfaceName: string | undefined): WebNetworkAccessUrl["kind"] {
+  if (isTailscale(address)) return "tailscale";
+  return interfaceName !== undefined && VIRTUAL_INTERFACE.test(interfaceName) ? "virtual" : "lan";
+}
+
 /**
  * @param host - the listening address.
  * @param port - the listening port.
- * @returns Tailscale addresses first, then LAN; empty when the server listens only on this computer.
+ * @param interfaces - the machine's network interfaces.
+ * @returns Tailscale addresses, then LAN, then virtual; empty when the server listens only on this computer.
  */
-export function networkAccessUrls(host: string, port: number): WebNetworkAccessUrl[] {
-  const addresses = isWildcardHost(host)
-    ? Object.values(networkInterfaces())
-        .flatMap((entries) => entries ?? [])
-        .filter((entry) => entry.family === "IPv4" && !entry.internal)
-        .map((entry) => entry.address)
+export function networkAccessUrls(
+  host: string,
+  port: number,
+  interfaces: NodeJS.Dict<NetworkInterfaceInfo[]> = networkInterfaces(),
+): WebNetworkAccessUrl[] {
+  const addresses: Array<{ address: string; name?: string }> = isWildcardHost(host)
+    ? Object.entries(interfaces).flatMap(([name, entries]) =>
+        (entries ?? [])
+          .filter((entry) => entry.family === "IPv4" && !entry.internal)
+          .map((entry) => ({ address: entry.address, name })),
+      )
     : isLoopbackHost(host)
       ? []
-      : [host];
+      : [{ address: host }];
   return addresses
-    .map((address) => ({
-      kind: isTailscale(address) ? ("tailscale" as const) : ("lan" as const),
+    .map(({ address, name }) => ({
+      kind: kindOf(address, name),
       url: `http://${address}:${String(port)}/`,
     }))
-    .sort((a, b) => Number(b.kind === "tailscale") - Number(a.kind === "tailscale"));
+    .sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind]);
+}
+
+/** @returns the addresses worth printing: virtual ones only when nothing else is available. */
+export function reachableNetworkUrls(urls: WebNetworkAccessUrl[]): WebNetworkAccessUrl[] {
+  const reachable = urls.filter((entry) => entry.kind !== "virtual");
+  return reachable.length > 0 ? reachable : urls;
 }

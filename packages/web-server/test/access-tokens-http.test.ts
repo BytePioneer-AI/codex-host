@@ -80,7 +80,7 @@ const bearer = (token: string): Record<string, string> => ({ authorization: `Bea
 async function start(
   t: TestContext,
   args: string[] = [],
-): Promise<{ base: URL; data: string; createToken(name: string): Promise<CreatedToken> }> {
+): Promise<{ base: URL; data: string; access(): Promise<AccessState> }> {
   const data = mkdtempSync(join(tmpdir(), "codexhost-auth-http-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const url = await startServer(
@@ -95,25 +95,25 @@ async function start(
   return {
     base,
     data,
-    createToken: async (name) => {
+    access: async () => {
       const result = resultOf(
-        await rpcCall(base, "codexhost/accessTokenCreate", { name }, bearer(LOCAL_TOKEN)),
+        await rpcCall(base, "codexhost/accessTokenGet", {}, bearer(LOCAL_TOKEN)),
       );
       assert.equal(result.ok, true, JSON.stringify(result));
-      return result.value as unknown as CreatedToken;
+      return result.value as unknown as AccessState;
     },
   };
 }
 
-interface CreatedToken {
-  token: { id: string; name: string };
+interface AccessState {
   secret: string;
-  links: Array<{ kind: string; url: string }>;
+  lastUsedAt: number | null;
+  networkUrls: Array<{ kind: string; url: string }>;
 }
 
-it("signs in with links, cookies, and bearer tokens, keeping named tokens out of URLs", async (t) => {
-  const { base, createToken } = await start(t);
-  const { secret } = await createToken("phone");
+it("signs in with links, cookies, and bearer tokens, keeping the access token out of URLs", async (t) => {
+  const { base, access } = await start(t);
+  const { secret } = await access();
   const remote = { host: "phone.example" };
 
   const anonymous = await send(base, "/");
@@ -154,7 +154,7 @@ it("signs in with links, cookies, and bearer tokens, keeping named tokens out of
     assert.equal(login.status, 401);
   }
 
-  // A named token in the query string is invalid even on this computer.
+  // The access token in the query string is invalid even on this computer.
   const queried = await send(base, `/?token=${secret}`);
   assert.equal(queried.status, 401);
   assert.equal(queried.headers["set-cookie"], undefined);
@@ -203,6 +203,18 @@ it("signs in with links, cookies, and bearer tokens, keeping named tokens out of
     413,
   );
 
+  // Signing out clears this browser's cookie and leaves the token itself valid.
+  const signedOut = await send(base, "/api/auth/logout", { method: "POST", headers: remote });
+  assert.equal(signedOut.status, 200);
+  assert.match(String(signedOut.headers["set-cookie"]), /codexhost_token=; .*Max-Age=0/u);
+  assert.equal((await send(base, "/api/auth/status", { headers: bearer(secret) })).status, 200);
+  const crossOriginSignOut = await send(base, "/api/auth/logout", {
+    method: "POST",
+    headers: { origin: "https://elsewhere.example" },
+  });
+  assert.equal(crossOriginSignOut.status, 403);
+  assert.equal(crossOriginSignOut.headers["set-cookie"], undefined);
+
   // A cookie that stopped being valid is cleared so it is not counted again.
   const expired = await send(base, "/", { headers: { cookie: "codexhost_token=gone" } });
   assert.equal(expired.status, 401);
@@ -214,20 +226,14 @@ it("signs in with links, cookies, and bearer tokens, keeping named tokens out of
   );
 });
 
-it("offers management only to local access", async (t) => {
-  const { base, createToken } = await start(t);
-  const { secret, token } = await createToken("phone");
-  const list = (headers: Record<string, string>) =>
-    rpcCall(base, "codexhost/accessTokenList", {}, headers);
+it("offers the token only to local access", async (t) => {
+  const { base, access } = await start(t);
+  const { secret } = await access();
+  const get = (headers: Record<string, string>) =>
+    rpcCall(base, "codexhost/accessTokenGet", {}, headers);
 
-  const listed = resultOf(await list(bearer(secret)));
-  assert.equal(listed.ok, true);
-  assert.deepEqual(
-    (listed.value as unknown as { tokens: Array<{ name: string }> }).tokens.map(({ name }) => name),
-    ["phone"],
-  );
   assert.equal(
-    (listed.value as unknown as { tokens: Array<{ secret: string }> }).tokens[0]?.secret,
+    (resultOf(await get(bearer(secret))).value as unknown as AccessState).secret,
     secret,
   );
 
@@ -237,11 +243,9 @@ it("offers management only to local access", async (t) => {
     { ...bearer(secret), "x-forwarded-host": "127.0.0.1" },
   ]) {
     for (const reply of [
-      await list(headers),
-      await rpcCall(base, "codexhost/accessTokenCreate", { name: "new" }, headers),
-      await rpcCall(base, "codexhost/accessTokenDelete", { id: token.id }, headers),
+      await get(headers),
+      await rpcCall(base, "codexhost/accessTokenRegenerate", {}, headers),
     ]) {
-      assert.equal(reply.body.includes("phone"), false);
       assert.equal(reply.body.includes(secret), false);
       const result = resultOf(reply);
       assert.equal(result.ok, false);
@@ -249,47 +253,31 @@ it("offers management only to local access", async (t) => {
       assert.equal(result.error?.details.url, `http://127.0.0.1:${base.port}`);
     }
   }
-  const after = resultOf(await list(bearer(LOCAL_TOKEN)));
-  assert.equal((after.value as unknown as { tokens: unknown[] }).tokens.length, 1);
+  assert.equal((await access()).secret, secret);
 
-  const invalid = resultOf(
-    await rpcCall(base, "codexhost/accessTokenCreate", { name: "  " }, bearer(LOCAL_TOKEN)),
-  );
-  assert.equal(invalid.error?.code, "auth/invalid-token-name");
-  const duplicate = resultOf(
-    await rpcCall(base, "codexhost/accessTokenCreate", { name: "phone" }, bearer(LOCAL_TOKEN)),
-  );
-  assert.equal(duplicate.error?.code, "auth/duplicate-token-name");
-  const missing = resultOf(
-    await rpcCall(base, "codexhost/accessTokenDelete", { id: "unknown" }, bearer(LOCAL_TOKEN)),
-  );
-  assert.deepEqual(missing.value, { deleted: false });
-
-  // Deleting the token this very request used still reports the result.
-  const own = resultOf(
-    await rpcCall(base, "codexhost/accessTokenDelete", { id: token.id }, bearer(secret)),
-  );
-  assert.deepEqual(own.value, { deleted: true });
+  // Replacing the token this very request used still reports the result.
+  const own = resultOf(await rpcCall(base, "codexhost/accessTokenRegenerate", {}, bearer(secret)));
+  const replacement = (own.value as unknown as AccessState).secret;
+  assert.notEqual(replacement, secret);
   assert.equal((await send(base, "/api/auth/status", { headers: bearer(secret) })).status, 401);
+  assert.equal(
+    (await send(base, "/api/auth/status", { headers: bearer(replacement) })).status,
+    200,
+  );
 });
 
-it("gives network sign-in links without the local token only when listening on the network", async (t) => {
+it("gives network addresses without any token only when listening on the network", async (t) => {
   const networked = await start(t, ["--host", "0.0.0.0"]);
-  const created = await networked.createToken("phone");
-  const listed = resultOf(
-    await rpcCall(networked.base, "codexhost/accessTokenList", {}, bearer(LOCAL_TOKEN)),
-  ).value as unknown as { networkUrls: Array<{ url: string }> };
-  assert.equal(created.links.length, listed.networkUrls.length);
-  for (const link of created.links) assert.match(link.url, /^http:\/\/[^/]+\/#token=/u);
-  assert.equal(JSON.stringify(created.links).includes(LOCAL_TOKEN), false);
-  assert.equal(JSON.stringify(listed.networkUrls).includes("token"), false);
+  const { secret, networkUrls } = await networked.access();
+  for (const { url } of networkUrls) assert.match(url, /^https?:\/\/[^/]+\/$/u);
+  assert.equal(JSON.stringify(networkUrls).includes("token"), false);
 
   // Through a real network address (when this machine has one) nothing counts as local.
-  const address = listed.networkUrls[0]?.url;
+  const address = networkUrls[0]?.url;
   if (address !== undefined) {
     const lan = new URL(address);
     assert.deepEqual(
-      JSON.parse((await send(lan, "/api/auth/status", { headers: bearer(created.secret) })).body),
+      JSON.parse((await send(lan, "/api/auth/status", { headers: bearer(secret) })).body),
       { authenticated: true, local: false },
     );
     assert.equal(
@@ -297,14 +285,13 @@ it("gives network sign-in links without the local token only when listening on t
       401,
     );
     assert.equal(
-      resultOf(await rpcCall(lan, "codexhost/accessTokenList", {}, bearer(created.secret))).error
-        ?.code,
+      resultOf(await rpcCall(lan, "codexhost/accessTokenGet", {}, bearer(secret))).error?.code,
       "auth/local-access-required",
     );
   }
 
   const loopback = await start(t);
-  assert.deepEqual((await loopback.createToken("phone")).links, []);
+  assert.deepEqual((await loopback.access()).networkUrls, []);
 });
 
 it("trusts forwarding headers only from a configured proxy", async (t) => {
@@ -314,7 +301,7 @@ it("trusts forwarding headers only from a configured proxy", async (t) => {
     "x-forwarded-proto": "https",
   };
   const untrusted = await start(t);
-  const { secret } = await untrusted.createToken("phone");
+  const { secret } = await untrusted.access();
   assert.equal(
     (
       await send(untrusted.base, "/api/auth/login", {
@@ -327,7 +314,7 @@ it("trusts forwarding headers only from a configured proxy", async (t) => {
   );
 
   const proxied = await start(t, ["--trusted-proxy", "127.0.0.1"]);
-  const named = await proxied.createToken("phone");
+  const named = await proxied.access();
   const login = await send(proxied.base, "/api/auth/login", {
     method: "POST",
     headers: forged,
@@ -340,7 +327,7 @@ it("trusts forwarding headers only from a configured proxy", async (t) => {
     resultOf(
       await rpcCall(
         proxied.base,
-        "codexhost/accessTokenList",
+        "codexhost/accessTokenGet",
         {},
         { ...bearer(named.secret), "x-forwarded-for": "198.51.100.1" },
       ),
@@ -363,8 +350,8 @@ it("trusts forwarding headers only from a configured proxy", async (t) => {
 });
 
 it("limits failed tokens by address without affecting signed-in devices", async (t) => {
-  const { base, createToken } = await start(t);
-  const { secret } = await createToken("phone");
+  const { base, access } = await start(t);
+  const { secret } = await access();
   const wrong = { cookie: "codexhost_token=wrong" };
   // Public assets neither count nor get limited.
   for (let request = 0; request < 12; request += 1) {
@@ -418,7 +405,7 @@ it("refuses management and keeps push subscriptions working with authentication 
   );
   const base = new URL(url);
   assert.equal(
-    resultOf(await rpcCall(base, "codexhost/accessTokenList", {}, {})).error?.code,
+    resultOf(await rpcCall(base, "codexhost/accessTokenGet", {}, {})).error?.code,
     "auth/disabled",
   );
   const subscribed = resultOf(
@@ -460,7 +447,7 @@ it("serves only raster images from local files", async (t) => {
 });
 
 it(
-  "closes every connection of a deleted token at once, leaving others and running work alone",
+  "closes every connection of a replaced token at once, leaving this computer and running work alone",
   { timeout: 60_000 },
   async (t) => {
     const directory = mkdtempSync(join(tmpdir(), "codexhost-auth-revoke-"));
@@ -473,14 +460,13 @@ it(
     t.after(() => debug.close());
     const channel = await startFakeChChannel(host, directory);
     t.after(() => channel.close());
-    const { base, createToken, data } = await start(t, [
+    const { base, access, data } = await start(t, [
       "--ch-cdp",
       debug.endpoint,
       "--ch-control-directory",
       directory,
     ]);
-    const a = await createToken("a");
-    const b = await createToken("b");
+    const device = (await access()).secret;
 
     const openSockets = async (secret: string) => {
       const sockets = [
@@ -493,15 +479,15 @@ it(
       await Promise.all(sockets.map((socket) => once(socket, "open")));
       return sockets;
     };
-    const socketsA = await openSockets(a.secret);
-    const socketsB = await openSockets(b.secret);
+    const socketsA = await openSockets(device);
+    const socketsB = await openSockets(LOCAL_TOKEN);
     t.after(() => {
       for (const socket of [...socketsA, ...socketsB]) socket.terminate();
     });
     // The event stream sends no headers until an event arrives, so it stays in flight.
     const inFlight = new Promise<void>((settled) => {
       const request = httpRequest(new URL("/api/ch/v1/events", base), {
-        headers: bearer(a.secret),
+        headers: bearer(device),
       });
       request.on("error", () => settled());
       request.on("response", (response) => {
@@ -517,7 +503,7 @@ it(
         base,
         "terminal/create",
         { agentId: "local-thread", request: { id: "term", cols: 80, rows: 24 } },
-        bearer(a.secret),
+        bearer(device),
       ),
     );
     assert.equal(terminal.ok, true, JSON.stringify(terminal));
@@ -547,15 +533,18 @@ it(
     assert.equal(await attachedToTerminal(socketsA[0] as WebSocket), true);
 
     const closedA = socketsA.map((socket) => once(socket, "close"));
-    const deleted = resultOf(
-      await rpcCall(base, "codexhost/accessTokenDelete", { id: a.token.id }, bearer(LOCAL_TOKEN)),
+    const regenerated = resultOf(
+      await rpcCall(base, "codexhost/accessTokenRegenerate", {}, bearer(LOCAL_TOKEN)),
     );
-    assert.deepEqual(deleted.value, { deleted: true });
+    assert.equal(regenerated.ok, true, JSON.stringify(regenerated));
     await Promise.all(closedA);
     await inFlight;
-    assert.equal((await send(base, "/api/auth/status", { headers: bearer(a.secret) })).status, 401);
+    assert.equal((await send(base, "/api/auth/status", { headers: bearer(device) })).status, 401);
     for (const socket of socketsB) assert.equal(socket.readyState, WebSocket.OPEN);
-    assert.equal((await send(base, "/api/auth/status", { headers: bearer(b.secret) })).status, 200);
+    assert.equal(
+      (await send(base, "/api/auth/status", { headers: bearer(LOCAL_TOKEN) })).status,
+      200,
+    );
 
     // The terminal that token opened keeps running for whoever is still allowed in.
     assert.equal(await attachedToTerminal(socketsB[0] as WebSocket), true);
@@ -564,15 +553,23 @@ it(
       false,
     );
 
-    // Deleted by another process sharing the data directory: new requests fail at once,
-    // and connections close within the removal check interval.
+    // Replaced by another process sharing the data directory: new requests fail at once,
+    // and connections close within the replacement check interval.
+    const replacement = (regenerated.value as unknown as AccessState).secret;
+    const socketsC = await openSockets(replacement);
+    t.after(() => {
+      for (const socket of socketsC) socket.terminate();
+    });
     const other = new AccessTokenStore(new DataDir(data));
     t.after(() => other.close());
-    const closedB = socketsB.map((socket) => once(socket, "close"));
+    const closedC = socketsC.map((socket) => once(socket, "close"));
     const started = Date.now();
-    assert.equal(other.delete(b.token.id), true);
-    assert.equal((await send(base, "/api/auth/status", { headers: bearer(b.secret) })).status, 401);
-    await Promise.all(closedB);
+    other.regenerate();
+    assert.equal(
+      (await send(base, "/api/auth/status", { headers: bearer(replacement) })).status,
+      401,
+    );
+    await Promise.all(closedC);
     assert.ok(Date.now() - started < 7_000);
   },
 );

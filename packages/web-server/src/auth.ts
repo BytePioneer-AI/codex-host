@@ -3,8 +3,8 @@
  *
  * A request presents a token as an HttpOnly cookie or as `Authorization: Bearer <token>` (native
  * clients). Browsers obtain the cookie from `POST /api/auth/login`, used by the sign-in page and by
- * `#token=` links, or from `?token=`, which accepts only the local token so that named tokens stay
- * out of proxy logs.
+ * `#token=` links, or from `?token=`, which accepts only the local token so that the access token
+ * stays out of proxy logs. `POST /api/auth/logout` removes the cookie from this browser only.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
@@ -22,7 +22,7 @@ const FAILURE_WINDOW_MS = 60_000;
 const PUBLIC_ASSET =
   /^\/(assets\/.*|favicon[^/]*\.svg|manifest\.webmanifest|apple-touch-icon\.png|icon-\d+\.png|sw\.js)$/u;
 
-/** Credential id of the local token; named tokens use their own id. */
+/** Credential id of the local token; the access token uses its own id. */
 export const LOCAL_CREDENTIAL = "local";
 
 /** What one authenticated request established. */
@@ -158,6 +158,10 @@ export class AccessAuth {
       await this.serveLogin(request, response);
       return { handled: true };
     }
+    if (pathname === "/api/auth/logout" && request.method === "POST") {
+      this.serveLogout(request, response);
+      return { handled: true };
+    }
     if ((pathname === "/" || pathname === "/index.html") && this.exchange(request, response))
       return { handled: true };
     const presented = presentedToken(request);
@@ -246,6 +250,18 @@ export class AccessAuth {
       })
       .end();
     return true;
+  }
+
+  private serveLogout(request: IncomingMessage, response: ServerResponse): void {
+    request.resume();
+    const sameOrigin = this.trust.sameOrigin(request);
+    response
+      .writeHead(sameOrigin ? 200 : 403, {
+        "content-type": "application/json",
+        "cache-control": "no-store",
+        ...(sameOrigin ? { "set-cookie": this.cookie(request, "", 0) } : {}),
+      })
+      .end(JSON.stringify(sameOrigin ? { ok: true } : { error: { code: "auth/cross-origin" } }));
   }
 
   private async serveLogin(request: IncomingMessage, response: ServerResponse): Promise<void> {

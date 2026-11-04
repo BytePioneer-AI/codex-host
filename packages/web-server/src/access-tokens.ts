@@ -1,34 +1,28 @@
 /**
  * Web access credentials stored in the Web data directory.
  *
- * `auth.json` holds the plaintext local token, which only the local-access check accepts.
- * `access-tokens.json` holds named tokens and their SHA-256 hashes. Several Web processes may share one
- * data directory, so the file is the source of truth: every check and mutation re-reads it when it
- * changed, and a timer notices removals for connections that make no further requests.
+ * `auth.json` holds the local token, which only the local-access check accepts. `access-token.json`
+ * holds the token other devices sign in with, created when it is first viewed. Several Web processes
+ * may share one data directory, so the file is the source of truth: every check re-reads it when it
+ * changed, and a timer notices replacement for connections that make no further requests.
  */
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, statSync } from "node:fs";
 
-import type { WebAccessToken } from "@codexhost/shared-contracts";
-import { WEB_ACCESS_TOKEN_NAME_MAX } from "@codexhost/shared-contracts";
-
 import type { DataDir } from "./store.ts";
-import { RpcError } from "./transport.ts";
 
 const LOCAL_FILE = "auth.json";
-const TOKENS_FILE = "access-tokens.json";
-/** Kept apart from the tokens so a stale usage write can never restore a deleted token. */
+const TOKEN_FILE = "access-token.json";
+/** Kept apart from the token so a stale usage write can never restore a replaced token. */
 const USAGE_FILE = "access-token-usage.json";
 const SECRET_MODE = 0o600;
 const USAGE_WRITE_INTERVAL_MS = 60_000;
-const REMOVAL_CHECK_INTERVAL_MS = 5_000;
+const REPLACEMENT_CHECK_INTERVAL_MS = 5_000;
 
 interface StoredToken {
+  /** Owns this token's connections and push subscriptions; changes when the token is regenerated. */
   id: string;
-  name: string;
-  hash: string;
-  secret?: string;
-  createdAt: number;
+  secret: string;
 }
 
 function hashOf(token: string): string {
@@ -37,23 +31,16 @@ function hashOf(token: string): string {
 
 function isStoredToken(value: unknown): value is StoredToken {
   const entry = value as Partial<StoredToken> | null;
-  return (
-    typeof entry?.id === "string" &&
-    typeof entry.name === "string" &&
-    typeof entry.hash === "string" &&
-    (entry.secret === undefined || typeof entry.secret === "string") &&
-    typeof entry.createdAt === "number"
-  );
+  return typeof entry?.id === "string" && typeof entry.secret === "string";
 }
 
 export class AccessTokenStore {
   readonly localToken: string;
   private readonly localHash: Buffer;
-  private tokens = new Map<string, StoredToken>();
-  private idByHash = new Map<string, string>();
+  private token: (StoredToken & { hash: string }) | undefined;
   private signature: string | undefined;
-  private readonly usageWrites = new Map<string, number>();
-  private readonly removalListeners = new Set<(id: string) => void>();
+  private lastUsageWrite = 0;
+  private readonly revocationListeners = new Set<(id: string) => void>();
   private readonly timer: NodeJS.Timeout;
 
   /**
@@ -74,7 +61,7 @@ export class AccessTokenStore {
     this.load();
     this.timer = setInterval(() => {
       this.sync();
-    }, REMOVAL_CHECK_INTERVAL_MS);
+    }, REPLACEMENT_CHECK_INTERVAL_MS);
     this.timer.unref();
   }
 
@@ -82,110 +69,72 @@ export class AccessTokenStore {
     clearInterval(this.timer);
   }
 
-  /** Observe token removal, whichever process performed it. */
-  onRemoved(listener: (id: string) => void): void {
-    this.removalListeners.add(listener);
+  /** Observe a token being replaced or removed, whichever process did it. */
+  onRevoked(listener: (id: string) => void): void {
+    this.revocationListeners.add(listener);
   }
 
   isLocalToken(candidate: string): boolean {
     return timingSafeEqual(createHash("sha256").update(candidate).digest(), this.localHash);
   }
 
-  /** @returns the id of the named token matching this value, recording its use. */
+  /** @returns the id of the access token when this value matches it, recording its use. */
   resolve(candidate: string): string | undefined {
     this.sync();
-    const id = this.idByHash.get(hashOf(candidate));
-    if (id !== undefined) this.recordUse(id);
-    return id;
+    if (this.token === undefined || hashOf(candidate) !== this.token.hash) return undefined;
+    this.recordUse(this.token.id);
+    return this.token.id;
   }
 
   has(id: string): boolean {
     this.sync();
-    return this.tokens.has(id);
+    return this.token?.id === id;
   }
 
-  list(): WebAccessToken[] {
+  /** @returns the access token, creating it on first use, and when another device last used it. */
+  current(): { secret: string; lastUsedAt: number | null } {
     this.sync();
-    const usage = this.readUsage();
-    return [...this.tokens.values()]
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .map((token) => ({
-        id: token.id,
-        name: token.name,
-        secret: token.secret ?? null,
-        createdAt: token.createdAt,
-        lastUsedAt: usage[token.id] ?? null,
-      }));
-  }
-
-  /** @returns the new entry and its plaintext, also available from the local token list. */
-  create(rawName: string): { token: WebAccessToken; secret: string } {
-    this.sync();
-    const name = rawName.trim();
-    if (name.length === 0 || [...name].length > WEB_ACCESS_TOKEN_NAME_MAX) {
-      throw new RpcError(
-        "auth/invalid-token-name",
-        `A token name must have 1 to ${String(WEB_ACCESS_TOKEN_NAME_MAX)} characters`,
-        {},
-      );
+    if (this.token === undefined) {
+      this.write();
+      this.load();
     }
-    if ([...this.tokens.values()].some((token) => token.name === name)) {
-      throw new RpcError("auth/duplicate-token-name", "A token with this name already exists", {});
-    }
-    const secret = randomBytes(32).toString("base64url");
-    const stored: StoredToken = {
-      id: randomUUID(),
-      name,
-      hash: hashOf(secret),
-      secret,
-      createdAt: Date.now(),
-    };
-    this.save([...this.tokens.values(), stored]);
-    this.load();
-    return {
-      secret,
-      token: { id: stored.id, name, secret, createdAt: stored.createdAt, lastUsedAt: null },
-    };
+    const { id, secret } = this.token as StoredToken;
+    return { secret, lastUsedAt: this.readUsage()[id] ?? null };
   }
 
-  /** @returns whether the token existed. Removal listeners run before this returns. */
-  delete(id: string): boolean {
+  /** Replace the access token. Revocation listeners run before this returns. */
+  regenerate(): { secret: string; lastUsedAt: number | null } {
     this.sync();
-    if (!this.tokens.has(id)) return false;
-    this.save([...this.tokens.values()].filter((token) => token.id !== id));
+    this.write();
     this.sync();
-    return true;
+    return this.current();
   }
 
-  /** Adopt another process's changes and report any token that disappeared. */
+  /** Adopt another process's change and report a token that is no longer current. */
   private sync(): void {
     if (this.fileSignature() === this.signature) return;
-    const previous = [...this.tokens.keys()];
+    const previous = this.token?.id;
     this.load();
-    for (const id of previous) {
-      if (this.tokens.has(id)) continue;
-      this.usageWrites.delete(id);
-      for (const listener of this.removalListeners) listener(id);
-    }
+    if (previous === undefined || previous === this.token?.id) return;
+    this.lastUsageWrite = 0;
+    for (const listener of this.revocationListeners) listener(previous);
   }
 
   private load(): void {
     this.signature = this.fileSignature();
-    const stored = this.data.readJson<{ tokens?: unknown }>(TOKENS_FILE, {}).tokens;
-    const tokens = Array.isArray(stored) ? stored.filter(isStoredToken) : [];
-    this.tokens = new Map(tokens.map((token) => [token.id, token]));
-    this.idByHash = new Map(tokens.map((token) => [token.hash, token.id]));
+    const stored = this.data.readJson<unknown>(TOKEN_FILE, undefined);
+    this.token = isStoredToken(stored) ? { ...stored, hash: hashOf(stored.secret) } : undefined;
   }
 
-  /** Callers sync first, so the written list cannot restore a token another process deleted. */
-  private save(tokens: StoredToken[]): void {
-    this.data.writeJson(TOKENS_FILE, { tokens }, { mode: SECRET_MODE });
+  private write(): void {
+    const token: StoredToken = { id: randomUUID(), secret: randomBytes(32).toString("base64url") };
+    this.data.writeJson(TOKEN_FILE, token, { mode: SECRET_MODE });
   }
 
   /** Replacing the file changes its inode, which also covers same-millisecond rewrites. */
   private fileSignature(): string | undefined {
     try {
-      const { ino, mtimeMs, size } = statSync(this.data.path(TOKENS_FILE));
+      const { ino, mtimeMs, size } = statSync(this.data.path(TOKEN_FILE));
       return `${String(ino)}:${String(mtimeMs)}:${String(size)}`;
     } catch {
       return undefined;
@@ -198,13 +147,10 @@ export class AccessTokenStore {
 
   private recordUse(id: string): void {
     const now = Date.now();
-    if (now - (this.usageWrites.get(id) ?? 0) < USAGE_WRITE_INTERVAL_MS) return;
-    this.usageWrites.set(id, now);
+    if (now - this.lastUsageWrite < USAGE_WRITE_INTERVAL_MS) return;
+    this.lastUsageWrite = now;
     try {
-      const usage = Object.fromEntries(
-        Object.entries(this.readUsage()).filter(([known]) => this.tokens.has(known)),
-      );
-      this.data.writeJson(USAGE_FILE, { ...usage, [id]: now }, { mode: SECRET_MODE });
+      this.data.writeJson(USAGE_FILE, { [id]: now }, { mode: SECRET_MODE });
     } catch (error) {
       // Losing one timestamp must not fail the authenticated request.
       console.error("[auth] could not record token use", error);

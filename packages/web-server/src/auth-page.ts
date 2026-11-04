@@ -4,23 +4,24 @@ import type { IncomingMessage } from "node:http";
 const COPY = {
   en: {
     lang: "en",
-    prompt: "Enter an access token. Create one on your computer in Settings → Access tokens.",
+    prompt: "Enter the access token. Find it on your computer in Settings → Connect devices.",
     placeholder: "Access token",
     submit: "Continue",
     invalid: "That access token is not valid.",
     limited: "Too many attempts. Try again in a minute.",
-    expired: "This sign-in is no longer valid. Enter another access token.",
+    expired:
+      "This sign-in is no longer valid. The token may have been regenerated: scan the new QR code or enter it.",
     queryToken: "That link is not valid here. Sign in with a token link or enter the token.",
     unreachable: "Could not reach the server. Try again.",
   },
   zh: {
     lang: "zh-CN",
-    prompt: "请输入访问令牌。可在电脑上的“设置 → 访问令牌”中创建。",
+    prompt: "请输入访问令牌。可在电脑上的“设置 → 连接设备”中查看。",
     placeholder: "访问令牌",
     submit: "继续",
     invalid: "访问令牌无效。",
     limited: "尝试次数过多，请一分钟后再试。",
-    expired: "登录已失效，请输入其他访问令牌。",
+    expired: "登录已失效，令牌可能已重新生成。请重新扫码或输入新令牌。",
     queryToken: "此链接在这里无效。请用令牌链接登录，或手动输入令牌。",
     unreachable: "无法连接服务器，请重试。",
   },

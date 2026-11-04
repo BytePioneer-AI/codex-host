@@ -6,9 +6,7 @@ import {
   voiceTranscribeResultSchema,
   harnessSessionImportSourcesResultSchema,
   harnessSessionListResultSchema,
-  webAccessTokenCreateResultSchema,
-  webAccessTokenDeleteResultSchema,
-  webAccessTokenListResultSchema,
+  webAccessStateSchema,
   type HarnessSessionImportCandidate,
   type HarnessSessionImportSourcesResult,
   type HarnessSessionListParams,
@@ -188,16 +186,9 @@ async function captureOnce(
 }
 
 export const accessTokenApi = {
-  list: async () =>
-    webAccessTokenListResultSchema.parse(await call<unknown>("codexhost/accessTokenList", {})),
-  create: async (name: string) =>
-    webAccessTokenCreateResultSchema.parse(
-      await call<unknown>("codexhost/accessTokenCreate", { name }),
-    ),
-  delete: async (id: string) =>
-    webAccessTokenDeleteResultSchema.parse(
-      await call<unknown>("codexhost/accessTokenDelete", { id }),
-    ),
+  get: async () => webAccessStateSchema.parse(await call<unknown>("codexhost/accessTokenGet", {})),
+  regenerate: async () =>
+    webAccessStateSchema.parse(await call<unknown>("codexhost/accessTokenRegenerate", {})),
 };
 
 export const pushApi = {

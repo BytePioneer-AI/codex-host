@@ -1,0 +1,237 @@
+.page,
+.connection,
+.routeText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.page {
+  gap: 16px;
+}
+
+.connection {
+  gap: 14px;
+}
+
+.description {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.meta {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.notice {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+  overflow-wrap: anywhere;
+}
+
+.error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.connectionMain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 20px;
+}
+
+.qrButton {
+  display: block;
+  flex: none;
+  margin: 0 auto;
+  padding: 0;
+  border: none;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+  line-height: 0;
+  cursor: zoom-in;
+}
+
+.connectionMain[data-enlarged] {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.connectionMain[data-enlarged] .qrButton {
+  cursor: zoom-out;
+}
+
+.qr {
+  display: block;
+  width: 196px;
+  height: 196px;
+}
+
+.connectionMain[data-enlarged] .qr {
+  width: min(320px, 72vw);
+  height: min(320px, 72vw);
+}
+
+.routes {
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.fieldTitle {
+  padding: 0;
+  margin-bottom: 6px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.route {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md, 10px);
+  cursor: pointer;
+}
+
+.route:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.route:has(input:checked) {
+  border-color: var(--dsw-alias-label-tertiary);
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.route input {
+  flex: none;
+  margin: 3px 0 0;
+  accent-color: var(--dsw-alias-label-primary);
+}
+
+.routeText {
+  flex: 1;
+  gap: 2px;
+}
+
+.routeTitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+}
+
+.routeAddress {
+  font-family: var(--dsw-font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--dsw-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.other summary {
+  padding: 4px 2px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.otherList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.copyField {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.input {
+  flex: 1 1 200px;
+  box-sizing: border-box;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md, 10px);
+  outline: none;
+  background: var(--dsw-alias-bg-layer-3);
+  font: inherit;
+  font-size: 13px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.input:focus {
+  border-color: var(--dsw-alias-label-tertiary);
+}
+
+.copy {
+  flex: none;
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding-top: 12px;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.danger {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.danger:hover:not(:disabled) {
+  color: var(--dsw-alias-state-error-primary);
+  background: var(--dsw-alias-interactive-bg-hover-danger, var(--dsw-alias-interactive-bg-hover));
+}
+
+.confirm {
+  width: min(440px, 100%);
+}
+
+.dangerConfirm {
+  background: var(--dsw-alias-state-error-primary);
+  color: #fff;
+}
+
+.dangerConfirm:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 88%, #000);
+  color: #fff;
+}

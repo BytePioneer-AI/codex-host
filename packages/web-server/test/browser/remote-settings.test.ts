@@ -77,14 +77,14 @@ it(
       401,
     );
 
-    const created = await fetch(new URL("/api/codexhost/accessTokenCreate", local), {
+    const created = await fetch(new URL("/api/codexhost/accessTokenGet", local), {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({
         type: "client-request",
-        rpcId: "create",
-        method: "codexhost/accessTokenCreate",
-        payload: { args: { name: "remote" } },
+        rpcId: "get",
+        method: "codexhost/accessTokenGet",
+        payload: { args: {} },
       }),
     });
     const remoteToken = ((await created.json()) as { result: { value: { secret: string } } }).result

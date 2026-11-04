@@ -1,4 +1,4 @@
-/** Token management and revocation as a browser sees them. */
+/** Connecting devices, regenerating the token, and signing out as a browser sees them. */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,12 +6,16 @@ import { join, resolve } from "node:path";
 import { it, type TestContext } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 
+import { networkAccessUrls } from "../../src/network-urls.ts";
 import { startServer } from "../support/server.ts";
 
 const LOCAL_TOKEN = "browser-access-token-test";
 const REMOTE_HOST = "codexhost-remote.test";
 
-async function start(t: TestContext): Promise<{ local: URL; remote: URL; browser: Browser }> {
+async function start(
+  t: TestContext,
+  args: string[] = [],
+): Promise<{ local: URL; remote: URL; browser: Browser }> {
   const data = mkdtempSync(join(tmpdir(), "codexhost-token-browser-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const local = new URL(
@@ -19,7 +23,7 @@ async function start(t: TestContext): Promise<{ local: URL; remote: URL; browser
       t,
       resolve(import.meta.dirname, "../.."),
       ["--import", "tsx", "src/main.ts"],
-      ["--data", data, "--token", LOCAL_TOKEN],
+      ["--data", data, "--token", LOCAL_TOKEN, ...args],
       { authenticated: true },
     ),
   );
@@ -35,32 +39,32 @@ async function start(t: TestContext): Promise<{ local: URL; remote: URL; browser
   return { local, remote, browser };
 }
 
-async function openTokensPage(page: Page): Promise<void> {
+async function openConnectPage(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByText("Access tokens", { exact: true }).first().click();
+  await page.getByText("Connect devices", { exact: true }).first().click();
 }
 
-async function createToken(page: Page, name: string): Promise<string> {
-  await page.getByRole("textbox", { name: "Token name" }).fill(name);
-  await page.getByRole("button", { name: "Create token" }).click();
-  const reveal = page.locator("[data-access-token-reveal]");
-  await reveal.getByText(`Token: ${name}`, { exact: true }).waitFor();
-  const secret = await reveal.getByRole("textbox").first().inputValue();
+/** Reads the token from the page shown when no network address is offered. */
+async function tokenOnPage(page: Page): Promise<string> {
+  const secret = await page.getByRole("textbox", { name: "Access token" }).inputValue();
   assert.ok(secret.length > 32);
-  await reveal.getByRole("button", { name: "Done" }).click();
   return secret;
 }
 
-async function deleteToken(page: Page, name: string): Promise<void> {
-  const row = page.locator(`[data-access-token-row="${name}"]`);
-  await row.getByRole("button", { name: "Delete" }).click();
-  await row.getByText("signed out immediately").waitFor();
-  await row.getByRole("button", { name: "Delete" }).click();
-  await row.waitFor({ state: "detached" });
+async function regenerate(page: Page): Promise<string> {
+  const previous = await tokenOnPage(page);
+  await page.getByRole("button", { name: "Regenerate…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Regenerate the access token?" });
+  await dialog.getByText("signed out immediately").waitFor();
+  await dialog.getByRole("button", { name: "Regenerate", exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  const next = await tokenOnPage(page);
+  assert.notEqual(next, previous);
+  return next;
 }
 
 it(
-  "manages tokens on this computer and shows only guidance elsewhere, at phone width too",
+  "shows the token on this computer and only guidance and sign-out elsewhere, at phone width too",
   { timeout: 90_000 },
   async (t) => {
     const { local, remote, browser } = await start(t);
@@ -70,30 +74,19 @@ it(
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(local.href);
     assert.equal(new URL(page.url()).search, "");
-    await openTokensPage(page);
-    await page.getByText("No access tokens yet.").waitFor();
+    await openConnectPage(page);
     await page.getByText("listening only on this computer").waitFor();
+    await page.getByText("No device has signed in yet").waitFor();
+    const secret = await tokenOnPage(page);
 
-    const secret = await createToken(page, "My phone");
-    await page.locator('[data-access-token-row="My phone"]').getByText("Created").waitFor();
-    await page.getByRole("textbox", { name: "Token name" }).fill("My phone");
-    await page.getByRole("button", { name: "Create token" }).click();
-    await page.getByText("A token with this name already exists.").waitFor();
-
-    // A fresh page can retrieve and copy the same token after the creation view is closed.
+    // A fresh page shows and copies the same token.
     await page.reload();
-    await openTokensPage(page);
-    await page
-      .locator('[data-access-token-row="My phone"]')
-      .getByRole("button", { name: "View", exact: true })
-      .click();
-    const reveal = page.locator("[data-access-token-reveal]");
-    assert.equal(await reveal.getByRole("textbox").first().inputValue(), secret);
+    await openConnectPage(page);
+    assert.equal(await tokenOnPage(page), secret);
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-    await reveal.getByRole("button", { name: "Copy", exact: true }).first().click();
-    await reveal.getByRole("button", { name: "Copied", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Copy", exact: true }).click();
+    await page.getByRole("button", { name: "Copied", exact: true }).waitFor();
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), secret);
-    await reveal.getByRole("button", { name: "Done" }).click();
 
     const phone = await browser.newContext({
       locale: "en-US",
@@ -116,45 +109,94 @@ it(
       .getByRole("button", { name: "Open sidebar" })
       .click({ timeout: 2_000 })
       .catch(() => undefined);
-    await openTokensPage(phonePage);
-    const notice = phonePage.locator('[data-access-token-notice="non-local"]');
+    await openConnectPage(phonePage);
+    const notice = phonePage.locator('[data-connect-notice="non-local"]');
     await notice.waitFor();
     assert.match(
       (await notice.textContent()) ?? "",
       new RegExp(`http://127\\.0\\.0\\.1:${local.port}`, "u"),
     );
-    assert.equal(await phonePage.getByText("My phone", { exact: true }).count(), 0);
-    assert.equal(await phonePage.getByRole("button", { name: "Create token" }).count(), 0);
+    assert.equal(await phonePage.getByRole("textbox", { name: "Access token" }).count(), 0);
+    assert.equal(await phonePage.getByRole("button", { name: "Regenerate…" }).count(), 0);
 
-    // The local page stays usable at phone width with a long name and its reveal open.
+    // Signing out warns first, returns to sign-in, and leaves the token valid.
+    await phonePage.getByRole("button", { name: "Sign out…" }).click();
+    const confirm = phonePage.getByRole("dialog", { name: "Sign out of this device?" });
+    await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
+    await confirm.waitFor({ state: "detached" });
+    await phonePage.getByRole("button", { name: "Sign out…" }).click();
+    await confirm.getByRole("button", { name: "Sign out", exact: true }).click();
+    await phonePage.getByPlaceholder("Access token").waitFor();
+    assert.deepEqual(await phone.cookies(), []);
+    await phonePage.getByPlaceholder("Access token").fill(secret);
+    await phonePage.getByRole("button", { name: "Continue" }).click();
+    await phonePage.waitForFunction(() => document.getElementById("form") === null);
+
+    // The local page stays usable at phone width.
     await page.setViewportSize({ width: 375, height: 700 });
-    // Crossing the narrow breakpoint remounts the dialog; let that finish before typing.
     await page.waitForTimeout(500);
-    const longName = "a very long token name that must wrap on a narrow phone screen ok";
-    await page.getByRole("textbox", { name: "Token name" }).fill(longName.slice(0, 64));
-    await page.getByRole("button", { name: "Create token" }).click();
-    await page.locator("[data-access-token-reveal]").waitFor();
+    await page
+      .getByRole("button", { name: "Open sidebar" })
+      .click({ timeout: 2_000 })
+      .catch(() => undefined);
     const overflow = await page.evaluate(() => {
-      const row = document.querySelector("[data-access-token-reveal]");
-      const rect = row?.getBoundingClientRect();
-      return rect === undefined ? Infinity : rect.right - window.innerWidth;
+      const section = document.querySelector("[data-connect-devices]");
+      const rect = section?.getBoundingClientRect();
+      return rect === undefined ? 0 : rect.right - window.innerWidth;
     });
-    assert.ok(overflow <= 0, `reveal overflows the viewport by ${String(overflow)}px`);
+    assert.ok(overflow <= 0, `page overflows the viewport by ${String(overflow)}px`);
     assert.deepEqual(errors, []);
   },
 );
 
 it(
-  "enters sign-in when the token is deleted, online or offline, but not when the server is away",
+  "connects a device by QR code and link for the chosen address",
+  { timeout: 60_000 },
+  async (t) => {
+    if (networkAccessUrls("0.0.0.0", 1).length === 0)
+      return t.skip("this machine has no network address");
+    const { local, browser } = await start(t, ["--host", "0.0.0.0"]);
+    const context = await browser.newContext({ locale: "en-US" });
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    const page = await context.newPage();
+    await page.goto(local.href);
+    await openConnectPage(page);
+
+    const qr = page.getByRole("img", { name: "Sign-in QR code" });
+    await qr.waitFor();
+    const link = page.getByRole("textbox", { name: "Sign-in link" });
+    const first = await link.inputValue();
+    assert.match(first, /^https?:\/\/[^/]+\/#token=[\w-]{32,}$/u);
+    assert.equal(first.includes(LOCAL_TOKEN), false);
+    await page.getByRole("button", { name: "Copy link" }).click();
+    await page.getByRole("button", { name: "Copied", exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), first);
+
+    // Virtual networks stay folded until asked for, so the first choice is never one of them.
+    const routes = networkAccessUrls("0.0.0.0", 1);
+    const virtualCount = routes.filter((route) => route.kind === "virtual").length;
+    if (routes.some((route) => route.kind !== "virtual") && virtualCount > 0) {
+      assert.equal(await page.locator('[data-connect-route="virtual"]:visible').count(), 0);
+      await page.getByText(`Other addresses (${String(virtualCount)})`).click();
+      await page.locator('[data-connect-route="virtual"]').first().click();
+      assert.notEqual(await link.inputValue(), first);
+    }
+
+    const small = await qr.boundingBox();
+    await page.getByRole("button", { name: "Enlarge QR code" }).click();
+    const large = await qr.boundingBox();
+    assert.ok((large?.width ?? 0) > (small?.width ?? Infinity));
+  },
+);
+
+it(
+  "enters sign-in when the token is regenerated, online or offline, but not when the server is away",
   { timeout: 120_000 },
   async (t) => {
     const { local, remote, browser } = await start(t);
     const owner = await (await browser.newContext({ locale: "en-US" })).newPage();
     await owner.goto(local.href);
-    await openTokensPage(owner);
-    const online = await createToken(owner, "online");
-    const offline = await createToken(owner, "offline");
-    const spare = await createToken(owner, "spare");
+    await openConnectPage(owner);
 
     const signIn = async (token: string): Promise<Page> => {
       const page = await (await browser.newContext({ locale: "en-US" })).newPage();
@@ -164,25 +206,24 @@ it(
       await page.getByRole("button", { name: "Settings", exact: true }).waitFor();
       return page;
     };
-    const signedIn = await signIn(online);
-    const other = await signIn(spare);
+    const signedIn = await signIn(await tokenOnPage(owner));
 
-    await deleteToken(owner, "online");
+    const second = await regenerate(owner);
     await signedIn.getByPlaceholder("Access token").waitFor({ timeout: 20_000 });
-    // Another token's page keeps working.
-    assert.equal(await other.getByPlaceholder("Access token").count(), 0);
-    assert.equal(await other.evaluate(async () => (await fetch("api/auth/status")).status), 200);
+    // This computer's page keeps working.
+    assert.equal(await owner.evaluate(async () => (await fetch("api/auth/status")).status), 200);
 
-    // Offline while its token is deleted; back on the network it finds out.
-    const away = await signIn(offline);
+    // Offline while the token is replaced; back on the network it finds out.
+    const away = await signIn(second);
     await away.context().setOffline(true);
-    await deleteToken(owner, "offline");
+    const third = await regenerate(owner);
     await away.waitForTimeout(1_000);
     assert.equal(await away.getByPlaceholder("Access token").count(), 0);
     await away.context().setOffline(false);
     await away.getByPlaceholder("Access token").waitFor({ timeout: 30_000 });
 
     // Server unreachable: the mux and the probe both fail, and the page stays.
+    const other = await signIn(third);
     await other.routeWebSocket("**/api/remote.mux", (socket) => socket.close());
     await other.route("**/api/auth/status", (route) => route.abort("connectionrefused"));
     const probed = other.waitForRequest("**/api/auth/status");
@@ -196,15 +237,14 @@ it(
 );
 
 it(
-  "switches an already signed-in browser to a linked token and rejects bad tokens",
+  "moves a browser holding a replaced token to the new link and rejects bad tokens",
   { timeout: 60_000 },
   async (t) => {
     const { local, remote, browser } = await start(t);
     const owner = await (await browser.newContext({ locale: "en-US" })).newPage();
     await owner.goto(local.href);
-    await openTokensPage(owner);
-    const first = await createToken(owner, "first");
-    const second = await createToken(owner, "second");
+    await openConnectPage(owner);
+    const first = await tokenOnPage(owner);
 
     const context = await browser.newContext({ locale: "en-US" });
     const page = await context.newPage();
@@ -219,9 +259,9 @@ it(
     const cookie = async () => decodeURIComponent((await context.cookies())[0]?.value ?? "");
     assert.equal(await cookie(), first);
 
+    const second = await regenerate(owner);
     await page.goto(`${remote.href}#token=${second}`);
-    await page.waitForFunction(() => window.location.hash === "");
-    await page.waitForResponse("**/plugins/**").catch(() => undefined);
+    await page.getByRole("button", { name: "Settings", exact: true }).waitFor();
     const deadline = Date.now() + 10_000;
     while ((await cookie()) !== second && Date.now() < deadline) await page.waitForTimeout(100);
     assert.equal(await cookie(), second);

@@ -74,7 +74,7 @@ export function ensureServiceWorker(): void {
 
 /**
  * Tie this browser's existing subscription to the token it is signed in with now. The server drops
- * subscriptions when their token is deleted, while the browser still holds the subscription.
+ * subscriptions when their token is replaced, while the browser still holds the subscription.
  */
 export function resubmitNotifications(): void {
   if (!("serviceWorker" in navigator) || !("Notification" in window)) return;

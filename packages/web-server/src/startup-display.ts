@@ -1,8 +1,15 @@
 /** Human-readable startup output; retain the first line for readiness consumers. */
 export interface NetworkAccessUrl {
-  kind: "tailscale" | "lan";
+  kind: "tailscale-https" | "tailscale" | "lan" | "virtual";
   url: string;
 }
+
+const KIND_LABEL: Record<NetworkAccessUrl["kind"], string> = {
+  "tailscale-https": "Tailscale HTTPS",
+  tailscale: "Tailscale",
+  lan: "LAN",
+  virtual: "Virtual",
+};
 
 export function formatWebStartup(options: {
   localUrl: string;
@@ -15,11 +22,10 @@ export function formatWebStartup(options: {
   if (options.networkUrls.length > 0) {
     lines.push("", "Network access");
     for (const entry of options.networkUrls) {
-      const label = entry.kind === "tailscale" ? "Tailscale" : "LAN";
-      lines.push(`${`${label}:`.padEnd(15)}${entry.url}`);
+      lines.push(`${`${KIND_LABEL[entry.kind]}:`.padEnd(15)}${entry.url}`);
     }
     lines.push(
-      "These addresses need an access token: create one on this computer in Settings → Access tokens.",
+      "These addresses need the access token: scan its QR code on this computer in Settings → Connect devices.",
       "HTTP on these addresses is not encrypted; use them only on networks you trust.",
     );
   }
@@ -27,7 +33,7 @@ export function formatWebStartup(options: {
   if (preferred && options.qrCode !== undefined) {
     lines.push(
       "",
-      `Phone access · ${preferred.kind === "tailscale" ? "Tailscale" : "LAN"}`,
+      `Phone access · ${KIND_LABEL[preferred.kind]}`,
       preferred.kind === "tailscale"
         ? "Connect both devices to Tailscale, then scan."
         : "Connect your phone to the same Wi-Fi, then scan.",
@@ -38,8 +44,8 @@ export function formatWebStartup(options: {
   if (options.localManagementUnavailable === true) {
     lines.push(
       "",
-      "This address is not this computer's local address, so access tokens cannot be managed here.",
-      "Listen on 127.0.0.1 or 0.0.0.0 to manage them.",
+      "This address is not this computer's local address, so the access token cannot be viewed here.",
+      "Listen on 127.0.0.1 or 0.0.0.0 to view it.",
     );
   }
   lines.push("", "Keep access links private.", "");

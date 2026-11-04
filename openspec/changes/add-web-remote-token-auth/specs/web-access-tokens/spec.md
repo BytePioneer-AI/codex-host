@@ -2,24 +2,19 @@
 
 ## Purpose
 
-Web 的访问认证能力：用户创建和撤销命名 token，从任意入口登录；管理操作只在本机访问时可用；并提供可信代理和基础访问保护。
+Web 的访问认证能力：其他设备用同一个访问 token 从任意入口登录；token 只在本机访问时显示和重新生成；并提供可信代理和基础访问保护。
 
 ## ADDED Requirements
 
-### Requirement: 命名 token
-Web SHALL 支持多个命名 token，所有 token 拥有相同的日常权限。token MUST 由系统生成，并在只有当前用户可读的文件中保存明文和哈希；本机管理页 SHALL 支持后续查看和复制明文。名称 MUST 去除首尾空白后非空、不超过 64 个字符且互不重复。token 不绑定设备或浏览器，也不过期。
+### Requirement: 访问 token
+Web SHALL 只有一个供其他设备登录的访问 token，它 MUST 由系统生成，并在只有当前用户可读的文件中保存明文；本机访问时 SHALL 可查看和复制。token 不绑定设备或浏览器，也不过期。
 
-#### Scenario: 创建 token
-- **WHEN** 用户以本机访问创建名为“我的手机”的 token
-- **THEN** 响应返回明文 token
-- **AND** 明文被持久化，本机访问列表接口可再次获取该明文
-
-#### Scenario: 名称无效
-- **WHEN** 用户提交空名称或已存在的名称
-- **THEN** 创建失败并返回明确的错误，不生成 token
+#### Scenario: 首次查看
+- **WHEN** 用户第一次以本机访问打开连接设备页
+- **THEN** 系统生成 token 并持久化，之后刷新页面或重启 Web 服务都显示同一个 token
 
 #### Scenario: 多设备使用同一 token
-- **WHEN** 两台设备先后使用同一 token 登录
+- **WHEN** 两台设备先后使用该 token 登录
 - **THEN** 两台设备都能访问，不需要额外确认
 
 ### Requirement: 登录方式
@@ -30,9 +25,9 @@ Web SHALL 支持多个命名 token，所有 token 拥有相同的日常权限。
 - **THEN** 页面完成登录并进入 Web 界面
 - **AND** 地址栏不再包含 token，token 也未出现在请求 URL 中
 
-#### Scenario: 已登录时打开带另一个 token 的链接
-- **WHEN** 已登录的浏览器打开带另一个有效 token 的链接
-- **THEN** 登录切换为该 token，并从地址栏移除 token
+#### Scenario: 重新生成后打开新链接
+- **WHEN** 仍保存旧 token 的浏览器打开带当前 token 的链接
+- **THEN** 登录切换为当前 token，并从地址栏移除 token
 
 #### Scenario: token 无效
 - **WHEN** 用户提交无效 token
@@ -50,7 +45,7 @@ Web SHALL 支持多个命名 token，所有 token 拥有相同的日常权限。
 - **THEN** 按非本机处理
 
 ### Requirement: 本机 token
-Web SHALL 维护一个本机 token，保存在只有当前用户可读的文件中。它 MUST 不出现在 token 列表中且不可删除，并且 MUST 只在满足本机访问中除“已登录”外的其他条件时有效。启动输出的第一行 SHALL 是带本机 token 的本机链接，该链接 SHALL 用查询参数 `?token=`，查询参数只接受本机 token。
+Web SHALL 维护一个本机 token，保存在只有当前用户可读的文件中。它 MUST 不在界面中展示且不随重新生成改变，并且 MUST 只在满足本机访问中除“已登录”外的其他条件时有效。启动输出的第一行 SHALL 是带本机 token 的本机链接，该链接 SHALL 用查询参数 `?token=`，查询参数只接受本机 token。
 
 #### Scenario: 换浏览器恢复登录
 - **WHEN** 用户在另一个本机浏览器打开启动输出中的本机链接
@@ -60,58 +55,68 @@ Web SHALL 维护一个本机 token，保存在只有当前用户可读的文件�
 - **WHEN** 请求经局域网地址或代理携带本机 token
 - **THEN** 按无效 token 处理
 
-#### Scenario: 查询参数携带命名 token
-- **WHEN** 请求用 `?token=` 携带命名 token
+#### Scenario: 查询参数携带访问 token
+- **WHEN** 请求用 `?token=` 携带访问 token
 - **THEN** 按无效 token 处理，提示用链接或手动输入登录
 
-### Requirement: 删除 token 立即生效
-删除 token 后 SHALL 立即拒绝使用它的所有请求，主动断开它建立的 WebSocket、事件流和进行中的 HTTP 请求，并删除它的推送订阅。删除 MUST 不停止 Host 上运行中的任务，也 MUST 不影响其他 token 的连接。
+### Requirement: 重新生成 token 立即生效
+重新生成 token 后 SHALL 立即拒绝使用旧 token 的所有请求，主动断开它建立的 WebSocket、事件流和进行中的 HTTP 请求，并删除它的推送订阅。重新生成 MUST 不停止 Host 上运行中的任务，也 MUST 不影响本机 token 的连接。
 
-#### Scenario: 正在对话时 token 被删除
-- **WHEN** 一台设备正通过流式连接查看运行中的任务，它使用的 token 被删除
+#### Scenario: 正在对话时 token 被重新生成
+- **WHEN** 一台设备正通过流式连接查看运行中的任务，token 被重新生成
 - **THEN** 连接被断开，页面进入登录页
-- **AND** 任务继续运行，可由其他 token 或本机查看
+- **AND** 任务继续运行，可由这台电脑或重新登录的设备查看
 
-#### Scenario: 设备离线时 token 被删除
-- **WHEN** 手机在后台期间它的 token 被删除，之后回到前台
+#### Scenario: 设备离线时 token 被重新生成
+- **WHEN** 手机在后台期间 token 被重新生成，之后回到前台
 - **THEN** 重新连接失败后页面进入登录页
 
 #### Scenario: 服务暂时不可达
 - **WHEN** 页面连接断开，但服务不可达，无法确认 token 状态
 - **THEN** 页面保持当前内容和连接状态提示，不进入登录页
 
-#### Scenario: 其他 token 不受影响
-- **WHEN** 删除 token A
-- **THEN** 使用 token B 的连接和推送订阅保持不变
+#### Scenario: 这台电脑不受影响
+- **WHEN** token 被重新生成
+- **THEN** 使用本机 token 的连接保持不变
 
-### Requirement: Token 管理页
-Web 设置 SHALL 在所有访问方式下显示 token 管理入口。本机访问时 SHALL 可查看用户创建的 token（名称、创建时间、最近使用时间）、复制明文和登录链接、创建和删除。非本机访问时 MUST 不显示列表，并提示只有在这台电脑上通过 `http://127.0.0.1:<端口>` 访问才能管理；管理接口 MUST 拒绝并返回明确的错误。
+### Requirement: 退出登录
+非本机访问的页面 SHALL 提供退出登录，确认时 MUST 说明重新登录需要在电脑上查看 token。退出 SHALL 清除这个浏览器的 Cookie 并取消它的推送订阅，MUST 不影响 token 和其他设备。
 
-#### Scenario: 手机打开管理页
-- **WHEN** 手机通过局域网或代理打开 token 管理页
-- **THEN** 显示本机访问提示，不显示 token 列表
+#### Scenario: 在借用的设备上退出
+- **WHEN** 用户在非本机页面确认退出登录
+- **THEN** 页面进入登录页，这个浏览器不再保留登录状态，token 仍然有效
+
+#### Scenario: 跨站请求退出
+- **WHEN** 其他站点向退出接口发起请求
+- **THEN** 接口拒绝，不清除 Cookie
+
+### Requirement: 连接设备页
+Web 设置 SHALL 在所有访问方式下显示“连接设备”入口。本机访问时 SHALL 显示所选地址的登录二维码和链接、最近使用时间，并可复制链接和 token、重新生成 token。非本机访问时 MUST 不显示 token，并提示只有在这台电脑上通过 `http://127.0.0.1:<端口>` 访问才能查看；接口 MUST 拒绝并返回明确的错误。
+
+#### Scenario: 手机打开连接设备页
+- **WHEN** 手机通过局域网或代理打开连接设备页
+- **THEN** 显示本机访问提示和退出登录，不显示 token
 
 #### Scenario: 非本机直接调用接口
-- **WHEN** 非本机访问调用列表、创建或删除接口
+- **WHEN** 非本机访问调用查看或重新生成接口
 - **THEN** 接口拒绝，不返回任何 token 信息，也不修改数据
 
-#### Scenario: 创建后获取访问方式
-- **WHEN** 本机创建 token 成功
-- **THEN** 页面显示可复制的 token；当前有可用的局域网或 Tailscale 地址时，同时提供对应的登录链接
-- **AND** 页面建议提前创建备用 token
+#### Scenario: 选择连接地址
+- **WHEN** 这台电脑有多个可用地址
+- **THEN** 页面默认选中已转发到当前端口的 Tailscale Serve HTTPS 地址，其次是 Tailscale 地址和局域网地址，并说明每种连接方式的适用范围
+- **AND** 虚拟机和容器网卡的地址折叠在“其他地址”中，仍可手动选择；启动输出只在没有其他地址时才列出它们
 
-#### Scenario: 再次查看 token
-- **WHEN** 用户刷新本机管理页或 Web 服务重启后，从列表查看已有 token
-- **THEN** 页面显示同一 token 明文，并可复制 token 和当前可用地址的登录链接
+#### Scenario: 没有可用地址
+- **WHEN** Web 只监听本机，也没有 Serve 转发
+- **THEN** 页面说明如何允许其他设备访问，并显示可复制的 token
 
-#### Scenario: 仅哈希的旧记录
-- **WHEN** 用户查看没有保存明文的旧 token
-- **THEN** 页面提示重新创建才能查看明文，列表接口的 secret 为 null
-- **AND** 该 token 仍可用于登录
+#### Scenario: 确认重新生成
+- **WHEN** 用户点击重新生成
+- **THEN** 确认时说明其他设备会立即退出、运行中的任务不受影响；确认后页面显示新的二维码
 
 #### Scenario: 未启用认证
-- **WHEN** Web 以 `--no-auth` 启动
-- **THEN** 管理页说明认证未启用，管理接口拒绝
+- **WHEN** Web 以 `--no-auth` 运行
+- **THEN** 页面说明认证未启用，接口返回明确的错误
 
 ### Requirement: 可信代理
 Web SHALL 默认忽略 `x-forwarded-*`。只有直连地址命中显式配置的可信代理地址时，才 SHALL 用这些头判断客户端地址、外部 Host（同源校验）和协议（Cookie 的 Secure）。
@@ -149,16 +154,16 @@ Web SHALL 默认忽略 `x-forwarded-*`。只有直连地址命中显式配置的
 ### Requirement: 推送订阅归属
 Web Push 订阅 SHALL 关联到创建它的 token。启用认证后，没有归属的已有订阅 MUST 被丢弃。已开启通知的浏览器 SHALL 在打开页面时重新提交订阅，使其关联到当前 token。
 
-#### Scenario: 删除 token 后不再推送
-- **WHEN** 某 token 被删除
-- **THEN** 该 token 名下的设备不再收到通知，其他 token 的设备照常收到
+#### Scenario: 重新生成 token 后不再推送
+- **WHEN** token 被重新生成
+- **THEN** 使用旧 token 的设备不再收到通知
 
 #### Scenario: 重新登录后恢复通知
-- **WHEN** 已开启通知的设备用新的 token 登录
+- **WHEN** 已开启通知的设备用重新生成的 token 登录
 - **THEN** 该设备的订阅关联到新 token，并继续收到通知
 
 ### Requirement: 对外监听
-`npm start web` 和 `preview.mjs` SHALL 默认监听 `0.0.0.0`，访问由 token 保护；`--host` 可以限定监听地址。对外监听时，启动输出和管理页的网络地址 MUST 不包含本机 token，并 SHALL 提示局域网 HTTP 为明文传输。
+`npm start web` 和 `preview.mjs` SHALL 默认监听 `0.0.0.0`，访问由 token 保护；`--host` 可以限定监听地址。对外监听时，启动输出和连接设备页的网络地址 MUST 不包含本机 token，并 SHALL 提示局域网 HTTP 为明文传输。
 
 #### Scenario: 默认启动
 - **WHEN** 用户不带 `--host` 运行 `npm start web`

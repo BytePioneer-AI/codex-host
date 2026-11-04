@@ -26,7 +26,13 @@ import { WebUiExtensions } from "./ui-extensions.ts";
 import { AccessTokenStore } from "./access-tokens.ts";
 import { SWITCH_TOKEN_SCRIPT } from "./auth-page.ts";
 import { AccessAuth, CredentialConnections, LOCAL_CREDENTIAL, type RequestAuth } from "./auth.ts";
-import { isLoopbackHost, isWildcardHost, networkAccessUrls } from "./network-urls.ts";
+import {
+  isLoopbackHost,
+  isWildcardHost,
+  networkAccessUrls,
+  reachableNetworkUrls,
+} from "./network-urls.ts";
+import { tailscaleServeAccessUrls } from "./tailscale-serve.ts";
 import { RequestTrust } from "./request-trust.ts";
 import { DESKTOP_SCREENSHOT_PATH } from "@codexhost/shared-contracts/desktop-screenshot";
 import { DesktopScreenshots } from "./desktop-screenshot.ts";
@@ -218,7 +224,7 @@ const settings = new Settings(data, events);
 const push = new PushNotifier(data);
 if (accessTokens !== undefined) {
   push.retainOwners((owner) => owner === LOCAL_CREDENTIAL || accessTokens.has(owner));
-  accessTokens.onRemoved((id) => {
+  accessTokens.onRevoked((id) => {
     connections.revoke(id);
     push.dropOwner(id);
   });
@@ -289,8 +295,11 @@ settings.register(rpc);
 push.register(rpc);
 registerAccessTokenRpc(rpc, accessTokens, {
   port: () => (server.address() as { port: number }).port,
-  networkUrls: () =>
-    networkAccessUrls(values.host as string, (server.address() as { port: number }).port),
+  networkUrls: async () => {
+    const host = values.host as string;
+    const { port } = server.address() as { port: number };
+    return [...(await tailscaleServeAccessUrls(host, port)), ...networkAccessUrls(host, port)];
+  },
 });
 registerMisc(rpc, { events });
 registerUiExtensionRpc(rpc, extensions, {
@@ -484,7 +493,7 @@ server.listen(Number(values.port), values.host, () => {
   const local = wildcard || isLoopbackHost(host);
   const query = accessTokens !== undefined && local ? `?token=${accessTokens.localToken}` : "";
   const localUrl = `http://${wildcard ? "127.0.0.1" : host}:${String(port)}/${query}`;
-  const urls = networkAccessUrls(host, port);
+  const urls = reachableNetworkUrls(networkAccessUrls(host, port));
   const printStartup = (qrCode?: string) =>
     console.log(
       formatWebStartup({

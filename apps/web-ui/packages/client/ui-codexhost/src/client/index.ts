@@ -48,7 +48,7 @@ import {
 } from "@deepseek-ai/dsh-client-ui-conversation/thread-reference";
 import type {} from "@deepseek-ai/dsh-client-ui-chat/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
-import { AccessTokensSection } from "./AccessTokensSection.tsx";
+import { ConnectDevicesSection } from "./ConnectDevicesSection.tsx";
 import { WebExtensionsSection } from "./WebExtensionsSection.tsx";
 import { watchAuthentication } from "./auth-watch.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
@@ -295,12 +295,12 @@ export function apply(ctx: ClientContext): void {
     ctx.slots.register(
       {
         name: "settings.section",
-        id: "codexhost-access-tokens",
+        id: "codexhost-connect-devices",
         order: 9,
-        label: () => t("settings.accessTokens"),
+        label: () => t("settings.connectDevices"),
         locale: NS,
       },
-      AccessTokensSection,
+      ConnectDevicesSection,
     ),
   );
   HOST_SETTINGS_PAGES.forEach(([pageId, label], index) => {

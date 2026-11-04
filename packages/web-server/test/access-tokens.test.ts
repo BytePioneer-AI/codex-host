@@ -35,53 +35,21 @@ function request(
   } as unknown as IncomingMessage;
 }
 
-it("keeps named tokens available to view after reopening the store", (t) => {
+it("creates the access token when first viewed and keeps it after reopening the store", (t) => {
   const data = dataDir(t);
   const tokens = store(t, data);
-  const { secret, token } = tokens.create("  我的手机  ");
-  assert.equal(token.name, "我的手机");
-  assert.equal(token.lastUsedAt, null);
+  assert.equal(tokens.resolve("anything"), undefined);
+  const { secret, lastUsedAt } = tokens.current();
+  assert.equal(lastUsedAt, null);
   assert.equal(Buffer.from(secret, "base64url").length, 32);
-  assert.equal(tokens.resolve(secret), token.id);
+  assert.equal(typeof tokens.resolve(secret), "string");
   assert.equal(tokens.resolve("not-a-token"), undefined);
-  assert.equal(token.secret, secret);
-  assert.equal(tokens.list()[0]?.secret, secret);
-  assert.equal(store(t, data).list()[0]?.secret, secret);
+  assert.equal(tokens.current().secret, secret);
+  assert.equal(store(t, data).current().secret, secret);
   if (process.platform !== "win32") {
-    assert.equal(statSync(data.path("access-tokens.json")).mode & 0o777, 0o600);
+    assert.equal(statSync(data.path("access-token.json")).mode & 0o777, 0o600);
     assert.equal(statSync(data.path("auth.json")).mode & 0o777, 0o600);
   }
-});
-
-it("keeps hash-only tokens usable without claiming their plaintext is available", (t) => {
-  const data = dataDir(t);
-  const tokens = store(t, data);
-  const { secret, token } = tokens.create("existing");
-  const saved = data.readJson<{ tokens: Array<{ secret?: string }> }>("access-tokens.json", {
-    tokens: [],
-  });
-  for (const entry of saved.tokens) delete entry.secret;
-  data.writeJson("access-tokens.json", saved);
-
-  const reopened = store(t, data);
-  assert.equal(reopened.resolve(secret), token.id);
-  assert.equal(reopened.list()[0]?.secret, null);
-  reopened.create("new");
-  assert.equal(reopened.resolve(secret), token.id);
-});
-
-it("rejects empty, too long, and duplicate names without creating a token", (t) => {
-  const tokens = store(t, dataDir(t));
-  tokens.create("phone");
-  for (const [name, code] of [
-    ["   ", "auth/invalid-token-name"],
-    ["x".repeat(65), "auth/invalid-token-name"],
-    [" phone ", "auth/duplicate-token-name"],
-  ] as const) {
-    assert.throws(() => tokens.create(name), { code });
-  }
-  assert.equal(tokens.list().length, 1);
-  assert.doesNotThrow(() => tokens.create("字".repeat(64)));
 });
 
 it("keeps the existing local token and tightens its file", (t) => {
@@ -93,58 +61,57 @@ it("keeps the existing local token and tightens its file", (t) => {
   assert.equal(tokens.localToken, "existing-local-token");
   assert.equal(tokens.isLocalToken("existing-local-token"), true);
   assert.equal(tokens.isLocalToken("another-token-value"), false);
-  assert.equal(tokens.list().length, 0);
   if (process.platform !== "win32") {
     assert.equal(statSync(data.path("auth.json")).mode & 0o777, 0o600);
   }
 });
 
-it("sees another process's deletion immediately and reports it once", (t) => {
+it("sees another process's regeneration immediately and reports it once", (t) => {
   const data = dataDir(t);
   const first = store(t, data);
   const second = store(t, data);
-  const removed: string[] = [];
-  first.onRemoved((id) => removed.push(id));
-  const { secret, token } = first.create("phone");
-  assert.equal(second.resolve(secret), token.id);
-  assert.equal(second.delete(token.id), true);
+  const revoked: string[] = [];
+  first.onRevoked((id) => revoked.push(id));
+  const { secret } = first.current();
+  const id = first.resolve(secret) as string;
+  assert.equal(second.resolve(secret), id);
+  const replacement = second.regenerate().secret;
+  assert.notEqual(replacement, secret);
   assert.equal(first.resolve(secret), undefined);
-  assert.deepEqual(removed, [token.id]);
+  assert.equal(first.has(id), false);
+  assert.deepEqual(revoked, [id]);
   assert.equal(first.resolve(secret), undefined);
-  assert.deepEqual(removed, [token.id]);
-  assert.equal(second.delete(token.id), false);
+  assert.deepEqual(revoked, [id]);
+  assert.equal(typeof first.resolve(replacement), "string");
+  assert.equal(first.current().secret, replacement);
 });
 
-it("does not bring a deleted token back from a stale process", (t) => {
+it("does not bring a replaced token back from a stale process", (t) => {
   const data = dataDir(t);
   const stale = store(t, data);
   const other = store(t, data);
-  const deleted = stale.create("deleted");
-  assert.equal(other.has(deleted.token.id), true);
-  assert.equal(other.delete(deleted.token.id), true);
-  // Neither writing a token nor recording a use may restore what `stale` still remembers.
-  const kept = stale.create("kept");
-  stale.resolve(kept.secret);
-  assert.deepEqual(
-    other.list().map((token) => token.name),
-    ["kept"],
-  );
-  assert.equal(other.resolve(deleted.secret), undefined);
+  const replaced = stale.current().secret;
+  assert.equal(typeof other.resolve(replaced), "string");
+  const current = other.regenerate().secret;
+  // Neither reading the token nor recording a use may restore what `stale` still remembers.
+  assert.equal(stale.resolve(replaced), undefined);
+  assert.equal(stale.current().secret, current);
+  assert.equal(other.resolve(replaced), undefined);
 });
 
-it("records use at most once a minute and keeps it out of the tokens file", (t) => {
+it("records use at most once a minute, keeps it out of the token file, and forgets it on regeneration", (t) => {
   const data = dataDir(t);
   const tokens = store(t, data);
-  const { secret, token } = tokens.create("phone");
-  const before = readFileSync(data.path("access-tokens.json"), "utf8");
-  tokens.resolve(secret);
-  const lastUsedAt = tokens.list()[0]?.lastUsedAt;
-  assert.equal(typeof lastUsedAt, "number");
-  assert.equal(readFileSync(data.path("access-tokens.json"), "utf8"), before);
+  const { secret } = tokens.current();
+  const before = readFileSync(data.path("access-token.json"), "utf8");
+  const id = tokens.resolve(secret) as string;
+  assert.equal(typeof tokens.current().lastUsedAt, "number");
+  assert.equal(readFileSync(data.path("access-token.json"), "utf8"), before);
   const usage = readFileSync(data.path("access-token-usage.json"), "utf8");
   tokens.resolve(secret);
   assert.equal(readFileSync(data.path("access-token-usage.json"), "utf8"), usage);
-  assert.ok(JSON.parse(usage)[token.id]);
+  assert.ok(JSON.parse(usage)[id]);
+  assert.equal(tokens.regenerate().lastUsedAt, null);
 });
 
 it("treats a request as local only when every signal says so", () => {

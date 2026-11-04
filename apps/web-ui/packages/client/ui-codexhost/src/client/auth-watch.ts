@@ -2,10 +2,11 @@
  * Enter the sign-in page once this browser's token stops being valid.
  *
  * A dropped connection does not say why it dropped, and a device that was offline when its token
- * was deleted never saw it happen, so every reconnect phase asks the server. Only an explicit 401
+ * was replaced never saw it happen, so every reconnect phase asks the server. Only an explicit 401
  * leaves the page: an unreachable server keeps the current content and connection status.
  */
 import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
+import { disableNotifications } from "./notifications.ts";
 
 const PROBE_INTERVAL_MS = 5_000;
 
@@ -45,4 +46,12 @@ export function watchAuthentication(state: ConnectionHandle["state"]): () => voi
     clearTimeout(timer);
     unsubscribe();
   };
+}
+
+/** Sign this browser out and show the sign-in page; a signed-out device must not keep notifying. */
+export async function signOut(): Promise<void> {
+  await disableNotifications().catch(() => undefined);
+  const response = await fetch("api/auth/logout", { method: "POST", credentials: "same-origin" });
+  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
+  window.location.reload();
 }

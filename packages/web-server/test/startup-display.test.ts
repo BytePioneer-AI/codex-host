@@ -17,7 +17,7 @@ it("left-aligns startup output with a local link and token-free network addresse
   assert.ok(output.includes("\nNetwork access\n"));
   assert.ok(output.includes("\nTailscale:     http://100.89.178.38:4400/\n"));
   assert.ok(output.includes("\nLAN:           http://192.168.1.2:4400/\n"));
-  assert.ok(output.includes("Settings → Access tokens"));
+  assert.ok(output.includes("Settings → Connect devices"));
   assert.ok(output.includes("not encrypted"));
   assert.equal(output.includes("Data directory"), false);
   for (const line of output.split("\n").filter(Boolean)) {
@@ -50,12 +50,12 @@ it("omits the scanner section without a rendered QR code or network address", ()
   }
 });
 
-it("explains when a specific interface leaves token management unavailable", () => {
+it("explains when a specific interface leaves the access token unavailable", () => {
   const output = formatWebStartup({
     localUrl: "http://192.168.1.2:4400/",
     networkUrls: [{ kind: "lan", url: "http://192.168.1.2:4400/" }],
     localManagementUnavailable: true,
   });
   assert.equal(output.split("\n")[0], "codexhost web: http://192.168.1.2:4400/");
-  assert.ok(output.includes("cannot be managed here"));
+  assert.ok(output.includes("cannot be viewed here"));
 });

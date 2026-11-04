@@ -297,11 +297,11 @@ The packed server uses only its bundled plugins unless --adapters is supplied.
 Install and authenticate each Harness CLI separately on the server machine.
 \`--adapters\` overrides the plugin directories (comma-separated); it does not install Harness CLIs.
 
-Web data lives in \`~/.codexhost/web\` (settings, access tokens, push keys and uploaded attachments).
+Web data lives in \`~/.codexhost/web\` (settings, the access token, push keys and uploaded attachments).
 Shared canonical metadata remains in the Host's \`~/.codexhost\` and history remains native to each Harness.
 The default listener of app/server.mjs is localhost, and the first output line is a sign-in link for this computer.
-Create access tokens for other devices on this computer in Settings → Access tokens; they cannot be
-managed from elsewhere. For phones, use an HTTPS reverse proxy such as Tailscale Serve, and name it
+Other devices sign in with the access token shown on this computer in Settings → Connect devices; it
+cannot be viewed from elsewhere. For phones, use an HTTPS reverse proxy such as Tailscale Serve, and name it
 with \`--trusted-proxy\` so its forwarding headers are honoured;
 PWA installation and Web Push need HTTPS. Do not expose \`--no-auth\` to a network.
 

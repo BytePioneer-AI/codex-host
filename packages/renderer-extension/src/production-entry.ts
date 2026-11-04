@@ -20,7 +20,17 @@ Object.defineProperty(window, "__codexhostInstallRpcSteeringV1", {
       originalDispose.call(routing);
     };
     routing.dispose = dispose;
-    state.__codexhostRpcSteeringV1 = { controller };
+    state.__codexhostRpcSteeringV1 = {
+      controller,
+      // A later native Remote Control install replaces this method; the Controller
+      // compares it on every tick and releases a displaced wrapper to reinstall.
+      forHost: (controller as { forHost: unknown }).forHost,
+      release() {
+        cleanup();
+        delete state.__codexhostRpcSteeringV1;
+        window.dispatchEvent(new CustomEvent("codexhost:draft-prewarm-policy-changed"));
+      },
+    };
     window.dispatchEvent(new CustomEvent("codexhost:draft-prewarm-policy-changed"));
     return true;
   },

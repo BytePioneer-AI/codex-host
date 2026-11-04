@@ -54,7 +54,7 @@ function fixture(options: { foreign?: boolean; ambiguous?: boolean } = {}) {
   const snapshots = [controller.collectAppStateSnapshot];
   if (options.ambiguous) snapshots.push(makeController().collectAppStateSnapshot);
   const install = vi.fn(() => true);
-  const window = {
+  const window: Record<string, unknown> = {
     __codexhostHostRoutingV1: { forHost: () => ({ manager: { kind: "main-process-rpc" } }) },
     __codexhostInstallRpcSteeringV1: install,
   };
@@ -94,6 +94,7 @@ function fixture(options: { foreign?: boolean; ambiguous?: boolean } = {}) {
     controller,
     install,
     command,
+    window,
     client: {
       command,
       async evaluate<T>(expression: string): Promise<T> {
@@ -144,6 +145,24 @@ describe("native RPC steering owner discovery", () => {
     await installRendererRpcSteeringDirect(f.client, () => now);
     expect(discoveries()).toBe(2);
     logged.mockRestore();
+  });
+  it("keeps a wrapper that still owns forHost and reinstalls one a later install displaced", async () => {
+    const f = fixture();
+    const release = vi.fn(() => delete f.window.__codexhostRpcSteeringV1);
+    f.window.__codexhostRpcSteeringV1 = {
+      controller: f.controller,
+      forHost: f.controller.forHost,
+      release,
+    };
+    await expect(installRendererRpcSteeringDirect(f.client)).resolves.toBe(false);
+    expect(release).not.toHaveBeenCalled();
+    expect(f.install).not.toHaveBeenCalled();
+
+    f.controller.forHost = () => undefined;
+    await expect(installRendererRpcSteeringDirect(f.client)).resolves.toBe(true);
+    expect(release).toHaveBeenCalledOnce();
+    expect(f.window.__codexhostRpcSteeringV1).toBeUndefined();
+    expect(f.install).toHaveBeenCalledExactlyOnceWith(f.controller);
   });
   it("treats a page that cannot be evaluated as not installed", async () => {
     const f = fixture();

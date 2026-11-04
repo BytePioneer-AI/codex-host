@@ -1,5 +1,6 @@
 import { FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
+import { harnessCommandDescriptorSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -567,6 +568,62 @@ describe("Native steering fallbacks", () => {
       expect(response).toMatchObject({ result: { delivery: "newTurn" } });
       expect(session.steers).toHaveLength(0);
       session.succeedTurn();
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("answers a marked start from the Host Turn even if a Harness command reports another", async () => {
+    const fixture = createFixture();
+    fixture.adapter.supportsSteer = true;
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.fn(async () => ({
+        ok: true as const,
+        value: { turnId: "harness-reported-turn" as never },
+      }));
+      session.commands = {
+        list: async () => ({
+          ok: true,
+          value: {
+            commands: [
+              harnessCommandDescriptorSchema.parse({
+                id: "fake.slash.review",
+                invocation: "/review",
+                label: "Review",
+                argumentMode: "text",
+              }),
+            ],
+          },
+        }),
+        execute,
+      };
+      session.completeCancellationOnRequest();
+      writeRequest(fixture.desktopInput, {
+        id: 47,
+        method: "turn/start",
+        params: {
+          threadId,
+          input: [{ type: "text", text: "/review", text_elements: [] }],
+          clientUserMessageId: "message-47",
+          additionalContext: {
+            codexhost_external_steering: {
+              kind: "application",
+              value: JSON.stringify({
+                expectedTurnId: turnId,
+                clientUserMessageId: "message-47",
+                delivery: "newTurn",
+              }),
+            },
+          },
+        },
+      });
+      const response = await fixture.collector.waitFor((message) => requestId(message, 47));
+      expect(response).toMatchObject({ result: { turn: { status: "inProgress" } } });
+      expect(execute).toHaveBeenCalledOnce();
     } finally {
       await stopFixture(fixture);
     }

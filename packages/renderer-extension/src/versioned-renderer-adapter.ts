@@ -164,7 +164,7 @@ declare global {
     __codexhostMainProcessTitlePolicyV1?: { state: "ready" };
     __codexhostDraftPrewarmPolicyV1?: RendererDraftPrewarmPolicy;
     __codexhostHostRoutingV1?: RendererHostRouting;
-    __codexhostRpcSteeringV1?: { controller: unknown };
+    __codexhostRpcSteeringV1?: { controller: unknown; forHost?: unknown; release?(): void };
   }
 }
 

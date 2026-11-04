@@ -46,7 +46,7 @@ it(
     let holdHistory = false;
     let failHistory = false;
     let endHistory: (() => void) | undefined;
-    let historyHeld = Promise.withResolvers<void>();
+    let historyHeld = Promise.withResolvers<undefined>();
     const pending: Array<() => void> = [];
     await page.routeWebSocket("**/api/remote.mux", (socket) => {
       const server = socket.connectToServer();
@@ -75,7 +75,7 @@ it(
           );
         } else if (holdHistory && follows.has(frame.streamId)) {
           pending.push(() => socket.send(message));
-          historyHeld.resolve();
+          historyHeld.resolve(undefined);
         } else socket.send(message);
       });
     });
@@ -99,7 +99,7 @@ it(
     // Native history replacement ends only the follow stream, not the connection.
     // Hold each new baseline so even a short-lived synchronization banner is detected.
     for (let attempt = 0; attempt < 2; attempt++) {
-      historyHeld = Promise.withResolvers<void>();
+      historyHeld = Promise.withResolvers<undefined>();
       holdHistory = true;
       assert.ok(endHistory);
       endHistory();
@@ -124,7 +124,7 @@ it(
       .waitFor();
     assert.equal(await page.getByText("existing CH answer", { exact: true }).count(), 1);
     assert.equal(await composer.innerText(), "Keep this mobile draft");
-    historyHeld = Promise.withResolvers<void>();
+    historyHeld = Promise.withResolvers<undefined>();
     holdHistory = true;
     await page.context().setOffline(false);
     await historyHeld.promise;

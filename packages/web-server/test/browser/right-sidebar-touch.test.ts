@@ -76,7 +76,8 @@ it(
           const animation = await panel.evaluate((node) => {
             const dock = node.querySelector<HTMLElement>(
               '[data-dockkit-host="dock"]:not([hidden])',
-            )!;
+            );
+            if (dock === null) throw new Error("Visible dock panel not found");
             const transitions = dock
               .getAnimations()
               .filter(

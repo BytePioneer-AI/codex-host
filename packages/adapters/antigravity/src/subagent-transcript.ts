@@ -24,6 +24,7 @@ const transcriptStepSchema = z.object({
   type: z.string(),
   status: z.string(),
   content: z.string().optional(),
+  thinking: z.string().optional(),
   tool_calls: z.array(z.object({ name: z.string(), args: z.unknown().optional() })).optional(),
 });
 
@@ -156,6 +157,16 @@ export function parseSubagentTranscript(
           }
         : { status: "succeeded" };
     if (step.type === "PLANNER_RESPONSE") {
+      if (step.thinking?.trim()) {
+        current.items.push({
+          item: {
+            type: "reasoning",
+            itemId: hostItemIdSchema.parse(`${itemId}-thinking`),
+            text: step.thinking.slice(0, outputLimit),
+          },
+          outcome,
+        });
+      }
       if (step.content) {
         current.items.push({
           item: { type: "agentMessage", itemId, text: step.content.slice(0, outputLimit) },
@@ -259,4 +270,53 @@ export async function readSubagentTranscript(input: {
       },
     };
   }
+}
+
+/**
+ * Reads the persisted thinking text for one `PLANNER_RESPONSE` step from the
+ * native brain transcript when the Language Server trajectory is unavailable.
+ */
+export async function readTranscriptStepThinking(
+  conversationId: string,
+  stepIndex: number,
+  outputLimit: number,
+  home?: string,
+): Promise<string | null> {
+  if (!conversationId || /[/\\]|^\.\.?$/u.test(conversationId)) return null;
+  const logsDir = path.join(nativeBrainDirPath(conversationId, home), ".system_generated", "logs");
+  for (const filename of ["transcript_full.jsonl", "transcript.jsonl"]) {
+    try {
+      const handle = await open(path.join(logsDir, filename), "r");
+      let text: string;
+      try {
+        const size = (await handle.stat()).size;
+        if (size === 0 || size > MAX_TRANSCRIPT_BYTES) continue;
+        const buffer = Buffer.alloc(size);
+        const { bytesRead } = await handle.read(buffer, 0, size, 0);
+        text = buffer.subarray(0, bytesRead).toString("utf8");
+      } finally {
+        await handle.close();
+      }
+      for (const line of text.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as unknown;
+          if (
+            isRecord(parsed) &&
+            parsed.step_index === stepIndex &&
+            parsed.type === "PLANNER_RESPONSE" &&
+            typeof parsed.thinking === "string" &&
+            parsed.thinking.trim().length > 0
+          ) {
+            return parsed.thinking.slice(0, outputLimit);
+          }
+        } catch {
+          // Ignore an incomplete trailing line while the Turn is still writing.
+        }
+      }
+    } catch {
+      // Try next transcript candidate.
+    }
+  }
+  return null;
 }

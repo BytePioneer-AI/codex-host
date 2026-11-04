@@ -88,13 +88,18 @@ import { rollbackAntigravityLastTurn } from "./rollback.js";
 import { ANTIGRAVITY_COMMAND_CATALOG, parseAndFormatAntigravityCommand } from "./slash-commands.js";
 import {
   codeActionFileChange,
+  requestAntigravityStepThinking,
   requestAntigravityTrajectorySteps,
   type AntigravityCodeAction,
 } from "./code-action-diff.js";
 import { fetchAntigravityQuota, type AntigravityQuotaSnapshot } from "./quota.js";
 import { AntigravityQuestionBridge } from "./question-bridge.js";
 import { AntigravitySubagents } from "./subagents.js";
-import { nativeSubagentIdSchema, readSubagentTranscript } from "./subagent-transcript.js";
+import {
+  nativeSubagentIdSchema,
+  readSubagentTranscript,
+  readTranscriptStepThinking,
+} from "./subagent-transcript.js";
 import { createAntigravityUsageStatistics } from "./usage-statistics.js";
 import {
   antigravityToolErrorMessage,
@@ -170,6 +175,8 @@ interface ActiveTurn {
   /** First sighting of a step whose Item was deferred: agy names the tool and
    * its parameters when the step opens, not when it ends. */
   pendingSteps: Map<number, AntigravityStepUpdateEvent["step_update"]>;
+  thinkingSteps: Set<number>;
+  checkedActiveThinkingSteps: Set<number>;
   httpsPort: number | null;
 }
 
@@ -866,6 +873,8 @@ class AntigravitySession implements HarnessSession {
       codeActionCursor: 0,
       fileChanges: new Map(),
       pendingSteps: new Map(),
+      thinkingSteps: new Set(),
+      checkedActiveThinkingSteps: new Set(),
       httpsPort: null,
     };
     this.#active = active;
@@ -1188,6 +1197,7 @@ class AntigravitySession implements HarnessSession {
       step = { ...step, step_type: "tool" };
     }
     if (step.step_type === "agent_response") {
+      await this.#maybeProjectStepThinking(active, step);
       if (typeof step.text_delta === "string" && step.text_delta.length > 0) {
         this.#appendOrSyncAgentText(active, step.text_delta, true);
         return;
@@ -1302,6 +1312,72 @@ class AntigravitySession implements HarnessSession {
     const port = await antigravityHttpsPort(active.logPath);
     if (port !== null) active.httpsPort = port;
     return port;
+  }
+
+  /**
+   * `agy --output-format stream-json` strips `<thought>` blocks from step text
+   * and omits `thinking` from `step_update`, reporting only `usage.thinking_tokens`
+   * when a planner step finishes. Resolve the step's thinking from inline fields,
+   * the Language Server trajectory, or the native brain transcript before
+   * projecting the step's visible response or subsequent tool calls.
+   */
+  async #maybeProjectStepThinking(
+    active: ActiveTurn,
+    step: AntigravityStepUpdateEvent["step_update"],
+  ): Promise<void> {
+    if (active.thinkingSteps.has(step.step_index)) return;
+    const isTerminal = step.state === "DONE" || step.state === "ERROR";
+    if (!isTerminal && active.checkedActiveThinkingSteps.has(step.step_index)) return;
+    if (!isTerminal) active.checkedActiveThinkingSteps.add(step.step_index);
+
+    const inlineThinking =
+      typeof step.thinking_delta === "string" && step.thinking_delta.trim().length > 0
+        ? step.thinking_delta
+        : typeof step.thinking === "string" && step.thinking.trim().length > 0
+          ? step.thinking
+          : null;
+    let thinking = inlineThinking;
+    if (thinking === null) {
+      const thinkingTokens = safeToken(step.usage?.thinking_tokens);
+      if (!isTerminal || thinkingTokens === undefined || thinkingTokens > 0) {
+        const port = await this.#languageServerPort(active);
+        if (port !== null) {
+          thinking = await requestAntigravityStepThinking(
+            port,
+            step.conversation_id,
+            step.step_index,
+            TRAJECTORY_TIMEOUT_MS,
+          );
+        }
+        if (thinking === null) {
+          const home =
+            (process.platform === "win32"
+              ? this.#environment.USERPROFILE
+              : this.#environment.HOME) || undefined;
+          thinking = await readTranscriptStepThinking(
+            step.conversation_id,
+            step.step_index,
+            this.#toolOutputLimit,
+            home,
+          );
+        }
+      }
+    }
+    if (isTerminal) active.thinkingSteps.add(step.step_index);
+    if (thinking === null || thinking.trim().length === 0) return;
+    active.thinkingSteps.add(step.step_index);
+    if (active.agentItem) {
+      this.#completeItem(active, active.agentItem, { status: "succeeded" });
+      active.agentItem = null;
+      active.agentText = "";
+    }
+    const item: HostItem = {
+      type: "reasoning",
+      itemId: this.#newItemId(),
+      text: thinking.slice(0, this.#toolOutputLimit),
+    };
+    this.#event({ type: "item.started", turnId: active.command.turnId, item });
+    this.#completeItem(active, item, { status: "succeeded" });
   }
 
   #appendOrSyncAgentText(active: ActiveTurn, text: string, isExplicitDelta: boolean): void {

@@ -1,4 +1,4 @@
-import { access, chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -2257,6 +2257,144 @@ if (count === 0) {
       expect(located.endsWith(`]\n\n${normalPrompt}`)).toBe(true);
       expect(formatAntigravityTurnPrompt(slashCommand, project)).toBe(slashCommand);
       expect(formatAntigravityTurnPrompt(located, project)).toBe(located);
+    });
+
+    it("projects planner thinking steps as reasoning Items before tools and responses", async () => {
+      const conversationId = "conv-thinking-projection";
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "dangerously-skip-permissions" },
+          conversation_id: conversationId,
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: conversationId,
+            step_index: 1,
+            state: "DONE",
+            step_type: "agent_response",
+            usage: {
+              input_tokens: 100,
+              output_tokens: 40,
+              thinking_tokens: 180,
+              total_tokens: 320,
+            },
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: conversationId,
+            step_index: 2,
+            state: "DONE",
+            step_type: "tool",
+            tool_name: "read_file",
+            tool_info: { name: "read_file", parameters: { Path: "/src/app.ts" }, output: "ok" },
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: conversationId,
+            step_index: 3,
+            state: "DONE",
+            step_type: "agent_response",
+            text_delta: "All checks passed.",
+            usage: { input_tokens: 140, output_tokens: 30, thinking_tokens: 95, total_tokens: 265 },
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: conversationId,
+            status: "SUCCESS",
+            num_turns: 1,
+            response: "All checks passed.",
+          },
+        }),
+      ];
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const logsDir = path.join(
+        cwd,
+        ".gemini",
+        "antigravity-cli",
+        "brain",
+        conversationId,
+        ".system_generated",
+        "logs",
+      );
+      await mkdir(logsDir, { recursive: true });
+      await writeFile(
+        path.join(logsDir, "transcript_full.jsonl"),
+        [
+          JSON.stringify({
+            step_index: 1,
+            source: "MODEL",
+            type: "PLANNER_RESPONSE",
+            status: "DONE",
+            thinking: "Reading /src/app.ts to inspect its exports.",
+            tool_calls: [{ name: "read_file", args: { Path: "/src/app.ts" } }],
+          }),
+          JSON.stringify({
+            step_index: 3,
+            source: "MODEL",
+            type: "PLANNER_RESPONSE",
+            status: "DONE",
+            thinking: "Verified /src/app.ts exports; formulating final answer.",
+            content: "All checks passed.",
+          }),
+        ].join("\n") + "\n",
+      );
+      const adapter = new AntigravityAdapter({
+        command,
+        environment: { ...process.env, HOME: cwd, USERPROFILE: cwd, CODEXHOST_DATA_DIR: cwd },
+      });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-thinking"),
+          input: [{ type: "text", text: "check app.ts" }],
+        });
+        const completedItems: Array<{ type: string; text?: string; toolName?: string }> = [];
+        while (true) {
+          const event = await nextEvent(iterator);
+          if (event.type === "item.completed") {
+            const { item } = event.snapshot;
+            completedItems.push({
+              type: item.type,
+              ...("text" in item ? { text: item.text } : {}),
+              ...("toolName" in item ? { toolName: item.toolName } : {}),
+            });
+          }
+          if (event.type === "turn.completed") break;
+        }
+        expect(completedItems).toEqual([
+          { type: "reasoning", text: "Reading /src/app.ts to inspect its exports." },
+          { type: "toolExecution", toolName: "read_file" },
+          {
+            type: "reasoning",
+            text: "Verified /src/app.ts exports; formulating final answer.",
+          },
+          { type: "agentMessage", text: "All checks passed." },
+        ]);
+        const snapshot = await session.readSnapshot();
+        if (!snapshot.ok) throw new Error(snapshot.error.message);
+        expect(snapshot.value.turns[0]?.items.map(({ item }) => item.type)).toEqual([
+          "reasoning",
+          "toolExecution",
+          "reasoning",
+          "agentMessage",
+        ]);
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
     });
   });
 });

@@ -131,6 +131,80 @@ describe("Antigravity Subagents", () => {
     expect(otherParent.turns[0]?.items[0]?.item.itemId).not.toBe(ids[0]);
   });
 
+  it("projects PLANNER_RESPONSE thinking as a reasoning Item before tool calls and final text", () => {
+    const withThinking =
+      row({
+        step_index: 0,
+        source: "USER_EXPLICIT",
+        type: "USER_INPUT",
+        status: "DONE",
+        content: "<USER_REQUEST>\nInspect fixture\n</USER_REQUEST>",
+      }) +
+      row({
+        step_index: 1,
+        source: "MODEL",
+        type: "PLANNER_RESPONSE",
+        status: "DONE",
+        thinking: "Checking directory contents first.",
+        tool_calls: [{ name: "list_dir", args: { DirectoryPath: "fixture" } }],
+      }) +
+      row({
+        step_index: 2,
+        source: "MODEL",
+        type: "GENERIC",
+        status: "DONE",
+        content: "marker.txt",
+      }) +
+      row({
+        step_index: 3,
+        source: "MODEL",
+        type: "PLANNER_RESPONSE",
+        status: "DONE",
+        thinking: "Found marker.txt; summarizing result.",
+        content: "AGY_CHILD_PROBE_OK",
+      });
+    const snapshot = parseSubagentTranscript(
+      withThinking,
+      parent,
+      child,
+      "completed",
+      process.cwd(),
+      64_000,
+    );
+    expect(snapshot.turns[0]?.items).toMatchObject([
+      {
+        item: {
+          type: "reasoning",
+          itemId: `agy-${parent}-${child}-1-thinking`,
+          text: "Checking directory contents first.",
+        },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: {
+          type: "toolExecution",
+          toolName: "list_dir",
+          output: { content: [{ text: "marker.txt" }] },
+        },
+      },
+      {
+        item: {
+          type: "reasoning",
+          itemId: `agy-${parent}-${child}-3-thinking`,
+          text: "Found marker.txt; summarizing result.",
+        },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: {
+          type: "agentMessage",
+          itemId: `agy-${parent}-${child}-3`,
+          text: "AGY_CHILD_PROBE_OK",
+        },
+      },
+    ]);
+  });
+
   it("ignores an incomplete final line, rejects interior corruption and does not invent terminal success", () => {
     const snapshot = parseSubagentTranscript(
       transcript + '{"step_index":4',

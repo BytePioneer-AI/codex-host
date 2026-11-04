@@ -1032,8 +1032,16 @@ export function installRendererBindingProbe(
       ? { ...state.availability, [agent]: "unavailable" as const }
       : state.availability;
   };
-  const composerAdapterState = (mounted: MountedComposer): RendererAdapterStatus["state"] =>
-    composerClient(mounted) ? "ready" : "installing";
+  const composerAdapterState = (mounted: MountedComposer): RendererAdapterStatus["state"] => {
+    const manager = mounted.hostId
+      ? window.__codexhostHostRoutingV1?.forHost(mounted.hostId)?.manager
+      : null;
+    const needsRpcSteering =
+      manager != null && "kind" in manager && manager.kind === "main-process-rpc";
+    return composerClient(mounted) && (!needsRpcSteering || window.__codexhostRpcSteeringV1)
+      ? "ready"
+      : "installing";
+  };
 
   const renderMounted = (mounted: MountedComposer): void => {
     if (!isMountedComposer(mounted.composer)) return;
@@ -1343,7 +1351,10 @@ export function installRendererBindingProbe(
   const isExternalConfigurationReady = (mounted: MountedComposer): boolean => {
     const current = controller.get(mounted.composer);
     if (current.agent === "codex") return true;
-    return isExternalConfigurationReadyView(mounted.modelView, mounted.permissionModeView);
+    return (
+      composerAdapterState(mounted) === "ready" &&
+      isExternalConfigurationReadyView(mounted.modelView, mounted.permissionModeView)
+    );
   };
 
   const clearDraftPrewarm = async (composer: Element): Promise<void> => {

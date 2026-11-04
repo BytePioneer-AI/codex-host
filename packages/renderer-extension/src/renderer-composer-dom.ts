@@ -835,7 +835,12 @@ export function renderComposerAgentControl(
   // native ownership verification still guards picker visibility and placement.
   const permissionModeBlocked =
     state.agent !== "codex" && !isPermissionModeControlReady(permissionModeView);
-  const submissionBlocked = switching || ownershipError || modelBlocked || permissionModeBlocked;
+  const submissionBlocked =
+    switching ||
+    ownershipError ||
+    (state.agent !== "codex" && adapterState !== "ready") ||
+    modelBlocked ||
+    permissionModeBlocked;
   if (submissionBlocked && control.sendDisabledBeforeSwitch === null) {
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;
     control.sendButton.disabled = true;

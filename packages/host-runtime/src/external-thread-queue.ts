@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { JsonObject, JsonValue } from "@codexhost/protocol-core";
+import { externalTurnInputText } from "./external-turn-input.js";
 
 /** Official app-server `QueuedSubmission`. */
 export interface QueuedSubmission {
@@ -48,6 +49,7 @@ const DEFAULT_PAGE_SIZE = 50;
  */
 export class ExternalThreadQueue {
   readonly #queues = new Map<string, QueueEntry[]>();
+  readonly #acceptedSteers = new Map<string, string>();
   readonly #notifyChanged: (threadId: string) => Promise<void>;
   readonly #createId: () => string;
 
@@ -106,7 +108,7 @@ export class ExternalThreadQueue {
   async delete(threadId: string, id: string): Promise<boolean> {
     const items = this.#queues.get(threadId);
     const index = items?.findIndex((item) => item.id === id) ?? -1;
-    if (!items || index === -1) return false;
+    if (!items || index === -1) return this.#acceptedSteers.get(id) === threadId;
     items.splice(index, 1);
     this.#prune(threadId);
     await this.#notifyChanged(threadId);
@@ -142,6 +144,33 @@ export class ExternalThreadQueue {
     };
   }
 
+  /** Reserve the exact queued input before steering can finish a replacement Turn.
+   * Otherwise automatic queue advancement can deliver that input a second time. */
+  takeSteered(
+    threadId: string,
+    clientUserMessageId: unknown,
+    input: unknown,
+  ): TakenSubmission | undefined {
+    if (typeof clientUserMessageId !== "string") return;
+    const matches = (this.#queues.get(threadId) ?? []).filter(
+      (item) => item.clientUserMessageId === clientUserMessageId,
+    );
+    if (matches.length === 0) return;
+    const item = matches[0] as QueueEntry;
+    if (matches.length !== 1 || externalTurnInputText(item.input) !== externalTurnInputText(input))
+      throw new ExternalQueueError(-32602, "Queued steering input changed before delivery");
+    return this.take(threadId, item.id);
+  }
+
+  async acceptSteered(threadId: string, taken: TakenSubmission): Promise<void> {
+    // Desktop may still acknowledge removal after the accepted input has completed.
+    this.#acceptedSteers.set(taken.submission.id, threadId);
+    while (this.#acceptedSteers.size > 128) {
+      this.#acceptedSteers.delete(this.#acceptedSteers.keys().next().value as string);
+    }
+    await this.#notifyChanged(threadId);
+  }
+
   restore(threadId: string, taken: TakenSubmission): void {
     const items = this.#items(threadId);
     if (items.some((item) => item.id === taken.submission.id)) return;
@@ -157,6 +186,9 @@ export class ExternalThreadQueue {
 
   forget(threadId: string): void {
     this.#queues.delete(threadId);
+    for (const [id, owner] of this.#acceptedSteers) {
+      if (owner === threadId) this.#acceptedSteers.delete(id);
+    }
   }
 
   #items(threadId: string): QueueEntry[] {

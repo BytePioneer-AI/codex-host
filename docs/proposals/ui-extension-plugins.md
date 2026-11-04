@@ -1,8 +1,8 @@
 # codexhost 界面扩展插件方案
 
-> 状态：分类、管理方式与第一期目标已确定；DSH Web 外置包安装、加载、启停和恢复的第一步已实现，完整主题配置、面板与展示插件验收、原生格式和 GUI 接入仍待完成。当前行为和验证范围以 [Web 界面扩展](../product/web-ui-extensions.md)为准；下文保留完整目标，不代表第一期已全部交付。现有 Harness 插件行为以[插件运行时说明](../architecture/harness-plugin-runtime.md)为准。
+> 状态：分类、管理方式与第一期目标已确定；DSH Web 外置包安装、原生前后端加载、启停和恢复已实现，完整主题配置、面板与展示插件验收、原生格式和 GUI 接入仍待完成。当前行为和验证范围以 [Web 界面扩展](../product/web-ui-extensions.md)为准；下文保留完整目标，不代表第一期已全部交付。现有 Harness 插件行为以[插件运行时说明](../architecture/harness-plugin-runtime.md)为准。
 
-codexhost 的目标是提供统一的插件管理入口，按职责区分 Harness 插件与界面扩展。界面扩展首先兼容 DSH 原生前端插件，并为 codexhost 原生插件和 Codex GUI 扩展保留接入边界。第一期复用已有 Cordis、客户端模块加载器、主题和 UI 插槽，逐步完成 DSH Web 插件的安装、加载、配置与禁用恢复。
+codexhost 的目标是提供统一的插件管理入口，按职责区分 Harness 插件与界面扩展。界面扩展首先兼容 DSH 原生 Web 插件，并为 codexhost 原生插件和 Codex GUI 扩展保留接入边界。第一期复用已有 Cordis、客户端模块加载器、主题和 UI 插槽，逐步完成 DSH Web 插件的安装、加载、配置与禁用恢复。
 
 本文中的 GUI 指 codexhost 在 Codex Desktop 内提供的界面扩展，不指 OpenAI 官方插件包格式。Web 与 GUI 是运行目标，插件作者可以只支持其中一端，也可以分别提供两端入口，不要求一套界面代码适配两端。
 
@@ -14,7 +14,7 @@ codexhost 的目标是提供统一的插件管理入口，按职责区分 Harnes
 | --- | --- | --- | --- |
 | Harness 插件 | 现有 Harness manifest 与 Adapter 工厂 | 接入 Agent Harness，由目标 CH Host 加载，原生执行语义属于对应 Adapter 和 Harness | 沿用现有实现 |
 | 界面扩展 | codexhost 原生格式 | 扩展主题、页面、侧栏和展示组件，由所声明的 Web 或 GUI 宿主加载 | 预留接入，具体格式由首个原生插件确定 |
-| 界面扩展 | DSH 兼容格式 | 使用原生 DSH 客户端发布包，由 Web 的 DSH 兼容模块加载 | 第一期实现 |
+| 界面扩展 | DSH 兼容格式 | 使用原生 DSH Web 发布包，由 Web 的嵌入运行时加载服务端入口与客户端贡献 | 第一期实现 |
 
 DSH 兼容插件保留原包和原生客户端格式，不要求作者增加 codexhost manifest。兼容模块将包信息映射为管理记录；它不把 DSH 插件转换成 Harness 插件，也不为其分配 Harness ID。
 
@@ -68,8 +68,8 @@ DSH 兼容插件保留原包和原生客户端格式，不要求作者增加 cod
 | 所有者 | 职责 |
 | --- | --- |
 | codexhost 扩展管理 | 管理身份、安装结果、启用目标、配置入口与各端状态，将操作交给实际所有者 |
-| DSH 兼容模块 | 读取原生包声明，检查兼容范围，解析客户端入口和资源，通过现有 DSH 客户端机制加载 |
-| Web 扩展宿主 | 提供已声明的主题、页面、侧栏和展示接口，管理当前页面的激活、清理与恢复 |
+| DSH 兼容模块 | 读取原生包及 bundle 声明，检查依赖，通过 Cordis Loader/Include 和 ClientModules 加载前后端贡献 |
+| Web 扩展宿主 | 持有监听器、认证和核心路由；嵌入原生 webServer，管理服务端与页面的加载、清理及恢复 |
 | GUI 扩展宿主 | 由 `renderer-extension` 提供明确扩展位置；Codex 私有 DOM、React 绑定及版本检查由宿主维护，CDP 和进程交互由 `desktop-control` 等现有所有者维护 |
 | Harness 插件运行时 | 保持现有 Adapter 公共契约、目标 Host 所有权和 Thread 执行归属 |
 
@@ -81,7 +81,7 @@ DSH 的 `ctx`、Session、bundle patch 等实现细节收在兼容模块中，�
 
 第一期目标是安装未经修改的 DSH 客户端发布包，通过现有公开接口扩展 Web，并完成重启恢复、禁用和卸载。兼容对象以原包版本和已验证宿主基线为单位。
 
-当前第一步已具备本机管理、npm 包名/GitHub 仓库/本机目录/归档安装、安装源选择、启动图装配、宿主版本校验、启停与卸载，以及独立恢复页、单页仅内置模式和整服务安全模式。已使用未经修改的 Blackgold 预构建主题原包验证源码和仓库外发行模式的加载和禁用恢复，详情见[功能文档](../product/web-ui-extensions.md#原包验证范围)。资源支持限于客户端 JavaScript、`client.*.js` 分块及内嵌 CSS；完整静态资源分发、通用配置编辑、自定义主题选择与持久化、其他面板/展示样本尚未完成。下表描述第一期的完整目标。
+当前具备本机管理、npm 包名/GitHub 仓库/本机目录/归档安装、安装源选择、原生前后端装配、宿主版本校验、启停与卸载，以及独立恢复页、单页仅内置模式和整服务安全模式。Maid Atelier、Open Sea 和 Blackgold 的原包展示、资源及恢复验证范围见[功能文档](../product/web-ui-extensions.md#原包验证范围)，其中也记录尚未通过的核心回归。资源由原包服务端路由提供，不增加逐插件映射。通用配置编辑、自定义主题选择与持久化、其他面板/展示样本尚未完成。下表描述第一期的完整目标。
 
 | 插件能力 | 第一期支持条件 |
 | --- | --- |
@@ -94,18 +94,18 @@ DSH 的 `ctx`、Session、bundle patch 等实现细节收在兼容模块中，�
 
 布局兼容限于现有插槽中的增量扩展。整套布局、整个侧栏或聊天主树的替换，以及依赖私有 DOM 层级或 CSS 类名的插件，不纳入第一期兼容承诺。现有页面可继续演进，已承诺的插槽名称、作用域、传参和主题接口需要保持契约。
 
-纯前端按依赖判断，不按包名或界面外观判断。存在 `./client` 入口并不充分：服务端入口可能提供必需的配置、启动 globals、资源注册或 Remote。只有这些依赖可从支持的声明中解析，或已经由宿主真实提供，才可以支持该包。第一期不导入任意默认 Host 入口来发现前端，也不自动裁掉混合 bundle 中必需的后台部分。
+兼容按真实依赖判断，不按包名或界面外观判断。存在 `./client` 入口并不充分：服务端入口可能提供必需的配置、启动 globals 或资源注册。普通 Web 启动执行已启用包的原生 Host 入口和 bundle；安装与保存启用选择本身不执行。缺失服务明确报告，不自动裁掉必需后台部分，也不为此启动 DSH Agent Runtime。
 
 ### 安装加载与配置
 
 - 沿用 DSH 的添加插件体验，支持直接输入 npm 包名、GitHub 仓库地址、本机目录或安装包，选择官方、镜像或自定义 npm 源，记录实际安装版本。目录安装保存独立副本。消费已构建的客户端产物，不要求在 codexhost 源码仓库重新编译。获取和安装包及其依赖时不执行生命周期或构建脚本；依赖脚本生成资源或启动新 Node 服务的包报告不支持。
 - 安装到暂存位置，完成包结构、入口、资源路径、依赖和版本检查后再登记。安装失败保留此前可用组合，安装完成与启用分开记录。
 - 保持 DSH 原生客户端 manifest 和模块格式，将内置插件与已启用用户插件组成同一启动图，复用共享 React、Cordis 和插槽模块。依赖闭包和包身份冲突必须明确诊断。
-- 提供发布包实际需要的 JS 分块及支持的静态资源，限定在已登记包的资源范围内；不只处理开发工作区中的 `client.js`。
+- 通过原生 ClientModules 提供 JS 分块，配套资源由原包 webServer 路由处理，保留其方法和缓存语义。用户装配不能覆盖内置模块、服务、认证、核心路由或恢复入口。
 - 补齐自定义主题的选择器、持久化和首屏恢复。第三方配置必须有可用 schema、存储和运行时消费路径，缺少必要路径时报告不支持。
 - 安装、配置或启停变化通过重启 Web 和刷新页面生效，界面显示待生效状态。应用插件变化不需要重启 CH Host；Web 重启会中断自身连接与终端，沿用其现有生命周期提示。
 
-「不支持独立后台服务」指第三方插件不能在第一期贡献新的 Node 服务、RPC 或 Agent 能力。安装、配置、资源分发和状态查询仍需要 Web 服务端提供支撑。
+Web 插件可在现有后端 Context 中注册其 Web 服务和路由，不另开产品监听端口；Harness 执行和 Thread 持久化仍由原所有者负责。依赖安装脚本生成后台产物、或要求未提供的 Agent 服务的包不在当前支持范围。
 
 ### 管理与失败恢复
 
@@ -113,11 +113,11 @@ DSH 的 `ctx`、Session、bundle patch 等实现细节收在兼容模块中，�
 
 客户端启动检查需要区分内置插件故障与可选插件故障，并处理依赖失败的插件。禁用后重新加载时，注册的组件、样式、订阅和事件应被释放，不留下悬空界面。保留上一份可用配置用于恢复，不自动反复激活失败版本。
 
-客户端插件运行在页面权限范围内，Cordis 的生命周期管理不提供恶意代码沙箱。恢复机制处理已知加载故障和配置问题，不承诺阻止任意脚本阻塞页面，也不承诺卸载能撤销外部副作用。
+插件是同进程、同页面的可信代码，不增加沙箱、权限系统或运行审批。Cordis 负责生命周期清理，不承诺撤销任意外部副作用。`--safe-mode` 在导入用户代码前生效；`/extensions` 和 `?extensions=off` 不执行用户客户端或首页注入，但不会停止已运行的服务端入口。卸载先移除登记，文件在运行实例释放后清理；下次启动清理残留。已启用的含 Host 入口包会在下一次普通 Web 启动时执行服务端代码。
 
 ### 第一期之外
 
-- 第三方独立通用后台服务，以及新增服务端 RPC、动态执行接口。
+- 独立 DSH Agent 后台，以及面向其执行体系的通用 RPC 和动态执行兼容层。
 - DSH 工具、模型 Provider、Agent hooks、工作流、调度和会话持久化插件的统一接入。
 - 原生 DSH profile 的插件管理、混合插件的自定义 UI 桥接，以及对其他 Harness 的工具转换。
 - codexhost 原生界面插件加载器、公开跨端 SDK、GUI 第三方扩展运行时。
@@ -153,7 +153,7 @@ DSH 插件保持 Web 兼容来源的定位，不自动成为 GUI 插件。若以
 
 | 位置 | 可复用能力或待补内容 |
 | --- | --- |
-| [Web 插件清单](../../packages/web-server/src/plugins.ts)、[资源装配](../../packages/web-server/src/web-assets.ts) | 内置与外置客户端启动图；当前外置资源限于 JavaScript 主包和分块 |
+| [Web 插件清单](../../packages/web-server/src/plugins.ts)、[资源装配](../../packages/web-server/src/web-assets.ts) | 由原生 ClientModules 提供内置与外置启动图、JavaScript 主包和分块；原包 Web 后端提供配套资源 |
 | [客户端模块系统](../../apps/web-ui/packages/client/modules/src/client/index.ts)、[客户端启动](../../apps/web-ui/packages/client/web/src/boot-client.ts)、[平台模块](../../apps/web-ui/packages/client/web/src/seed.ts) | 原生模块格式、Cordis 和共享实例；需要区分可选扩展的加载失败与内置启动失败 |
 | [主题实现](../../apps/web-ui/packages/client/ui-theme/src/client/index.ts)、[主题配置](../../apps/web-ui/packages/client/ui-theme/src/theme-settings.ts)、[浏览器偏好](../../apps/web-ui/packages/client/ui-settings/src/client/browser-preferences.ts) | 自定义主题注册和本地偏好；自定义主题 ID 的完整保存与恢复需要补齐 |
 | [codexhost 客户端扩展](../../apps/web-ui/packages/client/ui-codexhost/src/client/index.ts) | 通过原生插槽添加页面、侧栏入口、设置和展示内容的现有实例 |

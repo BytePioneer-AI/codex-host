@@ -52,7 +52,11 @@ async function fixtureArchive(root: string): Promise<string> {
       scripts: { install: "node -e \"throw new Error('scripts must not execute')\"" },
     }),
   );
-  writeFileSync(join(directory, "host.js"), "throw new Error('host entry must not execute');");
+  writeFileSync(
+    join(directory, "host.js"),
+    `export const inject=['webServer'];
+    export function apply(ctx){ctx.effect(()=>ctx.webServer.register({kind:'exact',path:'/extension-probe',handler(_req,res){res.end('native host')}}))}`,
+  );
   writeFileSync(
     join(directory, "lib/client.js"),
     `window.__ModuleLoader__.load({id:${JSON.stringify(FIXTURE_ID)},factory:()=>({inject:['theme'],apply(ctx){ctx.effect(()=>ctx.theme.overrideTokens('fixture',{'--dsw-alias-brand-primary':{light:'#123456',dark:'#123456'}}))}})});`,
@@ -193,6 +197,11 @@ async function roundTrip(t: TestContext, source?: string): Promise<void> {
   );
   await page.getByRole("button", { name: "Settings", exact: true }).waitFor();
   assert.deepEqual((await rpc(url, "list")).loadedIds, [id]);
+  if (!real)
+    assert.equal(
+      await (await page.request.get(new URL("/extension-probe", url).href)).text(),
+      "native host",
+    );
   if (real) {
     assert.equal(await page.locator(`style[data-plugin="${id}"]`).count(), 1);
     assert.equal(await page.locator(".dsh-gold-mark").count(), baselineMarks);
@@ -228,6 +237,8 @@ async function roundTrip(t: TestContext, source?: string): Promise<void> {
     baseline,
   );
   assert.deepEqual((await rpc(url, "list")).loadedIds, []);
+  if (!real)
+    assert.equal((await page.request.get(new URL("/extension-probe", url).href)).status(), 404);
   assert.equal(await page.locator('[data-codexhost-mark="otter"]').count(), baselineMarks);
   assert.equal(await page.locator(".dsh-gold-mark").count(), 0);
   if (screenshots && real)

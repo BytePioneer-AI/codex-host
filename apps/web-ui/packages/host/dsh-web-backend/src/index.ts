@@ -10,6 +10,9 @@
  * Agent fields the terminal controller reads.
  */
 import { stat } from "node:fs/promises";
+import { mountWebPlugins } from "./plugin-runtime.ts";
+import type { WebPluginRuntime, WebPluginRuntimeOptions } from "./plugin-types.ts";
+export type { WebPluginRuntime, WebPluginRuntimeOptions } from "./plugin-types.ts";
 import { Context } from "@deepseek-ai/cordis";
 import TypertGateway from "@deepseek-ai/dsh-api-gateway";
 import type { DshStreamInput } from "./stream-input.ts";
@@ -81,6 +84,8 @@ export interface DshWebBackend {
    * @returns the carrier-safe failure.
    */
   failure(error: unknown): DshRemoteFailure;
+  /** Mount selected trusted Web plugins below this backend's lifecycle. */
+  loadPlugins(options: WebPluginRuntimeOptions): Promise<WebPluginRuntime>;
   /** Dispose the DSH context and every service it mounted. */
   close(): Promise<void>;
 }
@@ -231,6 +236,7 @@ export async function createDshWebBackend(options: DshWebBackendOptions): Promis
         input?.window,
       ),
     failure: (error: unknown): DshRemoteFailure => gateway.wireStream.failure(error),
+    loadPlugins: (options) => mountWebPlugins(ctx, options),
     close: async (): Promise<void> => {
       await ctx.fiber.dispose().catch(() => undefined);
       for (const lifetime of agentLifetimes.values()) await lifetime.fiber.dispose();

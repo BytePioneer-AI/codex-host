@@ -7,7 +7,14 @@
  * index.html, and answers the `/plugins/??a,b&rev=x` combo route the module system expects.
  */
 
-import { createHash } from "node:crypto";
+import {
+  createClientAssets,
+  renderClientBoot,
+  type ClientAssets,
+  type ClientSource,
+  type ClientGraph,
+} from "@codexhost/dsh-web-backend/client-assets";
+import { readWebPluginBundle } from "@codexhost/dsh-web-backend/plugin-bundles";
 import {
   copyFileSync,
   existsSync,
@@ -23,52 +30,28 @@ import {
   readExternalClientAssets,
   EXTERNAL_CLIENT_PLATFORM_MODULES,
   type ClientAssetManifest as ClientManifest,
-  type ExternalClientAssets,
   type ExternalClientPluginSource,
 } from "./external-client-assets.ts";
 import {
   checkClientRuntimeVersions,
+  clientRuntimeRequirements,
   CLIENT_RUNTIME_VERSIONS_FILE,
   packedClientRuntimeVersions,
   sourceClientRuntimeVersions,
   type ClientRuntimeVersions,
 } from "./client-runtime-versions.ts";
 
-const CLIENT_MODULES_ID = "@deepseek-ai/dsh-client-modules";
 const CLIENT_CHUNK = /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/;
-const SOURCE_MAP_TRAILER = /(?:\r?\n)?\/\/# sourceMappingURL=[^\r\n]*(?:\r?\n)?$/;
-const SOURCE_URL_TRAILER = /(?:\r?\n)?\/\/# sourceURL=([^\r\n]+)(?:\r?\n)?$/;
 
 interface PluginRecord {
   id: string;
   dir: string;
   clientPath: string;
   manifest: ClientManifest;
-  rev: string;
-  external?: ExternalClientAssets;
+  external?: true;
 }
 
-interface BootEntry {
-  id: string;
-  url: string;
-  rev: string;
-  inject?: string[];
-  immediately?: true;
-  external?: string[];
-}
-
-interface BootBatch {
-  phase: "bootstrap" | "application";
-  url: string;
-  rev: string;
-  entries: string[];
-}
-
-export interface BootGraph {
-  rev: string;
-  entries: BootEntry[];
-  batches: BootBatch[];
-}
+export type BootGraph = ClientGraph;
 
 /** One plugin row of a packed distribution (`web/plugins.json`). */
 export interface PackedPlugin {
@@ -85,8 +68,10 @@ export interface WebAssetOptions {
   packedRoot?: string;
   /** Ordered client plugin package names to compose. */
   plugins: readonly string[];
-  /** Installed precompiled browser packages; their Host entry points are never imported. */
+  /** Installed package metadata; construction never executes plugin code. */
   externalPlugins?: readonly ExternalClientPluginSource[];
+  /** Native registry from the activated Host tree; absent for validation and recovery. */
+  clients?: ClientAssets;
   /** Global configuration objects injected before the shell runs. */
   globals: Readonly<Record<string, unknown>>;
   /** Document title. */
@@ -96,19 +81,6 @@ export interface WebAssetOptions {
 export interface AssetResponse {
   body: Buffer;
   contentType: string;
-}
-
-function shortHash(input: string | Buffer): string {
-  return createHash("sha1").update(input).digest("hex").slice(0, 12);
-}
-
-/** Content-addressed bundle revision: an unchanged rebuild keeps its revision and its cache. */
-function bundleRev(id: string, clientPath: string): string {
-  return createHash("sha1")
-    .update(`${id}\0`)
-    .update(readFileSync(clientPath))
-    .digest("hex")
-    .slice(0, 12);
 }
 
 /** Map every workspace package name to its directory. */
@@ -159,50 +131,6 @@ function clientExportOf(exportsField: unknown): string | undefined {
   return undefined;
 }
 
-function stripClientSuffix(name: string): string {
-  return name.endsWith("/client") ? name.slice(0, -"/client".length) : name;
-}
-
-function orderByModuleGraph(records: readonly PluginRecord[]): PluginRecord[] {
-  const byId = new Map(records.map((record) => [record.id, record]));
-  const ordered: PluginRecord[] = [];
-  const placed = new Set<string>();
-  const open: string[] = [];
-  const visit = (record: PluginRecord): void => {
-    if (placed.has(record.id)) return;
-    if (open.includes(record.id)) throw new Error(`web-assets: module graph cycle at ${record.id}`);
-    open.push(record.id);
-    for (const name of record.manifest.external ?? []) {
-      const dependency = byId.get(name) ?? byId.get(stripClientSuffix(name));
-      if (dependency !== undefined && dependency !== record) visit(dependency);
-    }
-    open.pop();
-    placed.add(record.id);
-    ordered.push(record);
-  };
-  for (const record of records) visit(record);
-  return ordered;
-}
-
-function prepareSource(bundle: string): string {
-  let source = bundle.replace(SOURCE_URL_TRAILER, "").replace(SOURCE_MAP_TRAILER, "");
-  if (!source.endsWith("\n")) source += "\n";
-  return source;
-}
-
-function pluginSource(record: PluginRecord): string {
-  return prepareSource(record.external?.source ?? readFileSync(record.clientPath, "utf8"));
-}
-
-/** A versioned external asset URL never serves bytes from another installed revision. */
-function matchesRevision(url: URL, allowed: readonly string[]): boolean {
-  const requested = url.searchParams.getAll("rev");
-  return (
-    requested.length === 0 ||
-    (requested.length === 1 && requested.some((rev) => allowed.includes(rev)))
-  );
-}
-
 function scriptTag(text: string): string {
   return `<script>${text.replace(/<\/script/giu, "<\\/script")}</script>`;
 }
@@ -212,29 +140,6 @@ function globalScript(name: string, value: unknown): string {
     `globalThis[${JSON.stringify(name)}] = ${JSON.stringify(value).replace(/</gu, "\\u003c")}`,
   );
 }
-
-const MODULE_QUEUE = `(()=>{
-const pendingQueue=[]
-window.__ModuleLoader__={
-  mode:"queue",
-  pendingQueue,
-  load(registration){pendingQueue.push(registration)},
-  create(options){
-    if(this.mode!=="queue")throw new Error("client-modules: window.__ModuleLoader__.create called after module-system boot")
-    const index=pendingQueue.findIndex(registration=>registration.id==="${CLIENT_MODULES_ID}")
-    const registration=pendingQueue[index]
-    if(registration===undefined)throw new Error("client-modules: HTML did not preload ${CLIENT_MODULES_ID}/client.js")
-    pendingQueue.splice(index,1)
-    const exports=registration.factory(specifier=>{
-      throw new Error('client-modules: ${CLIENT_MODULES_ID}/client.js requested external "'+specifier+'" before the module system existed')
-    })
-    if(typeof exports!=="object"||exports===null||typeof exports.createClientModuleSystem!=="function"||typeof exports.apply!=="function"){
-      throw new Error("client-modules: ${CLIENT_MODULES_ID}/client.js did not export the bootstrap module face")
-    }
-    return exports.createClientModuleSystem(this,{id:registration.id,exports},options)
-  }
-}
-})()`;
 
 const THEME_SCRIPT = `(() => {
   let preference = "system"
@@ -256,10 +161,9 @@ const THEME_SCRIPT = `(() => {
 /** Composed plugin graph plus the responses that serve it. */
 export class WebAssets {
   readonly distRoot: string;
-  private current: BootGraph;
+  private clients: ClientAssets;
   private readonly records: PluginRecord[];
   private readonly byId: Map<string, PluginRecord>;
-  private readonly combos = new Map<string, AssetResponse>();
   private indexHtml: Buffer;
   private readonly runtimeVersions: ClientRuntimeVersions | undefined;
 
@@ -280,13 +184,12 @@ export class WebAssets {
             dir,
             clientPath,
             manifest: plugin.manifest,
-            rev: bundleRev(plugin.id, clientPath),
           };
         });
       this.runtimeVersions = packedClientRuntimeVersions(this.distRoot);
       this.records = this.composeRecords(records);
       this.byId = new Map(this.records.map((record) => [record.id, record]));
-      this.current = this.composeGraph();
+      this.clients = options.clients ?? createClientAssets(this.clientSources());
       this.indexHtml = this.renderIndex();
       return;
     }
@@ -314,7 +217,7 @@ export class WebAssets {
       const rel = clientExportOf(pkg.exports);
       if (rel === undefined) throw new Error(`web-assets: ${id} exports no ./client bundle`);
       const clientPath = join(dir, rel);
-      records.push({ id, dir, clientPath, manifest, rev: bundleRev(id, clientPath) });
+      records.push({ id, dir, clientPath, manifest });
     }
     const present = new Set(records.map((record) => record.id));
     const missing: string[] = [];
@@ -340,36 +243,61 @@ export class WebAssets {
     }
     this.records = this.composeRecords(records);
     this.byId = new Map(this.records.map((record) => [record.id, record]));
-    this.current = this.composeGraph();
+    this.clients = options.clients ?? createClientAssets(this.clientSources());
     this.indexHtml = this.renderIndex();
   }
 
+  /** Browser-only builtins seed the native registry without executing their unrelated Host halves. */
+  clientSources(): ClientSource[] {
+    return this.records.map((record) => ({
+      id: record.id,
+      clientPath: record.clientPath,
+      manifest: record.manifest,
+    }));
+  }
+
   private composeRecords(builtins: PluginRecord[]): PluginRecord[] {
+    const selectedIds = new Set(builtins.map((record) => record.id));
+    for (const plugin of this.options.externalPlugins ?? []) {
+      if (selectedIds.has(plugin.id))
+        throw new Error(`web-assets: duplicate browser plugin ${plugin.id}`);
+      if (EXTERNAL_CLIENT_PLATFORM_MODULES.has(plugin.id))
+        throw new Error(`web-assets: external plugin cannot replace platform module ${plugin.id}`);
+      selectedIds.add(plugin.id);
+      const manifest = JSON.parse(readFileSync(join(plugin.directory, "package.json"), "utf8"));
+      checkClientRuntimeVersions(
+        plugin.id,
+        clientRuntimeRequirements(manifest),
+        this.runtimeVersions,
+      );
+    }
     const ids = new Set<string>();
-    for (const { id } of [...builtins, ...(this.options.externalPlugins ?? [])]) {
+    const selected = (this.options.externalPlugins ?? []).flatMap(
+      (plugin) => readWebPluginBundle(plugin).clients,
+    );
+    for (const { id } of [...builtins, ...selected]) {
       if (ids.has(id)) throw new Error(`web-assets: duplicate browser plugin ${id}`);
       ids.add(id);
     }
-    const external = (this.options.externalPlugins ?? []).map(readExternalClientAssets);
+    const external = selected.map(readExternalClientAssets);
     checkExternalClientDependencies(external, ids);
     for (const plugin of external)
       checkClientRuntimeVersions(plugin.id, plugin.requirements, this.runtimeVersions);
-    return orderByModuleGraph([
+    return [
       ...builtins,
       ...external.map((plugin) => ({
         id: plugin.id,
         dir: plugin.directory,
         clientPath: plugin.clientPath,
         manifest: plugin.manifest,
-        rev: plugin.rev,
-        external: plugin,
+        external: true as const,
       })),
-    ]);
+    ];
   }
 
   /** Boot graph rendered into the document as `__DSH_BOOT__`. */
   get graph(): BootGraph {
-    return this.current;
+    return this.clients.graph();
   }
 
   /** Composed client bundles, for development rebuild polling. */
@@ -392,11 +320,9 @@ export class WebAssets {
   rebuilt(id: string): string | undefined {
     const record = this.byId.get(id);
     if (record === undefined || record.external !== undefined) return undefined;
-    const rev = bundleRev(id, record.clientPath);
-    if (rev === record.rev) return undefined;
-    record.rev = rev;
-    this.combos.clear();
-    this.current = this.composeGraph();
+    const previous = this.graph.entries.find((entry) => entry.id === id)?.rev;
+    const rev = this.clients.rebuilt(id);
+    if (rev === previous) return undefined;
     this.indexHtml = this.renderIndex();
     return rev;
   }
@@ -411,58 +337,18 @@ export class WebAssets {
     return !previous.equals(this.indexHtml);
   }
 
-  private composeGraph(): BootGraph {
-    const entries: BootEntry[] = this.records.map((record) => ({
-      id: record.id,
-      url: `plugins/??${record.id}/client.js&rev=${record.rev}`,
-      rev: record.rev,
-      ...(record.manifest.inject !== undefined ? { inject: record.manifest.inject } : {}),
-      ...(record.manifest.immediately === true ? { immediately: true as const } : {}),
-      ...((record.manifest.external?.length ?? 0) > 0
-        ? { external: record.manifest.external }
-        : {}),
-    }));
-    const bootstrap = this.records.filter((record) => record.id === CLIENT_MODULES_ID);
-    const application = this.records.filter((record) => record.id !== CLIENT_MODULES_ID);
-    const batches: BootBatch[] = [];
-    for (const [phase, group] of [
-      ["bootstrap", bootstrap],
-      ["application", application],
-    ] as const) {
-      if (group.length === 0) continue;
-      const ids = group.map((record) => record.id);
-      const body = Buffer.from(group.map(pluginSource).join(""));
-      const rev = shortHash(body);
-      const url = `plugins/??${ids.map((id) => `${id}/client.js`).join(",")}&rev=${rev}`;
-      this.combos.set(this.comboKey(ids), { body, contentType: "text/javascript; charset=utf-8" });
-      batches.push({ phase, url, rev, entries: ids });
-    }
-    return { rev: shortHash(JSON.stringify({ entries, batches })), entries, batches };
-  }
-
-  private comboKey(ids: readonly string[]): string {
-    return ids.join(",");
-  }
-
   private renderIndex(): Buffer {
-    const template = readFileSync(join(this.distRoot, "index.html"), "utf8");
+    const template = renderClientBoot(
+      readFileSync(join(this.distRoot, "index.html"), "utf8"),
+      this.graph,
+    );
     const head: string[] = [
       '<base href="./">',
       "<style>:root{color-scheme:light}body{background-color:#fff;--dsh-boot-bg:#fff}@media(prefers-color-scheme:dark){:root{color-scheme:dark}body{background-color:#151517;--dsh-boot-bg:#151517}}</style>",
     ];
     for (const [name, value] of Object.entries(this.options.globals))
       head.push(globalScript(name, value));
-    head.push(scriptTag(MODULE_QUEUE));
-    for (const batch of this.graph.batches.filter((item) => item.phase === "application")) {
-      head.push(`<link rel="preload" as="script" href="${batch.url.replace(/&/gu, "&amp;")}">`);
-    }
-    for (const batch of this.graph.batches.filter((item) => item.phase === "bootstrap")) {
-      head.push(`<script src="${batch.url.replace(/&/gu, "&amp;")}"></script>`);
-    }
-    head.push(globalScript("__DSH_BOOT__", this.graph));
-    const body =
-      scriptTag(THEME_SCRIPT) +
-      scriptTag("(globalThis.__DSH_BOOT_READY__ ??= Promise.withResolvers()).resolve()");
+    const body = scriptTag(THEME_SCRIPT);
     const html = template
       .replace("<head>", `<head>\n${head.join("\n")}`)
       .replace(/<title>[^<]*<\/title>/u, `<title>${this.options.title}</title>`)
@@ -480,67 +366,28 @@ export class WebAssets {
    */
   plugin(pathAndSearch: string): AssetResponse | undefined {
     const url = new URL(pathAndSearch, "http://local");
-    const search = decodeURIComponent(url.search);
-    if (url.pathname === "/plugins/" && search.startsWith("??")) {
-      const resourceEnd = search.indexOf("&rev=");
-      const resources = (resourceEnd < 0 ? search.slice(2) : search.slice(2, resourceEnd)).split(
-        ",",
+    const revisions = url.searchParams.getAll("rev");
+    if (revisions.length > 1) return undefined;
+    const base = `${url.pathname}${url.search}`.split("&rev=")[0] ?? "";
+    const advertised = [...this.graph.entries, ...this.graph.batches].find(
+      (row) => `/${row.url}`.split("&rev=")[0] === base,
+    );
+    const onlyBuiltins =
+      advertised !== undefined &&
+      ("entries" in advertised ? advertised.entries : [advertised.id]).every(
+        (id) => this.byId.get(id)?.external === undefined && this.byId.has(id),
       );
-      if (resources.some((resource) => resource.endsWith(".map"))) {
-        return {
-          body: Buffer.from('{"version":3,"sources":[],"mappings":""}'),
-          contentType: "application/json",
-        };
-      }
-      const ids = resources.map((resource) => resource.replace(/\/client\.js$/u, ""));
-      const cached = this.combos.get(this.comboKey(ids));
-      const records = ids.map((id) => this.byId.get(id));
-      if (records.some((record) => record === undefined)) return undefined;
-      const body =
-        cached?.body ??
-        Buffer.from(records.map((record) => pluginSource(record as PluginRecord)).join(""));
-      if (records.some((record) => record?.external !== undefined)) {
-        const revisions = [shortHash(body)];
-        // One package can be requested either by its graph row or as a one-row batch.
-        if (records.length === 1 && records[0] !== undefined) revisions.push(records[0].rev);
-        if (!matchesRevision(url, revisions)) return undefined;
-      }
-      if (cached !== undefined) return cached;
-      const response = { body, contentType: "text/javascript; charset=utf-8" };
-      this.combos.set(this.comboKey(ids), response);
-      return response;
+    // Keep unversioned requests and development's built-in fallback. Versioned
+    // external resources always retain the native registry's exact-revision check.
+    if (advertised !== undefined && (revisions.length === 0 || onlyBuiltins)) {
+      url.search = new URL(advertised.url, "http://local/").search;
+    } else if (revisions.length === 0) {
+      const entry = this.graph.entries.find((row) =>
+        url.pathname.startsWith(`/plugins/${row.id}/`),
+      );
+      if (entry !== undefined) url.searchParams.set("rev", entry.rev);
     }
-    // Package-local chunk: /plugins/<id>/<client.x.js>
-    const rest = url.pathname.slice("/plugins/".length);
-    const slash = rest.lastIndexOf("/");
-    if (slash < 0) return undefined;
-    const id = decodeURIComponent(rest.slice(0, slash));
-    const fileName = rest.slice(slash + 1);
-    const record = this.byId.get(id);
-    if (record === undefined) return undefined;
-    if (fileName.endsWith(".map")) {
-      return {
-        body: Buffer.from('{"version":3,"sources":[],"mappings":""}'),
-        contentType: "application/json",
-      };
-    }
-    if (!CLIENT_CHUNK.test(fileName)) return undefined;
-    if (record.external !== undefined) {
-      if (!matchesRevision(url, [record.rev])) return undefined;
-      const source = record.external.chunks.get(fileName);
-      return source === undefined
-        ? undefined
-        : {
-            body: Buffer.from(prepareSource(source)),
-            contentType: "text/javascript; charset=utf-8",
-          };
-    }
-    const chunkPath = join(dirname(record.clientPath), fileName);
-    if (!existsSync(chunkPath)) return undefined;
-    return {
-      body: Buffer.from(prepareSource(readFileSync(chunkPath, "utf8"))),
-      contentType: "text/javascript; charset=utf-8",
-    };
+    return this.clients.readBundle(url.href);
   }
 
   /**

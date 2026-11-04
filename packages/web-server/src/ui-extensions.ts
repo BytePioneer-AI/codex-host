@@ -1,7 +1,7 @@
 /** Persistent Web extension ownership; package code is never imported by this module. */
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rename, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { z } from "zod";
 import {
@@ -42,6 +42,7 @@ export class WebUiExtensions {
   private entries: Entry[] = [];
   private queue: Promise<unknown> = Promise.resolve();
   private loadedIds: string[] = [];
+  private readonly runningInstalls = new Set<string>();
   private loadErrors = new Map<string, string>();
   private storeError?: string;
 
@@ -86,6 +87,9 @@ export class WebUiExtensions {
 
   composed(ids: readonly string[], error?: string): void {
     this.loadedIds = [...ids];
+    this.runningInstalls.clear();
+    for (const entry of this.entries)
+      if (ids.includes(entry.id)) this.runningInstalls.add(entry.installId);
     this.loadErrors.clear();
     if (error)
       for (const entry of this.entries) {
@@ -187,11 +191,39 @@ export class WebUiExtensions {
     return this.mutate(async () => {
       const entry = this.find(id);
       this.save(this.entries.filter((item) => item !== entry));
-      await rm(this.data.path("ui-extensions", "packages", entry.installId), {
-        recursive: true,
-        force: true,
-      });
+      if (!this.runningInstalls.has(entry.installId))
+        await rm(this.data.path("ui-extensions", "packages", entry.installId), {
+          recursive: true,
+          force: true,
+        });
       return this.state();
+    });
+  }
+
+  /** Remove unregistered installations only when no running plugin still owns their files. */
+  async cleanup(released = false): Promise<void> {
+    if (this.storeError) return;
+    await this.mutate(async () => {
+      if (released) this.runningInstalls.clear();
+      const retained = new Set([
+        ...this.runningInstalls,
+        ...this.entries.map((entry) => entry.installId),
+      ]);
+      const directory = this.data.path("ui-extensions", "packages");
+      const children = await readdir(directory, { withFileTypes: true }).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return [];
+          throw error;
+        },
+      );
+      for (const child of children) {
+        if (
+          child.isDirectory() &&
+          z.uuid().safeParse(child.name).success &&
+          !retained.has(child.name)
+        )
+          await rm(join(directory, child.name), { recursive: true, force: true });
+      }
     });
   }
 

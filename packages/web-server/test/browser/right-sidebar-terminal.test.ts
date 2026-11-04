@@ -108,7 +108,8 @@ it(
     });
     draftPage.on("pageerror", (error) => errors.push(error.message));
     await draftPage.goto(url);
-    await draftPage.getByText("Native Model", { exact: true }).waitFor();
+    // The compact mobile trigger keeps its loaded model label in the DOM but hides the text.
+    await draftPage.getByText("Native Model", { exact: true }).waitFor({ state: "attached" });
     await draftPage.waitForLoadState("networkidle");
     await draftPage.locator("[data-sidebar-right-expand]").click();
     await draftPage.locator('[data-sidebar-right-guide-entry="terminal"] button').first().click();

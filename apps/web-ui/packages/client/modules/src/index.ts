@@ -24,12 +24,13 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Service } from "@deepseek-ai/cordis";
+import { readClientSnapshot } from "./snapshot.ts";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Entry } from "@deepseek-ai/cordis-plugin-loader";
 import type { IndexInjection } from "@deepseek-ai/dsh-host-webserver";
@@ -57,6 +58,19 @@ declare module "@deepseek-ai/cordis" {
     /** The web plugin table (provided by the client-modules node half). */
     clientModules: ClientModuleRegistry;
   }
+}
+
+/** Browser-only entries supplied by the embedding application instead of executing a Host half. */
+export interface ClientModuleSource {
+  id: string;
+  clientPath: string;
+  manifest: { inject?: string[]; external?: string[]; immediately?: boolean };
+}
+
+export interface ClientModuleOptions {
+  sources?: readonly ClientModuleSource[];
+  /** Embedded carriers render and dispatch through the public graph/fetch APIs. */
+  registerWeb?: boolean;
 }
 
 /** The declared fields a graph row carries, normalized (absent array declarations become empty). */
@@ -154,6 +168,7 @@ interface WebPluginRecord {
   meta: PkgMeta;
   /** Exact build artifact included in the startup batches. */
   bundle: Buffer;
+  chunks: ReadonlyMap<string, Buffer>;
   /** Pre-read filesystem baseline handed to the HMR watcher. */
   baseline: ClientArtifactBaseline;
 }
@@ -170,7 +185,7 @@ interface ComboResource {
 /** One lazily materialized immutable response body. */
 interface LazyResponse {
   contentType: string;
-  body: () => Promise<Buffer>;
+  body: () => Buffer;
 }
 
 /** Fields shared by every generated combo plan. */
@@ -181,8 +196,8 @@ interface ComboArtifact {
   entries: string[];
   /** Absolute route URL of the map response. */
   sourceMapUrl: string;
-  scriptBody: () => Promise<Buffer>;
-  sourceMapBody: () => Promise<Buffer>;
+  scriptBody: () => Buffer;
+  sourceMapBody: () => Buffer;
 }
 
 /**
@@ -231,15 +246,6 @@ function framedHash(domain: string, parts: readonly string[]): string {
   const hash = createHash("sha1").update(domain).update("\0");
   for (const part of parts) hash.update(`${String(Buffer.byteLength(part))}:`).update(part);
   return hash.digest("hex").slice(0, HASH_REVISION_LENGTH);
-}
-
-/** Identify an entry's build from filesystem metadata without hashing its contents. */
-function artifactRevision(baseline: ClientArtifactBaseline): string {
-  return framedHash("plugin-artifact", [
-    String(baseline.mtimeMs),
-    String(baseline.ctimeMs),
-    String(baseline.size),
-  ]);
 }
 
 /** Absolute route prefix serving every plugin resource. */
@@ -414,13 +420,10 @@ function identitySectionMap(source: string, sourceUrl: string): Record<string, u
   };
 }
 
-/** Run one producer in the first requester's microtask, not off-thread, and share its settlement. */
-function lazyBody(produce: () => Buffer): () => Promise<Buffer> {
-  let result: Promise<Buffer> | undefined;
-  return () => {
-    result ??= Promise.resolve().then(produce);
-    return result;
-  };
+/** Materialize each immutable response once, on its first request. */
+function lazyBody(produce: () => Buffer): () => Buffer {
+  let result: Buffer | undefined;
+  return () => (result ??= produce());
 }
 
 /** Derive one combo revision from the ordered immutable row revisions. */
@@ -650,8 +653,26 @@ export class ClientModuleRegistry extends Service {
    * Bundle routes follow the optional Web carrier's injected lifecycle.
    * @param ctx - plugin context carrying Loader and an optional Web carrier.
    */
-  constructor(ctx: Context) {
+  constructor(ctx: Context, options: ClientModuleOptions = {}) {
     super(ctx, "clientModules");
+    for (const source of options.sources ?? []) {
+      if (this.table.has(source.id))
+        throw new Error(`client-modules: duplicate browser plugin ${source.id}`);
+      const snapshot = readClientSnapshot(source.clientPath);
+      const meta: PkgMeta = {
+        clientPath: source.clientPath,
+        ...source.manifest,
+        external: source.manifest.external ?? [],
+        immediately: source.manifest.immediately ?? false,
+      };
+      this.table.set(source.id, {
+        entry: graphRow(source.id, snapshot.rev, meta),
+        loaderName: "",
+        sourceKey: source.clientPath,
+        meta,
+        ...snapshot,
+      });
+    }
     // Subscribe before seeding so a fiber arriving mid-activation lands in the
     // same dirty set (Set idempotence makes the overlap harmless). An entry-less
     // fiber is a child plugin or a manual mount — never a loader row; O(1) drop.
@@ -672,7 +693,7 @@ export class ClientModuleRegistry extends Service {
     // Activation pass: the initial scan IS the incremental path over the
     // current entries, flushed synchronously (nothing async between subscribe,
     // seed, and flush).
-    for (const entry of ctx.loader.entries()) this.dirty.add(entry.options.name);
+    for (const entry of ctx.get("loader")?.entries() ?? []) this.dirty.add(entry.options.name);
     this.composed = this.compose();
     const failures: Error[] = [];
     this.flush((err) => failures.push(err));
@@ -691,10 +712,12 @@ export class ClientModuleRegistry extends Service {
         "client-modules: bundle route",
       );
     };
-    ctx.inject(["webServer"], registerWebCarrier);
-    ctx.on("webserver/index-inject", (table) => {
-      table.push(...bootInjections(this.composed));
-    });
+    if (options.registerWeb !== false) {
+      ctx.inject(["webServer"], registerWebCarrier);
+      ctx.on("webserver/index-inject", (table) => {
+        table.push(...bootInjections(this.composed));
+      });
+    }
   }
 
   /**
@@ -754,13 +777,13 @@ export class ClientModuleRegistry extends Service {
   rebuilt(id: string): string | undefined {
     const record = this.table.get(id);
     if (record === undefined) return undefined;
-    const baseline = this.captureArtifactBaseline(record.meta.clientPath);
-    const rev = artifactRevision(baseline);
-    if (rev === record.entry.rev) return rev;
-    const bundle = readFileSync(record.meta.clientPath);
-    record.baseline = baseline;
+    const snapshot = readClientSnapshot(record.meta.clientPath);
+    if (snapshot.rev === record.entry.rev) return snapshot.rev;
+    const rev = snapshot.rev;
+    record.baseline = snapshot.baseline;
     record.entry = graphRow(id, rev, record.meta);
-    record.bundle = bundle;
+    record.bundle = snapshot.bundle;
+    record.chunks = snapshot.chunks;
     this.composed = this.compose();
     for (const notify of this.rebuildListeners) {
       // Containment: rebuilt() runs inside the HMR watch callback — a
@@ -1007,17 +1030,6 @@ export class ClientModuleRegistry extends Service {
     return `${baseUrl}\0${loaderName}`;
   }
 
-  /** Capture the bundle stats before reading its bytes. */
-  private captureArtifactBaseline(clientPath: string): ClientArtifactBaseline {
-    const bundle = statSync(clientPath);
-    return {
-      path: clientPath,
-      mtimeMs: bundle.mtimeMs,
-      ctimeMs: bundle.ctimeMs,
-      size: bundle.size,
-    };
-  }
-
   /**
    * Read the activation-time bundle snapshot.
    * @param pkgName - package that declares the client bundle.
@@ -1028,14 +1040,9 @@ export class ClientModuleRegistry extends Service {
   private initialBundleSnapshot(
     pkgName: string,
     clientPath: string,
-  ): {
-    bundle: Buffer;
-    baseline: ClientArtifactBaseline;
-  } {
+  ): ReturnType<typeof readClientSnapshot> {
     try {
-      const baseline = this.captureArtifactBaseline(clientPath);
-      const bundle = readFileSync(clientPath);
-      return { bundle, baseline };
+      return readClientSnapshot(clientPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       throw new MissingClientBundleError(pkgName, clientPath, error);
@@ -1055,7 +1062,7 @@ export class ClientModuleRegistry extends Service {
   /** Reconcile one entry name against the live Loader sources. @returns whether the table changed. */
   private processOne(entryName: string, onError: (err: Error) => void): boolean {
     const nextSources = new Map<string, ClientPackageSource>();
-    for (const entry of this.ctx.loader.entries()) {
+    for (const entry of this.ctx.get("loader")?.entries() ?? []) {
       if (entry.options.name !== entryName || entry.fiber === undefined || entry.disabled) continue;
       const source = this.resolveSource(entry);
       if (source !== undefined) nextSources.set(source.sourceKey, source);
@@ -1108,16 +1115,19 @@ export class ClientModuleRegistry extends Service {
     }
     const source = sources[0];
     if (source === undefined) return this.table.delete(packageName);
+    if (this.table.get(packageName)?.loaderName === "")
+      throw new Error(`client-modules: duplicate browser plugin ${packageName}`);
     if (this.table.get(packageName)?.sourceKey === source.sourceKey) return false;
     // Startup and HMR share revisions so unchanged artifacts survive a server restart.
     const snapshot = this.initialBundleSnapshot(packageName, source.meta.clientPath);
-    const rev = artifactRevision(snapshot.baseline);
+    const rev = snapshot.rev;
     this.table.set(packageName, {
       entry: graphRow(packageName, rev, source.meta),
       loaderName: source.loaderName,
       sourceKey: source.sourceKey,
       meta: source.meta,
       bundle: snapshot.bundle,
+      chunks: snapshot.chunks,
       baseline: snapshot.baseline,
     });
     return true;
@@ -1181,14 +1191,15 @@ export class ClientModuleRegistry extends Service {
     if (request === undefined) return undefined;
     const { record, fileName, sourceMap, resourceUrl } = request;
     const clientPath = join(dirname(record.meta.clientPath), fileName);
-    if (!existsSync(clientPath)) return undefined;
+    const bundle = record.chunks.get(fileName);
+    if (bundle === undefined) return undefined;
     const sourceMapUrl = chunkMapReference(fileName, record.entry.rev);
     const resource = (): ComboResource => ({
       id: record.entry.id,
       rev: record.entry.rev,
       clientPath,
       fileName,
-      bundle: readFileSync(clientPath),
+      bundle,
     });
     const response: LazyResponse = sourceMap
       ? {
@@ -1203,14 +1214,21 @@ export class ClientModuleRegistry extends Service {
     return response;
   }
 
-  private async bundleResource(
+  /** Synchronous asset-carrier face over the same immutable response table. */
+  readBundle(url: string): { body: Buffer; contentType: string } | undefined {
+    const response = this.bundleResource("GET", url);
+    if (response.status !== 200 || response.body === undefined) return undefined;
+    return { body: response.body, contentType: response.headers!["content-type"]! };
+  }
+
+  private bundleResource(
     method: string | undefined,
     url: string,
-  ): Promise<{
+  ): {
     status: number;
     headers?: Record<string, string>;
     body?: Buffer;
-  }> {
+  } {
     if (method !== "GET" && method !== "HEAD") return { status: 405 };
     const requestUrl = new URL(url, "http://x");
     const resourceUrl = `${requestUrl.pathname}${requestUrl.search}`;
@@ -1222,7 +1240,7 @@ export class ClientModuleRegistry extends Service {
       return {
         status: 200,
         headers: { "content-type": response.contentType, "cache-control": IMMUTABLE_CACHE },
-        ...(method === "HEAD" ? {} : { body: await response.body() }),
+        ...(method === "HEAD" ? {} : { body: response.body() }),
       };
     }
     // Anything else under /plugins (including unadvertised combinations and

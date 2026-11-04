@@ -8,6 +8,7 @@
  *     native/codexhost[.exe]   current-platform service lifecycle Launcher
  *     web/                    Vite shell + composed client plugins + plugins.json
  *     adapters/<id>/          prebuilt Harness plugins, including Codex CLI
+ *     node_modules/           shared Web framework and asset-bearing dependencies
  *     package.json, README.md
  *
  * Requires TypeScript/plugins, native Launcher and Web UI builds in the same checkout.
@@ -32,6 +33,7 @@ import { build } from "esbuild";
 import { readPackagedAdapters } from "../src/packaged-adapters.ts";
 import { CLIENT_GLOBALS, CLIENT_PLUGINS } from "../src/plugins.ts";
 import { WebAssets } from "../src/web-assets.ts";
+import { packWebRuntime, WEB_RUNTIME_PACKAGES } from "../src/pack-web-runtime.ts";
 
 const serverRoot = resolve(import.meta.dirname, "..");
 const repoRoot = resolve(serverRoot, "../..");
@@ -120,9 +122,17 @@ await build({
   banner: { js: `#!/usr/bin/env node\n${banner}` },
   // Office and Playwright resolve workers, executables and other package assets
   // at runtime; keep their complete installations beside the server bundle.
-  external: ["bufferutil", "utf-8-validate", "@deepseek-ai/libreoffice-kit", "playwright-core"],
+  external: [
+    "bufferutil",
+    "utf-8-validate",
+    "@deepseek-ai/libreoffice-kit",
+    "playwright-core",
+    ...WEB_RUNTIME_PACKAGES,
+  ],
   logLevel: "warning",
 });
+
+await packWebRuntime(out);
 
 /**
  * Copy one installed package and its installed dependency closure.
@@ -216,6 +226,12 @@ cpSync(
 );
 cpSync(join(frontendRoot, "THIRD_PARTY_NOTICES.md"), join(out, "licenses/THIRD_PARTY_NOTICES.md"));
 for (const [name, file] of [
+  ["js-yaml", "LICENSE"],
+  ["import-meta-resolve", "license"],
+] as const) {
+  cpSync(join(repoRoot, "node_modules", name, file), join(out, "licenses", `${name}-MIT.txt`));
+}
+for (const [name, file] of [
   ["@deepseek-ai/libreoffice-kit", "LICENSE"],
   ["@deepseek-ai/libreoffice-kit", "NOTICE"],
 ] as const) {
@@ -239,7 +255,11 @@ writeFileSync(
         "Run Claude Code, Codex CLI, Pi and other coding agents from any browser or phone.",
       type: "module",
       bin: { "codexhost-web": "./app/server.mjs" },
-      engines: { node: ">=22.19" },
+      engines: (
+        JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+          engines: { node: string };
+        }
+      ).engines,
       os: [process.platform],
       cpu: [process.arch],
       license: "LGPL-3.0-only",
@@ -304,6 +324,12 @@ Other devices sign in with the access token shown on this computer in Settings â
 cannot be viewed from elsewhere. For phones, use an HTTPS reverse proxy such as Tailscale Serve, and name it
 with \`--trusted-proxy\` so its forwarding headers are honoured;
 PWA installation and Web Push need HTTPS. Do not expose \`--no-auth\` to a network.
+
+Enabled Web extensions run their original Host entries and client modules on Web startup.
+Keep node_modules/ with app/ and web/: installed plugins share those framework instances.
+Use --safe-mode to skip user Host and client code. /extensions and ?extensions=off omit user
+browser code only, not running Host entries. Disable/remove takes effect after restarting Web;
+files used by a running plugin are retained until its lifecycle ends. Plugins are trusted code.
 
 This distribution includes LGPL-licensed CodexHost code and MIT-licensed DSH-derived UI.
 Retained license texts and dependency notices are in LICENSE and licenses/.

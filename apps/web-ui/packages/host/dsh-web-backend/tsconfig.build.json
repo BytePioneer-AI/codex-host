@@ -10,6 +10,10 @@
     "types": ["node"],
     "paths": {
       "@deepseek-ai/cordis": ["./types/cordis.d.ts"],
+      "@deepseek-ai/cordis-plugin-loader": ["./types/loader.d.ts"],
+      "@codexhost/dsh-web-include": ["./types/include.d.ts"],
+      "@deepseek-ai/dsh-client-modules": ["./types/client-modules.d.ts"],
+      "@deepseek-ai/dsh-host-webserver": ["./types/webserver.d.ts"],
       "@deepseek-ai/dsh-api-gateway": ["./types/gateway.d.ts"],
       "@deepseek-ai/dsh-api-gateway/stream-server": ["./types/stream-server.d.ts"],
       "@deepseek-ai/dsh-api-workspace-files": ["./types/workspace-files.d.ts"],

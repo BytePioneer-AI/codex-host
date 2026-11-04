@@ -69,6 +69,7 @@ it(
         "--ch-control-directory",
         channelDirectory,
       ],
+      { authenticated: true },
     );
     const browser = await chromium.launch();
     t.after(() => browser.close());
@@ -114,13 +115,15 @@ it(
     await a.getByRole("menuitemradio", { name: "Alternate Model", exact: true }).click();
     await b.keyboard.press("Escape");
     await b.keyboard.press("Escape");
-    for (const page of [a, b])
+    for (const page of [a, b]) {
       await page.getByRole("button", { name: "Settings", exact: true }).click();
+      await page.getByRole("button", { name: "Resources", exact: true }).click();
+    }
     const policy = (page: Page) =>
-      page.getByRole("checkbox", { name: "Release idle external Harness sessions", exact: true });
+      page.getByRole("switch", { name: "Release idle sessions", exact: true });
     await policy(a).click();
     await expect(policy(a)).toBeChecked();
-    await b.getByRole("spinbutton", { name: "Idle timeout (minutes)", exact: true }).waitFor();
+    await b.getByRole("spinbutton", { name: "Idle timeout", exact: true }).waitFor();
     assert.equal(await policy(b).isChecked(), true);
     await store.patch(
       harnessPreferencePatchSchema.parse({
@@ -136,7 +139,7 @@ it(
       }),
     );
     for (const page of [a, b]) {
-      const timeout = page.getByRole("spinbutton", { name: "Idle timeout (minutes)", exact: true });
+      const timeout = page.getByRole("spinbutton", { name: "Idle timeout", exact: true });
       await timeout.waitFor();
       await expect(timeout).toHaveValue("42");
       assert.equal(await timeout.inputValue(), "42");

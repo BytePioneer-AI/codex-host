@@ -77,6 +77,29 @@ function installedDirectories(data: DataDir): string[] {
   return existsSync(directory) ? readdirSync(directory).sort() : [];
 }
 
+it("retains running installation files until release and cleans removed packages at startup", async (t) => {
+  const data = dataDir(t);
+  const store = extensions(data);
+  await store.install(`${PACKAGE}@${VERSION}`);
+  await store.setEnabled(PACKAGE, true);
+  store.composed([PACKAGE]);
+  const directory = item(store.plugins()).directory;
+  await store.remove(PACKAGE);
+  assert.deepEqual(store.state().extensions, []);
+  assert.deepEqual(store.state().loadedIds, [PACKAGE]);
+  await store.cleanup();
+  assert.ok(existsSync(directory));
+  await store.cleanup(true);
+  assert.equal(existsSync(directory), false);
+
+  await store.install(`${PACKAGE}@${VERSION}`);
+  store.composed([PACKAGE]);
+  const abandoned = item(store.plugins(false)).directory;
+  await store.remove(PACKAGE);
+  await extensions(data).cleanup();
+  assert.equal(existsSync(abandoned), false);
+});
+
 it("accepts npm names, exact versions, tags, ranges, and existing absolute package paths", async (t) => {
   for (const spec of ["simple-theme@1.0.0", "@test/dsh-theme@1.2.3-rc.1+build.2"]) {
     const separator = spec.lastIndexOf("@");

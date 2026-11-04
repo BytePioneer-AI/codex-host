@@ -3,6 +3,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { satisfies, valid, validRange } from "semver";
+import {
+  WEB_RUNTIME_ALIASES,
+  WEB_RUNTIME_PACKAGES,
+} from "@codexhost/dsh-web-backend/plugin-resolution";
 
 export const CLIENT_RUNTIME_VERSIONS_FILE = "client-runtime-versions.json";
 
@@ -19,11 +23,9 @@ export interface ClientRuntimeRequirement {
   readonly optional: boolean;
 }
 
-const VENDOR_PACKAGES = [
-  "@deepseek-ai/cordis",
-  "@deepseek-ai/cordis-plugin-loader",
-  "@deepseek-ai/cosmokit",
-  "@deepseek-ai/schemastery",
+const VENDOR_PACKAGES: readonly string[] = [
+  ...WEB_RUNTIME_PACKAGES,
+  ...Object.keys(WEB_RUNTIME_ALIASES),
 ];
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -61,7 +63,7 @@ export function sourceClientRuntimeVersions(
     if (directory !== undefined) manifest = join(directory, "package.json");
     else {
       try {
-        manifest = resolveFromWeb.resolve(`${id}/package.json`);
+        manifest = resolveFromWeb.resolve(`${WEB_RUNTIME_ALIASES[id] ?? id}/package.json`);
       } catch {
         continue;
       }

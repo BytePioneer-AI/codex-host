@@ -8,7 +8,13 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { createDshWebBackend, type DshWebBackend } from "@codexhost/dsh-web-backend";
+import {
+  createDshWebBackend,
+  type DshWebBackend,
+  type WebPluginRuntime,
+  type WebPluginRuntimeOptions,
+} from "@codexhost/dsh-web-backend";
+export type { WebPluginRuntime } from "@codexhost/dsh-web-backend";
 
 import type { StreamSink } from "./transport.ts";
 
@@ -116,6 +122,10 @@ export class DshWebServices {
       }
     })();
     return true;
+  }
+
+  loadPlugins(options: WebPluginRuntimeOptions): Promise<WebPluginRuntime> {
+    return this.backend.loadPlugins(options);
   }
 
   async close(): Promise<void> {

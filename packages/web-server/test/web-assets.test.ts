@@ -13,6 +13,15 @@ const ADDON = "@fixture/addon";
 const SHELL = "<html><head><title>T</title></head><body></body></html>";
 const BUNDLE = `window.__ModuleLoader__.load({id: "${ADDON}", factory: require => ({apply() { return require("react"); }})});\n`;
 
+/** Compare fixture code independently of the native combo separators and source-map trailer. */
+function script(assets: WebAssets, path: string): string | undefined {
+  return assets
+    .plugin(path)
+    ?.body.toString()
+    .replace(/\n;\n/g, "\n")
+    .replace(/\/\/# sourceMappingURL=[^\n]*\n?/g, "");
+}
+
 function write(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content);
@@ -79,9 +88,9 @@ for (const mode of ["source", "packed"] as const) {
     );
     const entry = assets.graph.entries.find(({ id }) => id === ADDON);
     assert.ok(entry);
-    assert.equal(assets.plugin(`/${entry.url}`)?.body.toString(), BUNDLE);
+    assert.equal(script(assets, `/${entry.url}`), BUNDLE);
     assert.equal(
-      assets.plugin(`/plugins/${ADDON}/client.details.js?rev=${entry.rev}`)?.body.toString(),
+      script(assets, `/plugins/${ADDON}/client.details.js?rev=${entry.rev}`),
       "chunk(1);\n",
     );
     assert.equal(assets.plugin(`/plugins/${ADDON}/host.js`), undefined);
@@ -110,12 +119,9 @@ it("keeps installed artifacts immutable until restart and revisions include pack
   const assets = new WebAssets(selected);
   const before = assets.graph.entries.find(({ id }) => id === ADDON);
   assert.ok(before);
-  assert.equal(assets.plugin(`/${before.url}`)?.body.toString(), BUNDLE);
+  assert.equal(script(assets, `/${before.url}`), BUNDLE);
   write(join(directory, "lib/client.details.js"), "chunk(2);\n");
-  assert.equal(
-    assets.plugin(`/plugins/${ADDON}/client.details.js`)?.body.toString(),
-    "chunk(1);\n",
-  );
+  assert.equal(script(assets, `/plugins/${ADDON}/client.details.js`), "chunk(1);\n");
   assert.equal(assets.rebuilt(ADDON), undefined);
   const restarted = new WebAssets(selected);
   const after = restarted.graph.entries.find(({ id }) => id === ADDON);
@@ -126,15 +132,12 @@ it("keeps installed artifacts immutable until restart and revisions include pack
     restarted.plugin(`/plugins/${ADDON}/client.details.js?rev=${before.rev}`),
     undefined,
   );
-  assert.equal(restarted.plugin(`/${after.url}`)?.body.toString(), BUNDLE);
+  assert.equal(script(restarted, `/${after.url}`), BUNDLE);
   assert.equal(
-    restarted.plugin(`/plugins/${ADDON}/client.details.js?rev=${after.rev}`)?.body.toString(),
+    script(restarted, `/plugins/${ADDON}/client.details.js?rev=${after.rev}`),
     "chunk(2);\n",
   );
-  assert.equal(
-    restarted.plugin(`/plugins/${ADDON}/client.details.js`)?.body.toString(),
-    "chunk(2);\n",
-  );
+  assert.equal(script(restarted, `/plugins/${ADDON}/client.details.js`), "chunk(2);\n");
 });
 
 it("checks revisions before returning cached external single and mixed batch responses", (t) => {
@@ -144,13 +147,13 @@ it("checks revisions before returning cached external single and mixed batch res
   const entry = assets.graph.entries.find(({ id }) => id === ADDON);
   const batch = assets.graph.batches.find(({ phase }) => phase === "application");
   assert.ok(entry && batch);
-  assert.equal(assets.plugin(`/${entry.url}`)?.body.toString(), BUNDLE);
-  assert.equal(assets.plugin(`/${batch.url}`)?.body.toString(), `builtin();\n${BUNDLE}`);
+  assert.equal(script(assets, `/${entry.url}`), BUNDLE);
+  assert.equal(script(assets, `/${batch.url}`), `builtin();\n${BUNDLE}`);
   assert.equal(assets.plugin(`/${entry.url.replace(entry.rev, "notcurrent")}`), undefined);
   assert.equal(assets.plugin(`/${batch.url.replace(batch.rev, "notcurrent")}`), undefined);
   assert.equal(assets.plugin(`/plugins/${ADDON}/client.details.js?rev=notcurrent`), undefined);
   assert.equal(assets.plugin(`/${entry.url}&rev=${entry.rev}`), undefined);
-  assert.equal(assets.plugin(`/plugins/??${ADDON}/client.js`)?.body.toString(), BUNDLE);
+  assert.equal(script(assets, `/plugins/??${ADDON}/client.js`), BUNDLE);
 
   write(join(directory, "lib/client.js"), `${BUNDLE}updated();\n`);
   const restarted = new WebAssets(selected);
@@ -163,10 +166,7 @@ it("checks revisions before returning cached external single and mixed batch res
     assert.ok(current);
     assert.match(restarted.plugin(`/${current.url}`)?.body.toString() ?? "", /updated\(\)/u);
   }
-  assert.equal(
-    restarted.plugin(`/plugins/??${BUILTIN}/client.js&rev=previous`)?.body.toString(),
-    "builtin();\n",
-  );
+  assert.equal(script(restarted, `/plugins/??${BUILTIN}/client.js&rev=previous`), "builtin();\n");
 });
 
 it("accepts both a package revision and a one-package batch revision", (t) => {
@@ -183,8 +183,8 @@ it("accepts both a package revision and a one-package batch revision", (t) => {
   const batch = assets.graph.batches[0];
   assert.ok(entry && batch);
   assert.notEqual(entry.rev, batch.rev);
-  assert.equal(assets.plugin(`/${entry.url}`)?.body.toString(), BUNDLE);
-  assert.equal(assets.plugin(`/${batch.url}`)?.body.toString(), BUNDLE);
+  assert.equal(script(assets, `/${entry.url}`), BUNDLE);
+  assert.equal(script(assets, `/${batch.url}`), BUNDLE);
 });
 
 it("rejects duplicate IDs, shell singleton replacements, and package-name mismatches", (t) => {
@@ -342,6 +342,20 @@ function packOptions(root: string, options: WebAssetOptions): WebAssetOptions {
 }
 
 for (const mode of ["source", "packed"] as const) {
+  it(`checks shared peers on a ${mode} bundle wrapper without its own client entry`, (t) => {
+    const { root, directory, options } = runtimeFixture(t);
+    const base = mode === "packed" ? packOptions(root, options) : options;
+    editManifest(directory, (manifest) => {
+      manifest.dsh = { bundle: { patch: "bundle.yml" } };
+      manifest.peerDependencies = { "@deepseek-ai/cordis": "^5.0.0" };
+    });
+    write(join(directory, "bundle.yml"), "- insert:\n    - id: host\n      name: ./host.js\n");
+    assert.throws(
+      () => new WebAssets({ ...base, externalPlugins: [{ id: ADDON, directory }] }),
+      /requires @deepseek-ai\/cordis@\^5\.0\.0.*provides 4\.0\.5-alpha\.1/,
+    );
+  });
+
   it(`checks DSH and singleton peers against the ${mode} Host instead of installed copies`, (t) => {
     const { root, directory, options } = runtimeFixture(t);
     const base = mode === "packed" ? packOptions(root, options) : options;

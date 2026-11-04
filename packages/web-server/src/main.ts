@@ -46,7 +46,7 @@ import { WebHarnessDisplaySettings } from "./harness-display-settings.ts";
 import { WebHarnessPreferences } from "./harness-preferences.ts";
 import { createChHostClient } from "./ch-host-client.ts";
 import { serveChClientGateway } from "./ch-client-gateway.ts";
-import { DshWebServices } from "./dsh-web-services.ts";
+import { DshWebServices, type WebPluginRuntime } from "./dsh-web-services.ts";
 import { harnessIconStyles } from "./harness-icon-styles.ts";
 import { Settings } from "./settings.ts";
 import { formatWebStartup } from "./startup-display.ts";
@@ -268,13 +268,50 @@ const extensions = new WebUiExtensions(data, {
     new WebAssets({ ...assetOptions, externalPlugins });
   },
 });
+await extensions.cleanup();
 let assets = builtInAssets;
+let pluginRuntime: WebPluginRuntime | undefined;
+let listeningPort = Number(values.port);
 if (!values["safe-mode"]) {
   try {
     const externalPlugins = extensions.plugins();
-    if (externalPlugins.length > 0) assets = new WebAssets({ ...assetOptions, externalPlugins });
+    if (externalPlugins.length > 0) {
+      // Validate packages before importing any code; failed activation owns only its subtree.
+      new WebAssets({ ...assetOptions, externalPlugins });
+      if (dsh === undefined) throw new Error("The DSH Web backend is unavailable");
+      pluginRuntime = await dsh.loadPlugins({
+        packages: externalPlugins,
+        builtins: builtInAssets.clientSources(),
+        address: () => ({ host: values.host as string, port: listeningPort }),
+        reserved: [
+          ...["/api", "/plugins", "/assets", "/harness-icons"].map((path) => ({
+            kind: "prefix" as const,
+            path,
+          })),
+          ...[
+            "/",
+            "/index.html",
+            "/extensions",
+            "/favicon.ico",
+            "/favicon.svg",
+            "/favicon-dark.svg",
+            "/manifest.webmanifest",
+            "/apple-touch-icon.png",
+            "/icon-192.png",
+            "/icon-512.png",
+            "/sw.js",
+            "/codexhost-settings.js",
+            SIDEBAR_BROWSER_PATH,
+          ].map((path) => ({ kind: "exact" as const, path })),
+        ],
+      });
+      assets = new WebAssets({ ...assetOptions, externalPlugins, clients: pluginRuntime.clients });
+    }
     extensions.composed(externalPlugins.map((plugin) => plugin.id));
   } catch (error) {
+    await pluginRuntime?.close();
+    pluginRuntime = undefined;
+    assets = builtInAssets;
     extensions.composed(
       [],
       error instanceof Error ? error.message : "Extension composition failed.",
@@ -429,7 +466,11 @@ const server = createServer((request, response) => {
     }
     if (pathname === "/" || pathname === "/index.html") {
       const builtInOnly = new URL(url, "http://localhost").searchParams.get("extensions") === "off";
-      const index = (builtInOnly ? recoveryAssets : assets).index();
+      const source = (builtInOnly ? recoveryAssets : assets).index();
+      const index =
+        !builtInOnly && pluginRuntime !== undefined
+          ? { ...source, body: Buffer.from(pluginRuntime.renderIndex(source.body.toString())) }
+          : source;
       send(
         response,
         auth === undefined
@@ -448,7 +489,7 @@ const server = createServer((request, response) => {
       return;
     }
     if (pathname.startsWith("/plugins/")) {
-      send(response, assets.plugin(url), url.includes("rev="));
+      send(response, assets.plugin(url) ?? recoveryAssets.plugin(url), url.includes("rev="));
       return;
     }
     if (pathname === "/harness-icons/presentation.json") {
@@ -464,10 +505,18 @@ const server = createServer((request, response) => {
       send(response, await sessions.catalog.icon(id));
       return;
     }
+    if (pluginRuntime !== undefined && (auth === undefined || requestAuth !== undefined)) {
+      if (request.method !== "GET" && request.method !== "HEAD" && !trust.sameOrigin(request)) {
+        response.writeHead(403).end("cross-origin request rejected");
+        return;
+      }
+      if (await pluginRuntime.handle(request, response)) return;
+    }
     send(response, assets.dist(pathname), pathname.startsWith("/assets/"));
   })().catch((error: unknown) => {
     console.error("[http] request failed", error);
     if (!response.headersSent) response.writeHead(500).end("internal error");
+    else response.destroy();
   });
 });
 
@@ -475,18 +524,30 @@ const wss = createBrowserWebSocketServer();
 const sidebarBrowser = new SidebarBrowser({ profileDirectory: join(dataRoot, "sidebar-browser") });
 server.on("upgrade", (request, socket, head) => {
   const path = (request.url ?? "").split("?")[0];
-  if ((path !== SIDEBAR_BROWSER_PATH && path !== "/api/remote.mux") || !trust.sameOrigin(request)) {
+  if (!trust.sameOrigin(request)) {
     socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
   }
   if (auth !== undefined && !auth.admitUpgrade(request, socket)) return;
   if (path === SIDEBAR_BROWSER_PATH) sidebarBrowser.upgrade(request, socket, head);
-  else wss.handleUpgrade(request, socket, head, (ws) => streams.attach(ws));
+  else if (path === "/api/remote.mux")
+    wss.handleUpgrade(request, socket, head, (ws) => streams.attach(ws));
+  else {
+    void (pluginRuntime?.upgrade(request, socket, head) ?? Promise.resolve(false))
+      .then((handled) => {
+        if (!handled) socket.destroy();
+      })
+      .catch((error: unknown) => {
+        console.warn("[extensions] upgrade failed", error);
+        socket.destroy();
+      });
+  }
 });
 
 server.listen(Number(values.port), values.host, () => {
   const port = (server.address() as { port: number }).port;
+  listeningPort = port;
   const host = values.host as string;
   const wildcard = isWildcardHost(host);
   // The local token works only on a local address, so a specific interface's link carries none.
@@ -531,6 +592,7 @@ async function shutdown(): Promise<void> {
   desktopScreenshots.close();
   await sidebarBrowser.close();
   await dsh?.close();
+  await extensions.cleanup(true);
   await sessions.close();
   await preferences?.close();
   displaySettings.close();

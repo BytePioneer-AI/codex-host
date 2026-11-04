@@ -8,6 +8,9 @@ import { startServer } from "./server.ts";
 import { composerMenu } from "./composer-menu.ts";
 
 export async function discoveryBrowser(t: TestContext, width = 1280, agents = false) {
+  // Close pages before their server, so reconnect checks do not race test teardown.
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
   const host = new FakeChHost();
   host.add("existing", "/computer/project", "Discovery source");
   host.add("destination", "/computer/project", "Discovery destination");
@@ -20,9 +23,8 @@ export async function discoveryBrowser(t: TestContext, width = 1280, agents = fa
     resolve(import.meta.dirname, "../.."),
     ["--import", "tsx", "src/main.ts"],
     ["--ch-cdp", debug.endpoint],
+    { authenticated: true },
   );
-  const browser = await chromium.launch();
-  t.after(() => browser.close());
   const page = await browser.newPage({
     viewport: { width, height: 900 },
     isMobile: width < 600,
@@ -33,7 +35,7 @@ export async function discoveryBrowser(t: TestContext, width = 1280, agents = fa
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("console", (message) => {
-    if (message.type() === "error") errors.push(message.text());
+    if (message.type() === "error") errors.push(`${message.text()} (${message.location().url})`);
   });
   await page.goto(url);
   const menu = page.getByRole("listbox", { name: "Trigger suggestions", exact: true });

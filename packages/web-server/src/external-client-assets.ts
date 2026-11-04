@@ -1,5 +1,4 @@
 /** Read precompiled DSH browser packages without importing their Host entry points. */
-import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import {
@@ -36,16 +35,13 @@ export const EXTERNAL_CLIENT_PLATFORM_MODULES: ReadonlySet<string> = new Set([
 const PACKAGE_ID = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
 const CLIENT_CHUNK = /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/u;
 
-/** Startup snapshot: responses retain the exact bytes selected by the graph revision. */
+/** Validated browser metadata; native ClientModules owns snapshots and revisions. */
 export interface ExternalClientAssets {
   readonly id: string;
   readonly directory: string;
   readonly clientPath: string;
   readonly manifest: ClientAssetManifest;
   readonly requirements: readonly ClientRuntimeRequirement[];
-  readonly source: string;
-  readonly chunks: ReadonlyMap<string, string>;
-  readonly rev: string;
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -119,27 +115,15 @@ export function readExternalClientAssets(
   )
     throw new Error(`web-assets: ${selection.id} exports no package-local ./client bundle`);
   const clientPath = packageFile(directory, resolve(directory, target));
-  const source = readFileSync(clientPath, "utf8");
-  const chunks = new Map<string, string>();
-  for (const name of readdirSync(dirname(clientPath)).sort()) {
-    if (CLIENT_CHUNK.test(name))
-      chunks.set(
-        name,
-        readFileSync(packageFile(directory, resolve(dirname(clientPath), name)), "utf8"),
-      );
+  for (const name of readdirSync(dirname(clientPath))) {
+    if (CLIENT_CHUNK.test(name)) packageFile(directory, resolve(dirname(clientPath), name));
   }
-  const hash = createHash("sha1").update(
-    JSON.stringify([selection.id, manifest, source, [...chunks]]),
-  );
   return {
     id: selection.id,
     directory,
     clientPath,
     manifest,
     requirements,
-    source,
-    chunks,
-    rev: hash.digest("hex").slice(0, 12),
   };
 }
 

@@ -1,6 +1,12 @@
 {
   "source": "deepseek-harness (codexhost-web fork)",
   "version": "0.2.1-alpha.1",
+  "webPluginRuntimeUpstream": {
+    "source": "codexhost-web fork",
+    "commit": "a28f8758b4579787e8511a2a45401e2c29ba2199",
+    "scope": "Cordis Include patch dialect; WebServer routes and index injections; client-modules; bare package classification from app-boot profile resolution",
+    "adaptation": "Embedded HTTP carrier without a second listener; Node resolve hooks limited to installed Web plugins and shared framework packages; Include uses the private @codexhost/dsh-web-include name to avoid changing Host Runtime's separate Cordis peers; no DSH CLI or Agent startup"
+  },
   "extensionInstallUpstream": {
     "source": "codexhost-web fork",
     "commit": "a28f8758b4579787e8511a2a45401e2c29ba2199",
@@ -69,6 +75,8 @@
   "packages": [
     "@deepseek-ai/cordis",
     "@deepseek-ai/cordis-plugin-loader",
+    "@codexhost/dsh-web-include",
+    "@deepseek-ai/dsh-host-webserver",
     "@deepseek-ai/cosmokit",
     "@deepseek-ai/dsh-agent-preset-registry",
     "@deepseek-ai/dsh-api-account-controller",

@@ -165,4 +165,4 @@ Thinking 的真实验收使用开发 Companion 0.1.6。MiniMax-M3.1-Flash 的 Li
 
 两个独立 Node 进程只读核对同一 Native Session 的两轮完整快照、原历史前缀和唯一 Host Turn 映射，哈希完全相同，没有创建新 Session、重发旧消息或执行工具。UI 验收暴露并修复了原生 RPC 包装绕过项目发布，以及无默认模型错误禁用模型菜单的问题；都是通用 Renderer 行为，没有 TRAE 专用 UI 分支。Head 1608dc9d 的四平台 CI 全部通过；该证据不代表其他 Desktop 版本、原生 macOS 或日常安装已验收。
 
-这些证据覆盖预装插件加载、桌面 Companion、公共 Adapter、隔离 Host 核心和上述 Desktop 基础对话流程。用户选择暂不调整原生 MCP 确认策略，允许 / 拒绝保留待验证；原生资源读取、其他未验证能力与日常部署仍需独立验收；自主 Turn 和无人值守委派明确受限。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。
+这些证据覆盖预装插件加载、桌面 Companion、公共 Adapter、隔离 Host 核心和上述 Desktop 基础对话流程。现有原生 MCP 策略没有触发审批，允许 / 拒绝保留待验证；原生资源读取、其他未验证能力与日常部署仍需独立验收；自主 Turn 和无人值守委派明确受限。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。

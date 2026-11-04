@@ -75,7 +75,7 @@ Thinking 选择：Companion 0.1.6 区分普通模型的 reasoning_effort_config�
 
 权限选择：Companion 0.1.7 只读动态配置、用户开关和最多 1 MiB 的本地 permission/global.json，沿用原生 Auto 可见性、Custom 存在性及默认规则，不导出授权资源或命令规则。preparePermission 验证原生作用域和档位后，公共选择配置下一轮；发送时同时设置消息顶层及 client_info 的 permission_profile_id。活动 Turn 固定原选择，不改全局配置。原生历史及 Session 元数据均未提供档位，只有 Host 已保存提示可以恢复，不以消息内容补造。远程和企业权限菜单不声明支持；未知活动 Profile 报错。手动模式也可能按原生规则直接执行允许的命令，不承诺每条命令都会弹审批。
 
-审批覆盖：Companion 0.1.8 明确声明文件 / MCP 审批能力，旧 Companion 不提供不可执行的按钮。文件操作的允许决策沿用原生 toolcall_id，拒绝使用 tool_name；删除沿用其无新增权限范围的专用格式。MCP / ReadMcpResource 沿用工具名，仅按原生新权限开关和请求元数据使用 execution / none，旧权限系统省略该字段。不提供 task / device 授权，不修改规则。界面保留目标文件、资源和 MCP 参数；未知格式或超限参数明确拒绝。文件修改和删除的允许及拒绝均已做真实验收。3.4.14 SOLO 的 MCP 执行已实测，本机原生策略没有要求额外审批；MCP 允许 / 拒绝与资源读取确认仍只有源码依据及回归测试。用户于 2026-11-04 选择暂不改变原生 MCP 确认策略，允许 / 拒绝保持待验证。
+审批覆盖：Companion 0.1.8 明确声明文件 / MCP 审批能力，旧 Companion 不提供不可执行的按钮。文件操作的允许决策沿用原生 toolcall_id，拒绝使用 tool_name；删除沿用其无新增权限范围的专用格式。MCP / ReadMcpResource 沿用工具名，仅按原生新权限开关和请求元数据使用 execution / none，旧权限系统省略该字段。不提供 task / device 授权，不修改规则。界面保留目标文件、资源和 MCP 参数；未知格式或超限参数明确拒绝。文件修改和删除的允许及拒绝均已做真实验收。3.4.14 SOLO 的 MCP 执行已实测，本机原生策略没有要求额外审批；MCP 允许 / 拒绝与资源读取确认仍只有源码依据及回归测试。验收保持现有原生权限策略，不为制造审批而修改全局规则。
 
 原生 Agent 与 MCP：Companion 0.1.11 在 TRAE CN 设置中提供 codexhost.traeCn.nativeAgent，默认沿用 builder_v3，可显式选择 solo_agent。完成活动工作后手动重启 Bridge 生效；已有 Session 必须使用其原生 Agent，类型不匹配在读取或写入前返回 configurationRequired，不自动改写会话。本机 3.4.14 的 Builder / SOLO 对话模型池分别为 9 / 19 项，不混合目录，不指定默认模型。先前两个 Builder 测试没有调用 MCP；raw agent/get_agents 的空 mcp_list 不能代表前端合成后的能力。SOLO 的独立测试实际触发 runAgentExtension，确认只读回调白名单缺少执行路径。
 

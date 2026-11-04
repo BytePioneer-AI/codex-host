@@ -37,6 +37,117 @@ const catalog = (urls: string[], extra = {}) => ({
 });
 afterEach(() => vi.restoreAllMocks());
 
+/** Mirrors the bundled layout: the entry namespace exposes only the runtime, whose `.c` holds
+ * instantiated modules and `.m` holds factories that must never run. */
+function bundledRuntime(
+  cache: Record<string, unknown>,
+  factories: Record<string, () => unknown> = {},
+) {
+  const require = Object.assign(
+    vi.fn(() => {
+      throw new Error("The bundled runtime must not be called during discovery");
+    }),
+    { c: cache, m: factories },
+  );
+  return { namespace: { __webpack_require__: require } as Record<string, unknown>, require };
+}
+function compiledModule(bindings: Record<string, () => unknown>): { exports: object } {
+  const exports = {};
+  for (const [key, get] of Object.entries(bindings))
+    Object.defineProperty(exports, key, { enumerable: true, get });
+  return { exports };
+}
+
+describe("bundled runtime native service discovery", () => {
+  const entry = "app://-/assets/entry.js";
+  const container = "app://-/assets/container.js";
+
+  function bundled(cache: Record<string, unknown>, factories?: Record<string, () => unknown>) {
+    const f = fixture(catalog([container, entry]));
+    const runtime = bundledRuntime(cache, factories);
+    f.imported.mockImplementation(async (url) =>
+      url === entry ? runtime.namespace : { __rspack_esm_id: "1", __webpack_modules__: {} },
+    );
+    return { ...f, runtime };
+  }
+
+  it("finds an instantiated export without calling the runtime or its factories", async () => {
+    const factory = vi.fn();
+    // Rspack emits `()=>binding`; defined literally so the source survives test transforms.
+    const module = { exports: {} };
+    const binding = creator;
+    Object.defineProperty(module.exports, "Nw", {
+      enumerable: true,
+      get: new Function("binding", "return ()=>binding")(binding) as () => unknown,
+    });
+    const f = bundled({ owner: module, other: { exports: {} } }, { lazy: factory });
+    expect(await f.load()).toBe(creator);
+    expect(f.runtime.require).not.toHaveBeenCalled();
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a registered factory as an available service", async () => {
+    const factory = vi.fn(() => creator);
+    const f = bundled({}, { lazy: factory });
+    expect(await f.load()).toBeNull();
+    expect(factory).not.toHaveBeenCalled();
+    expect(f.runtime.require).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates aliases but rejects two distinct instantiated services", async () => {
+    const data = (value: unknown) => {
+      const exports = {};
+      Object.defineProperty(exports, "service", { enumerable: true, value });
+      return { exports };
+    };
+    const duplicate = bundled({ a: data(creator), b: data(creator) });
+    expect(await duplicate.load()).toBe(creator);
+    const marked = (value: unknown): value is { marker: true } =>
+      typeof value === "object" && value !== null && "marker" in value;
+    const ambiguous = bundled({ a: data({ marker: true }), b: data({ marker: true }) });
+    await expect(
+      loadCodexNativeServices(ambiguous.owner as unknown as Window, marked, ambiguous.imported),
+    ).rejects.toThrow("native services are unavailable");
+  });
+
+  it("does not run unknown accessors or enumerate CommonJS objects such as window", async () => {
+    const lazy = vi.fn(() => creator);
+    const exports = {};
+    Object.defineProperty(exports, "lazy", { enumerable: true, get: lazy });
+    const globalLike = {
+      get service() {
+        return lazy();
+      },
+    };
+    const f = bundled({
+      unknownGetter: { exports },
+      commonJs: { exports: globalLike },
+      failed: { error: new Error("boom"), exports: { service: creator } },
+      deferred: { exports: Promise.resolve(creator) },
+    });
+    expect(await f.load()).toBeNull();
+    expect(lazy).not.toHaveBeenCalled();
+  });
+
+  it("skips a binding still in its temporal dead zone", async () => {
+    const throwing = new Function("return ()=>binding")() as () => unknown;
+    const f = bundled({ early: compiledModule({ pending: throwing }) });
+    expect(await f.load()).toBeNull();
+  });
+
+  it("scans past the URL catalog limit and fails closed beyond its own budget", async () => {
+    const tail = {};
+    Object.defineProperty(tail, "service", { enumerable: true, value: creator });
+    const modules: Record<string, unknown> = {};
+    for (let index = 0; index < 5_000; index++) modules[`m${index}`] = { exports: {} };
+    modules.tail = { exports: tail };
+    expect(await bundled(modules).load()).toBe(creator);
+    const oversized: Record<string, unknown> = {};
+    for (let index = 0; index <= 32_768; index++) oversized[`m${index}`] = {};
+    await expect(bundled(oversized).load()).rejects.toThrow("native services are unavailable");
+  });
+});
+
 describe("loaded native service discovery", () => {
   it("finds createThread in an already-loaded deep chunk absent from modulepreloads", async () => {
     const deep = "app://-/assets/deep-unrelated-name.js";

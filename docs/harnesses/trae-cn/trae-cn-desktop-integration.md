@@ -1,6 +1,6 @@
 # TRAE CN Desktop 原生桥接
 
-开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含插件 Manifest / 工厂、桌面 Companion、本机传输、公共 Adapter、文本会话、文件编辑与 Diff、结构化提问、命令 / 文件 / MCP 单次审批映射、已确认身份的活动恢复、模型 / Thinking / 本地权限选择及受限的 Fork / Rollback。插件 Bundle 与 Companion VSIX 已验证；预装清单、搬移 Host 与插件加载已验证；审批覆盖及完整 Desktop 验收尚未完成，仍为开发版本。
+开发中的 TRAE CN 接入以国内桌面应用的原生 Agent 为执行者，复用应用登录、模型配置和 Session。当前包含插件 Manifest / 工厂、桌面 Companion、本机传输、公共 Adapter、文本会话、文件编辑与 Diff、结构化提问、命令 / 文件 / MCP 单次审批映射、已确认身份的活动恢复、模型 / Thinking / 本地权限选择及受限的 Fork / Rollback。插件 Bundle、Companion VSIX、预装清单、搬移 Host，以及隔离 Desktop 的真实新建 / 手动选模型 / 重启续聊已验证；MCP 审批与资源读取及日常窗口部署尚未完成，仍为开发版本。
 
 ## 构建与安装
 
@@ -159,6 +159,10 @@ Thinking 的真实验收使用开发 Companion 0.1.6。MiniMax-M3.1-Flash 的 Li
 
 预装发行验收中，完整集合的真实 Loader、仓库外 Host / 插件以及 npm 文件集检查均通过，缺 Companion 时返回可重试的 configurationRequired。TRAE CN 3.4.13 的两轮实际对话通过预装插件进入隔离 AppServerHost；第二轮由新进程恢复同一 Thread / Native Session，精确读取原历史后复述第一轮的 TRAE_CN_3413_PREINSTALLED_OK。两轮各有唯一映射，原生状态为 Finished。Host 的真实委派入口则因固定要求 unattended-full-access 被插件明确拒绝，未改变父会话历史；该结果不代表可接收无人值守任务。
 
-当前日常 CodexHost 安装为 0.17.0，其实际 Runtime 仍为插件 API 1，且预装清单没有 trae-cn。开发插件要求 API 2，因此不能仅复制插件到这份运行中的 Host，也不降级 Manifest 绕过校验。未替换或强制重启用户的活动 Desktop。
+早期日常 CodexHost 0.17.0 的实际 Runtime 为插件 API 1，预装清单没有 trae-cn。开发插件要求 API 2，因此不能仅复制插件到该 Host，也不降级 Manifest 绕过校验。本机 CLI 随后已更新至 0.17.1，但本 PR 的 API 2 源代码与开发 Companion 未部署至日常窗口；没有替换或强制重启用户的活动 Desktop。
 
-这些证据覆盖预装插件加载、桌面 Companion、公共 Adapter 与隔离 Host 核心，仍需审批覆盖、自主 / 后台行为、完整委派，以及用户当前 CodexHost / Desktop 验收。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。
+2026-11-04 在独立的官方 Desktop 26.1027.3384.0 副本中完成真实界面验收。该副本使用独立 profile、CODEX_HOME、APPDATA / LOCALAPPDATA 和 Host 数据目录，加载源代码 Host / Controller / Renderer；日常窗口保持运行。新建页选定已打开的 MCP 工作区后，TRAE CN 可选并显示 19 个 SOLO 模型；无默认模型时显示 Select model，必须显式选择，其他聊天的模型偏好不自动填入。手动选择 Seed-Code 并发送后，真实界面收到 TRAE_CN_DESKTOP_UI_OK。完全重启副本，新草稿仍不预选模型；打开原 Thread，Seed-Code 和原历史恢复，发送不包含答案的复述请求后仍收到原标记。
+
+两个独立 Node 进程只读核对同一 Native Session 的两轮完整快照、原历史前缀和唯一 Host Turn 映射，哈希完全相同，没有创建新 Session、重发旧消息或执行工具。UI 验收暴露并修复了原生 RPC 包装绕过项目发布，以及无默认模型错误禁用模型菜单的问题；都是通用 Renderer 行为，没有 TRAE 专用 UI 分支。Head 1608dc9d 的四平台 CI 全部通过；该证据不代表其他 Desktop 版本、原生 macOS 或日常安装已验收。
+
+这些证据覆盖预装插件加载、桌面 Companion、公共 Adapter、隔离 Host 核心和上述 Desktop 基础对话流程。用户选择暂不调整原生 MCP 确认策略，允许 / 拒绝保留待验证；原生资源读取、其他未验证能力与日常部署仍需独立验收；自主 Turn 和无人值守委派明确受限。逐项状态见 [CAPABILITIES.md](../../../packages/adapters/trae-cn/CAPABILITIES.md)。

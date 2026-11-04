@@ -6,7 +6,7 @@
 |---|---|
 | Harness ID | trae-cn |
 | 原生接口与传输方式 | TRAE CN 桌面扩展桥接 `electron.ahaIpc`，调用应用自带 `harness.dll` / `ai-agent` JSON-RPC；复用应用登录 |
-| 已验证的原生版本 | Windows x64：TRAE CN 3.4.12 原生执行；3.4.13 预装插件经隔离 Host 实际对话及冷恢复续聊；3.4.14 SOLO 原生 MCP 执行与 Bridge 重建后的精确冷读；VS Code core 1.107.1 |
+| 已验证的原生版本 | Windows x64：TRAE CN 3.4.12 原生执行；3.4.13 预装插件经隔离 Host 实际对话及冷恢复续聊；3.4.14 SOLO 原生 MCP 执行、Bridge 重建后的精确冷读，以及隔离 Desktop 26.1027.3384.0 的真实新建、手动选模型和重启续聊；VS Code core 1.107.1 |
 | 交付范围 | 仓库内插件 + 桌面 Companion 扩展；原生接口为应用私有接口，须独立验收版本兼容性 |
 | 参考插件 | WorkBuddy 的应用发现与应用拥有的认证；公共 Harness 输出和交互契约 |
 | 最后验证 | 2026-10-31～11-04 Windows；真实对话、文件编辑与 Diff、活动恢复、提问及审批、文本 Fork / Rollback、单轮文件编辑回退为空；3.4.14 SOLO MCP 执行、源码哈希与跨进程冷读 |
@@ -63,7 +63,7 @@
 
 活动恢复的公共契约缺口与实现：原生实测可在断开观察者后重放同一问题实例，并继续同一用户消息；旧 Host 只在 turn.completed 持久化 NativeTurnRef，knownTurnRefs 没有原 Host Turn ID。API 2 新增可选 activeTurnRecovery、turn.identity.confirmed、knownTurns 和 recoveringTurn，Host 提前持久化原身份并按确认映射恢复原投影；Broker 转发，Renderer 沿用原公共投影，没有 TRAE 专用分支。旧 API 1 插件仍可加载且不接收新输入；TRAE 插件声明 API 2，拒绝在旧 Host 上执行。没有确认映射时不会猜测或重发任务。
 
-当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。插件 Manifest / 工厂、Bundle、Companion VSIX、本机 HTTP、公共 Adapter、普通 Session、结构化提问、命令 / 文件 / MCP 单次审批映射、已确认身份的活动恢复、逐轮模型 / Thinking / 本地权限选择及受限的历史派生已实现；预装发行接线与搬移验证已通过；审批覆盖、其余能力及当前用户 Desktop 验收尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接和确认状态的更新直至结束。
+当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。插件 Manifest / 工厂、Bundle、Companion VSIX、本机 HTTP、公共 Adapter、普通 Session、结构化提问、命令 / 文件 / MCP 单次审批映射、已确认身份的活动恢复、逐轮模型 / Thinking / 本地权限选择及受限的历史派生已实现；预装发行接线与搬移验证、隔离 Desktop 的真实新建 / 手动选模型 / 重启续聊已通过；MCP 审批及资源读取、其余能力和日常窗口部署验收尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接和确认状态的更新直至结束。
 
 历史派生限制：3.4.12 的原生 fork_session 可以精确复制文本会话前缀，但不会为复制的文件编辑用户消息建立对应的快照 Git 标签。一次独立原生探测创建了可读消息但不可读文件快照的副本；源历史不变，副本已停止并保留供核查，没有重试或删除用户历史。插件在写入前拒绝含文件编辑的 Fork，以及需保留非空前缀的文件编辑 Rollback。只有一轮时，Rollback 创建独立空会话，无需复制快照。会话回退不回滚工作区文件。新会话身份、精确前缀和源历史均重新核对；不确定回执不自动重试，已知副本验证失败时报告其原生 ID。
 
@@ -75,7 +75,7 @@ Thinking 选择：Companion 0.1.6 区分普通模型的 reasoning_effort_config�
 
 权限选择：Companion 0.1.7 只读动态配置、用户开关和最多 1 MiB 的本地 permission/global.json，沿用原生 Auto 可见性、Custom 存在性及默认规则，不导出授权资源或命令规则。preparePermission 验证原生作用域和档位后，公共选择配置下一轮；发送时同时设置消息顶层及 client_info 的 permission_profile_id。活动 Turn 固定原选择，不改全局配置。原生历史及 Session 元数据均未提供档位，只有 Host 已保存提示可以恢复，不以消息内容补造。远程和企业权限菜单不声明支持；未知活动 Profile 报错。手动模式也可能按原生规则直接执行允许的命令，不承诺每条命令都会弹审批。
 
-审批覆盖：Companion 0.1.8 明确声明文件 / MCP 审批能力，旧 Companion 不提供不可执行的按钮。文件操作的允许决策沿用原生 toolcall_id，拒绝使用 tool_name；删除沿用其无新增权限范围的专用格式。MCP / ReadMcpResource 沿用工具名，仅按原生新权限开关和请求元数据使用 execution / none，旧权限系统省略该字段。不提供 task / device 授权，不修改规则。界面保留目标文件、资源和 MCP 参数；未知格式或超限参数明确拒绝。文件修改和删除的允许及拒绝均已做真实验收。3.4.14 SOLO 的 MCP 执行已实测，本机原生策略没有要求额外审批；MCP 允许 / 拒绝与资源读取确认仍只有源码依据及回归测试。
+审批覆盖：Companion 0.1.8 明确声明文件 / MCP 审批能力，旧 Companion 不提供不可执行的按钮。文件操作的允许决策沿用原生 toolcall_id，拒绝使用 tool_name；删除沿用其无新增权限范围的专用格式。MCP / ReadMcpResource 沿用工具名，仅按原生新权限开关和请求元数据使用 execution / none，旧权限系统省略该字段。不提供 task / device 授权，不修改规则。界面保留目标文件、资源和 MCP 参数；未知格式或超限参数明确拒绝。文件修改和删除的允许及拒绝均已做真实验收。3.4.14 SOLO 的 MCP 执行已实测，本机原生策略没有要求额外审批；MCP 允许 / 拒绝与资源读取确认仍只有源码依据及回归测试。用户于 2026-11-04 选择暂不改变原生 MCP 确认策略，允许 / 拒绝保持待验证。
 
 原生 Agent 与 MCP：Companion 0.1.11 在 TRAE CN 设置中提供 codexhost.traeCn.nativeAgent，默认沿用 builder_v3，可显式选择 solo_agent。完成活动工作后手动重启 Bridge 生效；已有 Session 必须使用其原生 Agent，类型不匹配在读取或写入前返回 configurationRequired，不自动改写会话。本机 3.4.14 的 Builder / SOLO 对话模型池分别为 9 / 19 项，不混合目录，不指定默认模型。先前两个 Builder 测试没有调用 MCP；raw agent/get_agents 的空 mcp_list 不能代表前端合成后的能力。SOLO 的独立测试实际触发 runAgentExtension，确认只读回调白名单缺少执行路径。
 
@@ -89,11 +89,15 @@ Edit 参数清空：原生执行结束会清空 old_string / new_string。工具
 
 ## 插件外改动
 
-Desktop 工作区缺口：同一真实 Renderer Host 请求带 cwd 时 TRAE 返回 ready 与 19 个模型，省略时返回工作区未打开。现有 Harness inspect 契约已有 cwd，但新建页可用性及模型目录请求未传已发布的草稿工作区，目录切换也只刷新命令。现已将通用 Renderer 的草稿检查绑定已有工作区事件；为 Harness inspect 增加可选 threadId，由 Host 校验 Harness 归属并使用该 Thread 的持久 cwd，不让当前草稿目录覆盖已有会话。目录切换废弃旧响应；已有会话自身的目录可用时，其控件不跟随其他草稿报错。旧 Host 明确拒绝新参数时，沿用其原来未按 Thread 定位的检查行为。没有 TRAE 专用 Renderer / Host 分支。166 项聚焦回归、4 项浏览器检查、根构建、Renderer 构建、测试类型检查、改动 ESLint / 格式与 boundaries 通过；真实 Desktop 项目选择后的最终验收仍待完成。
+Desktop 工作区缺口：同一真实 Renderer Host 请求带 cwd 时 TRAE 返回 ready 与 19 个模型，省略时返回工作区未打开。现有 Harness inspect 契约已有 cwd，但新建页可用性及模型目录请求未传已发布的草稿工作区，目录切换也只刷新命令。现已将通用 Renderer 的草稿检查绑定已有工作区事件；为 Harness inspect 增加可选 threadId，由 Host 校验 Harness 归属并使用该 Thread 的持久 cwd，不让当前草稿目录覆盖已有会话。目录切换废弃旧响应；已有会话自身的目录可用时，其控件不跟随其他草稿报错。旧 Host 明确拒绝新参数时，沿用其原来未按 Thread 定位的检查行为。没有 TRAE 专用 Renderer / Host 分支。166 项聚焦回归、4 项浏览器检查、根构建、Renderer 构建、测试类型检查、改动 ESLint / 格式与 boundaries 通过；后续真实隔离 Desktop 验收及补充修复见下。
+
+原生项目发现与手动模型：原生 RPC 安装器包装 forComposer 后会通过 hostIdForComposer 直接取得 Host，因此项目发布也必须发生在该入口；不能只在被绕过的旧方法中刷新。选定项目通过 committed 草稿的 projectId 与原生侧栏目录解析，未知 / 清除 / 不可读选择撤销旧 cwd。真实目录没有默认模型时，非空可选目录仍为 ready，模型按钮显示 Select model；不自动采用第一项或其他聊天的保存偏好，显式选择之前禁止提交，已有会话则恢复自身模型。实际 RPC 安装器回归先复现问题，再通过 123 项 / 7 文件检查；无默认模型及旧偏好回归通过 106 项 / 4 文件检查。集合有重叠，不累计。
 
 预装清单、完整集合加载测试和搬移 Host 发行测试已加入 trae-cn。公共 API 2 扩展涉及 shared-contracts、harness-adapter、Host Runtime、Broker 及对应测试和文档；缺省兼容 API 1，无 Harness 专用公共分支。`package-lock.json` 注册 Workspace、三个公共契约依赖以及 Companion 打包 / ZIP 验证开发工具；根 `tsconfig.json` 加入该包的构建引用；`eslint.config.js` 为应用内 CommonJS 资源加入通用检查；`docs/index.md` 添加开发说明入口；`tests/release` 新增插件搬移和 VSIX 资源验证。开发工具不进入运行时 Bundle。先前独立 CLI 原型已从最终变更中撤回。
 
 ## 验证记录
+
+真实 Desktop UI（2026-11-04）：Windows 官方 Desktop 26.1027.3384.0 的独立副本，源代码 Host / Controller / Renderer，TRAE CN 3.4.14 / SOLO / 开发 Companion 0.1.11。在真实新建页选择 TRAE CN，读取 19 个原生对话模型，手动选择 Seed-Code 后发送，界面收到 TRAE_CN_DESKTOP_UI_OK。完全重启隔离 Desktop 后，新草稿仍要求 Select model；重新打开原 Thread，恢复同一模型与历史，再发送不含答案标记的“只复述上一次你的完整回复，不执行工具。”，界面收到同一标记。Host 保留同一个 NativeSessionRef 和两个唯一 Turn 映射；两个独立 Node 进程只读恢复的完整两轮快照 SHA-256 均为 f303aaa793f27a1b4418197337de777ca292d2f950af3d258931ee598f8784af，原首轮前缀精确不变，没有工具执行或重发。源码 Head 为 1608dc9d，其 Ubuntu / Windows / Linux ARM64 / macOS CI 全部通过，run 41781057146。证据为本地 ui-acceptance-v5.json、ui-cold-native-first.json、ui-cold-native-second.json 及界面截图，未提交本机日志 / 身份配置。日常 Desktop、当前较新 Desktop 版本、完整 MCP 审批与资源读取仍未验收。
 
 后台观察（2026-11-03）：最终完整 Adapter / VSIX / 插件 / 搬移 Host 族 236 项通过；typecheck、lint / boundaries 与改动格式通过。覆盖拒绝启动、执行身份变化、终态输出仍在刷新、后续轮并行、观察关闭及后台中冷恢复。真实 3.4.13 + 开发 Companion 0.1.9：在原专用 Thread 中完成后台新轮与后续纯文本轮，父轮 / 后续轮先结束，原命令随后输出 TRAE_CN_HOST_BACKGROUND_NEXT_DONE、exitCode=0；历史进行中叠加正确。Companion 进程退出后重建，两个新 Host 精确读取同一三轮历史，原前缀和三条唯一映射不变，Native Finished。先前脚本分别误选 thinking 兼容 Item、误读完成帧中的省略输出，保留失败记录后按真实增量和历史核对；没有重发旧命令。安装包包含十二个 CJS 资源。
 
@@ -160,4 +164,4 @@ MCP Head 9a19320c 的 Ubuntu / Windows / Linux ARM64 / macOS CI 全部通过，r
 | 预装发行与 3.4.13 执行 | 根 build:typescript；完整集合 Loader；搬移发行 Host；两进程真实会话 | 预装目录 / 启用 / 缺 Companion 诊断通过；3.4.13 两轮真实对话，冷恢复精确且上下文续聊成功；当前用户窗口仍未验收 |
 | 发行检查 | 46 项 Host Bundle / npm 检查；8 项 payload 检查；完整集合 Loader、独立插件 / VSIX 和工厂检查；typecheck、lint / boundaries | 均通过；初次两项 npm stderr 断言受到环境 UNDICI-EHPA 警告影响，关闭该警告后通过；payload 一项符号链接验证因本机 EPERM 未通过，定向检查中排除并单独记录 |
 | 扩展审批 CI | f298d2aa：GitHub Actions 41469773726 | Ubuntu、Windows、Linux ARM64、macOS 15 全部通过；预装接线之后需新 Head 的 CI |
-| Desktop / 委派 | 当前日常 Runtime 0.17.0 仍为插件 API 1；真实 Coordinator.start 使用 unattended-full-access | 旧 Host 无法加载 API 2 插件；无人值守委派明确拒绝；普通 Thread 的两轮与冷恢复已验证，不能据此声称完整 Desktop / 委派支持 |
+| Desktop / 委派 | 早期日常 Runtime 0.17.0 实测为插件 API 1；真实 Coordinator.start 使用 unattended-full-access；后续隔离源代码 Desktop 完成新建 / 手动模型 / 重启续聊 | 无人值守委派明确拒绝；本机 CLI 已更新至 0.17.1，但本 PR 的 API 2 源代码未部署到日常窗口，不能据此声称日常部署或完整委派支持 |

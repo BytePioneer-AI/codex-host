@@ -276,6 +276,37 @@ it("re-discovers the current RPC family instead of keeping an old ready family",
   }
 });
 
+it("reads one discovered RPC family without remounting unrelated native signals", async () => {
+  const threadSignal = vi.fn(() => null);
+  const hashSignal = vi.fn(() => null);
+  const hostSignal = vi.fn(() => null);
+  const f = setup({ hosts: ["local"] });
+  f.familyBindings.set(
+    { kind: "signal-family" },
+    new Map([
+      ['{"conversationId":"thread","hostId":"local"}', { value: { get: threadSignal } }],
+      ["1463309241", { value: { get: hashSignal } }],
+      ["local", { value: { get: hostSignal } }],
+    ]),
+  );
+  const routing = await install(f);
+  try {
+    const scans = hostSignal.mock.calls.length;
+    expect(scans).toBeGreaterThan(0);
+    const route = routing.forHost("local");
+    for (let read = 0; read < 5; read += 1) {
+      expect(routing.forHost("local")).toBe(route);
+      expect(routing.knownHostIds?.()).toContain("local");
+      route?.policy.requestTarget();
+    }
+    expect(hostSignal).toHaveBeenCalledTimes(scans);
+    expect(threadSignal).not.toHaveBeenCalled();
+    expect(hashSignal).not.toHaveBeenCalled();
+  } finally {
+    routing.dispose();
+  }
+});
+
 it("returns to the ready RPC peer when a native Host disappears", async () => {
   const f = setup({ nativeManager: true });
   const routing = await install(f);

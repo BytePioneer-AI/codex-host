@@ -54,10 +54,10 @@ export function mergeRefs(inherited: readonly string[], own: readonly string[]):
 
 export interface ThreadRefsStore {
   get(threadId: string): Promise<string[]>;
-  /** `cwd` is kept so a listing by reference can show where each Thread works. */
-  set(threadId: string, refs: readonly string[], cwd?: string): Promise<void>;
+  /** `cwd` and `title` are kept so a listing by reference can describe each Thread. */
+  set(threadId: string, refs: readonly string[], cwd?: string, title?: string): Promise<void>;
   /** Threads that carry the reference, most recently set first. */
-  find(ref: string): Promise<Array<{ threadId: string; cwd?: string }>>;
+  find(ref: string): Promise<Array<{ threadId: string; cwd?: string; title?: string }>>;
 }
 
 interface RefsFile {
@@ -65,6 +65,7 @@ interface RefsFile {
   threadId: string;
   refs: string[];
   cwd?: string;
+  title?: string;
   updatedAt: string;
 }
 
@@ -98,13 +99,19 @@ export class FileThreadRefsStore implements ThreadRefsStore {
     }
   }
 
-  async set(threadId: string, refs: readonly string[], cwd?: string): Promise<void> {
+  async set(
+    threadId: string,
+    refs: readonly string[],
+    cwd?: string,
+    title?: string,
+  ): Promise<void> {
     await mkdir(this.#directory, { recursive: true, mode: 0o700 });
     const file: RefsFile = {
       formatVersion: 1,
       threadId,
       refs: [...refs],
       ...(cwd ? { cwd } : {}),
+      ...(title ? { title } : {}),
       updatedAt: new Date().toISOString(),
     };
     const target = this.#path(threadId);
@@ -117,7 +124,7 @@ export class FileThreadRefsStore implements ThreadRefsStore {
     }
   }
 
-  async find(ref: string): Promise<Array<{ threadId: string; cwd?: string }>> {
+  async find(ref: string): Promise<Array<{ threadId: string; cwd?: string; title?: string }>> {
     let names: string[];
     try {
       names = await readdir(this.#directory);
@@ -137,6 +144,7 @@ export class FileThreadRefsStore implements ThreadRefsStore {
       .map((file) => ({
         threadId: file.threadId,
         ...(typeof file.cwd === "string" ? { cwd: file.cwd } : {}),
+        ...(typeof file.title === "string" ? { title: file.title } : {}),
       }));
   }
 

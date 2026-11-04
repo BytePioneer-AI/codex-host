@@ -48,6 +48,7 @@ export interface DelegationThreadSnapshot {
   hostId?: string;
   threadId: string;
   harnessId: RoutedHarnessId;
+  title?: string;
   status: DelegationThreadStatus;
   turn: { turnId: string; status: DelegationThreadStatus } | null;
   progress: DelegationProgress[];
@@ -108,6 +109,7 @@ export interface DelegationStartResult {
   deepLink: string;
   status: DelegationThreadStatus;
   cwd?: string;
+  title?: string;
   parentThreadId?: string;
   configuration?: DelegationConfigurationResult;
   /** References the child carries, inherited ones first; omitted when there are none. */

@@ -114,7 +114,7 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     const parent = result.parentThreadId ?? start.parentThreadId;
     const inherited = parent && !originClientName(parent) ? await this.#refs.get(parent) : [];
     const refs = mergeRefs(inherited, own);
-    if (refs.length > 0) await this.#refs.set(result.threadId, refs, result.cwd);
+    if (refs.length > 0) await this.#refs.set(result.threadId, refs, result.cwd, result.title);
     return withRefs(result, refs);
   }
 
@@ -214,20 +214,22 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     }
     const window = matches.slice(offset, offset + input.limit);
     const rows = await Promise.all(
-      window.map(({ threadId, cwd }) =>
+      window.map(({ threadId, cwd, title }) =>
         this.read({ threadId, view: "result" })
-          .then((snapshot) =>
-            withRefs(
+          .then((snapshot) => {
+            const resolvedTitle = snapshot.title ?? title;
+            return withRefs(
               {
                 threadId,
                 harnessId: snapshot.harnessId,
                 deepLink: `codex://threads/${threadId}`,
                 status: snapshot.status,
                 ...(cwd ? { cwd } : {}),
+                ...(resolvedTitle ? { title: resolvedTitle } : {}),
               },
               snapshot.refs ?? [],
-            ),
-          )
+            );
+          })
           // A Thread deleted since its references were stored is left out.
           .catch(() => undefined),
       ),

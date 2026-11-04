@@ -248,7 +248,12 @@ export class HarnessDelegationCoordinator {
         cwd: selectedCwd,
         title,
       });
-      return { ...result, parentThreadId, cwd: result.cwd ?? selectedCwd };
+      return {
+        ...result,
+        parentThreadId,
+        cwd: result.cwd ?? selectedCwd,
+        title: result.title ?? title,
+      };
     }
     const startInput = { ...input, parentThreadId, cwd: path.resolve(selectedCwd) };
     if (!this.#adapters.has(input.harnessId)) {
@@ -424,6 +429,7 @@ export class HarnessDelegationCoordinator {
             },
           }),
           cwd: record.cwd,
+          title: record.title,
           parentThreadId,
         };
       } catch (error) {
@@ -740,7 +746,7 @@ export class HarnessDelegationCoordinator {
         delegation.targetHarnessId as RoutedHarnessId,
         delegation.status,
       ),
-      ...(record ? { cwd: record.cwd } : {}),
+      ...(record ? { cwd: record.cwd, title: record.title } : {}),
       parentThreadId: delegation.parentHostThreadId,
     };
   }

@@ -48,6 +48,7 @@ function session(): DelegationControlRegistration & { starts: DelegationStartInp
         deepLink: `codex://threads/${threadId}`,
         status: "running" as const,
         ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...((input.taskName ?? input.task) ? { title: input.taskName ?? input.task } : {}),
         ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
         next: { read: "read", wait: "wait" },
       };
@@ -265,12 +266,13 @@ describe("Thread references", () => {
     expect(bodies[1]?.body).toMatchObject({ client: "grok-bot" });
     expect(bodies[1]?.body).not.toHaveProperty("cwd");
   });
-  it("shows where a Thread works when listing by reference", async () => {
+  it("shows where a Thread works and its title when listing by reference", async () => {
     const registry = new DelegationControlRegistry({ refs: store });
     registry.register(session());
     await registry.start({
       harnessId: "pi",
-      task: "t",
+      task: "fix issue 12",
+      taskName: "fix #12",
       cwd: "/repo",
       parentThreadId: "root",
       refs: [ISSUE],
@@ -278,7 +280,7 @@ describe("Thread references", () => {
     await expect(
       registry.list({ ref: ISSUE, limit: 5, sort: "created-desc" }),
     ).resolves.toMatchObject({
-      threads: [{ threadId: "child-1", cwd: "/repo", refs: [ISSUE] }],
+      threads: [{ threadId: "child-1", cwd: "/repo", title: "fix #12", refs: [ISSUE] }],
     });
   });
 

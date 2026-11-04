@@ -60,7 +60,13 @@ export function installRendererHostRpcRouting(
     if (disposed) return null;
     try {
       const store = dependencies.findStore(root);
-      discovery = store ? dependencies.findFamily(store) : null;
+      // Scanning reads signals, and reading mounts them: native atoms send requests
+      // on mount. Keep a discovered family until Desktop removes it from the store.
+      const bound =
+        store && discovery?.store === store
+          ? [...store.familyBindings.values()].includes(discovery.family)
+          : false;
+      if (!bound) discovery = store ? dependencies.findFamily(store) : null;
     } catch {
       discovery = null;
     }

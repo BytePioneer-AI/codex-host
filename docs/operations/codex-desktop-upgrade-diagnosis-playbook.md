@@ -285,6 +285,7 @@ React 根 useRef -> app scope handle { node, chain, scope, get, set, watch }
 识别与路由：
 
 - 只有 Composer 中找不到 native manager 时才启用 `main-process-rpc` 路由（`packages/desktop-control/src/renderer-host-rpc-routing.ts`）；连接值形状不唯一时 fail closed。
+- 读取 signal 会挂载它，原生原子可能在挂载时发请求（例如子代理发现会发 `thread/list`）。因此只读取键形如 Host ID 的成员，找到连接 family 后一直复用，直到 Desktop 把它从 store 移除。排查 Host CPU 偏高时，先看 `thread/list` 的频率。
 - Desktop 的 Model hook 只接受 `model/list` 目录中的 Model，草稿设置里的 codexhost carrier 会被丢弃。外部 Agent 的 carrier 因此在出站的 `startConversation`（按 `clientThreadId`）和 `prewarmConversation` 上改写；预热 carrier 带 `prewarm: true`，因为主进程的 `thread/start` 不再透传 `codexhostPrewarm` 参数。
 - 主进程的服务端队列对所有非 ephemeral Thread 启用，外部 Thread 的跟进消息由 Host 原生实现的 `thread/queue/*` 承接，见 `docs/architecture/external-thread-queue.md`。
 - 依赖旧 manager 内部成员的 Renderer 补丁在该路由下不安装；排查时先确认对应能力是否已迁到 Host 协议或出站 capnweb 层，不要恢复旧补丁。

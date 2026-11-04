@@ -922,13 +922,9 @@ export function installCurrentRendererAdapter(): {
         (window.__codexhostHostRoutingV1?.knownHostIds?.() ?? []).some(
           (hostId) => window.__codexhostHostRoutingV1?.forHost(hostId) != null,
         ));
-    const needsRpcSteering = [
-      "local",
-      ...(window.__codexhostHostRoutingV1?.knownHostIds?.() ?? []),
-    ].some((hostId) => {
-      const manager = window.__codexhostHostRoutingV1?.forHost(hostId)?.manager;
-      return manager != null && "kind" in manager && manager.kind === "main-process-rpc";
-    });
+    const manager = route?.manager;
+    const needsRpcSteering =
+      manager != null && "kind" in manager && manager.kind === "main-process-rpc";
     // Each external Composer gates on this binding itself. Aggregate readiness stays "ready" so a
     // discovery failure cannot hold the Renderer Session, and with it official Codex, hostage.
     const steeringReady = !needsRpcSteering || window.__codexhostRpcSteeringV1 !== undefined;

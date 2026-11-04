@@ -16,6 +16,7 @@ import {
   type RendererModuleCdpClient,
 } from "./renderer-loaded-modules.js";
 import { installNativeRpcRemoteControlDirect } from "./renderer-native-rpc-install.js";
+import { installRendererRpcSteeringDirect } from "./renderer-rpc-steering.js";
 
 export interface ProductionRendererStatus {
   version: 2;
@@ -385,6 +386,7 @@ const defaultOperations: RendererCdpControlOperations = {
   async installDraftPrewarmPolicy(renderer) {
     const status = await installRendererDraftPrewarmPolicyDirect(renderer);
     await installNativeRpcRemoteControlDirect(renderer);
+    await installRendererRpcSteeringDirect(renderer);
     return status;
   },
 };

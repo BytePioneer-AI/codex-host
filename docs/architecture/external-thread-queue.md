@@ -9,7 +9,7 @@ Desktop 在 Turn 运行中提交的跟进消息，经官方 app-server 的 `thre
 | `thread/queue/add` | 追加 `{ id, input, clientUserMessageId }`；`input` 必须含文本 |
 | `thread/queue/list` | 按顺序分页返回；`cursor` 为不透明偏移 |
 | `thread/queue/update` | 替换指定提交的 `input` |
-| `thread/queue/delete` | 返回 `{ deleted }` |
+| `thread/queue/delete` | 返回 `{ deleted }`；已接受引导的延迟删除按消息 ID 确认 |
 | `thread/queue/reorder` | 列出的 ID 按给定顺序移到前面，其余保持原顺序 |
 | `thread/queue/start` | 取出指定提交（缺省为首项）开始新 Turn，返回 `{ turn }`；Thread 忙时返回 `-32072` |
 
@@ -19,7 +19,8 @@ Desktop 在 Turn 运行中提交的跟进消息，经官方 app-server 的 `thre
 
 - Turn 正常完成（`completed`）后，Host 自动开始队首提交，对应官方服务端队列的自动推进。若入队请求晚于完成事件到达，Host 在回复入队后补查：仅当前进程已投影的最近一次 Turn 正常完成、Thread 空闲且没有待处理命令时推进；恢复出的历史不作为自动执行依据。
 - Turn 被中断或失败时不自动推进；Desktop 显示“队列已暂停”，用户点击“继续”时发送 `thread/queue/start`。
-- 运行中点击“引导”时，Desktop 先发 `turn/steer`，再 `thread/queue/delete`；投递方式由外部 steering 决定，见 `external-thread-steering.md`。
+- 运行中点击“引导”时，Desktop 先提交引导，再删除接受的队列消息；Host 按 `clientUserMessageId` 和规范化文本预留该条目，失败恢复原位置，成功则为稍后的 `thread/queue/delete` 保留删除回执（Host 内合计最多 128 条）。即使替换 Turn 在 Desktop 删除前快速完成，自动推进也不会重复执行这条输入。重复身份或输入变化在停止／发送前拒绝，不按文本单独删除其他消息。
+- 主进程 Manager 的新轮展示、请求标记和暂停结算见[外部 Thread 的「调整方向」](external-thread-steering.md#主进程-manager-的原生-rpc-路径)。存在其他中断暂停消息时，提交前要求先处理，不能用 resume-all 顺带恢复它。
 - 开始失败时，提交放回原位置并再次发出 `thread/queue/changed`。
 - Desktop 只为自己 `turn/start` 的输入做本地乐观展示。由队列开始的 Turn 由 Host 投影带 `clientId` 的 userMessage，否则该轮用户消息不显示。
 

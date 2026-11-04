@@ -143,6 +143,9 @@ import {
   threadOwnershipListResultSchema,
   threadSteeringInspectParamsSchema,
   threadSteeringInspectResultSchema,
+  threadSteeringContextSchema,
+  THREAD_STEERING_CONTEXT_PARAM,
+  THREAD_STEER_DELIVERY_PARAM,
   permissionModeFixedAtCreate,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
@@ -3821,7 +3824,7 @@ export class AppServerHost {
         ...(arguments_ ? { arguments: arguments_ } : {}),
       });
       if (!result.ok) throw new ExternalCommandError(-32073, result.error.message);
-      return { turnId: result.value.turnId, turn: projection.projector.pendingTurn(), gate };
+      return { turnId, turn: projection.projector.pendingTurn(), gate };
     } catch (error) {
       restoreExecutionHost();
       thread.running = false;
@@ -4770,6 +4773,11 @@ export class AppServerHost {
   }
 
   async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+    const context = routingParams(request).additionalContext;
+    if (isRecord(context) && Object.hasOwn(context, THREAD_STEERING_CONTEXT_PARAM)) {
+      await this.#steerExternalTurn(request, thread, true);
+      return;
+    }
     if (this.#externalThreadBusy(thread) || this.#pendingExternalCommandRequests.has(thread.id)) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active Turn"),
@@ -4966,11 +4974,38 @@ export class AppServerHost {
     }
   }
 
-  async #steerExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+  async #steerExternalTurn(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
+    asStart = false,
+  ): Promise<void> {
+    let queued: ReturnType<ExternalThreadQueue["takeSteered"]>;
+    let accepted = false;
     try {
+      let params = requestObject(request);
+      const context = params.additionalContext;
+      if (isRecord(context) && Object.hasOwn(context, THREAD_STEERING_CONTEXT_PARAM)) {
+        const marker = threadSteeringContextSchema.safeParse(
+          context[THREAD_STEERING_CONTEXT_PARAM],
+        );
+        if (
+          !marker.success ||
+          marker.data.clientUserMessageId !== params.clientUserMessageId ||
+          (asStart && marker.data.delivery !== "newTurn")
+        )
+          throw new ExternalSteerError(-32602, "Invalid native steering preparation context");
+        if (!asStart && params.expectedTurnId !== marker.data.expectedTurnId)
+          throw new ExternalSteerError(-32074, "Native steering target changed before submission");
+        params = {
+          ...params,
+          expectedTurnId: marker.data.expectedTurnId,
+          [THREAD_STEER_DELIVERY_PARAM]: marker.data.delivery,
+        };
+      }
+      queued = this.#externalQueue.takeSteered(thread.id, params.clientUserMessageId, params.input);
       const started = await this.#externalSteering.run(
         thread,
-        requestObject(request),
+        params,
         (text, assertActive) =>
           this.#beginExternalInputTurn(
             thread,
@@ -4979,24 +5014,43 @@ export class AppServerHost {
             typeof requestObject(request).clientUserMessageId === "string"
               ? (requestObject(request).clientUserMessageId as string)
               : undefined,
-            requestObject(request)[THREAD_REFERENCE_SOURCE_HOST_PARAM],
+            queued
+              ? queued.sourceHostId
+              : requestObject(request)[THREAD_REFERENCE_SOURCE_HOST_PARAM],
           ),
         (input) => this.#insertExternalInput(thread, input),
       );
+      accepted = true;
+      if (queued) {
+        // A notification failure cannot turn an accepted input into a failed delivery.
+        await this.#externalQueue
+          .acceptSteered(thread.id, queued)
+          .catch((error) => this.#diagnose(error));
+      }
       try {
         await this.#writer.json(
           rpcEnvelope(request, {
-            result: { turnId: started.turnId, delivery: started.delivery },
+            result: asStart
+              ? { turn: this.#projectedTurn(thread, started.turnId).projector.pendingTurn() }
+              : { turnId: started.turnId, delivery: started.delivery },
           }),
         );
       } finally {
         started.gate.resolve();
       }
     } catch (error) {
+      if (queued && !accepted) {
+        this.#externalQueue.restore(thread.id, queued);
+        await this.#externalQueue
+          .notifyChanged(thread.id)
+          .catch((failure) => this.#diagnose(failure));
+      }
       await this.#writer.json(
         rpcError(
           request,
-          error instanceof ExternalSteerError || error instanceof ExternalCommandError
+          error instanceof ExternalSteerError ||
+            error instanceof ExternalCommandError ||
+            error instanceof ExternalQueueError
             ? error.code
             : -32074,
           errorMessage(error),

@@ -19,7 +19,9 @@ Renderer 请求桥不使用 Host 上最后一次选择覆盖 `thread/start`。�
 
 选择策略先登记当前草稿的选择，再写入草稿模型；原生存储在写入时同步渲染新创建模式，也能读到本次选择。策略拒绝时不写草稿；草稿 setter 拒绝写入时（包括已执行 updater 后才拒绝提交），把该草稿的选择恢复为写入前草稿实际携带的 carrier（原本没有外部 carrier 时清除），不改动其他草稿。writer 只在 setter 正常返回后才记录新 carrier；updater 延迟执行时，连续外部选择共享首次写入前的原生设置，切回 Codex 或卸载时排队恢复该设置。
 
-Desktop 26.1027 的主进程 Manager 通过 Renderer app scope 中按 Host 发布的 RPC 连接发现。混合布局逐 Host 优先使用可用的 Renderer Manager，其余 Host 继续使用当前 `ready` 的 RPC client；一个 Host 就绪不会销毁其他 Host 的 RPC 路由或草稿绑定。RPC family 和 client 在读取时重新解析，原生 Manager 消失后也可回到仍有效的 RPC peer。没有可用连接时仍保持不可用，不以挂载注册表本身作为就绪依据。Remote Control 的连接代次为 `null`（断开、连接中、歧义或读取失败）时，两条路径都不可用；没有代次信号的旧布局以 `undefined` 保留 RPC 兼容。
+Desktop 26.1027 的主进程 Manager 通过 Renderer app scope 中按 Host 发布的 RPC 连接发现。混合布局逐 Host 优先使用可用的 Renderer Manager，其余 Host 继续使用当前 `ready` 的 RPC client；一个 Host 就绪不会销毁其他 Host 的 RPC 路由或草稿绑定。RPC family 在同一 store 的绑定有效期间复用，client 在每次读取时解析。原生 Manager 消失后也可回到仍有效的 RPC peer。没有可用连接时仍保持不可用，不以挂载注册表本身作为就绪依据。Remote Control 的连接代次为 `null`（断开、连接中、歧义或读取失败）时，两条路径都不可用；没有代次信号的旧布局以 `undefined` 保留 RPC 兼容。
+
+RPC 路由的原生 owner 发现由 Composer 身份读取（`hostIdForComposer`、`forComposer`）和 Host 集合协调（`knownHostIds`）承接，复用这些读取已有的发现结果；指定 Composer 时只检查该 Composer。普通 `forHost` 查询和 RPC 发送不会为寻找尚未出现的原生 Manager 扫描整个文档。Renderer 的 Composer 协调及 Controller 的既有安装检查会发现晚挂载的 owner，包括同一 editor 上新出现的 owner；仅持有 Host ID 的调用方在此之前继续使用有效 RPC，不主动触发 native 发现。发现原生 owner 后，原生 router 仍实时解析 registry 成员、Manager 和连接代次；这里不缓存 `null`、不缓存 registry 的连接结果，也不增加轮询或 React commit 钩子。
 
 RPC 布局下的 Windows Remote Control 复用已加载模块中的原生 Manager 工厂、RPC 会话与界面控制器。Controller 通过结构契约及工厂调用关系发现引用，不依赖混淆符号名，不复制 Desktop 实现，不修改签名应用。作用域和服务必须具有已验证的自身属性，不能把可动态生成任意成员的 RPC Proxy 当作作用域。引用仅用于当前 Renderer 文档，发现结束释放 CDP 对象组。相同模块目录和本地 RPC owner 下最多探测三次，前两次失败分别冷却 5 秒和 10 秒；已有发现或安装中的尝试去重，耗尽后保持稳定的 `unavailable`，不随 Controller 的 500ms 检查反复扫描。模块目录、CDP catalog owner 或本地 RPC owner 变化会重置预算；旧尝试的延迟结果不能覆盖新尝试。
 

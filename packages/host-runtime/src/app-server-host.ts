@@ -48,6 +48,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { handleCredentialImports } from "./credential-imports.js";
 import { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
+import { HarnessUserInstructionsStore } from "./harness-user-instructions.js";
 import {
   handleModelPriceOverridesRequest,
   isModelPriceOverridesMethod,
@@ -56,8 +57,12 @@ import {
 import {
   HARNESS_DISPLAY_GET_METHOD,
   HARNESS_DISPLAY_SET_METHOD,
+  HARNESS_USER_INSTRUCTIONS_SETTINGS_GET_METHOD,
+  HARNESS_USER_INSTRUCTIONS_SETTINGS_SET_METHOD,
   harnessDisplayGetSchema,
   harnessDisplaySetSchema,
+  harnessUserInstructionsGetSchema,
+  harnessUserInstructionsSetSchema,
 } from "@codexhost/shared-contracts";
 import {
   rewriteDelegationMentionInput,
@@ -663,6 +668,7 @@ export class AppServerHost {
   #usageOnlyAdapters: HarnessUsageStatisticsAdapter[] = [];
   #plugins: HarnessPluginRegistry | undefined;
   readonly #launchSettings: HarnessLaunchSettingsStore;
+  readonly #userInstructions: HarnessUserInstructionsStore;
   readonly #accountInspections = new HarnessAccountInspectionCache();
   readonly #installationTasks = new HarnessInstallationTasks();
   #externalRuntime: ExternalThreadRuntime;
@@ -738,6 +744,7 @@ export class AppServerHost {
     this.#launchSettings = new HarnessLaunchSettingsStore(
       this.#options.pluginContext?.environment ?? environment,
     );
+    this.#userInstructions = new HarnessUserInstructionsStore(environment);
     const permanentHome = path.resolve(environment.CODEX_HOME ?? path.join(os.homedir(), ".codex"));
     this.#ownsOfficialRuntimeScope = options.officialRuntimeScope === undefined;
     this.#officialRuntimeScope =
@@ -1455,6 +1462,34 @@ export class AppServerHost {
       } catch {
         await this.#writer.json(
           rpcError(request, -32000, "Could not save or read Harness display settings"),
+        );
+      }
+      return;
+    }
+    if (
+      request.method === HARNESS_USER_INSTRUCTIONS_SETTINGS_GET_METHOD ||
+      request.method === HARNESS_USER_INSTRUCTIONS_SETTINGS_SET_METHOD
+    ) {
+      const parsed = (
+        request.method === HARNESS_USER_INSTRUCTIONS_SETTINGS_SET_METHOD
+          ? harnessUserInstructionsSetSchema
+          : harnessUserInstructionsGetSchema
+      ).safeParse(request.params ?? {});
+      if (!parsed.success) {
+        await this.#writer.json(
+          rpcError(request, -32602, "Invalid Harness user instructions settings"),
+        );
+        return;
+      }
+      try {
+        const result =
+          request.method === HARNESS_USER_INSTRUCTIONS_SETTINGS_SET_METHOD
+            ? await this.#userInstructions.set(harnessUserInstructionsSetSchema.parse(parsed.data))
+            : await this.#userInstructions.get();
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch {
+        await this.#writer.json(
+          rpcError(request, -32000, "Could not save or read Harness user instructions settings"),
         );
       }
       return;
@@ -4154,6 +4189,9 @@ export class AppServerHost {
       return;
     }
 
+    await this.#userInstructions
+      .syncHarness(adapter.harnessId)
+      .catch((error) => this.#diagnose(error));
     const sessionResult = await adapter.open({
       kind: "create",
       cwd,

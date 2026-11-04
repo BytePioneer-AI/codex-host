@@ -1,10 +1,18 @@
-import type { LoadedSession } from "@codexhost/shared-contracts";
+import type {
+  HarnessUserInstructionsSet,
+  HarnessUserInstructionsSettings,
+  LoadedSession,
+} from "@codexhost/shared-contracts";
 import { RendererMethodUnavailableError } from "../renderer-request-sender.js";
 import type { RendererSettingsPageMountContext } from "./core.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
 export interface LoadedSessionsClient {
   listLoadedSessions?(): Promise<LoadedSession[]>;
+  getHarnessUserInstructionsSettings?(): Promise<HarnessUserInstructionsSettings>;
+  setHarnessUserInstructionsSettings?(
+    input: HarnessUserInstructionsSet,
+  ): Promise<HarnessUserInstructionsSettings>;
 }
 
 export function mountLoadedSessionsTable(

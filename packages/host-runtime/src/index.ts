@@ -39,6 +39,10 @@ export { DelegationControlRegistry } from "./delegation-control-registry.js";
 export { startDelegationControlServer } from "./delegation-control-server.js";
 export { installDelegationSkills, CODEXHOST_DELEGATION_SKILL } from "./delegation-skill.js";
 export {
+  HarnessUserInstructionsStore,
+  resolveExternalUserInstructionsTargets,
+} from "./harness-user-instructions.js";
+export {
   DELEGATION_CLI_PATH_ENV,
   DELEGATION_CLI_NODE_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,

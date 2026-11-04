@@ -20,6 +20,12 @@ import {
   harnessDisplaySettingsSchema,
   type HarnessDisplaySet,
   type HarnessDisplaySettings,
+  HARNESS_USER_INSTRUCTIONS_SETTINGS_GET_METHOD,
+  HARNESS_USER_INSTRUCTIONS_SETTINGS_SET_METHOD,
+  harnessUserInstructionsSetSchema,
+  harnessUserInstructionsSettingsSchema,
+  type HarnessUserInstructionsSet,
+  type HarnessUserInstructionsSettings,
   CONSOLE_OPEN_METHOD,
   consoleOpenParamsSchema,
   consoleOpenResultSchema,
@@ -204,6 +210,10 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   installation?(input: HarnessInstallationParams): Promise<HarnessInstallationState>;
   getHarnessDisplaySettings?(): Promise<HarnessDisplaySettings>;
   setHarnessDisplaySettings?(input: HarnessDisplaySet): Promise<HarnessDisplaySettings>;
+  getHarnessUserInstructionsSettings?(): Promise<HarnessUserInstructionsSettings>;
+  setHarnessUserInstructionsSettings?(
+    input: HarnessUserInstructionsSet,
+  ): Promise<HarnessUserInstructionsSettings>;
   getHarnessLaunchSettings?(input: HarnessLaunchSettingsGet): Promise<HarnessLaunchSettings>;
   setHarnessLaunchSettings?(input: HarnessLaunchSettingsSet): Promise<HarnessLaunchSettings>;
   setIdleReleaseSettings?(settings: IdleReleaseSettings): Promise<IdleReleaseSettings>;
@@ -397,6 +407,21 @@ export function createRendererModelClient(
     async setHarnessDisplaySettings(input: HarnessDisplaySet) {
       return harnessDisplaySettingsSchema.parse(
         await manager.sendRequest(HARNESS_DISPLAY_SET_METHOD, input),
+      );
+    },
+    async getHarnessUserInstructionsSettings(): Promise<HarnessUserInstructionsSettings> {
+      return harnessUserInstructionsSettingsSchema.parse(
+        await manager.sendRequest(HARNESS_USER_INSTRUCTIONS_SETTINGS_GET_METHOD, {}),
+      );
+    },
+    async setHarnessUserInstructionsSettings(
+      input: HarnessUserInstructionsSet,
+    ): Promise<HarnessUserInstructionsSettings> {
+      return harnessUserInstructionsSettingsSchema.parse(
+        await manager.sendRequest(
+          HARNESS_USER_INSTRUCTIONS_SETTINGS_SET_METHOD,
+          harnessUserInstructionsSetSchema.parse(input),
+        ),
       );
     },
     async getHarnessLaunchSettings(

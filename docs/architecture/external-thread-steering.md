@@ -53,6 +53,22 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
 
 只在 Host 实现 cancel/start 不足以接入官方界面：官方 steer 会把乐观消息放在旧 Turn，旧轮 interrupted 时又可能将它恢复到暂停队列。
 
+### 主进程 Manager 的原生 RPC 路径
+
+Desktop **26.1029.61003 / build 24614** 的提交和队列协调器由主进程拥有。Renderer 的 `main-process-rpc` 路由不是完整 Manager，不能在它上面调用 `startTurn` 或修改内部队列。
+
+- `desktop-control/renderer-rpc-steering.ts` 通过 CDP 查找 `collectAppStateSnapshot` 的真实 Closure，核对 Controller 方法组合、函数身份和当前 React root 的 Scope 身份；只有唯一匹配才安装。发现过程不导入模块、执行模块工厂或打开主进程 Inspector，临时句柄统一释放。
+- `renderer-rpc-steering.ts` 包装该 Controller 的 `forHost`，保留原生 RPC 的 await、dup 和 lease 行为，只拦截 Coordinator 的 `sendMessage` / `sendQueuedMessageNow` preparation callback。实际提交、乐观消息、附件和排队执行仍由原生 Coordinator 拥有；主进程 Manager 本身不变。
+- `official` 保留原生 preparation；不支持 Host 扩展的 stock app-server 先验证原生 Thread 所有权。`activeTurn` 保留 steer preparation；`newTurn` 使用同一原生 callback 的 start preparation，并设置 `afterInactiveTurnId`，使 Desktop 为替换 Turn 创建正常 start 展示。
+- 两种外部送达方式均在 `additionalContext.codexhost_external_steering` 中携带 `{ kind: "application", value: JSON.stringify({ expectedTurnId, clientUserMessageId, delivery }) }`。该字段经过原生请求白名单保留。Host 校验消息身份后，把标记的外部 `turn/start` 交给现有停止后重发流程，返回正常 `{ turn }` envelope；`activeTurn` 的 `turn/steer` 不得因能力变化偷偷变成新轮。
+- 新轮接受后，只移除本次队列消息。确认替换 Turn 仍在执行或正常完成后，才恢复中断暂停队列；显式停止或失败保留暂停。若提交前已有另一条因中断暂停的消息，则拒绝本次替换并要求先处理它，避免原生 resume-all 接口恢复先前暂停项。读取队列有超时，subscription lease 必须释放。
+- 原生 Coordinator 对每次提交都先以 `steer` 模式调用 preparation，线程空闲时也一样。因此先读 `getThreadExecutionState`：Thread 未加载或没有进行中的 Turn 时，不查询 Host、不加标记，原样交回原生流程，由它走普通 start。只有 Thread 确实在运行时才进入上述分流。
+- Composer 在 Thread 运行中直接提交且送达方式为 `newTurn` 时，包装把 `acceptLocally` 改为 `false`。否则消息先进入本地队列：替换需要先停旧轮，超过原生 250ms 的队列行显示延迟，旧轮 interrupted 又会给它打上暂停标记，界面闪出“队列已暂停”。这是原生支持的直接提交路径，消息由 start 的乐观展示接管；失败时保留在 Composer 并显示错误。官方 Thread、`activeTurn`、空闲 Thread 和判断失败时保留原生请求。
+- 目标 Turn 不可确认、连接更换、绑定卸载或 preparation 失败时，发送前拒绝；已经接受的消息不因清理失败重发。旧 Turn 恰好在提交途中结束时，带标记的 `turn/start` 会以 `-32074` 被拒绝，队列条目恢复原位或文字留在 Composer，不自动重发。
+- 绑定未就绪时，只有外部 Composer 的提交保持禁用；Adapter 总体状态仍为 `ready`，原因字段报告 `native-steering-policy-unavailable`，官方 Codex 提交不受影响。发现失败不抛出，也不重建 Renderer Session；Controller 的监控循环按 5 秒起、最长 5 分钟的退避重试，避免反复遍历堆。
+
+### Renderer 内 Manager 的路径
+
 `renderer-external-steering.ts` 在已确认的 RequestManager 上包装 `steerTurn`。Desktop Manager 同时是 `RpcTarget`，跨组件 RPC 禁止访问实例自身属性（即使该属性是函数）。因此对原型方法的包装放在该实例专属的原型层上，不用 `manager.sendRequest = ...` 创建实例属性，也不修改共享类原型。卸载时移除覆盖并恢复原型查找，不能仅赋回原函数；否则模型和权限列表仍会被 RPC 拒绝。
 
 接入流程：
@@ -67,7 +83,7 @@ Host 和 Renderer 接入必须配套发布；仅升级 Host、让旧 Renderer �
 
 ### 当前兼容边界
 
-接入点依据 Codex Desktop **26.901.51231 / build 8109** 的 `app-initial-cadb12d4a15e.js`：`steerTurn`、`startTurn`、`sendRequest`、`getTurnCoordinator()` 的 submissionHost，以及队列的 `loadMessages` / `readMessages` / `mutate`。这些是版本相关的 Desktop JavaScript 绑定，不是 Harness SDK 契约。更新 Desktop 后需重新核实。
+Renderer 内 Manager 的接入点依据 Codex Desktop **26.901.51231 / build 8109** 的 `app-initial-cadb12d4a15e.js`：`steerTurn`、`startTurn`、`sendRequest`、`getTurnCoordinator()` 的 submissionHost，以及队列的 `loadMessages` / `readMessages` / `mutate`。这些是版本相关的 Desktop JavaScript 绑定，不是 Harness SDK 契约。更新 Desktop 后需重新核实。
 
 - 公共 Harness 输入保持文本。`turn/start` 与 `turn/steer` 共用附件规范化：保留 Desktop 的原生图片清单；`localImage` 缺少清单时，按明确的绝对路径补入，不读取或上传文件。内嵌 `image` 必须已有足量的原生文件路径引用；混合输入先逐项扣除 `localImage` 引用，剩余引用数至少覆盖内嵌图片数。远程补存保留的额外旧引用不会导致拒绝。Host 不推测缺失图片的对应关系，也不把 base64 当作提示词；数量覆盖不等于校验文件内容与内嵌图片一致。
 - 空输入、无有效路径的图片、未知输入类型，以及直接附图的 Harness 命令，在能力查询或停止旧轮前拒绝。命令与图片应分别提交；命令识别也检查原生附件清单 `## My request:` 后的用户请求，不因清单前缀而把 `/compact` 等命令当作普通提示词。原始输入仍参与重试去重，不能将不同图片视为同一条消息。
@@ -103,6 +119,10 @@ Codex Desktop **26.924.22138 / build 11645** 的本地队列在 `turnCompleted` 
 ## 验证
 
 针对性测试：
+
+- `packages/renderer-extension/test/renderer-rpc-steering.test.ts`：空闲或未加载 Thread 的普通发送不受影响、原生 preparation 的送达选择、await 后保留拦截、请求标记、已暂停消息保护、失败保留、接受后停止、连接更换与卸载。
+- `packages/desktop-control/test/renderer-rpc-steering.test.ts`：Controller 与已提交 React Scope 的身份核对、歧义及其他 root 拒绝、句柄释放、失败退避。
+- `packages/host-runtime/test/app-server-host.external-queue.test.ts`：带标记的原生 start 进入替换流程、快速完成不重复执行、删除确认及失败恢复。
 
 - `tests/integration/external-image-steering.test.ts`：将 Renderer steer／停止后重发、远程补存器和真实 AppServerHost RPC 串联，覆盖纯图片送达、附件展示上下文、部分清单补存后的额外引用、清单中的命令及缺少路径时停止前拒绝。Desktop 展示与原生文件存储使用合成对象，Harness 使用 Fake Session，不代表实机验收。
 

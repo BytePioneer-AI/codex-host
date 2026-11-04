@@ -93,6 +93,7 @@ export interface RendererAdapterStatus {
     | "installation-failed"
     | "draft-prewarm-clear-failed"
     | "draft-routing-policy-unavailable"
+    | "native-steering-policy-unavailable"
     | "react-fiber-walk-limit-exceeded";
   modelUpdates: number;
   hook: "request-bridge" | null;
@@ -163,6 +164,7 @@ declare global {
     __codexhostMainProcessTitlePolicyV1?: { state: "ready" };
     __codexhostDraftPrewarmPolicyV1?: RendererDraftPrewarmPolicy;
     __codexhostHostRoutingV1?: RendererHostRouting;
+    __codexhostRpcSteeringV1?: { controller: unknown };
   }
 }
 
@@ -920,13 +922,25 @@ export function installCurrentRendererAdapter(): {
         (window.__codexhostHostRoutingV1?.knownHostIds?.() ?? []).some(
           (hostId) => window.__codexhostHostRoutingV1?.forHost(hostId) != null,
         ));
+    const needsRpcSteering = [
+      "local",
+      ...(window.__codexhostHostRoutingV1?.knownHostIds?.() ?? []),
+    ].some((hostId) => {
+      const manager = window.__codexhostHostRoutingV1?.forHost(hostId)?.manager;
+      return manager != null && "kind" in manager && manager.kind === "main-process-rpc";
+    });
+    // Each external Composer gates on this binding itself. Aggregate readiness stays "ready" so a
+    // discovery failure cannot hold the Renderer Session, and with it official Codex, hostage.
+    const steeringReady = !needsRpcSteering || window.__codexhostRpcSteeringV1 !== undefined;
     updateStatus(
       connected ? "ready" : "installing",
-      connected
-        ? "ready"
-        : fiberWalkLimited
-          ? "react-fiber-walk-limit-exceeded"
-          : "draft-routing-policy-unavailable",
+      connected && !steeringReady
+        ? "native-steering-policy-unavailable"
+        : connected
+          ? "ready"
+          : fiberWalkLimited
+            ? "react-fiber-walk-limit-exceeded"
+            : "draft-routing-policy-unavailable",
       connected ? "request-bridge" : null,
     );
     return route;

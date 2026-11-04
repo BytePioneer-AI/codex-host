@@ -123,6 +123,178 @@ describe("External Thread follow-up queue", () => {
     }
   });
 
+  it.each(["turn/steer", "turn/start"] as const)(
+    "consumes a queued %s replacement before it can auto-start twice",
+    async (submissionMethod) => {
+      const fixture = createFixture();
+      try {
+        const threadId = await startPiThread(fixture);
+        const turnId = await startPiTurn(fixture, threadId);
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Session was not opened");
+        const execute = vi.spyOn(session, "execute");
+        const queued = [];
+        for (const [index, value] of ["replacement", "next"].entries()) {
+          writeRequest(fixture.desktopInput, {
+            id: 10 + index,
+            method: "thread/queue/add",
+            params: { threadId, input: text(value), clientUserMessageId: `message-${index}` },
+          });
+          const added = await fixture.collector.waitFor((message) =>
+            requestId(message, 10 + index),
+          );
+          queued.push((added.result as { queuedSubmission: { id: string } }).queuedSubmission);
+        }
+        writeRequest(fixture.desktopInput, {
+          id: 20,
+          method: submissionMethod,
+          params: {
+            threadId,
+            input: text("replacement"),
+            clientUserMessageId: "message-0",
+            ...(submissionMethod === "turn/start"
+              ? {
+                  additionalContext: {
+                    codexhost_external_steering: {
+                      kind: "application",
+                      value: JSON.stringify({
+                        expectedTurnId: turnId,
+                        clientUserMessageId: "message-0",
+                        delivery: "newTurn",
+                      }),
+                    },
+                  },
+                }
+              : { expectedTurnId: turnId, codexhostSteerDelivery: "newTurn" }),
+          },
+        });
+        await vi.waitFor(() =>
+          expect(execute).toHaveBeenCalledWith({ type: "turn.cancel", turnId }),
+        );
+        session.completeCancellation();
+        const steered = await fixture.collector.waitFor((message) => requestId(message, 20));
+        expect(steered).not.toHaveProperty("error");
+        const replacementId =
+          submissionMethod === "turn/start"
+            ? (steered.result as { turn: { id: string } }).turn.id
+            : (steered.result as { turnId: string }).turnId;
+        // Desktop has not yet sent thread/queue/delete for its successful steer.
+        session.succeedTurn();
+        await fixture.collector.waitFor((message) =>
+          turnEvent(message, "turn/completed", replacementId),
+        );
+        await vi.waitFor(() =>
+          expect(execute).toHaveBeenCalledWith(
+            expect.objectContaining({ type: "turn.start", input: text("next") }),
+          ),
+        );
+        expect(
+          execute.mock.calls.filter(([command]) => {
+            const value = command as { type: string; input?: unknown };
+            return (
+              value.type === "turn.start" &&
+              JSON.stringify(value.input) === JSON.stringify(text("replacement"))
+            );
+          }),
+        ).toHaveLength(1);
+        const first = queued[0];
+        if (!first) throw new Error("Queued submission was not created");
+        writeRequest(fixture.desktopInput, {
+          id: 21,
+          method: "thread/queue/delete",
+          params: { threadId, queuedSubmissionId: first.id },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, 21)),
+        ).resolves.toMatchObject({ result: { deleted: true } });
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it.each(["client", "delivery", "json", "turn"])(
+    "rejects an invalid native start marker (%s) before execution",
+    async (invalid) => {
+      const fixture = createFixture();
+      try {
+        const threadId = await startPiThread(fixture);
+        const turnId = await startPiTurn(fixture, threadId);
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Session was not opened");
+        const execute = vi.spyOn(session, "execute");
+        const marker = {
+          expectedTurnId: invalid === "turn" ? "stale" : turnId,
+          clientUserMessageId: invalid === "client" ? "other" : "message",
+          delivery: invalid === "delivery" ? "activeTurn" : "newTurn",
+        };
+        writeRequest(fixture.desktopInput, {
+          id: 20,
+          method: "turn/start",
+          params: {
+            threadId,
+            input: text("keep input"),
+            clientUserMessageId: "message",
+            additionalContext: {
+              codexhost_external_steering: {
+                kind: "application",
+                value: invalid === "json" ? "invalid-json" : JSON.stringify(marker),
+              },
+            },
+          },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, 20)),
+        ).resolves.toMatchObject({ error: { code: invalid === "turn" ? -32074 : -32602 } });
+        expect(execute).not.toHaveBeenCalled();
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it("restores a queued submission when steering is rejected before acceptance", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
+      writeRequest(fixture.desktopInput, {
+        id: 10,
+        method: "thread/queue/add",
+        params: { threadId, input: text("keep queued"), clientUserMessageId: "message" },
+      });
+      const added = await fixture.collector.waitFor((message) => requestId(message, 10));
+      const submission = (added.result as { queuedSubmission: JsonObject }).queuedSubmission;
+      writeRequest(fixture.desktopInput, {
+        id: 20,
+        method: "turn/steer",
+        params: {
+          threadId,
+          expectedTurnId: "stale-turn",
+          input: text("keep queued"),
+          clientUserMessageId: "message",
+        },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 20)),
+      ).resolves.toMatchObject({ error: { code: -32074 } });
+      writeRequest(fixture.desktopInput, {
+        id: 21,
+        method: "thread/queue/list",
+        params: { threadId },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 21)),
+      ).resolves.toMatchObject({ result: { data: [submission], nextCursor: null } });
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it.each(["completed", "interrupted", "failed"])(
     "handles a queue/add arriving after the Turn is already %s",
     async (outcome) => {

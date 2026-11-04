@@ -513,30 +513,44 @@ describe("Native steering fallbacks", () => {
     }
   });
 
-  it("keeps a Renderer-presented activeTurn delivery instead of restarting", async () => {
-    const fixture = createFixture();
-    fixture.adapter.supportsSteer = true;
-    try {
-      const threadId = await startPiThread(fixture);
-      const turnId = await startPiTurn(fixture, threadId);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Session was not opened");
-      session.refuseNextSteer();
-      await expect(
-        steer(fixture, 41, threadId, turnId, "presented in this Turn", {
-          codexhostSteerDelivery: "activeTurn",
-        }),
-      ).resolves.toMatchObject({ error: { code: -32074 } });
-      await expect(
-        steer(fixture, 42, threadId, turnId, "now it joins", {
-          codexhostSteerDelivery: "activeTurn",
-        }),
-      ).resolves.toMatchObject({ result: { turnId, delivery: "activeTurn" } });
-      session.succeedTurn();
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
+  it.each(["top-level", "native-context"])(
+    "keeps a Renderer-presented activeTurn delivery instead of restarting (%s)",
+    async (format) => {
+      const fixture = createFixture();
+      fixture.adapter.supportsSteer = true;
+      try {
+        const threadId = await startPiThread(fixture);
+        const turnId = await startPiTurn(fixture, threadId);
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Session was not opened");
+        const context = (id: number): JsonObject =>
+          format === "top-level"
+            ? { codexhostSteerDelivery: "activeTurn" }
+            : {
+                additionalContext: {
+                  codexhost_external_steering: {
+                    kind: "application",
+                    value: JSON.stringify({
+                      expectedTurnId: turnId,
+                      clientUserMessageId: `message-${id}`,
+                      delivery: "activeTurn",
+                    }),
+                  },
+                },
+              };
+        session.refuseNextSteer();
+        await expect(
+          steer(fixture, 41, threadId, turnId, "presented in this Turn", context(41)),
+        ).resolves.toMatchObject({ error: { code: -32074 } });
+        await expect(
+          steer(fixture, 42, threadId, turnId, "now it joins", context(42)),
+        ).resolves.toMatchObject({ result: { turnId, delivery: "activeTurn" } });
+        session.succeedTurn();
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
 
   it("follows a Renderer-presented newTurn delivery even when native steering is available", async () => {
     const fixture = createFixture();

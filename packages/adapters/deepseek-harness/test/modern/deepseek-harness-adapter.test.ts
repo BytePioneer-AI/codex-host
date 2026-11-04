@@ -643,6 +643,7 @@ describe("DSH V4 session operations", () => {
         request: {
           address: { kind: "session", sessionId: "session-v4" },
           maxMessages: 200,
+          activate: true,
           assistantStream: true,
         },
       },

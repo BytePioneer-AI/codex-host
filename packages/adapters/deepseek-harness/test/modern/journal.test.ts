@@ -214,6 +214,17 @@ describe("DeepSeek Harness Modern journal", () => {
     }
   });
 
+  it("requests activation so following a cold Session resumes its Agent", async () => {
+    const setup = await openWith(snapshot(0, records(0, 0), false));
+    try {
+      expect(setup.remote.followCalls[0]?.args).toEqual({
+        request: { address: ADDRESS, maxMessages: 200, activate: true, assistantStream: true },
+      });
+    } finally {
+      await setup.journal.close();
+    }
+  });
+
   it("accepts DSH 0.2.2 pages that echo the fixed opening cut", async () => {
     const setup = await openWith(snapshot(5, records(4, 5), true), [
       () => ({ ok: true, value: { cursor: 5, records: records(1, 3), hasMore: true } }),

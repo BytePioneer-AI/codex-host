@@ -178,6 +178,8 @@ export async function openModernJournal(
           request: {
             address,
             maxMessages: limits.pageMaxMessages,
+            // DSH 0.2.2 follows passively unless asked; earlier releases ignore the member.
+            activate: true,
             assistantStream: true,
           },
         },

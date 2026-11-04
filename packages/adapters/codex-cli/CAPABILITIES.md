@@ -23,7 +23,7 @@
 | A6 | 取消 | 必做 | P0 | 支持 | src/session.ts | test/authentication-native.test.ts | turn/interrupt；原生中断或失败终态先结算未完成 Item，保留已流出的内容 |
 | A7 | 只读快照 | 必做 | P0 | 支持 | src/session.ts | test/authentication-native.test.ts | thread/read |
 | A8 | 持久身份 + resume | 必做 | P0 | 支持 | src/plugin.ts、src/session.ts | test/process.test.ts | ID 引用，不复制原生历史 |
-| A9 | 错误与并发 | 必做 | P0 | 受限 | src/session.ts、src/rpc.ts | test/authentication-native.test.ts | 无原生 steering |
+| A9 | 错误与并发 | 必做 | P0 | 受限 | src/plugin.ts、src/session.ts、src/rpc.ts | test/process.test.ts、test/authentication-native.test.ts | 原生恢复的 writer 冲突映射为可重试 sessionBusy；无原生 steering |
 | A10 | 关闭 | 必做 | P0 | 支持 | src/plugin.ts、src/session.ts、src/rpc.ts | test/process.test.ts | 关闭进程与用量读取 |
 | B1 | 切换 Model | 原生有则必做 | P1 | 支持 | src/session.ts | test/process.test.ts；configuration 声明 | 原生参数 |
 | B1-Fast | 原生 Fast 服务档位 | 原生有则必做 | P1 | 支持 | src/model-selection.ts、src/plugin.ts、src/session.ts | test/fast-mode.test.ts；CLI 0.161.0 原生目录与 ephemeral Thread 开关确认 | 仅原生 serviceTiers 声明 priority 时提供 fastModel；创建、恢复与 Turn 传原生 model/serviceTier；切换等待 settings 通知 |
@@ -59,6 +59,7 @@
 ## 受限与已知缺口
 
 - A9：原生 steering 明确拒绝；Host 使用所有外部 Harness 的队列规则。
+- A9：`thread/resume` 的原生 `-32600` writer 占用错误返回 `sessionBusy`。Host 保留忙碌错误码并提示关闭其他客户端中的会话后重试；不终止其他客户端、不删除原生锁、不创建替代会话。释放占用后使用相同 Native Session ID 恢复。
 - B3：原生依据为 CLI `0.161.0` 生成的 `ThreadStartResponse` / `ThreadResumeResponse`：响应含 `approvalPolicy` 与 `sandbox`。仅匹配目录内的审批策略和沙箱类型；粒度化审批、外部沙箱及缺失字段不报告标准权限 ID。读取有效权限不等于选择权限，未显式选择时不追加 Turn 权限覆盖。既有 live 切换仍用于后续 Turn，未单独验证活动 Turn 内权限变化。
 - B4、B15、B16：未完成完整无人值守与双向委派验收，不声称完整委派支持。
 - B11、B12：委派 Item 和自主 Turn 事件投影不等于完整子代理历史与自主能力交付。
@@ -92,4 +93,5 @@
 | 权限浏览器与插件 | Web `browser/permissions.test.ts`；隔离 Bundle 经真实 Loader 冷加载并连接假原生进程 | 390px / 1280px 两项通过；未知权限展示、主动选择及原生权限回填通过，关闭后清理隔离目录 |
 | 权限静态检查 | `npm run typecheck`、`npm run build:web:ui`、定向 ESLint / Prettier、源码边界与 `git diff --check` | 类型、Web 构建、格式和修改模块的源码边界通过；ESLint 未覆盖 Web UI（无匹配配置），全仓库边界检查被已有 `dist/codexhost-web/node_modules/tslib` 声明文件阻塞 |
 | 委派环境传递 | 定向 `test/command.test.ts`、`test/delegation-environment.test.ts`、`test/process.test.ts` | 32 项通过；隔离原生进程夹具及其子进程验证连接参数、CLI/Node 路径、创建与恢复身份、令牌更新、会话间隔离及默认环境不被修改；不代表真实 Model 驱动的委派验收 |
+| 原生会话占用 | Adapter `process.test.ts`、Protocol `thread-fork.test.ts`、Host `codex-cli-harness.test.ts` / `client-channel.test.ts`；Web `ch-host-client.test.ts` / `ch-client-gateway.test.ts` | Vitest 67 项、Web 5 项通过；隔离协议夹具验证 writer 冲突分类、导入后的快照错误码、同身份重试、Web 错误透传与过期快照重同步；TypeScript 构建和类型检查通过，无生产会话恢复或 Model 请求 |
 | Desktop / 真实委派 | 不改变 Desktop 原生路径 | 未执行 |

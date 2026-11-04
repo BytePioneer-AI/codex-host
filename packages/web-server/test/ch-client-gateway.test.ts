@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { it } from "node:test";
@@ -10,6 +12,7 @@ import { startFakeChDebugger } from "./support/ch-host.ts";
 import { startServer } from "./support/server.ts";
 import { defined } from "./support/defined.ts";
 import { createChHostClient } from "../src/ch-host-client.ts";
+import { serveChClientGateway } from "../src/ch-client-gateway.ts";
 
 it(
   "exposes the same generic App protocol through Web authentication, without leaking Host credentials",
@@ -152,3 +155,50 @@ it(
     assert.equal(host.requests.filter((request) => request.method === "turn/start").length, 1);
   },
 );
+
+it("preserves numeric Host errors on every native client operation", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ch-app-gateway-errors-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const host = new FakeChChannel();
+  const control = await startFakeChChannel(host, directory);
+  t.after(() => control.close());
+  const client = await createChHostClient({ directory });
+  t.after(() => client.close());
+  const server = createServer((request, response) => {
+    void serveChClientGateway(client, request, response);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(
+    () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      }),
+  );
+  let hostCode = -32072;
+  const message = "Native session is busy in another client";
+  const reject = async () => {
+    throw Object.assign(new Error(message), { code: hostCode });
+  };
+  t.mock.method(host, "snapshot", reject);
+  t.mock.method(host, "request", reject);
+  t.mock.method(host, "respond", reject);
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/ch/v1`;
+  const operations = {
+    snapshot: { threadId: "shared" },
+    rpc: { method: "turn/start", params: { threadId: "shared" } },
+    respond: { epoch: host.epoch, threadId: "shared", requestId: 1, result: {} },
+  };
+  for (const code of [-32072, -32094]) {
+    hostCode = code;
+    for (const [route, input] of Object.entries(operations)) {
+      const reply = await fetch(`${base}/${route}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      assert.equal(reply.status, 400);
+      assert.deepEqual(await reply.json(), { error: { code, message } });
+    }
+  }
+});

@@ -14,6 +14,7 @@ import {
 import type { ConsoleHostReply } from "./app-server-host.js";
 import { transcribeVoice, voiceStatus } from "./voice-transcription.js";
 import type { ClientChannelEvents } from "./client-channel-events.js";
+import { ClientChannelRequestError } from "./client-channel-error.js";
 import { ClientCommandReceipts } from "./client-command-receipts.js";
 import { compactClientSnapshot } from "./client-snapshot-compaction.js";
 import { listExternalTurns } from "./external-thread-history.js";
@@ -188,7 +189,8 @@ export class ClientChannelHost {
         sortDirection: "desc",
         itemsView: "full",
       });
-      if ("error" in prepared) throw new Error(prepared.error.message);
+      if ("error" in prepared)
+        throw new ClientChannelRequestError(prepared.error.code, prepared.error.message);
       thread = this.#host.loadedThread(threadId);
     }
     if (!thread) throw new Error("Thread is not owned by this local Host");

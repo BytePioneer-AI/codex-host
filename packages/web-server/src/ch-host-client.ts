@@ -279,21 +279,28 @@ export async function createChHostClient(
     channel.close();
     throw error;
   }
+  async function hostOperation<T>(operation: Promise<T>): Promise<T> {
+    try {
+      return await operation;
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? error.code : undefined;
+      throw new RpcError(
+        code === -32094 ? "host/resync" : "host/rejected",
+        error instanceof Error ? error.message : "Host request failed",
+        code === undefined ? {} : { hostCode: code },
+      );
+    }
+  }
+  const request: ChHostClient["request"] = (method, params) =>
+    hostOperation(channel.request(method, params));
   return {
-    realtime: channel,
-    async request<T>(method: string, params: Record<string, unknown>): Promise<T> {
-      try {
-        return await channel.request<T>(method, params);
-      } catch (error) {
-        throw new RpcError(
-          "host/rejected",
-          error instanceof Error ? error.message : "Host request failed",
-          (error as { code?: unknown }).code === undefined
-            ? {}
-            : { hostCode: (error as { code?: unknown }).code },
-        );
-      }
+    realtime: {
+      subscribe: (listener, after) => channel.subscribe(listener, after),
+      request,
+      snapshot: (threadId, options) => hostOperation(channel.snapshot(threadId, options)),
+      respond: (input) => hostOperation(channel.respond(input)),
     },
+    request,
     projects: (ids) =>
       endpoint?.owner === "service"
         ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", { threadIds: ids })

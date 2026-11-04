@@ -164,6 +164,10 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   if (request.method === "thread/start" || request.method === "thread/resume") {
+    if (request.method === "thread/resume" && config.resumeError) {
+      send({ id: request.id, error: config.resumeError });
+      return;
+    }
     threadId =
       request.method === "thread/start" ? `native-${process.pid}` : request.params.threadId;
     const saved = read("thread-settings.json", {});

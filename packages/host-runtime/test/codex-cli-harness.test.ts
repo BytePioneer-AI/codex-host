@@ -19,8 +19,10 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createHarnessAdapter } from "@codexhost/adapter-codex-cli/plugin";
+import { HostClientChannel } from "@codexhost/desktop-control";
 
 import { createFixture, stopFixture, writeRequest } from "./app-server-host-fixture.js";
+import { startClientChannelServer } from "../src/client-channel-server.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -275,6 +277,82 @@ describe("Codex CLI through the external Thread runtime", () => {
         "logical-import",
       );
     } finally {
+      await stopFixture(fixture);
+      await adapter.close();
+    }
+  });
+
+  it("preserves an imported Session's writer conflict through snapshots and retries after release", async () => {
+    const { root, home, adapter, fixture, scenario } = codexCliFixture();
+    const nativeThread = {
+      id: "busy-import",
+      name: "Imported conversation",
+      cwd: home,
+      updatedAt: 1_700_000_000,
+      ephemeral: false,
+      parentThreadId: null,
+    };
+    const nativeHistory = {
+      threads: [nativeThread],
+      threadTurns: {
+        "busy-import": [
+          {
+            id: "original-turn",
+            status: "completed",
+            items: [{ id: "original-answer", type: "agentMessage", text: "Saved native answer" }],
+            error: null,
+          },
+        ],
+      },
+    };
+    scenario({
+      ...nativeHistory,
+      resumeError: { code: -32600, message: "thread busy-import already has an active writer" },
+    });
+    await fixture.ready;
+    const directory = join(root, "client-hosts");
+    const server = await startClientChannelServer({
+      target: fixture.host,
+      environment: {},
+      directory,
+    });
+    const channel = new HostClientChannel(directory, server.descriptor);
+    try {
+      await channel.start();
+      const imported = await channel.request<{ threadId: string }>(
+        "codexhost/harness/session-import/import",
+        { harnessId: CODEX_CLI, nativeSessionId: nativeThread.id },
+      );
+      await expect(channel.snapshot(imported.threadId)).rejects.toMatchObject({
+        code: -32072,
+        message:
+          "External Native Session is busy. Close it in the other client or wait for its active operation to finish, then retry.",
+      });
+      scenario(nativeHistory);
+      const snapshot = await channel.snapshot(imported.threadId);
+      expect(snapshot.thread.id).toBe(imported.threadId);
+      expect(JSON.stringify(snapshot.turnsPage)).toContain("Saved native answer");
+      expect(
+        await channel.request("codexhost/harness/session-import/import", {
+          harnessId: CODEX_CLI,
+          nativeSessionId: nativeThread.id,
+        }),
+      ).toEqual(imported);
+      const requests = readFileSync(join(home, "rpc.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { method: string; params: { threadId?: string } });
+      expect(requests.some(({ method }) => ["thread/start", "turn/start"].includes(method))).toBe(
+        false,
+      );
+      expect(
+        requests
+          .filter(({ method }) => method === "thread/resume")
+          .map(({ params }) => params.threadId),
+      ).toEqual([nativeThread.id, nativeThread.id]);
+    } finally {
+      channel.close();
+      await server.close();
       await stopFixture(fixture);
       await adapter.close();
     }

@@ -15,7 +15,7 @@ import {
   resolveCodexExecutable,
   type CodexExecutable,
 } from "./command.ts";
-import { CodexAppServer } from "./rpc.ts";
+import { CodexAppServer, CodexRpcError } from "./rpc.ts";
 import { codexFastModel, readCodexModels } from "./model-selection.ts";
 import { CODEX_COMMANDS, CodexSession, HARNESS_ID } from "./session.ts";
 import { DEFAULT_PERMISSION_MODE, PERMISSION_MODES } from "./permission-modes.ts";
@@ -363,6 +363,23 @@ class CodexAdapter implements HarnessAdapter {
       }
       return result;
     } catch (error) {
+      if (
+        error instanceof CodexRpcError &&
+        error.method === "thread/resume" &&
+        error.error.code === -32600 &&
+        /^thread \S+ already has (?:an active writer|a live local writer)$/iu.test(
+          error.error.message,
+        )
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: "sessionBusy",
+            message: "Codex Session is open in another client. Close it there, then retry.",
+            retryable: true,
+          },
+        };
+      }
       return {
         ok: false,
         error: {

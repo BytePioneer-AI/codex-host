@@ -379,6 +379,56 @@ describe("Codex CLI native process", () => {
     }
   });
 
+  it.each(["an active writer", "a live local writer"])(
+    "reports a resumable Session with %s as busy and retries the same identity",
+    async (writer) => {
+      const f = fixture({
+        resumeError: { code: -32600, message: `thread occupied already has ${writer}` },
+      });
+      const nativeRef = nativeSessionRefSchema.parse({
+        formatVersion: 1,
+        harnessId: "codex-cli",
+        nativeSessionId: "occupied",
+      });
+      expect(await f.adapter.open({ kind: "resume", cwd: f.home, nativeRef })).toEqual({
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Codex Session is open in another client. Close it there, then retry.",
+          retryable: true,
+        },
+      });
+      writeFileSync(join(f.home, "scenario.json"), "{}");
+      const resumed = await f.adapter.open({ kind: "resume", cwd: f.home, nativeRef });
+      if (!resumed.ok) throw new Error(resumed.error.message);
+      expect(resumed.value.initialState.nativeRef).toEqual(nativeRef);
+      await resumed.value.close();
+      const records = f.records();
+      expect(records.filter(({ method }) => method === "thread/resume")).toHaveLength(2);
+      expect(records.some(({ method }) => ["thread/start", "turn/start"].includes(method))).toBe(
+        false,
+      );
+    },
+  );
+
+  it.each([
+    { code: -32600, message: "Invalid model configuration" },
+    { code: -32603, message: "thread occupied already has an active writer" },
+  ])("keeps unrelated native resume errors as failures: $message", async (resumeError) => {
+    const f = fixture({ resumeError });
+    expect(
+      await f.adapter.open({
+        kind: "resume",
+        cwd: f.home,
+        nativeRef: nativeSessionRefSchema.parse({
+          formatVersion: 1,
+          harnessId: "codex-cli",
+          nativeSessionId: "occupied",
+        }),
+      }),
+    ).toMatchObject({ ok: false, error: { code: "nativeFailure" } });
+  });
+
   it("rejects native steering without forwarding input to Codex", async () => {
     const f = fixture();
     const created = await f.adapter.open({ kind: "create", cwd: f.home });

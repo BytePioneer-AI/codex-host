@@ -14,6 +14,7 @@ import {
   CLIENT_REQUEST_LIMIT_BYTES,
 } from "@codexhost/shared-contracts";
 import type { ClientChannelEvents } from "./client-channel-events.js";
+import { ClientChannelRequestError } from "./client-channel-error.js";
 import { WebSocketServer } from "ws";
 import { attachRemoteAppServerSession } from "./remote-app-server-session.js";
 import type { RemoteAppServerSessionStreams, RemoteAppServerSession } from "./remote-app-server.js";
@@ -123,7 +124,7 @@ export async function startClientChannelServer(options: {
       if (!response.headersSent)
         reply(400, {
           error: {
-            code: -32602,
+            code: error instanceof ClientChannelRequestError ? error.code : -32602,
             message: error instanceof Error ? error.message : "Client operation failed",
           },
         });

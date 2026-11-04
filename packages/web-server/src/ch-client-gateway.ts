@@ -6,6 +6,7 @@ import {
   CLIENT_REQUEST_LIMIT_BYTES,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient } from "./ch-host-client.ts";
+import { RpcError } from "./transport.ts";
 
 /** Generic App protocol behind the Web server's auth + same-origin gate. Never
  * exposes the private loopback descriptor/token or creates an execution owner. */
@@ -106,12 +107,15 @@ export async function serveChClientGateway(
       response.destroy();
       return;
     }
+    const code =
+      error instanceof RpcError && "hostCode" in error.details
+        ? error.details.hostCode
+        : error instanceof Error && "code" in error
+          ? error.code
+          : undefined;
     reply(400, {
       error: {
-        code:
-          error instanceof Error && "code" in error && typeof error.code === "number"
-            ? error.code
-            : -32603,
+        code: typeof code === "number" ? code : -32603,
         message: error instanceof Error ? error.message : "Client operation failed",
       },
     });

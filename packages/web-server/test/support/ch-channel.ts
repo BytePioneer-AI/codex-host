@@ -181,7 +181,10 @@ export async function startFakeChChannel(
       response.writeHead(400);
       response.end(
         JSON.stringify({
-          error: { message: error instanceof Error ? error.message : String(error) },
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+            ...(error instanceof Error && "code" in error ? { code: error.code } : {}),
+          },
         }),
       );
     });

@@ -265,29 +265,13 @@ class NativeConnection {
     }
   }
 
-  #cancelStream(streamId) {
-    this.#mcp.unwatch(this.#streams.get(streamId)?.mcpObserver);
-    if (!this.#streams.delete(streamId) || this.#closed) return;
-    this.#channel.send(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        method: `rpc.stream.cancel.${streamId}`,
-        params: [{ streamId, reason: "CodexHost observer closed" }],
-      }),
-    );
-  }
-
   close(error = failure("invalidState", "TRAE CN connection closed")) {
     if (this.#closed) return;
-    const listeners = [...this.#streams.values()].map((stream) => stream.listener);
-    for (const streamId of this.#streams.keys()) {
-      try {
-        this.#cancelStream(streamId);
-      } catch {
-        /* The channel may already be disconnected. */
-      }
-    }
     this.#closed = true;
+    const listeners = [...this.#streams.values()].map((stream) => stream.listener);
+    // rpc.stream.cancel stops native generation; closing only retires local observers.
+    for (const stream of this.#streams.values()) this.#mcp.unwatch(stream.mcpObserver);
+    this.#streams.clear();
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(error);

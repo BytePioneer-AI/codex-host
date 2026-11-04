@@ -5,6 +5,7 @@ import type { HostEvent } from "@codexhost/harness-adapter";
 import { BackgroundCommands } from "../src/background.js";
 import { LiveItems } from "../src/live-items.js";
 import type { NativeCommandStatus } from "../src/commands.js";
+import { projectPlanItem } from "../src/history.js";
 
 const fixture = JSON.parse(
   readFileSync(new URL("./fixtures/native-background-command.json", import.meta.url), "utf8"),
@@ -25,6 +26,30 @@ const snapshot = (value: NativeCommandStatus) => ({
 afterEach(() => vi.useRealTimers());
 
 describe("TRAE CN detached command observation", () => {
+  it.each([
+    { status: "skipped_run" },
+    { status: "running" },
+    { status: "success", data: { command_id: "", is_background: true } },
+    { status: "success", data: { command_id: 42, is_background: true } },
+  ])("rejects background receipts without a stable execution ID: %j", (result) => {
+    const events: HostEvent[] = [],
+      follow = vi.fn();
+    const live = new LiveItems(turnId, (event) => events.push(event), { follow });
+    const plan = structuredClone(fixture.plan);
+    plan.tool_call_info.result = result;
+    plan.confirm_info = { confirm_status: "skipped_run" };
+    expect(() => live.acceptPlan(plan)).toThrowError(
+      expect.objectContaining({ code: "unsupported" }),
+    );
+    expect(() => projectPlanItem(plan, { status: "succeeded" }, undefined, true)).toThrowError(
+      expect.objectContaining({ code: "unsupported" }),
+    );
+    live.settle({ status: "succeeded" });
+    expect(events).toEqual([]);
+    expect(follow).not.toHaveBeenCalled();
+    expect(live.snapshots).toEqual([]);
+  });
+
   it("rejects a changed command identity on the same live Plan", () => {
     const live = new LiveItems(turnId, vi.fn(), { follow: vi.fn() });
     live.acceptPlan(fixture.plan);

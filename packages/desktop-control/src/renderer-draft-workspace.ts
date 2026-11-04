@@ -13,6 +13,7 @@ export function readRendererLocalDraftWorkspace(
   const record = (v: unknown): v is Record<string, unknown> =>
     typeof v === "object" && v !== null && !Array.isArray(v);
   const selections = new Set<string | null>();
+  let workspaceCatalog: ReturnType<typeof workspaces> | undefined;
   for (const editor of root.querySelectorAll(
     '[data-codex-composer], [contenteditable="true"][role="textbox"]',
   )) {
@@ -45,7 +46,9 @@ export function readRendererLocalDraftWorkspace(
       selections.add(null);
       continue;
     }
-    const matches = workspaces(root).filter((w) => w.id === project.projectId);
+    const matches = (workspaceCatalog ??= workspaces(root)).filter(
+      (w) => w.id === project.projectId,
+    );
     selections.add(matches.length === 1 ? (matches[0]?.cwd ?? null) : null);
   }
   return selections.size === 0 ? undefined : selections.size === 1 ? [...selections][0] : null;

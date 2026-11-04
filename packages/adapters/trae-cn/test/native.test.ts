@@ -305,11 +305,45 @@ describe("TRAE CN app-owned native RPC", () => {
     await rejected;
     expect(error).toHaveBeenCalledOnce();
     expect(channel.sent.some((message) => message.method === "rpc.stream.cancel.active")).toBe(
-      true,
+      false,
     );
+    expect(channel.disconnected).toBe(true);
     expect(channel.listenerCount("message")).toBe(0);
     native.close();
+    expect(error).toHaveBeenCalledOnce();
   });
+
+  it.each(["disconnect", "error", "malformed"])(
+    "cleans up an active stream on %s without cancelling native generation",
+    async (reason) => {
+      const { channel, native } = setup();
+      channel.handle = (message) => {
+        if (message.method === "request_stream")
+          channel.receive({ id: message.id, result: { streamId: "active" } });
+      };
+      const error = vi.fn();
+      await native.subscribe(
+        "lite",
+        "subscribe_events",
+        {},
+        {},
+        {
+          data: vi.fn(),
+          end: vi.fn(),
+          error,
+        },
+      );
+      if (reason === "malformed") channel.emit("message", "not-json");
+      else channel.emit(reason);
+      expect(native.closed).toBe(true);
+      expect(error).toHaveBeenCalledOnce();
+      expect(channel.disconnected).toBe(true);
+      expect(channel.sent.some((message) => message.method?.startsWith("rpc.stream.cancel."))).toBe(
+        false,
+      );
+      expect(channel.listenerCount("message")).toBe(0);
+    },
+  );
 
   it("keeps app-owned confirmation tracking current after an HTTP observer detaches", async () => {
     const { channel, native } = setup();

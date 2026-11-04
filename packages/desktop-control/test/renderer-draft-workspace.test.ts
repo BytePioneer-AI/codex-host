@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { readRendererLocalDraftWorkspace } from "../src/renderer-draft-workspace.js";
 
 const projects = [{ id: "one", label: "One", cwd: "/one" }];
@@ -18,6 +18,29 @@ const draft = {
   browserConversationId: "client-new-thread:test",
   selectedProject: { type: "local", projectId: "one" },
 };
+it("reads the workspace catalog once per call, then refreshes it on the next call", () => {
+  const editor = () => ({
+    querySelectorAll: () => [],
+    __reactFiber$app: { memoizedProps: { ...draft }, return: null },
+  });
+  const root = { querySelectorAll: () => [editor(), editor()] };
+  const catalog = vi.fn(() => projects);
+  expect(readRendererLocalDraftWorkspace(root, undefined, catalog)).toBe("/one");
+  expect(catalog).toHaveBeenCalledTimes(1);
+  catalog.mockReturnValue([{ id: "one", label: "One", cwd: "/moved" }]);
+  expect(readRendererLocalDraftWorkspace(root, undefined, catalog)).toBe("/moved");
+  expect(catalog).toHaveBeenCalledTimes(2);
+});
+it.each([
+  { ...draft, executionTargetHostId: "remote:one" },
+  { ...draft, browserConversationId: "existing-thread" },
+  { ...draft, selectedProject: null },
+])("does not read the catalog without a selected local draft: %j", (props) => {
+  const editor = { querySelectorAll: () => [], __reactFiber$app: { memoizedProps: props } };
+  const catalog = vi.fn(() => projects);
+  readRendererLocalDraftWorkspace({ querySelectorAll: () => [editor] }, undefined, catalog);
+  expect(catalog).not.toHaveBeenCalled();
+});
 it("resolves the committed selection by project identity, including a renamed project", () => {
   expect(read(draft, [{ id: "one", cwd: "/one", label: "Renamed" }])).toBe("/one");
 });

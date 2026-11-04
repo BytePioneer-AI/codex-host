@@ -184,6 +184,7 @@ export function projectPlanItem(
         observedCommand?.status !== "succeeded" &&
         observedCommand?.status !== "failed" &&
         observedCommand?.status !== "cancelled";
+      const backgroundRef = pendingBackground ? backgroundCommandReference(value) : undefined;
       if (!pendingBackground)
         assertObservedCommand(params, toolResult, value.confirm_info, terminal, observedCommand);
       if (pendingBackground) outcome = undefined;
@@ -248,9 +249,7 @@ export function projectPlanItem(
       result.push({
         item,
         ...(outcome ? { outcome } : {}),
-        ...(pendingBackground && record(data) && data.command_id !== undefined
-          ? { background: backgroundCommandReference(value) }
-          : {}),
+        ...(backgroundRef ? { background: backgroundRef } : {}),
       });
       return result;
     }

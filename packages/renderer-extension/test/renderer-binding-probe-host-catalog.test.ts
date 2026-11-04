@@ -17,6 +17,7 @@ import type { installRendererSidebarAgentIcons } from "../src/renderer-sidebar-a
 import type { RendererConnectionDiagnostics } from "../src/settings/connections-page.js";
 import type { RendererSessionImportClient } from "../src/settings/session-import-page.js";
 import type * as VersionedRendererAdapter from "../src/versioned-renderer-adapter.js";
+import { writeNewThreadExternalConfigurationPreference } from "../src/renderer-new-thread-preference.js";
 
 const testState = vi.hoisted(() => ({
   composer: null as unknown as Element,
@@ -294,6 +295,85 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
+
+it.each([false, true])(
+  "offers a catalog without a default until an explicit choice (saved=%s)",
+  async (saved) => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    const inspection = readyInspection();
+    const { defaultModel: chosen, ...catalog } = inspection.catalog;
+    if (saved) {
+      const values = new Map<string, string>();
+      const storage = {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          values.set(key, value);
+        },
+      };
+      Reflect.set(window, "localStorage", storage);
+      writeNewThreadExternalConfigurationPreference(
+        "claude-code",
+        chosen,
+        undefined,
+        undefined,
+        storage,
+      );
+    }
+    const local = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(async () => ({ ...inspection, catalog })),
+    };
+    const applyAgent = vi.fn<(...args: unknown[]) => boolean>(() => true);
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "claude-code",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      applyAgent,
+      {
+        currentHostId: () => "local",
+        clientForHost: () => local,
+      } as never,
+    );
+    const blocked = () => {
+      const preventDefault = vi.fn();
+      const listener = testState.documentListeners.get("submit");
+      assert(listener);
+      listener({
+        target: testState.composer,
+        preventDefault,
+        stopImmediatePropagation: vi.fn(),
+      } as unknown as Event);
+      return preventDefault.mock.calls.length > 0;
+    };
+    try {
+      await vi.waitFor(() =>
+        expect(testState.renderedModelViews.at(-1)).toMatchObject({ status: "ready", catalog }),
+      );
+      const view = testState.renderedModelViews.at(-1);
+      assert(view);
+      expect(view.selected).toBeUndefined();
+      expect(isRendererModelPickerDisabled(view)).toBe(false);
+      expect(blocked()).toBe(true);
+      expect(applyAgent.mock.calls.every((call) => call[1] === undefined)).toBe(true);
+      assert(testState.selectModel);
+      testState.selectModel(chosen.id);
+      await vi.waitFor(() =>
+        expect(testState.renderedModelViews.at(-1)).toMatchObject({
+          status: "ready",
+          selected: chosen,
+        }),
+      );
+      expect(blocked()).toBe(false);
+    } finally {
+      probe.dispose();
+    }
+  },
+);
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {
   it("keeps a Thread's own catalog usable when a different draft workspace is unavailable", async () => {

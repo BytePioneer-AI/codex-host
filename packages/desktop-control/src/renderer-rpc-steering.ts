@@ -37,7 +37,9 @@ export async function installRendererRpcSteeringDirect(
 ): Promise<boolean> {
   try {
     const needed = await client.evaluate<boolean>(`(() => {
-      if (window.__codexhostRpcSteeringV1) return false;
+      const steering = window.__codexhostRpcSteeringV1;
+      if (steering && steering.controller.forHost === steering.forHost) return false;
+      steering?.release();
       const routing=window.__codexhostHostRoutingV1;
       return ['local', ...(routing?.knownHostIds?.() ?? [])].some(id => routing?.forHost(id)?.manager.kind === 'main-process-rpc');
     })()`);

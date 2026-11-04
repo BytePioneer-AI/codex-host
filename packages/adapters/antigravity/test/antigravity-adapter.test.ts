@@ -1,4 +1,4 @@
-import { access, chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -2009,6 +2009,99 @@ process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id
         await session.close();
       } finally {
         await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("does not fail a replied Turn that recovered from a transient native error", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-recovered-error-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-recovered-error-cwd-"));
+      const home = path.join(directory, "home");
+      const cleanup = async (): Promise<void> => {
+        for (const target of [directory, cwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      const transient =
+        'API error (attempt 1): request failed: Post "https://example.invalid/stream": local error: tls: bad record MAC';
+      // user input, planner response, the error, then (if recovered) a tool step and the final reply
+      const conversations = {
+        "conv-recovered": [14, 15, 17, 23, 15],
+        "conv-unrecovered": [14, 15, 17],
+      };
+      const { DatabaseSync } = await import("node:sqlite");
+      for (const [conversationId, stepTypes] of Object.entries(conversations)) {
+        const dbDir = path.join(home, ".gemini", "antigravity-cli", "conversations");
+        await mkdir(dbDir, { recursive: true });
+        const db = new DatabaseSync(path.join(dbDir, `${conversationId}.db`));
+        db.exec(
+          "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, error_details BLOB, step_payload BLOB)",
+        );
+        const insert = db.prepare(
+          "INSERT INTO steps (idx, step_type, status, step_payload) VALUES (?, ?, 3, ?)",
+        );
+        stepTypes.forEach((stepType, idx) => {
+          insert.run(idx, stepType, Buffer.from(stepType === 17 ? transient : "step", "utf8"));
+        });
+        db.close();
+      }
+
+      const outcomes: Record<string, unknown> = {};
+      try {
+        for (const conversationId of Object.keys(conversations)) {
+          const scriptContent = `
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (!process.argv.includes("--input-format")) process.exit(0);
+process.stdout.write(JSON.stringify({ event: "init", conversation_id: ${JSON.stringify(conversationId)}, init: { permission_mode: "default" } }) + "\\n");
+process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: ${JSON.stringify(conversationId)}, status: "ERROR", error: ${JSON.stringify(transient)}, num_turns: 1, response: "done\\n" } }) + "\\n");
+`;
+          const jsPath = path.join(directory, `${conversationId}.cjs`);
+          await writeFile(jsPath, scriptContent);
+          let command: string;
+          if (process.platform === "win32") {
+            command = path.join(directory, `${conversationId}.cmd`);
+            await writeFile(command, `@node "${jsPath}" %*\r\n`);
+          } else {
+            command = path.join(directory, conversationId);
+            await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+            await chmod(command, 0o755);
+          }
+          const adapter = new AntigravityAdapter({
+            command,
+            environment: { ...process.env, HOME: home, USERPROFILE: home },
+          });
+          try {
+            const opened = await adapter.open({ kind: "create", cwd });
+            expect(opened.ok).toBe(true);
+            if (!opened.ok) return;
+            const session = opened.value;
+            const iterator = session.outputs[Symbol.asyncIterator]();
+            await session.execute({
+              type: "turn.start",
+              turnId: hostTurnIdSchema.parse(`turn-${conversationId}`),
+              input: [{ type: "text", text: "go" }],
+            });
+            while (true) {
+              const event = await nextEvent(iterator);
+              if (event.type === "turn.completed") {
+                outcomes[conversationId] = event.outcome;
+                break;
+              }
+            }
+            await session.close();
+          } finally {
+            await adapter.close();
+          }
+        }
+        expect(outcomes["conv-recovered"]).toMatchObject({ status: "succeeded" });
+        expect(outcomes["conv-unrecovered"]).toMatchObject({
+          status: "failed",
+          error: { message: `Antigravity Turn ended with status ERROR: ${transient}` },
+        });
+      } finally {
         await cleanup();
       }
     });

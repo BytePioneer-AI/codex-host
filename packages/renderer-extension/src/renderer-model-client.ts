@@ -329,7 +329,15 @@ export function createRendererModelClient(
     } catch (error) {
       // Older Hosts only understand unscoped/full inspection. Preserve that
       // legacy behavior when an optional selector is rejected explicitly.
-      if ((!params.purpose && !params.threadId) || !isInvalidParams(error)) throw error;
+      if (
+        (!params.purpose && !params.threadId) ||
+        !isInvalidParams(error) ||
+        (typeof error === "object" &&
+          error !== null &&
+          "message" in error &&
+          error.message === "Harness inspection scope does not match the Thread")
+      )
+        throw error;
       const full = { ...params };
       delete full.purpose;
       delete full.threadId;

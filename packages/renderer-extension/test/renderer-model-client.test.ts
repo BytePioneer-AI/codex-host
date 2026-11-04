@@ -956,6 +956,31 @@ describe("Renderer fixed Model request client", () => {
     });
   });
 
+  it.each([
+    { plain: false, availability: false },
+    { plain: false, availability: true },
+    { plain: true, availability: false },
+    { plain: true, availability: true },
+  ])(
+    "does not drop Thread scope after an ownership mismatch: %j",
+    async ({ plain, availability }) => {
+      const message = "Harness inspection scope does not match the Thread";
+      const failure = plain
+        ? { code: -32602, message }
+        : Object.assign(new Error(message), { code: -32602 });
+      const sendRequest = vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce(inspection);
+      const client = createRendererModelClient([{ sendRequest }]);
+      if (!client) throw new Error("Renderer client was not created");
+      const params = {
+        harnessId: piHarnessId,
+        threadId: hostThreadIdSchema.parse("foreign-thread"),
+        ...(availability ? { purpose: "availability" as const } : {}),
+      };
+      await expect(client.inspectHarness(params)).rejects.toBe(failure);
+      expect(sendRequest).toHaveBeenCalledExactlyOnceWith(HARNESS_INSPECT_METHOD, params);
+    },
+  );
+
   it("does not retry a full inspection rejected for its params", async () => {
     const sendRequest = vi
       .fn()

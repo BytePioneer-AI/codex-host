@@ -30,11 +30,12 @@ export class DataDir {
     }
   }
 
-  writeJson(relative: string, value: unknown): void {
+  /** Atomically replace one JSON file; `mode` applies from creation, so it is never briefly wider. */
+  writeJson(relative: string, value: unknown, options: { mode?: number } = {}): void {
     const target = this.path(relative);
     mkdirSync(dirname(target), { recursive: true });
     const temp = `${target}.${String(process.pid)}.tmp`;
-    writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`);
+    writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, options);
     renameSync(temp, target);
   }
 

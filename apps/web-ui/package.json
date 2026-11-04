@@ -8,6 +8,8 @@
     "build": "node --import tsx scripts/build.ts"
   },
   "devDependencies": {
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.0.0",
     "vite": "^6.0.0",
     "lightningcss": "^1.32.0",

@@ -1,6 +1,6 @@
 /** Shared configuration forms and their Host describe mirror. */
 import type { Context } from "@deepseek-ai/cordis";
-// Type-only: the ctx.remote merge, the fixed Host facts, and the carrier's
+// Type-only: the ctx.remote merge and the carrier's
 // `connection/reset` lifecycle event, all through the assembly package.
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
 // Type-only pair supplying `$on` and its key face without dragging a build
@@ -42,8 +42,8 @@ export const inject = ["remote", "remote.settings"];
  */
 export function apply(ctx: Context): void {
   const schema = new SettingsSchemaService(ctx);
-  // Every form uses the persistence mode resolved from the connected Host.
-  const persistence = ctx.remote.$host.isLoopback ? "host" : "memory";
+  // The Host supplies schemas and runtime settings; UI preferences are browser-owned.
+  const persistence = "host";
   const mirror = new SettingsDescribeMirror(ctx, persistence);
   ctx.effect(() => {
     const disposers = [

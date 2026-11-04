@@ -15,7 +15,7 @@ export interface ConfigFormSnapshot<T> {
   /** Last accepted schema-resolved section; undefined before the first acceptance. */
   value: T | undefined;
   /**
-   * Composition layer the Host resolved {@link value} over, when the owning
+   * Composition layer used to resolve {@link value}, when the owning
    * plugin declared one. What a field reverts to once cleared.
    */
   base: unknown;
@@ -27,10 +27,10 @@ export interface ConfigFormSnapshot<T> {
   user: unknown;
   /** Namespace revision fencing the next write; undefined before the first Host view. */
   revision: number | undefined;
-  /** Whether the Host document accepts writes; memory mode never does. */
+  /** Whether the selected storage accepts writes; memory mode never does. */
   writable: boolean;
-  /** `host` syncs with the Host document; `memory` keeps a remote browser process-local. */
-  mode: "host" | "memory";
+  /** Host document, per-origin browser storage, or non-persistent memory. */
+  mode: "host" | "browser" | "memory";
 }
 
 /**
@@ -47,12 +47,12 @@ export interface ConfigForm<T> {
   subscribe(listener: () => void): () => void;
   /**
    * Queue one atomic namespace mutation. All operations share one revision
-   * fence, Host validation, persistence decision, and recovery read. Supplying
+   * fence, schema validation, and storage destination. Supplying
    * `expectedRevision` preserves an earlier read as the fence instead of using
    * the latest queued or mirrored revision.
    * @param ops - ordered field operations copied when queued.
    * @param expectedRevision - optional fixed revision read by the domain editor.
-   * @returns true for Host acceptance, false for refusal or skipped writes, after any latest-write recovery.
+   * @returns true when saved, false for refusal or skipped writes, after any latest-write recovery.
    * Transport failures reject.
    */
   mutate(ops: readonly SettingsPathOpView[], expectedRevision?: number): Promise<boolean>;
@@ -62,7 +62,7 @@ export interface ConfigForm<T> {
    * publish; a Host-refused latest write reloads Host state instead.
    * @param field - scalar field inside the namespace section.
    * @param value - JSON-shaped value selected by the user.
-   * @returns true for Host acceptance, false for refusal or skipped writes, after any latest-write recovery.
+   * @returns true when saved, false for refusal or skipped writes, after any latest-write recovery.
    * Transport failures reject.
    */
   set(field: string, value: unknown): Promise<boolean>;
@@ -70,7 +70,7 @@ export interface ConfigForm<T> {
    * Queue one field clear, so the field re-inherits the composition layer.
    * Shares {@link set}'s ordering, revision, and recovery contract.
    * @param field - scalar field inside the namespace section.
-   * @returns true for Host acceptance, false for refusal or skipped writes, after any latest-write recovery.
+   * @returns true when saved, false for refusal or skipped writes, after any latest-write recovery.
    * Transport failures reject.
    */
   unset(field: string): Promise<boolean>;

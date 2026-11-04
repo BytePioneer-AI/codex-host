@@ -266,7 +266,7 @@ export class LocaleRuntime {
    * locale, because the active value may be a provisional browser-derived or
    * fallback resolution that nothing has stored yet. Picking the language
    * already on screen is still an explicit choice, and it must survive a
-   * different browser sharing the same DSH home. Only the render notification
+   * reload in this browser. Only the render notification
    * is conditional: republishing an unchanged locale would churn every
    * subscriber for nothing.
    * @param id - a registered locale id; unknown ids throw.

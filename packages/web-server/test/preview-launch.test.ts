@@ -40,6 +40,7 @@ it("removes inherited Host routing and Node injection without changing the paren
   assert.equal(args[args.indexOf("--harness") + 1], "all");
   assert.equal(args[args.indexOf("--adapters") + 1], join(bundle, "adapters"));
   assert.equal(args[args.indexOf("--host") + 1], "0.0.0.0");
+  assert.equal(args.includes("--trusted-proxy"), false);
   assert.equal(args[args.indexOf("--port") + 1], "4400");
   assert.equal(args[args.indexOf("--data") + 1], join(homedir(), ".codexhost", "web"));
   assert.match(
@@ -68,6 +69,11 @@ it("allows an explicit loopback or interface binding without disabling authentic
     assert.equal(args[args.indexOf("--host") + 1], host);
     assert.equal(args.includes("--no-auth"), false);
   }
+});
+
+it("forwards trusted proxies only when explicitly configured", () => {
+  const { args } = previewLaunch("/packed", { "trusted-proxy": "10.0.0.1,10.0.0.2" }, {});
+  assert.equal(args[args.indexOf("--trusted-proxy") + 1], "10.0.0.1,10.0.0.2");
 });
 
 it("accepts an explicit port instead of the default", () => {

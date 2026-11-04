@@ -16,6 +16,8 @@ interface StoredSubscription {
   keys: { p256dh: string; auth: string };
   createdAt: number;
   userAgent?: string;
+  /** Credential that created this subscription; absent when authentication was disabled. */
+  owner?: string;
 }
 
 export interface PushMessage {
@@ -59,12 +61,30 @@ export class PushNotifier {
     this.data.writeJson(SUBSCRIPTIONS_FILE, this.subscriptions);
   }
 
+  /** Discard subscriptions that no longer belong to a valid credential. */
+  retainOwners(isValid: (owner: string) => boolean): void {
+    const kept = this.subscriptions.filter(
+      (entry) => entry.owner !== undefined && isValid(entry.owner),
+    );
+    if (kept.length === this.subscriptions.length) return;
+    this.subscriptions = kept;
+    this.save();
+  }
+
+  /** Remove every subscription a revoked credential created. */
+  dropOwner(owner: string): void {
+    const kept = this.subscriptions.filter((entry) => entry.owner !== owner);
+    if (kept.length === this.subscriptions.length) return;
+    this.subscriptions = kept;
+    this.save();
+  }
+
   register(rpc: RpcRegistry): void {
     rpc.register("codexhost/pushConfig", () => ({
       publicKey: this.keys.publicKey,
       subscriptions: this.subscriptions.length,
     }));
-    rpc.register("codexhost/pushSubscribe", (args) => {
+    rpc.register("codexhost/pushSubscribe", (args, context) => {
       const subscription = (args.subscription ??
         (args.request as { subscription?: unknown } | undefined)?.subscription) as
         Partial<StoredSubscription> | undefined;
@@ -87,6 +107,7 @@ export class PushNotifier {
         keys: { p256dh: subscription.keys.p256dh, auth: subscription.keys.auth },
         createdAt: Date.now(),
         ...(typeof args.userAgent === "string" ? { userAgent: args.userAgent.slice(0, 200) } : {}),
+        ...(context.auth === undefined ? {} : { owner: context.auth.credential }),
       });
       this.save();
       return { subscribed: true, subscriptions: this.subscriptions.length };

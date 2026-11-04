@@ -11,6 +11,8 @@ import {
 export interface PreviewOptions extends HostRestartOptions {
   host?: string;
   port?: string;
+  /** Comma-separated proxy addresses allowed to set forwarding headers. */
+  "trusted-proxy"?: string;
   data?: string;
   workspace?: string;
   harness?: string;
@@ -71,6 +73,7 @@ export function previewLaunch(
       options.host ?? "0.0.0.0",
       "--port",
       options.port ?? "4400",
+      ...(options["trusted-proxy"] ? ["--trusted-proxy", options["trusted-proxy"]] : []),
       "--adapters",
       resolve(distribution, "adapters"),
       "--harness",

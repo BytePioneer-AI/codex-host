@@ -48,7 +48,9 @@ import {
 } from "@deepseek-ai/dsh-client-ui-conversation/thread-reference";
 import type {} from "@deepseek-ai/dsh-client-ui-chat/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
-import { ensureServiceWorker } from "./notifications.ts";
+import { AccessTokensSection } from "./AccessTokensSection.tsx";
+import { watchAuthentication } from "./auth-watch.ts";
+import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
 import { ImportPage, type ImportPageFace } from "./ImportPage.tsx";
 import { HostSettingsSection, type HostSettingsSectionFace } from "./HostSettingsSection.tsx";
@@ -275,6 +277,19 @@ export function apply(ctx: ClientContext): void {
     get: () => ctx.theme.getTheme().active.colorScheme,
     subscribe: (listener) => ctx.on("theme/change", listener),
   };
+  // Always listed: non-local access sees the same entry, with guidance instead of the tokens.
+  ctx.slots.inject("settings.section", () =>
+    ctx.slots.register(
+      {
+        name: "settings.section",
+        id: "codexhost-access-tokens",
+        order: 9,
+        label: () => t("settings.accessTokens"),
+        locale: NS,
+      },
+      AccessTokensSection,
+    ),
+  );
   HOST_SETTINGS_PAGES.forEach(([pageId, label], index) => {
     ctx.slots.inject("settings.section", () =>
       ctx.slots.register(
@@ -341,6 +356,11 @@ export function apply(ctx: ClientContext): void {
 
   // Deep links (`?session=<id>`, used by notification clicks) and service-worker messages.
   ensureServiceWorker();
+  resubmitNotifications();
+  ctx.effect(
+    () => watchAuthentication((ctx.get("connection") as ConnectionHandle).state),
+    "ui-codexhost: enter sign-in when the token is revoked",
+  );
   const openFromUrl = (): void => {
     const url = new URL(window.location.href);
     const sessionId = url.searchParams.get("session");

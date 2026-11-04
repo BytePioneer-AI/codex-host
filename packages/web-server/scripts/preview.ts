@@ -22,6 +22,7 @@ const { values } = parseArgs({
     "dev-web-ui": { type: "string" },
     host: { type: "string" },
     port: { type: "string" },
+    "trusted-proxy": { type: "string" },
     data: { type: "string" },
     workspace: { type: "string" },
     harness: { type: "string" },

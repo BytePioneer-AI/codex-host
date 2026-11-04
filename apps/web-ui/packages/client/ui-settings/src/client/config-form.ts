@@ -1,4 +1,4 @@
-/** Shared entry values and ordered writes over the Host configuration mirror. */
+/** Settings forms with ordered Host writes or browser-owned UI preferences. */
 
 import { DeveloperToolsPreference } from "./developer-tools.ts";
 import { DEVELOPER_TOOLS_NAMESPACE } from "../developer-tools-settings.ts";
@@ -29,6 +29,7 @@ import type {} from "@deepseek-ai/dsh-settings/types";
 import type { SettingsSchemaService } from "./schema.ts";
 import type { ConfigForm, ConfigFormSnapshot } from "./config-form-types.ts";
 import { SettingsDescribeMirror, type SettingsDescribeFace } from "./settings-mirror.ts";
+import { BrowserPreferences, isBrowserPreference } from "./browser-preferences.ts";
 
 /** Domain-owned description of one settings namespace consumed by a browser plugin. */
 interface ConfigFormSpec<T> {
@@ -43,10 +44,9 @@ interface ConfigFormSpec<T> {
 }
 
 /**
- * One namespace's derived view over the shared describe mirror, plus that
- * namespace's serialized Host writes. Writes carry the latest known namespace
- * revision, fold their answers back into the mirror, and teardown waits for
- * the operation already crossing the wire.
+ * One namespace's values and serialized writes. Host-backed forms fold accepted
+ * replies into the shared mirror; UI forms layer browser preferences over its
+ * schema and defaults without changing the Host document.
  */
 export class ConfigFormController<T> implements ConfigForm<T> {
   private readonly store: SnapshotStore<ConfigFormSnapshot<T>>;
@@ -54,6 +54,7 @@ export class ConfigFormController<T> implements ConfigForm<T> {
   private writeGeneration = 0;
   private disposed = false;
   private readonly unsubscribe: (() => void) | undefined;
+  private readonly browser: BrowserPreferences | undefined;
   /**
    * Revision answered by a superseded write still ahead of the mirror: the
    * mirror only folds the LATEST settlement in, so a queued successor takes
@@ -66,18 +67,20 @@ export class ConfigFormController<T> implements ConfigForm<T> {
    * namespace carries this form's writes (reads ride the mirror).
    * @param spec - namespace identity and optional narrowing decoder.
    * @param mirror - the shared describe mirror this form derives from.
-   * @param persistence - client-selected Host persistence; non-loopback pages may remain process-local.
+   * @param persistence - storage selected by the settings provider for this namespace.
    * @param schema - settings-owned schema operations.
    */
   constructor(
     private readonly ctx: Context,
     private readonly spec: ConfigFormSpec<T>,
     private readonly mirror: SettingsDescribeMirror,
-    private readonly persistence: "host" | "memory",
+    private readonly persistence: "host" | "browser" | "memory",
     private readonly schema: SettingsSchemaService,
   ) {
+    this.browser =
+      persistence === "browser" ? new BrowserPreferences(spec.namespace, schema) : undefined;
     this.store = createSnapshotStore<ConfigFormSnapshot<T>>({
-      status: persistence === "host" ? "loading" : "unavailable",
+      status: persistence === "memory" ? "unavailable" : "loading",
       value: undefined,
       base: undefined,
       user: undefined,
@@ -85,10 +88,18 @@ export class ConfigFormController<T> implements ConfigForm<T> {
       writable: false,
       mode: persistence,
     });
-    if (persistence === "host") {
-      this.unsubscribe = mirror.subscribe(() => {
+    if (persistence !== "memory") {
+      const unsubscribe = mirror.subscribe(() => {
         this.derive();
       });
+      const onStorage = (event: StorageEvent): void => {
+        if (event.key === null || event.key === this.browser?.key) this.derive();
+      };
+      if (this.browser !== undefined) window.addEventListener("storage", onStorage);
+      this.unsubscribe = () => {
+        unsubscribe();
+        if (this.browser !== undefined) window.removeEventListener("storage", onStorage);
+      };
       this.derive();
     }
   }
@@ -112,7 +123,7 @@ export class ConfigFormController<T> implements ConfigForm<T> {
    * revision, and recovery contract.
    * @param field - scalar field inside the namespace section.
    * @param value - JSON-shaped value selected by the user.
-   * @returns whether the Host accepted the write, after any recovery read.
+   * @returns whether the selected storage accepted the write, after any recovery read.
    */
   set(field: string, value: unknown): Promise<boolean> {
     return this.mutate([{ op: "set", path: [field], value: value as JsonValue }]);
@@ -122,7 +133,7 @@ export class ConfigFormController<T> implements ConfigForm<T> {
    * Queue one field clear; see {@link ConfigForm.unset} for the ordering,
    * revision, and recovery contract.
    * @param field - scalar field inside the namespace section.
-   * @returns whether the Host accepted the clear, after any recovery read.
+   * @returns whether the selected storage accepted the clear, after any recovery read.
    */
   unset(field: string): Promise<boolean> {
     return this.mutate([{ op: "unset", path: [field] }]);
@@ -132,10 +143,19 @@ export class ConfigFormController<T> implements ConfigForm<T> {
    * Queue one atomic namespace mutation; see {@link ConfigForm.mutate}.
    * @param ops - ordered field operations copied when queued.
    * @param expectedRevision - optional fixed revision read by the domain editor.
-   * @returns whether the Host accepted the mutation, after any recovery read.
+   * @returns whether the selected storage accepted the mutation, after any recovery read.
    */
   mutate(ops: readonly SettingsPathOpView[], expectedRevision?: number): Promise<boolean> {
     const ownedOps = structuredClone(ops) as SettingsPathOpView[];
+    const browser = this.browser;
+    if (browser !== undefined) {
+      return this.enqueue(() => {
+        const view = this.mirror.namespace(this.spec.namespace);
+        const saved = view !== undefined && browser.write(view, ownedOps, expectedRevision);
+        this.derive();
+        return Promise.resolve(saved);
+      });
+    }
     const generation = ++this.writeGeneration;
     return this.enqueue(async () => {
       const revision = expectedRevision ?? this.pendingRevision ?? this.getSnapshot().revision;
@@ -198,20 +218,23 @@ export class ConfigFormController<T> implements ConfigForm<T> {
     const mirrored = this.mirror.getSnapshot();
     if (mirrored.view === undefined) return;
     const { writable } = mirrored.view;
-    const view = mirrored.view.namespaces.find((candidate) => candidate.ns === this.spec.namespace);
-    if (view === undefined) {
+    const hostView = mirrored.view.namespaces.find(
+      (candidate) => candidate.ns === this.spec.namespace,
+    );
+    if (hostView === undefined) {
       this.store.update((draft) => {
         draft.status = "unavailable";
         draft.writable = writable;
       });
       return;
     }
+    const view = this.browser?.read(hostView) ?? hostView;
     const decoded = this.decode(view);
     this.store.update((draft) => {
       draft.revision = view.revision;
       draft.base = view.base;
       draft.user = view.user;
-      draft.writable = writable;
+      draft.writable = this.browser !== undefined || writable;
       if (decoded === undefined) return;
       draft.status = "ready";
       draft.value = decoded;
@@ -267,7 +290,7 @@ export class ConfigForms extends Service {
    * @param ctx - the providing plugin's context.
    * @param config - the shared describe mirror every shared form derives from,
    * the settings-owned schema operations, and the Host persistence the provider
-   * resolved from `remote.$host`.
+   * selected for Host-owned namespaces. UI preferences use browser storage.
    */
   constructor(
     ctx: Context,
@@ -295,8 +318,7 @@ export class ConfigForms extends Service {
   /**
    * The shared mirror's read/fold face for cross-namespace surfaces (schema
    * introspection, the served-namespace directory). Per-namespace consumers
-   * use {@link get}; both derive from the same snapshot, so they can never
-   * disagree about the document.
+   * use {@link get}, which also applies browser-owned UI preferences.
    * @returns the describe face over the shared mirror.
    */
   describe(): SettingsDescribeFace {
@@ -314,7 +336,7 @@ export class ConfigForms extends Service {
       this.owner,
       { namespace: entryId },
       this.mirror,
-      this.persistence,
+      isBrowserPreference(entryId) ? "browser" : this.persistence,
       this.schema,
     );
     this.forms.set(entryId, form);

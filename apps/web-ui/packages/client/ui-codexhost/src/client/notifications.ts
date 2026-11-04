@@ -71,3 +71,18 @@ export function ensureServiceWorker(): void {
   if (!("serviceWorker" in navigator)) return;
   void registration().catch(() => undefined);
 }
+
+/**
+ * Tie this browser's existing subscription to the token it is signed in with now. The server drops
+ * subscriptions when their token is deleted, while the browser still holds the subscription.
+ */
+export function resubmitNotifications(): void {
+  if (!("serviceWorker" in navigator) || !("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+  void (async () => {
+    const worker = await navigator.serviceWorker.getRegistration("./");
+    const subscription = await worker?.pushManager.getSubscription();
+    if (subscription !== null && subscription !== undefined)
+      await pushApi.subscribe(subscription.toJSON());
+  })().catch(() => undefined);
+}

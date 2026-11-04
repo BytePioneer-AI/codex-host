@@ -3,7 +3,8 @@
  *
  *   node --import tsx src/main.ts [--port 4400] [--host 127.0.0.1] [--data <dir>]
  *        [--adapters <dir>[,<dir>...]] [--harness <id>[,<id>...]]
- *        [--token <value>] [--rotate-token] [--no-auth] [--dev-web-ui <apps/web-ui>]
+ *        [--token <value>] [--trusted-proxy <ip>[,<ip>...]] [--no-auth]
+ *        [--dev-web-ui <apps/web-ui>]
  *
  * `--dev-web-ui` serves the Web UI from that source checkout instead of the packed copy and pushes
  * rebuilt plugin bundles to open pages (used by `npm start web -- --watch`).
@@ -11,14 +12,19 @@
 
 import { existsSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { homedir, networkInterfaces } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import qrcode from "qrcode-terminal";
 import { createBrowserWebSocketServer } from "./browser-websocket.ts";
 
-import { AccessAuth } from "./auth.ts";
+import { registerAccessTokenRpc } from "./access-token-rpc.ts";
+import { AccessTokenStore } from "./access-tokens.ts";
+import { SWITCH_TOKEN_SCRIPT } from "./auth-page.ts";
+import { AccessAuth, CredentialConnections, LOCAL_CREDENTIAL, type RequestAuth } from "./auth.ts";
+import { isLoopbackHost, isWildcardHost, networkAccessUrls } from "./network-urls.ts";
+import { RequestTrust } from "./request-trust.ts";
 import { DESKTOP_SCREENSHOT_PATH } from "@codexhost/shared-contracts/desktop-screenshot";
 import { DesktopScreenshots } from "./desktop-screenshot.ts";
 import { SIDEBAR_BROWSER_PATH } from "@codexhost/shared-contracts/sidebar-browser";
@@ -34,7 +40,7 @@ import { serveChClientGateway } from "./ch-client-gateway.ts";
 import { DshWebServices } from "./dsh-web-services.ts";
 import { harnessIconStyles } from "./harness-icon-styles.ts";
 import { Settings } from "./settings.ts";
-import { formatWebStartup, type NetworkAccessUrl } from "./startup-display.ts";
+import { formatWebStartup } from "./startup-display.ts";
 import { DataDir } from "./store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "./transport.ts";
 import { WebAssets, type AssetResponse } from "./web-assets.ts";
@@ -87,7 +93,7 @@ const { values } = parseArgs({
       default: process.env.CODEXHOST_DEFAULT_WORKSPACE ?? join(homedir(), "codexhost-workspace"),
     },
     token: { type: "string", default: process.env.CODEXHOST_WEB_TOKEN },
-    "rotate-token": { type: "boolean", default: false },
+    "trusted-proxy": { type: "string", default: process.env.CODEXHOST_WEB_TRUSTED_PROXIES },
     "no-auth": { type: "boolean", default: false },
     "import-recent": { type: "string", default: process.env.CODEXHOST_IMPORT_RECENT },
     "dev-web-ui": { type: "string" },
@@ -107,13 +113,13 @@ const dataRoot = resolve(
     ),
 );
 const data = new DataDir(dataRoot);
-const auth =
+const trust = new RequestTrust(values["trusted-proxy"]);
+const accessTokens =
   values["no-auth"] === true
     ? undefined
-    : new AccessAuth(data, {
-        rotate: values["rotate-token"],
-        ...(values.token === undefined ? {} : { token: values.token }),
-      });
+    : new AccessTokenStore(data, values.token === undefined ? {} : { token: values.token });
+const connections = new CredentialConnections();
+const auth = accessTokens && new AccessAuth(accessTokens, trust, connections);
 const rpc = new RpcRegistry();
 const streams = new StreamRegistry();
 const events = new EventHub(homedir());
@@ -206,6 +212,13 @@ const dsh = await DshWebServices.open({
 if (dsh) streams.setFallback((endpoint, args, sink) => dsh.stream(endpoint, args, sink));
 const settings = new Settings(data, events);
 const push = new PushNotifier(data);
+if (accessTokens !== undefined) {
+  push.retainOwners((owner) => owner === LOCAL_CREDENTIAL || accessTokens.has(owner));
+  accessTokens.onRemoved((id) => {
+    connections.revoke(id);
+    push.dropOwner(id);
+  });
+}
 sessions.notifier = (notification) => {
   void push.notify({
     kind: notification.kind,
@@ -242,6 +255,11 @@ preferences.register(rpc);
 displaySettings.register(rpc);
 settings.register(rpc);
 push.register(rpc);
+registerAccessTokenRpc(rpc, accessTokens, {
+  port: () => (server.address() as { port: number }).port,
+  networkUrls: () =>
+    networkAccessUrls(values.host as string, (server.address() as { port: number }).port),
+});
 registerMisc(rpc, { events });
 registerVoiceStatus(rpc, chHost);
 
@@ -287,54 +305,20 @@ async function readBody(
   return Buffer.concat(chunks).toString("utf8");
 }
 
-/**
- * Reject cross-origin browser requests (CSRF / cross-site WebSocket hijacking). Requests without
- * an Origin header (native clients, curl) are allowed; they still need the access token.
- */
-function sameOrigin(request: IncomingMessage): boolean {
-  const origin = request.headers.origin;
-  if (origin === undefined || origin === "null") return origin === undefined;
-  try {
-    const forwardedHost = request.headers["x-forwarded-host"];
-    const host =
-      (typeof forwardedHost === "string" ? forwardedHost.split(",")[0]?.trim() : undefined) ??
-      request.headers.host;
-    return new URL(origin).host === host;
-  } catch {
-    return false;
-  }
-}
-
 const server = createServer((request, response) => {
   const url = request.url ?? "/";
   const pathname = url.split("?")[0] ?? "/";
   void (async () => {
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    let requestAuth: RequestAuth | undefined;
     if (auth !== undefined) {
-      if ((pathname === "/" || pathname === "/index.html") && auth.exchange(request, response))
-        return;
-      if (!auth.authorized(request)) {
-        // Static shell assets carry no data; everything else (and the document) needs the token.
-        const publicAsset =
-          pathname.startsWith("/assets/") ||
-          /^\/(favicon[^/]*\.svg|manifest\.webmanifest|apple-touch-icon\.png|icon-\d+\.png|sw\.js)$/u.test(
-            pathname,
-          );
-        if (!publicAsset) {
-          if (pathname.startsWith("/api/") || pathname.startsWith("/plugins/")) {
-            response
-              .writeHead(401, { "content-type": "text/plain", "cache-control": "no-store" })
-              .end("authentication required");
-          } else {
-            auth.signInPage(response);
-          }
-          return;
-        }
-      }
+      const admission = await auth.gate(request, response, pathname);
+      if (admission.handled) return;
+      requestAuth = admission.auth;
     }
     if (pathname === "/api/file" && (request.method === "GET" || request.method === "HEAD")) {
       const path = new URL(url, "http://localhost").searchParams.get("path");
       response.setHeader("Cache-Control", "private, no-store");
-      response.setHeader("X-Content-Type-Options", "nosniff");
       if (!path) {
         response.writeHead(400).end(request.method === "HEAD" ? undefined : "missing path");
         return;
@@ -352,7 +336,7 @@ const server = createServer((request, response) => {
       return;
     }
     if (pathname.startsWith("/api/ch/v1/")) {
-      if (!sameOrigin(request)) {
+      if (!trust.sameOrigin(request)) {
         response
           .writeHead(403, { "content-type": "text/plain" })
           .end("cross-origin request rejected");
@@ -362,7 +346,7 @@ const server = createServer((request, response) => {
       return;
     }
     if (request.method === "POST" && pathname.startsWith("/api/")) {
-      if (!sameOrigin(request)) {
+      if (!trust.sameOrigin(request)) {
         response
           .writeHead(403, { "content-type": "text/plain" })
           .end("cross-origin request rejected");
@@ -383,7 +367,7 @@ const server = createServer((request, response) => {
       const body = await readBody(request, response);
       if (body === undefined) return;
       if (dsh && (await dsh.handleApiRequest(request, body, response))) return;
-      const reply = await rpc.handleHttp(body);
+      const reply = await rpc.handleHttp(body, requestAuth);
       response
         .writeHead(200, {
           "content-type": "application/json; charset=utf-8",
@@ -393,7 +377,18 @@ const server = createServer((request, response) => {
       return;
     }
     if (pathname === "/" || pathname === "/index.html") {
-      send(response, assets.index());
+      const index = assets.index();
+      send(
+        response,
+        auth === undefined
+          ? index
+          : {
+              ...index,
+              body: Buffer.from(
+                String(index.body).replace("<head>", `<head>${SWITCH_TOKEN_SCRIPT}`),
+              ),
+            },
+      );
       return;
     }
     if (hmr !== undefined && pathname === HMR_EVENTS_PATH) {
@@ -427,56 +422,33 @@ const server = createServer((request, response) => {
 const wss = createBrowserWebSocketServer();
 const sidebarBrowser = new SidebarBrowser({ profileDirectory: join(dataRoot, "sidebar-browser") });
 server.on("upgrade", (request, socket, head) => {
-  if ((request.url ?? "").split("?")[0] === SIDEBAR_BROWSER_PATH) {
-    if (!sameOrigin(request) || (auth !== undefined && !auth.authorized(request))) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
-      socket.destroy();
-      return;
-    }
-    sidebarBrowser.upgrade(request, socket, head);
-    return;
-  }
-  if (
-    (request.url ?? "").split("?")[0] !== "/api/remote.mux" ||
-    !sameOrigin(request) ||
-    (auth !== undefined && !auth.authorized(request))
-  ) {
+  const path = (request.url ?? "").split("?")[0];
+  if ((path !== SIDEBAR_BROWSER_PATH && path !== "/api/remote.mux") || !trust.sameOrigin(request)) {
     socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
   }
-  wss.handleUpgrade(request, socket, head, (ws) => streams.attach(ws));
+  if (auth !== undefined && !auth.admitUpgrade(request, socket)) return;
+  if (path === SIDEBAR_BROWSER_PATH) sidebarBrowser.upgrade(request, socket, head);
+  else wss.handleUpgrade(request, socket, head, (ws) => streams.attach(ws));
 });
 
 server.listen(Number(values.port), values.host, () => {
   const port = (server.address() as { port: number }).port;
-  const query = auth === undefined ? "" : `?token=${auth.token}`;
-  const wildcard = values.host === "0.0.0.0" || values.host === "::";
-  const localUrl = `http://${wildcard ? "127.0.0.1" : (values.host as string)}:${String(port)}/${query}`;
-  const urls: NetworkAccessUrl[] = [];
-  if (wildcard) {
-    // Tailscale hands out CGNAT addresses (100.64.0.0/10): reachable from the phone on any network.
-    const isTailscale = (ip: string): boolean => {
-      const [a, b] = ip.split(".").map(Number);
-      return a === 100 && b !== undefined && b >= 64 && b <= 127;
-    };
-    for (const addresses of Object.values(networkInterfaces())) {
-      for (const address of addresses ?? []) {
-        if (address.family !== "IPv4" || address.internal) continue;
-        urls.push({
-          kind: isTailscale(address.address) ? "tailscale" : "lan",
-          url: `http://${address.address}:${String(port)}/${query}`,
-        });
-      }
-    }
-    urls.sort((a, b) => Number(b.kind === "tailscale") - Number(a.kind === "tailscale"));
-  }
+  const host = values.host as string;
+  const wildcard = isWildcardHost(host);
+  // The local token works only on a local address, so a specific interface's link carries none.
+  const local = wildcard || isLoopbackHost(host);
+  const query = accessTokens !== undefined && local ? `?token=${accessTokens.localToken}` : "";
+  const localUrl = `http://${wildcard ? "127.0.0.1" : host}:${String(port)}/${query}`;
+  const urls = networkAccessUrls(host, port);
   const printStartup = (qrCode?: string) =>
     console.log(
       formatWebStartup({
         localUrl,
         networkUrls: urls,
         ...(qrCode === undefined ? {} : { qrCode }),
+        ...(accessTokens !== undefined && !local ? { localManagementUnavailable: true } : {}),
       }),
     );
   if (devWebUi !== undefined)
@@ -502,6 +474,7 @@ server.listen(Number(values.port), values.host, () => {
 
 async function shutdown(): Promise<void> {
   hmr?.close();
+  accessTokens?.close();
   server.close();
   desktopScreenshots.close();
   await sidebarBrowser.close();

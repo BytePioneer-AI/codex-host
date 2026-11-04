@@ -14,10 +14,12 @@ import {
 
 export { SessionRuntimeError as RpcError } from "@codexhost/session-runtime";
 import { SessionRuntimeError as RpcError } from "@codexhost/session-runtime";
+import type { RequestAuth } from "./auth.ts";
 
 export interface RpcContext {
-  /** Connection-scoped identity, when the browser supplied one. */
   readonly method: string;
+  /** The HTTP request's authentication; absent with `--no-auth` and for in-process calls. */
+  readonly auth?: RequestAuth;
 }
 
 export type RpcHandler = (args: Record<string, unknown>, context: RpcContext) => unknown;
@@ -39,7 +41,7 @@ export class RpcRegistry {
     return this.handlers.has(method);
   }
 
-  async dispatch(method: string, payload: unknown): Promise<RpcResult> {
+  async dispatch(method: string, payload: unknown, auth?: RequestAuth): Promise<RpcResult> {
     const handler = this.handlers.get(method);
     if (handler === undefined) {
       this.unhandled.set(method, (this.unhandled.get(method) ?? 0) + 1);
@@ -58,7 +60,7 @@ export class RpcRegistry {
         : {}
     ) as Record<string, unknown>;
     try {
-      const value = await handler(args ?? {}, { method });
+      const value = await handler(args ?? {}, { method, ...(auth === undefined ? {} : { auth }) });
       return { ok: true, value: value === undefined ? null : value };
     } catch (error) {
       if (error instanceof RpcError) {
@@ -82,9 +84,10 @@ export class RpcRegistry {
   /**
    * Handle one HTTP request body.
    * @param body - raw JSON text of the client-request envelope.
+   * @param auth - the request's authentication, passed to the handler.
    * @returns the server-response envelope text.
    */
-  async handleHttp(body: string): Promise<string> {
+  async handleHttp(body: string, auth?: RequestAuth): Promise<string> {
     let envelope: { type?: string; rpcId?: string; method?: string; payload?: unknown };
     try {
       envelope = JSON.parse(body) as typeof envelope;
@@ -98,7 +101,7 @@ export class RpcRegistry {
         },
       });
     }
-    const result = await this.dispatch(String(envelope.method ?? ""), envelope.payload);
+    const result = await this.dispatch(String(envelope.method ?? ""), envelope.payload, auth);
     return JSON.stringify({ type: "server-response", rpcId: envelope.rpcId, result });
   }
 }

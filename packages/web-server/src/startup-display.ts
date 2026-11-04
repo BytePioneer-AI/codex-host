@@ -8,6 +8,8 @@ export function formatWebStartup(options: {
   localUrl: string;
   networkUrls: readonly NetworkAccessUrl[];
   qrCode?: string;
+  /** The server does not listen on a local address, so the first line carries no token. */
+  localManagementUnavailable?: boolean;
 }): string {
   const lines = [`codexhost web: ${options.localUrl}`];
   if (options.networkUrls.length > 0) {
@@ -16,6 +18,10 @@ export function formatWebStartup(options: {
       const label = entry.kind === "tailscale" ? "Tailscale" : "LAN";
       lines.push(`${`${label}:`.padEnd(15)}${entry.url}`);
     }
+    lines.push(
+      "These addresses need an access token: create one on this computer in Settings → Access tokens.",
+      "HTTP on these addresses is not encrypted; use them only on networks you trust.",
+    );
   }
   const preferred = options.networkUrls[0];
   if (preferred && options.qrCode !== undefined) {
@@ -29,6 +35,13 @@ export function formatWebStartup(options: {
       options.qrCode.trimEnd(),
     );
   }
-  lines.push("", "Keep access links and QR codes private.", "");
+  if (options.localManagementUnavailable === true) {
+    lines.push(
+      "",
+      "This address is not this computer's local address, so access tokens cannot be managed here.",
+      "Listen on 127.0.0.1 or 0.0.0.0 to manage them.",
+    );
+  }
+  lines.push("", "Keep access links private.", "");
   return lines.join("\n");
 }

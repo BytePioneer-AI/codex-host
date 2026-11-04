@@ -212,14 +212,20 @@ window.__ModuleLoader__={
 })()`;
 
 const THEME_SCRIPT = `(() => {
-  const preference = "system"
+  let preference = "system"
+  let fontSize = 14
+  try {
+    const saved = JSON.parse(localStorage.getItem('codexhost.web.preferences.v1:ui-theme') || 'null')
+    if (['light', 'dark', 'system'].includes(saved?.user?.preference)) preference = saved.user.preference
+    if (Number.isInteger(saved?.user?.fontSize) && saved.user.fontSize >= 10 && saved.user.fontSize <= 22) fontSize = saved.user.fontSize
+  } catch {}
   const systemDark = preference === 'system'
     && typeof matchMedia !== 'undefined'
     && matchMedia('(prefers-color-scheme: dark)').matches
   const dark = preference === 'dark' || systemDark
   document.documentElement.dataset.dsThemeSource = preference
   document.body.toggleAttribute('data-ds-dark-theme', dark)
-  document.body.style.setProperty('--dsh-content-font-size', "14px")
+  document.body.style.setProperty('--dsh-content-font-size', fontSize + 'px')
 })()`;
 
 /** Composed plugin graph plus the responses that serve it. */

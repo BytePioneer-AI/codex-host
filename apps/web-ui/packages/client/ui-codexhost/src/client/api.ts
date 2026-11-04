@@ -6,6 +6,9 @@ import {
   voiceTranscribeResultSchema,
   harnessSessionImportSourcesResultSchema,
   harnessSessionListResultSchema,
+  webAccessTokenCreateResultSchema,
+  webAccessTokenDeleteResultSchema,
+  webAccessTokenListResultSchema,
   type HarnessSessionImportCandidate,
   type HarnessSessionImportSourcesResult,
   type HarnessSessionListParams,
@@ -21,6 +24,17 @@ import {
 export type ImportSource = HarnessSessionImportSourcesResult["harnesses"][number];
 export type ImportCandidate = HarnessSessionImportCandidate;
 
+/** A failed RPC, keeping the server's error code for callers that treat some codes specially. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly details: unknown,
+  ) {
+    super(message);
+  }
+}
+
 async function call<T>(method: string, args: Record<string, unknown>): Promise<T> {
   const response = await fetch(`api/${method}`, {
     method: "POST",
@@ -35,9 +49,14 @@ async function call<T>(method: string, args: Record<string, unknown>): Promise<T
   });
   if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
   const envelope = (await response.json()) as {
-    result: { ok: true; value: T } | { ok: false; error: { message: string } };
+    result:
+      | { ok: true; value: T }
+      | { ok: false; error: { message: string; code: string; details?: unknown } };
   };
-  if (!envelope.result.ok) throw new Error(envelope.result.error.message);
+  if (!envelope.result.ok) {
+    const { message, code, details } = envelope.result.error;
+    throw new ApiError(message, code, details);
+  }
   return envelope.result.value;
 }
 
@@ -167,6 +186,19 @@ async function captureOnce(
     signal.removeEventListener("abort", forward);
   }
 }
+
+export const accessTokenApi = {
+  list: async () =>
+    webAccessTokenListResultSchema.parse(await call<unknown>("codexhost/accessTokenList", {})),
+  create: async (name: string) =>
+    webAccessTokenCreateResultSchema.parse(
+      await call<unknown>("codexhost/accessTokenCreate", { name }),
+    ),
+  delete: async (id: string) =>
+    webAccessTokenDeleteResultSchema.parse(
+      await call<unknown>("codexhost/accessTokenDelete", { id }),
+    ),
+};
 
 export const pushApi = {
   config: () => call<{ publicKey: string; subscriptions: number }>("codexhost/pushConfig", {}),

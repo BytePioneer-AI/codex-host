@@ -32,8 +32,6 @@ async function setup(t: TestContext, locale = "en-US") {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(url);
-  await page.getByText("Native Model", { exact: true }).waitFor();
   if (locale === "zh-CN") {
     const response = await page.request.post(new URL("/api/settings/mutate", url).href, {
       headers: { origin: new URL(url).origin },
@@ -48,9 +46,9 @@ async function setup(t: TestContext, locale = "en-US") {
     });
     assert.equal(response.ok(), true);
     assert.equal((await response.json()).result.ok, true);
-    await page.reload();
-    await page.getByText("Native Model", { exact: true }).waitFor();
   }
+  await page.goto(url);
+  await page.getByText("Native Model", { exact: true }).waitFor();
   const folder = page.locator('[data-row-key^="workspace:"]').filter({ hasText: /^project$/ });
   if ((await folder.getAttribute("aria-expanded")) === "false") await folder.click();
   await page.locator('[data-row-key="session:destination"]').click();

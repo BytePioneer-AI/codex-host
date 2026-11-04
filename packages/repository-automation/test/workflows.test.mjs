@@ -40,7 +40,7 @@ describe("workflow and form contracts", () => {
   it("builds macOS packages on supported runners with matching architectures", async () => {
     const workflow = await read(".github/workflows/release-packages.yml");
     expect(workflow).toMatch(
-      /- target: macos-arm64\s+runner: macos-15\s+rustTarget: aarch64-apple-darwin/u,
+      /- target: macos-arm64\s+runner: macos-26\s+rustTarget: aarch64-apple-darwin/u,
     );
     expect(workflow).toMatch(
       /- target: macos-x64\s+runner: macos-15-intel\s+rustTarget: x86_64-apple-darwin/u,

@@ -641,5 +641,8 @@ export function createRendererModelClient(
 }
 
 function isInvalidParams(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === -32602;
+  if (typeof error !== "object" || error === null) return false;
+  const code =
+    "code" in error ? error.code : "jsonRpcCode" in error ? error.jsonRpcCode : undefined;
+  return code === -32602;
 }

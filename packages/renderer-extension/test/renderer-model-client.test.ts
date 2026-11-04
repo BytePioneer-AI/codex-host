@@ -915,59 +915,67 @@ describe("Renderer fixed Model request client", () => {
     await expect(client.inspectHarness({ harnessId: piHarnessId })).rejects.toThrow();
   });
 
-  it("retries an availability inspection without `purpose` on a Host that rejects it", async () => {
-    const sendRequest = vi
-      .fn()
-      .mockRejectedValueOnce(
-        Object.assign(new Error("Invalid Harness inspection params"), { code: -32602 }),
-      )
-      .mockResolvedValueOnce(inspection);
-    const client = createRendererModelClient([{ sendRequest }]);
-    if (!client) throw new Error("Synthetic Model client was not created");
+  it.each(["code", "jsonRpcCode"])(
+    "retries an availability inspection without `purpose` on a Host that rejects it (%s)",
+    async (codeField) => {
+      const sendRequest = vi
+        .fn()
+        .mockRejectedValueOnce(
+          Object.assign(new Error("Invalid Harness inspection params"), { [codeField]: -32602 }),
+        )
+        .mockResolvedValueOnce(inspection);
+      const client = createRendererModelClient([{ sendRequest }]);
+      if (!client) throw new Error("Synthetic Model client was not created");
 
-    await expect(
-      client.inspectHarness({ harnessId: piHarnessId, purpose: "availability" }),
-    ).resolves.toEqual(inspection);
-    expect(sendRequest.mock.calls.map(([, params]) => params)).toEqual([
-      { harnessId: piHarnessId, purpose: "availability" },
-      { harnessId: piHarnessId },
-    ]);
-  });
+      await expect(
+        client.inspectHarness({ harnessId: piHarnessId, purpose: "availability" }),
+      ).resolves.toEqual(inspection);
+      expect(sendRequest.mock.calls.map(([, params]) => params)).toEqual([
+        { harnessId: piHarnessId, purpose: "availability" },
+        { harnessId: piHarnessId },
+      ]);
+    },
+  );
 
-  it("preserves legacy inspection on an older Host that rejects Thread scope", async () => {
-    const sendRequest = vi
-      .fn()
-      .mockRejectedValueOnce(Object.assign(new Error("Invalid params"), { code: -32602 }))
-      .mockResolvedValueOnce(inspection);
-    const client = createRendererModelClient([{ sendRequest }]);
-    if (!client) throw new Error("Renderer client was not created");
-    await expect(
-      client.inspectHarness({
+  it.each(["code", "jsonRpcCode"])(
+    "preserves legacy inspection on an older Host that rejects Thread scope (%s)",
+    async (codeField) => {
+      const sendRequest = vi
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error("Invalid params"), { [codeField]: -32602 }))
+        .mockResolvedValueOnce(inspection);
+      const client = createRendererModelClient([{ sendRequest }]);
+      if (!client) throw new Error("Renderer client was not created");
+      await expect(
+        client.inspectHarness({
+          harnessId: piHarnessId,
+          threadId: hostThreadIdSchema.parse("thread-owned"),
+        }),
+      ).resolves.toEqual(inspection);
+      expect(sendRequest).toHaveBeenNthCalledWith(1, HARNESS_INSPECT_METHOD, {
         harnessId: piHarnessId,
-        threadId: hostThreadIdSchema.parse("thread-owned"),
-      }),
-    ).resolves.toEqual(inspection);
-    expect(sendRequest).toHaveBeenNthCalledWith(1, HARNESS_INSPECT_METHOD, {
-      harnessId: piHarnessId,
-      threadId: "thread-owned",
-    });
-    expect(sendRequest).toHaveBeenNthCalledWith(2, HARNESS_INSPECT_METHOD, {
-      harnessId: piHarnessId,
-    });
-  });
+        threadId: "thread-owned",
+      });
+      expect(sendRequest).toHaveBeenNthCalledWith(2, HARNESS_INSPECT_METHOD, {
+        harnessId: piHarnessId,
+      });
+    },
+  );
 
-  it.each([
-    { plain: false, availability: false },
-    { plain: false, availability: true },
-    { plain: true, availability: false },
-    { plain: true, availability: true },
-  ])(
+  it.each(
+    [
+      { plain: false, availability: false },
+      { plain: false, availability: true },
+      { plain: true, availability: false },
+      { plain: true, availability: true },
+    ].flatMap((entry) => ["code", "jsonRpcCode"].map((codeField) => ({ ...entry, codeField }))),
+  )(
     "does not drop Thread scope after an ownership mismatch: %j",
-    async ({ plain, availability }) => {
+    async ({ plain, availability, codeField }) => {
       const message = "Harness inspection scope does not match the Thread";
       const failure = plain
-        ? { code: -32602, message }
-        : Object.assign(new Error(message), { code: -32602 });
+        ? { [codeField]: -32602, message }
+        : Object.assign(new Error(message), { [codeField]: -32602 });
       const sendRequest = vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce(inspection);
       const client = createRendererModelClient([{ sendRequest }]);
       if (!client) throw new Error("Renderer client was not created");
@@ -981,16 +989,33 @@ describe("Renderer fixed Model request client", () => {
     },
   );
 
-  it("does not retry a full inspection rejected for its params", async () => {
-    const sendRequest = vi
-      .fn()
-      .mockRejectedValue(Object.assign(new Error("Invalid params"), { code: -32602 }));
-    const client = createRendererModelClient([{ sendRequest }]);
-    if (!client) throw new Error("Synthetic Model client was not created");
+  it.each([{ jsonRpcCode: -32077 }, { code: -32077, jsonRpcCode: -32602 }])(
+    "preserves other errors and the primary code before native fallback: %j",
+    async (codes) => {
+      const failure = Object.assign(new Error("Native inspection unavailable"), codes);
+      const sendRequest = vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce(inspection);
+      const client = createRendererModelClient([{ sendRequest }]);
+      if (!client) throw new Error("Renderer client was not created");
+      await expect(
+        client.inspectHarness({ harnessId: piHarnessId, purpose: "availability" }),
+      ).rejects.toBe(failure);
+      expect(sendRequest).toHaveBeenCalledOnce();
+    },
+  );
 
-    await expect(client.inspectHarness({ harnessId: piHarnessId })).rejects.toThrow(
-      "Invalid params",
-    );
-    expect(sendRequest).toHaveBeenCalledOnce();
-  });
+  it.each(["code", "jsonRpcCode"])(
+    "does not retry a full inspection rejected for its params (%s)",
+    async (codeField) => {
+      const sendRequest = vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error("Invalid params"), { [codeField]: -32602 }));
+      const client = createRendererModelClient([{ sendRequest }]);
+      if (!client) throw new Error("Synthetic Model client was not created");
+
+      await expect(client.inspectHarness({ harnessId: piHarnessId })).rejects.toThrow(
+        "Invalid params",
+      );
+      expect(sendRequest).toHaveBeenCalledOnce();
+    },
+  );
 });

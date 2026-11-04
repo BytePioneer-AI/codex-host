@@ -236,10 +236,11 @@ Thread 观察命令 SHALL 接受裸 Thread 标识与 Codex 深度链接，并可
 - **AND** 恢复的待投递通知 SHALL 等被通知 Thread 可读后再投递
 
 #### Scenario: 重启中断了正在运行的 Turn
-- **WHEN** 被观察 Thread 的某个 Turn 在 Host Runtime 重启前正在运行，重启结束了持有它的 Harness 进程，恢复后读到同一 Turn 已是终态
-- **THEN** 通知结果 SHALL 为 `interrupted`，并说明该 Turn 因 Host Runtime 重启而未完成
-- **AND** MUST NOT 报告为 `completed`
-- **AND** 恢复后读到的是之后的另一个 Turn 时，SHALL 按其实际终态报告
+- **WHEN** 被观察 Thread 在 Host Runtime 重启前正在运行，恢复后第一次成功读取时已是终态
+- **THEN** 通知结果 SHALL 为 `interrupted`，并说明 Host Runtime 重启时它正在运行、之后读到的状态
+- **AND** MUST NOT 报告为 `completed`，即使恢复出的 Turn 换了标识
+- **AND** 恢复宽限结束后 Thread 仍无法打开时，SHALL 同样报告 `interrupted` 并说明无法重新打开，而不是 `notFound`
+- **AND** 恢复后第一次读取时仍在运行的 Thread，之后停下时 SHALL 按实际终态报告
 
 #### Scenario: 多个 Runtime 共用数据目录
 - **WHEN** 同一 OS 用户同时运行多个 Host Runtime 进程，例如 Desktop 与远程监听

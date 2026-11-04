@@ -291,6 +291,21 @@ describe("Thread references", () => {
       next: { read: "r", wait: "w" },
     }) as Record<string, unknown>;
     expect(compact.parent).toBe("client:grok-bot");
+    const watched = compactDelegationOutput("delegate start", {
+      threadId: "t1",
+      harnessId: "pi",
+      status: "running",
+      parentThreadId: "client:grok-bot",
+      watch: {
+        threadId: "t1",
+        notifyThreadId: "client:grok-bot",
+        state: "watching",
+        status: "running",
+        timeoutMs: 1,
+      },
+      next: { read: "r", wait: "w" },
+    }) as { watch?: { notify?: string } };
+    expect(watched.watch?.notify).toBe("client:grok-bot");
     expect(DELEGATION_HELP).toContain("codexhost client add|list|remove");
     expect(DELEGATION_HELP).toContain("codexhost events");
   });

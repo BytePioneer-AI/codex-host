@@ -714,8 +714,10 @@ export class HarnessDelegationCoordinator {
   async #parentMetadata(
     parentThreadId: string,
   ): Promise<ParentMetadata & { harnessId: RoutedHarnessId }> {
-    // A client origin is no Thread; the stored source Harness keeps the native default.
-    if (originClientName(parentThreadId)) return { harnessId: "codex" };
+    // A client origin is no Thread: the stored source Harness keeps the native default, and
+    // the client's name stands in for a parent title, so titles read "<subtask> · <client>".
+    const client = originClientName(parentThreadId);
+    if (client) return { harnessId: "codex", title: client };
     const record = await this.#repository.find(parentThreadId);
     if (record)
       return {

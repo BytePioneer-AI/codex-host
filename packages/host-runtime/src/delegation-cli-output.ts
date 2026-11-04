@@ -12,6 +12,11 @@ import {
 } from "./delegation-types.js";
 import { originClientName } from "./external-client-origin.js";
 
+/** A Thread as a link; a client origin is no Thread, so it is shown as is. */
+function targetLink(identifier: string): string {
+  return originClientName(identifier) !== undefined ? identifier : threadLink(identifier);
+}
+
 export type DelegationCliFormat = "json" | "compact";
 
 function threadLink(threadId: string): string {
@@ -26,7 +31,7 @@ function watchOutput(watch: DelegationStartResult["watch"]): { watch?: unknown }
         ? watch
         : {
             state: watch.state,
-            notify: threadLink(watch.notifyThreadId),
+            notify: targetLink(watch.notifyThreadId),
             timeoutMs: watch.timeoutMs,
           },
   };
@@ -113,11 +118,7 @@ export function compactDelegationOutput(
         ...(result.cwd ? { cwd: result.cwd } : {}),
         ...(result.parentThreadId
           ? {
-              // A client origin is no Thread, so it is shown as is rather than as a Thread link.
-              parent:
-                originClientName(result.parentThreadId) !== undefined
-                  ? result.parentThreadId
-                  : threadLink(result.parentThreadId),
+              parent: targetLink(result.parentThreadId),
             }
           : {}),
         ...(effective?.resolvedModelLabel ? { model: effective.resolvedModelLabel } : {}),
@@ -150,7 +151,7 @@ export function compactDelegationOutput(
       const result = body as ThreadWatchResult;
       return {
         thread: threadLink(result.threadId),
-        notify: threadLink(result.notifyThreadId),
+        notify: targetLink(result.notifyThreadId),
         state: result.state,
         status: result.status,
         timeoutMs: result.timeoutMs,
@@ -161,7 +162,7 @@ export function compactDelegationOutput(
       return {
         watches: result.watches.map(({ threadId, notifyThreadId, state, outcome, reason }) => ({
           thread: threadLink(threadId),
-          notify: threadLink(notifyThreadId),
+          notify: targetLink(notifyThreadId),
           state,
           ...(outcome ? { outcome } : {}),
           ...(reason ? { reason } : {}),

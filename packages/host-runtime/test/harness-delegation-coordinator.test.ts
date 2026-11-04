@@ -786,6 +786,10 @@ describe("HarnessDelegationCoordinator", () => {
       };
       const result = await value.coordinator.start(input);
       expect(result).toMatchObject({ parentThreadId: "client:grok-bot", status: "running" });
+      // No parent title exists, so the client's name takes its place.
+      await expect(value.repository.find(result.threadId)).resolves.toMatchObject({
+        title: "triage issue 12 · grok-bot",
+      });
       expect(metadata).not.toHaveBeenCalled();
       // A retry from the same client within the window returns the same child.
       await expect(value.coordinator.start(input)).resolves.toMatchObject({

@@ -434,6 +434,7 @@ export class DelegationWatchService {
           ...(watch.turnId ? { turnId: watch.turnId } : {}),
           ...(watch.harnessId ? { harnessId: watch.harnessId } : {}),
           ...(watch.refs?.length ? { refs: watch.refs } : {}),
+          ...(watch.restartNote ? { note: watch.restartNote } : {}),
         })),
       );
       for (const watch of pending) this.#remove(watch);

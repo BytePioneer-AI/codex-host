@@ -22,6 +22,8 @@ export interface ClientEvent {
   harnessId?: string;
   deepLink: string;
   refs?: string[];
+  /** Why the outcome was decided, for example that a Host Runtime restart cut the work off. */
+  note?: string;
 }
 
 export type NewClientEvent = Omit<ClientEvent, "id" | "time">;

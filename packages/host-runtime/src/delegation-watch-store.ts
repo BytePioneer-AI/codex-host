@@ -14,8 +14,8 @@ export interface PersistedWatch extends ThreadWatchEntry {
   deliveryDeadline?: number;
   /** A send was started and its outcome was not recorded; deliver again after a restart. */
   delivering?: boolean;
-  /** The Turn last seen running; after a restart it tells an interrupted Turn from a finished one. */
-  runningTurnId?: string;
+  /** Why an `interrupted` outcome was decided after a restart, for the notification. */
+  restartNote?: string;
 }
 
 export interface DelegationWatchStore {
@@ -108,7 +108,7 @@ function parseWatchFile(text: string): WatchFile {
     !Number.isFinite(watch.deadline) ||
     !optionalNumber(watch.deliveryDeadline) ||
     (watch.delivering !== undefined && typeof watch.delivering !== "boolean") ||
-    !optionalString(watch.runningTurnId)
+    !optionalString(watch.restartNote)
   ) {
     throw new Error("unrecognized watch record");
   }

@@ -31,8 +31,6 @@ interface Watch extends PersistedWatch {
   deliverGraceUntil?: number;
   /** Restored while watching: the Turn that was running may have been cut off by the restart. */
   crossedRestart?: boolean;
-  /** The terminal state was a Turn ended by the restart, not by its Harness. */
-  endedByRestart?: boolean;
 }
 
 function persisted(watch: Watch): PersistedWatch {
@@ -49,7 +47,7 @@ function persisted(watch: Watch): PersistedWatch {
     deadline,
     deliveryDeadline,
     delivering,
-    runningTurnId,
+    restartNote,
   } = watch;
   return {
     id,
@@ -64,7 +62,7 @@ function persisted(watch: Watch): PersistedWatch {
     ...(reason ? { reason } : {}),
     ...(deliveryDeadline !== undefined ? { deliveryDeadline } : {}),
     ...(delivering ? { delivering } : {}),
-    ...(runningTurnId ? { runningTurnId } : {}),
+    ...(restartNote ? { restartNote } : {}),
   };
 }
 
@@ -104,8 +102,8 @@ function duration(milliseconds: number): string {
 
 function describe(watch: Watch): string {
   const link = threadLink(watch.threadId);
-  if (watch.outcome === "interrupted" && watch.endedByRestart)
-    return `${link}: interrupted (Turn ${watch.turnId ?? "unknown"}). The Host Runtime restarted while this Turn ran, so it did not finish; continue it or start it again.`;
+  if (watch.outcome === "interrupted" && watch.restartNote)
+    return `${link}: interrupted${watch.turnId ? ` (Turn ${watch.turnId})` : ""}. ${watch.restartNote}`;
   switch (watch.outcome) {
     case "timedOut":
       return `${link} has not reached a terminal state after ${duration(watch.timeoutMs)}; this watch expired. Run 'codexhost thread watch' again to keep waiting.`;
@@ -205,7 +203,6 @@ export class DelegationWatchService {
       registeredAt: new Date().toISOString(),
       timeoutMs: input.timeoutMs,
       deadline: Date.now() + input.timeoutMs,
-      ...(target.turn ? { runningTurnId: target.turn.turnId } : {}),
     };
     this.#watches.push(watch);
     await this.#persist(watch);
@@ -291,8 +288,8 @@ export class DelegationWatchService {
       if (watch.state !== "watching") continue;
       const observed = await this.#observe(watch);
       if (!observed) continue;
-      const { outcome, turnId, endedByRestart } = observed;
-      if (endedByRestart) watch.endedByRestart = true;
+      const { outcome, turnId, restartNote } = observed;
+      if (restartNote) watch.restartNote = restartNote;
       watch.state = "pendingDelivery";
       watch.outcome = outcome;
       if (turnId) watch.turnId = turnId;
@@ -312,9 +309,7 @@ export class DelegationWatchService {
 
   async #observe(
     watch: Watch,
-  ): Promise<
-    { outcome: ThreadWatchOutcome; turnId?: string; endedByRestart?: boolean } | undefined
-  > {
+  ): Promise<{ outcome: ThreadWatchOutcome; turnId?: string; restartNote?: string } | undefined> {
     try {
       const snapshot = await this.#api.read({ threadId: watch.threadId, view: "result" });
       delete watch.observeGraceUntil;
@@ -322,18 +317,19 @@ export class DelegationWatchService {
       const crossedRestart = watch.crossedRestart === true;
       delete watch.crossedRestart;
       if (terminal(snapshot.status)) {
-        // A restart ends the Harness processes it owned, and a Turn that was running before it
-        // can then read as completed. Report it as interrupted so the parent does not trust it.
-        if (crossedRestart && turnId !== undefined && turnId === watch.runningTurnId)
-          return { outcome: "interrupted", turnId, endedByRestart: true };
+        // A restart ends the Harness processes it owned. The Turn that was running can then read
+        // as completed, sometimes under a new Turn id, so a Thread that was running before the
+        // restart and is terminal on the first read after it is reported as interrupted.
+        if (crossedRestart)
+          return {
+            outcome: "interrupted",
+            ...(turnId ? { turnId } : {}),
+            restartNote: `The Host Runtime restarted while this Thread was running; afterwards it read as ${snapshot.status}, so the work most likely did not finish. Read it, then continue it or start it again.`,
+          };
         return {
           outcome: snapshot.status as ThreadWatchOutcome,
           ...(turnId ? { turnId } : {}),
         };
-      }
-      if (turnId && turnId !== watch.runningTurnId) {
-        watch.runningTurnId = turnId;
-        void this.#persist(watch);
       }
       delete watch.unreadableSince;
     } catch (error) {
@@ -342,7 +338,15 @@ export class DelegationWatchService {
         if (Date.now() < watch.observeGraceUntil) return undefined;
         delete watch.observeGraceUntil;
       }
-      if (errorCode(error) === "THREAD_NOT_FOUND") return { outcome: "notFound" };
+      if (errorCode(error) === "THREAD_NOT_FOUND") {
+        // A Harness may be unable to reopen a session whose Turn the restart cut off.
+        if (watch.crossedRestart)
+          return {
+            outcome: "interrupted",
+            restartNote: `The Host Runtime restarted while this Thread was running, and the Thread could not be opened again (${error instanceof Error ? error.message : String(error)}).`,
+          };
+        return { outcome: "notFound" };
+      }
       // Other read failures may be transient, so only a sustained failure is reported.
       watch.unreadableSince ??= Date.now();
       watch.lastReadError = error instanceof Error ? error.message : String(error);

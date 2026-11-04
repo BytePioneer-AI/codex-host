@@ -2653,6 +2653,54 @@ describe("QoderAdapter", () => {
       }
     });
 
+    it("emits the configured window when get_settings answers after the wait", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const fakeQuery = contextQuery(qoderCnSettings);
+      let answerSettings: (() => void) | undefined;
+      const defaultRequest = fakeQuery.request.getMockImplementation();
+      fakeQuery.request.mockImplementation(async (request: Record<string, unknown>) => {
+        if (request.type === "get_settings") {
+          await new Promise<void>((resolve) => {
+            answerSettings = resolve;
+          });
+        }
+        return defaultRequest?.(request);
+      });
+      const adapter = new QoderAdapter({
+        variant: "cn",
+        getAvailableModels: async () => [],
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+      try {
+        const opened = await adapter.open({
+          kind: "create",
+          cwd: "D:/project",
+          model: encodeQoderModelRef("dfmodel"),
+        });
+        if (!opened.ok) throw new Error("open failed");
+        const collector = new OutputCollector(opened.value.outputs);
+        try {
+          await vi.advanceTimersByTimeAsync(3_000);
+          expect(usageEvents(collector).at(-1)?.contextWindowTokens).toBe(
+            QODER_DEFAULT_CONTEXT_WINDOW_TOKENS,
+          );
+
+          expect(answerSettings).toBeTypeOf("function");
+          answerSettings?.();
+          await vi.advanceTimersByTimeAsync(0);
+          const latest = usageEvents(collector).at(-1);
+          expect(latest?.contextWindowTokens).toBe(1_000_000);
+          expect(latest?.contextUsedTokens).toBe(110_000);
+        } finally {
+          await opened.value.close();
+        }
+      } finally {
+        await adapter.close();
+        vi.useRealTimers();
+      }
+    });
+
     it("falls back to the default window when get_settings fails", async () => {
       const fakeQuery = contextQuery(new Error("unknown control request: get_settings"));
       const adapter = new QoderAdapter({

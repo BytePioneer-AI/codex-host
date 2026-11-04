@@ -60,17 +60,14 @@ function directRendererInstaller(): string {
       findFamily: ${findRendererHostRpcFamily.toString()},
       resolve: ${resolveRendererHostRpc.toString()},
       hostIds: ${rendererHostRpcHostIds.toString()},
-      composerHostIds: (composer) => {
+      discoverComposer: (composer) => {
         const source = composer?.matches?.('[data-codex-composer], [contenteditable="true"][role="textbox"]')
           ? { querySelectorAll: () => [composer] }
           : (composer ?? document);
         return discover(source);
       },
       portPrototype: MessagePort.prototype,
-      nativeRouting: () => {
-        const native = discover(document);
-        return native.managers.length || native.registries.length ? installNative(false) : null;
-      },
+      installNativeRouting: () => installNative(false),
       readConnection: (hostId) => readRendererConnectionGeneration(findRendererAppScopeStore(document), hostId),
     });
     const connected = (routing) => routing.forComposer() !== null ||

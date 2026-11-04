@@ -284,7 +284,7 @@ React 根 useRef -> app scope handle { node, chain, scope, get, set, watch }
 
 识别与路由：
 
-- 只有 Composer 中找不到 native manager 时才启用 `main-process-rpc` 路由（`packages/desktop-control/src/renderer-host-rpc-routing.ts`）；连接值形状不唯一时 fail closed。
+- `main-process-rpc` 路由（`packages/desktop-control/src/renderer-host-rpc-routing.ts`）逐 Host 保留 RPC fallback；Composer 或 Host 集合协调发现原生 owner 后，对相应 Host 优先使用 native manager，连接值形状不唯一时 fail closed。普通按 Host 读取不额外扫描文档；定向 Composer 读取复用自身的发现结果，不再另做一次全局 native 发现。排查输入、切换卡顿时，应分别检查 Composer 协调与按 Host 请求的调用栈，避免把发现工作放进每次路由读取。
 - 读取 signal 会挂载它，原生原子可能在挂载时发请求（例如子代理发现会发 `thread/list`）。因此只读取键形如 Host ID 的成员，找到连接 family 后一直复用，直到 Desktop 把它从 store 移除。排查 Host CPU 偏高时，先看 `thread/list` 的频率。
 - Desktop 的 Model hook 只接受 `model/list` 目录中的 Model，草稿设置里的 codexhost carrier 会被丢弃。外部 Agent 的 carrier 因此在出站的 `startConversation`（按 `clientThreadId`）和 `prewarmConversation` 上改写；预热 carrier 带 `prewarm: true`，因为主进程的 `thread/start` 不再透传 `codexhostPrewarm` 参数。
 - 主进程的服务端队列对所有非 ephemeral Thread 启用，外部 Thread 的跟进消息由 Host 原生实现的 `thread/queue/*` 承接，见 `docs/architecture/external-thread-queue.md`。

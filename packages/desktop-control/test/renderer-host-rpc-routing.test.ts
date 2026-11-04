@@ -90,7 +90,15 @@ function setup(
         : null,
     return: null,
   };
-  const editors = [{ __reactFiber$app: composerFiber, parentElement: null }];
+  const editors = [
+    {
+      __reactFiber$app: composerFiber,
+      parentElement: null,
+      matches: () => true,
+      querySelectorAll: () => [],
+    },
+  ];
+  const queryEditors = vi.fn(() => editors);
   const sent: unknown[] = [];
   class MessagePort {
     postMessage(message: unknown): void {
@@ -102,7 +110,7 @@ function setup(
     async evaluate<T>(expression: string): Promise<T> {
       return await runInNewContext(expression, {
         document: {
-          querySelectorAll: () => editors,
+          querySelectorAll: queryEditors,
           getElementById: (id: string) => (id === "root" ? container : null),
         },
         window: target,
@@ -132,6 +140,7 @@ function setup(
     editors,
     composerFiber,
     familyBindings,
+    queryEditors,
   };
 }
 
@@ -144,6 +153,87 @@ async function install(fixture: ReturnType<typeof setup>): Promise<Routing> {
   await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
   return fixture.target.__codexhostHostRoutingV1 as Routing;
 }
+
+it("does not search Composer trees when reading or sending through a known RPC Host", async () => {
+  vi.useFakeTimers();
+  const f = setup();
+  const routing = await install(f);
+  try {
+    const scans = f.queryEditors.mock.calls.length;
+    const route = routing.forHost("local");
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(routing.forHost("local")).toBe(route);
+      route?.policy.requestTarget();
+      await route?.manager.sendRequest("model/list", {});
+    }
+    expect(f.queryEditors).toHaveBeenCalledTimes(scans);
+  } finally {
+    routing.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("discovers a scoped Composer without searching unrelated Composer trees", async () => {
+  const f = setup();
+  const routing = await install(f);
+  try {
+    const scans = f.queryEditors.mock.calls.length;
+    for (let i = 0; i < 20; i++) {
+      expect(routing.hostIdForComposer(f.editors[0])).toBe("local");
+      expect(routing.forComposer(f.editors[0])?.manager).toMatchObject({
+        kind: "main-process-rpc",
+      });
+    }
+    expect(f.queryEditors).toHaveBeenCalledTimes(scans);
+  } finally {
+    routing.dispose();
+  }
+});
+
+it.each(["composer", "hosts"])(
+  "discovers a late native owner on the same editor through %s reconciliation",
+  async (entry) => {
+    const f = setup({ nativeManager: true, hosts: ["local", "remote-ssh:other"] });
+    const hook = f.composerFiber.memoizedState;
+    f.composerFiber.memoizedState = null;
+    const routing = await install(f);
+    try {
+      const before = routing.forHost("local");
+      const remote = routing.forHost("remote-ssh:other");
+      expect(before?.manager).toHaveProperty("kind", "main-process-rpc");
+      f.composerFiber.memoizedState = hook;
+      if (entry === "composer") routing.hostIdForComposer(f.editors[0]);
+      else routing.knownHostIds?.();
+      const after = routing.forHost("local");
+      expect(after?.manager).toBe(hook?.memoizedState);
+      expect(() => before?.policy.requestTarget()).toThrow("retired");
+      expect(routing.forHost("remote-ssh:other")).toBe(remote);
+      // The native router still reads current owners after adoption.
+      f.composerFiber.memoizedState = null;
+      expect(routing.forHost("local")?.manager).toHaveProperty("kind", "main-process-rpc");
+      f.composerFiber.memoizedState = hook;
+      expect(routing.forHost("local")?.manager).toBe(hook?.memoizedState);
+    } finally {
+      routing.dispose();
+    }
+  },
+);
+
+it("reconciles a mounted Composer through the Controller's existing installation check", async () => {
+  const f = setup({ nativeManager: true });
+  const editor = f.editors.pop();
+  if (!editor) throw new Error("Missing editor");
+  const routing = await install(f);
+  try {
+    expect(routing.forHost("local")?.manager).toHaveProperty("kind", "main-process-rpc");
+    f.editors.push(editor);
+    expect(await install(f)).toBe(routing);
+    expect(routing.forHost("local")?.manager).toBe(f.composerFiber.memoizedState?.memoizedState);
+  } finally {
+    routing.dispose();
+  }
+});
 
 function creation(method: string, model: string, options: Record<string, unknown>) {
   return [
@@ -178,6 +268,8 @@ it.each([false, true])(
     before?.policy.select(carrier, "client-new-thread:ssh");
     if (editor) f.editors.push(editor);
     try {
+      // Composer reconciliation enumerates Hosts before reading per-Host clients.
+      expect(routing.knownHostIds?.()).toEqual(expect.arrayContaining(["local", hostId]));
       expect(routing.forHost("local")?.manager).toBe(f.composerFiber.memoizedState?.memoizedState);
       expect(routing.forHost(hostId)).toBe(before);
       expect(routing.knownHostIds?.()).toEqual(expect.arrayContaining(["local", hostId]));
@@ -414,8 +506,8 @@ it.each(["missing", "null", "undefined"])(
     const before = routing.forHost("local");
     fixture.editors.push(editor);
     try {
-      expect(routing.forHost("ssh:remote")?.manager).toBe(manager);
       expect(routing.forComposer()?.hostId).toBe("ssh:remote");
+      expect(routing.forHost("ssh:remote")?.manager).toBe(manager);
       // Adopting the remote Host must not retire the unrelated local RPC route.
       expect(routing.forHost("local")).toBe(before);
       expect(before?.policy.requestTarget()).toBe(before?.manager);

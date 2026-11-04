@@ -642,11 +642,26 @@ export interface HarnessSessionImportSource {
   nativeRef: NativeSessionRef;
 }
 
+/** Confirmed import destination, with its live Session when initialization succeeded. */
+export interface HarnessSessionImportPrepared {
+  nativeRef: NativeSessionRef;
+  session?: HarnessSession;
+}
+
 /** Optional discovery of existing Native Sessions that codexhost can map and resume. */
 export interface HarnessSessionImportCapability {
   listCandidates(): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>>;
   /** Read-only revalidation. Omission keeps older discovery-only plugins valid, not importable. */
   resolveCandidate?(nativeSessionId: string): Promise<HarnessResult<HarnessSessionImportSource>>;
+  /** Prepare an import, optionally deriving a different Native Session. A failure result confirms
+   * that no derived Session was created; reject when the outcome is unconfirmed. Any known new
+   * nativeRef must be returned successfully, even without a usable Session. The Host owns a
+   * returned Session and persists the destination before reading its snapshot.
+   */
+  prepareImport?(input: {
+    source: HarnessSessionImportSource;
+    environment?: Record<string, string | undefined>;
+  }): Promise<HarnessResult<HarnessSessionImportPrepared>>;
 }
 
 export interface HarnessAdapter {
@@ -668,6 +683,11 @@ export interface HarnessAdapter {
    */
   readonly liveCommandCatalog?: boolean;
   readonly sessionImport?: HarnessSessionImportCapability;
+  /** Best-effort notification after a new Thread's first Turn is persisted, or a derived
+   * Thread's native identity is committed. Excludes ephemeral Threads, same-identity imports
+   * and unsubmitted prewarms. The Host neither waits for this notification nor retries it.
+   */
+  onSessionPublished?(nativeRef: NativeSessionRef): Promise<void>;
   /** Read-only local usage for the machine-wide statistics; never starts a native process. */
   readonly usageStatistics?: HarnessUsageStatisticsCapability;
   /** Optional read-only usage for sessions on an already-owned native connection. */

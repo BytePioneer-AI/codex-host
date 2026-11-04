@@ -33,6 +33,8 @@ export const en = {
   "connection.checking": "Checking the connection…",
   "connection.lastSynced": "Last synced at {time}",
   "connection.retry": "Retry",
+  "import.sourceBranch":
+    "Independent branch created from Codex session {sessionId}. Both sessions continue separately.",
   title: "Import sessions",
   subtitle:
     "Continue a session you started in a Harness on this computer. Its history is loaded when you open it.",
@@ -335,6 +337,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connection.checking": "正在检查连接…",
   "connection.lastSynced": "上次同步于 {time}",
   "connection.retry": "重试",
+  "import.sourceBranch": "从 Codex 会话 {sessionId} 创建的独立分支，两边分别继续。",
   title: "导入会话",
   subtitle: "继续你在这台电脑上用 Harness 开过的会话，打开时会加载完整历史。",
   search: "按标题或文件夹搜索",

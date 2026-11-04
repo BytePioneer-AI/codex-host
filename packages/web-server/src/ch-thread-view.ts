@@ -2,6 +2,7 @@
 import {
   REASONING_TRANSCRIPT_COMMAND,
   type ClientFileOperation,
+  type ClientThreadImportSource,
 } from "@codexhost/shared-contracts";
 import { conversationItems } from "./ch-file-operations.ts";
 import { SessionLog, type ProjectionListener } from "./session-log.ts";
@@ -48,6 +49,7 @@ export interface ChThread {
   historyMode?: "legacy" | "paginated";
   parentThreadId?: string | null;
   canAcceptDirectInput?: boolean;
+  codexhostImportSource?: ClientThreadImportSource | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -302,6 +304,7 @@ export class ChThreadView {
     }
     Object.assign(this.thread, thread);
     this.log.setProjection("title", threadListTitle(thread));
+    this.log.setProjection("codexhostImportSource", thread.codexhostImportSource ?? null);
     this.log.setProjection("sessionListMetadata", {
       blank: thread.turns.length === 0,
       lastPromptAt: thread.updatedAt * 1000,

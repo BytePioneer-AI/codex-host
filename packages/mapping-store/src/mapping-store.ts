@@ -444,7 +444,7 @@ export class MappingStore {
             continue;
           }
         }
-        if (record.state === "creating" && !record.nativeSessionRef) {
+        if (record.state === "creating" && !record.nativeSessionRef && !record.importSourceRef) {
           await rm(primary, { force: true });
           await rm(backup, { force: true });
           await rm(this.#metadataPath(record.hostThreadId), { force: true });
@@ -681,6 +681,7 @@ export class MappingStore {
         hostThreadId: input.hostThreadId,
         createRequestId: input.createRequestId,
         harnessId: input.harnessId,
+        ...(input.importSourceRef ? { importSourceRef: input.importSourceRef } : {}),
         state: "creating",
         cwd: input.cwd,
         title: input.title ?? "",

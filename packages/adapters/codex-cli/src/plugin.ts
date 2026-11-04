@@ -6,7 +6,12 @@
  */
 
 import { createCodexSessionUsage } from "@codexhost/adapter-codex-usage/session-usage";
-import { listCodexImportCandidates, readCodexImportCandidate } from "./codex-session-import.js";
+import {
+  codexOpenFailure,
+  listCodexImportCandidates,
+  readCodexImportCandidate,
+} from "./codex-session-import.js";
+import { prepareCodexImport } from "./import-session.js";
 
 import { projectCodexAccountCredits } from "./account-usage.ts";
 import {
@@ -15,7 +20,7 @@ import {
   resolveCodexExecutable,
   type CodexExecutable,
 } from "./command.ts";
-import { CodexAppServer, CodexRpcError } from "./rpc.ts";
+import { CodexAppServer } from "./rpc.ts";
 import { codexFastModel, readCodexModels } from "./model-selection.ts";
 import { CODEX_COMMANDS, CodexSession, HARNESS_ID } from "./session.ts";
 import { DEFAULT_PERMISSION_MODE, PERMISSION_MODES } from "./permission-modes.ts";
@@ -36,6 +41,7 @@ import {
   nativeSessionRefSchema,
   type AccountCreditsSnapshot,
   type HarnessAccountSnapshot,
+  type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 type Result<T> = HarnessResult<T>;
 
@@ -74,6 +80,7 @@ class CodexAdapter implements HarnessAdapter {
   private readonly childEnvironment: NodeJS.ProcessEnv;
   private readonly platform: NodeJS.Platform;
   private readonly launchCommand: string | undefined;
+  private readonly refreshNativeThreadCatalog: HarnessPluginContext["refreshNativeThreadCatalog"];
   private readonly usageAbort = new AbortController();
   private account: HarnessAccountSnapshot | null = null;
   private accountRefresh: Promise<HarnessAccountSnapshot | null> | undefined;
@@ -83,6 +90,9 @@ class CodexAdapter implements HarnessAdapter {
   constructor(context: HarnessPluginContext) {
     this.platform = context.platform as NodeJS.Platform;
     this.launchCommand = context.launchCommand;
+    this.refreshNativeThreadCatalog = context.managedRemoteHost
+      ? undefined
+      : context.refreshNativeThreadCatalog;
     this.environment = { ...process.env, ...context.environment };
     const home = codexHome(this.environment);
     this.childEnvironment = codexChildEnvironment(this.environment, home);
@@ -96,6 +106,11 @@ class CodexAdapter implements HarnessAdapter {
       environment: this.environment,
       platform: this.platform,
     });
+  }
+
+  async onSessionPublished(nativeRef: NativeSessionRef): Promise<void> {
+    if (this.closed || !this.nativeSessionId(nativeRef).ok) return;
+    await this.refreshNativeThreadCatalog?.(codexHome(this.environment));
   }
 
   private nativeSessionId(nativeRef: unknown): Result<string> {
@@ -363,35 +378,47 @@ class CodexAdapter implements HarnessAdapter {
       }
       return result;
     } catch (error) {
-      if (
-        error instanceof CodexRpcError &&
-        error.method === "thread/resume" &&
-        error.error.code === -32600 &&
-        /^thread \S+ already has (?:an active writer|a live local writer)$/iu.test(
-          error.error.message,
-        )
-      ) {
-        return {
-          ok: false,
-          error: {
-            code: "sessionBusy",
-            message: "Codex Session is open in another client. Close it there, then retry.",
-            retryable: true,
-          },
-        };
-      }
-      return {
-        ok: false,
-        error: {
-          code: "nativeFailure",
-          message: error instanceof Error ? error.message : String(error),
-          retryable: true,
-        },
-      };
+      return { ok: false, error: codexOpenFailure(error) };
     }
   }
 
   readonly sessionImport: Required<HarnessSessionImportCapability> = {
+    prepareImport: async ({ source, environment }) => {
+      if (this.closed)
+        return {
+          ok: false,
+          error: { code: "invalidState", message: "Codex CLI Adapter is closed", retryable: false },
+        };
+      const id = this.nativeSessionId(source.nativeRef);
+      if (!id.ok) return id;
+      if (source.candidate.nativeSessionId !== id.value)
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Codex import source identities do not match",
+            retryable: false,
+          },
+        };
+      const executable = this.executable();
+      if (executable.status !== "ready") return { ok: false, error: executableFailure(executable) };
+      const result = await prepareCodexImport({
+        usage: this.sessionUsage,
+        command: executable.command,
+        environment: codexChildEnvironment(
+          { ...this.environment, ...environment },
+          codexHome(this.environment),
+        ),
+        cwd: source.candidate.cwd,
+        threadId: id.value,
+        requestTimeoutMs: 15_000,
+      });
+      if (this.closed && result.ok) {
+        await result.value.session?.close();
+        return { ok: true, value: { nativeRef: result.value.nativeRef } };
+      }
+      return result;
+    },
     listCandidates: async () => {
       const executable = this.executable();
       if (executable.status !== "ready") return { ok: false, error: executableFailure(executable) };

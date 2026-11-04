@@ -163,13 +163,37 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     }, 10);
     return;
   }
-  if (request.method === "thread/start" || request.method === "thread/resume") {
+  if (["thread/start", "thread/resume", "thread/fork"].includes(request.method)) {
     if (request.method === "thread/resume" && config.resumeError) {
       send({ id: request.id, error: config.resumeError });
       return;
     }
-    threadId =
-      request.method === "thread/start" ? `native-${process.pid}` : request.params.threadId;
+    if (request.method === "thread/fork") {
+      if (config.forkError) {
+        send({ id: request.id, error: config.forkError });
+        return;
+      }
+      const sourceTurns = config.threadTurns?.[request.params.threadId] ?? [];
+      const boundary = sourceTurns.findIndex((turn) => turn.id === request.params.lastTurnId);
+      if (boundary < 0) {
+        send({ id: request.id, error: { code: -32602, message: "Unknown fork Turn boundary" } });
+        return;
+      }
+      threadId = `native-fork-${process.pid}`;
+      write("forked-threads.json", {
+        ...read("forked-threads.json", {}),
+        [threadId]: {
+          id: threadId,
+          sourceId: request.params.threadId,
+          cwd: request.params.cwd,
+          turns: sourceTurns.slice(0, boundary + 1),
+        },
+      });
+      if (config.forkExitBeforeReply) process.exit(0);
+      if (config.forkNoReply) return;
+    } else
+      threadId =
+        request.method === "thread/start" ? `native-${process.pid}` : request.params.threadId;
     const saved = read("thread-settings.json", {});
     const previous = saved[threadId] ?? {};
     const settings = {
@@ -219,6 +243,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
             sandbox: settings.sandboxPolicy,
             ...config.permissionSettingsResult,
           }),
+      ...(request.method === "thread/fork" ? config.forkResult : {}),
     };
   }
   if (request.method === "thread/settings/update") {
@@ -265,9 +290,13 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       ...(config.threads ?? []),
       ...Object.values(config.threadPages ?? {}).flatMap((page) => page.data ?? []),
     ].find((row) => row.id === id);
-    const metadata = Object.hasOwn(config.threadReads ?? {}, id) ? config.threadReads[id] : listed;
+    const forked = read("forked-threads.json", {})[id];
+    const metadata = Object.hasOwn(config.threadReads ?? {}, id)
+      ? config.threadReads[id]
+      : (listed ?? forked);
     const error =
       config.threadReadErrors?.[id] ??
+      (forked ? config.forkReadError : null) ??
       (metadata === null ? { code: -32600, message: `thread not loaded: ${id}` } : null);
     if (error) {
       send({ id: request.id, error });
@@ -280,7 +309,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         turns:
           request.params.includeTurns !== true || config.unsavedTurns === true
             ? []
-            : [...(config.threadTurns?.[id] ?? []), ...read("turns.json", [])],
+            : [...(config.threadTurns?.[id] ?? forked?.turns ?? []), ...read("turns.json", [])],
       },
     };
   }
@@ -304,6 +333,20 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     result = config.threadPages?.[cursor ?? "first"] ?? {
       data: threads.slice(offset, offset + limit),
       nextCursor: offset + limit < threads.length ? String(offset + limit) : null,
+    };
+  }
+  if (request.method === "thread/turns/list") {
+    const cursor = request.params.cursor ?? null;
+    if (config.turnListError) {
+      send({ id: request.id, error: config.turnListError });
+      return;
+    }
+    const turns = [...(config.threadTurns?.[request.params.threadId] ?? [])].reverse();
+    const offset = Number(cursor ?? 0);
+    const limit = request.params.limit ?? 100;
+    result = config.turnPages?.[cursor ?? "first"] ?? {
+      data: turns.slice(offset, offset + limit),
+      nextCursor: offset + limit < turns.length ? String(offset + limit) : null,
     };
   }
   if (request.method === "turn/start") {

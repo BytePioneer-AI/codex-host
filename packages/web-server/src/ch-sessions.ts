@@ -261,6 +261,7 @@ export class ChSessions {
       row.status.type,
       row.parentThreadId ?? null,
       row.canAcceptDirectInput !== false,
+      row.codexhostImportSource ?? null,
       this.threads.harnessId(row.id),
     ]);
   }
@@ -280,9 +281,12 @@ export class ChSessions {
     this.publishedCatalog = next;
     // Previously opened Threads retain sequenced browser projections even after
     // unfollow. Cached catalog hints cannot replace them. Push the authoritative
-    // title through the existing control stream without rereading any history.
-    for (const [id, row] of this.rows)
-      this.threads.view(id)?.log.setProjection("title", threadListTitle(row));
+    // metadata through the existing control stream without rereading any history.
+    for (const [id, row] of this.rows) {
+      const log = this.threads.view(id)?.log;
+      log?.setProjection("title", threadListTitle(row));
+      log?.setProjection("codexhostImportSource", row.codexhostImportSource ?? null);
+    }
     for (const row of changed) this.events.emit("api-session/added", row);
     if (before)
       for (const id of before.keys())
@@ -515,6 +519,7 @@ export class ChSessions {
       nativeDiscovery: !row.parentThreadId && row.canAcceptDirectInput !== false,
       threadReference: { hostId: "local" },
       title: threadListTitle(row),
+      codexhostImportSource: row.codexhostImportSource ?? null,
       harnessIdentity: { id: harnessId, name: await this.catalog.name(harnessId) },
       sessionListMetadata: { blank: false, lastPromptAt: row.updatedAt * 1000 },
     };

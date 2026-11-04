@@ -35,6 +35,7 @@ import { ImportIcon } from "./ImportIcon.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
 import { HostConnectionStatus } from "./HostConnectionStatus.tsx";
+import { ImportedThreadNotice } from "./ImportedThreadNotice.tsx";
 import { HostUsageDock } from "./HostUsageDock.tsx";
 import type {
   ComposerAttachment,
@@ -342,6 +343,17 @@ export function apply(ctx: ClientContext): void {
         }),
       },
       HostConnectionStatus,
+    ),
+  );
+  ctx.slots.inject("conversation.header.notice", () =>
+    ctx.slots.register(
+      {
+        name: "conversation.header.notice",
+        id: "codexhost.import-source",
+        locale: NS,
+        inject: () => ({ list: ctx.sessions.list }),
+      },
+      ImportedThreadNotice,
     ),
   );
   ctx.slots.inject("conversation.composer.dock", () =>

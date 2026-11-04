@@ -2,7 +2,7 @@
 
 ## 当前范围
 
-设置 → 会话导入可登记 **Claude Code、Pi、Hermes、Cursor CLI ACP、Kiro CLI、Grok、CodeBuddy、WorkBuddy、OMP、Kimi Code、OpenCode（v2）、Qoder、Qoder CN** 和 **DSH** 的原生 Session（已验证 `0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2`；命令和限制见 [DSH 验证记录](../harnesses/deepseek/dsh-version-validation.md)）。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
+设置 → 会话导入可登记 **Claude Code、Pi、Hermes、Cursor CLI ACP、Kiro CLI、Grok、CodeBuddy、WorkBuddy、OMP、Kimi Code、OpenCode（v2）、Qoder、Qoder CN** 和 **DSH** 的原生 Session（已验证 `0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2`；命令和限制见 [DSH 验证记录](../harnesses/deepseek/dsh-version-validation.md)）。普通导入建立 Host Thread 与原生 Session 的映射，打开后通过对应 Adapter 恢复历史；支持导入准备的 Adapter 可先恢复或原生派生会话，再提交实际身份。Host 不复制 Transcript、不转换 Harness、不发送用户 Turn。
 
 - Desktop 设置页提供明确的 Host 选择器。未手动选择时使用可唯一确定的 Composer Host；多个本地/远程标签页导致归属不明确时，要求先选择 Host，不显示为协议不支持。手动选择后，刷新仍使用该 Host，不随 Composer 改变。每次加载列表时捕获目标客户端，导入、打开及导航重试始终使用该列表所属 Host；切换 Host 清空旧列表并使在途结果失效，导入和导航重试期间禁止切换。目标 Host 不可用时不回退本地。独立控制台仍使用其连接的本地 Host。
 - Web 侧栏导入页使用同一共享 Host 的公共契约，并支持仅 Web 的 Codex CLI（`codex-cli`）。来源、候选列表、提交结果分别使用 `{ harnesses }`、`{ candidates, total }`、`{ threadId }`；Harness 身份来自当前列表所属来源，不从候选行推断。分页、迟到响应和导入后重试约束见[独立 Web 应用](../product/standalone-web.md#原生会话导入)。
@@ -21,6 +21,10 @@
 interface HarnessSessionImportCapability {
   listCandidates(): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>>;
   resolveCandidate?(nativeSessionId: string): Promise<HarnessResult<HarnessSessionImportSource>>;
+  prepareImport?(input: {
+    source: HarnessSessionImportSource;
+    environment?: Record<string, string | undefined>;
+  }): Promise<HarnessResult<{ nativeRef: NativeSessionRef; session?: HarnessSession }>>;
 }
 
 interface HarnessSessionImportSource {
@@ -34,7 +38,8 @@ interface HarnessSessionImportSource {
 - `listCandidates`：只返回有界的 ID、标题、更新时间、cwd 和运行状态。不能夹带 locator、凭据、Transcript 或原生 RPC payload。
 - `resolveCandidate`：只读地重新发现/验证选中的 ID，确认可恢复的项目和完整原生引用。会话消失返回 `sessionNotFound`，当前协议不支持返回 `unsupported`；不能信任上次列表的缓存元数据。
 - `candidate.nativeSessionId`、`nativeRef.nativeSessionId` 和所属 Harness 必须相符。
-- `running: true` 表示已知忙碌，Host 拒绝；`false` 表示可可靠确认空闲；`null` 表示无法可靠确认。未知不能降为 false。
+- `prepareImport` 可选，由 Adapter 使用原生协议取得可用身份，可以返回已打开的 Session。失败返回值保证未创建派生会话；结果不明确时抛异常，Host 保留待确认记录。已经取得新 ID 时必须返回成功身份，即使后续配置初始化失败、无法返回 Session。
+- `running: true` 表示已知忙碌，未提供 `prepareImport` 时 Host 拒绝；提供者自行处理原生占用语义。`false` 表示可可靠确认空闲；`null` 表示无法可靠确认。未知不能降为 false。
 - Adapter 关闭后不能启动新的发现；正在进行的本地扫描要取消并收尾。插件不得直接操作 Host 映射库。
 
 对于已经接入 Desktop 的 Harness，以后增加这两个方法、验证原生 resume 并补齐 Adapter 测试即可复用目标 Host/RPC/导入页面；无需再创建专属导入器或 Renderer 开关。新的插件整体产品接入仍受 [Renderer 边界](harness-plugin-runtime.md) 约束。
@@ -69,20 +74,22 @@ interface HarnessSessionImportSource {
 1. 列表过滤同 Harness 已 ready 的普通 Thread 映射；Subagent 映射不冒充普通会话所有者。同时过滤“被替换的旧会话”：编辑或回滚消息会让 Harness 派生新的原生 Session，Thread 改指向新会话，旧会话留在原生存储里且不再有映射。Mapping Store 在替换成功后把旧会话 ID 记入 `superseded-sessions/sessions.json`（独立于 Thread 记录，旧版本会忽略它；写入失败不影响替换），导入列表和导入请求都据此拒绝，避免同一段对话出现两条 Thread。Thread 被删除后这些旧版本仍保持隐藏。该记录只覆盖此功能上线之后发生的替换，此前留下的旧会话无法识别，仍会作为候选出现。
 2. 按 `(harnessId, nativeSessionId)` 合并重复请求，并优先复用已存在映射。
 3. 调用 Adapter resolver，检查新鲜元数据和身份，再检查并发提交者是否已胜出。
-4. 创建 provisional，提交完整 `nativeRef`，保留 `notLoaded` 状态；持久化失败清理 provisional，唯一性冲突复用胜出映射。
+4. 普通导入创建 provisional，提交完整 `nativeRef`，保留 `notLoaded` 状态；持久化失败清理 provisional，唯一性冲突复用胜出映射。提供 `prepareImport` 时，先以稳定创建请求 ID 和 `importSourceRef` 保存 provisional，再调用 Adapter；提交返回身份之后才读取历史和接管已打开的 Session，避免关闭重开造成占用竞争。
 5. 返回 Host Thread ID。Renderer 导航失败不能回滚已提交的映射；保留项目路径、重试打开，重挂载和过期请求不能重复导航。
 
-Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有跨进程 Session 所有权转移协议。
+准备导入的来源和实际身份都参与去重及候选过滤。携带 `importSourceRef` 的 creating 记录在重启后保留：请求结果未知或创建后的持久化失败均停止，不自动再次派生；明确未创建派生会话的失败才清理 provisional。已保存身份后的历史加载失败保留 ready 映射，再次打开只恢复该身份。已有 ready 映射不会因后来遇到占用而更换身份。Host 不提供跨进程 Session 所有权转移协议。
 
 ## Codex CLI 原生规则（Web）
 
 - 使用原生 app-server 的 `thread/list` cursor 遍历所有页面，只投影非 ephemeral 的顶层会话；页面大小不是候选总数上限。浏览器不接收原生文件路径或 locator。
 - 分页历史的多个 rollout 段可以具有同一个逻辑 Session ID。Adapter 在所有页面之间归并身份；对重复 ID 使用只读 `thread/read(includeTurns: false)` 获取权威元数据，不按首次出现、文件名或最大更新时间猜测。已消失、返回其他 ID 或不再符合顶层会话条件的重复组被排除，其他会话仍可发现；非“会话不存在”的原生读取错误明确报告，不返回空列表或部分成功。
-- 提交时重新发现所选身份，再按原生 ID 读取最新元数据。Native Ref 只包含 `codex-cli` 与逻辑 Session ID；导入只登记映射，不恢复会话、不发送 Turn、不复制或改写 rollout。
-- 打开后通过同一 CLI 的 `thread/resume` 和 `thread/read(includeTurns: true)` 恢复原生有效历史，分段引用与压缩文件由原生实现处理。Resume 和快照读取都验证返回的 Session ID，不接受另一会话或空白替代会话。
-- `running` 为 null，Host 不提供跨客户端写入互斥。Web 导入页不展示或按候选运行状态拦截；打开时遇到原生 writer 占用，返回可重试的会话忙碌错误，提示释放其他客户端的占用后重试。导入映射保留，重试恢复相同原生会话；Host 不终止其他客户端或删除原生锁。
+- 提交时重新发现所选身份，再按原生 ID 读取最新元数据。保持原有“导入”入口，先尝试原生 `thread/resume`；成功则沿用原 ID 和已打开的 Session。
+- 只有原生 resume 明确返回 writer 冲突才分页读取 `thread/turns/list`，以最近一个 completed Turn 的 `lastTurnId` 调用 `thread/fork`。没有已完成回合、分页异常和其他恢复错误均停止；不复制正在执行的半个回合，不关闭源会话持有者，不删除原生锁。
+- 保存原生 Fork 返回的新 ID，后续刷新、重启与重复导入都使用该分支，不再次 Fork。Fork 已发送但响应丢失、超时或结果不明确时停止并报告，保留待确认记录，不自动重试创建。Web 分支页标明源会话 ID，两边各自继续，不进行实时同步。
+- 派生身份提交后，尝试通知已连接且使用相同 Codex home 的 Desktop 刷新原生目录。通知仅调用内部目录失效接口，不恢复会话、不争抢 writer；GUI 未启动、未就绪或刷新失败均忽略，不补刷、不重试、不等待 GUI。
+- 普通恢复及快照仍严格验证保存的 Session ID，分段引用与压缩文件由原生实现处理。已经导入的会话后来被其他客户端占用时仍返回会话忙碌，不通过再次 Fork 偷换身份。导入不发送用户 Turn，历史派生完全由原生实现完成。
 
-隔离原生协议夹具覆盖同页／跨页重复、权威元数据不等于最新文件、提交前复查、重复组消失与身份不一致、读取失败、关闭取消，以及公共 Host 导入后读取两段历史并续写同一会话。macOS 的 Codex CLI `0.161.0` 本机只读验证将 231 条原生记录归并为 226 个有效候选，并使用临时 Mapping Store 验证公共 Host 列表和幂等导入；没有改变生产映射或发送真实 Model 请求。这不是生产 Thread 的 resume／续写实机验收。
+隔离原生协议夹具覆盖发现与解析、原 ID 续写、占用后的完成回合 Fork、未知结果和幂等恢复。macOS 的 Codex CLI `0.161.0` 在临时 CODEX_HOME、复制的 rollout 和两个独立 app-server 上验证：源会话有 writer 时 resume 被拒绝，带 completed `lastTurnId` 的 Fork 成功，副本历史止于该回合，源会话保持加载。未操作生产会话或发送真实 Model 请求。
 
 ## Pi 原生规则
 

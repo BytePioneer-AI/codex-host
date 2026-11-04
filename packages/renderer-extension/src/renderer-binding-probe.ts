@@ -120,6 +120,7 @@ import {
   isNativeProjectThreadCreator,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { loadCodexNativeServices } from "./codex-native-services.js";
+import { invalidateThreadCatalog } from "./codex-thread-catalog.js";
 import { openCodexSchedules } from "./codex-schedule-navigation.js";
 import { openRendererThread } from "./renderer-fork-control.js";
 import type {
@@ -289,6 +290,7 @@ type ApplyAdapterAgent = (
 
 export interface RendererBindingProbeApi {
   remoteConnections(request: unknown): Promise<unknown>;
+  invalidateThreadCatalog(): Promise<void>;
   status(): RendererBindingProbeStatus;
   currentThreadId(): string | null;
   lockedSelection(): LockedComposerSelection | null;
@@ -3423,6 +3425,7 @@ export function installRendererBindingProbe(
 
   const api: RendererBindingProbeApi = {
     remoteConnections: (request) => handleRemoteConnectionsRequest(remoteConnections, request),
+    invalidateThreadCatalog: () => invalidateThreadCatalog(window),
     currentThreadId() {
       const mounted = connectedComposers();
       return mounted.length === 1 && mounted[0]

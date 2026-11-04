@@ -83,6 +83,53 @@ it("shares canonical CH identity and cwd without a Web index/history or physical
   assert.deepEqual(readdirSync(root), ["workspaces.json"]);
 });
 
+it("projects imported branch provenance in both list rows and opened history", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-import-source-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = new FakeChHost();
+  const branch = host.add("imported-branch", root);
+  const source = { harnessId: "codex-cli", nativeSessionId: "native-source" };
+  branch.codexhostImportSource = source;
+  host.add("original-session", root);
+  const sessions = new ChSessions(
+    host,
+    new Workspaces(new DataDir(root), root),
+    new EventHub(root),
+  );
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  sessions.register(rpc, new StreamRegistry());
+  const list = await rpc.dispatch("session/list", { args: {} });
+  assert.ok(list.ok);
+  const { items } = list.value as {
+    items: Array<{
+      sessionId: string;
+      projections: { values: Record<string, unknown> };
+    }>;
+  };
+  assert.deepEqual(
+    items.find((item) => item.sessionId === branch.id)?.projections.values.codexhostImportSource,
+    source,
+  );
+  assert.equal(
+    items.find((item) => item.sessionId === "original-session")?.projections.values
+      .codexhostImportSource,
+    null,
+  );
+  assert.equal(
+    host.requests.some((request) => request.method === "thread/read"),
+    false,
+  );
+  const opened = await rpc.dispatch("session/projections", {
+    args: { request: { sessionId: branch.id } },
+  });
+  assert.ok(opened.ok);
+  assert.deepEqual(
+    (opened.value as { values: Record<string, unknown> }).values.codexhostImportSource,
+    source,
+  );
+});
+
 it("searches the displayed title at every fallback level", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-title-search-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

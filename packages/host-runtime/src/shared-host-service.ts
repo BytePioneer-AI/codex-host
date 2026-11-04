@@ -140,6 +140,14 @@ export async function runSharedHostService(
           modelPrices: prices,
           usageStatistics,
           ...installed,
+          pluginContext: {
+            ...installed.pluginContext,
+            refreshNativeThreadCatalog: async (nativeHome) => {
+              await Promise.allSettled(
+                [...desktops].map((desktop) => desktop.refreshNativeThreadCatalog(nativeHome)),
+              );
+            },
+          },
           ...(values.plugins
             ? { pluginRoots: [values.plugins, ...installed.pluginRoots.slice(1)] }
             : {}),

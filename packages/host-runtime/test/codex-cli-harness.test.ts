@@ -16,7 +16,7 @@ import {
   type ClientThreadSnapshot,
   type JsonObject,
 } from "@codexhost/shared-contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createHarnessAdapter } from "@codexhost/adapter-codex-cli/plugin";
 import { HostClientChannel } from "@codexhost/desktop-control";
@@ -45,16 +45,20 @@ function codexCliFixture() {
   const scenario = (value: JsonObject) =>
     writeFileSync(join(home, "scenario.json"), JSON.stringify(value));
   scenario({});
+  const refreshNativeThreadCatalog = vi.fn<(nativeHome: string) => Promise<void>>(
+    async () => undefined,
+  );
   const adapter = createHarnessAdapter({
     platform: process.platform,
     managedRemoteHost: false,
     launchCommand: command,
     environment: { HOME: root, CODEX_HOME: home },
+    refreshNativeThreadCatalog,
   });
   const fixture = createFixture({
     additionalAdapters: new Map([[CODEX_CLI, adapter]]),
   });
-  return { root, home, adapter, fixture, scenario };
+  return { root, home, adapter, fixture, scenario, refreshNativeThreadCatalog };
 }
 
 async function callClient(
@@ -88,7 +92,8 @@ function activeTurnOf(turn: JsonObject): string {
 
 describe("Codex CLI through the external Thread runtime", () => {
   it("routes native Fast selections through the public catalog and Model commands", async () => {
-    const { root, home, adapter, fixture, scenario } = codexCliFixture();
+    const { root, home, adapter, fixture, scenario, refreshNativeThreadCatalog } =
+      codexCliFixture();
     scenario({
       models: [
         {
@@ -113,6 +118,7 @@ describe("Codex CLI through the external Thread runtime", () => {
         cwd: root,
       });
       const threadId = String((created.thread as JsonObject).id);
+      expect(refreshNativeThreadCatalog).not.toHaveBeenCalled();
       for (const selected of [model.ref, model.fastModel]) {
         expect(
           await callClient(fixture, "codexhost/thread/model/select", {
@@ -147,6 +153,7 @@ describe("Codex CLI through the external Thread runtime", () => {
           .filter((r) => r.method === "thread/settings/update")
           .map((r) => r.params.serviceTier),
       ).toEqual([null, "priority"]);
+      expect(refreshNativeThreadCatalog).toHaveBeenCalledExactlyOnceWith(home);
     } finally {
       await stopFixture(fixture);
       await adapter.close();
@@ -154,7 +161,7 @@ describe("Codex CLI through the external Thread runtime", () => {
   });
 
   it("imports one logical Session from multiple native segments, reads its history and continues the same identity", async () => {
-    const { home, adapter, fixture, scenario } = codexCliFixture();
+    const { home, adapter, fixture, scenario, refreshNativeThreadCatalog } = codexCliFixture();
     const original = {
       id: "logical-import",
       name: "Old segment",
@@ -235,7 +242,8 @@ describe("Codex CLI through the external Thread runtime", () => {
         }),
       ).toEqual(imported);
       const beforeOpen = readFileSync(join(home, "rpc.jsonl"), "utf8");
-      expect(beforeOpen).not.toContain('"method":"thread/resume"');
+      expect(beforeOpen).toContain('"method":"thread/resume"');
+      expect(beforeOpen).not.toContain('"method":"thread/fork"');
       expect(beforeOpen).not.toContain('"method":"turn/start"');
       const history = await callClient(fixture, "thread/turns/list", { threadId, limit: 100 });
       expect(history.data).toHaveLength(2);
@@ -276,14 +284,16 @@ describe("Codex CLI through the external Thread runtime", () => {
       expect(records.find((entry) => entry.method === "turn/start")?.params.threadId).toBe(
         "logical-import",
       );
+      expect(refreshNativeThreadCatalog).not.toHaveBeenCalled();
     } finally {
       await stopFixture(fixture);
       await adapter.close();
     }
   });
 
-  it("preserves an imported Session's writer conflict through snapshots and retries after release", async () => {
-    const { root, home, adapter, fixture, scenario } = codexCliFixture();
+  it("forks a busy import at its completed Turn, keeps its new identity and continues independently", async () => {
+    const { root, home, adapter, fixture, scenario, refreshNativeThreadCatalog } =
+      codexCliFixture();
     const nativeThread = {
       id: "busy-import",
       name: "Imported conversation",
@@ -300,6 +310,14 @@ describe("Codex CLI through the external Thread runtime", () => {
             id: "original-turn",
             status: "completed",
             items: [{ id: "original-answer", type: "agentMessage", text: "Saved native answer" }],
+            error: null,
+          },
+          {
+            id: "active-source-turn",
+            status: "inProgress",
+            items: [
+              { id: "partial-answer", type: "agentMessage", text: "Unfinished source answer" },
+            ],
             error: null,
           },
         ],
@@ -323,33 +341,60 @@ describe("Codex CLI through the external Thread runtime", () => {
         "codexhost/harness/session-import/import",
         { harnessId: CODEX_CLI, nativeSessionId: nativeThread.id },
       );
-      await expect(channel.snapshot(imported.threadId)).rejects.toMatchObject({
-        code: -32072,
-        message:
-          "External Native Session is busy. Close it in the other client or wait for its active operation to finish, then retry.",
-      });
-      scenario(nativeHistory);
       const snapshot = await channel.snapshot(imported.threadId);
       expect(snapshot.thread.id).toBe(imported.threadId);
       expect(JSON.stringify(snapshot.turnsPage)).toContain("Saved native answer");
+      expect(JSON.stringify(snapshot.turnsPage)).not.toContain("Unfinished source answer");
+      expect(snapshot.thread.codexhostImportSource).toEqual({
+        harnessId: CODEX_CLI,
+        nativeSessionId: nativeThread.id,
+      });
       expect(
         await channel.request("codexhost/harness/session-import/import", {
           harnessId: CODEX_CLI,
           nativeSessionId: nativeThread.id,
         }),
       ).toEqual(imported);
+      expect((await channel.snapshot(imported.threadId)).thread.id).toBe(imported.threadId);
+      const turn = await callClient(fixture, "turn/start", {
+        threadId: imported.threadId,
+        clientUserMessageId: "continue-busy-import",
+        input: [{ type: "text", text: "Continue independently" }],
+      });
+      const turnId = activeTurnOf(turn);
+      await waitForSnapshot(
+        fixture,
+        imported.threadId,
+        (snapshot) =>
+          snapshot.activeTurnId !== turnId &&
+          snapshot.turnsPage.data.some((entry) => entry.id === turnId),
+      );
       const requests = readFileSync(join(home, "rpc.jsonl"), "utf8")
         .trim()
         .split("\n")
-        .map((line) => JSON.parse(line) as { method: string; params: { threadId?: string } });
-      expect(requests.some(({ method }) => ["thread/start", "turn/start"].includes(method))).toBe(
-        false,
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              method: string;
+              params: { threadId?: string; lastTurnId?: string };
+            },
+        );
+      expect(requests.some(({ method }) => method === "thread/start")).toBe(false);
+      const forks = requests.filter(({ method }) => method === "thread/fork");
+      expect(forks).toHaveLength(1);
+      expect(forks[0]?.params).toMatchObject({
+        threadId: nativeThread.id,
+        lastTurnId: "original-turn",
+      });
+      expect(requests.find(({ method }) => method === "turn/start")?.params.threadId).toMatch(
+        /^native-fork-/u,
       );
       expect(
         requests
           .filter(({ method }) => method === "thread/resume")
           .map(({ params }) => params.threadId),
-      ).toEqual([nativeThread.id, nativeThread.id]);
+      ).toEqual([nativeThread.id]);
+      expect(refreshNativeThreadCatalog).toHaveBeenCalledExactlyOnceWith(home);
     } finally {
       channel.close();
       await server.close();

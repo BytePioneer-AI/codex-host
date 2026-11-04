@@ -123,7 +123,10 @@ export function createProductionExternalThreadStore(
 }
 
 export class ExternalThreadRepository {
-  constructor(private readonly store: ExternalThreadStore) {}
+  constructor(
+    private readonly store: ExternalThreadStore,
+    private readonly onSessionPublished?: (record: StoredThreadRecordV1) => Promise<void>,
+  ) {}
 
   initialize(): Promise<void> {
     return this.store.initialize();
@@ -209,12 +212,30 @@ export class ExternalThreadRepository {
     return this.store.createProvisional(input);
   }
 
-  commitNative(
+  async commitNative(
     hostThreadId: HostThreadId,
     nativeSessionRef: NativeSessionRef,
     turnMappings: StoredTurnMappingV1[] = [],
   ): Promise<StoredThreadRecordV1> {
-    return this.store.commitReady({ hostThreadId, nativeSessionRef, turnMappings });
+    const previous = this.onSessionPublished ? await this.store.getThread(hostThreadId) : null;
+    const record = await this.store.commitReady({ hostThreadId, nativeSessionRef, turnMappings });
+    if (previous?.state === "creating" && (record.importSourceRef || record.forkSource)) {
+      this.#notifySessionPublished(record);
+    }
+    return record;
+  }
+
+  #notifySessionPublished(record: StoredThreadRecordV1): void {
+    if (
+      !this.onSessionPublished ||
+      record.ephemeral ||
+      record.subagent ||
+      record.importSourceRef?.nativeSessionId === record.nativeSessionRef?.nativeSessionId
+    )
+      return;
+    void Promise.resolve()
+      .then(() => this.onSessionPublished?.(record))
+      .catch(() => undefined);
   }
 
   setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1> {
@@ -284,13 +305,17 @@ export class ExternalThreadRepository {
     ) {
       throw new Error("Live Turn identity does not belong to the stored Thread");
     }
-    return this.store.upsertTurnMappings(record.hostThreadId, [
+    const updated = await this.store.upsertTurnMappings(record.hostThreadId, [
       {
         hostTurnId,
         nativeTurnRef,
         ...(nativeCheckpointRef ? { nativeCheckpointRef } : {}),
       },
     ]);
+    // An empty native Thread may have an ID without a persisted history file.
+    if (!record.importSourceRef && !record.forkSource && record.turnMappings.length === 0)
+      this.#notifySessionPublished(updated);
+    return updated;
   }
 
   async commitDerivedSnapshot(
@@ -317,11 +342,7 @@ export class ExternalThreadRepository {
         ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
       };
     });
-    const nextRecord = await this.store.commitReady({
-      hostThreadId: record.hostThreadId,
-      nativeSessionRef,
-      turnMappings: mappings,
-    });
+    const nextRecord = await this.commitNative(record.hostThreadId, nativeSessionRef, mappings);
     return this.#projectSnapshot(nextRecord, snapshot);
   }
 
@@ -541,6 +562,7 @@ export function createExternalThreadRecordInput(input: {
   historyMode: "legacy" | "paginated";
   projectlessWorkspace?: CreateProvisionalThreadInput["projectlessWorkspace"];
   forkSource?: CreateProvisionalThreadInput["forkSource"];
+  importSourceRef?: CreateProvisionalThreadInput["importSourceRef"];
   subagent?: CreateProvisionalThreadInput["subagent"];
 }): CreateProvisionalThreadInput {
   return {
@@ -554,6 +576,7 @@ export function createExternalThreadRecordInput(input: {
     historyMode: input.historyMode,
     ...(input.projectlessWorkspace ? { projectlessWorkspace: input.projectlessWorkspace } : {}),
     ...(input.forkSource ? { forkSource: input.forkSource } : {}),
+    ...(input.importSourceRef ? { importSourceRef: input.importSourceRef } : {}),
     ...(input.subagent ? { subagent: input.subagent } : {}),
   };
 }
@@ -624,6 +647,16 @@ export function externalThreadValue(input: {
         }
       : null,
     forkedFromId: record.forkSource?.hostThreadId ?? null,
+    ...(record.importSourceRef &&
+    record.nativeSessionRef &&
+    record.importSourceRef.nativeSessionId !== record.nativeSessionRef.nativeSessionId
+      ? {
+          codexhostImportSource: {
+            harnessId: record.importSourceRef.harnessId,
+            nativeSessionId: record.importSourceRef.nativeSessionId,
+          },
+        }
+      : {}),
     parentThreadId: record.subagent?.parentHostThreadId ?? null,
     ephemeral: record.ephemeral,
     canAcceptDirectInput: record.subagent ? false : input.loaded === false ? null : true,

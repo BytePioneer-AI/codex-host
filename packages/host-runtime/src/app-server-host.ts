@@ -243,6 +243,7 @@ import {
   type ProjectedTurn,
 } from "./external-turn-projection.js";
 import { DesktopControlRequests } from "./desktop-control-requests.js";
+import { refreshNativeThreadCatalog } from "./native-thread-catalog.js";
 import { DesktopThreadRouting } from "./desktop-thread-routing.js";
 import { errorMessage, rpcEnvelope, rpcError, type HostRequestOrigin } from "./desktop-rpc.js";
 import { allocateProjectlessWorkspace } from "./projectless-workspace.js";
@@ -805,6 +806,12 @@ export class AppServerHost {
     this.#repository = new ExternalThreadRepository(
       options.mappingStore ??
         createProductionExternalThreadStore(this.#options.environment ?? process.env),
+      async (record) => {
+        if (record.nativeSessionRef)
+          await this.#externalAdapters
+            .get(record.harnessId)
+            ?.onSessionPublished?.(record.nativeSessionRef);
+      },
     );
     this.#threadPins = new ExternalThreadPins(this.#repository, (method, params) =>
       this.#requestOfficial(method, params),
@@ -941,7 +948,8 @@ export class AppServerHost {
       handleCodexAccountRequest: (request) => this.#handleCodexAccountRequest(request),
       inspectHarness: (request) => this.#inspectHarness(request),
       openHarnessWebUi: (request) => this.#openHarnessWebUi(request),
-      handleSessionImport: (request) => this.#handleSessionImport(request),
+      handleSessionImport: (request) =>
+        this.#desktopRequests.run(undefined, () => this.#handleSessionImport(request)),
     });
     this.#threadRouting = new DesktopThreadRouting({
       writeJson: (value) => this.#writer.json(value),
@@ -1371,6 +1379,15 @@ export class AppServerHost {
     const installationTimeout = harnessInstallationRequestTimeoutMs(method, params);
     if (installationTimeout !== undefined) timeoutMs = Math.max(timeoutMs, installationTimeout);
     return this.#handleControlRequest(method, params, timeoutMs);
+  }
+
+  refreshNativeThreadCatalog(nativeHome: string): Promise<void> {
+    if (this.#closeRequested || this.#desktopInputEnded) return Promise.resolve();
+    return refreshNativeThreadCatalog(
+      this.#options.environment ?? process.env,
+      nativeHome,
+      this.#officialRuntimeScope.permanentHome,
+    );
   }
 
   async #handleControlRequest(
@@ -2939,6 +2956,9 @@ export class AppServerHost {
       descriptors: () => this.#pluginDescriptors,
       repository: this.#repository,
       diagnose: (error) => this.#diagnose(error),
+      environment: this.#options.environment ?? process.env,
+      adoptPreparedSession: (record, session) =>
+        this.#externalRuntime.adoptImported(record, session),
     });
     const response = await this.#sessionImportRequests.handle(request);
     await this.#writer.json(rpcEnvelope(request, response.body));

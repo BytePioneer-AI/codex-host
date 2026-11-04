@@ -168,7 +168,11 @@ Adapter 使用通用发现与持久化 launch settings 解析本地 `codex`；�
 
 未选择权限模式时，`thread/start`、`turn/start` 不下发审批或沙箱参数，使用用户原生配置；创建和恢复从原生响应中的审批策略与沙箱类型回填有效权限，不因读取到权限而增加本次 Session 的 Turn 参数覆盖。自定义审批策略、外部沙箱或缺失的权限响应不冒充标准档位，Web 显示“原生配置”。显式选择权限模式时只下发该模式对应的原生审批策略与沙箱模式名，不写死网络访问或可写目录；创建和恢复必须得到匹配的原生权限确认，否则拒绝打开 Session。`/compact`、`/review` 等原生能力、审批与提问交互、模型和推理强度、会话导入都按普通外部 Thread 契约提供；Fork 与回退最后一个 Turn 声明为不支持。Turn 进行中追加消息使用外部 Thread 对所有 Harness 统一的 steering 规则。
 
-原生会话通过通用导入接入：Host 通过原生 `thread/list` cursor 分页读完 Codex home 中可发现的会话，不把请求的单页 200 条当作总数上限；原生分页失败或 cursor 不前进时明确报错，不返回部分候选。同一逻辑 Session 的分页历史可以有多个 rollout 段，Adapter 按 Session ID 归并同页及跨页记录，重复项通过只读 `thread/read(includeTurns: false)` 获取权威标题、项目路径和更新时间，不按文件顺序或时间猜测当前段。已消失或身份无效的重复组不成为候选；原生读取故障明确报错，不冒充空列表。提交导入时重新发现并读取所选 ID，原生引用只保存逻辑 Session ID，不绑定某个历史文件。导入后成为可继续的 Codex CLI 外部 Thread，打开时由原生 `thread/resume` 和 `thread/read` 恢复其有效历史；返回不同的 Session ID 时拒绝，不新建空会话代替恢复。旧的 `<data>/web-codex/` 隔离来源数据不读取、不删除、不迁移，也不出现在 Web 会话列表中。同一原生会话不要在 GUI 官方 Codex 与 Web Codex CLI 中同时打开；Host 不为跨进程写入提供互斥。
+原生会话通过通用导入接入：Host 通过原生 `thread/list` cursor 分页读完 Codex home 中可发现的会话，不把请求的单页 200 条当作总数上限；原生分页失败或 cursor 不前进时明确报错，不返回部分候选。同一逻辑 Session 的分页历史可以有多个 rollout 段，Adapter 按 Session ID 归并同页及跨页记录，重复项通过只读 `thread/read(includeTurns: false)` 获取权威标题、项目路径和更新时间，不按文件顺序或时间猜测当前段。已消失或身份无效的重复组不成为候选；原生读取故障明确报错，不冒充空列表。提交导入时重新发现并读取所选 ID，原生引用只保存逻辑 Session ID，不绑定某个历史文件。旧的 `<data>/web-codex/` 隔离来源数据不读取、不删除、不迁移，也不出现在 Web 会话列表中。
+
+“导入”入口先尝试恢复所选 Codex 会话；未占用时沿用同一原生身份，只有明确的 writer 冲突才调用原生 Fork。分支截止于最近一个已完成回合，源会话正在执行的回合不会复制；没有已完成回合则明确失败。Host 保存返回的新 ID 和来源后，才读取分支历史；页面标明来源及两边独立继续。刷新、重启或重复提交只使用已保存的身份，Fork 请求结果不明确时停止并保留待确认记录，不自动重复创建。普通恢复仍严格验证原 ID；已导入的 Thread 后来被占用时报告忙碌，不再自动 Fork。Host 不关闭其他客户端或删除原生锁，也不提供分支之间的实时同步。
+
+Web 新建 Codex 会话在首个回合落盘后、导入派生分支在新 ID 提交后，尝试通知已连接且共享同一 Codex home 的 Desktop 刷新一次原生目录。空白会话只有 ID 时可能尚无原生历史文件，因此预热和空白草稿不触发。GUI 未运行、服务未就绪或刷新失败都忽略，不启动 GUI、不补刷、不重试，也不影响创建和对话。刷新只重新读取会话列表，不恢复 Session 或接管写锁。
 
 Codex CLI 的 Fast 闪电复用 Composer 的公共开关：只有原生 `model/list` 为当前 Model 声明 `serviceTiers` 中的 `priority` 档位时才显示，不按模型名或旧的 `additionalSpeedTiers` 猜测支持。Adapter 将普通 Model 与 Fast 选择映射为同一原生 Model 的不同 `serviceTier`，不把 Fast 引用作为模型名发送。创建和恢复通过原生参数与响应确认状态；未传配置提示时保留原生默认值或恢复值。显式普通引用关闭 Fast，显式 Fast 引用开启。
 

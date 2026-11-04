@@ -224,6 +224,12 @@ export const clientSnapshotRequestSchema = z.object({
 });
 export type ClientSnapshotRequest = z.infer<typeof clientSnapshotRequestSchema>;
 export type ClientSnapshotOptions = Omit<ClientSnapshotRequest, "threadId">;
+/** Native source of an imported Thread that continues as an independent branch. */
+export const clientThreadImportSourceSchema = z.object({
+  harnessId: z.string().min(1),
+  nativeSessionId: z.string().min(1),
+});
+export type ClientThreadImportSource = z.infer<typeof clientThreadImportSourceSchema>;
 export const clientThreadSnapshotSchema = z.object({
   cursor: clientChannelCursorSchema,
   /** Current interruptible Host Turn, including command Turns omitted from client history. */
@@ -240,6 +246,7 @@ export const clientThreadSnapshotSchema = z.object({
       status: z.object({ type: z.string() }).passthrough(),
       name: z.string().nullable().optional(),
       preview: z.string().optional(),
+      codexhostImportSource: clientThreadImportSourceSchema.optional(),
       turns: z.array(clientTurnSchema).length(0),
     })
     .passthrough(),

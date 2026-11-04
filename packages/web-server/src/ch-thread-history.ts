@@ -148,6 +148,7 @@ export class ChThreadHistory extends ChThreadView {
       ) {
         Object.assign(this.thread, { ...thread, turns: this.thread.turns });
         this.log.setProjection("title", threadListTitle(thread));
+        this.log.setProjection("codexhostImportSource", thread.codexhostImportSource ?? null);
         this.commands.update(snapshot?.command, this.thread.turns);
         return;
       }

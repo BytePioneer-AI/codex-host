@@ -51,6 +51,8 @@ const storedThreadCoreV1Shape = {
   harnessId: harnessIdSchema,
   state: z.enum(["creating", "ready"]),
   nativeSessionRef: nativeSessionRefSchema.optional(),
+  /** Original import identity, retained when preparation derives a different Native Session. */
+  importSourceRef: nativeSessionRefSchema.optional(),
   cwd: nonBlankTextSchema.max(16_384),
   title: z.string().max(4_096),
   archived: z.boolean(),
@@ -133,6 +135,20 @@ function refineThreadRecord(
       code: "custom",
       path: ["nativeSessionRef", "harnessId"],
       message: "Native Session Harness must match the Thread Harness",
+    });
+  }
+  if (record.importSourceRef && record.importSourceRef.harnessId !== record.harnessId) {
+    context.addIssue({
+      code: "custom",
+      path: ["importSourceRef", "harnessId"],
+      message: "Import source Harness must match the Thread Harness",
+    });
+  }
+  if (record.importSourceRef && record.subagent) {
+    context.addIssue({
+      code: "custom",
+      path: ["importSourceRef"],
+      message: "Subagent Threads cannot have an import source",
     });
   }
   const hostTurnIds = new Set<string>();
@@ -269,6 +285,7 @@ export interface CreateProvisionalThreadInput {
   hostThreadId: HostThreadId;
   createRequestId: string;
   harnessId: HarnessId;
+  importSourceRef?: NativeSessionRef;
   cwd: string;
   title?: string;
   transportModelId: string;

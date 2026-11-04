@@ -3,8 +3,72 @@ import {
   sessionImportTitle,
 } from "@codexhost/harness-adapter/session-import";
 import type { HarnessSessionImportCandidate } from "@codexhost/shared-contracts";
+import type { HarnessError } from "@codexhost/harness-adapter";
 
 import { CodexRpcError, type CodexAppServer } from "./rpc.js";
+
+export function isCodexWriterConflict(error: unknown): boolean {
+  return (
+    error instanceof CodexRpcError &&
+    error.method === "thread/resume" &&
+    error.error.code === -32600 &&
+    /^thread \S+ already has (?:an active writer|a live local writer)$/iu.test(error.error.message)
+  );
+}
+
+export function codexOpenFailure(error: unknown): HarnessError {
+  return isCodexWriterConflict(error)
+    ? {
+        code: "sessionBusy",
+        message: "Codex Session is open in another client. Close it there, then retry.",
+        retryable: true,
+      }
+    : {
+        code: "nativeFailure",
+        message: error instanceof Error ? error.message : String(error),
+        retryable: true,
+      };
+}
+
+/** A busy import may copy only the prefix ending at its latest completed native Turn. */
+export async function newestCompletedCodexTurn(
+  server: CodexAppServer,
+  threadId: string,
+): Promise<string | null> {
+  const cursors = new Set<string>();
+  const turns = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const response: { data: Array<{ id: string; status: string }>; nextCursor?: string | null } =
+      await server.request("thread/turns/list", {
+        threadId,
+        cursor,
+        limit: 100,
+        sortDirection: "desc",
+        itemsView: "notLoaded",
+      });
+    if (!Array.isArray(response.data)) throw new Error("Codex returned invalid Turn history");
+    for (const turn of response.data) {
+      if (
+        !turn ||
+        typeof turn.id !== "string" ||
+        !turn.id ||
+        !["completed", "interrupted", "failed", "inProgress"].includes(turn.status) ||
+        turns.has(turn.id)
+      )
+        throw new Error("Codex returned invalid or repeated Turn history");
+      turns.add(turn.id);
+      if (turn.status === "completed") return turn.id;
+    }
+    cursor = response.nextCursor ?? null;
+    if (cursor !== null) {
+      if (typeof cursor !== "string" || !cursor || cursors.has(cursor) || !response.data.length)
+        throw new Error("Codex Turn history cursor did not advance");
+      cursors.add(cursor);
+    }
+  } while (cursor !== null);
+  return null;
+}
 
 function candidateFromThread(value: unknown): HarnessSessionImportCandidate | null {
   if (!value || typeof value !== "object") return null;

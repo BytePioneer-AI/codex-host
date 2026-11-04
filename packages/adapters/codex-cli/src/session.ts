@@ -18,6 +18,7 @@ import {
 import { CodexAppServer, CodexRpcError } from "./rpc.ts";
 import { CodexModelSelection, CodexSettingsUnconfirmedError } from "./model-selection.ts";
 import { CodexUsage } from "./usage.ts";
+import { newestCompletedCodexTurn } from "./codex-session-import.js";
 import {
   confirmedPermissionMode,
   permissionMode,
@@ -98,6 +99,15 @@ interface PendingRequest {
   turnId: HostTurnId;
 }
 
+interface SessionStartResponse {
+  thread: { id: string };
+  model: string;
+  reasoningEffort: string | null;
+  serviceTier?: string | null;
+  approvalPolicy?: unknown;
+  sandbox?: unknown;
+}
+
 export interface CodexSessionOptions {
   usage: HarnessSessionUsageCapability;
   command: string;
@@ -107,6 +117,12 @@ export interface CodexSessionOptions {
   model?: string;
   effort?: string;
   permissionModeId?: string;
+  requestTimeoutMs?: number;
+  /** Only the explicit import preparation may derive a different native identity. */
+  importFork?: {
+    dispatched(): void;
+    created(nativeSessionId: string): void;
+  };
 }
 
 export class CodexSession implements HarnessSession {
@@ -146,6 +162,9 @@ export class CodexSession implements HarnessSession {
       command: options.command,
       cwd: options.cwd,
       environment: options.environment,
+      ...(options.requestTimeoutMs === undefined
+        ? {}
+        : { requestTimeoutMs: options.requestTimeoutMs }),
     });
     this.modelSelection = new CodexModelSelection(this.server);
     this.effort = options.effort;
@@ -190,25 +209,22 @@ export class CodexSession implements HarnessSession {
         : { approvalPolicy: this.mode.approvalPolicy, sandbox: this.mode.sandbox }),
       ...modelSettings,
     };
-    const response =
-      this.options.threadId === undefined
-        ? await this.server.request<{
-            thread: { id: string };
-            model: string;
-            reasoningEffort: string | null;
-            serviceTier?: string | null;
-            approvalPolicy?: unknown;
-            sandbox?: unknown;
-          }>("thread/start", { ...common, experimentalRawEvents: true })
-        : await this.server.request<{
-            thread: { id: string };
-            model: string;
-            reasoningEffort: string | null;
-            serviceTier?: string | null;
-            approvalPolicy?: unknown;
-            sandbox?: unknown;
-          }>("thread/resume", { threadId: this.options.threadId, ...common });
-    if (this.options.threadId !== undefined && response.thread.id !== this.options.threadId)
+    const response = this.options.importFork
+      ? await this.forkForImport(common)
+      : this.options.threadId === undefined
+        ? await this.server.request<SessionStartResponse>("thread/start", {
+            ...common,
+            experimentalRawEvents: true,
+          })
+        : await this.server.request<SessionStartResponse>("thread/resume", {
+            threadId: this.options.threadId,
+            ...common,
+          });
+    if (
+      !this.options.importFork &&
+      this.options.threadId !== undefined &&
+      response.thread.id !== this.options.threadId
+    )
       throw new Error("Codex CLI resumed a different native Session");
     this.threadId = response.thread.id;
     if (modelSettings.serviceTier === "priority" && response.serviceTier !== "priority")
@@ -222,6 +238,25 @@ export class CodexSession implements HarnessSession {
     this.initialState = this.state();
     await this.usage.refresh();
     this.initialUsage = this.usage.current;
+  }
+
+  private async forkForImport(common: Record<string, unknown>): Promise<SessionStartResponse> {
+    const { threadId, importFork } = this.options;
+    if (!threadId || !importFork) throw new Error("Codex import requires a source Session");
+    const lastTurnId = await newestCompletedCodexTurn(this.server, threadId);
+    if (!lastTurnId) throw new Error("Codex Session has no completed Turn available to import");
+    importFork.dispatched();
+    const response = await this.server.request<SessionStartResponse>("thread/fork", {
+      ...common,
+      threadId,
+      lastTurnId,
+      excludeTurns: true,
+    });
+    const id = response.thread?.id;
+    if (typeof id !== "string" || !id.trim() || id === threadId)
+      throw new Error("Codex import fork did not confirm a distinct native Session");
+    importFork.created(id);
+    return response;
   }
 
   private state(): HarnessSessionState {

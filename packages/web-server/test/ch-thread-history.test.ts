@@ -184,6 +184,26 @@ it("refreshes title fallbacks on both full reads and unchanged idle history", as
   assert.equal(reads(), 2);
 });
 
+it("keeps imported branch provenance current on full and unchanged idle reads", async () => {
+  const { host, row, view } = fixture(0);
+  const source = { harnessId: "codex-cli", nativeSessionId: "native-source" };
+  row.codexhostImportSource = source;
+  await view.refresh();
+  assert.deepEqual(view.log.projections.codexhostImportSource, source);
+  const reads = () => host.requests.filter((r) => r.method === "thread/turns/list").length;
+  assert.equal(reads(), 1);
+
+  delete row.codexhostImportSource;
+  await view.refresh();
+  assert.equal(view.log.projections.codexhostImportSource, null);
+  assert.equal(reads(), 1, "metadata refresh does not reread unchanged history");
+
+  row.codexhostImportSource = source;
+  await view.refresh(true);
+  assert.deepEqual(view.log.projections.codexhostImportSource, source);
+  assert.equal(reads(), 2);
+});
+
 it("coalesces older pages and retries errors without advancing the cursor", async () => {
   const { host, view } = fixture(12);
   await view.refresh();

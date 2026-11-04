@@ -301,6 +301,8 @@ npm ci
 npm start
 ```
 
+If your network cannot reach `download.qoder.com`, the Qoder SDK `postinstall` runtime download can make `npm ci` fail. Run `QODER_SKIP_DOWNLOAD=1 npm ci` instead (PowerShell: `$env:QODER_SKIP_DOWNLOAD=1; npm ci`). CodexHost launches the locally installed `qodercli`, so it does not need the runtime bundled with the SDK.
+
 To run the current source with a specific runtime version, use `npm start 0.12.0` (prereleases such as `0.13.0-rc.1` are also accepted). Host status, console version and update-check version reporting use this value. Without a version argument the version remains `<workspace-version>-dev`; `npm start 0.12.0 -- --no-build` reuses artifacts after building once. The override lasts for this launch and does not modify version files or publish packages. Source installations still lack packaged self-update resources; remote npm installation downloads the published package with that version, not the local source.
 
 

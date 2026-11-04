@@ -6,10 +6,14 @@ export async function openRendererLocalPage(
   execute: <T>(expression: string) => Promise<T>,
   url: string,
   targets: () => Promise<readonly { url: string }[]>,
+  /** The conversation that owns the page; the one shown now when omitted. */
+  owner?: string,
 ): Promise<LocalPageHandle> {
-  const conversationId = await execute<string | null>(
-    "window.__codexhostRendererBindingProbeV1?.currentThreadId?.() ?? null",
-  );
+  const conversationId =
+    owner ??
+    (await execute<string | null>(
+      "window.__codexhostRendererBindingProbeV1?.currentThreadId?.() ?? null",
+    ));
   if (!conversationId) throw new Error("Open a Codex task before starting verification");
   const browserTabId = `manual:${randomUUID()}`;
   const post = (value: object) =>

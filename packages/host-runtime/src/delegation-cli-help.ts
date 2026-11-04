@@ -81,6 +81,7 @@ export const DELEGATION_HELP = `usage:
   codexhost thread watch <thread>
   codexhost thread watches
   codexhost thread list
+  codexhost preview open|list|show|close
 
 Use <command> --help for its options. Use harness list to discover targets.
 ${COMMON_HELP}

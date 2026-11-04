@@ -22,6 +22,11 @@ export function isLocalPageUrl(value: string): boolean {
   }
 }
 
+/** A Codex conversation id the page is attached to; plain characters only, as it travels in one line. */
+export function isConversationId(value: string): boolean {
+  return /^[A-Za-z0-9_:-]{1,128}$/u.test(value);
+}
+
 /** The authenticated connection owns its page; disconnect always releases it. */
 export async function serveLocalPage(
   socket: Socket,
@@ -75,9 +80,13 @@ export async function serveLocalPage(
   }
 }
 
+/**
+ * Opens a loopback page in Codex's built-in browser. With a conversation id the
+ * page belongs to that conversation; without one, to the conversation shown now.
+ */
 export function createLocalPageOpener(
   environment: NodeJS.ProcessEnv,
-): ((url: string) => Promise<LocalPageHandle>) | undefined {
+): ((url: string, conversationId?: string) => Promise<LocalPageHandle>) | undefined {
   const port = Number(environment.CODEXHOST_CONTROL_PORT);
   const nonce = environment.CODEXHOST_CONTROL_NONCE;
   if (
@@ -88,9 +97,11 @@ export function createLocalPageOpener(
     !/^[0-9a-f]{32}$/u.test(nonce)
   )
     return undefined;
-  return async (url) => {
+  return async (url, conversationId) => {
     if (!isLocalPageUrl(url) || Buffer.byteLength(url) > 2048)
       throw new Error("Local page requires a loopback root URL");
+    if (conversationId !== undefined && !isConversationId(conversationId))
+      throw new Error("Local page conversation id is invalid");
     const socket = createConnection({ host: "127.0.0.1", port });
     socket.setEncoding("utf8");
     let buffer = "";
@@ -135,7 +146,7 @@ export function createLocalPageOpener(
       }
     };
     try {
-      await request(`PAGE ${nonce} ${url}`);
+      await request(`PAGE ${nonce} ${url}${conversationId ? ` ${conversationId}` : ""}`);
     } catch (error) {
       socket.destroy();
       throw error;

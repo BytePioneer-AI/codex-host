@@ -139,6 +139,21 @@ function isRetryableHarnessAvailability(
   );
 }
 
+/**
+ * The task the user is looking at. Desktop keeps hidden composers mounted for
+ * other views, so only shown ones count, and several composers of one task count
+ * as one. No shown composer, or shown composers of different tasks, gives null.
+ */
+export function currentThreadFromComposers(
+  composers: readonly { shown: boolean; threadId: string | null }[],
+): string | null {
+  const threads = new Set(
+    composers.filter((composer) => composer.shown).map((composer) => composer.threadId),
+  );
+  const [only] = threads;
+  return threads.size === 1 ? (only ?? null) : null;
+}
+
 export function retryableHarnessAvailabilityAgents(
   availability: HarnessAvailability,
   errors: HarnessAvailabilityErrors,
@@ -3340,13 +3355,15 @@ export function installRendererBindingProbe(
       (mounted) => isMountedComposer(mounted.composer) && mounted.control.root.isConnected,
     );
 
+  // Desktop keeps hidden composers mounted for other views; only a shown one is the current task.
+  const isShown = (mounted: MountedComposer): boolean =>
+    mounted.composer.getClientRects().length > 0 &&
+    window.getComputedStyle(mounted.composer).visibility === "visible" &&
+    !mounted.composer.closest('[hidden], [inert], [aria-hidden="true"]');
+
   const questions = installRendererQuestions(window, () => {
     const visible = connectedComposers().filter(
-      (mounted) =>
-        mounted.composer.getClientRects().length > 0 &&
-        window.getComputedStyle(mounted.composer).visibility === "visible" &&
-        !mounted.composer.closest('[hidden], [inert], [aria-hidden="true"]') &&
-        controller.get(mounted.composer).agent !== "codex",
+      (mounted) => isShown(mounted) && controller.get(mounted.composer).agent !== "codex",
     );
     const mounted = visible.length === 1 ? visible[0] : undefined;
     const threadId = mounted
@@ -3362,10 +3379,12 @@ export function installRendererBindingProbe(
   const api: RendererBindingProbeApi = {
     remoteConnections: (request) => handleRemoteConnectionsRequest(remoteConnections, request),
     currentThreadId() {
-      const mounted = connectedComposers();
-      return mounted.length === 1 && mounted[0]
-        ? (threadIdFromComposerModelTarget(mounted[0].modelTarget) ?? null)
-        : null;
+      return currentThreadFromComposers(
+        connectedComposers().map((mounted) => ({
+          shown: isShown(mounted),
+          threadId: threadIdFromComposerModelTarget(mounted.modelTarget) ?? null,
+        })),
+      );
     },
     status() {
       const selections = connectedComposers().map((mounted) => ({

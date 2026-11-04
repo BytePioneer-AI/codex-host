@@ -41,8 +41,11 @@ export interface LocalPageHandle {
 }
 
 export interface PreviewOpeners {
-  /** Opens a loopback root URL in Codex's built-in browser under the visible local task. */
-  page?: (url: string) => Promise<LocalPageHandle>;
+  /**
+   * Opens a loopback root URL in Codex's built-in browser, attached to the given
+   * conversation, or to the one shown now when there is none.
+   */
+  page?: (url: string, conversationId?: string) => Promise<LocalPageHandle>;
   /** Opens a loopback root URL in the system browser. */
   browser?: (url: URL) => Promise<void>;
 }
@@ -147,10 +150,29 @@ export class LocalPreviewManager {
   async #resolveFile(requested: string, cwd: string): Promise<string> {
     if (!path.isAbsolute(requested) || !path.isAbsolute(cwd))
       throw new DelegationControlError("INVALID_ARGUMENT", "Preview path and cwd must be absolute");
-    let file: string;
+    const outside = () =>
+      new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "Preview file must be inside the Thread's working directory",
+      );
     let root: string;
     try {
-      [file, root] = await Promise.all([realpath(requested), realpath(cwd)]);
+      root = await realpath(cwd);
+    } catch {
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        `Working directory does not exist: ${cwd}`,
+      );
+    }
+    // Checked before looking at the file, so the answer says nothing about files outside.
+    if (
+      !within(path.resolve(cwd), path.resolve(requested)) &&
+      !within(root, path.resolve(requested))
+    )
+      throw outside();
+    let file: string;
+    try {
+      file = await realpath(requested);
     } catch {
       throw new DelegationControlError(
         "INVALID_ARGUMENT",
@@ -158,11 +180,7 @@ export class LocalPreviewManager {
       );
     }
     // Resolved paths, so a symbolic link cannot point the preview outside the workspace.
-    if (!within(root, file))
-      throw new DelegationControlError(
-        "INVALID_ARGUMENT",
-        "Preview file must be inside the Thread's working directory",
-      );
+    if (!within(root, file)) throw outside();
     if (!(await stat(file)).isFile())
       throw new DelegationControlError("INVALID_ARGUMENT", "Preview path must be a file");
     return file;
@@ -299,7 +317,7 @@ export class LocalPreviewManager {
             preview.page = undefined;
           }
         }
-        preview.page = await this.#openers.page(preview.url);
+        preview.page = await this.#openers.page(preview.url, preview.threadId);
         await preview.page.show();
         return { ...this.#entry(preview), opened: "builtInBrowser" };
       } catch (error) {

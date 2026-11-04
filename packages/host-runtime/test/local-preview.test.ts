@@ -43,13 +43,16 @@ describe("local design preview", () => {
 
   it("serves the file at the root with live reload, and its directory read-only", async () => {
     const opened = page();
-    const previews = manager({ page: vi.fn(async () => opened) });
+    const opener = vi.fn(async () => opened);
+    const previews = manager({ page: opener });
     const result = await previews.open({
       path: path.join(mockups, "index.html"),
       cwd: workspace,
       threadId: "t1",
     });
     expect(result).toMatchObject({ opened: "builtInBrowser", threadId: "t1" });
+    // The page belongs to the calling Thread, not to whichever task is shown.
+    expect(opener).toHaveBeenCalledWith(result.url, "t1");
     expect(result.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/u);
     expect(opened.show).toHaveBeenCalledOnce();
 
@@ -98,6 +101,11 @@ describe("local design preview", () => {
     await expect(previews.open({ path: mockups, cwd: workspace })).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
     });
+    // Outside the workspace, existing or not, the answer is the same.
+    for (const target of [path.join(base, "secret.txt"), path.join(base, "absent.txt")])
+      await expect(previews.open({ path: target, cwd: workspace })).rejects.toMatchObject({
+        message: "Preview file must be inside the Thread's working directory",
+      });
   });
 
   it("reloads open pages once after a burst of edits", async () => {

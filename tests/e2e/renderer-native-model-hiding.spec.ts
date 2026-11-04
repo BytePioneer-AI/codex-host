@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
-import { build } from "esbuild";
+import { build, type Plugin } from "esbuild";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import type {
@@ -19,6 +20,45 @@ const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
 if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecutable } });
 
+/**
+ * The Composer controls import sibling workspaces (`@codexhost/shared-contracts`,
+ * `@codexhost/desktop-control/renderer-bindings`), whose runtime exports point
+ * at `dist/`. Those artifacts are gitignored and neither `test:e2e` nor the
+ * Playwright config builds them, so a fresh checkout would fail to resolve them
+ * here during collection. Map each package's published export back to the
+ * source file that produces it instead of requiring a prior `build:typescript`.
+ * Derived from the package manifests so a renamed or added export keeps
+ * working without touching this file.
+ */
+function workspaceSourcePlugin(): Plugin {
+  return {
+    name: "codexhost-workspace-source",
+    setup(builder) {
+      builder.onResolve({ filter: /^@codexhost\// }, (args) => {
+        const [scope, name, ...subpath] = args.path.split("/");
+        if (!scope || !name) return null;
+        const packageRoot = path.join(repositoryRoot, "packages", name);
+        const manifestPath = path.join(packageRoot, "package.json");
+        let manifest: { exports?: Record<string, { import?: string }> };
+        try {
+          manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+        } catch {
+          return null;
+        }
+        const key = subpath.length > 0 ? `./${subpath.join("/")}` : ".";
+        const runtime = manifest.exports?.[key]?.import;
+        if (!runtime) return null;
+        // `./dist/foo.js` -> `<packageRoot>/src/foo.ts`
+        const source = path.join(
+          packageRoot,
+          runtime.replace(/^\.\/dist\//, "src/").replace(/\.js$/, ".ts"),
+        );
+        return { path: source };
+      });
+    },
+  };
+}
+
 const { outputFiles } = await build({
   stdin: {
     contents: `
@@ -33,7 +73,11 @@ const { outputFiles } = await build({
   platform: "browser",
   target: "es2024",
   loader: { ".css": "text", ".png": "dataurl", ".svg": "dataurl" },
-  plugins: [tailwindEsbuildPlugin()],
+  plugins: [
+    workspaceSourcePlugin(),
+    // Runs after the resolver above, so settings CSS still compiles.
+    tailwindEsbuildPlugin(),
+  ],
   write: false,
 });
 const browserBundle = outputFiles[0]?.text;

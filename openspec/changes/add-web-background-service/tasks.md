@@ -22,7 +22,7 @@
 
 - [x] 4.1 连接设备页增加局域网开关、自启开关、后台状态和休眠提示，只在本机且后台模式时显示；更新“如何从其他网络连接”的文案，覆盖发行版的启动方式。验证：Playwright 覆盖切换后页面恢复、手机和前台模式不显示开关、手机宽度布局。
 - [x] 4.2 一键开关 Tailscale Serve。验证：用假 `tailscale` 脚本的 HTTP 和 Playwright 测试覆盖开启、确认时已被占用、退出 0 但未生效、只移除根路径、非本机请求被拒绝。
-- [ ] 4.3 Host 增加打开连接设备页的接口，Console 和 Codex 设置页增加按钮。验证：`renderer-extension` 和 `host-runtime` 测试覆盖 Web 未运行时先拉起、Host 不可用时的提示。
+- [ ] 4.3 Host 增加打开连接设备页的接口，Codex 设置页增加按钮。验证：`renderer-extension` 和 `host-runtime` 测试覆盖 Web 未运行时先拉起、Host 不可用时的提示。
 
 ## 5. 收尾
 

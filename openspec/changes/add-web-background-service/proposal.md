@@ -10,7 +10,7 @@ Web 现在只能从源码启动，而且跟着终端运行：关掉终端手机�
 - 新增 `codexhost web`、`codexhost stop`、`codexhost status`。`codexhost` 除打开 GUI 外，也在后台拉起 Web；未安装 Codex Desktop 时改为打开 Web。
 - Host 和 Web 脱离终端、GUI 和浏览器运行，只有 `codexhost stop` 或更新才停止。`codexhost stop` 关闭这台电脑上 codexhost 的全部进程，包括它拉起的 GUI。Web 崩溃后带退避自动重启，启动失败不反复重启。
 - 发行版 Web 默认只监听本机，由连接设备页的开关或启动选项对外。启动选项保存下来，之后的启动沿用。
-- 连接设备页增加局域网开关、一键开关 Tailscale Serve、登录后自动启动开关；Console 和 Codex 设置页增加打开它的入口。
+- 连接设备页增加局域网开关、一键开关 Tailscale Serve、登录后自动启动开关；Codex 设置页增加打开它的入口。
 - 用户发起更新时直接重启 Host 和 Web；下次启动发现版本不一致时同样重启。两者都不判断是否有任务在运行。
 - `npm start`、`npm start web` 不变，继续在前台运行。
 

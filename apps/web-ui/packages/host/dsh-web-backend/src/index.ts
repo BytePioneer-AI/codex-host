@@ -31,6 +31,8 @@ import type { GatewayService } from "./gateway-service.ts";
 
 /** Minimal host facts the DSH services consume. */
 export interface DshWebBackendOptions {
+  /** Release-only Office engine preparation, independent of request cancellation. */
+  readonly ensureOfficeEngine?: () => boolean;
   /** Absolute fallback root the DSH sandbox policy reports. */
   readonly workspaceRoot: string;
   /**
@@ -167,7 +169,7 @@ export async function createDshWebBackend(options: DshWebBackendOptions): Promis
     await ctx.plugin(TypertGateway);
     await ctx.plugin(WorkspaceFiles);
     // Office conversion reads the mounted workspace files and local filesystem.
-    await ctx.plugin(OfficeToPdf);
+    await ctx.plugin(OfficeToPdf, { ensureEngine: options.ensureOfficeEngine });
     await ctx.plugin(LocalSubprocess);
     const subprocess = ctx.get("subprocess") as SubprocessPort | undefined;
     if (subprocess === undefined) throw new Error("dsh-web-backend: subprocess is unavailable");

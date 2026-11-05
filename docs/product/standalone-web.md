@@ -62,7 +62,7 @@ Web 按内容寻址快照的 runtime 路径（或 `--ch-host-runtime` 覆盖值�
 
 发行流程 `prepare-payload` 与 `prepare-npm` 共用 Web 构建入口，输出 `app/web-server.mjs`、`app/web/` 与 `app/web-modules/`。轻量入口加载 `web-modules/server.mjs`，其框架及原生依赖通过该目录的 `node_modules` 正常解析；Harness 插件复用 `app/plugins`。监管进程显式传入安装内的 Host、Launcher 与插件路径，不创建 `host-builds` 快照；独立 packed 入口在没有 `--ch-host-runtime` 时仍使用快照。
 
-发行 Web 不提供 CDP、无认证和前端开发监听选项，也不带 `preview.mjs`；`node-pty` 仅保留目标 OS/CPU 的预编译文件。Office 入口包、worker 和 `koffi` 保留，LibreOffice 引擎不随包发布。`app/web-modules/office-engines.json` 从锁文件记录各引擎包的官方地址、版本与 SHA-512 integrity；发行入口尚未接入引擎下载，需要 LibreOffice 的预览暂不可用。发行浏览器构建使用临时输出目录，不覆盖源码开发使用的 packed 目录。
+发行 Web 不提供 CDP、无认证和前端开发监听选项，也不带 `preview.mjs`；`node-pty` 仅保留目标 OS/CPU 的预编译文件。Office 入口包、worker 和 `koffi` 保留，LibreOffice 引擎不随包发布。`app/web-modules/office-engines.json` 从锁文件记录各引擎包的官方地址、版本与 SHA-512 integrity。发行版首次预览 Word、PPT 时从 npm 官方源下载组件，校验后用系统 `tar` 解压，原子安装到 `<web-data>/office-engine/<版本>/node_modules/@deepseek-ai/` 并清理旧版本。页面提示正在下载，每 3 秒重试，完成后自动显示预览；离开页面只停止重试，不取消 Web 进程中的下载。下载失败提示检查电脑网络，下次预览重试；Web 重启后的未完成下载重新开始。源码运行不下载。引擎通过临时 `NODE_PATH` 和 Node 私有接口 `Module._initPaths()` 加入模块搜索路径，随即删除环境变量，Web 终端不继承；Node 升级时需验证此接口。发行浏览器构建使用临时输出目录，不覆盖源码开发使用的 packed 目录。
 
 ## 访问认证
 

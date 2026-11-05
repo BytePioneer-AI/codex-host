@@ -10,7 +10,7 @@
  * rebuilt plugin bundles to open pages (used by `npm start web -- --watch`).
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -48,6 +48,7 @@ import { WebHarnessPreferences } from "./harness-preferences.ts";
 import { createChHostClient } from "./ch-host-client.ts";
 import { serveChClientGateway } from "./ch-client-gateway.ts";
 import { DshWebServices, type WebPluginRuntime } from "./dsh-web-services.ts";
+import { createOfficeEngine } from "./office-engine.ts";
 import { harnessIconStyles } from "./harness-icon-styles.ts";
 import { Settings } from "./settings.ts";
 import { formatWebStartup } from "./startup-display.ts";
@@ -255,6 +256,14 @@ const dsh = await DshWebServices.open({
   workspaceRoot: resolve(values.workspace as string),
   threadWorkspace: (id) => sessions.terminalWorkspaceRoot(id),
   fileWorkspace: (id) => sessions.fileWorkspaceRoot(id),
+  ...(RELEASE_WEB
+    ? {
+        ensureOfficeEngine: createOfficeEngine(
+          dataRoot,
+          JSON.parse(readFileSync(join(import.meta.dirname, "office-engines.json"), "utf8")),
+        ),
+      }
+    : {}),
 }).catch((error: unknown) => {
   console.warn(
     "[right-sidebar] unavailable:",

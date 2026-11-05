@@ -58,7 +58,19 @@ export function OfficeBody(props: OfficeBodyProps): ReactNode {
   const revision = request?.revision;
   const held = props.useStore((state) => state.byTab[tab.id]);
   const view = held?.revision === revision ? held : undefined;
-  const settled = view?.file !== undefined || view?.failure !== undefined;
+  const downloading = view?.downloading === true;
+  const settled = downloading || view?.file !== undefined || view?.failure !== undefined;
+  const reload = request?.reload;
+  useEffect(() => {
+    if (!downloading || tab.signal.aborted) return;
+    const timer = setTimeout(() => reload?.(), 3000);
+    const cancel = () => clearTimeout(timer);
+    tab.signal.addEventListener("abort", cancel, { once: true });
+    return () => {
+      cancel();
+      tab.signal.removeEventListener("abort", cancel);
+    };
+  }, [downloading, reload, tab.signal]);
   useEffect(() => {
     retainTab(tab.id, tab.signal);
   }, [retainTab, tab.id, tab.signal]);
@@ -93,7 +105,8 @@ export function OfficeBody(props: OfficeBodyProps): ReactNode {
       </div>
     );
   }
-  if (file === undefined) return <LoadingIndicator label={t("loading")} />;
+  if (file === undefined)
+    return <LoadingIndicator label={t(held?.downloading ? "downloading" : "loading")} />;
   return (
     <div className={css.body}>
       {props.renderSlot(

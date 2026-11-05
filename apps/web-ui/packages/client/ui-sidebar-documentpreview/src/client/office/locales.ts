@@ -2,13 +2,14 @@
 export const zh = {
   title: "Office 文档",
   loading: "文档渲染中...",
+  downloading: "正在下载 Office 预览组件，完成后将自动显示预览。",
   retry: "重试",
   viewMissingFonts: "缺失 {count} 种字体，点击查看",
   missingFontsTitle: "缺失的字体",
   missingFontsDescription: "本次预览无法使用以下字体，预览中的文字和排版可能与原文档不同。",
   missingFontsCount: "{count} 种字体",
   closeDetails: "关闭字体详情",
-  unavailable: "Office 预览不可用。请在运行 DeepSeek Harness 的主机上启用文档预览服务。",
+  unavailable: "Office 预览组件不可用或下载失败，请检查运行 Web 的电脑的网络后重试。",
   invalid: "无法预览此 Office 文件。文件可能已损坏、受密码保护，或与扩展名不符。",
   tooLarge: "Office 文件或转换后的 PDF 超过预览大小上限，请缩小文件或调整预览配置。",
   failed: "Office 转换失败，未生成可用的 PDF。请检查该文件后重试。",
@@ -24,6 +25,7 @@ export type OfficePreviewKey = keyof typeof zh;
 export const en = {
   title: "Office document",
   loading: "Rendering document...",
+  downloading: "Downloading the Office preview component. The preview will appear automatically.",
   retry: "Retry",
   viewMissingFonts: "Missing fonts: {count}. Click to view.",
   missingFontsTitle: "Missing fonts",
@@ -32,7 +34,7 @@ export const en = {
   missingFontsCount: "Fonts: {count}",
   closeDetails: "Close font details",
   unavailable:
-    "Office previews are unavailable. Enable the document preview service on the computer running DeepSeek Harness.",
+    "The Office preview component is unavailable or failed to download. Check the network on the computer running Web and try again.",
   invalid:
     "This Office file cannot be previewed. It may be damaged, password protected, or have the wrong extension.",
   tooLarge:

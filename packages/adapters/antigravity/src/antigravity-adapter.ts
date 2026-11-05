@@ -28,6 +28,7 @@ import {
   type InspectHarnessInput,
   type HostAgentMessageItem,
   type HostCommand,
+  type HostContextCompactionItem,
   type HostEvent,
   type HostFileChange,
   type HostItem,
@@ -138,6 +139,11 @@ interface ActiveTurn {
   logPath: string;
   agentItem: HostAgentMessageItem | null;
   agentText: string;
+  /**
+   * agy's open context compaction, reported as a `checkpoint` step both for an
+   * explicit `/compact` and for compaction agy starts on its own mid-Turn.
+   */
+  compactionItem: HostContextCompactionItem | null;
   /**
    * Every agent text shown this Turn, across the messages that tool and
    * Subagent steps split it into. agy's `result.response` joins those segments.
@@ -852,6 +858,7 @@ class AntigravitySession implements HarnessSession {
       logPath,
       agentItem: null,
       agentText: "",
+      compactionItem: null,
       turnAgentText: "",
       tools: new Map(),
       completedItems: [],
@@ -1202,6 +1209,10 @@ class AntigravitySession implements HarnessSession {
       }
       return;
     }
+    if (step.step_type === "checkpoint") {
+      this.#handleCompactionStep(active, step);
+      return;
+    }
     if (step.step_type !== "tool") return;
     if (active.agentItem) {
       this.#completeItem(active, active.agentItem, { status: "succeeded" });
@@ -1246,6 +1257,45 @@ class AntigravitySession implements HarnessSession {
           }
         : { status: "succeeded" };
     this.#completeItem(active, completed, itemOutcome);
+  }
+
+  /**
+   * agy compacts a Conversation in a `checkpoint` step: the summary replaces the
+   * earlier history in agy's own context. Desktop shows it as a Context
+   * Compaction, and an explicit `/compact` command Turn is reported as manual by
+   * the Host from that Item.
+   */
+  #handleCompactionStep(active: ActiveTurn, step: AntigravityStepUpdateEvent["step_update"]): void {
+    if (!active.compactionItem) {
+      if (active.agentItem) {
+        this.#completeItem(active, active.agentItem, { status: "succeeded" });
+        active.agentItem = null;
+        active.agentText = "";
+      }
+      active.compactionItem = { type: "contextCompaction", itemId: this.#newItemId() };
+      this.#event({
+        type: "item.started",
+        turnId: active.command.turnId,
+        item: active.compactionItem,
+      });
+    }
+    if (step.state !== "DONE" && step.state !== "ERROR") return;
+    const item = active.compactionItem;
+    active.compactionItem = null;
+    this.#completeItem(
+      active,
+      item,
+      step.state === "ERROR"
+        ? {
+            status: "failed",
+            error: {
+              code: "nativeFailure",
+              message: "Antigravity context compaction failed",
+              retryable: false,
+            },
+          }
+        : { status: "succeeded" },
+    );
   }
 
   /**
@@ -1370,6 +1420,8 @@ class AntigravitySession implements HarnessSession {
           ? { status: "cancelled", ...(outcome.reason ? { reason: outcome.reason } : {}) }
           : { status: "succeeded" };
     active.subagents.finish(itemOutcome);
+    if (active.compactionItem) this.#completeItem(active, active.compactionItem, itemOutcome);
+    active.compactionItem = null;
     if (active.agentItem) this.#completeItem(active, active.agentItem, itemOutcome);
     // A step whose patch never resolved still ran, so an interrupted Turn
     // reports it as a Tool Execution rather than dropping it silently.

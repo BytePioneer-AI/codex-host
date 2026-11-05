@@ -58,6 +58,13 @@ export const ANTIGRAVITY_COMMAND_CATALOG: HarnessCommandCatalog = harnessCommand
         argumentMode: "text",
       },
       {
+        id: "antigravity.compact",
+        invocation: "/compact",
+        label: "Compact",
+        description: "Summarize the conversation to free up context",
+        argumentMode: "text",
+      },
+      {
         id: "antigravity.help",
         invocation: "/help",
         label: "Help",

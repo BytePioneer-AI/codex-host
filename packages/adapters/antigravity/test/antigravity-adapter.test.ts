@@ -2396,5 +2396,131 @@ if (count === 0) {
         await cleanup();
       }
     });
+
+    it("keeps streamed agent_response text after a reasoning Item resolved only at DONE", async () => {
+      const conversationId = "conv-thinking-order";
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "dangerously-skip-permissions" },
+          conversation_id: conversationId,
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: conversationId,
+            step_index: 1,
+            state: "RUNNING",
+            step_type: "agent_response",
+            text_delta: "First half. ",
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: conversationId,
+            step_index: 1,
+            state: "RUNNING",
+            step_type: "agent_response",
+            text_delta: "Second half.",
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: conversationId,
+            step_index: 1,
+            state: "DONE",
+            step_type: "agent_response",
+            usage: {
+              input_tokens: 100,
+              output_tokens: 40,
+              thinking_tokens: 220,
+              total_tokens: 360,
+            },
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: conversationId,
+            status: "SUCCESS",
+            num_turns: 1,
+            response: "First half. Second half.",
+          },
+        }),
+      ];
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const logsDir = path.join(
+        cwd,
+        ".gemini",
+        "antigravity-cli",
+        "brain",
+        conversationId,
+        ".system_generated",
+        "logs",
+      );
+      await mkdir(logsDir, { recursive: true });
+      await writeFile(
+        path.join(logsDir, "transcript_full.jsonl"),
+        JSON.stringify({
+          step_index: 1,
+          source: "MODEL",
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          thinking: "Drafting the final answer after reviewing the codebase.",
+          content: "First half. Second half.",
+        }) + "\n",
+      );
+      const adapter = new AntigravityAdapter({
+        command,
+        environment: { ...process.env, HOME: cwd, USERPROFILE: cwd, CODEXHOST_DATA_DIR: cwd },
+      });
+      try {
+        const opened = await adapter.open({
+          kind: "create",
+          cwd,
+          model: harnessModelRefSchema.parse({ id: "gemini-3.7-flash" }),
+          thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-thinking-order"),
+          input: [{ type: "text", text: "summarize" }],
+        });
+        const completedItems: Array<{ type: string; text?: string }> = [];
+        while (true) {
+          const event = await nextEvent(iterator);
+          if (event.type === "item.completed") {
+            const { item } = event.snapshot;
+            completedItems.push({
+              type: item.type,
+              ...("text" in item ? { text: item.text } : {}),
+            });
+          }
+          if (event.type === "turn.completed") break;
+        }
+        expect(completedItems).toEqual([
+          {
+            type: "reasoning",
+            text: "Drafting the final answer after reviewing the codebase.",
+          },
+          { type: "agentMessage", text: "First half. Second half." },
+        ]);
+        const snapshot = await session.readSnapshot();
+        if (!snapshot.ok) throw new Error(snapshot.error.message);
+        expect(snapshot.value.turns[0]?.items.map(({ item }) => item.type)).toEqual([
+          "reasoning",
+          "agentMessage",
+        ]);
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
   });
 });

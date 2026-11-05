@@ -6,8 +6,8 @@
   "license": "MIT",
   "exports": {
     ".": {
-      "types": "./src/events.ts",
-      "default": "./src/events.ts"
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
     },
     "./client": {
       "types": "./src/client/index.ts",
@@ -16,7 +16,9 @@
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@deepseek-ai/schemastery": "*"
+  },
   "dsh": {
     "client": {
       "inject": [

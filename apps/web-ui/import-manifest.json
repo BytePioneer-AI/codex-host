@@ -7,6 +7,89 @@
     "scope": "Cordis Include patch dialect; WebServer routes and index injections; client-modules; bare package classification from app-boot profile resolution",
     "adaptation": "Embedded HTTP carrier without a second listener; Node resolve hooks limited to installed Web plugins and shared framework packages; Include uses the private @codexhost/dsh-web-include name to avoid changing Host Runtime's separate Cordis peers; no DSH CLI or Agent startup"
   },
+  "clientHmrUpstream": {
+    "repository": "https://github.com/deepseek-ai/deepseek-harness",
+    "commit": "bf1a2bf69c76af82eb583aad596f7e3eceb81d31",
+    "packageVersion": "0.2.1-alpha.3",
+    "scope": "Missing client-hmr Node source, its three focused test files, and the repository MIT license; existing browser transport and runtime dependencies are retained, not upgraded",
+    "status": "Official Node entry is exported and mounted by dsh-web-backend; source and packed client compositions include HMR, recovery compositions exclude it",
+    "adaptation": "The five copied files remain byte-for-byte upstream. SHA-256 values below identify those original source bytes, not adapted browser files. Loader, Cordis and ClientModules are not upgraded.",
+    "localAdaptations": [
+      {
+        "path": "apps/web-ui/packages/client/hmr/src/client/index.ts",
+        "reason": "Retains the existing shell-frame reload branch and adds a development-only plugins/shell-events subscription. The static Vite shell cannot be replaced by the module controller; graph/rebuilt still use only the official plugins/events transport."
+      },
+      {
+        "path": "apps/web-ui/packages/client/hmr/src/events.ts",
+        "reason": "Existing baseline shell frame type and parser extension; unchanged by hot-loading integration."
+      },
+      {
+        "path": "apps/web-ui/packages/client/hmr/package.json",
+        "reason": "Private npm workspace source export for the Node entry and an explicit dependency on the existing schemastery workspace; no version upgrade."
+      },
+      {
+        "path": "apps/web-ui/packages/host/dsh-web-backend/src/plugin-runtime.ts",
+        "reason": "Local carrier adapter mounts the official plugin with a private route-registration port, keeping third-party /plugins reservations intact; incremental Loader operations stay on the existing management queue."
+      }
+    ],
+    "files": [
+      {
+        "source": "packages/client/hmr/src/index.ts",
+        "path": "apps/web-ui/packages/client/hmr/src/index.ts",
+        "sha256": "c44bd4146a459aae2ebf75adaa31a5db96e3e5d17279ec6d80cb3682c1e17534"
+      },
+      {
+        "source": "packages/client/hmr/tests/events.client.spec.ts",
+        "path": "apps/web-ui/packages/client/hmr/tests/events.client.spec.ts",
+        "sha256": "49a915425edf3282656a39825df53e9fe9f88cb40e979734cf59d5b159845e6f"
+      },
+      {
+        "source": "packages/client/hmr/tests/node-half.client.spec.ts",
+        "path": "apps/web-ui/packages/client/hmr/tests/node-half.client.spec.ts",
+        "sha256": "59d640b87b1cd70c3ec1d5d3df56d5bff3a9cc434d649ed5b94e66c48767b1d7"
+      },
+      {
+        "source": "packages/client/hmr/tests/transport.client.spec.ts",
+        "path": "apps/web-ui/packages/client/hmr/tests/transport.client.spec.ts",
+        "sha256": "71b3ab181f6097c9d85de07ebf7803dc054ffc2aa394244ad2e65f814cee1bef"
+      },
+      {
+        "source": "LICENSE",
+        "path": "apps/web-ui/packages/client/hmr/LICENSE",
+        "sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be"
+      }
+    ],
+    "dependencies": {
+      "runtime": ["node:fs", "@deepseek-ai/schemastery"],
+      "injectedServices": ["clientModules", "webServer"],
+      "typeImports": [
+        "node:http",
+        "@deepseek-ai/cordis",
+        "@deepseek-ai/dsh-client-modules",
+        "@deepseek-ai/dsh-host-webserver"
+      ],
+      "relativeImport": "./events.ts (existing browser/server wire contract)",
+      "tests": ["vitest", "@deepseek-ai/cordis", "@deepseek-ai/cordis-plugin-loader"],
+      "upstreamManifest": "packages/client/hmr/package.json",
+      "availability": "All dependencies use existing workspace/lockfile versions. The HMR manifest declares schemastery and exposes the Node entry; dsh-web-backend depends on HMR. The unchanged upstream tests are included by tests/vitest.config.js."
+    },
+    "compatibility": {
+      "localBaseline": "267391674e7079961a72f35db07c1a0fc857806c",
+      "browserTransport": "At localBaseline, formatting-normalized src/client/index.ts differs only by the shell reload branch; src/events.ts differs by its frame type/parser support and an internal-doc comment. The additional shell subscription is recorded in localAdaptations.",
+      "normalizedMatches": [
+        "vendor/cordis/src/fiber.ts",
+        "vendor/loader/src/config/entry.ts",
+        "vendor/loader/src/config/group.ts",
+        "packages/client/modules/src/client/entries.ts",
+        "packages/client/modules/src/client/entry-lifecycle.ts",
+        "packages/client/modules/src/client/manifest.ts",
+        "packages/client/modules/src/client/system.ts"
+      ],
+      "services": "The existing ClientModules provides graph/artifactBaseline/rebuilt/onGraphChanged/onRebuilt with the required signatures. Its local snapshot and embedded-carrier adaptations are retained. The embedded WebServer retains its reserved /plugins prefix for user packages. The built-in HMR uses an isolated route-registration port forwarded by the authenticated carrier.",
+      "versionLabels": "Local framework manifests retain alpha.1 labels; the pinned official framework manifests use alpha.2 and client packages use 0.2.1-alpha.3. Compatibility evidence is the source/API comparison and focused tests, not a claim of whole-package version equality.",
+      "excluded": "No boot/hmr, vendor/hmr, app-boot/profile, full Plugin Manager, Worker preview transport, or unrelated DSH upgrade. The later ce7073d51254c26cd63b22a60835b8f948deb447 browser transport requires eventsource-parser and is not imported."
+    }
+  },
   "extensionInstallUpstream": {
     "source": "codexhost-web fork",
     "commit": "a28f8758b4579787e8511a2a45401e2c29ba2199",

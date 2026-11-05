@@ -49,12 +49,10 @@ export const CLIENT_PLUGINS: readonly string[] = [
   "@deepseek-ai/dsh-api-workspace-controller",
   "@deepseek-ai/dsh-client-ui-directory-picker-browse",
   "@deepseek-ai/dsh-client-ui-codexhost",
+  "@deepseek-ai/dsh-client-hmr",
 ];
 
-/**
- * Development-only browser half of the reload channel, composed after {@link CLIENT_PLUGINS} when
- * the server runs with `--dev-web-ui`; packed distributions never include it.
- */
+/** Live graph transport, omitted only from built-in recovery pages. */
 export const HMR_CLIENT_PLUGIN = "@deepseek-ai/dsh-client-hmr";
 
 /** Configuration globals read by the composed plugins. */

@@ -362,6 +362,8 @@ export class WebAssets {
   }
 
   index(): AssetResponse {
+    // The native registry can change independently of development file rebuilds.
+    this.indexHtml = this.renderIndex();
     return { body: this.indexHtml, contentType: "text/html; charset=utf-8" };
   }
 

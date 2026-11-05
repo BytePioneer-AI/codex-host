@@ -137,7 +137,7 @@ async function roundTrip(t: TestContext, source?: string): Promise<void> {
         },
       },
     );
-  let url = await launch();
+  const url = await launch();
   const browser = await chromium.launch();
   t.after(() => browser.close());
   const page = await browser.newPage({ locale: "en-US", colorScheme: "light" });
@@ -166,7 +166,7 @@ async function roundTrip(t: TestContext, source?: string): Promise<void> {
     mkdirSync(screenshots, { recursive: true });
     await page.screenshot({ path: join(screenshots, "extensions-management.png"), fullPage: true });
   }
-  assert.deepEqual((await rpc(url, "list")).loadedIds, []);
+  assert.deepEqual((await rpc(url, "list")).loadedIds, [id]);
   if (real) {
     const registry = JSON.parse(
       readFileSync(join(data, "ui-extensions/installed.json"), "utf8"),
@@ -186,9 +186,6 @@ async function roundTrip(t: TestContext, source?: string): Promise<void> {
       "ba0438d0ccfdac090819bf4a88abbfd2b122af8d6a1a3912da5edce19bb03f92",
     );
   }
-  await stop(child);
-  url = await launch();
-  await page.goto(url);
   await page.waitForFunction(
     (color) =>
       getComputedStyle(document.body).getPropertyValue("--dsw-alias-brand-primary").trim() ===
@@ -212,7 +209,7 @@ async function roundTrip(t: TestContext, source?: string): Promise<void> {
     await page.screenshot({ path: join(screenshots, "blackgold-enabled.png"), fullPage: true });
   }
 
-  // A recovery page never evaluates the enabled extension, even before a server restart.
+  // Recovery remains built-in only while ordinary pages synchronize live.
   await page.goto(new URL("/?extensions=off", url).href);
   await page.getByRole("button", { name: "Settings", exact: true }).waitFor();
   assert.equal(
@@ -226,8 +223,6 @@ async function roundTrip(t: TestContext, source?: string): Promise<void> {
   await page.getByRole("button", { name: "启用 / Enable", exact: true }).waitFor();
   assert.deepEqual((await rpc(url, "list")).extensions[0]?.enabledTargets, []);
 
-  await stop(child);
-  url = await launch();
   await page.goto(url);
   await page.getByRole("button", { name: "Settings", exact: true }).waitFor();
   assert.equal(
@@ -248,7 +243,7 @@ async function roundTrip(t: TestContext, source?: string): Promise<void> {
 }
 
 it(
-  "installs a prebuilt client through settings, loads after restart and recovers by disabling",
+  "installs a prebuilt client through settings, loads live and recovers by disabling",
   { timeout: 120_000 },
   async (t) => roundTrip(t),
 );

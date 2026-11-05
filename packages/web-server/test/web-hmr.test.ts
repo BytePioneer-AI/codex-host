@@ -1,4 +1,4 @@
-/** Development reload channel: rebuilt bundles and shell documents reach open pages over SSE. */
+/** Development shell bridge has no plugin graph or rebuilt transport. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer, get, type IncomingMessage } from "node:http";
@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { it } from "node:test";
 
 import { WebAssets } from "../src/web-assets.ts";
-import { HMR_EVENTS_PATH, WebHmr } from "../src/web-hmr.ts";
+import { SHELL_EVENTS_PATH, WebShellReload } from "../src/web-hmr.ts";
 
 const PLUGIN = "@fixture/alpha";
 
@@ -62,11 +62,11 @@ async function until(condition: () => boolean, label: string): Promise<void> {
   }
 }
 
-it("pushes rebuilt plugin bundles and shell documents, skipping unchanged rewrites", async (t) => {
+it("only reloads rebuilt shell documents; plugin events belong to the official transport", async (t) => {
   const { root, bundle, shell } = fixture();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const assets = new WebAssets({ repoRoot: root, plugins: [PLUGIN], globals: {}, title: "T" });
-  const hmr = new WebHmr(assets, 20);
+  const hmr = new WebShellReload(assets, 20);
   const server = createServer((request, response) => {
     hmr.connect(request, response);
   });
@@ -77,37 +77,25 @@ it("pushes rebuilt plugin bundles and shell documents, skipping unchanged rewrit
   });
   const { port } = server.address() as AddressInfo;
   const { frames, response } = await subscribe(
-    `http://127.0.0.1:${String(port)}${HMR_EVENTS_PATH}`,
+    `http://127.0.0.1:${String(port)}${SHELL_EVENTS_PATH}`,
   );
   assert.equal(response.headers["content-type"], "text/event-stream");
 
-  await until(() => frames.length === 1, "the initial graph");
-  const initialRev = assets.graph.entries[0]?.rev;
-  assert.deepEqual(frames[0], { type: "graph", graph: assets.graph });
-
   writeFileSync(bundle, "alpha(2);\n");
-  await until(() => frames.length === 2, "the rebuilt frame");
-  const rebuilt = frames[1] as { type: string; id: string; rev: string };
-  assert.equal(rebuilt.type, "rebuilt");
-  assert.equal(rebuilt.id, PLUGIN);
-  assert.notEqual(rebuilt.rev, initialRev);
-  assert.equal(assets.graph.entries[0]?.rev, rebuilt.rev);
-  const served = assets.plugin(`/plugins/??${PLUGIN}/client.js&rev=${rebuilt.rev}`);
-  assert.match(served?.body.toString() ?? "", /alpha\(2\)/u);
-  assert.match(assets.index().body.toString(), new RegExp(rebuilt.rev, "u"));
-
-  // A watcher's initial rebuild rewrites identical bytes: the page must not reload for it.
-  const later = new Date(Date.now() + 5_000);
-  utimesSync(bundle, later, later);
   await new Promise((resolve) => setTimeout(resolve, 150));
-  assert.equal(frames.length, 2);
+  assert.deepEqual(frames, []);
+  // A shell rewrite with identical bytes must not reload pages.
+  const later = new Date(Date.now() + 5_000);
+  utimesSync(shell, later, later);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.deepEqual(frames, []);
 
   writeFileSync(
     shell,
     "<html><head><title>x</title></head><body><script src=b.js></script></body></html>",
   );
-  await until(() => frames.length === 3, "the shell frame");
-  assert.deepEqual(frames[2], { type: "shell" });
+  await until(() => frames.length === 1, "the shell frame");
+  assert.deepEqual(frames[0], { type: "shell" });
   assert.match(assets.index().body.toString(), /b\.js/u);
   response.destroy();
 });

@@ -12,7 +12,7 @@
 import { stat } from "node:fs/promises";
 import { mountWebPlugins } from "./plugin-runtime.ts";
 import type { WebPluginRuntime, WebPluginRuntimeOptions } from "./plugin-types.ts";
-export type { WebPluginRuntime, WebPluginRuntimeOptions } from "./plugin-types.ts";
+export type { WebPluginRuntime, WebPluginRuntimeOptions, WebPluginResult } from "./plugin-types.ts";
 import { Context } from "@deepseek-ai/cordis";
 import TypertGateway from "@deepseek-ai/dsh-api-gateway";
 import type { DshStreamInput } from "./stream-input.ts";

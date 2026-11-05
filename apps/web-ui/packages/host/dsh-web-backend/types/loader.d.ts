@@ -13,11 +13,15 @@ export interface Entry {
   options: EntryOptions;
   disabled: boolean;
   fiber?: Fiber;
+  subtree?: EntryTree;
 }
 export abstract class EntryTree {
   constructor(ctx: Context);
   ctx: Context;
+  store: Record<string, Entry>;
   root: { update(entries: EntryOptions[]): Promise<void>; stop(): void };
+  create(options: Omit<EntryOptions, "id"> & { id?: string }): Promise<string>;
+  remove(id: string): void;
   entries(): Iterable<Entry>;
   import(name: string, getOuterStack?: () => string[]): unknown;
   abstract write(): void;

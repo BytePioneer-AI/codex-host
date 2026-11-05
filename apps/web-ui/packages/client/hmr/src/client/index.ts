@@ -33,7 +33,7 @@ export function apply(ctx: Context): void {
 
   ctx.effect(() => {
     const source = new EventSource(EVENTS_ROUTE);
-    source.addEventListener("message", (event: MessageEvent<string>) => {
+    const receive = (event: MessageEvent<string>): void => {
       let value: unknown;
       try {
         value = JSON.parse(event.data) as unknown;
@@ -48,9 +48,17 @@ export function apply(ctx: Context): void {
       } else if (parsed.kind === "frame") {
         handle(parsed.frame);
       }
-    });
+    };
+    source.addEventListener("message", receive);
+    // CodexHost's static shell has a separate development-only reload channel;
+    // graph and rebuilt delivery remain entirely on the official transport.
+    const shell = (globalThis as { __CODEXHOST_DEV_WEB_UI__?: boolean }).__CODEXHOST_DEV_WEB_UI__
+      ? new EventSource("plugins/shell-events")
+      : undefined;
+    shell?.addEventListener("message", receive);
     return () => {
       source.close();
+      shell?.close();
     };
   }, "client-hmr: event source");
 }

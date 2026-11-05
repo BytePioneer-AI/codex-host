@@ -60,7 +60,7 @@ import { formatWebStartup } from "./startup-display.ts";
 import { DataDir } from "./store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "./transport.ts";
 import { WebAssets, type AssetResponse, type WebAssetOptions } from "./web-assets.ts";
-import { HMR_EVENTS_PATH, WebHmr } from "./web-hmr.ts";
+import { SHELL_EVENTS_PATH, WebShellReload } from "./web-hmr.ts";
 import { Workspaces } from "./workspaces.ts";
 import { inspectImage, readImageFile, WebImages } from "./web-images.ts";
 import { WebFiles } from "./web-files.ts";
@@ -309,68 +309,65 @@ const assetOptions: WebAssetOptions =
       }
     : {
         repoRoot: devWebUi ?? resolve(REPO_ROOT, "apps/web-ui"),
-        plugins: devWebUi === undefined ? CLIENT_PLUGINS : [...CLIENT_PLUGINS, HMR_CLIENT_PLUGIN],
-        globals: CLIENT_GLOBALS,
+        plugins: CLIENT_PLUGINS,
+        globals: { ...CLIENT_GLOBALS, __CODEXHOST_DEV_WEB_UI__: devWebUi !== undefined },
         title: "CodexHost",
       };
 const builtInAssets = new WebAssets(assetOptions);
-const recoveryAssets =
-  devWebUi === undefined
-    ? builtInAssets
-    : new WebAssets({
-        ...assetOptions,
-        plugins: CLIENT_PLUGINS,
-      });
+const recoveryAssets = new WebAssets({
+  ...assetOptions,
+  plugins: CLIENT_PLUGINS.filter((id) => id !== HMR_CLIENT_PLUGIN),
+});
 const extensions = new WebUiExtensions(data, {
   safeMode: values["safe-mode"],
   validate: (externalPlugins) => {
     new WebAssets({ ...assetOptions, externalPlugins });
   },
+  apply: async (externalPlugins, changedId) => {
+    if (pluginRuntime === undefined) throw new Error("The Web plugin runtime is unavailable");
+    return pluginRuntime.update(externalPlugins, changedId);
+  },
 });
 await extensions.cleanup();
-let assets = builtInAssets;
+let assets = values["safe-mode"] ? recoveryAssets : builtInAssets;
 let pluginRuntime: WebPluginRuntime | undefined;
 let listeningPort = Number(values.port);
 if (!values["safe-mode"]) {
   try {
-    const externalPlugins = extensions.plugins();
-    if (externalPlugins.length > 0) {
-      // Validate packages before importing any code; failed activation owns only its subtree.
-      new WebAssets({ ...assetOptions, externalPlugins });
-      if (dsh === undefined) throw new Error("The DSH Web backend is unavailable");
-      pluginRuntime = await dsh.loadPlugins({
-        packages: externalPlugins,
-        builtins: builtInAssets.clientSources(),
-        address: () => ({ host: values.host as string, port: listeningPort }),
-        reserved: [
-          ...["/api", "/plugins", "/assets", "/harness-icons"].map((path) => ({
-            kind: "prefix" as const,
-            path,
-          })),
-          ...[
-            "/",
-            "/index.html",
-            "/extensions",
-            "/favicon.ico",
-            "/favicon.svg",
-            "/favicon-dark.svg",
-            "/manifest.webmanifest",
-            "/apple-touch-icon.png",
-            "/icon-192.png",
-            "/icon-512.png",
-            "/sw.js",
-            "/codexhost-settings.js",
-            SIDEBAR_BROWSER_PATH,
-          ].map((path) => ({ kind: "exact" as const, path })),
-        ],
-      });
-      assets = new WebAssets({ ...assetOptions, externalPlugins, clients: pluginRuntime.clients });
-    }
-    extensions.composed(externalPlugins.map((plugin) => plugin.id));
+    if (dsh === undefined) throw new Error("The DSH Web backend is unavailable");
+    pluginRuntime = await dsh.loadPlugins({
+      packages: [],
+      builtins: builtInAssets.clientSources(),
+      address: () => ({ host: values.host as string, port: listeningPort }),
+      reserved: [
+        ...["/api", "/plugins", "/assets", "/harness-icons"].map((path) => ({
+          kind: "prefix" as const,
+          path,
+        })),
+        ...[
+          "/",
+          "/index.html",
+          "/extensions",
+          "/favicon.ico",
+          "/favicon.svg",
+          "/favicon-dark.svg",
+          "/manifest.webmanifest",
+          "/apple-touch-icon.png",
+          "/icon-192.png",
+          "/icon-512.png",
+          "/sw.js",
+          "/codexhost-settings.js",
+          SIDEBAR_BROWSER_PATH,
+        ].map((path) => ({ kind: "exact" as const, path })),
+      ],
+    });
+    assets = new WebAssets({ ...assetOptions, clients: pluginRuntime.clients });
+    // Validate saved packages before executing their entries, as on explicit enable.
+    new WebAssets({ ...assetOptions, externalPlugins: extensions.plugins() });
+    await extensions.restore();
   } catch (error) {
-    await pluginRuntime?.close();
-    pluginRuntime = undefined;
-    assets = builtInAssets;
+    // A saved selection may be invalid while the empty runtime and its transport
+    // remain usable for recovery management. Core backend services stay mounted.
     extensions.composed(
       [],
       error instanceof Error ? error.message : "Extension composition failed.",
@@ -378,7 +375,7 @@ if (!values["safe-mode"]) {
     console.warn("[extensions] using built-in UI; manage extensions at /extensions");
   }
 }
-const hmr = devWebUi === undefined ? undefined : new WebHmr(assets);
+const shellReload = devWebUi === undefined ? undefined : new WebShellReload(assets);
 
 streams.register("$events", events.handler);
 workspaces.register(rpc, streams);
@@ -578,8 +575,12 @@ const server = createServer((request, response) => {
       );
       return;
     }
-    if (hmr !== undefined && pathname === HMR_EVENTS_PATH) {
-      hmr.connect(request, response);
+    if (pathname === "/plugins/events" && pluginRuntime !== undefined) {
+      await pluginRuntime.events(request, response);
+      return;
+    }
+    if (shellReload !== undefined && pathname === SHELL_EVENTS_PATH) {
+      shellReload.connect(request, response);
       return;
     }
     if (pathname.startsWith("/plugins/")) {
@@ -712,7 +713,7 @@ server.listen(Number(values.port), values.host, async () => {
 });
 
 async function shutdown(exitCode = 0): Promise<void> {
-  hmr?.close();
+  shellReload?.close();
   accessTokens?.close();
   server.close();
   desktopScreenshots.close();

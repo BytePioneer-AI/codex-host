@@ -118,10 +118,8 @@ pub(super) fn host_chain_node_candidates(
     npm_node: Option<PathBuf>,
 ) -> Vec<PathBuf> {
     let mut nodes = vec![configured_node.to_path_buf()];
-    if let Some(path) = npm_node {
-        if path != configured_node {
-            nodes.push(path);
-        }
+    if let Some(path) = npm_node.filter(|path| path.as_path() != configured_node) {
+        nodes.push(path);
     }
     nodes
 }
@@ -276,10 +274,10 @@ mod tests {
     use super::*;
     use std::env;
 
-
     #[test]
     fn host_chain_node_candidates_include_npm_node_when_distinct() {
-        let configured = PathBuf::from("/Applications/Codex.app/Contents/Resources/cua_node/bin/node");
+        let configured =
+            PathBuf::from("/Applications/Codex.app/Contents/Resources/cua_node/bin/node");
         let npm = PathBuf::from("/opt/homebrew/bin/node");
         assert_eq!(
             host_chain_node_candidates(&configured, Some(npm.clone())),

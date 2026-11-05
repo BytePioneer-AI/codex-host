@@ -93,6 +93,13 @@ Web 会话页面 SHALL 区分并提示：无网络、连接中、电脑离线、
 - **WHEN** 登录状态探测在网络切换时一直没有响应
 - **THEN** 探测超时并按无法到达处理，之后的探测继续进行
 
+### Requirement: 远程连接说明
+本机访问连接设备页时，Web SHALL 提供默认收起的说明，介绍可以通过 Tailscale 或自备隧道从其他网络连接，并给出 Tailscale 下载地址和配置文档链接。该说明 MUST 只介绍当前可用的方式。
+
+#### Scenario: 不了解远程方式的用户
+- **WHEN** 用户展开连接设备页的远程连接说明
+- **THEN** 页面说明 Tailscale 和自备隧道分别需要什么，以及 `--public-url` 的作用
+
 ### Requirement: 自备隧道文档
 产品文档 SHALL 说明如何通过 Tailscale Serve、Tailscale Funnel、frp、Cloudflare Tunnel 和 nginx 访问 Web，包括公开地址和可信代理的取值、WebSocket 和事件流的要求、TLS 在哪里解开，以及谁能接触到入口和内容。文档 MUST 说明 Serve 配置在 Web 退出后保留，此时占用同一端口的其他程序会被转发。
 

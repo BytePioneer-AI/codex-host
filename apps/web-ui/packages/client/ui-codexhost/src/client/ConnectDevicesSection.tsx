@@ -184,6 +184,41 @@ function Connection({
   );
 }
 
+const REMOTE_ACCESS_DOC =
+  "https://github.com/BytePioneer-AI/codex-host/blob/main/docs/product/web-remote-access.md";
+
+/** Collapsed explanation of the ways to reach this computer from outside its network. */
+function RemoteOptions({ t }: { t: Translate }): ReactNode {
+  const option = (title: string, body: string, href: string, linkLabel: string): ReactNode => (
+    <div className={css.routeText}>
+      <span className={css.routeTitle}>{title}</span>
+      <span className={css.meta}>{body}</span>
+      <a className={css.link} href={href} target="_blank" rel="noreferrer">
+        {linkLabel}
+      </a>
+    </div>
+  );
+  return (
+    <details className={css.other} data-remote-options>
+      <summary>{t("connectDevices.remote.title")}</summary>
+      <div className={css.remoteList}>
+        {option(
+          "Tailscale",
+          t("connectDevices.remote.tailscale"),
+          "https://tailscale.com/download",
+          t("connectDevices.remote.tailscaleLink"),
+        )}
+        {option(
+          t("connectDevices.remote.tunnelTitle"),
+          t("connectDevices.remote.tunnel"),
+          REMOTE_ACCESS_DOC,
+          t("connectDevices.remote.tunnelLink"),
+        )}
+      </div>
+    </details>
+  );
+}
+
 function Confirm({
   title,
   description,
@@ -351,6 +386,7 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
           )}
         </div>
       )}
+      <RemoteOptions t={t} />
       <div className={css.footer}>
         <span
           className={css.meta}

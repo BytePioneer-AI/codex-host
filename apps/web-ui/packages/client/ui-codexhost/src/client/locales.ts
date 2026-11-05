@@ -142,6 +142,14 @@ export const en = {
   "connectDevices.kindVirtualHint":
     "Usually reachable only from virtual machines on this computer.",
   "connectDevices.otherAddresses": "Other addresses ({count})",
+  "connectDevices.remote.title": "How to connect from other networks",
+  "connectDevices.remote.tailscale":
+    "Install and sign in on both your phone and this computer to put them on a private network. They can then connect from anywhere without exposing Web to the Internet. Your phone needs Tailscale on, and this page shows the next step after you install it.",
+  "connectDevices.remote.tailscaleLink": "Download Tailscale",
+  "connectDevices.remote.tunnelTitle": "Your own tunnel or proxy",
+  "connectDevices.remote.tunnel":
+    "If you already use frp, Cloudflare Tunnel, or nginx, forward it to Web on this computer and keep the original Host. Start Web with --public-url <address> so the QR code uses that address.",
+  "connectDevices.remote.tunnelLink": "View setup guide",
   "connectDevices.signInLink": "Sign-in link",
   "connectDevices.linkPrivate":
     "The QR code and link contain the access token. Anyone who has it can control this computer, so keep it private.",
@@ -460,6 +468,14 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.kindVirtual": "虚拟网络",
   "connectDevices.kindVirtualHint": "通常只有这台电脑上的虚拟机能访问。",
   "connectDevices.otherAddresses": "其他地址（{count}）",
+  "connectDevices.remote.title": "如何从其他网络连接",
+  "connectDevices.remote.tailscale":
+    "在手机和这台电脑上安装并登录后，两者会组成一个私有网络，在任何地方都能连接，Web 也不会暴露到公网。手机需开着 Tailscale，安装后本页会提示下一步。",
+  "connectDevices.remote.tailscaleLink": "下载 Tailscale",
+  "connectDevices.remote.tunnelTitle": "自备隧道或代理",
+  "connectDevices.remote.tunnel":
+    "如果你已在用 frp、Cloudflare Tunnel 或 nginx，把它转发到这台电脑上的 Web，并保留原始 Host。启动 Web 时加 --public-url <地址>，二维码就会使用该地址。",
+  "connectDevices.remote.tunnelLink": "查看配置文档",
   "connectDevices.signInLink": "登录链接",
   "connectDevices.linkPrivate": "二维码和链接都包含访问令牌，拿到的人可以操作这台电脑，请勿外传。",
   "connectDevices.token": "访问令牌",

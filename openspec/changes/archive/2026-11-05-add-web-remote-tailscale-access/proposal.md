@@ -2,7 +2,7 @@
 
 ## Why
 
-阶段 1 之后，手机可以用 token 登录，但经 Tailscale Serve 的请求不被信任，因此 Cookie 不带 Secure，所有设备共用一个登录限速额度；自备隧道没有公开地址配置；手机连不上时也分不清是网络问题还是电脑离线。这一步让已经能运行 Web 的技术用户稳定地远程使用。对应[实施计划](../../../docs/proposals/web-remote-implementation-plan.md)的阶段 2。
+阶段 1 之后，手机可以用 token 登录，但经 Tailscale Serve 的请求不被信任，因此 Cookie 不带 Secure，所有设备共用一个登录限速额度；自备隧道没有公开地址配置；手机连不上时也分不清是网络问题还是电脑离线。这一步让已经能运行 Web 的技术用户稳定地远程使用。对应[实施计划](../../../../docs/proposals/web-remote-implementation-plan.md)的阶段 2。
 
 ## What Changes
 

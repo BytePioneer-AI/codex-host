@@ -13,6 +13,8 @@ Web 支持 Tailscale Serve、Funnel 和用户自备的 HTTPS 代理或隧道。W
 - 代理应保留原始 `Host`；如需改写 Host，则必须配置可信代理并写入外部 `X-Forwarded-Host`。HTTPS 终止代理应覆盖 `X-Forwarded-Proto: https` 和客户端 `X-Forwarded-For`，不要透传浏览器伪造的值。Web 只取可信直连代理写入的最右侧值，用于同源校验、Secure Cookie 和按客户端地址限速。
 - 代理必须转发 WebSocket Upgrade，禁用事件流缓冲，并允许长连接；不能只转发普通页面请求。不要把 Web 挂在子路径下。
 
+本机的连接设备页底部有默认收起的“如何从其他网络连接”，简要介绍 Tailscale 和自备隧道，并链接 Tailscale 下载页和本文。隧道地址只能通过启动参数配置，页面不提供配置入口。
+
 完整认证规则见[访问认证](standalone-web.md#访问认证)。令牌持有者可以操作电脑，登录链接和二维码应按凭据保管。
 
 ## Tailscale Serve：仅 tailnet 可访问
@@ -146,7 +148,7 @@ Web 可达但 Host 未就绪时提示 Host 不可用，而不是电脑离线。�
 
 | 方式 | 实际运行验证 |
 | --- | --- |
-| Tailscale Serve / Funnel | 自动化用 PATH 最前的假 CLI 验证状态、Secure Cookie、限速和信任撤销；未运行真实 Tailscale，手机蜂窝网、切网和锁屏验收待用户执行。 |
+| Tailscale Serve / Funnel | 用户实测 Tailscale 访问正常，未分平台记录；真实 Tailscale 1.104.1 只读检测覆盖已转发、被占用、只装 App、未安装。未运行、未登录、未开启 HTTPS 和 Funnel 只由假 CLI 自动化覆盖，真实转发头未单独核对，切网、锁屏和电脑离线后恢复未单独记录。 |
 | nginx | 未实际运行：本地未安装 nginx；示例的证书、TLS、WebSocket 和事件流需由部署者验证。 |
 | frp | 未实际运行：本地未安装 frpc/frps；公网端口、证书和完整链路需由部署者验证。 |
 | Cloudflare Tunnel | 未实际运行：没有为本次验证配置 Tunnel、域名或凭据。 |

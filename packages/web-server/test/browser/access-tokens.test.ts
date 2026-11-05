@@ -260,6 +260,18 @@ it(
     assert.ok(qr && tailscale && qr.y + qr.height <= tailscale.y);
     const bounds = await page.locator("[data-connect-devices]").boundingBox();
     assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390);
+    const remoteOptions = page.locator("[data-remote-options]");
+    const tailscaleLink = remoteOptions.getByRole("link", { name: "Download Tailscale" });
+    assert.equal(await tailscaleLink.isVisible(), false);
+    await remoteOptions.getByText("How to connect from other networks").click();
+    await tailscaleLink.waitFor();
+    await remoteOptions.getByRole("link", { name: "View setup guide" }).waitFor();
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+      true,
+    );
   },
 );
 

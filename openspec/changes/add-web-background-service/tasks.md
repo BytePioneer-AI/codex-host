@@ -27,5 +27,5 @@
 
 ## 5. 收尾
 
-- [ ] 5.1 Windows 卸载程序停止服务、移除自启项并提示 Serve；`npm stop` 识别后台 Web，`npm start web` 遇到占用时不结束后台 Web；更新 `docs/product/standalone-web.md`、`docs/product/web-remote-access.md`、`docs/operations/codexhost-console.md`、npm README 和实施计划。验证：`tools/dev-desktop` 的测试，以及文档中的命令与实现一致。
+- [x] 5.1 Windows 卸载程序停止服务、移除自启项并提示 Serve；`npm stop` 识别后台 Web，`npm start web` 遇到占用时不结束后台 Web；更新 `docs/product/standalone-web.md`、`docs/product/web-remote-access.md`、`docs/operations/codexhost-console.md`、npm README 和实施计划。验证：`tools/dev-desktop` 的测试，以及文档中的命令与实现一致。
 - [ ] 5.2 按实施计划第 5 节的验收场景实测：关闭终端后手机仍能连接、重启 Web 任务不受影响、更新后版本正确且会话保留、测量空闲时 Web 的内存和 CPU。验证：分平台记录结果，未执行的写明，不算通过。

@@ -2,12 +2,18 @@
 
 Web 支持 Tailscale Serve、Funnel 和用户自备的 HTTPS 代理或隧道。Web 不安装或登录 Tailscale；连接设备页只读检测状态，并在用户本机确认后开关 Serve。电脑必须开机、保持网络连接且 Web 正在运行。关闭 Web 不会停止共享 Host 上的任务，但手机无法再访问 Web。
 
+## 启动与停止
+
+安装包或 npm 用户运行 `codexhost web`，Host 和 Web 在后台运行，终端可关闭；首次默认仅监听 `127.0.0.1:4400`，适合由本机 Tailscale Serve 或 HTTPS 代理转发。安装包的完整命令路径见[独立 Web 应用](standalone-web.md#安装版后台-web)。局域网直连可在本机连接设备页开启，或执行 `codexhost web --host 0.0.0.0`；配置会保存。`codexhost status` 查看状态，`codexhost autostart on` 开启登录后启动，`codexhost autostart off` 关闭。
+
+`codexhost stop` 停止 codexhost 管理的 GUI、Web、Host、远程服务、Broker 和 Console，中断任务，不删除会话或修改自启和 Serve 配置。源码开发使用 `npm start web`，默认对外监听并在前台运行；后台 Web 占用其端口时启动失败，不结束后台 Web，可用 `npm start web -- --port 4401`。开发停机用 `npm stop`，也会停止已识别的后台 Web；须从独立终端执行。
+
 ## 地址、认证与代理
 
-- `--public-url https://code.example.com` 或 `CODEXHOST_WEB_PUBLIC_URL` 指定其他设备访问的站点根地址，命令行优先。`npm start web -- --public-url ...`、`node preview.mjs --public-url ...` 和直接入口 `node app/server.mjs --public-url ...` 都支持；preview 在清理环境前将环境变量转成参数。
+- 后台 Web 用 `codexhost web --public-url https://code.example.com` 指定并保存其他设备访问的站点根地址。源码入口 `npm start web -- --public-url ...`、`node preview.mjs --public-url ...` 和直接入口 `node app/server.mjs --public-url ...` 支持参数或 `CODEXHOST_WEB_PUBLIC_URL`，命令行优先；preview 在清理环境前将环境变量转成参数。后台模式读取保存的设置，不沿用这些 Web 环境变量。
 - 只接受 `http`、`https` 的根地址（可带端口和结尾 `/`），不允许用户信息、路径、查询或片段。无效值使启动失败。HTTP 可用，但以明文传输内容，页面会提示风险。
 - 地址选择顺序：配置的公开地址、Funnel、Serve HTTPS、Tailscale IP、局域网、虚拟网卡。虚拟地址在页面中折叠，终端只在没有其他地址时显示它们。
-- 启动第一行仍是 `codexhost web: http://.../?token=...` 本机链接。Tailscale 检测在第一行之后进行，最多等待 3 秒，失败不阻止启动或其他地址使用。终端二维码不含访问令牌；登录二维码在本机设置的“连接设备”页查看。
+- `codexhost web` 输出本机登录链接和后台运行提示；前台 preview 输出 `codexhost web: http://.../?token=...` 后检测 Tailscale，最多等待 3 秒，失败不阻止启动或其他地址使用。前台终端二维码不含访问令牌；登录二维码在本机设置的“连接设备”页查看。
 - 公开地址只用于链接和二维码，不自动成为可信代理、同源白名单或本机访问。其他设备始终需要访问令牌，不能查看或重新生成令牌。不要向网络开放 `--no-auth`。
 - 自备代理用 `--trusted-proxy <ip>[,<ip>...]` 指定**直接连接 Web 的代理 IP**；直接入口也接受 `CODEXHOST_WEB_TRUSTED_PROXIES`，preview 使用命令行参数。不要填浏览器、域名或上游 CDN 的地址。
 - 代理应保留原始 `Host`；如需改写 Host，则必须配置可信代理并写入外部 `X-Forwarded-Host`。HTTPS 终止代理应覆盖 `X-Forwarded-Proto: https` 和客户端 `X-Forwarded-For`，不要透传浏览器伪造的值。Web 只取可信直连代理写入的最右侧值，用于同源校验、Secure Cookie 和按客户端地址限速。
@@ -23,7 +29,7 @@ Web 支持 Tailscale Serve、Funnel 和用户自备的 HTTPS 代理或隧道。W
 
 电脑安装并登录 Tailscale。Web 先查找 `tailscale`，找不到时再尝试 `/Applications/Tailscale.app/Contents/MacOS/Tailscale`。macOS 只安装 App 时，页面命令中的 `tailscale` 需要用户自行启用 CLI，或替换为该 App 内路径。手机也需安装、登录 Tailscale，并由 tailnet 访问策略允许连接电脑。在管理后台开启 HTTPS 证书。
 
-Web 可监听回环地址，例如在源码开发入口使用 `npm start web -- --host 127.0.0.1`。本机打开“设置 → 连接设备”，页面在未安装、未运行、未登录、未开启 HTTPS、未转发、根路径占用或读取错误时显示 Tailscale 提示；正常转发时只在连接方式中提供地址，不显示独立状态区。HTTPS 443 根路径未占用时提供“开启 Tailscale Serve”确认按钮，也可自行执行以下命令：
+后台 Web 默认监听回环地址；已有其他监听设置时用 `codexhost web --host 127.0.0.1` 保存。源码开发入口使用 `npm start web -- --host 127.0.0.1`。本机打开“设置 → 连接设备”，页面在未安装、未运行、未登录、未开启 HTTPS、未转发、根路径占用或读取错误时显示 Tailscale 提示；正常转发时只在连接方式中提供地址，不显示独立状态区。HTTPS 443 根路径未占用时提供“开启 Tailscale Serve”确认按钮，也可自行执行以下命令：
 
 ```sh
 tailscale serve --bg http://127.0.0.1:4400
@@ -36,6 +42,12 @@ tailscale serve --bg http://127.0.0.1:4400
 TLS 在电脑上的 Tailscale Serve 解开，再经回环 HTTP 送到 Web；tailnet 允许的设备能接触入口，电脑能看到内容。Serve 生效期间，其他回环代理也会被信任；不要把这当成隧道身份认证。
 
 **`--bg` 配置在 Web 退出、`codexhost stop` 和更新后仍保留。占用同一端口的其他程序也会被转发。** Web 不自动移除配置；由用户在本机连接设备页确认关闭，或在 Tailscale 中管理。开启成功后页面默认选中 Tailscale HTTPS 地址。经代理或其他设备的请求不能开关 Serve，与查看访问令牌使用相同的本机判断。
+
+### 卸载时移除 Serve
+
+Windows 卸载会停止服务、关闭自启并显示 Serve 保留提醒，覆盖安装不关闭自启。macOS 删除应用或 npm 用户执行 `npm uninstall -g @codexhost/cli` 前，先运行 `codexhost stop` 和 `codexhost autostart off`；回退到不支持后台 Web 的旧版前也需如此。
+
+Serve 不随卸载撤销。先运行 `tailscale serve status` 确认根路径仍指向此 Web，再执行 `tailscale serve --https=443 --set-path=/ off`；非 443 HTTPS 转发替换为实际端口。不要移除属于其他服务的根路径，也不要省略 `--set-path=/`，以免删除该端口的其他路径。Web 运行时也可在本机连接设备页确认关闭。
 
 ## Tailscale Funnel：互联网公开入口
 
@@ -77,12 +89,14 @@ server {
 }
 ```
 
-Web 参数示例（已构建的发行目录）：
+安装包或 npm 版参数示例：
 
 ```sh
-node preview.mjs --host 127.0.0.1 --port 4400 \
+codexhost web --host 127.0.0.1 --port 4400 \
   --public-url https://code.example.com --trusted-proxy 127.0.0.1
 ```
+
+源码 packed 目录可将 `codexhost web` 换成 `node preview.mjs`，其参数仅用于该次前台运行。
 
 这个配置保留 Host，同时显式写入可信转发头。TLS 在 nginx 解开，nginx 管理者及 Web 电脑可看到内容。入口能被谁访问取决于 DNS、防火墙和监听网络；公网 nginx 的登录页可被任何人访问。Web 的 HTTP 端口不应对公网开放。若 nginx 位于其他机器，可信代理应改为其直连 IP，并单独保护 nginx 到 Web 的传输。
 

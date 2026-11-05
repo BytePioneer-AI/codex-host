@@ -87,6 +87,7 @@ const sourceEntries = [
   ["console", "packages/console-server/dist/main.js"],
 ];
 const packedEntries = [
+  ["web", "app/web-server.mjs"],
   ["web", "app/server.mjs"],
   ["web", "preview.mjs"],
   ["desktop", "app/desktop-controller.mjs"],
@@ -97,6 +98,9 @@ const packedEntries = [
 /** Only entrypoints launched by codexhost; arbitrary Node CLI flags are not interpreted. */
 export async function identifyStopTarget(candidate, { json = readJson } = {}) {
   if (typeof candidate.command !== "string") return null;
+  if (launcherProcess(candidate)?.rest.startsWith("web-service serve ")) {
+    return { ...candidate, kind: "web-supervisor" };
+  }
   const node = executable(candidate.command, "node");
   if (!node) return null;
   let args = node.rest;

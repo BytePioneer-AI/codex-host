@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { createServer, type AddressInfo } from "node:net";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
 import { shouldRestartHost } from "../../../tools/dev-desktop/host-restart.mjs";
+import { startServer } from "./support/server.ts";
 import {
   isDevelopmentWeb,
   restartDevelopmentPreview,
@@ -42,6 +44,58 @@ it("matches only the selected Node entry and port, including paths with spaces",
     ),
     true,
   );
+});
+
+it("leaves background Web untouched and fails when its port is occupied", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "codexhost-background-port-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const occupied = createServer();
+  t.after(() => new Promise<void>((done) => occupied.close(() => done())));
+  occupied.listen(0, "127.0.0.1");
+  await once(occupied, "listening");
+  const port = String((occupied.address() as AddressInfo).port);
+  const processes = [
+    {
+      pid: 100,
+      created: "start",
+      command: `${join(root, "bin/codexhost")} web-service serve --data ${root}`,
+    },
+    {
+      pid: 101,
+      created: "start",
+      command: `${process.execPath} --disable-warning=UNDICI-EHPA ${join(root, "app/web-server.mjs")} --background --ch-data ${root}`,
+    },
+  ];
+  await stopDevelopmentWeb(join(root, "app/server.mjs"), port, {
+    list: async () => processes,
+    signal: () => {
+      throw new Error("must not signal background Web");
+    },
+  });
+  let failedPreview: ChildProcess | undefined;
+  await assert.rejects(
+    startServer(
+      t,
+      resolve(import.meta.dirname, ".."),
+      ["--import", "tsx", "src/main.ts"],
+      ["--port", port],
+      {
+        environment: {
+          HOME: root,
+          CODEXHOST_DATA_DIR: join(root, "host"),
+          CODEX_HOME: join(root, "codex"),
+          CODEXHOST_CONSOLE_PORT: "4477",
+          SSH_CONNECTION: "smoke",
+        },
+        onSpawn: (child) => {
+          failedPreview = child;
+        },
+      },
+    ),
+    new RegExp(`EADDRINUSE: address already in use.*127\\.0\\.0\\.1:${port}`),
+  );
+  assert.equal(failedPreview?.exitCode, 1);
+  assert.equal(occupied.listening, true);
 });
 
 it("does not signal a reused PID and rejects a preview that will not exit", async () => {

@@ -137,7 +137,8 @@ const USAGE: &str = "usage:
   codexhost delegate --help
   codexhost harness list|inspect ...
   codexhost delegate start ...
-  codexhost thread send|cancel|read|wait|watch|watches|list ...";
+  codexhost thread send|cancel|read|wait|watch|watches|list ...
+  codexhost preview open|list|show|close ...";
 
 fn usage() {
     eprintln!("{USAGE}");

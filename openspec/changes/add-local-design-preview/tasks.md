@@ -16,4 +16,4 @@
 ## 3. 文档与验收
 
 - [x] 3.1 更新委派帮助文本（`preview open|list|show|close`）、`docs/architecture/local-design-preview.md` 与 `docs/index.md`。“设计稿用 preview 打开”的建议写进 spec-design skill，由使用方维护。验证：CLI 测试。
-- [ ] 3.2 真实验收：在 Claude Code Thread 中生成一个多页 HTML 原型，用 `preview open` 打开，连续修改三轮并确认自动刷新；在原生 Codex Thread 中重复一次。记录平台与 Desktop 版本。
+- [x] 3.2 真实验收：在 Claude Code Thread 中生成一个多页 HTML 原型，用 `preview open` 打开，连续修改三轮并确认自动刷新；在原生 Codex Thread 中重复一次。记录平台与 Desktop 版本。

@@ -142,4 +142,21 @@ describe("Owned Desktop local pages", () => {
     expect(expressions[0]).not.toContain("currentThreadId");
     await page.close();
   });
+  it("navigates to the owner conversation when its browser webview only mounts on route", async () => {
+    let routed = false;
+    const expressions: string[] = [];
+    const execute = async <T>(expression: string): Promise<T> => {
+      expressions.push(expression);
+      if (expression.includes('"type":"navigate-to-route"')) routed = true;
+      return (expression.includes("currentThreadId") ? (routed ? "owner" : null) : null) as T;
+    };
+    const page = await openRendererLocalPage(
+      execute,
+      url,
+      async () => (routed ? [{ url }] : []),
+      "owner",
+    );
+    expect(expressions.some((e) => e.includes('"path":"/local/owner"'))).toBe(true);
+    await page.close();
+  });
 });

@@ -29,10 +29,31 @@ export async function openRendererLocalPage(
       source: "browser_use",
       initiator: "codexhost_local_page",
     });
+    let navigated = false;
     const deadline = Date.now() + 5000;
     while (!(await targets()).some((target) => target.url === url)) {
       if (Date.now() >= deadline)
         throw new Error("Codex in-app browser did not load the local page");
+      // Desktop only mounts a conversation's browser webview once its route is shown.
+      if (owner && !navigated) {
+        navigated = true;
+        const current = await execute<string | null>(
+          "window.__codexhostRendererBindingProbeV1?.currentThreadId?.() ?? null",
+        );
+        if (current !== conversationId) {
+          await post({ type: "navigate-to-route", path: `/local/${conversationId}` });
+          await post({
+            type: "toggle-browser-panel",
+            conversationId,
+            browserTabId,
+            url,
+            open: true,
+            active: false,
+            source: "browser_use",
+            initiator: "codexhost_local_page",
+          });
+        }
+      }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   } catch (error) {

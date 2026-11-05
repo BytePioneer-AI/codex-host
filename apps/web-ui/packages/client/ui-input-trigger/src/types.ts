@@ -186,6 +186,8 @@ export interface InputTriggerSource {
   readonly order?: number;
   /** Join an existing programmatic launcher without claiming its execution semantics. */
   readonly launcher?: string;
+  /** Display order inside a programmatic launcher; defaults to the ordinary menu order. */
+  readonly launcherOrder?: number;
   /** Whether the menu renders the source-title row; defaults to true. */
   readonly showGroupTitle?: boolean;
   candidates(

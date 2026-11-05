@@ -304,6 +304,8 @@ export function registerHarnessDiscovery(ctx: Context): void {
         trigger: "@",
         aliases: ["#"],
         name: AGENTS,
+        launcher: "command",
+        launcherOrder: 30,
         order: 10,
         showGroupTitle: false,
         codec: { clipboardText: (ref) => ref, serialize: async (ref) => ref },

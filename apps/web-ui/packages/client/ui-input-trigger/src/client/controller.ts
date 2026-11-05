@@ -40,7 +40,7 @@ interface DismissedHit {
   readonly end: number;
 }
 
-/** Whether a tracked hit is the one the user just dismissed (same token, same query). */
+/** Whether a tracked hit is the one whose menu was closed (same token, same query). */
 function dismissedHit(dismissed: DismissedHit, hit: TriggerHit): boolean {
   return (
     dismissed.trigger === hit.trigger &&
@@ -105,10 +105,9 @@ export class InputTriggerController {
   /** The authoritative hit: single truth for span CAS material (menu snapshot never carries it alone). */
   private hit: TriggerHit | null = null;
   /**
-   * Identity of the hit whose menu the user dismissed. A dismissal means "not
-   * this one, not now": the same token with the same query keeps its menu
-   * closed, so restoring the caret after a dismissal cannot reopen it. Typing
-   * (a new query) or moving to another token clears it.
+   * Identity of a dismissed or exhausted hit. The same token with the same
+   * query keeps its menu closed, so editor commits cannot restart an empty
+   * lookup or undo a dismissal. Typing a new query or moving away clears it.
    */
   private dismissed: DismissedHit | null = null;
   /** Whether the open menu was reached by a drill pick; cleared with the menu. */
@@ -505,7 +504,7 @@ export class InputTriggerController {
     return this.deps.roster
       .all()
       .filter((source) => source === owner || source.launcher === launcher)
-      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      .sort((a, b) => (a.launcherOrder ?? a.order ?? 0) - (b.launcherOrder ?? b.order ?? 0));
   }
 
   /** Scope teardown: close and abort (the service deletes the map entry). */
@@ -711,7 +710,7 @@ export class InputTriggerController {
     this.headers.set(next);
   }
 
-  /** Record the open menu's identity as dismissed, so a bare re-track cannot revive it. */
+  /** Remember a closed menu's hit so a bare re-track cannot revive it. */
   private rememberDismissed(): void {
     const hit = this.hit;
     this.dismissed =
@@ -733,6 +732,10 @@ export class InputTriggerController {
   private reduce(ev: MenuEvent): void {
     const cur = this.menu.getSnapshot();
     const next = menuReduce(cur, ev, this.launcher.getSnapshot() !== null);
+    // Empty or failed discovery must stay closed for this token. Otherwise
+    // selection-only editor commits restart loading and flash the skeleton.
+    if (cur.open && !next.open && (ev.type === "source-settled" || ev.type === "source-failed"))
+      this.rememberDismissed();
     if (next !== cur) this.menu.set(next);
     if (next.open) return;
     this.clearLauncher();

@@ -390,6 +390,11 @@ pub fn inspect_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Launch console helpers share process-wide statics; serialize the tests
+    /// that mutate them so parallel `cargo test` workers do not race.
+    static LAUNCH_TEST_GATE: Mutex<()> = Mutex::new(());
 
     #[test]
     fn console_node_suppresses_only_the_experimental_proxy_warning() {
@@ -408,6 +413,10 @@ mod tests {
     #[test]
     fn terminal_launch_uses_the_address_from_ensure_without_asking_again() {
         use std::os::unix::fs::PermissionsExt;
+
+        let _gate = LAUNCH_TEST_GATE.lock().expect("launch test gate");
+        *PRESENTATION.lock().expect("presentation") = None;
+        *LAUNCH_CONSOLE.lock().expect("console state") = None;
 
         let root = env::temp_dir().join(format!("codexhost-console-early-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create fixture");
@@ -456,6 +465,10 @@ mod tests {
     #[test]
     fn stop_for_launch_asks_the_console_to_shutdown() {
         use std::os::unix::fs::PermissionsExt;
+
+        let _gate = LAUNCH_TEST_GATE.lock().expect("launch test gate");
+        *PRESENTATION.lock().expect("presentation") = None;
+        *LAUNCH_CONSOLE.lock().expect("console state") = None;
 
         let root = env::temp_dir().join(format!("codexhost-console-stop-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create fixture");

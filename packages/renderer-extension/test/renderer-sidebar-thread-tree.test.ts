@@ -12,6 +12,8 @@ import {
   installRendererSidebarThreadTree,
   layoutSidebarThreadTree,
   planSidebarThreadForest,
+  stickyMirrorLayouts,
+  sidebarThreadDescendantKeys,
   SIDEBAR_THREAD_TREE_INDENT_PX,
   SIDEBAR_THREAD_TREE_TOGGLE_STYLE,
   type SidebarThreadTreeDom,
@@ -51,8 +53,16 @@ class FakeList implements SidebarThreadTreeList {
     return this.mounted;
   }
 
-  mirror(mirrors: readonly SidebarThreadTreeMirror[]): void {
-    this.mirrors = mirrors;
+  mirror(
+    mirrors: readonly SidebarThreadTreeMirror[],
+    retain: ReadonlyMap<string, SidebarThreadTreeLayout> = new Map(),
+  ): void {
+    const retained: SidebarThreadTreeMirror[] = [];
+    for (const previous of this.mirrors) {
+      const layout = retain.get(previous.key);
+      if (layout) retained.push({ key: previous.key, source: previous.source, layout });
+    }
+    this.mirrors = [...mirrors, ...retained];
   }
 }
 
@@ -381,6 +391,84 @@ describe("Renderer sidebar Thread tree", () => {
     ]);
     expect(mirrorSummary(pinned)).toEqual([[forkKey, "fork", 1, 1, true, null]]);
     expect(summary(recents.mounted)).toEqual([["fork", 0, 0, true, null]]);
+    control.dispose();
+  });
+
+  it("keeps mirrored children under a remaining parent when Recents unmounts the sources", async () => {
+    const pinned = new FakeList([new FakeItem("parent")]);
+    const recents = new FakeList([new FakeItem("fork")]);
+    const dom = new FakeDom([pinned, recents]);
+    const client = clientWith({ forks: { fork: "parent" } });
+    const control = installRendererSidebarThreadTree({ getClient: () => client, dom });
+    await settle();
+    expect(mirrorSummary(pinned)).toEqual([[forkKey, "fork", 1, 1, false, null]]);
+    expect(summary(pinned.mounted)).toEqual([
+      ["parent", 0, 0, false, { collapsed: false, children: 1 }],
+    ]);
+
+    // Recents section collapses: fork row unmounts; pinned parent stays visible.
+    recents.mounted = [];
+    dom.change();
+    await settle();
+
+    expect(mirrorSummary(pinned)).toEqual([[forkKey, "fork", 1, 1, false, null]]);
+    expect(summary(pinned.mounted)).toEqual([
+      ["parent", 0, 0, false, { collapsed: false, children: 1 }],
+    ]);
+    control.dispose();
+  });
+
+  it("keeps a mirrored subtree when Recents unmounts nested sources", async () => {
+    const childKey = JSON.stringify(["local", "child"]);
+    const grandKey = JSON.stringify(["local", "grandchild"]);
+    const pinned = new FakeList([new FakeItem("parent")]);
+    const recents = new FakeList([new FakeItem("child"), new FakeItem("grandchild")]);
+    const dom = new FakeDom([pinned, recents]);
+    const client = clientWith({
+      relations: {
+        child: { parent: "parent" },
+        grandchild: { parent: "child" },
+      },
+    });
+    const control = installRendererSidebarThreadTree({ getClient: () => client, dom });
+    await settle();
+    expect(mirrorSummary(pinned)).toEqual([
+      [childKey, "child", 1, 1, false, { collapsed: false, children: 1 }],
+      [grandKey, "grandchild", 2, 2, false, null],
+    ]);
+
+    recents.mounted = [];
+    dom.change();
+    await settle();
+
+    expect(mirrorSummary(pinned)).toEqual([
+      [childKey, "child", 1, 1, false, { collapsed: false, children: 1 }],
+      [grandKey, "grandchild", 2, 2, false, null],
+    ]);
+    expect(summary(pinned.mounted)).toEqual([
+      ["parent", 0, 0, false, { collapsed: false, children: 1 }],
+    ]);
+    control.dispose();
+  });
+
+  it("hides sticky mirrors when the remaining parent is collapsed", async () => {
+    const pinned = new FakeList([new FakeItem("parent")]);
+    const recents = new FakeList([new FakeItem("fork")]);
+    const dom = new FakeDom([pinned, recents]);
+    const client = clientWith({ forks: { fork: "parent" } });
+    const control = installRendererSidebarThreadTree({ getClient: () => client, dom });
+    await settle();
+
+    recents.mounted = [];
+    dom.change();
+    await settle();
+    pinned.mounted[0]?.layout?.toggle?.onToggle();
+    await settle();
+
+    expect(summary(pinned.mounted)).toEqual([
+      ["parent", 0, 0, false, { collapsed: true, children: 1 }],
+    ]);
+    expect(mirrorSummary(pinned)).toEqual([[forkKey, "fork", 1, 1, true, null]]);
     control.dispose();
   });
 

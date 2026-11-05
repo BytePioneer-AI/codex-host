@@ -32,6 +32,7 @@ Codex Desktop 左侧边栏把 CodexHost 委派出的子 Thread 和 Fork 出的 T
 
 ## 已知边界
 
+- 子 Thread 所在分组（例如「最近」）折叠后，若父 Thread 仍留在其他列表（置顶／项目），已创建的镜像会保留在父 Thread 下，折叠按钮与子树不随源行卸载而消失。冷启动时若「最近」已折叠且从未挂载过子行，仍需展开一次才能建立镜像（没有可克隆的源 DOM）。
 - 父 Thread 尚未渲染（未加载到当前页，或所在分组已折叠）时，子 Thread 留在原位置；父 Thread 再次出现后自动嵌套。
 - 镜像不承接拖放、悬停卡片和只响应 pointerdown 的交互。
 - 视觉顺序由 CSS `order` 决定；依赖 DOM 顺序的键盘循环仍按原生顺序。
@@ -40,4 +41,4 @@ Codex Desktop 左侧边栏把 CodexHost 委派出的子 Thread 和 Fork 出的 T
 
 ## 验证
 
-`renderer-sidebar-thread-tree.test.ts` 覆盖布局、环、置顶父 Thread 的跨列表 Fork（含后出现的 Fork、折叠、父 Thread 消失和释放镜像）、跨列表的子树、同列表优先、重复 Thread 和跨列表环、折叠、重渲染、Host 区分、旧 Host 回退、迟到委派重试和释放；`renderer-model-client.test.ts` 覆盖方法结果校验和回退；`thread-relation-list.test.ts` 与 `app-server-host.thread-relations.test.ts` 覆盖 Host 关系读取、参数校验、存储失败和不写官方 stdin。
+`renderer-sidebar-thread-tree.test.ts` 覆盖布局、环、置顶父 Thread 的跨列表 Fork（含后出现的 Fork、折叠、父 Thread 消失、最近分组卸载后 sticky 镜像保留和释放镜像）、跨列表的子树、同列表优先、重复 Thread 和跨列表环、折叠、重渲染、Host 区分、旧 Host 回退、迟到委派重试和释放；`renderer-model-client.test.ts` 覆盖方法结果校验和回退；`thread-relation-list.test.ts` 与 `app-server-host.thread-relations.test.ts` 覆盖 Host 关系读取、参数校验、存储失败和不写官方 stdin。

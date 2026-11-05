@@ -44,6 +44,7 @@ export interface OfficeToPdfResult {
 
 /** Failures a conversion consumer can present without exposing engine diagnostics. */
 export type OfficeToPdfErrorCode =
+  | "downloading"
   | "input-too-large"
   | "output-too-large"
   | "invalid-document"

@@ -19,6 +19,8 @@ export type { WebPluginRuntime } from "@codexhost/dsh-web-backend";
 import type { StreamSink } from "./transport.ts";
 
 export interface DshWebServicesOptions {
+  /** Release-only Office engine preparation, independent of request cancellation. */
+  readonly ensureOfficeEngine?: () => boolean;
   /** Absolute workspace root the DSH sandbox policy reports. */
   readonly workspaceRoot: string;
   /** Terminal cwd for a known local Session: saved directory or Web user's home. */

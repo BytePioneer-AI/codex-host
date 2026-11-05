@@ -20,7 +20,11 @@ import qrcode from "qrcode-terminal";
 import { createBrowserWebSocketServer } from "./browser-websocket.ts";
 
 import { registerAccessTokenRpc } from "./access-token-rpc.ts";
-import { autostartState, registerBackgroundControls } from "./background-controls.ts";
+import {
+  autostartState,
+  registerBackgroundControls,
+  takeNpmEntrypoint,
+} from "./background-controls.ts";
 import { registerUiExtensionRpc } from "./ui-extension-rpc.ts";
 import { UI_EXTENSION_PAGE } from "./ui-extension-page.ts";
 import { WebUiExtensions } from "./ui-extensions.ts";
@@ -204,6 +208,7 @@ const launcher = resolve(
           process.platform === "win32" ? "codexhost.exe" : "codexhost",
         )),
 );
+const npmEntrypoint = takeNpmEntrypoint();
 const desktopScreenshots = new DesktopScreenshots([launcher]);
 const chHost = await createChHostClient({
   launch: {
@@ -421,6 +426,7 @@ registerBackgroundControls(rpc, accessTokens, {
   port: () => listeningPort,
   data,
   launcher,
+  npmEntrypoint,
   shutdown,
 });
 registerMisc(rpc, { events });

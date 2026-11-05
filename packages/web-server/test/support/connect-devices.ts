@@ -46,6 +46,7 @@ export async function connectServer(
     `#!${process.execPath}
 const fs = require("node:fs");
 const [command, action] = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(root)} + "/launcher-env-" + action, JSON.stringify({ node: process.env.CODEXHOST_NPM_NODE_PATH, wrapper: process.env.CODEXHOST_NPM_LAUNCHER_PATH }));
 if (command !== "autostart" || !["on", "off", "status"].includes(action)) process.exit(99);
 if (action === "status") console.log(fs.readFileSync(${JSON.stringify(autostart)}, "utf8"));
 else if (fs.existsSync(${JSON.stringify(failure)})) { console.error(fs.readFileSync(${JSON.stringify(failure)}, "utf8")); process.exit(1); }
@@ -144,6 +145,8 @@ else fs.writeFileSync(${JSON.stringify(autostart)}, action);
       await exited;
     },
     autostart: () => readFileSync(autostart, "utf8"),
+    launcherEnv: (action: string) =>
+      JSON.parse(readFileSync(join(root, `launcher-env-${action}`), "utf8")),
     setAutostart: (state: string) => writeFileSync(autostart, state),
     failAutostart: (reason: string) => writeFileSync(failure, reason),
   };

@@ -11,9 +11,22 @@ import { RpcError, type RpcRegistry } from "./transport.ts";
 
 const exec = promisify(execFile);
 
-async function autostart(launcher: string, action: "on" | "off" | "status"): Promise<string> {
+/** Moves npm's entrypoint out of process.env; only `autostart on` needs it, Web terminals must not inherit it. */
+export function takeNpmEntrypoint(): NodeJS.ProcessEnv {
+  const { CODEXHOST_NPM_NODE_PATH, CODEXHOST_NPM_LAUNCHER_PATH } = process.env;
+  delete process.env.CODEXHOST_NPM_NODE_PATH;
+  delete process.env.CODEXHOST_NPM_LAUNCHER_PATH;
+  return { CODEXHOST_NPM_NODE_PATH, CODEXHOST_NPM_LAUNCHER_PATH };
+}
+
+async function autostart(
+  launcher: string,
+  action: "on" | "off" | "status",
+  entrypoint: NodeJS.ProcessEnv = {},
+): Promise<string> {
   try {
-    return (await exec(launcher, ["autostart", action])).stdout.trim();
+    const env = { ...process.env, ...entrypoint };
+    return (await exec(launcher, ["autostart", action], { env })).stdout.trim();
   } catch (error) {
     // The Launcher contract reports on/off failures on stderr with a nonzero exit code.
     const failure = error as Error & { stderr?: string };
@@ -36,6 +49,7 @@ export function registerBackgroundControls(
     port(): number;
     data: DataDir;
     launcher: string;
+    npmEntrypoint: NodeJS.ProcessEnv;
     shutdown(exitCode: number): Promise<void>;
   },
 ): void {
@@ -61,7 +75,7 @@ export function registerBackgroundControls(
     localAccessTokens(tokens, context.auth, options.port());
     requireBackground();
     const input = enabled.parse(args);
-    await autostart(options.launcher, input.enabled ? "on" : "off");
+    await autostart(options.launcher, input.enabled ? "on" : "off", options.npmEntrypoint);
     return autostartState(options.launcher);
   });
 }

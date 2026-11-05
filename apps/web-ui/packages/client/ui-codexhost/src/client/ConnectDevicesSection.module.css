@@ -112,6 +112,25 @@
   color: var(--dsw-alias-label-primary);
 }
 
+.routeGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.routeGroup + .routeGroup,
+.route + .routeGroup {
+  margin-top: 10px;
+}
+
+.groupTitle {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+}
+
 .route {
   display: flex;
   align-items: flex-start;

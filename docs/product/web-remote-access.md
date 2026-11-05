@@ -21,7 +21,7 @@ Web 支持 Tailscale Serve、Funnel 和用户自备的 HTTPS 代理或隧道。W
 
 本机的连接设备页底部有默认收起的“如何从其他网络连接”，简要介绍 Tailscale 和自备隧道，并链接 Tailscale 下载页和本文。隧道地址只能通过启动参数配置，页面不提供配置入口。发行版使用 `codexhost web --public-url https://code.example.com`，启动选项保存在 Web 数据目录的 `service.json`，后续启动沿用。
 
-本机访问且 Web 以后台模式运行时，连接设备页显示局域网访问、登录后自动启动开关、后台状态和休眠提示。手机和前台开发模式不显示这些设置。局域网开关保存监听地址后只重启 Web，页面等待恢复；Web 终端会断开，Host 上的任务不受影响。开启后监听所有 IPv4 网卡，关闭后只监听 `127.0.0.1`。局域网 HTTP 为明文，电脑休眠时手机无法连接。自启项通过 Launcher 的 `autostart on|off|status` 管理，失败原因显示在页面。
+连接设备页的“连接方式”按入口分组：“直连（局域网、Tailscale IP）”和“Tailscale HTTPS”各有一个开关，下方列出该入口的地址；地址说明只在选中时显示。本机访问且 Web 以后台模式运行时，页面显示直连和登录后自动启动开关；手机不显示任何开关，前台开发模式不显示这两个开关。直连开关确认后保存监听地址并只重启 Web，页面等待恢复；Web 终端会断开，Host 上的任务不受影响。开启后监听所有 IPv4 网卡，关闭后只监听 `127.0.0.1`。局域网 HTTP 为明文，电脑休眠时手机无法连接。自启项通过 Launcher 的 `autostart on|off|status` 管理，失败原因显示在页面。
 
 完整认证规则见[访问认证](standalone-web.md#访问认证)。令牌持有者可以操作电脑，登录链接和二维码应按凭据保管。
 
@@ -29,7 +29,7 @@ Web 支持 Tailscale Serve、Funnel 和用户自备的 HTTPS 代理或隧道。W
 
 电脑安装并登录 Tailscale。Web 先查找 `tailscale`，找不到时再尝试 `/Applications/Tailscale.app/Contents/MacOS/Tailscale`。macOS 只安装 App 时，页面命令中的 `tailscale` 需要用户自行启用 CLI，或替换为该 App 内路径。手机也需安装、登录 Tailscale，并由 tailnet 访问策略允许连接电脑。在管理后台开启 HTTPS 证书。
 
-后台 Web 默认监听回环地址；已有其他监听设置时用 `codexhost web --host 127.0.0.1` 保存。源码开发入口使用 `npm start web -- --host 127.0.0.1`。本机打开“设置 → 连接设备”，页面在未安装、未运行、未登录、未开启 HTTPS、未转发、根路径占用或读取错误时显示 Tailscale 提示；正常转发时只在连接方式中提供地址，不显示独立状态区。HTTPS 443 根路径未占用时提供“开启 Tailscale Serve”确认按钮，也可自行执行以下命令：
+后台 Web 默认监听回环地址；已有其他监听设置时用 `codexhost web --host 127.0.0.1` 保存。源码开发入口使用 `npm start web -- --host 127.0.0.1`。本机打开“设置 → 连接设备”，页面在未安装、未运行、未登录、未开启 HTTPS、未转发、根路径占用或读取错误时显示 Tailscale 提示；正常转发时只在连接方式中提供地址，不显示独立状态区。HTTPS 443 根路径未占用时可打开“Tailscale HTTPS”开关，确认弹窗同时提供可复制的命令，也可自行执行：
 
 ```sh
 tailscale serve --bg http://127.0.0.1:4400

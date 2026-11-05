@@ -214,11 +214,18 @@ it(
       await page.locator(`[data-tailscale-status="${status}"]`).waitFor();
     }
     const command = `tailscale serve --bg http://127.0.0.1:${local.port}`;
-    assert.equal(await page.getByRole("textbox", { name: "Serve command" }).inputValue(), command);
-    await page.getByRole("button", { name: "Copy command" }).click();
-    await page.getByRole("button", { name: "Copied", exact: true }).waitFor();
+    assert.equal(await page.getByRole("textbox", { name: "Serve command" }).count(), 0);
+    await page.getByRole("switch", { name: "Tailscale HTTPS", exact: true }).click();
+    const enable = page.getByRole("dialog", { name: "Enable Tailscale Serve" });
+    assert.equal(
+      await enable.getByRole("textbox", { name: "Serve command" }).inputValue(),
+      command,
+    );
+    await enable.getByRole("button", { name: "Copy command" }).click();
+    await enable.getByRole("button", { name: "Copied", exact: true }).waitFor();
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), command);
-    await page.getByText("Another program using this port").waitFor();
+    await enable.getByText("another program using this port", { exact: false }).waitFor();
+    await enable.getByRole("button", { name: "Cancel", exact: true }).click();
     cli.set(RUNNING, serveStatus(3000));
     await page.reload();
     await openConnectPage(page);
@@ -236,7 +243,7 @@ it(
       );
       await route.waitFor();
       assert.equal(await page.locator("[data-tailscale-status]").count(), 0);
-      assert.equal(await page.getByText("Another program using this port").count(), 0);
+      assert.equal(await page.getByText("another program using this port").count(), 0);
       assert.equal(await route.getByRole("radio").isChecked(), true);
       assert.ok(
         (await page.getByRole("textbox", { name: "Sign-in link" }).inputValue()).startsWith(

@@ -11,7 +11,7 @@ import { accessTokenApi, ApiError } from "./api.ts";
 import { signOut } from "./auth-watch.ts";
 import { QrCode } from "./QrCode.tsx";
 import { ServeControl } from "./ServeControl.tsx";
-import { BackgroundControls } from "./BackgroundControls.tsx";
+import { AutostartControl, DirectControl, useDirectRestart } from "./BackgroundControls.tsx";
 import css from "./ConnectDevicesSection.module.css";
 
 type Translate = PropsLocale<"codexhostImport">["t"];
@@ -113,75 +113,117 @@ const KIND_HINT = {
   virtual: "connectDevices.kindVirtualHint",
 } as const;
 
-/** The QR code and link of the chosen address; best address first, virtual ones folded. */
+/**
+ * The QR code and link of the chosen address, with each way in as one group: its switch, then the
+ * addresses it opens. A switch stays visible when its addresses are gone, so it can be turned back on.
+ */
 function Connection({
   secret,
   addresses,
+  direct,
+  serve,
+  serveStatus,
+  localNotice,
   t,
 }: {
   secret: string;
   addresses: WebNetworkAccessUrl[];
+  direct: ReactNode;
+  serve: ReactNode;
+  serveStatus: string | undefined;
+  localNotice: boolean;
   t: Translate;
 }): ReactNode {
   const [selectedUrl, setSelectedUrl] = useState(addresses[0]?.url);
   const [enlarged, setEnlarged] = useState(false);
   const group = useId();
   const selected = addresses.find((entry) => entry.url === selectedUrl) ?? addresses[0];
-  if (selected === undefined) return null;
-  const link = `${selected.url}#token=${secret}`;
-  const preferred = addresses.filter((entry) => entry.kind !== "virtual");
-  const virtual = addresses.filter((entry) => entry.kind === "virtual");
+  const link = selected === undefined ? undefined : `${selected.url}#token=${secret}`;
+  const ofKinds = (...kinds: WebNetworkAccessUrl["kind"][]) =>
+    addresses.filter((entry) => kinds.includes(entry.kind));
+  const reachable = ofKinds("lan", "tailscale");
+  const virtual = ofKinds("virtual");
   const option = (entry: WebNetworkAccessUrl): ReactNode => (
     <label key={entry.url} className={css.route} data-connect-route={entry.kind}>
       <input
         type="radio"
         name={group}
-        checked={entry.url === selected.url}
+        checked={entry.url === selected?.url}
         onChange={() => setSelectedUrl(entry.url)}
       />
       <span className={css.routeText}>
         <span className={css.routeTitle}>
-          {t(KIND_LABEL[entry.kind])}
+          {entry.kind !== "tailscale-https" && t(KIND_LABEL[entry.kind])}
           <span className={css.routeAddress}>{new URL(entry.url).host}</span>
         </span>
-        <span className={css.meta}>{t(KIND_HINT[entry.kind])}</span>
+        {entry.url === selected?.url && (
+          <span className={css.meta}>{t(KIND_HINT[entry.kind])}</span>
+        )}
       </span>
     </label>
   );
   return (
     <div className={css.connection}>
       <div className={css.connectionMain} data-enlarged={enlarged ? true : undefined}>
-        <button
-          type="button"
-          className={css.qrButton}
-          aria-label={t(enlarged ? "connectDevices.shrinkQr" : "connectDevices.enlargeQr")}
-          aria-pressed={enlarged}
-          onClick={() => setEnlarged((value) => !value)}
-        >
-          <QrCode value={link} label={t("connectDevices.qrLabel")} className={css.qr} />
-        </button>
+        {link !== undefined && (
+          <button
+            type="button"
+            className={css.qrButton}
+            aria-label={t(enlarged ? "connectDevices.shrinkQr" : "connectDevices.enlargeQr")}
+            aria-pressed={enlarged}
+            onClick={() => setEnlarged((value) => !value)}
+          >
+            <QrCode value={link} label={t("connectDevices.qrLabel")} className={css.qr} />
+          </button>
+        )}
         <fieldset className={css.routes}>
           <legend className={css.fieldTitle}>{t("connectDevices.connectVia")}</legend>
-          {preferred.map(option)}
-          {virtual.length > 0 && (
-            <details className={css.other} open={preferred.length === 0}>
-              <summary>{t("connectDevices.otherAddresses", { count: virtual.length })}</summary>
-              <div className={css.otherList}>{virtual.map(option)}</div>
-            </details>
+          {ofKinds("public").map(option)}
+          {(direct !== null || reachable.length + virtual.length > 0) && (
+            <div className={css.routeGroup}>
+              {direct ?? <span className={css.groupTitle}>{t("connectDevices.direct")}</span>}
+              {reachable.map(option)}
+              {virtual.length > 0 && (
+                <details className={css.other} open={reachable.length === 0}>
+                  <summary>{t("connectDevices.otherAddresses", { count: virtual.length })}</summary>
+                  <div className={css.otherList}>{virtual.map(option)}</div>
+                </details>
+              )}
+            </div>
           )}
+          <div className={css.routeGroup} data-tailscale-status={serveStatus}>
+            {serve}
+            {ofKinds("tailscale-https", "tailscale-funnel").map(option)}
+          </div>
         </fieldset>
       </div>
-      <CopyField
-        key={link}
-        label={t("connectDevices.signInLink")}
-        value={link}
-        copyLabel={t("connectDevices.copyLink")}
-        t={t}
-      />
-      {selected.kind === "public" && selected.url.startsWith("http:") && (
-        <p className={css.notice}>{t("connectDevices.publicHttp")}</p>
+      {link !== undefined ? (
+        <>
+          <CopyField
+            key={link}
+            label={t("connectDevices.signInLink")}
+            value={link}
+            copyLabel={t("connectDevices.copyLink")}
+            t={t}
+          />
+          {selected?.kind === "public" && selected.url.startsWith("http:") && (
+            <p className={css.notice}>{t("connectDevices.publicHttp")}</p>
+          )}
+          <p className={css.meta}>{t("connectDevices.linkPrivate")}</p>
+        </>
+      ) : (
+        <>
+          {localNotice && <p className={css.notice}>{t("connectDevices.localListener")}</p>}
+          <span className={css.groupTitle}>{t("connectDevices.token")}</span>
+          <CopyField
+            key={secret}
+            label={t("connectDevices.token")}
+            value={secret}
+            copyLabel={t("connectDevices.copy")}
+            t={t}
+          />
+        </>
       )}
-      <p className={css.meta}>{t("connectDevices.linkPrivate")}</p>
     </div>
   );
 }
@@ -326,6 +368,7 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
   const [error, setError] = useState<string | null>(null);
 
   const restored = useCallback((data: WebAccessState) => setView({ kind: "ready", data }), []);
+  const restart = useDirectRestart(restored);
   const load = useCallback(async (): Promise<void> => {
     try {
       setView({ kind: "ready", data: await accessTokenApi.get() });
@@ -352,64 +395,70 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
       </p>
     );
 
-  const { secret, lastUsedAt, networkUrls, tailscale } = view.data;
+  const { secret, lastUsedAt, networkUrls, tailscale, background } = view.data;
   const used = lastUsedAt === null ? undefined : relativeTime(lastUsedAt, Date.now());
   return (
     <div className={css.page} data-connect-devices>
-      {view.data.background !== undefined && (
-        <BackgroundControls state={view.data.background} restored={restored} t={t} />
-      )}
-      <p className={css.description}>{t("connectDevices.description")}</p>
-      {networkUrls.length > 0 ? (
-        <Connection key={connectionKey} secret={secret} addresses={networkUrls} t={t} />
-      ) : (
-        <div className={css.connection}>
-          <p className={css.notice}>{t("connectDevices.localListener")}</p>
-          <CopyField
-            key={secret}
-            label={t("connectDevices.token")}
-            value={secret}
-            copyLabel={t("connectDevices.copy")}
-            t={t}
-          />
-        </div>
-      )}
-      {tailscale.status !== "serving" && (
-        <div className={css.connection} data-tailscale-status={tailscale.status}>
-          <h3 className={css.fieldTitle}>Tailscale</h3>
-          <p className={css.notice}>{t(`connectDevices.tailscale.${tailscale.status}`)}</p>
-          {tailscale.status === "occupied" && <p className={css.meta}>{tailscale.target}</p>}
-          {tailscale.status === "error" && <p className={css.error}>{tailscale.message}</p>}
-          {tailscale.status === "not-serving" && (
-            <>
-              <CopyField
-                label={t("connectDevices.serveCommand")}
-                value={tailscale.command}
-                copyLabel={t("connectDevices.copyCommand")}
-                t={t}
-              />
-              <p className={css.meta}>{t("connectDevices.servePersists")}</p>
-            </>
-          )}
-        </div>
-      )}
-      <ServeControl
-        enabled={tailscale.status === "serving"}
-        available={tailscale.status === "serving" || tailscale.status === "not-serving"}
+      <Connection
+        key={connectionKey}
+        secret={secret}
+        addresses={networkUrls}
+        direct={
+          background === undefined ? null : (
+            <DirectControl enabled={background.lan} restart={restart} t={t} />
+          )
+        }
+        serve={
+          <>
+            <ServeControl
+              enabled={tailscale.status === "serving"}
+              disabled={
+                restart.target !== null ||
+                (tailscale.status !== "serving" && tailscale.status !== "not-serving")
+              }
+              command={
+                tailscale.status === "not-serving" && (
+                  <CopyField
+                    label={t("connectDevices.serveCommand")}
+                    value={tailscale.command}
+                    copyLabel={t("connectDevices.copyCommand")}
+                    t={t}
+                  />
+                )
+              }
+              t={t}
+              refresh={async (preferServe) => {
+                const data = await accessTokenApi.get();
+                if (preferServe) {
+                  data.networkUrls.sort(
+                    (a, b) =>
+                      Number(b.kind === "tailscale-https" || b.kind === "tailscale-funnel") -
+                      Number(a.kind === "tailscale-https" || a.kind === "tailscale-funnel"),
+                  );
+                  setConnectionKey((key) => key + 1);
+                }
+                setView({ kind: "ready", data });
+              }}
+            />
+            {tailscale.status !== "serving" && tailscale.status !== "not-serving" && (
+              <p className={css.meta}>{t(`connectDevices.tailscale.${tailscale.status}`)}</p>
+            )}
+            {tailscale.status === "occupied" && <p className={css.meta}>{tailscale.target}</p>}
+            {tailscale.status === "error" && <p className={css.error}>{tailscale.message}</p>}
+          </>
+        }
+        serveStatus={tailscale.status === "serving" ? undefined : tailscale.status}
+        localNotice={background === undefined}
         t={t}
-        refresh={async (preferServe) => {
-          const data = await accessTokenApi.get();
-          if (preferServe) {
-            data.networkUrls.sort(
-              (a, b) =>
-                Number(b.kind === "tailscale-https" || b.kind === "tailscale-funnel") -
-                Number(a.kind === "tailscale-https" || a.kind === "tailscale-funnel"),
-            );
-            setConnectionKey((key) => key + 1);
-          }
-          setView({ kind: "ready", data });
-        }}
       />
+      {background !== undefined && (
+        <AutostartControl
+          state={background}
+          disabled={restart.target !== null}
+          restored={restored}
+          t={t}
+        />
+      )}
       <RemoteOptions t={t} />
       <div className={css.footer}>
         <span

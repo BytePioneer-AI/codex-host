@@ -94,19 +94,17 @@ export const en = {
   "usage.unit.tps": "tok/s",
   "usage.unit.ms": "ms",
   "usage.unit.seconds": "s",
-  "connectDevices.description":
-    "Scan this QR code with your phone's camera to sign in. Every device uses the same access token.",
   "connectDevices.localOnly":
     "The QR code and access token are only shown on this computer. Open {url} there to see them.",
   "connectDevices.disabled": "Authentication is not enabled, so no access token is needed.",
-  "connectDevices.background":
-    "Web is running in the background. Closing the terminal or browser does not stop it.",
-  "connectDevices.lan": "Local network access",
-  "connectDevices.lanHint":
-    "Local network HTTP is unencrypted. Changing this restarts Web and disconnects Web terminals, but Host tasks continue.",
+  "connectDevices.direct": "Direct (local network, Tailscale IP)",
+  "connectDevices.directOn": "Enable direct connections",
+  "connectDevices.directOff": "Disable direct connections",
+  "connectDevices.directOnConfirm":
+    "Web restarts and listens on every IPv4 interface over unencrypted HTTP. Web terminals disconnect; Host tasks continue.",
+  "connectDevices.directOffConfirm":
+    "Web restarts and listens only on this computer. Web terminals and other devices disconnect; Host tasks continue.",
   "connectDevices.autostart": "Start automatically after login",
-  "connectDevices.sleep":
-    "Your phone cannot connect while this computer is asleep. Keep it awake and connected to the network.",
   "connectDevices.restarting": "Restarting Web… Waiting for this page to reconnect.",
   "connectDevices.loading": "Loading…",
   "connectDevices.loadFailed": "Could not load this page: {message}",
@@ -124,29 +122,23 @@ export const en = {
   "connectDevices.publicHttp":
     "This HTTP address sends content without encryption. Use only a network you trust.",
   "connectDevices.tailscale.not-installed":
-    "Tailscale was not found. Install its CLI to use Serve; local network access is still available.",
+    "Tailscale was not found. Install its CLI to use Serve.",
   "connectDevices.tailscale.not-running":
     "Tailscale is not running. Start Tailscale on this computer.",
   "connectDevices.tailscale.not-logged-in": "Sign in to Tailscale on this computer first.",
   "connectDevices.tailscale.https-disabled":
     "Enable HTTPS certificates in the Tailscale admin console first.",
-  "connectDevices.tailscale.not-serving":
-    "The HTTPS 443 root is not forwarded. Enable Serve here or run this command to forward it to Web.",
   "connectDevices.tailscale.occupied":
     "The HTTPS 443 root already forwards elsewhere. No command is offered because it would replace that forwarding target:",
   "connectDevices.tailscale.error": "Could not read Tailscale status:",
   "connectDevices.serveOn": "Enable Tailscale Serve",
   "connectDevices.serveOff": "Disable Tailscale Serve",
   "connectDevices.serveOnConfirm":
-    "Forward the HTTPS root to this Web server? Your phone must be signed in to Tailscale.",
+    "Forward the HTTPS root to this Web server? This stays configured after Web exits, and another program using this port would also be forwarded.",
   "connectDevices.serveOffConfirm":
     "Remove only the root forwarding to this Web server? Other paths and ports will be kept.",
-  "connectDevices.serveRetained":
-    "Web exit, codexhost stop and updates keep Serve configured. Disable it here when no longer needed.",
   "connectDevices.serveCommand": "Serve command",
   "connectDevices.copyCommand": "Copy command",
-  "connectDevices.servePersists":
-    "Serve configuration remains after Web exits. Another program using this port would also be forwarded.",
   "connectDevices.kindTailscaleHttps": "Tailscale HTTPS",
   "connectDevices.kindTailscaleHttpsHint":
     "Encrypted, and supports notifications and installing to the home screen. Your phone needs Tailscale on.",
@@ -446,15 +438,16 @@ export const zh: Record<ImportLocaleKey, string> = {
   "usage.unit.tps": "tok/s",
   "usage.unit.ms": "毫秒",
   "usage.unit.seconds": "秒",
-  "connectDevices.description": "用手机相机扫码即可登录。所有设备使用同一个访问令牌。",
   "connectDevices.localOnly": "二维码和访问令牌只在这台电脑上显示。请在电脑上打开 {url} 查看。",
   "connectDevices.disabled": "认证未启用，不需要访问令牌。",
-  "connectDevices.background": "Web 正在后台运行，关闭终端或浏览器不会停止它。",
-  "connectDevices.lan": "局域网访问",
-  "connectDevices.lanHint":
-    "局域网 HTTP 为明文传输。切换会重启 Web、断开 Web 终端，但不影响 Host 上运行的任务。",
+  "connectDevices.direct": "直连（局域网、Tailscale IP）",
+  "connectDevices.directOn": "开启直连",
+  "connectDevices.directOff": "关闭直连",
+  "connectDevices.directOnConfirm":
+    "Web 将重启，并通过未加密的 HTTP 监听所有 IPv4 网卡。Web 终端会断开，Host 上的任务不受影响。",
+  "connectDevices.directOffConfirm":
+    "Web 将重启，并只监听这台电脑。Web 终端和其他设备会断开，Host 上的任务不受影响。",
   "connectDevices.autostart": "登录后自动启动",
-  "connectDevices.sleep": "电脑休眠后手机无法连接，请保持电脑唤醒并连接网络。",
   "connectDevices.restarting": "正在重启 Web… 等待页面恢复连接。",
   "connectDevices.loading": "正在加载…",
   "connectDevices.loadFailed": "无法加载此页面：{message}",
@@ -468,25 +461,20 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.kindFunnel": "Tailscale Funnel · 公开",
   "connectDevices.kindFunnelHint": "互联网中的任何人都能访问登录页，登录仍需要访问令牌。",
   "connectDevices.publicHttp": "此 HTTP 地址以明文传输内容，请只在你信任的网络中使用。",
-  "connectDevices.tailscale.not-installed":
-    "未检测到 Tailscale。请安装其 CLI 后使用 Serve，局域网访问仍可用。",
+  "connectDevices.tailscale.not-installed": "未检测到 Tailscale。请安装其 CLI 后使用 Serve。",
   "connectDevices.tailscale.not-running": "Tailscale 未运行，请先在这台电脑上启动 Tailscale。",
   "connectDevices.tailscale.not-logged-in": "请先在这台电脑上登录 Tailscale。",
   "connectDevices.tailscale.https-disabled": "请先在 Tailscale 管理后台开启 HTTPS 证书。",
-  "connectDevices.tailscale.not-serving":
-    "HTTPS 443 根路径尚未转发，可在此开启 Serve，或运行以下命令转发到 Web。",
   "connectDevices.tailscale.occupied":
     "HTTPS 443 根路径已转发到别处。开启命令会替换现有转发，因此不提供命令。当前目标：",
   "connectDevices.tailscale.error": "无法读取 Tailscale 状态：",
   "connectDevices.serveOn": "开启 Tailscale Serve",
   "connectDevices.serveOff": "关闭 Tailscale Serve",
-  "connectDevices.serveOnConfirm": "将 HTTPS 根路径转发到当前 Web？手机需要登录 Tailscale。",
+  "connectDevices.serveOnConfirm":
+    "将 HTTPS 根路径转发到当前 Web？Web 退出后配置仍保留，占用同一端口的其他程序也会被转发。",
   "connectDevices.serveOffConfirm": "仅移除指向当前 Web 的根路径转发？其他路径和端口将保留。",
-  "connectDevices.serveRetained":
-    "Web 退出、codexhost stop 和更新都保留 Serve 配置。不再需要时请在此关闭。",
   "connectDevices.serveCommand": "Serve 命令",
   "connectDevices.copyCommand": "复制命令",
-  "connectDevices.servePersists": "Web 退出后 Serve 配置仍保留，占用同一端口的其他程序也会被转发。",
   "connectDevices.kindTailscaleHttps": "Tailscale HTTPS",
   "connectDevices.kindTailscaleHttpsHint":
     "全程加密，支持通知和添加到主屏幕。手机需开着 Tailscale。",

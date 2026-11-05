@@ -6,6 +6,7 @@ import type { OfficeFileBytes } from "./cache.ts";
 /** One requested source revision and its settled preview. */
 export interface OfficeView {
   readonly revision: number;
+  readonly downloading?: boolean;
   readonly file?: OfficeFileBytes;
   readonly failure?: { readonly code: string; readonly message: string };
 }
@@ -16,6 +17,7 @@ export interface OfficeState {
 }
 
 type OfficeActions = {
+  downloading: (state: OfficeState, tab: TabId, revision: number) => void;
   loading: (state: OfficeState, tab: TabId, revision: number) => void;
   complete: (state: OfficeState, tab: TabId, revision: number, file: OfficeFileBytes) => void;
   failed: (
@@ -35,8 +37,14 @@ export function createOfficeStore(): EngineStoreHandle<OfficeState, OfficeAction
   return defineStore({
     init: (): OfficeState => ({ byTab: {} }),
     actions: {
+      /** @param state - draft. @param tab - owning tab. @param revision - pending revision. */
+      downloading(state, tab: TabId, revision: number) {
+        state.byTab[tab] = { revision, downloading: true };
+      },
       /** @param state - draft. @param tab - owning tab. @param revision - new content revision. */
       loading(state, tab: TabId, revision: number) {
+        // Keep the download notice and its previous revision until the retry settles.
+        if (state.byTab[tab]?.downloading) return;
         state.byTab[tab] = { revision };
       },
       /** @param state - draft. @param tab - owning tab. @param revision - completed revision. @param file - borrowed PDF bytes. */

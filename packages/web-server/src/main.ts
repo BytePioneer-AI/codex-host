@@ -10,7 +10,7 @@
  * rebuilt plugin bundles to open pages (used by `npm start web -- --watch`).
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -20,7 +20,11 @@ import qrcode from "qrcode-terminal";
 import { createBrowserWebSocketServer } from "./browser-websocket.ts";
 
 import { registerAccessTokenRpc } from "./access-token-rpc.ts";
-import { autostartState, registerBackgroundControls } from "./background-controls.ts";
+import {
+  autostartState,
+  registerBackgroundControls,
+  takeNpmEntrypoint,
+} from "./background-controls.ts";
 import { registerUiExtensionRpc } from "./ui-extension-rpc.ts";
 import { UI_EXTENSION_PAGE } from "./ui-extension-page.ts";
 import { WebUiExtensions } from "./ui-extensions.ts";
@@ -49,6 +53,7 @@ import { WebHarnessPreferences } from "./harness-preferences.ts";
 import { createChHostClient } from "./ch-host-client.ts";
 import { serveChClientGateway } from "./ch-client-gateway.ts";
 import { DshWebServices, type WebPluginRuntime } from "./dsh-web-services.ts";
+import { createOfficeEngine } from "./office-engine.ts";
 import { harnessIconStyles } from "./harness-icon-styles.ts";
 import { Settings } from "./settings.ts";
 import { formatWebStartup } from "./startup-display.ts";
@@ -203,6 +208,7 @@ const launcher = resolve(
           process.platform === "win32" ? "codexhost.exe" : "codexhost",
         )),
 );
+const npmEntrypoint = takeNpmEntrypoint();
 const desktopScreenshots = new DesktopScreenshots([launcher]);
 const chHost = await createChHostClient({
   launch: {
@@ -256,6 +262,14 @@ const dsh = await DshWebServices.open({
   workspaceRoot: resolve(values.workspace as string),
   threadWorkspace: (id) => sessions.terminalWorkspaceRoot(id),
   fileWorkspace: (id) => sessions.fileWorkspaceRoot(id),
+  ...(RELEASE_WEB
+    ? {
+        ensureOfficeEngine: createOfficeEngine(
+          dataRoot,
+          JSON.parse(readFileSync(join(import.meta.dirname, "office-engines.json"), "utf8")),
+        ),
+      }
+    : {}),
 }).catch((error: unknown) => {
   console.warn(
     "[right-sidebar] unavailable:",
@@ -412,6 +426,7 @@ registerBackgroundControls(rpc, accessTokens, {
   port: () => listeningPort,
   data,
   launcher,
+  npmEntrypoint,
   shutdown,
 });
 registerMisc(rpc, { events });

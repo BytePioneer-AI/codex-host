@@ -122,7 +122,11 @@ export function apply(ctx: Context, config: Config["office"]): void {
         signal,
       );
       signal.throwIfAborted();
-      if (!result.ok && result.error.code === "document-render/failed") {
+      if (
+        !result.ok &&
+        result.error.code === "document-render/failed" &&
+        result.error.details.reason !== "downloading"
+      ) {
         throw new Error(t(conversionErrorKey(result.error.details.reason)), {
           cause: result.error,
         });

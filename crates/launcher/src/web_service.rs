@@ -111,6 +111,7 @@ pub(super) fn ensure(options: &Options) -> Result<(), Box<dyn Error>> {
     let ready = launches.join(format!("web-{}-{nonce}.ready", std::process::id()));
     let mut command = Command::new(env::current_exe()?);
     clean(&mut command);
+    crate::autostart::forward_npm_entrypoint(&mut command);
     command
         .current_dir(&options.data)
         .arg("web-service")
@@ -169,6 +170,7 @@ fn serve(options: &Options) -> Result<(), Box<dyn Error>> {
             remove_file(&node_ready)?;
             let mut command = Command::new(&options.node);
             clean(&mut command);
+            crate::autostart::forward_npm_entrypoint(&mut command);
             command
                 .current_dir(&options.data)
                 .arg("--disable-warning=UNDICI-EHPA")

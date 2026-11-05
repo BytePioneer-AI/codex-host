@@ -67,7 +67,7 @@
 
 **Serve 写入。** 按 Tailscale v1.104.1 源码已确认的行为实现：`--bg` 会直接替换同路径转发；不带 `--set-path` 的 `off` 会删除该端口所有路径；缺少 HTTPS 能力时可能退出码为 0 却没有写入。所以每次操作前后都重新读取状态，关闭时明确指定根路径。接口要求本机访问，与查看 token 使用同一判断。
 
-**设置入口。** Host 新增一个打开连接设备页的接口，内部调用 Launcher，与现有的 `codexhost/console/open` 相同；Console 和 Codex 设置页共用同一个按钮。不新增 Web 状态接口：状态看连接设备页和 `codexhost status`。
+**设置入口。** Host 新增一个打开连接设备页的接口，内部调用 Launcher，与现有的 `codexhost/console/open` 相同；按钮放在 Codex 设置页，Console 不增加入口。不新增 Web 状态接口：状态看连接设备页和 `codexhost status`。
 
 ## Risks / Trade-offs
 

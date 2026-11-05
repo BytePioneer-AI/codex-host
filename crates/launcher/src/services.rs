@@ -336,6 +336,7 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
+        println!("Autostart: {}", crate::autostart::status_line());
         return Ok(());
     }
     let mut node = None;
@@ -343,42 +344,42 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let mut web = None;
     let mut data = None;
     let mut settings = Vec::new();
-    let background = action == "web" && arguments.iter().any(|argument| argument == "--background");
-    let update_recovery = background
-        && arguments
-            .iter()
-            .any(|argument| argument == "--update-recovery");
-    let arguments = arguments
-        .iter()
-        .filter(|argument| {
-            !background
-                || (*argument != "--background"
-                    && (!update_recovery || *argument != "--update-recovery"))
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    for pair in arguments.chunks(2) {
-        if pair.len() != 2 {
-            return Err(format!("{} requires a value", pair[0]).into());
+    let mut background = false;
+    let mut update_recovery = false;
+    let mut arguments = arguments.iter();
+    while let Some(option) = arguments.next() {
+        if option == "--background" && action == "web" {
+            background = true;
+            continue;
         }
-        let path = PathBuf::from(&pair[1]);
+        if option == "--update-recovery" && action == "web" {
+            update_recovery = true;
+            continue;
+        }
+        let value = arguments
+            .next()
+            .ok_or_else(|| format!("{option} requires a value"))?;
+        let path = PathBuf::from(value);
         if matches!(
-            pair[0].as_str(),
+            option.as_str(),
             "--node" | "--host-runtime" | "--web-runtime" | "--data"
         ) && !path.is_absolute()
         {
-            return Err(format!("{} must be absolute", pair[0]).into());
+            return Err(format!("{option} must be absolute").into());
         }
-        match pair[0].as_str() {
+        match option.as_str() {
             "--node" => node = Some(path),
             "--host-runtime" => host = Some(path),
             "--web-runtime" => web = Some(path),
             "--data" if action == "stop-for-update" || action == "web" => data = Some(path),
             "--host" | "--port" | "--public-url" | "--trusted-proxy" if action == "web" => {
-                settings.extend_from_slice(pair)
+                settings.extend([option.clone(), value.clone()])
             }
-            _ => return Err(format!("Unknown {action} option: {}", pair[0]).into()),
+            _ => return Err(format!("Unknown {action} option: {option}").into()),
         }
+    }
+    if update_recovery && !background {
+        return Err("--update-recovery requires --background".into());
     }
     let desktop = if action == "web" {
         Some(crate::discover_desktop(None))
@@ -394,8 +395,13 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
         options.data = data;
     }
     if action == "web" {
+        crate::autostart::refresh();
         if background {
-            ensure_current(&options, &settings, update_recovery)
+            let result = ensure_current(&options, &settings, update_recovery);
+            if let Err(error) = &result {
+                record_failure(error);
+            }
+            result
         } else {
             open_web(&options, &settings)
         }

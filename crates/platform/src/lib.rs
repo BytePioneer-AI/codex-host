@@ -5,13 +5,20 @@ use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::path::{Path, PathBuf};
 
+mod autostart;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod background;
 #[cfg(not(target_os = "windows"))]
 mod background;
+pub use autostart::{
+    AutostartCommand, AutostartStatus, autostart_status, disable_autostart, enable_autostart,
+    refresh_autostart,
+};
 mod desktop_launch;
 mod desktop_screenshot;
+#[cfg(any(target_os = "windows", test))]
+mod windows_command_line;
 pub use desktop_screenshot::{DesktopScreenshotError, capture_primary_desktop};
 mod independent_service;
 mod installation;

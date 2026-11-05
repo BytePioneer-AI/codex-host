@@ -6,7 +6,11 @@ import { fakeServe } from "./support/serve-control.ts";
 
 it("saves LAN options then exits 42, and calls the Launcher's autostart contract", async (t) => {
   const cli = fakeServe(t);
-  const server = await connectServer(t, cli.environment, true);
+  const server = await connectServer(
+    t,
+    { ...cli.environment, CODEXHOST_NPM_NODE_PATH: "/n", CODEXHOST_NPM_LAUNCHER_PATH: "/w" },
+    true,
+  );
   assert.deepEqual((await server.access()).background, {
     lan: false,
     autostart: { status: "off" },
@@ -29,6 +33,9 @@ it("saves LAN options then exits 42, and calls the Launcher's autostart contract
     status: "on",
   });
   assert.equal(server.autostart(), "on");
+  // Only registration gets npm's entrypoint; the Web environment terminals inherit does not.
+  assert.deepEqual(server.launcherEnv("on"), { node: "/n", wrapper: "/w" });
+  assert.deepEqual(server.launcherEnv("status"), {});
   assert.deepEqual((await server.call("codexhost/autostartSet", { enabled: false })).value, {
     status: "off",
   });

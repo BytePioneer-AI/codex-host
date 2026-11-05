@@ -39,6 +39,8 @@ declare module "@deepseek-ai/cordis" {
 
 /** Provider concurrency and kit rendering/font configuration. */
 export interface Config {
+  /** Release-only engine preparation; false means a process-owned download is running. */
+  ensureEngine?: () => boolean;
   /** Maximum simultaneous conversions; queued callers remain cancellable. */
   maxConcurrentConversions: number;
   /** Maximum metadata-only jobs awaiting source admission. */
@@ -81,6 +83,7 @@ export interface Config {
 
 /** Deployment defaults resolved before provider construction. */
 export const Config: z<Partial<Config>, Config> = z.object({
+  ensureEngine: z.function().extra("default", undefined),
   maxConcurrentConversions: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(2),
   maxQueuedJobs: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(8),
   maxReaders: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(32),
@@ -378,6 +381,14 @@ export class OfficeToPdf extends TypertRemoteService {
     let directory: string | undefined;
     try {
       if (slot.converter === undefined) {
+        let ready: boolean | undefined;
+        try {
+          ready = this.config.ensureEngine?.();
+        } catch (cause) {
+          throw new OfficeToPdfError("unavailable", "Office engine download failed.", { cause });
+        }
+        if (ready === false)
+          throw new OfficeToPdfError("downloading", "Office engine is downloading.");
         slot.converter = createConverter(this.options).catch((error: unknown) => {
           delete slot.converter;
           throw error;

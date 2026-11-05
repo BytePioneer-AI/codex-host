@@ -87,6 +87,7 @@ if (args.includes('--save-service-options')) {
 }
 const log = text => fs.appendFileSync(path.join(data, 'events'), text + '\n');
 log('web-start');
+fs.writeFileSync(path.join(data, 'npm-entrypoint.json'), JSON.stringify({node: process.env.CODEXHOST_NPM_NODE_PATH, wrapper: process.env.CODEXHOST_NPM_LAUNCHER_PATH}));
 fs.appendFileSync(path.join(data, 'starts'), 'start\n');
 if (fs.existsSync(path.join(data, 'fail'))) {
   console.error('first diagnostic' + 'x'.repeat(16384) + 'fixture port is occupied; use --port');
@@ -197,7 +198,7 @@ server.listen(0, '127.0.0.1', () => console.log(server.address().port));
             .arg(action);
         #[cfg(windows)]
         command.env("SystemRoot", env::var_os("SystemRoot").unwrap());
-        if !["status", "host", "web-service"].contains(&action) {
+        if !["status", "host", "web-service", "autostart"].contains(&action) {
             command
                 .arg("--node")
                 .arg(&self.node)
@@ -249,6 +250,129 @@ impl Drop for Fixture {
         let _ = self.console.wait();
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn background_web_records_ensure_failure_but_interactive_web_does_not() {
+    let fixture = Fixture::new();
+    fs::remove_file(fixture.root.join("host-runtime.mjs")).unwrap();
+    let failure = fixture.root.join("web-service-failure.txt");
+    let interactive = fixture
+        .public_command("web")
+        .args(["--port", "4472"])
+        .output()
+        .unwrap();
+    assert!(!interactive.status.success());
+    assert!(!failure.exists());
+    let background = fixture
+        .public_command("web")
+        .arg("--background")
+        .output()
+        .unwrap();
+    assert!(!background.status.success());
+    assert!(background.stdout.is_empty());
+    let reason = fs::read_to_string(&failure).unwrap();
+    assert!(reason.contains("Host runtime or Node executable is missing"));
+    let status = fixture.public_command("status").output().unwrap();
+    assert!(status.status.success());
+    assert!(
+        String::from_utf8_lossy(&status.stdout).contains(&format!("Web last failure: {reason}"))
+    );
+    assert!(!fixture.root.join("starts").exists());
+    assert!(!fixture.root.join("console-calls").exists());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn background_web_refreshes_only_enabled_autostart_without_printing_login_link() {
+    let fixture = Fixture::new();
+    let path = fixture
+        .root
+        .join("Library/LaunchAgents/ai.bytepioneer.codexhost.autostart.plist");
+    let output = fixture
+        .public_command("web")
+        .args(["--background", "--port", "4472"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    assert!(!path.exists());
+    assert!(!fixture.root.join("console-calls").exists());
+    assert!(
+        fixture
+            .public_command("autostart")
+            .arg("on")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let initial = fs::read_to_string(&path).unwrap();
+    let wrapper = fixture.root.join("npm-wrapper.js");
+    fs::write(&wrapper, "fixture").unwrap();
+    assert!(fixture.run("stop").status.success());
+    let output = fixture
+        .public_command("web")
+        .arg("--background")
+        .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
+        .env("CODEXHOST_NPM_LAUNCHER_PATH", &wrapper)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    let refreshed = fs::read_to_string(&path).unwrap();
+    assert_ne!(refreshed, initial);
+    assert!(refreshed.contains(wrapper.to_str().unwrap()));
+    let entrypoint = fixture.record("npm-entrypoint.json");
+    assert_eq!(entrypoint["node"], fixture.node);
+    assert_eq!(entrypoint["wrapper"], wrapper.to_str().unwrap());
+    // A source build keeps the installed entry.
+    assert!(
+        fixture
+            .public_command("web")
+            .arg("--background")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), refreshed);
+    fs::remove_file(&wrapper).unwrap();
+    let status = fixture.public_command("status").output().unwrap();
+    assert!(String::from_utf8_lossy(&status.stdout).contains("Autostart: invalid "));
+    assert_eq!(fs::read_to_string(&path).unwrap(), refreshed);
+    // Missing npm entrypoint makes refresh fail, but must not prevent Web reuse.
+    let output = fixture
+        .public_command("web")
+        .arg("--background")
+        .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
+        .env("CODEXHOST_NPM_LAUNCHER_PATH", &wrapper)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("could not refresh autostart"));
+    assert!(output.stdout.is_empty());
+    assert_eq!(fs::read_to_string(&path).unwrap(), refreshed);
+    let output = fixture.public_command("stop").output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        refreshed,
+        "stop leaves autostart unchanged"
+    );
 }
 
 #[test]

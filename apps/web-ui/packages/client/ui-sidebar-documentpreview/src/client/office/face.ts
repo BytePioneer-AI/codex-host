@@ -48,6 +48,11 @@ export function officeFace(
           if (result.ok) {
             actions.complete(tabId, revision, result.value);
             loaded(result.value.version);
+          } else if (
+            result.error.code === "document-render/failed" &&
+            result.error.details.reason === "downloading"
+          ) {
+            actions.downloading(tabId, revision);
           } else {
             actions.failed(tabId, revision, {
               code: result.error.code,

@@ -392,7 +392,7 @@ describe("current Codex Renderer Agent adapter", () => {
 
   it.each(["local", "remote-ssh-discovered:mac"])(
     "installs for %s and reads Host-owned settings without overwriting them",
-    (hostId) => {
+    async (hostId) => {
       const requestTarget = {
         hostId,
         sendRequest: vi.fn(),
@@ -516,6 +516,18 @@ describe("current Codex Renderer Agent adapter", () => {
             ["codexhost/harness/preferences/get", { scope: "external" }],
             ["codexhost/harness/preferences/get", { scope: "external" }],
           ]);
+          fakeWindow.__codexhostDraftPrewarmPolicyV1 = {
+            ...policy,
+            hostId: remoteTarget.hostId,
+            requestTarget: () => remoteTarget,
+          };
+          requestTarget.sendRequest.mockResolvedValueOnce({});
+          await expect(adapter.modelControl?.openWeb?.()).resolves.toEqual({});
+          expect(requestTarget.sendRequest).toHaveBeenLastCalledWith("codexhost/web/open", {});
+          expect(
+            remoteTarget.sendRequest.mock.calls.some(([method]) => method === "codexhost/web/open"),
+          ).toBe(false);
+          fakeWindow.__codexhostDraftPrewarmPolicyV1 = policy;
           // Auxiliary lookups must not disable real connection or explicit policy invalidation.
           Object.defineProperty(requestTarget, "requestClient", { value: { ...requestTarget } });
           const reconnected = adapter.modelControl?.clientForHost?.("local");
@@ -528,6 +540,16 @@ describe("current Codex Renderer Agent adapter", () => {
             "codexhost/harness/preferences/get",
             { scope: "external" },
           );
+        }
+        if (hostId !== "local") {
+          await expect(adapter.modelControl?.openWeb?.()).rejects.toThrow(
+            "The local Host is unavailable",
+          );
+          expect(
+            requestTarget.sendRequest.mock.calls.some(
+              ([method]) => method === "codexhost/web/open",
+            ),
+          ).toBe(false);
         }
         expect(
           requestTarget.sendRequest.mock.calls.some(([method]) => method.endsWith("/set")),

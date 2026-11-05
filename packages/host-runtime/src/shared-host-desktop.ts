@@ -16,6 +16,7 @@ import {
 import type { ModelPriceCatalog } from "./model-prices.js";
 import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
+import { createHostWebOpener } from "./web-opener.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
 
 /** Runtime/control context is private to an authenticated Desktop connection. It
@@ -89,6 +90,7 @@ export function sharedHostDesktop(
   const runtimePath = runtime && path.isAbsolute(runtime) ? runtime : undefined;
   const entry = runtimePath ? consoleEntrypoint(runtimePath) : null;
   const delegation = options.delegation();
+  const webOpener = createHostWebOpener(options.environment);
   const host = new AppServerHost({
     stockCodexPath: options.stockCodex,
     arguments: [],
@@ -119,6 +121,7 @@ export function sharedHostDesktop(
     ...(entry
       ? { consoleOpener: createHostConsoleOpener({ entrypoint: entry, environment }) }
       : {}),
+    ...(webOpener ? { webOpener } : {}),
     onDelegationApi: options.register,
   });
   return {

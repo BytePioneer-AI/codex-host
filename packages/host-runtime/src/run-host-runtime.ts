@@ -48,6 +48,7 @@ import { watchRemoteListenerSupervisor } from "./remote-listener-supervisor.js";
 import { remoteOfficialAppServerSocketPath } from "./remote-official-app-server.js";
 import { startConsoleControlServer } from "./console-control-server.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
+import { createHostWebOpener } from "./web-opener.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 import { ModelPriceCatalog, defaultModelPriceDirectory } from "./model-prices.js";
 import { UsageStatistics } from "./usage-statistics.js";
@@ -285,6 +286,7 @@ export async function runHostRuntime(input: {
   if (consoleOpener) usageStatistics.warm();
 
   if (!isRemoteUnixListenerInvocation(input.arguments)) {
+    const webOpener = createHostWebOpener(input.environment);
     const remoteControlPlan = createRemoteControlAppServerPlan({
       arguments: input.arguments,
       environment: input.environment,
@@ -329,6 +331,7 @@ export async function runHostRuntime(input: {
               onDelegationApi,
               ...(updateCoordinator ? { updateCoordinator } : {}),
               ...(consoleOpener ? { consoleOpener } : {}),
+              ...(webOpener ? { webOpener } : {}),
             });
             return await runWithConsoleControl(
               host,
@@ -352,6 +355,7 @@ export async function runHostRuntime(input: {
             closeMappingStoreOnExit: false,
             ...(updateCoordinator ? { updateCoordinator } : {}),
             ...(consoleOpener ? { consoleOpener } : {}),
+            ...(webOpener ? { webOpener } : {}),
           };
           const host = new AppServerHost({
             ...(runtimeMaintenance ? { runtimeMaintenance } : {}),

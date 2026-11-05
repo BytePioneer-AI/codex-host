@@ -33,6 +33,8 @@ import {
   isConsoleHostMethod,
   consoleOpenParamsSchema,
   consoleOpenResultSchema,
+  webOpenParamsSchema,
+  webOpenResultSchema,
 } from "@codexhost/shared-contracts";
 import {
   DELEGATION_MENTION_PATH_PREFIX,
@@ -230,6 +232,7 @@ import {
 } from "./codex-runtime/official-runtime-scope.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
 import type { HostConsoleOpener } from "./console-opener.js";
+import type { HostWebOpener } from "./web-opener.js";
 
 const CONSOLE_REQUEST_TIMEOUT_MS = 120_000;
 
@@ -357,6 +360,7 @@ export interface AppServerHostOptions {
   runtimeMaintenance?: RuntimeMaintenance;
   /** Present only on the local Host started by the Launcher. */
   consoleOpener?: HostConsoleOpener;
+  webOpener?: HostWebOpener;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
   /** Shared by all Hosts of one runtime; defaults to the bundled snapshot only. */
   modelPrices?: ModelPriceCatalog;
@@ -946,6 +950,7 @@ export class AppServerHost {
       inspectHarnessAccount: (adapter, refresh) => this.#inspectHarnessAccount(adapter, refresh),
       handleUpdateRequest: (request) => this.#handleUpdateRequest(request),
       handleConsoleOpen: (request) => this.#handleConsoleOpen(request),
+      handleWebOpen: (request) => this.#handleWebOpen(request),
       handleCodexAccountRequest: (request) => this.#handleCodexAccountRequest(request),
       inspectHarness: (request) => this.#inspectHarness(request),
       openHarnessWebUi: (request) => this.#openHarnessWebUi(request),
@@ -2848,6 +2853,26 @@ export class AppServerHost {
     }
     try {
       const result = consoleOpenResultSchema.parse(await opener.open());
+      await this.#writer.json(rpcEnvelope(request, { result }));
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32092, errorMessage(error).slice(0, 500)));
+    }
+  }
+
+  async #handleWebOpen(request: JsonRpcRequest): Promise<void> {
+    if (!webOpenParamsSchema.safeParse(request.params ?? {}).success) {
+      await this.#writer.json(rpcError(request, -32602, "Web params must be empty"));
+      return;
+    }
+    const opener = this.#options.webOpener;
+    if (!opener) {
+      await this.#writer.json(
+        rpcError(request, -32090, "Web can be opened on the local Host only"),
+      );
+      return;
+    }
+    try {
+      const result = webOpenResultSchema.parse(await opener.open());
       await this.#writer.json(rpcEnvelope(request, { result }));
     } catch (error) {
       await this.#writer.json(rpcError(request, -32092, errorMessage(error).slice(0, 500)));

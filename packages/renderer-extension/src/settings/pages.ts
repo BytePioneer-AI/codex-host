@@ -105,6 +105,7 @@ export interface RendererUpdateClient {
   readUpdateStatus(): Promise<UpdateStatusResult>;
   /** Opens the local codexhost console; absent on Hosts that cannot. */
   openConsole?(): Promise<unknown>;
+  openWeb?(): Promise<unknown>;
 }
 
 function panelIconName(view: string): RendererSettingsIconName {
@@ -212,6 +213,42 @@ function consoleSection(
   return section;
 }
 
+function webSection(
+  document: Document,
+  messages: RendererSettingsMessages,
+  client: RendererUpdateClient | null,
+): HTMLElement | null {
+  if (!client?.openWeb) return null;
+  const openWeb = client.openWeb.bind(client);
+  const section = document.createElement("div");
+  section.className = "settings-about-repository";
+  const copy = document.createElement("p");
+  copy.textContent = messages.aboutWeb;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "settings-command-button settings-command-button--secondary";
+  button.textContent = messages.aboutWebOpen;
+  const status = document.createElement("p");
+  status.setAttribute("role", "status");
+  status.hidden = true;
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    button.textContent = messages.aboutWebOpening;
+    status.hidden = true;
+    void openWeb()
+      .catch((error: unknown) => {
+        status.textContent = `${messages.aboutWebFailed}: ${error instanceof Error ? error.message : String(error)}`;
+        status.hidden = false;
+      })
+      .finally(() => {
+        button.disabled = false;
+        button.textContent = messages.aboutWebOpen;
+      });
+  });
+  section.append(copy, button, status);
+  return section;
+}
+
 function aboutPage(
   messages: RendererSettingsMessages,
   getClient: () => RendererUpdateClient | null = () => null,
@@ -264,6 +301,8 @@ function aboutPage(
       panel.append(product, tagline, introduction, starCallout, repositorySection);
       const consoleEntry = consoleSection(document, messages, getClient());
       if (consoleEntry) panel.append(consoleEntry);
+      const webEntry = webSection(document, messages, getClient());
+      if (webEntry) panel.append(webEntry);
       context.content.append(heading, panel);
       return undefined;
     },

@@ -2806,6 +2806,47 @@ describe("Renderer Updates page", () => {
     scope.dispose();
   });
 
+  it("opens Web from About and shows Host failures without opening a URL itself", async () => {
+    const openWeb = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("The local Host is unavailable"))
+      .mockResolvedValueOnce({});
+    const page = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN"), () => ({
+      checkUpdate: vi.fn(),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+      openWeb,
+    })).find(({ id }) => id === "about");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page?.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    const button = descendants(content).find(
+      (element) => element.tagName === "button" && element.textContent === "打开 Web",
+    );
+    if (!button) throw new Error("Web button is missing");
+    expect(visibleText(content)).toContain("设置 → 连接设备");
+    button.dispatch("click");
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe("正在打开…");
+    await vi.waitFor(() => {
+      expect(visibleText(content)).toContain("Web 打开失败: The local Host is unavailable");
+      expect(button.disabled).toBe(false);
+    });
+    button.dispatch("click");
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    expect(openWeb).toHaveBeenCalledTimes(2);
+    expect(button.textContent).toBe("打开 Web");
+    const status = descendants(content).find((element) =>
+      element.textContent.startsWith("Web 打开失败:"),
+    );
+    expect(status?.hidden).toBe(true);
+    scope.dispose();
+  });
+
   it("offers the codexhost console on the About page when the Host can open it", async () => {
     const openConsole = vi
       .fn()
@@ -2861,6 +2902,7 @@ describe("Renderer Updates page", () => {
       runLatest: (operation, handlers) => plainScope.runLatest(operation, handlers),
     });
     expect(visibleText(plain)).not.toContain("Open console");
+    expect(visibleText(plain)).not.toContain("Open Web");
     plainScope.dispose();
   });
 

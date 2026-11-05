@@ -995,6 +995,11 @@ export function installCurrentRendererAdapter(): {
     checkUpdate: () => settingsModelClient().checkUpdate(),
     startUpdate: () => settingsModelClient().startUpdate(),
     readUpdateStatus: () => settingsModelClient().readUpdateStatus(),
+    openWeb: async () => {
+      const client = disposed ? null : clients.forHost("local");
+      if (!client?.openWeb) throw new Error("The local Host is unavailable");
+      return client.openWeb();
+    },
     // The console lives on this machine, so it is always opened through the local Host.
     openConsole: async () => {
       const client = disposed ? null : clients.forHost("local");

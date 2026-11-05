@@ -24,6 +24,10 @@ import {
   type HarnessDisplaySet,
   type HarnessDisplaySettings,
   CONSOLE_OPEN_METHOD,
+  WEB_OPEN_METHOD,
+  webOpenParamsSchema,
+  webOpenResultSchema,
+  type WebOpenResult,
   consoleOpenParamsSchema,
   consoleOpenResultSchema,
   type ConsoleOpenResult,
@@ -256,6 +260,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
   openConsole?(): Promise<ConsoleOpenResult>;
+  openWeb?(): Promise<WebOpenResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
   listHarnessAccountSources?(): Promise<HarnessAccountSourceListResult>;
   inspectHarnessAccount?(input: HarnessAccountInspectParams): Promise<HarnessAccountInspectResult>;
@@ -611,6 +616,10 @@ export function createRendererModelClient(
         updateEmptyParamsSchema.parse({}),
       );
       return updateStatusResultSchema.parse(result);
+    },
+    async openWeb(): Promise<WebOpenResult> {
+      const result = await manager.sendRequest(WEB_OPEN_METHOD, webOpenParamsSchema.parse({}));
+      return webOpenResultSchema.parse(result);
     },
     async openConsole(): Promise<ConsoleOpenResult> {
       const result = await manager.sendRequest(

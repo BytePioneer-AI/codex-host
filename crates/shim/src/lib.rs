@@ -1169,11 +1169,17 @@ mod tests {
     #[test]
     fn local_desktop_keeps_launcher_host_paths_over_npm() {
         let selected = select_host_paths(
-            Some(OsString::from("/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node")),
-            Some(OsString::from("/Applications/ChatGPT.app/Contents/Resources/host-runtime.mjs")),
+            Some(OsString::from(
+                "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node",
+            )),
+            Some(OsString::from(
+                "/Applications/ChatGPT.app/Contents/Resources/host-runtime.mjs",
+            )),
             true,
             Some(OsString::from("/Users/me/.nvm/versions/node/bin/node")),
-            Some(OsString::from("/Users/me/.npm-global/lib/node_modules/@bytepioneer/codexhost")),
+            Some(OsString::from(
+                "/Users/me/.npm-global/lib/node_modules/@bytepioneer/codexhost",
+            )),
             false,
         );
 

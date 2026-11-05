@@ -914,6 +914,11 @@ codexhost
 codexhost --version
 codexhost inspect
 codexhost launch
+codexhost web
+codexhost status
+codexhost autostart on
+codexhost autostart status
+codexhost stop
 codexhost remote install
 codexhost remote start
 codexhost remote stop
@@ -924,13 +929,35 @@ codexhost broker status
 
 The \`codexhost\` command launches the packaged Rust launcher with:
 
-- the current Node.js executable as Host Runtime
-- packaged \`host-runtime\`, Desktop Controller, Renderer, and Shim binaries
+- the current Node.js executable for Web; Host may use Desktop's bundled Node for native integration
+- packaged \`host-runtime\`, Desktop Controller, Renderer, Shim and Web resources
+
+\`codexhost\` starts background Web alongside Desktop, or opens Web when Desktop is not installed. \`codexhost web\` ensures Host and Web run in the background and opens a browser; over SSH or without a graphical session it only prints a local login link. Closing the terminal or interface does not stop the services. \`CODEXHOST_WEB_SERVICE=0\` disables Web startup alongside \`codexhost\`.
+
+Web initially listens on \`127.0.0.1:4400\`. The local Connect devices page controls LAN access and Tailscale Serve. \`codexhost web --host 0.0.0.0 --port 4500\` enables LAN access on another port; \`--host\`, \`--port\`, \`--public-url\` and \`--trusted-proxy\` are validated and saved for later starts, with an empty value clearing the option. Changes restart only Web, disconnecting Web terminals but preserving Host tasks. Port conflicts fail without killing the listener or choosing another port. LAN HTTP is unencrypted.
+
+Matching services are reused; a version or installation mismatch replaces them, interrupting Host tasks when Host is replaced. \`codexhost status\` reads Host/Web status and versions, a token-free address, the last Web failure and autostart state. \`codexhost stop\` stops managed Desktop, Web, Host, remote services, Broker and Console, without confirmation, and reports interrupted Host tasks. Session data, autostart and Serve configuration remain; independently opened Desktop is not closed. Remote services return when another computer reconnects, but interrupted tasks do not resume automatically.
+
+\`codexhost autostart on|off|status\` manages current-user login startup, off by default. Login starts Host and Web without opening an interface. Linux requires systemd user services; linger is user-managed. Running \`codexhost\` refreshes enabled autostart with the current Node and CLI paths. The computer must remain awake and connected for phone access.
+
+Office preview components download from the npm registry on first use on the Web computer; documents are not uploaded. Download failures do not affect other features and can be retried.
+
+## Uninstall or downgrade
+
+Before removing the package or switching to a version without background Web support:
+
+\`\`\`bash
+codexhost stop
+codexhost autostart off
+npm uninstall -g ${NPM_PACKAGE_NAME}
+\`\`\`
+
+Serve configuration is retained. Check \`tailscale serve status\`; if the HTTPS 443 root path still points to this Web, use \`tailscale serve --https=443 --set-path=/ off\` (substitute the actual HTTPS port). Do not remove another service's root path or omit \`--set-path=/\`. The local Connect devices page can also disable Serve while Web is running.
 
 ## Requirements
 
 - ${NPM_NODE_REQUIREMENT} (other releases lack parts of the built-in \`node:sqlite\` module)
-- Official ChatGPT/Codex Desktop for macOS, Windows, or Linux
+- Official ChatGPT/Codex Desktop only when using the Desktop interface; Web works without it
 - Pi on \`PATH\` when using the Pi agent
 - Claude Code installed when using the Claude Code adapter
 

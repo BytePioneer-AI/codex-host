@@ -2,6 +2,25 @@
 
 Web 与 Codex Desktop 在同一仓库开发，浏览器通过 `packages/web-server` 的独立 Node 服务访问。默认 `codexhost` 会话来源按需启动或连接独立的本地 CH 后台，复用 CH 的 Thread 目录、创建、读取和操作；Web 网关不直接读写 Mapping Store、不为外部 Threads 启动第二份 Adapter，也不登记 Desktop 进程所有权。默认启用所有打包的会话 Harness，包括 Codex CLI（`codex-cli`）；它们都由共享后台的外部 Thread 运行时执行，Web 网关只连接 Host，不在本地执行 Harness。Web/PWA 共用响应式界面；尚无 iOS/Android 原生封装。
 
+## 安装版后台 Web
+
+安装包和 npm 包均包含 Web，无须源码或运行中的 Codex Desktop。npm 用户可直接运行以下命令；macOS 安装包将 `codexhost` 替换为 `/Applications/codexhost.app/Contents/MacOS/codexhost`（按实际安装位置调整），Windows PowerShell 使用 `& "$env:LOCALAPPDATA\Programs\codexhost\bin\codexhost.exe"`。
+
+```sh
+codexhost web
+codexhost status
+codexhost web --host 0.0.0.0 --port 4500
+codexhost stop
+```
+
+`codexhost web` 确保 Host 和 Web 在后台运行，输出本机登录链接并打开浏览器；SSH 或无图形界面时只输出链接。`codexhost` 打开 Desktop，同时在后台拉起 Web；未安装 Desktop 时说明原因并改为打开 Web。`CODEXHOST_WEB_SERVICE=0` 禁用 `codexhost` 随启动拉起 Web 的行为。关闭终端、GUI 或浏览器不停止后台服务，电脑休眠时手机仍无法连接。
+
+首次后台启动默认监听 `127.0.0.1:4400`。`codexhost web` 的 `--host`、`--port`、`--public-url`、`--trusted-proxy` 经 Web 校验后保存在 `<web-data>/service.json`，后续启动沿用；传空字符串清除对应选项，无效值不覆盖保存内容。选项变化只重启 Web，Host 任务不受影响，Web 终端会断开。本机连接设备页也提供局域网和自启开关，见[远程访问](web-remote-access.md)。
+
+版本、安装位置及选项一致时复用服务。`codexhost` 或 `codexhost web` 发现 Host 或 Web 的版本、运行入口不一致时切换为当前安装；Host 被替换会中断任务并输出任务数，会话记录保留，任务不自动续跑。后台 Web 就绪后崩溃会退避重启，启动阶段失败不重试。`codexhost status` 只读显示 Host/Web 状态与版本、不含 token 的 Web 地址、最近失败原因和自启状态，不启动服务。
+
+`codexhost stop` 不确认，按 GUI、Web、Host、远程服务、Broker、Console 的顺序停止，并报告本地 Host 被中断的任务数；用户自行打开的 Desktop 不关闭。远程服务停止后，其他电脑重新连接可恢复远程服务。自启项、Serve 配置和会话数据保留。前台开发 Web 不属于此命令的停止范围，开发者使用下文的 `npm stop`。
+
 ## 手机连接与恢复
 
 聊天标题下方的状态条独立显示浏览器到 Web 网关的连接，以及网关到 Host 的可用性；手机收起侧栏、未选择会话时也能看到浏览器连接提示。断线保留已显示的正文和草稿，提示上次历史同步时间；运行提示改为任务状态待确认，不把手机断线解释成后台任务停止。
@@ -32,13 +51,13 @@ Web 默认端口为 **4400**，控制台默认端口为 **4399**；可用 `--por
 
 Web 按内容寻址快照的 runtime 路径（或 `--ch-host-runtime` 覆盖值）与存活 Host 的 ready 记录比较。不带 `web` 的 `npm start` 使用固定的源码构建入口，按 `packages/**/dist/**/*.js`（包含 Host 直接依赖的 `packages/desktop-control/dist`，排除 node_modules、`packages/web-server/dist` 和 `packages/renderer-extension/dist`）、`packages/host-runtime/dist/plugins/enabled.json`、该插件目录下各 `<id>/plugin.mjs` 与 `<id>/manifest.json`，以及 `package-lock.json` 的相对路径和内容计算 SHA-256 指纹；相同内容重写不改变指纹。GUI 命令在没有运行中的 Host 时记录本次构建，供后续 Desktop `host ensure` 使用；已有 Host 时仅在成功重启后更新 `<data>/dev-host-fingerprint.json`。运行入口和已记录指纹都相同才视为未变，无记录视为变化。GUI 在 Host 未变时仅重启 Desktop；Host 变化且没有 Web 服务运行时自动重启 Host，任意打包 Web 服务正在运行时使用相同的保留/重启提问。Desktop 存活检测复用 macOS/Windows 的开发进程识别，Linux 视为未开启。
 
-成功构建仅显示进度和耗时；失败显示末尾最多 64,000 字符诊断，保留旧 Host 和 Web。完整构建输出可通过 `npm run build:web` 查看。`npm start web -- --no-build` 复用已有发行产物，仍应用同一 Host 判断并重启 Web。`npm run start:web` 保留兼容。Web 仅停止明确匹配的旧开发进程，不按端口直接杀进程；其他程序占用端口仍需自行处理。开发重启要求本地共享 Host，旧 CDP 接入使用直接 preview 入口。
+成功构建仅显示进度和耗时；失败显示末尾最多 64,000 字符诊断，保留旧 Host 和 Web。完整构建输出可通过 `npm run build:web` 查看。`npm start web -- --no-build` 复用已有发行产物，仍应用同一 Host 判断并重启 Web。`npm run start:web` 保留兼容。Web 仅停止明确匹配的旧开发进程，不按端口直接杀进程；后台 Web 或其他程序占用端口时，输出端口占用错误并退出，不结束占用者、不自动换端口。可用 `npm start web -- --port 4401` 选择其他端口。开发重启要求本地共享 Host，旧 CDP 接入使用直接 preview 入口。
 
 ### 跨工作树停机
 
-在包含此脚本的仓库目录运行 `npm stop`，可停止当前用户在不同工作树运行的本地 codexhost 服务，不要求当前目录已构建。它先停止 Web 热更新监听和 Web 服务，再通过停止 Desktop Controller 让原生 Launcher 关闭其管理的 Codex Desktop 和旧式 Host，随后停止 Host，最后停止 Console。macOS/Linux 向已确认身份的服务进程发送 SIGTERM，让现有退出逻辑和原生监督进程回收所属子进程；Windows 停止对应进程树。脚本等待服务及其原生监督进程退出；运行中的任务和 Web 终端会中断。会话、认证、配置和构建产物不会删除。
+在包含此脚本的仓库目录运行 `npm stop`，可停止当前用户在不同工作树运行的本地 codexhost 服务，不要求当前目录已构建。它先停止 Web 热更新监听、后台 Web 监管进程及 Web 子进程（先停监管进程以防重新拉起），再通过停止 Desktop Controller 让原生 Launcher 关闭其管理的 Codex Desktop 和旧式 Host，随后停止 Host，最后停止 Console。macOS/Linux 向已确认身份的服务进程发送 SIGTERM，让现有退出逻辑和原生监督进程回收所属子进程；Windows 停止对应进程树。脚本等待服务及其原生监督进程退出；运行中的任务和 Web 终端会中断。会话、认证、配置和构建产物不会删除。
 
-停机按 Node 入口路径及仓库/发行元数据识别服务，不按端口或模糊进程名杀进程，也不停止其他用户、远程机器或独立运行的 Agent。只读帮助：`npm stop -- --help`。重复执行且没有服务时正常退出。PID 已被其他进程复用时不会向替代进程发信号。无法验证 Host 监督进程或退出超时会报错，不会宣称停机完成；不要同时运行启动命令。通过相对路径手工启动、不符合仓库启动器布局的进程不在自动识别范围内。
+停机按 Node 入口路径及仓库/发行元数据识别服务，后台 Web 监管进程按原生 Launcher 的 `web-service serve` 命令识别，不按端口或模糊进程名杀进程，也不停止其他用户、远程机器或独立运行的 Agent。只读帮助：`npm stop -- --help`。重复执行且没有服务时正常退出。PID 已被其他进程复用时不会向替代进程发信号。无法验证 Host 监督进程或退出超时会报错，不会宣称停机完成；不要同时运行启动命令。通过相对路径手工启动、不符合仓库启动器布局的进程不在自动识别范围内。
 
 切换到尚不支持共享 Host 的旧工作树前，先在含停机脚本的工作树执行 `npm stop`，再到目标目录执行 `npm start`；这不会为其他分支自动安装新命令。必须从独立终端执行停机，不要让需要停止的 Host 内部 Agent 执行，否则当前任务本身也会被中断。该命令提供停机能力，不保证修复其他构建或 Desktop 兼容性问题。
 
@@ -68,13 +87,17 @@ Web 按内容寻址快照的 runtime 路径（或 `--ch-host-runtime` 覆盖值�
 
 安装时不注册自启项，默认关闭。用 `codexhost autostart on` 开启，`codexhost autostart off` 关闭；两者只改变下次登录的启动设置，不启动或停止当前服务。`codexhost autostart status` 只输出一行 `on`、`off` 或 `invalid <原因>`；开启、关闭失败时退出码非零，原因写入 stderr。
 
-自启执行 `codexhost web --background`，只确保 Host 和 Web 运行，不主动打开界面，不输出登录链接；后台启动失败的原因可用 `codexhost status` 查看。Windows npm 版的控制台窗口限制见下文。`codexhost` 和 `codexhost web` 启动时刷新已存在的自启项，内容相同时不重写，也不调用 systemctl；npm 版保存当前 Node 和 JavaScript wrapper 的绝对路径，切换 Node 或移动安装后重新运行即可刷新。刷新失败只警告，不阻止启动。`codexhost status` 只读显示自启状态，失效时提示重新运行 `codexhost` 修复；`codexhost stop` 不修改自启项。
+自启执行 `codexhost web --background`，只确保 Host 和 Web 运行，不主动打开界面，不输出登录链接；后台启动失败的原因可用 `codexhost status` 查看。Windows npm 版的控制台窗口限制见下文。`codexhost` 和 `codexhost web` 启动时刷新已存在的自启项，内容相同时不重写，也不调用 systemctl；npm 版保存当前 Node 和 JavaScript wrapper 的绝对路径，切换 Node 或移动安装后重新运行即可刷新；源码构建不自动刷新。刷新失败只警告，不阻止启动。`codexhost status` 只读显示自启状态，失效时提示重新运行 `codexhost` 修复；`codexhost stop` 不修改自启项。
 
 - macOS：`~/Library/LaunchAgents/ai.bytepioneer.codexhost.autostart.plist`，`RunAtLoad`，不用 `KeepAlive`；写入和删除不调用 `launchctl`，下次登录生效。
 - Windows：当前用户 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `codexhost` 值。安装包使用 GUI 子系统的 `bin/codexhost-start.exe --autostart`，由它隐藏控制台运行 Launcher 的 `web --background`。npm 版仍由 `node.exe` 执行 wrapper，登录时可能短暂出现控制台窗口；不增加中间脚本。完整命令行超过 260 个 UTF-16 字符时拒绝开启，需要缩短 Node 或安装路径。
 - Linux：systemd 用户服务 `codexhost-autostart.service`，`Type=oneshot`、`RemainAfterExit=yes`，通过 `default.target` 启用；配置位于 `$XDG_CONFIG_HOME/systemd/user/`，默认 `~/.config/systemd/user/`。没有可用的 systemd 用户服务时开启失败。注销后是否保留用户服务由用户的 systemd linger 设置决定，codexhost 不修改 linger。
 
-macOS 或 npm 卸载前，先运行 `codexhost stop` 和 `codexhost autostart off`，再移除应用或 npm 包。Tailscale Serve 配置仍会保留；如不再使用，先用 `tailscale serve status` 确认 HTTPS 443 根路径仍指向此 Web，再用 `tailscale serve --https=443 --set-path=/ off` 移除该根路径；使用其他 HTTPS 端口时替换为实际端口，不删除其他服务的转发。访问方式见[远程访问](web-remote-access.md)。回退到不支持后台 Web 的旧版前，也先停止服务并关闭自启。
+### 卸载与回退
+
+Windows 卸载程序在删除文件前依次调用安装内的 `codexhost stop` 和 `codexhost autostart off`，完成页提示 Serve 配置保留；覆盖安装不执行这两个卸载动作，不移除自启项。
+
+macOS 或 npm 卸载前，先运行 `codexhost stop` 和 `codexhost autostart off`（安装包使用本文开头的完整可执行文件路径），再移除应用或执行 `npm uninstall -g @codexhost/cli`。Tailscale Serve 配置仍会保留；如不再使用，先用 `tailscale serve status` 确认 HTTPS 443 根路径仍指向此 Web，再用 `tailscale serve --https=443 --set-path=/ off` 移除该根路径；使用其他 HTTPS 端口时替换为实际端口，不删除其他服务的转发。访问方式见[远程访问](web-remote-access.md)。回退到不支持后台 Web 的旧版前，也先停止服务并关闭自启。
 
 ## 访问认证
 
@@ -90,7 +113,7 @@ macOS 或 npm 卸载前，先运行 `codexhost stop` 和 `codexhost autostart of
 
 **连接设备：** Web 设置的“连接设备”分区在所有访问方式下都显示。本机访问时显示所选地址的登录二维码和链接、最近使用时间，可复制链接或令牌、重新生成令牌；非本机访问时只显示提示和退出登录，`codexhost/accessTokenGet`、`accessTokenRegenerate` 返回 `auth/local-access-required`；`--no-auth` 时返回 `auth/disabled`。地址默认依次选择配置的公开地址、Funnel、Serve HTTPS（打开页面时用 `tailscale serve status` 检测已转发到当前端口的配置，不会修改 Serve），其次是 Tailscale IP 和局域网；虚拟机和容器网卡的地址折叠在“其他地址”中，启动输出也只在没有其他地址时才列出它们。没有命令行管理入口。
 
-**远程地址与诊断：** 配置 `--public-url` 或 `CODEXHOST_WEB_PUBLIC_URL` 时，公开地址优先于 Funnel、Serve HTTPS 和网卡地址；只接受无用户信息、路径、查询和片段的 HTTP(S) 根地址，HTTP 会提示明文风险。`npm start web` 和 `preview.mjs` 会传递该值，但不据此增加可信代理或同源白名单。连接设备页只读显示 Tailscale 状态、占用目标及读取错误；根路径未转发时提供可复制命令，不执行命令。Funnel 标明互联网公开，仍需 token。启动第一行不变，其后读取并输出 Serve/Funnel 地址，检测最多 3 秒。Serve 配置在 Web 退出后保留，占用同端口的其他程序也会被转发。各方式的 TLS、代理和验证边界见[Web 远程访问](web-remote-access.md)。
+**远程地址与诊断：** 配置 `--public-url` 或 `CODEXHOST_WEB_PUBLIC_URL` 时，公开地址优先于 Funnel、Serve HTTPS 和网卡地址；只接受无用户信息、路径、查询和片段的 HTTP(S) 根地址，HTTP 会提示明文风险。`npm start web` 和 `preview.mjs` 会传递该值，但不据此增加可信代理或同源白名单。连接设备页读取 Tailscale 状态、占用目标及读取错误；本机用户确认后可开关 Serve，开启前重新确认根路径未占用，关闭只移除指向当前 Web 的根路径，结果以重新读取的状态为准。Funnel 标明互联网公开，仍需 token。启动第一行不变，其后读取并输出 Serve/Funnel 地址，检测最多 3 秒。Serve 配置在 Web 退出后保留，占用同端口的其他程序也会被转发。各方式的 TLS、代理和验证边界见[Web 远程访问](web-remote-access.md)。
 
 **退出登录：** 只在非本机页面提供，确认后取消这个浏览器的推送订阅并清除 Cookie（`POST /api/auth/logout`，需同源），令牌和其他设备不受影响。重新登录要在电脑上查看令牌。
 
@@ -378,7 +401,7 @@ Desktop 窗口未运行时，Host 使用同一条路径完成置顶和取消置�
 
 手机草稿仅在页面内存中按终端视图保留，切换标签不会丢失，刷新或关闭页面不持久化。仅在原生 `terminal/attach` 输入确认到达后清空未修改的草稿；确认表示服务接受输入，不代表命令执行成功。发送期间防止重复提交；断线、控制权被接管、缓冲拒绝或15 秒提交确认超时均保留草稿并提示先检查终端，重连不重发，手工重发还需确认。自动化覆盖原生文本框、本地编辑不发包、整段输入到 PTY、确认及失败边界；真实手机输入法体验仍需在对应设备验收。
 
-文档预览支持文本、代码、Markdown、图片、PDF、HTML、CSV/TSV/XLSX 表格，以及经本地 LibreOffice 引擎转换的 DOC/DOCX/PPT/PPTX。Office 引擎按平台以 npm 可选依赖提供：macOS/Windows 使用原生包，Linux 使用 WASM 包；缺少对应引擎或终端原生预构建时，对应能力按 DSH 原有提示显示不可用，不回退为其他引擎，也不影响文件树、预览和浏览器。原生 Office 引擎约 150 MB，发行目录会包含当前平台引擎及其许可证；发行包因此明显增大，且必须与目标 OS/CPU 匹配，不能把 macOS 或 Windows 的发行目录直接复制到其他平台运行。终端依赖 node-pty 预构建；没有对应平台预构建的平台不提供终端。
+文档预览支持文本、代码、Markdown、图片、PDF、HTML、CSV/TSV/XLSX 表格，以及经本地 LibreOffice 引擎转换的 DOC/DOCX/PPT/PPTX。Office 引擎按平台以 npm 可选依赖提供：macOS/Windows 使用原生包，Linux 使用 WASM 包；缺少对应引擎或终端原生预构建时，对应能力按 DSH 原有提示显示不可用，不回退为其他引擎，也不影响文件树、预览和浏览器。原生 Office 引擎约 150 MB，源码 packed 目录包含当前平台引擎及其许可证；安装包和 npm 包按上文所述按需下载。原生依赖必须与目标 OS/CPU 匹配，不能把 macOS 或 Windows 的发行目录直接复制到其他平台运行。终端依赖 node-pty 预构建；没有对应平台预构建的平台不提供终端。
 
 文本预览按像素偏移保留阅读位置：自动或手动刷新后，按需继续读取分页直到记忆位置可达；内容暂时清空或缩短导致的底部钳制不会覆盖记忆位置，用户主动向上滚动则更新它。正文关闭浏览器滚动锚定。纯文本与代码预览声明 `sourceLines` 并响应源文件行号导航；Markdown 等不提供源行锚点的预览确认该导航但不跳转，也不会在之后切换为代码或纯文本时补跳。
 

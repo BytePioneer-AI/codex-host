@@ -831,6 +831,28 @@ describe("npm package release", () => {
     ]);
   });
 
+  it("documents background Web and uninstall commands in both npm READMEs", () => {
+    for (const readme of [
+      createNpmMetaReadme({ version: "0.1.0" }),
+      createNpmReadme({ version: "0.1.0", target: releaseTarget("windows-x64") }),
+    ]) {
+      for (const command of [
+        "codexhost web",
+        "codexhost status",
+        "codexhost autostart on",
+        "codexhost autostart off",
+        "codexhost stop",
+        `npm uninstall -g ${NPM_PACKAGE_NAME}`,
+        "tailscale serve status",
+        "tailscale serve --https=443 --set-path=/ off",
+      ])
+        expect(readme).toContain(command);
+      expect(readme).toContain("127.0.0.1:4400");
+      expect(readme).toContain("--trusted-proxy");
+      expect(readme).toContain("--public-url");
+    }
+  });
+
   it("keeps Windows launcher supervision alive after the ready handshake", async () => {
     const result = await runLauncherLifecycle("win32");
     const readme = createNpmMetaReadme({ version: "0.1.0" });

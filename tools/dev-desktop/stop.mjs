@@ -11,7 +11,7 @@ import {
 export const usage = `usage: npm stop
 
 Stop this user's local codexhost services across worktrees:
-  Web previews/watchers, managed Codex Desktop, Hosts and Console.
+  Web previews/watchers and background Web, managed Codex Desktop, Hosts and Console.
 Running tasks and Web terminals are interrupted. No data or build files are removed.
 The invoking worktree does not need to be built. Run from a separate terminal,
 not a task hosted by the Host you are stopping. Do not start another interface concurrently.
@@ -59,7 +59,16 @@ export async function stopDevelopment({
   log(
     "codexhost stop: stopping local services across worktrees; running tasks will be interrupted",
   );
-  for (const kind of ["watch", "web", "desktop", "shared-host", "host", "console"]) {
+  // Stop Web supervisors before their children so a child exit cannot restart Web.
+  for (const kind of [
+    "watch",
+    "web-supervisor",
+    "web",
+    "desktop",
+    "shared-host",
+    "host",
+    "console",
+  ]) {
     for (const target of targets.filter((candidate) => candidate.kind === kind)) {
       log(`codexhost stop: stopping ${kind} (PID ${target.pid})`);
       await stop(target, { list });

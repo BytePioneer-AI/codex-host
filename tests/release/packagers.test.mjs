@@ -136,6 +136,23 @@ describe("platform packagers", () => {
     expect(installer).not.toMatch(/taskkill|powershell|\[Run\]/i);
   });
 
+  it("runs service shutdown and autostart removal only during uninstall, before deleting files", async () => {
+    const installer = await readFile(
+      path.join(root, "scripts/release/windows/Installer.iss"),
+      "utf8",
+    );
+    const uninstall = installer.split(/\[UninstallRun\]\r?\n/u)[1].split(/\r?\n\[/u)[0];
+    expect(uninstall.trim().split(/\r?\n/u)).toEqual([
+      'Filename: "{app}\\bin\\codexhost.exe"; Parameters: "stop"; Flags: runhidden; RunOnceId: "StopCodexhostServices"',
+      'Filename: "{app}\\bin\\codexhost.exe"; Parameters: "autostart off"; Flags: runhidden; RunOnceId: "DisableCodexhostAutostart"',
+    ]);
+    expect(installer.split("[Code]")[1]).not.toMatch(/autostart|unins|Serve/u);
+    expect(installer).not.toMatch(/\[Registry\]|RegDelete|taskkill|powershell/iu);
+    expect(installer).toContain("UninstalledAll=%1 was successfully removed");
+    expect(installer).toContain("Tailscale Serve configuration is still retained");
+    expect(installer).toContain("tailscale serve --https=443 --set-path=/ off");
+  });
+
   it("statically links the MSVC runtime so Windows executables need no VC++ Redistributable", async () => {
     const config = await readFile(path.join(root, ".cargo/config.toml"), "utf8");
     for (const target of ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]) {

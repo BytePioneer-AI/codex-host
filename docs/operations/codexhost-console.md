@@ -34,6 +34,12 @@ type: warning
 
 每次打开或刷新 Web 页面时只读取一次，不定时刷新、不轮询、不自动重试；切换控制台内部页面不会再次获取。读取不阻塞其他控制台功能。GitHub 请求最多等待 5 秒，本机接口请求最多等待 8 秒；读取失败、网络超时、文件不存在、格式错误或超过 16 KiB 时保持隐藏，不显示错误、提示条或空白占位。服务端不缓存公告或失败结果，手动刷新页面即可重新尝试；GitHub/CDN 自身缓存仍可能影响更新时效。通知不写入磁盘。
 
+## 与会话 Web 的区别
+
+Console 是仅本机访问的诊断和管理网页，默认端口 `4399`，由 `codexhost console` 打开。`codexhost web` 打开的是独立会话 Web，首次默认监听 `127.0.0.1:4400`，需要访问令牌，可用于手机连接；Host 和 Web 脱离终端运行，关闭页面不停止服务。无 Desktop 时 `codexhost` 改为打开会话 Web，不把 Console 当作聊天界面。命令和安装包路径见[独立 Web 应用](../product/standalone-web.md#安装版后台-web)。
+
+`codexhost status` 只读查看后台 Host/Web 的状态、版本、Web 地址及自启状态；`codexhost stop` 依次停止托管 GUI、Web、Host、远程服务、Broker 和 Console，报告被中断的任务数，会话数据保留。自启项用 `codexhost autostart on|off|status` 管理，停止服务不关闭自启，也不撤销 Tailscale Serve。
+
 ## 打开方式
 
 控制台随 codexhost 启动：
@@ -68,6 +74,10 @@ Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAt
 两个入口都在构建成功、产物验证后调用原生 Launcher 的 `host restart`，在同一数据目录的生命周期锁内等待旧进程树退出，再启动当前构建并等待就绪。构建失败或产物缺失不会停止旧 Host，Host 重启失败则不继续启动界面。`--no-build` 只跳过构建，仍重启 Host 和对应界面，不重放中断的任务。
 
 Desktop 使用 `CODEXHOST_DATA_DIR`，默认 `~/.codexhost`。Web 使用 `--ch-data` 或 `--ch-control-directory` 对应的 Host 数据目录，默认同为 `~/.codexhost`；Web 自身的 `--data` 不改变 Host 位置。Web 只停止相同工作树、相同端口且进程身份匹配的旧开发服务，不关闭 Desktop；其他端口或工作树的服务保持运行。Web 开发重启要求本地共享 Host，旧 CDP 接入请直接使用打包版 preview 入口。
+
+## 卸载
+
+Windows 卸载程序在删除安装文件前调用安装内的 `codexhost stop`、`codexhost autostart off`，完成页提醒 Serve 配置保留；覆盖安装仅走安装准备逻辑，不执行这些卸载动作，也不删除自启项。macOS 和 npm 用户移除应用或执行 `npm uninstall -g @codexhost/cli` 前须自行运行这两个命令。若不再使用 Serve，按[远程访问的卸载说明](../product/web-remote-access.md#卸载时移除-serve)检查并只移除对应 HTTPS 根路径。回退旧版前也应先停止后台服务并关闭自启。
 
 ## 端口
 

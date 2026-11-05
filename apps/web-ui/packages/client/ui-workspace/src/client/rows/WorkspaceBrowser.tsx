@@ -710,7 +710,8 @@ function SessionTree({
             }}
             onCreate={() => {
               if (group.workspaceId !== undefined) {
-                setGroupExpanded(group.key, true);
+                // Preserve even the implicit default against current-session auto-expansion.
+                setGroupExpanded(group.key, group.expanded);
                 startSession(group.workspaceId);
               }
             }}

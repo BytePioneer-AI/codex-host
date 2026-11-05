@@ -114,7 +114,7 @@ it("keeps saved enablement distinct from the current startup and confirms remova
   await act(async () => button("Enable").click());
   expect(uiExtensionsApi.setEnabled).toHaveBeenCalledExactlyOnceWith("test-theme", true);
   expect(container.textContent).toContain("Enabled for Web");
-  expect(container.textContent).toContain("Restart Web to apply this change.");
+  expect(container.textContent).toContain("The saved selection is not loaded on the server.");
   expect(container.textContent).not.toContain("Included when Web started.");
   await act(async () => button("Uninstall").click());
   expect(uiExtensionsApi.remove).not.toHaveBeenCalled();
@@ -236,7 +236,7 @@ it("preserves enabled choices in safe mode and prevents writes when saved record
   const { container, button } = await mount();
   expect(container.textContent).toContain("Your saved choices are kept.");
   expect(container.textContent).toContain("Enabled for Web");
-  expect(container.textContent).not.toContain("Restart Web to apply this change.");
+  expect(container.textContent).not.toContain("The saved selection is not loaded on the server.");
   expect(button("Disable").disabled).toBe(true);
   expect(button("Uninstall").disabled).toBe(true);
   expect(button("Add extension").disabled).toBe(true);

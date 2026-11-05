@@ -14,24 +14,11 @@ Right Sidebar touch controls follow the scoped revision in `sidebarTouchUpstream
 
 `packages/client/hmr` contains the browser half of `@deepseek-ai/dsh-client-hmr` and a byte-for-byte import of the official Node half and focused tests, pinned to [`bf1a2bf69c76af82eb583aad596f7e3eceb81d31`](https://github.com/deepseek-ai/deepseek-harness/tree/bf1a2bf69c76af82eb583aad596f7e3eceb81d31/packages/client/hmr). `clientHmrUpstream` in `import-manifest.json` records every copied path, SHA-256, dependency and baseline comparison. The package-local `LICENSE` is the unmodified upstream repository MIT license. The copied TypeScript files retain upstream formatting and are excluded from Prettier to preserve byte-level provenance.
 
-The imported Node entry is **not yet exported or mounted**. `packages/web-server/src/web-hmr.ts` still supplies the running server transport, and the browser plugin is composed only with `--dev-web-ui` (`npm start web` enables this by default and runs `scripts/build.ts --watch`; `--no-watch` disables it). The existing browser adaptation is a `shell` frame that reloads the page because the statically linked shell cannot be swapped; it is retained unchanged. The selected official revision matches that browser implementation without importing the later Worker transport or `eventsource-parser` dependency. Cordis fiber, Loader entry/group and the four client module reconciliation files match after formatting normalization. Existing ClientModules snapshot/carrier adaptations and embedded WebServer ownership remain in place.
+The official Node entry runs in `dsh-web-backend` alongside a stable Loader and ClientModules registry, including when no external plugin is enabled. Its private route-registration port forwards `/plugins/events` through the authenticated Web carrier without exposing reserved paths to user packages. The existing management queue applies only changed installations and awaits their Cordis disposal before deleting files. Source and packed client compositions include the browser transport; recovery pages omit it and therefore cannot receive external graphs. No Node code-replacement HMR, profile manager or Worker transport is mounted.
 
-The upstream tests are kept beside `src/` so their relative imports remain unchanged. They are not yet in the default test-discovery glob. A focused run uses the repository's Vitest configuration with only the discovery include overridden:
+`packages/web-server/src/web-hmr.ts` owns only the development shell watcher and `/plugins/shell-events`. The browser retains its local `shell` frame support and subscribes to that separate channel only when the source carrier enables `__CODEXHOST_DEV_WEB_UI__`. All plugin graph/rebuilt delivery uses the unmodified official server. Per-file adaptation reasons are recorded in the manifest; existing ClientModules snapshot/carrier adaptations remain in place.
 
-```sh
-node --input-type=module <<'JS'
-import { startVitest } from 'vitest/node';
-const ctx = await startVitest('test', [], {
-  config: 'tests/vitest.config.js',
-  include: ['apps/web-ui/packages/client/hmr/tests/*.spec.ts'],
-  watch: false,
-});
-if (!ctx) process.exitCode = 1;
-else await ctx.close();
-JS
-```
-
-These tests exercise the imported transport against the existing workspace Cordis/Loader and browser code, with fake module and HTTP services. They do not validate the Web carrier, authentication, installed-package lifecycle or distribution. Carrier integration must retain reserved routes and recovery-page isolation, keep the runtime available with zero installed plugins, and update the source/distribution composition together; no Node code-replacement HMR or profile manager is included.
+The three unchanged upstream test files live beside `src/` and run with `npx vitest run --config tests/vitest.config.js apps/web-ui/packages/client/hmr/tests`. Real Loader/storage integration is covered by `packages/web-server/test/dsh-web-hot-loading.test.ts`; authenticated carrier behavior by `dsh-web-plugin-http.test.ts`; browser synchronization, reconnect and recovery isolation by `test/browser/web-plugin-hot-loading.test.ts`. These fixture tests are not third-party package or packed-distribution acceptance.
 
 The upstream MIT license is retained in `LICENSE`, framework package licenses remain under `vendor/`, and upstream dependency notices are retained in `THIRD_PARTY_NOTICES.md`. Local import adaptations include private npm manifests, source exports, the selected source build, and removal of the upstream standalone Web Worker preview entry. The root LGPL license does not replace these notices.
 

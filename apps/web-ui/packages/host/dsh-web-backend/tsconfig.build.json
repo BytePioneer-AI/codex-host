@@ -13,6 +13,7 @@
       "@deepseek-ai/cordis-plugin-loader": ["./types/loader.d.ts"],
       "@codexhost/dsh-web-include": ["./types/include.d.ts"],
       "@deepseek-ai/dsh-client-modules": ["./types/client-modules.d.ts"],
+      "@deepseek-ai/dsh-client-hmr": ["./types/client-hmr.d.ts"],
       "@deepseek-ai/dsh-host-webserver": ["./types/webserver.d.ts"],
       "@deepseek-ai/dsh-api-gateway": ["./types/gateway.d.ts"],
       "@deepseek-ai/dsh-api-gateway/stream-server": ["./types/stream-server.d.ts"],

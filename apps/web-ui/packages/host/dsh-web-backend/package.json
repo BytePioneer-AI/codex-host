@@ -35,6 +35,7 @@
     "@deepseek-ai/dsh-api-terminal-controller": "*",
     "@deepseek-ai/dsh-api-workspace-files": "*",
     "@deepseek-ai/dsh-client-connection": "*",
+    "@deepseek-ai/dsh-client-hmr": "*",
     "@deepseek-ai/dsh-client-modules": "*",
     "@deepseek-ai/dsh-fs-local": "*",
     "@deepseek-ai/dsh-host-webserver": "*",

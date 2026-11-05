@@ -12,8 +12,26 @@
     "commit": "bf1a2bf69c76af82eb583aad596f7e3eceb81d31",
     "packageVersion": "0.2.1-alpha.3",
     "scope": "Missing client-hmr Node source, its three focused test files, and the repository MIT license; existing browser transport and runtime dependencies are retained, not upgraded",
-    "status": "Source import only; Node entry is not exported or mounted and existing WebHmr remains active in development",
-    "adaptation": "None in copied files, including formatting. Existing browser files retain CodexHost's shell frame extension. Local export, dependency, test discovery and carrier wiring are deferred to the adaptation phase.",
+    "status": "Official Node entry is exported and mounted by dsh-web-backend; source and packed client compositions include HMR, recovery compositions exclude it",
+    "adaptation": "The five copied files remain byte-for-byte upstream. SHA-256 values below identify those original source bytes, not adapted browser files. Loader, Cordis and ClientModules are not upgraded.",
+    "localAdaptations": [
+      {
+        "path": "apps/web-ui/packages/client/hmr/src/client/index.ts",
+        "reason": "Retains the existing shell-frame reload branch and adds a development-only plugins/shell-events subscription. The static Vite shell cannot be replaced by the module controller; graph/rebuilt still use only the official plugins/events transport."
+      },
+      {
+        "path": "apps/web-ui/packages/client/hmr/src/events.ts",
+        "reason": "Existing baseline shell frame type and parser extension; unchanged by hot-loading integration."
+      },
+      {
+        "path": "apps/web-ui/packages/client/hmr/package.json",
+        "reason": "Private npm workspace source export for the Node entry and an explicit dependency on the existing schemastery workspace; no version upgrade."
+      },
+      {
+        "path": "apps/web-ui/packages/host/dsh-web-backend/src/plugin-runtime.ts",
+        "reason": "Local carrier adapter mounts the official plugin with a private route-registration port, keeping third-party /plugins reservations intact; incremental Loader operations stay on the existing management queue."
+      }
+    ],
     "files": [
       {
         "source": "packages/client/hmr/src/index.ts",
@@ -53,11 +71,11 @@
       "relativeImport": "./events.ts (existing browser/server wire contract)",
       "tests": ["vitest", "@deepseek-ai/cordis", "@deepseek-ai/cordis-plugin-loader"],
       "upstreamManifest": "packages/client/hmr/package.json",
-      "availability": "All packages already exist in the local workspace/lockfile. The local HMR manifest still needs to declare schemastery and expose the Node entry in the adaptation phase. No new registry dependency or lockfile change is required for these tests."
+      "availability": "All dependencies use existing workspace/lockfile versions. The HMR manifest declares schemastery and exposes the Node entry; dsh-web-backend depends on HMR. The unchanged upstream tests are included by tests/vitest.config.js."
     },
     "compatibility": {
       "localBaseline": "267391674e7079961a72f35db07c1a0fc857806c",
-      "browserTransport": "After formatting normalization, src/client/index.ts differs only by the existing shell reload branch; src/events.ts differs by that frame's type/parser support and a removed upstream internal-doc comment.",
+      "browserTransport": "At localBaseline, formatting-normalized src/client/index.ts differs only by the shell reload branch; src/events.ts differs by its frame type/parser support and an internal-doc comment. The additional shell subscription is recorded in localAdaptations.",
       "normalizedMatches": [
         "vendor/cordis/src/fiber.ts",
         "vendor/loader/src/config/entry.ts",
@@ -67,7 +85,7 @@
         "packages/client/modules/src/client/manifest.ts",
         "packages/client/modules/src/client/system.ts"
       ],
-      "services": "The existing ClientModules provides graph/artifactBaseline/rebuilt/onGraphChanged/onRebuilt with the required signatures. Its local snapshot and embedded-carrier adaptations are retained. The existing embedded WebServer provides register and lifecycle disposal; its reserved /plugins prefix requires trusted carrier integration, not removal of third-party route checks.",
+      "services": "The existing ClientModules provides graph/artifactBaseline/rebuilt/onGraphChanged/onRebuilt with the required signatures. Its local snapshot and embedded-carrier adaptations are retained. The embedded WebServer retains its reserved /plugins prefix for user packages. The built-in HMR uses an isolated route-registration port forwarded by the authenticated carrier.",
       "versionLabels": "Local framework manifests retain alpha.1 labels; the pinned official framework manifests use alpha.2 and client packages use 0.2.1-alpha.3. Compatibility evidence is the source/API comparison and focused tests, not a claim of whole-package version equality.",
       "excluded": "No boot/hmr, vendor/hmr, app-boot/profile, full Plugin Manager, Worker preview transport, or unrelated DSH upgrade. The later ce7073d51254c26cd63b22a60835b8f948deb447 browser transport requires eventsource-parser and is not imported."
     }

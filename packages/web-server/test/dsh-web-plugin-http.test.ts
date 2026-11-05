@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { request } from "node:http";
+import { get, request, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it, type TestContext } from "node:test";
@@ -107,8 +107,41 @@ function upgrade(base: string, extra: Record<string, string> = {}): Promise<numb
   });
 }
 
+async function subscribe(t: TestContext, base: string) {
+  const response = await new Promise<IncomingMessage>((resolve) =>
+    get(new URL("/plugins/events", base), { headers }, resolve),
+  );
+  t.after(() => response.destroy());
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["content-type"], "text/event-stream");
+  const graphs: { entries: { id: string }[] }[] = [];
+  let buffer = "";
+  response.setEncoding("utf8");
+  response.on("data", (chunk: string) => {
+    buffer += chunk;
+    let end: number;
+    while ((end = buffer.indexOf("\n\n")) >= 0) {
+      const line = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      if (!line.startsWith("data: ")) continue;
+      const frame = JSON.parse(line.slice(6));
+      if (frame.type === "graph") graphs.push(frame.graph);
+    }
+  });
+  return {
+    response,
+    async contains(id: string, present: boolean) {
+      const deadline = Date.now() + 5000;
+      while (graphs.at(-1)?.entries.some((row) => row.id === id) !== present) {
+        assert.ok(Date.now() < deadline, "SSE graph did not converge");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    },
+  };
+}
+
 it(
-  "preserves native routing, authentication, recovery projections and running resources until shutdown",
+  "preserves native routing, authentication and recovery projections through hot selection changes",
   { timeout: 30_000 },
   async (t) => {
     const { root, source } = fixture(t);
@@ -128,6 +161,11 @@ it(
       },
     );
     assert.deepEqual((await rpc(url, "list")).loadedIds, [pkg.id]);
+    assert.equal((await fetch(new URL("/plugins/events", url))).status, 401);
+    const first = await subscribe(t, url);
+    const second = await subscribe(t, url);
+    await first.contains(pkg.id, true);
+    await second.contains(pkg.id, true);
     assert.equal((await fetch(new URL("/test-host", url))).status, 401);
     const get = (path: string, options: RequestInit = {}) =>
       fetch(new URL(path, url), { ...options, headers: { ...headers, ...options.headers } });
@@ -164,8 +202,25 @@ it(
     assert.equal((await get("/test-host")).status, 200);
     // Public shell filenames remain core-owned, even with a user plugin mounted.
     assert.equal((await fetch(new URL("/manifest.webmanifest", url))).status, 200);
-    await rpc(url, "remove", { id: pkg.id });
+    const recovery = await (await get("/?extensions=off")).text();
+    assert.doesNotMatch(recovery, /dsh-client-hmr|test-native-web/);
+    await rpc(url, "setEnabled", { id: pkg.id, enabled: false });
+    await first.contains(pkg.id, false);
+    await second.contains(pkg.id, false);
+    assert.equal((await get("/test-host/resource")).status, 404);
+    assert.ok(existsSync(pkg.directory));
+    assert.doesNotMatch(await (await get("/")).text(), /plugin-injection|plugin-tap/);
+    first.response.destroy();
+    await rpc(url, "setEnabled", { id: pkg.id, enabled: true });
+    await second.contains(pkg.id, true);
+    const reconnected = await subscribe(t, url);
+    await reconnected.contains(pkg.id, true);
     assert.equal(await (await get("/test-host/resource")).text(), "package resource");
+    assert.match(await (await get("/")).text(), /plugin-injection/);
+    await rpc(url, "remove", { id: pkg.id });
+    await reconnected.contains(pkg.id, false);
+    assert.equal((await get("/test-host/resource")).status, 404);
+    assert.equal(existsSync(pkg.directory), false);
     const exited = once(child, "exit");
     child.kill("SIGTERM");
     await exited;
@@ -207,6 +262,11 @@ it(
         assert.equal((await fetch(new URL("/test-host", url), { headers })).status, 404);
         if (mode === "missing")
           assert.match(state.extensions[0]?.loadError ?? "", /missingAgentService/);
+        if (mode === "safe") {
+          await rpc(url, "setEnabled", { id: "test-native-web", enabled: true });
+          assert.equal(existsSync(join(root, "imported")), false);
+          assert.equal((await fetch(new URL("/plugins/events", url), { headers })).status, 404);
+        }
       });
     }
   },

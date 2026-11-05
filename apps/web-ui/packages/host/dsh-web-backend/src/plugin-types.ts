@@ -21,8 +21,16 @@ export interface WebPluginRuntimeOptions {
   address(): { host: string; port: number };
   reserved?: readonly { kind: "exact" | "prefix"; path: string }[];
 }
+export interface WebPluginResult {
+  loadedIds: string[];
+  loadErrors: Record<string, string>;
+}
 export interface WebPluginRuntime {
   readonly clients: ClientAssets;
+  /** Called by the carrier's existing serialized management queue. */
+  update(packages: readonly WebPluginPackage[], changedId?: string): Promise<WebPluginResult>;
+  /** Built-in SSE endpoint; the carrier authenticates before dispatch. */
+  events(req: IncomingMessage, res: ServerResponse): void | Promise<void>;
   handle(req: IncomingMessage, res: ServerResponse): Promise<boolean>;
   upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<boolean>;
   renderIndex(html: string): string;

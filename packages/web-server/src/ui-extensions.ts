@@ -11,6 +11,7 @@ import {
   type WebUiExtensionsState,
 } from "@codexhost/shared-contracts";
 import type { DataDir } from "./store.ts";
+import type { WebPluginResult } from "@codexhost/dsh-web-backend";
 import {
   extensionInstallSpec,
   installExtensionPackage,
@@ -36,6 +37,11 @@ export interface WebUiExtensionsOptions {
   readonly installPackage?: (directory: string, spec: string, registry: string) => Promise<void>;
   /** Pure asset validation against the actual built-in set; never evaluates plugin JavaScript. */
   readonly validate: (plugins: readonly ExternalUiPlugin[]) => void;
+  /** Runs inside the management queue and settles only after removed instances release. */
+  readonly apply?: (
+    plugins: readonly ExternalUiPlugin[],
+    changedId?: string,
+  ) => Promise<WebPluginResult>;
 }
 
 export class WebUiExtensions {
@@ -95,6 +101,30 @@ export class WebUiExtensions {
       for (const entry of this.entries) {
         if (entry.enabledTargets.includes("web")) this.loadErrors.set(entry.id, error);
       }
+  }
+
+  /** Restore saved selection through the same serialized path as management changes. */
+  restore(): Promise<void> {
+    return this.mutate(() => this.apply());
+  }
+
+  private async apply(changedId?: string): Promise<void> {
+    if (this.options.safeMode || this.options.apply === undefined) return;
+    const plugins = this.plugins();
+    const result = await this.options.apply(plugins, changedId);
+    const errors = new Map(Object.entries(result.loadErrors));
+    for (const plugin of plugins) {
+      const previous = this.loadErrors.get(plugin.id);
+      if (
+        previous !== undefined &&
+        plugin.id !== changedId &&
+        !result.loadedIds.includes(plugin.id) &&
+        !errors.has(plugin.id)
+      )
+        errors.set(plugin.id, previous);
+    }
+    this.composed(result.loadedIds);
+    this.loadErrors = errors;
   }
 
   install(input: string, registry = OFFICIAL_NPM_REGISTRY): Promise<WebUiExtensionsState> {
@@ -183,6 +213,7 @@ export class WebUiExtensions {
             .map((item) => this.plugin(item)),
         );
       this.save(next);
+      await this.apply(id);
       return this.state();
     });
   }
@@ -191,6 +222,7 @@ export class WebUiExtensions {
     return this.mutate(async () => {
       const entry = this.find(id);
       this.save(this.entries.filter((item) => item !== entry));
+      await this.apply(id);
       if (!this.runningInstalls.has(entry.installId))
         await rm(this.data.path("ui-extensions", "packages", entry.installId), {
           recursive: true,

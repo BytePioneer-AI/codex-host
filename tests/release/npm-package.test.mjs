@@ -301,6 +301,7 @@ childProcess.spawn = (command, args, options) => {
     command,
     args,
     npmNodePath: options?.env?.CODEXHOST_NPM_NODE_PATH,
+    npmWrapperPath: options?.env?.CODEXHOST_NPM_LAUNCHER_PATH,
     stdoutFd: Array.isArray(options?.stdio) ? options.stdio[1]?.fd : null,
   }) + "\\n");
   const child = new EventEmitter();
@@ -631,6 +632,34 @@ describe("npm package release", () => {
             ...options,
           ],
     );
+  });
+
+  it.each(["on", "off", "status"])(
+    "routes autostart %s with the npm entrypoint",
+    async (action) => {
+      const { result, calls } = await runGeneratedWrapperLifecycle(
+        "darwin",
+        ["autostart", action],
+        [0],
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].args).toEqual(["autostart", action]);
+      expect(calls[0].npmNodePath).toBe(process.execPath);
+      expect(calls[0].npmWrapperPath).toMatch(/bin[/\\\\]codexhost\.js$/u);
+    },
+  );
+
+  it("passes background Web through without launching Desktop", async () => {
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "darwin",
+      ["web", "--background"],
+      [0],
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args[0]).toBe("web");
+    expect(calls[0].args.at(-1)).toBe("--background");
   });
 
   it.each(["ensure", "stop"])(

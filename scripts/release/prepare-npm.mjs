@@ -585,7 +585,7 @@ if (userArguments.length === 0) {
   launchArguments = ["launch"];
 } else if (userArguments[0] === "launch") {
   launchArguments = userArguments;
-} else if (userArguments[0] === "inspect" || userArguments[0] === "status") {
+} else if (userArguments[0] === "inspect" || userArguments[0] === "status" || userArguments[0] === "autostart") {
   launchArguments = userArguments;
 } else if (userArguments[0] === "web" || userArguments[0] === "stop") {
   launchArguments = [userArguments[0], "--node", process.execPath, "--host-runtime", hostRuntime,
@@ -622,6 +622,7 @@ if (userArguments.length === 0) {
       "  codexhost web [--host address] [--port port] [--public-url url] [--trusted-proxy addresses]",
       "  codexhost stop",
       "  codexhost status",
+      "  codexhost autostart on|off|status",
       "  codexhost console",
       "  codexhost update",
       "  codexhost launch [launcher options]",

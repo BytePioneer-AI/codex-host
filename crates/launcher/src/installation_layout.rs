@@ -109,6 +109,10 @@ impl InstalledResources {
     }
 }
 
+pub fn is_source_checkout_build(executable: &Path) -> bool {
+    source_checkout_layout(executable).is_some()
+}
+
 fn source_checkout_layout(executable: &Path) -> Option<(PathBuf, PathBuf)> {
     let build_directory = executable.parent()?;
     let profile = build_directory.file_name()?;

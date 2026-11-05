@@ -64,6 +64,18 @@ Web 按内容寻址快照的 runtime 路径（或 `--ch-host-runtime` 覆盖值�
 
 发行 Web 不提供 CDP、无认证和前端开发监听选项，也不带 `preview.mjs`；`node-pty` 仅保留目标 OS/CPU 的预编译文件。Office 入口包、worker 和 `koffi` 保留，LibreOffice 引擎不随包发布。`app/web-modules/office-engines.json` 从锁文件记录各引擎包的官方地址、版本与 SHA-512 integrity；发行入口尚未接入引擎下载，需要 LibreOffice 的预览暂不可用。发行浏览器构建使用临时输出目录，不覆盖源码开发使用的 packed 目录。
 
+### 登录后自动启动
+
+安装时不注册自启项，默认关闭。用 `codexhost autostart on` 开启，`codexhost autostart off` 关闭；两者只改变下次登录的启动设置，不启动或停止当前服务。`codexhost autostart status` 只输出一行 `on`、`off` 或 `invalid <原因>`；开启、关闭失败时退出码非零，原因写入 stderr。
+
+自启执行 `codexhost web --background`，只确保 Host 和 Web 运行，不主动打开界面，不输出登录链接；后台启动失败的原因可用 `codexhost status` 查看。Windows npm 版的控制台窗口限制见下文。`codexhost` 和 `codexhost web` 启动时刷新已存在的自启项，内容相同时不重写，也不调用 systemctl；npm 版保存当前 Node 和 JavaScript wrapper 的绝对路径，切换 Node 或移动安装后重新运行即可刷新。刷新失败只警告，不阻止启动。`codexhost status` 只读显示自启状态，失效时提示重新运行 `codexhost` 修复；`codexhost stop` 不修改自启项。
+
+- macOS：`~/Library/LaunchAgents/ai.bytepioneer.codexhost.autostart.plist`，`RunAtLoad`，不用 `KeepAlive`；写入和删除不调用 `launchctl`，下次登录生效。
+- Windows：当前用户 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `codexhost` 值。安装包使用 GUI 子系统的 `bin/codexhost-start.exe --autostart`，由它隐藏控制台运行 Launcher 的 `web --background`。npm 版仍由 `node.exe` 执行 wrapper，登录时可能短暂出现控制台窗口；不增加中间脚本。完整命令行超过 260 个 UTF-16 字符时拒绝开启，需要缩短 Node 或安装路径。
+- Linux：systemd 用户服务 `codexhost-autostart.service`，`Type=oneshot`、`RemainAfterExit=yes`，通过 `default.target` 启用；配置位于 `$XDG_CONFIG_HOME/systemd/user/`，默认 `~/.config/systemd/user/`。没有可用的 systemd 用户服务时开启失败。注销后是否保留用户服务由用户的 systemd linger 设置决定，codexhost 不修改 linger。
+
+macOS 或 npm 卸载前，先运行 `codexhost stop` 和 `codexhost autostart off`，再移除应用或 npm 包。Tailscale Serve 配置仍会保留；如不再使用，先用 `tailscale serve status` 确认 HTTPS 443 根路径仍指向此 Web，再用 `tailscale serve --https=443 --set-path=/ off` 移除该根路径；使用其他 HTTPS 端口时替换为实际端口，不删除其他服务的转发。访问方式见[远程访问](web-remote-access.md)。回退到不支持后台 Web 的旧版前，也先停止服务并关闭自启。
+
 ## 访问认证
 
 除 `--no-auth` 外，所有请求都要通过访问令牌认证。令牌只校验持有者，不绑定设备或浏览器，也不过期；不细分权限，因为持有者可以通过终端在电脑上执行命令，细分不构成真正的边界。

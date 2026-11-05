@@ -24,6 +24,8 @@ import { HostUnavailableError, type ConsoleHostClient } from "./host-client.js";
 import { CONSOLE_PAGE_CSS, CONSOLE_PAGE_HTML } from "./page.js";
 import type { ConsolePaths } from "./paths.js";
 import { ConsoleUpdateError, type ConsoleUpdates } from "./updates.js";
+import { runServiceCommand, serviceCommand } from "./services.js";
+import { webConnectionRequest, WEB_CONNECTION_METHODS } from "./web-client.js";
 
 export const CONSOLE_SERVICE = "codexhost-console";
 const MAX_BODY_BYTES = 16 * 1024;
@@ -48,6 +50,7 @@ export interface ConsoleServerOptions {
   idleTimeoutMs?: number;
   inspect?(launcherExecutable: string): Promise<InspectDocument>;
   launch?(command: string, args: string[]): void;
+  service?(command: string, args: string[], environment: NodeJS.ProcessEnv): Promise<void>;
   onExit(): void;
 }
 
@@ -131,6 +134,14 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
   let inspectCache: { at: number; value: Promise<InspectDocument> } | null = null;
   let idleTimer: NodeJS.Timeout | undefined;
   let exiting = false;
+  let stopping = false;
+  let shutdownRequested = false;
+  const service = options.service ?? runServiceCommand;
+  const serviceEnvironment = (): NodeJS.ProcessEnv => ({
+    ...environment,
+    CODEXHOST_DATA_DIR: options.paths.dataDirectory,
+    CODEXHOST_CONSOLE_PORT: String(port),
+  });
 
   // The console stays available while codexhost runs; afterwards it exits when idle.
   const scheduleIdleExit = (): void => {
@@ -294,7 +305,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     }
     if (route === "GET /api/health") {
       sendJson(response, 200, {
-        service: CONSOLE_SERVICE,
+        service: shutdownRequested ? `${CONSOLE_SERVICE}-stopping` : CONSOLE_SERVICE,
         schemaVersion: 1,
         version: options.version,
         pid: process.pid,
@@ -320,6 +331,10 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     let body: Record<string, unknown> = {};
     if (method !== "GET") {
       if (
+        !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.socket.remoteAddress ?? "") ||
+        request.headers.forwarded !== undefined ||
+        Object.keys(request.headers).some((name) => name.startsWith("x-forwarded-")) ||
+        request.headers["sec-fetch-site"] === "cross-site" ||
         !allowedChange(
           request.headers.origin,
           headerValue(request.headers[CONSOLE_REQUEST_HEADER]),
@@ -339,7 +354,58 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
 
     if (route === "POST /api/shutdown") {
       sendJson(response, 200, { ok: true });
-      setImmediate(exit);
+      // stop_all waits for Console to stop answering health probes. Keep the
+      // initiating request alive to report its real result before this process exits.
+      if (stopping) shutdownRequested = true;
+      else setImmediate(exit);
+      return;
+    }
+    if (route === "POST /api/stop") {
+      if (stopping) {
+        sendJson(response, 409, { error: "正在停止 codexhost" });
+        return;
+      }
+      const command = serviceCommand(options.installation, "stop");
+      stopping = true;
+      try {
+        await service(command.command, command.args, serviceEnvironment());
+        response.once("finish", () => setImmediate(exit));
+        sendJson(response, 200, { stopped: true });
+      } catch (error) {
+        stopping = false;
+        shutdownRequested = false;
+        sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    if (route === "POST /api/web/open") {
+      const command = serviceCommand(options.installation, "web");
+      await service(command.command, command.args, serviceEnvironment());
+      sendJson(response, 200, { opened: true });
+      return;
+    }
+    if (route === "POST /api/web/request") {
+      if (
+        typeof body.method !== "string" ||
+        !(WEB_CONNECTION_METHODS as readonly string[]).includes(body.method)
+      ) {
+        sendJson(response, 400, { error: "Web method is not available" });
+        return;
+      }
+      const args = body.params ?? {};
+      if (typeof args !== "object" || args === null || Array.isArray(args)) {
+        sendJson(response, 400, { error: "Expected params object" });
+        return;
+      }
+      sendJson(
+        response,
+        200,
+        await webConnectionRequest(
+          options.paths.dataDirectory,
+          body.method,
+          args as Record<string, unknown>,
+        ),
+      );
       return;
     }
     if (route === "GET /api/announcement") {

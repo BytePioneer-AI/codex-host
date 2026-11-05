@@ -710,7 +710,7 @@ fn missing_host_entry_reports_failure_but_still_stops_web_and_console() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn missing_desktop_opens_web_without_starting_console() {
+fn terminal_launch_prints_both_addresses_when_desktop_is_missing() {
     let fixture = Fixture::new();
     let launched = fixture
         .public_command("launch")
@@ -724,8 +724,34 @@ fn missing_desktop_opens_web_without_starting_console() {
         String::from_utf8_lossy(&launched.stderr)
     );
     assert!(String::from_utf8_lossy(&launched.stdout).contains("Codex Desktop is not installed"));
-    assert!(!fixture.root.join("console-calls").exists());
+    let text = String::from_utf8_lossy(&launched.stderr);
+    assert_eq!(text.matches("codexhost console: ").count(), 1);
+    assert_eq!(text.matches("codexhost web: ").count(), 1);
+    assert!(text.contains("codexhost web: http://127.0.0.1:4501/?token=fixture-secret"));
+    assert!(fixture.root.join("console-calls").exists());
     assert!(fixture.root.join("web-service-ready.json").exists());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn terminal_failure_prints_ready_web_but_omits_disabled_web() {
+    let fixture = Fixture::new();
+    for enabled in ["1", "0"] {
+        let result = fixture
+            .public_command("launch")
+            .env("CODEXHOST_INSTALL_ROOT", &fixture.root)
+            .env("CODEXHOST_WEB_SERVICE", enabled)
+            .env("CODEXHOST_CONSOLE", "1")
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        let text = String::from_utf8_lossy(&result.stderr);
+        assert_eq!(text.matches("codexhost console: ").count(), 1);
+        assert_eq!(
+            text.matches("codexhost web: ").count(),
+            usize::from(enabled == "1")
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -747,6 +773,7 @@ fn missing_desktop_and_failed_web_use_the_existing_console_error_path() {
         .unwrap();
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("Web startup failed:"));
+    assert!(!String::from_utf8_lossy(&result.stderr).contains("codexhost web: "));
     assert!(
         fs::read_to_string(fixture.root.join("console-calls"))
             .unwrap()

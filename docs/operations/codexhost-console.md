@@ -3,7 +3,7 @@
 控制台是一个本地网页，不依赖 Codex Desktop 启动成功。左侧导航分为：
 
 - **总览**：当前状态与下一步操作、codexhost 版本 / Codex Desktop 版本 / 安装方式三个信息框、最近一次启动的结果；失败时说明卡在哪一步和错误原文，内部阶段时间线折叠在“详细信息”中；注入持续失败时显示原因。成功时不展示时间线，不显示启动历史表格。原启动诊断页已合并，旧的 `#diagnostics` 和 `?view=diagnostics` 链接显示总览。日志不在页面中展示，通过“导出诊断包（含日志）”获取。
-- **设置**：连接、远程连接、账号、会话导入、更新，与 Codex 设置页使用同一套页面和 Host 接口。连接页支持通过运行中的本地 Host 安装 Harness CLI、检查版本和更新，复用安装进度、错误提示及安装后检测；不支持远程 Host 安装。WorkBuddy 仍通过官网手动下载安装桌面应用。Host 不可用时不提供一键安装。
+- **设置**：连接（Harness）、远程连接（SSH）、连接设备、账号、用量统计、更新。Harness、SSH、账号、用量与更新沿用 Codex 设置页和 Host 接口；会话导入请使用会话 Web，不在控制台提供重复入口。连接页支持通过运行中的本地 Host 安装 Harness CLI、检查版本和更新，复用安装进度、错误提示及安装后检测；不支持远程 Host 安装。WorkBuddy 仍通过官网手动下载安装桌面应用。Host 不可用时不提供一键安装。
 - **其他**：关于。
 
 外观（思考文本显示、空闲释放）由 Codex 界面保存，只能在 Codex 设置页修改。设计背景见 [`proposals/独立 Web 控制台方案.md`](../proposals/独立%20Web%20控制台方案.md)。
@@ -36,7 +36,7 @@ type: warning
 
 ## 与会话 Web 的区别
 
-Console 是仅本机访问的诊断和管理网页，默认端口 `4399`，由 `codexhost console` 打开。`codexhost web` 打开的是独立会话 Web，首次默认监听 `127.0.0.1:4400`，需要访问令牌，可用于手机连接；Host 和 Web 脱离终端运行，关闭页面不停止服务。无 Desktop 时 `codexhost` 改为打开会话 Web，不把 Console 当作聊天界面。命令和安装包路径见[独立 Web 应用](../product/standalone-web.md#安装版后台-web)。
+Console 是仅本机访问的诊断和管理网页，默认端口 `4399`，可由 `codexhost console` 打开。总览的“打开 Web”通过同一安装的 Launcher `web` 命令确保服务运行，并在默认浏览器打开登录链接，不依赖 Desktop。`codexhost web` 打开的是独立会话 Web，首次默认监听 `127.0.0.1:4400`，需要访问令牌，可用于手机连接；Host 和 Web 脱离终端运行，关闭页面不停止服务。无 Desktop 时 `codexhost` 改为打开会话 Web，不把 Console 当作聊天界面。命令和安装包路径见[独立 Web 应用](../product/standalone-web.md#安装版后台-web)。
 
 `codexhost status` 只读查看后台 Host/Web 的状态、版本、Web 地址及自启状态；`codexhost stop` 依次停止托管 GUI、Web、Host、远程服务、Broker 和 Console，报告被中断的任务数，会话数据保留。自启项用 `codexhost autostart on|off|status` 管理，停止服务不关闭自启，也不撤销 Tailscale Serve。
 
@@ -46,8 +46,8 @@ Console 是仅本机访问的诊断和管理网页，默认端口 `4399`，由 `
 
 | 启动方式 | 行为 |
 |---|---|
-| 安装包（macOS 打开应用、Windows 开始菜单） | 控制台在后台与 Codex Desktop 一同启动，默认不打开浏览器；启动失败或注入持续失败时在默认浏览器打开总览查看原因 |
-| 终端（npm 的 `codexhost`、`codexhost launch`、`npm start`） | 控制台在后台与 Codex Desktop 一同启动，成功时不输出；启动失败时在终端输出 `codexhost console: http://127.0.0.1:4399/` |
+| 安装包（macOS 打开应用、Windows 开始菜单） | 默认在浏览器打开控制台总览，再启动 Desktop；启动失败或注入持续失败时另外打开总览查看原因 |
+| 终端（npm 的 `codexhost`、`codexhost launch`、`npm start`） | 不打开浏览器；成功和失败都输出 `codexhost console: http://127.0.0.1:4399/`，Web 就绪时另输出 `codexhost web: <登录链接>`，与 `codexhost web` 的登录链接一致。`CODEXHOST_WEB_SERVICE=0` 或 Web 未就绪时省略 Web 行，不改变 Desktop 启动结果 |
 
 控制台在校验 Shim、Host Runtime、Desktop Controller 和 Renderer 等 Codex 启动资源之前启动；这些文件缺失时，仍能提供故障恢复入口。npm 包装脚本将这部分校验交给 Launcher，不提前拦截。Launcher、Node 和控制台自身文件仍须可用，端口占用等控制台自身故障不保证能打开网页；命令参数解析失败也不进入启动流程。
 
@@ -55,7 +55,7 @@ Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAt
 
 从已打开的 Web 控制台点击“启动”时，安装版调用 Launcher 的显式 `launch` 命令，npm 版通过 npm 包装脚本启动；两者都不再打开浏览器标签页。原页面通过状态轮询展示启动结果。状态由 Console 全局共享：窗口可见时，稳定状态每 30 秒检查，启动中或读取失败时每 5 秒检查；隐藏暂停周期查询，恢复可见立即补读。切换到其他设置页仍检测 Host 在线状态，手动及操作后刷新继续可用；单次概览请求最多等待 8 秒，并发刷新合并。
 
-设置 `CODEXHOST_CONSOLE=0` 可关闭以上行为。其他打开方式：
+设置 `CODEXHOST_CONSOLE=0` 可关闭控制台的启动、打开和地址输出，不影响 Web 的启用设置与地址输出。其他打开方式：
 
 | 方式 | 说明 |
 |---|---|
@@ -106,7 +106,7 @@ Desktop Controller 在注入失败时仍会让 Codex 正常运行并在后台重
 控制台只在本机运行，不设登录。以下检查防止浏览器中打开的其他网站使用它：
 
 - 只接受 `Host` 为 `127.0.0.1:<端口>` 或 `localhost:<端口>` 的请求（防 DNS 重绑定）。
-- 启动、更新、修改设置等操作必须携带 `x-codexhost-console: 1` 请求头；来自浏览器的请求还要求 `Origin` 为控制台自身。其他网站无法跨域附加该请求头。
+- 启动、停止、打开 Web、更新、修改设置，以及读取 Web 访问令牌都通过受保护的 POST 接口，必须携带 `x-codexhost-console: 1` 请求头；来自浏览器的请求还要求 `Origin` 为控制台自身。拒绝非 loopback 对端、带 `Forwarded` / `X-Forwarded-*` 的代理请求和明确的跨站请求。其他网站无法跨域附加该请求头；GET 不提供令牌。
 - 页面使用严格 CSP（不允许内联脚本和内联样式）。
 - “导出诊断包（含日志）”会把用户主目录替换为 `~`。
 
@@ -114,11 +114,22 @@ Desktop Controller 在注入失败时仍会让 Codex 正常运行并在后台重
 
 Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控制通道，把端口与随机令牌写入 `<数据目录>/console/hosts/host-<进程号>.json`（`0600`），退出时删除。控制台读取该文件，把设置请求转发给 Host，由 Host 按 Codex 设置页相同的逻辑处理；只接受 `CONSOLE_HOST_METHODS` 列出的设置方法，不接受 Thread 或 Turn 操作。
 
-- codexhost 未运行：连接页显示离线的插件列表并可修改安装路径；远程连接、账号、会话导入提示先启动 codexhost。
+- codexhost 未运行：连接页显示离线的插件列表并可修改安装路径；SSH 远程连接、账号、用量统计提示先启动 codexhost。“连接设备”独立连接后台 Web，不依赖 Desktop。
 - codexhost 运行但控制通道不可用（例如旧版本）：提示重新启动 codexhost。
-- Web 会话导入成功后显示“导入成功，请在 Codex 中查看”，不尝试导航，也不提供“重试打开”；导入失败仍显示实际错误。Codex 内置设置页保留导入后打开会话的行为。
 
-## 远程连接
+## 停止
+
+总览的“停止”先弹出确认窗，说明所有 codexhost 服务（包括控制台）会关闭，运行中的任务和 Web 终端会中断，会话数据保留。取消不发送停止请求。确认后调用同一安装的 Launcher `stop`，复用 `services.rs` 的 `stop_all`，不维护另一套进程清理逻辑；不会关闭登录自启或移除 Tailscale Serve 配置。
+
+控制台等待 Launcher 返回实际结果后再退出；成功时页面停止轮询并明确显示“codexhost 已停止”，不会把自身退出显示为连接错误。部分停止失败时显示 Launcher 的错误，不声称全部停止，可再次检查或重试。
+
+## 连接设备（Web 远程访问）
+
+`#connect-devices` 展示 Web 当前的二维码、登录链接、连接地址、直连与 Tailscale HTTPS 开关、登录后自动启动及重新生成令牌。直连、Serve 和令牌变更的确认说明与会话 Web 一致；登录自启与会话 Web 一样直接切换。直连变更由 Web 保存配置并通过原生监管进程重启，控制台只重试读取以确认恢复，不重放写请求。
+
+此页不需要 Desktop 或 Host 的设置通道，但需要已就绪的后台 Web；未运行时说明情况并提供“启动并打开 Web”。控制台从同一数据目录的 Web 就绪记录定位 loopback 服务，只代理固定的五个连接设置 RPC；Web 原有的状态、令牌、Tailscale、监听配置及自启实现仍是唯一读写方。无控制台本机请求校验的请求不能读取令牌或修改配置；登录链接和令牌不进入总览、公告或诊断包。
+
+## 远程连接（SSH）
 
 `#remote-connections` 与内置设置共用远程连接页面，支持添加、编辑、移除 SSH 连接、连接与断开、查看本机及远程版本、检测、安装、更新、修复和卸载远程服务。卸载可选择同时移除 codexhost 软件包，确认提示和缺失 Node.js、npm、Codex CLI 的错误提示与内置页一致。“连接”页仍用于 Harness 管理。
 

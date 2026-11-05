@@ -4,7 +4,35 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
+
+static WEB_STARTUP: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+static WEB_ANNOUNCED: Mutex<bool> = Mutex::new(false);
+
+/// Finish the optional Web startup before the terminal's ready signal. Failures
+/// remain independent of Desktop's outcome, and no service is started here.
+pub fn finish_launch(print: bool) {
+    if let Ok(mut startup) = WEB_STARTUP.lock()
+        && let Some(startup) = startup.take()
+    {
+        let _ = startup.join();
+    }
+    if !print || !web_enabled() {
+        return;
+    }
+    let Some(data) = data_directory() else {
+        return;
+    };
+    if let Ok(Some(owner)) = web_service::owner(&data)
+        && owner.web_running()
+        && let Ok(mut announced) = WEB_ANNOUNCED.lock()
+        && !*announced
+    {
+        eprintln!("codexhost web: {}", owner.access.login_url);
+        *announced = true;
+    }
+}
 
 use crate::installation_layout::InstalledResources;
 use crate::startup_record::data_directory;
@@ -129,17 +157,18 @@ fn open_web(
 }
 
 pub fn open_for_launch(options: &LaunchOptions) -> Result<(), Box<dyn Error>> {
-    open_web(
-        &resolve_options(
-            options.node.clone(),
-            options.host_runtime.clone(),
-            options.web_runtime.clone(),
-            None,
-            options.node.clone(),
-        )?,
-        &[],
-        false,
-    )
+    let resolved = resolve_options(
+        options.node.clone(),
+        options.host_runtime.clone(),
+        options.web_runtime.clone(),
+        None,
+        options.node.clone(),
+    )?;
+    if console::presentation() == Some(console::Presentation::Print) {
+        ensure_current(&resolved, &[], false)
+    } else {
+        open_web(&resolved, &[], false)
+    }
 }
 
 // LaunchServices may reparent Desktop, so its bridge cannot rely on Updater ancestry.
@@ -166,10 +195,7 @@ fn record_failure(error: &dyn std::fmt::Display) {
     }
 }
 
-pub fn start_for_launch(
-    options: &LaunchOptions,
-    desktop_root: Option<&Path>,
-) -> Option<JoinHandle<()>> {
+pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
     let prepare = || -> Result<Options, Box<dyn Error>> {
         let resolved = resolve_options(
             options.node.clone(),
@@ -187,10 +213,10 @@ pub fn start_for_launch(
         Ok(options) => options,
         Err(error) => {
             record_failure(&error);
-            return None;
+            return;
         }
     };
-    Some(thread::spawn(move || {
+    let startup = thread::spawn(move || {
         let start = || -> Result<(), Box<dyn Error>> {
             let _guard =
                 host_service::lifecycle_lock(&resolved.data, "web-service-lifecycle.lock")?;
@@ -199,7 +225,10 @@ pub fn start_for_launch(
         if let Err(error) = start() {
             record_failure(&error);
         }
-    }))
+    });
+    if let Ok(mut slot) = WEB_STARTUP.lock() {
+        *slot = Some(startup);
+    }
 }
 
 fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
@@ -436,6 +465,24 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finishing_without_output_waits_for_web_startup() {
+        let (done, completed) = std::sync::mpsc::channel();
+        *WEB_STARTUP.lock().unwrap() = Some(thread::spawn(move || {
+            thread::sleep(std::time::Duration::from_millis(30));
+            done.send(()).unwrap();
+        }));
+        finish_launch(false);
+        completed
+            .try_recv()
+            .expect("startup completed before returning");
+        assert!(WEB_STARTUP.lock().unwrap().is_none());
+        assert!(
+            !*WEB_ANNOUNCED.lock().unwrap(),
+            "joining must not announce Web"
+        );
+    }
 
     #[test]
     fn web_browser_url_only_appends_the_requested_section() {

@@ -91,7 +91,7 @@ Run `codexhost update` to check for the latest release and prepare an upgrade fr
 
 **codexhost does not start, or Codex opens without codexhost features**
 
-Run `codexhost console` (Windows: Start Menu → "codexhost console") to open the local console at `http://127.0.0.1:4399/`. It shows why the last start failed, the Codex Desktop version, Host Runtime logs, and can update codexhost while Codex is not running. It starts together with codexhost: installer launches open it in your browser only when startup or Codex UI integration fails, and terminal launches print its address only when startup fails.
+Run `codexhost console` (Windows: Start Menu → "codexhost console") to open the local console at `http://127.0.0.1:4399/`. It shows why the last start failed, the Codex Desktop version, Host Runtime logs, and can update codexhost while Codex is not running. It starts together with codexhost: installer launches open the console overview in your default browser, while terminal launches do not open a browser and print both the console address and the Web login link on success or failure (the Web line is omitted when disabled or not ready). The overview can open Web and stop codexhost after confirmation; “Connect devices” manages Web remote access using the same settings as Web.
 
 **macOS: "App can't be verified" on first launch**
 

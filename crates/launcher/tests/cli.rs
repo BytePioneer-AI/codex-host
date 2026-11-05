@@ -34,6 +34,10 @@ fn production_launcher_uses_the_three_state_running_desktop_flow() {
     assert!(source.contains("acquire_launcher_ownership"));
     assert!(source.contains("completely quit it before starting codexhost"));
     assert!(!source.contains("attach_unmanaged_desktop"));
+    assert!(source.contains("RunningDesktopChoice::Cancel => return Ok(())"));
+    assert!(source.contains(
+        "let result = launch_gui(options, installation, interactive);\n    services::finish_launch(false);\n    result"
+    ), "every GUI outcome, including cancellation, must join Web before returning");
 }
 
 #[test]

@@ -24,7 +24,7 @@ use std::error::Error;
 use std::ffi::OsString;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::fmt::{self, Display, Formatter};
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
@@ -1123,6 +1123,7 @@ fn force_stop_external_desktop(
 
 fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error>> {
     autostart::refresh();
+    start_launch_console(&options);
     let installation = discover_desktop(options.custom_install_root.as_deref());
     if options.update_recovery {
         services::prepare_host_for_update(
@@ -1145,6 +1146,7 @@ fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error
         match services::open_for_launch(&options) {
             Ok(()) => {
                 startup_record::finish(StartupOutcome::Ready, None);
+                console::show_for_launch(None);
                 emit_ready_line(&mut std::io::stdout())?;
                 return Ok(());
             }
@@ -1154,21 +1156,17 @@ fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error
             }
         }
     }
-    let web = if services::web_enabled() {
+    if services::web_enabled() {
         services::start_for_launch(
             &options,
             installation
                 .as_ref()
                 .ok()
                 .map(|desktop| desktop.install_root.as_path()),
-        )
-    } else {
-        None
-    };
-    let result = launch_gui(options, installation, interactive);
-    if let Some(web) = web {
-        web.join().expect("Web startup thread");
+        );
     }
+    let result = launch_gui(options, installation, interactive);
+    services::finish_launch(false);
     result
 }
 
@@ -1179,7 +1177,6 @@ fn launch_gui(
     _interactive_running_desktop: bool,
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
-    start_launch_console(&options);
     // 优先报告安装资源缺失，避免 Desktop 探测错误遮住损坏的 Host 安装。
     let options = options.resolve(
         installation
@@ -1323,7 +1320,6 @@ fn launch_gui(
     _interactive_running_desktop: bool,
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
-    start_launch_console(&options);
     // 优先报告安装资源缺失，避免 Desktop 探测错误遮住损坏的 Host 安装。
     let options = options.resolve(
         installation
@@ -1447,6 +1443,15 @@ fn run_console_command(action: &str) -> Result<(), Box<dyn Error>> {
     }
 }
 
+fn launch_presentation(arguments: &[String], terminal: bool) -> console::Presentation {
+    if arguments.first().map(String::as_str) == Some("launch") || (arguments.is_empty() && terminal)
+    {
+        console::Presentation::Print
+    } else {
+        console::Presentation::Browser
+    }
+}
+
 fn is_launch_command(arguments: &[String]) -> bool {
     matches!(
         arguments.first().map(String::as_str),
@@ -1540,11 +1545,14 @@ fn main() -> ExitCode {
     let launching = is_launch_command(&arguments);
     if launching {
         startup_record::begin();
-        console::set_presentation(if arguments.first().map(String::as_str) == Some("launch") {
-            console::Presentation::Print
-        } else {
-            console::Presentation::Browser
-        });
+        console::set_presentation(launch_presentation(
+            &arguments,
+            std::io::stdin().is_terminal()
+                || std::io::stdout().is_terminal()
+                || std::io::stderr().is_terminal()
+                || env::var_os("SSH_CONNECTION").is_some()
+                || env::var_os("SSH_TTY").is_some(),
+        ));
     }
     match run(&arguments) {
         Ok(()) => ExitCode::SUCCESS,
@@ -1660,6 +1668,18 @@ mod tests {
         );
         assert!(read_bounded_loopback_url(std::io::Cursor::new(vec![b'a'; 4097])).is_err());
         assert!(read_bounded_loopback_url(std::io::Cursor::new(b"one\ntwo")).is_err());
+    }
+
+    #[test]
+    fn launch_presentation_keeps_terminal_and_installer_entrypoints_distinct() {
+        use super::console::Presentation::{Browser, Print};
+        assert_eq!(super::launch_presentation(&[], false), Browser);
+        assert_eq!(super::launch_presentation(&[], true), Print);
+        assert_eq!(super::launch_presentation(&["launch".into()], false), Print);
+        assert_eq!(
+            super::launch_presentation(&[super::START_MENU_ARGUMENT.into()], true),
+            Browser
+        );
     }
 
     #[test]

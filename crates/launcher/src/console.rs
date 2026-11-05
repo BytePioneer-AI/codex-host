@@ -38,9 +38,9 @@ pub struct ConsoleCommand {
 /// How a launch shows the console once its outcome is known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Presentation {
-    /// Installer launches (Finder, Start Menu) open the default browser on a problem.
+    /// Installer launches (Finder, Start Menu) open the default browser.
     Browser,
-    /// Terminal launches (`launch`, used by npm and `npm start`) print the address on a problem.
+    /// Terminal launches (`launch`, used by npm and `npm start`) print the address.
     Print,
 }
 
@@ -48,6 +48,7 @@ struct LaunchConsole {
     command: ConsoleCommand,
     presentation: Presentation,
     ensure: Option<JoinHandle<()>>,
+    shown: bool,
 }
 
 static PRESENTATION: Mutex<Option<Presentation>> = Mutex::new(None);
@@ -80,10 +81,18 @@ fn node_command(command: &ConsoleCommand) -> Result<Command, Box<dyn Error>> {
     Ok(process)
 }
 
-/// Starts the console in the background as part of this launch, so a problem
-/// can be shown without waiting for it. Resources that do not exist are
-/// ignored, so a broken installation still reports its launch error.
+/// Starts the recovery console before Desktop resources are validated. Installer
+/// launches open the overview immediately; terminal launches announce it at readiness
+/// or failure. Missing console resources do not replace the original launch error.
 pub fn start_for_launch(command: ConsoleCommand) {
+    start_for_launch_with(command, open_browser);
+}
+
+fn open_browser(url: &str) -> bool {
+    codexhost_platform::open_external_url(url).is_ok()
+}
+
+fn start_for_launch_with(command: ConsoleCommand, open: impl FnOnce(&str) -> bool) {
     if !console_enabled(env::var_os(CONSOLE_ENV)) || !command.console_server.is_file() {
         return;
     }
@@ -95,6 +104,7 @@ pub fn start_for_launch(command: ConsoleCommand) {
             command: command.clone(),
             presentation,
             ensure: None,
+            shown: false,
         });
     }
     let ensure = thread::spawn(move || {
@@ -107,6 +117,9 @@ pub fn start_for_launch(command: ConsoleCommand) {
         && let Some(console) = slot.as_mut()
     {
         console.ensure = Some(ensure);
+    }
+    if presentation == Presentation::Browser {
+        show_with(None, open);
     }
 }
 
@@ -134,24 +147,19 @@ fn console_url(command: &ConsoleCommand) -> Result<String, Box<dyn Error>> {
     parse_console_url(&output.stdout).ok_or_else(|| "codexhost console returned no address".into())
 }
 
-/// Shows the console only for a problem (`reason`): a terminal launch prints
-/// the address and an installer launch opens the overview. After a successful
-/// installer launch it watches for a persistent Codex UI integration failure.
+/// Presents launch addresses without changing the launch result. Installer failures
+/// reopen the overview; ordinary calls and terminal address output are deduplicated.
 pub fn show_for_launch(reason: Option<&str>) -> bool {
-    if reason.is_some() {
-        return show();
-    }
-    if launch_presentation() == Some(Presentation::Browser) {
+    let shown = show(reason);
+    crate::services::finish_launch(presentation() == Some(Presentation::Print));
+    if shown && reason.is_none() && presentation() == Some(Presentation::Browser) {
         watch_integration();
     }
-    true
+    shown
 }
 
-fn launch_presentation() -> Option<Presentation> {
-    LAUNCH_CONSOLE
-        .lock()
-        .ok()
-        .and_then(|slot| slot.as_ref().map(|console| console.presentation))
+pub fn presentation() -> Option<Presentation> {
+    PRESENTATION.lock().ok().and_then(|slot| *slot)
 }
 
 /// Opens the console once if the Desktop Controller of this launch reports a
@@ -175,7 +183,7 @@ fn watch_integration() {
                 continue;
             };
             if integration_failing(&document, launch_started, now_ms()) {
-                show();
+                show(Some("integration-failure"));
                 return;
             }
         }
@@ -202,7 +210,11 @@ fn integration_failing(document: &Value, launch_started_ms: u64, now_ms: u64) ->
     failures >= 2 || now_ms.saturating_sub(updated) >= PERSISTENT_INTEGRATION_FAILURE_MS
 }
 
-fn show() -> bool {
+fn show(reason: Option<&str>) -> bool {
+    show_with(reason, open_browser)
+}
+
+fn show_with(reason: Option<&str>, open: impl FnOnce(&str) -> bool) -> bool {
     let (command, presentation, ensure) = {
         let Ok(mut slot) = LAUNCH_CONSOLE.lock() else {
             return false;
@@ -210,6 +222,9 @@ fn show() -> bool {
         let Some(console) = slot.as_mut() else {
             return false;
         };
+        if console.shown && (reason.is_none() || console.presentation == Presentation::Print) {
+            return true;
+        }
         (
             console.command.clone(),
             console.presentation,
@@ -226,13 +241,20 @@ fn show() -> bool {
             return false;
         }
     };
-    match presentation {
-        Presentation::Browser => codexhost_platform::open_external_url(&url).is_ok(),
+    let shown = match presentation {
+        Presentation::Browser => open(&url),
         Presentation::Print => {
             print_url(&url);
             true
         }
+    };
+    if shown
+        && let Ok(mut slot) = LAUNCH_CONSOLE.lock()
+        && let Some(console) = slot.as_mut()
+    {
+        console.shown = true;
     }
+    shown
 }
 
 /// Runs a foreground console command (open or update).
@@ -357,7 +379,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn successful_terminal_launch_does_not_show_the_console() {
+    fn successful_terminal_launch_prints_the_console_once() {
         use std::os::unix::fs::PermissionsExt;
 
         let root = env::temp_dir().join(format!("codexhost-console-early-{}", std::process::id()));
@@ -369,7 +391,7 @@ mod tests {
         std::fs::write(
             &node,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$3\" >> '{}'\nif [ \"$3\" = ensure ]; then echo 'codexhost console: http://127.0.0.1:4399/'; fi\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$3\" >> '{}'\nif [ \"$3\" = ensure ] || [ \"$3\" = open ]; then echo 'codexhost console: http://127.0.0.1:4399/'; fi\n",
                 calls.display()
             ),
         )
@@ -378,10 +400,11 @@ mod tests {
             .expect("make executable");
 
         set_presentation(Presentation::Print);
-        start_for_launch(ConsoleCommand {
+        let command = ConsoleCommand {
             node,
             console_server,
-        });
+        };
+        start_for_launch(command.clone());
         let ensure = LAUNCH_CONSOLE
             .lock()
             .expect("console state")
@@ -389,12 +412,41 @@ mod tests {
             .and_then(|console| console.ensure.take())
             .expect("ensure started");
         ensure.join().expect("ensure finished");
-        let shown_at_ready = show_for_launch(None);
-        let calls = std::fs::read_to_string(&calls).unwrap_or_default();
-        std::fs::remove_dir_all(&root).expect("remove fixture");
-
+        let shown_at_ready = show(None);
+        assert!(show(None));
+        assert!(show(Some("startup-failure")));
         assert!(shown_at_ready);
-        assert_eq!(calls, "ensure\n");
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), "ensure\nopen\n");
+
+        set_presentation(Presentation::Browser);
+        let mut opened = 0;
+        start_for_launch_with(command, |url| {
+            assert_eq!(url, "http://127.0.0.1:4399/");
+            opened += 1;
+            true
+        });
+        assert_eq!(
+            opened, 1,
+            "installer opens the overview before Desktop startup"
+        );
+        assert!(show_with(None, |_| panic!(
+            "ordinary calls must not reopen"
+        )));
+        for reason in ["startup-failure", "integration-failure"] {
+            assert!(show_with(Some(reason), |_| {
+                opened += 1;
+                true
+            }));
+        }
+        assert_eq!(
+            opened, 3,
+            "failures reopen the overview even if it was already shown"
+        );
+        assert!(
+            !show_with(Some("startup-failure"), |_| false),
+            "an earlier successful open must not hide a later browser failure on Windows"
+        );
+        std::fs::remove_dir_all(&root).expect("remove fixture");
     }
 
     #[test]

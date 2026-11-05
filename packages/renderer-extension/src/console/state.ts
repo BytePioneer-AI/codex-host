@@ -65,6 +65,14 @@ export class ConsoleState {
   overview: ConsoleOverview | null = null;
   update: UpdateSummary | null = null;
   offline = false;
+  stopped = false;
+
+  markStopped(): void {
+    this.stop();
+    this.stopped = true;
+    this.offline = false;
+    this.#emit();
+  }
   readonly #listeners = new Set<Listener>();
   #timer: number | undefined;
   #running = false;

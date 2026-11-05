@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod active_update;
+mod autostart;
 mod compatibility;
 mod console;
 mod desktop_attachment;
@@ -136,6 +137,7 @@ const USAGE: &str = "usage:
   codexhost web [--host <address>] [--port <port>] [--public-url <url>] [--trusted-proxy <addresses>]
   codexhost stop
   codexhost status
+  codexhost autostart on|off|status
   codexhost console
   codexhost update
   codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]
@@ -1107,6 +1109,7 @@ fn force_stop_external_desktop(
 }
 
 fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error>> {
+    autostart::refresh();
     let installation = discover_desktop(options.custom_install_root.as_deref());
     if services::web_enabled()
         && installation.as_ref().is_err_and(|error| {
@@ -1470,6 +1473,7 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         Some(action @ ("web" | "stop" | "status" | "stop-for-update")) => {
             services::run(action, &arguments[1..])
         }
+        Some("autostart") => autostart::run(&arguments[1..]),
         Some("console") if arguments.len() == 1 => run_console_command("open"),
         Some("update") if arguments.len() == 1 => run_console_command("update"),
         Some("update") => Err("update accepts no arguments".into()),

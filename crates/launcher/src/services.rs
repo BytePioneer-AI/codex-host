@@ -289,32 +289,39 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
+        println!("Autostart: {}", crate::autostart::status_line());
         return Ok(());
     }
     let mut node = None;
     let mut host = None;
     let mut web = None;
     let mut settings = Vec::new();
-    for pair in arguments.chunks(2) {
-        if pair.len() != 2 {
-            return Err(format!("{} requires a value", pair[0]).into());
+    let mut background = false;
+    let mut arguments = arguments.iter();
+    while let Some(option) = arguments.next() {
+        if option == "--background" && action == "web" {
+            background = true;
+            continue;
         }
-        let path = PathBuf::from(&pair[1]);
+        let value = arguments
+            .next()
+            .ok_or_else(|| format!("{option} requires a value"))?;
+        let path = PathBuf::from(value);
         if matches!(
-            pair[0].as_str(),
+            option.as_str(),
             "--node" | "--host-runtime" | "--web-runtime"
         ) && !path.is_absolute()
         {
-            return Err(format!("{} must be absolute", pair[0]).into());
+            return Err(format!("{option} must be absolute").into());
         }
-        match pair[0].as_str() {
+        match option.as_str() {
             "--node" => node = Some(path),
             "--host-runtime" => host = Some(path),
             "--web-runtime" => web = Some(path),
             "--host" | "--port" | "--public-url" | "--trusted-proxy" if action == "web" => {
-                settings.extend_from_slice(pair)
+                settings.extend([option.clone(), value.clone()])
             }
-            _ => return Err(format!("Unknown {action} option: {}", pair[0]).into()),
+            _ => return Err(format!("Unknown {action} option: {option}").into()),
         }
     }
     let desktop = if action == "web" {
@@ -328,7 +335,16 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
         .map(|desktop| desktop.install_root.as_path());
     let options = resolve_options(node, host, web, desktop_root, None)?;
     if action == "web" {
-        open_web(&options, &settings)
+        crate::autostart::refresh();
+        if background {
+            let result = ensure_current(&options, &settings);
+            if let Err(error) = &result {
+                record_failure(error);
+            }
+            result
+        } else {
+            open_web(&options, &settings)
+        }
     } else if action == "stop-for-update" {
         stop_for_update(&options)
     } else {

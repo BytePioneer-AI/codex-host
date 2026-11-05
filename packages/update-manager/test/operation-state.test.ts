@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -42,6 +42,24 @@ async function status(
 }
 
 describe("update operation state", () => {
+  it("transfers the prepared operation to the updater without releasing its lock", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-update-transfer-"));
+    roots.push(root);
+    const operation = await acquireUpdateOperationLock(root);
+    if (!operation) throw new Error("Missing operation lock");
+    await expect(operation.transferTo(process.pid)).rejects.toThrow("not prepared");
+    const statusPath = await status(root, "update-active", "prepared", 20);
+    await operation.setStatusPath(statusPath);
+    await expect(operation.transferTo(0)).rejects.toThrow("Invalid update owner PID");
+    await operation.transferTo(process.ppid);
+    expect(JSON.parse(await readFile(operation.path, "utf8"))).toEqual({
+      ownerPid: process.ppid,
+      statusPath,
+    });
+    await recoverUpdateOperationLock(root);
+    expect(await acquireUpdateOperationLock(root)).toBeNull();
+    await operation.release();
+  });
   it("recovers a crashed remote updater lock but preserves a live remote updater", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-update-remote-"));
     roots.push(root);
@@ -78,11 +96,11 @@ describe("update operation state", () => {
     { phase: "failed", age: 86_400, output: "opaque\n", restore: true },
     { phase: "succeeded", age: 86_401, output: "opaque\n", restore: false },
     { phase: "failed", age: 86_401, output: "opaque\n", restore: false },
-    { phase: "succeeded", age: 0, output: "", restore: false },
-    { phase: "failed", age: 0, output: undefined, restore: false },
+    { phase: "succeeded", age: 0, output: "", restore: true },
+    { phase: "failed", age: 0, output: undefined, restore: true },
     { phase: "prepared", age: 0, output: "opaque\n", restore: false },
   ] as const)(
-    "restores only recent nonempty completed output: $phase/$age/$output",
+    "restores the recent completed status with optional output: $phase/$age/$output",
     async ({ phase, age, output, restore }) => {
       const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-recent-update-"));
       roots.push(root);
@@ -91,9 +109,10 @@ describe("update operation state", () => {
       try {
         const statusPath = await status(root, "update-result", phase, now - age, output);
         const result = await discoverRecentCompletedUpdateStatus(root);
-        if (restore)
-          expect(result).toMatchObject({ statusPath, status: { serviceStopOutput: output } });
-        else expect(result).toBeNull();
+        if (restore) {
+          expect(result).toMatchObject({ statusPath, status: { phase } });
+          expect(result?.status.serviceStopOutput).toBe(output);
+        } else expect(result).toBeNull();
       } finally {
         clock.mockRestore();
       }
@@ -106,7 +125,9 @@ describe("update operation state", () => {
     const now = Math.floor(Date.now() / 1000);
     await status(root, "update-old", "failed", now - 10, "old failure output\n");
     await status(root, "update-latest", "succeeded", now, "");
-    await expect(discoverRecentCompletedUpdateStatus(root)).resolves.toBeNull();
+    await expect(discoverRecentCompletedUpdateStatus(root)).resolves.toMatchObject({
+      status: { phase: "succeeded", serviceStopOutput: "" },
+    });
   });
 
   it("reports whether a live operation lock exists", async () => {

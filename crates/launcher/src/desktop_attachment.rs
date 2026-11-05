@@ -243,12 +243,20 @@ fn recorded_launcher_is_current<E>(inspected: Result<PathBuf, E>, expected: &Pat
         .is_some_and(|path| path == expected)
 }
 
-pub(super) fn stop_managed(data: &Path) -> Result<bool, Box<dyn Error>> {
+pub(super) fn managed_processes(
+    data: &Path,
+) -> Result<
+    Option<(
+        codexhost_platform::ProcessSnapshot,
+        codexhost_platform::ProcessSnapshot,
+    )>,
+    Box<dyn Error>,
+> {
     let Some(descriptor) = read_descriptor(&default_descriptor_path()?)? else {
-        return Ok(false);
+        return Ok(None);
     };
     if !endpoint_ready(descriptor.control_port, Duration::from_millis(300)) {
-        return Ok(false);
+        return Ok(None);
     }
     let document: serde_json::Value = serde_json::from_slice(&std::fs::read(
         data.join("diagnostics/desktop-controller-v1.json"),
@@ -262,6 +270,13 @@ pub(super) fn stop_managed(data: &Path) -> Result<bool, Box<dyn Error>> {
     if controller.parent_id != launcher.id {
         return Err("Desktop Controller does not belong to the recorded Launcher".into());
     }
+    Ok(Some((launcher, controller)))
+}
+
+pub(super) fn stop_managed(data: &Path) -> Result<bool, Box<dyn Error>> {
+    let Some((launcher, controller)) = managed_processes(data)? else {
+        return Ok(false);
+    };
     codexhost_platform::terminate_process_instance(&controller, false)?;
     crate::host_service::wait_for_shutdown(None, Some(&launcher), Duration::from_secs(10))?;
     Ok(true)

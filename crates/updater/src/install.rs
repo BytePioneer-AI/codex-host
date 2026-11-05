@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::Read;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use codexhost_platform::configure_background_command;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -265,32 +265,6 @@ pub(crate) fn install(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
         Installation::WindowsInstaller(windows) => install_windows(request, windows),
         Installation::MacosDmg(macos) => install_macos(request, macos),
     }
-}
-
-pub(crate) fn relaunch(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
-    let mut command = match &request.installation {
-        Installation::Npm(npm) => {
-            let mut command = Command::new(&npm.node_path);
-            command.arg(&npm.npm_launcher_path);
-            command
-        }
-        Installation::WindowsInstaller(windows) => {
-            let mut command = Command::new(windows.install_root.join("bin/codexhost-start.exe"));
-            configure_background_command(&mut command);
-            command
-        }
-        Installation::MacosDmg(macos) => {
-            let mut command = Command::new("/usr/bin/open");
-            command.arg(&macos.app_path);
-            command
-        }
-    };
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    command.spawn()?;
-    Ok(())
 }
 
 #[cfg(all(test, any(target_os = "windows", target_os = "macos")))]

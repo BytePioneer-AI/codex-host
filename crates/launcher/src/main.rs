@@ -11,6 +11,7 @@ mod native_harness_broker;
 mod runtime_instance;
 #[cfg(target_os = "linux")]
 mod secure_storage;
+mod service_update;
 mod services;
 mod startup_record;
 #[cfg(target_os = "macos")]
@@ -133,7 +134,7 @@ const USAGE: &str = "usage:
   codexhost --help
   codexhost --version
   codexhost inspect [--json] [--custom-install <absolute-directory>]
-  codexhost web [--host <address>] [--port <port>] [--public-url <url>] [--trusted-proxy <addresses>]
+  codexhost web [--background] [--host <address>] [--port <port>] [--public-url <url>] [--trusted-proxy <addresses>]
   codexhost stop
   codexhost status
   codexhost console
@@ -344,6 +345,7 @@ fn inspect(custom_install_root: Option<&Path>, json: bool) -> Result<(), Box<dyn
 
 #[derive(Debug)]
 struct LaunchOptions {
+    update_recovery: bool,
     shim: Option<PathBuf>,
     node: Option<PathBuf>,
     host_runtime: Option<PathBuf>,
@@ -373,6 +375,7 @@ fn required_path(arguments: &[String], index: &mut usize, option: &str) -> Resul
 }
 
 fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
+    let mut update_recovery = false;
     let mut shim = None;
     let mut node = None;
     let mut host_runtime = None;
@@ -384,6 +387,7 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
+            "--update-recovery" => update_recovery = true,
             "--shim" => shim = Some(required_path(arguments, &mut index, "--shim")?),
             "--node" => node = Some(required_path(arguments, &mut index, "--node")?),
             "--host-runtime" => {
@@ -412,6 +416,7 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
         index += 1;
     }
     Ok(LaunchOptions {
+        update_recovery,
         shim,
         node,
         host_runtime,
@@ -1007,6 +1012,14 @@ fn desktop_environment(
         environment.push((OsString::from("CODEXHOST_DEV_VERSION"), version));
     }
     environment.extend(npm_update_runtime_environment(env::vars_os()));
+    if let Ok(value) = env::var("CODEXHOST_WEB_SERVICE")
+        && matches!(value.as_str(), "0" | "1")
+    {
+        environment.push((
+            OsString::from("CODEXHOST_WEB_SERVICE"),
+            OsString::from(value),
+        ));
+    }
     environment.extend(desktop_path_overrides::forwarded(env::vars_os()));
     #[cfg(target_os = "linux")]
     environment.extend(linux_wayland_runtime_environment(env::vars_os()));
@@ -1108,6 +1121,15 @@ fn force_stop_external_desktop(
 
 fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error>> {
     let installation = discover_desktop(options.custom_install_root.as_deref());
+    if options.update_recovery {
+        services::prepare_host_for_update(
+            &options,
+            installation
+                .as_ref()
+                .ok()
+                .map(|desktop| desktop.install_root.as_path()),
+        )?;
+    }
     if services::web_enabled()
         && installation.as_ref().is_err_and(|error| {
             matches!(
@@ -1431,6 +1453,7 @@ fn is_launch_command(arguments: &[String]) -> bool {
 
 fn default_launch_options() -> LaunchOptions {
     LaunchOptions {
+        update_recovery: false,
         shim: None,
         node: None,
         host_runtime: None,
@@ -1729,6 +1752,7 @@ mod tests {
         for node in [None, Some(executable.clone())] {
             let expected = node.clone().unwrap_or_else(|| desktop_node.clone());
             let options = super::LaunchOptions {
+                update_recovery: false,
                 shim: Some(executable.clone()),
                 node,
                 host_runtime: Some(executable.clone()),

@@ -23,6 +23,7 @@ import {
 import { createDefaultRendererSettingsPages } from "./settings/pages.js";
 import settingsCss from "./settings/shell.css";
 import tailwindCss from "./settings/tailwind.css";
+import { webRequestManager } from "./web-request-manager.js";
 
 /** The Web settings modal supplies padding and width; compact layout follows the page width. */
 const WEB_LAYOUT_CSS = `.settings-page { background: transparent; overflow: visible; container: codexhost-settings-page / inline-size; }
@@ -31,33 +32,6 @@ const WEB_LAYOUT_CSS = `.settings-page { background: transparent; overflow: visi
 interface WebSettingsMountOptions {
   locale: string;
   colorScheme: "light" | "dark";
-}
-
-/** Host requests through the Web server's authenticated client channel. */
-function webRequestManager(): {
-  sendRequest(method: string, params: unknown, options?: unknown): Promise<unknown>;
-} {
-  return {
-    async sendRequest(method, params, options) {
-      const response = await fetch("api/ch/v1/rpc", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ method, params: params ?? {} }),
-        ...(options instanceof AbortSignal ? { signal: options } : {}),
-      });
-      const reply = (await response.json().catch(() => null)) as {
-        result?: unknown;
-        error?: { code?: number; message?: string };
-      } | null;
-      if (!response.ok || !reply || reply.error) {
-        throw Object.assign(new Error(reply?.error?.message ?? `HTTP ${response.status}`), {
-          code: reply?.error?.code,
-        });
-      }
-      return reply.result;
-    },
-  };
 }
 
 /** The GUI's idle release group (switch, timeout, loaded sessions) as its own Web section. */

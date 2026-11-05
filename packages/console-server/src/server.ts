@@ -164,6 +164,8 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       appDirectory: options.installation.appDirectory,
       runtimeDescriptorPath: document?.runtime.descriptorPath ?? null,
       codexhostRunning: document?.runtime.running ?? false,
+      dataDirectory: options.paths.dataDirectory,
+      restartTarget: document?.desktop === null ? ("web" as const) : ("desktop" as const),
     };
   };
 
@@ -353,9 +355,8 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       route === "GET /api/update/status" ||
       route === "POST /api/update/start"
     ) {
-      // A running codexhost updates through its Host so the Launcher can hand over.
-      const target = await updateTarget();
-      if (target.codexhostRunning && (await options.host.available())) {
+      // The independent Host owns one update operation for all connected clients.
+      if (await options.host.available()) {
         const method =
           route === "POST /api/update/check"
             ? "codexhost/update/check"

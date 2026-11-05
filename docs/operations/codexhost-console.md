@@ -128,17 +128,22 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 
 ## 更新
 
-更新页面展示当前服务实例启动或从活动更新锁恢复的任务状态。重新启动后，仅恢复最近一次更新在过去 24 小时内结束且 `serviceStopOutput` 非空的结果，以纯文本显示 Host 停止时报告的被中断任务数；超过 24 小时或输出为空的历史任务不恢复。恢复的结果每次读取均检查时限，不无限期缓存；当前实例启动或从活动锁接管的任务仍可保留本次结果。页面刷新可继续查看同一任务；重试切换到新任务。历史状态文件按原有保留策略清理。
+更新页面展示当前服务实例启动或从活动更新锁恢复的任务状态。重新启动后，恢复最近一次更新在过去 24 小时内结束的结果；存在 `serviceStopOutput` 时，以纯文本显示 Host 停止时报告的被中断任务数。超过 24 小时的历史任务不恢复；没有停止输出的失败结果仍保留，避免部分停止失败后重连丢失结果。恢复的结果每次读取均检查时限，不无限期缓存；当前实例启动或从活动锁接管的任务仍可保留本次结果。页面刷新可继续查看同一任务；重试切换到新任务。历史状态文件按原有保留策略清理。
 
-Updater 等发起更新的进程退出后，调用当前安装的旧 Launcher `stop-for-update`，依次停止 Web 和 Host，然后安装并重新拉起；后台检查和下载不停止服务。这个隐藏入口不停止 Console、远程服务或 Broker，Console 的原有交接退出及 Windows 安装器关闭规则保持不变。npm 的 Launcher 和 Node 分别来自更新 request 的平台包根目录与 `node_path`，Windows 安装包从安装根目录的 `bin` 和 `runtime` 定位；macOS 的 Launcher 位于 `.app/Contents/MacOS/codexhost`，Node 位于 `.app/Contents/Resources/runtime/node`。Host `--stop` 的标准输出作为不透明文本保存在更新状态中，不由 Rust 解析任务数。安装失败时服务保持停止，下次启动按现有安装拉起，会话记录保留、被中断任务不自动继续。
+共享 Host 为 Web、Desktop 和 Console 提供同一份更新协调器。后台检查和下载不停止服务；原生 Host 监管进程接管同一份已准备请求，在受监管的 Node 子进程树外启动 Updater。Updater 校验所有者身份并确认全局更新锁已转移给自身后，通过当前安装的旧 Launcher `stop-for-update` 依次停止受管理 GUI、Web 和 Host，再安装。安装阶段其他客户端不能重新拉起服务；Updater 的恢复进程可以启动目标服务。请求使用明确的数据目录，停止和恢复都拒绝接管另一安装的运行服务。
 
-`codexhost update` 提供不打开浏览器的终端入口，适用于 npm、macOS DMG 和 Windows 安装包。命令检查最新 Release，已是最新版本时成功退出；有更新时需先退出正在运行的 codexhost。命令复用控制台更新管理器和全局更新锁，等待下载、准备以及 Updater 校验旧进程身份并确认 `waiting-for-exit` 后退出，随后后台安装并重启 codexhost。创建子进程或获得 PID 不代表交接成功；启动报错、提前退出或 10 秒内未确认交接都会使操作失败，并终止未就绪的 Updater。终端显示的是交接状态，不代表安装已经完成；重新启动后应检查当前版本，历史安装结果保留在本地更新状态文件中供诊断。检查、准备或交接失败时返回非零退出码。源码构建和 Linux 非 npm 安装不支持自更新。
+npm 的 Launcher 和 Node 分别来自更新请求的平台包根目录与 `node_path`；Windows 安装包从安装根目录的 `bin` 和 `runtime` 定位；macOS 的 Launcher 位于 `.app/Contents/MacOS/codexhost`，Node 位于 `.app/Contents/Resources/runtime/node`。Host `--stop` 的标准输出作为不透明文本保存在更新状态中，不由 Rust 解析任务数。更新后按原使用方式恢复：纯 Web 只恢复后台 Host 和 Web；受管理 GUI 在线时恢复 GUI 并沿用 Web 的启用设置。恢复检查服务的版本、运行入口、进程身份和监听状态。GUI 恢复由 Launcher 先确保共享 Host 运行，再启动 Desktop，因此不依赖 LaunchServices 保留父子进程关系。
 
-- codexhost 运行中：通过 Host 的更新流程检查与安装，与 Codex 设置页一致。macOS 和 Windows 上 Host 只准备更新，由 Launcher 拉起 Updater 并在确认交接后关闭 Desktop；Windows 的 Host Runtime 位于 Shim 的随关闭终止 Job 中，由它拉起的 Updater 会随 Desktop 一起被终止。
-- Windows 安装包更新以 `/DIR` 固定当前安装目录，启动安装器前由 Updater 先关闭仍从该安装目录运行的 Launcher、内置 Node（包括独立控制台）、Shim 和 node_repl 包装器，规则与下文的覆盖安装相同，因此不依赖目标版本安装器是否自带关闭步骤；npm 更新前关闭仍从该平台包运行的 codexhost 可执行文件，不关闭共享的系统 Node。安装器和 npm 的输出分别写入本次更新目录的 `installer.log`、`npm-install.log`。失败时不自动回滚，更新页保留手动更新入口。
-- codexhost 未运行：控制台下载并准备更新，拉起 Updater 并等待身份校验后的就绪确认才退出；Updater 等待控制台进程退出，再按原流程安装并重新启动 codexhost。
-- npm 安装需通过 npm 命令启动的控制台（`codexhost`、`codexhost console`，或 Codex 设置页）才能更新，因为更新需要 npm 路径环境变量。
-- 源码构建不支持在控制台更新。
+停止服务后安装或启动失败时，Updater 尝试一次恢复同一安装，更新状态保持失败并附带恢复结果；不保证损坏的安装可以回滚。会话记录保留，被中断任务不自动继续。浏览器在更新期间断线时有界重试状态查询，不重发开始更新；10 分钟内无法确认结果时显示未知，不推断安装失败。
+
+`codexhost update` 提供不打开浏览器的终端入口，适用于 npm、macOS DMG 和 Windows 安装包。命令检查最新 Release，已是最新版本时成功退出。有可用 Host 时，验证它属于当前安装后复用 Host 的更新接口；不同安装或缺少安装身份的旧 Host 会被明确拒绝。终端显示请求已接受不代表安装已经完成，应查看重连后的更新状态和当前版本。
+
+没有可用 Host 时，Console/CLI 使用独立更新流程，下载、准备后等待 Updater 校验进程身份并确认就绪，转移更新锁，再退出；Updater 等发起进程退出后安装。没有安装 Desktop 时恢复 Web，否则沿用 Desktop 启动方式。创建子进程或获得 PID 不代表交接成功；启动报错、提前退出或交接超时都会报告失败。源码构建和 Linux 非 npm 安装不支持自更新。
+
+- Windows 安装包更新以 `/DIR` 固定当前安装目录，启动安装器前由 Updater 关闭仍从该安装目录运行的 Launcher、内置 Node（包括独立控制台）、Shim 和 node_repl 包装器，规则与下文的覆盖安装相同；npm 更新前关闭仍从该平台包运行的 codexhost 可执行文件，不关闭共享的系统 Node。安装器和 npm 的输出分别写入本次更新目录的 `installer.log`、`npm-install.log`。失败时保留手动更新入口。
+- npm 安装保留 Node、npm CLI、wrapper 和平台包根目录的绝对路径，后台 Host 不依赖后来连接的 Desktop 提供安装信息。路径必须属于当前 Host 安装。
+- 检查、准备或交接失败时 CLI 返回非零退出码；安装后的最终结果保留在本地状态文件中。
+
 
 ### Windows 安装包覆盖安装
 

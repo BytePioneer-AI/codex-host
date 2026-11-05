@@ -129,7 +129,7 @@ describe("console updates", () => {
           version: "1.1.0",
           installation: "npm",
           phase,
-          updatedAt: Math.floor(Date.now() / 1000),
+          updatedAt: Math.floor(Date.now() / 1000) - 86_401,
           error: "old failure",
         }),
       );
@@ -180,11 +180,15 @@ describe("console updates", () => {
     await expect(updates.status()).resolves.toMatchObject({
       status: { phase: "failed", error: "current failure" },
     });
-    await expect(createConsoleUpdates(options).status()).resolves.toEqual({ status: null });
+    await expect(createConsoleUpdates(options).status()).resolves.toMatchObject({
+      status: { phase: "failed", error: "current failure" },
+    });
   });
 
   it("hands off to the Updater before returning", async () => {
     const { target, environment } = await npmLayout("linux");
+    target.dataDirectory = path.join(root, "custom-data");
+    target.restartTarget = "web";
     const spawnUpdater = vi.fn<(executable: string, requestPath: string) => never>(
       () => Object.assign(new EventEmitter(), { pid: 4321, kill: vi.fn() }) as never,
     );
@@ -224,7 +228,12 @@ describe("console updates", () => {
       wait_pid: 777,
       wait_executable: process.execPath,
       runtime_descriptor_path: target.runtimeDescriptorPath,
+      data_directory: target.dataDirectory,
+      restart_target: "web",
     });
+    expect(
+      JSON.parse(await readFile(path.join(root, "state", "active-update-v1.lock"), "utf8")),
+    ).toMatchObject({ ownerPid: 4321 });
   });
 
   it("shows the current preparation failure and replaces it when retrying", async () => {

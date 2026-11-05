@@ -93,6 +93,7 @@ impl Options {
 }
 
 pub(super) fn ensure(options: &Options) -> Result<(), Box<dyn Error>> {
+    crate::service_update::ensure_start_allowed(&options.data)?;
     crate::host_service::run(&options.host_arguments("ensure"))?;
     let started = Instant::now();
     while let Some(record) = owner(&options.data)? {

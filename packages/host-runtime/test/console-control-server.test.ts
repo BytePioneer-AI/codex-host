@@ -25,7 +25,10 @@ describe("Host console channel", () => {
     const target = {
       handleConsoleRequest: vi.fn(async (method: string) => ({ result: { method } })),
     };
-    const environment = { CODEXHOST_DATA_DIR: dataDirectory };
+    const environment = {
+      CODEXHOST_DATA_DIR: dataDirectory,
+      CODEXHOST_HOST_RUNTIME_PATH: path.join(dataDirectory, "app", "host-runtime.mjs"),
+    };
     const server = await startConsoleControlServer({ target, environment, pid: 4242 });
     try {
       expect(server.descriptorPath).toBe(
@@ -34,7 +37,11 @@ describe("Host console channel", () => {
       const descriptor = JSON.parse(
         await readFile(server.descriptorPath, "utf8"),
       ) as ConsoleHostDescriptor;
-      expect(descriptor).toMatchObject({ schemaVersion: 1, pid: 4242 });
+      expect(descriptor).toMatchObject({
+        schemaVersion: 1,
+        pid: 4242,
+        runtimePath: environment.CODEXHOST_HOST_RUNTIME_PATH,
+      });
       if (process.platform !== "win32") {
         expect((await stat(server.descriptorPath)).mode & 0o777).toBe(0o600);
       }

@@ -41,6 +41,7 @@ const value = key => args[args.indexOf(key) + 1];
 const remote = args.includes('--codexhost-remote');
 const data = remote ? process.env.HOME : value('--data');
 const log = text => fs.appendFileSync(path.join(data, 'events'), text + '\n');
+if (!remote && !args.includes('--stop')) fs.writeFileSync(path.join(data, 'update-environment.json'), JSON.stringify(Object.fromEntries(['CODEXHOST_LAUNCHER_PID', 'CODEXHOST_LAUNCHER_EXECUTABLE', 'CODEXHOST_RUNTIME_DESCRIPTOR_PATH', 'CODEXHOST_UPDATE_SERVICE', 'CODEXHOST_NPM_NODE_PATH'].map(key => [key, process.env[key]]))));
 if (remote) {
   log('remote-stop');
   if (fs.existsSync(path.join(data, 'remote-fail'))) process.exit(1);
@@ -691,5 +692,221 @@ fn owned_gui_activation(refuse_stop: bool) {
         assert_eq!(fixture.starts(), 1);
     } else {
         assert!(failure.contains("fixture port is occupied"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn service_supervisor_hands_off_once_and_can_retry_without_desktop() {
+    use std::os::unix::fs::PermissionsExt;
+    struct FinishHelper(PathBuf);
+    impl Drop for FinishHelper {
+        fn drop(&mut self) {
+            let _ = fs::write(&self.0, "finish");
+        }
+    }
+    let fixture = Fixture::new();
+    let started = fixture
+        .command("host", "ensure")
+        .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
+        .output()
+        .unwrap();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let environment = fixture.record("update-environment.json");
+    assert_eq!(environment["CODEXHOST_UPDATE_SERVICE"], "1");
+    assert_eq!(environment["CODEXHOST_NPM_NODE_PATH"], fixture.node);
+    let owner: u32 = environment["CODEXHOST_LAUNCHER_PID"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let state = PathBuf::from(
+        environment["CODEXHOST_RUNTIME_DESCRIPTOR_PATH"]
+            .as_str()
+            .unwrap(),
+    )
+    .parent()
+    .unwrap()
+    .join("updates");
+    fs::create_dir_all(&state).unwrap();
+    let deadline = || Instant::now() + Duration::from_secs(15);
+    for attempt in 1..=2 {
+        let operation = state.join(format!("update-1.2.3-test-{attempt}"));
+        fs::create_dir_all(&operation).unwrap();
+        let status = operation.join("status-v1.json");
+        let request = operation.join("request-v1.json");
+        let helper = operation.join("codexhost-updater");
+        let _helper_cleanup = FinishHelper(operation.join("finish"));
+        let helper_source = format!(
+            r##"#!{}
+import fs from 'node:fs';
+import path from 'node:path';
+const file = process.argv.at(-1);
+const request = JSON.parse(fs.readFileSync(file));
+const root = request.data_directory;
+fs.writeFileSync(path.join(path.dirname(file), 'observed.json'), JSON.stringify({{pid:process.pid, request}}));
+const write = phase => {{
+ const status = JSON.parse(fs.readFileSync(request.status_path));
+ status.phase=phase;
+ fs.writeFileSync(request.status_path+'.tmp', JSON.stringify(status));
+ fs.renameSync(request.status_path+'.tmp', request.status_path);
+}};
+write('waiting-for-exit');
+setTimeout(() => process.exit(2), 30_000);
+setInterval(() => {{
+ if (fs.existsSync(path.join(path.dirname(file), 'finish'))) {{ write('failed'); process.exit(0); }}
+}}, 20);
+"##,
+            fixture.node
+        );
+        fs::write(&helper, helper_source).unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(&request, serde_json::to_vec(&serde_json::json!({
+            "schema_version":1,"wait_pid":owner,"wait_executable":environment["CODEXHOST_LAUNCHER_EXECUTABLE"],
+            "status_path":status,"service_managed":true,"restart_target":"desktop","data_directory":fixture.root
+        })).unwrap()).unwrap();
+        fs::write(&status, serde_json::to_vec(&serde_json::json!({
+            "schemaVersion":1,"version":"1.2.3","installation":"npm","phase":"prepared","updatedAt":1
+        })).unwrap()).unwrap();
+        let lock = state.join("active-update-v1.lock");
+        fs::write(
+            &lock,
+            serde_json::to_vec(&serde_json::json!({"ownerPid":1,"statusPath":status})).unwrap(),
+        )
+        .unwrap();
+        let until = deadline();
+        let observed = loop {
+            if let Ok(bytes) = fs::read(operation.join("observed.json"))
+                && let Ok(observed) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            {
+                break observed;
+            }
+            assert!(
+                Instant::now() < until,
+                "service update did not start: {:?}",
+                fs::read_to_string(&status)
+            );
+            thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(observed["request"]["restart_target"], "web");
+        let updater = observed["pid"].as_u64().unwrap() as u32;
+        let until = deadline();
+        loop {
+            let owned: serde_json::Value =
+                serde_json::from_slice(&fs::read(&lock).unwrap()).unwrap();
+            if owned["ownerPid"] == updater {
+                break;
+            }
+            assert!(Instant::now() < until);
+            thread::sleep(Duration::from_millis(20));
+        }
+        // A service handoff leaves Host online until the Updater stops it.
+        assert!(fixture.root.join("shared-host-ready.json").exists());
+        if attempt == 2 {
+            assert!(
+                fixture
+                    .command("host", "stop")
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            assert!(
+                codexhost_platform::process_snapshot(updater).is_ok(),
+                "Updater was killed with Host"
+            );
+            // An unrelated client cannot restart Host while installation is active.
+            let blocked = fixture.command("host", "ensure").output().unwrap();
+            assert!(!blocked.status.success());
+            assert!(String::from_utf8_lossy(&blocked.stderr).contains("update is installing"));
+        }
+        fs::write(operation.join("finish"), "finish").unwrap();
+        let until = deadline();
+        loop {
+            let result: serde_json::Value =
+                serde_json::from_slice(&fs::read(&status).unwrap()).unwrap();
+            if result["phase"] == "failed" {
+                break;
+            }
+            assert!(Instant::now() < until);
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+#[test]
+fn background_web_reuses_saved_configuration_without_opening_a_window() {
+    let fixture = Fixture::new();
+    let started = fixture
+        .public_command("web")
+        .args(["--background", "--port", "4599"])
+        .output()
+        .unwrap();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&started.stdout).contains("token="));
+    let record = fixture.record("web-service-ready.json");
+    assert_eq!(record["address"], "http://127.0.0.1:4599/");
+    let repeated = fixture
+        .public_command("web")
+        .args(["--background", "--update-recovery"])
+        .output()
+        .unwrap();
+    assert!(
+        repeated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&repeated.stderr)
+    );
+    assert_eq!(fixture.starts(), 1);
+}
+
+#[test]
+fn desktop_update_recovery_prepares_host_even_with_web_disabled() {
+    let fixture = Fixture::new();
+    // The fixture has no Desktop installation. Host preparation must still precede
+    // that launch error, without starting Web or touching a real Desktop process.
+    let result = fixture
+        .public_command("launch")
+        .arg("--update-recovery")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(fixture.root.join("shared-host-ready.json").exists());
+    assert!(!fixture.root.join("web-service-ready.json").exists());
+    assert!(
+        fs::read_to_string(fixture.root.join("events"))
+            .unwrap()
+            .contains("host-start")
+    );
+}
+
+#[test]
+fn update_recovery_and_stop_refuse_to_replace_another_installation() {
+    let fixture = Fixture::new();
+    assert!(fixture.run("ensure").status.success());
+    let original = fixture.record("shared-host-ready.json");
+    let other = fixture.root.join("other-host.mjs");
+    fs::copy(fixture.root.join("host-runtime.mjs"), &other).unwrap();
+    for action in ["web", "stop-for-update"] {
+        let mut command = fixture.public_command(action);
+        command.arg("--host-runtime").arg(&other);
+        if action == "web" {
+            command.args(["--background", "--update-recovery"]);
+        }
+        let result = command.output().unwrap();
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("different installation"));
+        assert_eq!(
+            fixture.record("shared-host-ready.json")["pid"],
+            original["pid"]
+        );
+        assert_eq!(fixture.starts(), 1);
     }
 }

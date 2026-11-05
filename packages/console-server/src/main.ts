@@ -44,7 +44,9 @@ async function serve(): Promise<void> {
     installation,
     paths,
     updates,
-    host: createConsoleHostClient(paths.hostDescriptorDirectory),
+    host: createConsoleHostClient(paths.hostDescriptorDirectory, {
+      updateAppDirectory: appDirectory,
+    }),
     pageScript: await loadConsoleBundle(appDirectory),
     harnesses: createConsoleHarnesses(
       harnessPluginRoots(appDirectory, installation.distribution === null),

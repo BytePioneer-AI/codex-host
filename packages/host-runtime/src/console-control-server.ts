@@ -18,6 +18,7 @@ export interface ConsoleHostDescriptor {
   port: number;
   token: string;
   startedAt: number;
+  runtimePath?: string;
 }
 
 export interface ConsoleControlTarget {
@@ -158,6 +159,9 @@ export async function startConsoleControlServer(options: {
     port: (server.address() as AddressInfo).port,
     token,
     startedAt: (options.now ?? Date.now)(),
+    ...(options.environment.CODEXHOST_HOST_RUNTIME_PATH
+      ? { runtimePath: options.environment.CODEXHOST_HOST_RUNTIME_PATH }
+      : {}),
   };
   try {
     await writePrivateJson(descriptorPath, descriptor);

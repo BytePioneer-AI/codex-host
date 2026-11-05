@@ -77,11 +77,20 @@ export async function ensureHostService(options: HostServiceLaunch): Promise<voi
   if (!isAbsolute(options.launcher))
     throw new Error("Shared Host Launcher must be an absolute path");
   const env = Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([key]) =>
-        !key.toUpperCase().startsWith("CODEXHOST_") &&
-        !["NODE_OPTIONS", "NODE_PATH"].includes(key.toUpperCase()),
-    ),
+    Object.entries(process.env).filter(([key, value]) => {
+      const upper = key.toUpperCase();
+      if (upper === "CODEXHOST_WEB_SERVICE") return value === "0" || value === "1";
+      if (
+        [
+          "CODEXHOST_NPM_NODE_PATH",
+          "CODEXHOST_NPM_CLI_PATH",
+          "CODEXHOST_NPM_LAUNCHER_PATH",
+          "CODEXHOST_NPM_PACKAGE_ROOT",
+        ].includes(upper)
+      )
+        return typeof value === "string" && isAbsolute(value);
+      return !upper.startsWith("CODEXHOST_") && !["NODE_OPTIONS", "NODE_PATH"].includes(upper);
+    }),
   );
   await promisify(execFile)(options.launcher, args, {
     env,

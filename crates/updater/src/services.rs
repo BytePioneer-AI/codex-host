@@ -1,30 +1,23 @@
-//! Stop only Web and Host using the installation being replaced.
-use std::env;
+//! Stop the services using the installation being replaced.
 use std::error::Error;
 use std::process::Command;
 
 use codexhost_platform::configure_background_command;
 
-use crate::request::{Installation, UpdateRequest};
+use crate::request::UpdateRequest;
 
 fn stop_command(request: &UpdateRequest) -> Command {
-    let executable = format!("codexhost{}", env::consts::EXE_SUFFIX);
-    let (launcher, node) = match &request.installation {
-        Installation::Npm(npm) => (
-            npm.npm_package_root.join("bin").join(&executable),
-            npm.node_path.clone(),
-        ),
-        Installation::WindowsInstaller(windows) => (
-            windows.install_root.join("bin").join(&executable),
-            windows.install_root.join("runtime/node.exe"),
-        ),
-        Installation::MacosDmg(macos) => (
-            macos.app_path.join("Contents/MacOS").join(&executable),
-            macos.app_path.join("Contents/Resources/runtime/node"),
-        ),
-    };
-    let mut command = Command::new(launcher);
-    command.arg("stop-for-update").arg("--node").arg(node);
+    let mut command = Command::new(request.installation.launcher_path());
+    command
+        .arg("stop-for-update")
+        .arg("--node")
+        .arg(request.installation.node_path());
+    if let Some(data) = &request.data_directory {
+        command
+            .arg("--data")
+            .arg(data)
+            .env("CODEXHOST_DATA_DIR", data);
+    }
     configure_background_command(&mut command);
     command
 }
@@ -48,6 +41,7 @@ pub(crate) fn stop(request: &UpdateRequest) -> Result<Option<String>, Box<dyn Er
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::env;
 
     #[test]
     fn locates_the_old_launcher_and_node_from_each_existing_installation_request() {

@@ -383,20 +383,23 @@ describe("console server", () => {
     expect(response.status).toBe(503);
   });
 
-  it("updates through the Host while codexhost runs", async () => {
-    const request = vi.fn(async () => ({ result: { status: { phase: "prepared" } } }));
-    const { base, updates } = await start({
-      codexRunning: true,
-      host: { available: vi.fn(async () => true), request },
-    });
-    const response = await fetch(`${base}/api/update/start`, {
-      method: "POST",
-      headers: { origin: base, ...CHANGE },
-    });
-    expect(response.status).toBe(200);
-    expect(request).toHaveBeenCalledWith("codexhost/update/start", {});
-    expect(updates.start).not.toHaveBeenCalled();
-  });
+  it.each([true, false])(
+    "updates through the Host with Desktop running: %s",
+    async (codexRunning) => {
+      const request = vi.fn(async () => ({ result: { status: { phase: "prepared" } } }));
+      const { base, updates } = await start({
+        codexRunning,
+        host: { available: vi.fn(async () => true), request },
+      });
+      const response = await fetch(`${base}/api/update/start`, {
+        method: "POST",
+        headers: { origin: base, ...CHANGE },
+      });
+      expect(response.status).toBe(200);
+      expect(request).toHaveBeenCalledWith("codexhost/update/start", {});
+      expect(updates.start).not.toHaveBeenCalled();
+    },
+  );
 });
 
 it("proxies Host display notifications and aborts upstream on browser disconnect", async () => {

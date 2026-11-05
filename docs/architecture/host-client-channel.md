@@ -39,6 +39,10 @@ Web 中的 Codex CLI 使用 `codex-cli` 身份，与其它 CLI Harness 一样由
 
 同一原生会话不要在 GUI 官方 Codex 与 Web Codex CLI 中同时打开：两者共享原生 home 和历史，但 Host 不为跨进程写入提供互斥。
 
+## 应用更新
+
+共享 Host 持有同一更新协调器，Desktop 协议前端和 Web 客户端通道使用现有 `codexhost/update/check`、`start`、`status` 接口；Console 对同一安装复用这些接口。更新不要求 Desktop 在线。安装上下文来自原生服务监管进程，下载、校验、状态和互斥由 update-manager 管理。原生监管进程接管已准备请求并将锁交给独立 Updater，由它停止 GUI、Web、Host，安装并按请求恢复界面。安装期间其他客户端不能自动重拉服务。跨安装入口拒绝操作，不通过 PATH 猜测更新对象；源码构建不支持安装更新。具体恢复和失败语义见[控制台更新](../operations/codexhost-console.md#更新)。
+
 ## 认证与传输
 
 Host 只监听 `127.0.0.1`，使用随机 Bearer token，拒绝带 Origin 的直接浏览器请求。私有描述文件位于 `$CODEXHOST_DATA_DIR/client-hosts`，默认 `~/.codexhost/client-hosts`，文件权限为 `0600`；PID 和 epoch 区分不同实例。发现时验证存活 PID、文件类型、大小和 Unix 所有者/权限，并通过打开的文件句柄校验，拒绝符号链接。描述文件不是会话索引。

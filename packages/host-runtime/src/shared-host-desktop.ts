@@ -16,8 +16,7 @@ import {
 import type { ModelPriceCatalog } from "./model-prices.js";
 import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
-import { createHostUpdateCoordinator } from "./update-coordinator.js";
-import { hasLauncherManagedUpdateRuntime } from "./run-host-runtime.js";
+import type { HostUpdateCoordinator } from "./update-coordinator.js";
 
 /** Runtime/control context is private to an authenticated Desktop connection. It
  * cannot change the service's data root, native account home or execution owner. */
@@ -70,6 +69,7 @@ export function sharedHostDesktop(
     owner: SharedThreadOwner;
     store: ExternalThreadStore;
     prices: ModelPriceCatalog;
+    updateCoordinator?: HostUpdateCoordinator;
     delegation(): DelegationControlRegistration | undefined;
     register(api: DelegationControlRegistration): (() => void) | undefined;
     connected: Set<AppServerHost>;
@@ -115,14 +115,7 @@ export function sharedHostDesktop(
     ...(runtimePath
       ? { runtimeMaintenance: new RuntimeMaintenance({ runtimePath, remote: false, environment }) }
       : {}),
-    ...(runtimePath && hasLauncherManagedUpdateRuntime(environment, runtimePath)
-      ? {
-          updateCoordinator: createHostUpdateCoordinator({
-            hostRuntimePath: runtimePath,
-            environment,
-          }),
-        }
-      : {}),
+    ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
     ...(entry
       ? { consoleOpener: createHostConsoleOpener({ entrypoint: entry, environment }) }
       : {}),

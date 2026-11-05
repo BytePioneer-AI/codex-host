@@ -134,6 +134,7 @@ OpenSpec change 名称为建议值，创建时可以调整。
 - 重复运行或换一条命令时，复用已运行的 Host 和 Web，只打开对应界面，不重启；只有 Host 在运行时补上 Web。
 - 端口被其他程序占用时提示失败，可用 `--port` 指定，不自动换端口。`npm start web` 遇到安装版 Web 占用端口时同样提示，不杀进程。
 - 由 Rust 负责 Web 后台的启动、监管和退出清理，不解析 token 或 Harness 语义。Web 崩溃后带退避自动重启；启动失败不反复重启。支持 macOS、Windows 和 Linux。
+- Web 设置页可在没有 Desktop 的情况下检查和发起更新，界面共享同一更新协调器与互斥；原生层接管安装，纯 Web 更新后不打开 GUI，失败时尽力恢复可用安装并保留实际结果。
 - 更新由用户发起，后台只下载和准备。更新时直接重启 Host 和 Web，不判断是否有任务在运行，并输出被中断的任务数。`npm update` 后下次运行 `codexhost` 时，发现版本不一致同样直接重启。同时装了安装包和 npm 版时，以最后运行的为准并提示。
 - 登录后自动启动默认关闭，开启远程访问时提供开关，由 `codexhost` 在运行时写入，不在安装时注册；只启动 Host 和 Web，不打开界面。macOS 用用户级 LaunchAgent，Windows 用当前用户的 Run 注册表项，Linux 用 systemd 用户服务，没有 systemd 时不提供。npm 版依赖用户的 Node 路径，每次运行时刷新自启项，路径失效时由 `codexhost status` 报告。
 - 电脑端的“手机远程访问”设置入口，以及后台运行状态。

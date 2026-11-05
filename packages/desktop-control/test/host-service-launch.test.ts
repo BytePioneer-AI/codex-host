@@ -94,36 +94,67 @@ it("does not mistake a live PID or wrong epoch for a ready service", async () =>
   expect(native).toHaveBeenCalledOnce();
 });
 
-it("boots through the native Launcher with sanitized environment and checks the new endpoint", async () => {
+it.each(["0", "1"])(
+  "boots through the native Launcher with sanitized environment and Web service preference %s",
+  async (webService) => {
+    const f = await fixture();
+    vi.stubEnv("CODEXHOST_RUNTIME_TOKEN", "fixture-poison");
+    vi.stubEnv("NODE_OPTIONS", "--fixture-poison");
+    vi.stubEnv("NODE_PATH", "/fixture-poison");
+    vi.stubEnv("CODEXHOST_WEB_SERVICE", webService);
+    const npmPaths = {
+      CODEXHOST_NPM_NODE_PATH: path.join(f.root, "node"),
+      CODEXHOST_NPM_CLI_PATH: path.join(f.root, "npm-cli.js"),
+      CODEXHOST_NPM_LAUNCHER_PATH: path.join(f.root, "codexhost.js"),
+      CODEXHOST_NPM_PACKAGE_ROOT: path.join(f.root, "package"),
+    };
+    for (const [key, value] of Object.entries(npmPaths)) vi.stubEnv(key, value);
+    native.mockImplementation((_file, _args, _options, callback) => {
+      void f.save(f.descriptor).then(() => callback(null, "", ""), callback);
+    });
+    await ensureHostService(f.launch);
+    expect(native).toHaveBeenCalledOnce();
+    const [file, args, options] = native.mock.calls[0] as [
+      string,
+      string[],
+      { env: NodeJS.ProcessEnv },
+    ];
+    expect(file).toBe(f.launch.launcher);
+    expect(args).toEqual([
+      "host",
+      "ensure",
+      "--node",
+      process.execPath,
+      "--host-runtime",
+      f.launch.runtime,
+      "--data",
+      f.root,
+    ]);
+    expect(options.env.NODE_OPTIONS).toBeUndefined();
+    expect(options.env.NODE_PATH).toBeUndefined();
+    expect(
+      Object.fromEntries(
+        Object.entries(options.env).filter(([key]) => key.startsWith("CODEXHOST_")),
+      ),
+    ).toEqual({ ...npmPaths, CODEXHOST_WEB_SERVICE: webService });
+    expect(options.env.PATH).toBe(process.env.PATH);
+  },
+);
+
+it("does not preserve relative npm installation paths", async () => {
   const f = await fixture();
-  vi.stubEnv("CODEXHOST_RUNTIME_TOKEN", "fixture-poison");
-  vi.stubEnv("NODE_OPTIONS", "--fixture-poison");
-  vi.stubEnv("NODE_PATH", "/fixture-poison");
+  vi.stubEnv("CODEXHOST_WEB_SERVICE", "invalid");
+  for (const key of [
+    "CODEXHOST_NPM_NODE_PATH",
+    "CODEXHOST_NPM_CLI_PATH",
+    "CODEXHOST_NPM_LAUNCHER_PATH",
+    "CODEXHOST_NPM_PACKAGE_ROOT",
+  ])
+    vi.stubEnv(key, "relative-path");
   native.mockImplementation((_file, _args, _options, callback) => {
     void f.save(f.descriptor).then(() => callback(null, "", ""), callback);
   });
   await ensureHostService(f.launch);
-  expect(native).toHaveBeenCalledOnce();
-  const [file, args, options] = native.mock.calls[0] as [
-    string,
-    string[],
-    { env: NodeJS.ProcessEnv },
-  ];
-  expect(file).toBe(f.launch.launcher);
-  expect(args).toEqual([
-    "host",
-    "ensure",
-    "--node",
-    process.execPath,
-    "--host-runtime",
-    f.launch.runtime,
-    "--data",
-    f.root,
-  ]);
-  expect(options.env.NODE_OPTIONS).toBeUndefined();
-  expect(options.env.NODE_PATH).toBeUndefined();
-  expect(Object.keys(options.env).some((key) => key.toUpperCase().startsWith("CODEXHOST_"))).toBe(
-    false,
-  );
-  expect(options.env.PATH).toBe(process.env.PATH);
+  const options = native.mock.calls[0]?.[2] as { env: NodeJS.ProcessEnv };
+  expect(Object.keys(options.env).some((key) => key.startsWith("CODEXHOST_"))).toBe(false);
 });

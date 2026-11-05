@@ -54,6 +54,9 @@ import {
   runBoundedRendererUpdateRequest,
 } from "./update-request.js";
 
+import { createRendererUpdateStatusPoll } from "./update-status-poll.js";
+import { RendererRequestTransportError } from "../renderer-request-sender.js";
+
 export const CODEXHOST_GITHUB_REPOSITORY_URL = "https://github.com/BytePioneer-AI/codex-host";
 export const CODEXHOST_RELEASES_LATEST_URL = `${CODEXHOST_GITHUB_REPOSITORY_URL}/releases/latest`;
 export const CODEXHOST_NPM_MANUAL_UPDATE_COMMAND = "npm install -g @codexhost/cli@latest";
@@ -425,16 +428,24 @@ function updatesPage(
           ? "settings-update-manual-description is-fallback"
           : "settings-update-manual-description";
       };
-      let pollTimer: number | undefined;
-      let pollAttempts = 0;
       let pending = false;
-
-      const clearPoll = (): void => {
-        if (pollTimer !== undefined) {
-          document.defaultView?.clearTimeout(pollTimer);
-          pollTimer = undefined;
-        }
-      };
+      let checkedStatus: UpdateStatus | null = null;
+      const statusPoll = createRendererUpdateStatusPoll(context, {
+        status(status) {
+          const message = statusMessage(status, messages);
+          if (message) renderPendingStatus(status, message);
+          if (status?.phase === "succeeded") {
+            currentVersionValue.textContent = `v${status.version}`;
+            latestVersionValue.className = "";
+          }
+        },
+        reconnecting() {
+          renderPendingStatus(null, messages.updateReconnecting);
+        },
+        unavailable() {
+          renderPendingStatus(null, messages.updateResultUnavailable, "unavailable");
+        },
+      });
 
       // Unavailable can follow a rendered check (Retry after an error), so it
       // restores the metadata and manual controls to their unchecked state.
@@ -461,8 +472,8 @@ function updatesPage(
       };
 
       // Failed requests point at the manual download without exposing internal
-      // detail. A start timeout is handled separately: the Host may still be
-      // updating, so continue reading status rather than retrying the start.
+      // detail. An interrupted start response cannot establish the outcome;
+      // status reads can recover it without submitting another update.
       const renderRequestFailure = (error: unknown): void => {
         console.error("codexhost update request failed", error);
         renderPendingStatus(
@@ -472,37 +483,6 @@ function updatesPage(
             : messages.updateServiceUnavailable,
           "failed",
         );
-      };
-
-      const scheduleStatusPoll = (client: RendererUpdateClient, resetAttempts = false): void => {
-        clearPoll();
-        if (resetAttempts) pollAttempts = 0;
-        if (pollAttempts >= 320) {
-          renderPendingStatus(null, messages.updateRequestTimeout, "failed");
-          return;
-        }
-        pollAttempts += 1;
-        pollTimer = document.defaultView?.setTimeout(() => {
-          void context.runLatest(
-            (signal) => runBoundedRendererUpdateRequest(() => client.readUpdateStatus(), signal),
-            {
-              success(result) {
-                const message = statusMessage(result.status, messages);
-                if (message) renderPendingStatus(result.status, message);
-                if (result.status === null || isPendingStatus(result.status)) {
-                  scheduleStatusPoll(client);
-                }
-              },
-              failure(error) {
-                if (error instanceof RendererUpdateRequestTimeoutError) {
-                  scheduleStatusPoll(client);
-                } else {
-                  renderRequestFailure(error);
-                }
-              },
-            },
-          );
-        }, 750);
       };
 
       const appendServiceStopOutput = (status: UpdateStatus | null): void => {
@@ -516,7 +496,7 @@ function updatesPage(
       const renderPendingStatus = (
         status: UpdateStatus | null,
         message: string,
-        viewPhase: UpdateStatus["phase"] | "pending" = status?.phase ?? "pending",
+        viewPhase: UpdateStatus["phase"] | "pending" | "unavailable" = status?.phase ?? "pending",
       ): void => {
         panel.dataset.updateState = viewPhase;
         delete panel.dataset.inline;
@@ -548,6 +528,7 @@ function updatesPage(
       const start = (client: RendererUpdateClient): void => {
         if (pending) return;
         pending = true;
+        const previousStatus = checkedStatus;
         renderPendingStatus(null, messages.updatePreparing);
         void context.runLatest(
           (signal) => runBoundedRendererUpdateRequest(() => client.startUpdate(), signal),
@@ -558,12 +539,16 @@ function updatesPage(
                 result.status,
                 statusMessage(result.status, messages) ?? messages.updatePreparing,
               );
-              if (isPendingStatus(result.status)) scheduleStatusPoll(client, true);
+              if (isPendingStatus(result.status)) statusPoll.start(() => client.readUpdateStatus());
             },
             failure(error) {
               pending = false;
-              if (error instanceof RendererUpdateRequestTimeoutError) {
-                scheduleStatusPoll(client, true);
+              if (
+                error instanceof RendererUpdateRequestTimeoutError ||
+                error instanceof RendererRequestTransportError
+              ) {
+                renderPendingStatus(null, messages.updateReconnecting);
+                statusPoll.start(() => client.readUpdateStatus(), previousStatus);
               } else {
                 renderRequestFailure(error);
               }
@@ -580,6 +565,7 @@ function updatesPage(
           renderUnavailable(messages.runtimeCapabilityNotInstalled);
           return;
         }
+        checkedStatus = result.status;
         currentVersionValue.textContent = `v${result.currentVersion}`;
         latestVersionValue.textContent = result.latestVersion ? `v${result.latestVersion}` : "-";
         latestVersionValue.className = result.updateAvailable
@@ -601,7 +587,7 @@ function updatesPage(
         const operationMessage = statusMessage(result.status, messages);
         if (isPendingStatus(result.status)) {
           renderPendingStatus(result.status, operationMessage ?? messages.updatePreparing);
-          scheduleStatusPoll(client, true);
+          statusPoll.start(() => client.readUpdateStatus());
           return;
         }
         const actionableStatus =
@@ -690,7 +676,7 @@ function updatesPage(
       };
 
       void load();
-      return clearPoll;
+      return () => statusPoll.dispose();
     },
   });
 }

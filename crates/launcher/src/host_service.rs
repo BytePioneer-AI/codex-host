@@ -114,6 +114,14 @@ fn options(arguments: &[String]) -> Result<Options, Box<dyn Error>> {
 pub(super) fn clean(command: &mut Command) {
     for (key, _) in env::vars_os() {
         let upper = key.to_string_lossy().to_ascii_uppercase();
+        if crate::NPM_UPDATE_RUNTIME_ENV.contains(&upper.as_str())
+            && env::var_os(&key).is_some_and(|value| Path::new(&value).is_absolute())
+        {
+            continue;
+        }
+        if upper == "CODEXHOST_WEB_SERVICE" {
+            continue;
+        }
         if upper.starts_with("CODEXHOST_") || upper == "NODE_OPTIONS" || upper == "NODE_PATH" {
             command.env_remove(key);
         }
@@ -160,6 +168,7 @@ fn ensure(arguments: &[String], options: Options) -> Result<(), Box<dyn Error>> 
     if owner_ready(&options.data) {
         return Ok(());
     }
+    crate::service_update::ensure_start_allowed(&options.data)?;
     let launches = options.data.join("service-launches");
     fs::create_dir_all(&launches)?;
     #[cfg(unix)]
@@ -239,11 +248,18 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
         .env("CODEXHOST_CLI_NODE_PATH", &options.node)
         .env("CODEXHOST_HOST_NODE_PATH", &options.node)
         .env("CODEXHOST_LAUNCHER_EXECUTABLE", env::current_exe()?)
+        .env("CODEXHOST_LAUNCHER_PID", std::process::id().to_string())
+        .env(
+            "CODEXHOST_RUNTIME_DESCRIPTOR_PATH",
+            crate::runtime_instance::default_descriptor_path()?,
+        )
+        .env("CODEXHOST_UPDATE_SERVICE", "1")
         // Host-side fetch (for example voice transcription) follows the system proxy.
         .envs(codexhost_platform::proxy_environment());
     let mut child = spawn_supervised(&mut command)?;
     let result = (|| -> Result<(), Box<dyn Error>> {
         let mut published = false;
+        let mut started_update = None;
         while child.try_wait()?.is_none() {
             if !published && let Some(result) = readiness(&node_ready) {
                 match result {
@@ -260,6 +276,14 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
             }
             // Retain exact descendant identities before a root crash reparents them.
             child.has_live_processes()?;
+            if published
+                && let Err(error) = crate::active_update::start_pending_service_update(
+                    &mut started_update,
+                    &options.data,
+                )
+            {
+                eprintln!("codexhost update handoff: {error}");
+            }
             thread::sleep(Duration::from_millis(100));
         }
         if !published && let Ok(message) = fs::read_to_string(&node_ready) {
@@ -389,6 +413,7 @@ pub fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         "serve" => serve(options),
         "stop" => stop(&options),
         "restart" => {
+            crate::service_update::ensure_start_allowed(&options.data)?;
             stop(&options)?;
             let data = options.data.clone();
             let runtime = options.runtime.clone();

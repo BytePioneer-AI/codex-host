@@ -7,7 +7,8 @@ import { discoverHostClientChannel, isHostClientChannelOnline } from "@codexhost
 import { AppServerHost } from "./app-server-host.js";
 import { createProductionExternalThreadStore } from "./external-thread-repository.js";
 import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
-import { prepareDelegationRuntime } from "./run-host-runtime.js";
+import { hasLauncherManagedUpdateRuntime, prepareDelegationRuntime } from "./run-host-runtime.js";
+import { createHostUpdateCoordinator } from "./update-coordinator.js";
 import { prepareLocalCodex } from "./native-account-host.js";
 import { startClientChannelServer } from "./client-channel-server.js";
 import { startConsoleControlServer } from "./console-control-server.js";
@@ -133,6 +134,14 @@ export async function runSharedHostService(
         const desktopRuns = new Set<Promise<number>>();
         let delegation: DelegationControlRegistration | undefined;
         const installed = installedHarnessPluginOptions(hostEnvironment, false, runtimeUrl);
+        const runtimePath = hostEnvironment.CODEXHOST_HOST_RUNTIME_PATH;
+        const updateCoordinator =
+          runtimePath && hasLauncherManagedUpdateRuntime(hostEnvironment, runtimePath)
+            ? createHostUpdateCoordinator({
+                hostRuntimePath: runtimePath,
+                environment: hostEnvironment,
+              })
+            : undefined;
         const host = new AppServerHost({
           stockCodexPath: values["stock-codex"] ?? "",
           arguments: [],
@@ -147,6 +156,7 @@ export async function runSharedHostService(
           accountControl: official.accountControl,
           modelPrices: prices,
           usageStatistics,
+          ...(updateCoordinator ? { updateCoordinator } : {}),
           ...installed,
           pluginContext: {
             ...installed.pluginContext,
@@ -181,6 +191,7 @@ export async function runSharedHostService(
           owner,
           store,
           prices,
+          ...(updateCoordinator ? { updateCoordinator } : {}),
           delegation: () => delegation,
           register: (api: DelegationControlRegistration) => registry.register(api),
           connected: desktops,
@@ -220,7 +231,10 @@ export async function runSharedHostService(
             target: {
               clientEvents: host.clientEvents,
               handleConsoleRequest: (method, params) =>
-                ([...desktops].at(-1) ?? host).handleConsoleRequest(method, params),
+                (method.startsWith("codexhost/update/")
+                  ? host
+                  : ([...desktops].at(-1) ?? host)
+                ).handleConsoleRequest(method, params),
             },
           });
           if (remote) {

@@ -137,14 +137,18 @@ fn update(fail_install: bool, host_running: bool) {
     }
     assert_eq!(
         fs::read_to_string(fixture.root.join("order")).unwrap(),
-        if fail_install {
-            "stop\ninstall\n"
-        } else {
-            "stop\ninstall\nrelaunch\n"
-        }
+        "stop\ninstall\nrelaunch\n"
     );
-    assert_eq!(fixture.root.join("web-running").exists(), !fail_install);
-    assert_eq!(fixture.root.join("host-running").exists(), !fail_install);
+    assert!(fixture.root.join("web-running").exists());
+    assert!(fixture.root.join("host-running").exists());
+    if fail_install {
+        assert!(
+            status["error"]
+                .as_str()
+                .unwrap()
+                .contains("service recovery succeeded")
+        );
+    }
     assert!(fixture.root.join("console-running").exists());
 }
 
@@ -153,8 +157,154 @@ fn waits_then_stops_services_before_install_and_keeps_opaque_output_after_relaun
     update(false, true);
 }
 #[test]
-fn failed_install_leaves_services_stopped_and_preserves_stop_output() {
+fn failed_install_restores_services_and_preserves_failure_and_stop_output() {
     update(true, true);
+}
+
+#[test]
+fn service_managed_handoff_does_not_wait_for_the_owner_and_reports_recovery_failure() {
+    let mut fixture = Fixture::new(true);
+    let launcher = fixture.root.join("package/bin/codexhost");
+    let script = fs::read_to_string(&launcher).unwrap().replace(
+        "[ \"$3\" = /bin/sh ]",
+        "[ \"$3\" = /bin/sh ]\n[ \"$4\" = --data ]\n[ \"$5\" = \"$HOME/data\" ]\n[ \"$CODEXHOST_DATA_DIR\" = \"$HOME/data\" ]",
+    );
+    fs::write(launcher, script).unwrap();
+    let path = fixture.root.join("request.json");
+    let mut request: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    request["service_managed"] = true.into();
+    request["restart_target"] = "web".into();
+    request["data_directory"] = fixture
+        .root
+        .join("data")
+        .to_string_lossy()
+        .into_owned()
+        .into();
+    let status_path = fixture.root.join("update-fixture/status-v1.json");
+    fs::create_dir_all(status_path.parent().unwrap()).unwrap();
+    request["status_path"] = serde_json::to_value(&status_path).unwrap();
+    let lock_path = fixture.root.join("active-update-v1.lock");
+    fs::write(
+        &lock_path,
+        serde_json::to_vec(&serde_json::json!({
+            "ownerPid": fixture.owner.id(), "statusPath": status_path,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(&path, serde_json::to_vec(&request).unwrap()).unwrap();
+    let mut updater = Command::new(env!("CARGO_BIN_EXE_codexhost-updater"))
+        .args(["apply", "--request"])
+        .arg(path)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &fixture.root)
+        .env("USERPROFILE", &fixture.root)
+        .env("CODEXHOST_DATA_DIR", fixture.root.join("wrong-data"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !status_path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "managed updater did not acknowledge handoff"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        !fixture.root.join("order").exists(),
+        "services stopped before lock transfer"
+    );
+    let transferred = fixture.root.join("transferred.lock");
+    fs::write(
+        &transferred,
+        serde_json::to_vec(&serde_json::json!({
+            "ownerPid":updater.id(), "statusPath":status_path,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::rename(transferred, lock_path).unwrap();
+    loop {
+        if let Some(status) = updater.try_wait().unwrap() {
+            assert!(!status.success());
+            break;
+        }
+        if Instant::now() >= deadline {
+            updater.kill().unwrap();
+            updater.wait().unwrap();
+            panic!("managed updater waited for its live owner");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(fixture.owner.try_wait().unwrap().is_none());
+    let status: serde_json::Value =
+        serde_json::from_slice(&fs::read(status_path).unwrap()).unwrap();
+    assert_eq!(status["phase"], "failed");
+    assert!(
+        status["error"]
+            .as_str()
+            .unwrap()
+            .contains("npm update failed")
+    );
+    assert!(
+        status["error"]
+            .as_str()
+            .unwrap()
+            .contains("service recovery failed")
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("order")).unwrap(),
+        "stop\ninstall\n"
+    );
+}
+
+#[test]
+fn rejected_lock_handoff_does_not_stop_or_recover_services() {
+    let fixture = Fixture::new(false);
+    let status_path = fixture.root.join("update-fixture/status-v1.json");
+    fs::create_dir_all(status_path.parent().unwrap()).unwrap();
+    let path = fixture.root.join("request.json");
+    let mut request: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    request["service_managed"] = true.into();
+    request["restart_target"] = "web".into();
+    request["data_directory"] = serde_json::to_value(fixture.root.join("data")).unwrap();
+    request["status_path"] = serde_json::to_value(&status_path).unwrap();
+    fs::write(&path, serde_json::to_vec(&request).unwrap()).unwrap();
+    fs::write(
+        fixture.root.join("active-update-v1.lock"),
+        serde_json::to_vec(&serde_json::json!({
+            "ownerPid":fixture.owner.id(), "statusPath":fixture.root.join("unrelated-status.json"),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_codexhost-updater"))
+        .args(["apply", "--request"])
+        .arg(path)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &fixture.root)
+        .env("USERPROFILE", &fixture.root)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let status: serde_json::Value =
+        serde_json::from_slice(&fs::read(status_path).unwrap()).unwrap();
+    assert_eq!(status["phase"], "failed");
+    assert!(
+        status["error"]
+            .as_str()
+            .unwrap()
+            .contains("different update operation")
+    );
+    assert!(!status["error"].as_str().unwrap().contains("recovery"));
+    assert!(!fixture.root.join("order").exists());
+    assert!(fixture.root.join("web-running").exists());
+    assert!(fixture.root.join("host-running").exists());
 }
 
 #[test]

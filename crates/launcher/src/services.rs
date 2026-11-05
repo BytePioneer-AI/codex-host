@@ -63,8 +63,16 @@ fn replace_outdated(options: &Options, changed: bool) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-fn ensure_current(options: &Options, settings: &[String]) -> Result<(), Box<dyn Error>> {
+fn ensure_current(
+    options: &Options,
+    settings: &[String],
+    update_recovery: bool,
+) -> Result<(), Box<dyn Error>> {
     let _guard = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock")?;
+    crate::service_update::ensure_start_allowed(&options.data)?;
+    if update_recovery {
+        validate_installation(options)?;
+    }
     let changed = if !settings.is_empty() {
         let mut command = Command::new(&options.node);
         host_service::clean(&mut command);
@@ -89,7 +97,7 @@ fn ensure_current(options: &Options, settings: &[String]) -> Result<(), Box<dyn 
 }
 
 fn open_web(options: &Options, settings: &[String]) -> Result<(), Box<dyn Error>> {
-    ensure_current(options, settings)?;
+    ensure_current(options, settings, false)?;
     let ready =
         web_service::owner(&options.data)?.ok_or("Web exited before its address could be read")?;
     println!("codexhost web: {}", ready.access.login_url);
@@ -118,6 +126,23 @@ pub fn open_for_launch(options: &LaunchOptions) -> Result<(), Box<dyn Error>> {
     )
 }
 
+// LaunchServices may reparent Desktop, so its bridge cannot rely on Updater ancestry.
+pub fn prepare_host_for_update(
+    options: &LaunchOptions,
+    desktop_root: Option<&Path>,
+) -> Result<(), Box<dyn Error>> {
+    let resolved = resolve_options(
+        options.node.clone(),
+        options.host_runtime.clone(),
+        options.web_runtime.clone(),
+        desktop_root,
+        options.node.clone(),
+    )?;
+    let _guard = host_service::lifecycle_lock(&resolved.data, "web-service-lifecycle.lock")?;
+    validate_installation(&resolved)?;
+    host_service::run(&resolved.host_arguments("ensure"))
+}
+
 fn record_failure(error: &dyn std::fmt::Display) {
     if let Some(data) = data_directory() {
         let _ = fs::create_dir_all(&data);
@@ -138,6 +163,7 @@ pub fn start_for_launch(
             options.node.clone(),
         )?;
         let _guard = host_service::lifecycle_lock(&resolved.data, "web-service-lifecycle.lock")?;
+        crate::service_update::ensure_start_allowed(&resolved.data)?;
         replace_outdated(&resolved, false)?;
         Ok(resolved)
     };
@@ -160,8 +186,29 @@ pub fn start_for_launch(
     }))
 }
 
+fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
+    if let Some((runtime, _)) = host_service::current_runtime(&options.data)
+        && runtime.canonicalize()? != options.host_runtime.canonicalize()?
+    {
+        return Err("The running Host belongs to a different installation".into());
+    }
+    if let Some(owner) = web_service::owner(&options.data)?
+        && owner.runtime.canonicalize()? != options.runtime.canonicalize()?
+    {
+        return Err("The running Web belongs to a different installation".into());
+    }
+    if let Some((launcher, _)) = desktop_attachment::managed_processes(&options.data)?
+        && launcher.executable.canonicalize()? != env::current_exe()?.canonicalize()?
+    {
+        return Err("The running Desktop belongs to a different installation".into());
+    }
+    Ok(())
+}
+
 fn stop_for_update(options: &Options) -> Result<(), Box<dyn Error>> {
     let _guard = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock")?;
+    validate_installation(options)?;
+    desktop_attachment::stop_managed(&options.data)?;
     web_service::stop(options)?;
     if host_service::current_runtime(&options.data).is_some() {
         host_service::run(&options.host_arguments("stop"))?;
@@ -294,7 +341,22 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let mut node = None;
     let mut host = None;
     let mut web = None;
+    let mut data = None;
     let mut settings = Vec::new();
+    let background = action == "web" && arguments.iter().any(|argument| argument == "--background");
+    let update_recovery = background
+        && arguments
+            .iter()
+            .any(|argument| argument == "--update-recovery");
+    let arguments = arguments
+        .iter()
+        .filter(|argument| {
+            !background
+                || (*argument != "--background"
+                    && (!update_recovery || *argument != "--update-recovery"))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     for pair in arguments.chunks(2) {
         if pair.len() != 2 {
             return Err(format!("{} requires a value", pair[0]).into());
@@ -302,7 +364,7 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
         let path = PathBuf::from(&pair[1]);
         if matches!(
             pair[0].as_str(),
-            "--node" | "--host-runtime" | "--web-runtime"
+            "--node" | "--host-runtime" | "--web-runtime" | "--data"
         ) && !path.is_absolute()
         {
             return Err(format!("{} must be absolute", pair[0]).into());
@@ -311,6 +373,7 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
             "--node" => node = Some(path),
             "--host-runtime" => host = Some(path),
             "--web-runtime" => web = Some(path),
+            "--data" if action == "stop-for-update" || action == "web" => data = Some(path),
             "--host" | "--port" | "--public-url" | "--trusted-proxy" if action == "web" => {
                 settings.extend_from_slice(pair)
             }
@@ -326,9 +389,16 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
         .as_ref()
         .and_then(|result| result.as_ref().ok())
         .map(|desktop| desktop.install_root.as_path());
-    let options = resolve_options(node, host, web, desktop_root, None)?;
+    let mut options = resolve_options(node, host, web, desktop_root, None)?;
+    if let Some(data) = data {
+        options.data = data;
+    }
     if action == "web" {
-        open_web(&options, &settings)
+        if background {
+            ensure_current(&options, &settings, update_recovery)
+        } else {
+            open_web(&options, &settings)
+        }
     } else if action == "stop-for-update" {
         stop_for_update(&options)
     } else {

@@ -14,6 +14,13 @@
   gap: 14px;
 }
 
+.setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .description {
   margin: 0;
   font-size: 13px;
@@ -42,6 +49,7 @@
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-state-error-primary);
+  overflow-wrap: anywhere;
 }
 
 .connectionMain {

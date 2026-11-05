@@ -24,6 +24,28 @@ export const webTailscaleStateSchema = z.discriminatedUnion("status", [
 
 export type WebTailscaleState = z.infer<typeof webTailscaleStateSchema>;
 
+export const webServeResultSchema = z
+  .object({
+    state: webTailscaleStateSchema,
+    error: z.string().optional(),
+  })
+  .strict();
+
+export const webAutostartStateSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("on") }),
+  z.object({ status: z.literal("off") }),
+  z.object({ status: z.literal("invalid"), reason: z.string() }),
+]);
+
+export const webBackgroundStateSchema = z
+  .object({
+    lan: z.boolean(),
+    autostart: webAutostartStateSchema,
+  })
+  .strict();
+
+export type WebBackgroundState = z.infer<typeof webBackgroundStateSchema>;
+
 /** What this computer's connection page shows; available only on this computer. */
 export const webAccessStateSchema = z
   .object({
@@ -33,6 +55,7 @@ export const webAccessStateSchema = z
     /** Addresses for other devices; empty when Web listens only on this computer. */
     networkUrls: z.array(webNetworkAccessUrlSchema),
     tailscale: webTailscaleStateSchema,
+    background: webBackgroundStateSchema.optional(),
   })
   .strict();
 

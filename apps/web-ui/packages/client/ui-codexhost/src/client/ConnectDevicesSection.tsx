@@ -10,6 +10,8 @@ import {
 import { accessTokenApi, ApiError } from "./api.ts";
 import { signOut } from "./auth-watch.ts";
 import { QrCode } from "./QrCode.tsx";
+import { ServeControl } from "./ServeControl.tsx";
+import { BackgroundControls } from "./BackgroundControls.tsx";
 import css from "./ConnectDevicesSection.module.css";
 
 type Translate = PropsLocale<"codexhostImport">["t"];
@@ -318,10 +320,12 @@ function ElsewhereNotice({ url, t }: { url: string; t: Translate }): ReactNode {
  */
 export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): ReactNode {
   const [view, setView] = useState<View>({ kind: "loading" });
+  const [connectionKey, setConnectionKey] = useState(0);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const restored = useCallback((data: WebAccessState) => setView({ kind: "ready", data }), []);
   const load = useCallback(async (): Promise<void> => {
     try {
       setView({ kind: "ready", data: await accessTokenApi.get() });
@@ -352,9 +356,12 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
   const used = lastUsedAt === null ? undefined : relativeTime(lastUsedAt, Date.now());
   return (
     <div className={css.page} data-connect-devices>
+      {view.data.background !== undefined && (
+        <BackgroundControls state={view.data.background} restored={restored} t={t} />
+      )}
       <p className={css.description}>{t("connectDevices.description")}</p>
       {networkUrls.length > 0 ? (
-        <Connection secret={secret} addresses={networkUrls} t={t} />
+        <Connection key={connectionKey} secret={secret} addresses={networkUrls} t={t} />
       ) : (
         <div className={css.connection}>
           <p className={css.notice}>{t("connectDevices.localListener")}</p>
@@ -386,6 +393,23 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
           )}
         </div>
       )}
+      <ServeControl
+        enabled={tailscale.status === "serving"}
+        available={tailscale.status === "serving" || tailscale.status === "not-serving"}
+        t={t}
+        refresh={async (preferServe) => {
+          const data = await accessTokenApi.get();
+          if (preferServe) {
+            data.networkUrls.sort(
+              (a, b) =>
+                Number(b.kind === "tailscale-https" || b.kind === "tailscale-funnel") -
+                Number(a.kind === "tailscale-https" || a.kind === "tailscale-funnel"),
+            );
+            setConnectionKey((key) => key + 1);
+          }
+          setView({ kind: "ready", data });
+        }}
+      />
       <RemoteOptions t={t} />
       <div className={css.footer}>
         <span

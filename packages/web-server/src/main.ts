@@ -20,6 +20,7 @@ import qrcode from "qrcode-terminal";
 import { createBrowserWebSocketServer } from "./browser-websocket.ts";
 
 import { registerAccessTokenRpc } from "./access-token-rpc.ts";
+import { autostartState, registerBackgroundControls } from "./background-controls.ts";
 import { registerUiExtensionRpc } from "./ui-extension-rpc.ts";
 import { UI_EXTENSION_PAGE } from "./ui-extension-page.ts";
 import { WebUiExtensions } from "./ui-extensions.ts";
@@ -391,7 +392,27 @@ async function readNetworkAccess() {
 }
 registerAccessTokenRpc(rpc, accessTokens, {
   port: () => listeningPort,
-  access: readNetworkAccess,
+  access: async () => {
+    const [access, autostart] = await Promise.all([
+      readNetworkAccess(),
+      background ? autostartState(launcher) : undefined,
+    ]);
+    return {
+      ...access,
+      ...(autostart === undefined
+        ? {}
+        : {
+            background: { lan: isWildcardHost(values.host as string), autostart },
+          }),
+    };
+  },
+});
+registerBackgroundControls(rpc, accessTokens, {
+  background: background !== undefined,
+  port: () => listeningPort,
+  data,
+  launcher,
+  shutdown,
 });
 registerMisc(rpc, { events });
 registerUiExtensionRpc(rpc, extensions, {
@@ -503,7 +524,9 @@ const server = createServer((request, response) => {
       const body = await readBody(request, response);
       if (body === undefined) return;
       if (dsh && (await dsh.handleApiRequest(request, body, response))) return;
-      const reply = await rpc.handleHttp(body, requestAuth);
+      const reply = await rpc.handleHttp(body, requestAuth, (callback) => {
+        response.once("finish", callback);
+      });
       response
         .writeHead(200, {
           "content-type": "application/json; charset=utf-8",

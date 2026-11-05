@@ -2,16 +2,29 @@
 import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { once } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
 import { chromium } from "playwright";
 import type { WebUiExtensionsState } from "@codexhost/shared-contracts";
 import { startServer } from "../support/server.ts";
+import { FakeChHost, startFakeChDebugger } from "../support/ch-host.ts";
+import { openPluginTerminal } from "../support/web-plugin-terminal.ts";
 
 const samples = [
+  {
+    id: "@frostgao/dsh-theme-blackgold",
+    version: "1.0.0",
+    label: "blackgold",
+    archive: process.env.CODEXHOST_TEST_DSH_EXTENSION_ARCHIVE,
+    archiveHash: "f6ef545dec6ded0ffaacec8be6ce64026f4b79141888fe5a368f62a632a92957",
+    entries: {
+      "lib/client.js": "ba0438d0ccfdac090819bf4a88abbfd2b122af8d6a1a3912da5edce19bb03f92",
+    },
+    selector: ".dsh-gold-mark",
+    prefix: "",
+  },
   {
     id: "@smalltailqwq/dsh-client-ui-skin-maid-atelier",
     version: "0.1.9",
@@ -42,9 +55,12 @@ const samples = [
 const hash = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
 const TOKEN = "native-package-acceptance-token";
 
-for (const sample of samples)
+const cases = samples.flatMap((sample) =>
+  [false, true].map((withTerminal) => ({ sample, withTerminal })),
+);
+for (const { sample, withTerminal } of cases)
   it(
-    `runs unchanged ${sample.id}@${sample.version}, resources and disable recovery`,
+    `hot-loads unchanged ${sample.id}@${sample.version} ${withTerminal ? "with an existing PTY" : "across pages and recovery"}`,
     { skip: !sample.archive, timeout: 180_000 },
     async (t) => {
       assert.ok(sample.archive);
@@ -52,26 +68,32 @@ for (const sample of samples)
       const root = mkdtempSync(join(tmpdir(), "codexhost-real-web-plugin-"));
       t.after(() => rmSync(root, { recursive: true, force: true }));
       const data = join(root, "data");
+      const workspace = join(root, "workspace");
+      mkdirSync(workspace);
+      writeFileSync(join(workspace, "README.md"), "# Hot plugin workspace\n");
+      const host = new FakeChHost();
+      host.add("hot-thread", workspace, "Hot plugin Thread");
+      const debug = await startFakeChDebugger(host);
+      t.after(() => debug.close());
       let child!: ChildProcess;
-      const launch = () =>
-        startServer(
-          t,
-          resolve(import.meta.dirname, "../.."),
-          ["--import", "tsx", "src/main.ts"],
-          ["--data", data, "--token", TOKEN],
-          {
-            authenticated: true,
-            onSpawn: (value) => {
-              child = value;
-            },
+      let serverOutput = "";
+      const url = await startServer(
+        t,
+        resolve(import.meta.dirname, "../.."),
+        ["--import", "tsx", "src/main.ts"],
+        ["--data", data, "--token", TOKEN, "--ch-cdp", debug.endpoint],
+        {
+          authenticated: true,
+          environment: { SHELL: "/bin/sh" },
+          onSpawn: (value) => {
+            child = value;
+            for (const stream of [value.stdout, value.stderr])
+              stream?.on("data", (chunk) => {
+                serverOutput += String(chunk);
+              });
           },
-        );
-      const stop = async () => {
-        const ended = once(child, "exit");
-        child.kill("SIGTERM");
-        await ended;
-      };
-      let url = await launch();
+        },
+      );
       const rpc = async (action: string, args = {}): Promise<WebUiExtensionsState> => {
         const method = `codexhost/uiExtensions/${action}`;
         const response = await fetch(new URL(`/api/${method}`, url), {
@@ -92,20 +114,32 @@ for (const sample of samples)
       };
       const browser = await chromium.launch({ args: ["--enable-unsafe-swiftshader"] });
       t.after(() => browser.close());
-      const page = await browser.newPage({
+      const context = await browser.newContext({
         locale: "en-US",
         colorScheme: "light",
         viewport: { width: 1440, height: 1000 },
       });
+      const page = await context.newPage();
+      const second = await browser.newPage({ locale: "en-US", colorScheme: "light" });
+      const recovery = await context.newPage();
+      const manager = await context.newPage();
+      const pages = [page, second, recovery, manager];
       const errors: string[] = [];
+      const recoveryChannels: string[] = [];
+      for (const target of [recovery, manager])
+        target.on("request", (request) => {
+          if (request.url().includes("plugins/events")) recoveryChannels.push(request.url());
+        });
+      let terminal: Awaited<ReturnType<typeof openPluginTerminal>> | undefined;
+      let phase = "initial";
       const consoleErrors: string[] = [];
       const resources: { url: string; status: number }[] = [];
-      page.on("pageerror", (error) => errors.push(error.message));
+      for (const target of pages) target.on("pageerror", (error) => errors.push(error.message));
       page.on("console", (message) => {
         if (message.type() === "error") consoleErrors.push(message.text());
       });
       page.on("response", (response) => {
-        if (response.url().includes(sample.prefix))
+        if (sample.prefix && response.url().includes(sample.prefix))
           resources.push({ url: new URL(response.url()).pathname, status: response.status() });
       });
       const screenshots = process.env.CODEXHOST_TEST_EXTENSION_SCREENSHOTS;
@@ -114,11 +148,21 @@ for (const sample of samples)
         if (screenshots) {
           mkdirSync(screenshots, { recursive: true });
           writeFileSync(
-            join(screenshots, `${mode}-${sample.label}-observations.json`),
+            join(
+              screenshots,
+              `${mode}-${sample.label}${withTerminal ? "-pty" : ""}-observations.json`,
+            ),
             JSON.stringify(
               {
+                phase,
+                withTerminal,
+                serverPid: child.pid,
+                serverOutput,
+                mode,
                 archiveHash: sample.archiveHash,
                 entries: sample.entries,
+                terminal: terminal?.evidence(),
+                recoveryChannels,
                 errors,
                 consoleErrors,
                 resources,
@@ -129,6 +173,22 @@ for (const sample of samples)
           );
         }
       });
+      const target = new URL(url);
+      target.searchParams.set("session", "hot-thread");
+      await page.goto(target.href);
+      await page.getByText("earlier question", { exact: true }).waitFor();
+      await second.goto(url);
+      await recovery.goto(new URL("/?extensions=off", url).href);
+      await manager.goto(new URL("/extensions", url).href);
+      for (const target of [page, second, recovery])
+        await target.getByRole("button", { name: "Settings", exact: true }).waitFor();
+      for (const target of pages)
+        await target.evaluate(() => {
+          (globalThis as { hotDocument?: number }).hotDocument = 1;
+        });
+      assert.deepEqual((await rpc("list")).extensions, [], "PTY baseline has no installed plugin");
+      if (withTerminal) terminal = await openPluginTerminal(page, workspace);
+      phase = "installed";
       const installed = await rpc("install", { spec: sample.archive });
       assert.deepEqual(installed.extensions[0]?.enabledTargets, []);
       assert.equal(installed.extensions[0]?.version, sample.version);
@@ -142,15 +202,15 @@ for (const sample of samples)
       );
       for (const [entry, expected] of Object.entries(sample.entries))
         assert.equal(hash(join(directory, entry)), expected);
+      phase = "enabled";
       await rpc("setEnabled", { id: sample.id, enabled: true });
-      assert.deepEqual((await rpc("list")).loadedIds, []);
-      await stop();
-      url = await launch();
       assert.deepEqual((await rpc("list")).loadedIds, [sample.id]);
-      await page.goto(url);
-      await page.getByRole("button", { name: "Settings", exact: true }).waitFor();
-      await page.locator(sample.selector).waitFor({ state: "attached" });
-      let resource: string;
+      for (const target of [page, second]) {
+        await target.locator(sample.selector).first().waitFor({ state: "attached" });
+        assert.ok((await target.locator(`style[data-plugin="${sample.id}"]`).count()) > 0);
+      }
+      await terminal?.verify("enabled");
+      let resource: string | undefined;
       if (sample.label === "maid-atelier") {
         await page.waitForFunction(
           () =>
@@ -180,7 +240,7 @@ for (const sample of samples)
           assert.match(response.headers()["content-type"] ?? "", /^image\//);
           assert.ok((await response.body()).length > 100);
         }
-      } else {
+      } else if (sample.label === "open-sea") {
         const frame = page.frameLocator(sample.selector);
         await frame.locator("body.ready canvas").waitFor({ state: "visible", timeout: 60_000 });
         assert.ok(
@@ -201,7 +261,13 @@ for (const sample of samples)
           assert.ok((await response.body()).length > 100);
         }
       }
-      assert.ok(resources.some((response) => response.status === 200));
+      if (sample.label === "blackgold") {
+        const color = await page.evaluate(() =>
+          getComputedStyle(document.body).getPropertyValue("--dsw-alias-brand-primary").trim(),
+        );
+        assert.equal(color.toLowerCase(), "#cfb53b");
+      }
+      if (sample.prefix) assert.ok(resources.some((response) => response.status === 200));
       assert.deepEqual(
         resources.filter((response) => response.status >= 400),
         [],
@@ -209,33 +275,66 @@ for (const sample of samples)
       if (screenshots) {
         mkdirSync(screenshots, { recursive: true });
         await page.screenshot({
-          path: join(screenshots, `${mode}-${sample.label}-enabled.png`),
+          path: join(
+            screenshots,
+            `${mode}-${sample.label}${withTerminal ? "-pty" : ""}-enabled.png`,
+          ),
           fullPage: true,
           animations: "disabled",
         });
       }
-      await page.goto(new URL("/?extensions=off", url).href);
-      await page.getByRole("button", { name: "Settings", exact: true }).waitFor();
-      assert.equal(await page.locator(sample.selector).count(), 0);
-      assert.equal((await page.request.get(new URL(resource, url).href)).status(), 200);
-      await page.goto(new URL("/extensions", url).href);
-      await page.getByRole("button", { name: "禁用 / Disable", exact: true }).click();
-      await page.getByRole("button", { name: "启用 / Enable", exact: true }).waitFor();
-      await page.goto("about:blank");
-      await stop();
-      url = await launch();
-      await page.goto(url);
-      await page.getByRole("button", { name: "Settings", exact: true }).waitFor();
+      for (const target of [recovery, manager]) {
+        assert.equal(await target.locator(sample.selector).count(), 0);
+        assert.equal(await target.locator(`style[data-plugin="${sample.id}"]`).count(), 0);
+      }
+      if (resource)
+        assert.equal((await page.request.get(new URL(resource, url).href)).status(), 200);
+      phase = "disabled";
+      await second.context().setOffline(true);
+      await rpc("setEnabled", { id: sample.id, enabled: false });
+      await page.locator(sample.selector).first().waitFor({ state: "detached" });
+      await second.context().setOffline(false);
+      await second.locator(sample.selector).first().waitFor({ state: "detached" });
       assert.deepEqual((await rpc("list")).loadedIds, []);
-      assert.equal(await page.locator(sample.selector).count(), 0);
-      assert.equal((await page.request.get(new URL(resource, url).href)).status(), 404);
-      assert.deepEqual(errors, []);
+      for (const target of [page, second])
+        assert.equal(await target.locator(`style[data-plugin="${sample.id}"]`).count(), 0);
+      if (resource)
+        assert.equal((await page.request.get(new URL(resource, url).href)).status(), 404);
+      await terminal?.verify("disabled");
       if (screenshots)
         await page.screenshot({
-          path: join(screenshots, `${mode}-${sample.label}-disabled.png`),
+          path: join(
+            screenshots,
+            `${mode}-${sample.label}${withTerminal ? "-pty" : ""}-disabled.png`,
+          ),
           fullPage: true,
         });
-      await page.goto("about:blank");
-      await stop();
+      phase = "reenabled";
+      await rpc("setEnabled", { id: sample.id, enabled: true });
+      for (const target of [page, second])
+        await target.locator(sample.selector).first().waitFor({ state: "attached" });
+      await terminal?.verify("reenabled");
+      // The original files have not been rewritten by either activation.
+      for (const [entry, expected] of Object.entries(sample.entries))
+        assert.equal(hash(join(directory, entry)), expected);
+      phase = "removed";
+      await rpc("remove", { id: sample.id });
+      for (const target of [page, second]) {
+        await target.locator(sample.selector).first().waitFor({ state: "detached" });
+        assert.equal(await target.locator(`style[data-plugin="${sample.id}"]`).count(), 0);
+      }
+      if (resource)
+        assert.equal((await page.request.get(new URL(resource, url).href)).status(), 404);
+      assert.equal(existsSync(directory), false);
+      await terminal?.verify("removed");
+      for (const target of pages)
+        assert.equal(
+          await target.evaluate(() => (globalThis as { hotDocument?: number }).hotDocument),
+          1,
+        );
+      assert.deepEqual(recoveryChannels, []);
+      assert.equal(child.exitCode, null);
+      assert.deepEqual(errors, []);
+      phase = "complete";
     },
   );

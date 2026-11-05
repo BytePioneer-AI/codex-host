@@ -177,6 +177,33 @@ pub fn show_for_launch(reason: Option<&str>) -> bool {
     show(reason)
 }
 
+/// Stops the loopback console that this launch started. Called after a managed
+/// Desktop session ends so the next launch does not inherit a detached orphan
+/// on the same port. Failure paths that call [`show_for_launch`] leave the
+/// console up for diagnostics and skip this.
+pub fn stop_for_launch() {
+    let command = {
+        let Ok(mut slot) = LAUNCH_CONSOLE.lock() else {
+            return;
+        };
+        let Some(console) = slot.take() else {
+            return;
+        };
+        if let Some(ensure) = console.ensure {
+            let _ = ensure.join();
+        }
+        console.command
+    };
+    let Ok(mut process) = node_command(&command) else {
+        return;
+    };
+    let _ = process
+        .arg("shutdown")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 fn launch_presentation() -> Option<Presentation> {
     LAUNCH_CONSOLE
         .lock()
@@ -423,6 +450,53 @@ mod tests {
         assert!(shown_early);
         assert!(shown_at_ready);
         assert_eq!(calls, "ensure\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_for_launch_asks_the_console_to_shutdown() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = env::temp_dir().join(format!("codexhost-console-stop-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create fixture");
+        let console_server = root.join("console-server.mjs");
+        std::fs::write(&console_server, "fixture").expect("console entry");
+        let calls = root.join("calls");
+        let node = root.join("node");
+        std::fs::write(
+            &node,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$3\" >> '{}'\nif [ \"$3\" = ensure ]; then echo 'codexhost console: http://127.0.0.1:4399/'; fi\n",
+                calls.display()
+            ),
+        )
+        .expect("fake Node");
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755))
+            .expect("make executable");
+
+        set_presentation(Presentation::Print);
+        start_for_launch(ConsoleCommand {
+            node,
+            console_server,
+        });
+        let ensure = LAUNCH_CONSOLE
+            .lock()
+            .expect("console state")
+            .as_mut()
+            .and_then(|console| console.ensure.take())
+            .expect("ensure started");
+        ensure.join().expect("ensure finished");
+        stop_for_launch();
+        let calls = std::fs::read_to_string(&calls).unwrap_or_default();
+        let cleared = LAUNCH_CONSOLE
+            .lock()
+            .expect("console state")
+            .as_ref()
+            .is_none();
+        std::fs::remove_dir_all(&root).expect("remove fixture");
+
+        assert!(cleared);
+        assert_eq!(calls, "ensure\nshutdown\n");
     }
 
     #[test]

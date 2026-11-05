@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { consoleBuildId, consoleUrl } from "../src/open.js";
+import { consoleBuildId, consoleUrl, shutdownConsole } from "../src/open.js";
 
 it("opens the overview containing diagnostics", () => {
   expect(consoleUrl(4399)).toBe("http://127.0.0.1:4399/");
@@ -71,5 +71,11 @@ describe("console instance identity", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+});
+
+describe("shutdownConsole", () => {
+  it("is a no-op when the console port is free", async () => {
+    await expect(shutdownConsole({ CODEXHOST_CONSOLE_PORT: "35991" })).resolves.toBeUndefined();
   });
 });

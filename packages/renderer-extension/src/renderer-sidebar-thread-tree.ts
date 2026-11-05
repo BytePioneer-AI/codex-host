@@ -172,6 +172,16 @@ export interface SidebarThreadForestListPlan {
   mirrors: SidebarThreadForestMirrorPlan[];
 }
 
+export interface SidebarThreadForestOptions {
+  /**
+   * Per-list flag: when true, native entries of that list never leave for a
+   * cross-list parent (same-list nesting still applies). Mirrors *into* the
+   * list from elsewhere are unchanged. Used for Desktop's Pinned section so
+   * pinning a child alone is not undone by an unpinned ancestor in Recents.
+   */
+  retainNativeList?: readonly boolean[];
+}
+
 /**
  * Lay out all native lists together. Desktop files every Thread in exactly one
  * list, and a new Fork is not pinned, so the Fork of a pinned Thread lands in
@@ -180,11 +190,17 @@ export interface SidebarThreadForestListPlan {
  * where Desktop placed it; inside each list `layoutSidebarThreadTree` applies.
  * A parent in the same list wins over one elsewhere. Only a key shown once
  * across all lists can move, and a cross-list cycle keeps its entries in place.
+ *
+ * Lists marked in `retainNativeList` (Pinned) keep their native rows even when
+ * the parent lives elsewhere, so a pinned child stays visible in Pinned on its
+ * own. Inbound mirrors from Recents into a pinned parent still work.
  */
 export function planSidebarThreadForest(
   lists: readonly (readonly SidebarThreadTreeEntry[])[],
   collapsed: ReadonlySet<string> = new Set(),
+  options: SidebarThreadForestOptions = {},
 ): SidebarThreadForestListPlan[] {
+  const retainNative = options.retainNativeList ?? [];
   const counts = new Map<string, number>();
   const first = new Map<string, { list: number; index: number }>();
   const indexByKey = lists.map((entries, list) => {
@@ -203,6 +219,8 @@ export function planSidebarThreadForest(
     if (entry.parentKey === entry.key || indexByKey[list]?.get(entry.key) !== index) return null;
     const sameList = indexByKey[list]?.get(entry.parentKey);
     if (sameList !== undefined) return { list, index: sameList };
+    // Outbound retain: do not yank a pinned (etc.) row under an unpinned parent.
+    if (retainNative[list]) return null;
     if (counts.get(entry.key) !== 1) return null;
     return first.get(entry.parentKey) ?? null;
   };
@@ -292,6 +310,11 @@ export interface SidebarThreadTreeList {
     mirrors: readonly SidebarThreadTreeMirror[],
     retain?: ReadonlyMap<string, SidebarThreadTreeLayout>,
   ): void;
+  /**
+   * When true, native rows stay in this list even if their parent lives
+   * elsewhere (Pinned). Defaults to false when omitted.
+   */
+  retainNativePlacement?(): boolean;
 }
 
 export interface SidebarThreadTreeDom {
@@ -632,11 +655,55 @@ function sidebarListItem(row: Element): HTMLElement | null {
   return item?.parentElement?.getAttribute("role") === "list" ? item : null;
 }
 
+const SIDEBAR_SECTION_KEY_ATTRS = [
+  "data-app-action-sidebar-section-heading",
+  "data-app-action-sidebar-section",
+] as const;
+
+/**
+ * Closest preceding Desktop section heading/key node for a sidebar list.
+ * Sections are sequential in the scroll container (Pinned, then Recents, …),
+ * so the last heading that the list follows is this list's section.
+ */
+export function sidebarSectionHeadingForList(list: Element): HTMLElement | null {
+  const root = list.getRootNode();
+  const scope =
+    typeof Document !== "undefined" && root instanceof Document
+      ? root
+      : (list.ownerDocument as Document | null);
+  if (!scope || typeof scope.querySelectorAll !== "function") return null;
+  let best: HTMLElement | null = null;
+  const following = typeof Node !== "undefined" ? Node.DOCUMENT_POSITION_FOLLOWING : 4;
+  for (const heading of scope.querySelectorAll<HTMLElement>(
+    "[data-app-action-sidebar-section-heading], [data-app-action-sidebar-section]",
+  )) {
+    const position = heading.compareDocumentPosition(list);
+    if (position & following) best = heading;
+  }
+  return best;
+}
+
+/** True when the list is Desktop's Pinned section (native pin placement wins). */
+export function sidebarListRetainsNativePlacement(list: Element): boolean {
+  const heading = sidebarSectionHeadingForList(list);
+  if (!heading) return false;
+  for (const attr of SIDEBAR_SECTION_KEY_ATTRS) {
+    const raw = heading.getAttribute(attr);
+    if (!raw) continue;
+    if (raw.trim().toLowerCase() === "pinned") return true;
+  }
+  return false;
+}
+
 class BrowserSidebarThreadTreeList implements SidebarThreadTreeList {
   constructor(
     private readonly element: HTMLElement,
     private readonly itemFor: (element: HTMLElement) => BrowserSidebarThreadTreeItem,
   ) {}
+
+  retainNativePlacement(): boolean {
+    return sidebarListRetainsNativePlacement(this.element);
+  }
 
   items(): readonly SidebarThreadTreeItem[] {
     return [...this.element.children]
@@ -1009,7 +1076,8 @@ export function installRendererSidebarThreadTree(options: {
             }
           : null,
     });
-    const plans = planSidebarThreadForest(entries, collapsed);
+    const retainNativeList = lists.map((list) => list.retainNativePlacement?.() === true);
+    const plans = planSidebarThreadForest(entries, collapsed, { retainNativeList });
     const mountedKeys = new Set<string>();
     for (const listEntries of entries) {
       for (const entry of listEntries) {

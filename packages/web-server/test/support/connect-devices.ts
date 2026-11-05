@@ -6,6 +6,7 @@ import { once } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { join, resolve } from "node:path";
 import type { TestContext } from "node:test";
+import type { Locator } from "playwright";
 import type {
   WebAccessState,
   WebBackgroundState,
@@ -27,6 +28,13 @@ interface Reply<T> {
 import { DataDir } from "../../src/store.ts";
 import { saveServiceOptions, SETTINGS_CHANGED_EXIT_CODE } from "../../src/background-service.ts";
 import { startServer } from "./server.ts";
+
+/** The chosen address: a read-only input for one choice, a menu trigger for several. */
+export function addressValue(address: Locator): Promise<string> {
+  return address.evaluate((element) =>
+    element instanceof HTMLInputElement ? element.value : (element.textContent ?? ""),
+  );
+}
 
 export async function connectServer(
   t: TestContext,

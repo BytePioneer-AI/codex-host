@@ -34,7 +34,9 @@ export function registerAccessTokenRpc(
   tokens: AccessTokenStore | undefined,
   listener: {
     port(): number;
-    access(): Promise<Pick<WebAccessState, "networkUrls" | "tailscale" | "background">>;
+    access(): Promise<
+      Pick<WebAccessState, "networkUrls" | "directCandidates" | "tailscale" | "background">
+    >;
   },
 ): void {
   const managed = (context: RpcContext): AccessTokenStore =>

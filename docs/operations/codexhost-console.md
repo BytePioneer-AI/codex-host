@@ -77,7 +77,7 @@ Desktop 使用 `CODEXHOST_DATA_DIR`，默认 `~/.codexhost`。Web 使用 `--ch-d
 
 ## 卸载
 
-Windows 卸载程序在删除安装文件前调用安装内的 `codexhost stop`、`codexhost autostart off`，完成页提醒 Serve 配置保留；覆盖安装仅走安装准备逻辑，不执行这些卸载动作，也不删除自启项。macOS 和 npm 用户移除应用或执行 `npm uninstall -g @codexhost/cli` 前须自行运行这两个命令。若不再使用 Serve，按[远程访问的卸载说明](../product/web-remote-access.md#卸载时移除-serve)检查并只移除对应 HTTPS 根路径。回退旧版前也应先停止后台服务并关闭自启。
+Windows 卸载程序在删除安装文件前调用安装内的 `codexhost stop`、`codexhost autostart off`，完成页提醒 Serve 配置保留；覆盖安装仅走安装准备逻辑，不执行这些卸载动作，也不删除自启项。macOS 和 npm 用户移除应用或执行 `npm uninstall -g @codexhost/cli` 前须自行运行这两个命令。若不再使用 Serve，按[远程访问的卸载说明](../product/web-remote-access.md#卸载前清理)检查并只移除对应 HTTPS 根路径。回退旧版前也应先停止后台服务并关闭自启。
 
 ## 端口
 

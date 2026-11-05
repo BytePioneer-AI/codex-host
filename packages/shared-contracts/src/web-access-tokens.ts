@@ -54,6 +54,8 @@ export const webAccessStateSchema = z
     lastUsedAt: z.number().nullable(),
     /** Addresses for other devices; empty when Web listens only on this computer. */
     networkUrls: z.array(webNetworkAccessUrlSchema),
+    /** Preview addresses for managed direct access; not usable until present in networkUrls. */
+    directCandidates: z.array(webNetworkAccessUrlSchema).optional(),
     tailscale: webTailscaleStateSchema,
     background: webBackgroundStateSchema.optional(),
   })

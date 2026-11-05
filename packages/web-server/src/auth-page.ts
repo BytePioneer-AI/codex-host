@@ -4,7 +4,7 @@ import type { IncomingMessage } from "node:http";
 const COPY = {
   en: {
     lang: "en",
-    prompt: "Enter the access token. Find it on your computer in Settings → Connect devices.",
+    prompt: "Enter the access token. Copy it on your computer in Settings → Connect devices.",
     placeholder: "Access token",
     submit: "Continue",
     invalid: "That access token is not valid.",
@@ -16,7 +16,7 @@ const COPY = {
   },
   zh: {
     lang: "zh-CN",
-    prompt: "请输入访问令牌。可在电脑上的“设置 → 连接设备”中查看。",
+    prompt: "请输入访问令牌。可在电脑上的“设置 → 连接设备”中复制。",
     placeholder: "访问令牌",
     submit: "继续",
     invalid: "访问令牌无效。",

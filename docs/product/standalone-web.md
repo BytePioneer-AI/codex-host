@@ -15,7 +15,7 @@ codexhost stop
 
 `codexhost web` 确保 Host 和 Web 在后台运行，输出本机登录链接并打开浏览器；SSH 或无图形界面时只输出链接。`codexhost` 打开 Desktop，同时在后台拉起 Web；未安装 Desktop 时说明原因并改为打开 Web。`CODEXHOST_WEB_SERVICE=0` 禁用 `codexhost` 随启动拉起 Web 的行为。关闭终端、GUI 或浏览器不停止后台服务，电脑休眠时手机仍无法连接。
 
-首次后台启动默认监听 `127.0.0.1:4400`。`codexhost web` 的 `--host`、`--port`、`--public-url`、`--trusted-proxy` 经 Web 校验后保存在 `<web-data>/service.json`，后续启动沿用；传空字符串清除对应选项，无效值不覆盖保存内容。选项变化只重启 Web，Host 任务不受影响，Web 终端会断开。本机连接设备页也提供直连和自启开关，见[远程访问](web-remote-access.md)。
+首次后台启动默认监听 `127.0.0.1:4400`。`codexhost web` 的 `--host`、`--port`、`--public-url`、`--trusted-proxy` 经 Web 校验后保存在 `<web-data>/service.json`，后续启动沿用；传空字符串清除对应选项，无效值不覆盖保存内容。选项变化只重启 Web，Host 任务不受影响，Web 终端会断开。本机连接设备页也提供首次启用设备访问和启动设置，见[远程访问](web-remote-access.md)。
 
 版本、安装位置及选项一致时复用服务。`codexhost` 或 `codexhost web` 发现 Host 或 Web 的版本、运行入口不一致时切换为当前安装；Host 被替换会中断任务并输出任务数，会话记录保留，任务不自动续跑。后台 Web 就绪后崩溃会退避重启，启动阶段失败不重试。`codexhost status` 只读显示 Host/Web 状态与版本、不含 token 的 Web 地址、最近失败原因和自启状态，不启动服务。
 
@@ -113,9 +113,9 @@ macOS 或 npm 卸载前，先运行 `codexhost stop` 和 `codexhost autostart of
 
 Codex Desktop 的 codexhost 设置“远程连接”页顶部提供“手机和其他设备（Web）”区块及“打开连接设备页”按钮：手机或其他设备通过浏览器连接这台电脑，这台电脑需要保持开机和联网。下方“其他电脑（SSH）”则由这台电脑连接另一台 Mac 或 Linux 电脑。按钮通过本机 Host 调用当前安装的 Launcher `codexhost web --connect-devices`，确保后台 Web 运行，并在浏览器中直接打开“设置 → 连接设备”。开发构建保留按钮，但点击时提示 `Background Web is unavailable in a development build; run npm start web`，不运行 Launcher。`--connect-devices` 只在浏览器登录链接后添加 `#connect-devices`，不改变终端输出的登录链接或就绪记录。页面打开设置后清除该 hash，刷新不再弹出；不带开关的 `codexhost web` 仍打开首页。即使当前选择远程 Host，按钮仍只调用本机 Host；本机 Host 不可用时显示错误，不在远程机器打开浏览器。Console 不提供此入口。
 
-**连接设备：** Web 设置的“连接设备”分区在所有访问方式下都显示。本机访问时显示所选地址的登录二维码和链接、最近使用时间，可复制链接或令牌、重新生成令牌；非本机访问时只显示提示和退出登录，`codexhost/accessTokenGet`、`accessTokenRegenerate` 返回 `auth/local-access-required`；`--no-auth` 时返回 `auth/disabled`。地址默认依次选择配置的公开地址、Funnel、Serve HTTPS（打开页面时用 `tailscale serve status` 检测已转发到当前端口的配置，不会修改 Serve），其次是 Tailscale IP 和局域网；虚拟机和容器网卡的地址折叠在“其他地址”中，启动输出也只在没有其他地址时才列出它们。没有命令行管理入口。
+**连接设备：** Web 设置的“连接设备”分区在所有访问方式下都显示。本机访问时可选择连接方式，已有入口直接显示二维码和可复制的链接；首次 IP 或 HTTPS 访问通过“启用并显示二维码”准备。页面下方直接提供令牌管理、启动设置和停止设备访问；非本机访问时只显示提示和退出登录，`codexhost/accessTokenGet`、`accessTokenRegenerate` 返回 `auth/local-access-required`；`--no-auth` 时返回 `auth/disabled`。地址默认依次选择配置的公开地址、Funnel、Serve HTTPS（打开页面时用 `tailscale serve status` 检测已转发到当前端口的配置，不会修改 Serve），其次是局域网和 Tailscale IP；次要入口折叠在“其他连接方式”中，启动输出也只在没有其他地址时才列出它们。没有命令行管理入口。
 
-**远程地址与诊断：** 配置 `--public-url` 或 `CODEXHOST_WEB_PUBLIC_URL` 时，公开地址优先于 Funnel、Serve HTTPS 和网卡地址；只接受无用户信息、路径、查询和片段的 HTTP(S) 根地址，HTTP 会提示明文风险。`npm start web` 和 `preview.mjs` 会传递该值，但不据此增加可信代理或同源白名单。连接设备页读取 Tailscale 状态、占用目标及读取错误；本机用户确认后可开关 Serve，开启前重新确认根路径未占用，关闭只移除指向当前 Web 的根路径，结果以重新读取的状态为准。Funnel 标明互联网公开，仍需 token。启动第一行不变，其后读取并输出 Serve/Funnel 地址，检测最多 3 秒。Serve 配置在 Web 退出后保留，占用同端口的其他程序也会被转发。各方式的 TLS、代理和验证边界见[Web 远程访问](web-remote-access.md)。
+**远程地址与诊断：** 配置 `--public-url` 或 `CODEXHOST_WEB_PUBLIC_URL` 时，公开地址优先于 Funnel、Serve HTTPS 和网卡地址；只接受无用户信息、路径、查询和片段的 HTTP(S) 根地址，HTTP 以明文传输。`npm start web` 和 `preview.mjs` 会传递该值，但不据此增加可信代理或同源白名单。连接设备页读取 Tailscale 状态、占用目标及读取错误；本机用户点击启用后配置 Serve，“停止设备访问”确认后关闭；开启前重新确认根路径未占用，关闭只移除指向当前 Web 的根路径，结果以重新读取的状态为准。Funnel 标明互联网公开，仍需 token。启动第一行不变，其后读取并输出 Serve/Funnel 地址，检测最多 3 秒。Serve 配置在 Web 退出后保留，占用同端口的其他程序也会被转发。各方式的 TLS、代理和验证边界见[Web 远程访问](web-remote-access.md)。
 
 **退出登录：** 只在非本机页面提供，确认后取消这个浏览器的推送订阅并清除 Cookie（`POST /api/auth/logout`，需同源），令牌和其他设备不受影响。重新登录要在电脑上查看令牌。
 

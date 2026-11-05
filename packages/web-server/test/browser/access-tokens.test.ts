@@ -7,6 +7,7 @@ import { it, type TestContext } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 
 import { networkAccessUrls } from "../../src/network-urls.ts";
+import { addressValue } from "../support/connect-devices.ts";
 import { startServer } from "../support/server.ts";
 import { fakeTailscale, RUNNING, serveStatus, SERVE_HOST } from "../support/tailscale.ts";
 
@@ -46,9 +47,13 @@ async function openConnectPage(page: Page): Promise<void> {
   await page.getByText("Connect devices", { exact: true }).first().click();
 }
 
-/** Reads the token from the page shown when no network address is offered. */
+/** The token stays out of the main page and is only copied. */
 async function tokenOnPage(page: Page): Promise<string> {
-  const secret = await page.getByRole("textbox", { name: "Access token" }).inputValue();
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.evaluate(() => navigator.clipboard.writeText(""));
+  await page.getByRole("button", { name: "Copy token", exact: true }).click();
+  await page.waitForFunction(async () => (await navigator.clipboard.readText()).length > 32);
+  const secret = await page.evaluate(() => navigator.clipboard.readText());
   assert.ok(secret.length > 32);
   return secret;
 }
@@ -66,7 +71,7 @@ async function regenerate(page: Page): Promise<string> {
 }
 
 it(
-  "shows the token on this computer and only guidance and sign-out elsewhere, at phone width too",
+  "copies the token locally through More and only offers guidance and sign-out elsewhere",
   { timeout: 90_000 },
   async (t) => {
     const { local, remote, browser } = await start(t);
@@ -77,7 +82,7 @@ it(
     await page.goto(local.href);
     assert.equal(new URL(page.url()).search, "");
     await openConnectPage(page);
-    await page.getByText("listening only on this computer").waitFor();
+    await page.getByText("Local access only", { exact: true }).waitFor();
     await page.getByText("No device has signed in yet").waitFor();
     const secret = await tokenOnPage(page);
 
@@ -85,10 +90,6 @@ it(
     await page.reload();
     await openConnectPage(page);
     assert.equal(await tokenOnPage(page), secret);
-    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-    await page.getByRole("button", { name: "Copy", exact: true }).click();
-    await page.getByRole("button", { name: "Copied", exact: true }).waitFor();
-    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), secret);
 
     const phone = await browser.newContext({
       locale: "en-US",
@@ -166,33 +167,41 @@ it(
 
     const qr = page.getByRole("img", { name: "Sign-in QR code" });
     await qr.waitFor();
-    const link = page.getByRole("textbox", { name: "Sign-in link" });
-    const first = await link.inputValue();
-    assert.match(first, /^https?:\/\/[^/]+\/#token=[\w-]{32,}$/u);
-    assert.equal(first.includes(LOCAL_TOKEN), false);
+    const address = page.getByLabel("Connection address", { exact: true });
+    const first = await addressValue(address);
+    assert.equal(first.includes("#token="), false);
     await page.getByRole("button", { name: "Copy link" }).click();
     await page.getByRole("button", { name: "Copied", exact: true }).waitFor();
-    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), first);
+    const copied = await page.evaluate(() => navigator.clipboard.readText());
+    assert.match(copied, /^https?:\/\/[^/]+\/#token=[\w-]{32,}$/u);
+    assert.equal(copied.includes(LOCAL_TOKEN), false);
+    assert.equal(
+      new URL(copied).host,
+      new URL(first.startsWith("http") ? first : `http://${first}`).host,
+    );
 
     // Virtual networks stay folded until asked for, so the first choice is never one of them.
     const routes = networkAccessUrls("0.0.0.0", 1);
     const virtualCount = routes.filter((route) => route.kind === "virtual").length;
     if (routes.some((route) => route.kind !== "virtual") && virtualCount > 0) {
       assert.equal(await page.locator('[data-connect-route="virtual"]:visible').count(), 0);
-      await page.getByText(`Other addresses (${String(virtualCount)})`).click();
+      await page.getByText("Other connection methods", { exact: true }).click();
       await page.locator('[data-connect-route="virtual"]').first().click();
-      assert.notEqual(await link.inputValue(), first);
+      assert.notEqual(await addressValue(address), first);
     }
 
     const small = await qr.boundingBox();
     await page.getByRole("button", { name: "Enlarge QR code" }).click();
-    const large = await qr.boundingBox();
+    const large = await page
+      .getByRole("dialog", { name: "Scan with your phone camera" })
+      .getByRole("img", { name: "Sign-in QR code" })
+      .boundingBox();
     assert.ok((large?.width ?? 0) > (small?.width ?? Infinity));
   },
 );
 
 it(
-  "shows read-only Tailscale guidance, copyable commands and HTTPS choices at phone width",
+  "shows contextual Tailscale setup and HTTPS choices at phone width",
   { timeout: 60_000 },
   async (t) => {
     const cli = fakeTailscale(t);
@@ -202,6 +211,7 @@ it(
     const page = await context.newPage();
     await page.goto(local.href);
     await openConnectPage(page);
+    await page.locator('[data-connect-route="tailscale-https"]').getByRole("radio").check();
     await page.locator('[data-tailscale-status="not-running"]').waitFor();
     for (const [status, backend] of [
       ["not-logged-in", { BackendState: "NeedsLogin" }],
@@ -211,24 +221,19 @@ it(
       cli.set(backend);
       await page.reload();
       await openConnectPage(page);
+      await page.locator('[data-connect-route="tailscale-https"]').getByRole("radio").check();
       await page.locator(`[data-tailscale-status="${status}"]`).waitFor();
     }
-    const command = `tailscale serve --bg http://127.0.0.1:${local.port}`;
+    await page.getByRole("button", { name: "Enable and show QR code" }).waitFor();
     assert.equal(await page.getByRole("textbox", { name: "Serve command" }).count(), 0);
-    await page.getByRole("switch", { name: "Tailscale HTTPS", exact: true }).click();
-    const enable = page.getByRole("dialog", { name: "Enable Tailscale Serve" });
     assert.equal(
-      await enable.getByRole("textbox", { name: "Serve command" }).inputValue(),
-      command,
+      await page.getByRole("switch", { name: "Tailscale HTTPS", exact: true }).count(),
+      0,
     );
-    await enable.getByRole("button", { name: "Copy command" }).click();
-    await enable.getByRole("button", { name: "Copied", exact: true }).waitFor();
-    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), command);
-    await enable.getByText("another program using this port", { exact: false }).waitFor();
-    await enable.getByRole("button", { name: "Cancel", exact: true }).click();
     cli.set(RUNNING, serveStatus(3000));
     await page.reload();
     await openConnectPage(page);
+    await page.locator('[data-connect-route="tailscale-https"]').getByRole("radio").check();
     await page
       .locator('[data-tailscale-status="occupied"]')
       .getByText("http://127.0.0.1:3000", { exact: true })
@@ -245,34 +250,34 @@ it(
       assert.equal(await page.locator("[data-tailscale-status]").count(), 0);
       assert.equal(await page.getByText("another program using this port").count(), 0);
       assert.equal(await route.getByRole("radio").isChecked(), true);
-      assert.ok(
-        (await page.getByRole("textbox", { name: "Sign-in link" }).inputValue()).startsWith(
-          `https://${SERVE_HOST}/#token=`,
-        ),
+      assert.equal(
+        await page.getByLabel("Connection address", { exact: true }).inputValue(),
+        SERVE_HOST,
       );
-      if (funnel) await page.getByText("Anyone on the Internet").waitFor();
+      if (funnel) await page.getByText("Anyone on the Internet").first().waitFor();
     }
     cli.set(RUNNING, {}, { raw: "not-json" });
     await page.reload();
     await openConnectPage(page);
+    await page.locator('[data-connect-route="tailscale-https"]').getByRole("radio").check();
     await page.locator('[data-tailscale-status="error"]').waitFor();
     cli.set(RUNNING);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.reload();
     await page.getByRole("button", { name: "Open sidebar" }).click();
     await openConnectPage(page);
+    await page.locator('[data-connect-route="tailscale-https"]').getByRole("radio").check();
     await page.locator('[data-tailscale-status="not-serving"]').waitFor();
-    const qr = await page.getByRole("img", { name: "Sign-in QR code" }).boundingBox();
-    const tailscale = await page.locator("[data-tailscale-status]").boundingBox();
-    assert.ok(qr && tailscale && qr.y + qr.height <= tailscale.y);
+    assert.equal(await page.getByRole("img", { name: "Sign-in QR code" }).count(), 0);
     const bounds = await page.locator("[data-connect-devices]").boundingBox();
     assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390);
     const remoteOptions = page.locator("[data-remote-options]");
     const tailscaleLink = remoteOptions.getByRole("link", { name: "Download Tailscale" });
     assert.equal(await tailscaleLink.isVisible(), false);
-    await remoteOptions.getByText("How to connect from other networks").click();
+    await remoteOptions.getByText("Having trouble connecting?").click();
     await tailscaleLink.waitFor();
     await remoteOptions.getByRole("link", { name: "View setup guide" }).waitFor();
+    await remoteOptions.getByText("Cloudflare Tunnel", { exact: false }).waitFor();
     assert.equal(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
@@ -282,36 +287,28 @@ it(
   },
 );
 
-it(
-  "selects the configured public address ahead of Serve and warns for HTTP",
-  { timeout: 30_000 },
-  async (t) => {
-    const cli = fakeTailscale(t);
-    const { local, browser } = await start(
-      t,
-      ["--public-url", "http://code.example.com"],
-      cli.environment,
-    );
-    cli.set(RUNNING, serveStatus(Number(local.port), true));
-    const page = await browser.newPage({ locale: "en-US" });
-    await page.goto(local.href);
-    await openConnectPage(page);
-    await page.locator('[data-connect-route="public"]').waitFor();
-    assert.equal(await page.locator("[data-tailscale-status]").count(), 0);
-    assert.equal(
-      await page.locator('[data-connect-route="public"]').getByRole("radio").isChecked(),
-      true,
-    );
-    assert.ok(
-      (await page.getByRole("textbox", { name: "Sign-in link" }).inputValue()).startsWith(
-        "http://code.example.com/#token=",
-      ),
-    );
-    await page
-      .getByText("This HTTP address sends content without encryption.", { exact: false })
-      .waitFor();
-  },
-);
+it("selects the configured public address ahead of Serve", { timeout: 30_000 }, async (t) => {
+  const cli = fakeTailscale(t);
+  const { local, browser } = await start(
+    t,
+    ["--public-url", "http://code.example.com"],
+    cli.environment,
+  );
+  cli.set(RUNNING, serveStatus(Number(local.port), true));
+  const page = await browser.newPage({ locale: "en-US" });
+  await page.goto(local.href);
+  await openConnectPage(page);
+  await page.locator('[data-connect-route="public"]').waitFor();
+  assert.equal(await page.locator("[data-tailscale-status]").count(), 0);
+  assert.equal(
+    await page.locator('[data-connect-route="public"]').getByRole("radio").isChecked(),
+    true,
+  );
+  assert.equal(
+    await page.getByRole("textbox", { name: "Connection address" }).inputValue(),
+    "code.example.com",
+  );
+});
 
 it(
   "enters sign-in when the token is regenerated, online or offline, but not when the server is away",

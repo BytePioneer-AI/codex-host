@@ -1,31 +1,26 @@
-/** Web settings page that connects other devices: the access token's QR code, shown only on this computer. */
-import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
+/** Connection setup is local-only; other devices get guidance and sign-out. */
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Button, Modal, relativeTime } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import {
   webLocalAccessRequiredDetailsSchema,
   type WebAccessState,
-  type WebNetworkAccessUrl,
 } from "@codexhost/shared-contracts";
 import { accessTokenApi, ApiError } from "./api.ts";
 import { signOut } from "./auth-watch.ts";
-import { QrCode } from "./QrCode.tsx";
-import { ServeControl } from "./ServeControl.tsx";
-import { AutostartControl, DirectControl, useDirectRestart } from "./BackgroundControls.tsx";
+import { AutostartControl, useDirectRestart } from "./BackgroundControls.tsx";
+import { ConnectionCard } from "./ConnectionCard.tsx";
 import css from "./ConnectDevicesSection.module.css";
 
 type Translate = PropsLocale<"codexhostImport">["t"];
-
 type View =
   | { kind: "loading" }
   | { kind: "ready"; data: WebAccessState }
   | { kind: "non-local"; url: string }
   | { kind: "disabled" }
   | { kind: "failed"; message: string };
-
 const messageOf = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
-
 function viewOfError(error: unknown): View {
   if (error instanceof ApiError && error.code === "auth/disabled") return { kind: "disabled" };
   if (error instanceof ApiError && error.code === "auth/local-access-required") {
@@ -33,234 +28,6 @@ function viewOfError(error: unknown): View {
     return { kind: "non-local", url: details.success ? details.data.url : "http://127.0.0.1" };
   }
   return { kind: "failed", message: messageOf(error) };
-}
-
-function CopyButton({
-  value,
-  label,
-  t,
-}: {
-  value: string;
-  label: string;
-  t: Translate;
-}): ReactNode {
-  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
-  useEffect(() => {
-    if (state === "idle") return;
-    const timer = setTimeout(() => setState("idle"), 2_000);
-    return () => clearTimeout(timer);
-  }, [state]);
-  return (
-    <Button
-      variant="outline"
-      className={css.copy}
-      onClick={() => {
-        void navigator.clipboard.writeText(value).then(
-          () => setState("copied"),
-          () => setState("failed"),
-        );
-      }}
-    >
-      {state === "copied"
-        ? t("connectDevices.copied")
-        : state === "failed"
-          ? t("connectDevices.copyFailed")
-          : label}
-    </Button>
-  );
-}
-
-/** A value to select by hand with its copy action. */
-function CopyField({
-  label,
-  value,
-  copyLabel,
-  t,
-}: {
-  label: string;
-  value: string;
-  copyLabel: string;
-  t: Translate;
-}): ReactNode {
-  return (
-    <div className={css.copyField}>
-      <input
-        className={css.input}
-        aria-label={label}
-        readOnly
-        value={value}
-        onFocus={(event) => event.currentTarget.select()}
-      />
-      <CopyButton value={value} label={copyLabel} t={t} />
-    </div>
-  );
-}
-
-const KIND_LABEL = {
-  public: "connectDevices.kindPublic",
-  "tailscale-funnel": "connectDevices.kindFunnel",
-  "tailscale-https": "connectDevices.kindTailscaleHttps",
-  tailscale: "connectDevices.kindTailscale",
-  lan: "connectDevices.kindLan",
-  virtual: "connectDevices.kindVirtual",
-} as const;
-const KIND_HINT = {
-  public: "connectDevices.kindPublicHint",
-  "tailscale-funnel": "connectDevices.kindFunnelHint",
-  "tailscale-https": "connectDevices.kindTailscaleHttpsHint",
-  tailscale: "connectDevices.kindTailscaleHint",
-  lan: "connectDevices.kindLanHint",
-  virtual: "connectDevices.kindVirtualHint",
-} as const;
-
-/**
- * The QR code and link of the chosen address, with each way in as one group: its switch, then the
- * addresses it opens. A switch stays visible when its addresses are gone, so it can be turned back on.
- */
-function Connection({
-  secret,
-  addresses,
-  direct,
-  serve,
-  serveStatus,
-  localNotice,
-  t,
-}: {
-  secret: string;
-  addresses: WebNetworkAccessUrl[];
-  direct: ReactNode;
-  serve: ReactNode;
-  serveStatus: string | undefined;
-  localNotice: boolean;
-  t: Translate;
-}): ReactNode {
-  const [selectedUrl, setSelectedUrl] = useState(addresses[0]?.url);
-  const [enlarged, setEnlarged] = useState(false);
-  const group = useId();
-  const selected = addresses.find((entry) => entry.url === selectedUrl) ?? addresses[0];
-  const link = selected === undefined ? undefined : `${selected.url}#token=${secret}`;
-  const ofKinds = (...kinds: WebNetworkAccessUrl["kind"][]) =>
-    addresses.filter((entry) => kinds.includes(entry.kind));
-  const reachable = ofKinds("lan", "tailscale");
-  const virtual = ofKinds("virtual");
-  const option = (entry: WebNetworkAccessUrl): ReactNode => (
-    <label key={entry.url} className={css.route} data-connect-route={entry.kind}>
-      <input
-        type="radio"
-        name={group}
-        checked={entry.url === selected?.url}
-        onChange={() => setSelectedUrl(entry.url)}
-      />
-      <span className={css.routeText}>
-        <span className={css.routeTitle}>
-          {entry.kind !== "tailscale-https" && t(KIND_LABEL[entry.kind])}
-          <span className={css.routeAddress}>{new URL(entry.url).host}</span>
-        </span>
-        {entry.url === selected?.url && (
-          <span className={css.meta}>{t(KIND_HINT[entry.kind])}</span>
-        )}
-      </span>
-    </label>
-  );
-  return (
-    <div className={css.connection}>
-      <div className={css.connectionMain} data-enlarged={enlarged ? true : undefined}>
-        {link !== undefined && (
-          <button
-            type="button"
-            className={css.qrButton}
-            aria-label={t(enlarged ? "connectDevices.shrinkQr" : "connectDevices.enlargeQr")}
-            aria-pressed={enlarged}
-            onClick={() => setEnlarged((value) => !value)}
-          >
-            <QrCode value={link} label={t("connectDevices.qrLabel")} className={css.qr} />
-          </button>
-        )}
-        <fieldset className={css.routes}>
-          <legend className={css.fieldTitle}>{t("connectDevices.connectVia")}</legend>
-          {ofKinds("public").map(option)}
-          {(direct !== null || reachable.length + virtual.length > 0) && (
-            <div className={css.routeGroup}>
-              {direct ?? <span className={css.groupTitle}>{t("connectDevices.direct")}</span>}
-              {reachable.map(option)}
-              {virtual.length > 0 && (
-                <details className={css.other} open={reachable.length === 0}>
-                  <summary>{t("connectDevices.otherAddresses", { count: virtual.length })}</summary>
-                  <div className={css.otherList}>{virtual.map(option)}</div>
-                </details>
-              )}
-            </div>
-          )}
-          <div className={css.routeGroup} data-tailscale-status={serveStatus}>
-            {serve}
-            {ofKinds("tailscale-https", "tailscale-funnel").map(option)}
-          </div>
-        </fieldset>
-      </div>
-      {link !== undefined ? (
-        <>
-          <CopyField
-            key={link}
-            label={t("connectDevices.signInLink")}
-            value={link}
-            copyLabel={t("connectDevices.copyLink")}
-            t={t}
-          />
-          {selected?.kind === "public" && selected.url.startsWith("http:") && (
-            <p className={css.notice}>{t("connectDevices.publicHttp")}</p>
-          )}
-          <p className={css.meta}>{t("connectDevices.linkPrivate")}</p>
-        </>
-      ) : (
-        <>
-          {localNotice && <p className={css.notice}>{t("connectDevices.localListener")}</p>}
-          <span className={css.groupTitle}>{t("connectDevices.token")}</span>
-          <CopyField
-            key={secret}
-            label={t("connectDevices.token")}
-            value={secret}
-            copyLabel={t("connectDevices.copy")}
-            t={t}
-          />
-        </>
-      )}
-    </div>
-  );
-}
-
-const REMOTE_ACCESS_DOC =
-  "https://github.com/BytePioneer-AI/codex-host/blob/main/docs/product/web-remote-access.md";
-
-/** Collapsed explanation of the ways to reach this computer from outside its network. */
-function RemoteOptions({ t }: { t: Translate }): ReactNode {
-  const option = (title: string, body: string, href: string, linkLabel: string): ReactNode => (
-    <div className={css.routeText}>
-      <span className={css.routeTitle}>{title}</span>
-      <span className={css.meta}>{body}</span>
-      <a className={css.link} href={href} target="_blank" rel="noreferrer">
-        {linkLabel}
-      </a>
-    </div>
-  );
-  return (
-    <details className={css.other} data-remote-options>
-      <summary>{t("connectDevices.remote.title")}</summary>
-      <div className={css.remoteList}>
-        {option(
-          "Tailscale",
-          t("connectDevices.remote.tailscale"),
-          "https://tailscale.com/download",
-          t("connectDevices.remote.tailscaleLink"),
-        )}
-        {option(
-          t("connectDevices.remote.tunnelTitle"),
-          t("connectDevices.remote.tunnel"),
-          REMOTE_ACCESS_DOC,
-          t("connectDevices.remote.tunnelLink"),
-        )}
-      </div>
-    </details>
-  );
 }
 
 function Confirm({
@@ -356,29 +123,93 @@ function ElsewhereNotice({ url, t }: { url: string; t: Translate }): ReactNode {
   );
 }
 
-/**
- * @param props - slot props with the locale seat.
- * @returns the QR code on this computer, guidance and sign-out elsewhere.
- */
+/** One explicit action enables the chosen route; selecting it only previews its address. */
 export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): ReactNode {
   const [view, setView] = useState<View>({ kind: "loading" });
-  const [connectionKey, setConnectionKey] = useState(0);
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirming] = useState<"regenerate" | "stop" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
+  const [tokenCopied, setTokenCopied] = useState(false);
   const restored = useCallback((data: WebAccessState) => setView({ kind: "ready", data }), []);
-  const restart = useDirectRestart(restored);
-  const load = useCallback(async (): Promise<void> => {
-    try {
-      setView({ kind: "ready", data: await accessTokenApi.get() });
-    } catch (cause) {
-      setView(viewOfError(cause));
-    }
-  }, []);
+  const restart = useDirectRestart(restored, t("connectDevices.restartTimeout"));
+  const working = busy || restart.target !== null;
+
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (!tokenCopied) return;
+    const timer = setTimeout(() => setTokenCopied(false), 2_000);
+    return () => clearTimeout(timer);
+  }, [tokenCopied]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void accessTokenApi.get().then(
+      (data) => {
+        if (!cancelled) setView({ kind: "ready", data });
+      },
+      (cause: unknown) => {
+        if (!cancelled) setView(viewOfError(cause));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const refresh = async (): Promise<WebAccessState> => {
+    const data = await accessTokenApi.get();
+    restored(data);
+    return data;
+  };
+  const run = async (action: () => Promise<void>): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    restart.fail(undefined);
+    try {
+      await action();
+    } catch (cause) {
+      setError(t("connectDevices.actionFailed", { message: messageOf(cause) }));
+      // A failed compound action can still have removed one forwarding route.
+      try {
+        await refresh();
+      } catch {
+        /* Keep the last known state until the user retries. */
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+  const enable = (method: "direct" | "https") => {
+    void run(async () => {
+      if (method === "direct") {
+        const { changed } = await accessTokenApi.lan(true);
+        if (changed) restart.start(true);
+        else await refresh();
+      } else {
+        const result = await accessTokenApi.serve(true);
+        if (result.error !== undefined) throw new Error(result.error);
+        await refresh();
+      }
+    });
+  };
+  const stop = async () => {
+    let data = await refresh();
+    const removed = new Set<string>();
+    // Several HTTPS ports can forward here. Each API call rechecks ownership and removes one root.
+    while (data.tailscale.status === "serving") {
+      if (removed.has(data.tailscale.url) || removed.size >= 16)
+        throw new Error(t("connectDevices.stopIncomplete"));
+      removed.add(data.tailscale.url);
+      const result = await accessTokenApi.serve(false);
+      if (result.error !== undefined) throw new Error(result.error);
+      data = await refresh();
+    }
+    if (data.tailscale.status === "error") throw new Error(data.tailscale.message);
+    if (data.background?.lan) {
+      const { changed } = await accessTokenApi.lan(false);
+      if (changed) restart.start(false);
+      else await refresh();
+    }
+    setConfirming(null);
+  };
 
   if (view.kind === "loading") return <p className={css.meta}>{t("connectDevices.loading")}</p>;
   if (view.kind === "non-local") return <ElsewhereNotice url={view.url} t={t} />;
@@ -395,120 +226,175 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
       </p>
     );
 
-  const { secret, lastUsedAt, networkUrls, tailscale, background } = view.data;
+  const { data } = view;
+  const { secret, lastUsedAt, networkUrls, tailscale, background } = data;
+  const active = networkUrls.length > 0 || background?.lan === true;
+  const canStop = background?.lan === true || tailscale.status === "serving";
+  const unmanaged = networkUrls.some(
+    (entry) =>
+      entry.kind === "public" ||
+      (background === undefined && ["lan", "tailscale", "virtual"].includes(entry.kind)),
+  );
   const used = lastUsedAt === null ? undefined : relativeTime(lastUsedAt, Date.now());
+  const shownError = error ?? restart.error;
   return (
     <div className={css.page} data-connect-devices>
-      <Connection
-        key={connectionKey}
-        secret={secret}
-        addresses={networkUrls}
-        direct={
-          background === undefined ? null : (
-            <DirectControl enabled={background.lan} restart={restart} t={t} />
-          )
-        }
-        serve={
-          <>
-            <ServeControl
-              enabled={tailscale.status === "serving"}
-              disabled={
-                restart.target !== null ||
-                (tailscale.status !== "serving" && tailscale.status !== "not-serving")
-              }
-              command={
-                tailscale.status === "not-serving" && (
-                  <CopyField
-                    label={t("connectDevices.serveCommand")}
-                    value={tailscale.command}
-                    copyLabel={t("connectDevices.copyCommand")}
-                    t={t}
-                  />
-                )
-              }
-              t={t}
-              refresh={async (preferServe) => {
-                const data = await accessTokenApi.get();
-                if (preferServe) {
-                  data.networkUrls.sort(
-                    (a, b) =>
-                      Number(b.kind === "tailscale-https" || b.kind === "tailscale-funnel") -
-                      Number(a.kind === "tailscale-https" || a.kind === "tailscale-funnel"),
-                  );
-                  setConnectionKey((key) => key + 1);
-                }
-                setView({ kind: "ready", data });
-              }}
-            />
-            {tailscale.status !== "serving" && tailscale.status !== "not-serving" && (
-              <p className={css.meta}>{t(`connectDevices.tailscale.${tailscale.status}`)}</p>
-            )}
-            {tailscale.status === "occupied" && <p className={css.meta}>{tailscale.target}</p>}
-            {tailscale.status === "error" && <p className={css.error}>{tailscale.message}</p>}
-          </>
-        }
-        serveStatus={tailscale.status === "serving" ? undefined : tailscale.status}
-        localNotice={background === undefined}
+      <header className={css.header}>
+        <div>
+          <h2 className={css.title}>{t("connectDevices.title")}</h2>
+          <p className={css.description}>{t("connectDevices.subtitle")}</p>
+        </div>
+        <span className={css.status} data-active={active && restart.target === null}>
+          {t(
+            restart.target !== null
+              ? "connectDevices.preparing"
+              : active
+                ? "connectDevices.accessEnabled"
+                : "connectDevices.localAccess",
+          )}
+        </span>
+      </header>
+      <ConnectionCard
+        data={data}
+        busy={working}
+        restarting={restart.target !== null}
+        onEnable={enable}
+        onRefresh={() => {
+          void run(async () => {
+            await refresh();
+          });
+        }}
         t={t}
       />
-      {background !== undefined && (
-        <AutostartControl
-          state={background}
-          disabled={restart.target !== null}
-          restored={restored}
-          t={t}
-        />
+      {confirming === null && shownError != null && (
+        <p role="alert" className={css.error}>
+          {shownError}
+        </p>
       )}
-      <RemoteOptions t={t} />
-      <div className={css.footer}>
-        <span
-          className={css.meta}
-          title={lastUsedAt === null ? undefined : new Date(lastUsedAt).toLocaleString()}
-        >
-          {used === undefined
-            ? t("connectDevices.neverUsed")
-            : t("connectDevices.lastUsed", {
-                time: t(`connectDevices.relative.${used.unit}`, { n: used.n }),
-              })}
-        </span>
-        <div className={css.actions}>
-          {networkUrls.length > 0 && (
-            <CopyButton key={secret} value={secret} label={t("connectDevices.copyToken")} t={t} />
-          )}
-          <Button
-            variant="ghost"
-            className={css.danger}
-            onClick={() => {
-              setError(null);
-              setConfirming(true);
-            }}
-          >
-            {t("connectDevices.regenerate")}
-          </Button>
+      <section className={css.manage}>
+        <div className={css.manageRow}>
+          <div className={css.manageText}>
+            <span className={css.manageTitle}>{t("connectDevices.tokenTitle")}</span>
+            <span
+              className={css.meta}
+              title={lastUsedAt === null ? undefined : new Date(lastUsedAt).toLocaleString()}
+            >
+              {used === undefined
+                ? t("connectDevices.neverUsed")
+                : t("connectDevices.lastUsed", {
+                    time: t(`connectDevices.relative.${used.unit}`, { n: used.n }),
+                  })}
+            </span>
+          </div>
+          <div className={css.manageActions}>
+            <Button
+              variant="outline"
+              disabled={working}
+              onClick={() => {
+                setError(null);
+                void navigator.clipboard.writeText(secret).then(
+                  () => setTokenCopied(true),
+                  () => setError(t("connectDevices.copyFailed")),
+                );
+              }}
+            >
+              {t(tokenCopied ? "connectDevices.copied" : "connectDevices.copyToken")}
+            </Button>
+            <Button
+              variant="outline"
+              disabled={working}
+              onClick={() => {
+                setError(null);
+                setConfirming("regenerate");
+              }}
+            >
+              {t("connectDevices.regenerate")}
+            </Button>
+          </div>
         </div>
-      </div>
-      {confirming && (
+        {background !== undefined && (
+          <AutostartControl state={background} disabled={working} restored={restored} t={t} />
+        )}
+        {canStop && (
+          <div className={css.manageRow}>
+            <div className={css.manageText}>
+              <span className={css.manageTitle}>{t("connectDevices.stopTitleShort")}</span>
+              <span className={css.meta}>{t("connectDevices.stopHint")}</span>
+            </div>
+            <div className={css.manageActions}>
+              <Button
+                variant="outline"
+                className={css.dangerOutline}
+                disabled={working}
+                onClick={() => {
+                  setError(null);
+                  setConfirming("stop");
+                }}
+              >
+                {t("connectDevices.stop")}
+              </Button>
+            </div>
+          </div>
+        )}
+      </section>
+      <details className={css.other} data-remote-options>
+        <summary>{t("connectDevices.help")}</summary>
+        <div className={css.remoteList}>
+          <p className={css.notice}>{t("connectDevices.keepAwake")}</p>
+          <div className={css.routeText}>
+            <span className={css.routeTitle}>Tailscale</span>
+            <span className={css.meta}>{t("connectDevices.remote.tailscale")}</span>
+            <a
+              className={css.link}
+              href="https://tailscale.com/download"
+              target="_blank"
+              rel="noreferrer"
+            >
+              {t("connectDevices.remote.tailscaleLink")}
+            </a>
+          </div>
+          <div className={css.routeText}>
+            <span className={css.routeTitle}>{t("connectDevices.remote.tunnelTitle")}</span>
+            <span className={css.meta}>{t("connectDevices.remote.tunnel")}</span>
+            <a
+              className={css.link}
+              href="https://github.com/BytePioneer-AI/codex-host/blob/main/docs/product/web-remote-access.md"
+              target="_blank"
+              rel="noreferrer"
+            >
+              {t("connectDevices.remote.tunnelLink")}
+            </a>
+          </div>
+        </div>
+      </details>
+      {confirming !== null && (
         <Confirm
           t={t}
-          title={t("connectDevices.regenerateTitle")}
-          description={t("connectDevices.regenerateDescription")}
-          confirmLabel={t("connectDevices.regenerateConfirm")}
-          busy={busy}
+          title={t(
+            confirming === "stop" ? "connectDevices.stopTitle" : "connectDevices.regenerateTitle",
+          )}
+          description={
+            confirming === "stop"
+              ? `${t("connectDevices.stopDescription")}${unmanaged ? ` ${t("connectDevices.stopUnmanaged")}` : ""}`
+              : t("connectDevices.regenerateDescription")
+          }
+          confirmLabel={t(
+            confirming === "stop"
+              ? "connectDevices.stopConfirm"
+              : "connectDevices.regenerateConfirm",
+          )}
+          busy={working}
           error={error}
-          onClose={() => setConfirming(false)}
+          onClose={() => setConfirming(null)}
           onConfirm={() => {
-            setBusy(true);
-            setError(null);
-            void accessTokenApi
-              .regenerate()
-              .then((data) => {
-                setView({ kind: "ready", data });
-                setConfirming(false);
-              })
-              .catch((cause: unknown) => {
-                setError(t("connectDevices.actionFailed", { message: messageOf(cause) }));
-              })
-              .finally(() => setBusy(false));
+            void run(
+              confirming === "stop"
+                ? stop
+                : async () => {
+                    restored(await accessTokenApi.regenerate());
+                    setConfirming(null);
+                  },
+            );
           }}
         />
       )}

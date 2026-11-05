@@ -4,7 +4,6 @@ import { Switch } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { WebAccessState, WebBackgroundState } from "@codexhost/shared-contracts";
 import { accessTokenApi } from "./api.ts";
-import { SwitchConfirm } from "./SwitchConfirm.tsx";
 import css from "./ConnectDevicesSection.module.css";
 
 type Translate = PropsLocale<"codexhostImport">["t"];
@@ -17,13 +16,17 @@ export interface DirectRestart {
   fail: (message: string | undefined) => void;
 }
 
-/** Waits for Web to return with the requested listener; lives above the remountable route list. */
-export function useDirectRestart(restored: (data: WebAccessState) => void): DirectRestart {
+/** Waits for Web to return with the requested listener before offering connection links. */
+export function useDirectRestart(
+  restored: (data: WebAccessState) => void,
+  timeoutMessage: string,
+): DirectRestart {
   const [target, setTarget] = useState<boolean | null>(null);
   const [error, setError] = useState<string>();
   useEffect(() => {
     if (target === null) return;
     let cancelled = false;
+    const deadline = Date.now() + 60_000;
     let timer: ReturnType<typeof setTimeout>;
     const check = async () => {
       try {
@@ -43,6 +46,11 @@ export function useDirectRestart(restored: (data: WebAccessState) => void): Dire
           return;
         }
       }
+      if (Date.now() >= deadline) {
+        setError(timeoutMessage);
+        setTarget(null);
+        return;
+      }
       if (!cancelled)
         timer = setTimeout(() => {
           void check();
@@ -55,74 +63,8 @@ export function useDirectRestart(restored: (data: WebAccessState) => void): Dire
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [target, restored]);
+  }, [target, restored, timeoutMessage]);
   return { target, error, start: setTarget, fail: setError };
-}
-
-export function DirectControl({
-  enabled,
-  restart,
-  t,
-}: {
-  enabled: boolean;
-  restart: DirectRestart;
-  t: Translate;
-}): ReactNode {
-  const [confirming, setConfirming] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const label = t("connectDevices.direct");
-  return (
-    <>
-      <div className={css.setting}>
-        <span className={css.groupTitle}>{label}</span>
-        <Switch
-          label={label}
-          checked={enabled}
-          disabled={restart.target !== null}
-          onChange={() => {
-            restart.fail(undefined);
-            setConfirming(true);
-          }}
-        />
-      </div>
-      {restart.target !== null && (
-        <p role="status" className={css.notice}>
-          {t("connectDevices.restarting")}
-        </p>
-      )}
-      {restart.error !== undefined && (
-        <p role="alert" className={css.error}>
-          {restart.error}
-        </p>
-      )}
-      {confirming && (
-        <SwitchConfirm
-          t={t}
-          title={t(enabled ? "connectDevices.directOff" : "connectDevices.directOn")}
-          description={t(
-            enabled ? "connectDevices.directOffConfirm" : "connectDevices.directOnConfirm",
-          )}
-          busy={busy}
-          onClose={() => setConfirming(false)}
-          onConfirm={() => {
-            setBusy(true);
-            void accessTokenApi
-              .lan(!enabled)
-              .then(({ changed }) => {
-                if (changed) restart.start(!enabled);
-              })
-              .catch((cause: unknown) => {
-                restart.fail(cause instanceof Error ? cause.message : String(cause));
-              })
-              .finally(() => {
-                setBusy(false);
-                setConfirming(false);
-              });
-          }}
-        />
-      )}
-    </>
-  );
 }
 
 export function AutostartControl({
@@ -139,36 +81,36 @@ export function AutostartControl({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   return (
-    <section className={css.connection} data-background-controls>
-      <div className={css.setting}>
-        <span className={css.notice}>{t("connectDevices.autostart")}</span>
-        <Switch
-          label={t("connectDevices.autostart")}
-          checked={state.autostart.status === "on"}
-          disabled={busy || disabled}
-          onChange={(enabled) => {
-            setBusy(true);
-            setError(undefined);
-            void accessTokenApi
-              .autostart(enabled)
-              .then(async () => {
-                restored(await accessTokenApi.get());
-              })
-              .catch((cause: unknown) => {
-                setError(cause instanceof Error ? cause.message : String(cause));
-              })
-              .finally(() => setBusy(false));
-          }}
-        />
+    <div className={css.manageRow} data-background-controls>
+      <div className={css.manageText}>
+        <span className={css.manageTitle}>{t("connectDevices.autostart")}</span>
+        {state.autostart.status === "invalid" && (
+          <span className={css.error}>{state.autostart.reason}</span>
+        )}
+        {error !== undefined && (
+          <span role="alert" className={css.error}>
+            {error}
+          </span>
+        )}
       </div>
-      {state.autostart.status === "invalid" && (
-        <p className={css.error}>{state.autostart.reason}</p>
-      )}
-      {error !== undefined && (
-        <p role="alert" className={css.error}>
-          {error}
-        </p>
-      )}
-    </section>
+      <Switch
+        label={t("connectDevices.autostart")}
+        checked={state.autostart.status === "on"}
+        disabled={busy || disabled}
+        onChange={(enabled) => {
+          setBusy(true);
+          setError(undefined);
+          void accessTokenApi
+            .autostart(enabled)
+            .then(async () => {
+              restored(await accessTokenApi.get());
+            })
+            .catch((cause: unknown) => {
+              setError(cause instanceof Error ? cause.message : String(cause));
+            })
+            .finally(() => setBusy(false));
+        }}
+      />
+    </div>
   );
 }

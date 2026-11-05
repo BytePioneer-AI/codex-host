@@ -3,6 +3,7 @@ import { it } from "node:test";
 import { readServiceOptions } from "../src/background-service.ts";
 import { connectServer } from "./support/connect-devices.ts";
 import { fakeServe } from "./support/serve-control.ts";
+import { networkAccessUrls } from "../src/network-urls.ts";
 
 it("saves LAN options then exits 42, and calls the Launcher's autostart contract", async (t) => {
   const cli = fakeServe(t);
@@ -15,6 +16,9 @@ it("saves LAN options then exits 42, and calls the Launcher's autostart contract
     lan: false,
     autostart: { status: "off" },
   });
+  const initial = await server.access();
+  assert.deepEqual(initial.networkUrls, []);
+  assert.deepEqual(initial.directCandidates, networkAccessUrls("0.0.0.0", 4474));
   const secret = (await server.access()).secret;
   for (const method of ["codexhost/lanSet", "codexhost/autostartSet"] as const) {
     for (const headers of [{ host: "phone.example" }, { "x-forwarded-for": "198.51.100.1" }]) {
@@ -63,6 +67,7 @@ it("saves LAN options then exits 42, and calls the Launcher's autostart contract
   await server.restarted();
   assert.deepEqual(server.exits, [42]);
   assert.equal((await server.access()).background?.lan, true);
+  assert.deepEqual((await server.access()).networkUrls, initial.directCandidates);
   assert.equal((await server.access()).secret, secret);
   assert.deepEqual(cli.mutations(), []);
 });
@@ -71,6 +76,7 @@ it("does not expose background controls in foreground mode", async (t) => {
   const cli = fakeServe(t);
   const server = await connectServer(t, cli.environment);
   assert.equal((await server.access()).background, undefined);
+  assert.equal((await server.access()).directCandidates, undefined);
   for (const method of ["codexhost/lanSet", "codexhost/autostartSet"] as const)
     assert.equal(
       (await server.call(method, { enabled: true })).error.code,

@@ -94,16 +94,50 @@ export const en = {
   "usage.unit.tps": "tok/s",
   "usage.unit.ms": "ms",
   "usage.unit.seconds": "s",
+  "connectDevices.title": "Connect this computer",
+  "connectDevices.subtitle": "Scan with your phone camera to continue in the browser.",
+  "connectDevices.recommended": "Recommended",
+  "connectDevices.httpsSummary": "Across networks · Tailscale required on your phone",
+  "connectDevices.lanSummary": "Connect on the same network, with no extra app",
+  "connectDevices.address": "Connection address",
+  "connectDevices.refresh": "Refresh status",
+  "connectDevices.otherMethods": "Other connection methods",
+  "connectDevices.preparing": "Preparing…",
+  "connectDevices.qrPending": "QR code not ready",
+  "connectDevices.scan": "Scan with your phone camera",
+  "connectDevices.enableQr": "Enable and show QR code",
+  "connectDevices.enableImpact":
+    "Enables HTTP access on this computer’s network interfaces. Web briefly restarts and terminals disconnect; running tasks continue.",
+  "connectDevices.httpsSetup": "Tailscale is ready. Enable HTTPS access to show your QR code.",
+  "connectDevices.httpsPersistence":
+    "HTTPS forwarding stays enabled after Web exits. You can stop it below.",
+  "connectDevices.refreshHint": "Refresh to check the available address.",
+  "connectDevices.openTailscale": "Open Tailscale settings",
+  "connectDevices.noAddress":
+    "No address is available for this network. Check the computer’s connection, then refresh.",
+  "connectDevices.help": "Having trouble connecting?",
+  "connectDevices.keepAwake":
+    "Keep this computer awake and Web running. For Wi-Fi, both devices need to be on the same network.",
+  "connectDevices.accessEnabled": "Device access enabled",
+  "connectDevices.localAccess": "Local access only",
+  "connectDevices.tokenTitle": "Access token",
+  "connectDevices.stopTitleShort": "Stop device access",
+  "connectDevices.stopHint":
+    "Turns off IP access and HTTPS forwarding managed here. Running tasks continue.",
+  "connectDevices.stop": "Stop access…",
+  "connectDevices.stopTitle": "Stop device access?",
+  "connectDevices.stopConfirm": "Stop access",
+  "connectDevices.stopDescription":
+    "Closes managed IP access and Tailscale HTTPS roots forwarding to this Web. Web terminals and devices using those routes disconnect; running tasks continue. You can enable access again at any time.",
+  "connectDevices.stopUnmanaged":
+    "Your external proxy or foreground listener is managed separately and may still allow access.",
+  "connectDevices.stopIncomplete":
+    "Some HTTPS forwarding is still active. Refresh and try stopping access again.",
+  "connectDevices.restartTimeout":
+    "Web has not reconnected yet. Check that it is running, then refresh status.",
   "connectDevices.localOnly":
-    "The QR code and access token are only shown on this computer. Open {url} there to see them.",
+    "The QR code and access token are only available on the computer. Open {url} there to get them.",
   "connectDevices.disabled": "Authentication is not enabled, so no access token is needed.",
-  "connectDevices.direct": "Direct (local network, Tailscale IP)",
-  "connectDevices.directOn": "Enable direct connections",
-  "connectDevices.directOff": "Disable direct connections",
-  "connectDevices.directOnConfirm":
-    "Web restarts and listens on every IPv4 interface over unencrypted HTTP. Web terminals disconnect; Host tasks continue.",
-  "connectDevices.directOffConfirm":
-    "Web restarts and listens only on this computer. Web terminals and other devices disconnect; Host tasks continue.",
   "connectDevices.autostart": "Start automatically after login",
   "connectDevices.restarting": "Restarting Web… Waiting for this page to reconnect.",
   "connectDevices.loading": "Loading…",
@@ -111,47 +145,30 @@ export const en = {
   "connectDevices.actionFailed": "That did not work: {message}",
   "connectDevices.connectVia": "Connect through",
   "connectDevices.enlargeQr": "Enlarge QR code",
-  "connectDevices.shrinkQr": "Shrink QR code",
   "connectDevices.qrLabel": "Sign-in QR code",
   "connectDevices.kindPublic": "Public address",
   "connectDevices.kindPublicHint":
-    "The address configured with --public-url; access still requires a token.",
+    "Your configured public address. An access token is still required.",
   "connectDevices.kindFunnel": "Tailscale Funnel · Public",
   "connectDevices.kindFunnelHint":
     "Anyone on the Internet can reach the sign-in page. An access token is still required.",
-  "connectDevices.publicHttp":
-    "This HTTP address sends content without encryption. Use only a network you trust.",
   "connectDevices.tailscale.not-installed":
-    "Tailscale was not found. Install its CLI to use Serve.",
+    "Install and sign in to Tailscale on this computer and your phone, then refresh.",
   "connectDevices.tailscale.not-running":
     "Tailscale is not running. Start Tailscale on this computer.",
   "connectDevices.tailscale.not-logged-in": "Sign in to Tailscale on this computer first.",
   "connectDevices.tailscale.https-disabled":
     "Enable HTTPS certificates in the Tailscale admin console first.",
   "connectDevices.tailscale.occupied":
-    "The HTTPS 443 root already forwards elsewhere. No command is offered because it would replace that forwarding target:",
+    "HTTPS is already used by another service. Manage that forwarding in Tailscale first. Current target:",
   "connectDevices.tailscale.error": "Could not read Tailscale status:",
-  "connectDevices.serveOn": "Enable Tailscale Serve",
-  "connectDevices.serveOff": "Disable Tailscale Serve",
-  "connectDevices.serveOnConfirm":
-    "Forward the HTTPS root to this Web server? This stays configured after Web exits, and another program using this port would also be forwarded.",
-  "connectDevices.serveOffConfirm":
-    "Remove only the root forwarding to this Web server? Other paths and ports will be kept.",
-  "connectDevices.serveCommand": "Serve command",
-  "connectDevices.copyCommand": "Copy command",
-  "connectDevices.kindTailscaleHttps": "Tailscale HTTPS",
-  "connectDevices.kindTailscaleHttpsHint":
-    "Encrypted, and supports notifications and installing to the home screen. Your phone needs Tailscale on.",
   "connectDevices.kindTailscale": "Tailscale",
-  "connectDevices.kindTailscaleHint": "Works from any network once your phone is on Tailscale.",
-  "connectDevices.kindLan": "Local network",
-  "connectDevices.kindLanHint":
-    "Same Wi-Fi only. HTTP is not encrypted, so use a network you trust.",
+  "connectDevices.tailscaleViaHttps": "HTTPS",
+  "connectDevices.tailscaleViaIp": "IP",
+  "connectDevices.kindLan": "Same Wi-Fi",
   "connectDevices.kindVirtual": "Virtual network",
   "connectDevices.kindVirtualHint":
     "Usually reachable only from virtual machines on this computer.",
-  "connectDevices.otherAddresses": "Other addresses ({count})",
-  "connectDevices.remote.title": "How to connect from other networks",
   "connectDevices.remote.tailscale":
     "Install and sign in on both your phone and this computer to put them on a private network. They can then connect from anywhere without exposing Web to the Internet. Your phone needs Tailscale on, and this page shows the next step after you install it.",
   "connectDevices.remote.tailscaleLink": "Download Tailscale",
@@ -159,11 +176,6 @@ export const en = {
   "connectDevices.remote.tunnel":
     "If you already use frp, Cloudflare Tunnel, or nginx, forward it to Web on this computer and keep the original Host. For an installed release, run codexhost web --public-url <address>; from source, run npm start web -- --public-url <address>. The QR code will use that address.",
   "connectDevices.remote.tunnelLink": "View setup guide",
-  "connectDevices.signInLink": "Sign-in link",
-  "connectDevices.linkPrivate":
-    "The QR code and link contain the access token. Anyone who has it can control this computer, so keep it private.",
-  "connectDevices.token": "Access token",
-  "connectDevices.copy": "Copy",
   "connectDevices.copyLink": "Copy link",
   "connectDevices.copyToken": "Copy token",
   "connectDevices.copied": "Copied",
@@ -184,12 +196,12 @@ export const en = {
   "connectDevices.signOut": "Sign out…",
   "connectDevices.signOutTitle": "Sign out of this device?",
   "connectDevices.signOutDescription":
-    "Signing back in needs the access token, which is only shown on your computer. Other devices stay signed in.",
+    "Signing back in needs the access token, which can only be copied on the computer. Other devices stay signed in.",
   "connectDevices.signOutConfirm": "Sign out",
   "connectDevices.cancel": "Cancel",
   "connectDevices.close": "Close",
   "connectDevices.localListener":
-    "Web is listening only on this computer. To allow other devices on your network, start it with --host 0.0.0.0.",
+    "This foreground Web cannot change its IP listener here. Use Tailscale HTTPS, or see the setup guide.",
 
   "extensions.description":
     "Add DSH themes and panels to Web. Extensions are shared by everyone connected to this Web service. After installing, enable the extension here.",
@@ -438,15 +450,43 @@ export const zh: Record<ImportLocaleKey, string> = {
   "usage.unit.tps": "tok/s",
   "usage.unit.ms": "毫秒",
   "usage.unit.seconds": "秒",
-  "connectDevices.localOnly": "二维码和访问令牌只在这台电脑上显示。请在电脑上打开 {url} 查看。",
+  "connectDevices.title": "连接这台电脑",
+  "connectDevices.subtitle": "用手机相机扫码，在浏览器中继续使用。",
+  "connectDevices.recommended": "推荐",
+  "connectDevices.httpsSummary": "跨网络访问 · 手机需开启 Tailscale",
+  "connectDevices.lanSummary": "使用局域网地址连接，无需额外安装",
+  "connectDevices.address": "连接地址",
+  "connectDevices.refresh": "刷新状态",
+  "connectDevices.otherMethods": "其他连接方式",
+  "connectDevices.preparing": "正在准备…",
+  "connectDevices.qrPending": "二维码尚未就绪",
+  "connectDevices.scan": "用手机相机扫码",
+  "connectDevices.enableQr": "启用并显示二维码",
+  "connectDevices.enableImpact":
+    "将允许通过这台电脑的网卡进行 HTTP 访问。Web 会短暂重启，Web 终端会断开，运行中的任务继续。",
+  "connectDevices.httpsSetup": "Tailscale 已就绪，启用 HTTPS 访问后即可扫码。",
+  "connectDevices.httpsPersistence": "HTTPS 转发在 Web 退出后仍保留，可在下方停止。",
+  "connectDevices.refreshHint": "刷新以检查可用地址。",
+  "connectDevices.openTailscale": "打开 Tailscale 设置",
+  "connectDevices.noAddress": "未找到此网络的可用地址，请检查电脑网络后刷新。",
+  "connectDevices.help": "连接遇到问题？",
+  "connectDevices.keepAwake":
+    "请保持电脑唤醒且 Web 正在运行。使用 Wi-Fi 连接时，两台设备需处于同一局域网。",
+  "connectDevices.accessEnabled": "设备访问已启用",
+  "connectDevices.localAccess": "仅本机访问",
+  "connectDevices.tokenTitle": "访问令牌",
+  "connectDevices.stopTitleShort": "停止设备访问",
+  "connectDevices.stopHint": "关闭此页面管理的 IP 访问和 HTTPS 转发，运行中的任务继续。",
+  "connectDevices.stop": "停止访问…",
+  "connectDevices.stopTitle": "停止设备访问？",
+  "connectDevices.stopConfirm": "停止访问",
+  "connectDevices.stopDescription":
+    "关闭由此页面管理的 IP 访问，以及指向当前 Web 的 Tailscale HTTPS 根路径转发。Web 终端和通过这些入口连接的设备会断开，运行中的任务继续。之后可随时重新启用。",
+  "connectDevices.stopUnmanaged": "你配置的外部代理或前台监听需单独管理，它们可能仍允许访问。",
+  "connectDevices.stopIncomplete": "仍有 HTTPS 转发生效，请刷新后再次停止访问。",
+  "connectDevices.restartTimeout": "Web 尚未恢复连接，请确认它正在运行后刷新状态。",
+  "connectDevices.localOnly": "二维码和访问令牌只能在电脑上获取。请在电脑上打开 {url}。",
   "connectDevices.disabled": "认证未启用，不需要访问令牌。",
-  "connectDevices.direct": "直连（局域网、Tailscale IP）",
-  "connectDevices.directOn": "开启直连",
-  "connectDevices.directOff": "关闭直连",
-  "connectDevices.directOnConfirm":
-    "Web 将重启，并通过未加密的 HTTP 监听所有 IPv4 网卡。Web 终端会断开，Host 上的任务不受影响。",
-  "connectDevices.directOffConfirm":
-    "Web 将重启，并只监听这台电脑。Web 终端和其他设备会断开，Host 上的任务不受影响。",
   "connectDevices.autostart": "登录后自动启动",
   "connectDevices.restarting": "正在重启 Web… 等待页面恢复连接。",
   "connectDevices.loading": "正在加载…",
@@ -454,38 +494,25 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.actionFailed": "操作失败：{message}",
   "connectDevices.connectVia": "连接方式",
   "connectDevices.enlargeQr": "放大二维码",
-  "connectDevices.shrinkQr": "缩小二维码",
   "connectDevices.qrLabel": "登录二维码",
   "connectDevices.kindPublic": "公开地址",
-  "connectDevices.kindPublicHint": "通过 --public-url 配置的地址，登录仍需要访问令牌。",
+  "connectDevices.kindPublicHint": "你配置的公开地址，登录仍需要访问令牌。",
   "connectDevices.kindFunnel": "Tailscale Funnel · 公开",
   "connectDevices.kindFunnelHint": "互联网中的任何人都能访问登录页，登录仍需要访问令牌。",
-  "connectDevices.publicHttp": "此 HTTP 地址以明文传输内容，请只在你信任的网络中使用。",
-  "connectDevices.tailscale.not-installed": "未检测到 Tailscale。请安装其 CLI 后使用 Serve。",
+  "connectDevices.tailscale.not-installed":
+    "请在这台电脑和手机上安装并登录 Tailscale，然后刷新状态。",
   "connectDevices.tailscale.not-running": "Tailscale 未运行，请先在这台电脑上启动 Tailscale。",
   "connectDevices.tailscale.not-logged-in": "请先在这台电脑上登录 Tailscale。",
   "connectDevices.tailscale.https-disabled": "请先在 Tailscale 管理后台开启 HTTPS 证书。",
   "connectDevices.tailscale.occupied":
-    "HTTPS 443 根路径已转发到别处。开启命令会替换现有转发，因此不提供命令。当前目标：",
+    "HTTPS 已被其他服务使用，请先在 Tailscale 中调整转发。当前目标：",
   "connectDevices.tailscale.error": "无法读取 Tailscale 状态：",
-  "connectDevices.serveOn": "开启 Tailscale Serve",
-  "connectDevices.serveOff": "关闭 Tailscale Serve",
-  "connectDevices.serveOnConfirm":
-    "将 HTTPS 根路径转发到当前 Web？Web 退出后配置仍保留，占用同一端口的其他程序也会被转发。",
-  "connectDevices.serveOffConfirm": "仅移除指向当前 Web 的根路径转发？其他路径和端口将保留。",
-  "connectDevices.serveCommand": "Serve 命令",
-  "connectDevices.copyCommand": "复制命令",
-  "connectDevices.kindTailscaleHttps": "Tailscale HTTPS",
-  "connectDevices.kindTailscaleHttpsHint":
-    "全程加密，支持通知和添加到主屏幕。手机需开着 Tailscale。",
   "connectDevices.kindTailscale": "Tailscale",
-  "connectDevices.kindTailscaleHint": "手机也登录 Tailscale 后，在任意网络都能连接。",
-  "connectDevices.kindLan": "局域网",
-  "connectDevices.kindLanHint": "需连接同一 Wi-Fi。HTTP 未加密，请只在你信任的网络中使用。",
+  "connectDevices.tailscaleViaHttps": "HTTPS",
+  "connectDevices.tailscaleViaIp": "IP",
+  "connectDevices.kindLan": "同一 Wi-Fi",
   "connectDevices.kindVirtual": "虚拟网络",
   "connectDevices.kindVirtualHint": "通常只有这台电脑上的虚拟机能访问。",
-  "connectDevices.otherAddresses": "其他地址（{count}）",
-  "connectDevices.remote.title": "如何从其他网络连接",
   "connectDevices.remote.tailscale":
     "在手机和这台电脑上安装并登录后，两者会组成一个私有网络，在任何地方都能连接，Web 也不会暴露到公网。手机需开着 Tailscale，安装后本页会提示下一步。",
   "connectDevices.remote.tailscaleLink": "下载 Tailscale",
@@ -493,10 +520,6 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.remote.tunnel":
     "如果你已在用 frp、Cloudflare Tunnel 或 nginx，把它转发到这台电脑上的 Web，并保留原始 Host。发行版运行 codexhost web --public-url <地址>；源码版运行 npm start web -- --public-url <地址>，二维码就会使用该地址。",
   "connectDevices.remote.tunnelLink": "查看配置文档",
-  "connectDevices.signInLink": "登录链接",
-  "connectDevices.linkPrivate": "二维码和链接都包含访问令牌，拿到的人可以操作这台电脑，请勿外传。",
-  "connectDevices.token": "访问令牌",
-  "connectDevices.copy": "复制",
   "connectDevices.copyLink": "复制链接",
   "connectDevices.copyToken": "复制令牌",
   "connectDevices.copied": "已复制",
@@ -517,12 +540,12 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.signOut": "退出登录…",
   "connectDevices.signOutTitle": "退出这台设备的登录？",
   "connectDevices.signOutDescription":
-    "重新登录需要访问令牌，而令牌只在电脑上显示。其他设备不受影响。",
+    "重新登录需要访问令牌，令牌只能在电脑上复制。其他设备不受影响。",
   "connectDevices.signOutConfirm": "退出登录",
   "connectDevices.cancel": "取消",
   "connectDevices.close": "关闭",
   "connectDevices.localListener":
-    "Web 目前只监听这台电脑。要允许局域网中的其他设备访问，请用 --host 0.0.0.0 启动。",
+    "当前前台 Web 无法在此更改 IP 监听。你可以使用 Tailscale HTTPS，或查看配置文档。",
 
   "extensions.description":
     "为 Web 添加 DSH 主题和面板。扩展对连接此 Web 服务的所有页面生效，安装后可在这里启用。",

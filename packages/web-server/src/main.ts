@@ -400,6 +400,7 @@ async function readNetworkAccess() {
   return {
     tailscale,
     networkUrls: [...publicUrls, ...serve, ...networkAccessUrls(host, listeningPort)],
+    ...(background ? { directCandidates: networkAccessUrls("0.0.0.0", listeningPort) } : {}),
   };
 }
 registerAccessTokenRpc(rpc, accessTokens, {

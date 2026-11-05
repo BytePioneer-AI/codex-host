@@ -105,7 +105,7 @@ export const TurnChangesCard = memo(function TurnChangesCard({
               )}
               {expandedPaths.has(file.path) && (
                 <div className={css.diff}>
-                  <DiffBlock diffs={[...file.hunks]} labels={labels} maxLines={12} />
+                  <DiffBlock diffs={[...file.hunks]} labels={labels} maxLines={Infinity} />
                 </div>
               )}
             </li>

@@ -13,6 +13,7 @@ it(
   async (t) => {
     const host = new FakeChHost();
     const row = host.add("file-summary", "/computer/project", "File summaries");
+    const addedLines = Array.from({ length: 24 }, (_, index) => `added line ${index}`);
     row.turns = [1, 4].map((count) => ({
       id: `turn-${count}`,
       status: "completed",
@@ -29,7 +30,7 @@ it(
           changes: Array.from({ length: count }, (_, index) => ({
             path: `src/long-directory/components/file-${index}.ts`,
             kind: { type: "update", move_path: null },
-            diff: `--- a/src/long-directory/components/file-${index}.ts\n+++ b/src/long-directory/components/file-${index}.ts\n@@ -1,1 +1,1 @@\n-old ${index}\n+new ${index}\n`,
+            diff: `--- a/src/long-directory/components/file-${index}.ts\n+++ b/src/long-directory/components/file-${index}.ts\n@@ -1,1 +1,25 @@\n-old ${index}\n+new ${index}\n${addedLines.map((line) => `+${line}`).join("\n")}\n`,
           })),
         },
         {
@@ -79,6 +80,12 @@ it(
     await firstFile.click();
     await expect(firstFile).toHaveAttribute("aria-expanded", "true");
     await expect(multiple.getByText("new 0", { exact: true })).toBeVisible();
+    for (const line of addedLines) {
+      await expect(multiple.getByText(line, { exact: true })).toBeVisible();
+    }
+    await expect(
+      multiple.locator("[data-diff]").getByRole("button", { name: /hidden lines/u }),
+    ).toHaveCount(0);
     await firstFile.click();
     await expect(multiple.getByText("new 0", { exact: true })).toHaveCount(0);
     await multiple.getByRole("button", { name: "View changes", exact: true }).click();
@@ -87,6 +94,7 @@ it(
     await expect(multiple.getByText("new 3", { exact: true })).toHaveCount(0);
     await single.getByRole("button", { name: "View changes", exact: true }).click();
     await expect(single.getByText("new 0", { exact: true })).toBeVisible();
+    await expect(single.getByText("added line 12", { exact: true })).toBeVisible();
     await single.getByRole("button", { name: "Hide changes", exact: true }).click();
     await expect(single.locator("li")).toHaveCount(0);
     await page.evaluate(() => document.body.setAttribute("data-ds-dark-theme", ""));

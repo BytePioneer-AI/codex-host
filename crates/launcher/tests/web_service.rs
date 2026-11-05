@@ -59,7 +59,8 @@ if (args.includes('--stop')) {
 } else {
   log('host-start');
   fs.rmSync(stop, {force:true});
-  fs.writeFileSync(value('--ready-file'), 'ready\n');
+  fs.writeFileSync(value('--ready-file') + '.tmp', 'ready\n');
+  fs.renameSync(value('--ready-file') + '.tmp', value('--ready-file'));
   setInterval(() => { if (fs.existsSync(stop)) process.exit(0); }, 25);
 }
 "#,

@@ -12,6 +12,8 @@ export interface HostServiceLaunch {
   bundledPlugins?: string;
   codexHome?: string;
   stockCodex?: string;
+  /** Added to this process's environment before the Host filter below. */
+  environment?: NodeJS.ProcessEnv;
 }
 
 /** PID presence alone is not liveness: a descriptor may outlive its original PID. */
@@ -77,7 +79,7 @@ export async function ensureHostService(options: HostServiceLaunch): Promise<voi
   if (!isAbsolute(options.launcher))
     throw new Error("Shared Host Launcher must be an absolute path");
   const env = Object.fromEntries(
-    Object.entries(process.env).filter(([key, value]) => {
+    Object.entries({ ...process.env, ...options.environment }).filter(([key, value]) => {
       const upper = key.toUpperCase();
       if (upper === "CODEXHOST_WEB_SERVICE") return value === "0" || value === "1";
       if (

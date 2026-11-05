@@ -11,12 +11,19 @@ import { RpcError, type RpcRegistry } from "./transport.ts";
 
 const exec = promisify(execFile);
 
-/** Moves npm's entrypoint out of process.env; only `autostart on` needs it, Web terminals must not inherit it. */
+/** Moves npm's entrypoint out of process.env so Web terminals do not inherit it. */
 export function takeNpmEntrypoint(): NodeJS.ProcessEnv {
-  const { CODEXHOST_NPM_NODE_PATH, CODEXHOST_NPM_LAUNCHER_PATH } = process.env;
-  delete process.env.CODEXHOST_NPM_NODE_PATH;
-  delete process.env.CODEXHOST_NPM_LAUNCHER_PATH;
-  return { CODEXHOST_NPM_NODE_PATH, CODEXHOST_NPM_LAUNCHER_PATH };
+  const entrypoint: NodeJS.ProcessEnv = {};
+  for (const key of [
+    "CODEXHOST_NPM_NODE_PATH",
+    "CODEXHOST_NPM_CLI_PATH",
+    "CODEXHOST_NPM_LAUNCHER_PATH",
+    "CODEXHOST_NPM_PACKAGE_ROOT",
+  ]) {
+    entrypoint[key] = process.env[key];
+    Reflect.deleteProperty(process.env, key);
+  }
+  return entrypoint;
 }
 
 async function autostart(

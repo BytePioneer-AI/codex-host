@@ -208,27 +208,29 @@ fn desktop_ready(request: &UpdateRequest) -> Result<bool, Box<dyn Error>> {
     )
 }
 
+// An explicit --node overrides Host Node selection, which prefers Desktop's Node on macOS.
+fn pass_npm_node(command: &mut Command, request: &UpdateRequest) {
+    if let Installation::Npm(npm) = &request.installation {
+        command.arg("--node").arg(&npm.node_path);
+    }
+}
+
 fn command(request: &UpdateRequest) -> Command {
     let mut command = if request.restart_target == RestartTarget::Web {
         let mut command = Command::new(request.installation.launcher_path());
-        command
-            .args(["web", "--background", "--update-recovery"])
-            .arg("--node")
-            .arg(request.installation.node_path())
-            .arg("--data")
-            .arg(
-                request
-                    .data_directory
-                    .as_ref()
-                    .expect("validated Web data directory"),
-            );
+        command.args(["web", "--background", "--update-recovery"]);
+        pass_npm_node(&mut command, request);
+        command.arg("--data").arg(
+            request
+                .data_directory
+                .as_ref()
+                .expect("validated Web data directory"),
+        );
         command
     } else if request.data_directory.is_some() {
         let mut command = Command::new(request.installation.launcher_path());
-        command
-            .args(["launch", "--update-recovery"])
-            .arg("--node")
-            .arg(request.installation.node_path());
+        command.args(["launch", "--update-recovery"]);
+        pass_npm_node(&mut command, request);
         command
     } else {
         match &request.installation {
@@ -384,6 +386,16 @@ mod tests {
                 std::ffi::OsStr::new("--node"),
                 root.join("node").as_os_str(),
             ]
+        );
+        let packaged: UpdateRequest = serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "version": "1.2.3", "wait_pid": 1,
+            "wait_executable": root.join("node"), "runtime_descriptor_path": root.join("desktop.json"),
+            "status_path": root.join("status.json"), "data_directory": root.join("data"),
+            "installation": {"kind":"macos-dmg", "dmg_path":root.join("a.dmg"), "artifact_sha256":"0".repeat(64), "app_path":root.join("codexhost.app")}
+        })).unwrap();
+        assert_eq!(
+            super::command(&packaged).get_args().collect::<Vec<_>>(),
+            ["launch", "--update-recovery"]
         );
         request.data_directory = None;
         let legacy = super::command(&request);

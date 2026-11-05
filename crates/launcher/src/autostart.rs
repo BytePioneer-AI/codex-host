@@ -2,7 +2,6 @@
 use std::env;
 use std::error::Error;
 use std::path::PathBuf;
-use std::process::Command;
 
 use codexhost_platform::{AutostartCommand, AutostartStatus};
 
@@ -58,15 +57,5 @@ pub fn refresh() {
     });
     if let Err(error) = result {
         eprintln!("codexhost: could not refresh autostart: {error}");
-    }
-}
-
-/// Preserve npm's entrypoint through the supervisor's clean environment so the
-/// local Web page can register the same command as the npm CLI.
-pub fn forward_npm_entrypoint(command: &mut Command) {
-    for key in [NPM_NODE_PATH_ENV, NPM_LAUNCHER_PATH_ENV] {
-        if let Some(value) = env::var_os(key) {
-            command.env(key, value);
-        }
     }
 }

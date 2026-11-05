@@ -231,6 +231,7 @@ const chHost = await createChHostClient({
         ? join(packagedHost, "adapters")
         : pluginSource,
     ...(values["ch-codex-home"] ? { codexHome: resolve(values["ch-codex-home"]) } : {}),
+    environment: npmEntrypoint,
   },
   ...(values["ch-data"] && !values["ch-control-directory"]
     ? { directory: join(resolve(values["ch-data"]), "client-hosts") }

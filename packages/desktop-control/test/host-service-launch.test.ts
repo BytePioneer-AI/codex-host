@@ -158,3 +158,14 @@ it("does not preserve relative npm installation paths", async () => {
   const options = native.mock.calls[0]?.[2] as { env: NodeJS.ProcessEnv };
   expect(Object.keys(options.env).some((key) => key.startsWith("CODEXHOST_"))).toBe(false);
 });
+
+it("adds the caller's npm entrypoint when it has left this process's environment", async () => {
+  const f = await fixture();
+  const node = path.join(f.root, "node");
+  native.mockImplementation((_file, _args, _options, callback) => {
+    void f.save(f.descriptor).then(() => callback(null, "", ""), callback);
+  });
+  await ensureHostService({ ...f.launch, environment: { CODEXHOST_NPM_NODE_PATH: node } });
+  const options = native.mock.calls[0]?.[2] as { env: NodeJS.ProcessEnv };
+  expect(options.env.CODEXHOST_NPM_NODE_PATH).toBe(node);
+});

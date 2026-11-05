@@ -1,7 +1,7 @@
 /**
  * What one HTTP request may claim about where it came from.
  *
- * `x-forwarded-*` is client-controlled unless the direct peer is an explicitly configured proxy.
+ * `x-forwarded-*` is client-controlled unless the direct peer is a trusted proxy.
  * Local access is stricter: any sign of forwarding makes a request non-local, even from a trusted
  * proxy, because a tunnel ending on the loopback interface is not this computer.
  */
@@ -11,6 +11,10 @@ import type { IncomingMessage } from "node:http";
 function normalizedAddress(address: string | undefined): string {
   const value = (address ?? "").trim().toLowerCase();
   return value.startsWith("::ffff:") ? value.slice("::ffff:".length) : value;
+}
+
+function isLoopbackAddress(address: string): boolean {
+  return address === "::1" || (isIP(address) === 4 && address.startsWith("127."));
 }
 
 /** The rightmost value is the one the adjacent proxy wrote; earlier ones are the client's claim. */
@@ -26,7 +30,7 @@ function lastHeaderValue(value: string | string[] | undefined): string | undefin
  */
 export function isLocalConnection(request: IncomingMessage): boolean {
   const address = normalizedAddress(request.socket.remoteAddress);
-  if (address !== "::1" && !(isIP(address) === 4 && address.startsWith("127."))) return false;
+  if (!isLoopbackAddress(address)) return false;
   const forwarded = Object.keys(request.headers).some(
     (name) => name === "forwarded" || name.startsWith("x-forwarded-"),
   );
@@ -44,6 +48,7 @@ export function isLocalConnection(request: IncomingMessage): boolean {
 
 export class RequestTrust {
   private readonly proxies: ReadonlySet<string>;
+  trustLoopback = false;
 
   /** @param trustedProxies - comma-separated IP addresses of proxies allowed to set forwarding headers. */
   constructor(trustedProxies: string | undefined) {
@@ -58,7 +63,8 @@ export class RequestTrust {
   }
 
   private fromTrustedProxy(request: IncomingMessage): boolean {
-    return this.proxies.has(normalizedAddress(request.socket.remoteAddress));
+    const address = normalizedAddress(request.socket.remoteAddress);
+    return this.proxies.has(address) || (this.trustLoopback && isLoopbackAddress(address));
   }
 
   /** The address failed sign-ins are counted against. */

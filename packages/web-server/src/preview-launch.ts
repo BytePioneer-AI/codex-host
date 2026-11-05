@@ -13,6 +13,7 @@ export interface PreviewOptions extends HostRestartOptions {
   port?: string;
   /** Comma-separated proxy addresses allowed to set forwarding headers. */
   "trusted-proxy"?: string;
+  "public-url"?: string;
   data?: string;
   workspace?: string;
   harness?: string;
@@ -60,6 +61,7 @@ export function previewLaunch(
       );
     }),
   );
+  const publicUrl = options["public-url"] ?? environment.CODEXHOST_WEB_PUBLIC_URL;
   return {
     env,
     args: [
@@ -76,6 +78,7 @@ export function previewLaunch(
       "--port",
       options.port ?? "4400",
       ...(options["trusted-proxy"] ? ["--trusted-proxy", options["trusted-proxy"]] : []),
+      ...(publicUrl === undefined ? [] : ["--public-url", publicUrl]),
       "--adapters",
       resolve(distribution, "adapters"),
       "--harness",

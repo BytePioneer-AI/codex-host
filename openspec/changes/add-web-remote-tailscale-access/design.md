@@ -12,7 +12,7 @@
 
 **状态来源。** 用 `tailscale status --json` 的 `BackendState` 和 `Self` 能力判断运行、登录和 HTTPS，用 `serve status --json` 判断根路径目标和 `AllowFunnel`。结果作为 `WebAccessState` 的 `tailscale` 字段返回给页面，状态是封闭枚举，并带占用目标、错误信息等必要字段。不新增 RPC，不调用任何写入配置的 Tailscale 命令。
 
-**开启命令。** 页面显示 `tailscale serve --bg http://127.0.0.1:<端口>`，只在根路径未转发且监听地址可被转发时显示。根路径已转发到别处时不显示，因为这条命令会直接替换现有转发。
+**开启命令。** 页面显示 `tailscale serve --bg http://127.0.0.1:<端口>`，只在根路径未转发时显示。根路径已转发到别处时不显示，因为这条命令会直接替换现有转发。只监听具体网卡时本机访问条件无法满足，连接设备页读不到 Tailscale 状态，启动输出已说明这一点，因此不设对应状态。
 
 **地址种类。** `WebNetworkAccessUrl.kind` 增加 `public` 和 `tailscale-funnel`。排序为 `public`、`tailscale-funnel`、`tailscale-https`、`tailscale`、`lan`、`virtual`。
 

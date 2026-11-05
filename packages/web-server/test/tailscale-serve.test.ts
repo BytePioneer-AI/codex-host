@@ -1,70 +1,96 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { it, type TestContext } from "node:test";
+import { it } from "node:test";
 
-import { serveUrlsFromStatus, tailscaleServeAccessUrls } from "../src/tailscale-serve.ts";
+import { tailscaleServeState, tailscaleState } from "../src/tailscale-serve.ts";
+import { fakeTailscale, RUNNING, serveStatus, SERVE_HOST } from "./support/tailscale.ts";
 
-const NAME = "laptop.example.ts.net";
-
-function status(proxy: string, port = "443", https = true, path = "/"): unknown {
-  return {
-    TCP: { [port]: { HTTPS: https } },
-    Web: { [`${NAME}:${port}`]: { Handlers: { [path]: { Proxy: proxy } } } },
-  };
-}
-
-function fakeCli(t: TestContext, script: string): string {
-  const directory = mkdtempSync(join(tmpdir(), "codexhost-fake-tailscale-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const path = join(directory, "tailscale");
-  writeFileSync(path, `#!/bin/sh\n${script}\n`);
-  chmodSync(path, 0o755);
-  return path;
-}
-
-it("finds the HTTPS address that forwards to this server", () => {
-  assert.deepEqual(serveUrlsFromStatus(status("http://127.0.0.1:4400"), 4400), [
-    `https://${NAME}/`,
-  ]);
-  assert.deepEqual(serveUrlsFromStatus(status("http://localhost:4400/", "8443"), 4400), [
-    `https://${NAME}:8443/`,
-  ]);
-});
-
-it("ignores Serve configurations that do not reach this server over HTTPS", () => {
-  for (const other of [
-    status("http://127.0.0.1:3000"),
-    status("http://192.168.1.2:4400"),
-    status("http://127.0.0.1:4400/app"),
-    status("http://127.0.0.1:4400", "80", false),
-    status("http://127.0.0.1:4400", "443", true, "/web"),
-    {},
-    "not status",
-  ]) {
-    assert.deepEqual(serveUrlsFromStatus(other, 4400), []);
+it("reports installation, backend, HTTPS and root forwarding states using only read commands", async (t) => {
+  const cli = fakeTailscale(t);
+  const original = process.env.PATH;
+  process.env.PATH = cli.environment.PATH;
+  t.after(() => {
+    process.env.PATH = original;
+  });
+  const read = () => tailscaleState(4400, ["tailscale"]);
+  assert.deepEqual(await read(), { status: "not-running" });
+  cli.set({ BackendState: "NeedsLogin" });
+  assert.deepEqual(await read(), { status: "not-logged-in" });
+  cli.set({ BackendState: "Running", Self: {} });
+  assert.deepEqual(await read(), { status: "https-disabled" });
+  cli.set(RUNNING);
+  assert.deepEqual(await read(), {
+    status: "not-serving",
+    command: "tailscale serve --bg http://127.0.0.1:4400",
+  });
+  cli.set(RUNNING, serveStatus(3000));
+  assert.deepEqual(await read(), { status: "occupied", target: "http://127.0.0.1:3000" });
+  for (const funnel of [false, true]) {
+    cli.set(RUNNING, serveStatus(4400, funnel));
+    assert.deepEqual(await read(), { status: "serving", url: `https://${SERVE_HOST}/`, funnel });
   }
+  cli.set(RUNNING, {}, { raw: "not-json" });
+  const invalid = await read();
+  assert.equal(invalid.status, "error");
+  rmSync(cli.command);
+  process.env.PATH = cli.directory;
+  assert.deepEqual(await read(), { status: "not-installed" });
 });
 
-it("reads the installed command and treats every failure as no address", async (t) => {
-  const json = JSON.stringify(status("http://127.0.0.1:4400"));
-  const working = fakeCli(t, `echo '${json}'`);
-  const expected = [{ kind: "tailscale-https", url: `https://${NAME}/` }];
-  assert.deepEqual(await tailscaleServeAccessUrls("0.0.0.0", 4400, [working]), expected);
-  assert.deepEqual(await tailscaleServeAccessUrls("127.0.0.1", 4400, [working]), expected);
-  // Serve forwards over loopback, which a specific interface does not listen on.
-  assert.deepEqual(await tailscaleServeAccessUrls("192.168.1.2", 4400, [working]), []);
+it("tries another CLI only after ENOENT", async (t) => {
+  const cli = fakeTailscale(t);
+  const fallback = fakeTailscale(t);
+  const missing = join(cli.directory, "missing");
+  assert.deepEqual(await tailscaleState(4400, [missing, cli.command]), { status: "not-running" });
+  cli.set(RUNNING, serveStatus(4400));
+  assert.equal((await tailscaleServeState(4400, [missing, cli.command])).status, "serving");
+  for (const read of [tailscaleState, tailscaleServeState]) {
+    assert.deepEqual(await read(4400, [missing, join(cli.directory, "also-missing")]), {
+      status: "not-installed",
+    });
+    cli.set(RUNNING, {}, { raw: "not-json" });
+    assert.equal((await read(4400, [cli.command, fallback.command])).status, "error");
+  }
+  assert.equal(readFileSync(fallback.log, "utf8"), "");
+});
 
-  const missing = join(tmpdir(), "codexhost-no-such-tailscale");
-  assert.deepEqual(await tailscaleServeAccessUrls("0.0.0.0", 4400, [missing, working]), expected);
-  assert.deepEqual(await tailscaleServeAccessUrls("0.0.0.0", 4400, [missing]), []);
-  assert.deepEqual(
-    await tailscaleServeAccessUrls("0.0.0.0", 4400, [fakeCli(t, "echo stopped >&2; exit 1")]),
-    [],
-  );
-  assert.deepEqual(
-    await tailscaleServeAccessUrls("0.0.0.0", 4400, [fakeCli(t, "echo not-json")]),
-    [],
-  );
+it("recognizes an HTTPS root on 8443 before reporting an occupied 443 root", async (t) => {
+  const cli = fakeTailscale(t);
+  const occupied = serveStatus(3000);
+  for (const funnel of [false, true]) {
+    cli.set(RUNNING, {
+      TCP: { ...occupied.TCP, "8443": { HTTPS: true } },
+      Web: {
+        ...occupied.Web,
+        [`${SERVE_HOST}:8443`]: { Handlers: { "/": { Proxy: "http://localhost:4400/" } } },
+      },
+      AllowFunnel: { [`${SERVE_HOST}:8443`]: funnel },
+    });
+    assert.deepEqual(await tailscaleState(4400, [cli.command]), {
+      status: "serving",
+      url: `https://${SERVE_HOST}:8443/`,
+      funnel,
+    });
+  }
+  cli.set(RUNNING, {
+    TCP: { "8443": { HTTPS: true } },
+    Web: { [`${SERVE_HOST}:8443`]: { Handlers: { "/": { Proxy: "http://localhost:3000/" } } } },
+  });
+  assert.equal((await tailscaleServeState(4400, [cli.command])).status, "not-serving");
+});
+
+it("reports a command timeout without blocking other access methods", async (t) => {
+  const cli = fakeTailscale(t);
+  const original = process.env.PATH;
+  process.env.PATH = cli.environment.PATH;
+  t.after(() => {
+    process.env.PATH = original;
+  });
+  cli.set(RUNNING, {}, { delay: 10_000 });
+  const start = Date.now();
+  const state = await tailscaleState(4400, ["tailscale"]);
+  assert.equal(state.status, "error");
+  if (state.status === "error") assert.ok(state.message.length > 0);
+  assert.ok(Date.now() - start < 4_000);
 });

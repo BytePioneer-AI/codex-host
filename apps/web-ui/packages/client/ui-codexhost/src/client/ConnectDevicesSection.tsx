@@ -95,12 +95,16 @@ function CopyField({
 }
 
 const KIND_LABEL = {
+  public: "connectDevices.kindPublic",
+  "tailscale-funnel": "connectDevices.kindFunnel",
   "tailscale-https": "connectDevices.kindTailscaleHttps",
   tailscale: "connectDevices.kindTailscale",
   lan: "connectDevices.kindLan",
   virtual: "connectDevices.kindVirtual",
 } as const;
 const KIND_HINT = {
+  public: "connectDevices.kindPublicHint",
+  "tailscale-funnel": "connectDevices.kindFunnelHint",
   "tailscale-https": "connectDevices.kindTailscaleHttpsHint",
   tailscale: "connectDevices.kindTailscaleHint",
   lan: "connectDevices.kindLanHint",
@@ -172,6 +176,9 @@ function Connection({
         copyLabel={t("connectDevices.copyLink")}
         t={t}
       />
+      {selected.kind === "public" && selected.url.startsWith("http:") && (
+        <p className={css.notice}>{t("connectDevices.publicHttp")}</p>
+      )}
       <p className={css.meta}>{t("connectDevices.linkPrivate")}</p>
     </div>
   );
@@ -306,7 +313,7 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
       </p>
     );
 
-  const { secret, lastUsedAt, networkUrls } = view.data;
+  const { secret, lastUsedAt, networkUrls, tailscale } = view.data;
   const used = lastUsedAt === null ? undefined : relativeTime(lastUsedAt, Date.now());
   return (
     <div className={css.page} data-connect-devices>
@@ -323,6 +330,25 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
             copyLabel={t("connectDevices.copy")}
             t={t}
           />
+        </div>
+      )}
+      {tailscale.status !== "serving" && (
+        <div className={css.connection} data-tailscale-status={tailscale.status}>
+          <h3 className={css.fieldTitle}>Tailscale</h3>
+          <p className={css.notice}>{t(`connectDevices.tailscale.${tailscale.status}`)}</p>
+          {tailscale.status === "occupied" && <p className={css.meta}>{tailscale.target}</p>}
+          {tailscale.status === "error" && <p className={css.error}>{tailscale.message}</p>}
+          {tailscale.status === "not-serving" && (
+            <>
+              <CopyField
+                label={t("connectDevices.serveCommand")}
+                value={tailscale.command}
+                copyLabel={t("connectDevices.copyCommand")}
+                t={t}
+              />
+              <p className={css.meta}>{t("connectDevices.servePersists")}</p>
+            </>
+          )}
         </div>
       )}
       <div className={css.footer}>

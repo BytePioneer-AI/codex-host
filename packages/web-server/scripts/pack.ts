@@ -272,7 +272,7 @@ writeFileSync(
   join(out, "README.md"),
   `# CodexHost Web ${version}
 
-    node app/server.mjs [--host 0.0.0.0] [--port 4400] [--trusted-proxy <ip>[,<ip>...]] [--adapters <dir>[,<dir>...]]
+    node app/server.mjs [--host 0.0.0.0] [--port 4400] [--public-url <http(s)://host>] [--trusted-proxy <ip>[,<ip>...]] [--adapters <dir>[,<dir>...]]
 
 Default shared mode starts or connects to one independent local CH service. Desktop need not be open;
 closing either UI leaves the service and its tasks running. Both use the same CH data directory.
@@ -292,7 +292,10 @@ Old profiles, lock files and migration markers are not inspected or moved. There
 No Harness selection is needed; \`--harness <id,...>\` remains an optional advanced subset override.
 Missing CLIs and connection failures are normal unavailable states, not Web startup failures.
 Using a Harness requires an installed/authenticated native CLI; default enablement does not imply full Web capability verification.
-Optional preview flags: --port, --data, --workspace, --harness, --ch-data, --ch-codex-home.
+Optional preview flags: --port, --data, --workspace, --harness, --ch-data, --ch-codex-home, --public-url, --trusted-proxy.
+--public-url (or CODEXHOST_WEB_PUBLIC_URL) selects the preferred link and QR address. preview.mjs
+passes this value as an argument before removing inherited environment variables. Only an HTTP(S)
+site root without user information, path, query or fragment is accepted; it does not trust a proxy.
 Native ensure, stop and restart serialize lifecycle operations per Host data directory.
 Restart keeps the lock through shutdown and readiness; reconnecting clients reuse the replacement.
 No profile/home ownership lock or exit proof is used. The existing Mapping Store lock remains.
@@ -321,8 +324,13 @@ Web data lives in \`~/.codexhost/web\` (settings, the access token, push keys an
 Shared canonical metadata remains in the Host's \`~/.codexhost\` and history remains native to each Harness.
 The default listener of app/server.mjs is localhost, and the first output line is a sign-in link for this computer.
 Other devices sign in with the access token shown on this computer in Settings → Connect devices; it
-cannot be viewed from elsewhere. For phones, use an HTTPS reverse proxy such as Tailscale Serve, and name it
-with \`--trusted-proxy\` so its forwarding headers are honoured;
+cannot be viewed from elsewhere. The connection page reads Tailscale status and shows a command
+when the HTTPS root is free; Web never changes Tailscale configuration. A detected Serve root pointing
+to this Web automatically trusts loopback forwarding headers, refreshed every 30 seconds. Serve
+configuration remains after Web exits: another program using the same port would be forwarded too.
+Funnel addresses are marked public: anyone can reach the sign-in page, but still needs the token.
+For other proxies, set --trusted-proxy to the directly connected proxy's IP and preserve Host or
+set X-Forwarded-Host, X-Forwarded-Proto and X-Forwarded-For. Allow WebSockets and unbuffered event streams.
 PWA installation and Web Push need HTTPS. Do not expose \`--no-auth\` to a network.
 
 Enabled Web extensions run their original Host entries and client modules on Web startup.

@@ -4,6 +4,7 @@ import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client
 import type { HostObservable, PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import { Toast, useSustainedRecovery } from "@deepseek-ai/dsh-client-ui-primitives";
 import css from "./HostConnectionStatus.module.css";
+import { computerOffline } from "./auth-watch.ts";
 
 declare module "@deepseek-ai/dsh-session-projection/types" {
   interface SessionProjectionMap {
@@ -23,6 +24,7 @@ export function HostConnectionStatus({
   connection: Pick<ConnectionHandle, "state" | "reconnect">;
 } & PropsLocale<"codexhostImport">) {
   const carrier = useSyncExternalStore(connection.state.subscribe, connection.state.getSnapshot);
+  const computer = useSyncExternalStore(computerOffline.subscribe, computerOffline.getSnapshot);
   const host = useSyncExternalStore(
     (fn) => list.subscribe(fn),
     () =>
@@ -47,11 +49,13 @@ export function HostConnectionStatus({
     carrier === "disconnected"
       ? "offline"
       : recovering
-        ? noticeRecovery
-          ? carrier === undefined
-            ? "checking"
-            : "reconnecting"
-          : undefined
+        ? computer
+          ? "computer"
+          : noticeRecovery
+            ? carrier === undefined
+              ? "checking"
+              : "reconnecting"
+            : undefined
         : host === "reconnecting"
           ? "host"
           : openState === "error"

@@ -11,7 +11,7 @@ import { startServer } from "../support/server.ts";
 
 it(
   "keeps history synchronization quiet while showing connection failures and retaining drafts",
-  { timeout: 40_000 },
+  { timeout: 100_000 },
   async (t) => {
     const directory = mkdtempSync(join(tmpdir(), "ch-mobile-connection-"));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -48,7 +48,18 @@ it(
     let endHistory: (() => void) | undefined;
     let historyHeld = Promise.withResolvers<undefined>();
     const pending: Array<() => void> = [];
+    let blockMux = false;
+    let probeResult: "ok" | "network" | "gateway" | "timeout" = "ok";
+    await page.route("**/api/auth/status", (route) => {
+      if (probeResult === "timeout") return;
+      if (probeResult === "network") return route.abort("connectionrefused");
+      return route.fulfill({ status: probeResult === "gateway" ? 502 : 200, body: "{}" });
+    });
     await page.routeWebSocket("**/api/remote.mux", (socket) => {
+      if (blockMux) {
+        socket.close();
+        return;
+      }
       const server = socket.connectToServer();
       const follows = new Set<string>();
       const rejected = new Set<string>();
@@ -146,6 +157,39 @@ it(
     await page.locator('[data-web-connection="error"] button').click();
     await page.locator("[data-web-connection]").waitFor({ state: "hidden", timeout: 5000 });
     assert.equal(await composer.innerText(), "Keep this mobile draft");
+    // Brief interruption stays quiet; an HTTP 200 with the mux still down means reconnecting.
+    blockMux = true;
+    probeResult = "network";
+    const firstProbe = page.waitForRequest("**/api/auth/status");
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("offline"));
+      window.dispatchEvent(new Event("online"));
+    });
+    await firstProbe;
+    await page.waitForTimeout(1_000);
+    assert.equal(await page.locator('[data-web-connection="computer"]').count(), 0);
+    probeResult = "ok";
+    await page.waitForRequest("**/api/auth/status");
+    await page.locator('[data-web-connection="reconnecting"]').waitFor();
+    assert.equal(await page.locator('[data-web-connection="computer"]').count(), 0);
+
+    // Two failed five-second probe windows are required for every unreachable result.
+    for (const failure of ["network", "gateway", "timeout"] as const) {
+      probeResult = failure;
+      await page.waitForRequest("**/api/auth/status");
+      await page.waitForTimeout(6_000);
+      assert.equal(await page.locator('[data-web-connection="computer"]').count(), 0);
+      await page.locator('[data-web-connection="computer"]').waitFor({ timeout: 10_000 });
+      assert.equal(await composer.innerText(), "Keep this mobile draft");
+      assert.equal(await page.getByText("existing CH answer", { exact: true }).count(), 1);
+      probeResult = "ok";
+      await page.locator('[data-web-connection="reconnecting"]').waitFor({ timeout: 10_000 });
+    }
+    blockMux = false;
+    await page.locator('[data-web-connection="reconnecting"] button').click();
+    await page.locator("[data-web-connection]").waitFor({ state: "hidden", timeout: 5_000 });
+    assert.equal(await composer.innerText(), "Keep this mobile draft");
+    assert.equal(await page.getByText("existing CH answer", { exact: true }).count(), 1);
     assert.equal(
       await page.evaluate(() => (window as unknown as { connectionTest: string }).connectionTest),
       "same-page",

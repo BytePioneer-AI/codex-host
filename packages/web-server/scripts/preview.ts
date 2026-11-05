@@ -24,6 +24,7 @@ const { values } = parseArgs({
     host: { type: "string" },
     port: { type: "string" },
     "trusted-proxy": { type: "string" },
+    "public-url": { type: "string" },
     data: { type: "string" },
     workspace: { type: "string" },
     harness: { type: "string" },

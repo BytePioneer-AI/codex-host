@@ -8,6 +8,7 @@ import { it } from "node:test";
 import { promisify } from "node:util";
 
 import { previewLaunch } from "../src/preview-launch.ts";
+import { fakeTailscale } from "./support/tailscale.ts";
 
 const exec = promisify(execFile);
 
@@ -76,6 +77,23 @@ it("forwards trusted proxies only when explicitly configured", () => {
   assert.equal(args[args.indexOf("--trusted-proxy") + 1], "10.0.0.1,10.0.0.2");
 });
 
+it("forwards public URL from the option or environment, with the option taking precedence", () => {
+  for (const [options, environment, expected] of [
+    [{ "public-url": "https://code.example.com" }, {}, "https://code.example.com"],
+    [{}, { CODEXHOST_WEB_PUBLIC_URL: "http://code.example.com" }, "http://code.example.com"],
+    [
+      { "public-url": "https://chosen.example.com" },
+      { CODEXHOST_WEB_PUBLIC_URL: "https://env.example.com" },
+      "https://chosen.example.com",
+    ],
+  ] as const) {
+    const { args, env } = previewLaunch("/packed", options, environment);
+    assert.equal(args[args.indexOf("--public-url") + 1], expected);
+    assert.equal(env.CODEXHOST_WEB_PUBLIC_URL, undefined);
+    assert.equal(args.includes("--trusted-proxy"), false);
+  }
+});
+
 it("forwards safe mode without changing authentication or requesting a Host restart", () => {
   assert.equal(previewLaunch("/packed", {}, {}).args.includes("--safe-mode"), false);
   const { args } = previewLaunch("/packed", { "safe-mode": true }, {});
@@ -136,6 +154,7 @@ it("accepts Host decision flags without forwarding them to the Web service", () 
 });
 
 it("rejects standalone at both Web entry points before creating a profile", async (t) => {
+  const cli = fakeTailscale(t);
   const root = mkdtempSync(join(tmpdir(), "codexhost-no-standalone-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const entry of ["src/main.ts", "scripts/preview.ts"]) {
@@ -153,6 +172,7 @@ it("rejects standalone at both Web entry points before creating a profile", asyn
         ],
         {
           cwd: resolve(import.meta.dirname, ".."),
+          env: { ...cli.environment, HOME: root },
           timeout: 10_000,
         },
       ),

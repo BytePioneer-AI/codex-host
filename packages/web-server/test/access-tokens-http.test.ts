@@ -19,6 +19,7 @@ import { FakeChChannel, startFakeChChannel } from "./support/ch-channel.ts";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
 import { PNG } from "./support/image.ts";
 import { startServer } from "./support/server.ts";
+import { fakeTailscale, RUNNING, serveStatus } from "./support/tailscale.ts";
 
 const LOCAL_TOKEN = "local-token-for-http-tests";
 
@@ -80,6 +81,7 @@ const bearer = (token: string): Record<string, string> => ({ authorization: `Bea
 async function start(
   t: TestContext,
   args: string[] = [],
+  environment?: NodeJS.ProcessEnv,
 ): Promise<{ base: URL; data: string; access(): Promise<AccessState> }> {
   const data = mkdtempSync(join(tmpdir(), "codexhost-auth-http-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
@@ -88,7 +90,7 @@ async function start(
     resolve(import.meta.dirname, ".."),
     ["--import", "tsx", "src/main.ts"],
     ["--data", data, "--token", LOCAL_TOKEN, ...args],
-    { authenticated: true },
+    { authenticated: true, ...(environment === undefined ? {} : { environment }) },
   );
   const base = new URL(url);
   base.search = "";
@@ -348,6 +350,75 @@ it("trusts forwarding headers only from a configured proxy", async (t) => {
   assert.equal((await attempt("198.51.100.1", named.secret)).status, 429);
   assert.equal((await attempt("198.51.100.2", named.secret)).status, 200);
 });
+
+it(
+  "refreshes Serve trust on page reads and withdraws it within 30 seconds",
+  { timeout: 45_000 },
+  async (t) => {
+    const cli = fakeTailscale(t);
+    cli.set(RUNNING);
+    const { base, access } = await start(t, [], cli.environment);
+    const { secret } = await access();
+    const forwarded = {
+      "x-forwarded-for": "100.64.0.1",
+      "x-forwarded-proto": "https",
+      "x-forwarded-host": "phone.example",
+    };
+    const login = (headers: Record<string, string>, token = secret) =>
+      send(base, "/api/auth/login", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ token }),
+      });
+    assert.doesNotMatch(String((await login(forwarded)).headers["set-cookie"]), /Secure/u);
+    assert.equal((await login({ ...forwarded, origin: "https://phone.example" })).status, 403);
+    cli.set(RUNNING, serveStatus(Number(base.port)));
+    await access();
+    const signedIn = await login({ ...forwarded, origin: "https://phone.example" });
+    assert.equal(signedIn.status, 200);
+    assert.match(String(signedIn.headers["set-cookie"]), /; Secure$/u);
+    for (const headers of [forwarded, { ...forwarded, host: base.host }]) {
+      assert.equal(
+        resultOf(
+          await rpcCall(
+            base,
+            "codexhost/accessTokenGet",
+            {},
+            {
+              ...bearer(secret),
+              ...headers,
+            },
+          ),
+        ).error?.code,
+        "auth/local-access-required",
+      );
+    }
+    for (let failure = 0; failure < 10; failure++)
+      assert.equal((await login(forwarded, "wrong")).status, 401);
+    assert.equal((await login(forwarded)).status, 429);
+    assert.equal((await login({ ...forwarded, "x-forwarded-for": "100.64.0.2" })).status, 200);
+    cli.set(RUNNING);
+    await new Promise((done) => setTimeout(done, 31_000));
+    const revoked = await login(forwarded);
+    assert.equal(revoked.status, 200);
+    assert.doesNotMatch(String(revoked.headers["set-cookie"]), /Secure/u);
+    assert.equal((await login({ ...forwarded, origin: "https://phone.example" })).status, 403);
+    assert.equal(
+      resultOf(
+        await rpcCall(
+          base,
+          "codexhost/accessTokenGet",
+          {},
+          {
+            ...bearer(secret),
+            ...forwarded,
+          },
+        ),
+      ).error?.code,
+      "auth/local-access-required",
+    );
+  },
+);
 
 it("limits failed tokens by address without affecting signed-in devices", async (t) => {
   const { base, access } = await start(t);

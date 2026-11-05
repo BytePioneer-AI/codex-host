@@ -1,5 +1,5 @@
 /** Access token RPCs, available only when the request is local access. */
-import type { WebAccessState, WebNetworkAccessUrl } from "@codexhost/shared-contracts";
+import type { WebAccessState } from "@codexhost/shared-contracts";
 
 import type { AccessTokenStore } from "./access-tokens.ts";
 import { RpcError, type RpcContext, type RpcRegistry } from "./transport.ts";
@@ -12,7 +12,10 @@ import { RpcError, type RpcContext, type RpcRegistry } from "./transport.ts";
 export function registerAccessTokenRpc(
   rpc: RpcRegistry,
   tokens: AccessTokenStore | undefined,
-  listener: { port(): number; networkUrls(): Promise<WebNetworkAccessUrl[]> },
+  listener: {
+    port(): number;
+    access(): Promise<Pick<WebAccessState, "networkUrls" | "tailscale">>;
+  },
 ): void {
   const managed = (context: RpcContext): AccessTokenStore => {
     if (tokens === undefined)
@@ -28,7 +31,7 @@ export function registerAccessTokenRpc(
   };
   rpc.register("codexhost/accessTokenGet", async (_args, context): Promise<WebAccessState> => {
     const store = managed(context);
-    return { ...store.current(), networkUrls: await listener.networkUrls() };
+    return { ...store.current(), ...(await listener.access()) };
   });
   rpc.register(
     "codexhost/accessTokenRegenerate",
@@ -36,7 +39,7 @@ export function registerAccessTokenRpc(
       const store = managed(context);
       // A browser may be signed in with the token it replaces; this response still reports it.
       context.auth?.release();
-      return { ...store.regenerate(), networkUrls: await listener.networkUrls() };
+      return { ...store.regenerate(), ...(await listener.access()) };
     },
   );
 }

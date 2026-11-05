@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 import type { NetworkInterfaceInfo } from "node:os";
 import { it } from "node:test";
 
 import { networkAccessUrls, reachableNetworkUrls } from "../src/network-urls.ts";
+import { fakeTailscale } from "./support/tailscale.ts";
 
 function ipv4(address: string, internal = false): NetworkInterfaceInfo[] {
   return [{ address, internal, family: "IPv4", netmask: "", mac: "", cidr: null }];
@@ -27,6 +33,29 @@ it("orders addresses by how likely another device can reach them", () => {
     { kind: "virtual", url: "http://172.17.0.1:4400/" },
     { kind: "virtual", url: "http://172.24.0.1:4400/" },
   ]);
+});
+
+it("rejects invalid public URLs before initializing Web or Host state", async (t) => {
+  const cli = fakeTailscale(t);
+  const home = mkdtempSync(join(tmpdir(), "codexhost-public-url-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  for (const value of [
+    "not a URL",
+    "ftp://code.example.com",
+    "https://example.com/codex",
+    "https://example.com/?q=1",
+    "https://example.com/#token=x",
+    "https://user:pass@example.com",
+  ]) {
+    await assert.rejects(
+      promisify(execFile)(
+        process.execPath,
+        ["--import", "tsx", "src/main.ts", "--public-url", value],
+        { cwd: resolve(import.meta.dirname, ".."), env: { ...cli.environment, HOME: home } },
+      ),
+      /--public-url:/u,
+    );
+  }
 });
 
 it("offers no address when listening only on this computer", () => {

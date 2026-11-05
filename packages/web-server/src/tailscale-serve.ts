@@ -1,29 +1,45 @@
-/** Tailscale Serve addresses that already forward to this server; Serve is never configured here. */
+/** Read-only Tailscale diagnostics; Web never changes Serve or Funnel configuration. */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import type { WebNetworkAccessUrl } from "@codexhost/shared-contracts";
+import type { WebTailscaleState } from "@codexhost/shared-contracts";
 import { z } from "zod";
-
-import { isLoopbackHost, isWildcardHost } from "./network-urls.ts";
 
 const exec = promisify(execFile);
 const STATUS_TIMEOUT_MS = 3_000;
 const LOOPBACK_TARGETS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 /** The macOS app does not always install a `tailscale` command on PATH. */
 const CLI_CANDIDATES = ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"];
-
-const serveStatusSchema = z.object({
-  TCP: z.record(z.string(), z.object({ HTTPS: z.boolean().optional() })).optional(),
-  Web: z
-    .record(
-      z.string(),
-      z.object({
-        Handlers: z.record(z.string(), z.object({ Proxy: z.string().optional() })).optional(),
-      }),
-    )
+const statusSchema = z.object({
+  BackendState: z.string(),
+  Self: z
+    .object({ CapMap: z.record(z.string(), z.unknown()).optional() })
+    .nullable()
     .optional(),
 });
+const serveStatusSchema = z
+  .object({
+    TCP: z.record(z.string(), z.object({ HTTPS: z.boolean().optional() })).optional(),
+    Web: z
+      .record(
+        z.string(),
+        z.object({
+          Handlers: z
+            .record(
+              z.string(),
+              z.object({
+                Proxy: z.string().optional(),
+                Path: z.string().optional(),
+                Text: z.string().optional(),
+              }),
+            )
+            .optional(),
+        }),
+      )
+      .optional(),
+    AllowFunnel: z.record(z.string(), z.boolean()).optional(),
+  })
+  .nullable();
 
 function forwardsTo(proxy: string | undefined, port: number): boolean {
   if (proxy === undefined || !URL.canParse(proxy)) return false;
@@ -31,53 +47,85 @@ function forwardsTo(proxy: string | undefined, port: number): boolean {
   return (
     target.protocol === "http:" &&
     LOOPBACK_TARGETS.has(target.hostname) &&
-    target.port === String(port) &&
+    Number(target.port || 80) === port &&
     target.pathname === "/"
   );
 }
 
-/**
- * @param status - the parsed output of `tailscale serve status --json`.
- * @param port - this server's listening port.
- * @returns the HTTPS addresses whose root forwards to this server.
- */
-export function serveUrlsFromStatus(status: unknown, port: number): string[] {
-  const parsed = serveStatusSchema.safeParse(status);
-  if (!parsed.success) return [];
-  return Object.entries(parsed.data.Web ?? {}).flatMap(([hostPort, web]) => {
-    const separator = hostPort.lastIndexOf(":");
-    const servePort = hostPort.slice(separator + 1);
-    if (parsed.data.TCP?.[servePort]?.HTTPS !== true) return [];
-    if (!forwardsTo(web.Handlers?.["/"]?.Proxy, port)) return [];
-    const host = hostPort.slice(0, separator);
-    return [servePort === "443" ? `https://${host}/` : `https://${host}:${servePort}/`];
-  });
-}
-
-/**
- * @param host - the listening address; Serve forwards over loopback, so a specific interface is unreachable.
- * @param port - the listening port.
- * @param candidates - the Tailscale commands to try.
- * @returns this server's Serve addresses; empty when Tailscale is absent, stopped, or not forwarding here.
- */
-export async function tailscaleServeAccessUrls(
-  host: string,
-  port: number,
-  candidates: readonly string[] = CLI_CANDIDATES,
-): Promise<WebNetworkAccessUrl[]> {
-  if (!isWildcardHost(host) && !isLoopbackHost(host)) return [];
+/** Tries the next candidate only when one is not installed. */
+async function readJson(args: string[], candidates: readonly string[]): Promise<unknown> {
+  let missing: Error | undefined;
   for (const command of candidates) {
     try {
-      const { stdout } = await exec(command, ["serve", "status", "--json"], {
-        timeout: STATUS_TIMEOUT_MS,
-      });
-      return serveUrlsFromStatus(JSON.parse(stdout), port).map((url) => ({
-        kind: "tailscale-https",
-        url,
-      }));
+      const { stdout } = await exec(command, args, { timeout: STATUS_TIMEOUT_MS });
+      return JSON.parse(stdout);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return [];
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      missing = error as Error;
     }
   }
-  return [];
+  throw missing;
+}
+
+function failure(error: unknown): WebTailscaleState {
+  return (error as NodeJS.ErrnoException).code === "ENOENT"
+    ? { status: "not-installed" }
+    : { status: "error", message: (error as Error).message };
+}
+
+/** An HTTPS root forwarding here supplies the address and loopback proxy trust. */
+export async function tailscaleServeState(
+  port: number,
+  candidates: readonly string[] = CLI_CANDIDATES,
+): Promise<WebTailscaleState> {
+  try {
+    const status = serveStatusSchema.parse(
+      await readJson(["serve", "status", "--json"], candidates),
+    );
+    let occupied: string | undefined;
+    for (const [hostPort, web] of Object.entries(status?.Web ?? {})) {
+      const separator = hostPort.lastIndexOf(":");
+      const servePort = hostPort.slice(separator + 1);
+      const root = web.Handlers?.["/"];
+      if (root === undefined) continue;
+      if (status?.TCP?.[servePort]?.HTTPS === true && forwardsTo(root.Proxy, port)) {
+        const host = hostPort.slice(0, separator);
+        return {
+          status: "serving",
+          url: servePort === "443" ? `https://${host}/` : `https://${host}:${servePort}/`,
+          funnel: status.AllowFunnel?.[hostPort] === true,
+        };
+      }
+      if (servePort === "443") {
+        occupied = root.Proxy ?? root.Path ?? root.Text ?? JSON.stringify(root);
+      }
+    }
+    if (occupied !== undefined) return { status: "occupied", target: occupied };
+    return {
+      status: "not-serving",
+      command: `tailscale serve --bg http://127.0.0.1:${String(port)}`,
+    };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/** Full diagnostics for startup and the connection page, bounded to three seconds. */
+export async function tailscaleState(
+  port: number,
+  candidates: readonly string[] = CLI_CANDIDATES,
+): Promise<WebTailscaleState> {
+  try {
+    const [raw, serve] = await Promise.all([
+      readJson(["status", "--json"], candidates),
+      tailscaleServeState(port, candidates),
+    ]);
+    const status = statusSchema.parse(raw);
+    if (status.BackendState === "NeedsLogin") return { status: "not-logged-in" };
+    if (status.BackendState !== "Running") return { status: "not-running" };
+    if (status.Self?.CapMap?.https === undefined) return { status: "https-disabled" };
+    return serve;
+  } catch (error) {
+    return failure(error);
+  }
 }

@@ -8,6 +8,7 @@ import type { TestContext } from "node:test";
 import { FakeChHost, startFakeChDebugger } from "./ch-host.ts";
 import { seedWebExtension } from "./web-extension.ts";
 import { defined } from "./defined.ts";
+import { fakeTailscale } from "./tailscale.ts";
 
 /**
  * Start the real entry point on an OS-assigned port with disposable data and workspace directories.
@@ -47,6 +48,12 @@ export async function startServer(
     ? defined(args[args.lastIndexOf("--data") + 1])
     : data;
   const extensionId = extension ? seedWebExtension(fixtureData, extension).id : undefined;
+  const tailscale = options.environment?.PATH === undefined ? fakeTailscale(t) : undefined;
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) => !key.startsWith("CODEXHOST_") && key !== "NODE_OPTIONS" && key !== "NODE_PATH",
+    ),
+  );
   const child = spawn(
     process.execPath,
     [
@@ -64,7 +71,7 @@ export async function startServer(
     ],
     {
       cwd: packedEntry ? dirname(packedEntry) : cwd,
-      ...(options.environment ? { env: options.environment } : {}),
+      env: { ...environment, HOME: data, ...tailscale?.environment, ...options.environment },
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
@@ -97,6 +104,7 @@ export async function startServer(
     const finish = (): void => {
       clearTimeout(timeout);
       lines.close();
+      child.stdout.resume();
     };
     lines.on("line", (line) => {
       const match = /^codexhost web: (http:\/\/\S+)/u.exec(line);

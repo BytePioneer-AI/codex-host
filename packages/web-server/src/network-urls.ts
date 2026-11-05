@@ -13,12 +13,7 @@ function isTailscale(ip: string): boolean {
 const VIRTUAL_INTERFACE =
   /^(?:docker|br-|virbr|vmnet|vboxnet|veth|lxcbr|cni|flannel|cali|bridge)|^vEthernet \((?:Default Switch|WSL)|VMware Network Adapter|VirtualBox Host-Only/u;
 
-const KIND_ORDER: Record<WebNetworkAccessUrl["kind"], number> = {
-  "tailscale-https": 0,
-  tailscale: 1,
-  lan: 2,
-  virtual: 3,
-};
+const KIND_ORDER = { tailscale: 0, lan: 1, virtual: 2 };
 
 export function isWildcardHost(host: string): boolean {
   return host === "0.0.0.0" || host === "::";
@@ -28,7 +23,7 @@ export function isLoopbackHost(host: string): boolean {
   return host === "localhost" || host === "::1" || host.startsWith("127.");
 }
 
-function kindOf(address: string, interfaceName: string | undefined): WebNetworkAccessUrl["kind"] {
+function kindOf(address: string, interfaceName: string | undefined): keyof typeof KIND_ORDER {
   if (isTailscale(address)) return "tailscale";
   return interfaceName !== undefined && VIRTUAL_INTERFACE.test(interfaceName) ? "virtual" : "lan";
 }

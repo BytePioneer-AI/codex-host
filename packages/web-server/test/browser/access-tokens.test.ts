@@ -8,6 +8,7 @@ import { chromium, type Browser, type Page } from "playwright";
 
 import { networkAccessUrls } from "../../src/network-urls.ts";
 import { startServer } from "../support/server.ts";
+import { fakeTailscale, RUNNING, serveStatus, SERVE_HOST } from "../support/tailscale.ts";
 
 const LOCAL_TOKEN = "browser-access-token-test";
 const REMOTE_HOST = "codexhost-remote.test";
@@ -15,6 +16,7 @@ const REMOTE_HOST = "codexhost-remote.test";
 async function start(
   t: TestContext,
   args: string[] = [],
+  environment?: NodeJS.ProcessEnv,
 ): Promise<{ local: URL; remote: URL; browser: Browser }> {
   const data = mkdtempSync(join(tmpdir(), "codexhost-token-browser-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
@@ -24,7 +26,7 @@ async function start(
       resolve(import.meta.dirname, "../.."),
       ["--import", "tsx", "src/main.ts"],
       ["--data", data, "--token", LOCAL_TOKEN, ...args],
-      { authenticated: true },
+      { authenticated: true, ...(environment === undefined ? {} : { environment }) },
     ),
   );
   const remote = new URL(local);
@@ -186,6 +188,109 @@ it(
     await page.getByRole("button", { name: "Enlarge QR code" }).click();
     const large = await qr.boundingBox();
     assert.ok((large?.width ?? 0) > (small?.width ?? Infinity));
+  },
+);
+
+it(
+  "shows read-only Tailscale guidance, copyable commands and HTTPS choices at phone width",
+  { timeout: 60_000 },
+  async (t) => {
+    const cli = fakeTailscale(t);
+    const { local, browser } = await start(t, ["--host", "0.0.0.0"], { PATH: cli.directory });
+    const context = await browser.newContext({ locale: "en-US" });
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    const page = await context.newPage();
+    await page.goto(local.href);
+    await openConnectPage(page);
+    await page.locator('[data-tailscale-status="not-running"]').waitFor();
+    for (const [status, backend] of [
+      ["not-logged-in", { BackendState: "NeedsLogin" }],
+      ["https-disabled", { BackendState: "Running", Self: {} }],
+      ["not-serving", RUNNING],
+    ] as const) {
+      cli.set(backend);
+      await page.reload();
+      await openConnectPage(page);
+      await page.locator(`[data-tailscale-status="${status}"]`).waitFor();
+    }
+    const command = `tailscale serve --bg http://127.0.0.1:${local.port}`;
+    assert.equal(await page.getByRole("textbox", { name: "Serve command" }).inputValue(), command);
+    await page.getByRole("button", { name: "Copy command" }).click();
+    await page.getByRole("button", { name: "Copied", exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), command);
+    await page.getByText("Another program using this port").waitFor();
+    cli.set(RUNNING, serveStatus(3000));
+    await page.reload();
+    await openConnectPage(page);
+    await page
+      .locator('[data-tailscale-status="occupied"]')
+      .getByText("http://127.0.0.1:3000", { exact: true })
+      .waitFor();
+    assert.equal(await page.getByRole("textbox", { name: "Serve command" }).count(), 0);
+    for (const funnel of [false, true]) {
+      cli.set(RUNNING, serveStatus(Number(local.port), funnel));
+      await page.reload();
+      await openConnectPage(page);
+      const route = page.locator(
+        `[data-connect-route="${funnel ? "tailscale-funnel" : "tailscale-https"}"]`,
+      );
+      await route.waitFor();
+      assert.equal(await page.locator("[data-tailscale-status]").count(), 0);
+      assert.equal(await page.getByText("Another program using this port").count(), 0);
+      assert.equal(await route.getByRole("radio").isChecked(), true);
+      assert.ok(
+        (await page.getByRole("textbox", { name: "Sign-in link" }).inputValue()).startsWith(
+          `https://${SERVE_HOST}/#token=`,
+        ),
+      );
+      if (funnel) await page.getByText("Anyone on the Internet").waitFor();
+    }
+    cli.set(RUNNING, {}, { raw: "not-json" });
+    await page.reload();
+    await openConnectPage(page);
+    await page.locator('[data-tailscale-status="error"]').waitFor();
+    cli.set(RUNNING);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.reload();
+    await page.getByRole("button", { name: "Open sidebar" }).click();
+    await openConnectPage(page);
+    await page.locator('[data-tailscale-status="not-serving"]').waitFor();
+    const qr = await page.getByRole("img", { name: "Sign-in QR code" }).boundingBox();
+    const tailscale = await page.locator("[data-tailscale-status]").boundingBox();
+    assert.ok(qr && tailscale && qr.y + qr.height <= tailscale.y);
+    const bounds = await page.locator("[data-connect-devices]").boundingBox();
+    assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390);
+  },
+);
+
+it(
+  "selects the configured public address ahead of Serve and warns for HTTP",
+  { timeout: 30_000 },
+  async (t) => {
+    const cli = fakeTailscale(t);
+    const { local, browser } = await start(
+      t,
+      ["--public-url", "http://code.example.com"],
+      cli.environment,
+    );
+    cli.set(RUNNING, serveStatus(Number(local.port), true));
+    const page = await browser.newPage({ locale: "en-US" });
+    await page.goto(local.href);
+    await openConnectPage(page);
+    await page.locator('[data-connect-route="public"]').waitFor();
+    assert.equal(await page.locator("[data-tailscale-status]").count(), 0);
+    assert.equal(
+      await page.locator('[data-connect-route="public"]').getByRole("radio").isChecked(),
+      true,
+    );
+    assert.ok(
+      (await page.getByRole("textbox", { name: "Sign-in link" }).inputValue()).startsWith(
+        "http://code.example.com/#token=",
+      ),
+    );
+    await page
+      .getByText("This HTTP address sends content without encryption.", { exact: false })
+      .waitFor();
   },
 );
 

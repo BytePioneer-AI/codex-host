@@ -3,7 +3,7 @@
  *
  *   node --import tsx src/main.ts [--port 4400] [--host 127.0.0.1] [--data <dir>]
  *        [--adapters <dir>[,<dir>...]] [--harness <id>[,<id>...]]
- *        [--token <value>] [--trusted-proxy <ip>[,<ip>...]] [--no-auth]
+ *        [--token <value>] [--trusted-proxy <ip>[,<ip>...]] [--public-url <url>] [--no-auth]
  *        [--dev-web-ui <apps/web-ui>]
  *
  * `--dev-web-ui` serves the Web UI from that source checkout instead of the packed copy and pushes
@@ -32,7 +32,8 @@ import {
   networkAccessUrls,
   reachableNetworkUrls,
 } from "./network-urls.ts";
-import { tailscaleServeAccessUrls } from "./tailscale-serve.ts";
+import { tailscaleServeState, tailscaleState } from "./tailscale-serve.ts";
+import type { WebNetworkAccessUrl } from "@codexhost/shared-contracts";
 import { RequestTrust } from "./request-trust.ts";
 import { DESKTOP_SCREENSHOT_PATH } from "@codexhost/shared-contracts/desktop-screenshot";
 import { DesktopScreenshots } from "./desktop-screenshot.ts";
@@ -103,6 +104,7 @@ const { values } = parseArgs({
     },
     token: { type: "string", default: process.env.CODEXHOST_WEB_TOKEN },
     "trusted-proxy": { type: "string", default: process.env.CODEXHOST_WEB_TRUSTED_PROXIES },
+    "public-url": { type: "string", default: process.env.CODEXHOST_WEB_PUBLIC_URL },
     "no-auth": { type: "boolean", default: false },
     "import-recent": { type: "string", default: process.env.CODEXHOST_IMPORT_RECENT },
     "dev-web-ui": { type: "string" },
@@ -112,6 +114,21 @@ const { values } = parseArgs({
 });
 
 if (values["session-source"] !== "codexhost") throw new Error("Unknown --session-source");
+
+const publicUrls: WebNetworkAccessUrl[] = [];
+if (values["public-url"] !== undefined) {
+  const value = values["public-url"];
+  if (!URL.canParse(value) || !/^https?:\/\/[^\\/?#]+\/?$/iu.test(value)) {
+    throw new Error(
+      "--public-url: only an http or https site root is supported (no path, query or fragment)",
+    );
+  }
+  const url = new URL(value);
+  if (url.username !== "" || url.password !== "") {
+    throw new Error("--public-url: user information is not allowed");
+  }
+  publicUrls.push({ kind: "public", url: url.href });
+}
 
 const dataRoot = resolve(
   values.data ??
@@ -330,13 +347,25 @@ preferences.register(rpc);
 displaySettings.register(rpc);
 settings.register(rpc);
 push.register(rpc);
+async function readNetworkAccess() {
+  const host = values.host as string;
+  const tailscale = await tailscaleState(listeningPort);
+  trust.trustLoopback = tailscale.status === "serving";
+  const serve: WebNetworkAccessUrl[] = [];
+  if (tailscale.status === "serving") {
+    serve.push({
+      kind: tailscale.funnel ? "tailscale-funnel" : "tailscale-https",
+      url: tailscale.url,
+    });
+  }
+  return {
+    tailscale,
+    networkUrls: [...publicUrls, ...serve, ...networkAccessUrls(host, listeningPort)],
+  };
+}
 registerAccessTokenRpc(rpc, accessTokens, {
-  port: () => (server.address() as { port: number }).port,
-  networkUrls: async () => {
-    const host = values.host as string;
-    const { port } = server.address() as { port: number };
-    return [...(await tailscaleServeAccessUrls(host, port)), ...networkAccessUrls(host, port)];
-  },
+  port: () => listeningPort,
+  access: readNetworkAccess,
 });
 registerMisc(rpc, { events });
 registerUiExtensionRpc(rpc, extensions, {
@@ -545,7 +574,7 @@ server.on("upgrade", (request, socket, head) => {
   }
 });
 
-server.listen(Number(values.port), values.host, () => {
+server.listen(Number(values.port), values.host, async () => {
   const port = (server.address() as { port: number }).port;
   listeningPort = port;
   const host = values.host as string;
@@ -554,11 +583,20 @@ server.listen(Number(values.port), values.host, () => {
   const local = wildcard || isLoopbackHost(host);
   const query = accessTokens !== undefined && local ? `?token=${accessTokens.localToken}` : "";
   const localUrl = `http://${wildcard ? "127.0.0.1" : host}:${String(port)}/${query}`;
-  const urls = reachableNetworkUrls(networkAccessUrls(host, port));
+  console.log(`codexhost web: ${localUrl}`);
+  const urls = reachableNetworkUrls(
+    accessTokens !== undefined && local
+      ? (await readNetworkAccess()).networkUrls
+      : [...publicUrls, ...networkAccessUrls(host, port)],
+  );
+  if (accessTokens !== undefined && local) {
+    setInterval(async () => {
+      trust.trustLoopback = (await tailscaleServeState(port)).status === "serving";
+    }, 30_000);
+  }
   const printStartup = (qrCode?: string) =>
     console.log(
       formatWebStartup({
-        localUrl,
         networkUrls: urls,
         ...(qrCode === undefined ? {} : { qrCode }),
         ...(accessTokens !== undefined && !local ? { localManagementUnavailable: true } : {}),

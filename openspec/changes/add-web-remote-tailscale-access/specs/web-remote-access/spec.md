@@ -33,10 +33,6 @@
 - **WHEN** Serve 的 HTTPS 根路径已转发到当前 Web 的端口
 - **THEN** 页面显示该 HTTPS 地址和登录二维码
 
-#### Scenario: 监听地址无法被 Serve 转发
-- **WHEN** Web 以 `--host` 限定在非回环的具体网卡上
-- **THEN** 页面说明 Serve 无法转发到当前监听地址，不显示开启命令
-
 ### Requirement: Funnel 地址标明公开
 当检测到的转发地址已通过 Tailscale Funnel 公开到互联网时，Web SHALL 把它标为公开地址，并说明任何人都能访问登录页。
 

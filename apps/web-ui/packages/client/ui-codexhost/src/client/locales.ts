@@ -31,6 +31,7 @@ export const en = {
   "connection.host": "Host unavailable; reconnecting…",
   "connection.error": "Could not sync messages. Retry the connection.",
   "connection.checking": "Checking the connection…",
+  "connection.computer": "Cannot reach your computer. Check that it is on and Web is running.",
   "connection.lastSynced": "Last synced at {time}",
   "connection.retry": "Retry",
   "import.sourceBranch":
@@ -105,6 +106,30 @@ export const en = {
   "connectDevices.enlargeQr": "Enlarge QR code",
   "connectDevices.shrinkQr": "Shrink QR code",
   "connectDevices.qrLabel": "Sign-in QR code",
+  "connectDevices.kindPublic": "Public address",
+  "connectDevices.kindPublicHint":
+    "The address configured with --public-url; access still requires a token.",
+  "connectDevices.kindFunnel": "Tailscale Funnel · Public",
+  "connectDevices.kindFunnelHint":
+    "Anyone on the Internet can reach the sign-in page. An access token is still required.",
+  "connectDevices.publicHttp":
+    "This HTTP address sends content without encryption. Use only a network you trust.",
+  "connectDevices.tailscale.not-installed":
+    "Tailscale was not found. Install its CLI to use Serve; local network access is still available.",
+  "connectDevices.tailscale.not-running":
+    "Tailscale is not running. Start Tailscale on this computer.",
+  "connectDevices.tailscale.not-logged-in": "Sign in to Tailscale on this computer first.",
+  "connectDevices.tailscale.https-disabled":
+    "Enable HTTPS certificates in the Tailscale admin console first.",
+  "connectDevices.tailscale.not-serving":
+    "The HTTPS 443 root is not forwarded. Run this command yourself to forward it to Web.",
+  "connectDevices.tailscale.occupied":
+    "The HTTPS 443 root already forwards elsewhere. No command is offered because it would replace that forwarding target:",
+  "connectDevices.tailscale.error": "Could not read Tailscale status:",
+  "connectDevices.serveCommand": "Serve command",
+  "connectDevices.copyCommand": "Copy command",
+  "connectDevices.servePersists":
+    "Serve configuration remains after Web exits. Another program using this port would also be forwarded. Web does not change this configuration.",
   "connectDevices.kindTailscaleHttps": "Tailscale HTTPS",
   "connectDevices.kindTailscaleHttpsHint":
     "Encrypted, and supports notifications and installing to the home screen. Your phone needs Tailscale on.",
@@ -335,6 +360,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connection.host": "Host 暂不可用，正在重连…",
   "connection.error": "消息同步失败，请重试连接。",
   "connection.checking": "正在检查连接…",
+  "connection.computer": "无法连接到电脑，请确认电脑已开机且 Web 正在运行。",
   "connection.lastSynced": "上次同步于 {time}",
   "connection.retry": "重试",
   "import.sourceBranch": "从 Codex 会话 {sessionId} 创建的独立分支，两边分别继续。",
@@ -405,6 +431,25 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.enlargeQr": "放大二维码",
   "connectDevices.shrinkQr": "缩小二维码",
   "connectDevices.qrLabel": "登录二维码",
+  "connectDevices.kindPublic": "公开地址",
+  "connectDevices.kindPublicHint": "通过 --public-url 配置的地址，登录仍需要访问令牌。",
+  "connectDevices.kindFunnel": "Tailscale Funnel · 公开",
+  "connectDevices.kindFunnelHint": "互联网中的任何人都能访问登录页，登录仍需要访问令牌。",
+  "connectDevices.publicHttp": "此 HTTP 地址以明文传输内容，请只在你信任的网络中使用。",
+  "connectDevices.tailscale.not-installed":
+    "未检测到 Tailscale。请安装其 CLI 后使用 Serve，局域网访问仍可用。",
+  "connectDevices.tailscale.not-running": "Tailscale 未运行，请先在这台电脑上启动 Tailscale。",
+  "connectDevices.tailscale.not-logged-in": "请先在这台电脑上登录 Tailscale。",
+  "connectDevices.tailscale.https-disabled": "请先在 Tailscale 管理后台开启 HTTPS 证书。",
+  "connectDevices.tailscale.not-serving":
+    "HTTPS 443 根路径尚未转发，请自行运行以下命令将其转发到 Web。",
+  "connectDevices.tailscale.occupied":
+    "HTTPS 443 根路径已转发到别处。开启命令会替换现有转发，因此不提供命令。当前目标：",
+  "connectDevices.tailscale.error": "无法读取 Tailscale 状态：",
+  "connectDevices.serveCommand": "Serve 命令",
+  "connectDevices.copyCommand": "复制命令",
+  "connectDevices.servePersists":
+    "Web 退出后 Serve 配置仍保留，占用同一端口的其他程序也会被转发。Web 不会修改此配置。",
   "connectDevices.kindTailscaleHttps": "Tailscale HTTPS",
   "connectDevices.kindTailscaleHttpsHint":
     "全程加密，支持通知和添加到主屏幕。手机需开着 Tailscale。",

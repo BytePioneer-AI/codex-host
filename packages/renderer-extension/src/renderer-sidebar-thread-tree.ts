@@ -19,6 +19,7 @@ export const SIDEBAR_THREAD_TREE_TOGGLE_ATTRIBUTE = "data-codexhost-sidebar-thre
 export const SIDEBAR_THREAD_TREE_MIRROR_ATTRIBUTE = "data-codexhost-sidebar-thread-mirror";
 export const SIDEBAR_THREAD_TREE_INDENT_PX = 14;
 const SIDEBAR_THREAD_TREE_MAX_INDENT_DEPTH = 6;
+const SIDEBAR_THREAD_TREE_MAX_ANCESTRY = 64;
 const RELATION_RETRY_DELAYS_MS = [1_000, 3_000, 10_000] as const;
 const NATIVE_FORK_READ_CONCURRENCY = 4;
 

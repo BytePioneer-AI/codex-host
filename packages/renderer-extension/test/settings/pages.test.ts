@@ -2553,6 +2553,39 @@ describe("Renderer Updates page", () => {
     scope.dispose();
   });
 
+  it.each(["succeeded", "failed"] as const)(
+    "shows opaque Host stop output after %s, as text",
+    async (phase) => {
+      const serviceStopOutput =
+        "Host stopped; interrupted 7 running task(s)\n<script>not markup</script>\n";
+      const client = {
+        checkUpdate: vi.fn(async () => updateCheck({ ...updateStatus(phase), serviceStopOutput })),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(async () => ({ status: null })),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("zh-CN"),
+        () => client,
+      ).find(({ id }) => id === "updates");
+      if (!page) throw new Error("Updates page is not registered");
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      await vi.waitFor(() =>
+        expect(elementWithClass(content, "settings-update-service-stop-output").textContent).toBe(
+          serviceStopOutput,
+        ),
+      );
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
   it("shows only the Update action before an update starts and ignores stale success state", async () => {
     const client = {
       checkUpdate: vi.fn(async () => updateCheck(updateStatus("succeeded"))),

@@ -1,3 +1,4 @@
+import { expectedWebPaths, isWebResource, webBuildCommand } from "./web-resources.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
@@ -272,6 +273,7 @@ export function npmPackageCpu(target) {
 
 export function expectedNpmPackagePaths(target) {
   return [
+    ...expectedWebPaths(target),
     "package.json",
     "README.md",
     `bin/codexhost${target.executableSuffix}`,
@@ -583,8 +585,11 @@ if (userArguments.length === 0) {
   launchArguments = ["launch"];
 } else if (userArguments[0] === "launch") {
   launchArguments = userArguments;
-} else if (userArguments[0] === "inspect") {
+} else if (userArguments[0] === "inspect" || userArguments[0] === "status") {
   launchArguments = userArguments;
+} else if (userArguments[0] === "web" || userArguments[0] === "stop") {
+  launchArguments = [userArguments[0], "--node", process.execPath, "--host-runtime", hostRuntime,
+    "--web-runtime", path.join(packageRoot, "app", "web-server.mjs"), ...userArguments.slice(1)];
 } else if (userArguments[0] === "host") {
   if (userArguments[1] !== "ensure" && userArguments[1] !== "stop") fail("host expects ensure or stop");
   launchArguments = ["host", userArguments[1], "--node", process.execPath, "--host-runtime", hostRuntime,
@@ -614,6 +619,9 @@ if (userArguments.length === 0) {
       "  codexhost",
       "  codexhost --version",
       "  codexhost inspect",
+      "  codexhost web [--host address] [--port port] [--public-url url] [--trusted-proxy addresses]",
+      "  codexhost stop",
+      "  codexhost status",
       "  codexhost console",
       "  codexhost update",
       "  codexhost launch [launcher options]",
@@ -626,7 +634,7 @@ if (userArguments.length === 0) {
       "  codexhost thread send|cancel|read|wait|list ...",
       "",
       "This npm package uses the current Node.js runtime and the packaged",
-      "Rust launcher/shim. Codex Desktop must already be installed.",
+      "Rust launcher/shim. Without Codex Desktop, codexhost opens Web.",
     ].join("\\n"),
   );
   process.exit(0);
@@ -836,14 +844,17 @@ if (consoleArguments !== null) {
   child.stdout.on("data", (chunk) => {
     if (ready) return;
     const output = launcherOutput + chunk;
-    if (output.includes(readyMarker)) {
+    const marker = output.indexOf(readyMarker);
+    if (marker !== -1) {
+      process.stdout.write(output.slice(0, marker));
       ready = true;
       launcherOutput = "";
       startupTrace("received Launcher ready");
       if (!keepLauncherForeground) finish(0);
       return;
     }
-    // Only retain the tail needed to recognize a marker split across chunks.
+    // Retain only a possible split readiness marker; forward service results unchanged.
+    process.stdout.write(output.slice(0, Math.max(0, output.length - readyMarker.length + 1)));
     launcherOutput = output.slice(1 - readyMarker.length);
   });
   child.on("error", (error) => {
@@ -852,6 +863,7 @@ if (consoleArguments !== null) {
   });
   child.on("exit", (code, signal) => {
     startupTrace(ready ? "Launcher exited after ready" : "Launcher exited before ready");
+    if (!ready) process.stdout.write(launcherOutput);
     if (signal) {
       process.kill(process.pid, signal);
       return;
@@ -1003,7 +1015,9 @@ export async function validateNpmPackage({ packageRoot, target, root }) {
   const files = await walkFiles(packageRoot);
   const actual = files.map((file) => file.relative).sort();
   const missing = expected.filter((relative) => !actual.includes(relative));
-  const extra = actual.filter((relative) => !expected.includes(relative));
+  const extra = actual.filter(
+    (relative) => !expected.includes(relative) && !isWebResource(relative, target),
+  );
   if (missing.length > 0) {
     throw new Error(`npm package is missing files: ${missing.join(", ")}`);
   }
@@ -1242,6 +1256,7 @@ export async function prepareNpmPackage({
     createNpmReadme({ version: packageVersion, target }),
     "utf8",
   );
+  await runCommand(webBuildCommand(path.join(packageRoot, "app"), target), root);
   await writeThirdPartyNotices(root, packageRoot);
   await validateNpmPackage({ packageRoot, target, root });
 

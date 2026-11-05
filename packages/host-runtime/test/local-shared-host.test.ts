@@ -13,6 +13,7 @@ import { SharedThreadOwner } from "../src/shared-thread-owner.js";
 import { SharedThreadBridge } from "../src/shared-thread-bridge.js";
 import { connectLocalSharedHost } from "../src/local-shared-host.js";
 import { startClientChannelServer } from "../src/client-channel-server.js";
+import { runSharedHostService } from "../src/shared-host-service.js";
 import { readNativeWorkspaceSnapshot } from "../src/native-workspace-snapshot.js";
 import {
   createFixture,
@@ -50,10 +51,12 @@ async function setup() {
     await running;
     owner.output.end();
   });
+  const stop = vi.fn();
   const server = await startClientChannelServer({
     target: host,
     environment: { CODEXHOST_DATA_DIR: root },
     owner: "service",
+    shutdown: { runningTasks: () => new Set(host.runningThreadIds()).size, stop },
     desktopSession: (streams) => owner.createSession(streams),
   });
   cleanup.push(() => server.close());
@@ -83,7 +86,7 @@ async function setup() {
     cleanup.push(() => stopFixture(viewer));
     return { viewer, bridge };
   }
-  return { root, owner, adapter, host, server, web, store, gui };
+  return { root, owner, adapter, host, server, web, store, gui, stop };
 }
 
 it.each(["Web", "Desktop"])(
@@ -142,6 +145,49 @@ it.each(["Web", "Desktop"])(
     expect(await store.listThreads()).toHaveLength(1);
   },
 );
+
+it.each([0, 1])("shutdown reports %i running tasks before stopping", async (count) => {
+  const { root, web, adapter, stop } = await setup();
+  if (count === 1) {
+    const { thread } = await web.request<{ thread: { id: string } }>("thread/start", {
+      model: encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("pi") }),
+      cwd: root,
+    });
+    await web.request("turn/start", {
+      threadId: thread.id,
+      input: [{ type: "text", text: "running task" }],
+    });
+    await vi.waitFor(() => expect(adapter.sessions).toHaveLength(1));
+  }
+  const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  try {
+    expect(await runSharedHostService(["--data", root, "--stop"], {}, import.meta.url)).toBe(0);
+    expect(stdout).toHaveBeenCalledWith(
+      `Shared Host stopped; interrupted ${count} running task(s)\n`,
+    );
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+  } finally {
+    stdout.mockRestore();
+  }
+});
+
+it("prints only stopped for an old Host response without a task count", async () => {
+  const { root } = await setup();
+  const fetch = globalThis.fetch;
+  const request = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+    if (String(input).endsWith("/v1/shutdown"))
+      return Promise.resolve(Response.json({ result: { stopping: true } }));
+    return fetch(input, init);
+  });
+  const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  try {
+    expect(await runSharedHostService(["--data", root, "--stop"], {}, import.meta.url)).toBe(0);
+    expect(stdout).toHaveBeenCalledWith("Shared Host stopped\n");
+  } finally {
+    request.mockRestore();
+    stdout.mockRestore();
+  }
+});
 
 it("reads projects and pins with no Desktop and never rewrites native metadata", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "workspace-snapshot-"));

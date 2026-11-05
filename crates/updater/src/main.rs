@@ -4,6 +4,7 @@ mod install;
 mod prepare_install;
 mod remote;
 mod request;
+mod services;
 mod ssh;
 mod status;
 
@@ -62,7 +63,7 @@ fn wait_for_launcher_exit(request: &UpdateRequest) -> Result<(), Box<dyn Error>>
     }
     // This is the handoff acknowledgement: the owner must remain alive until
     // its identity has been checked, not merely until this process was spawned.
-    write_status(request, "waiting-for-exit", None)?;
+    write_status(request, "waiting-for-exit", None, None)?;
     let started = Instant::now();
     while process_exists(request.wait_pid) {
         if started.elapsed() >= WAIT_TIMEOUT {
@@ -122,19 +123,26 @@ fn wait_for_relaunch(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
 
 fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
     let request = UpdateRequest::parse(request_path)?;
+    let mut service_stop_output = None;
     let result = (|| -> Result<(), Box<dyn Error>> {
         wait_for_launcher_exit(&request)?;
-        write_status(&request, "installing", None)?;
+        service_stop_output = services::stop(&request)?;
+        write_status(&request, "installing", None, service_stop_output.as_deref())?;
         install(&request)?;
-        write_status(&request, "restarting", None)?;
+        write_status(&request, "restarting", None, service_stop_output.as_deref())?;
         relaunch(&request)?;
         wait_for_relaunch(&request)?;
-        write_status(&request, "succeeded", None)?;
+        write_status(&request, "succeeded", None, service_stop_output.as_deref())?;
         Ok(())
     })();
     if let Err(error) = &result {
         let message = error.to_string();
-        let _ = write_status(&request, "failed", Some(&message));
+        let _ = write_status(
+            &request,
+            "failed",
+            Some(&message),
+            service_stop_output.as_deref(),
+        );
     }
     result
 }

@@ -24,7 +24,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import {
   checkExternalClientDependencies,
   readExternalClientAssets,
@@ -64,6 +64,8 @@ export interface PackedPlugin {
 export interface WebAssetOptions {
   /** DSH repository root used to locate workspace packages and the built Vite shell. */
   repoRoot?: string;
+  /** Build output root when browser bundles are emitted outside the source checkout. */
+  buildRoot?: string;
   /** Packed distribution root (`web/` with `index.html`, assets, `plugins.json`, `plugins/`). */
   packedRoot?: string;
   /** Ordered client plugin package names to compose. */
@@ -195,7 +197,7 @@ export class WebAssets {
     }
     if (options.repoRoot === undefined)
       throw new Error("web-assets: repoRoot or packedRoot is required");
-    this.distRoot = resolve(options.repoRoot, "apps/web/dist");
+    this.distRoot = resolve(options.buildRoot ?? options.repoRoot, "apps/web/dist");
     const packages = scanWorkspacePackages(options.repoRoot);
     this.runtimeVersions = sourceClientRuntimeVersions(
       options.repoRoot,
@@ -216,7 +218,10 @@ export class WebAssets {
         throw new Error(`web-assets: ${id} declares no web client`);
       const rel = clientExportOf(pkg.exports);
       if (rel === undefined) throw new Error(`web-assets: ${id} exports no ./client bundle`);
-      const clientPath = join(dir, rel);
+      const clientPath = join(
+        options.buildRoot ? resolve(options.buildRoot, relative(options.repoRoot, dir)) : dir,
+        rel,
+      );
       records.push({ id, dir, clientPath, manifest });
     }
     const present = new Set(records.map((record) => record.id));

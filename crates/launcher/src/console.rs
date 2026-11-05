@@ -326,6 +326,18 @@ pub fn inspect_json(
     }))
 }
 
+pub fn stop(command: &ConsoleCommand) -> Result<bool, Box<dyn Error>> {
+    if !command.console_server.is_file() {
+        return Ok(false);
+    }
+    let status = node_command(command)?.arg("stop").status()?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(3) => Ok(false),
+        _ => Err("Console shutdown failed".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

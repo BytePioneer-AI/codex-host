@@ -61,7 +61,10 @@ export async function runSharedHostService(
   const directory = path.join(values.data, "client-hosts");
   const existing = await discoverHostClientChannel(directory);
   if (values.stop) {
-    if (!existing || !(await isHostClientChannelOnline(existing))) return 0;
+    if (!existing || !(await isHostClientChannelOnline(existing))) {
+      process.stdout.write("Shared Host is not running\n");
+      return 0;
+    }
     if (existing.owner !== "service") throw new Error("Refusing to stop a Desktop-owned Host");
     const response = await fetch(`http://127.0.0.1:${existing.port}/v1/shutdown`, {
       method: "POST",
@@ -71,7 +74,12 @@ export async function runSharedHostService(
       signal: AbortSignal.timeout(5000),
     });
     if (!response.ok) throw new Error("Host did not confirm shutdown; do not retry automatically");
-    await response.body?.cancel();
+    const { result } = (await response.json()) as { result: { runningTasks?: number } };
+    process.stdout.write(
+      result.runningTasks === undefined
+        ? "Shared Host stopped\n"
+        : `Shared Host stopped; interrupted ${result.runningTasks} running task(s)\n`,
+    );
     return 0;
   }
   if (existing && (await isHostClientChannelOnline(existing))) {
@@ -191,7 +199,11 @@ export async function runSharedHostService(
           channel = await startClientChannelServer({
             environment: env,
             owner: "service",
-            shutdown: stop,
+            shutdown: {
+              runningTasks: () =>
+                new Set([host, ...desktops].flatMap((owner) => owner.runningThreadIds())).size,
+              stop,
+            },
             desktopSession: (streams, request) => {
               if (stopping) throw new Error("Shared Host is stopping");
               return sharedHostDesktop(desktopOptions, streams, request);

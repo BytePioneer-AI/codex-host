@@ -84,6 +84,10 @@ fn production_launcher_resolves_resources_beside_its_installed_location() {
     let output = output_of_copied_binary(
         Command::new(&installed)
             .args(["launch"])
+            .env("HOME", &root)
+            .env("USERPROFILE", &root)
+            .env("LOCALAPPDATA", &root)
+            .env("CODEXHOST_WEB_SERVICE", "0")
             .env("CODEXHOST_DATA_DIR", root.join("data"))
             .env("CODEXHOST_CONSOLE", "0")
             .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop")),
@@ -117,6 +121,8 @@ fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
 
     let output = output_of_copied_binary(
         Command::new(&installed)
+            .env("HOME", &root)
+            .env("CODEXHOST_WEB_SERVICE", "0")
             .env("CODEXHOST_DATA_DIR", root.join("data"))
             .env("CODEXHOST_CONSOLE", "0")
             .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop")),
@@ -160,6 +166,8 @@ fn npm_launch_starts_recovery_console_without_desktop_or_bundled_node() {
         Command::new(&installed)
             .args(["launch", "--host-runtime"])
             .arg(&host_runtime)
+            .env("HOME", &root)
+            .env("CODEXHOST_WEB_SERVICE", "0")
             .env("CODEXHOST_DATA_DIR", root.join("data"))
             .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop"))
             .env("CODEXHOST_CONSOLE", "1")

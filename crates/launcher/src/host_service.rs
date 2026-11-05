@@ -21,6 +21,8 @@ struct ReadyOwner {
     executable: PathBuf,
     #[serde(default)]
     runtime: PathBuf,
+    #[serde(default)]
+    version: Option<String>,
 }
 fn owner_snapshot(data: &Path) -> Option<codexhost_platform::ProcessSnapshot> {
     let record = fs::read(data.join("shared-host-ready.json"))
@@ -33,6 +35,13 @@ fn owner_snapshot(data: &Path) -> Option<codexhost_platform::ProcessSnapshot> {
 fn owner_ready(data: &Path) -> bool {
     owner_snapshot(data).is_some()
 }
+
+pub(super) fn current_runtime(data: &Path) -> Option<(PathBuf, Option<String>)> {
+    owner_snapshot(data)?;
+    let record: ReadyOwner =
+        serde_json::from_slice(&fs::read(data.join("shared-host-ready.json")).ok()?).ok()?;
+    Some((record.runtime, record.version))
+}
 fn publish_ready(data: &Path, pid: u32, runtime: &Path) -> Result<(), Box<dyn Error>> {
     let live = codexhost_platform::process_snapshot(pid)?;
     let bytes = serde_json::to_vec(&ReadyOwner {
@@ -40,6 +49,7 @@ fn publish_ready(data: &Path, pid: u32, runtime: &Path) -> Result<(), Box<dyn Er
         started_at_micros: live.started_at_micros,
         executable: live.executable,
         runtime: runtime.to_owned(),
+        version: Some(env!("CARGO_PKG_VERSION").into()),
     })?;
     let temporary = data.join(format!("shared-host-ready-{}.tmp", std::process::id()));
     let mut options = OpenOptions::new();
@@ -101,7 +111,7 @@ fn options(arguments: &[String]) -> Result<Options, Box<dyn Error>> {
     Ok(options)
 }
 
-fn clean(command: &mut Command) {
+pub(super) fn clean(command: &mut Command) {
     for (key, _) in env::vars_os() {
         let upper = key.to_string_lossy().to_ascii_uppercase();
         if upper.starts_with("CODEXHOST_") || upper == "NODE_OPTIONS" || upper == "NODE_PATH" {
@@ -115,7 +125,7 @@ fn clean(command: &mut Command) {
 }
 
 // Readers must never see the empty/truncated intermediate file of fs::write.
-fn publish_status(file: &Path, message: &str) -> Result<(), Box<dyn Error>> {
+pub(super) fn publish_status(file: &Path, message: &str) -> Result<(), Box<dyn Error>> {
     let temporary = file.with_extension(format!("{}.tmp", std::process::id()));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -136,7 +146,7 @@ fn publish_status(file: &Path, message: &str) -> Result<(), Box<dyn Error>> {
     result
 }
 
-fn readiness(file: &Path) -> Option<Result<(), Box<dyn Error>>> {
+pub(super) fn readiness(file: &Path) -> Option<Result<(), Box<dyn Error>>> {
     fs::read_to_string(file).ok().map(|status| {
         if status == "ready\n" {
             Ok(())
@@ -270,7 +280,7 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
 
 // The supervisor exits after cleaning its managed children. This wait is only
 // for normal shutdown; it is not a startup lock or a crash-recovery proof.
-fn wait_for_shutdown(
+pub(super) fn wait_for_shutdown(
     owner: Option<&codexhost_platform::ProcessSnapshot>,
     supervisor: Option<&codexhost_platform::ProcessSnapshot>,
     timeout: Duration,
@@ -289,7 +299,7 @@ fn wait_for_shutdown(
             return Ok(());
         }
         if started.elapsed() >= timeout {
-            return Err("Shared Host shutdown timed out".into());
+            return Err("Service shutdown timed out".into());
         }
         // A stalled Node may retain native children. Let its supervisor finish
         // cleanup after terminating the owner captured before the stop request.
@@ -317,6 +327,7 @@ fn stop(options: &Options) -> Result<(), Box<dyn Error>> {
         .arg("--data")
         .arg(&options.data)
         .arg("--stop")
+        .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()?;
     if status.success() {
@@ -328,7 +339,7 @@ fn stop(options: &Options) -> Result<(), Box<dyn Error>> {
 
 // Keep the file in place: unlinking a locked file would let another caller lock a
 // different inode. The OS releases the lock when the maintenance process exits.
-fn lifecycle_lock(data: &Path) -> Result<fs::File, Box<dyn Error>> {
+pub(super) fn lifecycle_lock(data: &Path, name: &str) -> Result<fs::File, Box<dyn Error>> {
     fs::create_dir_all(data)?;
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
@@ -337,7 +348,7 @@ fn lifecycle_lock(data: &Path) -> Result<fs::File, Box<dyn Error>> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let file = options.open(data.join("shared-host-lifecycle.lock"))?;
+    let file = options.open(data.join(name))?;
     let started = Instant::now();
     loop {
         match file.try_lock_exclusive() {
@@ -347,7 +358,7 @@ fn lifecycle_lock(data: &Path) -> Result<fs::File, Box<dyn Error>> {
                     || error.raw_os_error() == Some(33) =>
             {
                 if started.elapsed() > Duration::from_secs(40) {
-                    return Err("Shared Host lifecycle is busy; no action was taken".into());
+                    return Err("Service lifecycle is busy; no action was taken".into());
                 }
                 thread::sleep(Duration::from_millis(25));
             }
@@ -368,7 +379,9 @@ pub fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     // The detached supervisor must not inherit or reacquire the caller's lock:
     // ensure/restart retain it until that supervisor has published readiness.
     let _guard = match action {
-        "ensure" | "stop" | "restart" => Some(lifecycle_lock(&options.data)?),
+        "ensure" | "stop" | "restart" => {
+            Some(lifecycle_lock(&options.data, "shared-host-lifecycle.lock")?)
+        }
         _ => None,
     };
     match action {

@@ -1,4 +1,4 @@
-use super::{publish_status, readiness, wait_for_shutdown};
+use super::{ReadyOwner, publish_ready, publish_status, readiness, wait_for_shutdown};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{env, fs, thread};
@@ -38,6 +38,10 @@ fn publishes_complete_private_status_before_readiness() {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o077, 0);
     }
+    publish_ready(&root, std::process::id(), &env::current_exe().unwrap()).unwrap();
+    let record: ReadyOwner =
+        serde_json::from_slice(&fs::read(root.join("shared-host-ready.json")).unwrap()).unwrap();
+    assert_eq!(record.version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
     fs::remove_dir_all(root).unwrap();
 }
 

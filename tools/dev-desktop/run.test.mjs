@@ -838,6 +838,7 @@ describe("development Desktop start", () => {
           HTTPS_PROXY: environment.HTTPS_PROXY,
         });
       }
+      expect(spawnImplementation.mock.calls.at(-1)[2].env.CODEXHOST_WEB_SERVICE).toBe("0");
       expect(environment).toEqual(originalEnvironment);
     },
   );

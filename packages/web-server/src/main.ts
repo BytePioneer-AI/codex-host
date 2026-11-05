@@ -13,7 +13,7 @@
 import { existsSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import qrcode from "qrcode-terminal";
@@ -62,8 +62,17 @@ import { serveFileUpload } from "./ch-file-upload-http.ts";
 import { registerVoiceStatus, serveVoiceTranscription } from "./voice-http.ts";
 import { defaultWebDataDirectory } from "./data-paths.ts";
 import { snapshotPackagedHost } from "./packaged-host.ts";
+import {
+  publicAccessUrl,
+  readServiceOptions,
+  saveServiceOptions,
+  SETTINGS_CHANGED_EXIT_CODE,
+} from "./background-service.ts";
 
-/** Packed distribution: app/server.mjs shares a root with web/, adapters/ and native/. */
+declare const CODEXHOST_RELEASE_WEB: boolean;
+const RELEASE_WEB = typeof CODEXHOST_RELEASE_WEB !== "undefined" && CODEXHOST_RELEASE_WEB;
+
+/** The release entry is in app/web-modules; the standalone packed entry is in app/. */
 const DISTRIBUTION_ROOT = resolve(import.meta.dirname, "..");
 const PACKED_WEB = join(DISTRIBUTION_ROOT, "web");
 const PACKED = existsSync(join(PACKED_WEB, "plugins.json"));
@@ -71,7 +80,7 @@ const REPO_ROOT = resolve(import.meta.dirname, "../../..");
 // A packed Web distribution ships the subprocess runner as JavaScript beside
 // the server bundle; the source package's TypeScript entry is not runnable.
 if (PACKED) {
-  const runner = join(DISTRIBUTION_ROOT, "app/subprocess-runner.mjs");
+  const runner = join(import.meta.dirname, "subprocess-runner.mjs");
   if (existsSync(runner)) process.env.CODEXHOST_SUBPROCESS_RUNNER ??= runner;
 }
 function defaultAdapterRoots(): string {
@@ -80,18 +89,27 @@ function defaultAdapterRoots(): string {
     : resolve(REPO_ROOT, "packages/host-runtime/dist/plugins");
 }
 
+const developmentOptions = {
+  "ch-cdp": { type: "string" },
+  "ch-control-directory": { type: "string" },
+  "no-auth": { type: "boolean", default: false },
+  "dev-web-ui": { type: "string" },
+} as const;
 const { values } = parseArgs({
   options: {
     "session-source": { type: "string", default: "codexhost" },
-    "ch-cdp": { type: "string" },
-    "ch-control-directory": { type: "string" },
+    ...((RELEASE_WEB ? {} : developmentOptions) as typeof developmentOptions),
     "ch-launcher": { type: "string" },
     "ch-host-runtime": { type: "string" },
+    "ch-node": { type: "string" },
     "ch-data": { type: "string" },
     "ch-codex-home": { type: "string" },
     "ch-plugins": { type: "string" },
-    port: { type: "string", default: process.env.CODEXHOST_WEB_PORT ?? "4400" },
-    host: { type: "string", default: process.env.CODEXHOST_WEB_HOST ?? "127.0.0.1" },
+    background: { type: "boolean", default: false },
+    "save-service-options": { type: "boolean", default: false },
+    "ready-file": { type: "string" },
+    port: { type: "string" },
+    host: { type: "string" },
     data: {
       type: "string",
       default: process.env.CODEXHOST_WEB_DATA,
@@ -103,32 +121,15 @@ const { values } = parseArgs({
       default: process.env.CODEXHOST_DEFAULT_WORKSPACE ?? join(homedir(), "codexhost-workspace"),
     },
     token: { type: "string", default: process.env.CODEXHOST_WEB_TOKEN },
-    "trusted-proxy": { type: "string", default: process.env.CODEXHOST_WEB_TRUSTED_PROXIES },
-    "public-url": { type: "string", default: process.env.CODEXHOST_WEB_PUBLIC_URL },
-    "no-auth": { type: "boolean", default: false },
+    "trusted-proxy": { type: "string" },
+    "public-url": { type: "string" },
     "import-recent": { type: "string", default: process.env.CODEXHOST_IMPORT_RECENT },
-    "dev-web-ui": { type: "string" },
     "safe-mode": { type: "boolean", default: false },
   },
   allowPositionals: false,
 });
 
 if (values["session-source"] !== "codexhost") throw new Error("Unknown --session-source");
-
-const publicUrls: WebNetworkAccessUrl[] = [];
-if (values["public-url"] !== undefined) {
-  const value = values["public-url"];
-  if (!URL.canParse(value) || !/^https?:\/\/[^\\/?#]+\/?$/iu.test(value)) {
-    throw new Error(
-      "--public-url: only an http or https site root is supported (no path, query or fragment)",
-    );
-  }
-  const url = new URL(value);
-  if (url.username !== "" || url.password !== "") {
-    throw new Error("--public-url: user information is not allowed");
-  }
-  publicUrls.push({ kind: "public", url: url.href });
-}
 
 const dataRoot = resolve(
   values.data ??
@@ -140,7 +141,31 @@ const dataRoot = resolve(
     ),
 );
 const data = new DataDir(dataRoot);
-const trust = new RequestTrust(values["trusted-proxy"]);
+if (values["save-service-options"]) {
+  try {
+    process.exit(saveServiceOptions(data, values) ? SETTINGS_CHANGED_EXIT_CODE : 0);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+const background = values.background ? readServiceOptions(data) : undefined;
+if (background) {
+  values.host = background.host;
+  values.port = String(background.port);
+} else {
+  values.host ??= process.env.CODEXHOST_WEB_HOST ?? "127.0.0.1";
+  values.port ??= process.env.CODEXHOST_WEB_PORT ?? "4400";
+}
+const publicUrl = background
+  ? background.publicUrl
+  : (values["public-url"] ?? process.env.CODEXHOST_WEB_PUBLIC_URL);
+const trustedProxies = background
+  ? background.trustedProxies
+  : (values["trusted-proxy"] ?? process.env.CODEXHOST_WEB_TRUSTED_PROXIES);
+const publicUrls: WebNetworkAccessUrl[] =
+  publicUrl === undefined ? [] : [{ kind: "public", url: publicAccessUrl(publicUrl) }];
+const trust = new RequestTrust(trustedProxies);
 const accessTokens =
   values["no-auth"] === true
     ? undefined
@@ -163,7 +188,7 @@ const enabledHarnesses =
     : new Set(values.harness.split(","));
 const workspaces = new Workspaces(data, resolve(values.workspace as string), true);
 const packagedHost =
-  PACKED && !values["ch-cdp"]
+  PACKED && !values["ch-cdp"] && !values["ch-host-runtime"]
     ? await snapshotPackagedHost(DISTRIBUTION_ROOT, displayDirectory)
     : DISTRIBUTION_ROOT;
 const pluginSource = resolve(values["ch-plugins"] ?? values.adapters ?? defaultAdapterRoots());
@@ -181,6 +206,7 @@ const desktopScreenshots = new DesktopScreenshots([launcher]);
 const chHost = await createChHostClient({
   launch: {
     launcher,
+    ...(values["ch-node"] ? { node: resolve(values["ch-node"]) } : {}),
     runtime: resolve(
       values["ch-host-runtime"] ??
         (PACKED
@@ -574,6 +600,16 @@ server.on("upgrade", (request, socket, head) => {
   }
 });
 
+if (background) {
+  server.once("error", (error: NodeJS.ErrnoException) => {
+    console.error(
+      error.code === "EADDRINUSE"
+        ? `Web port ${values.port} is in use; use --port to select another port`
+        : error.message,
+    );
+    process.exit(1);
+  });
+}
 server.listen(Number(values.port), values.host, async () => {
   const port = (server.address() as { port: number }).port;
   listeningPort = port;
@@ -583,6 +619,19 @@ server.listen(Number(values.port), values.host, async () => {
   const local = wildcard || isLoopbackHost(host);
   const query = accessTokens !== undefined && local ? `?token=${accessTokens.localToken}` : "";
   const localUrl = `http://${wildcard ? "127.0.0.1" : host}:${String(port)}/${query}`;
+  if (background) {
+    const readyFile = values["ready-file"];
+    if (readyFile !== undefined) {
+      new DataDir(dirname(readyFile)).writeJson(
+        basename(readyFile),
+        {
+          address: localUrl.split("?")[0],
+          loginUrl: localUrl,
+        },
+        { mode: 0o600 },
+      );
+    }
+  }
   console.log(`codexhost web: ${localUrl}`);
   const urls = reachableNetworkUrls(
     accessTokens !== undefined && local
@@ -623,7 +672,7 @@ server.listen(Number(values.port), values.host, async () => {
   });
 });
 
-async function shutdown(): Promise<void> {
+async function shutdown(exitCode = 0): Promise<void> {
   hmr?.close();
   accessTokens?.close();
   server.close();
@@ -634,7 +683,7 @@ async function shutdown(): Promise<void> {
   await sessions.close();
   await preferences?.close();
   displaySettings.close();
-  process.exit(0);
+  process.exit(exitCode);
 }
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());

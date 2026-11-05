@@ -47,7 +47,7 @@ export async function startClientChannelServer(options: {
   environment: NodeJS.ProcessEnv;
   directory?: string;
   owner?: "service";
-  shutdown?: () => void;
+  shutdown?: { runningTasks(): number; stop(): void };
   desktopSession?: (
     streams: RemoteAppServerSessionStreams,
     request: IncomingMessage,
@@ -105,9 +105,11 @@ export async function startClientChannelServer(options: {
         return;
       }
       const input = await body(request);
-      if (url.pathname === "/v1/shutdown" && options.shutdown) {
-        response.once("finish", () => setImmediate(() => options.shutdown?.()));
-        reply(200, { result: { stopping: true } });
+      const shutdown = options.shutdown;
+      if (url.pathname === "/v1/shutdown" && shutdown) {
+        const runningTasks = shutdown.runningTasks();
+        response.once("finish", () => setImmediate(() => shutdown.stop()));
+        reply(200, { result: { stopping: true, runningTasks } });
         return;
       }
       if (url.pathname === "/v1/rpc" && typeof input.method === "string")

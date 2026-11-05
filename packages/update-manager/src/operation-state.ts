@@ -91,6 +91,21 @@ export async function discoverLatestUpdateStatus(
   return candidates[0] ?? null;
 }
 
+/** Restore only the latest operation's nonempty stop output, for 24 hours after it ends. */
+export async function discoverRecentCompletedUpdateStatus(
+  stateDirectory: string,
+): Promise<DiscoveredUpdateStatus | null> {
+  const latest = await discoverLatestUpdateStatus(stateDirectory);
+  if (
+    !latest ||
+    !TERMINAL_PHASES.has(latest.status.phase) ||
+    !latest.status.serviceStopOutput ||
+    latest.status.updatedAt < Math.floor(Date.now() / 1000) - 24 * 60 * 60
+  )
+    return null;
+  return latest;
+}
+
 export async function cleanupTerminalUpdateState(
   stateDirectory: string,
   options: { now?: number; retentionSeconds?: number } = {},

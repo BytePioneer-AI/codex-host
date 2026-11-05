@@ -11,9 +11,11 @@ mod native_harness_broker;
 mod runtime_instance;
 #[cfg(target_os = "linux")]
 mod secure_storage;
+mod services;
 mod startup_record;
 #[cfg(target_os = "macos")]
 mod system_proxy_environment;
+mod web_service;
 
 use std::env;
 use std::error::Error;
@@ -131,6 +133,9 @@ const USAGE: &str = "usage:
   codexhost --help
   codexhost --version
   codexhost inspect [--json] [--custom-install <absolute-directory>]
+  codexhost web [--host <address>] [--port <port>] [--public-url <url>] [--trusted-proxy <addresses>]
+  codexhost stop
+  codexhost status
   codexhost console
   codexhost update
   codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]
@@ -342,6 +347,7 @@ struct LaunchOptions {
     shim: Option<PathBuf>,
     node: Option<PathBuf>,
     host_runtime: Option<PathBuf>,
+    web_runtime: Option<PathBuf>,
     desktop_controller: Option<PathBuf>,
     renderer_extension: Option<PathBuf>,
     pi: Option<PathBuf>,
@@ -370,6 +376,7 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
     let mut shim = None;
     let mut node = None;
     let mut host_runtime = None;
+    let mut web_runtime = None;
     let mut desktop_controller = None;
     let mut renderer_extension = None;
     let mut pi = None;
@@ -381,6 +388,9 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
             "--node" => node = Some(required_path(arguments, &mut index, "--node")?),
             "--host-runtime" => {
                 host_runtime = Some(required_path(arguments, &mut index, "--host-runtime")?)
+            }
+            "--web-runtime" => {
+                web_runtime = Some(required_path(arguments, &mut index, "--web-runtime")?)
             }
             "--desktop-controller" => {
                 desktop_controller = Some(required_path(
@@ -405,6 +415,7 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
         shim,
         node,
         host_runtime,
+        web_runtime,
         desktop_controller,
         renderer_extension,
         pi,
@@ -485,15 +496,22 @@ fn macos_default_node(
     }
 }
 
+fn select_host_node(
+    explicit: Option<PathBuf>,
+    desktop_root: Option<&Path>,
+    bundled: PathBuf,
+) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    let bundled = macos_default_node(desktop_root, bundled, env::var_os(NPM_NODE_PATH_ENV));
+    #[cfg(not(target_os = "macos"))]
+    let _ = desktop_root;
+    explicit.unwrap_or(bundled)
+}
+
 impl LaunchOptions {
     fn resolve(self, desktop_root: Option<&Path>) -> Result<ResolvedLaunchOptions, Box<dyn Error>> {
         let installed = InstalledResources::from_current_executable()?;
-        let default_node = installed.node;
-        #[cfg(target_os = "macos")]
-        let default_node =
-            macos_default_node(desktop_root, default_node, env::var_os(NPM_NODE_PATH_ENV));
-        #[cfg(not(target_os = "macos"))]
-        let _ = desktop_root;
+        let default_node = select_host_node(None, desktop_root, installed.node);
         Ok(ResolvedLaunchOptions {
             shim: resolve_resource_path(self.shim, &installed.shim, "--shim", "bundled Shim")?,
             node: resolve_resource_path(
@@ -1088,14 +1106,55 @@ fn force_stop_external_desktop(
     }
 }
 
+fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error>> {
+    let installation = discover_desktop(options.custom_install_root.as_deref());
+    if services::web_enabled()
+        && installation.as_ref().is_err_and(|error| {
+            matches!(
+                error.downcast_ref::<codexhost_platform::PlatformError>(),
+                Some(codexhost_platform::PlatformError::NotFound(_))
+            )
+        })
+    {
+        println!("Codex Desktop is not installed; opening Web instead");
+        match services::open_for_launch(&options) {
+            Ok(()) => {
+                startup_record::finish(StartupOutcome::Ready, None);
+                emit_ready_line(&mut std::io::stdout())?;
+                return Ok(());
+            }
+            Err(error) => {
+                eprintln!("Web startup failed: {error}");
+                return launch_gui(options, installation, interactive);
+            }
+        }
+    }
+    let web = if services::web_enabled() {
+        services::start_for_launch(
+            &options,
+            installation
+                .as_ref()
+                .ok()
+                .map(|desktop| desktop.install_root.as_path()),
+        )
+    } else {
+        None
+    };
+    let result = launch_gui(options, installation, interactive);
+    if let Some(web) = web {
+        web.join().expect("Web startup thread");
+    }
+    result
+}
+
 #[cfg(not(target_os = "linux"))]
-fn launch(
+fn launch_gui(
     options: LaunchOptions,
+    installation: Result<DesktopInstallation, Box<dyn Error>>,
     _interactive_running_desktop: bool,
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
     start_launch_console(&options);
-    let installation = discover_desktop(options.custom_install_root.as_deref());
     // 优先报告安装资源缺失，避免 Desktop 探测错误遮住损坏的 Host 安装。
     let options = options.resolve(
         installation
@@ -1233,13 +1292,13 @@ fn launch(
 }
 
 #[cfg(target_os = "linux")]
-fn launch(
+fn launch_gui(
     options: LaunchOptions,
+    installation: Result<DesktopInstallation, Box<dyn Error>>,
     _interactive_running_desktop: bool,
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
     start_launch_console(&options);
-    let installation = discover_desktop(options.custom_install_root.as_deref());
     // 优先报告安装资源缺失，避免 Desktop 探测错误遮住损坏的 Host 安装。
     let options = options.resolve(
         installation
@@ -1375,6 +1434,7 @@ fn default_launch_options() -> LaunchOptions {
         shim: None,
         node: None,
         host_runtime: None,
+        web_runtime: None,
         desktop_controller: None,
         renderer_extension: None,
         pi: None,
@@ -1407,6 +1467,9 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 .transpose()?;
             inspect(custom_install_root.as_deref(), options.json)
         }
+        Some(action @ ("web" | "stop" | "status" | "stop-for-update")) => {
+            services::run(action, &arguments[1..])
+        }
         Some("console") if arguments.len() == 1 => run_console_command("open"),
         Some("update") if arguments.len() == 1 => run_console_command("update"),
         Some("update") => Err("update accepts no arguments".into()),
@@ -1425,6 +1488,7 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         }
         Some("desktop-screenshot") => Err("desktop-screenshot accepts no arguments".into()),
         Some("host") => host_service::run(&arguments[1..]),
+        Some("web-service") => web_service::run(&arguments[1..]),
         Some("broker") => run_native_harness_broker_cli(&arguments[1..]),
         Some("harness") | Some("delegate") | Some("thread") => run_delegation_cli(arguments),
         _ => {
@@ -1668,6 +1732,7 @@ mod tests {
                 shim: Some(executable.clone()),
                 node,
                 host_runtime: Some(executable.clone()),
+                web_runtime: None,
                 desktop_controller: Some(executable.clone()),
                 renderer_extension: Some(executable.clone()),
                 pi: None,

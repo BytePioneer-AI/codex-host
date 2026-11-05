@@ -1310,6 +1310,16 @@ export class AppServerHost {
     }
   }
 
+  runningThreadIds(): string[] {
+    return [
+      ...this.#activeOfficialTurns.keys(),
+      ...this.#externalRuntime
+        .values()
+        .filter((thread) => thread.running || thread.activeTurnId !== null)
+        .map((thread) => thread.id),
+    ];
+  }
+
   #hasActiveWork(): boolean {
     return (
       this.#externalSteering.hasPending() ||

@@ -71,6 +71,25 @@ function editManifest(directory: string, edit: (manifest: Record<string, unknown
   write(path, JSON.stringify(manifest));
 }
 
+it("exports temporary browser builds without replacing development bundles", (t) => {
+  const { root, options } = fixture(t);
+  const buildRoot = join(root, "temporary-build");
+  write(join(buildRoot, "apps/web/dist/index.html"), SHELL);
+  write(join(buildRoot, "packages/client/builtin/lib/client.js"), "release();\n");
+  const assets = new WebAssets({ ...options, buildRoot });
+  const output = join(root, "release-web");
+  const [plugin] = assets.exportPlugins(output);
+  assert.ok(plugin);
+  assert.equal(
+    readFileSync(join(output, "plugins", plugin.dir, "client.js"), "utf8"),
+    "release();\n",
+  );
+  assert.equal(
+    readFileSync(join(root, "packages/client/builtin/lib/client.js"), "utf8"),
+    "builtin();\n",
+  );
+});
+
 for (const mode of ["source", "packed"] as const) {
   it(`composes original browser packages with ${mode} assets and leaves recovery built-in only`, (t) => {
     const { root, directory, options } = fixture(t);

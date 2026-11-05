@@ -505,6 +505,14 @@ function updatesPage(
         }, 750);
       };
 
+      const appendServiceStopOutput = (status: UpdateStatus | null): void => {
+        if (!status?.serviceStopOutput) return;
+        const output = document.createElement("pre");
+        output.className = "settings-update-service-stop-output";
+        output.textContent = status.serviceStopOutput;
+        panel.append(output);
+      };
+
       const renderPendingStatus = (
         status: UpdateStatus | null,
         message: string,
@@ -514,6 +522,7 @@ function updatesPage(
         delete panel.dataset.inline;
         panel.replaceChildren();
         panel.append(createPanelHead(document, viewPhase, message));
+        appendServiceStopOutput(status);
         setManualFallback(viewPhase === "failed");
         if (
           status?.phase === "downloading" &&
@@ -620,6 +629,7 @@ function updatesPage(
                   : messages.updateUpToDate,
           ),
         );
+        appendServiceStopOutput(result.status);
         if (actionableStatus?.error) {
           const error = document.createElement("p");
           error.className = "settings-update-error";

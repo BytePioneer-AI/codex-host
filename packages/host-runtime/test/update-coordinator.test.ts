@@ -281,10 +281,11 @@ describe("Host update coordinator", () => {
     const downloadObserved = new Promise<void>((resolve) => {
       resolveDownloadObserved = resolve;
     });
+    const spawnUpdater = vi.fn(() => ({ pid: 778 }) as unknown as ChildProcess);
     const manager = createBackgroundUpdateManager({
       platform: "darwin",
       randomId: () => "async-macos",
-      spawnUpdater: vi.fn(() => ({ pid: 778 }) as unknown as ChildProcess),
+      spawnUpdater,
       download: async (_source, destination, onProgress) => {
         resolveDownloadObserved();
         await onProgress?.({ downloadedBytes: 1, totalBytes: bytes.length });
@@ -328,6 +329,8 @@ describe("Host update coordinator", () => {
         totalBytes: bytes.length,
       }),
     );
+    expect(spawnUpdater).not.toHaveBeenCalled();
+    expect((await coordinator.status()).status).not.toHaveProperty("serviceStopOutput");
     unblockDownload();
     const home = fixture.environment.HOME;
     if (!home) throw new Error("fixture HOME is missing");
@@ -344,7 +347,58 @@ describe("Host update coordinator", () => {
     await expect(coordinator.status()).resolves.toMatchObject({
       status: { phase: "prepared", version: "1.2.3", installation: "macos-dmg" },
     });
+    expect(spawnUpdater).not.toHaveBeenCalled();
   });
+
+  it.each(["succeeded", "failed"])(
+    "recovers %s service stop output after relaunch",
+    async (phase) => {
+      const fixture = await npmFixture();
+      const home = fixture.environment.HOME;
+      if (!home) throw new Error("fixture HOME is missing");
+      const operation = path.join(
+        home,
+        "Library",
+        "Application Support",
+        "codexhost",
+        "updates",
+        "update-result",
+      );
+      await mkdir(operation, { recursive: true });
+      const serviceStopOutput = "Shared Host stopped; interrupted 7 running task(s)\n";
+      await writeFile(
+        path.join(operation, "status-v1.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          version: "1.2.3",
+          installation: "npm",
+          phase,
+          updatedAt: Math.floor(Date.now() / 1000),
+          serviceStopOutput,
+        }),
+      );
+      const coordinator = createHostUpdateCoordinator({
+        hostRuntimePath: fixture.hostRuntimePath,
+        environment: fixture.environment,
+        platform: "darwin",
+        architecture: "arm64",
+        fetchLatest: async () => release(),
+      });
+      await expect(coordinator.check()).resolves.toMatchObject({
+        status: { phase, serviceStopOutput },
+      });
+      await expect(coordinator.status()).resolves.toMatchObject({
+        status: { phase, serviceStopOutput },
+      });
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 86_401_000);
+      try {
+        await expect(coordinator.status()).resolves.toEqual({ status: null });
+        await expect(coordinator.check()).resolves.toMatchObject({ status: null });
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
 
   it.each(["prepared", "failed", "succeeded"])(
     "ignores historical %s status without an active operation lock",

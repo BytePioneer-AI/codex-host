@@ -58,6 +58,12 @@ Web 按内容寻址快照的 runtime 路径（或 `--ch-host-runtime` 覆盖值�
 
 打包版 Web 在连接 Host 前，将随包的 Host bundle、原生 Launcher 与完整插件目录复制到 `<ch-data>/host-builds/<内容哈希>/`，完成后原子发布；相同内容复用同一路径。后台与 Web 自动重连始终引用这份快照，重新打包 Web 不会删除或替换运行中的 Host 文件，延迟加载的插件资源仍可读取。显式指定的外部运行入口、Launcher 或插件目录由调用方维护，不会自动复制。快照不包含用户凭据或会话数据，不自动清理；需要回收磁盘时，先停止相关 Web 与 Host，再清理不使用的构建。直接运行打包入口仍按共享生命周期复用已有后台；仓库开发命令 `npm start` 和 `npm start web` 重启对应界面，并按上述内容变化与另一端运行状态决定是否重启后台。
 
+### 安装包和 npm 的 Web 资源
+
+发行流程 `prepare-payload` 与 `prepare-npm` 共用 Web 构建入口，输出 `app/web-server.mjs`、`app/web/` 与 `app/web-modules/`。轻量入口加载 `web-modules/server.mjs`，其框架及原生依赖通过该目录的 `node_modules` 正常解析；Harness 插件复用 `app/plugins`。监管进程显式传入安装内的 Host、Launcher 与插件路径，不创建 `host-builds` 快照；独立 packed 入口在没有 `--ch-host-runtime` 时仍使用快照。
+
+发行 Web 不提供 CDP、无认证和前端开发监听选项，也不带 `preview.mjs`；`node-pty` 仅保留目标 OS/CPU 的预编译文件。Office 入口包、worker 和 `koffi` 保留，LibreOffice 引擎不随包发布。`app/web-modules/office-engines.json` 从锁文件记录各引擎包的官方地址、版本与 SHA-512 integrity；发行入口尚未接入引擎下载，需要 LibreOffice 的预览暂不可用。发行浏览器构建使用临时输出目录，不覆盖源码开发使用的 packed 目录。
+
 ## 访问认证
 
 除 `--no-auth` 外，所有请求都要通过访问令牌认证。令牌只校验持有者，不绑定设备或浏览器，也不过期；不细分权限，因为持有者可以通过终端在电脑上执行命令，细分不构成真正的边界。

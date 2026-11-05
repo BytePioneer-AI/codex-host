@@ -531,7 +531,7 @@ export async function runDevelopmentDesktop({
   if (piPath) console.log(`codexhost dev: using Pi at ${piPath}`);
   else console.warn("codexhost dev: Pi was not found on PATH and will be unavailable");
 
-  const launchEnvironment = { ...environment };
+  const launchEnvironment = { ...environment, CODEXHOST_WEB_SERVICE: "0" };
   // A Harness launched by an npm installation may inherit its update routing. The Shim
   // prefers that routing over --host-runtime; a source launch must use this worktree instead.
   for (const name of [

@@ -47,6 +47,9 @@ import {
 } from "../../scripts/release/prepare-npm-meta.mjs";
 import { hostReleaseTargetId, releaseTarget } from "../../scripts/release/targets.mjs";
 
+const launcherStdout =
+  "Shared Host stopped; interrupted 2 running task(s)\nstartup:" + "x".repeat(1024 * 1024);
+
 async function temporaryDirectory() {
   return mkdtemp(path.join(os.tmpdir(), "codexhost-npm-package-"));
 }
@@ -224,7 +227,7 @@ if (process.env.CODEXHOST_TEST_TTY === "1") {
 childProcess.spawn = () => {
   const child = new EventEmitter();
   child.stdout = new PassThrough();
-  setTimeout(() => child.stdout.write("startup:" + "x".repeat(1024 * 1024) + "rea"), 10);
+  setTimeout(() => child.stdout.write(${JSON.stringify(launcherStdout)} + "rea"), 10);
   setTimeout(() => child.stdout.write("dy\\n"), 20);
   setTimeout(() => child.emit("exit", 7, null), 80);
   return child;
@@ -265,6 +268,7 @@ async function runLauncherLifecycle(
       {
         encoding: "utf8",
         env: environment,
+        maxBuffer: 2 * 1024 * 1024,
         timeout: 2_000,
         windowsHide: true,
       },
@@ -604,6 +608,31 @@ describe("npm package release", () => {
     expect(source).not.toContain("runtime/node");
   });
 
+  it.each(["web", "stop", "status"])("routes %s to the native service command", async (command) => {
+    const options = command === "web" ? ["--port", "4501", "--public-url", ""] : [];
+    const { result, calls } = await runGeneratedWrapperLifecycle(
+      "darwin",
+      [command, ...options],
+      [0],
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toEqual(
+      command === "status"
+        ? ["status"]
+        : [
+            command,
+            "--node",
+            process.execPath,
+            "--host-runtime",
+            expect.stringMatching(/host-runtime\.mjs$/u),
+            "--web-runtime",
+            expect.stringMatching(/web-server\.mjs$/u),
+            ...options,
+          ],
+    );
+  });
+
   it.each(["ensure", "stop"])(
     "supplies native resources for independent host %s without launching Desktop",
     async (command) => {
@@ -781,9 +810,10 @@ describe("npm package release", () => {
     expect(result.status, result.stderr).toBe(7);
     expect(result.stderr).toContain("received Launcher ready");
     expect(result.stderr).toContain("Launcher exited after ready");
-    expect(result.stdout).toContain(
+    expect(result.stdout).toBe(
       "⭐ If this project helps you, please give us a Star ⭐\n" +
-        "https://github.com/BytePioneer-AI/codex-host",
+        "https://github.com/BytePioneer-AI/codex-host\n" +
+        launcherStdout,
     );
     expect(readme).toContain("On Windows, the command remains attached until Codex Desktop exits");
     expect(readme).toContain("process trees of completed commands");
@@ -814,9 +844,12 @@ describe("npm package release", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toContain("received Launcher ready");
     expect(result.stderr).not.toContain("Launcher exited after ready");
+    expect(result.stdout).toContain("Shared Host stopped; interrupted 2 running task(s)\n");
+    expect(result.stdout).not.toContain("ready\n");
     expect(result.stdout).toBe(
       "⭐ If this project helps you, please give us a Star ⭐\n" +
-        "https://github.com/BytePioneer-AI/codex-host\n",
+        "https://github.com/BytePioneer-AI/codex-host\n" +
+        launcherStdout,
     );
   });
 
@@ -826,7 +859,8 @@ describe("npm package release", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toBe(
       "⭐ 如果这个项目对你有帮助，请给我们一个 Star ⭐\n" +
-        "https://github.com/BytePioneer-AI/codex-host\n",
+        "https://github.com/BytePioneer-AI/codex-host\n" +
+        launcherStdout,
     );
   });
 
@@ -837,12 +871,14 @@ describe("npm package release", () => {
     expect(colored.status, colored.stderr).toBe(0);
     expect(colored.stdout).toBe(
       "\u001B[33m⭐ If this project helps you, please give us a Star ⭐\u001B[0m\n" +
-        "\u001B[36mhttps://github.com/BytePioneer-AI/codex-host\u001B[0m\n",
+        "\u001B[36mhttps://github.com/BytePioneer-AI/codex-host\u001B[0m\n" +
+        launcherStdout,
     );
     expect(plain.status, plain.stderr).toBe(0);
     expect(plain.stdout).toBe(
       "⭐ If this project helps you, please give us a Star ⭐\n" +
-        "https://github.com/BytePioneer-AI/codex-host\n",
+        "https://github.com/BytePioneer-AI/codex-host\n" +
+        launcherStdout,
     );
   });
 

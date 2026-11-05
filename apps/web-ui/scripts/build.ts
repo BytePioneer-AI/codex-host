@@ -5,14 +5,19 @@
  * a Web server started with `--dev-web-ui` picks the new bundles up and pushes them to open pages.
  */
 import { copyFileSync, globSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, relative } from "node:path";
+import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { build as buildShell } from "vite";
 import { build } from "tsdown";
 import type { TsdownBundle, UserConfig } from "tsdown";
 
 const root = resolve(import.meta.dirname, "..");
-const watch = process.argv.includes("--watch");
+const { values } = parseArgs({
+  options: { watch: { type: "boolean", default: false }, output: { type: "string" } },
+});
+const watch = values.watch;
+const output = values.output === undefined ? root : resolve(values.output);
 const { plugins } = JSON.parse(readFileSync(resolve(root, "import-manifest.json"), "utf8")) as {
   plugins: string[];
 };
@@ -43,6 +48,8 @@ for (const name of plugins) {
       ...browser[0],
       cwd: directory,
       config: false,
+      outDir: resolve(output, relative(root, directory), "lib"),
+      ...(values.output === undefined ? {} : { minify: true, sourcemap: false }),
       watch,
       logLevel: watch ? "warn" : "info",
     })),
@@ -51,10 +58,16 @@ for (const name of plugins) {
   if (!watch) console.log(`codexhost web: client plugins ${completedPlugins}/${plugins.length}`);
 }
 const settingsPage = resolve(root, "../../packages/renderer-extension/dist/web-settings.js");
-const settingsTarget = resolve(root, "apps/web/dist/codexhost-settings.js");
+const settingsTarget = resolve(output, "apps/web/dist/codexhost-settings.js");
 if (!watch) {
   console.log("codexhost web: building browser shell");
-  await buildShell({ root: resolve(root, "apps/web") });
+  await buildShell({
+    root: resolve(root, "apps/web"),
+    build: {
+      outDir: resolve(output, "apps/web/dist"),
+      ...(values.output === undefined ? {} : { sourcemap: false }),
+    },
+  });
   // CodexHost settings pages shared with the console (built by `build:renderer`).
   copyFileSync(settingsPage, settingsTarget);
 } else {
@@ -63,7 +76,7 @@ if (!watch) {
   const shell = await buildShell({
     root: resolve(root, "apps/web"),
     logLevel: "warn",
-    build: { watch: {}, emptyOutDir: false },
+    build: { outDir: resolve(output, "apps/web/dist"), watch: {}, emptyOutDir: false },
   });
   copyFileSync(settingsPage, settingsTarget);
   console.log("codexhost web: watching client plugins and the browser shell");

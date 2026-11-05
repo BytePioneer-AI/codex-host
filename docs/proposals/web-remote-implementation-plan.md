@@ -115,7 +115,7 @@ OpenSpec change 名称为建议值，创建时可以调整。
 
 **前置：** 阶段 1
 
-**OpenSpec：** `add-web-background-service`
+**OpenSpec：** [`add-web-background-service`](../../openspec/changes/add-web-background-service/proposal.md)
 
 **交付：**
 
@@ -126,7 +126,7 @@ OpenSpec change 名称为建议值，创建时可以调整。
 | --- | --- |
 | `codexhost` | 确保 Host 和 Web 在后台运行，再打开 GUI |
 | `codexhost web` | 确保 Host 和 Web 在后台运行，再打开浏览器；没有图形界面时只输出地址；输出“已在后台运行，用 `codexhost stop` 停止” |
-| `codexhost stop` | 不确认，直接停止 Host 和 Web，并输出被中断的任务数 |
+| `codexhost stop` | 不确认，直接关闭 codexhost 拉起的 GUI、Web、Host、远程服务、Broker 和 Console，并输出被中断的任务数 |
 | `codexhost status` | 显示 Host、Web、访问地址和自启项是否有效 |
 
 - 关闭终端、GUI 窗口或浏览器后，Host 和 Web 后台继续运行。
@@ -139,7 +139,7 @@ OpenSpec change 名称为建议值，创建时可以调整。
 - 电脑端的“手机远程访问”设置入口，以及后台运行状态。
 - 用户确认后一键开启和关闭 Tailscale Serve。开启前检查根路径，已转发到别处时不覆盖；关闭只移除指向当前 Web 的根路径；结果以重新读取的状态为准。按 Tailscale v1.104.1 源码，`--bg` 会直接替换同路径转发，不带 `--set-path` 的 `off` 会删除该端口所有路径，缺少 HTTPS 能力时命令可能退出码为 0 却没有写入配置。
 
-**由 Spec 决定：** 跨平台安装方式、发行体积（当前发行目录约 267 MB），以及 Web 退出时是否撤销由 Web 开启的 Serve。
+**Spec 中的决定：**发行包不带 LibreOffice 引擎，第一次预览时从 npm 官方源下载；Web 退出、停止和更新都不撤销 Serve；`codexhost stop` 关闭 codexhost 的全部进程（用户自己打开的 Codex Desktop 除外）；`codexhost web` 的 `--host`、`--port`、`--public-url`、`--trusted-proxy` 保存后用于之后的启动。
 
 **验收场景：**
 

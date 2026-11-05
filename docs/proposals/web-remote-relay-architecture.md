@@ -239,7 +239,7 @@ Relay 职责：
 - `codexhost` 拉起 Host、Web 后台和 GUI。关闭终端或 GUI 窗口后，Host 和 Web 后台继续运行，只有用户主动停止时才全部退出。
 - Web 后台默认只监听 `127.0.0.1`，发行入口不沿用 `preview-launch.ts` 的 `0.0.0.0` 默认值。Web 后台运行不代表可以远程访问，用户在设置中开启入口后才对外。
 - GUI 不是必需项：`codexhost web` 只启动 Host 和 Web 并打开浏览器，未安装 Codex Desktop 时也能正常启动。
-- 界面显示后台运行状态，并提供 `codexhost stop`。它不确认，直接停止并输出被中断的任务数。
+- 界面显示后台运行状态，并提供 `codexhost stop`。它不确认，直接关闭 codexhost 拉起的 GUI、Web、Host、远程服务、Broker 和 Console，并输出被中断的任务数。
 - 更新由用户发起。更新时直接重启 Host 和 Web，运行中的任务被中断，会话记录保留，任务不自动继续。
 - 重复运行启动命令时复用已运行的 Web 后台，只打开 GUI。端口被其他程序占用时提示失败，用户可用 `--port` 指定其他端口，不自动更换端口。
 - Rust 负责 Web 后台的启动、监管和退出清理，可参考 `host_service.rs` 的现有机制，不解析 token 或 Harness 语义。

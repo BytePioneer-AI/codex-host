@@ -13,6 +13,7 @@ import {
   createBackgroundUpdateManager,
   defaultUpdateStateDirectory,
   discoverActiveUpdateStatus,
+  discoverRecentCompletedUpdateStatus,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
   recoverUpdateOperationLock,
@@ -83,6 +84,9 @@ function publicStatus(status: BackgroundUpdateStatus): UpdateStatus {
     ...(status.downloadedBytes === undefined ? {} : { downloadedBytes: status.downloadedBytes }),
     ...(status.totalBytes === undefined ? {} : { totalBytes: status.totalBytes }),
     error: status.error?.slice(0, ERROR_MAX_LENGTH) ?? null,
+    ...(status.serviceStopOutput === undefined
+      ? {}
+      : { serviceStopOutput: status.serviceStopOutput }),
   };
 }
 
@@ -132,7 +136,10 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
   async function latestStatus(): Promise<UpdateStatus | null> {
     if (!currentStatusPath) {
       const active = await discoverActiveUpdateStatus(stateDirectory());
-      if (!active) return null;
+      if (!active) {
+        const completed = await discoverRecentCompletedUpdateStatus(stateDirectory());
+        return completed ? publicStatus(completed.status) : null;
+      }
       currentStatusPath = active.statusPath;
     }
     const status = await manager.readStatus(currentStatusPath);

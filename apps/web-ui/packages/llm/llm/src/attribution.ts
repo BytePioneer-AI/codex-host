@@ -7,13 +7,9 @@
  * @module @deepseek-ai/dsh-llm/attribution
  */
 
-import { createRequire } from "node:module";
+import manifest from "../package.json" with { type: "json" };
 
-// The package's own manifest is the single source of the version so the
-// User-Agent cannot drift from what is published (`./package.json` is an
-// export of this package; the relative path resolves from both `src/` and
-// the bundled `lib/`).
-const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
+const { version } = manifest;
 
 /**
  * Static public application identity sent to LLM providers.

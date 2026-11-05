@@ -15,6 +15,7 @@ import {
   releaseBuildCommands,
   validatePayload,
 } from "../../scripts/release/prepare-payload.mjs";
+import { expectedWebPaths } from "../../scripts/release/web-resources.mjs";
 import { releaseTarget } from "../../scripts/release/targets.mjs";
 import { preinstalledHarnessPluginPaths } from "../../scripts/release/harness-plugins.mjs";
 
@@ -92,9 +93,13 @@ describe("release Payload", () => {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(33 + preinstalledHarnessPluginPaths().length);
+      expect(paths).toHaveLength(
+        33 + preinstalledHarnessPluginPaths().length + expectedWebPaths(target).length,
+      );
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
-        35 + preinstalledHarnessPluginPaths().length,
+        35 +
+          preinstalledHarnessPluginPaths().length +
+          expectedWebPaths(releaseTarget("windows-x64")).length,
       );
       expect(paths).toContain("licenses/tailwindcss-LICENSE.txt");
       expect(paths).toContain("app/plugins/enabled.json");
@@ -114,6 +119,18 @@ describe("release Payload", () => {
       expect(paths).toContain("app/codexhost-distribution.json");
       expect(paths).not.toContain("release-manifest.json");
       expect(paths).not.toContain("SHA256SUMS.txt");
+      expect(paths).toContain("app/web-server.mjs");
+      expect(paths).toContain("app/web-modules/office-engines.json");
+      const wrongPty = path.join(
+        root,
+        "app/web-modules/node_modules/node-pty/prebuilds/linux-x64/pty.node",
+      );
+      await mkdir(path.dirname(wrongPty), { recursive: true });
+      await writeFile(wrongPty, "wrong platform");
+      await expect(
+        validatePayload({ payloadRoot: root, target, root: "/repo/source" }),
+      ).rejects.toThrow("non-allowlist");
+      await rm(wrongPty);
       await writeFile(path.join(root, "app/host-runtime.js.map"), "unexpected");
       await expect(
         validatePayload({ payloadRoot: root, target, root: "/repo/source" }),

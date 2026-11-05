@@ -96,7 +96,19 @@ fn ensure_current(
     web_service::ensure(options)
 }
 
-fn open_web(options: &Options, settings: &[String]) -> Result<(), Box<dyn Error>> {
+fn web_browser_url(login_url: &str, connect_devices: bool) -> String {
+    if connect_devices {
+        format!("{login_url}#connect-devices")
+    } else {
+        login_url.to_owned()
+    }
+}
+
+fn open_web(
+    options: &Options,
+    settings: &[String],
+    connect_devices: bool,
+) -> Result<(), Box<dyn Error>> {
     ensure_current(options, settings, false)?;
     let ready =
         web_service::owner(&options.data)?.ok_or("Web exited before its address could be read")?;
@@ -108,7 +120,10 @@ fn open_web(options: &Options, settings: &[String]) -> Result<(), Box<dyn Error>
             || env::var_os("DISPLAY").is_some()
             || env::var_os("WAYLAND_DISPLAY").is_some());
     if graphical {
-        codexhost_platform::open_external_url(&ready.access.login_url)?;
+        codexhost_platform::open_external_url(&web_browser_url(
+            &ready.access.login_url,
+            connect_devices,
+        ))?;
     }
     Ok(())
 }
@@ -123,6 +138,7 @@ pub fn open_for_launch(options: &LaunchOptions) -> Result<(), Box<dyn Error>> {
             options.node.clone(),
         )?,
         &[],
+        false,
     )
 }
 
@@ -345,11 +361,16 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let mut data = None;
     let mut settings = Vec::new();
     let mut background = false;
+    let mut connect_devices = false;
     let mut update_recovery = false;
     let mut arguments = arguments.iter();
     while let Some(option) = arguments.next() {
         if option == "--background" && action == "web" {
             background = true;
+            continue;
+        }
+        if option == "--connect-devices" && action == "web" {
+            connect_devices = true;
             continue;
         }
         if option == "--update-recovery" && action == "web" {
@@ -403,7 +424,7 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
             }
             result
         } else {
-            open_web(&options, &settings)
+            open_web(&options, &settings, connect_devices)
         }
     } else if action == "stop-for-update" {
         stop_for_update(&options)
@@ -412,10 +433,21 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn web_browser_url_only_appends_the_requested_section() {
+        let login = "http://127.0.0.1:4478/?token=fixture-secret";
+        assert_eq!(web_browser_url(login, false), login);
+        assert_eq!(
+            web_browser_url(login, true),
+            "http://127.0.0.1:4478/?token=fixture-secret#connect-devices"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn web_uses_its_node_while_host_matches_the_gui_node_selection() {
         let root = env::temp_dir().join(format!("codexhost-service-nodes-{}", std::process::id()));

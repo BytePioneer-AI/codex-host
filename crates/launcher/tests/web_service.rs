@@ -443,6 +443,47 @@ fn supervises_only_ready_web_and_serializes_ensure_and_stop() {
 }
 
 #[test]
+fn connect_devices_flag_keeps_printed_login_and_ready_record_unchanged() {
+    let fixture = Fixture::new();
+    let plain = fixture
+        .public_command("web")
+        .args(["--port", "4478"])
+        .output()
+        .unwrap();
+    assert!(
+        plain.status.success(),
+        "{}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&plain.stdout),
+        "codexhost web: http://127.0.0.1:4478/?token=fixture-secret\nWeb is running in the background; use `codexhost stop` to stop it\n"
+    );
+    let ready = fs::read(fixture.root.join("web-service-ready.json")).unwrap();
+    let settings = fs::read(fixture.root.join("web/service.json")).unwrap();
+    let connected = fixture
+        .public_command("web")
+        .arg("--connect-devices")
+        .output()
+        .unwrap();
+    assert!(
+        connected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&connected.stderr)
+    );
+    assert_eq!(connected.stdout, plain.stdout);
+    assert_eq!(
+        fs::read(fixture.root.join("web-service-ready.json")).unwrap(),
+        ready
+    );
+    assert_eq!(
+        fs::read(fixture.root.join("web/service.json")).unwrap(),
+        settings
+    );
+    assert_eq!(fixture.starts(), 1);
+}
+
+#[test]
 fn headless_web_saves_options_and_replaces_mismatched_services_without_exposing_tokens_in_status() {
     let fixture = Fixture::new();
     let result = fixture

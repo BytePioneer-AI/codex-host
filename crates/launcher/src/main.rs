@@ -135,7 +135,7 @@ const USAGE: &str = "usage:
   codexhost --help
   codexhost --version
   codexhost inspect [--json] [--custom-install <absolute-directory>]
-  codexhost web [--background] [--host <address>] [--port <port>] [--public-url <url>] [--trusted-proxy <addresses>]
+  codexhost web [--background] [--connect-devices] [--host <address>] [--port <port>] [--public-url <url>] [--trusted-proxy <addresses>]
   codexhost stop
   codexhost status
   codexhost autostart on|off|status

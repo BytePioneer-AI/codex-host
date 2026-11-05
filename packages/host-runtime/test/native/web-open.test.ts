@@ -139,8 +139,10 @@ it("Desktop web/open starts Web independently of Host restart", { timeout: 180_0
     loginUrl: string;
   };
   assert.equal(web.address, "http://127.0.0.1:4478/");
-  const response = await fetch(web.loginUrl, { redirect: "manual" });
+  assert.equal(new URL(web.loginUrl).hash, "");
+  const response = await fetch(`${web.loginUrl}#connect-devices`, { redirect: "manual" });
   assert.equal(response.status, 302);
+  assert.equal(response.headers.get("location"), "/");
   const cookie = response.headers.get("set-cookie")?.split(";", 1)[0];
   assert.ok(cookie);
   const page = () => fetch(web.address, { headers: { cookie } });
@@ -149,6 +151,7 @@ it("Desktop web/open starts Web independently of Host restart", { timeout: 180_0
   assert.deepEqual(reused.result, {});
   const reusedWeb = JSON.parse(await readFile(path.join(data, "web-service-ready.json"), "utf8"));
   assert.equal(reusedWeb.web_pid, web.web_pid);
+  assert.equal(reusedWeb.loginUrl, web.loginUrl);
   peer.close();
   await peer.closed;
   const restart = await run(["host", "restart", ...args]);

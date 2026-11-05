@@ -158,6 +158,13 @@ export function SettingsRoot(props: SettingsRootComponentProps) {
   const { open, activeId } = useStore((state) => state);
   const shortcut = useShortcuts((rows) => rows.find((row) => row.id === "settings.open"));
   const { close, openSection } = actions;
+  useEffect(() => {
+    if (window.location.hash !== "#connect-devices") return;
+    openSection("codexhost-connect-devices");
+    const url = new URL(window.location.href);
+    url.hash = "";
+    window.history.replaceState(window.history.state, "", url.href);
+  }, [openSection]);
   const [requestedOnboarding, setRequestedOnboarding] = useState<string | undefined>();
   const [completedOnboarding, setCompletedOnboarding] = useState<ReadonlySet<string>>(
     () => new Set(),

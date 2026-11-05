@@ -30,7 +30,7 @@ describe("Host Web opener", () => {
       HOME: path.resolve("home"),
     };
     await expect(createHostWebOpener(environment)?.open()).resolves.toEqual({});
-    expect(spawn).toHaveBeenCalledExactlyOnceWith(launcher, ["web"], {
+    expect(spawn).toHaveBeenCalledExactlyOnceWith(launcher, ["web", "--connect-devices"], {
       env: environment,
       stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,

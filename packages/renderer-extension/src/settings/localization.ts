@@ -594,9 +594,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutConsoleOpen: "Open console",
   aboutConsoleOpening: "Opening…",
   aboutConsoleFailed: "The console could not be opened",
-  aboutWeb:
-    "Open Web in your browser. To connect a phone or another device, go to Settings → Connect devices in Web.",
-  aboutWebOpen: "Open Web",
+  aboutWeb: "Open Connect devices in your browser to connect a phone or another device.",
+  aboutWebOpen: "Open Connect devices",
   aboutWebOpening: "Opening…",
   aboutWebFailed: "Web could not be opened",
   pageLabels: Object.freeze({
@@ -895,8 +894,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutConsoleOpen: "打开控制台",
   aboutConsoleOpening: "正在打开…",
   aboutConsoleFailed: "控制台打开失败",
-  aboutWeb: "在浏览器中打开 Web。连接手机或其他设备，请在 Web 中前往“设置 → 连接设备”。",
-  aboutWebOpen: "打开 Web",
+  aboutWeb: "在浏览器中直接打开连接设备页，连接手机或其他设备。",
+  aboutWebOpen: "打开连接设备页",
   aboutWebOpening: "正在打开…",
   aboutWebFailed: "Web 打开失败",
   pageLabels: Object.freeze({

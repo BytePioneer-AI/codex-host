@@ -111,7 +111,7 @@ macOS 或 npm 卸载前，先运行 `codexhost stop` 和 `codexhost autostart of
 
 **本机访问：** 同时满足以下条件才算：已通过令牌登录；连接来自回环地址；`Host` 为 `127.0.0.1:<监听端口>` 或 `localhost:<监听端口>`；请求不带 `Forwarded` 和任何 `x-forwarded-*` 头。本机令牌在其他入口一律按无效处理。这个判断用于防止手机上误操作，不是严格的安全边界：`ssh -L` 等保留本机 `Host` 的转发无法区分，令牌持有者也可以通过终端读取本机令牌文件。只监听某个具体网卡地址时，这些条件无法满足，因此无法查看令牌，启动输出会说明。
 
-Codex Desktop 的 codexhost 设置“关于”页提供“打开 Web”按钮，通过本机 Host 调用当前安装的 Launcher `codexhost web`，确保后台 Web 运行并打开首页；连接设备请再进入 Web 的“设置 → 连接设备”。即使当前选择远程 Host，按钮仍只调用本机 Host；本机 Host 不可用时显示错误，不在远程机器打开浏览器。Console 不提供此入口。
+Codex Desktop 的 codexhost 设置“关于”页提供“打开连接设备页”按钮，通过本机 Host 调用当前安装的 Launcher `codexhost web --connect-devices`，确保后台 Web 运行，并在浏览器中直接打开“设置 → 连接设备”。`--connect-devices` 只在浏览器登录链接后添加 `#connect-devices`，不改变终端输出的登录链接或就绪记录。页面打开设置后清除该 hash，刷新不再弹出；不带开关的 `codexhost web` 仍打开首页。即使当前选择远程 Host，按钮仍只调用本机 Host；本机 Host 不可用时显示错误，不在远程机器打开浏览器。Console 不提供此入口。
 
 **连接设备：** Web 设置的“连接设备”分区在所有访问方式下都显示。本机访问时显示所选地址的登录二维码和链接、最近使用时间，可复制链接或令牌、重新生成令牌；非本机访问时只显示提示和退出登录，`codexhost/accessTokenGet`、`accessTokenRegenerate` 返回 `auth/local-access-required`；`--no-auth` 时返回 `auth/disabled`。地址默认依次选择配置的公开地址、Funnel、Serve HTTPS（打开页面时用 `tailscale serve status` 检测已转发到当前端口的配置，不会修改 Serve），其次是 Tailscale IP 和局域网；虚拟机和容器网卡的地址折叠在“其他地址”中，启动输出也只在没有其他地址时才列出它们。没有命令行管理入口。
 

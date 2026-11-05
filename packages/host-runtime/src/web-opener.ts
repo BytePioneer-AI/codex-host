@@ -15,7 +15,7 @@ export function createHostWebOpener(environment: NodeJS.ProcessEnv): HostWebOpen
   return {
     open() {
       return new Promise((resolve, reject) => {
-        const child = spawn(launcher, ["web"], {
+        const child = spawn(launcher, ["web", "--connect-devices"], {
           env: environment,
           // The login URL belongs to the Launcher, not the Renderer or Host logs.
           stdio: ["ignore", "ignore", "pipe"],

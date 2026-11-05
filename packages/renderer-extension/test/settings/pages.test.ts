@@ -2806,7 +2806,7 @@ describe("Renderer Updates page", () => {
     scope.dispose();
   });
 
-  it("opens Web from About and shows Host failures without opening a URL itself", async () => {
+  it("opens Connect devices from About and shows Host failures without opening a URL itself", async () => {
     const openWeb = vi
       .fn()
       .mockRejectedValueOnce(new Error("The local Host is unavailable"))
@@ -2825,10 +2825,10 @@ describe("Renderer Updates page", () => {
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
     const button = descendants(content).find(
-      (element) => element.tagName === "button" && element.textContent === "打开 Web",
+      (element) => element.tagName === "button" && element.textContent === "打开连接设备页",
     );
     if (!button) throw new Error("Web button is missing");
-    expect(visibleText(content)).toContain("设置 → 连接设备");
+    expect(visibleText(content)).toContain("在浏览器中直接打开连接设备页");
     button.dispatch("click");
     expect(button.disabled).toBe(true);
     expect(button.textContent).toBe("正在打开…");
@@ -2839,7 +2839,7 @@ describe("Renderer Updates page", () => {
     button.dispatch("click");
     await vi.waitFor(() => expect(button.disabled).toBe(false));
     expect(openWeb).toHaveBeenCalledTimes(2);
-    expect(button.textContent).toBe("打开 Web");
+    expect(button.textContent).toBe("打开连接设备页");
     const status = descendants(content).find((element) =>
       element.textContent.startsWith("Web 打开失败:"),
     );
@@ -2902,7 +2902,7 @@ describe("Renderer Updates page", () => {
       runLatest: (operation, handlers) => plainScope.runLatest(operation, handlers),
     });
     expect(visibleText(plain)).not.toContain("Open console");
-    expect(visibleText(plain)).not.toContain("Open Web");
+    expect(visibleText(plain)).not.toContain("Open Connect devices");
     plainScope.dispose();
   });
 

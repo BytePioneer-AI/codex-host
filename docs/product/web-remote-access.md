@@ -1,6 +1,6 @@
 # Web 远程访问
 
-Web 支持 Tailscale Serve、Funnel 和用户自备的 HTTPS 代理或隧道。Web 不安装、登录或修改 Tailscale；连接设备页只读状态并提供可复制的命令。电脑必须开机、保持网络连接且 Web 正在运行。关闭 Web 不会停止共享 Host 上的任务，但手机无法再访问 Web。
+Web 支持 Tailscale Serve、Funnel 和用户自备的 HTTPS 代理或隧道。Web 不安装或登录 Tailscale；连接设备页只读检测状态，并在用户本机确认后开关 Serve。电脑必须开机、保持网络连接且 Web 正在运行。关闭 Web 不会停止共享 Host 上的任务，但手机无法再访问 Web。
 
 ## 地址、认证与代理
 
@@ -13,7 +13,9 @@ Web 支持 Tailscale Serve、Funnel 和用户自备的 HTTPS 代理或隧道。W
 - 代理应保留原始 `Host`；如需改写 Host，则必须配置可信代理并写入外部 `X-Forwarded-Host`。HTTPS 终止代理应覆盖 `X-Forwarded-Proto: https` 和客户端 `X-Forwarded-For`，不要透传浏览器伪造的值。Web 只取可信直连代理写入的最右侧值，用于同源校验、Secure Cookie 和按客户端地址限速。
 - 代理必须转发 WebSocket Upgrade，禁用事件流缓冲，并允许长连接；不能只转发普通页面请求。不要把 Web 挂在子路径下。
 
-本机的连接设备页底部有默认收起的“如何从其他网络连接”，简要介绍 Tailscale 和自备隧道，并链接 Tailscale 下载页和本文。隧道地址只能通过启动参数配置，页面不提供配置入口。
+本机的连接设备页底部有默认收起的“如何从其他网络连接”，简要介绍 Tailscale 和自备隧道，并链接 Tailscale 下载页和本文。隧道地址只能通过启动参数配置，页面不提供配置入口。发行版使用 `codexhost web --public-url https://code.example.com`，启动选项保存在 Web 数据目录的 `service.json`，后续启动沿用。
+
+本机访问且 Web 以后台模式运行时，连接设备页显示局域网访问、登录后自动启动开关、后台状态和休眠提示。手机和前台开发模式不显示这些设置。局域网开关保存监听地址后只重启 Web，页面等待恢复；Web 终端会断开，Host 上的任务不受影响。开启后监听所有 IPv4 网卡，关闭后只监听 `127.0.0.1`。局域网 HTTP 为明文，电脑休眠时手机无法连接。自启项通过 Launcher 的 `autostart on|off|status` 管理，失败原因显示在页面。
 
 完整认证规则见[访问认证](standalone-web.md#访问认证)。令牌持有者可以操作电脑，登录链接和二维码应按凭据保管。
 
@@ -21,7 +23,7 @@ Web 支持 Tailscale Serve、Funnel 和用户自备的 HTTPS 代理或隧道。W
 
 电脑安装并登录 Tailscale。Web 先查找 `tailscale`，找不到时再尝试 `/Applications/Tailscale.app/Contents/MacOS/Tailscale`。macOS 只安装 App 时，页面命令中的 `tailscale` 需要用户自行启用 CLI，或替换为该 App 内路径。手机也需安装、登录 Tailscale，并由 tailnet 访问策略允许连接电脑。在管理后台开启 HTTPS 证书。
 
-Web 可监听回环地址，例如在源码开发入口使用 `npm start web -- --host 127.0.0.1`。本机打开“设置 → 连接设备”，页面在未安装、未运行、未登录、未开启 HTTPS、未转发、根路径占用或读取错误时显示 Tailscale 提示；正常转发时只在连接方式中提供地址，不显示独立状态区。HTTPS 443 根路径未占用时显示以下命令，**由用户在终端自行执行**：
+Web 可监听回环地址，例如在源码开发入口使用 `npm start web -- --host 127.0.0.1`。本机打开“设置 → 连接设备”，页面在未安装、未运行、未登录、未开启 HTTPS、未转发、根路径占用或读取错误时显示 Tailscale 提示；正常转发时只在连接方式中提供地址，不显示独立状态区。HTTPS 443 根路径未占用时提供“开启 Tailscale Serve”确认按钮，也可自行执行以下命令：
 
 ```sh
 tailscale serve --bg http://127.0.0.1:4400
@@ -29,11 +31,11 @@ tailscale serve --bg http://127.0.0.1:4400
 
 端口应与 Web 的 `--port` 一致。没有 HTTPS 根路径转发到当前 Web、但 443 根路径已指向其他目标时，页面显示目标而不提供开启命令，因为该命令会替换现有转发。监听具体网卡时无法查看连接设备页，Serve 也无法转发，应监听回环或通配地址。
 
-Web 只调用 `tailscale status --json`、`tailscale serve status --json`。检测到 HTTPS 根路径指向当前 Web 后，自动信任回环代理头，登录 Cookie 带 Secure，失败按手机的 tailnet IP 分别限速。启动和本机读取连接设备页时更新，每 30 秒读取一次 Serve 状态；撤销转发后约 30 秒恢复不信任。`--no-auth` 或监听具体网卡时不运行检测。经 Serve 的请求不算本机访问。非 443 HTTPS 端口也会识别，例如 `https://host:8443/`；443 地址省略端口。
+状态检测只调用 `tailscale status --json`、`tailscale serve status --json`。用户确认开启时，Web 重新读取状态，根路径已被占用则不写入。关闭时明确使用 `--https=<检测到的端口> --set-path=/ off`，只移除指向当前 Web 的根路径，保留其他路径和端口；根路径指向别处时不提供关闭操作。每次操作后重新读取状态，命令退出 0 但配置未生效也显示失败。检测到 HTTPS 根路径指向当前 Web 后，自动信任回环代理头，登录 Cookie 带 Secure，失败按手机的 tailnet IP 分别限速。启动和本机读取连接设备页时更新，每 30 秒读取一次 Serve 状态；撤销转发后约 30 秒恢复不信任。`--no-auth` 或监听具体网卡时不运行检测。经 Serve 的请求不算本机访问。非 443 HTTPS 端口也会识别，例如 `https://host:8443/`；443 地址省略端口。
 
 TLS 在电脑上的 Tailscale Serve 解开，再经回环 HTTP 送到 Web；tailnet 允许的设备能接触入口，电脑能看到内容。Serve 生效期间，其他回环代理也会被信任；不要把这当成隧道身份认证。
 
-**`--bg` 配置在 Web 退出后仍保留。占用同一端口的其他程序也会被转发。** Web 不自动移除配置；由用户在 Tailscale 中管理。
+**`--bg` 配置在 Web 退出、`codexhost stop` 和更新后仍保留。占用同一端口的其他程序也会被转发。** Web 不自动移除配置；由用户在本机连接设备页确认关闭，或在 Tailscale 中管理。开启成功后页面默认选中 Tailscale HTTPS 地址。经代理或其他设备的请求不能开关 Serve，与查看访问令牌使用相同的本机判断。
 
 ## Tailscale Funnel：互联网公开入口
 
@@ -153,4 +155,6 @@ Web 可达但 Host 未就绪时提示 Host 不可用，而不是电脑离线。�
 | frp | 未实际运行：本地未安装 frpc/frps；公网端口、证书和完整链路需由部署者验证。 |
 | Cloudflare Tunnel | 未实际运行：没有为本次验证配置 Tunnel、域名或凭据。 |
 
-Playwright 验证了手机宽度布局、连续失败/短暂中断、探测超时、502、恢复后草稿与消息保留；不等于 iOS/Android 真机验收。
+假 Tailscale CLI 的 HTTP 和 Playwright 测试覆盖开启、确认时根路径已占用、退出 0 未生效、仅移除根路径和非本机请求拒绝；未修改真实 Tailscale 配置。假 Launcher 测试覆盖自启状态、开关及 stderr 失败提示。Playwright 验证后台局域网切换后的页面恢复、手机和前台模式隐藏后台设置，以及手机宽度布局。
+
+Playwright 还验证了连续失败/短暂中断、探测超时、502、恢复后草稿与消息保留；不等于 iOS/Android 真机验收。

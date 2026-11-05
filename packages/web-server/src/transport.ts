@@ -20,6 +20,8 @@ export interface RpcContext {
   readonly method: string;
   /** The HTTP request's authentication; absent with `--no-auth` and for in-process calls. */
   readonly auth?: RequestAuth;
+  /** Run only after the HTTP response has been flushed (settings changes restart Web). */
+  readonly afterResponse?: (callback: () => void) => void;
 }
 
 export type RpcHandler = (args: Record<string, unknown>, context: RpcContext) => unknown;
@@ -41,7 +43,12 @@ export class RpcRegistry {
     return this.handlers.has(method);
   }
 
-  async dispatch(method: string, payload: unknown, auth?: RequestAuth): Promise<RpcResult> {
+  async dispatch(
+    method: string,
+    payload: unknown,
+    auth?: RequestAuth,
+    afterResponse?: RpcContext["afterResponse"],
+  ): Promise<RpcResult> {
     const handler = this.handlers.get(method);
     if (handler === undefined) {
       this.unhandled.set(method, (this.unhandled.get(method) ?? 0) + 1);
@@ -60,7 +67,11 @@ export class RpcRegistry {
         : {}
     ) as Record<string, unknown>;
     try {
-      const value = await handler(args ?? {}, { method, ...(auth === undefined ? {} : { auth }) });
+      const value = await handler(args ?? {}, {
+        method,
+        ...(auth === undefined ? {} : { auth }),
+        ...(afterResponse === undefined ? {} : { afterResponse }),
+      });
       return { ok: true, value: value === undefined ? null : value };
     } catch (error) {
       if (error instanceof RpcError) {
@@ -87,7 +98,11 @@ export class RpcRegistry {
    * @param auth - the request's authentication, passed to the handler.
    * @returns the server-response envelope text.
    */
-  async handleHttp(body: string, auth?: RequestAuth): Promise<string> {
+  async handleHttp(
+    body: string,
+    auth?: RequestAuth,
+    afterResponse?: RpcContext["afterResponse"],
+  ): Promise<string> {
     let envelope: { type?: string; rpcId?: string; method?: string; payload?: unknown };
     try {
       envelope = JSON.parse(body) as typeof envelope;
@@ -101,7 +116,12 @@ export class RpcRegistry {
         },
       });
     }
-    const result = await this.dispatch(String(envelope.method ?? ""), envelope.payload, auth);
+    const result = await this.dispatch(
+      String(envelope.method ?? ""),
+      envelope.payload,
+      auth,
+      afterResponse,
+    );
     return JSON.stringify({ type: "server-response", rpcId: envelope.rpcId, result });
   }
 }

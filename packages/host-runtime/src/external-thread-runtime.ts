@@ -667,7 +667,7 @@ export class ExternalThreadRuntime {
     );
     await new HarnessUserInstructionsStore(this.#environment)
       .syncHarness(harnessId)
-      .catch(() => undefined);
+      .catch(this.#diagnose);
     const opened = await adapter.open({
       kind: "resume",
       cwd: thread.record.cwd,
@@ -866,7 +866,7 @@ export class ExternalThreadRuntime {
     const restoredSelection = decodeExternalTransportSelection(harnessId, record.transportModelId);
     await new HarnessUserInstructionsStore(this.#environment)
       .syncHarness(harnessId)
-      .catch(() => undefined);
+      .catch(this.#diagnose);
     const opened = await adapter.open({
       kind: "resume",
       cwd: record.cwd,

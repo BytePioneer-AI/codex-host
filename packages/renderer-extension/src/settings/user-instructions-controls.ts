@@ -17,7 +17,7 @@ import {
 type UserInstructionsSyncStatus = "applied" | "pending" | "unavailable" | "failed";
 
 const HARNESS_DISPLAY_NAMES: Readonly<Record<string, string>> = Object.freeze({
-  antigravity: "Antigravity",
+  antigravity: "Antigravity CLI",
   "claude-code": "Claude Code",
   codebuddy: "CodeBuddy",
   copilot: "GitHub Copilot",
@@ -28,7 +28,7 @@ const HARNESS_DISPLAY_NAMES: Readonly<Record<string, string>> = Object.freeze({
   hermes: "Hermes",
   "kimi-code": "Kimi Code",
   "kiro-cli": "Kiro CLI",
-  omp: "OMP",
+  omp: "Oh My Pi",
   opencode: "OpenCode",
   pi: "Pi",
   qoder: "Qoder",

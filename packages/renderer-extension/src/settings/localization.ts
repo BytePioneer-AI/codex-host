@@ -284,10 +284,6 @@ export interface RendererSettingsMessages {
   readonly aboutConsoleOpen: string;
   readonly aboutConsoleOpening: string;
   readonly aboutConsoleFailed: string;
-  readonly aboutWeb: string;
-  readonly aboutWebOpen: string;
-  readonly aboutWebOpening: string;
-  readonly aboutWebFailed: string;
   readonly pageLabels: Readonly<Record<DefaultRendererSettingsPageId, string>>;
 }
 
@@ -594,10 +590,6 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutConsoleOpen: "Open console",
   aboutConsoleOpening: "Opening…",
   aboutConsoleFailed: "The console could not be opened",
-  aboutWeb: "Open Connect devices in your browser to connect a phone or another device.",
-  aboutWebOpen: "Open Connect devices",
-  aboutWebOpening: "Opening…",
-  aboutWebFailed: "Web could not be opened",
   pageLabels: Object.freeze({
     connections: "Connections",
     "remote-connections": "Remote connections",
@@ -894,10 +886,6 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutConsoleOpen: "打开控制台",
   aboutConsoleOpening: "正在打开…",
   aboutConsoleFailed: "控制台打开失败",
-  aboutWeb: "在浏览器中直接打开连接设备页，连接手机或其他设备。",
-  aboutWebOpen: "打开连接设备页",
-  aboutWebOpening: "正在打开…",
-  aboutWebFailed: "Web 打开失败",
   pageLabels: Object.freeze({
     connections: "连接",
     "remote-connections": "远程连接",

@@ -77,6 +77,16 @@ it("Desktop web/open starts Web independently of Host restart", { timeout: 180_0
     ],
     { cwd: repository, timeout: 90_000, maxBuffer: 4 * 1024 * 1024 },
   );
+  const { version } = JSON.parse(await readFile(path.join(repository, "package.json"), "utf8"));
+  await writeFile(
+    path.join(app, "codexhost-distribution.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      version,
+      distribution: "installer",
+      target: `${process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux"}-${process.arch}`,
+    }),
+  );
   const args = [
     "--node",
     node,

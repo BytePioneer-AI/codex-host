@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import type { WebOpenResult } from "@codexhost/shared-contracts";
+import { readRuntimeMetadata } from "@codexhost/update-manager";
 
 export interface HostWebOpener {
   open(): Promise<WebOpenResult>;
@@ -13,7 +14,14 @@ export function createHostWebOpener(environment: NodeJS.ProcessEnv): HostWebOpen
     return undefined;
   }
   return {
-    open() {
+    async open() {
+      const runtime = await readRuntimeMetadata(
+        environment.CODEXHOST_HOST_RUNTIME_PATH ?? "",
+        environment,
+      ).catch(() => null);
+      if (!runtime || runtime.distribution === "development") {
+        throw new Error("Background Web is unavailable in a development build; run npm start web");
+      }
       return new Promise((resolve, reject) => {
         const child = spawn(launcher, ["web", "--connect-devices"], {
           env: environment,

@@ -106,15 +106,38 @@ pub(super) fn endpoint_ready(port: u16, timeout: Duration) -> bool {
     .is_ok()
 }
 
+/// Nodes the Host Runtime may actually run under. For launcher-managed npm
+/// installs the Shim prefers `CODEXHOST_NPM_NODE_PATH` over `options.node`
+/// (macOS Desktop `cua_node`), so ready must accept that Host Node too —
+/// otherwise launch waits for a later unrelated `cua_node` under Desktop
+/// (MCP helpers) instead of Host Runtime.
+pub(super) fn host_runtime_node_candidates(
+    options_node: &Path,
+    npm_node: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut nodes = Vec::new();
+    if let Some(npm_node) = npm_node.filter(|path| !path.as_os_str().is_empty()) {
+        nodes.push(npm_node.to_path_buf());
+    }
+    if !nodes.iter().any(|node| node == options_node) {
+        nodes.push(options_node.to_path_buf());
+    }
+    nodes
+}
+
 pub(super) fn wait_for_host_chain(
     desktop_pid: u32,
     options: &ResolvedLaunchOptions,
+    npm_node: Option<&Path>,
     timeout: Duration,
 ) -> Result<bool, Box<dyn Error>> {
+    let host_nodes = host_runtime_node_candidates(&options.node, npm_node);
     let started = Instant::now();
     while started.elapsed() < timeout {
         if descendant_executable_exists(desktop_pid, &options.shim)?
-            && descendant_executable_exists(desktop_pid, &options.node)?
+            && host_nodes
+                .iter()
+                .any(|node| descendant_executable_exists(desktop_pid, node).unwrap_or(false))
         {
             return Ok(true);
         }
@@ -300,6 +323,30 @@ mod tests {
 
         assert!(!try_activate_controlled_instance(&descriptor).expect("busy Controller"));
         server.join().expect("attachment server");
+    }
+
+    #[test]
+    fn host_runtime_node_candidates_prefer_npm_node_without_dropping_options_node() {
+        let options_node =
+            PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node");
+        let npm_node = PathBuf::from("/opt/homebrew/Cellar/node/26.13.0_1/bin/node");
+
+        assert_eq!(
+            host_runtime_node_candidates(&options_node, Some(&npm_node)),
+            vec![npm_node.clone(), options_node.clone()]
+        );
+        assert_eq!(
+            host_runtime_node_candidates(&options_node, None),
+            vec![options_node.clone()]
+        );
+        assert_eq!(
+            host_runtime_node_candidates(&npm_node, Some(&npm_node)),
+            vec![npm_node.clone()]
+        );
+        assert_eq!(
+            host_runtime_node_candidates(&options_node, Some(Path::new(""))),
+            vec![options_node]
+        );
     }
 
     #[test]

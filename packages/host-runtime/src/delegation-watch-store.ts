@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -144,7 +144,8 @@ export class FileDelegationWatchStore implements DelegationWatchStore {
       const claimAt = name.indexOf(CLAIM_MARKER);
       const isRecord = claimAt < 0 && name.endsWith(RECORD_SUFFIX);
       // A claim left by an adopter that exited before finishing is adopted again.
-      const claimer = claimAt >= 0 ? Number(name.slice(claimAt + CLAIM_MARKER.length)) : NaN;
+      const claimer =
+        claimAt >= 0 ? Number(name.slice(claimAt + CLAIM_MARKER.length).split(".")[0]) : NaN;
       if (!isRecord && !(Number.isSafeInteger(claimer) && !processAlive(claimer))) continue;
       const watch = await this.#adoptFile(name).catch((error: unknown) => {
         this.#diagnose(error);
@@ -174,22 +175,34 @@ export class FileDelegationWatchStore implements DelegationWatchStore {
 
   async #adoptFile(name: string): Promise<PersistedWatch | undefined> {
     const source = path.join(this.#directory, name);
+    let text: string;
     let parsed: WatchFile;
     try {
-      parsed = parseWatchFile(await readFile(source, "utf8"));
+      text = await readFile(source, "utf8");
+      parsed = parseWatchFile(text);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       await rename(source, `${source}.${Date.now()}.invalid`).catch(() => undefined);
       throw new Error(`Set aside unreadable watch record ${name}: ${String(error)}`);
     }
     if (name.endsWith(RECORD_SUFFIX) && ownerAlive(parsed.owner, this.#owner)) return undefined;
-    const claim = `${this.#recordPath(parsed.watch.id)}${CLAIM_MARKER}${this.#owner.pid}`;
+    // Unique per adopter, so two stores in one process never share a claim.
+    const claim = `${this.#recordPath(parsed.watch.id)}${CLAIM_MARKER}${this.#owner.pid}.${randomBytes(4).toString("hex")}`;
     try {
       await rename(source, claim);
     } catch (error) {
       // Another Runtime claimed it first.
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
+    }
+    // Between the read and the rename another Runtime may have adopted the
+    // record and saved it again under its own owner. The rename then took that
+    // live record, so hand it back instead of adopting it a second time. `link`
+    // does not replace a record its owner has written since.
+    if ((await readFile(claim, "utf8").catch(() => undefined)) !== text) {
+      await link(claim, source).catch(() => undefined);
+      await rm(claim, { force: true });
+      return undefined;
     }
     await this.save(parsed.watch);
     await rm(claim, { force: true });

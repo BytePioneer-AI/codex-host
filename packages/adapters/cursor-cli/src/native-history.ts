@@ -8,6 +8,9 @@ export interface CursorNativeTurn {
   text: string;
   /** Native conversation root immediately before this user turn, when available. */
   rewindRoot?: string;
+  /** Cursor wrote this user record itself to report a finished background task (field 15),
+   * not as the echo of a prompt the Host submitted. */
+  notification?: true;
 }
 
 export function cursorConfigDirectory(environment: NodeJS.ProcessEnv): string {
@@ -17,6 +20,36 @@ export function cursorConfigDirectory(environment: NodeJS.ProcessEnv): string {
     : environment.XDG_CONFIG_HOME?.trim()
       ? path.resolve(environment.XDG_CONFIG_HOME, "cursor")
       : path.join(home, ".cursor");
+}
+
+/** True when the user's Cursor CLI asks for Run Everything (`approvalMode: unrestricted`).
+ * Missing or unreadable `cli-config.json` stays false so interactive Host approvals remain. */
+export function cursorCliApprovalModeIsUnrestricted(
+  environment: NodeJS.ProcessEnv,
+  cwd = process.cwd(),
+): boolean {
+  try {
+    // Native CLI overrides are relative to its cwd; its default home is platform-specific.
+    const home =
+      (process.platform === "win32" ? environment.USERPROFILE : environment.HOME) ??
+      os.userInfo().homedir;
+    const directory = environment.CURSOR_CONFIG_DIR?.trim()
+      ? environment.CURSOR_CONFIG_DIR
+      : environment.XDG_CONFIG_HOME?.trim()
+        ? path.join(environment.XDG_CONFIG_HOME, "cursor")
+        : path.join(home, ".cursor");
+    const raw: unknown = JSON.parse(
+      readFileSync(path.resolve(cwd, directory, "cli-config.json"), "utf8"),
+    );
+    return (
+      !!raw &&
+      typeof raw === "object" &&
+      !Array.isArray(raw) &&
+      (raw as { approvalMode?: unknown }).approvalMode === "unrestricted"
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function cursorSessionDirectory(sessionId: string, environment: NodeJS.ProcessEnv): string {
@@ -140,6 +173,7 @@ export function readCursorNativeHistory(
           id,
           text: one(user, 1).toString("utf8"),
           ...(rewindRoot ? { rewindRoot } : {}),
+          ...(user.get(15)?.length ? { notification: true as const } : {}),
         });
       }
     }

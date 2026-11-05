@@ -281,7 +281,7 @@ export interface ClaudeTurnTransport {
    */
   stopTasks(taskIds: readonly string[]): Promise<void>;
   start(): Promise<void>;
-  getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
+  getContextUsage(detail?: "summary" | "full"): Promise<ClaudeTransportContextUsage | null>;
   /** Live slash commands of the started native Session, when known. */
   slashCommands?(): ClaudeSlashCommandSnapshot | null;
   /**

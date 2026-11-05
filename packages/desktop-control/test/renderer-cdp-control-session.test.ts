@@ -33,6 +33,7 @@ function rendererClient(binding = readyBinding()) {
   return {
     commands,
     evaluateSpy,
+    on: vi.fn(() => () => {}),
     command: vi.fn(async (method: string, params?: Record<string, unknown>) => {
       commands.push({ method, ...(params ? { params } : {}) });
       if (method === "Runtime.evaluate") return { result: { type: "undefined" } };
@@ -84,6 +85,7 @@ describe("Renderer CDP Control Session", () => {
 
     expect(client.commands).toEqual([
       { method: "Runtime.enable" },
+      { method: "Debugger.enable" },
       { method: "Page.enable" },
       { method: "Page.addScriptToEvaluateOnNewDocument", params: { source } },
       {

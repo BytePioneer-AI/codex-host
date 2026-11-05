@@ -59,6 +59,10 @@ Codex Desktop 启动
 
 ## 二、第一步：记录现场版本和启动方式
 
+Remote Control 重连后，原生 Renderer Manager 可能仍是同一个对象，但其 `processHandle` 已失效。若首个请求报 `no active process for process handle`，还应核对原生 app scope 的连接状态与 `revision$`。旧管理器路径在这些信号存在时按连接代次释放桥接，断开期间不发送请求，重连后的请求建立新桥接；不会自动重放已经提交的用户消息。旧版没有连接信号时保留原有管理器身份检查，SSH 路由不受此检查影响。
+
+部分过渡版本同时提供 RPC 和原生 Renderer 管理器，但后者直到 Composer 挂载才可见。启动时没有 Composer 可以先使用 RPC；后续路由访问发现原生管理器时，先释放 RPC 的请求重写与草稿策略，再由原生注册表接管，避免 Remote Control 的扩展请求被发给原生 Codex。只提供 RPC 的 Desktop 保持原有路径，不通过后台轮询等待原生管理器。
+
 本地 Host 的官方后端异常退出或连接异常关闭后，Host 使用与远程部署相同的退避恢复机制：确认旧进程退出，再重建后端并重新初始化已有客户端。恢复期间官方请求仍返回不可用；失败的回合或语音启动请求不会自动重放。后端就绪后，用户可以显式重试，已订阅的持久 Thread 在需要时通过原生 `thread/resume` 恢复。此过程不重启 Desktop，也不关闭外部 Harness。
 
 若语音启动提示 `Official request failed; retry explicitly`，应先检查 Host Runtime 日志是否持续出现 `Codex is unavailable`，以及是否随后记录 `official Codex is unavailable; restarting in ...ms`。该报错本身不能证明麦克风权限、网络或语音服务异常；恢复失败时继续核对真实后端启动和连接故障。
@@ -140,7 +144,7 @@ Invalid request: unknown variant `clear-prewarmed-threads-for-host`
     checked: button.getAttribute("aria-checked"),
     disabled: button.disabled,
   }))
-  .filter((item) => /agent|model|pi|claude|deepseek|grok/i.test(
+  .filter((item) => /agent|model|pi|claude|deepseek|grok|qwen/i.test(
     [item.text, item.aria, item.title].join(" "),
   ));
 ```
@@ -264,6 +268,28 @@ has enqueueRequest
 
 当前实现不再支持旧版 `Function.prototype.toString()` 特征。API 形状不匹配时应 fail closed，不再回退到函数源码或闭包扫描。
 
+### Desktop 26.1027 起：Manager 在主进程
+
+从 `26.1027` 起，所有 AppServerManager 都在 Electron 主进程构造，Renderer 的 Composer Fiber 中找不到上述 outer manager，也没有 `requestClient`、`getConversation`、`storage` 或 `getTurnCoordinator`。主进程关闭了 Node Inspector，codexhost 只能通过 Renderer CDP 工作。
+
+Renderer 中可用的结构：
+
+```text
+React 根 useRef -> app scope handle { node, chain, scope, get, set, watch }
+  node.parent... -> 根 store { familyBindings: Map }
+    某个 signal-family: hostId -> { status: "ready", client: { hostId, rpc } }
+```
+
+`rpc` 是主进程 Host 服务的 capnweb stub：`rpc.sendRequest("codexhost/...")` 经主进程到达 Host；主进程把每条 app-server 通知以 `{ type: "mcp-notification", hostId, method, params }` 广播到窗口。Renderer 对主进程的调用（`startConversation`、`prewarmConversation`、`compactThread` 等）以 `["push", ["pipeline", id, [method], args]]` 经 `MessagePort.postMessage` 发出。
+
+识别与路由：
+
+- `main-process-rpc` 路由（`packages/desktop-control/src/renderer-host-rpc-routing.ts`）逐 Host 保留 RPC fallback；Composer 或 Host 集合协调发现原生 owner 后，对相应 Host 优先使用 native manager，连接值形状不唯一时 fail closed。普通按 Host 读取不额外扫描文档；定向 Composer 读取复用自身的发现结果，不再另做一次全局 native 发现。排查输入、切换卡顿时，应分别检查 Composer 协调与按 Host 请求的调用栈，避免把发现工作放进每次路由读取。
+- 读取 signal 会挂载它，原生原子可能在挂载时发请求（例如子代理发现会发 `thread/list`）。因此只读取键形如 Host ID 的成员，找到连接 family 后一直复用，直到 Desktop 把它从 store 移除。排查 Host CPU 偏高时，先看 `thread/list` 的频率。
+- Desktop 的 Model hook 只接受 `model/list` 目录中的 Model，草稿设置里的 codexhost carrier 会被丢弃。外部 Agent 的 carrier 因此在出站的 `startConversation`（按 `clientThreadId`）和 `prewarmConversation` 上改写；预热 carrier 带 `prewarm: true`，因为主进程的 `thread/start` 不再透传 `codexhostPrewarm` 参数。
+- 主进程的服务端队列对所有非 ephemeral Thread 启用，外部 Thread 的跟进消息由 Host 原生实现的 `thread/queue/*` 承接，见 `docs/architecture/external-thread-queue.md`。
+- 依赖旧 manager 内部成员的 Renderer 补丁在该路由下不安装；排查时先确认对应能力是否已迁到 Host 协议或出站 capnweb 层，不要恢复旧补丁。
+
 ## 六、第五步：沿用户点击路径逐步验证
 
 点击外部 Agent 后，不要只看最终 UI。按以下顺序检查：
@@ -313,6 +339,7 @@ pi
 claude-code
 deepseek-harness
 grok
+qwen-code
 ```
 
 如果 RPC 返回 `status: ready`，说明 Harness、账号和网络不是根因。
@@ -325,6 +352,16 @@ grok
 - policy 包装后函数源码是否改变了查找结果
 - Model client 是否每次调用重新查找 target
 - 注入的对象是否仍是当前 Fiber 中的同一个对象
+
+### 检查原生语言设置
+
+`codex-locale-adapter.ts` 分别读取语言 override 和 IDE/system locale。`appInfo.getLocaleInfo()` 成功不代表 override 已知；override 读取失败时必须保持 `fallback / unavailable`，不能推断为自动模式。
+
+语言 Adapter 仅使用 Desktop `26.1023.50603` 的原生 `settings.read("localeOverride")`、`settings.write("localeOverride", value)` 与 `appInfo.getLocaleInfo()`，不支持旧 `get-setting`、`set-setting` 或 `locale-info` fetch RPC。读取使用 `effective`，而不是 `configured`：`effective: null` 表示自动模式，`configured: undefined` 可以表示用户没有显式配置。写入限定为 `en-US`、`zh-CN`、`null`，直接等待原生调用完成。
+
+服务发现要求 registry 自有对应服务属性，并验证 callable stub 的方法；transport root 能合成任意属性路径，不是服务 registry。扫描所有允许的 modulepreload，跨模块按对象身份去重后才接受唯一 registry，多个不同候选必须 fail-closed。打包版 Desktop（如 26.1029.61003）的入口 namespace 只导出 `__webpack_require__`，服务发现同时读取其 `.c` 中已实例化模块的编译器导出；不调用该 runtime，也不触碰 `.m` 工厂，CommonJS 对象与未知访问器不在搜索域内。服务缺失、歧义或失败时，读取保留 navigator/default 用户语言降级，写入拒绝，不重试旧 RPC。相关测试统一在 `codex-locale-adapter.test.ts`。
+
+发现与原生调用共用单次请求的超时预算；取消或超时后不得发起迟到调用，迟到结果不生效。settings 和 appInfo 的 disposable RPC request 在完成、失败、取消或超时时释放。只读 smoke test 核对 Adapter 的 `status/mode/source`；设置写入需要单独获得授权，不能用读成功替代写入验证。
 
 ### 检查 Codex 额度门
 
@@ -453,6 +490,7 @@ ChatGPT 登录的 Codex 额度耗尽时，外部 Agent 的发送按钮仍为 dis
 - [ ] 点击 Claude Code 后 Model catalog 可加载
 - [ ] 点击 DeepSeek Harness 后 Model catalog 可加载
 - [ ] 点击 Grok 后 Model catalog 可加载
+- [ ] 点击 Qwen Code 后 Model catalog 可加载
 - [ ] 切回 Codex 后原生 Composer 仍可用
 - [ ] ChatGPT 账号 Codex 额度耗尽时，新 Thread 和已有外部 Thread 均可发送；切回 Codex 后发送按钮恢复 disabled
 - [ ] 新 Thread 和未锁定 Thread 都完成切换验证

@@ -37,6 +37,16 @@ Adapter 需要让某条结尾消息不作为最终回复时，显式设置 `phas
 
 Kimi Code 的普通 Prompt 在原生回合身份与结果确认后才完成末段正文：成功且含工具调用时标为 `final_answer`；失败、取消或原生身份验证失败时保留为 `commentary`，条目结果也不报告成功。共享投影与 Desktop 折叠规则不变。
 
+## Pi 实时与历史消息身份
+
+Pi 1.4 的 RPC 精简格式会从 `message_update` 删除 `message` 和 `partial`，所以 Provider 的 `responseId` 虽已存在，Host 仍要到 `message_end` 才收到。实时消息不能依赖它提前确定身份。
+
+Adapter 使用 `get_state` 确认的原生 Session ID、`message_start` 中的原生 Assistant timestamp，以及当前活动分支内同 timestamp 的 Assistant 出现序号生成 Item ID，并区分正文、推理。timestamp 也保存在最终原生消息中。启动及每次 Prompt 前，从现有 `get_entries` 的活动分支重建计数；历史 mapper 使用同一遍历规则，包含仅工具调用、错误和空正文的 Assistant。因此相同毫秒内的两条消息仍有不同身份，续聊、冷恢复和分支回退不依赖旧进程计数。Fork 的新原生 Session ID 与源聊天隔离。
+
+正文与推理的首次增量都先切换当前消息；同一消息的推理可跨正文增量继续，下一条消息结束前一条推理及空白正文占位。空白占位不会输出到 Desktop。已有可见输出后不更换身份，也不按文本去重。
+
+旧消息缺少有效 timestamp 时，若首个可见增量前已有原生 `responseId` 则使用它；两者都不可用时继续原有临时身份，不能保证与历史 Entry 身份一致。此规则不改变最终回复阶段推断、不修改原生会话文件，也不新增 Mapping Store 字段。
+
 ## 已知限制
 
 - 折叠发生在回合结束时，而不是最终回复开始输出时；原生 Codex 在最终回复开始时即可折叠。

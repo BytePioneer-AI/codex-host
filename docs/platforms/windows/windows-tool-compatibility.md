@@ -45,8 +45,11 @@ commands without a managed override still fail closed. The official CLI retains
 ownership of sandbox policy, authentication, and tool approvals; this callback
 does not start a Host Runtime or acquire its owner lease.
 
-The wrapper and sparse-environment CLI helper path recover the current user's
-static Windows proxy configuration through WinHTTP. Explicit proxy environment
+The Launcher, the wrapper and the sparse-environment CLI helper path recover the
+current user's static Windows proxy configuration through WinHTTP. The Launcher
+passes it to Desktop (and so to the Host Runtime and Harness children), the
+console, and the Updater, so update checks, downloads and npm installs use the
+same proxy as on macOS. Explicit proxy environment
 values, including empty values and `NODE_USE_ENV_PROXY=0`, take precedence.
 Missing proxy aliases and `NODE_USE_ENV_PROXY=1` are supplied when applicable.
 No local ports are hardcoded, no system settings are written, and no policy,

@@ -1,7 +1,13 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { LocalMediaMarkdownStream } from "@codexhost/harness-adapter/local-media-markdown";
 import {
   matchesModernForkHistory,
+  modernMediaRoots,
   ModernEventValidator,
   ModernHistoryError,
   resolveModernForkBoundary,
@@ -241,6 +247,76 @@ describe("DeepSeek Harness Modern history projection", () => {
     });
     expect(projection.incompleteTurn).toBeUndefined();
     expect(projection.lastSeq).toBe(10);
+  });
+
+  it("makes local media in agent text absolute, following working-directory changes", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexhost-dsh-history-media-"));
+    const shots = path.join(workspace, "shots");
+    try {
+      await mkdir(shots);
+      await writeFile(path.join(shots, "a.png"), "png");
+      await writeFile(path.join(shots, "b.png"), "png");
+      const events = [
+        event(0, "turn/start", { turn: 1 }),
+        event(1, "step/start", { turn: 1, step: 1 }),
+        userMessage(2, ["show"]),
+        assistantMessage(3, 1, 1, "![a](shots/a.png) `shots/b.png` ![b](b.png)", "think"),
+        event(4, "step/end", { turn: 1, step: 1 }),
+        event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+        event(6, "working-directory/change", { cwd: "shots" }),
+        event(7, "turn/start", { turn: 2 }),
+        event(8, "step/start", { turn: 2, step: 1 }),
+        userMessage(9, ["again"], "request-2"),
+        assistantMessage(10, 2, 1, "![b](b.png) ![a](shots/a.png)", "think"),
+        event(11, "step/end", { turn: 2, step: 1 }),
+        event(12, "turn/end", { turn: 2, reason: { kind: "completed" } }),
+      ];
+      const agentTexts = (cwd?: string) =>
+        projectModernHistory({
+          sessionId: SESSION_ID,
+          events,
+          ...(cwd === undefined ? {} : { cwd }),
+        }).snapshot.turns.flatMap(({ items }) =>
+          items.flatMap(({ item }) => (item.type === "agentMessage" ? [item.text] : [])),
+        );
+      const a = path.join(shots, "a.png").replaceAll("\\", "/");
+      const b = path.join(shots, "b.png").replaceAll("\\", "/");
+
+      expect(agentTexts(workspace)).toEqual([
+        `![a](${a}) ![b.png](${b}) ![b](b.png)`,
+        `![b](${b}) ![a](${a})`,
+      ]);
+      expect(agentTexts()).toEqual([
+        "![a](shots/a.png) `shots/b.png` ![b](b.png)",
+        "![b](b.png) ![a](shots/a.png)",
+      ]);
+
+      // A journal without a header cwd still reloads with the images live output showed.
+      const absolute = path.join(shots, "a.png");
+      const live = new LocalMediaMarkdownStream(modernMediaRoots(undefined, undefined));
+      const liveText = live.append(`see \`${absolute}\``) + live.flush();
+      const reloaded = (media?: boolean) =>
+        projectModernHistory({
+          sessionId: SESSION_ID,
+          events: [
+            event(0, "turn/start", { turn: 1 }),
+            event(1, "step/start", { turn: 1, step: 1 }),
+            userMessage(2, ["show"]),
+            assistantMessage(3, 1, 1, `see \`${absolute}\``, "think"),
+            event(4, "step/end", { turn: 1, step: 1 }),
+            event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+          ],
+          ...(media === undefined ? {} : { media }),
+        }).snapshot.turns.flatMap(({ items }) =>
+          items.flatMap(({ item }) => (item.type === "agentMessage" ? [item.text] : [])),
+        );
+      expect(liveText).toBe(`see ![a.png](${a})`);
+      expect(reloaded(true)).toEqual([liveText]);
+      // Usage projections do not ask for media and keep the native text.
+      expect(reloaded()).toEqual([`see \`${absolute}\``]);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 
   it("keeps surface replacement copies out of the human transcript and Usage", () => {
@@ -582,6 +658,27 @@ describe("DeepSeek Harness Modern history projection", () => {
             source: "delegation",
           }),
           event(1, "approval/policy", { policy: "never", source: "delegation" }),
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it("accepts approval/asked events that include DSH displayReason (#650)", () => {
+    expect(() =>
+      projectModernHistory({
+        sessionId: SESSION_ID,
+        events: [
+          event(0, "approval/asked", {
+            id: "approval-1",
+            toolName: "bash",
+            callId: "call-esc",
+            reason: "escalate sandbox to danger-full-access",
+            displayReason: {
+              en: "Allow this operation with danger-full-access permissions",
+              zh: "允许本次操作使用 danger-full-access 权限",
+            },
+          }),
+          event(1, "approval/decided", { id: "approval-1", outcome: "allowed-once" }),
         ],
       }),
     ).not.toThrow();

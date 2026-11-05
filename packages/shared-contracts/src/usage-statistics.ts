@@ -48,6 +48,7 @@ export const usageStatisticsParamsSchema = z.strictObject({
  * writes, output includes reasoning. Cache counts cover only the requests whose cache split is
  * known (`cacheKnownInputTokens` is their input), so input minus both cache counts is the input
  * that did not come from or go to the cache, plus the whole input of requests with unknown cache.
+ * Cache hit counts separately cover every request whose cache read is known.
  */
 export const usageStatisticsTotalsSchema = z.strictObject({
   requests: count,
@@ -55,6 +56,8 @@ export const usageStatisticsTotalsSchema = z.strictObject({
   cachedInputTokens: count,
   cacheWriteInputTokens: count,
   cacheKnownInputTokens: count,
+  cacheHitCachedInputTokens: count,
+  cacheHitInputTokens: count,
   outputTokens: count,
   reasoningOutputTokens: count,
   /** USD at the public price, summed over the priced requests only. */

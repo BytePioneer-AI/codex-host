@@ -53,12 +53,28 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
 
 只在 Host 实现 cancel/start 不足以接入官方界面：官方 steer 会把乐观消息放在旧 Turn，旧轮 interrupted 时又可能将它恢复到暂停队列。
 
+### 主进程 Manager 的原生 RPC 路径
+
+Desktop **26.1029.61003 / build 24614** 的提交和队列协调器由主进程拥有。Renderer 的 `main-process-rpc` 路由不是完整 Manager，不能在它上面调用 `startTurn` 或修改内部队列。
+
+- `desktop-control/renderer-rpc-steering.ts` 通过 CDP 查找 `collectAppStateSnapshot` 的真实 Closure，核对 Controller 方法组合、函数身份和当前 React root 的 Scope 身份；只有唯一匹配才安装。发现过程不导入模块、执行模块工厂或打开主进程 Inspector，临时句柄统一释放。
+- `renderer-rpc-steering.ts` 包装该 Controller 的 `forHost`，保留原生 RPC 的 await、dup 和 lease 行为，只拦截 Coordinator 的 `sendMessage` / `sendQueuedMessageNow` preparation callback。实际提交、乐观消息、附件和排队执行仍由原生 Coordinator 拥有；主进程 Manager 本身不变。
+- `official` 保留原生 preparation；不支持 Host 扩展的 stock app-server 先验证原生 Thread 所有权。`activeTurn` 保留 steer preparation；`newTurn` 使用同一原生 callback 的 start preparation，并设置 `afterInactiveTurnId`，使 Desktop 为替换 Turn 创建正常 start 展示。
+- 两种外部送达方式均在 `additionalContext.codexhost_external_steering` 中携带 `{ kind: "application", value: JSON.stringify({ expectedTurnId, clientUserMessageId, delivery }) }`。该字段经过原生请求白名单保留。Host 校验消息身份后，把标记的外部 `turn/start` 交给现有停止后重发流程，返回正常 `{ turn }` envelope；`activeTurn` 的 `turn/steer` 不得因能力变化偷偷变成新轮。
+- 新轮接受后，只移除本次队列消息。确认替换 Turn 仍在执行或正常完成后，才恢复中断暂停队列；显式停止或失败保留暂停。若提交前已有另一条因中断暂停的消息，则拒绝本次替换并要求先处理它，避免原生 resume-all 接口恢复先前暂停项。读取队列有超时，subscription lease 必须释放。
+- 原生 Coordinator 对每次提交都先以 `steer` 模式调用 preparation，线程空闲时也一样。因此先读 `getThreadExecutionState`：Thread 未加载或没有进行中的 Turn 时，不查询 Host、不加标记，原样交回原生流程，由它走普通 start。只有 Thread 确实在运行时才进入上述分流。
+- Composer 在 Thread 运行中直接提交且送达方式为 `newTurn` 时，包装把 `acceptLocally` 改为 `false`。否则消息先进入本地队列：替换需要先停旧轮，超过原生 250ms 的队列行显示延迟，旧轮 interrupted 又会给它打上暂停标记，界面闪出“队列已暂停”。这是原生支持的直接提交路径，消息由 start 的乐观展示接管；失败时保留在 Composer 并显示错误。官方 Thread、`activeTurn`、空闲 Thread 和判断失败时保留原生请求。
+- 目标 Turn 不可确认、连接更换、绑定卸载或 preparation 失败时，发送前拒绝；已经接受的消息不因清理失败重发。旧 Turn 恰好在提交途中结束时，带标记的 `turn/start` 会以 `-32074` 被拒绝，队列条目恢复原位或文字留在 Composer，不自动重发。
+- 绑定未就绪时，只有外部 Composer 的提交保持禁用；Adapter 总体状态仍为 `ready`，原因字段报告 `native-steering-policy-unavailable`，官方 Codex 提交不受影响。发现失败不抛出，也不重建 Renderer Session；Controller 的监控循环按 5 秒起、最长 5 分钟的退避重试，避免反复遍历堆。
+
+### Renderer 内 Manager 的路径
+
 `renderer-external-steering.ts` 在已确认的 RequestManager 上包装 `steerTurn`。Desktop Manager 同时是 `RpcTarget`，跨组件 RPC 禁止访问实例自身属性（即使该属性是函数）。因此对原型方法的包装放在该实例专属的原型层上，不用 `manager.sendRequest = ...` 创建实例属性，也不修改共享类原型。卸载时移除覆盖并恢复原型查找，不能仅赋回原函数；否则模型和权限列表仍会被 RPC 拒绝。
 
 接入流程：
 
 1. 带上本次要插入的文本调用 `codexhost/thread/steering/inspect`，读取送达方式（`official`、`activeTurn` 或 `newTurn`）。Host 不支持该方法（`-32601`，较旧或远程的 Host）时，改用 `codexhost/thread/ownership/list`：外部 Thread 按 `newTurn` 处理；两个方法都不支持时视为官方 app-server，先确认是原生 Codex Thread。`official` 与 `activeTurn` 走原函数，使用 Desktop 自己的 steer 展示，乐观消息属于当前 Turn；`activeTurn` 期间发出的 `turn/steer` 带上 `codexhostSteerDelivery: "activeTurn"`，让 Host 照这个选择执行而不重新判断。follower 窗口继续使用 Desktop 原有 owner 转发。以下步骤只适用于 `newTurn`。
-2. 外部输入使用 Desktop 自己的 `startTurn` 展示流程。新输入从一开始就属于新 Turn 占位，保留 `clientUserMessageId`、输入及附件展示上下文；不创建旧轮 `steeringUserMessage`，不修改官方 transcript 内部实体。
+2. 外部输入使用 Desktop 自己的 `startTurn` 展示流程。新输入从一开始就属于新 Turn 占位，保留 `clientUserMessageId`、输入及附件展示上下文；图片单独发送或从队列「调整方向」时同样保留预览条目，不要求额外输入文字。Host 在停止旧轮前校验文件引用；不创建旧轮 `steeringUserMessage`，不修改官方 transcript 内部实体。
 3. 仅将本次 `threadId + clientUserMessageId` 对应的出站 `turn/start` 转成 `turn/steer`，携带原先捕获的 `expectedTurnId` 和 `codexhostSteerDelivery: "newTurn"`。把 Host 的 `{turnId}` 回执转换成正常 start 展示流程需要的 Turn envelope。其他 start、请求选项及官方 steer 不变。
 4. 成功后解除本次旧轮 interrupted 引入的队列暂停，保留此前已暂停的消息。失败不自动重试或偷偷排队；Desktop 原有失败提交展示负责保留输入。
 5. 绑定卸载时停止新的替换，恢复包装过的方法；尚未发出的替换不能因卸载而意外成为普通 start。
@@ -67,9 +83,10 @@ Host 和 Renderer 接入必须配套发布；仅升级 Host、让旧 Renderer �
 
 ### 当前兼容边界
 
-接入点依据 Codex Desktop **26.901.51231 / build 8109** 的 `app-initial-cadb12d4a15e.js`：`steerTurn`、`startTurn`、`sendRequest`、`getTurnCoordinator()` 的 submissionHost，以及队列的 `loadMessages` / `readMessages` / `mutate`。这些是版本相关的 Desktop JavaScript 绑定，不是 Harness SDK 契约。更新 Desktop 后需重新核实。
+Renderer 内 Manager 的接入点依据 Codex Desktop **26.901.51231 / build 8109** 的 `app-initial-cadb12d4a15e.js`：`steerTurn`、`startTurn`、`sendRequest`、`getTurnCoordinator()` 的 submissionHost，以及队列的 `loadMessages` / `readMessages` / `mutate`。这些是版本相关的 Desktop JavaScript 绑定，不是 Harness SDK 契约。更新 Desktop 后需重新核实。
 
-- 当前公共 Harness 输入仅支持文本。图片等非文本输入、空输入、tool response 在停止前拒绝，不静默丢弃后再取消旧轮。
+- 公共 Harness 输入保持文本。`turn/start` 与 `turn/steer` 共用附件规范化：保留 Desktop 的原生图片清单；`localImage` 缺少清单时，按明确的绝对路径补入，不读取或上传文件。内嵌 `image` 必须已有足量的原生文件路径引用；混合输入先逐项扣除 `localImage` 引用，剩余引用数至少覆盖内嵌图片数。远程补存保留的额外旧引用不会导致拒绝。Host 不推测缺失图片的对应关系，也不把 base64 当作提示词；数量覆盖不等于校验文件内容与内嵌图片一致。
+- 空输入、无有效路径的图片、未知输入类型，以及直接附图的 Harness 命令，在能力查询或停止旧轮前拒绝。命令与图片应分别提交；命令识别也检查原生附件清单 `## My request:` 后的用户请求，不因清单前缀而把 `/compact` 等命令当作普通提示词。原始输入仍参与重试去重，不能将不同图片视为同一条消息。
 - 停止后重发复用普通输入启动路径；Harness 命令在该路径中解析执行，不作为原生 steer 文本插入。
 - 当前轮尚无确认的 Turn ID 时不猜测目标，也不把过期目标改为另一轮重试。
 - 停止后重发时，旧轮和新轮在 Native Session 历史中是两个真实 Turn，不复用旧 ID、不伪造同轮注入，不合并 Fork/Rollback 身份。
@@ -77,9 +94,11 @@ Host 和 Renderer 接入必须配套发布；仅升级 Host、让旧 Renderer �
 
 ## 跟进消息队列
 
-Codex Desktop **26.903.61454 / build 8378** 在功能开关及 app-server 版本满足条件时使用服务端队列。运行中追加消息会先调用 `thread/queue/list`，再调用 `thread/queue/add`；仅让 Host 返回空列表不能恢复入队。外部 Thread 不属于官方 app-server，Host 对这些请求的拒绝仍需保留，不能透传或伪造服务端队列。
+Codex Desktop **26.903.61454 / build 8378** 在功能开关及 app-server 版本满足条件时使用服务端队列。运行中追加消息会先调用 `thread/queue/list`，再调用 `thread/queue/add`；仅让 Host 返回空列表不能恢复入队。外部 Thread 不属于官方 app-server，队列请求不能透传给官方。
 
-`renderer-external-queue.ts` 在当前 Manager 的 `getTurnCoordinator().serverQueue.isEnabled(threadId)` 上排除外部 Thread，让 Desktop 继续使用保留的本地队列：
+Manager 位于主进程的 Desktop **26.1027** 使用 Host 实现的真实服务端队列，见[外部 Thread 跟进消息队列](external-thread-queue.md)。以下本地队列补丁仅用于 Renderer 仍持有 Manager 的路径。
+
+`renderer-external-queue.ts` 在 Renderer Manager 的 `getTurnCoordinator().serverQueue.isEnabled(threadId)` 上排除外部 Thread，让 Desktop 继续使用保留的本地队列：
 
 - 只读取同一个 Manager 的 `getConversation(threadId)`，核对 Thread ID 及 Host 投影的保留标记 `modelProvider: "codexhost"`。不根据当前 Agent 选择或 Model 名称猜测，不跨 Host 缓存身份，也不增加 RPC。
 - 普通入队、编辑、重排、删除／恢复、暂停和终态后的自动执行仍由 Desktop 原有队列负责，不新增 Host 队列或 Harness 命令。
@@ -100,6 +119,12 @@ Codex Desktop **26.924.22138 / build 11645** 的本地队列在 `turnCompleted` 
 ## 验证
 
 针对性测试：
+
+- `packages/renderer-extension/test/renderer-rpc-steering.test.ts`：空闲或未加载 Thread 的普通发送不受影响、原生 preparation 的送达选择、await 后保留拦截、请求标记、已暂停消息保护、失败保留、接受后停止、连接更换与卸载。
+- `packages/desktop-control/test/renderer-rpc-steering.test.ts`：Controller 与已提交 React Scope 的身份核对、歧义及其他 root 拒绝、句柄释放、失败退避。
+- `packages/host-runtime/test/app-server-host.external-queue.test.ts`：带标记的原生 start 进入替换流程、快速完成不重复执行、删除确认及失败恢复。
+
+- `tests/integration/external-image-steering.test.ts`：将 Renderer steer／停止后重发、远程补存器和真实 AppServerHost RPC 串联，覆盖纯图片送达、附件展示上下文、部分清单补存后的额外引用、清单中的命令及缺少路径时停止前拒绝。Desktop 展示与原生文件存储使用合成对象，Harness 使用 Fake Session，不代表实机验收。
 
 - `packages/host-runtime/test/app-server-host.broker-steering.test.ts`：非 Claude 的合成 Adapter 经真实 Broker socket 与 Host RPC，验证打开后能力变化、同轮消息投影，以及不支持时停止后重发；不代表该 Harness 的原生 steer 已接入。
 

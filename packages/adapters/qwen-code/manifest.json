@@ -1,0 +1,29 @@
+{
+  "manifestVersion": 1,
+  "id": "qwen-code",
+  "name": "Qwen Code",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.svg",
+  "links": {
+    "website": "https://github.com/QwenLM/qwen-code",
+    "installation": "https://github.com/QwenLM/qwen-code#installation"
+  },
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux · Terminal (sh/bash)",
+        "command": "npm install -g @qwen-code/qwen-code@latest"
+      },
+      {
+        "terminal": "Windows · PowerShell",
+        "command": "npm install -g @qwen-code/qwen-code@latest"
+      }
+    ],
+    "after": {
+      "en": "After installation, run qwen to complete login or setup.",
+      "zh-CN": "安装后运行 qwen，完成登录或配置。"
+    }
+  }
+}

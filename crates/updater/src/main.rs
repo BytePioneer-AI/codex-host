@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod install;
+mod prepare_install;
 mod remote;
 mod request;
 mod ssh;
@@ -139,10 +140,16 @@ fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn usage() {
-    eprintln!("usage: codexhost-updater apply --request <absolute-json-file>");
+    eprintln!(
+        "usage: codexhost-updater apply --request <absolute-json-file>\n       codexhost-updater prepare-install --install-root <absolute-directory>"
+    );
 }
 
 fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
+    if arguments.len() == 3 && arguments[0] == "prepare-install" && arguments[1] == "--install-root"
+    {
+        return prepare_install::prepare(Path::new(&arguments[2]));
+    }
     if arguments == ["ssh"] {
         return ssh::apply();
     }
@@ -192,6 +199,7 @@ mod tests {
                 node_path: wrong_executable.clone(),
                 npm_cli_path: wrong_executable.clone(),
                 npm_launcher_path: wrong_executable,
+                npm_package_root: directory.clone(),
             }),
         };
         let error = wait_for_launcher_exit(&request).unwrap_err();

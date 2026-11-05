@@ -13,9 +13,11 @@ const { outputFiles } = await build({
       import { createRendererSettingsPageRegistry } from "./packages/renderer-extension/src/settings/core.ts";
       import { rendererSettingsMessages } from "./packages/renderer-extension/src/settings/localization.ts";
       import { mountRendererSettingsShell } from "./packages/renderer-extension/src/settings/shell.ts";
+      import { createSessionImportSettingsPage } from "./packages/renderer-extension/src/settings/session-import-page.ts";
 
       globalThis.setupSettingsPage = () => {
         const messages = rendererSettingsMessages("en");
+        const importDiagnostics = { checks: [], agents: [], pending: null, grokInstalled: false };
         const page = (id, label) => ({
           id,
           label,
@@ -32,6 +34,22 @@ const { outputFiles } = await build({
         const registry = createRendererSettingsPageRegistry([
           page("connections", "Connections"),
           page("appearance", "General"),
+          createSessionImportSettingsPage(messages, (hostId) => hostId === "remote-ssh-discovered:build%20server" ? {
+            hostId,
+            listSessionImportSources: async () => ({ harnesses: [{ harnessId: "pi", name: "Pi" }, { harnessId: "grok", name: "Grok" }] }),
+            listHarnessSessions: async () => ({ candidates: [{ nativeSessionId: "remote-session", cwd: "/remote", title: "Remote session", updatedAt: 1, running: false }], total: 1 }),
+            importHarnessSession: async () => ({ threadId: "imported-remote" }),
+          } : null, null, () => ({
+            snapshot: () => ({ hosts: ["local", "durable", "remote-ssh-discovered:build%20server"].map(hostId => ({ hostId, active: false, agents: hostId === "local" ? [{ agent: "pi", availability: "notInstalled" }] : importDiagnostics.agents })) }),
+            refresh: async (hostId) => {
+              importDiagnostics.checks.push(hostId);
+              await importDiagnostics.pending;
+              importDiagnostics.agents = [
+                { agent: "pi", availability: "ready" },
+                { agent: "grok", availability: importDiagnostics.grokInstalled ? "ready" : "notInstalled" },
+              ];
+            },
+          })),
         ]);
         const events = [];
         const shell = mountRendererSettingsShell(registry, document, messages, {
@@ -56,7 +74,7 @@ const { outputFiles } = await build({
             ? (wasCurrent ? "/" : "/thread/settings-test")
             : "/plugins");
         });
-        globalThis.settingsFixture = { shell, events, nativeNavigations };
+        globalThis.settingsFixture = { shell, events, nativeNavigations, importDiagnostics };
       };
     `,
     resolveDir: path.resolve(import.meta.dirname, "../.."),
@@ -293,6 +311,79 @@ test("yields to browser history navigation", async ({ page }) => {
 
   await page.evaluate(() => history.back());
   await expect(page.locator(".codexhost-settings-page")).toBeHidden();
+});
+
+test("chooses a remote import Host explicitly when no unique Composer Host exists", async ({
+  page,
+}) => {
+  await setup(page);
+  await openSettings(page, "session-import");
+  const hosts = page.getByRole("group", { name: "Host", exact: true });
+  const remote = hosts.getByRole("button", { name: "build server", exact: true });
+  const local = hosts.getByRole("button", { name: "Local", exact: true });
+  await expect(hosts).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Host", exact: true })).toHaveCount(0);
+  await expect(remote).toHaveAttribute("aria-pressed", "false");
+  await expect(local).toHaveAttribute("aria-pressed", "false");
+  await expect(hosts).not.toContainText("remote-ssh-discovered");
+  await expect(page.locator(".settings-session-import-status")).toHaveText(
+    "Select the Host to import sessions from",
+  );
+  await remote.focus();
+  await page.keyboard.press("Enter");
+  await expect(remote).toBeFocused();
+  await expect(page.locator("[data-session-import-id]")).toHaveCount(1);
+  await expect(page.locator("[data-session-import-id]")).toContainText("Remote session");
+  await page.locator('[data-session-import-action="refresh"]').click();
+  await expect(remote).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("[data-session-import-id]")).toHaveCount(1);
+  await local.click();
+  await expect(local).toHaveAttribute("aria-pressed", "true");
+  await expect(remote).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("[data-session-import-id]")).toHaveCount(0);
+  await expect(page.locator(".settings-session-import-status")).toContainText(
+    "Session import is unavailable",
+  );
+});
+
+test("checks the selected import Host before rendering Harnesses and reuses its cache", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.evaluate(() => {
+    const state = Reflect.get(globalThis, "settingsFixture").importDiagnostics;
+    state.pending = new Promise((resolve) => {
+      state.finish = resolve;
+    });
+  });
+  await openSettings(page, "session-import");
+  const hosts = page.getByRole("group", { name: "Host", exact: true });
+  await expect(hosts.getByRole("button", { name: "durable", exact: true })).toHaveCount(0);
+  await hosts.getByRole("button", { name: "build server", exact: true }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => Reflect.get(globalThis, "settingsFixture").importDiagnostics.checks),
+    )
+    .toEqual(["remote-ssh-discovered:build%20server"]);
+  await expect(page.locator("[data-session-import-harness-option]")).toHaveCount(0);
+  await expect(page.locator("[data-session-import-id]")).toHaveCount(0);
+  await page.evaluate(() => Reflect.get(globalThis, "settingsFixture").importDiagnostics.finish());
+  await expect(page.locator("[data-session-import-harness-option]")).toHaveText(["Pi"]);
+  await expect(page.locator("[data-session-import-id]")).toHaveCount(1);
+  await page.locator('[data-session-import-action="search-input"]').fill("Remote");
+  await page.locator('[data-session-import-action="search-input"]').press("Enter");
+  await expect(page.locator("[data-session-import-id]")).toHaveCount(1);
+  expect(
+    await page.evaluate(() => Reflect.get(globalThis, "settingsFixture").importDiagnostics.checks),
+  ).toHaveLength(1);
+  await page.evaluate(() => {
+    Reflect.get(globalThis, "settingsFixture").importDiagnostics.grokInstalled = true;
+  });
+  await page.locator('[data-session-import-action="refresh"]').click();
+  await expect(page.locator("[data-session-import-harness-option]")).toHaveText(["Pi", "Grok"]);
+  expect(
+    await page.evaluate(() => Reflect.get(globalThis, "settingsFixture").importDiagnostics.checks),
+  ).toEqual(["remote-ssh-discovered:build%20server", "remote-ssh-discovered:build%20server"]);
 });
 
 test("lets a page-owned modal handle Escape first", async ({ page }) => {

@@ -16,15 +16,6 @@ test.beforeEach(async ({ page }) => {
   await page.goto("http://codexhost.test/");
 });
 
-await build({
-  entryPoints: [path.join(repositoryRoot, "packages/shared-contracts/src/index.ts")],
-  bundle: true,
-  format: "esm",
-  platform: "browser",
-  target: "es2024",
-  outfile: path.join(repositoryRoot, "packages/shared-contracts/dist/index.js"),
-});
-
 const { outputFiles } = await build({
   stdin: {
     contents: `

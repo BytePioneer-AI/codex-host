@@ -1,0 +1,22 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "types": ["node"],
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
+  },
+  "references": [
+    {
+      "path": "../../shared-contracts/tsconfig.json"
+    },
+    {
+      "path": "../../harness-adapter/tsconfig.json"
+    },
+    {
+      "path": "../../harness-discovery/tsconfig.json"
+    }
+  ],
+  "include": ["src/**/*.ts"]
+}

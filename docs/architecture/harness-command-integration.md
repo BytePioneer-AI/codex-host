@@ -95,7 +95,7 @@ Live commands are filtered by a blocklist, never an allowlist. `COMMON_EXCLUDED_
 | Qoder | SDK or ACP push | none (common list applies to every entry) | — |
 | Hermes | Gateway `slash.exec` / `session.compress` verified command set | none (common list applies to every entry) | — |
 
-WorkBuddy, DeepSeek Harness and OpenCode deliberately keep static catalogs. Antigravity CLI has no native listing interface.
+WorkBuddy, DeepSeek Harness and OpenCode deliberately keep static catalogs. Antigravity CLI has no native listing interface. Qwen Code has no native command catalog; its Adapter omits the `commands` capability.
 
 ## 5. Add focused tests
 

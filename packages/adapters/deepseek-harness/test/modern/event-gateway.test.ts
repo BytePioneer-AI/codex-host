@@ -480,6 +480,42 @@ describe("DeepSeek Harness Modern event gateway", () => {
     await gateway.close();
   });
 
+  it("delivers sandbox-escalation approvals that include DSH displayReason", async () => {
+    const feed = new EventFeed();
+    const remote = new FakeRemote(feed);
+    const gateway = await startGateway(remote, feed);
+    const sink = sinkProbe();
+    gateway.attach("session-1", sink);
+
+    const displayReason = {
+      en: "Allow this operation with danger-full-access permissions: write /tmp/out",
+      zh: "允许本次操作使用 danger-full-access 权限：write /tmp/out",
+    };
+    feed.push(
+      approval("event-display-reason", "session-1", {
+        toolName: "bash",
+        callId: "call-esc",
+        reason: "escalate sandbox to danger-full-access: write /tmp/out",
+        displayReason,
+      }),
+    );
+    await vi.waitFor(() => expect(sink.deliveries).toHaveLength(1));
+    expect(sink.deliveries[0]).toMatchObject({
+      type: "approval",
+      eventId: "event-display-reason",
+      sessionId: "session-1",
+      request: {
+        toolName: "bash",
+        callId: "call-esc",
+        reason: "escalate sandbox to danger-full-access: write /tmp/out",
+        displayReason,
+      },
+    });
+    expect(sink.faults).toEqual([]);
+    expect(remote.calls).toEqual([]);
+    await gateway.close();
+  });
+
   it("keeps the DSH 0.2.0-rc.2 wait descriptor and reports native release as cancel", async () => {
     const feed = new EventFeed();
     const remote = new FakeRemote(feed);

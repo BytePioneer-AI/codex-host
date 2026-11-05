@@ -603,6 +603,51 @@ describe("Claude native Turn interpretation", () => {
     ]);
   });
 
+  it.each(["sdk", "transcript", "text", "blocks"])(
+    "recognizes a refused SendMessage without is_error (%s)",
+    (shape) => {
+      const turn = new ClaudeNativeTurnAccumulator();
+      turn.consume(toolUse("SendMessage", "send-1", { to: "stopped-agent", message: "continue" }));
+      const refused = {
+        success: false,
+        message: "Agent was stopped by the user and won't be resumed.",
+      };
+      const text =
+        shape === "sdk" || shape === "transcript" ? refused.message : JSON.stringify(refused);
+      const message = {
+        ...toolResult("send-1", {
+          content: shape === "text" ? text : [{ type: "text", text }],
+        }),
+        ...(shape === "sdk" ? { tool_use_result: refused } : {}),
+        ...(shape === "transcript" ? { toolUseResult: refused } : {}),
+      };
+      expect(turn.consume(message).events).toContainEqual({
+        type: "subagent.completed",
+        callId: "send-1",
+        isError: true,
+        resultSummary: text,
+      });
+      // A refused delegation does not fail the Root's subsequent recovery.
+      expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+    },
+  );
+
+  it.each(["SendMessage", "Agent", "Bash"])(
+    "does not infer %s failure from prose or an unrelated result field",
+    (toolName) => {
+      const turn = new ClaudeNativeTurnAccumulator();
+      turn.consume(toolUse(toolName, "call-1", { to: "agent-1" }));
+      const nativeResult = toolName === "SendMessage" ? { success: true } : { success: false };
+      const events = turn.consume(
+        toolResult("call-1", {
+          content: 'The input contains {"success":false}',
+          nativeResult,
+        }),
+      ).events;
+      expect(events).toContainEqual(expect.objectContaining({ callId: "call-1", isError: false }));
+    },
+  );
+
   it("correlates interleaved Tool results and preserves native file evidence", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 

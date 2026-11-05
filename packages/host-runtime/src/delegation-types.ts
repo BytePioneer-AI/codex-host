@@ -168,6 +168,8 @@ export interface DelegationThreadListItem {
   title?: string;
   createdAt?: string;
   updatedAt?: string;
+  /** Set by native rows; recency-* sorts order by it, falling back to updatedAt. */
+  recencyAt?: string;
 }
 
 export interface DelegationThreadListResult {

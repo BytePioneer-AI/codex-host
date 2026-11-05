@@ -267,7 +267,6 @@ fn apply_locked(request: &Request) -> Result<(), Box<dyn Error>> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     struct Fixture {
@@ -292,15 +291,22 @@ mod tests {
             br#"{"version":"0.11.0"}"#,
         )
         .unwrap();
-        let node = root.join("node");
-        // This fixture records commands; it never invokes npm or a real service.
-        fs::write(&node, format!("#!/bin/sh\necho \"$2\" >> '{}'\nif [ \"$2\" = root ]; then echo '{}'; fi\nif [ \"$2\" = view ]; then exit {}; fi\nexit 0\n", root.join("calls").display(), root.join("node_modules").display(), if view_failure {1} else {0})).unwrap();
-        fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
+        // Interpret fixture scripts with the installed shell instead of executing a newly
+        // written file, which can race with parallel child spawns on Linux (ETXTBSY).
+        // These scripts record commands without invoking npm or a real service.
+        let source = format!(
+            "echo \"$1\" >> '{}'\nif [ \"$1\" = root ]; then echo '{}'; fi\nif [ \"$1\" = view ]; then exit {}; fi\nexit 0\n",
+            root.join("calls").display(),
+            root.join("node_modules").display(),
+            if view_failure { 1 } else { 0 },
+        );
+        fs::write(root.join("npm"), &source).unwrap();
+        fs::write(root.join("launcher"), &source).unwrap();
         let request = Request {
             version: "0.11.0".into(),
             installed_version: "0.11.0".into(),
             restart_only: false,
-            node,
+            node: PathBuf::from("/bin/sh"),
             npm: root.join("npm"),
             launcher: root.join("launcher"),
             package_root,
@@ -312,7 +318,11 @@ mod tests {
     #[test]
     fn unavailable_release_never_stops_the_service() {
         let f = fixture(true);
-        assert!(apply_locked(&f.request).is_err());
+        let error = apply_locked(&f.request).unwrap_err().to_string();
+        assert!(
+            error.contains("The requested release is unavailable or npm cannot reach the registry"),
+            "unexpected update failure: {error}"
+        );
         let calls = fs::read_to_string(f.root.join("calls")).unwrap();
         assert_eq!(calls, "root\nview\n");
         assert!(

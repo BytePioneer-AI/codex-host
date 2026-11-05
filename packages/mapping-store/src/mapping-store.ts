@@ -246,15 +246,27 @@ function processIdentity(pid: number): ProcessIdentity | null {
       const startedAt = Date.parse(result);
       return { executablePath: null, startedAt: Number.isFinite(startedAt) ? startedAt : null };
     }
+    // CIM can expose CreationDate for a reused system PID even when Get-Process cannot
+    // read its Path/StartTime. Serialize UTC explicitly: Windows PowerShell's default
+    // DateTime JSON representation is not an ISO timestamp that Date.parse can read.
     const query = [
       "$ErrorActionPreference = 'Stop'",
-      `$process = Get-Process -Id ${pid}`,
-      "$process | Select-Object Path, StartTime | ConvertTo-Json -Compress",
+      `$process = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}'`,
+      "if ($null -ne $process) { [pscustomobject]@{ " +
+        "Path = $process.ExecutablePath; " +
+        "StartTime = $(if ($null -ne $process.CreationDate) { " +
+        "$process.CreationDate.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) " +
+        "} else { $null }) } | ConvertTo-Json -Compress }",
     ].join("; ");
     const result = execFileSync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", query],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+        timeout: 5_000,
+      },
     ).trim();
     if (!result) return { executablePath: null, startedAt: null };
     const parsed = JSON.parse(result) as { Path?: unknown; StartTime?: unknown };
@@ -379,6 +391,7 @@ export class MappingStore {
       const names = (await readdir(this.#threadsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
+      const pendingQuarantines = new Set<string>();
       for (const name of names) {
         const primary = path.join(this.#threadsDirectory, name);
         const backup = path.join(this.#backupsDirectory, name);
@@ -394,7 +407,26 @@ export class MappingStore {
               this.#quarantineDirectory,
               `${name}.${this.#now().getTime()}.invalid`,
             );
-            await rename(primary, quarantine).catch(() => undefined);
+            const metadataSource = path.join(this.#metadataDirectory, name);
+            pendingQuarantines.add(name);
+            try {
+              // Preserve existing archives, including a copy left by an interrupted quarantine.
+              if (await exists(quarantine)) continue;
+              try {
+                // Keep the source metadata until the record moves; no rollback is needed if
+                // that rename fails. Orphan cleanup can remove it once the pair is archived.
+                await copyFile(metadataSource, `${quarantine}.metadata`, constants.COPYFILE_EXCL);
+              } catch (error) {
+                // ENOENT also means a missing quarantine/; skip only absent metadata.
+                if (systemErrorCode(error) !== "ENOENT" || (await exists(metadataSource)))
+                  throw error;
+              }
+              await rename(primary, quarantine);
+              pendingQuarantines.delete(name);
+            } catch {
+              // Leave the source pair for a later startup and protect its metadata below.
+              // One failed quarantine must not block access to healthy Threads.
+            }
             void primaryError;
             void backupError;
             continue;
@@ -421,9 +453,14 @@ export class MappingStore {
         (await readdir(this.#metadataDirectory))
           .filter(
             (name) =>
-              name.endsWith(".json") && !this.#records.has(name.slice(0, -5) as HostThreadId),
+              name.endsWith(".json") &&
+              !this.#records.has(name.slice(0, -5) as HostThreadId) &&
+              !pendingQuarantines.has(name),
           )
-          .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
+          // Cleanup is best effort, including a source whose quarantine copy is already safe.
+          .map((name) =>
+            rm(path.join(this.#metadataDirectory, name), { force: true }).catch(() => undefined),
+          ),
       );
       const delegationNames = (await readdir(this.#delegationsDirectory)).filter((name) =>
         name.endsWith(".json"),
@@ -473,6 +510,12 @@ export class MappingStore {
       this.#rebuildIndexes();
       this.#initialized = true;
     } catch (error) {
+      // A retry on this instance must reload from disk, not reuse a partial load.
+      this.#records.clear();
+      this.#delegations.clear();
+      this.#sectionPlacements = [];
+      this.#supersededSessions = [];
+      this.#rebuildIndexes();
       await this.close().catch(() => undefined);
       throw error;
     }
@@ -974,12 +1017,18 @@ export class MappingStore {
   }
 
   async #remove(hostThreadId: HostThreadId): Promise<void> {
-    if (!this.#records.has(hostThreadId)) return;
-    await Promise.all([
-      rm(this.#recordPath(hostThreadId), { force: true }),
-      rm(this.#backupPath(hostThreadId), { force: true }),
-      rm(this.#metadataPath(hostThreadId), { force: true }),
-    ]);
+    const current = this.#records.get(hostThreadId);
+    if (!current) return;
+    await rm(this.#recordPath(hostThreadId), { force: true });
+    try {
+      await rm(this.#backupPath(hostThreadId), { force: true });
+      // Metadata is removed last so any failed unlink leaves it intact.
+      await rm(this.#metadataPath(hostThreadId), { force: true });
+    } catch (error) {
+      // Startup discovers Threads by their primary record, not by orphan auxiliary files.
+      await this.#replaceFile(this.#recordPath(hostThreadId), current, false);
+      throw error;
+    }
     this.#records.delete(hostThreadId);
     this.#rebuildIndexes();
   }

@@ -1,6 +1,8 @@
 **/*.md
 **/*.wxs
 .pi/
+# Local-only design scratch files.
+.local/
 reference/
 node_modules/
 target/

@@ -1,9 +1,5 @@
 import { installRendererDraftPrewarmPolicyDirect } from "@codexhost/desktop-control";
-import {
-  encodeHarnessPluginRoute,
-  harnessIdSchema,
-  hostThreadIdSchema,
-} from "@codexhost/shared-contracts";
+import { harnessIdSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { afterEach, assert, expect, it, vi } from "vitest";
 import { installCurrentRendererAdapter } from "../src/versioned-renderer-adapter.js";
 
@@ -268,17 +264,17 @@ it("retires only a disconnected Host and rejects new requests on its captured cl
   }
 });
 
-it("does not copy an external carrier to a native remote Composer", async () => {
+it("rejects an unidentified external selection without changing local or remote Codex", async () => {
   const { adapter, local, remote, fiber } = await setup("local");
   try {
-    expect(adapter.applyAgent("pi")).toBe(true);
+    expect(adapter.applyAgent("pi")).toBe(false);
     fiber.memoizedProps.executionTargetHostId = remoteId;
     expect(adapter.modelControl?.currentHostId?.()).toBe(remoteId);
     await remote.requestClient.sendRequest("thread/start", { model: "native-model" });
     expect(remote.nativeSend).toHaveBeenCalledWith("thread/start", { model: "native-model" });
     await local.requestClient.sendRequest("thread/start", { model: "native-model" });
     expect(local.nativeSend).toHaveBeenCalledWith("thread/start", {
-      model: encodeHarnessPluginRoute({ harnessId: piRequest.harnessId }),
+      model: "native-model",
     });
   } finally {
     adapter.dispose();

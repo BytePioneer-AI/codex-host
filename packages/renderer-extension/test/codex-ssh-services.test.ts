@@ -25,11 +25,36 @@ describe("native SSH service discovery", () => {
     expect(load).toHaveBeenCalledWith("app://-/assets/relocated-123.js");
   });
 
-  it("prioritizes the shared module without importing unrelated preloads", async () => {
+  it("scans every preload before accepting the shared module's registry", async () => {
     const native = services();
-    const load = vi.fn().mockResolvedValue({ arbitraryName: native });
-    await loadCodexSshServices(owner("/assets/other.js", "/assets/app-shared-newhash.js"), load);
-    expect(load.mock.calls).toEqual([["app://-/assets/app-shared-newhash.js"]]);
+    const load = vi.fn().mockResolvedValueOnce({ arbitraryName: native }).mockResolvedValueOnce({});
+    expect(
+      await loadCodexSshServices(owner("/assets/other.js", "/assets/app-shared-newhash.js"), load),
+    ).toBe(native);
+    expect(load.mock.calls).toEqual([
+      ["app://-/assets/app-shared-newhash.js"],
+      ["app://-/assets/other.js"],
+    ]);
+  });
+
+  it("deduplicates the same registry re-exported by different modules", async () => {
+    const native = services();
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce({ first: native })
+      .mockResolvedValueOnce({ alias: native });
+    expect(await loadCodexSshServices(owner("/a.js", "/b.js", "/a.js"), load)).toBe(native);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed when different preload modules export distinct matching registries", async () => {
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce({ first: services() })
+      .mockResolvedValueOnce({ second: services() });
+    await expect(
+      loadCodexSshServices(owner("/assets/app-shared-a.js", "/b.js"), load),
+    ).rejects.toThrow("unavailable");
   });
 
   it("supports callable RPC stubs and rejects incomplete registries", async () => {

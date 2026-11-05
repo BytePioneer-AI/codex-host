@@ -681,10 +681,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
   }
 
-  async getContextUsage(): Promise<ClaudeTransportContextUsage | null> {
+  async getContextUsage(
+    detail: "summary" | "full" = "full",
+  ): Promise<ClaudeTransportContextUsage | null> {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) return null;
-    return parseContextUsage(await activeQuery.getContextUsage());
+    return parseContextUsage(await activeQuery.getContextUsage({ detail }));
   }
 
   getPermissionMode(): ClaudePermissionMode {
@@ -997,7 +999,11 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     if (this.#active) return this.abort();
     const activeQuery = this.#query;
     if (!activeQuery) throw new Error("Claude SDK transport is not running");
-    this.#idleAccumulator?.requestCancel();
+    // A steer takeover can interrupt on its first idle frame, before consume creates the accumulator.
+    const idle = (this.#idleAccumulator ??= new ClaudeNativeTurnAccumulator(
+      this.#provider ? { provider: this.#provider } : {},
+    ));
+    idle.requestCancel();
     try {
       await this.#stopRequest(activeQuery.interrupt(), INTERRUPT_TIMEOUT_MESSAGE);
     } catch (error) {

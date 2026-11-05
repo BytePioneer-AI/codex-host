@@ -316,8 +316,13 @@ export class KimiAdapter implements HarnessAdapter {
       return err("invalidState", "Adapter is closed");
     }
 
-    if (input.kind === "create" && input.executionPolicy === "unattended-full-access") {
-      return err("unsupported", "Kimi Code cannot guarantee unattended-full-access");
+    const unattended =
+      input.kind === "create" && input.executionPolicy === "unattended-full-access";
+    if (unattended && input.permissionModeId && input.permissionModeId !== "yolo") {
+      return err(
+        "invalidRequest",
+        "Kimi Code unattended execution requires the yolo Permission Mode",
+      );
     }
     if (
       (input.kind === "resume" && input.nativeRef.harnessId !== this.harnessId) ||
@@ -392,6 +397,7 @@ export class KimiAdapter implements HarnessAdapter {
         if (input.permissionModeId && !isKimiModeId(input.permissionModeId)) {
           throw new Error(`Unsupported permission mode: ${input.permissionModeId}`);
         }
+        const permissionModeId = input.permissionModeId ?? (unattended ? "yolo" : undefined);
         const requested = [
           ...(input.model
             ? [{ id: "model" as const, value: decodeKimiModelRefId(input.model.id) }]
@@ -399,9 +405,7 @@ export class KimiAdapter implements HarnessAdapter {
           ...(input.thinkingOptionId
             ? [{ id: "thinking" as const, value: input.thinkingOptionId }]
             : []),
-          ...(input.permissionModeId
-            ? [{ id: "mode" as const, value: input.permissionModeId }]
-            : []),
+          ...(permissionModeId ? [{ id: "mode" as const, value: permissionModeId }] : []),
         ];
         const configOptions = await applyRequestedConfig(
           transport,

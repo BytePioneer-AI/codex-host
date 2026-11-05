@@ -4,10 +4,23 @@ import { installRendererManagerMethods } from "./renderer-manager-methods.js";
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** Desktop's in-renderer request manager; the main-process RPC manager has no native resume. */
+export type RendererNativeResumeManager = Exclude<
+  RendererHostRoute["manager"],
+  { readonly kind: "main-process-rpc" }
+>;
+
+export function isRendererNativeResumeManager(
+  manager: RendererHostRoute["manager"],
+): manager is RendererNativeResumeManager {
+  return Reflect.get(manager, "kind") !== "main-process-rpc";
+}
+
 export function installRendererNativeResume(
   target: RendererHostRoute["manager"],
   isCurrent: () => boolean,
 ): (() => void) | null {
+  if (!isRendererNativeResumeManager(target)) return null;
   const original = target.resumeThread;
   const updateConversationState = target.updateConversationState;
   if (!original || !updateConversationState) return null;

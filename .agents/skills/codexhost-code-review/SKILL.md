@@ -7,7 +7,7 @@ description: 审查 codexhost 的 Pull Request 或本地 diff 的正确性与边
 
 这是指引，不是完整清单。它是两段式流程的第二段：[codexhost-pr-overview](../codexhost-pr-overview/SKILL.md) 先在表中给出一批 PR 的总览和推荐分，推荐分为 3（需深度审查）的 PR 再由本 skill 审细节。单独审查一个 PR 时可以直接使用。
 
-先读真实 diff 和周边代码，再按下面的检查找出**有证据的缺陷**。一个有证据的阻断项，好过一串风格建议。本 skill 只产出审查意见；评论、approve、合入等对外动作需用户另行授权。
+先读真实 diff 和周边代码，再按下面的检查找出**有证据的缺陷**。一个有证据的阻断项，好过一串风格建议。本 skill 只产出审查意见；评论、approve、合入等对外动作需用户另行授权。获准合入 PR 时，使用普通 Merge commit（`gh pr merge --merge`），保留分支原始提交；不要使用 Squash merge 或 Rebase merge。
 
 ## 先确认范围
 

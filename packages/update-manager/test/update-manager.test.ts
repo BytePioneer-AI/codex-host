@@ -166,6 +166,7 @@ describe("background update manager", () => {
         node_path: npmFiles.nodePath,
         npm_cli_path: npmFiles.npmCliPath,
         npm_launcher_path: npmFiles.npmLauncherPath,
+        npm_package_root: path.join(root, "npm", "platform-package"),
       },
     });
     await expect(manager.readStatus(prepared.statusPath)).resolves.toEqual({

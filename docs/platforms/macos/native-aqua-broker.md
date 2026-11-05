@@ -77,6 +77,15 @@ local execution. The broker loads the same plugin with native context, avoiding
 recursive broker construction. Neither the generic Host nor the broker imports
 concrete adapters.
 
+Plugins with native Session import can opt into `sessionImport: true` on their
+broker client. Claude Code, Cursor CLI, CodeBuddy and WorkBuddy enable it. The
+broker forwards discovery and fresh resolution to the installed Adapter; it does
+not scan storage or create mappings itself. Candidate metadata is paged over a
+connection-scoped snapshot. A lost snapshot fails the listing rather than mixing
+pages across broker generations; refreshing starts a new snapshot. References
+must match both the requested Session and the broker's Harness. Import and resume
+retain the target Host and do not copy Transcripts to the Desktop machine.
+
 Composer account limits use `adapter.credits` to read the native Adapter's existing
 quota snapshot. The broker client caches it for the Host's synchronous `credits()`
 read and coalesces concurrent refreshes. This forwards Claude Code's native 5-hour

@@ -31,6 +31,8 @@ import {
   type GrokTransportEvent,
 } from "../src/index.js";
 
+import { parseGrokQuestionRequest } from "../src/grok-questions.js";
+
 const initialize: InitializeResponse = {
   protocolVersion: 1,
   agentCapabilities: { loadSession: true },
@@ -167,12 +169,16 @@ class FakeGrokTransport implements GrokAcpTransportLike {
     return null;
   }
 
+  onQuestion!: Parameters<GrokAcpTransportLike["runTurn"]>[3];
+  onFault: ((error: GrokTransportError) => void) | undefined;
   lastPromptText: string | null = null;
   runTurn(
     text: string,
     onEvent: (event: GrokTransportEvent) => void,
     onPermission: (request: GrokPermissionRequest) => Promise<RequestPermissionResponse>,
+    onQuestion: Parameters<GrokAcpTransportLike["runTurn"]>[3],
   ): Promise<PromptResponse> {
+    this.onQuestion = onQuestion;
     this.lastPromptText = text;
     this.#activePromptText = text;
     this.#activePromptEvents = [];
@@ -261,7 +267,10 @@ async function openedSession(
     {},
     {
       randomUUID: () => `grok-id-${++uuid}`,
-      createTransport: () => transport,
+      createTransport: (options) => {
+        transport.onFault = options.onFault;
+        return transport;
+      },
       fetchCredits: async () => null,
     },
   );
@@ -297,7 +306,235 @@ async function nextEvent(
   return output.event;
 }
 
+describe("Grok Adapter questions", () => {
+  const request = parseGrokQuestionRequest({
+    sessionId: "grok-session",
+    toolCallId: "question-1",
+    mode: "default",
+    questions: [
+      {
+        question: "Choose",
+        multiSelect: true,
+        options: [
+          { label: "A", description: "First" },
+          { label: "B", description: "Second" },
+        ],
+      },
+    ],
+  });
+
+  it("round-trips multi-select through Session.execute without touching approvals", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    try {
+      await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("questions"),
+        input: [{ type: "text", text: "ask" }],
+      });
+      await nextEvent(iterator);
+      const pending = transport.onQuestion(request);
+      const output = await nextOutput(iterator);
+      if (output.kind !== "interaction") throw new Error("Missing question");
+      expect(output.interaction).toMatchObject({
+        type: "question",
+        questions: [{ multiple: true }],
+      });
+      const interactionId = output.interaction.interactionId;
+      expect(
+        await session.execute({
+          type: "interaction.respond",
+          interactionId,
+          response: { type: "approval", actionId: "allow-once" },
+        }),
+      ).toMatchObject({ ok: false });
+      expect(
+        await session.execute({
+          type: "interaction.respond",
+          interactionId,
+          response: { type: "question", answers: { q0: ["A", "B"] } },
+        }),
+      ).toMatchObject({ ok: true });
+      await expect(pending).resolves.toEqual({
+        outcome: "accepted",
+        answers: { Choose: ["A", "B"] },
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "interaction.closed",
+        reason: "responded",
+      });
+      expect(
+        await session.execute({
+          type: "interaction.respond",
+          interactionId,
+          response: { type: "question", answers: {} },
+        }),
+      ).toMatchObject({ ok: false });
+      transport.finish();
+      while ((await nextEvent(iterator)).type !== "turn.completed") {
+        /* drain usage */
+      }
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each(["withdraw", "cancel", "finish", "close", "fault"] as const)(
+    "retires pending questions on %s and rejects stale callbacks",
+    async (cause) => {
+      const transport = new FakeGrokTransport();
+      const { adapter, session } = await openedSession(transport);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      const turnId = hostTurnIdSchema.parse("questions");
+      try {
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "ask" }],
+        });
+        await nextEvent(iterator);
+        const ask = transport.onQuestion;
+        const pending = ask(request);
+        const output = await nextOutput(iterator);
+        if (output.kind !== "interaction") throw new Error("Missing question");
+        const interactionId = output.interaction.interactionId;
+        if (cause === "withdraw")
+          transport.event({ type: "interaction.resolved", toolCallId: request.toolCallId });
+        if (cause === "cancel") await session.execute({ type: "turn.cancel", turnId });
+        if (cause === "finish") transport.finish();
+        if (cause === "fault")
+          transport.onFault?.(new GrokTransportError("processExited", "fixture failure"));
+        if (cause === "close") {
+          transport.cancel.mockImplementation(async () => {
+            transport.finish({ stopReason: "cancelled" });
+            return undefined;
+          });
+          await session.close();
+        }
+        await expect(pending).resolves.toEqual({ outcome: "cancelled" });
+        expect(await nextEvent(iterator)).toMatchObject({
+          type: "interaction.closed",
+          interactionId,
+          reason: "cancelled",
+        });
+        expect(
+          await session.execute({
+            type: "interaction.respond",
+            interactionId,
+            response: { type: "question", answers: { q0: ["A"] } },
+          }),
+        ).toMatchObject({ ok: false });
+        if (cause === "withdraw" || cause === "cancel")
+          transport.finish({ stopReason: "cancelled" });
+        while ((await nextEvent(iterator)).type !== "turn.completed") {
+          /* drain usage */
+        }
+        await expect(ask({ ...request, toolCallId: "late" })).resolves.toEqual({
+          outcome: "cancelled",
+        });
+        if (cause !== "close" && cause !== "fault") {
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("next-turn"),
+            input: [{ type: "text", text: "next" }],
+          });
+          expect((await nextEvent(iterator)).type).toBe("turn.started");
+          await expect(ask({ ...request, toolCallId: "stale-turn" })).resolves.toEqual({
+            outcome: "cancelled",
+          });
+          const nextPending = transport.onQuestion(request);
+          expect((await nextOutput(iterator)).kind).toBe("interaction");
+          transport.finish();
+          await expect(nextPending).resolves.toEqual({ outcome: "cancelled" });
+          while ((await nextEvent(iterator)).type !== "turn.completed") {
+            /* drain closure/usage */
+          }
+        }
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+});
+
 describe("Grok Adapter ACP projection", () => {
+  it("keeps pending characters when media appears during an append-only message", async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "grok-media-stream-"));
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => crypto.randomUUID(),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    try {
+      const opened = await adapter.open({ kind: "create", cwd });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const session = opened.value;
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      const turnId = hostTurnIdSchema.parse("grok-media-stream");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "show" }],
+      });
+      expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
+      const first = "![missing](later.png) and `";
+      transport.event({ type: "agent.text", messageId: "first", text: first });
+      const started = await nextEvent(iterator);
+      const update = await nextEvent(iterator);
+      expect(started).toMatchObject({ type: "item.started", item: { type: "agentMessage" } });
+      expect(update).toMatchObject({
+        type: "item.updated",
+        update: { type: "text.append", text: first.slice(0, -1) },
+      });
+      await writeFile(path.join(cwd, "later.png"), "synthetic image");
+      transport.event({ type: "agent.text", messageId: "first", text: "later.png`。done" });
+      // A new message gets a fresh file-check cache; the earlier message keeps its decision.
+      transport.event({
+        type: "agent.text",
+        messageId: "second",
+        text: "![ready](later.png) `unfinished",
+      });
+      transport.finish();
+      const events: HostEvent[] = [started, update];
+      for (;;) {
+        const output = await nextOutput(iterator);
+        if (output.kind !== "event") continue;
+        events.push(output.event);
+        if (output.event.type === "turn.completed") break;
+      }
+      const completed = events.flatMap((event) =>
+        event.type === "item.completed" && event.snapshot.item.type === "agentMessage"
+          ? [event.snapshot.item]
+          : [],
+      );
+      expect(completed.map(({ text }) => text)).toEqual([
+        first + "later.png`。done",
+        `![ready](${path.join(cwd, "later.png").replaceAll("\\", "/")}) \`unfinished`,
+      ]);
+      for (const item of completed) {
+        expect(
+          events
+            .flatMap((event) =>
+              event.type === "item.updated" &&
+              event.itemId === item.itemId &&
+              event.update.type === "text.append"
+                ? [event.update.text]
+                : [],
+            )
+            .join(""),
+        ).toBe(item.text);
+      }
+    } finally {
+      await adapter.close();
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("passes per-Session delegation environment to the ACP transport", async () => {
     const transport = new FakeGrokTransport();
     const createTransport = vi.fn(() => transport);

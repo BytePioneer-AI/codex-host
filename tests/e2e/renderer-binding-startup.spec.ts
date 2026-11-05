@@ -98,6 +98,11 @@ const { outputFiles } = await build({
       globalThis.threadCommandRequests = [];
       globalThis.commandCatalogRequests = [];
       globalThis.appliedConfiguration = null;
+      let draftModel = "native";
+      const draftIdFor = root => {
+        const editor = root.querySelector("[data-codex-composer]");
+        return Object.getOwnPropertyDescriptor(editor, "__reactFiber$startup")?.value.updateQueue.memoCache.data[1][2];
+      };
       const binding = installRendererBindingProbe({
         enabledAgents: ["codex", "pi", "deepseek-harness", "opencode", "claude-code", "grok", "omp", "kiro-cli", ...(globalThis.startupAgent ? [globalThis.startupAgent] : [])],
         defaultAgent: globalThis.startupAgent ?? "pi",
@@ -105,10 +110,11 @@ const { outputFiles } = await build({
       binding.setAdapter(
         { state: "ready", reason: "ready", modelUpdates: 0, hook: "model-state" },
         undefined,
-        (agent, model, thinkingOptionId, permissionModeId) => {
+        (agent, model, thinkingOptionId, permissionModeId, selectedComposer) => {
           globalThis.appliedConfiguration = { agent, model, thinkingOptionId, ...(permissionModeId ? { permissionModeId } : {}) };
+          draftModel = modelSelectionForAgent(null, null, agent, model, thinkingOptionId, permissionModeId)?.model ?? "native";
           window.__codexhostHostRoutingV1?.forComposer()?.policy.select(
-            modelSelectionForAgent(null, null, agent, model, thinkingOptionId, permissionModeId)?.model ?? null,
+            agent === "codex" ? null : draftModel, draftIdFor(selectedComposer ?? composer),
           );
           return true;
         },
@@ -166,15 +172,19 @@ const { outputFiles } = await build({
           onResult: () => {},
           onError: () => {},
         };
-        const policy = createDraftPrewarmPolicyBridge(
-          { onNotification() {}, onRequest() {}, dispatchAppServerResponse() {} },
-          bridge, "local", window, { discardAllPrewarmedThreads() {} },
-        );
+        const pool = { hasPrewarmedThread: () => false, consumePrewarmedThread: async () => null, deletePrewarmedThread() {}, discardAllPrewarmedThreads() {} };
+        const manager = {
+          onNotification() {}, onRequest() {}, dispatchAppServerResponse() {},
+          threadCreation: { params: { prewarmedThreadManager: pool }, createConversation() {} },
+          async startConversation(input, options) { return bridge.sendRequest("thread/start", { cwd: "/fixture/workspace", model: input.collaborationMode.settings.model }); },
+        };
+        const policy = createDraftPrewarmPolicyBridge(manager, bridge, "local", window, pool);
         window.__codexhostHostRoutingV1 = { forComposer: () => ({ hostId: "local", policy }) };
-        globalThis.prewarmTestDraft = () => bridge.prewarmThreadStart({ cwd: "/fixture/workspace", model: "native" });
+        globalThis.prewarmTestDraft = () => bridge.prewarmThreadStart({ cwd: "/fixture/workspace", model: draftModel });
         document.addEventListener("click", (event) => {
           if (!event.defaultPrevented && event.target?.matches("button[type=submit]")) {
-            void bridge.sendRequest("thread/start", { cwd: "/fixture/workspace", model: "native" });
+            const root = event.target.closest("[data-codex-composer-root]");
+            void manager.startConversation({ collaborationMode: { mode: "default", settings: { model: "gpt-reserve" } } }, { clientThreadId: draftIdFor(root) });
           }
         });
       }, 100);

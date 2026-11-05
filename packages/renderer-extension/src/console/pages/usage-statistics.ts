@@ -906,8 +906,8 @@ export function createUsageStatisticsPage(
             key: "hit",
             label: messages.cacheHit,
             sort: (row) =>
-              row.cacheKnownInputTokens > 0
-                ? row.cachedInputTokens / row.cacheKnownInputTokens
+              row.cacheHitInputTokens > 0
+                ? row.cacheHitCachedInputTokens / row.cacheHitInputTokens
                 : -1,
             cell: (row) => cacheHitRate(row),
           },

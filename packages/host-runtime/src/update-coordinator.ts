@@ -249,7 +249,10 @@ export function createHostUpdateCoordinator(
                       onPrepared,
                     });
             }
-            if (platform !== "darwin") await manager.start(prepared);
+            // The Launcher starts the Updater on macOS and Windows. On Windows the
+            // Host Runtime runs in the Shim's kill-on-close Job, so an Updater it
+            // started would be killed together with the Desktop it waits for.
+            if (platform !== "darwin" && platform !== "win32") await manager.start(prepared);
           } catch (error) {
             await lock.release();
             rejectPrepared(error);

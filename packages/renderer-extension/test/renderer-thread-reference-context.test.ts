@@ -4,6 +4,18 @@ import type {
   RendererHostRouting,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { createRendererHostClients } from "../src/renderer-host-clients.js";
+import { createThreadReferenceContext } from "../src/renderer-thread-reference-context.js";
+
+it("does not guess an execution Host from reference text on a main-process RPC stub", () => {
+  const manager = Object.freeze({ kind: "main-process-rpc", sendRequest: vi.fn() });
+  const params = {
+    threadId: "thread",
+    input: [{ type: "text", text: "thread://target?hostId=other-host" }],
+  };
+  const prepare = createThreadReferenceContext(manager, "remote", () => true);
+  expect(prepare(params)).toBe(params);
+  expect(manager.sendRequest).not.toHaveBeenCalled();
+});
 
 function fixture(hostId: string, provider = "codexhost") {
   const rpc = vi.fn(async (method: unknown, params: unknown) => {

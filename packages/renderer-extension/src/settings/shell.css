@@ -548,6 +548,41 @@
   margin-top: 0;
 }
 
+.settings-session-import-host {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+  margin: -12px 0 12px;
+  color: var(--settings-muted);
+  font-size: 13px;
+}
+
+.settings-session-import-host > span,
+.settings-session-import-host + .settings-session-import-harness > span {
+  flex: none;
+  min-width: 60px;
+}
+
+.settings-session-import-host > .settings-connection-host-tabs {
+  flex: 1;
+}
+
+.settings-session-import-host .settings-connection-host-tab {
+  height: 34px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.settings-session-import-host .settings-connection-host-tab:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.settings-session-import-host + .settings-session-import-harness {
+  margin-top: 0;
+}
+
 .settings-session-import-search,
 .settings-session-import-pagination {
   display: flex;
@@ -904,7 +939,8 @@
   background: var(--settings-hover);
 }
 
-.settings-connection-host-tab[aria-selected="true"] {
+.settings-connection-host-tab[aria-selected="true"],
+.settings-connection-host-tab[aria-pressed="true"] {
   color: var(--settings-text);
   font-weight: 600;
   background: var(--settings-active);

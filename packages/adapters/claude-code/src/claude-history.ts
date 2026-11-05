@@ -12,7 +12,11 @@ import {
   type HarnessId,
 } from "@codexhost/shared-contracts";
 
-import { CLAUDE_SUBAGENT_TOOLS, ClaudeNativeTurnAccumulator } from "./native-message.js";
+import {
+  CLAUDE_SUBAGENT_TOOLS,
+  ClaudeNativeTurnAccumulator,
+  claudeSendMessageFailed,
+} from "./native-message.js";
 import { ClaudeBackgroundOccupancy } from "./background-occupancy.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 
@@ -20,6 +24,7 @@ interface ClaudeHistoryMessage {
   type: "user" | "assistant";
   uuid: string;
   message: Record<string, unknown>;
+  failed: boolean;
   /** A Subagent transcript record; live, its tools never reach the Tool lifecycle. */
   nested: boolean;
   syntheticUser: boolean;
@@ -145,7 +150,7 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
   let promptId: string | null = null;
   const occupancy = new ClaudeBackgroundOccupancy();
   let accumulator = new ClaudeNativeTurnAccumulator();
-  const sends = new Set<string>();
+  const sends = new Map<string, string | undefined>();
   let pendingNotification = false;
   for (const value of values) {
     if (!isRecord(value)) throw new Error("Claude history contains a malformed message");
@@ -169,6 +174,10 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
       type: value.type,
       uuid: value.uuid,
       message: value.message,
+      // Failure metadata belongs to the outer SDK/transcript record, not its Message.
+      failed:
+        value.type === "assistant" &&
+        (typeof value.error === "string" || value.isApiErrorMessage === true),
       nested: typeof value.parent_tool_use_id === "string" && value.parent_tool_use_id.length > 0,
       interrupted,
       startsTurn: false,
@@ -195,14 +204,16 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
     for (const event of accumulator.consume(value).events) {
       if (event.type === "subagent.started") {
         if (event.operation === "send") {
-          sends.add(event.callId);
-          if (event.nativeSubagentId) occupancy.occupyAgent(event.nativeSubagentId);
+          sends.set(event.callId, event.nativeSubagentId);
         } else if (event.background) occupancy.occupySpawn(event.callId, event.nativeSubagentId);
       } else if (event.type === "subagent.completed") {
-        if (!event.isError && (event.continuesInBackground || sends.has(event.callId))) {
+        if (sends.has(event.callId)) {
+          const agentId = event.nativeSubagentId ?? sends.get(event.callId);
+          if (!event.isError && agentId) occupancy.occupyAgent(agentId);
+          sends.delete(event.callId);
+        } else if (!event.isError && event.continuesInBackground) {
           occupancy.occupySpawn(event.callId, event.nativeSubagentId);
         } else occupancy.release(event.callId, event.nativeSubagentId);
-        sends.delete(event.callId);
       } else if (event.type === "workflow.launched" && event.background && !event.isError) {
         occupancy.occupySpawn(event.callId, event.taskId);
       } else if (event.type === "subagent.settled") {
@@ -256,7 +267,7 @@ function turnOutcome(messages: ClaudeHistoryMessage[]): HistoricalTurnOutcome {
   if (messages.some(({ interrupted }) => interrupted))
     return { status: "cancelled", reason: "Cancelled by user" };
   const assistants = messages.filter(({ type }) => type === "assistant");
-  const failed = assistants.some(({ message }) => typeof message.error === "string");
+  const failed = assistants.some(({ failed, nested }) => failed && !nested);
   if (failed) {
     return {
       status: "failed",
@@ -355,6 +366,10 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
           ];
         }
         if (message.type !== "assistant") return [];
+        const assistantOutcome: HostItemOutcome =
+          outcome.status === "failed" && (!message.failed || message.nested)
+            ? { status: "succeeded" }
+            : itemOutcome(outcome);
         const content = message.message.content;
         const text = textParts(content).join("");
         const reasoning = thinkingParts(content).join("");
@@ -371,7 +386,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
                     ),
                     text,
                   },
-                  outcome: itemOutcome(outcome),
+                  outcome: assistantOutcome,
                 },
               ]
             : [];
@@ -388,7 +403,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
                 itemId: claudeTranscriptItemId(user.uuid, "reasoning", (reasoningOrdinal += 1)),
                 text: reasoning,
               },
-              outcome: itemOutcome(outcome),
+              outcome: assistantOutcome,
             });
             projectedReasoning = true;
             continue;
@@ -404,7 +419,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
                 ),
                 text,
               },
-              outcome: itemOutcome(outcome),
+              outcome: assistantOutcome,
             });
             projectedText = true;
             continue;
@@ -421,7 +436,9 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
           const result = results.get(block.id);
           if (!result) continue;
           const output = toolResultOutput(result);
-          const failed = result.is_error === true;
+          const failed =
+            result.is_error === true ||
+            (block.name === "SendMessage" && claudeSendMessageFailed(undefined, output));
           const toolOutcome: HostItemOutcome = failed
             ? {
                 status: "failed",

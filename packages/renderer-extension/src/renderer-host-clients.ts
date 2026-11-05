@@ -9,7 +9,10 @@ import {
 } from "./renderer-model-client.js";
 import { installRendererExternalQueue } from "./renderer-external-queue.js";
 import { installRendererExternalSteering } from "./renderer-external-steering.js";
-import { installRendererNativeResume } from "./renderer-native-resume.js";
+import {
+  installRendererNativeResume,
+  isRendererNativeResumeManager,
+} from "./renderer-native-resume.js";
 import { createRemoteAttachmentSender } from "./renderer-remote-attachments.js";
 import { restoreThreadReferenceCapability } from "./renderer-thread-reference-capability.js";
 import { createThreadReferenceContext } from "./renderer-thread-reference-context.js";
@@ -61,6 +64,7 @@ export function createRendererHostClients(
           if (
             method === "thread/resume" &&
             options === undefined &&
+            isRendererNativeResumeManager(target) &&
             target.resumeThread &&
             target.updateConversationState
           ) {
@@ -126,6 +130,7 @@ export function createRendererHostClients(
       nativeClient,
       target,
       () => !disposed && readRouting()?.forHost(route.hostId) === route,
+      messages,
     );
     entries.set(route.hostId, { route, client, cleanups });
     try {

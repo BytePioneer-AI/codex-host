@@ -17,6 +17,7 @@ import {
   hostThreadIdSchema,
 } from "@codexhost/shared-contracts";
 import type { DelegationControlApi, DelegationThreadSnapshot } from "../src/delegation-types.js";
+import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
 import { DelegationWatchService } from "../src/delegation-watch.js";
 import { type CodexAccountControl } from "../src/account/codex-account-control.js";
 
@@ -719,6 +720,187 @@ describe("AppServerHost HarnessAdapter projection", () => {
       ]),
     });
     await stopFixture(fixture);
+  });
+
+  it("merges native Threads from several sessions in the order each session page is sorted by", async () => {
+    const registry = new DelegationControlRegistry();
+    const sessions = [];
+    for (let index = 0; index < 2; index++) {
+      const fixture = createFixture({
+        onDelegationApi: (api) => registry.register(api),
+      });
+      await fixture.ready;
+      await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+      sessions.push(fixture);
+    }
+    // Each official page is already newest first; the IDs sort the other way across sessions.
+    const pages = [
+      [{ id: "a-newest", cwd: "/synthetic", createdAt: 4_000, updatedAt: 4_000 }],
+      [{ id: "b-newer", cwd: "/synthetic", createdAt: 3_000, updatedAt: 3_000 }],
+    ];
+    try {
+      const pending = registry.list({ cwd: "/synthetic", limit: 2, sort: "created-desc" });
+      await Promise.all(
+        sessions.map(async (fixture, index) => {
+          const request = await readJsonLine(fixture.official.stdin);
+          expect(request).toMatchObject({
+            method: "thread/list",
+            params: { sortKey: "created_at", sortDirection: "desc" },
+          });
+          const data = (pages[index] ?? []).map((row) => ({ ...row, status: { type: "idle" } }));
+          fixture.official.stdout.write(
+            `${JSON.stringify({ id: request.id, result: { data, nextCursor: null } })}\n`,
+          );
+        }),
+      );
+      const page = await pending;
+      expect(page.threads.map((thread) => thread.threadId)).toEqual(["a-newest", "b-newer"]);
+      expect(page.threads[1]).toMatchObject({ createdAt: new Date(3_000_000).toISOString() });
+    } finally {
+      registry.close();
+      for (const fixture of sessions) await stopFixture(fixture);
+    }
+  });
+
+  it("merges native recency pages from several sessions by recencyAt before updatedAt", async () => {
+    const registry = new DelegationControlRegistry();
+    const sessions = [];
+    for (let index = 0; index < 2; index++) {
+      const fixture = createFixture({
+        onDelegationApi: (api) => registry.register(api),
+      });
+      await fixture.ready;
+      await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+      sessions.push(fixture);
+    }
+    // updatedAt alone would put "b-updated" first; the native recency order is recencyAt.
+    const pages = [
+      [{ id: "a-recent", cwd: "/synthetic", createdAt: 1, updatedAt: 100, recencyAt: 300 }],
+      [{ id: "b-updated", cwd: "/synthetic", createdAt: 1, updatedAt: 400, recencyAt: 200 }],
+    ];
+    try {
+      const pending = registry.list({ cwd: "/synthetic", limit: 1, sort: "recency-desc" });
+      await Promise.all(
+        sessions.map(async (fixture, index) => {
+          const request = await readJsonLine(fixture.official.stdin);
+          expect(request).toMatchObject({
+            method: "thread/list",
+            params: { sortKey: "recency_at", sortDirection: "desc" },
+          });
+          const data = (pages[index] ?? []).map((row) => ({ ...row, status: { type: "idle" } }));
+          fixture.official.stdout.write(
+            `${JSON.stringify({ id: request.id, result: { data, nextCursor: null } })}\n`,
+          );
+        }),
+      );
+      const page = await pending;
+      expect(page.threads.map((thread) => thread.threadId)).toEqual(["a-recent"]);
+      expect(page.threads[0]).toMatchObject({
+        updatedAt: new Date(100_000).toISOString(),
+        recencyAt: new Date(300_000).toISOString(),
+      });
+    } finally {
+      registry.close();
+      for (const fixture of sessions) await stopFixture(fixture);
+    }
+  });
+
+  it("leaves out native list timestamps a Date cannot hold instead of failing the list", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+      },
+    });
+    await fixture.ready;
+    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+    try {
+      if (!delegationApi) throw new Error("Delegation API was not registered");
+      const pending = delegationApi.list({ cwd: "/synthetic", limit: 1, sort: "created-desc" });
+      const request = await readJsonLine(fixture.official.stdin);
+      // A safe integer of seconds, but past the largest time a Date can represent.
+      const outOfRange = 8_640_000_000_001;
+      fixture.official.stdout.write(
+        `${JSON.stringify({
+          id: request.id,
+          result: {
+            data: [
+              {
+                id: "far-future",
+                cwd: "/synthetic",
+                createdAt: outOfRange,
+                updatedAt: 2_000,
+                recencyAt: outOfRange,
+                status: { type: "idle" },
+              },
+            ],
+            nextCursor: null,
+          },
+        })}\n`,
+      );
+      const page = await pending;
+      expect(page.threads).toHaveLength(1);
+      expect(page.threads[0]).toMatchObject({
+        threadId: "far-future",
+        updatedAt: new Date(2_000_000).toISOString(),
+      });
+      expect(page.threads[0]).not.toHaveProperty("createdAt");
+      expect(page.threads[0]).not.toHaveProperty("recencyAt");
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("orders an out-of-range native timestamp by its native seconds across sessions", async () => {
+    const registry = new DelegationControlRegistry();
+    const sessions = [];
+    for (let index = 0; index < 2; index++) {
+      const fixture = createFixture({
+        onDelegationApi: (api) => registry.register(api),
+      });
+      await fixture.ready;
+      await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+      sessions.push(fixture);
+    }
+    // A safe integer of seconds past the largest Date: native recency order puts it first, and
+    // its recencyAt (not its older updatedAt) is what native sorts by.
+    const outOfRange = 8_640_000_000_001;
+    const pages = [
+      [{ id: "a-recent", cwd: "/synthetic", createdAt: 1, updatedAt: 5, recencyAt: 300 }],
+      [{ id: "b-far", cwd: "/synthetic", createdAt: 1, updatedAt: 100, recencyAt: outOfRange }],
+    ];
+    try {
+      const pending = registry.list({ cwd: "/synthetic", limit: 1, sort: "recency-desc" });
+      await Promise.all(
+        sessions.map(async (fixture, index) => {
+          const request = await readJsonLine(fixture.official.stdin);
+          expect(request).toMatchObject({
+            method: "thread/list",
+            params: { sortKey: "recency_at", sortDirection: "desc" },
+          });
+          const data = (pages[index] ?? []).map((row) => ({ ...row, status: { type: "idle" } }));
+          fixture.official.stdout.write(
+            `${JSON.stringify({ id: request.id, result: { data, nextCursor: null } })}\n`,
+          );
+        }),
+      );
+      const page = await pending;
+      expect(page.threads.map((thread) => thread.threadId)).toEqual(["b-far"]);
+      // The raw seconds order the merge but never reach the list contract.
+      expect(page.threads[0]).toEqual({
+        threadId: "b-far",
+        harnessId: "codex",
+        deepLink: "codex://threads/b-far",
+        status: "completed",
+        cwd: "/synthetic",
+        createdAt: new Date(1_000).toISOString(),
+        updatedAt: new Date(100_000).toISOString(),
+      });
+      expect(JSON.parse(JSON.stringify(page.threads[0]))).not.toHaveProperty("recencyAt");
+    } finally {
+      registry.close();
+      for (const fixture of sessions) await stopFixture(fixture);
+    }
   });
 
   it("sends and cancels follow-up Turns on an external delegated Thread", async () => {

@@ -42,7 +42,6 @@ describe("Renderer settings localization", () => {
     expect(chinese.updateWaitingForExit).toBe("正在等待应用退出...");
     expect(chinese.updateInstallingNpm).toBe("正在通过 npm 安装...");
     expect(chinese.updateAndRestart).toBe("更新");
-    expect(chinese.updateWindowsManualRequired).toContain("Windows 暂不支持自动更新");
     expect(chinese.updateWindowsInstallerDescription).toContain("适用于当前系统的安装包");
     expect(chinese.updateManualNpmDescription).toBe(
       "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
@@ -60,11 +59,11 @@ describe("Renderer settings localization", () => {
     expect(chinese.updateStarLink).toBe("GitHub");
     expect(chinese.pageLabels.about).toBe("关于");
     expect(chinese.pageLabels["session-import"]).toBe("会话导入");
-    expect(chinese.sessionImportAvailabilityNote).toContain("可选 Harness 来自本地 Host");
+    expect(chinese.sessionImportAvailabilityNote).toContain("可选 Harness 来自当前 Host");
     expect(chinese.sessionImportAvailabilityNote).toContain("先在原生客户端关闭该会话再导入");
     expect(chinese.sessionImportAvailabilityNote).toContain("避免同时写入");
     expect(english.sessionImportAvailabilityNote).toContain(
-      "Available Harnesses come from the local Host",
+      "Available Harnesses come from the selected Host",
     );
     expect(english.sessionImportAvailabilityNote).toContain(
       "close the session in its native client before importing",

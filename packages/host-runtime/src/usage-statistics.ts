@@ -159,6 +159,8 @@ function emptyTotals(): UsageStatisticsTotals {
     cachedInputTokens: 0,
     cacheWriteInputTokens: 0,
     cacheKnownInputTokens: 0,
+    cacheHitCachedInputTokens: 0,
+    cacheHitInputTokens: 0,
     outputTokens: 0,
     reasoningOutputTokens: 0,
     costUsd: 0,
@@ -177,6 +179,10 @@ function addEntry(totals: UsageStatisticsTotals, entry: HarnessUsageEntry, cost:
   totals.inputTokens += entry.inputTokens;
   totals.outputTokens += entry.outputTokens;
   totals.reasoningOutputTokens += entry.reasoningOutputTokens ?? 0;
+  if (entry.cachedInputTokens !== undefined) {
+    totals.cacheHitCachedInputTokens += entry.cachedInputTokens;
+    totals.cacheHitInputTokens += entry.inputTokens;
+  }
   if (entry.cachedInputTokens !== undefined && entry.cacheWriteInputTokens !== undefined) {
     totals.cachedInputTokens += entry.cachedInputTokens;
     totals.cacheWriteInputTokens += entry.cacheWriteInputTokens;

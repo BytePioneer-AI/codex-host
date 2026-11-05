@@ -5,6 +5,7 @@ import type {
   RendererHostRouting,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { createRendererHostClients } from "../src/renderer-host-clients.js";
+import type { RendererNativeResumeManager } from "../src/renderer-native-resume.js";
 
 function fixture(inheritedResume = false) {
   let provider = "openai";
@@ -102,7 +103,7 @@ function fixture(inheritedResume = false) {
   return {
     clients,
     client,
-    manager: route.manager,
+    manager: route.manager as RendererNativeResumeManager,
     managerPrototype,
     resumeThread,
     sendRequest,

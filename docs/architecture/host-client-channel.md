@@ -90,6 +90,8 @@ Web 将同一 Thread 的变化按 100ms 合并，读取中再次变化会安排�
 
 Web 网关当前只使用 `knownTurns`：`ChThreadHistory` 把窗口里已持有的已结束 Turn（最近 16 个，指纹随 Turn 保存）发给 Host，把占位还原成本地副本再投影。必须回退到完整快照的情况：Host 换代（视图随之退役，本地副本与指纹一并丢弃）、hello `reset=true`（清除已持有指纹，下一次读取发送空 `knownTurns`）、占位的指纹与本地副本不符或本地没有该 Turn（立即以空 `knownTurns` 重读一次，若仍返回占位则报错）、旧 Host（不返回指纹，从不发送占位）。Web 网关**不**启用 `truncateToolOutput`：DSH 界面没有按需展开长输出的路径，浏览器必须收到完整输出，而截断只会改善本机 Host 到网关的 HTTP，却多出一次 `thread/items/list`；该选项原样开放给 `/api/ch/v1/snapshot` 的原生 App，它们自行用 `thread/items/list` 展开。
 
+Web HTTP 与浏览器 WebSocket 的压缩规则集中于 `packages/web-server/src/compression.ts`，共用 1 KiB 阈值。HTTP 的内置资产与 RPC JSON 回复仅压缩 `text/*`、`application/json`、`application/javascript`、`image/svg+xml`、`application/manifest+json`（忽略 Content-Type 参数）；按 Accept-Encoding 优先选择 br（quality 5），其次 gzip（level 6），`q=0` 拒绝该编码，不按其他 q 值排序。可压缩类型均带 `Vary: Accept-Encoding`，达到阈值且协商成功时使用异步 zlib 压缩。带 rev 的插件资源与 `/assets/` 的压缩结果按编码和完整 URL 缓存在同一个 Map 中，并发请求共享待完成结果，超过 64 条整体清空；其他回复逐次压缩。SSE、`/api/file` 图片、上传、`/api/ch/v1/` 网关及外部插件自管响应不经过这条压缩路径。
+
 浏览器 WebSocket（`/api/remote.mux`）对不小于 1 KiB 的帧启用 `permessage-deflate`（`server/clientNoContextTakeover`，level 3，zlib 并发上限 4），仅作用于浏览器一侧；Host 与网关之间的本机 HTTP 不压缩。禁用上下文复用后每帧独立压缩，1 KiB 以下的投影更新不压缩，连接不保留 deflate 窗口。
 
 Web 的 `session/control` 状态流必须先发送 baseline，再发送 projection 更新。异步草稿元数据准备完成后，服务端在同一个同步步骤中读取当前会话投影、注册广播并发送 baseline；准备期间的队列删除直接反映在 baseline 中。提前关闭的连接不再注册广播，避免异步准备结束后留下失效订阅。

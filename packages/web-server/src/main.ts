@@ -18,6 +18,7 @@ import { parseArgs } from "node:util";
 
 import qrcode from "qrcode-terminal";
 import { createBrowserWebSocketServer } from "./browser-websocket.ts";
+import { compressResponse } from "./compression.ts";
 
 import { registerAccessTokenRpc } from "./access-token-rpc.ts";
 import {
@@ -434,17 +435,29 @@ registerUiExtensionRpc(rpc, extensions, {
 });
 registerVoiceStatus(rpc, chHost);
 
-function send(response: ServerResponse, asset: AssetResponse | undefined, cache = false): void {
+async function send(
+  request: IncomingMessage,
+  response: ServerResponse,
+  asset: AssetResponse | undefined,
+  cache = false,
+): Promise<void> {
   if (asset === undefined) {
     response.writeHead(404, { "content-type": "text/plain" }).end("not found");
     return;
   }
+  const compressed = await compressResponse(
+    asset.body,
+    asset.contentType,
+    request.headers["accept-encoding"],
+    cache ? request.url : undefined,
+  );
   response
     .writeHead(200, {
       "content-type": asset.contentType,
       "cache-control": cache ? "public, max-age=31536000, immutable" : "no-cache",
+      ...compressed.headers,
     })
-    .end(asset.body);
+    .end(compressed.body);
 }
 
 async function readBody(
@@ -541,16 +554,23 @@ const server = createServer((request, response) => {
       const reply = await rpc.handleHttp(body, requestAuth, (callback) => {
         response.once("finish", callback);
       });
+      const contentType = "application/json; charset=utf-8";
+      const compressed = await compressResponse(
+        Buffer.from(reply),
+        contentType,
+        request.headers["accept-encoding"],
+      );
       response
         .writeHead(200, {
-          "content-type": "application/json; charset=utf-8",
+          "content-type": contentType,
           "cache-control": "no-store",
+          ...compressed.headers,
         })
-        .end(reply);
+        .end(compressed.body);
       return;
     }
     if (pathname === "/extensions") {
-      send(response, {
+      await send(request, response, {
         contentType: "text/html; charset=utf-8",
         body: Buffer.from(UI_EXTENSION_PAGE),
       });
@@ -563,7 +583,8 @@ const server = createServer((request, response) => {
         !builtInOnly && pluginRuntime !== undefined
           ? { ...source, body: Buffer.from(pluginRuntime.renderIndex(source.body.toString())) }
           : source;
-      send(
+      await send(
+        request,
         response,
         auth === undefined
           ? index
@@ -585,12 +606,17 @@ const server = createServer((request, response) => {
       return;
     }
     if (pathname.startsWith("/plugins/")) {
-      send(response, assets.plugin(url) ?? recoveryAssets.plugin(url), url.includes("rev="));
+      await send(
+        request,
+        response,
+        assets.plugin(url) ?? recoveryAssets.plugin(url),
+        url.includes("rev="),
+      );
       return;
     }
     if (pathname === "/harness-icons/presentation.json") {
       const plugins = await sessions.catalog.list();
-      send(response, {
+      await send(request, response, {
         contentType: "application/json",
         body: Buffer.from(JSON.stringify(harnessIconStyles(plugins))),
       });
@@ -598,7 +624,7 @@ const server = createServer((request, response) => {
     }
     if (pathname.startsWith("/harness-icons/")) {
       const id = decodeURIComponent(pathname.slice("/harness-icons/".length));
-      send(response, await sessions.catalog.icon(id));
+      await send(request, response, await sessions.catalog.icon(id));
       return;
     }
     if (pluginRuntime !== undefined && (auth === undefined || requestAuth !== undefined)) {
@@ -608,7 +634,7 @@ const server = createServer((request, response) => {
       }
       if (await pluginRuntime.handle(request, response)) return;
     }
-    send(response, assets.dist(pathname), pathname.startsWith("/assets/"));
+    await send(request, response, assets.dist(pathname), pathname.startsWith("/assets/"));
   })().catch((error: unknown) => {
     console.error("[http] request failed", error);
     if (!response.headersSent) response.writeHead(500).end("internal error");

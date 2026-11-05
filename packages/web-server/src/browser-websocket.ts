@@ -1,9 +1,7 @@
 /** WebSocket server options for the browser-facing multiplexed stream. */
 import { WebSocketServer, type ServerOptions } from "ws";
 
-/** Frames shorter than this are sent uncompressed: deflate costs more than it saves.
- * ws applies the threshold only when the sending side has no context takeover. */
-export const BROWSER_DEFLATE_THRESHOLD = 1024;
+import { COMPRESSION_THRESHOLD } from "./compression.ts";
 
 /**
  * Compress large JSON frames (history, tool output) for LAN/Tailscale/remote
@@ -17,7 +15,7 @@ export const BROWSER_WEBSOCKET_OPTIONS: ServerOptions = {
   noServer: true,
   maxPayload: 64 * 1024 * 1024,
   perMessageDeflate: {
-    threshold: BROWSER_DEFLATE_THRESHOLD,
+    threshold: COMPRESSION_THRESHOLD,
     zlibDeflateOptions: { level: 3, chunkSize: 16 * 1024 },
     zlibInflateOptions: { chunkSize: 16 * 1024 },
     serverNoContextTakeover: true,

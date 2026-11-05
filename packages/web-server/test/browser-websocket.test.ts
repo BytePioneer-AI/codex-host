@@ -4,10 +4,10 @@ import type { AddressInfo } from "node:net";
 import { it, type TestContext } from "node:test";
 import { WebSocket } from "ws";
 import {
-  BROWSER_DEFLATE_THRESHOLD,
   BROWSER_WEBSOCKET_OPTIONS,
   createBrowserWebSocketServer,
 } from "../src/browser-websocket.ts";
+import { COMPRESSION_THRESHOLD } from "../src/compression.ts";
 
 async function connect(t: TestContext, offerDeflate: boolean) {
   const server = createServer();
@@ -59,7 +59,7 @@ it("compresses large frames to a browser that offers deflate, keeping the frame 
 
 it("sends frames below the threshold uncompressed and serves browsers without deflate", async (t) => {
   const compressed = await connect(t, true);
-  const small = "s".repeat(BROWSER_DEFLATE_THRESHOLD - 64);
+  const small = "s".repeat(COMPRESSION_THRESHOLD - 64);
   // 2 byte header, no compression: roughly the payload length plus framing.
   const wire = await send(compressed.peer, compressed.client, small);
   assert.ok(wire >= small.length && wire < small.length + 16, String(wire));

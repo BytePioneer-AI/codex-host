@@ -4,6 +4,7 @@ import type { ChatNodeViewProps, TurnTailOwnerProps } from "../contract/slots.ts
 import { MessageIconActions } from "./MessageIconActions.tsx";
 import { TurnChangesCard } from "./TurnChangesCard.tsx";
 import { assistantText } from "./turn-assistant.ts";
+import { useTurnMessageTime } from "./turn-message-time.ts";
 import { hasAssistantReplyContent } from "../contract/assistant-content.ts";
 import type { ChatNode } from "../contract/chat-nodes.ts";
 import type { ChatSnapshot } from "../contract/snapshot.ts";
@@ -67,6 +68,7 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
   });
   const turn =
     node.location.kind === "turn" || node.location.kind === "step" ? node.location.turn : undefined;
+  const time = useTurnMessageTime(useProjection, turn?.turn, "end");
   if (turn === undefined) return null;
   const closing = data.closing;
   const owner: TurnTailOwnerProps = { turn, seq: closing?.finalNode.seq ?? data.seq, openFile };
@@ -94,7 +96,7 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
       {tail}
       <MessageIconActions
         text={assistantText(closing.blocks)}
-        time={closing.time}
+        time={time}
         clock="end"
         // The branch action owns boundary resolution: it sends the real
         // turn/end seq it already has, and the Host cuts exactly there.

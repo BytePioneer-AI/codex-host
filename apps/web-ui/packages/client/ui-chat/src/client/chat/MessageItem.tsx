@@ -22,6 +22,7 @@ import type { ModelRetryNode, TurnErrorNode, UserMessageNode } from "../contract
 import { CompactionItem } from "./CompactionItem.tsx";
 import { ContextInjectionRow } from "./ContextInjectionRow.tsx";
 import { MessageIconActions } from "./MessageIconActions.tsx";
+import { useTurnMessageTime } from "./turn-message-time.ts";
 import { SentMessageEditor } from "./SentMessageEditor.tsx";
 import css from "./MessageItem.module.css";
 
@@ -383,9 +384,15 @@ export const UserMessageNodeView = memo(function UserMessageNodeView({
   openFile,
   openSkill,
   messageEditing,
+  useProjection,
   t,
 }: ChatNodeViewProps<"user" | "steering">) {
   const data = node.data;
+  const turn =
+    node.location.kind === "turn" || node.location.kind === "step"
+      ? node.location.turn.turn
+      : undefined;
+  const time = useTurnMessageTime(useProjection, turn, "start");
   return (
     <UserStyleBubble
       content={data.content}
@@ -417,7 +424,7 @@ export const UserMessageNodeView = memo(function UserMessageNodeView({
             ) : null
           }
           text={text}
-          time={data.time}
+          time={node.kind === "user" ? time : undefined}
           clock="start"
           className={css.actions}
           t={t}

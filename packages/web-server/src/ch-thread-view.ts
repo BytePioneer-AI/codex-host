@@ -287,6 +287,7 @@ export class ChThreadView {
     for (const [id, view] of page.turns) this.turns.set(id, view);
     this.turnStart = start;
     this.thread.turns = [...turns, ...this.thread.turns];
+    this.publishMessageTimes();
     this.publishFileChanges();
   }
 
@@ -315,7 +316,32 @@ export class ChThreadView {
       this.log.clock = undefined;
     }
     this.log.setProjection("codexhostToolOutput", Object.fromEntries(this.liveOutput));
+    this.publishMessageTimes();
     this.publishFileChanges();
+  }
+
+  private publishMessageTimes(): void {
+    // Journal replay clocks may be synthetic; message labels require native boundaries.
+    this.log.setProjection(
+      "codexhostTurnTimes",
+      Object.fromEntries(
+        this.thread.turns.flatMap((turn) => {
+          const view = this.turns.get(turn.id);
+          if (!view) return [];
+          const start = nativeTime(turn.startedAt);
+          const end = nativeTime(turn.completedAt);
+          return [
+            [
+              view.projector.turn,
+              {
+                start: start ?? null,
+                end: end !== undefined && (start === undefined || end >= start) ? end : null,
+              },
+            ],
+          ];
+        }),
+      ),
+    );
   }
 
   private publishFileChanges(): void {

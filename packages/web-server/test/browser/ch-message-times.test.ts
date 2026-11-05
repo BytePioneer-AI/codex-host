@@ -4,12 +4,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
 import { chromium } from "playwright";
+import { expect } from "@playwright/test";
 import { FakeChChannel, startFakeChChannel } from "../support/ch-channel.ts";
 import { startFakeChDebugger } from "../support/ch-host.ts";
 import { startServer } from "../support/server.ts";
 
 it(
-  "shows original message times after loading and reopening shared history",
+  "shows only available native message times after loading and reopening shared history",
   { timeout: 30_000 },
   async (t) => {
     const directory = mkdtempSync(join(tmpdir(), "ch-message-times-"));
@@ -32,6 +33,25 @@ it(
         ],
       },
     ];
+    for (const [id, timing] of Object.entries({
+      untimed: {},
+      "start-only": { startedAt: Date.UTC(2024, 0, 3, 1, 2) / 1000 },
+      "end-only": { completedAt: Date.UTC(2024, 0, 4, 1, 3) / 1000 },
+    })) {
+      row.turns.push({
+        id,
+        status: "completed",
+        ...timing,
+        items: [
+          {
+            id: `${id}-user`,
+            type: "userMessage",
+            content: [{ type: "text", text: `${id} question` }],
+          },
+          { id: `${id}-answer`, type: "agentMessage", text: `${id} answer` },
+        ],
+      });
+    }
     const debug = await startFakeChDebugger(host);
     t.after(() => debug.close());
     const channel = await startFakeChChannel(host, directory);
@@ -52,7 +72,7 @@ it(
     const browser = await chromium.launch();
     t.after(() => browser.close());
     const page = await browser.newPage({
-      viewport: { width: 1280, height: 900 },
+      viewport: { width: 1280, height: 1600 },
       timezoneId: "Asia/Shanghai",
       locale: "en-US",
     });
@@ -69,11 +89,13 @@ it(
       .click();
 
     for (let attempt = 0; attempt < 2; attempt++) {
-      await page.getByText("Earlier answer", { exact: true }).waitFor();
+      await page.getByText("end-only answer", { exact: true }).waitFor();
       const user = page.locator('[data-clock="start"]');
       const assistant = page.locator('[data-clock="end"]');
-      assert.equal(await user.innerText(), "2024-1-2 09:02");
-      assert.equal(await assistant.innerText(), "2024-1-2 09:03");
+      await expect(user).toHaveText(["2024-1-2 09:02", "", "2024-1-3 09:02", ""]);
+      await expect(assistant).toHaveText(["2024-1-2 09:03", "", "", "2024-1-4 09:03"]);
+      await expect(user.getByRole("button", { name: "Copy", exact: true })).toHaveCount(4);
+      await expect(assistant.getByRole("button", { name: "Copy", exact: true })).toHaveCount(4);
       if (attempt === 0) await page.reload();
     }
     assert.ok(host.snapshots > 0, "message timing survives the shared snapshot contract");

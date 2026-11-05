@@ -90,6 +90,13 @@ it("preserves native message times across paging, refreshes and reopening", asyn
     view.log.events.filter((event) => event.type === type).map((event) => event.time);
   const expected = (key: "startedAt" | "completedAt", count: number) =>
     row.turns.slice(-count).map((turn) => Number(turn[key]) * 1000);
+  const labels = (history: ChThreadHistory) =>
+    Object.values(history.log.projections.codexhostTurnTimes ?? {});
+  const expectedLabels = (count: number) =>
+    row.turns.slice(-count).map((turn) => ({
+      start: Number(turn.startedAt) * 1000,
+      end: Number(turn.completedAt) * 1000,
+    }));
 
   await view.refresh();
   assert.deepEqual(times("user/message"), expected("startedAt", 5));
@@ -97,6 +104,7 @@ it("preserves native message times across paging, refreshes and reopening", asyn
   assert.deepEqual(times("turn/start"), expected("startedAt", 5));
   assert.deepEqual(times("turn/end"), expected("completedAt", 5));
   assert.equal(view.log.clock, undefined);
+  assert.deepEqual(labels(view), expectedLabels(5));
 
   const tail = structuredClone(view.log.events);
   t.mock.timers.tick(60_000);
@@ -106,9 +114,11 @@ it("preserves native message times across paging, refreshes and reopening", asyn
   assert.deepEqual(times("user/message"), expected("startedAt", 12));
   assert.deepEqual(times("assistant/message"), expected("completedAt", 12));
   assert.deepEqual(view.log.events.slice(-tail.length), tail);
+  assert.deepEqual(labels(view), expectedLabels(12));
 
   const reopened = new ChThreadHistory(host, row, "fake", () => {});
   await reopened.refresh();
+  assert.deepEqual(labels(reopened), expectedLabels(5));
   for (const type of ["user/message", "assistant/message"])
     assert.deepEqual(
       reopened.log.events.filter((event) => event.type === type).map((event) => event.time),
@@ -134,11 +144,38 @@ it("uses stable historical fallbacks when native timing is missing or invalid", 
     view.log.events.filter((event) => event.type === "turn/end").map((event) => event.time),
     [10_000, 10_000, 10_000, 10_000, 20_000],
   );
+  assert.deepEqual(Object.values(view.log.projections.codexhostTurnTimes ?? {}), [
+    { start: 0, end: 10_000 },
+    { start: null, end: null },
+    { start: null, end: null },
+    { start: null, end: null },
+    { start: 20_000, end: null },
+  ]);
 
   const untimed = fixture(1);
   Object.assign(defined(untimed.row.turns[0]), { startedAt: null, completedAt: null });
   await untimed.view.refresh();
   assert.ok(untimed.view.log.events.every((event) => event.time === untimed.row.createdAt * 1000));
+  assert.deepEqual(Object.values(untimed.view.log.projections.codexhostTurnTimes ?? {}), [
+    { start: null, end: null },
+  ]);
+});
+
+it("publishes only available native boundaries even when the journal needs a fallback", async () => {
+  const { row, view } = fixture(2);
+  Object.assign(defined(row.turns[0]), { startedAt: 100, completedAt: null });
+  Object.assign(defined(row.turns[1]), { startedAt: null, completedAt: 200 });
+  await view.refresh();
+  assert.deepEqual(Object.values(view.log.projections.codexhostTurnTimes ?? {}), [
+    { start: 100_000, end: null },
+    { start: null, end: 200_000 },
+  ]);
+  Object.assign(defined(row.turns[0]), { completedAt: 150 });
+  await view.refresh(true);
+  assert.deepEqual(Object.values(view.log.projections.codexhostTurnTimes ?? {}), [
+    { start: 100_000, end: 150_000 },
+    { start: null, end: 200_000 },
+  ]);
 });
 
 it("does not drain history on refresh and fills new-Turn gaps beyond five Turns", async () => {

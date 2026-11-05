@@ -120,6 +120,7 @@ it(
       host.add(`project-${i}-session`, `/computer/project-${i}`, `Project ${i} conversation`);
     for (let i = 0; i < 8; i++)
       host.add(`alpha-${i}`, "/computer/alpha", `Alpha conversation ${i}`);
+    host.add("loose-session", "/computer/loose", "Loose conversation", false).updatedAt = 3000;
     const debug = await startFakeChDebugger(host);
     t.after(() => debug.close());
     const url = await startServer(
@@ -148,6 +149,29 @@ it(
     await section.waitFor();
     assert.equal(await workspaceRows(), 5, "the Workspace list starts at its default window");
     assert.equal(await workspaceWindow.count(), 1);
+
+    const initialWorkspaceKeys = (await rowKeys(page)).filter(
+      (key) => key?.startsWith("workspace:") && key !== "workspace:",
+    );
+    await page
+      .locator('[role="tree"] [data-row-key^="workspace:"]')
+      .filter({ hasText: /^project-0$/ })
+      .click();
+    for (const key of [
+      "session:project-0-session",
+      "recent:loose-session",
+      "session:project-0-session",
+    ]) {
+      await page.locator(`[data-row-key="${key}"]`).click();
+      await page.locator(`[data-row-key="${key}"][aria-selected="true"]`).waitFor();
+      assert.deepEqual(
+        (await rowKeys(page)).filter(
+          (rowKey) => rowKey?.startsWith("workspace:") && rowKey !== "workspace:",
+        ),
+        initialWorkspaceKeys,
+        "switching between a visible Workspace and Recents preserves the first five Workspaces",
+      );
+    }
 
     await workspaceWindow.click();
     assert.equal(await workspaceRows(), 9, "expanding reveals every Workspace");

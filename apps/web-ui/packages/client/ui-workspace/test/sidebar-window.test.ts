@@ -63,8 +63,31 @@ it("shows the leading Workspaces and hides the rest by default", () => {
   );
   assert.equal(result.hiddenCount, 2);
 });
-it("keeps a Workspace that must stay reachable in place without spending the quota", () => {
+it("keeps the initial Workspace window stable when selecting a visible Workspace or Recents", () => {
+  const source = workspaces();
+  for (const key of ["a", undefined, "e", undefined]) {
+    const result = workspaceWindow(
+      source,
+      WORKSPACE_INITIAL_ROWS,
+      new Set(key === undefined ? [] : [key]),
+    );
+    assert.deepEqual(
+      result.rows.map((row) => row.key),
+      ["a", "b", "c", "d", "e"],
+    );
+    assert.equal(result.hiddenCount, 2);
+  }
+});
+it("keeps a Workspace outside the initial window reachable in its original position", () => {
   const result = workspaceWindow(workspaces(), WORKSPACE_INITIAL_ROWS, new Set(["g"]));
+  assert.deepEqual(
+    result.rows.map((row) => row.key),
+    ["a", "b", "c", "d", "e", "g"],
+  );
+  assert.equal(result.hiddenCount, 1);
+});
+it("reveals a hidden Workspace without adding unrelated rows for a visible current Workspace", () => {
+  const result = workspaceWindow(workspaces(), WORKSPACE_INITIAL_ROWS, new Set(["b", "g"]));
   assert.deepEqual(
     result.rows.map((row) => row.key),
     ["a", "b", "c", "d", "e", "g"],

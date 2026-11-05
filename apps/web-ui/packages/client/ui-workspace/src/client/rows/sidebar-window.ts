@@ -28,11 +28,11 @@ export function sidebarWindow<T extends SidebarRow>(
 }
 
 /**
- * Window over root Workspace rows, not over their Sessions. Rows the caller
- * must keep reachable belong to `keepKeys` and stay in place without consuming
- * the ordinary quota, like the current Session row inside a Workspace.
+ * Window over root Workspace rows, not over their Sessions. The leading rows
+ * stay stable; `keepKeys` additionally reveals required rows outside that window
+ * in their original positions.
  * @param groups - root Workspaces in render order.
- * @param limit - ordinary Workspaces shown before the reveal control.
+ * @param limit - leading Workspaces shown before the reveal control.
  * @param keepKeys - root keys that always stay visible.
  * @returns the visible rows in order plus the hidden row count.
  */
@@ -41,7 +41,6 @@ export function workspaceWindow<T extends { key: string }>(
   limit: number,
   keepKeys: ReadonlySet<string>,
 ): { rows: readonly T[]; hiddenCount: number } {
-  let ordinary = 0;
-  const rows = groups.filter((group) => keepKeys.has(group.key) || ordinary++ < limit);
+  const rows = groups.filter((group, index) => index < limit || keepKeys.has(group.key));
   return { rows, hiddenCount: groups.length - rows.length };
 }

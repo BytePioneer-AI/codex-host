@@ -84,7 +84,25 @@ npm start web -- --no-build --keep-host --safe-mode
 
 ## 原包验证范围
 
-以下原包记录验证的是重启加载流程，不代表热加载验收已完成。热加载聚焦夹具覆盖 Loader 增量启停、异步文件释放、官方 SSE、多页面重连、恢复隔离和开发外壳刷新；原包热加载及仓库外发行验收仍需单独执行。
+### 热加载验收
+
+macOS、Node 24.18.0、Chromium 上，未修改的 Blackgold 1.0.0 和 Maid Atelier 0.1.9 使用下列固定归档完成源码及仓库外发行热加载检查。发行包携带实际编译的原生 Launcher，打包后整体移出仓库运行，依赖解析不使用仓库的 `node_modules`。
+
+| 检查 | 源码 | 仓库外发行 |
+| --- | --- | --- |
+| 原包安装默认禁用，启用、禁用、再次启用、运行中卸载 | 两种原包通过 | 两种原包通过 |
+| 两个普通页面无刷新同步，断线重连追上最新图 | 通过 | 通过 |
+| 原包样式出现/清理、恢复页不订阅外部图 | 通过 | 通过 |
+| Maid 三个人物图片、宫殿/边框图片响应，禁用和卸载后路由消失 | 通过 | 通过 |
+| 启停前打开真实 PTY，五阶段保持同一 shell PID、变量、文件写入和回显 | 两种原包通过 | **未通过**：安装任何插件前，终端已因缺少 `@xterm/headless` 无法打开 |
+| fake Host 聊天、会话事件及文件侧栏 | 无插件、Blackgold、Maid 均通过 | 无插件、Blackgold、Maid 均通过 |
+| 资源设置页跨页面同步 | **未通过** | **未通过** |
+
+资源设置的无插件对照复现 Host 空闲超时为 42、页面仍显示 30；主题运行也有另一页面等待超时输入框超时的失败，不能据此宣称完整设置回归通过。发行 PTY 失败发生在插件安装前，与原包热加载测试分别报告。完整验收仍需这两个问题解决后的回归。
+
+[原包测试](../../packages/web-server/test/browser/dsh-web-plugin-packages.test.ts)分别提供 `across pages and recovery` 与 `with an existing PTY` 用例；后者必须实际打开终端，不以接口存在代替存活证据。`CODEXHOST_TEST_DSH_EXTENSION_ARCHIVE`、`CODEXHOST_TEST_MAID_ARCHIVE` 指向原归档；`CODEXHOST_TEST_WEB_BUNDLE` 指向仓库外 `app/server.mjs`；`CODEXHOST_TEST_EXTENSION_SCREENSHOTS` 保存截图、阶段、原包哈希、资源状态及 PTY PID/回显记录。缺归档的跳过不算验收通过。测试数据及进程隔离，聊天使用 fake Host，不发起真实模型请求。
+
+以下各包章节还保留其重启加载、安装来源及资源兼容记录；Open Sea 的热加载未在上述矩阵中执行。
 
 ### Maid Atelier 与 Open Sea
 

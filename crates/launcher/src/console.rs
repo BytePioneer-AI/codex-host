@@ -390,10 +390,12 @@ pub fn inspect_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::sync::Mutex;
 
-    /// Launch console helpers share process-wide statics; serialize the tests
-    /// that mutate them so parallel `cargo test` workers do not race.
+    /// Launch console helpers share process-wide statics; serialize the unix
+    /// tests that mutate them so parallel `cargo test` workers do not race.
+    #[cfg(unix)]
     static LAUNCH_TEST_GATE: Mutex<()> = Mutex::new(());
 
     #[test]

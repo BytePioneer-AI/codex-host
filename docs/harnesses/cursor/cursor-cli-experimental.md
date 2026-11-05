@@ -51,6 +51,13 @@ integration. [CLI ACP](https://cursor.com/docs/cli/acp) is the selected interfac
   request, recorded in the Native Session Ref locator and reused by resume and by
   derived Fork/rollback Sessions. ACP still confirms no effective policy, so a Turn
   that receives a native approval or plan request is cancelled and failed instead.
+- Interactive Sessions also request native `--force` when the user's own Cursor CLI
+  config already sets `approvalMode` to `unrestricted` (Run Everything / bypass) in
+  `cli-config.json` under the configured Cursor config directory. This respects the
+  local CLI bypass; it does not invent an ACP approval mode, does not rewrite the
+  Host `executionPolicy`, and does not enable the unattended cancel-and-fail path.
+  Missing or non-unrestricted config keeps the existing Host approval UI. Cursor
+  team policy may still silently degrade Run Everything back to an allowlist.
 - Native tool approvals and Cursor's blocking question/plan extensions, with
   exact interaction correlation, response validation and cancellation cleanup.
 - Session resume and read-only snapshots, with strict native turn identity checks.
@@ -268,14 +275,21 @@ own terminal approval and allowlist apply.
 A Host `unattended-full-access` request is carried into the
 native ACP process as Cursor's own Run Everything request (`--force` before the
 `acp` subcommand), persisted in the Native Session Ref locator, and reused by resume
-and by derived Fork/rollback Sessions. The native `--force` path still checks team
-policy and silently falls back to an allowlist when Run Everything is disabled; ACP
-reports only Agent/Plan/Ask and provides no confirmation of the effective approval
-policy. The adapter therefore claims no confirmation: a Turn that nevertheless
-receives a native approval or plan request is cancelled and reported as
-`nativeFailure`, never approved, and native denies, admin allowlists and Cursor's
-team policy continue to apply. Question extensions remain interactive and are never
-answered on the user's behalf. Refs persisted without a locator remain `default`.
+and by derived Fork/rollback Sessions. An interactive Session with Host
+`executionPolicy: default` makes the same native `--force` request when the user's
+`cli-config.json` already sets `approvalMode` to `unrestricted`; that is a spawn-time
+respect for the local CLI bypass, not a Host policy change and not a fabricated ACP
+approval level. If native approvals still arrive (for example after team policy
+degrades Run Everything), interactive Sessions keep the existing Host approval UI;
+only `unattended-full-access` cancels and fails those Turns. The native `--force`
+path still checks team policy and silently falls back to an allowlist when Run
+Everything is disabled; ACP reports only Agent/Plan/Ask and provides no confirmation
+of the effective approval policy. The adapter therefore claims no confirmation for
+unattended full access: a Turn that nevertheless receives a native approval or plan
+request is cancelled and reported as `nativeFailure`, never approved, and native
+denies, admin allowlists and Cursor's team policy continue to apply. Question
+extensions remain interactive and are never answered on the user's behalf. Refs
+persisted without a locator remain `default`.
 The installed `2026.09.18-9a7762b` bundle makes this fallback in
 `src/acp/cursor-acp-agent.ts`: `teamSettingsService.getAutoRunControls()` degrades to
 an allowlist with a debug log and no client-visible result.
@@ -288,7 +302,8 @@ A fresh native process also restored a non-default `fast` value from its saved
 Model ref after account-wide preferences were changed; native Turn identities
 remained equal. Native model preferences modified for validation were restored.
 Automated tests additionally cover partial configuration failure and restoring non-Thinking parameters from saved Model refs. They also cover the native
-`--force` argument, policy persistence through resume/Fork/rollback, and the
+`--force` argument for unattended full access and for interactive Sessions whose
+CLI config is `unrestricted`, policy persistence through resume/Fork/rollback, and the
 cancel-and-fail path for a native approval request in unattended full access; a live
 unattended delegated Turn under Cursor team policy was not exercised. These are
 plugin/native checks, not a claim of visual Desktop acceptance or an end-to-end

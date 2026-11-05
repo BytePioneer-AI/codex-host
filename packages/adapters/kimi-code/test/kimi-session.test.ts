@@ -24,6 +24,7 @@ import type {
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
 
+import { projectCodexQuestionRequest } from "@codexhost/protocol-core";
 import { KimiSession } from "../src/kimi-session.js";
 import { createKimiNativeTurnRef } from "../src/history.js";
 import type { KimiAcpTransportLike } from "../src/kimi-adapter.js";
@@ -1122,6 +1123,104 @@ describe("KimiSession", () => {
       expect(permissionResolvedWith).toEqual({
         outcome: { outcome: "selected", optionId: "approve_always" },
       });
+    });
+
+    it.each([
+      "plan_approve",
+      "plan_opt_0",
+      "plan_opt_1",
+      "plan_revise",
+      "plan_reject_and_exit",
+      "cancel",
+      "close",
+    ])("bridges plan review through native Codex choices: %s", async (selection) => {
+      const transport = new MockKimiTransport();
+      let nativeResponse: RequestPermissionResponse | undefined;
+      const options: RequestPermissionRequest["options"] = [
+        ...(selection === "plan_approve"
+          ? [{ optionId: "plan_approve", name: "Approve", kind: "allow_once" as const }]
+          : [
+              { optionId: "plan_opt_0", name: "Implement A", kind: "allow_once" as const },
+              { optionId: "plan_opt_1", name: "Implement B", kind: "allow_once" as const },
+            ]),
+        { optionId: "plan_revise", name: "Revise", kind: "reject_once" },
+        { optionId: "plan_reject_and_exit", name: "Reject and Exit", kind: "reject_once" },
+      ];
+      transport.promptMock = vi.fn(async (_text, handler) => {
+        nativeResponse = await handler.onPermission({
+          sessionId: "session-plan",
+          toolCall: {
+            toolCallId: "1:exit-plan",
+            title: "ExitPlanMode",
+            content: [{ type: "content", content: { type: "text", text: "Review the plan" } }],
+          },
+          options,
+        });
+        return { stopReason: "end_turn" };
+      });
+      const session = new KimiSession({
+        transport,
+        sessionId: "session-plan",
+        cwd: process.cwd(),
+        initialState: {},
+      });
+      try {
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("plan-turn"),
+          input: [{ type: "text", text: "Review plan" }],
+        });
+        let question: HostQuestionInteraction | undefined;
+        for await (const output of session.outputs) {
+          if (output.kind === "interaction" && output.interaction.type === "question") {
+            question = output.interaction;
+            break;
+          }
+        }
+        expect(question).toBeDefined();
+        if (!question) throw new Error("Missing plan question");
+        const projected = projectCodexQuestionRequest({
+          threadId: "thread-plan",
+          itemId: "plan-item",
+          interaction: question,
+        });
+        expect(projected.request.method).toBe("item/tool/requestUserInput");
+        expect(question.questions[0]).toMatchObject({
+          prompt: "Review the plan",
+          multiple: false,
+          allowOther: false,
+          options: options.map(({ optionId, name }) => ({ value: optionId, label: name })),
+        });
+        const invalid = await session.execute({
+          type: "interaction.respond",
+          interactionId: question.interactionId,
+          response: { type: "question", answers: { planApproval: ["unknown"] } },
+        });
+        expect(invalid).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+        expect(nativeResponse).toBeUndefined();
+        if (selection === "close") await session.close();
+        else {
+          const label = options.find(({ optionId }) => optionId === selection)?.name;
+          const response = projected.parseResponse({
+            answers: selection === "cancel" ? {} : { planApproval: { answers: [label] } },
+          });
+          expect(
+            await session.execute({
+              type: "interaction.respond",
+              interactionId: question.interactionId,
+              response,
+            }),
+          ).toMatchObject({ ok: true });
+        }
+        expect(nativeResponse).toEqual({
+          outcome:
+            selection === "cancel" || selection === "close"
+              ? { outcome: "cancelled" }
+              : { outcome: "selected", optionId: selection },
+        });
+      } finally {
+        await session.close();
+      }
     });
 
     it("bridges Elicitation (Question) interaction with single and multi choice", async () => {

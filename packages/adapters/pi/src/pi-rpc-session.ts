@@ -43,6 +43,7 @@ import {
 } from "./pi-usage.js";
 import type { PiNativeModel, PiNativeModelRef } from "./pi-model-catalog.js";
 import { verifyPiSessionCwd } from "./pi-session-file.js";
+import { isWindowsUncDirectory, piUncNodeInvocation } from "./pi-unc-launch.js";
 import { PiContentStream, PiContentStreamConflictError } from "./pi-content-stream.js";
 import { PiSubagentRpc } from "./pi-subagent-rpc.js";
 import type { PiSubagentInspection, PiSubagentNode } from "./pi-subagents.js";
@@ -546,6 +547,13 @@ export function piRpcProcessCommand(
   const extension = path.win32.extname(command).toLowerCase();
   if (platform !== "win32" || ![".cmd", ".bat"].includes(extension)) {
     return { command, arguments: arguments_, windowsVerbatimArguments: false };
+  }
+  if (isWindowsUncDirectory(options.cwd)) {
+    try {
+      return piUncNodeInvocation(command, arguments_, options.environment);
+    } catch (error) {
+      throw new PiRpcFaultError("unavailable", message(error));
+    }
   }
   const quote = (value: string): string => `"${value.replaceAll("%", "%%").replaceAll('"', '""')}"`;
   const commandLine = [command, ...arguments_].map(quote).join(" ");
@@ -1488,6 +1496,8 @@ export class PiRpcSession {
         if (this.#extensionStatuses.get(value.statusKey) === value.statusText) return true;
         this.#extensionStatuses.set(value.statusKey, value.statusText);
       }
+      // Native footer updates are ephemeral; progress messages create permanent Items.
+      return true;
     }
     const text = piStatusText(value);
     if (!text) return false;

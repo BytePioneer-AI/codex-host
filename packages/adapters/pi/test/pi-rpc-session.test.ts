@@ -1547,7 +1547,7 @@ describe("Pi RPC Turn aggregation", () => {
     },
   );
 
-  it("bounds idle progress without faulting, coalesces status and discloses omitted updates", async () => {
+  it("bounds idle notices without faulting and ignores ephemeral footer updates", async () => {
     const fake = new FakePiRpcProcess("manual-run");
     const onFault = vi.fn();
     const rpc = new PiRpcSession(
@@ -1574,8 +1574,8 @@ describe("Pi RPC Turn aggregation", () => {
     const pending = rpc.runTurn("synthetic", (event) => events.push(event));
     const progress = events.filter((event) => event.type === "progress.message");
     expect(progress).toHaveLength(129);
-    expect(progress[0]?.text).toContain("3 earlier updates were not retained");
-    expect(progress.at(-1)?.text).toBe("Pi status (job)\n\nState 4");
+    expect(progress[0]?.text).toContain("2 earlier updates were not retained");
+    expect(progress.some((event) => event.text.includes("Pi status"))).toBe(false);
     expect(progress.some((event) => event.text.includes("Update 129"))).toBe(true);
     expect(onFault).not.toHaveBeenCalled();
     const message = {
@@ -1591,7 +1591,7 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
-  it("retains idle notices and streams visible custom/status messages exactly once in a real Turn", async () => {
+  it("retains idle notices and streams visible custom/notification messages exactly once in a real Turn", async () => {
     const fake = new FakePiRpcProcess("manual-run");
     const events: PiTurnEvent[] = [];
     const rpc = new PiRpcSession(
@@ -1637,14 +1637,22 @@ describe("Pi RPC Turn aggregation", () => {
       statusKey: "job",
       statusText: "Waiting",
     });
+    for (let index = 0; index < 1000; index++)
+      send({
+        type: "extension_ui_request",
+        id: `tps-${index}`,
+        method: "setStatus",
+        statusKey: "tps",
+        statusText: `⚡ \u001b[38;2;68;221;255m${index} tok/s\u001b[39m`,
+      });
+    send({ type: "extension_ui_request", method: "setStatus", statusKey: "tps" });
     const progress = events.filter((event) => event.type === "progress.message");
-    expect(progress).toHaveLength(4);
-    expect(new Set(progress.map((event) => event.itemId)).size).toBe(4);
+    expect(progress).toHaveLength(3);
+    expect(new Set(progress.map((event) => event.itemId)).size).toBe(3);
     expect(progress.map((event) => event.text)).toEqual([
       "Pi notification (ad-process:notification)\n\nProcess complete",
       "Pi notification (ad-process:notification)\n\nProcess complete",
       "Pi notification (info)\n\nJob running",
-      "Pi status (job)\n\nWaiting",
     ]);
     const message = {
       role: "assistant",

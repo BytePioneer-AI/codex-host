@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { JsonObject } from "@codexhost/protocol-core";
+import { externalTurnInputText } from "./external-turn-input.js";
 
 export class ExternalQueueError extends Error {
   constructor(
@@ -26,6 +27,13 @@ export interface ExternalThreadQueueSnapshot {
   pausedReason: ExternalQueuePausedReason | null;
 }
 
+interface TakenSubmission {
+  submission: ExternalQueuedSubmission;
+  sourceHostId: string | undefined;
+  index: number;
+  pausedReason: ExternalQueuePausedReason | null;
+}
+
 export function nativeQueuedSubmission(item: ExternalQueuedSubmission): JsonObject {
   return {
     id: item.id,
@@ -46,6 +54,7 @@ function sameInput(left: JsonObject[], right: JsonObject[]): boolean {
 /** Process-owned queue for external Threads. Desktop and Web mutate this same state. */
 export class ExternalThreadQueue {
   readonly #receipts = new Map<string, ExternalQueuedSubmission>();
+  readonly #acceptedSteers = new Map<string, string>();
   readonly #states = new Map<
     string,
     { items: ExternalQueuedSubmission[]; pausedReason: ExternalQueuePausedReason | null }
@@ -135,9 +144,9 @@ export class ExternalThreadQueue {
 
   delete(threadId: string, itemId: string): boolean {
     const state = this.#states.get(threadId);
-    if (!state) return false;
+    if (!state) return this.#acceptedSteers.get(itemId) === threadId;
     const index = state.items.findIndex((item) => item.id === itemId);
-    if (index < 0) return false;
+    if (index < 0) return this.#acceptedSteers.get(itemId) === threadId;
     state.items.splice(index, 1);
     this.#prune(threadId, state);
     return true;
@@ -170,6 +179,53 @@ export class ExternalThreadQueue {
     return item ? structuredClone(item) : null;
   }
 
+  /** Reserve queued input so automatic advancement cannot deliver it during steering. */
+  takeSteered(
+    threadId: string,
+    clientUserMessageId: unknown,
+    input: unknown,
+  ): TakenSubmission | undefined {
+    if (typeof clientUserMessageId !== "string") return;
+    const state = this.#states.get(threadId);
+    if (!state) return;
+    const matches = state.items.filter((item) => item.clientUserMessageId === clientUserMessageId);
+    const item = matches[0];
+    if (!item) return;
+    if (matches.length !== 1 || externalTurnInputText(item.input) !== externalTurnInputText(input))
+      throw new ExternalQueueError(-32602, "Queued steering input changed before delivery");
+    const index = state.items.indexOf(item);
+    state.items.splice(index, 1);
+    this.#prune(threadId, state);
+    return {
+      submission: structuredClone(item),
+      sourceHostId: item.sourceHostId ?? undefined,
+      index,
+      pausedReason: state.pausedReason,
+    };
+  }
+
+  acceptSteered(threadId: string, taken: TakenSubmission): void {
+    // Desktop may acknowledge removal after the accepted input has completed.
+    this.#acceptedSteers.set(taken.submission.id, threadId);
+    while (this.#acceptedSteers.size > 128) {
+      this.#acceptedSteers.delete(this.#acceptedSteers.keys().next().value as string);
+    }
+  }
+
+  restore(threadId: string, taken: TakenSubmission): void {
+    let state = this.#states.get(threadId);
+    if (!state) {
+      state = { items: [], pausedReason: taken.pausedReason };
+      this.#states.set(threadId, state);
+    }
+    if (state.items.some((item) => item.id === taken.submission.id)) return;
+    state.items.splice(
+      Math.min(taken.index, state.items.length),
+      0,
+      structuredClone(taken.submission),
+    );
+  }
+
   pause(threadId: string, reason: ExternalQueuePausedReason): boolean {
     const state = this.#states.get(threadId);
     if (!state?.items.length || state.pausedReason === reason) return false;
@@ -196,6 +252,9 @@ export class ExternalThreadQueue {
     this.#states.delete(threadId);
     const prefix = `${threadId}\u0000`;
     for (const key of this.#receipts.keys()) if (key.startsWith(prefix)) this.#receipts.delete(key);
+    for (const [id, owner] of this.#acceptedSteers) {
+      if (owner === threadId) this.#acceptedSteers.delete(id);
+    }
   }
 
   #receiptKey(threadId: string, clientUserMessageId: string): string {

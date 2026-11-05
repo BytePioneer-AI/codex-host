@@ -90,7 +90,15 @@ function setup(
         : null,
     return: null,
   };
-  const editors = [{ __reactFiber$app: composerFiber, parentElement: null }];
+  const editors = [
+    {
+      __reactFiber$app: composerFiber,
+      parentElement: null,
+      matches: () => true,
+      querySelectorAll: () => [],
+    },
+  ];
+  const queryEditors = vi.fn(() => editors);
   const sent: unknown[] = [];
   class MessagePort {
     postMessage(message: unknown): void {
@@ -102,7 +110,7 @@ function setup(
     async evaluate<T>(expression: string): Promise<T> {
       return await runInNewContext(expression, {
         document: {
-          querySelectorAll: () => editors,
+          querySelectorAll: queryEditors,
           getElementById: (id: string) => (id === "root" ? container : null),
         },
         window: target,
@@ -121,7 +129,19 @@ function setup(
       new MessagePort(),
       message,
     );
-  return { renderer, target, rpc, connections, sent, post, MessagePort };
+  return {
+    renderer,
+    target,
+    rpc,
+    connections,
+    sent,
+    post,
+    MessagePort,
+    editors,
+    composerFiber,
+    familyBindings,
+    queryEditors,
+  };
 }
 
 function policyOf(route: ReturnType<Routing["forHost"]>) {
@@ -133,6 +153,87 @@ async function install(fixture: ReturnType<typeof setup>): Promise<Routing> {
   await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
   return fixture.target.__codexhostHostRoutingV1 as Routing;
 }
+
+it("does not search Composer trees when reading or sending through a known RPC Host", async () => {
+  vi.useFakeTimers();
+  const f = setup();
+  const routing = await install(f);
+  try {
+    const scans = f.queryEditors.mock.calls.length;
+    const route = routing.forHost("local");
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(routing.forHost("local")).toBe(route);
+      route?.policy.requestTarget();
+      await route?.manager.sendRequest("model/list", {});
+    }
+    expect(f.queryEditors).toHaveBeenCalledTimes(scans);
+  } finally {
+    routing.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("discovers a scoped Composer without searching unrelated Composer trees", async () => {
+  const f = setup();
+  const routing = await install(f);
+  try {
+    const scans = f.queryEditors.mock.calls.length;
+    for (let i = 0; i < 20; i++) {
+      expect(routing.hostIdForComposer(f.editors[0])).toBe("local");
+      expect(routing.forComposer(f.editors[0])?.manager).toMatchObject({
+        kind: "main-process-rpc",
+      });
+    }
+    expect(f.queryEditors).toHaveBeenCalledTimes(scans);
+  } finally {
+    routing.dispose();
+  }
+});
+
+it.each(["composer", "hosts"])(
+  "discovers a late native owner on the same editor through %s reconciliation",
+  async (entry) => {
+    const f = setup({ nativeManager: true, hosts: ["local", "remote-ssh:other"] });
+    const hook = f.composerFiber.memoizedState;
+    f.composerFiber.memoizedState = null;
+    const routing = await install(f);
+    try {
+      const before = routing.forHost("local");
+      const remote = routing.forHost("remote-ssh:other");
+      expect(before?.manager).toHaveProperty("kind", "main-process-rpc");
+      f.composerFiber.memoizedState = hook;
+      if (entry === "composer") routing.hostIdForComposer(f.editors[0]);
+      else routing.knownHostIds?.();
+      const after = routing.forHost("local");
+      expect(after?.manager).toBe(hook?.memoizedState);
+      expect(() => before?.policy.requestTarget()).toThrow("retired");
+      expect(routing.forHost("remote-ssh:other")).toBe(remote);
+      // The native router still reads current owners after adoption.
+      f.composerFiber.memoizedState = null;
+      expect(routing.forHost("local")?.manager).toHaveProperty("kind", "main-process-rpc");
+      f.composerFiber.memoizedState = hook;
+      expect(routing.forHost("local")?.manager).toBe(hook?.memoizedState);
+    } finally {
+      routing.dispose();
+    }
+  },
+);
+
+it("reconciles a mounted Composer through the Controller's existing installation check", async () => {
+  const f = setup({ nativeManager: true });
+  const editor = f.editors.pop();
+  if (!editor) throw new Error("Missing editor");
+  const routing = await install(f);
+  try {
+    expect(routing.forHost("local")?.manager).toHaveProperty("kind", "main-process-rpc");
+    f.editors.push(editor);
+    expect(await install(f)).toBe(routing);
+    expect(routing.forHost("local")?.manager).toBe(f.composerFiber.memoizedState?.memoizedState);
+  } finally {
+    routing.dispose();
+  }
+});
 
 function creation(method: string, model: string, options: Record<string, unknown>) {
   return [
@@ -152,6 +253,300 @@ function creation(method: string, model: string, options: Record<string, unknown
     ],
   ];
 }
+
+it.each([false, true])(
+  "keeps SSH RPC routes when the local native manager is ready (late=%s)",
+  async (late) => {
+    const hostId = "remote-ssh:other";
+    const f = setup({ nativeManager: true, hosts: ["local", hostId] });
+    const editor = late ? f.editors.pop() : undefined;
+    const routing = await install(f);
+    const before = routing.forHost(hostId);
+    expect(before?.manager).toMatchObject({ kind: "main-process-rpc" });
+    const localBefore = late ? routing.forHost("local") : null;
+    localBefore?.policy.select(carrier, "client-new-thread:local");
+    before?.policy.select(carrier, "client-new-thread:ssh");
+    if (editor) f.editors.push(editor);
+    try {
+      // Composer reconciliation enumerates Hosts before reading per-Host clients.
+      expect(routing.knownHostIds?.()).toEqual(expect.arrayContaining(["local", hostId]));
+      expect(routing.forHost("local")?.manager).toBe(f.composerFiber.memoizedState?.memoizedState);
+      expect(routing.forHost(hostId)).toBe(before);
+      expect(routing.knownHostIds?.()).toEqual(expect.arrayContaining(["local", hostId]));
+      f.composerFiber.memoizedProps.executionTargetHostId = hostId;
+      expect(routing.hostIdForComposer()).toBe(hostId);
+      expect(routing.forComposer()).toBe(before);
+      await before?.manager.sendRequest("model/list", {});
+      expect(f.rpc.sendRequest).toHaveBeenCalledExactlyOnceWith("model/list", {});
+      if (localBefore) expect(() => localBefore.policy.requestTarget()).toThrow("retired");
+      const local = creation("startConversation", "gpt-6.1-sol", {
+        clientThreadId: "client-new-thread:local",
+      });
+      f.post(local);
+      expect(f.sent.at(-1)).toBe(local);
+      f.post(
+        creation("startConversation", "gpt-6.1-sol", { clientThreadId: "client-new-thread:ssh" }),
+      );
+      expect(JSON.stringify(f.sent.at(-1))).toContain(carrier);
+    } finally {
+      routing.dispose();
+    }
+  },
+);
+
+it("re-resolves only ready SSH RPC clients after native adoption", async () => {
+  const hostId = "remote-ssh:other";
+  const f = setup({ nativeManager: true, hosts: ["local", hostId] });
+  const routing = await install(f);
+  try {
+    const before = routing.forHost(hostId);
+    expect(before).not.toBeNull();
+    const connection = f.connections.get(hostId);
+    if (!connection) throw new Error("Missing connection fixture");
+    connection.status = "connecting";
+    expect(routing.forHost(hostId)).toBeNull();
+    expect(() => before?.policy.requestTarget()).toThrow("retired");
+    connection.client.rpc = {
+      ...connection.client.rpc,
+      sendRequest: vi.fn(async () => ({ entries: [] })),
+    };
+    connection.status = "ready";
+    const after = routing.forHost(hostId);
+    expect(after).not.toBeNull();
+    expect(after).not.toBe(before);
+    await after?.manager.sendRequest("model/list", {});
+    expect(connection.client.rpc.sendRequest).toHaveBeenCalledExactlyOnceWith("model/list", {});
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("keeps legacy Remote Control RPC fallback without connection-generation signals", async () => {
+  const hostId = "remote-control:legacy";
+  const f = setup({ nativeManager: true, hosts: ["local", hostId] });
+  const routing = await install(f);
+  try {
+    const route = routing.forHost(hostId);
+    expect(route?.manager).toMatchObject({ kind: "main-process-rpc" });
+    await route?.manager.sendRequest("model/list", {});
+    expect(f.rpc.sendRequest).toHaveBeenCalledExactlyOnceWith("model/list", {});
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("re-discovers the current RPC family instead of keeping an old ready family", async () => {
+  const hostId = "remote-ssh:other";
+  const f = setup({ nativeManager: true, hosts: ["local", hostId] });
+  const routing = await install(f);
+  try {
+    const before = routing.forHost(hostId);
+    expect(before).not.toBeNull();
+    const peer = {
+      sendRequest: vi.fn(async () => ({ current: true })),
+      clearPrewarmedThreads: vi.fn(),
+    };
+    f.familyBindings.clear();
+    f.familyBindings.set(
+      { kind: "signal-family" },
+      new Map([
+        [
+          hostId,
+          {
+            value: { get: () => ({ status: "ready", client: { hostId, rpc: peer } }) },
+          },
+        ],
+      ]),
+    );
+    expect(() => before?.policy.requestTarget()).toThrow("retired");
+    const after = routing.forHost(hostId);
+    expect(after).not.toBe(before);
+    await expect(after?.manager.sendRequest("model/list", {})).resolves.toEqual({ current: true });
+    expect(peer.sendRequest).toHaveBeenCalledOnce();
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("reads one discovered RPC family without remounting unrelated native signals", async () => {
+  const threadSignal = vi.fn(() => null);
+  const hashSignal = vi.fn(() => null);
+  const hostSignal = vi.fn(() => null);
+  const f = setup({ hosts: ["local"] });
+  f.familyBindings.set(
+    { kind: "signal-family" },
+    new Map([
+      ['{"conversationId":"thread","hostId":"local"}', { value: { get: threadSignal } }],
+      ["1463309241", { value: { get: hashSignal } }],
+      ["local", { value: { get: hostSignal } }],
+    ]),
+  );
+  const routing = await install(f);
+  try {
+    const scans = hostSignal.mock.calls.length;
+    expect(scans).toBeGreaterThan(0);
+    const route = routing.forHost("local");
+    for (let read = 0; read < 5; read += 1) {
+      expect(routing.forHost("local")).toBe(route);
+      expect(routing.knownHostIds?.()).toContain("local");
+      route?.policy.requestTarget();
+    }
+    expect(hostSignal).toHaveBeenCalledTimes(scans);
+    expect(threadSignal).not.toHaveBeenCalled();
+    expect(hashSignal).not.toHaveBeenCalled();
+  } finally {
+    routing.dispose();
+  }
+});
+
+it("returns to the ready RPC peer when a native Host disappears", async () => {
+  const f = setup({ nativeManager: true });
+  const routing = await install(f);
+  try {
+    const native = routing.forHost("local");
+    expect(native?.manager).toHaveProperty("requestClient");
+    f.composerFiber.memoizedState = null;
+    const fallback = routing.forHost("local");
+    expect(fallback?.manager).toMatchObject({ kind: "main-process-rpc" });
+    expect(() => native?.policy.requestTarget()).toThrow("retired");
+    await fallback?.manager.sendRequest("model/list", {});
+    expect(f.rpc.sendRequest).toHaveBeenCalledOnce();
+  } finally {
+    routing.dispose();
+  }
+});
+
+it.each(["disconnected", "connecting", "ambiguous", "unreadable"])(
+  "retires Remote Control RPC fallback for %s generations even while its RPC stub stays ready",
+  async (failure) => {
+    const hostId = "remote-control:guarded";
+    const f = setup({ nativeManager: true, hosts: ["local", hostId] });
+    let state = "connected",
+      revision = 1,
+      unreadable = false;
+    const holder = () => ({
+      state$: {
+        get: () => {
+          if (unreadable) throw new Error("Connection unavailable");
+          return state;
+        },
+      },
+      revision$: { get: () => revision },
+      appServerVersion$: { get: () => "test" },
+    });
+    f.familyBindings.set({}, new Map([[hostId, { value: holder() }]]));
+    const routing = await install(f);
+    try {
+      const before = routing.forHost(hostId);
+      expect(before).not.toBeNull();
+      const ambiguous = {};
+      if (failure === "ambiguous")
+        f.familyBindings.set(ambiguous, new Map([[hostId, { value: holder() }]]));
+      else if (failure === "unreadable") unreadable = true;
+      else state = failure;
+      expect(() => before?.policy.requestTarget()).toThrow("retired");
+      expect(routing.forHost(hostId)).toBeNull();
+      f.composerFiber.memoizedProps.executionTargetHostId = hostId;
+      expect(routing.forComposer()).toBeNull();
+      expect(f.rpc.sendRequest).not.toHaveBeenCalled();
+      f.familyBindings.delete(ambiguous);
+      unreadable = false;
+      state = "connected";
+      revision++;
+      const after = routing.forHost(hostId);
+      expect(after).not.toBeNull();
+      expect(after).not.toBe(before);
+      await after?.manager.sendRequest("model/list", {});
+      expect(f.rpc.sendRequest).toHaveBeenCalledOnce();
+    } finally {
+      routing.dispose();
+    }
+  },
+);
+
+it("switches to a late native manager after starting without a Composer", async () => {
+  const fixture = setup({ nativeManager: true });
+  const editor = fixture.editors.pop();
+  if (!editor) throw new Error("Synthetic Composer absent");
+  const originalPost = fixture.MessagePort.prototype.postMessage;
+  const routing = await install(fixture);
+  const before = routing.forHost("local");
+  expect(before?.manager).toMatchObject({ kind: "main-process-rpc" });
+  fixture.editors.push(editor);
+  try {
+    const after = routing.forComposer();
+    expect(after?.manager).toBe(fixture.composerFiber.memoizedState?.memoizedState);
+    expect(() => before?.policy.requestTarget()).toThrow("retired");
+    // RPC-only Hosts still need the shared carrier hook after this Host adopts native.
+    expect(fixture.MessagePort.prototype.postMessage).not.toBe(originalPost);
+    expect(routing.forHost("local")).toBe(after);
+  } finally {
+    routing.dispose();
+    expect(fixture.MessagePort.prototype.postMessage).toBe(originalPost);
+  }
+});
+
+it.each(["missing", "null", "undefined"])(
+  "adopts a late manager using its request client Host when getHostId is %s",
+  async (mode) => {
+    const fixture = setup({ nativeManager: true });
+    const editor = fixture.editors.pop();
+    const manager = fixture.composerFiber.memoizedState?.memoizedState;
+    if (!editor || !manager || !("requestClient" in manager))
+      throw new Error("Missing fixture manager");
+    Reflect.deleteProperty(fixture.composerFiber.memoizedProps, "executionTargetHostId");
+    Object.assign(manager.requestClient, { hostId: "ssh:remote" });
+    if (mode === "missing") Reflect.deleteProperty(manager, "getHostId");
+    else
+      Object.defineProperty(manager, "getHostId", {
+        value: () => (mode === "null" ? null : undefined),
+      });
+    const originalPost = fixture.MessagePort.prototype.postMessage;
+    const routing = await install(fixture);
+    const before = routing.forHost("local");
+    fixture.editors.push(editor);
+    try {
+      expect(routing.forComposer()?.hostId).toBe("ssh:remote");
+      expect(routing.forHost("ssh:remote")?.manager).toBe(manager);
+      // Adopting the remote Host must not retire the unrelated local RPC route.
+      expect(routing.forHost("local")).toBe(before);
+      expect(before?.policy.requestTarget()).toBe(before?.manager);
+    } finally {
+      routing.dispose();
+      expect(fixture.MessagePort.prototype.postMessage).toBe(originalPost);
+    }
+  },
+);
+
+it.each(["throws", "empty", "non-string"])(
+  "keeps every RPC routing entry point usable when a late native Host getter %s",
+  async (mode) => {
+    const fixture = setup({ nativeManager: true });
+    const editor = fixture.editors.pop();
+    const manager = fixture.composerFiber.memoizedState?.memoizedState;
+    if (!editor || !manager || !("requestClient" in manager))
+      throw new Error("Missing fixture manager");
+    Object.defineProperty(manager, "getHostId", {
+      get() {
+        if (mode === "throws") throw new Error("Native Host owner unavailable");
+        return () => (mode === "empty" ? "" : 42);
+      },
+    });
+    const routing = await install(fixture);
+    const before = routing.forHost("local");
+    fixture.editors.push(editor);
+    try {
+      expect(routing.knownHostIds?.()).toEqual(["local"]);
+      expect(routing.hostIdForComposer()).toBe("local");
+      expect(routing.forComposer()).toBe(before);
+      expect(routing.forHost("local")).toBe(before);
+      await before?.manager.sendRequest("model/list", {});
+      expect(fixture.rpc.sendRequest).toHaveBeenCalledExactlyOnceWith("model/list", {});
+    } finally {
+      routing.dispose();
+    }
+  },
+);
 
 it("routes Host requests through the main-process RPC client without native internals", async () => {
   const fixture = setup();
@@ -320,9 +715,12 @@ it("keeps the native manager path when Desktop exposes one in the Renderer", asy
   const routing = await install(fixture);
   try {
     expect(routing.forComposer()?.manager).toHaveProperty("requestClient");
-    expect((fixture.MessagePort.prototype as { postMessage: unknown }).postMessage).toBe(original);
+    const request = creation("prewarmConversation", carrier, {});
+    fixture.post(request);
+    expect(fixture.sent.at(-1)).toBe(request);
   } finally {
     routing.dispose();
+    expect((fixture.MessagePort.prototype as { postMessage: unknown }).postMessage).toBe(original);
   }
 });
 

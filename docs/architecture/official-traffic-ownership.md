@@ -19,7 +19,15 @@ Renderer 请求桥不使用 Host 上最后一次选择覆盖 `thread/start`。�
 
 选择策略先登记当前草稿的选择，再写入草稿模型；原生存储在写入时同步渲染新创建模式，也能读到本次选择。策略拒绝时不写草稿；草稿 setter 拒绝写入时（包括已执行 updater 后才拒绝提交），把该草稿的选择恢复为写入前草稿实际携带的 carrier（原本没有外部 carrier 时清除），不改动其他草稿。writer 只在 setter 正常返回后才记录新 carrier；updater 延迟执行时，连续外部选择共享首次写入前的原生设置，切回 Codex 或卸载时排队恢复该设置。
 
-Desktop 26.1027 的主进程 Manager 通过 Renderer app scope 中按 Host 发布的 RPC 连接发现。存在可用的旧 Renderer Manager 时保留旧路径；仅看到旧注册表但没有可用 Manager 时，释放临时旧路由并尝试已识别的主进程 RPC。没有可用连接时仍保持不可用，不以挂载注册表本身作为就绪依据。
+Desktop 26.1027 的主进程 Manager 通过 Renderer app scope 中按 Host 发布的 RPC 连接发现。混合布局逐 Host 优先使用可用的 Renderer Manager，其余 Host 继续使用当前 `ready` 的 RPC client；一个 Host 就绪不会销毁其他 Host 的 RPC 路由或草稿绑定。RPC family 在同一 store 的绑定有效期间复用，client 在每次读取时解析。原生 Manager 消失后也可回到仍有效的 RPC peer。没有可用连接时仍保持不可用，不以挂载注册表本身作为就绪依据。Remote Control 的连接代次为 `null`（断开、连接中、歧义或读取失败）时，两条路径都不可用；没有代次信号的旧布局以 `undefined` 保留 RPC 兼容。
+
+RPC 路由的原生 owner 发现由 Composer 身份读取（`hostIdForComposer`、`forComposer`）和 Host 集合协调（`knownHostIds`）承接，复用这些读取已有的发现结果；指定 Composer 时只检查该 Composer。普通 `forHost` 查询和 RPC 发送不会为寻找尚未出现的原生 Manager 扫描整个文档。Renderer 的 Composer 协调及 Controller 的既有安装检查会发现晚挂载的 owner，包括同一 editor 上新出现的 owner；仅持有 Host ID 的调用方在此之前继续使用有效 RPC，不主动触发 native 发现。发现原生 owner 后，原生 router 仍实时解析 registry 成员、Manager 和连接代次；这里不缓存 `null`、不缓存 registry 的连接结果，也不增加轮询或 React commit 钩子。
+
+RPC 布局下的 Windows Remote Control 复用已加载模块中的原生 Manager 工厂、RPC 会话与界面控制器。Controller 通过结构契约及工厂调用关系发现引用，不依赖混淆符号名，不复制 Desktop 实现，不修改签名应用。作用域和服务必须具有已验证的自身属性，不能把可动态生成任意成员的 RPC Proxy 当作作用域。引用仅用于当前 Renderer 文档，发现结束释放 CDP 对象组。相同模块目录和本地 RPC owner 下最多探测三次，前两次失败分别冷却 5 秒和 10 秒；已有发现或安装中的尝试去重，耗尽后保持稳定的 `unavailable`，不随 Controller 的 500ms 检查反复扫描。模块目录、CDP catalog owner 或本地 RPC owner 变化会重置预算；旧尝试的延迟结果不能覆盖新尝试。
+
+界面控制器的服务入口为 Windows Remote Control 提供独立原生 Manager，其余 Host 委托官方服务。仅改写公开连接信号不能接入界面的历史订阅、审批和重放协调，因此使用原生控制器维护这些关系。每次物理连接世代变化或订阅租约释放都淘汰旧 Manager 和桥接，延迟平台探测不得发布到新连接。控制帧直接使用保留的上游 RPC，避免与等待控制帧响应的逻辑请求争用同一队列；清理完成后才释放上游句柄。
+
+主进程消费的原生审批、提问及 MCP elicitation 不会作为普通窗口请求广播。适配器订阅这些原生交互事件，按事件中的 Thread 从原生会话读取待处理请求，并通过原生 Manager 展示和回应；安装或重连时读取一次未完成工作的快照以恢复已有交互，不轮询。请求按 Thread 与原生 request ID 去重，读取期间发生的新交互或解决事件会触发一次新快照，旧快照不能重新显示已解决的审批。交互订阅成功后才发布新路由；订阅失败时释放候选 Manager，保留官方服务。
 
 该版本的官方模型目录可能过滤草稿中的外部 transport Model。RPC 路由依据已登记的 `clientThreadId`，在本次 `startConversation` 发出时把官方回退模型替换为外部 carrier（创建参数没有 Model 时同样写入 carrier），保留输入、工作区、Thinking、原生回调及传输参数；不修改原始模式对象。不属于已登记草稿的创建、无法识别的参数和明确指定另一个外部 carrier 的创建保持原样。可识别的外部预热请求一律带上预热标记：请求本身指定了外部 carrier 时保留其 Harness 与 Model，否则使用当前已选择的 carrier；Host 据此把它登记为可丢弃的预热，而不是发布新 Thread。没有外部选择的官方预热及无法识别的 carrier 保持原样。
 

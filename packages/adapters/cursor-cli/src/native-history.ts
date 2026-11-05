@@ -22,6 +22,36 @@ export function cursorConfigDirectory(environment: NodeJS.ProcessEnv): string {
       : path.join(home, ".cursor");
 }
 
+/** True when the user's Cursor CLI asks for Run Everything (`approvalMode: unrestricted`).
+ * Missing or unreadable `cli-config.json` stays false so interactive Host approvals remain. */
+export function cursorCliApprovalModeIsUnrestricted(
+  environment: NodeJS.ProcessEnv,
+  cwd = process.cwd(),
+): boolean {
+  try {
+    // Native CLI overrides are relative to its cwd; its default home is platform-specific.
+    const home =
+      (process.platform === "win32" ? environment.USERPROFILE : environment.HOME) ??
+      os.userInfo().homedir;
+    const directory = environment.CURSOR_CONFIG_DIR?.trim()
+      ? environment.CURSOR_CONFIG_DIR
+      : environment.XDG_CONFIG_HOME?.trim()
+        ? path.join(environment.XDG_CONFIG_HOME, "cursor")
+        : path.join(home, ".cursor");
+    const raw: unknown = JSON.parse(
+      readFileSync(path.resolve(cwd, directory, "cli-config.json"), "utf8"),
+    );
+    return (
+      !!raw &&
+      typeof raw === "object" &&
+      !Array.isArray(raw) &&
+      (raw as { approvalMode?: unknown }).approvalMode === "unrestricted"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function cursorSessionDirectory(sessionId: string, environment: NodeJS.ProcessEnv): string {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(sessionId))
     throw new Error("Unsupported Cursor native session ID");

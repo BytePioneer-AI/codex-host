@@ -88,7 +88,10 @@ export function findRendererHostRpcFamily(
     if (!record(definition) || definition.kind !== "signal-family") continue;
     if (!record(members) || typeof members.get !== "function") continue;
     for (const [hostId, member] of members) {
-      if (typeof hostId !== "string" || !record(member)) continue;
+      // Reading a signal mounts it, so members keyed by Thread or hash stay unread.
+      // Every connection family has `local`, so unknown Host kinds still find it.
+      if (typeof hostId !== "string" || !/^(?:local$|durable$|remote[-:])/u.test(hostId)) continue;
+      if (!record(member)) continue;
       const signal = member.value;
       if (!record(signal) || typeof signal.get !== "function") continue;
       let value: unknown;

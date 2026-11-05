@@ -5,7 +5,7 @@ import {
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
 } from "./harness-permission-modes.js";
-import { harnessIdSchema, hostThreadIdSchema } from "./ids.js";
+import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "./ids.js";
 import { threadUsageSnapshotSchema } from "./thread-usage.js";
 
 export const HARNESS_MODEL_REF_MAX_LENGTH = 512;
@@ -442,6 +442,33 @@ export const threadSteeringInspectParamsSchema = z
  * it instead of deciding again: `activeTurn` inserts natively, `newTurn` stops and restarts.
  */
 export const THREAD_STEER_DELIVERY_PARAM = "codexhostSteerDelivery";
+/** Native RPC preparation retains additionalContext across its start/steer choice. */
+export const THREAD_STEERING_CONTEXT_PARAM = "codexhost_external_steering";
+export const threadSteeringContextSchema = z
+  .object({
+    kind: z.literal("application"),
+    value: z
+      .string()
+      .transform((text, context): unknown => {
+        try {
+          return JSON.parse(text);
+        } catch {
+          context.addIssue({ code: "custom", message: "Invalid steering context JSON" });
+          return z.NEVER;
+        }
+      })
+      .pipe(
+        z
+          .object({
+            expectedTurnId: hostTurnIdSchema,
+            clientUserMessageId: z.string().min(1),
+            delivery: z.enum(["newTurn", "activeTurn"]),
+          })
+          .strict(),
+      ),
+  })
+  .strict()
+  .transform((context) => context.value);
 export const threadSteerDeliverySchema = z.enum(["activeTurn", "newTurn"]);
 export type ThreadSteerDelivery = z.infer<typeof threadSteerDeliverySchema>;
 

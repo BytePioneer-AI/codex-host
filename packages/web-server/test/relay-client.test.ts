@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { connect, type Socket } from "node:net";
+import { connect } from "node:net";
+import type { Duplex } from "node:stream";
 import { it, type TestContext } from "node:test";
 import { createRequire } from "node:module";
 import type { WebSocket } from "ws";
@@ -129,7 +130,7 @@ it("uses an HTTP CONNECT proxy with TLS verification and the configured SNI", as
   const relay = await startRelay(t);
   const proxy = createHttpServer();
   const targets: string[] = [];
-  const sockets = new Set<Socket>();
+  const sockets = new Set<Duplex>();
   proxy.on("connect", (request, socket, head) => {
     targets.push(request.url ?? "");
     sockets.add(socket);
@@ -160,9 +161,9 @@ for (const stage of ["proxy", "upgrade"] as const) {
     { timeout: 40_000 },
     async (t) => {
       const server = stage === "proxy" ? createHttpServer() : createHttpsServer(credentials);
-      const sockets = new Set<Socket>();
+      const sockets = new Set<Duplex>();
       let attempts = 0;
-      server.on(stage === "proxy" ? "connect" : "upgrade", (_request, socket: Socket) => {
+      server.on(stage === "proxy" ? "connect" : "upgrade", (_request, socket: Duplex) => {
         attempts++;
         sockets.add(socket);
         socket.on("error", () => {});

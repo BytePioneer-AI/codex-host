@@ -226,7 +226,7 @@ describe("checked limits, usage and quota notices", () => {
       });
       const onUsage = vi.fn();
       const relay = await start({
-        dailyQuota,
+        ...(dailyQuota === undefined ? {} : { dailyQuota }),
         check: () => ({ name: "alice", dailyQuota: 12 * 1024, usedToday: 8 * 1024 }),
         onUsage,
       });
@@ -283,7 +283,11 @@ describe("checked limits, usage and quota notices", () => {
       const check = vi
         .fn<NonNullable<RelayOptions["check"]>>()
         .mockReturnValueOnce({ name: "alice", dailyQuota: 1000, usedToday: 1000 })
-        .mockReturnValue({ name: "alice", dailyQuota: 2000, usedToday });
+        .mockReturnValue({
+          name: "alice",
+          dailyQuota: 2000,
+          ...(usedToday === undefined ? {} : { usedToday }),
+        });
       const relay = await start({ check });
       const first = await fakeAgent({ port: relay.port });
       await first.registered;

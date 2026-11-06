@@ -6,7 +6,7 @@ import { request } from "node:https";
 import { connect as tcpConnect } from "node:net";
 import { resolve } from "node:path";
 import { Duplex } from "node:stream";
-import { connect } from "node:tls";
+import { connect, type ConnectionOptions } from "node:tls";
 import { it, type TestContext } from "node:test";
 import { WebSocket } from "ws";
 import type { WebAccessState } from "@codexhost/shared-contracts";
@@ -155,10 +155,12 @@ it("terminates real phone TLS for login, RPC and WebSocket, with relay trust and
     );
     assert.equal((await f.send("/api/test", f.body("test"), { ...auth, origin })).status, 403);
   }
-  const ws = new WebSocket(`wss://localhost:${f.relay.port}/api/remote.mux`, {
+  // ws forwards SNI to tls.connect, but ClientOptions omits servername.
+  const wsOptions = {
     servername: f.hostname,
     headers: { ...auth, host: f.hostname, origin: `https://${f.hostname}` },
-  });
+  } satisfies WebSocket.ClientOptions & Pick<ConnectionOptions, "servername">;
+  const ws = new WebSocket(`wss://localhost:${f.relay.port}/api/remote.mux`, wsOptions);
   t.after(() => ws.terminate());
   await once(ws, "open");
   const pong = once(ws, "pong");

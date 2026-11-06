@@ -22,7 +22,9 @@ it("reports online without check and one offline event on disconnect", async () 
   const relay = await start({ onConnection: (event) => events.push(event) });
   const agent = await fakeAgent({ port: relay.port });
   await agent.registered;
-  relay.disconnect(agent.hostname.split(".")[0]);
+  const [name] = agent.hostname.split(".");
+  if (name === undefined) throw new Error("missing agent name");
+  relay.disconnect(name);
   await agent.closed;
   expect(events).toEqual([
     {
@@ -107,7 +109,7 @@ it.each([false, true])(
       startedAt: expect.any(Number),
     });
     expect(ended).toMatchObject({ ...opened, state: "close", endedAt: expect.any(Number) });
-    if (ended.state !== "close") throw new Error("missing close event");
+    if (ended?.state !== "close") throw new Error("missing close event");
     expect(ended.endedAt).toBeGreaterThanOrEqual(ended.startedAt);
     for (const direction of ["upload", "download"] as const) {
       const calls = onUsage.mock.calls.filter(([, , details]) => details.direction === direction);

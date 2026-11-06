@@ -1,7 +1,7 @@
 import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
-import { createServer as createTlsServer } from "node:tls";
+import { createServer as createTlsServer, type ConnectionOptions } from "node:tls";
 import { connect, constants } from "node:http2";
 import type * as http2 from "node:http2";
 import { WebSocket } from "ws";
@@ -322,10 +322,12 @@ describe("control registration", () => {
   }, 12_000);
 
   it("returns HTTP 404 without upgrading an unknown version", async () => {
-    const ws = new WebSocket("wss://127.0.0.1:4480/v2/agent", {
+    // ws forwards SNI to tls.connect, but ClientOptions omits servername.
+    const wsOptions = {
       servername: "relay.test",
       rejectUnauthorized: false,
-    });
+    } satisfies WebSocket.ClientOptions & Pick<ConnectionOptions, "servername">;
+    const ws = new WebSocket("wss://127.0.0.1:4480/v2/agent", wsOptions);
     ws.on("error", () => {});
     const response = await new Promise<number | undefined>((resolve) =>
       ws.once("unexpected-response", (_request, response) => {

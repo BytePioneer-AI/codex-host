@@ -8,7 +8,8 @@ import {
   type IncomingHttpHeaders,
   type OutgoingHttpHeaders,
 } from "node:http2";
-import { connect, type TLSSocket } from "node:tls";
+import type { SocketConstructorOpts } from "node:net";
+import { connect, type ConnectionOptions, type TLSSocket } from "node:tls";
 import { Duplex, Transform } from "node:stream";
 import { createWebSocketStream, WebSocket } from "ws";
 import {
@@ -49,13 +50,15 @@ export async function fakeAgent(
   );
   const hostname = `${deriveId(publicKey)}.relay.test`;
   const controlHost = options.controlHost ?? "relay.test";
-  const ws = new WebSocket(`wss://127.0.0.1:${options.port ?? 4480}${paths.agent}`, {
+  // ws forwards SNI to tls.connect, but ClientOptions omits servername.
+  const wsOptions = {
     servername: controlHost,
     rejectUnauthorized: false,
     perMessageDeflate: false,
     maxPayload,
     autoPong: options.autoPong ?? true,
-  });
+  } satisfies WebSocket.ClientOptions & Pick<ConnectionOptions, "servername">;
+  const ws = new WebSocket(`wss://127.0.0.1:${options.port ?? 4480}${paths.agent}`, wsOptions);
   const closed = new Promise<number>((resolve) => ws.once("close", resolve));
   ws.on("error", () => {});
   await once(ws, "open");
@@ -101,7 +104,7 @@ export async function fakeAgent(
           Buffer.from(registrationContent(options.signHost ?? controlHost, challenge)),
           privateKey,
         );
-        if (options.invalid) signature[0] ^= 255;
+        if (options.invalid) signature[0] = signature.readUInt8(0) ^ 255;
         stream.respond({
           ":status": 200,
           [headers.publicKey]: publicKey.toString("base64url"),
@@ -161,14 +164,15 @@ export async function fakeAgent(
 }
 
 export function phone(hostname: string, alpn = ["http/1.1"], port = 4480): TLSSocket {
-  const socket = connect({
+  const options = {
     host: "127.0.0.1",
     port,
     servername: hostname,
     rejectUnauthorized: false,
     ALPNProtocols: alpn,
     allowHalfOpen: false,
-  });
+  } satisfies ConnectionOptions & Pick<SocketConstructorOpts, "allowHalfOpen">;
+  const socket = connect(options);
   socket.on("error", () => {});
   return socket;
 }

@@ -4,7 +4,8 @@ import { once } from "node:events";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import https, { Agent, get } from "node:https";
-import { connect, type Socket } from "node:net";
+import { connect } from "node:net";
+import type { Duplex } from "node:stream";
 import { join } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import type { TestContext } from "node:test";
@@ -175,7 +176,7 @@ export async function pebble(t: TestContext, reuse: 0 | 100) {
 export async function httpProxy(t: TestContext) {
   const proxy = createServer((_req, res) => res.writeHead(500).end());
   const targets: string[] = [];
-  const sockets = new Set<Socket>();
+  const sockets = new Set<Duplex>();
   proxy.on("connect", (request, socket, head) => {
     targets.push(defined(request.url));
     const [host, port] = defined(request.url).split(":");

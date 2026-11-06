@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
-import { createServer as createHttpServer } from "node:http";
+import {
+  createServer as createHttpServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { createServer, type Socket } from "node:net";
 import { createServer as createTlsServer } from "node:tls";
 import { WebSocketServer } from "ws";
@@ -27,6 +31,7 @@ export interface RelayOptions {
   maxConnections?: number;
   check?: (request: RegistrationRequest) => RegistrationResult | Promise<RegistrationResult>;
   onUsage?: (name: string, bytes: number) => void;
+  onRequest?: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>;
 }
 
 export function createRelay(options: RelayOptions) {
@@ -43,8 +48,14 @@ export function createRelay(options: RelayOptions) {
   const usageByName = new Map<string, Usage>();
   const sockets = new Set<Socket>();
   const credentials = () => ({ cert: readFileSync(options.cert), key: readFileSync(options.key) });
-  const http = createHttpServer((_request, response) => {
-    response.writeHead(404).end();
+  const http = createHttpServer(async (request, response) => {
+    try {
+      if (options.onRequest) await options.onRequest(request, response);
+      else response.writeHead(404).end();
+    } catch {
+      if (!response.headersSent) response.writeHead(500).end();
+      else response.destroy();
+    }
   });
   const tls = createTlsServer({ ...credentials(), ALPNProtocols: ["http/1.1"] }, (socket) => {
     http.emit("connection", socket);

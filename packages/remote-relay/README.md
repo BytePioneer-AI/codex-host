@@ -47,9 +47,11 @@ kill -HUP <relay-pid>
 
 ## 嵌入与注册检查
 
-`@codexhost/remote-relay` 导出 `createRelay(options)`、`RelayOptions`、`RegistrationRequest` 和 `RegistrationResult`。`options` 的 `domain`、`controlHost`、`cert`、`key`、`rate`、`dailyQuota`、`maxConnections` 与启动参数同义，另有可选的 `heartbeatInterval`（毫秒，默认 25000）及两个回调：
+`@codexhost/remote-relay` 导出 `createRelay(options)`、`RelayOptions`、`RegistrationRequest` 和 `RegistrationResult`。`options` 的 `domain`、`controlHost`、`cert`、`key`、`rate`、`dailyQuota`、`maxConnections` 与启动参数同义，另有可选的 `heartbeatInterval`（毫秒，默认 25000）及三个回调：
 
 ```ts
+import type { IncomingMessage, ServerResponse } from "node:http";
+
 interface RegistrationRequest {
   id: string;
   ip: string | undefined;
@@ -62,6 +64,7 @@ interface RelayOptions {
   check?: (request: RegistrationRequest) => RegistrationResult | Promise<RegistrationResult>;
   // 每次转发的增量字节数，不是累计值；应同步接收，持久化可自行批量执行。
   onUsage?: (name: string, bytes: number) => void;
+  onRequest?: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>;
 }
 
 type RegistrationResult =
@@ -72,6 +75,8 @@ type RegistrationResult =
 `check` 仅在签名验证通过后调用，接收公钥派生的 ID、电脑 IP 和挑战响应中的可选名字、邀请码。允许时返回合法 DNS 标签（1–63 位字母、数字或中间的连字符）；核心把它转成小写，主机名为 `<name>.<domain>`。名字分配、身份与名字的唯一对应、邀请码和停用规则由部署者负责。不提供 `check` 时忽略提交的名字和邀请码，仍以公钥派生 ID 注册。
 
 返回的 `rate`、`dailyQuota` 优先于启动选项，省略时沿用启动值，均以字节为单位。`usedToday` 默认 0，作为 UTC 当天的用量起点；内存中已有该名字当天用量时，以内存为准。重连更新限速和额度，不清零当天用量或 ACME 小时用量。`onUsage` 与额度使用同一次计数，包括两个方向、ClientHello、TLS 开销和超额后的 ACME 验证流量；初始 `usedToday`、控制流和额度通知不重复上报。
+
+`onRequest` 接收控制地址上未升级为 WebSocket 的 HTTP 请求，可用于提供 `/admin` 等页面，由处理函数完成响应；未提供时返回 404。同步抛错或返回的 Promise 被拒绝时，尚未发送响应头则返回 500，否则关闭该响应，不影响 Relay 进程。WebSocket 升级路径和按地址名的 SNI 转发不经过该回调。
 
 返回值包含 `server`、`close()` 和 `disconnect(name)`。调用者自行 `server.listen(port)`；`disconnect` 立即注销地址并关闭其控制和手机连接，未知名字无操作。再次连接须重新经过 `check`，可借此使新额度或停用规则生效。
 

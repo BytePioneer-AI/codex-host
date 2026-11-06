@@ -31,6 +31,8 @@ export type { AntigravityStreamEvent } from "./stream-events.js";
 export {
   codeActionFileChange,
   parseAntigravityCodeActions,
+  parseAntigravityStepThinking,
+  requestAntigravityStepThinking,
   requestAntigravityTrajectorySteps,
 } from "./code-action-diff.js";
 export type { AntigravityCodeAction } from "./code-action-diff.js";

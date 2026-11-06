@@ -150,18 +150,12 @@ export const en = {
   "connectDevices.relay.hint":
     "Connect across networks without an extra phone app. An access token is required.",
   "connectDevices.relay.off": "Off",
-  "connectDevices.relay.connecting": "Connecting…",
-  "connectDevices.relay.connected": "Connected",
-  "connectDevices.relay.expires": "Certificate valid until {date}",
-  "connectDevices.relay.issuing": "Requesting a certificate…",
-  "connectDevices.relay.first-issue":
-    "Registered. Requesting a certificate, which usually takes under a minute.",
-  "connectDevices.relay.unreachable": "The certificate authority could not be reached.",
-  "connectDevices.relay.retry": "Next attempt: {date}",
+  "connectDevices.relay.connected": "On. Phones can connect at the address below.",
+  "connectDevices.relay.preparing": "Preparing… This usually takes under a minute.",
+  "connectDevices.relay.unavailable": "Temporarily unavailable. Retrying automatically at {date}.",
   "connectDevices.relay.paused":
-    "Certificate requests are paused. Fix the issue, then turn relay access off and on.",
-  "connectDevices.relay.missing-certificate":
-    "Registered, but a certificate is missing. Phone access is not available yet.",
+    "Needs attention. Fix the issue below, then turn relay access off and on.",
+  "connectDevices.relay.unreachable": "The certificate authority could not be reached.",
   "connectDevices.relay.replaced":
     "Stopped: another computer is using this identity. Turn relay access off and on after resolving the conflict.",
   "connectDevices.relay.rejected": "Stopped: the Relay rejected this identity's signature.",
@@ -521,15 +515,11 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.relay.title": "中转访问",
   "connectDevices.relay.hint": "跨网络连接，手机无需额外安装应用，登录需要访问令牌。",
   "connectDevices.relay.off": "已关闭",
-  "connectDevices.relay.connecting": "连接中…",
-  "connectDevices.relay.connected": "已连接",
-  "connectDevices.relay.expires": "证书有效期至 {date}",
-  "connectDevices.relay.issuing": "正在申请证书",
-  "connectDevices.relay.first-issue": "已注册，正在申请证书，通常一分钟内完成。",
+  "connectDevices.relay.connected": "已开启，手机可以通过下面的地址访问。",
+  "connectDevices.relay.preparing": "准备中…通常一分钟内完成。",
+  "connectDevices.relay.unavailable": "暂时无法使用，将于 {date} 自动重试。",
+  "connectDevices.relay.paused": "需要处理：请按下面的说明修复，然后关闭再打开中转访问。",
   "connectDevices.relay.unreachable": "无法连接证书机构。",
-  "connectDevices.relay.retry": "下次重试时间：{date}",
-  "connectDevices.relay.paused": "证书申请已暂停。请修复问题后关闭再打开中转访问。",
-  "connectDevices.relay.missing-certificate": "已注册，但缺少证书，手机暂时无法访问。",
   "connectDevices.relay.replaced":
     "已停止：另一台电脑正在使用此身份。解决冲突后关闭再打开中转访问。",
   "connectDevices.relay.rejected": "已停止：Relay 拒绝了此身份的签名。",

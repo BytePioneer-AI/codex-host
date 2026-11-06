@@ -4,6 +4,19 @@ import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { WebAccessState } from "@codexhost/shared-contracts";
 import css from "./ConnectDevicesSection.module.css";
 
+type RelayState = NonNullable<WebAccessState["relay"]>["state"];
+
+/**
+ * Registration and the first certificate are one "preparing" step for users; certificates are an
+ * implementation detail that surfaces only when a failure needs their attention.
+ */
+export function relayPreparing(state: RelayState): boolean {
+  return (
+    state.status === "connecting" ||
+    (state.status === "missing-certificate" && state.certificate.failure === undefined)
+  );
+}
+
 export function RelayControl({
   relay,
   busy,
@@ -18,47 +31,34 @@ export function RelayControl({
   t: PropsLocale<"codexhostImport">["t"];
 }): ReactNode {
   const { state, identityPath } = relay;
-  const certificate = "certificate" in state ? state.certificate : undefined;
-  // The first certificate is a normal step after registering, not a missing-file problem.
-  const firstIssue = state.status === "missing-certificate" && certificate?.issuing === true;
+  const failure = "certificate" in state ? state.certificate.failure : undefined;
+  // Renewal runs while the current certificate still works, so only a pause needs the user.
+  const paused = failure?.paused === true;
+  const message =
+    state.status === "stopped"
+      ? t(`connectDevices.relay.${state.reason}`)
+      : paused
+        ? t("connectDevices.relay.paused")
+        : state.status === "off" || state.status === "connected"
+          ? t(`connectDevices.relay.${state.status}`)
+          : relayPreparing(state)
+            ? t("connectDevices.relay.preparing")
+            : t("connectDevices.relay.unavailable", {
+                date: new Date(failure?.retryAt ?? "").toLocaleString(),
+              });
   return (
     <div className={css.manageRow} data-relay-status={state.status}>
       <div className={css.manageText}>
         <span className={css.manageTitle}>{t("connectDevices.relay.title")}</span>
         <span className={css.notice} role="status">
-          {t(
-            state.status === "stopped"
-              ? `connectDevices.relay.${state.reason}`
-              : firstIssue
-                ? "connectDevices.relay.first-issue"
-                : `connectDevices.relay.${state.status}`,
-          )}
+          {message}
         </span>
-        {(state.status === "connected" || state.status === "missing-certificate") && (
-          <span className={css.meta}>{state.url}</span>
-        )}
-        {certificate?.expiresAt && (
+        {paused && (
           <span className={css.meta}>
-            {t("connectDevices.relay.expires", {
-              date: new Date(certificate.expiresAt).toLocaleString(),
-            })}
+            {failure.detail ?? t("connectDevices.relay.unreachable")}
           </span>
         )}
-        {certificate?.issuing && !firstIssue && (
-          <span className={css.notice} role="status">
-            {t("connectDevices.relay.issuing")}
-          </span>
-        )}
-        {certificate?.failure && (
-          <span className={css.notice} role="status">
-            {certificate.failure.detail ?? t("connectDevices.relay.unreachable")}{" "}
-            {certificate.failure.paused
-              ? t("connectDevices.relay.paused")
-              : t("connectDevices.relay.retry", {
-                  date: new Date(certificate.failure.retryAt).toLocaleString(),
-                })}
-          </span>
-        )}
+        {state.status === "connected" && <span className={css.meta}>{state.url}</span>}
         <span className={css.meta}>
           {t("connectDevices.relay.identity", { path: identityPath })}
         </span>

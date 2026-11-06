@@ -73,9 +73,7 @@ it(
       await delay(20);
     await control.getByRole("button", { name: "Refresh status" }).click();
     await f.page.locator('[data-relay-status="missing-certificate"]').waitFor();
-    await control
-      .getByText("Registered, but a certificate is missing.", { exact: false })
-      .waitFor();
+    await control.getByText(/Preparing…|Temporarily unavailable/u).waitFor();
     assert.ok((await control.textContent())?.includes(f.data.path("remote-relay/identity.pem")));
     assert.equal(
       await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
@@ -105,7 +103,7 @@ it(
 );
 
 it(
-  "renders certificate expiry, issuance, failure/retry and pause at phone width",
+  "keeps certificates out of sight except for pauses, at phone width",
   { timeout: 60_000 },
   async (t) => {
     const f = await fixture(t);
@@ -139,36 +137,22 @@ it(
         };
         await open(f.page, f.login);
         const control = f.page.locator("[data-relay-status]");
-        const text = await control.textContent();
-        if (status === "connected") {
-          assert.ok(text?.includes("Certificate valid until"));
-          assert.ok(
-            text?.includes(
-              await f.page.evaluate((date) => new Date(date).toLocaleString(), expiresAt),
-            ),
-          );
-        }
-        if (phase === "issuing")
-          assert.ok(
-            text?.includes(
-              status === "connected"
-                ? "Requesting a certificate…"
-                : "Registered. Requesting a certificate, which usually takes under a minute.",
-            ),
-          );
-        if (phase === "failed" || phase === "paused") assert.ok(text?.includes(detail));
-        if (phase === "failed") {
-          assert.ok(text?.includes("Next attempt:"));
-          assert.ok(
-            text?.includes(
-              await f.page.evaluate((date) => new Date(date).toLocaleString(), retryAt),
-            ),
-          );
-        }
-        if (phase === "paused") {
-          assert.ok(text?.includes("Fix the issue, then turn relay access off and on."));
-          assert.ok(!text?.includes("Next attempt:"));
-        }
+        const text = (await control.textContent()) ?? "";
+        const retry = await f.page.evaluate((date) => new Date(date).toLocaleString(), retryAt);
+        // Certificates stay out of sight unless a pause needs the user.
+        for (const hidden of ["Certificate valid until", "certificate", "Requesting"])
+          assert.ok(!text.includes(hidden), `${status}/${phase} shows ${hidden}`);
+        const expected =
+          phase === "paused"
+            ? "Needs attention. Fix the issue below, then turn relay access off and on."
+            : status === "connected"
+              ? "On. Phones can connect at the address below."
+              : phase === "failed"
+                ? `Temporarily unavailable. Retrying automatically at ${retry}.`
+                : "Preparing… This usually takes under a minute.";
+        assert.ok(text.includes(expected), `${status}/${phase}: ${text}`);
+        assert.equal(text.includes(detail), phase === "paused");
+        assert.equal(text.includes("https://computer.relay.test/"), status === "connected");
         assert.equal(
           await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
           true,
@@ -193,14 +177,14 @@ it(
     );
     const states: Array<[WebRelayState, string]> = [
       [{ status: "off" }, "Off"],
-      [{ status: "connecting" }, "Connecting…"],
+      [{ status: "connecting" }, "Preparing…"],
       [
         {
           status: "connected",
           url: "https://computer.relay.test/",
           certificate: { issuing: false, expiresAt: "2027-01-01T00:00:00Z" },
         },
-        "Connected",
+        "On. Phones can connect",
       ],
       [
         {
@@ -208,7 +192,7 @@ it(
           url: "https://computer.relay.test/",
           certificate: { issuing: false },
         },
-        "certificate is missing",
+        "Preparing…",
       ],
       [{ status: "stopped", reason: "replaced" }, "another computer is using this identity"],
       [{ status: "stopped", reason: "rejected" }, "rejected this identity's signature"],
@@ -284,11 +268,8 @@ it(
     const control = f.page.locator("[data-relay-status]");
     await f.page.locator('[data-relay-status="missing-certificate"]').waitFor();
     assert.ok(
-      (await control.textContent())?.includes(
-        "Registered. Requesting a certificate, which usually takes under a minute.",
-      ),
+      (await control.textContent())?.includes("Preparing… This usually takes under a minute."),
     );
-    assert.ok(!(await control.textContent())?.includes("certificate is missing"));
     await f.page.locator('[data-relay-status="connected"]').waitFor();
     const settled = reads;
     await f.page.waitForTimeout(5_000);

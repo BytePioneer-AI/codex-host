@@ -9,7 +9,7 @@ import {
 import { accessTokenApi, ApiError } from "./api.ts";
 import { signOut } from "./auth-watch.ts";
 import { AutostartControl, useDirectRestart } from "./BackgroundControls.tsx";
-import { RelayControl } from "./RelayControl.tsx";
+import { RelayControl, relayPreparing } from "./RelayControl.tsx";
 import { ConnectionCard } from "./ConnectionCard.tsx";
 import css from "./ConnectDevicesSection.module.css";
 
@@ -156,12 +156,10 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
     };
   }, []);
   const relayState = view.kind === "ready" ? view.data.relay?.state : undefined;
-  const relaySettling =
-    relayState?.status === "connecting" ||
-    (relayState !== undefined && "certificate" in relayState && relayState.certificate.issuing);
+  const relaySettling = relayState !== undefined && relayPreparing(relayState);
   useEffect(() => {
     if (!relaySettling) return;
-    // Registration and certificate issuance finish in the background; follow them until they settle.
+    // Registration and the first certificate finish in the background; follow them until they settle.
     const timer = setTimeout(() => {
       void accessTokenApi.get().then(restored, () => undefined);
     }, 2_000);

@@ -152,6 +152,12 @@ export const en = {
   "connectDevices.relay.off": "Off",
   "connectDevices.relay.connecting": "Connecting… Refresh to check progress.",
   "connectDevices.relay.connected": "Connected",
+  "connectDevices.relay.expires": "Certificate valid until {date}",
+  "connectDevices.relay.issuing": "Requesting a certificate…",
+  "connectDevices.relay.unreachable": "The certificate authority could not be reached.",
+  "connectDevices.relay.retry": "Next attempt: {date}",
+  "connectDevices.relay.paused":
+    "Certificate requests are paused. Fix the issue, then turn relay access off and on.",
   "connectDevices.relay.missing-certificate":
     "Registered, but a certificate is missing. Phone access is not available yet.",
   "connectDevices.relay.replaced":
@@ -515,6 +521,11 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.relay.off": "已关闭",
   "connectDevices.relay.connecting": "连接中… 可刷新查看进度。",
   "connectDevices.relay.connected": "已连接",
+  "connectDevices.relay.expires": "证书有效期至 {date}",
+  "connectDevices.relay.issuing": "正在申请证书",
+  "connectDevices.relay.unreachable": "无法连接证书机构。",
+  "connectDevices.relay.retry": "下次重试时间：{date}",
+  "connectDevices.relay.paused": "证书申请已暂停。请修复问题后关闭再打开中转访问。",
   "connectDevices.relay.missing-certificate": "已注册，但缺少证书，手机暂时无法访问。",
   "connectDevices.relay.replaced":
     "已停止：另一台电脑正在使用此身份。解决冲突后关闭再打开中转访问。",

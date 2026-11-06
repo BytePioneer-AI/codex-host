@@ -1,4 +1,4 @@
-import type { Socket } from "node:net";
+import type { Duplex } from "node:stream";
 
 const maxHelloSize = 16 * 1024;
 
@@ -72,7 +72,7 @@ export function parseClientHello(bytes: Buffer): ClientHello | undefined {
 }
 
 /** Leaves the socket paused with every inspected byte restored to its readable queue. */
-export function readClientHello(socket: Socket): Promise<ClientHello> {
+export function readClientHello(socket: Duplex): Promise<ClientHello> {
   return new Promise((resolve, reject) => {
     let bytes = Buffer.alloc(0);
     const timer = setTimeout(() => fail(new Error("ClientHello timed out")), 10_000);

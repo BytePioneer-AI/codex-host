@@ -2,7 +2,7 @@
 
 ## 1. 签发与续期
 
-- [ ] 1.1 TLS 入口：
+- [x] 1.1 TLS 入口：
   - `@codexhost/remote-relay` 新增 `./client-hello` 导出，`readClientHello` 参数放宽为 `Duplex`，超时等其他行为不变。
   - `RelayTls` 改为由外部设置正式证书和挑战证书，先读 ClientHello 再分流，10 秒期限覆盖读 ClientHello 和握手。
 
@@ -10,7 +10,7 @@
   - 现有中转端到端测试继续通过。
   - 新增用例：无正式证书时，`acme-tls/1` 连接用挑战证书握手（TLS 1.2 和 1.3 各一次）；同一挑战的多条并发连接都完成；SNI 大小写不同仍匹配；没有挑战证书或 SNI 不符时关闭；普通连接在无证书时关闭；只发半个 ClientHello 后 10 秒关闭。
   - `npm run lint` 的边界检查通过。
-- [ ] 1.2 签发（`acme.ts`）：
+- [x] 1.2 签发（`acme.ts`）：
   - 按 design 的步骤走账户、订单、授权（跳过已有效的）、挑战、finalize、下载。
   - 关闭库内重试，设置 30 秒请求超时；拦截器按请求所属轮次记录错误响应。
   - 自己轮询 authorization 和订单，不用 `waitForValidStatus`。
@@ -26,7 +26,7 @@
   - 关闭挑战应答时，authorization 以 HTTP 200 返回 `invalid`，被分类为验证失败。
 
   记录实际运行的命令和结果。
-- [ ] 1.3 调度与失败（`certificates.ts`）：
+- [x] 1.3 调度与失败（`certificates.ts`）：
   - `nextAction`。
   - 注册成功时检查，以及每小时检查；证书到期即撤下。
   - 失败记录：绑定主机名和证书机构地址，每轮开始前写入，成功后删除。
@@ -41,8 +41,8 @@
 
 ## 2. 界面和文档
 
-- [ ] 2.1 状态：`WebRelayState` 增加 `certificate` 字段；连接设备页显示有效期、申请中、失败说明和下次重试时间、暂停提示。验证：Playwright 覆盖这些状态的文案，以及手机宽度下的布局。
-- [ ] 2.2 文档：
+- [x] 2.1 状态：`WebRelayState` 增加 `certificate` 字段；连接设备页显示有效期、申请中、失败说明和下次重试时间、暂停提示。验证：Playwright 覆盖这些状态的文案，以及手机宽度下的布局。
+- [x] 2.2 文档：
   - `docs/product/web-remote-access.md` 说明：证书自动申请、失败提示、证书透明日志会公开中转地址、`CODEXHOST_RELAY_ACME_DIRECTORY`。
   - 实施计划阶段 5 的 change 表和状态更新为：采用 TLS-ALPN-01，不做 DNS-01，也不做备用证书机构的自动切换。
 

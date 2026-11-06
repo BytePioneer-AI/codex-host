@@ -165,9 +165,16 @@ describe("local Codex read-only identity startup", () => {
     expect(f.requests).toEqual([]);
   });
 
-  it("initializes the native read connection before projecting the current identity", async () => {
+  it("prepares the native connection without prefetching identity, then reads it on demand", async () => {
     const f = nativeFixture();
     const local = await startLocal();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(f.requests.map((r) => r.method)).toEqual(["initialize", "initialized"]);
+    expect(local.accountControl.snapshot()).toMatchObject({
+      phase: "ready",
+      currentAccountId: null,
+      accounts: [],
+    });
     const result = codexAccountListResultSchema.parse(await local.accountControl.refresh?.());
     expect(result).toMatchObject({
       phase: "ready",
@@ -175,7 +182,7 @@ describe("local Codex read-only identity startup", () => {
       accounts: [{ accountId: "current", email: "current@example.com", planType: "pro" }],
     });
     expect(f.connect).toHaveBeenCalledOnce();
-    expect(f.requests.slice(0, 2).map((r) => r.method)).toEqual(["initialize", "initialized"]);
+    expect(f.requests.map((r) => r.method)).toEqual(["initialize", "initialized", "account/read"]);
     expect(
       f.requests
         .filter((r) => r.method === "account/read")

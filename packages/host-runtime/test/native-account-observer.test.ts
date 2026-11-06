@@ -34,19 +34,14 @@ function fixture() {
 }
 
 describe("native Account observation", () => {
-  it("publishes the current identity after native initialization without an account probe", async () => {
+  it("does not prefetch identity or announce an account change after native initialization", async () => {
     const f = fixture();
-    const collected = Promise.withResolvers<typeof f.snapshot>();
-    f.refresh.mockReturnValueOnce(collected.promise);
     f.observer.initialized(1);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(f.refresh).not.toHaveBeenCalled();
     expect(f.controlRequest).not.toHaveBeenCalled();
-    expect(f.scope.gate.phase).toBe("ready");
     expect(f.notify).not.toHaveBeenCalled();
-    collected.resolve(f.snapshot);
-    await vi.waitFor(() =>
-      expect(f.notify).toHaveBeenCalledWith("codexhost/account/changed", f.snapshot),
-    );
-    expect(f.controlRequest).not.toHaveBeenCalled();
+    expect(f.scope.gate.phase).toBe("ready");
   });
 
   it("announces only a ready replacement backend, never an intermediate generation", async () => {
@@ -116,6 +111,8 @@ describe("native Account observation", () => {
     "collects after %s without generating native authentication events",
     async (method) => {
       const f = fixture();
+      f.observer.initialized(1);
+      expect(f.refresh).not.toHaveBeenCalled();
       f.observer.observe({ method, params: { futureField: true } });
       await vi.waitFor(() =>
         expect(f.notify).toHaveBeenCalledWith("codexhost/account/changed", f.snapshot),

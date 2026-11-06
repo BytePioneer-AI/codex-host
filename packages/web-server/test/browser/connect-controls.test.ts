@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { chromium, type Page } from "playwright";
-import { addressValue, connectServer } from "../support/connect-devices.ts";
+import { addressValue, chooseTailscaleHttps, connectServer } from "../support/connect-devices.ts";
 import { fakeServe } from "../support/serve-control.ts";
 import { serveStatus, SERVE_HOST } from "../support/tailscale.ts";
 
@@ -13,7 +13,8 @@ async function openConnect(page: Page) {
 async function choose(page: Page, kind: string) {
   if (!(await page.locator(`[data-connect-route="${kind}"]`).isVisible()))
     await page.getByText("Other connection methods", { exact: true }).click();
-  await page.locator(`[data-connect-route="${kind}"]`).getByRole("radio").check();
+  if (kind === "tailscale-https") await chooseTailscaleHttps(page);
+  else await page.locator(`[data-connect-route="${kind}"]`).getByRole("radio").check();
 }
 async function stop(page: Page) {
   await page.getByRole("button", { name: "Stop access…", exact: true }).click();

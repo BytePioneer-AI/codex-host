@@ -171,44 +171,7 @@ export function ConnectionCard({
             </div>
           )}
         </div>
-        <div className={css.routePanel}>
-          <fieldset className={css.routes} disabled={busy}>
-            <legend className={css.fieldTitle}>{t("connectDevices.connectVia")}</legend>
-            <div className={css.routeGroup}>
-              <div className={css.routeFamily}>
-                {option("tailscale-https")}
-                {tailscaleChosen && hasTailscaleIp && (
-                  <div className={css.subRoutes}>
-                    <label className={css.subRoute}>
-                      <input
-                        type="radio"
-                        name={`${group}-tailscale`}
-                        checked={method === "tailscale-https"}
-                        onChange={() => choose("tailscale-https")}
-                      />
-                      {t("connectDevices.tailscaleViaHttps")}
-                    </label>
-                    <label className={css.subRoute} data-connect-route="tailscale">
-                      <input
-                        type="radio"
-                        name={`${group}-tailscale`}
-                        checked={method === "tailscale"}
-                        onChange={() => choose("tailscale")}
-                      />
-                      {t("connectDevices.tailscaleViaIp")}
-                    </label>
-                  </div>
-                )}
-              </div>
-              {option("lan")}
-            </div>
-          </fieldset>
-          {extras.length > 0 && (
-            <details className={css.other} open={extras.includes(method) ? true : undefined}>
-              <summary>{t("connectDevices.otherMethods")}</summary>
-              <div className={css.extraRoutes}>{extras.map(option)}</div>
-            </details>
-          )}
+        <div className={css.connectionDetails}>
           {(!ready || hint !== undefined) && (
             <div
               className={css.connectionHelp}
@@ -296,70 +259,109 @@ export function ConnectionCard({
               )}
             </div>
           )}
+          {selected !== undefined && (
+            <div className={css.addressRow}>
+              {choices.length > 1 ? (
+                <Menu
+                  open={addressMenu}
+                  onClose={() => setAddressMenu(false)}
+                  portal
+                  className={css.addressMenu}
+                  anchor={
+                    <button
+                      aria-label={t("connectDevices.address")}
+                      type="button"
+                      className={`${css.input} ${css.addressTrigger}`}
+                      disabled={busy}
+                      aria-haspopup="menu"
+                      aria-expanded={addressMenu}
+                      onClick={() => setAddressMenu(!addressMenu)}
+                    >
+                      <span>{new URL(selected.url).host}</span>
+                      <IconChevronDownOutlineRegular />
+                    </button>
+                  }
+                  items={choices.map((entry) => ({
+                    id: entry.url,
+                    label: new URL(entry.url).host,
+                  }))}
+                  selectedId={selected.url}
+                  onSelect={(url) => {
+                    setAddressMenu(false);
+                    setSelectedUrl(url);
+                  }}
+                />
+              ) : (
+                <input
+                  aria-label={t("connectDevices.address")}
+                  className={css.input}
+                  value={new URL(selected.url).host}
+                  readOnly
+                />
+              )}
+              {link !== undefined && (
+                <Button
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => {
+                    void navigator.clipboard.writeText(link).then(
+                      () => setCopied("copied"),
+                      () => setCopied("failed"),
+                    );
+                  }}
+                >
+                  {t(
+                    copied === "copied"
+                      ? "connectDevices.copied"
+                      : copied === "failed"
+                        ? "connectDevices.copyFailed"
+                        : "connectDevices.copyLink",
+                  )}
+                </Button>
+              )}
+            </div>
+          )}
         </div>
       </div>
-      {selected !== undefined && (
-        <div className={css.addressRow}>
-          {choices.length > 1 ? (
-            <Menu
-              open={addressMenu}
-              onClose={() => setAddressMenu(false)}
-              portal
-              className={css.addressMenu}
-              anchor={
-                <button
-                  aria-label={t("connectDevices.address")}
-                  type="button"
-                  className={`${css.input} ${css.addressTrigger}`}
-                  disabled={busy}
-                  aria-haspopup="menu"
-                  aria-expanded={addressMenu}
-                  onClick={() => setAddressMenu(!addressMenu)}
-                >
-                  <span>{new URL(selected.url).host}</span>
-                  <IconChevronDownOutlineRegular />
-                </button>
-              }
-              items={choices.map((entry) => ({
-                id: entry.url,
-                label: new URL(entry.url).host,
-              }))}
-              selectedId={selected.url}
-              onSelect={(url) => {
-                setAddressMenu(false);
-                setSelectedUrl(url);
-              }}
-            />
-          ) : (
-            <input
-              aria-label={t("connectDevices.address")}
-              className={css.input}
-              value={new URL(selected.url).host}
-              readOnly
-            />
-          )}
-          {link !== undefined && (
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => {
-                void navigator.clipboard.writeText(link).then(
-                  () => setCopied("copied"),
-                  () => setCopied("failed"),
-                );
-              }}
-            >
-              {t(
-                copied === "copied"
-                  ? "connectDevices.copied"
-                  : copied === "failed"
-                    ? "connectDevices.copyFailed"
-                    : "connectDevices.copyLink",
+      <div className={css.routePanel}>
+        <fieldset className={css.routes} disabled={busy}>
+          <legend className={css.fieldTitle}>{t("connectDevices.connectVia")}</legend>
+          <div className={css.routeGroup}>
+            <div className={css.routeFamily}>
+              {option("tailscale-https")}
+              {tailscaleChosen && hasTailscaleIp && (
+                <div className={css.subRoutes}>
+                  <label className={css.subRoute}>
+                    <input
+                      type="radio"
+                      name={`${group}-tailscale`}
+                      checked={method === "tailscale-https"}
+                      onChange={() => choose("tailscale-https")}
+                    />
+                    {t("connectDevices.tailscaleViaHttps")}
+                  </label>
+                  <label className={css.subRoute} data-connect-route="tailscale">
+                    <input
+                      type="radio"
+                      name={`${group}-tailscale`}
+                      checked={method === "tailscale"}
+                      onChange={() => choose("tailscale")}
+                    />
+                    {t("connectDevices.tailscaleViaIp")}
+                  </label>
+                </div>
               )}
-            </Button>
-          )}
-        </div>
-      )}
+            </div>
+            {option("lan")}
+          </div>
+        </fieldset>
+        {extras.length > 0 && (
+          <details className={css.other} open={extras.includes(method) ? true : undefined}>
+            <summary>{t("connectDevices.otherMethods")}</summary>
+            <div className={css.extraRoutes}>{extras.map(option)}</div>
+          </details>
+        )}
+      </div>
       {enlarged && link !== undefined && (
         <Modal
           open

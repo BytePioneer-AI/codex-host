@@ -33,7 +33,7 @@ import { DesktopUpdateBadge } from "./DesktopUpdateIndicator.tsx";
 import type { DesktopUpdateBridge } from "../types.ts";
 import { DesktopUpdateSource } from "./desktop-update-source.ts";
 import { CloseLabel, HeaderContent, TriggerContent } from "./chrome.tsx";
-import { GeneralSection } from "./GeneralSection.tsx";
+import { GeneralSection, type GeneralSectionInjected } from "./GeneralSection.tsx";
 import { CurrentVersionRow } from "./CurrentVersionRow.tsx";
 import { DeveloperToolsRow, type DeveloperToolsRowInjected } from "./DeveloperToolsRow.tsx";
 import { SettingsDocumentAction } from "./SettingsDocumentAction.tsx";
@@ -42,7 +42,7 @@ import { SettingsDocumentStore } from "./settings-document-store.ts";
 import { en, zh, type SettingsKey } from "./locales.ts";
 
 export type { CloseLabelProps, HeaderContentProps, TriggerContentProps } from "./chrome.tsx";
-export type { GeneralSectionComponentProps } from "./GeneralSection.tsx";
+export type { GeneralSectionComponentProps, GeneralSectionInjected } from "./GeneralSection.tsx";
 export type {
   SettingsDocumentActionInjected,
   SettingsDocumentActionProps,
@@ -313,6 +313,31 @@ export function apply(ctx: ClientContext): void {
         label: () => t("general.nav"),
         locale: NS,
         children: { "settings.general.item": { kind: "list", scope: "root" } },
+        inject: (): GeneralSectionInjected => {
+          let version = -1;
+          let items: readonly string[] = [];
+          return {
+            hooks: {
+              items: {
+                getSnapshot: () => {
+                  const nextVersion = ctx.slots.getVersion("settings.general.item");
+                  if (nextVersion !== version) {
+                    version = nextVersion;
+                    items = [
+                      ...new Set(
+                        [...ctx.slots.entries("settings.general.item")]
+                          .sort((a, b) => (a.options.order ?? 0) - (b.options.order ?? 0))
+                          .flatMap((entry) => (entry.options.id ? [entry.options.id] : [])),
+                      ),
+                    ];
+                  }
+                  return items;
+                },
+                subscribe: (listener) => ctx.slots.subscribe("settings.general.item", listener),
+              },
+            },
+          };
+        },
       },
       GeneralSection,
     ),

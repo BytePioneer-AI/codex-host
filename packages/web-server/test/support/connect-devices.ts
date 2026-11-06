@@ -6,7 +6,7 @@ import { once } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { join, resolve } from "node:path";
 import type { TestContext } from "node:test";
-import type { Locator } from "playwright";
+import type { Locator, Page } from "playwright";
 import type {
   WebAccessState,
   WebBackgroundState,
@@ -34,6 +34,13 @@ export function addressValue(address: Locator): Promise<string> {
   return address.evaluate((element) =>
     element instanceof HTMLInputElement ? element.value : (element.textContent ?? ""),
   );
+}
+
+/** The shared Tailscale row can already be checked for IP; choose its HTTPS sub-option too. */
+export async function chooseTailscaleHttps(page: Page): Promise<void> {
+  await page.locator('[data-connect-route="tailscale-https"]').getByRole("radio").check();
+  const https = page.getByRole("radio", { name: "HTTPS", exact: true });
+  if (await https.isVisible()) await https.check();
 }
 
 export async function connectServer(

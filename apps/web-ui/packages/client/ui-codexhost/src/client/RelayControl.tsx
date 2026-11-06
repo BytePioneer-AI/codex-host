@@ -59,9 +59,6 @@ export function RelayControl({
           </span>
         )}
         {state.status === "connected" && <span className={css.meta}>{state.url}</span>}
-        <span className={css.meta}>
-          {t("connectDevices.relay.identity", { path: identityPath })}
-        </span>
       </div>
       <div className={css.manageActions}>
         <Button variant="outline" disabled={busy} onClick={onRefresh}>
@@ -74,6 +71,9 @@ export function RelayControl({
           onChange={onChange}
         />
       </div>
+      <span className={`${css.meta} ${css.identityNote}`}>
+        {t("connectDevices.relay.identity", { path: identityPath })}
+      </span>
     </div>
   );
 }

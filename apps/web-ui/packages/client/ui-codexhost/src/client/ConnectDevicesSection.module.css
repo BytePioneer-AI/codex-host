@@ -1,7 +1,7 @@
 .page {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 24px;
   min-width: 0;
 }
 .header {
@@ -41,6 +41,7 @@
   line-height: 20px;
   color: var(--dsw-alias-label-tertiary);
   white-space: nowrap;
+  padding: 4px 0;
 }
 .status::before {
   content: "";
@@ -55,16 +56,28 @@
 .connection {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 24px;
 }
 .connectionMain {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
+  align-items: center;
   gap: 24px;
+  padding: 20px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-2);
 }
 .scan {
   flex: none;
+  padding-right: 24px;
+  border-right: 1px solid var(--dsw-alias-border-l2);
+}
+.connectionDetails {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
 }
 .qrButton {
   display: block;
@@ -78,13 +91,13 @@
 }
 .qr {
   display: block;
-  width: 168px;
-  height: 168px;
+  width: 144px;
+  height: 144px;
 }
 .qrPlaceholder {
   box-sizing: border-box;
-  width: 184px;
-  height: 184px;
+  width: 160px;
+  height: 160px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -101,11 +114,10 @@
   outline-offset: 3px;
 }
 .routePanel {
-  flex: 2 1 248px;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 10px;
 }
 .routes {
   border: 0;
@@ -116,11 +128,11 @@
 .fieldTitle {
   display: block;
   padding: 0;
-  margin-bottom: 8px;
-  font-size: 12px;
-  line-height: 18px;
-  font-weight: 500;
-  color: var(--dsw-alias-label-secondary);
+  margin-bottom: 10px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
 }
 .routeGroup,
 .extraRoutes {
@@ -128,29 +140,38 @@
   flex-direction: column;
   gap: 8px;
 }
-.routeGroup > .route,
-.extraRoutes > .route,
-.routeFamily {
+.routeGroup,
+.extraRoutes > .route {
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+.routeGroup {
+  gap: 0;
+  overflow: hidden;
+}
+.routeFamily {
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+.extraRoutes > .route:has(input:checked) {
+  border-color: var(--dsw-alias-label-secondary);
 }
 .routeGroup > .route:has(input:checked),
-.extraRoutes > .route:has(input:checked),
 .routeFamily:has(.route input:checked) {
-  border-color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 .route {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 12px;
+  padding: 12px 16px;
   cursor: pointer;
 }
 .subRoutes {
   display: flex;
   flex-wrap: wrap;
   gap: 16px;
-  padding: 0 12px 12px 35px;
+  padding: 0 16px 12px 39px;
 }
 .subRoute {
   display: flex;
@@ -165,7 +186,7 @@
   margin: 0;
   accent-color: var(--dsw-alias-label-primary);
 }
-.route {
+.extraRoutes > .route {
   border-radius: 10px;
 }
 .route:hover {
@@ -186,6 +207,9 @@
   gap: 3px;
   min-width: 0;
 }
+.route > .routeText {
+  flex: 1;
+}
 .routeTitle {
   display: flex;
   align-items: center;
@@ -197,6 +221,7 @@
   color: var(--dsw-alias-label-primary);
 }
 .routeAddress {
+  margin-left: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
   font-weight: 400;
@@ -214,13 +239,14 @@
 }
 .addressRow {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .addressRow > button {
   flex: none;
 }
 .input {
-  flex: 1 1 auto;
+  flex: 1 1 140px;
   box-sizing: border-box;
   min-width: 0;
   width: 100%;
@@ -234,7 +260,7 @@
   color: var(--dsw-alias-label-primary);
 }
 .addressMenu {
-  flex: 1 1 auto;
+  flex: 1 1 140px;
   min-width: 0;
 }
 .addressTrigger {
@@ -269,6 +295,15 @@
   color: var(--dsw-alias-label-tertiary);
   cursor: pointer;
 }
+.page > .other {
+  padding: 12px 16px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+.page > .other summary {
+  color: var(--dsw-alias-label-secondary);
+}
 .extraRoutes {
   margin-top: 8px;
 }
@@ -294,7 +329,10 @@
 .manage {
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--dsw-alias-border-l2);
+  padding: 0 20px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-2);
 }
 .manageRow {
   display: flex;
@@ -302,15 +340,29 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px 16px;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  padding: 16px 0;
+}
+.manageRow + .manageRow {
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+.identityNote {
+  flex-basis: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-3);
+}
+.stopRow {
+  padding: 16px 20px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-2);
 }
 .manageText {
   flex: 1 1 200px;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 .manageTitle {
   font-size: 13px;
@@ -321,6 +373,9 @@
   flex: none;
   display: flex;
   gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 .dangerOutline {
   color: var(--dsw-alias-state-error-primary);
@@ -370,16 +425,30 @@
   height: auto;
   border-radius: 12px;
 }
-@media (max-width: 520px) {
+@media (max-width: 600px) {
   .page {
     gap: 16px;
   }
   .connectionMain {
-    gap: 22px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 16px;
+    padding: 16px;
   }
-  .scan,
-  .routePanel {
+  .scan {
+    align-self: center;
+    padding-right: 0;
+    border-right: 0;
+  }
+  .manage {
+    padding: 0 12px;
+  }
+  .stopRow {
+    padding: 16px 12px;
+  }
+  .routeAddress {
     flex-basis: 100%;
+    margin-left: 0;
   }
   .title {
     font-size: 20px;

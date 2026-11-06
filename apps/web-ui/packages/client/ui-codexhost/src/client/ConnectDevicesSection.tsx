@@ -351,28 +351,28 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
         {background !== undefined && (
           <AutostartControl state={background} disabled={working} restored={restored} t={t} />
         )}
-        {canStop && (
-          <div className={css.manageRow}>
-            <div className={css.manageText}>
-              <span className={css.manageTitle}>{t("connectDevices.stopTitleShort")}</span>
-              <span className={css.meta}>{t("connectDevices.stopHint")}</span>
-            </div>
-            <div className={css.manageActions}>
-              <Button
-                variant="outline"
-                className={css.dangerOutline}
-                disabled={working}
-                onClick={() => {
-                  setError(null);
-                  setConfirming("stop");
-                }}
-              >
-                {t("connectDevices.stop")}
-              </Button>
-            </div>
-          </div>
-        )}
       </section>
+      {canStop && (
+        <div className={`${css.manageRow} ${css.stopRow}`}>
+          <div className={css.manageText}>
+            <span className={css.manageTitle}>{t("connectDevices.stopTitleShort")}</span>
+            <span className={css.meta}>{t("connectDevices.stopHint")}</span>
+          </div>
+          <div className={css.manageActions}>
+            <Button
+              variant="outline"
+              className={css.dangerOutline}
+              disabled={working}
+              onClick={() => {
+                setError(null);
+                setConfirming("stop");
+              }}
+            >
+              {t("connectDevices.stop")}
+            </Button>
+          </div>
+        </div>
+      )}
       <details className={css.other} data-remote-options>
         <summary>{t("connectDevices.help")}</summary>
         <div className={css.remoteList}>

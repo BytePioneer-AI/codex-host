@@ -7,7 +7,7 @@ import { it, type TestContext } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 
 import { networkAccessUrls } from "../../src/network-urls.ts";
-import { addressValue } from "../support/connect-devices.ts";
+import { addressValue, chooseTailscaleHttps } from "../support/connect-devices.ts";
 import { startServer } from "../support/server.ts";
 import { fakeTailscale, RUNNING, serveStatus, SERVE_HOST } from "../support/tailscale.ts";
 
@@ -211,7 +211,7 @@ it(
     const page = await context.newPage();
     await page.goto(local.href);
     await openConnectPage(page);
-    await page.locator('[data-connect-route="tailscale-https"]').getByRole("radio").check();
+    await chooseTailscaleHttps(page);
     await page.locator('[data-tailscale-status="not-running"]').waitFor();
     for (const [status, backend] of [
       ["not-logged-in", { BackendState: "NeedsLogin" }],
@@ -221,7 +221,7 @@ it(
       cli.set(backend);
       await page.reload();
       await openConnectPage(page);
-      await page.locator('[data-connect-route="tailscale-https"]').getByRole("radio").check();
+      await chooseTailscaleHttps(page);
       await page.locator(`[data-tailscale-status="${status}"]`).waitFor();
     }
     await page.getByRole("button", { name: "Enable and show QR code" }).waitFor();
@@ -233,7 +233,7 @@ it(
     cli.set(RUNNING, serveStatus(3000));
     await page.reload();
     await openConnectPage(page);
-    await page.locator('[data-connect-route="tailscale-https"]').getByRole("radio").check();
+    await chooseTailscaleHttps(page);
     await page
       .locator('[data-tailscale-status="occupied"]')
       .getByText("http://127.0.0.1:3000", { exact: true })
@@ -259,14 +259,14 @@ it(
     cli.set(RUNNING, {}, { raw: "not-json" });
     await page.reload();
     await openConnectPage(page);
-    await page.locator('[data-connect-route="tailscale-https"]').getByRole("radio").check();
+    await chooseTailscaleHttps(page);
     await page.locator('[data-tailscale-status="error"]').waitFor();
     cli.set(RUNNING);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.reload();
     await page.getByRole("button", { name: "Open sidebar" }).click();
     await openConnectPage(page);
-    await page.locator('[data-connect-route="tailscale-https"]').getByRole("radio").check();
+    await chooseTailscaleHttps(page);
     await page.locator('[data-tailscale-status="not-serving"]').waitFor();
     assert.equal(await page.getByRole("img", { name: "Sign-in QR code" }).count(), 0);
     const bounds = await page.locator("[data-connect-devices]").boundingBox();

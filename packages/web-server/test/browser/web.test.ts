@@ -104,7 +104,27 @@ for (const viewport of [
       await page.getByRole("button", { name: "Settings", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
       await dialog.getByRole("button", { name: "English", exact: true }).waitFor();
-      for (const name of ["English", "Light", "Dark", "System", "Close"]) {
+      const display = dialog.getByRole("region", { name: "Display & language", exact: true });
+      await display.getByRole("button", { name: "English", exact: true }).waitFor();
+      const languages = page.getByRole("group", { name: "Language / 语言", exact: true });
+      await languages
+        .getByRole("button", { name: "English", exact: true, pressed: true })
+        .waitFor();
+      await languages.getByRole("button", { name: "中文", exact: true }).click();
+      await languages.getByRole("button", { name: "中文", exact: true, pressed: true }).waitFor();
+      await page.getByRole("region", { name: "显示与语言", exact: true }).waitFor();
+      await languages.getByRole("button", { name: "English", exact: true }).click();
+      await languages
+        .getByRole("button", { name: "English", exact: true, pressed: true })
+        .waitFor();
+      for (const name of ["Light", "Dark", "System"]) {
+        assert.equal(await display.getByRole("button", { name, exact: true }).count(), 1);
+      }
+      await dialog
+        .getByRole("region", { name: "Interaction & reading", exact: true })
+        .getByText("Work details", { exact: true })
+        .waitFor();
+      for (const name of ["中文", "English", "Light", "Dark", "System", "Close"]) {
         const box = await dialog.getByRole("button", { name, exact: true }).boundingBox();
         assert.ok(box, `${name} has a visible box`);
         assert.ok(
@@ -112,10 +132,7 @@ for (const viewport of [
           `${name} is not clipped horizontally`,
         );
       }
-      const section = dialog
-        .getByText("Notifications", { exact: true })
-        .locator("..")
-        .locator("..");
+      const section = dialog.getByRole("region", { name: "Notifications", exact: true });
       const bounds = await section.boundingBox();
       assert.ok(bounds && bounds.width >= Math.min(260, viewport.width - 64));
       assert.doesNotMatch(await dialog.innerText(), /DeepSeek|Open configuration file/u);

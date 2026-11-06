@@ -254,6 +254,7 @@ GUI 原生路由仍不使用 Codex CLI 插件。共享 home 会共享原生配�
 
 ### 聊天投影通道
 
+
 `codexhostTurnChanges`（已加载 Turn 的文件摘要）和 `codexhostToolOutput`（运行中命令的输出尾部）仅通过对应会话的 `session/follow` 发送实时更新，不进入 `session/control` 的增量或初始 baseline，也不混入 `session/list` 或全局目录更新的摘要。每个 follow 快照仍携带该会话全部最新投影；切回会话或重连从快照恢复。多个页面同时 follow 同一会话时，各自都收到更新；未 follow 的页面不接收这两个 key 的实时变化。
 
 follow 使用与 control 相同的 `projection { sessionId, key, value, seq }` 整值替换帧，复用现有按 key 去重和日志水位，不追加日志事件、不推进 assistant-stream revision。客户端经 Gateway 的 journal notification 路径应用到原有投影存储；同一流中的实时帧允许相同 seq 的最新值替换旧值，较低水位不能覆盖较高水位；follow 开场快照仅对这两个聊天 key 接受相同 seq 的替换，其他 key 仍保留跨通道的较高水位优先规则。control baseline 丢弃 cached 行，并按水位清除已经消失的全局 key；缺省的 follow 聊天投影不在它的清除范围内。侧栏、标题、模型、权限等其他投影仍通过 control 发给所有页面，运行状态沿用原有目录和状态事件。

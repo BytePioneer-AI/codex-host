@@ -87,6 +87,8 @@ ps -axo pid,ppid,command | rg -i 'codexhost launch|host-runtime|desktop-controll
 - Host Runtime 和 Desktop Controller 是否来自当前工作区
 - 是否通过 `npm start` 重新构建过
 
+官方认证启动可能替换主 Renderer。CDP WebSocket 关闭后，客户端立即拒绝在途及后续命令；绑定检查终止对旧窗口的等待。Controller 将断连作为安装期瞬态故障，在既有三次安装预算内重新发现主窗口；持续失败仍进入正常退避，不重放用户请求。检查启动日志时，应确认新窗口的 Renderer 安装完成，不能只看 Launcher 的 `ready`。
+
 不要假设 Inspector 固定在某个端口。`npm start` 会为每次启动分配新的临时 Inspector 端口。
 
 可以从运行进程动态提取端口：

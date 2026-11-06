@@ -325,7 +325,7 @@ export function installRendererHostRpcRouting(
     hostId: string,
     nativeRoute?: RendererHostRoute | null,
   ): RendererHostRoute | null => {
-    if (disposed) return null;
+    if (disposed || hostId === "durable") return null;
     const connection = connectionFor(hostId);
     const preferred = nativeRoute === undefined ? nativeRouting?.forHost(hostId) : nativeRoute;
     if (connection === null || preferred) {
@@ -375,8 +375,19 @@ export function installRendererHostRpcRouting(
       const current = read();
       return [
         ...new Set([
-          ...(current ? dependencies.hostIds(current) : []),
-          ...(nativeRouting?.knownHostIds?.() ?? []),
+          ...(current
+            ? dependencies
+                .hostIds(current)
+                .filter(
+                  (hostId) =>
+                    hostId !== "durable" &&
+                    connectionFor(hostId) !== null &&
+                    dependencies.resolve(current, hostId) !== null,
+                )
+            : []),
+          ...(nativeRouting?.knownHostIds?.() ?? []).filter(
+            (hostId) => hostId !== "durable" && connectionFor(hostId) !== null,
+          ),
         ]),
       ];
     },

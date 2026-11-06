@@ -782,7 +782,8 @@ export function installRendererBindingProbe(
   let modelControl: RendererModelClient | null = null;
   const activeModelHostId = (composer?: Element): string | null => {
     if (!modelControl) return null;
-    return modelControl.currentHostId ? modelControl.currentHostId(composer) : "local";
+    const hostId = modelControl.currentHostId ? modelControl.currentHostId(composer) : "local";
+    return hostId === "durable" ? null : hostId;
   };
   const controllerTarget = (target: readonly unknown[] | null, hostId: string | null) =>
     scopedComposerTarget(target, hostId);
@@ -820,6 +821,7 @@ export function installRendererBindingProbe(
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     getClient: (hostId) => modelClientForHost(hostId),
     getPlugins: (hostId) => {
+      if (hostId === "durable") return undefined;
       const state = hostHarnessAvailabilityState(hostId);
       const client = modelClientForHost(hostId);
       // Sidebar ownership is enough to discover this Host's artwork; opening a Composer
@@ -2360,7 +2362,7 @@ export function installRendererBindingProbe(
     control: RendererModelClient | null,
     hostId: string | null,
   ): RendererModelClient | null {
-    if (!control || !hostId) return null;
+    if (!control || !hostId || hostId === "durable") return null;
     if (control.clientForHost) return control.clientForHost(hostId);
     // Only legacy controls without Host identity are local. An explicit null
     // means unresolved ownership, never permission to send a local request.
@@ -2378,6 +2380,7 @@ export function installRendererBindingProbe(
     retry = false,
     force = false,
   ): Promise<void> {
+    if (hostId === "durable") return Promise.resolve();
     const state = hostHarnessAvailabilityState(hostId);
     if (!retry) resetHarnessAvailabilityRetry(hostId);
     const client = modelClientForHost(hostId);
@@ -2619,7 +2622,7 @@ export function installRendererBindingProbe(
     // Settings lists observed Hosts even when multiple Composers make the
     // active route ambiguous. Requests still resolve each Host independently.
     for (const hostId of modelControl?.knownHostIds?.() ?? []) {
-      hostHarnessAvailabilityState(hostId);
+      if (hostId !== "durable") hostHarnessAvailabilityState(hostId);
     }
     // Hidden/native Composers can belong to a different Host. Never rebind
     // every Thread to the globally selected Host when navigating between them.
@@ -2666,6 +2669,7 @@ export function installRendererBindingProbe(
     const hostId = activeModelHostId();
     if (
       !hostId ||
+      hostId === "durable" ||
       (hostId === activeAvailabilityHostId &&
         [...mountedByComposer.values()].every((mounted) => mounted.hostId !== null))
     )
@@ -2683,7 +2687,7 @@ export function installRendererBindingProbe(
     reconcileHarnessAvailabilityHost();
     const hostIds = new Set([activeAvailabilityHostId]);
     for (const mounted of mountedByComposer.values()) {
-      if (mounted.hostId) hostIds.add(mounted.hostId);
+      if (mounted.hostId && mounted.hostId !== "durable") hostIds.add(mounted.hostId);
     }
     await Promise.all(
       [...hostIds].map((hostId) => refreshHarnessAvailabilityForHost(hostId, refresh)),
@@ -2694,7 +2698,9 @@ export function installRendererBindingProbe(
     snapshot(): RendererConnectionSnapshot {
       const hostIds = [
         "local",
-        ...[...harnessAvailabilityByHost.keys()].filter((hostId) => hostId !== "local").sort(),
+        ...[...harnessAvailabilityByHost.keys()]
+          .filter((hostId) => hostId !== "local" && hostId !== "durable")
+          .sort(),
       ];
       return {
         adapter: { ...adapterStatus },
@@ -2717,6 +2723,7 @@ export function installRendererBindingProbe(
     },
     refresh(hostId?: string): Promise<void> {
       if (hostId !== undefined) {
+        if (hostId === "durable") return Promise.resolve();
         return refreshConnectionHosts(
           [hostId],
           (target) => refreshHarnessAvailabilityForHost(target, true, false, true),
@@ -2724,8 +2731,9 @@ export function installRendererBindingProbe(
         );
       }
       reconcileHarnessAvailabilityHost();
-      return refreshConnectionHosts(harnessAvailabilityByHost.keys(), (target) =>
-        refreshHarnessAvailabilityForHost(target, true, false, true),
+      return refreshConnectionHosts(
+        [...harnessAvailabilityByHost.keys()].filter((target) => target !== "durable"),
+        (target) => refreshHarnessAvailabilityForHost(target, true, false, true),
       );
     },
     async installation(hostId, agent, action) {

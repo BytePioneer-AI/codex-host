@@ -27,7 +27,7 @@ export function relayData(t: TestContext): DataDir {
 export async function startRelay(
   t: TestContext,
   heartbeatInterval = 25,
-  limits: Pick<RelayOptions, "maxConnections"> = {},
+  options: Partial<RelayOptions> = {},
 ) {
   const relay = createRelay({
     domain: "relay.test",
@@ -35,7 +35,7 @@ export async function startRelay(
     cert: certPath,
     key: keyPath,
     heartbeatInterval,
-    ...limits,
+    ...options,
   });
   relay.server.listen(0, "::");
   await once(relay.server, "listening");

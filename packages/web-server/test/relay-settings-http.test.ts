@@ -9,6 +9,8 @@ import { readServiceOptions, saveServiceOptions } from "../src/background-servic
 import { relayIdentity } from "../src/remote-relay/identity.ts";
 import { DataDir } from "../src/store.ts";
 import { startServer } from "./support/server.ts";
+import { acmeServer } from "./support/acme-server.ts";
+import { certPath, startRelay, until } from "./support/relay.ts";
 
 function fixture(t: TestContext) {
   const data = new DataDir(mkdtempSync(join(tmpdir(), "relay-settings-")));
@@ -27,14 +29,19 @@ it("creates a private identity, reuses it, and derives a new ID after deletion",
   assert.notEqual(relayIdentity(data).id, first.id);
 });
 
-async function server(t: TestContext, data: DataDir, authenticated = true) {
+async function server(
+  t: TestContext,
+  data: DataDir,
+  authenticated = true,
+  environment: NodeJS.ProcessEnv = {},
+) {
   const login = new URL(
     await startServer(
       t,
       resolve(import.meta.dirname, ".."),
       ["--import", "tsx", "src/main.ts"],
       ["--data", data.root],
-      { authenticated, environment: { HTTPS_PROXY: "", https_proxy: "" } },
+      { authenticated, environment: { HTTPS_PROXY: "", https_proxy: "", ...environment } },
     ),
   );
   const token = login.searchParams.get("token");
@@ -102,6 +109,42 @@ it("saves the switch without restarting, rejects remote changes, and hides clear
     (await cleared.call("codexhost/relaySet", { enabled: true })).error.code,
     "relay/not-configured",
   );
+});
+
+it("validates and saves registration inputs over RPC and exposes the assigned hostname", async (t) => {
+  const requests: { name?: string; invite?: string }[] = [];
+  const relay = await startRelay(t, 25, {
+    check: (request) => {
+      requests.push(request);
+      return { name: "alice" };
+    },
+  });
+  const ca = await acmeServer(t, ({ reply }) => {
+    reply(503, { detail: "test CA unavailable" });
+    return true;
+  });
+  const data = fixture(t);
+  saveServiceOptions(data, { relay: `localhost:${relay.port}` });
+  const { call } = await server(t, data, true, {
+    NODE_EXTRA_CA_CERTS: certPath,
+    CODEXHOST_RELAY_ACME_DIRECTORY: ca.directory,
+  });
+  for (const name of ["abc", "ALICE", "a-bc", "a".repeat(21)]) {
+    const result = await call("codexhost/relaySet", { enabled: true, name, invite: "code" });
+    assert.ok(result.error);
+    assert.equal(readServiceOptions(data).relayEnabled, false);
+  }
+  await call("codexhost/relaySet", { enabled: true, name: "alice", invite: "code" });
+  await until(() => readServiceOptions(data).relayHostname === "alice.relay.test");
+  assert.equal(requests[0]?.name, "alice");
+  assert.equal(requests[0]?.invite, "code");
+  assert.equal(
+    (await call<WebAccessState>("codexhost/accessTokenGet")).value.relay?.hostname,
+    "alice.relay.test",
+  );
+  await call("codexhost/relaySet", { enabled: false });
+  assert.equal(readServiceOptions(data).relayName, "alice");
+  assert.equal(readServiceOptions(data).relayInvite, "code");
 });
 
 it("does not create an identity or connect with --no-auth even when enabled", async (t) => {

@@ -18,8 +18,23 @@ export function registerRelayRpc(
         "Configure --relay before enabling relay access",
         {},
       );
-    const { enabled } = z.object({ enabled: z.boolean() }).strict().parse(args);
-    relay.setEnabled(enabled);
+    const { enabled, name, invite } = z
+      .object({
+        enabled: z.boolean(),
+        name: z
+          .string()
+          .regex(/^(?:[a-z0-9]{4,20})?$/)
+          .optional(),
+        invite: z.string().optional(),
+      })
+      .strict()
+      .parse(args);
+    relay.setEnabled(
+      enabled,
+      name === undefined && invite === undefined
+        ? undefined
+        : { name: name ?? "", invite: invite ?? "" },
+    );
     return relay.state;
   });
 }

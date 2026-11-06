@@ -24,14 +24,19 @@ import {
 import type { WebRelayState } from "@codexhost/shared-contracts";
 import type { relayIdentity } from "./identity.ts";
 
-type StopReason = Extract<WebRelayState, { status: "stopped" }>["reason"];
+type StopReason =
+  | Extract<WebRelayState, { status: "stopped" }>["reason"]
+  | NonNullable<Extract<WebRelayState, { status: "off" }>["reason"]>;
 
 export function connectRelay(options: {
   host: string;
   identity: ReturnType<typeof relayIdentity>;
-  connecting(): void;
+  name?: string;
+  invite?: string;
+  connecting(reason?: "full"): void;
   registered(hostname: string): void;
   stopped(reason: StopReason): void;
+  notice?(until: string): void;
   tcp(stream: ServerHttp2Stream, request: IncomingHttpHeaders): void;
   heartbeatTimeout?: number;
 }): () => void {
@@ -66,15 +71,15 @@ export function connectRelay(options: {
       tunnel?.destroy();
       http2.close();
     };
-    const finish = (reason?: StopReason) => {
+    const finish = (reason?: StopReason | "full") => {
       if (finished) return;
       finished = true;
       cleanup();
-      if (reason !== undefined) {
+      if (reason !== undefined && reason !== "full") {
         options.stopped(reason);
         return;
       }
-      options.connecting();
+      options.connecting(reason);
       if (registeredAt !== undefined && performance.now() - registeredAt >= 60_000) backoff = 1_000;
       retry = setTimeout(attempt, backoff * (0.5 + Math.random() * 0.5));
       backoff = Math.min(backoff * 2, 60_000);
@@ -121,6 +126,8 @@ export function connectRelay(options: {
             Buffer.from(registrationContent(controlHost, challenge)),
             options.identity.privateKey,
           ).toString("base64url"),
+          ...(options.name ? { [headers.name]: options.name } : {}),
+          ...(options.invite ? { [headers.invite]: options.invite } : {}),
         });
         let body = "";
         stream.setEncoding("utf8");
@@ -137,6 +144,23 @@ export function connectRelay(options: {
             stream.end();
           } catch {
             ws?.terminate();
+          }
+        });
+      } else if (request[":path"] === paths.notice && challenged) {
+        stream.respond({ ":status": 200 });
+        stream.setEncoding("utf8");
+        let body = "";
+        stream.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        stream.once("end", () => {
+          if (finished) return;
+          try {
+            const notice = JSON.parse(body) as { quota: string; until: string };
+            if (notice.quota === "exhausted") options.notice?.(notice.until);
+            stream.end();
+          } catch {
+            stream.close(constants.NGHTTP2_REFUSED_STREAM);
           }
         });
       } else if (request[":path"] === paths.tcp && registeredAt !== undefined) {
@@ -163,15 +187,17 @@ export function connectRelay(options: {
         response.destroy();
         finish(response.statusCode === 404 ? "unsupported-version" : undefined);
       });
-      ws.once("close", (code) =>
-        finish(
-          code === closeCodes.replaced
-            ? "replaced"
-            : code === closeCodes.invalidSignature
-              ? "rejected"
-              : undefined,
-        ),
-      );
+      ws.once("close", (code) => {
+        const reasons: Record<number, StopReason | "full"> = {
+          [closeCodes.replaced]: "replaced",
+          [closeCodes.invalidSignature]: "rejected",
+          [closeCodes.invite]: "invite",
+          [closeCodes.nameTaken]: "name-taken",
+          [closeCodes.banned]: "banned",
+          [closeCodes.full]: "full",
+        };
+        finish(reasons[code]);
+      });
       ws.on("ping", resetHeartbeat);
       ws.once("open", () => {
         resetHeartbeat();

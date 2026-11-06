@@ -189,8 +189,10 @@ async function captureOnce(
 }
 
 export const accessTokenApi = {
-  relay: async (enabled: boolean) =>
-    webRelayStateSchema.parse(await call<unknown>("codexhost/relaySet", { enabled })),
+  relay: async (enabled: boolean, registration?: { name: string; invite: string }) =>
+    webRelayStateSchema.parse(
+      await call<unknown>("codexhost/relaySet", { enabled, ...registration }),
+    ),
   lan: (enabled: boolean) => call<{ changed: boolean }>("codexhost/lanSet", { enabled }),
   autostart: async (enabled: boolean) =>
     webAutostartStateSchema.parse(await call<unknown>("codexhost/autostartSet", { enabled })),

@@ -3,18 +3,19 @@ import { resolve } from "node:path";
 import { it, type TestContext } from "node:test";
 import { chromium, type Page } from "playwright";
 import type { WebAccessState, WebRelayState } from "@codexhost/shared-contracts";
+import type { RelayOptions, RegistrationRequest } from "@codexhost/remote-relay";
 import { certPath, delay, relayData, startRelay } from "../support/relay.ts";
 import { readServiceOptions } from "../../src/background-service.ts";
 import { defined } from "../support/defined.ts";
 import { startServer } from "../support/server.ts";
 import { acmeServer } from "../support/acme-server.ts";
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, options: Partial<RelayOptions> = {}, locale = "en-US") {
   const ca = await acmeServer(t, ({ reply }) => {
     reply(503, { detail: "test CA unavailable" });
     return true;
   });
-  const relay = await startRelay(t);
+  const relay = await startRelay(t, 25, options);
   const data = relayData(t);
   const login = new URL(
     await startServer(
@@ -45,7 +46,20 @@ async function fixture(t: TestContext) {
   assert.equal(readServiceOptions(data).relayHost, `localhost:${relay.port}`);
   const browser = await chromium.launch();
   t.after(() => browser.close());
-  const page = await browser.newPage({ locale: "en-US", viewport: { width: 375, height: 800 } });
+  const page = await browser.newPage({ locale, viewport: { width: 375, height: 800 } });
+  if (locale === "zh-CN") {
+    const method = "settings/mutate";
+    const response = await page.request.post(new URL(`/api/${method}`, login).href, {
+      headers: { authorization: `Bearer ${login.searchParams.get("token")}`, origin: login.origin },
+      data: {
+        method,
+        payload: {
+          args: { ns: "locale", ops: [{ op: "set", path: ["preference"], value: "zh" }] },
+        },
+      },
+    });
+    assert.equal((await response.json()).result.ok, true);
+  }
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, []));
@@ -69,7 +83,13 @@ it(
   "enables the real Relay from its connection method and hides it from a phone",
   { timeout: 60_000 },
   async (t) => {
-    const f = await fixture(t);
+    const requests: RegistrationRequest[] = [];
+    const f = await fixture(t, {
+      check: (request) => {
+        requests.push(request);
+        return { name: "alice" };
+      },
+    });
     await open(f.page, f.login);
     assert.equal(await f.page.locator("[data-relay-status]").count(), 0);
     const control = await chooseRelay(f.page);
@@ -77,12 +97,35 @@ it(
     const intro = (await control.textContent()) ?? "";
     assert.ok(intro.includes("official codexhost encrypted relay"));
     assert.ok(intro.includes(f.data.path("remote-relay/identity.pem")));
-    await control.getByRole("button", { name: "Enable relay" }).click();
+    const name = control.getByRole("textbox", { name: "Address name (optional)" });
+    const invite = control.getByRole("textbox", { name: "Invitation code" });
+    const enable = control.getByRole("button", { name: "Enable relay" });
+    assert.equal(await enable.isEnabled(), true);
+    assert.equal(readServiceOptions(f.data).relayEnabled, false);
+    for (const invalid of ["abc", "A123", "alice-bob", "alice bob", "a".repeat(21)]) {
+      await name.fill(invalid);
+      assert.equal(await enable.isEnabled(), false, invalid);
+      assert.equal(await name.getAttribute("aria-invalid"), "true");
+    }
+    for (const valid of ["", "a123", "a".repeat(20), "alice"]) {
+      await name.fill(valid);
+      assert.equal(await enable.isEnabled(), true, valid);
+    }
+    await invite.fill("invitation");
+    const fieldBounds = await name.boundingBox();
+    const buttonBounds = await enable.boundingBox();
+    assert.ok(fieldBounds && buttonBounds && fieldBounds.y < buttonBounds.y);
+    await enable.click();
     for (let i = 0; (await f.access()).relay?.state.status !== "missing-certificate" && i < 50; i++)
       await delay(20);
     await control.getByRole("button", { name: "Refresh status" }).click();
     await f.page.locator('[data-relay-status="missing-certificate"]').waitFor();
     await control.getByText(/Preparing…|Temporarily unavailable/u).waitFor();
+    assert.equal(requests[0]?.name, "alice");
+    assert.equal(requests[0]?.invite, "invitation");
+    assert.equal(readServiceOptions(f.data).relayHostname, "alice.relay.test");
+    assert.equal(await name.count(), 0);
+    assert.equal(await invite.count(), 0);
     assert.equal(
       await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,
@@ -93,6 +136,12 @@ it(
     await f.page.locator('[data-relay-status="off"]').waitFor();
     const state = await f.access();
     assert.equal(state.relay?.state.status, "off");
+    assert.equal(state.relay?.hostname, "alice.relay.test");
+    assert.equal(await name.count(), 0);
+    await open(f.page, f.login);
+    await chooseRelay(f.page);
+    assert.equal(await name.count(), 0);
+    assert.equal(await invite.count(), 0);
     const phone = await f.browser.newPage({
       locale: "en-US",
       viewport: { width: 375, height: 800 },
@@ -247,6 +296,145 @@ it(
     shown = { ...base, relay: undefined };
     await open(f.page, f.login);
     assert.equal(await f.page.locator('[data-connect-route="relay"]').count(), 0);
+  },
+);
+
+for (const locale of ["en-US", "zh-CN"]) {
+  it(
+    `shows real registration refusals and quota notices in ${locale} at phone width`,
+    { timeout: 60_000 },
+    async (t) => {
+      let outcome: "invite" | "name-taken" | "banned" | "full" | "quota" = "invite";
+      const f = await fixture(
+        t,
+        {
+          check: () =>
+            outcome === "quota"
+              ? { name: "alice", dailyQuota: 100, usedToday: 100 }
+              : { reject: outcome },
+        },
+        locale,
+      );
+      await open(f.page, f.login);
+      const control = await chooseRelay(f.page);
+      const chinese = locale === "zh-CN";
+      const enable = () =>
+        control.getByRole("button", { name: chinese ? "启用中转" : "Enable relay" });
+      const name = control.getByRole("textbox", {
+        name: chinese ? "地址名（可选）" : "Address name (optional)",
+      });
+      await name.fill("alice");
+      const cases = [
+        [
+          "invite",
+          chinese ? "邀请码无效或已被使用" : "Invitation code is invalid or has already been used",
+        ],
+        [
+          "name-taken",
+          chinese
+            ? "这个名字已被占用，请换一个"
+            : "This name is already taken. Choose another one.",
+        ],
+        [
+          "banned",
+          chinese ? "此电脑已被停止使用该中转" : "This computer has been disabled on this relay",
+        ],
+        ["full", chinese ? "中转已满，正在自动重试" : "The relay is full. Retrying automatically."],
+      ] as const;
+      for (const [reason, message] of cases) {
+        outcome = reason;
+        await enable().click();
+        await control.getByText(message, { exact: true }).waitFor();
+        assert.equal(readServiceOptions(f.data).relayEnabled, reason === "full");
+        if (reason !== "full") {
+          const bounds = await control.getByText(message, { exact: true }).boundingBox();
+          const field = await name.boundingBox();
+          assert.ok(bounds && field && bounds.y < field.y);
+          assert.equal(await enable().count(), 1);
+        }
+        assert.equal(
+          await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+          true,
+        );
+      }
+      await control.getByRole("button", { name: chinese ? "关闭中转" : "Turn off relay" }).click();
+      outcome = "quota";
+      await enable().click();
+      await control
+        .getByText(chinese ? "今日流量已用完" : "Today's traffic allowance is used up", {
+          exact: true,
+        })
+        .waitFor();
+      const state = await f.access();
+      const until = defined(defined(state.relay).quotaUntil);
+      const date = await f.page.evaluate((value) => new Date(value).toLocaleString(), until);
+      assert.ok(
+        (await control.textContent())?.includes(
+          chinese ? `将于 ${date} 恢复` : `Available again at ${date}`,
+        ),
+      );
+      assert.equal(await name.count(), 0);
+      assert.equal(readServiceOptions(f.data).relayEnabled, true);
+      assert.equal(
+        await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+      );
+    },
+  );
+}
+
+it(
+  "reads settled relay quota notices on page open and manual refresh without polling",
+  { timeout: 60_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const base = await f.access();
+    let quotaUntil: string | undefined;
+    let reads = 0;
+    await f.page.clock.install();
+    await f.page.route("**/api/codexhost/accessTokenGet", (route) => {
+      reads++;
+      return route.fulfill({
+        json: {
+          result: {
+            ok: true,
+            value: {
+              ...base,
+              relay: {
+                ...base.relay,
+                hostname: "alice.relay.test",
+                ...(quotaUntil ? { quotaUntil } : {}),
+                state: {
+                  status: "connected",
+                  url: "https://alice.relay.test/",
+                  certificate: { issuing: false },
+                },
+              },
+            },
+          },
+        },
+      });
+    });
+    await open(f.page, f.login);
+    const control = await chooseRelay(f.page);
+    quotaUntil = await f.page.evaluate(() => new Date(Date.now() + 60_000).toISOString());
+    const settled = reads;
+    await f.page.clock.fastForward(30_000);
+    assert.equal(reads, settled);
+    assert.equal(await control.getByText("Today's traffic allowance is used up").count(), 0);
+    await open(f.page, f.login);
+    await chooseRelay(f.page);
+    await control.getByText("Today's traffic allowance is used up", { exact: true }).waitFor();
+    const before = reads;
+    quotaUntil = undefined;
+    await f.page.clock.fastForward(40_000);
+    assert.equal(reads, before);
+    await control.getByRole("button", { name: "Refresh status" }).click();
+    await control
+      .getByText("Connect across networks without an extra phone app.", { exact: false })
+      .waitFor();
+    assert.equal(reads, before + 1);
+    assert.equal(await control.getByText("Today's traffic allowance is used up").count(), 0);
   },
 );
 

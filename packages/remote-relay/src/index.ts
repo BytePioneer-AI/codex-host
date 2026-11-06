@@ -4,10 +4,17 @@ import { createServer, type Socket } from "node:net";
 import { createServer as createTlsServer } from "node:tls";
 import { WebSocketServer } from "ws";
 import { readClientHello } from "./client-hello.js";
-import { maxPayload, normalizeControlHost, paths } from "./protocol.js";
+import { isDnsLabel, maxPayload, normalizeControlHost, paths } from "./protocol.js";
 import { forward } from "./forward.js";
-import { registerAgent, type Agent } from "./registration.js";
-import { pruneUsage, Usage } from "./usage.js";
+import {
+  registerAgent,
+  type Agent,
+  type RegistrationRequest,
+  type RegistrationResult,
+} from "./registration.js";
+import { pruneUsage, type Usage } from "./usage.js";
+
+export type { RegistrationRequest, RegistrationResult } from "./registration.js";
 
 export interface RelayOptions {
   domain: string;
@@ -18,6 +25,8 @@ export interface RelayOptions {
   rate?: number;
   dailyQuota?: number;
   maxConnections?: number;
+  check?: (request: RegistrationRequest) => RegistrationResult | Promise<RegistrationResult>;
+  onUsage?: (name: string, bytes: number) => void;
 }
 
 export function createRelay(options: RelayOptions) {
@@ -31,7 +40,7 @@ export function createRelay(options: RelayOptions) {
   const domain = normalizeControlHost(options.domain);
   const controlHost = normalizeControlHost(options.controlHost ?? domain);
   const agents = new Map<string, Agent>();
-  const usageById = new Map<string, Usage>();
+  const usageByName = new Map<string, Usage>();
   const sockets = new Set<Socket>();
   const credentials = () => ({ cert: readFileSync(options.cert), key: readFileSync(options.key) });
   const http = createHttpServer((_request, response) => {
@@ -51,9 +60,8 @@ export function createRelay(options: RelayOptions) {
       registerAgent(
         ws,
         agents,
-        domain,
-        controlHost,
-        options.heartbeatInterval ?? 25_000,
+        usageByName,
+        { ...options, domain, controlHost },
         request.socket.remoteAddress,
       );
     });
@@ -66,34 +74,40 @@ export function createRelay(options: RelayOptions) {
     // must close this connection, not reject unhandled and stop the whole Relay.
     void readClientHello(socket)
       .then(({ servername, alpn }) => {
-        const name = servername.toLowerCase();
-        if (name === controlHost) {
+        const hostname = servername.toLowerCase();
+        if (hostname === controlHost) {
           tls.emit("connection", socket);
           return;
         }
         const suffix = `.${domain}`;
-        const id = name.endsWith(suffix) ? name.slice(0, -suffix.length) : "";
-        const agent = /^[a-z2-7]{26}$/.test(id) ? agents.get(id) : undefined;
-        if (!agent) {
+        const name = hostname.endsWith(suffix) ? hostname.slice(0, -suffix.length) : "";
+        const agent = isDnsLabel(name) ? agents.get(name) : undefined;
+        const usage = usageByName.get(name);
+        if (!agent || !usage) {
           socket.destroy();
           return;
         }
-        let usage = usageById.get(id);
-        if (!usage) {
-          usage = new Usage(options.rate, options.dailyQuota);
-          usageById.set(id, usage);
-        }
-        forward(socket, agent, id, usage, alpn.length === 1 && alpn[0] === "acme-tls/1");
+        forward(
+          socket,
+          agent,
+          name,
+          usage,
+          alpn.length === 1 && alpn[0] === "acme-tls/1",
+          options.onUsage,
+        );
       })
       .catch(() => socket.destroy());
   });
   if (maxConnections !== undefined) server.maxConnections = maxConnections;
-  const cleanupUsage = setInterval(() => pruneUsage(usageById, agents), 60 * 60_000);
+  const cleanupUsage = setInterval(() => pruneUsage(usageByName, agents), 60 * 60_000);
   cleanupUsage.unref();
   const reload = () => tls.setSecureContext(credentials());
   process.on("SIGHUP", reload);
   return {
     server,
+    disconnect(name: string): void {
+      agents.get(name.toLowerCase())?.close(1000);
+    },
     async close(): Promise<void> {
       clearInterval(cleanupUsage);
       process.off("SIGHUP", reload);

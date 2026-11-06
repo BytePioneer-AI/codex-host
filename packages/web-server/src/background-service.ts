@@ -18,6 +18,9 @@ const serviceSchema = z.object({
     .optional(),
   relayHost: z.string().optional(),
   relayEnabled: z.boolean().default(false),
+  relayName: z.string().optional(),
+  relayInvite: z.string().optional(),
+  relayHostname: z.string().optional(),
   trustedProxies: z
     .string()
     .transform((value) => {
@@ -73,10 +76,11 @@ export function saveServiceOptions(
     if (value === "") Reflect.deleteProperty(next, field);
     else next[field] = option === "port" ? Number(value) : value;
   }
+  if (next.relayHost !== saved.relayHost) Reflect.deleteProperty(next, "relayHostname");
   const result = serviceSchema.safeParse(next);
   if (!result.success) throw new Error(z.prettifyError(result.error));
   const validated = result.data;
   if (isDeepStrictEqual(serviceSchema.parse(saved), validated)) return false;
-  data.writeJson("service.json", validated);
+  data.writeJson("service.json", validated, { mode: 0o600 });
   return true;
 }

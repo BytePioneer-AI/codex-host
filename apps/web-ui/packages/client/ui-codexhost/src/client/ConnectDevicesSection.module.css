@@ -313,6 +313,15 @@
   flex-direction: column;
   gap: 10px;
 }
+.relayFields,
+.relayField {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.relayFields {
+  gap: 10px;
+}
 .ready {
   display: flex;
   align-items: flex-start;

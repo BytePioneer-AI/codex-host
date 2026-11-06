@@ -152,6 +152,16 @@ export const en = {
     "Connect across networks without an extra phone app. An access token is required.",
   "connectDevices.relay.off":
     "The official codexhost encrypted relay. Your phone reaches this computer through the relay; traffic stays encrypted between them and the relay cannot read it. Enabling registers an address for this computer and requests its certificate.",
+  "connectDevices.relay.name": "Address name (optional)",
+  "connectDevices.relay.nameHint":
+    "4–20 lowercase letters or digits. Leave blank to let the relay assign a name.",
+  "connectDevices.relay.inviteLabel": "Invitation code",
+  "connectDevices.relay.invite": "Invitation code is invalid or has already been used",
+  "connectDevices.relay.name-taken": "This name is already taken. Choose another one.",
+  "connectDevices.relay.banned": "This computer has been disabled on this relay",
+  "connectDevices.relay.full": "The relay is full. Retrying automatically.",
+  "connectDevices.relay.quota": "Today's traffic allowance is used up",
+  "connectDevices.relay.quotaUntil": "Available again at {date}",
   "connectDevices.relay.enable": "Enable relay",
   "connectDevices.relay.disable": "Turn off relay",
   "connectDevices.relay.preparing": "Preparing… This usually takes under a minute.",
@@ -165,7 +175,7 @@ export const en = {
   "connectDevices.relay.unsupported-version":
     "Stopped: this protocol version is unsupported. Update codexhost.",
   "connectDevices.relay.identity":
-    "The address is determined by the identity key at {path}. Keep this file private. If it is lost or deleted, the address changes and cannot be recovered.",
+    "The identity key at {path} keeps this computer's address. Keep it private; losing or deleting it may make the address unrecoverable.",
   "connectDevices.kindPublic": "Public address",
   "connectDevices.kindPublicHint":
     "Your configured public address. An access token is still required.",
@@ -521,6 +531,15 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.relay.hint": "跨网络连接，手机无需额外安装应用，登录需要访问令牌。",
   "connectDevices.relay.off":
     "codexhost 官方加密中转。手机经中转连接这台电脑，内容在手机和电脑之间加密，中转无法查看。启用后会为这台电脑注册地址并申请证书。",
+  "connectDevices.relay.name": "地址名（可选）",
+  "connectDevices.relay.nameHint": "4–20 位小写字母和数字，留空由中转分配。",
+  "connectDevices.relay.inviteLabel": "邀请码",
+  "connectDevices.relay.invite": "邀请码无效或已被使用",
+  "connectDevices.relay.name-taken": "这个名字已被占用，请换一个",
+  "connectDevices.relay.banned": "此电脑已被停止使用该中转",
+  "connectDevices.relay.full": "中转已满，正在自动重试",
+  "connectDevices.relay.quota": "今日流量已用完",
+  "connectDevices.relay.quotaUntil": "将于 {date} 恢复",
   "connectDevices.relay.enable": "启用中转",
   "connectDevices.relay.disable": "关闭中转",
   "connectDevices.relay.preparing": "准备中…通常一分钟内完成。",
@@ -532,7 +551,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.relay.rejected": "已停止：Relay 拒绝了此身份的签名。",
   "connectDevices.relay.unsupported-version": "已停止：协议版本不受支持，请更新 codexhost。",
   "connectDevices.relay.identity":
-    "地址由 {path} 中的身份密钥决定，请妥善保管，不要分享。文件丢失或删除后地址会改变，旧地址无法找回。",
+    "{path} 中的身份密钥用于沿用这台电脑的地址，请妥善保管，不要分享。文件丢失或删除后可能无法找回旧地址。",
   "connectDevices.kindPublic": "公开地址",
   "connectDevices.kindPublicHint": "你配置的公开地址，登录仍需要访问令牌。",
   "connectDevices.kindFunnel": "Tailscale Funnel · 公开",

@@ -3,10 +3,13 @@ import { connect, type ClientHttp2Session } from "node:http2";
 import type { Socket } from "node:net";
 import { createWebSocketStream, WebSocket } from "ws";
 import { log } from "./log.js";
+import type { RelayOptions } from "./index.js";
+import { Usage } from "./usage.js";
 import {
   closeCodes,
   deriveId,
   headers,
+  isDnsLabel,
   paths,
   registrationContent,
   streamWindowSize,
@@ -22,18 +25,29 @@ function decodeField(value: unknown, length: number): Buffer {
   return decoded;
 }
 
+export interface RegistrationRequest {
+  id: string;
+  ip: string | undefined;
+  name?: string;
+  invite?: string;
+}
+
+export type RegistrationResult =
+  | { name: string; rate?: number; dailyQuota?: number; usedToday?: number }
+  | { reject: "invite" | "name-taken" | "banned" | "full" };
+
 export interface Agent {
   session: ClientHttp2Session;
   phones: Set<Socket>;
   close: (code: number) => void;
+  notifyQuota: () => void;
 }
 
 export function registerAgent(
   ws: WebSocket,
   agents: Map<string, Agent>,
-  domain: string,
-  controlHost: string,
-  heartbeatInterval: number,
+  usageByName: Map<string, Usage>,
+  options: RelayOptions & { controlHost: string },
   ip: string | undefined,
 ): void {
   const duplex = createWebSocketStream(ws);
@@ -42,7 +56,7 @@ export function registerAgent(
     settings: { initialWindowSize: streamWindowSize },
   });
   session.setLocalWindowSize(connectionWindowSize);
-  let id: string | undefined;
+  let name: string | undefined;
   let pong = true;
   const agent: Agent = {
     session,
@@ -51,11 +65,19 @@ export function registerAgent(
       unregister(code === closeCodes.replaced ? "replace" : "unregister");
       ws.close(code);
     },
+    notifyQuota() {
+      const until = new Date();
+      until.setUTCHours(24, 0, 0, 0);
+      const notice = session.request({ ":method": "POST", ":path": paths.notice });
+      notice.on("error", () => notice.destroy());
+      notice.resume();
+      notice.end(JSON.stringify({ quota: "exhausted", until: until.toISOString() }));
+    },
   };
   const unregister = (reason: "replace" | "unregister" = "unregister") => {
-    if (id && agents.get(id) === agent) {
-      agents.delete(id);
-      log(reason, id, ip);
+    if (name && agents.get(name) === agent) {
+      agents.delete(name);
+      log(reason, name, ip);
     }
     for (const phone of agent.phones) phone.destroy();
   };
@@ -68,7 +90,7 @@ export function registerAgent(
     }
     pong = false;
     ws.ping();
-  }, heartbeatInterval);
+  }, options.heartbeatInterval ?? 25_000);
   ws.on("pong", () => {
     pong = true;
   });
@@ -100,8 +122,9 @@ export function registerAgent(
     [headers.challenge]: challenge,
   });
   request.on("error", () => ws.terminate());
-  request.once("response", (response, _flags, rawHeaders) => {
+  request.once("response", async (response, _flags, rawHeaders) => {
     if (ws.readyState !== WebSocket.OPEN) return;
+    let id: string;
     try {
       for (const name of [headers.publicKey, headers.signature]) {
         if (rawHeaders.filter((value, index) => index % 2 === 0 && value === name).length !== 1) {
@@ -116,7 +139,12 @@ export function registerAgent(
       });
       if (
         response[":status"] !== 200 ||
-        !verify(null, Buffer.from(registrationContent(controlHost, challenge)), key, signature)
+        !verify(
+          null,
+          Buffer.from(registrationContent(options.controlHost, challenge)),
+          key,
+          signature,
+        )
       ) {
         agent.close(closeCodes.invalidSignature);
         return;
@@ -126,11 +154,53 @@ export function registerAgent(
       agent.close(closeCodes.invalidSignature);
       return;
     }
-    clearTimeout(timeout);
-    agents.get(id)?.close(closeCodes.replaced);
-    request.end(JSON.stringify({ hostname: `${id}.${domain}` }));
-    agents.set(id, agent);
-    log("register", id, ip);
+    try {
+      const result = options.check
+        ? await options.check({
+            id,
+            ip,
+            ...(response[headers.name] === undefined
+              ? {}
+              : { name: String(response[headers.name]) }),
+            ...(response[headers.invite] === undefined
+              ? {}
+              : { invite: String(response[headers.invite]) }),
+          })
+        : { name: id };
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if ("reject" in result) {
+        const codes = {
+          invite: closeCodes.invite,
+          "name-taken": closeCodes.nameTaken,
+          banned: closeCodes.banned,
+          full: closeCodes.full,
+        };
+        agent.close(codes[result.reject]);
+        return;
+      }
+      if (!isDnsLabel(result.name)) {
+        agent.close(1000);
+        return;
+      }
+      name = result.name.toLowerCase();
+      const rate = result.rate ?? options.rate;
+      const dailyQuota = result.dailyQuota ?? options.dailyQuota;
+      let usage = usageByName.get(name);
+      if (!usage) {
+        usage = new Usage(rate, dailyQuota, result.usedToday);
+        usageByName.set(name, usage);
+      } else if (options.check) {
+        usage.configure(rate, dailyQuota, result.usedToday);
+      }
+      clearTimeout(timeout);
+      agents.get(name)?.close(closeCodes.replaced);
+      request.end(JSON.stringify({ hostname: `${name}.${options.domain}` }));
+      agents.set(name, agent);
+      log("register", name, ip);
+      if (usage.exceeded) agent.notifyQuota();
+    } catch {
+      agent.close(1000);
+    }
   });
   request.resume();
 }

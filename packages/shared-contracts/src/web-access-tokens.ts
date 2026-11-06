@@ -54,11 +54,33 @@ export const webBackgroundStateSchema = z
 
 export type WebBackgroundState = z.infer<typeof webBackgroundStateSchema>;
 
+export const webRelayCertificateSchema = z.object({
+  expiresAt: z.string().optional(),
+  issuing: z.boolean(),
+  failure: z
+    .object({
+      /** The certificate authority's explanation; absent when it could not be reached. */
+      detail: z.string().optional(),
+      retryAt: z.string(),
+      paused: z.boolean(),
+    })
+    .optional(),
+});
+export type WebRelayCertificate = z.infer<typeof webRelayCertificateSchema>;
+
 export const webRelayStateSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("off") }),
   z.object({ status: z.literal("connecting") }),
-  z.object({ status: z.literal("connected"), url: z.string() }),
-  z.object({ status: z.literal("missing-certificate"), url: z.string() }),
+  z.object({
+    status: z.literal("connected"),
+    url: z.string(),
+    certificate: webRelayCertificateSchema,
+  }),
+  z.object({
+    status: z.literal("missing-certificate"),
+    url: z.string(),
+    certificate: webRelayCertificateSchema,
+  }),
   z.object({
     status: z.literal("stopped"),
     reason: z.enum(["replaced", "rejected", "unsupported-version"]),

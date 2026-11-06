@@ -1,17 +1,16 @@
-import { readFileSync } from "node:fs";
 import type { Server } from "node:http";
-import { constants, type IncomingHttpHeaders, type ServerHttp2Stream } from "node:http2";
+import type { IncomingHttpHeaders, ServerHttp2Stream } from "node:http2";
 import { createSecureContext, TLSSocket, type SecureContext } from "node:tls";
+import { readClientHello } from "@codexhost/remote-relay/client-hello";
 import { headers } from "@codexhost/remote-relay/protocol";
 import type { RequestTrust } from "../request-trust.ts";
-import type { DataDir } from "../store.ts";
 
-/** Terminates phone TLS on relay streams without opening a listener. */
+/** Terminates phone and ACME TLS on relay streams without opening a listener. */
 export class RelayTls {
   private context: SecureContext | undefined;
+  private challenge: { hostname: string; context: SecureContext } | undefined;
 
   constructor(
-    private readonly data: DataDir,
     private readonly server: Server,
     private readonly trust: RequestTrust,
   ) {}
@@ -20,39 +19,60 @@ export class RelayTls {
     return this.context !== undefined;
   }
 
-  reload(): boolean {
-    try {
-      this.context = createSecureContext({
-        cert: readFileSync(this.data.path("remote-relay", "certificate.pem")),
-        key: readFileSync(this.data.path("remote-relay", "certificate-key.pem")),
-      });
-    } catch {
-      this.context = undefined;
-    }
-    return this.available;
+  useCertificate(context: SecureContext): void {
+    this.context = context;
+  }
+
+  clear(): void {
+    this.context = undefined;
+  }
+
+  setChallenge(hostname: string, cert: Buffer, key: Buffer): void {
+    this.challenge = {
+      hostname: hostname.toLowerCase(),
+      context: createSecureContext({ cert, key, minVersion: "TLSv1.2" }),
+    };
+  }
+
+  clearChallenge(): void {
+    this.challenge = undefined;
   }
 
   accept(stream: ServerHttp2Stream, request: IncomingHttpHeaders, hostname: string): void {
-    if (this.context === undefined) {
-      stream.close(constants.NGHTTP2_CANCEL);
-      return;
-    }
-    const socket = new TLSSocket(stream, {
-      isServer: true,
-      secureContext: this.context,
-      ALPNProtocols: ["http/1.1"],
-    });
-    // A bare TLSSocket has no handshake deadline; tls.Server would apply one.
-    const handshake = setTimeout(() => socket.destroy(), 10_000);
-    socket.on("error", () => socket.destroy());
-    socket.once("close", () => clearTimeout(handshake));
-    socket.once("secure", () => {
-      clearTimeout(handshake);
-      this.trust.relaySockets.set(socket, {
-        address: request[headers.clientAddress] as string,
-        origin: `https://${hostname}`,
-      });
-      this.server.emit("connection", socket);
-    });
+    const deadline = setTimeout(() => stream.destroy(), 10_000);
+    stream.once("close", () => clearTimeout(deadline));
+    void readClientHello(stream)
+      .then(({ servername, alpn }) => {
+        const challenge = alpn.length === 1 && alpn[0] === "acme-tls/1";
+        const context = challenge
+          ? this.challenge?.hostname === servername.toLowerCase()
+            ? this.challenge.context
+            : undefined
+          : this.context;
+        if (context === undefined) {
+          stream.destroy();
+          return;
+        }
+        const socket = new TLSSocket(stream, {
+          isServer: true,
+          secureContext: context,
+          ALPNProtocols: [challenge ? "acme-tls/1" : "http/1.1"],
+        });
+        socket.on("error", () => socket.destroy());
+        socket.once("close", () => clearTimeout(deadline));
+        socket.once("secure", () => {
+          clearTimeout(deadline);
+          if (challenge) {
+            socket.end(() => socket.destroy());
+            return;
+          }
+          this.trust.relaySockets.set(socket, {
+            address: request[headers.clientAddress] as string,
+            origin: `https://${hostname}`,
+          });
+          this.server.emit("connection", socket);
+        });
+      })
+      .catch(() => stream.destroy());
   }
 }

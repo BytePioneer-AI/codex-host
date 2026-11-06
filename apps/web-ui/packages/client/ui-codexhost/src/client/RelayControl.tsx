@@ -18,6 +18,7 @@ export function RelayControl({
   t: PropsLocale<"codexhostImport">["t"];
 }): ReactNode {
   const { state, identityPath } = relay;
+  const certificate = "certificate" in state ? state.certificate : undefined;
   return (
     <div className={css.manageRow} data-relay-status={state.status}>
       <div className={css.manageText}>
@@ -31,6 +32,28 @@ export function RelayControl({
         </span>
         {(state.status === "connected" || state.status === "missing-certificate") && (
           <span className={css.meta}>{state.url}</span>
+        )}
+        {certificate?.expiresAt && (
+          <span className={css.meta}>
+            {t("connectDevices.relay.expires", {
+              date: new Date(certificate.expiresAt).toLocaleString(),
+            })}
+          </span>
+        )}
+        {certificate?.issuing && (
+          <span className={css.notice} role="status">
+            {t("connectDevices.relay.issuing")}
+          </span>
+        )}
+        {certificate?.failure && (
+          <span className={css.notice} role="status">
+            {certificate.failure.detail ?? t("connectDevices.relay.unreachable")}{" "}
+            {certificate.failure.paused
+              ? t("connectDevices.relay.paused")
+              : t("connectDevices.relay.retry", {
+                  date: new Date(certificate.failure.retryAt).toLocaleString(),
+                })}
+          </span>
         )}
         <span className={css.meta}>
           {t("connectDevices.relay.identity", { path: identityPath })}

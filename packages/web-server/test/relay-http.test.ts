@@ -14,8 +14,13 @@ import { relayIdentity } from "../src/remote-relay/identity.ts";
 import { certPath, delay, keyPath, relayData, startRelay } from "./support/relay.ts";
 import { defined } from "./support/defined.ts";
 import { startServer } from "./support/server.ts";
+import { acmeServer } from "./support/acme-server.ts";
 
 async function fixture(t: TestContext, certificate = true) {
+  const ca = await acmeServer(t, ({ reply }) => {
+    reply(503, { detail: "test CA unavailable" });
+    return true;
+  });
   const relay = await startRelay(t);
   const data = relayData(t);
   const hostname = `${relayIdentity(data).id}.relay.test`;
@@ -33,7 +38,12 @@ async function fixture(t: TestContext, certificate = true) {
       ["--data", data.root],
       {
         authenticated: true,
-        environment: { NODE_EXTRA_CA_CERTS: certPath, HTTPS_PROXY: "", https_proxy: "" },
+        environment: {
+          NODE_EXTRA_CA_CERTS: certPath,
+          HTTPS_PROXY: "",
+          https_proxy: "",
+          CODEXHOST_RELAY_ACME_DIRECTORY: ca.directory,
+        },
       },
     ),
   );

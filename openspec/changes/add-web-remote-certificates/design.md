@@ -10,7 +10,7 @@
 - **错误形态：** 错误响应最后被转成普通 `Error`，只剩 `detail` 文字，状态码、problem 类型和 `Retry-After` 都丢了。`badNonce` 由库单独重试，不受上面那个设置影响。
 - **超时：** HTTP 请求没有超时（axios 默认 `timeout: 0`）。
 - **状态等待：** `waitForValidStatus` 对 `ready` 和 `valid` 都返回，不代表证书已签发。
-- **账户：** `createAccount` 用同一账户私钥再次调用时，返回已有账户。
+- **账户：** `createAccount` 找到已有账户后会接着调用 `updateAccount`，把同样的参数作为账户更新发出；参数里只有 `onlyReturnExisting` 时会去掉它，改发 POST-as-GET。
 - **挑战证书：** `crypto.createAlpnCertificate(authz, keyAuthorization, key?)` 返回 `[key, cert]`。不传 key 时生成 RSA 密钥。
 - **代理：** 依赖的 axios 1.21 会读取 `HTTPS_PROXY` / `NO_PROXY`，对 `https://` 目标用 CONNECT 隧道。
 
@@ -26,7 +26,7 @@ Let's Encrypt 相关约束：
 ### 模块
 
 - `remote-relay/acme.ts` 完成一轮签发：
-  1. 用账户私钥调用 `createAccount({ termsOfServiceAgreed: true })`，不提供邮箱，也不保存账户 URL。
+  1. 用账户私钥调用 `createAccount({ onlyReturnExisting: true })` 查找已有账户；证书机构返回 `urn:ietf:params:acme:error:accountDoesNotExist` 时，再调用 `createAccount({ termsOfServiceAgreed: true })` 创建。不提供邮箱，也不保存账户 URL。不对已有账户直接调用带 `termsOfServiceAgreed` 的 `createAccount`：库在这种情况下会附带一次非 POST-as-GET 的账户更新请求，服务器可以拒绝（Pebble 就会拒绝）。
   2. 下单。
   3. 读取 authorization，跳过已经 `valid` 的。对仍为 `pending` 的，用临时 P-256 私钥生成挑战证书，交给 TLS 入口，然后提交挑战。
   4. 轮询这些 authorization，直到全部 `valid` 或出现 `invalid`；出现 `invalid` 时按其 challenge 的 `error` 分类后结束本轮。
@@ -67,7 +67,7 @@ Let's Encrypt 相关约束：
   - 用户重新打开中转开关时，清除 `failures`、`validationFailures` 和 `paused`，`retryAt` 改为 `retryAfter`（如果有）。
   - Web 重启只清除 `paused`。
   - 重新注册不改动记录。
-- **失败说明：** `detail` 记录证书机构返回的说明。没有收到错误响应时（网络错误或超时），记录为无法连接证书机构。
+- **失败说明：** `detail` 记录证书机构返回的说明。没有收到错误响应时（网络错误或超时）不记录，界面按语言显示“无法连接证书机构”。
 
 ### 文件
 
@@ -97,7 +97,7 @@ certificate: {
   expiresAt?: string;   // 当前可用证书的到期时间
   issuing: boolean;     // 正在签发
   failure?: {
-    detail: string;     // 证书机构的说明，或“无法连接证书机构”
+    detail?: string;    // 证书机构的说明；没有时界面显示“无法连接证书机构”
     retryAt: string;    // 下次自动尝试的时间
     paused: boolean;    // 已暂停，需要用户修复后重新打开中转
   };

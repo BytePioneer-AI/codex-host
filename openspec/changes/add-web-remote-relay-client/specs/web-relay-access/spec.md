@@ -8,7 +8,7 @@
 
 ### Requirement: 中转设置
 
-中转控制地址 SHALL 通过 `--relay <控制地址>` 配置，并像其他启动选项一样保存，传空值清除。没有配置时 MUST 不显示中转开关，也不发起连接。开关默认关闭，只能在本机访问时修改，状态保存并在重启后沿用；切换 MUST 即时生效，不重启 Web 或 Host。
+中转控制地址 SHALL 通过 `--relay <控制地址>` 配置，并像其他启动选项一样保存，传空值清除。没有配置时 MUST 不显示中转开关，也不发起连接。Web 以 `--no-auth` 运行时 MUST 拒绝开启中转。开关默认关闭，只能在本机访问时修改，状态保存并在重启后沿用；切换 MUST 即时生效，不重启 Web 或 Host。
 
 #### Scenario: 未配置控制地址
 
@@ -19,6 +19,11 @@
 
 - **WHEN** 已配置控制地址，用户在本机打开中转开关
 - **THEN** Web 开始连接 Relay，运行中的任务和已连接的浏览器不受影响
+
+#### Scenario: 未启用认证
+
+- **WHEN** Web 以 `--no-auth` 运行，且保存的设置是开启中转
+- **THEN** Web 不连接 Relay，打开开关的接口返回明确的错误
 
 #### Scenario: 手机尝试修改开关
 
@@ -41,7 +46,7 @@
 
 ### Requirement: 连接与注册
 
-开启后 Web SHALL 通过 443 端口的出站 WSS 连接控制地址，按 Relay 协议完成注册并记录 Relay 返回的地址。环境变量 `HTTPS_PROXY` 指向 HTTP 代理时 MUST 经该代理连接。连接设备页 SHALL 显示状态：关闭、连接中、已连接（附地址）、缺少证书、已停止（附原因）。
+开启后 Web SHALL 通过 443 端口的出站 WSS 连接控制地址，按 Relay 协议完成注册并记录 Relay 返回的地址。一次连接尝试超过 30 秒未完成注册即放弃并按重连规则重试。环境变量 `HTTPS_PROXY` 指向 HTTP 代理时 MUST 经该代理连接。连接设备页 SHALL 显示状态：关闭、连接中、已连接（附地址）、缺少证书、已停止（附原因）。
 
 #### Scenario: 注册成功
 
@@ -79,12 +84,17 @@
 
 ### Requirement: 在电脑上解开 TLS
 
-每条经 Relay 到达的手机连接 SHALL 在 Web 进程内用数据目录中的证书完成 TLS，只协商 HTTP/1.1，再交给现有 HTTP 服务。Web MUST NOT 为此新开监听端口。没有可用证书时，Web SHALL 保持注册，把手机连接直接关闭，状态显示缺少证书。Web MUST NOT 通过 Alt-Svc 或其他方式宣告 HTTP/3 或 ECH。
+每条经 Relay 到达的手机连接 SHALL 在 Web 进程内用数据目录中的证书完成 TLS，只协商 HTTP/1.1，再交给现有 HTTP 服务；10 秒内未完成握手的连接 MUST 被关闭。Web MUST NOT 为此新开监听端口。没有可用证书时，Web SHALL 保持注册，把手机连接直接关闭，状态显示缺少证书。Web MUST NOT 通过 Alt-Svc 或其他方式宣告 HTTP/3 或 ECH。
 
 #### Scenario: 手机经中转打开页面
 
 - **WHEN** 证书有效，手机访问 `https://<id>.<域名>`
 - **THEN** 手机看到的证书由这台电脑提供，页面、登录、RPC 和 WebSocket 都与其他入口一致
+
+#### Scenario: 握手停滞
+
+- **WHEN** 客户端发完 ClientHello 后不再发送
+- **THEN** 10 秒后该连接被关闭
 
 #### Scenario: 还没有证书
 
@@ -93,12 +103,17 @@
 
 ### Requirement: 经中转请求的归属
 
-经中转到达的请求 MUST 视为非本机访问和 HTTPS 访问：不能查看或修改 token，登录 Cookie 带 Secure，同源校验使用请求的 Host。登录失败限速 SHALL 按 Relay 告知的手机 IP 计数。这类请求携带的 `x-forwarded-*` 头 MUST 被忽略。
+经中转到达的请求 MUST 视为非本机访问和 HTTPS 访问：不能查看或修改 token，登录 Cookie 带 Secure，响应带 HSTS（不含子域），同源校验要求 Origin 完整等于 `https://<注册得到的主机名>`。登录失败限速 SHALL 按 Relay 告知的手机 IP 计数。这类请求携带的 `x-forwarded-*` 头 MUST 被忽略。
 
 #### Scenario: 两台手机经中转输错 token
 
 - **WHEN** 一台手机经中转连续输错 token 被限速
 - **THEN** 另一台从不同 IP 经中转访问的手机不受影响
+
+#### Scenario: 兄弟子域发起请求
+
+- **WHEN** 同一中转域名下另一台电脑的页面向这台电脑发起带 Cookie 的写请求
+- **THEN** Origin 不匹配，请求被拒绝
 
 #### Scenario: 伪造转发头
 
@@ -107,9 +122,18 @@
 
 ### Requirement: 大传输不阻塞其他请求
 
-Web 端每条中转流和整条控制连接的接收窗口 SHALL 为 8 MiB。一台手机下载大文件时，经同一控制连接的其他手机连接 MUST 继续得到响应。
+Web 端每条中转流的接收窗口 SHALL 为 2 MiB，整条控制连接的接收窗口为 8 MiB。一台手机下载大文件时，经同一控制连接的其他手机连接 MUST 继续得到响应。
 
 #### Scenario: 下载期间审批
 
 - **WHEN** 一台手机正在经中转下载大文件，另一台手机发起审批
 - **THEN** 审批请求及时得到处理
+
+### Requirement: 界面不可被其他来源嵌入
+
+所有入口返回的 HTML 页面 SHALL 带 `Content-Security-Policy: frame-ancestors 'self'`，使页面只能被同源页面嵌入。
+
+#### Scenario: 兄弟子域嵌入界面
+
+- **WHEN** 同一中转域名下另一台电脑的页面用 iframe 嵌入这台电脑的 Web
+- **THEN** 浏览器拒绝显示，用户的登录状态不能被借用来诱导点击

@@ -12,13 +12,15 @@ Relay 和电脑之间的协议在 [`add-remote-relay-server` 的 design](../add-
 
 - 新代码放在 `packages/web-server/src/remote-relay/`：身份密钥、控制连接（含代理和重连）、进程内 TLS、状态与 RPC 各一个模块。`main.ts` 只负责创建并把 HTTP 服务交给它。
 - 电脑一侧是 HTTP/2 服务端，跑在 WebSocket 字节流上。收到 `POST /v1/register` 时用身份私钥签名作答，读到请求体中的主机名才算注册成功；收到 `POST /v1/tcp` 时立即回 200，把这个 stream 当作手机的 TCP 连接。
-- 每个手机 stream 包一层 `tls.TLSSocket`（服务端模式，ALPN 只有 `http/1.1`），握手后用 `server.emit("connection", socket)` 交给现有 HTTP 服务。HTTP/1.1 的 keep-alive、升级为 WebSocket 都沿用现有处理。
+- 创建一个不调用 `listen()` 的 `tls.Server`（ALPN 只有 `http/1.1`，握手期限 10 秒），每个手机 stream 通过它的 `connection` 事件注入，`secureConnection` 后用 `server.emit("connection", socket)` 交给现有 HTTP 服务。直接 `new tls.TLSSocket()` 没有握手期限，发完 ClientHello 就停住的连接会一直占着 stream。HTTP/1.1 的 keep-alive、升级为 WebSocket 都沿用现有处理。
 - 正常 EOF 不销毁 socket，WebSocket 关闭时销毁承载它的 Duplex（验证报告记录的两个坑）。
 
 ### 请求归属
 
 - 经中转的 TLS socket 记录在一个 `WeakMap<Socket, 手机地址>` 中，地址来自 stream 请求头 `relay-client-address`。`RequestTrust` 先查这个表：命中时 `secure()` 为真，`clientAddress()` 返回该地址，不读任何 `x-forwarded-*`；`isLocalConnection()` 本来就因远端地址不是回环而为假，不需要改。
-- 同源校验沿用 `Host` 头，手机访问的 Host 就是 `<id>.<域名>`。
+- 经中转的请求，同源校验要求 `Origin` 完整等于 `https://<注册得到的主机名>`（协议和主机都比较），不再只比较主机部分。其他入口的校验不变。
+- 经中转的 HTTPS 响应带 `Strict-Transport-Security: max-age=31536000`，不带 `includeSubDomains`，只约束这台电脑自己的子域。
+- 所有入口的 HTML 响应带 `Content-Security-Policy: frame-ancestors 'self'`。加入 Public Suffix List 之前，同一中转域名下的兄弟子域是 same-site，可以带着用户的 Cookie 把界面嵌进自己的页面诱导点击；`__Host-` 防的是 Cookie 被覆盖，防不了嵌入。目前没有跨来源嵌入 Web 的场景，所以对所有入口一律加。
 
 ### Cookie 名
 
@@ -36,14 +38,16 @@ Relay 和电脑之间的协议在 [`add-remote-relay-server` 的 design](../add-
 
 ### 连接、代理和重连
 
-- 连接 `wss://<控制地址>/v1/agent`。`HTTPS_PROXY`（或 `https_proxy`）是 `http://` 地址时，先对代理发 `CONNECT <控制地址>:443`，在得到的 socket 上做 TLS 和 WebSocket 升级；证书校验和 SNI 都用控制地址。
+- 认证关闭（`--no-auth`）时拒绝开启中转：启动时即使 `relayEnabled` 为真也不连接，`codexhost/relaySet` 返回错误。否则电脑的全部能力会直接暴露到公网。
+- 连接 `wss://<控制地址>/v1/agent`。签名中的控制地址用本地配置值的小写主机名。WebSocket 单条消息上限 1 MiB。`HTTPS_PROXY`（或 `https_proxy`）是 `http://` 地址时，先对代理发 `CONNECT <控制地址>:443`，在得到的 socket 上做 TLS 和 WebSocket 升级；证书校验和 SNI 都用控制地址。
 - 退避：首次 1 秒，每次翻倍，上限 60 秒，每次取上限值的 50%–100% 之间的随机值。注册成功并保持 60 秒后，下一次断线从 1 秒重新开始。
-- 60 秒内没有收到 WebSocket ping 就主动关闭并重连（Relay 每 25 秒发一次）。
+- 一次连接尝试（DNS、代理 CONNECT、TLS、WebSocket 升级到注册完成）总期限 30 秒，超时销毁本次资源后进入退避。
+- 60 秒内没有收到 WebSocket ping 就强制断开（`terminate()`）并重连（Relay 每 25 秒发一次）。
 - 关闭码 4409（被替换）、4401（签名被拒）以及升级时的 404（版本不支持）进入“已停止”，不再重连，直到用户重新打开开关或 Web 重启。4408（注册超时）和其他断开按退避重连。
 
 ### 流控
 
-- HTTP/2 服务端的 `settings.initialWindowSize` 和会话连接窗口（`session.setLocalWindowSize`）都设为 8 MiB，与 Relay 一致。
+- HTTP/2 服务端的 stream 窗口（`settings.initialWindowSize`）设为 2 MiB，会话连接窗口（`session.setLocalWindowSize`）设为 8 MiB，与 Relay 一致。依据和内存上限见 Relay 的 design。
 
 ### 状态
 

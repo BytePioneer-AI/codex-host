@@ -2,6 +2,8 @@
 
 给自己的 codexhost Web 搭一个中转，手机不用装 App。中转只转发加密字节，手机的 TLS 在电脑上解开；服务器只需要控制地址的证书。完整参数见 [Relay README](../../packages/remote-relay/README.md)。
 
+自建中转需要自己的域名，不支持只用 IP。没有域名时，推荐用 [Tailscale](web-remote-access.md#tailscale-https推荐) 或官方中转；能接受 Cloudflare 看到内容时，也可以用 [Cloudflare Tunnel](web-remote-access.md#cloudflare-tunnel)。
+
 ## 准备
 
 - 自己的域名、一台公网 TCP 443 空闲的 Linux 服务器，已安装 Docker（含 Compose）和宿主机 certbot。

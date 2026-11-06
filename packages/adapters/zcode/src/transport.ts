@@ -106,6 +106,10 @@ export class CliTransport {
         env: {
           ...this.options.environment,
           ELECTRON_RUN_AS_NODE: "1",
+          // Desktop injects the App version the same way; without it the CLI self-reports its
+          // internal version in the request fingerprint headers (User-Agent, X-ZCode-App-Version),
+          // and the Start Plan gateway rejects those requests as unusual activity.
+          ZCODE_APP_VERSION: installation.version,
           ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: installation.builtinProviderConfig,
           ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: installation.personalProviderConfig,
         },

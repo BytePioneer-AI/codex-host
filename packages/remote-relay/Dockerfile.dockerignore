@@ -1,0 +1,10 @@
+**
+!package.json
+!package-lock.json
+!tsconfig.base.json
+!packages/
+!packages/remote-relay/
+!packages/remote-relay/package.json
+!packages/remote-relay/tsconfig.json
+!packages/remote-relay/src/
+!packages/remote-relay/src/**

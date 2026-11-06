@@ -90,7 +90,7 @@ Web 本身走 HTTP，由 Tailscale 网络加密传输。能开启 HTTPS 时优�
 
 ### Relay 中转
 
-电脑主动连接 Relay，手机通过 `https://<地址名>.<中转域名>/` 访问，不需要安装额外 App。Relay 转发加密字节，TLS 在电脑上的 Web 进程解开，不新开本地监听端口。
+电脑主动连接 Relay，手机通过 `https://<地址名>.<中转域名>/` 访问，不需要安装额外 App。Relay 转发加密字节，TLS 在电脑上的 Web 进程解开，不新开本地监听端口。用自己的域名和服务器部署中转，见[自建中转](self-hosted-relay.md)。
 
 - 安装版用 `codexhost web --relay <控制主机名>` 保存控制地址；传 `--relay ""` 清除。配置变更按其他启动选项重启 Web。源码预览用 `npm start web -- --relay <控制主机名>`，同样保存中转地址。更换或清除控制地址会清除已取得的 `relayHostname`，使用新中转时重新显示输入框；其他启动选项改变不清除它。
 - 没有内置官方地址。配置后，本机“连接设备”页的“连接方式”才列出“codexhost 中转”（排在 Tailscale 与同一 Wi‑Fi 之间）。中转默认关闭，选中后显示官方加密中转的说明和身份密钥位置，点击启用才注册和申请证书；状态保存为 `service.json` 的 `relayEnabled`；切换即时生效，不重启 Web 或 Host。`--no-auth` 时不会连接，也不能开启。

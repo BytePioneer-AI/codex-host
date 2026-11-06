@@ -1,0 +1,19 @@
+services:
+  relay:
+    image: codexhost-relay:local
+    restart: unless-stopped
+    ports:
+      - "443:8443"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    command:
+      - --domain
+      - r.example.com
+      - --control-host
+      - relay.example.com
+      - --cert
+      - /etc/letsencrypt/live/relay.example.com/fullchain.pem
+      - --key
+      - /etc/letsencrypt/live/relay.example.com/privkey.pem
+      - --port
+      - "8443"

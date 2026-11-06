@@ -9,9 +9,10 @@ import { log } from "./log.js";
 export function forward(
   socket: Socket,
   agent: Agent,
-  id: string,
+  name: string,
   usage: Usage,
   acme: boolean,
+  onUsage?: (name: string, bytes: number) => void,
 ): void {
   const validation = usage.exceeded && acme;
   if (agent.phones.size >= 32 || (usage.exceeded && (!validation || usage.acmeRemaining === 0))) {
@@ -36,9 +37,11 @@ export function forward(
   const account = (size: number) => {
     bytes += size;
     if (usage.add(size, validation)) {
-      log("quota", id, socket.remoteAddress, usage.bytes);
+      log("quota", name, socket.remoteAddress, usage.bytes);
+      agent.notifyQuota();
       for (const phone of agent.phones) phone.destroy();
     }
+    onUsage?.(name, size);
     if (validation && (bytes >= 64 * 1024 || usage.acmeRemaining === 0)) abort();
   };
   socket.on("error", abort);

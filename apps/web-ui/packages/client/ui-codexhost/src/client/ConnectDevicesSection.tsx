@@ -277,9 +277,9 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
         busy={working}
         restarting={restart.target !== null}
         onEnable={enable}
-        onRelay={(enabled) => {
+        onRelay={(enabled, registration) => {
           void run(async () => {
-            await accessTokenApi.relay(enabled);
+            await accessTokenApi.relay(enabled, registration);
             await refresh();
           });
         }}

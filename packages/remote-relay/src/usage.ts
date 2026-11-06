@@ -5,13 +5,24 @@ export class Usage {
   private acmeHour = "";
   private acmeBytes = 0;
   bytes = 0;
-  readonly upload: TokenBucket | undefined;
-  readonly download: TokenBucket | undefined;
+  upload: TokenBucket | undefined;
+  download: TokenBucket | undefined;
 
   constructor(
     rate: number | undefined,
-    private readonly quota: number | undefined,
+    private quota: number | undefined,
+    usedToday = 0,
   ) {
+    this.configure(rate, quota, usedToday);
+    this.bytes = usedToday;
+  }
+
+  configure(rate: number | undefined, quota: number | undefined, usedToday = 0): void {
+    if (this.expired) {
+      this.day = new Date().toISOString().slice(0, 10);
+      this.bytes = usedToday;
+    }
+    this.quota = quota;
     this.upload = rate === undefined ? undefined : new TokenBucket(rate);
     this.download = rate === undefined ? undefined : new TokenBucket(rate);
   }
@@ -48,10 +59,10 @@ export class Usage {
 }
 
 export function pruneUsage(
-  usageById: Map<string, Usage>,
+  usageByName: Map<string, Usage>,
   agents: ReadonlyMap<string, unknown>,
 ): void {
-  for (const [id, usage] of usageById) {
-    if (!agents.has(id) && usage.expired) usageById.delete(id);
+  for (const [name, usage] of usageByName) {
+    if (!agents.has(name) && usage.expired) usageByName.delete(name);
   }
 }

@@ -58,7 +58,7 @@ export function ConnectionCard({
   busy: boolean;
   restarting: boolean;
   onEnable: (method: "direct" | "https") => void;
-  onRelay: (enabled: boolean) => void;
+  onRelay: (enabled: boolean, registration?: { name: string; invite: string }) => void;
   onRefresh: () => void;
   t: Translate;
 }): ReactNode {
@@ -71,7 +71,8 @@ export function ConnectionCard({
   ];
   const [chosenMethod, setMethod] = useState<Kind>();
   // An enabled relay is shown while it prepares, before its address becomes usable.
-  const relayOn = relay !== undefined && relay.state.status !== "off";
+  const relayOn =
+    relay !== undefined && (relay.state.status !== "off" || relay.state.reason !== undefined);
   const method =
     (chosenMethod === "relay" && relay === undefined ? undefined : chosenMethod) ??
     PREFERENCE.find(

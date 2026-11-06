@@ -18,11 +18,18 @@ describe("relay protocol", () => {
     expect(registrationContent("RELAY.Example.:4480", "abc-_123")).toBe(
       "codexhost-relay-register-v1\nrelay.example\nabc-_123",
     );
-    expect(paths).toEqual({ agent: "/v1/agent", register: "/v1/register", tcp: "/v1/tcp" });
+    expect(paths).toEqual({
+      agent: "/v1/agent",
+      register: "/v1/register",
+      tcp: "/v1/tcp",
+      notice: "/v1/notice",
+    });
     expect(headers).toEqual({
       challenge: "relay-challenge",
       publicKey: "relay-public-key",
       signature: "relay-signature",
+      name: "relay-name",
+      invite: "relay-invite",
       clientAddress: "relay-client-address",
       clientPort: "relay-client-port",
     });
@@ -30,6 +37,10 @@ describe("relay protocol", () => {
       invalidSignature: 4401,
       registrationTimeout: 4408,
       replaced: 4409,
+      invite: 4410,
+      nameTaken: 4411,
+      banned: 4412,
+      full: 4413,
     });
   });
 });

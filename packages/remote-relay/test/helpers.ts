@@ -38,6 +38,7 @@ export async function fakeAgent(
     tcp?: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders) => void;
     registrationHeaders?: OutgoingHttpHeaders;
     controlDelay?: number;
+    noticeStatus?: number;
   } = {},
 ) {
   const privateKey = options.privateKey ?? generateKeyPairSync("ed25519").privateKey;
@@ -87,6 +88,7 @@ export async function fakeAgent(
   });
   const streams: ServerHttp2Stream[] = [];
   const challenges: string[] = [];
+  const notices: { quota: string; until: string }[] = [];
   const registered = new Promise<string>((resolve) => {
     http2.on("stream", (stream, request) => {
       stream.on("error", () => {});
@@ -114,6 +116,21 @@ export async function fakeAgent(
           if (body) resolve(JSON.parse(body).hostname);
           stream.end();
         });
+      } else if (request[":path"] === paths.notice) {
+        stream.respond({ ":status": options.noticeStatus ?? 200 });
+        if (options.noticeStatus !== undefined && options.noticeStatus !== 200) {
+          stream.resume();
+          stream.end();
+          return;
+        }
+        let body = "";
+        stream.on("data", (chunk) => {
+          body += chunk;
+        });
+        stream.on("end", () => {
+          notices.push(JSON.parse(body));
+          stream.end();
+        });
       } else {
         streams.push(stream);
         stream.respond({ ":status": 200 });
@@ -136,6 +153,7 @@ export async function fakeAgent(
     hostname,
     streams,
     challenges,
+    notices,
     get session() {
       return session;
     },

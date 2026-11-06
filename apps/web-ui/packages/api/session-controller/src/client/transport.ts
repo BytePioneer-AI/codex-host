@@ -13,8 +13,8 @@ import {
 import type {
   SessionAddress,
   SessionAssistantStreamBaseline,
-  SessionAssistantStreamFrame,
   SessionControlFrame,
+  SessionFollowFrame,
   SessionHistoryRecord,
   SessionPage,
   SessionPageRequest,
@@ -43,6 +43,11 @@ interface SessionJournalPage extends SessionPage {
   readonly assistantStream?: SessionAssistantStreamBaseline;
 }
 
+type SessionJournalNotification = Extract<
+  SessionFollowFrame,
+  { type: "assistant-stream" | "projection" }
+>;
+
 /** One complete publication from the Session journal stream. */
 export type SessionJournalChange =
   | {
@@ -52,14 +57,10 @@ export type SessionJournalChange =
       readonly hasMore: boolean;
     }
   | { readonly type: "append"; readonly entry: SessionLiveEventEntry }
-  | { readonly type: "assistant-stream"; readonly frame: SessionAssistantStreamFrame };
+  | SessionJournalNotification;
 
 function toSessionJournalChange(
-  change: RemoteJournalChange<
-    SessionJournalPage,
-    SessionHistoryRecord,
-    SessionAssistantStreamFrame
-  >,
+  change: RemoteJournalChange<SessionJournalPage, SessionHistoryRecord, SessionJournalNotification>,
 ): SessionJournalChange {
   switch (change.type) {
     case "replace":
@@ -72,7 +73,7 @@ function toSessionJournalChange(
       };
     }
     case "notification":
-      return { type: "assistant-stream", frame: change.notification };
+      return change.notification;
   }
 }
 
@@ -139,7 +140,7 @@ export class SessionEventStream extends RemoteJournalStream<
   SessionHistoryRecord,
   number,
   ClientSessionPageRequest,
-  SessionAssistantStreamFrame
+  SessionJournalNotification
 > {
   /**
    * @param remote - generated Session namespace and Gateway stream factory.
@@ -173,12 +174,7 @@ export class SessionEventStream extends RemoteJournalStream<
     request: ClientSessionPageRequest,
     signal: AbortSignal,
   ): AsyncIterable<
-    RemoteJournalFrame<
-      SessionHistoryRecord,
-      number,
-      SessionJournalPage,
-      SessionAssistantStreamFrame
-    >
+    RemoteJournalFrame<SessionHistoryRecord, number, SessionJournalPage, SessionJournalNotification>
   > {
     let assistantRevision: number | undefined;
     for await (const frame of this.remote.session.follow(
@@ -219,7 +215,11 @@ export class SessionEventStream extends RemoteJournalStream<
           );
         }
         assistantRevision = frame.frame.revision;
-        yield { type: "notification", notification: frame.frame };
+        yield { type: "notification", notification: frame };
+        continue;
+      }
+      if (frame.type === "projection") {
+        yield { type: "notification", notification: frame };
         continue;
       }
       assertSessionWireEvent(frame.event);

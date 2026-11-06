@@ -69,8 +69,11 @@ export const webRelayCertificateSchema = z.object({
 export type WebRelayCertificate = z.infer<typeof webRelayCertificateSchema>;
 
 export const webRelayStateSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("off") }),
-  z.object({ status: z.literal("connecting") }),
+  z.object({
+    status: z.literal("off"),
+    reason: z.enum(["invite", "name-taken", "banned"]).optional(),
+  }),
+  z.object({ status: z.literal("connecting"), reason: z.literal("full").optional() }),
   z.object({
     status: z.literal("connected"),
     url: z.string(),
@@ -100,7 +103,15 @@ export const webAccessStateSchema = z
     directCandidates: z.array(webNetworkAccessUrlSchema).optional(),
     tailscale: webTailscaleStateSchema,
     background: webBackgroundStateSchema.optional(),
-    relay: z.object({ state: webRelayStateSchema, identityPath: z.string() }).strict().optional(),
+    relay: z
+      .object({
+        state: webRelayStateSchema,
+        identityPath: z.string(),
+        hostname: z.string().optional(),
+        quotaUntil: z.string().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

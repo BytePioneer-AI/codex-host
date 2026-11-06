@@ -3,6 +3,7 @@ import { draftPermissionMode, type DraftConfiguration } from "./draft-configurat
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import {
+  WEB_FOLLOW_PROJECTION_KEYS,
   encodeHarnessPluginRoute,
   harnessPluginRouteSchema,
   threadInspectionSchema,
@@ -49,6 +50,12 @@ import {
 import type { Workspaces } from "./workspaces.ts";
 import { defaultProjections } from "./session-log.ts";
 import { applyUsageProjections } from "./usage-projection.ts";
+
+function globalProjectionValues(values: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(values).filter(([key]) => !WEB_FOLLOW_PROJECTION_KEYS.has(key)),
+  );
+}
 
 interface Draft {
   id: string;
@@ -249,8 +256,8 @@ export class ChSessions {
     }
     this.workspaces.setReferenceGroups(groups, projectless);
   }
-  /** Only fields used by the list summary; history projections have their own
-   * control stream. Re-emitting every row makes each browser rebuild its entire
+  /** Only fields used by the list summary; projections have their own
+   * streams. Re-emitting every row makes each browser rebuild its entire
    * catalog thousands of times and starves interactive history frames.
    */
   private catalogKey(row: ChThread): string {
@@ -353,19 +360,24 @@ export class ChSessions {
       throw new RpcError("session/not-external", "CH did not confirm external Thread ownership.");
     let view = this.threads.view(id);
     if (!view) {
-      view = new ChThreadHistory(
+      const history: ChThreadHistory = new ChThreadHistory(
         this.host,
         row,
         harnessId,
         (sessionId, key, value, seq) => {
-          for (const sink of this.controls)
-            sink.push({ type: "projection", sessionId, key, value, seq });
+          if (WEB_FOLLOW_PROJECTION_KEYS.has(key)) {
+            history.log.pushProjection(key, value, seq);
+          } else {
+            for (const sink of this.controls)
+              sink.push({ type: "projection", sessionId, key, value, seq });
+          }
         },
         this.threads.get(id)?.viewOrigin,
         this.attachments
           ? (content) => this.attachments?.project(id, content) ?? content
           : undefined,
       );
+      view = history;
       view.log.setProjection("threadReference", { hostId: "local" });
       if (this.images) {
         view.log.setProjection("attachmentInput", this.files ? WEB_FILE_INPUT : WEB_IMAGE_INPUT);
@@ -509,7 +521,7 @@ export class ChSessions {
       throw new RpcError("session/not-external", "CH did not confirm external Thread ownership.");
     const values = {
       ...defaultProjections(),
-      ...this.threads.view(row.id)?.log.projections,
+      ...globalProjectionValues(this.threads.view(row.id)?.log.projections ?? {}),
       ...(this.images
         ? {
             attachmentInput: this.files ? WEB_FILE_INPUT : WEB_IMAGE_INPUT,
@@ -1141,8 +1153,13 @@ export class ChSessions {
       // Draft metadata can yield. Capture live state and subscribe only after
       // it settles, in one synchronous step: the client requires the baseline
       // before any delta, and changes during preparation belong in that baseline.
-      for (const [id, view] of this.threads.views())
-        projections[id] = view.log.projectionBaseline();
+      for (const [id, view] of this.threads.views()) {
+        const baseline = view.log.projectionBaseline();
+        projections[id] = {
+          ...baseline,
+          values: globalProjectionValues(baseline.values),
+        };
+      }
       this.controls.add(sink);
       sink.onClose(() => this.controls.delete(sink));
       sink.push({ type: "baseline", value: { projections } });

@@ -167,7 +167,7 @@ export class ProjectionValueStore {
   }
 
   /**
-   * Apply one live control frame. Frames arrive in order on the control stream, so an equal seq
+   * Apply one live projection frame. Frames arrive in order on their stream, so an equal seq
    * is a newer value: CodexHost projections also change between journal events (token usage,
    * running tool output) without advancing the durable seq.
    * @param key - projection key.
@@ -206,8 +206,14 @@ export class ProjectionValueStore {
    * unless a newer frame already superseded the cut (a stale baseline can
    * neither overwrite nor clear newer sequenced values).
    * @param baseline - the response's projections block.
+   * @param liveKeys - follow-owned keys whose ordered openings can replace values at equal seq.
+   * @param preservedKeys - keys owned by another stream, retained when absent from this baseline.
    */
-  seed(baseline: ProjectionsBaseline): void {
+  seed(
+    baseline: ProjectionsBaseline,
+    liveKeys?: ReadonlySet<string>,
+    preservedKeys?: ReadonlySet<string>,
+  ): void {
     for (const [key, row] of this.rows) {
       if (row.kind !== "cached") continue;
       this.rows.delete(key);
@@ -216,9 +222,12 @@ export class ProjectionValueStore {
     // Erased walk: the framework crosses the open key space; per-key typing
     // is re-established at the consumer (useProjection's map lookup).
     const values = baseline.values as Record<string, unknown>;
-    for (const key of Object.keys(values)) this.apply(key, values[key], baseline.asOfSeq);
+    for (const key of Object.keys(values)) {
+      if (liveKeys?.has(key)) this.applyLive(key, values[key], baseline.asOfSeq);
+      else this.apply(key, values[key], baseline.asOfSeq);
+    }
     for (const [key, row] of this.rows) {
-      if (Object.hasOwn(values, key)) continue;
+      if (Object.hasOwn(values, key) || preservedKeys?.has(key)) continue;
       // Every cached row was deleted above; the kind test only narrows the
       // type so `row.seq` is readable.
       if (row.kind === "sequenced" && row.seq > baseline.asOfSeq) continue;

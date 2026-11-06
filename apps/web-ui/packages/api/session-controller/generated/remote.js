@@ -453,7 +453,14 @@ const _deepseek_ai_dsh_api_session_controller_session_follow_result$schema = () 
   'kind': z.literal("abandoned").readonly(),
 })]).readonly(),
 })]).readonly(),
-})]))
+}), z.intersection(z.object({
+  'type': z.literal("projection").readonly(),
+}), z.object({
+  'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
+  'key': z.string().readonly(),
+  'value': z.union([z.literal(null), z.string(), z.number(), z.literal(false), z.literal(true), z.array(z.lazy(() => JsonValueRemoteCodec$schema3())), z.record(z.string(), z.lazy(() => JsonValueRemoteCodec$schema3()))]).readonly(),
+  'seq': z.number().readonly(),
+}))]))
 let _deepseek_ai_dsh_api_session_controller_session_fork_parameter_0$schema$value
 const _deepseek_ai_dsh_api_session_controller_session_fork_parameter_0$schema = () => (_deepseek_ai_dsh_api_session_controller_session_fork_parameter_0$schema$value ??= z.object({
   'sessionId': z.intersection(z.string(), z.unknown()).readonly(),

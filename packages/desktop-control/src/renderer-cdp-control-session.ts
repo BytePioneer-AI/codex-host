@@ -300,7 +300,7 @@ async function installTarget(
     );
   };
   try {
-    disposeModules = await currentContext(() =>
+    const installedModules = await currentContext<() => void>(() =>
       installRendererLoadedModules(renderer).then((dispose) => {
         if (contextLifetime.signal.aborted) {
           dispose();
@@ -309,6 +309,7 @@ async function installTarget(
         return dispose;
       }),
     );
+    disposeModules = installedModules;
     await currentContext(() => renderer.command("Page.enable"));
     await currentContext(() =>
       renderer.command("Page.addScriptToEvaluateOnNewDocument", { source: rendererSource }),
@@ -320,7 +321,11 @@ async function installTarget(
     const binding = await currentContext(() =>
       waitForBinding(renderer, enabledAgents, timeoutMs, pollIntervalMs, contextLifetime.signal),
     );
-    return { renderer, snapshot: { target, draftPrewarmPolicy, binding }, disposeModules };
+    return {
+      renderer,
+      snapshot: { target, draftPrewarmPolicy, binding },
+      disposeModules: installedModules,
+    };
   } catch (error) {
     disposeModules?.();
     renderer.close();

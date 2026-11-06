@@ -2,7 +2,7 @@
 
 ## Why
 
-电脑已经能注册到 Relay，但没有证书时手机连接会被关闭。本 change 让电脑为自己的 `<id>.<中转域名>` 自动申请和续期证书，完成后手机就能经中转访问。对应[实施计划](../../../docs/proposals/web-remote-implementation-plan.md)阶段 5 的第三个 change，做完后阶段 5 只剩真机验收。
+电脑已经能注册到 Relay，但没有证书时手机连接会被关闭。本 change 让电脑为自己的 `<id>.<中转域名>` 自动申请和续期证书，完成后手机就能经中转访问。对应[实施计划](../../../../docs/proposals/web-remote-implementation-plan.md)阶段 5 的第三个 change，做完后阶段 5 只剩真机验收。
 
 ## What Changes
 

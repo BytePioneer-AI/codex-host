@@ -13,6 +13,7 @@ import { modelSelectionForAgent } from "../src/versioned-renderer-adapter.js";
 
 import {
   applyComposerModelWrite,
+  currentThreadFromComposers,
   draftPermissionMode,
   draftThinkingOptionForModel,
   isLateConversationTarget,
@@ -1512,5 +1513,29 @@ describe("Renderer Composer DOM behavior", () => {
     }
 
     expect(write).not.toHaveBeenCalled();
+  });
+});
+
+describe("currentThreadFromComposers", () => {
+  it("ignores hidden composers and counts one task's composers once", () => {
+    expect(
+      currentThreadFromComposers([
+        { shown: true, threadId: "t1" },
+        { shown: false, threadId: "t2" },
+        { shown: false, threadId: null },
+        { shown: true, threadId: "t1" },
+      ]),
+    ).toBe("t1");
+  });
+
+  it("is null when nothing is shown or two different tasks are shown", () => {
+    expect(currentThreadFromComposers([{ shown: false, threadId: "t1" }])).toBeNull();
+    expect(
+      currentThreadFromComposers([
+        { shown: true, threadId: "t1" },
+        { shown: true, threadId: "t2" },
+      ]),
+    ).toBeNull();
+    expect(currentThreadFromComposers([{ shown: true, threadId: null }])).toBeNull();
   });
 });

@@ -15,6 +15,7 @@ import {
   type ThreadWatchInput,
 } from "./delegation-types.js";
 import { matchesBearerToken } from "./bearer-token.js";
+import type { LocalPreviewManager } from "./local-preview.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
@@ -80,6 +81,15 @@ function watchApi(api: DelegationWatchApi | undefined): DelegationWatchApi {
   return api;
 }
 
+function preview(manager: LocalPreviewManager | undefined): LocalPreviewManager {
+  if (!manager)
+    throw new DelegationControlError(
+      "UNSUPPORTED",
+      "Preview needs the local Codex Desktop; this Host cannot open pages",
+    );
+  return manager;
+}
+
 /** The Turn already started, so a watch failure is reported beside it, not thrown. */
 function watchStartedTurn(watches: DelegationWatchApi, input: ThreadWatchInput) {
   return watches.watch(input).catch((error: unknown) => ({
@@ -108,6 +118,8 @@ export async function startDelegationControlServer(input: {
   token: string;
   api: DelegationControlApi;
   watchApi?: DelegationWatchApi;
+  /** Absent on a Host without a local Desktop; preview routes then report UNSUPPORTED. */
+  preview?: LocalPreviewManager;
 }): Promise<DelegationControlServer> {
   const server = createServer((request, response) => {
     void (async () => {
@@ -164,6 +176,24 @@ export async function startDelegationControlServer(input: {
           return;
         case "/v1/thread/list":
           writeJson(response, 200, await input.api.list(body as unknown as ThreadListInput));
+          return;
+        case "/v1/preview/open":
+          writeJson(
+            response,
+            200,
+            await preview(input.preview).open(
+              body as { path: string; cwd: string; threadId?: string },
+            ),
+          );
+          return;
+        case "/v1/preview/list":
+          writeJson(response, 200, preview(input.preview).list());
+          return;
+        case "/v1/preview/show":
+          writeJson(response, 200, await preview(input.preview).show(String(body.previewId)));
+          return;
+        case "/v1/preview/close":
+          writeJson(response, 200, await preview(input.preview).close(String(body.previewId)));
           return;
         default:
           throw new DelegationControlError("INVALID_ARGUMENT", "Unknown Runtime control route");

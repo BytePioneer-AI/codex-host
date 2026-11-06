@@ -1,6 +1,16 @@
 import { consumesNextArgument } from "./delegation-cli-options.js";
 
 const COMMAND_HELP = {
+  "preview open": `codexhost preview open <file>
+Show a local HTML file (for example a design mockup) in Codex's built-in browser, next to the conversation, and reload it whenever files in its directory change.
+The file must be inside the current working directory. Its directory is served read-only on a loopback port; relative links to styles, scripts and images work.
+Opening the same file again brings its existing tab to the front. Returns previewId, url and opened: builtInBrowser, or systemBrowser with the reason when the built-in browser is unavailable. UNSUPPORTED on a managed remote Host.`,
+  "preview list": `codexhost preview list
+List open previews with their file, URL and Thread.`,
+  "preview show": `codexhost preview show <preview>
+Bring a preview to the front, reopening its tab if it was closed.`,
+  "preview close": `codexhost preview close <preview>
+Stop serving a preview and close its tab. Previews also close when their Thread is archived or codexhost exits.`,
   "harness list": `codexhost harness list [--format json|compact]
 List Harnesses available in the active Runtime.`,
   "harness inspect": `codexhost harness inspect <harness> [--cwd <path>] [--refresh true|false] [--format json|compact]
@@ -71,6 +81,7 @@ export const DELEGATION_HELP = `usage:
   codexhost thread watch <thread>
   codexhost thread watches
   codexhost thread list
+  codexhost preview open|list|show|close
 
 Use <command> --help for its options. Use harness list to discover targets.
 ${COMMON_HELP}
@@ -90,7 +101,7 @@ export function delegationCliHelp(arguments_: readonly string[]): string | undef
   if (!group || group === "--help" || group === "-h") return DELEGATION_HELP;
   if (!command || command === "--help" || command === "-h" || command === "help") {
     if (group === "delegate") return DELEGATION_HELP;
-    if (group === "harness" || group === "thread") {
+    if (group === "harness" || group === "thread" || group === "preview") {
       const usages = Object.entries(COMMAND_HELP)
         .filter(([name]) => name.startsWith(`${group} `))
         .map(([, help]) => help.split("\n")[0]);

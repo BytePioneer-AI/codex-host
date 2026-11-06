@@ -10,7 +10,9 @@ function required<T>(value: T | undefined): T {
 }
 
 const nonce = "1234567890abcdef1234567890abcdef";
-async function setup(openLocalPage: (url: string) => Promise<LocalPageHandle>) {
+async function setup(
+  openLocalPage: (url: string, conversationId?: string) => Promise<LocalPageHandle>,
+) {
   const listener = createServer();
   await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
   const address = listener.address();
@@ -112,5 +114,49 @@ describe("Owned Desktop local pages", () => {
     await page.close();
     expect(expressions.filter((e) => e.includes('"type":"close-browser-tab"'))).toHaveLength(1);
     expect(expressions.at(-1)).toContain('"conversationId":"owner"');
+  });
+  it("attaches a page to the conversation the caller names", async () => {
+    const page = { show: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+    const open = vi.fn(async () => page);
+    const fixture = await setup(open);
+    try {
+      const handle = await fixture.open(url, "thread-123");
+      expect(open).toHaveBeenCalledWith(url, "thread-123");
+      await handle.close();
+      await (await fixture.open(url)).close();
+      expect(open).toHaveBeenLastCalledWith(url, undefined);
+      await expect(fixture.open(url, "bad id")).rejects.toThrow("conversation id is invalid");
+      expect(open).toHaveBeenCalledTimes(2);
+    } finally {
+      await fixture.server.close();
+    }
+  });
+  it("uses the owner it is given without asking which task is shown", async () => {
+    const expressions: string[] = [];
+    const execute = async <T>(expression: string): Promise<T> => {
+      expressions.push(expression);
+      return (expression.includes("currentThreadId") ? "shown" : null) as T;
+    };
+    const page = await openRendererLocalPage(execute, url, async () => [{ url }], "owner");
+    expect(expressions[0]).toContain('"conversationId":"owner"');
+    expect(expressions[0]).not.toContain("currentThreadId");
+    await page.close();
+  });
+  it("navigates to the owner conversation when its browser webview only mounts on route", async () => {
+    let routed = false;
+    const expressions: string[] = [];
+    const execute = async <T>(expression: string): Promise<T> => {
+      expressions.push(expression);
+      if (expression.includes('"type":"navigate-to-route"')) routed = true;
+      return (expression.includes("currentThreadId") ? (routed ? "owner" : null) : null) as T;
+    };
+    const page = await openRendererLocalPage(
+      execute,
+      url,
+      async () => (routed ? [{ url }] : []),
+      "owner",
+    );
+    expect(expressions.some((e) => e.includes('"path":"/local/owner"'))).toBe(true);
+    await page.close();
   });
 });

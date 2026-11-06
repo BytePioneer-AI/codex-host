@@ -6,7 +6,12 @@ import {
   type RemoteConnectionsRequest,
   type RemoteConnectionsReply,
 } from "@codexhost/shared-contracts";
-import { isLocalPageUrl, serveLocalPage, type LocalPageHandle } from "./local-page-control.js";
+import {
+  isConversationId,
+  isLocalPageUrl,
+  serveLocalPage,
+  type LocalPageHandle,
+} from "./local-page-control.js";
 
 const MAX_REQUEST_BYTES = 16 * 1024;
 
@@ -18,7 +23,7 @@ export interface StartControllerAttachmentServerOptions {
   port: number;
   nonce: string;
   attach(): Promise<void>;
-  openLocalPage?(url: string): Promise<LocalPageHandle>;
+  openLocalPage?(url: string, conversationId?: string): Promise<LocalPageHandle>;
   remoteConnections?(request: RemoteConnectionsRequest): Promise<RemoteConnectionsReply>;
 }
 
@@ -128,15 +133,22 @@ export async function startControllerAttachmentServer(
       }
       const prefix = `PAGE ${options.nonce} `;
       if (options.openLocalPage && line.startsWith(prefix)) {
-        const url = line.slice(prefix.length);
-        if (!isLocalPageUrl(url) || request.slice(newline + 1) !== "") {
+        // `<url>` or `<url> <conversationId>`; neither part contains a space.
+        const [url = "", conversationId, ...extra] = line.slice(prefix.length).split(" ");
+        if (
+          !isLocalPageUrl(url) ||
+          extra.length > 0 ||
+          (conversationId !== undefined && !isConversationId(conversationId)) ||
+          request.slice(newline + 1) !== ""
+        ) {
           respond(socket, "rejected");
           return;
         }
         socket.off("data", receive);
-        const page = serveLocalPage(socket, url, options.openLocalPage).catch(() =>
-          socket.destroy(),
-        );
+        const openLocalPage = options.openLocalPage;
+        const page = serveLocalPage(socket, url, (pageUrl) =>
+          openLocalPage(pageUrl, conversationId),
+        ).catch(() => socket.destroy());
         const completion = page.then(() => undefined);
         pages.add(completion);
         void completion.finally(() => pages.delete(completion));

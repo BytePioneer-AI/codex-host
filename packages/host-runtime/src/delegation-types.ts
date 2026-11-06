@@ -256,6 +256,8 @@ export type DelegationControlErrorCode =
   | "RESPONSE_TOO_LARGE"
   | "RUNTIME_UNREACHABLE"
   | "DELEGATION_FAILED"
+  /** The operation needs something this Host cannot provide, such as a local Desktop. */
+  | "UNSUPPORTED"
   | "INTERNAL_ERROR";
 
 export class DelegationControlError extends Error {

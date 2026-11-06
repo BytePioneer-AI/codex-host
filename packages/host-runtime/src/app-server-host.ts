@@ -373,6 +373,8 @@ export interface AppServerHostOptions {
   /** Present only on the local Host started by the Launcher. */
   consoleOpener?: HostConsoleOpener;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
+  /** Desktop asked to archive a Thread; resources tied to it (such as previews) can be released. */
+  onThreadArchived?: (threadId: string) => void;
   /** Shared by all Hosts of one runtime; defaults to the bundled snapshot only. */
   modelPrices?: ModelPriceCatalog;
   /** Machine-wide usage statistics; one per runtime, read from the loaded Harness plugins. */
@@ -1843,6 +1845,8 @@ export class AppServerHost {
     }
     if (request.method === "thread/archive" || request.method === "thread/unarchive") {
       const threadId = routingParams(request).threadId;
+      if (request.method === "thread/archive" && typeof threadId === "string")
+        this.#options.onThreadArchived?.(threadId);
       const location =
         typeof threadId === "string"
           ? await this.#locateExternalThread(threadId)

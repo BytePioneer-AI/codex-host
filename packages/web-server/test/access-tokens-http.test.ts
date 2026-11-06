@@ -124,6 +124,7 @@ it("signs in with links, cookies, and bearer tokens, keeping the access token ou
   assert.match(anonymous.body, /#token=/u);
   assert.equal(anonymous.headers["set-cookie"], undefined);
   assert.equal(anonymous.headers["x-content-type-options"], "nosniff");
+  assert.equal(anonymous.headers["content-security-policy"], "frame-ancestors 'self'");
   assert.match(
     (await send(base, "/", { headers: { "accept-language": "zh-CN" } })).body,
     /访问令牌/u,
@@ -323,7 +324,25 @@ it("trusts forwarding headers only from a configured proxy", async (t) => {
     body: JSON.stringify({ token: named.secret }),
   });
   assert.equal(login.status, 200);
-  assert.match(String(login.headers["set-cookie"]), /; Secure$/u);
+  assert.match(String(login.headers["set-cookie"]), /^__Host-codexhost_token=.*; Secure$/u);
+  const secureCookie = String(login.headers["set-cookie"]).split(";")[0] as string;
+  assert.equal(
+    (await send(proxied.base, "/api/auth/status", { headers: { ...forged, cookie: secureCookie } }))
+      .status,
+    200,
+  );
+  assert.equal(
+    (
+      await send(proxied.base, "/api/auth/status", {
+        headers: { ...forged, cookie: `codexhost_token=${named.secret}` },
+      })
+    ).status,
+    401,
+  );
+  assert.equal(
+    (await send(proxied.base, "/api/auth/status", { headers: { cookie: secureCookie } })).status,
+    401,
+  );
   // Trusting a proxy does not make what it forwards local.
   assert.equal(
     resultOf(
@@ -376,7 +395,7 @@ it(
     await access();
     const signedIn = await login({ ...forwarded, origin: "https://phone.example" });
     assert.equal(signedIn.status, 200);
-    assert.match(String(signedIn.headers["set-cookie"]), /; Secure$/u);
+    assert.match(String(signedIn.headers["set-cookie"]), /^__Host-codexhost_token=.*; Secure$/u);
     for (const headers of [forwarded, { ...forwarded, host: base.host }]) {
       assert.equal(
         resultOf(

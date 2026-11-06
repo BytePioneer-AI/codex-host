@@ -16,6 +16,8 @@ const serviceSchema = z.object({
       return value;
     })
     .optional(),
+  relayHost: z.string().optional(),
+  relayEnabled: z.boolean().default(false),
   trustedProxies: z
     .string()
     .transform((value) => {
@@ -46,7 +48,13 @@ export function readServiceOptions(data: DataDir) {
 /** Empty options clear saved values; validation precedes the atomic replacement. */
 export function saveServiceOptions(
   data: DataDir,
-  options: { host?: string; port?: string; "public-url"?: string; "trusted-proxy"?: string },
+  options: {
+    host?: string;
+    port?: string;
+    "public-url"?: string;
+    "trusted-proxy"?: string;
+    relay?: string;
+  },
 ): boolean {
   const file = data.path("service.json");
   const saved: Record<string, unknown> = existsSync(file)
@@ -57,6 +65,7 @@ export function saveServiceOptions(
     ["host", "host"],
     ["port", "port"],
     ["public-url", "publicUrl"],
+    ["relay", "relayHost"],
     ["trusted-proxy", "trustedProxies"],
   ] as const) {
     const value = options[option];

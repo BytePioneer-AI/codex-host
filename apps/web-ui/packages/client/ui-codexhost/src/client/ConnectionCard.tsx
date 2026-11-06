@@ -17,6 +17,7 @@ type Translate = PropsLocale<"codexhostImport">["t"];
 type Kind = WebNetworkAccessUrl["kind"];
 const LABEL = {
   public: "connectDevices.kindPublic",
+  relay: "connectDevices.relay.title",
   "tailscale-funnel": "connectDevices.kindFunnel",
   "tailscale-https": "connectDevices.kindTailscale",
   tailscale: "connectDevices.kindTailscale",
@@ -25,15 +26,17 @@ const LABEL = {
 } as const;
 const HINT: Partial<Record<Kind, Parameters<Translate>[0]>> = {
   public: "connectDevices.kindPublicHint",
+  relay: "connectDevices.relay.hint",
   "tailscale-funnel": "connectDevices.kindFunnelHint",
   virtual: "connectDevices.kindVirtualHint",
 };
 const PREFERENCE: Kind[] = [
   "public",
+  "relay",
   "tailscale-funnel",
   "tailscale-https",
-  "lan",
   "tailscale",
+  "lan",
   "virtual",
 ];
 
@@ -59,11 +62,13 @@ export function ConnectionCard({
       (entry) => !networkUrls.some((active) => active.url === entry.url),
     ),
   ];
-  const [method, setMethod] = useState<Kind>(
-    () =>
-      PREFERENCE.find((kind) => networkUrls.some((entry) => entry.kind === kind)) ??
-      (addresses.some((entry) => entry.kind === "lan") ? "lan" : "tailscale-https"),
-  );
+  const [chosenMethod, setMethod] = useState<Kind>();
+  const method =
+    (chosenMethod === "relay" && !addresses.some((entry) => entry.kind === "relay")
+      ? undefined
+      : chosenMethod) ??
+    PREFERENCE.find((kind) => networkUrls.some((entry) => entry.kind === kind)) ??
+    (addresses.some((entry) => entry.kind === "lan") ? "lan" : "tailscale-https");
   const [selectedUrl, setSelectedUrl] = useState<string>();
   const [enlarged, setEnlarged] = useState(false);
   const [addressMenu, setAddressMenu] = useState(false);

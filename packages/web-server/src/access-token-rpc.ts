@@ -35,7 +35,10 @@ export function registerAccessTokenRpc(
   listener: {
     port(): number;
     access(): Promise<
-      Pick<WebAccessState, "networkUrls" | "directCandidates" | "tailscale" | "background">
+      Pick<
+        WebAccessState,
+        "networkUrls" | "directCandidates" | "tailscale" | "background" | "relay"
+      >
     >;
   },
 ): void {

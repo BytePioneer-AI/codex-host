@@ -6,7 +6,15 @@ export const webNetworkAccessUrlSchema = z
      * `tailscale-https` is a Tailscale Serve address already forwarding to this server. `virtual` marks a
      * VM or container bridge, which other devices usually cannot reach.
      */
-    kind: z.enum(["public", "tailscale-funnel", "tailscale-https", "tailscale", "lan", "virtual"]),
+    kind: z.enum([
+      "public",
+      "relay",
+      "tailscale-funnel",
+      "tailscale-https",
+      "tailscale",
+      "lan",
+      "virtual",
+    ]),
     url: z.string().min(1),
   })
   .strict();
@@ -46,6 +54,18 @@ export const webBackgroundStateSchema = z
 
 export type WebBackgroundState = z.infer<typeof webBackgroundStateSchema>;
 
+export const webRelayStateSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("off") }),
+  z.object({ status: z.literal("connecting") }),
+  z.object({ status: z.literal("connected"), url: z.string() }),
+  z.object({ status: z.literal("missing-certificate"), url: z.string() }),
+  z.object({
+    status: z.literal("stopped"),
+    reason: z.enum(["replaced", "rejected", "unsupported-version"]),
+  }),
+]);
+export type WebRelayState = z.infer<typeof webRelayStateSchema>;
+
 /** What this computer's connection page shows; available only on this computer. */
 export const webAccessStateSchema = z
   .object({
@@ -58,6 +78,7 @@ export const webAccessStateSchema = z
     directCandidates: z.array(webNetworkAccessUrlSchema).optional(),
     tailscale: webTailscaleStateSchema,
     background: webBackgroundStateSchema.optional(),
+    relay: z.object({ state: webRelayStateSchema, identityPath: z.string() }).strict().optional(),
   })
   .strict();
 

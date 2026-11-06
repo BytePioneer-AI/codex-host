@@ -3,7 +3,7 @@
  *
  *   node --import tsx src/main.ts [--port 4400] [--host 127.0.0.1] [--data <dir>]
  *        [--adapters <dir>[,<dir>...]] [--harness <id>[,<id>...]]
- *        [--token <value>] [--trusted-proxy <ip>[,<ip>...]] [--public-url <url>] [--no-auth]
+ *        [--token <value>] [--trusted-proxy <ip>[,<ip>...]] [--public-url <url>] [--relay <control-host>] [--no-auth]
  *        [--dev-web-ui <apps/web-ui>]
  *
  * `--dev-web-ui` serves the Web UI from that source checkout instead of the packed copy and pushes
@@ -41,6 +41,8 @@ import {
 import { tailscaleServeState, tailscaleState } from "./tailscale-serve.ts";
 import type { WebNetworkAccessUrl } from "@codexhost/shared-contracts";
 import { RequestTrust } from "./request-trust.ts";
+import { RemoteRelay } from "./remote-relay/state.ts";
+import { registerRelayRpc } from "./remote-relay/rpc.ts";
 import { DESKTOP_SCREENSHOT_PATH } from "@codexhost/shared-contracts/desktop-screenshot";
 import { DesktopScreenshots } from "./desktop-screenshot.ts";
 import { SIDEBAR_BROWSER_PATH } from "@codexhost/shared-contracts/sidebar-browser";
@@ -130,6 +132,7 @@ const { values } = parseArgs({
     token: { type: "string", default: process.env.CODEXHOST_WEB_TOKEN },
     "trusted-proxy": { type: "string" },
     "public-url": { type: "string" },
+    relay: { type: "string" },
     "import-recent": { type: "string", default: process.env.CODEXHOST_IMPORT_RECENT },
     "safe-mode": { type: "boolean", default: false },
   },
@@ -156,7 +159,10 @@ if (values["save-service-options"]) {
     process.exit(1);
   }
 }
-const background = values.background ? readServiceOptions(data) : undefined;
+if (!values.background && values.relay !== undefined)
+  saveServiceOptions(data, { relay: values.relay });
+const serviceOptions = readServiceOptions(data);
+const background = values.background ? serviceOptions : undefined;
 if (background) {
   values.host = background.host;
   values.port = String(background.port);
@@ -400,7 +406,15 @@ async function readNetworkAccess() {
   }
   return {
     tailscale,
-    networkUrls: [...publicUrls, ...serve, ...networkAccessUrls(host, listeningPort)],
+    ...(relay.access === undefined ? {} : { relay: relay.access }),
+    networkUrls: [
+      ...publicUrls,
+      ...(relay.state.status === "connected"
+        ? [{ kind: "relay" as const, url: relay.state.url }]
+        : []),
+      ...serve,
+      ...networkAccessUrls(host, listeningPort),
+    ],
     ...(background ? { directCandidates: networkAccessUrls("0.0.0.0", listeningPort) } : {}),
   };
 }
@@ -494,6 +508,9 @@ const server = createServer((request, response) => {
   const pathname = url.split("?")[0] ?? "/";
   void (async () => {
     response.setHeader("X-Content-Type-Options", "nosniff");
+    response.setHeader("Content-Security-Policy", "frame-ancestors 'self'");
+    if (trust.relaySockets.has(request.socket))
+      response.setHeader("Strict-Transport-Security", "max-age=31536000");
     let requestAuth: RequestAuth | undefined;
     if (auth !== undefined) {
       const admission = await auth.gate(request, response, pathname);
@@ -642,6 +659,16 @@ const server = createServer((request, response) => {
   });
 });
 
+const relay = new RemoteRelay(
+  data,
+  serviceOptions.relayHost,
+  accessTokens !== undefined,
+  server,
+  trust,
+);
+registerRelayRpc(rpc, accessTokens, () => listeningPort, relay);
+if (serviceOptions.relayEnabled) relay.start();
+
 const wss = createBrowserWebSocketServer();
 const sidebarBrowser = new SidebarBrowser({ profileDirectory: join(dataRoot, "sidebar-browser") });
 server.on("upgrade", (request, socket, head) => {
@@ -740,6 +767,7 @@ server.listen(Number(values.port), values.host, async () => {
 });
 
 async function shutdown(exitCode = 0): Promise<void> {
+  relay.close();
   shellReload?.close();
   accessTokens?.close();
   server.close();

@@ -5,7 +5,7 @@
  * Local access is stricter: any sign of forwarding makes a request non-local, even from a trusted
  * proxy, because a tunnel ending on the loopback interface is not this computer.
  */
-import { isIP } from "node:net";
+import { isIP, type Socket } from "node:net";
 import type { IncomingMessage } from "node:http";
 
 function normalizedAddress(address: string | undefined): string {
@@ -49,6 +49,7 @@ export function isLocalConnection(request: IncomingMessage): boolean {
 export class RequestTrust {
   private readonly proxies: ReadonlySet<string>;
   trustLoopback = false;
+  readonly relaySockets = new WeakMap<Socket, { address: string; origin: string }>();
 
   /** @param trustedProxies - comma-separated IP addresses of proxies allowed to set forwarding headers. */
   constructor(trustedProxies: string | undefined) {
@@ -69,6 +70,8 @@ export class RequestTrust {
 
   /** The address failed sign-ins are counted against. */
   clientAddress(request: IncomingMessage): string {
+    const relay = this.relaySockets.get(request.socket);
+    if (relay !== undefined) return relay.address;
     const forwarded = this.fromTrustedProxy(request)
       ? lastHeaderValue(request.headers["x-forwarded-for"])
       : undefined;
@@ -77,6 +80,7 @@ export class RequestTrust {
 
   /** Whether the browser reached this server over HTTPS, as far as can be trusted. */
   secure(request: IncomingMessage): boolean {
+    if (this.relaySockets.has(request.socket)) return true;
     return (
       this.fromTrustedProxy(request) &&
       lastHeaderValue(request.headers["x-forwarded-proto"]) === "https"
@@ -90,6 +94,8 @@ export class RequestTrust {
   sameOrigin(request: IncomingMessage): boolean {
     const origin = request.headers.origin;
     if (origin === undefined || origin === "null") return origin === undefined;
+    const relay = this.relaySockets.get(request.socket);
+    if (relay !== undefined) return origin === relay.origin;
     const forwardedHost = this.fromTrustedProxy(request)
       ? lastHeaderValue(request.headers["x-forwarded-host"])
       : undefined;

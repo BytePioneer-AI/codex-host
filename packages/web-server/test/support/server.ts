@@ -71,7 +71,17 @@ export async function startServer(
     ],
     {
       cwd: packedEntry ? dirname(packedEntry) : cwd,
-      env: { ...environment, HOME: data, ...tailscale?.environment, ...options.environment },
+      env: {
+        ...environment,
+        ...tailscale?.environment,
+        HOME: data,
+        CODEXHOST_DATA_DIR: join(data, "host"),
+        CODEX_HOME: join(data, "codex"),
+        CODEXHOST_CONSOLE_PORT: "4499",
+        SSH_CONNECTION: "smoke",
+        PATH: tailscale ? `${dirname(tailscale.command)}:/usr/bin:/bin` : "/usr/bin:/bin",
+        ...options.environment,
+      },
       stdio: ["ignore", "pipe", "pipe"],
     },
   );

@@ -13,7 +13,8 @@ import type { AccessTokenStore } from "./access-tokens.ts";
 import { signInDocument, type SignInNotice } from "./auth-page.ts";
 import { isLocalConnection, type RequestTrust } from "./request-trust.ts";
 
-const COOKIE = "codexhost_token";
+const cookieName = (secure: boolean): string =>
+  secure ? "__Host-codexhost_token" : "codexhost_token";
 const COOKIE_MAX_AGE_SECONDS = 31_536_000;
 const LOGIN_BODY_LIMIT_BYTES = 4096;
 const FAILURE_LIMIT = 10;
@@ -93,13 +94,14 @@ export class FailedSignInLimit {
 
 function presentedToken(
   request: IncomingMessage,
+  secure: boolean,
 ): { token: string; source: "bearer" | "cookie" } | undefined {
   const header = request.headers.authorization;
   if (typeof header === "string" && header.startsWith("Bearer "))
     return { token: header.slice("Bearer ".length).trim(), source: "bearer" };
   for (const part of (request.headers.cookie ?? "").split(";")) {
     const [name, ...rest] = part.trim().split("=");
-    if (name !== COOKIE) continue;
+    if (name !== cookieName(secure)) continue;
     try {
       return { token: decodeURIComponent(rest.join("=")), source: "cookie" };
     } catch {
@@ -127,7 +129,7 @@ export class AccessAuth {
 
   private cookie(request: IncomingMessage, value: string, maxAge: number): string {
     const secure = this.trust.secure(request) ? "; Secure" : "";
-    return `${COOKIE}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${String(maxAge)}${secure}`;
+    return `${cookieName(this.trust.secure(request))}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${String(maxAge)}${secure}`;
   }
 
   private signInPage(
@@ -164,7 +166,7 @@ export class AccessAuth {
     }
     if ((pathname === "/" || pathname === "/index.html") && this.exchange(request, response))
       return { handled: true };
-    const presented = presentedToken(request);
+    const presented = presentedToken(request, this.trust.secure(request));
     const credential =
       presented === undefined ? undefined : this.credentialFor(presented.token, request);
     if (credential !== undefined) {
@@ -195,7 +197,7 @@ export class AccessAuth {
    * @returns whether the upgrade may proceed; otherwise the socket has been answered and closed.
    */
   admitUpgrade(request: IncomingMessage, socket: Duplex): boolean {
-    const presented = presentedToken(request);
+    const presented = presentedToken(request, this.trust.secure(request));
     const credential =
       presented === undefined ? undefined : this.credentialFor(presented.token, request);
     if (credential !== undefined) {

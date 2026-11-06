@@ -11,6 +11,7 @@
 | [同一 Wi-Fi](#同一-wi-fi) | 在家或办公室，临时连接 | 无 | 否（HTTP） | 同一网络的设备 | 页面点击启用 |
 | [Tailscale HTTPS](#tailscale-https推荐) | 只有自己的设备，跨网络使用（推荐） | 手机和电脑都装 Tailscale | 是 | tailnet 策略允许的设备 | 页面点击启用 |
 | [Tailscale IP](#tailscale-ip) | 已有 Tailscale，暂未开启 HTTPS | 手机和电脑都装 Tailscale | Tailscale 网络加密，Web 本身是 HTTP | tailnet 策略允许的设备 | 页面点击启用 |
+| [Relay 中转](#relay-中转) | 跨网络使用，手机不装 App | 自备 Relay 和电脑端证书 | 是，TLS 在电脑上解开 | 互联网上的任何人 | `--relay` + 页面开关 |
 | [Cloudflare Tunnel](#cloudflare-tunnel) | 有 Cloudflare 域名，手机不想装 App | 域名、`cloudflared` | 是 | 互联网上的任何人 | 命令行 |
 | [Tailscale Funnel](#tailscale-funnel) | 手机不装 Tailscale，也没有域名 | 电脑装 Tailscale，策略允许 Funnel | 是 | 互联网上的任何人 | 命令行 |
 | [nginx](#nginx) | 已有证书和反向代理 | nginx、域名、证书 | 是 | 取决于 DNS 和防火墙 | 配置文件 |
@@ -40,7 +41,7 @@
 
 在这台电脑上打开“设置 → 连接设备”，选择连接方式后用手机相机扫码，或点“复制链接”发到手机。二维码和复制的链接都包含令牌，页面上不显示完整令牌。
 
-选择方式、切换地址、打开页面和刷新状态都不会改变网络配置，只有点击“启用并显示二维码”才会。
+选择方式、切换地址、打开页面和刷新状态都不会改变网络配置。IP / Tailscale HTTPS 通过“启用并显示二维码”开启；中转通过独立开关开启。
 
 ### 同一 Wi-Fi
 
@@ -86,6 +87,19 @@ macOS 只安装了 App 时，命令位于 `/Applications/Tailscale.app/Contents/
 选中 Tailscale 且检测到 Tailscale IP 时，可以切换到“IP”。地址形如 `100.x.x.x:4400`，手机同样要开着 Tailscale。首次使用的启用步骤和同一 Wi-Fi 相同。
 
 Web 本身走 HTTP，由 Tailscale 网络加密传输。能开启 HTTPS 时优先用 HTTPS。
+
+### Relay 中转
+
+电脑主动连接 Relay，手机通过 `https://<id>.<中转域名>/` 访问，不需要安装额外 App。Relay 转发加密字节，TLS 在电脑上的 Web 进程解开，不新开本地监听端口。
+
+- 安装版用 `codexhost web --relay <控制主机名>` 保存控制地址；传 `--relay ""` 清除。配置变更按其他启动选项重启 Web。源码预览用 `npm start web -- --relay <控制主机名>`，同样保存中转地址。
+- 没有内置官方地址。配置后，本机“连接设备”页才显示中转开关。开关默认关闭，状态保存为 `service.json` 的 `relayEnabled`；切换即时生效，不重启 Web 或 Host。`--no-auth` 时不会连接，也不能开启。
+- 状态包括关闭、连接中、已连接、缺少证书和已停止。开关后页面刷新，也可手动“刷新状态”；只有已连接地址参与二维码选择。
+- 首次开启生成 `<web-data>/remote-relay/identity.pem`（Ed25519 PKCS#8，权限 0600）。地址由公钥派生，重启、更新沿用同一文件。不要分享私钥；文件丢失或删除后重新开启会得到新地址，旧地址无法找回。
+- 电脑端从同目录读取 `certificate.pem` 与 `certificate-key.pem`，开启时读取一次。**自动证书申请和续期尚未实现**；缺少可用证书时仍注册，但关闭手机连接。当前自动化验收使用测试 CA，不代表真实手机已可使用。
+- 出站默认为 WSS 443。`HTTPS_PROXY`（或 `https_proxy`）为 `http://` 代理时使用 CONNECT，仍校验控制地址的 TLS 证书。暂不支持 `NO_PROXY`、SOCKS 和代理认证。
+- 连接尝试（含 DNS、CONNECT、TLS、升级及注册）限时 30 秒；60 秒未收到 WebSocket ping 则断开重连。退避从 1 秒倍增到 60 秒，每次随机取上限的 50%–100%；注册稳定 60 秒后重置退避。被替换、签名被拒、版本不支持时停止，不自动争抢身份；处理原因后关闭再打开开关或重启 Web。
+- 中转请求始终是非本机 HTTPS；忽略 `x-forwarded-*`，按 Relay 告知的手机 IP 限速。Origin 必须完整匹配该电脑的 HTTPS 来源。响应含 `Strict-Transport-Security: max-age=31536000`，不包含子域；只协商 HTTP/1.1，不宣告 HTTP/3 或 ECH。
 
 ## 使用自己的域名或隧道
 
@@ -314,8 +328,8 @@ Serve 生效期间，其他回环代理也会被信任，不要把它当成隧�
 
 - **`--public-url`：** 只接受 `http`、`https` 的根地址（可带端口和结尾 `/`），不允许用户信息、路径、查询或片段，无效值使启动失败。HTTP 可用，但以明文传输。它只用于链接和二维码，不会成为可信代理、同源白名单或本机访问。
 - **参数来源：** 后台 Web 读取保存的设置，不沿用 Web 环境变量。源码入口 `npm start web -- --public-url ...`、`node preview.mjs --public-url ...` 和直接入口 `node app/server.mjs --public-url ...` 支持参数或 `CODEXHOST_WEB_PUBLIC_URL`，命令行优先；preview 在清理环境前把环境变量转成参数。`--trusted-proxy` 接受逗号分隔的多个 IP；直接入口也接受 `CODEXHOST_WEB_TRUSTED_PROXIES`，preview 使用命令行参数。
-- **页面默认选择：** 公开地址、Funnel、Serve HTTPS，其次局域网、Tailscale IP、虚拟网卡。没有可用入口时优先预览局域网候选地址，否则显示 HTTPS 设置。同一方式有多个地址时提供下拉选择。
-- **终端地址顺序：** 公开地址、Funnel、Serve HTTPS、Tailscale IP、局域网；只有没有其他地址时才显示虚拟网卡。
+- **页面默认选择：** 公开地址、已连接的中转地址、Funnel、Serve HTTPS、Tailscale IP、局域网、虚拟网卡。没有可用入口时优先预览局域网候选地址，否则显示 HTTPS 设置。同一方式有多个地址时提供下拉选择。
+- **终端地址顺序：** 公开地址、启动输出时已连接的中转地址、Funnel、Serve HTTPS、Tailscale IP、局域网；只有没有其他地址时才显示虚拟网卡。
 - **候选地址：** 后台 Web 首次只监听本机，`directCandidates` 提供网卡候选地址供预览，与已配置入口 `networkUrls` 分开。
 
 ### 启动输出
@@ -332,6 +346,10 @@ Serve 生效期间，其他回环代理也会被信任，不要把它当成隧�
 - **本机判断：** 经 Serve 的请求不算本机访问。经代理或其他设备的请求不能开关 Serve，判断方式与查看令牌相同。
 - **端口：** 非 443 HTTPS 端口也会识别，例如 `https://host:8443/`；443 地址省略端口。
 
+### 浏览器隔离
+
+所有入口的页面带 `Content-Security-Policy: frame-ancestors 'self'`，拒绝跨来源嵌入。HTTPS 登录使用 `__Host-codexhost_token`，属性为 Secure、HttpOnly、SameSite=Lax、Path=/，不设置 Domain；HTTP 使用 `codexhost_token`。读取时只认对应协议的名字，不兼容旧 HTTPS Cookie，升级后 HTTPS 入口需重新登录一次。
+
 ### 重连探测
 
 重连期间探测 `/api/auth/status`，每次最多 5 秒。401 回登录页；200 清除“电脑离线”；连续两个失败的探测窗口（约 10 秒，包括网络错误、超时和 502 等非 200/401 状态）后提示电脑离线并提供重试。
@@ -342,6 +360,7 @@ Serve 生效期间，其他回环代理也会被信任，不要把它当成隧�
 | --- | --- |
 | 同一 Wi-Fi、Tailscale IP | 只有 Playwright 覆盖页面流程，未单独记录真实设备连接。 |
 | Tailscale Serve / Funnel | 用户实测 Tailscale 访问正常，未分平台记录。真实 Tailscale 1.104.1 只读检测覆盖已转发、被占用、只装 App、未安装。未运行、未登录、未开启 HTTPS 和 Funnel 只由假 CLI 自动化覆盖。真实转发头未单独核对，切网、锁屏和电脑离线后恢复未单独记录。 |
+| Relay 中转 | 本机真实 Relay + 测试 CA 覆盖注册、重连、代理、TLS 登录 / RPC / WebSocket、限速隔离及大下载并发；Playwright 覆盖开关、状态、地址顺序和手机布局。未验证公网 443、真实 CA 或 iOS/Android。 |
 | nginx | **未实际运行：** 本地未安装 nginx。示例的证书、TLS、WebSocket 和事件流需由部署者验证。 |
 | frp | **未实际运行：** 本地未安装 frpc/frps。公网端口、证书和完整链路需由部署者验证。 |
 | Cloudflare Tunnel | **未实际运行：** 没有配置 Tunnel、域名或凭据，创建和启动命令也未执行。 |

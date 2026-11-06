@@ -422,7 +422,9 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
             "--host-runtime" => host = Some(path),
             "--web-runtime" => web = Some(path),
             "--data" if action == "stop-for-update" || action == "web" => data = Some(path),
-            "--host" | "--port" | "--public-url" | "--trusted-proxy" if action == "web" => {
+            "--host" | "--port" | "--public-url" | "--trusted-proxy" | "--relay"
+                if action == "web" =>
+            {
                 settings.extend([option.clone(), value.clone()])
             }
             _ => return Err(format!("Unknown {action} option: {option}").into()),

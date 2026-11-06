@@ -18,6 +18,7 @@
     "@codexhost/desktop-control": "0.0.0",
     "@codexhost/dsh-web-backend": "0.0.0",
     "@codexhost/harness-discovery": "0.0.0",
+    "@codexhost/remote-relay": "0.0.0",
     "@codexhost/session-runtime": "0.0.0",
     "@codexhost/shared-contracts": "0.0.0",
     "@deepseek-ai/dsh-file-reference": "*",

@@ -42,7 +42,7 @@ setTimeout(() => process.stdout.write(fixture.raw ?? JSON.stringify(args === "st
     command,
     log,
     set,
-    environment: { PATH: `${directory}:${process.env.PATH ?? ""}` },
+    environment: { PATH: `${directory}:/usr/bin:/bin` },
   };
 }
 

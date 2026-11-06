@@ -15,7 +15,7 @@ codexhost stop
 
 `codexhost web` 确保 Host 和 Web 在后台运行，输出本机登录链接并打开浏览器；SSH 或无图形界面时只输出链接。`codexhost` 打开 Desktop，同时在后台拉起 Web；未安装 Desktop 时说明原因并改为打开 Web。`CODEXHOST_WEB_SERVICE=0` 禁用 `codexhost` 随启动拉起 Web 的行为。关闭终端、GUI 或浏览器不停止后台服务，电脑休眠时手机仍无法连接。
 
-首次后台启动默认监听 `127.0.0.1:4400`。`codexhost web` 的 `--host`、`--port`、`--public-url`、`--trusted-proxy` 经 Web 校验后保存在 `<web-data>/service.json`，后续启动沿用；传空字符串清除对应选项，无效值不覆盖保存内容。选项变化只重启 Web，Host 任务不受影响，Web 终端会断开。本机连接设备页也提供首次启用设备访问和启动设置，见[远程访问](web-remote-access.md)。
+首次后台启动默认监听 `127.0.0.1:4400`。`codexhost web` 的 `--host`、`--port`、`--public-url`、`--trusted-proxy`、`--relay` 经 Web 处理后保存在 `<web-data>/service.json`，后续启动沿用；传空字符串清除对应选项，无效值不覆盖保存内容。选项变化只重启 Web，Host 任务不受影响，Web 终端会断开。本机连接设备页也提供首次启用设备访问和启动设置，见[远程访问](web-remote-access.md)。
 
 版本、安装位置及选项一致时复用服务。`codexhost` 或 `codexhost web` 发现 Host 或 Web 的版本、运行入口不一致时切换为当前安装；Host 被替换会中断任务并输出任务数，会话记录保留，任务不自动续跑。后台 Web 就绪后崩溃会退避重启，启动阶段失败不重试。`codexhost status` 只读显示 Host/Web 状态与版本、不含 token 的 Web 地址、最近失败原因和自启状态，不启动服务。
 
@@ -107,15 +107,17 @@ macOS 或 npm 卸载前，先运行 `codexhost stop` 和 `codexhost autostart of
 
 **本机令牌：** 保存在 `auth.json`，不在界面中展示，不随重新生成改变，只用于启动输出第一行的本机链接（`?token=`），`--token` 只设置它。令牌文件权限均为 `0600`（Windows 上依赖用户目录权限）。
 
-**登录：** 未登录的页面请求返回登录页，可手动输入令牌，也可打开 `#token=<token>` 链接；页面读取后立即从地址栏移除，所以访问令牌不会出现在请求 URL 或代理日志中。已登录时打开带当前令牌的链接会切换到该令牌。登录成功后写入 HttpOnly、SameSite=Lax 的 Cookie，经可信代理的 HTTPS 访问时带 Secure；原生客户端可用 `Authorization: Bearer`。`?token=` 只接受本机令牌。
+**登录：** 未登录的页面请求返回登录页，可手动输入令牌，也可打开 `#token=<token>` 链接；页面读取后立即从地址栏移除，所以访问令牌不会出现在请求 URL 或代理日志中。已登录时打开带当前令牌的链接会切换到该令牌。登录成功后写入 HttpOnly、SameSite=Lax 的 Cookie，HTTPS 访问（可信代理或中转）使用 `__Host-codexhost_token` 并带 Secure、Path=/、无 Domain，HTTP 使用 `codexhost_token`，只读取当前协议对应的名字；已有 HTTPS 登录升级后需重新登录一次；原生客户端可用 `Authorization: Bearer`。`?token=` 只接受本机令牌。
 
 **本机访问：** 同时满足以下条件才算：已通过令牌登录；连接来自回环地址；`Host` 为 `127.0.0.1:<监听端口>` 或 `localhost:<监听端口>`；请求不带 `Forwarded` 和任何 `x-forwarded-*` 头。本机令牌在其他入口一律按无效处理。这个判断用于防止手机上误操作，不是严格的安全边界：`ssh -L` 等保留本机 `Host` 的转发无法区分，令牌持有者也可以通过终端读取本机令牌文件。只监听某个具体网卡地址时，这些条件无法满足，因此无法查看令牌，启动输出会说明。
 
 Codex Desktop 的 codexhost 设置“远程连接”页顶部提供“手机和其他设备（Web）”区块及“打开连接设备页”按钮：手机或其他设备通过浏览器连接这台电脑，这台电脑需要保持开机和联网。下方“其他电脑（SSH）”则由这台电脑连接另一台 Mac 或 Linux 电脑。按钮通过本机 Host 调用当前安装的 Launcher `codexhost web --connect-devices`，确保后台 Web 运行，并在浏览器中直接打开“设置 → 连接设备”。开发构建保留按钮，但点击时提示 `Background Web is unavailable in a development build; run npm start web`，不运行 Launcher。`--connect-devices` 只在浏览器登录链接后添加 `#connect-devices`，不改变终端输出的登录链接或就绪记录。页面打开设置后清除该 hash，刷新不再弹出；不带开关的 `codexhost web` 仍打开首页。即使当前选择远程 Host，按钮仍只调用本机 Host；本机 Host 不可用时显示错误，不在远程机器打开浏览器。Console 不提供此入口。
 
-**连接设备：** Web 设置的“连接设备”分区在所有访问方式下都显示。本机访问时可选择连接方式，已有入口直接显示二维码和可复制的链接；首次 IP 或 HTTPS 访问通过“启用并显示二维码”准备。页面下方直接提供令牌管理、启动设置和停止设备访问；非本机访问时只显示提示和退出登录，`codexhost/accessTokenGet`、`accessTokenRegenerate` 返回 `auth/local-access-required`；`--no-auth` 时返回 `auth/disabled`。地址默认依次选择配置的公开地址、Funnel、Serve HTTPS（打开页面时用 `tailscale serve status` 检测已转发到当前端口的配置，不会修改 Serve），其次是局域网和 Tailscale IP；次要入口折叠在“其他连接方式”中，启动输出也只在没有其他地址时才列出它们。没有命令行管理入口。
+**连接设备：** Web 设置的“连接设备”分区在所有访问方式下都显示。本机访问时可选择连接方式，已有入口直接显示二维码和可复制的链接；首次 IP 或 HTTPS 访问通过“启用并显示二维码”准备。页面下方直接提供令牌管理、启动设置和停止设备访问；非本机访问时只显示提示和退出登录，`codexhost/accessTokenGet`、`accessTokenRegenerate` 返回 `auth/local-access-required`；`--no-auth` 时返回 `auth/disabled`。地址默认依次选择配置的公开地址、已连接的中转地址、Funnel、Serve HTTPS（打开页面时用 `tailscale serve status` 检测已转发到当前端口的配置，不会修改 Serve），其次是 Tailscale IP 和局域网；次要入口折叠在“其他连接方式”中，启动输出也只在没有其他地址时才列出它们。没有命令行管理入口。
 
 **远程地址与诊断：** 配置 `--public-url` 或 `CODEXHOST_WEB_PUBLIC_URL` 时，公开地址优先于 Funnel、Serve HTTPS 和网卡地址；只接受无用户信息、路径、查询和片段的 HTTP(S) 根地址，HTTP 以明文传输。`npm start web` 和 `preview.mjs` 会传递该值，但不据此增加可信代理或同源白名单。连接设备页读取 Tailscale 状态、占用目标及读取错误；本机用户点击启用后配置 Serve，“停止设备访问”确认后关闭；开启前重新确认根路径未占用，关闭只移除指向当前 Web 的根路径，结果以重新读取的状态为准。Funnel 标明互联网公开，仍需 token。启动第一行不变，其后读取并输出 Serve/Funnel 地址，检测最多 3 秒。Serve 配置在 Web 退出后保留，占用同端口的其他程序也会被转发。各方式的 TLS、代理和验证边界见[Web 远程访问](web-remote-access.md)。
+
+**中转入口：** `--relay <控制主机名>` 指定 Relay，保存在 `service.json` 的 `relayHost`，传空值清除；源码和 preview 入口也支持此选项。不配置时不显示开关，不内置官方地址。本机通过 `codexhost/relaySet` 保存 `relayEnabled` 并即时启停，不重启 Web / Host；`--no-auth` 拒绝开启。首次开启生成 `<web-data>/remote-relay/identity.pem`（0600），重启和更新沿用；丢失后地址无法恢复。证书读取同目录的 `certificate.pem`、`certificate-key.pem`，自动申请和续期尚待实现；缺证书仍注册但不接受手机连接。支持 `HTTPS_PROXY` / `https_proxy` 的 HTTP CONNECT，详情见[中转访问](web-remote-access.md#relay-中转)。
 
 **退出登录：** 只在非本机页面提供，确认后取消这个浏览器的推送订阅并清除 Cookie（`POST /api/auth/logout`，需同源），令牌和其他设备不受影响。重新登录要在电脑上查看令牌。
 
@@ -132,6 +134,8 @@ Codex Desktop 的 codexhost 设置“远程连接”页顶部提供“手机和�
 **Serve 推导的可信代理：** 除显式列表外，检测到 HTTPS 根路径转发至当前 Web 时也信任回环地址上的转发头；启动、连接设备页读取和每 30 秒的 Serve 检测刷新该状态，撤销后约 30 秒恢复默认忽略。未启用认证或监听具体非回环网卡时不检测。该信任不改变本机访问条件。
 
 **失败限速：** 携带无效令牌的请求按客户端地址计数，同一地址一分钟内失败 10 次后，该地址接下来一分钟内的登录和无效令牌请求返回 429。携带有效令牌的请求和公开静态资源不受影响，尚未登录（未携带令牌）也不计入。经代理访问但未配置可信代理时，所有用户共用一个地址，一人连续输错会影响其他人新登录，已登录设备不受影响。无效 Cookie 在响应中被清除，避免反复计入。
+
+**页面隔离：** 所有入口页面带 `Content-Security-Policy: frame-ancestors 'self'`。中转请求按非本机 HTTPS 处理，忽略转发头，按 Relay 提供的手机 IP 限速并完整比较 HTTPS Origin；响应带仅限本子域的 HSTS。
 
 **用户文件：** 所有响应带 `X-Content-Type-Options: nosniff`。`GET/HEAD /api/file` 只返回 PNG/JPEG/WebP/GIF 栅格图片，按文件内容判断，HTML 和 SVG 一律拒绝。HTML 预览运行在 `sandbox="allow-scripts"` 的不透明来源 iframe 中，无法读取 Cookie 或调用 Web 接口。
 

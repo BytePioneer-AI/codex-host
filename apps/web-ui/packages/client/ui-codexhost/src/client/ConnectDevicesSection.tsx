@@ -9,6 +9,7 @@ import {
 import { accessTokenApi, ApiError } from "./api.ts";
 import { signOut } from "./auth-watch.ts";
 import { AutostartControl, useDirectRestart } from "./BackgroundControls.tsx";
+import { RelayControl } from "./RelayControl.tsx";
 import { ConnectionCard } from "./ConnectionCard.tsx";
 import css from "./ConnectDevicesSection.module.css";
 
@@ -192,6 +193,10 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
   };
   const stop = async () => {
     let data = await refresh();
+    if (data.relay !== undefined && data.relay.state.status !== "off") {
+      await accessTokenApi.relay(false);
+      data = await refresh();
+    }
     const removed = new Set<string>();
     // Several HTTPS ports can forward here. Each API call rechecks ownership and removes one root.
     while (data.tailscale.status === "serving") {
@@ -229,7 +234,10 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
   const { data } = view;
   const { secret, lastUsedAt, networkUrls, tailscale, background } = data;
   const active = networkUrls.length > 0 || background?.lan === true;
-  const canStop = background?.lan === true || tailscale.status === "serving";
+  const canStop =
+    background?.lan === true ||
+    tailscale.status === "serving" ||
+    (data.relay !== undefined && data.relay.state.status !== "off");
   const unmanaged = networkUrls.some(
     (entry) =>
       entry.kind === "public" ||
@@ -272,6 +280,24 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
         </p>
       )}
       <section className={css.manage}>
+        {data.relay !== undefined && (
+          <RelayControl
+            relay={data.relay}
+            busy={working}
+            t={t}
+            onChange={(enabled) => {
+              void run(async () => {
+                await accessTokenApi.relay(enabled);
+                await refresh();
+              });
+            }}
+            onRefresh={() => {
+              void run(async () => {
+                await refresh();
+              });
+            }}
+          />
+        )}
         <div className={css.manageRow}>
           <div className={css.manageText}>
             <span className={css.manageTitle}>{t("connectDevices.tokenTitle")}</span>

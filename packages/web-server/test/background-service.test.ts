@@ -22,7 +22,11 @@ function fixture(t: test.TestContext): DataDir {
 
 test("background settings default to loopback and preserve saved values on invalid input", (t) => {
   const data = fixture(t);
-  assert.deepEqual(readServiceOptions(data), { host: "127.0.0.1", port: 4400 });
+  assert.deepEqual(readServiceOptions(data), {
+    host: "127.0.0.1",
+    port: 4400,
+    relayEnabled: false,
+  });
   assert.equal(saveServiceOptions(data, { port: "4400" }), false);
   assert.equal(existsSync(data.path("service.json")), false);
   data.writeJson("service.json", { port: 4400 });
@@ -47,9 +51,17 @@ test("background settings default to loopback and preserve saved values on inval
     assert.equal(readFileSync(data.path("service.json"), "utf8"), bytes);
   }
   saveServiceOptions(data, { host: "", port: "", "public-url": "", "trusted-proxy": "" });
-  assert.deepEqual(readServiceOptions(data), { host: "127.0.0.1", port: 4400 });
+  assert.deepEqual(readServiceOptions(data), {
+    host: "127.0.0.1",
+    port: 4400,
+    relayEnabled: false,
+  });
   data.writeJson("service.json", { port: 4501, futureField: true });
-  assert.deepEqual(readServiceOptions(data), { host: "127.0.0.1", port: 4501 });
+  assert.deepEqual(readServiceOptions(data), {
+    host: "127.0.0.1",
+    port: 4501,
+    relayEnabled: false,
+  });
 });
 
 test("one-shot save reports changed, unchanged and invalid options without starting services", (t) => {

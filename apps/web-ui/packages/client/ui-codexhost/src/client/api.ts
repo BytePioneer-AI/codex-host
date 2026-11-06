@@ -9,6 +9,7 @@ import {
   webAccessStateSchema,
   webServeResultSchema,
   webAutostartStateSchema,
+  webRelayStateSchema,
   type HarnessSessionImportCandidate,
   type HarnessSessionImportSourcesResult,
   type HarnessSessionListParams,
@@ -188,6 +189,8 @@ async function captureOnce(
 }
 
 export const accessTokenApi = {
+  relay: async (enabled: boolean) =>
+    webRelayStateSchema.parse(await call<unknown>("codexhost/relaySet", { enabled })),
   lan: (enabled: boolean) => call<{ changed: boolean }>("codexhost/lanSet", { enabled }),
   autostart: async (enabled: boolean) =>
     webAutostartStateSchema.parse(await call<unknown>("codexhost/autostartSet", { enabled })),

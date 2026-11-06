@@ -94,6 +94,14 @@ it("forwards public URL from the option or environment, with the option taking p
   }
 });
 
+it("forwards the explicit relay option, including clearing it, without a default", () => {
+  assert.equal(previewLaunch("/packed", {}, {}).args.includes("--relay"), false);
+  for (const relay of ["control.example", ""]) {
+    const { args } = previewLaunch("/packed", { relay }, {});
+    assert.equal(args[args.indexOf("--relay") + 1], relay);
+  }
+});
+
 it("forwards safe mode without changing authentication or requesting a Host restart", () => {
   assert.equal(previewLaunch("/packed", {}, {}).args.includes("--safe-mode"), false);
   const { args } = previewLaunch("/packed", { "safe-mode": true }, {});

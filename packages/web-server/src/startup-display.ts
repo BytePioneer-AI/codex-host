@@ -3,6 +3,7 @@ import type { WebNetworkAccessUrl } from "@codexhost/shared-contracts";
 
 const KIND_LABEL: Record<WebNetworkAccessUrl["kind"], string> = {
   public: "Public",
+  relay: "Relay",
   "tailscale-funnel": "Funnel (public)",
   "tailscale-https": "Tailscale HTTPS",
   tailscale: "Tailscale",

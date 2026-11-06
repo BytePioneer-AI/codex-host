@@ -19,6 +19,8 @@ export function RelayControl({
 }): ReactNode {
   const { state, identityPath } = relay;
   const certificate = "certificate" in state ? state.certificate : undefined;
+  // The first certificate is a normal step after registering, not a missing-file problem.
+  const firstIssue = state.status === "missing-certificate" && certificate?.issuing === true;
   return (
     <div className={css.manageRow} data-relay-status={state.status}>
       <div className={css.manageText}>
@@ -27,7 +29,9 @@ export function RelayControl({
           {t(
             state.status === "stopped"
               ? `connectDevices.relay.${state.reason}`
-              : `connectDevices.relay.${state.status}`,
+              : firstIssue
+                ? "connectDevices.relay.first-issue"
+                : `connectDevices.relay.${state.status}`,
           )}
         </span>
         {(state.status === "connected" || state.status === "missing-certificate") && (
@@ -40,7 +44,7 @@ export function RelayControl({
             })}
           </span>
         )}
-        {certificate?.issuing && (
+        {certificate?.issuing && !firstIssue && (
           <span className={css.notice} role="status">
             {t("connectDevices.relay.issuing")}
           </span>

@@ -150,10 +150,12 @@ export const en = {
   "connectDevices.relay.hint":
     "Connect across networks without an extra phone app. An access token is required.",
   "connectDevices.relay.off": "Off",
-  "connectDevices.relay.connecting": "Connecting… Refresh to check progress.",
+  "connectDevices.relay.connecting": "Connecting…",
   "connectDevices.relay.connected": "Connected",
   "connectDevices.relay.expires": "Certificate valid until {date}",
   "connectDevices.relay.issuing": "Requesting a certificate…",
+  "connectDevices.relay.first-issue":
+    "Registered. Requesting a certificate, which usually takes under a minute.",
   "connectDevices.relay.unreachable": "The certificate authority could not be reached.",
   "connectDevices.relay.retry": "Next attempt: {date}",
   "connectDevices.relay.paused":
@@ -519,10 +521,11 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.relay.title": "中转访问",
   "connectDevices.relay.hint": "跨网络连接，手机无需额外安装应用，登录需要访问令牌。",
   "connectDevices.relay.off": "已关闭",
-  "connectDevices.relay.connecting": "连接中… 可刷新查看进度。",
+  "connectDevices.relay.connecting": "连接中…",
   "connectDevices.relay.connected": "已连接",
   "connectDevices.relay.expires": "证书有效期至 {date}",
   "connectDevices.relay.issuing": "正在申请证书",
+  "connectDevices.relay.first-issue": "已注册，正在申请证书，通常一分钟内完成。",
   "connectDevices.relay.unreachable": "无法连接证书机构。",
   "connectDevices.relay.retry": "下次重试时间：{date}",
   "connectDevices.relay.paused": "证书申请已暂停。请修复问题后关闭再打开中转访问。",

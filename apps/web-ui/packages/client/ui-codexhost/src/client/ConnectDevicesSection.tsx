@@ -155,6 +155,18 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
       cancelled = true;
     };
   }, []);
+  const relayState = view.kind === "ready" ? view.data.relay?.state : undefined;
+  const relaySettling =
+    relayState?.status === "connecting" ||
+    (relayState !== undefined && "certificate" in relayState && relayState.certificate.issuing);
+  useEffect(() => {
+    if (!relaySettling) return;
+    // Registration and certificate issuance finish in the background; follow them until they settle.
+    const timer = setTimeout(() => {
+      void accessTokenApi.get().then(restored, () => undefined);
+    }, 2_000);
+    return () => clearTimeout(timer);
+  }, [relaySettling, view, restored]);
   const refresh = async (): Promise<WebAccessState> => {
     const data = await accessTokenApi.get();
     restored(data);

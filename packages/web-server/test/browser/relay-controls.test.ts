@@ -148,7 +148,14 @@ it(
             ),
           );
         }
-        if (phase === "issuing") assert.ok(text?.includes("Requesting a certificate…"));
+        if (phase === "issuing")
+          assert.ok(
+            text?.includes(
+              status === "connected"
+                ? "Requesting a certificate…"
+                : "Registered. Requesting a certificate, which usually takes under a minute.",
+            ),
+          );
         if (phase === "failed" || phase === "paused") assert.ok(text?.includes(detail));
         if (phase === "failed") {
           assert.ok(text?.includes("Next attempt:"));
@@ -199,7 +206,7 @@ it(
         {
           status: "missing-certificate",
           url: "https://computer.relay.test/",
-          certificate: { issuing: true },
+          certificate: { issuing: false },
         },
         "certificate is missing",
       ],
@@ -246,5 +253,45 @@ it(
     shown = { ...base, relay: undefined };
     await open(f.page, f.login);
     assert.equal(await f.page.getByRole("switch", { name: "Relay access" }).count(), 0);
+  },
+);
+
+it(
+  "follows registration and first issuance until the state settles",
+  { timeout: 60_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const base = await f.access();
+    const identityPath = defined(base.relay).identityPath;
+    const url = "https://computer.relay.test/";
+    const states: WebRelayState[] = [
+      { status: "connecting" },
+      { status: "missing-certificate", url, certificate: { issuing: true } },
+      {
+        status: "connected",
+        url,
+        certificate: { issuing: false, expiresAt: "2027-01-01T00:00:00Z" },
+      },
+    ];
+    let reads = 0;
+    await f.page.route("**/api/codexhost/accessTokenGet", (route) => {
+      const state = defined(states[Math.min(reads++, states.length - 1)]);
+      return route.fulfill({
+        json: { result: { ok: true, value: { ...base, relay: { identityPath, state } } } },
+      });
+    });
+    await open(f.page, f.login);
+    const control = f.page.locator("[data-relay-status]");
+    await f.page.locator('[data-relay-status="missing-certificate"]').waitFor();
+    assert.ok(
+      (await control.textContent())?.includes(
+        "Registered. Requesting a certificate, which usually takes under a minute.",
+      ),
+    );
+    assert.ok(!(await control.textContent())?.includes("certificate is missing"));
+    await f.page.locator('[data-relay-status="connected"]').waitFor();
+    const settled = reads;
+    await f.page.waitForTimeout(5_000);
+    assert.equal(reads, settled);
   },
 );

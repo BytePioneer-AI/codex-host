@@ -46,7 +46,7 @@ kill -HUP <relay-pid>
 
 ## 协议与限制
 
-协议导出为 `@codexhost/remote-relay/protocol`，完整契约见 [design.md](../../openspec/changes/add-remote-relay-server/design.md)。
+协议导出为 `@codexhost/remote-relay/protocol`，完整契约见 [design.md](../../openspec/changes/archive/2026-11-06-add-remote-relay-server/design.md)。
 
 - Ed25519 公钥的 SHA-256 前 16 字节编码为 26 位小写 base32 ID。
 - 每个控制连接一次 32 字节挑战，签名绑定小写、无端口、无末尾点的控制主机名。注册前不转发手机；无效签名、10 秒注册超时、同 ID 替换分别发送关闭码 `4401`、`4408`、`4409`。

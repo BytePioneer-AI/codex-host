@@ -18,7 +18,7 @@ Web SHALL 只有一个供其他设备登录的访问 token，它 MUST 由系统�
 - **THEN** 两台设备都能访问，不需要额外确认
 
 ### Requirement: 登录方式
-所有入口 SHALL 使用同一套登录。未登录的页面请求 SHALL 返回登录页，用户可手动输入 token。链接 SHALL 用 URL fragment（`#token=<token>`）携带 token，页面读取后 MUST 从地址栏移除。登录成功后 SHALL 写入 HttpOnly、SameSite=Lax 的 Cookie 记住登录，通过 HTTPS 访问时 MUST 带 Secure。
+所有入口 SHALL 使用同一套登录。未登录的页面请求 SHALL 返回登录页，用户可手动输入 token。链接 SHALL 用 URL fragment（`#token=<token>`）携带 token，页面读取后 MUST 从地址栏移除。登录成功后 SHALL 写入 HttpOnly、SameSite=Lax 的 Cookie 记住登录。通过 HTTPS 访问时，Cookie MUST 带 Secure，并使用 `__Host-` 前缀的名字（Path 为 `/`，不设置 Domain）；通过 HTTP 访问时使用不带前缀的名字。
 
 #### Scenario: 打开带 token 的链接
 - **WHEN** 手机打开 `https://example/#token=<有效 token>`
@@ -32,6 +32,10 @@ Web SHALL 只有一个供其他设备登录的访问 token，它 MUST 由系统�
 #### Scenario: token 无效
 - **WHEN** 用户提交无效 token
 - **THEN** 登录页显示错误，不写入 Cookie
+
+#### Scenario: 同一中转域名下的其他子域
+- **WHEN** 另一台电脑在同一中转域名下的子域，为父域名设置同名 Cookie
+- **THEN** 这台电脑的登录 Cookie 不被覆盖，因为 HTTPS 下使用的 `__Host-` 名字只能由本主机设置
 
 ### Requirement: 本机访问
 只有同时满足以下条件才 SHALL 算本机访问：已通过 token 登录；连接来自回环地址；`Host` 为 `127.0.0.1:<监听端口>` 或 `localhost:<监听端口>`；请求不带 `Forwarded` 和任何 `x-forwarded-*` 头。其他情况 MUST 按非本机处理，即使配置了可信代理。
@@ -103,11 +107,11 @@ Web 设置 SHALL 在所有访问方式下显示“连接设备”入口。本机
 
 #### Scenario: 选择连接地址
 - **WHEN** 这台电脑有多个可用地址
-- **THEN** 页面默认选中配置的公开地址，其次是已转发到当前端口的 Serve 或 Funnel HTTPS 地址，再次是 Tailscale 地址和局域网地址，并说明每种连接方式的适用范围
+- **THEN** 页面默认选中配置的公开地址，其次是已连接的中转地址，再次是已转发到当前端口的 Serve 或 Funnel HTTPS 地址，然后是 Tailscale 地址和局域网地址，并说明每种连接方式的适用范围
 - **AND** 虚拟机和容器网卡的地址折叠在“其他地址”中，仍可手动选择；启动输出只在没有其他地址时才列出它们
 
 #### Scenario: 没有可用地址
-- **WHEN** Web 只监听本机，也没有 Serve 转发或公开地址
+- **WHEN** Web 只监听本机，也没有 Serve 转发、已连接的中转或公开地址
 - **THEN** 页面说明如何允许其他设备访问，并显示可复制的 token
 
 #### Scenario: 确认重新生成
@@ -175,7 +179,7 @@ Web Push 订阅 SHALL 关联到创建它的 token。启用认证后，没有归�
 - **THEN** 该设备的订阅关联到新 token，并继续收到通知
 
 ### Requirement: 对外监听
-`npm start web` 和 `preview.mjs` SHALL 默认监听 `0.0.0.0`，访问由 token 保护；`--host` 可以限定监听地址。对外监听时，启动输出和连接设备页的网络地址 MUST 不包含本机 token，并 SHALL 提示局域网 HTTP 为明文传输。
+`npm start web` 和 `preview.mjs` SHALL 默认监听 `0.0.0.0`，访问由 token 保护；`--host` 可以限定监听地址。发行版后台 Web SHALL 默认只监听 `127.0.0.1`，由用户开启后才对外。对外监听时，启动输出和连接设备页的网络地址 MUST 不包含本机 token，并 SHALL 提示局域网 HTTP 为明文传输。
 
 #### Scenario: 默认启动
 - **WHEN** 用户不带 `--host` 运行 `npm start web`
@@ -185,3 +189,7 @@ Web Push 订阅 SHALL 关联到创建它的 token。启用认证后，没有归�
 #### Scenario: 限定为本机
 - **WHEN** 用户以 `--host 127.0.0.1` 启动
 - **THEN** 局域网设备无法连接
+
+#### Scenario: 发行版默认
+- **WHEN** 用户第一次运行 `codexhost web`
+- **THEN** 局域网设备无法连接，直到用户开启直连或用 `--host` 指定

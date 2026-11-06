@@ -184,6 +184,31 @@ describe("source boundary checks", () => {
     expect(violations[0]).toContain("cross-package source import");
   });
 
+  it.each(["@codexhost/host-runtime", "@codexhost/web-server", "zod"])(
+    "rejects Remote Relay dependency '%s'",
+    (specifier) => {
+      expect(
+        findSourceBoundaryViolations({
+          filePath: "/repo/packages/remote-relay/src/index.ts",
+          packageRoot: "/repo/packages/remote-relay",
+          packagesDirectory,
+          sourceText: `import value from "${specifier}";`,
+        })[0],
+      ).toContain("Remote Relay can only import");
+    },
+  );
+
+  it("allows Remote Relay built-ins, ws and local modules", () => {
+    expect(
+      findSourceBoundaryViolations({
+        filePath: "/repo/packages/remote-relay/src/index.ts",
+        packageRoot: "/repo/packages/remote-relay",
+        packagesDirectory,
+        sourceText: 'import "node:http2"; import "ws"; import "./protocol.js";',
+      }),
+    ).toEqual([]);
+  });
+
   it("allows imports through public Workspace package names", () => {
     const violations = findSourceBoundaryViolations({
       filePath: "/repo/packages/protocol-core/src/index.ts",

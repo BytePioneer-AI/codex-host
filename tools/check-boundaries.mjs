@@ -112,6 +112,18 @@ export function findSourceBoundaryViolations({
       violations.push(`${filePath}: Shared Contracts cannot import '${specifier}'`);
     }
 
+    if (
+      isInside(filePath, resolve(packagesDirectory, "remote-relay", "src")) &&
+      !specifier.startsWith(".") &&
+      !isAbsolute(specifier) &&
+      !builtins.has(specifier.replace(/^node:/u, "")) &&
+      specifier !== "ws"
+    ) {
+      violations.push(
+        `${filePath}: Remote Relay can only import Node built-ins and 'ws', not '${specifier}'`,
+      );
+    }
+
     if (specifier.startsWith(".") || isAbsolute(specifier)) {
       const importedPath = resolve(dirname(filePath), specifier);
       if (isInside(importedPath, packagesDirectory) && !isInside(importedPath, packageRoot)) {

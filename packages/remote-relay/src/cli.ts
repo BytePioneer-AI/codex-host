@@ -11,6 +11,7 @@ const { values } = parseArgs({
     port: { type: "string", default: "443" },
     rate: { type: "string" },
     "daily-quota": { type: "string" },
+    "max-connections": { type: "string" },
   },
 });
 if (!values.domain || !values.cert || !values.key) {
@@ -23,5 +24,8 @@ const relay = createRelay({
   key: values.key,
   ...(values.rate === undefined ? {} : { rate: Number(values.rate) }),
   ...(values["daily-quota"] === undefined ? {} : { dailyQuota: Number(values["daily-quota"]) }),
+  ...(values["max-connections"] === undefined
+    ? {}
+    : { maxConnections: Number(values["max-connections"]) }),
 });
 relay.server.listen(Number(values.port));

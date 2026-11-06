@@ -68,6 +68,26 @@ it("registers with the real Relay, survives its restart, and stops when replaced
   assert.equal(a.attempts(), attempts);
 });
 
+it("retries after Relay reaches maxConnections and registers when capacity is released", async (t) => {
+  proxyEnvironment(t);
+  const relay = await startRelay(t, 25, { maxConnections: 1 });
+  const occupying = client(t, `localhost:${relay.port}`);
+  await until(() => occupying.registrations.length === 1);
+  const waiting = client(t, `localhost:${relay.port}`);
+  // connecting runs both when an attempt starts and when a failure schedules its retry.
+  await until(() => waiting.attempts() >= 4);
+  assert.equal(waiting.registrations.length, 0);
+  assert.deepEqual(waiting.stopped, []);
+  assert.equal(occupying.registrations.length, 1);
+  assert.equal(occupying.attempts(), 1);
+  assert.deepEqual(occupying.stopped, []);
+
+  occupying.close();
+  await until(() => waiting.registrations.length === 1);
+  assert.equal(waiting.registrations[0], `${deriveId(waiting.identity.publicKey)}.relay.test`);
+  assert.deepEqual(waiting.stopped, []);
+});
+
 it("stops after a rejected signature or unsupported upgrade version", async (t) => {
   proxyEnvironment(t);
   const relay = await startRelay(t);

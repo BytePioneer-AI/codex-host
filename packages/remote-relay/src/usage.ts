@@ -1,7 +1,7 @@
 import { TokenBucket } from "./bandwidth.js";
 
 export class Usage {
-  private day = "";
+  private day = new Date().toISOString().slice(0, 10);
   private acmeHour = "";
   private acmeBytes = 0;
   bytes = 0;
@@ -14,6 +14,10 @@ export class Usage {
   ) {
     this.upload = rate === undefined ? undefined : new TokenBucket(rate);
     this.download = rate === undefined ? undefined : new TokenBucket(rate);
+  }
+
+  get expired(): boolean {
+    return this.day < new Date().toISOString().slice(0, 10);
   }
 
   get exceeded(): boolean {
@@ -40,5 +44,14 @@ export class Usage {
     if (validation) this.acmeBytes = 1024 * 1024 - this.acmeRemaining + bytes;
     this.bytes += bytes;
     return this.exceeded && !exceeded;
+  }
+}
+
+export function pruneUsage(
+  usageById: Map<string, Usage>,
+  agents: ReadonlyMap<string, unknown>,
+): void {
+  for (const [id, usage] of usageById) {
+    if (!agents.has(id) && usage.expired) usageById.delete(id);
   }
 }

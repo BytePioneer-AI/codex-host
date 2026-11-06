@@ -7,7 +7,7 @@ import { readClientHello } from "./client-hello.js";
 import { maxPayload, normalizeControlHost, paths } from "./protocol.js";
 import { forward } from "./forward.js";
 import { registerAgent, type Agent } from "./registration.js";
-import { Usage } from "./usage.js";
+import { pruneUsage, Usage } from "./usage.js";
 
 export interface RelayOptions {
   domain: string;
@@ -17,9 +17,17 @@ export interface RelayOptions {
   heartbeatInterval?: number;
   rate?: number;
   dailyQuota?: number;
+  maxConnections?: number;
 }
 
 export function createRelay(options: RelayOptions) {
+  const { maxConnections } = options;
+  if (
+    maxConnections !== undefined &&
+    (!Number.isSafeInteger(maxConnections) || maxConnections < 1)
+  ) {
+    throw new Error("--max-connections must be a positive integer");
+  }
   const domain = normalizeControlHost(options.domain);
   const controlHost = normalizeControlHost(options.controlHost ?? domain);
   const agents = new Map<string, Agent>();
@@ -79,11 +87,15 @@ export function createRelay(options: RelayOptions) {
       })
       .catch(() => socket.destroy());
   });
+  if (maxConnections !== undefined) server.maxConnections = maxConnections;
+  const cleanupUsage = setInterval(() => pruneUsage(usageById, agents), 60 * 60_000);
+  cleanupUsage.unref();
   const reload = () => tls.setSecureContext(credentials());
   process.on("SIGHUP", reload);
   return {
     server,
     async close(): Promise<void> {
+      clearInterval(cleanupUsage);
       process.off("SIGHUP", reload);
       for (const ws of wss.clients) ws.terminate();
       for (const socket of sockets) socket.destroy();

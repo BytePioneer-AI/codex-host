@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import type { TestContext } from "node:test";
-import { createRelay } from "@codexhost/remote-relay";
+import { createRelay, type RelayOptions } from "@codexhost/remote-relay";
 import { DataDir } from "../../src/store.ts";
 
 export const certPath = new URL("../fixtures/relay/cert.pem", import.meta.url).pathname;
@@ -24,13 +24,18 @@ export function relayData(t: TestContext): DataDir {
   t.after(() => rmSync(data.root, { recursive: true, force: true }));
   return data;
 }
-export async function startRelay(t: TestContext, heartbeatInterval = 25) {
+export async function startRelay(
+  t: TestContext,
+  heartbeatInterval = 25,
+  limits: Pick<RelayOptions, "maxConnections"> = {},
+) {
   const relay = createRelay({
     domain: "relay.test",
     controlHost: "localhost",
     cert: certPath,
     key: keyPath,
     heartbeatInterval,
+    ...limits,
   });
   relay.server.listen(0, "::");
   await once(relay.server, "listening");

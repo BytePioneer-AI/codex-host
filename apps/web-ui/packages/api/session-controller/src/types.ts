@@ -571,7 +571,7 @@ export interface SessionPage {
   readonly hasMore: boolean;
 }
 
-/** Complete opening window followed by ordered durable events and opted-in assistant frames. */
+/** Complete opening window followed by durable events, scoped projections and assistant frames. */
 export type SessionFollowFrame =
   | {
       readonly type: "snapshot";
@@ -583,9 +583,10 @@ export type SessionFollowFrame =
       readonly assistantStream?: SessionAssistantStreamBaseline;
     }
   | SessionEventEntry
-  | { readonly type: "assistant-stream"; readonly frame: SessionAssistantStreamFrame };
+  | { readonly type: "assistant-stream"; readonly frame: SessionAssistantStreamFrame }
+  | ({ readonly type: "projection" } & SessionProjectionUpdate);
 
-/** Complete live control baseline emitted once per control stream generation. */
+/** Globally scoped projections emitted once per control stream generation. */
 export interface SessionControlBaseline {
   readonly projections: Readonly<Record<SessionId, SessionProjectionBaseline>>;
 }

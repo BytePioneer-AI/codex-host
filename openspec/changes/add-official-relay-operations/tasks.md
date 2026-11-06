@@ -4,6 +4,7 @@
 
 - [x] 1.1 协议：增加 `relay-name`、`relay-invite` 头，四个拒绝关闭码（4410–4413），以及 `/v1/notice` 路径。在线电脑、用量和 SNI 路由改为按地址名，SNI 接受合法的 DNS 标签。验证：现有 `packages/remote-relay` 测试全部通过（不提供检查时行为不变）。
 - [x] 1.2 `createRelay` 增加 `check`、`onUsage` 选项和 `disconnect(name)`，并支持检查返回的限额和 `usedToday`。达到当日额度时向电脑发额度通知。README 补充这些选项和关闭码。验证：新增测试覆盖分配名字、四种拒绝、检查抛错、按检查返回的额度限制、从 `usedToday` 起算、`onUsage` 计数与额度一致、`disconnect` 后重连重新检查，以及额度通知。
+- [ ] 1.3 `createRelay` 增加可选的 `onRequest(request, response)`：控制地址上非协议的 HTTPS 请求交给它，不提供时仍返回 404。README 补充该选项。验证：测试覆盖提供与不提供两种情况，以及注册 WebSocket 和地址名转发不受影响。
 
 ## 2. 电脑端
 

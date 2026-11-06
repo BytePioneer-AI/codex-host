@@ -11,6 +11,7 @@
 - **核心接口：** `createRelay` 提供以下可选项：
   - `check(request)`：传入 ID、IP、地址名和邀请码。返回 `{ name, rate?, dailyQuota?, usedToday? }`，表示允许注册；或返回 `{ reject: "invite" | "name-taken" | "banned" | "full" }`，表示拒绝。检查抛错或超出 10 秒注册时限时，按注册失败关闭连接，电脑会自动重试。
   - `onUsage(name, bytes)`：在计数时报告每个地址名转发的增量字节数，计数口径与每日额度相同。
+  - `onRequest(request, response)`：控制地址上不属于协议的 HTTPS 请求交给它处理，路径与响应由部署者自行定义。不提供时返回 404。WebSocket 升级路径与按地址名的 SNI 转发不经过该回调。
 
   另外，返回值增加 `disconnect(name)`。不提供 `check` 时，地址名就是 ID，限额来自启动参数。
 - **按地址名索引：** 在线电脑、用量和替换逻辑都改为以地址名为键。部署者的检查函数保证一个名字只对应一个身份。同一名字的新注册仍会替换旧连接。SNI 改为接受任何合法的 DNS 标签，不再只接受 26 位 ID。检查返回的名字不是合法的 DNS 标签时，Relay 拒绝这次注册。如果内存中已有该名字当天的用量，以内存为准；没有时用 `usedToday` 作为起点。

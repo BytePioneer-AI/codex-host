@@ -116,16 +116,19 @@
    tool rows match Think chrome (no selected ring). */
 
 .syncing {
-  position: sticky;
-  top: 8px;
-  z-index: 1;
-  align-self: center;
-  height: 0;
-  overflow: visible;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
-  line-height: 20px;
-  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-block: 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(18px + var(--dsh-content-font-delta-secondary, 0px));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .syncingIcon {
+    display: none;
+  }
 }
 
 .hint {

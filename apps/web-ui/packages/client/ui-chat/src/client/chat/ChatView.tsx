@@ -22,6 +22,7 @@ import {
   IconChevronDownOutlineRegular,
   MarkdownDelegateProvider,
   Modal,
+  StateDot,
   useSustainedRecovery,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ChatViewSlotProps, OpenFileOptions } from "../contract/slots.ts";
@@ -376,13 +377,6 @@ export function ChatView({
 
   return (
     <div className={css.frame}>
-      {openState === "loading" && order.length > 0 && (
-        <div className={css.syncing}>
-          <span role="status" data-history-syncing>
-            {t("chat.syncing")}
-          </span>
-        </div>
-      )}
       {scroll.initialized && (
         <TurnNavigator
           items={railItems}
@@ -466,6 +460,12 @@ export function ChatView({
                 stale={statusUnconfirmed}
                 t={t}
               />
+            )}
+            {openState === "loading" && order.length > 0 && (
+              <div className={css.syncing} role="status" data-history-syncing>
+                <StateDot state="ongoing" className={css.syncingIcon} />
+                <span>{t("chat.syncing")}</span>
+              </div>
             )}
             {/* No pending placeholders: questions (ui-user-questions) and approvals
                 (ApprovalPanel) both take over the composer, so a flow card would

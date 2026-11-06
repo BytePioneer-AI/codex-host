@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
@@ -93,6 +93,7 @@ it(
     gates.set(b.id, coldGate);
     await page.locator('[data-row-key="session:cold-b"]').click();
     await expect(page.getByText("Loading history…", { exact: true })).toBeVisible();
+    await expect(page.locator("[data-history-syncing]")).toHaveCount(0);
     await expect(page.getByText("Cached answer", { exact: true })).toHaveCount(0);
     await expect.poll(() => cancelled.includes(a.id)).toBe(true);
     coldGate.resolve(undefined);
@@ -135,8 +136,13 @@ it(
     ];
     await page.locator('[data-row-key="session:cached-a"]').click();
     await expect(page.getByText("Cached answer", { exact: true })).toBeVisible({ timeout: 1000 });
-    await expect(page.locator("[data-history-syncing]")).toHaveText("Syncing…");
-    await expect(page.locator("[data-history-syncing]")).toBeVisible();
+    const syncing = page.locator("[data-history-syncing]");
+    await expect(syncing).toHaveText("Fetching latest messages…");
+    await expect(syncing).toHaveAttribute("role", "status");
+    await expect(
+      page.locator("[data-chat-flow] > [data-history-syncing]:last-child"),
+    ).toBeVisible();
+    await expect(syncing.locator('svg[data-state="ongoing"]')).toBeVisible();
     await expect(page.getByText("Loading history…", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Fresh authoritative answer", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Edit message", exact: true })).toHaveCount(0);
@@ -156,6 +162,25 @@ it(
       ).length,
       0,
     );
+    await page.setViewportSize({ width: 390, height: 844 });
+    await syncing.scrollIntoViewIfNeeded();
+    await expect(syncing).toBeInViewport();
+    const statusBox = defined(await syncing.boundingBox());
+    const composerBox = defined(await page.locator("[data-composer-seat]").boundingBox());
+    assert.ok(statusBox.x >= 0 && statusBox.x + statusBox.width <= 390);
+    assert.ok(statusBox.y + statusBox.height <= composerBox.y);
+    const screenshots = process.env.CODEXHOST_TEST_SCREENSHOTS;
+    if (screenshots) {
+      mkdirSync(screenshots, { recursive: true });
+      await page.screenshot({ path: join(screenshots, "history-syncing-mobile.png") });
+    }
+    await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+    await page.locator("body[data-ds-dark-theme]").waitFor();
+    await expect(syncing.locator("svg")).toBeHidden();
+    await expect(syncing).toHaveText("Fetching latest messages…");
+    await expect(syncing).toBeInViewport();
+    if (screenshots)
+      await page.screenshot({ path: join(screenshots, "history-syncing-mobile-dark-reduced.png") });
     cacheGate.resolve(undefined);
     await expect(page.getByText("Fresh authoritative answer", { exact: true })).toBeVisible();
     await expect(page.locator("[data-history-syncing]")).toHaveCount(0);

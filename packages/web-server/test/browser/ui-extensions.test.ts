@@ -40,8 +40,14 @@ async function fixtureArchive(root: string): Promise<string> {
     JSON.stringify({
       name: FIXTURE_ID,
       version: "1.0.0",
+      description: "A fixture Web theme.",
+      icon: "./icon.svg",
       type: "module",
-      exports: { ".": "./host.js", "./client": "./lib/client.js" },
+      exports: {
+        ".": "./host.js",
+        "./client": "./lib/client.js",
+        "./package.json": "./package.json",
+      },
       dsh: {
         client: {
           platform: "web",
@@ -56,6 +62,10 @@ async function fixtureArchive(root: string): Promise<string> {
     join(directory, "host.js"),
     `export const inject=['webServer'];
     export function apply(ctx){ctx.effect(()=>ctx.webServer.register({kind:'exact',path:'/extension-probe',handler(_req,res){res.end('native host')}}))}`,
+  );
+  writeFileSync(
+    join(directory, "icon.svg"),
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><circle cx="8" cy="8" r="7"/></svg>',
   );
   writeFileSync(
     join(directory, "lib/client.js"),
@@ -159,9 +169,15 @@ async function roundTrip(t: TestContext, source?: string): Promise<void> {
   });
   const row = page.locator(`[data-web-extension="${id}"]`);
   await row.waitFor({ timeout: 60_000 });
+  if (!real) {
+    await row.getByText("A fixture Web theme.", { exact: true }).waitFor();
+    assert.ok(
+      (await rpc(url, "list")).extensions[0]?.meta?.icon?.startsWith("data:image/svg+xml;base64,"),
+    );
+  }
   assert.deepEqual((await rpc(url, "list")).extensions[0]?.enabledTargets, []);
-  await row.getByRole("button", { name: "Enable", exact: true }).click();
-  await row.getByRole("button", { name: "Disable", exact: true }).waitFor();
+  await row.getByRole("switch", { name: id, exact: true }).click();
+  await row.getByRole("switch", { name: id, exact: true, checked: true }).waitFor();
   if (screenshots && real) {
     mkdirSync(screenshots, { recursive: true });
     await page.screenshot({ path: join(screenshots, "extensions-management.png"), fullPage: true });
@@ -344,14 +360,16 @@ it(
     );
     assert.equal((await rpc(url, "list")).extensions[0]?.version, "1.0.0");
     assert.deepEqual((await rpc(url, "list")).extensions[0]?.enabledTargets, []);
-    await row.getByRole("button", { name: "Uninstall", exact: true }).click();
-    await row.getByRole("button", { name: "Uninstall", exact: true }).click();
-    await row.waitFor({ state: "hidden" });
+    await row.getByRole("button", { name: FIXTURE_ID, exact: true }).click();
+    const detail = page.locator(`[data-web-extension-detail="${FIXTURE_ID}"]`);
+    await detail.getByRole("button", { name: "Uninstall", exact: true }).click();
+    await detail.getByRole("button", { name: "Uninstall", exact: true }).click();
+    await detail.waitFor({ state: "hidden" });
     await installFromSettings(page, directory);
     await row.waitFor();
     rmSync(directory, { recursive: true, force: true });
-    await row.getByRole("button", { name: "Enable", exact: true }).click();
-    await row.getByRole("button", { name: "Disable", exact: true }).waitFor();
+    await row.getByRole("switch", { name: FIXTURE_ID, exact: true }).click();
+    await row.getByRole("switch", { name: FIXTURE_ID, exact: true, checked: true }).waitFor();
     await stop(child);
     url = await launch();
     await page.goto(url);

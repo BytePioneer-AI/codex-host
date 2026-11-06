@@ -2,6 +2,12 @@
 
 Web 设置中的「界面扩展」（Interface extensions）支持安装、启用、禁用和卸载预构建的 DSH Web 包。插件通过原生 Cordis Loader/Include、客户端模块、主题和 UI 插槽运行，并可由原包服务端入口注册配套 Web 路由。安装记录属于 Web 服务，影响连接该服务的页面；它们与 Harness 插件目录、Adapter 和 Thread 执行路径分别管理。
 
+管理列表展示插件名称、版本、启用状态和开关；点击条目进入详情，查看完整安装来源并确认卸载。列表及详情中的项目链接优先使用 GitHub 地址，否则使用包声明的主页、仓库或有效网页安装来源；没有可用地址时不显示链接按钮。地址从已安装包的 `repository`、`homepage` 和安装来源读取，已有安装无需重新安装；仅接受不含内嵌凭据的 HTTP(S) 链接，不执行包代码，也不根据包名推测项目地址。
+
+图标、显示名称和说明遵循 DSH 的[插件展示元信息规范](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-a-package.md#5-add-optional-plugin-display-metadata)，读取器适配自官方 `app-boot/package-meta.ts`，来源记录在 `apps/web-ui/import-manifest.json`。名称和说明通过 Node ESM exports 读取 `locale/en.json` 及同目录的语言文件，按当前 DSH 语言链逐字段回退；包根插件可从其导出的 `package.json` 补充名称和说明。列表说明只展示一行，详情展示完整说明；本地化名称不改变安装身份和包名。
+
+图标优先读取导出清单中的 `icon` 相对路径，未声明时读取 `./icon` 导出，不扫描文件猜测图标。支持 SVG、PNG、JPEG、WebP，原始文件不超过 256 KiB；清单图标在解析符号链接后仍须位于清单目录内，导出图标须属于插件包。服务端以图片 data URL 返回，页面以 `img` 渲染；缺失或解码失败时显示默认插件图标。非法声明或不可读文件提供独立的元信息诊断，保留有效文字，不将其视为插件加载失败，也不阻止启停和卸载。读取元信息不执行插件入口，不需要启用或重新安装插件；元信息不写入安装记录。
+
 当前支持可信 Web 插件的前后端协同加载、管理和故障恢复，不启动另一套 DSH Agent Runtime。完整主题选择与配置持久化、更多面板和展示插件的兼容验收，以及 codexhost 原生格式和 GUI 第三方插件运行时仍未实现。分类和后续边界见[界面扩展插件方案](../proposals/ui-extension-plugins.md)。
 
 ## 安装与生效

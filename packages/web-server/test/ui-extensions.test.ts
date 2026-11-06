@@ -77,6 +77,52 @@ function installedDirectories(data: DataDir): string[] {
   return existsSync(directory) ? readdirSync(directory).sort() : [];
 }
 
+it("derives project links for existing installations without persisting metadata", async (t) => {
+  const data = dataDir(t);
+  const store = extensions(data);
+  await store.install(PACKAGE);
+  assert.equal(item(store.state().extensions).projectUrl, undefined);
+  const plugin = item(store.plugins(false));
+  writeFileSync(
+    join(plugin.directory, "package.json"),
+    JSON.stringify({ name: PACKAGE, version: VERSION, repository: "github:author/theme" }),
+  );
+  assert.equal(
+    item(extensions(data).state().extensions).projectUrl,
+    "https://github.com/author/theme",
+  );
+  assert.equal(readFileSync(data.path(REGISTRY), "utf8").includes("projectUrl"), false);
+  rmSync(join(plugin.directory, "package.json"));
+  assert.equal(item(store.state().extensions).projectUrl, undefined);
+});
+
+it("exposes DSH metadata without persisting it or blocking management on an icon error", async (t) => {
+  const data = dataDir(t);
+  const store = extensions(data);
+  await store.install(PACKAGE);
+  const plugin = item(store.plugins(false));
+  writeFileSync(
+    join(plugin.directory, "package.json"),
+    JSON.stringify({
+      name: PACKAGE,
+      version: VERSION,
+      description: "A package description",
+      icon: "https://example.com/icon.svg",
+      exports: { "./package.json": "./package.json" },
+    }),
+  );
+  const meta = item(extensions(data).state().extensions).meta;
+  assert.equal(meta?.description, "A package description");
+  assert.ok(meta?.error);
+  assert.equal(item(store.state().extensions).loadError, undefined);
+  assert.equal(readFileSync(data.path(REGISTRY), "utf8").includes('"meta"'), false);
+  assert.deepEqual(item((await store.setEnabled(PACKAGE, true)).extensions).enabledTargets, [
+    "web",
+  ]);
+  await store.remove(PACKAGE);
+  assert.deepEqual(store.state().extensions, []);
+});
+
 it("retains running installation files until release and cleans removed packages at startup", async (t) => {
   const data = dataDir(t);
   const store = extensions(data);
@@ -222,6 +268,7 @@ it("installs disabled, validates assets without importing code, and persists acr
     enabledTargets: [],
     source: `${PACKAGE}@${VERSION}`,
     installedAt: item(state.extensions).installedAt,
+    meta: { title: PACKAGE },
   });
   assert.ok(Number.isFinite(Date.parse(item(state.extensions).installedAt)));
   assert.deepEqual(checked, [[PACKAGE]]);

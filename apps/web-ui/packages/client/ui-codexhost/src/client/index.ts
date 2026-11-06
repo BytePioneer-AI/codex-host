@@ -50,7 +50,7 @@ import {
 import type {} from "@deepseek-ai/dsh-client-ui-chat/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { ConnectDevicesSection } from "./ConnectDevicesSection.tsx";
-import { WebExtensionsSection } from "./WebExtensionsSection.tsx";
+import { WebExtensionsSection, type WebExtensionsFace } from "./WebExtensionsSection.tsx";
 import { watchAuthentication } from "./auth-watch.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
@@ -288,6 +288,7 @@ export function apply(ctx: ClientContext): void {
         order: 8,
         label: () => t("settings.extensions"),
         locale: NS,
+        inject: (): WebExtensionsFace => ({ resolveText: (text) => ctx.locale.resolveText(text) }),
       },
       WebExtensionsSection,
     ),

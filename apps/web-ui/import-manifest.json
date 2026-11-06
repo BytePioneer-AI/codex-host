@@ -96,6 +96,13 @@
     "scope": "ui-plugin-manager install dialog structure and styles; plugin-manager install-spec parser",
     "adaptation": "Web-only prebuilt extension validation and installation; existing Modal/Button primitives; public GitHub archives, local directory snapshots and explicit npm registry selection"
   },
+  "pluginDisplayMetadataUpstream": {
+    "repository": "https://github.com/deepseek-ai/deepseek-harness",
+    "commit": "a28f8758b4579787e8511a2a45401e2c29ba2199",
+    "source": "packages/boot/app-boot/src/package-meta.ts",
+    "target": "packages/web-server/src/ui-extension-meta.ts",
+    "adaptation": "Read installed Web package roots through Node ESM resource exports without the DSH Agent runtime; retain locale, icon limits, containment, fallback and diagnostic rules; resolve translated display text with the existing DSH client locale service"
+  },
   "terminalUpstream": {
     "repository": "https://github.com/deepseek-ai/deepseek-harness",
     "commit": "ce7073d51254c26cd63b22a60835b8f948deb447",

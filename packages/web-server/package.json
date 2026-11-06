@@ -24,6 +24,7 @@
     "@deepseek-ai/dsh-file-reference": "*",
     "acme-client": "5.4.0",
     "image-size": "2.0.2",
+    "import-meta-resolve": "^4.2.0",
     "playwright-core": "1.62.0",
     "qrcode-terminal": "0.12.0",
     "semver": "7.8.5",

@@ -12,6 +12,8 @@ import {
 } from "@codexhost/shared-contracts";
 import type { DataDir } from "./store.ts";
 import type { WebPluginResult } from "@codexhost/dsh-web-backend";
+import { extensionProjectUrl } from "./ui-extension-project-url.ts";
+import { readExtensionMeta } from "./ui-extension-meta.ts";
 import {
   extensionInstallSpec,
   installExtensionPackage,
@@ -20,7 +22,7 @@ import {
 
 const FILE = "ui-extensions/installed.json";
 const entrySchema = webUiExtensionSchema
-  .omit({ loadError: true })
+  .omit({ loadError: true, projectUrl: true, meta: true })
   .extend({ installId: z.string().uuid() })
   .strict();
 const storeSchema = z
@@ -74,8 +76,13 @@ export class WebUiExtensions {
     return {
       extensions: this.entries.map((entry): WebUiExtension => {
         const loadError = this.loadErrors.get(entry.id);
+        const { directory } = this.plugin(entry);
+        const projectUrl = extensionProjectUrl(directory, entry.source);
+        const meta = readExtensionMeta(entry.id, directory);
         return {
           ...webUiExtensionSchema.parse(entry),
+          ...(projectUrl === undefined ? {} : { projectUrl }),
+          ...(meta === undefined ? {} : { meta }),
           ...(loadError === undefined ? {} : { loadError }),
         };
       }),

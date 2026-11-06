@@ -402,6 +402,7 @@ export { usageMeasurementsSchema, type UsageMeasurementsSnapshot } from "./threa
 
 export {
   webUiExtensionIdSchema,
+  webUiExtensionMetaSchema,
   webUiExtensionSchema,
   webUiExtensionsStateSchema,
   webUiExtensionRegistrySchema,
@@ -409,5 +410,6 @@ export {
   webUiExtensionEnabledSchema,
   webUiExtensionRemoveSchema,
   type WebUiExtension,
+  type WebUiExtensionMeta,
   type WebUiExtensionsState,
 } from "./web-ui-extensions.js";

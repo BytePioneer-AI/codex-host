@@ -6,6 +6,24 @@ export const webUiExtensionIdSchema = z
   .max(214)
   .regex(/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u);
 
+const localizedTextSchema = z.union([
+  z.string(),
+  z.object({ en: z.string() }).catchall(z.string()),
+]);
+
+/** DSH display metadata retains translations and a self-contained image data URL. */
+export const webUiExtensionMetaSchema = z.object({
+  title: localizedTextSchema.optional(),
+  description: localizedTextSchema.optional(),
+  icon: z
+    .string()
+    .max(Math.ceil((256 * 1024) / 3) * 4 + 64)
+    .regex(/^data:image\/(?:svg\+xml|png|jpeg|webp);base64,[A-Za-z0-9+/]*={0,2}$/u)
+    .optional(),
+  error: z.string().optional(),
+});
+export type WebUiExtensionMeta = z.infer<typeof webUiExtensionMetaSchema>;
+
 export const webUiExtensionSchema = z.object({
   id: webUiExtensionIdSchema,
   name: z.string().min(1).max(214),
@@ -14,7 +32,14 @@ export const webUiExtensionSchema = z.object({
   supportedTargets: z.tuple([z.literal("web")]),
   enabledTargets: z.array(z.literal("web")).max(1),
   source: z.string().min(1).max(4096),
+  /** Public project page, derived from installed package metadata and its source. */
+  projectUrl: z
+    .string()
+    .max(4096)
+    .url({ protocol: /^https?$/u })
+    .optional(),
   installedAt: z.string(),
+  meta: webUiExtensionMetaSchema.optional(),
   loadError: z.string().optional(),
 });
 

@@ -30,6 +30,7 @@ But **Codex** isn't the only great **Agent Harness** — **Claude Code** and **P
   <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="docs/imgs/badge-hermes.svg" /></a>
   <a href="https://qoder.com/cli"><img alt="Qoder" src="docs/imgs/badge-qoder.svg" /></a>
   <a href="https://moonshotai.github.io/kimi-code/"><img alt="Kimi Code" src="docs/imgs/badge-kimi.svg" /></a>
+  <a href="https://zcode.z.ai/"><img alt="ZCode" src="docs/imgs/badge-zcode.svg" /></a>
   <a href="docs/harnesses/copilot/copilot-harness-integration.md"><img alt="GitHub Copilot" src="https://img.shields.io/badge/Copilot-181717?logo=githubcopilot&logoColor=white" /></a>
 </p>
 <br />

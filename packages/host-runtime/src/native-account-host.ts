@@ -80,9 +80,7 @@ export async function prepareLocalCodex(input: {
     current = currentCodexAccountFromOfficialRead(response.result);
     return snapshot();
   });
-  void accounts.refresh?.()?.catch(() => {
-    input.diagnosticOutput.write("codexhost: Codex Account identity could not be read\n");
-  });
+  // 等待原生账号通知或显式读取，避免抢在 Desktop 首次身份读取前触发 account/updated。
   return {
     officialRuntimeScope: scope,
     accountControl: accounts,

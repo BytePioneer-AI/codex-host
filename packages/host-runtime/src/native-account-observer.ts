@@ -38,7 +38,7 @@ export class NativeAccountObserver {
     this.#initialized = true;
     this.#lastGeneration = nativeGeneration ?? -1;
     this.#scheduleAccountUpdate();
-    if (nativeGeneration !== undefined) this.observe({ method: "account/updated" });
+    // 初始化本身不是账号变化；提前刷新会改变 Desktop 的原生认证消息顺序。
   }
 
   /** Called after forwarding the native frame. Identity read failure cannot alter its outcome. */

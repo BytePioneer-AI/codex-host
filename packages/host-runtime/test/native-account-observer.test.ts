@@ -34,14 +34,17 @@ function fixture() {
 }
 
 describe("native Account observation", () => {
-  it("publishes the current identity after native initialization without an account probe", async () => {
+  it("waits for a native identity notification before collecting after initialization", async () => {
     const f = fixture();
     const collected = Promise.withResolvers<typeof f.snapshot>();
     f.refresh.mockReturnValueOnce(collected.promise);
     f.observer.initialized(1);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(f.refresh).not.toHaveBeenCalled();
     expect(f.controlRequest).not.toHaveBeenCalled();
     expect(f.scope.gate.phase).toBe("ready");
     expect(f.notify).not.toHaveBeenCalled();
+    f.observer.observe({ method: "account/updated" });
     collected.resolve(f.snapshot);
     await vi.waitFor(() =>
       expect(f.notify).toHaveBeenCalledWith("codexhost/account/changed", f.snapshot),

@@ -4,7 +4,7 @@ import {
   createRendererCdpControlSession,
   selectPrimaryRendererTarget,
 } from "../src/renderer-cdp-control-session.js";
-import type { CdpTarget } from "../src/cdp-client.js";
+import type { CdpEventListener, CdpTarget } from "../src/cdp-client.js";
 
 function target(id: string, url = "app://-/index.html"): CdpTarget {
   return {
@@ -47,6 +47,52 @@ function rendererClient(binding = readyBinding()) {
 }
 
 describe("Renderer CDP Control Session", () => {
+  it.each(["Runtime.executionContextsCleared", "Inspector.detached"])(
+    "abandons an unresponsive installation when %s fires",
+    async (event) => {
+      const callbacks = new Map<string, Set<CdpEventListener>>();
+      const client = {
+        ...rendererClient(),
+        on(method: string, listener: CdpEventListener) {
+          const listeners = callbacks.get(method) ?? new Set<CdpEventListener>();
+          listeners.add(listener);
+          callbacks.set(method, listeners);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+      };
+      client.command.mockImplementation(async (method, params) => {
+        if (method === "Runtime.evaluate" && params?.expression === "production renderer") {
+          queueMicrotask(() => {
+            for (const listener of [...(callbacks.get(event) ?? [])]) listener({}, undefined);
+          });
+          return new Promise<never>(() => {});
+        }
+        return {};
+      });
+
+      await expect(
+        createRendererCdpControlSession({
+          rendererCdpEndpoint: "http://127.0.0.1:43123",
+          rendererSource: "production renderer",
+          timeoutMs: 100,
+          pollIntervalMs: 1,
+          operations: {
+            listTargets: async () => [target("old-page")],
+            connect: async () => client,
+            installDraftPrewarmPolicy: async () => ({
+              state: "ready" as const,
+              reason: "owned-request-bridge" as const,
+            }),
+          },
+        }),
+      ).rejects.toThrow("Execution context was destroyed");
+      expect(client.close).toHaveBeenCalledOnce();
+      expect([...callbacks.values()].every((listeners) => listeners.size === 0)).toBe(true);
+    },
+  );
+
   it("selects only the exact primary app surface and preserves an owned target", () => {
     const first = target("page-1");
     const owned = target("page-2");

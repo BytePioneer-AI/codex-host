@@ -52,6 +52,7 @@ export interface AntigravityResultEvent {
   result: {
     conversation_id: string;
     status: string;
+    finished_reason?: string;
     response?: string;
     error?: string;
     num_turns: number;
@@ -109,6 +110,8 @@ export function parseAntigravityStreamLine(line: string): AntigravityStreamEvent
     isRecord(parsed.result) &&
     typeof parsed.result.conversation_id === "string" &&
     typeof parsed.result.status === "string" &&
+    (parsed.result.finished_reason === undefined ||
+      typeof parsed.result.finished_reason === "string") &&
     typeof parsed.result.num_turns === "number"
   ) {
     return parsed as unknown as AntigravityResultEvent;

@@ -2013,6 +2013,207 @@ process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id
       }
     });
 
+    it("passes --print-timeout 0s by default and fails Turns truncated by print_timeout or tool-only sticky errors", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-timeout-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-timeout-cwd-"));
+      const cleanup = async (): Promise<void> => {
+        for (const target of [directory, cwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      const stale =
+        'request failed: Post "https://example.invalid/stream": proxyconnect tcp: connection refused';
+      const runsFile = path.join(directory, "runs.jsonl");
+      const scriptContent = `
+const fs = require("fs");
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (!process.argv.includes("--input-format")) process.exit(0);
+const runsFile = ${JSON.stringify(runsFile)};
+const previous = fs.existsSync(runsFile)
+  ? fs.readFileSync(runsFile, "utf8").trim().split("\\n").filter(Boolean).length
+  : 0;
+fs.appendFileSync(runsFile, JSON.stringify(process.argv.slice(2)) + "\\n");
+const emit = (event) => process.stdout.write(JSON.stringify(event) + "\\n");
+emit({ event: "init", conversation_id: "conv-timeout", init: { permission_mode: "default" } });
+if (previous === 0) {
+  emit({
+    event: "step_update",
+    step_update: {
+      conversation_id: "conv-timeout",
+      step_index: 1,
+      state: "ACTIVE",
+      step_type: "agent_response",
+      text_delta: "Working on long task...",
+    },
+  });
+  process.stderr.write(
+    "error: print timeout after 30m0s (last step 1: PLANNER_RESPONSE (ACTIVE))\\n" +
+      'AGY_ERROR: {"type":"PRINT_TIMEOUT","message":"print timeout after 30m0s (last step 1: PLANNER_RESPONSE (ACTIVE))"}\\n',
+  );
+  emit({
+    event: "result",
+    result: {
+      conversation_id: "conv-timeout",
+      status: "SUCCESS",
+      finished_reason: "print_timeout",
+      response: "Working on long task...",
+      num_turns: 1,
+    },
+  });
+} else if (previous === 1) {
+  emit({
+    event: "result",
+    result: {
+      conversation_id: "conv-timeout",
+      status: "ERROR",
+      error: ${JSON.stringify(stale)},
+      num_turns: 2,
+    },
+  });
+} else if (previous === 2) {
+  emit({
+    event: "step_update",
+    step_update: {
+      conversation_id: "conv-timeout",
+      step_index: 2,
+      state: "DONE",
+      step_type: "agent_response",
+      text_delta: "Still working...",
+    },
+  });
+  process.stderr.write("error: print timeout after 30m0s (last step 2: PLANNER_RESPONSE (ACTIVE))\\n");
+  emit({
+    event: "result",
+    result: {
+      conversation_id: "conv-timeout",
+      status: "ERROR",
+      finished_reason: "error",
+      error: ${JSON.stringify(stale)},
+      response: "Working on long task...\\nStill working...",
+      num_turns: 3,
+    },
+  });
+} else {
+  emit({
+    event: "step_update",
+    step_update: {
+      conversation_id: "conv-timeout",
+      step_index: 3,
+      state: "DONE",
+      step_type: "agent_response",
+      text_delta: "Running tool first...",
+    },
+  });
+  emit({
+    event: "step_update",
+    step_update: {
+      conversation_id: "conv-timeout",
+      step_index: 4,
+      state: "ACTIVE",
+      step_type: "tool",
+      tool_name: "run_command",
+      tool_info: { parameters: { CommandLine: "echo hi" } },
+    },
+  });
+  emit({
+    event: "step_update",
+    step_update: {
+      conversation_id: "conv-timeout",
+      step_index: 4,
+      state: "DONE",
+      step_type: "tool",
+      tool_info: { output: "hi" },
+    },
+  });
+  emit({
+    event: "result",
+    result: {
+      conversation_id: "conv-timeout",
+      status: "ERROR",
+      error: ${JSON.stringify(stale)},
+      response: "Working on long task...\\nStill working...\\nRunning tool first...",
+      num_turns: 4,
+    },
+  });
+}
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      let command: string;
+      if (process.platform === "win32") {
+        command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        command = path.join(directory, "agy");
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const outcomes: unknown[] = [];
+        for (let index = 0; index < 4; index += 1) {
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse(`turn-timeout-${String(index + 1)}`),
+            input: [{ type: "text", text: `step ${String(index + 1)}` }],
+          });
+          while (true) {
+            const event = await nextEvent(iterator);
+            if (event.type === "turn.completed") {
+              outcomes.push(event.outcome);
+              break;
+            }
+          }
+        }
+        const recordedArgs = (await readFile(runsFile, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as string[]);
+        for (const args of recordedArgs) {
+          const timeoutFlagIndex = args.indexOf("--print-timeout");
+          expect(timeoutFlagIndex).toBeGreaterThanOrEqual(0);
+          expect(args[timeoutFlagIndex + 1]).toBe("0s");
+        }
+        expect(outcomes[0]).toMatchObject({
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message:
+              "Antigravity Turn timed out before completion: print timeout after 30m0s (last step 1: PLANNER_RESPONSE (ACTIVE))",
+          },
+        });
+        expect(outcomes[1]).toMatchObject({
+          status: "failed",
+          error: { message: `Antigravity Turn ended with status ERROR: ${stale}` },
+        });
+        expect(outcomes[2]).toMatchObject({
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message:
+              "Antigravity Turn timed out before completion: print timeout after 30m0s (last step 2: PLANNER_RESPONSE (ACTIVE))",
+          },
+        });
+        expect(outcomes[3]).toMatchObject({
+          status: "failed",
+          error: { message: `Antigravity Turn ended with status ERROR: ${stale}` },
+        });
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
     it("dynamically switches between Gemini (1M) and Claude (200k) models within the same session", async () => {
       const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-model-switch-"));
       const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-model-switch-cwd-"));

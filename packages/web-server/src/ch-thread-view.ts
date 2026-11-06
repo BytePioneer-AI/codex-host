@@ -3,10 +3,13 @@ import {
   REASONING_TRANSCRIPT_COMMAND,
   type ClientFileOperation,
   type ClientThreadImportSource,
+  type WebFileDiff,
+  type WebTurnFileSummary,
 } from "@codexhost/shared-contracts";
 import { conversationItems } from "./ch-file-operations.ts";
 import { SessionLog, type ProjectionListener } from "./session-log.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
+import { summarizeTurnDiffs } from "./ch-turn-changes.ts";
 import { RpcError } from "./transport.ts";
 import {
   TurnProjector,
@@ -344,17 +347,38 @@ export class ChThreadView {
     );
   }
 
+  /** Resolve only this view's displayed Turn coordinate; never a different Session's Turn. */
+  turnDiffs(turn: number, path?: string): WebFileDiff[] {
+    this.ensureCurrent();
+    const native = this.thread.turns.find(
+      (item) => this.turns.get(item.id)?.projector.turn === turn,
+    );
+    if (!native) throw new RpcError("session/diff-not-found", "This Turn is not loaded.");
+    const diffs = this.fileDiffs(native);
+    return path === undefined ? diffs : diffs.filter((diff) => diff.path === path);
+  }
+
+  private fileDiffs(turn: ChTurn): WebFileDiff[] {
+    return turn.items.flatMap((item) =>
+      item.type === "fileChange" ? hostFileChanges(item.changes).map(diffTexts) : [],
+    );
+  }
+
   private publishFileChanges(): void {
+    const previous = this.log.projections.codexhostTurnChanges as
+      Record<number, WebTurnFileSummary[]> | undefined;
     this.log.setProjection(
       "codexhostTurnChanges",
       Object.fromEntries(
         this.thread.turns.flatMap((turn) => {
           const view = this.turns.get(turn.id);
           if (!view) return [];
-          const diffs = turn.items.flatMap((item) =>
-            item.type === "fileChange" ? hostFileChanges(item.changes).map(diffTexts) : [],
-          );
-          return [[view.projector.turn, diffs]];
+          return [
+            [
+              view.projector.turn,
+              summarizeTurnDiffs(this.fileDiffs(turn), previous?.[view.projector.turn]),
+            ],
+          ];
         }),
       ),
     );

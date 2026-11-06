@@ -236,6 +236,13 @@ export class ProjectionValueStore {
     }
   }
 
+  /** Release follow-only values when the corresponding recent view is evicted. */
+  discard(keys: ReadonlySet<string>): void {
+    for (const key of keys) {
+      if (this.rows.delete(key)) this.changed(key);
+    }
+  }
+
   /** Discard one Host generation's values and watermarks while preserving subscribed faces. */
   clear(): void {
     for (const key of this.rows.keys()) {

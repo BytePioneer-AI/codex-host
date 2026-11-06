@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import {
   WEB_FOLLOW_PROJECTION_KEYS,
+  webTurnDiffsRequestSchema,
   encodeHarnessPluginRoute,
   harnessPluginRouteSchema,
   threadInspectionSchema,
@@ -773,6 +774,15 @@ export class ChSessions {
   register(rpc: RpcRegistry, streams: StreamRegistry): void {
     this.fileReferences.register(rpc);
     this.fileInputs?.register(rpc);
+    rpc.register("codexhost/turnDiffs", async (args) => {
+      const parsed = webTurnDiffsRequestSchema.safeParse(requestOf(args));
+      if (!parsed.success) throw new RpcError("session/diff-invalid", "Invalid Turn diff request.");
+      const { sessionId, turn, path } = parsed.data;
+      const id = this.id(sessionId);
+      await this.owner(id);
+      const view = this.threads.view(id) ?? (await this.view(id, true));
+      return { diffs: view.turnDiffs(turn, path) };
+    });
     rpc.register("codexhost/editMessage", async (args) => {
       const request = requestOf<{ sessionId: string; atSeq: number; text: string }>(args);
       if (

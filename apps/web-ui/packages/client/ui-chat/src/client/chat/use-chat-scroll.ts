@@ -13,7 +13,8 @@ import { useChatViewport } from "./use-chat-viewport.ts";
 /** Committed content and Session operations used to reconcile scroll ownership. */
 export interface ChatScrollInput extends ChatNavigationInput {
   readonly chatScroll: ChatViewSlotProps["chatScroll"];
-  readonly ready: boolean;
+  /** Cached or confirmed content can initialize the reading viewport. */
+  readonly displayReady: boolean;
   readonly order: readonly string[];
   readonly lastKey: string | null;
   readonly lastIsUser: boolean;
@@ -40,7 +41,8 @@ interface ChatScrollState extends ChatReadingState {
  */
 export function useChatScroll(input: ChatScrollInput): ChatScrollState {
   const {
-    ready,
+    displayReady,
+    historyReady,
     order,
     firstSeq,
     lastKey,
@@ -60,6 +62,7 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
   const { reading, state } = useChatReading(viewport, chatScroll, loadedTurns.at(-1)?.turn ?? null);
   const navigationInput = useMemo(
     () => ({
+      historyReady,
       firstSeq,
       loadingOlder,
       olderFailed,
@@ -67,7 +70,7 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
       loadOlder,
       loadThrough,
     }),
-    [firstSeq, loadingOlder, olderFailed, hasMore, loadOlder, loadThrough],
+    [historyReady, firstSeq, loadingOlder, olderFailed, hasMore, loadOlder, loadThrough],
   );
   const { navigation, busyTurn } = useChatNavigation(viewport, reading, navigationInput);
   const content = useRef<{
@@ -93,7 +96,7 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
         current.submissionId !== previous?.steeringId);
     if (reading.pending && !ownInput) return;
     content.current.applied = current;
-    if (current.ready && !content.current.opened) {
+    if (current.displayReady && !content.current.opened) {
       content.current.opened = true;
       navigation.reset();
       reading.restore();
@@ -110,7 +113,7 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
     }
     const tipChanged =
       previous === null ||
-      current.ready !== previous.ready ||
+      current.displayReady !== previous.displayReady ||
       current.firstSeq !== previous.firstSeq ||
       current.lastKey !== previous.lastKey ||
       current.order.length !== previous.order.length ||
@@ -126,10 +129,12 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
   useLayoutEffect(() => {
     let olderFrame: number | null = null;
     const queueOlder = (): void => {
-      if (olderFrame !== null || !content.current.opened || !content.current.input.ready) return;
+      if (olderFrame !== null || !content.current.opened || !content.current.input.historyReady)
+        return;
       olderFrame = requestAnimationFrame(() => {
         olderFrame = null;
-        if (content.current.opened && content.current.input.ready) navigation.autoLoadEarlier();
+        if (content.current.opened && content.current.input.historyReady)
+          navigation.autoLoadEarlier();
       });
     };
     const disconnectViewport = viewport.connect({
@@ -166,7 +171,7 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
   useLayoutEffect(() => {
     const previous = content.current.input;
     content.current.input = {
-      ready,
+      displayReady,
       order,
       lastKey,
       lastIsUser,
@@ -178,7 +183,7 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
       ...navigationInput,
     };
     viewport.updateTurns(loadedTurns);
-    const layoutChanged = previous.order !== order || previous.ready !== ready;
+    const layoutChanged = previous.order !== order || previous.displayReady !== displayReady;
     if (layoutChanged) viewport.invalidate();
     processContent();
     if (layoutChanged) reading.refreshActiveTurn();
@@ -187,7 +192,7 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
     reading,
     processContent,
     navigationInput,
-    ready,
+    displayReady,
     order,
     lastKey,
     lastIsUser,

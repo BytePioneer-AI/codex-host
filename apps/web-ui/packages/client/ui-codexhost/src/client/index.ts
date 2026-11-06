@@ -14,7 +14,7 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import { registerHarnessDiscovery } from "./harness-discovery.tsx";
 import { registerThreadReferenceDiscovery } from "./thread-reference-discovery.ts";
-import { desktopScreenshotApi, sentMessageEditApi, voiceApi } from "./api.ts";
+import { desktopScreenshotApi, sentMessageEditApi, turnDiffsApi, voiceApi } from "./api.ts";
 import { DesktopScreenshot } from "./desktop-screenshot.ts";
 import {
   DesktopScreenshotButton,
@@ -104,6 +104,7 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-codexhost: dictionaries");
   const t = ctx.locale.bind(NS);
   ctx.provide("chatMessageEditing", sentMessageEditApi);
+  ctx.provide("chatTurnDiffs", turnDiffsApi);
   ctx.inject(["conversation"], (scope) => {
     const screenshot = new DesktopScreenshot(desktopScreenshotApi.capture);
     const conversation = scope.conversation as ConversationController;

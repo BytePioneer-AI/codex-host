@@ -215,7 +215,11 @@ export function ConversationContent(props: ConversationContentProps) {
 
   const composer = renderSlotChain(
     "conversation.composer",
-    { sessionId, session, pendingInteraction },
+    {
+      sessionId,
+      session,
+      pendingInteraction: session?.openState === "open" ? pendingInteraction : undefined,
+    },
     { fallback: composerBar, fallbackOnly: sessionId === undefined, overlay: true },
   );
 

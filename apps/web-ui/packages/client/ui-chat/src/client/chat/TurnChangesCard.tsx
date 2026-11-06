@@ -11,6 +11,7 @@ import type { ChatNodeStore } from "../contract/snapshot.ts";
 import type { ChatViewSlotProps } from "../contract/slots.ts";
 import { ChangeStat } from "./ChangeStat.tsx";
 import { baseName, sumChanges, useTurnFileChanges } from "./turn-file-changes.ts";
+import { useTurnDiffs } from "./use-turn-diffs.ts";
 import css from "./TurnChangesCard.module.css";
 
 interface TurnChangesCardProps {
@@ -18,6 +19,7 @@ interface TurnChangesCardProps {
   readonly turn: number;
   readonly t: ChatViewSlotProps["t"];
   readonly useProjection: ChatViewSlotProps["useProjection"];
+  readonly loadTurnDiffs?: ChatViewSlotProps["loadTurnDiffs"];
 }
 
 /**
@@ -29,10 +31,12 @@ export const TurnChangesCard = memo(function TurnChangesCard({
   turn,
   t,
   useProjection,
+  loadTurnDiffs,
 }: TurnChangesCardProps) {
   const files = useTurnFileChanges(nodeStore, turn, useProjection);
   const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [showAllFiles, setShowAllFiles] = useState(false);
+  const full = useTurnDiffs(turn, files, expandedPaths, loadTurnDiffs);
   const labels = useMemo<DiffBlockLabels>(
     () => ({
       codeLabel: t("diff.code"),
@@ -83,33 +87,47 @@ export const TurnChangesCard = memo(function TurnChangesCard({
       </div>
       {(files.length > 1 || open) && (
         <ul className={css.files}>
-          {visibleFiles.map((file) => (
-            <li key={file.path} className={css.file}>
-              {files.length > 1 && (
-                <button
-                  type="button"
-                  className={css.fileHead}
-                  aria-expanded={expandedPaths.has(file.path)}
-                  onClick={() => {
-                    setExpandedPaths((paths) => {
-                      const next = new Set(paths);
-                      if (next.has(file.path)) next.delete(file.path);
-                      else next.add(file.path);
-                      return next;
-                    });
-                  }}
-                >
-                  <PathLabel path={file.path} className={css.path} />
-                  <ChangeStat added={file.added} removed={file.removed} />
-                </button>
-              )}
-              {expandedPaths.has(file.path) && (
-                <div className={css.diff}>
-                  <DiffBlock diffs={[...file.hunks]} labels={labels} maxLines={Infinity} />
-                </div>
-              )}
-            </li>
-          ))}
+          {visibleFiles.map((file) => {
+            const diffs = full.diffs(file);
+            return (
+              <li key={file.path} className={css.file}>
+                {files.length > 1 && (
+                  <button
+                    type="button"
+                    className={css.fileHead}
+                    aria-expanded={expandedPaths.has(file.path)}
+                    onClick={() => {
+                      setExpandedPaths((paths) => {
+                        const next = new Set(paths);
+                        if (next.has(file.path)) next.delete(file.path);
+                        else next.add(file.path);
+                        return next;
+                      });
+                    }}
+                  >
+                    <PathLabel path={file.path} className={css.path} />
+                    <ChangeStat added={file.added} removed={file.removed} />
+                  </button>
+                )}
+                {expandedPaths.has(file.path) && (
+                  <div className={css.diff}>
+                    {diffs !== undefined ? (
+                      <DiffBlock diffs={[...diffs]} labels={labels} maxLines={Infinity} />
+                    ) : full.error ? (
+                      <div role="alert">
+                        {full.error}{" "}
+                        <button type="button" onClick={full.retry}>
+                          {t("chat.retryDiff")}
+                        </button>
+                      </div>
+                    ) : (
+                      <span role="status">{t("chat.loadingDiff")}</span>
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
           {files.length > 3 && (
             <li>
               <button

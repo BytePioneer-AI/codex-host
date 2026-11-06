@@ -170,7 +170,7 @@ export function apply(ctx: Context): void {
             hooks: { linkOpening, browserAvailable },
             setLinkOpening: (destination) => {
               linkOpening.set(destination);
-              void chatSettings.set("linkOpening", destination).catch((_error: unknown) => {
+              void chatSettings.set("linkOpening", destination).catch(() => {
                 // The local choice remains usable when persistence is unavailable.
               });
             },
@@ -228,6 +228,7 @@ export function apply(ctx: Context): void {
           const chat = chatSource(binding);
           const conversation = ctx.uiConversation.binding(binding);
           const messageEditing = ctx.get("chatMessageEditing");
+          const turnDiffs = ctx.get("chatTurnDiffs");
           return {
             connection: ctx.get("connection") as ConnectionHandle,
             hooks: { presentation },
@@ -299,6 +300,9 @@ export function apply(ctx: Context): void {
               },
               read: () => chatScrollPositions.get(sessionId) ?? null,
             },
+            loadTurnDiffs: turnDiffs
+              ? (turn, path) => turnDiffs.read(sessionId, turn, path)
+              : undefined,
             editMessage: messageEditing
               ? (seq, text) => messageEditing.send(sessionId, seq, text)
               : undefined,

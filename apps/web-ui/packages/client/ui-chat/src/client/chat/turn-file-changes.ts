@@ -1,12 +1,13 @@
 /** Per-Turn file totals, separate from individual edit/write call details. */
 import { useSyncExternalStore } from "react";
+import type { WebTurnFileSummary } from "@codexhost/shared-contracts";
 import { diffTotals, type DiffHunk } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ChatNodeStore } from "../contract/snapshot.ts";
 import type { ChatViewSlotProps } from "../contract/slots.ts";
 
 declare module "@deepseek-ai/dsh-session-projection/types" {
   interface SessionProjectionMap {
-    codexhostTurnChanges: Readonly<Record<string, readonly DiffHunk[]>>;
+    codexhostTurnChanges: Readonly<Record<string, readonly WebTurnFileSummary[]>>;
   }
 }
 
@@ -15,7 +16,8 @@ export interface FileChange {
   readonly path: string;
   readonly added: number;
   readonly removed: number;
-  readonly hunks: readonly DiffHunk[];
+  readonly hunks?: readonly DiffHunk[];
+  readonly revision?: string;
 }
 
 const NO_FILES: readonly FileChange[] = [];
@@ -69,7 +71,7 @@ export function useTurnFileChanges(
   const tools = useSyncExternalStore(source.subscribe, source.getSnapshot);
   // Cheap to recompute: the source array changes only with its members.
   return summary !== undefined
-    ? fileChanges([{ meta: { diffs: summary } }])
+    ? summary
     : tools === undefined
       ? NO_FILES
       : fileChanges(tools.map((tool) => tool.root));

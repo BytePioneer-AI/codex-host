@@ -256,7 +256,13 @@ GUI 原生路由仍不使用 Codex CLI 插件。共享 home 会共享原生配�
 
 `codexhostTurnChanges`（已加载 Turn 的文件摘要）和 `codexhostToolOutput`（运行中命令的输出尾部）仅通过对应会话的 `session/follow` 发送实时更新，不进入 `session/control` 的增量或初始 baseline，也不混入 `session/list` 或全局目录更新的摘要。每个 follow 快照仍携带该会话全部最新投影；切回会话或重连从快照恢复。多个页面同时 follow 同一会话时，各自都收到更新；未 follow 的页面不接收这两个 key 的实时变化。
 
-follow 使用与 control 相同的 `projection { sessionId, key, value, seq }` 整值替换帧，复用现有按 key 去重和日志水位，不追加日志事件、不推进 assistant-stream revision。客户端经 Gateway 的 journal notification 路径应用到原有投影存储；同一流中的实时帧允许相同 seq 的最新值替换旧值，较低水位不能覆盖较高水位；follow 开场快照仅对这两个聊天 key 接受相同 seq 的替换，其他 key 仍保留跨通道的较高水位优先规则。control baseline 只合并其携带的全局 key，不清除 follow 所持有的聊天投影。侧栏、标题、模型、权限等其他投影仍通过 control 发给所有页面，运行状态沿用原有目录和状态事件。
+follow 使用与 control 相同的 `projection { sessionId, key, value, seq }` 整值替换帧，复用现有按 key 去重和日志水位，不追加日志事件、不推进 assistant-stream revision。客户端经 Gateway 的 journal notification 路径应用到原有投影存储；同一流中的实时帧允许相同 seq 的最新值替换旧值，较低水位不能覆盖较高水位；follow 开场快照仅对这两个聊天 key 接受相同 seq 的替换，其他 key 仍保留跨通道的较高水位优先规则。control baseline 丢弃 cached 行，并按水位清除已经消失的全局 key；缺省的 follow 聊天投影不在它的清除范围内。侧栏、标题、模型、权限等其他投影仍通过 control 发给所有页面，运行状态沿用原有目录和状态事件。
+
+### 累计文件差异按需读取
+
+`codexhostTurnChanges` 的快照和实时帧只携带各 Turn 的文件路径、增减行数及内容 revision，不携带 `oldText` / `newText` 全文。摘要统计沿用差异卡片的行比较和大比较上限；revision 用于发现路径与行数未变、内容已变的情况。运行中的文件列表与 +/- 统计仍实时更新。
+
+展开某个文件时，通过现有认证 RPC `codexhost/turnDiffs` 请求该会话、该已加载 Turn 和路径的完整差异；只并行请求已展开且尚未取到的文件，部分展开不读取整轮的其他文件；展开整轮时按路径并行读取缺少的差异，不预取全部会话的差异。RPC 沿用 Web 认证与同源检查，重新确认本地 external Thread 归属，并只在该会话的展示窗口内解析 Turn 坐标。未知、未加载或非 external 的目标不能借用其他会话的差异。卡片保留当前版本的已取正文，版本变化重新读取；失败显示错误和重试，不把旧正文当成新版本。各工具原始 edit/write 调用及结果仍保留在历史中，工具级差异查看继续使用其原始记录；按需读取负责累计 Turn 摘要的全文。Web 服务与浏览器须配套更新，旧页面需要刷新。
 
 ### 共享会话归档
 
@@ -271,6 +277,12 @@ Web 的归档和恢复操作调用同一 Host 的 `thread/archive` / `thread/una
 Web 展示和搜索共用 `Host name → 首条用户消息 preview → 执行目录 basename → Thread ID`。正式标题仅 trim，不截断；提示词摘要合并空白，显示前 80 个 Unicode 字符，超出加省略号。目录刷新还通过已有控制流更新曾打开过的 Thread 标题投影，即使当前已取消历史订阅，也不会被浏览器旧的 sequenced 投影挡住；标题更新不额外读取历史。
 
 Host 在原生确认首轮开始后，将首条用户消息的文本规范化并限定为 1024 个 Unicode 字符，保存为 Mapping Store 的 `thread-metadata/<id>.json` 中的 `preview`。它独立于正式 `title`，不会阻止 Codex 后续生成标题，也不覆盖用户改名。列表直接读取摘要，不为列表逐个恢复 Native Session；重启后仍可显示。旧记录在已有历史读取/恢复时按需补齐，补摘要本身不改变会话活跃时间。首条消息没有文本时保存空摘要，不借用后续消息；回滚移除唯一一轮时清除摘要。Web 不新增独立标题模型服务，也不持续同步 Harness 原生改名。
+
+### 页面内最近会话缓存
+
+每个页面在内存中保留最近释放的 **8 个**会话的可显示数据：已加载事件窗口、分页状态和投影值，按最近使用顺序淘汰。阅读锚点仍由 Chat 在页面生命周期内按会话独立保存，不随这 8 个展示缓存的淘汰而丢失。当前仍有引用的运行时不属于这份释放后缓存。切走仍正常释放最后一个引用、销毁 scope / assembler 并取消 follow，不为缓存保活会话运行时或后台订阅。淘汰时也释放对应的 follow 重型投影；关闭页面或控制器销毁即丢弃缓存，不写 IndexedDB、localStorage 或服务器历史。
+
+切回命中缓存的会话时，新运行时通过既有事件窗口替换入口重建 assembler，立即显示缓存正文并恢复阅读位置，同时照常打开完整 follow。等待期间显示轻量“同步中”，阅读、滚动和复制可用，但不触发分页或加载未显示的历史；权威快照就绪后正常恢复分页。编辑、分叉、审批和提问回答在权威快照就绪前不可用。新快照沿用既有完整窗口替换路径，不做增量校准，不将缓存冒充已同步状态。同步失败保留可读内容及错误，历史相关操作仍不可用；未命中、已淘汰或已移除的会话沿用正常首屏加载行为。
 
 ### 历史首屏与按需分页
 

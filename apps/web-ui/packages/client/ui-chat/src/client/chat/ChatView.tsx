@@ -186,6 +186,7 @@ export function ChatView({
   inspectCall,
   chatScroll,
   forkAt,
+  loadTurnDiffs,
   editMessage,
   fileMentions,
   usePresentation,
@@ -291,7 +292,10 @@ export function ChatView({
   const messageEditing = useSentMessageEditing(
     editMessage,
     editTarget?.seq ?? null,
-    running || pendingSubmissions.length > 0 || (inbox?.["next-turn"].length ?? 0) > 0,
+    openState !== "open" ||
+      running ||
+      pendingSubmissions.length > 0 ||
+      (inbox?.["next-turn"].length ?? 0) > 0,
   );
   const editNodeVisible =
     messageEditing.draft &&
@@ -352,7 +356,8 @@ export function ChatView({
       ? latestSteering.source.rpcId
       : (latestSteering?.id ?? null);
   const scroll = useChatScroll({
-    ready: openState === "open",
+    displayReady: openState === "open" || order.length > 0,
+    historyReady: openState === "open",
     order,
     firstSeq,
     lastKey,
@@ -371,6 +376,13 @@ export function ChatView({
 
   return (
     <div className={css.frame}>
+      {openState === "loading" && order.length > 0 && (
+        <div className={css.syncing}>
+          <span role="status" data-history-syncing>
+            {t("chat.syncing")}
+          </span>
+        </div>
+      )}
       {scroll.initialized && (
         <TurnNavigator
           items={railItems}
@@ -383,7 +395,9 @@ export function ChatView({
       <div className={css.root} data-chat-following-tail={scroll.followingTail ? "" : undefined}>
         <div ref={scroll.listRef} className={css.scroll}>
           <div ref={scroll.columnRef} className={css.column} data-chat-flow="">
-            {openState === "loading" && <div className={css.hint}>{t("chat.loadingHistory")}</div>}
+            {openState === "loading" && order.length === 0 && (
+              <div className={css.hint}>{t("chat.loadingHistory")}</div>
+            )}
             {openState === "error" && openError !== null && (
               <div className={css.openError}>
                 {t("chat.loadError", { message: openError.message, code: openError.code })}
@@ -429,6 +443,7 @@ export function ChatView({
                 openSkill={openSkill}
                 inspectCall={inspectCall}
                 forkAt={forkAt}
+                loadTurnDiffs={loadTurnDiffs}
                 messageEditing={messageEditing}
                 loadImage={loadImage}
                 renderMessageImages={renderMessageImages}

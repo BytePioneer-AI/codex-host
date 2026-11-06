@@ -115,6 +115,19 @@
 /* Selection still sets data-selected for details linkage; no outline —
    tool rows match Think chrome (no selected ring). */
 
+.syncing {
+  position: sticky;
+  top: 8px;
+  z-index: 1;
+  align-self: center;
+  height: 0;
+  overflow: visible;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 20px;
+  pointer-events: none;
+}
+
 .hint {
   color: var(--dsw-alias-label-tertiary);
   font-size: var(--dsh-content-font-size-secondary, 13px);

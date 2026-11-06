@@ -10,6 +10,9 @@ import {
   webServeResultSchema,
   webAutostartStateSchema,
   webRelayStateSchema,
+  webTurnDiffsResultSchema,
+  type HarnessCommandCatalog,
+  type ThreadCommandExecuteResult,
   type HarnessSessionImportCandidate,
   type HarnessSessionImportSourcesResult,
   type HarnessSessionListParams,
@@ -232,6 +235,16 @@ export const importApi = {
     ),
 };
 
+/** Cumulative file diffs are scoped to one displayed Session and Turn. */
+export const turnDiffsApi = {
+  read: async (sessionId: string, turn: number, path?: string) =>
+    webTurnDiffsResultSchema.parse(
+      await call("codexhost/turnDiffs", {
+        request: { sessionId, turn, ...(path === undefined ? {} : { path }) },
+      }),
+    ).diffs,
+};
+
 /** Edits address a displayed occurrence; the gateway resolves its native identity. */
 export const sentMessageEditApi = {
   send: (sessionId: string, atSeq: number, text: string) =>
@@ -244,14 +257,11 @@ export const sentMessageEditApi = {
 /** Thread-only discovery; never falls back to a draft Harness query. */
 export const harnessCommandApi = {
   inspect: (sessionId: string) =>
-    call<import("@codexhost/shared-contracts").HarnessCommandCatalog>("codexhost/threadCommands", {
+    call<HarnessCommandCatalog>("codexhost/threadCommands", {
       request: { sessionId },
     }),
   execute: (sessionId: string, commandId: string) =>
-    call<import("@codexhost/shared-contracts").ThreadCommandExecuteResult>(
-      "codexhost/executeThreadCommand",
-      {
-        request: { sessionId, commandId },
-      },
-    ),
+    call<ThreadCommandExecuteResult>("codexhost/executeThreadCommand", {
+      request: { sessionId, commandId },
+    }),
 };

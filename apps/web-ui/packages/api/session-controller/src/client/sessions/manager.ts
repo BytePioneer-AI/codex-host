@@ -15,7 +15,11 @@ import type {
 import { mergeOrderedBaseline } from "../ordered-baseline.ts";
 import { isRemoteFailure } from "@deepseek-ai/dsh-api-gateway/client";
 import { assertNever } from "@deepseek-ai/dsh-util-values";
-import type { RemoteFailure, RemoteResult } from "@deepseek-ai/dsh-typert-protocol";
+import {
+  RemoteError,
+  type RemoteFailure,
+  type RemoteResult,
+} from "@deepseek-ai/dsh-typert-protocol";
 import type { SessionListEntry, TitledSessionSummary } from "./lineage.ts";
 import { flattenLineage } from "./lineage.ts";
 // Type-only merge edge: the title domain's client-namespace outlet declares
@@ -25,6 +29,7 @@ import type {} from "@deepseek-ai/dsh-session-title/client";
 import { Notifier } from "./notifier.ts";
 import { ProjectionValueStore } from "./projection-store.ts";
 import { Session } from "./session.ts";
+import { RecentSessionViews } from "./recent-views.ts";
 import type { SessionRemotes } from "./remotes.ts";
 import type { SessionTarget } from "../contract/sessions.ts";
 
@@ -83,6 +88,7 @@ type SessionListMutation =
 /** Instance cluster + frame entry + the session list. */
 export class SessionManager {
   private readonly sessions = new Map<SessionId, Session>();
+  private readonly recentViews = new RecentSessionViews();
   /** In-flight Session disposals remain here after instances leave `sessions`, so manager disposal can await quiescence. */
   private readonly sessionDisposals = new Set<Promise<void>>();
   /**
@@ -187,6 +193,11 @@ export class SessionManager {
   drop(sessionId: SessionId, expected: Session): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (session !== expected) return Promise.resolve();
+    const view = session.captureView();
+    if (view) {
+      const evicted = this.recentViews.remember(sessionId, view);
+      if (evicted) this.projectionStores.get(evicted)?.discard(WEB_FOLLOW_PROJECTION_KEYS);
+    }
     this.sessions.delete(sessionId);
     this.addresses.delete(sessionId);
     this.pruneEngagement(sessionId, this.retainedIds(this.summaries));
@@ -208,6 +219,7 @@ export class SessionManager {
     await Promise.all(reads.map((read) => read.promise));
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
+    this.recentViews.clear();
     this.addresses.clear();
     for (const session of sessions) void this.startSessionDisposal(session);
     await this.drainSessionDisposals();
@@ -297,6 +309,7 @@ export class SessionManager {
         this.sessions.get(engaged.sessionId)?.handleBlank(false);
       },
       projections: this.projectionStore(sessionId),
+      cachedView: this.recentViews.take(sessionId),
     });
   }
 
@@ -567,6 +580,16 @@ export class SessionManager {
     sessionId: SessionId;
     atSeq?: SessionSeq;
   }): Promise<RemoteResult<{ sessionId: SessionId }>> {
+    const retained = this.sessions.get(opts.sessionId);
+    if (retained && retained.getSnapshot().openState !== "open")
+      return {
+        ok: false,
+        error: new RemoteError(
+          "session/syncing",
+          "Wait for the Session history to finish synchronizing.",
+          {},
+        ),
+      };
     const source = this.summaries.find((s) => s.sessionId === opts.sessionId);
     const result = await this.remote.session.fork({
       sessionId: opts.sessionId,
@@ -730,7 +753,10 @@ export class SessionManager {
         : { kind: "remove", sessionId },
     );
     if (durableSubagent) this.sessions.get(sessionId)?.handleRunning(false);
-    else this.sessions.get(sessionId)?.handleRemoved();
+    else {
+      this.recentViews.delete(sessionId);
+      this.sessions.get(sessionId)?.handleRemoved();
+    }
     const catalog = this.projectionStores.get(sessionId)?.values().subagentCatalog;
     if (!durableSubagent && (catalog === undefined || catalog.length === 0)) {
       this.projectionStores.delete(sessionId);

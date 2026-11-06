@@ -38,11 +38,14 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
   node,
   openFile,
   forkAt,
+  loadTurnDiffs,
   renderSlot,
   t,
   useChat,
+  useSession,
   useProjection,
 }: TurnTailNodeViewProps) {
+  const historyReady = useSession((snapshot) => snapshot.openState === "open");
   const forking = useRef(false);
   const [forkPending, setForkPending] = useState(false);
   const [forkError, setForkError] = useState<string>();
@@ -92,7 +95,13 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
       data-turn-tail={data.turn}
       data-actions-reveal={endsWithResponse ? "always" : "hover"}
     >
-      <TurnChangesCard nodeStore={nodeStore} turn={data.turn} t={t} useProjection={useProjection} />
+      <TurnChangesCard
+        nodeStore={nodeStore}
+        turn={data.turn}
+        t={t}
+        useProjection={useProjection}
+        loadTurnDiffs={loadTurnDiffs}
+      />
       {tail}
       <MessageIconActions
         text={assistantText(closing.blocks)}
@@ -101,7 +110,7 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
         // The branch action owns boundary resolution: it sends the real
         // turn/end seq it already has, and the Host cuts exactly there.
         onBranch={() => {
-          if (forking.current) return;
+          if (forking.current || !historyReady) return;
           forking.current = true;
           setForkPending(true);
           setForkError(undefined);
@@ -114,7 +123,9 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
               setForkPending(false);
             });
         }}
-        branchUnavailable={forkPending || data.branchUnavailable || hasLaterChatNode}
+        branchUnavailable={
+          !historyReady || forkPending || data.branchUnavailable || hasLaterChatNode
+        }
         className={css.actions}
         extraActions={assistantActions}
         t={t}

@@ -9,6 +9,8 @@ import type { ChatViewport } from "./use-chat-viewport.ts";
 
 /** History availability and loading operations for the committed Chat window. */
 export interface ChatNavigationInput extends Pick<ChatViewSlotProps, "loadOlder" | "loadThrough"> {
+  /** Only an authoritative window can admit history I/O. */
+  readonly historyReady: boolean;
   readonly firstSeq: ChatNode["anchorSeq"] | null;
   readonly hasMore: boolean;
   readonly loadingOlder: boolean;
@@ -80,6 +82,7 @@ export class ChatNavigation {
       if (this.input.loadingOlder) this.viewport.beginPreserving(landing.position);
       return;
     }
+    if (!this.input.historyReady) return;
     this.cancel();
     this.viewport.beginPreserving();
     this.reading.pauseFollowing();
@@ -108,7 +111,7 @@ export class ChatNavigation {
 
   /** Request one older page while retaining the current semantic position. */
   readonly loadEarlier = (): void => {
-    if (!this.input.hasMore || this.input.loadingOlder) return;
+    if (!this.input.historyReady || !this.input.hasMore || this.input.loadingOlder) return;
     this.requestedHead = this.input.firstSeq;
     this.cancel();
     this.viewport.beginPaging();
@@ -153,7 +156,7 @@ export class ChatNavigation {
   /** Land, retry, or complete the current jump against the committed window. */
   reconcile(): void {
     const jump = this.jump;
-    if (jump === null || this.reading.pending) return;
+    if (!this.input.historyReady || jump === null || this.reading.pending) return;
     if (jump.phase === "loading") {
       if (jump.landing === "pending") this.landJump(false);
       return;

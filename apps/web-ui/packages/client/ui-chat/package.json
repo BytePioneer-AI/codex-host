@@ -17,6 +17,7 @@
     "./package.json": "./package.json"
   },
   "dependencies": {
+    "@codexhost/shared-contracts": "*",
     "@deepseek-ai/dsh-client-store": "*",
     "@deepseek-ai/dsh-util-workspace-path": "*",
     "react": "^18.2.0",

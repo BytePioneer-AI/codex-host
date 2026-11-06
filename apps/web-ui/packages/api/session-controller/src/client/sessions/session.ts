@@ -1,4 +1,4 @@
-// Sessions remain resident after creation so their open Remote sources keep running off-screen.
+/** One retained Session runtime; recent display data survives separately after release. */
 
 import type { Context } from "@deepseek-ai/cordis";
 import { WEB_FOLLOW_PROJECTION_KEYS } from "@codexhost/shared-contracts";
@@ -47,6 +47,7 @@ import { RemoteError } from "@deepseek-ai/dsh-typert-protocol";
 import type { RemoteFailure, RemoteResult } from "@deepseek-ai/dsh-typert-protocol";
 import type { SessionRemotes } from "./remotes.ts";
 import { ProjectionValueStore } from "./projection-store.ts";
+import type { SessionViewData } from "./recent-views.ts";
 import type { ProjectionsBaseline } from "./projection-store.ts";
 import { resolvedClientTimeZone } from "../time-zone.ts";
 import { ClientAssistantStream, type ClientAssistantStreamResult } from "./assistant-stream.ts";
@@ -98,6 +99,8 @@ export interface SessionOptions {
    * private store (bare object-layer construction).
    */
   projections?: ProjectionValueStore;
+  /** Detached display data, replaced by the next authoritative follow snapshot. */
+  cachedView?: SessionViewData | undefined;
 }
 
 /**
@@ -125,6 +128,7 @@ export class Session implements SessionFace {
   private jumpPromise: Promise<void> | null = null;
   private pendingHistory: PendingHistory | null = null;
   private readonly stopObservingInbox: () => void;
+  private readonly onEngaged: SessionOptions["onEngaged"];
   private readonly assistantStream = new ClientAssistantStream();
   private running = false;
   private address: SubagentAddress | undefined;
@@ -202,9 +206,18 @@ export class Session implements SessionFace {
   constructor(
     readonly sessionId: SessionId,
     private readonly remote: SessionRemotes,
-    private readonly options: SessionOptions = {},
+    options: SessionOptions = {},
   ) {
+    this.onEngaged = options.onEngaged;
     this.projections = options.projections ?? new ProjectionValueStore();
+    if (options.cachedView) {
+      const view = options.cachedView;
+      this.baseSeq = view.baseSeq;
+      this.hasMore = view.hasMore;
+      this.lastSyncedAt = view.lastSyncedAt;
+      this.projections.applyCached(view.projections);
+      this.eventSource.replace(view.entries, view.hasMore);
+    }
     this.address = options.address;
     this.parentAvailable = options.parentAvailable;
     this.notifier = new Notifier(() => {
@@ -351,7 +364,7 @@ export class Session implements SessionFace {
       this.blankBit = false;
       this.notifier.markDirty();
     }
-    this.options.onEngaged?.(this);
+    this.onEngaged?.(this);
     return result;
   }
 
@@ -570,6 +583,18 @@ export class Session implements SessionFace {
   getSnapshot(): SessionSnapshot {
     this.notifier.ensureFresh();
     return this.snapshotCache;
+  }
+
+  /** Capture only display data before releasing the runtime and its transport. */
+  captureView(): SessionViewData | undefined {
+    if (this.lastSyncedAt === undefined || this.removed) return;
+    return {
+      entries: this.eventSource.getSnapshot().entries,
+      baseSeq: this.baseSeq,
+      hasMore: this.hasMore,
+      projections: this.projections.values(),
+      lastSyncedAt: this.lastSyncedAt,
+    };
   }
 
   // ---- Manager-only entry points (@internal; never called by the UI) ----

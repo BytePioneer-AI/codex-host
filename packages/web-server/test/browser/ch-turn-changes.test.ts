@@ -52,7 +52,23 @@ it(
     t.after(() => browser.close());
     const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
     const errors: string[] = [];
+    const diffRequests: Array<{ turn: number; path?: string }> = [];
+    const initialSummaries: unknown[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    page.on("request", (request) => {
+      if (request.url().endsWith("/api/codexhost/turnDiffs"))
+        diffRequests.push(request.postDataJSON().payload.args.request);
+    });
+    page.on("websocket", (socket) =>
+      socket.on("framereceived", ({ payload }) => {
+        const frame = JSON.parse(String(payload));
+        if (
+          frame.value?.type === "snapshot" &&
+          frame.value.projections?.values?.codexhostTurnChanges
+        )
+          initialSummaries.push(frame.value.projections.values.codexhostTurnChanges);
+      }),
+    );
     await page.goto(url);
     const folder = page.getByRole("treeitem").filter({ hasText: /^project$/u });
     await folder.waitFor();
@@ -77,9 +93,18 @@ it(
     const firstFile = multiple
       .getByRole("button")
       .filter({ has: page.locator('[data-path-label][title$="file-0.ts"]') });
+    assert.equal(
+      diffRequests.length,
+      0,
+      "opening a Session and listing files does not fetch diff bodies",
+    );
+    assert.ok(initialSummaries.length > 0);
+    assert.equal(/oldText|newText/u.test(JSON.stringify(initialSummaries)), false);
     await firstFile.click();
     await expect(firstFile).toHaveAttribute("aria-expanded", "true");
     await expect(multiple.getByText("new 0", { exact: true })).toBeVisible();
+    assert.equal(diffRequests.length, 1);
+    assert.equal(diffRequests[0]?.path, "src/long-directory/components/file-0.ts");
     for (const line of addedLines) {
       await expect(multiple.getByText(line, { exact: true })).toBeVisible();
     }
@@ -90,6 +115,11 @@ it(
     await expect(multiple.getByText("new 0", { exact: true })).toHaveCount(0);
     await multiple.getByRole("button", { name: "View changes", exact: true }).click();
     await expect(multiple.getByText("new 3", { exact: true })).toBeVisible();
+    assert.deepEqual(
+      diffRequests.map((request) => request.path).sort(),
+      Array.from({ length: 4 }, (_, index) => `src/long-directory/components/file-${index}.ts`),
+      "expanding a whole Turn requests only its missing files by path",
+    );
     await multiple.getByRole("button", { name: "Hide changes", exact: true }).click();
     await expect(multiple.getByText("new 3", { exact: true })).toHaveCount(0);
     await single.getByRole("button", { name: "View changes", exact: true }).click();

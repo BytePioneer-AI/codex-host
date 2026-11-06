@@ -29,9 +29,11 @@ import type { ObservableSnapshot } from "@deepseek-ai/dsh-client-store";
 import type {
   MarkdownFileMentions,
   MarkdownLinkResolver,
+  DiffHunk,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type {} from "@deepseek-ai/dsh-client-ui-layout/client";
 import type { createChatStore } from "../stores.ts";
+import type { ChatKey } from "../locale.ts";
 import type { ChatPresentationPolicy } from "../presentation-policy.ts";
 import type { ToolCallId } from "./store.ts";
 import type { ChatConversationViewNode, ChatNode, ChatNodeKind } from "./chat-nodes.ts";
@@ -199,6 +201,9 @@ export interface SentMessageEditing {
 
 declare module "@deepseek-ai/cordis" {
   interface Context {
+    chatTurnDiffs: {
+      read(sessionId: string, turn: number, path?: string): Promise<readonly DiffHunk[]>;
+    };
     chatMessageEditing: {
       send(sessionId: string, atSeq: number, text: string): Promise<SentMessageEditReceipt>;
     };
@@ -220,6 +225,7 @@ export interface ChatNodeOwnerProps {
   openFile: (path: string, options?: OpenFileOptions) => void;
   inspectCall: ((callId: ToolCallId) => void) | undefined;
   forkAt: (seq: number) => Promise<void>;
+  loadTurnDiffs?: ((turn: number, path?: string) => Promise<readonly DiffHunk[]>) | undefined;
   messageEditing?: SentMessageEditing | undefined;
   /**
    * Session-authorized image loader, down-threaded from the Chat view so a
@@ -312,6 +318,7 @@ export interface ChatViewInjected {
   };
   forkAt: (seq: number) => Promise<void>;
   editMessage?: ((seq: number, text: string) => Promise<SentMessageEditReceipt>) | undefined;
+  loadTurnDiffs?: ((turn: number, path?: string) => Promise<readonly DiffHunk[]>) | undefined;
   fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined;
 }
 
@@ -334,7 +341,7 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
 
   interface LocaleNamespaceMap {
     /** Chat target, transcript node, statistics, and details copy. */
-    chat: import("../locale.ts").ChatKey;
+    chat: ChatKey;
   }
 
   interface SlotMap {

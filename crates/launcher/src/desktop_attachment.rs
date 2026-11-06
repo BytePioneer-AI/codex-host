@@ -1,4 +1,3 @@
-#[cfg(target_os = "windows")]
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
@@ -106,17 +105,44 @@ pub(super) fn endpoint_ready(port: u16, timeout: Duration) -> bool {
     .is_ok()
 }
 
+const NPM_NODE_PATH_ENV: &str = "CODEXHOST_NPM_NODE_PATH";
+
+/// Node binaries that may run Host Runtime under Desktop.
+///
+/// Installer layouts use `configured_node`. Launcher-managed npm installs keep
+/// Desktop Controller on that path (often Desktop `cua_node`) while the Shim
+/// starts Host Runtime with `CODEXHOST_NPM_NODE_PATH` when set. Ready must
+/// accept either so npm launches are not gated on a later MCP `cua_node`.
+pub(super) fn host_chain_node_candidates(
+    configured_node: &Path,
+    npm_node: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut nodes = vec![configured_node.to_path_buf()];
+    if let Some(path) = npm_node.filter(|path| path.as_path() != configured_node) {
+        nodes.push(path);
+    }
+    nodes
+}
+
 pub(super) fn wait_for_host_chain(
     desktop_pid: u32,
     options: &ResolvedLaunchOptions,
     timeout: Duration,
 ) -> Result<bool, Box<dyn Error>> {
     let started = Instant::now();
+    let host_nodes = host_chain_node_candidates(
+        &options.node,
+        env::var_os(NPM_NODE_PATH_ENV).map(PathBuf::from),
+    );
     while started.elapsed() < timeout {
-        if descendant_executable_exists(desktop_pid, &options.shim)?
-            && descendant_executable_exists(desktop_pid, &options.node)?
-        {
-            return Ok(true);
+        if !descendant_executable_exists(desktop_pid, &options.shim)? {
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+        for node in &host_nodes {
+            if descendant_executable_exists(desktop_pid, node)? {
+                return Ok(true);
+            }
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -247,6 +273,25 @@ fn recorded_launcher_is_current<E>(inspected: Result<PathBuf, E>, expected: &Pat
 mod tests {
     use super::*;
     use std::env;
+
+    #[test]
+    fn host_chain_node_candidates_include_npm_node_when_distinct() {
+        let configured =
+            PathBuf::from("/Applications/Codex.app/Contents/Resources/cua_node/bin/node");
+        let npm = PathBuf::from("/opt/homebrew/bin/node");
+        assert_eq!(
+            host_chain_node_candidates(&configured, Some(npm.clone())),
+            vec![configured.clone(), npm]
+        );
+        assert_eq!(
+            host_chain_node_candidates(&configured, Some(configured.clone())),
+            vec![configured.clone()]
+        );
+        assert_eq!(
+            host_chain_node_candidates(&configured, None),
+            vec![configured]
+        );
+    }
 
     fn descriptor(port: u16) -> RuntimeDescriptor {
         RuntimeDescriptor::new(10, port, "0123456789abcdef0123456789abcdef".into())

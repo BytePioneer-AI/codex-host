@@ -11,6 +11,7 @@ import {
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { WebAccessState, WebNetworkAccessUrl } from "@codexhost/shared-contracts";
 import { QrCode } from "./QrCode.tsx";
+import { RelayControl } from "./RelayControl.tsx";
 import css from "./ConnectDevicesSection.module.css";
 
 type Translate = PropsLocale<"codexhostImport">["t"];
@@ -26,10 +27,14 @@ const LABEL = {
 } as const;
 const HINT: Partial<Record<Kind, Parameters<Translate>[0]>> = {
   public: "connectDevices.kindPublicHint",
-  relay: "connectDevices.relay.hint",
   "tailscale-funnel": "connectDevices.kindFunnelHint",
   virtual: "connectDevices.kindVirtualHint",
 };
+const SUMMARY = {
+  "tailscale-https": "connectDevices.httpsSummary",
+  relay: "connectDevices.relay.summary",
+  lan: "connectDevices.lanSummary",
+} as const;
 const PREFERENCE: Kind[] = [
   "public",
   "relay",
@@ -45,6 +50,7 @@ export function ConnectionCard({
   busy,
   restarting,
   onEnable,
+  onRelay,
   onRefresh,
   t,
 }: {
@@ -52,10 +58,11 @@ export function ConnectionCard({
   busy: boolean;
   restarting: boolean;
   onEnable: (method: "direct" | "https") => void;
+  onRelay: (enabled: boolean) => void;
   onRefresh: () => void;
   t: Translate;
 }): ReactNode {
-  const { networkUrls, tailscale, background, secret } = data;
+  const { networkUrls, tailscale, background, secret, relay } = data;
   const addresses = [
     ...networkUrls,
     ...(data.directCandidates ?? []).filter(
@@ -63,11 +70,13 @@ export function ConnectionCard({
     ),
   ];
   const [chosenMethod, setMethod] = useState<Kind>();
+  // An enabled relay is shown while it prepares, before its address becomes usable.
+  const relayOn = relay !== undefined && relay.state.status !== "off";
   const method =
-    (chosenMethod === "relay" && !addresses.some((entry) => entry.kind === "relay")
-      ? undefined
-      : chosenMethod) ??
-    PREFERENCE.find((kind) => networkUrls.some((entry) => entry.kind === kind)) ??
+    (chosenMethod === "relay" && relay === undefined ? undefined : chosenMethod) ??
+    PREFERENCE.find(
+      (kind) => networkUrls.some((entry) => entry.kind === kind) || (kind === "relay" && relayOn),
+    ) ??
     (addresses.some((entry) => entry.kind === "lan") ? "lan" : "tailscale-https");
   const [selectedUrl, setSelectedUrl] = useState<string>();
   const [enlarged, setEnlarged] = useState(false);
@@ -90,6 +99,7 @@ export function ConnectionCard({
   const extras = PREFERENCE.filter(
     (kind) =>
       kind !== "lan" &&
+      kind !== "relay" &&
       kind !== "tailscale-https" &&
       kind !== "tailscale" &&
       addresses.some((entry) => entry.kind === kind),
@@ -141,10 +151,8 @@ export function ConnectionCard({
           )}
           <span className={css.routeAddress}>{routeHost(kind)}</span>
         </span>
-        {(kind === "lan" || kind === "tailscale-https") && (
-          <span className={css.meta}>
-            {t(kind === "lan" ? "connectDevices.lanSummary" : "connectDevices.httpsSummary")}
-          </span>
+        {(kind === "lan" || kind === "tailscale-https" || kind === "relay") && (
+          <span className={css.meta}>{t(SUMMARY[kind])}</span>
         )}
       </span>
     </label>
@@ -172,7 +180,16 @@ export function ConnectionCard({
           )}
         </div>
         <div className={css.connectionDetails}>
-          {(!ready || hint !== undefined) && (
+          {method === "relay" && relay !== undefined && (
+            <RelayControl
+              relay={relay}
+              busy={busy}
+              onChange={onRelay}
+              onRefresh={onRefresh}
+              t={t}
+            />
+          )}
+          {method !== "relay" && (!ready || hint !== undefined) && (
             <div
               className={css.connectionHelp}
               data-tailscale-status={
@@ -352,6 +369,7 @@ export function ConnectionCard({
                 </div>
               )}
             </div>
+            {relay !== undefined && option("relay")}
             {option("lan")}
           </div>
         </fieldset>

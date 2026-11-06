@@ -59,29 +59,37 @@ async function open(page: Page, login: URL) {
   await page.locator("[data-connect-devices]").waitFor();
 }
 
+/** The relay is one of the connection methods; choosing it only shows its state. */
+async function chooseRelay(page: Page) {
+  await page.locator('[data-connect-route="relay"] input').check();
+  return page.locator("[data-relay-status]");
+}
+
 it(
-  "toggles the real Relay without restarting and hides controls from a phone",
+  "enables the real Relay from its connection method and hides it from a phone",
   { timeout: 60_000 },
   async (t) => {
     const f = await fixture(t);
     await open(f.page, f.login);
-    const control = f.page.locator("[data-relay-status]");
-    const toggle = control.getByRole("switch", { name: "Relay access" });
-    assert.equal(await toggle.isChecked(), false);
-    await toggle.click();
+    assert.equal(await f.page.locator("[data-relay-status]").count(), 0);
+    const control = await chooseRelay(f.page);
+    await f.page.locator('[data-relay-status="off"]').waitFor();
+    const intro = (await control.textContent()) ?? "";
+    assert.ok(intro.includes("official codexhost encrypted relay"));
+    assert.ok(intro.includes(f.data.path("remote-relay/identity.pem")));
+    await control.getByRole("button", { name: "Enable relay" }).click();
     for (let i = 0; (await f.access()).relay?.state.status !== "missing-certificate" && i < 50; i++)
       await delay(20);
     await control.getByRole("button", { name: "Refresh status" }).click();
     await f.page.locator('[data-relay-status="missing-certificate"]').waitFor();
     await control.getByText(/Preparing…|Temporarily unavailable/u).waitFor();
-    assert.ok((await control.textContent())?.includes(f.data.path("remote-relay/identity.pem")));
     assert.equal(
       await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,
     );
     const bounds = await control.boundingBox();
     assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 375);
-    await toggle.click();
+    await control.getByRole("button", { name: "Turn off relay" }).click();
     await f.page.locator('[data-relay-status="off"]').waitFor();
     const state = await f.access();
     assert.equal(state.relay?.state.status, "off");
@@ -98,7 +106,7 @@ it(
     await phone.getByRole("button", { name: "Settings", exact: true }).click();
     await phone.getByText("Connect devices", { exact: true }).first().click();
     await phone.locator('[data-connect-notice="non-local"]').waitFor();
-    assert.equal(await phone.getByRole("switch", { name: "Relay access" }).count(), 0);
+    assert.equal(await phone.locator('[data-connect-route="relay"]').count(), 0);
   },
 );
 
@@ -136,7 +144,7 @@ it(
           },
         };
         await open(f.page, f.login);
-        const control = f.page.locator("[data-relay-status]");
+        const control = await chooseRelay(f.page);
         const text = (await control.textContent()) ?? "";
         const retry = await f.page.evaluate((date) => new Date(date).toLocaleString(), retryAt);
         // Certificates stay out of sight unless a pause needs the user.
@@ -144,15 +152,14 @@ it(
           assert.ok(!text.includes(hidden), `${status}/${phase} shows ${hidden}`);
         const expected =
           phase === "paused"
-            ? "Needs attention. Fix the issue below, then turn relay access off and on."
+            ? "Needs attention. Fix the issue below, then turn the relay off and enable it again."
             : status === "connected"
-              ? "On. Phones can connect at the address below."
+              ? "Connect across networks without an extra phone app."
               : phase === "failed"
                 ? `Temporarily unavailable. Retrying automatically at ${retry}.`
                 : "Preparing… This usually takes under a minute.";
         assert.ok(text.includes(expected), `${status}/${phase}: ${text}`);
         assert.equal(text.includes(detail), phase === "paused");
-        assert.equal(text.includes("https://computer.relay.test/"), status === "connected");
         assert.equal(
           await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
           true,
@@ -176,7 +183,7 @@ it(
       route.fulfill({ json: { result: { ok: true, value: shown } } }),
     );
     const states: Array<[WebRelayState, string]> = [
-      [{ status: "off" }, "Off"],
+      [{ status: "off" }, "official codexhost encrypted relay"],
       [{ status: "connecting" }, "Preparing…"],
       [
         {
@@ -184,7 +191,7 @@ it(
           url: "https://computer.relay.test/",
           certificate: { issuing: false, expiresAt: "2027-01-01T00:00:00Z" },
         },
-        "On. Phones can connect",
+        "Connect across networks",
       ],
       [
         {
@@ -201,11 +208,10 @@ it(
     for (const [state, text] of states) {
       shown = { ...base, relay: { identityPath, state } };
       await open(f.page, f.login);
-      assert.ok((await f.page.locator("[data-relay-status]").textContent())?.includes(text));
-      assert.equal(
-        await f.page.getByRole("switch", { name: "Relay access" }).isChecked(),
-        state.status !== "off",
-      );
+      const control = await chooseRelay(f.page);
+      assert.ok((await control.textContent())?.includes(text));
+      const action = state.status === "off" ? "Enable relay" : "Turn off relay";
+      assert.equal(await control.getByRole("button", { name: action }).count(), 1);
     }
     const urls: WebAccessState["networkUrls"] = [
       { kind: "public", url: "https://public.test/" },
@@ -219,13 +225,17 @@ it(
       shown = {
         ...base,
         networkUrls: urls.slice(i).reverse(),
+        // The server lists the relay address exactly while the relay is connected.
         relay: {
           identityPath,
-          state: {
-            status: "connected",
-            url: defined(urls[1]).url,
-            certificate: { issuing: false, expiresAt: "2027-01-01T00:00:00Z" },
-          },
+          state:
+            i <= 1
+              ? {
+                  status: "connected",
+                  url: defined(urls[1]).url,
+                  certificate: { issuing: false, expiresAt: "2027-01-01T00:00:00Z" },
+                }
+              : { status: "off" },
         },
       };
       await open(f.page, f.login);
@@ -236,7 +246,7 @@ it(
     }
     shown = { ...base, relay: undefined };
     await open(f.page, f.login);
-    assert.equal(await f.page.getByRole("switch", { name: "Relay access" }).count(), 0);
+    assert.equal(await f.page.locator('[data-connect-route="relay"]').count(), 0);
   },
 );
 

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Button, Switch } from "@deepseek-ai/dsh-client-ui-primitives";
+import { Button, IconCheckCircleOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { WebAccessState } from "@codexhost/shared-contracts";
 import css from "./ConnectDevicesSection.module.css";
@@ -17,6 +17,7 @@ export function relayPreparing(state: RelayState): boolean {
   );
 }
 
+/** The relay's part of the connection card: what it is before enabling, then its state. */
 export function RelayControl({
   relay,
   busy,
@@ -34,46 +35,50 @@ export function RelayControl({
   const failure = "certificate" in state ? state.certificate.failure : undefined;
   // Renewal runs while the current certificate still works, so only a pause needs the user.
   const paused = failure?.paused === true;
-  const message =
-    state.status === "stopped"
+  const usable = state.status === "connected" && !paused;
+  const message = usable
+    ? t("connectDevices.relay.hint")
+    : state.status === "stopped"
       ? t(`connectDevices.relay.${state.reason}`)
       : paused
         ? t("connectDevices.relay.paused")
-        : state.status === "off" || state.status === "connected"
-          ? t(`connectDevices.relay.${state.status}`)
+        : state.status === "off"
+          ? t("connectDevices.relay.off")
           : relayPreparing(state)
             ? t("connectDevices.relay.preparing")
             : t("connectDevices.relay.unavailable", {
                 date: new Date(failure?.retryAt ?? "").toLocaleString(),
               });
   return (
-    <div className={css.manageRow} data-relay-status={state.status}>
-      <div className={css.manageText}>
-        <span className={css.manageTitle}>{t("connectDevices.relay.title")}</span>
-        <span className={css.notice} role="status">
-          {message}
-        </span>
-        {paused && (
-          <span className={css.meta}>
-            {failure.detail ?? t("connectDevices.relay.unreachable")}
-          </span>
+    <div className={css.connectionHelp} data-relay-status={state.status}>
+      <p className={usable ? css.ready : css.notice} role="status">
+        {usable && <IconCheckCircleOutlineRegular />}
+        <span>{message}</span>
+      </p>
+      {paused && (
+        <p className={css.meta}>{failure.detail ?? t("connectDevices.relay.unreachable")}</p>
+      )}
+      {state.status === "off" && (
+        <p className={css.meta}>{t("connectDevices.relay.identity", { path: identityPath })}</p>
+      )}
+      <div className={css.actions}>
+        {state.status === "off" ? (
+          <Button variant="primary" disabled={busy} aria-busy={busy} onClick={() => onChange(true)}>
+            {t(busy ? "connectDevices.preparing" : "connectDevices.relay.enable")}
+          </Button>
+        ) : (
+          <>
+            {!usable && (
+              <Button variant="outline" disabled={busy} onClick={onRefresh}>
+                {t("connectDevices.refresh")}
+              </Button>
+            )}
+            <Button variant="outline" disabled={busy} onClick={() => onChange(false)}>
+              {t("connectDevices.relay.disable")}
+            </Button>
+          </>
         )}
-        {state.status === "connected" && <span className={css.meta}>{state.url}</span>}
       </div>
-      <div className={css.manageActions}>
-        <Button variant="outline" disabled={busy} onClick={onRefresh}>
-          {t("connectDevices.refresh")}
-        </Button>
-        <Switch
-          label={t("connectDevices.relay.title")}
-          checked={state.status !== "off"}
-          disabled={busy}
-          onChange={onChange}
-        />
-      </div>
-      <span className={`${css.meta} ${css.identityNote}`}>
-        {t("connectDevices.relay.identity", { path: identityPath })}
-      </span>
     </div>
   );
 }

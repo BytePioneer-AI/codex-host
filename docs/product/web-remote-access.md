@@ -11,7 +11,7 @@
 | [同一 Wi-Fi](#同一-wi-fi) | 在家或办公室，临时连接 | 无 | 否（HTTP） | 同一网络的设备 | 页面点击启用 |
 | [Tailscale HTTPS](#tailscale-https推荐) | 只有自己的设备，跨网络使用（推荐） | 手机和电脑都装 Tailscale | 是 | tailnet 策略允许的设备 | 页面点击启用 |
 | [Tailscale IP](#tailscale-ip) | 已有 Tailscale，暂未开启 HTTPS | 手机和电脑都装 Tailscale | Tailscale 网络加密，Web 本身是 HTTP | tailnet 策略允许的设备 | 页面点击启用 |
-| [Relay 中转](#relay-中转) | 跨网络使用，手机不装 App | 自备 Relay、域名和公网 443，电脑自动申请证书 | 是，TLS 在电脑上解开 | 互联网上的任何人 | `--relay` + 页面开关 |
+| [Relay 中转](#relay-中转) | 跨网络使用，手机不装 App | 自备 Relay、域名和公网 443，电脑自动申请证书 | 是，TLS 在电脑上解开 | 互联网上的任何人 | `--relay` + 连接方式中启用 |
 | [Cloudflare Tunnel](#cloudflare-tunnel) | 有 Cloudflare 域名，手机不想装 App | 域名、`cloudflared` | 是 | 互联网上的任何人 | 命令行 |
 | [Tailscale Funnel](#tailscale-funnel) | 手机不装 Tailscale，也没有域名 | 电脑装 Tailscale，策略允许 Funnel | 是 | 互联网上的任何人 | 命令行 |
 | [nginx](#nginx) | 已有证书和反向代理 | nginx、域名、证书 | 是 | 取决于 DNS 和防火墙 | 配置文件 |
@@ -41,7 +41,7 @@
 
 在这台电脑上打开“设置 → 连接设备”，选择连接方式后用手机相机扫码，或点“复制链接”发到手机。二维码和复制的链接都包含令牌，页面上不显示完整令牌。
 
-选择方式、切换地址、打开页面和刷新状态都不会改变网络配置。IP / Tailscale HTTPS 通过“启用并显示二维码”开启；中转通过独立开关开启。
+选择方式、切换地址、打开页面和刷新状态都不会改变网络配置。IP / Tailscale HTTPS 通过“启用并显示二维码”开启；“codexhost 中转”在选中后点击“启用中转”开启，并可在同一处单独关闭。
 
 ### 同一 Wi-Fi
 
@@ -93,12 +93,12 @@ Web 本身走 HTTP，由 Tailscale 网络加密传输。能开启 HTTPS 时优�
 电脑主动连接 Relay，手机通过 `https://<id>.<中转域名>/` 访问，不需要安装额外 App。Relay 转发加密字节，TLS 在电脑上的 Web 进程解开，不新开本地监听端口。
 
 - 安装版用 `codexhost web --relay <控制主机名>` 保存控制地址；传 `--relay ""` 清除。配置变更按其他启动选项重启 Web。源码预览用 `npm start web -- --relay <控制主机名>`，同样保存中转地址。
-- 没有内置官方地址。配置后，本机“连接设备”页才显示中转开关。开关默认关闭，状态保存为 `service.json` 的 `relayEnabled`；切换即时生效，不重启 Web 或 Host。`--no-auth` 时不会连接，也不能开启。
+- 没有内置官方地址。配置后，本机“连接设备”页的“连接方式”才列出“codexhost 中转”（排在 Tailscale 与同一 Wi‑Fi 之间）。中转默认关闭，选中后显示官方加密中转的说明和身份密钥位置，点击启用才注册和申请证书；状态保存为 `service.json` 的 `relayEnabled`；切换即时生效，不重启 Web 或 Host。`--no-auth` 时不会连接，也不能开启。
 - 状态按手机能否访问显示：关闭、准备中（连接、注册和首次申请证书，通常一分钟内完成，页面自动刷新）、已开启（附地址）、暂时无法使用（附自动重试时间）、需要处理（证书申请暂停，附证书机构的说明）和已停止。证书有效期与后台续期不显示。也可手动“刷新状态”；只有已开启的地址参与二维码选择。
 - 首次开启生成 `<web-data>/remote-relay/identity.pem`（Ed25519 PKCS#8，权限 0600）。地址由公钥派生，重启、更新沿用同一文件。不要分享私钥；文件丢失或删除后重新开启会得到新地址，旧地址无法找回。
 - 注册成功后，电脑自动向 Let's Encrypt 申请证书，用经 Relay 转发的 TLS-ALPN-01 连接验证；不需要向电脑开放入站端口。账户私钥 `acme-account.pem`、证书私钥 `certificate-key.pem` 和证书 `certificate.pem` 都在同一目录中，权限 0600；私钥不离开电脑。账户与证书私钥首次生成后沿用，续期只原子替换证书，立即生效，不重启 Web。
 - 可用证书必须覆盖当前主机名、处于有效期内、与证书私钥匹配并能构造 TLS 上下文。注册成功和注册期间每小时检查，在实际有效期的 2/3 处续期。续期失败不影响仍可用的旧证书，到期则撤下。没有可用证书时保持注册，只应答本轮证书验证，关闭普通手机连接。
-- 失败按 10 分钟、1 小时、6 小时、之后 24 小时的基准退避，每次再加 0–10% 的延迟，并遵守证书机构的 `Retry-After`。等待时间保存在 `certificate-state.json`，重启或断线重连不会提前重试。连续两次验证失败或 CAA 拒绝时暂停；请根据页面的证书机构说明修复后关闭再打开中转。重新打开会清除本地失败计数与暂停，但仍遵守 `Retry-After`；Web 重启只解除暂停。
+- 失败按 10 分钟、1 小时、6 小时、之后 24 小时的基准退避，每次再加 0–10% 的延迟，并遵守证书机构的 `Retry-After`。等待时间保存在 `certificate-state.json`，重启或断线重连不会提前重试。连续两次验证失败或 CAA 拒绝时暂停；请根据页面的证书机构说明修复后关闭中转再重新启用。重新打开会清除本地失败计数与暂停，但仍遵守 `Retry-After`；Web 重启只解除暂停。
 - `CODEXHOST_RELAY_ACME_DIRECTORY` 可覆盖默认的 Let's Encrypt 生产目录，例如使用 staging 或本地测试 CA。更换目录后沿用账户私钥，旧目录的失败记录不适用；不会因此替换仍可用且未到续期时间的证书。staging 证书不被真实手机信任，切到生产前需要移除 staging 证书和失败记录。
 - **证书透明日志会公开中转地址。** 不要把地址当作秘密；访问安全依赖令牌。实现采用 TLS-ALPN-01，不做 DNS-01 或备用证书机构自动切换。
 - 控制连接出站默认为 WSS 443。`HTTPS_PROXY`（或 `https_proxy`）为 `http://` 代理时使用 CONNECT，仍校验控制地址的 TLS 证书；控制连接暂不支持 `NO_PROXY`、SOCKS 和代理认证。证书机构请求使用 axios 的 `HTTPS_PROXY` / `NO_PROXY` 支持，HTTPS 目标走 CONNECT。
@@ -345,7 +345,7 @@ Serve 生效期间，其他回环代理也会被信任，不要把它当成隧�
 
 - **`--public-url`：** 只接受 `http`、`https` 的根地址（可带端口和结尾 `/`），不允许用户信息、路径、查询或片段，无效值使启动失败。HTTP 可用，但以明文传输。它只用于链接和二维码，不会成为可信代理、同源白名单或本机访问。
 - **参数来源：** 后台 Web 读取保存的设置，不沿用 Web 环境变量。源码入口 `npm start web -- --public-url ...`、`node preview.mjs --public-url ...` 和直接入口 `node app/server.mjs --public-url ...` 支持参数或 `CODEXHOST_WEB_PUBLIC_URL`，命令行优先；preview 在清理环境前把环境变量转成参数。`--trusted-proxy` 接受逗号分隔的多个 IP；直接入口也接受 `CODEXHOST_WEB_TRUSTED_PROXIES`，preview 使用命令行参数。
-- **页面默认选择：** 公开地址、已连接的中转地址、Funnel、Serve HTTPS、Tailscale IP、局域网、虚拟网卡。没有可用入口时优先预览局域网候选地址，否则显示 HTTPS 设置。同一方式有多个地址时提供下拉选择。
+- **页面默认选择：** 公开地址、已启用的 codexhost 中转（准备中也选中以显示状态）、Funnel、Serve HTTPS、Tailscale IP、局域网、虚拟网卡。没有可用入口时优先预览局域网候选地址，否则显示 HTTPS 设置。同一方式有多个地址时提供下拉选择。
 - **终端地址顺序：** 公开地址、启动输出时已连接的中转地址、Funnel、Serve HTTPS、Tailscale IP、局域网；只有没有其他地址时才显示虚拟网卡。
 - **候选地址：** 后台 Web 首次只监听本机，`directCandidates` 提供网卡候选地址供预览，与已配置入口 `networkUrls` 分开。
 
@@ -377,7 +377,7 @@ Serve 生效期间，其他回环代理也会被信任，不要把它当成隧�
 | --- | --- |
 | 同一 Wi-Fi、Tailscale IP | 只有 Playwright 覆盖页面流程，未单独记录真实设备连接。 |
 | Tailscale Serve / Funnel | 用户实测 Tailscale 访问正常，未分平台记录。真实 Tailscale 1.104.1 只读检测覆盖已转发、被占用、只装 App、未安装。未运行、未登录、未开启 HTTPS 和 Funnel 只由假 CLI 自动化覆盖。真实转发头未单独核对，切网、锁屏和电脑离线后恢复未单独记录。 |
-| Relay 中转 | 本机真实 Relay + 测试 CA 覆盖注册、重连、代理、TLS 登录 / RPC / WebSocket、限速隔离及大下载并发；Pebble 覆盖 TLS-ALPN-01 首次签发、续期、授权复用、CONNECT 代理、两次验证失败暂停、注册替换作废和拒绝不可用新证书；本地模拟响应覆盖退避、`Retry-After`、超时和重启等待；Playwright 覆盖开关、证书状态、地址顺序和手机布局。未验证公网 443、Let's Encrypt staging/生产或 iOS/Android。 |
+| Relay 中转 | 本机真实 Relay + 测试 CA 覆盖注册、重连、代理、TLS 登录 / RPC / WebSocket、限速隔离及大下载并发；Pebble 覆盖 TLS-ALPN-01 首次签发、续期、授权复用、CONNECT 代理、两次验证失败暂停、注册替换作废和拒绝不可用新证书；本地模拟响应覆盖退避、`Retry-After`、超时和重启等待；Playwright 覆盖启用与关闭、证书状态、地址顺序和手机布局。未验证公网 443、Let's Encrypt staging/生产或 iOS/Android。 |
 | nginx | **未实际运行：** 本地未安装 nginx。示例的证书、TLS、WebSocket 和事件流需由部署者验证。 |
 | frp | **未实际运行：** 本地未安装 frpc/frps。公网端口、证书和完整链路需由部署者验证。 |
 | Cloudflare Tunnel | **未实际运行：** 没有配置 Tunnel、域名或凭据，创建和启动命令也未执行。 |

@@ -123,12 +123,12 @@ export const en = {
   "connectDevices.tokenTitle": "Access token",
   "connectDevices.stopTitleShort": "Stop device access",
   "connectDevices.stopHint":
-    "Turns off IP access, HTTPS forwarding and relay access managed here. Running tasks continue.",
+    "Turns off IP access, HTTPS forwarding and codexhost Relay managed here. Running tasks continue.",
   "connectDevices.stop": "Stop access…",
   "connectDevices.stopTitle": "Stop device access?",
   "connectDevices.stopConfirm": "Stop access",
   "connectDevices.stopDescription":
-    "Closes relay access, managed IP access and Tailscale HTTPS roots forwarding to this Web. Web terminals and devices using those routes disconnect; running tasks continue. You can enable access again at any time.",
+    "Closes codexhost Relay, managed IP access and Tailscale HTTPS roots forwarding to this Web. Web terminals and devices using those routes disconnect; running tasks continue. You can enable access again at any time.",
   "connectDevices.stopUnmanaged":
     "Your external proxy or foreground listener is managed separately and may still allow access.",
   "connectDevices.stopIncomplete":
@@ -146,18 +146,21 @@ export const en = {
   "connectDevices.connectVia": "Connect through",
   "connectDevices.enlargeQr": "Enlarge QR code",
   "connectDevices.qrLabel": "Sign-in QR code",
-  "connectDevices.relay.title": "Relay access",
+  "connectDevices.relay.title": "codexhost Relay",
+  "connectDevices.relay.summary": "Any network · No app needed on your phone",
   "connectDevices.relay.hint":
     "Connect across networks without an extra phone app. An access token is required.",
-  "connectDevices.relay.off": "Off",
-  "connectDevices.relay.connected": "On. Phones can connect at the address below.",
+  "connectDevices.relay.off":
+    "The official codexhost encrypted relay. Your phone reaches this computer through the relay; traffic stays encrypted between them and the relay cannot read it. Enabling registers an address for this computer and requests its certificate.",
+  "connectDevices.relay.enable": "Enable relay",
+  "connectDevices.relay.disable": "Turn off relay",
   "connectDevices.relay.preparing": "Preparing… This usually takes under a minute.",
   "connectDevices.relay.unavailable": "Temporarily unavailable. Retrying automatically at {date}.",
   "connectDevices.relay.paused":
-    "Needs attention. Fix the issue below, then turn relay access off and on.",
+    "Needs attention. Fix the issue below, then turn the relay off and enable it again.",
   "connectDevices.relay.unreachable": "The certificate authority could not be reached.",
   "connectDevices.relay.replaced":
-    "Stopped: another computer is using this identity. Turn relay access off and on after resolving the conflict.",
+    "Stopped: another computer is using this identity. Turn the relay off and enable it again after resolving the conflict.",
   "connectDevices.relay.rejected": "Stopped: the Relay rejected this identity's signature.",
   "connectDevices.relay.unsupported-version":
     "Stopped: this protocol version is unsupported. Update codexhost.",
@@ -493,12 +496,13 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.localAccess": "仅本机访问",
   "connectDevices.tokenTitle": "访问令牌",
   "connectDevices.stopTitleShort": "停止设备访问",
-  "connectDevices.stopHint": "关闭此页面管理的 IP 访问、HTTPS 转发和中转访问，运行中的任务继续。",
+  "connectDevices.stopHint":
+    "关闭此页面管理的 IP 访问、HTTPS 转发和 codexhost 中转，运行中的任务继续。",
   "connectDevices.stop": "停止访问…",
   "connectDevices.stopTitle": "停止设备访问？",
   "connectDevices.stopConfirm": "停止访问",
   "connectDevices.stopDescription":
-    "关闭中转访问、由此页面管理的 IP 访问，以及指向当前 Web 的 Tailscale HTTPS 根路径转发。Web 终端和通过这些入口连接的设备会断开，运行中的任务继续。之后可随时重新启用。",
+    "关闭 codexhost 中转、由此页面管理的 IP 访问，以及指向当前 Web 的 Tailscale HTTPS 根路径转发。Web 终端和通过这些入口连接的设备会断开，运行中的任务继续。之后可随时重新启用。",
   "connectDevices.stopUnmanaged": "你配置的外部代理或前台监听需单独管理，它们可能仍允许访问。",
   "connectDevices.stopIncomplete": "仍有 HTTPS 转发生效，请刷新后再次停止访问。",
   "connectDevices.restartTimeout": "Web 尚未恢复连接，请确认它正在运行后刷新状态。",
@@ -512,16 +516,19 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.connectVia": "连接方式",
   "connectDevices.enlargeQr": "放大二维码",
   "connectDevices.qrLabel": "登录二维码",
-  "connectDevices.relay.title": "中转访问",
+  "connectDevices.relay.title": "codexhost 中转",
+  "connectDevices.relay.summary": "任何网络 · 手机无需安装应用",
   "connectDevices.relay.hint": "跨网络连接，手机无需额外安装应用，登录需要访问令牌。",
-  "connectDevices.relay.off": "已关闭",
-  "connectDevices.relay.connected": "已开启，手机可以通过下面的地址访问。",
+  "connectDevices.relay.off":
+    "codexhost 官方加密中转。手机经中转连接这台电脑，内容在手机和电脑之间加密，中转无法查看。启用后会为这台电脑注册地址并申请证书。",
+  "connectDevices.relay.enable": "启用中转",
+  "connectDevices.relay.disable": "关闭中转",
   "connectDevices.relay.preparing": "准备中…通常一分钟内完成。",
   "connectDevices.relay.unavailable": "暂时无法使用，将于 {date} 自动重试。",
-  "connectDevices.relay.paused": "需要处理：请按下面的说明修复，然后关闭再打开中转访问。",
+  "connectDevices.relay.paused": "需要处理：请按下面的说明修复，然后关闭中转再重新启用。",
   "connectDevices.relay.unreachable": "无法连接证书机构。",
   "connectDevices.relay.replaced":
-    "已停止：另一台电脑正在使用此身份。解决冲突后关闭再打开中转访问。",
+    "已停止：另一台电脑正在使用此身份。解决冲突后关闭中转再重新启用。",
   "connectDevices.relay.rejected": "已停止：Relay 拒绝了此身份的签名。",
   "connectDevices.relay.unsupported-version": "已停止：协议版本不受支持，请更新 codexhost。",
   "connectDevices.relay.identity":

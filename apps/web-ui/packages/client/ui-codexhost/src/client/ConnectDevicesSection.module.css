@@ -150,7 +150,8 @@
   gap: 0;
   overflow: hidden;
 }
-.routeFamily {
+.routeFamily,
+.routeGroup > .route:not(:last-child) {
   border-bottom: 1px solid var(--dsw-alias-border-l2);
 }
 .extraRoutes > .route:has(input:checked) {
@@ -344,12 +345,6 @@
 }
 .manageRow + .manageRow {
   border-top: 1px solid var(--dsw-alias-border-l2);
-}
-.identityNote {
-  flex-basis: 100%;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-3);
 }
 .stopRow {
   padding: 16px 20px;

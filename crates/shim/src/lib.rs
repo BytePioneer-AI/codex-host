@@ -597,6 +597,7 @@ fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
             launcher_managed,
             env::var_os(NPM_NODE_PATH_ENV),
             env::var_os(NPM_PACKAGE_ROOT_ENV),
+            env::var_os(REMOTE_SSH_MANAGED_ENV).as_deref() == Some(std::ffi::OsStr::new("1")),
         );
         let node_path = node_path.as_deref().map(Path::new);
         let host_runtime_path = host_runtime_path.as_deref().map(Path::new);
@@ -668,7 +669,29 @@ fn select_host_paths(
     launcher_managed: bool,
     npm_node: Option<OsString>,
     npm_package_root: Option<OsString>,
+    remote_ssh_managed: bool,
 ) -> (Option<OsString>, Option<OsString>) {
+    // Remote SSH bootstrap keeps using the local npm Node/package so the Host
+    // Runtime is reachable from the client machine. Local Desktop launches must
+    // keep the Launcher-provided HOST paths (Desktop-signed cua_node) instead —
+    // preferring npm there breaks native peer authorization (#744 / #157).
+    if launcher_managed
+        && remote_ssh_managed
+        && let (Some(node), Some(package_root)) = (npm_node.clone(), npm_package_root.clone())
+    {
+        return (
+            Some(node),
+            Some(
+                PathBuf::from(package_root)
+                    .join("app")
+                    .join("host-runtime.mjs")
+                    .into_os_string(),
+            ),
+        );
+    }
+    if configured_node.is_some() && configured_runtime.is_some() {
+        return (configured_node, configured_runtime);
+    }
     if launcher_managed && let (Some(node), Some(package_root)) = (npm_node, npm_package_root) {
         return (
             Some(node),
@@ -707,6 +730,7 @@ fn host_runtime_paths_are_configured() -> bool {
             launcher_managed,
             env::var_os(NPM_NODE_PATH_ENV),
             env::var_os(NPM_PACKAGE_ROOT_ENV),
+            env::var_os(REMOTE_SSH_MANAGED_ENV).as_deref() == Some(std::ffi::OsStr::new("1")),
         ),
         (Some(_), Some(_))
     )
@@ -727,6 +751,7 @@ fn child_command(
         launcher_managed,
         env::var_os(NPM_NODE_PATH_ENV),
         env::var_os(NPM_PACKAGE_ROOT_ENV),
+        env::var_os(REMOTE_SSH_MANAGED_ENV).as_deref() == Some(std::ffi::OsStr::new("1")),
     );
     let remote_proxy_environment =
         if env::var_os(REMOTE_SSH_MANAGED_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
@@ -1119,13 +1144,14 @@ mod tests {
     }
 
     #[test]
-    fn local_launcher_paths_win_over_remote_profile_bootstrap_paths() {
+    fn remote_ssh_npm_paths_win_over_remote_profile_bootstrap_paths() {
         let selected = select_host_paths(
             Some(OsString::from("/remote/node")),
             Some(OsString::from("/remote/runtime/host-runtime.mjs")),
             true,
             Some(OsString::from("/local/node")),
             Some(OsString::from("/local/npm-package")),
+            true,
         );
 
         assert_eq!(selected.0, Some(OsString::from("/local/node")));
@@ -1137,6 +1163,37 @@ mod tests {
                     .join("host-runtime.mjs")
                     .into_os_string()
             )
+        );
+    }
+
+    #[test]
+    fn local_desktop_keeps_launcher_host_paths_over_npm() {
+        let selected = select_host_paths(
+            Some(OsString::from(
+                "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node",
+            )),
+            Some(OsString::from(
+                "/Applications/ChatGPT.app/Contents/Resources/host-runtime.mjs",
+            )),
+            true,
+            Some(OsString::from("/Users/me/.nvm/versions/node/bin/node")),
+            Some(OsString::from(
+                "/Users/me/.npm-global/lib/node_modules/@bytepioneer/codexhost",
+            )),
+            false,
+        );
+
+        assert_eq!(
+            selected.0,
+            Some(OsString::from(
+                "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
+            ))
+        );
+        assert_eq!(
+            selected.1,
+            Some(OsString::from(
+                "/Applications/ChatGPT.app/Contents/Resources/host-runtime.mjs"
+            ))
         );
     }
 

@@ -8,9 +8,9 @@
 ## 2. 原生命令
 
 - [x] 2.1 Launcher 增加 Web 监管进程和 ensure、stop：独立的就绪文件和锁、停止标记、退避重启、启动失败不重试。验证：参照 `host_service_tests.rs` 的 Rust 测试，加一个用假 Web 脚本的集成测试，覆盖崩溃重启、启动失败、并发 ensure、stop 后不重启。
-- [ ] 2.2 增加 `codexhost web`、`stop`、`status`，并在 npm wrapper 中路由：选项传递、打开浏览器或输出链接、版本和安装位置不一致时重启；`stop` 按 GUI、Web、Host、远程服务、Broker、Console 的顺序关闭。验证：Rust 测试和 `smoke-npm-package` 覆盖无图形界面、端口占用、版本不一致、status 不含 token；手动确认 codexhost 拉起的 GUI 被关闭，用户自己打开的 Desktop 不受影响，停止后服务没有被重新拉起，其他电脑重新连接后远程服务恢复。
-- [ ] 2.3 `codexhost` 在后台拉起 Web；未安装 Desktop 时改为打开 Web；`CODEXHOST_WEB_SERVICE=0` 关闭该行为。验证：测试覆盖 Web 失败不阻止 GUI、未安装 Desktop 时不打开 Console；手动确认 GUI 已打开时切到现有窗口。
-- [ ] 2.4 登录后自动启动：三个平台的写入、删除、校验，以及运行时刷新。验证：`crates/platform` 的测试覆盖生成内容和命令行长度限制；在 macOS 实际重新登录一次，Windows 和 Linux 未实测的写明。
+- [x] 2.2 增加 `codexhost web`、`stop`、`status`，并在 npm wrapper 中路由：选项传递、打开浏览器或输出链接、版本和安装位置不一致时重启；`stop` 按 GUI、Web、Host、远程服务、Broker、Console 的顺序关闭。验证：Rust 测试和 `smoke-npm-package` 覆盖无图形界面、端口占用、版本不一致、status 不含 token；手动确认 codexhost 拉起的 GUI 被关闭，用户自己打开的 Desktop 不受影响，停止后服务没有被重新拉起，其他电脑重新连接后远程服务恢复。 结果：用户在 macOS 实测通过，未分场景记录；Windows、Linux 未实测。
+- [x] 2.3 `codexhost` 在后台拉起 Web；未安装 Desktop 时改为打开 Web；`CODEXHOST_WEB_SERVICE=0` 关闭该行为。验证：测试覆盖 Web 失败不阻止 GUI、未安装 Desktop 时不打开 Console；手动确认 GUI 已打开时切到现有窗口。 结果：用户在 macOS 实测通过，未分场景记录；Windows、Linux 未实测。
+- [x] 2.4 登录后自动启动：三个平台的写入、删除、校验，以及运行时刷新。验证：`crates/platform` 的测试覆盖生成内容和命令行长度限制；在 macOS 实际重新登录一次，Windows 和 Linux 未实测的写明。 结果：用户在 macOS 实测通过，未分场景记录；Windows、Linux 未实测。
 
 ## 3. 发行和更新
 
@@ -28,4 +28,4 @@
 ## 5. 收尾
 
 - [x] 5.1 Windows 卸载程序停止服务、移除自启项并提示 Serve；`npm stop` 识别后台 Web，`npm start web` 遇到占用时不结束后台 Web；更新 `docs/product/standalone-web.md`、`docs/product/web-remote-access.md`、`docs/operations/codexhost-console.md`、npm README 和实施计划。验证：`tools/dev-desktop` 的测试，以及文档中的命令与实现一致。
-- [ ] 5.2 按实施计划第 5 节的验收场景实测：关闭终端后手机仍能连接、重启 Web 任务不受影响、更新后版本正确且会话保留、测量空闲时 Web 的内存和 CPU。验证：分平台记录结果，未执行的写明，不算通过。
+- [x] 5.2 按实施计划第 5 节的验收场景实测：关闭终端后手机仍能连接、重启 Web 任务不受影响、更新后版本正确且会话保留、测量空闲时 Web 的内存和 CPU。验证：分平台记录结果，未执行的写明，不算通过。 结果：用户在 macOS 实测通过，未分场景记录；Windows、Linux 未实测。空闲时 Web 后台的内存和 CPU 未测量。

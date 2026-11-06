@@ -1,6 +1,7 @@
 /** Host catalog, durable projection caches, and explicitly retained Client instances. */
 
 import type { SubagentAddress } from "@deepseek-ai/dsh-subagent/client";
+import { WEB_FOLLOW_PROJECTION_KEYS } from "@codexhost/shared-contracts";
 import { SessionSeq, type SessionId, type SessionSeqCursor } from "@deepseek-ai/dsh-session/types";
 import type { SessionProjectionMap } from "@deepseek-ai/dsh-session-projection/types";
 import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
@@ -672,7 +673,7 @@ export class SessionManager {
     for (const [sessionId, block] of Object.entries(baseline.projections)) {
       const store = this.projectionStore(sessionId as SessionId);
       const asOfSeq = sessionSeqCursor(block.asOfSeq);
-      store.seed({ ...block, asOfSeq });
+      store.seed({ ...block, asOfSeq }, undefined, WEB_FOLLOW_PROJECTION_KEYS);
     }
     this.notifier.markDirty();
   }

@@ -4,7 +4,7 @@
  * The DSH Web client consumes an append-only, densely sequenced event log plus process-local
  * assistant presentation frames. This class owns that journal for one codexhost Session:
  * persistence (JSONL), live follower fan-out, the assistant-stream revision counter, and the
- * projection values the client reads from `session/control` and list rows.
+ * projection values the client reads from control, follow, and list rows.
  */
 
 import type { SessionDataStore } from "./contracts.js";
@@ -220,6 +220,12 @@ export class SessionLog {
     this.projections[key] = value;
     this.data.writeJson(this.projectionFile, this.projections);
     this.onProjection(this.header.id, key, value, Math.max(this.lastSeq, 0));
+  }
+
+  /** Deliver a finished projection to this Session's followers at its existing journal watermark. */
+  pushProjection(key: string, value: unknown, seq: number): void {
+    for (const sink of this.followers)
+      sink.push({ type: "projection", sessionId: this.header.id, key, value, seq });
   }
 
   projectionBaseline(): { asOfSeq: number; values: Record<string, unknown> } {

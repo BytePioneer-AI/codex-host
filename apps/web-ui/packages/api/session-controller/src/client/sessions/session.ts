@@ -1,6 +1,7 @@
 // Sessions remain resident after creation so their open Remote sources keep running off-screen.
 
 import type { Context } from "@deepseek-ai/cordis";
+import { WEB_FOLLOW_PROJECTION_KEYS } from "@codexhost/shared-contracts";
 import type { InboxState, InboxTarget } from "@deepseek-ai/dsh-agent/types";
 import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
 import type {
@@ -169,7 +170,7 @@ export class Session implements SessionFace {
    * Per-session projection value store (push model; see the session-projection
    * subsystem page, docs/subsystems/session-projection.md): finished whole
    * values computed on the Host, seeded by the tail page's
-   * projections block and updated by Session Controller control frames;
+   * projections block and updated by Session Controller control/follow frames;
    * Host-sequenced writes merge under higher-seq-wins and cached list blocks
    * yield to them (projection-store.ts). Keys are read via `projections.faceOf(key)`
    * (the useProjection resolution face); the conversation snapshot never
@@ -721,6 +722,9 @@ export class Session implements SessionFace {
         break;
       case "assistant-stream":
         this.publishAssistantEntry(this.assistantStream.acceptFrame(change.frame));
+        break;
+      case "projection":
+        this.projections.applyLive(change.key, change.value, SessionSeq(change.seq));
     }
     this.lastSyncedAt = Date.now();
     this.notifier.markFrameDirty();
@@ -746,7 +750,7 @@ export class Session implements SessionFace {
     }
     if (visible.some((entry) => entry.event.type === "turn/start"))
       this.firstPromptPendingTurn = false;
-    if (projections !== undefined) this.projections.seed(projections);
+    if (projections !== undefined) this.projections.seed(projections, WEB_FOLLOW_PROJECTION_KEYS);
     this.eventSource.replace(visible, hasMore);
     // A new follow baseline replaces confirmed optimistic inputs with Host-owned rows.
     // Receipt-backed inputs are accepted, not failed, even if their history is outside this window.

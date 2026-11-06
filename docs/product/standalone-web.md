@@ -250,7 +250,13 @@ GUI 原生路由仍不使用 Codex CLI 插件。共享 home 会共享原生配�
 
 已运行的旧 Desktop-owned 通道仍可连接，但不会被接管或停止；迁移须用户另行更新并重启 Desktop。单独指定 `--ch-cdp http://127.0.0.1:<port>` 明确选择旧 CDP 入口；与 control directory 同用时，Thread 与置顶请求都使用事件通道，CDP 仅用于旧 Host 的项目读取。独立后台从原生保存文件只读读取项目，Windows 的共享聊天/项目读取不再要求 CDP。已选中的服务通道只重连或启动同一后台，不在 Web 网关创建执行 owner。仅重建 Web 不会升级正在运行的后台或 Desktop。
 
-共享目录只读取 `modelProvider: codexhost` 且 Host 确认属于 external 的 Threads，包括用于状态投影的已归档记录；主页默认隐藏已归档会话，不接入官方 Codex Threads或远程 Hosts。会话身份保持 CH Thread ID；列表、完整历史、模型和权限均从同一个 Host 查询。Web 不新增会话索引、原生引用映射或历史文件，DSH 格式只作可丢弃的内存展示缓冲。事件模式按 Host 通知刷新正在订阅的历史，100ms 合并同一 Thread 的连续变化；普通历史 1.5 秒轮询不再运行。通知只表示状态失效，客户端读取最近 5 轮的权威完整状态，不直接拼接重放的 token。读取期间的新事件会安排下一次校验，不会被正在进行的读取吞掉。目录变化也合并处理；项目和置顶没有完整聊天事件覆盖，继续单独定期同步。首次目录通过 `session/list` 一次性返回；后续查询只广播实际新增、修改、移除的条目，不将未变化的全部 Threads 重发为 `api-session/added`。比较覆盖标题、执行目录、更新时间、运行状态、父 Thread 和 Harness 归属；历史/模型/权限投影仍走独立控制流。快照查询失败不推进已发布目录基线，普通列表请求与定时刷新共用同一差量发布路径，避免会话数量较多时事件洪泛阻塞切换与历史帧处理。
+共享目录只读取 `modelProvider: codexhost` 且 Host 确认属于 external 的 Threads，包括用于状态投影的已归档记录；主页默认隐藏已归档会话，不接入官方 Codex Threads或远程 Hosts。会话身份保持 CH Thread ID；列表、完整历史、模型和权限均从同一个 Host 查询。Web 不新增会话索引、原生引用映射或历史文件，DSH 格式只作可丢弃的内存展示缓冲。事件模式按 Host 通知刷新正在订阅的历史，100ms 合并同一 Thread 的连续变化；普通历史 1.5 秒轮询不再运行。通知只表示状态失效，客户端读取最近 5 轮的权威完整状态，不直接拼接重放的 token。读取期间的新事件会安排下一次校验，不会被正在进行的读取吞掉。目录变化也合并处理；项目和置顶没有完整聊天事件覆盖，继续单独定期同步。首次目录通过 `session/list` 一次性返回；后续查询只广播实际新增、修改、移除的条目，不将未变化的全部 Threads 重发为 `api-session/added`。比较覆盖标题、执行目录、更新时间、运行状态、父 Thread 和 Harness 归属；标题、模型、权限等全局投影走 `session/control`。快照查询失败不推进已发布目录基线，普通列表请求与定时刷新共用同一差量发布路径，避免会话数量较多时事件洪泛阻塞切换与历史帧处理。
+
+### 聊天投影通道
+
+`codexhostTurnChanges`（已加载 Turn 的文件摘要）和 `codexhostToolOutput`（运行中命令的输出尾部）仅通过对应会话的 `session/follow` 发送实时更新，不进入 `session/control` 的增量或初始 baseline，也不混入 `session/list` 或全局目录更新的摘要。每个 follow 快照仍携带该会话全部最新投影；切回会话或重连从快照恢复。多个页面同时 follow 同一会话时，各自都收到更新；未 follow 的页面不接收这两个 key 的实时变化。
+
+follow 使用与 control 相同的 `projection { sessionId, key, value, seq }` 整值替换帧，复用现有按 key 去重和日志水位，不追加日志事件、不推进 assistant-stream revision。客户端经 Gateway 的 journal notification 路径应用到原有投影存储；同一流中的实时帧允许相同 seq 的最新值替换旧值，较低水位不能覆盖较高水位；follow 开场快照仅对这两个聊天 key 接受相同 seq 的替换，其他 key 仍保留跨通道的较高水位优先规则。control baseline 只合并其携带的全局 key，不清除 follow 所持有的聊天投影。侧栏、标题、模型、权限等其他投影仍通过 control 发给所有页面，运行状态沿用原有目录和状态事件。
 
 ### 共享会话归档
 

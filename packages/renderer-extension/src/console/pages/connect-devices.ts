@@ -15,6 +15,7 @@ export function createConnectDevicesPage(locale: string): RendererSettingsPageDe
   const t = (zh: string, en: string): string => (chinese ? zh : en);
   const kindLabels = {
     public: t("公开地址", "Public address"),
+    relay: t("中转", "Relay"),
     "tailscale-funnel": t("Tailscale Funnel · 公开", "Tailscale Funnel · Public"),
     "tailscale-https": "",
     tailscale: "Tailscale",
@@ -25,6 +26,10 @@ export function createConnectDevicesPage(locale: string): RendererSettingsPageDe
     public: t(
       "通过 --public-url 配置的地址，登录仍需要访问令牌。",
       "The address configured with --public-url; access still requires a token.",
+    ),
+    relay: t(
+      "经中转访问，TLS 在这台电脑上解开，中转看不到内容。登录仍需要访问令牌。",
+      "Through the relay. TLS ends on this computer, so the relay cannot read the content. An access token is still required.",
     ),
     "tailscale-funnel": t(
       "互联网中的任何人都能访问登录页，登录仍需要访问令牌。",
@@ -252,7 +257,7 @@ export function createConnectDevicesPage(locale: string): RendererSettingsPageDe
             );
           }
         };
-        addRoutes(routes, ["public"]);
+        addRoutes(routes, ["public", "relay"]);
         const direct = h(document, "div", {
           className: "console-connect-group",
           "data-connect-group": "direct",

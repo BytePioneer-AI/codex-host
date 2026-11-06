@@ -2028,6 +2028,9 @@ process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id
       const conversations = {
         "conv-recovered": [14, 15, 17, 23, 15],
         "conv-unrecovered": [14, 15, 17],
+        // an earlier Turn hit the error and recovered; agy repeats it in the
+        // result of the latest Turn, which never hit it and replied
+        "conv-stale-repeat": [14, 15, 17, 23, 15, 14, 23, 15],
       };
       const { DatabaseSync } = await import("node:sqlite");
       for (const [conversationId, stepTypes] of Object.entries(conversations)) {
@@ -2097,6 +2100,7 @@ process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id
           }
         }
         expect(outcomes["conv-recovered"]).toMatchObject({ status: "succeeded" });
+        expect(outcomes["conv-stale-repeat"]).toMatchObject({ status: "succeeded" });
         expect(outcomes["conv-unrecovered"]).toMatchObject({
           status: "failed",
           error: { message: `Antigravity Turn ended with status ERROR: ${transient}` },

@@ -37,8 +37,13 @@ export interface NativeErrorRecoveryQuery {
  * agent retried past the failure (for example a transient TLS or network error on one model
  * request) and completed every later step up to its final reply. The Conversation DB shows the
  * difference: in a recovered Turn the step carrying the error is followed by finished steps that
- * end with a planner response. Anything else, including a DB that cannot be read, is treated as
- * not recovered so a real failure is never hidden.
+ * end with a planner response.
+ *
+ * agy also keeps such an error on the Conversation and repeats it in the result of later Turns.
+ * When the latest Turn has no step carrying the error, but an earlier Turn of the Conversation
+ * does, the error is a stale repeat; the latest Turn counts as recovered when its own steps
+ * finished and end with a planner response. Anything else, including a DB that cannot be read, is
+ * treated as not recovered so a real failure is never hidden.
  */
 export async function nativeTurnRecoveredFromError(
   query: NativeErrorRecoveryQuery,
@@ -87,7 +92,21 @@ function readVerdict(
            FROM steps WHERE idx > ? ORDER BY idx ASC`,
       )
       .all(errorBytes, errorBytes, turnStart.idx) as unknown as StepRow[];
-    return verdictForTurn(steps);
+    if (steps.some((step) => step.has_error)) return verdictForTurn(steps);
+    // The latest Turn never hit the error. agy repeats an error an earlier
+    // Turn of this Conversation hit (and may have recovered from) in every
+    // later Turn's result, so only an error found earlier is a stale repeat.
+    const earlier = db
+      .prepare(
+        `SELECT 1 AS found FROM steps
+          WHERE idx < ?
+            AND (instr(COALESCE(step_payload, X''), ?) > 0
+              OR instr(COALESCE(error_details, X''), ?) > 0)
+          LIMIT 1`,
+      )
+      .get(turnStart.idx, errorBytes, errorBytes) as { found: number } | undefined;
+    if (!earlier) return "notRecovered";
+    return verdictForFinishedTurn(steps);
   } finally {
     db.close();
   }
@@ -102,10 +121,14 @@ function verdictForTurn(steps: StepRow[]): Verdict {
     }
   }
   if (errorAt < 0) return "notRecovered";
-  const after = steps.slice(errorAt + 1);
-  const last = after.at(-1);
+  return verdictForFinishedTurn(steps.slice(errorAt + 1));
+}
+
+/** Whether `steps` all finished and end with a planner response. */
+function verdictForFinishedTurn(steps: StepRow[]): Verdict {
+  const last = steps.at(-1);
   if (!last) return "notRecovered";
   // agy may still be flushing the last steps when the result arrives.
-  if (after.some((step) => step.status !== DONE_STATUS)) return "unsettled";
+  if (steps.some((step) => step.status !== DONE_STATUS)) return "unsettled";
   return last.step_type === PLANNER_RESPONSE_STEP ? "recovered" : "notRecovered";
 }

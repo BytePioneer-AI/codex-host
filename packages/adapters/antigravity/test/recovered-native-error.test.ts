@@ -76,12 +76,50 @@ describe("nativeTurnRecoveredFromError", () => {
     ).resolves.toBe(true);
   });
 
-  it("only looks at the latest Turn", async () => {
-    // the error belongs to an earlier Turn; the latest Turn has no error step
+  it("treats an error only an earlier Turn hit as a stale repeat", async () => {
+    // agy repeats the error an earlier, recovered Turn hit in the latest
+    // Turn's result; the latest Turn has no error step and replied.
     await expect(
       verdict([
         { type: USER_INPUT },
         errorStep,
+        { type: PLANNER_RESPONSE },
+        { type: USER_INPUT },
+        { type: TOOL },
+        { type: PLANNER_RESPONSE },
+      ]),
+    ).resolves.toBe(true);
+  });
+
+  it("keeps a stale repeat failed when the latest Turn did not end with a reply", async () => {
+    await expect(
+      verdict([
+        { type: USER_INPUT },
+        errorStep,
+        { type: PLANNER_RESPONSE },
+        { type: USER_INPUT },
+        { type: PLANNER_RESPONSE },
+        { type: TOOL },
+      ]),
+    ).resolves.toBe(false);
+  });
+
+  it("keeps a stale repeat failed while the latest Turn is still settling", async () => {
+    await expect(
+      verdict([
+        { type: USER_INPUT },
+        errorStep,
+        { type: PLANNER_RESPONSE },
+        { type: USER_INPUT },
+        { type: PLANNER_RESPONSE, status: RUNNING },
+      ]),
+    ).resolves.toBe(false);
+  });
+
+  it("keeps a Turn failed when no Turn of the Conversation hit the error", async () => {
+    await expect(
+      verdict([
+        { type: USER_INPUT },
         { type: PLANNER_RESPONSE },
         { type: USER_INPUT },
         { type: PLANNER_RESPONSE },

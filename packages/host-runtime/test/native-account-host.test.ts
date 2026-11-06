@@ -112,6 +112,19 @@ async function startLocal() {
 }
 
 describe("local Codex read-only identity startup", () => {
+  it("does not start an identity read before Desktop can issue its native requests", async () => {
+    const f = nativeFixture();
+    const local = await startLocal();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(f.requests.map((request) => request.method)).toEqual(["initialize", "initialized"]);
+    expect(local.accountControl.currentAccountId()).toBeNull();
+    await expect(local.accountControl.refresh?.()).resolves.toMatchObject({
+      currentAccountId: "current",
+      phase: "ready",
+    });
+    expect(f.requests.filter((request) => request.method === "account/read")).toHaveLength(1);
+  });
+
   it("recovers the local backend so an existing client can explicitly retry voice startup", async () => {
     const first = nativeFixture();
     const local = await startLocal();

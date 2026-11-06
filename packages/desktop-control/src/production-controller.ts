@@ -188,7 +188,10 @@ function isTransientRendererInstallError(error: unknown): boolean {
     const message = current instanceof Error ? current.message : String(current);
     if (
       message.includes("Execution context was destroyed") ||
-      message.includes("Promise was collected")
+      message.includes("Promise was collected") ||
+      message === "CDP command 'Runtime.evaluate' timed out" ||
+      message === "CDP WebSocket closed" ||
+      message === "CDP client is closed"
     ) {
       return true;
     }

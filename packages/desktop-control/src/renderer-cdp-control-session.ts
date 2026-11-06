@@ -236,20 +236,27 @@ async function waitForBinding(
   enabledAgents: readonly string[] | undefined,
   timeoutMs: number,
   pollIntervalMs: number,
+  signal?: AbortSignal,
 ): Promise<ProductionRendererStatus> {
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown;
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     try {
       const value = await readBinding(renderer);
       if (value !== null) return validateBindingStatus(value, enabledAgents);
     } catch (error) {
+      signal?.throwIfAborted();
       lastError = error;
       if (error instanceof RendererAdapterReadinessError && error.state !== "installing") {
         throw error;
       }
     }
-    await sleep(pollIntervalMs);
+    if (signal) {
+      await awaitWithSignal(sleep(pollIntervalMs), signal, "Renderer installation context expired");
+    } else {
+      await sleep(pollIntervalMs);
+    }
   }
   const detail = lastError instanceof Error ? `: ${lastError.message}` : "";
   throw new Error(`Production Renderer binding did not become ready${detail}`);
@@ -269,18 +276,62 @@ async function installTarget(
 }> {
   const renderer = await operations.connect(target.webSocketDebuggerUrl);
   let disposeModules: (() => void) | undefined;
+  const contextLifetime = new AbortController();
+  const invalidateContext = () => {
+    contextLifetime.abort(
+      new Error("Execution context was destroyed during Renderer installation"),
+    );
+  };
+  // 主窗口切换时立即放弃旧窗口，避免等待旧上下文中的 evaluate 超时。
+  const contextListeners = [
+    renderer.on("Runtime.executionContextsCleared", invalidateContext),
+    renderer.on("Inspector.detached", invalidateContext),
+  ];
+  const currentContext = <T>(work: () => Promise<T>): Promise<T> => {
+    contextLifetime.signal.throwIfAborted();
+    const pending = Promise.resolve().then(() => {
+      contextLifetime.signal.throwIfAborted();
+      return work();
+    });
+    return awaitWithSignal(
+      pending,
+      contextLifetime.signal,
+      "Renderer installation context expired",
+    );
+  };
   try {
-    disposeModules = await installRendererLoadedModules(renderer);
-    await renderer.command("Page.enable");
-    await renderer.command("Page.addScriptToEvaluateOnNewDocument", { source: rendererSource });
-    await evaluateSource(renderer, rendererSource);
-    const draftPrewarmPolicy = await operations.installDraftPrewarmPolicy(renderer);
-    const binding = await waitForBinding(renderer, enabledAgents, timeoutMs, pollIntervalMs);
-    return { renderer, snapshot: { target, draftPrewarmPolicy, binding }, disposeModules };
+    const installedModules = await currentContext<() => void>(() =>
+      installRendererLoadedModules(renderer).then((dispose) => {
+        if (contextLifetime.signal.aborted) {
+          dispose();
+          contextLifetime.signal.throwIfAborted();
+        }
+        return dispose;
+      }),
+    );
+    disposeModules = installedModules;
+    await currentContext(() => renderer.command("Page.enable"));
+    await currentContext(() =>
+      renderer.command("Page.addScriptToEvaluateOnNewDocument", { source: rendererSource }),
+    );
+    await currentContext(() => evaluateSource(renderer, rendererSource));
+    const draftPrewarmPolicy = await currentContext(() =>
+      operations.installDraftPrewarmPolicy(renderer),
+    );
+    const binding = await currentContext(() =>
+      waitForBinding(renderer, enabledAgents, timeoutMs, pollIntervalMs, contextLifetime.signal),
+    );
+    return {
+      renderer,
+      snapshot: { target, draftPrewarmPolicy, binding },
+      disposeModules: installedModules,
+    };
   } catch (error) {
     disposeModules?.();
     renderer.close();
     throw error;
+  } finally {
+    for (const unsubscribe of contextListeners) unsubscribe();
   }
 }
 

@@ -1569,6 +1569,108 @@ setTimeout(() => { process.exit(0); }, 50);
       }
     });
 
+    it("keeps distinct Native Turn identities when agy reuses num_turns", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-repeat-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-repeat-cwd-"));
+      const dataDir = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-repeat-data-"));
+      const runs = path.join(directory, "turns.txt");
+      const cleanup = async (): Promise<void> => {
+        for (const target of [directory, cwd, dataDir]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      // Reproduces a resumed agy Conversation whose result repeats the previous
+      // `num_turns` instead of advancing. Both results still describe distinct Turns.
+      const scriptContent = `
+const fs = require("node:fs");
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+if (process.argv.some((value) => value.startsWith("--print="))) process.exit(0);
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  if (input.includes("\\n")) return;
+  input += chunk;
+  if (input.indexOf("\\n") === -1) return;
+  const current = fs.existsSync(${JSON.stringify(runs)})
+    ? Number(fs.readFileSync(${JSON.stringify(runs)}, "utf8"))
+    : 0;
+  const turn = current + 1;
+  fs.writeFileSync(${JSON.stringify(runs)}, String(turn));
+  for (const event of [
+    { event: "init", conversation_id: "conv-repeat", init: { permission_mode: "dangerously-skip-permissions" } },
+    { event: "result", result: { conversation_id: "conv-repeat", status: "SUCCESS", num_turns: 1, response: "reply " + turn } },
+  ]) {
+    process.stdout.write(JSON.stringify(event) + "\\n");
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      let command: string;
+      if (process.platform === "win32") {
+        command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        command = path.join(directory, "agy");
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const adapter = new AntigravityAdapter({
+        command,
+        environment: { ...process.env, CODEXHOST_DATA_DIR: dataDir },
+      });
+      try {
+        const opened = await adapter.open({
+          kind: "create",
+          cwd,
+          environment: { CODEXHOST_THREAD_ID: "thread-repeat" },
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const identities: Array<{ nativeTurnKey: string; checkpointId: string }> = [];
+        for (const turnId of ["turn-repeat-1", "turn-repeat-2"]) {
+          const started = await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse(turnId),
+            input: [{ type: "text", text: "hello" }],
+          });
+          if (!started.ok) throw new Error(started.error.message);
+          while (true) {
+            const event = await nextEvent(iterator);
+            if (event.type !== "turn.completed" || event.turnId !== turnId) continue;
+            if (!event.nativeTurnRef || !event.outcome.checkpoint) {
+              throw new Error("Completed Turn has no Native identity");
+            }
+            identities.push({
+              nativeTurnKey: event.nativeTurnRef.nativeTurnKey,
+              checkpointId: event.outcome.checkpoint.checkpointId,
+            });
+            break;
+          }
+        }
+
+        expect(identities).toEqual([
+          { nativeTurnKey: "turn:1", checkpointId: "turn:1" },
+          { nativeTurnKey: "turn:1:2", checkpointId: "turn:1:2" },
+        ]);
+        const snapshot = await session.readSnapshot();
+        if (!snapshot.ok) throw new Error(snapshot.error.message);
+        expect(
+          snapshot.value.turns.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey),
+        ).toEqual(["turn:1", "turn:1:2"]);
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
     it("keeps one Question Hook directory per Thread across Turns and a resumed Session", async () => {
       const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-hooks-"));
       const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-hooks-cwd-"));

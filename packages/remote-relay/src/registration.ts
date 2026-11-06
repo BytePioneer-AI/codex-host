@@ -74,17 +74,25 @@ export function registerAgent(
       notice.end(JSON.stringify({ quota: "exhausted", until: until.toISOString() }));
     },
   };
-  const unregister = (reason: "replace" | "unregister" = "unregister") => {
+  const unregister = (reason: "replace" | "unregister" | "timeout" = "unregister") => {
     if (name && agents.get(name) === agent) {
       agents.delete(name);
-      log(reason, name, ip);
+      log(reason === "timeout" ? "unregister" : reason, name, ip);
+      options.onConnection?.({
+        type: "computer",
+        state: "offline",
+        name,
+        ip,
+        time: Date.now(),
+        reason,
+      });
     }
     for (const phone of agent.phones) phone.destroy();
   };
   const timeout = setTimeout(() => agent.close(closeCodes.registrationTimeout), 10_000);
   const heartbeat = setInterval(() => {
     if (!pong) {
-      unregister();
+      unregister("timeout");
       ws.terminate();
       return;
     }
@@ -197,6 +205,7 @@ export function registerAgent(
       request.end(JSON.stringify({ hostname: `${name}.${options.domain}` }));
       agents.set(name, agent);
       log("register", name, ip);
+      options.onConnection?.({ type: "computer", state: "online", name, ip, time: Date.now() });
       if (usage.exceeded) agent.notifyQuota();
     } catch {
       agent.close(1000);

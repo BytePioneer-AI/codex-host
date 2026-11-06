@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import type { Socket } from "node:net";
+import type { RelayOptions } from "./index.js";
 import type { ClientHttp2Stream } from "node:http2";
 import { headers, paths } from "./protocol.js";
 import type { Agent } from "./registration.js";
@@ -12,7 +14,8 @@ export function forward(
   name: string,
   usage: Usage,
   acme: boolean,
-  onUsage?: (name: string, bytes: number) => void,
+  onUsage?: RelayOptions["onUsage"],
+  onConnection?: RelayOptions["onConnection"],
 ): void {
   const validation = usage.exceeded && acme;
   if (agent.phones.size >= 32 || (usage.exceeded && (!validation || usage.acmeRemaining === 0))) {
@@ -28,20 +31,31 @@ export function forward(
     [headers.clientPort]: String(socket.remotePort),
   });
   agent.phones.add(socket);
+  const connection = {
+    type: "phone" as const,
+    id: randomUUID(),
+    name,
+    ip: socket.remoteAddress,
+    startedAt: Date.now(),
+    acme,
+  };
+  const totals = { upload: 0, download: 0 };
   const abort = () => {
     socket.destroy();
     stream.destroy();
   };
   const deadline = validation ? setTimeout(abort, 10_000) : undefined;
   let bytes = 0;
-  const account = (size: number) => {
+  const account = (size: number, direction: "upload" | "download") => {
     bytes += size;
-    if (usage.add(size, validation)) {
+    totals[direction] += size;
+    const quotaExceeded = usage.add(size, validation);
+    onUsage?.(name, size, { direction, acme, quotaExceeded });
+    if (quotaExceeded) {
       log("quota", name, socket.remoteAddress, usage.bytes);
       agent.notifyQuota();
       for (const phone of agent.phones) phone.destroy();
     }
-    onUsage?.(name, size);
     if (validation && (bytes >= 64 * 1024 || usage.acmeRemaining === 0)) abort();
   };
   socket.on("error", abort);
@@ -57,12 +71,15 @@ export function forward(
     clearTimeout(deadline);
     agent.phones.delete(socket);
     if (!socket.readableEnded || !socket.writableFinished) stream.destroy();
+    onConnection?.({ ...connection, state: "close", endedAt: Date.now(), ...totals });
   });
+  onConnection?.({ ...connection, state: "open" });
 
   function transfer(
     source: Socket | ClientHttp2Stream,
     target: Socket | ClientHttp2Stream,
     bucket: TokenBucket | undefined,
+    direction: "upload" | "download",
   ) {
     let timer: NodeJS.Timeout | undefined;
     let blocked = false;
@@ -89,7 +106,7 @@ export function forward(
         }
         const chunk = source.read(size) as Buffer;
         blocked = !target.write(chunk);
-        account(chunk.length);
+        account(chunk.length, direction);
         if (blocked || source.destroyed || target.destroyed) return;
       }
       // Trigger end after the last buffered byte, without destroying either write side.
@@ -105,6 +122,6 @@ export function forward(
     target.once("close", () => clearTimeout(timer));
     pump();
   }
-  transfer(socket, stream, usage.upload);
-  transfer(stream, socket, usage.download);
+  transfer(socket, stream, usage.upload, "upload");
+  transfer(stream, socket, usage.download, "download");
 }

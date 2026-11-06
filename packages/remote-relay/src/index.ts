@@ -18,7 +18,10 @@ import {
 } from "./registration.js";
 import { pruneUsage, type Usage } from "./usage.js";
 
+import type { ConnectionEvent, UsageDetails } from "./events.js";
+
 export type { RegistrationRequest, RegistrationResult } from "./registration.js";
+export type { ConnectionEvent, UsageDetails } from "./events.js";
 
 export interface RelayOptions {
   domain: string;
@@ -30,7 +33,8 @@ export interface RelayOptions {
   dailyQuota?: number;
   maxConnections?: number;
   check?: (request: RegistrationRequest) => RegistrationResult | Promise<RegistrationResult>;
-  onUsage?: (name: string, bytes: number) => void;
+  onUsage?: (name: string, bytes: number, details: UsageDetails) => void;
+  onConnection?: (event: ConnectionEvent) => void;
   onRequest?: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>;
 }
 
@@ -105,6 +109,7 @@ export function createRelay(options: RelayOptions) {
           usage,
           alpn.length === 1 && alpn[0] === "acme-tls/1",
           options.onUsage,
+          options.onConnection,
         );
       })
       .catch(() => socket.destroy());
@@ -122,12 +127,16 @@ export function createRelay(options: RelayOptions) {
     async close(): Promise<void> {
       clearInterval(cleanupUsage);
       process.off("SIGHUP", reload);
+      const closed = [...wss.clients, ...sockets].map(
+        (connection) => new Promise<void>((resolve) => connection.once("close", () => resolve())),
+      );
       for (const ws of wss.clients) ws.terminate();
       for (const socket of sockets) socket.destroy();
       wss.close();
       await new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
       );
+      await Promise.all(closed);
     },
   };
 }

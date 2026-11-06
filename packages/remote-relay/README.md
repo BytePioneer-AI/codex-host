@@ -47,7 +47,7 @@ kill -HUP <relay-pid>
 
 ## 嵌入与注册检查
 
-`@codexhost/remote-relay` 导出 `createRelay(options)`、`RelayOptions`、`RegistrationRequest` 和 `RegistrationResult`。`options` 的 `domain`、`controlHost`、`cert`、`key`、`rate`、`dailyQuota`、`maxConnections` 与启动参数同义，另有可选的 `heartbeatInterval`（毫秒，默认 25000）及三个回调：
+`@codexhost/remote-relay` 导出 `createRelay(options)`、`RelayOptions`、`RegistrationRequest` 和 `RegistrationResult`。`options` 的 `domain`、`controlHost`、`cert`、`key`、`rate`、`dailyQuota`、`maxConnections` 与启动参数同义，另有可选的 `heartbeatInterval`（毫秒，默认 25000）及以下可选回调：
 
 ```ts
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -63,7 +63,8 @@ interface RelayOptions {
   // 其他选项略。
   check?: (request: RegistrationRequest) => RegistrationResult | Promise<RegistrationResult>;
   // 每次转发的增量字节数，不是累计值；应同步接收，持久化可自行批量执行。
-  onUsage?: (name: string, bytes: number) => void;
+  onUsage?: (name: string, bytes: number, details: UsageDetails) => void;
+  onConnection?: (event: ConnectionEvent) => void;
   onRequest?: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>;
 }
 
@@ -76,7 +77,18 @@ type RegistrationResult =
 
 返回的 `rate`、`dailyQuota` 优先于启动选项，省略时沿用启动值，均以字节为单位。`usedToday` 默认 0，作为 UTC 当天的用量起点；内存中已有该名字当天用量时，以内存为准。重连更新限速和额度，不清零当天用量或 ACME 小时用量。`onUsage` 与额度使用同一次计数，包括两个方向、ClientHello、TLS 开销和超额后的 ACME 验证流量；初始 `usedToday`、控制流和额度通知不重复上报。
 
-`onRequest` 接收控制地址上未升级为 WebSocket 的 HTTP 请求，可用于提供 `/admin` 等页面，由处理函数完成响应；未提供时返回 404。同步抛错或返回的 Promise 被拒绝时，尚未发送响应头则返回 500，否则关闭该响应，不影响 Relay 进程。WebSocket 升级路径和按地址名的 SNI 转发不经过该回调。
+`UsageDetails` 和 `ConnectionEvent` 也由包入口导出。`onUsage` 的第三参数为 `{ direction: "upload" | "download", acme: boolean, quotaExceeded: boolean }`，upload 指手机到电脑，download 指电脑到手机；`quotaExceeded` 仅本次增量首次触达当天额度时为 true。现有双参数回调不需要修改。
+
+`onConnection` 同步接收以下事件，所有时间为 Unix 毫秒；回调应仅更新内存，持久化自行批量执行，不应抛错：
+
+- `{ type: "computer", state: "online", name, ip, time }`：成功注册并进入在线表后触发，即使未提供 `check` 也会触发。
+- `{ type: "computer", state: "offline", name, ip, time, reason }`：注销时仅触发一次；reason 为 `replace`（被替换）、`timeout`（心跳超时）或 `unregister`（断开、主动注销、关闭服务等）。注册失败不会产生上下线事件。
+- `{ type: "phone", state: "open", id, name, ip, startedAt, acme }`：连接获准转发；容量或额度拒绝的连接不报告。
+- `{ type: "phone", state: "close", id, name, ip, startedAt, acme, endedAt, upload, download }`：同一连接关闭，含两个方向的累计转发字节，与增量计数一致。`id` 在该连接生命周期内不变。
+
+ALPN 恰好为 `acme-tls/1` 时，连接与用量始终标记 `acme: true`（不只超额后）；部署者可排除证书验证的手机使用次数和时长，但它的流量仍计入额度。不提供回调不改变注册或转发行为。
+
+`onRequest` 接收控制地址上未升级为 WebSocket 的 HTTP 请求，可用于提供部署者自定路径的页面，由处理函数完成响应；未提供时返回 404。同步抛错或返回的 Promise 被拒绝时，尚未发送响应头则返回 500，否则关闭该响应，不影响 Relay 进程。WebSocket 升级路径和按地址名的 SNI 转发不经过该回调。
 
 返回值包含 `server`、`close()` 和 `disconnect(name)`。调用者自行 `server.listen(port)`；`disconnect` 立即注销地址并关闭其控制和手机连接，未知名字无操作。再次连接须重新经过 `check`，可借此使新额度或停用规则生效。
 

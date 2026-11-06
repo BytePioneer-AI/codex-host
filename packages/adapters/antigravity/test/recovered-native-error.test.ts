@@ -14,6 +14,8 @@ const ERROR_MESSAGE = 17;
 const TOOL = 23;
 const DONE = 3;
 const RUNNING = 2;
+const ERROR = 7;
+const GENERATING = 8;
 
 const nativeError =
   'API error (attempt 1): request failed: Post "https://example.invalid/stream": local error: tls: bad record MAC';
@@ -74,6 +76,77 @@ describe("nativeTurnRecoveredFromError", () => {
         { type: PLANNER_RESPONSE },
       ]),
     ).resolves.toBe(true);
+  });
+
+  it("recovers past a terminal tool failure that came after the error", async () => {
+    // agy retried the model request, replied, had an ask_question call denied
+    // by the pre-tool hook (CORTEX_STEP_STATUS_ERROR), then replied again.
+    await expect(
+      verdict([
+        { type: USER_INPUT },
+        errorStep,
+        { type: PLANNER_RESPONSE },
+        { type: TOOL, status: ERROR },
+        { type: PLANNER_RESPONSE },
+      ]),
+    ).resolves.toBe(true);
+  });
+
+  it("recovers a stale repeat whose latest Turn had a terminal tool failure", async () => {
+    await expect(
+      verdict([
+        { type: USER_INPUT },
+        errorStep,
+        { type: PLANNER_RESPONSE },
+        { type: USER_INPUT },
+        { type: TOOL, status: ERROR },
+        { type: PLANNER_RESPONSE },
+      ]),
+    ).resolves.toBe(true);
+  });
+
+  it("treats a retried model request followed by a completed reply as non-fatal", async () => {
+    await expect(
+      verdict([{ type: USER_INPUT }, errorStep, { type: PLANNER_RESPONSE }, { type: TOOL }]),
+    ).resolves.toBe(true);
+  });
+
+  it("keeps other errors failed when the Turn did not end with a reply", async () => {
+    const otherError = "agent executor error: generating and executing: request failed: EOF";
+    await expect(
+      verdict(
+        [
+          { type: USER_INPUT },
+          { type: ERROR_MESSAGE, payload: otherError },
+          { type: PLANNER_RESPONSE },
+          { type: TOOL },
+        ],
+        otherError,
+      ),
+    ).resolves.toBe(false);
+  });
+
+  it("keeps a retried model request failed when a later model response failed", async () => {
+    await expect(
+      verdict([
+        { type: USER_INPUT },
+        errorStep,
+        { type: PLANNER_RESPONSE },
+        { type: TOOL },
+        { type: PLANNER_RESPONSE, status: ERROR },
+      ]),
+    ).resolves.toBe(false);
+  });
+
+  it("keeps a retried model request failed while a later step is still generating", async () => {
+    await expect(
+      verdict([
+        { type: USER_INPUT },
+        errorStep,
+        { type: PLANNER_RESPONSE },
+        { type: PLANNER_RESPONSE, status: GENERATING },
+      ]),
+    ).resolves.toBe(false);
   });
 
   it("treats an error only an earlier Turn hit as a stale repeat", async () => {

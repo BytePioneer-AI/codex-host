@@ -5,7 +5,19 @@ import { nativeConversationDbPath } from "./fork.js";
 /** agy's step kinds and statuses as stored in a Conversation DB's `steps` table. */
 const USER_INPUT_STEP = 14;
 const PLANNER_RESPONSE_STEP = 15;
+const ERROR_MESSAGE_STEP = 17;
 const DONE_STATUS = 3;
+/**
+ * `CortexStepStatus` values of a step agy has not finished yet: UNSPECIFIED,
+ * PENDING, RUNNING, GENERATING, WAITING and QUEUED. Every other status
+ * (DONE, INVALID, CLEARED, CANCELED, ERROR, INTERRUPTED, ...) is terminal: a
+ * tool call the pre-tool hook denied stays ERROR forever and must not keep the
+ * Turn "settling".
+ */
+const UNSETTLED_STATUSES: ReadonlySet<number> = new Set([0, 1, 2, 8, 9, 11]);
+
+/** agy's note for one failed model request it retries on its own. */
+const RETRIED_REQUEST_ERROR = /^API error \(attempt \d+\):/;
 
 /** How often, and how far apart, a still-settling Conversation DB is read again. */
 const SETTLE_ATTEMPTS = 3;
@@ -92,7 +104,12 @@ function readVerdict(
            FROM steps WHERE idx > ? ORDER BY idx ASC`,
       )
       .all(errorBytes, errorBytes, turnStart.idx) as unknown as StepRow[];
-    if (steps.some((step) => step.has_error)) return verdictForTurn(steps);
+    if (steps.some((step) => step.has_error)) {
+      return verdictForTurn(
+        steps,
+        RETRIED_REQUEST_ERROR.test(new TextDecoder().decode(errorBytes)),
+      );
+    }
     // The latest Turn never hit the error. agy repeats an error an earlier
     // Turn of this Conversation hit (and may have recovered from) in every
     // later Turn's result, so only an error found earlier is a stale repeat.
@@ -112,7 +129,7 @@ function readVerdict(
   }
 }
 
-function verdictForTurn(steps: StepRow[]): Verdict {
+function verdictForTurn(steps: StepRow[], retriedRequest: boolean): Verdict {
   let errorAt = -1;
   for (let index = steps.length - 1; index >= 0; index -= 1) {
     if (steps[index]?.has_error) {
@@ -121,14 +138,52 @@ function verdictForTurn(steps: StepRow[]): Verdict {
     }
   }
   if (errorAt < 0) return "notRecovered";
-  return verdictForFinishedTurn(steps.slice(errorAt + 1));
+  const after = steps.slice(errorAt + 1);
+  const verdict = verdictForFinishedTurn(after);
+  if (verdict !== "notRecovered" || !retriedRequest) return verdict;
+  // `API error (attempt N)` only records one model request agy retried. Once a
+  // later model response completed, the retry succeeded and the error is not
+  // what ended the Turn.
+  return retriedRequestRecovered(after) ? "recovered" : "notRecovered";
 }
 
-/** Whether `steps` all finished and end with a planner response. */
+function settled(step: StepRow): boolean {
+  return !UNSETTLED_STATUSES.has(step.status);
+}
+
+function completedPlannerResponse(step: StepRow): boolean {
+  return step.step_type === PLANNER_RESPONSE_STEP && step.status === DONE_STATUS;
+}
+
+/**
+ * Whether `steps` all reached a terminal status and end with a completed
+ * planner response. Terminal failures in between (a denied or failed tool
+ * call) do not block the verdict; the final reply decides it.
+ */
 function verdictForFinishedTurn(steps: StepRow[]): Verdict {
   const last = steps.at(-1);
   if (!last) return "notRecovered";
   // agy may still be flushing the last steps when the result arrives.
-  if (steps.some((step) => step.status !== DONE_STATUS)) return "unsettled";
-  return last.step_type === PLANNER_RESPONSE_STEP ? "recovered" : "notRecovered";
+  if (!steps.every(settled)) return "unsettled";
+  return completedPlannerResponse(last) ? "recovered" : "notRecovered";
+}
+
+/**
+ * After a retried model request: every step settled, a later model response
+ * completed, and no new error message or failed model response came after it.
+ */
+function retriedRequestRecovered(steps: StepRow[]): boolean {
+  if (!steps.every(settled)) return false;
+  let lastReply = -1;
+  steps.forEach((step, index) => {
+    if (completedPlannerResponse(step)) lastReply = index;
+  });
+  if (lastReply < 0) return false;
+  return !steps
+    .slice(lastReply + 1)
+    .some(
+      (step) =>
+        step.step_type === ERROR_MESSAGE_STEP ||
+        (step.step_type === PLANNER_RESPONSE_STEP && step.status !== DONE_STATUS),
+    );
 }

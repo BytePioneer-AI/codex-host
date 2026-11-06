@@ -3373,7 +3373,18 @@ export function installRendererBindingProbe(
   const api: RendererBindingProbeApi = {
     remoteConnections: (request) => handleRemoteConnectionsRequest(remoteConnections, request),
     currentThreadId() {
-      const mounted = connectedComposers();
+      // The app routinely keeps several composer roots connected (hidden leftovers included), so
+      // counting connected roots alone never yields exactly one. Pick the single visible root —
+      // the conversation the user is looking at; fall back to a single connected root so the
+      // one-composer layout behaves exactly as before.
+      const connected = connectedComposers();
+      const visible = connected.filter(
+        (mounted) =>
+          mounted.composer.getClientRects().length > 0 &&
+          window.getComputedStyle(mounted.composer).visibility === "visible" &&
+          !mounted.composer.closest('[hidden], [inert], [aria-hidden="true"]'),
+      );
+      const mounted = visible.length === 1 ? visible : connected.length === 1 ? connected : [];
       return mounted.length === 1 && mounted[0]
         ? (threadIdFromComposerModelTarget(mounted[0].modelTarget) ?? null)
         : null;

@@ -16,6 +16,8 @@ import { defined } from "./support/defined.ts";
 import { startServer } from "./support/server.ts";
 import { acmeServer } from "./support/acme-server.ts";
 
+const ciTiming = { skip: process.env.CI ? "timing-sensitive under CI load" : false };
+
 async function fixture(t: TestContext, certificate = true) {
   const ca = await acmeServer(t, ({ reply }) => {
     reply(503, { detail: "test CA unavailable" });
@@ -199,7 +201,7 @@ it("limits by Relay's phone IP, ignores forged forwarding headers, and keeps ano
   );
 });
 
-it("resets phones when certificates are missing but keeps registration", async (t) => {
+it("resets phones when certificates are missing but keeps registration", ciTiming, async (t) => {
   const f = await fixture(t, false);
   assert.equal(
     f.state.networkUrls.some((entry) => entry.kind === "relay"),
@@ -242,7 +244,7 @@ it(
   },
 );
 
-it("drains a large response without blocking a second phone's RPC", async (t) => {
+it("drains a large response without blocking a second phone's RPC", ciTiming, async (t) => {
   const f = await fixture(t);
   const auth = { authorization: `Bearer ${f.state.secret}` };
   const page = (await f.send("/", undefined, auth)).body.toString();

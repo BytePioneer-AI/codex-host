@@ -4,6 +4,8 @@ use std::env;
 use std::fs::File;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::io::Read;
+#[cfg(any(target_os = "windows", test))]
+use std::io::{Seek, SeekFrom};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
@@ -440,31 +442,140 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     windows_installation(details, &windows_local_app_data()?)
 }
 
+/// Best-effort validation of a marketing or build version string.
+/// Rejects empty values, non-version strings, and the misleading placeholder "0.0.0.0".
+#[cfg(any(target_os = "windows", test))]
+fn validate_desktop_version(version: &str) -> Option<String> {
+    let trimmed = version.trim();
+    if !trimmed.is_empty()
+        && trimmed != "0.0.0.0"
+        && trimmed.len() <= 64
+        && trimmed.starts_with(|c: char| c.is_ascii_digit())
+        && trimmed.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-' || byte == b'+'
+        })
+    {
+        Some(trimmed.to_owned())
+    } else {
+        None
+    }
+}
+
 /// Best-effort read of the packaged Desktop version from `AppxManifest.xml`.
-///
-/// A portable/unpacked installation has no registered AppX package, so the
-/// version is not available from the Windows PackageManager. The official MSIX
-/// embeds the marketing version in the `<Identity Version="..."/>` attribute of
-/// its manifest; fall back to a placeholder when it cannot be parsed.
-#[cfg(target_os = "windows")]
-fn portable_package_version(package_root: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(package_root.join("AppxManifest.xml")).ok()?;
+#[cfg(any(target_os = "windows", test))]
+fn parse_manifest_version(content: &str) -> Option<String> {
     let identity = content.find("<Identity")?;
     let rest = &content[identity..];
     let marker = rest.find("Version=")?;
     let after = &rest[marker + "Version=".len()..];
     let value = after.strip_prefix('"')?;
-    let version = value[..value.find('"')?].to_owned();
-    if !version.is_empty()
-        && version.len() <= 64
-        && version
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b'.')
-    {
-        Some(version)
-    } else {
-        None
+    let raw = &value[..value.find('"')?];
+    validate_desktop_version(raw)
+}
+
+/// Best-effort read of the "version" field from a `package.json` file.
+#[cfg(any(target_os = "windows", test))]
+fn parse_package_json_version(content: &str) -> Option<String> {
+    let pkg: serde_json::Value = serde_json::from_str(content).ok()?;
+    let raw = pkg.get("version")?.as_str()?;
+    validate_desktop_version(raw)
+}
+
+/// Best-effort read of root `package.json` version from an Electron `app.asar` archive.
+///
+/// Electron ASAR headers contain a directory tree where root files reside strictly under
+/// `header["files"]`. Sub-dependencies in `node_modules` must not be matched.
+#[cfg(any(target_os = "windows", test))]
+fn parse_asar_package_json_version(asar_path: &Path) -> Option<String> {
+    let mut file = File::open(asar_path).ok()?;
+    let mut header_buf = [0_u8; 16];
+    file.read_exact(&mut header_buf).ok()?;
+
+    let magic = u32::from_le_bytes(header_buf[0..4].try_into().ok()?);
+    if magic != 4 {
+        return None;
     }
+    let header_size = u32::from_le_bytes(header_buf[4..8].try_into().ok()?);
+    let json_len = u32::from_le_bytes(header_buf[12..16].try_into().ok()?);
+
+    if header_size < 8 || json_len == 0 || json_len > header_size {
+        return None;
+    }
+    if json_len > 16 * 1024 * 1024 {
+        return None;
+    }
+
+    let mut json_buf = vec![0_u8; json_len as usize];
+    file.read_exact(&mut json_buf).ok()?;
+    let header_json = std::str::from_utf8(&json_buf).ok()?;
+
+    let header: serde_json::Value = serde_json::from_str(header_json).ok()?;
+    let pkg_entry = header.get("files")?.get("package.json")?;
+    let size = pkg_entry.get("size")?.as_u64()?;
+    let offset = match pkg_entry.get("offset")? {
+        serde_json::Value::Number(num) => num.as_u64()?,
+        serde_json::Value::String(s) => s.parse::<u64>().ok()?,
+        _ => return None,
+    };
+
+    if size == 0 || size > 1024 * 1024 {
+        return None;
+    }
+
+    let content_start = 8_u64.checked_add(header_size as u64)?;
+    let file_offset = content_start.checked_add(offset)?;
+
+    file.seek(SeekFrom::Start(file_offset)).ok()?;
+    let mut pkg_buf = vec![0_u8; size as usize];
+    file.read_exact(&mut pkg_buf).ok()?;
+    let pkg_content = std::str::from_utf8(&pkg_buf).ok()?;
+
+    parse_package_json_version(pkg_content)
+}
+
+/// Reads the desktop version from a portable installation across candidate metadata sources:
+/// 1. `AppxManifest.xml` (package or app root)
+/// 2. `app.asar` package.json
+/// 3. `package.json` on disk
+#[cfg(any(target_os = "windows", test))]
+fn portable_desktop_version(
+    package_root: &Path,
+    app_root: &Path,
+    asar_path: &Path,
+) -> Option<String> {
+    // 1. Try AppxManifest.xml from package_root or app_root
+    for dir in [package_root, app_root] {
+        if let Ok(content) = std::fs::read_to_string(dir.join("AppxManifest.xml"))
+            && let Some(version) = parse_manifest_version(&content)
+        {
+            return Some(version);
+        }
+    }
+
+    // 2. Try app.asar package.json
+    if asar_path.is_file()
+        && let Some(version) = parse_asar_package_json_version(asar_path)
+    {
+        return Some(version);
+    }
+
+    // 3. Try package.json on disk
+    let candidates = [
+        app_root.join("package.json"),
+        package_root.join("package.json"),
+        app_root.join("resources/app/package.json"),
+        app_root.join("resources/package.json"),
+    ];
+    for path in &candidates {
+        if path.is_file()
+            && let Ok(content) = std::fs::read_to_string(path)
+            && let Some(version) = parse_package_json_version(&content)
+        {
+            return Some(version);
+        }
+    }
+
+    None
 }
 
 /// Discover Codex Desktop from an explicitly supplied installation directory.
@@ -509,7 +620,8 @@ pub fn discover_codex_desktop_from_root(
     }
     let executable_codex_cli = packaged_codex_cli.clone();
 
-    let version = portable_package_version(&package_root).unwrap_or_else(|| "0.0.0.0".to_owned());
+    let version = portable_desktop_version(&package_root, &app_root, &asar_path)
+        .unwrap_or_else(|| "unknown".to_owned());
 
     Ok(DesktopInstallation {
         identity: DesktopIdentity::WindowsPackage {
@@ -742,14 +854,47 @@ mod windows_tests {
     }
 
     #[test]
-    fn custom_root_without_a_manifest_falls_back_to_a_placeholder_version() {
+    fn custom_root_without_a_manifest_falls_back_to_unknown_version() {
         let (root, install_root) = portable_fixture("codexhost-windows-no-manifest", None);
 
         let installation =
             super::discover_codex_desktop_from_root(&install_root).expect("portable installation");
 
-        assert_eq!(installation.version, "0.0.0.0");
-        assert_eq!(installation.build, "0.0.0.0");
+        assert_eq!(installation.version, "unknown");
+        assert_eq!(installation.build, "unknown");
+
+        fs::remove_dir_all(root).expect("remove portable fixture");
+    }
+
+    #[test]
+    fn custom_root_without_manifest_reads_version_from_asar() {
+        let (root, install_root) = portable_fixture("codexhost-windows-asar-version", None);
+        let asar_path = install_root.join("app/resources/app.asar");
+        let asar_bytes = super::portable_version_tests::create_fake_asar(
+            r#"{"name":"ChatGPT","version":"26.1021.3705.0"}"#,
+        );
+        fs::write(&asar_path, asar_bytes).expect("write fake asar");
+
+        let installation =
+            super::discover_codex_desktop_from_root(&install_root).expect("portable installation");
+
+        assert_eq!(installation.version, "26.1021.3705.0");
+        assert_eq!(installation.build, "26.1021.3705.0");
+
+        fs::remove_dir_all(root).expect("remove portable fixture");
+    }
+
+    #[test]
+    fn custom_root_without_manifest_reads_version_from_package_json() {
+        let (root, install_root) = portable_fixture("codexhost-windows-pkg-json-version", None);
+        let pkg_json = install_root.join("app/package.json");
+        fs::write(&pkg_json, b"{\"version\":\"26.1021.3705.0\"}").expect("write package.json");
+
+        let installation =
+            super::discover_codex_desktop_from_root(&install_root).expect("portable installation");
+
+        assert_eq!(installation.version, "26.1021.3705.0");
+        assert_eq!(installation.build, "26.1021.3705.0");
 
         fs::remove_dir_all(root).expect("remove portable fixture");
     }
@@ -771,18 +916,26 @@ mod windows_tests {
     #[test]
     fn portable_version_parsing_is_best_effort() {
         let root = temporary_directory("codexhost-version-parse");
-        assert_eq!(super::portable_package_version(&root), None);
+        let app_root = root.join("app");
+        let asar_path = app_root.join("resources/app.asar");
+        assert_eq!(
+            super::portable_desktop_version(&root, &app_root, &asar_path),
+            None
+        );
         fs::write(
             root.join("AppxManifest.xml"),
             b"<Package><Identity Name=\"OpenAI.Codex\" Version=\"1.2.3.4\"/></Package>",
         )
         .expect("write versioned manifest");
         assert_eq!(
-            super::portable_package_version(&root).as_deref(),
+            super::portable_desktop_version(&root, &app_root, &asar_path).as_deref(),
             Some("1.2.3.4")
         );
         fs::write(root.join("AppxManifest.xml"), b"not xml").expect("write invalid manifest");
-        assert_eq!(super::portable_package_version(&root), None);
+        assert_eq!(
+            super::portable_desktop_version(&root, &app_root, &asar_path),
+            None
+        );
         fs::remove_dir_all(root).expect("remove version fixture");
     }
 
@@ -1220,5 +1373,223 @@ mod tests {
             discover_from_candidates([first, second]),
             Err(PlatformError::Invalid(message)) if message.contains("multiple valid")
         ));
+    }
+}
+
+#[cfg(test)]
+mod portable_version_tests {
+    use super::{
+        parse_asar_package_json_version, parse_manifest_version, parse_package_json_version,
+        portable_desktop_version, validate_desktop_version,
+    };
+    use crate::temporary_directory;
+    use std::fs;
+
+    pub(super) fn create_fake_asar(pkg_json: &str) -> Vec<u8> {
+        let pkg_bytes = pkg_json.as_bytes();
+        let header_obj = format!(
+            r#"{{"files":{{"package.json":{{"size":{},"offset":"0"}}}}}}"#,
+            pkg_bytes.len()
+        );
+        let json_bytes = header_obj.as_bytes();
+        let json_len = json_bytes.len() as u32;
+        let pad = (4 - (json_len % 4)) % 4;
+        let header_size = 4 + 4 + json_len + pad;
+
+        let mut asar = Vec::new();
+        asar.extend_from_slice(&4_u32.to_le_bytes());
+        asar.extend_from_slice(&header_size.to_le_bytes());
+        asar.extend_from_slice(&(json_len + pad + 4).to_le_bytes());
+        asar.extend_from_slice(&json_len.to_le_bytes());
+        asar.extend_from_slice(json_bytes);
+        asar.extend(std::iter::repeat_n(0, pad as usize));
+        asar.extend_from_slice(pkg_bytes);
+        asar
+    }
+
+    #[test]
+    fn validates_desktop_version_and_rejects_placeholder_and_invalid() {
+        assert_eq!(
+            validate_desktop_version("26.1021.3705.0").as_deref(),
+            Some("26.1021.3705.0")
+        );
+        assert_eq!(validate_desktop_version("1.2.3").as_deref(), Some("1.2.3"));
+        assert_eq!(
+            validate_desktop_version("1.2.3-beta.1").as_deref(),
+            Some("1.2.3-beta.1")
+        );
+        assert_eq!(validate_desktop_version("0.0.0.0"), None);
+        assert_eq!(validate_desktop_version(""), None);
+        assert_eq!(validate_desktop_version("not_a_version"), None);
+    }
+
+    #[test]
+    fn parses_manifest_version() {
+        let xml = r#"<?xml version="1.0"?><Package><Identity Name="OpenAI.Codex" Version="26.1021.2667.0"/></Package>"#;
+        assert_eq!(
+            parse_manifest_version(xml).as_deref(),
+            Some("26.1021.2667.0")
+        );
+
+        let placeholder_xml =
+            r#"<Package><Identity Name="OpenAI.Codex" Version="0.0.0.0"/></Package>"#;
+        assert_eq!(parse_manifest_version(placeholder_xml), None);
+
+        let invalid = "<Package></Package>";
+        assert_eq!(parse_manifest_version(invalid), None);
+    }
+
+    #[test]
+    fn parses_package_json_version() {
+        let json = r#"{"name": "ChatGPT", "version": "26.1021.3705.0", "main": "app.js"}"#;
+        assert_eq!(
+            parse_package_json_version(json).as_deref(),
+            Some("26.1021.3705.0")
+        );
+
+        let spaces = r#"{"name":"test",  "version"  :  "1.2.3"  }"#;
+        assert_eq!(parse_package_json_version(spaces).as_deref(), Some("1.2.3"));
+
+        let placeholder = r#"{"version": "0.0.0.0"}"#;
+        assert_eq!(parse_package_json_version(placeholder), None);
+
+        let no_version = r#"{"name": "test"}"#;
+        assert_eq!(parse_package_json_version(no_version), None);
+    }
+
+    #[test]
+    fn parses_asar_package_json_version() {
+        let root = temporary_directory("codexhost-asar-test");
+        let asar_path = root.join("app.asar");
+
+        let asar_bytes = create_fake_asar(r#"{"name":"ChatGPT","version":"26.1021.3705.0"}"#);
+        fs::write(&asar_path, asar_bytes).expect("write fake asar");
+
+        assert_eq!(
+            parse_asar_package_json_version(&asar_path).as_deref(),
+            Some("26.1021.3705.0")
+        );
+
+        // Corrupt / truncated asar
+        fs::write(&asar_path, b"not an asar file").expect("write corrupt asar");
+        assert_eq!(parse_asar_package_json_version(&asar_path), None);
+
+        fs::remove_dir_all(root).expect("remove asar fixture");
+    }
+
+    #[test]
+    fn parses_asar_root_package_json_and_ignores_nested_node_modules() {
+        let root = temporary_directory("codexhost-asar-node-modules-test");
+        let asar_path = root.join("app.asar");
+
+        // Construct an ASAR with node_modules/atob-lite/package.json (v2.0.0)
+        // and root package.json (v26.1023.50603)
+        let dep_pkg = r#"{"name":"atob-lite","version":"2.0.0"}"#;
+        let root_pkg = r#"{"name":"ChatGPT","version":"26.1023.50603"}"#;
+
+        let header_obj = serde_json::json!({
+            "files": {
+                "node_modules": {
+                    "files": {
+                        "atob-lite": {
+                            "files": {
+                                "package.json": {
+                                    "size": dep_pkg.len(),
+                                    "offset": "0",
+                                    "integrity": {
+                                        "algorithm": "SHA256",
+                                        "hash": "somehash"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "package.json": {
+                    "integrity": {
+                        "algorithm": "SHA256",
+                        "hash": "rootpkgjsonhash"
+                    },
+                    "size": root_pkg.len(),
+                    "offset": format!("{}", dep_pkg.len())
+                }
+            }
+        });
+
+        let json_str = serde_json::to_string(&header_obj).unwrap();
+        let json_bytes = json_str.as_bytes();
+        let json_len = json_bytes.len() as u32;
+        let pad = (4 - (json_len % 4)) % 4;
+        let header_size = 4 + 4 + json_len + pad;
+
+        let mut asar = Vec::new();
+        asar.extend_from_slice(&4_u32.to_le_bytes());
+        asar.extend_from_slice(&header_size.to_le_bytes());
+        asar.extend_from_slice(&(json_len + pad + 4).to_le_bytes());
+        asar.extend_from_slice(&json_len.to_le_bytes());
+        asar.extend_from_slice(json_bytes);
+        asar.extend(std::iter::repeat_n(0, pad as usize));
+        asar.extend_from_slice(dep_pkg.as_bytes());
+        asar.extend_from_slice(root_pkg.as_bytes());
+
+        fs::write(&asar_path, asar).expect("write asar with node_modules");
+
+        assert_eq!(
+            parse_asar_package_json_version(&asar_path).as_deref(),
+            Some("26.1023.50603")
+        );
+
+        fs::remove_dir_all(root).expect("remove asar fixture");
+    }
+
+    #[test]
+    fn portable_desktop_version_prioritizes_manifest_then_asar_then_package_json() {
+        let root = temporary_directory("codexhost-portable-priority");
+        let package_root = root.join("package");
+        let app_root = package_root.join("app");
+        let resources = app_root.join("resources");
+        fs::create_dir_all(&resources).expect("create layout");
+
+        let asar_path = resources.join("app.asar");
+        let manifest_path = package_root.join("AppxManifest.xml");
+        let pkg_json_path = app_root.join("package.json");
+
+        // 1. When manifest, asar, and package.json are all present, manifest wins
+        fs::write(
+            &manifest_path,
+            b"<Package><Identity Name=\"OpenAI.Codex\" Version=\"26.1021.2667.0\"/></Package>",
+        )
+        .expect("write manifest");
+        let asar_bytes = create_fake_asar(r#"{"version":"26.1021.3705.0"}"#);
+        fs::write(&asar_path, &asar_bytes).expect("write asar");
+        fs::write(&pkg_json_path, b"{\"version\":\"1.0.0\"}").expect("write pkg.json");
+
+        assert_eq!(
+            portable_desktop_version(&package_root, &app_root, &asar_path).as_deref(),
+            Some("26.1021.2667.0")
+        );
+
+        // 2. When manifest is absent, app.asar wins (Issue #599 scenario!)
+        fs::remove_file(&manifest_path).expect("remove manifest");
+        assert_eq!(
+            portable_desktop_version(&package_root, &app_root, &asar_path).as_deref(),
+            Some("26.1021.3705.0")
+        );
+
+        // 3. When asar has no valid version / missing, package.json on disk wins
+        fs::write(&asar_path, b"invalid asar").expect("overwrite with invalid asar");
+        assert_eq!(
+            portable_desktop_version(&package_root, &app_root, &asar_path).as_deref(),
+            Some("1.0.0")
+        );
+
+        // 4. When all metadata is missing or invalid, returns None (which maps to unknown)
+        fs::remove_file(&pkg_json_path).expect("remove pkg.json");
+        assert_eq!(
+            portable_desktop_version(&package_root, &app_root, &asar_path),
+            None
+        );
+
+        fs::remove_dir_all(root).expect("remove priority fixture");
     }
 }

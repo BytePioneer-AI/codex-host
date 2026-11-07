@@ -87,7 +87,11 @@ function timelineDetails(
         document,
         "dd",
         {},
-        record.desktop ? `${record.desktop.version} (${record.desktop.build})` : "—",
+        record.desktop
+          ? record.desktop.version === "unknown" || record.desktop.version === "0.0.0.0"
+            ? messages.versionUnknown
+            : `${record.desktop.version} (${record.desktop.build})`
+          : "—",
       ),
       h(document, "dt", {}, messages.codexhost),
       h(document, "dd", {}, record.launcherVersion || "—"),

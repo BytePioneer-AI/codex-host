@@ -15,13 +15,28 @@ export interface StartupRecord {
   desktop: { version: string; build: string; installRoot: string } | null;
 }
 
+export interface InspectDesktopIdentity {
+  packageName?: string;
+  packageFamilyName?: string;
+  appxActivation?: { packageFullName: string; appUserModelId: string } | null;
+  bundleIdentifier?: string;
+  brand?: string;
+  flavor?: string;
+}
+
 export interface ConsoleOverview {
   console: {
     version: string;
     distribution: { version: string; distribution: "npm" | "installer"; target: string } | null;
   };
   inspect: {
-    desktop: { version: string; build: string; installRoot: string } | null;
+    desktop: {
+      platform?: string;
+      identity?: InspectDesktopIdentity;
+      version: string;
+      build: string;
+      installRoot: string;
+    } | null;
     desktopError: string | null;
     runtime: { running: boolean };
   } | null;

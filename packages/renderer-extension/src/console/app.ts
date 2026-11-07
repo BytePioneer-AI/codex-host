@@ -93,7 +93,11 @@ function statusCard(
         { className: "console-status-card__meta" },
         [
           version && `codexhost ${version}`,
-          overview?.inspect?.desktop && `Codex ${overview.inspect.desktop.version}`,
+          overview?.inspect?.desktop &&
+            (overview.inspect.desktop.version === "unknown" ||
+            overview.inspect.desktop.version === "0.0.0.0"
+              ? `${messages.desktop} (${messages.versionUnknown})`
+              : `Codex ${overview.inspect.desktop.version}`),
         ]
           .filter(Boolean)
           .join(" · "),

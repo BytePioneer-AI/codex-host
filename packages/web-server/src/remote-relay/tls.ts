@@ -6,7 +6,7 @@ import {
 } from "node:http2";
 import { createSecureContext, createServer as createTlsServer, type SecureContext } from "node:tls";
 import { readClientHello } from "@codexhost/remote-relay/client-hello";
-import { headers } from "@codexhost/remote-relay/protocol";
+import { headers, paths } from "@codexhost/remote-relay/protocol";
 import type { RequestTrust } from "../request-trust.ts";
 import { HTTP_KEEP_ALIVE_TIMEOUT } from "../http-server.ts";
 
@@ -71,9 +71,44 @@ export class RelayTls {
             socket.end(() => socket.destroy());
             return;
           }
+          const id = request[headers.connectionId];
+          let reportedDay: string | undefined;
           const peer = {
             address: request[headers.clientAddress] as string,
             origin: `https://${hostname}`,
+            authenticated: () => {
+              const day = new Date().toISOString().slice(0, 10);
+              if (typeof id !== "string" || reportedDay === day || stream.destroyed) return;
+              try {
+                stream.pushStream(
+                  {
+                    ":method": "GET",
+                    ":path": paths.authenticated,
+                    [headers.connectionId]: id,
+                  },
+                  (error, report) => {
+                    if (error) {
+                      if (reportedDay === day) reportedDay = undefined;
+                      return;
+                    }
+                    report.on("error", () => {
+                      if (reportedDay === day) reportedDay = undefined;
+                      report.destroy();
+                    });
+                    try {
+                      report.respond({ ":status": 204 });
+                      report.end();
+                    } catch {
+                      if (reportedDay === day) reportedDay = undefined;
+                      report.destroy();
+                    }
+                  },
+                );
+                reportedDay = day;
+              } catch {
+                // Telemetry must not affect login or access, including on older relay servers.
+              }
+            },
           };
           this.trust.relaySockets.set(socket, peer);
           if (socket.alpnProtocol === "h2") {

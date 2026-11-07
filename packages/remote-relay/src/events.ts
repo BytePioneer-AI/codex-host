@@ -28,6 +28,7 @@ export type ConnectionEvent =
       reason: "replace" | "unregister" | "timeout";
     })
   | (PhoneEvent & { state: "open" })
+  | (PhoneEvent & { state: "authenticated"; time: number })
   | (PhoneEvent & {
       state: "close";
       endedAt: number;

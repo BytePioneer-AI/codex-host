@@ -39,6 +39,7 @@ export type RegistrationResult =
 export interface Agent {
   session: ClientHttp2Session;
   phones: Set<Socket>;
+  authentications: Map<string, () => void>;
   close: (code: number) => void;
   notifyQuota: () => void;
 }
@@ -61,6 +62,7 @@ export function registerAgent(
   const agent: Agent = {
     session,
     phones: new Set(),
+    authentications: new Map(),
     close(code) {
       unregister(code === closeCodes.replaced ? "replace" : "unregister");
       ws.close(code);
@@ -74,6 +76,37 @@ export function registerAgent(
       notice.end(JSON.stringify({ quota: "exhausted", until: until.toISOString() }));
     },
   };
+  // Reports travel over this computer's signed control session and identify a live relay stream,
+  // never an IP supplied by an HTTP client. Old computers simply do not send these optional pushes.
+  session.on("stream", (stream, request) => {
+    stream.on("error", () => stream.destroy());
+    const id = request[headers.connectionId];
+    const authenticated =
+      name !== undefined &&
+      agents.get(name) === agent &&
+      request[":method"] === "GET" &&
+      request[":path"] === paths.authenticated &&
+      typeof id === "string"
+        ? agent.authentications.get(id)
+        : undefined;
+    if (!authenticated) {
+      stream.close();
+      return;
+    }
+    let accepted = false;
+    let empty = true;
+    stream.once("push", (response) => {
+      accepted = Number(response[":status"]) === 204;
+    });
+    stream.on("data", () => {
+      empty = false;
+      stream.close();
+    });
+    stream.once("end", () => {
+      if (empty && accepted) authenticated();
+    });
+    stream.resume();
+  });
   const unregister = (reason: "replace" | "unregister" | "timeout" = "unregister") => {
     if (name && agents.get(name) === agent) {
       agents.delete(name);

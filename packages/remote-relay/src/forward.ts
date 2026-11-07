@@ -24,21 +24,32 @@ export function forward(
   }
   socket.setNoDelay(true);
   socket.setKeepAlive(true);
+  const id = randomUUID();
   const stream = agent.session.request({
     ":method": "POST",
     ":path": paths.tcp,
     [headers.clientAddress]: socket.remoteAddress,
     [headers.clientPort]: String(socket.remotePort),
+    [headers.connectionId]: id,
   });
   agent.phones.add(socket);
   const connection = {
     type: "phone" as const,
-    id: randomUUID(),
+    id,
     name,
     ip: socket.remoteAddress,
     startedAt: Date.now(),
     acme,
   };
+  let authenticatedDay: string | undefined;
+  if (!acme)
+    agent.authentications.set(id, () => {
+      const time = Date.now();
+      const day = new Date(time).toISOString().slice(0, 10);
+      if (socket.destroyed || authenticatedDay === day) return;
+      authenticatedDay = day;
+      onConnection?.({ ...connection, state: "authenticated", time });
+    });
   const totals = { upload: 0, download: 0 };
   const abort = () => {
     socket.destroy();
@@ -70,6 +81,7 @@ export function forward(
   socket.once("close", () => {
     clearTimeout(deadline);
     agent.phones.delete(socket);
+    agent.authentications.delete(id);
     if (!socket.readableEnded || !socket.writableFinished) stream.destroy();
     onConnection?.({ ...connection, state: "close", endedAt: Date.now(), ...totals });
   });

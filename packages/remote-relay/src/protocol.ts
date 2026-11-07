@@ -5,6 +5,7 @@ export const paths = {
   register: "/v1/register",
   tcp: "/v1/tcp",
   notice: "/v1/notice",
+  authenticated: "/v1/authenticated",
 } as const;
 
 export const headers = {
@@ -15,6 +16,7 @@ export const headers = {
   invite: "relay-invite",
   clientAddress: "relay-client-address",
   clientPort: "relay-client-port",
+  connectionId: "relay-connection-id",
 } as const;
 
 export const closeCodes = {

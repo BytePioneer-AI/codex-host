@@ -85,9 +85,12 @@ type RegistrationResult =
 - `{ type: "computer", state: "online", name, ip, time }`：成功注册并进入在线表后触发，即使未提供 `check` 也会触发。
 - `{ type: "computer", state: "offline", name, ip, time, reason }`：注销时仅触发一次；reason 为 `replace`（被替换）、`timeout`（心跳超时）或 `unregister`（断开、主动注销、关闭服务等）。注册失败不会产生上下线事件。
 - `{ type: "phone", state: "open", id, name, ip, startedAt, acme }`：连接获准转发；容量或额度拒绝的连接不报告。
+- `{ type: "phone", state: "authenticated", id, name, ip, startedAt, acme: false, time }`：电脑端确认访问令牌或登录 Cookie 校验通过；按同一连接、UTC 日去重。它不同于原始 `open`：普通连接、扫描、认证失败及证书验证不产生该事件。IP 和身份来自对应的中转连接，不接受浏览器填报；旧电脑不报告，不能把其历史连接推算为已认证访问。
 - `{ type: "phone", state: "close", id, name, ip, startedAt, acme, endedAt, upload, download }`：同一连接关闭，含两个方向的累计转发字节，与增量计数一致。`id` 在该连接生命周期内不变。
 
 ALPN 恰好为 `acme-tls/1` 时，连接与用量始终标记 `acme: true`（不只超额后）；部署者可排除证书验证的手机使用次数和时长，但它的流量仍计入额度。不提供回调不改变注册或转发行为。
+
+认证报告只通过已签名注册的电脑控制会话传输：`POST /v1/tcp` 带中转生成的 `relay-connection-id`；电脑校验访问凭据后，使用该 HTTP/2 会话的 server push 发送 `GET /v1/authenticated`，带相同 ID，响应 204 且正文为空。核心只接受该电脑仍存活的非 ACME 连接 ID，忽略未知、其他电脑或已关闭连接的 ID，并按 UTC 日去重。不增加公网认证报告路由，也不传输令牌、Cookie、请求路径或转发内容。旧 Relay 不提供连接 ID，电脑不报告；统计失败不影响登录。此事件是电脑端的认证观测，不代表人数、登录操作次数或应用请求成功。
 
 `onRequest` 接收控制地址上未升级为 WebSocket 的 HTTP 请求，可用于提供部署者自定路径的页面，由处理函数完成响应；未提供时返回 404。同步抛错或返回的 Promise 被拒绝时，尚未发送响应头则返回 500，否则关闭该响应，不影响 Relay 进程。WebSocket 升级路径和按地址名的 SNI 转发不经过该回调。
 

@@ -202,6 +202,7 @@ export class AccessAuth {
       presented === undefined ? undefined : this.credentialFor(presented.token, request);
     if (credential !== undefined) {
       this.connections.track(credential, socket);
+      this.trust.authenticated(request);
       return true;
     }
     const status = presented === undefined ? 401 : this.countFailure(request);
@@ -217,6 +218,7 @@ export class AccessAuth {
     response: ServerResponse,
     credential: string,
   ): RequestAuth {
+    this.trust.authenticated(request);
     return {
       credential,
       local: isLocalConnection(request),
@@ -309,6 +311,7 @@ export class AccessAuth {
       reply(401, { error: { code: "auth/invalid-token" } });
       return;
     }
+    this.trust.authenticated(request);
     reply(200, { ok: true }, this.cookie(request, token, COOKIE_MAX_AGE_SECONDS));
   }
 }

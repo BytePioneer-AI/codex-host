@@ -49,7 +49,23 @@ export function isLocalConnection(request: IncomingMessage): boolean {
 export class RequestTrust {
   private readonly proxies: ReadonlySet<string>;
   trustLoopback = false;
-  readonly relaySockets = new WeakMap<Socket, { address: string; origin: string }>();
+  readonly relaySockets = new WeakMap<
+    Socket,
+    {
+      address: string;
+      origin: string;
+      authenticated?: () => void;
+    }
+  >();
+
+  /** Notify only the relay connection bound by the TLS bridge, never client-provided headers. */
+  authenticated(request: IncomingMessage): void {
+    try {
+      this.relaySockets.get(request.socket)?.authenticated?.();
+    } catch {
+      // Authentication is authoritative; optional telemetry must not block access.
+    }
+  }
 
   /** @param trustedProxies - comma-separated IP addresses of proxies allowed to set forwarding headers. */
   constructor(trustedProxies: string | undefined) {

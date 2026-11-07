@@ -180,6 +180,52 @@ function fixture() {
     },
   };
 }
+it("retains undo identity when the catalog sees archive before its write acknowledgement", async (t) => {
+  const applied = Promise.withResolvers<undefined>();
+  const acknowledgement = Promise.withResolvers<undefined>();
+  t.after(() => acknowledgement.resolve(undefined));
+  let archived = false;
+  const row = {
+    id: "native",
+    cwd: "/remote",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 2,
+    status: { type: "idle" },
+    turns: [],
+  };
+  const remote = new RemoteSessions(new EventHub("race"), async (op) => {
+    if (op.kind === "hosts") return [{ hostId: "remote-control:a", online: true }];
+    if (op.kind === "list") return { data: archived ? [] : [row], nextCursor: null };
+    if (op.kind === "read") return { result: { thread: row }, epoch: "epoch", requests: [] };
+    if (op.kind === "archive") {
+      archived = op.archived;
+      if (archived) {
+        applied.resolve(undefined);
+        await acknowledgement.promise;
+      }
+    }
+    return {};
+  });
+  t.after(() => remote.close());
+  const rpc = new RpcRegistry();
+  for (const method of ["workspace/archiveSession", "workspace/unarchiveSession"])
+    rpc.register(method, () => {
+      throw new Error("must not route locally");
+    });
+  remote.install(rpc, new StreamRegistry());
+  const id = remoteSessionId("remote-control:a", "native");
+  const call = (method: string) => rpc.dispatch(method, { args: { request: { sessionId: id } } });
+  const archiving = call("workspace/archiveSession");
+  await applied.promise;
+  await remote.refresh();
+  acknowledgement.resolve(undefined);
+  assert.deepEqual(await archiving, { ok: true, value: { archivedSessionIds: [id] } });
+  assert.deepEqual(await call("workspace/unarchiveSession"), {
+    ok: true,
+    value: { archivedSessionIds: [] },
+  });
+});
 it("returns local sessions while remote discovery is stalled", async (t) => {
   const release = Promise.withResolvers<undefined>();
   t.after(() => release.resolve(undefined));

@@ -112,6 +112,7 @@ export class RemoteSessions {
   private followTimers = new Set<NodeJS.Timeout>();
   private listing: Promise<void> | undefined;
   private archiveRevision = 0;
+  private archiveWrites = 0;
   private discoveryUnavailable = false;
   private closed = false;
   private readonly timer: NodeJS.Timeout;
@@ -161,6 +162,7 @@ export class RemoteSessions {
     return this.listing;
   }
   private async list(): Promise<void> {
+    if (this.archiveWrites) return;
     const archiveRevision = this.archiveRevision;
     let hosts: Array<{ hostId: string; online: boolean }>;
     try {
@@ -574,9 +576,19 @@ export class RemoteSessions {
           "This operation is unavailable for remote Threads",
         );
     }
-    await this.invoke(operation);
     if (operation.kind === "archive") {
+      this.archiveWrites++;
       this.archiveRevision++;
+    }
+    try {
+      await this.invoke(operation);
+    } finally {
+      if (operation.kind === "archive") {
+        this.archiveWrites--;
+        this.archiveRevision++;
+      }
+    }
+    if (operation.kind === "archive") {
       // Keep the confirmed row for undo even after it leaves the active catalog.
       entry.archived = operation.archived;
       this.syncArchives();

@@ -14,6 +14,29 @@ export { validateHostQuestionResponse } from "./question.js";
 export { unsupportedSteer } from "./steer.js";
 export { hostDerivedUsageFields, parseHostUsage, parseHostUsageRequest } from "./usage.js";
 export type { HostUsage, HostUsageCostSource, HostUsageRequest } from "./usage.js";
+export {
+  HARNESS_SKILL_CATEGORY_KEY,
+  HARNESS_SKILL_MANIFEST,
+  harnessSharedSkillsDirectory,
+  harnessSkillFromDirectory,
+  harnessSkillFrontmatter,
+  harnessSkillText,
+  readDirectories,
+  scanHarnessSkillsRoot,
+} from "./skills-catalog.js";
+export { createHarnessSkillsCatalog } from "./skills-catalog-helper.js";
+export type {
+  HarnessSkill,
+  HarnessSkillFailure,
+  HarnessSkillRef,
+  HarnessSkillsCatalogCapability,
+  HarnessSkillsCatalogRead,
+  HarnessSkillsRootScan,
+  HarnessSkillsSetEnabledOutcome,
+  HarnessSkillsContentRead,
+  HarnessSkillsUninstallOutcome,
+} from "./skills-catalog.js";
+export type { HarnessSkillsRoot } from "./skills-catalog-helper.js";
 export type {
   HarnessUsageEntry,
   HarnessUsageSession,

@@ -31,6 +31,7 @@ import { HermesGatewayHistoryError } from "./gateway-history.js";
 import { hermesGatewayThinkingOptions } from "./gateway-session-transport.js";
 import type { HarnessUsageStatisticsCapability } from "@codexhost/harness-adapter";
 import { createHermesUsageStatistics } from "./usage-statistics.js";
+import { createHermesSkillsCatalog } from "./hermes-skills.js";
 import {
   gatewayCapabilities,
   gatewayPermissionModes,
@@ -71,10 +72,13 @@ export class HermesAdapter implements HarnessAdapter {
   #gatewayProbes = new Map<string, Promise<HermesPythonRuntime | null>>();
   #openingNativeIds = new Set<string>();
   readonly usageStatistics: HarnessUsageStatisticsCapability;
+  readonly skillsCatalog: ReturnType<typeof createHermesSkillsCatalog>;
   constructor(options: HermesAdapterOptions = {}) {
     this.#options = options;
     // Read-only over Hermes' own state database for global usage statistics; no CLI is started.
     this.usageStatistics = createHermesUsageStatistics(options.environment ?? process.env);
+    // Read-only over Hermes' own skills directories; no CLI is started.
+    this.skillsCatalog = createHermesSkillsCatalog(options.environment ?? process.env);
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {

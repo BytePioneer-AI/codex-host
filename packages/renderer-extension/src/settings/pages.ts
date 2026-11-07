@@ -3,6 +3,7 @@ import {
   type RendererUsageStatisticsHostsProvider,
   type RendererUsageStatisticsRequest,
 } from "../console/pages/usage-statistics.js";
+import { createSkillsPage, type RendererSkillsRequest } from "../console/pages/skills.js";
 import { consoleMessages } from "../console/messages.js";
 import { createRemoteConnectionsPage } from "./remote-connections-page.js";
 import type { RemoteConnectionsControl } from "../remote-connections-control.js";
@@ -89,6 +90,7 @@ export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "accounts",
   "session-import",
   "usage-statistics",
+  "skills",
   "appearance",
   "updates",
   "about",
@@ -699,6 +701,8 @@ export function createDefaultRendererSettingsPages(
     Promise.reject(new Error("Local Host connection is unavailable")),
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
   harnessSchedules?: HarnessSchedulesPageOptions,
+  requestSkills: RendererSkillsRequest = () =>
+    Promise.reject(new Error("Local Host connection is unavailable")),
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections),
@@ -717,6 +721,7 @@ export function createDefaultRendererSettingsPages(
       messages.locale,
       usageStatisticsHosts,
     ),
+    createSkillsPage(consoleMessages(messages.locale), requestSkills),
     createAppearanceSettingsPage(messages, getLoadedSessionsClient),
     updatesPage(messages, getUpdateClient),
     aboutPage(messages, getUpdateClient),
@@ -732,6 +737,7 @@ export function createDefaultRendererSettingsRegistry(
   openImportedThread?: RendererImportedThreadOpener,
   requestUsageStatistics?: RendererUsageStatisticsRequest,
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
+  requestSkills?: RendererSkillsRequest,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(
     createDefaultRendererSettingsPages(
@@ -745,6 +751,8 @@ export function createDefaultRendererSettingsRegistry(
       undefined,
       requestUsageStatistics,
       usageStatisticsHosts,
+      undefined,
+      requestSkills,
     ),
   );
 }

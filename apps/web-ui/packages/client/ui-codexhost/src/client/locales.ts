@@ -159,7 +159,8 @@ export const en = {
   "connectDevices.selfRelay.invalidHost":
     "Enter a domain name such as relay.example.com, without https:// or a port.",
   "connectDevices.selfRelay.helpTitle": "How to set up your own relay",
-  "connectDevices.selfRelay.domain": "You need a domain and a Linux server with Docker.",
+  "connectDevices.selfRelay.domain":
+    "You need a domain and a Linux server with Docker (servers in mainland China require domain ICP filing with the cloud provider first).",
   "connectDevices.selfRelay.dns":
     "In your domain's DNS settings, add a record: type A, name *, value your server's public IPv4 address. On Cloudflare, choose DNS only.",
   "connectDevices.selfRelay.ports": "Open TCP port 443.",
@@ -562,7 +563,8 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.selfRelay.invalidHost":
     "请输入域名，例如 relay.example.com，不带 https:// 或端口。",
   "connectDevices.selfRelay.helpTitle": "如何搭建自己的中转",
-  "connectDevices.selfRelay.domain": "准备一个域名，以及一台装有 Docker 的 Linux 服务器。",
+  "connectDevices.selfRelay.domain":
+    "准备一个域名，以及一台装有 Docker 的 Linux 服务器（中国大陆服务器需先完成域名备案）。",
   "connectDevices.selfRelay.dns":
     "在域名的 DNS 设置里添加一条记录：类型选 A，名称填 *，值填服务器的公网 IPv4 地址。使用 Cloudflare 时选择“仅 DNS”。",
   "connectDevices.selfRelay.ports": "放行 TCP 443 端口。",

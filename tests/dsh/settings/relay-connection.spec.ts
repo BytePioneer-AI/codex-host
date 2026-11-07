@@ -47,7 +47,7 @@ it("distinguishes first preparation from an unreachable relay and clears the war
   render({ status: "connecting", reason: "unreachable" });
   expect(container.textContent).toContain(en["connectDevices.relay.connectionFailed"]);
   expect(container.textContent).not.toContain(en["connectDevices.relay.preparing"]);
-  expect(relayPreparing({ status: "connecting", reason: "unreachable" })).toBe(false);
+  expect(relayPreparing({ status: "connecting", reason: "unreachable" })).toBe(true);
 
   render({ status: "connecting", reason: "full" });
   expect(container.textContent).toContain(en["connectDevices.relay.full"]);

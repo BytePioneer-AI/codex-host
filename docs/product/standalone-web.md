@@ -15,7 +15,7 @@ codexhost stop
 
 `codexhost web` 确保 Host 和 Web 在后台运行，输出本机登录链接并打开浏览器；SSH 或无图形界面时只输出链接。`codexhost` 打开 Desktop，同时在后台拉起 Web；未安装 Desktop 时说明原因并改为打开 Web。`CODEXHOST_WEB_SERVICE=0` 禁用 `codexhost` 随启动拉起 Web 的行为。关闭终端、GUI 或浏览器不停止后台服务，电脑休眠时手机仍无法连接。
 
-首次后台启动默认监听 `127.0.0.1:4400`。`codexhost web` 的 `--host`、`--port`、`--public-url`、`--trusted-proxy`、`--relay` 经 Web 处理后保存在 `<web-data>/service.json`，后续启动沿用；传空字符串清除对应选项，无效值不覆盖保存内容。选项变化只重启 Web，Host 任务不受影响，Web 终端会断开。本机连接设备页也提供首次启用设备访问和启动设置，见[远程访问](web-remote-access.md)。
+首次后台启动默认监听 `127.0.0.1:4400`。`codexhost web` 的 `--host`、`--port`、`--public-url`、`--trusted-proxy`、`--relay` 经 Web 处理后保存在 `<web-data>/service.json`，后续启动沿用；传空字符串清除对应选项，无效值不覆盖保存内容。选项变化只重启 Web，Host 任务不受影响，Web 终端会断开。`--relay` 仅作为自建中转地址的开发覆盖，不改变官方中转卡片。本机连接设备页提供中转配置（无需重启）、首次启用设备访问和启动设置，见[远程访问](web-remote-access.md)。
 
 版本、安装位置及选项一致时复用服务。`codexhost` 或 `codexhost web` 发现 Host 或 Web 的版本、运行入口不一致时切换为当前安装；Host 被替换会中断任务并输出任务数，会话记录保留，任务不自动续跑。后台 Web 就绪后崩溃会退避重启，启动阶段失败不重试。`codexhost status` 只读显示 Host/Web 状态与版本、不含 token 的 Web 地址、最近失败原因和自启状态，不启动服务。
 
@@ -117,7 +117,7 @@ Codex Desktop 的 codexhost 设置“远程连接”页顶部提供“手机和�
 
 **远程地址与诊断：** 配置 `--public-url` 或 `CODEXHOST_WEB_PUBLIC_URL` 时，公开地址优先于 Funnel、Serve HTTPS 和网卡地址；只接受无用户信息、路径、查询和片段的 HTTP(S) 根地址，HTTP 以明文传输。`npm start web` 和 `preview.mjs` 会传递该值，但不据此增加可信代理或同源白名单。连接设备页读取 Tailscale 状态、占用目标及读取错误；本机用户点击启用后配置 Serve，“停止设备访问”确认后关闭；开启前重新确认根路径未占用，关闭只移除指向当前 Web 的根路径，结果以重新读取的状态为准。Funnel 标明互联网公开，仍需 token。启动第一行不变，其后读取并输出 Serve/Funnel 地址，检测最多 3 秒。Serve 配置在 Web 退出后保留，占用同端口的其他程序也会被转发。各方式的 TLS、代理和验证边界见[Web 远程访问](web-remote-access.md)。
 
-**中转入口：** `--relay <控制主机名>` 指定 Relay，保存在 `service.json` 的 `relayHost`，传空值清除；源码和 preview 入口也支持此选项。不配置时连接方式中不显示“codexhost 中转”，不内置官方地址。本机通过 `codexhost/relaySet` 保存 `relayEnabled` 并即时启停，不重启 Web / Host；`--no-auth` 拒绝开启。首次开启生成 `<web-data>/remote-relay/identity.pem`（0600），重启和更新沿用；丢失后地址无法恢复。注册成功后自动申请证书并保存为同目录的 `certificate.pem`、`certificate-key.pem`，在实际有效期的 2/3 处自动续期；私钥不离开电脑，新证书原子替换后立即生效。没有可用证书时仍保持注册、应答本轮证书验证，但不接受普通手机连接。支持 `HTTPS_PROXY` / `https_proxy` 的 HTTP CONNECT，详情见[中转访问](web-remote-access.md#relay-中转)。
+**中转入口：** 连接设备页始终提供平级的“codexhost 中转”（固定 `relay.chost.dev`）与“自建中转”。自建卡片填入控制主机名后直接启用，同一步保存并连接；开启后控制地址只读，关闭后可编辑。访问地址和复制链接紧跟状态与开关，后面提供先准备域名和服务器、再获取源码的简短部署教程，未配置展开、有控制地址后折叠；官方未分配地址时显示地址名与邀请码，自建不显示或发送这两项。默认关闭，同一时间仅一个中转开启，切换类型或改址前先关闭，当前使用卡片有标识。本机通过扩展的 `codexhost/relaySet` 保存 `relayKind`、自建 `relayHost`、`relayEnabled`，页面保存与启停即时生效，不重启 Web / Host；`--no-auth` 拒绝开启。开发用 `--relay` 只预填或覆盖自建地址（支持 `localhost:端口`），空值清除自建地址，不改变官方地址或显式保存的当前类型；旧文件没有 `relayKind` 时，`relayHost=relay.chost.dev` 或无地址按官方读取，其他地址按自建读取；旧官方配置保留已分配地址、证书和注册字段，不要求用户重新注册。切换当前类型或有效控制地址会清除旧分配主机名、注册字段、证书和签发记录，不更换身份密钥。首次开启生成 `<web-data>/remote-relay/identity.pem`（0600），页面只显示数据目录相对路径与简短保管说明，不显示完整本机绝对路径，重启和更新沿用；丢失后地址无法恢复。注册成功后自动申请证书并保存为同目录的 `certificate.pem`、`certificate-key.pem`，在实际有效期的 2/3 处自动续期；私钥不离开电脑，新证书原子替换后立即生效。没有可用证书时仍保持注册、应答本轮证书验证，但不接受普通手机连接。支持 `HTTPS_PROXY` / `https_proxy` 的 HTTP CONNECT，详情见[中转访问](web-remote-access.md#relay-中转)。
 
 **退出登录：** 只在非本机页面提供，确认后取消这个浏览器的推送订阅并清除 Cookie（`POST /api/auth/logout`，需同源），令牌和其他设备不受影响。重新登录要在电脑上查看令牌。
 

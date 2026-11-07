@@ -1,5 +1,9 @@
 import { expect, it } from "vitest";
-import { webAccessStateSchema, webRelayStateSchema } from "../src/web-access-tokens.js";
+import {
+  webAccessStateSchema,
+  webRelayHostSchema,
+  webRelayStateSchema,
+} from "../src/web-access-tokens.js";
 
 it("retains refusal reasons, capacity retry, remembered hostname and quota recovery", () => {
   for (const reason of ["invite", "name-taken", "banned"]) {
@@ -10,8 +14,11 @@ it("retains refusal reasons, capacity retry, remembered hostname and quota recov
     reason: "full",
   });
   const relay = {
+    kind: "official",
+    enabled: true,
+    officialHost: "relay.chost.dev",
+    customHost: "relay.example.com",
     state: { status: "connecting", reason: "full" },
-    identityPath: "/identity.pem",
     hostname: "alice.relay.test",
     quotaUntil: "2026-11-07T00:00:00.000Z",
   };
@@ -25,6 +32,29 @@ it("retains refusal reasons, capacity retry, remembered hostname and quota recov
     }).relay,
   ).toEqual(relay);
   expect(webRelayStateSchema.safeParse({ status: "off", reason: "full" }).success).toBe(false);
+});
+
+it("validates page control hostnames without accepting URLs, ports, or IPs", () => {
+  expect(webRelayHostSchema.parse("RELAY.example.com")).toBe("relay.example.com");
+  for (const host of [
+    "",
+    "https://relay.example.com",
+    "127.0.0.1",
+    "[::1]",
+    "a..com",
+    "a_.com",
+    "-a.com",
+    "a-.com",
+    "a.com:443",
+    "a.com/path",
+    "a.com.",
+    " a.com",
+    "a.com\n",
+    "a.com\r\n",
+    "a.com\t",
+    `${"a".repeat(64)}.com`,
+  ])
+    expect(webRelayHostSchema.safeParse(host).success, host).toBe(false);
 });
 
 it("requires certificate state on registered relays and retains issuance/failure details", () => {

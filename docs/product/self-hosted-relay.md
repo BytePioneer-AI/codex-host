@@ -4,9 +4,9 @@
 
 自建中转需要自己的域名，不支持只用 IP。没有域名时，推荐用 [Tailscale](web-remote-access.md#tailscale-https推荐) 或官方中转；能接受 Cloudflare 看到内容时，也可以用 [Cloudflare Tunnel](web-remote-access.md#cloudflare-tunnel)。
 
-## 准备
+## 准备域名和服务器
 
-- 自己的域名、一台公网 TCP 443 空闲的 Linux 服务器，已安装 Docker（含 Compose）和宿主机 certbot。
+- 自己的域名、一台公网 TCP 443 空闲的 Linux 服务器，已安装 Git、Docker（含 Compose）和宿主机 certbot。
 - 两条 DNS 记录：`relay.example.com`（控制地址）和 `*.r.example.com`（电脑地址），均指向服务器。使用 Cloudflare 时必须选“仅 DNS”，不能开代理。只在 IPv6 同样可达时添加 AAAA 记录。
 - 以下示例把仓库放在 `/opt/codexhost`，请把域名和路径换成自己的。服务器防火墙和云安全组需放行 TCP 443；下面的 certbot 申请和续期还需要 TCP 80。
 
@@ -14,7 +14,15 @@
 
 ## 部署
 
-### 1. 申请控制地址证书
+### 1. 获取源码
+
+准备好自己的域名和装有 Docker Compose、certbot 的 Linux 服务器后，在服务器上获取公开仓库源码，示例放在 `/opt/codexhost`（需要有该目录的写权限，也可改为自己的目录）：
+
+```sh
+git clone https://github.com/BytePioneer-AI/codex-host.git /opt/codexhost
+```
+
+### 2. 申请控制地址证书
 
 在服务器上运行，只申请控制地址，不用申请通配符证书；每台电脑会自行申请自己的证书。
 
@@ -30,7 +38,7 @@ sudo chgrp 1000 /etc/letsencrypt/live/relay.example.com/privkey.pem
 sudo chmod 640 /etc/letsencrypt/live/relay.example.com/privkey.pem
 ```
 
-### 2. 构建镜像
+### 3. 构建镜像
 
 在服务器的仓库根目录运行，不需要先安装 Node.js 或 npm 依赖：
 
@@ -41,7 +49,7 @@ docker build -f packages/remote-relay/Dockerfile -t codexhost-relay:local .
 
 镜像由你本地构建，暂不发布到镜像仓库。
 
-### 3. 启动
+### 4. 启动
 
 修改 [`packages/remote-relay/deploy/compose.yaml`](../../packages/remote-relay/deploy/compose.yaml) 中的域名和证书路径，然后在仓库根目录运行：
 
@@ -54,17 +62,13 @@ docker compose -f packages/remote-relay/deploy/compose.yaml logs --tail 50 relay
 
 可在 Compose 的 `command` 末尾追加参数，例如 `--rate`、`"2000000"`、`--daily-quota`、`"2000000000"`、`--max-connections`、`"200"`（每项单独一行，沿用现有列表格式）。分别限制每地址每方向的字节/秒、每地址 UTC 日双向总字节数、全部 TCP 连接数，默认均不限制。日用量只在内存中，重启会清零；这不是准入或防滥用机制。
 
-### 4. 在电脑上连接
+### 5. 在电脑上连接
 
-在运行 codexhost 的电脑上执行，控制地址只填主机名，不带 `https://`：
+在运行 codexhost 的电脑上打开“设置 → 连接设备”，选择独立的“自建中转”卡片。填写控制地址 `relay.example.com`，只填主机名，不带 `https://`、端口或路径，然后点击“启用中转”，同一步保存地址并开始连接，无需单独保存。卡片中的教程未配置时展开，有控制地址后收起为“如何搭建自己的中转”，可随时展开。
 
-```sh
-codexhost web --relay relay.example.com
-# 从源码运行时，在电脑的仓库根目录用：
-npm start web -- --relay relay.example.com
-```
+自建中转**不需要邀请码**，页面不显示地址名和邀请码；地址使用电脑公钥派生的 ID，例如 `https://<id>.r.example.com/`。开启后控制地址只读，关闭后才可编辑；访问地址和“复制链接”紧跟状态与开关，教程位于其后。等状态变为“已开启”后用手机扫码。官方与自建同一时间只能开启一个；如另一中转正在使用，须先关闭。更换控制地址前也须关闭，换址不沿用旧分配地址与证书，电脑身份密钥保持不变。
 
-然后打开“设置 → 连接设备”，选择“codexhost 中转”，名字和邀请码留空，点击“启用中转”。自建中转**不需要邀请码**，地址使用电脑公钥派生的 ID，例如 `https://<id>.r.example.com/`。等状态变为“已开启”后用手机扫码。更多连接说明见 [Web 远程访问](web-remote-access.md#relay-中转)。
+开发时仍可用 `codexhost web --relay relay.example.com` 预填或覆盖自建地址；该选项不改变“codexhost 中转”卡片的官方固定地址 `relay.chost.dev`，也不覆盖页面显式保存的当前类型。普通用户无需运行此命令。更多连接说明见 [Web 远程访问](web-remote-access.md#relay-中转)。
 
 ## 证书续期与更新
 

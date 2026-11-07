@@ -72,7 +72,7 @@ async function server(
   return { call };
 }
 
-it("saves the switch without restarting, rejects remote changes, and hides cleared configuration", async (t) => {
+it("saves the switch without restarting, rejects remote changes, and keeps both relay choices", async (t) => {
   const data = fixture(t);
   saveServiceOptions(data, { relay: "localhost:4498" });
   assert.equal(readServiceOptions(data).relayHost, "localhost:4498");
@@ -80,7 +80,10 @@ it("saves the switch without restarting, rejects remote changes, and hides clear
   const access = (await call<WebAccessState>("codexhost/accessTokenGet")).value;
   assert.deepEqual(access.relay, {
     state: { status: "off" },
-    identityPath: data.path("remote-relay/identity.pem"),
+    kind: "self-hosted",
+    enabled: false,
+    officialHost: "relay.chost.dev",
+    customHost: "localhost:4498",
   });
   for (const headers of [{ host: "phone.example" }, { "x-forwarded-for": "127.0.0.1" }]) {
     const result = await call(
@@ -94,6 +97,14 @@ it("saves the switch without restarting, rejects remote changes, and hides clear
   assert.equal((await call("codexhost/relaySet", { enabled: true })).value.status, "connecting");
   assert.equal(readServiceOptions(data).relayEnabled, true);
   assert.ok(existsSync(data.path("remote-relay/identity.pem")));
+  for (const args of [
+    { enabled: true, kind: "official" },
+    { enabled: false, kind: "self-hosted", host: "new.example.com" },
+  ]) {
+    assert.equal((await call("codexhost/relaySet", args)).error.code, "relay/enabled");
+    assert.equal(readServiceOptions(data).relayEnabled, true);
+    assert.equal(readServiceOptions(data).relayHost, "localhost:4498");
+  }
   assert.equal((await call("codexhost/relaySet", { enabled: false })).value.status, "off");
   assert.equal(
     (await call<WebAccessState>("codexhost/accessTokenGet")).value.secret,
@@ -102,7 +113,7 @@ it("saves the switch without restarting, rejects remote changes, and hides clear
   saveServiceOptions(data, { relay: "" });
   const cleared = await server(t, data);
   assert.equal(
-    (await cleared.call<WebAccessState>("codexhost/accessTokenGet")).value.relay,
+    (await cleared.call<WebAccessState>("codexhost/accessTokenGet")).value.relay?.customHost,
     undefined,
   );
   assert.equal(
@@ -111,7 +122,7 @@ it("saves the switch without restarting, rejects remote changes, and hides clear
   );
 });
 
-it("validates and saves registration inputs over RPC and exposes the assigned hostname", async (t) => {
+it("validates RPC registration inputs but never sends official credentials to a self-hosted relay", async (t) => {
   const requests: { name?: string; invite?: string }[] = [];
   const relay = await startRelay(t, 25, {
     check: (request) => {
@@ -136,15 +147,15 @@ it("validates and saves registration inputs over RPC and exposes the assigned ho
   }
   await call("codexhost/relaySet", { enabled: true, name: "alice", invite: "code" });
   await until(() => readServiceOptions(data).relayHostname === "alice.relay.test");
-  assert.equal(requests[0]?.name, "alice");
-  assert.equal(requests[0]?.invite, "code");
+  assert.equal(requests[0]?.name, undefined);
+  assert.equal(requests[0]?.invite, undefined);
   assert.equal(
     (await call<WebAccessState>("codexhost/accessTokenGet")).value.relay?.hostname,
     "alice.relay.test",
   );
   await call("codexhost/relaySet", { enabled: false });
-  assert.equal(readServiceOptions(data).relayName, "alice");
-  assert.equal(readServiceOptions(data).relayInvite, "code");
+  assert.equal(readServiceOptions(data).relayName, undefined);
+  assert.equal(readServiceOptions(data).relayInvite, undefined);
 });
 
 it("does not create an identity or connect with --no-auth even when enabled", async (t) => {
@@ -154,4 +165,55 @@ it("does not create an identity or connect with --no-auth even when enabled", as
   for (const enabled of [true, false])
     assert.equal((await call("codexhost/relaySet", { enabled })).error.code, "auth/disabled");
   assert.equal(existsSync(data.path("remote-relay/identity.pem")), false);
+});
+
+it("defaults to official and saves validated self-hosted settings live through the local RPC", async (t) => {
+  const data = fixture(t);
+  const { call } = await server(t, data);
+  const initial = (await call<WebAccessState>("codexhost/accessTokenGet")).value;
+  assert.equal(initial.relay?.kind, "official");
+  assert.equal(initial.relay?.officialHost, "relay.chost.dev");
+  assert.equal(initial.relay?.enabled, false);
+  assert.equal(existsSync(data.path("remote-relay/identity.pem")), false);
+  for (const host of [
+    "https://relay.example.com",
+    "relay.example.com:443",
+    "127.0.0.1",
+    "a..com",
+    "-relay.example.com",
+    "relay.example.com/path",
+    "a_b.example.com",
+    "relay.example.com ",
+  ]) {
+    const result = await call("codexhost/relaySet", { enabled: false, kind: "self-hosted", host });
+    assert.ok(result.error, host);
+    assert.equal(readServiceOptions(data).relayHost, undefined);
+  }
+  const remote = await call(
+    "codexhost/relaySet",
+    { enabled: false, kind: "self-hosted", host: "relay.example.com" },
+    { host: "phone.example", authorization: `Bearer ${initial.secret}` },
+  );
+  assert.equal(remote.error.code, "auth/local-access-required");
+  assert.equal(
+    (
+      await call("codexhost/relaySet", {
+        enabled: false,
+        kind: "self-hosted",
+        host: "RELAY.example.com",
+      })
+    ).value.status,
+    "off",
+  );
+  assert.equal(readServiceOptions(data).relayHost, "relay.example.com");
+  assert.equal(
+    (await call<WebAccessState>("codexhost/accessTokenGet")).value.secret,
+    initial.secret,
+  );
+  await call("codexhost/relaySet", { enabled: false, kind: "official" });
+  assert.equal(readServiceOptions(data).relayHost, "relay.example.com");
+  assert.equal(
+    (await call<WebAccessState>("codexhost/accessTokenGet")).value.relay?.kind,
+    "official",
+  );
 });

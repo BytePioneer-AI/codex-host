@@ -75,7 +75,7 @@ async function open(page: Page, login: URL) {
 
 /** The relay is one of the connection methods; choosing it only shows its state. */
 async function chooseRelay(page: Page) {
-  await page.locator('[data-connect-route="relay"] input').check();
+  await page.locator('[data-connect-route="self-hosted-relay"] input').check();
   return page.locator("[data-relay-status]");
 }
 
@@ -95,34 +95,25 @@ it(
     const control = await chooseRelay(f.page);
     await f.page.locator('[data-relay-status="off"]').waitFor();
     const intro = (await control.textContent()) ?? "";
-    assert.ok(intro.includes("official codexhost encrypted relay"));
-    assert.ok(intro.includes(f.data.path("remote-relay/identity.pem")));
+    assert.ok(intro.includes("Use your own relay"));
+    assert.ok(!intro.includes("official codexhost encrypted relay"));
+    assert.ok(intro.includes("remote-relay/identity.pem"));
+    assert.ok(!intro.includes(f.data.path("remote-relay/identity.pem")));
     const name = control.getByRole("textbox", { name: "Address name (optional)" });
     const invite = control.getByRole("textbox", { name: "Invitation code" });
+    assert.equal(await name.count(), 0);
+    assert.equal(await invite.count(), 0);
     const enable = control.getByRole("button", { name: "Enable relay" });
     assert.equal(await enable.isEnabled(), true);
     assert.equal(readServiceOptions(f.data).relayEnabled, false);
-    for (const invalid of ["abc", "A123", "alice-bob", "alice bob", "a".repeat(21)]) {
-      await name.fill(invalid);
-      assert.equal(await enable.isEnabled(), false, invalid);
-      assert.equal(await name.getAttribute("aria-invalid"), "true");
-    }
-    for (const valid of ["", "a123", "a".repeat(20), "alice"]) {
-      await name.fill(valid);
-      assert.equal(await enable.isEnabled(), true, valid);
-    }
-    await invite.fill("invitation");
-    const fieldBounds = await name.boundingBox();
-    const buttonBounds = await enable.boundingBox();
-    assert.ok(fieldBounds && buttonBounds && fieldBounds.y < buttonBounds.y);
     await enable.click();
     for (let i = 0; (await f.access()).relay?.state.status !== "missing-certificate" && i < 50; i++)
       await delay(20);
     await control.getByRole("button", { name: "Refresh status" }).click();
     await f.page.locator('[data-relay-status="missing-certificate"]').waitFor();
     await control.getByText(/Preparing…|Temporarily unavailable/u).waitFor();
-    assert.equal(requests[0]?.name, "alice");
-    assert.equal(requests[0]?.invite, "invitation");
+    assert.equal(requests[0]?.name, undefined);
+    assert.equal(requests[0]?.invite, undefined);
     assert.equal(readServiceOptions(f.data).relayHostname, "alice.relay.test");
     assert.equal(await name.count(), 0);
     assert.equal(await invite.count(), 0);
@@ -178,7 +169,8 @@ it(
         shown = {
           ...base,
           relay: {
-            identityPath: defined(base.relay).identityPath,
+            ...defined(base.relay),
+            enabled: true,
             state: {
               status,
               url: "https://computer.relay.test/",
@@ -226,13 +218,12 @@ it(
   async (t) => {
     const f = await fixture(t);
     const base = await f.access();
-    const identityPath = defined(base.relay).identityPath;
     let shown: WebAccessState = base;
     await f.page.route("**/api/codexhost/accessTokenGet", (route) =>
       route.fulfill({ json: { result: { ok: true, value: shown } } }),
     );
     const states: Array<[WebRelayState, string]> = [
-      [{ status: "off" }, "official codexhost encrypted relay"],
+      [{ status: "off" }, "Use your own relay"],
       [{ status: "connecting" }, "Preparing…"],
       [
         {
@@ -255,7 +246,10 @@ it(
       [{ status: "stopped", reason: "unsupported-version" }, "Update codexhost"],
     ];
     for (const [state, text] of states) {
-      shown = { ...base, relay: { identityPath, state } };
+      shown = {
+        ...base,
+        relay: { ...defined(base.relay), enabled: state.status !== "off", state },
+      };
       await open(f.page, f.login);
       const control = await chooseRelay(f.page);
       assert.ok((await control.textContent())?.includes(text));
@@ -276,7 +270,8 @@ it(
         networkUrls: urls.slice(i).reverse(),
         // The server lists the relay address exactly while the relay is connected.
         relay: {
-          identityPath,
+          ...defined(base.relay),
+          enabled: i <= 1,
           state:
             i <= 1
               ? {
@@ -323,7 +318,7 @@ for (const locale of ["en-US", "zh-CN"]) {
       const name = control.getByRole("textbox", {
         name: chinese ? "地址名（可选）" : "Address name (optional)",
       });
-      await name.fill("alice");
+      assert.equal(await name.count(), 0);
       const cases = [
         [
           "invite",
@@ -347,9 +342,6 @@ for (const locale of ["en-US", "zh-CN"]) {
         await control.getByText(message, { exact: true }).waitFor();
         assert.equal(readServiceOptions(f.data).relayEnabled, reason === "full");
         if (reason !== "full") {
-          const bounds = await control.getByText(message, { exact: true }).boundingBox();
-          const field = await name.boundingBox();
-          assert.ok(bounds && field && bounds.y < field.y);
           assert.equal(await enable().count(), 1);
         }
         assert.equal(
@@ -444,7 +436,6 @@ it(
   async (t) => {
     const f = await fixture(t);
     const base = await f.access();
-    const identityPath = defined(base.relay).identityPath;
     const url = "https://computer.relay.test/";
     const states: WebRelayState[] = [
       { status: "connecting" },
@@ -459,7 +450,15 @@ it(
     await f.page.route("**/api/codexhost/accessTokenGet", (route) => {
       const state = defined(states[Math.min(reads++, states.length - 1)]);
       return route.fulfill({
-        json: { result: { ok: true, value: { ...base, relay: { identityPath, state } } } },
+        json: {
+          result: {
+            ok: true,
+            value: {
+              ...base,
+              relay: { ...defined(base.relay), enabled: true, state },
+            },
+          },
+        },
       });
     });
     await open(f.page, f.login);

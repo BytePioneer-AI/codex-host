@@ -91,6 +91,16 @@ export const webRelayStateSchema = z.discriminatedUnion("status", [
 ]);
 export type WebRelayState = z.infer<typeof webRelayStateSchema>;
 
+/** A DNS hostname only: no scheme, port, path, whitespace, or IP literal. */
+export const webRelayHostSchema = z
+  .string()
+  .max(253)
+  .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/i)
+  .transform((host) => host.toLowerCase());
+
+export const webRelayKindSchema = z.enum(["official", "self-hosted"]);
+export type WebRelayKind = z.infer<typeof webRelayKindSchema>;
+
 /** What this computer's connection page shows; available only on this computer. */
 export const webAccessStateSchema = z
   .object({
@@ -106,7 +116,10 @@ export const webAccessStateSchema = z
     relay: z
       .object({
         state: webRelayStateSchema,
-        identityPath: z.string(),
+        enabled: z.boolean(),
+        kind: webRelayKindSchema,
+        officialHost: z.string(),
+        customHost: z.string().optional(),
         hostname: z.string().optional(),
         quotaUntil: z.string().optional(),
       })

@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { DataDir } from "./store.ts";
 import { RequestTrust } from "./request-trust.ts";
+import { clearRelayAssignment, relayHost, relayKind } from "./remote-relay/settings.ts";
 
 export const SETTINGS_CHANGED_EXIT_CODE = 42;
 
@@ -17,6 +18,7 @@ const serviceSchema = z.object({
     })
     .optional(),
   relayHost: z.string().optional(),
+  relayKind: z.enum(["official", "self-hosted"]).optional(),
   relayEnabled: z.boolean().default(false),
   relayName: z.string().optional(),
   relayInvite: z.string().optional(),
@@ -76,11 +78,20 @@ export function saveServiceOptions(
     if (value === "") Reflect.deleteProperty(next, field);
     else next[field] = option === "port" ? Number(value) : value;
   }
-  if (next.relayHost !== saved.relayHost) Reflect.deleteProperty(next, "relayHostname");
+  // --relay only supplies the self-hosted address; an explicit kind always wins.
+  if (options.relay !== undefined && next.relayHost !== saved.relayHost) {
+    if (saved.relayEnabled)
+      throw new Error("Turn off relay access before changing its control address");
+  }
   const result = serviceSchema.safeParse(next);
   if (!result.success) throw new Error(z.prettifyError(result.error));
   const validated = result.data;
   if (isDeepStrictEqual(serviceSchema.parse(saved), validated)) return false;
+  if (
+    relayHost(validated) !== relayHost(serviceSchema.parse(saved)) ||
+    relayKind(validated) !== relayKind(serviceSchema.parse(saved))
+  )
+    clearRelayAssignment(data, validated);
   data.writeJson("service.json", validated, { mode: 0o600 });
   return true;
 }

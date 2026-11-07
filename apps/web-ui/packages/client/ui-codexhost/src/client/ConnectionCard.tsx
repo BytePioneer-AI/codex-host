@@ -12,13 +12,15 @@ import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { WebAccessState, WebNetworkAccessUrl } from "@codexhost/shared-contracts";
 import { QrCode } from "./QrCode.tsx";
 import { RelayControl } from "./RelayControl.tsx";
+import { SelfHostedRelayHelp } from "./SelfHostedRelayHelp.tsx";
 import css from "./ConnectDevicesSection.module.css";
 
 type Translate = PropsLocale<"codexhostImport">["t"];
-type Kind = WebNetworkAccessUrl["kind"];
+type Kind = WebNetworkAccessUrl["kind"] | "self-hosted-relay";
 const LABEL = {
   public: "connectDevices.kindPublic",
   relay: "connectDevices.relay.title",
+  "self-hosted-relay": "connectDevices.selfRelay.title",
   "tailscale-funnel": "connectDevices.kindFunnel",
   "tailscale-https": "connectDevices.kindTailscale",
   tailscale: "connectDevices.kindTailscale",
@@ -33,11 +35,13 @@ const HINT: Partial<Record<Kind, Parameters<Translate>[0]>> = {
 const SUMMARY = {
   "tailscale-https": "connectDevices.httpsSummary",
   relay: "connectDevices.relay.summary",
+  "self-hosted-relay": "connectDevices.selfRelay.summary",
   lan: "connectDevices.lanSummary",
 } as const;
 const PREFERENCE: Kind[] = [
   "public",
   "relay",
+  "self-hosted-relay",
   "tailscale-funnel",
   "tailscale-https",
   "tailscale",
@@ -58,11 +62,15 @@ export function ConnectionCard({
   busy: boolean;
   restarting: boolean;
   onEnable: (method: "direct" | "https") => void;
-  onRelay: (enabled: boolean, registration?: { name: string; invite: string }) => void;
+  onRelay: (
+    enabled: boolean,
+    settings?: { name?: string; invite?: string; kind?: "official" | "self-hosted"; host?: string },
+  ) => void;
   onRefresh: () => void;
   t: Translate;
 }): ReactNode {
   const { networkUrls, tailscale, background, secret, relay } = data;
+  const relayMethod = relay?.kind === "self-hosted" ? "self-hosted-relay" : "relay";
   const addresses = [
     ...networkUrls,
     ...(data.directCandidates ?? []).filter(
@@ -71,12 +79,18 @@ export function ConnectionCard({
   ];
   const [chosenMethod, setMethod] = useState<Kind>();
   // An enabled relay is shown while it prepares, before its address becomes usable.
+  const isRelay = (kind: Kind) => kind === "relay" || kind === "self-hosted-relay";
   const relayOn =
-    relay !== undefined && (relay.state.status !== "off" || relay.state.reason !== undefined);
+    relay !== undefined &&
+    (relay.enabled || (relay.state.status === "off" && relay.state.reason !== undefined));
   const method =
-    (chosenMethod === "relay" && relay === undefined ? undefined : chosenMethod) ??
-    PREFERENCE.find(
-      (kind) => networkUrls.some((entry) => entry.kind === kind) || (kind === "relay" && relayOn),
+    (chosenMethod !== undefined && isRelay(chosenMethod) && relay === undefined
+      ? undefined
+      : chosenMethod) ??
+    PREFERENCE.find((kind) =>
+      isRelay(kind)
+        ? kind === relayMethod && relayOn
+        : networkUrls.some((entry) => entry.kind === kind),
     ) ??
     (addresses.some((entry) => entry.kind === "lan") ? "lan" : "tailscale-https");
   const [selectedUrl, setSelectedUrl] = useState<string>();
@@ -84,7 +98,9 @@ export function ConnectionCard({
   const [addressMenu, setAddressMenu] = useState(false);
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
   const group = useId();
-  const choices = addresses.filter((entry) => entry.kind === method);
+  const choices = addresses.filter((entry) =>
+    entry.kind === "relay" ? method === relayMethod : entry.kind === method,
+  );
   const selected = choices.find((entry) => entry.url === selectedUrl) ?? choices[0];
   const ready =
     !restarting &&
@@ -100,7 +116,7 @@ export function ConnectionCard({
   const extras = PREFERENCE.filter(
     (kind) =>
       kind !== "lan" &&
-      kind !== "relay" &&
+      !isRelay(kind) &&
       kind !== "tailscale-https" &&
       kind !== "tailscale" &&
       addresses.some((entry) => entry.kind === kind),
@@ -123,6 +139,7 @@ export function ConnectionCard({
   }, [copied]);
 
   const routeHost = (kind: Kind): string | undefined => {
+    if (isRelay(kind)) return kind === "relay" ? relay?.officialHost : relay?.customHost;
     const shown =
       kind === "tailscale-https" && tailscaleChosen
         ? selected
@@ -150,11 +167,15 @@ export function ConnectionCard({
           {kind === "tailscale-https" && (
             <span className={css.badge}>{t("connectDevices.recommended")}</span>
           )}
+          {isRelay(kind) && relay?.enabled && kind === relayMethod && (
+            <span className={css.badge}>{t("connectDevices.relay.inUse")}</span>
+          )}
           <span className={css.routeAddress}>{routeHost(kind)}</span>
         </span>
-        {(kind === "lan" || kind === "tailscale-https" || kind === "relay") && (
-          <span className={css.meta}>{t(SUMMARY[kind])}</span>
-        )}
+        {(kind === "lan" ||
+          kind === "tailscale-https" ||
+          kind === "relay" ||
+          kind === "self-hosted-relay") && <span className={css.meta}>{t(SUMMARY[kind])}</span>}
       </span>
     </label>
   );
@@ -181,8 +202,10 @@ export function ConnectionCard({
           )}
         </div>
         <div className={css.connectionDetails}>
-          {method === "relay" && relay !== undefined && (
+          {isRelay(method) && relay !== undefined && (
             <RelayControl
+              key={method}
+              kind={method === "relay" ? "official" : "self-hosted"}
               relay={relay}
               busy={busy}
               onChange={onRelay}
@@ -190,7 +213,7 @@ export function ConnectionCard({
               t={t}
             />
           )}
-          {method !== "relay" && (!ready || hint !== undefined) && (
+          {!isRelay(method) && (!ready || hint !== undefined) && (
             <div
               className={css.connectionHelp}
               data-tailscale-status={
@@ -339,6 +362,9 @@ export function ConnectionCard({
               )}
             </div>
           )}
+          {method === "self-hosted-relay" && relay !== undefined && (
+            <SelfHostedRelayHelp configured={Boolean(relay.customHost)} t={t} />
+          )}
         </div>
       </div>
       <div className={css.routePanel}>
@@ -370,7 +396,12 @@ export function ConnectionCard({
                 </div>
               )}
             </div>
-            {relay !== undefined && option("relay")}
+            {relay !== undefined && (
+              <>
+                {option("relay")}
+                {option("self-hosted-relay")}
+              </>
+            )}
             {option("lan")}
           </div>
         </fieldset>

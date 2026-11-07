@@ -17,7 +17,7 @@
 #### Scenario: 开启中转
 
 - **WHEN** 用户在本机选择 codexhost 中转并点击启用
-- **THEN** Web 开始连接 Relay，运行中的任务和已连接的浏览器不受影响
+- **THEN** Web 开始连接当前 Relay，运行中的任务和已连接的浏览器不受影响
 
 #### Scenario: 未启用认证
 

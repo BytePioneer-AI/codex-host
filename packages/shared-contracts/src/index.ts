@@ -8,6 +8,7 @@ export * from "./model-price-overrides.js";
 export * from "./usage-statistics.js";
 export * from "./thread-prewarm.js";
 export * from "./thread-questions.js";
+export * from "./thread-relations.js";
 export {
   CONSOLE_HOST_METHODS,
   CONSOLE_OPEN_METHOD,

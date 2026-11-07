@@ -139,9 +139,11 @@ const { outputFiles } = await build({
           return true;
         },
         {
-          ...((globalThis.holdHarnessPreferences || globalThis.holdFavoriteWrite) ? {
-            listHarnessPlugins: async () => ({ plugins: [{ id: "pi", name: "Pi", version: "1" }, { id: "grok", name: "Grok", version: "1" }] }),
-          } : {}),
+          listHarnessPlugins: async () => ({ plugins: (
+            globalThis.holdHarnessPreferences || globalThis.holdFavoriteWrite
+              ? ["pi", "grok"]
+              : [...new Set(["pi", "deepseek-harness", "opencode", "claude-code", "grok", "omp", "kiro-cli", ...(globalThis.startupAgent ? [globalThis.startupAgent] : [])])]
+          ).map(id => ({ id, name: id === "pi" ? "Pi" : id === "grok" ? "Grok" : id, version: "1" })) }),
           inspectHarness: async (_input, options) => {
             if (globalThis.holdBackgroundInspections && options?.priority === "background") {
               await new Promise(() => {});
@@ -202,7 +204,10 @@ const { outputFiles } = await build({
           async startConversation(input, options) { return bridge.sendRequest("thread/start", { cwd: "/fixture/workspace", model: input.collaborationMode.settings.model }); },
         };
         const policy = createDraftPrewarmPolicyBridge(manager, bridge, "local", window, pool);
-        window.__codexhostHostRoutingV1 = { forComposer: () => ({ hostId: "local", policy }) };
+        window.__codexhostHostRoutingV1 = {
+          forComposer: () => ({ hostId: "local", policy }),
+          forHost: hostId => hostId === "local" ? { hostId, manager, policy } : null,
+        };
         globalThis.prewarmTestDraft = () => bridge.prewarmThreadStart({ cwd: "/fixture/workspace", model: draftModel });
         document.addEventListener("click", (event) => {
           if (!event.defaultPrevented && event.target?.matches("button[type=submit]")) {

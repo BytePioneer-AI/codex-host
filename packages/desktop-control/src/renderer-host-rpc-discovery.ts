@@ -122,6 +122,7 @@ export function resolveRendererHostRpc(
   discovery: RendererHostRpcDiscovery,
   hostId: string,
 ): RendererHostRpc | null {
+  if (hostId === "durable") return null;
   const record = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null;
   const signal = discovery.family.get(hostId)?.value;
@@ -145,7 +146,30 @@ export function resolveRendererHostRpc(
 }
 
 export function rendererHostRpcHostIds(discovery: RendererHostRpcDiscovery): string[] {
-  return [...discovery.family.keys()].filter(
-    (hostId): hostId is string => typeof hostId === "string",
-  );
+  const record = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null;
+  const hostIds: string[] = [];
+  for (const [hostId, member] of discovery.family) {
+    // Desktop touches every cataloged connection and its reserved `durable` cloud
+    // Host during bootstrap; only ready non-durable RPC connections are active Hosts.
+    if (typeof hostId !== "string" || hostId === "durable" || !record(member)) continue;
+    const signal = member.value;
+    if (!record(signal) || typeof signal.get !== "function") continue;
+    let value: unknown;
+    try {
+      value = signal.get();
+    } catch {
+      continue;
+    }
+    if (
+      record(value) &&
+      value.status === "ready" &&
+      record(value.client) &&
+      value.client.hostId === hostId &&
+      (typeof value.client.rpc === "function" || record(value.client.rpc))
+    ) {
+      hostIds.push(hostId);
+    }
+  }
+  return hostIds;
 }

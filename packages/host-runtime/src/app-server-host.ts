@@ -376,6 +376,15 @@ interface TurnProjectionGate {
   resolve(): void;
 }
 
+/** One Harness command Desktop asked an External Thread to run. */
+interface ExternalCommandRequest {
+  select: (descriptor: HarnessCommandDescriptor) => boolean;
+  arguments?: JsonObject;
+  turnId?: HostTurnId;
+  missing: { code: number; message: string };
+  result: (turnId: HostTurnId) => JsonValue;
+}
+
 type HostApprovalRequestId = number;
 type HostQuestionRequestId = number;
 
@@ -1023,6 +1032,8 @@ export class AppServerHost {
       deleteExternalThread: (request, location) => this.#deleteExternalThread(request, location),
       cleanExternalBackgroundTerminals: (request, threadId) =>
         this.#cleanExternalBackgroundTerminals(request, threadId),
+      startExternalCompaction: (request, threadId) =>
+        this.#startExternalCompaction(request, threadId),
     });
   }
 
@@ -3303,9 +3314,46 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32078, "Thread is not externally owned"));
       return;
     }
+    const { commandId } = params.data;
     this.#dispatchDesktopReply(
       request,
-      () => this.#executeResolvedThreadCommand(request, resolution.thread, params.data),
+      () =>
+        this.#executeResolvedThreadCommand(request, resolution.thread, {
+          select: ({ id }) => id === commandId,
+          ...(params.data.arguments ? { arguments: params.data.arguments } : {}),
+          ...(params.data.turnId ? { turnId: params.data.turnId } : {}),
+          missing: {
+            code: -32078,
+            message: `External Harness does not expose command '${commandId}'`,
+          },
+          result: (turnId) =>
+            jsonValueSchema.parse(
+              threadCommandExecuteResultSchema.parse({ accepted: true, turnId }),
+            ),
+        }),
+      resolution.thread.id,
+    );
+  }
+
+  /** Runs Desktop's compact action through the Harness's native `/compact` command. */
+  async #startExternalCompaction(request: JsonRpcRequest, threadId: string): Promise<void> {
+    const resolution = await this.#resolveExternalThread(threadId);
+    if (await this.#writeResolutionError(request, resolution)) return;
+    if (resolution.kind !== "external") {
+      await this.#writer.json(rpcError(request, -32078, "Thread is not externally owned"));
+      return;
+    }
+    this.#dispatchDesktopReply(
+      request,
+      () =>
+        this.#executeResolvedThreadCommand(request, resolution.thread, {
+          select: ({ invocation }) => invocation === "/compact",
+          missing: {
+            code: -32076,
+            message: `External Thread does not support ${request.method}`,
+          },
+          result: () => ({}),
+        }),
       resolution.thread.id,
     );
   }
@@ -3313,7 +3361,7 @@ export class AppServerHost {
   async #executeResolvedThreadCommand(
     request: JsonRpcRequest,
     thread: ExternalThread,
-    params: ReturnType<typeof threadCommandExecuteParamsSchema.parse>,
+    params: ExternalCommandRequest,
   ): Promise<void> {
     if (this.#externalThreadBusy(thread) || this.#pendingExternalCommandRequests.has(thread.id)) {
       await this.#writer.json(
@@ -3335,15 +3383,9 @@ export class AppServerHost {
         await this.#writer.json(rpcError(request, -32078, catalog.error.message));
         return;
       }
-      const descriptor = catalog.value.commands.find(({ id }) => id === params.commandId);
+      const descriptor = catalog.value.commands.find(params.select);
       if (!descriptor) {
-        await this.#writer.json(
-          rpcError(
-            request,
-            -32078,
-            `External Harness does not expose command '${params.commandId}'`,
-          ),
-        );
+        await this.#writer.json(rpcError(request, params.missing.code, params.missing.message));
         return;
       }
       try {
@@ -3354,11 +3396,7 @@ export class AppServerHost {
           params.turnId,
         );
         try {
-          const result = threadCommandExecuteResultSchema.parse({
-            accepted: true,
-            turnId: started.turnId,
-          });
-          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+          await this.#writer.json(rpcEnvelope(request, { result: params.result(started.turnId) }));
         } finally {
           started.gate.resolve();
         }

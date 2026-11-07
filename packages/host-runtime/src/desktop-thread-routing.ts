@@ -189,6 +189,7 @@ export interface DesktopThreadRoutingHost {
   ): Promise<void>;
   deleteExternalThread(request: JsonRpcRequest, location: ExternalLocation): Promise<void>;
   cleanExternalBackgroundTerminals(request: JsonRpcRequest, threadId: string): Promise<void>;
+  startExternalCompaction(request: JsonRpcRequest, threadId: string): Promise<void>;
 }
 
 /**
@@ -692,6 +693,18 @@ export class DesktopThreadRouting {
       if (await this.#host.writeResolutionError(request, location)) return true;
       if (location.kind === "external") {
         await this.#host.cleanExternalBackgroundTerminals(request, request.params.threadId);
+        return true;
+      }
+    }
+    if (
+      request.method === "thread/compact/start" &&
+      isRecord(request.params) &&
+      typeof request.params.threadId === "string"
+    ) {
+      const location = await this.#host.locateExternalThread(request.params.threadId);
+      if (await this.#host.writeResolutionError(request, location)) return true;
+      if (location.kind === "external") {
+        await this.#host.startExternalCompaction(request, request.params.threadId);
         return true;
       }
     }

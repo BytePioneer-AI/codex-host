@@ -809,7 +809,7 @@ fn supervise_desktop(
     let mut controller = start_desktop_controller(options, control, environment)?;
     let desktop_pid = desktop.root_snapshot().id;
     startup_trace("waiting for Host chain");
-    if !wait_for_host_chain(desktop_pid, options, Duration::from_secs(30))? {
+    if !wait_for_host_chain(desktop.root_snapshot(), options, Duration::from_secs(30))? {
         let _ = stop_desktop_controller(&mut controller);
         let _ = desktop.shutdown(Duration::from_secs(2));
         return Err("Codex Desktop did not start the codexhost Host chain before timeout".into());
@@ -890,6 +890,14 @@ fn supervise_desktop(
     startup_trace("Codex Desktop launched");
     let desktop_pid = desktop.id();
     wait_for_launched_desktop_ownership(installation, &mut desktop, Duration::from_secs(5))?;
+    let desktop_snapshot = match codexhost_platform::process_snapshot(desktop_pid) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let _ = desktop.kill();
+            let _ = desktop.wait();
+            return Err(error.into());
+        }
+    };
     let mut controller = match start_desktop_controller(options, control, environment) {
         Ok(started) => started,
         Err(error) => {
@@ -899,7 +907,7 @@ fn supervise_desktop(
         }
     };
     startup_trace("waiting for Host chain");
-    if !wait_for_host_chain(desktop_pid, options, Duration::from_secs(30))? {
+    if !wait_for_host_chain(&desktop_snapshot, options, Duration::from_secs(30))? {
         let _ = stop_desktop_controller(&mut controller);
         let _ = desktop.kill();
         let _ = desktop.wait();

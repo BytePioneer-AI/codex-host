@@ -301,6 +301,8 @@ npm ci
 npm start
 ```
 
+如果所在网络无法访问 `download.qoder.com`（Qoder CN 为 `static.qoder.com.cn`），Qoder SDK 的 `postinstall` 下载运行时会导致 `npm ci` 失败，可改用 `QODER_SKIP_DOWNLOAD=1 npm ci`（PowerShell：`$env:QODER_SKIP_DOWNLOAD=1; npm ci`）。CodexHost 启动的是本机已安装的 CLI（Qoder 为 `qodercli`，Qoder CN 为 `qoderclicn`），不依赖 SDK 自带的运行时；使用哪个 Qoder Harness，就需要先安装对应的 CLI。
+
 可用 `npm start 0.12.0` 指定当前源码的运行版本，也支持 `0.13.0-rc.1` 等预发布版本。Host 状态、控制台版本和更新检查中的当前版本统一使用这个值。不传参数时仍为 `<仓库版本>-dev`；构建一次后，可用 `npm start 0.12.0 -- --no-build` 复用构建产物。参数只对本次启动生效，不修改版本文件、不发布 npm 包。源码安装仍不具备发行包的自更新资源；远程 npm 安装下载的是该版本已发布的包，不是本地源码。
 
 

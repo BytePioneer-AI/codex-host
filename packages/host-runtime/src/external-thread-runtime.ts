@@ -867,7 +867,6 @@ export class ExternalThreadRuntime {
     thread: ExternalThread,
     event: TurnCompletedEvent,
   ): Promise<Error | null> {
-    if (thread.persistenceError) return thread.persistenceError;
     if (!event.nativeTurnRef) {
       await this.persistUsageMeasurements(thread);
       return event.outcome.status === "succeeded"
@@ -881,13 +880,17 @@ export class ExternalThreadRuntime {
         event.nativeTurnRef,
         event.outcome.checkpoint,
       );
+      thread.persistenceError = null;
       await this.persistUsageMeasurements(thread);
       return null;
     } catch (error) {
-      const failure = error instanceof Error ? error : new Error(errorMessage(error));
+      const failure = new Error(
+        `External Turn identity could not be persisted: ${errorMessage(error)}`,
+        { cause: error },
+      );
       thread.persistenceError = failure;
       thread.stateObserver.fault(failure);
-      this.#diagnose("External Turn identity could not be persisted");
+      this.#diagnose(failure);
       return failure;
     }
   }

@@ -526,6 +526,9 @@ export class HarnessDelegationCoordinator {
     if (location.kind === "error")
       throw new DelegationControlError("THREAD_NOT_FOUND", location.error.message);
     const resolution = await this.#externalRuntime.resolve(input.threadId);
+    if (resolution.kind === "error") {
+      throw new DelegationControlError("INTERNAL_ERROR", resolution.error.message);
+    }
     if (resolution.kind !== "external") {
       throw new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found");
     }

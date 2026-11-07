@@ -986,6 +986,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       (error: unknown) => outcomes.push(error),
     );
     try {
+      await fixture.ready;
       await vi.waitFor(() => expect(stopProcess).toHaveBeenCalled());
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(outcomes).toEqual([]);
@@ -1180,7 +1181,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const fixture = createFixture();
 
     try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      await fixture.ready;
+      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
       fixture.official.stdout.end();
 
       const outcome = await Promise.race([
@@ -1204,7 +1206,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const fixture = createFixture({ desktopOutput: new PassThrough({ highWaterMark: 1 }) });
 
     try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      await fixture.ready;
+      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
       fixture.desktopOutput.pause();
       fixture.official.stdout.write(
         `${JSON.stringify({ method: "synthetic/event", params: { payload: "x".repeat(32_768) } })}\n`,
@@ -1236,7 +1239,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const fixture = createFixture();
 
     try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      await fixture.ready;
+      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
       expect(
         fixture.official.stdin.write(Buffer.alloc(fixture.official.stdin.writableHighWaterMark)),
       ).toBe(false);
@@ -1270,7 +1274,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const fixture = createFixture();
 
     try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      await fixture.ready;
+      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
       fixture.desktopInput.end();
 
       await expect(fixture.running).resolves.toBe(0);

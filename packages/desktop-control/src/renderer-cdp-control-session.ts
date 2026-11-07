@@ -1,5 +1,6 @@
 import {
   CdpClient,
+  CdpConnectionClosedError,
   listCdpTargets,
   type CdpClientOptions,
   type CdpFetch,
@@ -245,6 +246,7 @@ async function waitForBinding(
       if (value !== null) return validateBindingStatus(value, enabledAgents);
     } catch (error) {
       lastError = error;
+      if (error instanceof CdpConnectionClosedError) throw error;
       if (error instanceof RendererAdapterReadinessError && error.state !== "installing") {
         throw error;
       }

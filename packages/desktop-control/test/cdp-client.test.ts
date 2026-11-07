@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CdpConnectionClosedError } from "../src/cdp-client.js";
 
 import {
   CdpClient,
@@ -75,6 +76,25 @@ class FakeSocket {
 }
 
 describe("CDP client", () => {
+  it("rejects pending and subsequent commands immediately when the target socket closes", async () => {
+    const socket = new FakeSocket();
+    const client = await CdpClient.connect("ws://127.0.0.1:9222/devtools/page/page-1", {
+      socketFactory: () => socket,
+    });
+    try {
+      const pending = client.command("Runtime.evaluate");
+      const rejected = expect(pending).rejects.toBeInstanceOf(CdpConnectionClosedError);
+      socket.close();
+      await rejected;
+      await expect(client.command("Runtime.evaluate")).rejects.toBeInstanceOf(
+        CdpConnectionClosedError,
+      );
+      expect(socket.requests).toHaveLength(1);
+    } finally {
+      client.close();
+    }
+  });
+
   it("validates and returns loopback page targets", async () => {
     const fetchImpl: CdpFetch = async (url) => ({
       ok: true,

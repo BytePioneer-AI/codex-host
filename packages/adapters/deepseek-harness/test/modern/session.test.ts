@@ -3983,6 +3983,13 @@ describe("DeepSeek Harness Modern Session", () => {
               options: [{ label: "Apply" }, { label: "Revise" }],
               intent: { kind: "plan-review", approve: "Apply" },
             },
+            {
+              id: "consent",
+              question: "Allow Calculator?",
+              detail: "Calculator: view and control",
+              options: [{ label: "Allow" }, { label: "Deny" }],
+              intent: { kind: "approval", approve: "Allow", reject: "Deny" },
+            },
           ],
         },
         respond,
@@ -4056,6 +4063,18 @@ describe("DeepSeek Harness Modern Session", () => {
           allowOther: false,
           optional: false,
         },
+        {
+          id: "consent",
+          type: "choice",
+          prompt: "Allow Calculator?\n\nCalculator: view and control",
+          options: [
+            { value: "Allow", label: "Allow" },
+            { value: "Deny", label: "Deny" },
+          ],
+          multiple: false,
+          allowOther: false,
+          optional: false,
+        },
       ],
     });
     await expect(
@@ -4070,6 +4089,7 @@ describe("DeepSeek Harness Modern Session", () => {
             multi: ["Tests", "Docs"],
             custom: ["Elsewhere"],
             plan: ["Apply"],
+            consent: ["Deny"],
           },
         },
       }),
@@ -4081,6 +4101,7 @@ describe("DeepSeek Harness Modern Session", () => {
         { id: "multi", selected: ["Tests", "Docs"] },
         { id: "custom", selected: [], custom: "Elsewhere" },
         { id: "plan", selected: ["Apply"] },
+        { id: "consent", selected: ["Deny"] },
       ],
     });
     expect(await nextEvent(outputs)).toMatchObject({

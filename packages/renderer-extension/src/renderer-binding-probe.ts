@@ -894,6 +894,7 @@ export function installRendererBindingProbe(
     retryAttempt: 0,
   });
   const harnessAvailabilityByHost = new Map<string, HostHarnessAvailabilityState>();
+  const codexAccountLoads = new WeakMap<RendererCodexAccountState, Promise<void>>();
   const hostHarnessAvailabilityState = (hostId: string): HostHarnessAvailabilityState => {
     let state = harnessAvailabilityByHost.get(hostId);
     if (!state) {
@@ -2304,21 +2305,31 @@ export function installRendererBindingProbe(
     }
   };
 
-  const loadCodexAccounts = async (): Promise<void> => {
-    const hostIds = new Set([...mountedByComposer.values()].map((mounted) => mounted.hostId));
-    await Promise.all(
-      [...hostIds].map(async (hostId) => {
-        const accounts = codexAccountsForHost(hostId);
-        if (!accounts) return;
-        await accounts.refresh();
+  const loadCodexAccountsForHost = (hostId: string | null): Promise<void> => {
+    const accounts = codexAccountsForHost(hostId);
+    if (!accounts) return Promise.resolve();
+    const pending = codexAccountLoads.get(accounts);
+    if (pending) return pending;
+    const request = accounts
+      .refresh()
+      .then(() => {
         if (disposed || codexAccountsForHost(hostId) !== accounts) return;
         for (const mounted of mountedByComposer.values()) {
           if (mounted.hostId !== hostId) continue;
           renderMounted(mounted);
           if (controller.get(mounted.composer).agent === "codex") void refreshDraftUsage(mounted);
         }
-      }),
-    );
+      })
+      .finally(() => {
+        if (codexAccountLoads.get(accounts) === request) codexAccountLoads.delete(accounts);
+      });
+    codexAccountLoads.set(accounts, request);
+    return request;
+  };
+
+  const loadCodexAccounts = async (): Promise<void> => {
+    const hostIds = new Set([...mountedByComposer.values()].map((mounted) => mounted.hostId));
+    await Promise.all([...hostIds].map(loadCodexAccountsForHost));
   };
 
   const openInstallPage = (hostId: string | null, agent: ExternalRendererAgent): void => {
@@ -2585,7 +2596,8 @@ export function installRendererBindingProbe(
           void clearDraftPrewarm(mounted.composer).catch(() => undefined);
         }
         void loadExternalCatalog(mounted);
-        void refreshDraftUsage(mounted);
+        if (state.agent === "codex") void loadCodexAccountsForHost(hostId);
+        else void refreshDraftUsage(mounted);
         continue;
       }
       const target = controllerTarget(mounted.modelTarget, hostId);
@@ -2624,19 +2636,21 @@ export function installRendererBindingProbe(
     // Hidden/native Composers can belong to a different Host. Never rebind
     // every Thread to the globally selected Host when navigating between them.
     reloadMountedOwnershipForHost();
-    // Draft quota reads also recover when the Host has no usage notification channel.
+    // Draft quota follows the concrete client, including connections without notifications.
     for (const mounted of mountedByComposer.values()) {
       const client = composerClient(mounted);
       const request = draftUsageRequests.get(mounted);
+      const state = controller.get(mounted.composer);
       if (
-        controller.get(mounted.composer).agent !== "codex" &&
+        state.phase === "draft" &&
         mounted.draftUsageClient !== client &&
         (!request ||
           request.client !== client ||
           request.generation !== mounted.usageRequestGeneration ||
           (retryDraftUsage && !request.pending))
       ) {
-        void refreshDraftUsage(mounted);
+        if (state.agent === "codex") void loadCodexAccountsForHost(mounted.hostId);
+        else void refreshDraftUsage(mounted);
       }
     }
     let connectionsChanged = false;
@@ -2905,7 +2919,10 @@ export function installRendererBindingProbe(
     ) {
       void loadExternalCatalog(mounted);
     }
-    if (!threadIdFromComposerModelTarget(modelTarget)) void refreshDraftUsage(mounted);
+    if (!threadIdFromComposerModelTarget(modelTarget)) {
+      if (state.agent === "codex") void loadCodexAccountsForHost(mounted.hostId);
+      else void refreshDraftUsage(mounted);
+    }
     void refreshCommands(mounted);
   };
 

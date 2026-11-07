@@ -11,6 +11,7 @@ import type { PiSessionHistory } from "../src/pi-history.js";
 import {
   PiRpcSession,
   PiRpcSteerRejectedError,
+  PiRpcSteerTargetEndedError,
   type PiRpcProcessAdapter,
   type PiSessionState,
   type PiTurnEvent,
@@ -279,6 +280,50 @@ describe("Pi turn.steer", () => {
     expect(transport.steer).toHaveBeenCalledOnce();
   });
 
+  it("preserves a completed Turn before faulting a runtime retired by late steering", async () => {
+    const { session, transports, outputs } = await openSession();
+    const turnId = await startTurn(session);
+    const transport = transports[0];
+    if (!transport) throw new Error("Missing transport");
+    const receipt = Promise.withResolvers<undefined>();
+    transport.steer.mockReturnValueOnce(receipt.promise);
+    const steering = session.execute({
+      type: "turn.steer",
+      turnId,
+      input: [{ type: "text", text: "too late to queue" }],
+    });
+    const rejection = expect(steering).rejects.toBeInstanceOf(PiRpcSteerTargetEndedError);
+    transport.resolveTurn?.({ text: "original answer", cancelled: false });
+    const history = historyOf(["run the tool"]);
+    const late = new PiRpcSteerTargetEndedError(history);
+    const read = vi.spyOn(transport, "getEntries").mockRejectedValue(new Error("Runtime closed"));
+    receipt.reject(late);
+    await rejection;
+    await vi.waitFor(() =>
+      expect(hostEvents(outputs).some((event) => event.type === "session.faulted")).toBe(true),
+    );
+    const events = hostEvents(outputs);
+    expect(events.find((event) => event.type === "turn.completed")).toMatchObject({
+      turnId,
+      nativeTurnRef: { nativeTurnKey: "user-1" },
+      outcome: { status: "succeeded" },
+    });
+    expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(events.findIndex((event) => event.type === "session.faulted")).toBeGreaterThan(
+      events.findIndex((event) => event.type === "turn.completed"),
+    );
+    expect(read).not.toHaveBeenCalled();
+    expect(transport.abort).not.toHaveBeenCalled();
+    expect(userMessageEvents(outputs)).toEqual([]);
+    await expect(
+      session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("after-runtime-retirement"),
+        input: [{ type: "text", text: "must reopen the native history first" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+  });
+
   it("keeps the original prompt when one steer adds exactly one user entry", async () => {
     const { session, transports, outputs } = await openSession();
     const turnId = await startTurn(session);
@@ -442,11 +487,13 @@ describe("Pi RPC steer", () => {
         { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
       );
       await rpc.start();
+      const running = rpc.runTurn("run the tool", () => undefined).catch(() => undefined);
       const failure = await rpc.steer("once").catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(Error);
       expect(failure).not.toBeInstanceOf(PiRpcSteerRejectedError);
       expect(fake.steered).toEqual(["once"]);
       await rpc.close();
+      await running;
     },
   );
 
@@ -473,6 +520,40 @@ describe("Pi RPC steer", () => {
     await rpc.close();
   });
 
+  it("closes a late native queue without reporting acceptance or corrupting the completed run", async () => {
+    const fake = new FakePiProcess();
+    fake.steerReceipt = "after-settled";
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+      { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    const running = rpc.runTurn("run the tool", () => undefined);
+    const failure = await rpc.steer("late input").catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PiRpcSteerTargetEndedError);
+    expect(failure).not.toBeInstanceOf(PiRpcSteerRejectedError);
+    expect((failure as PiRpcSteerTargetEndedError).history).toEqual(historyOf(["run the tool"]));
+    await expect(running).resolves.toMatchObject({ text: "original answer", cancelled: false });
+    expect(fake.stdin.writable).toBe(false);
+    expect(fake.exitCode).toBe(0);
+    await expect(rpc.runTurn("do not consume the stale queue", () => undefined)).rejects.toThrow(
+      /unavailable/,
+    );
+    await rpc.close();
+  });
+
+  it("does not dispatch native steering without an active requested run", async () => {
+    const fake = new FakePiProcess();
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+      { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    await expect(rpc.steer("idle input")).rejects.toBeInstanceOf(PiRpcSteerRejectedError);
+    expect(fake.steered).toEqual([]);
+    await rpc.close();
+  });
+
   it("rejects a steer the native session does not accept", async () => {
     const fake = new FakePiProcess();
     fake.rejectSteer = "Agent is idle";
@@ -481,8 +562,10 @@ describe("Pi RPC steer", () => {
       { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
     );
     await rpc.start();
+    const running = rpc.runTurn("run the tool", () => undefined).catch(() => undefined);
     await expect(rpc.steer("reply pong")).rejects.toBeInstanceOf(PiRpcSteerRejectedError);
     await rpc.close();
+    await running;
   });
 });
 
@@ -496,6 +579,7 @@ class FakePiProcess extends EventEmitter {
   readonly steered: string[] = [];
   rejectSteer: string | null = null;
   steerReceipt = "queued";
+  history: PiSessionHistory = { entries: [], leafId: null };
   #buffer = Buffer.alloc(0);
 
   constructor() {
@@ -523,10 +607,11 @@ class FakePiProcess extends EventEmitter {
 
   #onCommand(command: Record<string, unknown>): void {
     if (command.type === "get_entries") {
-      this.#respond(command, { entries: [], leafId: null });
+      this.#respond(command, this.history);
       return;
     }
     if (command.type === "prompt") {
+      this.history = historyOf([String(command.message)]);
       this.#respond(command);
       this.#output({
         type: "tool_execution_start",
@@ -558,6 +643,19 @@ class FakePiProcess extends EventEmitter {
       if (this.steerReceipt === "missing") return;
       if (this.steerReceipt === "handled") {
         this.#respond(command, { disposition: "handled" });
+        return;
+      }
+      if (this.steerReceipt === "after-settled") {
+        this.#output({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "original answer" }],
+            stopReason: "stop",
+          },
+        });
+        this.#output({ type: "agent_settled" });
+        setTimeout(() => this.#respond(command, { disposition: "queued" }), 10);
         return;
       }
       this.#respond(command);

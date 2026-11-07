@@ -21,10 +21,12 @@ export class ExternalQueueError extends Error {
 
 interface QueueEntry extends QueuedSubmission {
   sourceHostId: string | undefined;
+  automaticStartAllowed: boolean;
 }
 interface TakenSubmission {
   submission: QueuedSubmission;
   sourceHostId: string | undefined;
+  automaticStartAllowed: boolean;
   index: number;
 }
 
@@ -44,8 +46,9 @@ const DEFAULT_PAGE_SIZE = 50;
 /**
  * Follow-ups Desktop queues on an External Thread through the official `thread/queue/*`
  * protocol. Desktop keeps no local copy: it lists the queue after every
- * `thread/queue/changed` and leaves the next submission to the Host once a Turn completes.
- * Entries live for the Host process; the Harness Session holds no queued input.
+ * `thread/queue/changed`. Both Desktop and Host can request the next submission.
+ * Inputs with uncertain delivery stay visible but cannot advance automatically. An explicit
+ * user submission remains possible after checking effects. Entries live for the Host process.
  */
 export class ExternalThreadQueue {
   readonly #queues = new Map<string, QueueEntry[]>();
@@ -63,6 +66,10 @@ export class ExternalThreadQueue {
 
   has(threadId: string): boolean {
     return (this.#queues.get(threadId)?.length ?? 0) > 0;
+  }
+
+  canStartAutomatically(threadId: string): boolean {
+    return this.#queues.get(threadId)?.[0]?.automaticStartAllowed === true;
   }
 
   list(threadId: string, params: JsonObject): JsonObject {
@@ -88,7 +95,13 @@ export class ExternalThreadQueue {
     clientUserMessageId: string,
     sourceHostId?: string,
   ): Promise<QueuedSubmission> {
-    const submission = { id: this.#createId(), input, clientUserMessageId, sourceHostId };
+    const submission = {
+      id: this.#createId(),
+      input,
+      clientUserMessageId,
+      sourceHostId,
+      automaticStartAllowed: true,
+    };
     this.#items(threadId).push(submission);
     await this.#notifyChanged(threadId);
     return publicSubmission(submission);
@@ -135,11 +148,18 @@ export class ExternalThreadQueue {
     const index = id == null ? 0 : items.findIndex((item) => item.id === id);
     const submission = index === -1 ? undefined : items[index];
     if (!submission) throw new ExternalQueueError(-32602, "Queued submission was not found");
+    if (id == null && !submission.automaticStartAllowed) {
+      throw new ExternalQueueError(
+        -32074,
+        "Queued input has an unknown delivery outcome; check effects before explicitly resending or removing it",
+      );
+    }
     items.splice(index, 1);
     this.#prune(threadId);
     return {
       submission: publicSubmission(submission),
       sourceHostId: submission.sourceHostId,
+      automaticStartAllowed: submission.automaticStartAllowed,
       index,
     };
   }
@@ -177,6 +197,7 @@ export class ExternalThreadQueue {
     items.splice(Math.min(taken.index, items.length), 0, {
       ...taken.submission,
       sourceHostId: taken.sourceHostId,
+      automaticStartAllowed: taken.automaticStartAllowed,
     });
   }
 

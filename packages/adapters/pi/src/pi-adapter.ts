@@ -107,6 +107,7 @@ import {
   PiRpcBusyError,
   PiRpcSession,
   PiRpcSteerRejectedError,
+  PiRpcSteerTargetEndedError,
   PiRpcUnsupportedCommandError,
   type PiInteractionRequest,
   type PiInteractionResponse,
@@ -206,6 +207,7 @@ interface ActiveTurn {
   acceptedSteerCount: number;
   acceptingSteers: boolean;
   pendingSteers: Set<Promise<void>>;
+  steerFailure?: PiRpcSteerTargetEndedError;
   reasoningItem: HostReasoningItem | null;
   tools: Map<string, ActiveTool>;
   interactions: Map<HostInteractionId, ActiveInteraction>;
@@ -467,7 +469,7 @@ class PiHarnessSession implements HarnessSession {
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
       autonomousTurns: { observe: true },
       subagents: { observe: true, readTranscript: true },
-      // Pi's native queue is guaranteed to join this Turn only while a root Tool is running.
+      // Root Tools provide an admission window; the transport also checks native receipt order.
       get steer(): boolean {
         return session.#canSteerActiveTurn();
       },
@@ -1012,6 +1014,7 @@ class PiHarnessSession implements HarnessSession {
       if (error instanceof PiRpcSteerRejectedError) {
         return { ok: false, error: invalidState(error.message) };
       }
+      if (error instanceof PiRpcSteerTargetEndedError) active.steerFailure = error;
       // A missing acknowledgement may follow native acceptance; never invite stop-and-resend.
       throw error;
     } finally {
@@ -2021,7 +2024,7 @@ class PiHarnessSession implements HarnessSession {
   ): Promise<{ nativeTurnRef: NativeTurnRef; checkpoint?: NativeCheckpointRef }> {
     active.acceptingSteers = false;
     await Promise.allSettled([...active.pendingSteers]);
-    const snapshot = mapPiSnapshot(await transport.getEntries(), {
+    const snapshot = mapPiSnapshot(active.steerFailure?.history ?? (await transport.getEntries()), {
       sessionId: transport.state.sessionId,
       model: nativeModelForHistory(transport.state),
     });
@@ -2080,6 +2083,11 @@ class PiHarnessSession implements HarnessSession {
       ...(nativeTurnRef ? { nativeTurnRef } : {}),
     });
     active.resolveCompletion();
+    if (active.steerFailure) {
+      // The completed Turn keeps its real outcome; Host recovery reopens the same history.
+      this.#fault(active.steerFailure);
+      return;
+    }
     queueMicrotask(() => {
       if (this.#phase !== "open") return;
       if (this.#transport) this.#drainPendingAutonomousTurns(this.#transport);

@@ -50,6 +50,32 @@ it("reserves only the matching input and restores its position after rejected st
   expect(queue.list("thread", {})).toEqual({ data: [before, target, after], nextCursor: null });
 });
 
+it("keeps unknown input visible but blocks automatic replay across edits and later Turns", async () => {
+  const queue = new ExternalThreadQueue({ notifyChanged: async () => {} });
+  const input = [{ type: "text", text: "uncertain" }];
+  const target = await queue.add("thread", input, "uncertain-message", "source");
+  const taken = queue.takeSteered("thread", "uncertain-message", input);
+  if (!taken) throw new Error("Missing reservation");
+  taken.automaticStartAllowed = false;
+  queue.restore("thread", taken);
+  const next = await queue.add("thread", [{ type: "text", text: "next" }], "next-message");
+  expect(queue.list("thread", {})).toEqual({ data: [target, next], nextCursor: null });
+  expect(queue.canStartAutomatically("thread")).toBe(false);
+  expect(() => queue.take("thread")).toThrow("unknown delivery outcome");
+  expect(await queue.update("thread", target.id, input)).toEqual(target);
+  expect(queue.canStartAutomatically("thread")).toBe(false);
+  const explicitNext = queue.take("thread", next.id);
+  expect(explicitNext.automaticStartAllowed).toBe(true);
+  expect(queue.canStartAutomatically("thread")).toBe(false);
+  const retry = queue.take("thread", target.id);
+  expect(retry.sourceHostId).toBe("source");
+  queue.restore("thread", retry);
+  expect(queue.canStartAutomatically("thread")).toBe(false);
+  expect(await queue.delete("thread", target.id)).toBe(true);
+  await queue.add("thread", input, "fresh-message");
+  expect(queue.canStartAutomatically("thread")).toBe(true);
+});
+
 it("acknowledges an accepted steer's delete without acknowledging another Thread or arbitrary id", async () => {
   const queue = new ExternalThreadQueue({ notifyChanged: async () => {} });
   const input = [{ type: "text", text: "steer" }];

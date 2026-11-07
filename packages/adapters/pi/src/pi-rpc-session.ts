@@ -192,6 +192,16 @@ export class PiRpcFaultError extends Error {
 /** A correlated native response explicitly refused steer before acceptance. */
 export class PiRpcSteerRejectedError extends Error {}
 
+/** An idle queue cannot establish delivery to the requested Turn. Never replay this input. */
+export class PiRpcSteerTargetEndedError extends PiRpcFaultError {
+  constructor(readonly history: PiSessionHistory) {
+    super(
+      "protocolError",
+      "Pi Turn ended before steer admission could be confirmed; the isolated runtime was closed. Input hook effects are unknown, so do not automatically resend the input",
+    );
+  }
+}
+
 export class PiRpcUnsupportedCommandError extends Error {
   constructor(readonly command: string) {
     super(`Pi RPC does not support '${command}'`);
@@ -1025,7 +1035,15 @@ export class PiRpcSession {
       throw new Error("Pi RPC Session is unavailable");
     }
     if (message.length === 0) throw new Error("Pi steer text must not be empty");
-    const response = await this.#send("steer", { message });
+    const target = this.#activeTurn;
+    if (!target || target.origin !== "requested" || target.settlement !== "pending") {
+      throw new PiRpcSteerRejectedError("Pi Turn is not accepting native input");
+    }
+    let admitted = false;
+    const response = await this.#send("steer", { message }, () => {
+      // Capture native frame order, not the state after an awaiting continuation runs.
+      admitted = this.#activeTurn === target && target.settlement === "pending";
+    });
     if (
       isRecord(response.data) &&
       response.data.disposition !== undefined &&
@@ -1033,6 +1051,13 @@ export class PiRpcSession {
     ) {
       // An input hook may have handled it already; retrying could repeat its effects.
       throw new Error("Pi steer was handled without confirming same-Turn queue admission");
+    }
+    if (!admitted) {
+      // Native input hooks may outlive the run and then enqueue into an idle Session.
+      // Preserve the terminal history before closing this owned process and its queue.
+      const history = await this.getEntries();
+      await this.close();
+      throw new PiRpcSteerTargetEndedError(history);
     }
   }
 
@@ -2086,7 +2111,11 @@ export class PiRpcSession {
     });
   }
 
-  #send(type: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  #send(
+    type: string,
+    payload: Record<string, unknown>,
+    onResponse?: () => void,
+  ): Promise<Record<string, unknown>> {
     const child = this.#child;
     if (!child?.stdin.writable || this.#closed || this.#failed) {
       return Promise.reject(new Error("Pi RPC stdin is unavailable"));
@@ -2095,7 +2124,10 @@ export class PiRpcSession {
     return new Promise((resolve, reject) => {
       const pending: PendingCommand = {
         command: type,
-        resolve,
+        resolve: (response) => {
+          onResponse?.();
+          resolve(response);
+        },
         reject,
         timeout: null,
       };

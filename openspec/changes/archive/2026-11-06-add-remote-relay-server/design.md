@@ -2,8 +2,7 @@
 
 ## Context
 
-
-本 change 定下的协议是 Relay 和电脑端之间的契约。电脑端在 `add-web-remote-relay-client` 中实现，必须遵守这里的格式。
+Relay 按 SNI 转发 TLS 字节，通过反向 HTTP/2 复用手机连接，并将 TLS-ALPN-01 验证连接转发到电脑。本文定义 Relay 与电脑端之间的协议；电脑端由 `add-web-remote-relay-client` 实现。
 
 ## Decisions
 
@@ -28,13 +27,12 @@
   - 公钥解码后必须是 32 字节，签名 64 字节，挑战 32 字节；字段重复或编码不符即拒绝。
   - 注册完成前 Relay 不打开 `/v1/tcp`；电脑拒绝第二次注册和未知路径。
 - WebSocket 单条消息上限 1 MiB（两端都设置 `maxPayload`）。HTTP/2 帧远小于这个值，正常流量不会触及；它防止在 HTTP/2 流控生效前，一条超大消息先占用内存。
-- 放弃“电脑在升级请求里带时间戳签名”的方案，它能省一个 RTT，但需要时钟同步和防重放缓存。
 
 ### 手机连接
 
 - 每条手机连接对应一个 `POST /v1/tcp` 请求，请求头 `relay-client-address` 和 `relay-client-port` 是手机的 IP 和端口。请求体是手机发往电脑的字节，响应体是电脑发往手机的字节。电脑立即返回 200。
 - 一个方向的 `END_STREAM` 对应 TCP 在该方向的 FIN；`RST_STREAM` 或任一侧出错时，两侧都销毁。
-- 用普通 POST 而不是 CONNECT：原型已用这种方式验证全双工，CONNECT 的 `:authority` 等字段在这里没有用处。
+- `POST /v1/tcp` 使用双向请求体和响应体承载全双工字节流。
 - 手机 socket 开启 `noDelay` 和 TCP keepalive，避免已消失的手机连接长期占用 stream。
 - 每个 ID 最多同时转发 32 条手机连接。这是固定值，不做配置：手机经中转只协商 HTTP/1.1，浏览器每个主机约 6 条连接，几台手机同时使用也在范围内。它同时决定了下面的内存上限。
 
@@ -42,8 +40,7 @@
 
 - 两端的 HTTP/2 都把 stream 窗口（`SETTINGS_INITIAL_WINDOW_SIZE`）设为 2 MiB，连接窗口设为 8 MiB。电脑端在 HTTP/2 服务端设相同值（电脑端 change）。
 - 手机写入变慢时，Relay 停止读取对应 stream，该 stream 的窗口耗尽，电脑在这条 stream 上的发送随之阻塞。Node 收到数据时会立即补充连接窗口，所以连接窗口不限制总缓存，其他 stream 也因此不被阻塞。每台电脑在每个方向上被缓存的数据上限约为 32 × 2 MiB = 64 MiB，另加 1 MiB 的 WebSocket 消息。
-- 2 MiB 的依据：验证报告中 Relay 到电脑约 140ms RTT，2 MiB 的 stream 窗口可支撑约 120Mbps，高于实测线路带宽（约 30Mbps）。默认 64KB 时只有约 2Mbps。
-- 验证报告中，窗口足够大时持续大传输使其他连接的 p95 增加约 100–300ms。审批优先级由电脑上的 HTTP 服务决定，不在 Relay 层处理。
+- 较大的 stream 窗口用于支持高延迟链路上的传输。审批优先级由电脑上的 HTTP 服务决定，不在 Relay 层处理。
 
 ### 心跳
 
@@ -71,15 +68,11 @@
 
 ## Risks / Trade-offs
 
-- [守着 443 的一方能用 TLS-ALPN-01 自行申请证书] → 证书透明日志可用于发现冒签，不能事先阻止。
+- [守着 443 的一方能用 TLS-ALPN-01 自行申请证书] → 证书透明日志可用于发现冒签，不能事先阻止，见[中转的信任边界](../../../../docs/product/web-remote-access.md#中转的信任边界)。
 - [注册不需要邀请，任何人都能生成密钥并占用 Relay 内存] → 核心的身份验证不等于准入控制。
-- [单进程容量有限] → 验证报告中单核约能转发 170–250Mbps。本 change 不做多实例；容量不够时再按 ID 分片。
 - [Relay 重启使当日额度清零] → 接受。额度用于控制成本，不是计费依据。
 - [浏览器改走 HTTP/3 或加密 SNI 时无法路由] → Relay 只接受 TCP 上的明文 SNI；电脑端不得通过 Alt-Svc、HTTPS 记录或 ECH 配置宣告这些能力（电脑端 change）。
 
 ## Migration
 
 新增包，没有既有数据。回滚即停止 Relay 部署，其他入口不受影响。
-
-## Open Questions
-

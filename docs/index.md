@@ -131,16 +131,13 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`product/web-remote-access.md`](product/web-remote-access.md) | Tailscale Serve/Funnel 只读诊断、公开地址、可信代理、手机连接提示，以及 nginx、frp、Cloudflare Tunnel 配置与验证边界。 |
+| [`product/web-remote-access.md`](product/web-remote-access.md) | 局域网、Tailscale、Relay 和自备隧道的连接方式、自动证书、可信代理、手机连接提示与信任边界。 |
 | [`product/self-hosted-relay.md`](product/self-hosted-relay.md) | 自建 Relay：本地构建 Docker 镜像、Compose 部署、DNS、宿主机 certbot 续期与电脑端连接。 |
 | [`product/web-ui-extensions.md`](product/web-ui-extensions.md) | DSH Web 插件安装、原生前后端运行、资源路由、启停、依赖检查、恢复与原包验证边界；使用或维护界面扩展时阅读。 |
 | [`proposals/ui-extension-plugins.md`](proposals/ui-extension-plugins.md) | 界面扩展目标方案与分步状态：Harness 与界面插件分类、统一管理、DSH 纯 Web 首期范围，以及待实现的原生插件和 Codex GUI 分端接入边界。 |
 | [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA 的共享 CH 会话、GUI/Web 共享偏好、作为普通外部 Harness 的 Codex CLI、原生项目归组、历史分页、Windows/macOS 按需桌面截图、侧栏服务器浏览器推流、源码构建、启动隔离、跨工作树停机及验收限制；开发 Web 或与 Desktop 并行运行时阅读。 |
 | [`product/web-ios-keyboard-composer-alignment.md`](product/web-ios-keyboard-composer-alignment.md) | 待解决问题：iOS Safari 软键盘下输入框与屏幕底部不贴合的实测数据、根因（页面被 iOS 多滚、`visualViewport` 不可用）、无效做法与备选方向；处理手机键盘布局前阅读。 |
 | [`../packages/remote-relay/README.md`](../packages/remote-relay/README.md) | 独立 Relay 的启动参数、部署要求、控制证书重载、协议与流量限制、元数据日志和本机验证；自建 Docker 部署见产品文档。 |
-| [`proposals/web-remote-relay-architecture.md`](proposals/web-remote-relay-architecture.md) | 分阶段实施的 Web 远程访问总体设计：五种访问方式（局域网、Tailscale、官方中转、自托管中转、自备隧道）、Token 认证、SNI 转发架构及信任边界；编写远程访问 Spec 前阅读。 |
-| [`proposals/web-remote-implementation-plan.md`](proposals/web-remote-implementation-plan.md) | Web 远程访问的实施计划：7 个阶段的交付、完成标准、依赖、OpenSpec 划分、人工事项和当前状态；开始或调整任一阶段前阅读。 |
-| [`proposals/web-remote-deferred-options.md`](proposals/web-remote-deferred-options.md) | 第一版不做的 Web 远程访问方案记录：P2P、Tailscale Peer Relays、Tailcat、Cloudflare Workers 中转的结论、同类产品做法、证据和重新评估条件；重新考虑这些方案前阅读。 |
 | [`proposals/herdr-core-terminal-backend.md`](proposals/herdr-core-terminal-backend.md) | 暂缓实施的终端后台调研：现有 DSH/xterm 路径、Alma 证据、Herdr Core 原生契约、输入确认缺口、独立进程生命周期及候选迁移与验收边界。 |
 
 ## 账号与 Desktop 产品接入

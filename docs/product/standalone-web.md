@@ -117,7 +117,7 @@ Codex Desktop 的 codexhost 设置“远程连接”页顶部提供“手机和�
 
 **远程地址与诊断：** 配置 `--public-url` 或 `CODEXHOST_WEB_PUBLIC_URL` 时，公开地址优先于 Funnel、Serve HTTPS 和网卡地址；只接受无用户信息、路径、查询和片段的 HTTP(S) 根地址，HTTP 以明文传输。`npm start web` 和 `preview.mjs` 会传递该值，但不据此增加可信代理或同源白名单。连接设备页读取 Tailscale 状态、占用目标及读取错误；本机用户点击启用后配置 Serve，“停止设备访问”确认后关闭；开启前重新确认根路径未占用，关闭只移除指向当前 Web 的根路径，结果以重新读取的状态为准。Funnel 标明互联网公开，仍需 token。启动第一行不变，其后读取并输出 Serve/Funnel 地址，检测最多 3 秒。Serve 配置在 Web 退出后保留，占用同端口的其他程序也会被转发。各方式的 TLS、代理和验证边界见[Web 远程访问](web-remote-access.md)。
 
-**中转入口：** `--relay <控制主机名>` 指定 Relay，保存在 `service.json` 的 `relayHost`，传空值清除；源码和 preview 入口也支持此选项。不配置时连接方式中不显示“codexhost 中转”，不内置官方地址。本机通过 `codexhost/relaySet` 保存 `relayEnabled` 并即时启停，不重启 Web / Host；`--no-auth` 拒绝开启。首次开启生成 `<web-data>/remote-relay/identity.pem`（0600），重启和更新沿用；丢失后地址无法恢复。证书读取同目录的 `certificate.pem`、`certificate-key.pem`，自动申请和续期尚待实现；缺证书仍注册但不接受手机连接。支持 `HTTPS_PROXY` / `https_proxy` 的 HTTP CONNECT，详情见[中转访问](web-remote-access.md#relay-中转)。
+**中转入口：** `--relay <控制主机名>` 指定 Relay，保存在 `service.json` 的 `relayHost`，传空值清除；源码和 preview 入口也支持此选项。不配置时连接方式中不显示“codexhost 中转”，不内置官方地址。本机通过 `codexhost/relaySet` 保存 `relayEnabled` 并即时启停，不重启 Web / Host；`--no-auth` 拒绝开启。首次开启生成 `<web-data>/remote-relay/identity.pem`（0600），重启和更新沿用；丢失后地址无法恢复。注册成功后自动申请证书并保存为同目录的 `certificate.pem`、`certificate-key.pem`，在实际有效期的 2/3 处自动续期；私钥不离开电脑，新证书原子替换后立即生效。没有可用证书时仍保持注册、应答本轮证书验证，但不接受普通手机连接。支持 `HTTPS_PROXY` / `https_proxy` 的 HTTP CONNECT，详情见[中转访问](web-remote-access.md#relay-中转)。
 
 **退出登录：** 只在非本机页面提供，确认后取消这个浏览器的推送订阅并清除 Cookie（`POST /api/auth/logout`，需同源），令牌和其他设备不受影响。重新登录要在电脑上查看令牌。
 
@@ -253,7 +253,6 @@ GUI 原生路由仍不使用 Codex CLI 插件。共享 home 会共享原生配�
 共享目录只读取 `modelProvider: codexhost` 且 Host 确认属于 external 的 Threads，包括用于状态投影的已归档记录；主页默认隐藏已归档会话，不接入官方 Codex Threads或远程 Hosts。会话身份保持 CH Thread ID；列表、完整历史、模型和权限均从同一个 Host 查询。Web 不新增会话索引、原生引用映射或历史文件，DSH 格式只作可丢弃的内存展示缓冲。事件模式按 Host 通知刷新正在订阅的历史，100ms 合并同一 Thread 的连续变化；普通历史 1.5 秒轮询不再运行。通知只表示状态失效，客户端读取最近 5 轮的权威完整状态，不直接拼接重放的 token。读取期间的新事件会安排下一次校验，不会被正在进行的读取吞掉。目录变化也合并处理；项目和置顶没有完整聊天事件覆盖，继续单独定期同步。首次目录通过 `session/list` 一次性返回；后续查询只广播实际新增、修改、移除的条目，不将未变化的全部 Threads 重发为 `api-session/added`。比较覆盖标题、执行目录、更新时间、运行状态、父 Thread 和 Harness 归属；标题、模型、权限等全局投影走 `session/control`。快照查询失败不推进已发布目录基线，普通列表请求与定时刷新共用同一差量发布路径，避免会话数量较多时事件洪泛阻塞切换与历史帧处理。
 
 ### 聊天投影通道
-
 
 `codexhostTurnChanges`（已加载 Turn 的文件摘要）和 `codexhostToolOutput`（运行中命令的输出尾部）仅通过对应会话的 `session/follow` 发送实时更新，不进入 `session/control` 的增量或初始 baseline，也不混入 `session/list` 或全局目录更新的摘要。每个 follow 快照仍携带该会话全部最新投影；切回会话或重连从快照恢复。多个页面同时 follow 同一会话时，各自都收到更新；未 follow 的页面不接收这两个 key 的实时变化。
 

@@ -2,7 +2,7 @@
 
 ## Why
 
-阶段 1 之后，手机可以用 token 登录，但经 Tailscale Serve 的请求不被信任，因此 Cookie 不带 Secure，所有设备共用一个登录限速额度；自备隧道没有公开地址配置；手机连不上时也分不清是网络问题还是电脑离线。这一步让已经能运行 Web 的技术用户稳定地远程使用。对应[实施计划](../../../../docs/proposals/web-remote-implementation-plan.md)的阶段 2。
+Tailscale Serve 入口需要正确处理 HTTPS Cookie、客户端地址和登录限速，自备隧道需要公开地址配置，手机端需要区分网络问题和电脑离线。
 
 ## What Changes
 
@@ -15,7 +15,7 @@
 
 ## Decisions
 
-- **Web 不修改 Tailscale 配置。** Web 进入安装包前，能运行它的只有源码用户，自己运行一条命令就够了。一键开启和关闭放到阶段 4，Serve 是否随 Web 关闭也到时再定。
+- **本 change 只读检测 Tailscale 配置。** 开关能力由 `add-web-background-service` 提供。
 - **可信代理从 Serve 状态推导，不保存设置。** 保存开关会在用户执行 `tailscale serve reset` 后过期，也覆盖不了手动开启的 Serve。放弃默认信任回环地址：frp TCP、`ssh -R` 等转发也来自回环地址，不应未经用户配置就被信任。
 - **诊断只报告电脑能确定的状态，不做连通性自测。** 电脑访问自己的 Serve 地址成功，不能说明手机能连上。
 - **公开地址只接受站点根地址，不自动信任隧道。** 代理的来源地址只有用户知道，所以可信代理继续手动配置。
@@ -37,4 +37,4 @@
 - `packages/shared-contracts`：连接设备接口的结果类型，新增地址种类和 Tailscale 状态。
 - `apps/web-ui`：连接设备页、连接状态提示。
 - 外部依赖：只读调用用户已安装的 `tailscale` 命令，不新增依赖。
-- 文档：新增 `docs/product/web-remote-access.md`，更新 `docs/index.md`、`docs/product/standalone-web.md` 和实施计划状态。
+- 文档：新增 `docs/product/web-remote-access.md`，更新 `docs/index.md`、`docs/product/standalone-web.md`。

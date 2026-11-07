@@ -53,12 +53,23 @@ Three independent macOS helper paths need different handling:
   forwarded unchanged so the official CLI, not the Shim, enforces the sandbox.
 - Native Computer Use inherits the managed Desktop's full environment. Desktop
   launched via LaunchServices is reparented to `launchd`, so Windows-style ancestry
-  to the Launcher cannot identify these helpers. On macOS the Shim verifies the
-  live Launcher executable, then walks a bounded, start-time-checked ancestry to
-  the exact Desktop executable in the resolved official CLI's validated bundle.
-  A direct Desktop child retains Host routing; only a deeper descendant uses the
-  stock CLI with `CODEXHOST_*` bootstrap state removed. Missing or stale identity
-  evidence retains existing explicit Host/SSH routing.
+  to the Launcher cannot identify these helpers. On macOS the Launcher
+  environment only marks a managed Desktop tree: the Launcher may exit, or its
+  PID may be reused, while that Desktop keeps spawning helpers. The Shim walks a
+  bounded, start-time-checked ancestry to the exact Desktop executable in the
+  resolved official CLI's validated bundle. A direct Desktop child retains Host
+  routing; only a deeper descendant uses the stock CLI with `CODEXHOST_*`
+  bootstrap state removed. Without Launcher metadata or a validated Desktop
+  ancestor, explicit Host/SSH routing is unchanged.
+- Only Desktop's main app-server may own the local Host Runtime. When the Shim's
+  parent is positively not the validated Desktop executable and the Mapping
+  Store lock names a live Host Runtime, or another live Desktop owns the local
+  Host Runtime lease, that caller runs on the stock CLI instead of failing.
+  Desktop's own main app-server keeps the explicit ownership error.
+- A failed Host Runtime ends Desktop's stderr with
+  `codexhost shim: Host Runtime exited with code N: <last Host diagnostic>`, so
+  the startup error, such as a Mapping Store owner, is not hidden behind Shim
+  cleanup notes. Stock CLI stderr stays byte-for-byte unchanged.
 
 For a candidate switch, preserve the previous runtime and confirm that both the
 Desktop process chain and the installed Remote Host refer to the new package.
@@ -82,6 +93,8 @@ cargo test --locked -p codexhost-shim --features test-utils --test host_runtime_
 cargo test --locked -p codexhost-launcher host_chain_
 cargo test --locked -p codexhost-platform process_chain
 cargo test --locked -p codexhost-shim --features test-utils --test proxy macos_
+cargo test --locked -p codexhost-shim --features test-utils --test proxy reports_the_host_runtime_startup_failure
+cargo test --locked -p codexhost-shim --features test-utils --test proxy managed_remote_listener_refuses
 cargo test --locked -p codexhost-shim --features test-utils --test proxy browser_helper
 cargo test --locked -p codexhost-shim --features test-utils --test proxy rejects_missing_stock_cli
 ```

@@ -631,17 +631,61 @@ fn macos_browser_sandbox_fallback_rejects_unrelated_commands() {
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_native_helpers_do_not_become_host_runtime_owners() {
-    assert_macos_native_helper_routing(false);
+    assert_macos_native_helper_routing(false, LauncherState::Live);
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_nested_cli_native_helpers_do_not_become_host_runtime_owners() {
-    assert_macos_native_helper_routing(true);
+    assert_macos_native_helper_routing(true, LauncherState::Live);
+}
+
+// Computer Use keeps spawning helpers after the Launcher that started Desktop has exited.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_native_helpers_stay_on_the_official_cli_after_the_launcher_exits() {
+    assert_macos_native_helper_routing(false, LauncherState::Exited);
+    assert_macos_native_helper_routing(true, LauncherState::Exited);
 }
 
 #[cfg(target_os = "macos")]
-fn assert_macos_native_helper_routing(nested_cli: bool) {
+#[test]
+fn macos_native_helpers_stay_on_the_official_cli_after_the_launcher_pid_is_reused() {
+    assert_macos_native_helper_routing(false, LauncherState::Reused);
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+enum LauncherState {
+    Live,
+    Exited,
+    Reused,
+}
+
+#[cfg(target_os = "macos")]
+fn exited_process_id() -> u32 {
+    let mut child = Command::new("/usr/bin/true")
+        .spawn()
+        .expect("spawn short-lived launcher fixture");
+    let process_id = child.id();
+    child.wait().expect("wait for short-lived launcher fixture");
+    process_id
+}
+
+#[cfg(target_os = "macos")]
+fn assert_macos_native_helper_routing(nested_cli: bool, launcher: LauncherState) {
+    // A reused launcher PID belongs to an unrelated executable started after Desktop.
+    let mut reused_launcher = matches!(launcher, LauncherState::Reused).then(|| {
+        Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn unrelated process at the launcher PID")
+    });
+    let launcher_id = match launcher {
+        LauncherState::Live => process::id(),
+        LauncherState::Exited => exited_process_id(),
+        LauncherState::Reused => reused_launcher.as_ref().unwrap().id(),
+    };
     for (depth, detached) in [
         (0, false),
         (1, false),
@@ -676,7 +720,7 @@ fn assert_macos_native_helper_routing(nested_cli: bool) {
             .env("FAKE_CODEX_HELPER_EXECUTABLE", fake_codex_path())
             .env("FAKE_CODEX_PRINT_INVOCATION", "1")
             .env("FAKE_CODEX_ROUTE_RESPONSE", "1")
-            .env("CODEXHOST_LAUNCHER_PID", process::id().to_string())
+            .env("CODEXHOST_LAUNCHER_PID", launcher_id.to_string())
             .env(
                 "CODEXHOST_LAUNCHER_EXECUTABLE",
                 std::env::current_exe().unwrap(),
@@ -720,6 +764,255 @@ fn assert_macos_native_helper_routing(nested_cli: bool) {
         }
         fs::remove_dir_all(directory).unwrap();
     }
+    if let Some(mut reused_launcher) = reused_launcher.take() {
+        let _ = reused_launcher.kill();
+        let _ = reused_launcher.wait();
+    }
+}
+
+/// Runs `app-server --listen stdio://` from a fixture Desktop bundle through `depth` helpers,
+/// without Launcher metadata, so only Host ownership decides the route.
+#[cfg(target_os = "macos")]
+fn run_unmanaged_bundle_app_server(
+    bundle_root: &std::path::Path,
+    data_directory: &std::path::Path,
+    depth: u32,
+    exchange: bool,
+) -> std::process::Output {
+    fs::create_dir_all(bundle_root).unwrap();
+    let bundle = macos_fixture_bundle(bundle_root);
+    let mut child = Command::new(bundle.join("Contents/MacOS/ChatGPT"))
+        .args(["app-server", "--listen", "stdio://"])
+        .env("FAKE_CODEX_HELPER_SHIM", shim_path())
+        .env("FAKE_CODEX_HELPER_DEPTH", depth.to_string())
+        .env("FAKE_CODEX_HELPER_EXECUTABLE", fake_codex_path())
+        .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+        .env("FAKE_CODEX_ROUTE_RESPONSE", "1")
+        .env_remove("CODEXHOST_LAUNCHER_PID")
+        .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
+        .env_remove("CODEXHOST_NPM_NODE_PATH")
+        .env_remove("CODEXHOST_NPM_PACKAGE_ROOT")
+        .env_remove(REMOTE_SSH_MANAGED_ENV)
+        .env("CODEXHOST_DATA_DIR", data_directory)
+        .env(
+            STOCK_CODEX_PATH_ENV,
+            bundle.join("Contents/Resources/codex"),
+        )
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(HOST_NODE_PATH_ENV, fake_codex_path())
+        .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    if exchange {
+        stdin.write_all(b"x").unwrap();
+        let mut response = [0_u8; 8];
+        child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_exact(&mut response)
+            .unwrap();
+        assert_eq!(&response, b"response");
+    }
+    drop(stdin);
+    child.wait_with_output().unwrap()
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_non_desktop_caller_uses_the_official_cli_when_another_desktop_owns_the_host() {
+    let directory = temporary_directory();
+    let owner_ready = directory.join("owner-ready");
+    let mut owner = host_runtime_shim(&directory, &owner_ready);
+    let owner_stdin = owner.stdin.take().expect("owner Host Runtime stdin");
+    let owner_root = process_id_from_ready(
+        &wait_for_file(&owner_ready, Duration::from_secs(5)),
+        "root=",
+    );
+
+    let helper = run_unmanaged_bundle_app_server(&directory.join("helper"), &directory, 1, true);
+    let helper_stderr = String::from_utf8_lossy(&helper.stderr);
+    assert!(helper.status.success(), "{helper_stderr}");
+    assert!(
+        helper_stderr.contains("args=app-server|--listen|stdio://"),
+        "a non-Desktop caller must reach the official CLI: {helper_stderr}"
+    );
+    assert!(
+        helper_stderr.contains("another Codex Desktop process owns the local Host Runtime"),
+        "{helper_stderr}"
+    );
+
+    // Desktop's own main app-server keeps the explicit ownership failure.
+    let desktop = run_unmanaged_bundle_app_server(&directory.join("desktop"), &directory, 0, false);
+    let desktop_stderr = String::from_utf8_lossy(&desktop.stderr);
+    assert!(!desktop.status.success(), "{desktop_stderr}");
+    assert!(
+        desktop_stderr.contains("another Codex Desktop process owns the local Host Runtime"),
+        "{desktop_stderr}"
+    );
+    assert!(
+        !desktop_stderr.contains("args=app-server|"),
+        "{desktop_stderr}"
+    );
+
+    assert!(
+        process_exists(owner.id()) && process_exists(owner_root),
+        "the owning Shim or Host Runtime was terminated"
+    );
+    drop(owner_stdin);
+    assert!(wait_for_process_exit(&mut owner, Duration::from_secs(5)));
+    fs::remove_dir_all(directory).expect("remove Host ownership fixture");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_non_desktop_caller_uses_the_official_cli_when_a_live_runtime_owns_the_mapping_store() {
+    let directory = temporary_directory();
+    let data = directory.join("helper");
+    fs::create_dir_all(data.join("mapping-store")).unwrap();
+    // The Mapping Store lock names a live Node process, as a remote listener's Host Runtime does.
+    let node = directory.join("node");
+    fs::copy(fake_codex_path(), &node).unwrap();
+    let mut runtime = Command::new(&node)
+        .arg("--child-sleep")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn live Mapping Store owner");
+    fs::write(
+        data.join("mapping-store/store.lock"),
+        format!(
+            "{{\"pid\":{},\"instanceId\":\"remote-listener\",\"startedAt\":\"2026-11-07T03:59:59.986Z\"}}\n",
+            runtime.id()
+        ),
+    )
+    .unwrap();
+
+    let helper = run_unmanaged_bundle_app_server(&directory.join("bundle"), &data, 1, true);
+    let stderr = String::from_utf8_lossy(&helper.stderr);
+    let _ = runtime.kill();
+    let _ = runtime.wait();
+    assert!(helper.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("args=app-server|--listen|stdio://"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "Host Runtime PID {} already owns the Mapping Store",
+            runtime.id()
+        )),
+        "{stderr}"
+    );
+    assert!(
+        !data.join("local-host-runtime-owner.lock").exists(),
+        "a routed helper must not acquire the Host Runtime lease"
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn reports_the_host_runtime_startup_failure_as_the_final_stderr_line() {
+    let directory = temporary_directory();
+    let failure = "codexhost Host Runtime: Host initialization failed: Another codexhost process owns Mapping Store";
+    let mut shim = Command::new(shim_path())
+        .args(["app-server", "--listen", "stdio://"])
+        .env_remove("CODEXHOST_LAUNCHER_PID")
+        .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
+        .env_remove(REMOTE_SSH_MANAGED_ENV)
+        .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+        .env(HOST_NODE_PATH_ENV, fake_codex_path())
+        .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
+        .env("CODEXHOST_DATA_DIR", &directory)
+        .env("FAKE_CODEX_EXIT_BEFORE_INPUT", "1")
+        .env(
+            "FAKE_CODEX_STDERR",
+            format!("{failure}\nlater cleanup note\n{failure}\n"),
+        )
+        .env("FAKE_CODEX_EXIT_CODE", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn failing Host Runtime Shim");
+    // Desktop keeps stdin open while the Host Runtime fails on its own.
+    let stdin = shim.stdin.take().expect("Desktop stdin");
+    let output = shim
+        .wait_with_output()
+        .expect("wait for failing Host Runtime");
+    drop(stdin);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        stderr.lines().last(),
+        Some(format!("codexhost shim: Host Runtime exited with code 1: {failure}").as_str()),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("official CLI"), "{stderr}");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn managed_remote_listener_refuses_a_local_launcher_session_or_missing_data_directory() {
+    static NEXT_GUARD_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
+
+    let directory = PathBuf::from("/tmp").join(format!(
+        "codexhost-remote-guard-{}-{}",
+        process::id(),
+        NEXT_GUARD_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir(&directory).expect("create remote listener guard fixture");
+    let ready = directory.join("ready");
+    for (launcher, data_directory, expected) in [
+        (
+            true,
+            true,
+            "refusing to start the managed remote listener inside a local codexhost Desktop session",
+        ),
+        (
+            false,
+            false,
+            "refusing to start the managed remote listener without CODEXHOST_DATA_DIR",
+        ),
+    ] {
+        let mut command = Command::new(shim_path());
+        command
+            .args(["app-server", "--listen", "unix://"])
+            .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
+            .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
+            .env_remove("CODEXHOST_DATA_DIR")
+            .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+            .env(HOST_NODE_PATH_ENV, fake_codex_path())
+            .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
+            .env(REMOTE_SSH_MANAGED_ENV, "1")
+            .env("CODEX_HOME", directory.join("home"))
+            .env("FAKE_CODEX_READY_PATH", &ready)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if launcher {
+            command.env("CODEXHOST_LAUNCHER_PID", process::id().to_string());
+        } else {
+            command.env_remove("CODEXHOST_LAUNCHER_PID");
+        }
+        if data_directory {
+            command.env("CODEXHOST_DATA_DIR", directory.join("data"));
+        }
+        let output = command.output().expect("run guarded remote listener");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(!ready.exists(), "no listener may start: {stderr}");
+    }
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -975,6 +1268,7 @@ fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
         .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
         .env(CODEX_CLI_PATH_ENV, shim_path())
         .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEXHOST_DATA_DIR", directory.join("data"))
         .env("CODEX_HOME", &codex_home)
         .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
         .env("FAKE_CODEX_READY_PATH", &ready)
@@ -1054,6 +1348,7 @@ fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
         .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
         .env(CODEX_CLI_PATH_ENV, shim_path())
         .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEXHOST_DATA_DIR", directory.join("data"))
         .env("CODEX_HOME", &codex_home)
         .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
         .env("FAKE_CODEX_READY_PATH", &ready)
@@ -1092,6 +1387,7 @@ fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
         .env(STOCK_CODEX_PATH_ENV, &alternate_stock)
         .env(CODEX_CLI_PATH_ENV, shim_path())
         .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEXHOST_DATA_DIR", directory.join("data"))
         .env("CODEX_HOME", &codex_home)
         .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
         .env("FAKE_CODEX_READY_PATH", &ready)
@@ -1249,6 +1545,7 @@ fn managed_remote_listener_replaces_a_stale_socket_before_the_startup_timeout() 
         .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
         .env(CODEX_CLI_PATH_ENV, shim_path())
         .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEXHOST_DATA_DIR", directory.join("data"))
         .env("CODEX_HOME", &codex_home)
         .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
         .env("FAKE_CODEX_READY_PATH", &ready)

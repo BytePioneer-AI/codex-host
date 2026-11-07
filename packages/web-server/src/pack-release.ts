@@ -5,6 +5,7 @@ import { build } from "esbuild";
 import { CLIENT_GLOBALS, CLIENT_PLUGINS } from "./plugins.ts";
 import { WebAssets } from "./web-assets.ts";
 import { packWebRuntime, WEB_RUNTIME_PACKAGES } from "./pack-web-runtime.ts";
+import { packKoffiBinding } from "./pack-koffi.ts";
 
 interface LockedPackage {
   version: string;
@@ -98,19 +99,15 @@ export async function packReleaseWeb(options: {
       filter: (source) => !/\.(?:map|pdb)$/u.test(source) && !source.endsWith(".test.js"),
     });
   }
-  for (const name of [
-    "playwright-core",
-    "@xterm/headless",
-    "@xterm/addon-serialize",
-    "koffi",
-    `@koromix/koffi-${platform}-${architecture}`,
-  ]) {
+  for (const name of ["playwright-core", "@xterm/headless", "@xterm/addon-serialize", "koffi"]) {
     cpSync(join(root, "node_modules", name), join(dependencies, name), {
       recursive: true,
       dereference: true,
       filter: (source) => !/\.(?:map|pdb)$/u.test(source),
     });
   }
+
+  await packKoffiBinding({ root, dependencies, platform, architecture });
 
   const kit = "@deepseek-ai/libreoffice-kit";
   const kitSource = join(root, "node_modules", kit);

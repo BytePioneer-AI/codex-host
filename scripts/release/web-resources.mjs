@@ -11,6 +11,7 @@ export function expectedWebPaths(target) {
     "app/web-modules/office-engines.json",
     "app/web-modules/node_modules/@deepseek-ai/libreoffice-kit/package.json",
     "app/web-modules/node_modules/koffi/package.json",
+    `app/web-modules/node_modules/@koromix/koffi-${platform}/package.json`,
     "app/web-modules/node_modules/playwright-core/package.json",
     "app/web-modules/node_modules/@xterm/headless/package.json",
     "app/web-modules/node_modules/@xterm/addon-serialize/package.json",

@@ -112,12 +112,22 @@ impl Fixture {
     fn assert_selected(&self, observed: Option<(PathBuf, String)>, stderr: &str) {
         let (executable, identity) =
             observed.unwrap_or_else(|| panic!("Host did not start: {stderr}"));
-        assert_eq!(executable, self.node, "Shim must execute the selected Node");
+        // Windows process inspection and fs::canonicalize can spell the same path
+        // differently (DOS versus verbatim paths). Compare canonical paths while
+        // retaining the full executable identity, not just its filename.
+        assert_eq!(
+            executable.canonicalize().unwrap(),
+            self.node,
+            "Shim must execute the selected Node"
+        );
         let runtime = identity
             .lines()
             .find_map(|line| line.strip_prefix("host_runtime_path="))
             .unwrap();
-        assert_eq!(Path::new(runtime), self.runtime.canonicalize().unwrap());
+        assert_eq!(
+            Path::new(runtime).canonicalize().unwrap(),
+            self.runtime.canonicalize().unwrap()
+        );
     }
 }
 

@@ -5,7 +5,7 @@ import { readRuntimeMetadata } from "@codexhost/update-manager";
 import { createConsoleHarnesses, harnessPluginRoots } from "./harnesses.js";
 import { createConsoleHostClient } from "./host-client.js";
 import { resolveInstallation } from "./installation.js";
-import { consoleBuildId, ensureConsole, openConsole } from "./open.js";
+import { consoleBuildId, ensureConsole, openConsole, shutdownConsole } from "./open.js";
 import { loadConsoleBundle } from "./page.js";
 import { consolePaths, consolePort } from "./paths.js";
 import { startConsoleServer, type RunningConsoleServer } from "./server.js";
@@ -20,7 +20,7 @@ const appDirectory = path.dirname(entryPath);
 
 function usage(): never {
   console.error(
-    "usage: console-server open [--no-browser] | console-server ensure | console-server serve | console-server update",
+    "usage: console-server open [--no-browser] | console-server ensure | console-server serve | console-server shutdown | console-server update",
   );
   process.exit(2);
 }
@@ -88,6 +88,11 @@ async function ensure(arguments_: string[]): Promise<void> {
   console.log(`codexhost console: http://127.0.0.1:${port}/`);
 }
 
+async function shutdown(arguments_: string[]): Promise<void> {
+  if (arguments_.length > 0) usage();
+  await shutdownConsole();
+}
+
 const [command, ...rest] = process.argv.slice(2);
 const run =
   command === "serve"
@@ -96,9 +101,11 @@ const run =
       ? open(rest)
       : command === "ensure"
         ? ensure(rest)
-        : command === "update"
-          ? updateFromCommand(appDirectory, rest)
-          : usage();
+        : command === "shutdown"
+          ? shutdown(rest)
+          : command === "update"
+            ? updateFromCommand(appDirectory, rest)
+            : usage();
 run.catch((error: unknown) => {
   console.error(`codexhost console: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);

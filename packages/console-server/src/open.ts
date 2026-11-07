@@ -70,6 +70,15 @@ async function requestShutdown(port: number): Promise<void> {
   if (!response.ok) throw new Error(`console shutdown failed: HTTP ${response.status}`);
 }
 
+/** Stops the loopback console if one is serving; no-op when the port is free. */
+export async function shutdownConsole(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const port = consolePort(environment);
+  const probe = await probeConsole(port);
+  if (probe.kind !== "console") return;
+  await requestShutdown(port);
+  await waitFor(port, (next) => next.kind !== "console", 5_000);
+}
+
 export interface OpenConsoleOptions {
   appDirectory: string;
   entryPath: string;

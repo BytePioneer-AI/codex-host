@@ -1232,10 +1232,19 @@ fn launch(
             {
                 continue;
             }
-            result => return result,
+            Ok(()) => {
+                console::stop_for_launch();
+                return Ok(());
+            }
+            Err(error) => return Err(error),
         }
         #[cfg(target_os = "macos")]
-        return result;
+        {
+            if result.is_ok() {
+                console::stop_for_launch();
+            }
+            return result;
+        }
     }
 }
 
@@ -1321,14 +1330,18 @@ fn launch(
             env::var_os(REMOTE_SSH_MANAGED_ENV),
         ),
     );
-    supervise_desktop(
+    let result = supervise_desktop(
         &installation,
         &options,
         &control.renderer_cdp_arguments,
         &environment,
         &control,
         &descriptor_path,
-    )
+    );
+    if result.is_ok() {
+        console::stop_for_launch();
+    }
+    result
 }
 
 fn start_launch_console(options: &LaunchOptions) {

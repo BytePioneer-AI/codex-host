@@ -18,6 +18,7 @@ import {
   mergeThreadListPages,
 } from "./delegation-thread-list-merge.js";
 import { DelegationWatchService } from "./delegation-watch.js";
+import type { DelegationWatchStore } from "./delegation-watch-store.js";
 
 function only<T>(values: readonly T[], message: string): T {
   const value = values.length === 1 ? values[0] : undefined;
@@ -46,10 +47,14 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     options: {
       diagnose?: (error: unknown) => void;
       remoteRead?: (input: ThreadReadInput) => ReturnType<DelegationControlApi["read"]>;
+      watchStore?: DelegationWatchStore;
     } = {},
   ) {
     this.#remoteRead = options.remoteRead;
-    this.#watchService = new DelegationWatchService(this, options);
+    this.#watchService = new DelegationWatchService(this, {
+      ...(options.diagnose ? { diagnose: options.diagnose } : {}),
+      ...(options.watchStore ? { store: options.watchStore } : {}),
+    });
   }
 
   get size(): number {
@@ -139,7 +144,7 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     return this.#watchService.watches();
   }
 
-  /** Stops all watches; pending notifications are dropped with the Host Runtime. */
+  /** Stops watching in this process; stored watches resume in the next Runtime. */
   close(): void {
     this.#watchService.close();
   }

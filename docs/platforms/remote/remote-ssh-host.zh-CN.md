@@ -115,13 +115,23 @@ npm start 0.12.0
 
 从 SSH 项目中创建的外部 Harness 会话会自动出现在另一端，首次出现可能需要几秒。两边都能查看消息、生成中的回复和工具操作，也都可以发送消息、中断任务或回答审批。
 
+默认情况下，Remote SSH Host 把数据放在 `~/.codexhost/remote/data`，本机 Desktop 则使用 `~/.codexhost`。因此在本机 Desktop 创建的 Harness 会话和置顶，不会直接出现在 SSH 远端列表中。若要让远端看到本机已有的 Harness 会话与置顶，请用共享数据目录重新安装远程服务：
+
+```bash
+codexhost remote stop
+codexhost remote install --share-local-data
+codexhost remote start
+```
+
+切换数据目录前先停止服务，安装后再启动，运行中的服务才会使用新的数据目录。也可使用 `--data-dir PATH` 指定与 Desktop 相同的自定义数据目录。再次安装时会保留此前选定的共享路径，除非你重新传入 `--data-dir` / `--share-local-data`。卸载远程服务时，不会删除 `~/.codexhost/remote` 之外的共享 Desktop 数据目录。
+
 使用时注意：
 
 - 任务运行中追加消息，请使用插入功能；另开任务可能提示忙碌。
 - 两边同时回答同一个审批或提问时，以先处理的回答为准。
 - 断线后重新打开会话，可以查看期间产生的内容。如果不确定一条消息是否发送成功，先查看记录再决定是否重发。
 
-此功能适用于从 SSH 项目中创建的外部 Harness 会话。其他本地会话和 Codex 自带的会话仍按原有方式使用。
+在默认隔离数据目录下，双端可见性适用于从 SSH 项目中创建的外部 Harness 会话；其他本地会话和 Codex 自带会话仍按原有方式使用。使用 `--share-local-data`（或匹配的 `--data-dir`）后，该主机上本机 Desktop 的 Harness 会话也会出现在 Remote SSH 中。
 
 ## 遇到问题怎么办
 
@@ -132,7 +142,7 @@ npm start 0.12.0
 | 看不到想使用的 Harness | 在远程电脑上确认工具已安装并登录，然后在 codexhost 的「连接」页面点击「重新诊断连接」。 |
 | 无法读取远程版本，或提示版本过旧 | 点击「更新远程服务」；不可用或失败时按上面的「需要手动更新时」操作。 |
 | 更新失败 | 检查远程电脑能否联网，再重试；仍失败时按手动更新步骤操作。 |
-| 另一台电脑看不到同一个会话 | 确认两端都通过 codexhost 启动、版本相同，远程桌面与 SSH 使用同一用户。使用自定义数据目录时，两种启动方式也要保持一致。 |
+| 另一台电脑看不到同一个会话 | 确认两端都通过 codexhost 启动、版本相同，远程桌面与 SSH 使用同一用户。使用自定义数据目录时，两种启动方式也要保持一致。若要通过 SSH 看到本机 Desktop 的 Harness 会话/置顶，请用 `codexhost remote install --share-local-data`（或 `--data-dir` 指向 Desktop 数据目录）重新安装。 |
 | Mac 上安装失败 | 确认远程 Mac 的桌面用户已登录，再执行 `codexhost remote install`。 |
 
 ## 停止或卸载

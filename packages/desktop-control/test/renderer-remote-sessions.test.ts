@@ -40,6 +40,46 @@ function fixture() {
   return { target, routes, read, requests, route };
 }
 describe("Desktop existing remote session boundary", () => {
+  it("shows configured offline hosts and restores only already-enabled connections once", async () => {
+    const f = fixture();
+    const writes: unknown[] = [];
+    f.target.__codexhostRendererBindingProbeV1 = {
+      async remoteConnections(input) {
+        const op = input as { action: string; hostId?: string };
+        if (op.action === "catalog")
+          return [
+            { hostId: "remote-ssh-discovered:a", displayName: "mac", autoConnect: true },
+            {
+              hostId: "remote-ssh-discovered:disabled",
+              displayName: "disabled",
+              autoConnect: false,
+            },
+          ];
+        if (op.action === "connect") {
+          writes.push(op);
+          throw new Error("unknown connect outcome");
+        }
+        return { state: op.hostId === "remote-control:b" ? "connected" : "disconnected" };
+      },
+    };
+    const hosts = await rendererRemoteSession(f.target, { kind: "hosts" });
+    await rendererRemoteSession(f.target, { kind: "hosts" });
+    expect(writes).toEqual([
+      { action: "connect", hostId: "remote-ssh-discovered:a", enabled: true },
+    ]);
+    expect(hosts).toContainEqual({
+      hostId: "remote-ssh-discovered:a",
+      displayName: "mac",
+      online: false,
+      state: "disconnected",
+    });
+    expect(hosts).toContainEqual({
+      hostId: "remote-ssh-discovered:disabled",
+      displayName: "disabled",
+      online: false,
+      state: "disconnected",
+    });
+  });
   it("isolates identical native thread and approval IDs by host and preserves observers", async () => {
     const f = fixture();
     const a = await f.read(),

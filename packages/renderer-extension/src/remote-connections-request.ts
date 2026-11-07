@@ -15,6 +15,8 @@ export async function handleRemoteConnectionsRequest(
       return control.readThread(request.hostId, request.input);
     case "list":
       return control.ssh.list();
+    case "catalog":
+      return control.ssh.catalog?.() ?? control.ssh.list();
     case "save":
       await control.ssh.save(request.draft, request.previous);
       return null;

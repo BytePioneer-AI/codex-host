@@ -8,6 +8,7 @@ import {
   type RemoteSessionOperation,
 } from "@codexhost/shared-contracts";
 import { requestDesktopRemoteConnections } from "./remote-connections-control.js";
+import { readRemoteProjectMetadata } from "./remote-project-metadata.js";
 
 export function remoteSessionDescriptorPaths(
   environment: NodeJS.ProcessEnv = process.env,
@@ -79,6 +80,14 @@ export async function requestRemoteSession(
     { action: "session", operation: input },
   );
   if ("error" in reply) throw new Error(reply.error.message);
+  if (input.kind === "hosts" && Array.isArray(reply.result)) {
+    const projects = await readRemoteProjectMetadata().catch(() => []);
+    return reply.result.map((host) =>
+      host && typeof host === "object" && !Array.isArray(host)
+        ? { ...host, projects: projects.filter((p) => p.hostId === host.hostId) }
+        : host,
+    );
+  }
   return reply.result;
 }
 

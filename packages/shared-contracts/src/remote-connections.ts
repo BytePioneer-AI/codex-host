@@ -28,6 +28,7 @@ export const codexSshDraftSchema = z.strictObject({
 export const remoteConnectionsRequestSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("session"), operation: remoteSessionOperationSchema }),
   z.strictObject({ action: z.literal("list") }),
+  z.strictObject({ action: z.literal("catalog") }),
   z.strictObject({
     action: z.literal("read-thread"),
     hostId: hostId.refine((id) => id !== "local"),

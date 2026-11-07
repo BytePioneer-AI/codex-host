@@ -6,6 +6,10 @@
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
+  "host.local": "本机",
+  "host.connected": "已连接",
+  "host.connecting": "连接中",
+  "host.disconnected": "未连接",
   "defaultWorkspace.failed": "无法创建默认工作区，请通过“选择工作区”选择文件夹",
   "draft.workspaceRequired": "请先选择工作区",
   "draft.initializationFailed": "暂时无法填入草稿，请稍后重试",
@@ -139,6 +143,10 @@ export type WorkspaceKey = keyof typeof zh;
 
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
+  "host.local": "Local",
+  "host.connected": "Connected",
+  "host.connecting": "Connecting",
+  "host.disconnected": "Disconnected",
   "defaultWorkspace.failed":
     "Unable to create default workspace. Use Choose workspace to select a folder.",
   "draft.workspaceRequired": "Choose a workspace first.",

@@ -20,12 +20,14 @@ interface Manager {
   ): unknown;
 }
 export interface RemoteSessionTarget {
+  __codexhostRendererBindingProbeV1?: { remoteConnections(input: unknown): Promise<unknown> };
   __codexhostHostRoutingV1?: {
     knownHostIds?(): readonly string[];
     forHost(id: string): { manager: Manager } | null;
   };
   __codexhostRemoteSessionsV1?: {
     managers: WeakMap<object, { epoch: string; answered: Set<string> }>;
+    reconnectAttempts?: Set<string>;
   };
 }
 
@@ -41,8 +43,46 @@ export async function rendererRemoteSession(
     /^remote-(?:ssh(?:-|:)|control:)/u.test(id),
   );
   const state = (target.__codexhostRemoteSessionsV1 ??= { managers: new WeakMap() });
-  if (operation.kind === "hosts")
-    return ids.map((hostId) => ({ hostId, online: !!routing.forHost(hostId) }));
+  if (operation.kind === "hosts") {
+    const api = target.__codexhostRendererBindingProbeV1;
+    if (!api?.remoteConnections)
+      return ids.map((hostId) => ({ hostId, online: !!routing.forHost(hostId) }));
+    const configured = await api.remoteConnections({ action: "catalog" });
+    const connections = Array.isArray(configured)
+      ? (configured as Array<{ hostId: string; displayName: string; autoConnect: boolean }>)
+      : [];
+    const attempts = (state.reconnectAttempts ??= new Set<string>());
+    return Promise.all(
+      [...new Set([...ids, ...connections.map((c) => c.hostId)])].map(async (hostId) => {
+        const connection = connections.find((c) => c.hostId === hostId);
+        let status = (await api
+          .remoteConnections({ action: "state", hostId })
+          .catch(() => ({ state: "error" }))) as { state: string };
+        if (connection?.autoConnect === false) attempts.delete(hostId);
+        if (connection?.autoConnect && status.state === "disconnected" && !attempts.has(hostId)) {
+          // Restore an already-enabled native connection once per Desktop lifetime.
+          // Never enable a user-disabled connection or replay an unknown outcome.
+          attempts.add(hostId);
+          await api
+            .remoteConnections({ action: "connect", hostId, enabled: true })
+            .catch(() => undefined);
+          status = (await api
+            .remoteConnections({ action: "state", hostId })
+            .catch(() => ({ state: "error" }))) as { state: string };
+        }
+        return {
+          hostId,
+          displayName:
+            connection?.displayName ??
+            (hostId.startsWith("remote-control:")
+              ? "Remote Control"
+              : hostId.replace(/^remote-ssh-(?:discovered|codex-managed):/u, "")),
+          state: status.state,
+          online: status.state === "connected" && !!routing.forHost(hostId),
+        };
+      }),
+    );
+  }
   if (!ids.includes(operation.hostId))
     throw new Error("Remote Host is offline or no longer known to Desktop");
   const route = routing.forHost(operation.hostId);

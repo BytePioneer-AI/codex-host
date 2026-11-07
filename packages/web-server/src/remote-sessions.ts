@@ -19,9 +19,31 @@ import {
 } from "./transport.ts";
 import { readToolOutput, toolOutputSink } from "./tool-output.ts";
 import type { Workspaces } from "./workspaces.ts";
+import {
+  remoteWorkspaceGroups,
+  remoteHostDisplayName,
+  type RemoteWorkspaceHost,
+} from "./remote-workspaces.ts";
 
 const PREFIX = "web-remote:";
-const hostsSchema = z.array(z.object({ hostId: z.string().min(1), online: z.boolean() }));
+const hostsSchema = z.array(
+  z.object({
+    hostId: z.string().min(1),
+    online: z.boolean(),
+    displayName: z.string().optional(),
+    state: z.string().optional(),
+    projects: z
+      .array(
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          path: z.string(),
+          threadIds: z.array(z.string()),
+        }),
+      )
+      .optional(),
+  }),
+);
 const rowSchema = z
   .object({
     id: z.string().min(1),
@@ -107,6 +129,7 @@ type Call = (operation: RemoteSessionOperation) => Promise<unknown>;
  * retain their own lifecycle; remote cwd and attachment paths never reach local tools. */
 export class RemoteSessions {
   private entries = new Map<string, Entry>();
+  private hosts = new Map<string, RemoteWorkspaceHost>();
   private controls = new Set<StreamSink>();
   private pending = new Map<string, { sessionId: string; cancel(): void }>();
   private followTimers = new Set<NodeJS.Timeout>();
@@ -164,7 +187,7 @@ export class RemoteSessions {
   private async list(): Promise<void> {
     if (this.archiveWrites) return;
     const archiveRevision = this.archiveRevision;
-    let hosts: Array<{ hostId: string; online: boolean }>;
+    let hosts: RemoteWorkspaceHost[];
     try {
       hosts = hostsSchema.parse(await this.invoke({ kind: "hosts" }));
       this.discoveryUnavailable = false;
@@ -175,8 +198,11 @@ export class RemoteSessions {
         );
       this.discoveryUnavailable = true;
       for (const entry of this.entries.values()) this.offline(entry);
+      for (const host of this.hosts.values()) host.online = false;
+      this.syncGroups();
       return;
     }
+    this.hosts = new Map(hosts.map((host) => [host.hostId, host]));
     const present = new Set(hosts.filter((host) => host.online).map((host) => host.hostId));
     for (const entry of this.entries.values())
       if (!present.has(entry.identity.hostId)) this.offline(entry);
@@ -231,10 +257,24 @@ export class RemoteSessions {
         }
         this.syncArchives();
       } catch {
+        host.online = false;
         for (const entry of this.entries.values())
           if (entry.identity.hostId === host.hostId) this.offline(entry);
       }
     }
+    this.syncGroups();
+  }
+  private syncGroups(): void {
+    this.workspaces?.setRemoteGroups(
+      remoteWorkspaceGroups(
+        this.hosts.values(),
+        [...this.entries].map(([sessionId, entry]) => ({
+          sessionId,
+          ...entry.identity,
+          cwd: entry.row.cwd,
+        })),
+      ),
+    );
   }
   private reference(entry: Entry) {
     return { ...entry.identity };
@@ -257,7 +297,17 @@ export class RemoteSessions {
         asOfSeq: 0,
         values: {
           ...defaultProjections(),
-          title: `[${entry.identity.hostId}] ${entry.row.name || entry.row.preview || entry.identity.threadId}`,
+          title: entry.row.name || entry.row.preview || entry.identity.threadId,
+          remoteHost: {
+            ...entry.identity,
+            displayName: remoteHostDisplayName(
+              this.hosts.get(entry.identity.hostId) ?? { hostId: entry.identity.hostId },
+            ),
+            state: entry.online ? "connected" : "disconnected",
+          },
+          ...(entry.row.modelProvider !== "codexhost"
+            ? { harnessIdentity: { id: "codex", name: "Codex" } }
+            : {}),
           threadReference: this.reference(entry),
           nativeConnection: { state: entry.online ? "connected" : "reconnecting" },
           nativeDiscovery: false,
@@ -331,6 +381,8 @@ export class RemoteSessions {
               "nativeConnection",
               "nativeDiscovery",
               "attachmentInput",
+              "remoteHost",
+              "harnessIdentity",
             ].includes(key)
           )
             current.view.log.setProjection(key, value);

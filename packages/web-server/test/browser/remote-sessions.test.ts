@@ -85,6 +85,8 @@ it(
             ? ["remote-ssh-discovered:a", "remote-control:b"].map((hostId) => ({
                 hostId,
                 online: true,
+                displayName: hostId.startsWith("remote-ssh") ? "mac" : "custom-gateway",
+                state: "connected",
               }))
             : operation.kind === "list"
               ? {
@@ -122,6 +124,28 @@ it(
         { mode: 0o600 },
       );
     }
+    const codexHome = join(directory, "codex");
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(
+      join(codexHome, ".codex-global-state.json"),
+      JSON.stringify({
+        "project-order": ["mac-project", "rc-project"],
+        "remote-projects": [
+          {
+            id: "mac-project",
+            hostId: "remote-ssh-discovered:a",
+            remotePath: "/remote/private",
+            label: "playcodex",
+          },
+          {
+            id: "rc-project",
+            hostId: "remote-control:b",
+            remotePath: "/remote/private",
+            label: "playcodex",
+          },
+        ],
+      }),
+    );
     const url = await startServer(
       t,
       resolve(import.meta.dirname, "../.."),
@@ -133,6 +157,7 @@ it(
           USERPROFILE: directory,
           LOCALAPPDATA: directory,
           XDG_RUNTIME_DIR: directory,
+          CODEX_HOME: codexHome,
         },
       },
     );
@@ -141,8 +166,21 @@ it(
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
     await page.goto(url);
     await page.waitForLoadState("networkidle");
+    for (const [hostId, label] of [
+      ["remote-ssh-discovered:a", "mac"],
+      ["remote-control:b", "custom-gateway"],
+    ]) {
+      const group = page
+        .locator('[data-row-key^="workspace:remote-workspace:"]')
+        .filter({ has: page.locator(`[data-host-id="${hostId}"]`) });
+      await group.waitFor();
+      assert.equal(await group.getByText("playcodex", { exact: true }).count(), 1);
+      await group.getByRole("img", { name: `${label} · Connected`, exact: true }).waitFor();
+      assert.equal(await group.getByRole("button", { name: /New session/ }).count(), 0);
+      await group.click();
+    }
     for (const hostId of ["remote-ssh-discovered:a", "remote-control:b"]) {
-      const item = page.getByText(`[${hostId}] Session ${hostId}`, { exact: true }).first();
+      const item = page.getByText(`Session ${hostId}`, { exact: true }).first();
       await item.waitFor({ timeout: 5000 }).catch(async (error: unknown) => {
         console.log({ calls, body: await page.locator("body").innerText() });
         if (process.env.CODEXHOST_TEST_SCREENSHOTS) {
@@ -156,6 +194,12 @@ it(
       await item.click();
       await page.getByText(`Answer from ${hostId}`, { exact: true }).waitFor();
     }
+    assert.ok(
+      await page
+        .locator("[data-native-codex-icon]")
+        .first()
+        .evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0),
+    );
     assert.ok(calls.some((call) => call.kind === "read" && call.hostId === "remote-control:b"));
     const transfer = await page.evaluateHandle(() => {
       const value = new DataTransfer();
@@ -194,6 +238,8 @@ it(
     await page.getByRole("button", { name: "undo", exact: true }).click();
     await remoteRow.waitFor();
     assert.equal(archived.size, 0);
+    await remoteRow.click();
+    await page.getByText("Follow-up accepted on remote-control:b", { exact: true }).waitFor();
     assert.deepEqual(
       calls.filter((call) => call.kind === "archive").map((call) => call.hostId),
       ["remote-control:b", "remote-control:b"],

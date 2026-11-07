@@ -23,15 +23,15 @@ codexhost stop
 
 ## Desktop 已有远程会话
 
-Web 主列表合并当前 Codex Desktop 已知的 SSH / official Remote Control 连接上的未归档 Thread。标题带原生 Host ID，引用保留 `{hostId, threadId}`；浏览器 Session ID 使用 `web-remote:` 加该二元组的 base64url 编码，因此不同主机上的同名 Thread 与本机 Thread 不会合并。此能力需要包含远程会话 Controller API 的 codexhost Desktop 正在运行；独立本机 Host 的运行不代表 Desktop 远程连接可用。
+Web 主列表合并当前 Codex Desktop 已知的 SSH / official Remote Control 连接上的未归档 Thread。侧栏项目显示原生主机名称与连接状态，本机项目显示“本机”；会话标题保持原名，最近列表及搜索结果也携带远程主机标识。引用保留 `{hostId, threadId}`；浏览器 Session ID 使用 `web-remote:` 加该二元组的 base64url 编码，因此不同主机上的同名 Thread 与本机 Thread 不会合并。此能力需要包含远程会话 Controller API 的 codexhost Desktop 正在运行；独立本机 Host 的运行不代表 Desktop 远程连接可用。
 
-Web 读取 Launcher 的私有本机 runtime descriptor，经已有 nonce 鉴权的 loopback Controller 通道访问 Desktop 原生 manager，不建立 SSH/RC 连接、不复制远程凭据、不修改网络或远程配置。只枚举 Desktop 路由已发现的 Host；在 Desktop 中建立或恢复连接后刷新 Web。Relay、Tailscale 只解决浏览器到 Web 的入站访问，不提供远程主机目录。
+Web 读取 Launcher 的私有本机 runtime descriptor，经已有 nonce 鉴权的 loopback Controller 通道访问 Desktop 原生 manager，不创建连接配置、不复制远程凭据、不修改网络设置。发现过程读取原生 SSH/RC 目录，展示已配置但离线的主机；仅对原生 autoConnect 已启用且处于 disconnected 的连接，在本次 Desktop 生命周期内请求一次原生连接恢复，不打开被用户禁用的连接，不重试结果未知的恢复请求。Relay、Tailscale 只解决浏览器到 Web 的入站访问，不提供远程主机目录。
 
 Linux 的 Web 与 Desktop 环境不同时，发现过程还检查当前用户标准 `/run/user/<uid>` 和 state 目录；每个候选都必须通过私有文件、所属用户和 Launcher 存活校验。存在多个不同的有效描述文件时拒绝选择。可为 Web 显式设置 `CODEXHOST_DESKTOP_RUNTIME_DESCRIPTOR` 为 Desktop 的私有 `desktop-runtime-v1.json` 绝对路径；发现失败会给出该诊断，不记录 nonce。选择在派发前完成，失去回执后不会换候选重发。
 
 本机列表立即返回，远程目录在后台刷新并发布列表差量。侧栏归档/撤销使用原生远程归档操作，确认后合并本机与远程归档集合并广播给其他浏览器；已确认的远程归档行保留到本次 Web 进程结束，以便目录刷新后仍能撤销。远程归档状态不写入本机历史；完整远程归档目录的重新发现尚不提供。消息在发送前按完整 JSON 请求的 UTF-8 字节数（含转义、nonce 和分隔符）校验 16 KiB Controller 上限，超限提示缩短消息，不报告为已派发后的未知结果。
 
-支持读取会话、空闲时文本续聊、停止当前 Turn、改名、归档，以及 manager 提供原生 pending request 和 responder 时的命令/文件变更审批（允许一次、拒绝）。线程 resume 和 turn/start 使用原生 ID，owner 和鉴权由原生 manager 保持。缺少原生审批方法的旧 manager 或其他交互类型会提示回 Desktop 操作，不伪造权限能力。远程文件上传、终端、本机路径打开、模型/权限切换、fork、编辑、队列和 steering 不提供；这些请求不会落到本机 Thread handler。远程 cwd 不挂入本机工作区。
+支持读取会话、空闲时文本续聊、停止当前 Turn、改名、归档，以及 manager 提供原生 pending request 和 responder 时的命令/文件变更审批（允许一次、拒绝）。线程 resume 和 turn/start 使用原生 ID，owner 和鉴权由原生 manager 保持。缺少原生审批方法的旧 manager 或其他交互类型会提示回 Desktop 操作，不伪造权限能力。远程文件上传、终端、本机路径打开、模型/权限切换、fork、编辑、队列和 steering 不提供；这些请求不会落到本机 Thread handler。远程项目来自 Desktop 保存的 remote-projects，按 hostId+项目 ID 隔离；归属优先使用原生项目分配，其次在该主机已登记项目的路径范围内匹配，未匹配的会话保留在对应主机分组。分组仅用于只读导航，不把远程路径交给本机目录创建、终端或文件操作。
 
 列表每个 Host 最多读取 100 页，每页 100 条；超过限制不发布不完整目录。打开的会话每 1.5 秒读取不消费事件的绝对快照，多个浏览器独立可见；关闭跟随即停止读取。快照保留原生 Turn/Item ID，单次 Controller 响应上限 16 MiB，超大完整历史当前不可用。连接失败保留已见列表、标记离线并停止该跟随的轮询；在 Desktop 恢复连接后重新打开会话。连接代际变化会使旧审批失效，重建浏览器投影。所有写请求只发送一次，超时或断线报告结果未知，不自动重发消息或审批；读后同步失败不否认已确认的写入。
 

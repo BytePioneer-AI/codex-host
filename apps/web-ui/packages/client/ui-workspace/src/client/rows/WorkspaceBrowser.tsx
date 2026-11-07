@@ -420,14 +420,18 @@ function SessionTree({
   }, [current, currentGroup, setGroupExpanded, groupExpansion]);
   const parents = useMemo(() => {
     if (!nestWorkspaces) return new Map<string, WorkspaceId | undefined>();
-    const keysByPath = new Map(
-      workspaces.map((workspace) => [workspace.path, workspace.workspaceId]),
-    );
-    const paths = [...keysByPath.keys()];
+    const pathsByHost = new Map<string, Map<string, WorkspaceId>>();
+    for (const workspace of workspaces) {
+      const hostId = workspace.remote?.hostId ?? "local";
+      const paths = pathsByHost.get(hostId) ?? new Map<string, WorkspaceId>();
+      if (workspace.path) paths.set(workspace.path, workspace.workspaceId);
+      pathsByHost.set(hostId, paths);
+    }
     return new Map<string, WorkspaceId | undefined>(
       workspaces.map((workspace) => {
-        const path = owningParentFolder(workspace.path, paths);
-        return [workspace.workspaceId, path === undefined ? undefined : keysByPath.get(path)];
+        const keysByPath = pathsByHost.get(workspace.remote?.hostId ?? "local");
+        const path = owningParentFolder(workspace.path, [...(keysByPath?.keys() ?? [])]);
+        return [workspace.workspaceId, path === undefined ? undefined : keysByPath?.get(path)];
       }),
     );
   }, [nestWorkspaces, workspaces]);
@@ -793,6 +797,7 @@ function SessionTree({
                 <SessionNodeItem
                   key={node.id}
                   rowKey={workspaceId === undefined ? `recent:${node.id}` : undefined}
+                  showHost={!group.remote}
                   node={node}
                   currentId={current}
                   now={now}
@@ -806,7 +811,7 @@ function SessionTree({
                         }
                       : undefined
                   }
-                  drag={workspaceId === undefined ? undefined : dragProps}
+                  drag={workspaceId === undefined || group.remote ? undefined : dragProps}
                   t={t}
                 />
               );

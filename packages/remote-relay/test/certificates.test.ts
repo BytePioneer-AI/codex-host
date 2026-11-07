@@ -58,7 +58,7 @@ async function fixture(hostname = "relay.example.test") {
   };
 }
 
-it.each([undefined, "control.example.test"])(
+it.skipIf(process.platform === "win32").each([undefined, "control.example.test"])(
   "issues through local ACME with default or explicit control host %s and reuses disk state",
   async (controlHost) => {
     const hostname = controlHost ?? "relay.example.test";

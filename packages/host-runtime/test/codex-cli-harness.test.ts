@@ -26,7 +26,9 @@ import { startClientChannelServer } from "../src/client-channel-server.js";
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  // On Windows the cmd.exe-launched CLI may still hold the directory; CI discards it.
+  for (const root of roots.splice(0))
+    if (process.platform !== "win32") rmSync(root, { recursive: true, force: true });
 });
 
 const CODEX_CLI = harnessPluginIdSchema.parse("codex-cli");

@@ -27,7 +27,8 @@ function fixture(scenario: object = {}) {
   });
   cleanups.push(async () => {
     await adapter.close();
-    rmSync(root, { recursive: true, force: true });
+    // On Windows the cmd.exe-launched CLI may still hold the directory; CI discards it.
+    if (process.platform !== "win32") rmSync(root, { recursive: true, force: true });
   });
   return {
     adapter,

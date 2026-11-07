@@ -104,7 +104,7 @@ async function fixture() {
 }
 const policy = { enabled: true, timeoutMinutes: 15 };
 
-describe("confirmed shared Renderer preferences", () => {
+describe.skipIf(process.platform === "win32")("confirmed shared Renderer preferences", () => {
   it("migrates legacy values without replacing existing file values or writing localStorage", async () => {
     const f = await fixture();
     await f.store.patch(

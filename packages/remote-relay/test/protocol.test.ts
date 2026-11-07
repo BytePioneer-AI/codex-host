@@ -20,6 +20,7 @@ describe("relay protocol", () => {
     );
     expect(paths).toEqual({
       agent: "/v1/agent",
+      authenticated: "/v1/authenticated",
       register: "/v1/register",
       tcp: "/v1/tcp",
       notice: "/v1/notice",
@@ -32,6 +33,7 @@ describe("relay protocol", () => {
       invite: "relay-invite",
       clientAddress: "relay-client-address",
       clientPort: "relay-client-port",
+      connectionId: "relay-connection-id",
     });
     expect(closeCodes).toEqual({
       invalidSignature: 4401,

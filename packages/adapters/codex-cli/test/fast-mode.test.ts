@@ -48,7 +48,8 @@ function fixture(initial: Record<string, unknown> = {}) {
   });
   cleanups.push(async () => {
     await adapter.close();
-    rmSync(root, { recursive: true, force: true });
+    // On Windows the cmd.exe-launched CLI may still hold the directory; CI discards it.
+    if (process.platform !== "win32") rmSync(root, { recursive: true, force: true });
   });
   const records = () =>
     readFileSync(join(home, "rpc.jsonl"), "utf8")

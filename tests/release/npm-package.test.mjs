@@ -585,6 +585,8 @@ describe("npm package release", () => {
     expect(source).toContain('runNativeBroker("uninstall"');
     expect(source).toContain('userArguments[0] === "delegate"');
     expect(source).toContain('userArguments[0] === "thread"');
+    expect(source).toContain('userArguments[0] === "client"');
+    expect(source).toContain('userArguments[0] === "events"');
     expect(source).toContain('userArguments[0] === "console"');
     expect(source).toContain('[consoleServer, userArguments[0] === "update" ? "update" : "open"]');
     expect(source).toContain('"--codexhost-delegation-cli"');

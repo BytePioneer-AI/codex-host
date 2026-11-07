@@ -17,7 +17,17 @@ import {
   listSortSeconds,
   mergeThreadListPages,
 } from "./delegation-thread-list-merge.js";
-import { DelegationWatchService } from "./delegation-watch.js";
+import { DelegationWatchService, type ClientEventSink } from "./delegation-watch.js";
+import type { DelegationWatchStore } from "./delegation-watch-store.js";
+import { clientOrigin, originClientName } from "./external-client-origin.js";
+import { mergeRefs, normalizeRefs, type ThreadRefsStore } from "./thread-refs.js";
+
+const REF_CURSOR_PREFIX = "ref:";
+
+/** Adds references to a result only when there are some, so existing output stays unchanged. */
+function withRefs<T extends object>(value: T, refs: readonly string[]): T {
+  return refs.length > 0 ? { ...value, refs: [...refs] } : value;
+}
 
 function only<T>(values: readonly T[], message: string): T {
   const value = values.length === 1 ? values[0] : undefined;
@@ -41,15 +51,24 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
 
   readonly #remoteRead:
     ((input: ThreadReadInput) => ReturnType<DelegationControlApi["read"]>) | undefined;
+  readonly #refs: ThreadRefsStore | undefined;
 
   constructor(
     options: {
       diagnose?: (error: unknown) => void;
       remoteRead?: (input: ThreadReadInput) => ReturnType<DelegationControlApi["read"]>;
+      watchStore?: DelegationWatchStore;
+      refs?: ThreadRefsStore;
+      clientEvents?: ClientEventSink;
     } = {},
   ) {
     this.#remoteRead = options.remoteRead;
-    this.#watchService = new DelegationWatchService(this, options);
+    this.#refs = options.refs;
+    this.#watchService = new DelegationWatchService(this, {
+      ...(options.diagnose ? { diagnose: options.diagnose } : {}),
+      ...(options.watchStore ? { store: options.watchStore } : {}),
+      ...(options.clientEvents ? { clientEvents: options.clientEvents } : {}),
+    });
   }
 
   get size(): number {
@@ -87,7 +106,16 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async start(input: DelegationStartInput) {
-    return (await this.#registrationForStart(input)).start(input);
+    const { refs: requested, ...start } = input;
+    // Validated before anything is created, so a bad reference never leaves a Thread behind.
+    const own = normalizeRefs(requested);
+    const result = await (await this.#registrationForStart(start)).start(start);
+    if (!this.#refs) return result;
+    const parent = result.parentThreadId ?? start.parentThreadId;
+    const inherited = parent && !originClientName(parent) ? await this.#refs.get(parent) : [];
+    const refs = mergeRefs(inherited, own);
+    if (refs.length > 0) await this.#refs.set(result.threadId, refs, result.cwd, result.title);
+    return withRefs(result, refs);
   }
 
   async send(input: Parameters<DelegationControlApi["send"]>[0]) {
@@ -99,6 +127,11 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async read(input: ThreadReadInput) {
+    const snapshot = await this.#read(input);
+    return withRefs(snapshot, (await this.#refs?.get(snapshot.threadId)) ?? []);
+  }
+
+  async #read(input: ThreadReadInput) {
     const { callerThreadId, ...read } = input;
     if (read.hostId !== undefined && read.hostId !== "local") {
       if (typeof callerThreadId === "string" && callerThreadId) {
@@ -128,7 +161,8 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   async wait(input: ThreadWaitInput) {
     if (input.hostId !== undefined && input.hostId !== "local")
       throw new DelegationControlError("INVALID_ARGUMENT", "Remote Hosts support thread read only");
-    return (await this.#registrationForThread(input.threadId)).wait(input);
+    const snapshot = await (await this.#registrationForThread(input.threadId)).wait(input);
+    return withRefs(snapshot, (await this.#refs?.get(snapshot.threadId)) ?? []);
   }
 
   async watch(input: ThreadWatchInput) {
@@ -139,12 +173,75 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     return this.#watchService.watches();
   }
 
-  /** Stops all watches; pending notifications are dropped with the Host Runtime. */
+  /** Stops watching in this process; stored watches resume in the next Runtime. */
   close(): void {
     this.#watchService.close();
   }
 
   async list(input: ThreadListInput) {
+    const { client, ref, ...rest } = input;
+    if (client !== undefined && rest.parentThreadId)
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "--client and --parent cannot be combined",
+      );
+    if (ref !== undefined) return this.#listByRef(ref, rest);
+    const page = await this.#list(
+      client !== undefined ? { ...rest, parentThreadId: clientOrigin(client) } : rest,
+    );
+    if (!this.#refs) return page;
+    const refs = this.#refs;
+    return {
+      ...page,
+      threads: await Promise.all(
+        page.threads.map(async (thread) => withRefs(thread, await refs.get(thread.threadId))),
+      ),
+    };
+  }
+
+  /** Threads carrying a reference, newest first; each row is read from its owning session. */
+  async #listByRef(ref: string, input: Omit<ThreadListInput, "client" | "ref">) {
+    const [normalized] = normalizeRefs([ref]);
+    const matches = normalized && this.#refs ? await this.#refs.find(normalized) : [];
+    let offset = 0;
+    if (input.cursor) {
+      const value = input.cursor.startsWith(REF_CURSOR_PREFIX)
+        ? Number(input.cursor.slice(REF_CURSOR_PREFIX.length))
+        : Number.NaN;
+      if (!Number.isSafeInteger(value) || value < 0)
+        throw new DelegationControlError("INVALID_ARGUMENT", "List cursor is invalid");
+      offset = value;
+    }
+    const window = matches.slice(offset, offset + input.limit);
+    const rows = await Promise.all(
+      window.map(({ threadId, cwd, title }) =>
+        this.read({ threadId, view: "result" })
+          .then((snapshot) => {
+            const resolvedTitle = snapshot.title ?? title;
+            return withRefs(
+              {
+                threadId,
+                harnessId: snapshot.harnessId,
+                deepLink: `codex://threads/${threadId}`,
+                status: snapshot.status,
+                ...(cwd ? { cwd } : {}),
+                ...(resolvedTitle ? { title: resolvedTitle } : {}),
+              },
+              snapshot.refs ?? [],
+            );
+          })
+          // A Thread deleted since its references were stored is left out.
+          .catch(() => undefined),
+      ),
+    );
+    const next = offset + window.length;
+    return {
+      threads: rows.filter((row) => row !== undefined),
+      nextCursor: next < matches.length ? `${REF_CURSOR_PREFIX}${next}` : null,
+    };
+  }
+
+  async #list(input: ThreadListInput) {
     if (
       (input.parentThreadId || this.#harnessCatalog) &&
       input.cursor &&
@@ -189,6 +286,14 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async #registrationForStart(input: DelegationStartInput): Promise<DelegationControlRegistration> {
+    if (originClientName(input.parentThreadId)) {
+      // A client is no session's Thread, so the shared catalog or the only session takes it.
+      if (this.#harnessCatalog) return this.#harnessCatalog;
+      return only(
+        [...this.#registrations],
+        "External client work needs exactly one active Host Runtime session",
+      );
+    }
     const matches = await this.#matching((registration) => registration.canHandleStart(input));
     return only(
       matches,

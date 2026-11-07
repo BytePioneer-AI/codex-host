@@ -137,7 +137,9 @@ const USAGE: &str = "usage:
   codexhost delegate --help
   codexhost harness list|inspect ...
   codexhost delegate start ...
-  codexhost thread send|cancel|read|wait|watch|watches|list ...";
+  codexhost thread send|cancel|read|wait|watch|watches|list ...
+  codexhost client status|on|off|create|list|revoke ...
+  codexhost events pull|ack ...";
 
 fn usage() {
     eprintln!("{USAGE}");
@@ -1426,7 +1428,9 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         }
         Some("open-loopback-url") => Err("open-loopback-url accepts no arguments".into()),
         Some("broker") => run_native_harness_broker_cli(&arguments[1..]),
-        Some("harness") | Some("delegate") | Some("thread") => run_delegation_cli(arguments),
+        Some("harness") | Some("delegate") | Some("thread") | Some("client") | Some("events") => {
+            run_delegation_cli(arguments)
+        }
         _ => {
             usage();
             Err("invalid launcher arguments".into())

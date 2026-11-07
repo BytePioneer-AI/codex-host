@@ -577,6 +577,10 @@ describe("delegation CLI", () => {
               ],
             },
           },
+          externalClient: {
+            environmentVariables: ["CODEXHOST_CLIENT_TOKEN", "CODEXHOST_CLIENT_TOKEN_FILE"],
+            register: "codexhost client add <name>",
+          },
         },
       },
     });

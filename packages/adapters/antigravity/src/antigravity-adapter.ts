@@ -1077,10 +1077,7 @@ class AntigravitySession implements HarnessSession {
       this.#completeIdentitylessTurn(active, event);
       return;
     }
-    const safeTurnId =
-      event.result.num_turns !== undefined && event.result.num_turns !== null
-        ? `turn:${event.result.num_turns}`
-        : `turn:${this.#history.snapshot().length + 1}`;
+    const safeTurnId = this.#uniqueNativeTurnKey(event.result.num_turns);
 
     const nativeTurnRef = nativeTurnRefSchema.parse({
       harnessId: this.harnessId,
@@ -1135,6 +1132,19 @@ class AntigravitySession implements HarnessSession {
         this.#completeTurn(active, { status: "failed", error, checkpoint }, nativeTurnRef);
       }
     }
+  }
+
+  #uniqueNativeTurnKey(numTurns: number | undefined): string {
+    const ordinal =
+      numTurns !== undefined && numTurns !== null ? numTurns : this.#history.snapshot().length + 1;
+    const base = `turn:${ordinal}`;
+    const used = new Set(
+      this.#history.snapshot().map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey),
+    );
+    if (!used.has(base)) return base;
+    let duplicate = 2;
+    while (used.has(`${base}:${duplicate}`)) duplicate += 1;
+    return `${base}:${duplicate}`;
   }
 
   /** A Turn agy ended without a Conversation keeps its native outcome but no native identity. */

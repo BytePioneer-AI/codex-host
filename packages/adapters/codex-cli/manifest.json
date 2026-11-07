@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "codex-cli",
+  "name": "Codex CLI",
+  "version": "0.1.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.png",
+  "surfaces": ["web"],
+  "launchCommand": true,
+  "links": { "installation": "https://developers.openai.com/codex/cli" }
+}

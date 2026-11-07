@@ -1,0 +1,54 @@
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--dsw-alias-state-business-tertiary) 88%, transparent);
+  display: grid;
+  place-items: center;
+}
+
+.invitation {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 40px);
+}
+
+.hint {
+  padding: 8px 16px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 15%, transparent);
+  border-radius: 10px;
+  background: var(--dsw-alias-state-business-tertiary);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 8%);
+  color: var(--dsw-alias-label-primary);
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(440px, 100%);
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-base);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 8%);
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.preview svg {
+  flex: none;
+}
+
+.title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

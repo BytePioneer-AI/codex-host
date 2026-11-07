@@ -148,7 +148,13 @@ export function mapExternalThreadHarnessError(
     case "invalidRequest":
       return { code: -32602, message: `External Thread ${operation} request is invalid` };
     case "sessionBusy":
-      return { code: -32072, message: "External Thread has an active operation" };
+      return {
+        code: -32072,
+        message:
+          operation === "resume"
+            ? "External Native Session is busy. Close it in the other client or wait for its active operation to finish, then retry."
+            : "External Thread has an active operation",
+      };
     case "unsupported":
       return { code: -32076, message: `External Harness does not support ${operation}` };
     case "sessionNotFound":

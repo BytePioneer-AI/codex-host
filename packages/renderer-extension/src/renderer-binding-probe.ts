@@ -1,3 +1,7 @@
+import {
+  HARNESS_PREFERENCES_UPDATED_EVENT,
+  rendererHarnessPreferences,
+} from "./renderer-harness-preferences.js";
 import { createRemoteConnectionsControl } from "./remote-connections-control.js";
 import { installRendererQuestions } from "./renderer-questions.js";
 import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js";
@@ -104,6 +108,7 @@ import {
   routeRendererHarnessCommandSelection,
 } from "./renderer-harness-command-claim.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
+import { installRendererSidebarThreadState } from "./renderer-sidebar-thread-state.js";
 import { createRendererUsageStatisticsSource } from "./renderer-usage-statistics-source.js";
 import {
   installRendererDelegationMention,
@@ -115,6 +120,7 @@ import {
   isNativeProjectThreadCreator,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { loadCodexNativeServices } from "./codex-native-services.js";
+import { invalidateThreadCatalog } from "./codex-thread-catalog.js";
 import { openCodexSchedules } from "./codex-schedule-navigation.js";
 import { openRendererThread } from "./renderer-fork-control.js";
 import type {
@@ -183,7 +189,7 @@ interface HostHarnessAvailabilityState {
   errors: HarnessAvailabilityErrors;
   webUi: HarnessWebUiAvailability;
   requestGeneration: number;
-  request: { client: RendererModelClient; promise: Promise<void> } | null;
+  request: { client: RendererModelClient; promise: Promise<void>; force: boolean } | null;
   retryTimer: number | null;
   retryAttempt: number;
 }
@@ -284,6 +290,7 @@ type ApplyAdapterAgent = (
 
 export interface RendererBindingProbeApi {
   remoteConnections(request: unknown): Promise<unknown>;
+  invalidateThreadCatalog(): Promise<void>;
   status(): RendererBindingProbeStatus;
   currentThreadId(): string | null;
   lockedSelection(): LockedComposerSelection | null;
@@ -767,6 +774,8 @@ export function installRendererBindingProbe(
     ...(options.defaultAgent ? { defaultAgent: options.defaultAgent } : {}),
   });
   const mountedByComposer = new Map<Element, MountedComposer>();
+  // composerId belongs to the logical draft and survives DOM replacement.
+  const pendingDefaultPreferences = new Map<string, boolean>();
   const catalogRequests = new WeakMap<MountedComposer, MountedCatalogRequest>();
   const draftUsageRequests = new WeakMap<
     MountedComposer,
@@ -818,6 +827,7 @@ export function installRendererBindingProbe(
     }
     return null;
   };
+  const sidebarThreadState = installRendererSidebarThreadState();
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     getClient: (hostId) => modelClientForHost(hostId),
     getPlugins: (hostId) => {
@@ -986,6 +996,8 @@ export function installRendererBindingProbe(
   };
 
   const notifySubmission = (composer: Element, trigger: SubmissionTrigger): void => {
+    const mounted = mountedByComposer.get(composer);
+    if (mounted) pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
     const state = controller.recordSubmission(composer);
     // Follow-ups in an existing Thread must not change which Agent a new Thread starts with.
     const createsThread = state.phase === "draft";
@@ -1048,6 +1060,7 @@ export function installRendererBindingProbe(
 
   const renderMounted = (mounted: MountedComposer): void => {
     if (!isMountedComposer(mounted.composer)) return;
+    restorePendingDraftPreference(mounted);
     const hostId = mounted.hostId;
     mounted.control.setPlugins(
       hostId
@@ -2253,6 +2266,7 @@ export function installRendererBindingProbe(
     mounted: MountedComposer,
     agent: RendererAgent,
   ): Promise<boolean> => {
+    pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
     if (agent !== "codex" && composerAvailability(mounted)[agent] !== "ready") {
       return false;
     }
@@ -2306,6 +2320,37 @@ export function installRendererBindingProbe(
       }
     }
   };
+
+  // A delayed initial snapshot may initialize only a pristine draft. User input,
+  // explicit configuration and submission permanently take ownership of this draft.
+  function restorePendingDraftPreference(mounted: MountedComposer): void {
+    if (!pendingDefaultPreferences.get(controller.get(mounted.composer).composerId)) return;
+    const state = controller.get(mounted.composer);
+    const editor = mounted.composer.querySelector<HTMLElement>(EDITOR_SELECTOR);
+    if (
+      mounted.modelTarget?.[0] !== "default" ||
+      state.phase !== "draft" ||
+      controller.isSubmissionPending(mounted.composer) ||
+      editor?.textContent?.trim()
+    ) {
+      pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
+      return;
+    }
+    const hostId = activeModelHostId(mounted.composer);
+    if (!hostId || !rendererHarnessPreferences(hostId)) return;
+    const agent = readNewThreadAgentPreference(
+      new Set(enabledAgents),
+      rendererNewThreadPreferenceStorage(hostId),
+    );
+    if (agent && agent !== "codex" && composerAvailability(mounted)[agent] !== "ready") return;
+    pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
+    if (!agent) return;
+    if (state.agent !== agent) void switchComposerAgent(mounted, agent);
+    else if (agent !== "codex") {
+      controller.clearConfiguration(mounted.composer);
+      void loadExternalCatalog(mounted);
+    }
+  }
 
   const loadCodexAccountsForHost = (hostId: string | null): Promise<void> => {
     const accounts = codexAccountsForHost(hostId);
@@ -2421,7 +2466,9 @@ export function installRendererBindingProbe(
       scheduleHarnessAvailabilityRetry(hostId);
       return Promise.resolve();
     }
-    if (state.request?.client === client) return state.request.promise;
+    if (state.request?.client === client && (!force || state.request.force)) {
+      return state.request.promise;
+    }
     if (state.directoryClient !== client) {
       state.plugins = null;
       state.availability = {};
@@ -2565,7 +2612,7 @@ export function installRendererBindingProbe(
         scheduleHarnessAvailabilityRetry(hostId);
       }
     })();
-    const request = { client, promise };
+    const request = { client, promise, force };
     state.request = request;
     void promise.then(
       () => {
@@ -2863,16 +2910,19 @@ export function installRendererBindingProbe(
       (modelId) => {
         const mounted = mountedByComposer.get(composer);
         if (!composer.isConnected || !mounted) return;
+        pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
         void selectExternalModel(mounted, modelId);
       },
       (thinkingOptionId) => {
         const mounted = mountedByComposer.get(composer);
         if (!composer.isConnected || !mounted) return;
+        pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
         void selectExternalThinking(mounted, thinkingOptionId);
       },
       (permissionModeId) => {
         const mounted = mountedByComposer.get(composer);
         if (!composer.isConnected || !mounted) return;
+        pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
         void selectPermissionMode(mounted, permissionModeId);
       },
       () => {
@@ -2881,6 +2931,14 @@ export function installRendererBindingProbe(
         if (editor) delegationMention?.openFor(editor);
       },
     );
+    if (!pendingDefaultPreferences.has(state.composerId)) {
+      pendingDefaultPreferences.set(
+        state.composerId,
+        modelTarget?.[0] === "default" &&
+          !(hostId && rendererHarnessPreferences(hostId)) &&
+          !editor.textContent?.trim(),
+      );
+    }
     const mounted: MountedComposer = {
       composer,
       composerId: state.composerId,
@@ -3136,6 +3194,7 @@ export function installRendererBindingProbe(
     if (!composer) return;
     controller.clearPendingSubmission(composer);
     const mounted = mountedByComposer.get(composer);
+    if (mounted) pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
     if (mounted && isOwnershipSubmissionBlocked(mounted.ownershipStatus)) return;
     if (controller.isSwitching(composer) || !applyComposerAgent(composer)) blockEvent(event);
   };
@@ -3181,6 +3240,7 @@ export function installRendererBindingProbe(
     const candidate = composerForElement(button);
     const composer = candidate && isMountedComposer(candidate) ? candidate : null;
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
+    if (mounted) pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
     if (!composer || !mounted || refreshSendButton(mounted.control) !== button) return;
     if (!prepareComposer(composer)) {
       blockEvent(event);
@@ -3302,6 +3362,10 @@ export function installRendererBindingProbe(
       }
     }
   };
+  const onPreferencesChanged = (): void => {
+    for (const mounted of mountedByComposer.values()) renderMounted(mounted);
+  };
+  window.addEventListener(HARNESS_PREFERENCES_UPDATED_EVENT, onPreferencesChanged);
   window.addEventListener("codexhost:draft-prewarm-policy-changed", onHostRouteChange);
   window.addEventListener("codexhost:draft-workspace", onDraftWorkspace);
   window.addEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
@@ -3397,6 +3461,7 @@ export function installRendererBindingProbe(
 
   const api: RendererBindingProbeApi = {
     remoteConnections: (request) => handleRemoteConnectionsRequest(remoteConnections, request),
+    invalidateThreadCatalog: () => invalidateThreadCatalog(window),
     currentThreadId() {
       // The app routinely keeps several composer roots connected (hidden leftovers included), so
       // counting connected roots alone never yields exactly one. Pick the single visible root —
@@ -3513,6 +3578,8 @@ export function installRendererBindingProbe(
     dispose() {
       if (disposed) return;
       disposed = true;
+      pendingDefaultPreferences.clear();
+      window.removeEventListener(HARNESS_PREFERENCES_UPDATED_EVENT, onPreferencesChanged);
       questions.dispose();
       usageNotificationDispose();
       adapterDispose?.();
@@ -3523,6 +3590,7 @@ export function installRendererBindingProbe(
       disposeReasoningSoftWrap();
       delegationMention?.dispose();
       sidebarAgentIcons.dispose();
+      sidebarThreadState.dispose();
       nativeScheduleControls.dispose();
       settingsLifecycle.dispose();
       document.removeEventListener("beforeinput", onBeforeInput, true);

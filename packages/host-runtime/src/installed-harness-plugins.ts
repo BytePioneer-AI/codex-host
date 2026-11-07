@@ -6,6 +6,7 @@ import { createLocalPageOpener } from "@codexhost/desktop-control";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 
 import { createLauncherUrlOpener } from "./launcher-url-opener.js";
+import { refreshNativeThreadCatalog } from "./native-thread-catalog.js";
 
 export const HARNESS_PLUGIN_DIRECTORY_ENV = "CODEXHOST_PLUGIN_DIRECTORY";
 
@@ -34,6 +35,12 @@ export function installedHarnessPluginOptions(
       managedRemoteHost,
       ...(opener ? { openLocalUrl: (url: string) => opener(new URL(url)) } : {}),
       ...(openLocalPage ? { openLocalPage } : {}),
+      ...(!managedRemoteHost
+        ? {
+            refreshNativeThreadCatalog: (nativeHome: string) =>
+              refreshNativeThreadCatalog(environment, nativeHome),
+          }
+        : {}),
     },
   };
 }

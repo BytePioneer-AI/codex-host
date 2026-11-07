@@ -6,6 +6,14 @@ export interface RendererRequestOptions {
   readonly timeoutMs?: number;
 }
 
+/** A request may have reached the peer, but no complete response was received. */
+export class RendererRequestTransportError extends Error {
+  constructor(cause: unknown) {
+    super("Request transport was interrupted", { cause });
+    this.name = "RendererRequestTransportError";
+  }
+}
+
 export class RendererMethodUnavailableError extends Error {
   readonly code = -32601;
 

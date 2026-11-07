@@ -83,7 +83,7 @@ codexhost
 
 **codexhost가 시작되지 않거나, Codex는 열렸지만 codexhost 기능이 보이지 않는 경우**
 
-`codexhost console`(Windows: 시작 메뉴 → "codexhost console")을 실행하면 로컬 콘솔 `http://127.0.0.1:4399/`이 열립니다. 마지막 시작 실패 원인, Codex Desktop 버전, Host Runtime 로그를 확인할 수 있고, Codex가 실행 중이 아닐 때 codexhost를 업데이트할 수 있습니다. 콘솔은 codexhost와 함께 시작됩니다. 설치 패키지로 실행하면 브라우저에서 열리고, 터미널에서 실행하면 주소가 출력됩니다.
+`codexhost console`(Windows: 시작 메뉴 → "codexhost console")을 실행하면 로컬 콘솔 `http://127.0.0.1:4399/`이 열립니다. 마지막 시작 실패 원인, Codex Desktop 버전, Host Runtime 로그를 확인할 수 있고, Codex가 실행 중이 아닐 때 codexhost를 업데이트할 수 있습니다. 콘솔은 codexhost와 함께 시작됩니다. 설치 패키지로 실행하면 기본 브라우저에서 콘솔 개요가 열립니다. 터미널 실행은 브라우저를 열지 않고 성공·실패 모두 콘솔 주소와 준비된 Web 로그인 링크를 출력합니다(Web 비활성화 또는 준비되지 않은 경우 Web 줄 생략). 개요에서 Web을 열거나 확인 후 codexhost를 중지할 수 있으며, 기기 연결 페이지는 Web과 같은 원격 접속 설정을 사용합니다.
 
 **macOS: 처음 열 때 "앱을 확인할 수 없음" 메시지가 표시됨**
 

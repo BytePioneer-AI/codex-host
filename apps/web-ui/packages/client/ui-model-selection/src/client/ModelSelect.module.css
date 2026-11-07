@@ -1,0 +1,478 @@
+.root {
+  position: relative;
+  min-width: 0;
+}
+
+/* Figma 313:14108 ToggleButton: 13/20 regular secondary label, 4px gap,
+   12px caption chevron; 28px chip height matches the sibling Plan /
+   Read-only selects in the same tool row. */
+.trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  /* Legacy fallback, then a row-relative cap that grants long names more
+     room without letting this trailing control consume the composer. */
+  max-width: 220px;
+  max-width: min(360px, 45cqw);
+  height: 28px;
+  padding: 0 4px 0 8px;
+  border: none;
+  /* Rounded chip chrome, matching the sibling permission trigger. */
+  border-radius: var(--dsw-radius-sm);
+  outline: none;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.trigger:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.trigger:focus-visible:not([data-selection-focus]) {
+  box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+
+.trigger:disabled {
+  color: var(--dsw-alias-label-dimmed);
+  cursor: default;
+}
+
+.triggerLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Effort value beside the model name (mock's 'High': same 13/20/400, caption
+   tone). Adaptive priority: the huge shrink factor makes the effort absorb
+   all deficit first — it ellipsizes away to nothing before the model name
+   loses a single pixel, and the chevron stays snug throughout. */
+.triggerEffort {
+  flex-shrink: 1000;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-caption);
+}
+
+/* The Models glyph replaces the text when the composer row cannot fit it. */
+.triggerIcon {
+  display: var(--dsh-composer-model-icon-display, none);
+  flex: 0 0 auto;
+}
+
+/* The composer measures expanded row demand and owns these display variables.
+   Outside a composer, the trigger retains its text. */
+.triggerLabel,
+.triggerEffort {
+  display: var(--dsh-composer-model-text-display, block);
+}
+
+.chevron {
+  flex: 0 0 auto;
+  color: var(--dsw-alias-label-caption);
+  transition: transform 120ms ease;
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+/* Placement measures only the Thinking card, so it stays 8px above the
+   trigger. The taller Model sibling is absolutely attached to its left and
+   therefore cannot push both cards toward the viewport top. */
+.menu {
+  position: fixed;
+  z-index: 1100;
+  width: 256px;
+  max-width: calc(100vw - 24px);
+  color: var(--dsw-alias-label-primary);
+}
+
+.panel {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: min(520px, var(--ch-model-menu-max-height, calc(100dvh - 96px)));
+  overflow: hidden;
+  padding: 8px;
+  border: 0;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+  box-shadow: var(--dsw-elevation-prominent);
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+}
+
+.modelPanel {
+  position: absolute;
+  top: 0;
+  right: calc(100% + 8px);
+  width: min(264px, calc(100vw - 292px));
+}
+
+.modelRight .modelPanel {
+  right: auto;
+  left: calc(100% + 8px);
+}
+
+.modelReplace .modelPanel {
+  position: relative;
+  top: auto;
+  right: auto;
+  width: 100%;
+}
+
+.modelReplace .thinkingPanel {
+  display: none;
+}
+
+.modelReplace .backButton {
+  display: inline-flex;
+}
+
+.thinkingPanel {
+  width: 100%;
+}
+
+.thinkingOptions {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.panelHeader {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 2px 8px 6px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+}
+
+.backButton {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-left: -6px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.backButton:hover,
+.backButton:focus-visible {
+  outline: none;
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.status,
+.empty {
+  padding: 8px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.error,
+.warning {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 3px;
+  padding: 6px 7px;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.warning {
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-state-warn-label);
+}
+
+.retry {
+  flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.searchRow {
+  position: relative;
+  flex-shrink: 0;
+  margin: 2px 0 3px;
+}
+
+.searchRow .search {
+  display: flex;
+  height: auto;
+  padding: 5px 7px;
+  border: 0 solid transparent;
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+}
+
+.searchRow .searchWithQuery {
+  padding-right: 34px;
+}
+
+.searchClear {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  corner-shape: round;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.searchClear:hover,
+.searchClear:focus-visible {
+  outline: none;
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.searchRow .search:focus-within {
+  border-color: transparent;
+}
+
+.searchRow .search input {
+  padding: 0;
+  font-size: 12px;
+  line-height: normal;
+}
+
+.searchRow .search input::placeholder {
+  color: var(--dsw-alias-label-caption);
+}
+
+.groups {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.modelRow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: var(--dsw-radius-md);
+}
+
+.modelRow:hover,
+.modelRow:has(.modelOption:focus-visible),
+.modelRow:has(.favorite:focus-visible),
+.modelRow:has(.optionActive) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.modelRow .modelOption {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+}
+
+.favorite {
+  display: grid;
+  place-items: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  padding: 5px;
+  border: 0;
+  border-radius: var(--dsw-radius-md);
+  outline: none;
+  background: transparent;
+  color: var(--dsw-alias-label-dimmed);
+  cursor: pointer;
+}
+
+.favorite svg {
+  width: 18px;
+  height: 18px;
+}
+
+.favorite:hover:not(:disabled),
+.favorite:focus-visible {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.favoriteActive {
+  color: var(--dsw-alias-state-warn-primary, #f5a524);
+}
+
+.favorite:disabled {
+  cursor: default;
+}
+
+.option {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  min-width: 100%;
+  min-height: 34px;
+  padding: 5px 7px;
+  border: none;
+  border-radius: var(--dsw-radius-md);
+  outline: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.option:not(.modelOption):hover:not(:disabled),
+.option:not(.modelOption):focus-visible,
+.optionActive:not(.modelOption):not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* Selection marker is the trailing check, not a fill — matches the Menu
+ * primitive's selected treatment. */
+.selected {
+  background: transparent;
+}
+
+.option:disabled {
+  color: var(--dsw-alias-label-dimmed);
+  cursor: default;
+}
+
+.optionCopy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.modelName {
+  overflow: hidden;
+  color: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.check {
+  display: grid;
+  place-items: center;
+  flex: 0 0 14px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.check svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* The current Model is the nested-menu row pinned below Thinking. */
+.modelCellWrap {
+  flex: 0 0 auto;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.cell {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  min-width: 100%;
+  height: 34px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+  text-align: left;
+  outline: none;
+}
+
+.cell:hover,
+.cell:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.cellLabel {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.cellValue {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  color: var(--dsw-alias-label-primary);
+}
+
+.cellChevron {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  color: var(--dsw-alias-menu-icon);
+}
+
+@media (max-width: 640px) {
+  .menu,
+  .modelPanel,
+  .thinkingPanel {
+    width: min(320px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+  }
+
+  .modelPanel {
+    position: relative;
+    top: auto;
+    right: auto;
+  }
+
+  .modelOpen .thinkingPanel {
+    display: none;
+  }
+
+  .backButton {
+    display: inline-flex;
+  }
+}

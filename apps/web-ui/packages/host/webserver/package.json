@@ -1,0 +1,14 @@
+{
+  "name": "@deepseek-ai/dsh-host-webserver",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "*"
+  }
+}

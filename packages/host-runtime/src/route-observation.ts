@@ -1,4 +1,9 @@
-import type { ExternalHarnessId, JsonRpcRequest, RoutedHarnessId } from "@codexhost/protocol-core";
+import {
+  decodeCreateRoute,
+  type ExternalHarnessId,
+  type JsonRpcRequest,
+  type RoutedHarnessId,
+} from "@codexhost/protocol-core";
 
 export type RouteModelCarrier = "official-model" | `${ExternalHarnessId}-transport`;
 
@@ -7,6 +12,28 @@ export interface CreateRequestRouteObservation {
   modelCarrier: RouteModelCarrier;
   selectedHarness: RoutedHarnessId;
   selectionSource: "official-model" | "transport-model";
+}
+
+/** Only an explicit codexhost transport Model selects an External Harness. */
+export function classifyCreateRequestRoute(
+  request: JsonRpcRequest,
+): CreateRequestRouteObservation | null {
+  const route = decodeCreateRoute(request);
+  if (!route) return null;
+  if (route.harnessId !== "codex") {
+    return {
+      requestMethod: "thread/start",
+      modelCarrier: `${route.harnessId}-transport`,
+      selectedHarness: route.harnessId,
+      selectionSource: "transport-model",
+    };
+  }
+  return {
+    requestMethod: "thread/start",
+    modelCarrier: "official-model",
+    selectedHarness: "codex",
+    selectionSource: "official-model",
+  };
 }
 
 export type ThreadPurpose = "conversation" | "ephemeral";

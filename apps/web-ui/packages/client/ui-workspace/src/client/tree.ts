@@ -21,7 +21,7 @@ import {
 /** Only the shared external catalog advertises this capability; absence is unsupported. */
 declare module "@deepseek-ai/dsh-session-projection/types" {
   interface SessionProjectionMap {
-    threadReference: { hostId: "local" } | null;
+    threadReference: { hostId: string; threadId?: string } | null;
   }
 }
 

@@ -21,6 +21,22 @@ codexhost stop
 
 `codexhost stop` 不确认，按 GUI、Web、Host、远程服务、Broker、Console 的顺序停止，并报告本地 Host 被中断的任务数；用户自行打开的 Desktop 不关闭。远程服务停止后，其他电脑重新连接可恢复远程服务。自启项、Serve 配置和会话数据保留。前台开发 Web 不属于此命令的停止范围，开发者使用下文的 `npm stop`。
 
+## Desktop 已有远程会话
+
+Web 主列表合并当前 Codex Desktop 已知的 SSH / official Remote Control 连接上的未归档 Thread。标题带原生 Host ID，引用保留 `{hostId, threadId}`；浏览器 Session ID 使用 `web-remote:` 加该二元组的 base64url 编码，因此不同主机上的同名 Thread 与本机 Thread 不会合并。此能力需要包含远程会话 Controller API 的 codexhost Desktop 正在运行；独立本机 Host 的运行不代表 Desktop 远程连接可用。
+
+Web 读取 Launcher 的私有本机 runtime descriptor，经已有 nonce 鉴权的 loopback Controller 通道访问 Desktop 原生 manager，不建立 SSH/RC 连接、不复制远程凭据、不修改网络或远程配置。只枚举 Desktop 路由已发现的 Host；在 Desktop 中建立或恢复连接后刷新 Web。Relay、Tailscale 只解决浏览器到 Web 的入站访问，不提供远程主机目录。
+
+支持读取会话、空闲时文本续聊、停止当前 Turn、改名、归档，以及 manager 提供原生 pending request 和 responder 时的命令/文件变更审批（允许一次、拒绝）。线程 resume 和 turn/start 使用原生 ID，owner 和鉴权由原生 manager 保持。缺少原生审批方法的旧 manager 或其他交互类型会提示回 Desktop 操作，不伪造权限能力。远程文件上传、终端、本机路径打开、模型/权限切换、fork、编辑、队列和 steering 不提供；这些请求不会落到本机 Thread handler。远程 cwd 不挂入本机工作区。
+
+列表每个 Host 最多读取 100 页，每页 100 条；超过限制不发布不完整目录。打开的会话每 1.5 秒读取不消费事件的绝对快照，多个浏览器独立可见；关闭跟随即停止读取。快照保留原生 Turn/Item ID，单次 Controller 响应上限 16 MiB，超大完整历史当前不可用。连接失败保留已见列表、标记离线并停止该跟随的轮询；在 Desktop 恢复连接后重新打开会话。连接代际变化会使旧审批失效，重建浏览器投影。所有写请求只发送一次，超时或断线报告结果未知，不自动重发消息或审批；读后同步失败不否认已确认的写入。
+
+本机 native Codex 目录及其共享 app-server 生命周期由本机来源负责，与此远程聚合独立。隔离 fixtures 覆盖复合身份、断线、代际、未知结果和审批路由；这些检查不代替 Windows/macOS 上真实 SSH、RC 活跃 Turn、Desktop 与多浏览器同时响应的实机验收。
+
+下图来自隔离 Controller fixture，展示同名远程 Thread 与定向续聊，不代表实机连接验收。
+
+![Web 远程会话隔离验收](../imgs/web-remote-sessions-fixture.png)
+
 ## 手机连接与恢复
 
 聊天标题下方的状态条独立显示浏览器到 Web 网关的连接，以及网关到 Host 的可用性；手机收起侧栏、未选择会话时也能看到浏览器连接提示。断线保留已显示的正文和草稿，提示上次历史同步时间；运行提示改为任务状态待确认，不把手机断线解释成后台任务停止。
@@ -338,11 +354,11 @@ Web 的 `user/message` seq 和分页 Turn 坐标只用于解析当前内存展�
 
 同一会话的「···」菜单提供“复制会话链接”，复制 `thread://<canonical Thread ID>?hostId=local`，等待剪贴板写入后提示“已复制”或失败。拖入引用的剪贴板、草稿与发送文本均为 `[@标题](thread://<canonical Thread ID>?hostId=local)`；标题仅供展示并转义 Markdown 特殊字符，身份与来源不按标题猜测。同名会话保留不同 ID。已发送用户消息与队列预览中的显式 `[@标题](thread://<id>?hostId=...)` 也显示蓝色会话图标与标题，悬停可见原始引用文本；消息复制、历史原文及队列编辑仍保留完整链接，不增加点击跳转或自动读取。队列编辑沿用文本链接回填，不要求重新装饰；发送拒绝保留草稿，结果未知不自动重发。
 
-在用户输入中手工粘贴裸 ID、`codex://threads/<id>`、`thread://<id>?hostId=...` 或 Markdown 链接仍是普通文本，不自动生成蓝色引用、不补充或改写来源。只有共享 external 目录确认归属的条目提供拖入和菜单复制；未创建草稿、官方 Codex 与远程来源不提供冒充共享 CH Thread 的入口。蓝色只表示引用，不表示已读取。
+在用户输入中手工粘贴裸 ID、`codex://threads/<id>`、`thread://<id>?hostId=...` 或 Markdown 链接仍是普通文本，不自动生成蓝色引用、不补充或改写来源。本机共享 external 目录与 Desktop 远程目录确认归属的已有 Thread 提供拖入和菜单复制；远程引用保留原生 Host ID 和 Thread ID，未创建草稿与未确认来源不提供入口。蓝色只表示引用，不表示已读取。
 
 读取仍由当前 Agent 在用户明确要求时使用已有 Skill 和 `codexhost thread read`，遵循既有 CLI 的权限与错误语义；Web 不预读历史、不追加工具教程或调用指令，也不向目标启动 Turn。没有 `@` 会话候选菜单、预览面板或新 RPC。浏览器自动化使用隔离 Host 验证输入与提交，不能替代真实 Harness/CLI 的端到端读取验收。
 
-助手回复中的会话链接支持 `[标题](codex://threads/<id>)`、`[标题](thread://<id>?hostId=local)`，以及正文或列表中的裸 `codex://threads/<id>` 和 `thread://<id>?hostId=local` 地址；裸地址周围的常见中英文标点不属于链接，行内代码、代码块与已有链接的标题不自动转换。目标必须以精确 ID 存在于当前会话目录，且投影确认是已创建的本地共享 external Thread；链接标题不参与寻址；链接随目录更新重新检查，新委派的目标进入目录后可点击，目标移出后恢复为文本。普通点击通过 Web 原有会话导航切换当前页面，不唤起 Desktop；中键或修饰键点击使用同源 `?session=<id>` 地址在新的 Web 页面打开。未知目标、远程 Host、缺失或重复来源及畸形地址保留原始标题或裸地址文本，不回退到同 ID 的本地会话。仅展示链接不预读目标历史，点击不启动 Turn；消息原文与复制内容保持不变。用户消息和排队预览中的蓝色引用仍只作展示。通用 Markdown 渲染器通过产品提供的裸地址匹配规则与链接解析回调获得安全 Web 地址，不直接放行自定义协议；HTTP(S)、邮件链接及危险协议的既有规则不变。
+助手回复中的会话链接支持 `[标题](codex://threads/<id>)`、`[标题](thread://<id>?hostId=local)`，以及正文或列表中的裸 `codex://threads/<id>` 和 `thread://<id>?hostId=local` 地址；裸地址周围的常见中英文标点不属于链接，行内代码、代码块与已有链接的标题不自动转换。目标必须以精确 ID 存在于当前会话目录，且投影确认是已创建的本机共享 external Thread 或 Desktop 远程 Thread；远程链接以完整 host+thread 身份查找；链接标题不参与寻址；链接随目录更新重新检查，新委派的目标进入目录后可点击，目标移出后恢复为文本。普通点击通过 Web 原有会话导航切换当前页面，不唤起 Desktop；中键或修饰键点击使用同源 `?session=<id>` 地址在新的 Web 页面打开。未知目标、不受支持的远程 Host、缺失或重复来源及畸形地址保留原始标题或裸地址文本，不回退到同 ID 的本地会话。远程链接使用 `thread://<原生 Thread ID>?hostId=<原生 Host ID>`，导航使用对应的 Web 复合 Session ID。仅展示链接不预读目标历史，点击不启动 Turn；消息原文与复制内容保持不变。用户消息和排队预览中的蓝色引用仍只作展示。通用 Markdown 渲染器通过产品提供的裸地址匹配规则与链接解析回调获得安全 Web 地址，不直接放行自定义协议；HTTP(S)、邮件链接及危险协议的既有规则不变。
 
 ### 普通会话 Fork
 

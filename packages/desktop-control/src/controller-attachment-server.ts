@@ -102,7 +102,9 @@ export async function startControllerAttachmentServer(
           return;
         }
         socket.setTimeout(
-          input.action === "read-thread" ? REMOTE_THREAD_CONTROL_TIMEOUT_MS : 30_000,
+          input.action === "read-thread" || input.action === "session"
+            ? REMOTE_THREAD_CONTROL_TIMEOUT_MS
+            : 30_000,
           () => socket.destroy(),
         );
         // The operation is not retried on connection loss: mutations may already have applied.
@@ -113,7 +115,7 @@ export async function startControllerAttachmentServer(
             (reply) => {
               const serialized = JSON.stringify(reply) + "\n";
               if (
-                input.action === "read-thread" &&
+                (input.action === "read-thread" || input.action === "session") &&
                 Buffer.byteLength(serialized) > REMOTE_THREAD_REPLY_MAX_BYTES
               ) {
                 socket.end(

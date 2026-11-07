@@ -414,3 +414,4 @@ export {
   type WebUiExtensionMeta,
   type WebUiExtensionsState,
 } from "./web-ui-extensions.js";
+export { remoteSessionOperationSchema, type RemoteSessionOperation } from "./remote-sessions.js";

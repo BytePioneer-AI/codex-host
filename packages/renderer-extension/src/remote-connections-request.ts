@@ -8,6 +8,8 @@ export async function handleRemoteConnectionsRequest(
 ): Promise<unknown> {
   const request = remoteConnectionsRequestSchema.parse(input);
   switch (request.action) {
+    case "session":
+      throw new Error("Remote sessions require the Desktop Controller route");
     case "read-thread":
       if (!control.readThread) throw new Error("Remote Thread reading is unavailable");
       return control.readThread(request.hostId, request.input);

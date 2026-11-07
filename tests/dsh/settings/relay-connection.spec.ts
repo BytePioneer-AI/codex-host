@@ -27,7 +27,7 @@ it("accepts a phone name and base domain, derives the relay host, and validates 
       kind: "official",
       enabled: false,
       officialHost: "relay.chost.dev",
-      hostname: "alice.chost.dev",
+      officialHostname: "alice.chost.dev",
       state: { status: "off" },
     },
     busy: false,
@@ -73,6 +73,41 @@ it("accepts a phone name and base domain, derives the relay host, and validates 
   expect(button.disabled).toBe(false);
   fill(domain, "https://example.com");
   expect(button.disabled).toBe(true);
+});
+
+it("hides official registration inputs when its address is saved and the current kind is self-hosted", () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  cleanups.push(() => act(() => root.unmount()));
+  const onChange = vi.fn();
+  const props = {
+    kind: "official",
+    relay: {
+      kind: "self-hosted",
+      enabled: false,
+      officialHost: "relay.chost.dev",
+      officialHostname: "alice.chost.dev",
+      customHost: "relay.example.com",
+      customHostname: "computer.example.com",
+      state: { status: "off" },
+    },
+    busy: false,
+    onChange,
+    onRefresh: vi.fn(),
+    t: (key: keyof typeof en) => en[key],
+  } as Props;
+  act(() => root.render(createElement(RelayControl, props)));
+  expect(container.querySelectorAll("input")).toHaveLength(0);
+  expect(container.textContent).not.toContain(en["connectDevices.relay.name"]);
+  expect(container.textContent).not.toContain(en["connectDevices.relay.inviteLabel"]);
+  expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+  act(() =>
+    container
+      .querySelector("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+  expect(onChange).toHaveBeenCalledWith(true, { kind: "official" });
 });
 
 it("distinguishes first preparation from an unreachable relay and clears the warning on recovery", () => {

@@ -59,7 +59,7 @@
 
 ### Requirement: 证书文件
 
-ACME 账户私钥、证书私钥和证书 SHALL 保存在数据目录的中转目录中，只有当前用户可读。私钥 MUST 以排他方式创建，已存在时读取而不覆盖。新证书 MUST 先确认可用，再原子替换旧文件；不可用时保留旧证书。
+ACME 账户私钥和证书私钥 SHALL 保存在数据目录的 `remote-relay/` 中；证书 `certificate.pem` 和签发记录 `certificate-state.json` SHALL 按控制地址分别保存在 `remote-relay/endpoints/<encodeURIComponent(控制地址)>/` 中，只有当前用户可读。私钥 MUST 以排他方式创建，已存在时读取而不覆盖。新证书 MUST 先确认可用，再原子替换旧文件；不可用时保留旧证书。
 
 #### Scenario: 写入中途退出
 

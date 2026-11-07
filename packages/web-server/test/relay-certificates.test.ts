@@ -28,7 +28,9 @@ it("allows slower dual-stack ACME connections without disabling IPv6", () => {
   assert.equal(acme.axios.defaults.httpsAgent.options.family, undefined);
 });
 
-const stateFile = "remote-relay/certificate-state.json";
+const host = "relay.test";
+const endpoint = `remote-relay/endpoints/${encodeURIComponent(host)}`;
+const stateFile = `${endpoint}/certificate-state.json`;
 const hostname = "phone.relay.test";
 const x509 = new X509Certificate(credentials.cert);
 const notBefore = Date.parse(x509.validFrom);
@@ -64,7 +66,8 @@ function fixture(t: TestContext, now = () => nowInValidity) {
   };
   const seed = () => {
     seedKey();
-    writeFileSync(data.path("remote-relay/certificate.pem"), credentials.cert);
+    mkdirSync(data.path(endpoint), { recursive: true });
+    writeFileSync(data.path(endpoint, "certificate.pem"), credentials.cert);
   };
   return { data, tls, manager, record, save, read, seed, seedKey };
 }
@@ -140,7 +143,7 @@ it("a 429 has no library retry and preserves numeric Retry-After across restart 
   let now = Date.now();
   t.mock.method(Date, "now", () => now);
   const f = fixture(t, () => now);
-  f.manager.start(hostname);
+  f.manager.start(hostname, host);
   await until(() => !f.manager.state.issuing);
   assert.equal(server.requests.length, 1);
   assert.equal(f.read().retryAt, now + 7_200_000);
@@ -155,11 +158,11 @@ it("a 429 has no library retry and preserves numeric Retry-After across restart 
     () => 0,
   );
   t.after(() => restarted.stop());
-  restarted.start(hostname);
+  restarted.start(hostname, host);
   assert.equal(restarted.state.issuing, false);
   restarted.stop();
   restarted.enable();
-  restarted.start(hostname);
+  restarted.start(hostname, host);
   assert.equal(f.read().failures, 0);
   assert.equal(f.read().validationFailures, 0);
   assert.equal(f.read().retryAt, now + 7_200_000);
@@ -177,17 +180,17 @@ it("resets pause only on restart, not re-registration; enable clears counters an
   });
   const f = fixture(t);
   f.save({ paused: true, failures: 4, validationFailures: 2 });
-  f.manager.start(hostname);
+  f.manager.start(hostname, host);
   assert.equal(f.read().paused, undefined);
   assert.equal(f.read().failures, 4);
   assert.equal(f.read().validationFailures, 2);
   f.save({ paused: true, failures: 4, validationFailures: 2 });
   f.manager.stop();
-  f.manager.start(hostname);
+  f.manager.start(hostname, host);
   assert.equal(f.read().paused, true);
   f.manager.enable();
   f.manager.stop();
-  f.manager.start(hostname);
+  f.manager.start(hostname, host);
   await until(() => !f.manager.state.issuing);
   assert.equal(f.read().failures, 1);
   assert.equal(f.read().validationFailures, 0);
@@ -203,7 +206,7 @@ for (const changed of ["hostname", "directory"] as const) {
     });
     const f = fixture(t);
     f.save({ [changed]: "other", paused: true, failures: 7, retryAt: notAfter });
-    f.manager.start(hostname);
+    f.manager.start(hostname, host);
     await until(() => !f.manager.state.issuing);
     assert.equal(f.read().failures, 1);
     assert.equal(f.read().hostname, hostname);
@@ -218,7 +221,7 @@ it("writes backoff before requests, merges later on-disk waits, and pauses on CA
     return true;
   });
   const f = fixture(t);
-  f.manager.start(hostname);
+  f.manager.start(hostname, host);
   assert.equal(f.read().failures, 1);
   await until(() => waiting !== undefined);
   f.save({ retryAt: notAfter, retryAfter: notAfter - 100 });
@@ -237,7 +240,7 @@ it("authorization success clears validation failures even if finalize fails", as
   });
   const f = fixture(t);
   f.save({ validationFailures: 1, retryAt: 0 });
-  f.manager.start(hostname);
+  f.manager.start(hostname, host);
   await until(() => !f.manager.state.issuing);
   assert.equal(f.read().validationFailures, 0);
   assert.equal(f.read().detail, "finalize unavailable");
@@ -257,7 +260,7 @@ it("polling 429 honors HTTP-date Retry-After instead of polling again", async (t
     return false;
   });
   const f = fixture(t, Date.now);
-  f.manager.start(hostname);
+  f.manager.start(hostname, host);
   await until(() => !f.manager.state.issuing);
   assert.equal(f.read().retryAt, Date.parse(retryAfter));
   assert.equal(server.requests.filter((request) => request.path === "/order/1").length, 1);
@@ -272,7 +275,7 @@ it("invalidation during a poll wait sends no further requests and keeps prewritt
     return true;
   });
   const f = fixture(t);
-  f.manager.start(hostname);
+  f.manager.start(hostname, host);
   await until(() => server.requests.some((request) => request.path === "/finalize"));
   f.manager.stop();
   const saved = readFileSync(f.data.path(stateFile));
@@ -292,11 +295,11 @@ it("late old responses cannot alter a new round's errors or persisted waits", as
   });
   let now = nowInValidity;
   const f = fixture(t, () => now);
-  f.manager.start(hostname);
+  f.manager.start(hostname, host);
   await until(() => waiting.length === 1);
   f.manager.stop();
   now = f.read().retryAt;
-  f.manager.start(hostname);
+  f.manager.start(hostname, host);
   await until(() => waiting.length === 2);
   waiting[1]?.reply(503, { detail: "new round" });
   await until(() => !f.manager.state.issuing);
@@ -319,7 +322,7 @@ it(
     const server = await acmeServer(t, () => true);
     const f = fixture(t, Date.now);
     assert.equal(acme.axios.defaults.timeout, 30_000);
-    f.manager.start(hostname);
+    f.manager.start(hostname, host);
     await until(() => !f.manager.state.issuing, 35_000);
     assert.equal(server.requests.length, 1);
     assert.equal(f.read().detail, undefined);
@@ -333,11 +336,11 @@ it("installs only usable certificates atomically, removes success records, and w
   let now = nowInValidity;
   const f = fixture(t, () => now);
   f.seedKey();
-  f.manager.start(hostname);
+  f.manager.start(hostname, host);
   await until(() => !f.manager.state.issuing);
   assert.equal(f.tls.available, true);
   assert.equal(existsSync(f.data.path(stateFile)), false);
-  assert.equal(statSync(f.data.path("remote-relay/certificate.pem")).mode & 0o777, 0o600);
+  assert.equal(statSync(f.data.path(endpoint, "certificate.pem")).mode & 0o777, 0o600);
   assert.equal(f.manager.state.expiresAt, new Date(notAfter).toISOString());
   f.save({ retryAt: notAfter + 100_000 });
   now = notAfter;
@@ -403,7 +406,7 @@ it("restart does not re-pause on a transient error with two historical validatio
   });
   const f = fixture(t);
   f.save({ paused: true, validationFailures: 2, retryAt: 0 });
-  f.manager.start(hostname);
+  f.manager.start(hostname, host);
   await until(() => !f.manager.state.issuing);
   assert.equal(f.read().validationFailures, 2);
   assert.equal(f.read().paused, false);
@@ -445,7 +448,7 @@ for (const type of ["caa", "serverInternal"]) {
       return true;
     });
     const f = fixture(t);
-    f.manager.start(hostname);
+    f.manager.start(hostname, host);
     await until(() => !f.manager.state.issuing);
     assert.equal(f.read().paused, type === "caa");
     assert.equal(f.read().validationFailures, 0);

@@ -12,7 +12,6 @@ import {
 } from "./acme.ts";
 import type { RelayTls } from "./tls.ts";
 
-const stateFile = "remote-relay/certificate-state.json";
 const hour = 60 * 60_000;
 
 export interface CertificateRecord {
@@ -78,6 +77,7 @@ export function retryDelay(failures: number, random: number): number {
 /** Only a registered Web process checks certificates and writes issuance records. */
 export class Certificates {
   private hostname: string | undefined;
+  private endpoint = "";
   private readonly directory = acmeDirectory();
   private reset: "restart" | "enable" | undefined = "restart";
   private record: CertificateRecord | undefined;
@@ -113,8 +113,9 @@ export class Certificates {
     this.reset = "enable";
   }
 
-  start(hostname: string): void {
+  start(hostname: string, host: string): void {
     this.stop();
+    this.endpoint = `remote-relay/endpoints/${encodeURIComponent(host)}`;
     this.hostname = hostname;
     this.check();
   }
@@ -129,7 +130,10 @@ export class Certificates {
   }
 
   private readRecord(): CertificateRecord | undefined {
-    const record = this.data.readJson<CertificateRecord | undefined>(stateFile, undefined);
+    const record = this.data.readJson<CertificateRecord | undefined>(
+      `${this.endpoint}/certificate-state.json`,
+      undefined,
+    );
     return record && record.hostname === this.hostname && record.directory === this.directory
       ? record
       : undefined;
@@ -143,13 +147,13 @@ export class Certificates {
       retryAt: Math.max(existing?.retryAt ?? 0, record.retryAt, retryAfter),
       ...(retryAfter ? { retryAfter } : {}),
     };
-    this.data.writeJson(stateFile, this.record, { mode: 0o600 });
+    this.data.writeJson(`${this.endpoint}/certificate-state.json`, this.record, { mode: 0o600 });
   }
 
   private load(): UsableCertificate | undefined {
     try {
       return usableCertificate(
-        readFileSync(this.data.path("remote-relay/certificate.pem")),
+        readFileSync(this.data.path(this.endpoint, "certificate.pem")),
         readFileSync(this.data.path("remote-relay/certificate-key.pem")),
         this.hostname as string,
         this.now(),
@@ -175,7 +179,9 @@ export class Certificates {
           this.record.retryAt = this.record.retryAfter ?? 0;
         }
         // Explicit user reset is the only operation allowed to shorten local backoff.
-        this.data.writeJson(stateFile, this.record, { mode: 0o600 });
+        this.data.writeJson(`${this.endpoint}/certificate-state.json`, this.record, {
+          mode: 0o600,
+        });
       }
       this.reset = undefined;
     }
@@ -237,13 +243,13 @@ export class Certificates {
         this.now(),
       );
       if (!certificate) throw new Error("Unusable certificate");
-      const target = this.data.path("remote-relay/certificate.pem");
+      const target = this.data.path(this.endpoint, "certificate.pem");
       const temp = `${target}.${process.pid}.${round.id}.tmp`;
       writeFileSync(temp, cert, { mode: 0o600 });
       renameSync(temp, target);
       this.tls.useCertificate(certificate.context);
       this.certificate = certificate;
-      rmSync(this.data.path(stateFile), { force: true });
+      rmSync(this.data.path(this.endpoint, "certificate-state.json"), { force: true });
       this.record = undefined;
     } catch (error) {
       if (!round.controller.signal.aborted) {

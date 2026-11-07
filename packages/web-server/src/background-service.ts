@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { DataDir } from "./store.ts";
 import { RequestTrust } from "./request-trust.ts";
-import { clearRelayAssignment, relayHost, relayKind } from "./remote-relay/settings.ts";
+import { relayHost } from "./remote-relay/settings.ts";
 
 export const SETTINGS_CHANGED_EXIT_CODE = 42;
 
@@ -20,9 +20,16 @@ const serviceSchema = z.object({
   relayHost: z.string().optional(),
   relayKind: z.enum(["official", "self-hosted"]).optional(),
   relayEnabled: z.boolean().default(false),
-  relayName: z.string().optional(),
-  relayInvite: z.string().optional(),
-  relayHostname: z.string().optional(),
+  relayRegistrations: z
+    .record(
+      z.string(),
+      z.object({
+        name: z.string().optional(),
+        invite: z.string().optional(),
+        hostname: z.string().optional(),
+      }),
+    )
+    .default({}),
   trustedProxies: z
     .string()
     .transform((value) => {
@@ -47,7 +54,26 @@ export function publicAccessUrl(value: string): string {
 
 export function readServiceOptions(data: DataDir) {
   const file = data.path("service.json");
-  return serviceSchema.parse(existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {});
+  const { relayName, relayInvite, relayHostname, ...saved } = serviceSchema
+    .extend({
+      relayName: z.string().optional(),
+      relayInvite: z.string().optional(),
+      relayHostname: z.string().optional(),
+    })
+    .parse(existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {});
+  const host = relayHost(saved);
+  if (
+    host &&
+    (relayName !== undefined || relayInvite !== undefined || relayHostname !== undefined)
+  ) {
+    saved.relayRegistrations[host] = {
+      ...(relayName === undefined ? {} : { name: relayName }),
+      ...(relayInvite === undefined ? {} : { invite: relayInvite }),
+      ...(relayHostname === undefined ? {} : { hostname: relayHostname }),
+      ...saved.relayRegistrations[host],
+    };
+  }
+  return saved;
 }
 
 /** Empty options clear saved values; validation precedes the atomic replacement. */
@@ -61,11 +87,8 @@ export function saveServiceOptions(
     relay?: string;
   },
 ): boolean {
-  const file = data.path("service.json");
-  const saved: Record<string, unknown> = existsSync(file)
-    ? JSON.parse(readFileSync(file, "utf8"))
-    : {};
-  const next = { ...saved };
+  const saved = readServiceOptions(data);
+  const next: Record<string, unknown> = { ...saved };
   for (const [option, field] of [
     ["host", "host"],
     ["port", "port"],
@@ -87,11 +110,6 @@ export function saveServiceOptions(
   if (!result.success) throw new Error(z.prettifyError(result.error));
   const validated = result.data;
   if (isDeepStrictEqual(serviceSchema.parse(saved), validated)) return false;
-  if (
-    relayHost(validated) !== relayHost(serviceSchema.parse(saved)) ||
-    relayKind(validated) !== relayKind(serviceSchema.parse(saved))
-  )
-    clearRelayAssignment(data, validated);
   data.writeJson("service.json", validated, { mode: 0o600 });
   return true;
 }

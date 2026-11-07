@@ -160,16 +160,19 @@ it("validates address names per relay kind and never sends invitations to a self
     name: "my-computer",
     invite: "code",
   });
-  await until(() => readServiceOptions(data).relayHostname === "alice.relay.test");
+  const host = `localhost:${relay.port}`;
+  await until(
+    () => readServiceOptions(data).relayRegistrations[host]?.hostname === "alice.relay.test",
+  );
   assert.equal(requests[0]?.name, "my-computer");
   assert.equal(requests[0]?.invite, undefined);
   assert.equal(
-    (await call<WebAccessState>("codexhost/accessTokenGet")).value.relay?.hostname,
+    (await call<WebAccessState>("codexhost/accessTokenGet")).value.relay?.customHostname,
     "alice.relay.test",
   );
   await call("codexhost/relaySet", { enabled: false });
-  assert.equal(readServiceOptions(data).relayName, "my-computer");
-  assert.equal(readServiceOptions(data).relayInvite, undefined);
+  assert.equal(readServiceOptions(data).relayRegistrations[host]?.name, "my-computer");
+  assert.equal(readServiceOptions(data).relayRegistrations[host]?.invite, undefined);
 });
 
 it("does not create an identity or connect with --no-auth even when enabled", async (t) => {

@@ -22,7 +22,8 @@ it("retains refusal reasons, capacity retry, remembered hostname and quota recov
     officialHost: "relay.chost.dev",
     customHost: "relay.example.com",
     state: { status: "connecting", reason: "full" },
-    hostname: "alice.relay.test",
+    officialHostname: "alice.relay.test",
+    customHostname: "computer.example.com",
     quotaUntil: "2026-11-07T00:00:00.000Z",
   };
   expect(

@@ -43,9 +43,9 @@ export function RelayControl({
 }): ReactNode {
   const current = kind === relay.kind;
   const state: RelayState = current ? relay.state : { status: "off" };
-  const hostname = current ? relay.hostname : undefined;
-  const quotaUntil = current ? relay.quotaUntil : undefined;
   const official = kind === "official";
+  const hostname = official ? relay.officialHostname : relay.customHostname;
+  const quotaUntil = current ? relay.quotaUntil : undefined;
   const blocked = relay.enabled && !current;
   const savedDomain = relay.customHost?.startsWith("relay.")
     ? relay.customHost.slice(6)

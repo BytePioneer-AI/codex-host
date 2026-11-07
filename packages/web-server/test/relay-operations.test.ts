@@ -60,16 +60,18 @@ it("submits and saves name and invite, remembers the hostname across disable and
     return { name: "alice" };
   });
   f.web.setEnabled(true, { name: "alice", invite: "invite-code" });
-  await until(() => f.web.access?.hostname === "alice.relay.test");
+  await until(() => f.web.access?.officialHostname === "alice.relay.test");
   assert.equal(requests[0]?.name, "alice");
   assert.equal(requests[0]?.invite, "invite-code");
   assert.match(requests[0]?.id ?? "", /^[a-z2-7]{26}$/);
   assert.ok(requests[0]?.ip);
-  assert.equal(readServiceOptions(f.data).relayName, "alice");
-  assert.equal(readServiceOptions(f.data).relayInvite, "invite-code");
-  assert.equal(readServiceOptions(f.data).relayHostname, "alice.relay.test");
+  assert.deepEqual(readServiceOptions(f.data).relayRegistrations[OFFICIAL_RELAY_HOST], {
+    name: "alice",
+    invite: "invite-code",
+    hostname: "alice.relay.test",
+  });
   f.web.setEnabled(false);
-  assert.equal(f.web.access?.hostname, "alice.relay.test");
+  assert.equal(f.web.access?.officialHostname, "alice.relay.test");
   f.web.setEnabled(true);
   await until(() => requests.length === 2 && f.web.state.status === "missing-certificate");
   assert.equal(requests[1]?.name, "alice");
@@ -78,7 +80,7 @@ it("submits and saves name and invite, remembers the hostname across disable and
   f.web.setEnabled(false);
   const restarted = new RemoteRelay(f.data, true, createServer(), new RequestTrust(undefined));
   t.after(() => restarted.close());
-  assert.equal(restarted.access?.hostname, "alice.relay.test");
+  assert.equal(restarted.access?.officialHostname, "alice.relay.test");
 });
 
 it("omits empty registration headers and lets check allocate a name", async (t) => {
@@ -88,7 +90,7 @@ it("omits empty registration headers and lets check allocate a name", async (t) 
     return { name: "assigned123" };
   });
   f.web.setEnabled(true, { name: "", invite: "" });
-  await until(() => f.web.access?.hostname === "assigned123.relay.test");
+  await until(() => f.web.access?.officialHostname === "assigned123.relay.test");
   assert.equal(request?.name, undefined);
   assert.equal(request?.invite, undefined);
 });
@@ -104,7 +106,7 @@ for (const reason of ["invite", "name-taken", "banned"] as const) {
     f.web.setEnabled(true, { name: "alice", invite: "bad" });
     await until(() => f.web.state.status === "off" && f.web.state.reason === reason);
     assert.equal(readServiceOptions(f.data).relayEnabled, false);
-    assert.equal(f.web.access?.hostname, undefined);
+    assert.equal(f.web.access?.officialHostname, undefined);
     assert.equal("reason" in readServiceOptions(f.data), false);
     await delay(1_100);
     assert.equal(checks, 1);
@@ -112,7 +114,7 @@ for (const reason of ["invite", "name-taken", "banned"] as const) {
     allowed = true;
     f.web.setEnabled(true, { name: "alice", invite: "fixed" });
     assert.deepEqual(f.web.state, { status: "connecting" });
-    await until(() => f.web.access?.hostname === "alice.relay.test");
+    await until(() => f.web.access?.officialHostname === "alice.relay.test");
     assert.equal(checks, 2);
     assert.equal(readServiceOptions(f.data).relayEnabled, true);
   });
@@ -130,17 +132,20 @@ for (const reason of ["invite", "name-taken"] as const) {
       return { name: newIdentity ? "newalice" : "alice" };
     });
     f.web.setEnabled(true, { name: "alice", invite: "used-code" });
-    await until(() => f.web.access?.hostname === "alice.relay.test");
+    await until(() => f.web.access?.officialHostname === "alice.relay.test");
     f.web.setEnabled(false);
     rmSync(f.data.path("remote-relay/identity.pem"));
     f.web.setEnabled(true);
     await until(() => f.web.state.status === "off" && f.web.state.reason === reason);
     assert.equal(newIdentity, true);
-    assert.equal(readServiceOptions(f.data).relayHostname, undefined);
-    assert.equal(f.web.access?.hostname, undefined);
+    assert.equal(
+      readServiceOptions(f.data).relayRegistrations[OFFICIAL_RELAY_HOST]?.hostname,
+      undefined,
+    );
+    assert.equal(f.web.access?.officialHostname, undefined);
     corrected = true;
     f.web.setEnabled(true, { name: "newalice", invite: "new-code" });
-    await until(() => f.web.access?.hostname === "newalice.relay.test");
+    await until(() => f.web.access?.officialHostname === "newalice.relay.test");
   });
 }
 
@@ -152,7 +157,7 @@ it("only writes a registered hostname when it changes, not on reconnect", async 
     return { name };
   });
   f.web.setEnabled(true);
-  await until(() => f.web.access?.hostname === "alice.relay.test");
+  await until(() => f.web.access?.officialHostname === "alice.relay.test");
   const writes = t.mock.method(f.data, "writeJson");
   const serviceWrites = () =>
     writes.mock.calls.filter((call) => call.arguments[0] === "service.json");
@@ -161,7 +166,7 @@ it("only writes a registered hostname when it changes, not on reconnect", async 
   assert.equal(serviceWrites().length, 0);
   name = "newalice";
   f.relay.disconnect("alice");
-  await until(() => f.web.access?.hostname === "newalice.relay.test");
+  await until(() => f.web.access?.officialHostname === "newalice.relay.test");
   assert.equal(serviceWrites().length, 1);
 });
 
@@ -176,7 +181,7 @@ it("keeps the switch enabled and retries after a full Relay", async (t) => {
   await until(() => f.web.state.status === "connecting" && f.web.state.reason === "full");
   assert.equal(readServiceOptions(f.data).relayEnabled, true);
   full = false;
-  await until(() => f.web.access?.hostname === "alice.relay.test");
+  await until(() => f.web.access?.officialHostname === "alice.relay.test");
   assert.ok(checks >= 2);
   assert.equal(readServiceOptions(f.data).relayEnabled, true);
 });
@@ -195,7 +200,10 @@ it(
     for (let i = 0; i < 50 && f.web.access?.quotaUntil === undefined; i++) await delay(10);
     assert.equal(f.web.access?.quotaUntil, "2026-11-07T00:00:00.000Z");
     assert.equal(readServiceOptions(f.data).relayEnabled, true);
-    assert.equal(readServiceOptions(f.data).relayHostname, "alice.relay.test");
+    assert.equal(
+      readServiceOptions(f.data).relayRegistrations[OFFICIAL_RELAY_HOST]?.hostname,
+      "alice.relay.test",
+    );
     await delay(1_100);
     assert.equal(f.web.access?.quotaUntil, undefined);
     assert.equal(checks, 1);
@@ -203,7 +211,7 @@ it(
   },
 );
 
-it("only clears the remembered hostname when the Relay control address changes", (t) => {
+it("preserves registrations across CLI control address changes and migrates legacy fields", (t) => {
   const data = relayData(t);
   data.writeJson("service.json", {
     relayHost: "old.example",
@@ -213,19 +221,29 @@ it("only clears the remembered hostname when the Relay control address changes",
     relayHostname: "alice.relay.test",
   });
   assert.equal(saveServiceOptions(data, { relay: "old.example" }), false);
-  assert.equal(readServiceOptions(data).relayHostname, "alice.relay.test");
+  const original = { name: "alice", invite: "invite-code", hostname: "alice.relay.test" };
+  assert.deepEqual(readServiceOptions(data).relayRegistrations["old.example"], original);
   saveServiceOptions(data, { port: "4497" });
-  assert.equal(readServiceOptions(data).relayHostname, "alice.relay.test");
+  assert.deepEqual(readServiceOptions(data).relayRegistrations["old.example"], original);
   saveServiceOptions(data, { relay: "new.example" });
-  assert.equal(readServiceOptions(data).relayHostname, undefined);
-  assert.equal(readServiceOptions(data).relayName, undefined);
-  assert.equal(readServiceOptions(data).relayInvite, undefined);
+  assert.deepEqual(readServiceOptions(data).relayRegistrations["old.example"], original);
+  assert.equal(readServiceOptions(data).relayRegistrations["new.example"], undefined);
   data.writeJson("service.json", {
     ...readServiceOptions(data),
-    relayHostname: "alice.new.example",
+    relayRegistrations: {
+      ...readServiceOptions(data).relayRegistrations,
+      "new.example": { hostname: "alice.new.example" },
+    },
   });
   saveServiceOptions(data, { relay: "" });
-  assert.equal(readServiceOptions(data).relayHostname, undefined);
+  assert.equal(readServiceOptions(data).relayRegistrations[OFFICIAL_RELAY_HOST], undefined);
+  assert.deepEqual(readServiceOptions(data).relayRegistrations["old.example"], original);
+  assert.equal(
+    readServiceOptions(data).relayRegistrations["new.example"]?.hostname,
+    "alice.new.example",
+  );
+  saveServiceOptions(data, { relay: "old.example" });
+  assert.deepEqual(readServiceOptions(data).relayRegistrations["old.example"], original);
 });
 
 it("registers at the newly saved page endpoint with the same identity, not the old assignment", async (t) => {
@@ -257,12 +275,12 @@ it("registers at the newly saved page endpoint with the same identity, not the o
   t.after(() => web.close());
   web.setEnabled(true, undefined, { kind: "self-hosted", host: "first.example.com" });
   assert.equal(readServiceOptions(f.data).relayHost, "first.example.com");
-  await until(() => web.access.hostname === "first.relay.test");
+  await until(() => web.access.customHostname === "first.relay.test");
   web.setEnabled(false);
   web.setEnabled(true, undefined, { kind: "self-hosted", host: "second.example.com" });
-  assert.equal(web.access.hostname, undefined);
+  assert.equal(web.access.customHostname, undefined);
   assert.equal(readServiceOptions(f.data).relayHost, "second.example.com");
-  await until(() => web.access.hostname === "second.second.test");
+  await until(() => web.access.customHostname === "second.second.test");
   assert.deepEqual(destinations, ["first.example.com", "second.example.com"]);
   assert.equal(identities.length, 2);
   assert.equal(identities[0], identities[1]);

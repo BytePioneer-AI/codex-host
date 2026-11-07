@@ -244,7 +244,8 @@ for (const locale of ["en-US", "zh-CN"]) {
             kind: "self-hosted",
             customHost: args.host ?? defined(shown.relay).customHost,
             enabled: args.enabled,
-            hostname: "computer.example.com",
+            customHostname: "computer.example.com",
+            officialHostname: "phone.relay.test",
             state: args.enabled
               ? {
                   status: "connected",
@@ -306,6 +307,7 @@ for (const locale of ["en-US", "zh-CN"]) {
           true,
         );
         await choose("relay");
+        assert.equal(await control.getByRole("textbox").count(), 0);
         assert.equal(await enable.isDisabled(), true);
         await control.getByText(closeFirst, { exact: true }).waitFor();
         assert.equal(
@@ -324,6 +326,7 @@ for (const locale of ["en-US", "zh-CN"]) {
       assert.equal(await host.isEnabled(), true);
       assert.equal(await help.getAttribute("open"), null);
       await choose("relay");
+      assert.equal(await control.getByRole("textbox").count(), 0);
       assert.equal(await enable.isEnabled(), true);
       shown = {
         ...shown,
@@ -332,7 +335,7 @@ for (const locale of ["en-US", "zh-CN"]) {
           ...defined(shown.relay),
           kind: "official",
           enabled: true,
-          hostname: "phone.relay.test",
+          officialHostname: "phone.relay.test",
           state: {
             status: "connected",
             url: "https://phone.relay.test/",

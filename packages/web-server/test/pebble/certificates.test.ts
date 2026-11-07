@@ -31,11 +31,12 @@ it(
     );
     t.after(() => manager.stop());
     const challenges = t.mock.method(f.tls, "setChallenge", () => {});
-    manager.start(f.hostname);
+    const host = `localhost:${f.relay.port}`;
+    manager.start(f.hostname, host);
     await until(() => !manager.state.issuing, 15_000);
     const read = () =>
       f.data.readJson<CertificateRecord>(
-        "remote-relay/certificate-state.json",
+        `remote-relay/endpoints/${encodeURIComponent(host)}/certificate-state.json`,
         {} as CertificateRecord,
       );
     assert.equal(read().validationFailures, 1);
@@ -45,7 +46,7 @@ it(
     assert.equal(read().validationFailures, 2);
     assert.equal(manager.state.failure?.paused, true);
     manager.stop();
-    manager.start(f.hostname);
+    manager.start(f.hostname, host);
     assert.equal(manager.state.issuing, false);
     assert.equal(challenges.mock.callCount(), 2);
   },
@@ -66,10 +67,12 @@ it(
       () => 0,
     );
     t.after(() => manager.stop());
-    manager.start(f.hostname);
+    const host = `localhost:${f.relay.port}`;
+    const endpoint = `remote-relay/endpoints/${encodeURIComponent(host)}`;
+    manager.start(f.hostname, host);
     await until(() => !manager.state.issuing, 15_000);
     assert.equal(manager.state.failure, undefined);
-    const original = readFileSync(f.data.path("remote-relay/certificate.pem"));
+    const original = readFileSync(f.data.path(endpoint, "certificate.pem"));
     const cert = new X509Certificate(original);
     offset =
       Date.parse(cert.validFrom) +
@@ -87,7 +90,7 @@ it(
     manager.check();
     await until(() => !manager.state.issuing, 15_000);
     assert.ok(manager.state.failure);
-    assert.deepEqual(readFileSync(f.data.path("remote-relay/certificate.pem")), original);
+    assert.deepEqual(readFileSync(f.data.path(endpoint, "certificate.pem")), original);
     const phone = connect({
       host: "127.0.0.1",
       port: f.relay.port,
@@ -142,12 +145,13 @@ it(
     });
     t.after(disconnect);
     await until(() => replaced && web.state.status === "stopped");
-    const saved = readFileSync(f.data.path("remote-relay/certificate-state.json"));
+    const endpoint = `remote-relay/endpoints/${encodeURIComponent(`localhost:${f.relay.port}`)}`;
+    const saved = readFileSync(f.data.path(endpoint, "certificate-state.json"));
     release();
     await delay(100);
     assert.equal(clear.mock.callCount(), 1);
-    assert.equal(existsSync(f.data.path("remote-relay/certificate.pem")), false);
-    assert.deepEqual(readFileSync(f.data.path("remote-relay/certificate-state.json")), saved);
+    assert.equal(existsSync(f.data.path(endpoint, "certificate.pem")), false);
+    assert.deepEqual(readFileSync(f.data.path(endpoint, "certificate-state.json")), saved);
   },
 );
 

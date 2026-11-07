@@ -126,7 +126,8 @@ export const webAccessStateSchema = z
         kind: webRelayKindSchema,
         officialHost: z.string(),
         customHost: z.string().optional(),
-        hostname: z.string().optional(),
+        officialHostname: z.string().optional(),
+        customHostname: z.string().optional(),
         quotaUntil: z.string().optional(),
       })
       .strict()

@@ -25,8 +25,9 @@ async function fixture(t: TestContext, certificate = true) {
   const data = relayData(t);
   const hostname = `${relayIdentity(data).id}.relay.test`;
   if (certificate) {
-    mkdirSync(data.path("remote-relay"), { recursive: true });
-    copyFileSync(certPath, data.path("remote-relay/certificate.pem"));
+    const endpoint = `remote-relay/endpoints/${encodeURIComponent(`localhost:${relay.port}`)}`;
+    mkdirSync(data.path(endpoint), { recursive: true });
+    copyFileSync(certPath, data.path(endpoint, "certificate.pem"));
     copyFileSync(keyPath, data.path("remote-relay/certificate-key.pem"));
   }
   data.writeJson("service.json", { relayHost: `localhost:${relay.port}`, relayEnabled: true });

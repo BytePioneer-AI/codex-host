@@ -1,4 +1,6 @@
 import type { Server } from "node:http";
+import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import type { RequestTrust } from "../request-trust.ts";
 import { RelayTls } from "./tls.ts";
 import type { WebAccessState, WebRelayKind, WebRelayState } from "@codexhost/shared-contracts";
@@ -7,7 +9,7 @@ import type { DataDir } from "../store.ts";
 import { relayIdentity } from "./identity.ts";
 import { connectRelay } from "./client.ts";
 import { Certificates } from "./certificates.ts";
-import { clearRelayAssignment, OFFICIAL_RELAY_HOST, relayHost, relayKind } from "./settings.ts";
+import { OFFICIAL_RELAY_HOST, relayHost, relayKind } from "./settings.ts";
 import { RpcError } from "../transport.ts";
 
 /** Owns the saved switch and the lifetime of this Web process's relay connection. */
@@ -27,20 +29,38 @@ export class RemoteRelay {
     trust: RequestTrust,
     private readonly connect = connectRelay,
   ) {
+    // Legacy files belong to the legacy assignment, which migrated to its own endpoint; after
+    // a control address change they have no owner and must not reach another endpoint.
+    const saved = readServiceOptions(data);
+    const host = relayHost(saved);
+    const owner = host && saved.relayRegistrations[host]?.hostname ? host : undefined;
+    const directory = owner && data.path("remote-relay", "endpoints", encodeURIComponent(owner));
+    for (const file of ["certificate.pem", "certificate-state.json"]) {
+      const legacy = data.path("remote-relay", file);
+      if (!existsSync(legacy)) continue;
+      if (directory) {
+        mkdirSync(directory, { recursive: true });
+        renameSync(legacy, join(directory, file));
+      } else rmSync(legacy, { force: true });
+    }
     this.tls = new RelayTls(server, trust);
     this.certificates = new Certificates(data, this.tls, () => this.updateCertificateState());
   }
 
   get access(): NonNullable<WebAccessState["relay"]> {
     const saved = readServiceOptions(this.data);
-    const { relayHostname } = saved;
+    const officialHostname = saved.relayRegistrations[OFFICIAL_RELAY_HOST]?.hostname;
+    const customHostname = saved.relayHost
+      ? saved.relayRegistrations[saved.relayHost]?.hostname
+      : undefined;
     return {
       state: this.state,
       enabled: saved.relayEnabled && this.authenticated,
       kind: relayKind(saved),
       officialHost: OFFICIAL_RELAY_HOST,
       ...(saved.relayHost ? { customHost: saved.relayHost } : {}),
-      ...(relayHostname ? { hostname: relayHostname } : {}),
+      ...(officialHostname ? { officialHostname } : {}),
+      ...(customHostname ? { customHostname } : {}),
       ...(this.quotaUntil ? { quotaUntil: this.quotaUntil } : {}),
     };
   }
@@ -51,11 +71,12 @@ export class RemoteRelay {
     const host = relayHost(saved);
     if (!host) return;
     const official = relayKind(saved) === "official";
+    const registration = saved.relayRegistrations[host];
     this.disconnect = this.connect({
       host,
       identity: relayIdentity(this.data),
-      name: saved.relayName ?? "",
-      invite: official ? (saved.relayInvite ?? "") : "",
+      name: registration?.name ?? "",
+      invite: official ? (registration?.invite ?? "") : "",
       connecting: (reason) => {
         this.certificates.stop();
         this.hostname = undefined;
@@ -64,14 +85,11 @@ export class RemoteRelay {
       registered: (hostname) => {
         this.hostname = hostname;
         const saved = readServiceOptions(this.data);
-        if (saved.relayHostname !== hostname) {
-          this.data.writeJson(
-            "service.json",
-            { ...saved, relayHostname: hostname },
-            { mode: 0o600 },
-          );
+        if (saved.relayRegistrations[host]?.hostname !== hostname) {
+          saved.relayRegistrations[host] = { ...saved.relayRegistrations[host], hostname };
+          this.data.writeJson("service.json", saved, { mode: 0o600 });
         }
-        this.certificates.start(hostname);
+        this.certificates.start(hostname, host);
       },
       stopped: (reason) => {
         this.certificates.stop();
@@ -80,7 +98,8 @@ export class RemoteRelay {
           this.setEnabled(false);
           if (reason === "invite" || reason === "name-taken") {
             const saved = readServiceOptions(this.data);
-            delete saved.relayHostname;
+            const registration = saved.relayRegistrations[host];
+            if (registration) delete registration.hostname;
             this.data.writeJson("service.json", saved, { mode: 0o600 });
           }
           this.state = { status: "off", reason };
@@ -145,11 +164,13 @@ export class RemoteRelay {
       );
     if (enabled && !relayHost(next))
       throw new RpcError("relay/not-configured", "Enter a self-hosted relay hostname first", {});
-    if (relayHost(saved) !== relayHost(next) || relayKind(saved) !== relayKind(next))
-      clearRelayAssignment(this.data, next);
     if (enabled && registration !== undefined) {
-      next.relayName = registration.name ?? "";
-      if (next.relayKind === "official") next.relayInvite = registration.invite ?? "";
+      const host = relayHost(next) as string;
+      next.relayRegistrations[host] = {
+        ...next.relayRegistrations[host],
+        name: registration.name ?? "",
+        ...(next.relayKind === "official" ? { invite: registration.invite ?? "" } : {}),
+      };
     }
     this.data.writeJson("service.json", next, { mode: 0o600 });
     this.close();

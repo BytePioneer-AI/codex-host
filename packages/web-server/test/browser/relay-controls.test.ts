@@ -112,7 +112,8 @@ it(
     await control.getByText(/Preparing…|Temporarily unavailable/u).waitFor();
     assert.equal(requests[0]?.name, undefined);
     assert.equal(requests[0]?.invite, undefined);
-    assert.equal(readServiceOptions(f.data).relayHostname, "alice.relay.test");
+    const saved = readServiceOptions(f.data);
+    assert.equal(saved.relayRegistrations[defined(saved.relayHost)]?.hostname, "alice.relay.test");
     assert.equal(await name.count(), 0);
     assert.equal(await invite.count(), 0);
     assert.equal(
@@ -125,7 +126,7 @@ it(
     await f.page.locator('[data-relay-status="off"]').waitFor();
     const state = await f.access();
     assert.equal(state.relay?.state.status, "off");
-    assert.equal(state.relay?.hostname, "alice.relay.test");
+    assert.equal(state.relay?.customHostname, "alice.relay.test");
     assert.equal(await name.count(), 0);
     await open(f.page, f.login);
     await chooseRelay(f.page);
@@ -392,7 +393,7 @@ it(
               ...base,
               relay: {
                 ...base.relay,
-                hostname: "alice.relay.test",
+                customHostname: "alice.relay.test",
                 ...(quotaUntil ? { quotaUntil } : {}),
                 state: {
                   status: "connected",

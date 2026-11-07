@@ -159,15 +159,12 @@ export const en = {
   "connectDevices.selfRelay.invalidHost":
     "Enter a domain name such as relay.example.com, without https:// or a port.",
   "connectDevices.selfRelay.helpTitle": "How to set up your own relay",
-  "connectDevices.selfRelay.source": "Get the codexhost source on your server:",
-  "connectDevices.selfRelay.domain":
-    "You need a domain and a Linux server with Docker and certbot.",
+  "connectDevices.selfRelay.domain": "You need a domain and a Linux server with Docker.",
   "connectDevices.selfRelay.dns":
-    "Add one DNS record pointing *.example.com to the server. Existing records are unaffected. On Cloudflare, choose DNS only.",
-  "connectDevices.selfRelay.ports": "Open TCP ports 443 and 80.",
-  "connectDevices.selfRelay.certificate": "Use certbot to get a certificate for relay.example.com.",
+    "In your domain's DNS settings, add a record: type A, name *, value your server's public IPv4 address. On Cloudflare, choose DNS only.",
+  "connectDevices.selfRelay.ports": "Open TCP port 443.",
   "connectDevices.selfRelay.docker":
-    "Build the image from packages/remote-relay/Dockerfile, replace example.com with your domain in packages/remote-relay/deploy/compose.yaml, then start it with Docker Compose.",
+    "Get the source on your server, replace example.com with your domain in compose.yaml, then start:",
   "connectDevices.selfRelay.connect":
     "Come back here, enter relay.example.com and click Enable relay.",
   "connectDevices.selfRelay.noDomain": "No domain? Use the official relay or Tailscale.",
@@ -563,15 +560,12 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.selfRelay.invalidHost":
     "请输入域名，例如 relay.example.com，不带 https:// 或端口。",
   "connectDevices.selfRelay.helpTitle": "如何搭建自己的中转",
-  "connectDevices.selfRelay.source": "在服务器上获取 codexhost 源码：",
-  "connectDevices.selfRelay.domain":
-    "准备一个域名，以及一台装有 Docker 和 certbot 的 Linux 服务器。",
+  "connectDevices.selfRelay.domain": "准备一个域名，以及一台装有 Docker 的 Linux 服务器。",
   "connectDevices.selfRelay.dns":
-    "添加一条 DNS 记录，把 *.example.com 指向服务器，已有记录不受影响。使用 Cloudflare 时选择“仅 DNS”。",
-  "connectDevices.selfRelay.ports": "放行 TCP 443 和 80 端口。",
-  "connectDevices.selfRelay.certificate": "用 certbot 为 relay.example.com 申请证书。",
+    "在域名的 DNS 设置里添加一条记录：类型选 A，名称填 *，值填服务器的公网 IPv4 地址。使用 Cloudflare 时选择“仅 DNS”。",
+  "connectDevices.selfRelay.ports": "放行 TCP 443 端口。",
   "connectDevices.selfRelay.docker":
-    "按 packages/remote-relay/Dockerfile 构建镜像，把 packages/remote-relay/deploy/compose.yaml 中的 example.com 换成你的域名，然后用 Docker Compose 启动。",
+    "在服务器上获取源码，把 compose.yaml 中的 example.com 换成你的域名，然后启动：",
   "connectDevices.selfRelay.connect": "回到这里填写 relay.example.com，点击“启用中转”。",
   "connectDevices.selfRelay.noDomain": "没有域名？可以使用官方中转或 Tailscale。",
   "connectDevices.selfRelay.docs": "完整自建中转教程",

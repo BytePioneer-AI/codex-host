@@ -15,14 +15,15 @@ export function SelfHostedRelayHelp({
       <div className={css.connectionHelp}>
         <ol className={css.relayTutorial}>
           <li>{t("connectDevices.selfRelay.domain")}</li>
-          <li>
-            {t("connectDevices.selfRelay.source")}
-            <code>git clone https://github.com/BytePioneer-AI/codex-host.git /opt/codexhost</code>
-          </li>
           <li>{t("connectDevices.selfRelay.dns")}</li>
           <li>{t("connectDevices.selfRelay.ports")}</li>
-          <li>{t("connectDevices.selfRelay.certificate")}</li>
-          <li>{t("connectDevices.selfRelay.docker")}</li>
+          <li>
+            {t("connectDevices.selfRelay.docker")}
+            <code>git clone https://github.com/BytePioneer-AI/codex-host.git /opt/codexhost</code>
+            <code>
+              cd /opt/codexhost/packages/remote-relay/deploy &amp;&amp; docker compose up -d --build
+            </code>
+          </li>
           <li>{t("connectDevices.selfRelay.connect")}</li>
         </ol>
         <p className={css.meta}>{t("connectDevices.selfRelay.noDomain")}</p>

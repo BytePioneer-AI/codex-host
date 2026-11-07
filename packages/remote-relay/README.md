@@ -1,45 +1,44 @@
 # Remote Relay
 
-独立的 SNI 字节转发服务，只依赖 Node.js 和 `ws`。手机 TLS 在电脑端终止，Relay 只持有控制地址的证书，不持有用户证书，不保存转发内容。电脑端接入和用户证书申请由 Web 提供；本包不启动 Host 或 Web。
+独立的 SNI 字节转发服务，只依赖 Node.js、`ws` 和 `acme-client`。手机 TLS 在电脑端终止，Relay 只持有控制地址的证书，不持有用户证书，不保存转发内容。电脑端接入和用户证书申请由 Web 提供；本包不启动 Host 或 Web。
 
 ## 启动
 
-Docker 本地构建、Compose 和宿主机 certbot 续期步骤见[自建中转](../../docs/product/self-hosted-relay.md)。镜像入口为 `codexhost-relay`，后续参数原样传入下表中的 CLI；镜像由用户从源码构建，暂不发布到镜像仓库。
+Docker 源码构建、Compose 和自动证书说明见[自建中转](../../docs/product/self-hosted-relay.md)。镜像入口为 `codexhost-relay`，后续参数原样传入下表中的 CLI；镜像由用户从源码构建，暂不发布到镜像仓库。
 
 直接从源码运行时，在仓库根目录安装依赖并构建本包：
 
 ```sh
 npm install
 npx tsc -b packages/remote-relay/tsconfig.json
-node packages/remote-relay/dist/cli.js \
-  --domain example.com \
-  --control-host relay.example.com \
-  --cert /etc/letsencrypt/live/relay.example.com/fullchain.pem \
-  --key /etc/letsencrypt/live/relay.example.com/privkey.pem
+node packages/remote-relay/dist/cli.js --domain example.com
 ```
 
 | 参数 | 含义 | 默认值 |
 | --- | --- | --- |
 | `--domain` | 用户子域的基础域名 | 必填 |
-| `--control-host` | 控制连接的主机名 | 与 `--domain` 相同 |
-| `--cert` | 控制地址的 PEM 证书链路径 | 必填 |
-| `--key` | 控制地址的 PEM 私钥路径 | 必填 |
+| `--control-host` | 控制连接的主机名 | `relay.<domain>` |
+| `--cert` | 已有控制地址 PEM 证书链路径，与 `--key` 成对提供 | 不提供时自动申请 |
+| `--key` | 已有控制地址 PEM 私钥路径，与 `--cert` 成对提供 | 不提供时自动申请 |
+| `--data-dir` | 自动证书与账户密钥的数据目录 | `./data`，容器 `/data` |
 | `--port` | TCP 监听端口 | `443` |
 | `--rate` | 每地址名、每方向的字节/秒，正整数；令牌桶容量为一秒的量 | 不限制 |
 | `--daily-quota` | 每地址名的 UTC 日双向总字节额度，正整数，含 TLS 开销 | 不限制 |
 | `--max-connections` | 监听端口的 TCP 连接总数上限，正整数；包含电脑、手机和尚未完成 ClientHello 的连接 | 不限制 |
 
-程序以前台单进程运行，监听全部网络接口。没有环境变量配置、后台守护、重试或自动端口回退。启动配置或证书读取失败由 Node 报错退出。
+程序以前台单进程运行，监听全部网络接口，无后台守护或端口回退。`CODEXHOST_RELAY_DATA_DIR` 可设置数据目录默认值，CLI 优先；`CODEXHOST_RELAY_ACME_DIRECTORY` 可指定测试 CA，默认 Let's Encrypt 生产目录。启动配置或手动证书读取失败由 Node 报错退出。
 
 ## 部署要求
 
 - 公网 TCP 443 可达；TLS-ALPN-01 的真实 CA 验证要求 443。容器内部可监听非特权端口并映射到公网 443；直接使用其他端口只用于本地测试。
 - 示例只需一条通配 DNS 记录 `*.example.com` 指向 Relay，同时覆盖控制地址 `relay.example.com` 和电脑地址 `<id>.example.com`。域名下已有的记录（如 `www`、根域）不受影响、照常使用，通配只覆盖没有单独记录的子域。电脑地址使用 26 位随机样式 ID（由公钥派生），不会与 `www` 等常见子域冲突。Cloudflare 必须选“仅 DNS”；只在 IPv6 同样可达时添加 AAAA 记录。若控制地址等于基础域名或不在通配范围内，则仍需单独的解析记录。
-- 用 certbot 只申请控制地址 `relay.example.com` 的证书，无需通配符证书；每台电脑自行申请自己的证书。控制地址有有效的证书链和私钥，进程具有读取权限；直接监听 443 时还需绑定特权端口的权限。
+- 中转自动为控制地址 `relay.example.com` 申请并续期 Let's Encrypt 证书，无需额外证书工具、80 端口或通配符证书；每台电脑自行申请自己的证书。直接监听 443 时需绑定特权端口的权限，Compose 已配置非 root 监听。
 - 用户连接不能经过会终止 TLS 的 HTTP 反向代理或 CDN。Relay 必须看到原始 ClientHello 和明文 SNI；不支持 QUIC/HTTP/3 或 ECH。
 - 电脑仅主动连接 `wss://<控制地址>/v1/agent`，用户证书在电脑上申请、保存和使用。独立部署者仍有能力通过控制 443 为子域申请证书，不能将本方案描述为运营方绝对无法解密。
 
-更新控制证书文件后向 **Relay 进程**发送 `SIGHUP`：
+自动证书模式下，数据目录保存 `acme-account.pem`、`certificate-key.pem` 和 `certificate.pem`，文件权限 0600。Compose 持久化 `/data`，重启复用密钥与有效证书；每 15 分钟检查，在实际有效期的 2/3 处续期并原子替换，无需重启。失败后约 15 分钟自动重试，重启容器会立即重试；旧证书有效时继续使用，到期后拒绝新的普通控制连接。首次签发前只应答控制地址证书验证。Let's Encrypt 有频率限制，不要反复删除数据卷或更换域名。
+
+已有证书时可成对提供 `--cert/--key`，不自动申请。更新这些文件后向 **Relay 进程**发送 `SIGHUP`：
 
 ```sh
 kill -HUP <relay-pid>
@@ -49,7 +48,7 @@ kill -HUP <relay-pid>
 
 ## 嵌入与注册检查
 
-`@codexhost/remote-relay` 导出 `createRelay(options)`、`RelayOptions`、`RegistrationRequest` 和 `RegistrationResult`。`options` 的 `domain`、`controlHost`、`cert`、`key`、`rate`、`dailyQuota`、`maxConnections` 与启动参数同义，另有可选的 `heartbeatInterval`（毫秒，默认 25000）及以下可选回调：
+`@codexhost/remote-relay` 导出 `createRelay(options)`、`RelayOptions`、`RegistrationRequest` 和 `RegistrationResult`。`options` 的 `domain`、`controlHost`、`cert`、`key`、`dataDir`、`rate`、`dailyQuota`、`maxConnections` 与启动参数同义，另有可选的 `heartbeatInterval`（毫秒，默认 25000）及以下可选回调：
 
 ```ts
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -143,7 +142,7 @@ npx prettier --check packages/remote-relay
 在一个终端启动 Relay：
 
 ```sh
-node packages/remote-relay/dist/cli.js --domain relay.test \
+node packages/remote-relay/dist/cli.js --domain relay.test --control-host relay.test \
   --cert packages/remote-relay/test/fixtures/cert.pem \
   --key packages/remote-relay/test/fixtures/key.pem --port 4488
 ```

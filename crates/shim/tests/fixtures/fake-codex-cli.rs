@@ -235,6 +235,9 @@ fn main() {
     }
     if env::var_os("FAKE_CODEX_EXIT_BEFORE_INPUT").is_some() {
         // A Host Runtime that fails during startup exits while Desktop still holds stdin open.
+        // A real Host Runtime spends far longer initializing than the Shim needs to record the
+        // child's identity, so model that instead of racing the lease publication.
+        std::thread::sleep(std::time::Duration::from_millis(200));
         if let Ok(stderr) = env::var("FAKE_CODEX_STDERR") {
             io::stderr()
                 .write_all(stderr.as_bytes())

@@ -1,6 +1,17 @@
 name: CI
 
 on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to check
+        type: choice
+        default: all
+        options:
+          - all
+          - ubuntu-22.04
+          - macos-26
+          - windows-latest
   pull_request:
     paths-ignore:
       - "docs/**"
@@ -30,10 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-22.04
-          - macos-26
-          - windows-latest
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["ubuntu-22.04","macos-26","windows-latest"]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -120,6 +128,7 @@ jobs:
 
   check-linux-arm64:
     name: Check Linux ARM64
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
     runs-on: ubuntu-22.04-arm
     steps:
       - name: Checkout

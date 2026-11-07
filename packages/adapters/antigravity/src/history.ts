@@ -94,6 +94,8 @@ const hostItemSchema = z.discriminatedUnion("type", [
         nativeSubagentId: z.string().optional(),
         description: z.string(),
         role: z.string().optional(),
+        model: z.string().optional(),
+        reasoningEffort: z.string().optional(),
         background: z.boolean(),
         status: z.enum(["pending", "running", "completed", "failed", "interrupted"]),
         resultSummary: z.string().optional(),

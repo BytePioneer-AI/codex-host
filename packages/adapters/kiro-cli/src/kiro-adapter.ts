@@ -1,3 +1,14 @@
+import { kiroChildSnapshot } from "./subagents.js";
+import type {
+  HarnessSubagentCapability,
+  HostEvent,
+  HostSubagentDelegationItem,
+} from "@codexhost/harness-adapter";
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -129,7 +140,7 @@ export const KIRO_SESSION_CAPABILITIES: HarnessSessionCapabilities = {
   },
   subagents: {
     observe: true,
-    readTranscript: false,
+    readTranscript: true,
   },
   autonomousTurns: {
     observe: false,
@@ -176,6 +187,48 @@ export interface KiroAdapterDependencies {
 
 export class KiroAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = harnessIdSchema.parse("kiro-cli");
+  readonly subagents: HarnessSubagentCapability = {
+    readSnapshot: async ({ parent, nativeSubagentId }) => {
+      try {
+        if (parent.harnessId !== this.harnessId) throw new Error("Invalid Kiro parent");
+        for (const session of this.#sessions) {
+          if (session.initialState.nativeRef?.nativeSessionId !== parent.nativeSessionId) continue;
+          const live = session.subagentSnapshot(nativeSubagentId);
+          if (live) return { ok: true, value: live };
+        }
+        const locate = this.#deps.locateSession ?? locateKiroNativeSession;
+        const location = await locate(
+          { environment: this.#options.environment },
+          parent.nativeSessionId,
+        );
+        if (!location) throw new Error("Kiro parent history was not found");
+        const snapshot = await (this.#deps.readSnapshot ?? readKiroSnapshot)(location);
+        const item = snapshot.turns
+          .flatMap((turn) => turn.items)
+          .map(({ item }) => item)
+          .find(
+            (item) =>
+              item.type === "subagentDelegation" &&
+              item.subagents.some((child) => child.nativeSubagentId === nativeSubagentId),
+          );
+        if (!item || item.type !== "subagentDelegation")
+          throw new Error("Kiro task was not found in this parent");
+        return {
+          ok: true,
+          value: kiroChildSnapshot(parent.nativeSessionId, item, nativeSubagentId),
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: {
+            code: "sessionNotFound",
+            message: error instanceof Error ? error.message : "Kiro task could not be read",
+            retryable: false,
+          },
+        };
+      }
+    },
+  };
   readonly commandCatalog = KIRO_COMMAND_CATALOG;
   readonly liveCommandCatalog = true;
   readonly sessionImport: KiroSessionImport;
@@ -764,7 +817,57 @@ export class KiroSession implements HarnessSession {
     return this.#usageRefresh;
   }
 
+  readonly #subagentItems = new Map<string, HostSubagentDelegationItem>();
+
+  subagentSnapshot(id: string): HostThreadSnapshot | undefined {
+    const item = this.#subagentItems.get(id);
+    return item ? kiroChildSnapshot(this.#sessionId, item, id) : undefined;
+  }
+
+  #subagentEvent(event: HostEvent): HostEvent {
+    const configured = configureSubagentEvent(event, this.#subagentConfiguration());
+    const item =
+      configured.type === "item.started"
+        ? configured.item
+        : configured.type === "item.completed"
+          ? configured.snapshot.item
+          : undefined;
+    if (configured.type === "item.updated" && configured.update.type === "subagents.replace") {
+      for (const previous of this.#subagentItems.values()) {
+        if (previous.itemId !== configured.itemId) continue;
+        const next = { ...previous, subagents: structuredClone(configured.update.subagents) };
+        for (const child of next.subagents)
+          if (child.nativeSubagentId) this.#subagentItems.set(child.nativeSubagentId, next);
+        break;
+      }
+    }
+    if (item?.type === "subagentDelegation") {
+      for (const child of item.subagents)
+        if (child.nativeSubagentId)
+          this.#subagentItems.set(child.nativeSubagentId, structuredClone(item));
+    }
+    return configured;
+  }
+
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state();
+    const model = state.effectiveModel ? state.effectiveModel.id : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#activeTurnId !== null || this.#configBusy) {
       return {
         ok: false,
@@ -880,7 +983,16 @@ export class KiroSession implements HarnessSession {
     });
 
     const userText = command.input.map((i) => i.text).join("\n");
-    const output = new KiroTurnOutput(turnId, this.#cwd, (event) => this.#channel.emit(event));
+    const output = new KiroTurnOutput(turnId, this.#cwd, (output) =>
+      this.#channel.emit(
+        output.kind === "event"
+          ? {
+              ...output,
+              event: this.#subagentEvent(output.event),
+            }
+          : output,
+      ),
+    );
     let assignedUserMessageId: string | undefined;
     const stopped = new Promise<never>((_resolve, reject) => {
       this.#stopTurn = () => reject(this.#faultError ?? new Error("Session closed"));

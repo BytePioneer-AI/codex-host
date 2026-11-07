@@ -1,3 +1,4 @@
+import { subagentConfiguration } from "@codexhost/harness-adapter";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -103,6 +104,8 @@ export type OmpTurnEvent =
     }
   | {
       type: "subagent.started";
+      model?: string;
+      reasoningEffort?: string;
       callId: string;
       nativeSubagentId: string;
       description: string;
@@ -113,6 +116,8 @@ export type OmpTurnEvent =
     }
   | {
       type: "subagent.updated";
+      model?: string;
+      reasoningEffort?: string;
       callId: string;
       nativeSubagentId: string;
       status: OmpSubagentTurnStatus;
@@ -1396,6 +1401,7 @@ export class OmpRpcSession {
             : "Subagent delegation";
         emit?.({
           type: "subagent.started",
+          ...subagentConfiguration(payload),
           callId,
           nativeSubagentId,
           description,
@@ -1430,6 +1436,8 @@ export class OmpRpcSession {
     const resultSummary = recentOutput.at(-1);
     emit?.({
       type: "subagent.updated",
+      ...subagentConfiguration(payload),
+      ...subagentConfiguration(progress),
       callId,
       nativeSubagentId,
       status,

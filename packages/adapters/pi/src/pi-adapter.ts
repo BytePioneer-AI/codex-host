@@ -1,3 +1,8 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import { createPiUsageStatistics } from "./pi-usage-statistics.js";
 import { fetchPiAccounts } from "./account-balance.js";
 import { createPiCredentialImports } from "./pi-credential-imports.js";
@@ -524,7 +529,25 @@ class PiHarnessSession implements HarnessSession {
     queueMicrotask(() => this.#fault(error));
   }
 
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state;
+    const model = state.effectiveModel ? decodePiModelRef(state.effectiveModel).id : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Pi Session is not open") };
     }
@@ -2066,6 +2089,7 @@ class PiHarnessSession implements HarnessSession {
   }
 
   #event(event: HostEvent): void {
+    event = configureSubagentEvent(event, this.#subagentConfiguration());
     this.#channel.emit({ kind: "event", event });
   }
 

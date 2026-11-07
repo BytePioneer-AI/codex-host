@@ -1,3 +1,4 @@
+import { subagentConfiguration } from "@codexhost/harness-adapter";
 import type {
   HarnessError,
   HostEvent,
@@ -52,6 +53,7 @@ export class ClaudeSubagentLifecycle {
       subagentId: event.nativeSubagentId ?? event.callId,
       ...(event.nativeSubagentId ? { nativeSubagentId: event.nativeSubagentId } : {}),
       description: event.description,
+      ...subagentConfiguration(event),
       ...(event.role ? { role: event.role } : {}),
       background: event.background,
       status: "running",
@@ -74,6 +76,7 @@ export class ClaudeSubagentLifecycle {
     if (!current) throw new Error("Claude Code Subagent delegation has no Agent state");
     const subagent: HostSubagentState = {
       ...current,
+      ...subagentConfiguration(event),
       status: event.status,
       ...(event.nativeSubagentId ? { nativeSubagentId: event.nativeSubagentId } : {}),
       ...(event.description ? { description: event.description } : {}),

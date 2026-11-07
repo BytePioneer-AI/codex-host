@@ -18,6 +18,7 @@ mod macos_native_harness_broker;
 #[cfg(target_os = "macos")]
 mod macos_process_observation;
 mod process;
+mod process_chain;
 mod process_supervision;
 mod process_termination;
 mod proxy_environment;
@@ -69,7 +70,7 @@ pub use macos_native_harness_broker::{
 #[cfg(target_os = "macos")]
 pub use process::force_stop_desktop;
 pub use process::{
-    ProcessSnapshot, descendant_executable_exists, desktop_process_ids_for_installation,
+    ProcessSnapshot, desktop_process_ids_for_installation,
     desktop_root_process_ids_for_installation, parent_process_id, process_executable_path,
     process_exists, process_snapshot, terminate_process_by_id,
 };
@@ -79,6 +80,7 @@ pub use process::{desktop_process_ids, desktop_root_process_ids, process_started
 pub use process::{
     desktop_process_tree, desktop_root_snapshots_for_installation, process_snapshots,
 };
+pub use process_chain::descendant_executable_pair_exists;
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
 pub use process_termination::{terminate_process_group_instance, terminate_process_instance};
 #[cfg(target_os = "windows")]

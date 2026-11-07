@@ -14,4 +14,4 @@ Session 只在当前请求的 Turn 有根级 Tool 未结束、且没有开始取
 
 定向测试覆盖根工具窗口的开闭、取消期间拒绝、明确拒绝与未知回执的区别、连续输入、终态与回执竞态、原生历史数量及用户消息投影归属。真实 Gate 位于 `tools/gate-steer/adapter.real.test.mjs`，默认跳过；用 `CODEXHOST_STEER_REAL_HARNESSES=omp` 显式选择。它检查单次、连续两次和工具结束附近的输入；被接纳的输入必须在原 Host Turn 恰好回复一次，不能以排到下一轮冒充通过。Gate 使用已有登录和所选模型，留下原生测试 Session，并清理临时工作目录。
 
-本机没有安装 OMP。本轮只核对原生源码契约并运行 Adapter/RPC 夹具，不能视为 OMP 实机或 Desktop 验收；发布前仍需在安装环境运行上述 Gate。
+macOS / OMP 18.12.6 已运行单次、连续两次和工具结束附近的真实 Gate。Desktop 26.1103.31037 的隔离窗口使用既有 `openai-codex / gpt-5.6-sol`、High 配置，在前台 sleep 命令执行时通过 Composer「排队」「引导」完成同轮插话；原工具成功完成，只有一个 Host Turn，回复遵循补充要求。验证必须识别实际 shell 命令，不能把 OMP 投影到同一 commandExecution 通道的 thinking 工具当作该命令。该结果不覆盖所有 Model / Provider 组合、延迟 input hook、多窗口、远端或其他 OS。

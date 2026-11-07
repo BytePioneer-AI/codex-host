@@ -6,6 +6,8 @@ import type { RelayOptions, RegistrationRequest } from "@codexhost/remote-relay"
 import { readServiceOptions, saveServiceOptions } from "../src/background-service.ts";
 import { RemoteRelay } from "../src/remote-relay/state.ts";
 import { RequestTrust } from "../src/request-trust.ts";
+import { connectRelay } from "../src/remote-relay/client.ts";
+import { OFFICIAL_RELAY_HOST } from "../src/remote-relay/settings.ts";
 import { acmeServer } from "./support/acme-server.ts";
 import { delay, relayData, startRelay, until } from "./support/relay.ts";
 
@@ -36,7 +38,17 @@ async function fixture(t: TestContext, check: NonNullable<RelayOptions["check"]>
   const data = relayData(t);
   const host = `localhost:${relay.port}`;
   saveServiceOptions(data, { relay: host });
-  const web = new RemoteRelay(data, host, true, createServer(), new RequestTrust(undefined));
+  data.writeJson("service.json", { ...readServiceOptions(data), relayKind: "official" });
+  const web = new RemoteRelay(
+    data,
+    true,
+    createServer(),
+    new RequestTrust(undefined),
+    (options) => {
+      assert.equal(options.host, OFFICIAL_RELAY_HOST);
+      return connectRelay({ ...options, host });
+    },
+  );
   t.after(() => web.close());
   return { relay, data, web };
 }
@@ -64,13 +76,7 @@ it("submits and saves name and invite, remembers the hostname across disable and
   assert.equal(requests[1]?.invite, "invite-code");
   assert.equal(requests[0]?.id, requests[1]?.id);
   f.web.setEnabled(false);
-  const restarted = new RemoteRelay(
-    f.data,
-    readServiceOptions(f.data).relayHost,
-    true,
-    createServer(),
-    new RequestTrust(undefined),
-  );
+  const restarted = new RemoteRelay(f.data, true, createServer(), new RequestTrust(undefined));
   t.after(() => restarted.close());
   assert.equal(restarted.access?.hostname, "alice.relay.test");
 });
@@ -212,12 +218,52 @@ it("only clears the remembered hostname when the Relay control address changes",
   assert.equal(readServiceOptions(data).relayHostname, "alice.relay.test");
   saveServiceOptions(data, { relay: "new.example" });
   assert.equal(readServiceOptions(data).relayHostname, undefined);
-  assert.equal(readServiceOptions(data).relayName, "alice");
-  assert.equal(readServiceOptions(data).relayInvite, "invite-code");
+  assert.equal(readServiceOptions(data).relayName, undefined);
+  assert.equal(readServiceOptions(data).relayInvite, undefined);
   data.writeJson("service.json", {
     ...readServiceOptions(data),
     relayHostname: "alice.new.example",
   });
   saveServiceOptions(data, { relay: "" });
   assert.equal(readServiceOptions(data).relayHostname, undefined);
+});
+
+it("registers at the newly saved page endpoint with the same identity, not the old assignment", async (t) => {
+  const identities: string[] = [];
+  const f = await fixture(t, (request) => {
+    identities.push(request.id);
+    return { name: "first" };
+  });
+  const second = await startRelay(t, 25, {
+    domain: "second.test",
+    check: (request) => {
+      identities.push(request.id);
+      assert.equal(request.invite, undefined);
+      return { name: "second" };
+    },
+  });
+  const destinations: string[] = [];
+  const web = new RemoteRelay(
+    f.data,
+    true,
+    createServer(),
+    new RequestTrust(undefined),
+    (options) => {
+      destinations.push(options.host);
+      const port = options.host === "first.example.com" ? f.relay.port : second.port;
+      return connectRelay({ ...options, host: `localhost:${port}` });
+    },
+  );
+  t.after(() => web.close());
+  web.setEnabled(true, undefined, { kind: "self-hosted", host: "first.example.com" });
+  assert.equal(readServiceOptions(f.data).relayHost, "first.example.com");
+  await until(() => web.access.hostname === "first.relay.test");
+  web.setEnabled(false);
+  web.setEnabled(true, undefined, { kind: "self-hosted", host: "second.example.com" });
+  assert.equal(web.access.hostname, undefined);
+  assert.equal(readServiceOptions(f.data).relayHost, "second.example.com");
+  await until(() => web.access.hostname === "second.second.test");
+  assert.deepEqual(destinations, ["first.example.com", "second.example.com"]);
+  assert.equal(identities.length, 2);
+  assert.equal(identities[0], identities[1]);
 });

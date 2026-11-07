@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { localAccessTokens } from "../access-token-rpc.ts";
 import type { AccessTokenStore } from "../access-tokens.ts";
-import { RpcError, type RpcRegistry } from "../transport.ts";
+import type { RpcRegistry } from "../transport.ts";
+import { webRelayHostSchema, webRelayKindSchema } from "@codexhost/shared-contracts";
 import type { RemoteRelay } from "./state.ts";
 
 export function registerRelayRpc(
@@ -12,15 +13,11 @@ export function registerRelayRpc(
 ): void {
   rpc.register("codexhost/relaySet", (args, context) => {
     localAccessTokens(tokens, context.auth, port());
-    if (!relay.configured)
-      throw new RpcError(
-        "relay/not-configured",
-        "Configure --relay before enabling relay access",
-        {},
-      );
-    const { enabled, name, invite } = z
+    const { enabled, name, invite, kind, host } = z
       .object({
         enabled: z.boolean(),
+        kind: webRelayKindSchema.optional(),
+        host: webRelayHostSchema.optional(),
         name: z
           .string()
           .regex(/^(?:[a-z0-9]{4,20})?$/)
@@ -28,12 +25,16 @@ export function registerRelayRpc(
         invite: z.string().optional(),
       })
       .strict()
+      .refine((value) => value.host === undefined || value.kind === "self-hosted", {
+        message: "A control hostname can only be set for the self-hosted relay",
+      })
       .parse(args);
     relay.setEnabled(
       enabled,
       name === undefined && invite === undefined
         ? undefined
         : { name: name ?? "", invite: invite ?? "" },
+      { kind, host },
     );
     return relay.state;
   });

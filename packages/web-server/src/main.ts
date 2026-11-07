@@ -406,7 +406,7 @@ async function readNetworkAccess() {
   }
   return {
     tailscale,
-    ...(relay.access === undefined ? {} : { relay: relay.access }),
+    relay: relay.access,
     networkUrls: [
       ...publicUrls,
       ...(relay.state.status === "connected"
@@ -659,13 +659,7 @@ const server = createServer((request, response) => {
   });
 });
 
-const relay = new RemoteRelay(
-  data,
-  serviceOptions.relayHost,
-  accessTokens !== undefined,
-  server,
-  trust,
-);
+const relay = new RemoteRelay(data, accessTokens !== undefined, server, trust);
 registerRelayRpc(rpc, accessTokens, () => listeningPort, relay);
 if (serviceOptions.relayEnabled) relay.start();
 

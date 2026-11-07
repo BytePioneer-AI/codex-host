@@ -122,13 +122,8 @@ it(
       "clearChallenge",
       RelayTls.prototype.clearChallenge,
     );
-    const web = new RemoteRelay(
-      f.data,
-      `localhost:${f.relay.port}`,
-      true,
-      createServer(),
-      new RequestTrust(undefined),
-    );
+    f.data.writeJson("service.json", { relayHost: `localhost:${f.relay.port}` });
+    const web = new RemoteRelay(f.data, true, createServer(), new RequestTrust(undefined));
     t.after(() => web.close());
     web.start();
     await until(() => polling, 15_000);

@@ -322,6 +322,20 @@
 .relayFields {
   gap: 10px;
 }
+.relayTutorial {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+  overflow-wrap: anywhere;
+}
+.relayTutorial li + li {
+  margin-top: 6px;
+}
+.relayTutorial code {
+  display: block;
+}
 .ready {
   display: flex;
   align-items: flex-start;

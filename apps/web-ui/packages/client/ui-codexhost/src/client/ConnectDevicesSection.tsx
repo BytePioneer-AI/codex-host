@@ -203,7 +203,7 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
   };
   const stop = async () => {
     let data = await refresh();
-    if (data.relay !== undefined && data.relay.state.status !== "off") {
+    if (data.relay?.enabled) {
       await accessTokenApi.relay(false);
       data = await refresh();
     }
@@ -245,9 +245,7 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
   const { secret, lastUsedAt, networkUrls, tailscale, background } = data;
   const active = networkUrls.length > 0 || background?.lan === true;
   const canStop =
-    background?.lan === true ||
-    tailscale.status === "serving" ||
-    (data.relay !== undefined && data.relay.state.status !== "off");
+    background?.lan === true || tailscale.status === "serving" || data.relay?.enabled === true;
   const unmanaged = networkUrls.some(
     (entry) =>
       entry.kind === "public" ||

@@ -354,6 +354,19 @@ class CodexAdapter implements HarnessAdapter {
         };
       const executable = this.executable();
       if (executable.status !== "ready") return { ok: false, error: executableFailure(executable) };
+      let permissionModeId: string | undefined = input.permissionModeId;
+      if (input.kind === "create" && input.executionPolicy === "unattended-full-access") {
+        if (permissionModeId && permissionModeId !== "danger-full-access")
+          return {
+            ok: false,
+            error: {
+              code: "invalidRequest",
+              message: "unattended-full-access requires Codex CLI danger-full-access",
+              retryable: false,
+            },
+          };
+        permissionModeId = "danger-full-access";
+      }
       const environment = { ...this.environment, ...input.environment };
       const result = await CodexSession.open({
         usage: this.sessionUsage,
@@ -365,9 +378,7 @@ class CodexAdapter implements HarnessAdapter {
           ? { model: (input.model as { id: string }).id }
           : {}),
         ...(typeof input.thinkingOptionId === "string" ? { effort: input.thinkingOptionId } : {}),
-        ...(typeof input.permissionModeId === "string"
-          ? { permissionModeId: input.permissionModeId }
-          : {}),
+        ...(typeof permissionModeId === "string" ? { permissionModeId } : {}),
       });
       if (this.closed && result.ok) {
         await result.value.close();

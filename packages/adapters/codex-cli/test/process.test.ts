@@ -468,6 +468,53 @@ describe("Codex CLI native process", () => {
     expect(turnStart?.params).not.toHaveProperty("sandboxPolicy");
   });
 
+  it.each(["workspaceWrite", "readOnly"])(
+    "uses full access for unattended creation with native %s defaults",
+    async (nativeSandbox) => {
+      const f = fixture({ nativeSandbox: { type: nativeSandbox } });
+      const created = await f.adapter.open({
+        kind: "create",
+        cwd: f.home,
+        executionPolicy: "unattended-full-access",
+      });
+      if (!created.ok) throw new Error(created.error.message);
+      try {
+        expect(created.value.initialState.effectivePermissionModeId).toBe("danger-full-access");
+        expect(await runTurn(created.value, hostTurnIdSchema.parse("turn-1"), "hello")).toEqual({
+          status: "succeeded",
+        });
+      } finally {
+        await created.value.close();
+      }
+      const records = f.records();
+      expect(records.find(({ method }) => method === "thread/start")?.params).toMatchObject({
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      });
+      expect(records.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+        approvalPolicy: "never",
+        sandboxPolicy: { type: "dangerFullAccess" },
+      });
+    },
+  );
+
+  it.each(["read-only", "workspace-write"])(
+    "rejects unattended creation with conflicting %s permissions",
+    async (mode) => {
+      const f = fixture();
+      await f.adapter.inspect();
+      const opened = await f.adapter.open({
+        kind: "create",
+        cwd: f.home,
+        executionPolicy: "unattended-full-access",
+        permissionModeId: harnessPermissionModeIdSchema.parse(mode),
+      });
+      if (opened.ok) await opened.value.close();
+      expect(opened).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+      expect(f.records().some(({ method }) => method === "thread/start")).toBe(false);
+    },
+  );
+
   it("sends only the chosen native approval policy and sandbox mode names", async () => {
     const f = fixture();
     const created = await f.adapter.open({
@@ -556,18 +603,21 @@ describe("Codex CLI native process", () => {
         sandbox: { type: "readOnly" },
       },
     },
-  ])("rejects an explicit mode not confirmed by Codex: %j", async (scenario) => {
+  ])("rejects full access not confirmed by Codex: %j", async (scenario) => {
     const f = fixture(scenario);
-    expect(
-      await f.adapter.open({
-        kind: "create",
-        cwd: f.home,
-        permissionModeId: harnessPermissionModeIdSchema.parse("danger-full-access"),
-      }),
-    ).toMatchObject({
-      ok: false,
-      error: { message: expect.stringContaining("did not confirm the requested Permission Mode") },
-    });
+    for (const configuration of [
+      { permissionModeId: harnessPermissionModeIdSchema.parse("danger-full-access") },
+      { executionPolicy: "unattended-full-access" as const },
+    ]) {
+      const opened = await f.adapter.open({ kind: "create", cwd: f.home, ...configuration });
+      if (opened.ok) await opened.value.close();
+      expect(opened).toMatchObject({
+        ok: false,
+        error: {
+          message: expect.stringContaining("did not confirm the requested Permission Mode"),
+        },
+      });
+    }
     expect(f.records().some(({ method }) => method === "turn/start")).toBe(false);
   });
 

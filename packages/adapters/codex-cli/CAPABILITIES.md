@@ -29,7 +29,7 @@
 | B1-Fast | 原生 Fast 服务档位 | 原生有则必做 | P1 | 支持 | src/model-selection.ts、src/plugin.ts、src/session.ts | test/fast-mode.test.ts；CLI 0.161.0 原生目录与 ephemeral Thread 开关确认 | 仅原生 serviceTiers 声明 priority 时提供 fastModel；创建、恢复与 Turn 传原生 model/serviceTier；切换等待 settings 通知 |
 | B2 | 切换 Thinking | 原生有则必做 | P1 | 支持 | src/session.ts | test/process.test.ts；configuration 声明 | 原生 effort |
 | B3 | 权限模式 | 原生有则必做 | P1 | 支持 | src/session.ts、src/permission-modes.ts | test/process.test.ts | live；创建与恢复从原生审批策略和沙箱响应确认权限；自定义或缺失配置不冒充标准档位 |
-| B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 受限 | src/plugin.ts、src/session.ts | test/process.test.ts | 仅按所选权限模式传参，未单独验证执行策略 |
+| B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 支持 | src/plugin.ts、src/session.ts | test/process.test.ts：隔离协议夹具 | unattended-full-access 映射为 danger-full-access / never；拒绝显式权限冲突及原生未确认；真实 Model 委派待验收 |
 | B5 | Fork | 原生有则必做 | P1 | 不支持 | src/plugin.ts、src/session.ts | history.fork=false；open 拒绝 | 通用 Fork 不开放；导入的 writer 冲突由 C6 使用受控原生派生 |
 | B6 | 跨目录 Fork | 原生有则必做 | P2 | 不支持 | src/plugin.ts、src/session.ts | history.forkAcrossCwd=false | 与 B5 相同 |
 | B7 | 回滚最后一轮 | 原生有则必做 | P1 | 不支持 | src/plugin.ts、src/session.ts | history.rollbackLastTurn=false | 原生派生恢复尚未接入 |
@@ -62,7 +62,7 @@
 - A9：原生 steering 明确拒绝；Host 使用所有外部 Harness 的队列规则。
 - A9：普通恢复遇到 `thread/resume` 的原生 `-32600` writer 占用错误返回 `sessionBusy`。Host 保留忙碌错误码并提示关闭其他客户端中的会话后重试；普通恢复不创建替代会话，释放占用后使用相同 Native Session ID 恢复。显式导入的派生规则见 C6；两条路径都不终止其他客户端或删除原生锁。
 - B3：原生依据为 CLI `0.161.0` 生成的 `ThreadStartResponse` / `ThreadResumeResponse`：响应含 `approvalPolicy` 与 `sandbox`。仅匹配目录内的审批策略和沙箱类型；粒度化审批、外部沙箱及缺失字段不报告标准权限 ID。读取有效权限不等于选择权限，未显式选择时不追加 Turn 权限覆盖。既有 live 切换仍用于后续 Turn，未单独验证活动 Turn 内权限变化。
-- B4、B15、B16：未完成完整无人值守与双向委派验收，不声称完整委派支持。
+- B4：无人值守权限映射由隔离协议夹具验证；真实 Model 执行未验收。B15、B16：未完成完整双向委派验收，不声称完整委派支持。
 - B11、B12：委派 Item 和自主 Turn 事件投影不等于完整子代理历史与自主能力交付。
 - B1-Fast：没有 `serviceTiers` 元数据的旧 CLI 不提供 Fast，不从旧速度标签推导档位。普通选择显式清除 Fast；无配置提示的恢复保留原生档位。切换仅保证后续 Turn 使用确认的配置，未实测真实推理速度、计费或生产 Session 的 Fast 恢复；恢复由隔离协议夹具验证。原生设置确认超时或失效会关闭 Session，避免未知档位继续发送。
 - B14：请求级计量尚未独立验收。
@@ -102,4 +102,5 @@
 | 导入持久化与退出 | Host `prepared-session-import.test.ts`、`codex-cli-harness.test.ts`、`harness-session-import.test.ts`、`client-channel.test.ts`；Mapping Store 定向测试 | Host 准备导入 10 项、集成与通道 33 项、存储 60 项通过；涵盖来源与新 ID 去重、重启恢复、未知结果保留、提交失败及准备／快照阶段退出清理 |
 | 分支来源与加载 | Web 会话／历史投影测试、390px／1280px 浏览器测试、隔离插件冷加载 | Web 24 项、浏览器 2 项通过；真实 Loader 加载 Bundle 后验证 writer 冲突、完成轮 Fork 和历史读取，所有夹具进程关闭；TypeScript / Web 构建、类型、Lint、修改文件格式检查通过 |
 | 原生占用时 Fork | macOS CLI `0.161.0`，临时 CODEX_HOME 和两个独立 app-server | 源会话持有 writer 时 resume 被拒绝、带 completed `lastTurnId` 的 Fork 成功，副本截止于所选回合且源会话仍加载；未发送真实 Model 请求，临时目录已清理 |
+| 委派最高权限 | Adapter `test/process.test.ts`、包级构建、定向 ESLint / Prettier | 34 项通过；隔离夹具覆盖 Auto / 只读默认下的无人值守最高权限、冲突拒绝与原生确认失败；普通默认行为保持不变，无真实 Model 请求 |
 | Desktop / 真实委派 | 不改变 Desktop 原生路径 | 未执行 |

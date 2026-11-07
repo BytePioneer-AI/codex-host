@@ -2,15 +2,9 @@ import type { ReactNode } from "react";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import css from "./ConnectDevicesSection.module.css";
 
-export function SelfHostedRelayHelp({
-  configured,
-  t,
-}: {
-  configured: boolean;
-  t: PropsLocale<"codexhostImport">["t"];
-}): ReactNode {
+export function SelfHostedRelayHelp({ t }: { t: PropsLocale<"codexhostImport">["t"] }): ReactNode {
   return (
-    <details className={css.other} data-self-relay-help open={!configured}>
+    <details className={css.other} data-self-relay-help>
       <summary>{t("connectDevices.selfRelay.helpTitle")}</summary>
       <div className={css.connectionHelp}>
         <ol className={css.relayTutorial}>

@@ -54,7 +54,7 @@ export class RemoteRelay {
     this.disconnect = this.connect({
       host,
       identity: relayIdentity(this.data),
-      name: official ? (saved.relayName ?? "") : "",
+      name: saved.relayName ?? "",
       invite: official ? (saved.relayInvite ?? "") : "",
       connecting: (reason) => {
         this.certificates.stop();
@@ -147,9 +147,9 @@ export class RemoteRelay {
       throw new RpcError("relay/not-configured", "Enter a self-hosted relay hostname first", {});
     if (relayHost(saved) !== relayHost(next) || relayKind(saved) !== relayKind(next))
       clearRelayAssignment(this.data, next);
-    if (enabled && next.relayKind === "official" && registration !== undefined) {
+    if (enabled && registration !== undefined) {
       next.relayName = registration.name ?? "";
-      next.relayInvite = registration.invite ?? "";
+      if (next.relayKind === "official") next.relayInvite = registration.invite ?? "";
     }
     this.data.writeJson("service.json", next, { mode: 0o600 });
     this.close();

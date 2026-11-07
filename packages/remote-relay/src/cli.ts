@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { createRelay } from "./index.js";
+import { selfHostedNames } from "./names.js";
 
 const { values } = parseArgs({
   options: {
@@ -24,6 +25,11 @@ const relay = createRelay({
   ...(values.cert === undefined ? {} : { cert: values.cert }),
   ...(values.key === undefined ? {} : { key: values.key }),
   dataDir: values["data-dir"],
+  check: selfHostedNames(
+    values["data-dir"],
+    values.domain,
+    values["control-host"] ?? `relay.${values.domain}`,
+  ),
   ...(values.rate === undefined ? {} : { rate: Number(values.rate) }),
   ...(values["daily-quota"] === undefined ? {} : { dailyQuota: Number(values["daily-quota"]) }),
   ...(values["max-connections"] === undefined

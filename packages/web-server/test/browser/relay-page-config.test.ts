@@ -101,7 +101,11 @@ for (const locale of ["en-US", "zh-CN"]) {
         exact: true,
       });
       const host = control.getByRole("textbox", {
-        name: chinese ? "控制地址" : "Control hostname",
+        name: chinese ? "中转域名" : "Relay domain",
+        exact: true,
+      });
+      const phoneName = control.getByRole("textbox", {
+        name: chinese ? "设备名称" : "Device name",
         exact: true,
       });
       const help = page.locator("[data-self-relay-help]");
@@ -152,10 +156,12 @@ for (const locale of ["en-US", "zh-CN"]) {
             chinese ? "codexhost 官方中转" : "The official codexhost relay",
           ),
         );
-        assert.equal(await help.getAttribute("open"), "");
+        assert.equal(await help.getAttribute("open"), null);
+        await screenshotUnconfigured(width);
+        await help.locator("summary").click();
         const tutorial = (await help.textContent()) ?? "";
         for (const text of [
-          "relay.example.com",
+          "mycomputer",
           chinese
             ? "# 将 example.com 替换为你的实际域名"
             : "# Replace example.com with your actual domain",
@@ -175,9 +181,9 @@ for (const locale of ["en-US", "zh-CN"]) {
             ? "在域名的 DNS 设置里添加一条记录：类型选 A，名称填 *，值填服务器的公网 IPv4 地址。使用 Cloudflare 时选择“仅 DNS”。"
             : "In your domain's DNS settings, add a record: type A, name *, value your server's public IPv4 address. On Cloudflare, choose DNS only.",
         );
-        const hint = control.locator(`[id="${await host.getAttribute("aria-describedby")}"]`);
-        assert.ok((await hint.textContent())?.includes("relay.example.com"));
-        assert.ok((await help.locator("li").nth(4).textContent())?.includes("relay.example.com"));
+        const hint = control.locator(`[id="${await phoneName.getAttribute("aria-describedby")}"]`);
+        assert.ok((await hint.textContent())?.includes("ID"));
+        assert.ok((await help.locator("li").nth(4).textContent())?.includes("mycomputer"));
         assert.equal(await help.locator("li").count(), 5);
         assert.deepEqual(await help.locator("li").nth(3).locator("code").allTextContents(), [
           "git clone https://github.com/BytePioneer-AI/codex-host.git /opt/codexhost",
@@ -198,7 +204,6 @@ for (const locale of ["en-US", "zh-CN"]) {
             chinese ? "准备一个域名" : "You need a domain",
           ),
         );
-        await screenshotUnconfigured(width);
         for (const invalid of [
           "https://relay.example.com",
           "127.0.0.1",
@@ -220,7 +225,7 @@ for (const locale of ["en-US", "zh-CN"]) {
 
       // Registration is simulated here; real endpoint switching is covered by the local Relay tests.
       let shown = base;
-      const writes: Array<{ enabled: boolean; kind: string; host?: string }> = [];
+      const writes: Array<{ enabled: boolean; kind: string; host?: string; name?: string }> = [];
       await page.route("**/api/codexhost/accessTokenGet", (route) =>
         route.fulfill({ json: { result: { ok: true, value: shown } } }),
       );
@@ -251,11 +256,14 @@ for (const locale of ["en-US", "zh-CN"]) {
         };
         await route.fulfill({ json: { result: { ok: true, value: defined(shown.relay).state } } });
       });
-      await host.fill("RELAY.example.com");
+      await phoneName.fill("computer");
+      await host.fill("EXAMPLE.COM");
       assert.equal(await enable.isEnabled(), true);
       await enable.click();
       await page.locator('[data-relay-status="connected"]').waitFor();
-      assert.deepEqual(writes, [{ enabled: true, kind: "self-hosted", host: "relay.example.com" }]);
+      assert.deepEqual(writes, [
+        { enabled: true, kind: "self-hosted", host: "relay.example.com", name: "computer" },
+      ]);
       for (const width of [375, 1440]) {
         await page.setViewportSize({ width, height: width === 375 ? 812 : 1000 });
         await open();
@@ -264,7 +272,9 @@ for (const locale of ["en-US", "zh-CN"]) {
         assert.equal(await control.getByText(closeFirst, { exact: true }).count(), 0);
         await control
           .getByText(
-            chinese ? "控制地址：relay.example.com" : "Control hostname: relay.example.com",
+            chinese
+              ? "中转服务器地址：relay.example.com"
+              : "Relay server address: relay.example.com",
             { exact: true },
           )
           .waitFor();
@@ -310,7 +320,7 @@ for (const locale of ["en-US", "zh-CN"]) {
       await control.getByRole("button", { name: chinese ? "关闭中转" : "Turn off relay" }).click();
       await page.locator('[data-relay-status="off"]').waitFor();
       assert.equal(writes.length, 2);
-      assert.equal(await host.inputValue(), "relay.example.com");
+      assert.equal(await host.inputValue(), "example.com");
       assert.equal(await host.isEnabled(), true);
       assert.equal(await help.getAttribute("open"), null);
       await choose("relay");

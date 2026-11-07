@@ -362,9 +362,7 @@ export function ConnectionCard({
               )}
             </div>
           )}
-          {method === "self-hosted-relay" && relay !== undefined && (
-            <SelfHostedRelayHelp configured={Boolean(relay.customHost)} t={t} />
-          )}
+          {method === "self-hosted-relay" && relay !== undefined && <SelfHostedRelayHelp t={t} />}
         </div>
       </div>
       <div className={css.routePanel}>

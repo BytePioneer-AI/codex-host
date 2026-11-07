@@ -26,12 +26,12 @@ node packages/remote-relay/dist/cli.js --domain example.com
 | `--daily-quota` | 每地址名的 UTC 日双向总字节额度，正整数，含 TLS 开销 | 不限制 |
 | `--max-connections` | 监听端口的 TCP 连接总数上限，正整数；包含电脑、手机和尚未完成 ClientHello 的连接 | 不限制 |
 
-程序以前台单进程运行，监听全部网络接口，无后台守护或端口回退。`CODEXHOST_RELAY_DATA_DIR` 可设置数据目录默认值，CLI 优先；`CODEXHOST_RELAY_ACME_DIRECTORY` 可指定测试 CA，默认 Let's Encrypt 生产目录。启动配置或手动证书读取失败由 Node 报错退出。
+CLI 支持电脑注册自选地址名，名称留空时使用公钥派生 ID。`names.json` 在数据目录中持久保存地址名与签名身份的绑定；同一身份可重用名称，其他身份不能抢占，控制地址与其他身份的派生 ID 也不可占用。程序以前台单进程运行，监听全部网络接口，无后台守护或端口回退。`CODEXHOST_RELAY_DATA_DIR` 可设置数据目录默认值，CLI 优先；`CODEXHOST_RELAY_ACME_DIRECTORY` 可指定测试 CA，默认 Let's Encrypt 生产目录。启动配置或手动证书读取失败由 Node 报错退出。
 
 ## 部署要求
 
 - 公网 TCP 443 可达；TLS-ALPN-01 的真实 CA 验证要求 443。容器内部可监听非特权端口并映射到公网 443；直接使用其他端口只用于本地测试。
-- 示例只需一条通配 DNS 记录 `*.example.com` 指向 Relay，同时覆盖控制地址 `relay.example.com` 和电脑地址 `<id>.example.com`。域名下已有的记录（如 `www`、根域）不受影响、照常使用，通配只覆盖没有单独记录的子域。电脑地址使用 26 位随机样式 ID（由公钥派生），不会与 `www` 等常见子域冲突。Cloudflare 必须选“仅 DNS”；只在 IPv6 同样可达时添加 AAAA 记录。若控制地址等于基础域名或不在通配范围内，则仍需单独的解析记录。
+- 示例只需一条通配 DNS 记录 `*.example.com` 指向 Relay，同时覆盖控制地址 `relay.example.com` 和电脑地址 `<id>.example.com`。域名下已有的记录（如 `www`、根域）不受影响、照常使用，通配只覆盖没有单独记录的子域。默认电脑地址使用 26 位公钥派生 ID；自选名称时须避开 `www` 等已有独立记录的子域。Cloudflare 必须选“仅 DNS”；只在 IPv6 同样可达时添加 AAAA 记录。若控制地址等于基础域名或不在通配范围内，则仍需单独的解析记录。
 - 中转自动为控制地址 `relay.example.com` 申请并续期 Let's Encrypt 证书，无需额外证书工具、80 端口或通配符证书；每台电脑自行申请自己的证书。直接监听 443 时需绑定特权端口的权限，Compose 已配置非 root 监听。
 - 用户连接不能经过会终止 TLS 的 HTTP 反向代理或 CDN。Relay 必须看到原始 ClientHello 和明文 SNI；不支持 QUIC/HTTP/3 或 ECH。
 - 电脑仅主动连接 `wss://<控制地址>/v1/agent`，用户证书在电脑上申请、保存和使用。独立部署者仍有能力通过控制 443 为子域申请证书，不能将本方案描述为运营方绝对无法解密。

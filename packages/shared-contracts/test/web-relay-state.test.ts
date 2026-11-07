@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 import {
   webAccessStateSchema,
   webRelayHostSchema,
+  webRelayNameSchema,
   webRelayStateSchema,
 } from "../src/web-access-tokens.js";
 
@@ -57,6 +58,13 @@ it("validates page control hostnames without accepting URLs, ports, or IPs", () 
     `${"a".repeat(64)}.com`,
   ])
     expect(webRelayHostSchema.safeParse(host).success, host).toBe(false);
+});
+
+it("validates optional self-hosted address names as single DNS labels", () => {
+  for (const name of ["", "mycomputer", "my-computer", "a", "a".repeat(63)])
+    expect(webRelayNameSchema.safeParse(name).success, name).toBe(true);
+  for (const name of ["a.b", "NAME", "-name", "name-", "a_b", "a".repeat(64)])
+    expect(webRelayNameSchema.safeParse(name).success, name).toBe(false);
 });
 
 it("requires certificate state on registered relays and retains issuance/failure details", () => {

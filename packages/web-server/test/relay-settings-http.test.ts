@@ -122,7 +122,7 @@ it("saves the switch without restarting, rejects remote changes, and keeps both 
   );
 });
 
-it("validates RPC registration inputs but never sends official credentials to a self-hosted relay", async (t) => {
+it("validates address names per relay kind and never sends invitations to a self-hosted relay", async (t) => {
   const requests: { name?: string; invite?: string }[] = [];
   const relay = await startRelay(t, 25, {
     check: (request) => {
@@ -141,20 +141,34 @@ it("validates RPC registration inputs but never sends official credentials to a 
     CODEXHOST_RELAY_ACME_DIRECTORY: ca.directory,
   });
   for (const name of ["abc", "ALICE", "a-bc", "a".repeat(21)]) {
-    const result = await call("codexhost/relaySet", { enabled: true, name, invite: "code" });
+    const result = await call("codexhost/relaySet", {
+      enabled: true,
+      kind: "official",
+      name,
+      invite: "code",
+    });
     assert.ok(result.error);
     assert.equal(readServiceOptions(data).relayEnabled, false);
   }
-  await call("codexhost/relaySet", { enabled: true, name: "alice", invite: "code" });
+  for (const name of ["a.b", "-name", "name-", "a".repeat(64)]) {
+    const result = await call("codexhost/relaySet", { enabled: true, kind: "self-hosted", name });
+    assert.ok(result.error);
+  }
+  await call("codexhost/relaySet", {
+    enabled: true,
+    kind: "self-hosted",
+    name: "my-computer",
+    invite: "code",
+  });
   await until(() => readServiceOptions(data).relayHostname === "alice.relay.test");
-  assert.equal(requests[0]?.name, undefined);
+  assert.equal(requests[0]?.name, "my-computer");
   assert.equal(requests[0]?.invite, undefined);
   assert.equal(
     (await call<WebAccessState>("codexhost/accessTokenGet")).value.relay?.hostname,
     "alice.relay.test",
   );
   await call("codexhost/relaySet", { enabled: false });
-  assert.equal(readServiceOptions(data).relayName, undefined);
+  assert.equal(readServiceOptions(data).relayName, "my-computer");
   assert.equal(readServiceOptions(data).relayInvite, undefined);
 });
 

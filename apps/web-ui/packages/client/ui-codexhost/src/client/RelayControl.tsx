@@ -3,6 +3,7 @@ import { Button, IconCheckCircleOutlineRegular } from "@deepseek-ai/dsh-client-u
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import {
   webRelayHostSchema,
+  webRelayNameSchema,
   type WebAccessState,
   type WebRelayKind,
 } from "@codexhost/shared-contracts";
@@ -46,15 +47,28 @@ export function RelayControl({
   const quotaUntil = current ? relay.quotaUntil : undefined;
   const official = kind === "official";
   const blocked = relay.enabled && !current;
-  const [host, setHost] = useState(relay.customHost ?? "");
+  const savedDomain = relay.customHost?.startsWith("relay.")
+    ? relay.customHost.slice(6)
+    : (hostname?.split(".").slice(1).join(".") ?? "");
+  const [domain, setDomain] = useState(savedDomain);
+  // Preserve an existing nonstandard control endpoint until the user edits its domain.
+  const host =
+    domain === savedDomain && relay.customHost ? relay.customHost : domain ? `relay.${domain}` : "";
   const hostChanged = host !== (relay.customHost ?? "");
   const validHost = webRelayHostSchema.safeParse(host).success;
-  const invalidHost = host !== "" && !validHost && hostChanged;
+  const invalidHost =
+    domain !== "" && (!webRelayHostSchema.safeParse(domain).success || (!validHost && hostChanged));
   const hostHint = useId();
-  const [name, setName] = useState("");
+  const [name, setName] = useState(official ? "" : (hostname?.split(".")[0] ?? ""));
   const [invite, setInvite] = useState("");
   const nameHint = useId();
-  const invalidName = name !== "" && !/^[a-z0-9]{4,20}$/.test(name);
+  const invalidName =
+    name !== "" &&
+    (official
+      ? !/^[a-z0-9]{4,20}$/.test(name)
+      : !webRelayNameSchema.safeParse(name).success ||
+        `${name}.${domain}` === host ||
+        (domain !== "" && !webRelayHostSchema.safeParse(`${name}.${domain}`).success));
   const failure = "certificate" in state ? state.certificate.failure : undefined;
   // Renewal runs while the current certificate still works, so only a pause needs the user.
   const paused = failure?.paused === true;
@@ -112,7 +126,7 @@ export function RelayControl({
             onChange(true, {
               kind,
               ...(official && hostname === undefined ? { name, invite } : {}),
-              ...(!official && hostChanged ? { host } : {}),
+              ...(!official ? { name, ...(hostChanged ? { host } : {}) } : {}),
             });
           }}
         >
@@ -122,8 +136,9 @@ export function RelayControl({
                 {t("connectDevices.selfRelay.host")}
                 <input
                   className={css.input}
-                  value={host}
-                  onChange={(event) => setHost(event.target.value.toLowerCase())}
+                  value={domain}
+                  placeholder="example.com"
+                  onChange={(event) => setDomain(event.target.value.toLowerCase())}
                   aria-invalid={invalidHost}
                   aria-describedby={hostHint}
                   autoCapitalize="none"
@@ -142,6 +157,49 @@ export function RelayControl({
                     : "connectDevices.selfRelay.hostHint",
                 )}
               </p>
+              <label className={`${css.relayField} ${css.notice}`}>
+                {t("connectDevices.selfRelay.name")}
+                <input
+                  className={css.input}
+                  value={name}
+                  placeholder="mycomputer"
+                  onChange={(event) => setName(event.target.value.toLowerCase())}
+                  aria-invalid={invalidName}
+                  aria-describedby={nameHint}
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  disabled={busy || blocked}
+                />
+              </label>
+              <p
+                id={nameHint}
+                className={invalidName ? css.error : css.meta}
+                role={invalidName ? "alert" : undefined}
+              >
+                {t(
+                  invalidName
+                    ? "connectDevices.selfRelay.invalidName"
+                    : "connectDevices.selfRelay.nameHint",
+                )}
+              </p>
+              <div className={css.relayPreview}>
+                <p className={css.notice}>{t("connectDevices.selfRelay.previewTitle")}</p>
+                <div className={css.relayPreviewAddress}>
+                  <span>https://</span>
+                  <span>
+                    <strong>{name || t("connectDevices.selfRelay.previewAutoName")}</strong>
+                    <small>{t("connectDevices.selfRelay.name")}</small>
+                  </span>
+                  <span aria-hidden="true">.</span>
+                  <span>
+                    <strong>{domain || "example.com"}</strong>
+                    <small>{t("connectDevices.selfRelay.host")}</small>
+                  </span>
+                </div>
+              </div>
+              {host && (
+                <p className={css.meta}>{t("connectDevices.selfRelay.address", { host })}</p>
+              )}
             </div>
           )}
           {official && hostname === undefined && (
@@ -183,7 +241,9 @@ export function RelayControl({
               disabled={
                 busy ||
                 blocked ||
-                (official ? hostname === undefined && invalidName : host === "" || invalidHost)
+                (official
+                  ? hostname === undefined && invalidName
+                  : host === "" || invalidHost || invalidName)
               }
               aria-busy={busy}
             >

@@ -15,6 +15,66 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("accepts a phone name and base domain, derives the relay host, and validates both fields", () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  cleanups.push(() => act(() => root.unmount()));
+  const onChange = vi.fn();
+  const props = {
+    kind: "self-hosted",
+    relay: {
+      kind: "official",
+      enabled: false,
+      officialHost: "relay.chost.dev",
+      hostname: "alice.chost.dev",
+      state: { status: "off" },
+    },
+    busy: false,
+    onChange,
+    onRefresh: vi.fn(),
+    t: (key: keyof typeof en, args?: { host?: string }) =>
+      en[key].replace("{host}", args?.host ?? ""),
+  } as Props;
+  act(() => root.render(createElement(RelayControl, props)));
+  const name = [...container.querySelectorAll("label")]
+    .find((label) => label.textContent?.startsWith("Device name"))!
+    .querySelector("input")!;
+  const domain = [...container.querySelectorAll("label")]
+    .find((label) => label.textContent?.startsWith("Relay domain"))!
+    .querySelector("input")!;
+  const button = container.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+  const fill = (input: HTMLInputElement, value: string) =>
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  expect(button.disabled).toBe(true);
+  fill(name, "mycomputer");
+  fill(domain, "EXAMPLE.COM");
+  expect(domain.value).toBe("example.com");
+  expect(container.textContent).toContain("Relay server address: relay.example.com");
+  expect(button.disabled).toBe(false);
+  act(() =>
+    container
+      .querySelector("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+  expect(onChange).toHaveBeenCalledWith(true, {
+    kind: "self-hosted",
+    name: "mycomputer",
+    host: "relay.example.com",
+  });
+  fill(name, "relay");
+  expect(button.disabled).toBe(true);
+  fill(name, "a.b");
+  expect(button.disabled).toBe(true);
+  fill(name, "");
+  expect(button.disabled).toBe(false);
+  fill(domain, "https://example.com");
+  expect(button.disabled).toBe(true);
+});
+
 it("distinguishes first preparation from an unreachable relay and clears the warning on recovery", () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div");

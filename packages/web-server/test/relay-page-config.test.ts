@@ -119,8 +119,10 @@ it("uses the official default, switches only while off, isolates assignments and
   assert.deepEqual(readFileSync(data.path("remote-relay/identity.pem")), identity);
   web.setEnabled(true, { name: "alice", invite: "must-not-leak" });
   assert.equal(connections[1]?.host, "relay.example.com");
-  assert.equal(connections[1]?.name, "");
+  assert.equal(connections[1]?.name, "alice");
   assert.equal(connections[1]?.invite, "");
+  assert.equal(readServiceOptions(data).relayName, "alice");
+  assert.equal(readServiceOptions(data).relayInvite, undefined);
   web.setEnabled(false);
   web.setEnabled(true, undefined, { kind: "official" });
   assert.equal(connections[2]?.host, OFFICIAL_RELAY_HOST);

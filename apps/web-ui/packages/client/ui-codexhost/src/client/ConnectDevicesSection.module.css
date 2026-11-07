@@ -322,6 +322,29 @@
 .relayFields {
   gap: 10px;
 }
+.relayPreview {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-separator, currentColor);
+  border-radius: 8px;
+  min-width: 0;
+}
+.relayPreviewAddress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+.relayPreviewAddress span {
+  display: flex;
+  flex-direction: column;
+}
+.relayPreviewAddress small {
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+}
 .relayTutorial {
   margin: 0;
   padding-left: 20px;

@@ -20,11 +20,11 @@
    ```
 
    Compose 从仓库源码构建镜像，无需安装 Node.js，也无需提前构建或从镜像仓库下载 codexhost 镜像。仅映射 TCP 443，容器以非 root 用户运行；控制地址默认 `relay.example.com`。
-5. 在运行 codexhost 的电脑上打开“设置 → 连接设备”，选择“自建中转”，填写 `relay.example.com`，点击“启用中转”。只填主机名，不带协议、端口或路径。
+5. 在运行 codexhost 的电脑上打开“设置 → 连接设备”，选择“自建中转”，依次填写“中转域名”（如 `example.com`，不带 `https://` 和 `relay.`）和“设备名称”（如 `mycomputer`），确认预览中的手机访问地址后点击“启用中转”。中转服务器地址随中转域名显示为 `relay.example.com`；服务器应使用默认的 `relay.<基础域名>` 控制地址。名称留空时使用电脑 ID。
 
 **知道控制地址的人都能注册使用，证书透明日志会公开域名；本示例不提供准入功能。** 手机登录仍需要电脑的访问令牌，不要分享登录链接或二维码。
 
-自建中转不需要邀请码；地址由电脑公钥派生，例如 `https://<id>.example.com/`。官方与自建同一时间只能开启一个。
+自建中转不需要邀请码；地址为 `https://mycomputer.example.com/`，名称留空则由电脑公钥派生为 `https://<id>.example.com/`。CLI 将地址名与电脑身份绑定，保存在 `/data/names.json`，重连和重启不释放；名称被其他身份占用时拒绝注册。控制地址与其他电脑的公钥派生 ID 不可抢占。官方与自建同一时间只能开启一个。
 
 开发时可用 `codexhost web --relay relay.example.com` 预填或覆盖自建地址，不改变官方固定地址或页面显式保存的当前类型。普通用户无需此命令。更多连接说明见 [Web 远程访问](web-remote-access.md#relay-中转)。
 
@@ -32,7 +32,7 @@
 
 中转通过 TLS-ALPN-01 在 443 自动申请 Let's Encrypt 控制地址证书，不申请通配符证书；每台电脑仍自行申请自己的证书。中转和用户连接不能经过会终止 TLS 的 HTTP 反向代理或 CDN。
 
-容器的 `/data` 由 Compose 的 `relay-data` 数据卷持久化，存放 `acme-account.pem`、`certificate-key.pem` 和 `certificate.pem`。私钥权限为 0600，重启复用密钥与有效证书；不要删除数据卷或分享私钥。首次签发完成前控制连接不可用。
+容器的 `/data` 由 Compose 的 `relay-data` 数据卷持久化，存放 `acme-account.pem`、`certificate-key.pem`、`certificate.pem` 和地址名绑定文件 `names.json`。私钥权限为 0600，重启复用密钥与有效证书；不要删除数据卷或分享私钥。首次签发完成前控制连接不可用。
 
 中转与电脑的证书申请请求保留 IPv4/IPv6 自动选择，地址族切换等待为 2 秒，请求总超时为 30 秒。网络错误保留原始错误码，不会被没有 HTTP 响应的错误处理覆盖。
 

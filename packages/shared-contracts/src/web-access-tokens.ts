@@ -101,6 +101,9 @@ export const webRelayHostSchema = z
   .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/i)
   .transform((host) => host.toLowerCase());
 
+/** Optional single-label address name; the empty value requests a derived address. */
+export const webRelayNameSchema = z.string().regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)?$/);
+
 export const webRelayKindSchema = z.enum(["official", "self-hosted"]);
 export type WebRelayKind = z.infer<typeof webRelayKindSchema>;
 

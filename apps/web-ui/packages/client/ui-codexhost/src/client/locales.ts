@@ -153,11 +153,20 @@ export const en = {
   "connectDevices.selfRelay.summary": "Your server and domain · No phone app needed",
   "connectDevices.selfRelay.off":
     "Use your own relay server. Like the official relay, it only forwards encrypted traffic.",
-  "connectDevices.selfRelay.address": "Control hostname: {host}",
-  "connectDevices.selfRelay.host": "Control hostname",
-  "connectDevices.selfRelay.hostHint": "For example, relay.example.com",
+  "connectDevices.selfRelay.address": "Relay server address: {host}",
+  "connectDevices.selfRelay.previewTitle":
+    "After enabling, your phone will reach this computer at:",
+  "connectDevices.selfRelay.previewAutoName": "computer ID",
+  "connectDevices.selfRelay.name": "Device name",
+  "connectDevices.selfRelay.host": "Relay domain",
+  "connectDevices.selfRelay.hostHint":
+    "The domain you deployed the relay on, without https:// or relay.",
+  "connectDevices.selfRelay.nameHint":
+    "A name for this computer: lowercase letters, digits and hyphens. It becomes the start of the phone address. Leave empty to use a computer ID.",
   "connectDevices.selfRelay.invalidHost":
-    "Enter a domain name such as relay.example.com, without https:// or a port.",
+    "Enter your relay's base domain, such as example.com, without https:// or a port.",
+  "connectDevices.selfRelay.invalidName":
+    "Use 1–63 lowercase letters, digits or interior hyphens; the relay server address is reserved.",
   "connectDevices.selfRelay.helpTitle": "How to set up your own relay",
   "connectDevices.selfRelay.domain":
     "You need a domain and a Linux server with Docker (servers in mainland China require domain ICP filing with the cloud provider first).",
@@ -167,7 +176,7 @@ export const en = {
   "connectDevices.selfRelay.docker": "Run on the server:",
   "connectDevices.selfRelay.replaceDomain": "# Replace example.com with your actual domain",
   "connectDevices.selfRelay.connect":
-    "Come back here, enter relay.[your domain] (e.g. relay.example.com) and click Enable relay.",
+    "Come back here, enter your relay domain and a device name (e.g. example.com and mycomputer) and click Enable relay.",
   "connectDevices.selfRelay.noDomain": "No domain? Use the official relay or Tailscale.",
   "connectDevices.selfRelay.docs": "Full self-hosted relay guide",
   "connectDevices.relay.title": "codexhost Relay",
@@ -557,11 +566,18 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.selfRelay.title": "自建中转",
   "connectDevices.selfRelay.summary": "自己的服务器和域名 · 手机无需安装应用",
   "connectDevices.selfRelay.off": "通过自己的服务器中转，和官方中转一样只转发加密内容。",
-  "connectDevices.selfRelay.address": "控制地址：{host}",
-  "connectDevices.selfRelay.host": "控制地址",
-  "connectDevices.selfRelay.hostHint": "例如 relay.example.com",
+  "connectDevices.selfRelay.address": "中转服务器地址：{host}",
+  "connectDevices.selfRelay.previewTitle": "启用后，手机将通过下面的地址访问这台电脑：",
+  "connectDevices.selfRelay.previewAutoName": "电脑 ID",
+  "connectDevices.selfRelay.name": "设备名称",
+  "connectDevices.selfRelay.host": "中转域名",
+  "connectDevices.selfRelay.hostHint": "你部署中转时使用的域名，不带 https:// 和 relay.",
+  "connectDevices.selfRelay.nameHint":
+    "给这台电脑起的名字，只能用小写字母、数字和连字符，会成为手机访问地址的开头。留空则使用电脑 ID。",
   "connectDevices.selfRelay.invalidHost":
-    "请输入域名，例如 relay.example.com，不带 https:// 或端口。",
+    "请输入自建中转的基础域名，例如 example.com，不带 https:// 或端口。",
+  "connectDevices.selfRelay.invalidName":
+    "名称须为 1–63 位小写字母、数字或中间的连字符，不能占用中转服务器地址。",
   "connectDevices.selfRelay.helpTitle": "如何搭建自己的中转",
   "connectDevices.selfRelay.domain":
     "准备一个域名，以及一台装有 Docker 的 Linux 服务器（中国大陆服务器需先完成域名备案）。",
@@ -571,7 +587,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.selfRelay.docker": "在服务器上运行以下命令：",
   "connectDevices.selfRelay.replaceDomain": "# 将 example.com 替换为你的实际域名",
   "connectDevices.selfRelay.connect":
-    "回到这里填写 relay.[你的域名]（样例：relay.example.com），点击“启用中转”。",
+    "回到这里填写中转域名和设备名称（例如 example.com 和 mycomputer），点击“启用中转”。",
   "connectDevices.selfRelay.noDomain": "没有域名？可以使用官方中转或 Tailscale。",
   "connectDevices.selfRelay.docs": "完整自建中转教程",
   "connectDevices.relay.title": "codexhost 中转",

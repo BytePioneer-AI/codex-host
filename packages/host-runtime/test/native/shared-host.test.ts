@@ -146,6 +146,10 @@ for (const first of ["Web", "Desktop"])
         return client;
       };
       const web = await connect();
+      // This fixture deliberately uses Node as the unavailable stock Codex.
+      // Native discovery must not take the shared external catalog offline.
+      const catalog = await web.request<{ data: Array<{ id: string }> }>("thread/list", {});
+      assert.ok(Array.isArray(catalog.data));
       const desktop = await connectLocalSharedHost({ launcher, runtime, dataDirectory: data });
       t.after(() => desktop.close());
       const id =

@@ -233,6 +233,7 @@ import {
   OfficialRuntimeClient,
   OfficialRuntimeScope,
 } from "./codex-runtime/official-runtime-scope.js";
+import { OfficialAdmissionError } from "./codex-runtime/official-work-gate.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
 import type { HostConsoleOpener } from "./console-opener.js";
 import type { HostWebOpener } from "./web-opener.js";
@@ -723,6 +724,17 @@ export class AppServerHost {
       loadedThread: (threadId) => this.#externalRuntime?.get(threadId),
       clientHistoryTurns: (thread) => this.#externalHistoryTurns(thread, true),
       queueSnapshot: (threadId) => this.#externalQueue.snapshot(threadId),
+      ...(this.#options.externalOnly
+        ? {
+            native: {
+              events: this.clientEvents,
+              request: (method: string, params: JsonObject) =>
+                this.#requestClientNative(method, params),
+              respond: (requestId: string | number, result: JsonValue) =>
+                this.#respondClientNative(requestId, result),
+            },
+          }
+        : {}),
       submit: (method, params, timeoutMs) =>
         this.#handleControlRequest(
           method,
@@ -796,6 +808,7 @@ export class AppServerHost {
       onBackendStopped: () => {
         this.#pendingOfficialTurnStarts.clear();
         this.#activeOfficialTurns.clear();
+        this.#client.resetNativeSession();
         this.#signalActiveWorkChanged();
       },
       output: async (output) =>
@@ -1856,6 +1869,7 @@ export class AppServerHost {
     value: JsonValue;
   }): Promise<void> {
     if (this.#options.externalOnly) {
+      this.#client.observeNativeMessage(input.value);
       // Native children created through Delegation still have a native owner
       // and lifecycle. Their rendering stays on the GUI's native connection.
       await this.#observeOfficialTurnLifecycle(input.value);
@@ -1927,6 +1941,39 @@ export class AppServerHost {
       });
     }
     return this.#officialRuntime.request(method, params);
+  }
+
+  async #requestClientNative(method: string, params: JsonObject): Promise<ConsoleHostReply> {
+    try {
+      const response = await this.#requestOfficial(method, params);
+      if (isRecord(response.error)) {
+        return {
+          error: {
+            code: typeof response.error.code === "number" ? response.error.code : -32603,
+            message:
+              typeof response.error.message === "string"
+                ? response.error.message
+                : "Native Codex request failed",
+          },
+        };
+      }
+      return { result: (response.result ?? null) as JsonValue };
+    } catch (error) {
+      if (error instanceof OfficialAdmissionError)
+        return { error: { code: -32090, message: "Native Codex is unavailable" } };
+      if (isRecord(error) && typeof error.code === "number")
+        return { error: { code: error.code, message: errorMessage(error) } };
+      return {
+        error: {
+          code: -32093,
+          message: "Native request outcome may be unknown; do not retry automatically",
+        },
+      };
+    }
+  }
+
+  #respondClientNative(requestId: string | number, result: JsonValue): Promise<void> {
+    return this.#officialRuntime.send({ id: requestId, result });
   }
 
   #inspectHarnessAccount(
@@ -2550,12 +2597,31 @@ export class AppServerHost {
           : {}),
         runtimeFor: (threadId) => this.#listRuntimeState(threadId),
         placementOf: (threadId) => placementById.get(threadId),
-        requestOfficialPage: async (params) =>
-          this.#options.externalOnly
-            ? { data: [], nextCursor: null, backwardsCursor: null }
-            : officialThreadListPageFromResponse(
-                await this.#officialRuntime.request("thread/list", params),
-              ),
+        requestOfficialPage: async (params) => {
+          if (this.#options.externalOnly && origin !== "client")
+            return { data: [], nextCursor: null, backwardsCursor: null };
+          let official;
+          try {
+            official = officialThreadListPageFromResponse(
+              await (this.#options.externalOnly
+                ? this.#requestOfficial("thread/list", params)
+                : this.#officialRuntime.request("thread/list", params)),
+            );
+          } catch (error) {
+            // Native Codex is optional for the shared external service. An
+            // unavailable binary must not hide external rows; protocol errors
+            // remain visible instead of being silently converted to an empty list.
+            if (
+              this.#options.externalOnly &&
+              origin === "client" &&
+              error instanceof OfficialAdmissionError &&
+              error.code === "unavailable"
+            )
+              return { data: [], nextCursor: null, backwardsCursor: null };
+            throw error;
+          }
+          return official;
+        },
       });
       await this.#writer.json(rpcEnvelope(request, { result }));
     } catch (error) {

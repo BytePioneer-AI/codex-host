@@ -184,53 +184,57 @@ it("invalidates equal-count summaries when full diff content changes", () => {
   assert.notEqual(changed[0]?.revision, first[0]?.revision);
 });
 
-it("authenticates diff RPCs and rejects non-external Threads", { timeout: 20_000 }, async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "ch-turn-diffs-auth-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const host = new FakeChChannel();
-  host.add("official", directory);
-  const request = host.request.bind(host);
-  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
-    if (method === "codexhost/thread/inspect" && params.threadId === "official")
-      return { owner: "codex", locked: true } as T;
-    return request<T>(method, params);
-  };
-  const channel = await startFakeChChannel(host, directory);
-  t.after(() => channel.close());
-  const debug = await startFakeChDebugger(host);
-  t.after(() => debug.close());
-  const url = await startServer(
-    t,
-    resolve(import.meta.dirname, ".."),
-    ["--import", "tsx", "src/main.ts"],
-    [
-      "--session-source",
-      "codexhost",
-      "--ch-cdp",
-      debug.endpoint,
-      "--ch-control-directory",
-      directory,
-    ],
-    { authenticated: true },
-  );
-  const send = (headers: Record<string, string>) =>
-    fetch(new URL("/api/codexhost/turnDiffs", url), {
-      method: "POST",
-      headers: { "content-type": "application/json", ...headers },
-      body: JSON.stringify({
-        type: "client-request",
-        rpcId: "diff",
-        method: "codexhost/turnDiffs",
-        payload: { args: { request: { sessionId: "official", turn: 1 } } },
-      }),
-    });
-  assert.equal((await send({})).status, 401);
-  const token = defined(new URL(url).searchParams.get("token"));
-  const headers = { authorization: `Bearer ${token}` };
-  assert.equal((await send({ ...headers, origin: "http://untrusted.invalid" })).status, 403);
-  const result = (await (await send(headers)).json()) as {
-    result: { ok: boolean; error: { code: string } };
-  };
-  assert.equal(result.result.ok, false);
-  assert.equal(result.result.error.code, "session/not-external");
-});
+it(
+  "authenticates native Thread diff RPCs and reports a missing diff",
+  { timeout: 20_000 },
+  async (t) => {
+    const directory = mkdtempSync(join(tmpdir(), "ch-turn-diffs-auth-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const host = new FakeChChannel();
+    host.add("official", directory);
+    const request = host.request.bind(host);
+    host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+      if (method === "codexhost/thread/inspect" && params.threadId === "official")
+        return { owner: "codex", locked: true } as T;
+      return request<T>(method, params);
+    };
+    const channel = await startFakeChChannel(host, directory);
+    t.after(() => channel.close());
+    const debug = await startFakeChDebugger(host);
+    t.after(() => debug.close());
+    const url = await startServer(
+      t,
+      resolve(import.meta.dirname, ".."),
+      ["--import", "tsx", "src/main.ts"],
+      [
+        "--session-source",
+        "codexhost",
+        "--ch-cdp",
+        debug.endpoint,
+        "--ch-control-directory",
+        directory,
+      ],
+      { authenticated: true },
+    );
+    const send = (headers: Record<string, string>) =>
+      fetch(new URL("/api/codexhost/turnDiffs", url), {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({
+          type: "client-request",
+          rpcId: "diff",
+          method: "codexhost/turnDiffs",
+          payload: { args: { request: { sessionId: "official", turn: 1 } } },
+        }),
+      });
+    assert.equal((await send({})).status, 401);
+    const token = defined(new URL(url).searchParams.get("token"));
+    const headers = { authorization: `Bearer ${token}` };
+    assert.equal((await send({ ...headers, origin: "http://untrusted.invalid" })).status, 403);
+    const result = (await (await send(headers)).json()) as {
+      result: { ok: boolean; error: { code: string } };
+    };
+    assert.equal(result.result.ok, false);
+    assert.equal(result.result.error.code, "session/diff-not-found");
+  },
+);

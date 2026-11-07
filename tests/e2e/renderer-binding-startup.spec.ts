@@ -97,6 +97,7 @@ const { outputFiles } = await build({
       };
       globalThis.threadCommandRequests = [];
       globalThis.commandCatalogRequests = [];
+      globalThis.harnessInspectionRequests = [];
       globalThis.appliedConfiguration = null;
       let draftModel = "native";
       const draftIdFor = root => {
@@ -120,6 +121,10 @@ const { outputFiles } = await build({
         },
         {
           inspectHarness: async (_input, options) => {
+            globalThis.harnessInspectionRequests.push(_input);
+            if (globalThis.expectedInspectionCwd && _input.cwd !== globalThis.expectedInspectionCwd) {
+              return { status: "unavailable", error: { code: "configurationRequired", message: "Workspace is not open", retryable: true } };
+            }
             if (globalThis.holdBackgroundInspections && options?.priority === "background") {
               await new Promise(() => {});
             }
@@ -429,6 +434,27 @@ test("a remounted draft keeps explicit Fast through submission, but a new draft 
   }
   await remount(true);
   await expect(fast).toHaveAttribute("aria-pressed", "false");
+});
+
+test("a draft uses its published project for both availability and the Model picker", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    Reflect.set(globalThis, "expectedInspectionCwd", "/fixture/workspace");
+    Reflect.set(globalThis, "__codexhostDraftWorkspacesV1", { local: "/fixture/workspace" });
+  });
+  await page.addScriptTag({ content: browserBundle });
+  const trigger = page.locator('[data-codexhost-model-control] > button[aria-haspopup="menu"]');
+  await expect(trigger).toContainText("Startup Model");
+  await expect(trigger).toBeEnabled();
+  const requests = await page.evaluate(
+    () =>
+      Reflect.get(globalThis, "harnessInspectionRequests") as { cwd?: string; purpose?: string }[],
+  );
+  expect(requests.length).toBeGreaterThan(0);
+  expect(requests.every((request) => request.cwd === "/fixture/workspace")).toBe(true);
+  await trigger.click();
+  await expect(page.getByRole("menu", { name: "Model", exact: true })).toBeVisible();
 });
 
 test("a draft waits for the Desktop prewarm policy before applying its Model", async ({ page }) => {

@@ -37,7 +37,7 @@ Native Ref 由当前 Harness ID、稳定的原生 ID，以及需要时可持久�
 
 ## Resume
 
-接口：`open({ kind: "resume", nativeRef, cwd, environment, knownTurnRefs, model?, thinkingOptionId?, permissionModeId? })`。
+接口：`open({ kind: "resume", nativeRef, cwd, environment, knownTurnRefs, knownTurns?, model?, thinkingOptionId?, permissionModeId? })`。
 
 - 校验 nativeRef，恢复同一个原生 Session，返回可以继续写入的 Session。
 - 处理 Host 提供的 `knownTurnRefs`，让历史与已有的 Host Turn 对齐；原生身份本身已经稳定时，不需要额外重新编码。
@@ -46,6 +46,8 @@ Native Ref 由当前 Harness ID、稳定的原生 ID，以及需要时可持久�
 - **配置提示由 Adapter 负责**：`model`、`thinkingOptionId`、`permissionModeId` 是 Host 从旧映射解码出的持久化提示，不是新的用户命令。Adapter 决定是用它初始化延迟配置、恢复保存的模式，还是保留权威的原生状态；Host 在 open 之后**不会**再补发配置命令。成功后发布原生确认的 state。要区分「这次没读到配置」和「已确认该配置不存在」，避免从旧值复活已经清除的 Thinking 或权限。
 - 恢复失败时保留源历史和 Host 的持久化记录，允许之后重试。
 - Host 会在空闲释放和故障恢复后调用 resume，与 Host 重启后的冷启动走同一条路径。
+
+API 2 的活动恢复是可选能力：Adapter 声明 `activeTurnRecovery: true` 后，Host 额外传入 `knownTurns`（原 Host Turn ID 与已确认 NativeTurnRef）。原生准入后可用 `turn.identity.confirmed` 提前持久化映射，该事件不是完成、成功或 checkpoint，已确认的身份不能改写。恢复同一活动任务时，Session 返回 `recoveringTurn: { turnId, nativeTurnRef, input }`，Host 验证所有权和持久映射后重建原投影。插件重接原生观察流，使用原 Host Turn ID 输出当前状态及交互；不能重新发送 Prompt 或另开任务。活动历史缺失或没有已确认映射时明确拒绝，保留原任务及记录。未声明此能力的旧插件保留原有 resume 输入和行为。
 
 当前能力 schema 没有独立的 resume 开关，也没有自动降级为 ephemeral Thread 的路径。原生不支持 resume 时，该分支返回 `unsupported`，并明确这只是受限后端。
 

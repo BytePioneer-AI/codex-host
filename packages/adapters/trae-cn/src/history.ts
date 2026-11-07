@@ -1,0 +1,461 @@
+import type {
+  HistoricalTurnOutcome,
+  HostItem,
+  HostItemOutcome,
+  HostItemSnapshot,
+  HostThreadSnapshot,
+  HostTextInput,
+} from "@codexhost/harness-adapter";
+import {
+  harnessIdSchema,
+  hostItemIdSchema,
+  jsonValueSchema,
+  nativeTurnRefSchema,
+  nativeCheckpointRefSchema,
+  type HarnessModelRef,
+} from "@codexhost/shared-contracts";
+import { confirmedModel } from "./models.js";
+import { record, TraeError } from "./errors.js";
+import { projectFileChanges } from "./file-changes.js";
+import {
+  assertObservedCommand,
+  readCommandStatus,
+  isBackgroundCommand,
+  backgroundCommandReference,
+  type NativeCommandStatus,
+  type NativeBackgroundCommand,
+} from "./commands.js";
+
+export const TRAE_CN_ID = harnessIdSchema.parse("trae-cn");
+
+export function nativeTurnRef(sessionId: string, userMessageId: string) {
+  // The native user message ID is acknowledged and durably stored, and assistant
+  // replies point to it. It survives process restarts independently of Host IDs.
+  return nativeTurnRefSchema.parse({
+    harnessId: TRAE_CN_ID,
+    nativeSessionId: sessionId,
+    nativeTurnKey: userMessageId,
+    formatVersion: 1,
+  });
+}
+
+function decoded(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    throw new TraeError("protocolError", "Invalid TRAE CN history content JSON");
+  }
+}
+
+function nonempty(value: unknown, name: string): string {
+  if (typeof value !== "string" || !value.trim())
+    throw new TraeError("protocolError", `Missing native ${name}`);
+  return value;
+}
+
+function nativeFailure(value: unknown) {
+  return {
+    code: "nativeFailure" as const,
+    message:
+      record(value) && typeof value.message === "string"
+        ? value.message
+        : "TRAE CN native task failed",
+    retryable: false,
+  };
+}
+
+export function turnOutcome(value: unknown, error?: unknown): HistoricalTurnOutcome {
+  if (value === "completed") return { status: "succeeded" };
+  if (value === "canceled" || value === "cancelled") return { status: "cancelled" };
+  if (value === "failed") return { status: "failed", error: nativeFailure(error) };
+  return { status: "unknown", reason: "TRAE CN has not confirmed a terminal task status" };
+}
+
+export interface ProjectedPlanItem {
+  item: HostItem;
+  /** Absent while the native Item is still running. */
+  outcome?: HostItemOutcome;
+  background?: NativeBackgroundCommand;
+}
+
+function toolArguments(name: string, params: unknown): unknown {
+  if (!record(params)) return params ?? {};
+  // Native Edit clears these strings after execution; AskUserQuestion fills
+  // answers after confirmation. Only stable arguments belong to the Item.
+  // Applied file contents come from the native message snapshot instead.
+  const mutable =
+    name === "AskUserQuestion" ? ["answers"] : name === "Edit" ? ["old_string", "new_string"] : [];
+  return mutable.length
+    ? Object.fromEntries(Object.entries(params).filter(([key]) => !mutable.includes(key)))
+    : params;
+}
+
+/** One native plan_item can contain separate reasoning, commentary and tool/answer Items. */
+export function projectPlanItem(
+  value: unknown,
+  terminal?: HostItemOutcome,
+  observedCommand?: NativeCommandStatus,
+  allowBackground = false,
+): ProjectedPlanItem[] {
+  if (!record(value)) throw new TraeError("protocolError", "Invalid TRAE CN plan item");
+  const id = nonempty(value.id, "plan item ID");
+  const result: ProjectedPlanItem[] = [];
+  const call = record(value.tool_call_info) ? value.tool_call_info : undefined;
+  const name = typeof call?.name === "string" ? call.name : "";
+  if (observedCommand && name !== "RunCommand")
+    throw new TraeError("protocolError", "Observed command belongs to a different native tool");
+  const toolResult = record(call?.result) ? call.result : undefined;
+  const timing = record(value.timing) ? value.timing : undefined;
+  const toolFinished = typeof timing?.tool_call_finished_at_ms === "number";
+  const completed =
+    toolFinished || (record(value.agent_status) && value.agent_status.status === "completed");
+  const textOutcome = completed ? { status: "succeeded" as const } : terminal;
+  for (const [key, type] of [
+    ["reasoning_content", "reasoning"],
+    ["thought", "agentMessage"],
+  ] as const) {
+    // Builder streams final answer text through thought before its finish call
+    // is complete, then clears thought in durable history. Wait for the native
+    // call kind before publishing commentary; finish.summary owns final text.
+    if (key === "thought" && (!name || name === "finish" || name === "ReplyUser")) continue;
+    if (typeof value[key] === "string" && value[key]) {
+      const itemId = hostItemIdSchema.parse(`${id}.${key}`);
+      result.push({
+        item:
+          type === "reasoning"
+            ? { type, itemId, text: value[key] }
+            : { type, itemId, text: value[key], phase: "commentary" },
+        ...(textOutcome ? { outcome: textOutcome } : {}),
+      });
+    }
+  }
+  if (!name) return result;
+  const params = decoded(call?.params);
+  let outcome: HostItemOutcome | undefined;
+  if (toolResult?.status === "success") outcome = { status: "succeeded" };
+  else if (toolResult?.status === "failed" || toolResult?.status === "error")
+    outcome = { status: "failed", error: nativeFailure({ message: toolResult.error_message }) };
+  else if (
+    ["canceled", "cancelled", "skipped", "skipped_run"].includes(String(toolResult?.status)) ||
+    (record(value.confirm_info) &&
+      ["skipped", "skipped_run", "canceled"].includes(String(value.confirm_info.confirm_status)))
+  )
+    outcome = { status: "cancelled" };
+  else outcome = terminal;
+  if (name === "finish" || name === "ReplyUser") {
+    if (record(params) && typeof params.summary === "string")
+      result.push({
+        item: {
+          type: "agentMessage",
+          itemId: hostItemIdSchema.parse(`${id}.answer`),
+          text: params.summary,
+          phase: "final_answer",
+        },
+        ...(outcome ? { outcome } : {}),
+      });
+    else if (completed) throw new TraeError("protocolError", "Native final answer has no summary");
+  } else if (
+    typeof timing?.tool_call_started_at_ms === "number" ||
+    toolFinished ||
+    terminal ||
+    ["success", "failed", "error", "canceled", "cancelled"].includes(String(toolResult?.status))
+  ) {
+    if (name === "RunCommand") {
+      if (!record(params) || typeof params.command !== "string" || !params.command.trim())
+        throw new TraeError("protocolError", "Native command has no command text");
+      if (
+        observedCommand &&
+        (observedCommand.planItemId !== id ||
+          observedCommand.commandId !== (record(toolResult?.data) && toolResult.data.command_id) ||
+          (typeof value.reply_to_message_id === "string" &&
+            observedCommand.messageId !== value.reply_to_message_id))
+      )
+        throw new TraeError(
+          "protocolError",
+          "Observed command belongs to another native execution",
+        );
+      const background = isBackgroundCommand(params, toolResult, value.confirm_info);
+      if (observedCommand && !background)
+        throw new TraeError("protocolError", "Observed command is not a background execution");
+      const pendingBackground =
+        allowBackground &&
+        background &&
+        observedCommand?.status !== "succeeded" &&
+        observedCommand?.status !== "failed" &&
+        observedCommand?.status !== "cancelled";
+      const backgroundRef = pendingBackground ? backgroundCommandReference(value) : undefined;
+      if (!pendingBackground)
+        assertObservedCommand(params, toolResult, value.confirm_info, terminal, observedCommand);
+      if (pendingBackground) outcome = undefined;
+      else if (observedCommand)
+        outcome =
+          observedCommand.status === "succeeded"
+            ? { status: "succeeded" }
+            : observedCommand.status === "cancelled"
+              ? { status: "cancelled", reason: "Native background command stopped" }
+              : { status: "failed", error: nativeFailure({ message: "Native command failed" }) };
+      const data = record(toolResult?.data) ? toolResult.data : undefined;
+      const confirmationReceipt =
+        record(call?.meta) &&
+        typeof call.meta.llm_toolcall_id === "string" &&
+        call.meta.llm_toolcall_id.endsWith("_sandbox_retry");
+      // Native sandbox retry temporarily overwrites this same plan ID with a
+      // successful interaction receipt, before restoring the command result.
+      // Its success confirms the decision, never command execution.
+      if (confirmationReceipt) {
+        if (terminal?.status === "succeeded")
+          throw new TraeError("protocolError", "Native command has only a confirmation receipt");
+        outcome = terminal;
+      }
+      const cwd = typeof params.cwd === "string" ? params.cwd : data?.cwd;
+      const item: HostItem = {
+        type: "commandExecution",
+        itemId: hostItemIdSchema.parse(`${id}.tool`),
+        command: params.command,
+        ...(typeof cwd === "string" ? { cwd } : {}),
+        ...(observedCommand
+          ? { output: observedCommand.output, outputTruncated: observedCommand.outputTruncated }
+          : !background && typeof data?.stdout === "string"
+            ? { output: data.stdout }
+            : {}),
+        ...(!background && !observedCommand && toolResult?.is_truncated === true
+          ? { outputTruncated: true }
+          : {}),
+        ...(observedCommand?.exitCode !== undefined
+          ? { exitCode: observedCommand.exitCode }
+          : !background &&
+              !observedCommand &&
+              typeof data?.exit_code === "number" &&
+              Number.isInteger(data.exit_code)
+            ? { exitCode: data.exit_code }
+            : {}),
+      };
+      if (
+        !background &&
+        !observedCommand &&
+        typeof timing?.tool_call_started_at_ms === "number" &&
+        typeof timing.tool_call_finished_at_ms === "number"
+      )
+        item.durationMs = Math.max(
+          0,
+          timing.tool_call_finished_at_ms - timing.tool_call_started_at_ms,
+        );
+      if (item.exitCode !== undefined && item.exitCode !== 0 && outcome?.status === "succeeded")
+        outcome = {
+          status: "failed",
+          error: nativeFailure({ message: `Native command exited with code ${item.exitCode}` }),
+        };
+      result.push({
+        item,
+        ...(outcome ? { outcome } : {}),
+        ...(backgroundRef ? { background: backgroundRef } : {}),
+      });
+      return result;
+    }
+    const item: HostItem = {
+      type: "toolExecution",
+      itemId: hostItemIdSchema.parse(`${id}.tool`),
+      toolName: name,
+      arguments: jsonValueSchema.parse(toolArguments(name, params)),
+    };
+    // Some native tools omit durable output entirely. Preserve that absence; do
+    // not fabricate file contents or substitute call arguments as tool output.
+    if (toolResult?.data !== undefined)
+      item.output = {
+        content: [
+          {
+            type: "text",
+            text:
+              typeof toolResult.data === "string"
+                ? toolResult.data
+                : JSON.stringify(toolResult.data),
+          },
+        ],
+        ...(toolResult.is_truncated === true ? { truncated: true } : {}),
+      };
+    if (
+      typeof timing?.tool_call_started_at_ms === "number" &&
+      typeof timing.tool_call_finished_at_ms === "number"
+    )
+      item.durationMs = Math.max(
+        0,
+        timing.tool_call_finished_at_ms - timing.tool_call_started_at_ms,
+      );
+    result.push({ item, ...(outcome ? { outcome } : {}) });
+  }
+  return result;
+}
+
+interface NativeMessage {
+  id: string;
+  role: "user" | "assistant";
+  index: number;
+  value: Record<string, unknown>;
+}
+
+function inputContent(value: unknown): HostTextInput[] {
+  const content = decoded(value);
+  if (!Array.isArray(content) || !content.length)
+    throw new TraeError("protocolError", "Missing native user input");
+  return content.map((part): HostTextInput => {
+    if (!record(part) || part.type !== "text" || typeof part.text_content !== "string")
+      throw new TraeError("unsupported", "This TRAE CN history contains non-text input");
+    return { type: "text", text: part.text_content };
+  });
+}
+
+/** Read-only history projection; active and missing terminal records remain unknown. */
+export function projectHistory(
+  value: unknown,
+  sessionId: string,
+  agentType: string,
+  options: { allowPendingCommands?: boolean } = {},
+): HostThreadSnapshot {
+  if (!record(value) || value.sessionId !== sessionId || !Array.isArray(value.items))
+    throw new TraeError("protocolError", "Invalid TRAE CN history snapshot");
+  const ids = new Set<string>();
+  const messages = value.items
+    .map((entry): NativeMessage => {
+      if (
+        !record(entry) ||
+        entry.chat_session_id !== sessionId ||
+        !Number.isSafeInteger(entry.message_index) ||
+        (entry.role !== "user" && entry.role !== "assistant")
+      )
+        throw new TraeError("protocolError", "Invalid native history message");
+      const id = nonempty(entry.message_id, "message ID");
+      if (ids.has(id)) throw new TraeError("protocolError", "Duplicate native history message ID");
+      ids.add(id);
+      return { id, index: entry.message_index as number, role: entry.role, value: entry };
+    })
+    .sort((left, right) => left.index - right.index);
+  const users = messages.filter((message) => message.role === "user");
+  const userIds = new Set(users.map((message) => message.id));
+  for (const message of messages)
+    if (
+      message.role === "assistant" &&
+      !userIds.has(nonempty(message.value.reply_to_message_id, "reply identity"))
+    )
+      throw new TraeError(
+        "protocolError",
+        "Native assistant reply has no corresponding user message",
+      );
+  const turns = users.map((user) => {
+    const replies = messages.filter(
+      (message) => message.role === "assistant" && message.value.reply_to_message_id === user.id,
+    );
+    if (replies.length > 1)
+      throw new TraeError(
+        "unsupported",
+        "Multiple native tasks for one user message require autonomous Turn projection",
+      );
+    const reply = replies[0]?.value;
+    const outcome = turnOutcome(reply?.status, reply?.error);
+    const terminal: HostItemOutcome | undefined =
+      outcome.status === "unknown" ? undefined : outcome;
+    const items: HostItemSnapshot[] = [];
+    if (reply) {
+      const content = decoded(reply.content);
+      if (!record(content) || !Array.isArray(content.messages))
+        throw new TraeError("unsupported", "Unsupported native assistant history format");
+      const itemIds = new Set<string>();
+      const commandStatuses = new Map<string, NativeCommandStatus>();
+      if (reply.commandStatuses !== undefined) {
+        if (!Array.isArray(reply.commandStatuses) || reply.commandStatuses.length > 100)
+          throw new TraeError("protocolError", "Invalid observed command history");
+        for (const entry of reply.commandStatuses) {
+          const status = readCommandStatus(entry);
+          const ownsPlan = content.messages.some(
+            (message) =>
+              record(message) &&
+              record(message.plan_item) &&
+              message.plan_item.id === status.planItemId &&
+              record(message.plan_item.tool_call_info) &&
+              message.plan_item.tool_call_info.name === "RunCommand",
+          );
+          if (!ownsPlan || status.messageId !== user.id || commandStatuses.has(status.planItemId))
+            throw new TraeError("protocolError", "Duplicate or foreign observed command history");
+          commandStatuses.set(status.planItemId, status);
+        }
+      }
+      for (const message of content.messages) {
+        if (!record(message) || message.type !== "plan_item")
+          throw new TraeError("unsupported", "Unsupported native task history Item");
+        const planId = record(message.plan_item) ? message.plan_item.id : undefined;
+        const status = typeof planId === "string" ? commandStatuses.get(planId) : undefined;
+        if (status) commandStatuses.delete(status.planItemId);
+        for (const projected of projectPlanItem(
+          message.plan_item,
+          terminal,
+          status,
+          options.allowPendingCommands,
+        )) {
+          if (itemIds.has(projected.item.itemId))
+            throw new TraeError("protocolError", "Duplicate native plan item identity");
+          itemIds.add(projected.item.itemId);
+          if (projected.outcome) items.push({ item: projected.item, outcome: projected.outcome });
+        }
+      }
+      if (commandStatuses.size)
+        throw new TraeError("protocolError", "Observed command has no owning native plan Item");
+      const deletionHistory = content.messages.some(
+        (message) =>
+          record(message) &&
+          record(message.plan_item) &&
+          record(message.plan_item.tool_call_info) &&
+          ["DeleteFile", "delete_file"].includes(String(message.plan_item.tool_call_info.name)) &&
+          record(message.plan_item.tool_call_info.result) &&
+          ["success", "failed", "canceled", "cancelled"].includes(
+            String(message.plan_item.tool_call_info.result.status),
+          ),
+      );
+      if (
+        reply.fileDiffs === undefined &&
+        (deletionHistory ||
+          content.messages.some(
+            (message) =>
+              record(message) &&
+              record(message.plan_item) &&
+              record(message.plan_item.tool_call_info) &&
+              record(message.plan_item.tool_call_info.result) &&
+              record(message.plan_item.tool_call_info.result.data) &&
+              message.plan_item.tool_call_info.result.data.can_show_diff === true,
+          ))
+      )
+        throw new TraeError(
+          "configurationRequired",
+          `Update the TRAE CN Companion to ${deletionHistory ? "0.1.10" : "0.1.1"} or newer to read native file diffs`,
+        );
+      const fileChanges = projectFileChanges(reply);
+      // The native snapshot confirms these edits were applied even when a later
+      // tool fails or the overall Turn is cancelled.
+      if (fileChanges && terminal)
+        items.push({ item: fileChanges, outcome: { status: "succeeded" } });
+    }
+    const model: HarnessModelRef | undefined = confirmedModel(
+      reply?.model ?? user.value.model,
+      agentType,
+    );
+    return {
+      nativeTurnRef: nativeTurnRef(sessionId, user.id),
+      input: inputContent(user.value.content),
+      items,
+      outcome,
+      ...(reply && outcome.status !== "unknown"
+        ? {
+            checkpoint: nativeCheckpointRefSchema.parse({
+              harnessId: TRAE_CN_ID,
+              nativeSessionId: sessionId,
+              checkpointId: nonempty(reply.message_id, "assistant message ID"),
+              formatVersion: 1,
+            }),
+          }
+        : {}),
+      ...(model ? { model } : {}),
+      ...(typeof reply?.chat_start_time === "number" ? { startedAtMs: reply.chat_start_time } : {}),
+      ...(typeof reply?.chat_end_time === "number" ? { completedAtMs: reply.chat_end_time } : {}),
+    };
+  });
+  return { turns };
+}

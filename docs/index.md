@@ -112,6 +112,12 @@
 | --- | --- |
 | [`harnesses/copilot/copilot-harness-integration.md`](harnesses/copilot/copilot-harness-integration.md) | 官方 SDK/headless stdio、原生登录、稳定历史与派生、接收委派和当前验证限制。 |
 
+### TRAE CN（开发中）
+
+| 文档 | 适用场景 |
+|---|---|
+| [`harnesses/trae-cn/trae-cn-desktop-integration.md`](harnesses/trae-cn/trae-cn-desktop-integration.md) | 开发中的国内 TRAE 桌面插件与 Companion：原生会话、模型 / Thinking / 权限配置、认证及验收边界；完整 Desktop 接入仍待验收。 |
+
 ### ZCode
 
 | 文档 | 内容与阅读时机 |

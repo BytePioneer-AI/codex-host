@@ -1,0 +1,39 @@
+[
+  {
+    "id": "native-edit",
+    "task_id": "native-task",
+    "confirm_info": {
+      "confirm_status": "confirmed",
+      "auto_confirm": false,
+      "interaction_instance_id": "native-instance"
+    },
+    "timing": { "generated_at_ms": 1, "tool_call_started_at_ms": 2 },
+    "tool_call_info": {
+      "id": "native-edit",
+      "name": "Edit",
+      "params": {
+        "file_path": "/workspace/owned.txt",
+        "old_string": "BEFORE",
+        "new_string": "AFTER"
+      },
+      "meta": { "llm_toolcall_id": "native-call" }
+    }
+  },
+  {
+    "id": "native-edit",
+    "task_id": "native-task",
+    "confirm_info": {
+      "confirm_status": "confirmed",
+      "auto_confirm": false,
+      "interaction_instance_id": "native-instance"
+    },
+    "timing": { "generated_at_ms": 1, "tool_call_started_at_ms": 2, "tool_call_finished_at_ms": 3 },
+    "tool_call_info": {
+      "id": "native-edit",
+      "name": "Edit",
+      "params": { "file_path": "/workspace/owned.txt", "old_string": "", "new_string": "" },
+      "meta": { "llm_toolcall_id": "native-call" },
+      "result": { "status": "success" }
+    }
+  }
+]

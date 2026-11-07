@@ -1,0 +1,56 @@
+{
+  "plan": {
+    "id": "native-plan",
+    "reply_to_message_id": "native-user",
+    "timing": { "tool_call_started_at_ms": 1000, "tool_call_finished_at_ms": 2000 },
+    "tool_call_info": {
+      "id": "native-plan",
+      "name": "RunCommand",
+      "params": { "blocking": false, "command": "echo DONE", "cwd": "/workspace" },
+      "result": {
+        "status": "success",
+        "data": {
+          "command_id": "native-command",
+          "status": "Running",
+          "stdout": "[Background Job] command_id=native-command",
+          "run_command_to_bg_reason": "timeout"
+        }
+      },
+      "meta": { "llm_toolcall_id": "native-tool-call" }
+    }
+  },
+  "running": {
+    "found": true,
+    "commandId": "native-command",
+    "statusPushSupported": false,
+    "result": {
+      "command_id": "native-command",
+      "status": "running",
+      "exit_code": null,
+      "output": "",
+      "stdout": "",
+      "cwd": "/workspace",
+      "command": "echo DONE",
+      "user_aborted": false,
+      "total_bytes": 0,
+      "stdout_complete": false
+    }
+  },
+  "completed": {
+    "found": true,
+    "commandId": "native-command",
+    "statusPushSupported": false,
+    "result": {
+      "command_id": "native-command",
+      "status": "completed",
+      "exit_code": 0,
+      "output": "DONE\r\n",
+      "stdout": "DONE\r\n",
+      "cwd": "/workspace",
+      "command": "echo DONE",
+      "user_aborted": false,
+      "total_bytes": 6,
+      "stdout_complete": true
+    }
+  }
+}

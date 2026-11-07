@@ -1,0 +1,47 @@
+{
+  "message": {
+    "chat_session_id": "session",
+    "message_index": 2,
+    "message_id": "assistant",
+    "reply_to_message_id": "user",
+    "role": "assistant",
+    "status": "completed",
+    "content": {
+      "messages": [
+        {
+          "type": "plan_item",
+          "plan_item": {
+            "id": "delete",
+            "tool_call_info": {
+              "id": "delete",
+              "name": "DeleteFile",
+              "params": { "file_paths": ["/workspace/delete-fixture.txt"] },
+              "result": {
+                "status": "success",
+                "error_message": "",
+                "data": { "changes": [] },
+                "images": null,
+                "render": null,
+                "is_truncated": false,
+                "interrupt": null
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "snapshot": {
+    "file_diffs": [
+      {
+        "file_path": "/workspace/delete-fixture.txt",
+        "file_action": "deleted",
+        "before_content": "TRAE_CN_DELETE_FIXTURE_0",
+        "after_content": null,
+        "insert_line_count": 0,
+        "delete_line_count": 1,
+        "toolcall_id": null
+      }
+    ]
+  }
+}

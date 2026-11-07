@@ -13,6 +13,7 @@ import {
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
+  harnessKnownTurnSchema,
 } from "@codexhost/shared-contracts";
 import type { HarnessError, HarnessOutput, HarnessSessionState } from "@codexhost/harness-adapter";
 import { HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE } from "./protocol.js";
@@ -51,6 +52,7 @@ const resumeSchema = z
     nativeRef: nativeSessionRefSchema,
     cwd: cwdSchema,
     knownTurnRefs: z.array(nativeTurnRefSchema).max(100_000).optional(),
+    knownTurns: z.array(harnessKnownTurnSchema).max(100_000).optional(),
   })
   .strict();
 const forkSchema = z
@@ -272,6 +274,7 @@ const eventKeys = new Map<string, ReadonlySet<string>>([
   ["subagent.state.changed", new Set(["type", "nativeSubagentId", "status", "resultSummary"])],
   ["subagent.transcript.changed", new Set(["type", "nativeSubagentId"])],
   ["turn.started", new Set(["type", "turnId"])],
+  ["turn.identity.confirmed", new Set(["type", "turnId", "nativeTurnRef"])],
   ["turn.autonomous.started", new Set(["type", "turnId", "input"])],
   ["item.started", new Set(["type", "turnId", "item"])],
   ["item.updated", new Set(["type", "turnId", "itemId", "update"])],
@@ -324,6 +327,11 @@ export const harnessOutputSchema = z.custom<HarnessOutput>((value) => {
     if (event.type === "session.state.changed")
       return harnessSessionStateSchema.safeParse(event.state).success;
     if (event.type === "session.faulted") return harnessErrorSchema.safeParse(event.error).success;
+    if (event.type === "turn.identity.confirmed")
+      return (
+        hostTurnIdSchema.safeParse(event.turnId).success &&
+        nativeTurnRefSchema.safeParse(event.nativeTurnRef).success
+      );
     if (event.type === "usage.history") return typeof event.complete === "boolean";
     return true;
   }

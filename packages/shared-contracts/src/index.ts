@@ -385,3 +385,9 @@ export {
   type CodexSshConnection,
   type CodexSshDraft,
 } from "./remote-connections.js";
+export {
+  harnessKnownTurnSchema,
+  harnessTurnRecoverySchema,
+  type HarnessKnownTurn,
+  type HarnessTurnRecovery,
+} from "./harness-recovery.js";

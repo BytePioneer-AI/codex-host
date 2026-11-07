@@ -196,6 +196,8 @@ Devin: ◐ indicates conditional support or pending native validation. Thinking 
 
 ## Cross-Agent Collaboration
 
+The preinstalled **[TRAE CN Desktop bridge](docs/harnesses/trae-cn/trae-cn-desktop-integration.md)** is experimental and requires a separately installed Companion extension. It reuses domestic Desktop login, conversation models and native Sessions; it does not use standalone Trae CLI authentication. Text, file edits, questions, single-use approvals and limited history operations have native evidence. Remaining approval coverage, delegation and current Desktop acceptance are tracked in its [capability inventory](packages/adapters/trae-cn/CAPABILITIES.md); it is not included in the complete-support table above.
+
 Type `#` in the chat input to choose an Agent to delegate a task to, or to find commands and skills available for the selected Harness.
 
 Ask the current Agent to hand off a self-contained task to another Harness. For example:

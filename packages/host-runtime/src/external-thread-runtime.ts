@@ -7,13 +7,14 @@ import type {
   HostThreadSnapshot,
   HostUsage,
   TurnCompletedEvent,
+  TurnIdentityConfirmedEvent,
 } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   decodeExternalTransportSelection,
   encodeExternalTransportSelection,
   mapExternalThreadHarnessError,
-  type CodexTurnProjector,
+  CodexTurnProjector,
   type ExternalConfigurationSelection,
   type ExternalHarnessId,
   type ExternalThreadRpcError,
@@ -27,6 +28,7 @@ import {
   type HostInteractionId,
   type HostTurnId,
   type NativeSessionRef,
+  harnessTurnRecoverySchema,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -105,7 +107,7 @@ export type ExternalThreadResolution =
   | { kind: "external"; thread: ExternalThread; historyFresh: boolean }
   | { kind: "error"; error: ExternalThreadRpcError };
 
-function nativeTurnKey(turn: HostThreadSnapshot["turns"][number]): string {
+function nativeTurnKey(turn: Pick<HostThreadSnapshot["turns"][number], "nativeTurnRef">): string {
   const ref = turn.nativeTurnRef;
   return `${ref.harnessId}\u0000${ref.nativeSessionId}\u0000${ref.nativeTurnKey}\u0000${ref.formatVersion}`;
 }
@@ -430,6 +432,7 @@ export class ExternalThreadRuntime {
       steeredTurnIds,
     };
     this.idleRelease.touch(externalThread);
+    this.#restoreActiveTurn(externalThread);
     externalThread.outputTask = this.#consumeOutputs(externalThread);
     this.#threads.set(externalThread.id, externalThread);
     return externalThread;
@@ -633,11 +636,11 @@ export class ExternalThreadRuntime {
           ? thread.turns
           : aligned.turns;
       thread.record = aligned.record;
-      thread.turns = turns;
+      thread.turns = turns.filter((turn) => turn.id !== thread.activeTurnId);
       thread.historyHydrated = true;
       thread.thread = externalThreadValue({
         record: aligned.record,
-        turns,
+        turns: thread.turns,
         sessionId: thread.sessionId,
         running: thread.running,
       });
@@ -670,6 +673,14 @@ export class ExternalThreadRuntime {
       environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: thread.record.hostThreadId },
       nativeRef: thread.record.nativeSessionRef as NativeSessionRef,
       knownTurnRefs: thread.record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
+      ...(adapter.activeTurnRecovery
+        ? {
+            knownTurns: thread.record.turnMappings.map(({ hostTurnId, nativeTurnRef }) => ({
+              turnId: hostTurnId,
+              nativeTurnRef,
+            })),
+          }
+        : {}),
       ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
       ...(restoredSelection?.thinkingOptionId
         ? { thinkingOptionId: restoredSelection.thinkingOptionId }
@@ -763,6 +774,7 @@ export class ExternalThreadRuntime {
         sessionId: thread.sessionId,
         running: thread.running,
       });
+      this.#restoreActiveTurn(thread);
       thread.outputTask = this.#consumeOutputs(thread);
       this.idleRelease.clearOutputFailed(thread);
       return null;
@@ -786,6 +798,15 @@ export class ExternalThreadRuntime {
         : null;
     }
     try {
+      const prior = thread.record.turnMappings.find(
+        (mapping) => mapping.hostTurnId === event.turnId,
+      );
+      if (
+        this.#adapters.get(thread.harnessId)?.activeTurnRecovery &&
+        prior &&
+        nativeTurnKey(prior) !== nativeTurnKey({ nativeTurnRef: event.nativeTurnRef })
+      )
+        throw new Error("Confirmed native Turn identity changed before completion");
       thread.record = await this.#repository.persistTurn(
         thread.record,
         event.turnId,
@@ -800,6 +821,81 @@ export class ExternalThreadRuntime {
       this.#diagnose("External Turn identity could not be persisted");
       return failure;
     }
+  }
+
+  async persistConfirmedTurnIdentity(
+    thread: ExternalThread,
+    event: TurnIdentityConfirmedEvent,
+  ): Promise<Error | null> {
+    if (thread.persistenceError) return thread.persistenceError;
+    if (thread.activeTurnId !== event.turnId || !thread.projectedTurns.has(event.turnId))
+      return new Error("Native Turn identity references an inactive Host Turn");
+    try {
+      const prior = thread.record.turnMappings.find(
+        (mapping) => mapping.hostTurnId === event.turnId,
+      );
+      if (prior && nativeTurnKey(prior) !== nativeTurnKey(event))
+        throw new Error("Confirmed native Turn identity changed within an active Turn");
+      thread.record = await this.#repository.persistTurn(
+        thread.record,
+        event.turnId,
+        event.nativeTurnRef,
+      );
+      return null;
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(errorMessage(error));
+      thread.persistenceError = failure;
+      thread.stateObserver.fault(failure);
+      return failure;
+    }
+  }
+
+  #restoreActiveTurn(thread: ExternalThread): void {
+    if (!thread.session.recoveringTurn) return;
+    const recovery = harnessTurnRecoverySchema.parse(thread.session.recoveringTurn);
+    const nativeRef = thread.record.nativeSessionRef;
+    const sessionRef = thread.session.initialState.nativeRef;
+    if (
+      !nativeRef ||
+      !sessionRef ||
+      recovery.nativeTurnRef.harnessId !== thread.harnessId ||
+      recovery.nativeTurnRef.nativeSessionId !== nativeRef.nativeSessionId ||
+      sessionRef.harnessId !== nativeRef.harnessId ||
+      sessionRef.nativeSessionId !== nativeRef.nativeSessionId
+    )
+      throw new Error("External active Turn recovery belongs to another Session");
+    if (!this.#adapters.get(thread.harnessId)?.activeTurnRecovery || thread.activeTurnId)
+      throw new Error("External active Turn recovery was not admitted");
+    const mapping = thread.record.turnMappings.find((m) => m.hostTurnId === recovery.turnId);
+    if (
+      !mapping ||
+      nativeTurnKey({ nativeTurnRef: mapping.nativeTurnRef }) !==
+        nativeTurnKey({ nativeTurnRef: recovery.nativeTurnRef })
+    )
+      throw new Error("External active Turn recovery has no confirmed Host identity");
+    thread.turns = thread.turns.filter((turn) => turn.id !== recovery.turnId);
+    thread.running = true;
+    thread.activeTurnId = recovery.turnId;
+    thread.projectedTerminalTurnId = null;
+    thread.projectedTurns.set(recovery.turnId, {
+      projector: new CodexTurnProjector({
+        threadId: thread.id,
+        turnId: recovery.turnId,
+        cwd: thread.cwd,
+        startedAtMs: Date.now(),
+        initialInput: recovery.input,
+      }),
+    });
+    thread.responseGates.set(recovery.turnId, {
+      promise: Promise.resolve(),
+      resolve: () => undefined,
+    });
+    thread.thread = externalThreadValue({
+      record: thread.record,
+      turns: thread.turns,
+      sessionId: thread.sessionId,
+      running: true,
+    });
   }
 
   async #restore(record: StoredThreadRecordV1): Promise<ExternalThread> {
@@ -866,6 +962,14 @@ export class ExternalThreadRuntime {
       environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: record.hostThreadId },
       nativeRef: record.nativeSessionRef as NativeSessionRef,
       knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
+      ...(adapter.activeTurnRecovery
+        ? {
+            knownTurns: record.turnMappings.map(({ hostTurnId, nativeTurnRef }) => ({
+              turnId: hostTurnId,
+              nativeTurnRef,
+            })),
+          }
+        : {}),
       ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
       ...(restoredSelection?.thinkingOptionId
         ? { thinkingOptionId: restoredSelection.thinkingOptionId }

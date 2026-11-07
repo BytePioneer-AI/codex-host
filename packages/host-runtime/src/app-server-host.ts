@@ -3345,10 +3345,29 @@ export class AppServerHost {
       );
       return;
     }
+    let inspectionCwd = params.data.cwd;
+    if (params.data.threadId) {
+      const location = await this.#locateExternalThread(params.data.threadId);
+      if (location.kind === "error") {
+        await this.#writer.json(rpcError(request, location.error.code, location.error.message));
+        return;
+      }
+      if (
+        location.kind !== "external" ||
+        location.record.harnessId !== params.data.harnessId ||
+        (inspectionCwd !== undefined && inspectionCwd !== location.record.cwd)
+      ) {
+        await this.#writer.json(
+          rpcError(request, -32602, "Harness inspection scope does not match the Thread"),
+        );
+        return;
+      }
+      inspectionCwd = location.record.cwd;
+    }
     let inspection: unknown;
     try {
       inspection = await adapter.inspect({
-        ...(params.data.cwd ? { cwd: params.data.cwd } : {}),
+        ...(inspectionCwd ? { cwd: inspectionCwd } : {}),
         ...(params.data.refresh !== undefined ? { refresh: params.data.refresh } : {}),
         ...(params.data.purpose ? { purpose: params.data.purpose } : {}),
       });
@@ -3927,13 +3946,21 @@ export class AppServerHost {
       if (!projected.effectiveModel) {
         throw new Error("Harness Session did not report an effective Model");
       }
-      // Resume and Fork read the saved selection, so keep it on the confirmed Model.
-      const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
+      // A Model change can replace or clear Thinking. Resume and Fork must use
+      // the complete confirmed selection instead of reviving the old hint.
+      const selection = {
         ...(decodeExternalTransportSelection(thread.harnessId, thread.transportModelId) ?? {}),
         model: projected.effectiveModel,
-      });
+      };
+      if (projected.effectiveThinkingOptionId)
+        selection.thinkingOptionId = projected.effectiveThinkingOptionId;
+      else delete selection.thinkingOptionId;
+      const transportModelId = encodeExternalTransportSelection(thread.harnessId, selection);
       thread.transportModelId = transportModelId;
       thread.requestedModel = projected.effectiveModel;
+      if (projected.effectiveThinkingOptionId)
+        thread.requestedThinkingOptionId = projected.effectiveThinkingOptionId;
+      else delete thread.requestedThinkingOptionId;
       try {
         thread.record = await this.#repository.setTransportModelId(
           thread.record.hostThreadId,
@@ -5510,6 +5537,11 @@ export class AppServerHost {
       if (!thread.running && !thread.activeTurnId && !this.#hasRunningSubagents(thread.id)) {
         await this.#setThreadStatus(thread, { type: "idle" });
       }
+      return;
+    }
+    if (event.type === "turn.identity.confirmed") {
+      const failure = await this.#externalRuntime.persistConfirmedTurnIdentity(thread, event);
+      if (failure) throw failure;
       return;
     }
     if (event.type === "session.faulted") {

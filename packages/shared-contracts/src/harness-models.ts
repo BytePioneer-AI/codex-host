@@ -287,6 +287,8 @@ export const harnessInspectParamsSchema = z
   .object({
     harnessId: harnessIdSchema,
     cwd: nonBlankTextSchema.max(16_384).optional(),
+    /** Resolve the persisted workspace of an owned external Thread. */
+    threadId: hostThreadIdSchema.optional(),
     refresh: z.boolean().optional(),
     /** `availability` asks only whether the Harness can run; see `InspectHarnessInput.purpose`. */
     purpose: z.literal("availability").optional(),

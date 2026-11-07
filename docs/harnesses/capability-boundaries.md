@@ -4,6 +4,8 @@
 
 ## 各 Harness 的接入方式
 
+- **TRAE CN（实验性）**：预装 Adapter 通过单独安装的 Companion 连接国内桌面应用内部的原生服务，复用其登录和会话模型，不调用独立 Trae CLI。已验证文本、文件编辑、提问、单次审批及受限历史派生；完整审批覆盖、委派和当前 Desktop 验收尚未完成。详见 [TRAE CN 桌面桥接](trae-cn/trae-cn-desktop-integration.md) 和插件能力清单。
+
 - **OMP**：现有原生提问与工具审批已接入。选择题使用原生逐项说明，超时与主动取消分别回传 `timedOut` / `cancelled`，详见 [OMP 交互](omp/omp-interactions.md)。子代理投影依赖 OMP RPC 的 `set_subagent_subscription` 订阅（服务端默认 `off`）：Host 启动连接时请求 `events` 级别；不支持该命令的旧版 OMP 优雅降级为无子代理投影，不阻塞会话。子代理转写读取优先直接读父会话文件旁的 `<子代理ID>.jsonl`（OMP RPC 的子代理注册表仅存于内存，冷启动进程无法按 ID 解析已完成的子代理）；文件不存在时回退 RPC 读取。
   OMP 的 `/context` 及原生明确报告未调用 Agent 的动态命令使用非持久化完成语义，显示原生文本后释放当前轮次，不合成历史身份；普通轮次的终结与取消检查保持不变。首次本地命令不产生历史文件时，以原生空消息确认下一轮可继续。详见 [本地命令边界](omp/omp-interactions.md#不调用-agent-的本地命令)。
 - **CodeBuddy**：从 ACP 动态目录读取斜杠命令，按原生压缩事件及持久化结果确认上下文压缩；通过原生附加系统提示让会话发现 Host 委派 CLI。Fork 和修订通过无模型的原生复制、原生 `/fork` 与仅作用于新副本的 rollback 完成，校验完整历史前缀与源会话不变；派生配置随原生引用恢复。成功派生后通过同一临时 ACP 进程的原生 HTTP 接口删除中间副本；早期失败或强杀仍可能残留，详见专属文档。详见 [CodeBuddy 接入](codebuddy/codebuddy-harness-integration.md)。

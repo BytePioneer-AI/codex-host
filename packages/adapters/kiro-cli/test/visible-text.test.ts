@@ -70,7 +70,12 @@ describe("Kiro leaked tool preambles", () => {
       });
       projector.project({ type: "turn.started", turnId });
       for (const event of events) {
-        if ("turnId" in event && event.type !== "turn.autonomous.started") projector.project(event);
+        if (
+          "turnId" in event &&
+          event.type !== "turn.autonomous.started" &&
+          event.type !== "turn.identity.confirmed"
+        )
+          projector.project(event);
       }
       expect(() =>
         projector.project({ type: "turn.completed", turnId, outcome: { status } }),

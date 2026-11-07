@@ -24,6 +24,7 @@ interface RendererHostRpcDependencies {
   hostIds: typeof rendererHostRpcHostIds;
   /** Current owners of the given Composer (or every mounted Composer). */
   discoverComposer(composer?: RendererHostRoot): RendererHostDiscovery;
+  localDraftWorkspace?(composer?: RendererHostRoot): string | null | undefined;
   /** `MessagePort.prototype`: Renderer capnweb calls to the main process leave through it. */
   portPrototype: { postMessage(this: unknown, message: unknown, ...rest: unknown[]): unknown };
   /** Installs a native router after Composer discovery has found a native owner. */
@@ -128,10 +129,10 @@ export function installRendererHostRpcRouting(
       return null;
     }
   };
-  // The draft's workspace reaches the Host only through its prewarm. Publish it
-  // so the Composer can ask for that workspace's live Harness commands.
+  // Publish the observed native project or prewarm path so draft inspection does
+  // not depend on Desktop having already prepared a native Session.
   const publishDraftWorkspace = (hostId: string, cwd: unknown): void => {
-    if (typeof cwd !== "string" || cwd.length === 0) return;
+    if (cwd !== null && (typeof cwd !== "string" || cwd.length === 0)) return;
     const drafts = isRecord(target.__codexhostDraftWorkspacesV1)
       ? target.__codexhostDraftWorkspacesV1
       : {};
@@ -145,6 +146,16 @@ export function installRendererHostRpcRouting(
       target.dispatchEvent(
         new CustomEvent("codexhost:draft-workspace", { detail: { hostId, cwd } }),
       );
+    }
+  };
+  const refreshDraftWorkspace = (hostId: string | null, composer?: RendererHostRoot): void => {
+    if (hostId !== "local") return;
+    try {
+      const cwd = dependencies.localDraftWorkspace?.(composer);
+      if (cwd !== undefined) publishDraftWorkspace("local", cwd);
+    } catch {
+      // An unreadable native selection must not retain another project's path.
+      publishDraftWorkspace("local", null);
     }
   };
   /** Rewrites only the Model of a Renderer-issued capnweb creation call. */
@@ -397,7 +408,11 @@ export function installRendererHostRpcRouting(
     hostIdForComposer(composer) {
       if (disposed) return null;
       try {
-        return composerHostId(nativeRouting ? null : discoverComposer(composer), composer);
+        const hostId = composerHostId(nativeRouting ? null : discoverComposer(composer), composer);
+        // Native replay routing resolves identity without calling this router's
+        // forComposer, so project publication must also follow that path.
+        refreshDraftWorkspace(hostId, composer);
+        return hostId;
       } catch {
         return null;
       }
@@ -416,6 +431,7 @@ export function installRendererHostRpcRouting(
         hostId = null;
       }
       const route = hostId ? routeFor(hostId, preferred) : null;
+      refreshDraftWorkspace(route?.hostId ?? null, composer);
       if (!composer) publish(route);
       return route;
     },

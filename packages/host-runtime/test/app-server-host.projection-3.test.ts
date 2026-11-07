@@ -17,6 +17,7 @@ import {
   encodeHarnessPluginRoute,
   harnessCommandDescriptorSchema,
   harnessIdSchema,
+  harnessModelCatalogSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
   hostItemIdSchema,
@@ -42,6 +43,58 @@ import {
 } from "./app-server-host-fixture.js";
 
 describe("AppServerHost HarnessAdapter projection", () => {
+  it.each(["changed", "cleared"] as const)(
+    "persists the owning Session's %s Thinking after a Model change",
+    async (kind) => {
+      const seed = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+      const catalog = harnessModelCatalogSchema.parse({
+        ...seed.catalog,
+        models: [
+          ...seed.catalog.models,
+          { ref: { id: "fake.no-thinking" }, label: "No Thinking", supportedThinkingOptionIds: [] },
+        ],
+      });
+      const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"), catalog);
+      const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+      try {
+        const initial = catalog.defaultModel,
+          high = catalog.defaultThinkingOptionId;
+        const target = catalog.models[kind === "changed" ? 1 : 2]?.ref;
+        if (!initial || !high || !target) throw new Error("Missing fixture configuration");
+        const threadId = await startExternalThread(
+          fixture,
+          encodeHarnessPluginRoute({
+            harnessId: adapter.harnessId,
+            model: initial,
+            thinkingOptionId: high,
+          }),
+        );
+        writeRequest(fixture.desktopInput, {
+          id: 89,
+          method: "codexhost/thread/model/select",
+          params: { threadId, model: target },
+        });
+        const response = await fixture.collector.waitFor((message) => requestId(message, 89));
+        expect(response).toMatchObject({ result: { effectiveModel: target } });
+        const thinking =
+          kind === "changed"
+            ? catalog.thinkingOptions.find((option) => option.id === "off")?.id
+            : undefined;
+        expect(adapter.sessions[0]?.state.effectiveThinkingOptionId).toBe(thinking);
+        expect(
+          await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+        ).toMatchObject({
+          transportModelId: encodeHarnessPluginRoute({
+            harnessId: adapter.harnessId,
+            model: target,
+            ...(thinking ? { thinkingOptionId: thinking } : {}),
+          }),
+        });
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
   it("selects a registered non-Pi Thread Model through its owning Session", async () => {
     const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
     const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));

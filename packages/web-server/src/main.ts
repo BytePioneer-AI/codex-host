@@ -568,9 +568,14 @@ const server = createServer((request, response) => {
       const body = await readBody(request, response);
       if (body === undefined) return;
       if (dsh && (await dsh.handleApiRequest(request, body, response))) return;
-      const reply = await rpc.handleHttp(body, requestAuth, (callback) => {
-        response.once("finish", callback);
-      });
+      const reply = await rpc.handleHttp(
+        body,
+        requestAuth,
+        (callback) => {
+          response.once("finish", callback);
+        },
+        trust.relaySockets.has(request.socket),
+      );
       const contentType = "application/json; charset=utf-8";
       const compressed = await compressResponse(
         Buffer.from(reply),
@@ -681,7 +686,9 @@ server.on("upgrade", (request, socket, head) => {
   if (auth !== undefined && !auth.admitUpgrade(request, socket)) return;
   if (path === SIDEBAR_BROWSER_PATH) sidebarBrowser.upgrade(request, socket, head);
   else if (path === "/api/remote.mux")
-    wss.handleUpgrade(request, socket, head, (ws) => streams.attach(ws));
+    wss.handleUpgrade(request, socket, head, (ws) =>
+      streams.attach(ws, trust.relaySockets.has(request.socket)),
+    );
   else {
     void (pluginRuntime?.upgrade(request, socket, head) ?? Promise.resolve(false))
       .then((handled) => {

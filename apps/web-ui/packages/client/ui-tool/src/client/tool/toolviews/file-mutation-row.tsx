@@ -61,6 +61,7 @@ export function FileMutationRow({
   openFile,
   inspect,
   useDisclosure,
+  copyOutput,
   t,
 }: FileMutationRowProps) {
   const model = toolRowModel(toolName, block, cwd, home);
@@ -78,6 +79,7 @@ export function FileMutationRow({
   return (
     <ToolRow
       useDisclosure={useDisclosure}
+      copyOutput={copyOutput}
       t={t}
       variant={model.variant}
       toolName={toolName}

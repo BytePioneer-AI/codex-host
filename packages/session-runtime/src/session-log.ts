@@ -7,6 +7,7 @@
  * projection values the client reads from control, follow, and list rows.
  */
 
+import { randomUUID } from "node:crypto";
 import type { SessionDataStore } from "./contracts.js";
 import type { SessionSink } from "./contracts.js";
 
@@ -105,6 +106,8 @@ export class SessionLog {
   readonly projections: Record<string, unknown>;
   private readonly followers = new Set<SessionSink>();
   private revision = 0;
+  /** Identity of this append-only rendering generation; never persisted. */
+  epoch: string = randomUUID();
   private attempt: ActiveAttempt | undefined;
   private attemptCounter = 0;
   /** Replay clock: while set, appended events take historical timestamps. */
@@ -133,6 +136,7 @@ export class SessionLog {
 
   /** Drop every event (rebuild from a fresh native transcript); projections are kept. */
   reset(): void {
+    this.epoch = randomUUID();
     this.events.length = 0;
     this.data.writeLines(this.file, []);
     this.attempt = undefined;
@@ -312,13 +316,27 @@ export class SessionLog {
 
   // ---- followers ---------------------------------------------------------------------------
 
-  follow(sink: SessionSink, request: PageWindow & { assistantStream?: boolean }): void {
+  follow(
+    sink: SessionSink,
+    request: PageWindow & { assistantStream?: boolean; resume?: { epoch: string; cursor: number } },
+  ): void {
     this.followers.add(sink);
     sink.onClose(() => this.followers.delete(sink));
     const attempt = this.attempt;
-    const window = this.window(this.events.length, request);
+    const resume = request.resume;
+    const canResume =
+      resume !== undefined &&
+      resume.epoch === this.epoch &&
+      Number.isSafeInteger(resume.cursor) &&
+      resume.cursor >= this.firstSeq - 1 &&
+      resume.cursor <= this.lastSeq;
+    const window = canResume
+      ? { start: resume.cursor + 1 - this.firstSeq }
+      : this.window(this.events.length, request);
     sink.push({
       type: "snapshot",
+      epoch: this.epoch,
+      ...(canResume ? { resumedAfter: resume.cursor } : {}),
       header: this.header,
       cursor: this.lastSeq,
       records: this.events

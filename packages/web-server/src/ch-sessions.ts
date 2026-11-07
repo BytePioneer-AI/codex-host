@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import {
   WEB_FOLLOW_PROJECTION_KEYS,
   webTurnDiffsRequestSchema,
+  webToolOutputReferenceSchema,
   encodeHarnessPluginRoute,
   harnessPluginRouteSchema,
   threadInspectionSchema,
@@ -51,6 +52,8 @@ import {
 import type { Workspaces } from "./workspaces.ts";
 import { defaultProjections } from "./session-log.ts";
 import { applyUsageProjections } from "./usage-projection.ts";
+import { readToolOutput, toolOutputRecords, toolOutputSink } from "./tool-output.ts";
+import type { WireEvent } from "./session-log.ts";
 
 function globalProjectionValues(values: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -1022,6 +1025,14 @@ export class ChSessions {
       }
       return { accepted: true };
     });
+    rpc.register("session/toolOutput", async (args) => {
+      const parsed = webToolOutputReferenceSchema.safeParse(requestOf(args));
+      if (!parsed.success) throw new RpcError("gateway/invalid", "Invalid tool output reference.");
+      const ref = parsed.data;
+      await this.owner(ref.sessionId);
+      const view = await this.view(ref.sessionId, true);
+      return readToolOutput(view.log, ref);
+    });
     rpc.register("session/attachment", async (args) => {
       const { sessionId, attachmentId } = requestOf<{ sessionId: string; attachmentId: string }>(
         args,
@@ -1124,7 +1135,7 @@ export class ChSessions {
         ? (await this.draftSummary(draft)).projections
         : (await this.view(sessionId, true)).log.projectionBaseline();
     });
-    rpc.register("session/page", async (args) => {
+    rpc.register("session/page", async (args, context) => {
       const req = requestOf<{
         address: { sessionId: string };
         throughSeq: number;
@@ -1134,7 +1145,16 @@ export class ChSessions {
       const view =
         this.threads.view(this.id(req.address.sessionId)) ??
         (await this.view(req.address.sessionId, true));
-      return view.olderPage(req.throughSeq, req.beforeSeq, req.maxMessages);
+      const page = await view.olderPage(req.throughSeq, req.beforeSeq, req.maxMessages);
+      return context.relay
+        ? {
+            ...page,
+            records: toolOutputRecords(
+              view.log,
+              page.records as Array<{ type: "event"; event: WireEvent }>,
+            ),
+          }
+        : page;
     });
     rpc.register("session/workspacePathApplications", () => ({ applications: [] }));
     rpc.register("session/openWorkspacePath", () => {
@@ -1208,7 +1228,7 @@ export class ChSessions {
       // had no realtime follower. The initial open already has a read in flight.
       const tracked = this.threads.get(view.thread.id);
       if (tracked?.usageReadAt !== undefined && !tracked.usage) this.loadUsage(view, true);
-      view.log.follow(sink, request);
+      view.log.follow(toolOutputSink(view.log, sink), request);
       // Publish first; prefetch just one older page, never drain all history.
       const prefetch = setImmediate(() => {
         if (!sink.closed && !this.closed) void view.prefetchOlder().catch(() => {});

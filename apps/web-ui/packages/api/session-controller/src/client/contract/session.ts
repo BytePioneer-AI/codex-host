@@ -7,6 +7,7 @@
  * must stub); implementation-internal entry points (history staging, wire-frame
  * dispatch) stay on the class, invisible out here.
  */
+import type { WebToolOutputReference } from "@codexhost/shared-contracts";
 import type {
   AttachmentIdType,
   FileAttachmentRef,
@@ -94,6 +95,8 @@ export interface ISession {
     signal?: AbortSignal,
     requestId?: SessionRequestId,
   ): Promise<RemoteResult<{ accepted: true }>>;
+  /** Read a projected tool fragment, caching by its complete identity and content version. */
+  readToolOutput(reference: WebToolOutputReference): Promise<string>;
   /**
    * Resolve one durable image referenced by this session.
    * @param attachmentId - opaque id found in the folded session log.

@@ -17,17 +17,21 @@ export interface CopyFeedback {
  * @param text - the text to write on copy.
  * @returns the `copied` flag and the `onCopy` handler.
  */
-export function useCopyFeedback(text: string): CopyFeedback {
+export function useCopyFeedback(text: string | (() => Promise<string>)): CopyFeedback {
   const [copied, setCopied] = useState(false);
   const onCopy = useCallback(() => {
     if (copied) return;
-    void writeClipboard(text).then((ok) => {
-      if (!ok) return;
-      setCopied(true);
-      window.setTimeout(() => {
-        setCopied(false);
-      }, COPIED_FEEDBACK_MS);
-    });
+    void (async () => {
+      try {
+        const value = typeof text === "function" ? await text() : text;
+        if (!(await writeClipboard(value))) return;
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), COPIED_FEEDBACK_MS);
+      } catch {
+        // Async text owners present loading and read failures at the source card.
+        return;
+      }
+    })();
   }, [copied, text]);
   return { copied, onCopy };
 }

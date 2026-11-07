@@ -8,7 +8,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { FoldToggle } from "./FoldToggle.tsx";
-import { writeClipboard } from "./clipboard.ts";
+import { useCopyFeedback } from "./use-copy-feedback.ts";
 import { CodeToolbar, type CodeToolbarLabels } from "./CodeToolbar.tsx";
 import cardCss from "./CodeCard.module.css";
 import {
@@ -38,6 +38,8 @@ export interface ReadBlockLine {
 export interface ReadBlockProps {
   /** Banner label (the file path, or a tool-supplied replacement title); omitted draws no label. */
   label?: string | undefined;
+  /** Resolve complete text only when the existing copy control is activated. */
+  copyText?: (() => Promise<string>) | undefined;
   /** The returned window's lines, in file order, each keeping its file line number. */
   lines: readonly ReadBlockLine[];
   /** Localized chrome supplied by the owning render site. */
@@ -82,6 +84,7 @@ export function ReadBlock({
   labels,
   lines,
   totalLines,
+  copyText,
   lang,
   maxLines = DEFAULT_READ_MAX_LINES,
   className,
@@ -100,19 +103,8 @@ export function ReadBlock({
     [highlighting, raw, lang, loaded],
   );
   const [expanded, setExpanded] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const { copied, onCopy } = useCopyFeedback(copyText ?? raw);
   const [wrapped, setWrapped] = useState(false);
-
-  const onCopy = useCallback(() => {
-    if (copied) return;
-    void writeClipboard(raw).then((ok) => {
-      if (!ok) return;
-      setCopied(true);
-      window.setTimeout(() => {
-        setCopied(false);
-      }, 1000);
-    });
-  }, [copied, raw]);
 
   const onToggle = useCallback(() => {
     setExpanded((value) => !value);

@@ -38,13 +38,24 @@ export type ReadFamilyCard = Pick<
  * @returns the assembled ToolRow.
  */
 export function readFamilyRow(
-  { toolName, block, cwd, home, openFile, inspect, useDisclosure, t }: ReadFamilyRowProps,
+  {
+    toolName,
+    block,
+    cwd,
+    home,
+    openFile,
+    inspect,
+    useDisclosure,
+    copyOutput,
+    t,
+  }: ReadFamilyRowProps,
   card: ReadFamilyCard,
 ): ReactNode {
   const model = toolRowModel(toolName, block, cwd, home);
   return (
     <ToolRow
       useDisclosure={useDisclosure}
+      copyOutput={copyOutput}
       t={t}
       variant={model.variant}
       toolName={toolName}

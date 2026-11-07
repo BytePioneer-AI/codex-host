@@ -1,4 +1,6 @@
 /** Register the Tool call tree, details renderer, and built-in atomic views. */
+import { SessionId } from "@deepseek-ai/dsh-session/types";
+import type { WebToolOutputReference } from "@codexhost/shared-contracts";
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
 import type { RemoteHostFacts } from "@deepseek-ai/dsh-api-remotes/client";
 import type { HostObservable } from "@deepseek-ai/dsh-client-ui-slots";
@@ -20,7 +22,7 @@ import { todoToolview } from "./tool/toolviews/todo-row.tsx";
 import { webToolview } from "./tool/toolviews/web-row.tsx";
 
 /** Required services: the slot registry and the Remote face carrying the Host home used for POSIX `~`. */
-export const inject = ["slots", "remote"];
+export const inject = ["slots", "remote", "sessions"];
 
 /**
  * Mount the whole-Tool renderers and built-in atomic Tool registrations.
@@ -31,7 +33,15 @@ export function apply(ctx: ClientContext): void {
     getSnapshot: () => ctx.remote.$host,
     subscribe: (listener) => ctx.on("connection/reset", listener),
   };
-  const toolInject = () => ({ hooks: { hostInfo } });
+  const toolInject = () => ({
+    hooks: { hostInfo },
+    readToolOutput: (reference: WebToolOutputReference) => {
+      const scope = ctx.sessions.scope(SessionId(reference.sessionId));
+      const session = scope && ctx.sessions.sessionOf(scope);
+      if (!session) return Promise.reject(new Error("Session is no longer open."));
+      return session.readToolOutput(reference);
+    },
+  });
   ctx.slots.inject("conversation.chat.node", () =>
     ctx.slots.register(
       {

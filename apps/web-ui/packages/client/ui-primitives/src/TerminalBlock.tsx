@@ -68,7 +68,7 @@ export interface TerminalBlockProps {
    * absent. Supplying it also keeps the control rendered before any output
    * exists — a command is copyable before it prints.
    */
-  copyText?: string | undefined;
+  copyText?: string | (() => Promise<string>) | undefined;
   /**
    * Draw the run-state dot and its assistive label in the card gutter
    * (default true). Hosts whose surrounding row already carries the same

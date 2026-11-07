@@ -18,6 +18,7 @@ import type { RequestAuth } from "./auth.ts";
 
 export interface RpcContext {
   readonly method: string;
+  readonly relay: boolean;
   /** The HTTP request's authentication; absent with `--no-auth` and for in-process calls. */
   readonly auth?: RequestAuth;
   /** Run only after the HTTP response has been flushed (settings changes restart Web). */
@@ -48,6 +49,7 @@ export class RpcRegistry {
     payload: unknown,
     auth?: RequestAuth,
     afterResponse?: RpcContext["afterResponse"],
+    relay = false,
   ): Promise<RpcResult> {
     const handler = this.handlers.get(method);
     if (handler === undefined) {
@@ -69,6 +71,7 @@ export class RpcRegistry {
     try {
       const value = await handler(args ?? {}, {
         method,
+        relay,
         ...(auth === undefined ? {} : { auth }),
         ...(afterResponse === undefined ? {} : { afterResponse }),
       });
@@ -102,6 +105,7 @@ export class RpcRegistry {
     body: string,
     auth?: RequestAuth,
     afterResponse?: RpcContext["afterResponse"],
+    relay = false,
   ): Promise<string> {
     let envelope: { type?: string; rpcId?: string; method?: string; payload?: unknown };
     try {
@@ -121,6 +125,7 @@ export class RpcRegistry {
       envelope.payload,
       auth,
       afterResponse,
+      relay,
     );
     return JSON.stringify({ type: "server-response", rpcId: envelope.rpcId, result });
   }
@@ -129,6 +134,8 @@ export class RpcRegistry {
 /** One logical stream as seen by an endpoint handler. */
 export interface StreamSink {
   readonly id: string;
+  /** Set by the accepted physical connection, never by a logical open payload. */
+  readonly relay?: boolean;
   readonly closed: boolean;
   /** Physical mux input; absent on output-only in-process test/application sinks. */
   readonly input?: DshStreamInput;
@@ -165,7 +172,7 @@ export class StreamRegistry {
   }
 
   /** Attach the mux protocol to one WebSocket. */
-  attach(socket: WebSocket): void {
+  attach(socket: WebSocket, relay = false): void {
     const inputBytes = 256 * 1024;
     const streams = new Map<
       string,
@@ -220,6 +227,7 @@ export class StreamRegistry {
         };
         const sink: StreamSink = {
           id: streamId,
+          relay,
           input: {
             items: inbox,
             window: {

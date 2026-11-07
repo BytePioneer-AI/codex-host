@@ -40,6 +40,8 @@ import type {
   SessionWorkspacePathApplication,
   SessionAttachmentRequest,
   SessionAttachmentValue,
+  SessionToolOutputRequest,
+  SessionToolOutputValue,
   SessionCancelRequest,
   SessionCancelValue,
   SessionControlFrame,
@@ -478,6 +480,16 @@ export class SessionController extends TypertRemoteService {
   @Remote("attachment")
   attachment(request: SessionAttachmentRequest): Promise<SessionAttachmentValue> {
     return this.commands.attachment(request);
+  }
+
+  /** Web rendering references are not issued by the native Session log. */
+  @Remote("toolOutput")
+  toolOutput(request: SessionToolOutputRequest): SessionToolOutputValue {
+    throw new RemoteError(
+      "session/tool-output-stale",
+      `Tool output reference for session "${request.sessionId}" is unavailable.`,
+      {},
+    );
   }
 
   /**

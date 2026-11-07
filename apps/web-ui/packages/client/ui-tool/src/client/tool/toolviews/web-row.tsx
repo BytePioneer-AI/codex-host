@@ -18,7 +18,7 @@ const WEB_TITLE_KEYS = {
 } as const;
 
 /** Lets users expand a completed web search or fetch result. */
-export function WebRow({ toolName, block, inspect, useDisclosure, t }: WebRowProps) {
+export function WebRow({ toolName, block, inspect, useDisclosure, copyOutput, t }: WebRowProps) {
   const model = toolRowModel(toolName, block);
   const web = webCardModel(block);
   const icon =
@@ -30,6 +30,7 @@ export function WebRow({ toolName, block, inspect, useDisclosure, t }: WebRowPro
   return (
     <ToolRow
       useDisclosure={useDisclosure}
+      copyOutput={copyOutput}
       t={t}
       variant={model.variant}
       toolName={toolName}

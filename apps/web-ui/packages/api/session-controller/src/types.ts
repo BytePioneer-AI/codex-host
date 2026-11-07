@@ -212,6 +212,11 @@ export interface SessionSearchItem {
 }
 
 /** Maximum number of Sessions returned by one search. */
+export type SessionToolOutputRequest = import("@codexhost/shared-contracts").WebToolOutputReference;
+export interface SessionToolOutputValue {
+  readonly text: string;
+}
+
 export const SESSION_SEARCH_RESULT_LIMIT = 20;
 
 /** Maximum search snippet length in Unicode code points. */
@@ -241,6 +246,7 @@ declare module "@deepseek-ai/dsh-typert-protocol" {
       readonly existingPreset?: string;
     };
     "session/attachment-invalid": { readonly reason: string };
+    "session/tool-output-stale": Record<string, never>;
     "session/queue-item-not-found": { readonly itemId: MessageId };
     "session/steer-unavailable": { readonly itemId: MessageId };
     "session/title-invalid": { readonly sessionId: SessionId };
@@ -511,6 +517,8 @@ export interface SessionFollowRequest extends Pick<
   readonly address: SessionAddress;
   /** Include process-local assistant presentation frames for the Web client. */
   readonly assistantStream?: true;
+  /** Confirmed position in the same process-local rendering journal. */
+  readonly resume?: { readonly epoch: string; readonly cursor: number };
 }
 
 /** One active assistant attempt in a reconnect opening snapshot. */
@@ -575,6 +583,9 @@ export interface SessionPage {
 export type SessionFollowFrame =
   | {
       readonly type: "snapshot";
+      readonly epoch?: string;
+      /** When present, records contain only events after this accepted cursor. */
+      readonly resumedAfter?: number;
       readonly header: SessionWireHeader;
       readonly cursor: number;
       readonly records: readonly SessionHistoryRecord[];

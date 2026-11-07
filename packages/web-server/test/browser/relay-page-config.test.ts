@@ -168,7 +168,14 @@ for (const locale of ["en-US", "zh-CN"]) {
         assert.equal(await help.getAttribute("open"), "");
         const tutorial = (await help.textContent()) ?? "";
         for (const text of [
-          "*.r.example.com",
+          "*.example.com",
+          "relay.example.com",
+          "<id>.example.com",
+          "--domain example.com --control-host relay.example.com",
+          "26",
+          "www",
+          "AAAA",
+          "IPv6",
           "Cloudflare",
           "443",
           "80",
@@ -177,6 +184,25 @@ for (const locale of ["en-US", "zh-CN"]) {
           "Tailscale",
         ])
           assert.ok(tutorial.includes(text), text);
+        const dns = (await help.locator("li").nth(2).textContent()) ?? "";
+        for (const text of chinese
+          ? ["一条通配 DNS 记录", "根域", "只覆盖没有单独记录的子域", "公钥派生", "仅 DNS"]
+          : [
+              "one wildcard DNS record",
+              "root domain",
+              "only covers subdomains without their own records",
+              "derived from public keys",
+              "DNS only",
+            ])
+          assert.ok(dns.includes(text), text);
+        const hint = control.locator(`[id="${await host.getAttribute("aria-describedby")}"]`);
+        assert.ok((await hint.textContent())?.includes("relay.example.com"));
+        assert.ok(
+          (await help.locator("li").nth(4).textContent())?.includes(
+            chinese ? "只申请 relay.example.com" : "only for relay.example.com",
+          ),
+        );
+        assert.ok((await help.locator("li").nth(6).textContent())?.includes("relay.example.com"));
         assert.equal(await help.locator("li").count(), 7);
         assert.equal(
           await help.locator("li").nth(1).locator("code").textContent(),
@@ -226,18 +252,18 @@ for (const locale of ["en-US", "zh-CN"]) {
         shown = {
           ...base,
           networkUrls: args.enabled
-            ? [...base.networkUrls, { kind: "relay", url: "https://computer.r.example.com/" }]
+            ? [...base.networkUrls, { kind: "relay", url: "https://computer.example.com/" }]
             : base.networkUrls,
           relay: {
             ...defined(shown.relay),
             kind: "self-hosted",
             customHost: args.host ?? defined(shown.relay).customHost,
             enabled: args.enabled,
-            hostname: "computer.r.example.com",
+            hostname: "computer.example.com",
             state: args.enabled
               ? {
                   status: "connected",
-                  url: "https://computer.r.example.com/",
+                  url: "https://computer.example.com/",
                   certificate: { issuing: false },
                 }
               : { status: "off" },

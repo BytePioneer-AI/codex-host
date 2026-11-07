@@ -164,15 +164,15 @@ export const en = {
   "connectDevices.selfRelay.domain":
     "You need your own domain and a Linux server with Docker Compose and certbot.",
   "connectDevices.selfRelay.dns":
-    "Point relay.example.com and *.r.example.com to your server. With Cloudflare, use DNS only, not the proxy.",
+    "Point one wildcard DNS record, *.example.com, to your server; it covers relay.example.com and <id>.example.com. Existing records such as www and the root domain keep working; the wildcard only covers subdomains without their own records. Computer addresses use 26-character random-looking IDs derived from public keys, avoiding common subdomain names. With Cloudflare, use DNS only, not the proxy. Add AAAA only if IPv6 is also reachable.",
   "connectDevices.selfRelay.ports":
     "Allow TCP 443; certbot certificate issuance and renewal also need TCP 80.",
   "connectDevices.selfRelay.certificate":
-    "First request a certificate for the control hostname with certbot and grant the container group read access to its private key. Each computer requests its own certificate.",
+    "First use certbot to request a certificate only for relay.example.com and grant the container group read access to its private key. Each computer requests its own certificate.",
   "connectDevices.selfRelay.docker":
-    "Build using packages/remote-relay/Dockerfile. Set domains and certificate paths in packages/remote-relay/deploy/compose.yaml, then start it with Docker Compose.",
+    "Build using packages/remote-relay/Dockerfile. In packages/remote-relay/deploy/compose.yaml, set --domain example.com --control-host relay.example.com and certificate paths, then start it with Docker Compose.",
   "connectDevices.selfRelay.connect":
-    "Return here, enter the control hostname and click Enable relay to save and connect. Scan once it is ready.",
+    "Return here, enter relay.example.com as the control hostname and click Enable relay to save and connect. Scan once it is ready.",
   "connectDevices.selfRelay.noDomain":
     "No domain? Use the official codexhost relay or Tailscale instead.",
   "connectDevices.selfRelay.docs": "Full self-hosted relay guide",
@@ -577,14 +577,14 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.selfRelay.domain":
     "准备自己的域名，以及装有 Docker Compose 和 certbot 的 Linux 服务器。",
   "connectDevices.selfRelay.dns":
-    "将 relay.example.com 和 *.r.example.com 两条 DNS 记录指向服务器；使用 Cloudflare 时选“仅 DNS”，不要开代理。",
+    "只需将一条通配 DNS 记录 *.example.com 指向服务器，同时覆盖 relay.example.com 和 <id>.example.com。已有记录（如 www、根域）不受影响、照常使用，通配只覆盖没有单独记录的子域。电脑地址使用 26 位随机样式 ID（由公钥派生），不会与常见子域冲突。Cloudflare 选“仅 DNS”，不要开代理；只在 IPv6 同样可达时添加 AAAA 记录。",
   "connectDevices.selfRelay.ports": "放行 TCP 443；certbot 申请和续期控制地址证书还需要 TCP 80。",
   "connectDevices.selfRelay.certificate":
-    "先用 certbot 申请控制地址证书，并授予容器组读取私钥的权限。每台电脑会自行申请自己的证书。",
+    "先用 certbot 只申请 relay.example.com 的证书，并授予容器组读取私钥的权限。每台电脑会自行申请自己的证书。",
   "connectDevices.selfRelay.docker":
-    "按 packages/remote-relay/Dockerfile 构建镜像，在 packages/remote-relay/deploy/compose.yaml 中填写域名和证书路径，再用 Docker Compose 启动。",
+    "按 packages/remote-relay/Dockerfile 构建镜像，在 packages/remote-relay/deploy/compose.yaml 中设置 --domain example.com --control-host relay.example.com 和证书路径，再用 Docker Compose 启动。",
   "connectDevices.selfRelay.connect":
-    "回到这里填写控制地址，点击“启用中转”即可保存并连接，准备完成后用手机扫码。",
+    "回到这里填写控制地址 relay.example.com，点击“启用中转”即可保存并连接，准备完成后用手机扫码。",
   "connectDevices.selfRelay.noDomain": "没有域名？建议使用官方 codexhost 中转或 Tailscale。",
   "connectDevices.selfRelay.docs": "完整自建中转教程",
   "connectDevices.relay.title": "codexhost 中转",

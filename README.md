@@ -96,6 +96,10 @@ Run `codexhost console` (Windows: Start Menu → "codexhost console") to open th
 xattr -dr com.apple.quarantine /Applications/codexhost.app
 ```
 
+**macOS: keep opening the official app icon**
+
+The optional [cold-start automation](docs/platforms/macos/cold-start-automation.md) observes a new Desktop launch and restarts it through codexhost without opening the console in a browser. It requires explicit installation from source and leaves existing sessions alone.
+
 **Windows: using a portable Codex Desktop**
 
 1. Point `CODEXHOST_INSTALL_ROOT` at the folder where you extracted Codex Desktop:

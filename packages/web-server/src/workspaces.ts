@@ -33,6 +33,7 @@ export class Workspaces {
   private referenceProjectless: ReadonlySet<string> = new Set();
   private referencePins: string[] | undefined;
   private referenceArchives: string[] | undefined;
+  private remoteArchives: readonly string[] = [];
 
   constructor(
     private readonly data: DataDir,
@@ -141,6 +142,14 @@ export class Workspaces {
     this.broadcast({ type: "archived", archivedSessionIds: this.archivedSessionIds() });
   }
 
+  /** Confirmed remote archives augment, never replace, the local owner's projection. */
+  setRemoteArchives(ids: readonly string[]): void {
+    const next = [...new Set(ids)];
+    if (JSON.stringify(next) === JSON.stringify(this.remoteArchives)) return;
+    this.remoteArchives = next;
+    this.broadcast({ type: "archived", archivedSessionIds: this.archivedSessionIds() });
+  }
+
   /** Authoritative visible pin list used by both the stream and RPC replies. */
   pinnedSessionIds(): string[] {
     return this.referencePins === undefined
@@ -164,9 +173,12 @@ export class Workspaces {
     return this.archivedSessionIds().includes(sessionId);
   }
   archivedSessionIds(): string[] {
-    return this.referenceArchives === undefined
-      ? this.state.archivedSessionIds
-      : [...new Set(this.referenceArchives)];
+    return [
+      ...new Set([
+        ...(this.referenceArchives ?? this.state.archivedSessionIds),
+        ...this.remoteArchives,
+      ]),
+    ];
   }
 
   create(path: string, referenceOnly = false): { workspace: WorkspaceView; created: boolean } {

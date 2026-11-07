@@ -102,3 +102,4 @@ export const packageMetadata = {
 } as const;
 export { requestDesktopRemoteConnections } from "./remote-connections-control.js";
 export { requestDesktopThreadCatalogRefresh } from "./thread-catalog-control.js";
+export { requestRemoteSession } from "./remote-session-client.js";

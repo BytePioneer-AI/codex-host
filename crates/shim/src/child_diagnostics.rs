@@ -107,12 +107,18 @@ mod tests {
         assert_eq!(last.as_deref(), Some("last line"));
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn summarizes_a_failed_host_runtime_with_its_last_diagnostic() {
-        use std::os::unix::process::ExitStatusExt;
-
-        let failed = std::process::ExitStatus::from_raw(1 << 8);
+        #[cfg(unix)]
+        let failed = {
+            use std::os::unix::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(1 << 8)
+        };
+        #[cfg(windows)]
+        let failed = {
+            use std::os::windows::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(1)
+        };
         assert_eq!(
             host_runtime_failure_summary(&failed, Some("Host initialization failed: locked")),
             "codexhost shim: Host Runtime exited with code 1: Host initialization failed: locked"

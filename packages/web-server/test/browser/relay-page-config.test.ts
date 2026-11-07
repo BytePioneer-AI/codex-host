@@ -156,7 +156,9 @@ for (const locale of ["en-US", "zh-CN"]) {
         const tutorial = (await help.textContent()) ?? "";
         for (const text of [
           "relay.example.com",
-          chinese ? "[你的域名，样例：example.com]" : "[your domain, e.g. example.com]",
+          chinese
+            ? "# 将 example.com 替换为你的实际域名"
+            : "# Replace example.com with your actual domain",
           "Cloudflare",
           "443",
           "Docker",
@@ -181,8 +183,9 @@ for (const locale of ["en-US", "zh-CN"]) {
           "git clone https://github.com/BytePioneer-AI/codex-host.git /opt/codexhost",
           "cd /opt/codexhost/packages/remote-relay/deploy",
           chinese
-            ? "echo RELAY_DOMAIN=[你的域名，样例：example.com] > .env"
-            : "echo RELAY_DOMAIN=[your domain, e.g. example.com] > .env",
+            ? "# 将 example.com 替换为你的实际域名"
+            : "# Replace example.com with your actual domain",
+          'echo "RELAY_DOMAIN=example.com" > .env',
           "docker compose up -d --build",
         ]);
         assert.equal(

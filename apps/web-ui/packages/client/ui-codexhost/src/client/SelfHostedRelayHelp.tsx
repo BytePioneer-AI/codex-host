@@ -21,9 +21,8 @@ export function SelfHostedRelayHelp({
             {t("connectDevices.selfRelay.docker")}
             <code>git clone https://github.com/BytePioneer-AI/codex-host.git /opt/codexhost</code>
             <code>cd /opt/codexhost/packages/remote-relay/deploy</code>
-            <code>
-              echo RELAY_DOMAIN={t("connectDevices.selfRelay.domainPlaceholder")} &gt; .env
-            </code>
+            <code>{t("connectDevices.selfRelay.replaceDomain")}</code>
+            <code>echo "RELAY_DOMAIN=example.com" &gt; .env</code>
             <code>docker compose up -d --build</code>
           </li>
           <li>{t("connectDevices.selfRelay.connect")}</li>

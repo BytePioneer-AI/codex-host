@@ -14,7 +14,8 @@
    ```sh
    git clone https://github.com/BytePioneer-AI/codex-host.git /opt/codexhost
    cd /opt/codexhost/packages/remote-relay/deploy
-   echo RELAY_DOMAIN=example.com > .env
+   # 将 example.com 替换为你的实际域名
+   echo "RELAY_DOMAIN=example.com" > .env
    docker compose up -d --build
    ```
 

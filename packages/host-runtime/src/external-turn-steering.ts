@@ -90,6 +90,14 @@ export class ExternalSteerNotTakenError extends ExternalSteerError {
   }
 }
 
+/** The Harness may have taken the input; only an explicit user action may submit it again. */
+export class ExternalSteerOutcomeUnknownError extends ExternalSteerError {
+  constructor(cause: unknown) {
+    super(-32074, cause instanceof Error ? cause.message : "Native steering outcome is unknown");
+    this.cause = cause;
+  }
+}
+
 interface SteeringInput {
   expectedTurnId: string;
   clientUserMessageId?: string;
@@ -153,11 +161,16 @@ export async function insertNativeSteer(
   const projectionDone = Promise.withResolvers<undefined>();
   thread.pendingSteerProjections.add(projectionDone.promise);
   try {
-    const result = await thread.session.execute({
-      type: "turn.steer",
-      turnId: input.turnId,
-      input: steered,
-    });
+    let result: HarnessResult<TurnSteerAccepted>;
+    try {
+      result = await thread.session.execute({
+        type: "turn.steer",
+        turnId: input.turnId,
+        input: steered,
+      });
+    } catch (error) {
+      throw new ExternalSteerOutcomeUnknownError(error);
+    }
     if (!result.ok) throw new ExternalSteerNotTakenError(result.error.message);
     thread.steeredTurnIds.add(input.turnId);
     const item: HostUserMessageItem = {
@@ -252,20 +265,19 @@ export class ExternalTurnSteering {
       if (key) {
         const receipt = { fingerprint, result, settled: false };
         this.#receipts.set(key, receipt);
-        void result.then(
-          () => {
-            receipt.settled = true;
-            // Bound completed receipts; never evict an in-flight delivery reservation.
-            while (this.#receipts.size > 128) {
-              const oldest = [...this.#receipts].find(([, entry]) => entry.settled)?.[0];
-              if (oldest === undefined) break;
-              this.#receipts.delete(oldest);
-            }
-          },
-          () => {
-            this.#receipts.delete(key);
-          },
-        );
+        const settle = (): void => {
+          receipt.settled = true;
+          // Bound completed receipts; never evict an in-flight delivery reservation.
+          while (this.#receipts.size > 128) {
+            const oldest = [...this.#receipts].find(([, entry]) => entry.settled)?.[0];
+            if (oldest === undefined) break;
+            this.#receipts.delete(oldest);
+          }
+        };
+        void result.then(settle, (error: unknown) => {
+          if (error instanceof ExternalSteerOutcomeUnknownError) settle();
+          else this.#receipts.delete(key);
+        });
       }
       return result;
     } catch (error) {

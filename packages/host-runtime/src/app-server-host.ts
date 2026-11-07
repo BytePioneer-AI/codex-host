@@ -191,6 +191,7 @@ import { ExternalSessionReleaseError } from "./external-thread-lifecycle.js";
 import { ExternalQueueError, ExternalThreadQueue } from "./external-thread-queue.js";
 import {
   ExternalSteerError,
+  ExternalSteerOutcomeUnknownError,
   ExternalTurnSteering,
   externalSteeringDelivery,
   insertNativeSteer,
@@ -4991,7 +4992,7 @@ export class AppServerHost {
   /** Desktop leaves queued follow-ups to the app-server once a Turn completes normally. */
   async #drainExternalQueue(thread: ExternalThread): Promise<void> {
     if (
-      !this.#externalQueue.has(thread.id) ||
+      !this.#externalQueue.canStartAutomatically(thread.id) ||
       this.#externalThreadBusy(thread) ||
       this.#pendingExternalCommandRequests.has(thread.id)
     )
@@ -5069,6 +5070,7 @@ export class AppServerHost {
       }
     } catch (error) {
       if (queued && !accepted) {
+        if (error instanceof ExternalSteerOutcomeUnknownError) queued.automaticStartAllowed = false;
         this.#externalQueue.restore(thread.id, queued);
         await this.#externalQueue
           .notifyChanged(thread.id)

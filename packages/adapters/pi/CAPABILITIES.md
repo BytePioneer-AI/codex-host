@@ -22,9 +22,9 @@
 | A5 | 执行 Turn | 必做 | P0 | 受限 | Pi RPC / adapter | 请求与自主回合组合回归 | 本轮验证准入、输出和终态；Desktop 应用待验收 |
 | A6 | 取消 | 必做 | P0 | 受限 | Pi RPC / adapter | 首消息前取消、旧轮收尾、close 回归 | 不误取消后继自主回合 |
 | A7 | 只读快照 | 必做 | P0 | 受限 | pi-history | 真实历史候选回放 | 可见通知、phase 和命令元数据；不宣称所有快照形态已覆盖 |
-| A8 | 持久身份 + resume | 必做 | P0 | 待验证 | 既有 Adapter | 本次未重验 | 只验 B11 及受影响路径 |
-| A9 | 错误与并发 | 必做 | P0 | 受限 | Pi RPC / adapter | 异步预检竞争、typed sessionBusy 回归 | 未接纳输入不 dispatch、不自动重试 |
-| A10 | 关闭 | 必做 | P0 | 待验证 | 既有 Adapter | 本次未重验 | 只验 B11 及受影响路径 |
+| A8 | 持久身份 + resume | 必做 | P0 | 受限 | pi-adapter.ts | pi-steer-delayed-input.real.test.ts；pi-adapter.test.ts | 晚到插话故障后恢复同一 Session，历史身份不变；其他平台待验收 |
+| A9 | 错误与并发 | 必做 | P0 | 受限 | Pi RPC / adapter | pi-steer.test.ts；异步预检竞争、typed sessionBusy 回归 | 写入前拒绝与结果未知分开；晚到输入不报成功、不自动重试 |
+| A10 | 关闭 | 必做 | P0 | 受限 | pi-rpc-session.ts / pi-adapter.ts | pi-steer.test.ts；pi-steer-delayed-input.real.test.ts | 等待专属进程退出后完成晚到插话恢复；未验所有 OS |
 | B1 | 切换 Model | 原生有则必做 | P1 | 待验证 | 既有 Adapter | 本次未重验 | 只验 B11 及受影响路径 |
 | B2 | 切换 Thinking | 原生有则必做 | P1 | 待验证 | 既有 Adapter | 本次未重验 | 只验 B11 及受影响路径 |
 | B3 | 权限模式 | 原生有则必做 | P1 | 待验证 | 既有 Adapter | 本次未重验 | 只验 B11 及受影响路径 |
@@ -55,6 +55,14 @@
 | D4 | 文档 | 预装时必做 | P1 | 待验证 | 既有 Adapter | 本次未重验 | 只验 B11 及受影响路径 |
 | D5 | 其他 | 可选 | P2 | 待验证 | 既有 Adapter | 本次未重验 | 只验 B11 及受影响路径 |
 
+## 原生插话边界
+
+- 范围：A5、A7、A9、A10；优先级 P0，结论为受限。实现位于 `pi-adapter.ts`、`pi-rpc-session.ts`，使用 Pi 原生 RPC，不新增公共契约。
+- 工具执行中的正常插话保持原生入队。成功回执必须在目标原生执行尚未终结时收到；终结之后才收到的入队回执按结果不确定处理，不触发停止后重发。
+- 晚到回执的恢复保留已完成 Turn 的原生历史，关闭该 Thread 专属的 Pi 进程以丢弃未执行队列，再由现有 Session 故障恢复路径恢复同一历史。不修改全局配置或其他 Thread，不声称可以撤销 input hook 已产生的副作用。
+- 验证：`pi-steer.test.ts` 覆盖回执顺序、拒绝与未知结果、历史身份及清理；`test/pi-steer-delayed-input.real.test.ts` 在 macOS / Pi 1.4.0 上验证晚到输入不报成功、原 Turn 成功、专属进程退出、同一 Session 恢复后可继续且无遗留输入重放。该用例在未修复 PR 上失败，在修复版本上通过。macOS / Desktop 26.1103.31037 的隔离窗口经真实 Composer 验证正常插话、晚到输入、原轮成功、同一 Session 恢复、旧队列不自动重放及删除后普通发送；多窗口、远端和其他 OS 未验收。
+- 检查记录：Pi、OMP 及 Host steering、未知交付队列与回执的定向合成测试通过；默认跳过的两个原生文件中，Pi 延迟输入用例已单独显式运行通过，OMP 原生 ask 未运行。Pi / OMP 的正常原生插话 Gate 均通过。类型检查、定向 ESLint / Prettier、boundary 与 diff 检查通过；插件重新打包后，经仓库外临时根的公共 Loader 冷加载、独立实例及关闭验证通过。
+
 ## Windows UNC 启动验证范围
 
 - 范围：A4、A8、B5、C5 的进程启动边界；仅处理 Windows UNC 工作目录与标准 Pi CMD launcher 的组合，不改 RPC、Model、Thinking、扩展或历史语义。
@@ -66,11 +74,11 @@
 
 ## 受限与已知缺口
 
-本清单补记于既有 Adapter 修复；未影响的能力本轮不重新验收，因此明确列为待验证，不代表原实现不支持。声明子代理修复及下述输出修复实际覆盖范围。Desktop 应用待空闲时重启并验收，不把候选插件通过验证当作已生效。
+本清单补记于既有 Adapter 修复；未影响的能力本轮不重新验收，因此明确列为待验证，不代表原实现不支持。声明子代理修复及下述输出修复实际覆盖范围。Desktop 插话已在隔离窗口验收；其他能力仍按各项记录界定，不把候选插件通过验证当作已在日常窗口生效。
 
 ## 插件外改动
 
-对应 docs/harnesses/pi/pi-subagents.md、pi-progress.md 功能说明及 docs/index.md 链接描述；不新增公共合同或 Harness 专用 Host/Renderer 分支。
+对应 docs/harnesses/pi/pi-subagents.md、pi-progress.md 功能说明及 docs/index.md 链接描述；原生插话边界补充 `docs/harnesses/pi/pi-steer.md`、`docs/architecture/external-thread-steering.md`。不新增公共契约或 Harness 专用 Host/Renderer 分支。
 
 ## 验证记录
 

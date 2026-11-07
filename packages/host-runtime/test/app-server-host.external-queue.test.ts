@@ -295,6 +295,81 @@ describe("External Thread follow-up queue", () => {
     }
   });
 
+  it("does not automatically replay unknown steering after the original or a later Turn", async () => {
+    const fixture = createFixture();
+    fixture.adapter.supportsSteer = true;
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
+      writeRequest(fixture.desktopInput, {
+        id: 10,
+        method: "thread/queue/add",
+        params: { threadId, input: text("uncertain input"), clientUserMessageId: "uncertain" },
+      });
+      const added = await fixture.collector.waitFor((message) => requestId(message, 10));
+      const queued = (added.result as { queuedSubmission: JsonObject & { id: string } })
+        .queuedSubmission;
+      execute.mockRejectedValueOnce(new Error("Native input outcome is unknown"));
+      writeRequest(fixture.desktopInput, {
+        id: 20,
+        method: "turn/steer",
+        params: {
+          threadId,
+          expectedTurnId: turnId,
+          input: text("uncertain input"),
+          clientUserMessageId: "uncertain",
+          codexhostSteerDelivery: "activeTurn",
+        },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 20)),
+      ).resolves.toMatchObject({ error: { code: -32074 } });
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      writeRequest(fixture.desktopInput, {
+        id: 21,
+        method: "thread/queue/list",
+        params: { threadId },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 21)),
+      ).resolves.toMatchObject({ result: { data: [queued], nextCursor: null } });
+      writeRequest(fixture.desktopInput, {
+        id: 22,
+        method: "turn/start",
+        params: { threadId, input: text("explicit follow-up"), clientUserMessageId: "follow-up" },
+      });
+      const started = await fixture.collector.waitFor((message) => requestId(message, 22));
+      expect(started).not.toHaveProperty("error");
+      const followUpId = (started.result as { turn: { id: string } }).turn.id;
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", followUpId),
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(execute).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: "turn.start", input: text("uncertain input") }),
+      );
+      writeRequest(fixture.desktopInput, {
+        id: 23,
+        method: "thread/queue/start",
+        params: { threadId, queuedSubmissionId: queued.id },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 23)),
+      ).resolves.toHaveProperty("result.turn.id");
+      expect(execute).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "turn.start", input: text("uncertain input") }),
+      );
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it.each(["completed", "interrupted", "failed"])(
     "handles a queue/add arriving after the Turn is already %s",
     async (outcome) => {

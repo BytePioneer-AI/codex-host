@@ -11,8 +11,10 @@ import { harnessIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 
 import {
   ExternalSteerNotTakenError,
+  ExternalSteerOutcomeUnknownError,
   ExternalTurnSteering,
   externalSteeringDelivery,
+  insertNativeSteer,
 } from "../src/external-turn-steering.js";
 
 type Cancel = (command: TurnCancelCommand) => Promise<HarnessResult<TurnCancelAccepted>>;
@@ -324,6 +326,36 @@ describe("Host native steering", () => {
     });
     expect(f.insert).toHaveBeenCalledTimes(2);
   });
+  it("retains an unknown receipt so retrying the same identity cannot send it twice", async () => {
+    const f = fixture();
+    f.thread.session.capabilities.steer = true;
+    const unknown = new ExternalSteerOutcomeUnknownError(new Error("native reply lost"));
+    f.insert.mockRejectedValueOnce(unknown);
+    const first = f.coordinator.run(f.thread, f.params, f.start, f.insert);
+    await expect(first).rejects.toBe(unknown);
+    const retry = f.coordinator.run(f.thread, f.params, f.start, f.insert);
+    expect(retry).toBe(first);
+    await expect(retry).rejects.toBe(unknown);
+    expect(f.insert).toHaveBeenCalledOnce();
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it("classifies an execute exception as an unknown outcome and releases projection ordering", async () => {
+    const thread = {
+      pendingSteerProjections: new Set<Promise<void>>(),
+      steeredTurnIds: new Set<ReturnType<typeof hostTurnIdSchema.parse>>(),
+      session: { execute: vi.fn().mockRejectedValue(new Error("native reply lost")) },
+    };
+    const host = { project: vi.fn(), diagnose: vi.fn() };
+    await expect(
+      insertNativeSteer(thread, { turnId: hostTurnIdSchema.parse("old"), text: "input" }, host),
+    ).rejects.toBeInstanceOf(ExternalSteerOutcomeUnknownError);
+    expect(thread.pendingSteerProjections.size).toBe(0);
+    expect(thread.steeredTurnIds.size).toBe(0);
+    expect(host.project).not.toHaveBeenCalled();
+  });
+
   it("starts the next Turn when untaken input arrives after the active Turn ended", async () => {
     const f = fixture();
     f.thread.session.capabilities.steer = true;

@@ -11,13 +11,14 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import qrcode from "qrcode-terminal";
 import { createBrowserWebSocketServer } from "./browser-websocket.ts";
+import { createWebServer } from "./http-server.ts";
 import { compressResponse } from "./compression.ts";
 
 import { registerAccessTokenRpc } from "./access-token-rpc.ts";
@@ -503,7 +504,7 @@ async function readBody(
   return Buffer.concat(chunks).toString("utf8");
 }
 
-const server = createServer((request, response) => {
+const server = createWebServer((request, response) => {
   const url = request.url ?? "/";
   const pathname = url.split("?")[0] ?? "/";
   void (async () => {

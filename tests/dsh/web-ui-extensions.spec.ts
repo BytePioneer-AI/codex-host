@@ -101,7 +101,7 @@ it("shows local-access guidance instead of installation controls", async () => {
   expect(container.querySelector("button")).toBeNull();
 });
 
-it("keeps saved enablement distinct from the current startup and confirms removal", async () => {
+it("keeps saved enablement distinct from current server loading and confirms removal", async () => {
   vi.mocked(uiExtensionsApi.list).mockResolvedValue(state());
   vi.mocked(uiExtensionsApi.setEnabled).mockResolvedValue(state(true));
   vi.mocked(uiExtensionsApi.remove).mockResolvedValue({
@@ -111,11 +111,20 @@ it("keeps saved enablement distinct from the current startup and confirms remova
   });
   const { container, button } = await mount();
   expect(container.textContent).toContain("Disabled");
-  await act(async () => button("Enable").click());
+  const toggle = container.querySelector<HTMLButtonElement>(
+    '[role="switch"][aria-label="Test Theme"]',
+  )!;
+  expect(toggle.getAttribute("aria-checked")).toBe("false");
+  await act(async () => toggle.click());
   expect(uiExtensionsApi.setEnabled).toHaveBeenCalledExactlyOnceWith("test-theme", true);
+  expect(toggle.getAttribute("aria-checked")).toBe("true");
   expect(container.textContent).toContain("Enabled for Web");
   expect(container.textContent).toContain("The saved selection is not loaded on the server.");
-  expect(container.textContent).not.toContain("Included when Web started.");
+  await act(async () => button("Test Theme").click());
+  expect(container.querySelector('[data-web-extension-detail="test-theme"]')).not.toBeNull();
+  expect(container.textContent).not.toContain(
+    "Loaded on the server; connected ordinary pages synchronize automatically.",
+  );
   await act(async () => button("Uninstall").click());
   expect(uiExtensionsApi.remove).not.toHaveBeenCalled();
   expect(container.textContent).toContain("Uninstall “Test Theme”?");
@@ -237,10 +246,21 @@ it("preserves enabled choices in safe mode and prevents writes when saved record
   expect(container.textContent).toContain("Your saved choices are kept.");
   expect(container.textContent).toContain("Enabled for Web");
   expect(container.textContent).not.toContain("The saved selection is not loaded on the server.");
-  expect(button("Disable").disabled).toBe(true);
-  expect(button("Uninstall").disabled).toBe(true);
+  const toggle = container.querySelector<HTMLButtonElement>(
+    '[role="switch"][aria-label="Test Theme"]',
+  )!;
+  expect(toggle.getAttribute("aria-checked")).toBe("true");
+  expect(toggle.disabled).toBe(true);
   expect(button("Add extension").disabled).toBe(true);
   expect(button("Refresh list").disabled).toBe(false);
+  await act(async () => button("Test Theme").click());
+  expect(container.querySelector('[data-web-extension-detail="test-theme"]')).not.toBeNull();
+  const detailToggle = container.querySelector<HTMLButtonElement>(
+    '[role="switch"][aria-label="Test Theme"]',
+  )!;
+  expect(detailToggle.getAttribute("aria-checked")).toBe("true");
+  expect(detailToggle.disabled).toBe(true);
+  expect(button("Uninstall").disabled).toBe(true);
 });
 
 it("sends installation requests through the shared RPC envelope and validates returned state", async () => {

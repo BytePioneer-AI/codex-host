@@ -446,6 +446,7 @@ it.each(["disconnected", "connecting", "ambiguous", "unreadable"])(
       else state = failure;
       expect(() => before?.policy.requestTarget()).toThrow("retired");
       expect(routing.forHost(hostId)).toBeNull();
+      expect(routing.knownHostIds?.()).not.toContain(hostId);
       f.composerFiber.memoizedProps.executionTargetHostId = hostId;
       expect(routing.forComposer()).toBeNull();
       expect(f.rpc.sendRequest).not.toHaveBeenCalled();
@@ -456,6 +457,7 @@ it.each(["disconnected", "connecting", "ambiguous", "unreadable"])(
       const after = routing.forHost(hostId);
       expect(after).not.toBeNull();
       expect(after).not.toBe(before);
+      expect(routing.knownHostIds?.()).toContain(hostId);
       await after?.manager.sendRequest("model/list", {});
       expect(f.rpc.sendRequest).toHaveBeenCalledOnce();
     } finally {
@@ -830,3 +832,22 @@ it.each([true, false])(
     }
   },
 );
+
+it("excludes Desktop's reserved durable Host and disconnected catalog entries from knownHostIds", async () => {
+  const sshHostId = "remote-ssh-discovered:yuwk-201";
+  const disconnectedEnvId = "remote-control:env_e_6ac33e9d40788325a48a8c0aa62bc454";
+  const f = setup({
+    hosts: ["local", "durable", sshHostId, disconnectedEnvId],
+  });
+  const disconnected = f.connections.get(disconnectedEnvId);
+  if (!disconnected) throw new Error("Missing disconnected Remote Control fixture");
+  disconnected.status = "disconnected";
+  const routing = await install(f);
+  try {
+    expect(routing.forHost("durable")).toBeNull();
+    expect(routing.forHost(disconnectedEnvId)).toBeNull();
+    expect(routing.knownHostIds?.()).toEqual(["local", sshHostId]);
+  } finally {
+    routing.dispose();
+  }
+});

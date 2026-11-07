@@ -103,7 +103,7 @@ export function installRendererHostRouting(
     hostId: string,
     discovery?: RendererHostDiscovery,
   ): RendererNativeRequestManager | null => {
-    if (disposed) return null;
+    if (disposed || hostId === "durable") return null;
     try {
       return resolve(discovery ?? read(), hostId);
     } catch {
@@ -203,7 +203,9 @@ export function installRendererHostRouting(
     knownHostIds() {
       if (disposed) return [];
       try {
-        return [...read().hostIds];
+        return [...read().hostIds].filter(
+          (hostId) => hostId !== "durable" && connectionFor(hostId) !== null,
+        );
       } catch {
         return [];
       }

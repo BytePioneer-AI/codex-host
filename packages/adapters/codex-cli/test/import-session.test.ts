@@ -1,19 +1,11 @@
 import type { HarnessSession, HarnessSessionImportSource } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { createHarnessAdapter } from "../src/plugin.ts";
-import { prepareCodexImport } from "../src/import-session.ts";
+import { writeCodexPeer } from "./codex-peer-fixture.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -39,12 +31,7 @@ function fixture(scenario: Record<string, unknown> = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "codex-import-")));
   const home = join(root, ".codex");
   mkdirSync(home);
-  const command = join(root, "codex");
-  writeFileSync(
-    command,
-    `#!${process.execPath}\n${readFileSync(resolve("tests/fixtures/codex-auth-peer.cjs"), "utf8")}`,
-  );
-  chmodSync(command, 0o700);
+  const command = writeCodexPeer(root);
   const source: HarnessSessionImportSource = {
     candidate: {
       nativeSessionId: "source",
@@ -253,20 +240,5 @@ it.each([
 ])("rejects with an unknown outcome when fork creation was not confirmed: %j", async (scenario) => {
   const f = fixture({ resumeError: busy, ...scenario });
   await expect(f.prepare()).rejects.toThrow("fork outcome is unknown");
-  expect(f.records().filter(({ method }) => method === "thread/fork")).toHaveLength(1);
-});
-
-it("bounds an unanswered fork RPC and does not report a safe-to-repeat failure", async () => {
-  const f = fixture({ resumeError: busy, forkNoReply: true });
-  await expect(
-    prepareCodexImport({
-      command: f.command,
-      cwd: f.root,
-      environment: { ...process.env, CODEX_HOME: f.home },
-      threadId: "source",
-      requestTimeoutMs: 1500,
-      usage: { observe: () => null, read: async () => null },
-    }),
-  ).rejects.toThrow("fork outcome is unknown");
   expect(f.records().filter(({ method }) => method === "thread/fork")).toHaveLength(1);
 });

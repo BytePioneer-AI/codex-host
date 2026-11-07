@@ -5,20 +5,13 @@ import {
   hostTurnIdSchema,
   type HarnessModelRef,
 } from "@codexhost/shared-contracts";
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHarnessAdapter } from "../src/plugin.ts";
 import { codexFastModel, type CodexModel } from "../src/model-selection.ts";
+import { writeCodexPeer } from "./codex-peer-fixture.ts";
 
 const base: CodexModel = {
   id: "native-model",
@@ -43,12 +36,7 @@ function fixture(initial: Record<string, unknown> = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "codex-fast-")));
   const home = join(root, ".codex");
   mkdirSync(home);
-  const command = join(root, "codex");
-  writeFileSync(
-    command,
-    `#!${process.execPath}\n${readFileSync(resolve("tests/fixtures/codex-auth-peer.cjs"), "utf8")}`,
-  );
-  chmodSync(command, 0o700);
+  const command = writeCodexPeer(root);
   const scenario = (value: Record<string, unknown>) =>
     writeFileSync(join(home, "scenario.json"), JSON.stringify({ models: [base], ...value }));
   scenario(initial);
@@ -119,7 +107,7 @@ async function turn(session: HarnessSession, outputs: HarnessOutput[], id: strin
 }
 
 // The fixture is an executable Node script, like the existing native-process suite.
-describe.skipIf(process.platform === "win32")("Codex native Fast service tier", () => {
+describe("Codex native Fast service tier", () => {
   it("advertises only native priority tiers, without name heuristics or legacy guesses", async () => {
     const f = fixture({
       models: [

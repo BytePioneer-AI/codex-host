@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmod,
   copyFile,
@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -229,7 +230,11 @@ childProcess.spawn = () => {
   child.stdout = new PassThrough();
   setTimeout(() => child.stdout.write(${JSON.stringify(launcherStdout)} + "rea"), 10);
   setTimeout(() => child.stdout.write("dy\\n"), 20);
-  setTimeout(() => child.emit("exit", 7, null), 80);
+  if (process.env.CODEXHOST_TEST_HOLD_LAUNCHER === "1") {
+    setInterval(() => {}, 1_000);
+  } else {
+    setTimeout(() => child.emit("exit", 7, null), 80);
+  }
   return child;
 };
 syncBuiltinESMExports();
@@ -241,7 +246,13 @@ syncBuiltinESMExports();
 
 async function runLauncherLifecycle(
   platform,
-  { locale = "en_US.UTF-8", noColor = false, tty = false, platformVersion = "0.1.0" } = {},
+  {
+    locale = "en_US.UTF-8",
+    noColor = false,
+    tty = false,
+    platformVersion = "0.1.0",
+    slowStdout = false,
+  } = {},
 ) {
   const root = await temporaryDirectory();
   try {
@@ -256,23 +267,55 @@ async function runLauncherLifecycle(
       CODEXHOST_STARTUP_TRACE: "1",
       CODEXHOST_TEST_PLATFORM: platform,
       CODEXHOST_TEST_TTY: tty ? "1" : "0",
+      CODEXHOST_TEST_HOLD_LAUNCHER: slowStdout && platform !== "win32" ? "1" : "0",
       LC_ALL: locale,
       npm_execpath: npmCliPath,
     };
     if (tty) environment.TERM = "xterm-256color";
     if (noColor) environment.NO_COLOR = "1";
     else delete environment.NO_COLOR;
-    return spawnSync(
-      process.execPath,
-      ["--import", pathToFileURL(preloadPath).href, launcherPath],
-      {
-        encoding: "utf8",
-        env: environment,
-        maxBuffer: 2 * 1024 * 1024,
-        timeout: 2_000,
-        windowsHide: true,
-      },
-    );
+    const args = ["--import", pathToFileURL(preloadPath).href, launcherPath];
+    if (slowStdout) {
+      return await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, args, {
+          env: environment,
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: 2_000,
+          windowsHide: true,
+        });
+        const chunks = [];
+        let stderr = "";
+        const consumer = new Writable({
+          highWaterMark: 1,
+          write(chunk, encoding, callback) {
+            chunks.push(chunk);
+            setImmediate(callback);
+          },
+        });
+        // Do not consume stdout until ready: the payload must exceed the pipe's
+        // capacity while the wrapper decides whether it can exit.
+        let consuming = false;
+        child.stderr.setEncoding("utf8");
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk;
+          if (!consuming && stderr.includes("received Launcher ready")) {
+            consuming = true;
+            child.stdout.pipe(consumer);
+          }
+        });
+        child.on("error", reject);
+        child.on("close", (status, signal) => {
+          resolve({ status, signal, stderr, stdout: Buffer.concat(chunks).toString("utf8") });
+        });
+      });
+    }
+    return spawnSync(process.execPath, args, {
+      encoding: "utf8",
+      env: environment,
+      maxBuffer: 2 * 1024 * 1024,
+      timeout: 2_000,
+      windowsHide: true,
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -903,6 +946,24 @@ describe("npm package release", () => {
         launcherStdout,
     );
   });
+
+  it.each(["darwin", "linux", "win32"])(
+    "flushes queued startup output to a slow stdout consumer on %s",
+    async (platform) => {
+      const result = await runLauncherLifecycle(platform, { slowStdout: true });
+
+      expect(result.signal, result.stderr).toBeNull();
+      expect(result.status, result.stderr).toBe(platform === "win32" ? 7 : 0);
+      expect(result.stderr).toContain("received Launcher ready");
+      if (platform === "win32") expect(result.stderr).toContain("Launcher exited after ready");
+      else expect(result.stderr).not.toContain("Launcher exited after ready");
+      expect(result.stdout).toBe(
+        "⭐ If this project helps you, please give us a Star ⭐\n" +
+          "https://github.com/BytePioneer-AI/codex-host\n" +
+          launcherStdout,
+      );
+    },
+  );
 
   it("uses a Chinese star prompt for a Chinese locale", async () => {
     const result = await runLauncherLifecycle("darwin", { locale: "zh_CN.UTF-8" });

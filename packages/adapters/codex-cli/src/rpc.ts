@@ -3,6 +3,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
 
+import { commandInvocation } from "@codexhost/harness-discovery";
+
 export interface RpcErrorShape {
   code: number;
   message: string;
@@ -54,9 +56,12 @@ export class CodexAppServer {
 
   constructor(options: AppServerOptions = {}) {
     this.requestTimeoutMs = options.requestTimeoutMs;
-    this.child = spawn(options.command ?? "codex", ["app-server"], {
+    const environment = options.environment ?? process.env;
+    const invocation = commandInvocation(options.command ?? "codex", ["app-server"], environment);
+    this.child = spawn(invocation.command, invocation.arguments, {
       cwd: options.cwd,
-      env: options.environment ?? process.env,
+      env: environment,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       stdio: ["pipe", "pipe", "pipe"],
     });
     readline

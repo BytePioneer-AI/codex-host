@@ -1,19 +1,11 @@
 import type { HarnessSession } from "@codexhost/harness-adapter";
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { expect, it } from "vitest";
 
 import { createHarnessAdapter } from "../src/plugin.ts";
+import { writeCodexPeer } from "./codex-peer-fixture.ts";
 
 function delegationEnvironment(id: string) {
   return {
@@ -29,22 +21,18 @@ it("passes per-session Host connections through create and resume without sharin
   const root = realpathSync(mkdtempSync(join(tmpdir(), "codex-cli-delegation-")));
   const home = join(root, ".codex");
   mkdirSync(home);
-  const command = join(root, "codex");
   // Only synthetic, explicitly supplied values are captured; no ambient credentials are logged.
   const probe = `JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([key]) =>
     key.startsWith('CODEXHOST_') || key.startsWith('CODEX_INTERNAL_') ||
     ['CODEX_CLI_PATH', 'CODEX_THREAD_ID', 'NODE_OPTIONS', 'NODE_PATH', 'SESSION_TOOL_SETTING'].includes(key)
   )))`;
-  writeFileSync(
-    command,
-    `#!${process.execPath}
-require('node:fs').writeFileSync(
+  const command = writeCodexPeer(
+    root,
+    `require('node:fs').writeFileSync(
   require('node:path').join(process.env.CODEX_HOME, 'environment-' + process.pid + '.json'),
   require('node:child_process').execFileSync(process.execPath, ['-e', ${JSON.stringify(`process.stdout.write(${probe})`)}])
-);
-${readFileSync(resolve("tests/fixtures/codex-auth-peer.cjs"), "utf8")}`,
+);`,
   );
-  chmodSync(command, 0o700);
   const base = delegationEnvironment("adapter-default");
   const adapter = createHarnessAdapter({
     platform: process.platform,

@@ -1,19 +1,12 @@
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema, type HostTurnId } from "@codexhost/shared-contracts";
-import {
-  chmodSync,
-  mkdtempSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createHarnessAdapter } from "../src/plugin.ts";
 import { CodexAppServer } from "../src/rpc.ts";
+import { waitForCodexRequest, writeCodexPeer } from "./codex-peer-fixture.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -24,12 +17,7 @@ function fixture(scenario: object = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "codex-local-auth-")));
   const home = join(root, ".codex");
   mkdirSync(home);
-  const command = join(root, "codex");
-  writeFileSync(
-    command,
-    `#!${process.execPath}\n${readFileSync(resolve("tests/fixtures/codex-auth-peer.cjs"), "utf8")}`,
-  );
-  chmodSync(command, 0o700);
+  const command = writeCodexPeer(root);
   writeFileSync(join(home, "scenario.json"), JSON.stringify(scenario));
   const adapter = createHarnessAdapter({
     platform: process.platform,
@@ -64,39 +52,36 @@ async function turn(session: HarnessSession, turnId: HostTurnId, text: string) {
   throw Error("Missing native Turn completion");
 }
 
-it.skipIf(process.platform === "win32")(
-  "uses local credentials without account preflight and returns native failure normally",
-  async () => {
-    const f = fixture({ requireAuth: true });
-    expect((await f.adapter.inspect()).status).toBe("ready");
-    expect(f.methods()).not.toContain("thread/start");
-    const opened = await f.adapter.open({ kind: "create", cwd: f.home });
-    if (!opened.ok) throw Error(opened.error.message);
-    try {
-      expect(
-        await turn(opened.value, hostTurnIdSchema.parse("missing-auth"), "hello"),
-      ).toMatchObject({
+it("uses local credentials without account preflight and returns native failure normally", async () => {
+  const f = fixture({ requireAuth: true });
+  expect((await f.adapter.inspect()).status).toBe("ready");
+  expect(f.methods()).not.toContain("thread/start");
+  const opened = await f.adapter.open({ kind: "create", cwd: f.home });
+  if (!opened.ok) throw Error(opened.error.message);
+  try {
+    expect(await turn(opened.value, hostTurnIdSchema.parse("missing-auth"), "hello")).toMatchObject(
+      {
         status: "failed",
         error: { code: "nativeFailure", message: "Native model unauthorized" },
-      });
-    } finally {
-      await opened.value.close();
-    }
-    writeFileSync(join(f.home, "authenticated.json"), "true");
-    const retried = await f.adapter.open({ kind: "create", cwd: f.home });
-    if (!retried.ok) throw Error(retried.error.message);
-    try {
-      expect(
-        await turn(retried.value, hostTurnIdSchema.parse("local-auth"), "hello"),
-      ).toMatchObject({ status: "succeeded" });
-    } finally {
-      await retried.value.close();
-    }
-    expect(f.methods().some((m) => m.startsWith("account/"))).toBe(false);
-  },
-);
+      },
+    );
+  } finally {
+    await opened.value.close();
+  }
+  writeFileSync(join(f.home, "authenticated.json"), "true");
+  const retried = await f.adapter.open({ kind: "create", cwd: f.home });
+  if (!retried.ok) throw Error(retried.error.message);
+  try {
+    expect(await turn(retried.value, hostTurnIdSchema.parse("local-auth"), "hello")).toMatchObject({
+      status: "succeeded",
+    });
+  } finally {
+    await retried.value.close();
+  }
+  expect(f.methods().some((m) => m.startsWith("account/"))).toBe(false);
+});
 
-it.skipIf(process.platform === "win32").each(["interrupted", "failed"] as const)(
+it.each(["interrupted", "failed"] as const)(
   "settles unfinished items before a native %s Turn and keeps the Session usable",
   async (status) => {
     const f = fixture({
@@ -240,113 +225,108 @@ const quotaScenario = {
   },
 };
 
-it.skipIf(process.platform === "win32")(
-  "reads quota without a Thread, coalesces refreshes and limits background queries",
-  async () => {
-    const f = fixture(quotaScenario);
-    expect(f.adapter.credits()).toBeNull();
-    const [account, concurrent, credits] = await Promise.all([
-      f.adapter.inspectAccount(),
-      f.adapter.inspectAccount(),
-      f.adapter.refreshCredits(),
-    ]);
-    expect(account).toMatchObject({
-      email: "codex@example.com",
-      plan: "plus",
-      credits: { usedPercent: 25, periodType: "five_hour" },
-    });
-    expect(concurrent).toEqual(account);
-    expect(credits).toEqual(account?.credits);
-    expect(f.adapter.credits()).toEqual(credits);
-    await f.adapter.refreshCredits();
-    expect(f.methods()).toEqual([
-      "initialize",
-      "initialized",
-      "account/read",
-      "account/rateLimits/read",
-    ]);
+it("reads quota without a Thread, coalesces refreshes and limits background queries", async () => {
+  const f = fixture(quotaScenario);
+  expect(f.adapter.credits()).toBeNull();
+  const [account, concurrent, credits] = await Promise.all([
+    f.adapter.inspectAccount(),
+    f.adapter.inspectAccount(),
+    f.adapter.refreshCredits(),
+  ]);
+  expect(account).toMatchObject({
+    email: "codex@example.com",
+    plan: "plus",
+    credits: { usedPercent: 25, periodType: "five_hour" },
+  });
+  expect(concurrent).toEqual(account);
+  expect(credits).toEqual(account?.credits);
+  expect(f.adapter.credits()).toEqual(credits);
+  await f.adapter.refreshCredits();
+  expect(f.methods()).toEqual([
+    "initialize",
+    "initialized",
+    "account/read",
+    "account/rateLimits/read",
+  ]);
 
-    const now = Date.now();
-    vi.spyOn(Date, "now").mockReturnValue(now + 60_001);
-    expect(f.adapter.credits()).toBeNull();
-    expect(await f.adapter.refreshCredits()).toEqual(credits);
-    expect(f.methods().filter((method) => method === "account/rateLimits/read")).toHaveLength(2);
-  },
-);
+  const now = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(now + 60_001);
+  expect(f.adapter.credits()).toBeNull();
+  expect(await f.adapter.refreshCredits()).toEqual(credits);
+  expect(f.methods().filter((method) => method === "account/rateLimits/read")).toHaveLength(2);
+});
 
-it.skipIf(process.platform === "win32")(
-  "clears previous quota after logout, API-key login, provider changes or read failure",
-  async () => {
-    const f = fixture(quotaScenario);
-    for (const scenario of [
-      {},
-      { accountRead: { account: { type: "apiKey" }, requiresOpenaiAuth: true } },
-      { accountRead: { ...quotaScenario.accountRead, requiresOpenaiAuth: false } },
-      { ...quotaScenario, rateLimits: { rateLimits: null } },
-      { ...quotaScenario, quotaError: true },
-    ]) {
-      f.scenario(quotaScenario);
-      expect(await f.adapter.inspectAccount()).not.toBeNull();
-      f.scenario(scenario);
-      expect(await f.adapter.inspectAccount()).toBeNull();
-      expect(f.adapter.credits()).toBeNull();
-    }
-    const other = fixture();
-    expect(await other.adapter.inspectAccount()).toBeNull();
-    expect(other.adapter.credits()).toBeNull();
-  },
-);
-
-it.skipIf(process.platform === "win32")(
-  "closes an in-flight quota process and keeps the cache empty after close",
-  async () => {
-    const f = fixture({ ...quotaScenario, quotaWaitFile: "never" });
-    const pending = f.adapter.inspectAccount();
-    await expect.poll(() => f.methods().includes("account/rateLimits/read")).toBe(true);
-    await f.adapter.close();
-    expect(await pending).toBeNull();
-    expect(f.adapter.credits()).toBeNull();
-    expect(await f.adapter.refreshCredits()).toBeNull();
+it("clears previous quota after logout, API-key login, provider changes or read failure", async () => {
+  const f = fixture(quotaScenario);
+  for (const scenario of [
+    {},
+    { accountRead: { account: { type: "apiKey" }, requiresOpenaiAuth: true } },
+    { accountRead: { ...quotaScenario.accountRead, requiresOpenaiAuth: false } },
+    { ...quotaScenario, rateLimits: { rateLimits: null } },
+    { ...quotaScenario, quotaError: true },
+  ]) {
+    f.scenario(quotaScenario);
+    expect(await f.adapter.inspectAccount()).not.toBeNull();
+    f.scenario(scenario);
     expect(await f.adapter.inspectAccount()).toBeNull();
-    expect(f.methods().filter((method) => method === "initialize")).toHaveLength(1);
-  },
-);
+    expect(f.adapter.credits()).toBeNull();
+  }
+  const other = fixture();
+  expect(await other.adapter.inspectAccount()).toBeNull();
+  expect(other.adapter.credits()).toBeNull();
+});
 
-it.skipIf(process.platform === "win32")(
-  "coalesces model inspections by workspace and closes native processes",
-  async () => {
-    const f = fixture({ modelWaitFile: "release" });
-    const pending = f.adapter.inspect({ cwd: f.home });
-    const concurrent = f.adapter.inspect({ cwd: f.home });
-    await expect.poll(() => f.methods().filter((m) => m === "model/list").length).toBe(1);
-    writeFileSync(join(f.home, "release"), "yes");
-    expect((await Promise.all([pending, concurrent])).map((v) => v.status)).toEqual([
-      "ready",
-      "ready",
-    ]);
-    expect(f.methods().some((m) => m.startsWith("account/"))).toBe(false);
-  },
-);
+it("closes an in-flight quota process and keeps the cache empty after close", async ({
+  signal,
+}) => {
+  const f = fixture({ ...quotaScenario, quotaWaitFile: "never" });
+  const pending = f.adapter.inspectAccount();
+  await waitForCodexRequest(f.home, "account/rateLimits/read", signal);
+  await f.adapter.close();
+  expect(await pending).toBeNull();
+  expect(f.adapter.credits()).toBeNull();
+  expect(await f.adapter.refreshCredits()).toBeNull();
+  expect(await f.adapter.inspectAccount()).toBeNull();
+  expect(f.methods().filter((method) => method === "initialize")).toHaveLength(1);
+});
 
-it.skipIf(process.platform === "win32")(
-  "bounds model control requests and closes in-flight inspections",
-  async () => {
-    const f = fixture({ modelWaitFile: "never" });
-    const server = new CodexAppServer({
-      command: f.command,
-      environment: { ...process.env, CODEX_HOME: f.home },
-      requestTimeoutMs: 1000,
-    });
-    try {
-      await server.initialize();
-      await expect(server.request("model/list", {})).rejects.toThrow("timed out");
-    } finally {
-      await server.close();
-    }
-    const pending = f.adapter.inspect();
-    await expect.poll(() => f.methods().filter((m) => m === "model/list").length).toBe(2);
-    await f.adapter.close();
-    expect((await pending).status).toBe("unavailable");
-    expect((await f.adapter.inspect()).status).toBe("unavailable");
-  },
-);
+it("coalesces model inspections by workspace and closes native processes", async ({ signal }) => {
+  const f = fixture({ modelWaitFile: "release" });
+  const pending = f.adapter.inspect({ cwd: f.home });
+  const concurrent = f.adapter.inspect({ cwd: f.home });
+  await waitForCodexRequest(f.home, "model/list", signal);
+  expect(f.methods().filter((m) => m === "model/list")).toHaveLength(1);
+  writeFileSync(join(f.home, "release"), "yes");
+  expect((await Promise.all([pending, concurrent])).map((v) => v.status)).toEqual([
+    "ready",
+    "ready",
+  ]);
+  expect(f.methods().some((m) => m.startsWith("account/"))).toBe(false);
+});
+
+it("bounds model control requests and closes in-flight inspections", async ({ signal }) => {
+  const f = fixture({ modelWaitFile: "never" });
+  // Keep the RPC timeout deterministic without charging real process startup to it.
+  vi.useFakeTimers();
+  const server = new CodexAppServer({
+    command: f.command,
+    environment: { ...process.env, CODEX_HOME: f.home },
+    requestTimeoutMs: 1000,
+  });
+  try {
+    await server.initialize();
+    const timedOut = expect(server.request("model/list", {})).rejects.toThrow("timed out");
+    await vi.advanceTimersByTimeAsync(1000);
+    await timedOut;
+    vi.useRealTimers();
+    await waitForCodexRequest(f.home, "model/list", signal);
+  } finally {
+    vi.useRealTimers();
+    await server.close();
+  }
+  const pending = f.adapter.inspect();
+  await waitForCodexRequest(f.home, "model/list", signal, 2);
+  await f.adapter.close();
+  expect((await pending).status).toBe("unavailable");
+  expect((await f.adapter.inspect()).status).toBe("unavailable");
+});

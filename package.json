@@ -38,7 +38,7 @@
     "test:web": "npm run test --workspace=@codexhost/web-server",
     "test:web:browser": "npm run test:browser --workspace=@codexhost/web-server",
     "test:web:distribution": "npm run test:distribution --workspace=@codexhost/web-server",
-    "test:shared-host": "npm run build:typescript && cargo build --locked --package codexhost-launcher && node --import tsx --test packages/host-runtime/test/native/*.test.ts",
+    "test:shared-host": "npm run build:typescript && npm run build:renderer && cargo build --locked --package codexhost-launcher && node --import tsx --test packages/host-runtime/test/native/*.test.ts",
     "build:renderer": "npm run build --workspace=@codexhost/renderer-extension",
     "build:rust": "cargo build --locked --package codexhost-launcher --package codexhost-platform --package codexhost-shim --package codexhost-updater",
     "release:prepare": "node scripts/release/prepare-version.mjs",

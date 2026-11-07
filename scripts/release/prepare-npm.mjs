@@ -836,7 +836,8 @@ if (consoleArguments !== null) {
     if (finished) return;
     finished = true;
     startupTrace("Launcher finished startup with code " + code);
-    process.exit(code);
+    // Flush queued startup output without waiting for the supervising Launcher.
+    process.stdout.end((error) => process.exit(error ? code || 1 : code));
   };
   child.stdout.setEncoding("utf8");
   let ready = false;

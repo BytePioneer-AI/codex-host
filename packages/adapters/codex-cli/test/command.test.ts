@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -26,9 +26,10 @@ function root(): string {
 }
 
 function executable(path: string): string {
-  writeFileSync(path, "#!/bin/sh\nexit 0\n");
-  chmodSync(path, 0o700);
-  return path;
+  const command = process.platform === "win32" ? `${path}.CMD` : path;
+  writeFileSync(command, process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n");
+  if (process.platform !== "win32") chmodSync(command, 0o700);
+  return command;
 }
 
 describe("Codex CLI executable discovery", () => {
@@ -38,7 +39,7 @@ describe("Codex CLI executable discovery", () => {
       resolveCodexExecutable({
         command: join(directory, "missing-codex"),
         environment: { HOME: directory, PATH: join(directory, "empty") },
-        platform: "linux",
+        platform: process.platform,
       }),
     ).toEqual({ status: "notInstalled" });
   });
@@ -51,14 +52,14 @@ describe("Codex CLI executable discovery", () => {
     expect(
       resolveCodexExecutable({
         environment: { HOME: directory, PATH: bin },
-        platform: "linux",
+        platform: process.platform,
       }),
     ).toEqual({ status: "ready", command });
     expect(
       resolveCodexExecutable({
         command,
         environment: { HOME: directory, PATH: join(directory, "empty") },
-        platform: "linux",
+        platform: process.platform,
       }),
     ).toEqual({ status: "ready", command });
   });
@@ -68,12 +69,12 @@ describe("Codex CLI executable discovery", () => {
     const bin = join(directory, "bin");
     mkdirSync(bin);
     const proxy = executable(join(bin, "codexhost-proxy"));
-    const alias = join(bin, "codex");
+    const alias = join(bin, process.platform === "win32" ? "codex.CMD" : "codex");
     symlinkSync(proxy, alias);
     expect(
       resolveCodexExecutable({
         environment: { HOME: directory, PATH: bin },
-        platform: "linux",
+        platform: process.platform,
       }),
     ).toEqual({ status: "unavailable" });
     const native = executable(join(bin, "native-codex"));
@@ -81,14 +82,16 @@ describe("Codex CLI executable discovery", () => {
       resolveCodexExecutable({
         command: native,
         environment: { HOME: directory, PATH: bin, CODEX_CLI_PATH: native },
-        platform: "linux",
+        platform: process.platform,
       }),
     ).toEqual({ status: "unavailable" });
   });
 
   it("uses CODEX_HOME or the user's own native home", () => {
-    expect(codexHome({ HOME: "/home/user" })).toBe("/home/user/.codex");
-    expect(codexHome({ HOME: "/home/user", CODEX_HOME: "/custom/codex" })).toBe("/custom/codex");
+    const home = root();
+    const configured = join(home, "custom", "codex");
+    expect(codexHome({ HOME: home })).toBe(join(home, ".codex"));
+    expect(codexHome({ HOME: home, CODEX_HOME: configured })).toBe(resolve(configured));
   });
 
   it("preserves the Host CLI connection while removing Desktop routing and Node injection", () => {

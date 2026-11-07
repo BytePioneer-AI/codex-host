@@ -11,6 +11,7 @@ import {
 import type { SocketConstructorOpts } from "node:net";
 import { connect, type ConnectionOptions, type TLSSocket } from "node:tls";
 import { Duplex, Transform } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { createWebSocketStream, WebSocket } from "ws";
 import {
   deriveId,
@@ -22,8 +23,8 @@ import {
   maxPayload,
 } from "../src/protocol.js";
 
-export const certPath = new URL("./fixtures/cert.pem", import.meta.url).pathname;
-export const keyPath = new URL("./fixtures/key.pem", import.meta.url).pathname;
+export const certPath = fileURLToPath(new URL("./fixtures/cert.pem", import.meta.url));
+export const keyPath = fileURLToPath(new URL("./fixtures/key.pem", import.meta.url));
 export const credentials = { cert: readFileSync(certPath), key: readFileSync(keyPath) };
 export const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 

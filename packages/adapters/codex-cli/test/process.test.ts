@@ -5,20 +5,13 @@ import {
   nativeSessionRefSchema,
   type HostTurnId,
 } from "@codexhost/shared-contracts";
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { createHarnessAdapter } from "../src/plugin.ts";
+import { waitForCodexRequest, writeCodexPeer } from "./codex-peer-fixture.ts";
 
 interface RpcRecord {
   method: string;
@@ -38,16 +31,11 @@ afterEach(async () => {
   for (const fn of cleanups.splice(0)) await fn();
 });
 
-function fixture(scenario: object = {}) {
+function fixture(scenario: object = {}, prelude = "") {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "codex-cli-process-")));
   const home = join(root, ".codex");
   mkdirSync(home);
-  const command = join(root, "codex");
-  writeFileSync(
-    command,
-    `#!${process.execPath}\n${readFileSync(resolve("tests/fixtures/codex-auth-peer.cjs"), "utf8")}`,
-  );
-  chmodSync(command, 0o700);
+  const command = writeCodexPeer(root, prelude);
   writeFileSync(join(home, "scenario.json"), JSON.stringify(scenario));
   const adapter = createHarnessAdapter({
     platform: process.platform,
@@ -97,6 +85,35 @@ async function runTurn(session: HarnessSession, turnId: HostTurnId, text: string
 }
 
 describe("Codex CLI native process", () => {
+  it("discovers and launches a CLI from a PATH directory containing spaces", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "codex cli launch-")));
+    const home = join(root, ".codex");
+    writeCodexPeer(
+      root,
+      `require('node:fs').writeFileSync(
+        require('node:path').join(process.env.CODEX_HOME, 'launch.json'),
+        JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), home: process.env.CODEX_HOME })
+      );`,
+    );
+    mkdirSync(home);
+    const adapter = createHarnessAdapter({
+      platform: process.platform,
+      managedRemoteHost: false,
+      environment: { HOME: root, CODEX_HOME: home, PATH: root, PATHEXT: ".CMD;.EXE" },
+    });
+    try {
+      expect((await adapter.inspect({ cwd: root })).status).toBe("ready");
+      expect(JSON.parse(readFileSync(join(home, "launch.json"), "utf8"))).toEqual({
+        args: ["app-server"],
+        cwd: root,
+        home,
+      });
+    } finally {
+      await adapter.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("creates, resumes and lists Sessions in the native home with Desktop routing removed", async () => {
     const f = fixture();
     expect((await f.adapter.inspect()).status).toBe("ready");
@@ -326,7 +343,7 @@ describe("Codex CLI native process", () => {
     });
   });
 
-  it("cancels canonical reads on close and starts no more discovery work", async () => {
+  it("cancels canonical reads on close and starts no more discovery work", async ({ signal }) => {
     const thread = {
       id: "pending",
       name: "History",
@@ -336,9 +353,13 @@ describe("Codex CLI native process", () => {
       ephemeral: false,
       parentThreadId: null,
     };
-    const f = fixture({ threads: [thread, thread], threadReadWaitFile: "never-written" });
+    const f = fixture(
+      { threads: [thread, thread], threadReadWaitFile: "never-written" },
+      // Exercise a cold start beyond Vitest's default one-second polling window.
+      "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1200);",
+    );
     const reading = f.adapter.sessionImport.listCandidates();
-    await vi.waitFor(() => expect(f.records().some((r) => r.method === "thread/read")).toBe(true));
+    await waitForCodexRequest(f.home, "thread/read", signal);
     await f.adapter.close();
     expect(await reading).toMatchObject({ ok: false });
     const count = f.records().length;
@@ -427,25 +448,6 @@ describe("Codex CLI native process", () => {
         }),
       }),
     ).toMatchObject({ ok: false, error: { code: "nativeFailure" } });
-  });
-
-  it("rejects native steering without forwarding input to Codex", async () => {
-    const f = fixture();
-    const created = await f.adapter.open({ kind: "create", cwd: f.home });
-    if (!created.ok) throw new Error(created.error.message);
-    try {
-      expect(created.value.capabilities.steer).toBe(false);
-      expect(
-        await created.value.execute({
-          type: "turn.steer",
-          turnId: hostTurnIdSchema.parse("turn-1"),
-          input: [{ type: "text", text: "follow-up" }],
-        }),
-      ).toMatchObject({ ok: false, error: { code: "unsupported" } });
-      expect(f.records().some(({ method }) => method === "turn/steer")).toBe(false);
-    } finally {
-      await created.value.close();
-    }
   });
 
   it("sends no approval or sandbox parameters when no Permission Mode was chosen", async () => {

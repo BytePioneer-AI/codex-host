@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createServer as createTlsServer, type ConnectionOptions } from "node:tls";
 import { connect, constants } from "node:http2";
 import type * as http2 from "node:http2";
@@ -18,7 +19,7 @@ vi.mock("node:http2", async (importOriginal) => {
 let relay: ReturnType<typeof createRelay>;
 let certDirectory: string;
 beforeEach(async () => {
-  certDirectory = mkdtempSync(new URL("./fixtures/run-", import.meta.url).pathname);
+  certDirectory = mkdtempSync(fileURLToPath(new URL("./fixtures/run-", import.meta.url)));
   copyFileSync(certPath, `${certDirectory}/cert.pem`);
   relay = createRelay({
     domain: "relay.test",
@@ -228,11 +229,22 @@ describe("phone forwarding", () => {
         slow.write("large");
         slow.pause();
       }
-      await delay(300);
-      const before = produced;
-      await delay(300);
-      expect(produced).toBe(before);
+      // TCP/TLS buffers may drain through several window updates before every stream stalls.
+      await vi.waitFor(
+        async () => {
+          expect(requests.mock.results).toHaveLength(slowCount);
+          for (const result of requests.mock.results) {
+            expect(result.value.state.localWindowSize).toBe(0);
+          }
+          const before = produced;
+          await delay(300);
+          expect(produced).toBe(before);
+        },
+        { timeout: 3000, interval: 50 },
+      );
       expect(produced).toBeGreaterThanOrEqual(streamWindowSize * slowCount);
+      // Exhausting the producer's data must not count as backpressure.
+      expect(produced).toBeLessThan(64 * 1024 * 1024);
       expect(requests.mock.results).toHaveLength(slowCount);
       for (const result of requests.mock.results) {
         expect(result.value.readableLength).toBeGreaterThan(64 * 1024);

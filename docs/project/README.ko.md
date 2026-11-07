@@ -297,6 +297,8 @@ npm ci
 npm start
 ```
 
+네트워크에서 `download.qoder.com`(Qoder CN은 `static.qoder.com.cn`)에 접근할 수 없으면 Qoder SDK `postinstall`의 런타임 다운로드 때문에 `npm ci`가 실패할 수 있습니다. 이 경우 `QODER_SKIP_DOWNLOAD=1 npm ci`를 사용하세요(PowerShell: `$env:QODER_SKIP_DOWNLOAD=1; npm ci`). CodexHost는 로컬에 설치된 CLI(Qoder는 `qodercli`, Qoder CN은 `qoderclicn`)를 실행하므로 SDK에 포함된 런타임이 필요하지 않습니다. 사용하는 Qoder Harness에 맞는 CLI를 먼저 설치하세요.
+
 ### 실행 아키텍처
 
 Pi를 예로 듭니다. 왼쪽에서 오른쪽이 한 번의 요청 호출 체인입니다: Desktop → 공용 계층 → Pi 플러그인 → 네이티브 프로세스.

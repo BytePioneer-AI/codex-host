@@ -427,9 +427,11 @@ describe("Renderer fixed Model request client", () => {
       "listLoadedSessions",
       "listSessionImportSources",
       "listThreadOwnership",
+      "listThreadRelations",
       "openConsole",
       "openHarnessWebUi",
       "readDelegationThread",
+      "readNativeThreadForkSource",
       "readUpdateStatus",
       "refreshCodexAccounts",
       "runtimeStatus",
@@ -442,6 +444,7 @@ describe("Renderer fixed Model request client", () => {
       "setupSsh",
       "startUpdate",
       "subscribeCodexAccounts",
+      "subscribeThreadArchived",
       "subscribeThreadUsage",
       "updateRemote",
     ]);
@@ -867,6 +870,94 @@ describe("Renderer fixed Model request client", () => {
         threadIds: [hostThreadIdSchema.parse("thread-1"), hostThreadIdSchema.parse("thread-2")],
       }),
     ).rejects.toThrow("does not match");
+  });
+
+  it("lists sidebar Thread relations and falls back to ownership on older Hosts", async () => {
+    const ids = [hostThreadIdSchema.parse("child"), hostThreadIdSchema.parse("parent")];
+    const relations = {
+      threads: [
+        {
+          threadId: "child",
+          owner: "external",
+          parent: { threadId: "parent", relation: "delegation" },
+        },
+        { threadId: "parent", owner: "codex", parent: null },
+      ],
+    };
+    const current = createRendererModelClient([{ sendRequest: vi.fn(async () => relations) }]);
+    await expect(current?.listThreadRelations?.({ threadIds: ids })).resolves.toEqual(relations);
+
+    const unavailable = Object.assign(new Error("Method not found"), { code: -32601 });
+    const older = vi.fn(async (method: string) => {
+      if (method === "codexhost/thread/relation/list") throw unavailable;
+      return {
+        threads: [
+          { threadId: "child", owner: "external", harnessId: "pi" },
+          { threadId: "parent", owner: "codex" },
+        ],
+      };
+    });
+    const olderClient = createRendererModelClient([{ sendRequest: older }]);
+    await expect(olderClient?.listThreadRelations?.({ threadIds: ids })).resolves.toEqual({
+      threads: [
+        { threadId: "child", owner: "external", parent: null },
+        { threadId: "parent", owner: "codex", parent: null },
+      ],
+    });
+
+    const stock = createRendererModelClient([
+      {
+        sendRequest: vi.fn(async () => {
+          throw unavailable;
+        }),
+      },
+    ]);
+    await expect(stock?.listThreadRelations?.({ threadIds: ids })).resolves.toEqual({
+      threads: [
+        { threadId: "child", owner: "codex", parent: null },
+        { threadId: "parent", owner: "codex", parent: null },
+      ],
+    });
+  });
+
+  it("rejects relation results that do not exactly match requested IDs", async () => {
+    const client = createRendererModelClient([
+      {
+        sendRequest: vi.fn(async () => ({
+          threads: [{ threadId: "other", owner: "codex", parent: null }],
+        })),
+      },
+    ]);
+
+    await expect(
+      client?.listThreadRelations?.({ threadIds: [hostThreadIdSchema.parse("thread-1")] }),
+    ).rejects.toThrow("does not match");
+  });
+
+  it("reads a native Fork source from metadata only and ignores Subagents", async () => {
+    const threads: Record<string, unknown> = {
+      fork: { id: "fork", forkedFromId: "parent" },
+      plain: { id: "plain", forkedFromId: null },
+      subagent: { id: "subagent", forkedFromId: "parent", parentThreadId: "parent" },
+      spawned: { id: "spawned", forkedFromId: "parent", source: { subAgent: {} } },
+      mismatch: { id: "other" },
+    };
+    const sendRequest = vi.fn(async (_method: string, params: unknown) => ({
+      thread: threads[(params as { threadId: string }).threadId],
+    }));
+    const client = createRendererModelClient([{ sendRequest }]);
+    const read = (threadId: string) =>
+      client?.readNativeThreadForkSource?.(hostThreadIdSchema.parse(threadId));
+
+    await expect(read("fork")).resolves.toBe("parent");
+    await expect(read("plain")).resolves.toBeNull();
+    await expect(read("subagent")).resolves.toBeNull();
+    await expect(read("spawned")).resolves.toBeNull();
+    await expect(read("mismatch")).rejects.toThrow("does not match");
+    expect(sendRequest).toHaveBeenCalledWith("thread/read", {
+      threadId: "fork",
+      includeTurns: false,
+    });
   });
 
   it("accepts a null update check when the Host has no update capability", async () => {

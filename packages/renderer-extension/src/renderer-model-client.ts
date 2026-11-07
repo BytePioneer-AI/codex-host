@@ -77,6 +77,9 @@ import {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  threadRelationListParamsSchema,
+  threadRelationListResultSchema,
+  THREAD_RELATION_LIST_METHOD,
   threadUsageInspectionParamsSchema,
   threadUsageInspectionSchema,
   updateCheckResultSchema,
@@ -104,6 +107,9 @@ import {
   type ThreadThinkingSelectParams,
   type ThreadOwnershipListParams,
   type ThreadOwnershipListResult,
+  type HostThreadId,
+  type ThreadRelationListParams,
+  type ThreadRelationListResult,
   type ThreadUsageInspection,
   type ThreadUsageInspectionParams,
   type UpdateCheckResult,
@@ -118,7 +124,7 @@ import {
   RendererMethodUnavailableError,
   type RendererRequestOptions,
 } from "./renderer-request-sender.js";
-import { verifyNativeCodexThread } from "./renderer-native-thread.js";
+import { readNativeThreadForkSource, verifyNativeCodexThread } from "./renderer-native-thread.js";
 import {
   createRendererSessionImportClient,
   type RendererSessionImportClient,
@@ -167,6 +173,7 @@ export const UPDATE_STATUS_METHOD = "codexhost/update/status";
 export const CODEX_ACCOUNT_LIST_METHOD = "codexhost/account/list";
 export const CODEX_ACCOUNT_REFRESH_METHOD = "codexhost/account/refresh";
 export const CODEX_ACCOUNT_CHANGED_METHOD = "codexhost/account/changed";
+export const THREAD_ARCHIVED_METHOD = "thread/archived";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -223,8 +230,14 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
+  /** Persisted sidebar parents; optional because older Hosts and stock Codex lack it. */
+  listThreadRelations?(input: ThreadRelationListParams): Promise<ThreadRelationListResult>;
+  /** Native Codex `thread/read` Fork source, metadata only. */
+  readNativeThreadForkSource?(threadId: HostThreadId): Promise<HostThreadId | null>;
   inspectThreadUsage(input: ThreadUsageInspectionParams): Promise<ThreadUsageInspection>;
   subscribeThreadUsage?(listener: (update: ThreadUsageInspection) => void): () => void;
+  /** App-server `thread/archived` notifications, from every archive entry point. */
+  subscribeThreadArchived?(listener: (threadId: HostThreadId) => void): () => void;
   selectThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadThinking(input: ThreadThinkingSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadPermissionMode(
@@ -480,6 +493,51 @@ export function createRendererModelClient(
       }
       return result;
     },
+    async listThreadRelations(input: ThreadRelationListParams): Promise<ThreadRelationListResult> {
+      const params = threadRelationListParamsSchema.parse(input);
+      let result: ThreadRelationListResult;
+      try {
+        result = threadRelationListResultSchema.parse(
+          await manager.sendRequest(THREAD_RELATION_LIST_METHOD, params),
+        );
+      } catch (error) {
+        if (!(error instanceof RendererMethodUnavailableError)) throw error;
+        // Older Hosts have no relation store access; keep only ownership so
+        // native Fork lookup is limited to Codex Threads. Stock Codex has
+        // neither method and every Thread is native.
+        let owners: ThreadOwnershipListResult["threads"] | null = null;
+        try {
+          owners = threadOwnershipListResultSchema.parse(
+            await manager.sendRequest(THREAD_OWNERSHIP_LIST_METHOD, params),
+          ).threads;
+        } catch (ownershipError) {
+          if (!(ownershipError instanceof RendererMethodUnavailableError)) throw ownershipError;
+        }
+        result = {
+          threads: params.threadIds.map((threadId, index) => ({
+            threadId,
+            owner: owners?.[index]?.threadId === threadId ? owners[index].owner : "codex",
+            parent: null,
+          })),
+        };
+        if (owners && owners.some((thread, index) => thread.threadId !== params.threadIds[index]))
+          throw new Error("Thread ownership-list result does not match the requested IDs");
+      }
+      if (
+        result.threads.length !== params.threadIds.length ||
+        result.threads.some((thread, index) => thread.threadId !== params.threadIds[index])
+      ) {
+        throw new Error("Thread relation-list result does not match the requested IDs");
+      }
+      return result;
+    },
+    async readNativeThreadForkSource(threadId: HostThreadId): Promise<HostThreadId | null> {
+      const parent = await readNativeThreadForkSource(
+        manager.sendRequest,
+        hostThreadIdSchema.parse(threadId),
+      );
+      return parent === null ? null : hostThreadIdSchema.parse(parent);
+    },
     inspectThreadUsage,
     subscribeThreadUsage(listener: (update: ThreadUsageInspection) => void): () => void {
       const notifications = notificationTarget(source);
@@ -508,6 +566,18 @@ export function createRendererModelClient(
         generations.clear();
         removeNotificationCallback();
       };
+    },
+    subscribeThreadArchived(listener: (threadId: HostThreadId) => void): () => void {
+      const notifications = notificationTarget(source);
+      if (!notifications?.addNotificationCallback) {
+        throw new Error("Renderer archive notification callback is unavailable");
+      }
+      return notifications.addNotificationCallback(THREAD_ARCHIVED_METHOD, (notification) => {
+        if (!isRecord(notification) || notification.method !== THREAD_ARCHIVED_METHOD) return;
+        const params = notification.params;
+        const threadId = hostThreadIdSchema.safeParse(isRecord(params) ? params.threadId : null);
+        if (threadId.success) listener(threadId.data);
+      });
     },
     selectThreadModel,
     selectThreadThinking,

@@ -74,6 +74,12 @@ export interface RendererSettingsMessages {
   readonly idleReleaseFailed: string;
   readonly reasoningSoftWrapTitle: string;
   readonly reasoningSoftWrapDescription: string;
+  readonly sidebarGroup: string;
+  readonly archiveChildrenTitle: string;
+  readonly archiveChildrenDescription: string;
+  readonly archiveChildrenAsk: string;
+  readonly archiveChildrenAlways: string;
+  readonly archiveChildrenNever: string;
   readonly pageUnavailable: string;
   readonly inDevelopment: string;
   readonly notAvailable: string;
@@ -343,6 +349,13 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   idleReleaseFailed: "Sync failed, try again",
   reasoningSoftWrapTitle: "Wrap thinking text",
   reasoningSoftWrapDescription: "Wrap long lines in thinking blocks. Shell output is unaffected.",
+  sidebarGroup: "Sidebar",
+  archiveChildrenTitle: "When archiving a parent thread",
+  archiveChildrenDescription:
+    "Child threads are unarchived Delegations and native forks nested under it in the sidebar. Official subagents are unaffected.",
+  archiveChildrenAsk: "Ask every time",
+  archiveChildrenAlways: "Always archive child threads",
+  archiveChildrenNever: "Never archive child threads",
   pageUnavailable: "Page unavailable",
   inDevelopment: "In development",
   notAvailable: "Not available",
@@ -654,6 +667,13 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   idleReleaseFailed: "同步失败，请重试",
   reasoningSoftWrapTitle: "换行显示思考文本",
   reasoningSoftWrapDescription: "思考块中的长行自动换行，不影响 Shell 输出。",
+  sidebarGroup: "侧边栏",
+  archiveChildrenTitle: "归档父会话时",
+  archiveChildrenDescription:
+    "子会话指侧边栏中嵌套在其下、尚未归档的委派会话和原生 fork 会话，不影响官方子代理。",
+  archiveChildrenAsk: "每次询问",
+  archiveChildrenAlways: "总是归档子会话",
+  archiveChildrenNever: "从不归档子会话",
   pageUnavailable: "页面不可用",
   inDevelopment: "开发中",
   notAvailable: "暂不可用",

@@ -28,3 +28,28 @@ export async function verifyNativeCodexThread(
     throw new Error("Native Thread response cannot establish Codex ownership");
   }
 }
+
+/**
+ * Read the Thread a native Codex Thread was forked from, using the existing
+ * metadata-only `thread/read` request. Returns null when the Thread is not a
+ * Fork or the response cannot be matched to the requested Thread.
+ * @param sendRequest Sends a Desktop app-server request.
+ * @param threadId The native Thread identity being read.
+ */
+export async function readNativeThreadForkSource(
+  sendRequest: (method: string, params: unknown) => Promise<unknown> | unknown,
+  threadId: string,
+): Promise<string | null> {
+  const native = await sendRequest("thread/read", { threadId, includeTurns: false });
+  const thread = isRecord(native) ? native.thread : null;
+  if (!isRecord(thread) || thread.id !== threadId) {
+    throw new Error("Native Thread response does not match the requested Thread");
+  }
+  // Codex Subagents may also carry a Fork source; Desktop nests them natively.
+  if (typeof thread.parentThreadId === "string" && thread.parentThreadId) return null;
+  if (isRecord(thread.source) && "subAgent" in thread.source) return null;
+  const forkedFromId = thread.forkedFromId;
+  return typeof forkedFromId === "string" && forkedFromId && forkedFromId !== threadId
+    ? forkedFromId
+    : null;
+}

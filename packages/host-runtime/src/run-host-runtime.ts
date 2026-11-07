@@ -412,7 +412,10 @@ export async function runHostRuntime(input: {
         revision: officialRuntimeScope.gate.revision,
         accounts: [{ accountId: "remote-native", label: "Remote native Codex Account" }],
       }));
-      const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
+      const mappingStore = createProductionExternalThreadStore(
+        delegationEnvironment,
+        "remote app-server listener",
+      );
       await mappingStore.initialize();
       const sharedOwner = new SharedThreadOwner();
       let sharedDelegation: DelegationControlRegistration | undefined;

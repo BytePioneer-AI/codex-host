@@ -78,6 +78,8 @@ export class MappingStoreError extends Error {
 export interface MappingStoreOptions {
   directory: string;
   instanceId?: string;
+  /** Diagnostic role recorded in the lock so a contender can name the live owner. */
+  ownerRole?: string;
   now?: () => Date;
   beforeReplace?: (record: StoredThreadRecordV1) => Promise<void> | void;
 }
@@ -88,6 +90,16 @@ interface LockRecord {
   startedAt: string;
   executablePath?: string;
   processStartedAt?: string;
+  role?: string;
+}
+
+function lockOwnerDescription(lock: Partial<LockRecord>): string {
+  const details = [`PID ${String(lock.pid)}`];
+  if (typeof lock.role === "string" && lock.role) details.push(lock.role);
+  if (typeof lock.startedAt === "string" && lock.startedAt) {
+    details.push(`started ${lock.startedAt}`);
+  }
+  return details.join(", ");
 }
 
 interface ProcessIdentity {
@@ -341,6 +353,7 @@ export class MappingStore {
   readonly #directory: string;
   readonly #instanceId: string;
   readonly #lockPath: string;
+  readonly #ownerRole: string | undefined;
   readonly #metadataDirectory: string;
   readonly #now: () => Date;
   readonly #quarantineDirectory: string;
@@ -371,6 +384,7 @@ export class MappingStore {
     this.#metadataDirectory = path.join(this.#directory, "thread-metadata");
     this.#lockPath = path.join(this.#directory, "store.lock");
     this.#instanceId = options.instanceId ?? randomUUID();
+    this.#ownerRole = options.ownerRole;
     this.#now = options.now ?? (() => new Date());
     this.#beforeReplace = options.beforeReplace;
   }
@@ -1298,6 +1312,7 @@ export class MappingStore {
         startedAt: this.#now().toISOString(),
         executablePath: process.execPath,
         processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+        ...(this.#ownerRole ? { role: this.#ownerRole } : {}),
       };
       await handle.writeFile(`${JSON.stringify(lock)}\n`, "utf8");
       await handle.sync();
@@ -1316,7 +1331,10 @@ export class MappingStore {
       // An invalid lock cannot prove a live owner and is treated as stale.
     }
     if (typeof existing.pid === "number" && lockOwnerIsLive(existing)) {
-      throw new MappingStoreError("STORE_LOCKED", "Another codexhost process owns Mapping Store");
+      throw new MappingStoreError(
+        "STORE_LOCKED",
+        `Another codexhost process owns Mapping Store at ${this.#directory} (${lockOwnerDescription(existing)})`,
+      );
     }
     await rename(this.#lockPath, `${this.#lockPath}.stale-${this.#now().getTime()}`).catch(
       () => undefined,

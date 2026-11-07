@@ -108,10 +108,14 @@ export function defaultMappingStoreDirectory(environment: NodeJS.ProcessEnv): st
   );
 }
 
+/** Names the Host process that owns a Mapping Store in lock contention diagnostics. */
+export type MappingStoreOwnerRole = "local Host Runtime" | "remote app-server listener";
+
 export function createProductionExternalThreadStore(
   environment: NodeJS.ProcessEnv,
+  ownerRole: MappingStoreOwnerRole = "local Host Runtime",
 ): ExternalThreadStore {
-  return new MappingStore({ directory: defaultMappingStoreDirectory(environment) });
+  return new MappingStore({ directory: defaultMappingStoreDirectory(environment), ownerRole });
 }
 
 export class ExternalThreadRepository {

@@ -1,3 +1,9 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
+import { subagentConfiguration } from "@codexhost/harness-adapter";
 import { createGrokUsageStatistics } from "./usage-statistics.js";
 import { randomUUID } from "node:crypto";
 import { readGrokCredentials } from "./grok-credential-export.js";
@@ -437,7 +443,25 @@ class GrokHarnessSession implements HarnessSession {
     };
   }
 
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state;
+    const model = state.effectiveModel ? state.effectiveModel.id : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Grok Session is not open") };
     }
@@ -1161,6 +1185,7 @@ class GrokHarnessSession implements HarnessSession {
         ...(prompt ? { prompt } : {}),
         ...(role ? { role } : {}),
         ...(model ? { model } : {}),
+        ...subagentConfiguration(event.rawInput),
         background: grokSubagentBackground(event.rawInput),
         ...(nativeSubagentId ? { nativeSubagentId } : {}),
       });
@@ -1216,6 +1241,8 @@ class GrokHarnessSession implements HarnessSession {
       const role = grokSubagentRole(event.rawInput);
       const nativeSubagentId = grokNativeSubagentId(event.rawInput, event.rawOutput, event.content);
       active.subagents.update(active.command.turnId, event.callId, {
+        ...subagentConfiguration(event.rawInput),
+        ...subagentConfiguration(event.rawOutput),
         ...(event.title
           ? { description: grokSubagentDescription(event.rawInput, event.title) }
           : {}),
@@ -1545,6 +1572,7 @@ class GrokHarnessSession implements HarnessSession {
   }
 
   #event(event: HostEvent): void {
+    event = configureSubagentEvent(event, this.#subagentConfiguration());
     this.#channel.emit({ kind: "event", event });
   }
 }

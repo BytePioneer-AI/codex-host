@@ -457,3 +457,54 @@ describe("Antigravity Subagents", () => {
     }
   });
 });
+
+describe("Antigravity child configuration", () => {
+  it.each([{}, { model: "native-model", reasoningEffort: "low" }])(
+    "uses native data before parent defaults: %j",
+    (configuration) => {
+      const { observer, events, completed } = fixture({
+        parentConfiguration: { model: "parent-model", reasoningEffort: "high" },
+      });
+      const event = step("RUNNING");
+      const childInfo = event.subagent_info.subagents[0];
+      if (!childInfo) throw new Error("Expected child info");
+      Object.assign(childInfo, configuration);
+      observer.handle(event);
+      expect(events[0]).toMatchObject({
+        item: {
+          prompt: "Inspect fixture",
+          subagents: [
+            {
+              model: "parent-model",
+              reasoningEffort: "high",
+              ...configuration,
+              nativeSubagentId: child,
+              role: "research",
+              status: "running",
+            },
+          ],
+        },
+      });
+      observer.handle(step("DONE"));
+      expect(completed[0]?.item).toMatchObject({
+        subagents: [{ model: "parent-model", reasoningEffort: "high", ...configuration }],
+      });
+      observer.stop();
+    },
+  );
+});
+
+it("does not discard Antigravity delegation identity when optional native configuration is opaque", () => {
+  const { observer, events } = fixture({
+    parentConfiguration: { model: "parent", reasoningEffort: "high" },
+  });
+  const event = step("RUNNING");
+  const childInfo = event.subagent_info.subagents[0];
+  if (!childInfo) throw new Error("Expected child info");
+  Object.assign(childInfo, { model: { id: "opaque" }, thinking: null });
+  observer.handle(event);
+  expect(events[0]).toMatchObject({
+    item: { subagents: [{ nativeSubagentId: child, model: "parent", reasoningEffort: "high" }] },
+  });
+  observer.stop();
+});

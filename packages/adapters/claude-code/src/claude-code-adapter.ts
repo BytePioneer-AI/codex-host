@@ -1,3 +1,8 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import { claudeUsageHistory, type ClaudeUsageRecord } from "./claude-usage.js";
 import { createClaudeUsageStatistics } from "./claude-usage-statistics.js";
 import {
@@ -752,7 +757,25 @@ class ClaudeHarnessSession implements HarnessSession {
     return this.#nativeRef;
   }
 
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state;
+    const model = state.effectiveModel ? decodeClaudeModelRef(state.effectiveModel) : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session is not open") };
     }
@@ -3021,6 +3044,7 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   #event(event: HostEvent): void {
+    event = configureSubagentEvent(event, this.#subagentConfiguration());
     this.#channel.emit({ kind: "event", event });
   }
 }

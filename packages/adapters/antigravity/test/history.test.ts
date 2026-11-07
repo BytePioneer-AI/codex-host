@@ -104,3 +104,50 @@ describe("Antigravity history sidecar", () => {
     }
   });
 });
+
+it("round-trips child configuration through the strict Antigravity sidecar schema", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-child-config-"));
+  const environment = { CODEXHOST_DATA_DIR: directory, CODEXHOST_THREAD_ID: "parent" };
+  try {
+    const history = await AntigravityHistory.open({
+      environment,
+      nativeSessionId: "conversation-1",
+    });
+    history.append({
+      nativeTurnRef,
+      turnInput: [],
+      items: [
+        {
+          item: {
+            type: "subagentDelegation",
+            itemId: hostItemIdSchema.parse("delegation"),
+            operation: "spawn",
+            prompt: "Review",
+            subagents: [
+              {
+                subagentId: "child",
+                nativeSubagentId: "child",
+                description: "Reviewer",
+                role: "reviewer",
+                model: "native-model",
+                reasoningEffort: "low",
+                background: true,
+                status: "completed",
+              },
+            ],
+          },
+          outcome: { status: "succeeded" },
+        },
+      ],
+      outcome: { status: "succeeded" },
+    });
+    await history.flush();
+    const restored = await AntigravityHistory.open({
+      environment,
+      nativeSessionId: "conversation-1",
+    });
+    expect(restored.snapshot()).toEqual(history.snapshot());
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

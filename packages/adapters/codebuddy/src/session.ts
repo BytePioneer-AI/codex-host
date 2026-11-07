@@ -1,3 +1,8 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import type {
   HarnessCommandAccepted,
   HarnessCommandCapability,
@@ -298,6 +303,7 @@ export class CodeBuddySession implements HarnessSession {
   }
 
   #emit(event: HostEvent) {
+    event = configureSubagentEvent(event, this.#subagentConfiguration());
     this.#channel.emit({ kind: "event", event });
   }
 
@@ -404,7 +410,25 @@ export class CodeBuddySession implements HarnessSession {
     }
   }
 
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state;
+    const model = state.effectiveModel ? nativeModel(state.effectiveModel) : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed || this.#fault)
       return failure("invalidState", "Session is closed or faulted", this.profile);
     if (this.#busy || this.#active)

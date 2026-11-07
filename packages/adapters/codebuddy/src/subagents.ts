@@ -220,8 +220,13 @@ export class CodeBuddySubagents {
               )
             : this.#observer.read(id, "running"));
           if (this.#closed || call.observationDone) continue;
-          const observedModel = snapshot.turns.at(-1)?.model;
-          if (observedModel) this.#update(call, { model: nativeModel(observedModel) });
+          const observedModel = snapshot.turns.at(-1)?.model ?? snapshot.state?.effectiveModel;
+          const reasoningEffort = snapshot.state?.effectiveThinkingOptionId;
+          if (observedModel || reasoningEffort)
+            this.#update(call, {
+              ...(observedModel ? { model: nativeModel(observedModel) } : {}),
+              ...(reasoningEffort ? { reasoningEffort } : {}),
+            });
           const signature = JSON.stringify(snapshot);
           if (signature !== call.signature) {
             call.signature = signature;

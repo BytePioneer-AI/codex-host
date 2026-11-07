@@ -72,6 +72,14 @@ export interface RendererSettingsMessages {
   readonly idleReleasePending: string;
   readonly idleReleaseUnavailable: string;
   readonly idleReleaseFailed: string;
+  readonly userInstructionsSection: string;
+  readonly userInstructionsTitle: string;
+  readonly userInstructionsDescription: string;
+  readonly userInstructionsHelpLabel: string;
+  readonly userInstructionsHelp: readonly string[];
+  readonly userInstructionsPending: string;
+  readonly userInstructionsUnavailable: string;
+  readonly userInstructionsFailed: string;
   readonly reasoningSoftWrapTitle: string;
   readonly reasoningSoftWrapDescription: string;
   readonly pageUnavailable: string;
@@ -341,6 +349,18 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   idleReleasePending: "Syncing…",
   idleReleaseUnavailable: "Not supported by this Host",
   idleReleaseFailed: "Sync failed, try again",
+  userInstructionsSection: "User instructions",
+  userInstructionsTitle: "Replace external CLI user instructions with Codex instructions",
+  userInstructionsDescription:
+    "Sync Codex global user instructions to enabled external CLIs and restore originals when turned off.",
+  userInstructionsHelpLabel: "About replacing external CLI user instructions",
+  userInstructionsHelp: Object.freeze([
+    "Reads Codex global user instructions from $CODEX_HOME/AGENTS.override.md (or $CODEX_HOME/AGENTS.md) and writes them to each enabled external CLI's global user instruction file.",
+    "Before replacing a CLI's instruction file, codexhost backs up the original under ~/.codexhost/user-instructions-backups and restores it when turned off.",
+  ]),
+  userInstructionsPending: "Syncing…",
+  userInstructionsUnavailable: "Not supported by this Host",
+  userInstructionsFailed: "Sync failed, try again",
   reasoningSoftWrapTitle: "Wrap thinking text",
   reasoningSoftWrapDescription: "Wrap long lines in thinking blocks. Shell output is unaffected.",
   pageUnavailable: "Page unavailable",
@@ -652,6 +672,18 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   idleReleasePending: "同步中…",
   idleReleaseUnavailable: "当前 Host 不支持",
   idleReleaseFailed: "同步失败，请重试",
+  userInstructionsSection: "用户自定义指令",
+  userInstructionsTitle: "使用 Codex 用户自定义指令替换外部 CLI 指令",
+  userInstructionsDescription:
+    "将 Codex 全局用户自定义指令同步至已启用的外部 CLI，关闭时自动恢复原文件。",
+  userInstructionsHelpLabel: "替换外部 CLI 用户自定义指令说明",
+  userInstructionsHelp: Object.freeze([
+    "从 $CODEX_HOME/AGENTS.override.md（或 $CODEX_HOME/AGENTS.md）读取 Codex 全局用户指令，并同步至各已启用外部 CLI 的全局用户指令文件。",
+    "首次替换前会将原文件备份至 ~/.codexhost/user-instructions-backups，关闭总开关或单个 CLI 开关时自动恢复原文件。",
+  ]),
+  userInstructionsPending: "同步中…",
+  userInstructionsUnavailable: "当前 Host 不支持",
+  userInstructionsFailed: "同步失败，请重试",
   reasoningSoftWrapTitle: "换行显示思考文本",
   reasoningSoftWrapDescription: "思考块中的长行自动换行，不影响 Shell 输出。",
   pageUnavailable: "页面不可用",

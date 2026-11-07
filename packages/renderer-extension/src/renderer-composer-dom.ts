@@ -134,12 +134,15 @@ function isOwnedRendererControl(element: Element): boolean {
     element.hasAttribute("data-codexhost-permission-mode-control") ||
     element.hasAttribute("data-codexhost-usage-control") ||
     element.hasAttribute("data-codexhost-credits-control") ||
+    element.hasAttribute("data-codexhost-native-provider-continuation") ||
+    element.hasAttribute("data-codexhost-native-provider-continuation-action") ||
     element.hasAttribute("data-codexhost-composer-indicators") ||
     element.hasAttribute("data-codexhost-harness-command-control")
   );
 }
 
 export function isComposerSubmitButton(button: HTMLButtonElement): boolean {
+  if (typeof button.hasAttribute === "function" && isOwnedRendererControl(button)) return false;
   if (button.type === "submit") return true;
   return /(^|\s)(send|submit|发送|提交)(\s|$)/u.test(buttonText(button));
 }
@@ -841,8 +844,10 @@ export function renderComposerAgentControl(
     (state.agent !== "codex" && adapterState !== "ready") ||
     modelBlocked ||
     permissionModeBlocked;
-  if (submissionBlocked && control.sendDisabledBeforeSwitch === null) {
-    control.sendDisabledBeforeSwitch = control.sendButton.disabled;
+  if (submissionBlocked) {
+    if (control.sendDisabledBeforeSwitch === null) {
+      control.sendDisabledBeforeSwitch = control.sendButton.disabled;
+    }
     control.sendButton.disabled = true;
   } else if (!submissionBlocked && control.sendDisabledBeforeSwitch !== null) {
     // Native blockers, including the Codex usage gate, may have changed while

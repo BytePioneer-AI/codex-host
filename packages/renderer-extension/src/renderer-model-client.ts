@@ -118,7 +118,15 @@ import {
   RendererMethodUnavailableError,
   type RendererRequestOptions,
 } from "./renderer-request-sender.js";
-import { verifyNativeCodexThread } from "./renderer-native-thread.js";
+import {
+  usesIndependentNativeInference,
+  readNativeCodexThread,
+  verifyNativeCodexThread,
+} from "./renderer-native-thread.js";
+import {
+  inspectNativeProviderContinuation,
+  continueNativeWithConfiguredProvider,
+} from "./renderer-native-provider-continuation.js";
 import {
   createRendererSessionImportClient,
   type RendererSessionImportClient,
@@ -200,6 +208,9 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
   return nested && typeof nested.addNotificationCallback === "function" ? nested : null;
 }
 
+/** Target of a native inference route check: an existing Thread or a new draft's workspace. */
+export type NativeInferenceTarget = ThreadInspectionParams | { cwd: string };
+
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
   installation?(input: HarnessInstallationParams): Promise<HarnessInstallationState>;
   getHarnessDisplaySettings?(): Promise<HarnessDisplaySettings>;
@@ -219,6 +230,17 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   ): Promise<HarnessInspection>;
   openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
+  /**
+   * Checks whether native Codex inference bypasses the Codex quota. An existing
+   * Thread uses its own provider and workspace; a new draft passes the
+   * workspace Desktop picked for it so project `.codex/config.toml` applies.
+   */
+  usesIndependentNativeInference?(input?: NativeInferenceTarget): Promise<boolean>;
+  inspectNativeProviderContinuation?(input: ThreadInspectionParams): Promise<string | null>;
+  continueNativeWithConfiguredProvider?(
+    input: ThreadInspectionParams,
+    providerId: string,
+  ): Promise<void>;
   inspectHarnessCommands(input: HarnessCommandsInspectParams): Promise<HarnessCommandCatalog>;
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
@@ -386,6 +408,40 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async inspectNativeProviderContinuation(input: ThreadInspectionParams) {
+      return inspectNativeProviderContinuation(
+        manager.sendRequest,
+        threadInspectionParamsSchema.parse(input).threadId,
+      );
+    },
+    async continueNativeWithConfiguredProvider(input: ThreadInspectionParams, providerId: string) {
+      return continueNativeWithConfiguredProvider(
+        manager.sendRequest,
+        threadInspectionParamsSchema.parse(input).threadId,
+        providerId,
+      );
+    },
+    async usesIndependentNativeInference(input?: NativeInferenceTarget): Promise<boolean> {
+      const thread =
+        input && "threadId" in input
+          ? await readNativeCodexThread(
+              manager.sendRequest,
+              threadInspectionParamsSchema.parse(input).threadId,
+            )
+          : undefined;
+      const draftCwd =
+        input && !("threadId" in input) && typeof input.cwd === "string" && input.cwd.length > 0
+          ? input.cwd
+          : undefined;
+      const cwd = input && "threadId" in input ? thread?.cwd : draftCwd;
+      return usesIndependentNativeInference(
+        await manager.sendRequest("config/read", {
+          includeLayers: false,
+          ...(cwd ? { cwd } : {}),
+        }),
+        thread?.modelProvider,
+      );
+    },
     async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {
       return runRendererInstallation(manager.sendRequest, input);
     },

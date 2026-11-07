@@ -1,31 +1,90 @@
 import { readFile, lstat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, isAbsolute } from "node:path";
 import {
   remoteSessionOperationSchema,
+  remoteSessionRequestBytes,
+  REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
   type RemoteSessionOperation,
 } from "@codexhost/shared-contracts";
 import { requestDesktopRemoteConnections } from "./remote-connections-control.js";
 
-function descriptorPath(): string {
-  const base =
-    process.platform === "win32"
-      ? process.env.LOCALAPPDATA
-      : process.platform === "darwin"
-        ? join(homedir(), "Library", "Application Support")
-        : (process.env.XDG_RUNTIME_DIR ??
-          process.env.XDG_STATE_HOME ??
-          join(homedir(), ".local", "state"));
-  if (!base) throw new Error("Desktop runtime directory is unavailable");
-  return join(base, "codexhost", "desktop-runtime-v1.json");
+export function remoteSessionDescriptorPaths(
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  home = homedir(),
+  uid = process.getuid?.(),
+): string[] {
+  const explicit = environment.CODEXHOST_DESKTOP_RUNTIME_DESCRIPTOR;
+  if (explicit) {
+    if (!isAbsolute(explicit))
+      throw new Error("CODEXHOST_DESKTOP_RUNTIME_DESCRIPTOR must be absolute");
+    return [explicit];
+  }
+  const bases =
+    platform === "win32"
+      ? [environment.LOCALAPPDATA]
+      : platform === "darwin"
+        ? [join(home, "Library", "Application Support")]
+        : [
+            environment.XDG_RUNTIME_DIR,
+            uid === undefined ? undefined : `/run/user/${uid}`,
+            environment.XDG_STATE_HOME,
+            join(home, ".local", "state"),
+          ];
+  return [
+    ...new Set(
+      bases
+        .filter((base): base is string => !!base && isAbsolute(base))
+        .map((base) => join(base, "codexhost", "desktop-runtime-v1.json")),
+    ),
+  ];
 }
 
 /** Reads the existing local Launcher's capability; never starts or repairs Desktop. */
 export async function requestRemoteSession(
   operation: RemoteSessionOperation,
-  path = descriptorPath(),
+  path: string | readonly string[] = remoteSessionDescriptorPaths(),
 ): Promise<unknown> {
   const input = remoteSessionOperationSchema.parse(operation);
+  if (remoteSessionRequestBytes(input) > REMOTE_CONTROLLER_REQUEST_MAX_BYTES)
+    throw new Error("Remote request is too large; shorten the message before sending");
+  const paths = typeof path === "string" ? [path] : path;
+  const candidates = [];
+  for (const candidate of paths) {
+    try {
+      candidates.push(await readDescriptor(candidate));
+    } catch (error) {
+      if (paths.length === 1 && typeof path === "string") throw error;
+    }
+  }
+  const unique = new Map(
+    candidates.map((value) => [
+      JSON.stringify([value.launcher_pid, value.control_port, value.nonce]),
+      value,
+    ]),
+  );
+  if (unique.size !== 1)
+    throw new Error(
+      "Desktop descriptor unavailable or ambiguous. Start codexhost Desktop, or set CODEXHOST_DESKTOP_RUNTIME_DESCRIPTOR to its private desktop-runtime-v1.json path.",
+    );
+  const value = [...unique.values()][0];
+  if (!value) throw new Error("Desktop descriptor unavailable");
+  // Discovery finishes before dispatch. Never try another descriptor after a lost reply.
+  const reply = await requestDesktopRemoteConnections(
+    {
+      CODEXHOST_CONTROL_PORT: String(value.control_port),
+      CODEXHOST_CONTROL_NONCE: value.nonce,
+    },
+    { action: "session", operation: input },
+  );
+  if ("error" in reply) throw new Error(reply.error.message);
+  return reply.result;
+}
+
+async function readDescriptor(
+  path: string,
+): Promise<{ launcher_pid: number; control_port: number; nonce: string }> {
   const stat = await lstat(path);
   if (
     !stat.isFile() ||
@@ -46,13 +105,9 @@ export async function requestRemoteSession(
   )
     throw new Error("Desktop runtime descriptor is invalid");
   process.kill(Number(value.launcher_pid), 0);
-  const reply = await requestDesktopRemoteConnections(
-    {
-      CODEXHOST_CONTROL_PORT: String(value.control_port),
-      CODEXHOST_CONTROL_NONCE: value.nonce,
-    },
-    { action: "session", operation: input },
-  );
-  if ("error" in reply) throw new Error(reply.error.message);
-  return reply.result;
+  return {
+    launcher_pid: Number(value.launcher_pid),
+    control_port: Number(value.control_port),
+    nonce: value.nonce,
+  };
 }

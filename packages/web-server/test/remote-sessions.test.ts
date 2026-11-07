@@ -5,6 +5,123 @@ import { RemoteSessions, remoteSessionId, remoteSessionIdentity } from "../src/r
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import type { RemoteSessionOperation } from "@codexhost/shared-contracts";
 import type { StreamSink } from "../src/transport.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DataDir } from "../src/store.ts";
+import { Workspaces } from "../src/workspaces.ts";
+
+it("archives and undoes through workspace RPCs without losing local archives or other hosts", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "remote-archive-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const workspaces = new Workspaces(new DataDir(directory), directory);
+  workspaces.setReferenceArchives(["local-archived"]);
+  const rpc = new RpcRegistry(),
+    streams = new StreamRegistry();
+  let follow: ((args: Record<string, unknown>, sink: StreamSink) => unknown) | undefined;
+  const register = streams.register.bind(streams);
+  streams.register = (name, handler) => {
+    if (name === "workspace/follow") follow = handler;
+    register(name, handler);
+  };
+  workspaces.register(rpc, streams);
+  const frames: unknown[] = [];
+  await defined(follow)(
+    {},
+    {
+      id: "observer",
+      closed: false,
+      push: (frame) => frames.push(frame),
+      end() {},
+      fail() {},
+      onClose() {},
+    },
+  );
+  const archived = new Set<string>();
+  const writes: RemoteSessionOperation[] = [];
+  let loseWrite = false,
+    loseRead = false;
+  let pauseList = false;
+  const listing = Promise.withResolvers<undefined>();
+  const releaseList = Promise.withResolvers<undefined>();
+  t.after(() => releaseList.resolve(undefined));
+  const row = {
+    id: "same",
+    cwd: "/remote",
+    name: "Remote",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 2,
+    status: { type: "idle" },
+    turns: [],
+  };
+  const remote = new RemoteSessions(
+    new EventHub("archive"),
+    async (op) => {
+      if (op.kind === "hosts")
+        return ["remote-control:a", "remote-control:b"].map((hostId) => ({ hostId, online: true }));
+      if (op.kind === "list") {
+        const data = archived.has(op.hostId) ? [] : [row];
+        if (pauseList) {
+          pauseList = false;
+          listing.resolve(undefined);
+          await releaseList.promise;
+        }
+        return { data, nextCursor: null };
+      }
+      if (op.kind === "read") {
+        if (loseRead) throw new Error("read unavailable");
+        return { result: { thread: row }, epoch: "epoch", requests: [] };
+      }
+      writes.push(op);
+      if (loseWrite) throw new Error("unknown outcome");
+      if (op.kind === "archive") {
+        if (op.archived) archived.add(op.hostId);
+        else archived.delete(op.hostId);
+      }
+      loseRead = true;
+      return {};
+    },
+    workspaces,
+  );
+  t.after(() => remote.close());
+  remote.install(rpc, streams);
+  const a = remoteSessionId("remote-control:a", "same"),
+    b = remoteSessionId("remote-control:b", "same");
+  const call = (method: string, sessionId: string) =>
+    rpc.dispatch(method, { args: { request: { sessionId } } });
+  await remote.refresh();
+  pauseList = true;
+  const staleRefresh = remote.refresh();
+  await listing.promise;
+  assert.deepEqual(await call("workspace/archiveSession", a), {
+    ok: true,
+    value: { archivedSessionIds: ["local-archived", a] },
+  });
+  assert.deepEqual(frames.at(-1), { type: "archived", archivedSessionIds: ["local-archived", a] });
+  releaseList.resolve(undefined);
+  await staleRefresh;
+  assert.deepEqual(workspaces.archivedSessionIds(), ["local-archived", a]);
+  workspaces.setReferenceArchives(["local-new"]);
+  assert.deepEqual(workspaces.archivedSessionIds(), ["local-new", a]);
+  await remote.refresh(); // The active catalog no longer contains the archived row; undo still works.
+  loseRead = false;
+  assert.deepEqual(await call("workspace/unarchiveSession", a), {
+    ok: true,
+    value: { archivedSessionIds: ["local-new"] },
+  });
+  assert.deepEqual(
+    writes.map((op) => "hostId" in op && op.hostId),
+    ["remote-control:a", "remote-control:a"],
+  );
+  loseRead = false;
+  loseWrite = true;
+  const failed = await call("workspace/archiveSession", b);
+  assert.ok(!failed.ok);
+  assert.equal(failed.error.code, "remote/outcome-unknown");
+  assert.deepEqual(workspaces.archivedSessionIds(), ["local-new"]);
+  assert.equal(writes.length, 3);
+});
 
 function fixture() {
   const calls: RemoteSessionOperation[] = [];
@@ -63,9 +180,45 @@ function fixture() {
     },
   };
 }
+it("returns local sessions while remote discovery is stalled", async (t) => {
+  const release = Promise.withResolvers<undefined>();
+  t.after(() => release.resolve(undefined));
+  const remote = new RemoteSessions(new EventHub("slow"), async () => {
+    await release.promise;
+    return [];
+  });
+  t.after(() => remote.close());
+  const rpc = new RpcRegistry();
+  rpc.register("session/list", () => ({ items: [{ sessionId: "local" }] }));
+  remote.install(rpc, new StreamRegistry());
+  const result = await Promise.race([
+    rpc.dispatch("session/list", {}),
+    new Promise((resolve) => setTimeout(() => resolve("blocked"), 100)),
+  ]);
+  assert.deepEqual(result, { ok: true, value: { items: [{ sessionId: "local" }] } });
+});
+it("rejects oversized CJK/escaped prompts and invalid input before any write", async (t) => {
+  const f = fixture();
+  t.after(() => f.remote.close());
+  for (const [text, code] of [
+    ["中".repeat(6000), "remote/too-large"],
+    ["\u0001".repeat(4000), "remote/too-large"],
+    ["", "remote/invalid-request"],
+    ["a".repeat(8001), "remote/too-large"],
+  ]) {
+    const result = await f.call("session/prompt", {
+      sessionId: remoteSessionId("remote-control:b", "same"),
+      content: [{ type: "text", text }],
+    });
+    assert.ok(!result.ok);
+    assert.equal(result.error.code, code);
+  }
+  assert.equal(f.calls.filter((op) => op.kind === "prompt").length, 0);
+});
 it("aggregates native owners with distinct host/thread identities and no local cwd", async (t) => {
   const f = fixture();
   t.after(() => f.remote.close());
+  await f.remote.refresh();
   const result = await f.call("session/list");
   assert.ok(result.ok);
   const items = (result.value as { items: Array<{ sessionId: string; cwd?: string }> }).items;
@@ -105,7 +258,7 @@ it("routes remote writes exactly once and reports unknown outcomes", async (t) =
 it("keeps offline rows and refuses writes without a current remote read", async (t) => {
   const f = fixture();
   t.after(() => f.remote.close());
-  await f.call("session/list");
+  await f.remote.refresh();
   f.offline();
   const list = await f.call("session/list");
   assert.ok(list.ok);

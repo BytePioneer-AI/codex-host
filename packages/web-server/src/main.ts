@@ -391,7 +391,7 @@ workspaces.register(rpc, streams);
 sessions.register(rpc, streams);
 sessions.registerCommands(rpc);
 sessions.registerImport(rpc);
-const remoteSessions = new RemoteSessions(events);
+const remoteSessions = new RemoteSessions(events, undefined, workspaces);
 remoteSessions.install(rpc, streams);
 preferences.register(rpc);
 displaySettings.register(rpc);

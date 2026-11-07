@@ -16,6 +16,7 @@ it(
     const nonce = "a".repeat(32);
     const calls: Array<{ kind: string; hostId?: string }> = [];
     const sent = new Map<string, string>();
+    const archived = new Set<string>();
     const requestIds = new Map<string, string>();
     const timestamp = Math.floor(Date.now() / 1000);
     const row = (hostId: string) => ({
@@ -71,6 +72,10 @@ it(
         const input = JSON.parse(text.slice(`REMOTE ${nonce} `.length));
         const operation = input.operation;
         calls.push(operation);
+        if (operation.kind === "archive") {
+          if (operation.archived) archived.add(operation.hostId);
+          else archived.delete(operation.hostId);
+        }
         if (operation.kind === "prompt") {
           sent.set(operation.hostId, operation.text);
           requestIds.set(operation.hostId, operation.requestId);
@@ -82,7 +87,10 @@ it(
                 online: true,
               }))
             : operation.kind === "list"
-              ? { data: [row(operation.hostId)], nextCursor: null }
+              ? {
+                  data: archived.has(operation.hostId) ? [] : [row(operation.hostId)],
+                  nextCursor: null,
+                }
               : operation.kind === "read"
                 ? {
                     result: { thread: row(operation.hostId) },
@@ -130,7 +138,7 @@ it(
     );
     const browser = await chromium.launch();
     t.after(() => browser.close());
-    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
     await page.goto(url);
     await page.waitForLoadState("networkidle");
     for (const hostId of ["remote-ssh-discovered:a", "remote-control:b"]) {
@@ -174,6 +182,22 @@ it(
     assert.equal(sent.has("remote-ssh-discovered:a"), false);
     assert.equal(calls.filter((call) => call.kind === "prompt").length, 1);
     assert.equal(await page.getByText("remote follow-up", { exact: true }).count(), 1);
+    const remoteId =
+      "web-remote:" +
+      Buffer.from(JSON.stringify(["remote-control:b", "same"])).toString("base64url");
+    const remoteRow = page.locator(`[data-row-key="recent:${remoteId}"]`);
+    await remoteRow.hover();
+    await remoteRow.getByRole("button", { name: "Archive session", exact: true }).click();
+    await page.getByRole("button", { name: "undo", exact: true }).waitFor();
+    assert.deepEqual([...archived], ["remote-control:b"]);
+    await remoteRow.waitFor({ state: "detached" });
+    await page.getByRole("button", { name: "undo", exact: true }).click();
+    await remoteRow.waitFor();
+    assert.equal(archived.size, 0);
+    assert.deepEqual(
+      calls.filter((call) => call.kind === "archive").map((call) => call.hostId),
+      ["remote-control:b", "remote-control:b"],
+    );
     if (process.env.CODEXHOST_TEST_SCREENSHOTS) {
       mkdirSync(process.env.CODEXHOST_TEST_SCREENSHOTS, { recursive: true });
       await page.screenshot({

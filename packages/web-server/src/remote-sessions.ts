@@ -2,6 +2,8 @@ import { requestRemoteSession } from "@codexhost/desktop-control";
 import { z } from "zod";
 import {
   remoteSessionOperationSchema,
+  remoteSessionRequestBytes,
+  REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
   webToolOutputReferenceSchema,
   type RemoteSessionOperation,
 } from "@codexhost/shared-contracts";
@@ -16,6 +18,7 @@ import {
   type StreamSink,
 } from "./transport.ts";
 import { readToolOutput, toolOutputSink } from "./tool-output.ts";
+import type { Workspaces } from "./workspaces.ts";
 
 const PREFIX = "web-remote:";
 const hostsSchema = z.array(z.object({ hostId: z.string().min(1), online: z.boolean() }));
@@ -92,6 +95,7 @@ interface Entry {
   identity: { hostId: string; threadId: string };
   row: ChThread;
   online: boolean;
+  archived?: boolean;
   epoch?: string;
   view?: ChThreadView;
   viewOrigin?: number;
@@ -107,11 +111,14 @@ export class RemoteSessions {
   private pending = new Map<string, { sessionId: string; cancel(): void }>();
   private followTimers = new Set<NodeJS.Timeout>();
   private listing: Promise<void> | undefined;
+  private archiveRevision = 0;
+  private discoveryUnavailable = false;
   private closed = false;
   private readonly timer: NodeJS.Timeout;
   constructor(
     private readonly events: EventHub,
     private readonly call: Call = requestRemoteSession,
+    private readonly workspaces?: Workspaces,
   ) {
     this.timer = setInterval(() => {
       if (this.controls.size) void this.refresh().catch(() => undefined);
@@ -120,16 +127,30 @@ export class RemoteSessions {
   }
   private async invoke(operation: RemoteSessionOperation): Promise<unknown> {
     if (this.closed) throw new RpcError("remote/offline", "Remote session gateway is closed");
-    const parsed = remoteSessionOperationSchema.parse(operation);
+    const parsed = remoteSessionOperationSchema.safeParse(operation);
+    if (!parsed.success) {
+      const tooLarge = parsed.error.issues.some((issue) => issue.code === "too_big");
+      throw new RpcError(
+        tooLarge ? "remote/too-large" : "remote/invalid-request",
+        tooLarge
+          ? "Remote request is too large; shorten the message before sending."
+          : "Invalid remote request; check the message and try again.",
+      );
+    }
+    if (remoteSessionRequestBytes(parsed.data) > REMOTE_CONTROLLER_REQUEST_MAX_BYTES)
+      throw new RpcError(
+        "remote/too-large",
+        "Remote request is too large; shorten the message before sending.",
+      );
     try {
-      return await this.call(parsed);
+      return await this.call(parsed.data);
     } catch {
       const write = !["hosts", "list", "read"].includes(operation.kind);
       throw new RpcError(
         write ? "remote/outcome-unknown" : "remote/offline",
         write
           ? "Remote operation was not confirmed; its outcome may be unknown. Refresh before deciding whether to retry."
-          : "Desktop remote connection is unavailable. Reconnect in Codex Desktop and refresh.",
+          : "Desktop remote connection is unavailable. Reconnect in Codex Desktop and refresh. If Desktop cannot be discovered, configure CODEXHOST_DESKTOP_RUNTIME_DESCRIPTOR with its private descriptor path.",
       );
     }
   }
@@ -140,10 +161,17 @@ export class RemoteSessions {
     return this.listing;
   }
   private async list(): Promise<void> {
+    const archiveRevision = this.archiveRevision;
     let hosts: Array<{ hostId: string; online: boolean }>;
     try {
       hosts = hostsSchema.parse(await this.invoke({ kind: "hosts" }));
+      this.discoveryUnavailable = false;
     } catch {
+      if (!this.discoveryUnavailable)
+        console.warn(
+          "[remote-sessions] Desktop discovery unavailable. Start codexhost Desktop; if Web uses a different environment, set CODEXHOST_DESKTOP_RUNTIME_DESCRIPTOR to its private desktop-runtime-v1.json path.",
+        );
+      this.discoveryUnavailable = true;
       for (const entry of this.entries.values()) this.offline(entry);
       return;
     }
@@ -177,9 +205,9 @@ export class RemoteSessions {
           if (cursor) seen.add(cursor);
         } while (cursor && seen.size < 100);
         if (cursor) throw new Error("Remote catalog exceeds bounded traversal");
-        if (this.closed) return;
+        if (this.closed || archiveRevision !== this.archiveRevision) return;
         for (const [id, entry] of this.entries)
-          if (entry.identity.hostId === host.hostId && !found.has(id)) {
+          if (entry.identity.hostId === host.hostId && !found.has(id) && !entry.archived) {
             this.entries.delete(id);
             this.clearPending(id);
             entry.view?.log.reconnectFollowers();
@@ -193,10 +221,13 @@ export class RemoteSessions {
             JSON.stringify(previous.row) !== JSON.stringify(entry.row);
           this.entries.set(
             id,
-            previous ? Object.assign(previous, { row: entry.row, online: true }) : entry,
+            previous
+              ? Object.assign(previous, { row: entry.row, online: true, archived: false })
+              : entry,
           );
           if (changed) this.events.emit("api-session/added", this.summary(id, entry));
         }
+        this.syncArchives();
       } catch {
         for (const entry of this.entries.values())
           if (entry.identity.hostId === host.hostId) this.offline(entry);
@@ -205,6 +236,11 @@ export class RemoteSessions {
   }
   private reference(entry: Entry) {
     return { ...entry.identity };
+  }
+  private syncArchives(): string[] {
+    const ids = [...this.entries].filter(([, entry]) => entry.archived).map(([id]) => id);
+    this.workspaces?.setRemoteArchives(ids);
+    return this.workspaces?.archivedSessionIds() ?? ids;
   }
   private summary(id: string, entry: Entry) {
     return {
@@ -401,7 +437,8 @@ export class RemoteSessions {
   install(rpc: RpcRegistry, streams: StreamRegistry): void {
     rpc.routeSessions(async (method, args, next) => {
       if (method === "session/list") {
-        const [local] = await Promise.all([next(), this.refresh()]);
+        void this.refresh().catch(() => undefined);
+        const local = await next();
         return {
           ...(local as object),
           items: [
@@ -523,7 +560,13 @@ export class RemoteSessions {
         break;
       case "session/archive":
       case "session/unarchive":
-        operation = { kind: "archive", ...base, archived: method === "session/archive" };
+      case "workspace/archiveSession":
+      case "workspace/unarchiveSession":
+        operation = {
+          kind: "archive",
+          ...base,
+          archived: method === "session/archive" || method === "workspace/archiveSession",
+        };
         break;
       default:
         throw new RpcError(
@@ -532,8 +575,16 @@ export class RemoteSessions {
         );
     }
     await this.invoke(operation);
+    if (operation.kind === "archive") {
+      this.archiveRevision++;
+      // Keep the confirmed row for undo even after it leaves the active catalog.
+      entry.archived = operation.archived;
+      this.syncArchives();
+    }
     // A failed read cannot turn an acknowledged mutation into a rejected write.
     await this.read(id).catch(() => undefined);
+    if (method === "workspace/archiveSession" || method === "workspace/unarchiveSession")
+      return { archivedSessionIds: this.syncArchives() };
     return method === "session/rename"
       ? { title: request.title, seq: view.log.lastSeq }
       : { accepted: true };

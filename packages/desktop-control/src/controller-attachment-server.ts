@@ -2,13 +2,14 @@ import { createServer, type Server, type Socket } from "node:net";
 import {
   REMOTE_THREAD_REPLY_MAX_BYTES,
   REMOTE_THREAD_CONTROL_TIMEOUT_MS,
+  REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
   remoteConnectionsRequestSchema,
   type RemoteConnectionsRequest,
   type RemoteConnectionsReply,
 } from "@codexhost/shared-contracts";
 import { isLocalPageUrl, serveLocalPage, type LocalPageHandle } from "./local-page-control.js";
 
-const MAX_REQUEST_BYTES = 16 * 1024;
+const MAX_REQUEST_BYTES = REMOTE_CONTROLLER_REQUEST_MAX_BYTES;
 
 export interface ControllerAttachmentServer {
   close(): Promise<void>;

@@ -214,6 +214,49 @@ describe("External Thread recovery lifecycle", () => {
     expect(f.open).toHaveBeenCalledOnce();
   });
 
+  it("preserves pending Side Chat context while reviving a faulted idle Session", async () => {
+    const f = await fixture();
+    f.thread.pendingInjectedText.push("Side conversation boundary.");
+    f.session.fault(fault);
+    f.runtime.markSessionUnavailable(f.thread);
+
+    await f.runtime.discardUnavailableIdle(f.thread);
+    expect(f.runtime.get(f.id)).toBe(f.thread);
+    expect(f.close).not.toHaveBeenCalled();
+
+    const resolving = f.runtime.resolve(f.id);
+    await f.closeStarted.promise;
+    f.closeGate.resolve();
+    const resolved = await resolving;
+    expect(resolved.kind).toBe("external");
+    expect(f.runtime.get(f.id)).toBe(f.thread);
+    expect(f.thread.session).not.toBe(f.session);
+    expect(f.thread.sessionUnavailable).toBe(false);
+    expect(f.thread.pendingInjectedText).toEqual(["Side conversation boundary."]);
+    expect(f.open).toHaveBeenCalledOnce();
+  });
+
+  it("retains pending Side Chat context when Session revival fails", async () => {
+    const f = await fixture();
+    f.thread.pendingInjectedText.push("Side conversation boundary.");
+    f.session.fault(fault);
+    f.runtime.markSessionUnavailable(f.thread);
+    f.open.mockImplementationOnce(async () => ({
+      ok: false,
+      error: { code: "unavailable", message: "synthetic resume failure", retryable: true },
+    }));
+
+    const resolving = f.runtime.resolve(f.id);
+    await f.closeStarted.promise;
+    f.closeGate.resolve();
+    await expect(resolving).resolves.toMatchObject({
+      kind: "error",
+      error: { code: -32077, message: "External Harness is unavailable" },
+    });
+    expect(f.runtime.get(f.id)).toBe(f.thread);
+    expect(f.thread.pendingInjectedText).toEqual(["Side conversation boundary."]);
+  });
+
   it("returns a retryable stale-reference error when discard wins over refresh", async () => {
     const f = await fixture();
     f.runtime.markSessionUnavailable(f.thread);

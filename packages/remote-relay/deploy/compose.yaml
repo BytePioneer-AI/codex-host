@@ -8,7 +8,7 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:ro
     command:
       - --domain
-      - r.example.com
+      - example.com
       - --control-host
       - relay.example.com
       - --cert

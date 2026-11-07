@@ -18,19 +18,35 @@ const status = {
 
 describe("Pi subagent history restoration", () => {
   it("accepts only known artifact versions owned by the exact parent Session", () => {
-    expect(piSubagentArtifact(status, "run-1", "parent")?.[0]?.children).toEqual([
+    const parent = new Set(["parent"]);
+    expect(piSubagentArtifact(status, "run-1", parent)?.[0]?.children).toEqual([
       { id: "review", kind: "step", label: "reviewer", state: "complete" },
     ]);
-    expect(piSubagentArtifact(status, "run-1", "foreign")).toBeNull();
-    expect(piSubagentArtifact(status, "wrong-run", "parent")).toBeNull();
+    expect(piSubagentArtifact(status, "run-1", new Set(["foreign"]))).toBeNull();
+    expect(piSubagentArtifact(status, "wrong-run", parent)).toBeNull();
     expect(
-      piSubagentArtifact({ ...status, lifecycleArtifactVersion: 4 }, "run-1", "parent"),
+      piSubagentArtifact({ ...status, lifecycleArtifactVersion: 4 }, "run-1", parent),
     ).toBeNull();
     expect(
       piSubagentArtifact(
         { ...status, steps: [{ ...status.steps[0], status: "future" }] },
         "run-1",
-        "parent",
+        parent,
+      ),
+    ).toBeNull();
+    expect(piSubagentArtifact({ ...status, sessionId: undefined }, "run-1", parent)).toBeNull();
+  });
+
+  it("accepts the parent's session file, which pi-subagents records as the owner", () => {
+    const sessionFile = path.join(os.tmpdir(), "parent.jsonl");
+    const owned = { ...status, sessionId: sessionFile };
+    expect(piSubagentArtifact(owned, "run-1", new Set(["parent", sessionFile]))).not.toBeNull();
+    expect(piSubagentArtifact(owned, "run-1", new Set(["parent"]))).toBeNull();
+    expect(
+      piSubagentArtifact(
+        owned,
+        "run-1",
+        new Set(["parent", path.join(os.tmpdir(), "other.jsonl")]),
       ),
     ).toBeNull();
   });
@@ -53,9 +69,9 @@ describe("Pi subagent history restoration", () => {
       };
       const emit = vi.fn();
       const observer = new PiSubagents(emit);
-      await restorePiSubagents(history, "foreign", observer);
+      await restorePiSubagents(history, new Set(["foreign"]), observer);
       expect(observer.project("subagent", result, hostItemIdSchema.parse("item"))).toBeNull();
-      await restorePiSubagents(history, "parent", observer);
+      await restorePiSubagents(history, new Set(["parent"]), observer);
       expect(observer.project("subagent", result, hostItemIdSchema.parse("item"))).toMatchObject({
         subagents: [
           {
@@ -67,7 +83,7 @@ describe("Pi subagent history restoration", () => {
       expect(emit).not.toHaveBeenCalled();
       await rm(path.join(asyncDir, "status.json"));
       await expect(
-        restorePiSubagents(history, "parent", new PiSubagents(emit)),
+        restorePiSubagents(history, new Set(["parent"]), new PiSubagents(emit)),
       ).resolves.toBeUndefined();
     } finally {
       await rm(dir, { recursive: true, force: true });

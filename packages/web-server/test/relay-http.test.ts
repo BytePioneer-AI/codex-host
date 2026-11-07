@@ -108,7 +108,7 @@ it("terminates real phone TLS for login, RPC and WebSocket, with relay trust and
   });
   t.after(() => alpn.destroy());
   await once(alpn, "secureConnect");
-  assert.equal(alpn.alpnProtocol, "http/1.1");
+  assert.equal(alpn.alpnProtocol, "h2");
   alpn.end();
   const anonymous = await f.send("/");
   assert.equal(anonymous.status, 401);

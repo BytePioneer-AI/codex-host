@@ -1,9 +1,14 @@
 import type { Server } from "node:http";
-import type { IncomingHttpHeaders, ServerHttp2Stream } from "node:http2";
-import { createSecureContext, TLSSocket, type SecureContext } from "node:tls";
+import {
+  createServer as createHttp2Server,
+  type IncomingHttpHeaders,
+  type ServerHttp2Stream,
+} from "node:http2";
+import { createSecureContext, createServer as createTlsServer, type SecureContext } from "node:tls";
 import { readClientHello } from "@codexhost/remote-relay/client-hello";
 import { headers } from "@codexhost/remote-relay/protocol";
 import type { RequestTrust } from "../request-trust.ts";
+import { HTTP_KEEP_ALIVE_TIMEOUT } from "../http-server.ts";
 
 /** Terminates phone and ACME TLS on relay streams without opening a listener. */
 export class RelayTls {
@@ -53,25 +58,41 @@ export class RelayTls {
           stream.destroy();
           return;
         }
-        const socket = new TLSSocket(stream, {
-          isServer: true,
-          secureContext: context,
-          ALPNProtocols: [challenge ? "acme-tls/1" : "http/1.1"],
+        // A TLS server completes Node's server-side handshake lifecycle before
+        // HTTP/2 takes ownership. It has no listener; the relay stream is its input.
+        const tls = createTlsServer({
+          SNICallback: (_servername, callback) => callback(null, context),
+          ALPNProtocols: challenge ? ["acme-tls/1"] : ["h2", "http/1.1"],
         });
-        socket.on("error", () => socket.destroy());
-        socket.once("close", () => clearTimeout(deadline));
-        socket.once("secure", () => {
+        tls.once("secureConnection", (socket) => {
+          socket.on("error", () => socket.destroy());
           clearTimeout(deadline);
           if (challenge) {
             socket.end(() => socket.destroy());
             return;
           }
-          this.trust.relaySockets.set(socket, {
+          const peer = {
             address: request[headers.clientAddress] as string,
             origin: `https://${hostname}`,
-          });
-          this.server.emit("connection", socket);
+          };
+          this.trust.relaySockets.set(socket, peer);
+          if (socket.alpnProtocol === "h2") {
+            const http2 = createHttp2Server((request, response) => {
+              // Compatibility requests expose a per-stream socket proxy. Bind
+              // this connection's relay identity before auth and shared routing.
+              this.trust.relaySockets.set(request.socket, peer);
+              this.server.emit("request", request, response);
+            });
+            http2.on("session", (session) => {
+              session.setTimeout(HTTP_KEEP_ALIVE_TIMEOUT, () => session.close());
+            });
+            http2.emit("connection", socket);
+          } else {
+            // Includes WebSocket Upgrade; extended CONNECT is not advertised.
+            this.server.emit("connection", socket);
+          }
         });
+        tls.emit("connection", stream);
       })
       .catch(() => stream.destroy());
   }

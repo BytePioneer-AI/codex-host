@@ -109,7 +109,7 @@ Web 本身走 HTTP，由 Tailscale 网络加密传输。能开启 HTTPS 时优�
 - **证书透明日志会公开中转地址。** 不要把地址当作秘密；访问安全依赖令牌。实现采用 TLS-ALPN-01，不做 DNS-01 或备用证书机构自动切换。
 - 控制连接出站默认为 WSS 443。`HTTPS_PROXY`（或 `https_proxy`）为 `http://` 代理时使用 CONNECT，仍校验控制地址的 TLS 证书；控制连接暂不支持 `NO_PROXY`、SOCKS 和代理认证。证书机构请求使用 axios 的 `HTTPS_PROXY` / `NO_PROXY` 支持，HTTPS 目标走 CONNECT。
 - 连接尝试（含 DNS、CONNECT、TLS、升级及注册）限时 30 秒；60 秒未收到 WebSocket ping 则断开重连。退避从 1 秒倍增到 60 秒，每次随机取上限的 50%–100%；注册稳定 60 秒后重置退避。被替换、签名被拒、版本不支持时停止，不自动争抢身份；处理原因后关闭再打开开关或重启 Web。
-- 中转请求始终是非本机 HTTPS；忽略 `x-forwarded-*`，按 Relay 告知的手机 IP 限速。Origin 必须完整匹配该电脑的 HTTPS 来源。响应含 `Strict-Transport-Security: max-age=31536000`，不包含子域；只协商 HTTP/1.1，不宣告 HTTP/3 或 ECH。
+- 中转请求始终是非本机 HTTPS；忽略 `x-forwarded-*`，按 Relay 告知的手机 IP 限速。Origin 必须完整匹配该电脑的 HTTPS 来源。响应含 `Strict-Transport-Security: max-age=31536000`，不包含子域。中转 TLS 优先协商 HTTP/2，多路复用同一条连接上的 HTTP 请求；兼容 HTTP/1.1。WebSocket 使用独立的 HTTP/1.1 连接，不启用 HTTP/2 扩展 CONNECT。不宣告 HTTP/3 或 ECH。本机、局域网、Tailscale 与反向代理连接 Web 的 HTTP 端口仍使用 HTTP/1.1。
 
 ## 使用自己的域名或隧道
 
@@ -353,6 +353,10 @@ Serve 生效期间，其他回环代理也会被信任，不要把它当成隧�
 **iOS 限制：** Safari 网站连续七天没有用户交互，Service Worker 注册可能被清除。添加到主屏幕的 Web App 不受这个七天限制，但用户清除数据或存储空间不足仍可能清除它。主屏幕 App 与 Safari 标签页的数据分开，需要各自在线打开并登录一次。Worker 被清除后会显示浏览器自己的错误页，需要联网重新打开界面。
 
 ## 技术参考
+
+### HTTP 连接复用
+
+Web 的 HTTP/1.1 空闲保持时间为 120 秒，本机、局域网、Tailscale、反向代理上游和中转共用。该值为 Chrome、Safari 等浏览器的分钟级空闲复用留出时间，同时限制闲置连接占用；浏览器也可能提前回收。HTTP/1.1 请求头与请求体接收期限保持 Node 默认值，不随空闲保持时间延长。中转 HTTP/2 会话在 120 秒无活动后优雅关闭，不中断正在处理的流。
 
 ### 地址规则
 

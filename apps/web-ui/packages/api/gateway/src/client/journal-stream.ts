@@ -11,7 +11,13 @@ function protocolViolation(message: string): RemoteError<"gateway/internal"> {
 
 /** Transport-neutral opening snapshot, durable entry, or cursorless notification. */
 export type RemoteJournalFrame<Entry, Cursor, Page, Notification = never> =
-  | { readonly type: "opened"; readonly cursor: Cursor; readonly page: Page }
+  | {
+      readonly type: "opened";
+      readonly cursor: Cursor;
+      readonly page: Page;
+      /** An authoritative replacement from a different journal identity. */
+      readonly reset?: true;
+    }
   | { readonly type: "entry"; readonly entry: Entry }
   | ([Notification] extends [never]
       ? never
@@ -287,6 +293,7 @@ export abstract class RemoteJournalStream<
     const cursor = item.value.cursor;
     if (
       resumed &&
+      item.value.reset !== true &&
       this.lastCursor !== undefined &&
       this.options.compare(cursor, this.lastCursor) < 0
     ) {

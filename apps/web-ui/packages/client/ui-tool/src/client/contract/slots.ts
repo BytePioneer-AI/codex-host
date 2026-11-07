@@ -1,4 +1,5 @@
 /** Tool UI slot declarations and their composed component props. */
+import type { WebToolOutputReference } from "@codexhost/shared-contracts";
 import type {
   HostObservable,
   InjectFace,
@@ -71,6 +72,8 @@ export interface ToolImagesOwnerProps {
 
 /** Standard owner currency supplied to every atomic Tool view. */
 export interface ToolCallCommonProps {
+  /** Resolve complete projected output when the tool's existing copy control is used. */
+  copyOutput?: (() => Promise<string>) | undefined;
   /** Stable Hook; each invocation owns its open state and subscribes to enclosing-Turn resets. */
   useDisclosure: UseDisclosure;
   /** Call identity, stable across all stages. */
@@ -153,6 +156,7 @@ declare module "@deepseek-ai/cordis" {
 
 /** Injected Host description for POSIX home-path display. */
 export type ToolHostInfoInjected = {
+  readToolOutput: (reference: WebToolOutputReference) => Promise<string>;
   hooks: {
     /**
      * Fixed Host facts, reached through a hook rather than injected as values:

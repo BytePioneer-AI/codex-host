@@ -29,6 +29,8 @@ export interface SearchFileGroup {
 
 /** Fields both search shapes carry (the render site positions; this component draws). */
 interface SearchBlockCommon {
+  /** Resolve complete text only when the existing copy control is activated. */
+  copyText?: (() => Promise<string>) | undefined;
   /** Localized chrome supplied by the owning render site. */
   labels: SearchBlockLabels;
   /**
@@ -204,7 +206,7 @@ export function SearchBlock(props: SearchBlockProps) {
   const rows = toRows(props, collapsed);
   const shown = shownCount(props);
   const empty = rows.length === 0;
-  const { copied, onCopy } = useCopyFeedback(copyText(props));
+  const { copied, onCopy } = useCopyFeedback(props.copyText ?? copyText(props));
 
   const onToggle = useCallback(() => {
     setExpanded((value) => !value);

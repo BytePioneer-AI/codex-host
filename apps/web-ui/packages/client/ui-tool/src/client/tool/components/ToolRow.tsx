@@ -48,8 +48,10 @@ import type { WebCardModelProps } from "../models/web-card-model.ts";
 import { AskQuestionCard } from "./AskQuestionCard.tsx";
 import { ToolDetails, type ToolDetailsModel } from "./ToolDetails.tsx";
 import css from "./ToolRow.module.css";
+import { ToolOutputCopyButton } from "./ToolOutputCopyButton.tsx";
 
 export interface ToolRowProps {
+  copyOutput?: (() => Promise<string>) | undefined;
   /** Subscribe here, where the row owns its expanded body. */
   useDisclosure: UseDisclosure;
   t: TranslateNS<"conversation">;
@@ -175,6 +177,7 @@ export const ToolRow = memo(function ToolRow({
   href,
   inspect,
   useDisclosure,
+  copyOutput,
 }: ToolRowProps) {
   const { expanded, toggle: toggleExpand } = useDisclosure();
   const terminalLabels = useMemo(() => terminalBlockLabels(t), [t]);
@@ -313,6 +316,7 @@ export const ToolRow = memo(function ToolRow({
           ) : terminalBody !== null ? (
             <TerminalBlock
               {...terminalBody.card}
+              copyText={copyOutput}
               maxLines={Infinity}
               labels={terminalLabels}
               className={css.terminalBody}
@@ -334,6 +338,7 @@ export const ToolRow = memo(function ToolRow({
               )}
               <DiffBlock
                 {...diffBody.card}
+                copyText={copyOutput}
                 labels={diffLabels}
                 maxLines={CHAT_DIFF_MAX_LINES}
                 className={css.diffBody}
@@ -342,6 +347,7 @@ export const ToolRow = memo(function ToolRow({
           ) : readBody !== null ? (
             <ReadBlock
               {...readBody}
+              copyText={copyOutput}
               labels={readLabels}
               maxLines={CHAT_READ_MAX_LINES}
               className={css.readBody}
@@ -370,6 +376,7 @@ export const ToolRow = memo(function ToolRow({
             <>
               <SearchBlock
                 {...searchBody.card}
+                copyText={copyOutput}
                 labels={searchLabels}
                 maxLines={CHAT_SEARCH_MAX_LINES}
                 className={css.searchBody}
@@ -426,6 +433,12 @@ export const ToolRow = memo(function ToolRow({
               )}
             </>
           )}
+          {copyOutput &&
+            terminalBody === null &&
+            diffBody === null &&
+            readBody === null &&
+            searchBody === null &&
+            detailsBody === null && <ToolOutputCopyButton read={copyOutput} t={t} />}
           {inspect !== undefined && (
             <button type="button" className={css.inspectButton} onClick={inspect}>
               <IconInspectOutlineRegular />
@@ -436,6 +449,7 @@ export const ToolRow = memo(function ToolRow({
       ) : undefined,
     [
       open,
+      copyOutput,
       detailsBody,
       askQuestionBody,
       terminalBody,

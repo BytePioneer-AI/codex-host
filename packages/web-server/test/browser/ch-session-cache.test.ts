@@ -64,15 +64,30 @@ it(
     page.on("pageerror", (error) => errors.push(error.message));
     const follows = new Map<string, string>();
     const cancelled: string[] = [];
-    page.on("websocket", (socket) =>
+    const openings: Array<{
+      epoch: string;
+      cursor: number;
+      resumedAfter?: number;
+      records: unknown[];
+    }> = [];
+    const resumeRequests: unknown[] = [];
+    page.on("websocket", (socket) => {
+      socket.on("framereceived", ({ payload }) => {
+        const frame = JSON.parse(String(payload));
+        if (follows.get(frame.streamId) === a.id && frame.value?.type === "snapshot")
+          openings.push(frame.value);
+      });
       socket.on("framesent", ({ payload }) => {
         const frame = JSON.parse(String(payload));
-        if (frame.type === "open" && frame.endpoint === "session/follow")
+        if (frame.type === "open" && frame.endpoint === "session/follow") {
           follows.set(frame.streamId, frame.payload.args.request.address.sessionId);
+          if (frame.payload.args.request.address.sessionId === a.id)
+            resumeRequests.push(frame.payload.args.request.resume);
+        }
         if (frame.type === "cancel" && follows.has(frame.streamId))
           cancelled.push(defined(follows.get(frame.streamId)));
-      }),
-    );
+      });
+    });
     await page.goto(url);
     await page.waitForLoadState("networkidle");
     const folder = page.getByRole("treeitem").filter({ hasText: /^cache-project$/u });
@@ -98,6 +113,15 @@ it(
     await expect.poll(() => cancelled.includes(a.id)).toBe(true);
     coldGate.resolve(undefined);
     await expect(page.getByText("existing CH answer", { exact: true })).toBeVisible();
+
+    await page.locator('[data-row-key="session:cached-a"]').click();
+    await expect.poll(() => openings.length).toBe(2);
+    await expect(page.locator("[data-history-syncing]")).toHaveCount(0);
+    assert.equal(openings[1]?.resumedAfter, openings[0]?.cursor);
+    assert.equal(openings[1]?.records.length, 0);
+    await page.locator('[data-row-key="session:cold-b"]').click();
+    await expect(page.getByText("existing CH answer", { exact: true })).toBeVisible();
+    await expect.poll(() => cancelled.filter((id) => id === a.id).length).toBe(2);
 
     const cacheGate = Promise.withResolvers<undefined>();
     gates.set(a.id, cacheGate);
@@ -186,6 +210,10 @@ it(
     await expect(page.locator("[data-history-syncing]")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Edit message", exact: true })).toBeEnabled();
     await expect(page.getByRole("radio", { name: "Allow once", exact: true })).toBeVisible();
+    assert.equal(openings.length, 3);
+    assert.deepEqual(resumeRequests[2], { epoch: openings[1]?.epoch, cursor: openings[1]?.cursor });
+    assert.equal(openings[2]?.resumedAfter, openings[1]?.cursor);
+    assert.ok((openings[2]?.records.length ?? 0) > 0);
     assert.deepEqual(errors, []);
   },
 );

@@ -13,6 +13,7 @@ export * from "./usage-statistics.js";
 export * from "./thread-prewarm.js";
 export * from "./thread-questions.js";
 export * from "./web.js";
+export * from "./web-tool-output.js";
 export {
   CONSOLE_HOST_METHODS,
   CONSOLE_OPEN_METHOD,

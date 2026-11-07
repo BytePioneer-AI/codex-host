@@ -5,6 +5,7 @@ import type {
   TypertRemoteContribution,
 } from '@deepseek-ai/dsh-typert-protocol'
 import type { ModelCatalog, SessionAttachmentRequest, SessionAttachmentValue, SessionCancelRequest, SessionCancelValue, SessionControlFrame, SessionCreateRequest, SessionCreateValue, SessionFollowFrame, SessionFollowRequest, SessionForkRequest, SessionForkValue, SessionListRequest, SessionListValue, SessionOpenWorkspacePathRequest, SessionOpenWorkspacePathValue, SessionPage, SessionPageRequest, SessionProjectionsRequest, SessionProjectionsValue, SessionPromptRequest, SessionPromptValue, SessionRenameRequest, SessionRenameValue, SessionSearchRequest, SessionSearchValue, SessionSelectModelRequest, SessionSelectModelValue, SessionUpdateQueueRequest, SessionUpdateQueueValue, SessionWorkspacePathApplication, SkillListRequest, SkillListValue } from '@deepseek-ai/dsh-api-session-controller/types'
+import type { SessionToolOutputRequest, SessionToolOutputValue } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { FileReferenceCandidate } from '@deepseek-ai/dsh-file-reference/types'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
@@ -30,6 +31,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     rename: (request: SessionRenameRequest) => Promise<RemoteResult<SessionRenameValue>>
     search: (request: SessionSearchRequest, signal?: AbortSignal) => Promise<RemoteResult<SessionSearchValue>>
     selectModel: (request: SessionSelectModelRequest) => Promise<RemoteResult<SessionSelectModelValue>>
+    toolOutput: (request: SessionToolOutputRequest) => Promise<RemoteResult<SessionToolOutputValue>>
     updateQueue: (request: SessionUpdateQueueRequest) => Promise<RemoteResult<SessionUpdateQueueValue>>
     workspacePathApplications: (request: { readonly path: string; }, signal?: AbortSignal) => Promise<RemoteResult<readonly SessionWorkspacePathApplication[]>>
   }
@@ -55,6 +57,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'session/rename': (request: SessionRenameRequest) => Promise<RemoteResult<SessionRenameValue>>
     'session/search': (request: SessionSearchRequest, signal?: AbortSignal) => Promise<RemoteResult<SessionSearchValue>>
     'session/selectModel': (request: SessionSelectModelRequest) => Promise<RemoteResult<SessionSelectModelValue>>
+    'session/toolOutput': (request: SessionToolOutputRequest) => Promise<RemoteResult<SessionToolOutputValue>>
     'session/updateQueue': (request: SessionUpdateQueueRequest) => Promise<RemoteResult<SessionUpdateQueueValue>>
     'session/workspacePathApplications': (request: { readonly path: string; }, signal?: AbortSignal) => Promise<RemoteResult<readonly SessionWorkspacePathApplication[]>>
     'skills/list': (request: SkillListRequest, signal?: AbortSignal) => Promise<RemoteResult<SkillListValue>>

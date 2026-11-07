@@ -1,7 +1,11 @@
 /** One retained Session runtime; recent display data survives separately after release. */
 
 import type { Context } from "@deepseek-ai/cordis";
-import { WEB_FOLLOW_PROJECTION_KEYS } from "@codexhost/shared-contracts";
+import {
+  WEB_FOLLOW_PROJECTION_KEYS,
+  type WebToolOutputReference,
+} from "@codexhost/shared-contracts";
+import { ToolOutputCache } from "../tool-output.ts";
 import type { InboxState, InboxTarget } from "@deepseek-ai/dsh-agent/types";
 import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
 import type {
@@ -47,7 +51,7 @@ import { RemoteError } from "@deepseek-ai/dsh-typert-protocol";
 import type { RemoteFailure, RemoteResult } from "@deepseek-ai/dsh-typert-protocol";
 import type { SessionRemotes } from "./remotes.ts";
 import { ProjectionValueStore } from "./projection-store.ts";
-import type { SessionViewData } from "./recent-views.ts";
+import type { SessionJournalCache, SessionViewData } from "./recent-views.ts";
 import type { ProjectionsBaseline } from "./projection-store.ts";
 import { resolvedClientTimeZone } from "../time-zone.ts";
 import { ClientAssistantStream, type ClientAssistantStreamResult } from "./assistant-stream.ts";
@@ -112,6 +116,8 @@ export interface SessionOptions {
 export class Session implements SessionFace {
   // ---- Window and derived state (all private; the snapshot is the only read API) ----
   private baseSeq = SessionLogOffset(0);
+  private cachedJournal: SessionJournalCache | undefined;
+  private readonly toolOutputs: ToolOutputCache;
   private hasMore = false;
   private openState: OpenState = "cold";
   private lastSyncedAt: number | undefined;
@@ -208,10 +214,15 @@ export class Session implements SessionFace {
     private readonly remote: SessionRemotes,
     options: SessionOptions = {},
   ) {
+    this.toolOutputs = new ToolOutputCache(
+      (reference) => this.remote.session.toolOutput(reference),
+      options.cachedView?.toolOutputs,
+    );
     this.onEngaged = options.onEngaged;
     this.projections = options.projections ?? new ProjectionValueStore();
     if (options.cachedView) {
       const view = options.cachedView;
+      this.cachedJournal = view.journal;
       this.baseSeq = view.baseSeq;
       this.hasMore = view.hasMore;
       this.lastSyncedAt = view.lastSyncedAt;
@@ -386,6 +397,15 @@ export class Session implements SessionFace {
     return { ok: true, value: { attachment: result.value.attachment, data } };
   }
 
+  /** Load exactly the projected tool fragment referenced by this Session. */
+  readToolOutput(reference: WebToolOutputReference): Promise<string> {
+    if (reference.sessionId !== this.sessionId)
+      return Promise.reject(
+        new RemoteError("session/tool-output-stale", "Tool output belongs to another session.", {}),
+      );
+    return this.toolOutputs.read(reference);
+  }
+
   /** Apply one operation to a still-pending queue occurrence. */
   async updateQueue(
     itemId: MessageId,
@@ -555,6 +575,7 @@ export class Session implements SessionFace {
     if (this.openState === "cold") return; // never opened: no window to rebuild (doOpen flips to 'loading' synchronously, so cold implies no in-flight open)
     this.openGeneration++;
     const events = this.events;
+    this.cachedJournal = events?.capture() ?? this.cachedJournal;
     this.events = undefined;
     await events?.dispose();
     this.openPromise = null;
@@ -588,7 +609,10 @@ export class Session implements SessionFace {
   /** Capture only display data before releasing the runtime and its transport. */
   captureView(): SessionViewData | undefined {
     if (this.lastSyncedAt === undefined || this.removed) return;
+    const journal = this.events?.capture() ?? this.cachedJournal;
     return {
+      ...(journal === undefined ? {} : { journal }),
+      toolOutputs: this.toolOutputs.values,
       entries: this.eventSource.getSnapshot().entries,
       baseSeq: this.baseSeq,
       hasMore: this.hasMore,
@@ -701,15 +725,26 @@ export class Session implements SessionFace {
     this.olderError = null;
     this.loadingOlder = false;
     this.notifier.markDirty();
-    const events = new SessionEventStream(this.remote, this.sessionAddress(), {
-      publish: (change) => {
-        if (generation !== this.openGeneration || this.events !== events) return;
-        this.acceptEventChange(change);
+    let epoch = this.cachedJournal?.epoch;
+    const events = new SessionEventStream(
+      this.remote,
+      this.sessionAddress(),
+      {
+        publish: (change) => {
+          if (generation !== this.openGeneration || this.events !== events) return;
+          if (change.type === "replace") {
+            if (epoch && events.journalEpoch !== epoch)
+              this.projections.discard(WEB_FOLLOW_PROJECTION_KEYS);
+            epoch = events.journalEpoch;
+          }
+          this.acceptEventChange(change);
+        },
+        failed: (error) => {
+          this.failEventStream(events, generation, error);
+        },
       },
-      failed: (error) => {
-        this.failEventStream(events, generation, error);
-      },
-    });
+      this.cachedJournal,
+    );
     this.events = events;
     try {
       await events.open(HISTORY_PAGE_OPTIONS);
@@ -1005,6 +1040,7 @@ export class Session implements SessionFace {
     if (generation !== this.openGeneration || this.events !== events) return;
     if (!isRemoteFailure(error)) throw error;
     this.openGeneration++;
+    this.cachedJournal = events.capture();
     this.events = undefined;
     this.openPromise = null;
     this.openState = "error";

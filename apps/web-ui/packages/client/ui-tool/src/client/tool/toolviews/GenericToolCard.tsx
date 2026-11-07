@@ -42,6 +42,7 @@ export function GenericToolCard({
   openFile,
   inspect,
   useDisclosure,
+  copyOutput,
   t,
 }: GenericToolCardProps) {
   const model = toolRowModel(toolName, block, cwd, home);
@@ -60,6 +61,7 @@ export function GenericToolCard({
   return (
     <ToolRow
       useDisclosure={useDisclosure}
+      copyOutput={copyOutput}
       t={t}
       variant={model.variant}
       toolName={toolName}

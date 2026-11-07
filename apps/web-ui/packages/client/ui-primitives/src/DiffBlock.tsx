@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import clsx from "clsx";
 import { structuredPatch } from "diff";
 import { FoldToggle } from "./FoldToggle.tsx";
-import { writeClipboard } from "./clipboard.ts";
+import { useCopyFeedback } from "./use-copy-feedback.ts";
 import { CodeToolbar, type CodeToolbarLabels } from "./CodeToolbar.tsx";
 import { languageForPath } from "./code-highlighting.ts";
 import cardCss from "./CodeCard.module.css";
@@ -25,6 +25,8 @@ export interface DiffHunk {
 }
 
 export interface DiffBlockProps {
+  /** Resolve complete text only when the existing copy control is activated. */
+  copyText?: (() => Promise<string>) | undefined;
   /** One entry per applied hunk, in file order; empty renders nothing. */
   diffs: DiffHunk[];
   /** Localized chrome supplied by the owning render site. */
@@ -180,29 +182,20 @@ function copyText(rows: DiffRow[]): string {
  */
 export function DiffBlock({
   diffs,
+  copyText: resolveCopyText,
   labels,
   maxLines = DEFAULT_DIFF_MAX_LINES,
   className,
 }: DiffBlockProps) {
   const rows = useMemo(() => buildRows(diffs), [diffs]);
   const [expanded, setExpanded] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const defaultCopyText = useCallback(async () => copyText(rows), [rows]);
+  const { copied, onCopy } = useCopyFeedback(resolveCopyText ?? defaultCopyText);
   const [wrapped, setWrapped] = useState(false);
   const firstLanguage = diffs[0] === undefined ? undefined : languageForPath(diffs[0].path);
   const language = diffs.every((diff) => languageForPath(diff.path) === firstLanguage)
     ? firstLanguage
     : undefined;
-
-  const onCopy = useCallback(() => {
-    if (copied) return;
-    void writeClipboard(copyText(rows)).then((ok) => {
-      if (!ok) return;
-      setCopied(true);
-      window.setTimeout(() => {
-        setCopied(false);
-      }, 1000);
-    });
-  }, [copied, rows]);
 
   const onToggle = useCallback(() => {
     setExpanded((value) => !value);

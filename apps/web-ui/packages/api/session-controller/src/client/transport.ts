@@ -28,6 +28,7 @@ import {
 import type { SessionEventLikeEntry, SessionLiveEventEntry } from "./contract/events.ts";
 import type { SessionRemotes } from "./sessions/remotes.ts";
 import { assertSessionWireEvent } from "./session-wire-event.ts";
+import type { SessionJournalCache } from "./sessions/recent-views.ts";
 
 export { SESSION_SEARCH_RESULT_LIMIT, SESSION_SEARCH_SNIPPET_MAX_CODE_POINTS } from "../types.ts";
 
@@ -142,6 +143,25 @@ export class SessionEventStream extends RemoteJournalStream<
   ClientSessionPageRequest,
   SessionJournalNotification
 > {
+  private journal:
+    | {
+        epoch: string;
+        cursor: number;
+        records: SessionHistoryRecord[];
+        hasMore: boolean;
+      }
+    | undefined;
+  private epoch: string | undefined;
+
+  /** Confirmed durable window, including settlements not yet visible to the assembler. */
+  capture(): SessionJournalCache | undefined {
+    return this.journal && { ...this.journal, records: [...this.journal.records] };
+  }
+
+  get journalEpoch(): string | undefined {
+    return this.epoch;
+  }
+
   /**
    * @param remote - generated Session namespace and Gateway stream factory.
    * @param address - durable ordinary-Session or direct-subagent address.
@@ -151,6 +171,7 @@ export class SessionEventStream extends RemoteJournalStream<
     private readonly remote: SessionRemotes,
     private readonly address: SessionAddress,
     options: SessionEventStreamOptions,
+    cached?: SessionJournalCache,
   ) {
     super(remote, {
       name: "session event stream",
@@ -162,11 +183,29 @@ export class SessionEventStream extends RemoteJournalStream<
       compare: (left, right) => left - right,
       follows: (left, right) => right === left + 1,
       publish: (change) => {
+        if (this.epoch !== undefined) {
+          if (change.type === "replace") {
+            this.journal = {
+              epoch: this.epoch,
+              cursor: change.entries.at(-1)?.event.seq ?? -1,
+              records: [...change.entries],
+              hasMore: change.hasMore,
+            };
+          } else if (this.journal !== undefined && change.type === "append") {
+            this.journal.cursor = change.entry.event.seq;
+            this.journal.records.push(change.entry);
+          } else if (this.journal !== undefined && change.type === "prepend") {
+            this.journal.records.unshift(...change.entries);
+            this.journal.hasMore = change.hasMore;
+          }
+        } else this.journal = undefined;
         options.publish(toSessionJournalChange(change));
       },
       ...(options.carrierFailed === undefined ? {} : { carrierFailed: options.carrierFailed }),
       failed: options.failed,
     });
+    this.journal = cached && { ...cached, records: [...cached.records] };
+    this.epoch = cached?.epoch;
   }
 
   /** @inheritdoc */
@@ -177,11 +216,13 @@ export class SessionEventStream extends RemoteJournalStream<
     RemoteJournalFrame<SessionHistoryRecord, number, SessionJournalPage, SessionJournalNotification>
   > {
     let assistantRevision: number | undefined;
+    const cached = this.journal;
     for await (const frame of this.remote.session.follow(
       {
         address: this.address,
         assistantStream: true,
         ...this.repairRequest(request),
+        ...(cached === undefined ? {} : { resume: { epoch: cached.epoch, cursor: cached.cursor } }),
       },
       signal,
     )) {
@@ -194,13 +235,31 @@ export class SessionEventStream extends RemoteJournalStream<
             {},
           );
         }
+        let records = frame.records;
+        let hasMore = frame.hasMore;
+        if (frame.resumedAfter !== undefined) {
+          if (
+            cached === undefined ||
+            frame.epoch !== cached.epoch ||
+            frame.resumedAfter !== cached.cursor ||
+            frame.cursor !== (records.at(-1)?.event.seq ?? cached.cursor) ||
+            (records.length > 0 && records[0]?.event.seq !== cached.cursor + 1)
+          ) {
+            throw new RemoteError("gateway/internal", "Invalid session resume baseline", {});
+          }
+          records = [...cached.records, ...records];
+          hasMore = cached.hasMore;
+        }
+        const reset = frame.epoch !== undefined && frame.epoch !== this.epoch;
+        this.epoch = frame.epoch;
         assistantRevision = frame.assistantStream.revision;
         yield {
           type: "opened",
+          ...(reset ? { reset: true } : {}),
           cursor: frame.cursor,
           page: {
-            records: frame.records,
-            hasMore: frame.hasMore,
+            records,
+            hasMore,
             projections: frame.projections,
             assistantStream: frame.assistantStream,
           },

@@ -1,4 +1,6 @@
 /** Root/subcall Tool composition with one keyed atomic dispatch path. */
+import { webToolOutputPreviews } from "@codexhost/shared-contracts";
+import { LazyToolOutput } from "./components/LazyToolOutput.tsx";
 import { memo, useMemo, type ReactNode } from "react";
 import type { ToolCallBlock } from "@deepseek-ai/dsh-client-ui-chat/client";
 import type { ToolCallOwnerProps, ToolCallPhaseProps, ToolTreeProps } from "../contract/slots.ts";
@@ -22,6 +24,7 @@ const ToolCall = memo(function ToolCall({
   callId,
   toolName,
   call,
+  readToolOutput,
   openFile,
   cwd,
   home,
@@ -32,7 +35,14 @@ const ToolCall = memo(function ToolCall({
   children,
 }: Pick<
   ToolTreeProps,
-  "renderSlot" | "openFile" | "cwd" | "inspectCall" | "loadImage" | "useDisclosure" | "t"
+  | "renderSlot"
+  | "openFile"
+  | "cwd"
+  | "inspectCall"
+  | "loadImage"
+  | "useDisclosure"
+  | "t"
+  | "readToolOutput"
 > & {
   callId: string;
   toolName: string;
@@ -63,15 +73,33 @@ const ToolCall = memo(function ToolCall({
     () => call.phase === "result" && toolRowModel(toolName, call.block).autoReviewDenial !== null,
     [toolName, call],
   );
+  const previews = call.phase === "result" ? webToolOutputPreviews(call.block.meta) : [];
+  const render = (value: ToolCallOwnerProps) =>
+    autoReviewDenied ? (
+      <GenericToolCard {...value} t={t} />
+    ) : (
+      renderSlot("tool.call.toolview", value, {
+        entryKey: toolName,
+        fallback: <GenericToolCard {...value} t={t} />,
+      })
+    );
   return (
     <div className={css.callRow} data-chat-anchor-key={`call:${callId}`} data-chat-call-id={callId}>
-      {autoReviewDenied ? (
-        <GenericToolCard {...owner} t={t} />
+      {call.phase === "result" && previews.length > 0 ? (
+        <LazyToolOutput
+          key={JSON.stringify(previews)}
+          block={call.block}
+          previews={previews}
+          read={readToolOutput}
+          useDisclosure={useDisclosure}
+          t={t}
+        >
+          {(block, copyOutput, useDisclosure) =>
+            render({ ...owner, phase: "result", block, copyOutput, useDisclosure })
+          }
+        </LazyToolOutput>
       ) : (
-        renderSlot("tool.call.toolview", owner, {
-          entryKey: toolName,
-          fallback: <GenericToolCard {...owner} t={t} />,
-        })
+        render(owner)
       )}
       {children}
     </div>
@@ -81,6 +109,7 @@ const ToolCall = memo(function ToolCall({
 const ToolCallBranch = memo(function ToolCallBranch({
   renderSlot,
   block,
+  readToolOutput,
   cwd,
   home,
   openFile,
@@ -90,7 +119,14 @@ const ToolCallBranch = memo(function ToolCallBranch({
   t,
 }: Pick<
   ToolTreeProps,
-  "renderSlot" | "cwd" | "openFile" | "inspectCall" | "loadImage" | "useDisclosure" | "t"
+  | "renderSlot"
+  | "cwd"
+  | "openFile"
+  | "inspectCall"
+  | "loadImage"
+  | "useDisclosure"
+  | "t"
+  | "readToolOutput"
 > & {
   block: ToolCallBlock;
   home?: string | undefined;
@@ -102,6 +138,7 @@ const ToolCallBranch = memo(function ToolCallBranch({
       callId={call.block.callId}
       toolName={callName(call)}
       call={call}
+      readToolOutput={readToolOutput}
       openFile={openFile}
       cwd={cwd}
       home={home}
@@ -117,6 +154,7 @@ const ToolCallBranch = memo(function ToolCallBranch({
               key={child.callId}
               renderSlot={renderSlot}
               block={child}
+              readToolOutput={readToolOutput}
               cwd={cwd}
               home={home}
               openFile={openFile}
@@ -141,6 +179,7 @@ const ToolCallBranch = memo(function ToolCallBranch({
 export function ToolCallTree({
   renderSlot,
   node,
+  readToolOutput,
   cwd,
   openFile,
   inspectCall,
@@ -154,6 +193,7 @@ export function ToolCallTree({
     <ToolCallBranch
       renderSlot={renderSlot}
       block={node.data.root}
+      readToolOutput={readToolOutput}
       cwd={cwd}
       home={home}
       openFile={openFile}

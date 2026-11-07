@@ -2,6 +2,7 @@
  * Cordis-free React primitives styled only through `--dsw-*` tokens.
  */
 
+export { useCopyFeedback } from "./use-copy-feedback.ts";
 export type { CodeToolbarLabels } from "./CodeToolbar.tsx";
 export { StateDot } from "./StateDot.tsx";
 export { RemotePluginIcon } from "./RemotePluginIcon.tsx";

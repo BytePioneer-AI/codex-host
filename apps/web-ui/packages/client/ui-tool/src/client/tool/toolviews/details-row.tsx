@@ -66,6 +66,7 @@ export function DetailsRow({
   openFile,
   inspect,
   useDisclosure,
+  copyOutput,
   t,
 }: DetailsRowProps) {
   const model = toolRowModel(toolName, block, cwd, home);
@@ -79,6 +80,7 @@ export function DetailsRow({
   return (
     <ToolRow
       useDisclosure={useDisclosure}
+      copyOutput={copyOutput}
       t={t}
       variant={model.variant}
       toolName={toolName}

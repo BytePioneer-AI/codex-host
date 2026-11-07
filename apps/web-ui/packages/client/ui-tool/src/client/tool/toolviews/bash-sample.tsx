@@ -22,6 +22,7 @@ import {
 import { formatToolBody, toolRowModel, type ToolRowState } from "../models/tool-call-model.ts";
 import { CONVERSATION_NS as NS } from "../../locale.ts";
 import css from "./bash-sample.module.css";
+import { ToolOutputCopyButton } from "../components/ToolOutputCopyButton.tsx";
 
 type BashRowProps = ToolCallViewProps & PropsLocale<"conversation">;
 
@@ -58,6 +59,7 @@ export const BashRow = memo(function BashRow({
   useProjection,
   inspect,
   useDisclosure,
+  copyOutput,
   t,
 }: BashRowProps) {
   const model = useMemo(() => toolRowModel(toolName, block), [toolName, block]);
@@ -159,6 +161,7 @@ export const BashRow = memo(function BashRow({
           {terminal !== null ? (
             <TerminalBlock
               {...terminal.card}
+              copyText={copyOutput}
               {...(liveOutput !== undefined && liveOutput !== "" ? { output: liveOutput } : {})}
               maxLines={Infinity}
               labels={labels}
@@ -185,6 +188,7 @@ export const BashRow = memo(function BashRow({
               )}
             </div>
           )}
+          {copyOutput && terminal === null && <ToolOutputCopyButton read={copyOutput} t={t} />}
           {inspect !== undefined && (
             <button type="button" className={css.inspectButton} onClick={inspect}>
               <IconInspectOutlineRegular />

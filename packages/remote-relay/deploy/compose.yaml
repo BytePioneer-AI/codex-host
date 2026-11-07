@@ -10,7 +10,12 @@ services:
       net.ipv4.ip_unprivileged_port_start: 0
     volumes:
       - relay-data:/data
-    command: ["--domain", "example.com"]
+    # Set the domain in .env next to this file: RELAY_DOMAIN=example.com
+    command:
+      [
+        "--domain",
+        "${RELAY_DOMAIN:?Set RELAY_DOMAIN in .env, for example RELAY_DOMAIN=example.com}",
+      ]
 
 volumes:
   relay-data:

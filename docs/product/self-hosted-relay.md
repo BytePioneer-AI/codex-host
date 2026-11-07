@@ -9,16 +9,16 @@
 1. 准备一个域名，以及一台装有 Git、Docker（含 Compose）的 Linux 服务器。
 2. 在域名的 DNS 设置里添加一条记录：类型选 A，名称填 *，值填服务器的公网 IPv4 地址。使用 Cloudflare 时选择“仅 DNS”。它同时覆盖控制地址 `relay.example.com` 和电脑地址 `<id>.example.com`；已有的 `www`、根域等记录不受影响，通配只覆盖没有独立记录的子域。只在 IPv6 同样可达时添加 AAAA 记录。
 3. 服务器防火墙和云安全组放行 TCP 443，并确保没有其他服务占用。证书验证需要从公网直达 443，无需开放 80，也无需安装额外证书工具。
-4. 在服务器上获取源码，把 [`compose.yaml`](../../packages/remote-relay/deploy/compose.yaml) 中的 `example.com` 换成你的域名，然后启动。示例目录需要写权限，也可换成自己的目录：
+4. 在服务器上运行以下命令，把 `example.com` 换成你的域名。域名写在部署目录的 `.env` 中，[`compose.yaml`](../../packages/remote-relay/deploy/compose.yaml) 会读取它，以后更新时无需重填。示例目录需要写权限，也可换成自己的目录：
 
    ```sh
    git clone https://github.com/BytePioneer-AI/codex-host.git /opt/codexhost
    cd /opt/codexhost/packages/remote-relay/deploy
-   # 编辑 compose.yaml 中的域名
+   echo RELAY_DOMAIN=example.com > .env
    docker compose up -d --build
    ```
 
-   Compose 从仓库源码构建镜像，无需安装 Node.js，也无需提前构建或从镜像仓库下载 codexhost 镜像。仅映射 TCP 443，容器以非 root 用户运行；命令只需 `--domain example.com`，控制地址默认 `relay.example.com`。
+   Compose 从仓库源码构建镜像，无需安装 Node.js，也无需提前构建或从镜像仓库下载 codexhost 镜像。仅映射 TCP 443，容器以非 root 用户运行；控制地址默认 `relay.example.com`。
 5. 在运行 codexhost 的电脑上打开“设置 → 连接设备”，选择“自建中转”，填写 `relay.example.com`，点击“启用中转”。只填主机名，不带协议、端口或路径。
 
 **知道控制地址的人都能注册使用，证书透明日志会公开域名；本示例不提供准入功能。** 手机登录仍需要电脑的访问令牌，不要分享登录链接或二维码。

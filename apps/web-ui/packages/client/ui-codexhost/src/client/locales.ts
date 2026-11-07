@@ -163,10 +163,10 @@ export const en = {
   "connectDevices.selfRelay.dns":
     "In your domain's DNS settings, add a record: type A, name *, value your server's public IPv4 address. On Cloudflare, choose DNS only.",
   "connectDevices.selfRelay.ports": "Open TCP port 443.",
-  "connectDevices.selfRelay.docker":
-    "Get the source on your server, replace example.com with your domain in compose.yaml, then start:",
+  "connectDevices.selfRelay.docker": "Run on the server:",
+  "connectDevices.selfRelay.domainPlaceholder": "[your domain, e.g. example.com]",
   "connectDevices.selfRelay.connect":
-    "Come back here, enter relay.example.com and click Enable relay.",
+    "Come back here, enter relay.[your domain] (e.g. relay.example.com) and click Enable relay.",
   "connectDevices.selfRelay.noDomain": "No domain? Use the official relay or Tailscale.",
   "connectDevices.selfRelay.docs": "Full self-hosted relay guide",
   "connectDevices.relay.title": "codexhost Relay",
@@ -564,9 +564,10 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.selfRelay.dns":
     "在域名的 DNS 设置里添加一条记录：类型选 A，名称填 *，值填服务器的公网 IPv4 地址。使用 Cloudflare 时选择“仅 DNS”。",
   "connectDevices.selfRelay.ports": "放行 TCP 443 端口。",
-  "connectDevices.selfRelay.docker":
-    "在服务器上获取源码，把 compose.yaml 中的 example.com 换成你的域名，然后启动：",
-  "connectDevices.selfRelay.connect": "回到这里填写 relay.example.com，点击“启用中转”。",
+  "connectDevices.selfRelay.docker": "在服务器上运行以下命令：",
+  "connectDevices.selfRelay.domainPlaceholder": "[你的域名，样例：example.com]",
+  "connectDevices.selfRelay.connect":
+    "回到这里填写 relay.[你的域名]（样例：relay.example.com），点击“启用中转”。",
   "connectDevices.selfRelay.noDomain": "没有域名？可以使用官方中转或 Tailscale。",
   "connectDevices.selfRelay.docs": "完整自建中转教程",
   "connectDevices.relay.title": "codexhost 中转",

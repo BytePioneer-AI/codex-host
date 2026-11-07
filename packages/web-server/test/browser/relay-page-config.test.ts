@@ -156,7 +156,7 @@ for (const locale of ["en-US", "zh-CN"]) {
         const tutorial = (await help.textContent()) ?? "";
         for (const text of [
           "relay.example.com",
-          "compose.yaml",
+          chinese ? "[你的域名，样例：example.com]" : "[your domain, e.g. example.com]",
           "Cloudflare",
           "443",
           "Docker",
@@ -179,7 +179,11 @@ for (const locale of ["en-US", "zh-CN"]) {
         assert.equal(await help.locator("li").count(), 5);
         assert.deepEqual(await help.locator("li").nth(3).locator("code").allTextContents(), [
           "git clone https://github.com/BytePioneer-AI/codex-host.git /opt/codexhost",
-          "cd /opt/codexhost/packages/remote-relay/deploy && docker compose up -d --build",
+          "cd /opt/codexhost/packages/remote-relay/deploy",
+          chinese
+            ? "echo RELAY_DOMAIN=[你的域名，样例：example.com] > .env"
+            : "echo RELAY_DOMAIN=[your domain, e.g. example.com] > .env",
+          "docker compose up -d --build",
         ]);
         assert.equal(
           await help.getByRole("link").getAttribute("href"),

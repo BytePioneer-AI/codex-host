@@ -102,12 +102,19 @@ Host SHALL return versioned opaque `nextCursor` and `backwardsCursor` values tha
 - **AND** it SHALL NOT forward the Host cursor to official Codex
 
 ### Requirement: Archive and Unarchive are persisted Host operations
-Host Runtime SHALL route `thread/archive` and `thread/unarchive` by persisted Thread ownership. For an External Thread it SHALL update only Mapping Store archive metadata, MUST NOT open or modify the Harness Native Session, and SHALL report success only after the requested state is durable.
+Host Runtime SHALL route `thread/archive` and `thread/unarchive` by persisted Thread ownership. For an External Thread it SHALL update only Mapping Store archive metadata, MUST NOT modify native session history or create conflicting turns, and SHALL report success only after the requested state is durable.
 
 #### Scenario: External Thread is archived
 - **WHEN** Desktop sends `thread/archive` for a ready External Thread
 - **THEN** Host SHALL persist `archived=true`, return the archive response, and then emit `thread/archived` for the same Host Thread ID
-- **AND** the Native Session, Transcript, Turn mappings, Fork anchors, and loaded runtime SHALL remain intact
+- **AND** the Native Session, Transcript, Turn mappings, and Fork anchors SHALL remain intact
+- **AND** Host SHALL asynchronously release its loaded runtime session if safe and idle without modifying native session history, regardless of the auto idle release timer setting
+- **AND** failure to release the runtime session SHALL NOT prevent future unarchive, read, or delete operations on the Thread
+
+#### Scenario: External Thread with active work is archived
+- **WHEN** Desktop sends `thread/archive` for an External Thread that is running a Turn or background task
+- **THEN** Host SHALL persist `archived=true`, return the archive response, and emit `thread/archived`
+- **AND** the running Turn or background task SHALL continue uninterrupted
 
 #### Scenario: External Thread is unarchived
 - **WHEN** Desktop sends `thread/unarchive` for an archived External Thread

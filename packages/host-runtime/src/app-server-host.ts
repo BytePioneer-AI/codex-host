@@ -3145,6 +3145,13 @@ export class AppServerHost {
       method: archived ? "thread/archived" : "thread/unarchived",
       params: { threadId: updated.record.hostThreadId },
     });
+    if (archived) {
+      // Defer release to next tick so that the current archive request's runOperation
+      // tracking clears from externalRuntime.idleRelease before evaluating safeToRelease.
+      setImmediate(() => {
+        this.#externalRuntime.idleRelease.releaseIfIdle(updated.record.hostThreadId);
+      });
+    }
   }
 
   async #updateExternalThreadMetadata(
@@ -5349,9 +5356,11 @@ export class AppServerHost {
         );
       }
     } catch (error) {
-      this.#externalRuntime.idleRelease.outputFailed(thread);
+      if (this.#externalRuntime.get(thread.id) === thread) {
+        this.#externalRuntime.idleRelease.outputFailed(thread);
+        this.#externalSteering.fault(thread.id, new Error(errorMessage(error)));
+      }
       this.#diagnose(error);
-      this.#externalSteering.fault(thread.id, new Error(errorMessage(error)));
       await settleExternalOutputFailure(
         thread,
         error,
@@ -5359,10 +5368,12 @@ export class AppServerHost {
         (failure) => this.#diagnose(failure),
       );
     } finally {
-      this.#externalSteering.fault(
-        thread.id,
-        new Error("External Harness output ended before replacement"),
-      );
+      if (this.#externalRuntime.get(thread.id) === thread) {
+        this.#externalSteering.fault(
+          thread.id,
+          new Error("External Harness output ended before replacement"),
+        );
+      }
     }
   }
 

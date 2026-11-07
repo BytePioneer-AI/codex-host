@@ -69,7 +69,7 @@ async function readSnapshot(
   dependencies: ClaudeForkInput["dependencies"],
   cwd: string,
   sessionId: string,
-): Promise<HarnessResult<HostThreadSnapshot>> {
+): Promise<HarnessResult<{ snapshot: HostThreadSnapshot; messages: unknown[] }>> {
   let messages: unknown[];
   try {
     messages = (await dependencies.readSessionMessages({ cwd, sessionId })) ?? [];
@@ -86,7 +86,7 @@ async function readSnapshot(
     };
   }
   try {
-    return { ok: true, value: mapClaudeSnapshot(messages, sessionId) };
+    return { ok: true, value: { snapshot: mapClaudeSnapshot(messages, sessionId), messages } };
   } catch {
     return {
       ok: false,
@@ -149,13 +149,13 @@ export async function forkClaudeSession(
   // The SDK resolves the source within that workspace's project/worktree history.
   const source = await readSnapshot(input.dependencies, input.cwd, sourceRef.data.nativeSessionId);
   if (!source.ok) return source;
-  if (input.kind === "rollbackLastTurn" && source.value.turns.length === 0) {
+  if (input.kind === "rollbackLastTurn" && source.value.snapshot.turns.length === 0) {
     return {
       ok: false,
       error: error("invalidRequest", "Claude Code Session has no Turn to roll back", false),
     };
   }
-  if (input.kind === "rollbackLastTurn" && source.value.turns.length === 1) {
+  if (input.kind === "rollbackLastTurn" && source.value.snapshot.turns.length === 1) {
     let nativeRef: NativeSessionRef;
     try {
       nativeRef = await input.pendingSessions.create(input.cwd, input.configuration);
@@ -170,7 +170,7 @@ export async function forkClaudeSession(
       input.cwd,
       sourceRef.data.nativeSessionId,
     );
-    if (!sourceAfter.ok || !isDeepStrictEqual(sourceAfter.value, source.value)) {
+    if (!sourceAfter.ok || !isDeepStrictEqual(sourceAfter.value.snapshot, source.value.snapshot)) {
       await input.pendingSessions.discard(nativeRef, input.cwd).catch(() => undefined);
       return {
         ok: false,
@@ -182,18 +182,31 @@ export async function forkClaudeSession(
       value: { sessionId: nativeRef.nativeSessionId, nativeRef, openMode: "create" },
     };
   }
-  const boundaryIndex =
-    input.kind === "rollbackLastTurn"
-      ? source.value.turns.length - 2
-      : source.value.turns.findIndex(
-          (turn) =>
-            checkpoint?.success && turn.checkpoint?.checkpointId === checkpoint.data.checkpointId,
-        );
-  const retained = source.value.turns[boundaryIndex];
-  const boundaryId =
-    retained?.checkpoint?.checkpointId ??
-    (input.kind === "rollbackLastTurn" ? retained?.nativeTurnRef.nativeTurnKey : undefined);
-  if (boundaryIndex < 0 || !boundaryId) {
+  let sourcePrefix: HostTurnSnapshot[];
+  let boundaryId: string | undefined;
+  if (input.kind === "rollbackLastTurn") {
+    sourcePrefix = source.value.snapshot.turns.slice(0, -1);
+    const retained = sourcePrefix.at(-1);
+    boundaryId = retained?.checkpoint?.checkpointId ?? retained?.nativeTurnRef.nativeTurnKey;
+  } else {
+    const requestedId = input.checkpoint.checkpointId;
+    const messageIndex = source.value.messages.findIndex(
+      (message) =>
+        typeof message === "object" &&
+        message !== null &&
+        "uuid" in message &&
+        message.uuid === requestedId,
+    );
+    // Later interruption records must not move the requested message boundary.
+    sourcePrefix = mapClaudeSnapshot(
+      source.value.messages.slice(0, messageIndex + 1),
+      sourceRef.data.nativeSessionId,
+    ).turns;
+    if (sourcePrefix.at(-1)?.checkpoint?.checkpointId === requestedId) {
+      boundaryId = requestedId;
+    }
+  }
+  if (!boundaryId) {
     return {
       ok: false,
       error: error("checkpointNotFound", "Claude Code Fork Checkpoint is unavailable", false),
@@ -241,18 +254,18 @@ export async function forkClaudeSession(
     return { ok: false, error: sourceAfter.error };
   }
 
-  const sourcePrefix = source.value.turns.slice(0, boundaryIndex + 1);
   const expectedPrefix = sourcePrefix.map(comparableTurn);
-  const derivedContent = derived.value.turns.map(comparableTurn);
-  const sourceIds = nativeIds(source.value);
-  const derivedIds = nativeIds(derived.value);
+  const derivedContent = derived.value.snapshot.turns.map(comparableTurn);
+  const sourceIds = nativeIds(source.value.snapshot);
+  sourceIds.add(boundaryId);
+  const derivedIds = nativeIds(derived.value.snapshot);
   if (
     (input.kind === "rollbackLastTurn" &&
-      sourceAfter.value.turns.length !== source.value.turns.length) ||
-    sourceAfter.value.turns.length < source.value.turns.length ||
+      sourceAfter.value.snapshot.turns.length !== source.value.snapshot.turns.length) ||
+    sourceAfter.value.snapshot.turns.length < source.value.snapshot.turns.length ||
     !isDeepStrictEqual(
-      sourceAfter.value.turns.slice(0, source.value.turns.length),
-      source.value.turns,
+      sourceAfter.value.snapshot.turns.slice(0, source.value.snapshot.turns.length),
+      source.value.snapshot.turns,
     ) ||
     !isDeepStrictEqual(derivedContent, expectedPrefix) ||
     derivedIds.size === 0 ||

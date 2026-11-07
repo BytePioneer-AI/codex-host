@@ -16,7 +16,7 @@ type RelayState = NonNullable<WebAccessState["relay"]>["state"];
  */
 export function relayPreparing(state: RelayState): boolean {
   return (
-    state.status === "connecting" ||
+    (state.status === "connecting" && state.reason !== "unreachable") ||
     (state.status === "missing-certificate" && state.certificate.failure === undefined)
   );
 }
@@ -64,8 +64,12 @@ export function RelayControl({
       ? t("connectDevices.relay.quota")
       : state.status === "off" && state.reason !== undefined
         ? t(`connectDevices.relay.${state.reason}`)
-        : state.status === "connecting" && state.reason === "full"
-          ? t("connectDevices.relay.full")
+        : state.status === "connecting" && state.reason !== undefined
+          ? t(
+              state.reason === "full"
+                ? "connectDevices.relay.full"
+                : "connectDevices.relay.connectionFailed",
+            )
           : usable
             ? t("connectDevices.relay.hint")
             : state.status === "stopped"

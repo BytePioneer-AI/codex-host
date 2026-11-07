@@ -1,5 +1,6 @@
 import { createPrivateKey, generateKeyPairSync, X509Certificate } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { Agent } from "node:https";
 import { join } from "node:path";
 import { createServer, type Server } from "node:tls";
 import * as acme from "acme-client";
@@ -12,6 +13,11 @@ const checkInterval = 15 * 60_000;
   }
 ).acmeSettings.retryMaxAttempts = 0;
 acme.axios.defaults.timeout = 30_000;
+// Allow slower IPv4 connections to finish before falling back to a possibly unavailable IPv6 route.
+acme.axios.defaults.httpsAgent = new Agent({
+  keepAlive: true,
+  autoSelectFamilyAttemptTimeout: 2_000,
+});
 
 export class ControlCertificate {
   readonly challenge = createServer({ ALPNProtocols: ["acme-tls/1"] }, (socket) => socket.end());

@@ -2,6 +2,8 @@
 !package.json
 !package-lock.json
 !tsconfig.base.json
+!patches/
+!patches/acme-client@5.4.0.patch
 !packages/
 !packages/remote-relay/
 !packages/remote-relay/package.json

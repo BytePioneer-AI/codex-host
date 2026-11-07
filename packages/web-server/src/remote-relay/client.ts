@@ -24,6 +24,8 @@ import {
 import type { WebRelayState } from "@codexhost/shared-contracts";
 import type { relayIdentity } from "./identity.ts";
 
+type ConnectingReason = Extract<WebRelayState, { status: "connecting" }>["reason"];
+
 type StopReason =
   | Extract<WebRelayState, { status: "stopped" }>["reason"]
   | NonNullable<Extract<WebRelayState, { status: "off" }>["reason"]>;
@@ -33,7 +35,7 @@ export function connectRelay(options: {
   identity: ReturnType<typeof relayIdentity>;
   name?: string;
   invite?: string;
-  connecting(reason?: "full"): void;
+  connecting(reason?: ConnectingReason): void;
   registered(hostname: string): void;
   stopped(reason: StopReason): void;
   notice?(until: string): void;
@@ -45,11 +47,12 @@ export function connectRelay(options: {
   const proxyValue = process.env.HTTPS_PROXY || process.env.https_proxy;
   const proxy = proxyValue?.startsWith("http://") ? new URL(proxyValue) : undefined;
   let backoff = 1_000;
+  let connectingReason: ConnectingReason;
   let retry: NodeJS.Timeout | undefined;
   let dispose: () => void;
 
   const attempt = () => {
-    options.connecting();
+    options.connecting(connectingReason);
     let finished = false;
     let registeredAt: number | undefined;
     let challenged = false;
@@ -79,7 +82,8 @@ export function connectRelay(options: {
         options.stopped(reason);
         return;
       }
-      options.connecting(reason);
+      connectingReason = reason ?? "unreachable";
+      options.connecting(connectingReason);
       if (registeredAt !== undefined && performance.now() - registeredAt >= 60_000) backoff = 1_000;
       retry = setTimeout(attempt, backoff * (0.5 + Math.random() * 0.5));
       backoff = Math.min(backoff * 2, 60_000);
@@ -139,6 +143,7 @@ export function connectRelay(options: {
           try {
             const { hostname } = JSON.parse(body) as { hostname: string };
             options.registered(hostname);
+            connectingReason = undefined;
             registeredAt = performance.now();
             clearTimeout(deadline);
             stream.end();

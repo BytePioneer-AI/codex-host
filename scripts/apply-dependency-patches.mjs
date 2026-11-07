@@ -1,8 +1,8 @@
 /**
- * Apply the imported DSH dependency patches after `npm install`.
+ * Apply dependency patches after `npm install`.
  *
- * npm installs the pinned packages, then this script applies the small upstream
- * patches for document preview, terminal helpers, Markdown URL boundaries,
+ * npm installs the pinned packages, then this script applies patches for ACME
+ * transport errors, document preview, terminal helpers, Markdown URL boundaries,
  * and composer viewport coordinates.
  * A patch already present is skipped so
  * repeated installs stay idempotent.
@@ -16,6 +16,7 @@ const repositoryRoot = resolve(import.meta.dirname, "..");
 
 /** Patch file and the installed package root it applies to. */
 const patches = [
+  ["patches/acme-client@5.4.0.patch", "node_modules/acme-client"],
   ["patches/@fortune-sheet__core@1.0.4.patch", "node_modules/@fortune-sheet/core"],
   ["patches/@fortune-sheet__react@1.0.4.patch", "node_modules/@fortune-sheet/react"],
   ["patches/exceljs@4.4.0.patch", "node_modules/exceljs"],

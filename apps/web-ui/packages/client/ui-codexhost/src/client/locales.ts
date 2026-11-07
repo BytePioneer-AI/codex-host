@@ -182,6 +182,8 @@ export const en = {
   "connectDevices.relay.name-taken": "This name is already taken. Choose another one.",
   "connectDevices.relay.banned": "This computer has been disabled on this relay",
   "connectDevices.relay.full": "The relay is full. Retrying automatically.",
+  "connectDevices.relay.connectionFailed":
+    "Cannot connect to the relay. Check its server, DNS and certificate. Retrying automatically.",
   "connectDevices.relay.quota": "Today's traffic allowance is used up",
   "connectDevices.relay.quotaUntil": "Available again at {date}",
   "connectDevices.relay.enable": "Enable relay",
@@ -581,6 +583,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.relay.name-taken": "这个名字已被占用，请换一个",
   "connectDevices.relay.banned": "此电脑已被停止使用该中转",
   "connectDevices.relay.full": "中转已满，正在自动重试",
+  "connectDevices.relay.connectionFailed": "无法连接中转，请检查服务器、DNS 和证书。正在自动重试。",
   "connectDevices.relay.quota": "今日流量已用完",
   "connectDevices.relay.quotaUntil": "将于 {date} 恢复",
   "connectDevices.relay.enable": "启用中转",

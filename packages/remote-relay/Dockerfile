@@ -1,8 +1,10 @@
 FROM node:24-alpine AS build
 WORKDIR /app
 
+RUN apk add --no-cache patch
 COPY package.json package-lock.json ./
 COPY packages/remote-relay/package.json packages/remote-relay/package.json
+COPY patches/acme-client@5.4.0.patch patches/acme-client@5.4.0.patch
 # Install only this workspace and its TypeScript build tools from the repository lockfile.
 RUN node --input-type=commonjs -e '\
   const fs = require("node:fs"); \
@@ -13,7 +15,8 @@ RUN node --input-type=commonjs -e '\
   ); \
   delete pkg.scripts; \
   fs.writeFileSync("package.json", JSON.stringify(pkg));' \
-  && npm ci --ignore-scripts --no-audit --no-fund
+  && npm ci --ignore-scripts --no-audit --no-fund \
+  && patch -p1 -d node_modules/acme-client < patches/acme-client@5.4.0.patch
 
 COPY tsconfig.base.json ./
 COPY packages/remote-relay/tsconfig.json packages/remote-relay/tsconfig.json

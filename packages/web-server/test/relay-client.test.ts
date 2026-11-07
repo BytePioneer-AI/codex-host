@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { connect } from "node:net";
+import { connect, createServer as createTcpServer } from "node:net";
 import type { Duplex } from "node:stream";
 import { it, type TestContext } from "node:test";
 import { createRequire } from "node:module";
@@ -33,12 +33,14 @@ function client(
   const identity = relayIdentity(relayData(t));
   const registrations: string[] = [];
   const stopped: string[] = [];
+  const reasons: Array<"full" | "unreachable" | undefined> = [];
   let attempts = 0;
   const close = connectRelay({
     host,
     identity,
-    connecting: () => {
+    connecting: (reason) => {
       attempts++;
+      reasons.push(reason);
     },
     registered: (hostname) => registrations.push(hostname),
     stopped: (reason) => stopped.push(reason),
@@ -46,7 +48,7 @@ function client(
     ...extra,
   });
   t.after(close);
-  return { registrations, stopped, identity, close, attempts: () => attempts };
+  return { registrations, stopped, reasons, identity, close, attempts: () => attempts };
 }
 
 it("registers with the real Relay, survives its restart, and stops when replaced", async (t) => {
@@ -67,6 +69,18 @@ it("registers with the real Relay, survives its restart, and stops when replaced
   const attempts = a.attempts();
   await delay(1_100);
   assert.equal(a.attempts(), attempts);
+});
+
+it("reports an unreachable control endpoint and retains the failure across retries", async (t) => {
+  proxyEnvironment(t);
+  const server = createTcpServer((socket) => socket.destroy());
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const a = client(t, `127.0.0.1:${(server.address() as { port: number }).port}`);
+  await until(() => a.reasons.length >= 3);
+  assert.deepEqual(a.reasons.slice(0, 3), [undefined, "unreachable", "unreachable"]);
+  assert.deepEqual(a.stopped, []);
 });
 
 it("retries after Relay reaches maxConnections and registers when capacity is released", async (t) => {
@@ -182,6 +196,7 @@ for (const stage of ["proxy", "upgrade"] as const) {
       assert.ok(performance.now() - started >= 30_000);
       assert.equal(a.registrations.length, 0);
       assert.equal(a.stopped.length, 0);
+      assert.deepEqual(a.reasons.slice(0, 3), [undefined, "unreachable", "unreachable"]);
     },
   );
 }

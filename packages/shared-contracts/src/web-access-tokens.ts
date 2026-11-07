@@ -73,7 +73,10 @@ export const webRelayStateSchema = z.discriminatedUnion("status", [
     status: z.literal("off"),
     reason: z.enum(["invite", "name-taken", "banned"]).optional(),
   }),
-  z.object({ status: z.literal("connecting"), reason: z.literal("full").optional() }),
+  z.object({
+    status: z.literal("connecting"),
+    reason: z.enum(["full", "unreachable"]).optional(),
+  }),
   z.object({
     status: z.literal("connected"),
     url: z.string(),

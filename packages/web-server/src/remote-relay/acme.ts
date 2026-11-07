@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { generateKeyPairSync } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { Agent } from "node:https";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as acme from "acme-client";
 import type { DataDir } from "../store.ts";
@@ -104,6 +105,11 @@ const requests = new WeakMap<object, AcmeRound>();
   acme.axios.defaults as typeof acme.axios.defaults & { acmeSettings: { retryMaxAttempts: number } }
 ).acmeSettings.retryMaxAttempts = 0;
 acme.axios.defaults.timeout = 30_000;
+// Allow slower IPv4 connections to finish before falling back to a possibly unavailable IPv6 route.
+acme.axios.defaults.httpsAgent = new Agent({
+  keepAlive: true,
+  autoSelectFamilyAttemptTimeout: 2_000,
+});
 acme.axios.interceptors.request.use((config) => {
   const round = rounds.getStore();
   if (round) {

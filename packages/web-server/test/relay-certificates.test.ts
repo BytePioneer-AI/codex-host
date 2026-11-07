@@ -22,6 +22,12 @@ import { RequestTrust } from "../src/request-trust.ts";
 import { acmeServer, type AcmeRequest } from "./support/acme-server.ts";
 import { credentials, delay, relayData, until } from "./support/relay.ts";
 
+it("allows slower dual-stack ACME connections without disabling IPv6", () => {
+  assert.equal(acme.axios.defaults.httpsAgent.options.autoSelectFamilyAttemptTimeout, 2_000);
+  assert.equal(acme.axios.defaults.httpsAgent.options.keepAlive, true);
+  assert.equal(acme.axios.defaults.httpsAgent.options.family, undefined);
+});
+
 const stateFile = "remote-relay/certificate-state.json";
 const hostname = "phone.relay.test";
 const x509 = new X509Certificate(credentials.cert);

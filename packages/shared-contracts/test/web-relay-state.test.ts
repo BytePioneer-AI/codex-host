@@ -9,10 +9,12 @@ it("retains refusal reasons, capacity retry, remembered hostname and quota recov
   for (const reason of ["invite", "name-taken", "banned"]) {
     expect(webRelayStateSchema.parse({ status: "off", reason })).toEqual({ status: "off", reason });
   }
-  expect(webRelayStateSchema.parse({ status: "connecting", reason: "full" })).toEqual({
-    status: "connecting",
-    reason: "full",
-  });
+  for (const reason of ["full", "unreachable"]) {
+    expect(webRelayStateSchema.parse({ status: "connecting", reason })).toEqual({
+      status: "connecting",
+      reason,
+    });
+  }
   const relay = {
     kind: "official",
     enabled: true,

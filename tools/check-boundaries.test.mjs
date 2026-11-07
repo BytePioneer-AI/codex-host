@@ -198,13 +198,14 @@ describe("source boundary checks", () => {
     },
   );
 
-  it("allows Remote Relay built-ins, ws and local modules", () => {
+  it("allows Remote Relay built-ins, ws, acme-client and local modules", () => {
     expect(
       findSourceBoundaryViolations({
         filePath: "/repo/packages/remote-relay/src/index.ts",
         packageRoot: "/repo/packages/remote-relay",
         packagesDirectory,
-        sourceText: 'import "node:http2"; import "ws"; import "./protocol.js";',
+        sourceText:
+          'import "node:http2"; import "ws"; import "acme-client"; import "./protocol.js";',
       }),
     ).toEqual([]);
   });

@@ -27,7 +27,9 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages/remote-relay/package.json ./packages/remote-relay/package.json
 COPY --from=build /app/packages/remote-relay/dist ./packages/remote-relay/dist
 RUN chmod +x packages/remote-relay/dist/cli.js \
-  && ln -s /app/packages/remote-relay/dist/cli.js /usr/local/bin/codexhost-relay
+  && ln -s /app/packages/remote-relay/dist/cli.js /usr/local/bin/codexhost-relay \
+  && mkdir /data && chown node:node /data
+ENV CODEXHOST_RELAY_DATA_DIR=/data
 USER node
-EXPOSE 8443
+EXPOSE 443
 ENTRYPOINT ["codexhost-relay"]

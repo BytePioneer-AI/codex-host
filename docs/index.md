@@ -132,7 +132,7 @@
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`product/web-remote-access.md`](product/web-remote-access.md) | 局域网、Tailscale、Relay 和自备隧道的连接方式、自动证书、可信代理、手机连接提示与信任边界。 |
-| [`product/self-hosted-relay.md`](product/self-hosted-relay.md) | 自建 Relay：本地构建 Docker 镜像、Compose 部署、DNS、宿主机 certbot 续期与电脑端连接。 |
+| [`product/self-hosted-relay.md`](product/self-hosted-relay.md) | 自建 Relay：Compose 从源码构建、通配 DNS、443 自动证书与电脑端连接。 |
 | [`product/web-ui-extensions.md`](product/web-ui-extensions.md) | DSH Web 插件安装、原生前后端运行、资源路由、启停、依赖检查、恢复与原包验证边界；使用或维护界面扩展时阅读。 |
 | [`proposals/ui-extension-plugins.md`](proposals/ui-extension-plugins.md) | 界面扩展目标方案与分步状态：Harness 与界面插件分类、统一管理、DSH 纯 Web 首期范围，以及待实现的原生插件和 Codex GUI 分端接入边界。 |
 | [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA 的共享 CH 会话、GUI/Web 共享偏好、作为普通外部 Harness 的 Codex CLI、原生项目归组、历史分页、Windows/macOS 按需桌面截图、侧栏服务器浏览器推流、源码构建、启动隔离、跨工作树停机及验收限制；开发 Web 或与 Desktop 并行运行时阅读。 |

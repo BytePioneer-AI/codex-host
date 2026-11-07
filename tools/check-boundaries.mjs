@@ -117,10 +117,11 @@ export function findSourceBoundaryViolations({
       !specifier.startsWith(".") &&
       !isAbsolute(specifier) &&
       !builtins.has(specifier.replace(/^node:/u, "")) &&
-      specifier !== "ws"
+      specifier !== "ws" &&
+      specifier !== "acme-client"
     ) {
       violations.push(
-        `${filePath}: Remote Relay can only import Node built-ins and 'ws', not '${specifier}'`,
+        `${filePath}: Remote Relay can only import Node built-ins, 'ws' and 'acme-client', not '${specifier}'`,
       );
     }
 

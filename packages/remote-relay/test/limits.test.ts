@@ -9,7 +9,13 @@ import { certPath, collect, credentials, delay, fakeAgent, keyPath, phone } from
 
 let relay: ReturnType<typeof createRelay> | undefined;
 async function start(options: Partial<RelayOptions> = {}) {
-  relay = createRelay({ domain: "relay.test", cert: certPath, key: keyPath, ...options });
+  relay = createRelay({
+    domain: "relay.test",
+    controlHost: "relay.test",
+    cert: certPath,
+    key: keyPath,
+    ...options,
+  });
   relay.server.listen(4482, "127.0.0.1");
   await once(relay.server, "listening");
 }

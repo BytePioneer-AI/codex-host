@@ -1,19 +1,16 @@
 services:
   relay:
-    image: codexhost-relay:local
+    build:
+      context: ../../..
+      dockerfile: packages/remote-relay/Dockerfile
     restart: unless-stopped
     ports:
-      - "443:8443"
+      - "443:443"
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
     volumes:
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-    command:
-      - --domain
-      - example.com
-      - --control-host
-      - relay.example.com
-      - --cert
-      - /etc/letsencrypt/live/relay.example.com/fullchain.pem
-      - --key
-      - /etc/letsencrypt/live/relay.example.com/privkey.pem
-      - --port
-      - "8443"
+      - relay-data:/data
+    command: ["--domain", "example.com"]
+
+volumes:
+  relay-data:

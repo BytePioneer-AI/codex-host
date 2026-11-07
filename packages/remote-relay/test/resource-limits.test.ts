@@ -11,7 +11,13 @@ const relays: ReturnType<typeof createRelay>[] = [];
 const sockets: Socket[] = [];
 
 async function start(options: Partial<RelayOptions> = {}) {
-  const relay = createRelay({ domain: "relay.test", cert: certPath, key: keyPath, ...options });
+  const relay = createRelay({
+    domain: "relay.test",
+    controlHost: "relay.test",
+    cert: certPath,
+    key: keyPath,
+    ...options,
+  });
   relays.push(relay);
   relay.server.listen(0, "127.0.0.1");
   await once(relay.server, "listening");

@@ -1,112 +1,57 @@
 # 自建中转
 
-给自己的 codexhost Web 搭一个中转，手机不用装 App。中转只转发加密字节，手机的 TLS 在电脑上解开；服务器只需要控制地址的证书。完整参数见 [Relay README](../../packages/remote-relay/README.md)。
+给自己的 codexhost Web 搭一个中转，手机不用装 App。中转只转发加密字节，手机的 TLS 在电脑上解开；控制地址的证书由中转自动申请和续期。完整参数见 [Relay README](../../packages/remote-relay/README.md)。
 
 自建中转需要自己的域名，不支持只用 IP。没有域名时，推荐用 [Tailscale](web-remote-access.md#tailscale-https推荐) 或官方中转；能接受 Cloudflare 看到内容时，也可以用 [Cloudflare Tunnel](web-remote-access.md#cloudflare-tunnel)。
 
-## 准备域名和服务器
-
-- 自己的域名、一台公网 TCP 443 空闲的 Linux 服务器，已安装 Git、Docker（含 Compose）和宿主机 certbot。
-- 一条通配 DNS 记录：`*.example.com` 指向服务器，同时覆盖控制地址 `relay.example.com` 和电脑地址 `<id>.example.com`，无需单独添加控制地址记录。域名下已有的记录（如 `www`、根域）不受影响、照常使用，通配只覆盖没有单独记录的子域。电脑地址使用 26 位随机样式 ID（由公钥派生），不会与 `www` 等常见子域冲突。使用 Cloudflare 时必须选“仅 DNS”，不能开代理。只在 IPv6 同样可达时添加 AAAA 记录。
-- 以下示例把仓库放在 `/opt/codexhost`，请把域名和路径换成自己的。服务器防火墙和云安全组需放行 TCP 443；下面的 certbot 申请和续期还需要 TCP 80。
-
-**知道控制地址的人都能注册使用，证书透明日志会公开域名；本示例不提供任何准入功能。** 手机登录仍需要电脑的访问令牌，不要分享登录链接或二维码。
-
 ## 部署
 
-### 1. 获取源码
+1. 准备一个域名，以及一台装有 Git、Docker（含 Compose）的 Linux 服务器。
+2. 在域名的 DNS 设置里添加一条记录：类型选 A，名称填 *，值填服务器的公网 IPv4 地址。使用 Cloudflare 时选择“仅 DNS”。它同时覆盖控制地址 `relay.example.com` 和电脑地址 `<id>.example.com`；已有的 `www`、根域等记录不受影响，通配只覆盖没有独立记录的子域。只在 IPv6 同样可达时添加 AAAA 记录。
+3. 服务器防火墙和云安全组放行 TCP 443，并确保没有其他服务占用。证书验证需要从公网直达 443，无需开放 80，也无需安装额外证书工具。
+4. 在服务器上获取源码，把 [`compose.yaml`](../../packages/remote-relay/deploy/compose.yaml) 中的 `example.com` 换成你的域名，然后启动。示例目录需要写权限，也可换成自己的目录：
 
-准备好自己的域名和装有 Docker Compose、certbot 的 Linux 服务器后，在服务器上获取公开仓库源码，示例放在 `/opt/codexhost`（需要有该目录的写权限，也可改为自己的目录）：
+   ```sh
+   git clone https://github.com/BytePioneer-AI/codex-host.git /opt/codexhost
+   cd /opt/codexhost/packages/remote-relay/deploy
+   # 编辑 compose.yaml 中的域名
+   docker compose up -d --build
+   ```
 
-```sh
-git clone https://github.com/BytePioneer-AI/codex-host.git /opt/codexhost
-```
+   Compose 从仓库源码构建镜像，无需安装 Node.js，也无需提前构建或从镜像仓库下载 codexhost 镜像。仅映射 TCP 443，容器以非 root 用户运行；命令只需 `--domain example.com`，控制地址默认 `relay.example.com`。
+5. 在运行 codexhost 的电脑上打开“设置 → 连接设备”，选择“自建中转”，填写 `relay.example.com`，点击“启用中转”。只填主机名，不带协议、端口或路径。
 
-### 2. 申请控制地址证书
+**知道控制地址的人都能注册使用，证书透明日志会公开域名；本示例不提供准入功能。** 手机登录仍需要电脑的访问令牌，不要分享登录链接或二维码。
 
-在服务器上运行，只申请控制地址，不用申请通配符证书；每台电脑会自行申请自己的证书。
+自建中转不需要邀请码；地址由电脑公钥派生，例如 `https://<id>.example.com/`。官方与自建同一时间只能开启一个。
 
-```sh
-sudo certbot certonly --standalone -d relay.example.com
-```
+开发时可用 `codexhost web --relay relay.example.com` 预填或覆盖自建地址，不改变官方固定地址或页面显式保存的当前类型。普通用户无需此命令。更多连接说明见 [Web 远程访问](web-remote-access.md#relay-中转)。
 
-容器使用非 root 用户（UID/GID 1000）。允许穿过 certbot 证书目录，只把控制地址私钥的读取权授予 GID 1000（确保宿主机这个组里的用户也可信），不要把私钥改成所有人可读：
+## 证书与数据
 
-```sh
-sudo chmod 755 /etc/letsencrypt/live /etc/letsencrypt/archive
-sudo chgrp 1000 /etc/letsencrypt/live/relay.example.com/privkey.pem
-sudo chmod 640 /etc/letsencrypt/live/relay.example.com/privkey.pem
-```
+中转通过 TLS-ALPN-01 在 443 自动申请 Let's Encrypt 控制地址证书，不申请通配符证书；每台电脑仍自行申请自己的证书。中转和用户连接不能经过会终止 TLS 的 HTTP 反向代理或 CDN。
 
-### 3. 构建镜像
+容器的 `/data` 由 Compose 的 `relay-data` 数据卷持久化，存放 `acme-account.pem`、`certificate-key.pem` 和 `certificate.pem`。私钥权限为 0600，重启复用密钥与有效证书；不要删除数据卷或分享私钥。首次签发完成前控制连接不可用。
 
-在服务器的仓库根目录运行，不需要先安装 Node.js 或 npm 依赖：
+中转每 15 分钟检查，在证书实际有效期的 2/3 处自动续期并立即替换，无需重启。失败后约 15 分钟自动重试，重启容器会立即重试；仍有效的旧证书继续使用，到期后拒绝新的普通控制连接。错误可用 `docker compose logs --tail 50 relay` 查看。Let's Encrypt 有频率限制，反复删除数据或更换域名可能触发限制。
 
-```sh
-cd /opt/codexhost
-docker build -f packages/remote-relay/Dockerfile -t codexhost-relay:local .
-```
+已有证书时，可成对提供 `--cert`、`--key` 并挂载可读的 PEM 证书链及私钥，此时不自动申请；需要续期后重新加载时，向 Relay 进程发送 `SIGHUP`，已有连接不受影响。显式 `--control-host` 可覆盖默认控制地址；不在通配 DNS 范围内时需另加解析记录。
 
-镜像由你本地构建，暂不发布到镜像仓库。
+## 限额与更新
 
-### 4. 启动
+可在 Compose 的 `command` 中追加 `--rate`、`--daily-quota`、`--max-connections`，分别限制每地址每方向的字节/秒、每地址 UTC 日双向总字节数及全部 TCP 连接数，默认均不限制。日用量只在内存中，重启会清零；这不是准入或防滥用机制。
 
-修改 [`packages/remote-relay/deploy/compose.yaml`](../../packages/remote-relay/deploy/compose.yaml) 中的域名和证书路径：示例参数为 `--domain example.com --control-host relay.example.com`，证书路径为 `/etc/letsencrypt/live/relay.example.com/` 下的文件。然后在仓库根目录运行：
+更新源码到需要的版本后，在部署目录运行：
 
 ```sh
-docker compose -f packages/remote-relay/deploy/compose.yaml up -d
-docker compose -f packages/remote-relay/deploy/compose.yaml logs --tail 50 relay
+docker compose up -d --build
 ```
 
-示例把公网 443 映射到容器 8443，避免非 root 进程绑定特权端口；整个 `/etc/letsencrypt` 只读挂载，保留 `live` 到 `archive` 的证书链接。容器异常退出或服务器重启后自动恢复。正常空闲时没有启动日志，控制地址 HTTPS 返回 **404 是正常的**。
-
-可在 Compose 的 `command` 末尾追加参数，例如 `--rate`、`"2000000"`、`--daily-quota`、`"2000000000"`、`--max-connections`、`"200"`（每项单独一行，沿用现有列表格式）。分别限制每地址每方向的字节/秒、每地址 UTC 日双向总字节数、全部 TCP 连接数，默认均不限制。日用量只在内存中，重启会清零；这不是准入或防滥用机制。
-
-### 5. 在电脑上连接
-
-在运行 codexhost 的电脑上打开“设置 → 连接设备”，选择独立的“自建中转”卡片。填写控制地址 `relay.example.com`，只填主机名，不带 `https://`、端口或路径，然后点击“启用中转”，同一步保存地址并开始连接，无需单独保存。卡片中的教程未配置时展开，有控制地址后收起为“如何搭建自己的中转”，可随时展开。
-
-自建中转**不需要邀请码**，页面不显示地址名和邀请码；地址使用电脑公钥派生的 ID，例如 `https://<id>.example.com/`。开启后控制地址只读，关闭后才可编辑；访问地址和“复制链接”紧跟状态与开关，教程位于其后。等状态变为“已开启”后用手机扫码。官方与自建同一时间只能开启一个；如另一中转正在使用，须先关闭。更换控制地址前也须关闭，换址不沿用旧分配地址与证书，电脑身份密钥保持不变。
-
-开发时仍可用 `codexhost web --relay relay.example.com` 预填或覆盖自建地址；该选项不改变“codexhost 中转”卡片的官方固定地址 `relay.chost.dev`，也不覆盖页面显式保存的当前类型。普通用户无需运行此命令。更多连接说明见 [Web 远程访问](web-remote-access.md#relay-中转)。
-
-## 证书续期与更新
-
-启用宿主机 certbot 的自动续期定时任务（安装方式不同，任务名称可能不同）。用 deploy hook 在续期成功后更新私钥权限并通知容器重新读证书。把以下内容保存为 `/etc/letsencrypt/renewal-hooks/deploy/codexhost-relay`，按实际情况修改域名和仓库绝对路径：
-
-```sh
-#!/bin/sh
-set -eu
-[ "$RENEWED_LINEAGE" = /etc/letsencrypt/live/relay.example.com ] || exit 0
-chgrp 1000 "$RENEWED_LINEAGE/privkey.pem"
-chmod 640 "$RENEWED_LINEAGE/privkey.pem"
-docker compose -f /opt/codexhost/packages/remote-relay/deploy/compose.yaml kill -s SIGHUP relay
-```
-
-```sh
-sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/codexhost-relay
-sudo certbot renew --dry-run
-```
-
-certbot 的 deploy hook 由 root 执行，需要能调用 Docker；`--dry-run` 默认不执行 deploy hook。可在仓库根目录手动验证信号：
-
-```sh
-docker compose -f packages/remote-relay/deploy/compose.yaml kill -s SIGHUP relay
-docker compose -f packages/remote-relay/deploy/compose.yaml ps
-```
-
-SIGHUP 不重启进程、不打断已有连接。先确保新证书与私钥完整、匹配且可读：加载失败会使进程退出，由 Compose 重启，没有旧证书回退。
-
-更新时，在仓库切换到需要的版本后重新构建并替换容器（会短暂断线，电脑自动重连）：
-
-```sh
-docker build --pull -f packages/remote-relay/Dockerfile -t codexhost-relay:local .
-docker compose -f packages/remote-relay/deploy/compose.yaml up -d --force-recreate
-```
+替换容器会短暂断线，电脑自动重连；证书数据卷保持不变。容器异常退出或服务器重启后自动恢复。控制地址 HTTPS 返回 **404 是正常的**。
 
 ## 常见问题
 
-- **443 被占用：** 停止或迁走占用它的服务，不能改用其他公网端口绕过；电脑证书验证必须能直达公网 443。certbot 的 standalone 方式还要求申请、续期时 80 空闲。
-- **容器重启或报 `EACCES`：** 检查域名、证书路径和上述目录/私钥权限；不要只挂载 `live` 或单个证书文件，续期后链接会变化。rootless Docker 或启用用户命名空间映射时，需按映射后的宿主机身份另行授予读取权限。
-- **控制地址可达但电脑地址不可用：** 检查 `*.example.com` 通配 DNS、443 防火墙和电脑的证书状态；通配只覆盖没有单独记录的子域，确认目标地址没有指向其他服务器的独立记录。不能经过 CDN 代理或会解开 TLS 的 HTTP 反向代理，中转需要原始 TLS 连接。
+- **443 被占用或验证失败：** 迁走占用服务，检查 DNS、CAA、云安全组和防火墙。不能改用其他公网端口绕过证书验证；Cloudflare 必须为“仅 DNS”。
+- **数据写入报 `EACCES`：** 使用示例命名卷；改用宿主机目录时，需让容器用户（UID/GID 1000）可写。不要把私钥改为所有人可读。
+- **控制地址可达但电脑地址不可用：** 检查通配 DNS、443 和电脑证书状态，确认目标没有指向其他服务器的独立记录。中转需要原始 TLS 连接，不支持终止 TLS 的代理、QUIC/HTTP/3 或 ECH。
 - **很多新电脑申请证书失败：** 同一注册域名共享证书机构的新证书限额，详情看连接设备页提示；反复启停不会绕过限额。

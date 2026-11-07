@@ -8,20 +8,22 @@ const { values } = parseArgs({
     "control-host": { type: "string" },
     cert: { type: "string" },
     key: { type: "string" },
+    "data-dir": { type: "string", default: process.env.CODEXHOST_RELAY_DATA_DIR ?? "./data" },
     port: { type: "string", default: "443" },
     rate: { type: "string" },
     "daily-quota": { type: "string" },
     "max-connections": { type: "string" },
   },
 });
-if (!values.domain || !values.cert || !values.key) {
-  throw new Error("--domain, --cert and --key are required");
+if (!values.domain) {
+  throw new Error("--domain is required");
 }
 const relay = createRelay({
   domain: values.domain,
-  controlHost: values["control-host"] ?? values.domain,
-  cert: values.cert,
-  key: values.key,
+  ...(values["control-host"] === undefined ? {} : { controlHost: values["control-host"] }),
+  ...(values.cert === undefined ? {} : { cert: values.cert }),
+  ...(values.key === undefined ? {} : { key: values.key }),
+  dataDir: values["data-dir"],
   ...(values.rate === undefined ? {} : { rate: Number(values.rate) }),
   ...(values["daily-quota"] === undefined ? {} : { dailyQuota: Number(values["daily-quota"]) }),
   ...(values["max-connections"] === undefined

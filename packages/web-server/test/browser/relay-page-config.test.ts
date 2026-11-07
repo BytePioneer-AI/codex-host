@@ -155,31 +155,32 @@ for (const locale of ["en-US", "zh-CN"]) {
         assert.equal(await help.getAttribute("open"), "");
         const tutorial = (await help.textContent()) ?? "";
         for (const text of [
-          "*.example.com",
           "relay.example.com",
           "compose.yaml",
           "Cloudflare",
           "443",
-          "80",
           "Docker",
-          "certbot",
+          "docker compose up -d --build",
           "Tailscale",
         ])
           assert.ok(tutorial.includes(text), text);
-        const dns = (await help.locator("li").nth(2).textContent()) ?? "";
-        for (const text of chinese
-          ? ["一条 DNS 记录", "已有记录不受影响", "仅 DNS"]
-          : ["one DNS record", "Existing records are unaffected", "DNS only"])
-          assert.ok(dns.includes(text), text);
+        for (const text of ["certbot", "80", "TLS-ALPN", "ACME", "AAAA", "IPv6"])
+          assert.ok(!tutorial.includes(text), text);
+        const dns = (await help.locator("li").nth(1).textContent()) ?? "";
+        assert.equal(
+          dns,
+          chinese
+            ? "在域名的 DNS 设置里添加一条记录：类型选 A，名称填 *，值填服务器的公网 IPv4 地址。使用 Cloudflare 时选择“仅 DNS”。"
+            : "In your domain's DNS settings, add a record: type A, name *, value your server's public IPv4 address. On Cloudflare, choose DNS only.",
+        );
         const hint = control.locator(`[id="${await host.getAttribute("aria-describedby")}"]`);
         assert.ok((await hint.textContent())?.includes("relay.example.com"));
         assert.ok((await help.locator("li").nth(4).textContent())?.includes("relay.example.com"));
-        assert.ok((await help.locator("li").nth(6).textContent())?.includes("relay.example.com"));
-        assert.equal(await help.locator("li").count(), 7);
-        assert.equal(
-          await help.locator("li").nth(1).locator("code").textContent(),
+        assert.equal(await help.locator("li").count(), 5);
+        assert.deepEqual(await help.locator("li").nth(3).locator("code").allTextContents(), [
           "git clone https://github.com/BytePioneer-AI/codex-host.git /opt/codexhost",
-        );
+          "cd /opt/codexhost/packages/remote-relay/deploy && docker compose up -d --build",
+        ]);
         assert.equal(
           await help.getByRole("link").getAttribute("href"),
           "https://github.com/BytePioneer-AI/codex-host/blob/main/docs/product/self-hosted-relay.md",

@@ -8,6 +8,7 @@ import { createServer, type Socket } from "node:net";
 import { createServer as createTlsServer } from "node:tls";
 import { WebSocketServer } from "ws";
 import { readClientHello } from "./client-hello.js";
+import { ControlCertificate } from "./certificates.js";
 import { isDnsLabel, maxPayload, normalizeControlHost, paths } from "./protocol.js";
 import { forward } from "./forward.js";
 import {
@@ -26,8 +27,9 @@ export type { ConnectionEvent, UsageDetails } from "./events.js";
 export interface RelayOptions {
   domain: string;
   controlHost?: string;
-  cert: string;
-  key: string;
+  cert?: string;
+  key?: string;
+  dataDir?: string;
   heartbeatInterval?: number;
   rate?: number;
   dailyQuota?: number;
@@ -47,11 +49,17 @@ export function createRelay(options: RelayOptions) {
     throw new Error("--max-connections must be a positive integer");
   }
   const domain = normalizeControlHost(options.domain);
-  const controlHost = normalizeControlHost(options.controlHost ?? domain);
+  const controlHost = normalizeControlHost(options.controlHost ?? `relay.${domain}`);
+  if ((options.cert === undefined) !== (options.key === undefined)) {
+    throw new Error("--cert and --key must be provided together");
+  }
   const agents = new Map<string, Agent>();
   const usageByName = new Map<string, Usage>();
   const sockets = new Set<Socket>();
-  const credentials = () => ({ cert: readFileSync(options.cert), key: readFileSync(options.key) });
+  const credentials = () => ({
+    cert: readFileSync(options.cert as string),
+    key: readFileSync(options.key as string),
+  });
   const http = createHttpServer(async (request, response) => {
     try {
       if (options.onRequest) await options.onRequest(request, response);
@@ -61,10 +69,14 @@ export function createRelay(options: RelayOptions) {
       else response.destroy();
     }
   });
-  const tls = createTlsServer({ ...credentials(), ALPNProtocols: ["http/1.1"] }, (socket) => {
-    http.emit("connection", socket);
-  });
+  const tls = createTlsServer(
+    { ...(options.cert ? credentials() : {}), ALPNProtocols: ["http/1.1"] },
+    (socket) => http.emit("connection", socket),
+  );
   tls.on("tlsClientError", (_error, socket) => socket.destroy());
+  const certificates = options.cert
+    ? undefined
+    : new ControlCertificate(tls, controlHost, options.dataDir ?? "./data");
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload });
   http.on("upgrade", (request, socket, head) => {
     if (request.url !== paths.agent) {
@@ -91,7 +103,12 @@ export function createRelay(options: RelayOptions) {
       .then(({ servername, alpn }) => {
         const hostname = servername.toLowerCase();
         if (hostname === controlHost) {
-          tls.emit("connection", socket);
+          if (alpn.length === 1 && alpn[0] === "acme-tls/1") {
+            if (certificates?.verifying) certificates.challenge.emit("connection", socket);
+            else socket.destroy();
+          } else if (!certificates || certificates.available) {
+            tls.emit("connection", socket);
+          } else socket.destroy();
           return;
         }
         const suffix = `.${domain}`;
@@ -118,13 +135,15 @@ export function createRelay(options: RelayOptions) {
   const cleanupUsage = setInterval(() => pruneUsage(usageByName, agents), 60 * 60_000);
   cleanupUsage.unref();
   const reload = () => tls.setSecureContext(credentials());
-  process.on("SIGHUP", reload);
+  if (certificates) server.once("listening", () => certificates.start());
+  else process.on("SIGHUP", reload);
   return {
     server,
     disconnect(name: string): void {
       agents.get(name.toLowerCase())?.close(1000);
     },
     async close(): Promise<void> {
+      certificates?.stop();
       clearInterval(cleanupUsage);
       process.off("SIGHUP", reload);
       const closed = [...wss.clients, ...sockets].map(

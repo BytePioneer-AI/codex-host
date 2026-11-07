@@ -7,7 +7,13 @@ import { certPath, keyPath, credentials, fakeAgent, phone, collect } from "./hel
 
 const relays: ReturnType<typeof createRelay>[] = [];
 async function start(options: Partial<RelayOptions> = {}) {
-  const relay = createRelay({ domain: "relay.test", cert: certPath, key: keyPath, ...options });
+  const relay = createRelay({
+    domain: "relay.test",
+    controlHost: "relay.test",
+    cert: certPath,
+    key: keyPath,
+    ...options,
+  });
   relays.push(relay);
   relay.server.listen(0, "127.0.0.1");
   await once(relay.server, "listening");

@@ -20,7 +20,12 @@ let certDirectory: string;
 beforeEach(async () => {
   certDirectory = mkdtempSync(new URL("./fixtures/run-", import.meta.url).pathname);
   copyFileSync(certPath, `${certDirectory}/cert.pem`);
-  relay = createRelay({ domain: "relay.test", cert: `${certDirectory}/cert.pem`, key: keyPath });
+  relay = createRelay({
+    domain: "relay.test",
+    controlHost: "relay.test",
+    cert: `${certDirectory}/cert.pem`,
+    key: keyPath,
+  });
   relay.server.listen(4480, "127.0.0.1");
   await once(relay.server, "listening");
 });
@@ -345,6 +350,7 @@ describe("control registration", () => {
       domain: "relay.test",
       cert: certPath,
       key: keyPath,
+      controlHost: "relay.test",
       heartbeatInterval: 40,
     });
     relay.server.listen(4480, "127.0.0.1");

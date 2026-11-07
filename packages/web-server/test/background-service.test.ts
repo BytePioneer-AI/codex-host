@@ -26,6 +26,7 @@ test("background settings default to loopback and preserve saved values on inval
     host: "127.0.0.1",
     port: 4400,
     relayEnabled: false,
+    relayRegistrations: {},
   });
   assert.equal(saveServiceOptions(data, { port: "4400" }), false);
   assert.equal(existsSync(data.path("service.json")), false);
@@ -55,12 +56,14 @@ test("background settings default to loopback and preserve saved values on inval
     host: "127.0.0.1",
     port: 4400,
     relayEnabled: false,
+    relayRegistrations: {},
   });
   data.writeJson("service.json", { port: 4501, futureField: true });
   assert.deepEqual(readServiceOptions(data), {
     host: "127.0.0.1",
     port: 4501,
     relayEnabled: false,
+    relayRegistrations: {},
   });
 });
 

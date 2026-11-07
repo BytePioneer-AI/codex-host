@@ -416,6 +416,19 @@ export class OfficialRuntimeOwner {
       return;
     const value = event.value;
     if (!object(value)) return client.output(event);
+    if (value.method === "serverRequest/resolved" && object(value.params)) {
+      const nativeId = value.params.requestId;
+      const match = [...client.serverRequests].find(([, original]) => original === nativeId);
+      if (match) {
+        client.serverRequests.delete(match[0]);
+        const projected = { ...value, params: { ...value.params, requestId: match[0] } };
+        return client.output({
+          ...event,
+          value: projected,
+          frame: Buffer.from(`${JSON.stringify(projected)}\n`),
+        });
+      }
+    }
     if (typeof value.id === "string" || typeof value.id === "number") {
       if (typeof value.method === "string") {
         const id = `codexhost:server:${client.id}:${event.generation}:${randomUUID()}`;

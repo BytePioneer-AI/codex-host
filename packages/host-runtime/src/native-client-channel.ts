@@ -181,14 +181,14 @@ function nativeQuestions(params: JsonObject): ClientQuestion | undefined {
           id,
           prompt,
           multiple: value.multiSelect === true,
-          allowOther: value.allowOther === true,
+          allowOther: value.isOther === true,
           options,
         }
       : {
           type: "text",
           id,
           prompt,
-          ...(value.secret === true ? { secret: true } : {}),
+          ...(value.isSecret === true ? { secret: true } : {}),
           ...(value.optional === true ? { optional: true } : {}),
         };
     questions.push(question);
@@ -246,6 +246,12 @@ function nativeInteraction(
   const approval = approvalInteraction(method, params);
   if (approval) return approval;
   if (method === "item/tool/requestUserInput") {
+    // The browser question card has no masked-input contract.
+    if (
+      Array.isArray(params.questions) &&
+      params.questions.some((question) => isRecord(question) && question.isSecret === true)
+    )
+      return undefined;
     const interaction = nativeQuestions(params);
     return interaction ? { kind: "question", interaction } : undefined;
   }
@@ -380,7 +386,11 @@ export class NativeClientChannel {
         const publicId =
           this.#pendingNativeIds.get(requestKey(requestId)) ??
           (typeof requestId === "string" && this.#pending.has(requestId) ? requestId : undefined);
-        if (publicId) this.#deletePending(publicId);
+        if (publicId) {
+          const pending = this.#pending.get(publicId);
+          this.#deletePending(publicId);
+          if (pending) this.#host.events.changed(pending.threadId, value.method);
+        }
       }
       return;
     }

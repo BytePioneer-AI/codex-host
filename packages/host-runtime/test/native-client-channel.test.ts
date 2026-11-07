@@ -166,6 +166,70 @@ it("does not expose native permission grants as generic approvals", () => {
   expect(channel.interactions("native-thread")).toEqual([]);
 });
 
+it("reads the native isOther flag for custom answers", () => {
+  const channel = new NativeClientChannel({
+    events: new ClientChannelEvents(),
+    request: vi.fn(async () => ({ result: {} })),
+    respond: vi.fn(async () => undefined),
+  });
+  channel.observeMessage({
+    id: 4,
+    method: "item/tool/requestUserInput",
+    params: {
+      threadId: "native-thread",
+      questions: [
+        { id: "choice", question: "Choose or type", isOther: true, options: [{ label: "Option" }] },
+      ],
+    },
+  });
+  expect(channel.interactions("native-thread")[0]?.interaction).toMatchObject({
+    type: "question",
+    questions: [{ id: "choice", allowOther: true }],
+  });
+});
+
+it("does not present a native secret question in an unmasked browser field", () => {
+  const channel = new NativeClientChannel({
+    events: new ClientChannelEvents(),
+    request: vi.fn(async () => ({ result: {} })),
+    respond: vi.fn(async () => undefined),
+  });
+  channel.observeMessage({
+    id: 8,
+    method: "item/tool/requestUserInput",
+    params: {
+      threadId: "native-thread",
+      questions: [{ id: "secret", question: "Secret input", isSecret: true, options: null }],
+    },
+  });
+  expect(channel.interactions("native-thread")).toEqual([]);
+});
+
+it("withdraws a resolved native card and invalidates its Thread without a Thread ID in the notification", () => {
+  const events = new ClientChannelEvents();
+  const updates: unknown[] = [];
+  events.subscribe((value) => updates.push(value));
+  const channel = new NativeClientChannel({
+    events,
+    request: vi.fn(async () => ({ result: {} })),
+    respond: vi.fn(async () => undefined),
+  });
+  channel.observeMessage({
+    id: "projected-native-id",
+    method: "item/fileChange/requestApproval",
+    params: { threadId: "native-thread" },
+  });
+  const before = updates.length;
+  channel.observeMessage({
+    method: "serverRequest/resolved",
+    params: { requestId: "projected-native-id" },
+  });
+  expect(channel.interactions("native-thread")).toEqual([]);
+  expect(updates.slice(before)).toContainEqual(
+    expect.objectContaining({ threadId: "native-thread", method: "serverRequest/resolved" }),
+  );
+});
+
 it("drops native pending interactions and subscriptions on backend generation reset", () => {
   const channel = new NativeClientChannel({
     events: new ClientChannelEvents(),

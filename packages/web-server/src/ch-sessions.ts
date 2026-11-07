@@ -195,12 +195,11 @@ export class ChSessions {
         const page: { data: ChThread[]; nextCursor: string | null } = await this.host.request<{
           data: ChThread[];
           nextCursor: string | null;
-        }>("thread/list", { limit: 200, cursor, archived, modelProviders: ["codexhost"] });
-        for (const row of page.data)
-          if (row.modelProvider === "codexhost") {
-            found.set(row.id, row);
-            if (archived) archivedIds.add(row.id);
-          }
+        }>("thread/list", { limit: 200, cursor, archived });
+        for (const row of page.data) {
+          found.set(row.id, row);
+          if (archived) archivedIds.add(row.id);
+        }
         cursor = page.nextCursor;
         if (cursor && seen.has(cursor))
           throw new RpcError("host/pagination-invalid", "CH cursor did not advance.");
@@ -213,9 +212,15 @@ export class ChSessions {
       const result = await this.host.request<{
         threads: Array<{ threadId: string; owner: string; harnessId?: string }>;
       }>("codexhost/thread/ownership/list", { threadIds: ids.slice(start, start + 100) });
-      for (const item of result.threads)
-        if (item.owner === "external" && item.harnessId)
+      for (const item of result.threads) {
+        if (
+          item.owner === "external" &&
+          item.harnessId &&
+          found.get(item.threadId)?.modelProvider === "codexhost"
+        )
           ownership.set(item.threadId, item.harnessId);
+        else if (item.owner === "codex") ownership.set(item.threadId, "codex");
+      }
     }
     const rows = new Map([...found].filter(([id]) => ownership.has(id)));
     for (const [id, row] of this.rows) {
@@ -308,11 +313,16 @@ export class ChSessions {
     const inspection = threadInspectionSchema.parse(
       await this.host.request("codexhost/thread/inspect", { threadId: this.id(id) }),
     );
-    if (inspection.owner !== "external")
-      throw new RpcError(
-        "session/not-external",
-        "This Web connection only handles external Harness Threads.",
-      );
+    // Native Codex retains its identity and is routed by the shared Host. It is
+    // not imported into the external codex-cli Adapter merely to use Web.
+    if (inspection.owner === "codex")
+      return {
+        ...inspection,
+        harnessId: "codex",
+        effectiveModel: undefined,
+        effectiveThinkingOptionId: undefined,
+        effectivePermissionModeId: undefined,
+      };
     return inspection;
   }
   private view(id: string, reuseIdle = false): Promise<ChThreadHistory> {
@@ -363,7 +373,7 @@ export class ChSessions {
     if (!row) throw new RpcError("session/not-found", "CH Thread not found.", { sessionId: id });
     const harnessId = this.threads.harnessId(id);
     if (!harnessId)
-      throw new RpcError("session/not-external", "CH did not confirm external Thread ownership.");
+      throw new RpcError("session/ownership-unconfirmed", "CH did not confirm Thread ownership.");
     let view = this.threads.view(id);
     if (!view) {
       const history: ChThreadHistory = new ChThreadHistory(
@@ -413,7 +423,9 @@ export class ChSessions {
       throw new RpcError("host/resync", "Host snapshot was superseded by a new generation");
     view.log.setProjection(
       "nativeDiscovery",
-      !view.thread.parentThreadId && view.thread.canAcceptDirectInput !== false,
+      harnessId !== "codex" &&
+        !view.thread.parentThreadId &&
+        view.thread.canAcceptDirectInput !== false,
     );
     if (view.ownerSnapshot && this.hostOnline && !this.closed)
       this.interactions?.update(view.ownerSnapshot);
@@ -476,6 +488,28 @@ export class ChSessions {
     configurationRevision: number,
   ): void {
     const id = view.thread.id;
+    if (harnessId === "codex") {
+      // Do not apply external Harness defaults to an existing native Thread.
+      // Its model and approval policy continue to be owned by app-server.
+      view.log.setProjection("sentMessageEdit", { seq: null });
+      const configuration = view.ownerSnapshot?.configuration;
+      const selection = {
+        provider: "codex",
+        model: configuration?.native?.model ?? "harness",
+        ...(configuration?.native?.reasoningEffort
+          ? { reasoningEffort: configuration.native.reasoningEffort }
+          : {}),
+      };
+      view.log.setProjection("modelSelection", { lastUsed: selection, next: selection });
+      view.log.setProjection("nativePermissions", {
+        harnessId: "codex",
+        catalog: null,
+        scope: "live",
+        selectable: false,
+        locked: true,
+      });
+      return;
+    }
     if ((this.threads.get(id)?.configurationRevision ?? 0) !== configurationRevision) return;
     if (!force && this.threads.get(id)?.controls) return;
     // Runtime inspection/config discovery must not gate the history snapshot.
@@ -531,7 +565,7 @@ export class ChSessions {
   private async summary(row: ChThread) {
     const harnessId = this.threads.harnessId(row.id);
     if (!harnessId)
-      throw new RpcError("session/not-external", "CH did not confirm external Thread ownership.");
+      throw new RpcError("session/ownership-unconfirmed", "CH did not confirm Thread ownership.");
     const values = {
       ...defaultProjections(),
       ...globalProjectionValues(this.threads.view(row.id)?.log.projections ?? {}),
@@ -541,7 +575,8 @@ export class ChSessions {
             imageLimits: WEB_IMAGE_LIMITS,
           }
         : {}),
-      nativeDiscovery: !row.parentThreadId && row.canAcceptDirectInput !== false,
+      nativeDiscovery:
+        harnessId !== "codex" && !row.parentThreadId && row.canAcceptDirectInput !== false,
       threadReference: { hostId: "local" },
       title: threadListTitle(row),
       codexhostImportSource: row.codexhostImportSource ?? null,
@@ -710,7 +745,7 @@ export class ChSessions {
   /**
    * Working directory of one Host-confirmed local Thread.
    *
-   * Drafts, official Codex Threads, and remote Threads have no local directory
+   * Drafts and remote Threads have no local directory
    * here: file access reports them unavailable rather than inventing one.
    * @param sessionId - Session identity the browser addressed.
    * @returns the Host-recorded directory, or undefined when this Thread has none.
@@ -932,6 +967,11 @@ export class ChSessions {
         return {};
       }
       const owner = await this.owner(request.sessionId);
+      if (owner.owner === "codex")
+        throw new RpcError(
+          "session/model-unavailable",
+          "This native Codex conversation keeps its app-server settings. Change its model in Desktop.",
+        );
       if (owner.harnessId !== request.provider)
         throw new RpcError(
           "session/model-unavailable",
@@ -1315,7 +1355,9 @@ export class ChSessions {
         throw new RpcError("command/unavailable", "Commands require an existing external Thread.");
       if (this.closed || !this.hostOnline)
         throw new RpcError("host/offline", "The Host is disconnected.");
-      await this.owner(id);
+      const owner = await this.owner(id);
+      if (owner.owner !== "external")
+        throw new RpcError("command/unavailable", "Harness commands require an external Thread.");
       const { thread } = await this.host.request<{ thread: ChThread }>("thread/read", {
         threadId: id,
         includeTurns: false,

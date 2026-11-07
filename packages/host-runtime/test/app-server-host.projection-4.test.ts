@@ -1424,6 +1424,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       },
     });
 
+    await fixture.ready;
     await vi.waitFor(() => {
       expect(fixture.spawnOfficial).toHaveBeenCalledWith(
         "/synthetic/codex",
@@ -1452,6 +1453,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       },
     });
 
+    await fixture.ready;
     await vi.waitFor(() => {
       expect(fixture.spawnOfficial).toHaveBeenCalledWith(
         "/synthetic/codex",

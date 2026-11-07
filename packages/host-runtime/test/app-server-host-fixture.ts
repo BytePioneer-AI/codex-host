@@ -317,7 +317,11 @@ export function createFixture(
   const official = new FakeOfficialProcess(options.officialExitsOnInputEnd);
   const collector = new JsonLineCollector(desktopOutput);
   const startup = Promise.withResolvers<undefined>();
-  void startup.promise.catch(() => undefined);
+  const ready = startup.promise.then(
+    () => new Promise<undefined>((resolve) => setImmediate(resolve, undefined)),
+  );
+  // Tests that close before startup may never await ready; awaiting it still rejects.
+  void ready.catch(() => undefined);
   const spawnOfficial = vi.fn(() => {
     startup.resolve(undefined);
     return official as unknown as ChildProcessWithoutNullStreams;
@@ -377,9 +381,7 @@ export function createFixture(
     host,
     official,
     running,
-    ready: startup.promise.then(
-      () => new Promise<undefined>((resolve) => setImmediate(resolve, undefined)),
-    ),
+    ready,
     mappingStore,
     mappingStoreDirectory,
     spawnOfficial,

@@ -16,6 +16,8 @@ export interface WebThreadState {
   reading?: Promise<ChThreadHistory>;
   /** The in-flight model/permission control load for `view`. */
   controls?: Promise<void>;
+  /** Confirmed configuration writes supersede reads started at an older revision. */
+  configurationRevision?: number;
   /** The in-flight usage load for `view`. */
   usage?: UsageLoad;
   usageReadAt?: number;

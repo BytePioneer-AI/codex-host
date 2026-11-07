@@ -8,6 +8,7 @@ import {
   webToolOutputReferenceSchema,
   encodeHarnessPluginRoute,
   harnessPluginRouteSchema,
+  harnessModelSelectionStateSchema,
   threadInspectionSchema,
   threadUsageInspectionSchema,
   type HarnessDisplayEntries,
@@ -356,6 +357,7 @@ export class ChSessions {
     this.threads.prune(id);
   }
   private async readView(id: string, force: boolean): Promise<ChThreadHistory> {
+    const configurationRevision = this.threads.get(id)?.configurationRevision ?? 0;
     if (!this.rows.has(id)) await this.refresh();
     const row = this.rows.get(id);
     if (!row) throw new RpcError("session/not-found", "CH Thread not found.", { sessionId: id });
@@ -424,7 +426,7 @@ export class ChSessions {
     if (this.threads.view(id) !== view)
       throw new RpcError("host/resync", "Host snapshot was superseded by a new generation");
     view.log.setProjection("harnessIdentity", { id: harnessId, name });
-    this.loadControls(view, harnessId, force);
+    this.loadControls(view, harnessId, force, configurationRevision);
     this.loadUsage(view, force);
     // History and running state must converge even when a live status notification
     // was missed. Use the Host status, not the last Turn's completion state.
@@ -467,8 +469,14 @@ export class ChSessions {
       });
     this.threads.ensure(id).usage = state;
   }
-  private loadControls(view: ChThreadHistory, harnessId: string, force: boolean): void {
+  private loadControls(
+    view: ChThreadHistory,
+    harnessId: string,
+    force: boolean,
+    configurationRevision: number,
+  ): void {
     const id = view.thread.id;
+    if ((this.threads.get(id)?.configurationRevision ?? 0) !== configurationRevision) return;
     if (!force && this.threads.get(id)?.controls) return;
     // Runtime inspection/config discovery must not gate the history snapshot.
     const loading = Promise.all([
@@ -479,7 +487,8 @@ export class ChSessions {
         if (
           this.closed ||
           this.threads.view(id) !== view ||
-          this.threads.get(id)?.controls !== loading
+          this.threads.get(id)?.controls !== loading ||
+          (this.threads.get(id)?.configurationRevision ?? 0) !== configurationRevision
         )
           return;
         const target = view.editableMessage();
@@ -928,16 +937,45 @@ export class ChSessions {
           "session/model-unavailable",
           "Start a new conversation to change Harness.",
         );
-      await this.host.request("codexhost/thread/model/select", {
-        threadId: this.id(request.sessionId),
-        model: { id: request.model },
-      });
-      if (request.reasoningEffort)
-        await this.host.request("codexhost/thread/thinking/select", {
-          threadId: this.id(request.sessionId),
-          thinkingOptionId: request.reasoningEffort,
+      const id = this.id(request.sessionId);
+      const hostEpoch = this.hostEpoch;
+      const publish = (value: unknown) => {
+        const configuration = harnessModelSelectionStateSchema.parse(value);
+        if (!configuration.effectiveModel)
+          throw new RpcError("session/model-unavailable", "Host did not confirm the Model.");
+        if (this.closed || this.hostEpoch !== hostEpoch) return configuration;
+        const state = this.threads.ensure(id);
+        // Reads started before this acknowledgement cannot replace its confirmed state.
+        state.configurationRevision = (state.configurationRevision ?? 0) + 1;
+        const selection = {
+          provider: owner.harnessId,
+          model: configuration.effectiveModel.id,
+          ...(configuration.effectiveThinkingOptionId
+            ? { reasoningEffort: configuration.effectiveThinkingOptionId }
+            : {}),
+        };
+        state.view?.log.setProjection("modelSelection", { lastUsed: selection, next: selection });
+        return configuration;
+      };
+      const configuration = publish(
+        await this.host.request("codexhost/thread/model/select", {
+          threadId: id,
+          model: { id: request.model },
+        }),
+      );
+      if (
+        request.reasoningEffort &&
+        request.reasoningEffort !== configuration.effectiveThinkingOptionId
+      )
+        publish({
+          ...configuration,
+          ...harnessModelSelectionStateSchema.parse(
+            await this.host.request("codexhost/thread/thinking/select", {
+              threadId: id,
+              thinkingOptionId: request.reasoningEffort,
+            }),
+          ),
         });
-      await this.view(request.sessionId);
       return {};
     });
     rpc.register("session/prompt", async (args) => {

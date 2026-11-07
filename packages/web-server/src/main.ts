@@ -450,11 +450,17 @@ registerUiExtensionRpc(rpc, extensions, {
 });
 registerVoiceStatus(rpc, chHost);
 
+const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
+/** Harness icon URLs are stable; serve the cached copy while revalidating in the background.
+ * `--dev-web-ui` keeps them fresh so icon changes show on reload. */
+const HARNESS_ICON_CACHE =
+  devWebUi === undefined ? "private, max-age=86400, stale-while-revalidate=604800" : "no-cache";
+
 async function send(
   request: IncomingMessage,
   response: ServerResponse,
   asset: AssetResponse | undefined,
-  cache = false,
+  cacheControl = "no-cache",
 ): Promise<void> {
   if (asset === undefined) {
     response.writeHead(404, { "content-type": "text/plain" }).end("not found");
@@ -464,12 +470,12 @@ async function send(
     asset.body,
     asset.contentType,
     request.headers["accept-encoding"],
-    cache ? request.url : undefined,
+    cacheControl === IMMUTABLE_CACHE ? request.url : undefined,
   );
   response
     .writeHead(200, {
       "content-type": asset.contentType,
-      "cache-control": cache ? "public, max-age=31536000, immutable" : "no-cache",
+      "cache-control": cacheControl,
       ...compressed.headers,
     })
     .end(compressed.body);
@@ -633,21 +639,26 @@ const server = createWebServer((request, response) => {
         request,
         response,
         assets.plugin(url) ?? recoveryAssets.plugin(url),
-        url.includes("rev="),
+        url.includes("rev=") ? IMMUTABLE_CACHE : undefined,
       );
       return;
     }
     if (pathname === "/harness-icons/presentation.json") {
       const plugins = await sessions.catalog.list();
-      await send(request, response, {
-        contentType: "application/json",
-        body: Buffer.from(JSON.stringify(harnessIconStyles(plugins))),
-      });
+      await send(
+        request,
+        response,
+        {
+          contentType: "application/json",
+          body: Buffer.from(JSON.stringify(harnessIconStyles(plugins))),
+        },
+        HARNESS_ICON_CACHE,
+      );
       return;
     }
     if (pathname.startsWith("/harness-icons/")) {
       const id = decodeURIComponent(pathname.slice("/harness-icons/".length));
-      await send(request, response, await sessions.catalog.icon(id));
+      await send(request, response, await sessions.catalog.icon(id), HARNESS_ICON_CACHE);
       return;
     }
     if (pluginRuntime !== undefined && (auth === undefined || requestAuth !== undefined)) {
@@ -657,7 +668,12 @@ const server = createWebServer((request, response) => {
       }
       if (await pluginRuntime.handle(request, response)) return;
     }
-    await send(request, response, assets.dist(pathname), pathname.startsWith("/assets/"));
+    await send(
+      request,
+      response,
+      assets.dist(pathname),
+      pathname.startsWith("/assets/") ? IMMUTABLE_CACHE : undefined,
+    );
   })().catch((error: unknown) => {
     console.error("[http] request failed", error);
     if (!response.headersSent) response.writeHead(500).end("internal error");

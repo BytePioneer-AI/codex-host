@@ -123,12 +123,12 @@ export const en = {
   "connectDevices.tokenTitle": "Access token",
   "connectDevices.stopTitleShort": "Stop device access",
   "connectDevices.stopHint":
-    "Turns off IP access, HTTPS forwarding and the official or self-hosted relay managed here. Running tasks continue.",
+    "Turns off the relay, IP access and HTTPS forwarding enabled here. Running tasks continue.",
   "connectDevices.stop": "Stop access…",
   "connectDevices.stopTitle": "Stop device access?",
   "connectDevices.stopConfirm": "Stop access",
   "connectDevices.stopDescription":
-    "Closes the official or self-hosted relay, managed IP access and Tailscale HTTPS roots forwarding to this Web. Web terminals and devices using those routes disconnect; running tasks continue. You can enable access again at any time.",
+    "Turns off the relay, IP access and Tailscale HTTPS enabled here. Devices and Web terminals connected through them disconnect; running tasks continue. You can enable access again at any time.",
   "connectDevices.stopUnmanaged":
     "Your external proxy or foreground listener is managed separately and may still allow access.",
   "connectDevices.stopIncomplete":
@@ -152,36 +152,31 @@ export const en = {
   "connectDevices.selfRelay.title": "Self-hosted relay",
   "connectDevices.selfRelay.summary": "Your server and domain · No phone app needed",
   "connectDevices.selfRelay.off":
-    "Use your own relay. TLS ends on this computer; the relay does not decrypt content during normal forwarding. No invitation code is needed.",
+    "Use your own relay server. Like the official relay, it only forwards encrypted traffic.",
   "connectDevices.selfRelay.address": "Control hostname: {host}",
   "connectDevices.selfRelay.host": "Control hostname",
-  "connectDevices.selfRelay.hostHint":
-    "Hostname only, for example relay.example.com. No https://, port or path.",
+  "connectDevices.selfRelay.hostHint": "For example, relay.example.com",
   "connectDevices.selfRelay.invalidHost":
-    "Enter a valid DNS hostname, without https://, a port, a path or an IP address.",
+    "Enter a domain name such as relay.example.com, without https:// or a port.",
   "connectDevices.selfRelay.helpTitle": "How to set up your own relay",
   "connectDevices.selfRelay.source": "Get the codexhost source on your server:",
   "connectDevices.selfRelay.domain":
-    "You need your own domain and a Linux server with Docker Compose and certbot.",
+    "You need a domain and a Linux server with Docker and certbot.",
   "connectDevices.selfRelay.dns":
-    "Point one wildcard DNS record, *.example.com, to your server; it covers relay.example.com and <id>.example.com. Existing records such as www and the root domain keep working; the wildcard only covers subdomains without their own records. Computer addresses use 26-character random-looking IDs derived from public keys, avoiding common subdomain names. With Cloudflare, use DNS only, not the proxy. Add AAAA only if IPv6 is also reachable.",
-  "connectDevices.selfRelay.ports":
-    "Allow TCP 443; certbot certificate issuance and renewal also need TCP 80.",
-  "connectDevices.selfRelay.certificate":
-    "First use certbot to request a certificate only for relay.example.com and grant the container group read access to its private key. Each computer requests its own certificate.",
+    "Add one DNS record pointing *.example.com to the server. Existing records are unaffected. On Cloudflare, choose DNS only.",
+  "connectDevices.selfRelay.ports": "Open TCP ports 443 and 80.",
+  "connectDevices.selfRelay.certificate": "Use certbot to get a certificate for relay.example.com.",
   "connectDevices.selfRelay.docker":
-    "Build using packages/remote-relay/Dockerfile. In packages/remote-relay/deploy/compose.yaml, set --domain example.com --control-host relay.example.com and certificate paths, then start it with Docker Compose.",
+    "Build the image from packages/remote-relay/Dockerfile, replace example.com with your domain in packages/remote-relay/deploy/compose.yaml, then start it with Docker Compose.",
   "connectDevices.selfRelay.connect":
-    "Return here, enter relay.example.com as the control hostname and click Enable relay to save and connect. Scan once it is ready.",
-  "connectDevices.selfRelay.noDomain":
-    "No domain? Use the official codexhost relay or Tailscale instead.",
+    "Come back here, enter relay.example.com and click Enable relay.",
+  "connectDevices.selfRelay.noDomain": "No domain? Use the official relay or Tailscale.",
   "connectDevices.selfRelay.docs": "Full self-hosted relay guide",
   "connectDevices.relay.title": "codexhost Relay",
   "connectDevices.relay.summary": "Any network · No app needed on your phone",
   "connectDevices.relay.hint":
     "Connect across networks without an extra phone app. An access token is required.",
-  "connectDevices.relay.off":
-    "The official codexhost encrypted relay. TLS ends on this computer; the relay does not decrypt content during normal forwarding. Enabling registers an address and requests its certificate.",
+  "connectDevices.relay.off": "The official codexhost relay. It only forwards encrypted traffic.",
   "connectDevices.relay.name": "Address name (optional)",
   "connectDevices.relay.nameHint":
     "4–20 lowercase letters or digits. Leave blank to let the relay assign a name.",
@@ -201,11 +196,9 @@ export const en = {
   "connectDevices.relay.unreachable": "The certificate authority could not be reached.",
   "connectDevices.relay.replaced":
     "Stopped: another computer is using this identity. Turn the relay off and enable it again after resolving the conflict.",
-  "connectDevices.relay.rejected": "Stopped: the Relay rejected this identity's signature.",
+  "connectDevices.relay.rejected": "Stopped: the relay rejected this computer.",
   "connectDevices.relay.unsupported-version":
     "Stopped: this protocol version is unsupported. Update codexhost.",
-  "connectDevices.relay.identity":
-    "This computer's identity key is stored in remote-relay/identity.pem in its local data directory to keep its address unchanged. Do not delete or share it.",
   "connectDevices.kindPublic": "Public address",
   "connectDevices.kindPublicHint":
     "Your configured public address. An access token is still required.",
@@ -540,13 +533,12 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.localAccess": "仅本机访问",
   "connectDevices.tokenTitle": "访问令牌",
   "connectDevices.stopTitleShort": "停止设备访问",
-  "connectDevices.stopHint":
-    "关闭此页面管理的 IP 访问、HTTPS 转发和官方或自建中转，运行中的任务继续。",
+  "connectDevices.stopHint": "关闭此页面开启的中转、IP 访问和 HTTPS 转发，运行中的任务继续。",
   "connectDevices.stop": "停止访问…",
   "connectDevices.stopTitle": "停止设备访问？",
   "connectDevices.stopConfirm": "停止访问",
   "connectDevices.stopDescription":
-    "关闭官方或自建中转、由此页面管理的 IP 访问，以及指向当前 Web 的 Tailscale HTTPS 根路径转发。Web 终端和通过这些入口连接的设备会断开，运行中的任务继续。之后可随时重新启用。",
+    "关闭此页面开启的中转、IP 访问和 Tailscale HTTPS。通过这些方式连接的设备和 Web 终端会断开，运行中的任务继续。之后可随时重新启用。",
   "connectDevices.stopUnmanaged": "你配置的外部代理或前台监听需单独管理，它们可能仍允许访问。",
   "connectDevices.stopIncomplete": "仍有 HTTPS 转发生效，请刷新后再次停止访问。",
   "connectDevices.restartTimeout": "Web 尚未恢复连接，请确认它正在运行后刷新状态。",
@@ -564,34 +556,29 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.relay.closeFirst": "请先关闭当前中转，再切换中转或修改控制地址。",
   "connectDevices.selfRelay.title": "自建中转",
   "connectDevices.selfRelay.summary": "自己的服务器和域名 · 手机无需安装应用",
-  "connectDevices.selfRelay.off":
-    "通过自己的中转连接。TLS 在这台电脑上解开，中转在正常转发时不解密内容，无需邀请码。",
+  "connectDevices.selfRelay.off": "通过自己的服务器中转，和官方中转一样只转发加密内容。",
   "connectDevices.selfRelay.address": "控制地址：{host}",
   "connectDevices.selfRelay.host": "控制地址",
-  "connectDevices.selfRelay.hostHint":
-    "只填主机名，例如 relay.example.com，不带 https://、端口或路径。",
+  "connectDevices.selfRelay.hostHint": "例如 relay.example.com",
   "connectDevices.selfRelay.invalidHost":
-    "请输入合法 DNS 主机名，不要填写 https://、端口、路径或 IP 地址。",
+    "请输入域名，例如 relay.example.com，不带 https:// 或端口。",
   "connectDevices.selfRelay.helpTitle": "如何搭建自己的中转",
   "connectDevices.selfRelay.source": "在服务器上获取 codexhost 源码：",
   "connectDevices.selfRelay.domain":
-    "准备自己的域名，以及装有 Docker Compose 和 certbot 的 Linux 服务器。",
+    "准备一个域名，以及一台装有 Docker 和 certbot 的 Linux 服务器。",
   "connectDevices.selfRelay.dns":
-    "只需将一条通配 DNS 记录 *.example.com 指向服务器，同时覆盖 relay.example.com 和 <id>.example.com。已有记录（如 www、根域）不受影响、照常使用，通配只覆盖没有单独记录的子域。电脑地址使用 26 位随机样式 ID（由公钥派生），不会与常见子域冲突。Cloudflare 选“仅 DNS”，不要开代理；只在 IPv6 同样可达时添加 AAAA 记录。",
-  "connectDevices.selfRelay.ports": "放行 TCP 443；certbot 申请和续期控制地址证书还需要 TCP 80。",
-  "connectDevices.selfRelay.certificate":
-    "先用 certbot 只申请 relay.example.com 的证书，并授予容器组读取私钥的权限。每台电脑会自行申请自己的证书。",
+    "添加一条 DNS 记录，把 *.example.com 指向服务器，已有记录不受影响。使用 Cloudflare 时选择“仅 DNS”。",
+  "connectDevices.selfRelay.ports": "放行 TCP 443 和 80 端口。",
+  "connectDevices.selfRelay.certificate": "用 certbot 为 relay.example.com 申请证书。",
   "connectDevices.selfRelay.docker":
-    "按 packages/remote-relay/Dockerfile 构建镜像，在 packages/remote-relay/deploy/compose.yaml 中设置 --domain example.com --control-host relay.example.com 和证书路径，再用 Docker Compose 启动。",
-  "connectDevices.selfRelay.connect":
-    "回到这里填写控制地址 relay.example.com，点击“启用中转”即可保存并连接，准备完成后用手机扫码。",
-  "connectDevices.selfRelay.noDomain": "没有域名？建议使用官方 codexhost 中转或 Tailscale。",
+    "按 packages/remote-relay/Dockerfile 构建镜像，把 packages/remote-relay/deploy/compose.yaml 中的 example.com 换成你的域名，然后用 Docker Compose 启动。",
+  "connectDevices.selfRelay.connect": "回到这里填写 relay.example.com，点击“启用中转”。",
+  "connectDevices.selfRelay.noDomain": "没有域名？可以使用官方中转或 Tailscale。",
   "connectDevices.selfRelay.docs": "完整自建中转教程",
   "connectDevices.relay.title": "codexhost 中转",
   "connectDevices.relay.summary": "任何网络 · 手机无需安装应用",
   "connectDevices.relay.hint": "跨网络连接，手机无需额外安装应用，登录需要访问令牌。",
-  "connectDevices.relay.off":
-    "codexhost 官方加密中转。TLS 在这台电脑上解开，中转在正常转发时不解密内容。启用后会为这台电脑注册地址并申请证书。",
+  "connectDevices.relay.off": "codexhost 官方中转，只转发加密内容。",
   "connectDevices.relay.name": "地址名（可选）",
   "connectDevices.relay.nameHint": "4–20 位小写字母和数字，留空由中转分配。",
   "connectDevices.relay.inviteLabel": "邀请码",
@@ -609,10 +596,8 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.relay.unreachable": "无法连接证书机构。",
   "connectDevices.relay.replaced":
     "已停止：另一台电脑正在使用此身份。解决冲突后关闭中转再重新启用。",
-  "connectDevices.relay.rejected": "已停止：Relay 拒绝了此身份的签名。",
+  "connectDevices.relay.rejected": "已停止：中转拒绝了这台电脑。",
   "connectDevices.relay.unsupported-version": "已停止：协议版本不受支持，请更新 codexhost。",
-  "connectDevices.relay.identity":
-    "这台电脑的身份密钥保存在本机数据目录的 remote-relay/identity.pem，用于保持地址不变，请勿删除或分享。",
   "connectDevices.kindPublic": "公开地址",
   "connectDevices.kindPublicHint": "你配置的公开地址，登录仍需要访问令牌。",
   "connectDevices.kindFunnel": "Tailscale Funnel · 公开",

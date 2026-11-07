@@ -100,7 +100,6 @@ export function RelayControl({
       {paused && (
         <p className={css.meta}>{failure.detail ?? t("connectDevices.relay.unreachable")}</p>
       )}
-      {state.status === "off" && <p className={css.meta}>{t("connectDevices.relay.identity")}</p>}
       {state.status === "off" ? (
         <form
           className={css.connectionHelp}

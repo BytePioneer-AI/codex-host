@@ -96,9 +96,7 @@ it(
     await f.page.locator('[data-relay-status="off"]').waitFor();
     const intro = (await control.textContent()) ?? "";
     assert.ok(intro.includes("Use your own relay"));
-    assert.ok(!intro.includes("official codexhost encrypted relay"));
-    assert.ok(intro.includes("remote-relay/identity.pem"));
-    assert.ok(!intro.includes(f.data.path("remote-relay/identity.pem")));
+    assert.ok(!intro.includes("The official codexhost relay"));
     const name = control.getByRole("textbox", { name: "Address name (optional)" });
     const invite = control.getByRole("textbox", { name: "Invitation code" });
     assert.equal(await name.count(), 0);
@@ -242,7 +240,7 @@ it(
         "Preparing…",
       ],
       [{ status: "stopped", reason: "replaced" }, "another computer is using this identity"],
-      [{ status: "stopped", reason: "rejected" }, "rejected this identity's signature"],
+      [{ status: "stopped", reason: "rejected" }, "the relay rejected this computer"],
       [{ status: "stopped", reason: "unsupported-version" }, "Update codexhost"],
     ];
     for (const [state, text] of states) {

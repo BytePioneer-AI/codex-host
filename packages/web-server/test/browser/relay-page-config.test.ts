@@ -108,12 +108,6 @@ for (const locale of ["en-US", "zh-CN"]) {
       const closeFirst = chinese
         ? "请先关闭当前中转，再切换中转或修改控制地址。"
         : "Turn off the active relay before switching or changing its control address.";
-      const checkIdentity = async () => {
-        const text = (await control.textContent()) ?? "";
-        assert.ok(text.includes("remote-relay/identity.pem"));
-        assert.ok(text.includes(chinese ? "本机数据目录" : "local data directory"));
-        assert.ok(text.includes(chinese ? "请勿删除或分享" : "Do not delete or share"));
-      };
       for (const width of [375, 1440]) {
         await page.setViewportSize({ width, height: width === 375 ? 812 : 1000 });
         await open();
@@ -123,15 +117,9 @@ for (const locale of ["en-US", "zh-CN"]) {
         assert.ok((await control.textContent())?.includes("relay.chost.dev"));
         assert.ok(
           (await control.textContent())?.includes(
-            chinese ? "codexhost 官方加密中转" : "official codexhost encrypted relay",
+            chinese ? "codexhost 官方中转" : "The official codexhost relay",
           ),
         );
-        assert.ok(
-          (await control.textContent())?.includes(
-            chinese ? "正常转发时不解密内容" : "does not decrypt content during normal forwarding",
-          ),
-        );
-        await checkIdentity();
         const name = control.getByRole("textbox", {
           name: chinese ? "地址名（可选）" : "Address name (optional)",
         });
@@ -161,21 +149,15 @@ for (const locale of ["en-US", "zh-CN"]) {
         );
         assert.ok(
           !(await control.textContent())?.includes(
-            chinese ? "官方加密中转" : "official codexhost encrypted relay",
+            chinese ? "codexhost 官方中转" : "The official codexhost relay",
           ),
         );
-        await checkIdentity();
         assert.equal(await help.getAttribute("open"), "");
         const tutorial = (await help.textContent()) ?? "";
         for (const text of [
           "*.example.com",
           "relay.example.com",
-          "<id>.example.com",
-          "--domain example.com --control-host relay.example.com",
-          "26",
-          "www",
-          "AAAA",
-          "IPv6",
+          "compose.yaml",
           "Cloudflare",
           "443",
           "80",
@@ -186,22 +168,12 @@ for (const locale of ["en-US", "zh-CN"]) {
           assert.ok(tutorial.includes(text), text);
         const dns = (await help.locator("li").nth(2).textContent()) ?? "";
         for (const text of chinese
-          ? ["一条通配 DNS 记录", "根域", "只覆盖没有单独记录的子域", "公钥派生", "仅 DNS"]
-          : [
-              "one wildcard DNS record",
-              "root domain",
-              "only covers subdomains without their own records",
-              "derived from public keys",
-              "DNS only",
-            ])
+          ? ["一条 DNS 记录", "已有记录不受影响", "仅 DNS"]
+          : ["one DNS record", "Existing records are unaffected", "DNS only"])
           assert.ok(dns.includes(text), text);
         const hint = control.locator(`[id="${await host.getAttribute("aria-describedby")}"]`);
         assert.ok((await hint.textContent())?.includes("relay.example.com"));
-        assert.ok(
-          (await help.locator("li").nth(4).textContent())?.includes(
-            chinese ? "只申请 relay.example.com" : "only for relay.example.com",
-          ),
-        );
+        assert.ok((await help.locator("li").nth(4).textContent())?.includes("relay.example.com"));
         assert.ok((await help.locator("li").nth(6).textContent())?.includes("relay.example.com"));
         assert.equal(await help.locator("li").count(), 7);
         assert.equal(
@@ -215,7 +187,7 @@ for (const locale of ["en-US", "zh-CN"]) {
         assert.equal(await enable.isEnabled(), false);
         assert.ok(
           (await help.locator("li").first().textContent())?.includes(
-            chinese ? "准备自己的域名" : "your own domain",
+            chinese ? "准备一个域名" : "You need a domain",
           ),
         );
         await screenshotUnconfigured(width);
@@ -333,7 +305,6 @@ for (const locale of ["en-US", "zh-CN"]) {
       assert.equal(await host.inputValue(), "relay.example.com");
       assert.equal(await host.isEnabled(), true);
       assert.equal(await help.getAttribute("open"), null);
-      await checkIdentity();
       await choose("relay");
       assert.equal(await enable.isEnabled(), true);
       shown = {

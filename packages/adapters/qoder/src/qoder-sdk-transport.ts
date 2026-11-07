@@ -1192,11 +1192,12 @@ export class QoderSession implements HarnessSession {
    */
   #loadConfiguredContextWindows(): Promise<void> {
     if (typeof this.#query.request !== "function") return Promise.resolve();
-    const loading = (async () => {
+    this.#usageRefreshedWithoutSettings = false;
+    const loading = Promise.resolve().then(async () => {
       try {
         const settings = await this.#query.request?.({ type: "get_settings" });
         const configured = parseQoderConfiguredContextWindows(settings);
-        if (configured && !this.#closed) {
+        if (configured && !this.#closed && loading === this.#configuredContextWindows) {
           this.#usageTracker.setConfiguredContextWindows(configured);
           // A refresh that already gave up waiting emitted the fallback window; refresh again
           // so the UI picks up the configured window without waiting for the next turn.
@@ -1208,14 +1209,15 @@ export class QoderSession implements HarnessSession {
       } catch {
         // Diagnostic only; keep the fallback window.
       }
-    })();
+    });
     this.#configuredContextWindows = loading;
     return loading;
   }
 
   async #awaitConfiguredContextWindows(): Promise<void> {
     const loading = this.#configuredContextWindows;
-    if (!loading) return;
+    // Only the first wait for this request pays the timeout; new requests reset the flag.
+    if (!loading || this.#usageRefreshedWithoutSettings) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const settled = await Promise.race([
       loading.then(() => true),

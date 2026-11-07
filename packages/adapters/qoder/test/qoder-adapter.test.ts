@@ -26,6 +26,7 @@ import {
   parseQoderModelCatalog,
   qoderAvailableThinkingOptions,
 } from "../src/qoder-models.js";
+import { QoderSession } from "../src/qoder-sdk-transport.js";
 import type {
   QoderModelInfo,
   QoderOptions,
@@ -2681,10 +2682,24 @@ describe("QoderAdapter", () => {
         if (!opened.ok) throw new Error("open failed");
         const collector = new OutputCollector(opened.value.outputs);
         try {
-          await vi.advanceTimersByTimeAsync(3_000);
+          await vi.advanceTimersByTimeAsync(2_999);
+          expect(fakeQuery.getContextUsage).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
           expect(usageEvents(collector).at(-1)?.contextWindowTokens).toBe(
             QODER_DEFAULT_CONTEXT_WINDOW_TOKENS,
           );
+
+          const session = opened.value;
+          if (!(session instanceof QoderSession)) throw new Error("unexpected session");
+          for (let refresh = 0; refresh < 3; refresh++) {
+            const before = fakeQuery.getContextUsage.mock.calls.length;
+            void session.refreshUsage();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(fakeQuery.getContextUsage).toHaveBeenCalledTimes(before + 1);
+            expect(usageEvents(collector).at(-1)?.contextWindowTokens).toBe(
+              QODER_DEFAULT_CONTEXT_WINDOW_TOKENS,
+            );
+          }
 
           expect(answerSettings).toBeTypeOf("function");
           answerSettings?.();
@@ -2692,6 +2707,73 @@ describe("QoderAdapter", () => {
           const latest = usageEvents(collector).at(-1);
           expect(latest?.contextWindowTokens).toBe(1_000_000);
           expect(latest?.contextUsedTokens).toBe(110_000);
+        } finally {
+          await opened.value.close();
+        }
+      } finally {
+        await adapter.close();
+        vi.useRealTimers();
+      }
+    });
+
+    it("waits for new model settings after a timeout and ignores superseded settings", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const fakeQuery = contextQuery(qoderCnSettings);
+      const answerSettings: Array<(settings: unknown) => void> = [];
+      const defaultRequest = fakeQuery.request.getMockImplementation();
+      fakeQuery.request.mockImplementation(async (request: Record<string, unknown>) => {
+        if (request.type === "get_settings") {
+          return new Promise<unknown>((resolve) => answerSettings.push(resolve));
+        }
+        return defaultRequest?.(request);
+      });
+      const adapter = new QoderAdapter({
+        variant: "cn",
+        getAvailableModels: async () => [],
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+      try {
+        const opened = await adapter.open({
+          kind: "create",
+          cwd: "D:/project",
+          model: encodeQoderModelRef("dfmodel"),
+        });
+        if (!opened.ok) throw new Error("open failed");
+        const collector = new OutputCollector(opened.value.outputs);
+        try {
+          await vi.advanceTimersByTimeAsync(3_000);
+          const before = fakeQuery.getContextUsage.mock.calls.length;
+          const selected = await opened.value.execute({
+            type: "model.select",
+            model: encodeQoderModelRef("gmodel"),
+          });
+          expect(selected.ok).toBe(true);
+          expect(answerSettings).toHaveLength(2);
+          await vi.advanceTimersByTimeAsync(2_999);
+          expect(fakeQuery.getContextUsage).toHaveBeenCalledTimes(before);
+
+          answerSettings[1]?.({
+            effective: {
+              model: {
+                name: "gmodel",
+                preferences: { gmodel: { contextWindow: 500_000 } },
+              },
+            },
+          });
+          await vi.advanceTimersByTimeAsync(0);
+          expect(usageEvents(collector).at(-1)?.contextWindowTokens).toBe(500_000);
+          expect(usageEvents(collector).at(-1)?.contextUsedTokens).toBe(55_000);
+
+          // The older request must not overwrite the new model's configured window.
+          answerSettings[0]?.(qoderCnSettings);
+          await vi.advanceTimersByTimeAsync(0);
+          const session = opened.value;
+          if (!(session instanceof QoderSession)) throw new Error("unexpected session");
+          await session.refreshUsage();
+          await vi.advanceTimersByTimeAsync(0);
+          expect(usageEvents(collector).at(-1)?.contextWindowTokens).toBe(500_000);
+          expect(usageEvents(collector).at(-1)?.contextUsedTokens).toBe(55_000);
         } finally {
           await opened.value.close();
         }

@@ -2,7 +2,7 @@
 
 ## Context
 
-Relay 和电脑之间的协议在 [`add-remote-relay-server` 的 design](../add-remote-relay-server/design.md) 中确定，本 change 实现电脑一侧，路径、请求头、签名内容、关闭码和窗口都按那里的约定，并从 `@codexhost/remote-relay/protocol` 导入，不另写一份。
+Relay 和电脑之间的协议在 [`add-remote-relay-server` 的 design](../2026-11-06-add-remote-relay-server/design.md) 中确定，本 change 实现电脑一侧，路径、请求头、签名内容、关闭码和窗口都按那里的约定，并从 `@codexhost/remote-relay/protocol` 导入，不另写一份。
 
 现有 Web 是一个 `node:http` 服务，监听本机或局域网端口。`request-trust.ts` 根据直连地址和可信代理判断本机访问、客户端地址和 HTTPS；`auth.ts` 写登录 Cookie；`background-service.ts` 保存 `service.json` 中的启动选项。
 
@@ -13,7 +13,7 @@ Relay 和电脑之间的协议在 [`add-remote-relay-server` 的 design](../add-
 - 新代码放在 `packages/web-server/src/remote-relay/`：身份密钥、控制连接（含代理和重连）、进程内 TLS、状态与 RPC 各一个模块。`main.ts` 只负责创建并把 HTTP 服务交给它。
 - 电脑一侧是 HTTP/2 服务端，跑在 WebSocket 字节流上。收到 `POST /v1/register` 时用身份私钥签名作答，读到请求体中的主机名才算注册成功；收到 `POST /v1/tcp` 时立即回 200，把这个 stream 当作手机的 TCP 连接。
 - 创建一个不调用 `listen()` 的 `tls.Server`（ALPN 只有 `http/1.1`，握手期限 10 秒），每个手机 stream 通过它的 `connection` 事件注入，`secureConnection` 后用 `server.emit("connection", socket)` 交给现有 HTTP 服务。直接 `new tls.TLSSocket()` 没有握手期限，发完 ClientHello 就停住的连接会一直占着 stream。HTTP/1.1 的 keep-alive、升级为 WebSocket 都沿用现有处理。
-- 正常 EOF 不销毁 socket，WebSocket 关闭时销毁承载它的 Duplex（验证报告记录的两个坑）。
+- 正常 EOF 不销毁 socket，WebSocket 关闭时销毁承载它的 Duplex。
 
 ### 请求归属
 
@@ -58,7 +58,7 @@ Relay 和电脑之间的协议在 [`add-remote-relay-server` 的 design](../add-
 - [单独完成本 change 时真手机不可用] → 证书在第三个 change；本 change 的验收用测试 CA 和本机 Relay 完成端到端测试。
 - [HTTPS 登录的浏览器升级后需重新登录一次] → 接受，在发行说明中写明。
 - [不支持 `NO_PROXY`、SOCKS 代理和需要认证的代理] → 系统代理多为本机 HTTP 代理；遇到需要时再扩展。
-- [所有手机连接都经一条控制连接，TCP 丢包会影响全部] → 验证报告中的数据可接受；不在本 change 处理。
+- 所有手机连接都经一条控制连接，底层 TCP 丢包可能同时影响多个 HTTP/2 stream。
 
 ## Migration
 

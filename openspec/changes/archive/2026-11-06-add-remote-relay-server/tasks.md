@@ -13,4 +13,4 @@
 
 ## 3. 文档
 
-- [x] 3.1 写 `packages/remote-relay/README.md`：启动参数、部署要求（443、控制地址证书、泛域名解析）、`SIGHUP` 续期和日志字段。更新总体设计第 12 节中本 change 已确定的问题、实施计划阶段 5 的状态，以及 `docs/index.md`。验证：README 中的参数与入口的参数解析一致；按 README 在本机用非特权端口和自签证书启动 Relay，用 2.2 的测试客户端完成一次转发。
+- [x] 3.1 写 `packages/remote-relay/README.md`：启动参数、部署要求（443、控制地址证书、泛域名解析）、`SIGHUP` 续期和日志字段。更新 `docs/index.md`。验证：README 中的参数与入口的参数解析一致；按 README 在本机用非特权端口和自签证书启动 Relay，用 2.2 的测试客户端完成一次转发。

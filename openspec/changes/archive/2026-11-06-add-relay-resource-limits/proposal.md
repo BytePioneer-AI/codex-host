@@ -22,4 +22,4 @@ Relay 当前只限制单 ID 的连接和流量，部署者无法限制服务器�
 
 ## Impact
 
-影响 `packages/remote-relay` 的启动参数和用量生命周期，以及 `packages/web-server` 的重连回归测试；更新 Relay README 与实施计划。无新依赖。
+影响 `packages/remote-relay` 的启动参数和用量生命周期，以及 `packages/web-server` 的重连回归测试；更新 Relay README。无新依赖。

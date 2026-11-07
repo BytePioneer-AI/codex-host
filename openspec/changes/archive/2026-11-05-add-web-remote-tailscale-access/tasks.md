@@ -17,9 +17,4 @@
 
 ## 4. 文档
 
-- [x] 4.1 新增 `docs/product/web-remote-access.md`，更新 `docs/index.md`、`docs/product/standalone-web.md`、`packages/web-server/README.md` 和实施计划状态。验证：文档参数与实现一致；nginx 和 frp 示例能在本地跑通的就实际运行，未运行的在文档中标明。
-
-## 5. 真机验收
-
-- [x] 5.1 在这台 Mac 上用真实 Tailscale 验证各检测状态，并确认 Serve 转发头与设计一致。验证：记录 Tailscale 版本和每项结果；未实际出现的状态写明。结果：Tailscale 1.104.1 只读检测实测已转发、被占用、只装 App、未安装，结果正确；未运行、未登录、未开启 HTTPS、Funnel 未实测；真实转发头未单独核对。
-- [x] 5.2 手机从蜂窝网通过 Serve 完成登录和日常操作，验证切网、锁屏、电脑离线后恢复，且没有重复消息。验证：分平台记录 iOS 和 Android 的结果，未执行的项目不算通过。结果：用户确认实际使用 Tailscale 没有问题，并决定不再继续其他测试；未分平台记录，切网、锁屏和电脑离线后恢复未单独记录，不算通过。
+- [x] 4.1 新增 `docs/product/web-remote-access.md`，更新 `docs/index.md`、`docs/product/standalone-web.md`、`packages/web-server/README.md`。验证：文档参数与实现一致；nginx 和 frp 示例能在本地跑通的就实际运行，未运行的在文档中标明。

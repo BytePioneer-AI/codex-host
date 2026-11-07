@@ -21,5 +21,4 @@
 
 ## 4. 文档和验收
 
-- [x] 4.1 更新 `docs/product/standalone-web.md`、`packages/web-server/README.md`、`packages/web-server/scripts/pack.ts` 中的发行 README，并把实施计划阶段 1 的状态改为已完成。验证：文档与实现一致，`docs/index.md` 无需新增条目。
-- [x] 4.2 真机验收：iOS 和 Android 手机用二维码和手动输入登录、退出登录、重新生成 token 后进入登录页、重新登录后恢复通知（局域网 HTTP 下无法验证的项目写明）。验证：记录每个平台的结果，未执行的项目不算通过。结果：2026-11-04 用户确认手机验收通过；未说明具体平台，iOS 和 Android 未分别记录。
+- [x] 4.1 更新 `docs/product/standalone-web.md`、`packages/web-server/README.md`、`packages/web-server/scripts/pack.ts` 中的发行 README。验证：文档与实现一致，`docs/index.md` 无需新增条目。

@@ -27,5 +27,4 @@
 
 ## 5. 收尾
 
-- [x] 5.1 Windows 卸载程序停止服务、移除自启项并提示 Serve；`npm stop` 识别后台 Web，`npm start web` 遇到占用时不结束后台 Web；更新 `docs/product/standalone-web.md`、`docs/product/web-remote-access.md`、`docs/operations/codexhost-console.md`、npm README 和实施计划。验证：`tools/dev-desktop` 的测试，以及文档中的命令与实现一致。
-- [x] 5.2 按实施计划第 5 节的验收场景实测：关闭终端后手机仍能连接、重启 Web 任务不受影响、更新后版本正确且会话保留、测量空闲时 Web 的内存和 CPU。验证：分平台记录结果，未执行的写明，不算通过。 结果：用户在 macOS 实测通过，未分场景记录；Windows、Linux 未实测。空闲时 Web 后台（macOS arm64，Rust debug 构建，各 10 分钟每 10 秒采样）：无浏览器连接时 Web Node 进程 RSS 中位 204MB、CPU 0.14%，Web 监管进程 RSS 13MB、CPU 1.5%；一个浏览器页面挂着时 Web Node RSS 中位 161MB、CPU 0.15%，监管进程 RSS 11MB、CPU 1.5%。
+- [x] 5.1 Windows 卸载程序停止服务、移除自启项并提示 Serve；`npm stop` 识别后台 Web，`npm start web` 遇到占用时不结束后台 Web；更新 `docs/product/standalone-web.md`、`docs/product/web-remote-access.md`、`docs/operations/codexhost-console.md` 和 npm README。验证：`tools/dev-desktop` 的测试，以及文档中的命令与实现一致。

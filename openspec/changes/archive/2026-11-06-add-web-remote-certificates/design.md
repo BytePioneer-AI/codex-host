@@ -2,7 +2,7 @@
 
 ## Context
 
-电脑端中转（[`add-web-remote-relay-client`](../archive/2026-11-06-add-web-remote-relay-client/design.md)）已在 `packages/web-server/src/remote-relay/` 实现注册、进程内 TLS 和状态页；证书文件位置约定为数据目录 `remote-relay/certificate.pem` 与 `certificate-key.pem`，由本 change 写入。Relay（[`add-remote-relay-server`](../archive/2026-11-06-add-remote-relay-server/design.md)）对 ALPN 恰为 `acme-tls/1` 的连接放行，不受日额度约束。
+电脑端中转（[`add-web-remote-relay-client`](../2026-11-06-add-web-remote-relay-client/design.md)）已在 `packages/web-server/src/remote-relay/` 实现注册、进程内 TLS 和状态页；证书文件位置约定为数据目录 `remote-relay/certificate.pem` 与 `certificate-key.pem`，由本 change 写入。Relay（[`add-remote-relay-server`](../2026-11-06-add-remote-relay-server/design.md)）对 ALPN 恰为 `acme-tls/1` 的连接放行，不受日额度约束。
 
 `acme-client` 5.4.0 的相关行为（已对照源码核实）：
 

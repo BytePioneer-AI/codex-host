@@ -2,7 +2,7 @@
 
 ## Why
 
-Web 现在的访问令牌同时用于本机链接和其他设备，无法轮换，也只在建立长连接时校验。这是手机远程访问的第一步：无论后续通过 Tailscale、中转还是隧道访问，都依赖可撤销、不暴露给代理日志的认证。对应[实施计划](../../../docs/proposals/web-remote-implementation-plan.md)的阶段 1。
+通过 Tailscale、中转或隧道远程访问 Web，需要可撤销、不暴露给代理日志的认证，并区分本机链接与其他设备使用的令牌。
 
 ## What Changes
 
@@ -26,7 +26,7 @@ Web 现在的访问令牌同时用于本机链接和其他设备，无法轮换�
 - **退出登录只影响这个浏览器。** 用于借用设备的场景；重新登录要回到电脑查看 token，所以确认时明确提示。
 - **不提供免 token 的本机访问。** frp TCP、`ssh -R` 等转发到回环地址的请求无法与本机区分，同机其他用户也能访问回环地址。
 - **`npm start web` 保持默认监听 `0.0.0.0`。** 所有入口都要 token，本机 token 在网络地址上无效，默认不再收窄监听地址；需要时用 `--host 127.0.0.1` 限定。
-- **自动打开浏览器不在本阶段。** 本阶段只输出带本机 token 的本机链接，打开浏览器由阶段 4 的统一启动命令负责。
+- **本 change 只输出本机登录链接。** 自动打开浏览器由 `add-web-background-service` 提供。
 
 ## Capabilities
 
@@ -44,4 +44,4 @@ Web 现在的访问令牌同时用于本机链接和其他设备，无法轮换�
 - `packages/shared-contracts`：访问 token 的浏览器安全类型。
 - `apps/web-ui`：连接设备页、退出登录、登录失效处理、通知重新关联。
 - 数据目录：新增 token 存储文件，`auth.json` 改为保存本机 token 并限制文件权限。
-- 文档：`docs/product/standalone-web.md`、发行 README、实施计划状态。
+- 文档：`docs/product/standalone-web.md`、发行 README。

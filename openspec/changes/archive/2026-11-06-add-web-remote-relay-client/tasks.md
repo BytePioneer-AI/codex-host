@@ -9,4 +9,4 @@
 ## 2. 界面和文档
 
 - [x] 2.1 连接设备页：配置了 `--relay` 时显示中转开关、状态和地址、身份密钥说明；已连接的中转地址按 spec 的顺序参与默认地址选择。验证：Playwright 覆盖开关切换后状态刷新、各状态文案、手机访问时不显示开关、手机宽度布局、地址选择顺序。
-- [x] 2.2 文档：更新 `docs/product/web-remote-access.md`（中转入口、身份密钥、代理）、`docs/product/standalone-web.md` 中的 `--relay` 选项，以及总体设计第 12 节和实施计划阶段 5 的状态。验证：文档中的选项和状态与实现一致。
+- [x] 2.2 文档：更新 `docs/product/web-remote-access.md`（中转入口、身份密钥、代理）、`docs/product/standalone-web.md` 中的 `--relay` 选项。验证：文档中的选项和状态与实现一致。

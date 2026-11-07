@@ -22,7 +22,7 @@ Web 服务只有一个明文保存在 `auth.json` 的 token。`main.ts` 对所�
 
 **查询参数。** `?token=` 只接受本机 token，这样访问 token 不会出现在代理日志中。启动输出第一行的格式不变，现有的就绪解析和测试不用改。
 
-**可信代理。** 新增 `--trusted-proxy <ip>[,<ip>...]` 和 `CODEXHOST_WEB_TRUSTED_PROXIES`，按直连地址精确匹配。`x-forwarded-for` 取最右侧的值，即可信代理观察到的客户端地址。阶段 2 开启 Tailscale Serve 时自动配置它。放弃布尔开关：无法表达只信任某个代理。
+**可信代理。** 新增 `--trusted-proxy <ip>[,<ip>...]` 和 `CODEXHOST_WEB_TRUSTED_PROXIES`，按直连地址精确匹配。`x-forwarded-for` 取最右侧的值，即可信代理观察到的客户端地址。Tailscale Serve 的信任推导由 `add-web-remote-tailscale-access` 提供。放弃布尔开关：无法表达只信任某个代理。
 
 **接口。** 使用现有 RPC：`codexhost/accessTokenGet`、`accessTokenRegenerate`，类型定义在 `shared-contracts`。结果包含明文 secret、最近使用时间和网络地址，页面据此生成二维码和登录链接。网络地址按网卡归类，并通过 `tailscale serve status --json` 检测已转发到当前端口的 HTTPS 地址；只读取，不修改 Serve 配置。非本机时返回错误码 `auth/local-access-required`，并在详情中带 `http://127.0.0.1:<端口>`。页面依据这个错误显示提示，不需要单独的“访问类型”接口。
 

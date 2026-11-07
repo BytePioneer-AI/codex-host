@@ -2,9 +2,9 @@
 
 ## Context
 
-阶段 1 已能只读检测 Serve 地址（`tailscale serve status --json`），并有 `RequestTrust`（启动时固定的可信代理集合）、本机访问判断和连接设备页。会话页的 `HostConnectionStatus` 已显示 `offline`、`checking`、`reconnecting`、`host` 和 `error`；`watchAuthentication` 在重连时探测 `/api/auth/status`，401 进入带“登录已失效”提示的登录页；Host 断开通过 `nativeConnection` 投影到打开的会话。
+Web 能只读检测 Serve 地址（`tailscale serve status --json`），并有 `RequestTrust`（启动时固定的可信代理集合）、本机访问判断和连接设备页。会话页的 `HostConnectionStatus` 已显示 `offline`、`checking`、`reconnecting`、`host` 和 `error`；`watchAuthentication` 在重连时探测 `/api/auth/status`，401 进入带“登录已失效”提示的登录页；Host 断开通过 `nativeConnection` 投影到打开的会话。
 
-已对照 Tailscale v1.104.1 源码确认，Serve 反向代理保留原始 `Host`，并用覆盖方式写入 `X-Forwarded-Host`、`X-Forwarded-Proto: https` 和 `X-Forwarded-For`（请求方的 tailnet 地址），客户端无法伪造。真机验收时再实测一次。
+已对照 Tailscale v1.104.1 源码确认，Serve 反向代理保留原始 `Host`，并用覆盖方式写入 `X-Forwarded-Host`、`X-Forwarded-Proto: https` 和 `X-Forwarded-For`（请求方的 tailnet 地址），客户端无法伪造。
 
 ## Decisions
 

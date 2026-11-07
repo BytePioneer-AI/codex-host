@@ -2,7 +2,7 @@
 
 ## Why
 
-`add-remote-relay-server` 提供了 Relay，电脑端还不能连上去。本 change 让 Web 主动连接 Relay，在进程内解开手机的 TLS，交给现有 HTTP 服务。对应[实施计划](../../../docs/proposals/web-remote-implementation-plan.md)阶段 5 的第二个 change；证书申请和续期在第三个 change `add-web-remote-certificates`。
+Web 主动连接 `add-remote-relay-server` 提供的 Relay，在进程内解开手机的 TLS，交给现有 HTTP 服务。证书申请和续期由 `add-web-remote-certificates` 提供。
 
 ## What Changes
 

@@ -151,7 +151,7 @@ Herdr、Core 和 App 的核对仓库声明 Apache-2.0；Alma Relay 的仓库声�
 - Alma 已解决浏览器中文 IME。调研未发现对应实现或真机测试证据，桌面／iOS App 的效果不能替代 Web 浏览器验收。
 - 可以直接复制 Alma 的 Herdr GUI。调研未找到这部分公开源码；不能因为 Relay 开源，就认为 GUI 和终端适配也开源。
 
-[Alma Relay README](https://github.com/yetone/alma-relay#readme) 已独立核对，其职责是手机到桌面 Alma 的远程流量转发，不是把 Herdr 转成浏览器终端的现成组件。本方案不包含 Relay 部署；公网手机访问是[另一个待评估方案](web-remote-relay-architecture.md)。
+[Alma Relay README](https://github.com/yetone/alma-relay#readme) 已独立核对，其职责是手机到桌面 Alma 的远程流量转发，不是把 Herdr 转成浏览器终端的现成组件。本方案不包含 Relay 部署；公网手机访问见[Web 远程访问](../product/web-remote-access.md)。
 
 ## 6. Herdr Core 原生契约：已确认的能力与差异
 

@@ -27,6 +27,18 @@ export function sharedHostLauncherPath(
   return paths.join(root, "bin", platform === "win32" ? "codexhost.exe" : "codexhost");
 }
 
+/** Old manifests can inherit an empty variable before remote install refreshes them. */
+export function sharedHostDataDirectory(
+  environment: NodeJS.ProcessEnv,
+  home = environment.HOME ?? environment.USERPROFILE ?? homedir(),
+): string {
+  const configured = environment.CODEXHOST_SHARED_DATA_DIR;
+  if (!configured?.trim()) return path.resolve(home, ".codexhost");
+  if (!path.isAbsolute(configured))
+    throw new Error("Shared Host data directory must be an absolute path");
+  return path.resolve(configured);
+}
+
 async function connectStream(
   launch: HostServiceLaunch,
   desktop?: { environment: NodeJS.ProcessEnv; arguments: string[] },

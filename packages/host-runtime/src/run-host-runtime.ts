@@ -56,6 +56,7 @@ import {
   runLocalDesktopBridge,
   connectLocalSharedExternalHost,
   sharedHostLauncherPath,
+  sharedHostDataDirectory,
 } from "./local-shared-host.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
@@ -467,10 +468,7 @@ export async function runHostRuntime(input: {
                     launcher: sharedHostLauncherPath(maintenanceRuntimePath, delegationEnvironment),
                     runtime: maintenanceRuntimePath,
                     stockCodex: stockCodexPath,
-                    dataDirectory: path.resolve(
-                      delegationEnvironment.CODEXHOST_SHARED_DATA_DIR ??
-                        path.join(homedir(), ".codexhost"),
-                    ),
+                    dataDirectory: sharedHostDataDirectory(delegationEnvironment),
                     ...(delegationEnvironment.CODEX_HOME
                       ? { codexHome: delegationEnvironment.CODEX_HOME }
                       : {}),

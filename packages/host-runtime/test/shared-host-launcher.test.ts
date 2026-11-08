@@ -18,3 +18,21 @@ it.each([
     ),
   ).toBe("/explicit/launcher");
 });
+
+it("does not let legacy listener environments select cwd for an empty shared directory", async () => {
+  const { sharedHostDataDirectory } = await import("../src/local-shared-host.js");
+  const path = await import("node:path");
+  const home = path.resolve("/profile"),
+    custom = path.join(home, "custom");
+  expect(sharedHostDataDirectory({ HOME: home, CODEXHOST_SHARED_DATA_DIR: "" })).toBe(
+    path.join(home, ".codexhost"),
+  );
+  for (const value of [undefined, "", "  "])
+    expect(sharedHostDataDirectory({ CODEXHOST_SHARED_DATA_DIR: value }, home)).toBe(
+      path.join(home, ".codexhost"),
+    );
+  expect(sharedHostDataDirectory({ CODEXHOST_SHARED_DATA_DIR: custom }, home)).toBe(custom);
+  expect(() => sharedHostDataDirectory({ CODEXHOST_SHARED_DATA_DIR: "relative" }, home)).toThrow(
+    "absolute path",
+  );
+});

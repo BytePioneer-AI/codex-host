@@ -81,7 +81,7 @@ interface HarnessSessionImportSource {
 
 ## 官方 Codex Thread
 
-同一 Codex home 中的官方 Thread 直接出现在 Web 与 Desktop，无需导入。它们保留官方 Thread ID，由共享 Host 使用官方协议读取和操作，不创建外部 Harness 映射。被其他后台占用时仍可读取历史，发送返回占用错误，不自动 Fork。旧 `codex-cli` 映射在两端列表隐藏，存储记录保持原样。
+同一 Codex home 中的官方 Thread 直接出现在 Web 与 Desktop，无需导入。它们保留官方 Thread ID，由共享 Host 使用官方协议读取和操作，不创建外部 Harness 映射。被其他后台占用时仍可读取历史，发送返回占用错误，不自动 Fork。
 
 ## Pi 原生规则
 

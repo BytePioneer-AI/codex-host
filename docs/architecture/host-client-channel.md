@@ -4,7 +4,7 @@
 
 GUI、Web 和其他 App 的共享外部 Threads 由一个独立后台中的 `AppServerHost` 执行。Adapter、原生引用、Mapping Store 和 Thread/Turn 执行只属于该所有者；Desktop 的协议前端与 Web 网关不另开会话或第二份可写存储，也不保存共享 transcript。官方 Codex 路径仍使用原生协议与原生历史，不变成 Web 的外部 Harness。
 
-客户端通道也支持本机原生 Codex Thread。共享服务通过已有 `OfficialRuntimeClient` 连接与 Desktop 相同的 `OfficialRuntimeScope`，按 Mapping Store 归属区分 external 与 native，保留官方 Thread ID。`thread/list` 沿用原生／外部合并分页；原生不可用不影响外部目录，协议错误仍报错。官方 Codex 不经 Adapter，也不提供专用会话导入。旧 `codex-cli` Mapping Store 记录在 Web 和 Desktop 列表隐藏，不删除或改写；Web 仅对列表返回的记录查询归属。
+客户端通道也支持本机原生 Codex Thread。共享服务通过已有 `OfficialRuntimeClient` 连接与 Desktop 相同的 `OfficialRuntimeScope`，按 Mapping Store 归属区分 external 与 native，保留官方 Thread ID。`thread/list` 沿用原生／外部合并分页；原生不可用不影响外部目录，协议错误仍报错。官方 Codex 不经 Adapter，也不提供专用会话导入。Web 仅对列表返回的记录查询归属。
 
 原生快照用 `thread/resume {threadId, excludeTurns: true}` 建立订阅，再调用官方 `thread/read` 与 `thread/turns/list`；没有模型、权限或沙箱默认值覆盖。客户端通道保存 resume 响应及 `thread/settings/updated` 确认的配置，快照直接携带 `configuration.effectiveModel`、`effectiveThinkingOptionId`、`effectivePermissionModeId`，Model Ref 与官方目录一致。客户端 inspect 仅在配置缺失时尝试恢复；恢复失败仍返回 `{owner: "codex", locked: false, history: …}`，不带配置字段，不阻止历史查看；已确认配置不随快照反复恢复；Desktop inspect 保持只读的 `{owner: "codex", locked: true}`，不恢复 Thread。游标在异步读取前捕获；读取中后台换代会拒绝快照，不能确认尚未包含的事件。后台退出清空原生订阅、配置与交互状态，并使已观察的会话失效。遇到官方 writer 冲突时退回只读历史，快照标记不可发送并跳过队列读取；再次发送保留官方错误并提示先在另一端关闭会话，不绕过锁或自动 Fork。
 

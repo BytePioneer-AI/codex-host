@@ -7,13 +7,7 @@ import {
   discoverHostClientChannel,
   type HostClientUpdate,
 } from "@codexhost/desktop-control";
-import {
-  harnessIdSchema,
-  hostThreadIdSchema,
-  type ClientChannelEvent,
-  type JsonObject,
-} from "@codexhost/shared-contracts";
-import { RETIRED_HARNESS_IDS } from "../src/app-server-host.js";
+import type { ClientChannelEvent } from "@codexhost/shared-contracts";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
 import { ClientCommandReceipts } from "../src/client-command-receipts.js";
 import { startClientChannelServer } from "../src/client-channel-server.js";
@@ -27,7 +21,6 @@ import {
   stopFixture,
   writeRequest,
   requiredMessageId,
-  JsonLineCollector,
 } from "./app-server-host-fixture.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -64,55 +57,6 @@ function current(fixture: ReturnType<typeof createFixture>) {
 }
 
 describe("public authenticated owner channel", () => {
-  it.each([false, true])(
-    "hides retired records on Web and Desktop without rewriting them (archived: %s)",
-    async (archived) => {
-      const { fixture, a } = await setup();
-      const official = new JsonLineCollector(fixture.official.stdin);
-      fixture.official.stdin.on("data", () => {
-        for (const request of official.messages.splice(0))
-          writeRequest(fixture.official.stdout, {
-            id: requiredMessageId(request),
-            result: { data: [], nextCursor: null, backwardsCursor: null },
-          });
-      });
-      for (const id of [...RETIRED_HARNESS_IDS, "pi"]) {
-        const harnessId = harnessIdSchema.parse(id);
-        const hostThreadId = hostThreadIdSchema.parse(`stored-${id}`);
-        await fixture.mappingStore.createProvisional({
-          hostThreadId,
-          createRequestId: `create-${id}`,
-          harnessId,
-          cwd: "/synthetic",
-          transportModelId: `codexhost/${id}`,
-          ephemeral: false,
-          historyMode: "paginated",
-        });
-        await fixture.mappingStore.commitReady({
-          hostThreadId,
-          nativeSessionRef: { harnessId, nativeSessionId: `native-${id}`, formatVersion: 1 },
-        });
-        if (archived) await fixture.mappingStore.setArchived(hostThreadId, true);
-      }
-      const before = await fixture.mappingStore.listThreads();
-      const params = { archived, modelProviders: ["codexhost"] };
-      const web = (await a.request("thread/list", params)) as JsonObject;
-      expect((web.data as JsonObject[]).map((thread) => thread.id)).toEqual(["stored-pi"]);
-      writeRequest(fixture.desktopInput, {
-        id: "desktop-retired-list",
-        method: "thread/list",
-        params,
-      });
-      const desktop = await fixture.collector.waitFor(
-        (message) => message.id === "desktop-retired-list",
-      );
-      expect(
-        ((desktop.result as JsonObject).data as JsonObject[]).map((thread) => thread.id),
-      ).toEqual(["stored-pi"]);
-      expect(await fixture.mappingStore.listThreads()).toEqual(before);
-    },
-  );
-
   it("forwards the GUI's paginated Revert with canonical identities and notifies both clients", async () => {
     const adapter = rollbackCapableAdapter();
     const { fixture, a, b, events } = await setup({ externalAdapters: new Map([["pi", adapter]]) });

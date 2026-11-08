@@ -21,6 +21,10 @@ import { listExternalTurns } from "./external-thread-history.js";
 import type { ExternalThreadQueueSnapshot } from "./external-thread-queue.js";
 import type { ExternalThread, ExternalThreadLocation } from "./external-thread-runtime.js";
 import { readExternalWorkspaceSnapshot } from "./native-workspace-snapshot.js";
+import {
+  NativeClientChannel,
+  type NativeClientChannelDependencies,
+} from "./native-client-channel.js";
 import { classifyCreateRequestRoute } from "./route-observation.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -56,6 +60,8 @@ export interface ClientChannelHostDependencies {
   /** History served to clients, including the live snapshot of a non-ephemeral active Turn. */
   clientHistoryTurns(thread: ExternalThread): JsonObject[];
   queueSnapshot(threadId: string): ExternalThreadQueueSnapshot;
+  /** Native Codex calls use the shared service's already-attached official client. */
+  readonly native?: NativeClientChannelDependencies;
   /** Runs one client request through the shared Desktop request handling. */
   submit(
     method: string,
@@ -65,17 +71,19 @@ export interface ClientChannelHostDependencies {
 }
 
 /**
- * Client channel adapter of the external Thread owner: restricted RPC, absolute Thread
+ * Client channel adapter of the shared Host: restricted RPC, absolute Thread
  * snapshots, interaction answers and invalidation of Threads clients may read.
  */
 export class ClientChannelHost {
   readonly clientEvents: ClientChannelEvents;
   readonly #host: ClientChannelHostDependencies;
+  readonly #native: NativeClientChannel | undefined;
   readonly #clientOwnedThreads = new Set<string>();
   readonly #clientReceipts = new ClientCommandReceipts();
 
   constructor(host: ClientChannelHostDependencies) {
     this.#host = host;
+    this.#native = host.native ? new NativeClientChannel(host.native) : undefined;
     this.clientEvents = host.events;
   }
 
@@ -102,7 +110,17 @@ export class ClientChannelHost {
     }
   }
 
-  /** Public client operations stay on this owner and never fall through to official Codex. */
+  /** Native app-server notifications are invalidations and server requests for
+   * the same Web snapshot/response boundary. */
+  observeNativeMessage(value: JsonValue): void {
+    this.#native?.observeMessage(value);
+  }
+
+  resetNativeSession(): void {
+    this.#native?.resetGeneration();
+  }
+
+  /** Route only to the confirmed external owner or this service's shared native client. */
   async handleClientRequest(method: string, input: unknown): Promise<ConsoleHostReply> {
     if (!(CLIENT_CHANNEL_METHODS as readonly string[]).includes(method))
       return { error: { code: -32601, message: "Client method is not available" } };
@@ -118,19 +136,25 @@ export class ClientChannelHost {
       };
     if (method === "codexhost/workspace/read") {
       await this.#host.waitForPlugins();
+      const nativeThreadIds = Array.isArray(params.threadIds)
+        ? params.threadIds.filter((value): value is string => typeof value === "string")
+        : [];
       return {
         result: jsonValueSchema.parse(
           await readExternalWorkspaceSnapshot(
             this.#host.environment(),
             await this.#host.listRecords(),
             await this.#host.listSectionPlacements(),
+            nativeThreadIds,
           ),
         ),
       };
     }
+    let native = false;
     if (method === "thread/start") {
       const route = classifyCreateRequestRoute(parsed.data);
-      if (!route || route.selectedHarness === "codex")
+      native = !route || route.selectedHarness === "codex";
+      if (native && !this.#native)
         return {
           error: {
             code: -32078,
@@ -138,9 +162,23 @@ export class ClientChannelHost {
           },
         };
     }
+    const nativeMethods = new Set([
+      "thread/read",
+      "thread/resume",
+      "thread/turns/list",
+      "thread/items/list",
+      "thread/name/set",
+      "thread/archive",
+      "thread/unarchive",
+      "turn/start",
+      "turn/steer",
+      "turn/interrupt",
+    ]);
     if (typeof params.threadId === "string") {
       const location = await this.#host.locateExternalThread(params.threadId);
-      if (location.kind !== "external")
+      native = native || (location.kind === "official" && nativeMethods.has(method));
+      const inspection = method === "codexhost/thread/inspect";
+      if (location.kind !== "external" && !native && !inspection)
         return { error: { code: -32078, message: "Thread is not owned by this external Host" } };
     } else if (
       (method.startsWith("thread/") || method.startsWith("turn/")) &&
@@ -149,12 +187,7 @@ export class ClientChannelHost {
     ) {
       return { error: { code: -32602, message: "threadId is required" } };
     }
-    const submit = async (): Promise<ConsoleHostReply> => {
-      const reply = await this.#host.submit(
-        method,
-        method === "thread/list" ? { ...params, modelProviders: ["codexhost"] } : params,
-        harnessInstallationRequestTimeoutMs(method, params),
-      );
+    const normalize = (reply: ConsoleHostReply): ConsoleHostReply => {
       return "error" in reply && [-32090, -32093].includes(reply.error.code)
         ? {
             error: {
@@ -165,13 +198,33 @@ export class ClientChannelHost {
           }
         : reply;
     };
+    const submit = async (): Promise<ConsoleHostReply> =>
+      normalize(
+        await this.#host.submit(
+          method,
+          params,
+          harnessInstallationRequestTimeoutMs(method, params),
+        ),
+      );
+    const nativeChannel = this.#native;
+    const nativeSubmit = async (): Promise<ConsoleHostReply> => {
+      if (!nativeChannel)
+        return {
+          error: {
+            code: -32078,
+            message: "Only external Harness Threads are available to this client",
+          },
+        };
+      return normalize(await nativeChannel.request(method, params));
+    };
+    const operation = native ? nativeSubmit : submit;
     return method === "turn/start" && typeof params.clientUserMessageId === "string"
       ? this.#clientReceipts.run(
           JSON.stringify([params.threadId, params.clientUserMessageId]),
           params,
-          submit,
+          operation,
         )
-      : submit();
+      : operation();
   }
 
   /** Absolute, bounded state; capture fields and delivery cursor without yielding.
@@ -181,6 +234,13 @@ export class ClientChannelHost {
     threadId: string,
     options: ClientSnapshotOptions = {},
   ): Promise<ClientThreadSnapshot> {
+    const location = await this.#host.locateExternalThread(threadId);
+    if (location.kind === "error")
+      throw new ClientChannelRequestError(location.error.code, location.error.message);
+    if (location.kind === "official") {
+      if (!this.#native) throw new Error("Thread is not owned by this local Host");
+      return this.#native.snapshot(threadId, options);
+    }
     let thread = this.#host.loadedThread(threadId);
     if (!thread) {
       const prepared = await this.handleClientRequest("thread/turns/list", {
@@ -271,7 +331,19 @@ export class ClientChannelHost {
       ? interactions.questions.get(id)
       : undefined;
     const pending = approval ?? question;
-    if (!pending) return { resolved: true };
+    if (!pending) {
+      if (this.#native) {
+        const resolved = await this.#native.respond(
+          input.requestId,
+          input.threadId,
+          jsonValueSchema.parse(input.result),
+        );
+        if (resolved) return { resolved: true };
+        if (this.#native.isStaleRequestId(input.requestId))
+          throw new Error("Host generation changed; refresh the pending interaction");
+      }
+      return { resolved: true };
+    }
     if (pending.thread.id !== input.threadId)
       throw new Error("Interaction does not belong to this Thread");
     pending.projection.parseResponse(input.result); // Reject malformed client responses before claiming.

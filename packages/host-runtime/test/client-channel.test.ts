@@ -206,9 +206,9 @@ describe("public authenticated owner channel", () => {
     );
     await expect(
       a.request("thread/read", { threadId: "official", includeTurns: false }),
-    ).rejects.toThrow("not owned");
+    ).rejects.toThrow("Only external");
     await expect(a.request("thread/resume", { threadId: "official" })).rejects.toThrow(
-      "not available",
+      "Only external",
     );
     expect(fixture.adapter.sessions).toHaveLength(0);
   });

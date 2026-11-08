@@ -2,7 +2,7 @@
 import { appendFileSync, writeFileSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, type WebSocket } from "ws";
 
 const home = process.env.CODEX_HOME;
 if (!home) throw new Error("Native fixture requires an isolated Codex home");
@@ -17,12 +17,15 @@ try {
   /* First startup. */
 }
 const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+const clients = new Set<WebSocket>();
 server.on("listening", () =>
   process.stderr.write(
     `listening on: ws://127.0.0.1:${(server.address() as { port: number }).port}\n`,
   ),
 );
 server.on("connection", (socket) => {
+  clients.add(socket);
+  socket.on("close", () => clients.delete(socket));
   socket.on("error", () => undefined);
   socket.on("message", (data) => {
     const request = JSON.parse(data.toString()) as {
@@ -58,19 +61,27 @@ server.on("connection", (socket) => {
           status: "completed",
           items: [{ id: "reply", type: "agentMessage", text: "native turn survived Desktop exit" }],
         };
-        thread = { ...thread, turns: [turn] };
+        thread = {
+          ...thread,
+          turns: [...(Array.isArray(thread?.turns) ? thread.turns : []), turn],
+        };
         writeFileSync(file, JSON.stringify(thread));
         log({ pid: process.pid, type: "turn/completed" });
-        if (socket.readyState === socket.OPEN)
-          socket.send(
-            JSON.stringify({ method: "turn/completed", params: { threadId: thread.id, turn } }),
-          );
+        const message = JSON.stringify({
+          method: "turn/completed",
+          params: { threadId: thread.id, turn },
+        });
+        for (const client of clients) if (client.readyState === client.OPEN) client.send(message);
       }, 400);
     } else if (request.method === "thread/list")
       result = { data: thread ? [thread] : [], nextCursor: null };
-    else if (request.method === "thread/turns/list")
-      result = { data: thread?.turns ?? [], nextCursor: null };
-    else if (request.method === "model/list") result = { data: [] };
+    else if (request.method === "thread/turns/list") {
+      const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+      result = {
+        data: request.params?.sortDirection === "desc" ? [...turns].reverse() : turns,
+        nextCursor: null,
+      };
+    } else if (request.method === "model/list") result = { data: [] };
     socket.send(JSON.stringify({ id: request.id, result }));
   });
 });

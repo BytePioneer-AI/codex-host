@@ -107,6 +107,9 @@ async function untilReady(ensure: () => boolean): Promise<void> {
 }
 
 it("returns downloading immediately through the preview RPC and keeps downloading after its request aborts", async (t) => {
+  const backendCleanup: { close?: () => Promise<void> } = {};
+  // Dispose retained terminal children before fixture cleanup removes their cwd.
+  t.after(() => backendCleanup.close?.());
   const f = await fixture(t);
   copyFileSync(
     join(import.meta.dirname, "fixtures/office/sample.docx"),
@@ -124,7 +127,7 @@ it("returns downloading immediately through the preview RPC and keeps downloadin
     threadWorkspace: () => f.root,
     ensureOfficeEngine: ensure,
   });
-  t.after(() => backend.close());
+  backendCleanup.close = () => backend.close();
   const request = new AbortController();
   const response = await backend.fetch(
     new Request("http://localhost/api/officeToPdf/render", {

@@ -101,6 +101,7 @@ export class ChHarnessCatalog {
     return this.preferences ? this.preferences.decorate(catalog) : catalog;
   }
   async name(id: string): Promise<string> {
+    if (id === "codex") return "Codex";
     return (await this.list()).find((plugin) => plugin.id === id)?.name ?? id;
   }
   async icon(id: string): Promise<{ body: Buffer; contentType: string } | undefined> {

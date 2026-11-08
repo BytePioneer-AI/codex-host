@@ -304,7 +304,7 @@ import {
   OfficialThreadListError,
 } from "./thread-list-aggregator.js";
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
-import { ExternalThreadPins } from "./external-thread-pins.js";
+import { ThreadPins } from "./external-thread-pins.js";
 import { externalThreadListEntries } from "./external-thread-list.js";
 import { ModelPriceCatalog } from "./model-prices.js";
 import { UsageMeasurementsStore } from "./usage-measurements-store.js";
@@ -672,7 +672,7 @@ export class AppServerHost {
   readonly #client: ClientChannelHost;
   readonly #desktopControl: DesktopControlRequests;
   readonly #threadRouting: DesktopThreadRouting;
-  readonly #threadPins: ExternalThreadPins;
+  readonly #threadPins: ThreadPins;
   #sectionOperations: Promise<unknown> = Promise.resolve();
   readonly #turnProjection: ExternalTurnProjection;
   /** Console requests share Desktop handling; their replies return to the console. */
@@ -855,7 +855,7 @@ export class AppServerHost {
       options.mappingStore ??
         createProductionExternalThreadStore(this.#options.environment ?? process.env),
     );
-    this.#threadPins = new ExternalThreadPins(this.#repository, (method, params) =>
+    this.#threadPins = new ThreadPins(this.#repository, (method, params) =>
       this.#requestOfficial(method, params),
     );
     this.#externalAdapters = new Map(options.externalAdapters);

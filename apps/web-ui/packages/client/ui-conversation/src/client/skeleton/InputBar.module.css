@@ -75,6 +75,56 @@
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
 
+/* The existing hero/active composer stacking contexts hold the material behind
+   the card. Blur on this background-only pseudo-element leaves fixed overlays
+   viewport-anchored and does not create a new stacking context on the card. */
+@supports (backdrop-filter: blur(14px)) or (-webkit-backdrop-filter: blur(14px)) {
+  :global([data-phone]) .card {
+    --dsh-composer-fixed-fill: color-mix(
+      in srgb,
+      var(--dsw-specific-input-major) 24%,
+      var(--dsw-alias-bg-base)
+    );
+    background: transparent;
+    box-shadow: none;
+  }
+
+  :global([data-phone]) .card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: color-mix(in srgb, var(--dsw-specific-input-major) 24%, transparent);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, var(--dsw-alias-bg-layer-3) 65%, transparent),
+      var(--dsw-elevation-soft),
+      0 8px 24px -12px var(--dsw-alias-bg-mask-2);
+    pointer-events: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  :global([data-phone]) .card {
+    --dsh-composer-fixed-fill: var(--dsw-specific-input-major);
+    background: var(--dsw-specific-input-major);
+    box-shadow: var(--dsw-elevation-soft);
+  }
+
+  :global([data-phone]) .card::before {
+    display: none;
+  }
+}
+
+@media (prefers-contrast: more), (forced-colors: active) {
+  :global([data-phone]) .card:not(.cardWorkspaceTrigger) {
+    outline: 1px solid var(--dsw-alias-label-primary);
+    outline-offset: -1px;
+  }
+}
+
 /* No-workspace trigger state: an inset 1px dashed outline marks the card as a
    workspace picker rather than a live composer. Keeping the complete stroke
    inside the rounded box prevents clipped corner pixels from reading heavier. */
@@ -497,9 +547,10 @@
   flex: none;
   align-items: center;
   gap: inherit;
-  background: var(--dsw-specific-input-major);
-  /* Opaque edge gutters keep scrolled controls out from under fixed actions. */
-  box-shadow: 0 0 0 8px var(--dsw-specific-input-major);
+  /* Match the material composited over the theme base, but stay opaque so
+     scrolled controls cannot show through or cover the fixed actions. */
+  background: var(--dsh-composer-fixed-fill, var(--dsw-specific-input-major));
+  box-shadow: 0 0 0 8px var(--dsh-composer-fixed-fill, var(--dsw-specific-input-major));
 }
 
 .row[data-phone-toolbar] .addSeat {

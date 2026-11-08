@@ -41,10 +41,10 @@ export function observeControlRow(
       }
       return;
     }
-    const wasCompact = row.hasAttribute("data-model-compact");
     const wasOverflow = row.hasAttribute("data-actions-overflow");
     // Both rulers include the resident action even when its entry is in the
-    // menu. Synchronous style reads finish before paint; no lifecycle changes.
+    // menu. The phone ruler includes the bounded model name, never icon-only.
+    // Synchronous style reads finish before paint; no lifecycle changes.
     row.removeAttribute("data-model-compact");
     row.removeAttribute("data-actions-overflow");
     row.toggleAttribute("data-toolbar-measuring", phone);
@@ -85,8 +85,7 @@ export function observeControlRow(
       );
     };
     const expanded = phone ? demand() : desktopDemand();
-    row.toggleAttribute("data-model-compact", expanded > available - (phone && wasCompact ? 2 : 0));
-    const fullDemand = phone ? demand() : expanded;
+    row.toggleAttribute("data-model-compact", !phone && expanded > available);
     const action = row.querySelector<HTMLElement>("[data-composer-overflow-action]");
     const menuTrigger = row.querySelector<HTMLButtonElement>('[data-toolbar-fixed="start"] button');
     // A read-only/preparing composer may lock + while an accessory stays live.
@@ -95,7 +94,7 @@ export function observeControlRow(
       phone &&
       action !== null &&
       menuTrigger?.disabled === false &&
-      fullDemand > available - (wasOverflow ? 2 : 0);
+      expanded > available - (wasOverflow ? 2 : 0);
     // Keep the menu's candidate identity and a focused trigger stable until
     // that interaction ends. A narrow row can scroll in either posture.
     const interacting =

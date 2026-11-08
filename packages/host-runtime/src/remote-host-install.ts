@@ -435,15 +435,24 @@ export async function installRemoteHost(
   const shimPath = await executable(options.shimPath, "codexhost Shim");
   const hostRuntimePath = await existingFile(options.hostRuntimePath, "codexhost Host Runtime");
 
-  const sharedDataDirectory = path.resolve(
+  const nonempty = (value: string | undefined): string | undefined =>
+    value?.trim() ? value : undefined;
+  const sharedSelection =
     options.sharedDataDirectory ??
-      environment.CODEXHOST_SHARED_DATA_DIR ??
-      (environment.CODEXHOST_REMOTE_SSH_MANAGED !== "1"
-        ? environment.CODEXHOST_DATA_DIR
-        : undefined) ??
-      previousManifest?.sharedDataDirectory ??
-      path.join(paths.home, ".codexhost"),
-  );
+    nonempty(environment.CODEXHOST_SHARED_DATA_DIR) ??
+    (environment.CODEXHOST_REMOTE_SSH_MANAGED !== "1"
+      ? nonempty(environment.CODEXHOST_DATA_DIR)
+      : undefined) ??
+    previousManifest?.sharedDataDirectory ??
+    path.join(paths.home, ".codexhost");
+  if (
+    typeof sharedSelection !== "string" ||
+    !sharedSelection.trim() ||
+    !path.isAbsolute(sharedSelection)
+  ) {
+    throw new Error("Shared Host data directory must be an absolute path");
+  }
+  const sharedDataDirectory = path.resolve(sharedSelection);
   if (sharedDataDirectory === paths.dataDirectory) {
     throw new Error("Shared Host data directory must differ from the SSH-only data directory");
   }

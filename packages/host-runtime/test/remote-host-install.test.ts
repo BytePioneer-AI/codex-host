@@ -857,6 +857,22 @@ it("persists a custom shared directory separately from the SSH store across rein
       environment: { HOME: home, SHELL: "/bin/zsh" },
     });
     expect(next.sharedDataDirectory).toBe(first.sharedDataDirectory);
+    const emptyEnv = await installRemoteHost({
+      ...options,
+      environment: {
+        HOME: home,
+        SHELL: "/bin/zsh",
+        CODEXHOST_SHARED_DATA_DIR: "",
+        CODEXHOST_DATA_DIR: "  ",
+      },
+    });
+    expect(emptyEnv.sharedDataDirectory).toBe(first.sharedDataDirectory);
+    await expect(installRemoteHost({ ...options, sharedDataDirectory: "" })).rejects.toThrow(
+      "absolute path",
+    );
+    await expect(
+      installRemoteHost({ ...options, sharedDataDirectory: "relative" }),
+    ).rejects.toThrow("absolute path");
     const overridden = await installRemoteHost({
       ...options,
       sharedDataDirectory: path.join(home, "explicit-host"),

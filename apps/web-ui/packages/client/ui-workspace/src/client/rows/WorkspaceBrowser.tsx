@@ -1645,9 +1645,7 @@ export function WorkspaceBrowser({
           <span
             className={clsx(css.sectionLabel, css.wide, searchExpanded && css.sectionLabelHidden)}
           >
-            {groupBy === "flat" || pinnedSessionIds.length > 0
-              ? t("section.sessions")
-              : t("section.workspaces")}
+            {t("section.sessions")}
           </span>
         )}
         {wide && (

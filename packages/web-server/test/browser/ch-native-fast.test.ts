@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { it } from "node:test";
 import { chromium } from "playwright";
-import { encodeOfficialCodexModelRef } from "../../../host-runtime/src/official-codex-model-ref.js";
+import { harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { FakeChHost, startFakeChDebugger } from "../support/ch-host.ts";
 import { nativeCodex } from "../support/native-codex.ts";
 import { startServer } from "../support/server.ts";
@@ -13,9 +13,9 @@ for (const width of [390, 1280]) {
     { timeout: 60_000 },
     async (t) => {
       const host = nativeCodex(new FakeChHost());
-      const normal = encodeOfficialCodexModelRef("gpt-5.4");
-      const fast = encodeOfficialCodexModelRef("gpt-5.4", "priority");
-      const unsupported = encodeOfficialCodexModelRef("no-priority");
+      const normal = harnessModelRefSchema.parse({ id: "fixture-native-model" });
+      const fast = harnessModelRefSchema.parse({ id: "fixture-native-priority" });
+      const unsupported = harnessModelRefSchema.parse({ id: "fixture-native-no-priority" });
       const request = host.request.bind(host);
       let effectiveModel = normal;
       host.request = async <R>(method: string, params: Record<string, unknown>): Promise<R> => {

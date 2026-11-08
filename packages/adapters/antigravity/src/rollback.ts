@@ -16,6 +16,7 @@ import {
 import { copyNativeBrainDirIfExists, copyNativeConversationDbIfExists } from "./fork.js";
 import { AntigravityHistory, type AntigravityTurn } from "./history.js";
 import type { AntigravityPermissionMode } from "./permission-modes.js";
+import { antigravityHome } from "./usage-statistics.js";
 
 export interface RollbackAntigravityLastTurnOptions {
   harnessId: HarnessId;
@@ -131,13 +132,15 @@ export async function rollbackAntigravityLastTurn(
     ...(thinkingOptionId ? { thinkingOptionId } : {}),
   });
 
+  const homedir = antigravityHome(sessionEnvironment);
   await Promise.all([
     copyNativeConversationDbIfExists(
       sourceRef.nativeSessionId,
       derivedNativeSessionId,
       mappedTurns.length,
+      homedir,
     ),
-    copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedNativeSessionId),
+    copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedNativeSessionId, homedir),
   ]);
 
   const derivedNativeRef: NativeSessionRef = {

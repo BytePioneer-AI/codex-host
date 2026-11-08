@@ -14,7 +14,12 @@ import {
 import { describe, expect, it } from "vitest";
 
 import { AntigravityAdapter } from "../src/index.js";
-import { copyNativeConversationDbIfExists, nativeConversationDbPath } from "../src/fork.js";
+import {
+  copyNativeConversationDbIfExists,
+  nativeConversationDbPath,
+  nativeConversationSummariesDbPath,
+  seedNativeConversationDb,
+} from "../src/fork.js";
 import { AntigravityHistory } from "../src/history.js";
 
 const antigravityHarnessId = harnessIdSchema.parse("antigravity");
@@ -393,6 +398,58 @@ describe("Antigravity Fork Session Branching", () => {
       const derivedDb = nativeConversationDbPath("derived-conv-id", fakeHome);
       const content = await import("node:fs/promises").then((fs) => fs.readFile(derivedDb, "utf8"));
       expect(content).toBe("SQLite format 3\0test-data");
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("rewrites trajectory metadata and seeds derived conversation db when source db is missing", async () => {
+    const fakeHome = await mkdtemp(path.join(os.tmpdir(), "codexhost-fakehome-seed-"));
+    const sourceId = "47b97c55-8bf0-4ed6-82c4-db4150880fbc";
+    const derivedFromExistingId = "f93a4d5e-509b-42cb-8ad5-280fbd470872";
+    const derivedFromMissingId = "ee54e5ff-6061-484b-97aa-8a8594131208";
+    try {
+      const { DatabaseSync } = await import("node:sqlite");
+      expect(await seedNativeConversationDb(sourceId, fakeHome)).toBe(true);
+
+      expect(
+        await copyNativeConversationDbIfExists(sourceId, derivedFromExistingId, 1, fakeHome),
+      ).toBe(true);
+
+      // Remove source .db to simulate external cleanup while summaries DB still has sourceId
+      await rm(nativeConversationDbPath(sourceId, fakeHome), { force: true });
+      expect(
+        await copyNativeConversationDbIfExists(sourceId, derivedFromMissingId, 1, fakeHome),
+      ).toBe(true);
+
+      for (const derivedId of [derivedFromExistingId, derivedFromMissingId]) {
+        const db = new DatabaseSync(nativeConversationDbPath(derivedId, fakeHome));
+        try {
+          const meta = db.prepare("SELECT cascade_id FROM trajectory_meta LIMIT 1").get() as {
+            cascade_id: string;
+          };
+          expect(meta.cascade_id).toBe(derivedId);
+          const blobRow = db
+            .prepare("SELECT data FROM trajectory_metadata_blob WHERE id = 'main'")
+            .get() as { data: Uint8Array };
+          expect(Buffer.from(blobRow.data).toString("utf8")).toContain(derivedId);
+        } finally {
+          db.close();
+        }
+
+        const sumDb = new DatabaseSync(nativeConversationSummariesDbPath(fakeHome));
+        try {
+          const row = sumDb
+            .prepare(
+              "SELECT conversation_id, raw_summary FROM conversation_summaries WHERE conversation_id = ?",
+            )
+            .get(derivedId) as { conversation_id: string; raw_summary: Uint8Array } | undefined;
+          expect(row?.conversation_id).toBe(derivedId);
+          expect(Buffer.from(row?.raw_summary ?? []).toString("utf8")).toContain(derivedId);
+        } finally {
+          sumDb.close();
+        }
+      }
     } finally {
       await rm(fakeHome, { recursive: true, force: true });
     }

@@ -727,7 +727,9 @@ export class SessionManager {
   handleSessionAdded(summary: SessionSummary): void {
     this.mergeSummary(summary);
     if (!this.disposed && summary.running) this.engagedSessions.add(summary.sessionId);
-    this.sessions.get(summary.sessionId)?.handleBlank(this.effectiveBlank(summary));
+    const session = this.sessions.get(summary.sessionId);
+    session?.handleRestored();
+    session?.handleBlank(this.effectiveBlank(summary));
     if (summary.projections !== undefined)
       this.applyListBlock(summary.sessionId, summary.projections);
   }

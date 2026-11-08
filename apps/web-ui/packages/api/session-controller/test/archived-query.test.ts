@@ -112,6 +112,18 @@ it("preserves loaded known archives and resident/running state, but drops missin
   await manager.dispose();
 });
 
+it("restores a retained Session when the Host adds the same identity again", async () => {
+  const { manager } = fixture();
+  manager.handleSessionAdded(row(ordinary));
+  const resident = manager.get(ordinary);
+  manager.handleSessionRemoved(ordinary);
+  expect(resident.getSnapshot().removed).toBe(true);
+  manager.handleSessionAdded(row(ordinary));
+  expect(manager.get(ordinary)).toBe(resident);
+  expect(resident.getSnapshot().removed).toBe(false);
+  await manager.dispose();
+});
+
 it("does not infer archives from omission and replays real removals during a scoped refresh", async () => {
   const { manager, list } = fixture();
   list.mockResolvedValueOnce(ok([row(ordinary), row(archived)]));

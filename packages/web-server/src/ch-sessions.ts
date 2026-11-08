@@ -263,8 +263,23 @@ export class ChSessions {
     for (const [id, row] of this.rows) {
       const harnessId = this.threads.harnessId(id);
       if (found.has(id) || !harnessId) continue;
-      if (known.has(id) && !archiveChanges.has(id) && (includeArchived || !archivedIds.has(id)))
+      if (known.has(id) && !archiveChanges.has(id) && (includeArchived || !archivedIds.has(id))) {
+        if (harnessId === "codex") {
+          try {
+            const refreshed = await this.host.request<{ thread: ChThread }>("thread/read", {
+              threadId: id,
+              includeTurns: false,
+            });
+            if (refreshed.thread.id === id) {
+              rows.set(id, refreshed.thread);
+              ownership.set(id, harnessId);
+            }
+          } catch {
+            // A missing native Thread is removed below with the rest of this catalog generation.
+          }
+        }
         continue;
+      }
       rows.set(id, row);
       ownership.set(id, harnessId);
     }

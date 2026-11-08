@@ -604,6 +604,7 @@ export class InputTriggerController {
       void source
         .candidates(projection, {
           menuEpoch: this.menuEpoch,
+          launcher: this.launcher.getSnapshot() ?? undefined,
           query: hit.query,
           quoted: hit.quoted,
           position: hit.position,

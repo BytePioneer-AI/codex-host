@@ -20,6 +20,7 @@ import {
   DesktopScreenshotButton,
   DesktopScreenshotPreview,
   type DesktopScreenshotFace,
+  type DesktopScreenshotButtonFace,
 } from "./DesktopScreenshot.tsx";
 import { VoiceInput } from "./voice-input.ts";
 import {
@@ -131,13 +132,18 @@ export function apply(ctx: ClientContext): void {
         conversation.releaseDraftAttachments(created as readonly ComposerAttachment[]),
     };
     scope.effect(() => () => screenshot.close(), "ui-codexhost: release desktop screenshot");
+    const screenshotButton: DesktopScreenshotButtonFace = {
+      screenshot,
+      drafts,
+      registerSource: (source) => scope.inputTriggers.registerSource(source),
+    };
     scope.slots.inject("conversation.input.right", () =>
       scope.slots.register(
         {
           name: "conversation.input.right",
           id: "codexhost.desktop-screenshot",
           locale: NS,
-          inject: (): DesktopScreenshotFace => ({ screenshot, drafts }),
+          inject: (): DesktopScreenshotButtonFace => screenshotButton,
         },
         DesktopScreenshotButton,
       ),

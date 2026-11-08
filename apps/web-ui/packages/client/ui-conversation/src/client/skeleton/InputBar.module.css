@@ -136,7 +136,7 @@
   height: 0;
 }
 
-/* The draft's scrollport, and the ONLY scrolling box in the composer. The
+/* The draft's vertical scrollport. The
    contenteditable grows with its content inside; the 14-line cap lives here
    because this is the box the cap describes. */
 .scroll {
@@ -438,6 +438,97 @@
   color: inherit;
   font-size: 12px;
   cursor: pointer;
+}
+
+.addSeat,
+.submitSeat {
+  display: contents;
+}
+
+/* Only the AppFrame's existing phone posture opts into native horizontal
+   scrolling. Flatten the two desktop groups so sticky edge seats belong to
+   this scrollport, not to a shorter intermediate containing block. */
+.row[data-phone-toolbar] {
+  flex-wrap: nowrap;
+  position: relative;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  scroll-padding-inline: 44px 46px;
+}
+
+.row[data-phone-toolbar]::-webkit-scrollbar {
+  display: none;
+}
+
+.row[data-phone-toolbar] .tools:not([hidden]),
+.row[data-phone-toolbar] .trailing:not(.trailingActive) {
+  display: contents;
+}
+
+.row[data-phone-toolbar] .tools > *,
+.row[data-phone-toolbar] [data-slot="conversation.input.left"] > * {
+  flex-shrink: 0;
+}
+
+.row[data-phone-toolbar] button:focus-visible {
+  outline-offset: -2px;
+}
+
+.row[data-phone-toolbar] .modes,
+.row[data-phone-toolbar] .standardControls {
+  flex: none;
+  width: max-content;
+}
+
+.row[data-phone-toolbar] .standardControls {
+  margin-left: auto;
+}
+
+.row[data-phone-toolbar][data-toolbar-measuring] .standardControls {
+  margin-left: 0;
+}
+
+.row[data-phone-toolbar] .addSeat,
+.row[data-phone-toolbar] .submitSeat {
+  position: sticky;
+  z-index: 1;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: inherit;
+  background: var(--dsw-specific-input-major);
+  /* Opaque edge gutters keep scrolled controls out from under fixed actions. */
+  box-shadow: 0 0 0 8px var(--dsw-specific-input-major);
+}
+
+.row[data-phone-toolbar] .addSeat {
+  left: 8px;
+}
+
+.row[data-phone-toolbar] .submitSeat {
+  right: 8px;
+  margin-left: 0;
+}
+
+.row[data-phone-toolbar][data-toolbar-activity] {
+  overflow: visible;
+}
+
+.row[data-actions-overflow] [data-composer-overflow-action] {
+  display: none;
+}
+
+@container (max-width: 560px) {
+  .row[data-phone-toolbar] .addSeat {
+    margin-right: -4px;
+  }
+
+  /* Preserve the existing 8px gaps within each desktop control group. */
+  .row[data-phone-toolbar] .activity,
+  .row[data-phone-toolbar] .submitSeat {
+    margin-left: -4px;
+  }
 }
 
 .standardControls {

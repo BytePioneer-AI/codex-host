@@ -1,4 +1,9 @@
 import {
+  SHARED_DELEGATION_METHOD,
+  sharedDelegationRegistration,
+  dispatchSharedDelegation,
+} from "./shared-delegation.js";
+import {
   THREAD_QUESTION_RESPOND_METHOD,
   threadQuestionsListParamsSchema,
   threadQuestionRespondParamsSchema,
@@ -657,6 +662,7 @@ export class AppServerHost {
   #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
   #delegationCoordinator: HarnessDelegationCoordinator;
   #sessionImportRequests: SessionImportRequests | undefined;
+  readonly #delegationApi: DelegationControlRegistration;
   #unregisterDelegationApi: (() => void) | undefined;
   #unsubscribeAccountState: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
@@ -910,40 +916,44 @@ export class AppServerHost {
     });
     const maintenanceOperation = <T>(run: () => Promise<T>): Promise<T> =>
       options.runtimeMaintenance ? options.runtimeMaintenance.operation(run) : run();
-    const unregisterDelegationApi = options.onDelegationApi?.({
-      listHarnesses: () =>
-        this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
-      inspect: (input) =>
-        this.#waitForPlugins().then(() => this.#delegationCoordinator.inspect(input)),
-      start: (input) =>
-        maintenanceOperation(async () => {
-          if (options.sharedDelegation && input.harnessId !== "codex") {
-            const active = [...this.#activeOfficialTurns.keys()];
-            const parentThreadId =
-              input.parentThreadId ?? (active.length === 1 ? active[0] : undefined);
-            return options.sharedDelegation.start({
-              ...input,
-              ...(parentThreadId ? { parentThreadId } : {}),
-            });
-          }
-          return this.#waitForPlugins().then(() => this.#delegationCoordinator.start(input));
-        }),
-      send: (input) =>
-        maintenanceOperation(() =>
-          this.#waitForPlugins().then(() => this.#delegationCoordinator.send(input)),
-        ),
-      cancel: (input) =>
-        this.#waitForPlugins().then(() => this.#delegationCoordinator.cancel(input)),
-      read: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.read(input)),
-      wait: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.wait(input)),
-      list: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.list(input)),
-      canHandleStart: (input) => this.#canHandleDelegationStart(input),
-      ownsThread: (threadId) => this.#ownsDelegationThread(threadId),
-      executionHostId: (threadId) => {
-        const thread = this.#externalRuntime.get(threadId);
-        return thread ? this.#executionHosts.get(thread) : undefined;
+    this.#delegationApi = sharedDelegationRegistration(
+      {
+        listHarnesses: () =>
+          this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
+        inspect: (input) =>
+          this.#waitForPlugins().then(() => this.#delegationCoordinator.inspect(input)),
+        start: (input) =>
+          maintenanceOperation(async () => {
+            if (options.sharedDelegation && input.harnessId !== "codex") {
+              const active = [...this.#activeOfficialTurns.keys()];
+              const parentThreadId =
+                input.parentThreadId ?? (active.length === 1 ? active[0] : undefined);
+              return options.sharedDelegation.start({
+                ...input,
+                ...(parentThreadId ? { parentThreadId } : {}),
+              });
+            }
+            return this.#waitForPlugins().then(() => this.#delegationCoordinator.start(input));
+          }),
+        send: (input) =>
+          maintenanceOperation(() =>
+            this.#waitForPlugins().then(() => this.#delegationCoordinator.send(input)),
+          ),
+        cancel: (input) =>
+          this.#waitForPlugins().then(() => this.#delegationCoordinator.cancel(input)),
+        read: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.read(input)),
+        wait: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.wait(input)),
+        list: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.list(input)),
+        canHandleStart: (input) => this.#canHandleDelegationStart(input),
+        ownsThread: (threadId) => this.#ownsDelegationThread(threadId),
+        executionHostId: (threadId) => {
+          const thread = this.#externalRuntime.get(threadId);
+          return thread ? this.#executionHosts.get(thread) : undefined;
+        },
       },
-    });
+      options.externalOnly ? options.sharedThreads : undefined,
+    );
+    const unregisterDelegationApi = options.onDelegationApi?.(this.#delegationApi);
     this.#unregisterDelegationApi =
       typeof unregisterDelegationApi === "function" ? unregisterDelegationApi : undefined;
     this.#turnProjection = new ExternalTurnProjection({
@@ -1618,6 +1628,11 @@ export class AppServerHost {
       await this.#writer.json(
         rpcError(request, -32090, "Remote service is updating; reconnect shortly"),
       );
+      return;
+    }
+    if (this.#options.externalOnly && request.method === SHARED_DELEGATION_METHOD) {
+      const result = await dispatchSharedDelegation(this.#delegationApi, requestObject(request));
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;
     }
     if (request.method === DELEGATION_READ_METHOD) {

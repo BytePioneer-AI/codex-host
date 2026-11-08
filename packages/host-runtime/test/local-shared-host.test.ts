@@ -1,3 +1,4 @@
+import type { DelegationControlRegistration } from "../src/delegation-types.js";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -278,4 +279,77 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
     writeFileSync(file, invalid);
     await expect(readNativeWorkspaceSnapshot(environment)).rejects.toThrow();
   }
+});
+
+it("routes the SSH delegation API to the shared owner without native fallback", async () => {
+  const { root, web, adapter } = await setup();
+  const bridge = new SharedThreadBridge({
+    connect: () =>
+      connectLocalSharedExternalHost({
+        launcher: "/unused",
+        runtime: "/unused",
+        dataDirectory: root,
+      }),
+    delegateCreates: true,
+    diagnose: () => undefined,
+  });
+  const captured: { api?: DelegationControlRegistration } = {};
+  const remote = createFixture({
+    externalOnly: true,
+    sharedThreads: bridge,
+    onDelegationApi: (api) => {
+      captured.api = api;
+    },
+  });
+  cleanup.push(() => stopFixture(remote));
+  const official = new JsonLineCollector(remote.official.stdin);
+  remote.official.stdin.on("data", () => {
+    for (const request of official.messages.splice(0))
+      remote.official.stdout.write(
+        JSON.stringify({
+          id: request.id,
+          error: { code: -32600, message: "not a native Thread" },
+        }) + "\n",
+      );
+  });
+  const started = await web.request<{ thread: { id: string } }>("thread/start", {
+    cwd: "/synthetic",
+    model: encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("pi") }),
+  });
+  if (!captured.api) throw new Error("Missing delegation registration");
+  const snapshot = await captured.api.read({ threadId: started.thread.id, view: "messages" });
+  expect(snapshot).toMatchObject({ threadId: started.thread.id, harnessId: "pi" });
+  const sent = await captured.api.send({ threadId: started.thread.id, message: "continue" });
+  expect(sent.harnessId).toBe("pi");
+  await expect(
+    captured.api.send({ threadId: started.thread.id, message: "duplicate" }),
+  ).rejects.toMatchObject({ code: "THREAD_BUSY" });
+  const session = adapter.sessions[0];
+  if (!session) throw new Error("Missing shared Session");
+  session.appendText("shared answer");
+  session.succeedTurn();
+  expect(
+    await captured.api.wait({ threadId: started.thread.id, view: "messages", timeoutMs: 1000 }),
+  ).toMatchObject({ harnessId: "pi", timedOut: false });
+  const child = await captured.api.start({
+    harnessId: "pi",
+    parentThreadId: started.thread.id,
+    task: "child task",
+    cwd: "/synthetic",
+  });
+  expect(child.harnessId).toBe("pi");
+  expect(
+    await captured.api.list({ parentThreadId: started.thread.id, sort: "created-asc", limit: 10 }),
+  ).toMatchObject({ threads: [{ threadId: child.threadId }] });
+  const childSession = adapter.sessions[1];
+  if (!childSession) throw new Error("Missing shared child");
+  childSession.completeCancellationOnRequest();
+  expect(await captured.api.cancel({ threadId: child.threadId })).toMatchObject({
+    cancelled: true,
+  });
+  expect(await remote.mappingStore.listThreads()).toHaveLength(0);
+  bridge.close();
+  await expect(
+    captured.api.read({ threadId: started.thread.id, view: "messages" }),
+  ).rejects.toThrow("disconnected");
 });

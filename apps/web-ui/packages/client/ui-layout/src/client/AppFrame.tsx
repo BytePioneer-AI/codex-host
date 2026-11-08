@@ -40,7 +40,8 @@ import {
   SIDEBAR_DEFAULT,
 } from "./columns.ts";
 import { DocumentTitle } from "./DocumentTitle.tsx";
-import { bindPhoneSidebarSwipe } from "./phone-sidebar-swipe.ts";
+import type { RightbarOwnerProps } from "./index.ts";
+import { bindPhoneRightbarMotion } from "./phone-rightbar-motion.ts";
 import { usePhoneDrawerMotion } from "./use-phone-drawer-motion.ts";
 import type { createLayoutStore } from "./stores.ts";
 import css from "./AppFrame.module.css";
@@ -174,16 +175,6 @@ export function AppFrame({
   const layoutInfo = useStore((state) => state.layoutInfo);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const viewport = layoutInfo.viewportWidth;
-  const bindSwipeNavigation = useCallback((open: () => void, close: () => void) => {
-    const frame = frameRef.current;
-    if (frame === null) return () => {};
-    const offOpen = bindPhoneSidebarSwipe(frame, "left", open);
-    const offClose = bindPhoneSidebarSwipe(frame, "right", close, "rightbar");
-    return () => {
-      offOpen();
-      offClose();
-    };
-  }, []);
 
   // Track the frame's own box (not the window): rAF-throttled ResizeObserver.
   useLayoutEffect(() => {
@@ -215,6 +206,14 @@ export function AppFrame({
   const narrow = viewport < SIDEBAR_AUTO_COLLAPSE;
   // Phone frames keep no icon rail: the sidebar opens as a drawer over the conversation.
   const phone = viewport < PHONE_BREAKPOINT;
+  const bindSwipeNavigation = useCallback<RightbarOwnerProps["bindSwipeNavigation"]>(
+    (surface) => {
+      const frame = frameRef.current;
+      if (!phone || frame === null) return { setExpanded: () => {}, dispose: () => {} };
+      return bindPhoneRightbarMotion(frame, surface);
+    },
+    [phone],
+  );
   const sidebarCollapsed = narrow ? !layoutInfo.narrowExpanded : layoutInfo.sidebar === 0;
   const drawerRef = useRef<HTMLDivElement>(null);
   const drawerBodyRef = useRef<HTMLDivElement>(null);

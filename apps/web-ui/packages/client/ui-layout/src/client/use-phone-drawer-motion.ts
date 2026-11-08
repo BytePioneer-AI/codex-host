@@ -193,16 +193,16 @@ export function usePhoneDrawerMotion(
       const origin = event.target;
       if (!(origin instanceof Element) || !root.contains(origin)) return;
       const touch = event.touches[0]!;
-      const onEdge = edge.contains(origin);
-      if (!onEdge) {
+      const closing = edge.contains(origin) || origin === mask;
+      if (!closing) {
         if (
           !root.hasAttribute("data-sidebar-collapsed") ||
-          (origin !== mask && !isPhoneSidebarGestureTarget(root, origin)) ||
+          !isPhoneSidebarGestureTarget(root, origin) ||
           origin.closest('[role="button"], label, [data-sidebar-right-panel]')
         )
           return;
       }
-      begin(touch.identifier, "touch", touch.clientX, touch.clientY, event.timeStamp, !onEdge);
+      begin(touch.identifier, "touch", touch.clientX, touch.clientY, event.timeStamp, !closing);
     };
     const touchMove = (event: TouchEvent) => {
       if (gesture?.kind !== "touch") return;

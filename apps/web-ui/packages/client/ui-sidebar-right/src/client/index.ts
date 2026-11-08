@@ -282,9 +282,9 @@ export function apply(ctx: ClientContext): void {
           inject: (): RightbarRootInjected => ({
             hooks: { views: views.source },
             mountView: (reference) => views.mount(reference),
-            setExpandedFromSwipe: (expanded) => {
+            setExpandedFromSwipe: (sessionId, expanded) => {
               if (
-                controller.commandTarget(null) !== undefined &&
+                controller.commandTarget(null)?.sessionId === sessionId &&
                 controller.isExpanded() !== expanded
               )
                 controller.toggleExpanded();

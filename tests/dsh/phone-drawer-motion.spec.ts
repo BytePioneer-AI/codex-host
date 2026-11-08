@@ -32,12 +32,13 @@ function fixture(reduce = false) {
   vi.stubGlobal("matchMedia", () => media);
   const change = vi.fn();
   function Drawer({ open, enabled }: { open: boolean; enabled: boolean }) {
+    const frame = useRef<HTMLDivElement>(null);
     const drawer = useRef<HTMLDivElement>(null);
     const backdrop = useRef<HTMLButtonElement>(null);
-    const present = usePhoneDrawerMotion(drawer, backdrop, enabled, open, change);
+    const present = usePhoneDrawerMotion(frame, drawer, backdrop, enabled, open, change);
     return createElement(
       "div",
-      null,
+      { ref: frame },
       createElement("button", { ref: backdrop }),
       createElement(
         "div",

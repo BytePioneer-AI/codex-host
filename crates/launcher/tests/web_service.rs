@@ -6,6 +6,10 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(windows)]
+#[path = "web_service/windows_background.rs"]
+mod windows_background;
+
 struct Fixture {
     root: PathBuf,
     node: String,

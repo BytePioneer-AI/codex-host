@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { remoteApprovalPresentation } from "../src/remote-approval.ts";
-import { canReorderLocalWorkspaces } from "../../../apps/web-ui/packages/client/ui-workspace/src/client/rows/workspace-reorder.ts";
+import { canReorderLocalWorkspaces } from "@deepseek-ai/dsh-client-ui-workspace/src/client/rows/workspace-reorder.ts";
 
 it("presents command and file approvals without private routing fields", () => {
   const command = remoteApprovalPresentation({
@@ -46,7 +46,7 @@ it("never treats a remote workspace as a local reorder source or destination", (
     ["mac", "other"],
     ["missing", "a"],
   ])
-    assert.equal(canReorderLocalWorkspaces(rows, pair[0]!, pair[1]), false);
+    assert.equal(canReorderLocalWorkspaces(rows, pair[0] ?? "", pair[1]), false);
 });
 
 it("uses the matching pending file-change item when approval params omit paths", () => {

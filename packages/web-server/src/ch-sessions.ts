@@ -243,6 +243,7 @@ export class ChSessions {
     const projects = await this.host.projects([...this.rows.keys()]);
     if (this.closed) return;
     const groups = new Map<string, string | undefined>();
+    const references: Array<{ sessionId: string; cwd: string; title?: string }> = [];
     const projectless = new Set(projects.projectless.filter((id) => !projects.assignments[id]));
     for (const row of this.rows.values()) {
       if (row.workspaceKind === "projectless" && !row.projectId && !projects.assignments[row.id])
@@ -252,19 +253,21 @@ export class ChSessions {
           ? projectGroupRoot(projects, row.id, row.cwd)
           : undefined;
       groups.set(row.id, root);
-      if (root)
-        this.workspaces.attachReferencedSession(
-          row.id,
-          root,
-          projects.projects.find((project) => project.rootPaths.includes(root))?.name,
-        );
+      if (root) {
+        const title = projects.projects.find((project) => project.rootPaths.includes(root))?.name;
+        references.push({
+          sessionId: row.id,
+          cwd: root,
+          ...(title !== undefined ? { title } : {}),
+        });
+      }
     }
     for (const draft of this.drafts.values()) {
       if (draft.canonicalId) continue;
       groups.set(draft.id, draft.cwd);
       if (!draft.cwd) projectless.add(draft.id);
     }
-    this.workspaces.setReferenceGroups(groups, projectless);
+    this.workspaces.syncReferencedSessions(references, groups, projectless);
   }
   /** Only fields used by the list summary; projections have their own
    * streams. Re-emitting every row makes each browser rebuild its entire
@@ -535,15 +538,20 @@ export class ChSessions {
     const harnessId = this.threads.harnessId(row.id);
     if (!harnessId)
       throw new RpcError("session/ownership-unconfirmed", "CH did not confirm Thread ownership.");
+    const projections = this.threads.view(row.id)?.log.projections ?? {};
+    // List readers use connection hints and child navigation, not full controls.
+    const hintKeys = [
+      "nativeConnection",
+      "nativeInteractionError",
+      "subagentCatalog",
+      ...(row.parentThreadId ? ["subagent", "subagentTiming", "tokenUsage"] : []),
+    ];
     const values = {
-      ...defaultProjections(),
-      ...globalProjectionValues(this.threads.view(row.id)?.log.projections ?? {}),
-      ...(this.images
-        ? {
-            attachmentInput: this.files ? WEB_FILE_INPUT : WEB_IMAGE_INPUT,
-            imageLimits: WEB_IMAGE_LIMITS,
-          }
-        : {}),
+      ...Object.fromEntries(
+        hintKeys
+          .filter((key) => Object.hasOwn(projections, key))
+          .map((key) => [key, projections[key]]),
+      ),
       nativeDiscovery: !row.parentThreadId && row.canAcceptDirectInput !== false,
       threadReference: { hostId: "local" },
       title: threadListTitle(row),
@@ -578,14 +586,18 @@ export class ChSessions {
         kind: "cached",
         asOfSeq: 0,
         values: {
-          ...(includeControls ? defaultProjections() : {}),
-          ...(this.images
+          ...(includeControls
             ? {
-                attachmentInput: this.files ? WEB_FILE_INPUT : WEB_IMAGE_INPUT,
-                imageLimits: WEB_IMAGE_LIMITS,
+                ...defaultProjections(),
+                ...(this.images
+                  ? {
+                      attachmentInput: this.files ? WEB_FILE_INPUT : WEB_IMAGE_INPUT,
+                      imageLimits: WEB_IMAGE_LIMITS,
+                    }
+                  : {}),
+                modelSelection: { lastUsed: null, next: draft.selection },
               }
             : {}),
-          modelSelection: { lastUsed: null, next: draft.selection },
           harnessIdentity: {
             id: draft.selection.provider,
             name: await this.catalog.name(draft.selection.provider),
@@ -639,7 +651,7 @@ export class ChSessions {
     this.drafts.set(id, draft);
     if (cwd) this.workspaces.attachReferencedSession(id, cwd);
     this.workspaces.addDraftReference(id, cwd);
-    this.events.emit("api-session/added", await this.draftSummary(draft));
+    this.events.emit("api-session/added", await this.draftSummary(draft, false));
     return { sessionId: id, agentPreset: "standard" };
   }
   /** Materialize a source-neutral draft without reading or writing global defaults. */
@@ -939,7 +951,7 @@ export class ChSessions {
               "New session defaults could not be saved.",
             ),
           );
-        this.events.emit("api-session/added", await this.draftSummary(draft));
+        this.events.emit("api-session/added", await this.draftSummary(draft, false));
         for (const sink of this.controls) {
           const s = await this.draftSummary(draft);
           for (const [key, value] of Object.entries(s.projections.values))

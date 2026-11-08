@@ -26,7 +26,14 @@ interface Diagnostic {
   };
 }
 
-function fixture(t: TestContext) {
+function fixture(t: TestContext, trace = true) {
+  const previous = process.env.CODEXHOST_TRACE_SESSION_LIST;
+  if (trace) process.env.CODEXHOST_TRACE_SESSION_LIST = "1";
+  else delete process.env.CODEXHOST_TRACE_SESSION_LIST;
+  t.after(() => {
+    if (previous === undefined) delete process.env.CODEXHOST_TRACE_SESSION_LIST;
+    else process.env.CODEXHOST_TRACE_SESSION_LIST = previous;
+  });
   const root = mkdtempSync(join(tmpdir(), "ch-list-timing-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const host = new FakeChHost();
@@ -61,14 +68,36 @@ function fixture(t: TestContext) {
   return { host, sessions, rpc, root, lines, diagnostics, list };
 }
 
+it("keeps Server-Timing without opt-in JSON logs and still reports failed requests", async (t) => {
+  const f = fixture(t, false);
+  const errors: string[] = [];
+  t.mock.method(console, "error", (line: string) => errors.push(line));
+  f.host.add("private", f.root);
+  await f.list("default", (timing, ok) => {
+    assert.equal(ok, true);
+    assert.match(timing.serverTiming(), /catalog_host_catalog;dur=/);
+    assert.match(timing.serverTiming(), /serialize;dur=/);
+    timing.report(ok);
+  });
+  assert.deepEqual(f.lines, []);
+  assert.deepEqual(errors, []);
+  f.host.request = async () => {
+    throw new RpcError("host/offline", "Sensitive upstream error");
+  };
+  const reply = JSON.parse(await f.list("failed-default"));
+  assert.equal(reply.result.error.code, "host/offline");
+  assert.deepEqual(f.lines, []);
+  assert.deepEqual(errors, ["[session/list] request failed"]);
+});
+
 it("accumulates monotonic durations and slowest calls, including failures", async () => {
   let now = 10;
   const timing = new SessionListTiming("clock", () => now);
-  await timing.measure("ownership", async () => {
+  await timing.measure("host_catalog", async () => {
     now += 25;
   });
   await assert.rejects(
-    timing.measure("ownership", async () => {
+    timing.measure("host_catalog", async () => {
       now += 15;
       throw new Error("failed");
     }),
@@ -84,27 +113,16 @@ it("accumulates monotonic durations and slowest calls, including failures", asyn
   timing.count("ownershipIds", 20);
   const snapshot = timing.snapshot();
   assert.equal(snapshot.totalMs, 45);
-  assert.deepEqual(snapshot.stages.ownership, { ms: 40, calls: 2, maxMs: 25 });
+  assert.deepEqual(snapshot.stages.host_catalog, { ms: 40, calls: 2, maxMs: 25 });
   assert.deepEqual(snapshot.stages.workspace_sync, { ms: 5, calls: 1, maxMs: 5 });
   assert.equal(snapshot.counts.ownershipIds, 120);
-  assert.match(timing.serverTiming(), /ownership;dur=40/);
+  assert.match(timing.serverTiming(), /host_catalog;dur=40/);
 });
 
-it("reports actual pages, batches, UTF-8 bytes and HTTP compression without logging metadata", async (t) => {
+it("reports the aggregate Host request, UTF-8 bytes and HTTP compression without logging metadata", async (t) => {
   const f = fixture(t);
   for (let i = 0; i < 206; i++) f.host.add(`private-id-${i}`, f.root, "私密标题", false);
   f.host.archivedIds.add("private-id-205");
-  const request = f.host.request.bind(f.host);
-  f.host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
-    const result = await request<T>(method, params);
-    if (method !== "thread/list") return result;
-    const rows = (result as { data: unknown[] }).data;
-    const start = Number(params.cursor ?? 0);
-    return {
-      data: rows.slice(start, start + 100),
-      nextCursor: start + 100 < rows.length ? String(start + 100) : null,
-    } as T;
-  };
   let timing: SessionListTiming | undefined;
   const reply = await f.list("list-pages", (value, ok) => {
     timing = value;
@@ -115,7 +133,7 @@ it("reports actual pages, batches, UTF-8 bytes and HTTP compression without logg
   const compressed = await timing.measure("compress", () =>
     compressResponse(Buffer.from(reply), "application/json", "gzip"),
   );
-  assert.match(timing.serverTiming(), /catalog_unarchived;dur=/);
+  assert.match(timing.serverTiming(), /catalog_host_catalog;dur=/);
   assert.match(timing.serverTiming(), /serialize;dur=/);
   assert.match(timing.serverTiming(), /compress;dur=/);
   timing.report(true, compressed.body.length);
@@ -124,22 +142,20 @@ it("reports actual pages, batches, UTF-8 bytes and HTTP compression without logg
   assert.ok(log?.catalog);
   assert.equal(log.rpcId, "list-pages");
   assert.equal(log.catalog.mode, "started");
-  assert.equal(log.catalog.stages.unarchived?.calls, 3);
-  assert.equal(log.catalog.stages.archived?.calls, 1);
-  assert.equal(log.catalog.stages.ownership?.calls, 3);
+  assert.equal(log.catalog.stages.host_catalog?.calls, 1);
   assert.equal(log.catalog.stages.projects?.calls, 1);
   assert.equal(log.catalog.stages.workspace_sync?.calls, 1);
   assert.equal(log.catalog.stages.archive_sync?.calls, 1);
   assert.equal(log.catalog.stages.catalog_publish?.calls, 1);
   assert.equal(log.catalog.counts.unarchivedRows, 205);
-  assert.equal(log.catalog.counts.archivedRows, 1);
-  assert.equal(log.catalog.counts.ownershipIds, 206);
-  assert.equal(log.counts.resultRows, 206);
+  assert.equal(log.catalog.counts.archivedRows, 0);
+  assert.equal(log.catalog.counts.ownershipIds, 205);
+  assert.equal(log.counts.resultRows, 205);
   assert.equal(log.responseBytes, Buffer.byteLength(reply));
   assert.equal(log.encodedBytes, compressed.body.length);
   assert.ok(log.responseBytes > reply.length, "UTF-8 bytes are not character counts");
   assert.ok(log.encodedBytes < log.responseBytes);
-  assert.equal(JSON.parse(reply).result.value.items.length, 206);
+  assert.equal(JSON.parse(reply).result.value.items.length, 205);
   assert.ok(f.lines.every((line) => !/private-id|私密标题/.test(line) && !line.includes(f.root)));
 });
 
@@ -152,7 +168,7 @@ for (const background of [false, true]) {
     const request = f.host.request.bind(f.host);
     let blocked = false;
     f.host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
-      if (method === "thread/list" && !blocked) {
+      if (method === "codexhost/thread/catalog/read" && !blocked) {
         blocked = true;
         entered.resolve(undefined);
         await gate.promise;
@@ -168,10 +184,12 @@ for (const background of [false, true]) {
     assert.equal(logs.length, background ? 1 : 2);
     const joined = logs.find((log) => log.rpcId === "second");
     assert.equal(joined?.catalog?.mode, "joined");
-    assert.equal(joined.catalog.stages.unarchived?.calls, 1);
-    assert.equal(joined.catalog.stages.archived?.calls, 1);
+    assert.equal(joined.catalog.stages.host_catalog?.calls, 1);
     assert.equal(joined.stages.catalog_wait?.calls, 1);
-    assert.equal(f.host.requests.filter(({ method }) => method === "thread/list").length, 2);
+    assert.equal(
+      f.host.requests.filter(({ method }) => method === "codexhost/thread/catalog/read").length,
+      1,
+    );
     if (!background) {
       const started = logs.find((log) => log.rpcId === "first");
       assert.equal(started?.catalog?.mode, "started");
@@ -202,7 +220,7 @@ it("logs a failed phase once, preserves the RPC error, and leaves unrelated RPCs
   f.host.add("thread", f.root);
   const request = f.host.request.bind(f.host);
   f.host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
-    if (method === "codexhost/thread/ownership/list")
+    if (method === "codexhost/thread/catalog/read")
       throw new RpcError("host/offline", "Sensitive error text");
     return request<T>(method, params);
   };
@@ -211,7 +229,7 @@ it("logs a failed phase once, preserves the RPC error, and leaves unrelated RPCs
   assert.equal(reply.result.error.code, "host/offline");
   const [log] = f.diagnostics();
   assert.equal(log?.ok, false);
-  assert.equal(log.catalog?.stages.ownership?.calls, 1);
+  assert.equal(log.catalog?.stages.host_catalog?.calls, 1);
   assert.equal(log.stages.summaries, undefined);
   assert.equal(log.stages.serialize?.calls, 1);
   assert.equal(f.lines.length, 1);

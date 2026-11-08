@@ -107,6 +107,10 @@ export class ThreadListTiming {
     write: (line: string) => void,
   ): void {
     try {
+      if (process.env.CODEXHOST_TRACE_SESSION_LIST !== "1") {
+        if (!ok) write("[thread/list] request failed");
+        return;
+      }
       write(
         `[thread/list] ${JSON.stringify({
           requestId: String(requestId).slice(0, 128),

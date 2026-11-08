@@ -497,10 +497,11 @@
 .row[data-phone-toolbar] {
   flex-wrap: nowrap;
   position: relative;
+  gap: 4px;
 }
 
 .row[data-phone-toolbar] .controlScroll {
-  --dsh-composer-edge-gap: 12px;
+  --dsh-composer-edge-gap: 4px;
   display: flex;
   flex: 1;
   align-items: center;
@@ -535,14 +536,11 @@
 .row[data-phone-toolbar] .modes,
 .row[data-phone-toolbar] .standardControls {
   flex: none;
+  gap: 4px;
   width: max-content;
 }
 
 .row[data-phone-toolbar] .standardControls {
-  margin-left: auto;
-}
-
-.row[data-phone-toolbar][data-toolbar-measuring] .standardControls {
   margin-left: 0;
 }
 
@@ -554,7 +552,7 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: inherit;
+  gap: 4px;
 }
 
 .row[data-phone-toolbar] .addSeat {
@@ -595,22 +593,6 @@
 
 .row[data-actions-overflow] [data-composer-overflow-action] {
   display: none;
-}
-
-@container (max-width: 560px) {
-  .row[data-phone-toolbar] .controlScroll {
-    --dsh-composer-edge-gap: 8px;
-  }
-
-  .row[data-phone-toolbar] .addSeat {
-    margin-right: -4px;
-  }
-
-  /* Preserve the existing 8px gaps within each desktop control group. */
-  .row[data-phone-toolbar] .activity,
-  .row[data-phone-toolbar] .submitSeat {
-    margin-left: -4px;
-  }
 }
 
 .standardControls {

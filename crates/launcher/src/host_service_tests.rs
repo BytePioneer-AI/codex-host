@@ -46,6 +46,33 @@ fn publishes_complete_private_status_before_readiness() {
 }
 
 #[test]
+fn service_environment_preserves_opt_in_list_tracing() {
+    const TEST: &str = "host_service::tests::service_environment_preserves_opt_in_list_tracing";
+    if env::var_os("CODEXHOST_TRACE_ENV_TEST").is_some() {
+        let mut command = Command::new("unused");
+        super::clean(&mut command);
+        assert!(
+            !command
+                .get_envs()
+                .any(|(key, _)| key == "CODEXHOST_TRACE_SESSION_LIST")
+        );
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == "CODEXHOST_TRACE_ENV_TEST" && value.is_none())
+        );
+        return;
+    }
+    let status = Command::new(env::current_exe().unwrap())
+        .args(["--exact", TEST])
+        .env("CODEXHOST_TRACE_ENV_TEST", "1")
+        .env("CODEXHOST_TRACE_SESSION_LIST", "1")
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
 fn shutdown_without_a_running_owner_returns_immediately() {
     wait_for_shutdown(None, None, Duration::from_millis(1)).unwrap();
 }

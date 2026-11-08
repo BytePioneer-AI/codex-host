@@ -14,9 +14,12 @@ import {
   REMOTE_UPDATE_METHOD,
   remoteUpdateParamsSchema,
   harnessInstallationRequestTimeoutMs,
+  THREAD_CATALOG_READ_METHOD,
+  threadCatalogReadParamsSchema,
 } from "@codexhost/shared-contracts";
 import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
+import { readThreadCatalog } from "./thread-catalog.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { externalTurnInputText } from "./external-turn-input.js";
 import {
@@ -1613,6 +1616,10 @@ export class AppServerHost {
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;
     }
+    if (request.method === THREAD_CATALOG_READ_METHOD) {
+      this.#dispatchDesktopReply(request, () => this.#readThreadCatalog(request));
+      return;
+    }
     if (this.#options.externalOnly && request.method === "codexhost/shared-threads/placements") {
       await this.#writer.json(
         rpcEnvelope(request, {
@@ -1856,16 +1863,18 @@ export class AppServerHost {
     }
   }
 
+  async #initializeSharedOfficial(): Promise<void> {
+    // The independent owner starts native Codex only when native metadata or
+    // an explicit native Delegation needs it, not when Web merely connects.
+    await this.#officialRuntime.initialize();
+    await this.#officialRuntime.initializeProtocol({
+      clientInfo: { name: "codexhost-shared-threads", version: "1" },
+      capabilities: { experimentalApi: true },
+    });
+  }
+
   async #requestOfficial(method: string, params: JsonObject): Promise<JsonObject> {
-    if (this.#options.externalOnly) {
-      // The independent owner starts native Codex only when native metadata or
-      // an explicit native Delegation needs it, not when Web merely connects.
-      await this.#officialRuntime.initialize();
-      await this.#officialRuntime.initializeProtocol({
-        clientInfo: { name: "codexhost-shared-threads", version: "1" },
-        capabilities: { experimentalApi: true },
-      });
-    }
+    if (this.#options.externalOnly) await this.#initializeSharedOfficial();
     return this.#officialRuntime.request(method, params);
   }
 
@@ -2500,6 +2509,43 @@ export class AppServerHost {
       }),
       nextCursor: result.nextCursor,
     };
+  }
+
+  async #readThreadCatalog(request: JsonRpcRequest): Promise<void> {
+    const parsed = threadCatalogReadParamsSchema.safeParse(request.params ?? {});
+    if (!parsed.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Thread catalog params"));
+      return;
+    }
+    try {
+      const result = await readThreadCatalog({
+        includeArchived: parsed.data.includeArchived ?? false,
+        readLocal: async () => {
+          const [records, placements] = await Promise.all([
+            this.#repository.list(),
+            this.#repository.listSectionPlacements(),
+          ]);
+          return { records, placements };
+        },
+        ...(this.#options.sharedThreads ? { sharedThreads: this.#options.sharedThreads } : {}),
+        runtimeFor: (id) => this.#listRuntimeState(id),
+        ...(this.#options.externalOnly
+          ? { initializeOfficial: () => this.#initializeSharedOfficial() }
+          : {}),
+        requestOfficialPage: async (params: JsonObject) =>
+          officialThreadListPageFromResponse(
+            await this.#officialRuntime.request("thread/list", params),
+          ),
+        diagnose: (line) => this.#diagnose(line),
+      });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+    } catch (error) {
+      await this.#writer.json(
+        error instanceof OfficialThreadListError
+          ? rpcEnvelope(request, { error: error.rpcError })
+          : rpcError(request, -32082, "Thread catalog aggregation failed"),
+      );
+    }
   }
 
   async #listThreads(

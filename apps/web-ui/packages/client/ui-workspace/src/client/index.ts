@@ -151,6 +151,16 @@ export function apply(ctx: Context): void {
   const viewInstance = viewHandle.create();
   // Archive visibility starts hidden on each page load, independently of saved layout/order.
   viewInstance.actions.setArchivedFilter("default");
+  ctx.effect(() => {
+    const syncArchiveScope = (): void => {
+      void sessions.setIncludeArchived(
+        (viewInstance.getSnapshot().archivedFilter ?? "default") !== "default",
+      );
+    };
+    const stop = viewInstance.subscribe(syncArchiveScope);
+    syncArchiveScope();
+    return stop;
+  }, "ui-workspace: browser-local archive query scope");
   const viewStore: typeof viewHandle = { ...viewHandle, create: () => viewInstance };
   const rowToast = createSnapshotStore<RowToastState | null>(null);
   let toastSeq = 0;

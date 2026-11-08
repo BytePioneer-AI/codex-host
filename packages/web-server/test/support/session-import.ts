@@ -33,7 +33,11 @@ export class SessionImportHost extends FakeChHost {
   }
 
   override async request<T>(method: string, params: Record<string, unknown>): Promise<T> {
-    if (method === "thread/list" && this.failCatalogAfterImport && this.mappings.size)
+    if (
+      method === "codexhost/thread/catalog/read" &&
+      this.failCatalogAfterImport &&
+      this.mappings.size
+    )
       throw new Error("Catalog temporarily unavailable");
     if (!method.startsWith("codexhost/harness/session-import/"))
       return super.request<T>(method, params);

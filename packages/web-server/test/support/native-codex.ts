@@ -3,6 +3,9 @@ import type { FakeChHost } from "./ch-host.ts";
 /** Native ownership is independent of the Provider chosen for the original Thread. */
 export function nativeCodex<T extends FakeChHost>(host: T): T {
   const request = host.request.bind(host);
+  const ownership = host.threadOwnership.bind(host);
+  host.threadOwnership = (threadId) =>
+    threadId.startsWith("native-") ? { threadId, owner: "codex" } : ownership(threadId);
   host.request = async <R>(method: string, params: Record<string, unknown>): Promise<R> => {
     if (method === "codexhost/harness/inspect" && params.harnessId === "codex") {
       host.requests.push({ method, params });

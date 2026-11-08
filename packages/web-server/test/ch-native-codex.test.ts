@@ -31,7 +31,7 @@ it("lists native and external Threads and continues native history with its orig
   }
   const list = await call<{
     items: Array<{ sessionId: string; projections: { values: Record<string, unknown> } }>;
-  }>("session/list");
+  }>("session/list", { includeArchived: true });
   assert.deepEqual(list.items.map((r) => r.sessionId).sort(), [
     "external-existing",
     "native-archived",
@@ -45,7 +45,7 @@ it("lists native and external Threads and continues native history with its orig
   assert.ok(workspaces.archivedSessionIds().includes("native-archived"));
   assert.ok(
     host.requests
-      .filter((r) => r.method === "thread/list")
+      .filter((r) => r.method === "codexhost/thread/catalog/read")
       .every((r) => r.params.modelProviders === undefined),
   );
   const projections = await call<{ values: Record<string, unknown> }>("session/projections", {

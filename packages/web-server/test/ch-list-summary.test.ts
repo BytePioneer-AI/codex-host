@@ -129,6 +129,7 @@ it("keeps child and connection hints but excludes unrelated loaded projections f
   const child = f.host.add("child", f.root);
   child.parentThreadId = "source";
   child.status = { type: "active" };
+  await f.list();
   for (const sessionId of ["source", "child"]) {
     await f.call("session/projections", { sessionId });
     await f.sessions["threads"].get(sessionId)?.controls;

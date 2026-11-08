@@ -3,9 +3,7 @@ import { performance } from "node:perf_hooks";
 type ListTimingStage =
   | "workspace_wait"
   | "catalog_wait"
-  | "unarchived"
-  | "archived"
-  | "ownership"
+  | "host_catalog"
   | "projects"
   | "workspace_sync"
   | "archive_sync"
@@ -110,6 +108,10 @@ export class SessionListTiming {
   }
 
   report(ok: boolean, encodedBytes?: number): void {
+    if (process.env.CODEXHOST_TRACE_SESSION_LIST !== "1") {
+      if (!ok) console.error("[session/list] request failed");
+      return;
+    }
     console.info(
       `[session/list] ${JSON.stringify({
         rpcId: this.rpcId?.slice(0, 128),

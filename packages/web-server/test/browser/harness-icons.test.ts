@@ -41,16 +41,13 @@ it(
           ],
         } as T;
       }
-      if (method === "codexhost/thread/ownership/list")
-        return {
-          threads: (params.threadIds as string[]).map((id) => ({
-            threadId: id,
-            owner: "external",
-            harnessId: id === "colored-history" ? "colored" : "fake",
-          })),
-        } as T;
       return original<T>(method, params);
     };
+    host.threadOwnership = (threadId) => ({
+      threadId,
+      owner: "external",
+      harnessId: threadId === "colored-history" ? "colored" : "fake",
+    });
     const debuggerServer = await startFakeChDebugger(host);
     t.after(() => debuggerServer.close());
     const url = await startServer(

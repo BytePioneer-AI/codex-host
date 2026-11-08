@@ -12,8 +12,10 @@ import {
   threadInspectionSchema,
   threadUsageInspectionSchema,
   type HarnessDisplayEntries,
+  THREAD_CATALOG_READ_METHOD,
+  type ThreadCatalogReadResult,
 } from "@codexhost/shared-contracts";
-import type { ChHostClient } from "./ch-host-client.ts";
+import type { ChHostClient, ChProjectSnapshot } from "./ch-host-client.ts";
 import { ChHarnessCatalog, type ModelSelection } from "./ch-harness-catalog.ts";
 /** Out-of-band Web Push notification for one Session. */
 export interface SessionNotification {
@@ -89,6 +91,8 @@ export class ChSessions {
   private controls = new Set<StreamSink>();
   private refreshing: Promise<void> | undefined;
   private refreshingCatalog = false;
+  private refreshingArchives = false;
+  private refreshingArchiveChanges: Map<string, boolean> | undefined;
   private refreshingTiming: SessionListTiming | undefined;
   private catalogReadAt = -Infinity;
   private timer?: NodeJS.Timeout;
@@ -139,6 +143,7 @@ export class ChSessions {
       ? new ChRealtime(host.realtime, {
           thread: (id) => this.view(id),
           catalog: () => this.refresh(),
+          archived: (id, archived) => this.updateArchive(id, archived),
           connection: (online) => {
             this.hostOnline = online;
             if (!online) this.interactions?.clear();
@@ -169,20 +174,33 @@ export class ChSessions {
   private id(id: string): string {
     return this.drafts.get(id)?.canonicalId ?? id;
   }
-  private async refresh(timing?: SessionListTiming): Promise<void> {
+  private async refresh(timing?: SessionListTiming, includeArchived = false): Promise<void> {
     if (this.closed) return;
-    if (this.refreshing && !this.refreshingCatalog) {
+    if (
+      this.refreshing &&
+      (!this.refreshingCatalog || (includeArchived && !this.refreshingArchives))
+    ) {
+      const stage = this.refreshingCatalog ? "catalog_wait" : "workspace_wait";
       const pending = this.refreshing.catch(() => undefined);
-      await (timing ? timing.measure("workspace_wait", () => pending) : pending);
-      return this.refresh(timing);
+      await (timing ? timing.measure(stage, () => pending) : pending);
+      return this.refresh(timing, includeArchived);
     }
     const mode = this.refreshing ? "joined" : "started";
     if (!this.refreshing) {
       this.refreshingCatalog = true;
+      this.refreshingArchives = includeArchived;
       this.refreshingTiming = new SessionListTiming();
-      this.refreshing = this.listAll(this.refreshingTiming).finally(() => {
+      const archiveChanges = new Map<string, boolean>();
+      this.refreshingArchiveChanges = archiveChanges;
+      this.refreshing = this.listAll(
+        this.refreshingTiming,
+        includeArchived,
+        archiveChanges,
+      ).finally(() => {
         this.refreshing = undefined;
         this.refreshingCatalog = false;
+        this.refreshingArchives = false;
+        this.refreshingArchiveChanges = undefined;
         this.refreshingTiming = undefined;
       });
     }
@@ -194,81 +212,82 @@ export class ChSessions {
       if (timing && catalogTiming) timing.catalog = { mode, ...catalogTiming.snapshot() };
     }
   }
-  private async listAll(timing: SessionListTiming): Promise<void> {
-    // A Thread a draft binds while this read is in flight is missing from its
-    // snapshot; it must not be dropped, or the first history read fails.
+  private async listAll(
+    timing: SessionListTiming,
+    includeArchived: boolean,
+    archiveChanges: ReadonlyMap<string, boolean>,
+  ): Promise<void> {
+    // Threads created during the read and archives outside its scope must survive it.
     const known = new Set(this.rows.keys());
-    const found = new Map<string, ChThread>();
-    const archivedIds = new Set<string>();
-    for (const archived of [false, true]) {
-      let cursor: string | null = null;
-      const seen = new Set<string>();
-      do {
-        const stage = archived ? "archived" : "unarchived";
-        const page: { data: ChThread[]; nextCursor: string | null } = await timing.measure(
-          stage,
-          () =>
-            this.host.request<{ data: ChThread[]; nextCursor: string | null }>("thread/list", {
-              limit: 200,
-              cursor,
-              archived,
-            }),
-        );
-        timing.count(archived ? "archivedRows" : "unarchivedRows", page.data.length);
-        for (const row of page.data) {
-          found.set(row.id, row);
-          if (archived) archivedIds.add(row.id);
-        }
-        cursor = page.nextCursor;
-        if (cursor && seen.has(cursor))
-          throw new RpcError("host/pagination-invalid", "CH cursor did not advance.");
-        if (cursor) seen.add(cursor);
-      } while (cursor);
+    const snapshot = await timing.measure("host_catalog", () =>
+      this.host.request<Omit<ThreadCatalogReadResult, "threads"> & { threads: ChThread[] }>(
+        THREAD_CATALOG_READ_METHOD,
+        { includeArchived },
+      ),
+    );
+    if (this.closed) return;
+    const found = new Map(snapshot.threads.map((row) => [row.id, row]));
+    const projects = await timing.measure("projects", () =>
+      this.host.projects([...new Set([...found.keys(), ...this.rows.keys()])]),
+    );
+    if (this.closed) return;
+    const snapshotArchives = new Set<string>(snapshot.archivedThreadIds);
+    const archivedIds = new Set(includeArchived ? [] : this.workspaces.archivedSessionIds());
+    for (const id of snapshotArchives) archivedIds.add(id);
+    for (const id of found.keys()) if (!snapshotArchives.has(id)) archivedIds.delete(id);
+    // Notifications received after the pull began supersede its archive membership.
+    for (const [id, archived] of archiveChanges) {
+      if (archived) archivedIds.add(id);
+      else archivedIds.delete(id);
     }
     const ownership = new Map<string, string>();
-    const ids = [...found.keys()];
-    for (let start = 0; start < ids.length; start += 100) {
-      const threadIds = ids.slice(start, start + 100);
-      timing.count("ownershipIds", threadIds.length);
-      const result = await timing.measure("ownership", () =>
-        this.host.request<{
-          threads: Array<{ threadId: string; owner: string; harnessId?: string }>;
-        }>("codexhost/thread/ownership/list", { threadIds }),
-      );
-      for (const item of result.threads) {
-        if (
-          item.owner === "external" &&
-          item.harnessId &&
-          found.get(item.threadId)?.modelProvider === "codexhost"
-        )
-          ownership.set(item.threadId, item.harnessId);
-        else if (item.owner === "codex") ownership.set(item.threadId, "codex");
-      }
+    for (const item of snapshot.ownership) {
+      if (
+        item.owner === "external" &&
+        item.harnessId &&
+        found.get(item.threadId)?.modelProvider === "codexhost"
+      )
+        ownership.set(item.threadId, item.harnessId);
+      else if (item.owner === "codex") ownership.set(item.threadId, "codex");
     }
+    timing.count("ownershipIds", ownership.size);
+    timing.count(
+      "archivedRows",
+      snapshot.threads.filter((row) => snapshotArchives.has(row.id)).length,
+    );
+    timing.count(
+      "unarchivedRows",
+      snapshot.threads.filter((row) => !snapshotArchives.has(row.id)).length,
+    );
     const rows = new Map([...found].filter(([id]) => ownership.has(id)));
     for (const [id, row] of this.rows) {
       const harnessId = this.threads.harnessId(id);
-      if (known.has(id) || found.has(id) || !harnessId) continue;
+      if (found.has(id) || !harnessId) continue;
+      if (known.has(id) && !archiveChanges.has(id) && (includeArchived || !archivedIds.has(id)))
+        continue;
       rows.set(id, row);
       ownership.set(id, harnessId);
     }
     this.threads.replaceHarnesses(ownership);
     this.rows = rows;
     timing.count("visibleRows", rows.size);
-    await this.syncWorkspace(timing);
+    await this.syncWorkspace(timing, projects);
     if (this.closed) return;
     timing.measureSync("archive_sync", () =>
-      this.workspaces.setReferenceArchives([...archivedIds].filter((id) => ownership.has(id))),
+      this.workspaces.setReferenceArchives([...archivedIds].sort()),
     );
     await timing.measure("catalog_publish", () => this.publishCatalogChanges());
     // Native pins are optional and cannot delay publishing the confirmed catalog.
     void this.pins.refresh().catch(() => undefined);
     this.catalogReadAt = Date.now();
   }
-  private async syncWorkspace(timing = new SessionListTiming()): Promise<void> {
-    const projects = await timing.measure("projects", () =>
-      this.host.projects([...this.rows.keys()]),
-    );
+  private async syncWorkspace(
+    timing = new SessionListTiming(),
+    snapshot?: ChProjectSnapshot,
+  ): Promise<void> {
+    const projects =
+      snapshot ??
+      (await timing.measure("projects", () => this.host.projects([...this.rows.keys()])));
     timing.count("projects", projects.projects.length);
     if (this.closed) return;
     timing.measureSync("workspace_sync", () => {
@@ -396,12 +415,23 @@ export class ChSessions {
   }
   private async readView(id: string, force: boolean): Promise<ChThreadHistory> {
     const configurationRevision = this.threads.get(id)?.configurationRevision ?? 0;
-    if (!this.rows.has(id)) await this.refresh();
-    const row = this.rows.get(id);
-    if (!row) throw new RpcError("session/not-found", "CH Thread not found.", { sessionId: id });
-    const harnessId = this.threads.harnessId(id);
-    if (!harnessId)
-      throw new RpcError("session/ownership-unconfirmed", "CH did not confirm Thread ownership.");
+    let row = this.rows.get(id) ?? this.threads.view(id)?.thread;
+    let harnessId = this.threads.harnessId(id);
+    if (!row || !harnessId) {
+      const owner = await this.owner(id);
+      harnessId = owner.harnessId;
+      if (!harnessId)
+        throw new RpcError("session/ownership-unconfirmed", "CH did not confirm Thread ownership.");
+      row ??= (
+        await this.host.request<{ thread: ChThread }>("thread/read", {
+          threadId: id,
+          includeTurns: false,
+        })
+      ).thread;
+      if (row.id !== id || (owner.owner === "external" && row.modelProvider !== "codexhost"))
+        throw new RpcError("session/ownership-unconfirmed", "CH did not confirm Thread identity.");
+      this.threads.setHarness(id, harnessId);
+    }
     let view = this.threads.view(id);
     if (!view) {
       const history: ChThreadHistory = new ChThreadHistory(
@@ -761,6 +791,9 @@ export class ChSessions {
       this.events.emit("api-session/added", await this.summary(result.thread));
       this.publishedCatalog?.set(result.thread.id, this.catalogKey(result.thread));
       this.events.emit("codexhost/session-bound", draft.id, result.thread.id);
+      // Navigation reads the retained draft during binding; remove its row only afterward.
+      // Keep the alias for in-flight requests, without deleting the native Thread.
+      this.events.emit("api-session/removed", draft.id);
       return result.thread.id;
     })();
     // No automatic retry after creation failure: the Host may already have allocated an identity.
@@ -778,7 +811,7 @@ export class ChSessions {
   localWorkspaceRoot(sessionId: string): string | undefined {
     const id = this.id(sessionId);
     if (this.drafts.has(id)) return undefined;
-    return this.rows.get(id)?.cwd;
+    return this.rows.get(id)?.cwd ?? this.threads.view(id)?.thread.cwd;
   }
 
   /**
@@ -825,6 +858,14 @@ export class ChSessions {
     this.drafts.delete(id);
   }
 
+  private updateArchive(id: string, archived: boolean): void {
+    this.refreshingArchiveChanges?.set(id, archived);
+    const ids = new Set(this.workspaces.archivedSessionIds());
+    if (archived) ids.add(id);
+    else ids.delete(id);
+    this.workspaces.setReferenceArchives([...ids].sort());
+  }
+
   private async setArchived(sessionId: string, archived: boolean): Promise<void> {
     const id = this.id(sessionId);
     if (this.drafts.has(id))
@@ -840,6 +881,7 @@ export class ChSessions {
     // Finish any pre-write catalog read before confirming from a fresh Host snapshot.
     // A read failure cannot turn an acknowledged mutation into a rejected write.
     await this.refreshing?.catch(() => undefined);
+    this.updateArchive(id, archived);
     await this.refresh().catch(() => undefined);
   }
 
@@ -915,11 +957,20 @@ export class ChSessions {
         return { pinnedSessionIds: await this.pins.sync({ threadId: id, pinned }) };
       });
     }
-    rpc.register("session/list", async (_args, context) => {
+    rpc.register("session/list", async (args, context) => {
+      const { includeArchived = false } = requestOf<{ includeArchived?: boolean }>(args);
+      if (typeof includeArchived !== "boolean")
+        throw new RpcError("session/list-invalid", "includeArchived must be a boolean.");
       const timing = context.sessionListTiming ?? new SessionListTiming();
-      await this.refresh(timing);
+      await this.refresh(timing, includeArchived);
+      const archivedSessionIds = this.workspaces.archivedSessionIds();
+      const archived = new Set(archivedSessionIds);
       const items = await timing.measure("summaries", async () => [
-        ...(await Promise.all([...this.rows.values()].map((row) => this.summary(row)))),
+        ...(await Promise.all(
+          [...this.rows.values()]
+            .filter((row) => includeArchived || !archived.has(row.id))
+            .map((row) => this.summary(row)),
+        )),
         ...(await Promise.all(
           [...this.drafts.values()]
             .filter((d) => !d.canonicalId)
@@ -927,7 +978,7 @@ export class ChSessions {
         )),
       ]);
       timing.count("resultRows", items.length);
-      return { items };
+      return { items, archivedSessionIds };
     });
     rpc.register("session/create", (args) => this.create(args));
     rpc.register("session/fork", async (args) => {

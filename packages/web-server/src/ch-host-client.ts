@@ -83,6 +83,7 @@ const METHODS = new Set([
   "codexhost/thread/inspect",
   "codexhost/thread/usage/inspect",
   "codexhost/thread/ownership/list",
+  "codexhost/thread/catalog/read",
   "codexhost/thread/model/select",
   "codexhost/thread/thinking/select",
   "codexhost/thread/permission-mode/select",

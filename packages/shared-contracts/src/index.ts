@@ -1,5 +1,6 @@
 import { z } from "zod";
 export * from "./client-channel.js";
+export * from "./thread-catalog.js";
 export * from "./voice.js";
 export * from "./web-access-tokens.js";
 export * from "./delegation-read.js";

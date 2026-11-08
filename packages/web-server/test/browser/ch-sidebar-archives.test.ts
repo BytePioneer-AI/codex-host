@@ -148,6 +148,13 @@ for (const legacyFilter of ["show", "only"]) {
       if ((await project.getAttribute("aria-expanded")) === "false") await project.click();
       await row("project-active").waitFor();
       await assertArchivesHidden();
+      const catalogRequests = () =>
+        host.requests.filter((r) => r.method === "codexhost/thread/catalog/read");
+      assert.ok(catalogRequests().length > 0);
+      assert.ok(
+        catalogRequests().every((r) => r.params.includeArchived === false),
+        "page load must not query archives",
+      );
 
       await row("active").click();
       host.archivedIds.add("active");
@@ -170,6 +177,10 @@ for (const legacyFilter of ["show", "only"]) {
       await row("archived").waitFor();
       await row("project-archived").waitFor();
       await row("active").waitFor();
+      assert.ok(
+        catalogRequests().some((r) => r.params.includeArchived === true),
+        "showing archives must explicitly query them",
+      );
       await selectView("Archived only");
       await row("active").waitFor({ state: "detached" });
       await row("project-active").waitFor({ state: "detached" });

@@ -10,13 +10,15 @@ import {
   hostThreadIdSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   aggregateThreadList,
   officialThreadListPageFromResponse,
 } from "../src/thread-list-aggregator.js";
 import { ThreadListTiming } from "../src/thread-list-timing.js";
+
+afterEach(() => vi.unstubAllEnvs());
 
 const harnessId = harnessIdSchema.parse("pi");
 
@@ -153,6 +155,7 @@ describe("aggregated Thread list", () => {
   });
 
   it("records failed official calls without logging their error payload or masking failures", async () => {
+    vi.stubEnv("CODEXHOST_TRACE_SESSION_LIST", "1");
     let now = 0;
     const timing = new ThreadListTiming(() => now);
     const decoded = query({ limit: 200, archived: true });
@@ -199,6 +202,7 @@ describe("aggregated Thread list", () => {
   });
 
   it("re-requests a partially consumed official batch for an exact cursor", async () => {
+    vi.stubEnv("CODEXHOST_TRACE_SESSION_LIST", "1");
     const source = officialSource([official("official-5", 5), official("official-3", 3)]);
     const decoded = query({ limit: 2, sortKey: "created_at", sortDirection: "desc" });
     let now = 0;

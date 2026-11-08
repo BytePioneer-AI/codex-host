@@ -24,6 +24,7 @@ it("shares canonical CH identity and cwd without a Web index/history or physical
   t.after(() => sessions.close());
   sessions.register(rpc, new StreamRegistry());
   sessions.registerCommands(rpc);
+  const emitted = t.mock.method(events, "emit");
   const call = async <T>(method: string, args: object = {}): Promise<T> => {
     const result = await rpc.dispatch(method, { args });
     assert.ok(result.ok, result.ok ? undefined : result.error.message);
@@ -73,6 +74,14 @@ it("shares canonical CH identity and cwd without a Web index/history or physical
   assert.ok(created);
   assert.equal(created.cwd, root);
   assert.equal(created.turns.length, 1);
+  const lifecycle = emitted.mock.calls.map((call) => call.arguments);
+  const bound = lifecycle.findIndex(([event]) => event === "codexhost/session-bound");
+  const removed = lifecycle.findIndex(
+    ([event, id]) => event === "api-session/removed" && id === draft.sessionId,
+  );
+  assert.ok(bound >= 0 && removed > bound, "remove the draft only after canonical navigation");
+  assert.deepEqual(lifecycle[bound], ["codexhost/session-bound", draft.sessionId, created.id]);
+  assert.ok(!lifecycle.some(([event, id]) => event === "api-session/removed" && id === created.id));
   const start = host.requests.find((req) => req.method === "thread/start");
   assert.ok(start);
   assert.equal("projectId" in start.params, false);
@@ -557,7 +566,7 @@ it("keeps a Thread created during an in-flight catalog read for its first histor
   let holding = true;
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
     const result = await request<T>(method, params);
-    if (method === "thread/list" && holding) await listHeld;
+    if (method === "codexhost/thread/catalog/read" && holding) await listHeld;
     return result;
   };
   host.projects = async () => {

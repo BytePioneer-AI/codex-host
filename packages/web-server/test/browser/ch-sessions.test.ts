@@ -95,6 +95,9 @@ for (const width of [390, 1280])
           path: join(process.env.CODEXHOST_TEST_SCREENSHOTS, `ch-directories-${width}.png`),
           animations: "disabled",
         });
+      const createdDraft = page.waitForResponse((response) =>
+        response.url().endsWith("/api/session/create"),
+      );
       await page
         .getByRole("button", { name: "New session", exact: true })
         .filter({ hasText: "New Session" })
@@ -102,6 +105,8 @@ for (const width of [390, 1280])
       // Wait for the requested draft, rather than typing into the previous
       // Thread's still-mounted composer during asynchronous navigation.
       await page.getByText("What should we build today?", { exact: true }).waitFor();
+      const draftReply = await (await createdDraft).json();
+      const draftId = draftReply.result.value.sessionId as string;
       assert.equal(await page.locator("[data-codexhost-import-source]").count(), 0);
       await page
         .getByRole("textbox", {
@@ -126,6 +131,14 @@ for (const width of [390, 1280])
         value.id.startsWith("canonical-"),
       );
       assert.ok(newThread);
+      if (width < 600) await sidebar.last().click();
+      assert.equal(
+        await page
+          .locator(`[data-row-key="session:${draftId}"], [data-row-key="recent:${draftId}"]`)
+          .count(),
+        0,
+        "binding must remove the draft row without waiting for a list refresh",
+      );
       assert.ok(
         host.requests.some((r) => r.method === "thread/read" && r.params.threadId === newThread.id),
       );

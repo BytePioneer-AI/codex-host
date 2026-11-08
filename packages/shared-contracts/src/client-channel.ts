@@ -16,6 +16,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/harness/preferences/get",
   "codexhost/harness/preferences/patch",
   "thread/list",
+  "codexhost/thread/catalog/read",
   "thread/read",
   "thread/resume",
   "thread/turns/list",

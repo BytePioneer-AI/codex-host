@@ -120,7 +120,7 @@ pub(super) fn clean(command: &mut Command) {
         {
             continue;
         }
-        if upper == "CODEXHOST_WEB_SERVICE" {
+        if upper == "CODEXHOST_WEB_SERVICE" || upper == "CODEXHOST_TRACE_SESSION_LIST" {
             continue;
         }
         if upper.starts_with("CODEXHOST_") || upper == "NODE_OPTIONS" || upper == "NODE_PATH" {

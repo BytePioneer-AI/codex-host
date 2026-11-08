@@ -3,13 +3,14 @@ import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import type { TestContext } from "node:test";
 import { createRelay, type RelayOptions } from "@codexhost/remote-relay";
 import { DataDir } from "../../src/store.ts";
 
-export const certPath = new URL("../fixtures/relay/cert.pem", import.meta.url).pathname;
-export const keyPath = new URL("../fixtures/relay/key.pem", import.meta.url).pathname;
+export const certPath = fileURLToPath(new URL("../fixtures/relay/cert.pem", import.meta.url));
+export const keyPath = fileURLToPath(new URL("../fixtures/relay/key.pem", import.meta.url));
 export const credentials = { cert: readFileSync(certPath), key: readFileSync(keyPath) };
 setDefaultCACertificates([...getCACertificates("default"), credentials.cert.toString()]);
 

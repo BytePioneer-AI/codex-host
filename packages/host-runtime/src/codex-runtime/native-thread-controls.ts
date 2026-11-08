@@ -1,6 +1,7 @@
 import type { JsonObject, JsonValue } from "@codexhost/protocol-core";
 import {
   harnessCommandCatalogSchema,
+  harnessCommandDescriptorSchema,
   harnessConfigurationStateSchema,
 } from "@codexhost/shared-contracts";
 import { encodeOfficialCodexModelRef } from "../official-codex-model-ref.js";
@@ -80,8 +81,71 @@ export async function updateNativeThreadSettings(
   }
 }
 
+function nativeSkills(result: JsonObject) {
+  const skills = new Map<string, { name: string; path: string }>();
+  const commands = [];
+  const warnings: string[] = [];
+  if (!Array.isArray(result.data)) warnings.push("Codex returned an invalid Skills list");
+  for (const entry of Array.isArray(result.data) ? result.data : []) {
+    if (!isRecord(entry) || !Array.isArray(entry.skills)) {
+      warnings.push("Codex returned an invalid Skills list entry");
+      continue;
+    }
+    for (const error of Array.isArray(entry.errors) ? entry.errors : []) {
+      warnings.push(`Codex Skill error: ${JSON.stringify(error)}`);
+    }
+    for (const skill of entry.skills) {
+      if (isRecord(skill) && skill.enabled === false) continue;
+      const command = harnessCommandDescriptorSchema.safeParse(
+        isRecord(skill)
+          ? {
+              id: `skill:${skill.name}`,
+              invocation: `$${skill.name}`,
+              label: skill.name,
+              ...(typeof skill.description === "string" && skill.description.trim()
+                ? { description: skill.description.trim().slice(0, 512) }
+                : {}),
+              argumentMode: "text",
+              kind: "skill",
+            }
+          : null,
+      );
+      if (
+        !isRecord(skill) ||
+        skill.enabled !== true ||
+        typeof skill.name !== "string" ||
+        skill.name !== skill.name.trim() ||
+        typeof skill.path !== "string" ||
+        !skill.path.trim() ||
+        !command.success
+      ) {
+        warnings.push(`Skipped invalid Codex Skill: ${JSON.stringify(skill)}`);
+        continue;
+      }
+      // Codex lists workspace Skills before same-named user Skills. Keep that order.
+      const previous = skills.get(skill.name);
+      if (previous) {
+        warnings.push(
+          `Skipped duplicate Skill '${skill.name}' at ${skill.path}; using ${previous.path}`,
+        );
+        continue;
+      }
+      skills.set(skill.name, { name: skill.name, path: skill.path });
+      commands.push(command.data);
+    }
+  }
+  return { skills, commands, warnings };
+}
+
+export function nativeThreadSkillInput(result: JsonObject, name: string): JsonObject | undefined {
+  const skill = nativeSkills(result).skills.get(name);
+  return skill ? { type: "skill", ...skill } : undefined;
+}
+
 export function nativeThreadCommands(skills: JsonObject) {
+  const catalog = nativeSkills(skills);
   return harnessCommandCatalogSchema.parse({
+    ...(catalog.warnings.length ? { warnings: catalog.warnings } : {}),
     source: "live",
     commands: [
       {
@@ -95,29 +159,10 @@ export function nativeThreadCommands(skills: JsonObject) {
         id: "review",
         invocation: "/review",
         label: "Review",
-        description: "Review uncommitted changes, or follow your review instructions",
-        argumentMode: "text",
+        description: "Review uncommitted changes; type /review instructions for a custom review",
+        argumentMode: "none",
       },
-      ...(Array.isArray(skills.data) ? skills.data : []).flatMap((entry) =>
-        isRecord(entry) && Array.isArray(entry.skills)
-          ? entry.skills.flatMap((skill) =>
-              isRecord(skill) && skill.enabled === true && typeof skill.name === "string"
-                ? [
-                    {
-                      id: `skill:${skill.name}`,
-                      invocation: `$${skill.name}`,
-                      label: skill.name,
-                      ...(typeof skill.description === "string" && skill.description
-                        ? { description: skill.description.slice(0, 512) }
-                        : {}),
-                      argumentMode: "text",
-                      kind: "skill",
-                    },
-                  ]
-                : [],
-            )
-          : [],
-      ),
+      ...catalog.commands,
     ],
   });
 }

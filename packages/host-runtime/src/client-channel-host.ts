@@ -31,6 +31,7 @@ import {
 import { classifyCreateRequestRoute } from "./route-observation.js";
 import { allocateProjectlessWorkspace } from "./projectless-workspace.js";
 import { decodeOfficialCodexModelRef } from "./official-codex-model-ref.js";
+import { nativeThreadSkillInput } from "./codex-runtime/native-thread-controls.js";
 
 const OFFICIAL_METHODS: Readonly<Record<string, "native" | "host">> = {
   "thread/read": "native",
@@ -237,24 +238,69 @@ export class ClientChannelHost {
           },
         };
       let nativeParams = params;
+      let skillName: string | undefined;
       if (Array.isArray(params.input))
         nativeParams = {
           ...params,
-          input: params.input.map((part) =>
-            isRecord(part) && part.type === "text" && typeof part.text === "string"
-              ? { ...part, text: restoreHarnessCommandMentions(part.text) }
-              : part,
-          ),
+          input: params.input.map((part) => {
+            if (!isRecord(part) || part.type !== "text" || typeof part.text !== "string")
+              return part;
+            const text = restoreHarnessCommandMentions(part.text);
+            if (text !== part.text) skillName ??= /^\$([A-Za-z0-9._:-]+)(?:\s|$)/u.exec(text)?.[1];
+            return { ...part, text };
+          }),
         };
       if (
-        method === "turn/start" &&
-        params.delivery !== "queue" &&
-        Array.isArray(nativeParams.input) &&
-        nativeParams.input.every((part) => isRecord(part) && part.type === "text")
+        ["turn/start", "turn/steer", "thread/queue/add", "thread/queue/update"].includes(method) &&
+        typeof params.threadId === "string" &&
+        Array.isArray(nativeParams.input)
       ) {
-        const text = nativeParams.input.map((part) => (isRecord(part) ? part.text : "")).join("\n");
+        if (
+          skillName &&
+          !nativeParams.input.some(
+            (part) => isRecord(part) && part.type === "skill" && part.name === skillName,
+          )
+        ) {
+          const read = await nativeChannel.request("thread/read", {
+            threadId: params.threadId,
+            includeTurns: false,
+          });
+          if ("error" in read) return normalize(read);
+          const thread =
+            isRecord(read.result) && isRecord(read.result.thread) ? read.result.thread : {};
+          if (typeof thread.cwd !== "string" || !thread.cwd)
+            return { error: { code: -32078, message: "Codex Thread has no Skill workspace" } };
+          const listed = await nativeChannel.request("skills/list", { cwds: [thread.cwd] });
+          if ("error" in listed) return normalize(listed);
+          const skill = nativeThreadSkillInput(
+            isRecord(listed.result) ? (listed.result as JsonObject) : {},
+            skillName,
+          );
+          if (!skill)
+            return {
+              error: { code: -32078, message: `Codex Skill '${skillName}' is unavailable` },
+            };
+          nativeParams = { ...nativeParams, input: [...nativeParams.input, skill] };
+        }
+      }
+      if (
+        ["turn/start", "turn/steer", "thread/queue/add", "thread/queue/update"].includes(method) &&
+        Array.isArray(nativeParams.input)
+      ) {
+        const text = nativeParams.input
+          .filter((part) => isRecord(part) && part.type === "text")
+          .map((part) => (isRecord(part) ? part.text : ""))
+          .join("\n");
         const command = /^\/(compact|review)(?:\s+([\s\S]*))?$/u.exec(text.trim());
-        if (command?.[1] && typeof params.threadId === "string")
+        if (command?.[1] && typeof params.threadId === "string") {
+          if (method !== "turn/start" || params.delivery === "queue")
+            return {
+              error: { code: -32078, message: "Codex compact/review cannot be queued or steered" },
+            };
+          if (!nativeParams.input.every((part) => isRecord(part) && part.type === "text"))
+            return {
+              error: { code: -32602, message: "Codex compact/review only accepts text arguments" },
+            };
           return normalize(
             await this.#host.submit(
               "codexhost/thread/command/execute",
@@ -266,6 +312,7 @@ export class ClientChannelHost {
               undefined,
             ),
           );
+        }
       }
       if (method === "codexhost/thread/queue/send-now") {
         if (typeof params.itemId !== "string" || !params.itemId)

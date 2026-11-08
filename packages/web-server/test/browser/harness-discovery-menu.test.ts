@@ -2,9 +2,85 @@ import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { it } from "node:test";
-import { restoreHarnessCommandMentions } from "@codexhost/shared-contracts";
+import {
+  harnessCommandCatalogSchema,
+  restoreHarnessCommandMentions,
+} from "@codexhost/shared-contracts";
 import { defined } from "../support/defined.ts";
 import { discoveryBrowser } from "../support/discovery-browser.ts";
+
+it(
+  "native Codex commands remain usable with discovery warnings; review executes and $Skills insert intact",
+  { timeout: 60_000 },
+  async (t) => {
+    const { host, state, page, composer, openCommands, menu, open, attach } =
+      await discoveryBrowser(t);
+    state.catalog = harnessCommandCatalogSchema.parse({
+      source: "live",
+      commands: [
+        { id: "compact", invocation: "/compact", label: "Compact", argumentMode: "none" },
+        { id: "review", invocation: "/review", label: "Review", argumentMode: "none" },
+        {
+          id: "skill:build",
+          invocation: "$build",
+          label: "build",
+          description: "Build it",
+          argumentMode: "text",
+          kind: "skill",
+        },
+      ],
+      warnings: [
+        "Skipped duplicate Skill 'build' at /user/build/SKILL.md; using /workspace/build/SKILL.md",
+      ],
+    });
+    await open();
+    await composer.fill("keep body");
+    await attach();
+    for (const id of ["compact", "review"]) {
+      await openCommands();
+      await menu.getByText(/Skipped duplicate Skill 'build'/).waitFor();
+      const submitted = page.waitForResponse((response) =>
+        response.url().endsWith("/api/codexhost/executeThreadCommand"),
+      );
+      await menu
+        .getByRole("option", { name: new RegExp(`^${id === "compact" ? "Compact" : "Review"}\\b`) })
+        .click();
+      await submitted;
+      assert.equal(await composer.innerText(), "keep body");
+      await page.getByText("kept.txt", { exact: true }).waitFor();
+    }
+    assert.deepEqual(
+      host.requests
+        .filter((r) => r.method === "codexhost/thread/command/execute")
+        .map((r) => r.params.commandId),
+      ["compact", "review"],
+    );
+    assert.equal(
+      host.requests.some((r) => r.method === "turn/start"),
+      false,
+    );
+    await openCommands();
+    await menu.getByRole("option", { name: /^build\b/u }).click();
+    await composer
+      .locator('[data-composer-chip="codexhost-native"]')
+      .getByText("$build", { exact: true })
+      .waitFor();
+    await composer.press("Escape");
+    const submitted = page.waitForResponse((response) =>
+      response.url().endsWith("/api/session/prompt"),
+    );
+    await composer.press("Enter");
+    await submitted;
+    const sent = host.requests.filter((r) => r.method === "turn/start").at(-1);
+    assert.ok(sent);
+    const text = restoreHarnessCommandMentions(
+      (sent.params.input as Array<{ text: string }>).map((part) => part.text).join("\n"),
+    );
+    assert.match(text, /^\$build /u);
+    assert.ok(text.includes("keep body"));
+    assert.ok(text.includes("kept.txt:"));
+  },
+);
 
 for (const width of [390, 1280])
   it(`native discovery and direct/text selection at ${width}px`, { timeout: 60_000 }, async (t) => {

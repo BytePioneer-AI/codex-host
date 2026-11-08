@@ -43,7 +43,7 @@ Web 在插件列表之外调用 `codexhost/harness/inspect {harnessId: "codex"}`
 
 客户端统一使用现有方法，Host 的方法表按所有者分发。官方 `thread/queue/*` 同名转发，`codexhost/thread/queue/send-now` 转为 `thread/queue/start`；排队发送进入官方队列，Web 与 Desktop 可操作同一队列。模型、Thinking 与权限选择转为 `thread/settings/update`，仅在匹配的 `thread/settings/updated` 通知确认后发布结果，空响应不表示已生效。权限选项来自 `permissionProfile/list` 中允许选择的档案，保留官方 ID。
 
-官方 Thread 的客户端命令目录提供 `/compact`、`/review` 和 `skills/list` 返回的启用 Skill，Desktop 的 Host 命令目录仍为空，使用其官方菜单；执行分别调用 `thread/compact/start`、`review/start`。命令回执只在官方返回 Turn ID 时携带 `turnId`，压缩的空响应不生成虚构 Turn；执行进度仍以官方通知与历史为准。置顶和用量复用 Host 已有官方实现。官方 Thread 不开放 Web Fork 或历史回退，控件按能力显示。
+官方 Thread 的客户端命令目录提供 `/compact`、`/review` 和 `skills/list` 返回的启用 Skill，Desktop 的 Host 命令目录仍为空，使用其官方菜单。菜单中的压缩和默认审查分别调用 `thread/compact/start`、`review/start`（`uncommittedChanges`）；显式发送 `/review 指令` 使用 `custom` target。压缩不接受文本参数，这两类操作不能排队或 Steer，不降级成普通 Prompt。Skill 同名时保留官方列表中首个有效启用项，目录通过 `warnings` 报告忽略的条目、解析错误或 Skills 加载失败，不影响有效入口；Skills 不可用时仍保留压缩和审查。`$name` carrier 保留原生前缀，发送时按当前工作区官方目录解析为 `type: "skill"` 的 `name/path` 输入，原有文本、附件及队列／Steer 语义保留；Skill 已失效或目录读取失败则拒绝发送，不退化为普通提示词。命令回执只在官方返回 Turn ID 时携带 `turnId`，压缩的空响应不生成虚构 Turn；执行进度仍以官方通知与历史为准。置顶和用量复用 Host 已有官方实现。官方 Thread 不开放 Web Fork 或历史回退，控件按能力显示。
 
 ## 应用更新
 

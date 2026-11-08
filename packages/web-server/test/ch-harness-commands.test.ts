@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
+import { harnessCommandCatalogSchema } from "@codexhost/shared-contracts";
 import { ChSessions } from "../src/ch-sessions.ts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
@@ -96,6 +97,27 @@ it("executes by stable ID with no arguments, and rejects unknown/text commands a
   assert.equal(
     host.requests.filter((r) => r.method === "codexhost/thread/command/execute").length,
     1,
+  );
+});
+it("preserves partial catalog warnings and admits native Codex default review without a text prompt", async (t) => {
+  const { host, state, thread, inspect, execute } = fixture(t);
+  state.catalog = harnessCommandCatalogSchema.parse({
+    commands: [
+      { id: "compact", invocation: "/compact", label: "Compact", argumentMode: "none" },
+      { id: "review", invocation: "/review", label: "Review", argumentMode: "none" },
+    ],
+    source: "live",
+    warnings: ["Skills unavailable"],
+  });
+  assert.deepEqual(await inspect(), { ok: true, value: state.catalog });
+  assert.equal((await execute("review")).ok, true);
+  assert.deepEqual(
+    host.requests.find((r) => r.method === "codexhost/thread/command/execute")?.params,
+    { threadId: thread.id, commandId: "review" },
+  );
+  assert.equal(
+    host.requests.some((r) => r.method === "turn/start"),
+    false,
   );
 });
 it("fences duplicate requests, preserves Host errors and never retries an unknown write", async (t) => {

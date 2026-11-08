@@ -3273,15 +3273,20 @@ export class AppServerHost {
         await this.#writer.json(rpcEnvelope(request, { result: { commands: [] } }));
         return;
       }
-      const metadata = await this.#readOfficialThreadMetadata(params.data.threadId);
-      const response = await this.#requestOfficial("skills/list", {
-        ...(metadata.cwd ? { cwds: [metadata.cwd] } : {}),
-      });
-      if (isRecord(response.error)) {
-        await this.#writer.json(rpcEnvelope(request, { error: response.error }));
-        return;
+      let catalog: HarnessCommandCatalog;
+      try {
+        const metadata = await this.#readOfficialThreadMetadata(params.data.threadId);
+        if (!metadata.cwd) throw new Error("Codex Thread has no Skill workspace");
+        const response = await this.#requestOfficial("skills/list", { cwds: [metadata.cwd] });
+        if (isRecord(response.error)) throw new Error(String(response.error.message));
+        catalog = nativeThreadCommands(isRecord(response.result) ? response.result : {});
+      } catch (error) {
+        this.#diagnose(error);
+        catalog = nativeThreadCommands({ data: [] });
+        catalog.warnings = [
+          `Codex Skills unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        ];
       }
-      const catalog = nativeThreadCommands(isRecord(response.result) ? response.result : {});
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(catalog) }));
       return;
     }
@@ -3376,6 +3381,12 @@ export class AppServerHost {
         typeof params.data.arguments?.text === "string" ? params.data.arguments.text.trim() : "";
       if (commandId !== "compact" && commandId !== "review") {
         await this.#writer.json(rpcError(request, -32078, `Unknown Codex command ${commandId}`));
+        return;
+      }
+      if (commandId === "compact" && instructions) {
+        await this.#writer.json(
+          rpcError(request, -32602, "Codex compact does not accept arguments"),
+        );
         return;
       }
       const resumed = await this.#requestClientNative("thread/resume", {

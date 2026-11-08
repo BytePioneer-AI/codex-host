@@ -213,7 +213,12 @@ it("uses official profiles and waits for settings confirmation; forwards command
             {
               cwd: "/workspace",
               skills: [
-                { name: "build", description: "Build it", enabled: true },
+                {
+                  name: "build",
+                  description: "Build it",
+                  path: "/workspace/.agents/skills/build/SKILL.md",
+                  enabled: true,
+                },
                 { name: "hidden", enabled: false },
               ],
             },

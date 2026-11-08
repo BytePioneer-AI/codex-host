@@ -67,6 +67,17 @@ function render(source: PwaInstall) {
   return container;
 }
 
+it.each(["manual", "available"])("keeps the %s row to a title and button", (state) => {
+  const source = installation();
+  if (state === "available") offer();
+  const container = render(source);
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  expect(container.querySelector("button")?.hasAttribute("aria-describedby")).toBe(false);
+  expect(container.textContent).toBe(
+    en["pwa.title"] + en[state === "available" ? "pwa.install" : "pwa.instructions"],
+  );
+});
+
 it("retains an offer before Settings mounts and prompts only on a user click", async () => {
   const source = installation();
   const { event, prompt } = offer();
@@ -84,7 +95,7 @@ it("retains an offer before Settings mounts and prompts only on a user click", a
   expect(button.textContent).toContain(en["pwa.instructions"]);
   act(() => button.click());
   expect(button.getAttribute("aria-expanded")).toBe("true");
-  expect(container.textContent).toContain(en["pwa.guide.backend"]);
+  expect(container.textContent).toContain(en["pwa.guide.limitations"]);
   expect(prompt).toHaveBeenCalledOnce();
 });
 
@@ -188,7 +199,8 @@ it("shows secure-context guidance without trying to install on plain HTTP", () =
   expect(container.textContent).toContain(en["pwa.guide.insecure"]);
   act(() => container.querySelector("button")!.click());
   expect(prompt).not.toHaveBeenCalled();
-  expect(container.textContent).toContain(en["pwa.guide.backend"]);
+  expect(container.textContent).toContain(en["pwa.guide.limitations"]);
+  expect(container.textContent?.split(en["pwa.guide.insecure"])).toHaveLength(2);
 });
 
 it("updates an open Settings row when installation becomes available", async () => {
@@ -203,7 +215,7 @@ it("updates an open Settings row when installation becomes available", async () 
   expect(button.textContent).toContain(en["pwa.install"]);
   await act(async () => button.click());
   expect(container.textContent).toContain(en["pwa.accepted"]);
-  expect(container.textContent).not.toContain(en["pwa.guide.backend"]);
+  expect(container.textContent).not.toContain(en["pwa.guide.limitations"]);
   act(() => window.dispatchEvent(new Event("appinstalled")));
   expect(container.querySelector("button")).toBeNull();
 });
@@ -222,4 +234,11 @@ it.each([
   Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, value: maxTouchPoints });
   cleanups.push(() => Reflect.deleteProperty(navigator, "maxTouchPoints"));
   expect(pwaInstallGuide(window)).toBe(expected);
+  const source = installation();
+  const container = render(source);
+  act(() => container.querySelector("button")!.click());
+  expect([...container.querySelectorAll("p")].map((p) => p.textContent)).toEqual([
+    en["pwa.guide.limitations"],
+    en[`pwa.guide.${source.guide}`],
+  ]);
 });

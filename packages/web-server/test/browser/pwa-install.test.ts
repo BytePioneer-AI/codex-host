@@ -67,7 +67,7 @@ for (const width of [320, 1280]) {
       const help = general.getByRole("button", { name: "Installation guide", exact: true });
       await help.click();
       await expect(help).toHaveAttribute("aria-expanded", "true");
-      await expect(general).toContainText("does not enable offline Agent execution");
+      await expect(general).toContainText("If opened inside WeChat or another app");
       await page.evaluate(() => window.dispatchEvent(new Event("appinstalled")));
       await expect(general).toContainText("this browser has confirmed installation");
       await expect(help).toHaveCount(0);

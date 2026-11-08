@@ -71,14 +71,16 @@ mod tests {
             })).unwrap();
             let command = stop_command(&request);
             assert_eq!(command.get_program(), launcher);
+            let arguments = command.get_args().collect::<Vec<_>>();
+            assert_eq!(arguments.len(), 3);
             assert_eq!(
-                command.get_args().collect::<Vec<_>>(),
+                &arguments[..2],
                 [
                     std::ffi::OsStr::new("stop-for-update"),
                     std::ffi::OsStr::new("--node"),
-                    node.as_os_str(),
                 ]
             );
+            assert_eq!(std::path::Path::new(arguments[2]), node);
         }
     }
 }

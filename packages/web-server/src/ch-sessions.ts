@@ -55,6 +55,7 @@ import { defaultProjections } from "./session-log.ts";
 import { applyUsageProjections } from "./usage-projection.ts";
 import { readToolOutput, toolOutputRecords, toolOutputSink } from "./tool-output.ts";
 import type { WireEvent } from "./session-log.ts";
+import { SessionListTiming } from "./session-list-timing.ts";
 
 function globalProjectionValues(values: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -88,6 +89,7 @@ export class ChSessions {
   private controls = new Set<StreamSink>();
   private refreshing: Promise<void> | undefined;
   private refreshingCatalog = false;
+  private refreshingTiming: SessionListTiming | undefined;
   private catalogReadAt = -Infinity;
   private timer?: NodeJS.Timeout;
   private closed = false;
@@ -167,22 +169,32 @@ export class ChSessions {
   private id(id: string): string {
     return this.drafts.get(id)?.canonicalId ?? id;
   }
-  private async refresh(): Promise<void> {
+  private async refresh(timing?: SessionListTiming): Promise<void> {
     if (this.closed) return;
     if (this.refreshing && !this.refreshingCatalog) {
-      await this.refreshing.catch(() => undefined);
-      return this.refresh();
+      const pending = this.refreshing.catch(() => undefined);
+      await (timing ? timing.measure("workspace_wait", () => pending) : pending);
+      return this.refresh(timing);
     }
+    const mode = this.refreshing ? "joined" : "started";
     if (!this.refreshing) {
       this.refreshingCatalog = true;
-      this.refreshing = this.listAll().finally(() => {
+      this.refreshingTiming = new SessionListTiming();
+      this.refreshing = this.listAll(this.refreshingTiming).finally(() => {
         this.refreshing = undefined;
         this.refreshingCatalog = false;
+        this.refreshingTiming = undefined;
       });
     }
-    return this.refreshing;
+    const pending = this.refreshing;
+    const catalogTiming = this.refreshingTiming;
+    try {
+      await (timing ? timing.measure("catalog_wait", () => pending) : pending);
+    } finally {
+      if (timing && catalogTiming) timing.catalog = { mode, ...catalogTiming.snapshot() };
+    }
   }
-  private async listAll(): Promise<void> {
+  private async listAll(timing: SessionListTiming): Promise<void> {
     // A Thread a draft binds while this read is in flight is missing from its
     // snapshot; it must not be dropped, or the first history read fails.
     const known = new Set(this.rows.keys());
@@ -192,10 +204,17 @@ export class ChSessions {
       let cursor: string | null = null;
       const seen = new Set<string>();
       do {
-        const page: { data: ChThread[]; nextCursor: string | null } = await this.host.request<{
-          data: ChThread[];
-          nextCursor: string | null;
-        }>("thread/list", { limit: 200, cursor, archived });
+        const stage = archived ? "archived" : "unarchived";
+        const page: { data: ChThread[]; nextCursor: string | null } = await timing.measure(
+          stage,
+          () =>
+            this.host.request<{ data: ChThread[]; nextCursor: string | null }>("thread/list", {
+              limit: 200,
+              cursor,
+              archived,
+            }),
+        );
+        timing.count(archived ? "archivedRows" : "unarchivedRows", page.data.length);
         for (const row of page.data) {
           found.set(row.id, row);
           if (archived) archivedIds.add(row.id);
@@ -209,9 +228,13 @@ export class ChSessions {
     const ownership = new Map<string, string>();
     const ids = [...found.keys()];
     for (let start = 0; start < ids.length; start += 100) {
-      const result = await this.host.request<{
-        threads: Array<{ threadId: string; owner: string; harnessId?: string }>;
-      }>("codexhost/thread/ownership/list", { threadIds: ids.slice(start, start + 100) });
+      const threadIds = ids.slice(start, start + 100);
+      timing.count("ownershipIds", threadIds.length);
+      const result = await timing.measure("ownership", () =>
+        this.host.request<{
+          threads: Array<{ threadId: string; owner: string; harnessId?: string }>;
+        }>("codexhost/thread/ownership/list", { threadIds }),
+      );
       for (const item of result.threads) {
         if (
           item.owner === "external" &&
@@ -231,43 +254,52 @@ export class ChSessions {
     }
     this.threads.replaceHarnesses(ownership);
     this.rows = rows;
-    await this.syncWorkspace();
+    timing.count("visibleRows", rows.size);
+    await this.syncWorkspace(timing);
     if (this.closed) return;
-    this.workspaces.setReferenceArchives([...archivedIds].filter((id) => ownership.has(id)));
-    await this.publishCatalogChanges();
+    timing.measureSync("archive_sync", () =>
+      this.workspaces.setReferenceArchives([...archivedIds].filter((id) => ownership.has(id))),
+    );
+    await timing.measure("catalog_publish", () => this.publishCatalogChanges());
     // Native pins are optional and cannot delay publishing the confirmed catalog.
     void this.pins.refresh().catch(() => undefined);
     this.catalogReadAt = Date.now();
   }
-  private async syncWorkspace(): Promise<void> {
-    const projects = await this.host.projects([...this.rows.keys()]);
+  private async syncWorkspace(timing = new SessionListTiming()): Promise<void> {
+    const projects = await timing.measure("projects", () =>
+      this.host.projects([...this.rows.keys()]),
+    );
+    timing.count("projects", projects.projects.length);
     if (this.closed) return;
-    const groups = new Map<string, string | undefined>();
-    const references: Array<{ sessionId: string; cwd: string; title?: string }> = [];
-    const projectless = new Set(projects.projectless.filter((id) => !projects.assignments[id]));
-    for (const row of this.rows.values()) {
-      if (row.workspaceKind === "projectless" && !row.projectId && !projects.assignments[row.id])
-        projectless.add(row.id);
-      const root =
-        row.cwd && !projectless.has(row.id)
-          ? projectGroupRoot(projects, row.id, row.cwd)
-          : undefined;
-      groups.set(row.id, root);
-      if (root) {
-        const title = projects.projects.find((project) => project.rootPaths.includes(root))?.name;
-        references.push({
-          sessionId: row.id,
-          cwd: root,
-          ...(title !== undefined ? { title } : {}),
-        });
+    timing.measureSync("workspace_sync", () => {
+      const groups = new Map<string, string | undefined>();
+      const references: Array<{ sessionId: string; cwd: string; title?: string }> = [];
+      const projectless = new Set(projects.projectless.filter((id) => !projects.assignments[id]));
+      for (const row of this.rows.values()) {
+        if (row.workspaceKind === "projectless" && !row.projectId && !projects.assignments[row.id])
+          projectless.add(row.id);
+        const root =
+          row.cwd && !projectless.has(row.id)
+            ? projectGroupRoot(projects, row.id, row.cwd)
+            : undefined;
+        groups.set(row.id, root);
+        if (root) {
+          const title = projects.projects.find((project) => project.rootPaths.includes(root))?.name;
+          references.push({
+            sessionId: row.id,
+            cwd: root,
+            ...(title !== undefined ? { title } : {}),
+          });
+        }
       }
-    }
-    for (const draft of this.drafts.values()) {
-      if (draft.canonicalId) continue;
-      groups.set(draft.id, draft.cwd);
-      if (!draft.cwd) projectless.add(draft.id);
-    }
-    this.workspaces.syncReferencedSessions(references, groups, projectless);
+      for (const draft of this.drafts.values()) {
+        if (draft.canonicalId) continue;
+        groups.set(draft.id, draft.cwd);
+        if (!draft.cwd) projectless.add(draft.id);
+      }
+      timing.count("workspaceReferences", references.length);
+      this.workspaces.syncReferencedSessions(references, groups, projectless);
+    });
   }
   /** Only fields used by the list summary; projections have their own
    * streams. Re-emitting every row makes each browser rebuild its entire
@@ -883,18 +915,19 @@ export class ChSessions {
         return { pinnedSessionIds: await this.pins.sync({ threadId: id, pinned }) };
       });
     }
-    rpc.register("session/list", async () => {
-      await this.refresh();
-      return {
-        items: [
-          ...(await Promise.all([...this.rows.values()].map((row) => this.summary(row)))),
-          ...(await Promise.all(
-            [...this.drafts.values()]
-              .filter((d) => !d.canonicalId)
-              .map((d) => this.draftSummary(d, false)),
-          )),
-        ],
-      };
+    rpc.register("session/list", async (_args, context) => {
+      const timing = context.sessionListTiming ?? new SessionListTiming();
+      await this.refresh(timing);
+      const items = await timing.measure("summaries", async () => [
+        ...(await Promise.all([...this.rows.values()].map((row) => this.summary(row)))),
+        ...(await Promise.all(
+          [...this.drafts.values()]
+            .filter((d) => !d.canonicalId)
+            .map((d) => this.draftSummary(d, false)),
+        )),
+      ]);
+      timing.count("resultRows", items.length);
+      return { items };
     });
     rpc.register("session/create", (args) => this.create(args));
     rpc.register("session/fork", async (args) => {

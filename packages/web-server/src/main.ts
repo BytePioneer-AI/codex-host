@@ -63,6 +63,7 @@ import { Settings } from "./settings.ts";
 import { formatWebStartup } from "./startup-display.ts";
 import { DataDir } from "./store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "./transport.ts";
+import type { SessionListTiming } from "./session-list-timing.ts";
 import { WebAssets, type AssetResponse, type WebAssetOptions } from "./web-assets.ts";
 import { SHELL_EVENTS_PATH, WebShellReload } from "./web-hmr.ts";
 import { Workspaces } from "./workspaces.ts";
@@ -575,6 +576,8 @@ const server = createWebServer((request, response) => {
       const body = await readBody(request, response);
       if (body === undefined) return;
       if (dsh && (await dsh.handleApiRequest(request, body, response))) return;
+      let listTiming: SessionListTiming | undefined;
+      let listOk = false;
       const reply = await rpc.handleHttp(
         body,
         requestAuth,
@@ -582,20 +585,33 @@ const server = createWebServer((request, response) => {
           response.once("finish", callback);
         },
         trust.relaySockets.has(request.socket),
+        (timing, ok) => {
+          listTiming = timing;
+          listOk = ok;
+        },
       );
       const contentType = "application/json; charset=utf-8";
-      const compressed = await compressResponse(
-        Buffer.from(reply),
-        contentType,
-        request.headers["accept-encoding"],
-      );
-      response
-        .writeHead(200, {
-          "content-type": contentType,
-          "cache-control": "no-store",
-          ...compressed.headers,
-        })
-        .end(compressed.body);
+      let encodedBytes: number | undefined;
+      let responseReady = false;
+      try {
+        const compress = () =>
+          compressResponse(Buffer.from(reply), contentType, request.headers["accept-encoding"]);
+        const compressed = listTiming
+          ? await listTiming.measure("compress", compress)
+          : await compress();
+        encodedBytes = compressed.body.length;
+        response
+          .writeHead(200, {
+            "content-type": contentType,
+            "cache-control": "no-store",
+            ...compressed.headers,
+            ...(listTiming ? { "server-timing": listTiming.serverTiming() } : {}),
+          })
+          .end(compressed.body);
+        responseReady = true;
+      } finally {
+        listTiming?.report(listOk && responseReady, encodedBytes);
+      }
       return;
     }
     if (pathname === "/extensions") {

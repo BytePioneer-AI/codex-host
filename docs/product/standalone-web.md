@@ -274,6 +274,10 @@ Turn 运行中排队发送进入官方队列，Web 可编辑、删除和立即�
 
 工作区引用按完整快照批量同步：持久状态发生变化时仅保存一次最终结果，并只广播最终可见差异；未变化时不写盘、不重复广播。
 
+`session/list` HTTP 请求在 Web 服务标准输出中产生一条 `[session/list]` JSON 诊断日志，以 `rpcId` 对应浏览器请求；失败也保留已经执行的阶段。`stages` 记录每阶段累计毫秒、调用次数 `calls` 和最慢一次 `maxMs`，包括等待工作区刷新 `workspace_wait`、等待目录 `catalog_wait`、摘要生成 `summaries`、JSON 序列化 `serialize` 和响应编码／压缩 `compress`。`catalog` 单独记录共享目录工作的未归档／归档查询（`unarchived`／`archived`，`calls` 为请求页数）、归属查询（`ownership`，`calls` 为批次数）、项目读取 `projects`、分组与工作区保存／广播 `workspace_sync`、归档同步 `archive_sync` 和目录差量发布 `catalog_publish`，并附条目计数。`catalog.mode` 为 `started` 或 `joined`；加入其他浏览器或后台刷新时仍提供该共享任务的完整统计，但它可能早于本次请求开始，不能与本次等待时间相加。异步置顶刷新不阻塞列表，不计入这些阶段。
+
+响应的 `Server-Timing` 头同时提供阶段耗时，可在开发者工具 Network → `session/list` → Timing 中查看；`catalog_*` 是 `catalog_wait` 对应共享任务的内部阶段，不与外层重复累加。总耗时从 RPC 信封解析后开始，覆盖处理、序列化与压缩，不包括认证、请求体读取、网络下载或下游内部独立排队细分。`responseBytes` 是未压缩 JSON 的 UTF-8 字节数，`encodedBytes` 是发出的响应体字节数（不含 HTTP 头）；不记录会话 ID、标题、正文、路径或完整响应。日志沿用 Web 服务标准输出，不另外写诊断文件。
+
 ### 聊天投影通道
 
 `codexhostTurnChanges`（已加载 Turn 的文件摘要）和 `codexhostToolOutput`（运行中命令的输出尾部）仅通过对应会话的 `session/follow` 发送实时更新，不进入 `session/control` 的增量或初始 baseline，也不混入 `session/list` 或全局目录更新的摘要。每个 follow 快照仍携带该会话全部最新投影；切回会话或重连从快照恢复。多个页面同时 follow 同一会话时，各自都收到更新；未 follow 的页面不接收这两个 key 的实时变化。

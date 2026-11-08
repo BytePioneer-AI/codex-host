@@ -1125,7 +1125,9 @@ export class AppServerHost {
     const plugins = await loadHarnessPlugins({
       roots: this.#options.pluginRoots,
       scope: "external",
-      sessionPlugins: this.#options.sharedThreads?.options.delegateCreates !== true,
+      sessionPlugins:
+        this.#options.externalOnly === true ||
+        this.#options.sharedThreads?.options.delegateCreates !== true,
       onUsageAdaptersLoaded: (adapters) => {
         if (!this.#pluginLoadAbort.signal.aborted) this.#usageOnlyAdapters = [...adapters.values()];
         usageReady();
@@ -1188,7 +1190,10 @@ export class AppServerHost {
           this.#displaySettings.close();
           this.#diagnose(error);
         });
-      if (this.#options.sharedThreads?.options.delegateCreates !== true) {
+      if (
+        this.#options.externalOnly ||
+        this.#options.sharedThreads?.options.delegateCreates !== true
+      ) {
         const apply = async () => {
           const snapshot = await this.#preferences.get();
           this.#applyHarnessPreferences(snapshot);
@@ -1568,6 +1573,26 @@ export class AppServerHost {
     origin: HostRequestOrigin,
   ): Promise<void> {
     if (this.#closeRequested) return;
+    // Desktop's extension create wraps the ordinary thread/start parameters.
+    // Only unwrap an explicit external carrier; native extensions stay byte-transparent.
+    if (
+      request.method === "thread/start" &&
+      isRecord(request.params) &&
+      isRecord(request.params.request)
+    ) {
+      const nested: JsonRpcRequest = {
+        id: request.id,
+        method: request.method,
+        params: request.params.request,
+      };
+      try {
+        const route = decodeCreateRoute(nested);
+        if (route && route.harnessId !== "codex") request = nested;
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        return;
+      }
+    }
     if (
       request.method === RUNTIME_STATUS_METHOD ||
       request.method === REMOTE_UPDATE_METHOD ||

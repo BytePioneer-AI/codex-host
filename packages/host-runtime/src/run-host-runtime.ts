@@ -52,7 +52,7 @@ import { createHostWebOpener } from "./web-opener.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 import { ModelPriceCatalog, defaultModelPriceDirectory } from "./model-prices.js";
 import { UsageStatistics } from "./usage-statistics.js";
-import { runLocalDesktopBridge } from "./local-shared-host.js";
+import { runLocalDesktopBridge, connectLocalSharedExternalHost } from "./local-shared-host.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
 export const MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE = "codexhost remote app-server listener";
@@ -455,6 +455,30 @@ export async function runHostRuntime(input: {
         desktopOutput: sharedOwner.output,
         diagnosticOutput: process.stderr,
         externalOnly: true,
+        ...(maintenanceRuntimePath
+          ? {
+              sharedThreads: new SharedThreadBridge({
+                connect: () =>
+                  connectLocalSharedExternalHost({
+                    launcher:
+                      delegationEnvironment.CODEXHOST_LAUNCHER_EXECUTABLE ??
+                      path.resolve(path.dirname(maintenanceRuntimePath), "../bin/codexhost"),
+                    runtime: maintenanceRuntimePath,
+                    stockCodex: stockCodexPath,
+                    dataDirectory: path.resolve(
+                      delegationEnvironment.CODEXHOST_SHARED_DATA_DIR ??
+                        path.join(homedir(), ".codexhost"),
+                    ),
+                    ...(delegationEnvironment.CODEX_HOME
+                      ? { codexHome: delegationEnvironment.CODEX_HOME }
+                      : {}),
+                  }),
+                delegateCreates: true,
+                diagnose: (error) =>
+                  process.stderr.write(`codexhost shared external Host: ${String(error)}\n`),
+              }),
+            }
+          : {}),
         ...installedHarnessPluginOptions(delegationEnvironment, true, input.hostRuntimeUrl),
         mappingStore,
         closeMappingStoreOnExit: false,

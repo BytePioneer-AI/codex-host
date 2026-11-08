@@ -11,6 +11,7 @@ import { StreamThreadPeer, type SharedThreadPeer } from "./shared-thread-peer.js
 async function connectStream(
   launch: HostServiceLaunch,
   desktop?: { environment: NodeJS.ProcessEnv; arguments: string[] },
+  endpoint = "/v1/desktop",
 ) {
   await ensureHostService(launch);
   const descriptor = await discoverHostClientChannel(
@@ -32,7 +33,7 @@ async function connectStream(
     : undefined;
   if (context && context.length > 16_000)
     throw new Error("Desktop runtime context exceeds its transport limit");
-  const socket = new WebSocket(`ws://127.0.0.1:${descriptor.port}/v1/desktop`, {
+  const socket = new WebSocket(`ws://127.0.0.1:${descriptor.port}${endpoint}`, {
     headers: {
       authorization: `Bearer ${descriptor.token}`,
       ...(context ? { "x-codexhost-desktop-context": context } : {}),
@@ -56,6 +57,16 @@ async function connectStream(
 /** Host-private Node client, also used by process-level acceptance tests. */
 export async function connectLocalSharedHost(launch: HostServiceLaunch): Promise<SharedThreadPeer> {
   const stream = await connectStream(launch);
+  const peer = new StreamThreadPeer(stream, stream, () => stream.destroy());
+  stream.on("error", () => peer.close());
+  return peer;
+}
+
+/** SSH shares external execution with Desktop/Web, without subscribing to native Codex. */
+export async function connectLocalSharedExternalHost(
+  launch: HostServiceLaunch,
+): Promise<SharedThreadPeer> {
+  const stream = await connectStream(launch, undefined, "/v1/external");
   const peer = new StreamThreadPeer(stream, stream, () => stream.destroy());
   stream.on("error", () => peer.close());
   return peer;

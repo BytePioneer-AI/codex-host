@@ -44,6 +44,8 @@ Web 控制台的「远程连接」（`#remote-connections`）也提供同一套�
 
 如果只使用 Codex 自带的远程编程功能，不使用其他 Harness，就不需要在远程电脑上安装 codexhost。
 
+远程机器上新建的外部 Harness 会话与该机器的本地 Desktop、Web 共用独立 Host，通过 SSH 打开或续聊时保留同一 Thread ID 和原生会话。旧 SSH 专用目录中的会话仍可从 SSH 读取，不自动复制或改换归属。升级时需同时重启共享 Host 和 SSH 监听器；共享执行方不可用时会返回错误，不会退回 Codex 创建会话。
+
 ### 图片与文件附件
 
 外部 Harness 继续接收文字及文件路径，不通过各 Harness 的专用图片接口发送。普通文件沿用 Desktop 原生上传和远程路径引用；能否读取文件、理解图片或解析其格式，由 Harness 的工具及所选模型决定。

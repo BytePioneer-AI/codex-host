@@ -1,3 +1,4 @@
+import { remoteApprovalPresentation } from "./remote-approval.ts";
 import { requestRemoteSession } from "@codexhost/desktop-control";
 import { z } from "zod";
 import {
@@ -450,27 +451,17 @@ export class RemoteSessions {
       if (this.pending.has(key)) continue;
       const epoch = entry.epoch;
       if (!epoch) continue;
-      const invocation = this.events.invoke("user-questions/request", id, {
-        questions: [
-          {
-            id: "approval",
-            question: JSON.stringify(request.params),
-            header: "Remote approval",
-            options: [{ label: "Allow once" }, { label: "Deny" }],
-            multiSelect: false,
-            allowOther: false,
-          },
-        ],
-      });
+      const invocation = this.events.invoke(
+        "approval/request",
+        id,
+        remoteApprovalPresentation(request, entry.row),
+      );
       const pending = { sessionId: id, cancel: invocation.cancel };
       this.pending.set(key, pending);
       void invocation.result.then(
         async (answer) => {
           if (this.pending.get(key) !== pending) return;
-          const selected = (answer as { answers?: Array<{ selected?: string[] }> })?.answers?.[0]
-            ?.selected;
-          const decision =
-            selected?.length === 1 && selected[0] === "Allow once" ? "accept" : "decline";
+          const decision = answer === "allowed-once" ? "accept" : "decline";
           try {
             await this.invoke({
               kind: "respond",
@@ -540,14 +531,22 @@ export class RemoteSessions {
       const view = await this.read(id);
       if (sink.closed) return true;
       view.log.follow(toolOutputSink(view.log, sink), requestOf(args));
-      let busy = false;
+      let busy = false,
+        failures = 0,
+        retryAt = 0;
       const timer = setInterval(() => {
-        if (busy || sink.closed || this.closed) return;
+        if (busy || sink.closed || this.closed || Date.now() < retryAt) return;
         busy = true;
         void this.read(id)
+          .then(() => {
+            failures = 0;
+            retryAt = 0;
+          })
           .catch(() => {
-            clearInterval(timer);
-            this.followTimers.delete(timer);
+            // The offline projection is already published by read(). Keep the
+            // subscription alive and back off until this viewer closes.
+            failures = Math.min(failures + 1, 5);
+            retryAt = Date.now() + Math.min(30_000, 1500 * 2 ** failures);
           })
           .finally(() => {
             busy = false;

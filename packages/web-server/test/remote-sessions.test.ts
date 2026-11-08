@@ -434,7 +434,7 @@ it("publishes host-scoped approvals to two clients and routes only the selected 
   t.after(() => remote.close());
   await remote.read(remoteSessionId("remote-ssh-discovered:a", "same"));
   await remote.read(remoteSessionId("remote-control:b", "same"));
-  type Frame = { type: string; agentId: string; eventId: string };
+  type Frame = { type: string; agentId: string; eventId: string; event: string };
   const pending = frames.map((values) =>
     (values as Frame[]).filter((frame) => frame.type === "waterfall"),
   );
@@ -445,9 +445,10 @@ it("publishes host-scoped approvals to two clients and routes only the selected 
       (frame) => frame.agentId === remoteSessionId("remote-control:b", "same"),
     ),
   );
+  assert.equal(selected.event, "approval/request");
   events.settle({
     eventId: selected.eventId,
-    outcome: { kind: "resolved", value: { answers: [{ selected: ["Allow once"] }] } },
+    outcome: { kind: "resolved", value: "allowed-once" },
   });
   await new Promise((resolve) => setImmediate(resolve));
   const replies = operations.filter((operation) => operation.kind === "respond");
@@ -465,3 +466,74 @@ it("publishes host-scoped approvals to two clients and routes only the selected 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(operations.filter((operation) => operation.kind === "respond").length, 1);
 });
+
+it(
+  "keeps a following view alive across a transient read failure and stops on close",
+  { timeout: 12000 },
+  async (t) => {
+    const hostId = "remote-ssh-discovered:a";
+    let reads = 0,
+      closed = false;
+    const remote = new RemoteSessions(new EventHub("recovery"), async (op) => {
+      if (op.kind === "hosts") return [{ hostId, online: true }];
+      const row = {
+        id: "same",
+        cwd: "/remote",
+        modelProvider: "openai",
+        createdAt: 1,
+        updatedAt: 2,
+        status: { type: "idle" },
+        turns: [],
+        name: reads >= 3 ? "Recovered" : "Before",
+      };
+      if (op.kind === "list") return { data: [row], nextCursor: null };
+      if (op.kind === "read") {
+        reads++;
+        if (reads === 2) throw Error("temporary disconnect");
+        return {
+          result: { thread: { ...row, name: reads >= 3 ? "Recovered" : "Before" } },
+          epoch: "epoch",
+          requests: [],
+        };
+      }
+      return {};
+    });
+    t.after(() => remote.close());
+    const streams = new StreamRegistry();
+    let route: Parameters<StreamRegistry["routeSessions"]>[0] | undefined;
+    streams.routeSessions = (value) => {
+      route = value;
+    };
+    remote.install(new RpcRegistry(), streams);
+    const frames: unknown[] = [];
+    const closing: Array<() => void> = [];
+    await defined(route)(
+      "session/follow",
+      { request: { address: { sessionId: remoteSessionId(hostId, "same") } } },
+      {
+        id: "follow",
+        get closed() {
+          return closed;
+        },
+        push: (x) => frames.push(x),
+        end() {},
+        fail() {},
+        onClose: (fn) => {
+          closing.push(fn);
+        },
+      },
+      async () => false,
+    );
+    const deadline = Date.now() + 8000;
+    while (reads < 3 && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(reads >= 3, "following must recover without reopening the session");
+    assert.match(JSON.stringify(frames), /Recovered/);
+    closed = true;
+    for (const close of closing) close();
+    const stopped = reads;
+    await new Promise((resolve) => setTimeout(resolve, 1700));
+    assert.equal(reads, stopped);
+  },
+);

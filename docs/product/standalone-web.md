@@ -21,6 +21,8 @@ codexhost stop
 
 `codexhost stop` 不确认，按 GUI、Web、Host、远程服务、Broker、Console 的顺序停止，并报告本地 Host 被中断的任务数；用户自行打开的 Desktop 不关闭。远程服务停止后，其他电脑重新连接可恢复远程服务。自启项、Serve 配置和会话数据保留。前台开发 Web 不属于此命令的停止范围，开发者使用下文的 `npm stop`。
 
+
+远程命令和文件审批复用 Web 的本地化审批组件，正文只展示命令、工作目录、文件路径和原因，不展示传输标识。已打开的远程会话在临时读取失败后保留订阅并退避重试，连接恢复后无需重新打开；关闭视图会停止重试。远程工作区既不能作为本地工作区排序的拖动源，也不能作为放置目标。
 ## Desktop 已有远程会话
 
 Web 主列表合并当前 Codex Desktop 已知的 SSH / official Remote Control 连接上的未归档 Thread。侧栏项目显示原生主机名称与连接状态，本机项目显示“本机”；会话标题保持原名，最近列表及搜索结果也携带远程主机标识。引用保留 `{hostId, threadId}`；浏览器 Session ID 使用 `web-remote:` 加该二元组的 base64url 编码，因此不同主机上的同名 Thread 与本机 Thread 不会合并。此能力需要包含远程会话 Controller API 的 codexhost Desktop 正在运行；独立本机 Host 的运行不代表 Desktop 远程连接可用。

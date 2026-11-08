@@ -54,6 +54,7 @@ import type {
   SessionRowState,
 } from "../tree.ts";
 import {
+  canReorderLocalWorkspaces,
   deriveFlat,
   deriveGroups,
   deriveSearchResults,
@@ -497,8 +498,11 @@ function SessionTree({
     if (workspaceDropCommitted.current) return;
     workspaceDropCommitted.current = true;
     setWorkspaceDrag(null);
+    if (!canReorderLocalWorkspaces(workspaces, activeDrag.workspaceId, over.id)) return;
     const owner = parents.get(activeDrag.workspaceId);
-    const siblings = workspaces.filter((workspace) => parents.get(workspace.workspaceId) === owner);
+    const siblings = workspaces.filter(
+      (workspace) => !workspace.remote && parents.get(workspace.workspaceId) === owner,
+    );
     const rowIndex = siblings.findIndex((workspace) => workspace.workspaceId === over.id);
     if (rowIndex === -1) return;
     const anchor = over.half === "before" ? over.id : siblings[rowIndex + 1]?.workspaceId;
@@ -588,7 +592,9 @@ function SessionTree({
     const workspaceId = group.workspaceId;
     const children = childrenByParent.get(group.key) ?? [];
     const compatibleDrag =
-      workspaceDrag !== null && parents.get(workspaceDrag.workspaceId) === parents.get(group.key);
+      workspaceDrag !== null &&
+      canReorderLocalWorkspaces(workspaces, workspaceDrag.workspaceId, workspaceId) &&
+      parents.get(workspaceDrag.workspaceId) === parents.get(group.key);
     const visible = sidebarWindow(
       group.sessions,
       sessionLimits[group.key] ?? GROUP_INITIAL_ROWS,
@@ -606,7 +612,7 @@ function SessionTree({
         ? workspaceDrag.over.half
         : null;
     const workspaceDragProps =
-      workspaceId === undefined
+      workspaceId === undefined || group.remote
         ? undefined
         : {
             start: () => {

@@ -1,6 +1,7 @@
 /** Shared shortcut keycaps; callers supply the effective platform presentation. */
 import css from "./ShortcutKeys.module.css";
 import clsx from "clsx";
+import { usePhoneSidebar } from "./PhoneSidebarView.tsx";
 
 /**
  * Render one command's keycaps without owning binding defaults or localized copy.
@@ -16,6 +17,8 @@ export function ShortcutKeys({
   variant?: "plain" | "tooltip";
   className?: string | undefined;
 }) {
+  const phone = usePhoneSidebar() !== null;
+  if (phone) return null;
   return (
     <span
       className={clsx(

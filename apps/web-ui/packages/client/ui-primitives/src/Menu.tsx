@@ -10,6 +10,7 @@ import { observeComposition } from "./keyboard-composition.ts";
 import { focusWithoutRing } from "./focus.ts";
 import { ShortcutKeys } from "./ShortcutKeys.tsx";
 import { MenuSurface } from "./MenuSurface.tsx";
+import { PhoneSidebarView, usePhoneSidebar } from "./PhoneSidebarView.tsx";
 import css from "./Menu.module.css";
 
 /** Selectable row (optionally with a nested submenu). */
@@ -196,8 +197,16 @@ export function Menu({
   footer,
   className,
   listClassName,
+  phoneSidebarTitle,
+  phoneSidebarDetails,
+  phoneSidebarFooterBackLabel,
 }: {
   open: boolean;
+  /** Opt sidebar menus into the phone drawer's internal view, preserving their rows. */
+  phoneSidebarTitle?: string;
+  phoneSidebarDetails?: ReactNode;
+  /** Explicit session-list return, rendered only in the phone sidebar view. */
+  phoneSidebarFooterBackLabel?: string;
   autoFocus?: boolean;
   anchor: ReactNode;
   items?: readonly MenuEntry[];
@@ -218,6 +227,9 @@ export function Menu({
   className?: string | undefined;
   listClassName?: string | undefined;
 }) {
+  const phoneSidebar = usePhoneSidebar();
+  const phoneView = phoneSidebar !== null && phoneSidebarTitle !== undefined;
+  const anchoredPortal = portal && !phoneView;
   const rootRef = useRef<HTMLSpanElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   /** Index the arrow walk last focused, the resume point when focus left the rows. */
@@ -276,7 +288,7 @@ export function Menu({
   // runs before the parent's, so a wrapper the host positions in its own
   // effect measures stale here — the host callback owns the truth instead.
   useLayoutEffect(() => {
-    if (!open || !portal) {
+    if (!open || !anchoredPortal) {
       setFixedPos(null);
       return;
     }
@@ -333,7 +345,7 @@ export function Menu({
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
     };
-  }, [open, portal, align, side, getAnchorRect]);
+  }, [open, anchoredPortal, align, side, getAnchorRect]);
 
   // Opening remembers where the keyboard was, so closing can hand it back to
   // that control — an anchor wrapping several (a split button) cannot be asked
@@ -364,7 +376,7 @@ export function Menu({
     }
     const composition = observeComposition(document);
     const onPointerDown = (e: PointerEvent) => {
-      if (!(e.target instanceof Node)) return;
+      if (phoneView || !(e.target instanceof Node)) return;
       // The portaled list is outside the anchor subtree; check both.
       if (rootRef.current?.contains(e.target) === true) return;
       if (listRef.current?.contains(e.target) === true) return;
@@ -373,7 +385,7 @@ export function Menu({
     const onKeyDown = (e: KeyboardEvent) => {
       if (
         composition.guards(e) ||
-        isBehindModal(rootRef.current) ||
+        isBehindModal(phoneView ? listRef.current : rootRef.current) ||
         e.defaultPrevented ||
         e.ctrlKey ||
         e.altKey ||
@@ -483,7 +495,7 @@ export function Menu({
       document.removeEventListener("keydown", onEscape, true);
       window.removeEventListener("blur", onWindowBlur);
     };
-  }, [open, onClose, autoFocus]);
+  }, [open, onClose, autoFocus, phoneView]);
 
   // A close from selection/Escape/outside click outruns a pending grace close;
   // left armed it would shut a list reopened inside the grace window. Its own
@@ -628,11 +640,12 @@ export function Menu({
         dense && css.denseList,
         compact && css.compactList,
         scrollable && css.scrollable,
-        portal && css.portal,
+        anchoredPortal && css.portal,
         side === "top" && !portal && css.sideTop,
         align === "end" && !portal && css.alignEnd,
+        phoneView && css.phoneList,
       )}
-      style={portal ? (fixedPos ?? MEASURE_STYLE) : undefined}
+      style={anchoredPortal ? (fixedPos ?? MEASURE_STYLE) : undefined}
       role="menu"
       // React portals bubble synthetic events through the REACT tree: without
       // this stop, an item click re-fires the anchor row's own onClick
@@ -650,6 +663,7 @@ export function Menu({
       onFocus={collapseSubmenuFrom}
     >
       <div className={css.viewport} role="presentation">
+        {phoneView && phoneSidebarDetails}
         {items.map(renderEntry)}
         {children}
       </div>
@@ -679,7 +693,19 @@ export function Menu({
       }
     >
       {anchor}
-      {portal ? list !== false && createPortal(list, document.body) : list}
+      {phoneView
+        ? open && (
+            <PhoneSidebarView
+              title={phoneSidebarTitle!}
+              onBack={onClose}
+              footerBackLabel={phoneSidebarFooterBackLabel}
+            >
+              {list}
+            </PhoneSidebarView>
+          )
+        : portal
+          ? list !== false && createPortal(list, document.body)
+          : list}
     </span>
   );
 }

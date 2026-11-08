@@ -324,6 +324,32 @@ export const en = {
   "extensions.recovery": "Open recovery page",
   "extensions.builtinsOnly": "Open with built-in extensions only",
 
+  "pwa.title": "Install CodexHost app",
+  "pwa.install": "Install app",
+  "pwa.instructions": "Installation guide",
+  "pwa.manual":
+    "Add CodexHost to your desktop or home screen. Installation options depend on your browser.",
+  "pwa.available": "Install to open CodexHost in its own window from your desktop or home screen.",
+  "pwa.prompting": "Confirm installation in your browser's dialog.",
+  "pwa.accepted": "Installation requested. Your browser will finish installing the app.",
+  "pwa.dismissed": "Installation cancelled. You can still install from your browser's menu.",
+  "pwa.failed":
+    "Could not open the installation dialog. Try your browser's menu or reload this page.",
+  "pwa.installed": "CodexHost is running as an app or this browser has confirmed installation.",
+  "pwa.guide.insecure":
+    "PWA installation requires HTTPS or localhost on this device. Plain HTTP LAN and Tailscale IP addresses do not qualify; open a configured HTTPS address from Connect devices.",
+  "pwa.guide.ios":
+    "On iPhone or iPad, open this page in Safari, choose Share → Add to Home Screen, and enable Open as Web App if offered.",
+  "pwa.guide.android":
+    "On Android, open the browser menu and choose Install app or Add to Home screen. Chrome, Edge, Samsung Internet and Firefox offer installation options; labels vary by browser.",
+  "pwa.guide.safari":
+    "In Safari on macOS Sonoma 14 or later, choose File → Add to Dock. Older versions can use Chrome or Edge to install.",
+  "pwa.guide.browser":
+    "In Chrome or Edge, use the install icon in the address bar or the browser menu's app installation option. If your browser does not offer installation, open this address in Chrome or Edge.",
+  "pwa.guide.limitations":
+    "If this page is inside WeChat or another app, open it in an external browser. A shortcut is not necessarily an installed PWA. Availability depends on the browser, device and site; an already installed app may not offer installation again.",
+  "pwa.guide.backend":
+    "The app still needs a connection to your CodexHost computer with Web and Host running. Installing it does not enable offline Agent execution.",
   "notifications.title": "Notifications",
   "notifications.on":
     "This device is notified when a turn finishes or an agent needs your approval or answer.",
@@ -718,6 +744,30 @@ export const zh: Record<ImportLocaleKey, string> = {
   "extensions.recovery": "打开恢复页面",
   "extensions.builtinsOnly": "仅使用内置扩展打开",
 
+  "pwa.title": "安装 CodexHost 应用",
+  "pwa.install": "安装应用",
+  "pwa.instructions": "安装指引",
+  "pwa.manual": "将 CodexHost 添加到桌面或主屏幕，安装方式取决于当前浏览器。",
+  "pwa.available": "安装后可从桌面或主屏幕打开 CodexHost，以独立窗口使用。",
+  "pwa.prompting": "请在浏览器弹窗中确认安装。",
+  "pwa.accepted": "已提交安装请求，浏览器将完成应用安装。",
+  "pwa.dismissed": "已取消安装，仍可通过浏览器菜单手动安装。",
+  "pwa.failed": "无法打开安装弹窗，请尝试浏览器菜单或刷新页面后重试。",
+  "pwa.installed": "当前已在应用窗口中运行，或浏览器已确认安装完成。",
+  "pwa.guide.insecure":
+    "PWA 安装需要 HTTPS 或当前设备的 localhost。普通局域网、Tailscale IP 的 HTTP 地址不满足要求，请从「连接设备」打开已配置的 HTTPS 地址。",
+  "pwa.guide.ios":
+    "在 iPhone 或 iPad 上，请用 Safari 打开当前页面，选择「分享 → 添加到主屏幕」；如有「作为 Web App 打开」选项，请开启。",
+  "pwa.guide.android":
+    "在安卓浏览器菜单中选择「安装应用」或「添加到主屏幕」。Chrome、Edge、Samsung Internet 和 Firefox 提供安装入口，具体名称因浏览器而异。",
+  "pwa.guide.safari":
+    "在 macOS Sonoma 14 或更新版本的 Safari 中，选择「文件 → 添加到程序坞」。旧版本可改用 Chrome 或 Edge 安装。",
+  "pwa.guide.browser":
+    "在 Chrome 或 Edge 中，点击地址栏安装图标，或通过浏览器菜单中的应用安装入口操作。如果当前浏览器没有安装功能，请用 Chrome 或 Edge 打开此地址。",
+  "pwa.guide.limitations":
+    "若在微信等应用内打开，请改用外部浏览器。创建快捷方式不一定等于安装 PWA；是否可安装取决于浏览器、设备和站点条件，已安装的应用也可能不再显示安装入口。",
+  "pwa.guide.backend":
+    "安装后仍需连接运行 Web 和 Host 的 CodexHost 电脑，不支持离线执行 Agent 任务。",
   "notifications.title": "通知",
   "notifications.on": "一轮结束、需要审批或回答问题时，会通知这台设备。",
   "notifications.off": "一轮结束或 Agent 需要你时，在这台设备上收到通知。",

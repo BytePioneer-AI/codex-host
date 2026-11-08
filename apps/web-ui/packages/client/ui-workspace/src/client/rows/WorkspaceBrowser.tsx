@@ -36,6 +36,7 @@ import {
   Modal,
   Toast,
   Tooltip,
+  usePhoneSidebar,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type {
   SessionListState,
@@ -150,8 +151,10 @@ function ViewOptionsMenu({
   t: WorkspaceBrowserProps["t"];
 }) {
   const [open, setOpen] = useState(false);
+  const phoneSidebar = usePhoneSidebar();
   return (
     <Menu
+      phoneSidebarTitle={t("viewOptions.label")}
       open={open}
       onClose={() => {
         setOpen(false);
@@ -212,6 +215,7 @@ function ViewOptionsMenu({
             type="button"
             className={clsx(css.iconButton, css.wide)}
             aria-label={t("viewOptions.label")}
+            data-phone-sidebar-return={phoneSidebar !== null || undefined}
             onClick={() => {
               setOpen((v) => !v);
             }}
@@ -1692,6 +1696,10 @@ export function WorkspaceBrowser({
                 }}
                 onKeyDown={(e) => {
                   if (e.key !== "Escape") return;
+                  if (e.currentTarget.closest("[data-phone-drawer]")) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }
                   setQuery("");
                   setSearchExpanded(false);
                 }}

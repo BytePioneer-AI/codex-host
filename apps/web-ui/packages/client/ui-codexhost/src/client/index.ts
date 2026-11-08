@@ -54,6 +54,8 @@ import { WebExtensionsSection, type WebExtensionsFace } from "./WebExtensionsSec
 import { watchAuthentication } from "./auth-watch.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
+import type {} from "@deepseek-ai/dsh-client-web";
+import { PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
 import { ImportPage, type ImportPageFace } from "./ImportPage.tsx";
 import { HostSettingsSection, type HostSettingsSectionFace } from "./HostSettingsSection.tsx";
 import type {} from "@deepseek-ai/dsh-client-ui-theme/client";
@@ -103,6 +105,21 @@ const HOST_SETTINGS_PAGES = [
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-codexhost: dictionaries");
   const t = ctx.locale.bind(NS);
+  const installation = ctx.get("pwaInstall");
+  if (installation !== undefined) {
+    ctx.slots.inject("settings.general.item", () =>
+      ctx.slots.register(
+        {
+          name: "settings.general.item",
+          id: "codexhost.pwa-install",
+          order: 90,
+          locale: NS,
+          inject: (): PwaInstallFace => ({ installation }),
+        },
+        PwaInstallRow,
+      ),
+    );
+  }
   ctx.provide("chatMessageEditing", sentMessageEditApi);
   ctx.provide("chatTurnDiffs", turnDiffsApi);
   ctx.inject(["conversation"], (scope) => {

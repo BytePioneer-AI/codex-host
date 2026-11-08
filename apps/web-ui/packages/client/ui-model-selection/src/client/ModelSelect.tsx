@@ -215,7 +215,7 @@ export function ModelSelect({
       reasoning === undefined
         ? []
         : [
-            ...(reasoning.defaultEffort === undefined
+            ...(reasoning.defaultEffort === undefined && currentChoice?.group.id !== "codex"
               ? [{ key: "provider-default", effort: undefined, label: t("effort.providerDefault") }]
               : []),
             ...reasoning.efforts.map((effort: ModelReasoningEffort) => {

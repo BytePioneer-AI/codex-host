@@ -178,7 +178,6 @@ it.each([
     value.groups[0]!.id = "codex";
     value.groups[0]!.models[0]!.reasoning = {
       efforts: ids.map((id) => ({ id, name: id })),
-      defaultEffort: "low",
     };
     const directory = createSnapshotStore(value);
     const select = vi.fn(async () => ({ ok: true as const, value: undefined }));
@@ -205,6 +204,48 @@ it.each([
     });
   },
 );
+
+it.each([
+  {
+    harnessId: "copilot",
+    reasoning: { efforts: [{ id: "low", name: "Low" }] },
+  },
+  {
+    harnessId: "opencode",
+    reasoning: {
+      efforts: [
+        { id: "native-default", name: "Default" },
+        { id: "low", name: "Low" },
+      ],
+      defaultEffort: "native-default",
+    },
+  },
+])("retains Default for $harnessId", async ({ harnessId, reasoning }) => {
+  const value = state(1);
+  value.current = { provider: harnessId, model: "m0", reasoningEffort: "low" };
+  value.groups[0]!.id = harnessId;
+  value.groups[0]!.models[0]!.reasoning = reasoning;
+  const select = vi.fn(async () => ({ ok: true as const, value: undefined }));
+  const container = await mount(
+    createElement(ModelSelect, {
+      locked: false,
+      available: true,
+      directory: createSnapshotStore(value),
+      load: vi.fn(),
+      select,
+      t: (key) => modelEn[key as keyof typeof modelEn] ?? key,
+    }),
+  );
+  await click(required<HTMLButtonElement>("button", container));
+  const rows = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'));
+  expect(rows.map((row) => row.textContent?.trim())).toEqual(["Default", "Low"]);
+  await click(rows[0]!);
+  expect(select).toHaveBeenCalledExactlyOnceWith({
+    provider: harnessId,
+    model: "m0",
+    ...(reasoning.defaultEffort ? { reasoningEffort: reasoning.defaultEffort } : {}),
+  });
+});
 
 it.each([
   {

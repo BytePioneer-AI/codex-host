@@ -4,6 +4,7 @@ import type { JsonObject } from "@codexhost/protocol-core";
 
 import { ClientChannelEvents } from "../src/client-channel-events.js";
 import { NativeClientChannel, type NativeClientReply } from "../src/native-client-channel.js";
+import { encodeOfficialCodexModelRef } from "../src/official-codex-model-ref.js";
 
 const thread: JsonObject = {
   id: "native-thread",
@@ -22,7 +23,14 @@ function snapshotChannel() {
     calls.push(method);
     if (method === "thread/resume") {
       events.changed("native-thread", method);
-      return { result: { thread, model: "gpt-5.4", reasoningEffort: "high" } };
+      return {
+        result: {
+          thread,
+          model: "gpt-5.4",
+          reasoningEffort: "high",
+          activePermissionProfile: { id: ":workspace" },
+        },
+      };
     }
     if (method === "thread/read") {
       events.changed("native-thread", "turn/completed");
@@ -40,15 +48,21 @@ function snapshotChannel() {
 }
 
 it("captures the native snapshot cursor before resume/read I/O and keeps real config", async () => {
-  const { channel, calls } = snapshotChannel();
+  const { channel, calls, request } = snapshotChannel();
 
   const first = await channel.snapshot("native-thread", {});
 
   expect(first.cursor.sequence).toBe(0);
   expect(first.configuration).toEqual({
-    native: { model: "gpt-5.4", reasoningEffort: "high" },
+    effectiveModel: encodeOfficialCodexModelRef("gpt-5.4"),
+    effectiveThinkingOptionId: "high",
+    effectivePermissionModeId: ":workspace",
   });
   expect(calls).toEqual(["thread/resume", "thread/read", "thread/turns/list"]);
+  expect(request).toHaveBeenCalledWith("thread/resume", {
+    threadId: "native-thread",
+    excludeTurns: true,
+  });
 
   await channel.snapshot("native-thread", {});
   expect(calls.filter((method) => method === "thread/resume")).toHaveLength(1);
@@ -56,6 +70,47 @@ it("captures the native snapshot cursor before resume/read I/O and keeps real co
   channel.resetGeneration();
   await channel.snapshot("native-thread", {});
   expect(calls.filter((method) => method === "thread/resume")).toHaveLength(2);
+});
+
+it("serves client inspection and snapshots from confirmed configuration without repeated resume", async () => {
+  const { channel, request, calls } = snapshotChannel();
+  const before = {
+    effectiveModel: encodeOfficialCodexModelRef("gpt-5.4"),
+    effectiveThinkingOptionId: "high",
+    effectivePermissionModeId: ":workspace",
+  };
+  expect(
+    await channel.request("codexhost/thread/inspect", { threadId: "native-thread" }),
+  ).toMatchObject({ result: { owner: "codex", locked: false, ...before } });
+  expect(request).toHaveBeenCalledExactlyOnceWith("thread/resume", {
+    threadId: "native-thread",
+    excludeTurns: true,
+  });
+  expect((await channel.snapshot("native-thread", {})).configuration).toEqual(before);
+  expect(
+    await channel.request("codexhost/thread/inspect", { threadId: "native-thread" }),
+  ).toMatchObject({ result: before });
+  channel.observeMessage({
+    method: "thread/settings/updated",
+    params: {
+      threadId: "native-thread",
+      threadSettings: {
+        model: "new-model",
+        effort: "low",
+        activePermissionProfile: { id: ":read-only" },
+      },
+    },
+  });
+  const after = {
+    effectiveModel: encodeOfficialCodexModelRef("new-model"),
+    effectiveThinkingOptionId: "low",
+    effectivePermissionModeId: ":read-only",
+  };
+  expect(
+    await channel.request("codexhost/thread/inspect", { threadId: "native-thread" }),
+  ).toMatchObject({ result: after });
+  expect((await channel.snapshot("native-thread", {})).configuration).toEqual(after);
+  expect(calls.filter((method) => method === "thread/resume")).toHaveLength(1);
 });
 
 it("validates native command decisions and preserves first-answer semantics", async () => {
@@ -149,7 +204,9 @@ it("discards snapshots and resumed state from a retired backend generation", asy
   expect(request.mock.calls.map(([method]) => method)).toEqual(["thread/resume"]);
   const snapshot = await channel.snapshot("native-thread", {});
   expect(request.mock.calls.filter(([method]) => method === "thread/resume")).toHaveLength(2);
-  expect(snapshot.configuration.native?.model).toBe("provider/model:preview");
+  expect(snapshot.configuration.effectiveModel).toEqual(
+    encodeOfficialCodexModelRef("provider/model:preview"),
+  );
 });
 
 it("does not expose native permission grants as generic approvals", () => {

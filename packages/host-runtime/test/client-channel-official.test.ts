@@ -7,7 +7,18 @@ import { hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { ClientChannelHost } from "../src/client-channel-host.js";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
 import { encodeOfficialCodexModelRef } from "../src/official-codex-model-ref.js";
-import { createFixture, startPiThread, stopFixture } from "./app-server-host-fixture.js";
+import {
+  createFixture,
+  startPiThread,
+  stopFixture,
+  writeRequest,
+} from "./app-server-host-fixture.js";
+import type {
+  NativeClientChannelDependencies,
+  NativeClientReply,
+} from "../src/native-client-channel.js";
+import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
+import { OfficialAdmissionError } from "../src/codex-runtime/official-work-gate.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -54,16 +65,12 @@ it("routes official and external queue, configuration, command, pin and usage me
     "thread/queue/delete",
     "thread/queue/reorder",
     "thread/queue/start",
-    "codexhost/thread/queue/send-now",
   ]) {
     request.mockClear();
     submit.mockClear();
     const params = { threadId: "official", queuedSubmissionId: "queued" };
     await host.handleClientRequest(method, params);
-    expect(request).toHaveBeenLastCalledWith(
-      method === "codexhost/thread/queue/send-now" ? "thread/queue/start" : method,
-      params,
-    );
+    expect(request).toHaveBeenLastCalledWith(method, params);
     expect(submit).not.toHaveBeenCalled();
     await host.handleClientRequest(method, { ...params, threadId: external });
     expect(submit).toHaveBeenLastCalledWith(method, { ...params, threadId: external }, undefined);
@@ -76,7 +83,6 @@ it("routes official and external queue, configuration, command, pin and usage me
     "codexhost/thread/command/execute",
     "codexhost/thread/pins/set",
     "codexhost/thread/usage/inspect",
-    "codexhost/thread/inspect",
   ]) {
     request.mockClear();
     submit.mockClear();
@@ -86,6 +92,39 @@ it("routes official and external queue, configuration, command, pin and usage me
     }
     expect(request).not.toHaveBeenCalled();
   }
+  request.mockClear();
+  submit.mockClear();
+  await host.handleClientRequest("codexhost/thread/queue/send-now", {
+    threadId: "official",
+    itemId: "second-queued",
+  });
+  expect(request).toHaveBeenCalledExactlyOnceWith("thread/queue/start", {
+    threadId: "official",
+    queuedSubmissionId: "second-queued",
+  });
+  expect(submit).not.toHaveBeenCalled();
+  await host.handleClientRequest("codexhost/thread/queue/send-now", {
+    threadId: external,
+    itemId: "external-queued",
+  });
+  expect(submit).toHaveBeenLastCalledWith(
+    "codexhost/thread/queue/send-now",
+    { threadId: external, itemId: "external-queued" },
+    undefined,
+  );
+  request.mockClear();
+  submit.mockClear();
+  expect(
+    await host.handleClientRequest("codexhost/thread/inspect", { threadId: "official" }),
+  ).toMatchObject({ result: { owner: "codex", locked: false } });
+  expect(request).not.toHaveBeenCalled();
+  expect(submit).not.toHaveBeenCalled();
+  await host.handleClientRequest("codexhost/thread/inspect", { threadId: external });
+  expect(submit).toHaveBeenCalledExactlyOnceWith(
+    "codexhost/thread/inspect",
+    { threadId: external },
+    undefined,
+  );
   await host.handleClientRequest("turn/start", {
     threadId: "official",
     delivery: "queue",
@@ -174,6 +213,15 @@ it("uses official profiles and waits for settings confirmation; forwards command
       capabilities: { configuration: { selectPermissionMode: true } },
     },
   });
+  writeRequest(fixture.desktopInput, {
+    id: 1001,
+    method: "codexhost/thread/inspect",
+    params: { threadId: "official" },
+  });
+  expect(await fixture.collector.waitFor((message) => message.id === 1001)).toMatchObject({
+    result: { owner: "codex", locked: true },
+  });
+  expect(calls.some((call) => call.method === "thread/resume")).toBe(false);
   for (const [method, selection, applied] of [
     ["model", { model: encodeOfficialCodexModelRef("new") }, { model: "new" }],
     ["thinking", { thinkingOptionId: "high" }, { effort: "high" }],
@@ -196,15 +244,6 @@ it("uses official profiles and waits for settings confirmation; forwards command
     await vi.waitFor(() => expect(updates.length).toBeGreaterThan(0));
     updates.shift();
     expect(resolved).toBe(false);
-    const before = await fixture.host.handleClientRequest("codexhost/thread/inspect", {
-      threadId: "official",
-    });
-    expect(before).toMatchObject({
-      result: {
-        effectiveModel: encodeOfficialCodexModelRef(String(settings.model)),
-        effectivePermissionModeId: (settings.activePermissionProfile as JsonObject).id,
-      },
-    });
     settings = { ...settings, ...applied };
     fixture.official.stdout.write(
       `${JSON.stringify({ method: "thread/settings/updated", params: { threadId: "official", threadSettings: settings } })}\n`,
@@ -230,6 +269,15 @@ it("uses official profiles and waits for settings confirmation; forwards command
       ],
     },
   });
+  writeRequest(fixture.desktopInput, {
+    id: 1002,
+    method: "codexhost/thread/commands/inspect",
+    params: { threadId: "official" },
+  });
+  expect(await fixture.collector.waitFor((message) => message.id === 1002)).toMatchObject({
+    result: { commands: [] },
+  });
+  expect(calls.filter((call) => call.method === "skills/list")).toHaveLength(1);
   expect(
     await fixture.host.handleClientRequest("codexhost/thread/command/execute", {
       threadId: "official",
@@ -256,4 +304,117 @@ it("uses official profiles and waits for settings confirmation; forwards command
     },
   });
   expect(calls).toContainEqual({ method: "skills/list", params: { cwds: ["/workspace"] } });
+  expect(calls.filter((call) => call.method === "thread/resume")).toHaveLength(5);
+  expect(
+    calls
+      .filter((call) => call.method === "thread/resume")
+      .every((call) => call.params.excludeTurns === true),
+  ).toBe(true);
+});
+
+it("keeps writer-conflicted snapshots readable and falls back to queue IDs for missing client message IDs", async () => {
+  const events = new ClientChannelEvents();
+  const thread = {
+    id: "official",
+    cwd: "/workspace",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 1,
+    status: { type: "idle" },
+    turns: [],
+  };
+  let occupied = true;
+  const request = vi.fn<NativeClientChannelDependencies["request"]>(
+    async (method): Promise<NativeClientReply> => {
+      if (method === "thread/resume")
+        return occupied
+          ? { error: { code: -32600, message: "thread official already has an active writer" } }
+          : {
+              result: {
+                thread,
+                model: "gpt-5.4",
+                reasoningEffort: "high",
+                activePermissionProfile: { id: ":workspace" },
+              },
+            };
+      if (method === "thread/read") return { result: { thread } };
+      if (method === "thread/turns/list") return { result: { data: [], nextCursor: null } };
+      if (method === "thread/queue/list")
+        return {
+          result: {
+            data: [
+              { id: "missing-client-id", input: [] },
+              { id: "with-client-id", input: [], clientUserMessageId: "original-client-id" },
+            ],
+          },
+        };
+      throw new Error(`Unexpected native method ${method}`);
+    },
+  );
+  const submit = vi.fn(async () => {
+    throw new Error("Snapshots must not call Host inspect");
+  });
+  const host = new ClientChannelHost({
+    events,
+    environment: () => ({}),
+    waitForPlugins: async () => {},
+    listRecords: async () => [],
+    listSectionPlacements: async () => [],
+    locateExternalThread: async () => ({ kind: "official" }),
+    loadedThread: () => undefined,
+    clientHistoryTurns: () => [],
+    queueSnapshot: () => ({ items: [], pausedReason: null }),
+    interactions: {
+      approvals: new Map(),
+      questions: new Map(),
+      isApprovalRequestId: (value): value is number => typeof value === "number",
+      isQuestionRequestId: (value): value is number => typeof value === "number",
+      respondApproval: async () => false,
+      respondQuestion: async () => false,
+    },
+    native: { events, request, respond: async () => {} },
+    submit,
+  });
+  const readOnly = await host.clientSnapshot("official");
+  expect(readOnly.thread.nativeSendError).toContain("请先在另一端关闭此会话");
+  expect(readOnly.queue).toEqual({ items: [], pausedReason: null });
+  expect(request.mock.calls.map(([method]) => method)).toEqual([
+    "thread/resume",
+    "thread/read",
+    "thread/turns/list",
+  ]);
+  occupied = false;
+  const writable = await host.clientSnapshot("official");
+  expect(writable.thread.nativeSendError).toBeUndefined();
+  expect(writable.queue?.items).toEqual([
+    { id: "missing-client-id", input: [], clientUserMessageId: "missing-client-id" },
+    { id: "with-client-id", input: [], clientUserMessageId: "original-client-id" },
+  ]);
+  expect(writable.configuration).toMatchObject({
+    effectiveModel: encodeOfficialCodexModelRef("gpt-5.4"),
+    effectiveThinkingOptionId: "high",
+    effectivePermissionModeId: ":workspace",
+  });
+  expect(submit).not.toHaveBeenCalled();
+  expect(request).toHaveBeenCalledWith("thread/resume", {
+    threadId: "official",
+    excludeTurns: true,
+  });
+});
+
+it("only reports official admission failures as notInstalled and preserves other inspection errors", async () => {
+  const fixture = createFixture();
+  cleanup.push(() => stopFixture(fixture));
+  await fixture.ready;
+  const request = vi
+    .spyOn(OfficialRuntimeClient.prototype, "request")
+    .mockRejectedValueOnce(new OfficialAdmissionError("unavailable"))
+    .mockRejectedValueOnce(new Error("catalog query failed"));
+  cleanup.push(() => request.mockRestore());
+  expect(
+    await fixture.host.handleClientRequest("codexhost/harness/inspect", { harnessId: "codex" }),
+  ).toMatchObject({ result: { status: "notInstalled" } });
+  expect(
+    await fixture.host.handleClientRequest("codexhost/harness/inspect", { harnessId: "codex" }),
+  ).toMatchObject({ result: { status: "error", error: { message: "catalog query failed" } } });
 });

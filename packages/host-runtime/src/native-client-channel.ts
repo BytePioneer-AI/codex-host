@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { JsonObject, JsonValue } from "@codexhost/protocol-core";
 import {
   clientThreadSnapshotSchema,
+  jsonValueSchema,
   type ClientInteraction,
   type ClientSnapshotOptions,
   type ClientThreadSnapshot,
@@ -10,6 +11,7 @@ import {
 import type { ClientChannelEvents } from "./client-channel-events.js";
 import { ClientChannelRequestError } from "./client-channel-error.js";
 import { compactClientSnapshot } from "./client-snapshot-compaction.js";
+import { nativeThreadConfiguration } from "./codex-runtime/native-thread-controls.js";
 
 export type NativeClientReply =
   { result: JsonValue } | { error: { code: number; message: string } };
@@ -35,11 +37,6 @@ interface PendingNativeInteraction {
   readonly interaction: ClientInteraction["interaction"];
 }
 
-interface NativeConfiguration {
-  readonly model?: string;
-  readonly reasoningEffort?: string;
-}
-
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -47,10 +44,6 @@ const isJsonObject = (value: unknown): value is JsonObject => isRecord(value);
 
 const requestKey = (id: string | number): string => JSON.stringify([typeof id, id]);
 const NATIVE_REQUEST_PREFIX = "codexhost:native-interaction:";
-
-function nativeConfigId(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
@@ -379,7 +372,7 @@ export class NativeClientChannel {
   readonly #host: NativeClientChannelDependencies;
   readonly #knownThreads = new Set<string>();
   readonly #resumedThreads = new Set<string>();
-  readonly #configuration = new Map<string, NativeConfiguration>();
+  readonly #configuration = new Map<string, ReturnType<typeof nativeThreadConfiguration>>();
   readonly #pending = new Map<string, PendingNativeInteraction>();
   readonly #pendingNativeIds = new Map<string, string>();
   readonly #unconfirmedResponses = new Set<string>();
@@ -400,6 +393,8 @@ export class NativeClientChannel {
     const threadId = threadIdFromParams(params);
     if (threadId) {
       this.noteThread(threadId);
+      if (value.method === "thread/settings/updated" && isJsonObject(params.threadSettings))
+        this.#configuration.set(threadId, nativeThreadConfiguration(params.threadSettings));
       if (value.method === "thread/closed") this.#resumedThreads.delete(threadId);
       if (value.method === "turn/started") this.#interactionErrors.delete(threadId);
       this.#host.events.changed(threadId, value.method);
@@ -467,13 +462,7 @@ export class NativeClientChannel {
     }
     if (method === "thread/resume" && threadId) {
       const result = resultObject(reply);
-      const model = nativeConfigId(result?.model);
-      const reasoningEffort = nativeConfigId(result?.reasoningEffort);
-      if (model || reasoningEffort)
-        this.#configuration.set(threadId, {
-          ...(model ? { model } : {}),
-          ...(reasoningEffort ? { reasoningEffort } : {}),
-        });
+      this.#configuration.set(threadId, nativeThreadConfiguration(result ?? {}));
     }
     if (method === "thread/list") {
       const data = resultObject(reply)?.data;
@@ -493,13 +482,31 @@ export class NativeClientChannel {
       },
     });
     const threadId = threadIdFromParams(params);
+    if (method === "codexhost/thread/inspect") {
+      if (!threadId) return { error: { code: -32602, message: "threadId is required" } };
+      if (!this.#configuration.has(threadId)) {
+        const resumed = await this.request("thread/resume", { threadId, excludeTurns: true });
+        if ("error" in resumed) return resumed;
+      }
+      return {
+        result: jsonValueSchema.parse({
+          owner: "codex",
+          locked: false,
+          ...this.#configuration.get(threadId),
+          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        }),
+      };
+    }
     if (threadId && RESUME_BEFORE.has(method) && !this.#resumedThreads.has(threadId)) {
-      const resumed = await this.#host.request("thread/resume", { threadId });
+      const resumed = await this.#host.request("thread/resume", { threadId, excludeTurns: true });
       if (generation !== this.#generationToken) return stale();
       this.observeResponse("thread/resume", { threadId }, resumed);
       if ("error" in resumed) return resumed;
     }
-    const reply = await this.#host.request(method, params);
+    const reply = await this.#host.request(
+      method,
+      method === "thread/resume" ? { ...params, excludeTurns: true } : params,
+    );
     if (generation !== this.#generationToken) return stale();
     this.observeResponse(method, params, reply);
     if (threadId && CHANGED_METHODS.has(method) && !("error" in reply))
@@ -529,7 +536,7 @@ export class NativeClientChannel {
     try {
       let nativeSendError: string | undefined;
       if (!this.#resumedThreads.has(threadId)) {
-        const resumed = await this.request("thread/resume", { threadId });
+        const resumed = await this.request("thread/resume", { threadId, excludeTurns: true });
         assertGeneration();
         if ("error" in resumed) {
           if (
@@ -578,11 +585,8 @@ export class NativeClientChannel {
           ...(nativeInteractionError ? { nativeInteractionError } : {}),
         },
         turnsPage,
-        // Native configuration is owned by official Codex. Only values returned
-        // by native resume are presented; no Host defaults are synthesized.
-        configuration: {
-          ...(configuration ? { native: configuration } : {}),
-        },
+        // Only configuration confirmed by native resume or settings notifications is presented.
+        configuration: configuration ?? {},
         interactions: this.interactions(threadId),
       });
       assertGeneration();

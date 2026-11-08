@@ -104,11 +104,12 @@ it("lists native and external Threads and continues native history with its orig
   }
 });
 
-it("omits Codex when the official program is unavailable and keeps other Harnesses", async (t) => {
+it("omits unavailable Codex, exposes inspection errors and restores its entry after recovery", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "web-native-unavailable-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = new FakeChHost();
   const sessions = new ChSessions(
-    new FakeChHost(),
+    host,
     new Workspaces(new DataDir(root), root),
     new EventHub(root),
   );
@@ -116,5 +117,23 @@ it("omits Codex when the official program is unavailable and keeps other Harness
   assert.deepEqual(
     (await sessions.catalog.models()).groups.map((group) => group.id),
     ["fake"],
+  );
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/harness/inspect" && params.harnessId === "codex")
+      return {
+        status: "error",
+        error: { code: "unavailable", message: "official catalog failed", retryable: false },
+      } as T;
+    return request<T>(method, params);
+  };
+  const failed = await sessions.catalog.models();
+  assert.deepEqual(failed.failures, [
+    { id: "codex", name: "Codex", message: "official catalog failed" },
+  ]);
+  nativeCodex(host);
+  assert.deepEqual(
+    (await sessions.catalog.models()).groups.map((group) => group.id),
+    ["codex", "fake"],
   );
 });

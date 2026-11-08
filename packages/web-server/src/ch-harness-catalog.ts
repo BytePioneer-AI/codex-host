@@ -56,7 +56,11 @@ export class ChHarnessCatalog {
           harnessId: id,
           ...(cwd ? { cwd } : {}),
         })
-        .then((value) => harnessInspectionSchema.parse(value))
+        .then((value) => {
+          const result = harnessInspectionSchema.parse(value);
+          if (id === "codex" && result.status !== "ready") this.inspections.delete(key);
+          return result;
+        })
         .catch((error: unknown) => {
           this.inspections.delete(key);
           throw error;
@@ -76,7 +80,7 @@ export class ChHarnessCatalog {
     );
     if (this.restrictTo === undefined || this.restrictTo.has("codex")) {
       const inspection = await this.inspect("codex").catch(() => undefined);
-      if (inspection?.status === "ready")
+      if (inspection)
         values.unshift({ id: harnessIdSchema.parse("codex"), name: "Codex", inspection });
     }
     const groups = values.flatMap(({ id, name, inspection }) =>

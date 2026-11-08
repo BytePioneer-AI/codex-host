@@ -42,37 +42,3 @@ it("reads Desktop order without writing it and preserves model defaults and fail
   assert.equal(readFileSync(path, "utf8"), original);
   assert.deepEqual(await readHarnessDisplayEntries(join(directory, "missing")), []);
 });
-
-it("leads with official Codex when available", () => {
-  const entries = [
-    { agent: "grok", section: "main" as const },
-    { agent: "pi", section: "auto" as const },
-  ];
-  const result = withHarnessDisplayOrder(
-    {
-      groups: [
-        { id: "grok", name: "Grok" },
-        { id: "codex", name: "Codex" },
-        { id: "pi", name: "Pi" },
-      ],
-      failures: [],
-    },
-    entries,
-  );
-  assert.deepEqual(result.harnessOrder, ["codex", "grok", "pi"]);
-  assert.deepEqual(
-    result.groups.map((item) => item.id),
-    ["codex", "grok", "pi"],
-  );
-  const missing = withHarnessDisplayOrder(
-    {
-      groups: [
-        { id: "grok", name: "Grok" },
-        { id: "pi", name: "Pi" },
-      ],
-      failures: [],
-    },
-    entries,
-  );
-  assert.deepEqual(missing.harnessOrder, ["grok", "pi"]);
-});

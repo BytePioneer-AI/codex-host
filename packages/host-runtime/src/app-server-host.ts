@@ -255,7 +255,6 @@ import { DesktopThreadRouting } from "./desktop-thread-routing.js";
 import { errorMessage, rpcEnvelope, rpcError, type HostRequestOrigin } from "./desktop-rpc.js";
 import { allocateProjectlessWorkspace } from "./projectless-workspace.js";
 import {
-  nativeThreadConfiguration,
   updateNativeThreadSettings,
   nativeThreadCommands,
 } from "./codex-runtime/native-thread-controls.js";
@@ -1019,7 +1018,7 @@ export class AppServerHost {
       selectThreadPermissionMode: (request) => this.#selectThreadPermissionMode(request),
       writeHarnessCommandCatalog: (request, harnessId, cwd, inspectedThreadId) =>
         this.#writeHarnessCommandCatalog(request, harnessId, cwd, inspectedThreadId),
-      inspectThreadCommands: (request) => this.#inspectThreadCommands(request),
+      inspectThreadCommands: (request, origin) => this.#inspectThreadCommands(request, origin),
       executeThreadCommand: (request) => this.#executeThreadCommand(request),
       sendQueuedExternalTurnNow: (request, thread) =>
         this.#sendQueuedExternalTurnNow(request, thread),
@@ -2172,24 +2171,9 @@ export class AppServerHost {
       isRecord(defaultEntry) && typeof defaultEntry.model === "string"
         ? encodeOfficialCodexModelRef(defaultEntry.model)
         : undefined;
-    const profilesResponse = await this.#requestOfficial("permissionProfile/list", {});
-    if (isRecord(profilesResponse.error)) throw new Error(String(profilesResponse.error.message));
-    const profiles =
-      isRecord(profilesResponse.result) && Array.isArray(profilesResponse.result.data)
-        ? profilesResponse.result.data.filter(
-            (profile): profile is JsonObject => isRecord(profile) && profile.allowed === true,
-          )
-        : [];
-    const permissionModes = profiles.map((profile) => ({
-      id: profile.id,
-      label: profile.id,
-      ...(typeof profile.description === "string" && profile.description
-        ? { description: profile.description }
-        : {}),
-    }));
     return {
       harnessId: input.harnessId,
-      inspection: harnessInspectionSchema.parse({
+      inspection: {
         status: "ready",
         catalog: {
           models,
@@ -2200,15 +2184,12 @@ export class AppServerHost {
           configuration: {
             selectModel: models.length > 0,
             selectThinkingOption: thinkingById.size > 0,
-            selectPermissionMode: permissionModes.length > 0,
+            selectPermissionMode: false,
             permissionModeScope: "live",
           },
-          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
         },
-        ...(permissionModes.length
-          ? { permissionModes: { modes: permissionModes, defaultModeId: permissionModes[0]?.id } }
-          : {}),
-      }),
+      },
     };
   }
 
@@ -3041,21 +3022,49 @@ export class AppServerHost {
     }
     if (params.data.harnessId === "codex") {
       try {
-        const { inspection } = await this.#inspectOfficialDelegationTarget({
+        let { inspection } = await this.#inspectOfficialDelegationTarget({
           harnessId: params.data.harnessId,
           ...(params.data.cwd ? { cwd: params.data.cwd } : {}),
         });
+        if (inspection.status === "ready") {
+          const response = await this.#requestOfficial("permissionProfile/list", {});
+          if (isRecord(response.error)) throw new Error(String(response.error.message));
+          const profiles =
+            isRecord(response.result) && Array.isArray(response.result.data)
+              ? response.result.data.filter(
+                  (profile): profile is JsonObject => isRecord(profile) && profile.allowed === true,
+                )
+              : [];
+          const modes = profiles.map((profile) => ({
+            id: profile.id,
+            label: profile.id,
+            ...(typeof profile.description === "string" && profile.description
+              ? { description: profile.description }
+              : {}),
+          }));
+          inspection = harnessInspectionSchema.parse({
+            ...inspection,
+            capabilities: {
+              configuration: {
+                ...inspection.capabilities.configuration,
+                selectPermissionMode: modes.length > 0,
+              },
+              history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+            },
+            ...(modes.length ? { permissionModes: { modes, defaultModeId: modes[0]?.id } } : {}),
+          });
+        }
         await this.#writer.json(
           rpcEnvelope(request, { result: jsonValueSchema.parse(inspection) }),
         );
-      } catch {
+      } catch (error) {
         await this.#writer.json(
           rpcEnvelope(request, {
             result: {
-              status: "notInstalled",
+              status: error instanceof OfficialAdmissionError ? "notInstalled" : "error",
               error: {
                 code: "unavailable",
-                message: "Official Codex is unavailable",
+                message: errorMessage(error),
                 retryable: false,
               },
             },
@@ -3170,23 +3179,11 @@ export class AppServerHost {
       }));
     const threadUsage =
       resolution.kind === "official" ? null : await this.#threadUsage(resolution.thread);
-    let officialConfiguration = {};
-    if (resolution.kind === "official") {
-      const response = await this.#requestOfficial("thread/resume", {
-        threadId: params.data.threadId,
-      });
-      if (!isRecord(response.error))
-        officialConfiguration = nativeThreadConfiguration(
-          isRecord(response.result) ? response.result : {},
-        );
-    }
     const inspection = threadInspectionSchema.parse(
       resolution.kind === "official"
         ? {
             owner: "codex",
-            locked: false,
-            ...officialConfiguration,
-            history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+            locked: true,
             ...(supportsThreadReferences ? { supportsThreadReferences: true } : {}),
           }
         : {
@@ -3350,7 +3347,7 @@ export class AppServerHost {
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
   }
 
-  async #inspectThreadCommands(request: JsonRpcRequest): Promise<void> {
+  async #inspectThreadCommands(request: JsonRpcRequest, origin: HostRequestOrigin): Promise<void> {
     const params = threadCommandsInspectParamsSchema.safeParse(request.params);
     if (!params.success) {
       await this.#writer.json(
@@ -3361,6 +3358,10 @@ export class AppServerHost {
     const location = await this.#locateExternalThread(params.data.threadId);
     if (await this.#writeResolutionError(request, location)) return;
     if (location.kind !== "external") {
+      if (origin !== "client") {
+        await this.#writer.json(rpcEnvelope(request, { result: { commands: [] } }));
+        return;
+      }
       const metadata = await this.#readOfficialThreadMetadata(params.data.threadId);
       const response = await this.#requestOfficial("skills/list", {
         ...(metadata.cwd ? { cwds: [metadata.cwd] } : {}),
@@ -3466,7 +3467,10 @@ export class AppServerHost {
         await this.#writer.json(rpcError(request, -32078, `Unknown Codex command ${commandId}`));
         return;
       }
-      const resumed = await this.#requestClientNative("thread/resume", { threadId });
+      const resumed = await this.#requestClientNative("thread/resume", {
+        threadId,
+        excludeTurns: true,
+      });
       if ("error" in resumed) {
         await this.#writer.json(rpcEnvelope(request, resumed));
         return;
@@ -3673,7 +3677,10 @@ export class AppServerHost {
     settings: JsonObject,
   ): Promise<void> {
     try {
-      const resumed = await this.#requestOfficial("thread/resume", { threadId });
+      const resumed = await this.#requestOfficial("thread/resume", {
+        threadId,
+        excludeTurns: true,
+      });
       if (isRecord(resumed.error)) {
         await this.#writer.json(rpcEnvelope(request, { error: resumed.error }));
         return;

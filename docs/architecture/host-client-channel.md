@@ -6,7 +6,7 @@ GUI、Web 和其他 App 的共享外部 Threads 由一个独立后台中的 `App
 
 客户端通道也支持本机原生 Codex Thread。共享服务通过已有 `OfficialRuntimeClient` 连接与 Desktop 相同的 `OfficialRuntimeScope`，按 Mapping Store 归属区分 external 与 native，保留官方 Thread ID。`thread/list` 沿用原生／外部合并分页；原生不可用不影响外部目录，协议错误仍报错。不会通过 Codex CLI Adapter 再启动一份写入同一原生会话的 app-server。
 
-原生快照用仅含 Thread ID 的 `thread/resume` 建立订阅，再调用官方 `thread/read` 与 `thread/turns/list`；没有模型、权限或沙箱默认值覆盖。快照的 `configuration.effectiveModel`、`effectiveThinkingOptionId`、`effectivePermissionModeId` 展示官方确认的配置，Model Ref 与官方目录一致。游标在异步读取前捕获；读取中后台换代会拒绝快照，不能确认尚未包含的事件。后台退出清空原生订阅、配置与交互状态，并使已观察的会话失效。遇到官方 writer 冲突时退回只读历史，快照标记不可发送；再次发送保留官方错误并提示先在另一端关闭会话，不绕过锁或自动 Fork。
+原生快照用 `thread/resume {threadId, excludeTurns: true}` 建立订阅，再调用官方 `thread/read` 与 `thread/turns/list`；没有模型、权限或沙箱默认值覆盖。客户端通道保存 resume 响应及 `thread/settings/updated` 确认的配置，快照直接携带 `configuration.effectiveModel`、`effectiveThinkingOptionId`、`effectivePermissionModeId`，Model Ref 与官方目录一致。客户端 inspect 只在配置缺失时恢复一次，不随快照反复恢复；Desktop inspect 保持只读的 `{owner: "codex", locked: true}`，不恢复 Thread。游标在异步读取前捕获；读取中后台换代会拒绝快照，不能确认尚未包含的事件。后台退出清空原生订阅、配置与交互状态，并使已观察的会话失效。遇到官方 writer 冲突时退回只读历史，快照标记不可发送并跳过队列读取；再次发送保留官方错误并提示先在另一端关闭会话，不绕过锁或自动 Fork。
 
 原生命令／文件审批和提问可由 Web 回答。审批严格保留原生可选 decision；Web 使用代次限定的不透明请求 ID，服务端再映射到官方 ID，旧页面不能回答重启后复用编号的新请求。首次有效回应后删除待处理项，不自动重放结果未知的响应。未支持的原生权限授予请求不转换成通用允许／拒绝；Web 提问卡片没有密码输入契约，因此含 `isSecret` 的提问也不降级成明文字段。对 Web 不能回答的官方请求，有 Desktop 连接时交由 Desktop；没有 Desktop 连接时立即返回错误并投影原因，不让 Turn 悬挂。
 
@@ -43,7 +43,7 @@ Web 在插件列表之外调用 `codexhost/harness/inspect {harnessId: "codex"}`
 
 客户端统一使用现有方法，Host 的方法表按所有者分发。官方 `thread/queue/*` 同名转发，`codexhost/thread/queue/send-now` 转为 `thread/queue/start`；排队发送进入官方队列，Web 与 Desktop 可操作同一队列。模型、Thinking 与权限选择转为 `thread/settings/update`，仅在匹配的 `thread/settings/updated` 通知确认后发布结果，空响应不表示已生效。权限选项来自 `permissionProfile/list` 中允许选择的档案，保留官方 ID。
 
-命令目录提供 `/compact`、`/review` 和 `skills/list` 返回的启用 Skill；执行分别调用 `thread/compact/start`、`review/start`。命令回执只在官方返回 Turn ID 时携带 `turnId`，压缩的空响应不生成虚构 Turn；执行进度仍以官方通知与历史为准。置顶和用量复用 Host 已有官方实现。官方 Thread 不开放 Web Fork 或历史回退，控件按能力显示。
+官方 Thread 的客户端命令目录提供 `/compact`、`/review` 和 `skills/list` 返回的启用 Skill，Desktop 的 Host 命令目录仍为空，使用其官方菜单；执行分别调用 `thread/compact/start`、`review/start`。命令回执只在官方返回 Turn ID 时携带 `turnId`，压缩的空响应不生成虚构 Turn；执行进度仍以官方通知与历史为准。置顶和用量复用 Host 已有官方实现。官方 Thread 不开放 Web Fork 或历史回退，控件按能力显示。
 
 ## 应用更新
 

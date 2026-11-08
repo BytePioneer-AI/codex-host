@@ -36,7 +36,6 @@ export type HarnessDisplaySet = z.infer<typeof harnessDisplaySetSchema>;
 
 /** Display preference only; this order never registers or enables a Harness. */
 export const DEFAULT_HARNESS_DISPLAY_ORDER: readonly string[] = [
-  "codex",
   "pi",
   "claude-code",
   "deepseek-harness",
@@ -55,7 +54,7 @@ export const DEFAULT_HARNESS_DISPLAY_ORDER: readonly string[] = [
   "zcode",
 ];
 
-/** Saved Main/More order precedes missing catalog entries. */
+/** Codex is pinned first; saved Main/More order precedes missing catalog entries. */
 export function orderHarnessDisplay<T extends { readonly id: string; readonly name: string }>(
   catalog: readonly T[],
   entries: HarnessDisplayEntries = [],
@@ -64,7 +63,7 @@ export function orderHarnessDisplay<T extends { readonly id: string; readonly na
   const recorded = new Set(entries.map((entry) => entry.agent));
   const ranks = new Map(DEFAULT_HARNESS_DISPLAY_ORDER.map((id, rank) => [id, rank]));
   const missing = catalog
-    .filter((item) => !recorded.has(item.id))
+    .filter((item) => item.id !== "codex" && !recorded.has(item.id))
     .toSorted(
       (a, b) =>
         (ranks.get(a.id) ?? Infinity) - (ranks.get(b.id) ?? Infinity) ||
@@ -76,10 +75,14 @@ export function orderHarnessDisplay<T extends { readonly id: string; readonly na
     ...missing.map((item) => ({ agent: item.id, section: "auto" as const })),
   ];
   const ordered = all
-    .filter((entry) => byId.has(entry.agent))
+    .filter((entry) => entry.agent !== "codex" && byId.has(entry.agent))
     .toSorted((a, b) => Number(a.section === "more") - Number(b.section === "more"));
-  return ordered.flatMap((entry) => {
-    const item = byId.get(entry.agent);
-    return item ? [item] : [];
-  });
+  const codex = byId.get("codex");
+  return [
+    ...(codex ? [codex] : []),
+    ...ordered.flatMap((entry) => {
+      const item = byId.get(entry.agent);
+      return item ? [item] : [];
+    }),
+  ];
 }

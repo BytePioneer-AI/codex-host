@@ -110,7 +110,7 @@ export interface DesktopThreadRoutingHost {
     cwd?: string,
     inspectedThreadId?: string,
   ): Promise<void>;
-  inspectThreadCommands(request: JsonRpcRequest): Promise<void>;
+  inspectThreadCommands(request: JsonRpcRequest, origin: HostRequestOrigin): Promise<void>;
   executeThreadCommand(request: JsonRpcRequest): Promise<void>;
   sendQueuedExternalTurnNow(request: JsonRpcRequest, thread: ExternalThread): Promise<void>;
   handleExternalQueueRequest(request: JsonRpcRequest, thread: ExternalThread): Promise<void>;
@@ -271,7 +271,7 @@ export class DesktopThreadRouting {
       return true;
     }
     if (request.method === "codexhost/thread/commands/inspect") {
-      await this.#host.inspectThreadCommands(request);
+      await this.#host.inspectThreadCommands(request, origin);
       return true;
     }
     if (request.method === "codexhost/thread/command/execute") {

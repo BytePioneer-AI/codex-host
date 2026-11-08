@@ -57,7 +57,7 @@ const OFFICIAL_METHODS: Readonly<Record<string, "native" | "host">> = {
   "codexhost/thread/command/execute": "host",
   "codexhost/thread/pins/set": "host",
   "codexhost/thread/usage/inspect": "host",
-  "codexhost/thread/inspect": "host",
+  "codexhost/thread/inspect": "native",
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -267,6 +267,12 @@ export class ClientChannelHost {
             ),
           );
       }
+      if (method === "codexhost/thread/queue/send-now") {
+        if (typeof params.itemId !== "string" || !params.itemId)
+          return { error: { code: -32602, message: "itemId is required" } };
+        nativeParams = { ...nativeParams, queuedSubmissionId: params.itemId };
+        delete nativeParams.itemId;
+      }
       if (method === "thread/start") {
         nativeParams = { ...params };
         if (typeof params.model === "object" && params.model && !Array.isArray(params.model)) {
@@ -322,25 +328,21 @@ export class ClientChannelHost {
     if (location.kind === "official") {
       if (!this.#native) throw new Error("Thread is not owned by this local Host");
       const snapshot = await this.#native.snapshot(threadId, options);
-      const inspection = await this.#host.submit(
-        "codexhost/thread/inspect",
-        { threadId },
-        undefined,
-      );
-      if ("error" in inspection)
-        throw new ClientChannelRequestError(inspection.error.code, inspection.error.message);
-      const queue =
-        snapshot.thread.canAcceptDirectInput === false
-          ? { result: { data: [] } }
-          : await this.#native.request("thread/queue/list", { threadId });
+      const queue = snapshot.thread.nativeSendError
+        ? { result: { data: [] } }
+        : await this.#native.request("thread/queue/list", { threadId });
       if ("error" in queue)
         throw new ClientChannelRequestError(queue.error.code, queue.error.message);
-      const configuration = isRecord(inspection.result) ? inspection.result : {};
       const items =
-        isRecord(queue.result) && Array.isArray(queue.result.data) ? queue.result.data : [];
+        isRecord(queue.result) && Array.isArray(queue.result.data)
+          ? queue.result.data.map((item) =>
+              isRecord(item)
+                ? { ...item, clientUserMessageId: item.clientUserMessageId ?? item.id }
+                : item,
+            )
+          : [];
       return clientThreadSnapshotSchema.parse({
         ...snapshot,
-        configuration,
         queue: { items, pausedReason: null },
       });
     }

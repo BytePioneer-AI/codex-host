@@ -93,7 +93,7 @@ export type ThreadCommandExecuteParams = z.infer<typeof threadCommandExecutePara
 export const threadCommandExecuteResultSchema = z
   .object({
     accepted: z.literal(true),
-    turnId: hostTurnIdSchema,
+    turnId: hostTurnIdSchema.optional(),
   })
   .strict();
 

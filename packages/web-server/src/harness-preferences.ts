@@ -5,7 +5,7 @@ import {
   HARNESS_PREFERENCES_PATCH_METHOD,
   harnessPreferenceSnapshotSchema,
   harnessPreferenceOperationSchema,
-  installedHarnessPluginIdSchema,
+  harnessIdSchema,
   type HarnessPreferenceOperation,
   type HarnessPreferenceSnapshot,
 } from "@codexhost/shared-contracts";
@@ -71,7 +71,7 @@ export class WebHarnessPreferences {
       permissionModeId?: string | undefined;
     },
   ) {
-    const id = installedHarnessPluginIdSchema.parse(harnessId);
+    const id = harnessIdSchema.parse(harnessId);
     const operation = harnessPreferenceOperationSchema.parse({
       kind: "newThread",
       harnessId: id,

@@ -47,7 +47,7 @@ it("preserves live/static/unspecified catalogs and native metadata without creat
   );
   assert.equal(host.threads.size, 1);
 });
-it("rejects unbound drafts, official ownership, read-only children and missing Threads", async (t) => {
+it("allows official ownership but rejects unbound drafts, read-only children and missing Threads", async (t) => {
   const { host, thread, dispatch, inspect, execute } = fixture(t);
   const created = await dispatch("session/create", { cwd: thread.cwd });
   assert.ok(created.ok);
@@ -65,9 +65,14 @@ it("rejects unbound drafts, official ownership, read-only children and missing T
   const request = host.request.bind(host);
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
     method === "codexhost/thread/inspect"
-      ? ({ owner: "codex", locked: true } as T)
+      ? ({
+          owner: "codex",
+          locked: false,
+          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        } as T)
       : request<T>(method, params);
-  assert.equal((await inspect()).ok, false);
+  assert.equal((await inspect()).ok, true);
+  host.requests.length = 0;
   assert.equal((await inspect("missing")).ok, false);
   assert.equal(
     host.requests.some((r) => r.method.includes("commands/inspect")),
@@ -122,7 +127,6 @@ it("reuses the ready Web Harness catalog, filters usage/unavailable entries, and
   assert.deepEqual(
     catalog.groups.map((g) => [g.id, g.name]),
     [
-      ["codex-cli", "Codex"],
       ["fake", "Twin"],
       ["other", "Twin"],
     ],

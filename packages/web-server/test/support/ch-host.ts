@@ -145,7 +145,17 @@ export class FakeChHost implements ChHostClient {
         };
         break;
       case "codexhost/harness/inspect":
-        value = this.inspection;
+        value =
+          params.harnessId === "codex"
+            ? {
+                status: "notInstalled",
+                error: {
+                  code: "unavailable",
+                  message: "No official Codex in this fixture",
+                  retryable: false,
+                },
+              }
+            : this.inspection;
         break;
       case "codexhost/thread/ownership/list":
         value = {

@@ -43,7 +43,7 @@ it("reads Desktop order without writing it and preserves model defaults and fail
   assert.deepEqual(await readHarnessDisplayEntries(join(directory, "missing")), []);
 });
 
-it("leads with the installed Codex CLI, as Desktop leads with official Codex", () => {
+it("leads with official Codex when available", () => {
   const entries = [
     { agent: "grok", section: "main" as const },
     { agent: "pi", section: "auto" as const },
@@ -52,17 +52,17 @@ it("leads with the installed Codex CLI, as Desktop leads with official Codex", (
     {
       groups: [
         { id: "grok", name: "Grok" },
-        { id: "codex-cli", name: "Codex CLI" },
+        { id: "codex", name: "Codex" },
         { id: "pi", name: "Pi" },
       ],
       failures: [],
     },
     entries,
   );
-  assert.deepEqual(result.harnessOrder, ["codex-cli", "grok", "pi"]);
+  assert.deepEqual(result.harnessOrder, ["codex", "grok", "pi"]);
   assert.deepEqual(
     result.groups.map((item) => item.id),
-    ["codex-cli", "grok", "pi"],
+    ["codex", "grok", "pi"],
   );
   const missing = withHarnessDisplayOrder(
     {

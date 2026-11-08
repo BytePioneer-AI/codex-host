@@ -52,7 +52,7 @@ describe("shared Harness preferences", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
-  it("rejects the reserved native Codex identity in the external scope", async () => {
+  it("accepts official Codex preferences in the shared external scope but rejects retired scopes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "harness-pref-scopes-"));
     const store = new HarnessPreferencesStore(directory);
     try {
@@ -60,7 +60,7 @@ describe("shared Harness preferences", () => {
         harnessPreferencePatchSchema.safeParse({
           operations: [{ kind: "favorite", harnessId: "codex", modelId: "m", enabled: true }],
         }).success,
-      ).toBe(false);
+      ).toBe(true);
       expect(() =>
         harnessPreferencePatchSchema.parse({ scope: "web-codex:" + "a".repeat(64) }),
       ).toThrow();

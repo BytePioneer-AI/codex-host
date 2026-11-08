@@ -341,13 +341,28 @@ function turnIdFromPage(turn: unknown): string | undefined {
   return turn.status === "inProgress" ? turn.id : undefined;
 }
 
-const RESUME_BEFORE = new Set(["turn/start", "turn/steer", "turn/interrupt"]);
+const RESUME_BEFORE = new Set([
+  "turn/start",
+  "turn/steer",
+  "turn/interrupt",
+  "thread/queue/list",
+  "thread/queue/add",
+  "thread/queue/update",
+  "thread/queue/delete",
+  "thread/queue/reorder",
+  "thread/queue/start",
+]);
 const CHANGED_METHODS = new Set([
   "thread/resume",
   "thread/start",
   "thread/name/set",
   "thread/archive",
   "thread/unarchive",
+  "thread/queue/add",
+  "thread/queue/update",
+  "thread/queue/delete",
+  "thread/queue/reorder",
+  "thread/queue/start",
   "turn/start",
   "turn/steer",
   "turn/interrupt",

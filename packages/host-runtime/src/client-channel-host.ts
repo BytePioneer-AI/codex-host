@@ -4,6 +4,9 @@ import { jsonRpcRequestSchema, type JsonObject, type JsonValue } from "@codexhos
 import {
   CLIENT_CHANNEL_METHODS,
   clientThreadSnapshotSchema,
+  clientProjectlessWorkspaceSchema,
+  harnessModelRefSchema,
+  restoreHarnessCommandMentions,
   harnessInstallationRequestTimeoutMs,
   jsonValueSchema,
   type ClientChannelResponse,
@@ -26,6 +29,36 @@ import {
   type NativeClientChannelDependencies,
 } from "./native-client-channel.js";
 import { classifyCreateRequestRoute } from "./route-observation.js";
+import { allocateProjectlessWorkspace } from "./projectless-workspace.js";
+import { decodeOfficialCodexModelRef } from "./official-codex-model-ref.js";
+
+const OFFICIAL_METHODS: Readonly<Record<string, "native" | "host">> = {
+  "thread/read": "native",
+  "thread/resume": "native",
+  "thread/turns/list": "native",
+  "thread/items/list": "native",
+  "thread/name/set": "native",
+  "thread/archive": "native",
+  "thread/unarchive": "native",
+  "turn/start": "native",
+  "turn/steer": "native",
+  "turn/interrupt": "native",
+  "thread/queue/list": "native",
+  "thread/queue/add": "native",
+  "thread/queue/update": "native",
+  "thread/queue/delete": "native",
+  "thread/queue/reorder": "native",
+  "thread/queue/start": "native",
+  "codexhost/thread/queue/send-now": "native",
+  "codexhost/thread/model/select": "host",
+  "codexhost/thread/thinking/select": "host",
+  "codexhost/thread/permission-mode/select": "host",
+  "codexhost/thread/commands/inspect": "host",
+  "codexhost/thread/command/execute": "host",
+  "codexhost/thread/pins/set": "host",
+  "codexhost/thread/usage/inspect": "host",
+  "codexhost/thread/inspect": "host",
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -162,23 +195,11 @@ export class ClientChannelHost {
           },
         };
     }
-    const nativeMethods = new Set([
-      "thread/read",
-      "thread/resume",
-      "thread/turns/list",
-      "thread/items/list",
-      "thread/name/set",
-      "thread/archive",
-      "thread/unarchive",
-      "turn/start",
-      "turn/steer",
-      "turn/interrupt",
-    ]);
     if (typeof params.threadId === "string") {
       const location = await this.#host.locateExternalThread(params.threadId);
-      native = native || (location.kind === "official" && nativeMethods.has(method));
-      const inspection = method === "codexhost/thread/inspect";
-      if (location.kind !== "external" && !native && !inspection)
+      const official = location.kind === "official" ? OFFICIAL_METHODS[method] : undefined;
+      native = native || official === "native";
+      if (location.kind !== "external" && !native && official !== "host")
         return { error: { code: -32078, message: "Thread is not owned by this external Host" } };
     } else if (
       (method.startsWith("thread/") || method.startsWith("turn/")) &&
@@ -215,7 +236,68 @@ export class ClientChannelHost {
             message: "Only external Harness Threads are available to this client",
           },
         };
-      return normalize(await nativeChannel.request(method, params));
+      let nativeParams = params;
+      if (Array.isArray(params.input))
+        nativeParams = {
+          ...params,
+          input: params.input.map((part) =>
+            isRecord(part) && part.type === "text" && typeof part.text === "string"
+              ? { ...part, text: restoreHarnessCommandMentions(part.text) }
+              : part,
+          ),
+        };
+      if (
+        method === "turn/start" &&
+        params.delivery !== "queue" &&
+        Array.isArray(nativeParams.input) &&
+        nativeParams.input.every((part) => isRecord(part) && part.type === "text")
+      ) {
+        const text = nativeParams.input.map((part) => (isRecord(part) ? part.text : "")).join("\n");
+        const command = /^\/(compact|review)(?:\s+([\s\S]*))?$/u.exec(text.trim());
+        if (command?.[1] && typeof params.threadId === "string")
+          return normalize(
+            await this.#host.submit(
+              "codexhost/thread/command/execute",
+              {
+                threadId: params.threadId,
+                commandId: command[1],
+                ...(command[2] ? { arguments: { text: command[2] } } : {}),
+              },
+              undefined,
+            ),
+          );
+      }
+      if (method === "thread/start") {
+        nativeParams = { ...params };
+        if (typeof params.model === "object" && params.model && !Array.isArray(params.model)) {
+          try {
+            nativeParams.model = decodeOfficialCodexModelRef(
+              harnessModelRefSchema.parse(params.model),
+            );
+          } catch {
+            return { error: { code: -32602, message: "Invalid official Model Ref" } };
+          }
+        }
+        if (params.projectlessWorkspace !== undefined) {
+          const choice = clientProjectlessWorkspaceSchema.safeParse(params.projectlessWorkspace);
+          if (!choice.success || params.cwd !== undefined || params.ephemeral === true)
+            return { error: { code: -32602, message: "Invalid projectless workspace choice" } };
+          nativeParams.cwd = (
+            await allocateProjectlessWorkspace(this.#host.environment(), choice.data.prompt ?? "")
+          ).cwd;
+          delete nativeParams.projectlessWorkspace;
+        }
+      }
+      return normalize(
+        await nativeChannel.request(
+          method === "codexhost/thread/queue/send-now"
+            ? "thread/queue/start"
+            : method === "turn/start" && params.delivery === "queue"
+              ? "thread/queue/add"
+              : method,
+          nativeParams,
+        ),
+      );
     };
     const operation = native ? nativeSubmit : submit;
     return method === "turn/start" && typeof params.clientUserMessageId === "string"
@@ -239,7 +321,28 @@ export class ClientChannelHost {
       throw new ClientChannelRequestError(location.error.code, location.error.message);
     if (location.kind === "official") {
       if (!this.#native) throw new Error("Thread is not owned by this local Host");
-      return this.#native.snapshot(threadId, options);
+      const snapshot = await this.#native.snapshot(threadId, options);
+      const inspection = await this.#host.submit(
+        "codexhost/thread/inspect",
+        { threadId },
+        undefined,
+      );
+      if ("error" in inspection)
+        throw new ClientChannelRequestError(inspection.error.code, inspection.error.message);
+      const queue =
+        snapshot.thread.canAcceptDirectInput === false
+          ? { result: { data: [] } }
+          : await this.#native.request("thread/queue/list", { threadId });
+      if ("error" in queue)
+        throw new ClientChannelRequestError(queue.error.code, queue.error.message);
+      const configuration = isRecord(inspection.result) ? inspection.result : {};
+      const items =
+        isRecord(queue.result) && Array.isArray(queue.result.data) ? queue.result.data : [];
+      return clientThreadSnapshotSchema.parse({
+        ...snapshot,
+        configuration,
+        queue: { items, pausedReason: null },
+      });
     }
     let thread = this.#host.loadedThread(threadId);
     if (!thread) {

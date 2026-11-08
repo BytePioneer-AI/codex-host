@@ -50,8 +50,12 @@ describe("platform packagers", () => {
     expect(workflow).toContain("npm_tag: result.npmTag");
     expect(workflow).toContain("ref: ${{ needs.prepare.outputs.commit_sha }}");
     expect(workflow).not.toContain("ref: ${{ needs.prepare.outputs.tag }}");
-    expect(workflow).toContain("Revalidate tag and CI immediately before npm publication");
-    expect(workflow).toContain("Revalidate tag and CI immediately before GitHub publication");
+    expect(workflow).toContain(
+      "Revalidate tag and selected CI policy immediately before npm publication",
+    );
+    expect(workflow).toContain(
+      "Revalidate tag and selected CI policy immediately before GitHub publication",
+    );
 
     expect(workflow).toContain("codexhost-*.dmg");
     expect(workflow).toContain("codexhost-*.exe");

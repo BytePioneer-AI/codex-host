@@ -15,6 +15,7 @@ import type {
 import { bootClient } from "./boot-client.ts";
 import { BootPage } from "./boot-page.ts";
 import { PwaInstall } from "./pwa-install.ts";
+import { installUiMetrics } from "./ui-metrics.ts";
 import { preventIosFocusZoom } from "./ios-focus-zoom.ts";
 import { guardIosComposerPageScroll } from "./ios-composer-scroll.ts";
 import { mountClient } from "./mount.ts";
@@ -33,6 +34,7 @@ export class AppWebEntry {
   private readonly pwaInstall: PwaInstall | undefined;
   private ctx: Context | undefined;
   private stopDragRecall: (() => void) | undefined;
+  private stopUiMetrics: (() => void) | undefined;
   private modules!: ClientModuleSystem;
   private manifest!: BootManifest;
 
@@ -56,6 +58,7 @@ export class AppWebEntry {
     preventIosFocusZoom();
     guardIosComposerPageScroll();
     this.page = new BootPage(container);
+    this.stopUiMetrics = installUiMetrics(container.ownerDocument);
   }
 
   /**
@@ -127,6 +130,8 @@ export class AppWebEntry {
   /** Dispose the client plugin tree and whichever page owns the mount point. */
   async dispose(): Promise<void> {
     this.pwaInstall?.dispose();
+    this.stopUiMetrics?.();
+    this.stopUiMetrics = undefined;
     this.stopDragRecall?.();
     this.stopDragRecall = undefined;
     const ctx = this.ctx;

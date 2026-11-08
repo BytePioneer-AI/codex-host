@@ -147,7 +147,9 @@ export function VoiceInputButton({
         barWidth -
         anchor.width;
       tray.set(
-        window.matchMedia("(max-width: 600px), (pointer: coarse)").matches || needed > available,
+        row.closest("[data-phone]") !== null ||
+          window.matchMedia("(max-width: 600px), (pointer: coarse)").matches ||
+          needed > available,
       );
     };
     const resize = new ResizeObserver(measure);

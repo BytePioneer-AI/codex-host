@@ -271,6 +271,7 @@ export function MenuView({
                       role="option"
                       aria-selected={active}
                       aria-disabled={item.disabledReason !== undefined || undefined}
+                      aria-busy={item.busy || undefined}
                       title={item.disabledReason}
                       className={clsx(css.item, active && css.active)}
                       // mousedown, not click: the textarea keeps focus (combobox

@@ -3,6 +3,7 @@ export function isPhoneSidebarGestureTarget(
   frame: HTMLElement,
   target: Element,
   allowButtons = false,
+  point?: { x: number; y: number },
 ): boolean {
   if (!frame.contains(target)) return false;
   if (
@@ -19,6 +20,23 @@ export function isPhoneSidebarGestureTarget(
   ) {
     const overflow = getComputedStyle(node).overflowX;
     if (node.scrollWidth > node.clientWidth + 1 && /^(auto|scroll)$/.test(overflow)) return false;
+  }
+  // Inert content retargets touches to its moving background. Keep its protected
+  // regions excluded when grabbing a closing panel, even though they cannot focus.
+  if (point !== undefined) {
+    for (const child of target.querySelectorAll("[inert], [inert] *")) {
+      const rect = child.getBoundingClientRect();
+      if (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        point.x >= rect.left &&
+        point.x <= rect.right &&
+        point.y >= rect.top &&
+        point.y <= rect.bottom &&
+        !isPhoneSidebarGestureTarget(frame, child, allowButtons)
+      )
+        return false;
+    }
   }
   return true;
 }

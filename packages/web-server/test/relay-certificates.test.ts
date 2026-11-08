@@ -127,7 +127,9 @@ it("creates and reuses exclusive P-256 PKCS#8 private keys with 0600 permissions
     const key = certificateKey(f.data, name);
     assert.match(key.toString(), /BEGIN PRIVATE KEY/);
     assert.deepEqual(certificateKey(f.data, name), key);
-    assert.equal(statSync(f.data.path("remote-relay", name)).mode & 0o777, 0o600);
+    // Windows reports DOS attributes through stat.mode, not POSIX permission bits.
+    if (process.platform !== "win32")
+      assert.equal(statSync(f.data.path("remote-relay", name)).mode & 0o777, 0o600);
   }
 });
 
@@ -340,7 +342,8 @@ it("installs only usable certificates atomically, removes success records, and w
   await until(() => !f.manager.state.issuing);
   assert.equal(f.tls.available, true);
   assert.equal(existsSync(f.data.path(stateFile)), false);
-  assert.equal(statSync(f.data.path(endpoint, "certificate.pem")).mode & 0o777, 0o600);
+  if (process.platform !== "win32")
+    assert.equal(statSync(f.data.path(endpoint, "certificate.pem")).mode & 0o777, 0o600);
   assert.equal(f.manager.state.expiresAt, new Date(notAfter).toISOString());
   f.save({ retryAt: notAfter + 100_000 });
   now = notAfter;

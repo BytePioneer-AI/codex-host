@@ -15,8 +15,9 @@ import { credentials, delay, relayData, startRelay, until } from "./support/rela
 function proxyEnvironment(t: TestContext, value = "") {
   const upper = process.env.HTTPS_PROXY;
   const lower = process.env.https_proxy;
-  process.env.HTTPS_PROXY = value;
   process.env.https_proxy = "";
+  // Windows aliases environment names case-insensitively: clear first, then set.
+  process.env.HTTPS_PROXY = value;
   t.after(() => {
     if (upper === undefined) delete process.env.HTTPS_PROXY;
     else process.env.HTTPS_PROXY = upper;
@@ -90,7 +91,9 @@ it("retries after Relay reaches maxConnections and registers when capacity is re
   await until(() => occupying.registrations.length === 1);
   const waiting = client(t, `localhost:${relay.port}`);
   // connecting runs both when an attempt starts and when a failure schedules its retry.
-  await until(() => waiting.attempts() >= 4);
+  // maxConnections can drop TCP before TLS completes without an immediate client
+  // error. Allow two real 30-second attempt deadlines plus their retry backoff.
+  await until(() => waiting.attempts() >= 4, 65_000);
   assert.equal(waiting.registrations.length, 0);
   assert.deepEqual(waiting.stopped, []);
   assert.equal(occupying.registrations.length, 1);

@@ -17,7 +17,10 @@ export function nativeThreadConfiguration(settings: JsonObject) {
   return harnessConfigurationStateSchema.parse({
     ...(typeof settings.model === "string"
       ? {
-          effectiveModel: encodeOfficialCodexModelRef(settings.model),
+          effectiveModel: encodeOfficialCodexModelRef(
+            settings.model,
+            typeof settings.serviceTier === "string" ? settings.serviceTier : null,
+          ),
           resolvedModelLabel: settings.model,
         }
       : {}),
@@ -57,6 +60,13 @@ export async function updateNativeThreadSettings(
       // A preceding turn/start can still have a settings notification in flight.
       if (settings.model !== undefined && applied.model !== settings.model) return;
       if (settings.effort !== undefined && applied.effort !== settings.effort) return;
+      if (Object.hasOwn(settings, "serviceTier")) {
+        if (!(applied.serviceTier === null || typeof applied.serviceTier === "string")) {
+          reject(new Error("Codex returned invalid service tier settings"));
+          return;
+        }
+        if ((applied.serviceTier ?? "default") !== (settings.serviceTier ?? "default")) return;
+      }
       if (
         settings.permissions !== undefined &&
         (!isRecord(applied.activePermissionProfile) ||

@@ -140,8 +140,20 @@ it("routes official and external queue, configuration, command, pin and usage me
   });
   expect(request).toHaveBeenLastCalledWith("thread/start", {
     model: "gpt/test",
+    serviceTier: null,
     cwd: expect.stringContaining(path.join(home, "Documents", "Codex")),
   });
+  await host.handleClientRequest("thread/start", {
+    model: encodeOfficialCodexModelRef("gpt/test", "priority"),
+    cwd: "/workspace",
+  });
+  expect(request).toHaveBeenLastCalledWith("thread/start", {
+    model: "gpt/test",
+    serviceTier: "priority",
+    cwd: "/workspace",
+  });
+  await host.handleClientRequest("thread/start", { cwd: "/workspace" });
+  expect(request).toHaveBeenLastCalledWith("thread/start", { cwd: "/workspace" });
   expect(await fixture.mappingStore.listThreads()).toHaveLength(1);
 });
 
@@ -151,6 +163,7 @@ it("uses official profiles and waits for settings confirmation; forwards command
   await fixture.ready;
   let settings: JsonObject = {
     model: "old",
+    serviceTier: null,
     effort: "low",
     activePermissionProfile: { id: ":workspace" },
   };

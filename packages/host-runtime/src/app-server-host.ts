@@ -102,6 +102,7 @@ import {
   harnessWebUiOpenParamsSchema,
   harnessWebUiOpenResultSchema,
   harnessModelSelectionStateSchema,
+  catalogModelForRef,
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,
   hostThreadIdSchema,
@@ -215,7 +216,7 @@ import { projectDelegationThreadSnapshot } from "./delegation-snapshot.js";
 import { rememberNativeListSeconds } from "./delegation-thread-list-merge.js";
 import {
   canonicalizeOfficialCodexModelRef,
-  decodeOfficialCodexModelRef,
+  decodeOfficialCodexModelSelection,
   encodeOfficialCodexModelRef,
 } from "./official-codex-model-ref.js";
 import {
@@ -2067,6 +2068,10 @@ export class AppServerHost {
       return [
         {
           ref: encodeOfficialCodexModelRef(candidate.model),
+          ...(Array.isArray(candidate.serviceTiers) &&
+          candidate.serviceTiers.some((tier) => isRecord(tier) && tier.id === "priority")
+            ? { fastModel: encodeOfficialCodexModelRef(candidate.model, "priority") }
+            : {}),
           label:
             typeof candidate.displayName === "string" && candidate.displayName.trim()
               ? candidate.displayName
@@ -2113,7 +2118,9 @@ export class AppServerHost {
     } catch {
       throw new DelegationControlError("INVALID_ARGUMENT", "Official Model Ref is invalid");
     }
-    const nativeModelId = requestedModel ? decodeOfficialCodexModelRef(requestedModel) : undefined;
+    const nativeSelection = requestedModel
+      ? decodeOfficialCodexModelSelection(requestedModel)
+      : undefined;
     const digest = createHash("sha256")
       .update(
         JSON.stringify({
@@ -2168,23 +2175,14 @@ export class AppServerHost {
           "Official Model catalog is unavailable",
         );
       }
-      if (
-        requestedModel &&
-        !inspected.inspection.catalog.models.some(
-          (candidate) => candidate.ref.id === requestedModel.id,
-        )
-      ) {
+      if (requestedModel && !catalogModelForRef(inspected.inspection.catalog, requestedModel)) {
         throw new DelegationControlError("INVALID_ARGUMENT", "Official Model is unavailable", {
           validModelIds: inspected.inspection.catalog.models.map((candidate) => candidate.ref.id),
         });
       }
       if (input.thinkingOptionId) {
         const selectedModel = requestedModel ?? inspected.inspection.catalog.defaultModel;
-        const selectedEntry = selectedModel
-          ? inspected.inspection.catalog.models.find(
-              (candidate) => candidate.ref.id === selectedModel.id,
-            )
-          : undefined;
+        const selectedEntry = catalogModelForRef(inspected.inspection.catalog, selectedModel);
         const validThinkingOptionIds = selectedEntry?.supportedThinkingOptionIds ?? [];
         if (!validThinkingOptionIds.includes(input.thinkingOptionId)) {
           throw new DelegationControlError(
@@ -2197,7 +2195,7 @@ export class AppServerHost {
     }
     const started = await this.#officialRuntime.request("thread/start", {
       cwd: input.cwd,
-      ...(nativeModelId ? { model: nativeModelId } : {}),
+      ...nativeSelection,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
       ephemeral: false,
@@ -2217,7 +2215,7 @@ export class AppServerHost {
       const turn = await this.#requestOfficial("turn/start", {
         threadId,
         input: [{ type: "text", text: input.task }],
-        ...(nativeModelId ? { model: nativeModelId } : {}),
+        ...nativeSelection,
         ...(input.thinkingOptionId ? { effort: input.thinkingOptionId } : {}),
       });
       const turnResult = isRecord(turn.result) ? turn.result : null;
@@ -2263,7 +2261,14 @@ export class AppServerHost {
                 },
                 effective: {
                   ...(startedResult && typeof startedResult.model === "string"
-                    ? { effectiveModel: encodeOfficialCodexModelRef(startedResult.model) }
+                    ? {
+                        effectiveModel: encodeOfficialCodexModelRef(
+                          startedResult.model,
+                          typeof startedResult.serviceTier === "string"
+                            ? startedResult.serviceTier
+                            : null,
+                        ),
+                      }
                     : {}),
                 },
               },
@@ -3635,9 +3640,11 @@ export class AppServerHost {
     }
     const thread = resolution.kind === "external" ? resolution.thread : undefined;
     if (!thread) {
-      await this.#selectOfficialThreadSettings(request, params.data.threadId, {
-        model: decodeOfficialCodexModelRef(params.data.model),
-      });
+      await this.#selectOfficialThreadSettings(
+        request,
+        params.data.threadId,
+        decodeOfficialCodexModelSelection(params.data.model),
+      );
       return;
     }
     if (!thread.session.capabilities.configuration.selectModel) {

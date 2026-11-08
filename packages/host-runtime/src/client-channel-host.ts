@@ -30,7 +30,7 @@ import {
 } from "./native-client-channel.js";
 import { classifyCreateRequestRoute } from "./route-observation.js";
 import { allocateProjectlessWorkspace } from "./projectless-workspace.js";
-import { decodeOfficialCodexModelRef } from "./official-codex-model-ref.js";
+import { decodeOfficialCodexModelSelection } from "./official-codex-model-ref.js";
 import { nativeThreadSkillInput } from "./codex-runtime/native-thread-controls.js";
 
 const OFFICIAL_METHODS: Readonly<Record<string, "native" | "host">> = {
@@ -324,8 +324,9 @@ export class ClientChannelHost {
         nativeParams = { ...params };
         if (typeof params.model === "object" && params.model && !Array.isArray(params.model)) {
           try {
-            nativeParams.model = decodeOfficialCodexModelRef(
-              harnessModelRefSchema.parse(params.model),
+            Object.assign(
+              nativeParams,
+              decodeOfficialCodexModelSelection(harnessModelRefSchema.parse(params.model)),
             );
           } catch {
             return { error: { code: -32602, message: "Invalid official Model Ref" } };

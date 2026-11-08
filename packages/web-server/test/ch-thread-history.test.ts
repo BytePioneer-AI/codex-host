@@ -223,7 +223,7 @@ it("refreshes title fallbacks on both full reads and unchanged idle history", as
 
 it("keeps imported branch provenance current on full and unchanged idle reads", async () => {
   const { host, row, view } = fixture(0);
-  const source = { harnessId: "codex-cli", nativeSessionId: "native-source" };
+  const source = { harnessId: "pi", nativeSessionId: "native-source" };
   row.codexhostImportSource = source;
   await view.refresh();
   assert.deepEqual(view.log.projections.codexhostImportSource, source);

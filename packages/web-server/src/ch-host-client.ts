@@ -28,7 +28,7 @@ import { RpcError } from "./transport.ts";
 export interface ChHostClient {
   request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T>;
   projects(threadIds: string[]): Promise<ChProjectSnapshot>;
-  /** Shared Host native sections; returns the confirmed external pin order. */
+  /** Shared Host native sections; returns the confirmed official and External pin order. */
   pins(change?: ChPinChange): Promise<string[]>;
   close(): void;
   readonly realtime?: {
@@ -83,6 +83,7 @@ const METHODS = new Set([
   "codexhost/thread/inspect",
   "codexhost/thread/usage/inspect",
   "codexhost/thread/ownership/list",
+  "codexhost/thread/catalog/read",
   "codexhost/thread/model/select",
   "codexhost/thread/thinking/select",
   "codexhost/thread/permission-mode/select",

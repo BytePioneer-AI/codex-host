@@ -20,6 +20,7 @@ import {
   DesktopScreenshotButton,
   DesktopScreenshotPreview,
   type DesktopScreenshotFace,
+  type DesktopScreenshotButtonFace,
 } from "./DesktopScreenshot.tsx";
 import { VoiceInput } from "./voice-input.ts";
 import {
@@ -35,7 +36,6 @@ import { ImportIcon } from "./ImportIcon.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
 import { HostConnectionStatus } from "./HostConnectionStatus.tsx";
-import { ImportedThreadNotice } from "./ImportedThreadNotice.tsx";
 import { HostUsageDock } from "./HostUsageDock.tsx";
 import type {
   ComposerAttachment,
@@ -54,6 +54,8 @@ import { WebExtensionsSection, type WebExtensionsFace } from "./WebExtensionsSec
 import { watchAuthentication } from "./auth-watch.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
+import type {} from "@deepseek-ai/dsh-client-web";
+import { PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
 import { ImportPage, type ImportPageFace } from "./ImportPage.tsx";
 import { HostSettingsSection, type HostSettingsSectionFace } from "./HostSettingsSection.tsx";
 import type {} from "@deepseek-ai/dsh-client-ui-theme/client";
@@ -103,6 +105,21 @@ const HOST_SETTINGS_PAGES = [
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-codexhost: dictionaries");
   const t = ctx.locale.bind(NS);
+  const installation = ctx.get("pwaInstall");
+  if (installation !== undefined) {
+    ctx.slots.inject("settings.general.item", () =>
+      ctx.slots.register(
+        {
+          name: "settings.general.item",
+          id: "codexhost.pwa-install",
+          order: 90,
+          locale: NS,
+          inject: (): PwaInstallFace => ({ installation }),
+        },
+        PwaInstallRow,
+      ),
+    );
+  }
   ctx.provide("chatMessageEditing", sentMessageEditApi);
   ctx.provide("chatTurnDiffs", turnDiffsApi);
   ctx.inject(["conversation"], (scope) => {
@@ -114,13 +131,18 @@ export function apply(ctx: ClientContext): void {
         conversation.releaseDraftAttachments(created as readonly ComposerAttachment[]),
     };
     scope.effect(() => () => screenshot.close(), "ui-codexhost: release desktop screenshot");
+    const screenshotButton: DesktopScreenshotButtonFace = {
+      screenshot,
+      drafts,
+      registerSource: (source) => scope.inputTriggers.registerSource(source),
+    };
     scope.slots.inject("conversation.input.right", () =>
       scope.slots.register(
         {
           name: "conversation.input.right",
           id: "codexhost.desktop-screenshot",
           locale: NS,
-          inject: (): DesktopScreenshotFace => ({ screenshot, drafts }),
+          inject: (): DesktopScreenshotButtonFace => screenshotButton,
         },
         DesktopScreenshotButton,
       ),
@@ -345,17 +367,6 @@ export function apply(ctx: ClientContext): void {
         }),
       },
       HostConnectionStatus,
-    ),
-  );
-  ctx.slots.inject("conversation.header.notice", () =>
-    ctx.slots.register(
-      {
-        name: "conversation.header.notice",
-        id: "codexhost.import-source",
-        locale: NS,
-        inject: () => ({ list: ctx.sessions.list }),
-      },
-      ImportedThreadNotice,
     ),
   );
   ctx.slots.inject("conversation.composer.dock", () =>

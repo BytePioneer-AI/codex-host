@@ -134,8 +134,9 @@ export function VoiceInputButton({
         row.getBoundingClientRect().width -
         parseFloat(style.paddingLeft) -
         parseFloat(style.paddingRight);
+      const controls = row.querySelector<HTMLElement>("[data-toolbar-scroll]") ?? row;
       const widths = Array.from(
-        row.children,
+        controls.children,
         (child) => child.getBoundingClientRect().width,
       ).filter((width) => width > 0);
       const barWidth = parseFloat(getComputedStyle(entry).getPropertyValue("--voice-bar-width"));
@@ -147,13 +148,16 @@ export function VoiceInputButton({
         barWidth -
         anchor.width;
       tray.set(
-        window.matchMedia("(max-width: 600px), (pointer: coarse)").matches || needed > available,
+        row.closest("[data-phone]") !== null ||
+          window.matchMedia("(max-width: 600px), (pointer: coarse)").matches ||
+          needed > available,
       );
     };
     const resize = new ResizeObserver(measure);
     resize.observe(row);
     resize.observe(entry);
-    for (const child of row.children) resize.observe(child);
+    const controls = row.querySelector<HTMLElement>("[data-toolbar-scroll]") ?? row;
+    for (const child of controls.children) resize.observe(child);
     measure();
     return () => resize.disconnect();
   }, [tray, visible, live]);

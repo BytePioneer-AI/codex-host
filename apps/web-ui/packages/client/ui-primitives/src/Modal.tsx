@@ -4,9 +4,14 @@ import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { IconCloseOutlineRegular } from "./icons/index.tsx";
 import { useModalLayer } from "./useModalLayer.ts";
+import { PhoneSidebarView, usePhoneSidebar } from "./PhoneSidebarView.tsx";
 import css from "./Modal.module.css";
 
 interface ModalBaseProps {
+  /** Sidebar-owned flow: replace the current phone drawer view; desktop stays modal. */
+  phoneSidebar?: boolean;
+  /** Keep a sidebar flow's later error phase in its drawer even after dismissal. */
+  phoneSidebarOrigin?: boolean;
   open: boolean;
   onClose: () => void;
   title: string;
@@ -57,11 +62,39 @@ export function Modal({
   headless = false,
   backdropBlur = true,
   shortcutModal,
+  phoneSidebar = false,
+  phoneSidebarOrigin = false,
 }: ModalProps) {
+  const sidebar = usePhoneSidebar();
+  const phoneOrigin = useRef(false);
+  const wasOpen = useRef(false);
+  if (open && !wasOpen.current)
+    phoneOrigin.current = phoneSidebar && (sidebar?.open === true || phoneSidebarOrigin);
+  wasOpen.current = open;
+  const internal = phoneOrigin.current && sidebar !== null;
   const dialog = useRef<HTMLDivElement>(null);
-  useModalLayer(dialog, open, onClose);
+  useModalLayer(dialog, open && !internal, onClose);
 
   if (!open) return null;
+  if (internal)
+    return (
+      <PhoneSidebarView
+        title={title}
+        onBack={onClose}
+        className={className}
+        onKeyDownCapture={onKeyDownCapture}
+      >
+        {headless ? (
+          children
+        ) : (
+          <div className={clsx(css.content, contentClassName)}>
+            {description && <p className={css.description}>{description}</p>}
+            {children !== undefined && <div className={css.body}>{children}</div>}
+          </div>
+        )}
+        {footer !== undefined && <div className={css.footer}>{footer}</div>}
+      </PhoneSidebarView>
+    );
 
   return createPortal(
     <div className={css.root} role="presentation" onKeyDownCapture={onKeyDownCapture}>

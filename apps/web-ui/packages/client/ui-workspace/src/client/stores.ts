@@ -68,6 +68,7 @@ type WorkspaceViewActions = {
     draft: WorkspaceViewState,
     mode: SessionOrderBy,
     initialOrders: Readonly<Record<string, readonly string[]>>,
+    source: SessionOrderSource,
   ) => void;
   setGroupExpanded: (draft: WorkspaceViewState, key: string, expanded: boolean) => void;
   setSectionExpanded: (draft: WorkspaceViewState, key: string, expanded: boolean) => void;
@@ -75,12 +76,14 @@ type WorkspaceViewActions = {
   syncSessionOrders: (
     draft: WorkspaceViewState,
     orders: Readonly<Record<string, readonly string[]>>,
+    source: SessionOrderSource,
   ) => void;
   setSessionOrder: (
     draft: WorkspaceViewState,
     accountKey: string,
     order: readonly string[],
     initialOrders: Readonly<Record<string, readonly string[]>>,
+    source: SessionOrderSource,
   ) => void;
   pinSessionOrder: (
     draft: WorkspaceViewState,
@@ -91,11 +94,37 @@ type WorkspaceViewActions = {
   setArchivedFilter: (draft: WorkspaceViewState, filter: ArchivedFilter) => void;
 };
 
-/** Copy read-only projections into the persisted mutable store representation. */
+/** Preserve unresolved saved slots across scoped lists, without rendering or discovering them. */
 function copySessionOrders(
   orders: Readonly<Record<string, readonly string[]>>,
+  saved: Readonly<Record<string, readonly string[]>>,
+  source: SessionOrderSource,
 ): Record<string, string[]> {
-  return Object.fromEntries(Object.entries(orders).map(([key, order]) => [key, [...order]]));
+  const known = new Map(Object.entries(source.summaries));
+  const accounts = new Map<string, string>();
+  for (const [key, members] of Object.entries(source.members)) {
+    if (key === FLAT_SESSION_ORDER_KEY) continue;
+    for (const id of members) accounts.set(id, key);
+  }
+  return Object.fromEntries(
+    Object.entries(orders).map(([key, order]) => {
+      const retained = [...order];
+      const first = order[0] === undefined ? undefined : known.get(order[0]);
+      // The selected blank remains first when its first prompt ends blank pinning.
+      let insertion = first?.blank && (first.retainedBy.mainView ?? 0) > 0 ? 1 : 0;
+      for (const id of saved[key] ?? []) {
+        const index = retained.indexOf(id);
+        if (index !== -1) insertion = index + 1;
+        else if (
+          !known.has(id) &&
+          (key === FLAT_SESSION_ORDER_KEY || !accounts.has(id) || accounts.get(id) === key)
+        ) {
+          retained.splice(insertion++, 0, id);
+        }
+      }
+      return [key, retained];
+    }),
+  );
 }
 
 /**
@@ -120,9 +149,12 @@ export function createWorkspaceViewStore(): EngineStoreHandle<
       setGroupBy: (d, mode: SessionGroupBy) => {
         d.groupBy = mode;
       },
-      setOrderBy: (d, mode: SessionOrderBy, initialOrders) => {
+      setOrderBy: (d, mode: SessionOrderBy, initialOrders, source) => {
         if (mode === d.orderBy) return;
-        d.sessionOrderByAccount = mode === "manual" ? copySessionOrders(initialOrders) : {};
+        d.sessionOrderByAccount =
+          mode === "manual"
+            ? copySessionOrders(initialOrders, d.sessionOrderByAccount, source)
+            : {};
         d.orderBy = mode;
       },
       setGroupExpanded: (d, key: string, expanded: boolean) => {
@@ -142,32 +174,46 @@ export function createWorkspaceViewStore(): EngineStoreHandle<
         delete (d as WorkspaceViewState & { sessionUpdatedAtByAccount?: unknown })
           .sessionUpdatedAtByAccount;
       },
-      syncSessionOrders: (d, orders) => {
+      syncSessionOrders: (d, orders, source) => {
         if (d.orderBy !== "manual") return;
-        Object.assign(d.sessionOrderByAccount, copySessionOrders(orders));
+        Object.assign(
+          d.sessionOrderByAccount,
+          copySessionOrders(orders, d.sessionOrderByAccount, source),
+        );
       },
-      setSessionOrder: (d, accountKey, order, initialOrders) => {
-        if (d.orderBy === "updated") d.sessionOrderByAccount = copySessionOrders(initialOrders);
-        else Object.assign(d.sessionOrderByAccount, copySessionOrders(initialOrders));
+      setSessionOrder: (d, accountKey, order, initialOrders, source) => {
+        const orders = copySessionOrders(
+          { ...initialOrders, [accountKey]: order },
+          d.sessionOrderByAccount,
+          source,
+        );
+        if (d.orderBy === "updated") d.sessionOrderByAccount = orders;
+        else Object.assign(d.sessionOrderByAccount, orders);
         d.orderBy = "manual";
-        d.sessionOrderByAccount[accountKey] = [...order];
       },
       pinSessionOrder: (d, sessionId, accountKeys, source) => {
         const selected = new Set(accountKeys);
-        d.sessionOrderByAccount = Object.fromEntries(
-          Object.entries(source.members).map(([key, members]) => {
-            const order = reconcileManualOrder(
-              members,
-              d.sessionOrderByAccount[key],
-              source.summaries,
-              source.rowState,
-            );
-            return [
+        const orders = copySessionOrders(
+          Object.fromEntries(
+            Object.entries(source.members).map(([key, members]) => [
               key,
-              selected.has(key) ? [sessionId, ...order.filter((id) => id !== sessionId)] : order,
-            ];
-          }),
+              reconcileManualOrder(
+                members,
+                d.sessionOrderByAccount[key],
+                source.summaries,
+                source.rowState,
+              ),
+            ]),
+          ),
+          d.sessionOrderByAccount,
+          source,
         );
+        for (const key of selected) {
+          if (orders[key] !== undefined)
+            orders[key] = [sessionId, ...orders[key].filter((id) => id !== sessionId)];
+        }
+        // Groups absent from this scoped catalog may contain only unloaded archives.
+        Object.assign(d.sessionOrderByAccount, orders);
       },
       setArchivedFilter: (d, filter: ArchivedFilter) => {
         d.archivedFilter = filter;

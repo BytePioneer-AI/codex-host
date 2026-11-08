@@ -12,6 +12,7 @@ import type { ChatViewSlotProps } from "../contract/slots.ts";
 import { ChangeStat } from "./ChangeStat.tsx";
 import { baseName, sumChanges, useTurnFileChanges } from "./turn-file-changes.ts";
 import { useTurnDiffs } from "./use-turn-diffs.ts";
+import a11yCss from "./accessibility.module.css";
 import css from "./TurnChangesCard.module.css";
 
 interface TurnChangesCardProps {
@@ -34,6 +35,14 @@ export const TurnChangesCard = memo(function TurnChangesCard({
   loadTurnDiffs,
 }: TurnChangesCardProps) {
   const files = useTurnFileChanges(nodeStore, turn, useProjection);
+  const nameCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const file of files) {
+      const name = baseName(file.path);
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    return counts;
+  }, [files]);
   const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [showAllFiles, setShowAllFiles] = useState(false);
   const full = useTurnDiffs(turn, files, expandedPaths, loadTurnDiffs);
@@ -77,18 +86,23 @@ export const TurnChangesCard = memo(function TurnChangesCard({
           type="button"
           className={css.review}
           aria-expanded={open}
+          aria-label={t(open ? "chat.hideChanges" : "chat.viewChanges")}
           onClick={() => {
             setExpandedPaths(new Set(open ? [] : files.map((file) => file.path)));
             if (!open) setShowAllFiles(true);
           }}
         >
-          {t(open ? "chat.hideChanges" : "chat.viewChanges")}
+          <span className={css.reviewLabel}>
+            {t(open ? "chat.hideChanges" : "chat.viewChanges")}
+          </span>
+          <IconChevronDownOutlineRegular size={16} className={css.mobileChevron} data-open={open} />
         </button>
       </div>
       {(files.length > 1 || open) && (
         <ul className={css.files}>
           {visibleFiles.map((file) => {
             const diffs = full.diffs(file);
+            const name = baseName(file.path);
             return (
               <li key={file.path} className={css.file}>
                 {files.length > 1 && (
@@ -105,23 +119,48 @@ export const TurnChangesCard = memo(function TurnChangesCard({
                       });
                     }}
                   >
+                    <IconFileDiffOutlineRegular size={16} className={css.mobileFileIcon} />
                     <PathLabel path={file.path} className={css.path} />
+                    <span className={css.mobilePath}>
+                      <span className={css.fileName} aria-hidden="true">
+                        {name}
+                      </span>
+                      {(nameCounts.get(name) ?? 0) > 1 && (
+                        <span className={css.directory} aria-hidden="true">
+                          {file.path.slice(0, file.path.length - name.length)}
+                        </span>
+                      )}
+                      <span className={a11yCss.visuallyHidden}>{file.path}</span>
+                    </span>
                     <ChangeStat added={file.added} removed={file.removed} />
+                    <IconChevronDownOutlineRegular
+                      size={16}
+                      className={css.mobileChevron}
+                      data-open={expandedPaths.has(file.path)}
+                    />
                   </button>
                 )}
                 {expandedPaths.has(file.path) && (
                   <div className={css.diff}>
+                    <div className={css.mobileFullPath}>{file.path}</div>
                     {diffs !== undefined ? (
-                      <DiffBlock diffs={[...diffs]} labels={labels} maxLines={Infinity} />
+                      <DiffBlock
+                        diffs={[...diffs]}
+                        labels={labels}
+                        maxLines={Infinity}
+                        className={css.inlineDiff}
+                      />
                     ) : full.error ? (
-                      <div role="alert">
+                      <div role="alert" className={css.diffStatus}>
                         {full.error}{" "}
                         <button type="button" onClick={full.retry}>
                           {t("chat.retryDiff")}
                         </button>
                       </div>
                     ) : (
-                      <span role="status">{t("chat.loadingDiff")}</span>
+                      <span role="status" className={css.diffStatus}>
+                        {t("chat.loadingDiff")}
+                      </span>
                     )}
                   </div>
                 )}

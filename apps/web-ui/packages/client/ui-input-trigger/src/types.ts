@@ -75,6 +75,8 @@ export interface InputTriggerCandidate {
   readonly hint?: string;
   /** Visible explanation for a row that cannot be selected. */
   readonly disabledReason?: string;
+  /** The action is working; busy does not itself prohibit a repeat invocation. */
+  readonly busy?: boolean;
   /** Optional visual heading shared by adjacent candidates; sectioned groups omit their source-title row. */
   readonly section?: string;
   /** Opaque source-owned pick payload. */
@@ -127,6 +129,8 @@ export interface SubmitEnvelope {
 
 /** Candidate request passed to a source. The signal is superseded on query change / menu close. */
 export interface CandidateRequest {
+  /** Programmatic launcher, absent for a typed trigger. */
+  readonly launcher?: string;
   /** Stable for one menu opening; query refinement keeps this identity. */
   readonly menuEpoch?: object;
   readonly query: string;

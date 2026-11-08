@@ -283,3 +283,31 @@
   left: -10px;
   width: 10px;
 }
+
+/* Only menus explicitly projected into the phone sidebar use this layout. */
+.phoneList.phoneList {
+  --dsw-menu-surface-fill: transparent;
+  --dsw-menu-backdrop-filter: none;
+  position: static;
+  flex: 1;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+  padding: 0 12px;
+  border-radius: 0;
+  background: transparent;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+.phoneList .item {
+  min-height: 44px;
+}
+
+.phoneList .submenu {
+  position: static;
+  min-width: 0;
+  box-shadow: none;
+}

@@ -66,7 +66,7 @@ export function withDiscovery(host: FakeChHost) {
       return {
         plugins: [
           { ...base, id: "fake", name: "Twin" },
-          ...(!state.withdrawn ? [{ ...base, id: "codex-cli", name: "Codex" }] : []),
+          ...(!state.withdrawn ? [{ ...base, id: "alpha-agent", name: "Alpha" }] : []),
           { ...base, id: "other", name: "Twin" },
           { ...base, id: "missing", name: "Missing" },
           { ...base, id: "usage", name: "Usage", kind: "usage" },

@@ -440,8 +440,13 @@ export class ChatViewport {
   scrollToBottom(follow: ScrollFollow): ViewportLanding | null {
     const metrics = this.metrics();
     if (metrics === null || this.elements === null) return null;
+    // WebKit can report a top beyond the floor during native rubber-band.
+    // It is already at the tail; writing the floor would fight the rebound.
     const landing: ViewportLanding = {
-      metrics: follow.toBottom(this.elements.scroller, metrics, "instant"),
+      metrics:
+        metrics.top > metrics.floor
+          ? metrics
+          : follow.toBottom(this.elements.scroller, metrics, "instant"),
       position: null,
       turn: this.latestTurn,
     };
@@ -494,10 +499,8 @@ export class ChatViewport {
     )
       return;
     this.invalidate();
-    if (this.paging !== null) {
-      this.events?.resize();
-      return;
-    }
+    // Reader motion stays reader-owned during paging, including touch inertia.
+    // Content commits and ResizeObserver handle prepend compensation separately.
     const scroll = this.readScroll();
     if (scroll !== null) this.events?.scroll(scroll);
   };

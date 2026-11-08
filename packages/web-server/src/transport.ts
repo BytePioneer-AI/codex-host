@@ -15,10 +15,13 @@ import {
 export { SessionRuntimeError as RpcError } from "@codexhost/session-runtime";
 import { SessionRuntimeError as RpcError } from "@codexhost/session-runtime";
 import type { RequestAuth } from "./auth.ts";
+import { SessionListTiming } from "./session-list-timing.ts";
 
 export interface RpcContext {
   readonly method: string;
   readonly relay: boolean;
+  /** Per-request diagnostics for session/list; never shared between browser requests. */
+  readonly sessionListTiming?: SessionListTiming;
   /** The HTTP request's authentication; absent with `--no-auth` and for in-process calls. */
   readonly auth?: RequestAuth;
   /** Run only after the HTTP response has been flushed (settings changes restart Web). */
@@ -59,6 +62,7 @@ export class RpcRegistry {
     auth?: RequestAuth,
     afterResponse?: RpcContext["afterResponse"],
     relay = false,
+    sessionListTiming?: SessionListTiming,
   ): Promise<RpcResult> {
     const handler = this.handlers.get(method);
     if (handler === undefined) {
@@ -82,6 +86,7 @@ export class RpcRegistry {
         handler(args ?? {}, {
           method,
           relay,
+          ...(sessionListTiming === undefined ? {} : { sessionListTiming }),
           ...(auth === undefined ? {} : { auth }),
           ...(afterResponse === undefined ? {} : { afterResponse }),
         });
@@ -117,6 +122,7 @@ export class RpcRegistry {
     auth?: RequestAuth,
     afterResponse?: RpcContext["afterResponse"],
     relay = false,
+    onSessionListTiming?: (timing: SessionListTiming, ok: boolean) => void,
   ): Promise<string> {
     let envelope: { type?: string; rpcId?: string; method?: string; payload?: unknown };
     try {
@@ -131,14 +137,35 @@ export class RpcRegistry {
         },
       });
     }
+    const timing =
+      envelope.method === "session/list"
+        ? new SessionListTiming(typeof envelope.rpcId === "string" ? envelope.rpcId : undefined)
+        : undefined;
     const result = await this.dispatch(
       String(envelope.method ?? ""),
       envelope.payload,
       auth,
       afterResponse,
       relay,
+      timing,
     );
-    return JSON.stringify({ type: "server-response", rpcId: envelope.rpcId, result });
+    const serialize = () => {
+      const reply = JSON.stringify({ type: "server-response", rpcId: envelope.rpcId, result });
+      if (timing) timing.responseBytes = Buffer.byteLength(reply);
+      return reply;
+    };
+    let reply: string;
+    try {
+      reply = timing ? timing.measureSync("serialize", serialize) : serialize();
+    } catch (error) {
+      timing?.report(false);
+      throw error;
+    }
+    if (timing) {
+      if (onSessionListTiming) onSessionListTiming(timing, result.ok);
+      else timing.report(result.ok);
+    }
+    return reply;
   }
 }
 

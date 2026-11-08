@@ -47,6 +47,12 @@
   background: transparent;
 }
 
+/* Phone material belongs to the drawer, not an opaque child shell. */
+:global([data-phone-drawer]) .root {
+  background: transparent;
+  max-width: 100%;
+}
+
 /* Rail geometry (figma rail spec): 36x36 control boxes centered in the 56px
    rail (10px side padding), 12px vertical rhythm, 18px from the rail top to
    the whale's box (24px to the 24-wide whale glyph itself). */

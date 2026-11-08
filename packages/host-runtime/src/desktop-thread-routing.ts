@@ -90,11 +90,7 @@ export interface DesktopThreadRoutingHost {
     resolution: ExternalThreadLocation | ExternalThreadResolution,
   ): Promise<boolean>;
   forwardOfficialRequest(request: JsonRpcRequest, frame: Buffer<ArrayBufferLike>): Promise<void>;
-  startExternalThread(
-    request: JsonRpcRequest,
-    harnessId: ExternalHarnessId,
-    origin: HostRequestOrigin,
-  ): Promise<void>;
+  startExternalThread(request: JsonRpcRequest, harnessId: ExternalHarnessId): Promise<void>;
   forkExternalThreadFromRenderer(request: JsonRpcRequest): Promise<void>;
   inspectThread(request: JsonRpcRequest): Promise<void>;
   inspectThreadUsage(request: JsonRpcRequest): Promise<void>;
@@ -110,7 +106,7 @@ export interface DesktopThreadRoutingHost {
     cwd?: string,
     inspectedThreadId?: string,
   ): Promise<void>;
-  inspectThreadCommands(request: JsonRpcRequest): Promise<void>;
+  inspectThreadCommands(request: JsonRpcRequest, origin: HostRequestOrigin): Promise<void>;
   executeThreadCommand(request: JsonRpcRequest): Promise<void>;
   sendQueuedExternalTurnNow(request: JsonRpcRequest, thread: ExternalThread): Promise<void>;
   handleExternalQueueRequest(request: JsonRpcRequest, thread: ExternalThread): Promise<void>;
@@ -118,7 +114,6 @@ export interface DesktopThreadRoutingHost {
     request: JsonRpcRequest,
     frame: Buffer<ArrayBufferLike>,
     query: DecodedThreadListRequest,
-    origin: HostRequestOrigin,
   ): Promise<void>;
   listThreads(
     request: JsonRpcRequest,
@@ -271,7 +266,7 @@ export class DesktopThreadRouting {
       return true;
     }
     if (request.method === "codexhost/thread/commands/inspect") {
-      await this.#host.inspectThreadCommands(request);
+      await this.#host.inspectThreadCommands(request, origin);
       return true;
     }
     if (request.method === "codexhost/thread/command/execute") {
@@ -338,7 +333,7 @@ export class DesktopThreadRouting {
       }
       this.#host.dispatchReply(request, () =>
         listRequest.sortKey === "section_position"
-          ? this.#host.listSectionThreads(request, frame, listRequest, origin)
+          ? this.#host.listSectionThreads(request, frame, listRequest)
           : this.#host.listThreads(request, listRequest, origin),
       );
       return true;
@@ -444,7 +439,7 @@ export class DesktopThreadRouting {
       );
     }
     if (createRoute && createRoute.selectedHarness !== "codex") {
-      await this.#host.startExternalThread(request, createRoute.selectedHarness, origin);
+      await this.#host.startExternalThread(request, createRoute.selectedHarness);
       return true;
     }
     if (request.method === "thread/fork") {

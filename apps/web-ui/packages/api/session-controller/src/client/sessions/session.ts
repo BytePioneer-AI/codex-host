@@ -688,6 +688,13 @@ export class Session implements SessionFace {
     this.notifier.markDirty();
   }
 
+  /** Restore a retained instance when the Host confirms the same Session exists. */
+  handleRestored(): void {
+    if (!this.removed) return;
+    this.removed = false;
+    this.notifier.markDirty();
+  }
+
   /**
    * `api-session/error` relay: the outlet for live failures with no turn position.
    * @param message - the stringified error.

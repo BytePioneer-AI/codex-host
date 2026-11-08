@@ -82,6 +82,30 @@ describe("owner-allocated projectless execution directories", () => {
     }
   });
 
+  it("retains requested native project assignments without importing or rewriting them", async () => {
+    const home = await homeDirectory();
+    const file = path.join(home, ".codex-global-state.json");
+    const original = JSON.stringify({
+      "project-order": ["project"],
+      "local-projects": { project: { id: "project", name: "Product", rootPaths: ["/product"] } },
+      "thread-project-assignments": {
+        "native-worktree": { projectKind: "local", projectId: "project" },
+        "not-requested": { projectKind: "local", projectId: "project" },
+      },
+      "projectless-thread-ids": ["native-projectless", "other-projectless"],
+    });
+    await writeFile(file, original);
+    const snapshot = await readExternalWorkspaceSnapshot(
+      { CODEX_HOME: home },
+      [],
+      [],
+      ["native-worktree", "native-projectless"],
+    );
+    expect(snapshot.assignments).toEqual({ "native-worktree": "project" });
+    expect(snapshot.projectless).toEqual(["native-projectless"]);
+    expect(await readFile(file, "utf8")).toBe(original);
+  });
+
   it("keeps no-project affiliation in the canonical store across reload, not GUI metadata", async () => {
     const home = await homeDirectory();
     const codexHome = path.join(home, ".codex");

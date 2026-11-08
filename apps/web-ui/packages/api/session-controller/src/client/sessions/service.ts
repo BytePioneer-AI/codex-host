@@ -385,6 +385,11 @@ export class ClientSessions implements ISessions {
     return this.manager.refreshList();
   }
 
+  /** Set the browser-local list scope without changing Session ownership or selection. */
+  setIncludeArchived(includeArchived: boolean): Promise<void> {
+    return this.manager.setIncludeArchived(includeArchived);
+  }
+
   /**
    * Search the Host's visible message-content index. Results stay
    * request-local; the list snapshot remains the metadata authority.

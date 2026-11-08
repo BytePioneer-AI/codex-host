@@ -137,7 +137,8 @@ it("returns a confirmed fork even when the subsequent catalog refresh fails", as
   const request = host.request.bind(host);
   let created = false;
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
-    if (created && method === "thread/list") throw new Error("Catalog unavailable");
+    if (created && method === "codexhost/thread/catalog/read")
+      throw new Error("Catalog unavailable");
     const result = await request<T>(method, params);
     if (method === "codexhost/thread/fork") created = true;
     return result;

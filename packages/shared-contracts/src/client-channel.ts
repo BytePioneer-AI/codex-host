@@ -16,7 +16,9 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/harness/preferences/get",
   "codexhost/harness/preferences/patch",
   "thread/list",
+  "codexhost/thread/catalog/read",
   "thread/read",
+  "thread/resume",
   "thread/turns/list",
   "thread/revert",
   "thread/items/list",
@@ -240,7 +242,8 @@ export const clientThreadSnapshotSchema = z.object({
     .object({
       id: z.string().min(1),
       cwd: z.string(),
-      modelProvider: z.literal("codexhost"),
+      /** External rows use codexhost; native Codex rows retain their official provider. */
+      modelProvider: z.string().min(1),
       createdAt: z.number(),
       updatedAt: z.number(),
       status: z.object({ type: z.string() }).passthrough(),
@@ -255,6 +258,13 @@ export const clientThreadSnapshotSchema = z.object({
     nextCursor: z.string().nullable(),
   }),
   configuration: z.object({
+    /** Native Codex model names are not external Harness transport refs. */
+    native: z
+      .object({
+        model: z.string().min(1).max(1024).optional(),
+        reasoningEffort: z.string().min(1).max(128).optional(),
+      })
+      .optional(),
     effectiveModel: harnessModelRefSchema.optional(),
     effectiveThinkingOptionId: harnessThinkingOptionIdSchema.optional(),
     effectivePermissionModeId: harnessPermissionModeIdSchema.optional(),

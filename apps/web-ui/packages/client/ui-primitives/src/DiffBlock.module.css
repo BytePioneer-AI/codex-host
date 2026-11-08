@@ -5,7 +5,7 @@
 .body {
   display: grid;
   grid-template-columns: minmax(max-content, 1fr);
-  padding: 6px 0 20px;
+  padding: var(--dsh-diff-body-padding, 6px 0 20px);
   font: var(--dsw-font-markdown-code-block);
   overflow-x: auto;
 }
@@ -13,7 +13,7 @@
 .line {
   box-sizing: border-box;
   min-height: 1lh;
-  padding: 0 22px;
+  padding: 0 var(--dsh-diff-inline-padding, 22px);
   white-space: pre;
 }
 
@@ -66,7 +66,7 @@
 .expand {
   display: block;
   width: 100%;
-  padding: 0 22px;
+  padding: 0 var(--dsh-diff-inline-padding, 22px);
   border: none;
   background: transparent;
   color: var(--dsw-alias-label-tertiary);

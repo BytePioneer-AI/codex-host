@@ -177,6 +177,7 @@ function copyText(rows: DiffRow[]): string {
 
 /**
  * Render a file mutation as an inline diff surface.
+ * `data-diff-body` and `data-diff-row` expose body/row-kind styling hooks.
  * @param props - see {@link DiffBlockProps}.
  * @returns the diff block element.
  */
@@ -226,9 +227,9 @@ export function DiffBlock({
           setWrapped((value) => !value);
         }}
       />
-      <div className={css.body}>
+      <div className={css.body} data-diff-body>
         {head.map((row, index) => (
-          <div key={index} className={clsx(css.line, ROW_CLASS[row.kind])}>
+          <div key={index} className={clsx(css.line, ROW_CLASS[row.kind])} data-diff-row={row.kind}>
             {row.text}
           </div>
         ))}
@@ -242,7 +243,7 @@ export function DiffBlock({
           />
         )}
         {tail.map((row, index) => (
-          <div key={index} className={clsx(css.line, ROW_CLASS[row.kind])}>
+          <div key={index} className={clsx(css.line, ROW_CLASS[row.kind])} data-diff-row={row.kind}>
             {row.text}
           </div>
         ))}

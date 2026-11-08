@@ -522,7 +522,7 @@ it(
           closing.push(fn);
         },
       },
-      async () => false,
+      async () => {},
     );
     const deadline = Date.now() + 8000;
     while (reads < 3 && Date.now() < deadline)

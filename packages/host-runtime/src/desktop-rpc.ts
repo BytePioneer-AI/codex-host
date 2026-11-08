@@ -1,6 +1,6 @@
 import type { JsonObject, JsonRpcRequest } from "@codexhost/protocol-core";
 
-/** Desktop/console requests present Desktop surfaces; client-channel requests do not. */
+/** Transport entry point for a Host request. */
 export type HostRequestOrigin = "desktop" | "console" | "client";
 
 function isRecord(value: unknown): value is Record<string, unknown> {

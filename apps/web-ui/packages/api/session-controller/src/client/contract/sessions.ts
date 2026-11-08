@@ -112,6 +112,13 @@ export interface ISessions {
    */
   refresh(): Promise<void>;
   /**
+   * Set this browser's archive query scope and refresh when it changes.
+   * Reconnects and automatic refreshes reuse the choice; no Host-global setting is written.
+   * @param includeArchived - whether list queries should include archived summaries.
+   * @returns completion of the scoped refresh, if needed.
+   */
+  setIncludeArchived(includeArchived: boolean): Promise<void>;
+  /**
    * Search the Host's visible message-content index. Results stay
    * request-local; the list snapshot remains the metadata authority.
    * @param query - non-blank literal phrase.

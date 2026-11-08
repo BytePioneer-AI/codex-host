@@ -12,7 +12,7 @@ for (const width of [390, 1280])
         width,
         true,
       );
-      const expectedTargets = ["Codexcodex-cli", "Twinfake", "Twinother"];
+      const expectedTargets = ["Alphaalpha-agent", "Twinfake", "Twinother"];
       const targets = menu.locator('[role="option"][id*="codexhost-delegation"]');
       const plus = page.getByRole("button", { name: "Add files or run commands", exact: true });
       const search = page.getByRole("combobox", { name: "Search menu", exact: true });
@@ -48,12 +48,12 @@ for (const width of [390, 1280])
           (r) => r.method === "codexhost/harness/inspect",
         ).length;
 
-        for (const query of ["codex-cli", "Codex"]) {
+        for (const query of ["alpha-agent", "Alpha"]) {
           await search.fill(query);
           await page.waitForFunction(
             () => document.querySelectorAll('[data-trigger-menu] [role="option"]').length === 1,
           );
-          await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
+          await menu.getByRole("option", { name: "Alpha alpha-agent", exact: true }).waitFor();
           assert.equal(
             await composer.innerText(),
             "Before After",
@@ -63,7 +63,7 @@ for (const width of [390, 1280])
         await search.press("Enter");
         await chips.waitFor();
         await menu.waitFor({ state: "hidden" });
-        assert.equal((await composer.innerText()).replace(/\s+/gu, " "), "Before Codex After");
+        assert.equal((await composer.innerText()).replace(/\s+/gu, " "), "Before Alpha After");
         await page.getByText("kept.txt", { exact: true }).waitFor();
         assert.equal(
           writeMethods().length,
@@ -84,7 +84,7 @@ for (const width of [390, 1280])
         await composer.press("ControlOrMeta+C");
         assert.equal(
           (await page.evaluate(() => navigator.clipboard.readText())).trim(),
-          "Before [@Codex](subagent://codexhost.codex-cli) After",
+          "Before [@Alpha](subagent://codexhost.alpha-agent) After",
         );
         await composer.press("ControlOrMeta+Z");
         await chips.waitFor({ state: "detached" });

@@ -1,5 +1,7 @@
 import {
+  useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -10,9 +12,14 @@ import { createPortal } from "react-dom";
 import {
   IconCloseOutlineRegular,
   IconLoadingOutlineRegular,
+  rankByName,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
+import type {
+  InputTriggerCandidate,
+  InputTriggerServiceContract,
+} from "@deepseek-ai/dsh-client-ui-input-trigger/client";
 import type { DesktopScreenshot } from "./desktop-screenshot.ts";
 import { DesktopScreenshotViewer } from "./DesktopScreenshotViewer.tsx";
 import css from "./DesktopScreenshot.module.css";
@@ -27,12 +34,71 @@ export interface DesktopScreenshotFace {
 }
 type Locale = PropsLocale<"codexhostImport">;
 
+export interface DesktopScreenshotButtonFace extends DesktopScreenshotFace {
+  registerSource: InputTriggerServiceContract["registerSource"];
+}
+
 export function DesktopScreenshotButton({
   screenshot,
+  registerSource,
   sessionId,
+  overflowActions = false,
   t,
-}: PropsRuntime<"conversation.input.right"> & DesktopScreenshotFace & Locale) {
+}: PropsRuntime<"conversation.input.right"> & DesktopScreenshotButtonFace & Locale) {
   const state = useSyncExternalStore(screenshot.subscribe, screenshot.getSnapshot);
+  const sourceId = useId();
+  const capture = useCallback(() => {
+    if (sessionId !== undefined) void screenshot.refresh(sessionId);
+  }, [screenshot, sessionId]);
+  const live = useRef({ sessionId, overflowActions, t, capture });
+  live.current = { sessionId, overflowActions, t, capture };
+  useLayoutEffect(() => {
+    if (!overflowActions) return;
+    return registerSource({
+      trigger: "/",
+      name: `desktop-screenshot:${sourceId}`,
+      launcher: "command",
+      // Launcher groups start with interface actions at 0, then native commands/Skills.
+      launcherOrder: -10,
+      showGroupTitle: false,
+      candidates: async (session, request) => {
+        const current = live.current;
+        if (
+          request.launcher !== "command" ||
+          !current.overflowActions ||
+          session.sessionId !== current.sessionId
+        )
+          return [];
+        const pending = screenshot.getSnapshot().pending;
+        const items: InputTriggerCandidate[] = [
+          {
+            name: "desktop-screenshot",
+            label: current.t("desktop.label"),
+            showAlias: false,
+            description: pending ? current.t("desktop.pending") : undefined,
+            busy: pending,
+            icon: DesktopScreenshotIcon,
+          },
+        ];
+        return rankByName(items, request.query);
+      },
+      subscribeCandidates: (_session, listener) => {
+        let pending = screenshot.getSnapshot().pending;
+        return screenshot.subscribe(() => {
+          const next = screenshot.getSnapshot().pending;
+          if (pending === next) return;
+          pending = next;
+          listener();
+        });
+      },
+      onPick: (pick) => {
+        const current = live.current;
+        if (current.overflowActions && pick.session.sessionId === current.sessionId)
+          current.capture();
+        return "handled";
+      },
+    });
+  }, [registerSource, screenshot, sourceId, overflowActions]);
   // A late capture from the previous conversation must not enter the new one.
   useLayoutEffect(
     () => () => {
@@ -43,14 +109,20 @@ export function DesktopScreenshotButton({
   const seconds = useElapsedSeconds(state.startedAt);
   if (sessionId === undefined) return null;
   return (
-    <Tooltip portal side="top" label={t(state.pending ? "desktop.pending" : "desktop.label")}>
+    <Tooltip
+      portal
+      disabled={overflowActions}
+      side="top"
+      label={t(state.pending ? "desktop.pending" : "desktop.label")}
+    >
       <button
         type="button"
         className={state.pending ? `${css.entry} ${css.entryBusy}` : css.entry}
         aria-label={t("desktop.label")}
         aria-busy={state.pending}
+        data-composer-overflow-action
         onMouseDown={(event) => event.preventDefault()}
-        onClick={() => void screenshot.refresh(sessionId)}
+        onClick={capture}
       >
         {state.pending ? (
           <>
@@ -60,21 +132,27 @@ export function DesktopScreenshotButton({
             <span className={css.elapsed}>{seconds}s</span>
           </>
         ) : (
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 20 20"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.4"
-            aria-hidden="true"
-          >
-            <rect x="2" y="3" width="16" height="11" rx="2" />
-            <path d="M10 14v3M6 17h8" />
-          </svg>
+          <DesktopScreenshotIcon size={16} />
         )}
       </button>
     </Tooltip>
+  );
+}
+
+function DesktopScreenshotIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      aria-hidden="true"
+    >
+      <rect x="2" y="3" width="16" height="11" rx="2" />
+      <path d="M10 14v3M6 17h8" />
+    </svg>
   );
 }
 

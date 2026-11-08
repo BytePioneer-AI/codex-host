@@ -8,6 +8,7 @@ import { Workspaces } from "../src/workspaces.ts";
 import { DataDir } from "../src/store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import { FakeChHost } from "./support/ch-host.ts";
+import { nativeCodex } from "./support/native-codex.ts";
 
 it("deduplicates displayed titles while publishing fallback and cwd changes", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-catalog-titles-"));
@@ -54,6 +55,59 @@ it("deduplicates displayed titles while publishing fallback and cwd changes", as
   row.cwd = "";
   await refresh([row.id]);
   await refresh([]);
+});
+
+it("keeps an official Codex Thread when the catalog briefly omits it", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-catalog-codex-gap-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = nativeCodex(new FakeChHost());
+  const row = host.add("native-thread", "/project");
+  row.modelProvider = "openai";
+  const request = host.request.bind(host);
+  let omit = false;
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    const value = await request<T>(method, params);
+    if (method !== "codexhost/thread/catalog/read" || !omit) return value;
+    const catalog = value as {
+      threads: Array<{ id: string }>;
+      ownership: Array<{ threadId: string }>;
+      archivedThreadIds: string[];
+    };
+    return {
+      ...catalog,
+      threads: catalog.threads.filter((thread) => thread.id !== row.id),
+      ownership: catalog.ownership.filter((owner) => owner.threadId !== row.id),
+    } as T;
+  };
+  const events = new EventHub(root);
+  const emitted: Array<{ event: string; args: unknown[] }> = [];
+  events.emit = (event, ...args) => emitted.push({ event, args });
+  const sessions = new ChSessions(host, new Workspaces(new DataDir(root), root), events);
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  sessions.register(rpc, new StreamRegistry());
+  const list = () => rpc.dispatch("session/list", { args: {} });
+
+  assert.ok((await list()).ok);
+  omit = true;
+  const retained = await list();
+  assert.ok(retained.ok);
+  assert.ok(
+    (retained.value as { items: Array<{ sessionId: string }> }).items.some(
+      (item) => item.sessionId === row.id,
+    ),
+  );
+  assert.equal(
+    emitted.some((entry) => entry.event === "api-session/removed"),
+    false,
+  );
+
+  host.threads.delete(row.id);
+  assert.ok((await list()).ok);
+  assert.deepEqual(
+    emitted.filter((entry) => entry.event === "api-session/removed").map((entry) => entry.args[0]),
+    [row.id],
+  );
 });
 
 it("broadcasts catalog deltas, not every unchanged Thread on every polling tick", async (t) => {

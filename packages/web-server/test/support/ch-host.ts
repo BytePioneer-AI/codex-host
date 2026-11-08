@@ -88,6 +88,9 @@ export class FakeChHost implements ChHostClient {
     this.threads.set(id, row);
     return row;
   }
+  threadOwnership(threadId: string): { threadId: string; owner: string; harnessId?: string } {
+    return { threadId, owner: "external", harnessId: "fake" };
+  }
   async request<T>(method: string, params: Record<string, unknown>): Promise<T> {
     if (this.closed) throw new Error("Host offline");
     // CDP fixtures receive values from a VM realm; retain wire facts with local prototypes.
@@ -113,6 +116,24 @@ export class FakeChHost implements ChHostClient {
         throw Object.assign(new Error("Legacy fixture does not support display RPCs"), {
           code: -32601,
         });
+      case "codexhost/thread/catalog/read": {
+        const threads = [...this.threads.values()].filter(
+          (thread) => params.includeArchived === true || !this.archivedIds.has(thread.id),
+        );
+        value = {
+          threads: threads.map((thread) => ({ ...structuredClone(thread), turns: [] })),
+          ownership: threads.map((thread) => this.threadOwnership(thread.id)),
+          archivedThreadIds: [...this.archivedIds].filter((id) => {
+            const owner = this.threadOwnership(id);
+            return params.includeArchived === true
+              ? owner.owner === "codex" ||
+                  (owner.owner === "external" &&
+                    this.threads.get(id)?.modelProvider === "codexhost")
+              : owner.owner === "external" && this.threads.get(id)?.modelProvider === "codexhost";
+          }),
+        };
+        break;
+      }
       case "thread/list":
         value = {
           data: [...this.threads.values()].filter(
@@ -145,15 +166,21 @@ export class FakeChHost implements ChHostClient {
         };
         break;
       case "codexhost/harness/inspect":
-        value = this.inspection;
+        value =
+          params.harnessId === "codex"
+            ? {
+                status: "notInstalled",
+                error: {
+                  code: "unavailable",
+                  message: "No official Codex in this fixture",
+                  retryable: false,
+                },
+              }
+            : this.inspection;
         break;
       case "codexhost/thread/ownership/list":
         value = {
-          threads: (params.threadIds as string[]).map((id) => ({
-            threadId: id,
-            owner: "external",
-            harnessId: "fake",
-          })),
+          threads: (params.threadIds as string[]).map((id) => this.threadOwnership(id)),
         };
         break;
       case "codexhost/thread/inspect":

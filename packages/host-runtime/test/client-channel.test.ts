@@ -180,7 +180,9 @@ describe("public authenticated owner channel", () => {
           { kind: "newThread", harnessId: "codex", configuration: { model: { id: "gpt" } } },
         ],
       }),
-    ).rejects.toThrow();
+    ).resolves.toMatchObject({
+      values: { newThread: { byHarness: { codex: { model: { id: "gpt" } } } } },
+    });
     expect(fixture.adapter.sessions).toHaveLength(0);
   });
   it("rejects unauthenticated/browser-origin traffic and official Thread execution", async () => {
@@ -206,9 +208,9 @@ describe("public authenticated owner channel", () => {
     );
     await expect(
       a.request("thread/read", { threadId: "official", includeTurns: false }),
-    ).rejects.toThrow("not owned");
+    ).rejects.toThrow("Only external");
     await expect(a.request("thread/resume", { threadId: "official" })).rejects.toThrow(
-      "not available",
+      "Only external",
     );
     expect(fixture.adapter.sessions).toHaveLength(0);
   });

@@ -5,6 +5,18 @@ import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { createSnapshotStore } from "@deepseek-ai/dsh-client-store";
 import { ModelSelect } from "../../../apps/web-ui/packages/client/ui-model-selection/src/client/ModelSelect.tsx";
 import type { ModelDirectoryState } from "../../../apps/web-ui/packages/client/ui-model-selection/src/client/directory.ts";
+import {
+  en as modelEn,
+  zh as modelZh,
+} from "../../../apps/web-ui/packages/client/ui-model-selection/src/client/locales.ts";
+import {
+  PermissionSelect,
+  type PermissionSelectProps,
+} from "../../../apps/web-ui/packages/client/ui-permission-presets/src/client/PermissionSelect.tsx";
+import {
+  accessEn,
+  accessZh,
+} from "../../../apps/web-ui/packages/client/ui-permission-presets/src/client/locales.ts";
 import { PopupSelectController } from "../../../apps/web-ui/packages/client/ui-commands/src/client/popup.ts";
 import { PopupSelectView } from "../../../apps/web-ui/packages/client/ui-commands/src/client/PopupSelectView.tsx";
 
@@ -135,6 +147,158 @@ async function model(count: number, selected = true) {
   await click(trigger);
   return { trigger, directory, select };
 }
+
+it.each([
+  {
+    locale: "en",
+    dictionary: modelEn,
+    labels: ["None", "Minimal", "Low", "Medium", "High", "Extra High", "Max", "Ultra"],
+  },
+  {
+    locale: "zh",
+    dictionary: modelZh,
+    labels: ["无", "最低", "低", "中", "高", "超高", "最大", "极致"],
+  },
+])(
+  "shows localized official Codex Thinking labels in the trigger and list ($locale)",
+  async ({ dictionary, labels }) => {
+    const ids = [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+      "future-effort",
+    ];
+    const value = state(1);
+    value.current = { provider: "codex", model: "m0", reasoningEffort: "xhigh" };
+    value.groups[0]!.id = "codex";
+    value.groups[0]!.models[0]!.reasoning = {
+      efforts: ids.map((id) => ({ id, name: id })),
+    };
+    const directory = createSnapshotStore(value);
+    const select = vi.fn(async () => ({ ok: true as const, value: undefined }));
+    const container = await mount(
+      createElement(ModelSelect, {
+        locked: false,
+        available: true,
+        directory,
+        load: vi.fn(),
+        select,
+        t: (key) => dictionary[key as keyof typeof dictionary] ?? key,
+      }),
+    );
+    const trigger = required<HTMLButtonElement>("button", container);
+    expect(trigger.textContent).toContain(`Model 0${labels[5]}`);
+    await click(trigger);
+    const rows = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'));
+    expect(rows.map((row) => row.textContent?.trim())).toEqual([...labels, "future-effort"]);
+    await click(rows[2]!);
+    expect(select).toHaveBeenCalledExactlyOnceWith({
+      provider: "codex",
+      model: "m0",
+      reasoningEffort: "low",
+    });
+  },
+);
+
+it.each([
+  {
+    harnessId: "copilot",
+    reasoning: { efforts: [{ id: "low", name: "Low" }] },
+  },
+  {
+    harnessId: "opencode",
+    reasoning: {
+      efforts: [
+        { id: "native-default", name: "Default" },
+        { id: "low", name: "Low" },
+      ],
+      defaultEffort: "native-default",
+    },
+  },
+])("retains Default for $harnessId", async ({ harnessId, reasoning }) => {
+  const value = state(1);
+  value.current = { provider: harnessId, model: "m0", reasoningEffort: "low" };
+  value.groups[0]!.id = harnessId;
+  value.groups[0]!.models[0]!.reasoning = reasoning;
+  const select = vi.fn(async () => ({ ok: true as const, value: undefined }));
+  const container = await mount(
+    createElement(ModelSelect, {
+      locked: false,
+      available: true,
+      directory: createSnapshotStore(value),
+      load: vi.fn(),
+      select,
+      t: (key) => modelEn[key as keyof typeof modelEn] ?? key,
+    }),
+  );
+  await click(required<HTMLButtonElement>("button", container));
+  const rows = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'));
+  expect(rows.map((row) => row.textContent?.trim())).toEqual(["Default", "Low"]);
+  await click(rows[0]!);
+  expect(select).toHaveBeenCalledExactlyOnceWith({
+    provider: harnessId,
+    model: "m0",
+    ...(reasoning.defaultEffort ? { reasoningEffort: reasoning.defaultEffort } : {}),
+  });
+});
+
+it.each([
+  {
+    locale: "en",
+    dictionary: accessEn,
+    labels: ["Read only", "Workspace write", "Full access", "future-profile"],
+  },
+  {
+    locale: "zh",
+    dictionary: accessZh,
+    labels: ["只读", "工作区写入", "完全访问", "future-profile"],
+  },
+])(
+  "shows localized official Codex permission labels and retains descriptions ($locale)",
+  async ({ dictionary, labels }) => {
+    const ids = [":read-only", ":workspace", ":danger-full-access", ":future-profile"];
+    const select = vi.fn(async () => true);
+    const container = await mount(
+      createElement(PermissionSelect, {
+        locked: false,
+        select,
+        useProjection: (name: string) =>
+          name === "permissions"
+            ? { currentValue: ":workspace" }
+            : {
+                harnessId: "codex",
+                selectable: true,
+                locked: false,
+                scope: "live",
+                catalog: {
+                  defaultModeId: ":workspace",
+                  modes: ids.map((id) => ({
+                    id,
+                    label: id.slice(1),
+                    description: `Details ${id}`,
+                  })),
+                },
+              },
+        t: (key: string) => dictionary[key as keyof typeof dictionary] ?? key,
+      } as PermissionSelectProps),
+    );
+    const trigger = required<HTMLButtonElement>("button", container);
+    expect(trigger.textContent).toBe(labels[1]);
+    expect(trigger.title).toBe("Details :workspace");
+    await click(trigger);
+    const rows = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+    expect(rows.map((row) => row.textContent)).toEqual(
+      labels.map((label, index) => `${label}Details ${ids[index]}`),
+    );
+    await click(rows[0]!);
+    expect(select).toHaveBeenCalledExactlyOnceWith(":read-only");
+  },
+);
 
 it.each(
   devices.flatMap((profile) =>

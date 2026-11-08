@@ -306,15 +306,14 @@ Ctrl+C stops Web only. Explicit backend maintenance: native/codexhost host stop 
 Use host restart with the same arguments for replacement while updated clients stay open.
 Close older clients without lifecycle locking first. Stopping or restarting the backend stops its tasks.
 Do not launch app/server.mjs directly from a CodexHost-managed session with inherited Desktop settings.
-Codex CLI is an ordinary preinstalled external Harness. Its executable comes from the shared discovery rules
-and the persisted launch setting for \`codex-cli\`; \`CODEX_HOME\` selects the native home, otherwise ~/.codex.
-The native CLI uses local credentials directly; there is no authentication preflight or special queue pause.
-Codex Desktop and CodexHost.app are not required for Web external Threads. Do not open the same native Session
-in GUI Codex and Web Codex CLI at the same time.
-GUI native Codex requests keep their official route and never load this plugin.
+Codex uses the shared Host's official app-server and native Thread IDs, not an external Harness plugin.
+The Host prefers Desktop's bundled program, then a local codex version 0.161.0 or newer.
+CODEX_HOME selects the native home, otherwise ~/.codex. Native history needs no import.
+Web and Desktop share the same official Threads; writer conflicts allow history reads but prevent sending.
+Codex Desktop and CodexHost.app are not required for Web. Missing Codex does not block other Harnesses.
 
 Included Harness plugins: ${extraAdapters.map((plugin) => plugin.id).join(", ")}.
-Every external plugin, including Codex CLI, loads in the canonical Host in shared mode.
+Every external plugin loads in the canonical Host in shared mode.
 Default plugin input is the build of this checkout, not an installed CodexHost.app.
 The packed server uses only its bundled plugins unless --adapters is supplied.
 Install and authenticate each Harness CLI separately on the server machine.

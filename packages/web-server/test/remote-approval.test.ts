@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { remoteApprovalPresentation } from "../src/remote-approval.ts";
-import { canReorderLocalWorkspaces } from "../../../apps/web-ui/packages/client/ui-workspace/src/client/tree.ts";
+import { canReorderLocalWorkspaces } from "../../../apps/web-ui/packages/client/ui-workspace/src/client/rows/workspace-reorder.ts";
 
 it("presents command and file approvals without private routing fields", () => {
   const command = remoteApprovalPresentation({

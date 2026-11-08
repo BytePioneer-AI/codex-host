@@ -11,7 +11,7 @@ import { FakeChHost, startFakeChDebugger } from "../support/ch-host.ts";
 import { startServer } from "../support/server.ts";
 
 const TOKEN = "offline-page-local-test-token";
-const TITLE = "Unable to connect to your computer";
+const TITLE = "Connecting…";
 const webUi = resolve(import.meta.dirname, "../../../../apps/web-ui");
 
 async function fixture(t: TestContext, locale = "en-US", args: string[] = []) {
@@ -191,7 +191,45 @@ it(
 );
 
 it(
-  "times out navigation after ten seconds and recovery probes after five seconds",
+  "immediately retries transient navigation failures and accepts six-second recovery responses",
+  { timeout: 40_000 },
+  async (t) => {
+    const { url, context, page } = await fixture(t);
+    await signIn(page, url);
+    const address = page.url();
+    for (const latency of [0, 6_000]) {
+      let first = true;
+      let probes = 0;
+      await context.route(address, async (route) => {
+        if (first) {
+          first = false;
+          return route.fulfill({ status: 503, body: "Temporary gateway failure" });
+        }
+        if (!route.request().serviceWorker()) {
+          probes++;
+          await new Promise((resolve) => setTimeout(resolve, latency));
+        }
+        return route.continue();
+      });
+      const probe = page.waitForRequest(
+        (request) => request.url() === address && !request.serviceWorker(),
+        { timeout: 2_000 },
+      );
+      await page.reload();
+      await probe;
+      if (latency) {
+        await page.getByRole("heading", { name: TITLE }).waitFor();
+        assert.equal(await page.locator("#help").isVisible(), false);
+      }
+      await page.getByRole("button", { name: "Settings", exact: true }).waitFor();
+      assert.equal(probes, 1);
+      await context.unroute(address);
+    }
+  },
+);
+
+it(
+  "uses ten-second deadlines for navigation and deduplicated recovery probes",
   {
     timeout: 45_000,
   },
@@ -200,23 +238,33 @@ it(
     await signIn(page, url);
     const address = page.url();
     let hang = true;
+    let probes = 0;
+    let probeStarted = 0;
     await context.route(address, (route) => {
+      if (!route.request().serviceWorker()) {
+        probes++;
+        probeStarted = Date.now();
+      }
       if (hang) return;
       return route.continue();
+    });
+    const failed = page.waitForEvent("requestfailed", {
+      predicate: (request) => request.url() === address && !request.serviceWorker(),
     });
     const started = Date.now();
     assert.equal((await page.reload())?.status(), 503);
     assert.ok(Date.now() - started >= 9_500);
     assert.ok(Date.now() - started < 15_000);
     await page.getByRole("heading", { name: TITLE }).waitFor();
-    const failed = page.waitForEvent("requestfailed", {
-      predicate: (request) => request.url() === address && !request.serviceWorker(),
-    });
-    const probeStarted = Date.now();
     await page.getByRole("button", { name: "Retry", exact: true }).click();
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("online"));
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
     await failed;
-    assert.ok(Date.now() - probeStarted >= 4_500);
-    assert.ok(Date.now() - probeStarted < 8_000);
+    assert.equal(probes, 1, "clicks and resume events must reuse the active probe");
+    assert.ok(Date.now() - probeStarted >= 9_500);
+    assert.ok(Date.now() - probeStarted < 15_000);
     await page.getByRole("heading", { name: TITLE }).waitFor();
     hang = false;
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
@@ -235,13 +283,15 @@ it(
     await page.goto(url);
     await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
     await page.setViewportSize({ width: 320, height: 640 });
+    await page.clock.install();
     const address = `${page.url()}?address=${"long-address-".repeat(30)}`;
     await context.route(address, (route) => route.fulfill({ status: 503, body: "gateway" }));
     await page.goto(address);
     await context.setOffline(true);
-    await page.getByRole("heading", { name: "网络已断开" }).waitFor();
-    await page.getByText("请检查这台设备的网络连接。", { exact: true }).waitFor();
-    assert.equal(await page.title(), "网络已断开");
+    await page.getByRole("heading", { name: "正在连接…" }).waitFor();
+    await page.getByText("等待网络恢复，将自动重连。", { exact: true }).waitFor();
+    assert.equal(await page.title(), "正在连接…");
+    assert.equal(await page.locator("#help").isVisible(), false);
     assert.equal(await page.locator("html").getAttribute("lang"), "zh");
     assert.equal(await page.locator("#address").textContent(), address);
     assert.equal(await page.locator("script[src], link, img").count(), 0);
@@ -282,8 +332,12 @@ it(
     const onlineProbe = page.waitForResponse(address);
     await context.setOffline(false);
     await onlineProbe;
-    await page.getByRole("heading", { name: "无法连接到电脑" }).waitFor();
-    await page.getByText("请确认电脑开机，并且 Web 正在运行。", { exact: true }).waitFor();
+    await page.getByRole("heading", { name: "正在连接…" }).waitFor();
+    await page.getByText("正在自动重连，连接恢复后将继续打开。", { exact: true }).waitFor();
+    await page.clock.runFor(30_000);
+    await page
+      .getByText("连接耗时较长，请检查网络并确认电脑上的 Web 正在运行。", { exact: true })
+      .waitFor();
     const api = await page.evaluate(async () => {
       const response = await fetch("api/auth/status");
       return { status: response.status, body: await response.text() };

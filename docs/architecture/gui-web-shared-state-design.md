@@ -14,12 +14,12 @@ Rust 负责后台进程监管与正常退出时的子进程清理。生命周期
 
 - `@codexhost/session-runtime` 只提供共享的投影、会话日志、用量计量与展示类型；它不再拥有独立会话运行器或组织存储。
 - Host 通过安装插件公共契约加载 Adapter，不导入 web-server 应用代码或具体 Adapter。Web RPC/stream、认证、Push 与 UI 投影留在网关。
-- external AppServerHost/Mapping Store 是外部 Thread 的唯一所有者，包括 Codex CLI：Adapter、原生引用、元数据、交互、跟进队列与导入都走外部 Thread 运行时。原生历史仍在 Harness 自己的 home 中。
-- Codex CLI 使用 `codex-cli` 身份，Manifest 只声明 Web 界面。`surfaces` 只影响 Desktop 呈现：Desktop 的插件列表、新建路由、Thread 列表和 Thread 事件排除仅 Web 的 Harness；执行、存储与 client channel 不受影响。代码中不按 `codex-cli` 字面量特判。
-- 保留 `codex` 身份给 GUI 官方路径：外部 Harness 路由、插件目录与偏好拒绝这个身份。GUI 原生 Codex 保留官方执行与历史，不变成 external Thread。官方项目只读，external 官方 pin 仍走 Desktop。
+- external AppServerHost/Mapping Store 是外部 Thread 的唯一所有者：Adapter、原生引用、元数据、交互、跟进队列与导入都走外部 Thread 运行时。原生历史仍在 Harness 自己的 home 中。插件在 Web 和 Desktop 使用同一目录，不声明界面过滤。
+- `codex` 是官方路径的保留身份，不是外部插件。Web 与 Desktop 通过同一官方 app-server 操作同一 Thread ID；官方历史无需导入，也不写入 Mapping Store。模型、Thinking、权限、队列和命令由 Host 转发官方协议，偏好可使用 `codex` 身份。
+- 其他 Harness 的通用会话导入保留。官方项目只读，置顶通过共享 Host 的原生分区协议读写，不要求 Desktop 窗口。
 
 ## 使用边界
 
-Codex CLI 的原生 home 取自 `CODEX_HOME`，未设置时为 `~/.codex`。认证完全由原生 CLI 负责，Host 不读取、复制或预检凭据。GUI 与 Web 可以共用 home，但同一原生会话不要在两侧同时打开：Host 不为跨进程写入提供互斥。
+官方 Codex home 取自 `CODEX_HOME`，未设置时为 `~/.codex`。Host 优先使用 Desktop 自带程序，其次使用本机不低于 0.161.0 的 `codex`。Web 和通过 codexhost 打开的 Desktop 共用后台；被其他后台占用的 Thread 可读历史，发送返回官方占用错误，不绕过锁或自动 Fork。Host 不为独立进程提供原生 home 互斥。
 
 不提供旧 standalone 数据迁移、回滚或交接入口，不检查或清理旧锁及迁移标记，不自动移动用户数据。`<data>/web-codex/` 的旧隔离来源数据不读取、不删除、不迁移，也不出现在 Web 会话列表。未知提交不重发，不恢复不存在的内存队列；Host 失联时 Web 不回退到本地执行。Push 依赖 Web 网关存活。

@@ -128,6 +128,7 @@ export async function runSharedHostService(
           environment: hostEnvironment,
           diagnosticOutput: process.stderr,
           deferStart: true,
+          remoteControl: remote !== null,
         });
         const owner = new SharedThreadOwner();
         const desktops = new Set<AppServerHost>();
@@ -150,6 +151,7 @@ export async function runSharedHostService(
           desktopOutput: owner.output,
           diagnosticOutput: process.stderr,
           externalOnly: true,
+          desktopConnected: () => desktops.size > 0,
           mappingStore: store,
           closeMappingStoreOnExit: false,
           officialRuntimeScope: official.officialRuntimeScope,
@@ -158,14 +160,6 @@ export async function runSharedHostService(
           usageStatistics,
           ...(updateCoordinator ? { updateCoordinator } : {}),
           ...installed,
-          pluginContext: {
-            ...installed.pluginContext,
-            refreshNativeThreadCatalog: async (nativeHome) => {
-              await Promise.allSettled(
-                [...desktops].map((desktop) => desktop.refreshNativeThreadCatalog(nativeHome)),
-              );
-            },
-          },
           ...(values.plugins
             ? { pluginRoots: [values.plugins, ...installed.pluginRoots.slice(1)] }
             : {}),

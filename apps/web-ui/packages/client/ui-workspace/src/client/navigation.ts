@@ -28,6 +28,7 @@ import type { DraftInitializationOptions } from "@deepseek-ai/dsh-client-ui-conv
 import type { RowToast } from "./contract/slots.ts";
 import { pinOrderAccounts, pinOrderSource } from "./pin-order.ts";
 import type { WorkspaceViewStoreActions } from "./stores.ts";
+import { SessionKeepalive } from "./session-keepalive.ts";
 
 interface MainSelection {
   readonly sessionId?: SessionId;
@@ -151,6 +152,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     { persist: { name: "dsh.sessions.current" } },
   );
   private mainReference: SessionReference | undefined;
+  private readonly keepalive: SessionKeepalive;
 
   /**
    * @param ctx - Client root Context.
@@ -169,11 +171,14 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     private readonly notify: (toast: RowToast) => void,
   ) {
     super(ctx, "uiWorkspace");
+    this.keepalive = new SessionKeepalive(sessions, workspaces);
     ctx.effect(() => {
+      const stopKeepalive = this.keepalive.start();
       const stop = this.watchNavigation();
       return () => {
         stop();
         this.lifetime.abort();
+        stopKeepalive();
         const reference = this.mainReference;
         this.mainReference = undefined;
         reference?.release();
@@ -507,6 +512,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     }
     const previous = this.mainReference;
     this.mainReference = reference;
+    this.keepalive.visit(reference, target);
     previous?.release();
     if (panel === "reveal") this.ctx.layout.selectPanel(null);
   }

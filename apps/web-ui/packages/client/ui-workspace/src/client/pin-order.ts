@@ -32,8 +32,13 @@ export function pinOrderSource(
   return {
     members: Object.fromEntries([
       ...workspaces.map((workspace) => [workspace.workspaceId, workspace.sessionIds] as const),
-      [UNGROUPED_KEY, list.ids.filter((id) => list.byId[id] !== undefined && !accounted.has(id))],
-      [FLAT_SESSION_ORDER_KEY, sessionMemberIds(list)],
+      [
+        UNGROUPED_KEY,
+        [...new Set([...list.ids, ...rowState.archivedSessionIds])].filter(
+          (id) => !accounted.has(id),
+        ),
+      ],
+      [FLAT_SESSION_ORDER_KEY, sessionMemberIds(list, rowState.archivedSessionIds)],
     ]),
     summaries: list.byId,
     rowState,

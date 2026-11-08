@@ -290,11 +290,15 @@ export interface SkillListValue {
 /** Session list request. */
 export interface SessionListRequest {
   readonly cursor?: string;
+  /** Include archived summaries in this request; defaults to false. */
+  readonly includeArchived?: boolean;
 }
 
 /** Session list response value. */
 export interface SessionListValue {
   readonly items: readonly SessionSummary[];
+  /** Server-known archive IDs, including previously discovered IDs; not a full discovery. */
+  readonly archivedSessionIds?: readonly SessionId[];
 }
 
 /** Session search request. */

@@ -4,7 +4,7 @@ export interface StreamHeartbeatOptions {
   readonly intervalMs?: number;
   /** Deadline for the matching reply. Default: 10000ms. */
   readonly timeoutMs?: number;
-  /** Deadline for a probe requested when the page returns to the foreground. Default: 2000ms. */
+  /** Foreground probe deadline; defaults to timeoutMs (10000ms). */
   readonly restoreTimeoutMs?: number;
 }
 
@@ -17,6 +17,12 @@ export class StreamHeartbeat {
   private readonly interval: number;
   private readonly timeout: number;
   private readonly restoreTimeout: number;
+  private readonly visibilityChanged = (): void => {
+    if (document.visibilityState !== "hidden") return;
+    // A frozen deadline must not run before the deferred foreground probe.
+    clearTimeout(this.timer);
+    this.pending = undefined;
+  };
 
   constructor(
     private readonly send: (id: string) => void,
@@ -25,7 +31,9 @@ export class StreamHeartbeat {
   ) {
     this.interval = options.intervalMs ?? 25_000;
     this.timeout = options.timeoutMs ?? 10_000;
-    this.restoreTimeout = options.restoreTimeoutMs ?? 2_000;
+    this.restoreTimeout = options.restoreTimeoutMs ?? this.timeout;
+    if (typeof document !== "undefined")
+      document.addEventListener("visibilitychange", this.visibilityChanged);
     this.schedule(this.interval);
   }
 
@@ -46,6 +54,8 @@ export class StreamHeartbeat {
 
   stop(): void {
     this.stopped = true;
+    if (typeof document !== "undefined")
+      document.removeEventListener("visibilitychange", this.visibilityChanged);
     clearTimeout(this.timer);
     this.pending = undefined;
   }

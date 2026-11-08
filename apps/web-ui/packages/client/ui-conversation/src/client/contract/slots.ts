@@ -228,8 +228,16 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
     "conversation.composer.dock": { kind: "list"; scope: "session" };
     /** Compact controls at the left of the composer tool row. */
     "conversation.input.left": { kind: "list"; scope: "session" };
-    /** Compact controls before the composer submit action. */
-    "conversation.input.right": { kind: "list"; scope: "session" };
+    /**
+     * Compact controls before submit. An action opting into the phone overflow
+     * menu marks its resident trigger `data-composer-overflow-action` and keeps
+     * its state/lifecycle mounted. Floating content must use a portal.
+     */
+    "conversation.input.right": {
+      kind: "list";
+      scope: "session";
+      owner: { overflowActions?: boolean };
+    };
     /** Compact action after the model selector; it can expand across the toolbar while retaining the editor and submit action. */
     "conversation.input.activity": {
       kind: "single";

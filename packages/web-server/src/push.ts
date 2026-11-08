@@ -28,7 +28,7 @@ export interface PushMessage {
   /** Document-relative URL opened on click. */
   url?: string;
   sessionId?: string;
-  kind: "turn" | "approval" | "question" | "error";
+  kind: "turn" | "approval" | "question" | "error" | "test";
 }
 
 const KEYS_FILE = "push-keys.json";
@@ -40,7 +40,7 @@ export class PushNotifier {
 
   constructor(
     private readonly data: DataDir,
-    subject = "mailto:codexhost@localhost",
+    subject = "https://github.com/BytePioneer-AI/codex-host",
   ) {
     const stored = data.readJson<{ publicKey?: string; privateKey?: string }>(KEYS_FILE, {});
     if (stored.publicKey === undefined || stored.privateKey === undefined) {
@@ -120,7 +120,7 @@ export class PushNotifier {
     });
     rpc.register("codexhost/pushTest", async () => {
       const sent = await this.notify({
-        kind: "turn",
+        kind: "test",
         title: "CodexHost",
         body: "Notifications are working.",
         tag: "codexhost-test",

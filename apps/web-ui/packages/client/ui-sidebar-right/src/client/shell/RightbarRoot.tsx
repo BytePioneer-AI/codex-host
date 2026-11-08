@@ -1,5 +1,5 @@
 /** Root-scoped controller for the right Sidebar's Session content. */
-import { useEffect, useLayoutEffect } from "react";
+import { useCallback, useLayoutEffect } from "react";
 import type {
   HostObservable,
   InjectFace,
@@ -7,6 +7,7 @@ import type {
   PropsRuntime,
 } from "@deepseek-ai/dsh-client-ui-slots";
 import type { SessionReference } from "@deepseek-ai/dsh-api-session-controller/client";
+import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { SidebarSessionViewSnapshot } from "../session-views.ts";
 import type {} from "../contract/slots.ts";
 import css from "./SidebarRight.module.css";
@@ -16,7 +17,7 @@ export interface RightbarRootInjected {
   readonly hooks: { readonly views: HostObservable<readonly SidebarSessionViewSnapshot[]> };
   readonly mountView: (reference: SessionReference) => () => void;
   /** Change the current Session's panel visibility without closing its tabs or resources. */
-  readonly setExpandedFromSwipe: (expanded: boolean) => void;
+  readonly setExpandedFromSwipe: (sessionId: SessionId, expanded: boolean) => void;
 }
 
 type RootProps = PropsRuntime<"rightbar"> &
@@ -32,6 +33,7 @@ function SessionView({
   width,
   viewportWidth,
   bindSwipeNavigation,
+  setExpandedFromSwipe,
   canShow,
 }: Pick<
   RootProps,
@@ -41,10 +43,15 @@ function SessionView({
   | "width"
   | "viewportWidth"
   | "bindSwipeNavigation"
+  | "setExpandedFromSwipe"
   | "canShow"
 > & { readonly view: SidebarSessionViewSnapshot; readonly visible: boolean }) {
   useLayoutEffect(() => mountView(view.reference), [mountView, view.reference]);
   const active = visible && view.selected;
+  const setExpanded = useCallback(
+    (expanded: boolean) => setExpandedFromSwipe(view.sessionId, expanded),
+    [setExpandedFromSwipe, view.sessionId],
+  );
   return (
     <div className={css.session} hidden={!active} data-sidebar-right-session={view.sessionId}>
       <SessionProvider session={view.reference}>
@@ -52,6 +59,7 @@ function SessionView({
           width,
           viewportWidth,
           bindSwipeNavigation,
+          setExpandedFromSwipe: setExpanded,
           canShow,
           active,
           retainTab: view.retainTab,
@@ -69,14 +77,6 @@ function SessionView({
 export function RightbarRoot({ usePanelInfo, useViews, ...props }: RootProps) {
   const visible = usePanelInfo((info) => info.activePanelId === null);
   const views = useViews((value) => value);
-  const { bindSwipeNavigation, setExpandedFromSwipe } = props;
-  useEffect(() => {
-    if (!visible) return;
-    return bindSwipeNavigation(
-      () => setExpandedFromSwipe(true),
-      () => setExpandedFromSwipe(false),
-    );
-  }, [visible, bindSwipeNavigation, setExpandedFromSwipe]);
   return (
     <>
       {views.map((view) => (

@@ -127,21 +127,21 @@ it("accepts explicit Harness ids without relaxing isolation", () => {
   assert.equal(launch.args.includes("--import-recent"), false);
 });
 
-it("selects Codex CLI like every other external Harness without inheriting Desktop routing", () => {
+it("selects official Codex without inheriting Desktop routing", () => {
   const launch = previewLaunch(
     "/packed",
-    { harness: "codex-cli,claude-code" },
+    { harness: "codex,claude-code" },
     { CODEXHOST_CODEX_COMMAND: "/unsafe/codex", CODEX_CLI_PATH: "/unsafe/shim" },
   );
-  assert.equal(launch.args[launch.args.indexOf("--harness") + 1], "codex-cli,claude-code");
+  assert.equal(launch.args[launch.args.indexOf("--harness") + 1], "codex,claude-code");
   assert.equal(launch.args.includes("--codex-command"), false);
   assert.equal(launch.args.includes("--codex-home"), false);
   assert.deepEqual(launch.env, {});
 });
 
 it("allows Pi like every other session Harness", () => {
-  const { args } = previewLaunch("/packed", { harness: "pi,codex-cli" }, {});
-  assert.equal(args[args.indexOf("--harness") + 1], "pi,codex-cli");
+  const { args } = previewLaunch("/packed", { harness: "pi,codex" }, {});
+  assert.equal(args[args.indexOf("--harness") + 1], "pi,codex");
 });
 
 it("rejects empty ids and unsafe selection syntax before spawning", () => {

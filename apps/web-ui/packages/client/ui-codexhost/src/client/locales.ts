@@ -34,8 +34,6 @@ export const en = {
   "connection.computer": "Cannot reach your computer. Check that it is on and Web is running.",
   "connection.lastSynced": "Last synced at {time}",
   "connection.retry": "Retry",
-  "import.sourceBranch":
-    "Independent branch created from Codex session {sessionId}. Both sessions continue separately.",
   title: "Import sessions",
   subtitle:
     "Continue a session you started in a Harness on this computer. Its history is loaded when you open it.",
@@ -324,6 +322,25 @@ export const en = {
   "extensions.recovery": "Open recovery page",
   "extensions.builtinsOnly": "Open with built-in extensions only",
 
+  "pwa.title": "Install CodexHost app",
+  "pwa.install": "Install app",
+  "pwa.instructions": "Installation guide",
+  "pwa.prompting": "Confirm installation in your browser's dialog.",
+  "pwa.accepted": "Installation requested. Your browser will finish installing the app.",
+  "pwa.dismissed": "Installation cancelled. You can still install from your browser's menu.",
+  "pwa.failed":
+    "Could not open the installation dialog. Try your browser's menu or reload this page.",
+  "pwa.installed": "CodexHost is running as an app or this browser has confirmed installation.",
+  "pwa.guide.insecure":
+    "Installation requires HTTPS or localhost. Open an HTTPS address from Connect devices.",
+  "pwa.guide.ios":
+    "On iOS, choose Share → Add to Home Screen in your browser. If unavailable, open in Safari.",
+  "pwa.guide.android":
+    "On Android, use Chrome or Edge, then tap Install app here when available; otherwise use the browser menu's Install app option.",
+  "pwa.guide.safari": "In Safari on macOS 14 or later, choose File → Add to Dock.",
+  "pwa.guide.browser":
+    "Use Chrome or Edge, then click Install app here when available, or use the address bar's install icon.",
+  "pwa.guide.limitations": "If opened inside WeChat or another app, use an external browser.",
   "notifications.title": "Notifications",
   "notifications.on":
     "This device is notified when a turn finishes or an agent needs your approval or answer.",
@@ -458,7 +475,6 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connection.computer": "无法连接到电脑，请确认电脑已开机且 Web 正在运行。",
   "connection.lastSynced": "上次同步于 {time}",
   "connection.retry": "重试",
-  "import.sourceBranch": "从 Codex 会话 {sessionId} 创建的独立分支，两边分别继续。",
   title: "导入会话",
   subtitle: "继续你在这台电脑上用 Harness 开过的会话，打开时会加载完整历史。",
   search: "按标题或文件夹搜索",
@@ -718,6 +734,23 @@ export const zh: Record<ImportLocaleKey, string> = {
   "extensions.recovery": "打开恢复页面",
   "extensions.builtinsOnly": "仅使用内置扩展打开",
 
+  "pwa.title": "安装 CodexHost 应用",
+  "pwa.install": "安装应用",
+  "pwa.instructions": "安装指引",
+  "pwa.prompting": "请在浏览器弹窗中确认安装。",
+  "pwa.accepted": "已提交安装请求，浏览器将完成应用安装。",
+  "pwa.dismissed": "已取消安装，仍可通过浏览器菜单手动安装。",
+  "pwa.failed": "无法打开安装弹窗，请尝试浏览器菜单或刷新页面后重试。",
+  "pwa.installed": "当前已在应用窗口中运行，或浏览器已确认安装完成。",
+  "pwa.guide.insecure": "安装需要 HTTPS 或 localhost，请从「连接设备」打开 HTTPS 地址。",
+  "pwa.guide.ios":
+    "在 iOS 上，点击浏览器的「分享 → 添加到主屏幕」；若没有此选项，请用 Safari 打开。",
+  "pwa.guide.android":
+    "在安卓上，推荐使用 Chrome 或 Edge 打开，出现「安装应用」后点击此处安装；也可从浏览器菜单选择「安装应用」。",
+  "pwa.guide.safari": "在 macOS 14 或更新版本的 Safari 中，选择「文件 → 添加到程序坞」。",
+  "pwa.guide.browser":
+    "推荐使用 Chrome 或 Edge 打开，出现「安装应用」后点击此处安装，或点击地址栏的安装图标。",
+  "pwa.guide.limitations": "若在微信等应用内打开，请改用外部浏览器。",
   "notifications.title": "通知",
   "notifications.on": "一轮结束、需要审批或回答问题时，会通知这台设备。",
   "notifications.off": "一轮结束或 Agent 需要你时，在这台设备上收到通知。",

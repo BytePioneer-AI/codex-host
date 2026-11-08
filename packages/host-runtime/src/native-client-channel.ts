@@ -460,9 +460,10 @@ export class NativeClientChannel {
       if (method === "thread/resume") this.#resumedThreads.add(threadId);
       if (method === "thread/archive") this.#resumedThreads.delete(threadId);
     }
-    if (method === "thread/resume" && threadId) {
+    const configuredThreadId = threadId ?? (typeof thread?.id === "string" ? thread.id : undefined);
+    if ((method === "thread/resume" || method === "thread/start") && configuredThreadId) {
       const result = resultObject(reply);
-      this.#configuration.set(threadId, nativeThreadConfiguration(result ?? {}));
+      this.#configuration.set(configuredThreadId, nativeThreadConfiguration(result ?? {}));
     }
     if (method === "thread/list") {
       const data = resultObject(reply)?.data;

@@ -6,6 +6,10 @@ Web 与 Codex Desktop 在同一仓库开发，浏览器通过 `packages/web-serv
 
 已有原生 Codex 会话不需要“导入”即可查看历史、续聊、停止当前 Turn、重命名和归档。浏览器只是同一运行时的客户端，不为每个原生会话启动新的 `codex app-server`，也不把原生 ID 转成外部 Harness ID。消息、任务状态和待处理交互通过共享通道重新同步；断线后不自动重发结果未知的写请求。模型、Thinking 和权限可在 Web 切换，仅在官方 `thread/settings/updated` 确认后显示已生效；权限选项来自官方档案列表。官方 Thread 支持共享队列、`/compact`、`/review`、Skill 菜单、置顶和用量，Web 不开放其 Fork 或历史回退。
 
+Codex 的 Fast 闪电仅在官方 `model/list` 为当前 Model 的 `serviceTiers` 声明 `priority` 时显示，不根据 Model 名、Thinking 或旧 `additionalSpeedTiers` 推断能力。普通和 Fast 复用公共 `fastModel` 引用契约，对应同一原生 Model；Host 将开启转换为 `serviceTier: "priority"`，显式关闭转换为 `serviceTier: null`。未指定 Model 选择时不覆盖官方默认或恢复配置。创建响应、恢复响应和 `thread/settings/updated` 中确认的档位决定选中状态，Desktop 的配置变化也会同步。
+
+运行中切换通过 `thread/settings/update`，保留 Thinking，并等待成功响应及 Model、service tier 均匹配的通知后返回确认；省略 service tier 的 Thinking 或权限更新不会清除 Fast。后续 Turn 沿用官方 Thread 设置，不把 Fast 引用作为原生 Model 名发送，也不承诺改变正在运行的请求。Fast 可能增加额度消耗；目录声明仅表示能力，不保证账号可用额度、实际调度或速度。
+
 选择器在官方程序可用时只显示一个“Codex”，首次发送创建官方 Thread，Desktop 使用同一身份；不可用时不显示 Codex，其他 Harness 不受影响。无项目时由 Host 分配默认生成目录，Web 不自行分配。旧 `codex-cli` Mapping Store 条目在 Web 和 Desktop 列表都隐藏，不迁移、不删除或改写；官方历史直接以官方 Thread 显示。
 
 这里的共享范围是本机。浏览器经 Relay、Tailscale 或局域网访问本机，不意味着主列表会自动聚合 Desktop 已连接的 SSH／Remote Control 主机；远程主机目录和按 Host 路由另行实现。

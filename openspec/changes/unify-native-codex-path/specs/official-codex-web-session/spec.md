@@ -62,6 +62,12 @@ Web SHALL 对官方 Codex Thread 提供模型、Thinking、权限、排队消息
 - **WHEN** 用户在官方 Thread 中切换模型或 Thinking
 - **THEN** Web 仅在官方确认后显示新值，后续 Turn 使用该配置
 
+#### Scenario: Fast 服务档位
+- **WHEN** 官方 Model 目录声明当前 Model 支持 `priority` 服务档位
+- **THEN** Web 显示 Fast 闪电，开启和关闭分别使用同一原生 Model 的 `serviceTier: "priority"` 与 `serviceTier: null`，保留 Thinking，且仅在官方确认匹配档位后显示生效
+- **AND** 创建、恢复和 Desktop 设置变化以官方返回的档位显示状态；后续 Turn 沿用官方设置
+- **AND** 没有 `priority` 元数据时不显示闪电，不根据 Model 名或旧速度标签猜测支持
+
 #### Scenario: 切换权限
 - **WHEN** 用户打开官方 Thread 的权限选择
 - **THEN** 选项来自官方权限档案列表，选择结果由官方确认

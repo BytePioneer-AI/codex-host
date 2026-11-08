@@ -914,6 +914,7 @@ export class AppServerHost {
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
       externalThreadBusy: (thread) => this.#externalThreadBusy(thread),
     });
+    options.sharedThreads?.setLocalOwnershipProbe((threadId) => this.#hasLocalThread(threadId));
     const maintenanceOperation = <T>(run: () => Promise<T>): Promise<T> =>
       options.runtimeMaintenance ? options.runtimeMaintenance.operation(run) : run();
     this.#delegationApi = sharedDelegationRegistration(
@@ -2037,6 +2038,19 @@ export class AppServerHost {
     if (input.parentThreadId) return this.#ownsDelegationThread(input.parentThreadId);
     const externalActive = this.#externalRuntime.values().some((thread) => thread.running);
     return externalActive || this.#activeOfficialTurns.size > 0;
+  }
+
+  async #hasLocalThread(threadId: string): Promise<boolean> {
+    if (this.#externalRuntime.get(threadId)) return true;
+    const parsed = hostThreadIdSchema.safeParse(threadId);
+    if (parsed.success && (await this.#repository.find(parsed.data)) !== null) return true;
+    try {
+      const reply = await this.#requestOfficial("thread/read", { threadId, includeTurns: false });
+      const thread = isRecord(reply.result) ? reply.result.thread : undefined;
+      return isRecord(thread) && thread.id === threadId;
+    } catch {
+      return false;
+    }
   }
 
   async #ownsDelegationThread(threadId: string): Promise<boolean> {

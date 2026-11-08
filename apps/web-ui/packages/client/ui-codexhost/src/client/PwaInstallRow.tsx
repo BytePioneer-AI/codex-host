@@ -21,20 +21,24 @@ export function PwaInstallRow({
   const description =
     installation.guide === "insecure" && state !== "installed"
       ? t("pwa.guide.insecure")
-      : t(`pwa.${state}`);
+      : state === "manual" || state === "available"
+        ? null
+        : t(`pwa.${state}`);
 
   return (
     <div className={css.section}>
       <div className={css.row}>
         <div className={css.text}>
           <div className={css.title}>{t("pwa.title")}</div>
-          <div
-            id={descriptionId}
-            className={css.description}
-            role={state === "failed" ? "alert" : "status"}
-          >
-            {description}
-          </div>
+          {description !== null && (
+            <div
+              id={descriptionId}
+              className={css.description}
+              role={state === "failed" ? "alert" : "status"}
+            >
+              {description}
+            </div>
+          )}
         </div>
         {state !== "installed" && (
           <button
@@ -42,7 +46,7 @@ export function PwaInstallRow({
             className={css.button}
             disabled={state === "prompting"}
             aria-busy={state === "prompting"}
-            aria-describedby={descriptionId}
+            aria-describedby={description === null ? undefined : descriptionId}
             aria-expanded={nativePrompt ? undefined : guideOpen}
             aria-controls={nativePrompt ? undefined : guideId}
             onClick={() => {
@@ -61,9 +65,8 @@ export function PwaInstallRow({
       </div>
       {guideOpen && state !== "installed" && (
         <div id={guideId} className={css.guide}>
-          <p>{t(`pwa.guide.${installation.guide}`)}</p>
           <p>{t("pwa.guide.limitations")}</p>
-          <p>{t("pwa.guide.backend")}</p>
+          {installation.guide !== "insecure" && <p>{t(`pwa.guide.${installation.guide}`)}</p>}
         </div>
       )}
     </div>

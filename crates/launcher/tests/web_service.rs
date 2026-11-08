@@ -598,13 +598,11 @@ fn headless_web_saves_options_and_replaces_mismatched_services_without_exposing_
 #[test]
 fn stop_continues_after_failures_and_keeps_configuration() {
     let fixture = Fixture::new();
+    let started = fixture.public_command("web").output().unwrap();
     assert!(
-        fixture
-            .public_command("web")
-            .output()
-            .unwrap()
-            .status
-            .success()
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
     );
     fs::create_dir_all(fixture.root.join(".codexhost/remote")).unwrap();
     fs::write(fixture.root.join(".codexhost/remote/manifest.json"), "{}").unwrap();
@@ -615,11 +613,11 @@ fn stop_continues_after_failures_and_keeps_configuration() {
         fs::create_dir_all(&runtime).unwrap();
         fs::write(runtime.join("desktop-runtime-v1.json"), "invalid").unwrap();
     }
-    let stopped = fixture.public_command("stop").output().unwrap();
+    let _stopped = fixture.public_command("stop").output().unwrap();
     #[cfg(not(target_os = "windows"))]
     {
-        assert!(!stopped.status.success());
-        assert!(String::from_utf8_lossy(&stopped.stderr).contains("Remote: stop failed"));
+        assert!(!_stopped.status.success());
+        assert!(String::from_utf8_lossy(&_stopped.stderr).contains("Remote: stop failed"));
     }
     assert!(!fixture.root.join("web-service-ready.json").exists());
     assert!(!fixture.root.join("shared-host-ready.json").exists());
@@ -629,12 +627,14 @@ fn stop_continues_after_failures_and_keeps_configuration() {
             .join(".codexhost/remote/manifest.json")
             .exists()
     );
-    let events = fs::read_to_string(fixture.root.join("events")).unwrap();
     #[cfg(unix)]
-    assert!(
-        events.contains("web-stop\nhost-stop\nremote-stop\nconsole-stop\n"),
-        "{events}"
-    );
+    {
+        let events = fs::read_to_string(fixture.root.join("events")).unwrap();
+        assert!(
+            events.contains("web-stop\nhost-stop\nremote-stop\nconsole-stop\n"),
+            "{events}"
+        );
+    }
     let count = fixture.starts();
     thread::sleep(Duration::from_millis(1200));
     assert_eq!(fixture.starts(), count);

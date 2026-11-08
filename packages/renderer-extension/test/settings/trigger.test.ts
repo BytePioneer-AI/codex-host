@@ -173,13 +173,11 @@ describe("Renderer settings navigation rail trigger", () => {
       expect(button.children[0]?.attributes.get("width")).toBe("22");
       expect(button.children[0]?.attributes.get("height")).toBe("22");
       expect(button.style.color).toContain("--color-text-secondary-ghost");
-      expect(button.children[0]?.attributes.get("data-codexhost-mark")).toBe("otter-navigation");
-      expect(button.children[0]?.attributes.get("viewBox")).toBe("0 0 384 384");
+      expect(button.children[0]?.attributes.get("data-codexhost-mark")).toBe("ch-navigation");
+      expect(button.children[0]?.attributes.get("viewBox")).toBe("12.8 12.2 40 40");
       expect(button.children[0]?.children).toHaveLength(2);
-      expect(button.children[0]?.children[1]?.attributes.get("fill")).toBe(
-        "light-dark(currentColor, #697680)",
-      );
-      expect(button.children[0]?.children[1]?.attributes.get("fill-rule")).toBe("evenodd");
+      expect(button.children[0]?.children[1]?.attributes.get("fill")).toBe("currentColor");
+      expect(button.children[0]?.children[1]?.attributes.get("x")).toBe("27.6");
       expect(badge?.style.display).toBe("none");
       button.dispatch("click");
       expect(opened).toHaveBeenLastCalledWith(control.button, undefined);

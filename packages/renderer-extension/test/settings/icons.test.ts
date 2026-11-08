@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import darkSvg from "../../src/assets/codexhost-otter-dark.svg?raw";
 import lightSvg from "../../src/assets/codexhost-otter-light.svg?raw";
+import historicalRail from "../../src/assets/history/codexhost-rail-v1.svg?raw";
 
 import {
   CODEXHOST_OTTER_DARK_DETAIL_PATH,
@@ -36,37 +37,46 @@ function withSvgDocument(test: () => void): void {
   }
 }
 
-function expectOtter(icon: SVGElement, size: number): void {
+function expectRailMark(icon: SVGElement, size: number): void {
   const svg = icon as unknown as FakeSvgElement;
   expect(svg.tagName).toBe("svg");
-  expect(svg.attributes.get("viewBox")).toBe("0 0 384 384");
+  expect(svg.attributes.get("viewBox")).toBe("12.8 12.2 40 40");
+  expect(historicalRail).toContain(`viewBox="${svg.attributes.get("viewBox")}"`);
   expect(svg.attributes.get("width")).toBe(String(size));
   expect(svg.attributes.get("height")).toBe(String(size));
   expect(svg.attributes.get("aria-hidden")).toBe("true");
   expect(svg.attributes.get("focusable")).toBe("false");
-  expect(svg.attributes.get("data-codexhost-mark")).toBe("otter-navigation");
+  expect(svg.attributes.get("data-codexhost-mark")).toBe("ch-navigation");
   expect(svg.children).toHaveLength(2);
-  const [detail, silhouette] = svg.children;
-  expect(detail?.attributes.get("d")).toBe(CODEXHOST_OTTER_DARK_DETAIL_PATH);
-  expect(detail?.attributes.get("fill")).toBe("light-dark(transparent, #b8c0c6)");
-  expect(silhouette?.attributes.get("d")).toBe(CODEXHOST_OTTER_PATH);
-  expect(silhouette?.attributes.get("fill")).toBe("light-dark(currentColor, #697680)");
-  for (const path of svg.children) {
-    expect(path.tagName).toBe("path");
-    expect(path.attributes.get("fill-rule")).toBe("evenodd");
-    expect(path.attributes.has("stroke")).toBe(false);
+  const [ring, module] = svg.children;
+  expect(ring?.tagName).toBe("path");
+  expect(historicalRail).toContain(`d="${ring?.attributes.get("d")}"`);
+  expect(ring?.attributes.get("fill")).toBe("none");
+  expect(ring?.attributes.get("stroke")).toBe("currentColor");
+  expect(ring?.attributes.get("stroke-width")).toBe("3.2");
+  expect(ring?.attributes.get("stroke-linecap")).toBe("round");
+  expect(module?.tagName).toBe("rect");
+  expect(module?.attributes.get("fill")).toBe("currentColor");
+  expect(module?.attributes.get("stroke")).toBe("none");
+  const historicalSquare = historicalRail.match(/<rect\b[^>]+/u)?.[0];
+  for (const attribute of ["x", "y", "width", "height", "rx"]) {
+    expect(historicalSquare).toContain(`${attribute}="${module?.attributes.get(attribute)}"`);
+  }
+  for (const shape of svg.children) {
+    expect(shape.attributes.has("transform")).toBe(false);
+    expect(shape.attributes.has("style")).toBe(false);
   }
   expect(svg.classList.add).toHaveBeenCalledWith("codexhost-settings-icon");
 }
 
-describe("CodexHost theme-aware otter UI mark", () => {
-  for (const size of [20, 22, 24]) {
-    it(`renders the original silhouette without a plate at ${size}px`, () => {
-      withSvgDocument(() => expectOtter(createRendererSettingsBrandGlyph(size), size));
+describe("CodexHost navigation rail CH mark", () => {
+  for (const size of [16, 20, 22, 24]) {
+    it(`preserves historical geometry with a lighter monochrome ring at ${size}px`, () => {
+      withSvgDocument(() => expectRailMark(createRendererSettingsBrandGlyph(size), size));
     });
   }
 
-  it("keeps the viewable SVG exports aligned with the inline UI paths", () => {
+  it("keeps the retained otter SVG exports aligned with their source paths", () => {
     const light = lightSvg;
     const dark = darkSvg;
     expect(light).toContain(`d="${CODEXHOST_OTTER_PATH}"`);

@@ -1,5 +1,5 @@
 /** Isolated Web + fake Launcher; exit 42 drives the test supervisor, never a file watcher. */
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { request } from "node:http";
 import { once } from "node:events";
@@ -13,6 +13,7 @@ import type {
   WebTailscaleState,
 } from "@codexhost/shared-contracts";
 import { defined } from "./defined.ts";
+import { nodeCommand } from "./node-command.ts";
 
 type Replies = {
   "codexhost/accessTokenGet": WebAccessState;
@@ -52,13 +53,12 @@ export async function connectServer(
   const root = mkdtempSync(join(tmpdir(), "web-connect-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const data = new DataDir(join(root, "web"));
-  const launcher = join(root, "launcher");
   const autostart = join(root, "autostart");
   const failure = join(root, "failure");
   writeFileSync(autostart, "off");
-  writeFileSync(
-    launcher,
-    `#!${process.execPath}
+  const cli = nodeCommand(
+    "launcher",
+    `
 const fs = require("node:fs");
 const [command, action] = process.argv.slice(2);
 fs.writeFileSync(${JSON.stringify(root)} + "/launcher-env-" + action, JSON.stringify({ node: process.env.CODEXHOST_NPM_NODE_PATH, wrapper: process.env.CODEXHOST_NPM_LAUNCHER_PATH }));
@@ -68,7 +68,7 @@ else if (fs.existsSync(${JSON.stringify(failure)})) { console.error(fs.readFileS
 else fs.writeFileSync(${JSON.stringify(autostart)}, action);
 `,
   );
-  chmodSync(launcher, 0o755);
+  const launcher = cli.command;
   saveServiceOptions(data, { port: "4474" });
   const exits: number[] = [];
   let current: ChildProcess | undefined;
@@ -92,6 +92,7 @@ else fs.writeFileSync(${JSON.stringify(autostart)}, action);
         authenticated: true,
         environment: {
           ...environment,
+          ...cli.environment,
           HOME: root,
           CODEXHOST_DATA_DIR: join(root, "host"),
           CODEX_HOME: join(root, "codex"),

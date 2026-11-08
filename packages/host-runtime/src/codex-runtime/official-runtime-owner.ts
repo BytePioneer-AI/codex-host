@@ -75,6 +75,7 @@ export class OfficialRuntimeOwner {
   readonly #factory: () => OwnedOfficialBackend;
   readonly #diagnosticOutput: Writable;
   readonly #clients = new Set<Client>();
+  readonly #activeTurns = new Set<string>();
   #backend: OwnedOfficialBackend | undefined;
   #generation = 0;
   #phase: "stopped" | "starting" | "running" | "stopping" | "unavailable" = "stopped";
@@ -88,6 +89,10 @@ export class OfficialRuntimeOwner {
   }
   get generation(): number {
     return this.#generation;
+  }
+
+  get hasActiveWork(): boolean {
+    return this.gate.busy || this.#activeTurns.size > 0;
   }
 
   get running(): boolean {
@@ -176,6 +181,7 @@ export class OfficialRuntimeOwner {
           delete client.initializing;
         }
         this.#backend = undefined;
+        this.#activeTurns.clear();
         this.#phase = "stopped";
         retired = true;
       } catch {
@@ -416,6 +422,12 @@ export class OfficialRuntimeOwner {
       return;
     const value = event.value;
     if (!object(value)) return client.output(event);
+    if (object(value.params) && typeof value.params.threadId === "string") {
+      if (value.method === "turn/started") this.#activeTurns.add(value.params.threadId);
+      if (value.method === "turn/completed" || value.method === "thread/closed")
+        this.#activeTurns.delete(value.params.threadId);
+      if (value.method === "thread/closed") client.threads.delete(value.params.threadId);
+    }
     if (value.method === "serverRequest/resolved" && object(value.params)) {
       const nativeId = value.params.requestId;
       const match = [...client.serverRequests].find(([, original]) => original === nativeId);
@@ -452,6 +464,15 @@ export class OfficialRuntimeOwner {
 
   #remember(client: Client, method: string, params: JsonObject, response: JsonObject): void {
     if (response.error) return;
+    if (object(response.result)) {
+      if (
+        method === "turn/start" &&
+        typeof params.threadId === "string" &&
+        object(response.result.turn) &&
+        response.result.turn.status === "inProgress"
+      )
+        this.#activeTurns.add(params.threadId);
+    }
     if (
       ["thread/archive", "thread/unsubscribe"].includes(method) &&
       typeof params.threadId === "string"

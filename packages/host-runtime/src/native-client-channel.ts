@@ -17,7 +17,12 @@ export type NativeClientReply =
 export interface NativeClientChannelDependencies {
   readonly events: ClientChannelEvents;
   request(method: string, params: JsonObject): Promise<NativeClientReply>;
-  respond(requestId: string | number, result: JsonValue): Promise<void>;
+  respond(
+    requestId: string | number,
+    result: JsonValue,
+    error?: { code: number; message: string },
+  ): Promise<void>;
+  desktopConnected?(): boolean;
 }
 
 interface PendingNativeInteraction {
@@ -377,6 +382,8 @@ export class NativeClientChannel {
   readonly #configuration = new Map<string, NativeConfiguration>();
   readonly #pending = new Map<string, PendingNativeInteraction>();
   readonly #pendingNativeIds = new Map<string, string>();
+  readonly #unconfirmedResponses = new Set<string>();
+  readonly #interactionErrors = new Map<string, string>();
   #generationToken = 0;
 
   constructor(host: NativeClientChannelDependencies) {
@@ -388,11 +395,13 @@ export class NativeClientChannel {
   }
 
   observeMessage(value: JsonValue): void {
-    if (!isRecord(value) || typeof value.method !== "string" || !isRecord(value.params)) return;
-    const params = value.params as JsonObject;
+    if (!isRecord(value) || typeof value.method !== "string") return;
+    const params = isRecord(value.params) ? (value.params as JsonObject) : {};
     const threadId = threadIdFromParams(params);
     if (threadId) {
       this.noteThread(threadId);
+      if (value.method === "thread/closed") this.#resumedThreads.delete(threadId);
+      if (value.method === "turn/started") this.#interactionErrors.delete(threadId);
       this.#host.events.changed(threadId, value.method);
     }
     if (value.method === "serverRequest/resolved") {
@@ -411,7 +420,17 @@ export class NativeClientChannel {
     }
     if (typeof value.id !== "string" && typeof value.id !== "number") return;
     const interaction = nativeInteraction(value.method, params);
-    if (!interaction || !threadId) return;
+    if (!interaction) {
+      if (this.#host.desktopConnected?.()) return;
+      const message = `Web cannot answer official Codex request '${value.method}'. Open Codex Desktop to handle it.`;
+      void this.#host.respond(value.id, null, { code: -32601, message }).catch(() => undefined);
+      if (threadId) {
+        this.#interactionErrors.set(threadId, message);
+        this.#host.events.changed(threadId, "nativeInteractionError");
+      }
+      return;
+    }
+    if (!threadId) return;
     if (this.#pendingNativeIds.has(requestKey(value.id))) return;
     const publicId = `${NATIVE_REQUEST_PREFIX}${this.#generationToken}:${randomUUID()}`;
     this.#pending.set(publicId, {
@@ -444,6 +463,7 @@ export class NativeClientChannel {
     if (threadId) {
       this.noteThread(threadId);
       if (method === "thread/resume") this.#resumedThreads.add(threadId);
+      if (method === "thread/archive") this.#resumedThreads.delete(threadId);
     }
     if (method === "thread/resume" && threadId) {
       const result = resultObject(reply);
@@ -507,11 +527,20 @@ export class NativeClientChannel {
         throw new ClientChannelRequestError(-32094, "Host generation changed; refresh the Thread");
     };
     try {
+      let nativeSendError: string | undefined;
       if (!this.#resumedThreads.has(threadId)) {
         const resumed = await this.request("thread/resume", { threadId });
         assertGeneration();
-        if ("error" in resumed)
-          throw new ClientChannelRequestError(resumed.error.code, resumed.error.message);
+        if ("error" in resumed) {
+          if (
+            resumed.error.code === -32600 &&
+            /^thread \S+ already has (?:an active writer|a live local writer)$/iu.test(
+              resumed.error.message,
+            )
+          )
+            nativeSendError = `${resumed.error.message}. 请先在另一端关闭此会话。`;
+          else throw new ClientChannelRequestError(resumed.error.code, resumed.error.message);
+        }
       }
       const read = await this.request("thread/read", { threadId, includeTurns: false });
       assertGeneration();
@@ -538,10 +567,16 @@ export class NativeClientChannel {
       };
       const activeTurnId = data.map(turnIdFromPage).find((id): id is string => id !== undefined);
       const configuration = this.#configuration.get(threadId);
+      const nativeInteractionError = this.#interactionErrors.get(threadId);
       const snapshot = clientThreadSnapshotSchema.parse({
         cursor,
         ...(activeTurnId ? { activeTurnId } : {}),
-        thread: { ...thread, turns: [] },
+        thread: {
+          ...thread,
+          turns: [],
+          ...(nativeSendError ? { nativeSendError } : {}),
+          ...(nativeInteractionError ? { nativeInteractionError } : {}),
+        },
         turnsPage,
         // Native configuration is owned by official Codex. Only values returned
         // by native resume are presented; no Host defaults are synthesized.
@@ -560,6 +595,8 @@ export class NativeClientChannel {
   }
 
   async respond(requestId: string | number, threadId: string, result: JsonValue): Promise<boolean> {
+    if (typeof requestId === "string" && this.#unconfirmedResponses.has(requestId))
+      throw new Error("Native interaction delivery outcome is unknown; do not resend the response");
     const pending = typeof requestId === "string" ? this.#pending.get(requestId) : undefined;
     if (!pending) return false;
     if (pending.threadId !== threadId)
@@ -568,7 +605,9 @@ export class NativeClientChannel {
     // Claim before delivery: a transport failure has an ambiguous outcome and
     // must not permit a second native writer to answer the request.
     this.#deletePending(pending.requestId);
+    this.#unconfirmedResponses.add(pending.requestId);
     await this.#host.respond(pending.nativeRequestId, response);
+    this.#unconfirmedResponses.delete(pending.requestId);
     this.#host.events.changed(pending.threadId, "serverRequest/resolved");
     return true;
   }
@@ -580,6 +619,8 @@ export class NativeClientChannel {
     this.#resumedThreads.clear();
     this.#pending.clear();
     this.#pendingNativeIds.clear();
+    this.#unconfirmedResponses.clear();
+    this.#interactionErrors.clear();
     this.#configuration.clear();
     for (const threadId of threads) this.#host.events.changed(threadId, "thread/status/changed");
   }

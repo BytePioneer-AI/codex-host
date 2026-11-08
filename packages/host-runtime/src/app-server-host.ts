@@ -339,6 +339,8 @@ import {
 export interface AppServerHostOptions {
   /** Private external-session owner: never forwards requests to native Codex. */
   externalOnly?: boolean;
+  /** Shared service's live Desktop connection count, not native client subscriptions. */
+  desktopConnected?(): boolean;
   /** GUI connection to the single external-session owner. */
   sharedThreads?: SharedThreadBridge;
   /** In-process SSH fronts send external Delegations to the same owner as GUI requests. */
@@ -736,8 +738,12 @@ export class AppServerHost {
               events: this.clientEvents,
               request: (method: string, params: JsonObject) =>
                 this.#requestClientNative(method, params),
-              respond: (requestId: string | number, result: JsonValue) =>
-                this.#respondClientNative(requestId, result),
+              respond: (
+                requestId: string | number,
+                result: JsonValue,
+                error?: { code: number; message: string },
+              ) => this.#respondClientNative(requestId, result, error),
+              desktopConnected: () => this.#options.desktopConnected?.() ?? false,
             },
           }
         : {}),
@@ -1980,8 +1986,12 @@ export class AppServerHost {
     }
   }
 
-  #respondClientNative(requestId: string | number, result: JsonValue): Promise<void> {
-    return this.#officialRuntime.send({ id: requestId, result });
+  #respondClientNative(
+    requestId: string | number,
+    result: JsonValue,
+    error?: { code: number; message: string },
+  ): Promise<void> {
+    return this.#officialRuntime.send({ id: requestId, ...(error ? { error } : { result }) });
   }
 
   #inspectHarnessAccount(

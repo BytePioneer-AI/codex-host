@@ -196,6 +196,32 @@ it("projects resolution IDs per client and retires another client's answered req
   }
 });
 
+it("does not treat resumed historical inProgress Turns as active work on this backend", async () => {
+  const f = fixture();
+  const { client } = f.attach();
+  try {
+    await f.owner.start();
+    await client.initialize(initialization);
+    f.gate.initialized();
+    f.connection().setResponse((request) => ({
+      id: request.id ?? null,
+      result:
+        request.method === "thread/resume"
+          ? { thread: { id: "thread-one", turns: [{ id: "stale-turn", status: "inProgress" }] } }
+          : { turn: { id: "new-turn", status: "inProgress" } },
+    }));
+    await client.request("thread/resume", { threadId: "thread-one" });
+    expect(f.owner.hasActiveWork).toBe(false);
+    await client.request("turn/start", { threadId: "thread-one", input: [] });
+    expect(f.owner.hasActiveWork).toBe(true);
+    f.connection().emit({ method: "turn/completed", params: { threadId: "thread-one" } });
+    await vi.waitFor(() => expect(f.owner.hasActiveWork).toBe(false));
+  } finally {
+    await f.owner.stop();
+    client.close();
+  }
+});
+
 describe("owned loopback backend", () => {
   it("requires readiness, hashes capability authentication, and discards managed stderr", async () => {
     const child = Object.assign(new EventEmitter(), {

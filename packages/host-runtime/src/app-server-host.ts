@@ -268,6 +268,21 @@ export type ConsoleHostReply = { result: JsonValue } | { error: { code: number; 
 
 const SUBAGENT_TERMINAL_REFRESH_DELAYS_MS = [0, 50, 100, 150] as const;
 const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
+const OFFICIAL_THINKING_LABELS = new Map([
+  ["none", "None"],
+  ["minimal", "Minimal"],
+  ["low", "Low"],
+  ["medium", "Medium"],
+  ["high", "High"],
+  ["xhigh", "Extra High"],
+  ["max", "Max"],
+  ["ultra", "Ultra"],
+]);
+const OFFICIAL_PERMISSION_LABELS = new Map([
+  [":read-only", "Read only"],
+  [":workspace", "Workspace write"],
+  [":danger-full-access", "Full access"],
+]);
 // Native Codex account quota is still pulled through its official API; keep
 // that reading briefly cached so concurrent Composer inspections coalesce.
 
@@ -2045,12 +2060,7 @@ export class AppServerHost {
             }
             const id = harnessThinkingOptionIdSchema.safeParse(option.reasoningEffort);
             if (!id.success) return [];
-            thinkingById.set(
-              id.data,
-              typeof option.description === "string" && option.description.trim()
-                ? option.description
-                : option.reasoningEffort,
-            );
+            thinkingById.set(id.data, OFFICIAL_THINKING_LABELS.get(id.data) ?? id.data);
             return [id.data];
           })
         : [];
@@ -2935,7 +2945,10 @@ export class AppServerHost {
               : [];
           const modes = profiles.map((profile) => ({
             id: profile.id,
-            label: profile.id,
+            label:
+              typeof profile.id === "string"
+                ? (OFFICIAL_PERMISSION_LABELS.get(profile.id) ?? profile.id.replace(/^:/u, ""))
+                : profile.id,
             ...(typeof profile.description === "string" && profile.description
               ? { description: profile.description }
               : {}),

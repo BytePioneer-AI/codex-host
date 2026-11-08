@@ -170,15 +170,36 @@ it("uses official profiles and waits for settings confirmation; forwards command
       if (method === "model/list")
         result = {
           data: [
-            { model: "old", displayName: "Old", isDefault: true, supportedReasoningEfforts: [] },
+            {
+              model: "old",
+              displayName: "Old",
+              isDefault: true,
+              supportedReasoningEfforts: [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra",
+                "future-effort",
+              ].map((reasoningEffort) => ({
+                reasoningEffort,
+                description: "Fast responses with lighter reasoning",
+              })),
+            },
           ],
         };
       if (method === "permissionProfile/list")
         result = {
           data: [
             { id: ":workspace", description: "Workspace", allowed: true },
+            { id: ":read-only", description: "Read without writing files", allowed: true },
+            { id: ":danger-full-access", description: "Unrestricted access", allowed: true },
+            { id: ":future-profile", description: "Future", allowed: true },
             { id: "custom-profile", description: "Custom", allowed: true },
-            { id: ":danger-full-access", allowed: false },
+            { id: ":blocked-profile", allowed: false },
           ],
           nextCursor: null,
         };
@@ -209,10 +230,29 @@ it("uses official profiles and waits for settings confirmation; forwards command
   expect(inspection).toMatchObject({
     result: {
       status: "ready",
-      permissionModes: { modes: [{ id: ":workspace" }, { id: "custom-profile" }] },
+      permissionModes: {
+        modes: [
+          { id: ":workspace", label: "Workspace write", description: "Workspace" },
+          { id: ":read-only", label: "Read only", description: "Read without writing files" },
+          { id: ":danger-full-access", label: "Full access", description: "Unrestricted access" },
+          { id: ":future-profile", label: "future-profile", description: "Future" },
+          { id: "custom-profile", label: "custom-profile", description: "Custom" },
+        ],
+      },
       capabilities: { configuration: { selectPermissionMode: true } },
     },
   });
+  expect(inspection).toHaveProperty("result.catalog.thinkingOptions", [
+    { id: "none", label: "None" },
+    { id: "minimal", label: "Minimal" },
+    { id: "low", label: "Low" },
+    { id: "medium", label: "Medium" },
+    { id: "high", label: "High" },
+    { id: "xhigh", label: "Extra High" },
+    { id: "max", label: "Max" },
+    { id: "ultra", label: "Ultra" },
+    { id: "future-effort", label: "future-effort" },
+  ]);
   writeRequest(fixture.desktopInput, {
     id: 1001,
     method: "codexhost/thread/inspect",

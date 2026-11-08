@@ -12,7 +12,7 @@ import {
 import type { InjectFace, PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type { NativePermissionMode } from "./native.ts";
-import { PERMISSION_ACCESS_NS } from "./locales.ts";
+import { accessEn, PERMISSION_ACCESS_NS, type PermissionAccessKey } from "./locales.ts";
 import css from "./PermissionSelect.module.css";
 
 /** Shield with an exclamation mark: the trigger glyph of a dangerous mode. */
@@ -62,7 +62,13 @@ export function PermissionSelect({ locked, select, useProjection, t }: Permissio
   }, [native, unavailable, confirmation]);
 
   if (selection === undefined || !native?.selectable || native.catalog === null) return null;
-  const current = native.catalog.modes.find((mode) => mode.id === selection.currentValue);
+  const modes = native.catalog.modes.map((mode) => {
+    const key = `codex.${mode.id}` as PermissionAccessKey;
+    return native.harnessId === "codex" && Object.hasOwn(accessEn, key)
+      ? { ...mode, label: t(key) }
+      : mode;
+  });
+  const current = modes.find((mode) => mode.id === selection.currentValue);
   const label = current?.label ?? t("native.configuration");
   const busy = pick !== null || confirmation !== null;
   const closeConfirmation = () => {
@@ -86,7 +92,7 @@ export function PermissionSelect({ locked, select, useProjection, t }: Permissio
         portal
         side="top"
         selectedId={selection.currentValue}
-        items={native.catalog.modes.map((mode) => ({
+        items={modes.map((mode) => ({
           id: mode.id,
           label: (
             <span className={clsx(css.optionCopy, mode.dangerous && css.dangerous)}>
@@ -101,7 +107,7 @@ export function PermissionSelect({ locked, select, useProjection, t }: Permissio
         onSelect={(id) => {
           setOpen(false);
           if (unavailable || busy || id === selection.currentValue) return;
-          const mode = native.catalog?.modes.find((item) => item.id === id);
+          const mode = modes.find((item) => item.id === id);
           if (!mode) return;
           if (mode.dangerous) {
             setAcknowledged(false);

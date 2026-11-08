@@ -252,6 +252,7 @@ import {
 import { DesktopControlRequests } from "./desktop-control-requests.js";
 import { DesktopThreadRouting } from "./desktop-thread-routing.js";
 import { errorMessage, rpcEnvelope, rpcError, type HostRequestOrigin } from "./desktop-rpc.js";
+import { ThreadListTiming } from "./thread-list-timing.js";
 import { allocateProjectlessWorkspace } from "./projectless-workspace.js";
 import {
   updateNativeThreadSettings,
@@ -2506,51 +2507,62 @@ export class AppServerHost {
     listRequest: DecodedThreadListRequest,
     origin: HostRequestOrigin,
   ): Promise<void> {
+    const timing = new ThreadListTiming();
+    let ok = false;
     try {
-      const [records, placements] = await Promise.all([
-        this.#repository.list(),
-        this.#repository.listSectionPlacements(),
-      ]);
+      const [records, placements] = await timing.measure("store", () =>
+        Promise.all([this.#repository.list(), this.#repository.listSectionPlacements()]),
+      );
+      timing.counts.mappingRecords = records.length;
+      timing.counts.placements = placements.length;
       const placementById = new Map(
         placements.map((entry) => [entry.hostThreadId as string, entry]),
       );
-      const result = await aggregateThreadList({
-        query: listRequest,
-        records,
-        ...(this.#options.sharedThreads
-          ? {
-              sharedThreads: await this.#options.sharedThreads.list(listRequest.params),
-            }
-          : {}),
-        runtimeFor: (threadId) => this.#listRuntimeState(threadId),
-        placementOf: (threadId) => placementById.get(threadId),
-        requestOfficialPage: async (params) => {
-          if (this.#options.externalOnly && origin !== "client")
-            return { data: [], nextCursor: null, backwardsCursor: null };
-          let official;
-          try {
-            official = officialThreadListPageFromResponse(
-              await (this.#options.externalOnly
-                ? this.#requestOfficial("thread/list", params)
-                : this.#officialRuntime.request("thread/list", params)),
-            );
-          } catch (error) {
-            // Native Codex is optional for the shared external service. An
-            // unavailable binary must not hide external rows; protocol errors
-            // remain visible instead of being silently converted to an empty list.
-            if (
-              this.#options.externalOnly &&
-              origin === "client" &&
-              error instanceof OfficialAdmissionError &&
-              error.code === "unavailable"
-            )
+      const sharedCatalog = this.#options.sharedThreads;
+      const sharedThreads = sharedCatalog
+        ? await timing.measure("shared_catalog", () => sharedCatalog.list(listRequest.params))
+        : undefined;
+      timing.counts.sharedRows = sharedThreads?.length ?? 0;
+      const result = await timing.measure("aggregate", () =>
+        aggregateThreadList({
+          query: listRequest,
+          records,
+          ...(sharedThreads ? { sharedThreads } : {}),
+          ...(origin === "client" ? { timing } : {}),
+          runtimeFor: (threadId) => this.#listRuntimeState(threadId),
+          placementOf: (threadId) => placementById.get(threadId),
+          requestOfficialPage: async (params) => {
+            if (this.#options.externalOnly && origin !== "client")
               return { data: [], nextCursor: null, backwardsCursor: null };
-            throw error;
-          }
-          return official;
-        },
-      });
+            let official;
+            try {
+              official = officialThreadListPageFromResponse(
+                await (this.#options.externalOnly
+                  ? this.#requestOfficial("thread/list", params)
+                  : this.#officialRuntime.request("thread/list", params)),
+              );
+            } catch (error) {
+              // Native Codex is optional for the shared external service. An
+              // unavailable binary must not hide external rows; protocol errors
+              // remain visible instead of being silently converted to an empty list.
+              if (
+                this.#options.externalOnly &&
+                origin === "client" &&
+                error instanceof OfficialAdmissionError &&
+                error.code === "unavailable"
+              ) {
+                timing.counts.officialUnavailable++;
+                return { data: [], nextCursor: null, backwardsCursor: null };
+              }
+              throw error;
+            }
+            return official;
+          },
+        }),
+      );
+      timing.counts.returnedRows = result.data.length;
       await this.#writer.json(rpcEnvelope(request, { result }));
+      ok = true;
     } catch (error) {
       if (error instanceof OfficialThreadListError) {
         await this.#writer.json(rpcEnvelope(request, { error: error.rpcError }));
@@ -2558,6 +2570,9 @@ export class AppServerHost {
       }
       await this.#writer.json(rpcError(request, -32082, "Thread list aggregation failed"));
       this.#diagnose(error);
+    } finally {
+      if (origin === "client")
+        timing.report(request.id, listRequest, ok, (line) => this.#diagnose(line));
     }
   }
 

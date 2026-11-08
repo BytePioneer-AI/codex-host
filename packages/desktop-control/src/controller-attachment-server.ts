@@ -18,7 +18,6 @@ export interface StartControllerAttachmentServerOptions {
   port: number;
   nonce: string;
   attach(): Promise<void>;
-  invalidateThreadCatalog?(): Promise<void>;
   openLocalPage?(url: string): Promise<LocalPageHandle>;
   remoteConnections?(request: RemoteConnectionsRequest): Promise<RemoteConnectionsReply>;
 }
@@ -75,19 +74,6 @@ export async function startControllerAttachmentServer(
       if (newline < 0) return;
       handled = true;
       const line = request.slice(0, newline).replace(/\r$/, "");
-      if (
-        options.invalidateThreadCatalog &&
-        line === `CATALOG ${options.nonce}` &&
-        request.slice(newline + 1) === ""
-      ) {
-        void Promise.resolve()
-          .then(() => options.invalidateThreadCatalog?.())
-          .then(
-            () => respond(socket, "ready"),
-            () => respond(socket, "failed"),
-          );
-        return;
-      }
       const remotePrefix = `REMOTE ${options.nonce} `;
       if (options.remoteConnections && line.startsWith(remotePrefix)) {
         let input;

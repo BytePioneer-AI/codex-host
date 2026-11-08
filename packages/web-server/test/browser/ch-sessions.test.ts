@@ -13,10 +13,7 @@ for (const width of [390, 1280])
     { timeout: 60_000 },
     async (t) => {
       const host = new FakeChHost();
-      host.add("gui-existing", "/computer/main-project", "From Codex GUI").codexhostImportSource = {
-        harnessId: "codex-cli",
-        nativeSessionId: "01a1a5a1-16b4-72f3-acbc-45703226b4d8",
-      };
+      host.add("gui-existing", "/computer/main-project", "From Codex GUI");
       host.add("gui-worktree", "/computer/worktrees/task-a", "From another worktree");
       const debuggerServer = await startFakeChDebugger(host);
       t.after(() => debuggerServer.close());
@@ -77,12 +74,6 @@ for (const width of [390, 1280])
       assert.equal(await row.getAttribute("data-row-key"), "session:gui-existing");
       await row.click();
       await page.getByText("existing CH answer", { exact: true }).waitFor();
-      await page
-        .getByText(
-          "Independent branch created from Codex session 01a1a5a1-16b4-72f3-acbc-45703226b4d8. Both sessions continue separately.",
-          { exact: true },
-        )
-        .waitFor();
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       if (process.env.CODEXHOST_TEST_SCREENSHOTS) {
         mkdirSync(process.env.CODEXHOST_TEST_SCREENSHOTS, { recursive: true });

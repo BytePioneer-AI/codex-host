@@ -33,7 +33,6 @@ const classes = {
   qoder: "QoderAdapter",
   "qoder-cn": "QoderAdapter",
   zcode: "ZcodeAdapter",
-  "codex-cli": "CodexAdapter",
 };
 
 const unavailable: HarnessInspection = {
@@ -141,7 +140,6 @@ describe("installed Harness composition", () => {
       qoder: ["/compact"],
       "qoder-cn": ["/compact"],
       zcode: ["/compact", "/goal"],
-      "codex-cli": ["/compact", "/review"],
     };
     const registry = await load();
     try {

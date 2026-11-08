@@ -31,89 +31,6 @@ function controllerSnapshot(): RendererCdpControlSession["snapshot"] {
 }
 
 describe("production Desktop Controller", () => {
-  it("drops catalog hints before installation and while no Renderer Session is available", async () => {
-    const abort = new AbortController();
-    const readRenderer = vi.fn(async () => "production renderer");
-    const install = vi.fn(async () => {
-      throw new Error("Renderer is unavailable");
-    });
-    let refresh: (() => Promise<void>) | undefined;
-    await runDesktopController(controllerOptions(), abort.signal, {
-      readRenderer,
-      install,
-      startAttachmentServer: async (options) => {
-        refresh = options.invalidateThreadCatalog;
-        expect(refresh).toEqual(expect.any(Function));
-        await refresh?.();
-        expect(readRenderer).not.toHaveBeenCalled();
-        expect(install).not.toHaveBeenCalled();
-        return attachmentServer();
-      },
-      ready: vi.fn(),
-      sleep: async () => {
-        await refresh?.();
-        expect(install).toHaveBeenCalledOnce();
-        abort.abort();
-      },
-      monitorIntervalMs: 1,
-    });
-    expect(readRenderer).toHaveBeenCalledOnce();
-    expect(install).toHaveBeenCalledOnce();
-  });
-
-  it.each([false, true])(
-    "uses the existing Renderer outside the recovery queue and ignores catalog errors: %s",
-    async (failed) => {
-      const abort = new AbortController();
-      const recovery = Promise.withResolvers<RendererCdpControlSession["snapshot"]>();
-      const ensureInstalled = vi.fn(() => recovery.promise);
-      const activateDesktop = vi.fn(async () => 1);
-      const executeRenderer = failed
-        ? vi.fn().mockRejectedValue(new Error("Renderer context disappeared"))
-        : vi.fn().mockResolvedValue(undefined);
-      const session: RendererCdpControlSession = {
-        snapshot: controllerSnapshot(),
-        ensureInstalled,
-        activateDesktop,
-        executeRenderer,
-        close: vi.fn(),
-      };
-      const install = vi.fn(async () => session);
-      let control: Parameters<DesktopControllerDependencies["startAttachmentServer"]>[0];
-      await runDesktopController(controllerOptions(), abort.signal, {
-        readRenderer: vi.fn(async () => "production renderer"),
-        install,
-        startAttachmentServer: async (options) => {
-          control = options;
-          return attachmentServer();
-        },
-        ready: vi.fn(),
-        sleep: async () => {
-          const attaching = control.attach();
-          try {
-            await vi.waitFor(() => expect(ensureInstalled).toHaveBeenCalledOnce());
-            const refreshing = control.invalidateThreadCatalog?.();
-            await vi.waitFor(() => expect(executeRenderer).toHaveBeenCalledOnce());
-            await expect(refreshing).resolves.toBeUndefined();
-            expect(executeRenderer).toHaveBeenCalledWith(
-              "window.__codexhostRendererBindingProbeV1?.invalidateThreadCatalog?.()",
-            );
-            expect(activateDesktop).not.toHaveBeenCalled();
-            expect(ensureInstalled).toHaveBeenCalledOnce();
-            expect(install).toHaveBeenCalledOnce();
-          } finally {
-            recovery.resolve(controllerSnapshot());
-            await attaching;
-            abort.abort();
-          }
-        },
-        monitorIntervalMs: 1,
-      });
-      expect(activateDesktop).toHaveBeenCalledOnce();
-      expect(session.close).toHaveBeenCalledOnce();
-    },
-  );
-
   it("accepts only a loopback Renderer CDP endpoint, absolute Renderer path, and strict attachment fields", () => {
     const rendererPath = path.resolve("fixtures/renderer-extension.js");
     expect(
@@ -228,7 +145,6 @@ describe("production Desktop Controller", () => {
       attach: expect.any(Function),
       openLocalPage: expect.any(Function),
       remoteConnections: expect.any(Function),
-      invalidateThreadCatalog: expect.any(Function),
     });
     expect(ready).toHaveBeenCalledWith({
       schemaVersion: 2,

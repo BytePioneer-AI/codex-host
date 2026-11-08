@@ -91,7 +91,6 @@ import {
   type HarnessCommandCatalog,
   type HarnessCommandDescriptor,
   type HarnessId,
-  type HarnessPluginSurface,
   harnessIdSchema,
   threadCommandExecuteParamsSchema,
   threadCommandExecuteResultSchema,
@@ -238,6 +237,7 @@ import type { HostUpdateCoordinator } from "./update-coordinator.js";
 import type { HostConsoleOpener } from "./console-opener.js";
 import type { HostWebOpener } from "./web-opener.js";
 
+export const RETIRED_HARNESS_IDS = ["codex-cli"];
 const CONSOLE_REQUEST_TIMEOUT_MS = 120_000;
 
 import { ClientChannelEvents } from "./client-channel-events.js";
@@ -250,7 +250,6 @@ import {
   type ProjectedTurn,
 } from "./external-turn-projection.js";
 import { DesktopControlRequests } from "./desktop-control-requests.js";
-import { refreshNativeThreadCatalog } from "./native-thread-catalog.js";
 import { DesktopThreadRouting } from "./desktop-thread-routing.js";
 import { errorMessage, rpcEnvelope, rpcError, type HostRequestOrigin } from "./desktop-rpc.js";
 import { allocateProjectlessWorkspace } from "./projectless-workspace.js";
@@ -587,8 +586,6 @@ class OrderedWriter {
     private readonly stream: Writable,
     /** Returns true for a message it consumed instead of the stream. */
     private readonly intercept: (value: JsonValue) => boolean = () => false,
-    /** Returns true to withhold a message this connection must not receive. */
-    private readonly suppress: (value: JsonValue) => boolean = () => false,
   ) {}
 
   frame(frame: Buffer<ArrayBufferLike>): Promise<void> {
@@ -596,7 +593,7 @@ class OrderedWriter {
   }
 
   json(value: JsonValue): Promise<void> {
-    if (this.intercept(value) || this.suppress(value)) return Promise.resolve();
+    if (this.intercept(value)) return Promise.resolve();
     return this.#enqueue(() => writeJsonFrame(this.stream, value));
   }
 
@@ -620,7 +617,6 @@ export class AppServerHost {
   #nativeAccountObserver: NativeAccountObserver | undefined;
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #pluginDescriptors: HarnessPluginDescriptor[] = [];
-  #pluginSurfaces: ReadonlyMap<HarnessId, ReadonlySet<HarnessPluginSurface>> = new Map();
   #usageOnlyAdapters: HarnessUsageStatisticsAdapter[] = [];
   #plugins: HarnessPluginRegistry | undefined;
   readonly #launchSettings: HarnessLaunchSettingsStore;
@@ -684,8 +680,6 @@ export class AppServerHost {
   readonly #pluginLoadAbort = new AbortController();
   #pluginLoading: Promise<void> | undefined;
   #usagePluginsReady: Promise<void> | undefined;
-  /** Settles once manifests declared their surfaces, before plugin imports and warmup. */
-  #pluginSurfacesReady: Promise<void> | undefined;
   readonly #desktopRequests = new DesktopRequestQueue();
   #drainActiveWorkOnInputEnd = false;
   #desktopInputEnded = false;
@@ -754,15 +748,11 @@ export class AppServerHost {
           "client",
         ),
     });
-    this.#writer = new OrderedWriter(
-      this.#options.desktopOutput,
-      (value) => {
-        this.#noteDesktopReply(value);
-        this.#client.observeDesktopMessage(value);
-        return this.#takeConsoleReply(value);
-      },
-      (value) => this.#dropsDesktopEvent(value),
-    );
+    this.#writer = new OrderedWriter(this.#options.desktopOutput, (value) => {
+      this.#noteDesktopReply(value);
+      this.#client.observeDesktopMessage(value);
+      return this.#takeConsoleReply(value);
+    });
     const environment = this.#options.environment ?? process.env;
     this.#displaySettings = new HarnessDisplaySettingsStore(options.environment ?? process.env);
     this.#preferences = new HarnessPreferencesStore(
@@ -848,12 +838,6 @@ export class AppServerHost {
     this.#repository = new ExternalThreadRepository(
       options.mappingStore ??
         createProductionExternalThreadStore(this.#options.environment ?? process.env),
-      async (record) => {
-        if (record.nativeSessionRef)
-          await this.#externalAdapters
-            .get(record.harnessId)
-            ?.onSessionPublished?.(record.nativeSessionRef);
-      },
     );
     this.#threadPins = new ExternalThreadPins(this.#repository, (method, params) =>
       this.#requestOfficial(method, params),
@@ -904,13 +888,12 @@ export class AppServerHost {
       officialThreadMetadata: (threadId) => this.#readOfficialThreadMetadata(threadId),
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
       externalThreadBusy: (thread) => this.#externalThreadBusy(thread),
-      harnessSurfaces: (harnessId) => this.#pluginSurfaces.get(harnessId as HarnessId),
     });
     const maintenanceOperation = <T>(run: () => Promise<T>): Promise<T> =>
       options.runtimeMaintenance ? options.runtimeMaintenance.operation(run) : run();
     const unregisterDelegationApi = options.onDelegationApi?.({
-      listHarnesses: (input) =>
-        this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses(input)),
+      listHarnesses: () =>
+        this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
       inspect: (input) =>
         this.#waitForPlugins().then(() => this.#delegationCoordinator.inspect(input)),
       start: (input) =>
@@ -983,7 +966,6 @@ export class AppServerHost {
       listLoadedSessions: () => this.#externalRuntime.idleRelease.list(),
       applyHarnessPreferences: (snapshot) => this.#applyHarnessPreferences(snapshot),
       attachUsageStatistics: () => this.#attachUsageStatistics(),
-      eligibleFor: (origin, surface, harnessId) => this.#eligibleFor(origin, surface, harnessId),
       inspectHarnessAccount: (adapter, refresh) => this.#inspectHarnessAccount(adapter, refresh),
       handleUpdateRequest: (request) => this.#handleUpdateRequest(request),
       handleConsoleOpen: (request) => this.#handleConsoleOpen(request),
@@ -1005,8 +987,7 @@ export class AppServerHost {
       writeResolutionError: (request, resolution) =>
         this.#writeResolutionError(request, resolution),
       forwardOfficialRequest: (request, frame) => this.#forwardOfficialRequest(request, frame),
-      startExternalThread: (request, harnessId, origin) =>
-        this.#startExternalThread(request, harnessId, origin),
+      startExternalThread: (request, harnessId) => this.#startExternalThread(request, harnessId),
       forkExternalThreadFromRenderer: (request) => this.#forkExternalThreadFromRenderer(request),
       inspectThread: (request) => this.#inspectThread(request),
       inspectThreadUsage: (request) => this.#inspectThreadUsage(request),
@@ -1024,8 +1005,8 @@ export class AppServerHost {
         this.#sendQueuedExternalTurnNow(request, thread),
       handleExternalQueueRequest: (request, thread) =>
         this.#handleExternalQueueRequest(request, thread),
-      listSectionThreads: (request, frame, query, origin) =>
-        this.#listSectionThreads(request, frame, query, origin),
+      listSectionThreads: (request, frame, query) =>
+        this.#listSectionThreads(request, frame, query),
       listThreads: (request, listRequest, origin) =>
         this.#listThreads(request, listRequest, origin),
       runSectionOperation: (run) => this.#runSectionOperation(run),
@@ -1109,37 +1090,23 @@ export class AppServerHost {
       const ready = Promise.withResolvers<undefined>();
       const usageReady = () => ready.resolve(undefined);
       this.#usagePluginsReady = ready.promise;
-      const surfaces = Promise.withResolvers<undefined>();
-      const surfacesReady = () => surfaces.resolve(undefined);
-      this.#pluginSurfacesReady = surfaces.promise;
-      this.#pluginLoading = this.#loadInstalledPlugins(usageReady, surfacesReady)
+      this.#pluginLoading = this.#loadInstalledPlugins(usageReady)
         .catch((error: unknown) => {
           this.#diagnose(`Harness plugin load failed: ${errorMessage(error)}`);
         })
         .finally(() => {
           usageReady();
-          surfacesReady();
         });
     }
     return this.#pluginLoading;
   }
 
-  /** Presentation filtering needs manifests only, never a slow plugin import or warmup. */
-  #waitForPluginSurfaces(): Promise<void> {
-    void this.#waitForPlugins();
-    return this.#pluginSurfacesReady ?? Promise.resolve();
-  }
-
-  async #loadInstalledPlugins(usageReady: () => void, surfacesReady: () => void): Promise<void> {
+  async #loadInstalledPlugins(usageReady: () => void): Promise<void> {
     if (!this.#options.pluginRoots || this.#pluginLoadAbort.signal.aborted) return;
     const plugins = await loadHarnessPlugins({
       roots: this.#options.pluginRoots,
       scope: "external",
       sessionPlugins: this.#options.sharedThreads?.options.delegateCreates !== true,
-      onSurfacesDeclared: (surfaces) => {
-        if (!this.#pluginLoadAbort.signal.aborted) this.#pluginSurfaces = surfaces;
-        surfacesReady();
-      },
       onUsageAdaptersLoaded: (adapters) => {
         if (!this.#pluginLoadAbort.signal.aborted) this.#usageOnlyAdapters = [...adapters.values()];
         usageReady();
@@ -1160,60 +1127,12 @@ export class AppServerHost {
     }
     this.#plugins = plugins;
     this.#pluginDescriptors = plugins.list();
-    this.#pluginSurfaces = plugins.surfaces();
     this.#usageOnlyAdapters = [...plugins.usageAdapters.values()];
     for (const [id, adapter] of plugins.adapters) this.#externalAdapters.set(id, adapter);
   }
 
-  /** Omitted surfaces mean every surface; the plugin identity never decides this. */
-  #visibleOn(surface: HarnessPluginSurface, harnessId: string): boolean {
-    return this.#pluginSurfaces.get(harnessId as HarnessId)?.has(surface) ?? true;
-  }
-
-  /** Client-channel requests are not a Desktop surface and stay unfiltered. */
-  #eligibleFor(
-    origin: HostRequestOrigin,
-    surface: HarnessPluginSurface,
-    harnessId: string,
-  ): boolean {
-    return origin === "client" || this.#visibleOn(surface, harnessId);
-  }
-
-  #recordsFor(
-    origin: HostRequestOrigin,
-    records: readonly StoredThreadRecordV1[],
-  ): readonly StoredThreadRecordV1[] {
-    return origin === "client"
-      ? records
-      : records.filter((record) => this.#visibleOn("desktop", record.harnessId));
-  }
-
-  /**
-   * A Desktop request naming one Thread of a Harness Desktop does not present is answered as a
-   * missing Thread, so restored tabs or links cannot bring it back into the GUI.
-   */
-  #desktopThreadHarness(request: JsonRpcRequest, origin: HostRequestOrigin): string | undefined {
-    if (origin !== "desktop" || !isRecord(request.params)) return undefined;
-    const threadId = request.params.threadId;
-    // Official Threads have no External record and pass synchronously, without any wait.
-    return typeof threadId === "string" ? this.#repository.harnessOf(threadId) : undefined;
-  }
-
-  /** External Thread events stay Host-owned for a Harness this Desktop must not present. */
-  #dropsDesktopEvent(value: JsonValue): boolean {
-    if (!isRecord(value) || typeof value.method !== "string") return false;
-    const params = isRecord(value.params) ? value.params : undefined;
-    if (params === undefined) return false;
-    const thread = isRecord(params.thread) ? params.thread : undefined;
-    const threadId =
-      typeof params.threadId === "string"
-        ? params.threadId
-        : typeof thread?.id === "string"
-          ? thread.id
-          : undefined;
-    if (threadId === undefined) return false;
-    const harnessId = this.#externalRuntime.get(threadId)?.harnessId;
-    return harnessId !== undefined && !this.#visibleOn("desktop", harnessId);
+  #recordsFor(records: readonly StoredThreadRecordV1[]): readonly StoredThreadRecordV1[] {
+    return records.filter((record) => !RETIRED_HARNESS_IDS.includes(record.harnessId));
   }
 
   async #closeAdapters(): Promise<void> {
@@ -1434,15 +1353,6 @@ export class AppServerHost {
     const installationTimeout = harnessInstallationRequestTimeoutMs(method, params);
     if (installationTimeout !== undefined) timeoutMs = Math.max(timeoutMs, installationTimeout);
     return this.#handleControlRequest(method, params, timeoutMs);
-  }
-
-  refreshNativeThreadCatalog(nativeHome: string): Promise<void> {
-    if (this.#closeRequested || this.#desktopInputEnded) return Promise.resolve();
-    return refreshNativeThreadCatalog(
-      this.#options.environment ?? process.env,
-      nativeHome,
-      this.#officialRuntimeScope.permanentHome,
-    );
   }
 
   async #handleControlRequest(
@@ -1670,15 +1580,6 @@ export class AppServerHost {
       );
       return;
     }
-    const externalHarness = this.#desktopThreadHarness(request, origin);
-    if (externalHarness !== undefined) {
-      await this.#waitForPluginSurfaces();
-      if (!this.#visibleOn("desktop", externalHarness)) {
-        const threadId = String((request.params as JsonObject).threadId);
-        await this.#writer.json(rpcError(request, -32600, `thread not found: ${threadId}`));
-        return;
-      }
-    }
     if (request.method === DELEGATION_READ_METHOD) {
       const parsed = delegationReadParamsSchema.safeParse(request.params);
       if (!parsed.success) {
@@ -1776,7 +1677,7 @@ export class AppServerHost {
       }
       return;
     }
-    if (await this.#desktopControl.handle(request, origin)) return;
+    if (await this.#desktopControl.handle(request)) return;
     if (
       request.method === "codexhost/thread/pins/list" ||
       request.method === "codexhost/thread/pins/set"
@@ -2596,7 +2497,6 @@ export class AppServerHost {
     origin: HostRequestOrigin,
   ): Promise<void> {
     try {
-      await this.#waitForPluginSurfaces();
       const [records, placements] = await Promise.all([
         this.#repository.list(),
         this.#repository.listSectionPlacements(),
@@ -2606,7 +2506,7 @@ export class AppServerHost {
       );
       const result = await aggregateThreadList({
         query: listRequest,
-        records: this.#recordsFor(origin, records),
+        records: this.#recordsFor(records),
         ...(this.#options.sharedThreads
           ? {
               sharedThreads: await this.#options.sharedThreads.list(listRequest.params),
@@ -2663,10 +2563,8 @@ export class AppServerHost {
     request: JsonRpcRequest,
     frame: Buffer<ArrayBufferLike>,
     query: DecodedThreadListRequest,
-    origin: HostRequestOrigin,
   ): Promise<void> {
     try {
-      await this.#waitForPluginSurfaces();
       const [records, localPlacements, sharedPlacements, sharedThreads] = await Promise.all([
         this.#repository.list(),
         this.#repository.listSectionPlacements(),
@@ -2683,7 +2581,7 @@ export class AppServerHost {
       );
       const externalRows = new Map(
         externalThreadListEntries({
-          records: this.#recordsFor(origin, records),
+          records: this.#recordsFor(records),
           query,
           runtimeFor: (threadId) => this.#listRuntimeState(threadId),
           placementOf: (threadId) => placementById.get(threadId),
@@ -3982,19 +3880,8 @@ export class AppServerHost {
     }
   }
 
-  async #startExternalThread(
-    request: JsonRpcRequest,
-    harnessId: ExternalHarnessId,
-    origin: HostRequestOrigin,
-  ): Promise<void> {
+  async #startExternalThread(request: JsonRpcRequest, harnessId: ExternalHarnessId): Promise<void> {
     await this.#waitForPlugins();
-    if (!this.#eligibleFor(origin, "desktop", harnessId)) {
-      this.#routeObservationTracker.rejectCreate(request.id);
-      await this.#writer.json(
-        rpcError(request, -32070, `Harness '${harnessId}' is not available in Desktop`),
-      );
-      return;
-    }
     const adapter = this.#externalAdapters.get(harnessId);
     if (!adapter) {
       this.#routeObservationTracker.rejectCreate(request.id);

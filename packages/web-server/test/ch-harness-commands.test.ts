@@ -127,6 +127,7 @@ it("reuses the ready Web Harness catalog, filters usage/unavailable entries, and
   assert.deepEqual(
     catalog.groups.map((g) => [g.id, g.name]),
     [
+      ["alpha-agent", "Alpha"],
       ["fake", "Twin"],
       ["other", "Twin"],
     ],

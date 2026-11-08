@@ -37,7 +37,6 @@ export class ChHarnessCatalog {
           .plugins.filter(
             (plugin) =>
               plugin.kind !== "usage" &&
-              plugin.id !== "codex-cli" &&
               (this.restrictTo === undefined || this.restrictTo.has(plugin.id)),
           ),
       )

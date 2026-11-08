@@ -113,6 +113,28 @@ it("serves client inspection and snapshots from confirmed configuration without 
   expect(calls.filter((method) => method === "thread/resume")).toHaveLength(1);
 });
 
+it.each([
+  { code: -32600, message: "thread native-thread already has a live local writer" },
+  { code: -32000, message: "resume unavailable" },
+])("returns inspection without configuration when resume fails: $message", async (error) => {
+  const { channel, request } = snapshotChannel();
+  request.mockResolvedValueOnce({ error });
+  expect(await channel.request("codexhost/thread/inspect", { threadId: "native-thread" })).toEqual({
+    result: {
+      owner: "codex",
+      locked: false,
+      history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+    },
+  });
+  expect(request).toHaveBeenCalledExactlyOnceWith("thread/resume", {
+    threadId: "native-thread",
+    excludeTurns: true,
+  });
+  expect(
+    await channel.request("codexhost/thread/inspect", { threadId: "native-thread" }),
+  ).toMatchObject({ result: { effectiveThinkingOptionId: "high" } });
+});
+
 it("validates native command decisions and preserves first-answer semantics", async () => {
   const events = new ClientChannelEvents();
   const respond = vi.fn(async () => undefined);

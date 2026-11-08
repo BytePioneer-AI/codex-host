@@ -1,8 +1,0 @@
-.notice {
-  flex-shrink: 0;
-  padding: 6px 16px;
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}

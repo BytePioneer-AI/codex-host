@@ -485,8 +485,7 @@ export class NativeClientChannel {
     if (method === "codexhost/thread/inspect") {
       if (!threadId) return { error: { code: -32602, message: "threadId is required" } };
       if (!this.#configuration.has(threadId)) {
-        const resumed = await this.request("thread/resume", { threadId, excludeTurns: true });
-        if ("error" in resumed) return resumed;
+        await this.request("thread/resume", { threadId, excludeTurns: true });
       }
       return {
         result: jsonValueSchema.parse({

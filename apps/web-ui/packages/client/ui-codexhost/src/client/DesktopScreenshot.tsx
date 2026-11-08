@@ -58,7 +58,8 @@ export function DesktopScreenshotButton({
       trigger: "/",
       name: `desktop-screenshot:${sourceId}`,
       launcher: "command",
-      launcherOrder: 40,
+      // Launcher groups start with interface actions at 0, then native commands/Skills.
+      launcherOrder: -10,
       showGroupTitle: false,
       candidates: async (session, request) => {
         const current = live.current;

@@ -80,11 +80,6 @@
    viewport-anchored and does not create a new stacking context on the card. */
 @supports (backdrop-filter: blur(14px)) or (-webkit-backdrop-filter: blur(14px)) {
   :global([data-phone]) .card {
-    --dsh-composer-fixed-fill: color-mix(
-      in srgb,
-      var(--dsw-specific-input-major) 24%,
-      var(--dsw-alias-bg-base)
-    );
     background: transparent;
     box-shadow: none;
   }
@@ -108,7 +103,6 @@
 
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
   :global([data-phone]) .card {
-    --dsh-composer-fixed-fill: var(--dsw-specific-input-major);
     background: var(--dsw-specific-input-major);
     box-shadow: var(--dsw-elevation-soft);
   }
@@ -491,23 +485,36 @@
 }
 
 .addSeat,
-.submitSeat {
+.submitSeat,
+.controlScroll {
   display: contents;
 }
 
-/* Only the AppFrame's existing phone posture opts into native horizontal
-   scrolling. Flatten the two desktop groups so sticky edge seats belong to
-   this scrollport, not to a shorter intermediate containing block. */
+/* Only AppFrame's phone posture changes the layout. The middle scrollport
+   stops before both fixed seats, so no opaque backing is needed over glass.
+   It must not establish a containing block: the absolute seats belong to
+   .row, outside this descendant scrollport's overflow clip. */
 .row[data-phone-toolbar] {
   flex-wrap: nowrap;
   position: relative;
+}
+
+.row[data-phone-toolbar] .controlScroll {
+  --dsh-composer-edge-gap: 12px;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: inherit;
+  min-width: 0;
+  min-height: 44px;
+  margin-left: calc(var(--dsh-composer-start-width, 44px) + var(--dsh-composer-edge-gap));
+  margin-right: calc(var(--dsh-composer-end-width, 44px) + var(--dsh-composer-edge-gap));
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-width: none;
-  scroll-padding-inline: 44px 46px;
 }
 
-.row[data-phone-toolbar]::-webkit-scrollbar {
+.row[data-phone-toolbar] .controlScroll::-webkit-scrollbar {
   display: none;
 }
 
@@ -541,16 +548,13 @@
 
 .row[data-phone-toolbar] .addSeat,
 .row[data-phone-toolbar] .submitSeat {
-  position: sticky;
+  position: absolute;
+  inset-block: 2px 6px;
   z-index: 1;
   display: flex;
   flex: none;
   align-items: center;
   gap: inherit;
-  /* Match the material composited over the theme base, but stay opaque so
-     scrolled controls cannot show through or cover the fixed actions. */
-  background: var(--dsh-composer-fixed-fill, var(--dsw-specific-input-major));
-  box-shadow: 0 0 0 8px var(--dsh-composer-fixed-fill, var(--dsw-specific-input-major));
 }
 
 .row[data-phone-toolbar] .addSeat {
@@ -562,8 +566,31 @@
   margin-left: 0;
 }
 
-.row[data-phone-toolbar][data-toolbar-activity] {
-  overflow: visible;
+/* Transparent borders keep the existing 28/30px themed circles inside
+   separate 44px targets, including simultaneous Stop and Send. */
+.row[data-phone-toolbar] .add,
+.row[data-phone-toolbar] .primary {
+  box-sizing: border-box;
+  width: 44px;
+  height: 44px;
+  background-clip: padding-box;
+}
+
+.row[data-phone-toolbar] .add {
+  border: 8px solid transparent;
+}
+
+.row[data-phone-toolbar] .primary {
+  border: 7px solid transparent;
+}
+
+/* Voice/activity takeover uses the resident desktop groups in normal flow. */
+.row[data-phone-toolbar][data-toolbar-activity] .controlScroll {
+  display: contents;
+}
+
+.row[data-phone-toolbar][data-toolbar-activity] .submitSeat {
+  position: static;
 }
 
 .row[data-actions-overflow] [data-composer-overflow-action] {
@@ -571,6 +598,10 @@
 }
 
 @container (max-width: 560px) {
+  .row[data-phone-toolbar] .controlScroll {
+    --dsh-composer-edge-gap: 8px;
+  }
+
   .row[data-phone-toolbar] .addSeat {
     margin-right: -4px;
   }

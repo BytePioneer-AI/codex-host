@@ -9,6 +9,10 @@ export function observeControlRow(
   row: HTMLElement,
   onLayout?: (layout: ControlRowLayout) => void,
 ): () => void {
+  const scrollport = row.querySelector<HTMLElement>("[data-toolbar-scroll]");
+  if (scrollport === null) return () => {};
+  const start = row.querySelector<HTMLElement>('[data-toolbar-fixed="start"]');
+  const end = row.querySelector<HTMLElement>('[data-toolbar-fixed="end"]');
   let last: ControlRowLayout = { phone: false, overflowActions: false };
   let disposed = false;
   const observed = new Set<Element>();
@@ -18,16 +22,12 @@ export function observeControlRow(
     const active = row.ownerDocument.activeElement;
     if (!(active instanceof HTMLElement) || !row.contains(active)) return;
     if (active.closest("[data-toolbar-fixed]")) return;
-    const start = row.querySelector<HTMLElement>('[data-toolbar-fixed="start"]');
-    const end = row.querySelector<HTMLElement>('[data-toolbar-fixed="end"]');
-    if (start === null || end === null) return;
-    const gap = parseFloat(getComputedStyle(row).columnGap) || 0;
-    const left = start.getBoundingClientRect().right + gap;
-    const right = end.getBoundingClientRect().left - gap;
+    const { left, right } = scrollport.getBoundingClientRect();
     const rect = active.getBoundingClientRect();
     // Move only this scrollport, never the conversation or the draft selection.
-    if (rect.left < left) row.scrollLeft += rect.left - left;
-    else if (rect.right > right) row.scrollLeft += Math.min(rect.right - right, rect.left - left);
+    if (rect.left < left) scrollport.scrollLeft += rect.left - left;
+    else if (rect.right > right)
+      scrollport.scrollLeft += Math.min(rect.right - right, rect.left - left);
   };
 
   const measure = (): void => {
@@ -48,6 +48,20 @@ export function observeControlRow(
     row.removeAttribute("data-model-compact");
     row.removeAttribute("data-actions-overflow");
     row.toggleAttribute("data-toolbar-measuring", phone);
+    if (phone) {
+      // Intrinsic fixed-seat widths do not depend on the middle viewport. In
+      // particular, reserve both Stop and Send when a continuable child runs.
+      // Guard writes so the style observer converges without re-notifying itself.
+      for (const [name, seat] of [
+        ["start", start],
+        ["end", end],
+      ] as const) {
+        if (seat === null) continue;
+        const property = `--dsh-composer-${name}-width`;
+        const value = `${seat.getBoundingClientRect().width}px`;
+        if (row.style.getPropertyValue(property) !== value) row.style.setProperty(property, value);
+      }
+    }
     const style = getComputedStyle(row);
     const available =
       row.getBoundingClientRect().width -
@@ -57,7 +71,11 @@ export function observeControlRow(
       const items = (parent: Element): Element[] =>
         Array.from(parent.children).flatMap((child) => {
           const display = getComputedStyle(child).display;
-          return display === "none" ? [] : display === "contents" ? items(child) : [child];
+          return display === "none"
+            ? []
+            : child === scrollport || display === "contents"
+              ? items(child)
+              : [child];
         });
       const controls = items(row);
       return (
@@ -76,7 +94,7 @@ export function observeControlRow(
     // Desktop retains its original two-group model-collapse/wrap behavior.
     const desktopDemand = (): number => {
       const widths = Array.from(
-        row.children,
+        scrollport.children,
         (child) => child.getBoundingClientRect().width,
       ).filter((width) => width > 0);
       return (
@@ -96,7 +114,7 @@ export function observeControlRow(
       menuTrigger?.disabled === false &&
       expanded > available - (wasOverflow ? 2 : 0);
     // Keep the menu's candidate identity and a focused trigger stable until
-    // that interaction ends. A narrow row can scroll in either posture.
+    // that interaction ends. The middle viewport can scroll in either posture.
     const interacting =
       row.hasAttribute("data-command-menu-open") ||
       (action !== null && action.contains(row.ownerDocument.activeElement));
@@ -107,7 +125,7 @@ export function observeControlRow(
       last = { phone, overflowActions };
       onLayout?.(last);
     }
-    if (!phone || row.scrollWidth <= row.clientWidth) row.scrollLeft = 0;
+    if (!phone || scrollport.scrollWidth <= scrollport.clientWidth) scrollport.scrollLeft = 0;
     revealFocus();
   };
   const resize = new ResizeObserver(measure);

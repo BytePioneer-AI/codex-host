@@ -8,6 +8,25 @@ import {
 import { WebSocket, createWebSocketStream } from "ws";
 import { StreamThreadPeer, type SharedThreadPeer } from "./shared-thread-peer.js";
 
+/** Matches both npm payloads and the signed macOS app's Resources/MacOS split. */
+export function sharedHostLauncherPath(
+  runtime: string,
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (environment.CODEXHOST_LAUNCHER_EXECUTABLE) return environment.CODEXHOST_LAUNCHER_EXECUTABLE;
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  const root = paths.dirname(paths.dirname(runtime));
+  if (
+    platform === "darwin" &&
+    paths.basename(root) === "Resources" &&
+    paths.basename(paths.dirname(root)) === "Contents"
+  ) {
+    return paths.join(paths.dirname(root), "MacOS", "codexhost");
+  }
+  return paths.join(root, "bin", platform === "win32" ? "codexhost.exe" : "codexhost");
+}
+
 async function connectStream(
   launch: HostServiceLaunch,
   desktop?: { environment: NodeJS.ProcessEnv; arguments: string[] },

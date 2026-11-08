@@ -107,6 +107,9 @@ async function untilReady(ensure: () => boolean): Promise<void> {
 }
 
 it("returns downloading immediately through the preview RPC and keeps downloading after its request aborts", async (t) => {
+  let backend: Awaited<ReturnType<typeof createDshWebBackend>> | undefined;
+  // Dispose retained terminal children before fixture cleanup removes their cwd.
+  t.after(() => backend?.close());
   const f = await fixture(t);
   copyFileSync(
     join(import.meta.dirname, "fixtures/office/sample.docx"),
@@ -119,12 +122,11 @@ it("returns downloading immediately through the preview RPC and keeps downloadin
     received.resolve(undefined);
   });
   const ensure = f.createOfficeEngine(f.data, [f.artifact]);
-  const backend = await createDshWebBackend({
+  backend = await createDshWebBackend({
     workspaceRoot: f.root,
     threadWorkspace: () => f.root,
     ensureOfficeEngine: ensure,
   });
-  t.after(() => backend.close());
   const request = new AbortController();
   const response = await backend.fetch(
     new Request("http://localhost/api/officeToPdf/render", {

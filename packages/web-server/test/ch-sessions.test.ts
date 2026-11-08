@@ -88,7 +88,7 @@ it("projects imported branch provenance in both list rows and opened history", a
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const host = new FakeChHost();
   const branch = host.add("imported-branch", root);
-  const source = { harnessId: "codex-cli", nativeSessionId: "native-source" };
+  const source = { harnessId: "pi", nativeSessionId: "native-source" };
   branch.codexhostImportSource = source;
   host.add("original-session", root);
   const sessions = new ChSessions(

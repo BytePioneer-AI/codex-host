@@ -122,6 +122,35 @@ it(
       ),
       false,
     );
+    const draftPage = await browser.newPage({
+      viewport: { width: 1280, height: 900 },
+      locale: "en-US",
+    });
+    draftPage.on("pageerror", (error) => errors.push(error.message));
+    await draftPage.goto(url);
+    await draftPage
+      .getByRole("button", { name: "Select Harness, current Codex", exact: true })
+      .click();
+    assert.equal(await draftPage.getByRole("menuitem", { name: "Codex", exact: true }).count(), 1);
+    assert.equal(
+      await draftPage.getByRole("menuitem", { name: "Codex CLI", exact: true }).count(),
+      0,
+    );
+    await draftPage.keyboard.press("Escape");
+    await draftPage.locator('[contenteditable="true"]').fill("New official Codex chat");
+    await draftPage.getByRole("button", { name: "Send message", exact: true }).click();
+    await draftPage.getByText("CH response: New official Codex chat", { exact: true }).waitFor();
+    const start = host.requests.find((entry) => entry.method === "thread/start");
+    assert.deepEqual(start?.params.model, { id: "gpt-5.4" });
+    assert.equal(start?.params.cwd, undefined);
+    assert.deepEqual(start?.params.projectlessWorkspace, { prompt: "New official Codex chat" });
+    const created = [...host.threads.values()].at(-1);
+    assert.ok(created);
+    assert.ok(created.id.startsWith("native-created-"));
+    assert.equal(
+      host.requests.filter((entry) => entry.method === "turn/start").at(-1)?.params.threadId,
+      created.id,
+    );
     assert.deepEqual(errors, []);
   },
 );

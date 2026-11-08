@@ -35,52 +35,6 @@ function request(port: number, line: string): Promise<string> {
 }
 
 describe("Controller attachment server", () => {
-  it("authenticates catalog invalidation without accepting arguments or attachment work", async () => {
-    const port = await availablePort();
-    const attach = vi.fn(async () => {});
-    const invalidateThreadCatalog = vi.fn(async () => {});
-    const server = await startControllerAttachmentServer({
-      port,
-      nonce,
-      attach,
-      invalidateThreadCatalog,
-    });
-    try {
-      for (const line of [
-        `CATALOG ${"0".repeat(32)}\n`,
-        `CATALOG ${nonce} arbitraryJavaScript()\n`,
-        `CATALOG ${nonce}\nATTACH ${nonce}\n`,
-      ])
-        expect(await request(port, line)).toBe("rejected\n");
-      expect(invalidateThreadCatalog).not.toHaveBeenCalled();
-      expect(await request(port, `CATALOG ${nonce}\n`)).toBe("ready\n");
-      expect(invalidateThreadCatalog).toHaveBeenCalledExactlyOnceWith();
-      expect(attach).not.toHaveBeenCalled();
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("contains catalog callback failures and keeps attachment available", async () => {
-    const port = await availablePort();
-    const attach = vi.fn(async () => {});
-    const server = await startControllerAttachmentServer({
-      port,
-      nonce,
-      attach,
-      invalidateThreadCatalog: async () => {
-        throw new Error("private Renderer error");
-      },
-    });
-    try {
-      expect(await request(port, `CATALOG ${nonce}\n`)).toBe("failed\n");
-      expect(await request(port, `ATTACH ${nonce}\n`)).toBe("ready\n");
-      expect(attach).toHaveBeenCalledOnce();
-    } finally {
-      await server.close();
-    }
-  });
-
   it("accepts only the exact nonce and invokes the attachment callback", async () => {
     const port = await availablePort();
     const attach = vi.fn(async () => {});

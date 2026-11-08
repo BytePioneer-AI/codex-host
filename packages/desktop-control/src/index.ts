@@ -101,4 +101,3 @@ export const packageMetadata = {
   contractVersion: WORKSPACE_CONTRACT_VERSION,
 } as const;
 export { requestDesktopRemoteConnections } from "./remote-connections-control.js";
-export { requestDesktopThreadCatalogRefresh } from "./thread-catalog-control.js";

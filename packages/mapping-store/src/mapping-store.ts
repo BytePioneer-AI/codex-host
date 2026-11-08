@@ -1040,16 +1040,6 @@ export class MappingStore {
     });
   }
 
-  /** The Harness owning a stored Thread, read synchronously; undefined before initialization. */
-  threadHarnessId(hostThreadId: string): HarnessId | undefined {
-    try {
-      this.#requireInitialized();
-    } catch {
-      return undefined;
-    }
-    return this.#records.get(hostThreadId as HostThreadId)?.harnessId;
-  }
-
   /** Native Sessions that an existing or former Thread of this Harness moved on from. */
   supersededNativeSessionIds(harnessId: HarnessId): string[] {
     this.#requireInitialized();

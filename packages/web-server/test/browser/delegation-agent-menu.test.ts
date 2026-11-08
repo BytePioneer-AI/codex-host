@@ -78,13 +78,17 @@ it(
     state.failure = "Command catalog unavailable";
     await composer.pressSequentially("@");
     await menu.getByRole("option", { name: /Retry native commands/ }).waitFor();
-    const targets = menu.getByRole("option").filter({ hasText: /^(Codex|Twin)/ });
-    assert.deepEqual(await targets.allTextContents(), ["Codexcodex-cli", "Twinfake", "Twinother"]);
+    const targets = menu.getByRole("option").filter({ hasText: /^(Alpha|Twin)/ });
+    assert.deepEqual(await targets.allTextContents(), [
+      "Alphaalpha-agent",
+      "Twinfake",
+      "Twinother",
+    ]);
     assert.equal(await menu.getByRole("option", { name: /Missing|Usage/ }).count(), 0);
-    await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).click();
+    await menu.getByRole("option", { name: "Alpha alpha-agent", exact: true }).click();
     const chips = composer.locator('[data-composer-chip="codexhost-delegation"]');
     await chips.waitFor();
-    assert.equal((await composer.innerText()).replace(/\s+/g, " "), "Before Codex After");
+    assert.equal((await composer.innerText()).replace(/\s+/g, " "), "Before Alpha After");
     assert.equal(writeMethods().length, 0);
     assert.equal(
       host.requests.filter((r) => r.method === "codexhost/harness/inspect").length,
@@ -169,21 +173,21 @@ it(
       await discoveryBrowser(t, 1280, true);
     await open();
     await composer.fill("@");
-    await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
+    await menu.getByRole("option", { name: "Alpha alpha-agent", exact: true }).waitFor();
     await menu.getByRole("option", { name: "Twin fake", exact: true }).waitFor();
     await menu.getByRole("option", { name: /^Native skill\b/ }).waitFor();
     await composer.press("Escape");
-    for (const text of ["dev@codex-cli.com", "https://host/@codex-cli", "@notes.txt "]) {
+    for (const text of ["dev@alpha-agent.com", "https://host/@alpha-agent", "@notes.txt "]) {
       await composer.fill(text);
       await menu.waitFor({ state: "hidden" });
       assert.equal(await composer.locator("[data-composer-chip]").count(), 0);
       assert.equal(await composer.innerText(), text);
     }
-    await composer.fill("Discuss Codex @Codex");
+    await composer.fill("Discuss Alpha @Alpha");
     await composer.press("Escape");
     assert.equal(await composer.locator("[data-composer-chip]").count(), 0);
-    await composer.fill("@codex-cli");
-    await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
+    await composer.fill("@alpha-agent");
+    await menu.getByRole("option", { name: "Alpha alpha-agent", exact: true }).waitFor();
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("Enter");
     await composer.locator('[data-composer-chip="codexhost-delegation"]').waitFor();

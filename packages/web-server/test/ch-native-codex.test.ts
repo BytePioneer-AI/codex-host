@@ -71,4 +71,69 @@ it("lists native and external Threads and continues native history with its orig
   );
   await call("session/rename", { sessionId: "native-existing", title: "same native chat" });
   assert.equal(host.threads.get("native-existing")?.name, "same native chat");
+
+  const catalog = await call<{ groups: Array<{ id: string; name: string }> }>(
+    "session/modelCatalog",
+  );
+  assert.deepEqual(
+    catalog.groups.map((group) => group.id),
+    ["codex", "fake"],
+  );
+  assert.equal(catalog.groups[0]?.name, "Codex");
+  for (const cwd of [root, undefined]) {
+    const draft = await call<{ sessionId: string }>("session/create", cwd ? { cwd } : {});
+    await call("session/prompt", {
+      sessionId: draft.sessionId,
+      content: [{ type: "text", text: "First official message" }],
+    });
+    const start = host.requests.filter((entry) => entry.method === "thread/start").at(-1);
+    assert.deepEqual(start?.params.model, { id: "gpt-5.4" });
+    assert.equal(start?.params.cwd, cwd);
+    assert.deepEqual(
+      start?.params.projectlessWorkspace,
+      cwd ? undefined : { prompt: "First official message" },
+    );
+    const created = [...host.threads.values()].at(-1);
+    assert.ok(created);
+    assert.ok(created.id.startsWith("native-created-"));
+    assert.equal(created.modelProvider, "openai");
+    assert.equal(
+      host.requests.filter((entry) => entry.method === "turn/start").at(-1)?.params.threadId,
+      created.id,
+    );
+  }
+});
+
+it("omits unavailable Codex, exposes inspection errors and restores its entry after recovery", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "web-native-unavailable-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = new FakeChHost();
+  const sessions = new ChSessions(
+    host,
+    new Workspaces(new DataDir(root), root),
+    new EventHub(root),
+  );
+  t.after(() => sessions.close());
+  assert.deepEqual(
+    (await sessions.catalog.models()).groups.map((group) => group.id),
+    ["fake"],
+  );
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/harness/inspect" && params.harnessId === "codex")
+      return {
+        status: "error",
+        error: { code: "unavailable", message: "official catalog failed", retryable: false },
+      } as T;
+    return request<T>(method, params);
+  };
+  const failed = await sessions.catalog.models();
+  assert.deepEqual(failed.failures, [
+    { id: "codex", name: "Codex", message: "official catalog failed" },
+  ]);
+  nativeCodex(host);
+  assert.deepEqual(
+    (await sessions.catalog.models()).groups.map((group) => group.id),
+    ["codex", "fake"],
+  );
 });

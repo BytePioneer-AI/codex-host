@@ -313,17 +313,10 @@ export class ChSessions {
     const inspection = threadInspectionSchema.parse(
       await this.host.request("codexhost/thread/inspect", { threadId: this.id(id) }),
     );
-    // Native Codex retains its identity and is routed by the shared Host. It is
-    // not imported into the external codex-cli Adapter merely to use Web.
-    if (inspection.owner === "codex")
-      return {
-        ...inspection,
-        harnessId: "codex",
-        effectiveModel: undefined,
-        effectiveThinkingOptionId: undefined,
-        effectivePermissionModeId: undefined,
-      };
-    return inspection;
+    return {
+      ...inspection,
+      harnessId: inspection.owner === "codex" ? "codex" : inspection.harnessId,
+    };
   }
   private view(id: string, reuseIdle = false): Promise<ChThreadHistory> {
     id = this.id(id);
@@ -423,9 +416,7 @@ export class ChSessions {
       throw new RpcError("host/resync", "Host snapshot was superseded by a new generation");
     view.log.setProjection(
       "nativeDiscovery",
-      harnessId !== "codex" &&
-        !view.thread.parentThreadId &&
-        view.thread.canAcceptDirectInput !== false,
+      !view.thread.parentThreadId && view.thread.canAcceptDirectInput !== false,
     );
     if (view.ownerSnapshot && this.hostOnline && !this.closed)
       this.interactions?.update(view.ownerSnapshot);
@@ -488,28 +479,6 @@ export class ChSessions {
     configurationRevision: number,
   ): void {
     const id = view.thread.id;
-    if (harnessId === "codex") {
-      // Do not apply external Harness defaults to an existing native Thread.
-      // Its model and approval policy continue to be owned by app-server.
-      view.log.setProjection("sentMessageEdit", { seq: null });
-      const configuration = view.ownerSnapshot?.configuration;
-      const selection = {
-        provider: "codex",
-        model: configuration?.native?.model ?? "harness",
-        ...(configuration?.native?.reasoningEffort
-          ? { reasoningEffort: configuration.native.reasoningEffort }
-          : {}),
-      };
-      view.log.setProjection("modelSelection", { lastUsed: selection, next: selection });
-      view.log.setProjection("nativePermissions", {
-        harnessId: "codex",
-        catalog: null,
-        scope: "live",
-        selectable: false,
-        locked: true,
-      });
-      return;
-    }
     if ((this.threads.get(id)?.configurationRevision ?? 0) !== configurationRevision) return;
     if (!force && this.threads.get(id)?.controls) return;
     // Runtime inspection/config discovery must not gate the history snapshot.
@@ -575,8 +544,7 @@ export class ChSessions {
             imageLimits: WEB_IMAGE_LIMITS,
           }
         : {}),
-      nativeDiscovery:
-        harnessId !== "codex" && !row.parentThreadId && row.canAcceptDirectInput !== false,
+      nativeDiscovery: !row.parentThreadId && row.canAcceptDirectInput !== false,
       threadReference: { hostId: "local" },
       title: threadListTitle(row),
       codexhostImportSource: row.codexhostImportSource ?? null,
@@ -691,21 +659,34 @@ export class ChSessions {
   private async commit(draft: Draft, prompt: string): Promise<string> {
     if (draft.canonicalId) return draft.canonicalId;
     draft.creating ??= (async () => {
+      const plugin = (await this.catalog.list()).some(
+        (item) => item.id === draft.selection.provider,
+      );
       const result = await this.host.request<{ thread: ChThread }>("thread/start", {
         historyMode: "paginated",
         ...(draft.cwd
           ? { cwd: draft.cwd }
           : { projectlessWorkspace: { prompt: prompt.slice(0, 16_384) } }),
-        model: encodeHarnessPluginRoute(
-          harnessPluginRouteSchema.parse({
-            harnessId: draft.selection.provider,
-            model: { id: draft.selection.model },
-            ...(draft.selection.reasoningEffort
-              ? { thinkingOptionId: draft.selection.reasoningEffort }
-              : {}),
-            ...(draft.permissionModeId ? { permissionModeId: draft.permissionModeId } : {}),
-          }),
-        ),
+        ...(plugin
+          ? {
+              model: encodeHarnessPluginRoute(
+                harnessPluginRouteSchema.parse({
+                  harnessId: draft.selection.provider,
+                  model: { id: draft.selection.model },
+                  ...(draft.selection.reasoningEffort
+                    ? { thinkingOptionId: draft.selection.reasoningEffort }
+                    : {}),
+                  ...(draft.permissionModeId ? { permissionModeId: draft.permissionModeId } : {}),
+                }),
+              ),
+            }
+          : {
+              model: { id: draft.selection.model },
+              ...(draft.selection.reasoningEffort
+                ? { config: { model_reasoning_effort: draft.selection.reasoningEffort } }
+                : {}),
+              ...(draft.permissionModeId ? { permissions: draft.permissionModeId } : {}),
+            }),
       });
       // Older Desktop CDP bridges may rewrite the explicit route. Confirm the
       // owner before binding the draft or sending any input; a rejected creating
@@ -967,11 +948,6 @@ export class ChSessions {
         return {};
       }
       const owner = await this.owner(request.sessionId);
-      if (owner.owner === "codex")
-        throw new RpcError(
-          "session/model-unavailable",
-          "This native Codex conversation keeps its app-server settings. Change its model in Desktop.",
-        );
       if (owner.harnessId !== request.provider)
         throw new RpcError(
           "session/model-unavailable",
@@ -1352,21 +1328,16 @@ export class ChSessions {
         !sessionId ||
         (this.drafts.has(sessionId) && !this.drafts.get(sessionId)?.canonicalId)
       )
-        throw new RpcError("command/unavailable", "Commands require an existing external Thread.");
+        throw new RpcError("command/unavailable", "Commands require an existing Thread.");
       if (this.closed || !this.hostOnline)
         throw new RpcError("host/offline", "The Host is disconnected.");
-      const owner = await this.owner(id);
-      if (owner.owner !== "external")
-        throw new RpcError("command/unavailable", "Harness commands require an external Thread.");
+      await this.owner(id);
       const { thread } = await this.host.request<{ thread: ChThread }>("thread/read", {
         threadId: id,
         includeTurns: false,
       });
       if (thread.id !== id || thread.parentThreadId || thread.canAcceptDirectInput === false)
-        throw new RpcError(
-          "command/unavailable",
-          "Commands require an editable local external Thread.",
-        );
+        throw new RpcError("command/unavailable", "Commands require an editable local Thread.");
       return thread;
     });
     rpc.register("codexhost/threadCommands", (args) =>

@@ -658,7 +658,12 @@ const server = createWebServer((request, response) => {
     }
     if (pathname.startsWith("/harness-icons/")) {
       const id = decodeURIComponent(pathname.slice("/harness-icons/".length));
-      await send(request, response, await sessions.catalog.icon(id), HARNESS_ICON_CACHE);
+      await send(
+        request,
+        response,
+        id === "codex" ? assets.dist("/codex.png") : await sessions.catalog.icon(id),
+        HARNESS_ICON_CACHE,
+      );
       return;
     }
     if (pluginRuntime !== undefined && (auth === undefined || requestAuth !== undefined)) {

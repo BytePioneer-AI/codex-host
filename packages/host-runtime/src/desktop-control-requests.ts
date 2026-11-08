@@ -41,13 +41,12 @@ import {
   usageStatisticsParamsSchema,
   type HarnessAccountInspectResult,
   type HarnessPluginDescriptor,
-  type HarnessPluginSurface,
   type HarnessPreferenceSnapshot,
   type LoadedSession,
 } from "@codexhost/shared-contracts";
 
 import { handleCredentialImports } from "./credential-imports.js";
-import { errorMessage, rpcEnvelope, rpcError, type HostRequestOrigin } from "./desktop-rpc.js";
+import { errorMessage, rpcEnvelope, rpcError } from "./desktop-rpc.js";
 import { listedHarnessAccounts, listHarnessAccountSources } from "./harness-accounts.js";
 import type { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
 import { handleHarnessInstallation, HarnessInstallationError } from "./harness-installation.js";
@@ -79,7 +78,6 @@ export interface DesktopControlRequestHost {
   listLoadedSessions(): LoadedSession[];
   applyHarnessPreferences(snapshot: HarnessPreferenceSnapshot): void;
   attachUsageStatistics(): void;
-  eligibleFor(origin: HostRequestOrigin, surface: HarnessPluginSurface, harnessId: string): boolean;
   inspectHarnessAccount(
     adapter: HarnessAdapter,
     refresh?: boolean,
@@ -106,7 +104,7 @@ export class DesktopControlRequests {
   }
 
   /** Returns false when `request` is not a control request, leaving it to Thread routing. */
-  async handle(request: JsonRpcRequest, origin: HostRequestOrigin): Promise<boolean> {
+  async handle(request: JsonRpcRequest): Promise<boolean> {
     if (
       request.method === HARNESS_PREFERENCES_GET_METHOD ||
       request.method === HARNESS_PREFERENCES_PATCH_METHOD
@@ -440,9 +438,7 @@ export class DesktopControlRequests {
         }
         await this.#host.waitForPlugins();
         const result = harnessPluginListResultSchema.parse({
-          plugins: this.#host
-            .pluginDescriptors()
-            .filter((plugin) => this.#host.eligibleFor(origin, "desktop", plugin.id)),
+          plugins: this.#host.pluginDescriptors(),
         });
         await this.#host.writeJson(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       });

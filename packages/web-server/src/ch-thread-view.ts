@@ -296,15 +296,19 @@ export class ChThreadView {
 
   update(thread: ChThread): void {
     this.ensureCurrent();
-    // Native history can replace live Item identities when a Turn is persisted.
-    // This journal is append-only: reopen it rather than append the replacement
-    // transcript after the already displayed live output.
+    // The journal is append-only. Reopen if native input arrives after begin()
+    // or persisted history replaces live Items, so input stays before its output.
     for (const turn of thread.turns) {
       const view = this.turns.get(turn.id);
-      if (!view || view.done) continue;
+      if (!view) continue;
+      const previous = this.thread.turns.find((item) => item.id === turn.id);
       const ids = new Set(conversationItems(turn).map((item) => item.id));
-      if ([...view.items.keys()].some((id) => !ids.has(id)))
-        throw new RpcError("host/items-replaced", "CH replaced live Items with native history.");
+      if (
+        (!view.done && [...view.items.keys()].some((id) => !ids.has(id))) ||
+        JSON.stringify(previous?.items.filter((item) => item.type === "userMessage")) !==
+          JSON.stringify(turn.items.filter((item) => item.type === "userMessage"))
+      )
+        throw new RpcError("host/items-replaced", "CH replaced already projected Items.");
     }
     Object.assign(this.thread, thread);
     this.log.setProjection("title", threadListTitle(thread));

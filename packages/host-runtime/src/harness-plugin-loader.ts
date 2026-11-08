@@ -11,13 +11,10 @@ import type {
 import {
   HARNESS_PLUGIN_API_VERSION,
   HARNESS_PLUGIN_LIMIT,
-  HARNESS_PLUGIN_SURFACES,
   harnessPluginDescriptorSchema,
   isHarnessPluginInScope,
-  type HarnessId,
   type HarnessPluginDescriptor,
   type HarnessPluginScope,
-  type HarnessPluginSurface,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -51,7 +48,7 @@ export interface LoadHarnessPluginsOptions {
   /** Absolute trusted roots only. Default enablement comes from each root's enabled.json. */
   roots: readonly string[];
   context: HarnessPluginContext;
-  /** Defaults to external. Codex execution requires a separate Web-owned registry. */
+  /** Defaults to external; official Codex is not a plugin. */
   scope?: HarnessPluginScope;
   /** Server-owned explicit enablement instead of enabled.json, still bounded by scope. */
   enabledIds?: ReadonlySet<string>;
@@ -73,12 +70,6 @@ export interface LoadHarnessPluginsOptions {
    * plugins start. Ownership/cleanup remains with the returned registry.
    */
   onUsageAdaptersLoaded?: (adapters: ReadonlyMap<string, HarnessUsageStatisticsAdapter>) => void;
-  /** Declared presentation surfaces, published from manifests before any import or warmup.
-   * Includes plugins this Host does not mount, so stored Threads can be filtered at once.
-   */
-  onSurfacesDeclared?: (
-    surfaces: ReadonlyMap<HarnessId, ReadonlySet<HarnessPluginSurface>>,
-  ) => void;
   diagnose?: (diagnostic: HarnessPluginDiagnostic) => void;
 }
 
@@ -291,8 +282,6 @@ export async function loadHarnessPlugins(
     // enabled.json entry or onlyIds selection cannot widen the owner's scope.
     if (!isHarnessPluginInScope(manifest.id, scope)) continue;
     if (!candidate.enabled || (options.onlyIds && !options.onlyIds.has(manifest.id))) continue;
-    if (counts.get(manifest.id) === 1 && !options.reservedIds?.has(manifest.id))
-      registry.declareSurfaces(manifest.id, manifest.surfaces ?? HARNESS_PLUGIN_SURFACES);
     if (options.sessionPlugins === false && manifest.kind !== "usage") continue;
     if (counts.get(manifest.id) !== 1 || options.reservedIds?.has(manifest.id)) {
       if (!conflicted.has(manifest.id)) diagnose({ id: manifest.id, code: "duplicateId" });
@@ -300,11 +289,6 @@ export async function loadHarnessPlugins(
       continue;
     }
     pending.push(candidate);
-  }
-  try {
-    options.onSurfacesDeclared?.(registry.surfaces());
-  } catch {
-    /* An observer cannot change loading. */
   }
   // Each plugin gets a full import/factory budget. Four workers overlap a slow
   // neighbor without shrinking later plugins to whatever time remains.
@@ -317,7 +301,6 @@ export async function loadHarnessPlugins(
     {
       descriptor: HarnessPluginDescriptor;
       adapter: PluginAdapter;
-      surfaces?: readonly HarnessPluginSurface[];
     }
   >();
   const worker = async (): Promise<void> => {
@@ -381,7 +364,6 @@ export async function loadHarnessPlugins(
       loaded.set(candidate, {
         descriptor,
         adapter,
-        ...(manifest.surfaces ? { surfaces: manifest.surfaces } : {}),
       });
     }
   };
@@ -397,12 +379,7 @@ export async function loadHarnessPlugins(
     await Promise.all(Array.from({ length: Math.min(4, batch.length) }, () => worker()));
     for (const candidate of batch) {
       const entry = loaded.get(candidate);
-      if (entry)
-        await registry.register(
-          entry.descriptor,
-          entry.adapter,
-          entry.surfaces ?? HARNESS_PLUGIN_SURFACES,
-        );
+      if (entry) await registry.register(entry.descriptor, entry.adapter);
     }
     if (index === 0) options.onUsageAdaptersLoaded?.(registry.usageAdapters);
   }

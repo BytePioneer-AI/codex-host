@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
+import { harnessCommandCatalogSchema } from "@codexhost/shared-contracts";
 import { ChSessions } from "../src/ch-sessions.ts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
@@ -47,7 +48,7 @@ it("preserves live/static/unspecified catalogs and native metadata without creat
   );
   assert.equal(host.threads.size, 1);
 });
-it("rejects unbound drafts, official ownership, read-only children and missing Threads", async (t) => {
+it("allows official ownership but rejects unbound drafts, read-only children and missing Threads", async (t) => {
   const { host, thread, dispatch, inspect, execute } = fixture(t);
   const created = await dispatch("session/create", { cwd: thread.cwd });
   assert.ok(created.ok);
@@ -65,9 +66,14 @@ it("rejects unbound drafts, official ownership, read-only children and missing T
   const request = host.request.bind(host);
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
     method === "codexhost/thread/inspect"
-      ? ({ owner: "codex", locked: true } as T)
+      ? ({
+          owner: "codex",
+          locked: false,
+          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        } as T)
       : request<T>(method, params);
-  assert.equal((await inspect()).ok, false);
+  assert.equal((await inspect()).ok, true);
+  host.requests.length = 0;
   assert.equal((await inspect("missing")).ok, false);
   assert.equal(
     host.requests.some((r) => r.method.includes("commands/inspect")),
@@ -91,6 +97,27 @@ it("executes by stable ID with no arguments, and rejects unknown/text commands a
   assert.equal(
     host.requests.filter((r) => r.method === "codexhost/thread/command/execute").length,
     1,
+  );
+});
+it("preserves partial catalog warnings and admits native Codex default review without a text prompt", async (t) => {
+  const { host, state, thread, inspect, execute } = fixture(t);
+  state.catalog = harnessCommandCatalogSchema.parse({
+    commands: [
+      { id: "compact", invocation: "/compact", label: "Compact", argumentMode: "none" },
+      { id: "review", invocation: "/review", label: "Review", argumentMode: "none" },
+    ],
+    source: "live",
+    warnings: ["Skills unavailable"],
+  });
+  assert.deepEqual(await inspect(), { ok: true, value: state.catalog });
+  assert.equal((await execute("review")).ok, true);
+  assert.deepEqual(
+    host.requests.find((r) => r.method === "codexhost/thread/command/execute")?.params,
+    { threadId: thread.id, commandId: "review" },
+  );
+  assert.equal(
+    host.requests.some((r) => r.method === "turn/start"),
+    false,
   );
 });
 it("fences duplicate requests, preserves Host errors and never retries an unknown write", async (t) => {
@@ -122,7 +149,7 @@ it("reuses the ready Web Harness catalog, filters usage/unavailable entries, and
   assert.deepEqual(
     catalog.groups.map((g) => [g.id, g.name]),
     [
-      ["codex-cli", "Codex"],
+      ["alpha-agent", "Alpha"],
       ["fake", "Twin"],
       ["other", "Twin"],
     ],

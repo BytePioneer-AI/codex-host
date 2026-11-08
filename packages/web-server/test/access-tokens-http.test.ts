@@ -84,7 +84,6 @@ async function start(
   environment?: NodeJS.ProcessEnv,
 ): Promise<{ base: URL; data: string; access(): Promise<AccessState> }> {
   const data = mkdtempSync(join(tmpdir(), "codexhost-auth-http-"));
-  t.after(() => rmSync(data, { recursive: true, force: true }));
   const url = await startServer(
     t,
     resolve(import.meta.dirname, ".."),
@@ -92,6 +91,7 @@ async function start(
     ["--data", data, "--token", LOCAL_TOKEN, ...args],
     { authenticated: true, ...(environment === undefined ? {} : { environment }) },
   );
+  t.after(() => rmSync(data, { recursive: true, force: true }));
   const base = new URL(url);
   base.search = "";
   return {
@@ -541,7 +541,6 @@ it(
   { timeout: 60_000 },
   async (t) => {
     const directory = mkdtempSync(join(tmpdir(), "codexhost-auth-revoke-"));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
     const workspace = join(directory, "workspace");
     mkdirSync(workspace);
     const host = new FakeChChannel();
@@ -556,6 +555,7 @@ it(
       "--ch-control-directory",
       directory,
     ]);
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
     const device = (await access()).secret;
 
     const openSockets = async (secret: string) => {
@@ -588,78 +588,96 @@ it(
     });
     await new Promise((settled) => setTimeout(settled, 300));
 
-    const terminal = resultOf(
-      await rpcCall(
-        base,
-        "terminal/create",
-        { agentId: "local-thread", request: { id: "term", cols: 80, rows: 24 } },
-        bearer(device),
-      ),
-    );
-    assert.equal(terminal.ok, true, JSON.stringify(terminal));
+    let terminalCreated = false;
+    try {
+      const terminal = resultOf(
+        await rpcCall(
+          base,
+          "terminal/create",
+          { agentId: "local-thread", request: { id: "term", cols: 80, rows: 24 } },
+          bearer(device),
+        ),
+      );
+      assert.equal(terminal.ok, true, JSON.stringify(terminal));
+      terminalCreated = true;
 
-    const attachedToTerminal = (socket: WebSocket): Promise<boolean> =>
-      new Promise((done) => {
-        const streamId = `attach-${String(Math.random())}`;
-        const timer = setTimeout(() => done(false), 10_000);
-        socket.on("message", (data) => {
-          const frame = JSON.parse(String(data)) as {
-            streamId?: string;
-            value?: { type?: string };
-          };
-          if (frame.streamId !== streamId || frame.value?.type !== "snapshot") return;
-          clearTimeout(timer);
-          done(true);
+      const attachedToTerminal = (socket: WebSocket): Promise<boolean> =>
+        new Promise((done) => {
+          const streamId = `attach-${String(Math.random())}`;
+          const timer = setTimeout(() => done(false), 10_000);
+          socket.on("message", (data) => {
+            const frame = JSON.parse(String(data)) as {
+              streamId?: string;
+              value?: { type?: string };
+            };
+            if (frame.streamId !== streamId || frame.value?.type !== "snapshot") return;
+            clearTimeout(timer);
+            done(true);
+          });
+          socket.send(
+            JSON.stringify({
+              type: "open",
+              streamId,
+              endpoint: "terminal/attach",
+              payload: { args: { agentId: "local-thread", id: "term" } },
+            }),
+          );
         });
-        socket.send(
-          JSON.stringify({
-            type: "open",
-            streamId,
-            endpoint: "terminal/attach",
-            payload: { args: { agentId: "local-thread", id: "term" } },
-          }),
-        );
+      assert.equal(await attachedToTerminal(socketsA[0] as WebSocket), true);
+
+      const closedA = socketsA.map((socket) => once(socket, "close"));
+      const regenerated = resultOf(
+        await rpcCall(base, "codexhost/accessTokenRegenerate", {}, bearer(LOCAL_TOKEN)),
+      );
+      assert.equal(regenerated.ok, true, JSON.stringify(regenerated));
+      await Promise.all(closedA);
+      await inFlight;
+      assert.equal((await send(base, "/api/auth/status", { headers: bearer(device) })).status, 401);
+      for (const socket of socketsB) assert.equal(socket.readyState, WebSocket.OPEN);
+      assert.equal(
+        (await send(base, "/api/auth/status", { headers: bearer(LOCAL_TOKEN) })).status,
+        200,
+      );
+
+      // The terminal that token opened keeps running for whoever is still allowed in.
+      assert.equal(await attachedToTerminal(socketsB[0] as WebSocket), true);
+      assert.equal(
+        host.requests.some(({ method }) => /interrupt|cancel|archive/iu.test(method)),
+        false,
+      );
+
+      // Replaced by another process sharing the data directory: new requests fail at once,
+      // and connections close within the replacement check interval.
+      const replacement = (regenerated.value as unknown as AccessState).secret;
+      const socketsC = await openSockets(replacement);
+      t.after(() => {
+        for (const socket of socketsC) socket.terminate();
       });
-    assert.equal(await attachedToTerminal(socketsA[0] as WebSocket), true);
-
-    const closedA = socketsA.map((socket) => once(socket, "close"));
-    const regenerated = resultOf(
-      await rpcCall(base, "codexhost/accessTokenRegenerate", {}, bearer(LOCAL_TOKEN)),
-    );
-    assert.equal(regenerated.ok, true, JSON.stringify(regenerated));
-    await Promise.all(closedA);
-    await inFlight;
-    assert.equal((await send(base, "/api/auth/status", { headers: bearer(device) })).status, 401);
-    for (const socket of socketsB) assert.equal(socket.readyState, WebSocket.OPEN);
-    assert.equal(
-      (await send(base, "/api/auth/status", { headers: bearer(LOCAL_TOKEN) })).status,
-      200,
-    );
-
-    // The terminal that token opened keeps running for whoever is still allowed in.
-    assert.equal(await attachedToTerminal(socketsB[0] as WebSocket), true);
-    assert.equal(
-      host.requests.some(({ method }) => /interrupt|cancel|archive/iu.test(method)),
-      false,
-    );
-
-    // Replaced by another process sharing the data directory: new requests fail at once,
-    // and connections close within the replacement check interval.
-    const replacement = (regenerated.value as unknown as AccessState).secret;
-    const socketsC = await openSockets(replacement);
-    t.after(() => {
-      for (const socket of socketsC) socket.terminate();
-    });
-    const other = new AccessTokenStore(new DataDir(data));
-    t.after(() => other.close());
-    const closedC = socketsC.map((socket) => once(socket, "close"));
-    const started = Date.now();
-    other.regenerate();
-    assert.equal(
-      (await send(base, "/api/auth/status", { headers: bearer(replacement) })).status,
-      401,
-    );
-    await Promise.all(closedC);
-    assert.ok(Date.now() - started < 7_000);
+      const other = new AccessTokenStore(new DataDir(data));
+      t.after(() => other.close());
+      const closedC = socketsC.map((socket) => once(socket, "close"));
+      const started = Date.now();
+      other.regenerate();
+      assert.equal(
+        (await send(base, "/api/auth/status", { headers: bearer(replacement) })).status,
+        401,
+      );
+      await Promise.all(closedC);
+      assert.ok(Date.now() - started < 7_000);
+    } finally {
+      if (terminalCreated) {
+        // Server termination on Windows does not gracefully close its PTY child.
+        // Dispose this fixture's terminal before after-hooks remove its cwd.
+        const closed = resultOf(
+          await rpcCall(
+            base,
+            "terminal/close",
+            { agentId: "local-thread", id: "term" },
+            bearer(LOCAL_TOKEN),
+          ),
+        );
+        assert.equal(closed.ok, true, JSON.stringify(closed));
+      }
+    }
   },
 );

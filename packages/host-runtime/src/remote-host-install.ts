@@ -30,6 +30,7 @@ export interface RemoteHostManifestV1 {
   shimPath: string;
   hostRuntimePath: string;
   dataDirectory: string;
+  sharedDataDirectory?: string;
   entrypointSha256?: string;
   profileBackupPath?: string;
 }
@@ -42,6 +43,7 @@ export interface RemoteHostInstallOptions {
   nodePath?: string;
   shimPath?: string;
   hostRuntimePath?: string;
+  sharedDataDirectory?: string;
   platform?: NodeJS.Platform;
   environment?: NodeJS.ProcessEnv;
 }
@@ -241,6 +243,9 @@ function installManagedProfileBlock(contents: string, manifest: RemoteHostManife
     `export CODEXHOST_HOST_NODE_PATH=${shellQuote(manifest.nodePath)}`,
     `export CODEXHOST_HOST_RUNTIME_PATH=${shellQuote(manifest.hostRuntimePath)}`,
     `export CODEXHOST_DATA_DIR=${shellQuote(manifest.dataDirectory)}`,
+    ...(manifest.sharedDataDirectory
+      ? [`export CODEXHOST_SHARED_DATA_DIR=${shellQuote(manifest.sharedDataDirectory)}`]
+      : []),
     "export CODEXHOST_REMOTE_SSH_MANAGED='1'",
   ];
   const block = [
@@ -317,6 +322,7 @@ async function readManifest(filePath: string): Promise<RemoteHostManifestV1 | nu
     "shimPath",
     "hostRuntimePath",
     "dataDirectory",
+    "sharedDataDirectory",
     "entrypointSha256",
     "claudeCommand", // Inert metadata accepted from older format-1 manifests.
     "profileBackupPath",
@@ -330,7 +336,7 @@ async function readManifest(filePath: string): Promise<RemoteHostManifestV1 | nu
     "hostRuntimePath",
     "dataDirectory",
   ] as const;
-  const optionalPaths = ["claudeCommand", "profileBackupPath"] as const;
+  const optionalPaths = ["claudeCommand", "profileBackupPath", "sharedDataDirectory"] as const;
   if (
     manifest.format !== MANIFEST_FORMAT ||
     Object.keys(manifest).some((key) => !allowed.has(key)) ||
@@ -429,6 +435,18 @@ export async function installRemoteHost(
   const shimPath = await executable(options.shimPath, "codexhost Shim");
   const hostRuntimePath = await existingFile(options.hostRuntimePath, "codexhost Host Runtime");
 
+  const sharedDataDirectory = path.resolve(
+    options.sharedDataDirectory ??
+      environment.CODEXHOST_SHARED_DATA_DIR ??
+      (environment.CODEXHOST_REMOTE_SSH_MANAGED !== "1"
+        ? environment.CODEXHOST_DATA_DIR
+        : undefined) ??
+      previousManifest?.sharedDataDirectory ??
+      path.join(paths.home, ".codexhost"),
+  );
+  if (sharedDataDirectory === paths.dataDirectory) {
+    throw new Error("Shared Host data directory must differ from the SSH-only data directory");
+  }
   let manifest: RemoteHostManifestV1 = {
     format: MANIFEST_FORMAT,
     wrapperPath: paths.wrapperPath,
@@ -438,6 +456,7 @@ export async function installRemoteHost(
     shimPath,
     hostRuntimePath,
     dataDirectory: paths.dataDirectory,
+    sharedDataDirectory,
     ...(previousManifest?.profileBackupPath
       ? { profileBackupPath: previousManifest.profileBackupPath }
       : {}),

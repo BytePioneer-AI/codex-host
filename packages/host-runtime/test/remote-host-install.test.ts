@@ -829,3 +829,43 @@ describe("remote SSH Host installation", () => {
     }
   });
 });
+
+it("persists a custom shared directory separately from the SSH store across reinstalls", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "shared-directory-"));
+  try {
+    const options = {
+      home,
+      stockCodexPath: await executable(path.join(home, "codex")),
+      nodePath: await executable(path.join(home, "node")),
+      shimPath: await executable(path.join(home, "shim")),
+      hostRuntimePath: await regularFile(path.join(home, "runtime.mjs")),
+      platform: "darwin" as const,
+      environment: {
+        HOME: home,
+        SHELL: "/bin/zsh",
+        CODEXHOST_DATA_DIR: path.join(home, "custom-host"),
+      },
+    };
+    const first = await installRemoteHost(options);
+    expect(first.sharedDataDirectory).toBe(path.join(home, "custom-host"));
+    expect(first.dataDirectory).toBe(path.join(home, ".codexhost/remote/data"));
+    expect(await readFile(first.profilePath, "utf8")).toContain(
+      "CODEXHOST_SHARED_DATA_DIR=" + shellQuote(first.sharedDataDirectory ?? ""),
+    );
+    const next = await installRemoteHost({
+      ...options,
+      environment: { HOME: home, SHELL: "/bin/zsh" },
+    });
+    expect(next.sharedDataDirectory).toBe(first.sharedDataDirectory);
+    const overridden = await installRemoteHost({
+      ...options,
+      sharedDataDirectory: path.join(home, "explicit-host"),
+    });
+    expect(overridden.sharedDataDirectory).toBe(path.join(home, "explicit-host"));
+    await expect(
+      installRemoteHost({ ...options, sharedDataDirectory: first.dataDirectory }),
+    ).rejects.toThrow("must differ");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});

@@ -46,6 +46,8 @@ New external Harness conversations on the remote computer share the same indepen
 
 If you only use Codex's built-in remote coding features, you do not need codexhost on the remote computer.
 
+If Desktop or Web uses a custom Host data directory, run `codexhost remote install --shared-data /absolute/path/to/host-data` on that computer, then restart the SSH listener. Installation captures `CODEXHOST_SHARED_DATA_DIR` (or a non-SSH `CODEXHOST_DATA_DIR`) when no option is supplied and preserves the saved selection on reinstall. This shared directory is stored in the remote manifest and SSH profile; it never replaces the separate SSH-only data directory. Native agents use the shared owner for delegation reads, sends, cancellation and waits too; historical SSH-owned parents keep their local delegation owner.
+
 ### Image and file attachments
 
 External Harnesses continue to receive text and file paths, not Harness-specific image inputs. Ordinary files use Desktop's native upload and remote path references. Reading files, interpreting images, and parsing their formats depend on the Harness's tools and the selected model.

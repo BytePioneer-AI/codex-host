@@ -472,14 +472,6 @@ export class OfficialRuntimeOwner {
         response.result.turn.status === "inProgress"
       )
         this.#activeTurns.add(params.threadId);
-      const thread = response.result.thread;
-      if (
-        object(thread) &&
-        typeof thread.id === "string" &&
-        Array.isArray(thread.turns) &&
-        thread.turns.some((turn) => object(turn) && turn.status === "inProgress")
-      )
-        this.#activeTurns.add(thread.id);
     }
     if (
       ["thread/archive", "thread/unsubscribe"].includes(method) &&

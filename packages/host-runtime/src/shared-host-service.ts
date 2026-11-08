@@ -128,6 +128,7 @@ export async function runSharedHostService(
           environment: hostEnvironment,
           diagnosticOutput: process.stderr,
           deferStart: true,
+          remoteControl: remote !== null,
         });
         const owner = new SharedThreadOwner();
         const desktops = new Set<AppServerHost>();

@@ -44,20 +44,23 @@ export async function prepareLocalCodex(input: {
   diagnosticOutput: Writable;
   /** Shared service: Web-only use need not start the official Codex process. */
   deferStart?: boolean;
+  /** Remote Control retains its supplied arguments and first-invocation-only configuration. */
+  remoteControl?: boolean;
 }): Promise<PreparedLocalCodex> {
   const home = await canonicalCodexHome(
     input.environment.CODEX_HOME ?? path.join(homedir(), ".codex"),
   );
   await mkdir(home, { recursive: true });
   const startupFile =
-    input.deferStart && input.environment.CODEXHOST_DATA_DIR
+    input.deferStart && !input.remoteControl && input.environment.CODEXHOST_DATA_DIR
       ? path.join(input.environment.CODEXHOST_DATA_DIR, "official-startup-v1.json")
       : undefined;
   let startup = {
     stockCodexPath: input.stockCodexPath,
-    arguments: input.deferStart
-      ? ["-c", "features.code_mode_host=true", "app-server"]
-      : [...input.arguments],
+    arguments:
+      input.deferStart && !input.remoteControl
+        ? ["-c", "features.code_mode_host=true", "app-server"]
+        : [...input.arguments],
     environment: input.environment,
   };
   if (startupFile) {
@@ -83,12 +86,14 @@ export async function prepareLocalCodex(input: {
   }
   startup.stockCodexPath =
     (await resolveOfficialCodexExecutable(startup.stockCodexPath, input.environment)) ?? "";
+  let startupConfigured = false;
   const scope = new OfficialRuntimeScope({
     permanentHome: home,
     diagnosticOutput: input.diagnosticOutput,
     // Local Desktop connections outlive a failed official backend generation.
     recovery: {},
     createBackend: () => {
+      startupConfigured = true;
       if (!startup.stockCodexPath) throw new Error("Official Codex is unavailable");
       return createOwnedLoopbackBackend({
         stockCodexPath: startup.stockCodexPath,
@@ -131,37 +136,46 @@ export async function prepareLocalCodex(input: {
     officialRuntimeScope: scope,
     accountControl: accounts,
     configureStartup: async (configuration) => {
-      if (!input.deferStart || scope.closed) return;
+      if (!input.deferStart || scope.closed || (input.remoteControl && startupConfigured)) return;
       const stockCodexPath = await resolveOfficialCodexExecutable(
         configuration.stockCodexPath,
         configuration.environment,
       );
       if (!stockCodexPath) throw new Error("Official Codex executable is a shim or proxy");
       const next = { ...configuration, stockCodexPath, arguments: [...configuration.arguments] };
+      if (input.remoteControl) {
+        startupConfigured = true;
+        startup = next;
+        return;
+      }
       if (startupFile) {
-        await mkdir(path.dirname(startupFile), { recursive: true });
-        await writeFile(
-          startupFile,
-          JSON.stringify({
-            stockCodexPath: next.stockCodexPath,
-            arguments: next.arguments,
-          }),
-          { mode: 0o600 },
-        );
+        try {
+          await mkdir(path.dirname(startupFile), { recursive: true });
+          await writeFile(
+            startupFile,
+            JSON.stringify({
+              stockCodexPath: next.stockCodexPath,
+              arguments: next.arguments,
+            }),
+            { mode: 0o600 },
+          );
+        } catch {
+          input.diagnosticOutput.write(
+            "codexhost: could not record official Codex startup arguments\n",
+          );
+        }
       }
       const changed =
         startup.stockCodexPath !== next.stockCodexPath ||
         JSON.stringify(startup.arguments) !== JSON.stringify(next.arguments);
-      if (changed && scope.owner.generation > 0) {
-        if (scope.owner.hasActiveWork) {
-          input.diagnosticOutput.write(
-            "codexhost: Desktop startup differs; preserving active official Codex work\n",
-          );
-          return;
-        }
-        await scope.stop();
+      if (changed && scope.owner.generation > 0 && scope.owner.hasActiveWork) {
+        input.diagnosticOutput.write(
+          "codexhost: Desktop startup differs; preserving active official Codex work\n",
+        );
+        return;
       }
       startup = next;
+      if (changed && scope.owner.generation > 0) await scope.stop();
     },
     close: async () => {
       await scope.close();

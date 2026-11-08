@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -185,11 +185,60 @@ describe("local Codex read-only identity startup", () => {
     );
   });
 
-  it("retires an idle Web-first backend once and starts the next request with Desktop arguments", async () => {
+  it.each([false, true])(
+    "preserves Remote Control startup without reading, writing or replacing recorded startup (configure first: %s)",
+    async (configureFirst) => {
+      const first = nativeFixture();
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-startup-"));
+      temporaryDirectories.add(directory);
+      const startupFile = path.join(directory, "official-startup-v1.json");
+      const saved = JSON.stringify({
+        stockCodexPath: "/synthetic/saved",
+        arguments: ["-c", "features.saved=true", "app-server"],
+      });
+      await writeFile(startupFile, saved);
+      const arguments_ = ["app-server", "--analytics-default-enabled"];
+      const local = await prepareLocalCodex({
+        stockCodexPath: "/synthetic/codex",
+        arguments: arguments_,
+        environment: { CODEX_HOME: path.join(directory, "home"), CODEXHOST_DATA_DIR: directory },
+        diagnosticOutput: new PassThrough(),
+        deferStart: true,
+        remoteControl: true,
+      });
+      prepared.add(local);
+      const configuration = {
+        stockCodexPath: "/synthetic/desktop-codex",
+        arguments: ["-c", "features.remote=true", "app-server"],
+        environment: {},
+      };
+      if (configureFirst) {
+        await local.configureStartup(configuration);
+        await local.configureStartup({ ...configuration, arguments: ["app-server"] });
+      }
+      await local.officialRuntimeScope.start();
+      expect(createOwnedLoopbackBackend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          arguments: configureFirst ? configuration.arguments : arguments_,
+        }),
+      );
+      await local.configureStartup({ ...configuration, arguments: ["app-server"] });
+      expect(first.stop).not.toHaveBeenCalled();
+      expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
+      expect(await readFile(startupFile, "utf8")).toBe(saved);
+    },
+  );
+
+  it("uses Desktop arguments even when a request starts before idle retirement returns", async () => {
     const first = nativeFixture();
     const local = await startLocal(true);
     await local.officialRuntimeScope.start();
     nativeFixture();
+    const stop = local.officialRuntimeScope.stop.bind(local.officialRuntimeScope);
+    vi.spyOn(local.officialRuntimeScope, "stop").mockImplementationOnce(async () => {
+      await stop();
+      await local.officialRuntimeScope.start();
+    });
     const configuration = {
       stockCodexPath: "/synthetic/codex",
       arguments: ["app-server", "--analytics-default-enabled"],
@@ -198,11 +247,37 @@ describe("local Codex read-only identity startup", () => {
     await local.configureStartup(configuration);
     await local.configureStartup(configuration);
     expect(first.stop).toHaveBeenCalledOnce();
-    expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledTimes(2);
     await local.officialRuntimeScope.start();
     expect(createOwnedLoopbackBackend).toHaveBeenCalledTimes(2);
     expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
       expect.objectContaining({ arguments: configuration.arguments }),
+    );
+  });
+
+  it("continues Desktop startup after recording its arguments fails", async () => {
+    nativeFixture();
+    const diagnostics = new PassThrough();
+    const local = await startLocal(true, undefined, diagnostics);
+    const startupFile = path.join(
+      path.dirname(local.officialRuntimeScope.permanentHome),
+      "official-startup-v1.json",
+    );
+    await mkdir(startupFile);
+    const arguments_ = ["app-server", "--analytics-default-enabled"];
+    await expect(
+      local.configureStartup({
+        stockCodexPath: "/synthetic/desktop-codex",
+        arguments: arguments_,
+        environment: {},
+      }),
+    ).resolves.toBeUndefined();
+    await local.officialRuntimeScope.start();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledWith(
+      expect.objectContaining({ arguments: arguments_ }),
+    );
+    expect(diagnostics.read()?.toString()).toContain(
+      "could not record official Codex startup arguments",
     );
   });
 

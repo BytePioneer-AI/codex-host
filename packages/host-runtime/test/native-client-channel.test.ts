@@ -234,8 +234,6 @@ it.each([
   { method: "item/permissions/requestApproval", params: {} },
   { method: "item/tool/requestUserInput", params: { questions: [{ isSecret: true }] } },
   { method: "item/tool/call", params: {} },
-  { method: "attestation/generate", params: {} },
-  { method: "account/chatgptAuthTokens/refresh", params: {} },
   { method: "currentTime/read", params: {} },
   { method: "applyPatchApproval", params: {} },
   { method: "execCommandApproval", params: {} },
@@ -257,10 +255,7 @@ it.each([
     const request = {
       id: 42,
       method,
-      params: {
-        ...params,
-        ...(method === "account/chatgptAuthTokens/refresh" ? {} : { threadId: "native-thread" }),
-      },
+      params: { ...params, threadId: "native-thread" },
     };
     channel.observeMessage(request);
     expect(respond).not.toHaveBeenCalled();
@@ -273,6 +268,32 @@ it.each([
     });
     const snapshot = await channel.snapshot("native-thread", {});
     expect(snapshot.thread.nativeInteractionError).toContain("Open Codex Desktop");
+  },
+);
+
+it.each(["account/chatgptAuthTokens/refresh", "attestation/generate"])(
+  "rejects threadless %s without invalidating or adding errors to Threads",
+  async (method) => {
+    const events = new ClientChannelEvents();
+    const changed = vi.spyOn(events, "changed");
+    const respond = vi.fn(async () => undefined);
+    const channel = new NativeClientChannel({
+      events,
+      request: vi.fn(async (method: string) => ({
+        result: method === "thread/turns/list" ? { data: [], nextCursor: null } : { thread },
+      })),
+      respond,
+    });
+    channel.noteThread("native-thread");
+    channel.noteThread("another-thread");
+    channel.observeMessage({ id: 42, method, params: {} });
+    expect(respond).toHaveBeenCalledWith(42, null, {
+      code: -32601,
+      message: expect.stringContaining(method),
+    });
+    expect(changed).not.toHaveBeenCalled();
+    const snapshot = await channel.snapshot("native-thread", {});
+    expect(snapshot.thread.nativeInteractionError).toBeUndefined();
   },
 );
 

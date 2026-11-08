@@ -409,9 +409,10 @@ export class NativeClientChannel {
       if (this.#host.desktopConnected?.()) return;
       const message = `Web cannot answer official Codex request '${value.method}'. Open Codex Desktop to handle it.`;
       void this.#host.respond(value.id, null, { code: -32601, message }).catch(() => undefined);
-      this.#interactionErrors.set(threadId ?? "", message);
-      for (const affected of threadId ? [threadId] : this.#knownThreads)
-        this.#host.events.changed(affected, "nativeInteractionError");
+      if (threadId) {
+        this.#interactionErrors.set(threadId, message);
+        this.#host.events.changed(threadId, "nativeInteractionError");
+      }
       return;
     }
     if (!threadId) return;
@@ -551,8 +552,7 @@ export class NativeClientChannel {
       };
       const activeTurnId = data.map(turnIdFromPage).find((id): id is string => id !== undefined);
       const configuration = this.#configuration.get(threadId);
-      const nativeInteractionError =
-        this.#interactionErrors.get(threadId) ?? this.#interactionErrors.get("");
+      const nativeInteractionError = this.#interactionErrors.get(threadId);
       const snapshot = clientThreadSnapshotSchema.parse({
         cursor,
         ...(activeTurnId ? { activeTurnId } : {}),

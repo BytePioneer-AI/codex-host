@@ -23,5 +23,7 @@
 
 ## 3. 删除与验收（组 1、2 合并后）
 
-- [ ] 3.1 实测四个场景：Desktop 先开、Web 先开、Desktop 全程关闭、两端同时操作同一 Thread。验证：记录每个场景的结果和实际模型请求情况。
+- [x] 3.1 实测四个场景：Desktop 先开、Web 先开、Desktop 全程关闭、两端同时操作同一 Thread。验证：记录每个场景的结果和实际模型请求情况。
 - [x] 3.2 按 design 第 7 节删除 Adapter 及配套机制，加入旧记录过滤，并更新预装清单、`tsconfig.json`、`docs/index.md` 与相关文档。验证：`grep -r "codex-cli" packages apps scripts --include='*.ts' --include='*.tsx' --include='*.json'` 仅剩 `RETIRED_HARNESS_IDS`；`npm run typecheck`、`npm run lint` 通过；插件冷加载测试通过。
+
+验收记录（2026-11-08）：用户在本会话确认“实测通过”，覆盖此前约定的四种启动与双端场景，以及原生命令、Skills、Fast 与置顶同步。此为用户实测确认；未提供逐场景日志或模型请求明细，不将其记作代理执行的测试。

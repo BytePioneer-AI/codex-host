@@ -402,6 +402,81 @@ it("keeps writer-conflicted snapshots readable and falls back to queue IDs for m
   });
 });
 
+it("pairs official Web submissions with their snapshot user Items before fingerprinting", async () => {
+  const events = new ClientChannelEvents();
+  const turns: JsonObject[] = [];
+  const thread = {
+    id: "official",
+    cwd: "/workspace",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 1,
+    status: { type: "idle" },
+    turns: [],
+  };
+  const request: NativeClientChannelDependencies["request"] = async (method, params) => {
+    if (method === "thread/resume" || method === "thread/read") return { result: { thread } };
+    if (method === "thread/queue/list") return { result: { data: [] } };
+    if (method === "thread/turns/list")
+      return { result: { data: structuredClone([...turns].reverse()), nextCursor: null } };
+    if (method === "turn/start") {
+      const id = `turn-${turns.length + 1}`;
+      // Official history does not echo the Web's clientUserMessageId.
+      turns.push({
+        id,
+        status: "completed",
+        items: [{ id: `${id}-user`, type: "userMessage", content: params.input ?? [] }],
+      });
+      return { result: { turn: { id, status: "inProgress", items: [] } } };
+    }
+    throw new Error(`Unexpected native method ${method}`);
+  };
+  const host = new ClientChannelHost({
+    events,
+    environment: () => ({}),
+    waitForPlugins: async () => {},
+    listRecords: async () => [],
+    listSectionPlacements: async () => [],
+    locateExternalThread: async () => ({ kind: "official" }),
+    loadedThread: () => undefined,
+    clientHistoryTurns: () => [],
+    queueSnapshot: () => ({ items: [], pausedReason: null }),
+    interactions: {
+      approvals: new Map(),
+      questions: new Map(),
+      isApprovalRequestId: (value): value is number => typeof value === "number",
+      isQuestionRequestId: (value): value is number => typeof value === "number",
+      respondApproval: async () => false,
+      respondQuestion: async () => false,
+    },
+    native: { events, request, respond: async () => {} },
+    submit: async () => {
+      throw new Error("Must use the official client");
+    },
+  });
+  for (const [index, text] of ["你好", "你在做是什么"].entries()) {
+    expect(
+      await host.handleClientRequest("turn/start", {
+        threadId: thread.id,
+        clientUserMessageId: `web-${index + 1}`,
+        input: [{ type: "text", text }],
+      }),
+    ).toHaveProperty("result");
+  }
+  const snapshot = await host.clientSnapshot(thread.id, { knownTurns: [] });
+  expect(snapshot.turnsPage.data.map((turn) => turn.items[0]?.clientId)).toEqual([
+    "web-2",
+    "web-1",
+  ]);
+  expect(snapshot.activeTurnId).toBeUndefined();
+  const knownTurns = snapshot.turnsPage.data.map((turn) => ({
+    id: String(turn.id),
+    fingerprint: String(turn.fingerprint),
+  }));
+  const compacted = await host.clientSnapshot(thread.id, { knownTurns });
+  expect(compacted.turnsPage.data.every((turn) => turn.unchanged === true)).toBe(true);
+});
+
 it("only reports official admission failures as notInstalled and preserves other inspection errors", async () => {
   const fixture = createFixture();
   cleanup.push(() => stopFixture(fixture));

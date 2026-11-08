@@ -327,7 +327,7 @@ export class ClientChannelHost {
       throw new ClientChannelRequestError(location.error.code, location.error.message);
     if (location.kind === "official") {
       if (!this.#native) throw new Error("Thread is not owned by this local Host");
-      const snapshot = await this.#native.snapshot(threadId, options);
+      const snapshot = await this.#native.snapshot(threadId, {});
       const queue = snapshot.thread.nativeSendError
         ? { result: { data: [] } }
         : await this.#native.request("thread/queue/list", { threadId });
@@ -341,10 +341,18 @@ export class ClientChannelHost {
                 : item,
             )
           : [];
-      return clientThreadSnapshotSchema.parse({
-        ...snapshot,
-        queue: { items, pausedReason: null },
-      });
+      for (const turn of snapshot.turnsPage.data) {
+        const clientId = this.#clientReceipts.clientIdForTurn(threadId, turn.id);
+        const user = turn.items.find((item) => item.type === "userMessage");
+        if (clientId && user && typeof user.clientId !== "string") user.clientId = clientId;
+      }
+      return compactClientSnapshot(
+        clientThreadSnapshotSchema.parse({
+          ...snapshot,
+          queue: { items, pausedReason: null },
+        }),
+        options,
+      );
     }
     let thread = this.#host.loadedThread(threadId);
     if (!thread) {

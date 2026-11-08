@@ -169,7 +169,7 @@
 
 /* The darwin closed sidebar has no rail: the centre reaches the window edge,
    where a separator would draw a seam against nothing. */
-:global([data-platform="darwin"]) [data-sidebar-collapsed] .centerCol {
+:global([data-platform="darwin"]) [data-sidebar-hidden] .centerCol {
   border-left: none;
 }
 
@@ -179,7 +179,7 @@
    the frame's left edge — traffic lights to x 68, controls at x 88
    (28 + 8 + 28), then 8px of air. Main panels whose content reaches the
    top-left corner pad by this. */
-:global([data-platform="darwin"]) .frame[data-sidebar-collapsed] {
+:global([data-platform="darwin"]) .frame[data-sidebar-hidden] {
   --dsh-frame-leading-clearance: 160px;
 }
 
@@ -188,7 +188,7 @@
    only the controls (12 + 28 + 8 + 28 + 8). The 12px start matches the
    expanded sidebar strip's inline padding (ui-sidebar .topStrip), so
    collapsing never shifts the toggle. */
-:global([data-platform="darwin"][data-fullscreen]) .frame[data-sidebar-collapsed] {
+:global([data-platform="darwin"][data-fullscreen]) .frame[data-sidebar-hidden] {
   --dsh-frame-leading-clearance: 84px;
 }
 
@@ -305,8 +305,10 @@
   z-index: 40;
   border: 0;
   padding: 0;
-  background: rgb(0 0 0 / 0.32);
-  animation: phoneFade var(--ds-transition-duration-slow, 240ms) var(--ds-ease-in-out, ease);
+  background: rgb(0 0 0 / 0.12);
+  -webkit-tap-highlight-color: transparent;
+  visibility: hidden;
+  opacity: 0;
 }
 
 .phoneDrawer {
@@ -317,39 +319,91 @@
   z-index: 41;
   overflow: hidden;
   background: var(--dsw-specific-sidebar-fill, var(--dsw-alias-bg-base));
-  box-shadow: 0 0 32px rgb(0 0 0 / 0.18);
-  transform: translateX(-105%);
+  border-radius: 0 28px 28px 0;
+  --phone-drawer-highlight: color-mix(in srgb, var(--dsw-alias-bg-base) 80%, transparent);
+  box-shadow:
+    8px 12px 36px -12px rgb(0 0 0 / 0.24),
+    inset -1px 1px 0 var(--phone-drawer-highlight);
+  transform: translateX(-110%);
   visibility: hidden;
-  transition:
-    transform var(--ds-transition-duration-slow, 240ms) var(--ds-ease-in-out, ease),
-    visibility 0s linear var(--ds-transition-duration-slow, 240ms);
   padding-top: env(safe-area-inset-top);
   padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: 12px;
+  will-change: transform;
   box-sizing: border-box;
 }
 
-.phoneDrawer[data-open] {
-  transform: translateX(0);
-  visibility: visible;
-  transition: transform var(--ds-transition-duration-slow, 240ms) var(--ds-ease-in-out, ease);
+:global([data-ds-dark-theme]) .phoneDrawer {
+  --phone-drawer-highlight: color-mix(in srgb, var(--dsw-alias-label-primary) 18%, transparent);
 }
 
-@keyframes phoneFade {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
+@supports (backdrop-filter: blur(18px)) or (-webkit-backdrop-filter: blur(18px)) {
   .phoneDrawer {
-    transition: none;
+    background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 38%, transparent);
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
   }
-  .phoneBackdrop {
-    animation: none;
+}
+
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  .phoneDrawer {
+    background: var(--dsw-specific-sidebar-fill);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border-right: 1px solid var(--dsw-alias-label-primary);
   }
+}
+
+/* Keep native scrolling in the phone drawer without painting scrollbar chrome. */
+.phoneDrawer,
+.phoneDrawer * {
+  scrollbar-width: none;
+}
+
+.phoneDrawer::-webkit-scrollbar,
+.phoneDrawer *::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.phoneDrawerBody {
+  height: 100%;
+}
+
+.phoneDrawerContent {
+  height: 100%;
+  min-height: 0;
+}
+
+.phoneDrawer:has([data-phone-sidebar-view]) .phoneDrawerContent {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.phoneViews {
+  position: absolute;
+  inset: env(safe-area-inset-top) 12px env(safe-area-inset-bottom) env(safe-area-inset-left);
+  pointer-events: none;
+}
+
+.phoneViews > * {
+  pointer-events: auto;
+}
+
+.phoneDrawerEdge {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 12px;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+/* The edge owns no row hit targets; its gutter leaves inline operations alone. */
+.frame[data-phone] .handle {
+  display: none;
 }
 
 .frame[data-phone] .leadingSeat {
@@ -358,6 +412,6 @@
 }
 
 /* Phone: the two leading controls (open sidebar, new session) sit left of the conversation header. */
-.frame[data-phone][data-sidebar-collapsed] {
+.frame[data-phone][data-sidebar-hidden] {
   --dsh-frame-leading-clearance: 92px;
 }

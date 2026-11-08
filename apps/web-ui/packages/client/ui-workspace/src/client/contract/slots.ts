@@ -156,8 +156,8 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
       owner: SessionRowScheduleOwnerProps;
     };
     /**
-     * Section of the Session row's hover card between its relative time and
-     * its trailing status line. Mounted only while that card is open.
+     * Section of the Session row's hover card or phone details view between
+     * its relative time and trailing status line. Mounted while that surface is open.
      */
     "sidebar.session.row.hover": {
       kind: "list";

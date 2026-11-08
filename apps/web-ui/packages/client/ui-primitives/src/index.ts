@@ -47,6 +47,7 @@ export { observeComposition } from "./keyboard-composition.ts";
 export { focusWithoutRing, isMobileDevice, shouldAutoFocusTextInput } from "./focus.ts";
 export { closeTopModal, isBehindModal, modalSelector, useModalLayer } from "./useModalLayer.ts";
 export { Modal } from "./Modal.tsx";
+export { PhoneSidebarProvider, usePhoneSidebar } from "./PhoneSidebarView.tsx";
 export { RiskConfirmation } from "./RiskConfirmation.tsx";
 export type { RiskConfirmationProps } from "./RiskConfirmation.tsx";
 export { ConnectionIndicator } from "./ConnectionIndicator.tsx";

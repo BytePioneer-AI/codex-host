@@ -14,6 +14,7 @@ import type {
 } from "@deepseek-ai/dsh-client-modules/client";
 import { bootClient } from "./boot-client.ts";
 import { BootPage } from "./boot-page.ts";
+import { PwaInstall } from "./pwa-install.ts";
 import { preventIosFocusZoom } from "./ios-focus-zoom.ts";
 import { guardIosComposerPageScroll } from "./ios-composer-scroll.ts";
 import { mountClient } from "./mount.ts";
@@ -29,6 +30,7 @@ export class AppWebEntry {
   private readonly container: HTMLElement;
   private readonly seams: BootSeams | undefined;
   private readonly page: BootPage;
+  private readonly pwaInstall: PwaInstall | undefined;
   private ctx: Context | undefined;
   private stopDragRecall: (() => void) | undefined;
   private modules!: ClientModuleSystem;
@@ -42,6 +44,15 @@ export class AppWebEntry {
   constructor(container: HTMLElement, seams?: BootSeams) {
     this.container = container;
     this.seams = seams;
+    const browser = container.ownerDocument.defaultView;
+    if (
+      browser !== null &&
+      !("dshDesktop" in browser) &&
+      !("dshDesktopBoot" in browser) &&
+      /^https?:$/u.test(browser.location.protocol)
+    ) {
+      this.pwaInstall = new PwaInstall(browser);
+    }
     preventIosFocusZoom();
     guardIosComposerPageScroll();
     this.page = new BootPage(container);
@@ -89,6 +100,7 @@ export class AppWebEntry {
       const prefetching = this.prefetchImmediateTier();
       const ctx = new Context();
       this.ctx = ctx;
+      if (this.pwaInstall !== undefined) ctx.provide("pwaInstall", this.pwaInstall);
       this.page.setTotal(this.manifest.plugins.length);
       await prefetching;
       await bootClient({
@@ -114,6 +126,7 @@ export class AppWebEntry {
 
   /** Dispose the client plugin tree and whichever page owns the mount point. */
   async dispose(): Promise<void> {
+    this.pwaInstall?.dispose();
     this.stopDragRecall?.();
     this.stopDragRecall = undefined;
     const ctx = this.ctx;

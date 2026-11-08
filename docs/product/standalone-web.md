@@ -2,6 +2,12 @@
 
 Web 与 Codex Desktop 在同一仓库开发，浏览器通过 `packages/web-server` 的独立 Node 服务访问。默认 `codexhost` 会话来源按需启动或连接独立的本地 CH 后台，复用 CH 的 Thread 目录、创建、读取和操作；Web 网关不直接读写 Mapping Store、不为外部 Threads 启动第二份 Adapter，也不登记 Desktop 进程所有权。默认启用所有打包的会话 Harness，包括 Codex CLI（`codex-cli`）；它们都由共享后台的外部 Thread 运行时执行，Web 网关只连接 Host，不在本地执行 Harness。Web/PWA 共用响应式界面；尚无 iOS/Android 原生封装。
 
+## 安装为 PWA 应用
+
+Web「设置 → 通用设置 → 其他设置」提供「安装 CodexHost 应用」入口。浏览器发出可安装事件后，点击「安装应用」唤起原生确认弹窗；确认、取消或失败后不重复使用同一次安装事件。用户接受安装请求不等于安装完成，只有浏览器确认完成或页面以独立应用模式运行时才显示已安装状态。安装事件由浏览器壳在异步加载插件前监听，设置入口通过客户端服务读取，不依赖设置页是否打开；浏览器没有提供事件、暂不满足条件或已在其他窗口安装时，显示「安装指引」，不据此断言浏览器不支持 PWA。
+
+指引按当前设备说明安卓浏览器菜单、iOS/iPadOS Safari「添加到主屏幕」、macOS Safari「添加到程序坞」及桌面 Chrome/Edge 的入口；应用内浏览器建议改用外部浏览器。PWA 需要 HTTPS 安全上下文，本机 localhost 除外；普通局域网或 Tailscale IP 的 HTTP 访问会提示使用「连接设备」中已配置的 HTTPS 地址，不自动改写或跳转地址。是否提供安装及其形式由浏览器决定，创建快捷方式不等于安装 PWA；页面不能绕过用户确认。安装不下载原生 CodexHost、不请求通知权限，也不提供离线 Agent 执行，仍需连接运行中的 Web 与 Host。原生 Desktop 壳不显示此入口。
+
 ## 安装版后台 Web
 
 安装包和 npm 包均包含 Web，无须源码或运行中的 Codex Desktop。npm 用户可直接运行以下命令；macOS 安装包将 `codexhost` 替换为 `/Applications/codexhost.app/Contents/MacOS/codexhost`（按实际安装位置调整），Windows PowerShell 使用 `& "$env:LOCALAPPDATA\Programs\codexhost\bin\codexhost.exe"`。

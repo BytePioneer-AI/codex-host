@@ -566,10 +566,9 @@ export class RemoteSessions {
     id: string,
     request: Record<string, unknown>,
   ): Promise<unknown> {
-    const view = await this.read(id);
-    const entry = this.entries.get(id);
-    if (!entry?.epoch) throw new RpcError("remote/offline", "Remote connection changed");
-    const base = { ...entry.identity, epoch: entry.epoch };
+    const readOnly = ["session/projections", "session/page", "session/toolOutput"].includes(method);
+    const cached = readOnly ? this.entries.get(id)?.view : undefined;
+    const view = cached ?? (await this.read(id));
     if (method === "session/projections") return view.log.projectionBaseline();
     if (method === "session/page")
       return view.log.page(
@@ -579,6 +578,9 @@ export class RemoteSessions {
       );
     if (method === "session/toolOutput")
       return readToolOutput(view.log, webToolOutputReferenceSchema.parse(request));
+    const entry = this.entries.get(id);
+    if (!entry?.epoch) throw new RpcError("remote/offline", "Remote connection changed");
+    const base = { ...entry.identity, epoch: entry.epoch };
     let operation: RemoteSessionOperation;
     switch (method) {
       case "session/prompt": {

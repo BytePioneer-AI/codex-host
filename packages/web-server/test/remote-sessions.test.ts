@@ -537,3 +537,69 @@ it(
     assert.equal(reads, stopped);
   },
 );
+
+it("serves cached remote projections and pages without refreshing or cancelling approvals", async (t) => {
+  const hostId = "remote-ssh-discovered:a";
+  let reads = 0,
+    unavailable = false;
+  const calls: string[] = [];
+  const events = new EventHub("cached");
+  const frames: unknown[] = [];
+  await events.handler(
+    {},
+    { id: "events", closed: false, push: (x) => frames.push(x), end() {}, fail() {}, onClose() {} },
+  );
+  const row = {
+    id: "thread",
+    cwd: "/remote",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 1,
+    status: { type: "idle" },
+    turns: [],
+  };
+  const remote = new RemoteSessions(events, async (op) => {
+    calls.push(op.kind);
+    if (op.kind === "hosts") return [{ hostId, online: true }];
+    if (op.kind === "list") return { data: [row], nextCursor: null };
+    if (op.kind === "read") {
+      reads++;
+      if (unavailable) throw Error("offline");
+      return {
+        result: { thread: row },
+        epoch: "epoch",
+        requests: [
+          {
+            id: 1,
+            method: "item/commandExecution/requestApproval",
+            params: { command: "echo test" },
+          },
+        ],
+      };
+    }
+    return {};
+  });
+  t.after(() => remote.close());
+  const rpc = new RpcRegistry();
+  for (const method of ["session/projections", "session/page", "session/prompt"])
+    rpc.register(method, () => {
+      throw Error("local handler must not run");
+    });
+  remote.install(rpc, new StreamRegistry());
+  const id = remoteSessionId(hostId, "thread");
+  await remote.read(id);
+  unavailable = true;
+  const before = frames.length;
+  const call = (method: string, extra: Record<string, unknown> = {}) =>
+    rpc.dispatch(method, { args: { request: { sessionId: id, ...extra } } });
+  assert.equal((await call("session/projections")).ok, true);
+  assert.equal((await call("session/page", { throughSeq: 0 })).ok, true);
+  assert.equal(reads, 1);
+  assert.equal(frames.length, before);
+  assert.equal(
+    (await call("session/prompt", { content: [{ type: "text", text: "do not send" }] })).ok,
+    false,
+  );
+  assert.equal(reads, 2);
+  assert.equal(calls.includes("prompt"), false);
+});

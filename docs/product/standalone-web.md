@@ -10,7 +10,7 @@ Codex 的 Fast 闪电仅在官方 `model/list` 为当前 Model 的 `serviceTiers
 
 运行中切换通过 `thread/settings/update`，保留 Thinking，并等待成功响应及 Model、service tier 均匹配的通知后返回确认；省略 service tier 的 Thinking 或权限更新不会清除 Fast。后续 Turn 沿用官方 Thread 设置，不把 Fast 引用作为原生 Model 名发送，也不承诺改变正在运行的请求。Fast 可能增加额度消耗；目录声明仅表示能力，不保证账号可用额度、实际调度或速度。
 
-选择器在官方程序可用时只显示一个“Codex”，首次发送创建官方 Thread，Desktop 使用同一身份；不可用时不显示 Codex，其他 Harness 不受影响。无项目时由 Host 分配默认生成目录，Web 不自行分配。旧 `codex-cli` Mapping Store 条目在 Web 和 Desktop 列表都隐藏，不迁移、不删除或改写；官方历史直接以官方 Thread 显示。
+选择器在官方程序可用时只显示一个“Codex”，首次发送创建官方 Thread，Desktop 使用同一身份；不可用时不显示 Codex，其他 Harness 不受影响。无项目时由 Host 分配默认生成目录，Web 不自行分配。官方历史直接以官方 Thread 显示。已有外部映射按普通列表规则处理，可能与官方历史重复；列表可见不保证对应 Harness 可用或可续聊。
 
 这里的共享范围是本机。浏览器经 Relay、Tailscale 或局域网访问本机，不意味着主列表会自动聚合 Desktop 已连接的 SSH／Remote Control 主机；远程主机目录和按 Host 路由另行实现。
 

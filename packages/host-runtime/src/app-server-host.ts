@@ -238,7 +238,6 @@ import type { HostUpdateCoordinator } from "./update-coordinator.js";
 import type { HostConsoleOpener } from "./console-opener.js";
 import type { HostWebOpener } from "./web-opener.js";
 
-export const RETIRED_HARNESS_IDS = ["codex-cli"];
 const CONSOLE_REQUEST_TIMEOUT_MS = 120_000;
 
 import { ClientChannelEvents } from "./client-channel-events.js";
@@ -1145,10 +1144,6 @@ export class AppServerHost {
     this.#pluginDescriptors = plugins.list();
     this.#usageOnlyAdapters = [...plugins.usageAdapters.values()];
     for (const [id, adapter] of plugins.adapters) this.#externalAdapters.set(id, adapter);
-  }
-
-  #recordsFor(records: readonly StoredThreadRecordV1[]): readonly StoredThreadRecordV1[] {
-    return records.filter((record) => !RETIRED_HARNESS_IDS.includes(record.harnessId));
   }
 
   async #closeAdapters(): Promise<void> {
@@ -2521,7 +2516,7 @@ export class AppServerHost {
       );
       const result = await aggregateThreadList({
         query: listRequest,
-        records: this.#recordsFor(records),
+        records,
         ...(this.#options.sharedThreads
           ? {
               sharedThreads: await this.#options.sharedThreads.list(listRequest.params),
@@ -2596,7 +2591,7 @@ export class AppServerHost {
       );
       const externalRows = new Map(
         externalThreadListEntries({
-          records: this.#recordsFor(records),
+          records,
           query,
           runtimeFor: (threadId) => this.#listRuntimeState(threadId),
           placementOf: (threadId) => placementById.get(threadId),

@@ -122,15 +122,7 @@ Web SHALL 回答审批、非密码提问和表单式询问。对 Web 不能回�
 - **THEN** 消息正常发送
 
 ### Requirement: 不再提供 Codex CLI 接入
-Host SHALL 不再提供 `codex-cli` Harness 及其专用会话导入，其他 Harness 的通用导入 MUST 不受影响。已有的 `codex-cli` 记录 MUST 不显示在任何列表中，也不得被删除或改写。
-
-#### Scenario: 旧记录
-- **WHEN** Mapping Store 中存在 `codex-cli` 记录
-- **THEN** Web 和 Desktop 列表都不显示这些记录，其官方历史以官方 Thread 显示
-
-#### Scenario: 没有重复条目
-- **WHEN** 用户查看 Web 列表
-- **THEN** 同一段官方 Codex 对话只出现一条
+Host SHALL 不再提供 `codex-cli` Harness 及其专用会话导入，其他 Harness 的通用导入 MUST 不受影响。
 
 #### Scenario: 其他 Harness 导入
 - **WHEN** 用户导入 Pi 或 Claude Code 的原生会话

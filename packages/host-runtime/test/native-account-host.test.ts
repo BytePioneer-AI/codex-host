@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -28,7 +28,7 @@ afterEach(async () => {
 function nativeFixture() {
   const exit = Promise.withResolvers<OfficialAppServerExit>();
   const requests: JsonObject[] = [];
-  const connections: Array<{ close(): void }> = [];
+  const connections: Array<{ close(): void; stdout: PassThrough }> = [];
   let account: JsonObject | null = {
     type: "chatgpt",
     email: "current@example.com",
@@ -74,7 +74,7 @@ function nativeFixture() {
       stderr.end();
       closed.resolve({ code: 0, signal: null });
     });
-    connections.push({ close });
+    connections.push({ close, stdout });
     return { stdin, stdout, stderr, closed: closed.promise, close };
   });
   const stop = vi.fn(async () => {
@@ -91,6 +91,9 @@ function nativeFixture() {
     requests,
     connect,
     stop,
+    notify: (value: JsonObject) => {
+      for (const connection of connections) connection.stdout.write(`${JSON.stringify(value)}\n`);
+    },
     crash: () => exit.resolve({ code: 1, signal: null }),
     signOut: () => {
       account = null;
@@ -98,14 +101,23 @@ function nativeFixture() {
   };
 }
 
-async function startLocal(deferStart = false) {
+async function startLocal(
+  deferStart = false,
+  savedStartup?: { stockCodexPath: string; arguments: string[] },
+  diagnosticOutput = new PassThrough(),
+) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-native-account-host-"));
   temporaryDirectories.add(directory);
+  if (savedStartup)
+    await writeFile(path.join(directory, "official-startup-v1.json"), JSON.stringify(savedStartup));
   const local = await prepareLocalCodex({
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
-    environment: { CODEX_HOME: path.join(directory, "missing-codex-home") },
-    diagnosticOutput: new PassThrough(),
+    environment: {
+      CODEX_HOME: path.join(directory, "missing-codex-home"),
+      CODEXHOST_DATA_DIR: directory,
+    },
+    diagnosticOutput,
     deferStart,
   });
   prepared.add(local);
@@ -113,7 +125,7 @@ async function startLocal(deferStart = false) {
 }
 
 describe("local Codex read-only identity startup", () => {
-  it("defers Web-only native startup and preserves the first Desktop invocation on one backend", async () => {
+  it("records the Desktop invocation for subsequent Web-first startup", async () => {
     const f = nativeFixture();
     const local = await startLocal(true);
     expect(createOwnedLoopbackBackend).not.toHaveBeenCalled();
@@ -125,13 +137,18 @@ describe("local Codex read-only identity startup", () => {
       "app-server",
       "--analytics-default-enabled",
     ];
-    local.configureStartup({
+    await local.configureStartup({
       stockCodexPath: "/synthetic/desktop-codex",
       arguments: arguments_,
       environment: { CODEX_HOME: "/must-not-change-home", PATH: "/synthetic/path" },
     });
     arguments_.push("--must-not-leak");
-    local.configureStartup({ stockCodexPath: "/synthetic/other", arguments: [], environment: {} });
+    expect(
+      JSON.parse(await readFile(path.join(path.dirname(home), "official-startup-v1.json"), "utf8")),
+    ).toEqual({
+      stockCodexPath: "/synthetic/desktop-codex",
+      arguments: ["-c", "features.synthetic=true", "app-server", "--analytics-default-enabled"],
+    });
     await local.officialRuntimeScope.start();
     expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
     expect(createOwnedLoopbackBackend).toHaveBeenCalledWith({
@@ -142,6 +159,72 @@ describe("local Codex read-only identity startup", () => {
     });
     await local.accountControl.refresh?.();
     expect(f.connect).toHaveBeenCalledOnce();
+  });
+
+  it("uses recorded Desktop arguments when Web starts first", async () => {
+    nativeFixture();
+    const arguments_ = ["-c", "features.saved=true", "app-server"];
+    const local = await startLocal(true, {
+      stockCodexPath: "/synthetic/desktop-codex",
+      arguments: arguments_,
+    });
+    await local.officialRuntimeScope.start();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledWith(
+      expect.objectContaining({ arguments: arguments_ }),
+    );
+  });
+
+  it("uses baseline arguments without a startup record", async () => {
+    nativeFixture();
+    const local = await startLocal(true);
+    await local.officialRuntimeScope.start();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        arguments: ["-c", "features.code_mode_host=true", "app-server"],
+      }),
+    );
+  });
+
+  it("retires an idle Web-first backend once and starts the next request with Desktop arguments", async () => {
+    const first = nativeFixture();
+    const local = await startLocal(true);
+    await local.officialRuntimeScope.start();
+    nativeFixture();
+    const configuration = {
+      stockCodexPath: "/synthetic/codex",
+      arguments: ["app-server", "--analytics-default-enabled"],
+      environment: {},
+    };
+    await local.configureStartup(configuration);
+    await local.configureStartup(configuration);
+    expect(first.stop).toHaveBeenCalledOnce();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
+    await local.officialRuntimeScope.start();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledTimes(2);
+    expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
+      expect.objectContaining({ arguments: configuration.arguments }),
+    );
+  });
+
+  it("preserves an active Turn when Desktop arguments differ", async () => {
+    const first = nativeFixture();
+    const diagnostics = new PassThrough();
+    const local = await startLocal(true, undefined, diagnostics);
+    await local.officialRuntimeScope.start();
+    first.notify({
+      method: "turn/started",
+      params: { threadId: "active-thread", turn: { id: "active-turn", status: "inProgress" } },
+    });
+    await vi.waitFor(() => expect(local.officialRuntimeScope.owner.hasActiveWork).toBe(true));
+    await local.configureStartup({
+      stockCodexPath: "/synthetic/codex",
+      arguments: ["app-server", "--analytics-default-enabled"],
+      environment: {},
+    });
+    expect(first.stop).not.toHaveBeenCalled();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
+    expect(local.officialRuntimeScope.owner.hasActiveWork).toBe(true);
+    expect(diagnostics.read()?.toString()).toContain("preserving active official Codex work");
   });
 
   it("recovers the local backend so an existing client can explicitly retry voice startup", async () => {

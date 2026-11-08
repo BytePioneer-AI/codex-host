@@ -115,7 +115,9 @@ export class ChInteractions {
   ) {}
   update(snapshot: ClientThreadSnapshot): void {
     const threadId = String(snapshot.thread.id);
-    if (!snapshot.interactions.length) this.error(threadId, null);
+    const message = snapshot.thread.nativeInteractionError ?? snapshot.thread.nativeSendError;
+    if (typeof message === "string") this.error(threadId, message);
+    else if (!snapshot.interactions.length) this.error(threadId, null);
     const keys = new Set(
       snapshot.interactions.map((value) => `${snapshot.cursor.epoch}:${value.requestId}`),
     );

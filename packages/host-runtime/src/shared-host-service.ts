@@ -150,6 +150,7 @@ export async function runSharedHostService(
           desktopOutput: owner.output,
           diagnosticOutput: process.stderr,
           externalOnly: true,
+          desktopConnected: () => desktops.size > 0,
           mappingStore: store,
           closeMappingStoreOnExit: false,
           officialRuntimeScope: official.officialRuntimeScope,

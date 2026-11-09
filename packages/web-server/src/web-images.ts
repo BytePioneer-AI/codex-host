@@ -106,6 +106,10 @@ export function inspectImage(bytes: Buffer, mediaType?: string): PreparedImage {
 
 /** Bounded, read-only local raster access for authenticated media or authorized Thread attachments. */
 export function readImageFile(path: string): Buffer {
+  // Harness-written image links carry the POSIX-style drive prefix (`/D:/…`)
+  // the workspace file service canonicalizes; Windows resolution would
+  // otherwise read it as a `D:` directory under the current drive.
+  path = path.replace(/^\/(?=[A-Za-z]:[/\\])/u, "");
   let fd: number | undefined;
   try {
     if (

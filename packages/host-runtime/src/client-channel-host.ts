@@ -314,12 +314,6 @@ export class ClientChannelHost {
           );
         }
       }
-      if (method === "codexhost/thread/queue/send-now") {
-        if (typeof params.itemId !== "string" || !params.itemId)
-          return { error: { code: -32602, message: "itemId is required" } };
-        nativeParams = { ...nativeParams, queuedSubmissionId: params.itemId };
-        delete nativeParams.itemId;
-      }
       if (method === "thread/start") {
         nativeParams = { ...params };
         if (typeof params.model === "object" && params.model && !Array.isArray(params.model)) {
@@ -344,16 +338,18 @@ export class ClientChannelHost {
       }
       return normalize(
         await nativeChannel.request(
-          method === "codexhost/thread/queue/send-now"
-            ? "thread/queue/start"
-            : method === "turn/start" && params.delivery === "queue"
-              ? "thread/queue/add"
-              : method,
+          method === "turn/start" && params.delivery === "queue" ? "thread/queue/add" : method,
           nativeParams,
         ),
       );
     };
     const operation = native ? nativeSubmit : submit;
+    if (native && method === "codexhost/thread/queue/send-now")
+      return this.#clientReceipts.run(
+        JSON.stringify([method, params.threadId, params.itemId]),
+        params,
+        operation,
+      );
     return method === "turn/start" && typeof params.clientUserMessageId === "string"
       ? this.#clientReceipts.run(
           JSON.stringify([params.threadId, params.clientUserMessageId]),

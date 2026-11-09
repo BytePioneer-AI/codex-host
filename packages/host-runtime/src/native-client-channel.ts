@@ -12,6 +12,8 @@ import type { ClientChannelEvents } from "./client-channel-events.js";
 import { ClientChannelRequestError } from "./client-channel-error.js";
 import { compactClientSnapshot } from "./client-snapshot-compaction.js";
 import { nativeThreadConfiguration } from "./codex-runtime/native-thread-controls.js";
+import { sendNativeQueuedMessage } from "./native-queued-steering.js";
+import { NativeClientItems } from "./native-client-items.js";
 
 export type NativeClientReply =
   { result: JsonValue } | { error: { code: number; message: string } };
@@ -373,6 +375,7 @@ export class NativeClientChannel {
   readonly #knownThreads = new Set<string>();
   readonly #resumedThreads = new Set<string>();
   readonly #configuration = new Map<string, ReturnType<typeof nativeThreadConfiguration>>();
+  readonly #items = new NativeClientItems();
   readonly #pending = new Map<string, PendingNativeInteraction>();
   readonly #pendingNativeIds = new Map<string, string>();
   readonly #unconfirmedResponses = new Set<string>();
@@ -390,6 +393,7 @@ export class NativeClientChannel {
   observeMessage(value: JsonValue): void {
     if (!isRecord(value) || typeof value.method !== "string") return;
     const params = isRecord(value.params) ? (value.params as JsonObject) : {};
+    this.#items.observe(value.method, params);
     const threadId = threadIdFromParams(params);
     if (threadId) {
       this.noteThread(threadId);
@@ -483,6 +487,18 @@ export class NativeClientChannel {
       },
     });
     const threadId = threadIdFromParams(params);
+    if (method === "codexhost/thread/queue/send-now") {
+      if (!threadId || typeof params.itemId !== "string" || !params.itemId)
+        return { error: { code: -32602, message: "threadId and itemId are required" } };
+      return sendNativeQueuedMessage(
+        (method, params) =>
+          generation === this.#generationToken
+            ? this.request(method, params)
+            : Promise.resolve(stale()),
+        threadId,
+        params.itemId,
+      );
+    }
     if (method === "codexhost/thread/inspect") {
       if (!threadId) return { error: { code: -32602, message: "threadId is required" } };
       if (!this.#configuration.has(threadId)) {
@@ -503,11 +519,18 @@ export class NativeClientChannel {
       this.observeResponse("thread/resume", { threadId }, resumed);
       if ("error" in resumed) return resumed;
     }
-    const reply = await this.#host.request(
+    let reply = await this.#host.request(
       method,
       method === "thread/resume" ? { ...params, excludeTurns: true } : params,
     );
     if (generation !== this.#generationToken) return stale();
+    if (
+      method === "thread/turns/list" &&
+      threadId &&
+      "result" in reply &&
+      isJsonObject(reply.result)
+    )
+      reply = { result: this.#items.project(threadId, reply.result) };
     this.observeResponse(method, params, reply);
     if (threadId && CHANGED_METHODS.has(method) && !("error" in reply))
       this.#host.events.changed(threadId, method);
@@ -626,6 +649,7 @@ export class NativeClientChannel {
     this.#unconfirmedResponses.clear();
     this.#interactionErrors.clear();
     this.#configuration.clear();
+    this.#items.clear();
     for (const threadId of threads) this.#host.events.changed(threadId, "thread/status/changed");
   }
 

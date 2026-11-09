@@ -41,9 +41,13 @@ Web / App → Web 网关 → 客户端通道 ───────────�
 
 Web 在插件列表之外调用 `codexhost/harness/inspect {harnessId: "codex"}`，就绪时显示一个“Codex”；不可用时不影响其他 Harness。`codex` 是保留 ID，不是插件描述符。新建传官方 Model Ref，由 Host 转为官方 `thread/start` 参数，直接返回官方 Thread ID，不创建 Mapping Store 记录。无项目时由 Host 分配默认生成目录再传 `cwd`，Web 不分配目录。
 
-客户端统一使用现有方法，Host 的方法表按所有者分发。官方 `thread/queue/*` 同名转发，`codexhost/thread/queue/send-now` 转为 `thread/queue/start`；排队发送进入官方队列，Web 与 Desktop 可操作同一队列。模型、Thinking 与权限选择转为 `thread/settings/update`，仅在匹配的 `thread/settings/updated` 通知确认后发布结果，空响应不表示已生效。权限选项来自 `permissionProfile/list` 中允许选择的档案，保留官方 ID。
+客户端统一使用现有方法，Host 的方法表按所有者分发。官方 `thread/queue/*` 同名转发；排队发送进入官方队列，Web 与 Desktop 可操作同一队列。`codexhost/thread/queue/send-now` 在空闲时调用 `thread/queue/start`，活动 Turn 内则读取原队列项，以其完整输入和 `clientUserMessageId` 调用带 `expectedTurnId` 的 `turn/steer`，确认接受后才删除队列项。拒绝或结果未知不回退启动新 Turn；已接受但删除未确认时返回 `-32095`，保留“输入已接受，不要重发”的明确错误信息，不把它归为发送结果完全未知。相同 Thread／队列项的该操作复用当前 Host 的有界进程内回执，不承诺跨重启去重，也不能将两次原生写入变成原子操作。模型、Thinking 与权限选择转为 `thread/settings/update`，仅在匹配的 `thread/settings/updated` 通知确认后发布结果，空响应不表示已生效。权限选项来自 `permissionProfile/list` 中允许选择的档案，保留官方 ID。
 
 官方 Thread 的客户端命令目录提供 `/compact`、`/review` 和 `skills/list` 返回的启用 Skill，Desktop 的 Host 命令目录仍为空，使用其官方菜单。菜单中的压缩和默认审查分别调用 `thread/compact/start`、`review/start`（`uncommittedChanges`）；显式发送 `/review 指令` 使用 `custom` target。压缩不接受文本参数，这两类操作不能排队或 Steer，不降级成普通 Prompt。Skill 同名时保留官方列表中首个有效启用项，目录通过 `warnings` 报告忽略的条目、解析错误或 Skills 加载失败，不影响有效入口；Skills 不可用时仍保留压缩和审查。`$name` carrier 保留原生前缀，发送时按当前工作区官方目录解析为 `type: "skill"` 的 `name/path` 输入，原有文本、附件及队列／Steer 语义保留；Skill 已失效或目录读取失败则拒绝发送，不退化为普通提示词。命令回执只在官方返回 Turn ID 时携带 `turnId`，压缩的空响应不生成虚构 Turn；执行进度仍以官方通知与历史为准。置顶和用量复用 Host 已有官方实现。官方 Thread 不开放 Web Fork 或历史回退，控件按能力显示。
+
+官方命令的开始和输出通知可能早于原生历史分页中的 Item。Host 在当前原生后端代次内保留 `commandExecution` 通知，补入原生 full Turn 页，已持久化的完成记录优先；不填充 summary/notLoaded 页，也不凭工具事件虚构 Turn。仅当全页 Item 都有原生 `startedAtMs` 时稳定排序，使完成时才追加的命令仍位于后来输入之前；缺失时间戳时保留原生顺序。Thread 关闭或后端换代清空临时状态，不持久化第二份历史。
+
+官方停止使用 `turn/interrupt`，不等价于终止该 Thread 的后台终端。原生后台命令可以在 Turn 中断后继续运行，与显式启动的下一 Turn 重叠；终端清理属于独立的原生操作，Host 不在停止 Turn 时追加全量清理或进程强杀。
 
 ## 应用更新
 

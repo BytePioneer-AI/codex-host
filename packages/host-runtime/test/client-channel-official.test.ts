@@ -33,7 +33,9 @@ it("routes official and external queue, configuration, command, pin and usage me
   if (!record) throw new Error("Missing fixture Thread");
   const home = mkdtempSync(path.join(tmpdir(), "official-create-"));
   cleanup.push(() => rmSync(home, { recursive: true, force: true }));
-  const request = vi.fn(async () => ({ result: {} }));
+  const request = vi.fn(async (method: string): Promise<NativeClientReply> => ({
+    result: method === "thread/turns/list" ? { data: [], nextCursor: null } : {},
+  }));
   const submit = vi.fn(async () => ({ result: {} }));
   const events = new ClientChannelEvents();
   const host = new ClientChannelHost({
@@ -98,10 +100,16 @@ it("routes official and external queue, configuration, command, pin and usage me
     threadId: "official",
     itemId: "second-queued",
   });
-  expect(request).toHaveBeenCalledExactlyOnceWith("thread/queue/start", {
+  expect(request).toHaveBeenLastCalledWith("thread/queue/start", {
     threadId: "official",
     queuedSubmissionId: "second-queued",
   });
+  expect(request).toHaveBeenCalledTimes(2);
+  await host.handleClientRequest("codexhost/thread/queue/send-now", {
+    threadId: "official",
+    itemId: "second-queued",
+  });
+  expect(request).toHaveBeenCalledTimes(2);
   expect(submit).not.toHaveBeenCalled();
   await host.handleClientRequest("codexhost/thread/queue/send-now", {
     threadId: external,
@@ -112,6 +120,37 @@ it("routes official and external queue, configuration, command, pin and usage me
     { threadId: external, itemId: "external-queued" },
     undefined,
   );
+  request.mockClear();
+  const previousRequest = request.getMockImplementation();
+  if (!previousRequest) throw new Error("Missing native fixture");
+  request.mockImplementation(async (method) => {
+    if (method === "thread/turns/list")
+      return { result: { data: [{ id: "active", status: "inProgress" }] } };
+    if (method === "thread/queue/list")
+      return {
+        result: { data: [{ id: "cleanup-unconfirmed", clientUserMessageId: "client", input: [] }] },
+      };
+    if (method === "turn/steer") return { result: { turnId: "active" } };
+    if (method === "thread/queue/delete") return { error: { code: -32093, message: "Timeout" } };
+    return { result: {} };
+  });
+  const sendUnconfirmed = () =>
+    host.handleClientRequest("codexhost/thread/queue/send-now", {
+      threadId: "official",
+      itemId: "cleanup-unconfirmed",
+    });
+  const [accepted, duplicate] = await Promise.all([sendUnconfirmed(), sendUnconfirmed()]);
+  expect(accepted).toEqual({
+    error: {
+      code: -32095,
+      message: "Codex accepted the steer, but queue removal was not confirmed. Do not resend.",
+    },
+  });
+  expect(duplicate).toEqual(accepted);
+  expect(await sendUnconfirmed()).toEqual(accepted);
+  expect(request.mock.calls.filter(([method]) => method === "turn/steer")).toHaveLength(1);
+  expect(request.mock.calls.filter(([method]) => method === "thread/queue/delete")).toHaveLength(1);
+  request.mockImplementation(previousRequest);
   request.mockClear();
   submit.mockClear();
   expect(

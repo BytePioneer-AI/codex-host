@@ -36,7 +36,7 @@ it.each(["output", "silent", "exit", "timeout"])(
       resume() {},
       kill() {
         fallbackKills++;
-        if (mode === "timeout") return;
+        if (mode === "timeout" || !alive || mode === "exit") return;
         throw new Error("Unidentified ConPTY cleanup must not be used");
       },
     };
@@ -91,6 +91,7 @@ it.each(["output", "silent", "exit", "timeout"])(
     if (mode === "output") data("ready");
     await closing;
     assert.equal(handle.pid, 42);
+    assert.equal(fallbackKills, 1);
     assert.deepEqual(signals, [42]);
     assert.deepEqual(await handle.done, { exitCode: null, signal: null });
     exit({ exitCode: 0 });

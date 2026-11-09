@@ -455,6 +455,13 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
       await this.waitForWindowsShellExit();
     }
     if (!shellGone()) throw new Error(`terminal cleanup failed; surviving pid: ${this.pid}`);
+    try {
+      // taskkill stops the process but does not release node-pty's pipes/agent.
+      // Release that owned transport only after process cleanup is confirmed.
+      this.terminal.kill();
+    } catch (_ptyTransportAlreadyClosed) {
+      // The process inspector and exit event remain authoritative.
+    }
   }
 
   private async waitForWindowsShellExit(): Promise<void> {

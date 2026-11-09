@@ -254,7 +254,9 @@ export function apply(ctx: Context, config: Config = Config({})): void {
         return candidate !== undefined && tab.id === candidate.id && tab.label === candidate.label;
       });
     if (!unchanged) conversationViews.set(next);
-    for (const binding of bindings) restoreView(binding.sessionId);
+    for (const binding of bindings) {
+      if (sessions.binding(binding.sessionId) === binding) restoreView(binding.sessionId);
+    }
   };
   ctx.effect(() => {
     const disposeViews = slots.subscribe("conversation.view", refreshViews);
@@ -687,22 +689,24 @@ export function apply(ctx: Context, config: Config = Config({})): void {
       InputBar,
     );
 
-  slots.inject("main", function* () {
-    yield slots.register(
-      {
-        name: "main",
-        key: "conversation",
-        children: { "main.conversation": { kind: "single", scope: "session-maybe" } },
-      },
-      ConversationPanel,
-    );
-    yield registerConversationRoot();
-    yield registerConversationContent();
-    yield registerConversationSession();
-    yield registerHeader();
-    yield registerSessionHeader();
-    yield registerComposerBar();
-  });
+  ctx.inject(["conversation"], (scope) =>
+    scope.slots.inject("main", function* () {
+      yield slots.register(
+        {
+          name: "main",
+          key: "conversation",
+          children: { "main.conversation": { kind: "single", scope: "session-maybe" } },
+        },
+        ConversationPanel,
+      );
+      yield registerConversationRoot();
+      yield registerConversationContent();
+      yield registerConversationSession();
+      yield registerHeader();
+      yield registerSessionHeader();
+      yield registerComposerBar();
+    }),
+  );
 
   ctx.plugin(ConversationController, {
     input: inputHub,

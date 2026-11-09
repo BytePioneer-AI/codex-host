@@ -2,13 +2,13 @@ import { z } from "zod";
 import { idleReleaseSettingsSchema } from "./idle-release.js";
 import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "./harness-models.js";
 import { harnessPermissionModeIdSchema } from "./harness-permission-modes.js";
-import { installedHarnessPluginIdSchema } from "./harness-plugins.js";
+import { harnessIdSchema } from "./ids.js";
 
 export const HARNESS_PREFERENCES_GET_METHOD = "codexhost/harness/preferences/get";
 export const HARNESS_PREFERENCES_PATCH_METHOD = "codexhost/harness/preferences/patch";
 export const HARNESS_PREFERENCES_CHANGED_METHOD = "codexhost/harness/preferences/changed";
 export const harnessPreferenceScopeSchema = z.string().regex(/^external$/u);
-const preferenceHarnessKey = installedHarnessPluginIdSchema.transform((id) => String(id));
+const preferenceHarnessKey = harnessIdSchema.transform((id) => String(id));
 export const harnessDefaultConfigurationSchema = z
   .strictObject({
     model: harnessModelRefSchema.optional(),
@@ -20,7 +20,7 @@ export const harnessDefaultConfigurationSchema = z
     "A default configuration must contain a preference",
   );
 export const newThreadDefaultsSchema = z.strictObject({
-  lastHarness: installedHarnessPluginIdSchema.optional(),
+  lastHarness: harnessIdSchema.optional(),
   byHarness: z.record(preferenceHarnessKey, harnessDefaultConfigurationSchema),
 });
 const modelId = z.string().min(1).max(1024);
@@ -41,19 +41,19 @@ export const harnessPreferenceOperationSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("idleRelease"), value: idleReleaseSettingsSchema }),
   z.strictObject({
     kind: z.literal("favorite"),
-    harnessId: installedHarnessPluginIdSchema,
+    harnessId: harnessIdSchema,
     modelId,
     enabled: z.boolean(),
   }),
   z.strictObject({
     kind: z.literal("favorites"),
-    harnessId: installedHarnessPluginIdSchema,
+    harnessId: harnessIdSchema,
     modelIds: z.array(modelId).max(2048),
   }),
   z.strictObject({
     kind: z.literal("newThread"),
-    lastHarness: installedHarnessPluginIdSchema.optional(),
-    harnessId: installedHarnessPluginIdSchema.optional(),
+    lastHarness: harnessIdSchema.optional(),
+    harnessId: harnessIdSchema.optional(),
     configuration: harnessDefaultConfigurationSchema.optional(),
   }),
 ]);
@@ -74,12 +74,6 @@ export const harnessPreferencePatchSchema = z
         ctx.addIssue({
           code: "custom",
           message: "A default Harness or complete configuration is required",
-        });
-      const harnessId = "harnessId" in operation ? operation.harnessId : undefined;
-      if (harnessId === "codex")
-        ctx.addIssue({
-          code: "custom",
-          message: "Official Codex is not an external Harness",
         });
     }
   });

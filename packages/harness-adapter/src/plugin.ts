@@ -37,10 +37,6 @@ export interface HarnessPluginContext {
   readonly openLocalUrl?: (url: string) => Promise<void>;
   /** Opens a background page in the local Desktop browser; owner must close it. */
   readonly openLocalPage?: (url: string) => Promise<HarnessLocalPage>;
-  /** Best-effort refresh of an already connected Desktop's native history catalog.
-   * Only the matching local native home is eligible; never starts or reconnects Desktop.
-   */
-  readonly refreshNativeThreadCatalog?: (nativeHome: string) => Promise<void>;
 }
 
 /** A loaded module supplies a factory, not a global registration side effect. */

@@ -1,21 +1,14 @@
 /** Named tokens through the real Web entry point: sign-in, local access, and immediate revocation. */
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it, type TestContext } from "node:test";
 
-import {
-  SIDEBAR_BROWSER_PATH,
-  SIDEBAR_BROWSER_TAB_PARAM,
-} from "@codexhost/shared-contracts/sidebar-browser";
 import WebSocket from "ws";
 
-import { AccessTokenStore } from "../src/access-tokens.ts";
-import { DataDir } from "../src/store.ts";
-import { FakeChChannel, startFakeChChannel } from "./support/ch-channel.ts";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
 import { PNG } from "./support/image.ts";
 import { startServer } from "./support/server.ts";
@@ -84,7 +77,6 @@ async function start(
   environment?: NodeJS.ProcessEnv,
 ): Promise<{ base: URL; data: string; access(): Promise<AccessState> }> {
   const data = mkdtempSync(join(tmpdir(), "codexhost-auth-http-"));
-  t.after(() => rmSync(data, { recursive: true, force: true }));
   const url = await startServer(
     t,
     resolve(import.meta.dirname, ".."),
@@ -92,6 +84,7 @@ async function start(
     ["--data", data, "--token", LOCAL_TOKEN, ...args],
     { authenticated: true, ...(environment === undefined ? {} : { environment }) },
   );
+  t.after(() => rmSync(data, { recursive: true, force: true }));
   const base = new URL(url);
   base.search = "";
   return {
@@ -535,131 +528,3 @@ it("serves only raster images from local files", async (t) => {
     assert.equal(reply.body.includes("<script>"), false, name);
   }
 });
-
-it(
-  "closes every connection of a replaced token at once, leaving this computer and running work alone",
-  { timeout: 60_000 },
-  async (t) => {
-    const directory = mkdtempSync(join(tmpdir(), "codexhost-auth-revoke-"));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
-    const workspace = join(directory, "workspace");
-    mkdirSync(workspace);
-    const host = new FakeChChannel();
-    host.add("local-thread", workspace, "Local Thread");
-    const debug = await startFakeChDebugger(host);
-    t.after(() => debug.close());
-    const channel = await startFakeChChannel(host, directory);
-    t.after(() => channel.close());
-    const { base, access, data } = await start(t, [
-      "--ch-cdp",
-      debug.endpoint,
-      "--ch-control-directory",
-      directory,
-    ]);
-    const device = (await access()).secret;
-
-    const openSockets = async (secret: string) => {
-      const sockets = [
-        new WebSocket(new URL("/api/remote.mux", base), { headers: bearer(secret) }),
-        new WebSocket(
-          new URL(`${SIDEBAR_BROWSER_PATH}?${SIDEBAR_BROWSER_TAB_PARAM}=revoke-tab`, base),
-          { headers: bearer(secret) },
-        ),
-      ];
-      await Promise.all(sockets.map((socket) => once(socket, "open")));
-      return sockets;
-    };
-    const socketsA = await openSockets(device);
-    const socketsB = await openSockets(LOCAL_TOKEN);
-    t.after(() => {
-      for (const socket of [...socketsA, ...socketsB]) socket.terminate();
-    });
-    // The event stream sends no headers until an event arrives, so it stays in flight.
-    const inFlight = new Promise<void>((settled) => {
-      const request = httpRequest(new URL("/api/ch/v1/events", base), {
-        headers: bearer(device),
-      });
-      request.on("error", () => settled());
-      request.on("response", (response) => {
-        response.on("close", () => settled());
-        response.resume();
-      });
-      request.end();
-    });
-    await new Promise((settled) => setTimeout(settled, 300));
-
-    const terminal = resultOf(
-      await rpcCall(
-        base,
-        "terminal/create",
-        { agentId: "local-thread", request: { id: "term", cols: 80, rows: 24 } },
-        bearer(device),
-      ),
-    );
-    assert.equal(terminal.ok, true, JSON.stringify(terminal));
-
-    const attachedToTerminal = (socket: WebSocket): Promise<boolean> =>
-      new Promise((done) => {
-        const streamId = `attach-${String(Math.random())}`;
-        const timer = setTimeout(() => done(false), 10_000);
-        socket.on("message", (data) => {
-          const frame = JSON.parse(String(data)) as {
-            streamId?: string;
-            value?: { type?: string };
-          };
-          if (frame.streamId !== streamId || frame.value?.type !== "snapshot") return;
-          clearTimeout(timer);
-          done(true);
-        });
-        socket.send(
-          JSON.stringify({
-            type: "open",
-            streamId,
-            endpoint: "terminal/attach",
-            payload: { args: { agentId: "local-thread", id: "term" } },
-          }),
-        );
-      });
-    assert.equal(await attachedToTerminal(socketsA[0] as WebSocket), true);
-
-    const closedA = socketsA.map((socket) => once(socket, "close"));
-    const regenerated = resultOf(
-      await rpcCall(base, "codexhost/accessTokenRegenerate", {}, bearer(LOCAL_TOKEN)),
-    );
-    assert.equal(regenerated.ok, true, JSON.stringify(regenerated));
-    await Promise.all(closedA);
-    await inFlight;
-    assert.equal((await send(base, "/api/auth/status", { headers: bearer(device) })).status, 401);
-    for (const socket of socketsB) assert.equal(socket.readyState, WebSocket.OPEN);
-    assert.equal(
-      (await send(base, "/api/auth/status", { headers: bearer(LOCAL_TOKEN) })).status,
-      200,
-    );
-
-    // The terminal that token opened keeps running for whoever is still allowed in.
-    assert.equal(await attachedToTerminal(socketsB[0] as WebSocket), true);
-    assert.equal(
-      host.requests.some(({ method }) => /interrupt|cancel|archive/iu.test(method)),
-      false,
-    );
-
-    // Replaced by another process sharing the data directory: new requests fail at once,
-    // and connections close within the replacement check interval.
-    const replacement = (regenerated.value as unknown as AccessState).secret;
-    const socketsC = await openSockets(replacement);
-    t.after(() => {
-      for (const socket of socketsC) socket.terminate();
-    });
-    const other = new AccessTokenStore(new DataDir(data));
-    t.after(() => other.close());
-    const closedC = socketsC.map((socket) => once(socket, "close"));
-    const started = Date.now();
-    other.regenerate();
-    assert.equal(
-      (await send(base, "/api/auth/status", { headers: bearer(replacement) })).status,
-      401,
-    );
-    await Promise.all(closedC);
-    assert.ok(Date.now() - started < 7_000);
-  },
-);

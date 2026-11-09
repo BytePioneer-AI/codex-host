@@ -10,6 +10,7 @@ import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import {
   EventHub,
+  RpcError,
   RpcRegistry,
   StreamRegistry,
   type StreamHandler,
@@ -42,8 +43,10 @@ it("authorizes projected output reads, previews relay follow/page, and preserves
   const original = host.request.bind(host);
   let denied = false;
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    // Native Codex is a supported owner now. Access revocation must be an
+    // authoritative Host refusal, not merely a native ownership label.
     if (denied && method === "codexhost/thread/inspect")
-      return { owner: "codex", locked: true } as T;
+      throw new RpcError("host/rejected", "Thread access revoked");
     return original<T>(method, params);
   };
   const sessions = new ChSessions(host, new Workspaces(new DataDir(dir), dir), new EventHub(dir));
@@ -122,5 +125,5 @@ it("authorizes projected output reads, previews relay follow/page, and preserves
   denied = true;
   const inaccessible = await call(ref);
   assert.ok(!inaccessible.ok);
-  assert.equal(inaccessible.error.code, "session/not-external");
+  assert.equal(inaccessible.error.code, "host/rejected");
 });

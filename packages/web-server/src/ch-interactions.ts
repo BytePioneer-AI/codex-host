@@ -39,14 +39,26 @@ function presentation(pending: ClientInteraction): {
         },
       ],
       result(value) {
+        const nativeApproval =
+          pending.request.method === "item/commandExecution/requestApproval" ||
+          pending.request.method === "item/fileChange/requestApproval";
         const answer = (value as Answer | undefined)?.answers?.find(
           (entry) => entry.id === "approval",
         );
-        if (value == null || (answer?.selected?.length === 0 && !answer.custom))
+        if (value == null || (answer?.selected?.length === 0 && !answer.custom)) {
+          if (nativeApproval) {
+            const deny =
+              interaction.actions.find((action) => action.id === "decline") ??
+              interaction.actions.find((action) => action.id === "cancel");
+            if (!deny) throw new Error("Choose one of the native approval actions");
+            return { decision: deny.id };
+          }
           return { action: "decline" };
+        }
         const action = interaction.actions[labels.indexOf(answer?.selected?.[0] ?? "")];
         if (!action || answer?.custom || answer?.selected?.length !== 1)
           throw new Error("Choose one of the native approval actions");
+        if (nativeApproval) return { decision: action.id };
         const params = record(pending.request.params);
         if ("actionId" in record(record(params.requestedSchema).properties))
           return { action: "accept", content: { actionId: action.id } };
@@ -103,7 +115,9 @@ export class ChInteractions {
   ) {}
   update(snapshot: ClientThreadSnapshot): void {
     const threadId = String(snapshot.thread.id);
-    if (!snapshot.interactions.length) this.error(threadId, null);
+    const message = snapshot.thread.nativeInteractionError ?? snapshot.thread.nativeSendError;
+    if (typeof message === "string") this.error(threadId, message);
+    else if (!snapshot.interactions.length) this.error(threadId, null);
     const keys = new Set(
       snapshot.interactions.map((value) => `${snapshot.cursor.epoch}:${value.requestId}`),
     );

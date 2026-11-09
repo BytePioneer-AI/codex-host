@@ -14,11 +14,13 @@ import type {
   FocusEventHandler,
   MouseEventHandler,
   MutableRefObject,
+  PointerEventHandler,
   ReactElement,
   Ref,
 } from "react";
 import { createPortal } from "react-dom";
 import { ShortcutKeys } from "./ShortcutKeys.tsx";
+import { usePhoneSidebar } from "./PhoneSidebarView.tsx";
 import { useDismissOnOutsidePointer } from "./useDismissOnOutsidePointer.ts";
 import css from "./Tooltip.module.css";
 // Tooltips take the wide answer — any key returns to the keyboard. Focus rings read the
@@ -40,6 +42,8 @@ interface AnchorProps {
   ref?: Ref<HTMLElement> | undefined;
   onMouseEnter?: MouseEventHandler | undefined;
   onMouseLeave?: MouseEventHandler | undefined;
+  onPointerEnter?: PointerEventHandler | undefined;
+  onPointerLeave?: PointerEventHandler | undefined;
   onClick?: MouseEventHandler | undefined;
   onFocus?: FocusEventHandler | undefined;
   onBlur?: FocusEventHandler | undefined;
@@ -102,6 +106,8 @@ export function Tooltip({
   children: ReactElement<AnchorProps>;
 }) {
   const id = useId();
+  const phone = usePhoneSidebar() !== null;
+  const hasShortcut = !phone && Boolean(shortcutKeys?.length);
   const [pinned, setPinned] = useState(false);
   const anchor = useRef<HTMLElement | null>(null);
   // React 18 keeps the element's ref outside props; forward it so wrapping an
@@ -146,7 +152,7 @@ export function Tooltip({
     },
     [suppressAncestors],
   );
-  const visible = pos !== null && !disabled;
+  const visible = pos !== null && !disabled && (!phone || Boolean(resolvedLabel));
   // ResizeObserver supplies the laid-out border box; fitting never reads
   // geometry after a position write or needs a React commit to flip sides.
   useEffect(() => {
@@ -214,7 +220,7 @@ export function Tooltip({
   }, [cancelShow, disabled, openOnClick, pinned]);
 
   const show = () => {
-    if (disabled) return;
+    if (disabled || (phone && !(typeof label === "function" ? label() : label))) return;
     const el = anchor.current;
     /* v8 ignore next -- the ref is attached by event time: events fire on the cloned anchor. */
     if (el === null) return;
@@ -277,7 +283,7 @@ export function Tooltip({
       data-portal={portal || undefined}
       data-pinned={pinned || undefined}
       data-align={align}
-      data-has-shortcut={shortcutKeys?.length ? true : undefined}
+      data-has-shortcut={hasShortcut || undefined}
       style={{
         left: pos.x,
         top: y,
@@ -306,8 +312,23 @@ export function Tooltip({
           openOnClick && visible
             ? [children.props["aria-describedby"], id].filter(Boolean).join(" ")
             : children.props["aria-describedby"],
+        onPointerEnter: (e) => {
+          children.props.onPointerEnter?.(e);
+          if (!phone || e.pointerType === "touch") return;
+          triggers.current.hover = true;
+          showAfterDelay(delayMs);
+        },
+        onPointerLeave: (e) => {
+          children.props.onPointerLeave?.(e);
+          if (!phone) return;
+          triggers.current.hover = false;
+          cancelShow();
+          if (!pinned) withdraw();
+        },
         onMouseEnter: (e) => {
           children.props.onMouseEnter?.(e);
+          // Phone touch compatibility mouse events must not open a hover tooltip.
+          if (phone) return;
           triggers.current.hover = true;
           showAfterDelay(delayMs);
         },
@@ -331,7 +352,11 @@ export function Tooltip({
         },
         onFocus: (e) => {
           children.props.onFocus?.(e);
-          if (pointerModality()) return;
+          if (
+            pointerModality() ||
+            (phone && e.currentTarget.hasAttribute("data-dsh-automatic-focus"))
+          )
+            return;
           triggers.current.focus = true;
           showAfterDelay(focusDelayMs);
         },

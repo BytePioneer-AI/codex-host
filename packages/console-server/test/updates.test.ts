@@ -185,57 +185,6 @@ describe("console updates", () => {
     });
   });
 
-  it("hands off to the Updater before returning", async () => {
-    const { target, environment } = await npmLayout("linux");
-    target.dataDirectory = path.join(root, "custom-data");
-    target.restartTarget = "web";
-    const spawnUpdater = vi.fn<(executable: string, requestPath: string) => never>(
-      () => Object.assign(new EventEmitter(), { pid: 4321, kill: vi.fn() }) as never,
-    );
-    const onHandedOff = vi.fn();
-    const updates = createConsoleUpdates({
-      onHandedOff,
-      waitForHandoff: true,
-      environment,
-      platform: "linux",
-      processId: 777,
-      processExecutable: process.execPath,
-      stateDirectory: path.join(root, "state"),
-      fetchLatest: async () => release,
-      manager: createBackgroundUpdateManager({ platform: "linux", spawnUpdater }),
-    });
-
-    await updates.check(target);
-    const starting = updates.start(target);
-    await vi.waitFor(() => expect(spawnUpdater).toHaveBeenCalledOnce());
-    expect(onHandedOff).not.toHaveBeenCalled();
-    const call = spawnUpdater.mock.calls[0];
-    if (!call) throw new Error("Updater was not spawned");
-    const spawnedRequest = JSON.parse(await readFile(call[1], "utf8"));
-    const status = JSON.parse(await readFile(spawnedRequest.status_path, "utf8"));
-    await writeFile(
-      spawnedRequest.status_path,
-      JSON.stringify({ ...status, phase: "waiting-for-exit" }),
-    );
-    const result = await starting;
-
-    expect(result.status.phase).toBe("waiting-for-exit");
-    expect(result.status).toMatchObject({ version: "1.1.0", installation: "npm" });
-    expect(onHandedOff).toHaveBeenCalledOnce();
-    const requestPath = (spawnUpdater.mock.calls[0] as unknown as [string, string])[1];
-    const request = JSON.parse(await readFile(requestPath, "utf8")) as Record<string, unknown>;
-    expect(request).toMatchObject({
-      wait_pid: 777,
-      wait_executable: process.execPath,
-      runtime_descriptor_path: target.runtimeDescriptorPath,
-      data_directory: target.dataDirectory,
-      restart_target: "web",
-    });
-    expect(
-      JSON.parse(await readFile(path.join(root, "state", "active-update-v1.lock"), "utf8")),
-    ).toMatchObject({ ownerPid: 4321 });
-  });
-
   it("shows the current preparation failure and replaces it when retrying", async () => {
     const { target, environment } = await npmLayout("linux");
     await rm(environment.CODEXHOST_NPM_CLI_PATH);

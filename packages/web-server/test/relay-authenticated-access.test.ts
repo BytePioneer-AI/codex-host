@@ -114,6 +114,44 @@ async function fixture(t: TestContext, legacy = false) {
   return { secret, tokens, send, authenticated, events, hostname, port, sessions };
 }
 
+for (const alpn of ["h2", "http/1.1"]) {
+  it(
+    `releases relay slots when ${alpn} clients disconnect without TLS shutdown`,
+    { timeout: 10_000 },
+    async (t) => {
+      const f = await fixture(t);
+      for (let i = 0; i < 33; i++) {
+        const phone = connect({
+          host: "127.0.0.1",
+          port: f.port,
+          servername: f.hostname,
+          rejectUnauthorized: false,
+          ALPNProtocols: [alpn],
+        });
+        f.sessions.add(phone);
+        await once(phone, "secureConnect");
+        if (alpn === "h2") {
+          const session = connectHttp2(`https://${f.hostname}`, { createConnection: () => phone });
+          f.sessions.add(session);
+          const request = session.request({ ":path": "/" });
+          request.resume();
+          await once(request, "end");
+        } else {
+          phone.write(`GET / HTTP/1.1\r\nHost: ${f.hostname}\r\n\r\n`);
+          await once(phone, "data");
+        }
+        phone.destroy();
+        await until(
+          () =>
+            f.events.filter((event) => event.type === "phone" && event.state === "close").length ===
+            i + 1,
+          1_000,
+        );
+      }
+    },
+  );
+}
+
 it(
   "reports only valid login/cookie/bearer authentication, never scans, invalid tokens, assets or spoofed IP headers",
   { timeout: 10_000 },

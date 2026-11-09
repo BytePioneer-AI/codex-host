@@ -31,7 +31,7 @@ const TRANSCRIPT_VIEW_SETTING_VALUES = [
 ] as const;
 
 /** Default work details for non-Desktop Web clients. */
-export const DEFAULT_TRANSCRIPT_VIEW_MODE: TranscriptViewMode = "detailed";
+export const DEFAULT_TRANSCRIPT_VIEW_MODE: TranscriptViewMode = "standard";
 
 /** Destinations for ordinary clicks on Chat HTTP(S) links. */
 export type LinkOpening = "sidebar" | "new-tab";

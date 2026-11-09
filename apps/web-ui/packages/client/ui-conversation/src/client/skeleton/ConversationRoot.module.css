@@ -436,17 +436,48 @@ button.crumb:hover {
      composer stays above the pinned header on the extreme small-viewport
      overlap and the pinned header stays above the rail. */
   z-index: 7;
-  /* Input mask (figma 1205:27463): transcript fades out under a FIXED 36px
+  /* Default input mask (figma 1205:27463): transcript fades out under a FIXED 36px
      band at the seat's top (the figma 24% of the resting ~150px composer),
      solid below — px stops, not %, so a growing draft only widens the solid
      region and the fade band never stretches. The 0px stop is bg-base at
      zero alpha (not white, which the figma export hardcodes) so both themes
      fade from their own base. */
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--dsw-alias-bg-base) 0%, transparent) 0px,
-    var(--dsw-alias-bg-base) 36px
+  background: var(
+    --dsh-phone-composer-mask,
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--dsw-alias-bg-base) 0%, transparent) 0px,
+      var(--dsw-alias-bg-base) 36px
+    )
   );
+}
+
+/* Only the visible default bar thins the mask behind its glass. The chain's
+   fallback has a sibling when a takeover is elected; that seat keeps the
+   opaque mask. Retain the 36px reading fade and an opaque bottom edge. */
+@supports (backdrop-filter: blur(14px)) or (-webkit-backdrop-filter: blur(14px)) {
+  :global([data-phone])
+    .composerSeat:where(
+      :has(
+        :global(
+          [data-chain-overlay-fallback="conversation.composer"]:only-child [data-composer-card]
+        )
+      )
+    ) {
+    --dsh-phone-composer-mask: linear-gradient(
+      180deg,
+      transparent 0px,
+      color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent) 36px,
+      color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent) calc(100% - 28px),
+      var(--dsw-alias-bg-base) 100%
+    );
+  }
+}
+
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  :global([data-phone]) .composerSeat {
+    --dsh-phone-composer-mask: initial;
+  }
 }
 
 /* An open @/slash menu (data-trigger-menu, ui-input-trigger) renders inside

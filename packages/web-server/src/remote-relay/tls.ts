@@ -65,6 +65,8 @@ export class RelayTls {
           ALPNProtocols: challenge ? ["acme-tls/1"] : ["h2", "http/1.1"],
         });
         tls.once("secureConnection", (socket) => {
+          // Do not inherit the tunnel's half-open mode and retain slots after browser EOF.
+          socket.allowHalfOpen = false;
           socket.on("error", () => socket.destroy());
           clearTimeout(deadline);
           if (challenge) {

@@ -85,6 +85,23 @@
   transform: rotate(180deg);
 }
 
+/* Phone capacity includes this bounded name, independent of the composer's
+   compact variables. Effort stays in the existing menu and accessible label. */
+:global([data-phone]) .trigger {
+  max-width: none;
+}
+
+:global([data-phone]) .triggerLabel {
+  display: block;
+  flex-shrink: 0;
+  max-width: 100px;
+}
+
+:global([data-phone]) .triggerIcon,
+:global([data-phone]) .triggerEffort {
+  display: none;
+}
+
 /* Placement measures only the Thinking card, so it stays 8px above the
    trigger. The taller Model sibling is absolutely attached to its left and
    therefore cannot push both cards toward the viewport top. */

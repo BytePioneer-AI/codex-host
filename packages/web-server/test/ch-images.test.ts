@@ -7,7 +7,7 @@ import { ChSessions } from "../src/ch-sessions.ts";
 import { ChThreadHistory } from "../src/ch-thread-history.ts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
-import { WebImages } from "../src/web-images.ts";
+import { WebImages, WEB_IMAGE_LIMITS } from "../src/web-images.ts";
 import { ChAttachments } from "../src/ch-attachments.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import { FakeChHost } from "./support/ch-host.ts";
@@ -85,13 +85,19 @@ it("shared image sends use paths, reject invalid drafts before native creation a
   const rows = await call<{
     items: Array<{
       sessionId: string;
-      projections: { values: { attachmentInput: { enabled: boolean; imagesOnly: boolean } } };
+      projections: { values: Record<string, unknown> };
     }>;
   }>("session/list", {});
-  assert.deepEqual(
-    rows.items.find((row) => row.sessionId === threadId)?.projections.values.attachmentInput,
-    { enabled: true, imagesOnly: true },
-  );
+  assert.ok(rows.items.some((row) => row.sessionId === threadId));
+  for (const row of rows.items) {
+    assert.equal(Object.hasOwn(row.projections.values, "attachmentInput"), false);
+    assert.equal(Object.hasOwn(row.projections.values, "imageLimits"), false);
+  }
+  const opened = await call<{ values: Record<string, unknown> }>("session/projections", {
+    sessionId: threadId,
+  });
+  assert.deepEqual(opened.values.attachmentInput, { enabled: true, imagesOnly: true });
+  assert.deepEqual(opened.values.imageLimits, WEB_IMAGE_LIMITS);
 });
 
 it("cold history and older-page projection reconstruct image references without a Web Thread index", async (t) => {

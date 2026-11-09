@@ -9,7 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use codexhost_platform::{
-    configure_detached_service_command, node_entrypoint_path, spawn_supervised,
+    configure_background_command, configure_detached_service_command, node_entrypoint_path,
+    spawn_supervised,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -119,7 +120,7 @@ pub(super) fn clean(command: &mut Command) {
         {
             continue;
         }
-        if upper == "CODEXHOST_WEB_SERVICE" {
+        if upper == "CODEXHOST_WEB_SERVICE" || upper == "CODEXHOST_TRACE_SESSION_LIST" {
             continue;
         }
         if upper.starts_with("CODEXHOST_") || upper == "NODE_OPTIONS" || upper == "NODE_PATH" {
@@ -256,6 +257,7 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
         .env("CODEXHOST_UPDATE_SERVICE", "1")
         // Host-side fetch (for example voice transcription) follows the system proxy.
         .envs(codexhost_platform::proxy_environment());
+    configure_background_command(&mut command);
     let mut child = spawn_supervised(&mut command)?;
     let result = (|| -> Result<(), Box<dyn Error>> {
         let mut published = false;

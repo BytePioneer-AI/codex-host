@@ -57,6 +57,11 @@ for (const failure of ["wrong-harness", "inspection-unavailable"] as const) {
       false,
       "Do not navigate the browser to an unconfirmed Harness",
     );
+    assert.equal(
+      emitted.mock.calls.some(({ arguments: args }) => args[0] === "api-session/removed"),
+      false,
+      "Keep the draft when binding was not confirmed",
+    );
     const projections = await rpc.dispatch("session/projections", {
       args: { request: { sessionId } },
     });

@@ -16,7 +16,7 @@ export const en = {
   "discovery.retry": "Retry native commands",
   "discovery.failed": "Native command catalog unavailable:",
 
-  "settings.connectDevices": "Connect devices",
+  remoteAccess: "Remote access",
   "settings.extensions": "Interface extensions",
   "settings.connections": "Connections",
   "settings.resources": "Resources",
@@ -34,8 +34,6 @@ export const en = {
   "connection.computer": "Cannot reach your computer. Check that it is on and Web is running.",
   "connection.lastSynced": "Last synced at {time}",
   "connection.retry": "Retry",
-  "import.sourceBranch":
-    "Independent branch created from Codex session {sessionId}. Both sessions continue separately.",
   title: "Import sessions",
   subtitle:
     "Continue a session you started in a Harness on this computer. Its history is loaded when you open it.",
@@ -96,7 +94,6 @@ export const en = {
   "usage.unit.seconds": "s",
   "connectDevices.title": "Connect this computer",
   "connectDevices.subtitle": "Scan with your phone camera to continue in the browser.",
-  "connectDevices.recommended": "Recommended",
   "connectDevices.httpsSummary": "Across networks · Tailscale required on your phone",
   "connectDevices.lanSummary": "Connect on the same network, with no extra app",
   "connectDevices.address": "Connection address",
@@ -149,7 +146,7 @@ export const en = {
   "connectDevices.relay.inUse": "In use",
   "connectDevices.relay.closeFirst":
     "Turn off the active relay before switching or changing its control address.",
-  "connectDevices.selfRelay.title": "Self-hosted relay",
+  "connectDevices.selfRelay.title": "Self-hosted encrypted relay",
   "connectDevices.selfRelay.summary": "Your server and domain · No phone app needed",
   "connectDevices.selfRelay.off":
     "Use your own relay server. Like the official relay, it only forwards encrypted traffic.",
@@ -179,7 +176,7 @@ export const en = {
     "Come back here, enter your relay domain and a device name (e.g. example.com and mycomputer) and click Enable relay.",
   "connectDevices.selfRelay.noDomain": "No domain? Use the official relay or Tailscale.",
   "connectDevices.selfRelay.docs": "Full self-hosted relay guide",
-  "connectDevices.relay.title": "codexhost Relay",
+  "connectDevices.relay.title": "Official encrypted relay",
   "connectDevices.relay.summary": "Any network · No app needed on your phone",
   "connectDevices.relay.hint":
     "Connect across networks without an extra phone app. An access token is required.",
@@ -324,6 +321,25 @@ export const en = {
   "extensions.recovery": "Open recovery page",
   "extensions.builtinsOnly": "Open with built-in extensions only",
 
+  "pwa.title": "Install CodexHost app",
+  "pwa.install": "Install app",
+  "pwa.instructions": "Installation guide",
+  "pwa.prompting": "Confirm installation in your browser's dialog.",
+  "pwa.accepted": "Installation requested. Your browser will finish installing the app.",
+  "pwa.dismissed": "Installation cancelled. You can still install from your browser's menu.",
+  "pwa.failed":
+    "Could not open the installation dialog. Try your browser's menu or reload this page.",
+  "pwa.installed": "CodexHost is running as an app or this browser has confirmed installation.",
+  "pwa.guide.insecure":
+    "Installation requires HTTPS or localhost. Open an HTTPS address from Connect devices.",
+  "pwa.guide.ios":
+    "On iOS, choose Share → Add to Home Screen in your browser. If unavailable, open in Safari.",
+  "pwa.guide.android":
+    "On Android, use Chrome or Edge, then tap Install app here when available; otherwise use the browser menu's Install app option.",
+  "pwa.guide.safari": "In Safari on macOS 14 or later, choose File → Add to Dock.",
+  "pwa.guide.browser":
+    "Use Chrome or Edge, then click Install app here when available, or use the address bar's install icon.",
+  "pwa.guide.limitations": "If opened inside WeChat or another app, use an external browser.",
   "notifications.title": "Notifications",
   "notifications.on":
     "This device is notified when a turn finishes or an agent needs your approval or answer.",
@@ -440,7 +456,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "discovery.retry": "重试原生命令目录",
   "discovery.failed": "原生命令目录不可用：",
 
-  "settings.connectDevices": "连接设备",
+  remoteAccess: "远程访问",
   "settings.extensions": "界面扩展",
   "settings.connections": "连接",
   "settings.resources": "资源管理",
@@ -458,7 +474,6 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connection.computer": "无法连接到电脑，请确认电脑已开机且 Web 正在运行。",
   "connection.lastSynced": "上次同步于 {time}",
   "connection.retry": "重试",
-  "import.sourceBranch": "从 Codex 会话 {sessionId} 创建的独立分支，两边分别继续。",
   title: "导入会话",
   subtitle: "继续你在这台电脑上用 Harness 开过的会话，打开时会加载完整历史。",
   search: "按标题或文件夹搜索",
@@ -518,7 +533,6 @@ export const zh: Record<ImportLocaleKey, string> = {
   "usage.unit.seconds": "秒",
   "connectDevices.title": "连接这台电脑",
   "connectDevices.subtitle": "用手机相机扫码，在浏览器中继续使用。",
-  "connectDevices.recommended": "推荐",
   "connectDevices.httpsSummary": "跨网络访问 · 手机需开启 Tailscale",
   "connectDevices.lanSummary": "使用局域网地址连接，无需额外安装",
   "connectDevices.address": "连接地址",
@@ -563,7 +577,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.qrLabel": "登录二维码",
   "connectDevices.relay.inUse": "当前使用",
   "connectDevices.relay.closeFirst": "请先关闭当前中转，再切换中转或修改控制地址。",
-  "connectDevices.selfRelay.title": "自建中转",
+  "connectDevices.selfRelay.title": "自建加密中转",
   "connectDevices.selfRelay.summary": "自己的服务器和域名 · 手机无需安装应用",
   "connectDevices.selfRelay.off": "通过自己的服务器中转，和官方中转一样只转发加密内容。",
   "connectDevices.selfRelay.address": "中转服务器地址：{host}",
@@ -590,7 +604,7 @@ export const zh: Record<ImportLocaleKey, string> = {
     "回到这里填写中转域名和设备名称（例如 example.com 和 mycomputer），点击“启用中转”。",
   "connectDevices.selfRelay.noDomain": "没有域名？可以使用官方中转或 Tailscale。",
   "connectDevices.selfRelay.docs": "完整自建中转教程",
-  "connectDevices.relay.title": "codexhost 中转",
+  "connectDevices.relay.title": "官方加密中转",
   "connectDevices.relay.summary": "任何网络 · 手机无需安装应用",
   "connectDevices.relay.hint": "跨网络连接，手机无需额外安装应用，登录需要访问令牌。",
   "connectDevices.relay.off": "codexhost 官方中转，只转发加密内容。",
@@ -718,6 +732,23 @@ export const zh: Record<ImportLocaleKey, string> = {
   "extensions.recovery": "打开恢复页面",
   "extensions.builtinsOnly": "仅使用内置扩展打开",
 
+  "pwa.title": "安装 CodexHost 应用",
+  "pwa.install": "安装应用",
+  "pwa.instructions": "安装指引",
+  "pwa.prompting": "请在浏览器弹窗中确认安装。",
+  "pwa.accepted": "已提交安装请求，浏览器将完成应用安装。",
+  "pwa.dismissed": "已取消安装，仍可通过浏览器菜单手动安装。",
+  "pwa.failed": "无法打开安装弹窗，请尝试浏览器菜单或刷新页面后重试。",
+  "pwa.installed": "当前已在应用窗口中运行，或浏览器已确认安装完成。",
+  "pwa.guide.insecure": "安装需要 HTTPS 或 localhost，请从「连接设备」打开 HTTPS 地址。",
+  "pwa.guide.ios":
+    "在 iOS 上，点击浏览器的「分享 → 添加到主屏幕」；若没有此选项，请用 Safari 打开。",
+  "pwa.guide.android":
+    "在安卓上，推荐使用 Chrome 或 Edge 打开，出现「安装应用」后点击此处安装；也可从浏览器菜单选择「安装应用」。",
+  "pwa.guide.safari": "在 macOS 14 或更新版本的 Safari 中，选择「文件 → 添加到程序坞」。",
+  "pwa.guide.browser":
+    "推荐使用 Chrome 或 Edge 打开，出现「安装应用」后点击此处安装，或点击地址栏的安装图标。",
+  "pwa.guide.limitations": "若在微信等应用内打开，请改用外部浏览器。",
   "notifications.title": "通知",
   "notifications.on": "一轮结束、需要审批或回答问题时，会通知这台设备。",
   "notifications.off": "一轮结束或 Agent 需要你时，在这台设备上收到通知。",

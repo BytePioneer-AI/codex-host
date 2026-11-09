@@ -20,6 +20,7 @@ import {
   DesktopScreenshotButton,
   DesktopScreenshotPreview,
   type DesktopScreenshotFace,
+  type DesktopScreenshotButtonFace,
 } from "./DesktopScreenshot.tsx";
 import { VoiceInput } from "./voice-input.ts";
 import {
@@ -32,10 +33,10 @@ import {
   type VoiceInputFace,
 } from "./VoiceInput.tsx";
 import { ImportIcon } from "./ImportIcon.tsx";
+import { RemoteAccessAction, type RemoteAccessActionFace } from "./RemoteAccessAction.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
 import { HostConnectionStatus } from "./HostConnectionStatus.tsx";
-import { ImportedThreadNotice } from "./ImportedThreadNotice.tsx";
 import { HostUsageDock } from "./HostUsageDock.tsx";
 import type {
   ComposerAttachment,
@@ -54,6 +55,8 @@ import { WebExtensionsSection, type WebExtensionsFace } from "./WebExtensionsSec
 import { watchAuthentication } from "./auth-watch.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
+import type {} from "@deepseek-ai/dsh-client-web";
+import { PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
 import { ImportPage, type ImportPageFace } from "./ImportPage.tsx";
 import { HostSettingsSection, type HostSettingsSectionFace } from "./HostSettingsSection.tsx";
 import type {} from "@deepseek-ai/dsh-client-ui-theme/client";
@@ -88,12 +91,12 @@ export const inject = [
 
 /** Console settings pages shown in Web settings, after General. */
 const HOST_SETTINGS_PAGES = [
-  ["connections", "settings.connections"],
-  ["resources", "settings.resources"],
-  ["accounts", "settings.accounts"],
-  ["usage-statistics", "settings.usage"],
-  ["updates", "settings.updates"],
-  ["about", "settings.about"],
+  ["accounts", "settings.accounts", 2],
+  ["connections", "settings.connections", 3],
+  ["usage-statistics", "settings.usage", 4],
+  ["resources", "settings.resources", 5],
+  ["updates", "settings.updates", 7],
+  ["about", "settings.about", 8],
 ] as const;
 
 /**
@@ -103,6 +106,21 @@ const HOST_SETTINGS_PAGES = [
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-codexhost: dictionaries");
   const t = ctx.locale.bind(NS);
+  const installation = ctx.get("pwaInstall");
+  if (installation !== undefined) {
+    ctx.slots.inject("settings.general.item", () =>
+      ctx.slots.register(
+        {
+          name: "settings.general.item",
+          id: "codexhost.pwa-install",
+          order: 90,
+          locale: NS,
+          inject: (): PwaInstallFace => ({ installation }),
+        },
+        PwaInstallRow,
+      ),
+    );
+  }
   ctx.provide("chatMessageEditing", sentMessageEditApi);
   ctx.provide("chatTurnDiffs", turnDiffsApi);
   ctx.inject(["conversation"], (scope) => {
@@ -114,13 +132,18 @@ export function apply(ctx: ClientContext): void {
         conversation.releaseDraftAttachments(created as readonly ComposerAttachment[]),
     };
     scope.effect(() => () => screenshot.close(), "ui-codexhost: release desktop screenshot");
+    const screenshotButton: DesktopScreenshotButtonFace = {
+      screenshot,
+      drafts,
+      registerSource: (source) => scope.inputTriggers.registerSource(source),
+    };
     scope.slots.inject("conversation.input.right", () =>
       scope.slots.register(
         {
           name: "conversation.input.right",
           id: "codexhost.desktop-screenshot",
           locale: NS,
-          inject: (): DesktopScreenshotFace => ({ screenshot, drafts }),
+          inject: (): DesktopScreenshotButtonFace => screenshotButton,
         },
         DesktopScreenshotButton,
       ),
@@ -260,6 +283,21 @@ export function apply(ctx: ClientContext): void {
       ImportIcon,
     ),
   );
+  ctx.inject(["settingsNavigation"], (scope) => {
+    scope.slots.inject("sidebar.primary.action", () =>
+      scope.slots.register(
+        {
+          name: "sidebar.primary.action",
+          id: "codexhost-remote-access",
+          locale: NS,
+          inject: (): RemoteAccessActionFace => ({
+            openSection: (id) => scope.settingsNavigation.openSection(id),
+          }),
+        },
+        RemoteAccessAction,
+      ),
+    );
+  });
   ctx.slots.inject("settings.general.item", () =>
     ctx.slots.register(
       {
@@ -286,7 +324,7 @@ export function apply(ctx: ClientContext): void {
       {
         name: "settings.section",
         id: "codexhost-ui-extensions",
-        order: 8,
+        order: 6,
         label: () => t("settings.extensions"),
         locale: NS,
         inject: (): WebExtensionsFace => ({ resolveText: (text) => ctx.locale.resolveText(text) }),
@@ -299,20 +337,20 @@ export function apply(ctx: ClientContext): void {
       {
         name: "settings.section",
         id: "codexhost-connect-devices",
-        order: 9,
-        label: () => t("settings.connectDevices"),
+        order: 1,
+        label: () => t("remoteAccess"),
         locale: NS,
       },
       ConnectDevicesSection,
     ),
   );
-  HOST_SETTINGS_PAGES.forEach(([pageId, label], index) => {
+  HOST_SETTINGS_PAGES.forEach(([pageId, label, order]) => {
     ctx.slots.inject("settings.section", () =>
       ctx.slots.register(
         {
           name: "settings.section",
           id: `codexhost-${pageId}`,
-          order: 10 + index,
+          order,
           label: () => t(label),
           locale: NS,
           inject: (): HostSettingsSectionFace => ({ pageId, locale, colorScheme }),
@@ -345,17 +383,6 @@ export function apply(ctx: ClientContext): void {
         }),
       },
       HostConnectionStatus,
-    ),
-  );
-  ctx.slots.inject("conversation.header.notice", () =>
-    ctx.slots.register(
-      {
-        name: "conversation.header.notice",
-        id: "codexhost.import-source",
-        locale: NS,
-        inject: () => ({ list: ctx.sessions.list }),
-      },
-      ImportedThreadNotice,
     ),
   );
   ctx.slots.inject("conversation.composer.dock", () =>

@@ -116,6 +116,7 @@ function RenameForm({
   };
   return (
     <Modal
+      phoneSidebar
       open
       onClose={close}
       closeLabel={t("close")}

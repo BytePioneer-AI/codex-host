@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "license": "MIT",
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts"
+  },
   "exports": {
     ".": {
       "types": "./src/index.ts",

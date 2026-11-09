@@ -86,6 +86,22 @@ describe("release Payload", () => {
     await expect(prepareReleasePayload({ target })).rejects.toThrow("requires host platform");
   });
 
+  it("rejects a Windows ARM64 payload missing its target Koffi binding", async () => {
+    const root = await temporaryDirectory();
+    const target = releaseTarget("windows-arm64");
+    const binding = "app/web-modules/node_modules/@koromix/koffi-win32-arm64/package.json";
+    try {
+      expect(expectedPayloadPaths(target)).toContain(binding);
+      await createPayload(root, target);
+      await rm(path.join(root, binding));
+      await expect(
+        validatePayload({ payloadRoot: root, target, root: "/repo/source" }),
+      ).rejects.toThrow(binding);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("validates the platform allowlists including preinstalled plugin resources", async () => {
     const root = await temporaryDirectory();
     const target = releaseTarget("macos-arm64");

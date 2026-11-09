@@ -200,19 +200,49 @@ it(
       JSON.stringify(await second.request("thread/read", { threadId: id, includeTurns: true })),
       /native turn survived Desktop exit/u,
     );
+    const web2 = new HostClientChannel(path.join(data, "client-hosts"), endpoint);
+    t.after(() => web2.close());
+    const web2Events: Array<{ type: string; threadId?: string }> = [];
+    web2.subscribe((event) => web2Events.push(event));
+    await web2.start();
+    const listed = await web.request<{ data: Array<{ id: string; modelProvider?: string }> }>(
+      "thread/list",
+      {},
+    );
+    assert.ok(listed.data.some((entry) => entry.id === id));
+    const observed = await web.snapshot(id);
+    assert.equal(observed.thread.id, id);
+    assert.equal(observed.thread.modelProvider, "openai");
+    assert.match(JSON.stringify(observed), /native turn survived Desktop exit/u);
+    await web.request("turn/start", {
+      threadId: id,
+      input: [{ type: "text", text: "native Web follow-up" }],
+      clientUserMessageId: "web-native-follow-up",
+    });
+    const followUpDeadline = Date.now() + 10_000;
+    while (
+      !(await readFile(path.join(codexHome, "native-calls.jsonl"), "utf8")).match(
+        /turn\/completed[\s\S]*turn\/completed/u,
+      )
+    ) {
+      assert.ok(Date.now() < followUpDeadline, "Web native Turn did not finish");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.ok(web2Events.some((event) => event.type === "changed" && event.threadId === id));
+    const final = await web2.snapshot(id);
+    assert.match(JSON.stringify(final), /native turn survived Desktop exit/u);
+    assert.equal(final.turnsPage.data.length, 2);
     const log = (await readFile(path.join(codexHome, "native-calls.jsonl"), "utf8"))
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as { type: string; feature?: boolean });
     assert.equal(log.filter((entry) => entry.type === "startup").length, 1);
     assert.equal(log.find((entry) => entry.type === "startup")?.feature, true);
-    assert.equal(log.filter((entry) => entry.type === "turn/start").length, 1);
+    assert.equal(log.filter((entry) => entry.type === "turn/start").length, 2);
     assert.equal(
       (await discoverHostClientChannel(path.join(data, "client-hosts")))?.pid,
       endpoint.pid,
     );
-    // Independent lifecycle does not broaden Web into the official Codex path.
-    await assert.rejects(web.snapshot(id), /external|owned/u);
     const secondExited = once(second.child, "exit");
     second.child.stdin.end();
     assert.deepEqual(await secondExited, [0, null]);

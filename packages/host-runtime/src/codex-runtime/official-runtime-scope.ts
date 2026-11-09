@@ -31,6 +31,7 @@ export class OfficialRuntimeScope {
   readonly #diagnosticOutput: Writable;
   readonly #recovery: { delaysMs: readonly number[]; stableMs: number } | undefined;
   #starting: Promise<void> | undefined;
+  #stopping: Promise<void> | undefined;
   #started = false;
   #closed = false;
   #readyAt = 0;
@@ -72,6 +73,7 @@ export class OfficialRuntimeScope {
 
   start(): Promise<void> {
     if (this.#closed) return Promise.reject(new Error("Official Codex is unavailable"));
+    if (this.#stopping) return this.#stopping.then(() => this.start());
     if (this.#starting) return this.#starting;
     if (this.#started && (!this.#recovery || this.owner.running)) return Promise.resolve();
     if (!this.#started && this.owner.running) {
@@ -106,6 +108,24 @@ export class OfficialRuntimeScope {
 
   attach(output: CodexRuntimeOutput, onBackendStopped?: () => void): OfficialClientSession {
     return this.owner.attach(output, onBackendStopped);
+  }
+
+  /** Retire an idle generation without closing its clients or scheduling recovery. */
+  stop(): Promise<void> {
+    if (this.#stopping) return this.#stopping;
+    const stopping = (async () => {
+      if (this.#starting) await this.#starting.catch(() => undefined);
+      this.#started = false;
+      this.#clearRecoveryTimer();
+      await this.owner.stop();
+    })();
+    this.#stopping = stopping;
+    void stopping
+      .finally(() => {
+        if (this.#stopping === stopping) this.#stopping = undefined;
+      })
+      .catch(() => undefined);
+    return stopping;
   }
 
   async close(): Promise<void> {

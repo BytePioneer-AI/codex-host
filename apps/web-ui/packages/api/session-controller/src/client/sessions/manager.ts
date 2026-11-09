@@ -111,6 +111,8 @@ export class SessionManager {
   private listPhase: SessionListPhase = "pending";
   private listError: RemoteFailure | null = null;
   private listInflight: Promise<void> | null = null;
+  /** Browser-local query scope, retained across reconnects and automatic refreshes. */
+  private includeArchived = false;
   /** Active list request's mutation log; its identity also fences completion after reconnect. */
   private listMutations: SessionListMutation[] | null = null;
   private readonly addresses = new Map<SessionId, SubagentAddress>();
@@ -418,9 +420,20 @@ export class SessionManager {
 
   // ---- List API ----
 
-  /** Full refresh via session.list (single-flight within one Host generation). */
+  /** Change only this browser's list scope; an old-scope response cannot satisfy it. */
+  setIncludeArchived(includeArchived: boolean): Promise<void> {
+    if (this.includeArchived === includeArchived) return this.listInflight ?? Promise.resolve();
+    this.includeArchived = includeArchived;
+    this.listMutations = null;
+    this.listInflight = null;
+    return this.refreshList();
+  }
+
+  /** Refresh via session.list, single-flight within one connection and query scope. */
   refreshList(): Promise<void> {
+    if (this.disposed) return Promise.resolve();
     if (this.listInflight !== null) return this.listInflight;
+    const includeArchived = this.includeArchived;
     this.listState = "loading";
     this.listError = null;
     const established = this.summaries;
@@ -429,17 +442,23 @@ export class SessionManager {
     this.notifier.markDirty();
     this.listInflight = (async () => {
       try {
-        const result = await this.remote.session.list({});
+        const result = await this.remote.session.list({ includeArchived });
         if (this.listMutations !== mutations) return;
         if (result.ok) {
-          const baseline: SessionSummary[] =
+          const archived = new Set(result.value.archivedSessionIds);
+          const received = new Set(result.value.items.map((summary) => summary.sessionId));
+          // A scoped omission is not deletion. Only explicitly archived, already-loaded
+          // rows survive it; missing ordinary rows still leave the catalog.
+          const rows = [
+            ...result.value.items,
+            ...(!includeArchived
+              ? established.filter((s) => archived.has(s.sessionId) && !received.has(s.sessionId))
+              : []),
+          ];
+          const baseline =
             this.listPhase === "pending"
-              ? [...result.value.items]
-              : mergeOrderedBaseline(
-                  established,
-                  result.value.items,
-                  (summary) => summary.sessionId,
-                );
+              ? rows
+              : mergeOrderedBaseline(established, rows, (summary) => summary.sessionId);
           // A removal supersedes running observed in the pull, including after re-addition.
           const removedSincePull = new Set<SessionId>();
           for (const mutation of mutations) {
@@ -708,7 +727,9 @@ export class SessionManager {
   handleSessionAdded(summary: SessionSummary): void {
     this.mergeSummary(summary);
     if (!this.disposed && summary.running) this.engagedSessions.add(summary.sessionId);
-    this.sessions.get(summary.sessionId)?.handleBlank(this.effectiveBlank(summary));
+    const session = this.sessions.get(summary.sessionId);
+    session?.handleRestored();
+    session?.handleBlank(this.effectiveBlank(summary));
     if (summary.projections !== undefined)
       this.applyListBlock(summary.sessionId, summary.projections);
   }

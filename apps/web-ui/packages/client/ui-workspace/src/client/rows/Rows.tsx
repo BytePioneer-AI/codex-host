@@ -731,6 +731,13 @@ export function SessionNodeItem({
               }}
               portal
               autoFocus
+              phoneSidebarTitle={title}
+              phoneSidebarFooterBackLabel={t("session.backToList")}
+              phoneSidebarDetails={
+                <div className={css.phoneDetails}>
+                  <SessionHoverContent node={node} now={now} renderSlot={renderSlot} t={t} />
+                </div>
+              }
               getAnchorRect={contextPoint === null ? undefined : () => contextPoint}
               anchor={
                 <button

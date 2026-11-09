@@ -15,6 +15,7 @@ import {
 import { Workspaces } from "../src/workspaces.ts";
 import { FakeChHost } from "./support/ch-host.ts";
 import { FakeChChannel } from "./support/ch-channel.ts";
+import { nativeCodex } from "./support/native-codex.ts";
 
 function setup(t: TestContext, host = new FakeChHost()) {
   const root = mkdtempSync(join(tmpdir(), "ch-archives-"));
@@ -31,7 +32,8 @@ function setup(t: TestContext, host = new FakeChHost()) {
   host.archivedIds.add("archived");
   host.archivedIds.add("official");
   const workspaces = new Workspaces(data, root, true);
-  const sessions = new ChSessions(host, workspaces, new EventHub(root));
+  const events = new EventHub(root);
+  const sessions = new ChSessions(host, workspaces, events);
   t.after(() => sessions.close());
   const rpc = new RpcRegistry();
   const streams = new StreamRegistry();
@@ -67,7 +69,7 @@ function setup(t: TestContext, host = new FakeChHost()) {
     assert.ok(result.ok, result.ok ? undefined : result.error.message);
     return result.value;
   };
-  return { root, data, host, rpc, workspaces, frames, observe, call };
+  return { root, data, host, rpc, workspaces, frames, observe, call, sessions, events };
 }
 
 it("projects Host archive membership, ignores legacy shared flags and broadcasts GUI changes", async (t) => {
@@ -75,7 +77,10 @@ it("projects Host archive membership, ignores legacy shared flags and broadcasts
   await bench.observe();
   assert.deepEqual(bench.frames.at(-1)?.value?.archivedSessionIds, []);
   const list = (await bench.call("session/list")) as { items: Array<{ sessionId: string }> };
-  assert.deepEqual(list.items.map((row) => row.sessionId).sort(), ["active", "archived"]);
+  assert.deepEqual(
+    list.items.map((row) => row.sessionId),
+    ["active"],
+  );
   assert.deepEqual(bench.workspaces.archivedSessionIds(), ["archived"]);
   assert.equal(bench.workspaces.isArchived("active"), false);
   assert.deepEqual(bench.frames.at(-1), { type: "archived", archivedSessionIds: ["archived"] });
@@ -98,29 +103,41 @@ it("projects Host archive membership, ignores legacy shared flags and broadcasts
   );
 });
 
-it("collects archived pages only for confirmed external Threads", async (t) => {
+it("loads archives only on explicit requests and preserves their rows when another browser hides them", async (t) => {
   const bench = setup(t);
-  bench.host.add("older", bench.root);
-  bench.host.add("unowned", bench.root);
-  bench.host.archivedIds.add("older");
-  bench.host.archivedIds.add("unowned");
-  const original = bench.host.request.bind(bench.host);
-  bench.host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
-    if (method === "thread/list" && params.archived) {
-      const ids = params.cursor ? ["older", "unowned"] : ["archived", "official"];
-      return {
-        data: ids.map((id) => bench.host.threads.get(id)),
-        nextCursor: params.cursor ? null : "older",
-      } as T;
-    }
-    if (method === "codexhost/thread/ownership/list") {
-      const result = await original<{ threads: Array<{ threadId: string }> }>(method, params);
-      return { threads: result.threads.filter((row) => row.threadId !== "unowned") } as T;
-    }
-    return original<T>(method, params);
+  const removed: unknown[] = [];
+  bench.events.emit = (event, id) => {
+    if (event === "api-session/removed") removed.push(id);
   };
-  await bench.call("session/list");
-  assert.deepEqual(bench.workspaces.archivedSessionIds(), ["archived", "older"]);
+  const list = async (includeArchived = false) =>
+    (await bench.call("session/list", { includeArchived })) as {
+      items: Array<{ sessionId: string }>;
+    };
+  assert.deepEqual(
+    (await list()).items.map((row) => row.sessionId),
+    ["active"],
+  );
+  assert.deepEqual((await list(true)).items.map((row) => row.sessionId).sort(), [
+    "active",
+    "archived",
+  ]);
+  assert.deepEqual(
+    (await list()).items.map((row) => row.sessionId),
+    ["active"],
+  );
+  assert.deepEqual(removed, []);
+  assert.equal(bench.sessions["rows"].has("archived"), true);
+  assert.deepEqual(
+    bench.host.requests
+      .filter((r) => r.method === "codexhost/thread/catalog/read")
+      .map((r) => r.params.includeArchived),
+    [false, true, false],
+  );
+  assert.ok(
+    !bench.host.requests.some(
+      (r) => r.method === "thread/list" || r.method === "codexhost/thread/ownership/list",
+    ),
+  );
 });
 
 it("routes Web workspace and session archive actions to the same Host without stopping work", async (t) => {
@@ -179,7 +196,8 @@ it("retains the confirmed archive set on failed reads/writes and never replays a
   let failWrite = true;
   let writes = 0;
   bench.host.request = async (method, params) => {
-    if (method === "thread/list" && failRead) throw new RpcError("host/offline", "offline read");
+    if (method === "codexhost/thread/catalog/read" && failRead)
+      throw new RpcError("host/offline", "offline read");
     if (method === "thread/archive") {
       writes++;
       if (failWrite) throw new RpcError("host/offline", "offline write");
@@ -201,9 +219,9 @@ it("retains the confirmed archive set on failed reads/writes and never replays a
   await bench.call("workspace/archiveSession", { sessionId: "active" });
   assert.equal(writes, before + 1);
   assert.equal(bench.host.archivedIds.has("active"), true);
-  assert.deepEqual(bench.workspaces.archivedSessionIds(), ["archived"]);
+  assert.deepEqual(bench.workspaces.archivedSessionIds(), ["active", "archived"]);
   assert.equal((await bench.rpc.dispatch("session/list", { args: {} })).ok, false);
-  assert.deepEqual(bench.workspaces.archivedSessionIds(), ["archived"]);
+  assert.deepEqual(bench.workspaces.archivedSessionIds(), ["active", "archived"]);
   failRead = false;
   await bench.call("session/list");
   assert.deepEqual(bench.workspaces.archivedSessionIds(), ["active", "archived"]);
@@ -261,6 +279,108 @@ it("does not confirm an archive from a catalog read started before the mutation"
   read.resolve(undefined);
   await poll;
   assert.deepEqual(await write, { archivedSessionIds: ["active", "archived"] });
+});
+
+it("follows an in-flight unarchived refresh with an archive-inclusive read when requested", async (t) => {
+  const bench = setup(t);
+  const entered = Promise.withResolvers<undefined>();
+  const release = Promise.withResolvers<undefined>();
+  t.after(() => release.resolve(undefined));
+  const request = bench.host.request.bind(bench.host);
+  let blocked = false;
+  bench.host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/thread/catalog/read" && !blocked) {
+      blocked = true;
+      entered.resolve(undefined);
+      await release.promise;
+    }
+    return request<T>(method, params);
+  };
+  const ordinary = bench.call("session/list");
+  await entered.promise;
+  const archive = bench.call("session/list", { includeArchived: true });
+  release.resolve(undefined);
+  const [hidden, shown] = (await Promise.all([ordinary, archive])) as Array<{
+    items: Array<{ sessionId: string }>;
+  }>;
+  assert.deepEqual(
+    hidden?.items.map((row) => row.sessionId),
+    ["active"],
+  );
+  assert.deepEqual(shown?.items.map((row) => row.sessionId).sort(), ["active", "archived"]);
+  assert.deepEqual(
+    bench.host.requests
+      .filter((r) => r.method === "codexhost/thread/catalog/read")
+      .map((r) => r.params.includeArchived),
+    [false, true],
+  );
+});
+
+it("opens an archived Thread by ID without enumerating archives or adding it to the ordinary list", async (t) => {
+  const host = nativeCodex(new FakeChHost());
+  const bench = setup(t, host);
+  host.add("native-archived", bench.root).modelProvider = "openai";
+  host.archivedIds.add("native-archived");
+  await bench.call("session/list");
+  await bench.call("session/projections", { sessionId: "native-archived" });
+  const ordinary = (await bench.call("session/list")) as { items: Array<{ sessionId: string }> };
+  assert.ok(!ordinary.items.some((row) => row.sessionId === "native-archived"));
+  assert.ok(
+    host.requests.some(
+      (r) =>
+        r.method === "thread/read" &&
+        r.params.threadId === "native-archived" &&
+        r.params.includeTurns === false,
+    ),
+  );
+  assert.ok(
+    host.requests
+      .filter((r) => r.method === "codexhost/thread/catalog/read")
+      .every((r) => r.params.includeArchived === false),
+  );
+});
+
+it("preserves a native row archived through Desktop without listing native archives", async (t) => {
+  const host = nativeCodex(new FakeChChannel());
+  const bench = setup(t, host);
+  host.add("native-row", bench.root).modelProvider = "openai";
+  await bench.call("session/list");
+  const removed: unknown[] = [];
+  bench.events.emit = (event, id) => {
+    if (event === "api-session/removed") removed.push(id);
+  };
+  host.archivedIds.add("native-row");
+  host.changed("native-row", "thread/archived");
+  await bench.call("session/list");
+  assert.ok(bench.workspaces.isArchived("native-row"));
+  assert.ok(bench.sessions["rows"].has("native-row"));
+  assert.deepEqual(removed, []);
+});
+
+it("keeps a native archive notification newer than an in-flight catalog snapshot", async (t) => {
+  const host = nativeCodex(new FakeChChannel());
+  const bench = setup(t, host);
+  host.add("native-row", bench.root).modelProvider = "openai";
+  await bench.call("session/list");
+  const removed: unknown[] = [];
+  bench.events.emit = (event, id) => {
+    if (event === "api-session/removed") removed.push(id);
+  };
+  const projects = host.projects.bind(host);
+  let notified = false;
+  host.projects = async () => {
+    if (!notified) {
+      notified = true;
+      host.archivedIds.add("native-row");
+      host.changed("native-row", "thread/archived");
+    }
+    return projects();
+  };
+  await bench.call("session/list");
+  assert.ok(bench.workspaces.isArchived("native-row"));
+  await bench.call("session/list");
+  assert.ok(bench.sessions["rows"].has("native-row"));
+  assert.deepEqual(removed, []);
 });
 
 it("retains persisted local archive records", async (t) => {

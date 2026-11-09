@@ -16,6 +16,11 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import {
+  focusWithoutRing,
+  PhoneSidebarProvider,
+  useModalLayer,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import type {
   PropsLocale,
   PropsRenderSlots,
@@ -35,7 +40,9 @@ import {
   SIDEBAR_DEFAULT,
 } from "./columns.ts";
 import { DocumentTitle } from "./DocumentTitle.tsx";
-import { bindPhoneSidebarSwipe } from "./phone-sidebar-swipe.ts";
+import type { RightbarOwnerProps } from "./index.ts";
+import { bindPhoneRightbarMotion } from "./phone-rightbar-motion.ts";
+import { usePhoneDrawerMotion } from "./use-phone-drawer-motion.ts";
 import type { createLayoutStore } from "./stores.ts";
 import css from "./AppFrame.module.css";
 
@@ -168,16 +175,6 @@ export function AppFrame({
   const layoutInfo = useStore((state) => state.layoutInfo);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const viewport = layoutInfo.viewportWidth;
-  const bindSwipeNavigation = useCallback((open: () => void, close: () => void) => {
-    const frame = frameRef.current;
-    if (frame === null) return () => {};
-    const offOpen = bindPhoneSidebarSwipe(frame, "left", open);
-    const offClose = bindPhoneSidebarSwipe(frame, "right", close, "rightbar");
-    return () => {
-      offOpen();
-      offClose();
-    };
-  }, []);
 
   // Track the frame's own box (not the window): rAF-throttled ResizeObserver.
   useLayoutEffect(() => {
@@ -209,12 +206,57 @@ export function AppFrame({
   const narrow = viewport < SIDEBAR_AUTO_COLLAPSE;
   // Phone frames keep no icon rail: the sidebar opens as a drawer over the conversation.
   const phone = viewport < PHONE_BREAKPOINT;
+  const bindSwipeNavigation = useCallback<RightbarOwnerProps["bindSwipeNavigation"]>(
+    (surface) => {
+      const frame = frameRef.current;
+      if (!phone || frame === null) return { setExpanded: () => {}, dispose: () => {} };
+      return bindPhoneRightbarMotion(frame, surface);
+    },
+    [phone],
+  );
   const sidebarCollapsed = narrow ? !layoutInfo.narrowExpanded : layoutInfo.sidebar === 0;
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const drawerBodyRef = useRef<HTMLDivElement>(null);
+  const backdropRef = useRef<HTMLButtonElement>(null);
+  const [phoneViewTarget, setPhoneViewTarget] = useState<HTMLDivElement | null>(null);
+  const [phoneViewCount, setPhoneViewCount] = useState(0);
+  const enterPhoneView = useCallback(() => {
+    setPhoneViewCount((count) => count + 1);
+    return () => setPhoneViewCount((count) => count - 1);
+  }, []);
+  const setPhoneOpen = useCallback(
+    (open: boolean) => {
+      if (open === sidebarCollapsed) actions.toggleSidebar();
+    },
+    [actions, sidebarCollapsed],
+  );
+  const drawerPresent = usePhoneDrawerMotion(
+    frameRef,
+    drawerRef,
+    backdropRef,
+    phone,
+    !sidebarCollapsed,
+    setPhoneOpen,
+  );
+  useLayoutEffect(() => {
+    if (drawerBodyRef.current) drawerBodyRef.current.inert = !drawerPresent;
+  }, [drawerPresent, phone]);
+  useModalLayer(drawerRef, phone && drawerPresent && phoneViewCount === 0, () =>
+    setPhoneOpen(false),
+  );
+  const wasDrawerPresent = useRef(drawerPresent);
   useEffect(() => {
-    const frame = frameRef.current;
-    if (!phone || !sidebarCollapsed || frame === null) return;
-    return bindPhoneSidebarSwipe(frame, "right", () => actions.toggleSidebar());
-  }, [actions, phone, sidebarCollapsed]);
+    const closed = wasDrawerPresent.current && !drawerPresent;
+    wasDrawerPresent.current = drawerPresent;
+    if (!phone || !closed) return;
+    if (
+      document.activeElement === document.body ||
+      drawerRef.current?.contains(document.activeElement)
+    ) {
+      const control = frameRef.current?.querySelector<HTMLElement>("[data-shell-leading] button");
+      if (control) focusWithoutRing(control, { preventScroll: true });
+    }
+  }, [phone, drawerPresent]);
   const sidebarPreference = sidebarCollapsed
     ? 0
     : layoutInfo.sidebar === 0
@@ -332,8 +374,8 @@ export function AppFrame({
   const sidebar = useMemo(
     () =>
       renderSlot("sidebar", {
-        collapsed: sidebarCollapsed,
-        width: phone ? drawerWidth : cols.sidebar,
+        collapsed: phone ? false : sidebarCollapsed,
+        width: phone ? drawerWidth - 12 : cols.sidebar,
       }),
     [renderSlot, sidebarCollapsed, cols.sidebar, phone, drawerWidth],
   );
@@ -359,10 +401,12 @@ export function AppFrame({
   // row (ui-sidebar). AppFrame.module.css publishes the matching
   // --dsh-frame-leading-clearance under the same collapsed condition.
   const leading = useMemo(() => renderSlot("shell.leading", {}), [renderSlot]);
-  const leadingMounted = (darwin || phone) && sidebarCollapsed;
+  // Phone presentation stays intact until the drawer finishes its visible exit.
+  const sidebarHidden = phone ? !drawerPresent : sidebarCollapsed;
+  const leadingMounted = (darwin || phone) && sidebarHidden;
   const gridSidebar = phone ? 0 : cols.sidebar;
 
-  return (
+  const frame = (
     <div
       ref={frameRef}
       className={css.frame}
@@ -374,6 +418,7 @@ export function AppFrame({
       }}
       data-phone={phone || undefined}
       data-sidebar-collapsed={sidebarCollapsed || undefined}
+      data-sidebar-hidden={sidebarHidden || undefined}
       data-rightbar-collapsed={cols.rightbar === 0 || undefined}
       data-rightbar-fullscreen={layoutInfo.rightbarFullscreen || undefined}
       data-rightbar-instant={layoutInfo.rightbarInstant || undefined}
@@ -388,23 +433,41 @@ export function AppFrame({
       {phone ? (
         <>
           <div className={css.phoneSidebarTrack} />
-          {!sidebarCollapsed && (
-            <button
-              type="button"
-              className={css.phoneBackdrop}
-              aria-label={t("close")}
-              onClick={() => {
-                actions.toggleSidebar();
-              }}
-            />
-          )}
+          <button
+            ref={backdropRef}
+            type="button"
+            className={css.phoneBackdrop}
+            aria-label={t("close")}
+            tabIndex={-1}
+            onClick={() => setPhoneOpen(false)}
+          />
           <div
+            ref={drawerRef}
             className={css.phoneDrawer}
             data-phone-drawer
-            data-open={!sidebarCollapsed || undefined}
+            data-open={drawerPresent || undefined}
+            role={phoneViewCount === 0 ? "dialog" : undefined}
+            aria-modal={drawerPresent && phoneViewCount === 0 ? true : undefined}
+            aria-label={productTitle}
+            aria-hidden={!drawerPresent || undefined}
+            tabIndex={-1}
             style={{ width: drawerWidth }}
           >
-            {sidebar}
+            <div ref={drawerBodyRef} className={css.phoneDrawerBody}>
+              <div className={css.phoneDrawerContent} data-phone-sidebar-content>
+                {sidebar}
+              </div>
+              <div ref={setPhoneViewTarget} className={css.phoneViews} />
+            </div>
+            <div
+              className={css.phoneDrawerEdge}
+              data-phone-drawer-edge
+              aria-hidden="true"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            />
           </div>
         </>
       ) : (
@@ -452,5 +515,15 @@ export function AppFrame({
         />
       )}
     </div>
+  );
+  return (
+    <PhoneSidebarProvider
+      target={phone ? phoneViewTarget : null}
+      open={drawerPresent}
+      backLabel={t("back")}
+      enterView={enterPhoneView}
+    >
+      {frame}
+    </PhoneSidebarProvider>
   );
 }

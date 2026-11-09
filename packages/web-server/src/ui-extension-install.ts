@@ -2,7 +2,11 @@
 import { execFile } from "node:child_process";
 import { stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { commandInvocation, withNodeRuntimeOnPath } from "@codexhost/harness-discovery";
+import {
+  commandInvocation,
+  resolveHarnessExecutable,
+  withNodeRuntimeOnPath,
+} from "@codexhost/harness-discovery";
 import { webUiExtensionRegistrySchema } from "@codexhost/shared-contracts";
 import semver from "semver";
 import { parseInstallSpec } from "./dsh-install-spec.ts";
@@ -111,9 +115,16 @@ export async function installExtensionPackage(
   }
   environment.npm_config_ignore_scripts = "true";
   const scope = /^(@[^/]+)\//u.exec(spec)?.[1];
+  // Resolve before entering the package directory: a bare npm.cmd can derive
+  // its own prefix from cwd on Windows rather than from the installed shim.
+  const npm = resolveHarnessExecutable(
+    { id: "npm", command: process.platform === "win32" ? "npm.cmd" : "npm" },
+    { environment },
+  );
+  if (!npm) throw new Error("npm is unavailable on the installation PATH.");
   // Command-line options override inherited npm configuration for execution and installation scope.
   const invocation = commandInvocation(
-    process.platform === "win32" ? "npm.cmd" : "npm",
+    npm.executable,
     [
       "install",
       "--prefix",

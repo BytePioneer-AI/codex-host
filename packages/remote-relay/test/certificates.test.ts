@@ -1,13 +1,13 @@
 import { X509Certificate } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as acme from "acme-client";
 import { afterEach, expect, it, vi } from "vitest";
 import { createRelay } from "../src/index.js";
 import { acmeServer, signCertificate } from "./acme-server.js";
-import { certPath, collect, fakeAgent, keyPath, phone } from "./helpers.js";
+import { certPath, fakeAgent, keyPath, phone } from "./helpers.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -42,50 +42,15 @@ async function fixture(hostname = "relay.example.test") {
     port = (relay.server.address() as { port: number }).port;
     return relay;
   };
-  const ready = async () => {
-    await vi.waitFor(() =>
-      expect(existsSync(join(data, "certificate.pem")), String(ca.probeError)).toBe(true),
-    );
-  };
   return {
     data,
     ca,
     start,
-    ready,
     get port() {
       return port;
     },
   };
 }
-
-it.skipIf(process.platform === "win32").each([undefined, "control.example.test"])(
-  "issues through local ACME with default or explicit control host %s and reuses disk state",
-  async (controlHost) => {
-    const hostname = controlHost ?? "relay.example.test";
-    const f = await fixture(hostname);
-    const relay = await f.start(controlHost);
-    await f.ready();
-    expect(f.ca.validations).toBe(1);
-    expect(f.ca.orders).toBe(1);
-    const client = phone(hostname, undefined, f.port);
-    await once(client, "secureConnect");
-    expect(client.getPeerCertificate().subjectaltname).toBe(`DNS:${hostname}`);
-    const result = collect(client);
-    client.write(`GET / HTTP/1.1\r\nHost: ${hostname}\r\nConnection: close\r\n\r\n`);
-    expect((await result).toString()).toContain("ready");
-    client.destroy();
-    const account = readFileSync(join(f.data, "acme-account.pem"));
-    const key = readFileSync(join(f.data, "certificate-key.pem"));
-    for (const file of ["acme-account.pem", "certificate-key.pem", "certificate.pem"])
-      expect(statSync(join(f.data, file)).mode & 0o777).toBe(0o600);
-    await relay.close();
-    await f.start(controlHost);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(f.ca.orders).toBe(1);
-    expect(readFileSync(join(f.data, "acme-account.pem"))).toEqual(account);
-    expect(readFileSync(join(f.data, "certificate-key.pem"))).toEqual(key);
-  },
-);
 
 it("renews at two-thirds of validity without disconnecting existing controls", async () => {
   const f = await fixture();

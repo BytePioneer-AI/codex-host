@@ -373,6 +373,24 @@
   }
 }
 
+/* Frame phone layout only: touch laptops and desktop search keep their rules. */
+:global([data-phone-drawer]) .sessionRow {
+  height: 48px;
+  min-height: 48px;
+}
+
+.phoneDetails {
+  padding: 8px 8px 16px;
+}
+
+.phoneDetails .hoverTitle {
+  display: none;
+}
+
+.phoneDetails :is(.hoverTitle, .hoverTime, .hoverStatus, .hoverPath) {
+  color: inherit;
+}
+
 /* Session drag insert marker: a leading chevron and 2px rule between rows,
    absolutely positioned so it neither resembles a row border nor changes layout. */
 .sessionRow.dropBefore,
@@ -477,6 +495,40 @@
 .iconButton:hover {
   color: var(--dsw-alias-label-primary);
   background: color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent);
+}
+
+/* Phone rows tint the drawer material without covering it with an opaque card.
+   Hover alone stays clear; menu/press feedback is weaker than selection. */
+:global([data-phone-drawer]) :is(.projectRow, .sessionRow) {
+  --dsh-row-surface: transparent;
+  background: var(--dsh-row-surface);
+}
+
+:global([data-phone-drawer])
+  :is(.projectRow, .sessionRow):is(:active, :focus-visible, :has(:focus-visible), .menuOpen) {
+  --dsh-row-surface: color-mix(in srgb, var(--dsw-alias-label-primary) 3%, transparent);
+}
+
+:global([data-phone-drawer]) .sessionRow.selected {
+  --dsh-row-surface: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent);
+}
+
+:global([data-phone-drawer]) .rowActions,
+:global([data-phone-drawer]) .rowActions::before {
+  background: transparent;
+}
+
+/* Keep the hit target and keyboard ring; a press changes the glyph, not a
+   second rectangle over the row's feedback. */
+:global([data-phone-drawer]) .iconButton {
+  width: 44px;
+  height: 44px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+:global([data-phone-drawer]) .iconButton:active {
+  color: var(--dsw-alias-label-primary);
 }
 
 /* Touch has no hover. Keep one large explicit menu trigger; all actions

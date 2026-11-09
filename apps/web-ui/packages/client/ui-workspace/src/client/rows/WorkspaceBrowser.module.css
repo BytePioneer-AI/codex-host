@@ -10,6 +10,15 @@
   padding-right: var(--dsh-session-list-edge-inset);
 }
 
+/* Replace the hidden phone scrollbar's 5px gutter with equivalent padding. */
+:global([data-phone-drawer]) .root {
+  --dsh-session-list-scrollbar-width: 0px;
+}
+
+:global([data-phone-drawer]) .list {
+  scrollbar-gutter: auto;
+}
+
 .root.rail {
   padding-right: 0;
 }
@@ -339,9 +348,9 @@
   pointer-events: none;
 }
 
-/* macOS desktop: the sidebar is translucent over window vibrancy, so the
-   opaque fill gradient would paint a solid smear instead of a fade. */
-:global([data-platform="darwin"]) .fade {
+/* Translucent sidebars must not end in an opaque fill gradient. */
+:global([data-platform="darwin"]) .fade,
+:global([data-phone-drawer]) .fade {
   display: none;
 }
 

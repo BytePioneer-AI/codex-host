@@ -683,11 +683,6 @@ export interface HarnessAdapter {
    */
   readonly liveCommandCatalog?: boolean;
   readonly sessionImport?: HarnessSessionImportCapability;
-  /** Best-effort notification after a new Thread's first Turn is persisted, or a derived
-   * Thread's native identity is committed. Excludes ephemeral Threads, same-identity imports
-   * and unsubmitted prewarms. The Host neither waits for this notification nor retries it.
-   */
-  onSessionPublished?(nativeRef: NativeSessionRef): Promise<void>;
   /** Read-only local usage for the machine-wide statistics; never starts a native process. */
   readonly usageStatistics?: HarnessUsageStatisticsCapability;
   /** Optional read-only usage for sessions on an already-owned native connection. */

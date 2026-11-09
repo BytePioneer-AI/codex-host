@@ -11,6 +11,7 @@ import { EventHub, RpcRegistry, StreamRegistry, type StreamHandler } from "../sr
 import { Workspaces } from "../src/workspaces.ts";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
 import { FakeChChannel, startFakeChChannel } from "./support/ch-channel.ts";
+import { nativeCodex } from "./support/native-codex.ts";
 
 it("routes pins through the shared Host protocol and does not repeat no-op writes", async (t) => {
   const host = new FakeChHost();
@@ -215,6 +216,76 @@ it("projects only shared external pins, synchronizes changes and never overwrite
   assert.equal(
     (await rpc.dispatch("workspace/pinSession", { args: { request: { sessionId } } })).ok,
     false,
+  );
+  assert.equal(
+    host.requests.some((r) => r.method === "thread/start"),
+    false,
+  );
+});
+
+it("projects official and External pins on Web refresh and confirms both pin directions without a Web copy", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-native-pins-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const data = new DataDir(root);
+  data.writeJson("workspaces.json", {
+    items: [],
+    archivedSessionIds: [],
+    pinnedSessionIds: ["legacy"],
+  });
+  const host = nativeCodex(new FakeChHost());
+  // Reload closes a gateway connection, not the shared Host's durable state.
+  host.close = () => {};
+  host.add("native-existing", root).modelProvider = "openai";
+  host.add("external", root);
+  host.pinnedIds = ["native-existing", "external", "remote-only"];
+  const open = () => {
+    const workspaces = new Workspaces(data, root, true);
+    const sessions = new ChSessions(host, workspaces, new EventHub(root));
+    const rpc = new RpcRegistry(),
+      streams = new StreamRegistry();
+    workspaces.register(rpc, streams);
+    sessions.register(rpc, streams);
+    t.after(() => sessions.close());
+    return { workspaces, sessions, rpc };
+  };
+  const refresh = async (web: ReturnType<typeof open>, expected: string[]) => {
+    assert.ok((await web.rpc.dispatch("session/list", { args: {} })).ok);
+    // Pin snapshots are published independently of the catalog response.
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (JSON.stringify(web.workspaces.pinnedSessionIds()) === JSON.stringify(expected)) break;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    assert.deepEqual(web.workspaces.pinnedSessionIds(), expected);
+  };
+  const change = async (web: ReturnType<typeof open>, pinned: boolean) => {
+    const result = await web.rpc.dispatch(
+      pinned ? "workspace/pinSession" : "workspace/unpinSession",
+      {
+        args: { request: { sessionId: "native-existing" } },
+      },
+    );
+    assert.ok(result.ok, result.ok ? undefined : result.error.message);
+    return result.value;
+  };
+  const first = open();
+  await refresh(first, ["native-existing", "external"]);
+  assert.deepEqual(await change(first, false), { pinnedSessionIds: ["external"] });
+  assert.deepEqual(host.pinnedIds, ["external", "remote-only"]);
+  assert.deepEqual(await change(first, true), {
+    pinnedSessionIds: ["external", "native-existing"],
+  });
+  assert.deepEqual(host.pinnedIds, ["external", "remote-only", "native-existing"]);
+  first.sessions.close();
+  const reloaded = open();
+  await refresh(reloaded, ["external", "native-existing"]);
+  host.pinnedIds = ["external"]; // Desktop unpin.
+  await refresh(reloaded, ["external"]);
+  host.pinnedIds = ["native-existing", "external"]; // Desktop pin.
+  await refresh(reloaded, ["native-existing", "external"]);
+  assert.deepEqual(
+    data.readJson<{ pinnedSessionIds: string[] }>("workspaces.json", { pinnedSessionIds: [] })
+      .pinnedSessionIds,
+    ["legacy"],
   );
   assert.equal(
     host.requests.some((r) => r.method === "thread/start"),

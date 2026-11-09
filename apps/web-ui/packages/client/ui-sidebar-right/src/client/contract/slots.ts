@@ -49,6 +49,8 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
       scope: "session";
       owner: RightbarOwnerProps & {
         readonly active: boolean;
+        /** Commit visibility through the current Session's existing navigation service. */
+        readonly setExpandedFromSwipe: (expanded: boolean) => void;
         /** @param tabId - retained body. @param signal - tab occurrence lifetime. @returns releases the View-owned hold. */
         readonly retainTab: (tabId: TabId, signal: AbortSignal) => () => void;
       };

@@ -9,7 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use codexhost_platform::{
-    configure_detached_service_command, node_entrypoint_path, spawn_supervised,
+    configure_background_command, configure_detached_service_command, node_entrypoint_path,
+    spawn_supervised,
 };
 use serde::{Deserialize, Serialize};
 
@@ -195,6 +196,7 @@ fn serve(options: &Options) -> Result<(), Box<dyn Error>> {
                 .env("CODEXHOST_DATA_DIR", &options.data)
                 .envs(codexhost_platform::proxy_environment())
                 .stderr(Stdio::piped());
+            configure_background_command(&mut command);
             let mut child = spawn_supervised(&mut command)?;
             let mut stderr = child.take_stderr().expect("piped Web stderr");
             let diagnostics = thread::spawn(move || {

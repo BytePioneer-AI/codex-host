@@ -16,7 +16,11 @@ import { it, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 
-import { commandInvocation, withNodeRuntimeOnPath } from "@codexhost/harness-discovery";
+import {
+  commandInvocation,
+  resolveHarnessExecutable,
+  withNodeRuntimeOnPath,
+} from "@codexhost/harness-discovery";
 
 import { DataDir } from "../src/store.ts";
 import { extensionInstallSpec } from "../src/ui-extension-install.ts";
@@ -495,8 +499,13 @@ it("uses real offline npm to install a local archive without running lifecycle s
     });
   }
   const environment = withNodeRuntimeOnPath(process.env);
+  const npm = resolveHarnessExecutable(
+    { id: "npm", command: process.platform === "win32" ? "npm.cmd" : "npm" },
+    { environment },
+  );
+  assert.ok(npm);
   const invocation = commandInvocation(
-    process.platform === "win32" ? "npm.cmd" : "npm",
+    npm.executable,
     ["pack", "--offline", "--ignore-scripts", "--json", "--pack-destination", fixture],
     environment,
   );

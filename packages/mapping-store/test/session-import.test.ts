@@ -13,7 +13,7 @@ import { MappingStore, type CreateProvisionalThreadInput } from "../src/index.js
 
 const directories: string[] = [];
 const stores: MappingStore[] = [];
-const harnessId = harnessIdSchema.parse("codex-cli");
+const harnessId = harnessIdSchema.parse("pi");
 const sourceRef = nativeSessionRefSchema.parse({
   harnessId,
   nativeSessionId: "import-source",
@@ -27,7 +27,7 @@ const input: CreateProvisionalThreadInput = {
   importSourceRef: sourceRef,
   cwd: "/synthetic",
   title: "Imported Session",
-  transportModelId: "codexhost/codex-cli",
+  transportModelId: "codexhost/pi",
   ephemeral: false,
   historyMode: "paginated",
 };
@@ -144,7 +144,7 @@ describe("Session import identity", () => {
     {
       name: "a different Harness",
       change: {
-        importSourceRef: nativeSessionRefSchema.parse({ ...sourceRef, harnessId: "pi" }),
+        importSourceRef: nativeSessionRefSchema.parse({ ...sourceRef, harnessId: "claude-code" }),
       },
     },
     {

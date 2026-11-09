@@ -15,6 +15,17 @@
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
 
+/* The phone sidebar supplies navigation chrome; the real Host browser keeps its panes and actions. */
+.dialog.dialog:global([data-phone-sidebar-view]) {
+  width: 100%;
+  height: 100%;
+  gap: 0;
+}
+
+:global([data-phone-sidebar-view]) .header > .title {
+  display: none;
+}
+
 /* Card-scope wrapper hosting the path editor's Escape and focus-leave
  * observers; display:contents keeps header/content/footer as direct flex
  * children of the Modal card. */

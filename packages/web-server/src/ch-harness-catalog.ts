@@ -1,6 +1,7 @@
 /** Native plugin/model metadata from the same Host as the shared Threads, never local Adapter instances. */
 import {
   harnessInspectionSchema,
+  harnessIdSchema,
   harnessPluginListResultSchema,
   type HarnessPluginDescriptor,
   type HarnessInspection,
@@ -54,7 +55,11 @@ export class ChHarnessCatalog {
           harnessId: id,
           ...(cwd ? { cwd } : {}),
         })
-        .then((value) => harnessInspectionSchema.parse(value))
+        .then((value) => {
+          const result = harnessInspectionSchema.parse(value);
+          if (id === "codex" && result.status !== "ready") this.inspections.delete(key);
+          return result;
+        })
         .catch((error: unknown) => {
           this.inspections.delete(key);
           throw error;
@@ -66,11 +71,20 @@ export class ChHarnessCatalog {
   async models() {
     const plugins = await this.list();
     const values = await Promise.all(
-      plugins.map(async (plugin) => ({ plugin, inspection: await this.inspect(plugin.id) })),
+      plugins.map(async (plugin) => ({
+        id: plugin.id,
+        name: plugin.name,
+        inspection: await this.inspect(plugin.id),
+      })),
     );
-    const groups = values.flatMap(({ plugin, inspection }) =>
+    if (this.restrictTo === undefined || this.restrictTo.has("codex")) {
+      const inspection = await this.inspect("codex").catch(() => undefined);
+      if (inspection)
+        values.unshift({ id: harnessIdSchema.parse("codex"), name: "Codex", inspection });
+    }
+    const groups = values.flatMap(({ id, name, inspection }) =>
       inspection.status === "ready"
-        ? [groupOf(plugin.id, plugin.name, inspection as Inspection & { status: "ready" })]
+        ? [groupOf(id, name, inspection as Inspection & { status: "ready" })]
         : [],
     );
     const first = values.find(
@@ -79,7 +93,7 @@ export class ChHarnessCatalog {
     if (!first || first.inspection.status !== "ready")
       throw new RpcError("host/no-harness", "CH has no ready session Harness.");
     const selection: ModelSelection = {
-      provider: first.plugin.id,
+      provider: first.id,
       model:
         first.inspection.catalog.defaultModel?.id ??
         first.inspection.catalog.models[0]?.ref.id ??
@@ -90,9 +104,9 @@ export class ChHarnessCatalog {
         default: selection,
         groups,
         routableProviders: groups.map((group) => group.id),
-        failures: values.flatMap(({ plugin, inspection }) =>
+        failures: values.flatMap(({ id, name, inspection }) =>
           inspection.status !== "ready" && inspection.status !== "notInstalled"
-            ? [{ id: plugin.id, name: plugin.name, message: inspection.error.message }]
+            ? [{ id, name, message: inspection.error.message }]
             : [],
         ),
       },
@@ -101,6 +115,7 @@ export class ChHarnessCatalog {
     return this.preferences ? this.preferences.decorate(catalog) : catalog;
   }
   async name(id: string): Promise<string> {
+    if (id === "codex") return "Codex";
     return (await this.list()).find((plugin) => plugin.id === id)?.name ?? id;
   }
   async icon(id: string): Promise<{ body: Buffer; contentType: string } | undefined> {

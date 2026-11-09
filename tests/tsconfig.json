@@ -2,6 +2,7 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "declaration": false,
     "declarationMap": false,
     "sourceMap": false,
@@ -11,6 +12,8 @@
   "include": [
     "../packages/**/test/**/*.ts",
     "../packages/renderer-extension/src/assets.d.ts",
+    "../packages/web-server/src/web-push.d.ts",
     "./**/*.ts"
-  ]
+  ],
+  "exclude": ["./dsh"]
 }

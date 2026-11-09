@@ -101,7 +101,7 @@ import type {
   SDKUserMessage,
   SessionMessage,
 } from "./qoder-sdk-types.js";
-import { QoderUsageTracker } from "./qoder-usage.js";
+import { parseQoderConfiguredContextWindows, QoderUsageTracker } from "./qoder-usage.js";
 
 export class PushableInput<T> implements AsyncIterable<T> {
   #queue: T[] = [];
@@ -188,6 +188,9 @@ export interface QoderSessionOptions {
   onClosed?: () => void;
 }
 
+/** Upper bound on how long a usage refresh waits for `get_settings` before using the fallback. */
+const QODER_SETTINGS_WAIT_MS = 3_000;
+
 export class QoderSession implements HarnessSession {
   readonly harnessId: HarnessId;
   readonly capabilities: HarnessSessionCapabilities;
@@ -216,6 +219,9 @@ export class QoderSession implements HarnessSession {
   #activeTurn: ActiveTurnState | null = null;
   #closed = false;
   #consumerLoopDone: Promise<void>;
+  #configuredContextWindows: Promise<void> | undefined;
+  /** Set when a usage refresh stopped waiting for `get_settings` and used the fallback window. */
+  #usageRefreshedWithoutSettings = false;
 
   constructor(options: QoderSessionOptions) {
     const variant = options.variant ?? "global";
@@ -335,6 +341,7 @@ export class QoderSession implements HarnessSession {
 
     void this.#initSupportedCommands();
     this.#consumerLoopDone = this.#consumeMessages();
+    void this.#loadConfiguredContextWindows();
     void this.refreshUsage();
   }
 
@@ -1178,7 +1185,54 @@ export class QoderSession implements HarnessSession {
     }
   }
 
+  /**
+   * `get_context_usage` may report only a percentage, so read the effective per-model
+   * `contextWindow` from `get_settings`. Best effort: unsupported or failed requests keep the
+   * built-in fallback window.
+   */
+  #loadConfiguredContextWindows(): Promise<void> {
+    if (typeof this.#query.request !== "function") return Promise.resolve();
+    this.#usageRefreshedWithoutSettings = false;
+    const loading = Promise.resolve().then(async () => {
+      try {
+        const settings = await this.#query.request?.({ type: "get_settings" });
+        const configured = parseQoderConfiguredContextWindows(settings);
+        if (configured && !this.#closed && loading === this.#configuredContextWindows) {
+          this.#usageTracker.setConfiguredContextWindows(configured);
+          // A refresh that already gave up waiting emitted the fallback window; refresh again
+          // so the UI picks up the configured window without waiting for the next turn.
+          if (this.#usageRefreshedWithoutSettings) {
+            this.#usageRefreshedWithoutSettings = false;
+            void this.refreshUsage();
+          }
+        }
+      } catch {
+        // Diagnostic only; keep the fallback window.
+      }
+    });
+    this.#configuredContextWindows = loading;
+    return loading;
+  }
+
+  async #awaitConfiguredContextWindows(): Promise<void> {
+    const loading = this.#configuredContextWindows;
+    // Only the first wait for this request pays the timeout; new requests reset the flag.
+    if (!loading || this.#usageRefreshedWithoutSettings) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      loading.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), QODER_SETTINGS_WAIT_MS);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!settled && loading === this.#configuredContextWindows) {
+      this.#usageRefreshedWithoutSettings = true;
+    }
+  }
+
   async refreshUsage(forTurnId?: HostTurnId): Promise<void> {
+    await this.#awaitConfiguredContextWindows();
     let changed = false;
     if (this.#query.getContextUsage) {
       try {
@@ -1516,6 +1570,7 @@ export class QoderSession implements HarnessSession {
         }
         this.#state = nextState;
         this.#usageTracker.setModel(nativeModel);
+        void this.#loadConfiguredContextWindows();
         void this.refreshUsage();
         this.#emitEvent({
           type: "session.state.changed",

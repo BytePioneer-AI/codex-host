@@ -10,6 +10,13 @@
 # Shared agent skills for Claude Code
 !/.claude/skills
 
+# Local third-party design skills (keep on disk, do not commit)
+.agents/skills/impeccable/
+.agents/skills/apple-design/
+.agents/skills/mobile-native/
+/.grok/
+/skills-lock.json
+
 # Environment and secrets
 .env
 .env.*
@@ -18,6 +25,9 @@
 
 # Dependencies and tool caches
 node_modules/
+.work/
+.dsh-build/
+/apps/web-ui/**/lib/
 .npm/
 .cache/
 .wix/

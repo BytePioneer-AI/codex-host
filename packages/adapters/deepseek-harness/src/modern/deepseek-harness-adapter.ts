@@ -702,7 +702,10 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
   ): Promise<void> {
     const seedLength = child.inheritedEventCount;
     if (
-      child.header.parentSession !== expected.sourceSessionId ||
+      // DSH 0.2.2 writes ordinary Fork children without their source; the
+      // inherited prefix below is still compared event by event.
+      (child.header.parentSession !== undefined &&
+        child.header.parentSession !== expected.sourceSessionId) ||
       child.header.cwd !== cwd ||
       seedLength !== expected.seedLength
     ) {

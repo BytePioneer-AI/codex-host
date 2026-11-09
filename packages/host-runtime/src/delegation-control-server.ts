@@ -7,6 +7,7 @@ import {
   type DelegationStartInput,
   type DelegationWatchApi,
   type HarnessInspectInput,
+  type HarnessListInput,
   type ThreadCancelInput,
   type ThreadListInput,
   type ThreadSendInput,
@@ -112,7 +113,7 @@ export async function routeDelegationRequest(
 ): Promise<unknown> {
   switch (route) {
     case "/v1/harness/list":
-      return handlers.api.listHarnesses();
+      return handlers.api.listHarnesses(body as HarnessListInput);
     case "/v1/harness/inspect":
       return handlers.api.inspect(body as unknown as HarnessInspectInput);
     case "/v1/delegate/start":

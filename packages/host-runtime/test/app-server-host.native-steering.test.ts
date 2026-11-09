@@ -1,5 +1,6 @@
 import { FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
+import { harnessCommandDescriptorSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -513,30 +514,44 @@ describe("Native steering fallbacks", () => {
     }
   });
 
-  it("keeps a Renderer-presented activeTurn delivery instead of restarting", async () => {
-    const fixture = createFixture();
-    fixture.adapter.supportsSteer = true;
-    try {
-      const threadId = await startPiThread(fixture);
-      const turnId = await startPiTurn(fixture, threadId);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Session was not opened");
-      session.refuseNextSteer();
-      await expect(
-        steer(fixture, 41, threadId, turnId, "presented in this Turn", {
-          codexhostSteerDelivery: "activeTurn",
-        }),
-      ).resolves.toMatchObject({ error: { code: -32074 } });
-      await expect(
-        steer(fixture, 42, threadId, turnId, "now it joins", {
-          codexhostSteerDelivery: "activeTurn",
-        }),
-      ).resolves.toMatchObject({ result: { turnId, delivery: "activeTurn" } });
-      session.succeedTurn();
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
+  it.each(["top-level", "native-context"])(
+    "keeps a Renderer-presented activeTurn delivery instead of restarting (%s)",
+    async (format) => {
+      const fixture = createFixture();
+      fixture.adapter.supportsSteer = true;
+      try {
+        const threadId = await startPiThread(fixture);
+        const turnId = await startPiTurn(fixture, threadId);
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Session was not opened");
+        const context = (id: number): JsonObject =>
+          format === "top-level"
+            ? { codexhostSteerDelivery: "activeTurn" }
+            : {
+                additionalContext: {
+                  codexhost_external_steering: {
+                    kind: "application",
+                    value: JSON.stringify({
+                      expectedTurnId: turnId,
+                      clientUserMessageId: `message-${id}`,
+                      delivery: "activeTurn",
+                    }),
+                  },
+                },
+              };
+        session.refuseNextSteer();
+        await expect(
+          steer(fixture, 41, threadId, turnId, "presented in this Turn", context(41)),
+        ).resolves.toMatchObject({ error: { code: -32074 } });
+        await expect(
+          steer(fixture, 42, threadId, turnId, "now it joins", context(42)),
+        ).resolves.toMatchObject({ result: { turnId, delivery: "activeTurn" } });
+        session.succeedTurn();
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
 
   it("follows a Renderer-presented newTurn delivery even when native steering is available", async () => {
     const fixture = createFixture();
@@ -553,6 +568,62 @@ describe("Native steering fallbacks", () => {
       expect(response).toMatchObject({ result: { delivery: "newTurn" } });
       expect(session.steers).toHaveLength(0);
       session.succeedTurn();
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("answers a marked start from the Host Turn even if a Harness command reports another", async () => {
+    const fixture = createFixture();
+    fixture.adapter.supportsSteer = true;
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.fn(async () => ({
+        ok: true as const,
+        value: { turnId: "harness-reported-turn" as never },
+      }));
+      session.commands = {
+        list: async () => ({
+          ok: true,
+          value: {
+            commands: [
+              harnessCommandDescriptorSchema.parse({
+                id: "fake.slash.review",
+                invocation: "/review",
+                label: "Review",
+                argumentMode: "text",
+              }),
+            ],
+          },
+        }),
+        execute,
+      };
+      session.completeCancellationOnRequest();
+      writeRequest(fixture.desktopInput, {
+        id: 47,
+        method: "turn/start",
+        params: {
+          threadId,
+          input: [{ type: "text", text: "/review", text_elements: [] }],
+          clientUserMessageId: "message-47",
+          additionalContext: {
+            codexhost_external_steering: {
+              kind: "application",
+              value: JSON.stringify({
+                expectedTurnId: turnId,
+                clientUserMessageId: "message-47",
+                delivery: "newTurn",
+              }),
+            },
+          },
+        },
+      });
+      const response = await fixture.collector.waitFor((message) => requestId(message, 47));
+      expect(response).toMatchObject({ result: { turn: { status: "inProgress" } } });
+      expect(execute).toHaveBeenCalledOnce();
     } finally {
       await stopFixture(fixture);
     }

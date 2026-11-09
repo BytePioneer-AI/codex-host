@@ -252,12 +252,13 @@ export async function runDelegationCli(input: {
           "harness list accepts no positional arguments",
         );
       }
+      const caller = callerThreadId(environment);
       writeResult(
         "harness list",
         await requestRuntime({
           environment,
           path: "/v1/harness/list",
-          body: {},
+          body: caller ? { parentThreadId: normalizeThreadId(caller) } : {},
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
         }),
       );
@@ -279,6 +280,7 @@ export async function runDelegationCli(input: {
       if (refresh !== undefined && refresh !== "true" && refresh !== "false") {
         throw new DelegationControlError("INVALID_ARGUMENT", "--refresh must be true or false");
       }
+      const caller = callerThreadId(environment);
       writeResult(
         "harness inspect",
         await requestRuntime({
@@ -286,6 +288,7 @@ export async function runDelegationCli(input: {
           path: "/v1/harness/inspect",
           body: {
             harnessId,
+            ...(caller ? { parentThreadId: normalizeThreadId(caller) } : {}),
             ...(cwdOption(parsed) ? { cwd: cwdOption(parsed) } : {}),
             ...(refresh !== undefined ? { refresh: refresh === "true" } : {}),
           },

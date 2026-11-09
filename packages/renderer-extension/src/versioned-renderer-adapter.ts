@@ -11,6 +11,7 @@ import {
 } from "@codexhost/desktop-control/renderer-bindings";
 import { createRendererHostClients } from "./renderer-host-clients.js";
 import { installIdleReleasePreferenceSync } from "./renderer-idle-release-preference.js";
+import { installRendererHarnessPreferenceSync } from "./renderer-harness-preferences.js";
 import {
   encodeHarnessPluginRoute,
   harnessIdSchema,
@@ -93,6 +94,7 @@ export interface RendererAdapterStatus {
     | "installation-failed"
     | "draft-prewarm-clear-failed"
     | "draft-routing-policy-unavailable"
+    | "native-steering-policy-unavailable"
     | "react-fiber-walk-limit-exceeded";
   modelUpdates: number;
   hook: "request-bridge" | null;
@@ -163,6 +165,7 @@ declare global {
     __codexhostMainProcessTitlePolicyV1?: { state: "ready" };
     __codexhostDraftPrewarmPolicyV1?: RendererDraftPrewarmPolicy;
     __codexhostHostRoutingV1?: RendererHostRouting;
+    __codexhostRpcSteeringV1?: { controller: unknown; forHost?: unknown; release?(): void };
   }
 }
 
@@ -885,6 +888,7 @@ export function installCurrentRendererAdapter(): {
 
   const usageSubscription = createThreadUsageSubscriptionRelay();
   const idleReleaseSync = installIdleReleasePreferenceSync(window);
+  const preferencesSync = installRendererHarnessPreferenceSync(window);
   const clients = createRendererHostClients(() => window.__codexhostHostRoutingV1, window);
   const stopGroupSync = startAgentGroupSync(
     getSharedAgentGroupPreferenceStore(),
@@ -911,6 +915,9 @@ export function installCurrentRendererAdapter(): {
         ? client
         : clients.forHost("local");
     idleReleaseSync.connect(localClient);
+    stopGroupSync.connect();
+    preferencesSync.connect("local", localClient);
+    if (route?.hostId && route.hostId !== "local") preferencesSync.connect(route.hostId, client);
     // Adapter readiness describes native connections, not a unique global
     // Composer route. Never use this aggregate readiness to choose a request Host.
     const connected =
@@ -920,13 +927,21 @@ export function installCurrentRendererAdapter(): {
         (window.__codexhostHostRoutingV1?.knownHostIds?.() ?? []).some(
           (hostId) => window.__codexhostHostRoutingV1?.forHost(hostId) != null,
         ));
+    const manager = route?.manager;
+    const needsRpcSteering =
+      manager != null && "kind" in manager && manager.kind === "main-process-rpc";
+    // Each external Composer gates on this binding itself. Aggregate readiness stays "ready" so a
+    // discovery failure cannot hold the Renderer Session, and with it official Codex, hostage.
+    const steeringReady = !needsRpcSteering || window.__codexhostRpcSteeringV1 !== undefined;
     updateStatus(
       connected ? "ready" : "installing",
-      connected
-        ? "ready"
-        : fiberWalkLimited
-          ? "react-fiber-walk-limit-exceeded"
-          : "draft-routing-policy-unavailable",
+      connected && !steeringReady
+        ? "native-steering-policy-unavailable"
+        : connected
+          ? "ready"
+          : fiberWalkLimited
+            ? "react-fiber-walk-limit-exceeded"
+            : "draft-routing-policy-unavailable",
       connected ? "request-bridge" : null,
     );
     return route;
@@ -990,6 +1005,11 @@ export function installCurrentRendererAdapter(): {
     checkUpdate: () => settingsModelClient().checkUpdate(),
     startUpdate: () => settingsModelClient().startUpdate(),
     readUpdateStatus: () => settingsModelClient().readUpdateStatus(),
+    openWeb: async () => {
+      const client = disposed ? null : clients.forHost("local");
+      if (!client?.openWeb) throw new Error("The local Host is unavailable");
+      return client.openWeb();
+    },
     // The console lives on this machine, so it is always opened through the local Host.
     openConsole: async () => {
       const client = disposed ? null : clients.forHost("local");
@@ -1139,6 +1159,7 @@ export function installCurrentRendererAdapter(): {
         () => clients.dispose(),
         () => usageSubscription.dispose(),
         () => idleReleaseSync.dispose(),
+        () => preferencesSync.dispose(),
       ];
       selectedPolicies.clear();
       for (const cleanup of cleanups) {

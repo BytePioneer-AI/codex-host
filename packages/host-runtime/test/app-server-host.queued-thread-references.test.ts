@@ -10,7 +10,7 @@ import {
   writeRequest,
 } from "./app-server-host-fixture.js";
 
-it.each(["automatic", "manual"])(
+it.each(["automatic", "manual", "steer"])(
   "uses the queued submitter's Host identity on %s start",
   async (mode) => {
     const remoteRead = vi.fn(async () => {
@@ -51,7 +51,15 @@ it.each(["automatic", "manual"])(
         data: [queued],
         nextCursor: null,
       });
-      if (mode === "manual") {
+      if (mode === "steer") {
+        session.completeCancellationOnRequest();
+        await request(14, "turn/steer", {
+          expectedTurnId: firstTurnId,
+          input,
+          clientUserMessageId: "queued-message",
+          codexhostSourceHostId: "steering-host",
+        });
+      } else if (mode === "manual") {
         await request(14, "turn/interrupt", { turnId: firstTurnId });
         session.completeCancellation();
       } else session.succeedTurn();

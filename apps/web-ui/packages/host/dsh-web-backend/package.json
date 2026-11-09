@@ -1,0 +1,53 @@
+{
+  "name": "@codexhost/dsh-web-backend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./src/index.ts"
+    },
+    "./stream-input": {
+      "types": "./lib/stream-input.d.ts",
+      "default": "./src/stream-input.ts"
+    },
+    "./client-assets": {
+      "types": "./lib/client-assets.d.ts",
+      "default": "./src/client-assets.ts"
+    },
+    "./plugin-bundles": {
+      "types": "./lib/plugin-bundles.d.ts",
+      "default": "./src/plugin-bundles.ts"
+    },
+    "./plugin-resolution": {
+      "types": "./lib/plugin-resolution.d.ts",
+      "default": "./src/plugin-resolution.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@codexhost/dsh-web-include": "*",
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/cordis-plugin-loader": "*",
+    "@deepseek-ai/dsh-api-gateway": "*",
+    "@deepseek-ai/dsh-api-terminal-controller": "*",
+    "@deepseek-ai/dsh-api-workspace-files": "*",
+    "@deepseek-ai/dsh-client-connection": "*",
+    "@deepseek-ai/dsh-client-hmr": "*",
+    "@deepseek-ai/dsh-client-modules": "*",
+    "@deepseek-ai/dsh-fs-local": "*",
+    "@deepseek-ai/dsh-host-webserver": "*",
+    "@deepseek-ai/dsh-office-to-pdf": "*",
+    "@deepseek-ai/dsh-sandbox-policy": "*",
+    "@deepseek-ai/dsh-subprocess-local": "*",
+    "@deepseek-ai/dsh-typert-registry": "*",
+    "import-meta-resolve": "^4.2.0",
+    "js-yaml": "^4.1.0"
+  },
+  "types": "./lib/index.d.ts",
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9"
+  }
+}

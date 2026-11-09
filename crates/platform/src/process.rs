@@ -341,7 +341,14 @@ impl ObservedProcessTree {
         )?;
         #[cfg(target_os = "linux")]
         let snapshots = process_snapshots()?;
-        self.observe_snapshots(&snapshots)
+        let mut owned = self.observe_snapshots(&snapshots)?;
+        // A native service explicitly transfers to its own supervisor before
+        // starting children. Closing its former Desktop parent must not kill it.
+        let transferred = super::independent_service::transferred_processes(&self.root, &owned);
+        owned.retain(|process| !transferred.contains(&process.id));
+        self.known
+            .retain(|process| !transferred.contains(&process.id));
+        Ok(owned)
     }
 
     fn observe_snapshots(
@@ -711,58 +718,11 @@ pub fn desktop_root_process_ids_for_installation(
 }
 
 #[cfg(target_os = "windows")]
-fn windows_executable_key(path: &Path) -> String {
+pub(crate) fn windows_executable_key(path: &Path) -> String {
     node_entrypoint_path(path)
         .to_string_lossy()
         .replace('/', "\\")
         .to_lowercase()
-}
-
-#[cfg(target_os = "windows")]
-pub fn descendant_executable_exists(
-    root_process_id: u32,
-    executable: &Path,
-) -> Result<bool, PlatformError> {
-    let entries = windows_process::process_entries()?;
-    let mut owned = vec![root_process_id];
-    loop {
-        let mut changed = false;
-        for process in &entries {
-            if !owned.contains(&process.id) && owned.contains(&process.parent_id) {
-                owned.push(process.id);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    let expected = windows_executable_key(executable);
-    Ok(owned.into_iter().skip(1).any(|process_id| {
-        windows_process::process_image_path(process_id)
-            .is_ok_and(|path| windows_executable_key(&path) == expected)
-    }))
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-pub fn descendant_executable_exists(
-    root_process_id: u32,
-    executable: &Path,
-) -> Result<bool, PlatformError> {
-    let snapshots = process_snapshots()?;
-    Ok(descendant_snapshots(&[root_process_id], &snapshots)
-        .iter()
-        .any(|process| process.executable == executable))
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-pub fn descendant_executable_exists(
-    _root_process_id: u32,
-    _executable: &Path,
-) -> Result<bool, PlatformError> {
-    Err(PlatformError::Unsupported(
-        "descendant process discovery currently supports Windows, macOS, and Linux only",
-    ))
 }
 
 #[cfg(target_os = "windows")]

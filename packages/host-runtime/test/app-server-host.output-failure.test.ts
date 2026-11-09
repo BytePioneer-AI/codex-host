@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
+import {
+  harnessIdSchema,
+  harnessPermissionModeCatalogSchema,
+  hostItemIdSchema,
+  hostTurnIdSchema,
+} from "@codexhost/shared-contracts";
 import {
   createFixture,
   requestId,
@@ -14,7 +20,19 @@ import {
 
 describe("AppServerHost output failure", () => {
   it("fails the Turn and closes its Session when an Item changes type at completion", async () => {
-    const fixture = createFixture();
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [{ id: "auto", label: "Auto" }],
+      defaultModeId: "auto",
+    });
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("pi"),
+      undefined,
+      true,
+      true,
+      null,
+      permissionModes,
+    );
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
     try {
       const threadId = await startPiThread(fixture);
       const turnId = hostTurnIdSchema.parse(await startPiTurn(fixture, threadId));
@@ -63,15 +81,42 @@ describe("AppServerHost output failure", () => {
           }),
         }),
       );
-      // Never reuse a Session after its output consumer has failed.
+      // Configuration must resume the native identity, not execute on the closed Session.
+      const execute = vi.spyOn(session, "execute");
+      const nativeOpen = adapter.open.bind(adapter);
+      const open = vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+        if (input.kind !== "resume") return nativeOpen(input);
+        const restored = new FakeHarnessSession(
+          adapter.harnessId,
+          adapter.catalog,
+          undefined,
+          input.nativeRef,
+          undefined,
+          true,
+          input.cwd,
+          true,
+          undefined,
+          null,
+          permissionModes,
+        );
+        return { ok: true, value: restored };
+      });
       writeRequest(fixture.desktopInput, {
         id: 3,
-        method: "turn/start",
-        params: { threadId, input: [{ type: "text", text: "again" }] },
+        method: "codexhost/thread/permission-mode/select",
+        params: { threadId, permissionModeId: "auto" },
       });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toHaveProperty(
-        "error",
+      expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
+        result: { effectivePermissionModeId: "auto" },
+      });
+      expect(open).toHaveBeenCalledOnce();
+      expect(open).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "resume",
+          nativeRef: session.initialState.nativeRef,
+        }),
       );
+      expect(execute).not.toHaveBeenCalled();
       const otherThread = await startExternalThread(fixture, "codexhost/pi-native", 4);
       const otherTurn = await startPiTurn(fixture, otherThread, 5);
       const otherSession = fixture.adapter.sessions[1];

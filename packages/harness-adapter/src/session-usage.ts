@@ -3,6 +3,8 @@ import type { HostUsage, HostUsageRequest } from "./usage.js";
 
 /** Read-only metering for sessions whose execution is owned outside HarnessSession. */
 export interface HarnessSessionUsageCapability {
+  /** Opaque stable storage scope for observed metrics; different native homes must differ. */
+  readonly measurementScope?: string;
   /** Observe an existing native connection without owning it or issuing native commands.
    * Private protocol parsing belongs to the plugin. Must be synchronous and non-blocking.
    */
@@ -47,6 +49,10 @@ export interface HarnessSessionUsageObservation {
 }
 
 export interface HarnessSessionUsageHistory {
+  /** Native retained turns allow Host measurement caches to exclude rolled-back history. */
+  retainedTurnIds?: readonly string[];
+  /** Last native Turn latency, when durably recorded by the Harness. */
+  lastTurnTiming?: { turnId: string; timeToFirstOutputMs: number; at: number };
   usage: HostUsage | null;
   requests: readonly HostUsageRequest[];
   complete: boolean;

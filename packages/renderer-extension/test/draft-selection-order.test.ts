@@ -81,6 +81,9 @@ function setup(hostId: string) {
   const route = { hostId, policy, manager };
   const events = new EventTarget();
   vi.stubGlobal("window", {
+    get document() {
+      return document;
+    },
     addEventListener: events.addEventListener.bind(events),
     removeEventListener: events.removeEventListener.bind(events),
     dispatchEvent: events.dispatchEvent.bind(events),

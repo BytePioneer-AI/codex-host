@@ -201,6 +201,57 @@ fn run_parsed_native_harness_broker_cli(cli: NativeHarnessBrokerCli) -> Result<(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+pub fn stop_installed_brokers(
+    home: &std::path::Path,
+    node: &std::path::Path,
+    host_runtime: &std::path::Path,
+) -> Result<bool, Box<dyn Error>> {
+    let agents = match std::fs::read_dir(home.join("Library/LaunchAgents")) {
+        Ok(agents) => agents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let mut stopped = false;
+    let mut failures = Vec::new();
+    for entry in agents {
+        let name = entry?.file_name();
+        let Some(label) = name.to_str().and_then(|name| name.strip_suffix(".plist")) else {
+            continue;
+        };
+        let harness = if label == codexhost_platform::NATIVE_HARNESS_BROKER_LABEL {
+            "claude-code"
+        } else {
+            let Some(id) = label
+                .strip_prefix("ai.bytepioneer.codexhost.")
+                .and_then(|label| label.strip_suffix("-broker"))
+            else {
+                continue;
+            };
+            if !codexhost_platform::native_harness_broker_label(id)
+                .is_ok_and(|expected| expected == label)
+            {
+                continue;
+            }
+            id
+        };
+        match stop_native_harness_broker(NativeHarnessBrokerPaths {
+            harness_id: harness,
+            home,
+            node,
+            host_runtime,
+        }) {
+            Ok(changed) => stopped |= changed,
+            Err(error) => failures.push(format!("{label}: {error}")),
+        }
+    }
+    if failures.is_empty() {
+        Ok(stopped)
+    } else {
+        Err(failures.join("\n").into())
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn run_parsed_native_harness_broker_cli(_: NativeHarnessBrokerCli) -> Result<(), Box<dyn Error>> {
     Err("the native Harness broker is available only on macOS".into())

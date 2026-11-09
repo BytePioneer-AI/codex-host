@@ -682,6 +682,61 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
+  it.each(["result", "messages"] as const)(
+    "preserves history recovery errors when reading %s",
+    async (view) => {
+      const value = await fixture();
+      try {
+        const started = await value.coordinator.start({
+          harnessId: "pi",
+          task: "synthetic history recovery",
+          parentThreadId: "parent",
+        });
+        const session = value.adapter.sessions[0];
+        if (!session) throw new Error("Missing delegated Session");
+        session.succeedTurn();
+        const message = "Synthetic history active branch references a missing Entry";
+        vi.spyOn(session, "readSnapshot").mockResolvedValue({
+          ok: false,
+          error: { code: "nativeFailure", message, retryable: true },
+        });
+        value.runtime.clear();
+        await expect(value.repository.find(started.threadId)).resolves.toMatchObject({
+          state: "ready",
+        });
+        const recoveryError = {
+          code: "INTERNAL_ERROR",
+          message: "External Thread read failed",
+        };
+        await expect(
+          value.coordinator.read({ threadId: started.threadId, view }),
+        ).rejects.toMatchObject(recoveryError);
+        await expect(
+          value.coordinator.wait({ threadId: started.threadId, view, timeoutMs: 100 }),
+        ).rejects.toMatchObject(recoveryError);
+      } finally {
+        await value.close();
+      }
+    },
+  );
+
+  it("retains a missing-Thread error if an external mapping vanishes during resolution", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "synthetic missing mapping",
+        parentThreadId: "parent",
+      });
+      vi.spyOn(value.runtime, "resolve").mockResolvedValue({ kind: "official" });
+      await expect(
+        value.coordinator.read({ threadId: started.threadId, view: "result" }),
+      ).rejects.toMatchObject({ code: "THREAD_NOT_FOUND", message: "Thread was not found" });
+    } finally {
+      await value.close();
+    }
+  });
+
   it("reads the projected terminal Turn when a dead Harness cannot serve its history", async () => {
     const value = await fixture();
     try {

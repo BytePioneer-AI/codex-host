@@ -147,7 +147,7 @@ export const en = {
   "connectDevices.relay.inUse": "In use",
   "connectDevices.relay.closeFirst":
     "Turn off the active relay before switching or changing its control address.",
-  "connectDevices.selfRelay.title": "Self-hosted relay",
+  "connectDevices.selfRelay.title": "Self-hosted encrypted relay",
   "connectDevices.selfRelay.summary": "Your server and domain · No phone app needed",
   "connectDevices.selfRelay.off":
     "Use your own relay server. Like the official relay, it only forwards encrypted traffic.",
@@ -177,7 +177,7 @@ export const en = {
     "Come back here, enter your relay domain and a device name (e.g. example.com and mycomputer) and click Enable relay.",
   "connectDevices.selfRelay.noDomain": "No domain? Use the official relay or Tailscale.",
   "connectDevices.selfRelay.docs": "Full self-hosted relay guide",
-  "connectDevices.relay.title": "codexhost Relay",
+  "connectDevices.relay.title": "Official encrypted relay",
   "connectDevices.relay.summary": "Any network · No app needed on your phone",
   "connectDevices.relay.hint":
     "Connect across networks without an extra phone app. An access token is required.",
@@ -579,7 +579,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.qrLabel": "登录二维码",
   "connectDevices.relay.inUse": "当前使用",
   "connectDevices.relay.closeFirst": "请先关闭当前中转，再切换中转或修改控制地址。",
-  "connectDevices.selfRelay.title": "自建中转",
+  "connectDevices.selfRelay.title": "自建加密中转",
   "connectDevices.selfRelay.summary": "自己的服务器和域名 · 手机无需安装应用",
   "connectDevices.selfRelay.off": "通过自己的服务器中转，和官方中转一样只转发加密内容。",
   "connectDevices.selfRelay.address": "中转服务器地址：{host}",
@@ -606,7 +606,7 @@ export const zh: Record<ImportLocaleKey, string> = {
     "回到这里填写中转域名和设备名称（例如 example.com 和 mycomputer），点击“启用中转”。",
   "connectDevices.selfRelay.noDomain": "没有域名？可以使用官方中转或 Tailscale。",
   "connectDevices.selfRelay.docs": "完整自建中转教程",
-  "connectDevices.relay.title": "codexhost 中转",
+  "connectDevices.relay.title": "官方加密中转",
   "connectDevices.relay.summary": "任何网络 · 手机无需安装应用",
   "connectDevices.relay.hint": "跨网络连接，手机无需额外安装应用，登录需要访问令牌。",
   "connectDevices.relay.off": "codexhost 官方中转，只转发加密内容。",

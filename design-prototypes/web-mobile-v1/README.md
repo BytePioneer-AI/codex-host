@@ -9,6 +9,7 @@
 - 本地服务：**http://127.0.0.1:8080/**，刷新即可查看。
 - [index.html](index.html)：页面切换、390 / 430 宽度切换、**磨砂玻璃 / 实色对照**。
 - [app.html#thread](app.html#thread)：直接进入会话，适合手机浏览。
+- [recent-navigation.html](recent-navigation.html)：顶部最近访问的原样／轻量浅底入口对照；轻量项为 32px 视觉表面、44px 点击区，无选中态，按下加深。复用现有示例会话、草稿与选择器，不修改正式界面。
 - 可以直接打开静态文件；不需要构建、安装依赖或访问 Host。
 - `?preview=1` 只为截图加入模拟状态栏和 home indicator。真实手机直接打开 `app.html`，使用真实安全区。
 

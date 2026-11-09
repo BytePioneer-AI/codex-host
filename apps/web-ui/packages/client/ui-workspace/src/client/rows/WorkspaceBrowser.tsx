@@ -70,6 +70,7 @@ import { pinOrderSource } from "../pin-order.ts";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
 import { PinnedSection } from "./PinnedSection.tsx";
+import { SessionListError } from "./SessionListError.tsx";
 import { SectionHeading } from "./SectionHeading.tsx";
 import {
   GROUP_INITIAL_ROWS,
@@ -344,8 +345,9 @@ type SessionTreeProps = Pick<
 function EmptySessions({
   rowState,
   onLeaveArchivedOnly,
+  partial,
   t,
-}: Pick<SessionTreeProps, "rowState" | "onLeaveArchivedOnly" | "t">) {
+}: Pick<SessionTreeProps, "rowState" | "onLeaveArchivedOnly" | "t"> & { partial?: boolean }) {
   const archivedOnly = rowState.archivedFilter === "only";
   return (
     <div className={css.emptyState} data-row-key="empty">
@@ -354,7 +356,13 @@ function EmptySessions({
       ) : (
         <IconQueueOutlineRegular size={24} />
       )}
-      <div>{archivedOnly ? t("empty.noneArchived") : t("empty.none")}</div>
+      <div>
+        {partial
+          ? t("sessions.notLoaded")
+          : archivedOnly
+            ? t("empty.noneArchived")
+            : t("empty.none")}
+      </div>
       {archivedOnly && (
         <button type="button" className={css.emptyAction} onClick={onLeaveArchivedOnly}>
           {t("empty.viewOthers")}
@@ -740,6 +748,14 @@ function SessionTree({
           />
         )}
         {childRows.length > 0 && <div role="group">{childRows}</div>}
+        {group.expanded &&
+          group.workspaceId !== undefined &&
+          sessions.length === 0 &&
+          list.hasMore && (
+            <div role="status" className={css.empty}>
+              {t("sessions.partial")}
+            </div>
+          )}
         {(sessions.length > 0 || visible.hiddenCount > 0) && (
           <div
             role="group"
@@ -894,7 +910,12 @@ function SessionTree({
           t={t}
         />
         {groups.length === 0 && pinnedRows.length === 0 && (
-          <EmptySessions rowState={rowState} onLeaveArchivedOnly={onLeaveArchivedOnly} t={t} />
+          <EmptySessions
+            rowState={rowState}
+            onLeaveArchivedOnly={onLeaveArchivedOnly}
+            partial={list.hasMore}
+            t={t}
+          />
         )}
         {workspaceRoots.length > 0 && (
           <SectionHeading
@@ -1013,7 +1034,12 @@ function FlatList({
         />
         {pinnedRows.length > 0 && <SectionHeading label={t("section.sessions")} />}
         {rows.length === 0 && pinnedRows.length === 0 && (
-          <EmptySessions rowState={rowState} onLeaveArchivedOnly={onLeaveArchivedOnly} t={t} />
+          <EmptySessions
+            rowState={rowState}
+            onLeaveArchivedOnly={onLeaveArchivedOnly}
+            partial={list.hasMore}
+            t={t}
+          />
         )}
         {visible.rows.map((node) => {
           const active = drag !== null && drag.pinned === node.pinned;
@@ -1238,6 +1264,8 @@ export function WorkspaceBrowser({
   closeAddWorkspace,
   setDirectoryBusy,
   dismissForkError,
+  refreshSessions,
+  loadMoreSessions,
   renderSlot,
   t,
 }: WorkspaceBrowserProps) {
@@ -1900,6 +1928,25 @@ export function WorkspaceBrowser({
             />
           ))}
       </div>
+
+      {wide && list.hasMore && (
+        <button
+          type="button"
+          className={css.sessionOverflowButton}
+          disabled={list.loading}
+          onClick={loadMoreSessions}
+        >
+          {t(list.loading ? "sessions.loading" : "sessions.loadMore")}
+        </button>
+      )}
+      {wide && (
+        <SessionListError
+          list={list}
+          refreshSessions={refreshSessions}
+          loadMoreSessions={loadMoreSessions}
+          t={t}
+        />
+      )}
 
       <Modal
         open={renameTarget !== null}

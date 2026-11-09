@@ -515,6 +515,8 @@ export function apply(ctx: Context, config: Config = Config({})): void {
         name: "conversation.header",
         children: {
           "conversation.header.leading": { kind: "single", scope: "root" },
+          "conversation.header.navigation": { kind: "single", scope: "session-maybe" },
+          "conversation.header.shortcuts": { kind: "single", scope: "session-maybe" },
           "conversation.session.header": { kind: "single", scope: "session" },
         },
       },

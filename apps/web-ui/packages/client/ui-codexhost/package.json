@@ -37,6 +37,9 @@
         "@deepseek-ai/dsh-client-ui-input-trigger",
         "@deepseek-ai/dsh-client-ui-theme"
       ],
+      "external": [
+        "@deepseek-ai/dsh-client-ui-workspace/client"
+      ],
       "platform": "web"
     }
   }

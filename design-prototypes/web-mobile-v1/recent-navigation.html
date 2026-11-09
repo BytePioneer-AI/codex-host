@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f5f6f7" />
+    <title>codexhost · 最近访问导航对照</title>
+    <link rel="stylesheet" href="recent-navigation.css" />
+    <script src="recent-navigation.js" defer></script>
+  </head>
+  <body>
+    <header class="preview-header">
+      <div>
+        <h1>最近访问，轻一点。</h1>
+        <p>保留一键切换，把注意力还给当前对话。独立原型，仅使用示例数据。</p>
+      </div>
+      <nav class="preview-controls" aria-label="预览选项">
+        <div class="options" aria-label="预览内容">
+          <button type="button" data-view="compare" aria-pressed="true">对照</button>
+          <button type="button" data-view="light" aria-pressed="false">只看轻量方案</button>
+        </div>
+        <div class="options" aria-label="手机宽度">
+          <button type="button" data-width="390" aria-pressed="true">390</button>
+          <button type="button" data-width="430" aria-pressed="false">430</button>
+        </div>
+        <a href="recent-navigation.html?view=light&amp;standalone=1">独立打开轻量方案</a>
+      </nav>
+    </header>
+    <main class="comparison">
+      <section class="original" aria-labelledby="original-heading">
+        <div class="caption">
+          <h2 id="original-heading">原样</h2>
+          <p>灰底胶囊 · 最近标签 · 更多入口</p>
+        </div>
+        <div class="device">
+          <iframe title="原样：胶囊最近访问栏" data-variant="original"></iframe>
+        </div>
+      </section>
+      <section aria-labelledby="light-heading">
+        <div class="caption">
+          <h2 id="light-heading">轻量方案</h2>
+          <p>统一浅底 · 32px 视觉／44px 点击区 · 横滑浏览</p>
+        </div>
+        <div class="device">
+          <iframe title="轻量方案：浅底最近访问入口" data-variant="light"></iframe>
+        </div>
+      </section>
+    </main>
+    <footer class="preview-footer">
+      点击最近项可切换示例会话；点击顶部会话标题打开完整列表与搜索。原型不访问 Host，不发送消息。
+    </footer>
+  </body>
+</html>

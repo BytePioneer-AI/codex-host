@@ -50,6 +50,11 @@ const responseSchema = z
   })
   .strict();
 interface BridgeOptions {
+  /**
+   * A directory the caller keeps across Turns. The bridge writes its Hook files there and leaves
+   * the directory on dispose; without one it uses a private temporary directory it removes.
+   */
+  directory?: string;
   turnId: HostTurnId;
   nativeSessionId(): string | undefined;
   schedule(action: () => void): void;
@@ -97,7 +102,8 @@ export class AntigravityQuestionBridge {
   }
 
   static async create(options: BridgeOptions): Promise<AntigravityQuestionBridge> {
-    const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-question-"));
+    const directory =
+      options.directory ?? (await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-question-")));
     const bridge = new AntigravityQuestionBridge(directory, options);
     try {
       await new Promise<void>((resolve, reject) => {
@@ -112,7 +118,8 @@ export class AntigravityQuestionBridge {
       if (!address || typeof address === "string") throw new Error("Question bridge did not bind");
       bridge.environment.CODEXHOST_AGY_QUESTION_URL = `http://127.0.0.1:${address.port}/question`;
       const client = path.join(directory, "question-hook.cjs");
-      await mkdir(path.join(directory, ".agents"));
+      // A kept directory already holds the previous Turn's files; they are rewritten below.
+      await mkdir(path.join(directory, ".agents"), { recursive: true, mode: 0o700 });
       await writeFile(client, ANTIGRAVITY_QUESTION_HOOK_CLIENT, "utf8");
       const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
       // agy's Go exec escapes literal double quotes before cmd.exe sees them.
@@ -386,8 +393,11 @@ export class AntigravityQuestionBridge {
         this.#server.close(() => resolve());
         this.#server.closeAllConnections();
       });
-      // Only remove the private directory returned by mkdtemp for this bridge.
-      await rm(this.directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      // Only remove the private directory returned by mkdtemp for this bridge; a caller's
+      // directory stays for the Thread's next Turn.
+      if (this.#options.directory === undefined) {
+        await rm(this.directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      }
     })();
     return this.#disposal;
   }

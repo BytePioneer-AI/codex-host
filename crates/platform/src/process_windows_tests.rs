@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use super::{
     descendant_process_snapshots, descendant_process_snapshots_with, process_instance_exists,
     process_snapshot, running_executable_snapshots, running_executable_snapshots_with,
-    windows_descendant_ids, windows_executable_key,
+    windows_executable_key,
 };
 use crate::terminate_process_instance;
 use crate::windows_process::ProcessEntry;
@@ -44,19 +44,6 @@ fn treats_verbatim_and_regular_windows_executable_paths_as_equal() {
         windows_executable_key(Path::new(r"\\?\D:\Program\node.exe")),
         windows_executable_key(Path::new(r"d:\program\node.exe")),
     );
-}
-
-#[test]
-fn captures_descendants_before_intermediate_parents_exit() {
-    let entries = [
-        entry(1, 0, "root.exe"),
-        entry(2, 1, "child.exe"),
-        entry(3, 2, "child.exe"),
-        entry(4, 3, "child.exe"),
-    ];
-    assert_eq!(windows_descendant_ids(1, &entries), [2, 3, 4]);
-    // A post-shutdown snapshot cannot rediscover the surviving orphan chain.
-    assert!(windows_descendant_ids(1, &entries[2..]).is_empty());
 }
 
 #[test]

@@ -1,9 +1,11 @@
+import { createOpenCodeUsageStatistics } from "./usage-statistics.js";
 import type {
   HarnessAdapter,
   HarnessInspection,
   HarnessResult,
   HarnessSession,
   HarnessSessionImportCapability,
+  HarnessUsageStatisticsCapability,
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
 import {
@@ -23,10 +25,14 @@ export class OpenCodeAdapter implements HarnessAdapter {
   readonly commandCatalog = openCodeCommandCatalog;
   readonly #adapters = new Set<HarnessAdapter>();
   #closed = false;
+  readonly usageStatistics: HarnessUsageStatisticsCapability;
   constructor(
     readonly options: OpenCodeAdapterOptions = {},
     readonly dependencies?: OpenCodeAdapterDependencies,
-  ) {}
+  ) {
+    // Read-only over OpenCode's database for both protocol versions; no CLI is started.
+    this.usageStatistics = createOpenCodeUsageStatistics(options.environment ?? process.env);
+  }
 
   async #select(environment?: NodeJS.ProcessEnv, input?: OpenSessionInput) {
     if (this.#closed) throw new Error("OpenCode Adapter is closed");

@@ -74,6 +74,9 @@ async function setup(initialHostId: string) {
   const editors = [editor];
   const listeners = new EventTarget();
   vi.stubGlobal("window", {
+    get document() {
+      return document;
+    },
     addEventListener: listeners.addEventListener.bind(listeners),
     removeEventListener: listeners.removeEventListener.bind(listeners),
     dispatchEvent: listeners.dispatchEvent.bind(listeners),
@@ -94,6 +97,9 @@ async function setup(initialHostId: string) {
   };
   await installRendererDraftPrewarmPolicyDirect(renderer);
   const adapter = installCurrentRendererAdapter();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  local.nativeSend.mockClear();
+  remote.nativeSend.mockClear();
   return { local, remote, managers, fiber, editors, adapter, renderer };
 }
 
@@ -181,8 +187,8 @@ it.each(["local", remoteId])(
       expect(adapter.modelControl?.currentHostId?.()).toBe(hostId);
       expect(forComposer).toHaveBeenCalledTimes(1);
       expect(hostIdForComposer).not.toHaveBeenCalled();
-      if (hostId === "local") expect(forHost).not.toHaveBeenCalled();
-      else expect(forHost).toHaveBeenCalledExactlyOnceWith("local");
+      // The local group preference subscription revalidates its own Host route.
+      expect(forHost.mock.calls).toEqual(hostId === "local" ? [["local"]] : [["local"], ["local"]]);
 
       managers.delete(hostId);
       expect(adapter.modelControl?.currentHostId?.()).toBe(hostId);
@@ -264,16 +270,18 @@ it("retires only a disconnected Host and rejects new requests on its captured cl
   }
 });
 
-it("does not copy an external carrier to a native remote Composer", async () => {
+it("rejects an unidentified external selection without changing local or remote Codex", async () => {
   const { adapter, local, remote, fiber } = await setup("local");
   try {
-    expect(adapter.applyAgent("pi")).toBe(true);
+    expect(adapter.applyAgent("pi")).toBe(false);
     fiber.memoizedProps.executionTargetHostId = remoteId;
     expect(adapter.modelControl?.currentHostId?.()).toBe(remoteId);
     await remote.requestClient.sendRequest("thread/start", { model: "native-model" });
     expect(remote.nativeSend).toHaveBeenCalledWith("thread/start", { model: "native-model" });
     await local.requestClient.sendRequest("thread/start", { model: "native-model" });
-    expect(local.nativeSend).toHaveBeenCalledWith("thread/start", { model: "codexhost/pi-native" });
+    expect(local.nativeSend).toHaveBeenCalledWith("thread/start", {
+      model: "native-model",
+    });
   } finally {
     adapter.dispose();
   }

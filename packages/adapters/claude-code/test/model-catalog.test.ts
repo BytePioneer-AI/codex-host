@@ -75,12 +75,13 @@ describe("Claude Code runtime Model catalog", () => {
       { id: "high", label: "High" },
       { id: "xhigh", label: "Extra High" },
       { id: "max", label: "Max" },
+      { id: "ultracode", label: "Ultracode" },
     ]);
     expect(normalized.catalog.defaultThinkingOptionId).toBe("auto");
     expect(
       normalized.catalog.models.find(({ label }) => label.startsWith("Family (sonnet"))
         ?.supportedThinkingOptionIds,
-    ).toEqual(["off", "auto", "low", "medium", "high", "xhigh", "max"]);
+    ).toEqual(["off", "auto", "low", "medium", "high", "xhigh", "max", "ultracode"]);
     expect(JSON.stringify(normalized.catalog)).not.toMatch(/private|apiKey|price|supportsEffort/u);
   });
 

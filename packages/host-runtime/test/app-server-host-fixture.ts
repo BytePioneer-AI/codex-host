@@ -1,7 +1,7 @@
 import type { RuntimeMaintenance } from "../src/runtime-maintenance.js";
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -159,14 +159,17 @@ export function writeRequest(stream: PassThrough, value: JsonObject): void {
 
 export const jsonLineBuffers = new WeakMap<PassThrough, string>();
 
-export async function readJsonLine(stream: PassThrough): Promise<JsonObject> {
+export async function readJsonLine(stream: PassThrough, timeoutMs = 1000): Promise<JsonObject> {
   let buffer = jsonLineBuffers.get(stream) ?? "";
   if (!buffer.includes("\n")) {
-    await vi.waitFor(() => {
-      const chunk = stream.read() as Buffer | string | null;
-      if (chunk !== null) buffer += String(chunk);
-      expect(buffer).toContain("\n");
-    });
+    await vi.waitFor(
+      () => {
+        const chunk = stream.read() as Buffer | string | null;
+        if (chunk !== null) buffer += String(chunk);
+        expect(buffer).toContain("\n");
+      },
+      { timeout: timeoutMs },
+    );
   }
   const newline = buffer.indexOf("\n");
   const line = buffer.slice(0, newline);
@@ -266,10 +269,14 @@ export class ModernSessionImportAdapter extends FakeHarnessAdapter {
 export function createFixture(
   options: {
     sharedThreads?: SharedThreadBridge;
+    externalOnly?: boolean;
     environment?: NodeJS.ProcessEnv;
     pluginDirectory?: string;
+    codexUsage?: boolean;
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
-    mappingStore?: MappingStore;
+    /** Adapters without Fake Session state, e.g. a real plugin used by an integration test. */
+    additionalAdapters?: ReadonlyMap<ExternalHarnessId, HarnessAdapter>;
+    mappingStore?: AppServerHostOptions["mappingStore"];
     mappingStoreDirectory?: string;
     closeMappingStoreOnExit?: boolean;
     desktopOutput?: PassThrough;
@@ -279,16 +286,33 @@ export function createFixture(
     updateCoordinator?: HostUpdateCoordinator;
     runtimeMaintenance?: RuntimeMaintenance;
     consoleOpener?: HostConsoleOpener;
+    webOpener?: AppServerHostOptions["webOpener"];
     accountControl?: CodexAccountControl;
     officialRuntimeScope?: OfficialRuntimeScope;
     onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
     onCreateRequestRoute?: AppServerHostOptions["onCreateRequestRoute"];
+    modelPrices?: AppServerHostOptions["modelPrices"];
+    usageStatistics?: AppServerHostOptions["usageStatistics"];
   } = {},
 ) {
   const adapter =
     options.externalAdapters?.get("pi") ?? new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
   const mappingStoreDirectory =
     options.mappingStoreDirectory ?? mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
+  let pluginDirectory = options.pluginDirectory;
+  if (options.codexUsage) {
+    pluginDirectory = path.join(mappingStoreDirectory, "plugins");
+    mkdirSync(pluginDirectory, { recursive: true });
+    cpSync(
+      path.resolve("packages/host-runtime/dist/plugins/codex-usage"),
+      path.join(pluginDirectory, "codex-usage"),
+      { recursive: true },
+    );
+    writeFileSync(
+      path.join(pluginDirectory, "enabled.json"),
+      JSON.stringify({ version: 1, enabled: ["codex-usage"] }),
+    );
+  }
   const mappingStore =
     options.mappingStore ?? new MappingStore({ directory: mappingStoreDirectory });
   const desktopInput = new PassThrough();
@@ -297,7 +321,11 @@ export function createFixture(
   const official = new FakeOfficialProcess(options.officialExitsOnInputEnd);
   const collector = new JsonLineCollector(desktopOutput);
   const startup = Promise.withResolvers<undefined>();
-  void startup.promise.catch(() => undefined);
+  const ready = startup.promise.then(
+    () => new Promise<undefined>((resolve) => setImmediate(resolve, undefined)),
+  );
+  // Tests that close before startup may never await ready; awaiting it still rejects.
+  void ready.catch(() => undefined);
   const spawnOfficial = vi.fn(() => {
     startup.resolve(undefined);
     return official as unknown as ChildProcessWithoutNullStreams;
@@ -308,6 +336,7 @@ export function createFixture(
     ...(options.sharedThreads ? { sharedThreads: options.sharedThreads } : {}),
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
+    ...(options.externalOnly !== undefined ? { externalOnly: options.externalOnly } : {}),
     desktopInput,
     desktopOutput,
     diagnosticOutput,
@@ -319,9 +348,12 @@ export function createFixture(
       CODEXHOST_DATA_DIR: mappingStoreDirectory,
       ...(options.environment ?? {}),
     },
-    ...(options.pluginDirectory ? { pluginRoots: [options.pluginDirectory] } : {}),
-    externalAdapters:
-      options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
+    ...(pluginDirectory ? { pluginRoots: [pluginDirectory] } : {}),
+    externalAdapters: new Map<ExternalHarnessId, HarnessAdapter>([
+      ...(options.externalAdapters ??
+        new Map<ExternalHarnessId, FakeHarnessAdapter>([["pi", adapter]])),
+      ...(options.additionalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>()),
+    ]),
     spawnOfficial: spawnOfficial as unknown as typeof spawn,
     // The fake process exits synchronously on kill; real-time grace only slows tests.
     officialCloseTimeoutMs: 50,
@@ -336,6 +368,9 @@ export function createFixture(
     ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
     ...(options.runtimeMaintenance ? { runtimeMaintenance: options.runtimeMaintenance } : {}),
     ...(options.consoleOpener ? { consoleOpener: options.consoleOpener } : {}),
+    ...(options.webOpener ? { webOpener: options.webOpener } : {}),
+    ...(options.modelPrices ? { modelPrices: options.modelPrices } : {}),
+    ...(options.usageStatistics ? { usageStatistics: options.usageStatistics } : {}),
     ...(options.accountControl ? { accountControl: options.accountControl } : {}),
     ...(options.officialRuntimeScope ? { officialRuntimeScope: options.officialRuntimeScope } : {}),
     ...(options.onDelegationApi ? { onDelegationApi: options.onDelegationApi } : {}),
@@ -355,9 +390,7 @@ export function createFixture(
     host,
     official,
     running,
-    ready: startup.promise.then(
-      () => new Promise<undefined>((resolve) => setImmediate(resolve, undefined)),
-    ),
+    ready,
     mappingStore,
     mappingStoreDirectory,
     spawnOfficial,
@@ -447,13 +480,14 @@ export async function bindOfficialThread(
 export async function answerOfficialParentCwd(
   fixture: ReturnType<typeof createFixture>,
   threadId = "parent-thread",
+  name?: string,
 ): Promise<void> {
   const request = await readJsonLine(fixture.official.stdin);
   expect(request).toMatchObject({ method: "thread/read", params: { threadId } });
   fixture.official.stdout.write(
     `${JSON.stringify({
       id: request.id,
-      result: { thread: { id: threadId, cwd: "/synthetic" } },
+      result: { thread: { id: threadId, cwd: "/synthetic", ...(name ? { name } : {}) } },
     })}\n`,
   );
 }

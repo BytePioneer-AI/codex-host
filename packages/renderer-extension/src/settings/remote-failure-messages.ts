@@ -40,8 +40,8 @@ export const REMOTE_FAILURE_CHINESE: Readonly<Record<string, string>> = Object.f
     "当前 codexhost 与 npm 全局安装位置不匹配。请选择仅卸载远程服务，或在远程电脑上手动卸载软件包",
   "The remote service was uninstalled, but removing the codexhost package failed. Check npm permissions on the remote computer and retry":
     "远程服务已卸载，但 codexhost 软件包卸载失败。请检查远程电脑上的 npm 权限后重试",
-  "Remote Node.js is unsupported. Select Node.js 22.19 or later in the 22.x series, or Node.js 24.x":
-    "远程 Node.js 版本不受支持，请选择 Node.js 22.19 及以上的 22.x 版本，或 Node.js 24.x",
+  "Remote Node.js is unsupported. Select Node.js 22.19 or later, except 23.x":
+    "远程 Node.js 版本不受支持，请选择 Node.js 22.19 及以上版本，但不包括 23.x",
   "npm installation failed. Check network access and global installation permissions":
     "npm 安装失败，请检查网络和全局安装权限",
   "Remote service configuration failed. Check Codex CLI and the remote desktop login":

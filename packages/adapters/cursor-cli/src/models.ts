@@ -5,7 +5,7 @@ import {
 import type { HarnessModelCatalog, HarnessSessionCapabilities } from "@codexhost/harness-adapter";
 import type { CursorSessionInfo, CursorNativeModel } from "./transport.js";
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
-import { cursorThinking, cursorThinkingState } from "./thinking.js";
+import { cursorThinking, cursorThinkingState, isCursorThinkingOption } from "./thinking.js";
 import { cursorForkAvailable } from "./fork-support.js";
 
 export const CURSOR_CAPABILITIES: HarnessSessionCapabilities = {
@@ -25,9 +25,30 @@ export const CURSOR_CAPABILITIES: HarnessSessionCapabilities = {
 export const CURSOR_MODES = harnessPermissionModeCatalogSchema.parse({
   defaultModeId: "agent",
   modes: [
-    { id: "agent", label: "Agent", description: "Native agent mode with Cursor tool approvals" },
-    { id: "plan", label: "Plan", description: "Native read-only planning mode" },
-    { id: "ask", label: "Ask", description: "Native read-only question mode" },
+    {
+      id: "agent",
+      label: "Agent",
+      description: "Native agent mode with Cursor tool approvals",
+      localizations: {
+        "zh-CN": { description: "执行任务，可修改文件和运行命令；需要审批的操作仍会请求确认。" },
+      },
+    },
+    {
+      id: "plan",
+      label: "Plan",
+      description: "Native read-only planning mode",
+      localizations: {
+        "zh-CN": { label: "规划模式", description: "只读分析代码并制定实施计划，不修改项目文件。" },
+      },
+    },
+    {
+      id: "ask",
+      label: "Ask",
+      description: "Native read-only question mode",
+      localizations: {
+        "zh-CN": { label: "询问", description: "只读查看代码并回答问题，不修改项目文件。" },
+      },
+    },
   ],
 });
 export const cursorModelRef = (nativeId: string) =>
@@ -46,14 +67,18 @@ export function cursorCatalog(info: CursorSessionInfo): HarnessModelCatalog {
     { id: ReturnType<typeof cursorThinking>[number]["id"]; label: string }
   >();
   const models = native.models.map((model) => {
-    const config =
-      model.value === native.current
-        ? info.configOptions
-        : info.nativeModels?.find((entry) => entry.value === model.value)?.configOptions;
+    const live = model.value === native.current;
+    const config = live
+      ? info.configOptions
+      : info.nativeModels?.find((entry) => entry.value === model.value)?.configOptions;
     const options = cursorThinking(config);
     for (const { id, label } of options) thinking.set(id, { id, label });
     return {
-      ref: cursorConfiguredModelRef(model.value, config),
+      // Only the live model's parameters reflect the user's Cursor settings. The parameterized
+      // catalog reports Cursor's built-in defaults for every other model (for example
+      // `fast=true`), so pinning them would override the user's remembered per-model parameters.
+      // A bare Ref selects only the model and lets Cursor apply those parameters itself.
+      ref: live ? cursorConfiguredModelRef(model.value, config) : cursorModelRef(model.value),
       label: model.name,
       supportedThinkingOptionIds: options.map(({ id }) => id),
     };
@@ -180,8 +205,12 @@ export function cursorCapabilities(info: CursorSessionInfo): HarnessSessionCapab
 
 /** Keep native non-Thinking parameters in the persisted Model Ref across Host restarts. */
 export function cursorConfiguredModelRef(model: string, options?: SessionConfigOption[] | null) {
+  // Parameters offered as Thinking must stay out of the Ref; otherwise changing them would
+  // produce a Ref absent from the catalog and the selection could never be confirmed.
   const parameters = (options ?? []).flatMap((option) =>
-    option.category === "model_config" && option.type === "select"
+    option.category === "model_config" &&
+    option.type === "select" &&
+    !isCursorThinkingOption(option)
       ? [`${option.id}=${option.currentValue}`]
       : [],
   );

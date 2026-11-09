@@ -1,3 +1,4 @@
+import { createGrokUsageStatistics } from "./usage-statistics.js";
 import { randomUUID } from "node:crypto";
 import { readGrokCredentials } from "./grok-credential-export.js";
 import path from "node:path";
@@ -8,6 +9,7 @@ import type {
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   liveHarnessCommandPrompt,
   mergeLiveHarnessCommands,
@@ -52,7 +54,10 @@ import {
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
+import { LocalMediaMarkdownStream } from "@codexhost/harness-adapter/local-media-markdown";
 import {
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
@@ -85,7 +90,12 @@ import {
   type GrokTransportEvent,
 } from "./acp-transport.js";
 import { GrokSessionImport } from "./session-import.js";
-import { grokMediaResolveRoots, rewriteLocalMediaMarkdown } from "./local-media-markdown.js";
+import {
+  GrokQuestions,
+  type GrokQuestionRequest,
+  type GrokQuestionResponse,
+} from "./grok-questions.js";
+import { grokMediaResolveRoots } from "./local-media-markdown.js";
 import { GrokSubagentLifecycle } from "./grok-subagent-lifecycle.js";
 import {
   grokNativeSubagentId,
@@ -127,9 +137,10 @@ import { fetchGrokAccount, fetchGrokCredits, type GrokCreditsSnapshot } from "./
 import type { HarnessAccountSnapshot } from "@codexhost/shared-contracts";
 import {
   combineUsage,
+  GrokTurnUsage,
+  sessionCostFromNative,
   sessionUsageFromHistory,
   usageFromCompact,
-  usageFromPrompt,
   usageFromSignals,
   usageFromUpdate,
 } from "./grok-usage.js";
@@ -163,6 +174,7 @@ export interface GrokAcpTransportLike {
   inspect(): Promise<GrokOpenResult["initialize"]>;
   open(input: GrokOpenInput): Promise<GrokOpenResult>;
   getHistory(): Promise<GrokTransportEvent[]>;
+  getUsage(): Promise<unknown>;
   readHistory(sessionId: string, cwd?: string): Promise<GrokTransportEvent[]>;
   locateSession(sessionId: string): Promise<GrokNativeSessionLocation | null>;
   deleteSession(sessionId: string): Promise<void>;
@@ -170,12 +182,14 @@ export interface GrokAcpTransportLike {
     text: string,
     onEvent: (event: GrokTransportEvent) => void,
     onPermission: (request: GrokPermissionRequest) => Promise<RequestPermissionResponse>,
+    onQuestion: (request: GrokQuestionRequest) => Promise<GrokQuestionResponse>,
   ): Promise<PromptResponse>;
   compact(
     userContext: string | undefined,
     onEvent: (event: GrokTransportEvent) => void,
   ): Promise<GrokCompactResult>;
-  setModel(modelId: string, reasoningEffort?: string): Promise<void>;
+  setModel(modelId: string, reasoningEffort?: string, contextWindowTokens?: number): Promise<void>;
+  setPermissionMode(permissionModeId: HarnessPermissionModeId): Promise<void>;
   cancel(): Promise<void>;
   close(): Promise<void>;
   /** Latest native command list of the open Session; absent on older transports. */
@@ -195,10 +209,10 @@ interface ActiveApproval {
 
 interface ActiveTurn {
   command: TurnStartCommand;
+  usage?: GrokTurnUsage;
   agent: HostAgentMessageItem | null;
   agentMessageId: string | null;
-  rawAgentText: string;
-  projectedAgentText: string;
+  agentMedia: LocalMediaMarkdownStream | null;
   reasoning: HostReasoningItem | null;
   reasoningMessageId: string | null;
   compactionItem: HostContextCompactionItem | null;
@@ -208,6 +222,7 @@ interface ActiveTurn {
   subagents: GrokSubagentLifecycle;
   completedItems: HostItemSnapshot[];
   approvals: Map<HostInteractionId, ActiveApproval>;
+  questions: GrokQuestions;
   cancellationRequested: boolean;
   beforeNativeTurnKeys: Set<string>;
   completion: Promise<void>;
@@ -222,6 +237,7 @@ const grokCommandCatalog = harnessCommandCatalogSchema.parse({
     {
       id: "grok.compact",
       invocation: "/compact",
+      localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
       label: "Compact context",
       description: "Compact the current conversation context",
       argumentMode: "text",
@@ -234,7 +250,7 @@ function capabilitiesForModels(modelState: GrokModelState): HarnessSessionCapabi
       selectModel: modelState.catalog.models.length > 0,
       selectThinkingOption: modelState.catalog.thinkingOptions.length > 0,
       selectPermissionMode: true,
-      permissionModeScope: "atCreate",
+      permissionModeScope: "live",
     },
     history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
     subagents: { observe: true, readTranscript: true },
@@ -343,6 +359,8 @@ class GrokHarnessSession implements HarnessSession {
   #phase: SessionPhase = "open";
   #state: HarnessSessionState;
   #usage: HostUsage | null = null;
+  readonly #initialCostUsd: number;
+  #costRequest = 0;
 
   constructor(
     cwd: string,
@@ -374,6 +392,7 @@ class GrokHarnessSession implements HarnessSession {
     this.#toolOutputLimit = options.toolOutputLimit;
     this.initialUsage = options.initialUsage ?? null;
     this.#usage = this.initialUsage;
+    this.#initialCostUsd = this.initialUsage?.totalCostUsd ?? 0;
     this.capabilities = capabilitiesForModels(modelState);
     this.commands = {
       list: async () => ({ ok: true, value: this.#liveCommandCatalog() }),
@@ -442,6 +461,7 @@ class GrokHarnessSession implements HarnessSession {
 
   execute(command: HarnessCommandInvocation): Promise<HarnessResult<HarnessCommandAccepted>>;
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -454,6 +474,7 @@ class GrokHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -465,6 +486,7 @@ class GrokHarnessSession implements HarnessSession {
     if (this.#phase !== "open")
       return { ok: false, error: invalidState("Grok Session is not open") };
     if ("commandId" in command) return this.#executeHarnessCommand(command);
+    if (command.type === "turn.steer") return unsupportedSteer("Grok");
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
@@ -502,10 +524,13 @@ class GrokHarnessSession implements HarnessSession {
     });
     const active: ActiveTurn = {
       command,
+      questions: new GrokQuestions(command.turnId, this.#randomUUID, (output) =>
+        this.#channel.emit(output),
+      ),
+      usage: new GrokTurnUsage(this.#usage, this.#snapshot.turns.length === 0),
       agent: null,
       agentMessageId: null,
-      rawAgentText: "",
-      projectedAgentText: "",
+      agentMedia: null,
       reasoning: null,
       reasoningMessageId: null,
       compactionItem: null,
@@ -529,7 +554,12 @@ class GrokHarnessSession implements HarnessSession {
         text,
         (event) => this.#handleEvent(active, event),
         (request) => this.#requestPermission(active, request),
+        (request) =>
+          this.#active === active && this.#phase === "open" && !active.cancellationRequested
+            ? active.questions.ask(request)
+            : Promise.resolve({ outcome: "cancelled" }),
       )
+      .finally(() => active.questions.cancel())
       .then(
         (response) =>
           this.#settleFromHistory(
@@ -623,10 +653,12 @@ class GrokHarnessSession implements HarnessSession {
     });
     const active: ActiveTurn = {
       command: { type: "turn.start", turnId: command.turnId, input: [] },
+      questions: new GrokQuestions(command.turnId, this.#randomUUID, (output) =>
+        this.#channel.emit(output),
+      ),
       agent: null,
       agentMessageId: null,
-      rawAgentText: "",
-      projectedAgentText: "",
+      agentMedia: null,
       reasoning: null,
       reasoningMessageId: null,
       compactionItem: null,
@@ -789,7 +821,14 @@ class GrokHarnessSession implements HarnessSession {
     }
     this.#configuring = true;
     try {
-      await this.#transport.setModel(model.id, thinkingOptionId);
+      const contextWindow = this.#modelState.defaultContextWindowTokensByModel.get(model.id);
+      await this.#transport.setModel(model.id, thinkingOptionId, contextWindow);
+      if (contextWindow !== undefined) {
+        this.#modelState.contextWindowTokensByModel = new Map([
+          ...this.#modelState.contextWindowTokensByModel,
+          [model.id, contextWindow],
+        ]);
+      }
       this.#state = stateForGrokModel(
         this.#modelState,
         { nativeRef: nativeRef(this.#transport.sessionId) },
@@ -798,6 +837,10 @@ class GrokHarnessSession implements HarnessSession {
         this.#state.effectivePermissionModeId,
       );
       this.#event({ type: "session.state.changed", state: this.#state });
+      const selectedWindow = this.#modelState.contextWindowTokensByModel.get(model.id);
+      if (selectedWindow !== undefined && this.#usage?.contextUsedTokens !== undefined) {
+        this.#publishUsage({ contextWindowTokens: selectedWindow });
+      }
       return { ok: true, value: { completed: true } };
     } catch (error) {
       return { ok: false, error: normalizeError(error, "nativeFailure") };
@@ -821,14 +864,29 @@ class GrokHarnessSession implements HarnessSession {
         },
       };
     }
-    return {
-      ok: false,
-      error: {
-        code: "invalidRequest",
-        message: "Grok Permission Mode is fixed at Session creation",
-        retryable: false,
-      },
-    };
+    if (this.#active || this.#configuring) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Grok Session cannot configure permissions during another operation",
+          retryable: true,
+        },
+      };
+    }
+    this.#configuring = true;
+    try {
+      await this.#transport.setPermissionMode(command.permissionModeId);
+      if (this.#phase !== "open")
+        return { ok: false, error: invalidState("Grok Session is closed") };
+      this.#state = { ...this.#state, effectivePermissionModeId: command.permissionModeId };
+      this.#event({ type: "session.state.changed", state: this.#state });
+      return { ok: true, value: { completed: true } };
+    } catch (error) {
+      return { ok: false, error: normalizeError(error, "nativeFailure") };
+    } finally {
+      this.#configuring = false;
+    }
   }
 
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
@@ -838,6 +896,7 @@ class GrokHarnessSession implements HarnessSession {
     }
     if (active.cancellationRequested) return { ok: true, value: { cancellationRequested: true } };
     active.cancellationRequested = true;
+    active.questions.cancel();
     for (const approval of active.approvals.values()) {
       approval.resolve({ outcome: { outcome: "cancelled" } });
     }
@@ -853,9 +912,10 @@ class GrokHarnessSession implements HarnessSession {
     command: InteractionRespondCommand,
   ): Promise<HarnessResult<InteractionRespondAccepted>> {
     const active = this.#active;
+    if (active?.questions.has(command.interactionId)) return active.questions.respond(command);
     const pending = active?.approvals.get(command.interactionId);
     if (!active || !pending)
-      return { ok: false, error: invalidState("Grok Approval is not pending") };
+      return { ok: false, error: invalidState("Grok Interaction is not pending") };
     if (command.response.type !== "approval") {
       return {
         ok: false,
@@ -919,6 +979,15 @@ class GrokHarnessSession implements HarnessSession {
 
   #handleEvent(active: ActiveTurn, event: GrokTransportEvent): void {
     if (this.#active !== active || this.#phase !== "open") return;
+    if (event.type === "interaction.resolved") {
+      active.questions.withdraw(event.toolCallId);
+      return;
+    }
+    const requestUsage = active.usage?.observe(event);
+    if (requestUsage) {
+      this.#publishUsage(requestUsage, active.command.turnId, true);
+      void this.#refreshCost(active);
+    }
     const contextUsage = usageFromUpdate(
       event.type === "usage" ? event.update : undefined,
       event.metadata,
@@ -939,6 +1008,21 @@ class GrokHarnessSession implements HarnessSession {
       active.compactionTerminal = event;
       this.#completeCompaction(active, event);
     } else if (event.type === "usage" || event.type === "turn.completed") return;
+  }
+
+  async #refreshCost(active: ActiveTurn): Promise<void> {
+    const request = ++this.#costRequest;
+    try {
+      const totalCostUsd = sessionCostFromNative(
+        await this.#transport.getUsage(),
+        this.#initialCostUsd,
+      );
+      if (this.#active !== active || this.#phase !== "open" || request !== this.#costRequest)
+        return;
+      if (totalCostUsd !== undefined) this.#publishUsage({ totalCostUsd }, active.command.turnId);
+    } catch {
+      // Older native versions or failed queries retain the last fee; settlement reconciles it.
+    }
   }
 
   #startCompaction(
@@ -1013,20 +1097,16 @@ class GrokHarnessSession implements HarnessSession {
         itemId: hostItemIdSchema.parse(this.#randomUUID()),
         text: "",
       };
-      active.rawAgentText = "";
-      active.projectedAgentText = "";
+      active.agentMedia = new LocalMediaMarkdownStream(this.#mediaRoots);
       this.#event({ type: "item.started", turnId: active.command.turnId, item: active.agent });
     }
-    active.rawAgentText += text;
-    const projected = rewriteLocalMediaMarkdown(active.rawAgentText, this.#mediaRoots, {
-      holdIncomplete: true,
-    });
-    const delta = projected.startsWith(active.projectedAgentText)
-      ? projected.slice(active.projectedAgentText.length)
-      : text;
-    if (delta.length === 0) return;
-    active.projectedAgentText += delta;
-    active.agent = { ...active.agent, text: active.projectedAgentText };
+    const delta = active.agentMedia?.append(text) ?? "";
+    this.#publishAgent(active, delta);
+  }
+
+  #publishAgent(active: ActiveTurn, delta: string): void {
+    if (!active.agent || !active.agentMedia || !delta) return;
+    active.agent = { ...active.agent, text: active.agentMedia.text };
     this.#event({
       type: "item.updated",
       turnId: active.command.turnId,
@@ -1294,25 +1374,11 @@ class GrokHarnessSession implements HarnessSession {
 
   #completeAgent(active: ActiveTurn, outcome: HostItemOutcome): void {
     const item = active.agent;
-    if (item && active.rawAgentText.length > 0) {
-      const flushed = rewriteLocalMediaMarkdown(active.rawAgentText, this.#mediaRoots);
-      const delta = flushed.startsWith(item.text) ? flushed.slice(item.text.length) : "";
-      if (delta.length > 0) {
-        active.projectedAgentText = flushed;
-        active.agent = { ...item, text: flushed };
-        this.#event({
-          type: "item.updated",
-          turnId: active.command.turnId,
-          itemId: item.itemId,
-          update: { type: "text.append", text: delta },
-        });
-      }
-    }
+    if (item && active.agentMedia) this.#publishAgent(active, active.agentMedia.flush());
     const completed = active.agent ?? item;
     active.agent = null;
     active.agentMessageId = null;
-    active.rawAgentText = "";
-    active.projectedAgentText = "";
+    active.agentMedia = null;
     if (completed) this.#completeItem(active, completed, outcome);
   }
 
@@ -1358,13 +1424,27 @@ class GrokHarnessSession implements HarnessSession {
         outcome = { status: "failed", error: normalizeError(error, "protocolError") };
       }
     }
+    const promptUsage = response?.usage ?? response?._meta?.usage;
+    if (
+      nativeTurnRef &&
+      promptUsage !== undefined &&
+      !history.some(
+        (event) =>
+          event.type === "turn.completed" &&
+          event.nativeTurnKey === nativeTurnRef.nativeTurnKey &&
+          event.usage !== undefined,
+      )
+    ) {
+      history.push({
+        type: "turn.completed",
+        nativeTurnKey: nativeTurnRef.nativeTurnKey,
+        stopReason: response?.stopReason ?? "end_turn",
+        usage: promptUsage,
+      });
+    }
+    const usage = sessionUsageFromHistory(history);
     await this.#refreshCredits().catch(() => undefined);
-    this.#finish(
-      active,
-      checkpoint ? { ...outcome, checkpoint } : outcome,
-      sessionUsageFromHistory(history) ?? (response ? usageFromPrompt(response) : null),
-      nativeTurnRef,
-    );
+    this.#finish(active, checkpoint ? { ...outcome, checkpoint } : outcome, usage, nativeTurnRef);
   }
 
   #finish(
@@ -1374,6 +1454,7 @@ class GrokHarnessSession implements HarnessSession {
     nativeTurnRef?: NativeTurnRef,
   ): void {
     if (this.#active !== active) return;
+    active.questions.cancel();
     const itemOutcome: HostItemOutcome = outcome;
     this.#completeReasoning(active, itemOutcome);
     this.#completeAgent(active, itemOutcome);
@@ -1395,7 +1476,8 @@ class GrokHarnessSession implements HarnessSession {
       });
     }
     this.#active = null;
-    if (usage) this.#publishUsage(usage, active.command.turnId);
+    if (usage || this.#usage)
+      this.#publishUsage({ ...usage, ...active.usage?.metrics() }, active.command.turnId, true);
     this.#event({
       type: "turn.completed",
       turnId: active.command.turnId,
@@ -1405,8 +1487,18 @@ class GrokHarnessSession implements HarnessSession {
     active.resolveCompletion();
   }
 
-  #publishUsage(usage: HostUsage, observedForTurnId?: TurnStartCommand["turnId"]): void {
-    const merged = combineUsage(this.#usage, usage);
+  #publishUsage(
+    usage: HostUsage,
+    observedForTurnId?: TurnStartCommand["turnId"],
+    replaceMetrics = false,
+  ): void {
+    const base = this.#usage ? { ...this.#usage } : null;
+    if (base && replaceMetrics) {
+      delete base.outputTokensPerSecond;
+      delete base.cacheHitRatePercent;
+      delete base.sessionCacheUsage;
+    }
+    const merged = combineUsage(base, usage);
     if (merged === null || JSON.stringify(merged) === JSON.stringify(this.#usage)) return;
     this.#usage = merged;
     this.#event({
@@ -1422,6 +1514,7 @@ class GrokHarnessSession implements HarnessSession {
     const active = this.#active;
     if (active) {
       active.cancellationRequested = true;
+      active.questions.cancel();
       for (const approval of active.approvals.values())
         approval.resolve({ outcome: { outcome: "cancelled" } });
       await this.#transport.cancel().catch(() => undefined);
@@ -1467,6 +1560,7 @@ export class GrokAdapter implements HarnessAdapter {
   readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = grokHarnessId;
   readonly sessionImport: GrokSessionImport;
+  readonly usageStatistics: ReturnType<typeof createGrokUsageStatistics>;
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async (input) => {
       if (input.parent.harnessId !== this.harnessId || input.nativeSubagentId.trim().length === 0) {
@@ -1524,6 +1618,7 @@ export class GrokAdapter implements HarnessAdapter {
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.#environment = options.environment;
     this.sessionImport = new GrokSessionImport(options.environment);
+    this.usageStatistics = createGrokUsageStatistics(options.environment ?? process.env);
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_GROK_TOOL_OUTPUT_LIMIT;
     this.#dependencies = dependencies ?? {
       randomUUID,
@@ -1544,10 +1639,16 @@ export class GrokAdapter implements HarnessAdapter {
 
   async inspectAccount(): Promise<HarnessAccountSnapshot | null> {
     if (this.#closePromise) return null;
-    return (this.#dependencies.fetchAccount ?? fetchGrokAccount)({
+    const account = await (this.#dependencies.fetchAccount ?? fetchGrokAccount)({
       ...(this.#environment ? { environment: this.#environment } : {}),
       signal: this.#accountAbort.signal,
     });
+    // The account overview reports the shared plan cap. Product breakdowns
+    // remain available through credits(), not a Renderer Harness-ID filter.
+    if (!account?.credits) return account;
+    const credits = { ...account.credits };
+    delete credits.productUsage;
+    return { ...account, credits };
   }
 
   credits(): GrokCreditsSnapshot | null {
@@ -1786,6 +1887,8 @@ export class GrokAdapter implements HarnessAdapter {
         modelStateFromInitialize(opened.initialize);
       if (!modelState)
         throw new GrokTransportError("protocolError", "Grok returned an invalid Model catalog");
+      const nativeModelId = modelState.currentModel.id;
+      const nativeThinkingOptionId = modelState.currentThinkingOptionId;
       const retainedConfiguration = sourceConfiguration;
       if ((input.kind === "rollbackLastTurn" || input.kind === "fork") && retainedConfiguration) {
         const operation = input.kind === "rollbackLastTurn" ? "Rewind" : "Fork";
@@ -1813,10 +1916,6 @@ export class GrokAdapter implements HarnessAdapter {
           retainedConfiguration.model.id !== modelState.currentModel.id ||
           retainedConfiguration.thinkingOptionId !== modelState.currentThinkingOptionId
         ) {
-          await transport.setModel(
-            retainedConfiguration.model.id,
-            retainedConfiguration.thinkingOptionId,
-          );
           modelState.currentModel = retainedConfiguration.model;
           if (retainedConfiguration.thinkingOptionId) {
             modelState.currentThinkingOptionId = retainedConfiguration.thinkingOptionId;
@@ -1846,17 +1945,41 @@ export class GrokAdapter implements HarnessAdapter {
           selectedModel.id !== modelState.currentModel.id ||
           selectedThinking !== modelState.currentThinkingOptionId
         ) {
-          await transport.setModel(selectedModel.id, selectedThinking);
           modelState.currentModel = selectedModel;
           if (selectedThinking) modelState.currentThinkingOptionId = selectedThinking;
           else delete modelState.currentThinkingOptionId;
         }
       }
+      const contextWindow = modelState.defaultContextWindowTokensByModel.get(
+        modelState.currentModel.id,
+      );
+      if (
+        modelState.currentModel.id !== nativeModelId ||
+        modelState.currentThinkingOptionId !== nativeThinkingOptionId ||
+        (contextWindow !== undefined &&
+          modelState.contextWindowTokensByModel.get(modelState.currentModel.id) !== contextWindow)
+      ) {
+        await transport.setModel(
+          modelState.currentModel.id,
+          modelState.currentThinkingOptionId,
+          contextWindow,
+        );
+        if (contextWindow !== undefined) {
+          modelState.contextWindowTokensByModel = new Map([
+            ...modelState.contextWindowTokensByModel,
+            [modelState.currentModel.id, contextWindow],
+          ]);
+        }
+      }
+      await transport.setPermissionMode(initialPermissionModeId);
       const history = await transport.getHistory();
-      const initialUsage =
+      let initialUsage =
         input.kind === "resume" || input.kind === "fork" || input.kind === "rollbackLastTurn"
           ? combineUsage(sessionUsageFromHistory(history), usageFromSignals(opened.signals))
           : null;
+      if (contextWindow !== undefined && initialUsage?.contextUsedTokens !== undefined) {
+        initialUsage = combineUsage(initialUsage, { contextWindowTokens: contextWindow });
+      }
       const environment = input.environment ?? this.#environment;
       const sessionDirectory = grokNativeSessionDirectory(
         environment ? { cwd, environment } : { cwd },

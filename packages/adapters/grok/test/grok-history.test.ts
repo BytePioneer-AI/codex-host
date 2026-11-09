@@ -388,7 +388,7 @@ describe("Grok history local media Markdown", () => {
       );
       expect(snapshot.turns[0]?.items).toMatchObject([
         {
-          item: { type: "agentMessage", text: `![clip](${videoPath})` },
+          item: { type: "agentMessage", text: `![clip](${videoPath.replaceAll("\\", "/")})` },
           outcome: { status: "succeeded" },
         },
       ]);

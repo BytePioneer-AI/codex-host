@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
 
-mod handoff;
+mod cleanup_handoff;
 
-pub use handoff::UpdateHandoff;
+pub use cleanup_handoff::UpdateHandoff;

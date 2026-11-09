@@ -1,118 +1,111 @@
 ---
 name: codexhost-add-harness
-description: 为 codexhost 新增 Harness 插件，或规划、审查、补全现有 Harness Adapter。按当前公共契约实现原生能力，区分插件后端、预装发行和 Desktop 产品接入；不用于单纯添加 Model、Provider 或账号。
+description: 为 codexhost 新增 Harness 插件，或规划、审查、补全现有 Harness Adapter。开发前在插件中建立带必做与优先级的能力清单 CAPABILITIES.md，按接口规范实现原生能力，交付时以该清单供审查；区分用户插件、预装发行、Desktop 产品接入和公共契约扩展；不用于单纯添加 Model、Provider 或账号。
 ---
 
 # 新增 codexhost Harness 插件
 
-目标：交付一个通过公共契约工作的独立插件，而不是在 Host 中增加一套 Harness 专用流程。插件是交付与加载单元，`HarnessAdapter` / `HarnessSession` 是运行时接口；不要求继承基类，也不要求使用 ACP。
+目标：交付一个**只通过公共契约工作**的独立插件。插件是交付与加载单元，`HarnessAdapter` / `HarnessSession` 是运行时接口；不要求继承基类，也不要求使用 ACP。
 
-本文代码路径以仓库根目录为基准，`references/` 链接相对于本 Skill。接口签名、字段限制和当前行为以源码为准；参考文档是实现与验收清单，不是第二份接口定义。
+代码路径以仓库根目录为基准，`references/` 链接相对于本 Skill。**接口签名、字段限制以源码为准**；本 Skill 回答「要实现哪些功能、每项遵守什么规范、怎样验收」，不是第二份类型定义。
 
-## 当前架构边界
+## 架构边界
 
 ```text
-Host
-├─ 发现 Manifest、读取显式启用配置、调用插件工厂
+Host（公共）
+├─ 发现 Manifest、读取 enabled.json、调用插件工厂（Cordis 作用域管理生命周期）
 ├─ 通过 HarnessAdapter / HarnessSession 执行业务
-└─ 拥有 Thread 映射、持久化事务、委派和 Desktop 协议投影
-             │ 公共契约
+└─ 拥有 Thread 映射、持久化事务、预热、空闲释放、委派、用量计量、Desktop 协议投影
+             │ 公共契约（harness-adapter + shared-contracts）
              ▼
-插件
-├─ Manifest：身份、版本、展示信息、入口
-├─ 工厂：把 Host Context 转成原生构造参数
-├─ HarnessAdapter：检查、打开 Session、关闭共享资源
-└─ HarnessSession：执行、输出、状态、历史、关闭
+插件（你的代码）
+├─ Manifest：身份、版本、展示、安装指引、入口
+├─ 工厂：把 HarnessPluginContext 转成原生构造参数，挂上安装/更新能力
+├─ HarnessAdapter：检查、打开 Session、可选的目录/账号/统计/导入能力、关闭
+└─ HarnessSession：执行、有序输出、状态、历史、关闭
              │ 插件内部
              ▼
-原生 SDK / RPC / 服务 / CLI
+原生 SDK / RPC / Gateway / ACP / CLI / 桌面应用内置 CLI
 ```
 
-- 七个既有 Harness 和用户插件共用动态加载器，Host 不静态依赖具体 Adapter 包。新 ID 使用共享插件路由。
-- 公共工具仍可复用：例如 `harness-discovery` 实现搜索机制，插件声明命令名、环境变量和安装目录策略。
-- **完整产品去专属化尚未完成**：Renderer 仍有固定 Agent 名单、配置字段和展示接线；旧路由、部分恢复策略、Credits、导入、Broker 与远程配置仍有历史特例。插件加载成功不等于自动出现在 Desktop。
-- 既有特例是兼容负担，不是新 Harness 的实现模板。公共契约无法表达真实需求时，记录缺口并在当前任务范围内设计公共扩展；不得通过新 Harness 专用 Host 分支绕过契约。
+- 所有插件共用动态 Loader，Host 不静态依赖任何 Adapter 包。
+- Desktop 的 Picker、图标、设置连接页、安装/更新、模型/Thinking/权限控件、Thread 恢复都由**插件目录 + inspect 结果**驱动。新插件使用共享路由时不需要改 Renderer。
+- `renderer-binding-probe.ts` 等处按 ID 的分支只是旧 Thread 编码的兼容读取，**不是新插件的模板**。
 
-## 1. 确定交付范围和能力
+## 改动边界：默认只改插件目录
 
-从用户请求判断范围；只有会影响实现边界的歧义才询问，不默认扩展为全产品改造。
-
-| 交付范围 | 必须完成 | 不自动包含 |
+| 场景 | 允许修改 | 不应修改 |
 |---|---|---|
-| 插件后端 | 原生适配、Manifest/工厂、可运行依赖、隔离目录加载、公共行为测试 | 仓库预装、Desktop UI |
-| 预装发行 | 插件后端 + Workspace 构建、预装清单、独立 Bundle、许可与发行验收 | Renderer 自动发现 |
-| Desktop 产品接入 | 插件后端 + Picker、配置、恢复、展示及 UI 验收 | 必须成为预装插件 |
+| 用户独立插件 | 只有插件目录；放入用户插件根并写 `enabled.json` | 仓库任何文件 |
+| 仓库内预装 | 插件目录 + 发行配置（`tsconfig.json` references、`scripts/release/harness-plugins.json`、lockfile）+ 文档 | Host / Renderer / protocol-core 公共代码 |
+| 公共契约缺口 | 按[公共扩展规则](references/packaging-and-validation.md#公共契约扩展)设计通用能力 | 新 Harness 专用的 Host 分支、专用 codec、按 ID 判断 |
 
-普通持久化 Thread 和完整委派要求可写 resume。原生系统不支持时，可以交付明确受限的后端，但不能把它称为完整产品接入；当前没有自动 ephemeral Thread 降级。
+需要改公共代码时，先确认公共契约确实无法表达该原生能力，并记录缺口；不得以「接入更快」为由增加 Harness 专用分支。
 
-先读取以下权威入口：
+## 1. 建立能力清单（必做，先于编码）
 
-- `packages/harness-adapter/src/text-session.ts`：Adapter、Session、命令、事件和可选接口。
-- `packages/harness-adapter/src/plugin.ts`：工厂和 Context。
-- `packages/shared-contracts/src/harness-models.ts`：Catalog、能力和检查结果。
-- `packages/shared-contracts/src/harness-plugins.ts`：Manifest、描述与启用配置。
-- `docs/architecture/harness-plugin-runtime.md`：已实现边界、安装、信任和发行规则。
+1. 把[能力清单模板](references/capabilities-template.md)复制到插件目录的 `CAPABILITIES.md`（仓库内为 `packages/adapters/<id>/CAPABILITIES.md`）。
+2. 对照[能力总表](references/capability-inventory.md)的「必做」「优先级」列和接口说明，**逐行**填写「结论」（支持 / 不支持 / 受限 / 待验证 / 不适用），并在「证据」或「备注」中写原生依据（文档、源码、实测命令）。不允许跳过任何一行。
+3. 按优先级安排实现顺序：先完成全部 P0，得到可运行的版本；再完成 P1，之后才能交付；P2 可以放到后续迭代。
 
-核对目标 Harness 的当前原生接口、版本、认证和运行方式。实际可行时优先原生 SDK、RPC 或服务接口；只有原生接口不可用或确有理由时使用 ACP，并记录能力差异。不要以 CLI 名称相似推断协议兼容。
+同时核对：
 
-使用 [实现导航](references/current-harness-implementations.md) 按传输和能力选参考，不整包复制。输出简短计划：
+- 目标 Harness 当前的原生接口、版本、认证与运行方式。可行时优先用原生 SDK / RPC / 服务；只有缺少原生接口时才用 ACP，并记录能力差异。不要因为 CLI 名称相似就推断协议兼容。
+- 在[实现导航](references/implementations.md)中按传输方式选最接近的参考插件；只参考对应的单点，不整包复制。
+- 接口成员速查：[接口索引](references/interface-index.md)。
+
+输出计划：
 
 ```text
-交付：插件后端 / 预装发行 / Desktop（可组合）
-原生接口与版本：……
-支持：create、resume、Turn、取消、历史、工具、Question……
-不支持或受限：Fork、权限仅创建时设置……
-待验证：……（不能当作不支持，也不能声明已实现）
-参考模块：……
-预计修改：插件目录；其他位置逐项说明原因
+交付范围：用户插件 / 预装发行 / Desktop 产品接入 / 完整委派（可组合）
+原生接口与验证版本：……
+能力清单：CAPABILITIES.md 已建立，列出 P0 / P1 / P2 中结论为「支持」的项
+参考插件：……（各参考哪一点）
+插件外改动：无 / 发行配置 / 公共扩展（逐项说明原因）
 ```
 
-本步完成条件：每项目标能力都有原生依据、公共映射或明确缺口，并且交付范围清楚。
+完成条件：`CAPABILITIES.md` 中每行都有结论；「支持」有原生依据和对应接口；「待验证」既不当作已实现，也不当作不支持；必做行没有「不支持」（A8 例外，见总表）。
 
-## 2. 实现插件的四个职责
+## 2. 按规范实现
 
-以下是职责清单，不是强制文件数量。Pi 的 Adapter 和 Session 就在同一个源文件中。
+按 `CAPABILITIES.md` 的优先级实现，每项能力遵守对应的规范文档：每完成一项，就在清单中补上「实现位置」和「证据」。
 
-| 职责 | 必须提供 | 按需提供 |
-|---|---|---|
-| Manifest | `manifestVersion`、`id`、`name`、`version`、`adapterApiVersion`、`entry` | `icon`、文档/安装链接 |
-| 工厂模块 | `createHarnessAdapter(context)`，返回身份匹配的实例 | `warmup(adapter)` |
-| `HarnessAdapter` | `harnessId`、`inspect()`、`open()`、`close()` | `sessionImport`、`subagents`、`webUi` |
-| `HarnessSession` | `harnessId`、`capabilities`、`initialState`、`initialUsage`、`outputs`、`readSnapshot()`、`execute()`、`close()` | `commands`、`refreshUsage()` |
+| 区域 | 规范 |
+|---|---|
+| inspect / open / execute / 配置 / 错误 / 并发 / close | [会话核心](references/spec-session-core.md) |
+| Turn / Item 时序、内容映射、Interaction、故障、自主 Turn、Subagent | [输出与交互](references/spec-output-interactions.md) |
+| 身份、快照、resume、Fork、Rollback、导入 | [身份与历史](references/spec-history.md) |
+| 用量计量、全局统计、账号额度 | [用量与账号](references/spec-usage-accounts.md) |
+| 预热、空闲释放 | [预热与空闲释放](references/spec-prewarm-idle.md) |
+| Manifest 展示、安装、版本检查与更新、启动路径 | [连接页](references/spec-connections.md) |
+| 接收委派、向下委派、CLI 发现 | [委派](references/spec-delegation.md) |
+| Desktop 展示与验收 | [Desktop](references/spec-desktop.md) |
+| Manifest、工厂、打包、发行、验证分层 | [加载、发行与验证](references/packaging-and-validation.md) |
 
-`execute()` 必须处理公共命令的分派：`turn.start`、`turn.cancel`、`interaction.respond`、`model.select`、`thinking.select`、`permissionMode.select`。`open()` 必须识别 create、resume、fork、rollbackLastTurn。存在接口不代表必须支持所有原生操作：不支持的分支返回类型化 `unsupported`，不伪造成功。
+通用要求：
 
-所有新插件都读取并满足：
+- 不支持的能力：能力字段声明为 false，对应操作返回类型化 `unsupported`，可选方法直接不提供；**不伪造成功、不提供空实现**。
+- 优先复用 `@codexhost/harness-adapter`（输出流、交互校验、Usage 解析、导入工具、诊断脱敏）和 `@codexhost/harness-discovery`（可执行文件发现、安装器、版本管理）。
+- 按职责拆分文件，不为统一形式添加空模块。
 
-- [公共行为](references/public-adapter-contract.md)：检查、配置、并发、错误、环境和可选接口。
-- [输出与交互](references/output-and-interactions.md)：Turn/Item 时序、原生输出映射、取消和故障。
-- [身份与历史](references/thread-lifecycle-and-history.md)：所有插件的 identity、快照要求；按能力实现 resume/Fork/Rollback。
-- [加载、发行与验证](references/registration-and-validation.md)：Manifest、工厂、依赖及 Host 接入验证。
+完成条件：公共接口能跑通真实原生操作；声明与行为一致；失败和关闭不遗留进程、流、订阅或定时器。
 
-实现需要的原生 Transport、模型转换、历史、Usage 和交互模块。优先复用 `packages/harness-adapter/src/index.ts` 导出的校验、输出流和诊断工具；CLI 搜索复用 `packages/harness-discovery/src/index.ts`。拆文件按职责，不为统一形式添加空模块、空 `warmup` 或多余封装。
+## 3. 接入加载与发行
 
-本步完成条件：公共接口能跑通真实原生操作，声明与行为一致；所有支持能力已实现，未实现项明确标注，失败与关闭不遗留活动资源。
+- **所有插件**：构建可搬移的 ESM 产物，在临时隔离根目录用真实 Loader 加载验证。直接 `new Adapter()` 的测试不能代替插件加载验证。
+- **预装**：修改发行配置，执行 Bundle 与 payload 验证，详见[加载、发行与验证](references/packaging-and-validation.md)。
+- **Desktop**：按 [Desktop 验收](references/spec-desktop.md)做真实 UI 验证。正常情况下不需要改 Renderer；如果发现必须改，说明这是公共缺口。
 
-## 3. 按范围完成加载和产品接入
+## 4. 验证与交付报告
 
-- **所有插件**：按[加载、发行与验证](references/registration-and-validation.md)构建可搬移的插件，在隔离根目录显式启用，通过真实 Loader 验证；直接 `new Adapter()` 的测试不能替代插件加载。
-- **仓库内实现或预装发行**：读取该参考中的 Workspace/发行分支。用户独立插件不需要修改预装清单；Host 包不得增加具体 Adapter 依赖。
-- **Desktop 产品接入**：读取[Renderer 产品接入](references/renderer-product-integration.md)，处理当前静态 UI 边界；新插件路由仍用共享 codec，不新增专用编码。「调整方向」沿用公共路径，插件侧验证[取消与后续 Turn](references/output-and-interactions.md#取消与后续-turn)。
-- **接收委派、继续向下委派或声明完整 Agent 协调**：读取[跨 Harness 委派](references/cross-harness-delegation.md)。它复用普通可写 Thread，不另建一套执行接口。
-- **新增公共能力**：同时核对类型、schema、Host 投影、使用方和测试。浏览器共享契约保持 Node-free，Renderer 不导入原生 SDK 或 Electron 私有 API。
+按[验证分层](references/packaging-and-validation.md#验证分层)执行聚焦检查，不默认运行全仓库测试。构建通过不能代替原生语义验证；一次聊天成功也不能代替取消、交互、恢复和清理验证。
 
-本步完成条件：每个范围都有对应产物和验收证据；未启用的范围不做机械接线。现有 Harness 无需知道新 Harness 的私有信息。
+交付报告：
 
-## 4. 验证和交付
+1. 插件位置、ID、原生接口及验证版本；入口、依赖、资源、安装/启用方式。
+2. **`CAPABILITIES.md` 的最终状态**：每行都有结论、实现位置和证据，「受限与已知缺口」「插件外改动」「验证记录」三节已填写，并逐条满足总表的[审查规则](references/capability-inventory.md#审查规则)。该文件随插件源码一起提交，供审查使用。
+3. 插件外改动清单及原因；是否新增公共扩展；确认没有新增 Harness 专用分支。
+4. 已执行的检查、原生环境验证；跳过或受阻的检查及原因。
+5. 分别标注用户插件、预装发行、Desktop、完整委派的完成情况；不适用的写「不适用」。
 
-按[验证分层](references/registration-and-validation.md#验证分层)执行聚焦检查，不默认运行全仓库测试。新增插件不能以构建通过替代原生语义验证，也不能以一次聊天成功替代取消、交互、恢复和清理验证。
-
-交付报告包含：
-
-1. 插件位置、ID、原生接口及验证版本；入口、依赖、资源和安装/启用方式。
-2. 支持、不支持、受限、未验证的能力，以及必要的认证或平台条件。
-3. 实际修改了哪些插件外文件及原因；公共专用分支是否有新增。
-4. 已执行检查、原生/目标环境验证；跳过或受阻检查及原因。
-5. 分别标记插件后端、预装发行、Desktop 和完整委派的完成情况；不适用项写不适用。
-
-只有范围内的实现、能力声明、测试和文档一致，才能宣布该范围完成。发现公共层缺口或原生限制时交付明确结论，不把受限实现包装成完整支持。
+只有能力声明、实现、测试和文档一致，才能宣布该范围完成。受限实现不能包装成完整支持。

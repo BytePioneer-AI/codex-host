@@ -9,10 +9,10 @@ import {
   cleanupTerminalUpdateState,
   compareSemanticVersions,
   createBackgroundUpdateManager,
-  discoverLatestUpdateStatus,
+  discoverActiveUpdateStatus,
+  discoverRecentCompletedUpdateStatus,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
-  isUpdateOperationActive,
   recoverUpdateOperationLock,
   resolveInstalledUpdateContext,
   readRuntimeMetadata,
@@ -24,8 +24,6 @@ import {
 } from "@codexhost/update-manager";
 
 const ERROR_MAX_LENGTH = 500;
-const WINDOWS_NPM_MANUAL_UPDATE_REASON =
-  "Windows npm installations require a manual update: exit codexhost and its Console, then run npm install -g @codexhost/cli@latest";
 
 export interface HostUpdateCoordinator {
   check(signal?: AbortSignal): Promise<UpdateCheckResult>;
@@ -56,6 +54,9 @@ function publicStatus(status: BackgroundUpdateStatus): UpdateStatus {
     ...(status.downloadedBytes === undefined ? {} : { downloadedBytes: status.downloadedBytes }),
     ...(status.totalBytes === undefined ? {} : { totalBytes: status.totalBytes }),
     error: status.error?.slice(0, ERROR_MAX_LENGTH) ?? null,
+    ...(status.serviceStopOutput === undefined
+      ? {}
+      : { serviceStopOutput: status.serviceStopOutput }),
   };
 }
 
@@ -88,24 +89,26 @@ export function createHostUpdateCoordinator(
     });
   let candidate: CodexhostLatestRelease | null = null;
 
+  let currentStatusPath: string | null = null;
+
   async function latestStatus(context: InstalledUpdateContext): Promise<UpdateStatus | null> {
-    const discovered = await discoverLatestUpdateStatus(context.common.stateDirectory);
-    if (!discovered) return null;
-    if (
-      discovered.status.phase !== "succeeded" &&
-      discovered.status.phase !== "failed" &&
-      !(await isUpdateOperationActive(context.common.stateDirectory))
-    ) {
-      return null;
+    if (!currentStatusPath) {
+      const active = await discoverActiveUpdateStatus(context.common.stateDirectory);
+      if (!active) {
+        const completed = await discoverRecentCompletedUpdateStatus(context.common.stateDirectory);
+        return completed ? publicStatus(completed.status) : null;
+      }
+      currentStatusPath = active.statusPath;
     }
-    return publicStatus(discovered.status);
+    const status = await manager.readStatus(currentStatusPath);
+    return status ? publicStatus(status) : null;
   }
 
   async function installable(
     context: InstalledUpdateContext,
     release: CodexhostLatestRelease,
   ): Promise<boolean> {
-    if (context.installation.kind === "npm") return platform !== "win32";
+    if (context.installation.kind === "npm") return true;
     const target = context.metadata.target;
     if (target === "linux-x64" || target === "linux-arm64") return false;
     try {
@@ -150,10 +153,7 @@ export function createHostUpdateCoordinator(
         let error: string | null = null;
         if (updateAvailable) {
           installationAvailable = await installable(context, release);
-          if (
-            !installationAvailable &&
-            !(platform === "win32" && context.installation.kind === "npm")
-          ) {
+          if (!installationAvailable) {
             error = "The latest GitHub Release has no verified asset for this installation";
           }
         }
@@ -185,9 +185,6 @@ export function createHostUpdateCoordinator(
 
     async start(): Promise<UpdateStartResult> {
       const context = await installedContext();
-      if (platform === "win32" && context.installation.kind === "npm") {
-        throw new Error(WINDOWS_NPM_MANUAL_UPDATE_REASON);
-      }
       await recoverUpdateOperationLock(context.common.stateDirectory);
       const lock = await acquireUpdateOperationLock(context.common.stateDirectory);
       if (!lock) {
@@ -196,6 +193,7 @@ export function createHostUpdateCoordinator(
         throw new Error("Another update operation is already active");
       }
 
+      currentStatusPath = null;
       let resolvePrepared!: (info: {
         version: string;
         installation: BackgroundUpdateStatus["installation"];
@@ -225,6 +223,7 @@ export function createHostUpdateCoordinator(
           statusPath: string;
         }): Promise<void> => {
           await lock.setStatusPath(info.statusPath);
+          currentStatusPath = info.statusPath;
           resolvePrepared(info);
         };
         const prepareAndStart = async (): Promise<void> => {
@@ -257,10 +256,11 @@ export function createHostUpdateCoordinator(
                       onPrepared,
                     });
             }
-            // The Launcher starts this helper on Windows and macOS so it is not
-            // inside the Desktop process tree. A Host-started Windows helper is
-            // assigned to the Shim Job and dies when that Job closes.
-            if (platform !== "darwin" && platform !== "win32") manager.start(prepared);
+            // The Launcher starts the Updater on macOS and Windows. On Windows the
+            // Host Runtime runs in the Shim's kill-on-close Job, so an Updater it
+            // started would be killed together with the Desktop it waits for.
+            if (!context.common.serviceManaged && platform !== "darwin" && platform !== "win32")
+              await manager.start(prepared, (pid) => lock.transferTo(pid));
           } catch (error) {
             await lock.release();
             rejectPrepared(error);

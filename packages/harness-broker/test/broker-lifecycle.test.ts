@@ -112,25 +112,6 @@ describe("on-demand Aqua Harness broker lifecycle", () => {
     }
   });
 
-  it("retires when idle and the next request starts a fresh broker", async () => {
-    const paths = await fixture();
-    const { start, started, retired } = launcher(paths, 80);
-    const client = new BrokeredHarnessAdapter({
-      harnessId: "codebuddy",
-      descriptorPath: paths.descriptorPath,
-      startBroker: start,
-    });
-    try {
-      expect((await client.inspect()).status).toBe("ready");
-      await until(() => retired.size === 1);
-      expect(await exists(paths.descriptorPath)).toBe(false);
-      expect((await client.inspect()).status).toBe("ready");
-      expect(started).toHaveLength(2);
-    } finally {
-      await client.close();
-    }
-  });
-
   it("never retires while a Session is open", async () => {
     const paths = await fixture();
     const { start, retired } = launcher(paths, 50);

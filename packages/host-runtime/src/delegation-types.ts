@@ -40,6 +40,7 @@ export interface DelegationProgress {
 }
 
 export interface DelegationThreadSnapshot {
+  hostId?: string;
   threadId: string;
   harnessId: RoutedHarnessId;
   status: DelegationThreadStatus;
@@ -58,6 +59,8 @@ export interface DelegationThreadSnapshot {
 export interface DelegationStartInput {
   harnessId: RoutedHarnessId;
   task: string;
+  /** Short display name; the full task remains the initial message. */
+  taskName?: string;
   cwd?: string;
   parentThreadId?: string;
   requestId?: string;
@@ -69,6 +72,13 @@ export interface HarnessInspectInput {
   harnessId: RoutedHarnessId;
   cwd?: string;
   refresh?: boolean;
+  /** Calling Thread; an official parent cannot inspect a Harness Desktop must not present. */
+  parentThreadId?: string;
+}
+
+export interface HarnessListInput {
+  /** Calling Thread; an official parent cannot list a Harness Desktop must not present. */
+  parentThreadId?: string;
 }
 
 export interface HarnessInspectResult {
@@ -128,6 +138,10 @@ export interface ThreadCancelResult {
 }
 
 export interface ThreadReadInput {
+  /** Internal caller context from the CLI; not forwarded to another Host. */
+  callerThreadId?: string;
+  /** Explicit Desktop Host identity; never inferred from the Thread ID. */
+  hostId?: string;
   threadId: string;
   view: "result" | "messages";
   cursor?: string;
@@ -161,6 +175,8 @@ export interface DelegationThreadListItem {
   title?: string;
   createdAt?: string;
   updatedAt?: string;
+  /** Set by native rows; recency-* sorts order by it, falling back to updatedAt. */
+  recencyAt?: string;
 }
 
 export interface DelegationThreadListResult {
@@ -222,7 +238,7 @@ export interface DelegationWatchApi {
 }
 
 export interface DelegationControlApi {
-  listHarnesses(): Promise<HarnessListResult>;
+  listHarnesses(input?: HarnessListInput): Promise<HarnessListResult>;
   inspect(input: HarnessInspectInput): Promise<HarnessInspectResult>;
   start(input: DelegationStartInput): Promise<DelegationStartResult>;
   send(input: ThreadSendInput): Promise<ThreadSendResult>;
@@ -233,6 +249,7 @@ export interface DelegationControlApi {
 }
 
 export interface DelegationControlRegistration extends DelegationControlApi {
+  executionHostId?(threadId: string): string | undefined;
   canHandleStart(input: DelegationStartInput): boolean | Promise<boolean>;
   ownsThread(threadId: string): boolean | Promise<boolean>;
 }
@@ -243,6 +260,7 @@ export type DelegationControlErrorCode =
   | "THREAD_NOT_FOUND"
   | "THREAD_BUSY"
   | "PARENT_THREAD_AMBIGUOUS"
+  | "RESPONSE_TOO_LARGE"
   | "RUNTIME_UNREACHABLE"
   | "DELEGATION_FAILED"
   | "INTERNAL_ERROR";

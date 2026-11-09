@@ -6,7 +6,24 @@
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
   "icon": "./assets/icon.svg",
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux / Windows · Terminal / PowerShell",
+        "command": "npm install -g @tencent-ai/codebuddy-code"
+      }
+    ],
+    "before": {
+      "en": "Requires Node.js 18 or later (including npm).",
+      "zh-CN": "需要 Node.js 18 或更高版本（包含 npm）。"
+    },
+    "after": {
+      "en": "After installation, run codebuddy to complete login or setup.",
+      "zh-CN": "安装后运行 codebuddy，完成登录或配置。"
+    }
+  },
   "links": {
+    "website": "https://www.codebuddy.ai/",
     "installation": "https://www.codebuddy.ai/docs/zh/cli/overview",
     "documentation": "https://www.codebuddy.ai/docs/zh/cli/acp"
   }

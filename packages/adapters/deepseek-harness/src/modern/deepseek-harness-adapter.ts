@@ -512,6 +512,13 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       this.#sessions.add(openedSession);
       await this.#startEvents();
       this.#assertAccepting();
+      if (input.kind === "resume" && input.permissionModeId) {
+        const restored = await openedSession.execute({
+          type: "permissionMode.select",
+          permissionModeId: input.permissionModeId,
+        });
+        if (!restored.ok) throw new AdapterOperationError(restored.error);
+      }
       return { ok: true, value: openedSession };
     } catch (error) {
       await session?.close().catch(() => undefined);
@@ -695,7 +702,10 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
   ): Promise<void> {
     const seedLength = child.inheritedEventCount;
     if (
-      child.header.parentSession !== expected.sourceSessionId ||
+      // DSH 0.2.2 writes ordinary Fork children without their source; the
+      // inherited prefix below is still compared event by event.
+      (child.header.parentSession !== undefined &&
+        child.header.parentSession !== expected.sourceSessionId) ||
       child.header.cwd !== cwd ||
       seedLength !== expected.seedLength
     ) {

@@ -1,5 +1,6 @@
 import type { HarnessSessionCapabilities } from "@codexhost/shared-contracts";
 export const ZCODE_CAPABILITIES: HarnessSessionCapabilities = {
+  steer: false,
   configuration: {
     selectModel: true,
     selectThinkingOption: true,

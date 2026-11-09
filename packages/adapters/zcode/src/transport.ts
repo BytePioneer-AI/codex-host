@@ -4,6 +4,7 @@ import { ZcodeError } from "./errors.js";
 import { record, text } from "./protocol.js";
 import { resolveInstallation, type ZcodeInstallation } from "./installation.js";
 import { accountConfig, providerRuntimeHeaders } from "./account.js";
+import type { PersonalCodingPlanAccount } from "./personal-coding-plan.js";
 import { DEFAULT_TIMEOUT_MS, nativeCall, type CallContext, type NativeMethod } from "./methods.js";
 import type { ZcodeVerifier } from "./verification/index.js";
 
@@ -47,6 +48,9 @@ export class CliTransport {
   // Aborting these cancels only this transport's running and queued shared verifications.
   #headerRequests = new Map<string, AbortController>();
   #startPlan = false;
+  #signedIn = false;
+  #startPlanChecked = true;
+  #codingPlan!: PersonalCodingPlanAccount;
   #fault: Error | undefined;
   #closed = false;
   #closePromise: Promise<void> | undefined;
@@ -57,6 +61,17 @@ export class CliTransport {
   /** Whether the signed-in ZCode account contributed Start Plan providers. */
   get startPlan() {
     return this.#startPlan;
+  }
+  /** Whether ZCode Desktop is signed in to a Zhipu account, whatever that account is entitled to. */
+  get signedIn() {
+    return this.#signedIn;
+  }
+  /** False when the Start Plan balance could not be read, so its entitlement is unknown. */
+  get startPlanChecked() {
+    return this.#startPlanChecked;
+  }
+  get codingPlanIssue() {
+    return this.#codingPlan?.issue;
   }
   constructor(readonly options: TransportOptions) {
     this.#context = {
@@ -69,12 +84,18 @@ export class CliTransport {
     if (this.#child || this.#closed)
       throw new ZcodeError("invalidState", "ZCode transport already started or closed");
     const installation = await resolveInstallation(this.options.environment, this.options.app);
-    const { params: accountParams, startPlan } = await accountConfig(
-      installation,
-      this.options.environment,
-    );
+    const {
+      params: accountParams,
+      startPlan,
+      signedIn,
+      startPlanChecked,
+      codingPlan,
+    } = await accountConfig(installation, this.options.environment);
     this.#installation = installation;
     this.#startPlan = startPlan;
+    this.#signedIn = signedIn;
+    this.#startPlanChecked = startPlanChecked;
+    this.#codingPlan = codingPlan;
     // ZCode Desktop runs its Agent CLI on its own Electron build as Node; the CLI's native
     // plugin modules are built for that runtime. Its tool children inherit the variable, as there.
     const child = spawn(
@@ -85,6 +106,10 @@ export class CliTransport {
         env: {
           ...this.options.environment,
           ELECTRON_RUN_AS_NODE: "1",
+          // Desktop injects the App version the same way; without it the CLI self-reports its
+          // internal version in the request fingerprint headers (User-Agent, X-ZCode-App-Version),
+          // and the Start Plan gateway rejects those requests as unusual activity.
+          ZCODE_APP_VERSION: installation.version,
           ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: installation.builtinProviderConfig,
           ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: installation.personalProviderConfig,
         },
@@ -220,11 +245,12 @@ export class CliTransport {
       try {
         reply({
           result: await providerRuntimeHeaders(
-            params.accountAccess,
+            params,
             controller.signal,
             this.#installation,
             this.options.environment,
             () => this.options.verifier(this.#installation.version),
+            this.#codingPlan,
           ),
         });
       } finally {

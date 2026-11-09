@@ -63,6 +63,7 @@ export interface CreateRoute {
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
   permissionModeId?: HarnessPermissionModeId;
+  prewarm?: true;
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -500,47 +501,10 @@ export function encodeExternalTransportSelection(
   harnessId: ExternalHarnessId,
   selection: ExternalConfigurationSelection,
 ): string {
-  switch (harnessId) {
-    case "pi":
-      return encodePiTransportModel(selection.model, selection.thinkingOptionId);
-    case "claude-code":
-      return encodeClaudeTransportModel(
-        selection.model,
-        selection.permissionModeId,
-        selection.thinkingOptionId,
-      );
-    case "deepseek-harness":
-      return encodeDeepSeekHarnessTransportModel(selection.model, selection.permissionModeId);
-    case "opencode":
-      return encodeOpenCodeTransportModel(
-        selection.model,
-        selection.permissionModeId,
-        selection.thinkingOptionId,
-      );
-    case "grok":
-      return encodeGrokTransportModel(
-        selection.model,
-        selection.permissionModeId,
-        selection.thinkingOptionId,
-      );
-    case "omp":
-      return encodeOmpTransportModel(
-        selection.model,
-        selection.thinkingOptionId,
-        selection.permissionModeId,
-      );
-    case "antigravity":
-      return encodeAntigravityTransportModel(
-        selection.model,
-        selection.permissionModeId,
-        selection.thinkingOptionId,
-      );
-    default:
-      return encodeHarnessPluginRoute({
-        harnessId: harnessPluginIdSchema.parse(harnessId),
-        ...selection,
-      });
-  }
+  return encodeHarnessPluginRoute({
+    harnessId: harnessPluginIdSchema.parse(harnessId),
+    ...selection,
+  });
 }
 
 export function decodeExternalTransportSelection(
@@ -595,10 +559,13 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
 
   const pluginRoute = decodeHarnessPluginRoute(request.params.model);
   if (pluginRoute) {
+    // The prewarm marker describes this create only; the Thread keeps its selection.
+    const { prewarm, ...selection } = pluginRoute;
     return {
       harnessId: pluginRoute.harnessId,
       routeMode: "native",
-      transportModelId: request.params.model,
+      transportModelId: prewarm ? encodeHarnessPluginRoute(selection) : request.params.model,
+      ...(prewarm ? { prewarm } : {}),
       ...(pluginRoute.model ? { model: pluginRoute.model } : {}),
       ...(pluginRoute.thinkingOptionId ? { thinkingOptionId: pluginRoute.thinkingOptionId } : {}),
       ...(pluginRoute.permissionModeId ? { permissionModeId: pluginRoute.permissionModeId } : {}),

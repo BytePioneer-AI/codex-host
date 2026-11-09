@@ -3,6 +3,7 @@ import { chmod, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promise
 import net, { type Server, type Socket } from "node:net";
 import path from "node:path";
 
+import { parseHarnessAccountCredits } from "@codexhost/harness-adapter";
 import type {
   HarnessAdapter,
   HarnessError,
@@ -12,9 +13,10 @@ import type {
 } from "@codexhost/harness-adapter";
 
 import {
-  accountCreditsSnapshotSchema,
   harnessAccountListParamsSchema,
   harnessAccountSnapshotSchema,
+  harnessSessionImportCandidateSchema,
+  type HarnessSessionImportCandidate,
   harnessPluginIdSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
@@ -35,6 +37,9 @@ import {
   brokerHostCommandSchema,
   brokerInspectInputSchema,
   brokerOpenInputSchema,
+  brokerSessionImportListParamsSchema,
+  brokerSessionImportResolveParamsSchema,
+  brokerSessionImportSourceSchema,
   sessionCommandExecuteParamsSchema,
   sessionExecuteParamsSchema,
   sessionParamsSchema,
@@ -72,6 +77,7 @@ interface ConnectionState {
   inputSequence: number;
   outputSequence: number;
   sessions: Set<string>;
+  sessionImportCandidates?: readonly HarnessSessionImportCandidate[];
   queue: Promise<void>;
   queuedFrames: number;
   closed: boolean;
@@ -178,6 +184,7 @@ function sessionMetadata(record: ServerSession): object {
     sessionId: record.id,
     sessionGeneration: record.generation,
     capabilities: record.session.capabilities,
+    readCapabilities: true,
     initialState: {
       ...initialState,
       ...(record.nativeRef ? { nativeRef: record.nativeRef } : {}),
@@ -500,8 +507,10 @@ export async function startHarnessBrokerServer(input: {
       if (request.method === "adapter.open") retireWhenIdle = false;
       if (request.method === "adapter.credits") {
         harnessAccountListParamsSchema.parse(request.params);
-        const adapter = input.adapter as HarnessAdapter & { credits?: () => unknown };
-        return accountCreditsSnapshotSchema.nullable().parse(adapter.credits?.() ?? null);
+        const value = input.adapter.credits?.();
+        const credits = parseHarnessAccountCredits(value);
+        if (value != null && !credits) throw new Error("Invalid account credits snapshot");
+        return credits;
       }
       if (request.method === "adapter.inspectAccount") {
         harnessAccountListParamsSchema.parse(request.params);
@@ -514,10 +523,76 @@ export async function startHarnessBrokerServer(input: {
         const inspection = await input.adapter.inspect({
           ...(parsed.cwd ? { cwd: parsed.cwd } : {}),
           ...(parsed.refresh !== undefined ? { refresh: parsed.refresh } : {}),
+          ...(parsed.purpose !== undefined ? { purpose: parsed.purpose } : {}),
         });
         // An unusable Harness gains nothing from a resident broker; exit once idle.
         retireWhenIdle = inspection.status !== "ready";
         return inspection;
+      }
+      if (request.method === "adapter.sessionImport.list") {
+        const { limit, offset } = brokerSessionImportListParamsSchema.parse(request.params);
+        const capability = input.adapter.sessionImport;
+        if (!capability?.resolveCandidate) {
+          return {
+            ok: false,
+            error: {
+              code: "unsupported",
+              message: "Harness Session import is unavailable",
+              retryable: false,
+            },
+          };
+        }
+        if (offset === 0) {
+          delete state.sessionImportCandidates;
+          const result = await capability.listCandidates();
+          if (!result.ok) return result;
+          state.sessionImportCandidates = result.value.map((candidate) =>
+            harnessSessionImportCandidateSchema.parse(candidate),
+          );
+        }
+        const candidates = state.sessionImportCandidates;
+        if (!candidates) {
+          return {
+            ok: false,
+            error: {
+              code: "invalidState",
+              message: "Session import snapshot is unavailable; refresh the list",
+              retryable: true,
+            },
+          };
+        }
+        const page = candidates.slice(offset, offset + limit);
+        const total = candidates.length;
+        if (offset + page.length >= total) delete state.sessionImportCandidates;
+        return { ok: true, value: { candidates: page, total } };
+      }
+      if (request.method === "adapter.sessionImport.resolve") {
+        const { nativeSessionId } = brokerSessionImportResolveParamsSchema.parse(request.params);
+        const capability = input.adapter.sessionImport;
+        if (!capability?.resolveCandidate) {
+          return {
+            ok: false,
+            error: {
+              code: "unsupported",
+              message: "Harness Session import is unavailable",
+              retryable: false,
+            },
+          };
+        }
+        const result = await capability.resolveCandidate(nativeSessionId);
+        if (!result.ok) return result;
+        const source = brokerSessionImportSourceSchema.safeParse(result.value);
+        if (
+          !source.success ||
+          source.data.nativeRef.harnessId !== input.adapter.harnessId ||
+          source.data.candidate.nativeSessionId !== nativeSessionId
+        ) {
+          return {
+            ok: false,
+            error: protocolError("Session import source identity does not match"),
+          };
+        }
+        return { ok: true, value: source.data };
       }
       if (request.method === "adapter.subagent.readSnapshot") {
         const subagents = input.adapter.subagents;
@@ -744,6 +819,7 @@ export async function startHarnessBrokerServer(input: {
         }
         let result;
         if (command.type === "turn.start") result = await record.session.execute(command);
+        else if (command.type === "turn.steer") result = await record.session.execute(command);
         else if (command.type === "turn.cancel") result = await record.session.execute(command);
         else if (command.type === "interaction.respond") {
           result = await record.session.execute({
@@ -779,6 +855,10 @@ export async function startHarnessBrokerServer(input: {
             record.selection.permissionModeId = command.permissionModeId;
         }
         return result;
+      }
+      if (request.method === "session.readCapabilities") {
+        const session = requireSession(request.params).session;
+        return session.readCapabilities ? session.readCapabilities() : session.capabilities;
       }
       if (request.method === "session.readSnapshot") {
         return requireSession(request.params).session.readSnapshot();

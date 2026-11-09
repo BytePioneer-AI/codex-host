@@ -1,13 +1,14 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 
 import { describe, expect, it } from "vitest";
 
-import { consoleBuildId, consoleUrl, stopConsoleForUpdate } from "../src/open.js";
+import { consoleBuildId, consoleUrl, stopConsole, stopConsoleForUpdate } from "../src/open.js";
 
 const CONSOLE_FIXTURE = `
 const http = require("node:http");
@@ -68,7 +69,96 @@ it("opens the overview containing diagnostics", () => {
   expect(consoleUrl(26340)).toBe("http://127.0.0.1:26340/");
 });
 
+describe("console stop", () => {
+  it.each(["console", "foreign", "free"])(
+    "reports stopping a %s endpoint without starting services",
+    async (kind) => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "console-stop-"));
+      const requests: string[] = [];
+      const server = createServer((request, response) => {
+        requests.push(`${request.method} ${request.url}`);
+        response.setHeader("content-type", "application/json");
+        if (request.url === "/api/shutdown") {
+          expect(request.headers["x-codexhost-console"]).toBe("1");
+          response.end("{}");
+          setTimeout(() => server.close(), 200);
+        } else {
+          response.end(
+            JSON.stringify({
+              service: kind === "console" ? "codexhost-console" : "other",
+              appDirectory: home,
+              pid: process.pid,
+            }),
+          );
+        }
+      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const port = (server.address() as { port: number }).port;
+      if (kind === "free") await new Promise<void>((resolve) => server.close(() => resolve()));
+      try {
+        const result = await new Promise((resolve) => {
+          execFile(
+            process.execPath,
+            ["--import", "tsx", "src/main.ts", "stop"],
+            {
+              cwd: path.resolve(import.meta.dirname, ".."),
+              env: {
+                ...process.env,
+                HOME: home,
+                USERPROFILE: home,
+                CODEX_HOME: path.join(home, "codex"),
+                CODEXHOST_DATA_DIR: home,
+                CODEXHOST_CONSOLE_PORT: String(port),
+              },
+            },
+            (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stdout, stderr }),
+          );
+        });
+        expect(result).toEqual({ code: kind === "console" ? 0 : 3, stdout: "", stderr: "" });
+        expect(requests.filter((request) => request === "POST /api/shutdown")).toHaveLength(
+          kind === "console" ? 1 : 0,
+        );
+        if (kind === "console") expect(server.listening).toBe(false);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("uses the existing port validation", async () => {
+    await expect(stopConsole({ CODEXHOST_CONSOLE_PORT: "invalid" })).rejects.toThrow(
+      "CODEXHOST_CONSOLE_PORT",
+    );
+  });
+});
+
 describe("console instance identity", () => {
+  it("does not reuse a console that discovers Hosts in a different data directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-console-data-"));
+    try {
+      const entry = path.join(root, "console-server.mjs");
+      await writeFile(entry, "same build");
+      const local = { CODEXHOST_DATA_DIR: path.join(root, "local") };
+      const remote = { CODEXHOST_DATA_DIR: path.join(root, "remote") };
+      const localId = await consoleBuildId(entry, local);
+      expect(await consoleBuildId(entry, remote)).not.toBe(localId);
+      expect(await consoleBuildId(entry, local)).toBe(localId);
+      expect(
+        await consoleBuildId(entry, {
+          CODEXHOST_DATA_DIR: path.join(root, "local", "child", ".."),
+        }),
+      ).toBe(localId);
+      expect(await consoleBuildId(entry, {})).toBe(
+        await consoleBuildId(entry, {
+          CODEXHOST_DATA_DIR: path.join(os.homedir(), ".codexhost"),
+        }),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it("replaces a source console when only the launch version changes", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-console-version-"));
     try {

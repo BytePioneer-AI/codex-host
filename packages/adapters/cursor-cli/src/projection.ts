@@ -74,7 +74,17 @@ export class CursorTurnOutput {
     readonly emit: (event: HostEvent) => void,
     nativeTurnIndex = 0,
   ) {
-    this.subagents = new CursorSubagents(turnId, emit, nativeTurnIndex);
+    this.subagents = new CursorSubagents(
+      turnId,
+      (event) => {
+        if (event.type === "item.started") {
+          this.#flushHold();
+          this.#finishText();
+        }
+        emit(event);
+      },
+      nativeTurnIndex,
+    );
   }
 
   sawWritableIterableClosed(): boolean {
@@ -124,11 +134,7 @@ export class CursorTurnOutput {
     this.#text = undefined;
   }
   update(notification: SessionNotification) {
-    if (this.subagents.update(notification)) {
-      this.#flushHold();
-      this.#finishText();
-      return;
-    }
+    if (this.subagents.update(notification)) return;
     const { update } = notification;
     if (
       update.sessionUpdate === "agent_message_chunk" ||
@@ -152,11 +158,12 @@ export class CursorTurnOutput {
       update.sessionUpdate === "tool_call" ||
       update.sessionUpdate === "tool_call_update"
     ) {
-      this.#flushHold();
-      this.#finishText();
       if (this.#finishedTools.has(update.toolCallId)) return;
       let tool = this.#tools.get(update.toolCallId);
       if (!tool) {
+        // Only the first observation of a tool starts a new reply boundary.
+        this.#flushHold();
+        this.#finishText();
         const args = jsonValueSchema.safeParse(update.rawInput ?? {});
         const item: Extract<HostItem, { type: "toolExecution" }> = {
           type: "toolExecution",

@@ -1,4 +1,3 @@
-import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import type {
@@ -73,7 +72,7 @@ async function readSnapshot(
 ): Promise<HarnessResult<HostThreadSnapshot>> {
   let messages: unknown[];
   try {
-    messages = await dependencies.readSessionMessages({ cwd, sessionId });
+    messages = (await dependencies.readSessionMessages({ cwd, sessionId })) ?? [];
   } catch {
     return {
       ok: false,
@@ -145,13 +144,9 @@ export async function forkClaudeSession(
       error: error("protocolError", "Claude Code Session working directory is unavailable", false),
     };
   }
-  if (path.resolve(sourceInfo.cwd) !== input.cwd) {
-    return {
-      ok: false,
-      error: error("unsupported", "Claude Code cannot Fork across working directories", false),
-    };
-  }
 
+  // Native worktree entry changes the Session cwd without changing the Desktop workspace.
+  // The SDK resolves the source within that workspace's project/worktree history.
   const source = await readSnapshot(input.dependencies, input.cwd, sourceRef.data.nativeSessionId);
   if (!source.ok) return source;
   if (input.kind === "rollbackLastTurn" && source.value.turns.length === 0) {

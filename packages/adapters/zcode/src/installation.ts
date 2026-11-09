@@ -176,6 +176,10 @@ export function createZcodeInstallation(environment: NodeJS.ProcessEnv, app?: st
       updateAvailable: false,
       canUpdate: false,
       messageCode: "zcode-desktop-updater",
+      notice: {
+        en: "The CLI ships inside ZCode Desktop. Update ZCode Desktop itself to update it.",
+        "zh-CN": "CLI 随 ZCode Desktop 一起发布，请直接更新 ZCode Desktop。",
+      },
       message: "The CLI ships inside ZCode Desktop. Update ZCode Desktop itself to update it.",
     };
   };

@@ -21,6 +21,7 @@ import {
 import {
   createFixture,
   JsonLineCollector,
+  startExternalThread,
   startPiThread,
   startPiTurn,
   writeRequest,
@@ -97,6 +98,47 @@ async function rpc(
 }
 
 describe("shared external Threads", () => {
+  it.each(["submit", "discard"])(
+    "keeps SSH prewarms out of every viewer's history until used (%s)",
+    async (action) => {
+      const { front, adapter } = setup();
+      const ssh = front(true);
+      const desktop = front(false);
+      const threadId = await startExternalThread(ssh, "codexhost/pi-native", 1, {
+        codexhostPrewarm: true,
+      });
+      const late = front(false);
+      for (const viewer of [ssh, desktop, late]) {
+        await viewer.ready;
+        expect(await rpc(viewer, 10, "thread/list", {})).toMatchObject({ result: { data: [] } });
+        expect(viewer.collector.messages.filter((m) => m.method === "thread/started")).toEqual([]);
+      }
+      if (action === "submit") {
+        await startPiTurn(ssh, threadId);
+        for (const viewer of [ssh, desktop, late]) {
+          await viewer.collector.waitFor((m) => m.method === "thread/started");
+          expect(await rpc(viewer, 11, "thread/list", {})).toMatchObject({
+            result: { data: [{ id: threadId }] },
+          });
+          expect(
+            viewer.collector.messages.filter((m) => m.method === "thread/started"),
+          ).toHaveLength(1);
+        }
+        session(adapter).succeedTurn();
+      } else {
+        expect(await rpc(ssh, 12, "codexhost/thread/prewarm/discard", { threadId })).toMatchObject({
+          result: { discarded: true },
+        });
+        for (const viewer of [ssh, desktop, late]) {
+          expect(await rpc(viewer, 13, "thread/list", {})).toMatchObject({ result: { data: [] } });
+          expect(viewer.collector.messages.filter((m) => m.method === "thread/started")).toEqual(
+            [],
+          );
+        }
+      }
+    },
+  );
+
   it("steers from the other GUI through the same cancellation and replacement sequence", async () => {
     const { front, adapter, open } = setup();
     const ssh = front(true);
@@ -122,6 +164,51 @@ describe("shared external Threads", () => {
       });
     }
     expect(open).toHaveBeenCalledOnce();
+    session(adapter).succeedTurn();
+  });
+
+  it("routes multi-select cards through the shared owner and accepts only one GUI answer", async () => {
+    const { front, adapter } = setup();
+    const ssh = front(true);
+    const desktop = front(false);
+    const threadId = await startPiThread(ssh);
+    const turnId = await startPiTurn(ssh, threadId);
+    const interactionId = session(adapter).askQuestion({
+      id: "pick",
+      type: "choice",
+      prompt: "Pick",
+      multiple: true,
+      optional: false,
+      allowOther: false,
+      options: [
+        { value: "a", label: "Alpha" },
+        { value: "b", label: "Beta" },
+      ],
+    });
+    let id = 100;
+    for (const viewer of [ssh, desktop]) {
+      await vi.waitFor(async () =>
+        expect(
+          await rpc(viewer, id++, "codexhost/thread/questions/list", { threadId }),
+        ).toMatchObject({
+          result: { questions: [{ interactionId, turnId }] },
+        }),
+      );
+      expect(viewer.collector.messages.some((m) => m.method === "item/tool/requestUserInput")).toBe(
+        false,
+      );
+    }
+    const params = { threadId, turnId, interactionId, answers: { pick: ["a", "b"] } };
+    expect(await rpc(desktop, id++, "codexhost/thread/question/respond", params)).toMatchObject({
+      result: { accepted: true },
+    });
+    expect(await rpc(ssh, id++, "codexhost/thread/question/respond", params)).toHaveProperty(
+      "error",
+    );
+    expect(session(adapter).interactionResponses).toHaveLength(1);
+    expect(await rpc(ssh, id++, "codexhost/thread/questions/list", { threadId })).toMatchObject({
+      result: { questions: [] },
+    });
     session(adapter).succeedTurn();
   });
 
@@ -194,6 +281,31 @@ describe("shared external Threads", () => {
     expect(await rpc(desktop, 24, "thread/list", { archived: true })).toMatchObject({
       result: { data: [{ id: threadId }] },
     });
+  });
+
+  it("broadcasts local deletion to every viewer and removes the Thread from subsequent lists", async () => {
+    const { front, adapter } = setup();
+    const ssh = front(true);
+    const desktop = front(false);
+    const threadId = await startPiThread(ssh);
+    await desktop.collector.waitFor((m) => m.method === "thread/started");
+    const close = vi.spyOn(session(adapter), "close");
+
+    expect(await rpc(desktop, 20, "thread/delete", { threadId })).toEqual({ id: 20, result: {} });
+    for (const viewer of [ssh, desktop]) {
+      expect(await viewer.collector.waitFor((m) => m.method === "thread/deleted")).toEqual({
+        method: "thread/deleted",
+        params: { threadId },
+      });
+      expect(await rpc(viewer, 21, "thread/list", {})).toMatchObject({ result: { data: [] } });
+      expect(await rpc(viewer, 22, "thread/list", { archived: true })).toMatchObject({
+        result: { data: [] },
+      });
+    }
+    expect(close).toHaveBeenCalledOnce();
+    const late = front(false);
+    expect(await rpc(late, 23, "thread/list", {})).toMatchObject({ result: { data: [] } });
+    expect(late.collector.messages.some((m) => m.method === "thread/started")).toBe(false);
   });
 
   it("renders the same accepted user message and streamed reply in both GUIs with one Session", async () => {

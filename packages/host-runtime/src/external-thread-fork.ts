@@ -95,6 +95,16 @@ export async function executeExternalThreadFork(input: {
     boundaryIndex = mappings.length - 1;
   }
   const boundary = mappings[boundaryIndex];
+  // Native history may have split this boundary Turn while Desktop still shows it whole.
+  if (boundary && source.steeredTurnIds.has(boundary.hostTurnId)) {
+    return {
+      ok: false,
+      error: {
+        code: -32080,
+        message: "This Turn took steered input; reopen the Thread before forking from it",
+      },
+    };
+  }
   if (boundaryIndex < 0 || !boundary?.nativeCheckpointRef) {
     return {
       ok: false,
@@ -154,6 +164,7 @@ export async function executeExternalThreadFork(input: {
   }
 
   const session = opened.value;
+  await inheritSourceModel(source, session);
   const inheritedPermissionModeId = await inheritSourcePermissionMode(source, session);
   try {
     const derivedNativeRef = session.initialState.nativeRef;
@@ -176,7 +187,7 @@ export async function executeExternalThreadFork(input: {
       source.harnessId,
       provisional.transportModelId,
     );
-    if (effectiveModel && selection?.model && selection.model.id !== effectiveModel.id) {
+    if (effectiveModel && selection && selection.model?.id !== effectiveModel.id) {
       const transportModelId = encodeExternalTransportSelection(source.harnessId, {
         ...selection,
         model: effectiveModel,
@@ -221,6 +232,35 @@ export async function executeExternalThreadFork(input: {
       ok: false,
       error: { code: -32081, message: "External Fork could not be persisted" },
     };
+  }
+}
+
+/**
+ * A fork continues the source conversation. When the Harness does not confirm a Model for the
+ * derived Session (Claude Code would otherwise run its native default), it keeps the source's
+ * current Model. A Model the Harness confirms for the fork is its actual Model and stays.
+ * Failure is non-fatal: the derived Session then keeps the Model it opened with.
+ */
+async function inheritSourceModel(source: ExternalThread, session: HarnessSession): Promise<void> {
+  let persisted;
+  try {
+    persisted = decodeExternalTransportSelection(source.harnessId, source.transportModelId)?.model;
+  } catch {
+    persisted = undefined;
+  }
+  const sourceModel =
+    source.stateObserver.state.effectiveModel ?? source.requestedModel ?? persisted;
+  if (
+    !sourceModel ||
+    !session.capabilities.configuration.selectModel ||
+    session.initialState.effectiveModel !== undefined
+  ) {
+    return;
+  }
+  try {
+    await session.execute({ type: "model.select", model: sourceModel });
+  } catch {
+    // The derived Session keeps the Model it opened with.
   }
 }
 

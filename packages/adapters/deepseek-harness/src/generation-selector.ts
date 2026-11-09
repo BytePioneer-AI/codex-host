@@ -78,7 +78,8 @@ export interface DeepSeekGenerationProbeDependencies {
   terminateProcessTree(child: ChildProcess, timeoutMs: number): void;
 }
 
-const DEFAULT_TIMEOUT_MS = 5_000;
+// `dsh --version` competes with the rest of startup for CPU and disk; 5 s was not always enough.
+const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 1_000;
 const DEFAULT_OUTPUT_LIMIT_BYTES = 16 * 1024;
 const DIAGNOSTIC_RAW_TAIL_BYTES = 16 * 1024;
@@ -92,17 +93,23 @@ const SEMVER_PATTERN = new RegExp(
   "u",
 );
 
-const DEEPSEEK_NEWEST_VERIFIED_VERSION = "0.2.0-rc.2";
+const DEEPSEEK_NEWEST_VERIFIED_VERSION = "0.2.2-rc.1";
 /** Releases that passed the fixed-tag audit and the real CLI Gate, oldest first. */
 const DEEPSEEK_VERIFIED_VERSIONS = [
   "0.1.7-rc.1",
   "0.1.7-rc.2",
   "0.2.0-rc.1",
+  "0.2.0-rc.2",
+  "0.2.1-rc.1",
+  "0.2.1-rc.2",
+  "0.2.1-rc.3",
+  "0.2.1-rc.4",
+  "0.2.1-rc.5",
   DEEPSEEK_NEWEST_VERIFIED_VERSION,
 ] as const;
 
 /** Install command offered when the local CLI predates Session Format V4. */
-export const DEEPSEEK_UPGRADE_COMMAND = `npm install -g @deepseek-ai/dsh@${DEEPSEEK_NEWEST_VERIFIED_VERSION}`;
+export const DEEPSEEK_UPGRADE_COMMAND = "npm install -g @deepseek-ai/dsh@latest";
 
 export const DEFAULT_DEEPSEEK_ENDPOINT = "http://127.0.0.1:3080/";
 const MODERN_AUTHENTICATION_FINGERPRINT = Buffer.from(

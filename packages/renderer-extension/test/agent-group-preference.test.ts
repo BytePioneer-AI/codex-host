@@ -7,7 +7,7 @@ import {
 describe("Host-confirmed Agent grouping", () => {
   it("folds only confirmed missing installations by default", () => {
     const store = createAgentGroupPreferenceStore(null);
-    expect(store.list(new Set(["pi"])).find((entry) => entry.agent === "pi")?.section).toBe("more");
+    expect(store.list(new Set(["pi"]))).toEqual([]); // No synthesized built-in Harness entries.
     expect(store.sectionOf("pi", true)).toBe("more");
     expect(store.sectionOf("pi", false)).toBe("main");
   });
@@ -56,6 +56,78 @@ describe("Host-confirmed Agent grouping", () => {
     store.setWriter(null);
     store.moveAgent("pi", "more");
     expect(store.sectionOf("pi")).toBe("main");
+  });
+
+  it("orders only discovered plugins, with new plugins appended by name", () => {
+    const store = createAgentGroupPreferenceStore(null);
+    const catalog = [
+      { id: "z-new", name: "Alpha" },
+      { id: "grok", name: "Grok" },
+      { id: "claude-code", name: "Claude Code" },
+      { id: "a-new", name: "Zulu" },
+      { id: "pi", name: "Pi" },
+      { id: "codex", name: "Codex" },
+    ];
+    expect(store.list(new Set(["pi"]), catalog)).toEqual([
+      { agent: "pi", section: "more" },
+      { agent: "claude-code", section: "main" },
+      { agent: "grok", section: "main" },
+      { agent: "z-new", section: "main" },
+      { agent: "a-new", section: "main" },
+    ]);
+    expect(store.list()).toEqual([]);
+    store.replace([{ agent: "removed-plugin", section: "main" }]);
+    expect(store.list(undefined, [])).toEqual([]);
+  });
+
+  it("preserves custom order and groups, appending unrecorded plugins in default order", () => {
+    const store = createAgentGroupPreferenceStore(null);
+    store.replace([
+      { agent: "grok", section: "more" },
+      { agent: "claude-code", section: "main" },
+    ]);
+    const catalog = ["opencode", "pi", "claude-code", "grok"].map((id) => ({ id, name: id }));
+    expect(store.list(undefined, catalog).map(({ agent }) => agent)).toEqual([
+      "grok",
+      "claude-code",
+      "pi",
+      "opencode",
+    ]);
+    expect(store.list(undefined, catalog)[0]?.section).toBe("more");
+  });
+
+  it("moves relative to default rows and restores defaults after Host confirmation", () => {
+    const store = createAgentGroupPreferenceStore(null);
+    const catalog = ["grok", "claude-code", "pi"].map((id) => ({ id, name: id }));
+    const writer = vi.fn();
+    store.setWriter(writer);
+    store.setSyncStatus("ready");
+    store.moveAgent("grok", "main", "claude-code", catalog);
+    const [entries] = writer.mock.calls[0] ?? [];
+    expect(entries).toEqual([
+      { agent: "pi", section: "auto" },
+      { agent: "grok", section: "main" },
+      { agent: "claude-code", section: "auto" },
+    ]);
+    expect(store.list(undefined, catalog).map(({ agent }) => agent)).toEqual([
+      "pi",
+      "claude-code",
+      "grok",
+    ]);
+    store.replace(entries);
+    expect(store.list(undefined, catalog).map(({ agent }) => agent)).toEqual([
+      "pi",
+      "grok",
+      "claude-code",
+    ]);
+    store.resetToDefault();
+    expect(writer).toHaveBeenLastCalledWith([]);
+    store.replace([]);
+    expect(store.list(undefined, catalog).map(({ agent }) => agent)).toEqual([
+      "pi",
+      "claude-code",
+      "grok",
+    ]);
   });
 
   it("ignores corrupt legacy data", () => {

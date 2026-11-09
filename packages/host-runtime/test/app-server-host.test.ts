@@ -151,7 +151,12 @@ describe("AppServerHost idle resource release", () => {
             null,
             permissionModes,
           );
-          expect(resumed.state.effectivePermissionModeId).toBe("default");
+          expect(input.permissionModeId).toBe(expectedMode);
+          // The Adapter restores saved configuration before returning its Session.
+          await resumed.execute({
+            type: "permissionMode.select",
+            permissionModeId: harnessPermissionModeIdSchema.parse(input.permissionModeId),
+          });
           resumedCommands = vi.spyOn(resumed, "execute").mock.calls;
           return { ok: true, value: resumed };
         });
@@ -166,8 +171,8 @@ describe("AppServerHost idle resource release", () => {
         const next = await delegationApi.send({ threadId, message: "continue" });
         if (!resumed) throw new Error("Missing resumed Session");
         expect(resumed.state.effectivePermissionModeId).toBe(expectedMode);
-        // The resumed Session starts at default, so assert the restore itself.
-        expect(resumedCommands).toContainEqual([
+        // Host must not replay an already restored configuration command.
+        expect(resumedCommands).not.toContainEqual([
           { type: "permissionMode.select", permissionModeId: expectedMode },
         ]);
         resumed.succeedTurn();

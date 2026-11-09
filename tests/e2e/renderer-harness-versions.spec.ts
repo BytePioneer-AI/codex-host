@@ -161,10 +161,11 @@ test("unsupported plugins show original instructions without disabling supported
   const panel = page.locator(".settings-harness-version");
   await expect(panel).toContainText("当前 Host 或插件不支持 CLI 版本管理");
   await expect(panel.getByRole("button", { name: "更新", exact: true })).toBeDisabled();
-  await expect(panel.getByRole("link", { name: "查看安装指引" })).toHaveAttribute(
-    "href",
-    "https://code.claude.com/docs/en/quickstart",
-  );
+  await expect(
+    page
+      .locator(".settings-connection-inspector__header")
+      .getByRole("link", { name: "访问官网: Claude Code" }),
+  ).toHaveAttribute("href", "https://code.claude.com/");
   await page.screenshot({ path: testInfo.outputPath("versions-unsupported.png") });
   await page.getByRole("row", { name: /^Pi 正常/ }).click();
   await expect(panel.getByRole("button", { name: "更新", exact: true })).toBeEnabled();

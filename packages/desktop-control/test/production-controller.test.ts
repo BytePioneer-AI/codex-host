@@ -9,6 +9,7 @@ import {
   type DesktopControllerDependencies,
 } from "../src/production-controller.js";
 import type { RendererCdpControlSession } from "../src/renderer-cdp-control-session.js";
+import { CdpConnectionClosedError } from "../src/cdp-client.js";
 
 const attachmentNonce = "0123456789abcdef0123456789abcdef";
 
@@ -135,25 +136,6 @@ describe("production Desktop Controller", () => {
       rendererCdpEndpoint: "http://127.0.0.1:43123",
       rendererSource:
         "globalThis.__zod_globalConfig ??= {}; globalThis.__zod_globalConfig.jitless = true;\nproduction renderer",
-      enabledAgents: [
-        "codex",
-        "pi",
-        "claude-code",
-        "deepseek-harness",
-        "opencode",
-        "grok",
-        "omp",
-        "antigravity",
-        "kiro-cli",
-        "codebuddy",
-        "workbuddy",
-        "cursor-cli",
-        "hermes",
-        "qoder",
-        "qoder-cn",
-        "kimi-code",
-        "zcode",
-      ],
       timeoutMs: 90_000,
       signal: abort.signal,
     });
@@ -221,7 +203,10 @@ describe("production Desktop Controller", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("retries a transient Renderer evaluation failure during cold startup", async () => {
+  it.each([
+    new Error("Promise was collected"),
+    new CdpConnectionClosedError("CDP WebSocket closed"),
+  ])("retries a transient Renderer startup failure: %s", async (secondFailure) => {
     const abort = new AbortController();
     abort.abort();
     const close = vi.fn();
@@ -240,7 +225,7 @@ describe("production Desktop Controller", () => {
           cause: new Error("Execution context was destroyed during Renderer reload"),
         }),
       )
-      .mockRejectedValueOnce(new Error("Promise was collected"))
+      .mockRejectedValueOnce(secondFailure)
       .mockResolvedValueOnce(session);
     const ready = vi.fn();
     const sleep = vi.fn(async () => {});

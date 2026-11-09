@@ -1,5 +1,6 @@
 import {
   CdpClient,
+  CdpConnectionClosedError,
   listCdpTargets,
   type CdpClientOptions,
   type CdpFetch,
@@ -10,6 +11,13 @@ import {
   installRendererDraftPrewarmPolicyDirect,
   type RendererDraftPrewarmPolicyStatus,
 } from "./renderer-draft-prewarm-policy.js";
+
+import {
+  installRendererLoadedModules,
+  type RendererModuleCdpClient,
+} from "./renderer-loaded-modules.js";
+import { installNativeRpcRemoteControlDirect } from "./renderer-native-rpc-install.js";
+import { installRendererRpcSteeringDirect } from "./renderer-rpc-steering.js";
 
 export interface ProductionRendererStatus {
   version: 2;
@@ -26,8 +34,7 @@ export interface RendererCdpControlSnapshot {
   binding: ProductionRendererStatus;
 }
 
-interface RendererCdpClient {
-  command(method: string, params?: Record<string, unknown>): Promise<unknown>;
+interface RendererCdpClient extends RendererModuleCdpClient {
   evaluate<T>(expression: string): Promise<T>;
   close(): void;
 }
@@ -101,14 +108,12 @@ function awaitWithSignal<T>(
   });
 }
 
-function sameAgents(actual: readonly string[], expected: readonly string[]): boolean {
-  // The Renderer owns presentation order; the Controller only verifies membership.
+function sameAgents(actual: readonly string[], expected: readonly string[] | undefined): boolean {
+  // Production discovers plugins after mounting. Explicit tooling expectations stay exact.
+  if (!actual.includes("codex") || new Set(actual).size !== actual.length) return false;
+  if (!expected) return true;
   const expectedSet = new Set(expected);
-  return (
-    actual.length === expected.length &&
-    new Set(actual).size === actual.length &&
-    actual.every((agent) => expectedSet.has(agent))
-  );
+  return actual.length === expected.length && actual.every((agent) => expectedSet.has(agent));
 }
 
 function isPrimaryRendererUrl(value: string): boolean {
@@ -148,7 +153,7 @@ class RendererAdapterReadinessError extends Error {
 
 function validateBindingStatus(
   value: unknown,
-  expectedAgents: readonly string[],
+  expectedAgents: readonly string[] | undefined,
 ): ProductionRendererStatus {
   if (
     !isRecord(value) ||
@@ -229,7 +234,7 @@ async function readBinding(renderer: RendererCdpClient): Promise<unknown> {
 
 async function waitForBinding(
   renderer: RendererCdpClient,
-  enabledAgents: readonly string[],
+  enabledAgents: readonly string[] | undefined,
   timeoutMs: number,
   pollIntervalMs: number,
 ): Promise<ProductionRendererStatus> {
@@ -241,6 +246,7 @@ async function waitForBinding(
       if (value !== null) return validateBindingStatus(value, enabledAgents);
     } catch (error) {
       lastError = error;
+      if (error instanceof CdpConnectionClosedError) throw error;
       if (error instanceof RendererAdapterReadinessError && error.state !== "installing") {
         throw error;
       }
@@ -254,21 +260,27 @@ async function waitForBinding(
 async function installTarget(
   target: CdpTarget,
   rendererSource: string,
-  enabledAgents: readonly string[],
+  enabledAgents: readonly string[] | undefined,
   timeoutMs: number,
   pollIntervalMs: number,
   operations: RendererCdpControlOperations,
-): Promise<{ renderer: RendererCdpClient; snapshot: RendererCdpControlSnapshot }> {
+): Promise<{
+  renderer: RendererCdpClient;
+  snapshot: RendererCdpControlSnapshot;
+  disposeModules(): void;
+}> {
   const renderer = await operations.connect(target.webSocketDebuggerUrl);
+  let disposeModules: (() => void) | undefined;
   try {
-    await renderer.command("Runtime.enable");
+    disposeModules = await installRendererLoadedModules(renderer);
     await renderer.command("Page.enable");
     await renderer.command("Page.addScriptToEvaluateOnNewDocument", { source: rendererSource });
     await evaluateSource(renderer, rendererSource);
     const draftPrewarmPolicy = await operations.installDraftPrewarmPolicy(renderer);
     const binding = await waitForBinding(renderer, enabledAgents, timeoutMs, pollIntervalMs);
-    return { renderer, snapshot: { target, draftPrewarmPolicy, binding } };
+    return { renderer, snapshot: { target, draftPrewarmPolicy, binding }, disposeModules };
   } catch (error) {
+    disposeModules?.();
     renderer.close();
     throw error;
   }
@@ -281,11 +293,12 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
     private renderer: RendererCdpClient,
     private readonly rendererCdpEndpoint: string,
     private readonly rendererSource: string,
-    private readonly enabledAgents: readonly string[],
+    private readonly enabledAgents: readonly string[] | undefined,
     private readonly timeoutMs: number,
     private readonly pollIntervalMs: number,
     private readonly operations: RendererCdpControlOperations,
     private currentSnapshot: RendererCdpControlSnapshot,
+    private disposeModules: () => void,
   ) {}
 
   get snapshot(): RendererCdpControlSnapshot {
@@ -310,8 +323,10 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
         this.pollIntervalMs,
         this.operations,
       );
+      this.disposeModules();
       this.renderer.close();
       this.renderer = replacement.renderer;
+      this.disposeModules = replacement.disposeModules;
       this.currentSnapshot = replacement.snapshot;
       return this.currentSnapshot;
     }
@@ -339,8 +354,10 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
         this.pollIntervalMs,
         this.operations,
       );
+      this.disposeModules();
       this.renderer.close();
       this.renderer = replacement.renderer;
+      this.disposeModules = replacement.disposeModules;
       this.currentSnapshot = replacement.snapshot;
       return this.currentSnapshot;
     }
@@ -360,6 +377,7 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.disposeModules();
     this.renderer.close();
   }
 }
@@ -367,13 +385,18 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
 const defaultOperations: RendererCdpControlOperations = {
   listTargets: (endpoint, signal) => listCdpTargets(endpoint, fetch, signal),
   connect: (webSocketDebuggerUrl) => CdpClient.connect(webSocketDebuggerUrl),
-  installDraftPrewarmPolicy: installRendererDraftPrewarmPolicyDirect,
+  async installDraftPrewarmPolicy(renderer) {
+    const status = await installRendererDraftPrewarmPolicyDirect(renderer);
+    await installNativeRpcRemoteControlDirect(renderer);
+    await installRendererRpcSteeringDirect(renderer);
+    return status;
+  },
 };
 
 export async function createRendererCdpControlSession(
   options: CreateRendererCdpControlOptions,
 ): Promise<RendererCdpControlSession> {
-  const enabledAgents = options.enabledAgents ?? ["codex", "pi"];
+  const enabledAgents = options.enabledAgents;
   const timeoutMs = options.timeoutMs ?? 30_000;
   const pollIntervalMs = options.pollIntervalMs ?? 250;
   const operations = options.operations ?? defaultOperations;
@@ -402,6 +425,7 @@ export async function createRendererCdpControlSession(
     pollIntervalMs,
     operations,
     installed.snapshot,
+    installed.disposeModules,
   );
 }
 

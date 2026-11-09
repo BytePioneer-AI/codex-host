@@ -5,13 +5,21 @@ export type {
   HarnessCredentialExport,
   HarnessCredentialImports,
 } from "./credential-imports.js";
+export { parseHarnessAccountCredits } from "./account-credits.js";
 export { validateHostApprovalResponse } from "./approval.js";
 export { validateHostInteractionResponse } from "./interaction.js";
 export { HarnessOutputChannel } from "./output-channel.js";
 export { sanitizeDiagnosticTail, filterAmbientNodeWarnings } from "./diagnostics.js";
 export { validateHostQuestionResponse } from "./question.js";
-export { parseHostUsage } from "./usage.js";
-export type { HostUsage } from "./usage.js";
+export { unsupportedSteer } from "./steer.js";
+export { hostDerivedUsageFields, parseHostUsage, parseHostUsageRequest } from "./usage.js";
+export type { HostUsage, HostUsageCostSource, HostUsageRequest } from "./usage.js";
+export type {
+  HarnessUsageEntry,
+  HarnessUsageSession,
+  HarnessUsageSource,
+  HarnessUsageStatisticsCapability,
+} from "./usage-statistics.js";
 export type {
   AutonomousTurnStartedEvent,
   CreateSessionInput,
@@ -36,6 +44,7 @@ export type {
   HarnessSessionCapabilities,
   HarnessSessionImportCandidate,
   HarnessSessionImportCapability,
+  HarnessSessionImportPrepared,
   HarnessSessionImportSource,
   HarnessSubagentCapability,
   HarnessWebUiAction,
@@ -65,6 +74,7 @@ export type {
   HostQuestionInteraction,
   HostQuestionResponse,
   HostReasoningItem,
+  HostUserMessageItem,
   HostSubagentDelegationItem,
   HostSubagentState,
   HostSubagentStatus,
@@ -93,12 +103,16 @@ export type {
   SessionStateChangedEvent,
   SessionUsageChangedEvent,
   SubagentStateChangedEvent,
+  UsageHistoryEvent,
+  UsageRequestEvent,
   SubagentTranscriptChangedEvent,
   ThinkingSelectCommand,
   ThinkingSelectCompleted,
   TurnCompletedEvent,
   TurnCancelAccepted,
   TurnCancelCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
   TurnOutcome,
   TurnStartAccepted,
   TurnStartCommand,

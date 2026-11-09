@@ -5,7 +5,7 @@ import { readRuntimeMetadata } from "@codexhost/update-manager";
 
 import { consoleBundleCandidates } from "./page.js";
 import { CONSOLE_REQUEST_HEADER } from "./request-guard.js";
-import { CONSOLE_PORT_ENV, consolePort } from "./paths.js";
+import { CONSOLE_PORT_ENV, consolePort, dataDirectory } from "./paths.js";
 import { CONSOLE_SERVICE } from "./server.js";
 
 export type ConsoleProbe =
@@ -70,6 +70,15 @@ async function requestShutdown(port: number): Promise<void> {
   if (!response.ok) throw new Error(`console shutdown failed: HTTP ${response.status}`);
 }
 
+export async function stopConsole(environment: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  const port = consolePort(environment);
+  if ((await probeConsole(port)).kind !== "console") return false;
+  await requestShutdown(port);
+  const probe = await waitFor(port, (next) => next.kind !== "console", 5_000);
+  if (probe.kind === "console") throw new Error(`codexhost console did not stop on port ${port}`);
+  return true;
+}
+
 /** Stops only this installation's console. The server verifies the observed
  * instance again at shutdown, so a port changing owners cannot stop another
  * installation. An older server without this route leaves the update blocked.
@@ -121,7 +130,7 @@ export interface OpenConsoleOptions {
   browser?: boolean;
 }
 
-/** Changes when the server/page bundle is replaced or the source launch version changes. */
+/** Identity for reuse: the build/version and the data directory used to discover Hosts. */
 export async function consoleBuildId(
   entryPath: string,
   environment: NodeJS.ProcessEnv = process.env,
@@ -134,7 +143,7 @@ export async function consoleBuildId(
   }
   const runtime = await readRuntimeMetadata(entryPath, environment).catch(() => null);
   if (runtime?.distribution === "development") parts.push(runtime.version);
-  return parts.join(".");
+  return JSON.stringify([parts.join("."), dataDirectory(environment)]);
 }
 
 function startDetachedServer(entryPath: string, environment: NodeJS.ProcessEnv): void {
@@ -162,7 +171,7 @@ function openWithLauncher(launcherExecutable: string, url: string): Promise<bool
 
 /**
  * Ensures exactly one console answers on the configured port, restarting it
- * when it belongs to a different installation. Returns the port.
+ * when it belongs to a different installation or data directory. Returns the port.
  */
 export async function ensureConsole(
   options: Pick<OpenConsoleOptions, "appDirectory" | "entryPath" | "environment">,

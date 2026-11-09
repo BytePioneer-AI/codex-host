@@ -15,17 +15,20 @@ const sourceRuntimeUrl = pathToFileURL(path.resolve("packages/host-runtime/dist/
 const pluginRoot = path.resolve("packages/host-runtime/dist/plugins");
 const classes = {
   pi: "PiAdapter",
+  copilot: "CopilotAdapter",
   "claude-code": "ClaudeCodeAdapter",
   "deepseek-harness": "DeepSeekHarnessAdapter",
   opencode: "OpenCodeAdapter",
   grok: "GrokAdapter",
   omp: "OmpAdapter",
+  "qwen-code": "QwenCodeAdapter",
   antigravity: "AntigravityAdapter",
   "kimi-code": "KimiAdapter",
   "kiro-cli": "KiroAdapter",
   codebuddy: "CodeBuddyAdapter",
   workbuddy: "WorkBuddyAdapter",
   "cursor-cli": "CursorAdapter",
+  devin: "DevinAdapter",
   hermes: "HermesAdapter",
   qoder: "QoderAdapter",
   "qoder-cn": "QoderAdapter",
@@ -82,7 +85,8 @@ describe("installed Harness composition", () => {
           .list()
           .map(({ id }) => id)
           .sort(),
-      ).toEqual(Object.keys(classes).sort());
+      ).toEqual([...Object.keys(classes), "codex-usage"].sort());
+      expect([...registry.usageAdapters.keys()]).toEqual(["codex-usage"]);
       for (const [id, adapter] of registry.adapters) {
         expect(adapter.harnessId).toBe(id);
         // esbuild may suffix class names when a plugin contains two protocol generations.
@@ -100,6 +104,7 @@ describe("installed Harness composition", () => {
 
   it("provides every built-in command catalog before inspection or Session creation", async () => {
     const expected = {
+      copilot: [],
       codebuddy: ["/compact", "/cost"],
       workbuddy: ["/compact", "/init"],
       "cursor-cli": ["/copy-request-id"],
@@ -109,6 +114,7 @@ describe("installed Harness composition", () => {
       opencode: ["/compact"],
       grok: ["/compact"],
       omp: ["/compact"],
+      "qwen-code": [],
       antigravity: [
         "/plan",
         "/goal",
@@ -117,6 +123,7 @@ describe("installed Harness composition", () => {
         "/boost",
         "/learn",
         "/schedule",
+        "/compact",
         "/help",
       ],
       "kiro-cli": [
@@ -128,6 +135,7 @@ describe("installed Harness composition", () => {
         "/kiro-vibe",
       ],
       "kimi-code": ["/compact", "/status", "/usage", "/mcp", "/tasks", "/help"],
+      devin: [],
       hermes: ["/help", "/tools", "/context", "/version", "/compress"],
       qoder: ["/compact"],
       "qoder-cn": ["/compact"],
@@ -150,16 +158,19 @@ describe("installed Harness composition", () => {
   }, 35_000);
 
   it.each([
+    ["copilot", "CODEXHOST_COPILOT_COMMAND"],
     ["pi", "CODEXHOST_PI_COMMAND"],
     ["claude-code", "CODEXHOST_CLAUDE_COMMAND"],
     ["grok", "CODEXHOST_GROK_COMMAND"],
     ["opencode", "CODEXHOST_OPENCODE_COMMAND"],
     ["omp", "CODEXHOST_OMP_COMMAND"],
+    ["qwen-code", "CODEXHOST_QWEN_COMMAND"],
     ["antigravity", "CODEXHOST_ANTIGRAVITY_COMMAND"],
     ["kiro-cli", "CODEXHOST_KIRO_COMMAND"],
     ["codebuddy", "CODEXHOST_CODEBUDDY_COMMAND"],
     ["workbuddy", "CODEXHOST_WORKBUDDY_COMMAND"],
     ["cursor-cli", "CODEXHOST_CURSOR_COMMAND"],
+    ["devin", "CODEXHOST_DEVIN_COMMAND"],
     ["hermes", "CODEXHOST_HERMES_COMMAND"],
     ["qoder", "CODEXHOST_QODER_COMMAND"],
     ["qoder-cn", "CODEXHOST_QODERCN_COMMAND"],
@@ -214,7 +225,10 @@ describe("installed Harness composition", () => {
     try {
       for (const [id, adapter] of first.adapters) expect(adapter).not.toBe(second.adapters.get(id));
       await first.close();
-      expect(second.list()).toHaveLength(Object.keys(classes).length);
+      expect(second.list()).toHaveLength(Object.keys(classes).length + 1);
+      for (const [id, adapter] of first.usageAdapters) {
+        expect(adapter).not.toBe(second.usageAdapters.get(id));
+      }
     } finally {
       await Promise.all([first.close(), second.close()]);
     }

@@ -1,7 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { decodePiTransportSelection } from "@codexhost/protocol-core";
 import { build } from "esbuild";
 import path from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import { decodeHarnessPluginRoute, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { createHarnessAdapter } from "@codexhost/adapter-copilot/plugin";
 
 import { tailwindEsbuildPlugin } from "../../packages/renderer-extension/scripts/tailwind-esbuild-plugin.mjs";
 
@@ -21,6 +24,7 @@ test.beforeEach(async ({ page }) => {
 const { outputFiles } = await build({
   stdin: {
     contents: `
+      import { installRendererHarnessPreferenceSync } from "./packages/renderer-extension/src/renderer-harness-preferences.ts";
       import { installRendererBindingProbe } from "./packages/renderer-extension/src/renderer-binding-probe.ts";
       import { modelSelectionForAgent } from "./packages/renderer-extension/src/versioned-renderer-adapter.ts";
       import { createDraftPrewarmPolicyBridge } from "./packages/desktop-control/src/renderer-draft-prewarm-runtime.ts";
@@ -29,7 +33,7 @@ const { outputFiles } = await build({
 
       const model = { id: "pi-model-v1.startup" };
       const kiro = globalThis.startupAgent === "kiro-cli";
-      const inspection = {
+      const inspection = globalThis.startupInspection ?? {
         status: "ready",
         catalog: kiro ? parseKiroModelCatalog([{
           id: "model",
@@ -95,21 +99,51 @@ const { outputFiles } = await build({
       globalThis.threadCommandRequests = [];
       globalThis.commandCatalogRequests = [];
       globalThis.appliedConfiguration = null;
+      if (globalThis.holdHarnessPreferences || globalThis.holdFavoriteWrite) {
+        const sync = installRendererHarnessPreferenceSync(window);
+        const initial = Promise.withResolvers();
+        let snapshot = { scope: "external", revision: 0, values: { favorites: {}, newThread: { lastHarness: "pi", byHarness: {} } } };
+        globalThis.favoriteWrites = [];
+        const client = {
+          getHarnessPreferences: () => globalThis.holdHarnessPreferences ? initial.promise : Promise.resolve(snapshot),
+          patchHarnessPreferences: async input => {
+            globalThis.favoriteWrites.push(input);
+            await new Promise((resolve, reject) => { globalThis.completeFavoriteWrite = resolve; globalThis.rejectFavoriteWrite = () => reject(new Error("Disk full")); });
+            const operation = input.operations[0];
+            snapshot = { ...snapshot, revision: snapshot.revision + 1, values: { ...snapshot.values, favorites: { [operation.harnessId]: operation.enabled ? [operation.modelId] : [] } } };
+            return snapshot;
+          },
+        };
+        sync.connect("local", client);
+        globalThis.resolvePreferences = () => initial.resolve(snapshot);
+        globalThis.replacePreferencesConnection = () => sync.connect("local", { ...client, getHarnessPreferences: async () => ({ ...snapshot, values: { ...snapshot.values, newThread: { lastHarness: "grok", byHarness: {} } } }) });
+      }
+      let draftModel = "native";
+      const draftIdFor = root => {
+        const editor = root.querySelector("[data-codex-composer]");
+        return Object.getOwnPropertyDescriptor(editor, "__reactFiber$startup")?.value.updateQueue.memoCache.data[1][2];
+      };
       const binding = installRendererBindingProbe({
-        enabledAgents: ["codex", "pi", "deepseek-harness", "opencode", "claude-code", "grok", "omp", "kiro-cli"],
+        enabledAgents: ["codex", "pi", "deepseek-harness", "opencode", "claude-code", "grok", "omp", "kiro-cli", ...(globalThis.startupAgent ? [globalThis.startupAgent] : [])],
         defaultAgent: globalThis.startupAgent ?? "pi",
       });
       binding.setAdapter(
         { state: "ready", reason: "ready", modelUpdates: 0, hook: "model-state" },
         undefined,
-        (agent, model, thinkingOptionId) => {
-          globalThis.appliedConfiguration = { agent, model, thinkingOptionId };
+        (agent, model, thinkingOptionId, permissionModeId, selectedComposer) => {
+          globalThis.appliedConfiguration = { agent, model, thinkingOptionId, ...(permissionModeId ? { permissionModeId } : {}) };
+          draftModel = modelSelectionForAgent(null, null, agent, model, thinkingOptionId, permissionModeId)?.model ?? "native";
           window.__codexhostHostRoutingV1?.forComposer()?.policy.select(
-            modelSelectionForAgent(null, null, agent, model, thinkingOptionId)?.model ?? null,
+            agent === "codex" ? null : draftModel, draftIdFor(selectedComposer ?? composer),
           );
           return true;
         },
         {
+          listHarnessPlugins: async () => ({ plugins: (
+            globalThis.holdHarnessPreferences || globalThis.holdFavoriteWrite
+              ? ["pi", "grok"]
+              : [...new Set(["pi", "deepseek-harness", "opencode", "claude-code", "grok", "omp", "kiro-cli", ...(globalThis.startupAgent ? [globalThis.startupAgent] : [])])]
+          ).map(id => ({ id, name: id === "pi" ? "Pi" : id === "grok" ? "Grok" : id, version: "1" })) }),
           inspectHarness: async (_input, options) => {
             if (globalThis.holdBackgroundInspections && options?.priority === "background") {
               await new Promise(() => {});
@@ -152,6 +186,10 @@ const { outputFiles } = await build({
         const bridge = {
           sendRequest: async (method, params) => {
             globalThis.threadStartRequests.push({ method, params });
+            if (globalThis.nativeThreadStart) {
+              const result = await globalThis.nativeThreadStart(params, editor.textContent);
+              globalThis.nativeReply = result.text;
+            }
             return { thread: { id: "fixture-thread" } };
           },
           prewarmThreadStart(params) { return this.sendRequest("thread/start", params); },
@@ -159,15 +197,22 @@ const { outputFiles } = await build({
           onResult: () => {},
           onError: () => {},
         };
-        const policy = createDraftPrewarmPolicyBridge(
-          { onNotification() {}, onRequest() {}, dispatchAppServerResponse() {} },
-          bridge, "local", window, { discardAllPrewarmedThreads() {} },
-        );
-        window.__codexhostHostRoutingV1 = { forComposer: () => ({ hostId: "local", policy }) };
-        globalThis.prewarmTestDraft = () => bridge.prewarmThreadStart({ cwd: "/fixture/workspace", model: "native" });
+        const pool = { hasPrewarmedThread: () => false, consumePrewarmedThread: async () => null, deletePrewarmedThread() {}, discardAllPrewarmedThreads() {} };
+        const manager = {
+          onNotification() {}, onRequest() {}, dispatchAppServerResponse() {},
+          threadCreation: { params: { prewarmedThreadManager: pool }, createConversation() {} },
+          async startConversation(input, options) { return bridge.sendRequest("thread/start", { cwd: "/fixture/workspace", model: input.collaborationMode.settings.model }); },
+        };
+        const policy = createDraftPrewarmPolicyBridge(manager, bridge, "local", window, pool);
+        window.__codexhostHostRoutingV1 = {
+          forComposer: () => ({ hostId: "local", policy }),
+          forHost: hostId => hostId === "local" ? { hostId, manager, policy } : null,
+        };
+        globalThis.prewarmTestDraft = () => bridge.prewarmThreadStart({ cwd: "/fixture/workspace", model: draftModel });
         document.addEventListener("click", (event) => {
           if (!event.defaultPrevented && event.target?.matches("button[type=submit]")) {
-            void bridge.sendRequest("thread/start", { cwd: "/fixture/workspace", model: "native" });
+            const root = event.target.closest("[data-codex-composer-root]");
+            void manager.startConversation({ collaborationMode: { mode: "default", settings: { model: "gpt-reserve" } } }, { clientThreadId: draftIdFor(root) });
           }
         });
       }, 100);
@@ -187,6 +232,91 @@ const { outputFiles } = await build({
 
 const browserBundle = outputFiles[0]?.text;
 if (!browserBundle) throw new Error("Renderer binding startup E2E bundle was not generated");
+
+test("Copilot preselects Auto and sends without a manual Model choice", async ({ page }) => {
+  test.skip(
+    process.env.CODEXHOST_COPILOT_NATIVE_TEST !== "1",
+    "Requires the installed authenticated Copilot CLI",
+  );
+  test.setTimeout(90_000);
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "copilot-default-send-"));
+  const adapter = createHarnessAdapter({
+    environment: { ...process.env },
+    platform: process.platform,
+    managedRemoteHost: false,
+  });
+  try {
+    const inspection = await adapter.inspect({ cwd, refresh: true });
+    if (inspection.status !== "ready") throw new Error("Copilot inspection unavailable");
+    const initialModel = inspection.catalog.defaultModel;
+    expect(initialModel).toBeDefined();
+    await page.exposeFunction(
+      "nativeThreadStart",
+      async (params: { model: string }, text: string) => {
+        const route = decodeHarnessPluginRoute(params.model);
+        expect(route?.harnessId).toBe("copilot");
+        expect(route?.model).toEqual(initialModel);
+        expect(route?.permissionModeId).toBe("manual");
+        const opened = await adapter.open({
+          kind: "create",
+          cwd,
+          ...(route?.model ? { model: route.model } : {}),
+          ...(route?.permissionModeId ? { permissionModeId: route.permissionModeId } : {}),
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        let terminal: string | undefined;
+        const reading = (async () => {
+          for await (const output of opened.value.outputs) {
+            if (output.kind === "event" && output.event.type === "turn.completed")
+              terminal = output.event.outcome.status;
+          }
+        })();
+        try {
+          expect(
+            (
+              await opened.value.execute({
+                type: "turn.start",
+                turnId: hostTurnIdSchema.parse("default-send"),
+                input: [{ type: "text", text }],
+              })
+            ).ok,
+          ).toBe(true);
+          await expect.poll(() => terminal, { timeout: 60_000 }).toBe("succeeded");
+          const snapshot = await opened.value.readSnapshot();
+          if (!snapshot.ok) throw new Error(snapshot.error.message);
+          return {
+            text: snapshot.value.turns
+              .flatMap((turn) =>
+                turn.items.flatMap(({ item }) => (item.type === "agentMessage" ? [item.text] : [])),
+              )
+              .join("\n"),
+          };
+        } finally {
+          await opened.value.close();
+          await reading;
+        }
+      },
+    );
+    await page.evaluate((inspection) => {
+      Reflect.set(globalThis, "startupAgent", "copilot");
+      Reflect.set(globalThis, "startupInspection", inspection);
+    }, inspection);
+    await page.addScriptTag({ content: browserBundle });
+    await expect(page.getByRole("button", { name: "Model: Auto", exact: true })).toBeEnabled();
+    await page
+      .getByRole("textbox")
+      .fill("Reply exactly AUTO_PRESELECTED_SEND_OK. Do not use tools.");
+    const send = page.locator("[data-codex-composer-root] button[type=submit]");
+    await expect(send).toBeEnabled();
+    await send.click();
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(globalThis, "nativeReply")), { timeout: 60_000 })
+      .toContain("AUTO_PRESELECTED_SEND_OK");
+  } finally {
+    await adapter.close();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
 
 test("a new conversation shows Harness commands but disables compact before a Thread exists", async ({
   page,
@@ -321,7 +451,7 @@ test("a remounted draft keeps explicit Fast through submission, but a new draft 
   expect(requests).toHaveLength(2);
   for (const request of requests) {
     expect(request.method).toBe("thread/start");
-    expect(decodePiTransportSelection(request.params.model)?.model).toEqual({
+    expect(decodeHarnessPluginRoute(request.params.model)?.model).toEqual({
       id: "pi-model-v1.startup-fast",
     });
   }
@@ -432,3 +562,155 @@ test("Kiro selects Thinking inside the Model picker before a Thread exists", asy
   await expect(page.locator('[data-command-id="kiro.effort"]')).toHaveCount(0);
   await expect(page.locator('[data-command-id="kiro.context"]')).toBeVisible();
 });
+
+test("delayed shared preferences initialize a pristine Composer without a native Thread", async ({
+  page,
+}) => {
+  await page.evaluate(() =>
+    Object.assign(globalThis, { startupAgent: "codex", holdHarnessPreferences: true }),
+  );
+  await page.addScriptTag({ content: browserBundle });
+  await expect(page.locator("[data-codexhost-agent-control]")).toBeVisible();
+  await page.evaluate(() =>
+    (globalThis as typeof globalThis & { resolvePreferences(): void }).resolvePreferences(),
+  );
+  await expect(page.locator("[data-codexhost-agent-control] > button")).toHaveAttribute(
+    "aria-label",
+    /Pi$/u,
+  );
+});
+
+for (const action of ["edited", "submitted", "chosen", "reconnected"] as const) {
+  test(`a late preference snapshot does not replace a ${action} Composer`, async ({ page }) => {
+    await page.evaluate(() =>
+      Object.assign(globalThis, { startupAgent: "codex", holdHarnessPreferences: true }),
+    );
+    await page.addScriptTag({ content: browserBundle });
+    await expect(page.locator("[data-codexhost-agent-control]")).toBeVisible();
+    if (action === "edited") {
+      await page.getByRole("textbox").fill("user-owned draft");
+      await page.getByRole("textbox").fill("");
+    } else if (action === "submitted") {
+      await page.waitForFunction(
+        () => typeof (globalThis as Record<string, unknown>).prewarmTestDraft === "function",
+      );
+      await page.locator("button[type=submit]").click();
+    } else if (action === "chosen") {
+      await page.locator("[data-codexhost-agent-control] > button").click();
+      await page.locator('[role="menuitemradio"][data-agent="grok"]').click();
+      await expect(page.locator("[data-codexhost-agent-control] > button")).toHaveAttribute(
+        "aria-label",
+        /Grok$/u,
+      );
+    } else {
+      await page.evaluate(() =>
+        (
+          globalThis as typeof globalThis & { replacePreferencesConnection(): void }
+        ).replacePreferencesConnection(),
+      );
+      await expect(page.locator("[data-codexhost-agent-control] > button")).toHaveAttribute(
+        "aria-label",
+        /Grok$/u,
+      );
+    }
+    await page.evaluate(() =>
+      (globalThis as typeof globalThis & { resolvePreferences(): void }).resolvePreferences(),
+    );
+    await expect(page.locator("[data-codexhost-agent-control] > button")).toHaveAttribute(
+      "aria-label",
+      action === "reconnected" || action === "chosen" ? /Grok$/u : /Codex$/u,
+    );
+  });
+}
+
+test("favorite buttons block a second click until confirmation and recover after failure", async ({
+  page,
+}) => {
+  await page.evaluate(() => Object.assign(globalThis, { holdFavoriteWrite: true }));
+  await page.addScriptTag({ content: browserBundle });
+  const trigger = page.locator("[data-codexhost-model-control] > button");
+  await trigger.click();
+  const star = page.getByRole("button", { name: "Favorite Startup Model", exact: true });
+  await star.waitFor();
+  const box = await star.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.dblclick((box?.x ?? 0) + 5, (box?.y ?? 0) + 5, { delay: 20 });
+  await expect(star).toBeDisabled();
+  expect(
+    await page.evaluate(
+      () => (globalThis as typeof globalThis & { favoriteWrites: unknown[] }).favoriteWrites.length,
+    ),
+  ).toBe(1);
+  await page.evaluate(() =>
+    (globalThis as typeof globalThis & { completeFavoriteWrite(): void }).completeFavoriteWrite(),
+  );
+  const remove = page.getByRole("button", { name: "Unfavorite Startup Model", exact: true });
+  await expect(remove).toBeEnabled();
+  await remove.click();
+  await expect(remove).toBeDisabled();
+  await page.evaluate(() =>
+    (globalThis as typeof globalThis & { rejectFavoriteWrite(): void }).rejectFavoriteWrite(),
+  );
+  await expect(remove).toBeEnabled();
+  await expect(remove).toHaveAttribute("aria-pressed", "true");
+});
+
+for (const action of ["edited", "chosen", "submitted", "new-draft"] as const) {
+  test(`pending preferences preserve logical draft intent across non-paired remount: ${action}`, async ({
+    page,
+  }) => {
+    await page.evaluate(() =>
+      Object.assign(globalThis, { startupAgent: "codex", holdHarnessPreferences: true }),
+    );
+    await page.addScriptTag({ content: browserBundle });
+    await expect(page.locator("[data-codexhost-agent-control]")).toBeVisible();
+    if (action === "edited" || action === "new-draft") {
+      await page.getByRole("textbox").fill("user input");
+      await page.getByRole("textbox").fill("");
+    } else if (action === "chosen") {
+      await page.locator("[data-codexhost-agent-control] > button").click();
+      await page.locator('[role="menuitemradio"][data-agent="grok"]').click();
+      await expect(page.locator("[data-codexhost-agent-control] > button")).toHaveAttribute(
+        "aria-label",
+        /Grok$/u,
+      );
+    } else {
+      await page.waitForFunction(
+        () => typeof Reflect.get(globalThis, "prewarmTestDraft") === "function",
+      );
+      await page.locator("button[type=submit]").click();
+    }
+    await page.locator("[data-codex-composer-root]:visible").evaluate((original, newDraft) => {
+      const source = original.querySelector("[data-codex-composer]");
+      if (!source) throw new Error("Fixture editor missing");
+      const fiber = Object.getOwnPropertyDescriptor(source, "__reactFiber$startup")?.value;
+      const data = fiber.updateQueue.memoCache.data.map((row: unknown[]) => [...row]);
+      if (newDraft) data[1][2] = "client-new-thread:fresh";
+      const editor = source.cloneNode(true);
+      Object.defineProperty(editor, "__reactFiber$startup", {
+        value: { ...fiber, updateQueue: { memoCache: { data } } },
+      });
+      const composer = document.createElement("div");
+      composer.setAttribute("data-codex-composer-root", "true");
+      const toolbar = document.createElement("div");
+      const send = document.createElement("button");
+      send.type = "submit";
+      toolbar.append(send);
+      composer.append(editor, toolbar);
+      (original as HTMLElement).hidden = true;
+      const otherContainer = document.createElement("section");
+      otherContainer.append(composer);
+      document.body.append(otherContainer);
+    }, action === "new-draft");
+    await expect(
+      page.locator("[data-codex-composer-root]:visible [data-codexhost-agent-control]"),
+    ).toBeVisible();
+    await page.evaluate(() => Reflect.get(globalThis, "resolvePreferences")());
+    await expect(
+      page.locator("[data-codex-composer-root]:visible [data-codexhost-agent-control] > button"),
+    ).toHaveAttribute(
+      "aria-label",
+      action === "new-draft" ? /Pi$/u : action === "chosen" ? /Grok$/u : /Codex$/u,
+    );
+  });
+}

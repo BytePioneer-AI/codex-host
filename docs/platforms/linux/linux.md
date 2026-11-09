@@ -9,7 +9,7 @@ codexhost
 
 ## Supported environment
 
-The Linux release supports the official ChatGPT `.deb` and `.rpm` packages on x86-64 and ARM64. The codexhost Linux native binaries use glibc 2.35 as their release baseline and can load on systems with glibc 2.35 or newer; the official ChatGPT App's distribution support remains defined by OpenAI's documentation. codexhost verifies the production package metadata, native ELF architecture, and these packaged entry points:
+The Linux release supports the official ChatGPT `.deb` and `.rpm` packages on x86-64 and ARM64. The codexhost Linux native binaries use glibc 2.28 as their release baseline, matching the official Node.js 22 Linux binaries, and can load on systems with glibc 2.28 or newer, including RHEL 8-family distributions used as Remote SSH hosts; the official ChatGPT App's distribution support remains defined by OpenAI's documentation. codexhost verifies the production package metadata, native ELF architecture, and these packaged entry points:
 
 - launcher: `/usr/bin/chatgpt`
 - installation: `/usr/lib/chatgpt`
@@ -24,6 +24,8 @@ Renderer integration failures are recovered in the background and do not display
 ## Process ownership
 
 codexhost refuses to take over an independently running ChatGPT App. Quit ChatGPT completely before launching codexhost. A managed launch starts the verified Desktop executable directly and supervises it through `/proc`; stock ChatGPT launches still use the official launcher. Shutdown signals are sent only after PID, start time, and executable identity are revalidated.
+
+When an active Wayland session is detected (such as when `WAYLAND_DISPLAY` is present), managed launches automatically append `--ozone-platform=wayland`, `--enable-wayland-ime`, and `--wayland-text-input-version=3` so IME candidate windows (such as Fcitx5) render with native Wayland transparency instead of opaque black borders under XWayland. To opt out, set `CODEXHOST_DISABLE_WAYLAND=1` (for example, `CODEXHOST_DISABLE_WAYLAND=1 codexhost`).
 
 ## Diagnosis
 

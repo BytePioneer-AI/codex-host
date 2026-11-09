@@ -1,3 +1,7 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexTurnProjector } from "@codexhost/protocol-core";
 
@@ -41,6 +45,28 @@ import {
   ModernHarnessSession,
   type ModernSessionControl,
 } from "../../src/modern/session.js";
+
+/** Lifecycle assertions skip Host usage metering events, which have their own tests. */
+function lifecycleOutputs(session: {
+  outputs: AsyncIterable<HarnessOutput>;
+}): AsyncIterator<HarnessOutput> {
+  const iterator = session.outputs[Symbol.asyncIterator]();
+  return {
+    async next() {
+      for (;;) {
+        const next = await iterator.next();
+        if (
+          next.done ||
+          next.value.kind !== "event" ||
+          (next.value.event.type !== "usage.request" && next.value.event.type !== "usage.history")
+        )
+          return next;
+      }
+    },
+    return: async (value?: unknown) =>
+      (await iterator.return?.(value)) ?? { done: true, value: undefined },
+  };
+}
 
 const SESSION_ID = "modern-session";
 /** A goal round's context message, the autonomous source V4 records. */
@@ -612,7 +638,7 @@ async function eventsThrough(
 /** Stream one native PTC Turn: `run_code` dispatches `pwsh Get-Date` at seq 5-6, 450ms apart. */
 async function streamPtcTurn(): Promise<{ test: ReturnType<typeof setup>; emitted: HostEvent[] }> {
   const test = setup([() => accepted()], [], ["request-1"]);
-  const outputs = test.session.outputs[Symbol.asyncIterator]();
+  const outputs = lifecycleOutputs(test.session);
   await test.session.execute({
     type: "turn.start",
     turnId: turnId("ptc-turn"),
@@ -716,7 +742,7 @@ describe("DeepSeek Harness automatic compaction", () => {
         [],
         profile,
       );
-      const outputs = test.session.outputs[Symbol.asyncIterator]();
+      const outputs = lifecycleOutputs(test.session);
       beginAutonomousTurn(test);
       await eventsThrough(outputs, "turn.started");
       for (const [index, error] of [undefined, "summary failed"].entries()) {
@@ -785,7 +811,7 @@ describe("DeepSeek Harness automatic compaction", () => {
   it("waits through pre-step compaction before correlating an accepted prompt", async () => {
     vi.useFakeTimers();
     const test = setup([async () => accepted()], [], ["request-1"], 5_000, null, undefined, 10);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await test.session.execute({
       type: "turn.start",
       turnId: turnId("pre-step"),
@@ -813,7 +839,7 @@ describe("DeepSeek Harness automatic compaction", () => {
   it("re-arms accepted-prompt correlation after compaction instead of waiting forever", async () => {
     vi.useFakeTimers();
     const test = setup([async () => accepted()], [], ["request-1"], 5_000, null, undefined, 10);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await test.session.execute({
       type: "turn.start",
       turnId: turnId("missing-echo"),
@@ -835,7 +861,7 @@ describe("DeepSeek Harness automatic compaction", () => {
   it("does not duplicate the manual command Item from its native journal events", async () => {
     const execution = deferred<ModernRemoteResult<unknown>>();
     const test = setup([() => execution.promise]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await test.session.commands.execute({ turnId: turnId("manual"), commandId: "dsh.compact" });
     await nextEvent(outputs);
     await nextEvent(outputs);
@@ -863,7 +889,7 @@ describe("DeepSeek Harness automatic compaction", () => {
 
   it("updates occupancy for pruning without fabricating a summary compaction", async () => {
     const test = setup([]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     beginAutonomousTurn(test);
     await eventsThrough(outputs, "turn.started");
     test.feed.push(
@@ -886,7 +912,7 @@ describe("DeepSeek Harness automatic compaction", () => {
 
   it("continues the reply after a native summary replacement without exposing the checkpoint as user input", async () => {
     const test = setup([]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     beginAutonomousTurn(test);
     await eventsThrough(outputs, "turn.started");
     test.feed.push(event(4, "compaction/start", { compactionId: "summary", turn: 1 }));
@@ -953,7 +979,7 @@ describe("DeepSeek Harness automatic compaction", () => {
       event(4, "compaction/start", { compactionId: "resumed", turn: 1 }),
     ];
     const test = setup([], history);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const opening = await eventsThrough(outputs, "item.started");
     expect(opening.at(-1)).toMatchObject({
       type: "item.started",
@@ -972,7 +998,7 @@ describe("DeepSeek Harness automatic compaction", () => {
 
   it("settles an unfinished compaction when its Turn is cancelled", async () => {
     const test = setup([]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     beginAutonomousTurn(test);
     await eventsThrough(outputs, "turn.started");
     test.feed.push(event(4, "compaction/start", { compactionId: "cancelled", turn: 1 }));
@@ -1018,7 +1044,7 @@ describe("DeepSeek Harness Modern Session", () => {
         permissionModes: null,
         sessionId: SESSION_ID,
       });
-      const outputs = session.outputs[Symbol.asyncIterator]();
+      const outputs = lifecycleOutputs(session);
       try {
         follow.push({
           type: "assistant-stream",
@@ -1078,7 +1104,7 @@ describe("DeepSeek Harness Modern Session", () => {
       [],
       DEEPSEEK_V4_PROFILE,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await eventsThrough(outputs, "turn.started");
     const readPrefix = vi.fn();
     for (const entry of history) {
@@ -1131,7 +1157,7 @@ describe("DeepSeek Harness Modern Session", () => {
       reasoningEffort: "high",
     });
     const test = setup([], [], undefined, 5_000, null, eventBytes(first));
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     test.feed.push(first);
     await Promise.resolve();
     expect(test.remote.streamCalls).toBe(0);
@@ -1192,7 +1218,7 @@ describe("DeepSeek Harness Modern Session", () => {
       permissionModes: null,
       sessionId: SESSION_ID,
     });
-    const outputs = session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(session);
 
     expect(await nextEvent(outputs)).toMatchObject({
       type: "session.faulted",
@@ -1204,7 +1230,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("uses exact prompt wire, preserves text parts, and projects text/reasoning/Tool/Diff/Usage", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const id = turnId("host-turn-1");
     const result = await test.session.execute({
       type: "turn.start",
@@ -1278,6 +1304,286 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
+  it("keeps a live Turn healthy through DSH 0.2.1 job, working-directory, and title records", async () => {
+    const test = setup([() => accepted()], [], ["request-1"]);
+    const outputs = lifecycleOutputs(test.session);
+    const id = turnId("host-turn-1");
+    await test.session.execute({
+      type: "turn.start",
+      turnId: id,
+      input: [{ type: "text", text: "run it" }],
+    });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(userMessage(2, "run it", "request-1"));
+    expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
+    test.feed.push(assistantMessage(3, "done", "think"));
+    test.feed.push(
+      event(4, "tool/call", { turn: 1, step: 1, callId: "call-1", name: "write", arguments: "{}" }),
+    );
+    const job = {
+      jobId: "bash-1",
+      owner: SESSION_ID,
+      kind: "bash",
+      label: "write a.txt",
+      startedAt: 1,
+      toolCall: { callId: "call-1", rootCallId: "call-1" },
+    };
+    test.feed.push(event(5, "job/registered", job));
+    test.feed.push(
+      event(6, "job/settled", {
+        ...job,
+        finishedAt: 2,
+        status: "completed",
+        cause: "producer",
+        producerReported: true,
+        detail: "exit code: 0",
+      }),
+    );
+    test.feed.push(event(7, "working-directory/change", { cwd: "/tmp/next" }));
+    test.feed.push(toolResult(8));
+    test.feed.push(
+      event(9, "session/title-llm-request", {
+        titleProvider: "first-prompt-llm",
+        messageSeqs: [2],
+        route: { provider: "deepseek", model: "deepseek-v4" },
+        system: "Create a concise title.",
+        messages: [{ role: "user", content: [{ type: "text", text: '["run it"]' }] }],
+        maxTokens: 64,
+        reasoningEffort: "off",
+      }),
+    );
+    test.feed.push(event(10, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(11, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+
+    const emitted = await eventsThrough(outputs, "turn.completed");
+    expect(emitted.some((item) => item.type === "session.faulted")).toBe(false);
+    expect(
+      emitted
+        .filter((item) => item.type === "item.completed")
+        .map((item) => (item.type === "item.completed" ? item.snapshot.item.type : "")),
+    ).toEqual(["reasoning", "agentMessage", "toolExecution", "fileChange"]);
+    expect(emitted.at(-1)).toMatchObject({
+      type: "turn.completed",
+      turnId: id,
+      outcome: { status: "succeeded", checkpoint: { checkpointId: "v4-turn-end:11" } },
+    });
+    await test.session.close();
+  });
+
+  it("streams relative local media as absolute paths, live and in history", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexhost-dsh-media-"));
+    const shots = path.join(workspace, "shots");
+    try {
+      await mkdir(shots);
+      await writeFile(path.join(shots, "a.png"), "png");
+      await writeFile(path.join(shots, "b.png"), "png");
+      const feed = new EventFeed();
+      const remote = new FakeRemote([() => accepted()]);
+      const session = new ModernHarnessSession({
+        remote,
+        journal: {
+          header: { version: 4, id: SESSION_ID, createdAt: 1, isSeeded: false, cwd: workspace },
+          cursor: -1,
+          projections: { asOfSeq: -1, values: {} },
+          events: [],
+          live: feed,
+          close: () => {
+            feed.finish();
+            return Promise.resolve();
+          },
+        },
+        control: new FakeControl(),
+        eventGateway: new ModernEventGateway(remote),
+        modelCatalog: MODEL_CATALOG,
+        permissionModes: null,
+        sessionId: SESSION_ID,
+        randomUUID: () => "request-1",
+        now: () => 10,
+      });
+      const outputs = lifecycleOutputs(session);
+      const id = turnId("host-turn-1");
+      await session.execute({
+        type: "turn.start",
+        turnId: id,
+        input: [{ type: "text", text: "show" }],
+      });
+      feed.push(event(0, "turn/start", { turn: 1 }));
+      feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+      feed.push(userMessage(2, "show", "request-1"));
+      expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
+      // Relative paths resolve against the agent's current directory, then the Session's.
+      feed.push(event(3, "working-directory/change", { cwd: shots }));
+      const stream = new LiveAttempts(feed);
+      stream.start("attempt-1", 3);
+      stream.chunk({ type: "text-delta", index: 0, text: "![a](shots/" });
+      stream.chunk({ type: "text-delta", index: 0, text: "a.png) and ![b](b.p" });
+      stream.chunk({ type: "text-delta", index: 0, text: "ng)" });
+      feed.push(finalAssistantMessage(4, 1, "![a](shots/a.png) and ![b](b.png)", "think"));
+      stream.commit(4);
+      feed.push(event(5, "step/end", { turn: 1, step: 1 }));
+      feed.push(event(6, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+      const emitted = await eventsThrough(outputs, "turn.completed");
+
+      const a = path.join(shots, "a.png").replaceAll("\\", "/");
+      const b = path.join(shots, "b.png").replaceAll("\\", "/");
+      const agent = emitted.find(
+        (entry) => entry.type === "item.started" && entry.item.type === "agentMessage",
+      );
+      const agentId = agent?.type === "item.started" ? agent.item.itemId : undefined;
+      expect(
+        emitted.flatMap((entry) =>
+          entry.type === "item.updated" &&
+          entry.itemId === agentId &&
+          entry.update.type === "text.append"
+            ? [entry.update.text]
+            : [],
+        ),
+      ).toEqual(["![a](", `${a}) and ![b](`, `${b})`]);
+      const text = `![a](${a}) and ![b](${b})`;
+      expect(emitted).toContainEqual(
+        expect.objectContaining({
+          type: "item.completed",
+          snapshot: {
+            item: expect.objectContaining({ itemId: agentId, text }),
+            outcome: { status: "succeeded" },
+          },
+        }),
+      );
+      // The Host accepts a completion only when it matches the appended text.
+      const ui = new CodexTurnProjector({
+        threadId: "dsh-media",
+        turnId: id,
+        cwd: workspace,
+        startedAtMs: 1_000,
+      });
+      ui.project({ type: "turn.started", turnId: id });
+      for (const entry of emitted) {
+        if (
+          entry.type === "item.started" ||
+          entry.type === "item.updated" ||
+          entry.type === "item.completed"
+        ) {
+          ui.project(entry);
+        }
+      }
+
+      const snapshot = await session.readSnapshot();
+      expect(snapshot.ok && snapshot.value.turns[0]?.items.map(({ item }) => item)).toContainEqual(
+        expect.objectContaining({ type: "agentMessage", text }),
+      );
+      await session.close();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves resumed media against the directory of its message, not a later one", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexhost-dsh-media-"));
+    const shots = path.join(workspace, "shots");
+    const later = path.join(workspace, "later");
+    try {
+      await mkdir(shots);
+      await mkdir(later);
+      await writeFile(path.join(shots, "a.png"), "png");
+      const feed = new EventFeed();
+      const session = new ModernHarnessSession({
+        remote: new FakeRemote([]),
+        journal: {
+          header: { version: 4, id: SESSION_ID, createdAt: 1, isSeeded: false, cwd: workspace },
+          cursor: 6,
+          projections: { asOfSeq: -1, values: {} },
+          // The incomplete Turn changes directory after the message naming the media.
+          events: [
+            event(0, "turn/start", { turn: 1 }),
+            event(1, "step/start", { turn: 1, step: 1 }),
+            userMessage(2, "show", "old-request"),
+            event(3, "working-directory/change", { cwd: shots }),
+            finalAssistantMessage(4, 1, "![a](a.png)", "think"),
+            event(5, "step/end", { turn: 1, step: 1 }),
+            event(6, "working-directory/change", { cwd: later }),
+          ],
+          live: feed,
+          close: () => {
+            feed.finish();
+            return Promise.resolve();
+          },
+        },
+        control: new FakeControl(),
+        eventGateway: new ModernEventGateway(new FakeRemote([])),
+        modelCatalog: MODEL_CATALOG,
+        permissionModes: null,
+        sessionId: SESSION_ID,
+        randomUUID: () => "autonomous-resume",
+        now: () => 10,
+      });
+      const outputs = lifecycleOutputs(session);
+      const a = path.join(shots, "a.png").replaceAll("\\", "/");
+      let agentText: string | undefined;
+      while (agentText === undefined) {
+        const entry = await nextEvent(outputs);
+        if (entry.type === "item.completed" && entry.snapshot.item.type === "agentMessage") {
+          agentText = entry.snapshot.item.text;
+        }
+      }
+      expect(agentText).toBe(`![a](${a})`);
+      feed.push(event(7, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+      await eventsThrough(outputs, "turn.completed");
+      await session.close();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a live Turn healthy through the DSH 0.2.1-rc.2 search request with disabled thinking", async () => {
+    const test = setup([() => accepted()], [], ["request-1"]);
+    const outputs = lifecycleOutputs(test.session);
+    const id = turnId("host-turn-1");
+    await test.session.execute({
+      type: "turn.start",
+      turnId: id,
+      input: [{ type: "text", text: "search it" }],
+    });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(userMessage(2, "search it", "request-1"));
+    expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
+    test.feed.push(assistantMessage(3, "done", "think"));
+    test.feed.push(
+      event(4, "tool/call", { turn: 1, step: 1, callId: "call-1", name: "write", arguments: "{}" }),
+    );
+    test.feed.push(
+      event(5, "web/deepseek-search-llm-request", {
+        endpoint: "https://api.deepseek.com/anthropic/v1/messages",
+        apiVersion: "2023-06-01",
+        body: {
+          model: "deepseek-v4-flash",
+          max_tokens: 4096,
+          messages: [{ role: "user", content: [{ type: "text", text: "search" }] }],
+          tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
+          thinking: { type: "disabled" },
+        },
+      }),
+    );
+    test.feed.push(toolResult(6));
+    test.feed.push(event(7, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(8, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+
+    const emitted = await eventsThrough(outputs, "turn.completed");
+    expect(emitted.some((item) => item.type === "session.faulted")).toBe(false);
+    expect(
+      emitted
+        .filter((item) => item.type === "item.completed")
+        .map((item) => (item.type === "item.completed" ? item.snapshot.item.type : "")),
+    ).toEqual(["reasoning", "agentMessage", "toolExecution", "fileChange"]);
+    expect(emitted.at(-1)).toMatchObject({
+      type: "turn.completed",
+      turnId: id,
+      outcome: { status: "succeeded", checkpoint: { checkpointId: "v4-turn-end:8" } },
+    });
+    await test.session.close();
+  });
+
   it("streams V4 PTC sub-calls in place of run_code with native durations", async () => {
     const { test, emitted } = await streamPtcTurn();
     const itemId = `dsh-modern:${SESSION_ID}:event:5:tool`;
@@ -1338,7 +1644,7 @@ describe("DeepSeek Harness Modern Session", () => {
       [],
       ["request-1", "request-2", "request-3", "request-4"],
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const stream = new LiveAttempts(test.feed);
     const cases = [
       {
@@ -1450,7 +1756,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("omits empty final reasoning and does not carry it into later steps", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const stream = new LiveAttempts(test.feed);
     const id = turnId("host-turn-empty-reasoning");
     await test.session.execute({
@@ -1511,7 +1817,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("streams native reasoning before the durable Assistant message", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const id = turnId("reasoning-stream-turn");
     await test.session.execute({
       type: "turn.start",
@@ -1710,7 +2016,7 @@ describe("DeepSeek Harness Modern Session", () => {
       [],
       DEEPSEEK_V4_PROFILE,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await test.session.execute({
       type: "turn.start",
       turnId: turnId("reasoning-retry-turn"),
@@ -1846,7 +2152,7 @@ describe("DeepSeek Harness Modern Session", () => {
       [replacement],
       DEEPSEEK_V4_PROFILE,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     expect(await nextEvent(outputs)).toMatchObject({ type: "turn.autonomous.started" });
     expect(await nextEvent(outputs)).toMatchObject({ type: "turn.started" });
     test.feed.push({
@@ -1951,7 +2257,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("ignores live surface replacement copies for correlation and visible output", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const stream = new LiveAttempts(test.feed);
     const id = turnId("host-turn-surface-replacement");
     await test.session.execute({
@@ -2001,7 +2307,7 @@ describe("DeepSeek Harness Modern Session", () => {
   it("buffers turn/start and step/start through a multi-message claim until any rpcId matches", async () => {
     const receipt = deferred<ModernRemoteResult<unknown>>();
     const test = setup([() => receipt.promise], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const order: string[] = [];
     const firstOutput = outputs.next().then((value) => {
       order.push("output");
@@ -2041,7 +2347,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("keeps a live Turn healthy when chunk and message Usage telemetry are malformed", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const id = turnId("host-turn-usage");
     await test.session.execute({
       type: "turn.start",
@@ -2094,7 +2400,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("materializes an unmatched first user-message batch as one autonomous Turn", async () => {
     const test = setup([], [], ["autonomous-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     test.feed.push(event(0, "turn/start", { turn: 1 }));
     test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
     test.feed.push(userMessage(2, "one", "foreign"));
@@ -2123,7 +2429,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("starts a live autonomous Turn at the boundary after a goal user/message", async () => {
     const test = setup([], [], ["autonomous-source"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     test.feed.push(event(0, "turn/start", { turn: 1 }));
     test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
     test.feed.push(sourcedUserMessage(2, "context", GOAL_SOURCE));
@@ -2148,7 +2454,7 @@ describe("DeepSeek Harness Modern Session", () => {
       userMessage(2, "resumed", "old-request"),
     ];
     const test = setup([], history, ["autonomous-resume"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     expect(await nextEvent(outputs)).toMatchObject({
       type: "turn.autonomous.started",
       turnId: "autonomous-resume",
@@ -2193,7 +2499,7 @@ describe("DeepSeek Harness Modern Session", () => {
       ],
       ["must-not-materialize"],
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
 
     expect(test.remote.streamCalls).toBe(0);
     await expect(test.session.readSnapshot()).resolves.toMatchObject({
@@ -2213,7 +2519,7 @@ describe("DeepSeek Harness Modern Session", () => {
       sourcedUserMessage(2, "context", GOAL_SOURCE),
     ];
     const test = setup([], history, ["autonomous-resume-source"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     expect(await nextEvent(outputs)).toEqual({
       type: "turn.autonomous.started",
       turnId: "autonomous-resume-source",
@@ -2231,7 +2537,7 @@ describe("DeepSeek Harness Modern Session", () => {
     async (order) => {
       const cancelReceipt = deferred<ModernRemoteResult<unknown>>();
       const test = setup([() => accepted(), () => cancelReceipt.promise], [], ["request-1"]);
-      const outputs = test.session.outputs[Symbol.asyncIterator]();
+      const outputs = lifecycleOutputs(test.session);
       const id = turnId("host-turn-1");
       await test.session.execute({
         type: "turn.start",
@@ -2284,7 +2590,7 @@ describe("DeepSeek Harness Modern Session", () => {
       [],
       DEEPSEEK_V4_PROFILE,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const id = turnId("host-turn-fork");
     await test.session.execute({
       type: "turn.start",
@@ -2318,7 +2624,7 @@ describe("DeepSeek Harness Modern Session", () => {
       [],
       DEEPSEEK_V4_PROFILE,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await test.session.execute({
       type: "turn.start",
       turnId: turnId("recovery-turn"),
@@ -2425,7 +2731,7 @@ describe("DeepSeek Harness Modern Session", () => {
       [],
       DEEPSEEK_V4_PROFILE,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await test.session.execute({
       type: "turn.start",
       turnId: turnId("unmatched-turn"),
@@ -2488,7 +2794,7 @@ describe("DeepSeek Harness Modern Session", () => {
       ["request-1"],
       50,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const execution = test.session.execute({
       type: "turn.start",
       turnId: turnId("host-turn-1"),
@@ -2526,7 +2832,7 @@ describe("DeepSeek Harness Modern Session", () => {
       ["request-1"],
       50,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const execution = test.session.execute({
       type: "turn.start",
       turnId: turnId("host-turn-inbox"),
@@ -2567,7 +2873,7 @@ describe("DeepSeek Harness Modern Session", () => {
       undefined,
       50,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
 
     await expect(
       test.session.execute({
@@ -2611,7 +2917,7 @@ describe("DeepSeek Harness Modern Session", () => {
   it("clears an accepted prompt correlation deadline when the Session closes", async () => {
     vi.useFakeTimers();
     const test = setup([() => accepted()], [], ["request-1"], 500, null, undefined, 50);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
 
     await expect(
       test.session.execute({
@@ -2646,7 +2952,7 @@ describe("DeepSeek Harness Modern Session", () => {
       undefined,
       500,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const execution = test.session.execute({
       type: "turn.start",
       turnId: turnId("host-turn-timeout"),
@@ -2679,7 +2985,7 @@ describe("DeepSeek Harness Modern Session", () => {
       ["request-1"],
       50,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const execution = test.session.execute({
       type: "turn.start",
       turnId: turnId("host-turn-close-grace"),
@@ -2706,7 +3012,7 @@ describe("DeepSeek Harness Modern Session", () => {
       ["request-1"],
       50,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const execution = test.session.execute({
       type: "turn.start",
       turnId: turnId("host-turn-fault-grace"),
@@ -2732,7 +3038,7 @@ describe("DeepSeek Harness Modern Session", () => {
       ["request-1", "autonomous-1"],
       500,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const execution = test.session.execute({
       type: "turn.start",
       turnId: turnId("host-turn-after-autonomous"),
@@ -2782,7 +3088,7 @@ describe("DeepSeek Harness Modern Session", () => {
   it("protocol-faults a Remote rejection that contradicts an observed durable requestId", async () => {
     const receipt = deferred<ModernRemoteResult<unknown>>();
     const test = setup([() => receipt.promise], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const execution = test.session.execute({
       type: "turn.start",
       turnId: turnId("host-turn-1"),
@@ -2811,7 +3117,7 @@ describe("DeepSeek Harness Modern Session", () => {
   it("keeps a pre-receipt durable match Host-bound when a later event faults", async () => {
     const receipt = deferred<ModernRemoteResult<unknown>>();
     const test = setup([() => receipt.promise], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const execution = test.session.execute({
       type: "turn.start",
       turnId: turnId("host-turn-1"),
@@ -2850,7 +3156,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("settles an accepted pending Turn once when close happens before native turn/start", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await test.session.execute({
       type: "turn.start",
       turnId: turnId("host-turn-1"),
@@ -2870,7 +3176,7 @@ describe("DeepSeek Harness Modern Session", () => {
   it("keeps a pre-receipt durable match Host-bound when close races the receipt", async () => {
     const receipt = deferred<ModernRemoteResult<unknown>>();
     const test = setup([() => receipt.promise], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const execution = test.session.execute({
       type: "turn.start",
       turnId: turnId("host-turn-1"),
@@ -2894,7 +3200,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("settles an accepted pending Turn once when a protocol fault happens before native turn/start", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await test.session.execute({
       type: "turn.start",
       turnId: turnId("host-turn-1"),
@@ -2927,7 +3233,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("ends outputs when a native cancel fault races close", async () => {
     const test = setup([() => ({ ok: true, value: { accepted: false } })]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     beginAutonomousTurn(test);
     await nextEvent(outputs);
     await expect(test.session.close()).rejects.toThrow("invalid receipt");
@@ -2948,7 +3254,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("rejects stop confirmation when an active Session faults before close", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await test.session.execute({
       type: "turn.start",
       turnId: turnId("fault-first"),
@@ -2977,7 +3283,7 @@ describe("DeepSeek Harness Modern Session", () => {
       ["request-1", "autonomous-1"],
       50_000,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const execution = test.session.execute({
       type: "turn.start",
       turnId: turnId("uncertain"),
@@ -3004,7 +3310,7 @@ describe("DeepSeek Harness Modern Session", () => {
     const receipt = deferred<ModernRemoteResult<unknown>>();
     const cancel = deferred<ModernRemoteResult<unknown>>();
     const test = setup([() => receipt.promise, () => cancel.promise], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const execution = test.session.execute({
       type: "turn.start",
       turnId: turnId("late-accepted"),
@@ -3027,7 +3333,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("waits for native stop after a cancel receipt and shares close confirmation", async () => {
     const test = setup([() => accepted()]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     beginAutonomousTurn(test);
     await nextEvent(outputs);
     let closed = false;
@@ -3056,7 +3362,7 @@ describe("DeepSeek Harness Modern Session", () => {
   it("rejects close when a cancel receipt never becomes a native terminal", async () => {
     vi.useFakeTimers();
     const test = setup([() => accepted()]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     beginAutonomousTurn(test);
     await nextEvent(outputs);
     const result = expect(test.session.close()).rejects.toThrow("did not confirm native Turn stop");
@@ -3067,7 +3373,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("closes an active Turn exactly once and ignores late terminal history", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await test.session.execute({
       type: "turn.start",
       turnId: turnId("host-turn-1"),
@@ -3089,7 +3395,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("confirms a same-value Model selection without a Native mutation", async () => {
     const test = setup([]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
 
     await expect(
       test.session.execute({
@@ -3113,7 +3419,7 @@ describe("DeepSeek Harness Modern Session", () => {
     "confirms same-value %s once without a Native mutation",
     async (_label, command, modes) => {
       const test = setup([], [], ["autonomous-1"], 5_000, modes);
-      const outputs = test.session.outputs[Symbol.asyncIterator]();
+      const outputs = lifecycleOutputs(test.session);
 
       await expect(test.session.execute(command as never)).resolves.toEqual({
         ok: true,
@@ -3132,7 +3438,7 @@ describe("DeepSeek Harness Modern Session", () => {
   it("selects Thinking through session/selectModel and publishes only confirmed control state", async () => {
     const receipt = deferred<ModernRemoteResult<unknown>>();
     const test = setup([() => receipt.promise]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const selected = {
       provider: "deepseek",
       model: "deepseek-v4",
@@ -3172,7 +3478,7 @@ describe("DeepSeek Harness Modern Session", () => {
   it("selects Permission through the exact command and confirms its projection", async () => {
     const receipt = deferred<ModernRemoteResult<unknown>>();
     const test = setup([() => receipt.promise], [], ["autonomous-1"], 5_000, PERMISSION_CATALOG);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
 
     const selecting = test.session.execute({
       type: "permissionMode.select",
@@ -3207,7 +3513,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("does not let late journal configuration roll back newer control state", async () => {
     const test = setup([]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     test.control.update(
       "modelSelection",
       {
@@ -3239,7 +3545,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("keeps public command discovery readable during an active Turn", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await test.session.execute({
       type: "turn.start",
       turnId: turnId("active-turn"),
@@ -3261,7 +3567,7 @@ describe("DeepSeek Harness Modern Session", () => {
   it("runs a Host command Turn and activates a buffered autonomous Turn afterwards", async () => {
     const execution = deferred<ModernRemoteResult<unknown>>();
     const test = setup([() => execution.promise]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const commandTurnId = turnId("command-turn");
 
     await expect(
@@ -3326,7 +3632,7 @@ describe("DeepSeek Harness Modern Session", () => {
         return { ok: true, value: { selected } };
       },
     ]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const activeTurnId = turnId("active-command");
     await expect(
       test.session.commands.execute({ turnId: activeTurnId, commandId: "dsh.compact" }),
@@ -3379,7 +3685,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("rejects command admission when configuration changes before acceptance", async () => {
     const test = setup([]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const executing = test.session.commands.execute({
       turnId: turnId("command-race"),
       commandId: "dsh.compact",
@@ -3400,7 +3706,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("rejects commands while an autonomous Turn is active without native discovery", async () => {
     const test = setup([], [], ["autonomous-after-admission"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
 
     test.feed.push(event(0, "turn/start", { turn: 1 }));
     test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
@@ -3442,7 +3748,7 @@ describe("DeepSeek Harness Modern Session", () => {
   it("cancels an active command with exactly one Item and Turn terminal", async () => {
     const execution = deferred<ModernRemoteResult<unknown>>();
     const test = setup([() => execution.promise]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const commandTurnId = turnId("cancelled-command");
     await test.session.commands.execute({
       turnId: commandTurnId,
@@ -3478,7 +3784,7 @@ describe("DeepSeek Harness Modern Session", () => {
   it("closes an active command once without activating its buffered autonomous Turn", async () => {
     const execution = deferred<ModernRemoteResult<unknown>>();
     const test = setup([() => execution.promise]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const commandTurnId = turnId("closed-command");
     await test.session.commands.execute({
       turnId: commandTurnId,
@@ -3529,7 +3835,7 @@ describe("DeepSeek Harness Modern Session", () => {
     const test = setup([
       () => Promise.reject(new ModernRemoteConnectionError("unavailable", "lost response")),
     ]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await test.session.commands.execute({
       turnId: turnId("uncertain-command"),
       commandId: "dsh.compact",
@@ -3559,14 +3865,21 @@ describe("DeepSeek Harness Modern Session", () => {
       [],
       ["request-early", "approval-allow", "approval-deny"],
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const hostTurnId = turnId("host-bound-interaction");
     const starting = test.session.execute({
       type: "turn.start",
       turnId: hostTurnId,
       input: [{ type: "text", text: "go" }],
     });
-    test.session.onDelivery(approvalDelivery("event-allow", allow));
+    test.session.onDelivery(
+      approvalDelivery("event-allow", allow, {
+        toolName: "write",
+        callId: "call-1",
+        reason: "escalate sandbox",
+        displayReason: { en: "Allow write?", zh: "允许写入？" },
+      }),
+    );
     test.feed.push(event(0, "turn/start", { turn: 1 }));
     test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
     test.feed.push(userMessage(2, "go", "request-early"));
@@ -3635,7 +3948,7 @@ describe("DeepSeek Harness Modern Session", () => {
     const respond = vi.fn<ModernQuestionDelivery["respond"]>(async () => undefined);
     const reject = vi.fn<ModernQuestionDelivery["reject"]>(async () => undefined);
     const test = setup([], [], ["autonomous-question", "question-answer", "question-cancel"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const turn = turnId("autonomous-question");
     test.session.onDelivery(
       questionDelivery(
@@ -3669,6 +3982,13 @@ describe("DeepSeek Harness Modern Session", () => {
               question: "Apply plan?",
               options: [{ label: "Apply" }, { label: "Revise" }],
               intent: { kind: "plan-review", approve: "Apply" },
+            },
+            {
+              id: "consent",
+              question: "Allow Calculator?",
+              detail: "Calculator: view and control",
+              options: [{ label: "Allow" }, { label: "Deny" }],
+              intent: { kind: "approval", approve: "Allow", reject: "Deny" },
             },
           ],
         },
@@ -3743,6 +4063,18 @@ describe("DeepSeek Harness Modern Session", () => {
           allowOther: false,
           optional: false,
         },
+        {
+          id: "consent",
+          type: "choice",
+          prompt: "Allow Calculator?\n\nCalculator: view and control",
+          options: [
+            { value: "Allow", label: "Allow" },
+            { value: "Deny", label: "Deny" },
+          ],
+          multiple: false,
+          allowOther: false,
+          optional: false,
+        },
       ],
     });
     await expect(
@@ -3757,6 +4089,7 @@ describe("DeepSeek Harness Modern Session", () => {
             multi: ["Tests", "Docs"],
             custom: ["Elsewhere"],
             plan: ["Apply"],
+            consent: ["Deny"],
           },
         },
       }),
@@ -3768,6 +4101,7 @@ describe("DeepSeek Harness Modern Session", () => {
         { id: "multi", selected: ["Tests", "Docs"] },
         { id: "custom", selected: [], custom: "Elsewhere" },
         { id: "plan", selected: ["Apply"] },
+        { id: "consent", selected: ["Deny"] },
       ],
     });
     expect(await nextEvent(outputs)).toMatchObject({
@@ -3816,7 +4150,7 @@ describe("DeepSeek Harness Modern Session", () => {
     const questionRespond = vi.fn<ModernQuestionDelivery["respond"]>(async () => undefined);
     const questionReject = vi.fn<ModernQuestionDelivery["reject"]>(async () => undefined);
     const test = setup([], [], ["invalid-response-turn", "invalid-approval", "invalid-question"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     beginAutonomousTurn(test);
     await nextEvent(outputs);
     await nextEvent(outputs);
@@ -3918,7 +4252,7 @@ describe("DeepSeek Harness Modern Session", () => {
     const firstRespond = vi.fn<ModernApprovalDelivery["respond"]>(() => firstSettlement.promise);
     const racedRespond = vi.fn<ModernApprovalDelivery["respond"]>(() => racedSettlement.promise);
     const test = setup([], [], ["response-race-turn", "concurrent-response", "cancel-race"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     beginAutonomousTurn(test);
     await nextEvent(outputs);
     await nextEvent(outputs);
@@ -3985,7 +4319,7 @@ describe("DeepSeek Harness Modern Session", () => {
   it("allows configuration with a queued delivery but blocks new work without activating Native", async () => {
     const respond = vi.fn<ModernApprovalDelivery["respond"]>(async () => undefined);
     const test = setup([]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     test.session.onDelivery(approvalDelivery("queued-event", respond));
 
     await expect(
@@ -4020,7 +4354,7 @@ describe("DeepSeek Harness Modern Session", () => {
     async (terminal) => {
       const respond = vi.fn<ModernApprovalDelivery["respond"]>(async () => undefined);
       const test = setup([], [], ["terminal-order-turn", "terminal-interaction"]);
-      const outputs = test.session.outputs[Symbol.asyncIterator]();
+      const outputs = lifecycleOutputs(test.session);
       beginAutonomousTurn(test);
       await nextEvent(outputs);
       await nextEvent(outputs);
@@ -4102,7 +4436,7 @@ describe("DeepSeek Harness Modern Session", () => {
       DEEPSEEK_V4_PROFILE,
       200,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     test.feed.push({
       type: "assistant-stream",
       frame: { type: "start", attemptId: "a", revision: 1, startedAfterSeq: 2, turn: 1, step: 1 },
@@ -4145,7 +4479,7 @@ describe("DeepSeek Harness Modern Session", () => {
       [],
       DEEPSEEK_V4_PROFILE,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await Promise.resolve();
 
     test.feed.push({
@@ -4396,7 +4730,7 @@ describe("DeepSeek Harness Modern Session", () => {
       [],
       DEEPSEEK_V4_PROFILE,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const started = test.session.execute({
       type: "turn.start",
       turnId: turnId("bound-stream"),
@@ -4471,7 +4805,7 @@ describe("DeepSeek Harness Modern Session", () => {
       [replacement],
       DEEPSEEK_V4_PROFILE,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     test.feed.push({
       type: "assistant-stream",
       frame: {
@@ -4579,7 +4913,7 @@ describe("DeepSeek Harness Modern Session", () => {
         [replacement],
         DEEPSEEK_V4_PROFILE,
       );
-      const outputs = test.session.outputs[Symbol.asyncIterator]();
+      const outputs = lifecycleOutputs(test.session);
       test.feed.push({
         type: "assistant-stream",
         frame: {
@@ -4706,7 +5040,7 @@ describe("DeepSeek Harness Modern Session", () => {
         [replacement],
         DEEPSEEK_V4_PROFILE,
       );
-      const outputs = test.session.outputs[Symbol.asyncIterator]();
+      const outputs = lifecycleOutputs(test.session);
       test.feed.push({
         type: "assistant-stream",
         frame: {
@@ -4781,7 +5115,7 @@ describe("DeepSeek Harness Modern Session", () => {
       [],
       DEEPSEEK_V4_PROFILE,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     test.feed.push({
       type: "assistant-stream",
       frame: {
@@ -4939,7 +5273,7 @@ describe("DeepSeek Harness Modern Session", () => {
       [replacement],
       DEEPSEEK_V4_PROFILE,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     expect(await nextEvent(outputs)).toMatchObject({ type: "turn.autonomous.started" });
     expect(await nextEvent(outputs)).toMatchObject({ type: "turn.started" });
 
@@ -5041,7 +5375,7 @@ describe("DeepSeek Harness Modern Session", () => {
       [],
       DEEPSEEK_V4_PROFILE,
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     await Promise.resolve();
     test.feed.push({
       type: "assistant-stream",

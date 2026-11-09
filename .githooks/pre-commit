@@ -1,0 +1,20 @@
+#!/bin/sh
+# Catch formatting before it reaches CI. Checks only staged files; fix with `npm run format`.
+# Enabled by `npm install` (the `prepare` script sets core.hooksPath).
+set -e
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -n "$staged" ] || exit 0
+
+if ! git diff --cached --name-only --diff-filter=ACMR -z |
+  xargs -0 npx --no-install prettier --check --ignore-unknown --log-level warn; then
+  echo "pre-commit: formatting issues above; run \`npm run format\` and stage the result." >&2
+  exit 1
+fi
+
+if printf '%s\n' "$staged" | grep -q '\.rs$'; then
+  if ! cargo fmt --all --check >/dev/null; then
+    echo "pre-commit: Rust formatting issues; run \`npm run format\` and stage the result." >&2
+    exit 1
+  fi
+fi

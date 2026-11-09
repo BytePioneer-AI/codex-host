@@ -17,6 +17,19 @@ import {
   type DeepSeekExecutableGeneration,
 } from "../src/generation-selector.js";
 
+const VERIFIED_VERSIONS = [
+  "0.1.7-rc.1",
+  "0.1.7-rc.2",
+  "0.2.0-rc.1",
+  "0.2.0-rc.2",
+  "0.2.1-rc.1",
+  "0.2.1-rc.2",
+  "0.2.1-rc.3",
+  "0.2.1-rc.4",
+  "0.2.1-rc.5",
+  "0.2.2-rc.1",
+] as const;
+
 const readyInspection: HarnessInspection = {
   status: "ready",
   catalog: { models: [], thinkingOptions: [] },
@@ -126,7 +139,7 @@ describe("DeepSeek public generation selector", () => {
     await adapter.close();
   });
 
-  it.each(["0.1.7-rc.1", "0.1.7-rc.2", "0.2.0-rc.1", "0.2.0-rc.2"] as const)(
+  it.each(VERIFIED_VERSIONS)(
     "revalidates import metadata and preserves %s native identity",
     async (version) => {
       const modern = new FakeAdapter();
@@ -179,7 +192,7 @@ describe("DeepSeek public generation selector", () => {
     },
   );
 
-  it.each(["0.1.7-rc.1", "0.1.7-rc.2", "0.2.0-rc.1", "0.2.0-rc.2"] as const)(
+  it.each(VERIFIED_VERSIONS)(
     "passes exact %s through the managed Modern Adapter factory",
     async (version) => {
       const executable = { ...modernExecutable, version };
@@ -261,7 +274,7 @@ describe("DeepSeek public generation selector", () => {
 
     const expected = {
       code: "unsupported",
-      message: expect.stringContaining("npm install -g @deepseek-ai/dsh@0.2.0-rc.2"),
+      message: expect.stringContaining("npm install -g @deepseek-ai/dsh@latest"),
       retryable: false,
       diagnostic: "unsupported",
       stage: "version",

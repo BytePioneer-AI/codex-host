@@ -48,21 +48,37 @@ export const kimiPermissionModeCatalog: HarnessPermissionModeCatalog =
       {
         id: harnessPermissionModeIdSchema.parse("default"),
         label: "询问确认",
+        localizations: {
+          en: { label: "Ask for approval" },
+          "zh-CN": { description: "工具正常执行，需要时手动审批。" },
+        },
         description: "Manual approvals; tools execute normally.",
       },
       {
         id: harnessPermissionModeIdSchema.parse("plan"),
         label: "计划模式",
+        localizations: {
+          en: { label: "Plan mode" },
+          "zh-CN": { description: "只读规划，不执行工具。" },
+        },
         description: "Read-only planning; no tool execution.",
       },
       {
         id: harnessPermissionModeIdSchema.parse("auto"),
         label: "按需询问",
+        localizations: {
+          en: { label: "Ask as needed" },
+          "zh-CN": { description: "自动批准安全操作。" },
+        },
         description: "Auto-approve safe operations.",
       },
       {
         id: harnessPermissionModeIdSchema.parse("yolo"),
         label: "无需询问",
+        localizations: {
+          en: { label: "No approval prompts" },
+          "zh-CN": { description: "自动批准所有操作。" },
+        },
         description: "Auto-approve everything.",
         dangerous: true,
       },

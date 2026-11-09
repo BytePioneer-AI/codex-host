@@ -38,7 +38,6 @@ describe("Hermes Gateway-only chat routing", () => {
     try {
       expect(request).toHaveBeenCalledWith("session.resume", {
         session_id: "saved",
-        eager_build: true,
         omit_messages: true,
       });
       expect(session.initialState.nativeRef?.nativeSessionId).toBe("saved");
@@ -108,6 +107,8 @@ describe("Hermes Gateway-only chat routing", () => {
   );
   it("resumes an unmarked import identity through the actual Gateway without mutating the input reference", async () => {
     vi.spyOn(HermesGatewayTransport, "probe").mockResolvedValue("/supported/python");
+    vi.spyOn(HermesGatewayTransport.prototype, "prepareSession").mockResolvedValue();
+    vi.spyOn(HermesGatewayTransport.prototype, "start").mockResolvedValue();
     const imports = vi.spyOn(nativeSessions, "readHermesSessions");
     const ref = nativeSessionRefSchema.parse({
       harnessId: "hermes",
@@ -162,6 +163,8 @@ describe("Hermes Gateway-only chat routing", () => {
   );
   it("creates through Gateway with the complete Thread environment and no import process", async () => {
     vi.spyOn(HermesGatewayTransport, "probe").mockResolvedValue("/supported/python");
+    vi.spyOn(HermesGatewayTransport.prototype, "prepareSession").mockResolvedValue();
+    vi.spyOn(HermesGatewayTransport.prototype, "start").mockResolvedValue();
     const imports = vi.spyOn(nativeSessions, "readHermesSessions");
     const session = {
       initialState: {},
@@ -193,6 +196,8 @@ describe("Hermes Gateway-only chat routing", () => {
   });
   it("keeps a single owner during concurrent Gateway resume", async () => {
     vi.spyOn(HermesGatewayTransport, "probe").mockResolvedValue("/supported/python");
+    vi.spyOn(HermesGatewayTransport.prototype, "prepareSession").mockResolvedValue();
+    vi.spyOn(HermesGatewayTransport.prototype, "start").mockResolvedValue();
     let finish!: (session: HermesSession) => void;
     const open = vi.spyOn(gatewayOpen, "openGatewaySession").mockReturnValue(
       new Promise((resolve) => {

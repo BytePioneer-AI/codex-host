@@ -31,6 +31,30 @@ Desktop 处理 `turn/completed` 时只读取状态、错误和耗时，不读取
 
 Adapter 需要让某条结尾消息不作为最终回复时，显式设置 `phase: "commentary"`。
 
+## 独立 Web 的折叠
+
+Web 直接消费 Host 已投影的消息阶段，不重新推断 `final_answer`，也不需要启动 Codex Desktop。Web 桥接在轮次结束时，将该消息的原生 Item ID 映射为显示用的 Step，通过 `turn/end.finalAssistantStep` 传递；`null` 表示 Host 未确认最终答复。没有此字段的 Session 来源仍按最后一个已结算、含回复且不含工具调用的 Step 判断。
+
+最终答复正文按 Step 身份和正文分区保持可见，排序锚点只负责布局。附带推理和普通工具仍可折叠，包括最终答复之后到达的过程记录。Host 未确认最终答复时，整轮保持展开，与 Desktop 的折叠条件一致。
+
+不同 Agent 消息分别映射到不同 Step，避免阶段说明和最终答复合并。同一消息 ID 在轮次结束时补全阶段，不重复追加正文。
+
+## 工具通知与消息边界
+
+工具首次出现可以结束前一段正文或推理，但已有工具的进度、结果和重复通知不应切断正在输出的下一段回复。Cursor CLI 对普通工具与原生 Task 委派使用这一规则，实时输出与 ACP 历史重放共用处理；Kimi Code 同样只在首次观察到工具时分段，并忽略工具终态后的重复通知。
+
+Kimi Code 的普通 Prompt 在原生回合身份与结果确认后才完成末段正文：成功且含工具调用时标为 `final_answer`；失败、取消或原生身份验证失败时保留为 `commentary`，条目结果也不报告成功。共享投影与 Desktop 折叠规则不变。
+
+## Pi 实时与历史消息身份
+
+Pi 1.4 的 RPC 精简格式会从 `message_update` 删除 `message` 和 `partial`，所以 Provider 的 `responseId` 虽已存在，Host 仍要到 `message_end` 才收到。实时消息不能依赖它提前确定身份。
+
+Adapter 使用 `get_state` 确认的原生 Session ID、`message_start` 中的原生 Assistant timestamp，以及当前活动分支内同 timestamp 的 Assistant 出现序号生成 Item ID，并区分正文、推理。timestamp 也保存在最终原生消息中。启动及每次 Prompt 前，从现有 `get_entries` 的活动分支重建计数；历史 mapper 使用同一遍历规则，包含仅工具调用、错误和空正文的 Assistant。因此相同毫秒内的两条消息仍有不同身份，续聊、冷恢复和分支回退不依赖旧进程计数。Fork 的新原生 Session ID 与源聊天隔离。
+
+正文与推理的首次增量都先切换当前消息；同一消息的推理可跨正文增量继续，下一条消息结束前一条推理及空白正文占位。空白占位不会输出到 Desktop。已有可见输出后不更换身份，也不按文本去重。
+
+旧消息缺少有效 timestamp 时，若首个可见增量前已有原生 `responseId` 则使用它；两者都不可用时继续原有临时身份，不能保证与历史 Entry 身份一致。此规则不改变最终回复阶段推断、不修改原生会话文件，也不新增 Mapping Store 字段。
+
 ## 已知限制
 
 - 折叠发生在回合结束时，而不是最终回复开始输出时；原生 Codex 在最终回复开始时即可折叠。
@@ -41,6 +65,6 @@ Adapter 需要让某条结尾消息不作为最终回复时，显式设置 `phas
 
 ## 与 Adapter 显式阶段的关系
 
-Kiro CLI（`turn-output.ts`、`history.ts`、`kiro-adapter.ts`）、Qoder（`qoder-sdk-transport.ts`、`qoder-history.ts`，Qoder CN 复用）和 Kimi Code（`kimi-session.ts`、`history.ts`）在引入本规则前已自行标注 `final_answer`，规则与上述推断基本等价，推断对它们不生效。区别在于：Kimi Code 只在回合含工具调用时标注；Qoder 实时路径会把不含工具调用的单条消息直接标为 `final_answer`；Kiro CLI 与 Qoder 的历史回合结果不是 `succeeded`（包括 `unknown`）时，结尾消息被显式标为 `commentary`，这类回合不折叠。
+Kiro CLI（`turn-output.ts`、`history.ts`、`kiro-adapter.ts`）、Qoder（`qoder-sdk-transport.ts`、`qoder-history.ts`，Qoder CN 复用）和 Kimi Code（`kimi-session.ts`、`history.ts`）在引入本规则前已自行标注 `final_answer`，规则与上述推断基本等价，已显式标注的消息不再参与推断。区别在于：Kimi Code 只在回合成功且含工具调用时标注；Qoder 实时路径会把不含工具调用的单条消息直接标为 `final_answer`；Kiro CLI 与 Qoder 的历史回合结果不是 `succeeded`（包括 `unknown`）时，结尾消息被显式标为 `commentary`，这类回合不折叠。
 
 这些 Adapter 在失败或取消时标注的 `commentary` 仍有作用：委派快照据此不把失败回合的部分输出报告为最终结果。推断规则稳定后，可删除三者标注 `final_answer` 的部分，保留失败与取消时的 `commentary`。

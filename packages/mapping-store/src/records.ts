@@ -1,3 +1,4 @@
+import { usageMeasurementsSchema } from "@codexhost/shared-contracts";
 import {
   harnessIdSchema,
   hostThreadIdSchema,
@@ -41,7 +42,7 @@ const storedGitInfoV1Schema = z
   })
   .strict();
 
-/** Fields of the Thread record file; must stay readable by releases without Desktop metadata. */
+/** Fields owned by the Thread record file; Desktop metadata is stored separately. */
 const storedThreadCoreV1Shape = {
   formatVersion: z.literal(1),
   revision: z.number().int().positive(),
@@ -50,6 +51,8 @@ const storedThreadCoreV1Shape = {
   harnessId: harnessIdSchema,
   state: z.enum(["creating", "ready"]),
   nativeSessionRef: nativeSessionRefSchema.optional(),
+  /** Original import identity, retained when preparation derives a different Native Session. */
+  importSourceRef: nativeSessionRefSchema.optional(),
   cwd: nonBlankTextSchema.max(16_384),
   title: z.string().max(4_096),
   archived: z.boolean(),
@@ -76,17 +79,35 @@ const storedThreadCoreV1Shape = {
   updatedAt: isoDateSchema,
 };
 
-/**
- * Desktop organization metadata. It lives in a separate per-Thread file so that the
- * strict Thread record keeps its pre-metadata shape and an older release can still load it.
- */
+/** Thread presentation/organization metadata, stored separately from its identity and mappings. */
 const storedThreadMetadataFieldsShape = {
+  usageMeasurements: z
+    .object({ nativeSessionRef: nativeSessionRefSchema, values: usageMeasurementsSchema })
+    .strict()
+    .optional()
+    .catch(undefined),
+  /** Bounded first user message, independent of the official title. Empty means textless. */
+  preview: z.string().max(4_096).optional(),
   projectId: nonBlankTextSchema.max(1_024).optional(),
+  projectlessWorkspace: z
+    .object({
+      workspaceRoot: nonBlankTextSchema.max(16_384),
+      outputDirectory: nonBlankTextSchema.max(16_384),
+    })
+    .strict()
+    .optional(),
   daybreakEnabled: z.boolean().optional(),
   gitInfo: storedGitInfoV1Schema.optional(),
 };
 
-export const THREAD_METADATA_FIELDS = ["projectId", "daybreakEnabled", "gitInfo"] as const;
+export const THREAD_METADATA_FIELDS = [
+  "usageMeasurements",
+  "preview",
+  "projectId",
+  "projectlessWorkspace",
+  "daybreakEnabled",
+  "gitInfo",
+] as const;
 
 export const storedThreadMetadataV1Schema = z
   .object({
@@ -94,7 +115,7 @@ export const storedThreadMetadataV1Schema = z
     hostThreadId: storedHostThreadIdSchema,
     ...storedThreadMetadataFieldsShape,
   })
-  .strict();
+  .passthrough();
 
 export type StoredThreadMetadataV1 = z.infer<typeof storedThreadMetadataV1Schema>;
 
@@ -114,6 +135,20 @@ function refineThreadRecord(
       code: "custom",
       path: ["nativeSessionRef", "harnessId"],
       message: "Native Session Harness must match the Thread Harness",
+    });
+  }
+  if (record.importSourceRef && record.importSourceRef.harnessId !== record.harnessId) {
+    context.addIssue({
+      code: "custom",
+      path: ["importSourceRef", "harnessId"],
+      message: "Import source Harness must match the Thread Harness",
+    });
+  }
+  if (record.importSourceRef && record.subagent) {
+    context.addIssue({
+      code: "custom",
+      path: ["importSourceRef"],
+      message: "Subagent Threads cannot have an import source",
     });
   }
   const hostTurnIds = new Set<string>();
@@ -162,10 +197,10 @@ function refineThreadRecord(
   }
 }
 
-/** The on-disk Thread record, exactly as releases before Desktop metadata wrote it. */
+/** On-disk Thread fields. Unknown fields are retained for forward-compatible writes. */
 export const storedThreadCoreV1Schema = z
   .object(storedThreadCoreV1Shape)
-  .strict()
+  .passthrough()
   .superRefine(refineThreadRecord);
 
 /**
@@ -174,7 +209,7 @@ export const storedThreadCoreV1Schema = z
  */
 export const storedThreadRecordV1Schema = z
   .object({ ...storedThreadCoreV1Shape, ...storedThreadMetadataFieldsShape })
-  .strict()
+  .passthrough()
   .superRefine(refineThreadRecord);
 
 export type StoredThreadRecordV1 = z.infer<typeof storedThreadRecordV1Schema>;
@@ -235,7 +270,9 @@ export interface FindRecentDelegationInput {
  * unchanged; `null` clears the stored value.
  */
 export interface ThreadMetadataPatch {
+  preview?: string | null;
   projectId?: string | null;
+  projectlessWorkspace?: StoredThreadRecordV1["projectlessWorkspace"] | null;
   daybreakEnabled?: boolean;
   gitInfo?: {
     branch?: string | null;
@@ -248,11 +285,13 @@ export interface CreateProvisionalThreadInput {
   hostThreadId: HostThreadId;
   createRequestId: string;
   harnessId: HarnessId;
+  importSourceRef?: NativeSessionRef;
   cwd: string;
   title?: string;
   transportModelId: string;
   ephemeral: boolean;
   historyMode: "legacy" | "paginated";
+  projectlessWorkspace?: StoredThreadRecordV1["projectlessWorkspace"];
   forkSource?: { hostThreadId: HostThreadId; hostTurnId: HostTurnId };
   subagent?: {
     parentHostThreadId: HostThreadId;

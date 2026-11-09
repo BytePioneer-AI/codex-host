@@ -24,12 +24,155 @@ codexhost 只对接写 Session Format V4 的 DSH，最低版本为 `0.1.7-rc.1`�
 | `0.1.7-rc.2` | `477b4f420553e8a52c2fbccc464d7561b239c443` | |
 | `0.2.0-rc.1` | `4878cdabd87d4041bdaff61d04c966883b9fd07a` | 失败的 step 开始补写工具结果 |
 | `0.2.0-rc.2` | `639ed015397290b3745d163aafe02ffee4aa3f84` | 新增限时提问 |
+| `0.2.1-rc.1` | `1600d8a1e140dcde43a1a0941940a0480712c011` | 新增 job 生命周期、工作目录、标题推理等级等日志记录 |
+| `0.2.1-rc.2` | `687f282e8625c6b8d11ff58211a90524be2e4317` | 辅助搜索请求新增 `thinking` |
+| `0.2.1-rc.3` | `1f81c047fc48fa190a683e469daa699857e9afe8` | 官方 API key 路由跟随 `/models` 列表 |
+| `0.2.1-rc.4` | `504a01a9578abc2c6f1fb896b1dc322c9fe24f66` | |
+| `0.2.1-rc.5` | `b830ec950faba0a46dda564be3e2d854afed94f1` | |
+| `0.2.2-rc.1` | `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db` | 多键投影帧、分页回显截止点、普通 Fork 不记来源、follow 显式激活、模型 badge、授权提问 |
 
 - 版本门槛只拦低版本，不拦高版本。
-- `dsh --version` 必须输出单行规范 SemVer。低于 `0.1.7-rc.1` 的版本（包括 `0.1.7-alpha.*` 等更早的预发布）在启动托管 Web 前返回 `unsupported`：stage 为 `version`，不可重试。中英双语提示依次说明当前版本低于最低版本、列出上表四个支持版本、说明高于 `0.2.0-rc.2` 的版本可以尝试连接但适配度可能有限，最后给出升级命令 `npm install -g @deepseek-ai/dsh@0.2.0-rc.2`。支持版本列表与升级命令由 `generation-selector.ts` 中的同一份版本列表生成。
-- 不低于门槛但未验证的版本（例如以后的 `0.2.0` 正式版）按 V4 尝试。托管 Web、Remote、历史和流式数据仍逐项严格校验，不符合就明确失败。设置 → 连接只列出四个支持版本，并提示高于 `0.2.0-rc.2` 的版本可以尝试连接、但适配度可能有限。npm 上 `0.1.7-rc.2` 之后的下一个版本就是 `0.2.0-rc.1`，两者之间没有其他发布，所以提示只提“高于 `0.2.0-rc.2`”。
-- 首次安装、安装指引及连接页的“更新 CLI”均跟随 npm `latest`；保留既有安装管理策略，不因本次协议合并重新固定版本。安装最新版不代表已验证兼容，连接仍须通过 V4 协议校验。截至 2026-09-30，`latest` 与 `next` 均为 `0.2.0-rc.2`；`alpha` 为 `0.1.7-alpha.2`，低于门槛，会被拒绝。
+- `dsh --version` 必须输出单行规范 SemVer。低于 `0.1.7-rc.1` 的版本（包括 `0.1.7-alpha.*` 等更早的预发布）在启动托管 Web 前返回 `unsupported`：stage 为 `version`，不可重试。中英双语提示依次说明当前版本低于最低版本、列出上表十个支持版本、说明高于 `0.2.2-rc.1` 的版本可以尝试连接但适配度可能有限，最后给出升级命令 `npm install -g @deepseek-ai/dsh@latest`。支持版本列表由 `generation-selector.ts` 维护；升级命令与首次安装、连接页的“更新 CLI”保持一致，跟随 npm `latest`，不因验证了 `next` 上的版本而切换安装渠道。
+- 不低于门槛但未验证的版本（例如以后的 `0.2.2` 正式版）按 V4 尝试。托管 Web、Remote、历史和流式数据仍逐项严格校验，不符合就明确失败。设置 → 连接只列出十个支持版本，并提示高于 `0.2.2-rc.1` 的版本可以尝试连接、但适配度可能有限。`0.2.0-rc.2` 与 `0.2.1-rc.1` 之间的 `0.2.1-alpha.*`、`0.2.1-rc.5` 与 `0.2.2-rc.1` 之间的 `0.2.2-alpha.*` 不低于门槛，会按 V4 尝试，但未经验证。
+- 首次安装、安装指引及连接页的“更新 CLI”均跟随 npm `latest`；保留既有安装管理策略，不因协议合并重新固定版本。安装最新版不代表已验证兼容，连接仍须通过 V4 协议校验。截至 2026-11-04，`latest` 为 `0.2.1-rc.5`，`next` 为 `0.2.2-rc.1`，`alpha` 为 `0.2.2-alpha.3`。
 - 旧 Session Ref 没有 locator（V0 时期）或带任意合法 SemVer locator（V3/V4 时期）时，都可以尝试恢复。Fork checkpoint 必须带 `v4-turn-end:` 前缀，且 locator 与当前 CLI 版本一致。
+
+## 0.2.2-rc.1 源码审计
+
+审计按固定 tag 进行：`dsh-v0.2.1-rc.5` → `dsh-v0.2.2-rc.1`（2623 个提交，`0.2.1-rc.5` 是其祖先）。`session-format-catalog` 仍为 `currentVersion: 4`，迁移链没有新增版本。
+
+逐条比对两个 tag 的 `docs/persistence-schema.json`（65 个持久化根）：只有 `user/message`、`developer/message`、`agent/inbox/spliced` 与 `session/title-llm-request` 四条的 digest 变化，没有新增或删除。四条共用消息来源类型，变化来自三条同版本变更：`2026-10-13-liveshare-share-viewer-principal`、`2026-10-22-action-card-status`、`2026-10-25-skill-catalog-incomplete`。`0.2.2-rc.1` 的 schema 文件新增了结构节点，`0.2.1-rc.5` 只有 digest 与类型名，因此另按类型名比对：真正变化的只有 `MessageSource`、`SkillCatalogSource`，以及 `Principal` 换成 `ShareViewerPrincipal`；其余是内嵌消息的父类型。标题请求源码只多了类型声明。
+
+日志格式之外，session-controller 经过重构，codexhost 使用的几个 Remote 接口随之变化：
+
+| 对接点 | 0.2.1-rc.5 → 0.2.2-rc.1 | codexhost 处理 |
+| --- | --- | --- |
+| npm 包、`dsh` 命令、`--version`、`dsh web` 启动参数、就绪行、token 换 cookie、401 指纹、`HEAD /api/session.export` flush | 不变：`apps/cli` 只改 import，`browser-auth.ts` 没有改动；导出另增 `/api/session.markdown` | 无 |
+| `/api/remote.mux` | 默认协商 `permessage-deflate`，不少于 1024 字符的帧压缩发送 | 无：`ws` 客户端默认协商并解压，`maxPayload` 按解压后计算 |
+| `$events` | 转发事件新增 `llm/models-updated`、`plugin-manager/update-state`（emit），帧格式不变 | 无：emit 帧不按事件名处理 |
+| `session/control` 的 `projection` 帧 | 由每个键一帧 `{sessionId, key, value, seq}` 改为每个已提交事件一帧 `{sessionId, seq, changes: [{key, val}]}`（DSH 升级指南 `v0.2.2-alpha.2/projection-event-frames`） | **需要**：两种格式都接受。`changes` 非空、键不重复、不超过每个 Session 的键数上限，每项正好是 `{key, val}`；逐项沿用原有的过期、同序号与冲突规则 |
+| `session/page` | 返回值多了 `cursor`（本页的截止点），`throughSeq` 改为可选，`page` 成为 `events` 的弃用别名 | **需要**：接受带 `cursor` 的页面，`cursor` 必须等于请求的 `throughSeq` |
+| `session/follow` | 新增可选 `activate`；省略时不再自动恢复冷 Agent（`v0.2.1-rc.3/session-follow-activation`）。首帧结构不变 | **需要**：始终发送 `activate: true`。旧版本 schemastery 的对象解析会丢弃未声明字段，`0.1.7-rc.1`、`0.2.0-rc.2` 实测接受 |
+| `session/fork` 与子会话 header | 普通 Fork 的子会话不再写 `parentSession`（`v0.2.1-rc.3/independent-session-forks`），`isSeeded` 与 `session/end-seed` 不变 | **需要**：`parentSession` 存在时仍须等于源会话；缺失时照常逐条比对继承前缀 |
+| `session/modelCatalog` | 模型条目新增可选 `badge`：`text` 为字符串或含 `en` 的翻译，`tone` 为 `neutral` / `info` / `success` / `warning`。只来自 DeepSeek 官方 `/models` 列表的声明 | **需要**：按形状校验后丢弃，不改模型标签 |
+| `user-questions/request` | intent 新增 `kind: "approval"`：固定的允许、拒绝及可选的始终允许动作，必须带 `detail`、单个问题、不带 `wait`。目前只由实验性 CUA 插件发出 | **需要**：按同样的约束接受，投影为不允许自由输入的选择题；`subject` 与 `display` 只校验不下传。修复前 codexhost 会让该 Session 以 `protocolError` 故障 |
+| `modelSelection` 投影 | 改由 AgentLoop 在 Host 级注册，键名与 `{lastUsed, next}` 视图不变 | 无 |
+| `session/selectModel` | 未传推理强度时不再写入适配器默认值 | 无：codexhost 对有推理档位的模型总是显式传值 |
+| `session/list` | 行结构不变；摘要不再带 `imageLimits`、`contextBreakdown`、`contextPressure` | 无：列表只读 `title`，上下文占用来自已打开 Session 的投影 |
+| 其他 Remote 方法 | 新增 `events`、`observeEvent`、`observeProjections`、`state`、`observeState`、`wait`，没有删除 | 无 |
+| 消息来源：`action-cards`、`skill-catalog` 的 `incomplete`、share-viewer `principal` | 见上文三条持久化变更 | 无：来源只要求非空且不是 `plugin` 的 `kind`，只有 `kind: "user"` 投影为用户输入；补定向测试 |
+| `permissions` 投影 | 初始权限改在 Agent 创建时写入 | 无 |
+
+## 0.2.1-rc.3 至 rc.5 源码审计
+
+`dsh-v0.2.1-rc.2` → `dsh-v0.2.1-rc.5` 共 19 个提交（13 个非合并提交）。`docs/persistence-schema.json` 以及 `session`、`sdk`、`acp` 快照均无变化，`packages/session`、`packages/core`、网关与 remotes 的源码无变化，`apps/cli` 只改了测试。
+
+- `0.2.1-rc.3`：官方 API key 路由在模型目录未自定义时跟随 `GET https://api.deepseek.com/models`，首次访问最多等待 5 秒（codexhost 的单次调用超时为 10 秒）。`session/modelCatalog` 只取 `id`、`name`、`description`、`reasoning`，空分组由 DSH 过滤，推理档位来自内置模型信息，所以结构不变。其余是网页端导航自定义与统计。
+- `0.2.1-rc.4`：ACP 与 MCP 诊断不再写入 ACP stdout；codexhost 使用 `dsh web`。
+- `0.2.1-rc.5`：网页端思考块渲染。
+
+三个版本 codexhost 都无需改动。`0.2.1-rc.3` 引入的模型列表到 `0.2.2-rc.1` 可能带 badge，见上节。
+
+## 0.2.2-rc.1 真实 CLI 验证
+
+环境：macOS 27.0.1（arm64）、Node.js `v24.21.0`、npm `11.19.0`、Vitest `4.1.10`。`0.2.2-rc.1`、`0.2.1-rc.5`、`0.2.1-rc.4`、`0.2.1-rc.3`、`0.2.1-rc.2`、`0.2.0-rc.2`、`0.1.7-rc.1` 分别用 `npm install --prefix <临时目录>` 隔离安装，`dsh --version` 与目标版本一致，`@deepseek-ai/dsh-*` 子包依次为 319、295、295、295、294、277、266 个且均为同一版本；安装脚本的处理同 `0.2.1-rc.1`。全部验证都用本地 SSE 模型桩和隔离的 `DSH_HOME`，不调用真实计费模型。
+
+| 验证 | 修复前 Adapter（upstream main `ca4bfafb`） | 修复后 Adapter |
+| --- | --- | --- |
+| 生命周期 Gate，`0.2.2-rc.1` | 新建会话即失败：`protocolError`，“DeepSeek Harness control stream emitted an invalid frame”。连接诊断仍为 `ready`，没有发出模型请求 | 连续 5 次通过，每次约 5.4–5.7 秒 |
+| 升级探测：在 `0.2.1-rc.5` 上建会话，换到 `0.2.2-rc.1` 继续 | 能打开，历史完整；下一条消息启动失败，错误同上，没有发出模型请求 | 继续的回合成功 |
+| 生命周期 Gate，`0.2.1-rc.3`、`rc.4`、`rc.5` | — | 各连续 3 次通过，每次约 5.3–6.2 秒 |
+| 生命周期 Gate，`0.2.1-rc.2`、`0.2.0-rc.2`、`0.1.7-rc.1` | — | 各 1 次通过，分别约 6.6、3.5、3.7 秒 |
+
+单项对照：在修复后的源码上分别去掉一项修复、重新构建，DSH 为 `0.2.2-rc.1`。
+
+| 探测 | 去掉该项修复 | 完整修复 |
+| --- | --- | --- |
+| 分页：建 110 个回合（220 条消息，超过 follow 首屏的 200 条），换新 Adapter 冷恢复 | 恢复失败：`protocolError`，“session/page returned an invalid page” | 110 个回合完整，之后的回合成功；`0.2.1-rc.5`、`0.1.7-rc.1` 上同样成功 |
+| Fork：两个回合后在第一个回合的 checkpoint Fork | 失败：DSH 已创建子会话，codexhost 校验失败、未接纳 | 子会话有 1 个回合。`DSH_HOME` 中子会话 header 为 `isSeeded: true`、没有 `parentSession`；`0.2.1-rc.5`、`0.1.7-rc.1` 的子会话仍带 `parentSession`，同样接纳 |
+| 崩溃恢复：无人值守完全访问模式下，bash 执行 `sleep 30` 时 SIGKILL 托管的 `dsh web`，用新 Adapter 恢复 | 与完整修复相同 | 约 1.6 秒恢复。回合以 `nativeFailure`（“DeepSeek Harness Turn ended with 'interrupted'”）结束，bash Tool Item 为 failed，内容为 DSH 补写的“结果未知”说明；下一个回合成功，模型收到补写的 `tool_result`。与 `0.2.1-rc.5` 相同 |
+
+去掉 `activate` 后，崩溃恢复没有观察到差别：DSH 读取会话时已经补写中断的工具结果，下一次 prompt 也会创建 Agent。保留它是为了让 `0.2.2` 打开会话时的行为与 `0.1.7-rc.1` 至 `0.2.1-rc.5` 一致（打开即恢复 Agent）。
+
+探测是一次性脚本，没有纳入仓库：模型桩实现 Messages SSE；崩溃探测让 DSH 调用 `bash`（`0.2.2-rc.1` 要求 `description` 参数）；Fork 探测从 `DSH_HOME` 解压 `session.v4.jsonl.zstd` 读取子会话 header。
+
+另外用 codexhost 的 V4 历史投影回放 DSH 自带的全部 V4 会话快照，工具目录的占位符与工具名列表换成最小声明，补回连续序号和固定时间：
+
+- `0.2.2-rc.1`：`session` 161 个、`web` 31 个、`acp` 7 个全部通过；`sdk` 37 个中 35 个通过，另外 2 个是已知的 `offloadImages`（见“未验证的边界”）。新增的 `web/creation-recommendations` 含 `action-cards` 来源，也通过。
+- `0.2.1-rc.5`：`session` 145 个、`web` 26 个、`acp` 7 个全部通过；`sdk` 26 个中 24 个通过，原因相同。
+
+本次修复不改历史投影，回放结果修复前后相同。
+
+模型 badge 与授权提问没有用真实 CLI 触发：badge 只在 DSH 请求官方 `https://api.deepseek.com/models` 且得到声明时出现；授权提问由需要手动启用、仅限 macOS 的实验性 CUA 插件发出。两者由单元测试覆盖。
+
+## 0.2.1-rc.2 源码审计
+
+审计按固定 tag 进行：`dsh-v0.2.1-rc.1` → `dsh-v0.2.1-rc.2`（9 个提交，456 个文件，其中绝大部分只是包版本号）。`session-format-catalog` 仍为 `currentVersion: 4`。除版本号外，实质改动只有三类：辅助搜索请求新增 `thinking`、新增 DeepSeek Search/Fetch API 插件、网页端的 “1017” 模型标签。
+
+为了不靠人工通读漏项，审计另外逐条比对了两个 tag 的 `docs/persistence-schema.json`（64 个持久化根）：只有 `event:web/deepseek-search-llm-request` 一条的 digest 变化，没有新增或删除。用同样的方法比对 `0.2.0-rc.2` → `0.2.1-rc.1`，变化的 9 条（新增 `job/registered`、`job/settled`、`working-directory/change`，变化 `session/title-llm-request`、`subagent/catalog`、`tool/ptc-dispatch`，以及 `user/message`、`developer/message`、`agent/inbox/spliced` 共用的来源类型新增 `principal`）与上一节的处理一致，没有遗漏。
+
+| 对接点 | 0.2.1-rc.1 → 0.2.1-rc.2 | codexhost 处理 |
+| --- | --- | --- |
+| npm 包、`dsh` 命令、`dsh web` 启动参数、就绪行、认证、`/api`、`$events`、flush、`session/*`、`session/list` | 不变：`packages/api`、网关与 CLI 没有代码改动 | 无 |
+| `web/deepseek-search-llm-request` | 请求体新增可选 `thinking: {"type":"disabled"}`。默认的 `web-search-deepseek` 提供者每次搜索都写入 | **需要**：接受该成员，其他取值与额外成员仍拒绝 |
+| DeepSeek Search/Fetch API（`web-deepseek-api`） | 新插件，随基础包注册；默认仍选用 Messages 搜索与本地 HTTP 抓取，在设置里打开 “Use the new Web Search API” 才改用它。它的调用不写辅助请求事件，工具调用与结果照常记录；`deepseek-fetch` 快照回放通过 | 无 |
+| “1017” 模型标签 | 先在模型包追加显示名、随后还原；最终只新增网页端标签插件 `ui-deepseek-model-label-1017`，模型目录与模型 id 不变 | 无 |
+
+修复前的 Adapter 在 `0.2.1-rc.2` 上的首次 `web_search` 调用就会让 Session 故障（`protocolError`），而 DSH 里的原生回合照常执行完。
+
+## 0.2.1-rc.2 真实 CLI 验证
+
+环境同 `0.2.1-rc.1`：macOS 27.0.1（arm64）、Node.js `v24.21.0`、npm `11.19.0`、Vitest `4.1.10`。`0.2.1-rc.2` 用 `npm install --prefix <临时目录>` 隔离安装，`dsh --version` 为 `0.2.1-rc.2`，`@deepseek-ai/dsh-*` 子包 294 个且均为同一版本；安装脚本的处理同上。全部验证都用本地 SSE 模型桩和隔离的 `DSH_HOME`，不调用真实计费模型。
+
+| 验证 | 修复前 Adapter（本 PR 的前 4 个提交，`f913c88e`） | 修复后 Adapter |
+| --- | --- | --- |
+| 搜索探测，`0.2.1-rc.2` | `web_search` 失败，Session 故障：`protocolError`，“Modern history known event has an incompatible schema”。日志里的搜索请求带 `thinking: {"type":"disabled"}`；故障后 DSH 继续请求模型并执行完回合 | 回合成功；`web_search` 成功；搜索请求带 `thinking: {"type":"disabled"}` |
+| 搜索探测，`0.2.1-rc.1`（对照） | 回合成功；搜索请求没有 `thinking` | 回合成功；搜索请求没有 `thinking` |
+| 生命周期 Gate，`0.2.1-rc.2` | 连续 3 次 1/1 通过（Gate 不调用 `web_search`） | 连续 5 次 1/1 通过，每次约 5.5 秒 |
+| 生命周期 Gate，`0.2.1-rc.1`、`0.2.0-rc.2` | — | 各 1 次 1/1 通过，分别约 5.5 秒、3.7 秒 |
+| 工具探测，`0.2.1-rc.2` | — | 回合成功；`bash`、`working_directory` 两个 Tool Item 均成功；原生日志含 `reasoningEffort: off` 的标题请求、`job/registered`、`job/settled`、`working-directory/change` |
+
+搜索探测是一次性脚本，没有纳入仓库：模型桩先让 DSH 调用 `web_search`（`queries: ["probe query"]`）；DSH 的搜索提供者通过 `DEEPSEEK_SEARCH_BASE_URL` 把辅助 Messages 请求发到同一个桩，桩返回含 `web_search_tool_result` 的非流式响应；之后模型回复文本。会话以无人值守的完全访问模式创建，之后从隔离 `DSH_HOME` 读回原生日志。
+
+另外用 codexhost 的 V4 历史投影回放 `0.2.1-rc.2` 自带的全部 V4 会话快照：
+
+- `session` 目录 145 个：修复前 144 个通过，唯一失败的 `web-search-endpoint-guidance` 失败在 `web/deepseek-search-llm-request`；修复后 145 个全部通过。
+- `web` 目录 26 个、`acp` 目录 7 个均通过。
+- `sdk` 目录 26 个中 24 个通过。`inline-image-prompt`、`minimal-image-compaction` 在 `0.2.1-rc.1` 上同样失败，原因与 `0.2.1-rc.2` 无关，见“未验证的边界”。
+
+## 0.2.1-rc.1 源码审计
+
+审计按固定 tag 进行：`dsh-v0.2.0-rc.2` → `dsh-v0.2.1-rc.1`（1916 个提交），只核对 codexhost 实际使用的对接点。`session-format-catalog` 仍为 `currentVersion: 4`，迁移链没有新增版本；新增的同版本日志变更见 DSH `docs/persistence-changes/` 中 2026-09-13 至 2026-10-13 的记录。
+
+| 对接点 | 0.2.0-rc.2 → 0.2.1-rc.1 | codexhost 处理 |
+| --- | --- | --- |
+| npm 包、`dsh` 命令、`--version`、`dsh web --no-open --host 127.0.0.1 --port 0` | 不变；`--host` 改为接受任意具体 IP 字面量并拒绝通配地址，新增 `--public-url`、`--tls-cert`/`--tls-key` | 无 |
+| 就绪行、token 换 cookie、401 指纹 | 就绪行去掉 LAN 后缀，地址取自监听 origin，对 `127.0.0.1` 仍为 `http://127.0.0.1:<port>/?token=…`；HTTP 下浏览器 cookie 仍为 v1、属性不变；401 正文与头不变 | 无 |
+| `/api` Unary、`/api/remote.mux`、`$events`、`$events/result` | 新增 API 调用方身份与资源访问控制，以及 `/connect` 签发的 v2 API cookie；浏览器 cookie 仍映射为 owner Peer（`interactions: answer`），访问不受限，`$events/result` 要求与事件流同一 Peer，codexhost 两者都用同一浏览器 cookie | 无 |
+| `HEAD /api/session.export` flush、`session/*` 各请求参数、流式 chunk、`userQuestions`、`permissionPresets/catalog`、`commands/execute` | 不变；`session/fork` 新增可选 `allowMigration`（默认 true） | 无 |
+| `session/create` | 改为“复用指定的空白会话，否则另铸 id”，返回的 id 可能与请求不同 | 无：codexhost 总是请求新的 UUID，DSH 不存在该会话时按原 id 创建 |
+| `session/list` | 每行新增 `formatStatus`（`current` / `migration-required`） | **需要**：接受该字段，不影响导入候选 |
+| Session Format 新增事件 | `job/registered`、`job/settled`（每个 bash/pwsh 调用与 workflow 都写，包括前台命令）、`working-directory/change`（`working_directory` 工具或目录恢复） | **需要**：按精确形状校验，log-only，不生成 Item |
+| Session Format 同版本字段 | 标题请求可选 `reasoningEffort`（路由支持推理时写入，DeepSeek 模型为 `off`）；`tool/ptc-dispatch` 可选 `meta`；`subagent/catalog` v2（mode `external`）；`user-rpc` 来源可选 `principal`（仅非 owner 写入） | **需要**：前三项放行；`principal` 不影响 codexhost |
+
+修复前的 Adapter 在 0.2.1-rc.1 上会因前两类日志记录让 Session 故障（`protocolError`），且历史中含这些记录的 Thread 之后无法打开。
+
+## 0.2.1-rc.1 真实 CLI 验证
+
+环境：macOS 27.0.1（arm64）、Node.js `v24.21.0`、npm `11.19.0`、Vitest `4.1.10`。`0.2.1-rc.1` 与 `0.2.0-rc.2` 分别用 `npm install --prefix <临时目录>` 隔离安装，`dsh --version` 与目标版本一致，`@deepseek-ai/dsh-*` 子包依次为 293、278 个且均为同一版本。npm 11 默认拦截依赖的安装脚本，需对 `@deepseek-ai/dsh-subprocess-local`、`node-pty`、`koffi` 执行 `npm install-scripts approve` 后 `npm rebuild`，与 npm 10 默认执行这些脚本的结果一致。全部验证都用本地 SSE 模型桩和隔离的 `DSH_HOME`，不调用真实计费模型。
+
+| 验证 | 修复前 Adapter（upstream main `1aa9f65d`） | 修复后 Adapter |
+| --- | --- | --- |
+| 生命周期 Gate，`0.2.1-rc.1` | 首个回合即 `session.faulted`：`protocolError`，“Modern history known event has an incompatible schema”（标题请求的 `reasoningEffort`） | 连续 8 次 1/1 通过，每次约 5.7 秒 |
+| 生命周期 Gate，`0.2.0-rc.2` | — | 连续 5 次 1/1 通过，每次约 3.4 秒 |
+| 工具探测，`0.2.1-rc.1` | 同上，在模型发出第一个工具调用前故障 | 回合成功；`bash`、`working_directory` 两个 Tool Item 均成功；原生日志依次含 `reasoningEffort: off` 的标题请求、`job/registered`、`job/settled`、`working-directory/change` |
+| 工具探测，`0.2.0-rc.2` | — | 回合成功；`bash` 成功，`working_directory` 按预期失败（该版本没有此工具）；日志不含上述新增记录 |
+
+工具探测是一次性脚本，没有纳入仓库：模型桩依次让 DSH 调用 `bash`（`echo PROBE_OK`）与 `working_directory`（`cd nested`）再回复文本，会话以无人值守的 `danger-full-access` 创建，之后从隔离 `DSH_HOME` 读回原生日志。
+
+Gate 的模型桩按输入标记判定主请求，而 DSH 并发发出的会话标题请求会把首条输入嵌进提示词。`0.2.1-rc.1` 调整了标题生成时机，修正前该误判在 6 次运行中出现 5 次；诊断显示两条“重叠”的请求都是标题请求。模型桩现按 `0.1.7` 起各版本共用的标题提示词识别标题请求，不计为主请求，也不挂起。
+
+另外，用 codexhost 的 V4 历史投影回放 DSH 自带的全部 V4 会话快照：`0.2.0-rc.2` 的 24 个修复前后均通过；`0.2.1-rc.1` 的 144 个修复前 44 个失败（`job/registered` 34 个、`working-directory/change` 6 个、`subagent/catalog` 2 个、`tool/ptc-dispatch` 2 个），修复后全部通过。快照没有标题请求，`reasoningEffort` 由单元测试和上面的真实 CLI 结果覆盖。
 
 ## 0.2.0 源码审计
 
@@ -46,7 +189,7 @@ codexhost 只对接写 Session Format V4 的 DSH，最低版本为 `0.1.7-rc.1`�
 
 rc.1 没有限时提问，`wait` 与迟到回答只出现在 rc.2。逐项差异与决策见归档的 [design](../../../openspec/changes/archive/2026-09-30-support-dsh-020rc-v4-only/design.md)。
 
-## 真实 CLI 验证
+## 0.1.7 至 0.2.0 真实 CLI 验证
 
 环境：Linux x86_64（内核 5.10.134-19.8.al8）、Node.js `v22.23.2`、npm `10.9.8`、Vitest `4.1.10`。四个版本分别用 `npm install --prefix <临时目录>/<版本> @deepseek-ai/dsh@<版本>` 隔离安装。`dsh --version` 与目标版本一致，所有 `@deepseek-ai/dsh-*` 子包也是同一版本（依次为 267、273、278、278 个）。
 
@@ -166,7 +309,64 @@ CodeRabbit 在 #412 上建议拒绝 catalog `options` 中的 `auto`，本变更�
 
 ## 自动化测试与覆盖率
 
-`npm run test:deepseek:coverage` 先构建 TypeScript，再运行整个 DSH Adapter。下面的结果在第 11 个提交 `3ca7509b`（本 PR 的最终代码）上运行：**25 个文件、882 项测试全部通过**。它取代归档任务 2.6 在删除 V0/V3 时记录的 876 项及当时的覆盖率；之后的提交又补了测试。统计范围为 `packages/adapters/deepseek-harness/src/**/*.ts`，包含未执行文件，四项门槛均为 80%：
+`npm run test:deepseek:coverage` 先构建 TypeScript，再运行整个 DSH Adapter。统计范围为 `packages/adapters/deepseek-harness/src/**/*.ts`，包含未执行文件，四项门槛均为 80%。HTML 与 JSON 摘要生成到 `coverage/deepseek-harness/`，不纳入 Git。
+
+### 0.2.2 对接（0.2.1-rc.3 至 0.2.2-rc.1）
+
+在本次对接的最终代码上运行：**28 个文件、1008 项测试全部通过**。
+
+| 指标 | 覆盖率 | 已覆盖 / 总数 |
+| --- | --- | --- |
+| 语句 | 88.16% | 6121 / 6943 |
+| 分支 | 83.75% | 5285 / 6310 |
+| 函数 | 93.92% | 959 / 1021 |
+| 行 | 91.11% | 5679 / 6233 |
+
+同一代码上，DSH Adapter 与设置页测试（`packages/renderer-extension/test/settings`）一起运行 43 个文件、1213 项通过；`npm run lint`、`npm run typecheck`、`prettier --check .` 与 `git diff --check` 均通过。本机没有 Rust 工具链，未运行 `cargo fmt --check`（本次未改动 Rust）。
+
+新增的定向测试：
+
+- control 流：一帧多键的变更逐键生效并通知对应订阅与等待；同一帧内逐键套用过期、同序号与冲突规则；空列表、重复键、`value` 代替 `val`、缺 `val`、多余字段、空键、非法值或序号、缺 `sessionId`、新旧字段混用都按协议错误故障；键数超过上限报 `resourceLimit`。
+- 分页：页面回显与请求相同的截止点时照常拼接；回显其他截止点、字符串或 `null` 时按协议错误失败并关闭 follow。
+- follow 请求带 `activate: true`。
+- Fork：子会话 header 没有 `parentSession` 时按继承前缀接纳；`parentSession` 指向其他会话时仍拒绝。
+- 模型目录：字符串与翻译两种 badge 被接受且不改变目录；缺 `tone`、未知 `tone`、多余字段、空白文本、缺英文、非字符串翻译、非对象的 badge 都拒绝。
+- 授权提问：带 `subject` 与 `display` 的 CUA 形状被投递，只保留动作标签；缺 `detail`、多选、选项与动作不一致、动作重复或为空、`subject` 缺名称、`display` 缺英文、带 `callId`、多个问题、带 `wait` 都拒绝；投影为 `allowOther: false` 的选择题，回答原样转发。
+- 历史：share-viewer `principal` 的用户消息照常作为输入；`skill-catalog`（`incomplete: true`）与 `action-cards` 来源的消息不进入用户输入。这一项在改动前后都通过，用来防止回退。
+- 版本：`0.2.1-rc.3`、`rc.4`、`rc.5` 与 `0.2.2-rc.1` 被识别为已验证版本，低版本提示逐字列出十个版本。
+
+在改动前的源码上保留这些测试，共 24 项失败：协议相关 12 项（control 流 3、分页 1、follow 3、Fork 1、badge 2、授权提问 2；follow 的 3 项中有 2 项是断言完整 follow 参数的既有测试），版本列表相关 12 项。
+
+### 0.2.1 对接（rc.1 与 rc.2）
+
+在本次对接的最终代码上运行：**28 个文件、958 项测试全部通过**。
+
+| 指标 | 覆盖率 | 已覆盖 / 总数 |
+| --- | --- | --- |
+| 语句 | 87.85% | 6019 / 6851 |
+| 分支 | 83.36% | 5153 / 6181 |
+| 函数 | 93.70% | 937 / 1000 |
+| 行 | 90.81% | 5586 / 6151 |
+
+同一代码上 `npm run lint`（ESLint 与包边界检查）、`npm run typecheck`、`prettier --check .`、`git diff --check` 和设置页测试（`packages/renderer-extension/test/settings`）均通过；本机未安装 Rust 工具链，没有运行 `cargo fmt --check`（本次未改动 Rust）。`openspec validate --strict` 中 `deepseek-versioned-web-protocol` 通过；`deepseek-harness-fast-session` 报“每条需求至少一个场景”，upstream main 上结果相同。
+
+新增的定向测试：
+
+- 日志记录：`job/registered`、`job/settled`（有无 `toolCall`、`detail`）、`working-directory/change`、带与不带 `reasoningEffort` 的标题请求、带 `meta` 的 `tool/ptc-dispatch`、v2 `external` 子代理目录项均被接受且拒绝多余字段；非法枚举、缺字段、空白 id、`toolCall` 缺 `rootCallId`、`reasoningEffort` 为空白、`tool/ptc-dispatch-start` 带 `meta`、v2 配 `one-shot` 与 v0 配 `external` 均被拒绝。
+- 实时回合：bash 的 job 登记与结束、目录切换和带 `reasoningEffort` 的标题请求夹在工具调用与结果之间时，回合仍成功结束，Item 不变。
+- 会话列表：`formatStatus` 为 `current`、`migration-required` 时照常作为导入候选，其他取值拒绝。
+- 搜索请求：`web/deepseek-search-llm-request` 带与不带 `thinking: {type: "disabled"}` 均被接受；`thinking` 为 `enabled`、带 `budget_tokens`、缺 `type`、字符串、`null`，或请求体带其他成员时均被拒绝。
+- 实时回合：搜索请求夹在工具调用与结果之间时，回合仍成功结束，Item 不变。
+- 版本：`0.2.1-rc.1`、`0.2.1-rc.2` 被识别为已验证版本，低版本提示逐字列出六个版本并给出跟随 npm `latest` 的升级命令。
+- 在改动前的源码上，`0.2.1-rc.1` 相关的日志、实时回合、会话列表与回放用例中 13 项失败；`0.2.1-rc.2` 的搜索请求用例中 3 项失败（接受带 `thinking` 的请求、实时回合、rc.2 回放），拒绝类用例在改动前后都通过。
+
+V4 回放夹具 `packages/adapters/deepseek-harness/test/fixtures/dsh-021rc1-tool-call-turn.v4.jsonl` 与 `dsh-v0.2.1-rc.1` 的 `snapshots/session/tool-call-turn/session.v4.jsonl` 逐字节相同（该文件最后修改于 DSH `54c13688a853e78aa907ce175dbd39dd700378d8`，`snapshot.yml` 标记 `recording: live`）。它与 0.2.0-rc.2 夹具是同一场景，多出 bash 的 `job/registered`、`job/settled` 和 `tool/result` 的 `meta`，两者共用同一回放测试。
+
+`dsh-021rc2-web-search-turn.v4.jsonl` 与 `dsh-v0.2.1-rc.2` 的 `snapshots/session/web-search-endpoint-guidance/session.v4.jsonl` 逐字节相同。该场景把搜索指向不可达的端点，所以 `web_search` 工具失败，回放断言 Item 依次为推理、失败的工具、回答。
+
+### 0.2.0 对接（V4-only）
+
+下面的结果在当时 PR 的第 11 个提交 `3ca7509b` 上运行：**25 个文件、882 项测试全部通过**。它取代归档任务 2.6 在删除 V0/V3 时记录的 876 项及当时的覆盖率；之后的提交又补了测试。
 
 | 指标 | 覆盖率 | 已覆盖 / 总数 |
 | --- | --- | --- |
@@ -175,7 +375,7 @@ CodeRabbit 在 #412 上建议拒绝 catalog `options` 中的 `auto`，本变更�
 | 函数 | 93.42% | 909 / 973 |
 | 行 | 89.81% | 5326 / 5930 |
 
-HTML 与 JSON 摘要生成到 `coverage/deepseek-harness/`，不纳入 Git。本变更新增或改写的定向测试覆盖：
+当时新增或改写的定向测试覆盖：
 
 - 补写工具结果：未启动/已启动 × `forked`/`interrupted` 的正例，以及 id、错误码、`sourceEventSeqs`、内容不符的负例；实时与冷历史的 Item 身份一致，PTC `run_code` 不生成 Item。
 - 限时提问：有无 `wait`、非法 `wait`、回放时 `wait` 不一致；continued、迟到回答的各种返回值；原生结果未知时先等结果再回复，覆盖补发被拒、传输失败后重试、及时回答遇到失败结果、故障与关闭；回合结束时 `expired`；`user-question-reply` 在实时与冷历史中都不投影为用户输入。
@@ -198,7 +398,14 @@ V4 回放夹具 `packages/adapters/deepseek-harness/test/fixtures/dsh-020rc2-too
 ## 未验证的边界
 
 - 未使用真实计费模型；Desktop 端到端显示（权限选择器、PTC 子调用卡片、回合继续输出时仍打开的提问、崩溃恢复后的 Thread、`unsupported` 提示）需人工在 Desktop 中验证。
-- 本次真实 CLI 验证只在 Linux 上运行，没有在 Windows 或 macOS 上复验这四个版本。
+- 0.2.0 系列的真实 CLI 验证只在 Linux 上运行；`0.2.1` 系列、`0.2.2-rc.1` 以及 `0.2.0-rc.2`、`0.1.7-rc.1` 的复验只在 macOS arm64 上运行，没有在 Windows 或 Linux 上复验 `0.2.1` 与 `0.2.2` 系列。
+- `0.2.1-rc.1` 的 PTC 子调用 `meta` 与外部 Agent 子代理目录项只由 DSH 快照回放和单元测试覆盖，没有用真实 CLI 触发；Desktop 中 `0.2.1` 系列会话的显示未手测。
+- `0.2.2-rc.1` 的模型 badge 与授权提问（`kind: "approval"`）只由单元测试覆盖：前者需要官方 `/models` 下发声明，后者由需手动启用、仅限 macOS 的实验性 CUA 插件发出。Desktop 的模型选择器不显示 badge。
+- `0.2.2-rc.1` 的 follow `activate` 在崩溃恢复与冷恢复后继续对话的探测中没有观察到可见差别，只按 DSH 升级指南与旧版本行为保留。
+- `0.2.1-rc.2` 的搜索探测使用默认的 `web-search-deepseek` 提供者和本地桩。新增的 DeepSeek Search/Fetch API（Web search 设置开关，默认关闭）没有用真实 CLI 触发，只有 `deepseek-fetch` 快照回放；两个版本之间的 schema 比对显示它没有新增记录类型。
+- `subagent/catalog` v1（DSH 迁移为未知子代理写入，0.1.7 起即存在）仍被拒绝，与 `0.2.1` 系列无关，未在本次对接中处理。
+- `assistant/attempt` 的失败诊断带 `offloadImages`（图片超出路由预算、DSH 需要卸载最旧图片后重试，`IMAGE_OFFLOAD_REQUIRED`）会被拒绝：`profiles/validation.ts` 只允许 `message`、`code`、`status`、`providerRetryAfterMs`、`requestId`。该成员在 DSH `0.1.7-rc.2`、`0.2.0-rc.2`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.5`、`0.2.2-rc.1` 的源码中都存在，`sdk` 目录的 `inline-image-prompt`、`minimal-image-compaction` 快照因此回放失败；它与本次版本变化无关，未在本次对接中处理，也没有用真实 CLI 触发。
+- 原生执行可能仍在时（例如托管 `dsh web` 被杀）关闭故障的 Session，`close()` 返回的拒绝要晚一步才有处理器，Node 先报告一次未处理的 Promise 拒绝（随后提示已异步处理）。`0.2.1-rc.5` 与 `0.2.2-rc.1` 上都复现，修复前的 Adapter 同样如此；在默认设置的独立 Node 进程中，它会使进程退出。Host Runtime 中的影响没有验证，未在本次对接中处理。
 - 未用真实 CLI 触发 PTC 模式、失败的 step，以及 Fork 种子里的补写结果；Auto review 插件未启用。
 - 不把默认配置下的验证推广到任意非默认 preset 或 profile；不证明独立第三方客户端或任意后台工具进程的退出。
 

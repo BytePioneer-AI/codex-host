@@ -1,8 +1,9 @@
 export const credentialImportEnglish = {
-  column: "Use in Harness",
   sectionTitle: "Accounts in Pi",
+  sectionHint: "Copy a local Codex or Grok login into a Pi model entry.",
+  sectionImport: "Import account",
   sectionEmpty:
-    "No logins in Pi yet. Use the Pi mark on a Codex or Grok account above to import one.",
+    "No logins in Pi yet. Use “Import account”, or “Import into Pi” on a Codex or Grok account above.",
   rowReimport: "Copy again",
   rowRemove: "Remove",
   othersTitle: "Pi's own logins",
@@ -16,6 +17,8 @@ export const credentialImportEnglish = {
   entry: "Entry in Pi",
   name: "Model entry name",
   source: "Source account",
+  sourceCurrent: "Current login",
+  sourceImported: "Already in Pi as {name}/…; another entry can be added",
   preview: "Creates {name}/… in Pi. Existing Provider configurations remain unchanged.",
   warning:
     "Copies the current authorization once; it does not synchronize logins or add quota. Pi and the original app may refresh the same token, which can require signing in again. Usage follows this Provider's billing rules.",
@@ -36,9 +39,11 @@ export const credentialImportEnglish = {
 };
 export type CredentialImportMessages = typeof credentialImportEnglish;
 export const credentialImportChinese: CredentialImportMessages = {
-  column: "用于 Harness",
   sectionTitle: "Pi 中的账号",
-  sectionEmpty: "Pi 中还没有登录。点击上方 Codex 或 Grok 账号行的 Pi 图标即可导入。",
+  sectionHint: "把 Codex、Grok 的本地登录复制成 Pi 的模型入口",
+  sectionImport: "导入账号",
+  sectionEmpty:
+    "Pi 中还没有登录。点击「导入账号」，或上方 Codex、Grok 账号行的「导入到 Pi」即可导入。",
   rowReimport: "重新导入",
   rowRemove: "移除",
   othersTitle: "Pi 自有配置",
@@ -51,6 +56,8 @@ export const credentialImportChinese: CredentialImportMessages = {
   entry: "Pi 中的入口",
   name: "模型入口名称",
   source: "来源账号",
+  sourceCurrent: "当前登录",
+  sourceImported: "已导入为 {name}/…，可再新增一个入口",
   preview: "将在 Pi 中新增 {name}/…，保留全部已有 Provider 配置。",
   warning:
     "仅复制当前授权，不持续同步登录，也不增加额度。Pi 与原生工具分别刷新同一凭证时，可能需要重新登录。实际用量遵循该 Provider 的计费规则。",

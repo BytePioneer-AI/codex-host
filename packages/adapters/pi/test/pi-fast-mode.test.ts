@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import type * as filesystemPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -24,73 +24,61 @@ afterEach(async () => {
   vi.mocked(rename).mockReset();
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
 });
-function codexCredential() {
-  const claims = Buffer.from(
-    JSON.stringify({ iss: "https://auth.openai.com", client_id: "app_EMoamEEZ73f0CkXaXp7hrann" }),
-  ).toString("base64url");
-  return {
-    type: "oauth",
-    access: `header.${claims}.signature`,
-    refresh: "fixture",
-    expires: 9999999999999,
-  };
-}
-
 describe("Pi Host Fast", () => {
-  it("requires Codex OAuth, the Codex API and priority metadata, including alias and imported Providers", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "pi-fast-"));
-    homes.push(home);
-    await mkdir(path.join(home, ".pi/agent"), { recursive: true });
-    await mkdir(path.join(home, ".codex"));
-    await writeFile(
-      path.join(home, ".pi/agent/auth.json"),
-      JSON.stringify({
-        c: codexCredential(),
-        "codex-alice": { ...codexCredential(), codexhostImportId: "owned" },
-        "openai-codex": { type: "api_key", key: "fixture" },
-        other: { type: "oauth", access: "invalid" },
-      }),
-    );
-    await writeFile(
-      path.join(home, ".codex/models_cache.json"),
-      JSON.stringify({
-        models: [{ slug: "supported", service_tiers: [{ id: "priority" }] }, { slug: "ordinary" }],
-      }),
-    );
+  it("requires a Responses API and a case-insensitive GPT model ID, without credentials or cache files", () => {
     const model = {
-      provider: "c",
-      id: "supported",
+      provider: "proxy",
+      id: "gpt-synthetic",
+      name: "Custom display name",
       reasoning: true,
       api: "openai-codex-responses",
     };
-    const keys = await piFastModelKeys(
-      [
-        model,
-        { ...model, provider: "codex-alice" },
-        { ...model, provider: "openai-codex" },
-        { ...model, provider: "other" },
-        { ...model, id: "ordinary" },
-        { ...model, api: "openai-responses" },
-      ],
-      { HOME: home },
-    );
-    expect([...keys]).toEqual([
-      encodePiModelRef(model).id,
-      encodePiModelRef({ ...model, provider: "codex-alice" }).id,
-    ]);
+    const responses = {
+      ...model,
+      provider: "other",
+      id: "alias-GpT-model",
+      api: "openai-responses",
+    };
+    const models = [
+      model,
+      responses,
+      { ...model, id: "deepseek", name: "GPT display name" },
+      { ...model, id: "deepseek-responses", api: "openai-responses", name: "GPT" },
+      { ...model, api: "openai-completions" },
+      { provider: model.provider, id: model.id, reasoning: true },
+    ];
+    const keys = piFastModelKeys(models);
+    expect([...keys]).toEqual([encodePiModelRef(model).id, encodePiModelRef(responses).id]);
     const catalog = withPiFast(
       harnessModelCatalogSchema.parse({
-        models: [{ ref: encodePiModelRef(model), label: "c / supported" }],
+        models: [{ ref: encodePiModelRef(model), label: "Custom display name" }],
         thinkingOptions: [],
       }),
       keys,
     );
     const fast = catalog.models[0]?.fastModel;
     if (!fast) throw new Error("Missing Fast choice");
-    expect(decodePiModelRef(fast)).toEqual({ provider: "c", id: "supported", fast: true });
-    await rm(path.join(home, ".codex/models_cache.json"));
-    expect(await piFastModelKeys([model], { HOME: home })).toEqual(new Set());
+    expect(decodePiModelRef(fast)).toEqual({ provider: "proxy", id: "gpt-synthetic", fast: true });
   });
+
+  it.each(["getProvider", "registerProvider"])(
+    "does not advertise Fast when Pi lacks %s",
+    (missing) => {
+      const registerCommand = vi.fn();
+      const ctx = {
+        modelRegistry: { getProvider: missing === "getProvider" ? undefined : vi.fn() },
+      };
+      const pi = {
+        on: (name: string, handler: (event: unknown, context: typeof ctx) => void) => {
+          if (name === "session_start") handler({}, ctx);
+        },
+        registerProvider: missing === "registerProvider" ? undefined : vi.fn(),
+        registerCommand,
+      };
+      new Function(PI_FAST_EXTENSION.replace("export default function", "return function"))()(pi);
+      expect(registerCommand).not.toHaveBeenCalled();
+    },
+  );
 
   it("writes the bundled extension only under Host storage and handles concurrent starts", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "pi-fast-resource-"));
@@ -145,7 +133,7 @@ describe("Pi Host Fast", () => {
     },
   );
 
-  it("is inert until enabled and decorates the existing Provider without replacing its authentication or reasoning", async () => {
+  it.each(["openai-codex-responses", "openai-responses"])("toggles Fast (%s)", async (api) => {
     type Model = { provider: string; id: string; api: string };
     type Stream = (model: Model, context: unknown, options?: Record<string, unknown>) => unknown;
     type Provider = {
@@ -171,7 +159,7 @@ describe("Pi Host Fast", () => {
       provider = value;
     });
     const notify = vi.fn();
-    const model: Model = { provider: "c", id: "supported", api: "openai-codex-responses" };
+    const model: Model = { provider: "c", id: "alias-GPT-model", api };
     const ctx = { model, modelRegistry: { getProvider: () => provider }, ui: { notify } };
     type Handler = (args: string, context: typeof ctx) => Promise<void>;
     const commands = new Map<string, { handler: Handler }>();
@@ -203,7 +191,10 @@ describe("Pi Host Fast", () => {
       { model: model.id, service_tier: "priority" },
       model,
     );
-    expect(streamSimple.mock.lastCall?.[2]).toMatchObject({ reasoning: "high", apiKey: "fixture" });
+    expect(streamSimple.mock.lastCall?.[2]).toMatchObject({
+      reasoning: "high",
+      apiKey: "fixture",
+    });
     provider.stream(model, {}, options);
     expect(stream.mock.lastCall?.[2]).toMatchObject({
       serviceTier: "priority",
@@ -239,9 +230,10 @@ describe("Pi Host Fast", () => {
     for (const other of [
       { ...model, provider: "other" },
       { ...model, api: "other" },
+      { ...model, id: "deepseek" },
     ]) {
       expect(JSON.parse((await provider.streamSimple(other, {}, options)) as string)).toEqual({
-        model: model.id,
+        model: other.id,
       });
       expect(streamSimple.mock.lastCall?.[2]).toBe(options);
     }
@@ -260,8 +252,13 @@ describe("Pi Host Fast", () => {
     });
     expect(register).toHaveBeenCalledOnce();
     expect(streamSimple.mock.lastCall?.[2]).toBe(options);
-    await expect(
-      command.handler("on nonce", { ...ctx, model: { ...model, api: "other" } }),
-    ).rejects.toThrow("Codex API");
+    for (const invalid of [
+      { ...model, api: "other" },
+      { ...model, id: "deepseek", name: "GPT" },
+    ]) {
+      await expect(command.handler("on nonce", { ...ctx, model: invalid })).rejects.toThrow(
+        "Fast requires a GPT model",
+      );
+    }
   });
 });

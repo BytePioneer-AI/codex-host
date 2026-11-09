@@ -1,271 +1,165 @@
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+//! Confirm ownership before a service update can stop its native supervisor.
+use std::error::Error;
+use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
-const HANDOFF_FILE: &str = "cleanup-complete-v1";
-const TOKEN_BYTES: usize = 32;
-static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+use serde::Deserialize;
 
-/// Authorizes installation only after this Helper's Launcher finished cleanup.
-/// A fresh token is required for every Helper launch, including retries.
-pub struct UpdateHandoff {
-    token: String,
+const ACTIVE_UPDATE_LOCK_FILE: &str = "active-update-v1.lock";
+const MAX_LOCK_BYTES: u64 = 4 * 1024;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ActiveUpdateLock {
+    owner_pid: u32,
+    status_path: PathBuf,
 }
 
-impl UpdateHandoff {
-    pub fn from_token(token: &str) -> io::Result<Self> {
-        if token.len() != TOKEN_BYTES
-            || !token
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "update handoff token must contain 32 lowercase hexadecimal characters",
-            ));
-        }
-        Ok(Self {
-            token: token.into(),
-        })
+fn read_lock(path: &Path) -> Result<Option<ActiveUpdateLock>, Box<dyn Error>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > MAX_LOCK_BYTES {
+        return Err("active update lock is not a bounded regular file".into());
     }
-
-    pub fn token(&self) -> &str {
-        &self.token
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(MAX_LOCK_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_LOCK_BYTES {
+        return Err("active update lock exceeds its size limit".into());
     }
-
-    /// Publish only after managed Desktop cleanup has completed successfully.
-    pub fn publish(&self, request_path: &Path) -> io::Result<()> {
-        self.publish_with_sync(request_path, File::sync_all)
+    let lock: ActiveUpdateLock = serde_json::from_slice(&bytes)?;
+    if lock.owner_pid == 0 || !lock.status_path.is_absolute() {
+        return Err("active update lock identity is invalid".into());
     }
-
-    fn publish_with_sync(
-        &self,
-        request_path: &Path,
-        sync: impl FnOnce(&File) -> io::Result<()>,
-    ) -> io::Result<()> {
-        let destination = handoff_path(request_path)?;
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let (temporary, mut file) = loop {
-            let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-            let temporary = destination.with_file_name(format!(
-                ".{HANDOFF_FILE}.{}.{}.tmp",
-                std::process::id(),
-                id
-            ));
-            match options.open(&temporary) {
-                Ok(file) => break (temporary, file),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
-        };
-
-        let prepared = file
-            .write_all(self.token.as_bytes())
-            .and_then(|()| sync(&file));
-        drop(file);
-        if let Err(error) = prepared {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
-
-        // A hard link publishes the fully synced file without replacing a prior handoff.
-        let published = fs::hard_link(&temporary, &destination);
-        // Once linked, failure to remove the staging name cannot revoke publication.
-        let _ = fs::remove_file(&temporary);
-        published
-    }
-
-    /// Verify only after the Launcher has exited, immediately before installing.
-    pub fn verify(&self, request_path: &Path) -> io::Result<()> {
-        let path = handoff_path(request_path)?;
-        let metadata = fs::symlink_metadata(&path)?;
-        if !metadata.is_file()
-            || metadata.file_type().is_symlink()
-            || metadata.len() != TOKEN_BYTES as u64
-        {
-            return Err(invalid_handoff());
-        }
-        let file = File::open(&path)?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file() || metadata.len() != TOKEN_BYTES as u64 {
-            return Err(invalid_handoff());
-        }
-        // Bound the read even if the file changes after its metadata was read.
-        let mut bytes = Vec::with_capacity(TOKEN_BYTES + 1);
-        file.take((TOKEN_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)?;
-        if bytes != self.token.as_bytes() {
-            return Err(invalid_handoff());
-        }
-        Ok(())
-    }
+    Ok(Some(lock))
 }
 
-fn handoff_path(request_path: &Path) -> io::Result<PathBuf> {
-    if !request_path.is_absolute() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "update handoff request path must be absolute",
-        ));
-    }
-    request_path
+pub(crate) fn wait_for_ownership(
+    status_path: &Path,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
+    let state_directory = status_path
         .parent()
-        .map(|parent| parent.join(HANDOFF_FILE))
-        .ok_or_else(invalid_handoff)
-}
-
-fn invalid_handoff() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        "Launcher did not authorize this update after Desktop cleanup",
-    )
+        .and_then(Path::parent)
+        .ok_or("update status path has no state directory")?;
+    let lock_path = state_directory.join(ACTIVE_UPDATE_LOCK_FILE);
+    let expected_status = status_path.canonicalize()?;
+    let started = Instant::now();
+    loop {
+        if let Some(lock) = read_lock(&lock_path)? {
+            if lock.status_path.canonicalize().ok().as_ref() != Some(&expected_status) {
+                return Err("active update lock belongs to a different update operation".into());
+            }
+            if lock.owner_pid == std::process::id() {
+                return Ok(());
+            }
+        }
+        if started.elapsed() >= timeout {
+            return Err(
+                "active update lock was not transferred to the Updater before timeout".into(),
+            );
+        }
+        thread::sleep(Duration::from_millis(20).min(timeout.saturating_sub(started.elapsed())));
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{HANDOFF_FILE, UpdateHandoff};
-    use std::fs;
-    use std::io;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use super::*;
 
-    const TOKEN: &str = "0123456789abcdef0123456789abcdef";
-    static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
-
-    fn fixture() -> (PathBuf, PathBuf, UpdateHandoff) {
-        let root = loop {
-            let id = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
-            let root =
-                std::env::temp_dir().join(format!("codexhost-handoff-{}-{id}", std::process::id()));
-            match fs::create_dir(&root) {
-                Ok(()) => break root,
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => panic!("failed to create handoff fixture: {error}"),
-            }
-        };
-        let request = root.join("request-v1.json");
-        (root, request, UpdateHandoff::from_token(TOKEN).unwrap())
+    struct Fixture {
+        root: PathBuf,
+        status: PathBuf,
     }
-
-    #[test]
-    fn accepts_only_a_32_character_lowercase_hexadecimal_token() {
-        assert_eq!(UpdateHandoff::from_token(TOKEN).unwrap().token(), TOKEN);
-        for invalid in [
-            "",
-            "0123456789abcdef0123456789abcde",
-            "0123456789abcdef0123456789abcdef0",
-            "0123456789ABCDEF0123456789ABCDEF",
-            "../../../../../../../../../../..",
-            "é123456789abcdef0123456789abcdef",
-        ] {
-            assert!(UpdateHandoff::from_token(invalid).is_err());
+    impl Fixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "codexhost-update-lock-{}-{:?}",
+                std::process::id(),
+                thread::current().id()
+            ));
+            let status = root.join("update-fixture/status-v1.json");
+            fs::create_dir_all(status.parent().unwrap()).unwrap();
+            fs::write(&status, "waiting-for-exit").unwrap();
+            Self { root, status }
+        }
+        fn write_lock(&self, owner: u32, status: &Path) {
+            fs::write(
+                self.root.join(ACTIVE_UPDATE_LOCK_FILE),
+                serde_json::to_vec(&serde_json::json!({"ownerPid":owner,"statusPath":status}))
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
         }
     }
 
     #[test]
-    fn accepts_the_published_token_and_rejects_a_second_publication() {
-        let (root, request, handoff) = fixture();
-        handoff.publish(&request).unwrap();
-        handoff.verify(&request).unwrap();
-        assert_eq!(fs::read(root.join(HANDOFF_FILE)).unwrap(), TOKEN.as_bytes());
-        assert_eq!(
-            handoff.publish(&request).unwrap_err().kind(),
-            std::io::ErrorKind::AlreadyExists
+    fn accepts_only_ownership_of_this_operation() {
+        let fixture = Fixture::new();
+        fixture.write_lock(std::process::id(), &fixture.status);
+        wait_for_ownership(&fixture.status, Duration::ZERO).unwrap();
+        fixture.write_lock(std::process::id(), &fixture.root.join("other-status.json"));
+        assert!(
+            wait_for_ownership(&fixture.status, Duration::ZERO)
+                .unwrap_err()
+                .to_string()
+                .contains("different update operation")
         );
-        handoff.verify(&request).unwrap();
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn a_sync_failure_after_the_full_write_does_not_publish_authorization() {
-        let (root, request, handoff) = fixture();
-        let error = handoff
-            .publish_with_sync(&request, |file| {
-                assert_eq!(file.metadata()?.len(), TOKEN.len() as u64);
-                Err(io::Error::other("simulated sync failure"))
-            })
-            .unwrap_err();
-        assert_eq!(error.to_string(), "simulated sync failure");
-        assert_eq!(
-            handoff.verify(&request).unwrap_err().kind(),
-            io::ErrorKind::NotFound
+    fn missing_or_different_owner_times_out_without_modifying_the_lock() {
+        let fixture = Fixture::new();
+        assert!(
+            wait_for_ownership(&fixture.status, Duration::from_millis(10))
+                .unwrap_err()
+                .to_string()
+                .contains("timeout")
         );
-        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
-        handoff.publish(&request).unwrap();
-        handoff.verify(&request).unwrap();
-        fs::remove_dir_all(root).unwrap();
+        let owner = if std::process::id() == 1 { 2 } else { 1 };
+        fixture.write_lock(owner, &fixture.status);
+        let before = fs::read(fixture.root.join(ACTIVE_UPDATE_LOCK_FILE)).unwrap();
+        assert!(
+            wait_for_ownership(&fixture.status, Duration::from_millis(10))
+                .unwrap_err()
+                .to_string()
+                .contains("timeout")
+        );
+        assert_eq!(
+            fs::read(fixture.root.join(ACTIVE_UPDATE_LOCK_FILE)).unwrap(),
+            before
+        );
     }
 
     #[test]
-    fn rejects_missing_mismatched_truncated_and_oversized_authorization() {
-        let (root, request, handoff) = fixture();
-        assert!(handoff.verify(&request).is_err());
-        for invalid in [
-            Vec::new(),
-            TOKEN.as_bytes()[..31].to_vec(),
-            b"fedcba9876543210fedcba9876543210".to_vec(),
-            format!("{TOKEN}\n").into_bytes(),
-            vec![b'0'; 8192],
-        ] {
-            fs::write(root.join(HANDOFF_FILE), invalid).unwrap();
-            assert!(handoff.verify(&request).is_err());
-        }
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn a_previous_helpers_token_does_not_authorize_a_retry() {
-        let (root, request, previous) = fixture();
-        previous.publish(&request).unwrap();
-        let retry = UpdateHandoff::from_token("fedcba9876543210fedcba9876543210").unwrap();
-        assert!(retry.verify(&request).is_err());
-        assert!(retry.publish(&request).is_err());
-        previous.verify(&request).unwrap();
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn rejects_a_directory_and_relative_request_paths() {
-        let (root, request, handoff) = fixture();
-        fs::create_dir(root.join(HANDOFF_FILE)).unwrap();
-        assert!(handoff.verify(&request).is_err());
-        assert!(handoff.publish(Path::new("request-v1.json")).is_err());
-        assert!(handoff.verify(Path::new("request-v1.json")).is_err());
-        fs::remove_dir_all(root).unwrap();
+    fn rejects_oversized_and_non_regular_locks() {
+        let fixture = Fixture::new();
+        let lock_path = fixture.root.join(ACTIVE_UPDATE_LOCK_FILE);
+        fs::write(&lock_path, vec![b' '; MAX_LOCK_BYTES as usize + 1]).unwrap();
+        assert!(wait_for_ownership(&fixture.status, Duration::ZERO).is_err());
+        fs::remove_file(&lock_path).unwrap();
+        fs::create_dir(&lock_path).unwrap();
+        assert!(wait_for_ownership(&fixture.status, Duration::ZERO).is_err());
     }
 
     #[cfg(unix)]
     #[test]
-    fn rejects_a_symlink_even_when_its_target_has_the_matching_token() {
-        let (root, request, handoff) = fixture();
-        let target = root.join("target");
-        fs::write(&target, TOKEN).unwrap();
-        std::os::unix::fs::symlink(target, root.join(HANDOFF_FILE)).unwrap();
-        assert!(handoff.verify(&request).is_err());
-        assert!(handoff.publish(&request).is_err());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn publishes_without_group_or_other_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-        let (root, request, handoff) = fixture();
-        handoff.publish(&request).unwrap();
-        assert_eq!(
-            fs::metadata(root.join(HANDOFF_FILE))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-        fs::remove_dir_all(root).unwrap();
+    fn rejects_a_symlinked_lock() {
+        let fixture = Fixture::new();
+        std::os::unix::fs::symlink(&fixture.status, fixture.root.join(ACTIVE_UPDATE_LOCK_FILE))
+            .unwrap();
+        assert!(wait_for_ownership(&fixture.status, Duration::ZERO).is_err());
     }
 }

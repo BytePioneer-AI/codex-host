@@ -1,4 +1,4 @@
-import { DEFAULT_RENDERER_AGENTS, type RendererAgent } from "./agent-selection-state.js";
+import { type RendererAgent } from "./agent-selection-state.js";
 import {
   installRendererBindingProbe,
   type RendererBindingProbeApi,
@@ -6,10 +6,10 @@ import {
 import { installCurrentRendererAdapter } from "./versioned-renderer-adapter.js";
 
 export function installRendererBinding(
-  enabledAgents: readonly RendererAgent[] = DEFAULT_RENDERER_AGENTS,
+  enabledAgents?: readonly RendererAgent[],
 ): RendererBindingProbeApi {
   window.__codexhostRendererBindingProbeV1?.dispose();
-  const binding = installRendererBindingProbe({ enabledAgents });
+  const binding = installRendererBindingProbe({ ...(enabledAgents ? { enabledAgents } : {}) });
   try {
     const adapter = installCurrentRendererAdapter();
     binding.setAdapter(adapter.status, adapter.dispose, adapter.applyAgent, adapter.modelControl);

@@ -46,7 +46,25 @@ fn run(command: &mut Command) -> Result<(), Box<dyn Error>> {
         thread::sleep(Duration::from_millis(100));
     }
 }
+fn cancel_path(request: &Request) -> PathBuf {
+    request.status_path.with_extension("cancel")
+}
+fn cancel_requested(request: &Request) -> bool {
+    let Ok(bytes) = fs::read(cancel_path(request)) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    value["targetVersion"].as_str() == Some(request.version.as_str())
+}
 fn status(request: &Request, phase: &str, error: Option<String>) -> Result<(), Box<dyn Error>> {
+    // Host writes remote-update.cancel before recording failed. That marker is the
+    // source of truth for cancellation: the helper must not install after it appears,
+    // even if a late rename briefly overwrites the JSON status file.
+    if phase != "failed" && (cancel_requested(request) || status_already_failed(request)?) {
+        return Err("Remote update was cancelled before the helper started".into());
+    }
     let temporary = request.status_path.with_extension("tmp");
     fs::write(
         &temporary,
@@ -54,7 +72,15 @@ fn status(request: &Request, phase: &str, error: Option<String>) -> Result<(), B
             &json!({"phase":phase,"targetVersion":request.version,"error":error,"updaterPid":std::process::id()}),
         )?,
     )?;
+    // Re-check immediately before publishing so a Host cancel during the write still wins.
+    if phase != "failed" && (cancel_requested(request) || status_already_failed(request)?) {
+        let _ = fs::remove_file(&temporary);
+        return Err("Remote update was cancelled before the helper started".into());
+    }
     fs::rename(temporary, &request.status_path)?;
+    if phase != "failed" && cancel_requested(request) {
+        return Err("Remote update was cancelled before the helper started".into());
+    }
     Ok(())
 }
 fn remote(request: &Request, action: &str) -> Result<(), Box<dyn Error>> {
@@ -85,13 +111,31 @@ pub(crate) fn apply(path: &Path) -> Result<(), Box<dyn Error>> {
             return Err("remote updater paths must be absolute".into());
         }
     }
+    // If the Host already timed out (cancel marker and/or failed status), do not install.
+    if status_already_failed(&request)? || cancel_requested(&request) {
+        return Err("Remote update was cancelled before the helper started".into());
+    }
     // Record this process first: the service that started it only knows it by this PID.
     status(&request, "installing", None)?;
+    // Host may have timed out between the check and this write; bail before installing.
+    if status_already_failed(&request)? || cancel_requested(&request) {
+        return Err("Remote update was cancelled before the helper started".into());
+    }
     let result = apply_locked(&request);
     if let Err(error) = &result {
         let _ = status(&request, "failed", Some(error.to_string()));
     }
     result
+}
+fn status_already_failed(request: &Request) -> Result<bool, Box<dyn Error>> {
+    let Ok(bytes) = fs::read(&request.status_path) else {
+        return Ok(false);
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Ok(false);
+    };
+    Ok(value["phase"].as_str() == Some("failed")
+        && value["targetVersion"].as_str() == Some(request.version.as_str()))
 }
 fn apply_locked(request: &Request) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&request.lock_directory)?;
@@ -121,6 +165,9 @@ fn apply_locked(request: &Request) -> Result<(), Box<dyn Error>> {
                 &json!({"ownerPid":std::process::id(),"statusPath":null,"remoteUpdate":true}),
             )?,
         )?;
+        if cancel_requested(request) || status_already_failed(request)? {
+            return Err("Remote update was cancelled before the helper started".into());
+        }
         let before: serde_json::Value = serde_json::from_slice(&fs::read(
             request.package_root.join("app/codexhost-distribution.json"),
         )?)?;
@@ -220,7 +267,6 @@ fn apply_locked(request: &Request) -> Result<(), Box<dyn Error>> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     struct Fixture {
@@ -245,15 +291,22 @@ mod tests {
             br#"{"version":"0.11.0"}"#,
         )
         .unwrap();
-        let node = root.join("node");
-        // This fixture records commands; it never invokes npm or a real service.
-        fs::write(&node, format!("#!/bin/sh\necho \"$2\" >> '{}'\nif [ \"$2\" = root ]; then echo '{}'; fi\nif [ \"$2\" = view ]; then exit {}; fi\nexit 0\n", root.join("calls").display(), root.join("node_modules").display(), if view_failure {1} else {0})).unwrap();
-        fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
+        // Interpret fixture scripts with the installed shell instead of executing a newly
+        // written file, which can race with parallel child spawns on Linux (ETXTBSY).
+        // These scripts record commands without invoking npm or a real service.
+        let source = format!(
+            "echo \"$1\" >> '{}'\nif [ \"$1\" = root ]; then echo '{}'; fi\nif [ \"$1\" = view ]; then exit {}; fi\nexit 0\n",
+            root.join("calls").display(),
+            root.join("node_modules").display(),
+            if view_failure { 1 } else { 0 },
+        );
+        fs::write(root.join("npm"), &source).unwrap();
+        fs::write(root.join("launcher"), &source).unwrap();
         let request = Request {
             version: "0.11.0".into(),
             installed_version: "0.11.0".into(),
             restart_only: false,
-            node,
+            node: PathBuf::from("/bin/sh"),
             npm: root.join("npm"),
             launcher: root.join("launcher"),
             package_root,
@@ -265,7 +318,11 @@ mod tests {
     #[test]
     fn unavailable_release_never_stops_the_service() {
         let f = fixture(true);
-        assert!(apply_locked(&f.request).is_err());
+        let error = apply_locked(&f.request).unwrap_err().to_string();
+        assert!(
+            error.contains("The requested release is unavailable or npm cannot reach the registry"),
+            "unexpected update failure: {error}"
+        );
         let calls = fs::read_to_string(f.root.join("calls")).unwrap();
         assert_eq!(calls, "root\nview\n");
         assert!(

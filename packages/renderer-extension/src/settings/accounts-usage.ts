@@ -1,4 +1,8 @@
-import type { AccountCreditsSnapshot } from "@codexhost/shared-contracts";
+import {
+  accountCreditsWindowLabel,
+  localizeHarnessPresentation,
+  type AccountCreditsSnapshot,
+} from "@codexhost/shared-contracts";
 
 import { formatRendererCreditsReset, rendererCreditsTone } from "../renderer-credits-control.js";
 import { formatRendererCreditsPercent } from "../renderer-usage-control.js";
@@ -29,18 +33,6 @@ export function creditsPeriodLabel(
   if (periodType === "five_hour") return messages.accountCreditsPeriodFiveHour;
   if (periodType === "seven_day") return messages.accountCreditsPeriodSevenDay;
   return messages.accountCreditsPeriodUnknown;
-}
-
-export function creditsProductLabel(product: string, messages: RendererSettingsMessages): string {
-  if (product === "GrokBuild" || product === "Build") return messages.accountCreditsBuild;
-  if (product === "5-hour window") return messages.accountCreditsPeriodFiveHour;
-  if (product === "7-day window") return messages.accountCreditsPeriodSevenDay;
-  if (product.endsWith(" · monthly"))
-    return `${product.slice(0, -" · monthly".length)} · ${messages.accountCreditsPeriodMonthly}`;
-  if (product === "GrokChat") return "Chat";
-  if (product === "GrokImagine") return "Imagine";
-  if (product === "GrokVoice") return "Voice";
-  return product;
 }
 
 export function formatAccountCreditsReset(
@@ -115,25 +107,6 @@ function comparisonPeriod(
   return null;
 }
 
-function scopedUsageProduct(product: string): {
-  scope: string;
-  period: AccountUsagePeriod;
-} | null {
-  const suffixes: ReadonlyArray<readonly [string, AccountUsagePeriod]> = [
-    [" · 5-hour window", "five_hour"],
-    [" · Weekly window", "seven_day"],
-    [" · 7-day window", "seven_day"],
-    [" · 5-hour", "five_hour"],
-    [" · 7-day", "seven_day"],
-  ];
-  for (const [suffix, period] of suffixes) {
-    if (!product.endsWith(suffix)) continue;
-    const scope = product.slice(0, -suffix.length).trim();
-    if (scope) return { scope, period };
-  }
-  return null;
-}
-
 /** Generic limits occupy the first row; related scoped limits add aligned quota-only rows. */
 function splitUsageWindows(
   credits: AccountCreditsSnapshot,
@@ -144,27 +117,28 @@ function splitUsageWindows(
   const scopedRows = new Map<string, AccountUsageRow[]>();
   const additional: AccountUsageWindow[] = [];
   const addScoped = (
-    scope: string,
+    scope: NonNullable<AccountCreditsSnapshot["scope"]>,
     period: AccountUsagePeriod,
     window: AccountUsageWindow,
   ): void => {
-    const rows = scopedRows.get(scope) ?? [];
+    const scopeLabel = localizeHarnessPresentation(scope, messages.locale).label;
+    const rows = scopedRows.get(scope.id) ?? [];
     let row = rows.find((candidate) => !candidate.columns[period]);
     if (!row) {
-      row = { scope, columns: {} };
+      row = { scope: scopeLabel, columns: {} };
       rows.push(row);
-      scopedRows.set(scope, rows);
+      scopedRows.set(scope.id, rows);
     }
     row.columns[period] = {
       ...window,
-      label: `${scope} · ${creditsPeriodLabel(period, messages)}`,
+      label: window.label,
       scoped: true,
     };
   };
   const addWindow = (
     window: AccountUsageWindow,
     period: AccountUsagePeriod | null,
-    scope?: string,
+    scope?: AccountCreditsSnapshot["scope"],
   ): void => {
     if (scope && period) addScoped(scope, period, window);
     else if (!scope && period && !generic.columns[period]) generic.columns[period] = window;
@@ -172,37 +146,27 @@ function splitUsageWindows(
   };
 
   const primary: AccountUsageWindow = {
-    label: credits.label
-      ? creditsProductLabel(credits.label, messages)
-      : creditsPeriodLabel(credits.periodType, messages),
+    label: accountCreditsWindowLabel(credits, messages.locale, (period) =>
+      creditsPeriodLabel(period, messages),
+    ),
     usedPercent: credits.usedPercent,
     amount: credits,
     resetsAt: credits.resetsAt,
-    scoped: Boolean(credits.label && scopedUsageProduct(credits.label)),
+    scoped: Boolean(credits.scope),
   };
-  const primaryScope = credits.label ? scopedUsageProduct(credits.label) : null;
-  addWindow(
-    primary,
-    primaryScope?.period ?? (credits.label ? null : comparisonPeriod(credits.periodType)),
-    primaryScope?.scope,
-  );
+  addWindow(primary, comparisonPeriod(credits.periodType), credits.scope);
 
   for (const product of credits.productUsage ?? []) {
-    const scoped = scopedUsageProduct(product.product);
     const window: AccountUsageWindow = {
-      label: creditsProductLabel(product.product, messages),
+      label: accountCreditsWindowLabel(product, messages.locale, (period) =>
+        creditsPeriodLabel(period, messages),
+      ),
       usedPercent: product.usagePercent,
       amount: product,
       resetsAt: product.resetsAt,
-      scoped: Boolean(scoped),
+      scoped: Boolean(product.scope),
     };
-    const genericPeriod =
-      product.product === "5-hour window"
-        ? "five_hour"
-        : product.product === "7-day window"
-          ? "seven_day"
-          : null;
-    addWindow(window, scoped?.period ?? genericPeriod, scoped?.scope);
+    addWindow(window, comparisonPeriod(product.periodType ?? "unknown"), product.scope);
   }
 
   const structured = [...scopedRows.values()].flat();
@@ -318,39 +282,37 @@ export function renderAccountUsage(
     return { cells: [cell], continuationCells: [] };
   }
   const { rows, additional } = splitUsageWindows(state.credits, messages, filter);
-  // Non-comparison quotas use the same two physical columns, without inventing periods.
-  const onlyRow = rows.length === 1 ? rows[0] : undefined;
-  if (additional.length && onlyRow && !Object.keys(onlyRow.columns).length) rows.pop();
-  for (let index = 0; index < additional.length; index += 2) {
-    const first = additional[index];
-    const second = additional[index + 1];
-    rows.push({
-      columns: {
-        ...(first ? { five_hour: first } : {}),
-        ...(second ? { seven_day: second } : {}),
-      },
-    });
+  // Pack actual windows, rather than reserving empty slots for a period or scope.
+  // This keeps Kimi's weekly and scoped 5-hour windows in the same Account row.
+  const windows = [
+    ...rows.flatMap((row) =>
+      (["five_hour", "seven_day"] as const).flatMap((period) =>
+        row.columns[period] ? [row.columns[period]] : [],
+      ),
+    ),
+    ...additional,
+  ];
+  const packed: HTMLTableCellElement[][] = [];
+  for (let index = 0; index < windows.length; index += 2) {
+    const pair = windows.slice(index, index + 2);
+    packed.push(
+      pair.map((window) => {
+        const cell = document.createElement("td");
+        cell.className = "settings-account-usage-cell";
+        if (pair.length === 1) cell.colSpan = 2;
+        cell.append(renderUsageWindow(document, window, messages, display));
+        return cell;
+      }),
+    );
   }
-  const renderCells = (row: AccountUsageRow): HTMLTableCellElement[] =>
-    (["five_hour", "seven_day"] as const).map((period) => {
-      const cell = document.createElement("td");
-      cell.className = "settings-account-usage-cell";
-      const window = row.columns[period];
-      if (window) cell.append(renderUsageWindow(document, window, messages, display));
-      else {
-        const missing = document.createElement("div");
-        missing.className = "settings-account-usage__missing";
-        const dash = document.createElement("span");
-        dash.textContent = "—";
-        dash.setAttribute("aria-hidden", "true");
-        missing.append(dash);
-        cell.append(missing);
-      }
-      return cell;
-    });
-  const [firstRow = { columns: {} }, ...continuations] = rows;
-  const cells = renderCells(firstRow);
-  const continuationCells = continuations.map(renderCells);
+  if (packed.length === 0) {
+    const cell = document.createElement("td");
+    cell.colSpan = 2;
+    cell.className = "settings-account-usage-cell settings-account-usage-cell--message";
+    cell.textContent = messages.accountCreditsEmpty;
+    packed.push([cell]);
+  }
+  const [cells = [], ...continuationCells] = packed;
   return { cells, continuationCells };
 }
 

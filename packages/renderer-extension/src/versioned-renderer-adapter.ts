@@ -1,13 +1,17 @@
 import { startAgentGroupSync } from "./agent-group-sync.js";
+import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js";
 import { getSharedAgentGroupPreferenceStore } from "./agent-group-preference.js";
 import {
   committedReactAncestors,
+  createScopedDraftModelWriter,
+  findScopedDraftModelBinding,
   REACT_FIBER_WALK_LIMIT_EVENT,
   type RendererHostRoute,
   type RendererHostRouting,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { createRendererHostClients } from "./renderer-host-clients.js";
 import { installIdleReleasePreferenceSync } from "./renderer-idle-release-preference.js";
+import { installRendererHarnessPreferenceSync } from "./renderer-harness-preferences.js";
 import {
   encodeHarnessPluginRoute,
   harnessIdSchema,
@@ -90,6 +94,7 @@ export interface RendererAdapterStatus {
     | "installation-failed"
     | "draft-prewarm-clear-failed"
     | "draft-routing-policy-unavailable"
+    | "native-steering-policy-unavailable"
     | "react-fiber-walk-limit-exceeded";
   modelUpdates: number;
   hook: "request-bridge" | null;
@@ -139,7 +144,11 @@ export interface RendererDraftPrewarmPolicy {
   state: "ready";
   hostId: string;
   readonly requestTarget?: () => unknown;
-  select(model: string | null): boolean;
+  select(
+    model: string | null,
+    draftId?: string,
+    creationModes?: readonly Record<string, unknown>[],
+  ): boolean;
   clear(): Promise<void>;
 }
 
@@ -156,26 +165,8 @@ declare global {
     __codexhostMainProcessTitlePolicyV1?: { state: "ready" };
     __codexhostDraftPrewarmPolicyV1?: RendererDraftPrewarmPolicy;
     __codexhostHostRoutingV1?: RendererHostRouting;
+    __codexhostRpcSteeringV1?: { controller: unknown; forHost?: unknown; release?(): void };
   }
-}
-
-const KIRO_CLI_HARNESS_ID = harnessIdSchema.parse("kiro-cli");
-
-function transportModelIdForAgent(agent: RendererAgent): string | null {
-  if (agent === "pi") return PI_TRANSPORT_MODEL_ID;
-  if (agent === "claude-code") return CLAUDE_CODE_TRANSPORT_MODEL_ID;
-  if (agent === "deepseek-harness") return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
-  if (agent === "opencode") return OPENCODE_TRANSPORT_MODEL_ID;
-  if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
-  if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
-  if (agent === "antigravity") return ANTIGRAVITY_TRANSPORT_MODEL_ID;
-  if (agent === "kiro-cli") return encodeHarnessPluginRoute({ harnessId: KIRO_CLI_HARNESS_ID });
-  if (agent === "codebuddy" || agent === "workbuddy" || agent === "cursor-cli")
-    return encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse(agent) });
-  if (agent === "qoder" || agent === "qoder-cn" || agent === "kimi-code" || agent === "zcode") {
-    return encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse(agent) });
-  }
-  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -779,6 +770,7 @@ function findComposerDraftIds(composer: Element): Set<string> {
 }
 
 export function findComposerModelTarget(composer: Element): readonly unknown[] | null {
+  if (orbitComposerKind(composer) !== "codex") return null;
   const draftIds = findComposerDraftIds(composer);
   const domIdentity = findComposerDomIdentity(composer);
   if (domIdentity.kind === "ambiguous") return null;
@@ -851,45 +843,16 @@ export function modelSelectionForAgent(
   thinkingOptionId?: HarnessThinkingOptionId,
   permissionModeId?: HarnessPermissionModeId,
 ): ModelPowerSelection | null {
-  const transportModelId =
-    agent === "pi"
-      ? piTransportModelId(model, thinkingOptionId)
-      : agent === "claude-code"
-        ? claudeTransportModelId(model, permissionModeId, thinkingOptionId)
-        : agent === "deepseek-harness"
-          ? deepSeekHarnessTransportModelId(model, permissionModeId)
-          : agent === "opencode"
-            ? openCodeTransportModelId(model, permissionModeId, thinkingOptionId)
-            : agent === "grok"
-              ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
-              : agent === "omp"
-                ? ompTransportModelId(model, thinkingOptionId, permissionModeId)
-                : agent === "antigravity"
-                  ? antigravityTransportModelId(model, permissionModeId, thinkingOptionId)
-                  : agent === "kiro-cli" ||
-                      agent === "codebuddy" ||
-                      agent === "workbuddy" ||
-                      agent === "cursor-cli"
-                    ? encodeHarnessPluginRoute({
-                        harnessId: harnessIdSchema.parse(agent),
-                        ...(model ? { model } : {}),
-                        ...(thinkingOptionId && agent !== "cursor-cli" ? { thinkingOptionId } : {}),
-                        ...(permissionModeId ? { permissionModeId } : {}),
-                      })
-                    : agent === "hermes"
-                      ? hermesTransportModelId(model, permissionModeId)
-                      : agent === "qoder" ||
-                          agent === "qoder-cn" ||
-                          agent === "kimi-code" ||
-                          agent === "zcode"
-                        ? encodeHarnessPluginRoute({
-                            harnessId: harnessIdSchema.parse(agent),
-                            ...(model ? { model } : {}),
-                            ...(thinkingOptionId ? { thinkingOptionId } : {}),
-                            ...(permissionModeId ? { permissionModeId } : {}),
-                          })
-                        : transportModelIdForAgent(agent);
-  return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
+  if (agent === "codex") return officialSelection;
+  return {
+    model: encodeHarnessPluginRoute({
+      harnessId: harnessIdSchema.parse(agent),
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    }),
+    reasoningEffort,
+  };
 }
 
 export function installCurrentRendererAdapter(): {
@@ -925,6 +888,7 @@ export function installCurrentRendererAdapter(): {
 
   const usageSubscription = createThreadUsageSubscriptionRelay();
   const idleReleaseSync = installIdleReleasePreferenceSync(window);
+  const preferencesSync = installRendererHarnessPreferenceSync(window);
   const clients = createRendererHostClients(() => window.__codexhostHostRoutingV1, window);
   const stopGroupSync = startAgentGroupSync(
     getSharedAgentGroupPreferenceStore(),
@@ -951,6 +915,9 @@ export function installCurrentRendererAdapter(): {
         ? client
         : clients.forHost("local");
     idleReleaseSync.connect(localClient);
+    stopGroupSync.connect();
+    preferencesSync.connect("local", localClient);
+    if (route?.hostId && route.hostId !== "local") preferencesSync.connect(route.hostId, client);
     // Adapter readiness describes native connections, not a unique global
     // Composer route. Never use this aggregate readiness to choose a request Host.
     const connected =
@@ -960,13 +927,21 @@ export function installCurrentRendererAdapter(): {
         (window.__codexhostHostRoutingV1?.knownHostIds?.() ?? []).some(
           (hostId) => window.__codexhostHostRoutingV1?.forHost(hostId) != null,
         ));
+    const manager = route?.manager;
+    const needsRpcSteering =
+      manager != null && "kind" in manager && manager.kind === "main-process-rpc";
+    // Each external Composer gates on this binding itself. Aggregate readiness stays "ready" so a
+    // discovery failure cannot hold the Renderer Session, and with it official Codex, hostage.
+    const steeringReady = !needsRpcSteering || window.__codexhostRpcSteeringV1 !== undefined;
     updateStatus(
       connected ? "ready" : "installing",
-      connected
-        ? "ready"
-        : fiberWalkLimited
-          ? "react-fiber-walk-limit-exceeded"
-          : "draft-routing-policy-unavailable",
+      connected && !steeringReady
+        ? "native-steering-policy-unavailable"
+        : connected
+          ? "ready"
+          : fiberWalkLimited
+            ? "react-fiber-walk-limit-exceeded"
+            : "draft-routing-policy-unavailable",
       connected ? "request-bridge" : null,
     );
     return route;
@@ -1030,6 +1005,11 @@ export function installCurrentRendererAdapter(): {
     checkUpdate: () => settingsModelClient().checkUpdate(),
     startUpdate: () => settingsModelClient().startUpdate(),
     readUpdateStatus: () => settingsModelClient().readUpdateStatus(),
+    openWeb: async () => {
+      const client = disposed ? null : clients.forHost("local");
+      if (!client?.openWeb) throw new Error("The local Host is unavailable");
+      return client.openWeb();
+    },
     // The console lives on this machine, so it is always opened through the local Host.
     openConsole: async () => {
       const client = disposed ? null : clients.forHost("local");
@@ -1098,6 +1078,7 @@ export function installCurrentRendererAdapter(): {
   });
 
   const selectedPolicies = new Map<string, RendererDraftPrewarmPolicy>();
+  const draftModels = createScopedDraftModelWriter();
   const handleRoutingPolicyChange = (): void => {
     currentRequestRoute();
   };
@@ -1111,7 +1092,7 @@ export function installCurrentRendererAdapter(): {
     permissionModeId?: HarnessPermissionModeId,
     composer?: Element,
   ): boolean => {
-    if (disposed) return false;
+    if (disposed || (composer && isOrbitComposer(composer))) return false;
     const selection = modelSelectionForAgent(
       null,
       null,
@@ -1125,7 +1106,29 @@ export function installCurrentRendererAdapter(): {
     const route = window.__codexhostHostRoutingV1?.forComposer(composer);
     if (!route) return false;
     try {
-      if (route.policy.select(carrier ?? null)) {
+      const target = composer ? findComposerModelTarget(composer) : null;
+      if (target?.[0] === "conversation") return true;
+      if (target?.[0] !== "default" || typeof target[1] !== "string" || !composer)
+        return agent === "codex";
+      const binding = findScopedDraftModelBinding(composer, target[1]);
+      const draftKey = target[1];
+      if (!binding || !route.policy.scopedCreation)
+        return agent === "codex" && !draftModels.has(draftKey);
+      // The draft write may synchronously render a new creation mode.
+      const previous = draftModels.model(draftKey);
+      const policyChanged = route.policy.select(carrier ?? null, draftKey, binding.creationModes);
+      try {
+        draftModels.apply(draftKey, binding, carrier ?? null);
+      } catch (error) {
+        // The draft keeps its previous model, so its selection must name that model again.
+        try {
+          route.policy.select(previous, draftKey, binding.creationModes);
+        } catch {
+          // The outer handler reports the route as unavailable.
+        }
+        throw error;
+      }
+      if (policyChanged) {
         modelUpdates += 1;
         liveStatus.modelUpdates = modelUpdates;
       }
@@ -1143,6 +1146,7 @@ export function installCurrentRendererAdapter(): {
     dispose() {
       if (disposed) return;
       disposed = true;
+      draftModels.dispose();
       window.removeEventListener(
         "codexhost:draft-prewarm-policy-changed",
         handleRoutingPolicyChange,
@@ -1155,6 +1159,7 @@ export function installCurrentRendererAdapter(): {
         () => clients.dispose(),
         () => usageSubscription.dispose(),
         () => idleReleaseSync.dispose(),
+        () => preferencesSync.dispose(),
       ];
       selectedPolicies.clear();
       for (const cleanup of cleanups) {

@@ -132,6 +132,135 @@ describe("Codex UI projector", () => {
     ).toMatchObject([{ type: "userMessage" }]);
   });
 
+  it("keeps steered input inside its Turn, tagged for Desktop only while live", () => {
+    const steered = {
+      type: "userMessage" as const,
+      itemId: itemId("steer-1"),
+      input: [{ type: "text" as const, text: "also run the tests" }],
+    };
+    const live = projector();
+    live.project({ type: "turn.started", turnId });
+    live.bindUserMessageClientId(steered.itemId, "desktop-message");
+    const started = live.project({ type: "item.started", turnId, item: steered });
+    expect(started.messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          turnId,
+          item: { id: "steer-1", type: "userMessage", clientId: "desktop-message" },
+        },
+      },
+    ]);
+    live.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: steered, outcome: { status: "succeeded" } },
+    });
+    expect(live.pendingTurn().items).toContainEqual(
+      expect.objectContaining({ id: "steer-1", clientId: "desktop-message" }),
+    );
+
+    const historical = projectHistoricalTurn({
+      turnId,
+      cwd: "/workspace",
+      snapshot: {
+        nativeTurnRef: nativeTurnRefSchema.parse({
+          harnessId: "pi",
+          nativeSessionId: "native",
+          nativeTurnKey: "user",
+          formatVersion: 1,
+        }),
+        input: [{ type: "text", text: "start" }],
+        items: [{ item: steered, outcome: { status: "succeeded" } }],
+        outcome: { status: "succeeded" },
+      },
+    });
+    expect(historical.items).toEqual([
+      expect.objectContaining({ type: "userMessage", id: "turn-1-user" }),
+      {
+        id: "steer-1",
+        type: "userMessage",
+        clientId: null,
+        content: [{ type: "text", text: "also run the tests", text_elements: [] }],
+      },
+    ]);
+  });
+
+  it.each([true, false])("restores Desktop image attachments (request heading: %s)", (request) => {
+    const text = [
+      "",
+      "# Files mentioned by the user:",
+      "",
+      "## codex-clipboard-1.png: C:/Users/me/AppData/Local/Temp/codex-clipboard-1.png",
+      "Image attachment: true",
+      "",
+      "## notes.md: /work/notes.md",
+      "",
+      ...(request
+        ? ["## My request:", "## typed.png: /work/typed.png", "Image attachment: true"]
+        : []),
+    ].join("\n");
+    const input = [{ type: "text" as const, text }];
+    const content = [
+      { type: "text", text, text_elements: [] },
+      { type: "localImage", path: "C:/Users/me/AppData/Local/Temp/codex-clipboard-1.png" },
+    ];
+
+    const live = new CodexTurnProjector({
+      threadId: "thread-1",
+      turnId,
+      cwd: "/workspace",
+      startedAtMs: 1_000,
+      initialInput: input,
+    });
+    expect(live.project({ type: "turn.started", turnId }).messages).toContainEqual(
+      expect.objectContaining({
+        method: "item/started",
+        params: expect.objectContaining({
+          item: { id: "turn-1-user", type: "userMessage", clientId: null, content },
+        }),
+      }),
+    );
+    const snapshotOnly = new CodexTurnProjector({
+      threadId: "thread-1",
+      turnId,
+      cwd: "/workspace",
+      startedAtMs: 1_000,
+      snapshotInput: input,
+    });
+    expect(snapshotOnly.project({ type: "turn.started", turnId }).messages).not.toContainEqual(
+      expect.objectContaining({ method: "item/started" }),
+    );
+    expect(snapshotOnly.pendingTurn().items).toEqual([]);
+    expect(snapshotOnly.snapshotTurn().items).toEqual([
+      { id: "turn-1-user", type: "userMessage", clientId: null, content },
+    ]);
+
+    const steered = { type: "userMessage" as const, itemId: itemId("steer-1"), input };
+    expect(live.project({ type: "item.started", turnId, item: steered }).messages).toMatchObject([
+      { method: "item/started", params: { item: { id: "steer-1", content } } },
+    ]);
+
+    const historical = projectHistoricalTurn({
+      turnId,
+      cwd: "/workspace",
+      snapshot: {
+        nativeTurnRef: nativeTurnRefSchema.parse({
+          harnessId: "claude-code",
+          nativeSessionId: "native",
+          nativeTurnKey: "user",
+          formatVersion: 1,
+        }),
+        input,
+        items: [],
+        outcome: { status: "succeeded" },
+      },
+    });
+    expect(historical.items).toEqual([
+      { id: "turn-1-user", type: "userMessage", clientId: null, content },
+    ]);
+  });
+
   it("does not invent historical duration from invalid native timing", () => {
     const snapshot: HostThreadSnapshot["turns"][number] = {
       nativeTurnRef: nativeTurnRefSchema.parse({
@@ -213,6 +342,7 @@ describe("Codex UI projector", () => {
     };
 
     expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toEqual({
+      codexhostFileOperations: [],
       id: "turn-1",
       status: "completed",
       items: [
@@ -749,6 +879,43 @@ describe("Codex UI projector", () => {
       expect(historical.items).toMatchObject([{ type: "userMessage" }, expected]);
     },
   );
+
+  it.each([
+    [{ status: "succeeded" }, "completed"],
+    [
+      {
+        status: "failed",
+        error: { code: "nativeFailure", message: "Summary failed", retryable: true },
+      },
+      "failed",
+    ],
+    [{ status: "cancelled", reason: "Summary cancelled" }, "interrupted"],
+  ] as const)("includes compaction outcome only in client snapshots: %s", (outcome, status) => {
+    const value = projector();
+    const item = { type: "contextCompaction" as const, itemId: itemId("compact-snapshot") };
+    value.project({ type: "turn.started", turnId });
+    const started = value.project({ type: "item.started", turnId, item });
+    expect(started.messages).toMatchObject([
+      {
+        method: "item/started",
+        params: { item: { id: item.itemId, type: item.type } },
+      },
+    ]);
+    expect(value.snapshotTurn()).toMatchObject({
+      status: "inProgress",
+      items: expect.arrayContaining([{ id: item.itemId, type: item.type, status: "inProgress" }]),
+    });
+    value.project({ type: "item.completed", turnId, snapshot: { item, outcome } });
+    expect(value.snapshotTurn()).toMatchObject({
+      status: "inProgress",
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: item.itemId, type: item.type, status }),
+      ]),
+    });
+    expect(value.pendingTurn().items).not.toContainEqual(
+      expect.objectContaining({ type: item.type }),
+    );
+  });
 
   it("projects native context compaction before the continued Agent reply", () => {
     const value = projector();

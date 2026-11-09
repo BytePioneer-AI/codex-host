@@ -1,6 +1,8 @@
 import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
+  encodeHarnessPluginRoute,
+  harnessIdSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -52,6 +54,9 @@ import {
   formatRendererTokenCount,
   rendererUsageTriggerMaxWidth,
 } from "../src/renderer-usage-control.js";
+
+// Layout-only doubles represent chat Composers with no native request surface.
+const noNativeRequest = { closest: () => null, querySelector: () => null };
 
 describe("Renderer connection diagnostics", () => {
   it.each(["kiro-cli", "codebuddy", "workbuddy"] as const)(
@@ -405,13 +410,12 @@ describe("Renderer Composer DOM behavior", () => {
   });
 
   it("retries external Usage after an early empty inspection", () => {
-    expect(shouldRetryExternalThreadUsage("pi", null)).toBe(true);
-    expect(shouldRetryExternalThreadUsage("claude-code", null)).toBe(true);
-    expect(shouldRetryExternalThreadUsage("codex", null)).toBe(true);
-    expect(shouldRetryExternalThreadUsage("codex", { totalCostUsd: 0.168 })).toBe(true);
+    expect(shouldRetryExternalThreadUsage(false, null)).toBe(true);
+    expect(shouldRetryExternalThreadUsage(true, null)).toBe(true);
+    expect(shouldRetryExternalThreadUsage(true, { totalCostUsd: 0.168 })).toBe(true);
     expect(
       shouldRetryExternalThreadUsage(
-        "codex",
+        true,
         { totalCostUsd: 0.168 },
         {
           usedPercent: 33,
@@ -419,11 +423,11 @@ describe("Renderer Composer DOM behavior", () => {
         },
       ),
     ).toBe(false);
-    expect(shouldRetryExternalThreadUsage("pi", { totalCostUsd: 0.168 })).toBe(false);
-    expect(shouldRetryExternalThreadUsage("grok", { totalCostUsd: 0.168 })).toBe(true);
+    expect(shouldRetryExternalThreadUsage(false, { totalCostUsd: 0.168 })).toBe(false);
+    expect(shouldRetryExternalThreadUsage(true, { totalCostUsd: 0.168 })).toBe(true);
     expect(
       shouldRetryExternalThreadUsage(
-        "grok",
+        true,
         { totalCostUsd: 0.168 },
         {
           usedPercent: 33,
@@ -431,13 +435,11 @@ describe("Renderer Composer DOM behavior", () => {
         },
       ),
     ).toBe(false);
-    // Same "keep retrying for Account Credits" carve-out Grok gets: without it, revisiting a
-    // Claude Code Thread whose Usage was already known (so the initial retry never engaged)
-    // would leave the credits pill permanently blank.
-    expect(shouldRetryExternalThreadUsage("claude-code", { totalCostUsd: 0.168 })).toBe(true);
+    // Any plugin advertising quota gets the same retry, even after Usage has arrived.
+    expect(shouldRetryExternalThreadUsage(true, { totalCostUsd: 0.168 })).toBe(true);
     expect(
       shouldRetryExternalThreadUsage(
-        "claude-code",
+        true,
         { totalCostUsd: 0.168 },
         { usedPercent: 62, periodType: "five_hour" },
       ),
@@ -488,6 +490,7 @@ describe("Renderer Composer DOM behavior", () => {
     replacement.setAttribute("data-codex-intelligence-trigger", "true");
     replacement.setAttribute("data-composer-navigation-target", "reasoning");
     const composer = {
+      ...noNativeRequest,
       querySelectorAll: (selector: string) =>
         selector === 'button[aria-haspopup="menu"]' ? [replacement] : [],
     } as unknown as Element;
@@ -525,6 +528,7 @@ describe("Renderer Composer DOM behavior", () => {
   describe("stale send button after Codex re-renders the trailing actions", () => {
     const button = (connected: boolean, disabled = false) =>
       ({
+        closest: () => null,
         type: "submit",
         disabled,
         isConnected: connected,
@@ -532,6 +536,7 @@ describe("Renderer Composer DOM behavior", () => {
       }) as unknown as HTMLButtonElement;
     const fakeControl = (sendButton: HTMLButtonElement, liveButtons: HTMLButtonElement[]) => {
       const composer = {
+        ...noNativeRequest,
         contains: (node: unknown) =>
           node === composer ||
           liveButtons.includes(node as HTMLButtonElement) ||
@@ -591,6 +596,7 @@ describe("Renderer Composer DOM behavior", () => {
     it("keeps the mount-time last-button fallback for unlabelled action buttons", () => {
       const stale = { ...button(false), type: "button" } as unknown as HTMLButtonElement;
       const owned = {
+        closest: () => null,
         type: "button",
         disabled: false,
         isConnected: true,
@@ -598,6 +604,7 @@ describe("Renderer Composer DOM behavior", () => {
         parentElement: null,
       } as unknown as HTMLButtonElement;
       const action = {
+        closest: () => null,
         type: "button",
         disabled: false,
         isConnected: true,
@@ -614,6 +621,7 @@ describe("Renderer Composer DOM behavior", () => {
     it("does not mistake a Stop button for send once a labelled send button is replaced", () => {
       const stale = button(false);
       const stop = {
+        closest: () => null,
         type: "button",
         disabled: false,
         isConnected: true,
@@ -691,12 +699,12 @@ describe("Renderer Composer DOM behavior", () => {
 
     expect(isNativeContextUsageControlCandidate(native)).toBe(true);
     expect(nativeContextUsageControlForComposer(composer)).toBe(native);
-    expect(formatRendererCacheHitRate(99.9)).toBe("CH 99.9%");
+    expect(formatRendererCacheHitRate(99.9)).toBe("99.9%");
     expect(formatRendererCost(0.168)).toBe("$0.168");
-    expect(formatRendererTokenCount(87000)).toBe("87k");
-    expect(formatRendererTokenCount(6700)).toBe("6.7k");
-    expect(formatRendererTokenCount(375000)).toBe("375k");
-    expect(rendererUsageTriggerMaxWidth()).toBe("min(140px, 22vw)");
+    expect(formatRendererTokenCount(87000)).toBe("87K");
+    expect(formatRendererTokenCount(6700)).toBe("6.7K");
+    expect(formatRendererTokenCount(375000)).toBe("375K");
+    expect(rendererUsageTriggerMaxWidth()).toBe("min(240px, 30vw)");
   });
 
   it("places Usage beside the native context wrapper when it is present", () => {
@@ -721,6 +729,7 @@ describe("Renderer Composer DOM behavior", () => {
     const usageRoot = { remove: vi.fn() };
     const control = {
       composer: {
+        ...noNativeRequest,
         querySelectorAll: (selector: string) =>
           selector.includes("[aria-label]") ? [nativeContext] : [],
       },
@@ -754,7 +763,7 @@ describe("Renderer Composer DOM behavior", () => {
     const placeCredits = vi.fn();
     const usageRoot = { remove: vi.fn() };
     const control = {
-      composer: { querySelectorAll: () => [] },
+      composer: { ...noNativeRequest, querySelectorAll: () => [] },
       modelPicker: { root: modelRoot, trigger: {} },
       nativeModelControl: null,
       nativePermissionModeControl: null,
@@ -803,7 +812,7 @@ describe("Renderer Composer DOM behavior", () => {
     const placeCredits = vi.fn();
     const removeCredits = vi.fn();
     const control = {
-      composer: { querySelectorAll: () => [] },
+      composer: { ...noNativeRequest, querySelectorAll: () => [] },
       modelPicker: { root: {}, trigger: {} },
       nativeModelControl: null,
       nativePermissionModeControl: null,
@@ -1067,6 +1076,7 @@ describe("Renderer Composer DOM behavior", () => {
       },
     } as unknown as ComposerAgentControl;
 
+    Object.assign(control.composer, noNativeRequest);
     reconcileComposerNativeControls(control, true, false);
 
     expect(insertBefore).toHaveBeenCalledWith(modelRoot, voice);
@@ -1117,6 +1127,7 @@ describe("Renderer Composer DOM behavior", () => {
       },
     } as unknown as ComposerAgentControl;
 
+    Object.assign(control.composer, noNativeRequest);
     reconcileComposerNativeControls(control, true, false);
 
     expect(insertBefore).toHaveBeenCalledWith(modelRoot, pause);
@@ -1303,7 +1314,7 @@ describe("Renderer Composer DOM behavior", () => {
       restoredThreadOwnership({
         owner: "external",
         harnessId: "hermes",
-        transportModelId: "codexhost/plugin-v1@synthetic",
+        transportModelId: encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("hermes") }),
         history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
         effectiveModel: harnessModelRefSchema.parse({
           id: "hermes-model-v1.emFpOmdsbS01LXR1cmJv",
@@ -1439,7 +1450,7 @@ describe("Renderer Composer DOM behavior", () => {
     expect(lateConversationTargetResolution(defaultTarget, conversationTarget, "locked")).toBe(
       "transfer",
     );
-    expect(shouldRetryExternalThreadUsage("pi", null)).toBe(true);
+    expect(shouldRetryExternalThreadUsage(false, null)).toBe(true);
     expect(lateConversationTargetResolution(defaultTarget, defaultTarget, "draft")).toBe("none");
     expect(isLateConversationTarget(conversationTarget, conversationTarget)).toBe(false);
     expect(isLateConversationTarget(conversationTarget, ["conversation", "opaque-2"])).toBe(true);

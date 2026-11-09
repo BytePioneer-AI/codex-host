@@ -2,6 +2,7 @@ import type {
   CodexhostError,
   HarnessInstallationState,
   HarnessLaunchSettings,
+  HarnessPluginDescriptor,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -10,7 +11,7 @@ import {
   type AgentGroupSection,
 } from "../agent-group-preference.js";
 import type { ExternalRendererAgent, RendererAgentAvailability } from "../agent-selection-state.js";
-import { createRendererAgentIcon, RENDERER_AGENT_LABELS } from "../renderer-agent-icon.js";
+import { createRendererAgentIcon, rendererAgentLabel } from "../renderer-agent-icon.js";
 import type { RendererAdapterStatus } from "../versioned-renderer-adapter.js";
 import type { RemoteConnectionsControl } from "../remote-connections-control.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
@@ -18,9 +19,11 @@ import { createRendererSettingsIcon } from "./icons.js";
 import { createHarnessLaunchControls } from "./harness-launch-controls.js";
 import { harnessHasInstallCommands } from "./harness-installation-guides.js";
 import { createHarnessInstallationPanel } from "./harness-installation-panel.js";
-import { HARNESS_OFFICIAL_WEBSITES } from "./harness-official-websites.js";
 import { harnessInstallStore } from "./harness-install-store.js";
-import { createHarnessVersionPanel } from "./harness-version-panel.js";
+import { createConnectionVersions } from "./connection-versions.js";
+import { createConnectionUpdates } from "./connection-updates.js";
+import type { HarnessVersionPanel } from "./harness-version-panel.js";
+import { harnessVersionLabel } from "./harness-version-messages.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
 export const CODEXHOST_GITHUB_ISSUES_NEW_URL =
@@ -28,6 +31,7 @@ export const CODEXHOST_GITHUB_ISSUES_NEW_URL =
 
 export interface RendererConnectionAgentSnapshot {
   readonly agent: ExternalRendererAgent;
+  readonly plugin?: HarnessPluginDescriptor;
   readonly availability: RendererAgentAvailability;
   readonly error: CodexhostError | null;
   readonly webUiAvailable?: true;
@@ -37,6 +41,7 @@ export interface RendererConnectionHostSnapshot {
   readonly hostId: string;
   readonly active: boolean;
   readonly agents: readonly RendererConnectionAgentSnapshot[];
+  readonly directoryError?: string;
 }
 
 export interface RendererConnectionSnapshot {
@@ -76,6 +81,7 @@ interface ConnectionListItem {
   readonly openWebUi?: () => Promise<void>;
   readonly install?: () => void;
   readonly installError?: string;
+  readonly version?: HarnessVersionPanel;
 }
 
 function connectionStatusLabel(
@@ -167,7 +173,7 @@ function copyDiagnosticsToClipboard(
   );
 }
 
-function connectionHostName(hostId: string, messages: RendererSettingsMessages): string {
+export function connectionHostName(hostId: string, messages: RendererSettingsMessages): string {
   if (hostId === "local") return messages.connectionLocalHost;
   const separator = hostId.lastIndexOf(":");
   const encodedName = separator >= 0 ? hostId.slice(separator + 1) : hostId;
@@ -259,7 +265,9 @@ function createConnectionIdentityIcon(
     : "settings-connection-row__mark";
   container.setAttribute("aria-hidden", "true");
   if (item.agentSnapshot) {
-    container.append(createRendererAgentIcon(item.agentSnapshot.agent, size, document));
+    container.append(
+      createRendererAgentIcon(item.agentSnapshot.agent, size, document, item.agentSnapshot.plugin),
+    );
   } else {
     container.textContent = "CH";
   }
@@ -320,6 +328,7 @@ function createConnectionRow(
         ? messages.connectionConfigurationRequired
         : connectionStatusLabel(item.availability, messages, item.error !== null);
 
+  const version = item.version;
   const action = document.createElement("div");
   action.className = "settings-connection-row__action";
   action.setAttribute("role", "cell");
@@ -348,6 +357,30 @@ function createConnectionRow(
       select();
     });
     action.append(viewError);
+  }
+  if (version?.state?.updateAvailable && !version.updating) {
+    const available = document.createElement("span");
+    available.className = "settings-connection-version-available";
+    available.textContent = messages.harnessVersionAvailable;
+    available.title = `${messages.harnessVersionCurrent}: ${version.state.currentVersion ?? "—"}\n${messages.harnessVersionLatest}: ${harnessVersionLabel(version.state, messages.harnessVersion)}`;
+    action.append(available);
+  }
+  if (version?.state?.updateAvailable && version.state.canUpdate) {
+    const update = document.createElement("button");
+    update.type = "button";
+    update.className = "settings-connection-install-link";
+    update.dataset.connectionAction = "update";
+    update.disabled = version.updating;
+    update.title = messages.harnessVersionUpdate;
+    update.setAttribute("aria-label", `${messages.harnessVersionUpdate}: ${item.name}`);
+    update.append(createRendererSettingsIcon("download", 17));
+    update.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (update.disabled) return;
+      void version.update();
+      select();
+    });
+    action.append(update);
   }
   if (group) {
     const toggle = document.createElement("button");
@@ -402,10 +435,12 @@ function createInspectorHeader(
   const title = document.createElement("strong");
   title.textContent = item.name;
   identity.append(createConnectionIdentityIcon(document, item, 20), title);
-  if (item.agentSnapshot) {
+  const websiteUrl =
+    item.agentSnapshot?.plugin?.links?.website ?? item.agentSnapshot?.plugin?.links?.documentation;
+  if (websiteUrl) {
     const website = document.createElement("a");
     website.className = "settings-connection-website";
-    website.href = HARNESS_OFFICIAL_WEBSITES[item.agentSnapshot.agent];
+    website.href = websiteUrl;
     website.target = "_blank";
     website.rel = "noopener noreferrer";
     website.title = messages.connectionOfficialWebsite;
@@ -449,10 +484,11 @@ function renderConnectionInspector(
     error.textContent = item.installError;
     body.append(error);
   }
-  if (item.agentSnapshot?.agent === "deepseek-harness") {
+  const notice = item.agentSnapshot?.plugin?.notice;
+  if (notice) {
     const compatibility = document.createElement("p");
     compatibility.className = "settings-connection-compatibility";
-    compatibility.textContent = messages.connectionDeepSeekTestedVersions;
+    compatibility.textContent = notice[messages.locale] ?? notice.en;
     body.append(compatibility);
   }
 
@@ -468,7 +504,7 @@ function renderConnectionInspector(
     body.append(
       createHarnessInstallationPanel(
         document,
-        item.agentSnapshot.agent,
+        item.agentSnapshot.plugin,
         hostId,
         messages,
         (button, command, label) =>
@@ -585,7 +621,8 @@ function renderConnectionInspector(
   const setLaunchSettings = diagnostics?.setLaunchSettings?.bind(diagnostics);
   if (
     hostId === "local" &&
-    (agent === "zcode" || agent === "workbuddy") &&
+    agent &&
+    item.agentSnapshot?.plugin?.launchCommand &&
     getLaunchSettings &&
     setLaunchSettings
   ) {
@@ -614,9 +651,19 @@ function connectionItems(
       availability: snapshot.adapter.state,
       error: null,
     },
+    ...(host.directoryError
+      ? [
+          {
+            key: "plugin-directory",
+            name: "Harness plugins",
+            availability: "error" as const,
+            error: { code: "unavailable" as const, message: host.directoryError, retryable: true },
+          },
+        ]
+      : []),
     ...host.agents.map((agent): ConnectionListItem => ({
       key: agent.agent,
-      name: RENDERER_AGENT_LABELS[agent.agent],
+      name: rendererAgentLabel(agent.agent, agent.plugin),
       availability: agent.availability,
       error: agent.availability === "notInstalled" ? null : agent.error,
       agentSnapshot: agent,
@@ -719,16 +766,47 @@ export function createConnectionsSettingsPage(
       // Background availability updates must not discard a path draft or an in-flight save.
       let launchControls: { hostId: string; itemKey: string; element: HTMLElement | null } | null =
         null;
-      // Panels are owned by the page and keyed by Host + Harness, not by each
-      // diagnostic render. Keep in-flight updates and check results across row switches.
-      const versionPanels = new Map<string, HTMLElement>();
-      const updatingVersions = new Set<string>();
       const hostNames = new Map<string, string>();
       let latestSnapshot: RendererConnectionSnapshot | null = null;
       let disposeHostScroller = (): void => undefined;
+      let disposed = false;
+      let renderQueued = false;
+      let renderFrame: number | null = null;
+
+      // Inspections arrive per Harness. Render their latest state once per
+      // frame rather than rebuilding every row for each notification.
+      const scheduleRender = (): void => {
+        if (disposed || context.signal.aborted || renderQueued) return;
+        renderQueued = true;
+        const flush = (): void => {
+          renderFrame = null;
+          renderQueued = false;
+          if (!disposed && !context.signal.aborted) {
+            render(diagnostics?.snapshot() ?? latestSnapshot);
+          }
+        };
+        if (document.defaultView?.requestAnimationFrame) {
+          renderFrame = document.defaultView.requestAnimationFrame(flush);
+        } else {
+          queueMicrotask(flush);
+        }
+      };
+      const cancelRender = (): void => {
+        disposed = true;
+        if (renderFrame !== null) document.defaultView?.cancelAnimationFrame(renderFrame);
+        renderFrame = null;
+      };
 
       const diagnostics = getDiagnostics();
+      const versions = createConnectionVersions(
+        document,
+        messages,
+        context.signal,
+        diagnostics,
+        scheduleRender,
+      );
       const installs = diagnostics ? harnessInstallStore(diagnostics) : null;
+      const updates = createConnectionUpdates(document, messages, context.signal, scheduleRender);
       const runRefresh = (): void => {
         if (pending || !diagnostics) return;
         pending = true;
@@ -883,14 +961,20 @@ export function createConnectionsSettingsPage(
             const agent = item.agentSnapshot?.agent;
             if (!agent) return item;
             const state = installs?.get(selectedHost.hostId, agent);
+            const availability = state?.status ?? item.availability;
+            const version =
+              item.agentSnapshot?.availability !== "notInstalled" &&
+              availability !== "installing" &&
+              availability !== "checking"
+                ? versions.get(selectedHost.hostId, agent)
+                : undefined;
             return {
               ...item,
               ...(state ? { availability: state.status } : {}),
-              ...(updatingVersions.has(JSON.stringify([selectedHost.hostId, agent]))
-                ? { availability: "updating" as const }
-                : {}),
+              ...(version ? { version } : {}),
+              ...(version?.updating ? { availability: "updating" as const } : {}),
               ...(state?.error ? { installError: state.error } : {}),
-              ...(diagnostics?.installation && harnessHasInstallCommands(agent)
+              ...(diagnostics?.installation && harnessHasInstallCommands(item.agentSnapshot?.plugin)
                 ? {
                     install: () => {
                       void installs?.install(selectedHost.hostId, agent);
@@ -936,36 +1020,7 @@ export function createConnectionsSettingsPage(
             runRefresh,
           );
           launchControls = { hostId: selectedHost.hostId, itemKey: item.key, element };
-          const agent = item.agentSnapshot?.agent;
-          const installation = diagnostics?.installation?.bind(diagnostics);
-          if (
-            agent &&
-            item.agentSnapshot?.availability !== "notInstalled" &&
-            item.availability !== "installing" &&
-            item.availability !== "checking" &&
-            installation
-          ) {
-            const key = JSON.stringify([selectedHost.hostId, agent]);
-            let panel = versionPanels.get(key);
-            if (!panel) {
-              const hostId = selectedHost.hostId;
-              panel = createHarnessVersionPanel(document, messages, context.signal, agent, {
-                async run(action) {
-                  if (action !== "update") return installation(hostId, agent, action);
-                  updatingVersions.add(key);
-                  if (diagnostics) render(diagnostics.snapshot());
-                  try {
-                    return await installation(hostId, agent, action);
-                  } finally {
-                    updatingVersions.delete(key);
-                    if (!context.signal.aborted && diagnostics) render(diagnostics.snapshot());
-                  }
-                },
-              });
-              versionPanels.set(key, panel);
-            }
-            inspector.append(panel);
-          }
+          if (item.version) inspector.append(item.version.element);
         };
 
         const pinnedItem = items.find((item) => item.key === "renderer-adapter");
@@ -988,6 +1043,7 @@ export function createConnectionsSettingsPage(
             item.agentSnapshot !== undefined,
         );
         const agentByKey = new Map(groupableItems.map((item) => [item.key, item]));
+        const catalog = groupableItems.map((item) => ({ id: item.key, name: item.name }));
         const preferenceOrder = groupPreference
           .list(
             new Set(
@@ -995,13 +1051,9 @@ export function createConnectionsSettingsPage(
                 .filter((item) => item.agentSnapshot.availability === "notInstalled")
                 .map((item) => item.agentSnapshot.agent),
             ),
+            catalog,
           )
           .filter((entry) => agentByKey.has(entry.agent));
-        for (const item of groupableItems) {
-          if (!preferenceOrder.some((entry) => entry.agent === item.key)) {
-            preferenceOrder.push({ agent: item.key as ExternalRendererAgent, section: "main" });
-          }
-        }
         const mainEntries = preferenceOrder.filter((entry) => entry.section === "main");
         const moreEntries = preferenceOrder.filter((entry) => entry.section === "more");
         const nextInSection = (
@@ -1046,7 +1098,7 @@ export function createConnectionsSettingsPage(
               : messages.connectionGroupMoveToMain,
           dragHandleTitle: messages.connectionGroupDragHandle,
           toggleSection() {
-            groupPreference.moveAgent(agent, section === "main" ? "more" : "main", null);
+            groupPreference.moveAgent(agent, section === "main" ? "more" : "main", null, catalog);
           },
           onDragStart(event) {
             if (groupDisabled) {
@@ -1076,7 +1128,7 @@ export function createConnectionsSettingsPage(
             event.preventDefault();
             if (!draggingAgent) return;
             const { beforeAgent } = dropTargetSection(agent, event);
-            groupPreference.moveAgent(draggingAgent, section, beforeAgent);
+            groupPreference.moveAgent(draggingAgent, section, beforeAgent, catalog);
             draggingAgent = null;
             clearDropIndicators();
           },
@@ -1123,7 +1175,7 @@ export function createConnectionsSettingsPage(
             event.preventDefault();
             zone.dataset.connectionDragOver = "false";
             if (!draggingAgent) return;
-            groupPreference.moveAgent(draggingAgent, "more", null);
+            groupPreference.moveAgent(draggingAgent, "more", null, catalog);
             draggingAgent = null;
             clearDropIndicators();
           });
@@ -1156,7 +1208,14 @@ export function createConnectionsSettingsPage(
 
         const selectedItem = items.find((item) => item.key === selectedItemKey) ?? items[0];
         if (selectedItem) selectItem(selectedItem);
-        list.append(hostStrip, tableHeader, rows);
+        const updateControls = updates.createControls(
+          selectedHost.hostId,
+          items.flatMap((item) => (item.version ? [item.version] : [])),
+        );
+        const hostHeader = document.createElement("div");
+        hostHeader.className = "settings-connection-host-header";
+        hostHeader.append(hostStrip, updateControls.button);
+        list.append(hostHeader, updateControls.result, tableHeader, rows);
         layout.append(list, inspector);
         content.replaceChildren(layout);
         disposeHostScroller = configureHostScroller(
@@ -1198,20 +1257,20 @@ export function createConnectionsSettingsPage(
         );
       // Keep the Main / More grouping in sync with any other open picker or
       // settings instance (e.g. the Agent picker's "Manage" shortcut).
-      const unsubscribeGroup = groupPreference.subscribe(() =>
-        render(diagnostics?.snapshot() ?? latestSnapshot),
-      );
+      const unsubscribeGroup = groupPreference.subscribe(scheduleRender);
       if (!diagnostics) {
         refresh.disabled = true;
         return () => {
+          cancelRender();
           disposeHostScroller();
           unsubscribeGroup();
         };
       }
       refresh.addEventListener("click", runRefresh);
-      const unsubscribe = diagnostics.subscribe(() => render(diagnostics.snapshot()));
-      const unsubscribeInstalls = installs?.subscribe(() => render(diagnostics.snapshot()));
+      const unsubscribe = diagnostics.subscribe(scheduleRender);
+      const unsubscribeInstalls = installs?.subscribe(scheduleRender);
       return () => {
+        cancelRender();
         disposeHostScroller();
         unsubscribeInstalls?.();
         unsubscribe();

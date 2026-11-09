@@ -4,15 +4,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use super::STATUS_FILE;
 use super::{ACTIVE_UPDATE_LOCK_FILE, PendingUpdate, waiting_for_launcher_exit_at};
+use super::{STATUS_FILE, atomic_replace_file, wait_for_updater_ready};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-use super::{
-    StartedUpdate, atomic_replace_file, pending_startable_update_at, pending_update_at,
-    record_updater_start_failure, start_pending_update_at, transfer_lock_to_updater,
-    wait_for_updater_ready,
-};
+use super::{StartedUpdate, record_updater_start_failure, start_pending_update_at};
+use super::{pending_startable_update_at, pending_update_at, transfer_lock_to_updater};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn sleeping_helper() -> std::process::Child {
@@ -60,7 +56,7 @@ fn ready_helper(label: &str) -> (PathBuf, StartedUpdate) {
     );
     let mut child = sleeping_helper();
     set_phase(&pending, "waiting-for-exit");
-    wait_for_updater_ready(&mut child, &pending.status_path).expect("Helper is ready");
+    wait_for_updater_ready(&mut child, &pending.status_path, false).expect("Helper is ready");
     (
         root,
         StartedUpdate {
@@ -147,7 +143,6 @@ fn write_pending_update_in(
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn resolves_only_a_request_for_the_current_launcher() {
     let fixture = fixture_directory("pending-update");
@@ -161,11 +156,10 @@ fn resolves_only_a_request_for_the_current_launcher() {
         pending_startable_update_at(&root, 42, &launcher).expect("resolve pending update"),
         Some(expected)
     );
-    assert!(pending_update_at(&root, 43, &launcher).is_err());
+    assert!(pending_update_at(&root, 43, &launcher).unwrap().is_none());
     fs::remove_dir_all(fixture).expect("remove pending update fixture");
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn waits_for_the_updater_ready_handshake_before_returning() {
     let fixture = fixture_directory("updater-ready");
@@ -223,7 +217,7 @@ fn waits_for_the_updater_ready_handshake_before_returning() {
             .expect("publish waiting status fixture");
     });
     let started = std::time::Instant::now();
-    wait_for_updater_ready(&mut child, &status_path).expect("wait for updater readiness");
+    wait_for_updater_ready(&mut child, &status_path, false).expect("wait for updater readiness");
     assert!(started.elapsed() >= std::time::Duration::from_millis(40));
     writer.join().expect("join status writer");
     child.kill().expect("stop updater fixture");
@@ -231,7 +225,6 @@ fn waits_for_the_updater_ready_handshake_before_returning() {
     fs::remove_dir_all(fixture).expect("remove updater ready fixture");
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn does_not_accept_a_waiting_status_from_an_exited_updater() {
     let fixture = fixture_directory("exited-updater");
@@ -261,11 +254,44 @@ fn does_not_accept_a_waiting_status_from_an_exited_updater() {
     let mut child = command.spawn().expect("spawn exiting updater fixture");
     child.wait().expect("reap exiting updater fixture");
 
-    assert!(wait_for_updater_ready(&mut child, &status_path).is_err());
+    assert!(wait_for_updater_ready(&mut child, &status_path, false).is_err());
     fs::remove_dir_all(fixture).expect("remove exited updater fixture");
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn a_service_updater_may_finish_before_the_ready_handshake_is_observed() {
+    let fixture = fixture_directory("finished-service-updater");
+    let status_path = fixture.join(STATUS_FILE);
+    fs::write(
+        &status_path,
+        format!(
+            "{}\n",
+            json!({
+                "schemaVersion": 1,
+                "version": "1.2.3",
+                "installation": "npm",
+                "phase": "succeeded",
+                "updatedAt": 1,
+            })
+        ),
+    )
+    .expect("write finished status");
+    let mut command = std::process::Command::new(if cfg!(target_os = "windows") {
+        "cmd.exe"
+    } else {
+        "/usr/bin/true"
+    });
+    if cfg!(target_os = "windows") {
+        command.args(["/d", "/c", "exit", "0"]);
+    }
+    let mut child = command.spawn().expect("spawn exiting updater fixture");
+    child.wait().expect("reap exiting updater fixture");
+
+    wait_for_updater_ready(&mut child, &status_path, true).expect("service update progressed");
+    assert!(wait_for_updater_ready(&mut child, &status_path, false).is_err());
+    fs::remove_dir_all(fixture).expect("remove finished updater fixture");
+}
+
 #[test]
 fn transfers_the_active_lock_to_the_updater_process() {
     let fixture = fixture_directory("update-owner");
@@ -285,7 +311,6 @@ fn transfers_the_active_lock_to_the_updater_process() {
     fs::remove_dir_all(fixture).expect("remove transferred lock fixture");
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn waits_until_the_final_request_exists() {
     let fixture = fixture_directory("incomplete-update");
@@ -764,12 +789,11 @@ fn treats_waiting_for_exit_as_a_managed_desktop_stop() {
     )
     .expect("write waiting status fixture");
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     assert_eq!(
         pending_startable_update_at(&root, 42, &launcher).expect("do not restart Helper"),
         None
     );
     assert!(waiting_for_launcher_exit_at(&root, 42, &launcher).expect("detect waiting update"));
-    assert!(waiting_for_launcher_exit_at(&root, 43, &launcher).is_err());
+    assert!(!waiting_for_launcher_exit_at(&root, 43, &launcher).unwrap());
     fs::remove_dir_all(fixture).expect("remove waiting update fixture");
 }

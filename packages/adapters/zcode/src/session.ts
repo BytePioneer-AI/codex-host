@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   parseHostUsage,
   type HarnessCommandInvocation,
@@ -14,12 +15,14 @@ import {
   type TurnOutcome,
   type HostItemOutcome,
   type TurnStartCommand,
+  type TurnSteerCommand,
   type TurnCancelCommand,
   type InteractionRespondCommand,
   type ModelSelectCommand,
   type ThinkingSelectCommand,
   type PermissionModeSelectCommand,
   type TurnStartAccepted,
+  type TurnSteerAccepted,
   type TurnCancelAccepted,
   type InteractionRespondAccepted,
   type ModelSelectCompleted,
@@ -51,6 +54,7 @@ import { makeInteraction, type PendingInteraction } from "./interactions.js";
 import { COMMAND_CATALOG, goalArguments } from "./commands.js";
 import { readHistory } from "./read-history.js";
 import { ZCODE_CAPABILITIES } from "./capabilities.js";
+import { ZcodeUsage } from "./usage.js";
 
 /** A native notification, or an interaction request identified by its business request ID. */
 interface NativeMessage {
@@ -83,6 +87,7 @@ export class ZcodeSession implements HarnessSession {
   };
   #state: HarnessSessionState;
   #snapshot: NativeSnapshot;
+  readonly #usage: ZcodeUsage;
   #active: ActiveTurn | undefined;
   #pendingInteractions = new Map<string, PendingInteraction>();
   #closed = false;
@@ -103,6 +108,7 @@ export class ZcodeSession implements HarnessSession {
     this.capabilities = ZCODE_CAPABILITIES;
     this.catalog = modelCatalog(nativeCatalog);
     this.#snapshot = snapshot;
+    this.#usage = new ZcodeUsage(snapshot.session.sessionId, (event) => this.#emit(event));
     this.#goalActive =
       (snapshot.target === undefined ? snapshot.projection.target : snapshot.target)?.status ===
       "active";
@@ -122,6 +128,7 @@ export class ZcodeSession implements HarnessSession {
     this.#channel.emit({ kind: "event", event });
   }
   async subscribe() {
+    this.#usage.replay(this.#snapshot.messages, true);
     await this.transport.listen(
       "onDynamicSessionEvent",
       {
@@ -249,6 +256,7 @@ export class ZcodeSession implements HarnessSession {
     }
   }
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -261,6 +269,7 @@ export class ZcodeSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -270,6 +279,7 @@ export class ZcodeSession implements HarnessSession {
   > {
     if (this.#closed || this.#faulted) return failure("invalidState", "ZCode session is closed");
     try {
+      if (command.type === "turn.steer") return unsupportedSteer("ZCode");
       if (command.type === "turn.start") {
         if (
           !hostTurnIdSchema.safeParse(command.turnId).success ||
@@ -482,6 +492,7 @@ export class ZcodeSession implements HarnessSession {
     const event = eventSchema.parse(p);
     if (event.seq <= this.#lastSeq) return;
     this.#lastSeq = event.seq;
+    this.#usage.observe(event);
     if (event.type === "session.updated" && event.payload && Object.hasOwn(event.payload, "target"))
       this.#goalActive = record(event.payload.target).status === "active";
     if (event.type === "turn.started") {
@@ -583,6 +594,10 @@ export class ZcodeSession implements HarnessSession {
                   : turn?.outcome;
       if (!outcome || outcome.status === "unknown")
         throw new ZcodeError("protocolError", "ZCode completed without a confirmed turn outcome");
+      if (this.#active !== active || this.#closed || this.#faulted) return;
+      // Reconcile finalized native messages before Turn completion so deferred stream usage
+      // (e.g. cache details absent from the event) can still contribute this Turn's timing.
+      this.#usage.replay(snapshot.messages, false);
       this.#finish(active, {
         ...outcome,
         ...(turn?.checkpoint ? { checkpoint: turn.checkpoint } : {}),

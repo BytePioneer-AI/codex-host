@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import type { HarnessCommandInvocation, HarnessResult } from "@codexhost/harness-adapter";
+import type {
+  HarnessCommandInvocation,
+  HarnessResult,
+  TurnStartAccepted,
+  TurnStartCommand,
+} from "@codexhost/harness-adapter";
 import {
   harnessCommandDescriptorSchema,
+  hostItemIdSchema,
   hostTurnIdSchema,
   type HarnessCommandCatalog,
 } from "@codexhost/shared-contracts";
@@ -28,6 +34,128 @@ const liveSkill = harnessCommandDescriptorSchema.parse({
   label: "review",
   argumentMode: "text",
   kind: "skill",
+});
+
+describe("Ephemeral Turn completion", () => {
+  it.each([
+    ["explicitly ephemeral", true, "completed"],
+    ["unmarked", false, "failed"],
+  ] as const)(
+    "handles %s completion without native identity and accepts the next Turn",
+    async (_label, ephemeral, status) => {
+      const fixture = createFixture();
+      try {
+        const threadId = await startPiThread(fixture);
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Session was not opened");
+        const turnSession: {
+          execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+        } = session;
+        vi.spyOn(turnSession, "execute").mockImplementationOnce(async ({ turnId }) => ({
+          ok: true,
+          value: { turnId },
+        }));
+        const turnId = hostTurnIdSchema.parse(await startPiTurn(fixture, threadId));
+        const itemId = hostItemIdSchema.parse("local-output");
+        const text = "Native local command output";
+        session.emitEvent({ type: "turn.started", turnId });
+        session.emitEvent({
+          type: "item.started",
+          turnId,
+          item: { type: "agentMessage", itemId, text: "" },
+        });
+        session.emitEvent({
+          type: "item.updated",
+          turnId,
+          itemId,
+          update: { type: "text.append", text },
+        });
+        session.emitEvent({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: { type: "agentMessage", itemId, text },
+            outcome: { status: "succeeded" },
+          },
+        });
+        session.emitEvent({
+          type: "turn.completed",
+          turnId,
+          outcome: { status: "succeeded" },
+          ...(ephemeral ? { ephemeral: true as const } : {}),
+        });
+        await expect(
+          fixture.collector.waitFor((message) =>
+            turnEvent(message, "item/agentMessage/delta", turnId),
+          ),
+        ).resolves.toMatchObject({ params: { itemId, delta: text } });
+        await expect(
+          fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
+        ).resolves.toMatchObject({
+          params: {
+            turn: {
+              id: turnId,
+              status,
+              items: expect.arrayContaining([
+                expect.objectContaining({ type: "agentMessage", id: itemId, text }),
+              ]),
+              ...(ephemeral
+                ? { error: null }
+                : { error: { message: "External Turn identity could not be persisted" } }),
+            },
+          },
+        });
+
+        if (ephemeral) {
+          writeRequest(fixture.desktopInput, {
+            id: 3,
+            method: "thread/read",
+            params: { threadId, includeTurns: true },
+          });
+          await expect(
+            fixture.collector.waitFor((message) => requestId(message, 3)),
+          ).resolves.toMatchObject({ result: { thread: { turns: [], status: { type: "idle" } } } });
+          writeRequest(fixture.desktopInput, {
+            id: 4,
+            method: "thread/turns/list",
+            params: { threadId },
+          });
+          await expect(
+            fixture.collector.waitFor((message) => requestId(message, 4)),
+          ).resolves.toMatchObject({ result: { data: [] } });
+        }
+
+        const nextTurnId = await startPiTurn(fixture, threadId, 5);
+        session.appendText("Next native answer");
+        session.succeedTurn();
+        await expect(
+          fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", nextTurnId)),
+        ).resolves.toMatchObject({ params: { turn: { status: "completed", error: null } } });
+        writeRequest(fixture.desktopInput, {
+          id: 6,
+          method: "thread/read",
+          params: { threadId, includeTurns: true },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, 6)),
+        ).resolves.toMatchObject({
+          result: { thread: { turns: [{ id: nextTurnId, status: "completed" }] } },
+        });
+        writeRequest(fixture.desktopInput, {
+          id: 7,
+          method: "thread/turns/list",
+          params: { threadId },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, 7)),
+        ).resolves.toMatchObject({
+          result: { data: [{ id: nextTurnId, status: "completed" }] },
+        });
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
 });
 
 describe("Thread command catalog", () => {

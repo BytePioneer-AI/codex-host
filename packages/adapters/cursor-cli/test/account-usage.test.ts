@@ -19,11 +19,14 @@ describe("Cursor account usage", () => {
       credits: {
         usedPercent: 20,
         label: "Auto · monthly",
+        scope: { id: "auto", label: "Auto" },
         periodType: "monthly",
         resetsAt: "2026-10-01T00:00:00.000Z",
         productUsage: [
           {
             product: "API · monthly",
+            periodType: "monthly",
+            scope: { id: "api", label: "API" },
             usagePercent: 35,
             resetsAt: "2026-10-01T00:00:00.000Z",
           },

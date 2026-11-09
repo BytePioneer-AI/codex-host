@@ -17,6 +17,7 @@ import {
   hostThreadIdSchema,
 } from "@codexhost/shared-contracts";
 import type { DelegationControlApi, DelegationThreadSnapshot } from "../src/delegation-types.js";
+import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
 import { DelegationWatchService } from "../src/delegation-watch.js";
 import { type CodexAccountControl } from "../src/account/codex-account-control.js";
 
@@ -44,6 +45,16 @@ import {
   bindOfficialThread,
   answerOfficialParentCwd,
 } from "./app-server-host-fixture.js";
+
+async function answerOfficialChildName(
+  fixture: ReturnType<typeof createFixture>,
+  name?: string,
+): Promise<void> {
+  const request = await readJsonLine(fixture.official.stdin);
+  expect(request).toMatchObject({ method: "thread/name/set" });
+  expect(request.params).toHaveProperty("name", name ?? expect.stringContaining(" · "));
+  fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`);
+}
 
 async function nativeSendFixture(): Promise<{
   fixture: ReturnType<typeof createFixture>;
@@ -93,6 +104,17 @@ describe("AppServerHost HarnessAdapter projection", () => {
     ).resolves.toMatchObject({ result: { status: "ready" } });
     expect(claude.inspectionCalls).toBe(1);
     expect(pi.inspectionCalls).toBe(0);
+
+    const inspect = vi.spyOn(pi, "inspect");
+    writeRequest(fixture.desktopInput, {
+      id: 33,
+      method: "codexhost/harness/inspect",
+      params: { harnessId: "pi", refresh: true, purpose: "availability" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 33)),
+    ).resolves.toMatchObject({ result: { status: "ready" } });
+    expect(inspect).toHaveBeenCalledWith({ refresh: true, purpose: "availability" });
 
     writeRequest(fixture.desktopInput, {
       id: 32,
@@ -480,17 +502,27 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const read = await readJsonLine(fixture.official.stdin);
     expect(read).toMatchObject({
       method: "thread/read",
-      params: { threadId: "native-parent" },
+      params: { threadId: "native-parent", includeTurns: false },
     });
     fixture.official.stdout.write(
       `${JSON.stringify({
         id: read.id,
-        result: { thread: { id: "native-parent", cwd: "/native-workspace" } },
+        result: {
+          thread: {
+            id: "native-parent",
+            cwd: "/native-workspace",
+            name: "Native project",
+            preview: "Original task text",
+          },
+        },
       })}\n`,
     );
 
     await expect(pending).resolves.toMatchObject({ harnessId: "pi", status: "running" });
     expect(fixture.adapter.sessions[0]?.cwd).toBe(path.resolve("/native-workspace"));
+    expect((await fixture.mappingStore.listThreads())[0]?.title).toBe(
+      "inherit workspace · Native project",
+    );
     fixture.adapter.sessions[0]?.succeedTurn();
     await stopFixture(fixture);
   });
@@ -688,6 +720,187 @@ describe("AppServerHost HarnessAdapter projection", () => {
       ]),
     });
     await stopFixture(fixture);
+  });
+
+  it("merges native Threads from several sessions in the order each session page is sorted by", async () => {
+    const registry = new DelegationControlRegistry();
+    const sessions = [];
+    for (let index = 0; index < 2; index++) {
+      const fixture = createFixture({
+        onDelegationApi: (api) => registry.register(api),
+      });
+      await fixture.ready;
+      await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+      sessions.push(fixture);
+    }
+    // Each official page is already newest first; the IDs sort the other way across sessions.
+    const pages = [
+      [{ id: "a-newest", cwd: "/synthetic", createdAt: 4_000, updatedAt: 4_000 }],
+      [{ id: "b-newer", cwd: "/synthetic", createdAt: 3_000, updatedAt: 3_000 }],
+    ];
+    try {
+      const pending = registry.list({ cwd: "/synthetic", limit: 2, sort: "created-desc" });
+      await Promise.all(
+        sessions.map(async (fixture, index) => {
+          const request = await readJsonLine(fixture.official.stdin);
+          expect(request).toMatchObject({
+            method: "thread/list",
+            params: { sortKey: "created_at", sortDirection: "desc" },
+          });
+          const data = (pages[index] ?? []).map((row) => ({ ...row, status: { type: "idle" } }));
+          fixture.official.stdout.write(
+            `${JSON.stringify({ id: request.id, result: { data, nextCursor: null } })}\n`,
+          );
+        }),
+      );
+      const page = await pending;
+      expect(page.threads.map((thread) => thread.threadId)).toEqual(["a-newest", "b-newer"]);
+      expect(page.threads[1]).toMatchObject({ createdAt: new Date(3_000_000).toISOString() });
+    } finally {
+      registry.close();
+      for (const fixture of sessions) await stopFixture(fixture);
+    }
+  });
+
+  it("merges native recency pages from several sessions by recencyAt before updatedAt", async () => {
+    const registry = new DelegationControlRegistry();
+    const sessions = [];
+    for (let index = 0; index < 2; index++) {
+      const fixture = createFixture({
+        onDelegationApi: (api) => registry.register(api),
+      });
+      await fixture.ready;
+      await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+      sessions.push(fixture);
+    }
+    // updatedAt alone would put "b-updated" first; the native recency order is recencyAt.
+    const pages = [
+      [{ id: "a-recent", cwd: "/synthetic", createdAt: 1, updatedAt: 100, recencyAt: 300 }],
+      [{ id: "b-updated", cwd: "/synthetic", createdAt: 1, updatedAt: 400, recencyAt: 200 }],
+    ];
+    try {
+      const pending = registry.list({ cwd: "/synthetic", limit: 1, sort: "recency-desc" });
+      await Promise.all(
+        sessions.map(async (fixture, index) => {
+          const request = await readJsonLine(fixture.official.stdin);
+          expect(request).toMatchObject({
+            method: "thread/list",
+            params: { sortKey: "recency_at", sortDirection: "desc" },
+          });
+          const data = (pages[index] ?? []).map((row) => ({ ...row, status: { type: "idle" } }));
+          fixture.official.stdout.write(
+            `${JSON.stringify({ id: request.id, result: { data, nextCursor: null } })}\n`,
+          );
+        }),
+      );
+      const page = await pending;
+      expect(page.threads.map((thread) => thread.threadId)).toEqual(["a-recent"]);
+      expect(page.threads[0]).toMatchObject({
+        updatedAt: new Date(100_000).toISOString(),
+        recencyAt: new Date(300_000).toISOString(),
+      });
+    } finally {
+      registry.close();
+      for (const fixture of sessions) await stopFixture(fixture);
+    }
+  });
+
+  it("leaves out native list timestamps a Date cannot hold instead of failing the list", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+      },
+    });
+    await fixture.ready;
+    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+    try {
+      if (!delegationApi) throw new Error("Delegation API was not registered");
+      const pending = delegationApi.list({ cwd: "/synthetic", limit: 1, sort: "created-desc" });
+      const request = await readJsonLine(fixture.official.stdin);
+      // A safe integer of seconds, but past the largest time a Date can represent.
+      const outOfRange = 8_640_000_000_001;
+      fixture.official.stdout.write(
+        `${JSON.stringify({
+          id: request.id,
+          result: {
+            data: [
+              {
+                id: "far-future",
+                cwd: "/synthetic",
+                createdAt: outOfRange,
+                updatedAt: 2_000,
+                recencyAt: outOfRange,
+                status: { type: "idle" },
+              },
+            ],
+            nextCursor: null,
+          },
+        })}\n`,
+      );
+      const page = await pending;
+      expect(page.threads).toHaveLength(1);
+      expect(page.threads[0]).toMatchObject({
+        threadId: "far-future",
+        updatedAt: new Date(2_000_000).toISOString(),
+      });
+      expect(page.threads[0]).not.toHaveProperty("createdAt");
+      expect(page.threads[0]).not.toHaveProperty("recencyAt");
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("orders an out-of-range native timestamp by its native seconds across sessions", async () => {
+    const registry = new DelegationControlRegistry();
+    const sessions = [];
+    for (let index = 0; index < 2; index++) {
+      const fixture = createFixture({
+        onDelegationApi: (api) => registry.register(api),
+      });
+      await fixture.ready;
+      await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+      sessions.push(fixture);
+    }
+    // A safe integer of seconds past the largest Date: native recency order puts it first, and
+    // its recencyAt (not its older updatedAt) is what native sorts by.
+    const outOfRange = 8_640_000_000_001;
+    const pages = [
+      [{ id: "a-recent", cwd: "/synthetic", createdAt: 1, updatedAt: 5, recencyAt: 300 }],
+      [{ id: "b-far", cwd: "/synthetic", createdAt: 1, updatedAt: 100, recencyAt: outOfRange }],
+    ];
+    try {
+      const pending = registry.list({ cwd: "/synthetic", limit: 1, sort: "recency-desc" });
+      await Promise.all(
+        sessions.map(async (fixture, index) => {
+          const request = await readJsonLine(fixture.official.stdin);
+          expect(request).toMatchObject({
+            method: "thread/list",
+            params: { sortKey: "recency_at", sortDirection: "desc" },
+          });
+          const data = (pages[index] ?? []).map((row) => ({ ...row, status: { type: "idle" } }));
+          fixture.official.stdout.write(
+            `${JSON.stringify({ id: request.id, result: { data, nextCursor: null } })}\n`,
+          );
+        }),
+      );
+      const page = await pending;
+      expect(page.threads.map((thread) => thread.threadId)).toEqual(["b-far"]);
+      // The raw seconds order the merge but never reach the list contract.
+      expect(page.threads[0]).toEqual({
+        threadId: "b-far",
+        harnessId: "codex",
+        deepLink: "codex://threads/b-far",
+        status: "completed",
+        cwd: "/synthetic",
+        createdAt: new Date(1_000).toISOString(),
+        updatedAt: new Date(100_000).toISOString(),
+      });
+      expect(JSON.parse(JSON.stringify(page.threads[0]))).not.toHaveProperty("recencyAt");
+    } finally {
+      registry.close();
+      for (const fixture of sessions) await stopFixture(fixture);
+    }
   });
 
   it("sends and cancels follow-up Turns on an external delegated Thread", async () => {
@@ -982,6 +1195,10 @@ describe("AppServerHost HarnessAdapter projection", () => {
           defaultModel: xaiModel,
           thinkingOptions: [{ id: "high", label: "High" }],
         },
+        capabilities: {
+          configuration: { selectPermissionMode: false },
+          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+        },
       },
     });
 
@@ -1029,6 +1246,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         },
       })}\n`,
     );
+    await answerOfficialChildName(fixture);
     const turnStart = await readJsonLine(fixture.official.stdin);
     expect(turnStart).toMatchObject({
       method: "turn/start",
@@ -1094,6 +1312,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         },
       })}\n`,
     );
+    await answerOfficialChildName(fixture);
     const turnStart = await readJsonLine(fixture.official.stdin);
     expect(turnStart).toMatchObject({
       method: "turn/start",
@@ -1126,11 +1345,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const pending = delegationApi.start({
       harnessId: "codex",
       task: "review auth",
+      taskName: "Auth review",
       cwd: "/synthetic",
       parentThreadId: "parent-thread",
       requestId: "native-request-1",
     });
-    await answerOfficialParentCwd(fixture);
+    await answerOfficialParentCwd(fixture, "parent-thread", "Main review");
     const threadStart = await readJsonLine(fixture.official.stdin);
     expect(threadStart).toMatchObject({
       method: "thread/start",
@@ -1143,6 +1363,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
     );
+    await answerOfficialChildName(fixture, "Auth review · Main review");
     const turnStart = await readJsonLine(fixture.official.stdin);
     expect(turnStart).toMatchObject({
       method: "turn/start",
@@ -1189,7 +1410,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       parentThreadId: "parent-thread",
       requestId: "native-request-1",
     });
-    await answerOfficialParentCwd(fixture);
+    await answerOfficialParentCwd(fixture, "parent-thread", "Renamed parent");
     await expect(duplicate).resolves.toMatchObject({ threadId: "native-child" });
     expect(fixture.official.stdin.readableLength).toBe(0);
 
@@ -1204,6 +1425,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: implicitThreadStart.id, result: { thread: { id: "implicit-child" } } })}\n`,
     );
+    await answerOfficialChildName(fixture);
     const implicitTurnStart = await readJsonLine(fixture.official.stdin);
     fixture.official.stdout.write(
       `${JSON.stringify({ id: implicitTurnStart.id, result: { turn: { id: "implicit-turn" } } })}\n`,
@@ -1217,6 +1439,50 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     await answerOfficialParentCwd(fixture);
     await expect(implicitDuplicate).resolves.toMatchObject({ threadId: "implicit-child" });
+    expect(fixture.official.stdin.readableLength).toBe(0);
+    await stopFixture(fixture);
+  });
+
+  it("still delivers the task with the default title if the native child title cannot be set", async () => {
+    let api: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (registration) => {
+        api = registration;
+      },
+    });
+    await fixture.ready;
+    if (!api) throw new Error("Delegation API was not registered");
+    const pending = api.start({
+      harnessId: "codex",
+      task: "Task",
+      parentThreadId: "parent-thread",
+    });
+    await answerOfficialParentCwd(fixture);
+    const start = await readJsonLine(fixture.official.stdin);
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: start.id, result: { thread: { id: "unnamed-child" } } })}\n`,
+    );
+    const name = await readJsonLine(fixture.official.stdin);
+    expect(name).toMatchObject({ method: "thread/name/set" });
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: name.id, error: { code: -1, message: "name failed" } })}\n`,
+    );
+    const turnStart = await readJsonLine(fixture.official.stdin);
+    expect(turnStart).toMatchObject({
+      method: "turn/start",
+      params: { threadId: "unnamed-child", input: [{ type: "text", text: "Task" }] },
+    });
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "unnamed-turn" } } })}\n`,
+    );
+    await expect(pending).resolves.toMatchObject({
+      threadId: "unnamed-child",
+      turnId: "unnamed-turn",
+      status: "running",
+    });
+    expect(await fixture.mappingStore.listDelegations()).toEqual([
+      expect.objectContaining({ childHostThreadId: "unnamed-child", status: "running" }),
+    ]);
     expect(fixture.official.stdin.readableLength).toBe(0);
     await stopFixture(fixture);
   });
@@ -1246,6 +1512,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
     );
+    await answerOfficialChildName(fixture);
     const turnStart = await readJsonLine(fixture.official.stdin);
     fixture.official.stdout.write(
       `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-turn" } } })}\n`,
@@ -1283,6 +1550,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "fast-child" } } })}\n`,
     );
+    await answerOfficialChildName(fixture);
     const turnStart = await readJsonLine(fixture.official.stdin);
     fixture.official.stdout.write(
       `${JSON.stringify({
@@ -1374,6 +1642,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
     );
+    await answerOfficialChildName(fixture);
     const turnStart = await readJsonLine(fixture.official.stdin);
     fixture.official.stdout.write(
       `${JSON.stringify({ id: turnStart.id, error: { code: -1, message: "delivery failed" } })}\n`,
@@ -1470,7 +1739,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     await expect(fixture.collector.waitFor((message) => requestId(message, 42))).resolves.toEqual({
       id: 42,
-      result: { threadId: "official-thread", usage: null },
+      result: { threadId: "official-thread", usage: null, accountCreditsSupported: true },
     });
 
     writeRequest(fixture.desktopInput, {
@@ -1524,7 +1793,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
   });
 
   it("projects official Codex token Usage and account rate limits for inspection", async () => {
-    const fixture = createFixture();
+    const fixture = createFixture({ codexUsage: true });
     fixture.official.stdin.on("data", (chunk: Buffer) => {
       for (const line of chunk.toString("utf8").split("\n")) {
         if (!line) continue;
@@ -1583,6 +1852,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       id: 44,
       result: {
         threadId: "official-thread",
+        accountCreditsSupported: true,
         accountCredits: {
           usedPercent: 3,
           periodType: "five_hour",
@@ -1590,6 +1860,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
           productUsage: [
             {
               product: "7-day window",
+              periodType: "seven_day",
               usagePercent: 9,
               resetsAt: new Date(2_400 * 1_000).toISOString(),
             },
@@ -1605,6 +1876,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
           contextUsedTokens: 240,
           contextWindowTokens: 2_000,
           cacheHitRatePercent: 75,
+          sessionCacheHitRatePercent: 75,
         },
       },
     });
@@ -1677,6 +1949,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
   it("keeps cumulative Thread Usage independent from native Account changes", async () => {
     const fixture = createFixture({
+      codexUsage: true,
       accountControl: {
         currentAccountId: () => null,
         snapshot: () => ({
@@ -1716,6 +1989,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       id: 45,
       result: {
         threadId: "official-thread",
+        accountCreditsSupported: true,
         usage: {
           totalTokens: 100,
           inputTokens: 80,

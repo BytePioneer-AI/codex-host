@@ -4,7 +4,6 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import type { HarnessModelCatalog } from "@codexhost/shared-contracts";
-import { readPiCodexProviderNames } from "./pi-credential-imports.js";
 import { decodePiModelRef, encodePiModelRef, type PiNativeModel } from "./pi-model-catalog.js";
 
 export const PI_FAST_COMMAND = "codexhost-fast-mode";
@@ -14,11 +13,12 @@ export const PI_FAST_ACK = "codexhost-fast-mode:";
 export const PI_FAST_EXTENSION = `export default function(pi) {
   let target;
   const wrapped = new Set();
+  const supportsModel = (model) => model && (model.api === "openai-codex-responses" || model.api === "openai-responses") && /gpt/i.test(model.id);
   pi.on("model_select", (_event, ctx) => {
-    if (target && (target.provider !== ctx.model?.provider || target.id !== ctx.model?.id || ctx.model?.api !== "openai-codex-responses")) target = undefined;
+    if (target && (target.provider !== ctx.model?.provider || target.id !== ctx.model?.id || !supportsModel(ctx.model))) target = undefined;
   });
   pi.on("session_start", (_event, ctx) => {
-    if (typeof ctx.modelRegistry.getProvider !== "function") return;
+    if (typeof ctx.modelRegistry.getProvider !== "function" || typeof pi.registerProvider !== "function") return;
     pi.registerCommand("${PI_FAST_COMMAND}", {
       description: "Codex Host Fast mode",
       handler: async (args, ctx) => {
@@ -26,11 +26,11 @@ export const PI_FAST_EXTENSION = `export default function(pi) {
         if (!nonce || (mode !== "on" && mode !== "off")) throw new Error("Invalid Fast selection");
         if (mode === "on") {
           const model = ctx.model;
-          if (!model || model.api !== "openai-codex-responses") throw new Error("Fast requires the Codex API");
+          if (!supportsModel(model)) throw new Error("Fast requires a GPT model using the Codex or OpenAI Responses API");
           const original = ctx.modelRegistry.getProvider(model.provider);
-          if (!original) throw new Error("Codex Provider is unavailable");
+          if (!original) throw new Error("Provider is unavailable");
           if (!wrapped.has(model.provider)) {
-            const options = (model, value) => target && model.api === "openai-codex-responses" && target.provider === model.provider && target.id === model.id
+            const options = (model, value) => target && supportsModel(model) && target.provider === model.provider && target.id === model.id
               ? {
                   ...value,
                   serviceTier: "priority",
@@ -83,44 +83,17 @@ export async function ensurePiFastExtension(environment: NodeJS.ProcessEnv): Pro
   return file;
 }
 
-/** No network or credential refresh. Reuses the existing local OAuth classification. */
-export async function piFastModelKeys(
-  models: readonly PiNativeModel[],
-  environment: NodeJS.ProcessEnv,
-): Promise<Set<string>> {
-  try {
-    const codexHome =
-      environment.CODEX_HOME ??
-      path.join(environment.HOME ?? environment.USERPROFILE ?? homedir(), ".codex");
-    const cache: unknown = JSON.parse(
-      await readFile(path.join(codexHome, "models_cache.json"), "utf8"),
-    );
-    if (!cache || typeof cache !== "object" || !("models" in cache) || !Array.isArray(cache.models))
-      return new Set();
-    const priority = new Set(
-      cache.models
-        .filter(
-          (model) =>
-            typeof model?.slug === "string" &&
-            Array.isArray(model.service_tiers) &&
-            model.service_tiers.some((tier: { id?: string } | null) => tier?.id === "priority"),
-        )
-        .map((model) => model.slug),
-    );
-    const codexProviders = new Set(readPiCodexProviderNames(environment));
-    return new Set(
-      models
-        .filter(
-          (model) =>
-            model.api === "openai-codex-responses" &&
-            codexProviders.has(model.provider) &&
-            priority.has(model.id),
-        )
-        .map((model) => encodePiModelRef(model).id),
-    );
-  } catch {
-    return new Set();
-  }
+/** Eligible request targets; upstream acceptance of priority is not guaranteed. */
+export function piFastModelKeys(models: readonly PiNativeModel[]): Set<string> {
+  return new Set(
+    models
+      .filter(
+        (model) =>
+          (model.api === "openai-codex-responses" || model.api === "openai-responses") &&
+          /gpt/i.test(model.id),
+      )
+      .map((model) => encodePiModelRef(model).id),
+  );
 }
 
 export function withPiFast(

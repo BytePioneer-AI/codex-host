@@ -1,14 +1,17 @@
 #![forbid(unsafe_code)]
 
+mod handoff;
 mod install;
+mod prepare_install;
 mod remote;
 mod request;
+mod restart;
+mod services;
 mod ssh;
 mod status;
 
 use std::env;
 use std::error::Error;
-use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 use std::thread;
@@ -20,25 +23,12 @@ use codexhost_platform::{process_executable_path, process_exists};
 #[cfg(target_os = "windows")]
 use codexhost_platform::{process_instance_exists, process_started_at_micros};
 use codexhost_updater::UpdateHandoff;
-use serde::Deserialize;
 
-use install::{install, relaunch};
+use install::install;
 use request::UpdateRequest;
 use status::write_status;
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(180);
-const RELAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_RUNTIME_DESCRIPTOR_BYTES: u64 = 4 * 1024;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RuntimeDescriptorProbe {
-    schema_version: u8,
-    launcher_pid: u32,
-    control_port: u16,
-    nonce: String,
-}
-
 fn same_executable(left: &Path, right: &Path) -> bool {
     let normalize = |path: &Path| {
         let value = path.to_string_lossy().replace('/', "\\");
@@ -91,8 +81,12 @@ fn wait_for_launcher_exit(request: &UpdateRequest) -> Result<(), Box<dyn Error>>
     if !process_instance_exists(request.wait_pid, launcher_started_at)? {
         return Err("Launcher exited before the background Updater was ready".into());
     }
-    // Publish readiness only after confirming this is the exact live Launcher.
-    write_status(request, "waiting-for-exit", None)?;
+    // This is the handoff acknowledgement: publish readiness only after
+    // confirming this is the exact live Launcher, not merely that it spawned us.
+    write_status(request, "waiting-for-exit", None, None)?;
+    if request.service_managed {
+        return handoff::wait_for_ownership(&request.status_path, Duration::from_secs(10));
+    }
     let started = Instant::now();
     loop {
         if !process_instance_exists(request.wait_pid, launcher_started_at)? {
@@ -111,7 +105,12 @@ fn wait_for_authorized_launcher_exit(
     request_path: &Path,
     handoff: Option<&UpdateHandoff>,
 ) -> Result<(), Box<dyn Error>> {
-    if cfg!(any(target_os = "macos", target_os = "windows")) && handoff.is_none() {
+    // A service-managed Updater stops the services itself after ownership is
+    // transferred; only a Desktop Launcher handoff carries cleanup authorization.
+    if cfg!(any(target_os = "macos", target_os = "windows"))
+        && !request.service_managed
+        && handoff.is_none()
+    {
         return Err("update handoff token is required".into());
     }
     wait_for_launcher_exit(request)?;
@@ -121,79 +120,56 @@ fn wait_for_authorized_launcher_exit(
     Ok(())
 }
 
-fn relaunched_launcher_is_ready(
-    descriptor_launcher_pid: u32,
-    previous_launcher_pid: u32,
-    process_is_alive: impl FnOnce(u32) -> bool,
-) -> bool {
-    descriptor_launcher_pid != previous_launcher_pid && process_is_alive(descriptor_launcher_pid)
-}
-
-fn wait_for_relaunch(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
-    let descriptor_path = &request.runtime_descriptor_path;
-    let started = Instant::now();
-    while started.elapsed() < RELAUNCH_TIMEOUT {
-        let bytes = match fs::symlink_metadata(descriptor_path) {
-            Ok(metadata)
-                if metadata.is_file()
-                    && !metadata.file_type().is_symlink()
-                    && metadata.len() <= MAX_RUNTIME_DESCRIPTOR_BYTES =>
-            {
-                fs::read(descriptor_path)?
-            }
-            Ok(_) => return Err("runtime descriptor is not a bounded regular file".into()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                thread::sleep(Duration::from_millis(100));
-                continue;
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let descriptor = serde_json::from_slice::<RuntimeDescriptorProbe>(&bytes)?;
-        if descriptor.schema_version != 1
-            || descriptor.launcher_pid == 0
-            || descriptor.control_port == 0
-            || descriptor.nonce.len() != 32
-            || !descriptor
-                .nonce
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        {
-            return Err("runtime descriptor is invalid".into());
-        }
-        if relaunched_launcher_is_ready(descriptor.launcher_pid, request.wait_pid, process_exists) {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    Err("updated codexhost did not become ready after relaunch".into())
-}
-
 fn apply(request_path: &Path, handoff: Option<&UpdateHandoff>) -> Result<(), Box<dyn Error>> {
     let request = UpdateRequest::parse(request_path)?;
+    let _independent = request
+        .service_managed
+        .then(codexhost_platform::register_independent_service)
+        .transpose()?;
+    let mut service_stop_output = None;
+    let mut stopping_started = false;
     let result = (|| -> Result<(), Box<dyn Error>> {
         wait_for_authorized_launcher_exit(&request, request_path, handoff)?;
-        write_status(&request, "installing", None)?;
+        stopping_started = true;
+        service_stop_output = services::stop(&request)?;
+        write_status(&request, "installing", None, service_stop_output.as_deref())?;
         install(&request)?;
-        write_status(&request, "restarting", None)?;
-        relaunch(&request)?;
-        wait_for_relaunch(&request)?;
-        write_status(&request, "succeeded", None)?;
+        write_status(&request, "restarting", None, service_stop_output.as_deref())?;
+        restart::restore(&request, Some(&request.version))?;
+        write_status(&request, "succeeded", None, service_stop_output.as_deref())?;
         Ok(())
     })();
     if let Err(error) = &result {
-        let message = error.to_string();
-        let _ = write_status(&request, "failed", Some(&message));
+        let mut message = error.to_string();
+        if stopping_started {
+            match restart::restore(&request, None) {
+                Ok(()) => message.push_str("; service recovery succeeded"),
+                Err(recovery) => {
+                    message.push_str(&format!("; service recovery failed: {recovery}"))
+                }
+            }
+        }
+        let _ = write_status(
+            &request,
+            "failed",
+            Some(&message),
+            service_stop_output.as_deref(),
+        );
     }
     result
 }
 
 fn usage() {
     eprintln!(
-        "usage: codexhost-updater apply --request <absolute-json-file> --handoff-token <token>"
+        "usage: codexhost-updater apply --request <absolute-json-file> [--handoff-token <token>]\n       codexhost-updater prepare-install --install-root <absolute-directory>"
     );
 }
 
 fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
+    if arguments.len() == 3 && arguments[0] == "prepare-install" && arguments[1] == "--install-root"
+    {
+        return prepare_install::prepare(Path::new(&arguments[2]));
+    }
     if arguments == ["ssh"] {
         return ssh::apply();
     }
@@ -206,7 +182,6 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         {
             Some(UpdateHandoff::from_token(token)?)
         }
-        #[cfg(target_os = "linux")]
         [command, flag, _] if command == "apply" && flag == "--request" => None,
         _ => {
             usage();
@@ -230,9 +205,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::request::{Installation, NpmInstallation, UpdateRequest};
-    use super::{
-        relaunched_launcher_is_ready, wait_for_authorized_launcher_exit, wait_for_launcher_exit,
-    };
+    use super::{wait_for_authorized_launcher_exit, wait_for_launcher_exit};
     use codexhost_updater::UpdateHandoff;
     use std::fs;
     use std::path::Path;
@@ -271,18 +244,35 @@ mod tests {
     }
 
     #[test]
-    fn accepts_a_live_relaunched_launcher_without_executable_path_matching() {
-        assert!(relaunched_launcher_is_ready(42, 41, |pid| pid == 42));
-    }
-
-    #[test]
-    fn rejects_the_previous_launcher_descriptor() {
-        assert!(!relaunched_launcher_is_ready(41, 41, |_| true));
-    }
-
-    #[test]
-    fn rejects_a_relaunched_launcher_that_has_exited() {
-        assert!(!relaunched_launcher_is_ready(42, 41, |_| false));
+    fn does_not_acknowledge_handoff_before_owner_identity_is_validated() {
+        let directory =
+            std::env::temp_dir().join(format!("codexhost-handoff-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let wrong_executable = directory.join("not-the-owner");
+        std::fs::write(&wrong_executable, "fixture").unwrap();
+        let status_path = directory.join("status.json");
+        std::fs::write(&status_path, "prepared").unwrap();
+        let request = UpdateRequest {
+            schema_version: 1,
+            version: "1.0.0".into(),
+            wait_pid: std::process::id(),
+            wait_executable: wrong_executable.clone(),
+            runtime_descriptor_path: directory.join("runtime.json"),
+            restart_target: Default::default(),
+            data_directory: None,
+            service_managed: false,
+            status_path: status_path.clone(),
+            installation: Installation::Npm(NpmInstallation {
+                node_path: wrong_executable.clone(),
+                npm_cli_path: wrong_executable.clone(),
+                npm_launcher_path: wrong_executable,
+                npm_package_root: directory.clone(),
+            }),
+        };
+        let error = wait_for_launcher_exit(&request).unwrap_err();
+        assert!(error.to_string().contains("not the expected Launcher"));
+        assert_eq!(std::fs::read_to_string(status_path).unwrap(), "prepared");
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -297,11 +287,15 @@ mod tests {
             wait_pid: u32::MAX,
             wait_executable: std::env::current_exe().expect("test executable"),
             runtime_descriptor_path: status_path.clone(),
+            restart_target: Default::default(),
+            data_directory: None,
+            service_managed: false,
             status_path: status_path.clone(),
             installation: Installation::Npm(NpmInstallation {
                 node_path: status_path.clone(),
                 npm_cli_path: status_path.clone(),
                 npm_launcher_path: status_path.clone(),
+                npm_package_root: status_path.clone(),
             }),
         };
 
@@ -395,11 +389,15 @@ mod tests {
             wait_pid: launcher.id(),
             wait_executable,
             runtime_descriptor_path: root.join("runtime.json"),
+            restart_target: Default::default(),
+            data_directory: None,
+            service_managed: false,
             status_path: status_path.clone(),
             installation: Installation::Npm(NpmInstallation {
                 node_path: root.join("unused-node"),
                 npm_cli_path: root.join("unused-npm"),
                 npm_launcher_path: root.join("unused-launcher"),
+                npm_package_root: root.join("unused-package"),
             }),
         };
         if run_apply {
@@ -425,6 +423,7 @@ mod tests {
                         "node_path": npm.node_path,
                         "npm_cli_path": npm.npm_cli_path,
                         "npm_launcher_path": npm.npm_launcher_path,
+                        "npm_package_root": npm.npm_package_root,
                     },
                 }))
                 .unwrap(),
@@ -545,12 +544,51 @@ mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
-    fn command_line_rejects_missing_or_invalid_handoff_tokens() {
-        let arguments = ["apply", "--request", "unused-request.json"].map(String::from);
+    fn desktop_handoffs_require_a_token_and_service_handoffs_do_not() {
+        let root = std::env::temp_dir().join(format!(
+            "codexhost-token-required-{}-{}",
+            std::process::id(),
+            NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let status_path = root.join("status-v1.json");
+        let mut request = UpdateRequest {
+            schema_version: 1,
+            version: "1.2.3".into(),
+            wait_pid: u32::MAX,
+            wait_executable: std::env::current_exe().expect("test executable"),
+            runtime_descriptor_path: root.join("runtime.json"),
+            restart_target: Default::default(),
+            data_directory: Some(root.clone()),
+            service_managed: false,
+            status_path: status_path.clone(),
+            installation: Installation::Npm(NpmInstallation {
+                node_path: status_path.clone(),
+                npm_cli_path: status_path.clone(),
+                npm_launcher_path: status_path.clone(),
+                npm_package_root: root.clone(),
+            }),
+        };
+        let request_path = root.join("request-v1.json");
         assert_eq!(
-            super::run(&arguments).unwrap_err().to_string(),
-            "invalid updater arguments"
+            wait_for_authorized_launcher_exit(&request, &request_path, None)
+                .unwrap_err()
+                .to_string(),
+            "update handoff token is required"
         );
+        request.service_managed = true;
+        // The service path proceeds to the Launcher identity check instead.
+        let error = wait_for_authorized_launcher_exit(&request, &request_path, None)
+            .unwrap_err()
+            .to_string();
+        assert_ne!(error, "update handoff token is required");
+        assert!(!status_path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn command_line_rejects_invalid_handoff_tokens() {
         let arguments = [
             "apply",
             "--request",

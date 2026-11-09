@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { AvailableCommand } from "@agentclientprotocol/sdk";
-import { harnessCommandCatalogSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessCommandCatalogSchema,
+  hostTurnIdSchema,
+  localizeHarnessPresentation,
+} from "@codexhost/shared-contracts";
 
 import {
   buildKimiCommandCatalog,
+  KIMI_DEFAULT_COMMAND_CATALOG,
+  KIMI_DEFAULT_COMMANDS,
   formatKimiCommandPrompt,
   formatKimiCommandOutput,
   stripAnsi,
@@ -11,6 +17,49 @@ import {
 
 describe("slash-commands", () => {
   describe("buildKimiCommandCatalog", () => {
+    it("localizes known compact metadata in both the draft and Session default catalogs", () => {
+      for (const catalog of [
+        KIMI_DEFAULT_COMMAND_CATALOG,
+        buildKimiCommandCatalog([...KIMI_DEFAULT_COMMANDS]),
+      ]) {
+        const compact = catalog.commands.find((command) => command.id === "compact");
+        if (!compact) throw new Error("Missing default compact command");
+        expect(localizeHarnessPresentation(compact, "zh-CN")).toEqual({
+          label: "压缩上下文",
+          description: "压缩当前对话上下文",
+        });
+        expect(localizeHarnessPresentation(compact, "en")).toEqual({
+          label: "compact",
+          description: "Compact the conversation context",
+        });
+        expect(compact).toMatchObject({
+          id: "compact",
+          invocation: "/compact",
+          argumentMode: "text",
+        });
+      }
+    });
+
+    it("does not translate arbitrary live commands based on their name alone", () => {
+      const catalog = buildKimiCommandCatalog([
+        { name: "compact", description: "Custom compression workflow", input: { hint: "prompt" } },
+        {
+          name: "custom",
+          description: "Compact the conversation context",
+          input: { hint: "prompt" },
+        },
+      ]);
+      expect(catalog.commands.map((command) => command.localizations)).toEqual([
+        undefined,
+        undefined,
+      ]);
+      expect(
+        catalog.commands.map((command) => localizeHarnessPresentation(command, "zh-CN")),
+      ).toEqual([
+        { label: "compact", description: "Custom compression workflow" },
+        { label: "custom", description: "Compact the conversation context" },
+      ]);
+    });
     it("returns empty catalog when availableCommands is empty", () => {
       const catalog = buildKimiCommandCatalog([]);
       expect(catalog).toEqual({ commands: [] });

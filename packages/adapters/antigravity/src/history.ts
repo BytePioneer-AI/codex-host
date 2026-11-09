@@ -148,6 +148,17 @@ function historyPath(environment: NodeJS.ProcessEnv): string | null {
   return threadId ? path.join(historyRoot(environment), `${threadId}.json`) : null;
 }
 
+/**
+ * The Thread's Question Hook directory, or null without a usable Thread ID. agy receives it
+ * through `--add-dir` on every Turn, and a resumed native Conversation can still refer to a
+ * directory an earlier Turn added, so a Thread keeps one directory instead of a new one per Turn.
+ */
+export function antigravityHookDirectory(environment: NodeJS.ProcessEnv): string | null {
+  const threadId = safeThreadId(environment);
+  if (!threadId || threadId === "." || threadId === "..") return null;
+  return path.join(historyRoot(environment), "hooks", threadId);
+}
+
 function jsonTurn(turn: AntigravityTurn): JsonValue {
   return JSON.parse(JSON.stringify(turn)) as JsonValue;
 }

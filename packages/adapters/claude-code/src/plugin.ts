@@ -15,6 +15,8 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
   const environment = await withUserShellEnvironment({ ...context.environment });
   if (context.platform === "darwin" && context.managedRemoteHost) {
     return new BrokeredHarnessAdapter({
+      sessionImport: true,
+      forwardDelegationEnvironment: true,
       commandCatalog: claudeCommandCatalog,
       liveCommandCatalog: true,
       environment,

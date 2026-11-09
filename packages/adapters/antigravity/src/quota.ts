@@ -14,6 +14,8 @@ export type AntigravityCommandRunner = (arguments_: readonly string[]) => Promis
 
 export interface AntigravityQuotaBucket {
   product: string;
+  periodType?: AntigravityQuotaSnapshot["periodType"];
+  scope?: { id: string; label: string };
   usagePercent: number;
   resetsAt?: string;
 }
@@ -23,11 +25,12 @@ export interface AntigravityQuotaBucket {
  * which the Host strips before validating.
  */
 export interface AntigravityQuotaSnapshot {
-  label: string;
+  label?: string;
+  scope?: { id: string; label: string };
   usedPercent: number;
   periodType: "weekly" | "five_hour" | "unknown";
   resetsAt?: string;
-  productUsage?: readonly AntigravityQuotaBucket[];
+  productUsage?: AntigravityQuotaBucket[];
   fetchedAt: string;
 }
 
@@ -82,6 +85,8 @@ function parseBuckets(groups: readonly unknown[]): ParsedBucket[] {
       const resetsAt = nonEmptyString(bucket.reset_time);
       buckets.push({
         product: groupName ? `${groupName} · ${label}` : label,
+        periodType: periodTypeFrom(window),
+        ...(groupName ? { scope: { id: groupName, label: groupName } } : {}),
         usagePercent,
         window,
         ...(resetsAt ? { resetsAt } : {}),
@@ -125,15 +130,20 @@ export function parseAntigravityUsageCommand(
   if (!leading) return null;
   const others = buckets.filter((bucket) => bucket !== leading);
   return {
-    label: leading.product,
+    ...(leading.scope || periodTypeFrom(leading.window) === "unknown"
+      ? { label: leading.product }
+      : {}),
+    ...(leading.scope ? { scope: leading.scope } : {}),
     usedPercent: leading.usagePercent,
     periodType: periodTypeFrom(leading.window),
     fetchedAt,
     ...(leading.resetsAt ? { resetsAt: leading.resetsAt } : {}),
     ...(others.length > 0
       ? {
-          productUsage: others.map(({ product, usagePercent, resetsAt }) => ({
+          productUsage: others.map(({ product, periodType, scope, usagePercent, resetsAt }) => ({
             product,
+            ...(periodType ? { periodType } : {}),
+            ...(scope ? { scope } : {}),
             usagePercent,
             ...(resetsAt ? { resetsAt } : {}),
           })),

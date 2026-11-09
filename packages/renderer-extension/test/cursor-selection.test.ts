@@ -5,15 +5,14 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
 } from "@codexhost/shared-contracts";
-import { DraftAgentController, KNOWN_RENDERER_AGENTS } from "../src/agent-selection-state.js";
+import { DraftAgentController } from "../src/agent-selection-state.js";
 import { restoredThreadOwnership } from "../src/renderer-binding-probe.js";
 import { modelSelectionForAgent } from "../src/versioned-renderer-adapter.js";
-import { RENDERER_AGENT_INSTALL_URLS } from "../src/renderer-agent-picker.js";
-import { RENDERER_AGENT_LABELS } from "../src/renderer-agent-icon.js";
+import { pluginDescriptor } from "../../../tests/fixtures/harness-plugin-descriptors.js";
+import { rendererAgentLabel } from "../src/renderer-agent-icon.js";
 
 describe("Cursor and Kiro selection in one Desktop", () => {
   it("keeps both models isolated and never carries Kiro Thinking into Cursor", () => {
-    expect(KNOWN_RENDERER_AGENTS).toEqual(expect.arrayContaining(["kiro-cli", "cursor-cli"]));
     const controller = new DraftAgentController<object>(),
       composer = {};
     const cursor = harnessModelRefSchema.parse({ id: "cursor.Y29tcG9zZXItMi41" });
@@ -28,7 +27,14 @@ describe("Cursor and Kiro selection in one Desktop", () => {
     expect(controller.modelForAgent(composer, "kiro-cli")).toEqual(kiro);
     expect(controller.thinkingOptionForAgent(composer, "cursor-cli")).toBeUndefined();
     expect(controller.thinkingOptionForAgent(composer, "kiro-cli")).toBe(high);
-    const selection = modelSelectionForAgent(null, null, "cursor-cli", cursor, high, mode);
+    const selection = modelSelectionForAgent(
+      null,
+      null,
+      "cursor-cli",
+      cursor,
+      controller.thinkingOptionForAgent(composer, "cursor-cli"),
+      mode,
+    );
     if (typeof selection?.model !== "string") throw Error("Missing Cursor carrier");
     expect(decodeHarnessPluginRoute(selection.model)).toMatchObject({
       harnessId: "cursor-cli",
@@ -45,8 +51,8 @@ describe("Cursor and Kiro selection in one Desktop", () => {
         history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
       }),
     ).toEqual({ agent: "cursor-cli", model: cursor, permissionModeId: mode });
-    expect(RENDERER_AGENT_LABELS["cursor-cli"]).toBe("Cursor CLI");
-    expect(RENDERER_AGENT_INSTALL_URLS["cursor-cli"]).toBe(
+    expect(rendererAgentLabel("cursor-cli", pluginDescriptor("cursor-cli"))).toBe("Cursor CLI");
+    expect(pluginDescriptor("cursor-cli").links?.installation).toBe(
       "https://cursor.com/docs/cli/installation",
     );
   });
@@ -60,6 +66,6 @@ describe("Cursor and Kiro selection in one Desktop", () => {
         locked: true,
         history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
       }),
-    ).toThrow("incompatible");
+    ).toThrow("identity mismatch");
   });
 });

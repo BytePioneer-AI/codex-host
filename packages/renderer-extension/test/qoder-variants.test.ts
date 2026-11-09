@@ -7,8 +7,9 @@ import {
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
 } from "@codexhost/shared-contracts";
-import { DraftAgentController, DEFAULT_RENDERER_AGENTS } from "../src/agent-selection-state.js";
-import { RENDERER_AGENT_LABELS } from "../src/renderer-agent-icon.js";
+import { DraftAgentController } from "../src/agent-selection-state.js";
+import { rendererAgentLabel } from "../src/renderer-agent-icon.js";
+import { pluginDescriptor } from "../../../tests/fixtures/harness-plugin-descriptors.js";
 import { modelSelectionForAgent } from "../src/versioned-renderer-adapter.js";
 import { restoredThreadOwnership } from "../src/renderer-binding-probe.js";
 import { rendererAgentForThreadOwnership } from "../src/renderer-sidebar-agent-icons.js";
@@ -21,7 +22,6 @@ describe("Qoder distribution identity in Desktop", () => {
   it.each(["qoder", "qoder-cn"] as const)(
     "round trips %s through the shared route and ownership",
     (agent) => {
-      expect(DEFAULT_RENDERER_AGENTS).toContain(agent);
       const selection = modelSelectionForAgent(null, null, agent, model, thinking, permission);
       if (!selection || typeof selection.model !== "string") throw new Error("Missing carrier");
       expect(decodeHarnessPluginRoute(selection.model)).toEqual({
@@ -51,7 +51,7 @@ describe("Qoder distribution identity in Desktop", () => {
           ...inspection,
           harnessId: agent === "qoder" ? "qoder-cn" : "qoder",
         }),
-      ).toThrow("incompatible transport Model");
+      ).toThrow("identity mismatch");
       expect(
         rendererAgentForThreadOwnership({
           owner: "external",
@@ -63,7 +63,7 @@ describe("Qoder distribution identity in Desktop", () => {
   );
 
   it("keeps model, Thinking and Permission Mode separate when switching and restoring", async () => {
-    const controller = new DraftAgentController();
+    const controller = new DraftAgentController({ enabledAgents: ["codex", "qoder", "qoder-cn"] });
     const composer = {};
     controller.mount(composer, ["default"]);
     const globalModel = harnessModelRefSchema.parse({ id: "global-model" });
@@ -101,7 +101,7 @@ describe("Qoder distribution identity in Desktop", () => {
   });
 
   it("shows distinct names for the two Agents", () => {
-    expect(RENDERER_AGENT_LABELS.qoder).toBe("Qoder");
-    expect(RENDERER_AGENT_LABELS["qoder-cn"]).toBe("Qoder CN");
+    expect(rendererAgentLabel("qoder", pluginDescriptor("qoder"))).toBe("Qoder");
+    expect(rendererAgentLabel("qoder-cn", pluginDescriptor("qoder-cn"))).toBe("Qoder CN");
   });
 });

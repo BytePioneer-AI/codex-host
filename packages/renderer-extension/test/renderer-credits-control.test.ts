@@ -52,26 +52,28 @@ describe("Renderer credits control", () => {
     expect(formatRendererCreditsReset("not-a-date")).toBe("not-a-date");
   });
 
-  it("translates product-scoped labels and limit windows into English and Chinese", () => {
-    expect(productLabel("GrokBuild")).toBe("Build");
-    expect(productLabel("5-hour window")).toBe("5-hour limit");
-    expect(productLabel("7-day window")).toBe("7-day limit");
-    expect(productLabel("Weekly window")).toBe("Weekly limit");
-    expect(productLabel("5-hour window", "zh-CN")).toBe("5 小时额度");
-    expect(productLabel("7-day window", "zh-CN")).toBe("7 天额度");
-    expect(productLabel("Weekly window", "zh-CN")).toBe("周额度");
-    expect(productLabel("Gemini Models · 5-hour window", "zh-CN")).toBe(
-      "Gemini Models · 5 小时额度",
+  it("uses structured periods and scopes, never display-string parsing", () => {
+    const window = {
+      product: "arbitrary native wording",
+      usagePercent: 12,
+      periodType: "five_hour" as const,
+      scope: { id: "group-1", label: "Model group" },
+    };
+    expect(productLabel(window)).toBe("Model group · 5-hour limit");
+    expect(productLabel(window, "zh-CN")).toBe("Model group · 5 小时额度");
+    expect(productLabel({ ...window, product: "different punctuation" }, "zh-CN")).toBe(
+      "Model group · 5 小时额度",
     );
-    expect(productLabel("Claude and GPT models · Weekly window", "zh-CN")).toBe(
-      "Claude and GPT models · 周额度",
+    expect(productLabel({ product: "GrokBuild", usagePercent: 12 })).toBe("GrokBuild");
+    expect(productLabel({ product: "7-day window", usagePercent: 12 }, "zh-CN")).toBe(
+      "7-day window",
     );
-    expect(productLabel("Claude and GPT models · 7-day window", "zh-CN")).toBe(
-      "Claude and GPT models · 7 天额度",
-    );
-    expect(productLabel("Opus · 7-day")).toBe("Opus · 7-day limit");
-    expect(productLabel("Opus · 7-day", "zh-CN")).toBe("Opus · 7 天额度");
-    expect(productLabel("Model group · 5-hour", "zh-CN")).toBe("Model group · 5 小时额度");
+    expect(
+      productLabel(
+        { product: "custom", usagePercent: 12, localizations: { "zh-CN": { label: "专属额度" } } },
+        "zh-CN",
+      ),
+    ).toBe("专属额度");
   });
 
   it("formats a same-day reset as a precise time and every other reset as a dated time", () => {

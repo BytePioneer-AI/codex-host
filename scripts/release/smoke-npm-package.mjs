@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { verifyLinuxGlibcBaseline } from "./linux-glibc.mjs";
+import {
+  LINUX_GLIBC_BASELINE_IMAGE,
+  verifyLinuxGlibcBaseline,
+  verifyLinuxGlibcLoad,
+} from "./linux-glibc.mjs";
 import {
   NPM_PLATFORM_PACKAGE_NAMES,
   npmTarballFileName,
@@ -39,6 +43,8 @@ export async function smokeNpmPackage({ targetName, version, workDirectory }) {
     for (const result of verifyLinuxGlibcBaseline({ packageRoot: platform.packageRoot })) {
       console.log(`${result.relative}: GLIBC_${result.maximum}`);
     }
+    verifyLinuxGlibcLoad({ packageRoot: platform.packageRoot });
+    console.log(`native executables load on ${LINUX_GLIBC_BASELINE_IMAGE}`);
   }
   const platformTarball = await packNpmPackage({
     packageRoot: platform.packageRoot,
@@ -77,7 +83,13 @@ export async function smokeNpmPackage({ targetName, version, workDirectory }) {
       throw new Error(`installed package cpu is invalid: ${JSON.stringify(manifest.cpu)}`);
     }
     if (process.platform !== "win32") {
-      for (const relative of executablePaths) {
+      const executables = [
+        ...executablePaths,
+        ...(target.hostPlatform === "darwin"
+          ? [`app/web-modules/node_modules/node-pty/prebuilds/darwin-${architecture}/spawn-helper`]
+          : []),
+      ];
+      for (const relative of executables) {
         const mode = (await stat(path.join(packageRoot, relative))).mode & 0o777;
         if ((mode & 0o111) === 0) throw new Error(`${relative} is not executable`);
       }

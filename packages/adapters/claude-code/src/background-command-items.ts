@@ -39,6 +39,8 @@ interface FollowedCommand {
   truncated: boolean;
   timer: NodeJS.Timeout | null;
   reading: Promise<void>;
+  /** Keep the native result and ownership until the final read or Session close. */
+  outcome: HostItemOutcome | undefined;
   /** Completed on the wire; a read still in flight must not append after it. */
   completed: boolean;
 }
@@ -65,7 +67,9 @@ export class ClaudeBackgroundCommandItems {
   }
 
   taskIds(): string[] {
-    return [...this.#commands.values()].map(({ command }) => command.taskId);
+    return [...this.#commands.values()].flatMap(({ command, outcome }) =>
+      outcome ? [] : [command.taskId],
+    );
   }
 
   follow(command: ClaudeDetachedCommand): void {
@@ -79,6 +83,7 @@ export class ClaudeBackgroundCommandItems {
       truncated: false,
       timer: null,
       reading: Promise.resolve(),
+      outcome: undefined,
       completed: false,
     };
     this.#commands.set(command.callId, followed);
@@ -88,24 +93,23 @@ export class ClaudeBackgroundCommandItems {
     }
   }
 
-  /** Returns whether the notification settles a followed command. */
+  /** Returns whether the notification belongs to a followed command. */
   settle(notification: TaskNotification): boolean {
     const followed = notification.callId ? this.#commands.get(notification.callId) : undefined;
     if (!followed) return false;
-    this.#commands.delete(followed.command.callId);
+    if (followed.outcome) return true;
+    const outcome = notificationOutcome(notification.status);
+    followed.outcome = outcome;
     if (followed.timer) clearInterval(followed.timer);
     followed.outputFile ??= notification.outputFile;
-    void this.#poll(followed).then(() =>
-      this.#complete(followed, notificationOutcome(notification.status)),
-    );
+    void this.#poll(followed).then(() => this.#complete(followed, outcome));
     return true;
   }
 
   /** The native process is gone; no notification can arrive any more. */
   abandonAll(reason: string): void {
     for (const followed of this.#commands.values()) {
-      if (followed.timer) clearInterval(followed.timer);
-      this.#complete(followed, { status: "cancelled", reason });
+      this.#complete(followed, followed.outcome ?? { status: "cancelled", reason });
     }
     this.#commands.clear();
   }
@@ -116,7 +120,7 @@ export class ClaudeBackgroundCommandItems {
   }
 
   async #read(followed: FollowedCommand): Promise<void> {
-    if (!followed.outputFile || followed.truncated) return;
+    if (!followed.outputFile || followed.truncated || followed.completed) return;
     let handle;
     try {
       handle = await open(followed.outputFile, "r");
@@ -126,8 +130,9 @@ export class ClaudeBackgroundCommandItems {
     followed.opened = true;
     try {
       const buffer = Buffer.alloc(READ_CHUNK_BYTES);
-      for (;;) {
+      while (!followed.completed) {
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, followed.offset);
+        if (followed.completed) return;
         if (bytesRead === 0) return;
         followed.offset += bytesRead;
         this.#append(followed, followed.decoder.write(buffer.subarray(0, bytesRead)));
@@ -156,8 +161,11 @@ export class ClaudeBackgroundCommandItems {
   }
 
   #complete(followed: FollowedCommand, outcome: HostItemOutcome): void {
+    if (followed.completed) return;
     const { command } = followed;
     followed.completed = true;
+    if (followed.timer) clearInterval(followed.timer);
+    this.#commands.delete(command.callId);
     const output =
       followed.output.length > 0
         ? followed.output

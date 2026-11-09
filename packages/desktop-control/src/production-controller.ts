@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { openRendererLocalPage } from "./renderer-local-page.js";
-import { listCdpTargets } from "./cdp-client.js";
+import { CdpConnectionClosedError, listCdpTargets } from "./cdp-client.js";
 import { remoteConnectionsExpression } from "./remote-connections-control.js";
 import { remoteConnectionsReplySchema } from "@codexhost/shared-contracts";
 
@@ -38,7 +38,7 @@ export interface DesktopControllerDependencies {
   install(options: {
     rendererCdpEndpoint: string;
     rendererSource: string;
-    enabledAgents: readonly string[];
+    enabledAgents?: readonly string[];
     timeoutMs: number;
     signal?: AbortSignal;
   }): Promise<RendererCdpControlSession>;
@@ -185,6 +185,7 @@ export function parseDesktopControllerArguments(
 function isTransientRendererInstallError(error: unknown): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 4; depth += 1) {
+    if (current instanceof CdpConnectionClosedError) return true;
     const message = current instanceof Error ? current.message : String(current);
     if (
       message.includes("Execution context was destroyed") ||
@@ -248,25 +249,7 @@ export async function runDesktopController(
       {
         rendererCdpEndpoint: options.rendererCdpEndpoint,
         rendererSource: `${RENDERER_CSP_BOOTSTRAP}\n${rendererSource}`,
-        enabledAgents: [
-          "codex",
-          "pi",
-          "claude-code",
-          "deepseek-harness",
-          "opencode",
-          "grok",
-          "omp",
-          "antigravity",
-          "kiro-cli",
-          "codebuddy",
-          "workbuddy",
-          "cursor-cli",
-          "hermes",
-          "qoder",
-          "qoder-cn",
-          "kimi-code",
-          "zcode",
-        ],
+        // External Agents are discovered from each target Host after installation.
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
         signal,
       },

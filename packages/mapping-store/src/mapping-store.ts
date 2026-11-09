@@ -1,3 +1,7 @@
+import {
+  usageMeasurementsSchema,
+  type UsageMeasurementsSnapshot,
+} from "@codexhost/shared-contracts";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -167,8 +171,8 @@ function threadMetadataOf(record: StoredThreadRecordV1): StoredThreadMetadataV1 
 
 /** The record as written to the Thread file, which older releases must still accept. */
 function withoutThreadMetadata(record: StoredThreadRecordV1): StoredThreadRecordV1 {
-  const { projectId, daybreakEnabled, gitInfo, ...core } = record;
-  void [projectId, daybreakEnabled, gitInfo];
+  const { preview, projectId, projectlessWorkspace, daybreakEnabled, gitInfo, ...core } = record;
+  void [preview, projectId, projectlessWorkspace, daybreakEnabled, gitInfo];
   return core;
 }
 
@@ -188,9 +192,17 @@ function applyThreadMetadataPatch(
   patch: ThreadMetadataPatch,
 ): StoredThreadRecordV1 {
   const next = { ...current };
+  if (patch.preview !== undefined) {
+    if (patch.preview === null) delete next.preview;
+    else next.preview = patch.preview;
+  }
   if (patch.projectId !== undefined) {
     if (patch.projectId === null) delete next.projectId;
     else next.projectId = patch.projectId;
+  }
+  if (patch.projectlessWorkspace !== undefined) {
+    if (patch.projectlessWorkspace === null) delete next.projectlessWorkspace;
+    else next.projectlessWorkspace = patch.projectlessWorkspace;
   }
   if (patch.daybreakEnabled !== undefined) next.daybreakEnabled = patch.daybreakEnabled;
   if (patch.gitInfo !== undefined) {
@@ -246,15 +258,27 @@ function processIdentity(pid: number): ProcessIdentity | null {
       const startedAt = Date.parse(result);
       return { executablePath: null, startedAt: Number.isFinite(startedAt) ? startedAt : null };
     }
+    // CIM can expose CreationDate for a reused system PID even when Get-Process cannot
+    // read its Path/StartTime. Serialize UTC explicitly: Windows PowerShell's default
+    // DateTime JSON representation is not an ISO timestamp that Date.parse can read.
     const query = [
       "$ErrorActionPreference = 'Stop'",
-      `$process = Get-Process -Id ${pid}`,
-      "$process | Select-Object Path, StartTime | ConvertTo-Json -Compress",
+      `$process = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}'`,
+      "if ($null -ne $process) { [pscustomobject]@{ " +
+        "Path = $process.ExecutablePath; " +
+        "StartTime = $(if ($null -ne $process.CreationDate) { " +
+        "$process.CreationDate.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) " +
+        "} else { $null }) } | ConvertTo-Json -Compress }",
     ].join("; ");
     const result = execFileSync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", query],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+        timeout: 5_000,
+      },
     ).trim();
     if (!result) return { executablePath: null, startedAt: null };
     const parsed = JSON.parse(result) as { Path?: unknown; StartTime?: unknown };
@@ -379,6 +403,7 @@ export class MappingStore {
       const names = (await readdir(this.#threadsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
+      const pendingQuarantines = new Set<string>();
       for (const name of names) {
         const primary = path.join(this.#threadsDirectory, name);
         const backup = path.join(this.#backupsDirectory, name);
@@ -394,13 +419,32 @@ export class MappingStore {
               this.#quarantineDirectory,
               `${name}.${this.#now().getTime()}.invalid`,
             );
-            await rename(primary, quarantine).catch(() => undefined);
+            const metadataSource = path.join(this.#metadataDirectory, name);
+            pendingQuarantines.add(name);
+            try {
+              // Preserve existing archives, including a copy left by an interrupted quarantine.
+              if (await exists(quarantine)) continue;
+              try {
+                // Keep the source metadata until the record moves; no rollback is needed if
+                // that rename fails. Orphan cleanup can remove it once the pair is archived.
+                await copyFile(metadataSource, `${quarantine}.metadata`, constants.COPYFILE_EXCL);
+              } catch (error) {
+                // ENOENT also means a missing quarantine/; skip only absent metadata.
+                if (systemErrorCode(error) !== "ENOENT" || (await exists(metadataSource)))
+                  throw error;
+              }
+              await rename(primary, quarantine);
+              pendingQuarantines.delete(name);
+            } catch {
+              // Leave the source pair for a later startup and protect its metadata below.
+              // One failed quarantine must not block access to healthy Threads.
+            }
             void primaryError;
             void backupError;
             continue;
           }
         }
-        if (record.state === "creating" && !record.nativeSessionRef) {
+        if (record.state === "creating" && !record.nativeSessionRef && !record.importSourceRef) {
           await rm(primary, { force: true });
           await rm(backup, { force: true });
           await rm(this.#metadataPath(record.hostThreadId), { force: true });
@@ -421,9 +465,14 @@ export class MappingStore {
         (await readdir(this.#metadataDirectory))
           .filter(
             (name) =>
-              name.endsWith(".json") && !this.#records.has(name.slice(0, -5) as HostThreadId),
+              name.endsWith(".json") &&
+              !this.#records.has(name.slice(0, -5) as HostThreadId) &&
+              !pendingQuarantines.has(name),
           )
-          .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
+          // Cleanup is best effort, including a source whose quarantine copy is already safe.
+          .map((name) =>
+            rm(path.join(this.#metadataDirectory, name), { force: true }).catch(() => undefined),
+          ),
       );
       const delegationNames = (await readdir(this.#delegationsDirectory)).filter((name) =>
         name.endsWith(".json"),
@@ -473,6 +522,12 @@ export class MappingStore {
       this.#rebuildIndexes();
       this.#initialized = true;
     } catch (error) {
+      // A retry on this instance must reload from disk, not reuse a partial load.
+      this.#records.clear();
+      this.#delegations.clear();
+      this.#sectionPlacements = [];
+      this.#supersededSessions = [];
+      this.#rebuildIndexes();
       await this.close().catch(() => undefined);
       throw error;
     }
@@ -626,6 +681,7 @@ export class MappingStore {
         hostThreadId: input.hostThreadId,
         createRequestId: input.createRequestId,
         harnessId: input.harnessId,
+        ...(input.importSourceRef ? { importSourceRef: input.importSourceRef } : {}),
         state: "creating",
         cwd: input.cwd,
         title: input.title ?? "",
@@ -633,6 +689,7 @@ export class MappingStore {
         transportModelId: input.transportModelId,
         ephemeral: input.ephemeral,
         historyMode: input.historyMode,
+        ...(input.projectlessWorkspace ? { projectlessWorkspace: input.projectlessWorkspace } : {}),
         ...(input.forkSource ? { forkSource: input.forkSource } : {}),
         ...(input.subagent ? { subagent: input.subagent } : {}),
         turnMappings: [],
@@ -772,6 +829,52 @@ export class MappingStore {
     });
   }
 
+  /** Optional telemetry updates only the existing metadata file, never activity or identity. */
+  async saveUsageMeasurements(
+    hostThreadId: HostThreadId,
+    expectedNativeSessionRef: NativeSessionRef,
+    values: UsageMeasurementsSnapshot,
+  ): Promise<StoredThreadRecordV1> {
+    this.#requireInitialized();
+    const parsed = usageMeasurementsSchema.parse(values);
+    let result: StoredThreadRecordV1 | undefined;
+    await this.#enqueue(async () => {
+      const current = this.#records.get(hostThreadId);
+      if (!current)
+        throw new MappingStoreError("THREAD_NOT_FOUND", "External Thread was not found");
+      result = current;
+      if (
+        current.state !== "ready" ||
+        !sameJson(current.nativeSessionRef, expectedNativeSessionRef)
+      )
+        return;
+      const retained = new Set<string>(current.turnMappings.map((mapping) => mapping.hostTurnId));
+      const prior = current.usageMeasurements;
+      const merged: UsageMeasurementsSnapshot = {};
+      if (prior && sameJson(prior.nativeSessionRef, expectedNativeSessionRef)) {
+        for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
+          const value = prior.values[field];
+          if (value && retained.has(value.turnId)) merged[field] = value;
+        }
+      }
+      for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
+        const value = parsed[field];
+        if (value && retained.has(value.turnId) && (!merged[field] || value.at >= merged[field].at))
+          merged[field] = value;
+      }
+      const next = { ...current };
+      if (Object.keys(merged).length)
+        next.usageMeasurements = { nativeSessionRef: expectedNativeSessionRef, values: merged };
+      else delete next.usageMeasurements;
+      if (sameJson(current.usageMeasurements, next.usageMeasurements)) return;
+      await this.#writeMetadataFile(hostThreadId, threadMetadataOf(next));
+      this.#records.set(hostThreadId, next);
+      result = next;
+    });
+    if (!result) throw new MappingStoreError("IO_ERROR", "Measurement update produced no record");
+    return cloneRecord(result);
+  }
+
   async upsertTurnMappings(
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
@@ -857,13 +960,18 @@ export class MappingStore {
     patch: ThreadMetadataPatch,
     options: { ifProjectId?: string } = {},
   ): Promise<StoredThreadRecordV1> {
-    return this.#update(hostThreadId, (current) => {
-      if (options.ifProjectId !== undefined && current.projectId !== options.ifProjectId) {
-        return null;
-      }
-      const next = applyThreadMetadataPatch(current, patch);
-      return sameJson(next, current) ? null : next;
-    });
+    return this.#update(
+      hostThreadId,
+      (current) => {
+        if (options.ifProjectId !== undefined && current.projectId !== options.ifProjectId) {
+          return null;
+        }
+        const next = applyThreadMetadataPatch(current, patch);
+        return sameJson(next, current) ? null : next;
+      },
+      // Backfilling a display hint is not new conversation activity.
+      Object.keys(patch).every((key) => key === "preview"),
+    );
   }
 
   /** Section placements of stored External Threads, in insertion order. */
@@ -974,12 +1082,18 @@ export class MappingStore {
   }
 
   async #remove(hostThreadId: HostThreadId): Promise<void> {
-    if (!this.#records.has(hostThreadId)) return;
-    await Promise.all([
-      rm(this.#recordPath(hostThreadId), { force: true }),
-      rm(this.#backupPath(hostThreadId), { force: true }),
-      rm(this.#metadataPath(hostThreadId), { force: true }),
-    ]);
+    const current = this.#records.get(hostThreadId);
+    if (!current) return;
+    await rm(this.#recordPath(hostThreadId), { force: true });
+    try {
+      await rm(this.#backupPath(hostThreadId), { force: true });
+      // Metadata is removed last so any failed unlink leaves it intact.
+      await rm(this.#metadataPath(hostThreadId), { force: true });
+    } catch (error) {
+      // Startup discovers Threads by their primary record, not by orphan auxiliary files.
+      await this.#replaceFile(this.#recordPath(hostThreadId), current, false);
+      throw error;
+    }
     this.#records.delete(hostThreadId);
     this.#rebuildIndexes();
   }
@@ -1001,6 +1115,7 @@ export class MappingStore {
   async #update(
     hostThreadId: HostThreadId,
     change: (current: StoredThreadRecordV1) => StoredThreadRecordV1 | null,
+    preserveUpdatedAt = false,
   ): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
     let result: StoredThreadRecordV1 | null = null;
@@ -1016,7 +1131,7 @@ export class MappingStore {
       const next = storedThreadRecordV1Schema.parse({
         ...changed,
         revision: current.revision + 1,
-        updatedAt: this.#now().toISOString(),
+        updatedAt: preserveUpdatedAt ? current.updatedAt : this.#now().toISOString(),
       }) as StoredThreadRecordV1;
       this.#validateGlobal(next, hostThreadId);
       await this.#replaceFile(this.#recordPath(hostThreadId), next, true);
@@ -1081,7 +1196,17 @@ export class MappingStore {
 
   async #writeNew(record: StoredThreadRecordV1): Promise<void> {
     this.#validateGlobal(record, null);
-    await this.#replaceFile(this.#recordPath(record.hostThreadId), record, false);
+    // Publish placement metadata first. A crash may leave an orphan sidecar
+    // (initialize removes it), never an admitted Thread missing its no-project fact.
+    const metadata = threadMetadataOf(record);
+    if (metadata) await this.#writeMetadataFile(record.hostThreadId, metadata);
+    try {
+      await this.#replaceFile(this.#recordPath(record.hostThreadId), record, false);
+    } catch (error) {
+      if (metadata)
+        await rm(this.#metadataPath(record.hostThreadId), { force: true }).catch(() => undefined);
+      throw error;
+    }
     this.#records.set(record.hostThreadId, record);
     this.#rebuildIndexes();
   }
@@ -1114,7 +1239,7 @@ export class MappingStore {
     }
   }
 
-  /** Atomically writes, or with null removes, a Thread's Desktop metadata file. */
+  /** Atomically patches owned metadata fields, retaining unknown fields on disk. */
   async #writeMetadataFile(
     hostThreadId: HostThreadId,
     metadata: StoredThreadMetadataV1 | null,
@@ -1123,12 +1248,18 @@ export class MappingStore {
     const temp = `${target}.tmp-${randomUUID()}`;
     let handle: FileHandle | null = null;
     try {
-      if (!metadata) {
+      const retained = Object.fromEntries(
+        Object.entries((await this.#readMetadata(hostThreadId)) ?? {}).filter(
+          ([name]) => !["formatVersion", "hostThreadId", ...THREAD_METADATA_FIELDS].includes(name),
+        ),
+      );
+      if (!metadata && Object.keys(retained).length === 0) {
         await rm(target, { force: true });
         return;
       }
+      const next = { ...retained, formatVersion: 1, hostThreadId, ...metadata };
       handle = await open(temp, "wx", constants.S_IRUSR | constants.S_IWUSR);
-      await handle.writeFile(`${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+      await handle.writeFile(`${JSON.stringify(next, null, 2)}\n`, "utf8");
       await handle.sync();
       await handle.close();
       handle = null;

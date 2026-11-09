@@ -75,6 +75,13 @@ export function commandCatalog(
             id: `${profile.harnessId}.${name}`,
             invocation: `/${name}`,
             label: name,
+            ...(name === "compact" && !skill
+              ? {
+                  localizations: {
+                    "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" },
+                  },
+                }
+              : {}),
             ...(text(entry.description).trim()
               ? { description: text(entry.description).trim().slice(0, 512) }
               : {}),

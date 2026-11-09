@@ -47,6 +47,14 @@ export interface CdpClientOptions {
 
 export type CdpEventListener = (params: unknown, sessionId: string | undefined) => void;
 
+/** The connection is terminal; further commands require a newly discovered target. */
+export class CdpConnectionClosedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CdpConnectionClosedError";
+  }
+}
+
 interface PendingCommand {
   resolve(value: unknown): void;
   reject(error: Error): void;
@@ -231,8 +239,12 @@ export class CdpClient {
     this.#socket = socket;
     this.#commandTimeoutMs = commandTimeoutMs;
     socket.addEventListener("message", (event) => this.#onMessage(event));
-    socket.addEventListener("error", () => this.#fail(new Error("CDP WebSocket failed")));
-    socket.addEventListener("close", () => this.#fail(new Error("CDP WebSocket closed")));
+    socket.addEventListener("error", () =>
+      this.#disconnect(new CdpConnectionClosedError("CDP WebSocket failed")),
+    );
+    socket.addEventListener("close", () =>
+      this.#disconnect(new CdpConnectionClosedError("CDP WebSocket closed")),
+    );
   }
 
   static async connect(url: string, options: CdpClientOptions = {}): Promise<CdpClient> {
@@ -289,7 +301,7 @@ export class CdpClient {
   }
 
   #send(method: string, params: Record<string, unknown>, sessionId?: string): Promise<unknown> {
-    if (this.#closed) return Promise.reject(new Error("CDP client is closed"));
+    if (this.#closed) return Promise.reject(new CdpConnectionClosedError("CDP client is closed"));
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -316,19 +328,44 @@ export class CdpClient {
       returnByValue: true,
     });
     if (!isRecord(response)) throw new Error("Runtime.evaluate returned an invalid result");
-    if (isRecord(response.exceptionDetails)) {
-      throw new Error(cdpExceptionMessage(response.exceptionDetails, "Renderer evaluation failed"));
+    try {
+      if (isRecord(response.exceptionDetails)) {
+        throw new Error(
+          cdpExceptionMessage(response.exceptionDetails, "Renderer evaluation failed"),
+        );
+      }
+      if (!isRecord(response.result) || !("value" in response.result)) {
+        throw new Error("Runtime.evaluate did not return a value");
+      }
+      return response.result.value as T;
+    } finally {
+      // returnByValue still returns remote handles for thrown objects. Both the
+      // result and exception can retain the same Error under distinct handles.
+      const objects = [
+        response.result,
+        isRecord(response.exceptionDetails) ? response.exceptionDetails.exception : undefined,
+      ];
+      const ids = new Set(
+        objects.flatMap((object) =>
+          isRecord(object) && typeof object.objectId === "string" ? [object.objectId] : [],
+        ),
+      );
+      await Promise.all(
+        [...ids].map((objectId) =>
+          this.command("Runtime.releaseObject", { objectId }).catch(() => undefined),
+        ),
+      );
     }
-    if (!isRecord(response.result) || !("value" in response.result)) {
-      throw new Error("Runtime.evaluate did not return a value");
-    }
-    return response.result.value as T;
   }
 
   close(): void {
+    this.#disconnect(new CdpConnectionClosedError("CDP client closed"));
+  }
+
+  #disconnect(error: CdpConnectionClosedError): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.#fail(new Error("CDP client closed"));
+    this.#fail(error);
     this.#listeners.clear();
     this.#socket.close();
   }

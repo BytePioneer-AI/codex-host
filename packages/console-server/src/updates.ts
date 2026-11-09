@@ -1,4 +1,5 @@
 import path from "node:path";
+import { dataDirectory } from "./paths.js";
 
 import type {
   UpdateCheckResult,
@@ -12,10 +13,10 @@ import {
   compareSemanticVersions,
   createBackgroundUpdateManager,
   defaultUpdateStateDirectory,
-  discoverLatestUpdateStatus,
+  discoverActiveUpdateStatus,
+  discoverRecentCompletedUpdateStatus,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
-  isUpdateOperationActive,
   recoverUpdateOperationLock,
   selectInstallerReleaseArtifact,
   readRuntimeMetadata,
@@ -49,6 +50,8 @@ export interface ConsoleUpdateTarget {
   /** Launcher runtime descriptor path from `inspect --json`. */
   runtimeDescriptorPath: string | null;
   codexhostRunning: boolean;
+  dataDirectory?: string;
+  restartTarget?: "desktop" | "web";
 }
 
 export interface ConsoleUpdates {
@@ -60,7 +63,7 @@ export interface ConsoleUpdates {
 export interface CreateConsoleUpdatesOptions {
   /** Called once the Updater owns the update; the console must then exit. */
   onHandedOff(): void;
-  /** Terminal commands must stay alive until preparation and Updater launch finish. */
+  /** Terminal commands must stay alive until the Updater confirms handoff. */
   waitForHandoff?: boolean;
   environment?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
@@ -86,6 +89,9 @@ function publicStatus(status: BackgroundUpdateStatus): UpdateStatus {
     ...(status.downloadedBytes === undefined ? {} : { downloadedBytes: status.downloadedBytes }),
     ...(status.totalBytes === undefined ? {} : { totalBytes: status.totalBytes }),
     error: status.error?.slice(0, ERROR_MAX_LENGTH) ?? null,
+    ...(status.serviceStopOutput === undefined
+      ? {}
+      : { serviceStopOutput: status.serviceStopOutput }),
   };
 }
 
@@ -131,18 +137,19 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
   let candidate: CodexhostLatestRelease | null = null;
   let handedOff = false;
 
+  let currentStatusPath: string | null = null;
+
   async function latestStatus(): Promise<UpdateStatus | null> {
-    const directory = stateDirectory();
-    const discovered = await discoverLatestUpdateStatus(directory);
-    if (!discovered) return null;
-    if (
-      discovered.status.phase !== "succeeded" &&
-      discovered.status.phase !== "failed" &&
-      !(await isUpdateOperationActive(directory))
-    ) {
-      return null;
+    if (!currentStatusPath) {
+      const active = await discoverActiveUpdateStatus(stateDirectory());
+      if (!active) {
+        const completed = await discoverRecentCompletedUpdateStatus(stateDirectory());
+        return completed ? publicStatus(completed.status) : null;
+      }
+      currentStatusPath = active.statusPath;
     }
-    return publicStatus(discovered.status);
+    const status = await manager.readStatus(currentStatusPath);
+    return status ? publicStatus(status) : null;
   }
 
   function installable(metadata: DistributionMetadata, release: CodexhostLatestRelease): boolean {
@@ -175,6 +182,8 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         platform === "win32" ? "codexhost-updater.exe" : "codexhost-updater",
       ),
       stateDirectory: stateDirectory(),
+      dataDirectory: target.dataDirectory ?? dataDirectory(environment),
+      restartTarget: target.restartTarget ?? "desktop",
       onPrepared,
     };
     const kind = installationKind(metadata);
@@ -290,6 +299,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         if (existing) return { status: existing };
         throw new ConsoleUpdateError("busy", "Another update operation is already active");
       }
+      currentStatusPath = null;
       try {
         const release = await fetchLatest();
         if (
@@ -311,12 +321,13 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
           try {
             const prepared = await prepare(metadata, target, release, async (info) => {
               await lock.setStatusPath(info.statusPath);
+              currentStatusPath = info.statusPath;
               resolvePrepared(info.statusPath);
             });
             // The console runs outside the Codex Desktop process tree on every
             // platform, so it starts the Updater itself and then exits so the
             // Updater's wait on this process completes.
-            manager.start(prepared);
+            await manager.start(prepared, (pid) => lock.transferTo(pid));
             handedOff = true;
             options.onHandedOff();
           } catch (error) {

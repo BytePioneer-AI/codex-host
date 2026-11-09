@@ -54,7 +54,12 @@ describe.skipIf(!app)("ZCode installed CLI with isolated local Provider", () => 
                 id: "fixture_write",
                 name: "Write",
                 input: {
-                  file_path: path.join(root, "fixture-created.txt"),
+                  file_path: path.join(
+                    root,
+                    last.includes("fixture-write-meter")
+                      ? "meter-created.txt"
+                      : "fixture-created.txt",
+                  ),
                   content: "fixture content\n",
                 },
               },
@@ -105,7 +110,12 @@ describe.skipIf(!app)("ZCode installed CLI with isolated local Provider", () => 
           content: blocks,
           stop_reason: stop,
           stop_sequence: null,
-          usage: { input_tokens: 5, output_tokens: 4 },
+          usage: {
+            input_tokens: 5,
+            output_tokens: 4,
+            cache_read_input_tokens: 30,
+            cache_creation_input_tokens: 10,
+          },
         }),
       );
       return;
@@ -122,7 +132,12 @@ describe.skipIf(!app)("ZCode installed CLI with isolated local Provider", () => 
         content: [],
         stop_reason: null,
         stop_sequence: null,
-        usage: { input_tokens: 5, output_tokens: 0 },
+        usage: {
+          input_tokens: 5,
+          output_tokens: 0,
+          cache_read_input_tokens: 30,
+          cache_creation_input_tokens: 10,
+        },
       },
     });
     blocks.forEach((block, index) => {
@@ -140,6 +155,8 @@ describe.skipIf(!app)("ZCode installed CLI with isolated local Provider", () => 
       });
       send("content_block_stop", { index });
     });
+    // Give the actual CLI observable generation time, independent of tool execution.
+    await new Promise((resolve) => setTimeout(resolve, 25));
     send("message_delta", {
       delta: { stop_reason: stop, stop_sequence: null },
       usage: { output_tokens: 4 },
@@ -228,6 +245,73 @@ describe.skipIf(!app)("ZCode installed CLI with isolated local Provider", () => 
     expect(
       next.values.find((value) => value.kind === "event" && value.event.type === "turn.completed"),
     ).toMatchObject({ event: { nativeTurnRef: history.value.turns[1]?.nativeTurnRef } });
+    await resumed.value.close();
+  }, 45_000);
+  it("meters native requests before Turn completion and replays the same usage on resume", async () => {
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: root,
+      executionPolicy: "unattended-full-access",
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value,
+      output = observe(session);
+    const ref = required(session.initialState.nativeRef);
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("native-meter"),
+      input: [{ type: "text", text: "fixture-write-meter" }],
+    });
+    await output.untilTerminal("native-meter");
+    const requests = output.values.flatMap((value) =>
+      value.kind === "event" && value.event.type === "usage.request" ? [value.event.request] : [],
+    );
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request).toMatchObject({
+        model: "fixture-model",
+        inputTokens: 45,
+        outputTokens: 4,
+        cachedInputTokens: 30,
+        cacheWriteInputTokens: 10,
+      });
+      expect(request.historical).toBeUndefined();
+      expect(request.startedAtMs).toBeTypeOf("number");
+      expect(required(request.completedAtMs)).toBeGreaterThan(required(request.startedAtMs));
+    }
+    const firstRequest = output.values.findIndex(
+      (v) => v.kind === "event" && v.event.type === "usage.request",
+    );
+    const terminal = output.values.findIndex(
+      (v) => v.kind === "event" && v.event.type === "turn.completed",
+    );
+    expect(firstRequest).toBeGreaterThanOrEqual(0);
+    expect(terminal).toBeGreaterThan(firstRequest);
+    expect(new Set(requests.map((request) => request.requestId)).size).toBe(2);
+    expect(
+      output.values.some(
+        (v) => v.kind === "event" && v.event.type === "usage.history" && !v.event.complete,
+      ),
+    ).toBe(false);
+    await session.close();
+    const resumed = await adapter.open({ kind: "resume", cwd: root, nativeRef: ref });
+    if (!resumed.ok) throw new Error(resumed.error.message);
+    const replay = observe(resumed.value);
+    await vi.waitFor(() =>
+      expect(
+        replay.values.some((v) => v.kind === "event" && v.event.type === "usage.history"),
+      ).toBe(true),
+    );
+    const historical = replay.values.flatMap((v) =>
+      v.kind === "event" && v.event.type === "usage.request" ? [v.event.request] : [],
+    );
+    expect(historical).toHaveLength(requests.length);
+    for (const request of requests) {
+      const facts = { ...request };
+      delete facts.startedAtMs;
+      delete facts.completedAtMs;
+      expect(historical).toContainEqual({ ...facts, reasoningOutputTokens: 0, historical: true });
+    }
     await resumed.value.close();
   }, 45_000);
   it("preserves per-Thread tool environment across concurrent workspaces", async () => {

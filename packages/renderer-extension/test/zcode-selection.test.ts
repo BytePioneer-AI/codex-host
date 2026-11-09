@@ -5,19 +5,18 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
 } from "@codexhost/shared-contracts";
-import { DraftAgentController, DEFAULT_RENDERER_AGENTS } from "../src/agent-selection-state.js";
-import { RENDERER_AGENT_LABELS } from "../src/renderer-agent-icon.js";
+import { DraftAgentController } from "../src/agent-selection-state.js";
+import { rendererAgentLabel } from "../src/renderer-agent-icon.js";
 import { modelSelectionForAgent } from "../src/versioned-renderer-adapter.js";
 import { restoredThreadOwnership } from "../src/renderer-binding-probe.js";
-import { RENDERER_AGENT_INSTALL_URLS } from "../src/renderer-agent-picker.js";
+import { pluginDescriptor } from "../../../tests/fixtures/harness-plugin-descriptors.js";
 import { harnessInstallationGuide } from "../src/settings/harness-installation-guides.js";
 
 describe("ZCode Desktop selection", () => {
   it.each(["zcode-local-v1"])(
     "round trips %s configuration and locked Thread restoration through the shared plugin route",
     async (prefix) => {
-      expect(DEFAULT_RENDERER_AGENTS).toContain("zcode");
-      expect(RENDERER_AGENT_LABELS.zcode).toBe("ZCode");
+      expect(rendererAgentLabel("zcode", pluginDescriptor("zcode"))).toBe("ZCode");
       const model = harnessModelRefSchema.parse({ id: `${prefix}.WyJwIiwibSJd` });
       const thinking = harnessThinkingOptionIdSchema.parse("high"),
         permission = harnessPermissionModeIdSchema.parse("build");
@@ -44,7 +43,7 @@ describe("ZCode Desktop selection", () => {
         thinkingOptionId: thinking,
         permissionModeId: permission,
       });
-      const controller = new DraftAgentController(),
+      const controller = new DraftAgentController({ enabledAgents: ["codex", "zcode"] }),
         composer = {};
       controller.mount(composer, ["default"]);
       controller.setExternalModel(composer, "zcode", model);
@@ -66,11 +65,11 @@ describe("ZCode Desktop selection", () => {
     },
   );
   it("points both install entries at the ZCode installation section", () => {
-    const guide = harnessInstallationGuide("zcode", "en");
+    const guide = harnessInstallationGuide(pluginDescriptor("zcode"), "en");
     expect(guide.url).toMatch(
       /codex-host\/blob\/main\/docs\/harnesses\/zcode\/zcode-harness-integration\.md#%E5%AE%89%E8%A3%85$/,
     );
-    expect(RENDERER_AGENT_INSTALL_URLS.zcode).toBe(guide.url);
+    expect(pluginDescriptor("zcode").links?.installation).toBe(guide.url);
     expect(guide.before).toContain("Start Plan");
     expect(guide.before).not.toMatch(/build|runtime/iu);
   });

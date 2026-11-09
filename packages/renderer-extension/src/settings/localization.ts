@@ -79,6 +79,7 @@ export interface RendererSettingsMessages {
   readonly notAvailable: string;
   readonly runtimeCapabilityNotInstalled: string;
   readonly sessionImportHarness: string;
+  readonly sessionImportSelectHost: string;
   readonly sessionImportDescription: string;
   readonly sessionImportAvailabilityNote: string;
   readonly sessionImportRefresh: string;
@@ -127,6 +128,8 @@ export interface RendererSettingsMessages {
   readonly accountCreditsFailed: string;
   readonly accountCreditsRetry: string;
   readonly accountCreditsRefresh: string;
+  readonly accountEmailsHide: string;
+  readonly accountEmailsShow: string;
   readonly accountLoadFailed: string;
   readonly accountCreditsUsed: string;
   readonly accountCreditsResetAt: string;
@@ -195,10 +198,17 @@ export interface RendererSettingsMessages {
   readonly connectionInstallRunning: string;
   readonly harnessVersion: HarnessVersionMessages;
   readonly harnessVersionTitle: string;
+  readonly harnessVersionApplicationTitle: string;
   readonly harnessVersionCurrent: string;
   readonly harnessVersionLatest: string;
   readonly harnessVersionChecking: string;
+  readonly harnessVersionAvailable: string;
   readonly harnessVersionUpdate: string;
+  readonly harnessVersionDownloadUpdate: string;
+  readonly harnessUpdateAll: string;
+  readonly harnessUpdateAllProgress: string;
+  readonly harnessUpdateAllDescription: string;
+  readonly harnessUpdateAllResult: string;
   readonly harnessVersionUpdating: string;
   readonly harnessVersionUpToDate: string;
   readonly harnessVersionUpdated: string;
@@ -249,12 +259,13 @@ export interface RendererSettingsMessages {
   readonly updateInstallingNpm: string;
   readonly updateRequestTimeout: string;
   readonly updateServiceUnavailable: string;
+  readonly updateReconnecting: string;
+  readonly updateResultUnavailable: string;
   readonly updateRestarting: string;
   readonly updateSucceeded: string;
   readonly updateFailed: string;
   readonly updateRetry: string;
   readonly updateManualNpmDescription: string;
-  readonly updateWindowsNpmDescription: string;
   readonly updateWindowsInstallerDescription: string;
   readonly updateManualTitle: string;
   readonly updateManualFallbackDescription: string;
@@ -340,15 +351,16 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   notAvailable: "Not available",
   runtimeCapabilityNotInstalled: "This runtime capability is not installed yet.",
   sessionImportHarness: "Harness",
+  sessionImportSelectHost: "Select the Host to import sessions from",
   sessionImportDescription:
     "Sessions keep their original project path. If a folder is not in the Codex sidebar, add it as a project first. Original history remains managed by the Harness.",
   sessionImportAvailabilityNote:
-    "Available Harnesses come from the local Host. If activity is unknown, close the session in its native client before importing to avoid concurrent writes.",
+    "Available Harnesses come from the selected Host. If activity is unknown, close the session in its native client before importing to avoid concurrent writes.",
   sessionImportRefresh: "Refresh",
-  sessionImportRefreshing: "Loading local sessions...",
+  sessionImportRefreshing: "Loading sessions from the selected Host...",
   sessionImportUnavailable:
-    "Session import is unavailable for this local Harness or its current protocol. Update the Host/plugin or choose another Harness.",
-  sessionImportEmpty: "No local sessions are available to import.",
+    "Session import is unavailable for this Harness or the selected Host protocol. Update the Host/plugin or choose another Harness.",
+  sessionImportEmpty: "No sessions are available to import on the selected Host.",
   sessionImportSearch: "Search",
   sessionImportSearchPlaceholder: "Search titles, session IDs or project paths",
   sessionImportNoMatches: "No sessions match your search.",
@@ -357,7 +369,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportNext: "Next",
   sessionImportPageSummary: "Page {page} of {pages} · {total} sessions",
   sessionImportLoadFailed:
-    "Local sessions could not be loaded. Check directory access or duplicate session IDs, then retry.",
+    "Sessions could not be loaded from the selected Host. Check directory access or duplicate session IDs, then retry.",
   sessionImportFailed: "The session could not be imported.",
   sessionImportUntitled: "Untitled session",
   sessionImportUpdatedAt: "Updated",
@@ -397,6 +409,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountCreditsFailed: "Could not load limits",
   accountCreditsRetry: "Retry",
   accountCreditsRefresh: "Refresh limits",
+  accountEmailsHide: "Hide emails",
+  accountEmailsShow: "Show emails",
   accountLoadFailed: "Could not load Codex Accounts.",
   accountCreditsUsed: "Used",
   accountCreditsResetAt: "Quota resets: {time}",
@@ -461,23 +475,31 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "No saved override. Uses environment configuration, then automatic discovery.",
   launchPathSaving: "Saving…",
   launchPathLoading: "Loading launch settings…",
-  launchPathLoadError: "Could not load launch settings. Reopen this detail panel to retry.",
+  launchPathLoadError:
+    "Could not load launch settings. Save an installation directory or reset to automatic discovery to replace them.",
   launchPathSaveError:
     "Could not save. Enter an existing absolute installation folder on this Host and check configuration permissions.",
   connectionOfficialWebsite: "Visit official website",
   connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "Supported DSH versions: 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1 and 0.2.0-rc.2. Versions newer than 0.2.0-rc.2 can be tried, but compatibility may be limited; versions older than 0.1.7-rc.1 must be upgraded first.",
+    "Supported DSH versions: 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1, 0.2.0-rc.2, 0.2.1-rc.1, 0.2.1-rc.2, 0.2.1-rc.3, 0.2.1-rc.4, 0.2.1-rc.5 and 0.2.2-rc.1. Versions newer than 0.2.2-rc.1 can be tried, but compatibility may be limited; versions older than 0.1.7-rc.1 must be upgraded first.",
   connectionInstall: "Install",
   connectionInstallDescription: "This Harness was not detected.",
   connectionInstallRunning:
     "Installing on the selected Host. You can leave this page; login or setup may still be required afterward.",
   harnessVersion: harnessVersionEnglish,
   harnessVersionTitle: "Harness CLI version",
+  harnessVersionApplicationTitle: "Application version",
   harnessVersionCurrent: "Current version",
   harnessVersionLatest: "Latest version",
   harnessVersionChecking: "Checking versions…",
+  harnessVersionAvailable: "Update available",
   harnessVersionUpdate: "Update",
+  harnessVersionDownloadUpdate: "Download update",
+  harnessUpdateAll: "Update all",
+  harnessUpdateAllProgress: "Updating",
+  harnessUpdateAllDescription: "Update all eligible Harnesses on the selected Host.",
+  harnessUpdateAllResult: "Updated {succeeded}; failed {failed}.",
   harnessVersionUpdating: "Updating…",
   harnessVersionUpToDate: "Up to date",
   harnessVersionUpdated: "Update verified. New sessions will use the new version.",
@@ -535,13 +557,14 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "The update service did not respond. Download the latest version from GitHub Releases below.",
   updateServiceUnavailable:
     "Automatic updates are unavailable right now. Download the latest version from GitHub Releases below.",
+  updateReconnecting: "Waiting for the update service to reconnect...",
+  updateResultUnavailable:
+    "The update result could not be confirmed. Reopen Updates later to check its status.",
   updateRestarting: "Restarting to finish the update...",
   updateSucceeded: "Update installed successfully.",
   updateFailed: "Update failed.",
   updateRetry: "Retry",
   updateManualNpmDescription: "To update manually, quit codexhost and run this command:",
-  updateWindowsNpmDescription:
-    "On Windows, quit codexhost and its separate Console before running this command in a terminal:",
   updateWindowsInstallerDescription:
     "To update manually, download and run the installer for this system.",
   updateManualTitle: "Manual update",
@@ -575,6 +598,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     appearance: "General",
     accounts: "Accounts",
     "session-import": "Session Import",
+    "usage-statistics": "Usage statistics",
     updates: "Updates",
     about: "About",
   }),
@@ -642,15 +666,16 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   notAvailable: "暂不可用",
   runtimeCapabilityNotInstalled: "运行时尚未安装该项能力，因此暂不可用。",
   sessionImportHarness: "Harness",
+  sessionImportSelectHost: "请选择要导入会话的 Host",
   sessionImportDescription:
     "会话将保留原始项目路径；若该文件夹尚未出现在 Codex 侧栏，请先将其添加为项目。原始历史仍由 Harness 管理。",
   sessionImportAvailabilityNote:
-    "可选 Harness 来自本地 Host。运行状态未知时，请先在原生客户端关闭该会话再导入，避免同时写入。",
+    "可选 Harness 来自当前 Host。运行状态未知时，请先在原生客户端关闭该会话再导入，避免同时写入。",
   sessionImportRefresh: "刷新",
-  sessionImportRefreshing: "正在读取本地会话……",
+  sessionImportRefreshing: "正在读取当前 Host 上的会话……",
   sessionImportUnavailable:
-    "本地 Harness 或当前协议暂不支持会话导入，请更新 Host/插件或选择其他 Harness。",
-  sessionImportEmpty: "没有可导入的本地会话。",
+    "该 Harness 或当前 Host 协议暂不支持会话导入，请更新 Host/插件或选择其他 Harness。",
+  sessionImportEmpty: "当前 Host 上没有可导入的会话。",
   sessionImportSearch: "搜索",
   sessionImportSearchPlaceholder: "搜索标题、会话 ID 或项目路径",
   sessionImportNoMatches: "没有匹配的会话。",
@@ -658,7 +683,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportPrevious: "上一页",
   sessionImportNext: "下一页",
   sessionImportPageSummary: "第 {page} / {pages} 页 · 共 {total} 条",
-  sessionImportLoadFailed: "无法读取本地会话，请检查目录访问权限或重复的会话 ID 后重试。",
+  sessionImportLoadFailed: "无法读取当前 Host 上的会话，请检查目录访问权限或重复的会话 ID 后重试。",
   sessionImportFailed: "无法导入该会话。",
   sessionImportUntitled: "未命名会话",
   sessionImportUpdatedAt: "更新时间",
@@ -694,6 +719,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountCreditsFailed: "额度读取失败",
   accountCreditsRetry: "重试",
   accountCreditsRefresh: "刷新额度",
+  accountEmailsHide: "隐藏邮箱",
+  accountEmailsShow: "显示邮箱",
   accountLoadFailed: "无法加载 Codex 账号。",
   accountCreditsUsed: "已用",
   accountCreditsResetAt: "额度重置时间：{time}",
@@ -755,21 +782,28 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathAutomatic: "未设置自定义路径，使用环境变量配置或自动发现。",
   launchPathSaving: "正在保存…",
   launchPathLoading: "正在读取启动设置…",
-  launchPathLoadError: "无法读取启动设置，请重新打开此详情面板重试。",
+  launchPathLoadError: "无法读取启动设置。保存安装目录或恢复自动发现即可替换。",
   launchPathSaveError: "保存失败。请填写此 Host 上实际存在的安装目录绝对路径，并确认配置目录可写。",
   connectionOfficialWebsite: "访问官网",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2。高于 0.2.0-rc.2 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
+    "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1、0.2.0-rc.2、0.2.1-rc.1、0.2.1-rc.2、0.2.1-rc.3、0.2.1-rc.4、0.2.1-rc.5 和 0.2.2-rc.1。高于 0.2.2-rc.1 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
   connectionInstall: "安装",
   connectionInstallDescription: "尚未检测到该 Harness。",
   connectionInstallRunning: "正在所选 Host 上安装，离开页面不会中断。安装后可能仍需登录或配置。",
   harnessVersion: harnessVersionChinese,
   harnessVersionTitle: "Harness CLI 版本",
+  harnessVersionApplicationTitle: "应用版本",
   harnessVersionCurrent: "当前版本",
   harnessVersionLatest: "最新版本",
   harnessVersionChecking: "正在检查版本…",
+  harnessVersionAvailable: "有更新",
   harnessVersionUpdate: "更新",
+  harnessVersionDownloadUpdate: "下载更新",
+  harnessUpdateAll: "全部更新",
+  harnessUpdateAllProgress: "更新中",
+  harnessUpdateAllDescription: "更新当前 Host 上支持自动更新且有新版本的 Harness。",
+  harnessUpdateAllResult: "已更新 {succeeded} 项，{failed} 项失败。",
   harnessVersionUpdating: "正在更新…",
   harnessVersionUpToDate: "已是最新",
   harnessVersionUpdated: "已确认更新成功，新会话将使用新版本。",
@@ -822,14 +856,14 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateInstallingNpm: "正在通过 npm 安装...",
   updateRequestTimeout: "更新服务未响应，请通过下方 GitHub Releases 手动下载最新版本。",
   updateServiceUnavailable: "暂时无法自动更新，请通过下方 GitHub Releases 手动下载最新版本。",
+  updateReconnecting: "正在等待更新服务重新连接...",
+  updateResultUnavailable: "暂时无法确认更新结果，请稍后重新打开更新页面查看。",
   updateRestarting: "正在重启以完成更新...",
   updateSucceeded: "更新安装成功。",
   updateFailed: "更新失败。",
   updateRetry: "重试",
   updateManualNpmDescription:
     "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
-  updateWindowsNpmDescription:
-    "在 Windows 上手动更新前，请先退出 codexhost 及独立控制台，再在终端运行以下命令：",
   updateWindowsInstallerDescription: "如需手动更新，请下载并运行适用于当前系统的安装包。",
   updateManualTitle: "手动更新",
   updateManualFallbackDescription:
@@ -861,6 +895,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     appearance: "通用",
     accounts: "账号",
     "session-import": "会话导入",
+    "usage-statistics": "用量统计",
     updates: "更新",
     about: "关于",
   }),

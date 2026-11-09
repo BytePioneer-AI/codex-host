@@ -1,0 +1,33 @@
+[
+  {
+    "type": "tool.execution_start",
+    "id": "99f8f01e-d77c-4cbe-9b99-d6a2b264eb20",
+    "timestamp": "2026-10-22T10:59:16.878Z",
+    "parentId": "88182541-34c5-4ed4-bf5b-d97c95ba0d76",
+    "data": {
+      "toolCallId": "custom_call_KIV2qoCmpVmsEU3hQptaGf14",
+      "toolName": "apply_patch",
+      "arguments": "*** Begin Patch\n*** Add File: probe.txt\n+ORIGINAL\n*** End Patch\n"
+    }
+  },
+  {
+    "type": "tool.execution_complete",
+    "id": "89f918a3-9b0b-4280-a397-9d76cc062988",
+    "timestamp": "2026-10-22T10:59:16.909Z",
+    "parentId": "3663729a-7089-4855-a3ef-82d99da97be0",
+    "data": {
+      "toolCallId": "custom_call_KIV2qoCmpVmsEU3hQptaGf14",
+      "success": true,
+      "fileEdits": [
+        {
+          "path": "/workspace/probe.txt",
+          "kind": "create"
+        }
+      ],
+      "result": {
+        "content": "Added 1 file(s): /workspace/probe.txt",
+        "detailedContent": "\ndiff --git a/workspace/probe.txt b/workspace/probe.txt\ncreate file mode 100644\nindex 0000000..0000000\n--- a/dev/null\n+++ b/workspace/probe.txt\n@@ -1,0 +1,2 @@\n+ORIGINAL\n+\n\n"
+      }
+    }
+  }
+]

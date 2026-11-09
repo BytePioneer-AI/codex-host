@@ -1,4 +1,6 @@
 import { inspectInstallation, resolveInstallation } from "./installation.js";
+import { createConsoleHostClient, createHostUpdates } from "./host-client.js";
+import { consolePaths } from "./paths.js";
 import { createConsoleUpdates, type ConsoleUpdates, type ConsoleUpdateTarget } from "./updates.js";
 
 /** Shares the console's release selection, operation lock and native installer. */
@@ -25,7 +27,7 @@ export async function runUpdateCommand(
   const { status } = await updates.start(target);
   if (status.phase === "failed") throw new Error(status.error ?? "Update failed");
   write(
-    `Update ${status.version}: ${status.phase}. The background updater will finish installation and restart codexhost.`,
+    `Update ${status.version}: ${status.phase}. The update request was accepted; installation is not complete yet. The background updater will install it and restart codexhost.`,
   );
 }
 
@@ -34,13 +36,21 @@ export async function updateFromCommand(appDirectory: string, arguments_: string
   const installation = await resolveInstallation(appDirectory);
   if (!installation.distribution) throw new Error("A source checkout cannot update itself");
   if (!installation.launcherExecutable) throw new Error("The codexhost Launcher is unavailable");
+  const paths = consolePaths();
+  const host = createConsoleHostClient(paths.hostDescriptorDirectory, {
+    updateAppDirectory: appDirectory,
+  });
   const inspected = await inspectInstallation(installation.launcherExecutable);
   await runUpdateCommand(
     {
       ...installation,
       runtimeDescriptorPath: inspected.runtime.descriptorPath,
       codexhostRunning: inspected.runtime.running,
+      dataDirectory: paths.dataDirectory,
+      restartTarget: inspected.desktop === null ? "web" : "desktop",
     },
-    createConsoleUpdates({ waitForHandoff: true, onHandedOff() {} }),
+    (await host.available())
+      ? createHostUpdates(host)
+      : createConsoleUpdates({ waitForHandoff: true, onHandedOff() {} }),
   );
 }

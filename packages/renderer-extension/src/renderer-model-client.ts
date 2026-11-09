@@ -1,4 +1,7 @@
 import {
+  DELEGATION_READ_METHOD,
+  delegationReadParamsSchema,
+  type DelegationReadParams,
   REMOTE_SSH_SETUP_METHOD,
   remoteSshSetupResultSchema,
   remoteSshSetupParamsSchema,
@@ -10,17 +13,21 @@ import {
   type RuntimeStatus,
 } from "@codexhost/shared-contracts";
 import {
-  HARNESS_INSTALLATION_METHOD,
-  harnessInstallationParamsSchema,
-  harnessInstallationStateSchema,
   type HarnessInstallationParams,
   type HarnessInstallationState,
   HARNESS_DISPLAY_GET_METHOD,
+  HARNESS_DISPLAY_CHANGED_METHOD,
+  HARNESS_DISPLAY_CAPABILITIES_METHOD,
+  harnessDisplayCapabilitiesSchema,
   HARNESS_DISPLAY_SET_METHOD,
   harnessDisplaySettingsSchema,
   type HarnessDisplaySet,
   type HarnessDisplaySettings,
   CONSOLE_OPEN_METHOD,
+  WEB_OPEN_METHOD,
+  webOpenParamsSchema,
+  webOpenResultSchema,
+  type WebOpenResult,
   consoleOpenParamsSchema,
   consoleOpenResultSchema,
   type ConsoleOpenResult,
@@ -110,6 +117,7 @@ import {
   type UpdateStartResult,
   type UpdateStatusResult,
 } from "@codexhost/shared-contracts";
+import { runRendererInstallation } from "./renderer-installation-client.js";
 
 import {
   createRendererRequestSender,
@@ -118,6 +126,16 @@ import {
   type RendererRequestOptions,
 } from "./renderer-request-sender.js";
 import { verifyNativeCodexThread } from "./renderer-native-thread.js";
+import {
+  HARNESS_PREFERENCES_GET_METHOD,
+  HARNESS_PREFERENCES_PATCH_METHOD,
+  HARNESS_PREFERENCES_CHANGED_METHOD,
+  harnessPreferenceSnapshotSchema,
+  harnessPreferencePatchSchema,
+  harnessPreferenceGetSchema,
+  type HarnessPreferenceSnapshot,
+  type HarnessPreferencePatch,
+} from "@codexhost/shared-contracts";
 import {
   createRendererSessionImportClient,
   type RendererSessionImportClient,
@@ -149,10 +167,10 @@ export const THREAD_USAGE_INSPECT_METHOD = "codexhost/thread/usage/inspect";
 export const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
 export const THREAD_TOKEN_USAGE_UPDATED_METHOD = "thread/tokenUsage/updated";
 /**
- * Codex Desktop does not dispatch the custom `codexhost/thread/usage/updated`
- * notification to renderer callbacks, and the native token-usage carrier is
- * only projected once Context usage is known. Turn completion is dispatched,
- * so it is the guaranteed point to re-read account quota after a reply.
+ * Desktop filters custom usage notifications before native manager callbacks;
+ * renderer-host-clients also observes their raw per-Host window messages.
+ * Native Token updates and Turn completion remain fallback refresh signals,
+ * including for account quota after a reply.
  */
 export const TURN_COMPLETED_METHOD = "turn/completed";
 const THREAD_USAGE_REFRESH_METHODS = [
@@ -200,7 +218,12 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 }
 
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
+  getHarnessPreferences?(scope?: string): Promise<HarnessPreferenceSnapshot>;
+  patchHarnessPreferences?(input: HarnessPreferencePatch): Promise<HarnessPreferenceSnapshot>;
+  subscribeHarnessPreferences?(listener: () => void): () => void;
   installation?(input: HarnessInstallationParams): Promise<HarnessInstallationState>;
+  getHarnessDisplayCapabilities?(): Promise<{ events: boolean }>;
+  subscribeHarnessDisplaySettings?(listener: () => void): () => void;
   getHarnessDisplaySettings?(): Promise<HarnessDisplaySettings>;
   setHarnessDisplaySettings?(input: HarnessDisplaySet): Promise<HarnessDisplaySettings>;
   getHarnessLaunchSettings?(input: HarnessLaunchSettingsGet): Promise<HarnessLaunchSettings>;
@@ -230,12 +253,14 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
     input: ThreadPermissionModeSelectParams,
   ): Promise<HarnessConfigurationState>;
   setupSsh?(input: RemoteSshSetupParams): Promise<RemoteSshSetupResult>;
+  readDelegationThread?(input: DelegationReadParams): Promise<unknown>;
   runtimeStatus?(): Promise<RuntimeStatus>;
   updateRemote?(version: string): Promise<RuntimeStatus>;
   checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
   openConsole?(): Promise<ConsoleOpenResult>;
+  openWeb?(): Promise<WebOpenResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
   listHarnessAccountSources?(): Promise<HarnessAccountSourceListResult>;
   inspectHarnessAccount?(input: HarnessAccountInspectParams): Promise<HarnessAccountInspectResult>;
@@ -321,7 +346,16 @@ export function createRendererModelClient(
     options?: RendererRequestOptions,
   ): Promise<HarnessInspection> => {
     const params = harnessInspectParamsSchema.parse(input);
-    const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params, options);
+    let result: unknown;
+    try {
+      result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params, options);
+    } catch (error) {
+      // Hosts that predate `purpose` reject it as an unknown param; they only run full inspection.
+      if (!params.purpose || !isInvalidParams(error)) throw error;
+      const full = { ...params };
+      delete full.purpose;
+      result = await manager.sendRequest(HARNESS_INSPECT_METHOD, full, options);
+    }
     return harnessInspectionSchema.parse(result);
   };
   const inspectHarnessCommands = async (
@@ -375,13 +409,45 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
-    async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {
-      return harnessInstallationStateSchema.parse(
+    async getHarnessPreferences(scope = "external") {
+      return harnessPreferenceSnapshotSchema.parse(
         await manager.sendRequest(
-          HARNESS_INSTALLATION_METHOD,
-          harnessInstallationParamsSchema.parse(input),
-          { priority: "interactive" },
+          HARNESS_PREFERENCES_GET_METHOD,
+          harnessPreferenceGetSchema.parse({ scope }),
         ),
+      );
+    },
+    async patchHarnessPreferences(input: HarnessPreferencePatch) {
+      return harnessPreferenceSnapshotSchema.parse(
+        await manager.sendRequest(
+          HARNESS_PREFERENCES_PATCH_METHOD,
+          harnessPreferencePatchSchema.parse(input),
+        ),
+      );
+    },
+    subscribeHarnessPreferences(listener: () => void) {
+      return (
+        notificationTarget(source)?.addNotificationCallback?.(
+          HARNESS_PREFERENCES_CHANGED_METHOD,
+          listener,
+        ) ?? (() => {})
+      );
+    },
+    async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {
+      return runRendererInstallation(manager.sendRequest, input);
+    },
+    async getHarnessDisplayCapabilities() {
+      if (!notificationTarget(source)) return { events: false };
+      return harnessDisplayCapabilitiesSchema.parse(
+        await manager.sendRequest(HARNESS_DISPLAY_CAPABILITIES_METHOD, {}),
+      );
+    },
+    subscribeHarnessDisplaySettings(listener: () => void) {
+      return (
+        notificationTarget(source)?.addNotificationCallback?.(
+          HARNESS_DISPLAY_CHANGED_METHOD,
+          listener,
+        ) ?? (() => {})
       );
     },
     async getHarnessDisplaySettings() {
@@ -512,6 +578,9 @@ export function createRendererModelClient(
         await manager.sendRequest(REMOTE_SSH_SETUP_METHOD, remoteSshSetupParamsSchema.parse(input)),
       );
     },
+    async readDelegationThread(input: DelegationReadParams) {
+      return source.sendRequest(DELEGATION_READ_METHOD, delegationReadParamsSchema.parse(input));
+    },
     async runtimeStatus() {
       // Asked directly rather than through the remembering sender: an outdated remote
       // service can be updated in place, after which this method starts answering.
@@ -547,6 +616,10 @@ export function createRendererModelClient(
         updateEmptyParamsSchema.parse({}),
       );
       return updateStatusResultSchema.parse(result);
+    },
+    async openWeb(): Promise<WebOpenResult> {
+      const result = await manager.sendRequest(WEB_OPEN_METHOD, webOpenParamsSchema.parse({}));
+      return webOpenResultSchema.parse(result);
     },
     async openConsole(): Promise<ConsoleOpenResult> {
       const result = await manager.sendRequest(
@@ -620,4 +693,8 @@ export function createRendererModelClient(
       });
     },
   });
+}
+
+function isInvalidParams(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === -32602;
 }

@@ -1,3 +1,4 @@
+import { createDshUsageStatistics } from "./modern/usage-statistics.js";
 import { deepSeekHarnessCommandCatalog } from "./harness-commands.js";
 
 import type {
@@ -82,6 +83,7 @@ class DelegateSelectionError extends Error {
 export class DeepSeekHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
+  readonly usageStatistics: ReturnType<typeof createDshUsageStatistics>;
   readonly sessionImport = Object.freeze({
     listCandidates: () => this.#listSessionImportCandidates(),
     resolveCandidate: async (
@@ -137,6 +139,8 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     dependencies: DeepSeekHarnessAdapterDependencies = {},
   ) {
     this.#options = options;
+    // Read-only over dsh's session files; no dsh process is started.
+    this.usageStatistics = createDshUsageStatistics(options.environment ?? process.env);
     this.#probeExecutable =
       dependencies.probeExecutable ?? ((input) => probeDeepSeekExecutableGeneration(input));
     this.#createModernAdapter =

@@ -11,11 +11,15 @@ export const KIRO_PERMISSION_MODES: HarnessPermissionMode[] = [
   {
     id: KIRO_DEFAULT_PERMISSION_MODE_ID,
     label: "Autopilot",
+    localizations: {
+      "zh-CN": { label: "自动执行", description: "在原生策略范围内自动执行工具。" },
+    },
     description: "Automatic tool execution within native policy bounds",
   },
   {
     id: harnessPermissionModeIdSchema.parse("supervised"),
     label: "Supervised",
+    localizations: { "zh-CN": { label: "人工监督", description: "人工审核工具审批与文件修改。" } },
     description: "Manual review of tool approvals and file modifications",
   },
 ];

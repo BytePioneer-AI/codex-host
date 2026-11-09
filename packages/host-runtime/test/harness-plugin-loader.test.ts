@@ -1,4 +1,5 @@
 import { cp, mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -71,6 +72,143 @@ afterEach(async () => {
 });
 
 describe("Harness plugin discovery and loading", () => {
+  it.each(["credits", "refreshCredits"])(
+    "rejects malformed optional %s capabilities",
+    async (method) => {
+      const directory = await root(["broken-quota"]);
+      await plugin(directory, "broken-quota", {
+        code: `
+      import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+      export function createHarnessAdapter() {
+        return Object.assign(new FakeHarnessAdapter("broken-quota"), { ${method}: "not-callable" });
+      }
+    `,
+      });
+      const registry = await loadHarnessPlugins({ roots: [directory], context });
+      try {
+        expect(await [...registry.adapters.values()][0]?.inspect()).toMatchObject({
+          status: "unavailable",
+        });
+      } finally {
+        await registry.close();
+      }
+    },
+  );
+  it("loads usage-only plugins without manufacturing session methods and closes them", async () => {
+    const directory = await root(["local-usage"]);
+    const marker = path.join(directory, "closed");
+    await plugin(directory, "local-usage", {
+      manifest: { kind: "usage" },
+      code: `
+        import { writeFile } from "node:fs/promises";
+        export function createUsageStatisticsAdapter() {
+          return { harnessId: "local-usage", usageStatistics: {
+            listSources: async () => [], readSource: async () => []
+          }, close: async () => writeFile(${JSON.stringify(marker)}, "closed") };
+        }
+        export function warmup() { throw new Error("usage plugins must not warm native processes"); }
+      `,
+    });
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({ roots: [directory], context, diagnose });
+    expect(registry.adapters.size).toBe(0);
+    expect(registry.usageAdapters.size).toBe(1);
+    expect(registry.list()).toMatchObject([{ id: "local-usage", kind: "usage" }]);
+    expect([...registry.usageAdapters.values()][0]).not.toHaveProperty("open");
+    expect(diagnose).not.toHaveBeenCalled();
+    await registry.close();
+    await registry.close();
+    expect(await readFile(marker, "utf8")).toBe("closed");
+  });
+
+  it("settles statistics before importing Session plugins, including failed statistics plugins", async () => {
+    const directory = await root(["usage-agent", "broken-usage", "chat-agent"]);
+    const marker = path.join(directory, "chat-imported");
+    await plugin(directory, "usage-agent", {
+      manifest: { kind: "usage" },
+      code: `export function createUsageStatisticsAdapter() { return {
+        harnessId: "usage-agent", close: async () => {},
+        usageStatistics: { listSources: async () => [], readSource: async () => [] }
+      }; }`,
+    });
+    await plugin(directory, "broken-usage", {
+      manifest: { kind: "usage" },
+      code: `export function createUsageStatisticsAdapter() { throw new Error("failed"); }`,
+    });
+    await plugin(directory, "chat-agent", {
+      code: `import { writeFileSync } from "node:fs";
+        import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+        writeFileSync(${JSON.stringify(marker)}, "started");
+        export function createHarnessAdapter() { return new FakeHarnessAdapter("chat-agent"); }`,
+    });
+    const ready = vi.fn((adapters) => {
+      expect([...adapters.keys()].sort()).toEqual(["broken-usage", "usage-agent"]);
+      expect(existsSync(marker)).toBe(false);
+    });
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      onUsageAdaptersLoaded: ready,
+    });
+    try {
+      expect(ready).toHaveBeenCalledOnce();
+      expect(existsSync(marker)).toBe(true);
+      expect([...registry.adapters.keys()]).toContain("chat-agent");
+    } finally {
+      await registry.close();
+    }
+  });
+
+  it("rejects malformed optional session usage capabilities", async () => {
+    const directory = await root(["broken-usage"]);
+    await plugin(directory, "broken-usage", {
+      manifest: { kind: "usage" },
+      code: `export function createUsageStatisticsAdapter() {
+        return { harnessId: "broken-usage", close: async () => {},
+          usageStatistics: { listSources: async () => [], readSource: async () => [] },
+          sessionUsage: { read: async () => null }
+        };
+      }`,
+    });
+    const diagnose = vi.fn();
+    const registry = await loadHarnessPlugins({ roots: [directory], context, diagnose });
+    try {
+      expect(diagnose).toHaveBeenCalledWith({ code: "loadFailed", id: "broken-usage" });
+      expect([...registry.usageAdapters.values()][0]?.sessionUsage).toBeUndefined();
+    } finally {
+      await registry.close();
+    }
+  });
+
+  it.each(["throw", "invalid", "incompatible"])(
+    "isolates %s usage plugins without adding a chat route",
+    async (failure) => {
+      const directory = await root(["broken-usage", "healthy-agent"]);
+      await plugin(directory, "broken-usage", {
+        manifest: {
+          kind: "usage",
+          ...(failure === "incompatible" ? { adapterApiVersion: 999 } : {}),
+        },
+        code:
+          failure === "throw"
+            ? 'export function createUsageStatisticsAdapter() { throw new Error("private detail"); }'
+            : 'export function createUsageStatisticsAdapter() { return { harnessId: "broken-usage", close: async () => {} }; }',
+      });
+      await plugin(directory, "healthy-agent");
+      const registry = await loadHarnessPlugins({ roots: [directory], context });
+      try {
+        expect([...registry.adapters.keys()]).toEqual(["healthy-agent"]);
+        const broken = [...registry.usageAdapters.values()][0];
+        expect(broken).toBeDefined();
+        await expect(
+          broken?.usageStatistics.listSources(new AbortController().signal),
+        ).rejects.toThrow("unavailable");
+      } finally {
+        await registry.close();
+      }
+    },
+  );
+
   it("passes saved commands only to opted-in local factories and exposes the setting", async () => {
     const directory = await root(["custom-agent", "ordinary-agent"]);
     const saved = "/custom/entry";
@@ -109,6 +247,42 @@ describe("Harness plugin discovery and loading", () => {
       expect(remote.list().every(({ launchCommand }) => !launchCommand)).toBe(true);
     } finally {
       await remote.close();
+    }
+  });
+  it("reports unreadable launch settings without falling back to discovery", async () => {
+    const directory = await root(["custom-agent"]);
+    const marker = path.join(directory, "created.txt");
+    await plugin(directory, "custom-agent", {
+      manifest: { launchCommand: true },
+      code: `
+        import { writeFileSync } from "node:fs";
+        import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+        export function createHarnessAdapter() {
+          writeFileSync(${JSON.stringify(marker)}, "created");
+          return new FakeHarnessAdapter("custom-agent");
+        }
+      `,
+    });
+    const diagnostics: HarnessPluginDiagnostic[] = [];
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      launchCommandForPlugin: async () => {
+        throw new Error("Could not read Harness launch settings at /settings/custom-agent.json");
+      },
+      diagnose: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    try {
+      expect(diagnostics).toEqual([{ id: "custom-agent", code: "launchSettingsUnreadable" }]);
+      expect(existsSync(marker)).toBe(false);
+      expect(registry.list().find(({ id }) => id === "custom-agent")?.launchCommand).toBe(true);
+      expect([...registry.adapters.keys()]).toEqual(["custom-agent"]);
+      await expect([...registry.adapters.values()][0]?.inspect()).resolves.toMatchObject({
+        status: "unavailable",
+        error: { message: expect.stringContaining("launchSettingsUnreadable") },
+      });
+    } finally {
+      await registry.close();
     }
   });
   it.each([
@@ -236,7 +410,9 @@ describe("Harness plugin discovery and loading", () => {
 
   it("loads an unknown identity and clones public descriptors", async () => {
     const directory = await root(["sample-agent"]);
-    const location = await plugin(directory, "sample-agent", { manifest: { icon: "icon.svg" } });
+    const location = await plugin(directory, "sample-agent", {
+      manifest: { icon: "icon.svg", iconStyle: { borderRadius: 22.37 } },
+    });
     await writeFile(
       path.join(location, "icon.svg"),
       '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h4v4z"/></svg>',
@@ -248,12 +424,15 @@ describe("Harness plugin discovery and loading", () => {
         id: "sample-agent",
         name: "Plugin sample-agent",
         icon: expect.stringMatching(/^data:image\/svg\+xml;base64,/u),
+        iconStyle: { borderRadius: 22.37 },
       }),
     ]);
     const first = registry.list()[0];
     if (!first) throw new Error("Expected loaded plugin descriptor");
     first.name = "mutated";
+    first.iconStyle = { background: "#000000" };
     expect(registry.list()[0]?.name).toBe("Plugin sample-agent");
+    expect(registry.list()[0]?.iconStyle).toEqual({ borderRadius: 22.37 });
     const adapter = [...registry.adapters.values()][0];
     if (!adapter) throw new Error("Expected loaded Adapter");
     expect((await adapter.inspect()).status).toBe("ready");
@@ -311,7 +490,7 @@ describe("Harness plugin discovery and loading", () => {
     expect(diagnose).toHaveBeenCalledExactlyOnceWith({ id: "duplicate", code: "duplicateId" });
   });
 
-  it("does not shadow a transitional built-in and rejects the official identity", async () => {
+  it("does not shadow a transitional built-in or register the official identity", async () => {
     const directory = await root(["sample-agent"]);
     await plugin(directory, "sample-agent");
     await plugin(directory, "codex");
@@ -323,10 +502,7 @@ describe("Harness plugin discovery and loading", () => {
       diagnose,
     });
     expect(registry.list()).toEqual([]);
-    expect(diagnose.mock.calls.map(([entry]) => entry.code)).toEqual([
-      "invalidManifest",
-      "duplicateId",
-    ]);
+    expect(diagnose.mock.calls.map(([entry]) => entry.code)).toEqual(["duplicateId"]);
   });
 
   it("keeps an incompatible plugin visible but never imports its entry", async () => {
@@ -573,8 +749,8 @@ describe("Harness plugin registry lifetime", () => {
       throw new Error("failure");
     });
     const bClose = vi.spyOn(b, "close");
-    registry.register(first, a);
-    registry.register(second, b);
+    await registry.register(first, a);
+    await registry.register(second, b);
     first.name = "changed";
     expect(registry.list()[0]?.name).toBe("First");
     await expect(registry.close()).rejects.toBeInstanceOf(AggregateError);

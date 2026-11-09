@@ -4,11 +4,13 @@ import { access, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type {
-  HostItemSnapshot,
-  HostThreadSnapshot,
-  HostTurnSnapshot,
-  HostUsage,
+import {
+  parseHostUsageRequest,
+  type HostItemSnapshot,
+  type HostThreadSnapshot,
+  type HostTurnSnapshot,
+  type HostUsage,
+  type HostUsageRequest,
 } from "@codexhost/harness-adapter";
 import {
   hostItemIdSchema,
@@ -430,7 +432,7 @@ function parseJsonl(contents: string, tolerateIncompleteTail: boolean) {
   };
 }
 
-const NATIVE_MESSAGE_TYPES = new Set([
+export const NATIVE_MESSAGE_TYPES = new Set([
   "message",
   "reasoning",
   "function_call",
@@ -447,8 +449,27 @@ export function pendingNativeHistoryRewind(contents: string) {
     : undefined;
 }
 
+/** CodeBuddy's cache-expired automatic compaction writes its summary as a new physical root:
+ *  `parentId` is absent while `logicalParentId` points at the last row before it. The row is an
+ *  internal compaction record, not a user prompt. */
+function isNativeCompactionSummary(row: Record<string, unknown>): boolean {
+  const data = record(row.providerData);
+  return row.type === "message" && row.role === "user" && data.isCompactInternal === true;
+}
+
 /** Follow the current native parent chain, not every branch in the append-only file. */
 export function nativeHistoryRows(contents: string) {
+  return collectNativeHistoryRows(contents, false);
+}
+
+/** Display history additionally crosses a cache-expired compaction's logical edge so the
+ *  pre-compaction conversation remains readable. Administrative readers keep the physical
+ *  chain above so existing derived-session provenance stays valid. */
+function nativeDisplayHistoryRows(contents: string) {
+  return collectNativeHistoryRows(contents, true);
+}
+
+function collectNativeHistoryRows(contents: string, followCompactionParent: boolean) {
   const entries = new Map<string, Record<string, unknown>>();
   let leaf = "";
   for (const row of parseRows(contents)) {
@@ -474,6 +495,12 @@ export function nativeHistoryRows(contents: string) {
     if (!row) throw new CodeBuddyError("protocolError", "Native history parent is missing");
     chain.push(row);
     leaf = text(row.parentId);
+    if (!leaf && followCompactionParent && isNativeCompactionSummary(row)) {
+      const logicalParent = text(row.logicalParentId);
+      if (logicalParent && !entries.has(logicalParent))
+        throw new CodeBuddyError("protocolError", "Native compaction parent is missing");
+      leaf = logicalParent;
+    }
   }
   return chain.reverse();
 }
@@ -483,6 +510,7 @@ export function snapshotFromHistory(
   ref: NativeSessionRef,
   cwd: string,
   profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
+  options: { includeCompactionHistory?: boolean } = {},
 ): HostThreadSnapshot {
   const supportsNativeCommands = nativeCommandsEnabled(profile);
   const supportsFork = capabilitiesForProfile(profile).history.fork;
@@ -518,7 +546,10 @@ export function snapshotFromHistory(
       snapshot.item.outputTruncated = Boolean(output.truncated);
     }
   };
-  const history = nativeHistoryRows(contents);
+  const includeCompactionHistory = options.includeCompactionHistory !== false;
+  const history = includeCompactionHistory
+    ? nativeDisplayHistoryRows(contents)
+    : nativeHistoryRows(contents);
   // Only manual compaction creates a command Turn. Native automatic compaction
   // also has an internal user prompt, which must not split the current user Turn.
   const manualCompactions = new Set<string>();
@@ -572,6 +603,56 @@ export function snapshotFromHistory(
       !manualCompactions.has(text(row.id))
     )
       continue;
+    // Native continuations include both internal context and real user steer messages.
+    // Only context-only wrappers and explicit meta rows are hidden; user text stays
+    // on the active Turn without changing its native identity or pending Tools.
+    if (
+      row.type === "message" &&
+      row.role === "user" &&
+      data.startsNewUserRequest === false &&
+      !localCommand &&
+      data.agent !== "compact" &&
+      !isNativeCompactionSummary(row)
+    ) {
+      const contextOnly =
+        body.trim().length > 0 &&
+        body
+          .replace(
+            /<system-reminder\b[^>]*\sdata-role=(["'])user-context\1[^>]*>[\s\S]*?<\/system-reminder>/gu,
+            "",
+          )
+          .trim().length === 0;
+      if (data.isMeta === true || contextOnly) continue;
+      if (current) {
+        if (body) current.input.push({ type: "text", text: body });
+        continue;
+      }
+    }
+    // A cache-expired automatic compaction persists its summary as an internal user row.
+    // It is not a user prompt: keep it inside the Turn it compacted and project the
+    // native evidence as a compaction Item instead of a raw <cb_summary> message.
+    if (includeCompactionHistory && isNativeCompactionSummary(row)) {
+      if (supportsNativeCommands && current) {
+        const outcome: HostItemSnapshot["outcome"] =
+          data.isCompacted === true
+            ? { status: "succeeded" }
+            : {
+                status: "failed",
+                error: nativeError(
+                  new CodeBuddyError("nativeFailure", "Native compaction did not complete"),
+                  profile,
+                ),
+              };
+        current.items.push({
+          item: {
+            type: "contextCompaction",
+            itemId: hostItemIdSchema.parse(`compact-${text(row.id)}`),
+          },
+          outcome,
+        });
+      }
+      continue;
+    }
     if (row.type === "message" && row.role === "user") {
       current = {
         nativeTurnRef: nativeTurnRefSchema.parse({
@@ -687,6 +768,87 @@ export function snapshotFromHistory(
 }
 
 /** One Usage entry per model request; duplicated tool rows do not multiply spend. */
+function usageCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Host usage metering for CodeBuddy and WorkBuddy. Each `providerData.messageId` across all
+ * native branches is one model request; its rows share one OpenAI-compatible `rawUsage`. Verified against
+ * local CodeBuddy history (deepseek-v4.1-flash, hy4-preview-f): `prompt_tokens` includes cached
+ * input and cache writes (= `prompt_cache_hit_tokens` + `prompt_cache_miss_tokens` +
+ * `prompt_cache_write_tokens` on all 368 local CodeBuddy and WorkBuddy rows), cached input is
+ * `prompt_tokens_details.cached_tokens` (equal to `prompt_cache_hit_tokens`), and
+ * `completion_tokens` includes `completion_thinking_tokens`. The Anthropic-style
+ * `cache_read_input_tokens` and `cache_creation_input_tokens` were always zero; a request that
+ * reports either has unverified semantics and is left unmetered rather than guessed. Subagent
+ * requests belong to their own transcripts.
+ */
+export function historyUsageRequests(
+  contents: string,
+  historical: boolean,
+): { requests: HostUsageRequest[]; complete: boolean } {
+  const usages = new Map<string, Record<string, unknown>>();
+  // Transcript display follows the active branch; metering must also replay older requests
+  // already counted while this Session was open, or reopening would silently reduce its cost.
+  for (const row of nativeRawHistoryRows(contents)) {
+    if (!NATIVE_MESSAGE_TYPES.has(text(row.type))) continue;
+    const data = record(row.providerData);
+    if (data.isSubAgent === true || !Object.keys(record(data.rawUsage)).length) continue;
+    if (text(data.messageId)) usages.set(text(data.messageId), data);
+  }
+  const requests: HostUsageRequest[] = [];
+  let complete = true;
+  for (const [requestId, data] of usages) {
+    const request = providerUsageRequest(requestId, data, historical);
+    if (request) requests.push(request);
+    else complete = false;
+  }
+  return { requests, complete };
+}
+
+/** The request one native message's `providerData` describes, or null when not verifiable. */
+export function providerUsageRequest(
+  requestId: string,
+  data: Record<string, unknown>,
+  historical: boolean,
+): HostUsageRequest | null {
+  const usage = record(data.rawUsage);
+  const model = text(data.model) || text(data.requestModelId);
+  const input = usageCount(usage.prompt_tokens);
+  const output = usageCount(usage.completion_tokens);
+  const cached = usageCount(record(usage.prompt_tokens_details).cached_tokens ?? 0);
+  const written = usageCount(usage.prompt_cache_write_tokens ?? 0);
+  const thinking = usageCount(usage.completion_thinking_tokens);
+  const unverifiedCache = [usage.cache_read_input_tokens, usage.cache_creation_input_tokens].some(
+    (value) => value !== undefined && value !== 0,
+  );
+  if (
+    !model ||
+    input === null ||
+    output === null ||
+    cached === null ||
+    written === null ||
+    unverifiedCache
+  ) {
+    return null;
+  }
+  try {
+    return parseHostUsageRequest({
+      requestId,
+      ...(historical ? { historical: true } : {}),
+      model,
+      inputTokens: input,
+      cachedInputTokens: cached,
+      cacheWriteInputTokens: written,
+      outputTokens: output,
+      ...(thinking !== null && thinking <= output ? { reasoningOutputTokens: thinking } : {}),
+    });
+  } catch {
+    return null;
+  }
+}
+
 export function historyUsage(contents: string): HostUsage | null {
   const requests = new Map<string, Record<string, unknown>>();
   for (const row of nativeHistoryRows(contents)) {
@@ -696,25 +858,34 @@ export function historyUsage(contents: string): HostUsage | null {
       requests.set(text(data.messageId), usage);
   }
   if (!requests.size) return null;
+  // Cache fields as verified in `historyUsageRequests`: cached input is
+  // `prompt_tokens_details.cached_tokens` and writes are `prompt_cache_write_tokens`; the
+  // Anthropic-style `cache_read_input_tokens` stayed zero even for cached DeepSeek requests.
   const fields = {
-    inputTokens: "prompt_tokens",
-    outputTokens: "completion_tokens",
-    totalTokens: "total_tokens",
-    cachedInputTokens: "cache_read_input_tokens",
-    cacheWriteInputTokens: "cache_creation_input_tokens",
-    reasoningOutputTokens: "completion_thinking_tokens",
-    totalCredits: "credit",
+    inputTokens: (usage: Record<string, unknown>) => usage.prompt_tokens,
+    outputTokens: (usage: Record<string, unknown>) => usage.completion_tokens,
+    totalTokens: (usage: Record<string, unknown>) => usage.total_tokens,
+    cachedInputTokens: (usage: Record<string, unknown>) =>
+      record(usage.prompt_tokens_details).cached_tokens,
+    cacheWriteInputTokens: (usage: Record<string, unknown>) => usage.prompt_cache_write_tokens,
+    reasoningOutputTokens: (usage: Record<string, unknown>) => usage.completion_thinking_tokens,
+    totalCredits: (usage: Record<string, unknown>) => usage.credit,
   } as const;
   const result: HostUsage = {};
+  const latest = [...requests.values()].at(-1);
+  const input = usageCount(latest?.prompt_tokens);
+  const cached = usageCount(record(latest?.prompt_tokens_details).cached_tokens);
+  if (input !== null && input > 0 && cached !== null && cached <= input)
+    result.cacheHitRatePercent = (cached / input) * 100;
   for (const [host, native] of Object.entries(fields)) {
-    const values = [...requests.values()].map((usage) => usage[native]);
+    const values = [...requests.values()].map((usage) => native(usage));
     if (
       values.every(
         (value): value is number =>
           typeof value === "number" && Number.isFinite(value) && value >= 0,
       )
     ) {
-      result[host as keyof HostUsage] = values.reduce((sum, value) => sum + value, 0);
+      result[host as keyof typeof fields] = values.reduce((sum, value) => sum + value, 0);
     }
   }
   return Object.keys(result).length ? result : null;

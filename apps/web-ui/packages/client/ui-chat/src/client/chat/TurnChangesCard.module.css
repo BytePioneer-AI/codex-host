@@ -1,0 +1,345 @@
+.card {
+  margin: 8px 0;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  corner-shape: round;
+  color: var(--dsw-alias-label-primary);
+  font-size: calc(var(--dsh-content-font-size-secondary, 13px) + 2px);
+  line-height: 20px;
+  --dsh-change-stat-font-size: calc(var(--dsh-content-font-size-secondary, 13px) + 1px);
+  --dsw-alias-state-success-primary: var(--dsw-alias-file-diff-added-marker);
+  --dsw-alias-state-error-primary: var(--dsw-alias-file-diff-deleted-marker);
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+}
+
+.icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  corner-shape: round;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.title {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review,
+.fileHead,
+.more {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.review {
+  flex: none;
+  padding: 4px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  corner-shape: round;
+  font-size: var(--dsh-content-font-size, 14px);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.review:hover,
+.fileHead:hover,
+.more:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.review:focus-visible,
+.fileHead:focus-visible,
+.more:focus-visible {
+  outline: 2px solid var(--dsw-alias-label-tertiary);
+  outline-offset: -2px;
+}
+
+.files {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  list-style: none;
+}
+
+.fileHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+}
+
+.fileHead .path {
+  flex: 1;
+  min-width: 0;
+  font-size: inherit;
+  --dsw-alias-label-tertiary: var(--dsw-alias-label-secondary);
+}
+
+.diff {
+  padding: 0 12px 12px;
+}
+
+.file:first-child .diff:first-child {
+  padding-top: 12px;
+}
+
+.more {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  font-weight: 500;
+}
+
+.mobileChevron,
+.mobileFileIcon,
+.mobilePath,
+.mobileFullPath {
+  display: none;
+}
+
+.chevron {
+  flex: none;
+  transition: transform 0.15s;
+}
+
+.chevron[data-open="true"] {
+  transform: rotate(180deg);
+}
+
+@media (max-width: 480px) {
+  .header {
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .icon {
+    width: 36px;
+    height: 36px;
+  }
+
+  .review {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
+:global([data-phone]) .card {
+  min-width: 0;
+  max-width: 100%;
+  /* Max-content paths and diff lines must not trigger mobile text inflation.
+     100% keeps browser zoom and the user's explicit font preference intact. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px));
+  --dsh-change-stat-font-size: calc(var(--dsh-content-font-size-secondary, 13px) - 1px);
+  --dsh-diff-inline-padding: 12px;
+  --dsh-diff-body-padding: 4px 0 8px;
+}
+
+:global([data-phone]) .header {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 44px;
+  min-height: 52px;
+  gap: 8px;
+  padding: 0 4px 0 12px;
+}
+
+:global([data-phone]) .icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 0;
+  background: transparent;
+}
+
+:global([data-phone]) .icon > svg {
+  width: 16px;
+  height: 16px;
+}
+
+:global([data-phone]) .text {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+:global([data-phone]) .title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 500;
+}
+
+:global([data-phone]) .review {
+  grid-column: auto;
+  justify-self: stretch;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+}
+
+:global([data-phone]) .reviewLabel {
+  display: none;
+}
+
+:global([data-phone]) .mobileChevron,
+:global([data-phone]) .mobileFileIcon {
+  display: block;
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+}
+
+:global([data-phone]) .mobileChevron {
+  transition: transform 0.15s;
+}
+
+:global([data-phone]) .mobileChevron[data-open="true"] {
+  transform: rotate(180deg);
+}
+
+:global([data-phone]) .fileHead,
+:global([data-phone]) .more {
+  min-height: 44px;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+:global([data-phone]) .file + .file {
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+:global([data-phone]) .path {
+  display: none;
+}
+
+:global([data-phone]) .mobilePath {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  padding-block: 4px;
+}
+
+:global([data-phone]) .fileName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+/* Same-name files expose their directory even while collapsed. Full paths
+   remain selectable below each expanded file, without relying on hover. */
+:global([data-phone]) .directory,
+:global([data-phone]) .mobileFullPath {
+  color: var(--dsw-alias-label-secondary);
+  font-size: calc(11px + var(--dsh-content-font-delta-secondary, 0px));
+  line-height: calc(16px + var(--dsh-content-font-delta-secondary, 0px));
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+:global([data-phone]) .mobileFullPath {
+  display: block;
+  padding: 4px 12px;
+  user-select: text;
+}
+
+:global([data-phone]) .diff,
+:global([data-phone]) .file:first-child .diff:first-child {
+  padding: 0;
+}
+
+:global([data-phone]) .diffStatus {
+  display: block;
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+
+:global([data-phone]) .diffStatus button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+:global([data-phone]) .inlineDiff {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  border-radius: 0;
+}
+
+:global([data-phone]) .inlineDiff :global([data-diff-body]) {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  font-size: calc(
+    var(--dsw-font-markdown-code-block-font-size, 11px) + var(--dsh-content-font-delta, 0px)
+  );
+  line-height: calc(
+    var(--dsw-font-markdown-code-block-line-height, 19px) + var(--dsh-content-font-delta, 0px)
+  );
+  /* Tab presentation only; source spaces and clipboard text stay verbatim. */
+  tab-size: 2;
+  overscroll-behavior-x: contain;
+}
+
+/* The owning file row supplies the accessible path outside the code scrollport.
+   Keep DiffBlock's source rows intact for its original copy operation. */
+:global([data-phone]) .inlineDiff :global([data-diff-row="path"]) {
+  display: none;
+}
+
+:global([data-phone]) .inlineDiff :global([data-code-block-banner]) {
+  min-height: 44px;
+  gap: 8px;
+  padding: 0 8px 0 12px;
+}
+
+:global([data-phone]) .inlineDiff :global([data-code-block-banner]) button {
+  width: 44px;
+  height: 44px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :global([data-phone]) .mobileChevron {
+    transition: none;
+  }
+}

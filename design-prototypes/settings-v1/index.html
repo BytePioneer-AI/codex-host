@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>codexhost · 设置界面设计方案</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 24 24%27%3E%3Crect width=%2724%27 height=%2724%27 rx=%276%27 fill=%27%236259ce%27/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./launch-dialog.css" />
+    <script src="./launch-dialog.js" defer></script>
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <div class="presentation">
+      <header class="presentation-header">
+        <div>
+          <div class="overline">CODEXHOST / DESIGN EXPLORATION 01</div>
+          <h1>让设置回归清晰。</h1>
+        </div>
+        <div class="presentation-tools">
+          <span class="prototype-label"><span></span> 独立交互原型 · 示例数据</span>
+          <div class="view-toggle" aria-label="预览配色">
+            <button data-view="light" aria-pressed="true">
+              <span data-icon="sun"></span> 浅色
+            </button>
+            <button data-view="dark" aria-pressed="false">
+              <span data-icon="moon"></span> 深色
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div class="app-window">
+        <aside class="app-rail" aria-label="应用导航示意">
+          <div class="rail-logo" aria-label="codexhost">c<span>h</span></div>
+          <div class="rail-divider"></div>
+          <span class="rail-item" title="对话"><span data-icon="chat"></span></span>
+          <span class="rail-item" title="工作区"><span data-icon="box"></span></span>
+          <span class="rail-item" title="计划任务"><span data-icon="clock"></span></span>
+          <div class="rail-bottom">
+            <span class="rail-item selected" title="设置"><span data-icon="settings"></span></span>
+            <span class="avatar">CW</span>
+          </div>
+        </aside>
+
+        <aside class="settings-sidebar">
+          <div class="sidebar-heading"><span>设置</span><span class="keycap">⌘ ,</span></div>
+          <nav aria-label="设置分类">
+            <div class="nav-caption">工作区</div>
+            <button class="nav-item active" data-page="general" aria-current="page">
+              <span data-icon="settings"></span>通用设置
+            </button>
+            <button class="nav-item" data-page="resources">
+              <span data-icon="cpu"></span>资源管理
+            </button>
+            <div class="nav-caption">HARNESS</div>
+            <button class="nav-item" data-page="harnesses">
+              <span data-icon="box"></span>连接与 Harness <span class="nav-count">3</span>
+            </button>
+            <button class="nav-item" data-page="accounts">
+              <span data-icon="user"></span>账号与额度
+            </button>
+          </nav>
+          <div class="sidebar-footer">
+            <div class="host-status">
+              <span class="status-dot"></span> 本地 Host <span>已连接</span>
+            </div>
+            <div class="version">
+              <span>codexhost <span class="mono">0.17.3</span></span
+              ><span class="version-badge">最新版本</span>
+            </div>
+          </div>
+        </aside>
+
+        <div class="settings-main">
+          <header class="content-toolbar">
+            <div class="breadcrumb">
+              设置 <span>/</span> <strong id="breadcrumb-current">通用设置</strong>
+            </div>
+            <div class="toolbar-right">
+              <span class="saved-state"><span data-icon="check"></span> 仅在原型中生效</span
+              ><span class="toolbar-separator"></span
+              ><span class="window-decoration" aria-hidden="true">⌘</span>
+            </div>
+          </header>
+          <main id="page-content" tabindex="-1"></main>
+          <footer class="content-footer">
+            <span><span class="status-dot"></span> 所有演示操作均在此页面内完成</span
+            ><span class="mono">DESIGN PREVIEW</span>
+          </footer>
+        </div>
+      </div>
+
+      <footer class="design-notes">
+        <div>
+          <span class="note-number">01</span>
+          <p><strong>安静的层次</strong><span>中性色打底，用表面和细线区分信息。</span></p>
+        </div>
+        <div>
+          <span class="note-number">02</span>
+          <p><strong>有节奏的密度</strong><span>紧凑导航，舒展内容；设置按目的分组。</span></p>
+        </div>
+        <div>
+          <span class="note-number">03</span>
+          <p><strong>少量、明确的强调</strong><span>强调色留给选中状态和关键操作。</span></p>
+        </div>
+      </footer>
+    </div>
+    <dialog
+      id="launch-dialog"
+      class="launch-dialog"
+      aria-labelledby="launch-title"
+      aria-describedby="launch-note"
+    >
+      <form>
+        <header class="dialog-heading">
+          <div class="dialog-identity">
+            <span class="harness-logo"></span>
+            <div>
+              <span class="dialog-eyebrow">HARNESS SETTINGS</span>
+              <h2 id="launch-title">Harness 设置</h2>
+            </div>
+          </div>
+          <button class="dialog-close" type="button" data-dismiss aria-label="关闭启动设置">
+            <span data-icon="close"></span>
+          </button>
+        </header>
+        <div class="dialog-body">
+          <div class="dialog-host">
+            <span data-icon="monitor"></span><span>本地 Host</span><span class="status-dot"></span
+            ><span>已连接 · 示例</span>
+          </div>
+          <h3 class="dialog-section-title">启动程序</h3>
+          <p class="dialog-description">选择 <span id="launch-name"></span> 的可执行文件来源。</p>
+          <label class="launch-choice"
+            ><input type="radio" name="launch-mode" value="automatic" checked autofocus /><span
+              ><strong>自动查找</strong><small>使用 Host 环境中可用的启动程序</small></span
+            ><span class="recommended">推荐</span></label
+          >
+          <label class="launch-choice"
+            ><input type="radio" name="launch-mode" value="custom" /><span
+              ><strong>指定路径</strong><small>适用于多个版本或自定义安装位置</small></span
+            ></label
+          >
+          <div class="path-field" hidden>
+            <label for="executable-path">启动程序完整路径</label
+            ><input
+              id="executable-path"
+              name="executable"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+            />
+            <p id="launch-error" role="alert"></p>
+          </div>
+          <div class="detected-program">
+            <span data-icon="check"></span>
+            <div><strong>自动查找结果 · 示例</strong><code id="detected-path"></code></div>
+            <span class="inline-badge">可用</span>
+          </div>
+          <p class="dialog-notice" id="launch-note">
+            <span data-icon="info"></span>此处仅演示设置流程，保存只在本页内生效。
+          </p>
+        </div>
+        <footer class="dialog-footer">
+          <span>用于后续启动的会话</span>
+          <div>
+            <button type="button" class="secondary-button" data-dismiss>取消</button
+            ><button type="submit" class="primary-button">保存设置</button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
+    <div id="toast" class="toast" role="status" hidden></div>
+
+    <template id="general-template">
+      <div class="page-heading">
+        <div class="eyebrow">WORKSPACE PREFERENCES</div>
+        <h2>通用设置</h2>
+        <p>你的工作区，你的习惯。</p>
+      </div>
+      <section class="settings-section" aria-labelledby="appearance-title">
+        <div class="section-heading">
+          <span class="section-symbol" data-icon="sun"></span>
+          <h3 id="appearance-title">外观</h3>
+          <p>选择你喜欢的工作环境</p>
+        </div>
+        <div class="settings-card appearance-card">
+          <div class="row-copy">
+            <h4>界面主题</h4>
+            <p>在每一处细节中，保持一致。</p>
+          </div>
+          <div class="theme-options" aria-label="界面主题">
+            <button class="theme-option" data-preference="light" aria-pressed="true">
+              <span class="mini-window light"
+                ><span class="mini-side"><i></i><i></i><i></i><i></i></span
+                ><span class="mini-body"><i></i><i></i><span></span><i></i></span
+              ></span>
+              <span class="theme-label"
+                ><span data-icon="sun"></span>浅色<span class="radio-mark"></span
+              ></span>
+            </button>
+            <button class="theme-option" data-preference="dark" aria-pressed="false">
+              <span class="mini-window dark"
+                ><span class="mini-side"><i></i><i></i><i></i><i></i></span
+                ><span class="mini-body"><i></i><i></i><span></span><i></i></span
+              ></span>
+              <span class="theme-label"
+                ><span data-icon="moon"></span>深色<span class="radio-mark"></span
+              ></span>
+            </button>
+            <button class="theme-option" data-preference="system" aria-pressed="false">
+              <span class="mini-window system"
+                ><span class="mini-side"><i></i><i></i><i></i><i></i></span
+                ><span class="mini-body"><i></i><i></i><span></span><i></i></span
+              ></span>
+              <span class="theme-label"
+                ><span data-icon="monitor"></span>跟随系统<span class="radio-mark"></span
+              ></span>
+            </button>
+          </div>
+          <div class="preference-row">
+            <label class="row-copy" for="language"
+              ><h4>显示语言</h4>
+              <p>设置界面使用的语言</p></label
+            ><select id="language">
+              <option>简体中文</option>
+              <option>English</option>
+            </select>
+          </div>
+          <div class="preference-row">
+            <label class="row-copy" for="font-size"
+              ><h4>会话字号</h4>
+              <p>让长时间阅读更舒适</p></label
+            >
+            <div class="number-control">
+              <button data-step="-1" aria-label="减小字号">−</button
+              ><output id="font-size">14</output
+              ><button data-step="1" aria-label="增大字号">＋</button><span>px</span>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="settings-section" aria-labelledby="interaction-title">
+        <div class="section-heading">
+          <span class="section-symbol" data-icon="command"></span>
+          <h3 id="interaction-title">交互与阅读</h3>
+          <p>专注在真正重要的内容上</p>
+        </div>
+        <div class="settings-card">
+          <div class="preference-row">
+            <label class="row-copy" for="enter-behavior"
+              ><h4>发送消息</h4>
+              <p>选择你的键盘操作习惯</p></label
+            ><select id="enter-behavior">
+              <option>Enter 发送</option>
+              <option>⌘ Enter 发送</option>
+            </select>
+          </div>
+          <div class="preference-row">
+            <div class="row-copy">
+              <h4 id="wrap-label">推理内容自动换行</h4>
+              <p>完整展示长行内容，无需横向滚动</p>
+            </div>
+            <button
+              class="switch"
+              role="switch"
+              aria-checked="true"
+              aria-labelledby="wrap-label"
+              data-setting="wrap"
+            ></button>
+          </div>
+          <div class="preference-row">
+            <label class="row-copy" for="work-details"
+              ><h4>工作细节</h4>
+              <p>控制工具调用与过程信息的展示密度</p></label
+            ><select id="work-details">
+              <option>标准</option>
+              <option>精简</option>
+              <option>详细</option>
+            </select>
+          </div>
+        </div>
+      </section>
+    </template>
+
+    <template id="harnesses-template">
+      <div class="page-heading">
+        <div class="eyebrow">HARNESS CONNECTIONS</div>
+        <h2>连接与 Harness</h2>
+        <p>熟悉的原生能力，在同一个工作区相遇。</p>
+      </div>
+      <section class="host-card">
+        <div class="host-icon"><span data-icon="monitor"></span></div>
+        <div class="row-copy">
+          <h3>本地 Host</h3>
+          <p>此设备 · macOS <span class="mono">arm64</span></p>
+        </div>
+        <span class="status-tag"><span class="status-dot"></span>连接正常</span>
+      </section>
+      <section class="settings-section" aria-labelledby="harness-title">
+        <div class="section-heading">
+          <span class="section-symbol" data-icon="box"></span>
+          <h3 id="harness-title">已安装的 Harness</h3>
+          <p>3 个可用</p>
+        </div>
+        <div class="settings-card harness-list">
+          <article class="harness-row">
+            <span class="harness-logo claude">✳</span>
+            <div class="row-copy">
+              <h4>Claude Code <span class="inline-badge">CLI</span></h4>
+              <p>Anthropic <span>·</span> 原生会话与工具调用</p>
+            </div>
+            <span class="available"><span class="status-dot"></span>可用</span
+            ><button class="subtle-button" data-launch="claude" aria-label="Claude Code 设置">
+              设置 <span data-icon="chevron"></span>
+            </button>
+          </article>
+          <article class="harness-row">
+            <span class="harness-logo codex">⌘</span>
+            <div class="row-copy">
+              <h4>Codex CLI <span class="inline-badge">CLI</span></h4>
+              <p>OpenAI <span>·</span> 编码与工作区操作</p>
+            </div>
+            <span class="available"><span class="status-dot"></span>可用</span
+            ><button class="subtle-button" data-launch="codex" aria-label="Codex CLI 设置">
+              设置 <span data-icon="chevron"></span>
+            </button>
+          </article>
+          <article class="harness-row">
+            <span class="harness-logo opencode">o_</span>
+            <div class="row-copy">
+              <h4>OpenCode <span class="inline-badge">CLI</span></h4>
+              <p>开源 Harness <span>·</span> 多 Provider 支持</p>
+            </div>
+            <span class="available"><span class="status-dot"></span>可用</span
+            ><button class="subtle-button" data-launch="opencode" aria-label="OpenCode 设置">
+              设置 <span data-icon="chevron"></span>
+            </button>
+          </article>
+        </div>
+        <p class="helper">
+          <span data-icon="info"></span> 每个 Harness 保留自己的模型、工具和会话语义。
+        </p>
+      </section>
+      <div class="quiet-callout">
+        <span data-icon="box"></span>
+        <div>
+          <h4>让更多 Harness 加入工作区</h4>
+          <p>通过插件扩展你熟悉的 Agent 工具。</p>
+        </div>
+        <button class="secondary-button" data-demo="Harness 插件目录">
+          浏览插件 <span data-icon="arrow"></span>
+        </button>
+      </div>
+    </template>
+
+    <template id="accounts-template">
+      <div class="page-heading">
+        <div class="eyebrow">ACCOUNTS & USAGE</div>
+        <h2>账号与额度</h2>
+        <p>连接状态与额度信息，一目了然。</p>
+      </div>
+      <div class="info-banner">
+        <span data-icon="info"></span>此页展示虚构账号与额度，仅用于评审排版。
+      </div>
+      <section class="settings-section" aria-labelledby="accounts-title">
+        <div class="section-heading">
+          <span class="section-symbol" data-icon="user"></span>
+          <h3 id="accounts-title">已连接账号</h3>
+          <p>按 Harness 查看</p>
+        </div>
+        <div class="settings-card account-card">
+          <div class="account-heading">
+            <span class="harness-logo claude">✳</span>
+            <div class="row-copy">
+              <h4>Claude Code</h4>
+              <p>design@example.com</p>
+            </div>
+            <span class="inline-badge">示例账号</span>
+          </div>
+          <div class="quota">
+            <div>
+              <h4>会话额度</h4>
+              <span><strong>64%</strong> 剩余</span>
+            </div>
+            <div class="quota-track"><span style="width: 64%"></span></div>
+            <p>约 2 小时后重置 <span>已使用 36%</span></p>
+          </div>
+          <div class="quota">
+            <div>
+              <h4>每周额度</h4>
+              <span><strong>82%</strong> 剩余</span>
+            </div>
+            <div class="quota-track"><span style="width: 82%"></span></div>
+            <p>周五 09:00 重置 <span>已使用 18%</span></p>
+          </div>
+        </div>
+      </section>
+      <div class="quiet-callout">
+        <span data-icon="shield"></span>
+        <div>
+          <h4>认证由 Harness 原生方式管理</h4>
+          <p>账号与额度展示遵循对应 Harness 的能力。</p>
+        </div>
+      </div>
+    </template>
+
+    <template id="resources-template">
+      <div class="page-heading">
+        <div class="eyebrow">RESOURCE MANAGEMENT</div>
+        <h2>资源管理</h2>
+        <p>忙时全力以赴，闲时轻装运行。</p>
+      </div>
+      <section class="settings-section" aria-labelledby="release-title">
+        <div class="section-heading">
+          <span class="section-symbol" data-icon="cpu"></span>
+          <h3 id="release-title">空闲资源释放</h3>
+          <p>减少后台资源占用</p>
+        </div>
+        <div class="settings-card">
+          <div class="preference-row">
+            <div class="row-copy">
+              <h4 id="release-label">自动释放空闲会话</h4>
+              <p>会话空闲后释放 Harness 进程</p>
+            </div>
+            <button
+              class="switch"
+              role="switch"
+              aria-checked="true"
+              aria-labelledby="release-label"
+              data-setting="release"
+            ></button>
+          </div>
+          <div class="preference-row">
+            <label class="row-copy" for="idle-timeout"
+              ><h4>空闲等待时间</h4>
+              <p>从最后一次活动开始计时</p></label
+            ><select id="idle-timeout">
+              <option>15 分钟</option>
+              <option>30 分钟</option>
+              <option>60 分钟</option>
+            </select>
+          </div>
+        </div>
+      </section>
+      <section class="settings-section" aria-labelledby="sessions-title">
+        <div class="section-heading">
+          <span class="section-symbol" data-icon="clock"></span>
+          <h3 id="sessions-title">已加载会话</h3>
+          <p>示例数据</p>
+        </div>
+        <div class="settings-card">
+          <div class="session-row">
+            <span class="session-icon" data-icon="chat"></span>
+            <div class="row-copy">
+              <h4>设置界面设计探索</h4>
+              <p>Claude Code <span>·</span> 刚刚活跃</p>
+            </div>
+            <span class="status-tag">运行中</span>
+          </div>
+          <div class="session-row">
+            <span class="session-icon" data-icon="chat"></span>
+            <div class="row-copy">
+              <h4>工作区导航整理</h4>
+              <p>Codex CLI <span>·</span> 空闲 8 分钟</p>
+            </div>
+            <span class="inline-badge">空闲</span>
+          </div>
+        </div>
+      </section>
+    </template>
+  </body>
+</html>

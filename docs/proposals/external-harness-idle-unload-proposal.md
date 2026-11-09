@@ -3,7 +3,7 @@
 > 状态：已按确认方案在独立分支实现，见 [PR #303](https://github.com/BytePioneer-AI/codex-host/pull/303)。尚未发布；真实 Desktop 与逐 Harness 实测仍待完成，PR 保持 Draft。
 > 来源：[#294](https://github.com/BytePioneer-AI/codex-host/issues/294) 及后续方案讨论。
 > 依据（2026-09-15）：源码核对；本机 Codex Desktop 26.908.40834 安装包与日志分析；stock `codex-cli 0.154.0-alpha.6.2` app-server 实测；Host 合成探针测试（临时文件，未提交）。未在真实 Desktop 上验证自动释放与恢复。
-> 修订：前几版分别评估了 Renderer 前台上报、接入 Codex 原生退订语义、Adapter 活动探针与进程组检查，均因复杂度或收益问题未采用（见第 6 节）。本版改为用户显式开启、达到可配置空闲时间后关闭会话的简化方案，并保留可恢复性与 Host 操作协调保护。最近一次审查后明确：方案仅考虑本地 Host，远程 Host 不在范围内；进行中的 Host 操作以按 Thread 的占用计数保护，不以空闲时长兜底；设置校验共用 `shared-contracts` schema；设置页内部 ID 保持 `appearance`；超时时间为 5～1440 分钟整数；设置存储采用 Renderer localStorage 并下发给本地 Host。
+> 修订：前几版分别评估了 Renderer 前台上报、接入 Codex 原生退订语义、Adapter 活动探针与进程组检查，均因复杂度或收益问题未采用（见第 6 节）。本版改为用户显式开启、达到可配置空闲时间后关闭会话的简化方案，并保留可恢复性与 Host 操作协调保护。最近一次审查后明确：方案仅考虑本地 Host，远程 Host 不在范围内；进行中的 Host 操作以按 Thread 的占用计数保护，不以空闲时长兜底；设置校验共用 `shared-contracts` schema；设置页内部 ID 保持 `appearance`；超时时间为 5～1440 分钟整数；设置现由本地共享 Host 持久化，GUI 与 Web 通过偏好 RPC 和通知同步。
 
 ## 1. 背景与目标
 
@@ -47,13 +47,13 @@
   - 仅作用于本地 Host 上的外部 Agent 会话。
 - 样式：设置页引入 Tailwind CSS（构建期依赖），由 `renderer-extension/scripts/tailwind-esbuild-plugin.mjs` 编译 `settings/tailwind.css` 并以文本注入设置页 Shadow DOM。只引入 theme 与 utilities、不引入 preflight；颜色映射到现有 `--settings-*` 变量以保持深浅色一致；插件显式声明 cascade layer 顺序，并把 `@property` 初始值展开为普通声明（Chromium 不在 Shadow DOM 中注册 `@property`）。现有 `shell.css` 的元素级基础样式移入 `@layer base`，其余组件样式保持不变。
 
-- 存储方式：**Renderer localStorage + 下发给本地 Host**。
-  - Renderer 将开关和时长保存在 localStorage 的 `codexhost.idle-release.v1` 键中（JSON 对象 `{ enabled, timeoutMinutes }`），沿用现有偏好模块的做法；读取失败或读到无效值时按默认值（关闭、30 分钟）处理。写入失败明确提示保存失败，不将未保存的输入作为已生效设置，也不覆盖之前的有效配置。
-  - Renderer 在与本地 Host 建立连接后、以及设置变更时，通过 `codexhost/settings/idle-release/set` 把完整设置下发给本地 Host，成功响应返回应用的完整设置。多个窗口重复下发同一设置是幂等的，以最后一次为准。
-  - 每次实际下发前重新读取 localStorage；监听 `storage` 事件同步其他窗口的变更，不在重连时重放窗口缓存。单个连接串行下发并合并等待中的变更；新连接不被旧连接未完成的请求阻塞，旧响应不能覆盖新连接的应用状态。
-  - Host 只把设置保存在内存，不新增持久化文件。Host 重启或连接重建后，在 Renderer 重新下发前按“关闭”处理。
-  - Host 用共用 schema 校验；无效的设置返回错误，不覆盖已有有效配置。
-  - 旧版 Host 不支持该请求时，Renderer 现有请求发送器会得到“方法不支持”错误，设置页提示当前 Host 不支持此功能，不静默当作已生效。
+- 存储方式：**本地共享 Host 文件 + GUI/Web 确认快照**。
+  - Host 保存到 `$CODEXHOST_DATA_DIR/harness-preferences-v1.json` 的 `external.idleRelease`（默认目录 `~/.codexhost`），读取失败或缺失时采用关闭、30 分钟；文件无效时拒绝覆盖并报告错误。
+  - 两端通过 `codexhost/harness/preferences/get|patch` 读取和保存；旧 `codexhost/settings/idle-release/set` 仍兼容，但同样先持久化再应用。
+  - Host 串行保存并广播偏好变更；Renderer 重连读取最新值。旧 `codexhost.idle-release.v1` localStorage 仅初始化尚不存在的字段，不再承担正常写入。
+  - 写入失败保留之前的有效策略；Host 重启从文件恢复，不依赖某个浏览器窗口重新下发。
+  - 无效设置与不支持接口均明确报错；该策略只管理本地 CH 外部会话，不接管 GUI 原生 Codex。
+  - 完整作用域、迁移与实时同步约定见[独立 Web 应用](../product/standalone-web.md#gui--web-共享偏好)。
 
 ### 3.2 空闲判定
 
@@ -111,6 +111,10 @@
 - 现有恢复路径保证 Native Session 身份一致（`alignSnapshot()` 校验）；不保证 cwd、Model、Thinking 与释放前完全一致，例如 OMP、OpenCode 恢复时可能静默替换 Model 并持久化实际状态。这与 Host 重启后的恢复行为一致，本方案不额外承诺。
 - 不通知 Desktop：Desktop 中该 Thread 保持原状态；用户下一次操作触发恢复，期间等待 Harness 启动。
 
+故障恢复不依赖自动释放开关。`ExternalThreadLifecycle` 在 Host 内按 Thread 串行协调故障 discard、关闭与输出 drain、子线程清理、resolve restore 和 refresh 原地 revival；等待者进入屏障后重新检查当前实例，不复用等待前取得的恢复判断。`session.faulted` 输出回调只启动 discard，不能等待包含自身 `outputTask` 的清理。定时空闲释放避开生命周期操作及故障实例，已开始的空闲释放则由恢复入口等待。
+
+故障恢复的每次 Session 关闭与输出 drain 合计最多等待 60 秒；失败或超时返回 `-32075`，保留旧所有权，不启动新 Session。后续请求可以重试确认：未完成的 close 继续等待原 Promise，不并行调用第二次 close；已拒绝的 close 可以再次调用，但只有成功关闭并 drain 后才允许恢复。Adapter 若缓存永久关闭失败，重试仍返回错误，需要停止残留进程并重启 Host。恢复初始化失败时尚未注册的 Session 同样必须完成清理。迟到关闭不会自行移除或恢复实例；被替换对象上的 refresh 返回带重试提示的 `-32076`。这不改变定时空闲释放失败后的保守阻断策略。rollback 的 `replace()` 不属于这条故障恢复事务：调用方已先打开并提交 replacement，仍保留既有的尽力关闭、记录异常后接管已提交 Session 的语义，不在提交后新增关闭失败出口。其旧资源释放失败风险不由本次 #513 修复解决。Host 的 lifecycle drain 只等待任务结束，不代表失败的资源释放已获确认；未注册恢复候选仍由释放记录和 Adapter 持有，最终资源关闭由 Adapter 负责。
+
 ## 4. 用户可见影响与风险
 
 | 影响 | 说明 | 处理 |
@@ -142,14 +146,14 @@
 
 ### 5.2 Host 恢复入口
 
-所有需要执行对象的入口都经过 `resolve()`。合成探针（Fake Adapter，冷态为“Store 有记录、Runtime 未加载”）确认以下请求会触发恢复：含 Turns 的 `thread/read`、`thread/turns/list`、`thread/items/list`、`thread/resume`、`codexhost/thread/inspect`、`codexhost/thread/usage/inspect`；不含 Turns 的 `thread/read`、`thread/name/set`、`codexhost/thread/commands/inspect`、`thread/unsubscribe` 不触发。源码核对 fork、rollback、`turn/start`、`turn/steer`、`turn/interrupt`、配置选择、命令执行和委派 CLI 也经过 `resolve()`。冷态 `thread/resume` 只恢复一次，并发恢复由 `#restores` 合并。
+所有需要执行对象的入口都经过 `resolve()`。合成探针（Fake Adapter，冷态为“Store 有记录、Runtime 未加载”）确认以下请求会触发恢复：含 Turns 的 `thread/read`、`thread/turns/list`、`thread/items/list`、`thread/resume`、`codexhost/thread/inspect`、`codexhost/thread/usage/inspect`；不含 Turns 的 `thread/read`、`thread/name/set`、`codexhost/thread/commands/inspect`、`thread/unsubscribe` 不触发。源码核对 fork、rollback、`turn/start`、`turn/steer`、`turn/interrupt`、配置选择、命令执行和委派 CLI 也经过 `resolve()`。冷态 `thread/resume` 的并发调用经同一生命周期屏障重查注册状态，复用已恢复的 Session。
 
 ### 5.3 Host 数据模型
 
 - `ExternalThread.session` 为必填；Thread 从 Runtime 移除后即为未加载，恢复无需新状态。
 - `outputTask` 只在 Session 输出通道结束后才结束，因此只能在 `close()` 之后等待。当前输出消费路径会捕获部分异常，不能把该 Promise 完成视为持久化成功；释放逻辑还需检查 `persistenceError`，并显式获知其他输出消费失败。
 - Mapping Store 保存元数据、Native Session 引用和 Turn 映射，不保存完整 Transcript；恢复从 Harness 原生历史读取。
-- Host 目前没有通用的设置持久化机制；现有偏好保存在 Renderer localStorage，Host 运行配置来自环境变量。
+- Host 通过共享偏好文件保存策略，Renderer 和 Web 使用同一权威来源。
 - `DesktopRequestQueue.run(threadId, operation)` 按 Thread 串行 Desktop 请求，但只等待传入操作返回；`turn/start`、`turn/steer` 在处理函数中再次派发异步任务，委派控制 API 不经过该队列。
 - 每个 `AppServerHost` 在构造时创建自己的 `ExternalThreadRuntime`；Renderer 通过 `clientForHost(hostId)` 访问 Host，本地 Host 的 ID 为 `local`。
 
@@ -181,7 +185,7 @@
 单元与合成测试（Fake Adapter、Fake Timers）：
 
 - 设置关闭或未收到设置时不发起回收；设置无效不启用，更新无效不覆盖已有有效配置。
-- Renderer：设置写入并从 localStorage 回显；读取不可用或值无效时按默认值，写入失败明确提示；连接本地 Host 后及设置变更时下发；多窗口读取最新存储并同步；旧连接迟到响应不覆盖新状态；Host 不支持该请求时设置页给出提示。
+- Renderer：设置从 Host 确认快照回显；本地旧值仅初始化缺失字段，写入失败明确提示；多窗口和 Web 读取通知后的最新快照；旧连接迟到响应不覆盖新状态；Host 不支持该请求时设置页给出提示。
 - Host：重启或连接重建后在收到下发前不回收；重复下发同一设置不重置已有活动时间。
 - “通用”页保留原外观选项，新增开关、时长输入和本地化说明；默认关闭、默认 30 分钟，已保存值正确回显。
 - 覆盖 5～1440 整数分钟校验：边界值 5、1440 可保存，4、1441、空值、小数拒绝并提示；Host 使用同一 schema 拒绝越界设置；时长增减生效，以及关闭后保留时长。
@@ -214,14 +218,14 @@
 - 入口：现有“外观”页，显示名改为“通用”，内部 ID 保持 `appearance`。
 - 开关：自动释放默认关闭。
 - 超时时间：带原生上下增减控件的分钟数值输入框（不用下拉框），默认 30 分钟，范围 5～1440 分钟整数。
-- 存储：Renderer localStorage 保存，下发给本地 Host，Host 仅保存在内存；未采用在 `~/.codexhost` 新增配置文件的方案。
+- 存储：共享 Host 文件持久化；Renderer localStorage 仅作为旧数据初始化来源。
 - 协调：未完成的 Host 操作以复用 `DesktopRequestQueue` 加按 Thread 占用计数保护，不以空闲时长兜底。
 
 当前无待定产品决策；真实环境验证仍未完成（见第 12 节）。
 
 ## 10. 总结
 
-本方案在“通用”设置页提供默认关闭的自动释放开关及可修改的空闲超时时间（默认 30 分钟），全部功能仅针对本地 Host。以用户显式开启和明确提示为前提，使用 Host 已知的 Turn、Subagent、steering 和持久化状态，并以复用 `DesktopRequestQueue` 加按 Thread 占用计数保护进行中的 Host 操作，优先复用现有 `close()` 与 `resolve()` 恢复路径，不引入 Adapter 安全探针或原生退订语义。设置保存在 Renderer localStorage，并通过新增的 codexhost 请求下发给本地 Host，所有 Adapter 均需验证关闭恢复行为，必要修正按结果确定。代价是可能停止会话启动的服务和后台任务，以及恢复时的等待；这些通过设置项旁的问号浮窗告知用户。
+本方案在“通用”设置页提供默认关闭的自动释放开关及可修改的空闲超时时间（默认 30 分钟），全部功能仅针对本地 Host。以用户显式开启和明确提示为前提，使用 Host 已知的 Turn、Subagent、steering 和持久化状态，并以复用 `DesktopRequestQueue` 加按 Thread 占用计数保护进行中的 Host 操作，优先复用现有 `close()` 与 `resolve()` 恢复路径，不引入 Adapter 安全探针或原生退订语义。设置保存在共享 Host 本地文件，GUI/Web 通过 codexhost 偏好接口同步，所有 Adapter 均需验证关闭恢复行为，必要修正按结果确定。代价是可能停止会话启动的服务和后台任务，以及恢复时的等待；这些通过设置项旁的问号浮窗告知用户。
 
 ## 11. 已加载会话状态表
 

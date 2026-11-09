@@ -21,8 +21,13 @@ export function nativeConversationDbPath(nativeSessionId: string, homedir = os.h
   return path.join(homedir, ".gemini", "antigravity-cli", "conversations", `${nativeSessionId}.db`);
 }
 
+/** agy's per-Conversation directories, one per native Conversation ID. */
+export function nativeBrainRoot(homedir = os.homedir()): string {
+  return path.join(homedir, ".gemini", "antigravity-cli", "brain");
+}
+
 export function nativeBrainDirPath(nativeSessionId: string, homedir = os.homedir()): string {
-  return path.join(homedir, ".gemini", "antigravity-cli", "brain", nativeSessionId);
+  return path.join(nativeBrainRoot(homedir), nativeSessionId);
 }
 
 export async function cloneNativeConversationDb(

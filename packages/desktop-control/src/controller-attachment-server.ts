@@ -1,5 +1,7 @@
 import { createServer, type Server, type Socket } from "node:net";
 import {
+  REMOTE_THREAD_REPLY_MAX_BYTES,
+  REMOTE_THREAD_CONTROL_TIMEOUT_MS,
   remoteConnectionsRequestSchema,
   type RemoteConnectionsRequest,
   type RemoteConnectionsReply,
@@ -85,13 +87,32 @@ export async function startControllerAttachmentServer(
           respond(socket, "rejected");
           return;
         }
-        socket.setTimeout(30_000, () => socket.destroy());
+        socket.setTimeout(
+          input.action === "read-thread" ? REMOTE_THREAD_CONTROL_TIMEOUT_MS : 30_000,
+          () => socket.destroy(),
+        );
         // The operation is not retried on connection loss: mutations may already have applied.
         const operation = options.remoteConnections;
         void Promise.resolve()
           .then(() => operation(input))
           .then(
-            (reply) => socket.end(JSON.stringify(reply) + "\n"),
+            (reply) => {
+              const serialized = JSON.stringify(reply) + "\n";
+              if (
+                input.action === "read-thread" &&
+                Buffer.byteLength(serialized) > REMOTE_THREAD_REPLY_MAX_BYTES
+              ) {
+                socket.end(
+                  JSON.stringify({
+                    error: {
+                      code: -32094,
+                      message:
+                        "Thread snapshot exceeds the 16 MiB response limit; reduce the message page size. Oversized individual results are not supported.",
+                    },
+                  }) + "\n",
+                );
+              } else socket.end(serialized);
+            },
             () =>
               socket.end(
                 JSON.stringify({

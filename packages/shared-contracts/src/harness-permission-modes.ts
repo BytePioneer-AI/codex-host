@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { harnessLocalizationsSchema } from "./harness-presentation.js";
 import { hostThreadIdSchema } from "./ids.js";
 
 export const HARNESS_PERMISSION_MODE_ID_MAX_LENGTH = 128;
@@ -13,7 +14,7 @@ const nonBlankTextSchema = z.string().refine((value) => value.trim().length > 0,
 
 export const harnessPermissionModeIdSchema = nonBlankTextSchema
   .max(HARNESS_PERMISSION_MODE_ID_MAX_LENGTH)
-  .regex(/^[A-Za-z0-9._~-]+$/u, "Permission Mode ID must use transport-safe characters")
+  .regex(/^[A-Za-z0-9._~:-]+$/u, "Permission Mode ID must use transport-safe characters")
   .brand<"HarnessPermissionModeId">();
 
 export type HarnessPermissionModeId = z.infer<typeof harnessPermissionModeIdSchema>;
@@ -24,6 +25,7 @@ export const harnessPermissionModeSchema = z
     label: nonBlankTextSchema.max(HARNESS_PERMISSION_MODE_LABEL_MAX_LENGTH),
     description: nonBlankTextSchema.max(HARNESS_PERMISSION_MODE_DESCRIPTION_MAX_LENGTH).optional(),
     dangerous: z.boolean().optional(),
+    localizations: harnessLocalizationsSchema.optional(),
   })
   .strict();
 

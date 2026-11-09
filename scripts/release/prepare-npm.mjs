@@ -1,4 +1,6 @@
+import { expectedWebPaths, isWebResource, webBuildCommand } from "./web-resources.mjs";
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import {
   chmod,
   copyFile,
@@ -18,6 +20,7 @@ import {
   buildPreinstalledHarnessPlugins,
   preinstalledHarnessPluginPaths,
 } from "./harness-plugins.mjs";
+import { linuxGlibcCargoArguments, stripLinuxDebugInfo } from "./linux-glibc.mjs";
 import { hostReleaseTarget, npmReleaseUsage, releaseTargetForHost } from "./targets.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -39,6 +42,35 @@ export const NPM_RUNTIME_PLATFORM_PACKAGES = Object.freeze({
   "linux-x64": NPM_PLATFORM_PACKAGE_NAMES["linux-x64"],
   "linux-arm64": NPM_PLATFORM_PACKAGE_NAMES["linux-arm64"],
 });
+// Published packages keep the repository's minimum Node.js version but no upper
+// bound: newer host runtimes are accepted. Bundled plugins import node:sqlite,
+// which older Node.js releases do not provide.
+export function minimumNodeVersionFromEngines(range) {
+  const versions = [...String(range ?? "").matchAll(/>=\s*v?(\d+)\.(\d+)\.(\d+)/gu)].map((match) =>
+    match.slice(1, 4).map(Number),
+  );
+  if (versions.length === 0) throw new Error(`engines.node has no minimum version: ${range}`);
+  versions.sort((left, right) => left[0] - right[0] || left[1] - right[1] || left[2] - right[2]);
+  return versions[0].join(".");
+}
+
+export const NPM_MINIMUM_NODE_VERSION = minimumNodeVersionFromEngines(
+  JSON.parse(readFileSync(path.join(repositoryRoot, "package.json"), "utf8")).engines?.node,
+);
+// Node.js 23.x lacks parts of node:sqlite that bundled plugins import (the module is flagged
+// before 23.4.0 and sqlite.backup arrives in 23.8.0); the repository engines skip 23.x too.
+export const NPM_NODE_EXCLUDED_RANGE = Object.freeze({ from: "23.0.0", to: "24.0.0" });
+function compareNodeVersions(left, right) {
+  const a = left.split(".").map(Number);
+  const b = right.split(".").map(Number);
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+export const NPM_NODE_ENGINE =
+  compareNodeVersions(NPM_MINIMUM_NODE_VERSION, NPM_NODE_EXCLUDED_RANGE.from) < 0
+    ? `>=${NPM_MINIMUM_NODE_VERSION} <${NPM_NODE_EXCLUDED_RANGE.from} || >=${NPM_NODE_EXCLUDED_RANGE.to}`
+    : `>=${compareNodeVersions(NPM_MINIMUM_NODE_VERSION, NPM_NODE_EXCLUDED_RANGE.to) < 0 ? NPM_NODE_EXCLUDED_RANGE.to : NPM_MINIMUM_NODE_VERSION}`;
+export const NPM_NODE_REQUIREMENT = `Node.js ${NPM_MINIMUM_NODE_VERSION} or later, except 23.x`;
+
 export const NPM_PACKAGE_DESCRIPTION =
   "Run Pi and Claude Code as first-class external harnesses inside Codex Desktop.";
 
@@ -49,6 +81,18 @@ export function npmPlatformPackageName(target) {
 }
 
 const runtimeLicenses = [
+  {
+    packageName: "@deepseek-ai/cordis",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Cordis-LICENSE.txt",
+  },
+  {
+    packageName: "@deepseek-ai/cosmokit",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Cosmokit-LICENSE.txt",
+  },
   {
     packageName: "@agentclientprotocol/sdk",
     license: "Apache-2.0",
@@ -97,6 +141,12 @@ const runtimeLicenses = [
     source: "LICENSE",
     output: "QoderCN-Agent-SDK-LICENSE.txt",
   },
+  {
+    packageName: "@qwen-code/sdk",
+    license: "Apache-2.0",
+    source: "scripts/release/licenses/qwen-code-sdk-0.1.26-Apache-2.0.txt",
+    output: "Qwen-Code-SDK-LICENSE.txt",
+  },
   { packageName: "diff", license: "BSD-3-Clause", source: "LICENSE", output: "diff-LICENSE.txt" },
   { packageName: "lucide", license: "ISC", source: "LICENSE", output: "lucide-LICENSE.txt" },
   {
@@ -142,11 +192,11 @@ export function npmReleaseBuildCommands(
       label: "Rust release build",
       command: "cargo",
       args: [
-        "build",
+        ...(target.hostPlatform === "linux"
+          ? linuxGlibcCargoArguments(target.rustTarget)
+          : ["build", "--target", target.rustTarget]),
         "--release",
         "--locked",
-        "--target",
-        target.rustTarget,
         "--package",
         "codexhost-launcher",
         "--package",
@@ -223,6 +273,7 @@ export function npmPackageCpu(target) {
 
 export function expectedNpmPackagePaths(target) {
   return [
+    ...expectedWebPaths(target),
     "package.json",
     "README.md",
     `bin/codexhost${target.executableSuffix}`,
@@ -244,11 +295,15 @@ export function expectedNpmPackagePaths(target) {
     "licenses/OpenCode-v2-Client-LICENSE.txt",
     "licenses/Qoder-Agent-SDK-LICENSE.txt",
     "licenses/QoderCN-Agent-SDK-LICENSE.txt",
+    "licenses/Qwen-Code-SDK-LICENSE.txt",
+    "licenses/Cordis-LICENSE.txt",
+    "licenses/Cosmokit-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",
     "licenses/tailwindcss-LICENSE.txt",
     "licenses/ws-LICENSE.txt",
     "licenses/zod-LICENSE.txt",
+    "licenses/DesktopScreenshot-NOTICES.txt",
     "THIRD_PARTY_NOTICES.txt",
   ].sort();
 }
@@ -268,7 +323,7 @@ export function createNpmPackageManifest({ version, target }) {
       "THIRD_PARTY_NOTICES.txt",
     ],
     engines: {
-      node: ">=22",
+      node: NPM_NODE_ENGINE,
     },
     os: npmPackageOs(target),
     cpu: npmPackageCpu(target),
@@ -297,7 +352,27 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const version = ${JSON.stringify(version)};
+const minimumNodeVersion = ${JSON.stringify(NPM_MINIMUM_NODE_VERSION)};
+const excludedNodeRange = ${JSON.stringify(NPM_NODE_EXCLUDED_RANGE)};
 const userArguments = process.argv.slice(2);
+{
+  const compare = (left, right) => {
+    const a = left.split(".").map(Number);
+    const b = right.split(".").map(Number);
+    return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  };
+  const current = process.versions.node;
+  if (
+    compare(current, minimumNodeVersion) < 0 ||
+    (compare(current, excludedNodeRange.from) >= 0 &&
+      compare(current, excludedNodeRange.to) < 0)
+  ) {
+    console.error(
+      \`codexhost: Node.js \${current} is not supported; ${NPM_PACKAGE_NAME} requires ${NPM_NODE_REQUIREMENT}.\`,
+    );
+    process.exit(1);
+  }
+}
 const repositoryUrl = "https://github.com/BytePioneer-AI/codex-host";
 const startupTraceStartedAt = Date.now();
 function startupTrace(stage) {
@@ -510,14 +585,23 @@ if (userArguments.length === 0) {
   launchArguments = ["launch"];
 } else if (userArguments[0] === "launch") {
   launchArguments = userArguments;
-} else if (userArguments[0] === "inspect") {
+} else if (userArguments[0] === "inspect" || userArguments[0] === "status" || userArguments[0] === "autostart") {
   launchArguments = userArguments;
+} else if (userArguments[0] === "web" || userArguments[0] === "stop") {
+  launchArguments = [userArguments[0], "--node", process.execPath, "--host-runtime", hostRuntime,
+    "--web-runtime", path.join(packageRoot, "app", "web-server.mjs"), ...userArguments.slice(1)];
+} else if (userArguments[0] === "host") {
+  if (userArguments[1] !== "ensure" && userArguments[1] !== "stop") fail("host expects ensure or stop");
+  launchArguments = ["host", userArguments[1], "--node", process.execPath, "--host-runtime", hostRuntime,
+    "--data", updateEnvironment.CODEXHOST_DATA_DIR || path.join(homedir(), ".codexhost"), ...userArguments.slice(2)];
 } else if (userArguments[0] === "console" || userArguments[0] === "update") {
   launchArguments = null;
   consoleArguments = userArguments.slice(1);
 } else if (userArguments[0] === "remote") {
   launchArguments = null;
-  remoteArguments = userArguments.slice(1);
+  // The packaged resources are appended after the subcommand; without one, the
+  // first injected option would be read as the subcommand. Show usage instead.
+  remoteArguments = userArguments.length > 1 ? userArguments.slice(1) : ["help"];
 } else if (userArguments[0] === "broker") {
   launchArguments = null;
   brokerArguments = userArguments.slice(1);
@@ -535,18 +619,23 @@ if (userArguments.length === 0) {
       "  codexhost",
       "  codexhost --version",
       "  codexhost inspect",
+      "  codexhost web [--host address] [--port port] [--public-url url] [--trusted-proxy addresses]",
+      "  codexhost stop",
+      "  codexhost status",
+      "  codexhost autostart on|off|status",
       "  codexhost console",
       "  codexhost update",
       "  codexhost launch [launcher options]",
       "  codexhost remote install|start|stop|status|uninstall",
       "  codexhost broker install|status|stop|uninstall",
+      "  codexhost host ensure|stop [--data directory]",
       "  codexhost delegate --help",
       "  codexhost harness inspect ...",
       "  codexhost delegate start ...",
       "  codexhost thread send|cancel|read|wait|list ...",
       "",
       "This npm package uses the current Node.js runtime and the packaged",
-      "Rust launcher/shim. Codex Desktop must already be installed.",
+      "Rust launcher/shim. Without Codex Desktop, codexhost opens Web.",
     ].join("\\n"),
   );
   process.exit(0);
@@ -572,7 +661,9 @@ if (launchArguments?.[0] === "launch") {
     }
   }
   const extras = [];
-  if (!injected.has("--node")) extras.push("--node", process.execPath);
+  if (!injected.has("--node") && process.platform !== "darwin") {
+    extras.push("--node", process.execPath);
+  }
   if (!injected.has("--shim")) extras.push("--shim", shim);
   if (!injected.has("--host-runtime")) extras.push("--host-runtime", hostRuntime);
   if (!injected.has("--desktop-controller")) {
@@ -745,7 +836,8 @@ if (consoleArguments !== null) {
     if (finished) return;
     finished = true;
     startupTrace("Launcher finished startup with code " + code);
-    process.exit(code);
+    // Flush queued startup output without waiting for the supervising Launcher.
+    process.stdout.end((error) => process.exit(error ? code || 1 : code));
   };
   child.stdout.setEncoding("utf8");
   let ready = false;
@@ -754,14 +846,17 @@ if (consoleArguments !== null) {
   child.stdout.on("data", (chunk) => {
     if (ready) return;
     const output = launcherOutput + chunk;
-    if (output.includes(readyMarker)) {
+    const marker = output.indexOf(readyMarker);
+    if (marker !== -1) {
+      process.stdout.write(output.slice(0, marker));
       ready = true;
       launcherOutput = "";
       startupTrace("received Launcher ready");
       if (!keepLauncherForeground) finish(0);
       return;
     }
-    // Only retain the tail needed to recognize a marker split across chunks.
+    // Retain only a possible split readiness marker; forward service results unchanged.
+    process.stdout.write(output.slice(0, Math.max(0, output.length - readyMarker.length + 1)));
     launcherOutput = output.slice(1 - readyMarker.length);
   });
   child.on("error", (error) => {
@@ -770,6 +865,7 @@ if (consoleArguments !== null) {
   });
   child.on("exit", (code, signal) => {
     startupTrace(ready ? "Launcher exited after ready" : "Launcher exited before ready");
+    if (!ready) process.stdout.write(launcherOutput);
     if (signal) {
       process.kill(process.pid, signal);
       return;
@@ -819,6 +915,11 @@ codexhost
 codexhost --version
 codexhost inspect
 codexhost launch
+codexhost web
+codexhost status
+codexhost autostart on
+codexhost autostart status
+codexhost stop
 codexhost remote install
 codexhost remote start
 codexhost remote stop
@@ -829,13 +930,35 @@ codexhost broker status
 
 The \`codexhost\` command launches the packaged Rust launcher with:
 
-- the current Node.js executable as Host Runtime
-- packaged \`host-runtime\`, Desktop Controller, Renderer, and Shim binaries
+- the current Node.js executable for Web; Host may use Desktop's bundled Node for native integration
+- packaged \`host-runtime\`, Desktop Controller, Renderer, Shim and Web resources
+
+\`codexhost\` starts background Web alongside Desktop, or opens Web when Desktop is not installed. \`codexhost web\` ensures Host and Web run in the background and opens a browser; over SSH or without a graphical session it only prints a local login link. Closing the terminal or interface does not stop the services. \`CODEXHOST_WEB_SERVICE=0\` disables Web startup alongside \`codexhost\`.
+
+Web initially listens on \`127.0.0.1:4400\`. The local Connect devices page controls LAN access and Tailscale Serve. \`codexhost web --host 0.0.0.0 --port 4500\` enables LAN access on another port; \`--host\`, \`--port\`, \`--public-url\` and \`--trusted-proxy\` are validated and saved for later starts, with an empty value clearing the option. Changes restart only Web, disconnecting Web terminals but preserving Host tasks. Port conflicts fail without killing the listener or choosing another port. LAN HTTP is unencrypted.
+
+Matching services are reused; a version or installation mismatch replaces them, interrupting Host tasks when Host is replaced. \`codexhost status\` reads Host/Web status and versions, a token-free address, the last Web failure and autostart state. \`codexhost stop\` stops managed Desktop, Web, Host, remote services, Broker and Console, without confirmation, and reports interrupted Host tasks. Session data, autostart and Serve configuration remain; independently opened Desktop is not closed. Remote services return when another computer reconnects, but interrupted tasks do not resume automatically.
+
+\`codexhost autostart on|off|status\` manages current-user login startup, off by default. Login starts Host and Web without opening an interface. Linux requires systemd user services; linger is user-managed. Running \`codexhost\` refreshes enabled autostart with the current Node and CLI paths. The computer must remain awake and connected for phone access.
+
+Office preview components download from the npm registry on first use on the Web computer; documents are not uploaded. Download failures do not affect other features and can be retried.
+
+## Uninstall or downgrade
+
+Before removing the package or switching to a version without background Web support:
+
+\`\`\`bash
+codexhost stop
+codexhost autostart off
+npm uninstall -g ${NPM_PACKAGE_NAME}
+\`\`\`
+
+Serve configuration is retained. Check \`tailscale serve status\`; if the HTTPS 443 root path still points to this Web, use \`tailscale serve --https=443 --set-path=/ off\` (substitute the actual HTTPS port). Do not remove another service's root path or omit \`--set-path=/\`. The local Connect devices page can also disable Serve while Web is running.
 
 ## Requirements
 
-- Node.js 22 or 24 (Node 20 and older are not supported)
-- Official ChatGPT/Codex Desktop for macOS, Windows, or Linux
+- ${NPM_NODE_REQUIREMENT} (other releases lack parts of the built-in \`node:sqlite\` module)
+- Official ChatGPT/Codex Desktop only when using the Desktop interface; Web works without it
 - Pi on \`PATH\` when using the Pi agent
 - Claude Code installed when using the Claude Code adapter
 
@@ -881,6 +1004,16 @@ export async function writeThirdPartyNotices(root, packageRoot) {
       "",
     );
   }
+  await copyReleaseFile(
+    path.join(root, "scripts/release/licenses/desktop-screenshot-NOTICES.txt"),
+    path.join(licensesDirectory, "DesktopScreenshot-NOTICES.txt"),
+    "desktop screenshot native dependency notices",
+  );
+  notices.push(
+    "Desktop screenshot native dependencies (Windows/macOS)",
+    "License and copyright texts: licenses/DesktopScreenshot-NOTICES.txt",
+    "",
+  );
   await writeFile(
     path.join(packageRoot, "THIRD_PARTY_NOTICES.txt"),
     `${notices.join("\n").trimEnd()}\n`,
@@ -911,7 +1044,9 @@ export async function validateNpmPackage({ packageRoot, target, root }) {
   const files = await walkFiles(packageRoot);
   const actual = files.map((file) => file.relative).sort();
   const missing = expected.filter((relative) => !actual.includes(relative));
-  const extra = actual.filter((relative) => !expected.includes(relative));
+  const extra = actual.filter(
+    (relative) => !expected.includes(relative) && !isWebResource(relative, target),
+  );
   if (missing.length > 0) {
     throw new Error(`npm package is missing files: ${missing.join(", ")}`);
   }
@@ -932,7 +1067,12 @@ export async function validateNpmPackage({ packageRoot, target, root }) {
     ) {
       forbiddenReferences.push("@anthropic-ai/", "@codexhost/adapter-claude-code");
     }
-    if (file.relative !== "package.json" && text.includes("runtime/node")) {
+    // Match the executable path, not an esbuild source label such as
+    // packages/host-runtime/node_modules/@deepseek-ai/cordis/lib/index.js.
+    if (
+      file.relative !== "package.json" &&
+      /(?:^|[^\w.-])runtime[/\\]+node(?:\.exe)?(?![\w.-])/u.test(text)
+    ) {
       throw new Error(`npm package must not embed a private Node runtime: ${file.relative}`);
     }
     if (forbiddenReferences.some((reference) => text.includes(reference))) {
@@ -1077,6 +1217,7 @@ export async function prepareNpmPackage({
     "npm Updater",
     true,
   );
+  if (target.hostPlatform === "linux") stripLinuxDebugInfo({ packageRoot });
 
   await runCommand(
     {
@@ -1144,6 +1285,7 @@ export async function prepareNpmPackage({
     createNpmReadme({ version: packageVersion, target }),
     "utf8",
   );
+  await runCommand(webBuildCommand(path.join(packageRoot, "app"), target), root);
   await writeThirdPartyNotices(root, packageRoot);
   await validateNpmPackage({ packageRoot, target, root });
 

@@ -116,7 +116,10 @@ export async function probeWebSocket(input: {
   timeoutMs: number;
   timeoutMessage: string;
 }): Promise<RemoteHostRuntimeStatus> {
-  const socket = new WebSocket("ws://localhost/", { createConnection: input.createConnection });
+  const socket = new WebSocket("ws://localhost/", {
+    perMessageDeflate: false,
+    createConnection: input.createConnection,
+  });
   try {
     return await new Promise<RemoteHostRuntimeStatus>((resolve) => {
       let settled = false;
@@ -224,9 +227,6 @@ async function probeProtocol(
 function installedManifest(status: RemoteHostInstallationStatus): RemoteHostManifestV1 {
   if (status.state === "not-installed") {
     throw new Error("Remote Host is not installed. Run: codexhost remote install");
-  }
-  if (status.state === "degraded") {
-    throw new Error(`Remote Host installation is degraded: ${status.issues.join("; ")}`);
   }
   return status;
 }
@@ -356,7 +356,11 @@ export async function startRemoteHost(
     throw new Error("Remote Host lifecycle must run on the macOS or Linux SSH host");
   }
   const lifecycle = dependencies();
-  const manifest = installedManifest(await lifecycle.inspectInstallation(options));
+  const installation = await lifecycle.inspectInstallation(options);
+  if (installation.state === "degraded") {
+    throw new Error(`Remote Host installation is degraded: ${installation.issues.join("; ")}`);
+  }
+  const manifest = installedManifest(installation);
   const socketPath = socketPathFor(environment);
   const current = await lifecycle.probeProtocol(manifest, socketPath, environment);
   if (current.state === "running") {
@@ -380,6 +384,9 @@ export async function stopRemoteHost(
     throw new Error("Remote Host lifecycle must run on the macOS or Linux SSH host");
   }
   const lifecycle = dependencies();
+  // An update can make the previous shell profile/entrypoint obsolete before reinstalling it.
+  // Stopping the existing listener does not launch either: protocol probing and the native
+  // terminator's socket-owner/process-identity checks still gate termination.
   const manifest = installedManifest(await lifecycle.inspectInstallation(options));
   const socketPath = socketPathFor(environment);
   const current = await lifecycle.probeProtocol(manifest, socketPath, environment);

@@ -7,6 +7,7 @@ import {
   type DelegationStartInput,
   type DelegationWatchApi,
   type HarnessInspectInput,
+  type HarnessListInput,
   type ThreadCancelInput,
   type ThreadListInput,
   type ThreadSendInput,
@@ -14,6 +15,7 @@ import {
   type ThreadWaitInput,
   type ThreadWatchInput,
 } from "./delegation-types.js";
+import { matchesBearerToken } from "./bearer-token.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
@@ -116,7 +118,7 @@ export async function startDelegationControlServer(input: {
         });
         return;
       }
-      if (request.headers.authorization !== `Bearer ${input.token}`) {
+      if (!matchesBearerToken(request.headers.authorization, input.token)) {
         writeJson(response, 401, {
           error: { code: "RUNTIME_UNREACHABLE", message: "Runtime token is invalid" },
         });
@@ -125,7 +127,7 @@ export async function startDelegationControlServer(input: {
       const body = await jsonBody(request);
       switch (request.url) {
         case "/v1/harness/list":
-          writeJson(response, 200, await input.api.listHarnesses());
+          writeJson(response, 200, await input.api.listHarnesses(body as HarnessListInput));
           return;
         case "/v1/harness/inspect":
           writeJson(response, 200, await input.api.inspect(body as unknown as HarnessInspectInput));

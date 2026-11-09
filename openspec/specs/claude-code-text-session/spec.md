@@ -77,7 +77,7 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 - **AND** each caller-assigned User UUID is submitted once
 
 ### Requirement: Claude Native history maps deterministically
-`readSnapshot()` SHALL read only the identified Native Session through the official Claude SDK history API and SHALL deterministically map each human User message and its following supported Assistant text and explicit visible thinking into one Host Turn. The caller-assigned User UUID SHALL remain the Native Turn identity. Claude Tool-result User messages, synthetic or metadata User records, local-command output or caveat records, native Model-selection and Compact command envelopes, and background task-notification records SHALL NOT become human Host Turns. Other genuine human slash-command prompts SHALL remain eligible for projection. codexhost SHALL NOT persist a second Transcript.
+`readSnapshot()` SHALL read only the identified Native Session and SHALL deterministically preserve the live execution boundaries, including independent task-notification continuations. A requested Turn SHALL use its caller-assigned User UUID; an autonomous continuation SHALL use its triggering notification User UUID, matching the live Adapter. Claude Tool-result User messages, synthetic or metadata User records, local-command output or caveat records, native Model-selection and Compact command envelopes, and background task-notification records SHALL NOT become human Host Turns. Other genuine human slash-command prompts SHALL remain eligible for projection. codexhost SHALL NOT persist a second Transcript.
 
 #### Scenario: Completed Claude history is read repeatedly
 - **WHEN** a Claude Session containing completed text Turns and visible Assistant thinking is read more than once
@@ -107,8 +107,10 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 
 #### Scenario: Native history contains background task-notification records
 - **WHEN** Claude history contains a User record whose origin is `task-notification` or whose text is a complete `<task-notification>` wrapper
-- **THEN** that native control record SHALL NOT create a Host Turn or appear as User input
-- **AND** following Assistant continuations SHALL remain on the preceding human Turn
+- **THEN** a notification that triggers independent Root execution SHALL start a historical Turn with empty User input and its own notification UUID as Native Turn identity
+- **AND** each Turn's Checkpoint SHALL be its last Root message UUID, so the preceding Turn's Checkpoint stays before the independent notification
+- **AND** notifications and continuations owned by a Turn held for background Agent or Workflow occupancy SHALL stay on that same Turn, using the same native delegation and settlement evidence as the live Adapter
+- **AND** nested Subagent messages SHALL NOT advance a Root Checkpoint
 - **AND** ordinary human text that only mentions these tags SHALL remain eligible for projection
 
 #### Scenario: Native history contains another human slash command
@@ -652,6 +654,39 @@ Claude Code SHALL advertise Subagent observation and SHALL map Root `Agent` or `
 #### Scenario: Background task notification resumes Claude after the requested Turn completed
 - **WHEN** Claude consumes a task notification after the requested Host Turn has completed and generates a follow-up Root answer
 - **THEN** Claude Adapter SHALL emit the correlated Session-scoped Subagent completion and one autonomous Host Turn with stable native identity
+- **AND** that Host Turn SHALL run live as a Claude continuation without a Turn request
+
+### Requirement: Claude continuations without a Turn request run as live autonomous Turns
+Claude Adapter SHALL project a native Segment that Claude starts without a Host Turn request, such as its answer to a background Subagent or background command notification after the requested Host Turn completed, as one autonomous Host Turn that runs while the Segment runs. Claude Transport SHALL hold that Segment's events only until its first Root output and then deliver them, and every later event, as they arrive.
+
+#### Scenario: Background command completes after the requested Turn completed
+- **WHEN** a Bash command that Claude moved to the background completes after its requested Host Turn completed and Claude answers the notification with Root output
+- **THEN** Claude Adapter SHALL emit `turn.autonomous.started` at that first Root output and project the answer's Items as they arrive, before the native Result
+- **AND** the autonomous Host Turn SHALL complete when the native Result arrives
+
+#### Scenario: Turn request arrives while the continuation runs
+- **WHEN** a Turn request arrives after the autonomous Host Turn started and before its native Result
+- **THEN** Claude Adapter SHALL reject the request as retryable `sessionBusy`
+- **AND** the continuation's remaining output SHALL stay in its own Host Turn
+
+#### Scenario: Turn request arrives before the continuation produces Root output
+- **WHEN** Claude has consumed a task notification without producing Root output yet and a Turn request arrives
+- **THEN** Claude Adapter SHALL accept the request, and the requested Turn SHALL take over the native stream from that point
+- **AND** events that native Segment emitted before the request SHALL be delivered to the requested Turn and SHALL NOT reappear in a later Turn
+
+#### Scenario: Native activity without Root output
+- **WHEN** Claude reports a Segment start, a live background task level, task progress, or a settlement without Root output
+- **THEN** Claude Adapter SHALL NOT start an autonomous Host Turn for it until that Segment produces Root output or reaches its native Result
+- **AND** independent settlements SHALL still be delivered at Session scope
+
+#### Scenario: Each continuation keeps its own identity
+- **WHEN** a continuation starts after an earlier one completed or was taken over by a requested Turn
+- **THEN** its autonomous Host Turn SHALL use its own native identity and SHALL contain none of the earlier Segment's events
+
+#### Scenario: User cancels a live autonomous Turn
+- **WHEN** the user cancels a running autonomous Host Turn
+- **THEN** Claude Adapter SHALL interrupt that native Segment without closing the native process
+- **AND** it SHALL complete the Host Turn as cancelled when the native Result confirms the interruption
 
 ### Requirement: Claude exposes read-only Subagent history
 Claude Adapter SHALL implement the common Subagent transcript capability using the official `getSubagentMessages()` API and SHALL map supported User, Assistant, Reasoning, Tool Use, and Tool Result content into deterministic Child Host Thread history without persisting another transcript.

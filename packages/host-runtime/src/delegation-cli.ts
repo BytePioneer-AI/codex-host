@@ -1,6 +1,8 @@
+import path from "node:path";
 import type { Writable } from "node:stream";
 
 import { delegationCliHelp, type DelegationCliCommand } from "./delegation-cli-help.js";
+import { parseDelegationArguments, type DelegationCliArguments } from "./delegation-cli-options.js";
 import { compactDelegationOutput } from "./delegation-cli-output.js";
 
 export { DELEGATION_HELP } from "./delegation-cli-help.js";
@@ -16,6 +18,9 @@ import {
 } from "./delegation-types.js";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
+// Node's fetch abandons a request that sends no response headers for 300 s, so
+// longer waits are split into Runtime requests that each answer well before then.
+const MAX_WAIT_REQUEST_MS = 240_000;
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 
@@ -28,9 +33,28 @@ function normalizeThreadId(value: string): string {
   return normalized;
 }
 
+function readThreadReference(value: string): { threadId: string; hostId?: string } {
+  if (!value.startsWith("thread://")) return { threadId: normalizeThreadId(value) };
+  const match = /^thread:\/\/([^/?#]+)(?:\?hostId=([^&#]+))?$/u.exec(value);
+  if (!match?.[1])
+    throw new DelegationControlError("INVALID_ARGUMENT", "Thread reference is invalid");
+  return {
+    threadId: normalizeThreadId(match[1]),
+    ...(match[2] ? { hostId: decodeHostId(match[2]) } : {}),
+  };
+}
+
+function decodeHostId(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new DelegationControlError("INVALID_ARGUMENT", "Thread reference is invalid");
+  }
+}
+
 function positiveInteger(value: string | undefined, name: string, maximum?: number): number {
-  const number = Number(value);
-  if (!value || !Number.isSafeInteger(number) || number <= 0 || (maximum && number > maximum)) {
+  const number = value && /^[0-9]+$/u.test(value) ? Number(value) : Number.NaN;
+  if (!Number.isSafeInteger(number) || number <= 0 || (maximum && number > maximum)) {
     throw new DelegationControlError(
       "INVALID_ARGUMENT",
       `${name} must be a positive integer${maximum ? ` no greater than ${maximum}` : ""}`,
@@ -39,35 +63,17 @@ function positiveInteger(value: string | undefined, name: string, maximum?: numb
   return number;
 }
 
-function options(arguments_: readonly string[]): {
-  positionals: string[];
-  options: Map<string, string>;
-} {
-  const positionals: string[] = [];
-  const parsed = new Map<string, string>();
-  for (let index = 0; index < arguments_.length; index += 1) {
-    const argument = arguments_[index];
-    if (!argument) continue;
-    if (!argument.startsWith("--")) {
-      positionals.push(argument);
-      continue;
-    }
-    if (parsed.has(argument))
-      throw new DelegationControlError("INVALID_ARGUMENT", `${argument} may only be provided once`);
-    const value = arguments_[index + 1];
-    if (!value || value.startsWith("--"))
-      throw new DelegationControlError("INVALID_ARGUMENT", `${argument} requires a value`);
-    parsed.set(argument, value);
-    index += 1;
-  }
-  return { positionals, options: parsed };
-}
-
-function value(parsed: ReturnType<typeof options>, name: string): string | undefined {
+function value(parsed: DelegationCliArguments, name: string): string | undefined {
   return parsed.options.get(name);
 }
 
-function rejectUnknown(parsed: ReturnType<typeof options>, allowed: readonly string[]): void {
+/** Resolve --cwd against the caller's cwd; the Runtime would otherwise resolve it against its own. */
+function cwdOption(parsed: DelegationCliArguments): string | undefined {
+  const cwd = value(parsed, "--cwd");
+  return cwd ? path.resolve(process.cwd(), cwd) : undefined;
+}
+
+function rejectUnknown(parsed: DelegationCliArguments, allowed: readonly string[]): void {
   const known = new Set([...allowed, "--format"]);
   for (const name of parsed.options.keys()) {
     if (!known.has(name))
@@ -110,6 +116,8 @@ async function requestRuntime(input: {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify(input.body),
+      // The Runtime never redirects; following one would resend the request elsewhere.
+      redirect: "error",
     });
   } catch (error) {
     throw new DelegationControlError(
@@ -118,9 +126,24 @@ async function requestRuntime(input: {
       { cause: error instanceof Error ? error.message : String(error) },
     );
   }
-  const body = (await response.json()) as {
-    error?: { code?: unknown; message?: unknown; details?: unknown };
-  };
+  let body: { error?: { code?: unknown; message?: unknown; details?: unknown } };
+  try {
+    const parsed: unknown = await response.json();
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error("Runtime response is not a JSON object");
+    }
+    body = parsed as typeof body;
+  } catch (error) {
+    throw new DelegationControlError(
+      "RUNTIME_UNREACHABLE",
+      `Host Runtime returned an unreadable response (HTTP ${response.status}). Check that ${DELEGATION_RUNTIME_ENDPOINT_ENV} points to the Host Runtime.`,
+      {
+        reason: "invalid_runtime_response",
+        status: response.status,
+        cause: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
   if (!response.ok || body.error) {
     const code = typeof body.error?.code === "string" ? body.error.code : "INTERNAL_ERROR";
     const message =
@@ -132,6 +155,20 @@ async function requestRuntime(input: {
     );
   }
   return body;
+}
+
+/** Waits are non-consuming, so a long wait repeats bounded Runtime waits until its own deadline. */
+async function waitInSlices(
+  body: Record<string, unknown> & { timeoutMs?: number },
+  request: (body: Record<string, unknown>) => Promise<unknown>,
+): Promise<unknown> {
+  const deadline = Date.now() + (body.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS);
+  while (true) {
+    const remaining = Math.max(1, deadline - Date.now());
+    const result = await request({ ...body, timeoutMs: Math.min(remaining, MAX_WAIT_REQUEST_MS) });
+    const timedOut = (result as { timedOut?: unknown } | null)?.timedOut === true;
+    if (!timedOut || deadline - Date.now() <= 0) return result;
+  }
 }
 
 function writeJson(output: Writable, value: unknown): void {
@@ -162,7 +199,7 @@ export async function runDelegationCli(input: {
       output.write(help);
       return 0;
     }
-    const parsed = options(rest);
+    const parsed = parseDelegationArguments(rest);
     const format = value(parsed, "--format") ?? "json";
     if (format !== "json" && format !== "compact") {
       throw new DelegationControlError("INVALID_ARGUMENT", "--format must be json or compact");
@@ -181,12 +218,13 @@ export async function runDelegationCli(input: {
           "harness list accepts no positional arguments",
         );
       }
+      const caller = callerThreadId(environment);
       writeResult(
         "harness list",
         await requestRuntime({
           environment,
           path: "/v1/harness/list",
-          body: {},
+          body: caller ? { parentThreadId: normalizeThreadId(caller) } : {},
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
         }),
       );
@@ -208,6 +246,7 @@ export async function runDelegationCli(input: {
       if (refresh !== undefined && refresh !== "true" && refresh !== "false") {
         throw new DelegationControlError("INVALID_ARGUMENT", "--refresh must be true or false");
       }
+      const caller = callerThreadId(environment);
       writeResult(
         "harness inspect",
         await requestRuntime({
@@ -215,7 +254,8 @@ export async function runDelegationCli(input: {
           path: "/v1/harness/inspect",
           body: {
             harnessId,
-            ...(value(parsed, "--cwd") ? { cwd: value(parsed, "--cwd") } : {}),
+            ...(caller ? { parentThreadId: normalizeThreadId(caller) } : {}),
+            ...(cwdOption(parsed) ? { cwd: cwdOption(parsed) } : {}),
             ...(refresh !== undefined ? { refresh: refresh === "true" } : {}),
           },
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
@@ -227,6 +267,7 @@ export async function runDelegationCli(input: {
       rejectUnknown(parsed, [
         "--harness",
         "--task",
+        "--task-name",
         "--cwd",
         "--model",
         "--thinking",
@@ -261,7 +302,10 @@ export async function runDelegationCli(input: {
           body: {
             harnessId,
             task,
-            ...(value(parsed, "--cwd") ? { cwd: value(parsed, "--cwd") } : {}),
+            ...(value(parsed, "--task-name") !== undefined
+              ? { taskName: value(parsed, "--task-name") }
+              : {}),
+            ...(cwdOption(parsed) ? { cwd: cwdOption(parsed) } : {}),
             ...(value(parsed, "--model") ? { model: { id: value(parsed, "--model") } } : {}),
             ...(value(parsed, "--thinking")
               ? { thinkingOptionId: value(parsed, "--thinking") }
@@ -332,7 +376,13 @@ export async function runDelegationCli(input: {
       return 0;
     }
     if (group === "thread" && (command === "read" || command === "wait")) {
-      rejectUnknown(parsed, ["--view", "--cursor", "--limit", "--timeout-ms"]);
+      rejectUnknown(parsed, [
+        "--view",
+        "--cursor",
+        "--limit",
+        "--timeout-ms",
+        ...(command === "read" ? ["--host"] : []),
+      ]);
       if (parsed.positionals.length !== 1)
         throw new DelegationControlError(
           "INVALID_ARGUMENT",
@@ -354,8 +404,21 @@ export async function runDelegationCli(input: {
       const threadId = parsed.positionals[0];
       if (!threadId)
         throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is required");
+      const reference =
+        command === "read"
+          ? readThreadReference(threadId)
+          : { threadId: normalizeThreadId(threadId) };
+      const hostId = value(parsed, "--host");
+      if (hostId && reference.hostId && hostId !== reference.hostId)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "--host conflicts with the Thread reference",
+        );
+      const caller = command === "read" ? callerThreadId(environment) : undefined;
       const body = {
-        threadId: normalizeThreadId(threadId),
+        ...reference,
+        ...(hostId ? { hostId } : {}),
+        ...(caller ? { callerThreadId: normalizeThreadId(caller) } : {}),
         view,
         ...(value(parsed, "--cursor") ? { cursor: value(parsed, "--cursor") } : {}),
         ...(value(parsed, "--limit")
@@ -369,14 +432,16 @@ export async function runDelegationCli(input: {
             }
           : {}),
       };
-      writeResult(
-        command === "read" ? "thread read" : "thread wait",
-        await requestRuntime({
+      const request = (requestBody: Record<string, unknown>) =>
+        requestRuntime({
           environment,
           path: command === "read" ? "/v1/thread/read" : "/v1/thread/wait",
-          body,
+          body: requestBody,
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
-        }),
+        });
+      writeResult(
+        command === "read" ? "thread read" : "thread wait",
+        command === "read" ? await request(body) : await waitInSlices(body, request),
         view,
       );
       return 0;
@@ -458,7 +523,7 @@ export async function runDelegationCli(input: {
           environment,
           path: "/v1/thread/list",
           body: {
-            cwd: value(parsed, "--cwd") ?? process.cwd(),
+            cwd: cwdOption(parsed) ?? process.cwd(),
             ...(parentThread ? { parentThreadId: normalizeThreadId(parentThread) } : {}),
             limit: value(parsed, "--limit")
               ? positiveInteger(value(parsed, "--limit"), "--limit", MAX_LIMIT)

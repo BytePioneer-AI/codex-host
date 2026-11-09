@@ -19,6 +19,8 @@ import {
   type BackgroundUpdateStatus,
 } from "./status.js";
 
+import { waitForUpdaterReady } from "./updater-ready.js";
+
 const REQUEST_SCHEMA_VERSION = 1;
 const WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 30, 70, 150, 300] as const;
 
@@ -35,6 +37,10 @@ export interface CommonUpdateOptions {
   runtimeDescriptorPath: string;
   updaterExecutable: string;
   stateDirectory: string;
+  /** The independent Host supervisor hands the prepared operation to the Updater. */
+  serviceManaged?: boolean;
+  restartTarget?: "desktop" | "web";
+  dataDirectory?: string;
   onPrepared?(info: PreparedUpdateInfo): void | Promise<void>;
 }
 
@@ -82,7 +88,11 @@ export interface BackgroundUpdateManager {
     options: WindowsInstallerUpdateOptions,
   ): Promise<PreparedBackgroundUpdate>;
   prepareMacOsDmg(options: MacOsDmgUpdateOptions): Promise<PreparedBackgroundUpdate>;
-  start(prepared: PreparedBackgroundUpdate): StartedBackgroundUpdate;
+  /** Resolves only after the Updater validates the owner and is waiting for its exit. */
+  start(
+    prepared: PreparedBackgroundUpdate,
+    transferOwnership?: (updaterPid: number) => Promise<void>,
+  ): Promise<StartedBackgroundUpdate>;
   readStatus(statusPath: string): Promise<BackgroundUpdateStatus | null>;
 }
 
@@ -93,12 +103,16 @@ interface InternalRequest {
   wait_executable: string;
   runtime_descriptor_path: string;
   status_path: string;
+  service_managed?: true;
+  restart_target?: "desktop" | "web";
+  data_directory?: string;
   installation:
     | {
         kind: "npm";
         node_path: string;
         npm_cli_path: string;
         npm_launcher_path: string;
+        npm_package_root: string;
       }
     | {
         kind: "windows-installer";
@@ -123,6 +137,9 @@ interface PreparedCommonUpdate {
   helperPath: string;
   requestPath: string;
   statusPath: string;
+  serviceManaged?: boolean;
+  restartTarget?: "desktop" | "web";
+  dataDirectory?: string;
 }
 
 function errorMessage(error: unknown): string {
@@ -317,6 +334,14 @@ export function createBackgroundUpdateManager(
       "Updater executable",
     );
     const stateDirectory = requireAbsolutePath(options.stateDirectory, "update state directory");
+    const dataDirectory =
+      options.dataDirectory === undefined
+        ? undefined
+        : requireAbsolutePath(options.dataDirectory, "data directory");
+    if (options.restartTarget !== undefined && !["desktop", "web"].includes(options.restartTarget))
+      throw new Error("Invalid update restart target");
+    if ((options.serviceManaged || options.restartTarget === "web") && !dataDirectory)
+      throw new Error("Service updates require a data directory");
     await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
     const workDirectory = path.join(stateDirectory, `update-${version}-${randomId()}`);
     await mkdir(workDirectory, { recursive: false, mode: 0o700 });
@@ -337,6 +362,9 @@ export function createBackgroundUpdateManager(
       helperPath,
       requestPath,
       statusPath,
+      ...(options.serviceManaged ? { serviceManaged: true } : {}),
+      ...(options.restartTarget ? { restartTarget: options.restartTarget } : {}),
+      ...(dataDirectory ? { dataDirectory } : {}),
     };
   }
 
@@ -381,6 +409,9 @@ export function createBackgroundUpdateManager(
       wait_executable: common.launcherExecutable,
       runtime_descriptor_path: common.runtimeDescriptorPath,
       status_path: common.statusPath,
+      ...(common.serviceManaged ? { service_managed: true as const } : {}),
+      ...(common.restartTarget ? { restart_target: common.restartTarget } : {}),
+      ...(common.dataDirectory ? { data_directory: common.dataDirectory } : {}),
       installation,
     };
     await writePrivateJson(common.requestPath, request);
@@ -411,6 +442,7 @@ export function createBackgroundUpdateManager(
             options.npmLauncherPath,
             "npm codexhost launcher",
           ),
+          npm_package_root: requireAbsolutePath(options.packageRoot, "npm platform package root"),
         });
       } catch (error) {
         await writeFailedStatus(common.statusPath, common.version, "npm", error);
@@ -461,16 +493,37 @@ export function createBackgroundUpdateManager(
       );
     },
 
-    start(prepared: PreparedBackgroundUpdate): StartedBackgroundUpdate {
+    async start(
+      prepared: PreparedBackgroundUpdate,
+      transferOwnership?: (updaterPid: number) => Promise<void>,
+    ): Promise<StartedBackgroundUpdate> {
       if (!preparedRequests.delete(prepared.requestPath)) {
         throw new Error(
           "background update was not prepared by this manager or was already started",
         );
       }
-      const child = spawnUpdater(prepared.helperPath, prepared.requestPath);
-      if (child.pid === undefined)
-        throw new Error("background Updater did not report a process ID");
-      return Object.freeze({ ...prepared, updaterPid: child.pid });
+      try {
+        const child = spawnUpdater(prepared.helperPath, prepared.requestPath);
+        await waitForUpdaterReady(
+          child,
+          () => this.readStatus(prepared.statusPath),
+          undefined,
+          async () => {
+            if (child.pid === undefined)
+              throw new Error("background Updater did not report a process ID");
+            await transferOwnership?.(child.pid);
+          },
+        );
+        return Object.freeze({ ...prepared, updaterPid: child.pid as number });
+      } catch (error) {
+        await writeFailedStatus(
+          prepared.statusPath,
+          prepared.version,
+          prepared.installation,
+          error,
+        );
+        throw error;
+      }
     },
 
     async readStatus(statusPathValue: string): Promise<BackgroundUpdateStatus | null> {

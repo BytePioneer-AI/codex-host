@@ -51,22 +51,18 @@
 
 ## Repository Skills
 
-Use the applicable repository-local skills below when their task occurs; all ten support contextual invocation. Read the selected `SKILL.md` before using its workflow. Select by task rather than loading or executing every skill on every change. These guides supplement the ownership, scope, and validation rules in this file; copied examples do not establish installed tools or product capabilities.
+Use the applicable repository-local skills below when their task occurs; they support contextual invocation. Read the selected `SKILL.md` before using its workflow. Select by task rather than loading or executing every skill on every change. These guides supplement the ownership, scope, and validation rules in this file; copied examples do not establish installed tools or product capabilities.
 
 | Task | Skill |
 | --- | --- |
-| Production code changes and dependency boundaries | [architecture-governance](.agents/skills/architecture-governance/SKILL.md) |
-| Feature impact analysis, state ownership and implementation planning | [feature-boundary-planner](.agents/skills/feature-boundary-planner/SKILL.md) |
-| Export changes, reference tracing and code deletion | [dep-refs](.agents/skills/dep-refs/SKILL.md) |
-| React implementation and performance review | [react-best-practices](.agents/skills/react-best-practices/SKILL.md) |
-| AI chat components and conversation UI | [ai-elements](.agents/skills/ai-elements/SKILL.md) |
-| Browser interaction using the session's available tools | [control-browser](.agents/skills/control-browser/SKILL.md) |
-| Browser automation through the agent-browser CLI | [agent-browser](.agents/skills/agent-browser/SKILL.md) |
-| Electron application interaction and testing | [electron](.agents/skills/electron/SKILL.md) |
-| Exploratory application testing and issue reports | [dogfood](.agents/skills/dogfood/SKILL.md) |
-| GUI behavior and visual verification | [web-gui-tester](.agents/skills/web-gui-tester/SKILL.md) |
+| Version releases, Release Notes, preview channels, and release recovery | [codexhost-release](.agents/skills/codexhost-release/SKILL.md) |
+| Overview table of a batch of PRs with a 1–5 recommendation score | [codexhost-pr-overview](.agents/skills/codexhost-pr-overview/SKILL.md) |
+| Reviewing a PR or local diff for correctness and boundaries | [codexhost-code-review](.agents/skills/codexhost-code-review/SKILL.md) |
+| Selecting local checks before pushing or claiming checks pass | [codexhost-pre-push-checks](.agents/skills/codexhost-pre-push-checks/SKILL.md) |
+| Finding evidence-backed simplification candidates (read-only audit) | [codexhost-find-simplifications](.agents/skills/codexhost-find-simplifications/SKILL.md) |
+| Auditing comments and docs for reasoning-transcript leakage | [codexhost-trim-cot-leakage](.agents/skills/codexhost-trim-cot-leakage/SKILL.md) |
 
-Existing Harness integration and Desktop update audit skills remain applicable to their specialized tasks. Imported skill provenance and license information is in [.agents/skills/NOTICE.md](.agents/skills/NOTICE.md).
+Existing Harness integration and Desktop update audit skills remain applicable to their specialized tasks.
 
 ## Implementation Principles
 
@@ -87,7 +83,8 @@ Existing Harness integration and Desktop update audit skills remain applicable t
 ## Testing & Completion
 
 - Choose build and validation commands from `package.json`, not a copied command catalog. For focused tests, use the repository configuration in `tests/vitest.config.js` or `tests/e2e/playwright.config.js`, and the owning `Cargo.toml` for Rust test features.
-- To build and launch from source, run `npm start` at the repository root; `npm start -- --no-build` reuses existing artifacts. On macOS/Windows this stops running Codex Desktop processes before launch. Use it when launching is intended, not as a routine validation command; implementation is in `tools/dev-desktop/run.mjs`.
+- To build and launch from source, run `npm start` at the repository root for Desktop or `npm start web` for Web; both restart the corresponding interface after building, reusing an unchanged shared Host. A changed Host restarts automatically only when the other interface is closed; otherwise a post-build prompt defaults to keeping Host (non-interactive runs keep it and warn). `--restart-host` / `--keep-host` override this choice; no running Host is left to the interface's `host ensure`. `--no-build` reuses existing artifacts and applies the same Host decision. Restarting Host interrupts its tasks. `npm start web` rebuilds Web UI sources on edit and swaps them into open pages by default; `--no-watch` disables this, while explicit `--watch` remains supported. `--no-build` does not disable watching. On macOS/Windows the Desktop command stops running Codex Desktop processes before launch. Use it when launching is intended, not as a routine validation command; implementation is in `tools/dev-desktop/run.mjs`.
+- `npm stop` stops the current user's identifiable local codexhost services across worktrees (Web/watchers, managed Desktop, shared Hosts and Console), interrupting tasks and Web terminals without deleting data. It signals verified service processes and waits for native supervisors to finish cleanup, without using the invoking checkout's build. Run only when stopping is intended, from a separate terminal; never use it as routine validation or from a Host-owned task. Implementation: `tools/dev-desktop/stop.mjs`.
 - Small, low-risk changes do not require tests. For high-risk or cross-package changes, or when explicitly requested, add focused tests for changed behavior and boundary conditions; do not run full test suites by default.
 - Do not claim a check passed unless it was executed. Report skipped or blocked checks and the reason.
 - A change is complete only when implementation, contracts, tests, and affected documentation agree.

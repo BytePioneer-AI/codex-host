@@ -72,6 +72,17 @@ export class ExternalThreadIdleRelease {
     if (state) state.outputFailed = true;
   }
 
+  /** After a successful Session revival, allow idle release again. */
+  clearOutputFailed(thread: ExternalThread): void {
+    const state = this.#activity.get(thread);
+    if (state) {
+      state.outputFailed = false;
+      state.lastActivity = Date.now();
+    } else {
+      this.touch(thread);
+    }
+  }
+
   failure(thread: ExternalThread): string | undefined {
     return this.#activity.get(thread)?.closeFailed ? CLOSE_FAILURE : undefined;
   }

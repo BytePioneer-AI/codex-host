@@ -12,11 +12,7 @@ export type {
   SetCodexLocaleOverrideOptions,
 } from "./codex-locale-adapter.js";
 
-export {
-  DEFAULT_RENDERER_AGENTS,
-  DraftAgentController,
-  KNOWN_RENDERER_AGENTS,
-} from "./agent-selection-state.js";
+export { DEFAULT_RENDERER_AGENTS, DraftAgentController } from "./agent-selection-state.js";
 export type {
   ComposerAgentPhase,
   DraftAgentControllerOptions,

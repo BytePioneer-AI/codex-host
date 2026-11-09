@@ -8,6 +8,7 @@ import type {
   HostThreadSnapshot,
   HostTurnSnapshot,
 } from "@codexhost/harness-adapter";
+import { rewriteLocalMediaMarkdown } from "@codexhost/harness-adapter/local-media-markdown";
 import {
   hostItemIdSchema,
   nativeCheckpointRefSchema,
@@ -18,7 +19,7 @@ import {
 
 import type { GrokTransportEvent } from "./acp-transport.js";
 import { projectGrokFileChanges } from "./grok-file-change.js";
-import { grokMediaResolveRoots, rewriteLocalMediaMarkdown } from "./local-media-markdown.js";
+import { grokMediaResolveRoots } from "./local-media-markdown.js";
 import {
   grokNativeSubagentId,
   grokSubagentBackground,

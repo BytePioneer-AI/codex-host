@@ -34,6 +34,8 @@ pub(crate) fn forwarded(
 /// Electron's app-level userData override does not redirect Chromium's early
 /// session storage by itself. Match the official Desktop's isolated launch:
 /// provide the same explicit profile as a Chromium argument as well.
+/// On Linux Wayland sessions, enable the native Ozone platform and Wayland text-input
+/// flags so IME candidate windows render with transparent visuals instead of opaque borders.
 pub(crate) fn launch_arguments(
     base: &[OsString],
     environment: &[(OsString, OsString)],
@@ -46,7 +48,43 @@ pub(crate) fn launch_arguments(
         argument.push(directory);
         arguments.push(argument);
     }
+    #[cfg(target_os = "linux")]
+    append_linux_wayland_arguments(&mut arguments, environment);
     arguments
+}
+
+#[cfg(target_os = "linux")]
+fn append_linux_wayland_arguments(
+    arguments: &mut Vec<OsString>,
+    environment: &[(OsString, OsString)],
+) {
+    if arguments
+        .iter()
+        .any(|arg| arg.to_string_lossy().starts_with("--ozone-platform"))
+    {
+        return;
+    }
+    if environment.iter().any(|(name, value)| {
+        name == "CODEXHOST_DISABLE_WAYLAND" && (value == "1" || value == "true")
+    }) {
+        return;
+    }
+    let is_wayland = environment.iter().any(|(name, value)| {
+        (name == "WAYLAND_DISPLAY" && !value.is_empty())
+            || (name == "XDG_SESSION_TYPE" && value == "wayland")
+    });
+    if is_wayland {
+        arguments.push(OsString::from("--ozone-platform=wayland"));
+        if !arguments.iter().any(|arg| arg == "--enable-wayland-ime") {
+            arguments.push(OsString::from("--enable-wayland-ime"));
+        }
+        if !arguments.iter().any(|arg| {
+            arg.to_string_lossy()
+                .starts_with("--wayland-text-input-version")
+        }) {
+            arguments.push(OsString::from("--wayland-text-input-version=3"));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -114,5 +152,55 @@ mod tests {
             ])
             .is_empty()
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn appends_wayland_and_ime_flags_in_wayland_session() {
+        let base = [OsString::from("--remote-debugging-port=12345")];
+        let environment = [(
+            OsString::from("WAYLAND_DISPLAY"),
+            OsString::from("wayland-0"),
+        )];
+        assert_eq!(
+            launch_arguments(&base, &environment),
+            [
+                base[0].clone(),
+                OsString::from("--ozone-platform=wayland"),
+                OsString::from("--enable-wayland-ime"),
+                OsString::from("--wayland-text-input-version=3"),
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn respects_explicit_ozone_platform_override() {
+        let base = [
+            OsString::from("--remote-debugging-port=12345"),
+            OsString::from("--ozone-platform=x11"),
+        ];
+        let environment = [(
+            OsString::from("WAYLAND_DISPLAY"),
+            OsString::from("wayland-0"),
+        )];
+        assert_eq!(launch_arguments(&base, &environment), base);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn respects_wayland_disable_flag() {
+        let base = [OsString::from("--remote-debugging-port=12345")];
+        let environment = [
+            (
+                OsString::from("WAYLAND_DISPLAY"),
+                OsString::from("wayland-0"),
+            ),
+            (
+                OsString::from("CODEXHOST_DISABLE_WAYLAND"),
+                OsString::from("1"),
+            ),
+        ];
+        assert_eq!(launch_arguments(&base, &environment), base);
     }
 }

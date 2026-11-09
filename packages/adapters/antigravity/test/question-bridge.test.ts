@@ -163,6 +163,58 @@ describe("Antigravity question Hook bridge", () => {
     await expect(access(bridge.directory)).rejects.toThrow();
   });
 
+  it("keeps a caller's directory for the next Turn and gives that Turn its own credential", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-kept-"));
+    const directory = path.join(root, "hooks", "thread-kept");
+    const create = async () => {
+      const outputs: HarnessOutput[] = [];
+      const bridge = await AntigravityQuestionBridge.create({
+        directory,
+        turnId: hostTurnIdSchema.parse("turn-test"),
+        nativeSessionId: () => input.conversationId,
+        schedule: (action) => action(),
+        emit: (output) => outputs.push(output),
+      });
+      return { bridge, outputs };
+    };
+    try {
+      const first = await create();
+      expect(first.bridge.directory).toBe(directory);
+      await first.bridge.dispose();
+      await expect(access(path.join(directory, ".agents", "hooks.json"))).resolves.toBeUndefined();
+
+      const second = await create();
+      try {
+        const url = second.bridge.environment.CODEXHOST_AGY_QUESTION_URL;
+        if (!url) throw new Error("Bridge did not publish its URL");
+        const stale = await fetch(url, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${first.bridge.environment.CODEXHOST_AGY_QUESTION_TOKEN}`,
+          },
+          body: JSON.stringify(input),
+        });
+        expect(stale.status).toBe(403);
+        await stale.text();
+        const done = runHook(second.bridge);
+        const interaction = await question(second.outputs);
+        expect(
+          second.bridge.respond({
+            type: "interaction.respond",
+            interactionId: interaction.interactionId,
+            response: { type: "question", answers: { q1: ["Beta"] } },
+          }).ok,
+        ).toBe(true);
+        expect(JSON.parse((await done).stdout).reason).toContain('"answers":["Beta"]');
+      } finally {
+        await second.bridge.dispose();
+      }
+      await expect(access(path.join(directory, "question-hook.cjs"))).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   it.each(["cancelled", "expired", "turn-ended"] as const)(
     "closes %s questions without inventing an answer",
     async (mode) => {

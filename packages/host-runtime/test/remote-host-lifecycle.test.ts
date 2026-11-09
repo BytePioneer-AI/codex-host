@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import net, { type AddressInfo } from "node:net";
 import path from "node:path";
+import { PassThrough } from "node:stream";
+import { runRemoteHostCli } from "../src/remote-host-cli.js";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
@@ -251,17 +253,103 @@ describe("remote Host lifecycle", () => {
     );
   });
 
-  it("refuses to stop a stock listener", async () => {
+  it.skipIf(process.platform === "win32").each(["running", "stopped"] as const)(
+    "CLI stop uses the installed manifest without --shim (%s)",
+    async (state) => {
+      const terminate = vi.fn();
+      const inspect = vi.fn().mockResolvedValue(readyInstallation);
+      restore = setRemoteHostLifecycleDependenciesForTest({
+        inspectInstallation: inspect,
+        probeProtocol: vi.fn().mockResolvedValue(runtime(state, "codexhost")),
+        runTerminator: terminate,
+        socketExists: vi.fn().mockResolvedValue(false),
+      });
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      expect(
+        await runRemoteHostCli({
+          arguments: ["stop"],
+          environment: { HOME: home },
+          output: stdout,
+          diagnosticOutput: stderr,
+        }),
+      ).toBe(0);
+      expect(JSON.parse(stdout.read().toString())).toEqual({
+        state: "stopped",
+        changed: state === "running",
+        socketPath,
+      });
+      expect(stderr.read()).toBeNull();
+      expect(inspect).toHaveBeenCalledWith({ environment: { HOME: home } });
+      expect(terminate).toHaveBeenCalledTimes(state === "running" ? 1 : 0);
+    },
+  );
+
+  it("allows stopping an outdated installation but still refuses to start it", async () => {
     const terminate = vi.fn();
+    const probe = vi.fn().mockResolvedValue(runtime("running", "codexhost"));
+    const launch = vi.fn();
     restore = setRemoteHostLifecycleDependenciesForTest({
-      inspectInstallation: vi.fn().mockResolvedValue(readyInstallation),
-      probeProtocol: vi.fn().mockResolvedValue(runtime("conflict", "stock-codex")),
+      inspectInstallation: vi.fn().mockResolvedValue({
+        ...readyInstallation,
+        state: "degraded",
+        issues: ["shell profile does not configure the managed native entrypoint"],
+      }),
+      probeProtocol: probe,
+      runTerminator: terminate,
+      socketExists: vi.fn().mockResolvedValue(false),
+      launch,
+    });
+    const options = { platform: "linux" as const, environment: { HOME: home } };
+
+    await expect(startRemoteHost(options)).rejects.toThrow("installation is degraded");
+    expect(probe).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+    await expect(stopRemoteHost(options)).resolves.toEqual({
+      state: "stopped",
+      changed: true,
+      socketPath,
+    });
+    expect(terminate).toHaveBeenCalledWith(
+      expect.objectContaining(manifest),
+      socketPath,
+      "managed",
+      options.environment,
+    );
+  });
+
+  it("preserves native ownership verification when stopping a degraded installation", async () => {
+    const terminate = vi.fn().mockRejectedValue(new Error("socket owner does not match"));
+    restore = setRemoteHostLifecycleDependenciesForTest({
+      inspectInstallation: vi.fn().mockResolvedValue({
+        ...readyInstallation,
+        state: "degraded",
+        issues: ["shell profile does not configure the managed native entrypoint"],
+      }),
+      probeProtocol: vi.fn().mockResolvedValue(runtime("running", "codexhost")),
       runTerminator: terminate,
     });
 
     await expect(
       stopRemoteHost({ platform: "linux", environment: { HOME: home } }),
-    ).rejects.toThrow("not owned by codexhost");
-    expect(terminate).not.toHaveBeenCalled();
+    ).rejects.toThrow("socket owner does not match");
+    expect(terminate).toHaveBeenCalledOnce();
   });
+
+  it.each(["ready", "degraded"])(
+    "refuses to stop a stock listener (%s installation)",
+    async (state) => {
+      const terminate = vi.fn();
+      restore = setRemoteHostLifecycleDependenciesForTest({
+        inspectInstallation: vi.fn().mockResolvedValue({ ...readyInstallation, state }),
+        probeProtocol: vi.fn().mockResolvedValue(runtime("conflict", "stock-codex")),
+        runTerminator: terminate,
+      });
+
+      await expect(
+        stopRemoteHost({ platform: "linux", environment: { HOME: home } }),
+      ).rejects.toThrow("not owned by codexhost");
+      expect(terminate).not.toHaveBeenCalled();
+    },
+  );
 });

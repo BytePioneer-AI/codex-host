@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   formatRendererContextSummary,
+  formatRendererCacheHitRate,
+  formatRendererCost,
   formatRendererCredits,
+  formatRendererLatency,
   formatRendererPlanReset,
   formatRendererPlanWindow,
   formatRendererTokenCount,
@@ -12,6 +15,17 @@ import {
 } from "../src/renderer-usage-control.js";
 
 describe("Renderer Usage localization", () => {
+  it("labels API average speed without calling it generation TPS", () => {
+    expect(rendererUsageHasDisplayData({ apiOutputTokensPerSecond: 82.4 })).toBe(true);
+    expect(rendererUsageMessages("zh-CN")).toMatchObject({
+      apiOutputSpeed: "API 平均速度",
+      apiOutputSpeedDescription: expect.stringContaining("含首字等待"),
+    });
+    expect(rendererUsageMessages("en")).toMatchObject({
+      apiOutputSpeed: "API average speed",
+      apiOutputSpeedDescription: expect.stringContaining("including first-token wait"),
+    });
+  });
   it("shows credit-only and context-only data without dollar conversion", () => {
     expect(rendererUsageHasDisplayData({ totalCredits: 0.05 })).toBe(true);
     expect(rendererUsageHasDisplayData({ contextUsagePercent: 9.5 })).toBe(true);
@@ -24,27 +38,27 @@ describe("Renderer Usage localization", () => {
     expect(rendererUsageMessages("zh-CN")).toMatchObject({
       usage: "用量",
       context: "上下文",
-      latestCacheHit: "最近缓存命中率",
+      latestCacheHit: "最近缓存命中（CH）",
       inputOutput: "输入 / 输出",
-      sessionCostEstimate: "会话费用估算",
+      sessionCostEstimate: "费用估算",
     });
-    expect(formatRendererTokenRate(42.5, "zh-CN")).toBe("42.5 Token/秒");
+    expect(formatRendererTokenRate(42.5, "zh-CN")).toBe("42.5 tok/s");
     expect(rendererUsageMessages("en")).toMatchObject({
       usage: "Usage",
       context: "Context",
-      latestCacheHit: "Latest cache hit",
+      latestCacheHit: "Latest cache hit (CH)",
       inputOutput: "Input / output",
-      sessionCostEstimate: "Session cost estimate",
+      sessionCostEstimate: "Cost estimate",
     });
     expect(formatRendererTokenRate(42.5, "en")).toBe("42.5 tok/s");
   });
 });
 
 describe("Renderer Usage token-count formatting", () => {
-  it("switches units at the exact k, M, and B thresholds", () => {
+  it("switches units at the exact K, M, and B thresholds", () => {
     expect(formatRendererTokenCount(999)).toBe("999");
-    expect(formatRendererTokenCount(1_000)).toBe("1k");
-    expect(formatRendererTokenCount(999_999)).toBe("1000k");
+    expect(formatRendererTokenCount(1_000)).toBe("1K");
+    expect(formatRendererTokenCount(999_999)).toBe("1000K");
     expect(formatRendererTokenCount(1_000_000)).toBe("1M");
     expect(formatRendererTokenCount(162_108_400)).toBe("162.1M");
     expect(formatRendererTokenCount(999_999_999)).toBe("1000M");
@@ -55,7 +69,7 @@ describe("Renderer Usage token-count formatting", () => {
 
 describe("Renderer Usage context-summary formatting", () => {
   it("shows the used percentage and the context window", () => {
-    expect(formatRendererContextSummary(15_000, 934_500)).toBe("1.6% / 934.5k");
+    expect(formatRendererContextSummary(15_000, 934_500)).toBe("1.6% / 934.5K");
   });
 });
 
@@ -92,5 +106,35 @@ describe("Renderer Usage native Codex snapshots", () => {
       }),
     ).toBe(true);
     expect(rendererUsageHasDisplayData(null)).toBe(false);
+  });
+});
+
+describe("Renderer Usage Host metering", () => {
+  it("shows session cache rate and time to first output on their own", () => {
+    expect(rendererUsageHasDisplayData({ sessionCacheHitRatePercent: 40 })).toBe(true);
+    expect(rendererUsageHasDisplayData({ timeToFirstOutputMs: 900 })).toBe(true);
+  });
+  it("formats latency in ms below one second and seconds above", () => {
+    expect(formatRendererLatency(840)).toBe("840ms");
+    expect(formatRendererLatency(1_250)).toBe("1.3s");
+    expect(formatRendererLatency(2_000, "zh-CN")).toBe("2 秒");
+    expect(formatRendererLatency(840, "zh-CN")).toBe("840 毫秒");
+  });
+  it("labels the Host-metered rows in Chinese", () => {
+    expect(rendererUsageMessages("zh-CN")).toMatchObject({
+      sessionCacheHit: "平均缓存命中",
+      timeToFirstOutput: "首 token（TTFT）",
+      outputSpeed: "输出速度（TPS）",
+    });
+  });
+});
+
+describe("Renderer Usage compact formats", () => {
+  it("rounds fast rates and keeps cents above one dollar", () => {
+    expect(formatRendererTokenRate(232.4)).toBe("232 tok/s");
+    expect(formatRendererTokenRate(9.14)).toBe("9.1 tok/s");
+    expect(formatRendererCost(12.232)).toBe("$12.23");
+    expect(formatRendererCost(0.217)).toBe("$0.217");
+    expect(formatRendererCacheHitRate(96.54)).toBe("96.5%");
   });
 });

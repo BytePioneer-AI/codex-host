@@ -9,6 +9,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   RENDERER_NEW_THREAD_PREFERENCE_KEY,
+  rendererNewThreadPreferenceStorage,
+  readNewThreadAgentPreference,
+  writeNewThreadAgentPreference,
   readNewThreadExternalConfigurationPreference,
   writeNewThreadExternalConfigurationPreference,
 } from "../src/renderer-new-thread-preference.js";
@@ -46,6 +49,20 @@ const permissionModes = harnessPermissionModeCatalogSchema.parse({
 });
 
 describe("Renderer new-Thread external configuration preference", () => {
+  it("keeps explicit legacy storage readable for migration", () => {
+    const storage = memoryStorage();
+    writeNewThreadAgentPreference("third-party", storage);
+    writeNewThreadExternalConfigurationPreference(
+      "third-party",
+      model,
+      undefined,
+      undefined,
+      storage,
+    );
+    expect(storage.values.has(RENDERER_NEW_THREAD_PREFERENCE_KEY)).toBe(true);
+    expect(readNewThreadAgentPreference(undefined, storage)).toBe("third-party");
+    expect(rendererNewThreadPreferenceStorage(null)).toBeNull();
+  });
   it("restores Model and Thinking but keeps Fast off for a new Thread", () => {
     const storage = memoryStorage();
     const fast = harnessModelRefSchema.parse({ id: "priority" });

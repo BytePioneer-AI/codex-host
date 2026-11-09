@@ -24,6 +24,7 @@ import type {
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
 
+import { projectCodexQuestionRequest } from "@codexhost/protocol-core";
 import { KimiSession } from "../src/kimi-session.js";
 import { createKimiNativeTurnRef } from "../src/history.js";
 import type { KimiAcpTransportLike } from "../src/kimi-adapter.js";
@@ -678,6 +679,46 @@ describe("KimiSession", () => {
       await rm(home, { recursive: true, force: true });
     });
 
+    it("rejects turn.steer and still rejects a second turn.start as sessionBusy", async () => {
+      const transport = new MockKimiTransport();
+      transport.promptMock = vi.fn(() => new Promise(() => {}));
+      const session = new KimiSession({
+        transport,
+        sessionId: "session-steer",
+        cwd: "D:/project",
+        initialState: {},
+      });
+      const turnId = hostTurnIdSchema.parse("turn-steer");
+      expect(session.capabilities.steer).toBeUndefined();
+      expect(
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "Task 1" }],
+        }),
+      ).toMatchObject({ ok: true });
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "insert" }],
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: { code: "unsupported", message: expect.stringContaining("cannot steer") },
+      });
+      expect(
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-steer-next"),
+          input: [{ type: "text", text: "Task 2" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+      await vi.waitFor(() => {
+        expect(transport.promptMock).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it("rejects concurrent turn start with sessionBusy", async () => {
       const transport = new MockKimiTransport();
       transport.promptMock = vi.fn(
@@ -881,11 +922,25 @@ describe("KimiSession", () => {
         return { stopReason: "end_turn" };
       });
 
+      let snapshotReads = 0;
       const session = new KimiSession({
         transport,
         sessionId: "session-write",
         cwd: "D:/project",
         initialState: {},
+        readNativeSnapshot: async () => ({
+          turns:
+            snapshotReads++ === 0
+              ? []
+              : [
+                  {
+                    nativeTurnRef: createKimiNativeTurnRef("session-write", 0),
+                    input: [{ type: "text", text: "Create note.txt" }],
+                    items: [],
+                    outcome: { status: "succeeded" },
+                  },
+                ],
+        }),
       });
 
       const turnId = hostTurnIdSchema.parse("turn-write-1");
@@ -900,6 +955,11 @@ describe("KimiSession", () => {
         outputs.push(out);
         if (out.kind === "event" && out.event.type === "turn.completed") break;
       }
+
+      expect(outputs.at(-1)).toMatchObject({
+        kind: "event",
+        event: { type: "turn.completed", outcome: { status: "succeeded" } },
+      });
 
       // 1. Reasoning item was started and completed before tool
       const reasoningCompleted = outputs.find(
@@ -1065,6 +1125,104 @@ describe("KimiSession", () => {
       });
     });
 
+    it.each([
+      "plan_approve",
+      "plan_opt_0",
+      "plan_opt_1",
+      "plan_revise",
+      "plan_reject_and_exit",
+      "cancel",
+      "close",
+    ])("bridges plan review through native Codex choices: %s", async (selection) => {
+      const transport = new MockKimiTransport();
+      let nativeResponse: RequestPermissionResponse | undefined;
+      const options: RequestPermissionRequest["options"] = [
+        ...(selection === "plan_approve"
+          ? [{ optionId: "plan_approve", name: "Approve", kind: "allow_once" as const }]
+          : [
+              { optionId: "plan_opt_0", name: "Implement A", kind: "allow_once" as const },
+              { optionId: "plan_opt_1", name: "Implement B", kind: "allow_once" as const },
+            ]),
+        { optionId: "plan_revise", name: "Revise", kind: "reject_once" },
+        { optionId: "plan_reject_and_exit", name: "Reject and Exit", kind: "reject_once" },
+      ];
+      transport.promptMock = vi.fn(async (_text, handler) => {
+        nativeResponse = await handler.onPermission({
+          sessionId: "session-plan",
+          toolCall: {
+            toolCallId: "1:exit-plan",
+            title: "ExitPlanMode",
+            content: [{ type: "content", content: { type: "text", text: "Review the plan" } }],
+          },
+          options,
+        });
+        return { stopReason: "end_turn" };
+      });
+      const session = new KimiSession({
+        transport,
+        sessionId: "session-plan",
+        cwd: process.cwd(),
+        initialState: {},
+      });
+      try {
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("plan-turn"),
+          input: [{ type: "text", text: "Review plan" }],
+        });
+        let question: HostQuestionInteraction | undefined;
+        for await (const output of session.outputs) {
+          if (output.kind === "interaction" && output.interaction.type === "question") {
+            question = output.interaction;
+            break;
+          }
+        }
+        expect(question).toBeDefined();
+        if (!question) throw new Error("Missing plan question");
+        const projected = projectCodexQuestionRequest({
+          threadId: "thread-plan",
+          itemId: "plan-item",
+          interaction: question,
+        });
+        expect(projected.request.method).toBe("item/tool/requestUserInput");
+        expect(question.questions[0]).toMatchObject({
+          prompt: "Review the plan",
+          multiple: false,
+          allowOther: false,
+          options: options.map(({ optionId, name }) => ({ value: optionId, label: name })),
+        });
+        const invalid = await session.execute({
+          type: "interaction.respond",
+          interactionId: question.interactionId,
+          response: { type: "question", answers: { planApproval: ["unknown"] } },
+        });
+        expect(invalid).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+        expect(nativeResponse).toBeUndefined();
+        if (selection === "close") await session.close();
+        else {
+          const label = options.find(({ optionId }) => optionId === selection)?.name;
+          const response = projected.parseResponse({
+            answers: selection === "cancel" ? {} : { planApproval: { answers: [label] } },
+          });
+          expect(
+            await session.execute({
+              type: "interaction.respond",
+              interactionId: question.interactionId,
+              response,
+            }),
+          ).toMatchObject({ ok: true });
+        }
+        expect(nativeResponse).toEqual({
+          outcome:
+            selection === "cancel" || selection === "close"
+              ? { outcome: "cancelled" }
+              : { outcome: "selected", optionId: selection },
+        });
+      } finally {
+        await session.close();
+      }
+    });
+
     it("bridges Elicitation (Question) interaction with single and multi choice", async () => {
       const transport = new MockKimiTransport();
       let elicitationResolvedWith: CreateElicitationResponse | null = null;
@@ -1182,11 +1340,25 @@ describe("KimiSession", () => {
         return { stopReason: "end_turn" };
       });
 
+      let snapshotReads = 0;
       const session = new KimiSession({
         transport,
         sessionId: "session-elic-fold",
         cwd: "D:/project",
         initialState: {},
+        readNativeSnapshot: async () => ({
+          turns:
+            snapshotReads++ === 0
+              ? []
+              : [
+                  {
+                    nativeTurnRef: createKimiNativeTurnRef("session-elic-fold", 0),
+                    input: [{ type: "text", text: "Test question tool" }],
+                    items: [],
+                    outcome: { status: "succeeded" },
+                  },
+                ],
+        }),
       });
 
       const turnId = hostTurnIdSchema.parse("turn-elic-fold-1");
@@ -1214,6 +1386,11 @@ describe("KimiSession", () => {
         }
         if (out.kind === "event" && out.event.type === "turn.completed") break;
       }
+
+      expect(outputs.at(-1)).toMatchObject({
+        kind: "event",
+        event: { type: "turn.completed", outcome: { status: "succeeded" } },
+      });
 
       // Verify reasoning item was emitted BEFORE interaction
       const reasoningCompleted = outputs.find(

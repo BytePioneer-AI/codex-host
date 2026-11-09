@@ -1,3 +1,4 @@
+import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import type {
@@ -16,6 +17,7 @@ import type {
   HostUsage,
   TurnOutcome,
 } from "@codexhost/harness-adapter";
+import { rewriteLocalMediaMarkdown } from "@codexhost/harness-adapter/local-media-markdown";
 import {
   harnessIdSchema,
   hostItemIdSchema,
@@ -97,6 +99,8 @@ const KNOWN_EVENT_TYPES = new Set([
   "hook/invoked",
   "hook/result",
   "image/offload",
+  "job/registered",
+  "job/settled",
   "llm/retry",
   "llm/retry-started",
   "model/selection",
@@ -133,6 +137,7 @@ const KNOWN_EVENT_TYPES = new Set([
   "turn/start",
   "user/message",
   "web/deepseek-search-llm-request",
+  "working-directory/change",
   "workspace/changes",
 ]);
 
@@ -325,6 +330,14 @@ export class ModernEventValidator {
         validateImageOffload(data, trace);
         return;
       case "workspace/changes":
+        return;
+      case "working-directory/change":
+        exactKeys(data, ["cwd"]);
+        requiredString(data.cwd, "working-directory/change cwd");
+        return;
+      case "job/registered":
+      case "job/settled":
+        validateJobLifecycle(event.type, data);
         return;
       case "agent-preset/selected":
         exactKeys(data, ["agentPreset"]);
@@ -770,6 +783,16 @@ export interface ProjectModernHistoryInput {
   readonly toolOutputLimit?: number;
   readonly maxEvents?: number;
   readonly profile?: DeepSeekModernProfile;
+  /**
+   * Session working directory from the journal header. Relative media paths in agent messages
+   * resolve against it when {@link media} is on.
+   */
+  readonly cwd?: string;
+  /**
+   * Rewrite local media in agent messages exactly as live output does, so a reloaded Thread
+   * shows the same images. Defaults to on when `cwd` is given.
+   */
+  readonly media?: boolean;
 }
 
 /** Strictly validate and project one complete authoritative Modern journal prefix. */
@@ -789,6 +812,8 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
   let effectiveThinkingOptionId = input.fallbackThinkingOptionId;
   let contextWindowTokens: number | undefined;
   let usage: HostUsage | null = null;
+  let workingDirectory = input.cwd;
+  const media = input.media ?? input.cwd !== undefined;
   const rawUsageByStep = new Map<string, unknown>();
 
   const rebuildUsage = (): void => {
@@ -809,6 +834,7 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
     validator.accept(event);
     if (!KNOWN_EVENT_TYPES.has(event.type) || !isRecord(event.data)) continue;
     const data = event.data;
+    workingDirectory = modernWorkingDirectory(workingDirectory, event);
     switch (event.type) {
       case "turn/start":
         active = {
@@ -856,7 +882,14 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
       case "assistant/message":
         if (event.surfaceOp === "append") {
           recordSettlementUsage(data, event.seq);
-          if (active) projectAssistantMessage(active, input.sessionId, data);
+          if (active) {
+            projectAssistantMessage(
+              active,
+              input.sessionId,
+              data,
+              media ? modernMediaRoots(workingDirectory, input.cwd) : undefined,
+            );
+          }
         }
         break;
       case "compaction/start":
@@ -991,10 +1024,40 @@ export function modernItemId(sessionId: string, key: string): HostItemId {
   return hostItemIdSchema.parse(`dsh-modern:${sessionId}:${key}`);
 }
 
+/** Working directory after `event`; DSH records each change its `working_directory` tool makes. */
+export function modernWorkingDirectory(
+  current: string | undefined,
+  event: ModernJournalEvent,
+): string | undefined {
+  if (
+    event.type !== "working-directory/change" ||
+    !isRecord(event.data) ||
+    typeof event.data.cwd !== "string"
+  ) {
+    return current;
+  }
+  const next = event.data.cwd;
+  if (path.isAbsolute(next)) return path.resolve(next);
+  return current === undefined ? undefined : path.resolve(current, next);
+}
+
+/** Directories that resolve a relative media path: the current, then the Session's. */
+export function modernMediaRoots(
+  workingDirectory: string | undefined,
+  sessionDirectory: string | undefined,
+): string[] {
+  return [
+    ...new Set(
+      [workingDirectory ?? sessionDirectory, sessionDirectory].filter((root) => root !== undefined),
+    ),
+  ];
+}
+
 function projectAssistantMessage(
   turn: HistoryTurn,
   sessionId: string,
   data: Record<string, unknown>,
+  mediaRoots: readonly string[] | undefined,
 ): void {
   const message = data.message as Record<string, unknown>;
   if (Array.isArray(message.content)) {
@@ -1024,7 +1087,7 @@ function projectAssistantMessage(
     const item: HostAgentMessageItem = {
       type: "agentMessage",
       itemId: modernItemId(sessionId, `turn:${turn.turn}:step:${String(data.step)}:assistant`),
-      text,
+      text: mediaRoots ? rewriteLocalMediaMarkdown(text, mediaRoots) : text,
     };
     turn.items.push({ item, outcome: { status: "succeeded" } });
   }
@@ -1475,13 +1538,26 @@ function validateInboxSplice(data: Record<string, unknown>, profile: DeepSeekMod
 }
 
 function validateApprovalAsked(data: Record<string, unknown>): void {
-  requiredOptionalKeys(data, ["id", "toolName"], ["callId", "reason"]);
+  requiredOptionalKeys(data, ["id", "toolName"], ["callId", "reason", "displayReason"]);
   requiredString(data.id, "approval/asked id");
   requiredString(data.toolName, "approval/asked toolName");
   if (data.callId !== undefined) requiredString(data.callId, "approval/asked callId");
   if (data.reason !== undefined && typeof data.reason !== "string") {
     fail("Modern history approval/asked reason is malformed");
   }
+  if (data.displayReason !== undefined && !isApprovalDisplayReason(data.displayReason)) {
+    fail("Modern history approval/asked displayReason is malformed");
+  }
+}
+
+function isApprovalDisplayReason(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const entries = Object.entries(value);
+  if (entries.length === 0) return false;
+  return entries.every(
+    ([locale, text]) =>
+      locale.length > 0 && typeof text === "string" && text.length > 0 && nonBlankString(text),
+  );
 }
 
 function validateApprovalDecided(data: Record<string, unknown>): void {
@@ -1624,7 +1700,11 @@ function validateSessionTitle(data: Record<string, unknown>): void {
 }
 
 function validateSessionTitleRequest(data: Record<string, unknown>): void {
-  exactKeys(data, ["titleProvider", "messageSeqs", "route", "system", "messages", "maxTokens"]);
+  requiredOptionalKeys(
+    data,
+    ["titleProvider", "messageSeqs", "route", "system", "messages", "maxTokens"],
+    ["reasoningEffort"],
+  );
   requiredString(data.titleProvider, "session/title request provider");
   validateSeqArray(data.messageSeqs, "session/title request messageSeqs");
   validateModelRoute(data.route, "session/title request route");
@@ -1638,6 +1718,10 @@ function validateSessionTitleRequest(data: Record<string, unknown>): void {
     }
   }
   positiveInteger(data.maxTokens, "session/title request maxTokens");
+  // DSH 0.2.1 records the effort it selected when the title route exposes reasoning.
+  if (data.reasoningEffort !== undefined && !nonBlankString(data.reasoningEffort)) {
+    fail("Modern history session/title request reasoningEffort is invalid");
+  }
 }
 
 function validateTodoWrite(data: Record<string, unknown>): void {
@@ -1681,6 +1765,48 @@ function validateWorkflow(type: string, data: Record<string, unknown>): void {
   enumValue(data.stopReason, ["completed", "cancelled", "error"], "workflow stopReason");
 }
 
+/**
+ * DSH 0.2.1 logs every owned job (foreground and background shell commands,
+ * workflows) as a registration and a settlement repeating its identity. Both
+ * are log-only: the tool/call and tool/result around them carry the Item.
+ */
+function validateJobLifecycle(type: string, data: Record<string, unknown>): void {
+  const settled = type === "job/settled";
+  requiredOptionalKeys(
+    data,
+    [
+      "jobId",
+      "owner",
+      "kind",
+      "label",
+      "startedAt",
+      ...(settled ? ["finishedAt", "status", "cause", "producerReported"] : []),
+    ],
+    settled ? ["toolCall", "detail"] : ["toolCall"],
+  );
+  requiredString(data.jobId, `${type} jobId`);
+  requiredString(data.owner, `${type} owner`);
+  requiredString(data.kind, `${type} kind`);
+  if (typeof data.label !== "string") fail(`Modern history ${type} label is invalid`);
+  nonNegativeInteger(data.startedAt, `${type} startedAt`);
+  if (data.toolCall !== undefined) {
+    if (!isRecord(data.toolCall)) fail(`Modern history ${type} toolCall is malformed`);
+    exactKeys(data.toolCall, ["callId", "rootCallId"]);
+    requiredString(data.toolCall.callId, `${type} toolCall callId`);
+    requiredString(data.toolCall.rootCallId, `${type} toolCall rootCallId`);
+  }
+  if (!settled) return;
+  nonNegativeInteger(data.finishedAt, "job/settled finishedAt");
+  enumValue(data.status, ["completed", "killed", "failed"], "job/settled status");
+  enumValue(data.cause, ["producer", "kill", "teardown"], "job/settled cause");
+  if (typeof data.producerReported !== "boolean") {
+    fail("Modern history job/settled producerReported is invalid");
+  }
+  if (data.detail !== undefined && typeof data.detail !== "string") {
+    fail("Modern history job/settled detail is invalid");
+  }
+}
+
 function validatePtcDispatch(
   type: string,
   data: Record<string, unknown>,
@@ -1689,8 +1815,9 @@ function validatePtcDispatch(
   const settle = type === "tool/ptc-dispatch";
   const required = ["rootCallId", "parentCallId", "subCallId", "name", "arguments"];
   if (settle) required.push("isError", "content");
-  // A failed sub-call settles with tool/result's optional error identity.
-  requiredOptionalKeys(data, required, settle ? ["error"] : []);
+  // A failed sub-call settles with tool/result's optional error identity; DSH
+  // 0.2.1 also keeps the sub-tool's presentation metadata, which is opaque here.
+  requiredOptionalKeys(data, required, settle ? ["error", "meta"] : []);
   for (const key of ["rootCallId", "parentCallId", "subCallId", "name"]) {
     requiredString(data[key], `tool/ptc-dispatch ${key}`);
   }
@@ -1851,11 +1978,18 @@ function validateSearchRequest(data: Record<string, unknown>): void {
   requiredString(data.endpoint, "search request endpoint");
   requiredString(data.apiVersion, "search request apiVersion");
   if (!isRecord(data.body)) fail("Modern history search request body is malformed");
-  requiredOptionalKeys(data.body, ["model", "max_tokens", "messages", "tools"], []);
+  requiredOptionalKeys(data.body, ["model", "max_tokens", "messages", "tools"], ["thinking"]);
   requiredString(data.body.model, "search request model");
   positiveInteger(data.body.max_tokens, "search request max_tokens");
   if (!Array.isArray(data.body.messages) || !Array.isArray(data.body.tools)) {
     fail("Modern history search request arrays are malformed");
+  }
+  // DSH 0.2.1-rc.2 always sends `thinking: disabled` on the auxiliary search turn.
+  if (data.body.thinking !== undefined) {
+    const { thinking } = data.body;
+    if (!isRecord(thinking)) fail("Modern history search request thinking is malformed");
+    exactKeys(thinking, ["type"]);
+    if (thinking.type !== "disabled") fail("Modern history search request thinking is invalid");
   }
 }
 

@@ -1,6 +1,6 @@
 # Windows 自动更新的进程交接
 
-设置页可为 Windows npm 与安装器发行版检查最新稳定 Release、显示更新说明及手动更新方式。只有 Windows 安装器发行版提供应用内安装：Host 下载并验证安装器产物，在 `%LOCALAPPDATA%\codexhost\updates` 写入请求、状态和活动锁。Windows npm 发行版的应用内安装暂不可用；独立 Console 可能继续占用 npm 安装目录，而当前交接无法保证其退出。用户需退出 codexhost 及 Console，再运行 `npm install -g @codexhost/cli@latest`。Host 不启动 Updater：它运行在 Desktop 的 Shim/Host 进程链内，启动的子进程可能随 Shim Job 一起退出。
+设置页可为 Windows npm 与安装器发行版检查最新稳定 Release、显示更新说明，并提供应用内安装与手动更新方式。Host 准备 npm 更新或下载并验证安装器产物，在 `%LOCALAPPDATA%\codexhost\updates` 写入请求、状态和活动锁。Host 不启动 Updater：它运行在 Desktop 的 Shim/Host 进程链内，启动的子进程可能随 Shim Job 一起退出。本文描述由 Desktop Launcher 交接的更新；由原生 Host 监管进程接管的后台服务更新见 [控制台说明](../../operations/codexhost-console.md#更新)，它通过活动锁转移确认所有权，由 Updater 自行停止并恢复服务，不使用下文的清理凭据。
 
 ```text
 Renderer 更新指令 → Host 准备请求与状态 → Launcher 启动 Updater

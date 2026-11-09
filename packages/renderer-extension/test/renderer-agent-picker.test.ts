@@ -58,9 +58,13 @@ describe("Renderer Agent picker presentation", () => {
         },
       ),
     ).toBe("Agent: Codex · reviewer@example.com (locked)");
-    expect(rendererAgentPickerTooltip({ agent: "claude-code", phase: "locked" }, undefined)).toBe(
-      "Agent: Claude Code (locked)",
-    );
+    expect(
+      rendererAgentPickerTooltip({ agent: "claude-code", phase: "locked" }, undefined, {
+        id: "claude-code" as never,
+        name: "Claude Code",
+        version: "1",
+      }),
+    ).toBe("Agent: Claude Code (locked)");
   });
 
   it("keeps a Codex draft switchable while disabling unavailable external Agents", () => {
@@ -91,11 +95,31 @@ describe("Renderer Agent picker presentation", () => {
     });
   });
 
+  it("lets an unavailable saved draft explicitly switch to Codex even with an empty plugin directory", () => {
+    expect(
+      rendererAgentPickerView({ agent: "removed-plugin", phase: "draft" }, "ready", false, [
+        "codex",
+      ]),
+    ).toMatchObject({
+      label: "removed-plugin",
+      triggerDisabled: false,
+      nativeModelHidden: true,
+      optionDisabled: { codex: false },
+    });
+  });
+
   it("hides the native Model for an external Agent and locks submitted selection", () => {
     expect(
-      rendererAgentPickerView({ agent: "pi", phase: "locked" }, "ready", false, ["codex", "pi"], {
-        pi: "ready",
-      }),
+      rendererAgentPickerView(
+        { agent: "pi", phase: "locked" },
+        "ready",
+        false,
+        ["codex", "pi"],
+        {
+          pi: "ready",
+        },
+        { id: "pi" as never, name: "Pi", version: "1" },
+      ),
     ).toEqual({
       label: "Pi",
       triggerDisabled: true,
@@ -157,6 +181,50 @@ describe("Renderer Agent picker presentation", () => {
       downloadVisible: { pi: false },
       errorVisible: { pi: false },
     });
+  });
+
+  it.each([
+    { name: "power selection owner", expected: true },
+    { name: "missing owner", noOwner: true, expected: false },
+    { name: "missing power callback", props: { onCommitPower: undefined }, expected: false },
+    { name: "invalid power choices", props: { powerSelections: {} }, expected: false },
+    { name: "missing Model callback", props: { onSelectModel: undefined }, expected: false },
+    { name: "missing effort", omitEffort: true, expected: false },
+    { name: "unrelated menu", navigation: "permissions", expected: false },
+    { name: "missing semantic target", navigation: null, expected: false },
+    { name: "non-menu button", menu: false, expected: false },
+    { name: "Host Model control", owned: "data-codexhost-model-control", expected: false },
+    { name: "Host Agent control", owned: "data-codexhost-agent-control", expected: false },
+  ])("identifies a native power Model menu: $name", (testCase) => {
+    const attributes: Record<string, string> = {
+      "data-composer-navigation-target": "reasoning",
+    };
+    if (testCase.navigation === null) delete attributes["data-composer-navigation-target"];
+    else if (testCase.navigation) {
+      attributes["data-composer-navigation-target"] = testCase.navigation;
+    }
+    if (testCase.owned) attributes[testCase.owned] = "fixture";
+    const props: Record<string, unknown> = {
+      onSelectModel: () => undefined,
+      onCommitPower: () => undefined,
+      reasoningEffort: "high",
+      powerSelections: [],
+      ...testCase.props,
+    };
+    if (testCase.omitEffort) delete props.reasoningEffort;
+    const element = {
+      getAttribute: (name: string) => attributes[name] ?? null,
+      hasAttribute: (name: string) => name in attributes,
+      matches: () => testCase.menu !== false,
+    } as unknown as Element;
+    Object.defineProperty(element, "__reactFiber$test", {
+      value: {
+        memoizedProps: {},
+        return: { memoizedProps: testCase.noOwner ? {} : props, return: null },
+      },
+    });
+
+    expect(isNativeModelControlCandidate(element)).toBe(testCase.expected);
   });
 
   it("recognizes only the native React Model menu as the Model candidate", () => {

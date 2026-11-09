@@ -1,7 +1,20 @@
 import { z } from "zod";
+export * from "./client-channel.js";
+export * from "./thread-catalog.js";
+export * from "./voice.js";
+export * from "./web-access-tokens.js";
+export * from "./delegation-read.js";
 export * from "./credential-imports.js";
 export * from "./harness-display-settings.js";
+export * from "./harness-preferences.js";
+export * from "./harness-presentation.js";
+export * from "./account-credits-presentation.js";
+export * from "./model-price-overrides.js";
+export * from "./usage-statistics.js";
 export * from "./thread-prewarm.js";
+export * from "./thread-questions.js";
+export * from "./web.js";
+export * from "./web-tool-output.js";
 export {
   CONSOLE_HOST_METHODS,
   CONSOLE_OPEN_METHOD,
@@ -74,12 +87,15 @@ export {
   harnessPluginListParamsSchema,
   harnessPluginListResultSchema,
   harnessPluginManifestSchema,
+  installedHarnessPluginIdSchema,
+  isHarnessPluginInScope,
 } from "./harness-plugins.js";
 export type {
   HarnessPluginConfiguration,
   HarnessPluginDescriptor,
   HarnessPluginListResult,
   HarnessPluginManifest,
+  HarnessPluginScope,
 } from "./harness-plugins.js";
 export * from "./harness-launch-settings.js";
 export * from "./harness-installation.js";
@@ -198,6 +214,12 @@ export {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  threadSteeringInspectParamsSchema,
+  threadSteeringInspectResultSchema,
+  THREAD_STEER_DELIVERY_PARAM,
+  THREAD_STEERING_CONTEXT_PARAM,
+  threadSteeringContextSchema,
+  threadSteerDeliverySchema,
   threadOwnershipSchema,
 } from "./harness-models.js";
 export type {
@@ -222,6 +244,8 @@ export type {
   ThreadOwnership,
   ThreadOwnershipListParams,
   ThreadOwnershipListResult,
+  ThreadSteeringInspectResult,
+  ThreadSteerDelivery,
 } from "./harness-models.js";
 export {
   harnessCommandCatalogSchema,
@@ -243,6 +267,7 @@ export {
   accountCreditsProductUsageSchema,
   accountResetCreditsSchema,
   accountCreditsSnapshotSchema,
+  composerIndicatorsSchema,
   threadUsageInspectionParamsSchema,
   threadUsageInspectionSchema,
   threadUsageSnapshotSchema,
@@ -344,6 +369,8 @@ export {
   type DelegationMentionRewrite,
 } from "./delegation-mention.js";
 
+export { desktopImageAttachmentPaths } from "./desktop-attachments.js";
+
 export {
   REMOTE_SSH_SETUP_METHOD,
   remoteSshSetupParamsSchema,
@@ -368,3 +395,19 @@ export {
   type CodexSshConnection,
   type CodexSshDraft,
 } from "./remote-connections.js";
+
+export { usageMeasurementsSchema, type UsageMeasurementsSnapshot } from "./thread-usage.js";
+
+export {
+  webUiExtensionIdSchema,
+  webUiExtensionMetaSchema,
+  webUiExtensionSchema,
+  webUiExtensionsStateSchema,
+  webUiExtensionRegistrySchema,
+  webUiExtensionInstallSchema,
+  webUiExtensionEnabledSchema,
+  webUiExtensionRemoveSchema,
+  type WebUiExtension,
+  type WebUiExtensionMeta,
+  type WebUiExtensionsState,
+} from "./web-ui-extensions.js";

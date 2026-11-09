@@ -16,17 +16,34 @@ const { outputFiles } = await build({
       let connections = scenario === "empty" ? [] : [initial];
       let uninstalled = false;
       window.operations = [];
-      window.electronBridge = { sendMessageFromView(message) {
-        const params = JSON.parse(message.body);
+      function nativeOperation(operation, params = {}) {
         let body = {};
-        if (message.url.endsWith("refresh-remote-connections")) body = { remoteConnections: connections };
-        if (message.url.endsWith("app-server-connection-state")) body = { state: connections.find(c => c.hostId === params.hostId)?.autoConnect ? "connected" : "disconnected" };
-        if (message.url.endsWith("app-server-connection-state") && scenario === "failed") body = { state: "error", error: "Connection refused" };
-        if (message.url.endsWith("save-codex-managed-remote-ssh-connections")) connections = params.remoteConnections.map(c => ({...c, sshHost:c.hostname, sshAlias:c.alias, autoConnect:connections.find(p => p.hostId === c.hostId)?.autoConnect ?? false}));
-        if (message.url.endsWith("set-remote-connection-auto-connect")) { (window.connectCalls ??= []).push(params.autoConnect); window.operations.push(params.autoConnect ? "connect" : "disconnect"); }
-        if (message.url.endsWith("set-remote-connection-auto-connect")) connections = connections.map(c => c.hostId === params.hostId ? {...c, autoConnect:params.autoConnect} : c);
+        if (operation === "refresh-remote-connections") body = { remoteConnections: connections };
+        if (operation === "app-server-connection-state") body = { state: connections.find(c => c.hostId === params.hostId)?.autoConnect ? "connected" : "disconnected" };
+        if (operation === "app-server-connection-state" && scenario === "failed") body = { state: "error", error: "Connection refused" };
+        if (operation === "save-codex-managed-remote-ssh-connections") connections = params.remoteConnections.map(c => ({...c, sshHost:c.hostname, sshAlias:c.alias, autoConnect:connections.find(p => p.hostId === c.hostId)?.autoConnect ?? false}));
+        if (operation === "set-remote-connection-auto-connect") { (window.connectCalls ??= []).push(params.autoConnect); window.operations.push(params.autoConnect ? "connect" : "disconnect"); }
+        if (operation === "set-remote-connection-auto-connect") connections = connections.map(c => c.hostId === params.hostId ? {...c, autoConnect:params.autoConnect} : c);
+        return body;
+      }
+      const modern = new URLSearchParams(location.search).get("native") === "1";
+      window.legacySshRequests = 0;
+      window.electronBridge = { sendMessageFromView(message) {
+        window.legacySshRequests++;
+        if (modern) throw new Error("Legacy SSH handler is not implemented");
+        const body = nativeOperation(message.url.split("/").at(-1), JSON.parse(message.body));
         queueMicrotask(() => window.dispatchEvent(new MessageEvent("message", {data:{type:"fetch-response", requestId:message.requestId, responseType:"success", status:200, bodyJsonString:JSON.stringify(body)}})));
       } };
+      if (modern) {
+        window.nativeSshServices = {
+          sshConnections: { refresh: async () => nativeOperation("refresh-remote-connections"), save: async params => nativeOperation("save-codex-managed-remote-ssh-connections", params) },
+          remoteConnections: { setAutoConnect: async params => nativeOperation("set-remote-connection-auto-connect", params), getState: async hostId => nativeOperation("app-server-connection-state", {hostId}) },
+        };
+        const preload = document.createElement("link");
+        preload.rel = "modulepreload";
+        preload.href = "/assets/native-services.js";
+        document.head.append(preload);
+      }
       const status = { runningVersion:"0.11.0", installedVersion:"0.11.0", restartRequired:false, remote:false, updateSupported:false, update:{phase:"idle", targetVersion:null,error:null} };
       const launchVersion=new URLSearchParams(location.search).get("version");
       if(launchVersion) {status.runningVersion=launchVersion; status.installedVersion=launchVersion;}
@@ -62,7 +79,11 @@ const { outputFiles } = await build({
       const content = document.createElement("div");
       content.className = "settings-page__content";
       shadow.append(style, content);
-      createRemoteConnectionsPage(rendererSettingsMessages("zh-CN"), () => control).mount({content,signal:new AbortController().signal});
+      const openWeb = new URLSearchParams(location.search).get("web") === "1" ? async () => {
+        window.webOpenCalls = (window.webOpenCalls ?? 0) + 1;
+        if (window.webOpenCalls === 1) throw new Error("Background Web is unavailable in a development build; run npm start web");
+      } : undefined;
+      createRemoteConnectionsPage(rendererSettingsMessages("zh-CN"), () => control, () => openWeb).mount({content,signal:new AbortController().signal});
     `,
     resolveDir: path.resolve(import.meta.dirname, "../.."),
     loader: "ts",
@@ -87,6 +108,47 @@ const css = (
 ).join("\n");
 const pageHtml = `<!doctype html><html lang="zh-CN" style="color-scheme:light dark"><head><style id="settings-css" media="not all">${css}</style><style>body{margin:0}</style></head><body><main></main></body></html>`;
 const shots = path.resolve(import.meta.dirname, "../../test-results/remote-connections");
+test("Desktop shows Web before SSH while Console keeps the SSH-only page", async ({ page }) => {
+  await page.route("http://localhost/remote-settings*", (route) =>
+    route.fulfill({ contentType: "text/html", body: pageHtml }),
+  );
+  await page.goto("http://localhost/remote-settings?web=1");
+  await page.addScriptTag({ content: outputFiles[0]?.text ?? "" });
+  await expect(page.getByRole("heading", { level: 2 })).toHaveText([
+    "手机和其他设备（Web）",
+    "其他电脑（SSH）",
+  ]);
+  await expect(
+    page.getByText("这台电脑通过 SSH 连接另一台 Mac 或 Linux 电脑。连接配置与 Codex 共用。", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "公司", exact: true })).toBeVisible();
+  const open = page.getByRole("button", { name: "打开连接设备页", exact: true });
+  await open.click();
+  const error = page.getByRole("alert").filter({ hasText: "Background Web is unavailable" });
+  await expect(error).toBeVisible();
+  const buttonBox = await open.boundingBox();
+  const errorBox = await error.boundingBox();
+  if (!buttonBox || !errorBox) throw new Error("Web button and error must have visible bounds");
+  expect(errorBox.y).toBeGreaterThanOrEqual(buttonBox.y + buttonBox.height);
+  await open.click();
+  await expect(error).toBeHidden();
+  await expect(open).toBeEnabled();
+  expect(
+    await page.evaluate(() => (window as Window & { webOpenCalls?: number }).webOpenCalls),
+  ).toBe(2);
+
+  await page.goto("http://localhost/remote-settings");
+  await page.addScriptTag({ content: outputFiles[0]?.text ?? "" });
+  await expect(page.getByRole("heading", { name: "公司", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2 })).toHaveCount(0);
+  await expect(open).toHaveCount(0);
+  await expect(
+    page.getByText("通过 SSH 连接你的 Mac 或 Linux 电脑。连接配置与 Codex 共用。", { exact: true }),
+  ).toBeVisible();
+});
+
 test("SSH settings save, connection toggle, version display, and immediate update", async ({
   page,
 }) => {
@@ -96,7 +158,13 @@ test("SSH settings save, connection toggle, version display, and immediate updat
   await page.route("http://localhost/remote-settings*", (route) =>
     route.fulfill({ contentType: "text/html", body: pageHtml }),
   );
-  await page.goto("http://localhost/remote-settings");
+  await page.route("http://localhost/assets/native-services.js", (route) =>
+    route.fulfill({
+      contentType: "text/javascript",
+      body: "export const renamedRegistry = window.nativeSshServices;",
+    }),
+  );
+  await page.goto("http://localhost/remote-settings?native=1");
   await page.addScriptTag({ content: outputFiles[0]?.text ?? "" });
   // Fixture preparation ends here. All behavior below is driven by visible UI controls.
   await expect(page.getByRole("heading", { name: "公司", exact: true })).toBeVisible();
@@ -151,6 +219,11 @@ test("SSH settings save, connection toggle, version display, and immediate updat
   await page.setViewportSize({ width: 560, height: 720 });
   await page.screenshot({ path: path.join(shots, "06-dark-narrow.png"), fullPage: true });
   await expect(page.getByRole("button", { name: "打开 Codex SSH 设置 ↗" })).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () => (window as Window & { legacySshRequests?: number }).legacySshRequests,
+    ),
+  ).toBe(0);
   expect(errors).toEqual([]);
 });
 

@@ -107,7 +107,6 @@ impl Fixture {
             desktop_controller: PathBuf::new(),
             renderer_extension: PathBuf::new(),
             pi: None,
-            custom_install_root: None,
         };
         let mut fixture = Self {
             directory,

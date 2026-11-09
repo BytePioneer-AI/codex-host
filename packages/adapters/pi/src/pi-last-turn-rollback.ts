@@ -14,7 +14,7 @@ interface PiLastTurnRollbackTransport {
 }
 
 export type PiLastTurnRollbackResult =
-  { ok: false; reason: "empty" } | { ok: true; unpersisted: boolean };
+  { ok: false; reason: "empty" | "unsupported" } | { ok: true; unpersisted: boolean };
 
 function modelFromState(state: PiSessionState): PiNativeModelRef | null {
   if (state.provider === null && state.modelId === null) return null;
@@ -36,6 +36,7 @@ export async function rollbackPiLastTurn(
   const copiedHistory = await transport.getEntries();
   const boundary = resolvePiLastTurnBoundary(copiedHistory);
   if (!boundary) return { ok: false, reason: "empty" };
+  if (!boundary.lastUserEntryId) return { ok: false, reason: "unsupported" };
 
   const sourceSnapshot = mapPiSnapshot(copiedHistory, {
     sessionId: startupSessionId,

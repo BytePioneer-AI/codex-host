@@ -1,0 +1,10 @@
+{
+  "name": "codexhost-settings-design-prototype",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "preview": "python3 -m http.server 48761 --bind 127.0.0.1 --directory dist"
+  }
+}

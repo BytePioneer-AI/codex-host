@@ -8,6 +8,7 @@ import readline from "node:readline";
 import type { Readable, Writable } from "node:stream";
 
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   sanitizeDiagnosticTail,
   type HarnessAdapter,
@@ -23,9 +24,11 @@ import {
   type HarnessSession,
   type HarnessSessionCapabilities,
   type HarnessSessionState,
+  type HarnessUsageStatisticsCapability,
   type InspectHarnessInput,
   type HostAgentMessageItem,
   type HostCommand,
+  type HostContextCompactionItem,
   type HostEvent,
   type HostFileChange,
   type HostItem,
@@ -45,6 +48,8 @@ import {
   type ThinkingSelectCompleted,
   type TurnCancelAccepted,
   type TurnCancelCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
@@ -69,7 +74,7 @@ import {
 
 import { resolveAntigravityExecutable } from "./command.js";
 import { forkAntigravitySession } from "./fork.js";
-import { AntigravityHistory } from "./history.js";
+import { AntigravityHistory, antigravityHookDirectory } from "./history.js";
 import {
   antigravityAvailableThinkingOptions,
   antigravityModelArguments,
@@ -91,6 +96,7 @@ import { fetchAntigravityQuota, type AntigravityQuotaSnapshot } from "./quota.js
 import { AntigravityQuestionBridge } from "./question-bridge.js";
 import { AntigravitySubagents } from "./subagents.js";
 import { nativeSubagentIdSchema, readSubagentTranscript } from "./subagent-transcript.js";
+import { createAntigravityUsageStatistics } from "./usage-statistics.js";
 import {
   antigravityToolErrorMessage,
   isAntigravityPermissionDenial,
@@ -115,6 +121,11 @@ export interface AntigravityAdapterOptions {
   printTimeout?: string;
   toolOutputLimit?: number;
   subagentObservationTimeoutMs?: number;
+  /**
+   * How long a finished Turn's cleanup waits for its agy to report closing after signalling it.
+   * A child that keeps agy's output open must not hold later Turns' cleanup or close().
+   */
+  turnCleanupWaitMs?: number;
 }
 
 interface ActiveTurn {
@@ -128,6 +139,16 @@ interface ActiveTurn {
   logPath: string;
   agentItem: HostAgentMessageItem | null;
   agentText: string;
+  /**
+   * agy's open context compaction, reported as a `checkpoint` step both for an
+   * explicit `/compact` and for compaction agy starts on its own mid-Turn.
+   */
+  compactionItem: HostContextCompactionItem | null;
+  /**
+   * Every agent text shown this Turn, across the messages that tool and
+   * Subagent steps split it into. agy's `result.response` joins those segments.
+   */
+  turnAgentText: string;
   tools: Map<number, HostItem>;
   completedItems: HostItemSnapshot[];
   stderr: string;
@@ -158,11 +179,45 @@ interface ActiveTurn {
   httpsPort: number | null;
 }
 
+/**
+ * agy's `result.response` is the Turn's agent text with every segment joined,
+ * including the ones shown before tool steps. Compared with what the stream
+ * already showed (ignoring whitespace, which agy may join differently), returns
+ * the tail the stream never showed: `""` when the reply holds nothing new, or
+ * `null` when the stream showed nothing or the reply does not match it.
+ */
+function unstreamedReplyTail(streamed: string, reply: string): string | null {
+  const shown = streamed.replace(/\s+/gu, "");
+  if (shown === "") return null;
+  const replied = reply.replace(/\s+/gu, "");
+  if (shown.endsWith(replied)) return "";
+  let at = 0;
+  let matched = 0;
+  while (matched < shown.length && at < reply.length) {
+    const char = reply[at] ?? "";
+    if (/\s/u.test(char)) {
+      at += 1;
+      continue;
+    }
+    if (char !== shown[matched]) return null;
+    at += 1;
+    matched += 1;
+  }
+  if (matched < shown.length) return null;
+  // Whitespace the stream already ended with is not part of the tail.
+  const tail = reply.slice(at);
+  const shownTrailing = /\s*$/u.exec(streamed)?.[0] ?? "";
+  return tail.startsWith(shownTrailing) ? tail.slice(shownTrailing.length) : tail;
+}
+
 const antigravityHarnessId = harnessIdSchema.parse("antigravity");
 const DEFAULT_INSPECT_TIMEOUT_MS = 20_000;
-const DEFAULT_PRINT_TIMEOUT = "30m";
+const DEFAULT_PRINT_TIMEOUT = "0s";
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const DEFAULT_SUBAGENT_OBSERVATION_TIMEOUT_MS = 30_000;
+/** How long a finished Turn's agy may take to exit after its stdin closes before it is signalled. */
+const NATIVE_EXIT_GRACE_MS = 2_000;
+const DEFAULT_TURN_CLEANUP_WAIT_MS = 5_000;
 const CONTEXT_USAGE_TIMEOUT_MS = 8_000;
 const CONTEXT_USAGE_RETRY_MS = 100;
 const TRAJECTORY_TIMEOUT_MS = 2_000;
@@ -241,14 +296,35 @@ function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
 }
 
+/** Resolves once `promise` settles or `timeoutMs` passes, whichever comes first. */
+function settledWithin(promise: Promise<unknown>, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    const settle = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    void promise.then(settle, settle);
+  });
+}
+
 export const ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION =
   "[System Instruction: When creating new files in the workspace, you MUST use the write_to_file tool. When modifying existing files, use the replace_file_content tool. CRITICAL: NEVER include ArtifactMetadata when calling write_to_file for workspace files (ArtifactMetadata is strictly reserved for artifacts in the brain directory, and providing it for workspace files causes a path validation rejection). Do NOT use terminal commands (such as Set-Content, Out-File, echo, or cat) to create or write code files. For clarification, ask_question is connected to the codexhost Desktop through a Hook. Use single-choice or text questions. The Hook returns the actual user response in its reason while blocking the native auto-skip behavior; do not retry merely because the native tool reports it was blocked.]\n\n";
 
-export function formatAntigravityTurnPrompt(text: string): string {
+/**
+ * agy also receives the Question Hook directory as a workspace (`--add-dir`), so the Turn prompt
+ * names the project directory; otherwise a terminal command can run in the Hook directory.
+ */
+function antigravityWorkingDirectoryInstruction(cwd: string): string {
+  return `[System Instruction: The project working directory is ${JSON.stringify(cwd)}. Run terminal commands and resolve relative file paths in this directory unless the task requires another one.]\n\n`;
+}
+
+export function formatAntigravityTurnPrompt(text: string, cwd?: string): string {
   if (text.startsWith("/") || text.includes("ArtifactMetadata")) {
     return text;
   }
-  return `${ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION}${text}`;
+  const workingDirectory = cwd ? antigravityWorkingDirectoryInstruction(cwd) : "";
+  return `${ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION}${workingDirectory}${text}`;
 }
 
 /**
@@ -390,15 +466,28 @@ async function pollAntigravityContextUsage(
   return null;
 }
 
-function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostUsage | null {
+/**
+ * Host usage from one agy usage object. A step's usage describes one model request, whose prompt
+ * estimates the context in use; agy reports that prompt as `input_tokens` plus the separate
+ * `cache_read_tokens`. A result's usage sums every request of the native Conversation, so it
+ * carries context only when agy names it.
+ */
+function hostUsage(
+  value: AntigravityUsage | undefined,
+  modelId: string | undefined,
+  scope: "request" | "conversation",
+): HostUsage | null {
   if (!value) return null;
   const inputTokens = safeToken(value.input_tokens);
   const outputTokens = safeToken(value.output_tokens);
   const reasoningOutputTokens = safeToken(value.thinking_tokens);
   const totalTokens = safeToken(value.total_tokens);
-  const contextUsedTokens = safeToken(
-    value.context_used_tokens ?? value.estimated_tokens_used ?? value.input_tokens,
-  );
+  const requestPromptTokens =
+    scope === "request" && inputTokens !== undefined
+      ? inputTokens + (safeToken(value.cache_read_tokens) ?? 0)
+      : undefined;
+  const contextUsedTokens =
+    safeToken(value.context_used_tokens ?? value.estimated_tokens_used) ?? requestPromptTokens;
   const rawWindow = safeToken(value.context_window_tokens ?? value.max_context_tokens);
   const contextWindowTokens =
     contextUsedTokens !== undefined || rawWindow !== undefined
@@ -416,6 +505,11 @@ function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostU
       : {}),
   };
   return Object.keys(usage).length > 0 ? usage : null;
+}
+
+function stderrPrintTimeoutMessage(stderr: string): string | null {
+  const match = stderr.match(/\b(print timeout after [^\r\n"]+)/iu);
+  return match?.[1]?.trim() ?? null;
 }
 
 function normalizedProcessError(
@@ -498,6 +592,7 @@ class AntigravitySession implements HarnessSession {
   readonly #printTimeout: string;
   readonly #toolOutputLimit: number;
   readonly #subagentObservationTimeoutMs: number;
+  readonly #turnCleanupWaitMs: number;
   readonly #history: AntigravityHistory;
   readonly #subagentObservers = new Set<AntigravitySubagents>();
   #active: ActiveTurn | null = null;
@@ -506,6 +601,8 @@ class AntigravitySession implements HarnessSession {
   #closed = false;
   #model: HarnessModelRef | undefined;
   #nativeRef: NativeSessionRef | undefined;
+  /** The last result's `response`: agy carries earlier Turns' replies in it. */
+  #lastResultResponse = "";
   #permissionMode: AntigravityPermissionMode;
   #thinkingOptionId: HarnessThinkingOptionId | undefined;
   readonly #catalog: HarnessModelCatalog | undefined;
@@ -523,6 +620,7 @@ class AntigravitySession implements HarnessSession {
     thinkingOptionId?: HarnessThinkingOptionId;
     toolOutputLimit: number;
     subagentObservationTimeoutMs: number;
+    turnCleanupWaitMs: number;
     onClosed(): void;
   }) {
     this.#catalog = input.catalog;
@@ -537,6 +635,7 @@ class AntigravitySession implements HarnessSession {
     this.#thinkingOptionId = input.thinkingOptionId ?? input.history.thinkingOptionId;
     this.#toolOutputLimit = input.toolOutputLimit;
     this.#subagentObservationTimeoutMs = input.subagentObservationTimeoutMs;
+    this.#turnCleanupWaitMs = input.turnCleanupWaitMs;
     this.#onClosed = input.onClosed;
     this.initialState = this.#state();
     this.outputs = this.#channel.outputs;
@@ -590,6 +689,7 @@ class AntigravitySession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -602,6 +702,7 @@ class AntigravitySession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -611,6 +712,8 @@ class AntigravitySession implements HarnessSession {
   > {
     if (this.#closed) return { ok: false, error: invalidState("Antigravity Session is closed") };
     if (command.type === "turn.cancel") return this.#cancel(command);
+    // Headless stream-json runs each stdin message as its own Turn; steering exists only in the TUI.
+    if (command.type === "turn.steer") return unsupportedSteer("Antigravity");
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
@@ -644,30 +747,38 @@ class AntigravitySession implements HarnessSession {
     }
 
     let questions: AntigravityQuestionBridge;
-    this.#preparingQuestions = AntigravityQuestionBridge.create({
-      turnId: command.turnId,
-      nativeSessionId: () =>
-        this.#active?.command === command && !this.#active.cancellationRequested
-          ? this.#nativeRef?.nativeSessionId
-          : undefined,
-      schedule: (action) => {
-        if (this.#active?.command === command) this.#enqueue(this.#active, action);
-        else action();
-      },
-      emit: (output) => {
-        const active = this.#active;
-        if (!active || active.command !== command) return;
-        if (output.kind === "event" && output.event.type === "item.started" && active.agentItem) {
-          this.#completeItem(active, active.agentItem, { status: "succeeded" });
-          active.agentItem = null;
-          active.agentText = "";
-        }
-        if (output.kind === "event" && output.event.type === "item.completed") {
-          active.completedItems.push(output.event.snapshot);
-        }
-        this.#channel.emit(output);
-      },
-    });
+    const hookDirectory = antigravityHookDirectory(this.#environment);
+    // The Thread's Hook directory outlives each Turn, while the previous Turn's agy may still be
+    // exiting and its bridge closing; the next bridge rewrites the directory after that cleanup,
+    // which is itself bounded. A private per-Turn directory is shared with no one.
+    const previousTurn = hookDirectory ? this.#questionCleanup : Promise.resolve();
+    this.#preparingQuestions = previousTurn.then(() =>
+      AntigravityQuestionBridge.create({
+        ...(hookDirectory ? { directory: hookDirectory } : {}),
+        turnId: command.turnId,
+        nativeSessionId: () =>
+          this.#active?.command === command && !this.#active.cancellationRequested
+            ? this.#nativeRef?.nativeSessionId
+            : undefined,
+        schedule: (action) => {
+          if (this.#active?.command === command) this.#enqueue(this.#active, action);
+          else action();
+        },
+        emit: (output) => {
+          const active = this.#active;
+          if (!active || active.command !== command) return;
+          if (output.kind === "event" && output.event.type === "item.started" && active.agentItem) {
+            this.#completeItem(active, active.agentItem, { status: "succeeded" });
+            active.agentItem = null;
+            active.agentText = "";
+          }
+          if (output.kind === "event" && output.event.type === "item.completed") {
+            active.completedItems.push(output.event.snapshot);
+          }
+          this.#channel.emit(output);
+        },
+      }),
+    );
     try {
       questions = await this.#preparingQuestions;
     } catch (error) {
@@ -752,6 +863,8 @@ class AntigravitySession implements HarnessSession {
       logPath,
       agentItem: null,
       agentText: "",
+      compactionItem: null,
+      turnAgentText: "",
       tools: new Map(),
       completedItems: [],
       stderr: "",
@@ -808,7 +921,7 @@ class AntigravitySession implements HarnessSession {
       });
     });
     try {
-      const turnPrompt = formatAntigravityTurnPrompt(text);
+      const turnPrompt = formatAntigravityTurnPrompt(text, this.#cwd);
       if (child.stdin.writable) {
         child.stdin.write(
           `${JSON.stringify({ event: "user", message: { content: turnPrompt } })}\n`,
@@ -893,7 +1006,7 @@ class AntigravitySession implements HarnessSession {
     if (event.event === "step_update") {
       if (event.step_update.conversation_id !== this.#nativeRef?.nativeSessionId) return;
       await this.#handleStep(active, event.step_update);
-      const usage = hostUsage(event.step_update.usage, active.model?.id);
+      const usage = hostUsage(event.step_update.usage, active.model?.id, "request");
       if (usage) this.#publishUsage(active, usage);
       this.#ensureContextUsage(active, event.step_update.conversation_id);
       return;
@@ -921,7 +1034,7 @@ class AntigravitySession implements HarnessSession {
       });
       return;
     }
-    const usage = hostUsage(event.result.usage, active.model?.id);
+    const usage = hostUsage(event.result.usage, active.model?.id, "conversation");
     if (usage) this.#publishUsage(active, usage);
     this.#ensureContextUsage(active, event.result.conversation_id);
     if (active.contextUsagePromise) {
@@ -941,24 +1054,40 @@ class AntigravitySession implements HarnessSession {
       this.#history.bindNativeSession(convId);
       this.#event({ type: "session.state.changed", state: this.#state() });
     }
-    if (event.result.response) {
-      this.#appendOrSyncAgentText(active, event.result.response, false);
+    const response = event.result.response ?? "";
+    // agy's result.response also carries earlier Turns' replies, so only the
+    // text after the previous result's response is this Turn's own reply.
+    const turnReply = response.startsWith(this.#lastResultResponse)
+      ? response.slice(this.#lastResultResponse.length)
+      : response;
+    if (response) this.#lastResultResponse = response;
+    if (turnReply.trim() !== "") {
+      // The streamed segments are already on screen as separate messages, so
+      // only text the stream never showed is added to the last one.
+      const unshown = unstreamedReplyTail(active.turnAgentText, turnReply);
+      if (unshown === null) this.#appendOrSyncAgentText(active, turnReply, false);
+      else if (unshown.trim() !== "") this.#appendAgentText(active, unshown);
     }
-    const safeTurnId =
-      event.result.num_turns !== undefined && event.result.num_turns !== null
-        ? `turn:${event.result.num_turns}`
-        : `turn:${this.#history.snapshot().length + 1}`;
-    const safeSessionId = convId || this.#nativeRef?.nativeSessionId || "unknown-session";
+    const repliedThisTurn =
+      active.agentItem !== null && active.tools.size === 0 && active.pendingSteps.size === 0;
+    if (!convId) {
+      // agy ended before it ever named a Conversation (no `init`, empty result id), so no
+      // native Turn exists to map. A placeholder identity would only be rejected by the Host
+      // and mask the native outcome, so the Turn completes without one.
+      this.#completeIdentitylessTurn(active, event);
+      return;
+    }
+    const safeTurnId = this.#uniqueNativeTurnKey(event.result.num_turns);
 
     const nativeTurnRef = nativeTurnRefSchema.parse({
       harnessId: this.harnessId,
-      nativeSessionId: safeSessionId,
+      nativeSessionId: convId,
       nativeTurnKey: safeTurnId,
       formatVersion: 1,
     });
     const checkpoint = nativeCheckpointRefSchema.parse({
       harnessId: this.harnessId,
-      nativeSessionId: safeSessionId,
+      nativeSessionId: convId,
       checkpointId: safeTurnId,
       formatVersion: 1,
     });
@@ -968,7 +1097,7 @@ class AntigravitySession implements HarnessSession {
         { status: "cancelled", reason: "Cancelled by user", checkpoint },
         nativeTurnRef,
       );
-    } else if (event.result.status === "SUCCESS") {
+    } else if (this.#resultSucceeded(active, event)) {
       if (active.permissionDenial !== null && !active.agentItem) {
         this.#completeTurn(
           active,
@@ -983,22 +1112,96 @@ class AntigravitySession implements HarnessSession {
         this.#completeTurn(active, { status: "succeeded", checkpoint }, nativeTurnRef);
       }
     } else {
-      const nativeError = event.result.error?.trim();
-      const errorDetail = nativeError || active.stderr;
-      this.#completeTurn(
-        active,
-        {
-          status: "failed",
-          error: normalizedProcessError(
-            errorDetail,
-            `Antigravity Turn ended with status ${event.result.status}`,
-            nativeError !== undefined,
-          ),
-          checkpoint,
-        },
-        nativeTurnRef,
-      );
+      const error = this.#resultError(active, event);
+      const finishedReason = event.result.finished_reason?.trim();
+      const timedOut =
+        finishedReason === "print_timeout" || stderrPrintTimeoutMessage(active.stderr) !== null;
+      if (
+        !timedOut &&
+        finishedReason !== "interrupted" &&
+        repliedThisTurn &&
+        event.result.error?.trim() &&
+        this.#reportedEarlier(error)
+      ) {
+        // agy keeps a Conversation's first failure and repeats it in the result
+        // of every later Turn, even when that Turn answered without error. A
+        // Turn that replied and only repeats an error an earlier Turn of this
+        // Conversation already reported did not fail.
+        this.#completeTurn(active, { status: "succeeded", checkpoint }, nativeTurnRef);
+      } else {
+        this.#completeTurn(active, { status: "failed", error, checkpoint }, nativeTurnRef);
+      }
     }
+  }
+
+  #uniqueNativeTurnKey(numTurns: number | undefined): string {
+    const ordinal =
+      numTurns !== undefined && numTurns !== null ? numTurns : this.#history.snapshot().length + 1;
+    const base = `turn:${ordinal}`;
+    const used = new Set(
+      this.#history.snapshot().map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey),
+    );
+    if (!used.has(base)) return base;
+    let duplicate = 2;
+    while (used.has(`${base}:${duplicate}`)) duplicate += 1;
+    return `${base}:${duplicate}`;
+  }
+
+  /** A Turn agy ended without a Conversation keeps its native outcome but no native identity. */
+  #completeIdentitylessTurn(active: ActiveTurn, event: AntigravityResultEvent): void {
+    if (active.cancellationRequested) {
+      this.#completeTurn(active, { status: "cancelled", reason: "Cancelled by user" });
+      return;
+    }
+    this.#completeTurn(active, {
+      status: "failed",
+      error: this.#resultSucceeded(active, event)
+        ? {
+            code: "protocolError",
+            message: "Antigravity finished the Turn without a Conversation identity",
+            retryable: true,
+          }
+        : this.#resultError(active, event),
+    });
+  }
+
+  #resultSucceeded(active: ActiveTurn, event: AntigravityResultEvent): boolean {
+    return (
+      event.result.status === "SUCCESS" &&
+      !event.result.finished_reason?.trim() &&
+      stderrPrintTimeoutMessage(active.stderr) === null
+    );
+  }
+
+  #resultError(active: ActiveTurn, event: AntigravityResultEvent): HarnessError {
+    const finishedReason = event.result.finished_reason?.trim();
+    const timeoutDetail = stderrPrintTimeoutMessage(active.stderr);
+    const nativeError =
+      timeoutDetail ??
+      event.result.error?.trim() ??
+      (finishedReason === "print_timeout" ? "print timeout" : undefined);
+    const fallback =
+      timeoutDetail !== null || finishedReason === "print_timeout"
+        ? "Antigravity Turn timed out before completion"
+        : event.result.status === "SUCCESS" && finishedReason
+          ? `Antigravity Turn ended early (${finishedReason})`
+          : `Antigravity Turn ended with status ${event.result.status}`;
+    return normalizedProcessError(
+      nativeError || active.stderr,
+      fallback,
+      nativeError !== undefined,
+    );
+  }
+
+  #reportedEarlier(error: HarnessError): boolean {
+    return this.#history
+      .snapshot()
+      .some(
+        ({ outcome }) =>
+          outcome.status === "failed" &&
+          outcome.error.code === error.code &&
+          outcome.error.message === error.message,
+      );
   }
 
   #publishUsage(active: ActiveTurn, usage: HostUsage): void {
@@ -1049,6 +1252,10 @@ class AntigravitySession implements HarnessSession {
       }
       return;
     }
+    if (step.step_type === "checkpoint") {
+      this.#handleCompactionStep(active, step);
+      return;
+    }
     if (step.step_type !== "tool") return;
     if (active.agentItem) {
       this.#completeItem(active, active.agentItem, { status: "succeeded" });
@@ -1093,6 +1300,45 @@ class AntigravitySession implements HarnessSession {
           }
         : { status: "succeeded" };
     this.#completeItem(active, completed, itemOutcome);
+  }
+
+  /**
+   * agy compacts a Conversation in a `checkpoint` step: the summary replaces the
+   * earlier history in agy's own context. Desktop shows it as a Context
+   * Compaction, and an explicit `/compact` command Turn is reported as manual by
+   * the Host from that Item.
+   */
+  #handleCompactionStep(active: ActiveTurn, step: AntigravityStepUpdateEvent["step_update"]): void {
+    if (!active.compactionItem) {
+      if (active.agentItem) {
+        this.#completeItem(active, active.agentItem, { status: "succeeded" });
+        active.agentItem = null;
+        active.agentText = "";
+      }
+      active.compactionItem = { type: "contextCompaction", itemId: this.#newItemId() };
+      this.#event({
+        type: "item.started",
+        turnId: active.command.turnId,
+        item: active.compactionItem,
+      });
+    }
+    if (step.state !== "DONE" && step.state !== "ERROR") return;
+    const item = active.compactionItem;
+    active.compactionItem = null;
+    this.#completeItem(
+      active,
+      item,
+      step.state === "ERROR"
+        ? {
+            status: "failed",
+            error: {
+              code: "nativeFailure",
+              message: "Antigravity context compaction failed",
+              retryable: false,
+            },
+          }
+        : { status: "succeeded" },
+    );
   }
 
   /**
@@ -1175,6 +1421,7 @@ class AntigravitySession implements HarnessSession {
   }
 
   #appendAgentText(active: ActiveTurn, text: string): void {
+    active.turnAgentText += text;
     if (!active.agentItem) {
       active.agentItem = { type: "agentMessage", itemId: this.#newItemId(), text };
       active.agentText = text;
@@ -1199,8 +1446,11 @@ class AntigravitySession implements HarnessSession {
         if (outcome.status !== "succeeded") await active.subagents.cancel();
         await active.subagents.settled;
         if (active.process.stdin.writable) active.process.stdin.end();
-        const timer = setTimeout(() => active.process.kill(), 2_000);
-        await active.exited.finally(() => clearTimeout(timer));
+        const timer = setTimeout(() => active.process.kill(), NATIVE_EXIT_GRACE_MS);
+        // A child that keeps agy's output open can delay `close` indefinitely, and later Turns'
+        // cleanup and close() queue behind this one.
+        await settledWithin(active.exited, NATIVE_EXIT_GRACE_MS + this.#turnCleanupWaitMs);
+        clearTimeout(timer);
         await active.questions.dispose();
         this.#subagentObservers.delete(active.subagents);
       })
@@ -1213,6 +1463,8 @@ class AntigravitySession implements HarnessSession {
           ? { status: "cancelled", ...(outcome.reason ? { reason: outcome.reason } : {}) }
           : { status: "succeeded" };
     active.subagents.finish(itemOutcome);
+    if (active.compactionItem) this.#completeItem(active, active.compactionItem, itemOutcome);
+    active.compactionItem = null;
     if (active.agentItem) this.#completeItem(active, active.agentItem, itemOutcome);
     // A step whose patch never resolved still ran, so an interrupted Turn
     // reports it as a Tool Execution rather than dropping it silently.
@@ -1411,6 +1663,7 @@ function historySubagentState(
 export class AntigravityAdapter implements HarnessAdapter {
   readonly commandCatalog = ANTIGRAVITY_COMMAND_CATALOG;
   readonly harnessId: HarnessId = antigravityHarnessId;
+  readonly usageStatistics: HarnessUsageStatisticsCapability;
   readonly subagents = {
     readSnapshot: async (input: {
       parent: NativeSessionRef;
@@ -1458,6 +1711,7 @@ export class AntigravityAdapter implements HarnessAdapter {
   readonly #sessions = new Set<AntigravitySession>();
   readonly #toolOutputLimit: number;
   readonly #subagentObservationTimeoutMs: number;
+  readonly #turnCleanupWaitMs: number;
   #closed = false;
   #quota: AntigravityQuotaSnapshot | null = null;
   #quotaCwd: string | null = null;
@@ -1467,6 +1721,7 @@ export class AntigravityAdapter implements HarnessAdapter {
   constructor(options: AntigravityAdapterOptions = {}) {
     this.#command = options.command;
     this.#environment = options.environment ?? process.env;
+    this.usageStatistics = createAntigravityUsageStatistics(this.#environment);
     this.#inspectTimeoutMs = options.inspectTimeoutMs ?? DEFAULT_INSPECT_TIMEOUT_MS;
     this.#printTimeout = options.printTimeout ?? DEFAULT_PRINT_TIMEOUT;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
@@ -1476,6 +1731,11 @@ export class AntigravityAdapter implements HarnessAdapter {
       throw new RangeError("subagentObservationTimeoutMs must be a finite positive number");
     }
     this.#subagentObservationTimeoutMs = subagentObservationTimeoutMs;
+    const turnCleanupWaitMs = options.turnCleanupWaitMs ?? DEFAULT_TURN_CLEANUP_WAIT_MS;
+    if (!Number.isFinite(turnCleanupWaitMs) || turnCleanupWaitMs < 0) {
+      throw new RangeError("turnCleanupWaitMs must be a finite non-negative number");
+    }
+    this.#turnCleanupWaitMs = turnCleanupWaitMs;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -1552,7 +1812,8 @@ export class AntigravityAdapter implements HarnessAdapter {
     if (!snapshot) return null;
     return {
       credits: {
-        label: snapshot.label,
+        ...(snapshot.label ? { label: snapshot.label } : {}),
+        ...(snapshot.scope ? { scope: snapshot.scope } : {}),
         usedPercent: snapshot.usedPercent,
         periodType: snapshot.periodType,
         ...(snapshot.resetsAt ? { resetsAt: snapshot.resetsAt } : {}),
@@ -1561,7 +1822,7 @@ export class AntigravityAdapter implements HarnessAdapter {
     };
   }
 
-  /** Duck-typed by the Host Runtime to populate the account credits surface. */
+  /** Public account telemetry cache; never attributes quota to historical Thread spend. */
   credits(): AntigravityQuotaSnapshot | null {
     return this.#quota;
   }
@@ -1677,6 +1938,7 @@ export class AntigravityAdapter implements HarnessAdapter {
             ...(params.thinkingOptionId ? { thinkingOptionId: params.thinkingOptionId } : {}),
             toolOutputLimit: this.#toolOutputLimit,
             subagentObservationTimeoutMs: this.#subagentObservationTimeoutMs,
+            turnCleanupWaitMs: this.#turnCleanupWaitMs,
             onClosed: () => this.#sessions.delete(session),
           });
           this.#sessions.add(session);
@@ -1716,6 +1978,7 @@ export class AntigravityAdapter implements HarnessAdapter {
             ...(params.thinkingOptionId ? { thinkingOptionId: params.thinkingOptionId } : {}),
             toolOutputLimit: this.#toolOutputLimit,
             subagentObservationTimeoutMs: this.#subagentObservationTimeoutMs,
+            turnCleanupWaitMs: this.#turnCleanupWaitMs,
             onClosed: () => this.#sessions.delete(session),
           });
           this.#sessions.add(session);
@@ -1779,6 +2042,7 @@ export class AntigravityAdapter implements HarnessAdapter {
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
       toolOutputLimit: this.#toolOutputLimit,
       subagentObservationTimeoutMs: this.#subagentObservationTimeoutMs,
+      turnCleanupWaitMs: this.#turnCleanupWaitMs,
       onClosed: () => this.#sessions.delete(session),
     });
     this.#sessions.add(session);

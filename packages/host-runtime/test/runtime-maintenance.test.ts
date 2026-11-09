@@ -16,7 +16,7 @@ afterEach(async () => {
   vi.clearAllMocks();
   await Promise.all(directories.splice(0).map((p) => rm(p, { recursive: true, force: true })));
 });
-async function fixture(remote = false) {
+async function fixture(remote = false, updaterStartTimeoutMs?: number) {
   const root = await mkdtemp(path.join(tmpdir(), "codexhost-maintenance-"));
   directories.push(root);
   const pkg = path.join(root, "node_modules/@codexhost/cli-darwin-arm64");
@@ -42,17 +42,27 @@ async function fixture(remote = false) {
       HOME: root,
       CODEXHOST_DATA_DIR: path.join(root, "data"),
     },
+    ...(updaterStartTimeoutMs === undefined ? {} : { updaterStartTimeoutMs }),
   });
   await control.status();
   return { control, root, runtimePath, metadata };
 }
-/** Stands in for the shell that starts the helper: the helper reports its PID, the shell exits. */
+/** Stands in for the shell that starts the helper: echo $!, report status PID, then close. */
 function helperStartedBy(statusPath: string, targetVersion: string, updaterPid: number) {
-  const starter = new EventEmitter();
-  void writeFile(
-    statusPath,
-    JSON.stringify({ phase: "installing", targetVersion, error: null, updaterPid }),
-  ).then(() => starter.emit("exit", 0));
+  const starter = new EventEmitter() as EventEmitter & {
+    stdout: EventEmitter;
+  };
+  starter.stdout = new EventEmitter();
+  queueMicrotask(() => {
+    starter.stdout.emit("data", `${updaterPid}\n`);
+    void writeFile(
+      statusPath,
+      JSON.stringify({ phase: "installing", targetVersion, error: null, updaterPid }),
+    ).then(() => {
+      starter.emit("exit", 0);
+      starter.emit("close", 0);
+    });
+  });
   return starter;
 }
 describe("runtime maintenance", () => {
@@ -167,7 +177,7 @@ describe("runtime maintenance", () => {
       // The helper is started through a shell that exits, so the service is not its parent.
       const [command, args, options] = call;
       expect(command).toBe("/bin/sh");
-      expect(args[1]).toMatch(/&$/u);
+      expect(args[1]).toMatch(/& echo \$!$/u);
       expect(options).toMatchObject({ detached: true });
       const request = JSON.parse(await readFile(args[3], "utf8"));
       expect(request).toMatchObject({ version: "0.11.0", restartOnly: true });
@@ -223,4 +233,92 @@ describe("runtime maintenance", () => {
     await writeFile(path.join(path.dirname(f.runtimePath), "plugins/enabled.json"), '["pi"]');
     expect((await f.control.status()).restartRequired).toBe(true);
   });
+  it.skipIf(process.platform === "win32")(
+    "kills the detached helper when start times out before updaterPid is written",
+    async () => {
+      // A short real deadline instead of a fake clock: start() does real filesystem work before
+      // it arms the deadline, so fake time could run out before the deadline even exists.
+      const f = await fixture(true, 100);
+      const statusPath = path.join(f.root, "data/remote-update.json");
+      const helperPid = 42_424;
+      const kill = vi.spyOn(process, "kill").mockImplementation(((
+        pid: number,
+        signal?: number | string,
+      ) => {
+        if (pid === helperPid) return true;
+        // Preserve liveliness probes used by status().
+        if (signal === 0) return true;
+        return true;
+      }) as typeof process.kill);
+      spawn.mockImplementation(() => {
+        const starter = new EventEmitter() as EventEmitter & { stdout: EventEmitter };
+        starter.stdout = new EventEmitter();
+        // Defer close past the Host attaching listeners (same race the real shell avoids).
+        queueMicrotask(() => {
+          starter.stdout.emit("data", `${helperPid}\n`);
+          queueMicrotask(() => {
+            starter.emit("exit", 0);
+            starter.emit("close", 0);
+          });
+        });
+        return starter;
+      });
+      await expect(f.control.start("0.12.0")).rejects.toThrow("Remote updater did not start");
+      expect(kill).toHaveBeenCalledWith(helperPid);
+      expect(JSON.parse(await readFile(statusPath, "utf8"))).toMatchObject({
+        phase: "failed",
+        error: "Remote updater did not start",
+      });
+      expect(
+        JSON.parse(await readFile(path.join(f.root, "data/remote-update.cancel"), "utf8")),
+      ).toEqual({
+        targetVersion: "0.12.0",
+      });
+      // A late helper write still surfaces through status() after the recorded failure.
+      await writeFile(
+        statusPath,
+        JSON.stringify({
+          phase: "installing",
+          targetVersion: "0.12.0",
+          error: null,
+          updaterPid: helperPid,
+        }),
+      );
+      expect((await f.control.status()).update.phase).toBe("installing");
+      expect(f.control.blocked).toBe(true);
+      kill.mockRestore();
+    },
+    15_000,
+  );
+  it.skipIf(process.platform === "win32")(
+    "still reads helper PID when exit precedes stdout data",
+    async () => {
+      const f = await fixture(true);
+      const statusPath = path.join(f.root, "data/remote-update.json");
+      spawn.mockImplementation(() => {
+        const starter = new EventEmitter() as EventEmitter & { stdout: EventEmitter };
+        starter.stdout = new EventEmitter();
+        queueMicrotask(() => {
+          starter.emit("exit", 0);
+          queueMicrotask(() => {
+            starter.stdout.emit("data", `${process.pid}\n`);
+            starter.emit("close", 0);
+            void writeFile(
+              statusPath,
+              JSON.stringify({
+                phase: "installing",
+                targetVersion: "0.12.0",
+                error: null,
+                updaterPid: process.pid,
+              }),
+            );
+          });
+        });
+        return starter;
+      });
+      await expect(f.control.start("0.12.0")).resolves.toMatchObject({
+        update: { phase: "installing", targetVersion: "0.12.0" },
+      });
+    },
+  );
 });

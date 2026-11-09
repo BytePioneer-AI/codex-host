@@ -238,9 +238,18 @@ describe("ZCode installed CLI transport", () => {
             builtinModelIds: ["GLM-5.3-Flash"],
             access: { type: "zhipu-account", entitled: true },
           },
+          "account:zai-individual-coding-plan": {
+            access: { type: "zhipu-account", entitled: false },
+          },
         },
         states: {
           "account:zai-start-plan": { availability: "available", entitled: true, current: true },
+          "account:zai-individual-coding-plan": {
+            availability: "unavailable",
+            entitled: false,
+            current: false,
+            unavailableReason: "not-connected",
+          },
         },
       },
     });
@@ -257,6 +266,47 @@ describe("ZCode installed CLI transport", () => {
         states: {},
       },
     });
+  });
+
+  it("routes Personal Coding Plan reverse requests without JWT or verification", async () => {
+    const providerId = "account:zai-individual-coding-plan";
+    const apiKey = "synthetic-personal-key";
+    const { root, options, log } = await fixture(
+      `reply(await ask('interaction/requestProviderRuntimeHeaders',{requestId:'personal-headers',providerId:'${providerId}',modelSelection:{providerId:'${providerId}',modelId:'GLM-5.2'},accountAccess:{type:'zhipu-account',accountType:'zai',mode:'individual-coding-plan'}}))`,
+      {
+        "oauth:active_provider": "zai",
+        "oauth:zai:user_info": JSON.stringify({ user_id: "fixture-user" }),
+        [`account-provider:coding-plan:${providerId}:account:fixture-user:api-key`]: apiKey,
+      },
+    );
+    await writeFile(
+      path.join(root, ".zcode/v2/setting.json"),
+      JSON.stringify({
+        providerFamilyDomain: "zai",
+        providerFamilyConnectionSelections: { zai: { kind: "individual-coding-plan" } },
+      }),
+    );
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [{ productName: "Coding Plan", status: "VALID", inCurrentPeriod: true }],
+        }),
+      ),
+    );
+    const transport = await started(options());
+    try {
+      expect(transport.startPlan).toBe(false);
+      expect(await transport.request("readSession", { sessionId: "personal" })).toMatchObject({
+        result: { headersApplied: true, requestAuth: { apiKey } },
+      });
+      expect(JSON.stringify((await log())[0])).not.toContain(apiKey);
+      await writeFile(path.join(root, ".zcode/v2/credentials.json"), "{}");
+      expect(await transport.request("readSession", { sessionId: "signed-out" })).toMatchObject({
+        result: { headersApplied: false },
+      });
+    } finally {
+      await transport.close();
+    }
   });
 
   it("reports a re-announced interaction once and leaves it for resolveInteraction", async () => {

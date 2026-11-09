@@ -4,10 +4,12 @@ import {
   open,
   readFile,
   readdir,
+  rename,
   rm,
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 import { parseUpdateStatus, type BackgroundUpdateStatus } from "./status.js";
@@ -24,6 +26,7 @@ export interface DiscoveredUpdateStatus {
 export interface UpdateOperationLock {
   readonly path: string;
   setStatusPath(statusPath: string): Promise<void>;
+  transferTo(ownerPid: number): Promise<void>;
   release(): Promise<void>;
 }
 
@@ -40,6 +43,25 @@ async function regularFile(filePath: string): Promise<boolean> {
 export async function isUpdateOperationActive(stateDirectory: string): Promise<boolean> {
   if (!path.isAbsolute(stateDirectory)) throw new Error("update state directory must be absolute");
   return regularFile(path.join(stateDirectory, LOCK_FILE));
+}
+
+// Recover only the operation named by the lock, never an unrelated historical result.
+export async function discoverActiveUpdateStatus(
+  stateDirectory: string,
+): Promise<DiscoveredUpdateStatus | null> {
+  if (!path.isAbsolute(stateDirectory)) throw new Error("update state directory must be absolute");
+  const lockPath = path.join(stateDirectory, LOCK_FILE);
+  if (!(await regularFile(lockPath))) return null;
+  try {
+    const lock = JSON.parse(await readFile(lockPath, "utf8")) as Record<string, unknown>;
+    if (typeof lock.statusPath !== "string" || !path.isAbsolute(lock.statusPath)) return null;
+    if (!(await regularFile(lock.statusPath))) return null;
+    const status = parseUpdateStatus(JSON.parse(await readFile(lock.statusPath, "utf8")));
+    if (TERMINAL_PHASES.has(status.phase)) return null;
+    return { statusPath: lock.statusPath, status };
+  } catch {
+    return null;
+  }
 }
 
 export async function discoverLatestUpdateStatus(
@@ -70,6 +92,20 @@ export async function discoverLatestUpdateStatus(
   }
   candidates.sort((left, right) => right.status.updatedAt - left.status.updatedAt);
   return candidates[0] ?? null;
+}
+
+/** Restore the latest completed operation for 24 hours, including failures before service stop. */
+export async function discoverRecentCompletedUpdateStatus(
+  stateDirectory: string,
+): Promise<DiscoveredUpdateStatus | null> {
+  const latest = await discoverLatestUpdateStatus(stateDirectory);
+  if (
+    !latest ||
+    !TERMINAL_PHASES.has(latest.status.phase) ||
+    latest.status.updatedAt < Math.floor(Date.now() / 1000) - 24 * 60 * 60
+  )
+    return null;
+  return latest;
 }
 
 export async function cleanupTerminalUpdateState(
@@ -121,6 +157,7 @@ export async function acquireUpdateOperationLock(
   await handle.sync();
   await handle.close();
   let released = false;
+  let operationStatusPath: string | null = null;
   return {
     path: lockPath,
     async setStatusPath(statusPath: string) {
@@ -131,6 +168,27 @@ export async function acquireUpdateOperationLock(
         `${JSON.stringify({ ownerPid: process.pid, statusPath: path.normalize(statusPath) })}\n`,
         { encoding: "utf8", mode: 0o600 },
       );
+      operationStatusPath = path.normalize(statusPath);
+    },
+    async transferTo(ownerPid: number) {
+      if (released || !operationStatusPath) throw new Error("Update operation is not prepared");
+      if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0)
+        throw new Error("Invalid update owner PID");
+      const temporary = `${lockPath}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(
+          temporary,
+          `${JSON.stringify({ ownerPid, statusPath: operationStatusPath })}\n`,
+          {
+            encoding: "utf8",
+            mode: 0o600,
+            flag: "wx",
+          },
+        );
+        await rename(temporary, lockPath);
+      } finally {
+        await rm(temporary, { force: true });
+      }
     },
     async release() {
       if (released) return;

@@ -63,8 +63,8 @@ it.each(["output", "silent", "exit", "timeout"])(
     if (mode === "timeout") {
       vi.useFakeTimers();
       try {
-        const rejected = assert.rejects(handle.terminate(), /Windows terminal startup timed out/);
-        await vi.advanceTimersByTimeAsync(10_000);
+        const rejected = assert.rejects(handle.terminate(), /ConPTY process is not ready/);
+        await vi.advanceTimersByTimeAsync(5000);
         await rejected;
         assert.equal(fallbackKills, 1);
         assert.equal(handle.running, true);

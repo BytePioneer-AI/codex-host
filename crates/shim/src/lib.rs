@@ -843,6 +843,20 @@ fn resolve_stock_codex_path(
 }
 
 /// Runs the byte-transparent proxy and emits optional lifecycle observations.
+/// A child that exits before its identity is recorded leaves no process to snapshot. Its exit
+/// status and stderr are the real diagnosis, so the proxy reports them instead of the
+/// registration error; the unpublished lease is released when it drops.
+fn child_exited_during_startup(child: &mut codexhost_platform::SupervisedChild) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(250);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            _ => return false,
+        }
+    }
+}
+
 pub fn run_proxy_with_observer(
     arguments: &[OsString],
     observer: &impl ProxyObserver,
@@ -897,6 +911,7 @@ pub fn run_proxy_with_observer(
     let child_id = child.id();
     if let Some(lease) = &mut local_runtime_lease
         && let Err(error) = lease.set_child_process_id(child_id)
+        && !child_exited_during_startup(&mut child)
     {
         let _ = child.force_terminate();
         let _ = child.wait();

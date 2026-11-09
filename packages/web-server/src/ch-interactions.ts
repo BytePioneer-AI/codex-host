@@ -25,14 +25,8 @@ function presentation(pending: ClientInteraction): {
       questions: [
         {
           id: "approval",
-          header: interaction.title,
-          question: [
-            interaction.title,
-            interaction.description,
-            interaction.subject ? JSON.stringify(interaction.subject, null, 2) : undefined,
-          ]
-            .filter(Boolean)
-            .join("\n\n"),
+          question: interaction.title,
+          ...(interaction.description ? { detail: interaction.description } : {}),
           options: labels.map((label) => ({ label })),
           multiSelect: false,
           allowOther: false,

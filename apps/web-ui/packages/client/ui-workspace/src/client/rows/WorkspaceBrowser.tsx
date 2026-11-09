@@ -36,6 +36,7 @@ import {
   Modal,
   Toast,
   Tooltip,
+  usePhoneSidebar,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type {
   SessionListState,
@@ -65,6 +66,7 @@ import {
   sessionMemberIds,
   UNGROUPED_KEY,
 } from "../tree.ts";
+import { pinOrderSource } from "../pin-order.ts";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
 import { PinnedSection } from "./PinnedSection.tsx";
@@ -150,8 +152,10 @@ function ViewOptionsMenu({
   t: WorkspaceBrowserProps["t"];
 }) {
   const [open, setOpen] = useState(false);
+  const phoneSidebar = usePhoneSidebar();
   return (
     <Menu
+      phoneSidebarTitle={t("viewOptions.label")}
       open={open}
       onClose={() => {
         setOpen(false);
@@ -212,6 +216,7 @@ function ViewOptionsMenu({
             type="button"
             className={clsx(css.iconButton, css.wide)}
             aria-label={t("viewOptions.label")}
+            data-phone-sidebar-return={phoneSidebar !== null || undefined}
             onClick={() => {
               setOpen((v) => !v);
             }}
@@ -1291,8 +1296,8 @@ export function WorkspaceBrowser({
       : undefined;
   const ungroupedMemberIds = useMemo(() => {
     const accounted = new Set(workspaces.flatMap((workspace) => workspace.sessionIds));
-    return list.ids.filter((id) => list.byId[id] !== undefined && !accounted.has(id));
-  }, [list, workspaces]);
+    return [...new Set([...list.ids, ...archivedSessionIds])].filter((id) => !accounted.has(id));
+  }, [archivedSessionIds, list.ids, workspaces]);
   const orderState = useMemo(
     () => ({ pinnedSessionIds, archivedSessionIds }),
     [archivedSessionIds, pinnedSessionIds],
@@ -1301,7 +1306,10 @@ export function WorkspaceBrowser({
     () => ({ ...orderState, archivedFilter }),
     [orderState, archivedFilter],
   );
-  const flatMemberIds = useMemo(() => sessionMemberIds(list), [list]);
+  const flatMemberIds = useMemo(
+    () => sessionMemberIds(list, archivedSessionIds),
+    [archivedSessionIds, list],
+  );
   const orderedWorkspaces = useMemo(
     () =>
       workspaces.map((workspace) => {
@@ -1346,6 +1354,10 @@ export function WorkspaceBrowser({
       currentBlank !== undefined && flatMemberIds.includes(currentBlank) ? currentBlank : undefined,
     );
   }, [currentBlank, flatMemberIds, list.byId, orderBy, orderState, sessionOrderByAccount]);
+  const orderSource = useMemo(
+    () => pinOrderSource(workspaces, list, orderState),
+    [list, orderState, workspaces],
+  );
   const activeSessionOrders = useMemo<Readonly<Record<string, readonly SessionId[]>>>(
     () =>
       Object.fromEntries([
@@ -1382,7 +1394,7 @@ export function WorkspaceBrowser({
       if (ids[0] !== currentBlank || saved[0] === currentBlank) continue;
       changed[key] = [currentBlank, ...saved.filter((id) => id !== currentBlank)];
     }
-    if (Object.keys(changed).length > 0) actions.syncSessionOrders(changed);
+    if (Object.keys(changed).length > 0) actions.syncSessionOrders(changed, orderSource);
   }, [
     actions.syncSessionOrders,
     activeSessionOrders,
@@ -1390,6 +1402,7 @@ export function WorkspaceBrowser({
     list.phase,
     orderBy,
     sessionOrderByAccount,
+    orderSource,
     workspacePhase,
     workspaceReady,
   ]);
@@ -1404,7 +1417,7 @@ export function WorkspaceBrowser({
     const moved = Object.entries(activeSessionOrders).some(
       ([key, ids]) => ids[0] === currentBlank && sessionOrderByAccount[key]?.[0] !== currentBlank,
     );
-    if (moved) actions.syncSessionOrders(activeSessionOrders);
+    if (moved) actions.syncSessionOrders(activeSessionOrders, orderSource);
   }, [
     actions.syncSessionOrders,
     activeSessionOrders,
@@ -1412,10 +1425,11 @@ export function WorkspaceBrowser({
     list.phase,
     orderBy,
     sessionOrderByAccount,
+    orderSource,
     workspaceReady,
   ]);
   const saveSessionOrder = (accountKey: string, order: readonly string[]): void => {
-    actions.setSessionOrder(accountKey, order, activeSessionOrders);
+    actions.setSessionOrder(accountKey, order, activeSessionOrders, orderSource);
   };
   // The query outlives the tree and the input (both wide-only) so collapsing
   // does not silently drop an in-progress filter.
@@ -1645,9 +1659,7 @@ export function WorkspaceBrowser({
           <span
             className={clsx(css.sectionLabel, css.wide, searchExpanded && css.sectionLabelHidden)}
           >
-            {groupBy === "flat" || pinnedSessionIds.length > 0
-              ? t("section.sessions")
-              : t("section.workspaces")}
+            {t("section.sessions")}
           </span>
         )}
         {wide && (
@@ -1694,6 +1706,10 @@ export function WorkspaceBrowser({
                 }}
                 onKeyDown={(e) => {
                   if (e.key !== "Escape") return;
+                  if (e.currentTarget.closest("[data-phone-drawer]")) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }
                   setQuery("");
                   setSearchExpanded(false);
                 }}
@@ -1723,7 +1739,7 @@ export function WorkspaceBrowser({
               archivedFilter={archivedFilter}
               onGroupPick={actions.setGroupBy}
               onOrderPick={(mode) => {
-                actions.setOrderBy(mode, activeSessionOrders);
+                actions.setOrderBy(mode, activeSessionOrders, orderSource);
               }}
               onArchivedFilterPick={actions.setArchivedFilter}
               t={t}

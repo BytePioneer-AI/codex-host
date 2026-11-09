@@ -1,3 +1,7 @@
+#[cfg(windows)]
+#[path = "support/windows_service.rs"]
+mod windows_service;
+
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -5,6 +9,10 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[cfg(windows)]
+#[path = "web_service/windows_background.rs"]
+mod windows_background;
 
 struct Fixture {
     root: PathBuf,
@@ -378,6 +386,10 @@ fn background_web_refreshes_only_enabled_autostart_without_printing_login_link()
 
 #[test]
 fn update_stop_leaves_console_and_remote_untouched() {
+    #[cfg(windows)]
+    if windows_service::run_in_service_job() {
+        return;
+    }
     let mut fixture = Fixture::new();
     assert!(fixture.run("ensure").status.success());
     fs::create_dir_all(fixture.root.join(".codexhost/remote")).unwrap();
@@ -407,6 +419,10 @@ fn update_stop_leaves_console_and_remote_untouched() {
 
 #[test]
 fn supervises_only_ready_web_and_serializes_ensure_and_stop() {
+    #[cfg(windows)]
+    if windows_service::run_in_service_job() {
+        return;
+    }
     let fixture = Fixture::new();
     let mut first = fixture.command("web-service", "ensure").spawn().unwrap();
     let second = fixture.run("ensure");
@@ -444,6 +460,10 @@ fn supervises_only_ready_web_and_serializes_ensure_and_stop() {
 
 #[test]
 fn connect_devices_flag_keeps_printed_login_and_ready_record_unchanged() {
+    #[cfg(windows)]
+    if windows_service::run_in_service_job() {
+        return;
+    }
     let fixture = Fixture::new();
     let plain = fixture
         .public_command("web")
@@ -485,6 +505,10 @@ fn connect_devices_flag_keeps_printed_login_and_ready_record_unchanged() {
 
 #[test]
 fn headless_web_saves_options_and_replaces_mismatched_services_without_exposing_tokens_in_status() {
+    #[cfg(windows)]
+    if windows_service::run_in_service_job() {
+        return;
+    }
     let fixture = Fixture::new();
     let result = fixture
         .public_command("web")
@@ -597,14 +621,16 @@ fn headless_web_saves_options_and_replaces_mismatched_services_without_exposing_
 
 #[test]
 fn stop_continues_after_failures_and_keeps_configuration() {
+    #[cfg(windows)]
+    if windows_service::run_in_service_job() {
+        return;
+    }
     let fixture = Fixture::new();
+    let started = fixture.public_command("web").output().unwrap();
     assert!(
-        fixture
-            .public_command("web")
-            .output()
-            .unwrap()
-            .status
-            .success()
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
     );
     fs::create_dir_all(fixture.root.join(".codexhost/remote")).unwrap();
     fs::write(fixture.root.join(".codexhost/remote/manifest.json"), "{}").unwrap();
@@ -615,11 +641,11 @@ fn stop_continues_after_failures_and_keeps_configuration() {
         fs::create_dir_all(&runtime).unwrap();
         fs::write(runtime.join("desktop-runtime-v1.json"), "invalid").unwrap();
     }
-    let stopped = fixture.public_command("stop").output().unwrap();
+    let _stopped = fixture.public_command("stop").output().unwrap();
     #[cfg(not(target_os = "windows"))]
     {
-        assert!(!stopped.status.success());
-        assert!(String::from_utf8_lossy(&stopped.stderr).contains("Remote: stop failed"));
+        assert!(!_stopped.status.success());
+        assert!(String::from_utf8_lossy(&_stopped.stderr).contains("Remote: stop failed"));
     }
     assert!(!fixture.root.join("web-service-ready.json").exists());
     assert!(!fixture.root.join("shared-host-ready.json").exists());
@@ -629,12 +655,14 @@ fn stop_continues_after_failures_and_keeps_configuration() {
             .join(".codexhost/remote/manifest.json")
             .exists()
     );
-    let events = fs::read_to_string(fixture.root.join("events")).unwrap();
     #[cfg(unix)]
-    assert!(
-        events.contains("web-stop\nhost-stop\nremote-stop\nconsole-stop\n"),
-        "{events}"
-    );
+    {
+        let events = fs::read_to_string(fixture.root.join("events")).unwrap();
+        assert!(
+            events.contains("web-stop\nhost-stop\nremote-stop\nconsole-stop\n"),
+            "{events}"
+        );
+    }
     let count = fixture.starts();
     thread::sleep(Duration::from_millis(1200));
     assert_eq!(fixture.starts(), count);
@@ -682,6 +710,10 @@ fn stopped_remote_installation_does_not_report_running_services_or_raw_json() {
 
 #[test]
 fn missing_host_entry_reports_failure_but_still_stops_web_and_console() {
+    #[cfg(windows)]
+    if windows_service::run_in_service_job() {
+        return;
+    }
     let fixture = Fixture::new();
     assert!(
         fixture
@@ -1033,6 +1065,10 @@ setInterval(() => {{
 
 #[test]
 fn background_web_reuses_saved_configuration_without_opening_a_window() {
+    #[cfg(windows)]
+    if windows_service::run_in_service_job() {
+        return;
+    }
     let fixture = Fixture::new();
     let started = fixture
         .public_command("web")
@@ -1062,6 +1098,10 @@ fn background_web_reuses_saved_configuration_without_opening_a_window() {
 
 #[test]
 fn desktop_update_recovery_prepares_host_even_with_web_disabled() {
+    #[cfg(windows)]
+    if windows_service::run_in_service_job() {
+        return;
+    }
     let fixture = Fixture::new();
     // The fixture has no Desktop installation. Host preparation must still precede
     // that launch error, without starting Web or touching a real Desktop process.
@@ -1082,6 +1122,10 @@ fn desktop_update_recovery_prepares_host_even_with_web_disabled() {
 
 #[test]
 fn update_recovery_and_stop_refuse_to_replace_another_installation() {
+    #[cfg(windows)]
+    if windows_service::run_in_service_job() {
+        return;
+    }
     let fixture = Fixture::new();
     assert!(fixture.run("ensure").status.success());
     let original = fixture.record("shared-host-ready.json");

@@ -9,6 +9,28 @@ import {
   type HarnessDisplaySet,
 } from "@codexhost/shared-contracts";
 
+/** A Windows reader/scanner can briefly deny replacement. Retry only a failed
+ * atomic rename of the same complete snapshot; never delete the destination. */
+async function replaceSnapshot(temporary: string, destination: string): Promise<void> {
+  const delays = [10, 30, 70, 150, 300];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(temporary, destination);
+      return;
+    } catch (error) {
+      const delay = delays[attempt];
+      const code = (error as NodeJS.ErrnoException).code;
+      if (
+        process.platform !== "win32" ||
+        delay === undefined ||
+        !["EPERM", "EACCES", "EBUSY"].includes(code ?? "")
+      )
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 /** Shared across local Host processes. Complete snapshots use last successful write wins. */
 export class HarnessDisplaySettingsStore {
   readonly #file: string;
@@ -88,7 +110,7 @@ export class HarnessDisplaySettingsStore {
           if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
         }
       } else {
-        await rename(temporary, this.#file);
+        await replaceSnapshot(temporary, this.#file);
       }
       const snapshot = await this.get();
       this.#publish(snapshot);

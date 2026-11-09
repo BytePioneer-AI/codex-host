@@ -59,6 +59,7 @@ Use the applicable repository-local skills below when their task occurs; they su
 | Overview table of a batch of PRs with a 1–5 recommendation score | [codexhost-pr-overview](.agents/skills/codexhost-pr-overview/SKILL.md) |
 | Reviewing a PR or local diff for correctness and boundaries | [codexhost-code-review](.agents/skills/codexhost-code-review/SKILL.md) |
 | Selecting local checks before pushing or claiming checks pass | [codexhost-pre-push-checks](.agents/skills/codexhost-pre-push-checks/SKILL.md) |
+| Testing runtime behavior in isolated Web, Host, Harness, or end-to-end environments | [codexhost-isolated-testing](.agents/skills/codexhost-isolated-testing/SKILL.md) |
 | Finding evidence-backed simplification candidates (read-only audit) | [codexhost-find-simplifications](.agents/skills/codexhost-find-simplifications/SKILL.md) |
 | Auditing comments and docs for reasoning-transcript leakage | [codexhost-trim-cot-leakage](.agents/skills/codexhost-trim-cot-leakage/SKILL.md) |
 

@@ -71,6 +71,22 @@
   }
 }
 
+/* Phone tracking and settling share one live offset. Never move or clip the
+   common panel root: fixed floating hosts must keep their viewport geometry. */
+.panel[data-sidebar-right-phone-motion] :global([data-dockkit-host="dock"]),
+.panel[data-sidebar-right-phone-motion] :global([data-dockkit-empty]),
+.panel[data-sidebar-right-phone-motion] :global([data-dockkit-divider]) {
+  transform: translateX(var(--dsh-rightbar-phone-x));
+  visibility: var(--dsh-rightbar-phone-visibility);
+  transition: none;
+}
+
+/* Collapsed content stays inert; its moving dock background can still be grabbed. */
+.panel[data-sidebar-right-phone-motion] :global([data-dockkit-host="dock"]),
+.panel[data-sidebar-right-phone-motion] :global([data-dockkit-empty]) {
+  pointer-events: auto;
+}
+
 .panel[data-sidebar-right-panel="fullscreen"] {
   --dsh-dockkit-dock-layer: 40;
 }

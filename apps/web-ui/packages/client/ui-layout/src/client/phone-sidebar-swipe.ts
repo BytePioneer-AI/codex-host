@@ -1,3 +1,46 @@
+/** Shared start-target guard; right-panel return gestures also allow buttons. */
+export function isPhoneSidebarGestureTarget(
+  frame: HTMLElement,
+  target: Element,
+  allowButtons = false,
+  point?: { x: number; y: number },
+): boolean {
+  if (!frame.contains(target)) return false;
+  if (
+    target.closest(
+      'input, textarea, select, a, [contenteditable]:not([contenteditable="false"]), [role="slider"], [data-phone-drawer], canvas, iframe, video, [data-sidebar-terminal], [data-dockkit-host="float"], [data-dockkit-divider], [data-dockkit-strip-tabs]',
+    ) ||
+    (!allowButtons && target.closest("button, [data-sidebar-right-session]"))
+  )
+    return false;
+  for (
+    let node: Element | null = target;
+    node !== null && node !== frame;
+    node = node.parentElement
+  ) {
+    const overflow = getComputedStyle(node).overflowX;
+    if (node.scrollWidth > node.clientWidth + 1 && /^(auto|scroll)$/.test(overflow)) return false;
+  }
+  // Inert content retargets touches to its moving background. Keep its protected
+  // regions excluded when grabbing a closing panel, even though they cannot focus.
+  if (point !== undefined) {
+    for (const child of target.querySelectorAll("[inert], [inert] *")) {
+      const rect = child.getBoundingClientRect();
+      if (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        point.x >= rect.left &&
+        point.x <= rect.right &&
+        point.y >= rect.top &&
+        point.y <= rect.bottom &&
+        !isPhoneSidebarGestureTarget(frame, child, allowButtons)
+      )
+        return false;
+    }
+  }
+  return true;
+}
+
 /** Single-finger navigation that yields to scrolling, editing and content-owned gestures. */
 export function bindPhoneSidebarSwipe(
   frame: HTMLElement,
@@ -29,27 +72,12 @@ export function bindPhoneSidebarSwipe(
     reset();
     if (event.touches.length !== 1 || !available()) return;
     const target = event.target;
-    if (!(target instanceof Element) || !frame.contains(target)) return;
     if (
-      target.closest(
-        'input, textarea, select, a, [contenteditable]:not([contenteditable="false"]), [role="slider"], [data-phone-drawer], canvas, iframe, video, [data-sidebar-terminal], [data-dockkit-host="float"], [data-dockkit-divider], [data-dockkit-strip-tabs]',
-      )
+      !(target instanceof Element) ||
+      !isPhoneSidebarGestureTarget(frame, target, surface === "rightbar")
     )
       return;
-    if (
-      surface === "main"
-        ? target.closest("button, [data-sidebar-right-session]") !== null
-        : !inRightbar(target)
-    )
-      return;
-    for (
-      let node: Element | null = target;
-      node !== null && node !== frame;
-      node = node.parentElement
-    ) {
-      const overflow = getComputedStyle(node).overflowX;
-      if (node.scrollWidth > node.clientWidth + 1 && /^(auto|scroll)$/.test(overflow)) return;
-    }
+    if (surface === "rightbar" && !inRightbar(target)) return;
     const touch = event.touches[0]!;
     gesture = {
       id: touch.identifier,
@@ -62,6 +90,8 @@ export function bindPhoneSidebarSwipe(
   };
   const onMove = (event: TouchEvent): void => {
     if (gesture === null) return;
+    // A direct drawer drag owns this sequence, including a later direction reversal.
+    if (event.defaultPrevented) return reset();
     if (frame.ownerDocument.getSelection()?.isCollapsed === false) return reset();
     const touch = event.touches[0];
     if (event.touches.length !== 1 || touch?.identifier !== gesture.id) return reset();
@@ -78,7 +108,14 @@ export function bindPhoneSidebarSwipe(
   const onEnd = (event: TouchEvent): void => {
     const active = gesture;
     reset();
-    if (active === null || !active.claimed || event.touches.length !== 0 || !available()) return;
+    if (
+      event.defaultPrevented ||
+      active === null ||
+      !active.claimed ||
+      event.touches.length !== 0 ||
+      !available()
+    )
+      return;
     if (!frame.contains(active.target) || (surface === "rightbar" && !inRightbar(active.target)))
       return;
     const touch = Array.from(event.changedTouches).find((touch) => touch.identifier === active.id);

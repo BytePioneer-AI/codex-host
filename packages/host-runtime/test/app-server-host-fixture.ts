@@ -269,6 +269,7 @@ export class ModernSessionImportAdapter extends FakeHarnessAdapter {
 export function createFixture(
   options: {
     sharedThreads?: SharedThreadBridge;
+    externalOnly?: boolean;
     environment?: NodeJS.ProcessEnv;
     pluginDirectory?: string;
     codexUsage?: boolean;
@@ -335,6 +336,7 @@ export function createFixture(
     ...(options.sharedThreads ? { sharedThreads: options.sharedThreads } : {}),
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
+    ...(options.externalOnly !== undefined ? { externalOnly: options.externalOnly } : {}),
     desktopInput,
     desktopOutput,
     diagnosticOutput,

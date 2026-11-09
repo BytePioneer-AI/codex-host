@@ -332,6 +332,7 @@ export function DirectoryBrowser({
   // Show-hidden toggle state (pure client-side filter, reset on each open).
   const [showHidden, setShowHidden] = useState(false);
   const [folderDraft, setFolderDraft] = useState<string | null>(null);
+  const newFolderRef = useRef<HTMLButtonElement>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const requestSeq = useRef(0);
@@ -870,6 +871,7 @@ export function DirectoryBrowser({
 
   return (
     <Modal
+      phoneSidebar
       open={open}
       // Escape and mask reach every mounted Modal's document listener; while
       // the nested create dialog is up only that topmost dialog may close
@@ -1086,6 +1088,7 @@ export function DirectoryBrowser({
         </div>
         <div className={css.footerBar}>
           <Button
+            ref={newFolderRef}
             variant="outline"
             icon={<IconPlusOutlineRegular size={14} />}
             disabled={parent === null || loading || parentInert || draftPending}
@@ -1145,9 +1148,14 @@ export function DirectoryBrowser({
       </div>
       {/* Nested create dialog (figma 813:23278): names one folder inside the target. */}
       <Modal
+        phoneSidebar
         open={folderDraft !== null}
         onClose={() => {
-          if (!creatingFolder) setFolderDraft(null);
+          if (creatingFolder) return;
+          setFolderDraft(null);
+          if (newFolderRef.current?.closest("[data-phone-sidebar-view]")) {
+            queueMicrotask(() => newFolderRef.current?.focus({ preventScroll: true }));
+          }
         }}
         title={t("browser.newFolder")}
         className={clsx(css.createDialog)}

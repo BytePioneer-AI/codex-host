@@ -111,7 +111,19 @@ async function subscribe(t: TestContext, base: string) {
   const response = await new Promise<IncomingMessage>((resolve) =>
     get(new URL("/plugins/events", base), { headers }, resolve),
   );
-  t.after(() => response.destroy());
+  let closing = false;
+  let failure: Error | undefined;
+  response.on("error", (error: Error) => {
+    if (!closing) failure = error;
+  });
+  const close = () => {
+    closing = true;
+    response.destroy();
+  };
+  t.after(() => {
+    close();
+    assert.ifError(failure);
+  });
   assert.equal(response.statusCode, 200);
   assert.equal(response.headers["content-type"], "text/event-stream");
   const graphs: { entries: { id: string }[] }[] = [];
@@ -130,9 +142,11 @@ async function subscribe(t: TestContext, base: string) {
   });
   return {
     response,
+    close,
     async contains(id: string, present: boolean) {
       const deadline = Date.now() + 5000;
       while (graphs.at(-1)?.entries.some((row) => row.id === id) !== present) {
+        assert.ifError(failure);
         assert.ok(Date.now() < deadline, "SSE graph did not converge");
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
@@ -210,7 +224,7 @@ it(
     assert.equal((await get("/test-host/resource")).status, 404);
     assert.ok(existsSync(pkg.directory));
     assert.doesNotMatch(await (await get("/")).text(), /plugin-injection|plugin-tap/);
-    first.response.destroy();
+    first.close();
     await rpc(url, "setEnabled", { id: pkg.id, enabled: true });
     await second.contains(pkg.id, true);
     const reconnected = await subscribe(t, url);
@@ -221,6 +235,8 @@ it(
     await reconnected.contains(pkg.id, false);
     assert.equal((await get("/test-host/resource")).status, 404);
     assert.equal(existsSync(pkg.directory), false);
+    second.close();
+    reconnected.close();
     const exited = once(child, "exit");
     child.kill("SIGTERM");
     await exited;

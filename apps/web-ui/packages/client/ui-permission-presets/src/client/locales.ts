@@ -43,6 +43,9 @@ export const en = {
 /** Simplified Chinese dictionary for the current-session popup gate. */
 export const accessZh = {
   mode: "访问模式，当前：{name}",
+  "codex.:read-only": "只读",
+  "codex.:workspace": "工作区写入",
+  "codex.:danger-full-access": "完全访问",
   "native.configuration": "原生配置",
   "native.configuration.description": "使用 Harness 原生权限配置，尚未匹配到已确认的权限模式。",
   "native.atCreate": "此 Harness 仅允许在创建原生会话前选择权限模式。",
@@ -76,6 +79,9 @@ export type PermissionAccessKey = keyof typeof accessZh;
 /** English dictionary for the current-session popup gate. */
 export const accessEn = {
   mode: "Access mode, current: {name}",
+  "codex.:read-only": "Read only",
+  "codex.:workspace": "Workspace write",
+  "codex.:danger-full-access": "Full access",
   "native.configuration": "Native configuration",
   "native.configuration.description":
     "Using the Harness's native permissions; no confirmed permission mode matches the catalog.",

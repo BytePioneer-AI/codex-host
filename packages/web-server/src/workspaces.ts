@@ -241,6 +241,92 @@ export class Workspaces {
     return workspace;
   }
 
+  /** Mirror one complete CH workspace snapshot, saving and publishing only final changes. */
+  syncReferencedSessions(
+    sessions: readonly { sessionId: string; cwd: string; title?: string }[],
+    groups: Map<string, string | undefined>,
+    projectless: ReadonlySet<string> = new Set(),
+  ): void {
+    const before = new Map(
+      this.list().map((workspace) => [workspace.workspaceId, JSON.stringify(workspace)]),
+    );
+    const items = this.state.items.map((workspace) => ({
+      ...workspace,
+      sessionIds: [...workspace.sessionIds],
+    }));
+    const byPath = new Map(items.map((workspace) => [workspace.path, workspace]));
+    const members = new Map<string, Set<string>>();
+    const now = new Date().toISOString();
+    for (const { sessionId, cwd, title } of sessions) {
+      let workspace = byPath.get(resolve(cwd));
+      if (!workspace) {
+        const expanded = cwd.startsWith("~") ? join(homedir(), cwd.slice(1)) : cwd;
+        if (!isAbsolute(expanded))
+          throw new RpcError("workspace/invalid-path", `Workspace path must be absolute: ${cwd}`, {
+            path: cwd,
+          });
+        const path = resolve(expanded);
+        workspace = byPath.get(path);
+        if (!workspace) {
+          workspace = {
+            workspaceId: randomUUID(),
+            path,
+            title: basename(path) || path,
+            sessionIds: [],
+            createdAt: now,
+            updatedAt: now,
+            origin: "codexhost",
+          };
+          items.push(workspace);
+          byPath.set(path, workspace);
+        }
+      }
+      if (title && workspace.origin !== "web") workspace.title = title;
+      let ids = members.get(workspace.workspaceId);
+      if (!ids) {
+        ids = new Set(workspace.sessionIds);
+        members.set(workspace.workspaceId, ids);
+      }
+      if (!ids.has(sessionId)) {
+        ids.add(sessionId);
+        workspace.sessionIds.push(sessionId);
+      }
+    }
+    let changed = false;
+    const originals = new Map(
+      this.state.items.map((workspace) => [workspace.workspaceId, workspace]),
+    );
+    for (const workspace of items) {
+      const original = originals.get(workspace.workspaceId);
+      if (
+        !original ||
+        original.title !== workspace.title ||
+        original.sessionIds.length !== workspace.sessionIds.length ||
+        original.sessionIds.some((id, index) => id !== workspace.sessionIds[index])
+      ) {
+        workspace.updatedAt = now;
+        changed = true;
+      }
+    }
+    if (changed) {
+      const state = { ...this.state, items };
+      this.data.writeJson(FILE, state);
+      this.state = state;
+    }
+    this.referenceGroups = groups;
+    this.referenceProjectless = projectless;
+    const after = this.list();
+    const ids = new Set(after.map((workspace) => workspace.workspaceId));
+    for (const workspaceId of before.keys())
+      if (!ids.has(workspaceId)) this.broadcast({ type: "remove", workspaceId });
+    for (const workspace of after)
+      if (before.get(workspace.workspaceId) !== JSON.stringify(workspace))
+        this.broadcast({ type: "upsert", workspace });
+    const workspaceIds = [...ids];
+    if (JSON.stringify([...before.keys()]) !== JSON.stringify(workspaceIds))
+      this.broadcast({ type: "order", workspaceIds });
+  }
+
   /** An actual Web submission makes its selected folder an explicit Web workspace. */
   selectReferenceWorkspace(cwd: string): void {
     const workspace = this.byPath(resolve(cwd)) ?? this.create(cwd, true).workspace;

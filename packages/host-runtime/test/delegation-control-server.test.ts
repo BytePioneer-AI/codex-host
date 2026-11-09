@@ -23,10 +23,11 @@ describe("delegation control server", () => {
       status: "running" as const,
       next: { read: "read", wait: "wait" },
     }));
+    const listHarnesses = vi.fn(async () => ({ harnesses: ["codex" as const, "pi" as const] }));
     const server = await startDelegationControlServer({
       token,
       api: {
-        listHarnesses: vi.fn(async () => ({ harnesses: ["codex" as const, "pi" as const] })),
+        listHarnesses,
         inspect: vi.fn(),
         start,
         send: vi.fn(),
@@ -62,8 +63,12 @@ describe("delegation control server", () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({ threadId: "thread-1" });
       expect(start).toHaveBeenCalledWith({ harnessId: "pi", task: "review", cwd: "/synthetic" });
-      const harnesses = await fetch(`${server.endpoint}/v1/harness/list`, authorized({}));
+      const harnesses = await fetch(
+        `${server.endpoint}/v1/harness/list`,
+        authorized({ parentThreadId: "caller" }),
+      );
       await expect(harnesses.json()).resolves.toEqual({ harnesses: ["codex", "pi"] });
+      expect(listHarnesses).toHaveBeenCalledWith({ parentThreadId: "caller" });
       expect(start).toHaveBeenCalledTimes(1);
     } finally {
       await server.close();

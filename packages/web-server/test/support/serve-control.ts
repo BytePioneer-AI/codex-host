@@ -1,9 +1,10 @@
 /** Writable fake CLI: never falls through to an installed Tailscale executable. */
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { RUNNING, SERVE_HOST } from "./tailscale.ts";
+import { nodeCommand } from "./node-command.ts";
 
 export function fakeServe(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), "web-serve-control-"));
@@ -11,10 +12,9 @@ export function fakeServe(t: TestContext) {
   const file = join(directory, "fixture.json");
   const log = join(directory, "calls");
   writeFileSync(log, "");
-  const command = join(directory, "tailscale");
-  writeFileSync(
-    command,
-    `#!${process.execPath}
+  const cli = nodeCommand(
+    "tailscale",
+    `
 const fs = require("node:fs");
 const file = ${JSON.stringify(file)};
 const args = process.argv.slice(2);
@@ -38,7 +38,6 @@ else if (args[0] === "serve") {
 } else process.exit(99);
 `,
   );
-  chmodSync(command, 0o755);
   const set = (serve: unknown = {}, extra: { noop?: boolean; failure?: string } = {}) =>
     writeFileSync(file, JSON.stringify({ status: RUNNING, serve, ...extra }));
   set();
@@ -49,6 +48,6 @@ else if (args[0] === "serve") {
       readFileSync(log, "utf8")
         .split("\n")
         .filter((line) => line && !line.endsWith("--json")),
-    environment: { PATH: directory },
+    environment: { PATH: cli.directory, ...cli.environment },
   };
 }

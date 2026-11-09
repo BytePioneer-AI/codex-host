@@ -525,6 +525,8 @@ export function RightbarSeat({
   width,
   viewportWidth,
   canShow,
+  bindSwipeNavigation,
+  setExpandedFromSwipe,
   useStore,
   actions,
   t,
@@ -550,6 +552,46 @@ export function RightbarSeat({
   const autoFullscreen = viewportWidth < 768;
   const fullscreen = autoFullscreen || surface?.layout.mode === "fullscreen";
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const swipe = useRef<ReturnType<RightbarSeatProps["bindSwipeNavigation"]> | null>(null);
+  const expanded = surface?.layout.expanded ?? false;
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+  const initialized = surface !== undefined;
+  useLayoutEffect(() => {
+    const element = panelRef.current;
+    if (!active || !initialized || element === null) return;
+    const binding = bindSwipeNavigation({
+      element,
+      expanded: expandedRef.current,
+      onExpandedChange: setExpandedFromSwipe,
+      paint: (offset, visible) => {
+        if (offset === null) {
+          element.removeAttribute("data-sidebar-right-phone-motion");
+          element.style.removeProperty("--dsh-rightbar-phone-x");
+          element.style.removeProperty("--dsh-rightbar-phone-visibility");
+        } else {
+          element.style.setProperty("--dsh-rightbar-phone-x", `${offset}px`);
+          element.style.setProperty(
+            "--dsh-rightbar-phone-visibility",
+            visible ? "visible" : "hidden",
+          );
+          element.setAttribute("data-sidebar-right-phone-motion", "");
+        }
+        // Dockkit already keeps collapsed tab sections inert. The unseeded empty
+        // host needs the same protection during a first-open preview, not floats.
+        for (const content of element.querySelectorAll<HTMLElement>("[data-dockkit-empty] > *"))
+          content.inert = offset !== null && !expandedRef.current;
+      },
+    });
+    swipe.current = binding;
+    return () => {
+      swipe.current = null;
+      binding.dispose();
+    };
+  }, [active, initialized, bindSwipeNavigation, setExpandedFromSwipe]);
+  useLayoutEffect(() => {
+    swipe.current?.setExpanded(expanded);
+  }, [expanded]);
   // A reading never re-renders anything: the service applies it when it splits.
   const reportRoom = useCallback(
     (fits: ReadonlyMap<PaneId, HalvesFit>): void => {

@@ -228,6 +228,13 @@ export function registerHarnessDiscovery(ctx: Context): void {
                 selected.set(row, { command, entry });
                 return row;
               });
+            if (catalog.warnings?.length && !query)
+              rows.push({
+                name: t("discovery.retry"),
+                value: "retry",
+                section: t("discovery.commands"),
+                description: catalog.warnings.join("\n"),
+              });
             if (catalog.source === "static" && !query)
               rows.push({
                 name: t("discovery.static"),

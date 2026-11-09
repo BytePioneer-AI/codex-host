@@ -69,14 +69,18 @@ export async function readNativeWorkspaceSnapshot(
   });
 }
 
-/** Combine read-only GUI facts with this owner's canonical no-project records. */
+/** Combine requested native GUI facts with this owner's canonical no-project records. */
 export async function readExternalWorkspaceSnapshot(
   environment: NodeJS.ProcessEnv,
   threads: readonly StoredThreadRecordV1[],
   placements: readonly StoredSectionPlacementV1[],
+  nativeThreadIds: readonly string[] = [],
 ): Promise<ClientWorkspaceSnapshot> {
   const snapshot = await readNativeWorkspaceSnapshot(environment);
-  const owned = new Set(threads.map((thread) => String(thread.hostThreadId)));
+  const owned = new Set([
+    ...threads.map((thread) => String(thread.hostThreadId)),
+    ...nativeThreadIds,
+  ]);
   const assignments = Object.fromEntries(
     Object.entries(snapshot.assignments).filter(([id]) => owned.has(id)),
   );

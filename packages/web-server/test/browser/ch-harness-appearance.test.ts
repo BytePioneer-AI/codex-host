@@ -37,16 +37,13 @@ for (const dark of [false, true])
                 },
               ],
             } as T;
-          if (method === "codexhost/thread/ownership/list")
-            return {
-              threads: (params.threadIds as string[]).map((id) => ({
-                threadId: id,
-                owner: "external",
-                harnessId: id === "claude" ? "claude-code" : "fake",
-              })),
-            } as T;
           return native<T>(method, params);
         };
+        host.threadOwnership = (threadId) => ({
+          threadId,
+          owner: "external",
+          harnessId: threadId === "claude" ? "claude-code" : "fake",
+        });
         const debug = await startFakeChDebugger(host);
         t.after(() => debug.close());
         const url = await startServer(

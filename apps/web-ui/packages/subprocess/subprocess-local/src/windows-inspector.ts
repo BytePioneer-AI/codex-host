@@ -10,6 +10,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { win32 } from "node:path";
 import type { SubprocessTerminalSignal } from "@deepseek-ai/dsh-subprocess";
 import { createLazyRequire } from "@deepseek-ai/dsh-lazy-require";
 import type { ProcessIdentity, ProcessInspector, ProcessSnapshot } from "./process-inspector.ts";
@@ -149,12 +150,16 @@ export function createWindowsProcessInspector(
 /** Terminate one Windows process tree with taskkill, contained like POSIX group signalling. */
 function taskkillTree(pid: number, force: boolean): void {
   if (pid <= 0) return;
-  // Outcome deliberately unchecked: an already-absent tree, exit races, and a
-  // missing taskkill binary are as tolerable here as ESRCH is for POSIX.
-  spawnSync("taskkill", ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])], {
-    stdio: "ignore",
-    windowsHide: true,
-  });
+  const systemRoot = process.env.SystemRoot ?? process.env.windir;
+  if (!systemRoot || !/^[A-Za-z]:[\\/]/u.test(systemRoot))
+    throw new Error("Windows SystemRoot is unavailable or invalid");
+  // Nonzero status can mean an exit race; the caller verifies process liveness.
+  const result = spawnSync(
+    win32.join(systemRoot, "System32", "taskkill.exe"),
+    ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])],
+    { stdio: "ignore", windowsHide: true },
+  );
+  if (result.error) throw result.error;
 }
 
 declare const nativePtr: unique symbol;

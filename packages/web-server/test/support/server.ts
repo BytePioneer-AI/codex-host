@@ -79,7 +79,7 @@ export async function startServer(
         CODEX_HOME: join(data, "codex"),
         CODEXHOST_CONSOLE_PORT: "4499",
         SSH_CONNECTION: "smoke",
-        PATH: tailscale ? `${dirname(tailscale.command)}:/usr/bin:/bin` : "/usr/bin:/bin",
+        PATH: tailscale?.environment.PATH ?? "/usr/bin:/bin",
         ...options.environment,
       },
       stdio: ["ignore", "pipe", "pipe"],

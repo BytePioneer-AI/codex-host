@@ -7,11 +7,6 @@ export const HARNESS_PLUGIN_MANIFEST_MAX_BYTES = 32 * 1024;
 export const HARNESS_PLUGIN_ICON_MAX_BYTES = 128 * 1024;
 export const HARNESS_PLUGIN_LIMIT = 128;
 
-/** Where the Host may present a plugin; never an execution, storage or trust scope. */
-export const HARNESS_PLUGIN_SURFACES = ["desktop", "web"] as const;
-export const harnessPluginSurfaceSchema = z.enum(HARNESS_PLUGIN_SURFACES);
-export type HarnessPluginSurface = z.infer<typeof harnessPluginSurfaceSchema>;
-
 /** Installed plugin identities are portable directory keys, not Native Session IDs. */
 export const installedHarnessPluginIdSchema = z
   .string()
@@ -134,14 +129,6 @@ const pluginPresentationShape = {
 };
 
 /** A manifest is data only. It must be validated before importing any plugin code. */
-export const harnessPluginSurfacesSchema = z
-  .array(harnessPluginSurfaceSchema)
-  .min(1)
-  .max(HARNESS_PLUGIN_SURFACES.length)
-  .refine((surfaces) => new Set(surfaces).size === surfaces.length, {
-    message: "Plugin surfaces must be unique",
-  });
-
 export const harnessPluginManifestSchema = z
   .object({
     manifestVersion: z.literal(1),
@@ -149,8 +136,6 @@ export const harnessPluginManifestSchema = z
     adapterApiVersion: z.number().int().positive(),
     entry: relativeResourceSchema,
     icon: relativeResourceSchema.optional(),
-    /** Omitted means the plugin appears in every surface; never inferred from its identity. */
-    surfaces: harnessPluginSurfacesSchema.optional(),
   })
   .strict();
 export type HarnessPluginManifest = z.infer<typeof harnessPluginManifestSchema>;

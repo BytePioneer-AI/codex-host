@@ -164,9 +164,6 @@ export function ConnectionCard({
       <span className={css.routeText}>
         <span className={css.routeTitle}>
           {t(LABEL[kind])}
-          {kind === "tailscale-https" && (
-            <span className={css.badge}>{t("connectDevices.recommended")}</span>
-          )}
           {isRelay(kind) && relay?.enabled && kind === relayMethod && (
             <span className={css.badge}>{t("connectDevices.relay.inUse")}</span>
           )}
@@ -369,6 +366,12 @@ export function ConnectionCard({
         <fieldset className={css.routes} disabled={busy}>
           <legend className={css.fieldTitle}>{t("connectDevices.connectVia")}</legend>
           <div className={css.routeGroup}>
+            {relay !== undefined && (
+              <>
+                {option("relay")}
+                {option("self-hosted-relay")}
+              </>
+            )}
             <div className={css.routeFamily}>
               {option("tailscale-https")}
               {tailscaleChosen && hasTailscaleIp && (
@@ -394,12 +397,6 @@ export function ConnectionCard({
                 </div>
               )}
             </div>
-            {relay !== undefined && (
-              <>
-                {option("relay")}
-                {option("self-hosted-relay")}
-              </>
-            )}
             {option("lan")}
           </div>
         </fieldset>

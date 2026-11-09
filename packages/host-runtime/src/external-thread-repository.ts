@@ -58,7 +58,6 @@ export interface ExternalThreadStore {
   replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1>;
   /** Optional so a Store without this knowledge simply filters nothing. */
   supersededNativeSessionIds?(harnessId: HarnessId): string[];
-  threadHarnessId?(hostThreadId: string): string | undefined;
   replaceReadySessionAfterLastTurn(
     input: ReplaceReadySessionAfterLastTurnInput,
   ): Promise<StoredThreadRecordV1>;
@@ -123,10 +122,7 @@ export function createProductionExternalThreadStore(
 }
 
 export class ExternalThreadRepository {
-  constructor(
-    private readonly store: ExternalThreadStore,
-    private readonly onSessionPublished?: (record: StoredThreadRecordV1) => Promise<void>,
-  ) {}
+  constructor(private readonly store: ExternalThreadStore) {}
 
   initialize(): Promise<void> {
     return this.store.initialize();
@@ -139,11 +135,6 @@ export class ExternalThreadRepository {
   /** Native Sessions a Thread of this Harness left behind when a message was edited or rolled back. */
   supersededNativeSessionIds(harnessId: HarnessId): ReadonlySet<string> {
     return new Set(this.store.supersededNativeSessionIds?.(harnessId) ?? []);
-  }
-
-  /** Synchronous owner lookup for routing decisions that must not delay official requests. */
-  harnessOf(threadId: string): string | undefined {
-    return this.store.threadHarnessId?.(threadId);
   }
 
   async find(threadId: string): Promise<StoredThreadRecordV1 | null> {
@@ -212,30 +203,12 @@ export class ExternalThreadRepository {
     return this.store.createProvisional(input);
   }
 
-  async commitNative(
+  commitNative(
     hostThreadId: HostThreadId,
     nativeSessionRef: NativeSessionRef,
     turnMappings: StoredTurnMappingV1[] = [],
   ): Promise<StoredThreadRecordV1> {
-    const previous = this.onSessionPublished ? await this.store.getThread(hostThreadId) : null;
-    const record = await this.store.commitReady({ hostThreadId, nativeSessionRef, turnMappings });
-    if (previous?.state === "creating" && (record.importSourceRef || record.forkSource)) {
-      this.#notifySessionPublished(record);
-    }
-    return record;
-  }
-
-  #notifySessionPublished(record: StoredThreadRecordV1): void {
-    if (
-      !this.onSessionPublished ||
-      record.ephemeral ||
-      record.subagent ||
-      record.importSourceRef?.nativeSessionId === record.nativeSessionRef?.nativeSessionId
-    )
-      return;
-    void Promise.resolve()
-      .then(() => this.onSessionPublished?.(record))
-      .catch(() => undefined);
+    return this.store.commitReady({ hostThreadId, nativeSessionRef, turnMappings });
   }
 
   setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1> {
@@ -305,17 +278,13 @@ export class ExternalThreadRepository {
     ) {
       throw new Error("Live Turn identity does not belong to the stored Thread");
     }
-    const updated = await this.store.upsertTurnMappings(record.hostThreadId, [
+    return this.store.upsertTurnMappings(record.hostThreadId, [
       {
         hostTurnId,
         nativeTurnRef,
         ...(nativeCheckpointRef ? { nativeCheckpointRef } : {}),
       },
     ]);
-    // An empty native Thread may have an ID without a persisted history file.
-    if (!record.importSourceRef && !record.forkSource && record.turnMappings.length === 0)
-      this.#notifySessionPublished(updated);
-    return updated;
   }
 
   async commitDerivedSnapshot(

@@ -54,7 +54,11 @@ function signalName(number: number | undefined): NodeJS.Signals | null {
  * the tracking a remote provider needs.
  */
 export class LocalTerminalHandle implements SubprocessTerminalHandle {
-  readonly pid: number;
+  private processId = 0;
+
+  get pid(): number {
+    return this.processId;
+  }
   readonly output = new PassThrough();
   readonly done: Promise<SubprocessOutcome>;
 
@@ -71,7 +75,7 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
   private quiescent = false;
   private managedRangeEmpty = false;
   /** The spawned shell's start identity; scans stop adopting members once the root pid no longer carries it. */
-  private readonly rootIdentity: ProcessIdentity | undefined;
+  private rootIdentity: ProcessIdentity | undefined;
 
   /**
    * @param terminal - allocated node-pty process.
@@ -90,15 +94,7 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
     private readonly onQuiescence?: () => void,
     private readonly observeShellExit = false,
   ) {
-    this.pid = terminal.pid;
-    try {
-      this.rootIdentity = inspector
-        .snapshot()
-        .tree(this.pid)
-        .find((member) => member.pid === this.pid);
-    } catch (_rootIdentityUnavailable) {
-      this.rootIdentity = undefined;
-    }
+    this.captureProcessIdentity();
     this.done = this.outcome.promise;
     const resume = (): void => {
       if (!this.outputPaused) return;
@@ -110,6 +106,7 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
       this.output.off("drain", resume);
     });
     this.dataDisposable = terminal.onData((data) => {
+      this.captureProcessIdentity();
       if (
         !this.output.write(Buffer.from(data, "utf8")) &&
         this.cleanup === undefined &&
@@ -145,6 +142,19 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
     });
   }
 
+  private captureProcessIdentity(): void {
+    if (this.processId > 0 || this.exited || this.terminal.pid <= 0) return;
+    this.processId = this.terminal.pid;
+    try {
+      this.rootIdentity = this.inspector
+        .snapshot()
+        .tree(this.processId)
+        .find((member) => member.pid === this.processId);
+    } catch (_rootIdentityUnavailable) {
+      this.rootIdentity = undefined;
+    }
+  }
+
   /** Whether node-pty has not yet published the top-level exit event. */
   get running(): boolean {
     return !this.exited;
@@ -167,6 +177,7 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
   // Local inspection is synchronous; the seam returns a promise for remote transports.
   // oxlint-disable-next-line typescript/require-await -- Preserve promise rejection semantics at the async provider contract.
   async inspectForeground(): Promise<SubprocessTerminalForeground | undefined> {
+    this.captureProcessIdentity();
     this.descendants(this.inspector.snapshot());
     const processGroupId = this.inspector.foregroundPgid(this.pid);
     if (processGroupId === undefined) return undefined;
@@ -178,6 +189,7 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
 
   // oxlint-disable-next-line typescript/require-await -- Local inspection is synchronous; SSH shares this promise interface.
   async inspectActivity(): Promise<SubprocessTerminalActivity> {
+    this.captureProcessIdentity();
     let state: SubprocessTerminalActivity["state"] = this.quiescent ? "idle" : "unknown";
     let revision = 0;
     if (!this.quiescent) {
@@ -280,6 +292,7 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
    * event. This does not claim quiescence and does not replace terminate().
    */
   terminateForHostExit(): void {
+    this.captureProcessIdentity();
     this.forceStopDescendants();
     this.forceStopShell();
     this.forceStopDescendants();
@@ -454,6 +467,14 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
   }
 
   private async closeOnce(): Promise<void> {
+    if (this.platform === "win32" && this.processId === 0 && !this.exited) {
+      // node-pty publishes the PID after its ConPTY worker connects (5s startup timeout).
+      const deadline = Date.now() + 5000;
+      while (this.terminal.pid <= 0 && !this.exited && Date.now() < deadline) await delay(10);
+      this.captureProcessIdentity();
+      if (this.processId === 0 && !this.exited)
+        throw new Error("terminal cleanup failed; ConPTY process is not ready");
+    }
     if (this.managedOwner !== undefined) {
       try {
         await this.closeManagedRange(this.managedOwner);

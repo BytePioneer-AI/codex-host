@@ -19,7 +19,7 @@ for (const [trigger, width] of [
       const reads = () =>
         host.requests.filter((r) => r.method === "codexhost/thread/commands/inspect");
       await composer.fill(trigger);
-      await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
+      await menu.getByRole("option", { name: "Alpha alpha-agent", exact: true }).waitFor();
       assert.equal(await menu.locator('[id*="codexhost-native"]').count(), 0);
       assert.equal(
         reads().length,
@@ -33,7 +33,7 @@ for (const [trigger, width] of [
       await open();
       await composer.fill(trigger);
       await menu.getByRole("option", { name: /^Native skill\b/ }).waitFor();
-      await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
+      await menu.getByRole("option", { name: "Alpha alpha-agent", exact: true }).waitFor();
       assert.equal(
         await menu.getByRole("option", { name: /^Model\b|^Permission\b|^File\b/ }).count(),
         0,
@@ -73,11 +73,11 @@ for (const [trigger, width] of [
       await attach();
       await composer.press("End");
       await composer.press(" ");
-      await composer.pressSequentially(`${trigger}codex-cli`);
-      await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
+      await composer.pressSequentially(`${trigger}alpha-agent`);
+      await menu.getByRole("option", { name: "Alpha alpha-agent", exact: true }).waitFor();
       await composer.press("Enter");
       const agent = composer.locator('[data-composer-chip="codexhost-delegation"]');
-      const icon = agent.locator('img[src="/harness-icons/codex-cli"]');
+      const icon = agent.locator('img[src="/harness-icons/alpha-agent"]');
       await icon.waitFor();
       await page.waitForFunction(() => {
         const image = document.querySelector<HTMLImageElement>(
@@ -85,14 +85,14 @@ for (const [trigger, width] of [
         );
         return image?.complete && image.naturalWidth > 0;
       });
-      assert.equal(await agent.innerText(), "Codex");
+      assert.equal(await agent.innerText(), "Alpha");
       assert.equal(writeMethods().length, 0);
       await composer.press("ControlOrMeta+A");
       await composer.press("ControlOrMeta+C");
       const text = await page.evaluate(() => navigator.clipboard.readText());
       assert.ok(text.includes("subagent://codexhost-command.native-skill"));
-      assert.ok(text.includes("subagent://codexhost.codex-cli"));
-      assert.equal(text.includes(`${trigger}codex-cli`), false);
+      assert.ok(text.includes("subagent://codexhost.alpha-agent"));
+      assert.equal(text.includes(`${trigger}alpha-agent`), false);
       const submitted = page.waitForResponse((response) =>
         response.url().endsWith("/api/session/prompt"),
       );
@@ -109,7 +109,7 @@ for (const [trigger, width] of [
       assert.ok(restored.includes("kept.txt:"));
       assert.ok(restored.includes("before"));
       assert.ok(restored.includes("after"));
-      assert.ok(restored.includes("subagent://codexhost.codex-cli"));
+      assert.ok(restored.includes("subagent://codexhost.alpha-agent"));
       await composer.fill(`body ${trigger}compact`);
       await attach();
       await menu.getByRole("option", { name: /^Compact\b/ }).waitFor();
@@ -149,10 +149,10 @@ it(
   async (t) => {
     const { page, composer, menu, open, writeMethods } = await discoveryBrowser(t, 1280, true);
     await open();
-    await composer.fill("delegate #codex-cli");
-    await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).click();
+    await composer.fill("delegate #alpha-agent");
+    await menu.getByRole("option", { name: "Alpha alpha-agent", exact: true }).click();
     const chip = composer.locator('[data-composer-chip="codexhost-delegation"]');
-    const icon = chip.locator('img[src="/harness-icons/codex-cli"]');
+    const icon = chip.locator('img[src="/harness-icons/alpha-agent"]');
     await icon.waitFor();
     await composer.press("ControlOrMeta+Z");
     assert.equal(await chip.count(), 0);
@@ -161,10 +161,10 @@ it(
     await composer.press("ControlOrMeta+A");
     await composer.press("ControlOrMeta+C");
     const text = await page.evaluate(() => navigator.clipboard.readText());
-    assert.equal(text.trim(), "delegate [@Codex](subagent://codexhost.codex-cli)");
+    assert.equal(text.trim(), "delegate [@Alpha](subagent://codexhost.alpha-agent)");
     await page.reload();
     await icon.waitFor();
-    assert.equal(await chip.innerText(), "Codex");
+    assert.equal(await chip.innerText(), "Alpha");
     await composer.click();
     await composer.press("ControlOrMeta+A");
     await composer.press("ControlOrMeta+C");
@@ -232,7 +232,7 @@ it(
     state.failure = "Hash fixture catalog failure";
     await composer.fill("#");
     await menu.getByRole("option", { name: /Retry native commands/ }).waitFor();
-    await menu.getByRole("option", { name: "Codex codex-cli", exact: true }).waitFor();
+    await menu.getByRole("option", { name: "Alpha alpha-agent", exact: true }).waitFor();
     state.failure = "";
     await menu.getByRole("option", { name: /Retry native commands/ }).click();
     await menu.getByRole("option", { name: /^Compact\b/ }).waitFor();

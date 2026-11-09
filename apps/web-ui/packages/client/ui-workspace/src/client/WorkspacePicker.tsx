@@ -9,13 +9,14 @@
  * occupant's own create-folder affordance already covers creating one.
  */
 import type { ReactNode, RefObject } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Button,
   IconFolderCloseRegular,
   IconPlusOutlineRegular,
   Menu,
   Modal,
+  usePhoneSidebar,
   type MenuEntry,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type {
@@ -93,6 +94,8 @@ export function WorkspacePickFlow({
   const [errorOpen, setErrorOpen] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
   const [flowOpen, setFlowOpen] = useState(false);
+  const phoneSidebar = usePhoneSidebar();
+  const phoneFlowOrigin = useRef(false);
   const [pickingFolder, setPickingFolder] = useState(false);
   // One picking interaction at a time: while the flow is open (native chooser
   // pending, browse dialog up) or its pick is being adopted, every other
@@ -168,11 +171,12 @@ export function WorkspacePickFlow({
       });
 
   const openDirectoryFlow = useCallback((): void => {
+    phoneFlowOrigin.current = phoneSidebar?.open === true;
     onClose();
     setErrorOpen(false);
     setModalError(null);
     setFlowOpen(true);
-  }, [onClose]);
+  }, [onClose, phoneSidebar?.open]);
 
   // A menu exists to disambiguate between targets. With no workspaces listed
   // and the add action the only entry left, the anchor gesture IS that action:
@@ -243,6 +247,8 @@ export function WorkspacePickFlow({
       )}
       {renderDirectoryFlow(flowOwner)}
       <Modal
+        phoneSidebar
+        phoneSidebarOrigin={phoneFlowOrigin.current}
         open={errorOpen}
         onClose={closeModal}
         closeLabel={t("close")}

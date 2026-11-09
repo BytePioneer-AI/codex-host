@@ -63,6 +63,7 @@ import type { ModelSelectInjected } from "./slots.ts";
 import css from "./ModelSelect.module.css";
 import { orderModelProviders } from "./provider-order.ts";
 import { isModelRoute } from "./fast-model.ts";
+import { en, type ModelKey } from "./locales.ts";
 
 /** The primary Thinking card stays mounted while its Model sibling is open. */
 type Pane = "root" | "model";
@@ -209,29 +210,32 @@ export function ModelSelect({
   const currentChoice = choices[selectedIndex];
   const reasoning = currentChoice?.model.reasoning;
   const effectiveEffort = state.current?.reasoningEffort ?? reasoning?.defaultEffort;
-  const effortLabel =
-    reasoning === undefined
-      ? state.retainedEffort
-      : effectiveEffort === undefined
-        ? t("effort.providerDefault")
-        : (reasoning.efforts.find((level) => level.id === effectiveEffort)?.name ??
-          effectiveEffort);
   const effortChoices = useMemo<readonly EffortChoice[]>(
     () =>
       reasoning === undefined
         ? []
         : [
-            ...(reasoning.defaultEffort === undefined
+            ...(reasoning.defaultEffort === undefined && currentChoice?.group.id !== "codex"
               ? [{ key: "provider-default", effort: undefined, label: t("effort.providerDefault") }]
               : []),
-            ...reasoning.efforts.map((effort: ModelReasoningEffort) => ({
-              key: `effort:${effort.id}`,
-              effort: effort.id,
-              label: effort.name,
-            })),
+            ...reasoning.efforts.map((effort: ModelReasoningEffort) => {
+              const key = `codex.effort.${effort.id}` as ModelKey;
+              return {
+                key: `effort:${effort.id}`,
+                effort: effort.id,
+                label:
+                  currentChoice?.group.id === "codex" && Object.hasOwn(en, key)
+                    ? t(key)
+                    : effort.name,
+              };
+            }),
           ],
-    [reasoning, t],
+    [reasoning, currentChoice?.group.id, t],
   );
+  const effortLabel =
+    reasoning === undefined
+      ? state.retainedEffort
+      : (effortChoices.find((level) => level.effort === effectiveEffort)?.label ?? effectiveEffort);
   const { pending } = state;
   const busy = pending !== null;
 

@@ -154,6 +154,74 @@ const initialization = {
   capabilities: { experimentalApi: true },
 };
 
+it("projects resolution IDs per client and retires another client's answered request", async () => {
+  const f = fixture();
+  const a = f.attach(),
+    b = f.attach();
+  try {
+    await f.owner.start();
+    await a.client.initialize(initialization);
+    await b.client.initialize(initialization);
+    f.gate.initialized();
+    const request = {
+      id: 17,
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-one" },
+    };
+    f.connection(0, 0).emit(request);
+    f.connection(0, 1).emit(request);
+    await vi.waitFor(() =>
+      expect(b.output.some((message) => message.method === request.method)).toBe(true),
+    );
+    const aId = a.output.find((message) => message.method === request.method)?.id;
+    const bId = b.output.find((message) => message.method === request.method)?.id;
+    if (typeof aId !== "string" || typeof bId !== "string")
+      throw new Error("Missing projected request");
+    expect(aId).not.toBe(bId);
+    await a.client.send({ id: aId, result: { decision: "accept" } });
+    f.connection(0, 1).emit({ method: "serverRequest/resolved", params: { requestId: 17 } });
+    await vi.waitFor(() =>
+      expect(b.output).toContainEqual({
+        method: "serverRequest/resolved",
+        params: { requestId: bId },
+      }),
+    );
+    await expect(b.client.send({ id: bId, result: { decision: "accept" } })).rejects.toThrow(
+      "Retired",
+    );
+  } finally {
+    await f.owner.stop();
+    a.client.close();
+    b.client.close();
+  }
+});
+
+it("does not treat resumed historical inProgress Turns as active work on this backend", async () => {
+  const f = fixture();
+  const { client } = f.attach();
+  try {
+    await f.owner.start();
+    await client.initialize(initialization);
+    f.gate.initialized();
+    f.connection().setResponse((request) => ({
+      id: request.id ?? null,
+      result:
+        request.method === "thread/resume"
+          ? { thread: { id: "thread-one", turns: [{ id: "stale-turn", status: "inProgress" }] } }
+          : { turn: { id: "new-turn", status: "inProgress" } },
+    }));
+    await client.request("thread/resume", { threadId: "thread-one" });
+    expect(f.owner.hasActiveWork).toBe(false);
+    await client.request("turn/start", { threadId: "thread-one", input: [] });
+    expect(f.owner.hasActiveWork).toBe(true);
+    f.connection().emit({ method: "turn/completed", params: { threadId: "thread-one" } });
+    await vi.waitFor(() => expect(f.owner.hasActiveWork).toBe(false));
+  } finally {
+    await f.owner.stop();
+    client.close();
+  }
+});
+
 describe("owned loopback backend", () => {
   it("requires readiness, hashes capability authentication, and discards managed stderr", async () => {
     const child = Object.assign(new EventEmitter(), {

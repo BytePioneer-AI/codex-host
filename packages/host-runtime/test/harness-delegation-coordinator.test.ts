@@ -818,4 +818,47 @@ describe("HarnessDelegationCoordinator", () => {
       await value.close();
     }
   });
+  it("starts work for an external client as its own origin and lists it by that origin", async () => {
+    const metadata = vi.fn(async () => undefined);
+    const value = await fixture(undefined, metadata);
+    try {
+      await expect(
+        value.coordinator.start({
+          harnessId: "pi",
+          task: "triage",
+          parentThreadId: "client:grok-bot",
+        }),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: expect.stringContaining("--cwd"),
+      });
+
+      const input = {
+        harnessId: "pi" as const,
+        task: "triage issue 12",
+        cwd: "/synthetic",
+        parentThreadId: "client:grok-bot",
+      };
+      const result = await value.coordinator.start(input);
+      expect(result).toMatchObject({ parentThreadId: "client:grok-bot", status: "running" });
+      // No parent title exists, so the client's name takes its place.
+      await expect(value.repository.find(result.threadId)).resolves.toMatchObject({
+        title: "triage issue 12 · grok-bot",
+      });
+      expect(metadata).not.toHaveBeenCalled();
+      // A retry from the same client within the window returns the same child.
+      await expect(value.coordinator.start(input)).resolves.toMatchObject({
+        threadId: result.threadId,
+      });
+      await expect(
+        value.coordinator.list({
+          parentThreadId: "client:grok-bot",
+          limit: 25,
+          sort: "created-desc",
+        }),
+      ).resolves.toMatchObject({ threads: [{ threadId: result.threadId }] });
+    } finally {
+      await value.close();
+    }
+  });
 });

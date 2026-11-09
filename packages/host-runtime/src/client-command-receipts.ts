@@ -62,7 +62,7 @@ export class ClientCommandReceipts {
     void result.then(
       (reply) => {
         entry.settled = true;
-        if ("error" in reply && [-32602, -32072].includes(reply.error.code))
+        if ("error" in reply && [-32600, -32602, -32072].includes(reply.error.code))
           this.entries.delete(key); // Validation/busy: definitely not submitted.
         if (
           "result" in reply &&

@@ -275,7 +275,7 @@ console.log(JSON.stringify({ launch: typeof chromium.launchPersistentContext, as
     );
     assert.equal(received.env.NODE_OPTIONS, undefined);
     assert.equal(received.env.NODE_PATH, undefined);
-    assert.equal(received.args[received.args.indexOf("--harness") + 1], "claude-code");
+    assert.equal(received.args[received.args.indexOf("--harness") + 1], "claude-code,codex");
     assert.equal(
       received.args[received.args.indexOf("--adapters") + 1],
       realpathSync(join(preview, "adapters")),
@@ -285,7 +285,6 @@ console.log(JSON.stringify({ launch: typeof chromium.launchPersistentContext, as
 
     for (const [id, kind] of [
       ["pi", "session"],
-      ["codex-cli", "session"],
       ["opencode", "session"],
       ["usage", "usage"],
     ] as const) {
@@ -303,7 +302,7 @@ console.log(JSON.stringify({ launch: typeof chromium.launchPersistentContext, as
       { cwd: root, env: previewEnv },
     );
     const all = JSON.parse(allStdout) as { args: string[]; env: NodeJS.ProcessEnv };
-    assert.equal(all.args[all.args.indexOf("--harness") + 1], "claude-code,codex-cli,opencode,pi");
+    assert.equal(all.args[all.args.indexOf("--harness") + 1], "claude-code,codex,opencode,pi");
     const { stdout: defaultStdout } = await exec(process.execPath, [join(preview, "preview.mjs")], {
       cwd: root,
       env: previewEnv,
@@ -315,11 +314,11 @@ console.log(JSON.stringify({ launch: typeof chromium.launchPersistentContext, as
     assert.equal(all.args.includes("--import-recent"), false);
     const { stdout: codexStdout } = await exec(
       process.execPath,
-      [join(preview, "preview.mjs"), "--harness", "codex-cli"],
+      [join(preview, "preview.mjs"), "--harness", "codex"],
       { cwd: root, env: previewEnv },
     );
     const codex = JSON.parse(codexStdout) as { args: string[]; env: NodeJS.ProcessEnv };
-    assert.equal(codex.args[codex.args.indexOf("--harness") + 1], "codex-cli");
+    assert.equal(codex.args[codex.args.indexOf("--harness") + 1], "codex");
     assert.equal(codex.args.includes("--codex-command"), false);
     assert.equal(codex.args.includes("--codex-home"), false);
     for (const id of ["missing", "usage"]) {

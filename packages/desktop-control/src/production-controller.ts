@@ -296,16 +296,6 @@ export async function runDesktopController(
     attachmentServer = await dependencies.startAttachmentServer({
       port: options.attachmentPort,
       nonce: options.attachmentNonce,
-      invalidateThreadCatalog: async () => {
-        if (signal.aborted) return;
-        try {
-          await session?.executeRenderer(
-            "window.__codexhostRendererBindingProbeV1?.invalidateThreadCatalog?.()",
-          );
-        } catch {
-          // Catalog hints do not acquire, recover, or activate a Renderer Session.
-        }
-      },
       remoteConnections: async (request) => {
         // Serialize session recovery, not the native request: the renderer can await Host
         // responses while other settings reads run. Never retry a submitted mutation.

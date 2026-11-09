@@ -80,11 +80,16 @@ export function sharedHostDesktop(
   request?: IncomingMessage,
 ): RemoteAppServerSession {
   const { environment, arguments: nativeArguments } = desktopContext(options.environment, request);
+  let startup: Promise<void> | undefined;
   if (nativeArguments) {
     const stockCodexPath = environment.CODEXHOST_STOCK_CODEX_PATH ?? options.stockCodex;
     if (!path.isAbsolute(stockCodexPath))
       throw new Error("Desktop requires an absolute native Codex executable");
-    options.official.configureStartup({ stockCodexPath, arguments: nativeArguments, environment });
+    startup = options.official.configureStartup({
+      stockCodexPath,
+      arguments: nativeArguments,
+      environment,
+    });
   }
   const runtime = environment.CODEXHOST_HOST_RUNTIME_PATH;
   const runtimePath = runtime && path.isAbsolute(runtime) ? runtime : undefined;
@@ -126,6 +131,7 @@ export function sharedHostDesktop(
   });
   return {
     run: async () => {
+      await startup;
       options.connected.add(host);
       const running = host.run();
       options.running.add(running);

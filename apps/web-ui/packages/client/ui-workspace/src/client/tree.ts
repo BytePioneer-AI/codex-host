@@ -470,10 +470,17 @@ export function deriveGroups(
 /**
  * Select complete flat-list membership, independently of archive visibility.
  * @param list - sessions list snapshot.
- * @returns known ordinary Session ids, including archives and excluding blank drafts.
+ * @param archivedSessionIds - known archive IDs whose unloaded order slots must survive.
+ * @returns ordinary Session ids and unloaded archive slots, excluding known blank drafts.
  */
-export function sessionMemberIds(list: SessionListState): SessionId[] {
-  return visibleSessionIds(list, [], "show");
+export function sessionMemberIds(
+  list: SessionListState,
+  archivedSessionIds: readonly SessionId[] = [],
+): SessionId[] {
+  return [
+    ...visibleSessionIds(list, [], "show"),
+    ...archivedSessionIds.filter((id) => list.byId[id] === undefined),
+  ];
 }
 
 /**

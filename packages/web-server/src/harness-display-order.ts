@@ -20,10 +20,9 @@ export async function readHarnessDisplayEntries(directory: string): Promise<Harn
 }
 
 /**
- * Web has no official Codex; the local Codex CLI takes the leading place Desktop gives it.
- * A Harness that is not installed is absent from the catalog and so never leads.
+ * Official Codex leads when available; absent entries never lead.
  */
-const WEB_LEADING_HARNESS = "codex-cli";
+const WEB_LEADING_HARNESS = "codex";
 
 function leadingFirst<T extends { id: string }>(items: readonly T[]): T[] {
   return [

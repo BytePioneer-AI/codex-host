@@ -75,6 +75,50 @@
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
 
+/* The existing hero/active composer stacking contexts hold the material behind
+   the card. Blur on this background-only pseudo-element leaves fixed overlays
+   viewport-anchored and does not create a new stacking context on the card. */
+@supports (backdrop-filter: blur(14px)) or (-webkit-backdrop-filter: blur(14px)) {
+  :global([data-phone]) .card {
+    background: transparent;
+    box-shadow: none;
+  }
+
+  :global([data-phone]) .card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: color-mix(in srgb, var(--dsw-specific-input-major) 24%, transparent);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, var(--dsw-alias-bg-layer-3) 65%, transparent),
+      var(--dsw-elevation-soft),
+      0 8px 24px -12px var(--dsw-alias-bg-mask-2);
+    pointer-events: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  :global([data-phone]) .card {
+    background: var(--dsw-specific-input-major);
+    box-shadow: var(--dsw-elevation-soft);
+  }
+
+  :global([data-phone]) .card::before {
+    display: none;
+  }
+}
+
+@media (prefers-contrast: more), (forced-colors: active) {
+  :global([data-phone]) .card:not(.cardWorkspaceTrigger) {
+    outline: 1px solid var(--dsw-alias-label-primary);
+    outline-offset: -1px;
+  }
+}
+
 /* No-workspace trigger state: an inset 1px dashed outline marks the card as a
    workspace picker rather than a live composer. Keeping the complete stroke
    inside the rounded box prevents clipped corner pixels from reading heavier. */
@@ -136,7 +180,7 @@
   height: 0;
 }
 
-/* The draft's scrollport, and the ONLY scrolling box in the composer. The
+/* The draft's vertical scrollport. The
    contenteditable grows with its content inside; the 14-line cap lives here
    because this is the box the cap describes. */
 .scroll {
@@ -438,6 +482,117 @@
   color: inherit;
   font-size: 12px;
   cursor: pointer;
+}
+
+.addSeat,
+.submitSeat,
+.controlScroll {
+  display: contents;
+}
+
+/* Only AppFrame's phone posture changes the layout. The middle scrollport
+   stops before both fixed seats, so no opaque backing is needed over glass.
+   It must not establish a containing block: the absolute seats belong to
+   .row, outside this descendant scrollport's overflow clip. */
+.row[data-phone-toolbar] {
+  flex-wrap: nowrap;
+  position: relative;
+  gap: 4px;
+}
+
+.row[data-phone-toolbar] .controlScroll {
+  --dsh-composer-edge-gap: 4px;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: inherit;
+  min-width: 0;
+  min-height: 44px;
+  margin-left: calc(var(--dsh-composer-start-width, 44px) + var(--dsh-composer-edge-gap));
+  margin-right: calc(var(--dsh-composer-end-width, 44px) + var(--dsh-composer-edge-gap));
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.row[data-phone-toolbar] .controlScroll::-webkit-scrollbar {
+  display: none;
+}
+
+.row[data-phone-toolbar] .tools:not([hidden]),
+.row[data-phone-toolbar] .trailing:not(.trailingActive) {
+  display: contents;
+}
+
+.row[data-phone-toolbar] .tools > *,
+.row[data-phone-toolbar] [data-slot="conversation.input.left"] > * {
+  flex-shrink: 0;
+}
+
+.row[data-phone-toolbar] button:focus-visible {
+  outline-offset: -2px;
+}
+
+.row[data-phone-toolbar] .modes,
+.row[data-phone-toolbar] .standardControls {
+  flex: none;
+  gap: 4px;
+  width: max-content;
+}
+
+.row[data-phone-toolbar] .standardControls {
+  margin-left: 0;
+}
+
+.row[data-phone-toolbar] .addSeat,
+.row[data-phone-toolbar] .submitSeat {
+  position: absolute;
+  inset-block: 2px 6px;
+  z-index: 1;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.row[data-phone-toolbar] .addSeat {
+  left: 8px;
+}
+
+.row[data-phone-toolbar] .submitSeat {
+  right: 8px;
+  margin-left: 0;
+}
+
+/* Transparent borders keep the existing 28/30px themed circles inside
+   separate 44px targets, including simultaneous Stop and Send. */
+.row[data-phone-toolbar] .add,
+.row[data-phone-toolbar] .primary {
+  box-sizing: border-box;
+  width: 44px;
+  height: 44px;
+  background-clip: padding-box;
+}
+
+.row[data-phone-toolbar] .add {
+  border: 8px solid transparent;
+}
+
+.row[data-phone-toolbar] .primary {
+  border: 7px solid transparent;
+}
+
+/* Voice/activity takeover uses the resident desktop groups in normal flow. */
+.row[data-phone-toolbar][data-toolbar-activity] .controlScroll {
+  display: contents;
+}
+
+.row[data-phone-toolbar][data-toolbar-activity] .submitSeat {
+  position: static;
+}
+
+.row[data-actions-overflow] [data-composer-overflow-action] {
+  display: none;
 }
 
 .standardControls {

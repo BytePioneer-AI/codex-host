@@ -38,7 +38,8 @@ async function setup(t: TestContext, host: FakeChHost = new FakeChChannel()) {
   assert.ok((await list()).ok);
   await tick(100);
   host.requests.length = 0;
-  const directoryReads = () => host.requests.filter((r) => r.method === "thread/list");
+  const directoryReads = () =>
+    host.requests.filter((r) => r.method === "codexhost/thread/catalog/read");
   return { host, row, workspaces, sessions, rpc, events, tick, list, directoryReads, root };
 }
 
@@ -61,11 +62,7 @@ it("keeps project and pin synchronization without rescanning the event catalog e
   for (let i = 0; i < 4; i++) await b.tick(10_000);
   assert.equal(b.directoryReads().length, 0);
   await b.tick(10_000);
-  assert.equal(
-    b.directoryReads().length,
-    2,
-    "a complete active/archive check remains every minute",
-  );
+  assert.equal(b.directoryReads().length, 1, "an unarchived catalog check remains every minute");
   assert.ok(b.workspaces.ownerOf("missed-notification"));
 });
 
@@ -83,7 +80,7 @@ it("refreshes on lifecycle notifications and reconnect instead of waiting for th
     host.requests.length = 0;
     host.changed("thread", method);
     await b.tick(100);
-    assert.equal(b.directoryReads().length, 2, method);
+    assert.equal(b.directoryReads().length, 1, method);
   }
   host.connection(false);
   await b.tick(60_000);
@@ -91,7 +88,7 @@ it("refreshes on lifecycle notifications and reconnect instead of waiting for th
   host.add("while-offline", b.root);
   host.connection(true);
   await b.tick(100);
-  assert.equal(b.directoryReads().length, 2);
+  assert.equal(b.directoryReads().length, 1);
   assert.ok(b.workspaces.ownerOf("while-offline"));
 });
 
@@ -116,7 +113,7 @@ it("waits for an organization read before satisfying a concurrent full refresh",
   assert.equal(reads, 1, "a pending organization read does not overlap another poll");
   release();
   assert.ok((await full).ok);
-  assert.equal(b.directoryReads().length, 2);
+  assert.equal(b.directoryReads().length, 1);
   assert.equal(reads, 2, "the requested full refresh still reads its own current snapshot");
 });
 
@@ -155,8 +152,8 @@ it("retains confirmed organization on failure and ignores a read after close", a
 it("keeps the ten-second full catalog check for legacy CDP", async (t) => {
   const b = await setup(t, new FakeChHost());
   await b.tick(10_000);
-  assert.equal(b.directoryReads().length, 2);
-  assert.ok(b.host.requests.some((r) => r.method === "codexhost/thread/ownership/list"));
+  assert.equal(b.directoryReads().length, 1);
+  assert.ok(b.directoryReads().every((r) => r.params.includeArchived === false));
 });
 
 it("publishes confirmed catalog changes before an optional pin service answers", async (t) => {

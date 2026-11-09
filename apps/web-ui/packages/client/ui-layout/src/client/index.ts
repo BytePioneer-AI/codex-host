@@ -135,8 +135,16 @@ export interface SidebarOwnerProps {
 
 /** Right column owner share: resolved normal geometry and opening eligibility. */
 export interface RightbarOwnerProps {
-  /** Bind phone swipes to open from the main panel and close from the right panel; returns cleanup. */
-  bindSwipeNavigation: (open: () => void, close: () => void) => () => void;
+  /** Bind the active panel's phone motion; null offset restores its ordinary presentation. */
+  bindSwipeNavigation: (surface: {
+    readonly element: HTMLElement;
+    readonly expanded: boolean;
+    readonly paint: (offset: number | null, visible: boolean) => void;
+    readonly onExpandedChange: (expanded: boolean) => void;
+  }) => {
+    readonly setExpanded: (expanded: boolean) => void;
+    readonly dispose: () => void;
+  };
   /** Resolved normal panel width in px, not the saved preference; zero if it cannot fit. */
   width: number;
   /** Current frame width in px. */

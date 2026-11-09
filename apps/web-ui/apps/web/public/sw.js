@@ -12,9 +12,11 @@ self.addEventListener("fetch", (event) => {
   if (event.request.mode === "navigate") event.respondWith(navigate(event.request));
 });
 
+const requestTimeout = 10_000;
+
 async function navigate(request) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
+  const timer = setTimeout(() => controller.abort(), requestTimeout);
   try {
     const response = await fetch(request, { signal: controller.signal });
     return [502, 503, 504].includes(response.status) ? offlineResponse() : response;
@@ -27,25 +29,32 @@ async function navigate(request) {
 
 function offlineResponse() {
   const zh = navigator.language.startsWith("zh");
-  const computer = zh
-    ? ["无法连接到电脑", "请确认电脑开机，并且 Web 正在运行。"]
-    : ["Unable to connect to your computer", "Make sure your computer is on and Web is running."];
+  const title = zh ? "正在连接…" : "Connecting…";
+  const connecting = zh
+    ? "正在自动重连，连接恢复后将继续打开。"
+    : "Reconnecting automatically. Your page will open when ready.";
   const network = zh
-    ? ["网络已断开", "请检查这台设备的网络连接。"]
-    : ["You are offline", "Check this device's network connection."];
+    ? "等待网络恢复，将自动重连。"
+    : "Waiting for your network. We'll reconnect automatically.";
+  const help = zh
+    ? "连接耗时较长，请检查网络并确认电脑上的 Web 正在运行。"
+    : "This is taking longer than expected. Check your network and that Web is running on your computer.";
   return new Response(
     `<!doctype html>
 <html lang="${zh ? "zh" : "en"}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${computer[0]}</title>
+  <title>${title}</title>
   <style>
     :root { color-scheme: light dark; font-family: system-ui, sans-serif; color: #202124; background: #f7f7f8; }
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; }
-    main { width: 100%; max-width: 440px; }
-    h1 { font-size: 1.5rem; }
+    main { width: 100%; max-width: 440px; text-align: center; }
+    h1 { font-size: 1.25rem; }
+    .spinner { width: 28px; height: 28px; margin: auto; border: 3px solid #8884; border-top-color: currentColor; border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
     p { line-height: 1.6; }
     #address { overflow-wrap: anywhere; font-size: 0.875rem; color: #5f6368; }
     button { font: inherit; padding: 12px 24px; border: 1px solid #767676; border-radius: 8px; color: inherit; background: transparent; cursor: pointer; }
@@ -57,42 +66,64 @@ function offlineResponse() {
 </head>
 <body>
   <main>
-    <h1 id="title">${computer[0]}</h1>
-    <p id="description"></p>
-    <p id="address"></p>
+    <div class="spinner" aria-hidden="true"></div>
+    <h1>${title}</h1>
+    <p id="description" role="status"></p>
+    <div id="help" hidden>
+      <p>${help}</p>
+      <p id="address"></p>
+    </div>
     <button type="button" id="retry">${zh ? "重试" : "Retry"}</button>
   </main>
   <script>
+    let pending = false;
+    let navigating = false;
+    let retryTimer;
+    let retryDelay = 1000;
     function updateDescription() {
-      const [title, description] = navigator.onLine
-        ? ${JSON.stringify(computer)}
+      document.getElementById("description").textContent = navigator.onLine
+        ? ${JSON.stringify(connecting)}
         : ${JSON.stringify(network)};
-      document.title = title;
-      document.getElementById("title").textContent = title;
-      document.getElementById("description").textContent = description;
     }
     async function probe() {
+      if (pending || navigating) return;
+      clearTimeout(retryTimer);
+      pending = true;
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5000);
+      const timer = setTimeout(() => controller.abort(), ${requestTimeout});
       try {
         const response = await fetch(location.href, { cache: "no-store", signal: controller.signal });
-        if (![502, 503, 504].includes(response.status)) location.reload();
+        void response.body?.cancel().catch(() => {});
+        if (![502, 503, 504].includes(response.status)) {
+          navigating = true;
+          location.reload();
+        }
       } catch {
-        // Network errors and timeouts leave the offline page in place.
+        // Keep the loading state while the connection recovers.
       } finally {
         clearTimeout(timer);
+        pending = false;
+        if (!navigating) {
+          retryTimer = setTimeout(probe, retryDelay);
+          retryDelay = Math.min(retryDelay * 2, 10000);
+        }
       }
     }
+    function retry() {
+      retryDelay = 1000;
+      probe();
+    }
     document.getElementById("address").textContent = location.href;
-    document.getElementById("retry").addEventListener("click", probe);
+    document.getElementById("retry").addEventListener("click", retry);
     updateDescription();
-    setInterval(probe, 10000);
+    setTimeout(() => { document.getElementById("help").hidden = false; }, 30000);
+    probe();
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") probe();
+      if (document.visibilityState === "visible") retry();
     });
     window.addEventListener("online", () => {
       updateDescription();
-      probe();
+      retry();
     });
     window.addEventListener("offline", updateDescription);
     navigator.serviceWorker.addEventListener("message", (event) => {

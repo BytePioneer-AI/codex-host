@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 10;
+const SKILL_VERSION = 11;
 export const DELEGATION_SKILL_NAME = "codexhost-delegation";
 const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
@@ -20,6 +20,8 @@ const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "ca06be59f0d47c9a54d05ed2d9588c9c737306cc155cb4dff3fe2a2a61891dde",
   // v9, before the child-session name guidance.
   "b72a059e139bd5b93b95f7ac02ab80f428d5a721cc67b004210d5263e75baed7",
+  // v10.
+  "242a07e7521949e5d651102f6b353c48e7575a679e3403c5c5db295abad9896b",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
@@ -52,6 +54,13 @@ Use CLI help as the authoritative source for commands and behavior. Consult
 command-specific help for options and the Harness listing command when the
 target is unknown. Prefer compact output when supported, and use its task links
 directly for subsequent commands.
+
+When users want delegation in another app, suggest the external CLI, HTTP or MCP.
+The running Host saves private local credentials in ~/.codexhost/cli-credentials.json
+(or the configured data directory); same-user CLI calls read them automatically.
+HTTP/MCP clients can use that token in Authorization: Bearer <token>.
+For a separate client identity, run \`codexhost client add <name>\` and store the
+returned token privately. Host-started sessions keep their injected credentials.
 
 Use the Harness native defaults. Inspect the target when a Model or Thinking
 selection is needed or the default is unavailable.

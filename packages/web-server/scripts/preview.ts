@@ -49,9 +49,12 @@ const available = readdirSync(adapters, { withFileTypes: true })
 const requested = values.harness ?? "all";
 const harness =
   requested === "all"
-    ? available
-        .filter(({ manifest }) => manifest.kind !== "usage")
-        .map(({ manifest }) => manifest.id)
+    ? [
+        "codex",
+        ...available
+          .filter(({ manifest }) => manifest.kind !== "usage")
+          .map(({ manifest }) => manifest.id),
+      ]
         .sort()
         .join(",")
     : requested;
@@ -63,6 +66,7 @@ const launch = previewLaunch(
 const selected = launch.args[launch.args.indexOf("--harness") + 1] as string;
 for (const id of selected.split(",")) {
   if (
+    id !== "codex" &&
     !available.some(
       ({ directory, manifest }) =>
         directory === id && manifest.id === id && manifest.kind !== "usage",

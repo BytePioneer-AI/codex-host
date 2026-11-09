@@ -19,6 +19,21 @@ import {
 } from "./delegation-watch-store.js";
 import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 import { startDelegationControlServer } from "./delegation-control-server.js";
+import {
+  ExternalClientRegistry,
+  codexhostDataDirectory,
+  defaultExternalClientsPath,
+} from "./external-clients.js";
+import { ClientEventLog, eventRetentionDays } from "./external-client-events.js";
+import { externalClientMcp } from "./external-client-mcp.js";
+import { externalClientEventStream, externalClientRouter } from "./external-client-routes.js";
+import { FileThreadRefsStore } from "./thread-refs.js";
+import {
+  externalClientDescriptorPath,
+  externalClientPort,
+  startExternalClientServer,
+  type ExternalClientServer,
+} from "./external-client-server.js";
 import { installDelegationSkills } from "./delegation-skill.js";
 import type { DelegationControlRegistration } from "./delegation-types.js";
 import { readRemoteDelegationThread } from "./remote-delegation-read.js";
@@ -150,6 +165,8 @@ export function delegationCliEnvironment(
 export async function prepareDelegationRuntime(input: {
   environment: NodeJS.ProcessEnv;
   hostRuntimePath?: string;
+  /** Only the local Runtime serves external clients; a managed remote Host does not. */
+  externalClients?: boolean;
   createHost(
     environment: NodeJS.ProcessEnv,
     onDelegationApi: (api: DelegationControlRegistration) => (() => void) | undefined,
@@ -160,6 +177,10 @@ export async function prepareDelegationRuntime(input: {
     process.stderr.write(
       `codexhost delegation watch: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
     );
+  const events = new ClientEventLog({
+    directory: path.join(codexhostDataDirectory(input.environment), "client-events"),
+    retentionDays: eventRetentionDays(input.environment),
+  });
   const registry = new DelegationControlRegistry({
     remoteRead: (request) => readRemoteDelegationThread(input.environment, request),
     diagnose: diagnoseWatch,
@@ -167,9 +188,26 @@ export async function prepareDelegationRuntime(input: {
       defaultDelegationWatchDirectory(input.environment),
       diagnoseWatch,
     ),
+    refs: new FileThreadRefsStore(
+      path.join(codexhostDataDirectory(input.environment), "thread-refs"),
+    ),
+    clientEvents: events,
   });
   const token = randomBytes(32).toString("hex");
   const server = await startDelegationControlServer({ token, api: registry, watchApi: registry });
+  const externalServer = input.externalClients
+    ? await startExternalClients(input.environment, registry, events).then(
+        (started) => {
+          if (started)
+            process.stderr.write(`codexhost external clients: listening on ${started.endpoint}\n`);
+          return started;
+        },
+        (error: unknown) => {
+          process.stderr.write(`codexhost external clients: ${String(error)}\n`);
+          return undefined;
+        },
+      )
+    : undefined;
   const environment = {
     ...input.environment,
     ...delegationCliEnvironment(input.environment, input.hostRuntimePath),
@@ -193,8 +231,31 @@ export async function prepareDelegationRuntime(input: {
     return await input.createHost(environment, (value) => registry.register(value), registry);
   } finally {
     registry.close();
+    await externalServer?.close();
     await server.close();
   }
+}
+
+async function startExternalClients(
+  environment: NodeJS.ProcessEnv,
+  registry: DelegationControlRegistry,
+  events: ClientEventLog,
+): Promise<ExternalClientServer | undefined> {
+  const port = externalClientPort(environment);
+  if (port === undefined) return undefined;
+  const clients = new ExternalClientRegistry(defaultExternalClientsPath(environment));
+  const route = externalClientRouter({ api: registry, watchApi: registry, events });
+  return startExternalClientServer({
+    port,
+    clients,
+    route,
+    streams: {
+      "/v1/events": externalClientEventStream(events, clients),
+      "/mcp": externalClientMcp(route),
+    },
+    descriptorPath: externalClientDescriptorPath(environment),
+    diagnose: (message) => process.stderr.write(`codexhost external clients: ${message}\n`),
+  });
 }
 
 /**
@@ -305,6 +366,7 @@ export async function runHostRuntime(input: {
     return prepareDelegationRuntime({
       environment,
       ...(hostRuntimePath ? { hostRuntimePath } : {}),
+      externalClients: true,
       createHost: async (delegationEnvironment, onDelegationApi, registry) => {
         const official = await prepareLocalCodex({
           stockCodexPath,

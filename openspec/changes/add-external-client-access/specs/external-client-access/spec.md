@@ -48,7 +48,7 @@ Host Runtime SHALL 在 `127.0.0.1` 的固定端口上提供外部客户端监听
 - **AND** 响应 MUST NOT 透露哪些客户端名称存在
 
 ### Requirement: 外部客户端可以作为委派来源
-外部客户端 SHALL 可以调用现有全部委派与 Thread 操作，语义与输出形状与 CLI 一致。客户端未指定父 Thread 发起 `delegate start` 时，Host SHALL 创建以该客户端为来源的 Thread，并持久记录来源；指定父 Thread 时按现有父子血缘处理。以客户端为来源的 Thread SHALL 像其他 Thread 一样出现在 Desktop 侧栏，可由用户打开接管。
+外部客户端 SHALL 可以调用现有全部委派与 Thread 操作，语义与输出形状与 CLI 一致。客户端未指定父 Thread 发起 `delegate start` 时，Host SHALL 创建以该客户端为来源的 Thread，并持久记录来源；指定父 Thread 时按现有父子血缘处理。以客户端为来源的 Thread SHALL 像其他 Thread 一样出现在 Desktop 侧栏，可由用户打开接管，标题为“子任务名 · 客户端名”。
 
 #### Scenario: 客户端发起无父 Thread 的委派
 - **WHEN** 客户端 `grok-bot` 执行 `delegate start --harness codex --cwd <dir> --task <text>` 且未提供 `--parent-thread`
@@ -57,7 +57,7 @@ Host Runtime SHALL 在 `127.0.0.1` 的固定端口上提供外部客户端监听
 
 #### Scenario: 客户端发起的 Thread 在侧栏可见
 - **WHEN** 客户端发起的 Thread 已创建
-- **THEN** 用户 SHALL 能在 Desktop 侧栏的对应工作目录下看到并打开它
+- **THEN** 用户 SHALL 能在 Desktop 侧栏看到并打开它：工作目录属于 Desktop 已有项目时在该项目下，否则在“最近”中
 - **AND** 打开后 SHALL 可以像普通 Thread 一样继续对话或接管
 
 #### Scenario: 多个 Host 会话时的路由

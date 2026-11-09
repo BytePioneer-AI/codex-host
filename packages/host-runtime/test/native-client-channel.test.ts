@@ -81,7 +81,14 @@ it("serves client inspection and snapshots from confirmed configuration without 
   };
   expect(
     await channel.request("codexhost/thread/inspect", { threadId: "native-thread" }),
-  ).toMatchObject({ result: { owner: "codex", locked: false, ...before } });
+  ).toMatchObject({
+    result: {
+      owner: "codex",
+      locked: false,
+      ...before,
+      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+    },
+  });
   expect(request).toHaveBeenCalledExactlyOnceWith("thread/resume", {
     threadId: "native-thread",
     excludeTurns: true,
@@ -113,6 +120,86 @@ it("serves client inspection and snapshots from confirmed configuration without 
   expect(calls.filter((method) => method === "thread/resume")).toHaveLength(1);
 });
 
+it("registers a native fork's subscription and actual configuration on the child, not the source", async () => {
+  const { channel, request, events } = snapshotChannel();
+  const inspect = (threadId: string) => channel.request("codexhost/thread/inspect", { threadId });
+  const source = await inspect("native-thread");
+  const changed = vi.spyOn(events, "changed");
+  const params = { threadId: "native-thread", lastTurnId: "turn-1", excludeTurns: true };
+  const fork = {
+    result: {
+      thread: { ...thread, id: "forked-thread", forkedFromId: "native-thread" },
+      model: "child-model",
+      serviceTier: "priority",
+      reasoningEffort: "low",
+      activePermissionProfile: { id: ":read-only" },
+    },
+  };
+  request.mockResolvedValueOnce(fork);
+  expect(await channel.request("thread/fork", params)).toEqual(fork);
+  expect(request).toHaveBeenLastCalledWith("thread/fork", params);
+  expect(changed).toHaveBeenCalledExactlyOnceWith("forked-thread", "thread/fork");
+  expect(await inspect("forked-thread")).toMatchObject({
+    result: {
+      effectiveModel: encodeOfficialCodexModelRef("child-model", "priority"),
+      effectiveThinkingOptionId: "low",
+      effectivePermissionModeId: ":read-only",
+    },
+  });
+  expect(await inspect("native-thread")).toEqual(source);
+  expect(request).toHaveBeenCalledTimes(2);
+  request.mockResolvedValueOnce({ result: { turn: { id: "child-turn", status: "inProgress" } } });
+  await channel.request("turn/start", { threadId: "forked-thread", input: [] });
+  expect(request).toHaveBeenLastCalledWith("turn/start", { threadId: "forked-thread", input: [] });
+  expect(request.mock.calls.filter(([method]) => method === "thread/resume")).toHaveLength(1);
+});
+
+it.each<NativeClientReply>([
+  { error: { code: -32602, message: "Unknown fork boundary" } },
+  { result: {} },
+  { result: { thread, model: "must-not-replace-source" } },
+])(
+  "does not replace source configuration or publish a child without a distinct fork identity",
+  async (reply) => {
+    const { channel, request, events } = snapshotChannel();
+    const source = await channel.request("codexhost/thread/inspect", { threadId: "native-thread" });
+    const changed = vi.spyOn(events, "changed");
+    request.mockResolvedValueOnce(reply);
+    expect(
+      await channel.request("thread/fork", { threadId: "native-thread", lastTurnId: "turn-1" }),
+    ).toEqual(reply);
+    expect(changed).not.toHaveBeenCalled();
+    expect(
+      await channel.request("codexhost/thread/inspect", { threadId: "native-thread" }),
+    ).toEqual(source);
+    expect(request).toHaveBeenCalledTimes(2);
+  },
+);
+
+it("does not retain or retry a fork response from a retired native generation", async () => {
+  const { channel, request, events } = snapshotChannel();
+  const changed = vi.spyOn(events, "changed");
+  request.mockImplementationOnce(async () => {
+    channel.resetGeneration();
+    return { result: { thread: { ...thread, id: "forked-thread" }, model: "retired-model" } };
+  });
+  expect(
+    await channel.request("thread/fork", { threadId: "native-thread", lastTurnId: "turn-1" }),
+  ).toMatchObject({ error: { code: -32094, message: expect.stringContaining("Do not retry") } });
+  expect(changed).not.toHaveBeenCalled();
+  expect(request).toHaveBeenCalledOnce();
+  request.mockResolvedValueOnce({
+    result: { thread: { ...thread, id: "forked-thread" }, model: "confirmed-model" },
+  });
+  expect(
+    await channel.request("codexhost/thread/inspect", { threadId: "forked-thread" }),
+  ).toMatchObject({ result: { effectiveModel: encodeOfficialCodexModelRef("confirmed-model") } });
+  expect(request).toHaveBeenLastCalledWith("thread/resume", {
+    threadId: "forked-thread",
+    excludeTurns: true,
+  });
+});
+
 it.each([
   { code: -32600, message: "thread native-thread already has a live local writer" },
   { code: -32000, message: "resume unavailable" },
@@ -123,7 +210,7 @@ it.each([
     result: {
       owner: "codex",
       locked: false,
-      history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
     },
   });
   expect(request).toHaveBeenCalledExactlyOnceWith("thread/resume", {

@@ -65,6 +65,7 @@ const METHODS = new Set([
   "thread/revert",
   "thread/start",
   "thread/resume",
+  "thread/fork",
   "thread/name/set",
   "thread/archive",
   "thread/unarchive",

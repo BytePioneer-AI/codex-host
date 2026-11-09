@@ -4,7 +4,7 @@ Web 与 Codex Desktop 在同一仓库开发，浏览器通过 `packages/web-serv
 
 ### 本机原生 Codex 会话
 
-已有原生 Codex 会话不需要“导入”即可查看历史、续聊、停止当前 Turn、重命名和归档。浏览器只是同一运行时的客户端，不为每个原生会话启动新的 `codex app-server`，也不把原生 ID 转成外部 Harness ID。消息、任务状态和待处理交互通过共享通道重新同步；断线后不自动重发结果未知的写请求。模型、Thinking 和权限可在 Web 切换，仅在官方 `thread/settings/updated` 确认后显示已生效；权限选项来自官方档案列表。官方 Thread 支持共享队列、`/compact`、`/review`、Skill 菜单、置顶和用量，Web 不开放其 Fork 或历史回退。
+已有原生 Codex 会话不需要“导入”即可查看历史、续聊、停止当前 Turn、重命名和归档。浏览器只是同一运行时的客户端，不为每个原生会话启动新的 `codex app-server`，也不把原生 ID 转成外部 Harness ID。消息、任务状态和待处理交互通过共享通道重新同步；断线后不自动重发结果未知的写请求。模型、Thinking 和权限可在 Web 切换，仅在官方 `thread/settings/updated` 确认后显示已生效；权限选项来自官方档案列表。官方 Thread 支持共享队列、`/compact`、`/review`、Skill 菜单、同目录 Fork、置顶和用量，Web 不开放其历史回退。
 
 Codex 的 Fast 闪电仅在官方 `model/list` 为当前 Model 的 `serviceTiers` 声明 `priority` 时显示，不根据 Model 名、Thinking 或旧 `additionalSpeedTiers` 推断能力。普通和 Fast 复用公共 `fastModel` 引用契约，对应同一原生 Model；Host 将开启转换为 `serviceTier: "priority"`，显式关闭转换为 `serviceTier: null`。未指定 Model 选择时不覆盖官方默认或恢复配置。创建响应、恢复响应和 `thread/settings/updated` 中确认的档位决定选中状态，Desktop 的配置变化也会同步。
 
@@ -374,9 +374,9 @@ Web 的 `user/message` seq 和分页 Turn 坐标只用于解析当前内存展�
 
 ### 普通会话 Fork
 
-共享模式的侧栏“分叉会话”和消息尾部“在新对话中分支”通过 `session/fork` 转发至 CH 的 `codexhost/thread/fork`。侧栏选择最近已结束的轮次；消息入口必须对应当前内存历史窗口中的精确 `turn/end`，Web 将展示坐标映射成 canonical `lastTurnId`，包括已向前分页的历史，不把局部序号当成原生 ID，也不自动改到相邻轮次。过期窗口、空历史、草稿和不支持 Fork 的 Thread 明确拒绝；具体 checkpoint 是否可用及运行期间是否允许派生仍由 CH/Adapter 判断。
+共享模式的侧栏“分叉会话”和消息尾部“在新对话中分支”通过 `session/fork` 按 Thread 归属转发：官方 Codex 使用原生 `thread/fork`，外部 Harness 使用 CH 的 `codexhost/thread/fork`。侧栏选择最近已结束的轮次；消息入口必须对应当前内存历史窗口中的精确 `turn/end`，Web 将展示坐标映射成 canonical `lastTurnId`，包括已向前分页的历史，不把局部序号当成原生 ID，也不自动改到相邻轮次。过期窗口、空历史、草稿和不支持 Fork 的 Thread 明确拒绝；具体 checkpoint 是否可用及运行期间是否允许派生仍由 CH/Adapter 判断。
 
-只实现原执行目录中的普通 Fork，不创建 worktree、不传 cwd 覆盖、不新建 Web 历史副本。CH 负责原生派生、身份及持久化，确认后 Web 刷新目录并使用返回的 Thread ID 打开新会话。两个点击入口均显示失败原因；请求结果未知时不自动重试。Fork 已确认后目录刷新失败不改报创建失败，后续目录同步恢复可见性。客户端仍沿用既有的派生标题更新；标题更新失败不回滚已创建的 Thread。
+只实现原执行目录中的普通 Fork，不创建 worktree、不传 cwd 覆盖、不新建 Web 历史副本。CH 负责原生派生、身份及持久化，确认后 Web 刷新目录并使用返回的独立 Thread ID 打开新会话。官方 Codex 的派生会话保持官方身份并与 Desktop 共用，模型、Thinking、Fast 和权限以原生 Fork 响应确认为准，不覆盖来源会话配置。两个点击入口均显示失败原因；请求结果未知时不自动重试。Fork 已确认后目录刷新失败不改报创建失败，后续目录同步恢复可见性。客户端仍沿用既有的派生标题更新；标题更新失败不回滚已创建的 Thread。
 
 ### 编辑调用与本轮文件变更
 

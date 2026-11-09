@@ -36,6 +36,7 @@ import { nativeThreadSkillInput } from "./codex-runtime/native-thread-controls.j
 const OFFICIAL_METHODS: Readonly<Record<string, "native" | "host">> = {
   "thread/read": "native",
   "thread/resume": "native",
+  "thread/fork": "native",
   "thread/turns/list": "native",
   "thread/items/list": "native",
   "thread/name/set": "native",

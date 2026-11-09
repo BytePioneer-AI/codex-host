@@ -25,7 +25,7 @@ afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 
-it("routes official and external queue, configuration, command, pin and usage methods by owner", async () => {
+it("routes official and external fork, queue, configuration, command, pin and usage methods by owner", async () => {
   const fixture = createFixture();
   cleanup.push(() => stopFixture(fixture));
   const external = await startPiThread(fixture);
@@ -61,6 +61,7 @@ it("routes official and external queue, configuration, command, pin and usage me
     submit,
   });
   for (const method of [
+    "thread/fork",
     "thread/queue/list",
     "thread/queue/add",
     "thread/queue/update",
@@ -70,13 +71,24 @@ it("routes official and external queue, configuration, command, pin and usage me
   ]) {
     request.mockClear();
     submit.mockClear();
-    const params = { threadId: "official", queuedSubmissionId: "queued" };
+    const params = {
+      threadId: "official",
+      ...(method === "thread/fork"
+        ? { lastTurnId: "native-cut", excludeTurns: true }
+        : { queuedSubmissionId: "queued" }),
+    };
     await host.handleClientRequest(method, params);
     expect(request).toHaveBeenLastCalledWith(method, params);
     expect(submit).not.toHaveBeenCalled();
     await host.handleClientRequest(method, { ...params, threadId: external });
     expect(submit).toHaveBeenLastCalledWith(method, { ...params, threadId: external }, undefined);
   }
+  expect(await host.handleClientRequest("thread/fork", {})).toMatchObject({
+    error: { code: -32602, message: "threadId is required" },
+  });
+  expect(
+    await host.handleClientRequest("codexhost/thread/fork", { threadId: "official" }),
+  ).toMatchObject({ error: { code: -32078 } });
   for (const method of [
     "codexhost/thread/model/select",
     "codexhost/thread/thinking/select",
@@ -296,7 +308,10 @@ it("uses official profiles and waits for settings confirmation; forwards command
           { id: "custom-profile", label: "custom-profile", description: "Custom" },
         ],
       },
-      capabilities: { configuration: { selectPermissionMode: true } },
+      capabilities: {
+        configuration: { selectPermissionMode: true },
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+      },
     },
   });
   expect(inspection).toHaveProperty("result.catalog.thinkingOptions", [

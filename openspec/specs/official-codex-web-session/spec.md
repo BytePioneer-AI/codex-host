@@ -56,7 +56,7 @@ Web 先于 Desktop 启动官方后台时，Host SHALL 使用最近一次记录�
 - **THEN** Host 不中断该 Turn，保留现有后台并记录诊断
 
 ### Requirement: Web 操作官方 Codex Thread 的能力
-Web SHALL 对官方 Codex Thread 提供模型、Thinking、权限、排队消息、`/compact`、`/review`、Skill 菜单、置顶和会话用量。配置 MUST 以官方目录和官方确认结果为准，未确认时不得显示为已生效。
+Web SHALL 对官方 Codex Thread 提供模型、Thinking、权限、排队消息、`/compact`、`/review`、Skill 菜单、同目录 Fork、置顶和会话用量。配置 MUST 以官方目录和官方确认结果为准，未确认时不得显示为已生效。
 
 #### Scenario: 切换模型
 - **WHEN** 用户在官方 Thread 中切换模型或 Thinking
@@ -83,6 +83,15 @@ Web SHALL 对官方 Codex Thread 提供模型、Thinking、权限、排队消息
 #### Scenario: 置顶和用量
 - **WHEN** 用户置顶官方 Thread 或查看其用量
 - **THEN** 操作成功，结果与 Desktop 一致
+
+#### Scenario: 分叉官方 Thread
+- **WHEN** 用户从侧栏或已结束轮次分叉官方 Thread
+- **THEN** 官方 Codex 创建同目录的独立 Thread，精确保留选定轮次及之前的历史，来源 Thread 保持不变
+- **AND** 派生 Thread 与 Desktop 共用官方身份，生效配置以原生返回为准，不写入来源 Thread 的配置
+
+#### Scenario: 分叉结果未知
+- **WHEN** 官方 Fork 的响应断开或未确认独立 Thread ID
+- **THEN** Web 显示未确认原因，不自动重试、不重发历史消息，也不降级为外部 Harness 创建
 
 ### Requirement: 官方服务端请求不悬挂
 Web SHALL 回答审批、非密码提问和表单式询问。对 Web 不能回答的请求，没有 Desktop 连接时 Host MUST 立即返回错误并在会话中提示；有 Desktop 连接时 MUST 不回答，交由 Desktop 处理。

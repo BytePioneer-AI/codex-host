@@ -453,10 +453,11 @@ export class NativeClientChannel {
   private observeResponse(method: string, params: JsonObject, reply: NativeClientReply): void {
     if ("error" in reply) return;
     const thread = resultThread(reply);
+    const opensThread = ["thread/resume", "thread/start", "thread/fork"].includes(method);
+    if (method === "thread/fork" && thread?.id === params.threadId) return;
     if (thread && typeof thread.id === "string") {
       this.noteThread(thread.id);
-      if (method === "thread/resume" || method === "thread/start")
-        this.#resumedThreads.add(thread.id);
+      if (opensThread) this.#resumedThreads.add(thread.id);
     }
     const threadId = threadIdFromParams(params);
     if (threadId) {
@@ -464,10 +465,12 @@ export class NativeClientChannel {
       if (method === "thread/resume") this.#resumedThreads.add(threadId);
       if (method === "thread/archive") this.#resumedThreads.delete(threadId);
     }
-    const configuredThreadId = threadId ?? (typeof thread?.id === "string" ? thread.id : undefined);
-    if ((method === "thread/resume" || method === "thread/start") && configuredThreadId) {
+    const configuredThreadId =
+      typeof thread?.id === "string" ? thread.id : method === "thread/fork" ? undefined : threadId;
+    if (opensThread && configuredThreadId) {
       const result = resultObject(reply);
       this.#configuration.set(configuredThreadId, nativeThreadConfiguration(result ?? {}));
+      if (method === "thread/fork") this.#host.events.changed(configuredThreadId, method);
     }
     if (method === "thread/list") {
       const data = resultObject(reply)?.data;
@@ -509,7 +512,7 @@ export class NativeClientChannel {
           owner: "codex",
           locked: false,
           ...this.#configuration.get(threadId),
-          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+          history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
         }),
       };
     }

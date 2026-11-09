@@ -1084,11 +1084,17 @@ export class ChSessions {
         state.view?.log.setProjection("modelSelection", { lastUsed: selection, next: selection });
         return configuration;
       };
+      // Unchanged native settings may not emit a confirmation notification.
       const configuration = publish(
-        await this.host.request("codexhost/thread/model/select", {
-          threadId: id,
-          model: { id: request.model },
-        }),
+        owner.owner === "codex" && owner.effectiveModel?.id === request.model
+          ? {
+              effectiveModel: owner.effectiveModel,
+              effectiveThinkingOptionId: owner.effectiveThinkingOptionId,
+            }
+          : await this.host.request("codexhost/thread/model/select", {
+              threadId: id,
+              model: { id: request.model },
+            }),
       );
       if (
         request.reasoningEffort &&

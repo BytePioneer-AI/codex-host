@@ -3021,7 +3021,7 @@ export class AppServerHost {
                 ...inspection.capabilities.configuration,
                 selectPermissionMode: modes.length > 0,
               },
-              history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+              history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
             },
             ...(modes.length ? { permissionModes: { modes, defaultModeId: modes[0]?.id } } : {}),
           });

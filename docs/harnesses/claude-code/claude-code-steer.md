@@ -2,7 +2,7 @@
 
 Claude Code 的运行中插入走 Agent SDK 流式输入：向当前 Query 的输入流推入 `SDKUserMessage`，`priority: "next"`，`origin: { kind: "human" }`。这不会取消当前 Turn，也不会另开一轮。`now` 会把正在运行的 shell 命令、子 Agent 和 MCP 调用转入后台后立即送达，`later` 会等到空闲，Adapter 都不用。
 
-Host 在原生接受后自己发当前 Turn 的 `userMessage` Item。Adapter 不发这条 Item，也不改历史解析。
+实时执行时，Host 在原生接受后自己发当前 Turn 的 `userMessage` Item，Adapter 不重复发布。冷历史读取时，Adapter 从原生已送达的输入记录恢复对应的历史 Item。
 
 ## 何时同轮插入
 
@@ -34,9 +34,21 @@ CLI 先发 `command_lifecycle` `queued`，表示 Claude 已接受这条输入；
 
 ## 历史
 
-原生把插入记成同一条 transcript 里的 `queued_command` attachment（`commandMode: "prompt"`，`source_uuid` 是插入消息 id），不是新的 user 消息。现有历史解析忽略 attachment，所以刷新后仍是原来那一轮，插入文本不会变成单独的 Turn 或 Item。
+Claude Code 2.1.319 的原生测试记录把同轮插入记成主 Session transcript 中的 `attachment.queued_command`，而非普通 `user` 消息。历史读取保留附件，然后仅将明确属于根级人类输入的记录映射为当前 Turn 内的 `userMessage` Item：要求 `commandMode: "prompt"`、`origin.kind: "human"`、有效的 attachment UUID、`source_uuid` 和文本 prompt；排除明确的非人类来源、`humanTurn: false`、meta / synthetic、sidechain、子工具和其他 Session 记录。文件等其他附件、任务通知、不明来源的 queued_command 均不提升为用户输入。确认属于人类输入但身份或文本无效时，映射报错，不猜测内容。
+
+原生 attachment 的 `renderedRole` 可以是 `system`，`rendered` 包含提醒包装；显示的是 `attachment.prompt`，不显示包装，也不根据文本是否含 `<task-notification>` 猜测其来源。原生追加位置表示送达位置，时间戳可能是更早的排队时间，因此不按时间排序。工具 Item 仍位于其调用位置，用户插入位于原生送达位置；不将工具完成时间当作新的用户输入边界。
+
+身份分别处理：外层 attachment UUID 是持久记录身份和冷历史 Item ID；`source_uuid` 是 SDK 输入 UUID，不是 Web 的 requestId / clientId。重复外层 UUID 沿用原生读取规则：最后一份记录的内容和元数据、第一次出现的位置。同一 `source_uuid` 的重复送达只恢复一次，内容冲突则报错；不同输入 UUID 即使文本完全相同也各自保留。若相同输入另有真实普通 user 记录，则以该 user 的原生 Turn 边界为准，不再恢复重复的附件 Item；原生 Fork 的 `forkedFrom.messageUuid` 同样用于识别该身份。
+
+附件不创建新的 Turn，不作为 checkpoint，也不消耗 assistant / tool 的身份序号。根级 user UUID 继续作为 `nativeTurnRef.nativeTurnKey`；checkpoint 仍只能来自根级 assistant 或原生中断记录，且必须位于最后一条已送达插入之后。只有附件、没有原生 Turn 锚点时拒绝映射。Fork / rollback 沿用完整历史前缀校验，包含恢复出的输入；原生派生丢失这些输入时拒绝并清理派生 Session，不改源 Session。一轮中的多条插入不增加 rollback 的轮数。
+
+公共历史契约能够表达同轮 `userMessage`，无须扩展 Host 契约；它不携带每条输入的发送时间或本地 Web requestId，不能从原生历史重建实时 `source.rpcId`，也不保证冷历史 Item ID 与 Host 实时分配的 Item ID 相同。未送达、没有持久记录的排队输入无法由该路径恢复。其他 CLI 版本若缺少明确人类来源信息，保守忽略，而非把所有附件当作输入。原生 transcript 缺少完整 Result 终态时仍报告 unknown，不根据工具成功或最终文本猜测 Turn 成功。
 
 ## 验证
+
+冷历史聚焦回归见 `claude-queued-history.test.ts`、`claude-queued-fork.test.ts` 和 `claude-code-adapter.test.ts` 的只读 resume 用例：覆盖两次连续插入、相同文本不同身份、重复记录与元数据、任务通知及普通附件排除、真实普通 user 的新轮边界、checkpoint、knownTurnRefs、Fork 前缀丢失拒绝和整轮 rollback。这些使用精简合成 transcript / SDK 依赖，不代表真实原生 Fork 已验收。
+
+2026-11-09 用当前源码默认 Adapter 的 `open(resume)` / `readSnapshot()` 只读回放此前三份真实 CLI 2.1.319 测试 Session，模型均为 `claude-haiku-4-5-20251001`：分别恢复 3、2、2 条 queued_command 输入，原有 10、2、2 个 Turn、checkpoint 及非用户 Item 全部不变，重复读取稳定，源 JSONL 的 SHA-256 不变。没有启动模型任务、真实 Fork 或替换运行中的插件；运行服务中的冷历史 UI 验收需要部署新版 Adapter 后另行执行。
 
 自动化回归：`packages/adapters/claude-code/test/claude-code-adapter.test.ts` 的 `preserves cancellation when a native steer starts before its idle accumulator exists` 使用真实 `ClaudeSdkTransport` 与 `FakeQuery`，按 Root 中断结果 → 插入 `started`（首个 idle 帧）→ 插入中断结果的顺序送入 SDK 消息，断言最终为 cancelled、等待期间拒绝新 Turn、结束后可启动新 Turn，且没有自主 Turn。这是合成 SDK 流测试，不代表真实 CLI 或 Desktop 实机验收。
 

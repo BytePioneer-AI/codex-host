@@ -22,6 +22,45 @@ export function resolveQoderContextWindow(modelId?: string, reportedWindow?: num
   return QODER_DEFAULT_CONTEXT_WINDOW_TOKENS;
 }
 
+export interface QoderConfiguredContextWindows {
+  /** Model the CLI runs when the session did not pick one (`model.name`). */
+  readonly defaultModelId?: string;
+  /** Effective `model.preferences.<model>.contextWindow` values, keyed by native model id. */
+  readonly windows: Readonly<Record<string, number>>;
+}
+
+/**
+ * Reads the per-model context windows out of a `get_settings` control response.
+ * Qoder CLIs (qoderclicn 1.1.81) answer `get_context_usage` with a percentage only, so the
+ * effective `contextWindow` from settings is the only source for the window size.
+ */
+export function parseQoderConfiguredContextWindows(
+  settings: unknown,
+): QoderConfiguredContextWindows | undefined {
+  if (!settings || typeof settings !== "object") return undefined;
+  const effective = (settings as Record<string, unknown>).effective;
+  if (!effective || typeof effective !== "object") return undefined;
+  const model = (effective as Record<string, unknown>).model;
+  if (!model || typeof model !== "object") return undefined;
+  const { name, preferences } = model as Record<string, unknown>;
+
+  const windows: Record<string, number> = {};
+  if (preferences && typeof preferences === "object") {
+    for (const [modelId, preference] of Object.entries(preferences as Record<string, unknown>)) {
+      if (!preference || typeof preference !== "object") continue;
+      const contextWindow = (preference as Record<string, unknown>).contextWindow;
+      if (isNonNegativeSafeInteger(contextWindow) && contextWindow > 0) {
+        windows[modelId] = contextWindow;
+      }
+    }
+  }
+  if (Object.keys(windows).length === 0) return undefined;
+  return {
+    ...(typeof name === "string" && name.length > 0 ? { defaultModelId: name } : {}),
+    windows,
+  };
+}
+
 export class QoderUsageTracker {
   #inputTokens: number | undefined;
   #outputTokens: number | undefined;
@@ -37,6 +76,8 @@ export class QoderUsageTracker {
   #planFiveHourUsedPercent: number | undefined;
   #planFiveHourResetsAtUnix: number | undefined;
   #turnCredits: number | undefined;
+  #modelId: string | undefined;
+  readonly #configuredWindows = new Map<string, number>();
 
   constructor(options?: {
     modelId?: string | undefined;
@@ -46,14 +87,27 @@ export class QoderUsageTracker {
       options?.contextWindowTokens && options.contextWindowTokens > 0
         ? options.contextWindowTokens
         : resolveQoderContextWindow(options?.modelId);
+    this.#modelId = options?.modelId;
   }
 
   setModel(modelId?: string, catalogWindow?: number): void {
+    if (modelId) this.#modelId = modelId;
     if (catalogWindow && catalogWindow > 0) {
       this.#contextWindowTokens = catalogWindow;
     } else if (modelId) {
-      this.#contextWindowTokens = resolveQoderContextWindow(modelId);
+      this.#contextWindowTokens =
+        this.#configuredWindows.get(modelId) ?? resolveQoderContextWindow(modelId);
     }
+  }
+
+  /** Applies configured windows from `get_settings`; later `setModel` calls reuse them. */
+  setConfiguredContextWindows(configured: QoderConfiguredContextWindows): void {
+    for (const [modelId, window] of Object.entries(configured.windows)) {
+      if (window > 0) this.#configuredWindows.set(modelId, window);
+    }
+    this.#modelId ??= configured.defaultModelId;
+    const window = this.#modelId ? this.#configuredWindows.get(this.#modelId) : undefined;
+    if (window) this.#contextWindowTokens = window;
   }
 
   observeAssistant(message: SDKAssistantMessage): void {
@@ -180,7 +234,8 @@ export class QoderUsageTracker {
     if (!context || typeof context !== "object") return;
     const raw = context as Record<string, unknown>;
 
-    if (typeof raw.model === "string") {
+    // Re-resolving the same model would discard a window configured via settings.
+    if (typeof raw.model === "string" && raw.model !== this.#modelId) {
       this.setModel(raw.model);
     }
 

@@ -1,3 +1,6 @@
+import { mkdtemp } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { expect, it, vi } from "vitest";
@@ -67,8 +70,8 @@ vi.mock("../src/model-prices.js", () => ({
 }));
 vi.mock("../src/usage-statistics.js", () => ({ UsageStatistics: vi.fn() }));
 vi.mock("../src/remote-control-app-server.js", () => ({
-  createRemoteControlAppServerPlan: () => ({
-    environment: {},
+  createRemoteControlAppServerPlan: ({ environment }: { environment: NodeJS.ProcessEnv }) => ({
+    environment,
     officialArguments: [],
     pipePath: "\\\\.\\pipe\\synthetic-catalog-test",
   }),
@@ -100,7 +103,12 @@ it("registers the primary Remote Control Host as the catalog for its attached se
   expect(
     await runHostRuntime({
       arguments: [],
-      environment: { CODEXHOST_STOCK_CODEX_PATH: "/synthetic/codex" },
+      environment: {
+        CODEXHOST_STOCK_CODEX_PATH: "/synthetic/codex",
+        // Keep the user's watches, clients and listener port out of the test.
+        CODEXHOST_DATA_DIR: await mkdtemp(path.join(os.tmpdir(), "codexhost-runtime-")),
+        CODEXHOST_EXTERNAL_CLIENT_PORT: "off",
+      },
     }),
   ).toBe(0);
   expect(state.hosts).toHaveLength(2);

@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { HarnessDisplaySettingsStore } from "../src/harness-display-settings.js";
 
 describe("shared Harness display settings", () => {
@@ -57,4 +57,29 @@ describe("shared Harness display settings", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+});
+
+it("notifies only confirmed changes and observes another Host's atomic writes", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "harness-display-events-"));
+  const observer = new HarnessDisplaySettingsStore({ CODEXHOST_DATA_DIR: directory });
+  const writer = new HarnessDisplaySettingsStore({ CODEXHOST_DATA_DIR: directory });
+  try {
+    let changes = 0;
+    const remove = await observer.subscribe(() => {
+      changes++;
+    });
+    await writer.set({ entries: [{ agent: "pi", section: "more" }] });
+    await vi.waitFor(() => expect(changes).toBe(1));
+    await observer.set({ entries: [{ agent: "pi", section: "more" }] });
+    expect(changes).toBe(1);
+    await expect(observer.set({ entries: [{ agent: "", section: "more" }] })).rejects.toThrow();
+    expect(changes).toBe(1);
+    remove();
+    await observer.set({ entries: [] });
+    expect(changes).toBe(1);
+  } finally {
+    observer.close();
+    writer.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });

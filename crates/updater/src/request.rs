@@ -14,8 +14,22 @@ pub(crate) struct UpdateRequest {
     pub(crate) wait_pid: u32,
     pub(crate) wait_executable: PathBuf,
     pub(crate) runtime_descriptor_path: PathBuf,
+    #[serde(default)]
+    pub(crate) restart_target: RestartTarget,
+    #[serde(default)]
+    pub(crate) data_directory: Option<PathBuf>,
+    #[serde(default)]
+    pub(crate) service_managed: bool,
     pub(crate) status_path: PathBuf,
     pub(crate) installation: Installation,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum RestartTarget {
+    #[default]
+    Desktop,
+    Web,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,6 +67,30 @@ pub(crate) struct MacOsInstallation {
 }
 
 impl Installation {
+    pub(crate) fn resources_root(&self) -> PathBuf {
+        match self {
+            Self::Npm(npm) => npm.npm_package_root.clone(),
+            Self::WindowsInstaller(windows) => windows.install_root.clone(),
+            Self::MacosDmg(macos) => macos.app_path.join("Contents/Resources"),
+        }
+    }
+
+    pub(crate) fn launcher_path(&self) -> PathBuf {
+        let name = format!("codexhost{}", std::env::consts::EXE_SUFFIX);
+        match self {
+            Self::MacosDmg(macos) => macos.app_path.join("Contents/MacOS").join(name),
+            _ => self.resources_root().join("bin").join(name),
+        }
+    }
+
+    pub(crate) fn node_path(&self) -> PathBuf {
+        match self {
+            Self::Npm(npm) => npm.node_path.clone(),
+            Self::WindowsInstaller(windows) => windows.install_root.join("runtime/node.exe"),
+            Self::MacosDmg(macos) => macos.app_path.join("Contents/Resources/runtime/node"),
+        }
+    }
+
     pub(crate) fn name(&self) -> &'static str {
         match self {
             Self::Npm(_) => "npm",
@@ -142,6 +180,11 @@ impl UpdateRequest {
         require_absolute_file(&self.wait_executable, "Launcher executable")?;
         require_absolute_path(&self.runtime_descriptor_path, "runtime descriptor path")?;
         require_absolute_path(&self.status_path, "update status path")?;
+        if let Some(data) = &self.data_directory {
+            require_absolute_path(data, "service data directory")?;
+        } else if self.restart_target == RestartTarget::Web || self.service_managed {
+            return Err("service updates require an explicit data directory".into());
+        }
         match &self.installation {
             Installation::Npm(npm) => {
                 require_absolute_file(&npm.node_path, "npm Node.js executable")?;
@@ -179,7 +222,7 @@ impl UpdateRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::{UpdateRequest, valid_sha256, validate_version};
+    use super::{RestartTarget, UpdateRequest, valid_sha256, validate_version};
 
     #[test]
     fn accepts_release_semver_and_rejects_ambiguous_versions() {
@@ -202,5 +245,51 @@ mod tests {
     fn request_rejects_unknown_installation_fields() {
         let request = br#"{"schema_version":1,"version":"1.2.3","wait_pid":2,"wait_executable":"/tmp/launcher","runtime_descriptor_path":"/tmp/desktop-runtime-v1.json","status_path":"/tmp/status","installation":{"kind":"npm","node_path":"/tmp/node","npm_cli_path":"/tmp/npm","npm_launcher_path":"/tmp/codexhost.js","extra":true}}"#;
         assert!(serde_json::from_slice::<UpdateRequest>(request).is_err());
+    }
+
+    #[test]
+    fn legacy_requests_default_to_desktop_and_service_requests_require_absolute_data() {
+        let root = std::env::temp_dir();
+        let executable = std::env::current_exe().unwrap();
+        let mut value = serde_json::json!({
+            "schema_version":1, "version":"1.2.3", "wait_pid":if std::process::id() == 1 {2} else {1},
+            "wait_executable":executable, "runtime_descriptor_path":root.join("desktop.json"),
+            "status_path":root.join("status.json"), "installation": {
+                "kind":"npm", "node_path":executable, "npm_cli_path":executable,
+                "npm_launcher_path":executable, "npm_package_root":root,
+            }
+        });
+        let legacy: UpdateRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(legacy.restart_target, RestartTarget::Desktop);
+        assert!(!legacy.service_managed);
+        legacy.validate().unwrap();
+        value["restart_target"] = "web".into();
+        assert!(
+            serde_json::from_value::<UpdateRequest>(value.clone())
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        value["data_directory"] = "relative/data".into();
+        assert!(
+            serde_json::from_value::<UpdateRequest>(value.clone())
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        value["data_directory"] = serde_json::to_value(root.join("service-data")).unwrap();
+        serde_json::from_value::<UpdateRequest>(value.clone())
+            .unwrap()
+            .validate()
+            .unwrap();
+        value["restart_target"] = "desktop".into();
+        value["service_managed"] = true.into();
+        value.as_object_mut().unwrap().remove("data_directory");
+        assert!(
+            serde_json::from_value::<UpdateRequest>(value)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
     }
 }

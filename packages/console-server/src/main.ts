@@ -5,7 +5,7 @@ import { readRuntimeMetadata } from "@codexhost/update-manager";
 import { createConsoleHarnesses, harnessPluginRoots } from "./harnesses.js";
 import { createConsoleHostClient } from "./host-client.js";
 import { resolveInstallation } from "./installation.js";
-import { consoleBuildId, ensureConsole, openConsole, shutdownConsole } from "./open.js";
+import { consoleBuildId, ensureConsole, openConsole, stopConsole } from "./open.js";
 import { loadConsoleBundle } from "./page.js";
 import { consolePaths, consolePort } from "./paths.js";
 import { startConsoleServer, type RunningConsoleServer } from "./server.js";
@@ -20,7 +20,7 @@ const appDirectory = path.dirname(entryPath);
 
 function usage(): never {
   console.error(
-    "usage: console-server open [--no-browser] | console-server ensure | console-server serve | console-server shutdown | console-server update",
+    "usage: console-server open [--no-browser] | console-server ensure | console-server serve | console-server stop | console-server update",
   );
   process.exit(2);
 }
@@ -44,7 +44,9 @@ async function serve(): Promise<void> {
     installation,
     paths,
     updates,
-    host: createConsoleHostClient(paths.hostDescriptorDirectory),
+    host: createConsoleHostClient(paths.hostDescriptorDirectory, {
+      updateAppDirectory: appDirectory,
+    }),
     pageScript: await loadConsoleBundle(appDirectory),
     harnesses: createConsoleHarnesses(
       harnessPluginRoots(appDirectory, installation.distribution === null),
@@ -88,9 +90,9 @@ async function ensure(arguments_: string[]): Promise<void> {
   console.log(`codexhost console: http://127.0.0.1:${port}/`);
 }
 
-async function shutdown(arguments_: string[]): Promise<void> {
+async function stop(arguments_: string[]): Promise<void> {
   if (arguments_.length > 0) usage();
-  await shutdownConsole();
+  process.exitCode = (await stopConsole()) ? 0 : 3;
 }
 
 const [command, ...rest] = process.argv.slice(2);
@@ -101,8 +103,8 @@ const run =
       ? open(rest)
       : command === "ensure"
         ? ensure(rest)
-        : command === "shutdown"
-          ? shutdown(rest)
+        : command === "stop"
+          ? stop(rest)
           : command === "update"
             ? updateFromCommand(appDirectory, rest)
             : usage();

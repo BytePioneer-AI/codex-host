@@ -221,6 +221,21 @@ describe("Codex UI projector", () => {
         }),
       }),
     );
+    const snapshotOnly = new CodexTurnProjector({
+      threadId: "thread-1",
+      turnId,
+      cwd: "/workspace",
+      startedAtMs: 1_000,
+      snapshotInput: input,
+    });
+    expect(snapshotOnly.project({ type: "turn.started", turnId }).messages).not.toContainEqual(
+      expect.objectContaining({ method: "item/started" }),
+    );
+    expect(snapshotOnly.pendingTurn().items).toEqual([]);
+    expect(snapshotOnly.snapshotTurn().items).toEqual([
+      { id: "turn-1-user", type: "userMessage", clientId: null, content },
+    ]);
+
     const steered = { type: "userMessage" as const, itemId: itemId("steer-1"), input };
     expect(live.project({ type: "item.started", turnId, item: steered }).messages).toMatchObject([
       { method: "item/started", params: { item: { id: "steer-1", content } } },
@@ -327,6 +342,7 @@ describe("Codex UI projector", () => {
     };
 
     expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toEqual({
+      codexhostFileOperations: [],
       id: "turn-1",
       status: "completed",
       items: [
@@ -863,6 +879,43 @@ describe("Codex UI projector", () => {
       expect(historical.items).toMatchObject([{ type: "userMessage" }, expected]);
     },
   );
+
+  it.each([
+    [{ status: "succeeded" }, "completed"],
+    [
+      {
+        status: "failed",
+        error: { code: "nativeFailure", message: "Summary failed", retryable: true },
+      },
+      "failed",
+    ],
+    [{ status: "cancelled", reason: "Summary cancelled" }, "interrupted"],
+  ] as const)("includes compaction outcome only in client snapshots: %s", (outcome, status) => {
+    const value = projector();
+    const item = { type: "contextCompaction" as const, itemId: itemId("compact-snapshot") };
+    value.project({ type: "turn.started", turnId });
+    const started = value.project({ type: "item.started", turnId, item });
+    expect(started.messages).toMatchObject([
+      {
+        method: "item/started",
+        params: { item: { id: item.itemId, type: item.type } },
+      },
+    ]);
+    expect(value.snapshotTurn()).toMatchObject({
+      status: "inProgress",
+      items: expect.arrayContaining([{ id: item.itemId, type: item.type, status: "inProgress" }]),
+    });
+    value.project({ type: "item.completed", turnId, snapshot: { item, outcome } });
+    expect(value.snapshotTurn()).toMatchObject({
+      status: "inProgress",
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: item.itemId, type: item.type, status }),
+      ]),
+    });
+    expect(value.pendingTurn().items).not.toContainEqual(
+      expect.objectContaining({ type: item.type }),
+    );
+  });
 
   it("projects native context compaction before the continued Agent reply", () => {
     const value = projector();

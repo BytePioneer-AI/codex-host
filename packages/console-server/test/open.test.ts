@@ -1,14 +1,82 @@
 import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { consoleBuildId, consoleUrl, shutdownConsole } from "../src/open.js";
+import { consoleBuildId, consoleUrl, stopConsole } from "../src/open.js";
 
 it("opens the overview containing diagnostics", () => {
   expect(consoleUrl(4399)).toBe("http://127.0.0.1:4399/");
   expect(consoleUrl(26340)).toBe("http://127.0.0.1:26340/");
+});
+
+describe("console stop", () => {
+  it.each(["console", "foreign", "free"])(
+    "reports stopping a %s endpoint without starting services",
+    async (kind) => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "console-stop-"));
+      const requests: string[] = [];
+      const server = createServer((request, response) => {
+        requests.push(`${request.method} ${request.url}`);
+        response.setHeader("content-type", "application/json");
+        if (request.url === "/api/shutdown") {
+          expect(request.headers["x-codexhost-console"]).toBe("1");
+          response.end("{}");
+          setTimeout(() => server.close(), 200);
+        } else {
+          response.end(
+            JSON.stringify({
+              service: kind === "console" ? "codexhost-console" : "other",
+              appDirectory: home,
+              pid: process.pid,
+            }),
+          );
+        }
+      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const port = (server.address() as { port: number }).port;
+      if (kind === "free") await new Promise<void>((resolve) => server.close(() => resolve()));
+      try {
+        const result = await new Promise((resolve) => {
+          execFile(
+            process.execPath,
+            ["--import", "tsx", "src/main.ts", "stop"],
+            {
+              cwd: path.resolve(import.meta.dirname, ".."),
+              env: {
+                ...process.env,
+                HOME: home,
+                USERPROFILE: home,
+                CODEX_HOME: path.join(home, "codex"),
+                CODEXHOST_DATA_DIR: home,
+                CODEXHOST_CONSOLE_PORT: String(port),
+              },
+            },
+            (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stdout, stderr }),
+          );
+        });
+        expect(result).toEqual({ code: kind === "console" ? 0 : 3, stdout: "", stderr: "" });
+        expect(requests.filter((request) => request === "POST /api/shutdown")).toHaveLength(
+          kind === "console" ? 1 : 0,
+        );
+        if (kind === "console") expect(server.listening).toBe(false);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("uses the existing port validation", async () => {
+    await expect(stopConsole({ CODEXHOST_CONSOLE_PORT: "invalid" })).rejects.toThrow(
+      "CODEXHOST_CONSOLE_PORT",
+    );
+  });
 });
 
 describe("console instance identity", () => {
@@ -71,11 +139,5 @@ describe("console instance identity", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
-  });
-});
-
-describe("shutdownConsole", () => {
-  it("is a no-op when the console port is free", async () => {
-    await expect(shutdownConsole({ CODEXHOST_CONSOLE_PORT: "35991" })).resolves.toBeUndefined();
   });
 });

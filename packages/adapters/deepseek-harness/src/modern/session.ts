@@ -1039,7 +1039,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
                   ...(option.description ? { description: option.description } : {}),
                 })),
                 multiple: question.multiSelect === true,
-                allowOther: question.intent?.kind !== "plan-review",
+                allowOther: question.intent === undefined,
                 optional: false,
               }
             : {

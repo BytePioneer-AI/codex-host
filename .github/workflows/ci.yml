@@ -1,6 +1,17 @@
 name: CI
 
 on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to check
+        type: choice
+        default: all
+        options:
+          - all
+          - ubuntu-22.04
+          - macos-26
+          - windows-latest
   pull_request:
     paths-ignore:
       - "docs/**"
@@ -30,10 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-22.04
-          - macos-26
-          - windows-latest
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["ubuntu-22.04","macos-26","windows-latest"]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -92,6 +100,10 @@ jobs:
           --exclude 'packages/renderer-extension/test/**'
           --exclude 'tools/gate-claude-code/run.test.mjs'
 
+      # Real Launcher + Node service, with isolated HOME/data and fake Harnesses.
+      - name: Test independent Host lifecycle
+        run: npm run test:shared-host
+
       # Rust formatting is already covered by the Linux x64 formatting step.
       - name: Check Rust
         run: >
@@ -116,6 +128,7 @@ jobs:
 
   check-linux-arm64:
     name: Check Linux ARM64
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
     runs-on: ubuntu-22.04-arm
     steps:
       - name: Checkout
@@ -146,6 +159,8 @@ jobs:
         run: npm ci --prefer-offline
 
       # Linux x64 owns TS tests; ARM64 verifies native code and the installed package.
+      - name: Test independent Host lifecycle
+        run: npm run test:shared-host
 
       - name: Check Rust
         run: >

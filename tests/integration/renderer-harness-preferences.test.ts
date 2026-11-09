@@ -131,6 +131,7 @@ describe.skipIf(process.platform === "win32")("confirmed shared Renderer prefere
     const f = await fixture();
     f.sync.connect("local", f.client);
     await vi.waitFor(() => expect(rendererHarnessPreferenceStatus()).toBe("applied"));
+    expect(readIdleReleasePreference(f.owner)).toEqual({ enabled: false, timeoutMinutes: 10 });
     expect(writeIdleReleasePreference(f.owner, policy)).toBe(true);
     await vi.waitFor(() => expect(readIdleReleasePreference(f.owner)).toEqual(policy));
     for (const timeoutMinutes of [4, 1441, 30.5, NaN])

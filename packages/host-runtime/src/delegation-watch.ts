@@ -205,7 +205,16 @@ export class DelegationWatchService {
       deadline: Date.now() + input.timeoutMs,
     };
     this.#watches.push(watch);
-    await this.#persist(watch);
+    try {
+      await this.#persist(watch, true);
+    } catch (error) {
+      const index = this.#watches.indexOf(watch);
+      if (index >= 0) this.#watches.splice(index, 1);
+      throw new DelegationControlError(
+        "INTERNAL_ERROR",
+        `Could not persist Thread watch: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     this.#schedule();
     return { ...result, state: "watching" };
   }
@@ -402,20 +411,21 @@ export class DelegationWatchService {
     return true;
   }
 
-  #persist(watch: Watch): Promise<void> {
+  #persist(watch: Watch, required = false): Promise<void> {
     const record = persisted(watch);
-    return this.#write((store) => store.save(record));
+    return this.#write((store) => store.save(record), required);
   }
 
-  #write(operation: (store: DelegationWatchStore) => Promise<void>): Promise<void> {
+  #write(
+    operation: (store: DelegationWatchStore) => Promise<void>,
+    required = false,
+  ): Promise<void> {
     const store = this.#store;
     if (!store) return Promise.resolve();
     // Writes run in order, so a later state of a watch is never overwritten by an earlier one.
-    const next = this.#writes
-      .then(() => operation(store))
-      .catch((error: unknown) => this.#diagnose(error));
-    this.#writes = next;
-    return next;
+    const next = this.#writes.then(() => operation(store));
+    this.#writes = next.catch((error: unknown) => this.#diagnose(error));
+    return required ? next : this.#writes;
   }
 
   #remove(watch: Watch): void {

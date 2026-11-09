@@ -19,7 +19,7 @@
 | `delegate start ... --watch true` | 创建委派后顺手观察，通知 Host 解析出的发起方 |
 | `thread watches` | 列出尚未送达的 watch |
 
-`delegate start` 先完成委派；watch 注册失败不会让命令失败，而是在返回的 `watch` 字段里报告 `notRegistered` 和原因。`thread send` 不提供 `--watch`，发送后需要通知时单独执行 `thread watch`。
+watch 首次持久化失败时不保留内存注册，`thread watch` 返回错误，调用方可稍后重试。`delegate start` 先完成委派；watch 注册失败不会让命令失败，而是在返回的 `watch` 字段里报告 `notRegistered` 和原因。`thread send` 不提供 `--watch`，发送后需要通知时单独执行 `thread watch`。
 
 ## 结果
 

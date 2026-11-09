@@ -374,15 +374,41 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     });
   });
 
-  it("keeps working in memory when the store fails", async () => {
+  it("rejects an unsaved watch and allows registration to be retried", async () => {
+    const store = memoryStore();
+    const save = vi.spyOn(store, "save").mockRejectedValueOnce(new Error("disk full"));
+    const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });
+    const watches = service(fake, store);
+    const input = { threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 };
+
+    await expect(watches.watch(input)).rejects.toMatchObject({
+      code: "INTERNAL_ERROR",
+      message: expect.stringContaining("disk full"),
+    });
+    await expect(watches.watches()).resolves.toEqual({ watches: [] });
+    expect(store.records.size).toBe(0);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(fake.sent).toEqual([]);
+
+    await expect(watches.watch(input)).resolves.toMatchObject({ state: "watching" });
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(store.records.size).toBe(1);
+    fake.update("child", { status: "completed" });
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(fake.sent).toHaveLength(1);
+    expect(store.records.size).toBe(0);
+  });
+
+  it("keeps an already registered watch working when later store writes fail", async () => {
     const diagnose = vi.fn();
     const failing: DelegationWatchStore = {
       adopt: async () => {
         throw new Error("disk unavailable");
       },
-      save: async () => {
-        throw new Error("disk full");
-      },
+      save: vi
+        .fn<DelegationWatchStore["save"]>()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(new Error("disk full")),
       remove: async () => undefined,
     };
     const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });

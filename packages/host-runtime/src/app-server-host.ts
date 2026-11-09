@@ -115,7 +115,6 @@ import {
   harnessWebUiOpenParamsSchema,
   harnessWebUiOpenResultSchema,
   harnessModelSelectionStateSchema,
-  catalogModelForRef,
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,

@@ -4,7 +4,7 @@ import {
   createRendererCdpControlSession,
   selectPrimaryRendererTarget,
 } from "../src/renderer-cdp-control-session.js";
-import type { CdpTarget } from "../src/cdp-client.js";
+import { CdpConnectionClosedError, type CdpTarget } from "../src/cdp-client.js";
 
 function target(id: string, url = "app://-/index.html"): CdpTarget {
   return {
@@ -95,6 +95,30 @@ describe("Renderer CDP Control Session", () => {
     ]);
     expect(session.snapshot.binding).toEqual(readyBinding());
     session.close();
+  });
+
+  it("stops waiting for binding when the target connection closes", async () => {
+    const client = rendererClient();
+    const closed = new CdpConnectionClosedError("CDP WebSocket closed");
+    client.evaluateSpy.mockRejectedValueOnce(closed);
+    await expect(
+      createRendererCdpControlSession({
+        rendererCdpEndpoint: "http://127.0.0.1:43123",
+        rendererSource: "production renderer",
+        pollIntervalMs: 1,
+        timeoutMs: 100,
+        operations: {
+          listTargets: async () => [target("page-1")],
+          connect: async () => client,
+          installDraftPrewarmPolicy: async () => ({
+            state: "ready" as const,
+            reason: "owned-request-bridge" as const,
+          }),
+        },
+      }),
+    ).rejects.toBe(closed);
+    expect(client.evaluateSpy).toHaveBeenCalledOnce();
+    expect(client.close).toHaveBeenCalledOnce();
   });
 
   it("reconciles a changed Host before judging the previous Adapter readiness", async () => {

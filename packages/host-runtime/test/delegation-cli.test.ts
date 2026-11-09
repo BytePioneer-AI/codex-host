@@ -91,6 +91,27 @@ describe("delegation CLI", () => {
     });
   });
 
+  it("preserves the caller Thread while resolving a relative Harness inspection cwd", async () => {
+    const fetchImpl = successfulFetch({ harnessId: "pi", inspection: { status: "ready" } });
+    await expect(
+      runDelegationCli({
+        arguments: ["harness", "inspect", "pi", "--cwd", "."],
+        environment: {
+          [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+          [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+          [DELEGATION_THREAD_ID_ENV]: "codex://threads/inspection-parent",
+        },
+        output: new PassThrough(),
+        fetchImpl,
+      }),
+    ).resolves.toBe(0);
+    expect(JSON.parse(String(vi.mocked(fetchImpl).mock.calls[0]?.[1]?.body))).toEqual({
+      harnessId: "pi",
+      parentThreadId: "inspection-parent",
+      cwd: process.cwd(),
+    });
+  });
+
   it("normalizes deep links and sends delegate start as JSON", async () => {
     const fetchImpl = successfulFetch({ threadId: "child-1" });
     const output = new PassThrough();
@@ -547,12 +568,12 @@ describe("delegation CLI", () => {
     });
   });
 
-  it("fails with structured Runtime errors and does not discover a fallback", async () => {
+  it("reports a missing local Host without requiring injected credentials", async () => {
     const diagnosticOutput = new PassThrough();
     await expect(
       runDelegationCli({
         arguments: ["thread", "read", "thread-1"],
-        environment: { PATH: "/synthetic" },
+        environment: { PATH: "/synthetic", CODEXHOST_DATA_DIR: "/synthetic" },
         diagnosticOutput,
       }),
     ).resolves.toBe(1);
@@ -560,7 +581,7 @@ describe("delegation CLI", () => {
       error: {
         code: "RUNTIME_UNREACHABLE",
         message:
-          'CODEXHOST_RUNTIME_ENDPOINT and CODEXHOST_RUNTIME_TOKEN are required. If this command runs inside native Codex, shell_environment_policy may have filtered the Host-provided CODEXHOST_* variables. Prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only allowlist that contains "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools; do not use unconstrained inherit = "all".',
+          "No local CLI credentials were found. Start or update the local Host with its external listener enabled, or configure an external client token.",
         details: {
           reason: "missing_runtime_environment",
           missingEnvironmentVariables: [
@@ -576,6 +597,10 @@ describe("delegation CLI", () => {
                 DELEGATION_RUNTIME_TOKEN_ENV,
               ],
             },
+          },
+          externalClient: {
+            environmentVariables: ["CODEXHOST_CLIENT_TOKEN", "CODEXHOST_CLIENT_TOKEN_FILE"],
+            register: "codexhost client add <name>",
           },
         },
       },

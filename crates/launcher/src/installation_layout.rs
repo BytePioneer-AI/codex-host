@@ -10,6 +10,7 @@ pub struct InstalledResources {
     pub shim: PathBuf,
     pub node: PathBuf,
     pub host_runtime: PathBuf,
+    pub web_runtime: PathBuf,
     pub desktop_controller: PathBuf,
     pub renderer_extension: PathBuf,
     pub console_server: PathBuf,
@@ -73,6 +74,7 @@ impl InstalledResources {
                 .join("runtime")
                 .join(format!("node{executable_suffix}")),
             host_runtime: resource_root.join("app/host-runtime.mjs"),
+            web_runtime: resource_root.join("app/web-server.mjs"),
             desktop_controller: resource_root.join("app/desktop-controller.mjs"),
             renderer_extension: resource_root.join("app/renderer-extension.js"),
             console_server: resource_root.join("app/console-server.mjs"),
@@ -97,6 +99,7 @@ impl InstalledResources {
             shim: build_directory.join(format!("codexhost-shim{executable_suffix}")),
             node,
             host_runtime,
+            web_runtime: repository_root.join("packages/web-server/dist/main.js"),
             desktop_controller: repository_root
                 .join("packages/desktop-control/dist/release-main.js"),
             renderer_extension: repository_root
@@ -104,6 +107,10 @@ impl InstalledResources {
             console_server: repository_root.join("packages/console-server/dist/main.js"),
         })
     }
+}
+
+pub fn is_source_checkout_build(executable: &Path) -> bool {
+    source_checkout_layout(executable).is_some()
 }
 
 fn source_checkout_layout(executable: &Path) -> Option<(PathBuf, PathBuf)> {
@@ -144,6 +151,7 @@ mod tests {
                     .join("runtime")
                     .join(format!("node{}", env::consts::EXE_SUFFIX)),
                 host_runtime: root.join("app/host-runtime.mjs"),
+                web_runtime: root.join("app/web-server.mjs"),
                 desktop_controller: root.join("app/desktop-controller.mjs"),
                 renderer_extension: root.join("app/renderer-extension.js"),
                 console_server: root.join("app/console-server.mjs"),
@@ -182,6 +190,7 @@ mod tests {
                     .join(format!("codexhost-shim{}", env::consts::EXE_SUFFIX)),
                 node: PathBuf::from(format!("node{}", env::consts::EXE_SUFFIX)),
                 host_runtime: root.join("packages/host-runtime/dist/main.js"),
+                web_runtime: root.join("packages/web-server/dist/main.js"),
                 desktop_controller: root.join("packages/desktop-control/dist/release-main.js"),
                 renderer_extension: root.join("packages/renderer-extension/dist/production.js"),
                 console_server: root.join("packages/console-server/dist/main.js"),

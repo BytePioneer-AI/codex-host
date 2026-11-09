@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
+import type { ClientChannelEvents } from "./client-channel-events.js";
 import type { ConsoleHostReply } from "./app-server-host.js";
 import { matchesBearerToken } from "./bearer-token.js";
 
@@ -17,9 +18,11 @@ export interface ConsoleHostDescriptor {
   port: number;
   token: string;
   startedAt: number;
+  runtimePath?: string;
 }
 
 export interface ConsoleControlTarget {
+  clientEvents?: ClientChannelEvents;
   handleConsoleRequest(method: string, params: unknown): Promise<ConsoleHostReply>;
 }
 
@@ -83,6 +86,32 @@ export async function startConsoleControlServer(options: {
   const pid = options.pid ?? process.pid;
   const server = createServer((request, response) => {
     void (async () => {
+      if (
+        request.method === "GET" &&
+        request.url === "/display-events" &&
+        options.target.clientEvents
+      ) {
+        if (!matchesBearerToken(request.headers.authorization, token)) {
+          reply(response, 401, {});
+          return;
+        }
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-store",
+        });
+        const remove = options.target.clientEvents.subscribe((event) => {
+          if (event.type === "hello" || event.type === "display-settings-changed") {
+            if (!response.write(`data: ${JSON.stringify(event)}\n\n`)) response.destroy();
+          }
+        });
+        const heartbeat = setInterval(() => response.write(": heartbeat\n\n"), 15_000);
+        heartbeat.unref();
+        response.on("close", () => {
+          remove();
+          clearInterval(heartbeat);
+        });
+        return;
+      }
       if (request.method !== "POST" || request.url !== "/rpc") {
         reply(response, 404, { error: { code: -32601, message: "Not found" } });
         return;
@@ -130,6 +159,9 @@ export async function startConsoleControlServer(options: {
     port: (server.address() as AddressInfo).port,
     token,
     startedAt: (options.now ?? Date.now)(),
+    ...(options.environment.CODEXHOST_HOST_RUNTIME_PATH
+      ? { runtimePath: options.environment.CODEXHOST_HOST_RUNTIME_PATH }
+      : {}),
   };
   try {
     await writePrivateJson(descriptorPath, descriptor);

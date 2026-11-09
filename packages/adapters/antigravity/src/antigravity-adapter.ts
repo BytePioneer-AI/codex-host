@@ -28,6 +28,7 @@ import {
   type InspectHarnessInput,
   type HostAgentMessageItem,
   type HostCommand,
+  type HostContextCompactionItem,
   type HostEvent,
   type HostFileChange,
   type HostItem,
@@ -140,6 +141,11 @@ interface ActiveTurn {
   agentItem: HostAgentMessageItem | null;
   agentText: string;
   /**
+   * agy's open context compaction, reported as a `checkpoint` step both for an
+   * explicit `/compact` and for compaction agy starts on its own mid-Turn.
+   */
+  compactionItem: HostContextCompactionItem | null;
+  /**
    * Every agent text shown this Turn, across the messages that tool and
    * Subagent steps split it into. agy's `result.response` joins those segments.
    */
@@ -207,7 +213,7 @@ function unstreamedReplyTail(streamed: string, reply: string): string | null {
 
 const antigravityHarnessId = harnessIdSchema.parse("antigravity");
 const DEFAULT_INSPECT_TIMEOUT_MS = 20_000;
-const DEFAULT_PRINT_TIMEOUT = "30m";
+const DEFAULT_PRINT_TIMEOUT = "0s";
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const DEFAULT_SUBAGENT_OBSERVATION_TIMEOUT_MS = 30_000;
 /** How long a finished Turn's agy may take to exit after its stdin closes before it is signalled. */
@@ -500,6 +506,11 @@ function hostUsage(
       : {}),
   };
   return Object.keys(usage).length > 0 ? usage : null;
+}
+
+function stderrPrintTimeoutMessage(stderr: string): string | null {
+  const match = stderr.match(/\b(print timeout after [^\r\n"]+)/iu);
+  return match?.[1]?.trim() ?? null;
 }
 
 function normalizedProcessError(
@@ -853,6 +864,7 @@ class AntigravitySession implements HarnessSession {
       logPath,
       agentItem: null,
       agentText: "",
+      compactionItem: null,
       turnAgentText: "",
       tools: new Map(),
       completedItems: [],
@@ -1049,7 +1061,6 @@ class AntigravitySession implements HarnessSession {
     const turnReply = response.startsWith(this.#lastResultResponse)
       ? response.slice(this.#lastResultResponse.length)
       : response;
-    const repliedThisTurn = Boolean(active.agentItem) || turnReply.trim() !== "";
     if (response) this.#lastResultResponse = response;
     if (turnReply.trim() !== "") {
       // The streamed segments are already on screen as separate messages, so
@@ -1058,6 +1069,8 @@ class AntigravitySession implements HarnessSession {
       if (unshown === null) this.#appendOrSyncAgentText(active, turnReply, false);
       else if (unshown.trim() !== "") this.#appendAgentText(active, unshown);
     }
+    const repliedThisTurn =
+      active.agentItem !== null && active.tools.size === 0 && active.pendingSteps.size === 0;
     if (!convId) {
       // agy ended before it ever named a Conversation (no `init`, empty result id), so no
       // native Turn exists to map. A placeholder identity would only be rejected by the Host
@@ -1065,10 +1078,7 @@ class AntigravitySession implements HarnessSession {
       this.#completeIdentitylessTurn(active, event);
       return;
     }
-    const safeTurnId =
-      event.result.num_turns !== undefined && event.result.num_turns !== null
-        ? `turn:${event.result.num_turns}`
-        : `turn:${this.#history.snapshot().length + 1}`;
+    const safeTurnId = this.#uniqueNativeTurnKey(event.result.num_turns);
 
     const nativeTurnRef = nativeTurnRefSchema.parse({
       harnessId: this.harnessId,
@@ -1088,7 +1098,7 @@ class AntigravitySession implements HarnessSession {
         { status: "cancelled", reason: "Cancelled by user", checkpoint },
         nativeTurnRef,
       );
-    } else if (event.result.status === "SUCCESS") {
+    } else if (this.#resultSucceeded(active, event)) {
       if (active.permissionDenial !== null && !active.agentItem) {
         this.#completeTurn(
           active,
@@ -1104,7 +1114,16 @@ class AntigravitySession implements HarnessSession {
       }
     } else {
       const error = this.#resultError(active, event);
-      if (repliedThisTurn && event.result.error?.trim() && this.#reportedEarlier(error)) {
+      const finishedReason = event.result.finished_reason?.trim();
+      const timedOut =
+        finishedReason === "print_timeout" || stderrPrintTimeoutMessage(active.stderr) !== null;
+      if (
+        !timedOut &&
+        finishedReason !== "interrupted" &&
+        repliedThisTurn &&
+        event.result.error?.trim() &&
+        this.#reportedEarlier(error)
+      ) {
         // agy keeps a Conversation's first failure and repeats it in the result
         // of every later Turn, even when that Turn answered without error. A
         // Turn that replied and only repeats an error an earlier Turn of this
@@ -1131,6 +1150,19 @@ class AntigravitySession implements HarnessSession {
     }
   }
 
+  #uniqueNativeTurnKey(numTurns: number | undefined): string {
+    const ordinal =
+      numTurns !== undefined && numTurns !== null ? numTurns : this.#history.snapshot().length + 1;
+    const base = `turn:${ordinal}`;
+    const used = new Set(
+      this.#history.snapshot().map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey),
+    );
+    if (!used.has(base)) return base;
+    let duplicate = 2;
+    while (used.has(`${base}:${duplicate}`)) duplicate += 1;
+    return `${base}:${duplicate}`;
+  }
+
   /** A Turn agy ended without a Conversation keeps its native outcome but no native identity. */
   #completeIdentitylessTurn(active: ActiveTurn, event: AntigravityResultEvent): void {
     if (active.cancellationRequested) {
@@ -1139,22 +1171,40 @@ class AntigravitySession implements HarnessSession {
     }
     this.#completeTurn(active, {
       status: "failed",
-      error:
-        event.result.status === "SUCCESS"
-          ? {
-              code: "protocolError",
-              message: "Antigravity finished the Turn without a Conversation identity",
-              retryable: true,
-            }
-          : this.#resultError(active, event),
+      error: this.#resultSucceeded(active, event)
+        ? {
+            code: "protocolError",
+            message: "Antigravity finished the Turn without a Conversation identity",
+            retryable: true,
+          }
+        : this.#resultError(active, event),
     });
   }
 
+  #resultSucceeded(active: ActiveTurn, event: AntigravityResultEvent): boolean {
+    return (
+      event.result.status === "SUCCESS" &&
+      !event.result.finished_reason?.trim() &&
+      stderrPrintTimeoutMessage(active.stderr) === null
+    );
+  }
+
   #resultError(active: ActiveTurn, event: AntigravityResultEvent): HarnessError {
-    const nativeError = event.result.error?.trim();
+    const finishedReason = event.result.finished_reason?.trim();
+    const timeoutDetail = stderrPrintTimeoutMessage(active.stderr);
+    const nativeError =
+      timeoutDetail ??
+      event.result.error?.trim() ??
+      (finishedReason === "print_timeout" ? "print timeout" : undefined);
+    const fallback =
+      timeoutDetail !== null || finishedReason === "print_timeout"
+        ? "Antigravity Turn timed out before completion"
+        : event.result.status === "SUCCESS" && finishedReason
+          ? `Antigravity Turn ended early (${finishedReason})`
+          : `Antigravity Turn ended with status ${event.result.status}`;
     return normalizedProcessError(
       nativeError || active.stderr,
-      `Antigravity Turn ended with status ${event.result.status}`,
+      fallback,
       nativeError !== undefined,
     );
   }
@@ -1218,6 +1268,10 @@ class AntigravitySession implements HarnessSession {
       }
       return;
     }
+    if (step.step_type === "checkpoint") {
+      this.#handleCompactionStep(active, step);
+      return;
+    }
     if (step.step_type !== "tool") return;
     if (active.agentItem) {
       this.#completeItem(active, active.agentItem, { status: "succeeded" });
@@ -1262,6 +1316,45 @@ class AntigravitySession implements HarnessSession {
           }
         : { status: "succeeded" };
     this.#completeItem(active, completed, itemOutcome);
+  }
+
+  /**
+   * agy compacts a Conversation in a `checkpoint` step: the summary replaces the
+   * earlier history in agy's own context. Desktop shows it as a Context
+   * Compaction, and an explicit `/compact` command Turn is reported as manual by
+   * the Host from that Item.
+   */
+  #handleCompactionStep(active: ActiveTurn, step: AntigravityStepUpdateEvent["step_update"]): void {
+    if (!active.compactionItem) {
+      if (active.agentItem) {
+        this.#completeItem(active, active.agentItem, { status: "succeeded" });
+        active.agentItem = null;
+        active.agentText = "";
+      }
+      active.compactionItem = { type: "contextCompaction", itemId: this.#newItemId() };
+      this.#event({
+        type: "item.started",
+        turnId: active.command.turnId,
+        item: active.compactionItem,
+      });
+    }
+    if (step.state !== "DONE" && step.state !== "ERROR") return;
+    const item = active.compactionItem;
+    active.compactionItem = null;
+    this.#completeItem(
+      active,
+      item,
+      step.state === "ERROR"
+        ? {
+            status: "failed",
+            error: {
+              code: "nativeFailure",
+              message: "Antigravity context compaction failed",
+              retryable: false,
+            },
+          }
+        : { status: "succeeded" },
+    );
   }
 
   /**
@@ -1386,6 +1479,8 @@ class AntigravitySession implements HarnessSession {
           ? { status: "cancelled", ...(outcome.reason ? { reason: outcome.reason } : {}) }
           : { status: "succeeded" };
     active.subagents.finish(itemOutcome);
+    if (active.compactionItem) this.#completeItem(active, active.compactionItem, itemOutcome);
+    active.compactionItem = null;
     if (active.agentItem) this.#completeItem(active, active.agentItem, itemOutcome);
     // A step whose patch never resolved still ran, so an interrupted Turn
     // reports it as a Tool Execution rather than dropping it silently.

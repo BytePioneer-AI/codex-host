@@ -258,6 +258,8 @@ export interface RendererSettingsMessages {
   readonly updateInstallingNpm: string;
   readonly updateRequestTimeout: string;
   readonly updateServiceUnavailable: string;
+  readonly updateReconnecting: string;
+  readonly updateResultUnavailable: string;
   readonly updateRestarting: string;
   readonly updateSucceeded: string;
   readonly updateFailed: string;
@@ -479,7 +481,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionOfficialWebsite: "Visit official website",
   connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "Supported DSH versions: 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1, 0.2.0-rc.2, 0.2.1-rc.1 and 0.2.1-rc.2. Versions newer than 0.2.1-rc.2 can be tried, but compatibility may be limited; versions older than 0.1.7-rc.1 must be upgraded first.",
+    "Supported DSH versions: 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1, 0.2.0-rc.2, 0.2.1-rc.1, 0.2.1-rc.2, 0.2.1-rc.3, 0.2.1-rc.4, 0.2.1-rc.5 and 0.2.2-rc.1. Versions newer than 0.2.2-rc.1 can be tried, but compatibility may be limited; versions older than 0.1.7-rc.1 must be upgraded first.",
   connectionInstall: "Install",
   connectionInstallDescription: "This Harness was not detected.",
   connectionInstallRunning:
@@ -553,6 +555,9 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "The update service did not respond. Download the latest version from GitHub Releases below.",
   updateServiceUnavailable:
     "Automatic updates are unavailable right now. Download the latest version from GitHub Releases below.",
+  updateReconnecting: "Waiting for the update service to reconnect...",
+  updateResultUnavailable:
+    "The update result could not be confirmed. Reopen Updates later to check its status.",
   updateRestarting: "Restarting to finish the update...",
   updateSucceeded: "Update installed successfully.",
   updateFailed: "Update failed.",
@@ -780,7 +785,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionOfficialWebsite: "访问官网",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1、0.2.0-rc.2、0.2.1-rc.1 和 0.2.1-rc.2。高于 0.2.1-rc.2 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
+    "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1、0.2.0-rc.2、0.2.1-rc.1、0.2.1-rc.2、0.2.1-rc.3、0.2.1-rc.4、0.2.1-rc.5 和 0.2.2-rc.1。高于 0.2.2-rc.1 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
   connectionInstall: "安装",
   connectionInstallDescription: "尚未检测到该 Harness。",
   connectionInstallRunning: "正在所选 Host 上安装，离开页面不会中断。安装后可能仍需登录或配置。",
@@ -848,6 +853,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateInstallingNpm: "正在通过 npm 安装...",
   updateRequestTimeout: "更新服务未响应，请通过下方 GitHub Releases 手动下载最新版本。",
   updateServiceUnavailable: "暂时无法自动更新，请通过下方 GitHub Releases 手动下载最新版本。",
+  updateReconnecting: "正在等待更新服务重新连接...",
+  updateResultUnavailable: "暂时无法确认更新结果，请稍后重新打开更新页面查看。",
   updateRestarting: "正在重启以完成更新...",
   updateSucceeded: "更新安装成功。",
   updateFailed: "更新失败。",

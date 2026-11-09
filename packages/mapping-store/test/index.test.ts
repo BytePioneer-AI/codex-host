@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -764,6 +764,43 @@ describe("mapping-store package", () => {
     await second.close();
   });
 
+  it("persists preview separately without renaming or changing recency", async () => {
+    const directory = await temporaryStoreDirectory();
+    let now = new Date("2026-01-01T00:00:00.000Z");
+    const store = new MappingStore({ directory, now: () => now });
+    await store.initialize();
+    await createReady(store);
+    const before = await store.setTitle(threadId, "User title");
+    now = new Date("2026-02-01T00:00:00.000Z");
+    const saved = await store.updateMetadata(threadId, { preview: "First prompt" });
+    expect(saved).toMatchObject({
+      preview: "First prompt",
+      title: before.title,
+      updatedAt: before.updatedAt,
+    });
+    expect(await store.updateMetadata(threadId, { preview: "First prompt" })).toEqual(saved);
+    const core = JSON.parse(
+      await readFile(path.join(directory, "threads", `${threadId}.json`), "utf8"),
+    );
+    expect(storedThreadCoreV1Schema.safeParse(core).success).toBe(true);
+    expect(core).not.toHaveProperty("preview");
+    await store.close();
+    const reopened = new MappingStore({ directory });
+    await reopened.initialize();
+    try {
+      expect(await reopened.getThread(threadId)).toMatchObject({
+        title: "User title",
+        preview: "First prompt",
+      });
+      await reopened.updateMetadata(threadId, { preview: "" });
+      expect(await reopened.getThread(threadId)).toHaveProperty("preview", "");
+      await reopened.updateMetadata(threadId, { preview: null });
+      expect(await reopened.getThread(threadId)).not.toHaveProperty("preview");
+    } finally {
+      await reopened.close();
+    }
+  });
+
   it("keeps Thread record files readable by releases without Desktop metadata", async () => {
     const directory = await temporaryStoreDirectory();
     const first = new MappingStore({ directory });
@@ -1247,4 +1284,70 @@ describe("mapping-store package", () => {
     await store.initialize();
     await store.close();
   });
+});
+
+it("stores latest measurements only in existing metadata without changing identity revision or activity", async () => {
+  const directory = await temporaryStoreDirectory();
+  const store = new MappingStore({ directory });
+  await store.initialize();
+  await createReady(store);
+  await store.updateMetadata(threadId, { preview: "keep preview", projectId: "project" });
+  const before = await store.getThread(threadId);
+  const core = await readFile(path.join(directory, "threads", `${threadId}.json`), "utf8");
+  const values = {
+    outputTokensPerSecond: { value: 100, turnId: "turn-1", at: 100 },
+    timeToFirstOutputMs: { value: 50, turnId: "turn-1", at: 90 },
+  };
+  const saved = await store.saveUsageMeasurements(threadId, nativeRef, values);
+  expect(saved).toMatchObject({
+    revision: before?.revision,
+    updatedAt: before?.updatedAt,
+    preview: "keep preview",
+    usageMeasurements: { values },
+  });
+  expect(await readFile(path.join(directory, "threads", `${threadId}.json`), "utf8")).toBe(core);
+  expect(
+    JSON.parse(await readFile(path.join(directory, "thread-metadata", `${threadId}.json`), "utf8")),
+  ).toMatchObject({ projectId: "project", usageMeasurements: { values } });
+  const metadataPath = path.join(directory, "thread-metadata", `${threadId}.json`);
+  const stamp = await stat(metadataPath, { bigint: true });
+  await store.saveUsageMeasurements(threadId, nativeRef, values);
+  expect((await stat(metadataPath, { bigint: true })).mtimeNs).toBe(stamp.mtimeNs);
+  expect((await stat(metadataPath, { bigint: true })).ino).toBe(stamp.ino);
+  await store.close();
+  const reopened = new MappingStore({ directory });
+  await reopened.initialize();
+  expect((await reopened.getThread(threadId))?.usageMeasurements?.values).toEqual(values);
+  const wrong = nativeSessionRefSchema.parse({ ...nativeRef, nativeSessionId: "other" });
+  expect(
+    (await reopened.saveUsageMeasurements(threadId, wrong, {})).usageMeasurements?.values,
+  ).toEqual(values);
+  await reopened.reconcileTurnMappings(threadId, []);
+  expect(
+    (await reopened.saveUsageMeasurements(threadId, nativeRef, values)).usageMeasurements,
+  ).toBeUndefined();
+  expect((await reopened.getThread(threadId))?.preview).toBe("keep preview");
+  await reopened.close();
+});
+
+it("does not discard organization metadata when optional usage cache is invalid", async () => {
+  const directory = await temporaryStoreDirectory();
+  const first = new MappingStore({ directory });
+  await first.initialize();
+  await createReady(first);
+  await first.updateMetadata(threadId, { preview: "keep", projectId: "project" });
+  await first.close();
+  const file = path.join(directory, "thread-metadata", `${threadId}.json`);
+  const metadata = JSON.parse(await readFile(file, "utf8"));
+  metadata.usageMeasurements = {
+    nativeSessionRef: nativeRef,
+    values: { timeToFirstOutputMs: { value: -1, turnId: "turn-1", at: 1 } },
+  };
+  await writeFile(file, JSON.stringify(metadata));
+  const reopened = new MappingStore({ directory });
+  await reopened.initialize();
+  const record = await reopened.getThread(threadId);
+  expect(record).toMatchObject({ preview: "keep", projectId: "project" });
+  expect(record?.usageMeasurements).toBeUndefined();
+  await reopened.close();
 });

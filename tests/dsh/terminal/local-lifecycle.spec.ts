@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { it } from "vitest";
+import { it, vi } from "vitest";
 import type { IPty } from "node-pty";
 import { LocalTerminalHandle } from "../../../apps/web-ui/packages/subprocess/subprocess-local/src/terminal.ts";
 import type { ProcessInspector } from "../../../apps/web-ui/packages/subprocess/subprocess-local/src/process-inspector.ts";
 
-it.each(["output", "silent", "exit"])(
+it.each(["output", "silent", "exit", "timeout"])(
   "closes a Windows terminal after delayed initialization (%s)",
   async (mode) => {
     let data: (value: string) => void = () => {};
@@ -12,6 +12,7 @@ it.each(["output", "silent", "exit"])(
     let pid = 0;
     let alive = true;
     const signals: number[] = [];
+    let fallbackKills = 0;
     const terminal: IPty = {
       get pid() {
         return pid;
@@ -34,6 +35,8 @@ it.each(["output", "silent", "exit"])(
       pause() {},
       resume() {},
       kill() {
+        fallbackKills++;
+        if (mode === "timeout") return;
         throw new Error("Unidentified ConPTY cleanup must not be used");
       },
     };
@@ -57,6 +60,23 @@ it.each(["output", "silent", "exit"])(
       },
     };
     const handle = new LocalTerminalHandle(terminal, inspector, 1, "win32");
+    if (mode === "timeout") {
+      vi.useFakeTimers();
+      try {
+        const rejected = assert.rejects(handle.terminate(), /Windows terminal startup timed out/);
+        await vi.advanceTimersByTimeAsync(10_000);
+        await rejected;
+        assert.equal(fallbackKills, 1);
+        assert.equal(handle.running, true);
+        assert.deepEqual(signals, []);
+        exit({ exitCode: 0 });
+        await handle.terminate();
+        assert.deepEqual(await handle.done, { exitCode: 0, signal: null });
+      } finally {
+        vi.useRealTimers();
+      }
+      return;
+    }
     const closing = handle.terminate();
     await new Promise((resolve) => setTimeout(resolve, 30));
     assert.deepEqual(signals, []);

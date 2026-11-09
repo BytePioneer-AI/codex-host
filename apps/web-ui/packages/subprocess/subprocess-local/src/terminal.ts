@@ -471,8 +471,16 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
       // until its first output, which can exceed the termination grace on CI.
       const deadline = Date.now() + 10_000;
       while (!this.exited && this.pid <= 0 && Date.now() < deadline) await delay(25);
-      if (!this.exited && this.pid <= 0)
+      if (!this.exited && this.pid <= 0) {
+        try {
+          // Queue cancellation even if ConPTY finishes starting after our budget.
+          // Retain observation and retryability until exit is actually confirmed.
+          this.terminal.kill();
+        } catch (_startupCancellationUnavailable) {
+          // Cleanup still reports failure rather than claiming the process is gone.
+        }
         throw new Error("terminal cleanup failed; Windows terminal startup timed out");
+      }
     }
     this.captureRootIdentity();
     if (this.managedOwner !== undefined) {

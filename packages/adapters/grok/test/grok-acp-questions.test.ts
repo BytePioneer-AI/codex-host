@@ -53,7 +53,6 @@ createInterface({input:process.stdin}).on('line', line => {
       QUESTION_SCENARIO: scenario,
       QUESTION_RECORDS: records,
     },
-    commandTimeoutMs: 2000,
     closeTimeoutMs: 500,
   });
   try {

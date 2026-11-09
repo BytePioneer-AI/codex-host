@@ -1,5 +1,6 @@
 import type {
   HistoricalTurnOutcome,
+  HostItemSnapshot,
   HostItemOutcome,
   HostThreadSnapshot,
 } from "@codexhost/harness-adapter";
@@ -19,9 +20,9 @@ import {
 } from "./native-message.js";
 import { ClaudeBackgroundOccupancy } from "./background-occupancy.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
+import { readClaudeQueuedCommand } from "./claude-queued-command.js";
 
-interface ClaudeHistoryMessage {
-  type: "user" | "assistant";
+interface ClaudeHistoryRecord {
   uuid: string;
   message: Record<string, unknown>;
   failed: boolean;
@@ -30,7 +31,14 @@ interface ClaudeHistoryMessage {
   syntheticUser: boolean;
   interrupted: boolean;
   startsTurn: boolean;
+  forkSourceUuid?: string;
 }
+
+type ClaudeHistoryMessage = ClaudeHistoryRecord &
+  (
+    | { type: "user" | "assistant" }
+    | { type: "steering"; sourceUuid: string; message: { role: "user"; content: string } }
+  );
 
 const claudeCodeHarnessId: HarnessId = harnessIdSchema.parse("claude-code");
 
@@ -155,6 +163,24 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
   for (const value of values) {
     if (!isRecord(value)) throw new Error("Claude history contains a malformed message");
     if (value.type === "system") continue;
+    if (value.type === "attachment") {
+      const queued = readClaudeQueuedCommand(value, sessionId);
+      if (!queued) continue;
+      if (ids.has(queued.uuid)) throw new Error("Claude history contains duplicate message IDs");
+      ids.add(queued.uuid);
+      messages.push({
+        type: "steering",
+        uuid: queued.uuid,
+        sourceUuid: queued.sourceUuid,
+        message: { role: "user", content: queued.prompt },
+        failed: false,
+        nested: false,
+        syntheticUser: false,
+        interrupted: false,
+        startsTurn: false,
+      });
+      continue;
+    }
     if (
       (value.type !== "user" && value.type !== "assistant") ||
       typeof value.uuid !== "string" ||
@@ -181,6 +207,9 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
       nested: typeof value.parent_tool_use_id === "string" && value.parent_tool_use_id.length > 0,
       interrupted,
       startsTurn: false,
+      ...(isRecord(value.forkedFrom) && typeof value.forkedFrom.messageUuid === "string"
+        ? { forkSourceUuid: value.forkedFrom.messageUuid }
+        : {}),
       syntheticUser:
         value.type === "user" &&
         (interrupted ||
@@ -238,7 +267,27 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
         typeof value.promptId === "string" && value.promptId.length > 0 ? value.promptId : null;
     }
   }
-  return messages;
+  // An ordinary user record for the SDK input owns its native Turn boundary,
+  // including when the user record has a new UUID after a native Fork.
+  const userIds = new Set(
+    messages.flatMap((message) =>
+      isHumanUser(message)
+        ? [message.uuid, ...(message.forkSourceUuid ? [message.forkSourceUuid] : [])]
+        : [],
+    ),
+  );
+  const delivered = new Map<string, string>();
+  return messages.filter((message) => {
+    if (message.type !== "steering") return true;
+    const id = message.sourceUuid;
+    if (userIds.has(id)) return false;
+    const prompt = message.message.content;
+    const previous = delivered.get(id);
+    if (previous !== undefined && previous !== prompt)
+      throw new Error("Claude queued input UUID refers to different prompts");
+    delivered.set(id, prompt);
+    return previous === undefined;
+  });
 }
 
 function isHumanUser(message: ClaudeHistoryMessage): boolean {
@@ -303,6 +352,8 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
   for (let index = 0; index < messages.length;) {
     const user = messages[index];
     if (!user || !user.startsTurn) {
+      if (user?.type === "steering")
+        throw new Error("Claude queued input has no native Turn anchor");
       index += 1;
       continue;
     }
@@ -311,9 +362,13 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     const turnMessages = messages.slice(index, end);
     const outcome = turnOutcome(turnMessages);
     const results = toolResultBlocks(turnMessages);
-    const checkpointMessage = turnMessages.findLast(
+    const checkpointIndex = turnMessages.findLastIndex(
       ({ type, interrupted, nested }) => !nested && (type === "assistant" || interrupted),
     );
+    const lastSteering = turnMessages.findLastIndex(({ type }) => type === "steering");
+    // A checkpoint before the latest delivered input cannot retain the displayed prefix.
+    const checkpointMessage =
+      checkpointIndex > lastSteering ? turnMessages[checkpointIndex] : undefined;
     let agentMessageOrdinal = 0;
     let reasoningOrdinal = 0;
     // Tool Items count only what live reaches the Tool lifecycle: root, non-Subagent
@@ -340,7 +395,19 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
         type: "text",
         text: displayedUserText(text),
       })),
-      items: turnMessages.flatMap((message) => {
+      items: turnMessages.flatMap<HostItemSnapshot>((message) => {
+        if (message.type === "steering") {
+          return [
+            {
+              item: {
+                type: "userMessage",
+                itemId: hostItemIdSchema.parse(message.uuid),
+                input: [{ type: "text", text: message.message.content }],
+              },
+              outcome: { status: "succeeded" },
+            },
+          ];
+        }
         if (message.type === "user") {
           const recapOutput = visibleUserTextParts(user).some((text) =>
             isNamedCommandEnvelope(text, recapCommandNamePattern),

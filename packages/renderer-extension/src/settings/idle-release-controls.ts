@@ -7,11 +7,11 @@ import {
 import {
   IDLE_RELEASE_CHANGE_EVENT,
   IDLE_RELEASE_STATUS_EVENT,
-  IDLE_RELEASE_STORAGE_KEY,
   readIdleReleasePreference,
   writeIdleReleasePreference,
   type IdleReleaseSyncStatus,
 } from "../renderer-idle-release-preference.js";
+import { rendererHarnessPreferenceStatus } from "../renderer-harness-preferences.js";
 import type { RendererSettingsMessages } from "./localization.js";
 import type { RendererSettingsPageMountContext } from "./core.js";
 import { mountLoadedSessionsTable, type LoadedSessionsClient } from "./loaded-sessions-table.js";
@@ -131,22 +131,15 @@ export function mountIdleReleaseControls(
   minutes.addEventListener("input", () => {
     if (minutes.getAttribute("aria-invalid") === "true") setInvalid(false);
   });
-  const storage = (event: StorageEvent): void => {
-    if (event.key === IDLE_RELEASE_STORAGE_KEY || event.key === null) sync();
-  };
   const onStatus = (event: Event): void =>
     showStatus((event as CustomEvent<IdleReleaseSyncStatus>).detail);
   owner.addEventListener(IDLE_RELEASE_CHANGE_EVENT, sync);
   owner.addEventListener(IDLE_RELEASE_STATUS_EVENT, onStatus);
-  owner.addEventListener("storage", storage);
   sync();
-  showStatus("pending");
-  // Ask the installed connection synchronizer to report whether the saved setting was applied.
-  owner.dispatchEvent(new Event(IDLE_RELEASE_CHANGE_EVENT));
+  showStatus(rendererHarnessPreferenceStatus());
   return () => {
     disposeTable();
     owner.removeEventListener(IDLE_RELEASE_CHANGE_EVENT, sync);
     owner.removeEventListener(IDLE_RELEASE_STATUS_EVENT, onStatus);
-    owner.removeEventListener("storage", storage);
   };
 }

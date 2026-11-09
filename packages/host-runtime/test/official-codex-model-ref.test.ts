@@ -4,10 +4,30 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalizeOfficialCodexModelRef,
   decodeOfficialCodexModelRef,
+  decodeOfficialCodexModelSelection,
   encodeOfficialCodexModelRef,
 } from "../src/official-codex-model-ref.js";
 
 describe("official Codex Model refs", () => {
+  it("round-trips Fast as a selection of the same native Model with priority", () => {
+    const fast = encodeOfficialCodexModelRef("provider/model", "priority");
+    expect(fast).not.toEqual(encodeOfficialCodexModelRef("provider/model"));
+    expect(decodeOfficialCodexModelRef(fast)).toBe("provider/model");
+    expect(decodeOfficialCodexModelSelection(fast)).toEqual({
+      model: "provider/model",
+      serviceTier: "priority",
+    });
+    expect(canonicalizeOfficialCodexModelRef(fast)).toEqual(fast);
+    expect(
+      decodeOfficialCodexModelSelection(encodeOfficialCodexModelRef("provider/model")),
+    ).toEqual({ model: "provider/model", serviceTier: null });
+    expect(encodeOfficialCodexModelRef("provider/model", "flex")).toEqual(
+      encodeOfficialCodexModelRef("provider/model"),
+    );
+    expect(() =>
+      decodeOfficialCodexModelSelection(harnessModelRefSchema.parse({ id: `${fast.id}.` })),
+    ).toThrow("canonical");
+  });
   it.each([
     ["gpt-5.6-luna", "codex-model-v1.Z3B0LTUuNi1sdW5h"],
     ["xai/grok-4.6", "codex-model-v1.eGFpL2dyb2stNC42"],

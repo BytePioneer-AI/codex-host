@@ -619,6 +619,33 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     ).toMatchObject({ availability: "ready", error: null });
   });
 
+  it("excludes the reserved durable Host from connection diagnostics even when active or listed", async () => {
+    installFakeBrowser();
+    const local = { listHarnessPlugins, inspectHarness: vi.fn(async () => readyInspection()) };
+    const durable = { listHarnessPlugins: vi.fn(), inspectHarness: vi.fn() };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "pi"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      {
+        currentHostId: () => "durable",
+        knownHostIds: () => ["local", "durable"],
+        clientForHost: (hostId: string) => (hostId === "durable" ? durable : local),
+      } as never,
+    );
+    const diagnostics = testState.getConnectionDiagnostics?.();
+    await diagnostics?.refresh();
+    expect(diagnostics?.snapshot().hosts.map(({ hostId }) => hostId)).toEqual(["local"]);
+    expect(durable.listHarnessPlugins).not.toHaveBeenCalled();
+    expect(durable.inspectHarness).not.toHaveBeenCalled();
+    probe.dispose();
+  });
+
   it("reports a disconnected Host and ignores its late availability reply without affecting local", async () => {
     installFakeBrowser();
     const pending = Promise.withResolvers<ReturnType<typeof readyInspection>>();

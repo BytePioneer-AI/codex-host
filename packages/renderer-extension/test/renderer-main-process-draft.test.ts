@@ -96,7 +96,11 @@ async function setup() {
       return: null,
     },
   } as unknown as Element;
-  const target = new EventTarget();
+  const target = new (class extends EventTarget {
+    get document() {
+      return document;
+    }
+  })();
   vi.stubGlobal("window", target);
   vi.stubGlobal("document", {
     querySelector: () => editor,

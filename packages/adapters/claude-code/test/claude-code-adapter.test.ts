@@ -11,6 +11,7 @@ import {
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
+  nativeTurnRefSchema,
   type HostInteractionId,
 } from "@codexhost/shared-contracts";
 
@@ -40,6 +41,7 @@ import {
   type ClaudeTurnTransport,
 } from "../src/transport.js";
 import { FakeQuery } from "./fake-sdk-query.js";
+import { queuedCommand } from "./fixtures/claude-queued-command.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -1722,69 +1724,96 @@ describe("Claude Code HarnessAdapter", () => {
     });
   });
 
-  it("reads and resumes Native history without starting a Transport until the next Turn", async () => {
-    const { adapter, dependencies, history, transports } = fixture();
-    const sourceRef = nativeSessionRefSchema.parse({
-      harnessId: "claude-code",
-      nativeSessionId: "source-session",
-      formatVersion: 1,
-    });
-    history.push(
-      {
-        type: "user",
-        uuid: "source-user",
-        session_id: "source-session",
-        message: { role: "user", content: "source prompt" },
-      },
-      {
-        type: "assistant",
-        uuid: "source-assistant",
-        session_id: "source-session",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "source response" }],
-          stop_reason: "end_turn",
+  it.each([false, true])(
+    "reads and resumes Native history without starting a Transport until the next Turn (steered=%s)",
+    async (steered) => {
+      const { adapter, dependencies, history, transports } = fixture();
+      const sourceRef = nativeSessionRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "source-session",
+        formatVersion: 1,
+      });
+      history.push(
+        {
+          type: "user",
+          uuid: "source-user",
+          session_id: "source-session",
+          message: { role: "user", content: "source prompt" },
         },
-      },
-    );
-
-    const opened = await adapter.open({ kind: "resume", cwd: "/synthetic", nativeRef: sourceRef });
-    if (!opened.ok) throw new Error(opened.error.message);
-    expect(opened.value.initialState).toEqual({ nativeRef: sourceRef });
-    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: {
-        turns: [
-          {
-            nativeTurnRef: { nativeTurnKey: "source-user" },
-            input: [{ type: "text", text: "source prompt" }],
-            items: [{ item: { type: "agentMessage", text: "source response" } }],
+        ...(steered
+          ? [queuedCommand("source-attachment", "sdk-steer", "source steer", "source-session")]
+          : []),
+        {
+          type: "assistant",
+          uuid: "source-assistant",
+          session_id: "source-session",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "source response" }],
+            stop_reason: "end_turn",
           },
-        ],
-      },
-    });
-    expect(dependencies.createTransport).not.toHaveBeenCalled();
+        },
+      );
 
-    const iterator = opened.value.outputs[Symbol.asyncIterator]();
-    await expect(opened.value.execute(textTurn("continued"))).resolves.toMatchObject({ ok: true });
-    expect(dependencies.createTransport).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cwd: path.resolve("/synthetic"),
-        sessionId: "source-session",
-        openMode: "resume",
-      }),
-    );
-    expect(await nextEvent(iterator)).toMatchObject({
-      type: "session.state.changed",
-      state: { nativeRef: sourceRef },
-    });
-    expect((await nextEvent(iterator)).type).toBe("turn.started");
-    expect((await nextEvent(iterator)).type).toBe("item.started");
-    transports[0]?.finish({ status: "succeeded" });
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    await opened.value.close();
-  });
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd: "/synthetic",
+        nativeRef: sourceRef,
+        knownTurnRefs: [nativeTurnRefSchema.parse({ ...sourceRef, nativeTurnKey: "source-user" })],
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.initialState).toEqual({ nativeRef: sourceRef });
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            {
+              nativeTurnRef: { nativeTurnKey: "source-user" },
+              checkpoint: { checkpointId: "source-assistant" },
+              input: [{ type: "text", text: "source prompt" }],
+              items: [
+                ...(steered
+                  ? [
+                      {
+                        item: {
+                          type: "userMessage",
+                          itemId: "source-attachment",
+                          input: [{ text: "source steer" }],
+                        },
+                      },
+                    ]
+                  : []),
+                { item: { type: "agentMessage", text: "source response" } },
+              ],
+            },
+          ],
+        },
+      });
+      expect(dependencies.createTransport).not.toHaveBeenCalled();
+
+      const iterator = opened.value.outputs[Symbol.asyncIterator]();
+      await expect(opened.value.execute(textTurn("continued"))).resolves.toMatchObject({
+        ok: true,
+      });
+      expect(dependencies.createTransport).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cwd: path.resolve("/synthetic"),
+          sessionId: "source-session",
+          openMode: "resume",
+        }),
+      );
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "session.state.changed",
+        state: { nativeRef: sourceRef },
+      });
+      expect((await nextEvent(iterator)).type).toBe("turn.started");
+      expect((await nextEvent(iterator)).type).toBe("item.started");
+      transports[0]?.finish({ status: "succeeded" });
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await opened.value.close();
+    },
+  );
 
   it("defers resumed Query startup until the next Turn and applies the final configuration", async () => {
     const { adapter, dependencies, transports } = fixture();

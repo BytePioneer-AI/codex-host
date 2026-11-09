@@ -34,6 +34,10 @@ fn production_launcher_uses_the_three_state_running_desktop_flow() {
     assert!(source.contains("acquire_launcher_ownership"));
     assert!(source.contains("completely quit it before starting codexhost"));
     assert!(!source.contains("attach_unmanaged_desktop"));
+    assert!(source.contains("RunningDesktopChoice::Cancel => return Ok(())"));
+    assert!(source.contains(
+        "let result = launch_gui(options, installation, interactive);\n    services::finish_launch(false);\n    result"
+    ), "every GUI outcome, including cancellation, must join Web before returning");
 }
 
 #[test]
@@ -84,6 +88,10 @@ fn production_launcher_resolves_resources_beside_its_installed_location() {
     let output = output_of_copied_binary(
         Command::new(&installed)
             .args(["launch"])
+            .env("HOME", &root)
+            .env("USERPROFILE", &root)
+            .env("LOCALAPPDATA", &root)
+            .env("CODEXHOST_WEB_SERVICE", "0")
             .env("CODEXHOST_DATA_DIR", root.join("data"))
             .env("CODEXHOST_CONSOLE", "0")
             .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop")),
@@ -117,6 +125,8 @@ fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
 
     let output = output_of_copied_binary(
         Command::new(&installed)
+            .env("HOME", &root)
+            .env("CODEXHOST_WEB_SERVICE", "0")
             .env("CODEXHOST_DATA_DIR", root.join("data"))
             .env("CODEXHOST_CONSOLE", "0")
             .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop")),
@@ -160,6 +170,8 @@ fn npm_launch_starts_recovery_console_without_desktop_or_bundled_node() {
         Command::new(&installed)
             .args(["launch", "--host-runtime"])
             .arg(&host_runtime)
+            .env("HOME", &root)
+            .env("CODEXHOST_WEB_SERVICE", "0")
             .env("CODEXHOST_DATA_DIR", root.join("data"))
             .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop"))
             .env("CODEXHOST_CONSOLE", "1")
@@ -192,6 +204,7 @@ fn help_prints_usage_to_stdout_and_succeeds() {
         assert!(stdout.starts_with("usage:\n"), "{argument}");
         for command in [
             "codexhost --version",
+            "codexhost desktop-screenshot",
             "codexhost harness list|inspect ...",
             "codexhost thread send|cancel|read|wait|watch|watches|list ...",
             "codexhost broker install|status|stop|uninstall",
@@ -199,6 +212,19 @@ fn help_prints_usage_to_stdout_and_succeeds() {
             assert!(stdout.contains(command), "{argument}: {command}");
         }
     }
+}
+
+#[test]
+fn desktop_screenshot_rejects_arguments_before_capturing() {
+    let output = Command::new(launcher_path())
+        .args(["desktop-screenshot", "--output", "untrusted.png"])
+        .output()
+        .expect("run launcher");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("desktop-screenshot accepts no arguments")
+    );
 }
 
 #[test]

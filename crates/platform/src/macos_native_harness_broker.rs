@@ -109,7 +109,7 @@ fn required_absolute_path(path: &Path, label: &str) -> Result<String, PlatformEr
     Ok(value.to_owned())
 }
 
-fn xml_text(value: &str) -> String {
+pub(crate) fn xml_text(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")

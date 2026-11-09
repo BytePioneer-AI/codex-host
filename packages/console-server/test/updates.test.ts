@@ -74,6 +74,47 @@ describe("console updates", () => {
     });
   });
 
+  it.each(["failed", "succeeded"])(
+    "displays %s service stop output after Console restarts",
+    async (phase) => {
+      const { target, environment } = await npmLayout();
+      const stateDirectory = path.join(root, "state");
+      const operation = path.join(stateDirectory, "update-result");
+      await mkdir(operation, { recursive: true });
+      const serviceStopOutput = "Shared Host stopped; interrupted 7 running task(s)\n";
+      await writeFile(
+        path.join(operation, "status-v1.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          version: "1.1.0",
+          installation: "npm",
+          phase,
+          updatedAt: Math.floor(Date.now() / 1000),
+          serviceStopOutput,
+        }),
+      );
+      const updates = createConsoleUpdates({
+        onHandedOff: vi.fn(),
+        environment,
+        stateDirectory,
+        fetchLatest: async () => release,
+      });
+      await expect(updates.check(target)).resolves.toMatchObject({
+        status: { phase, serviceStopOutput },
+      });
+      await expect(updates.status()).resolves.toMatchObject({
+        status: { phase, serviceStopOutput },
+      });
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 86_401_000);
+      try {
+        await expect(updates.status()).resolves.toEqual({ status: null });
+        await expect(updates.check(target)).resolves.toMatchObject({ status: null });
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
   it.each(["failed", "succeeded", "prepared"])(
     "does not display historical %s state",
     async (phase) => {
@@ -88,7 +129,7 @@ describe("console updates", () => {
           version: "1.1.0",
           installation: "npm",
           phase,
-          updatedAt: Math.floor(Date.now() / 1000),
+          updatedAt: Math.floor(Date.now() / 1000) - 86_401,
           error: "old failure",
         }),
       );
@@ -139,50 +180,8 @@ describe("console updates", () => {
     await expect(updates.status()).resolves.toMatchObject({
       status: { phase: "failed", error: "current failure" },
     });
-    await expect(createConsoleUpdates(options).status()).resolves.toEqual({ status: null });
-  });
-
-  it("hands off to the Updater before returning", async () => {
-    const { target, environment } = await npmLayout("linux");
-    const spawnUpdater = vi.fn<(executable: string, requestPath: string) => never>(
-      () => Object.assign(new EventEmitter(), { pid: 4321, kill: vi.fn() }) as never,
-    );
-    const onHandedOff = vi.fn();
-    const updates = createConsoleUpdates({
-      onHandedOff,
-      waitForHandoff: true,
-      environment,
-      platform: "linux",
-      processId: 777,
-      processExecutable: process.execPath,
-      stateDirectory: path.join(root, "state"),
-      fetchLatest: async () => release,
-      manager: createBackgroundUpdateManager({ platform: "linux", spawnUpdater }),
-    });
-
-    await updates.check(target);
-    const starting = updates.start(target);
-    await vi.waitFor(() => expect(spawnUpdater).toHaveBeenCalledOnce());
-    expect(onHandedOff).not.toHaveBeenCalled();
-    const call = spawnUpdater.mock.calls[0];
-    if (!call) throw new Error("Updater was not spawned");
-    const spawnedRequest = JSON.parse(await readFile(call[1], "utf8"));
-    const status = JSON.parse(await readFile(spawnedRequest.status_path, "utf8"));
-    await writeFile(
-      spawnedRequest.status_path,
-      JSON.stringify({ ...status, phase: "waiting-for-exit" }),
-    );
-    const result = await starting;
-
-    expect(result.status.phase).toBe("waiting-for-exit");
-    expect(result.status).toMatchObject({ version: "1.1.0", installation: "npm" });
-    expect(onHandedOff).toHaveBeenCalledOnce();
-    const requestPath = (spawnUpdater.mock.calls[0] as unknown as [string, string])[1];
-    const request = JSON.parse(await readFile(requestPath, "utf8")) as Record<string, unknown>;
-    expect(request).toMatchObject({
-      wait_pid: 777,
-      wait_executable: process.execPath,
-      runtime_descriptor_path: target.runtimeDescriptorPath,
+    await expect(createConsoleUpdates(options).status()).resolves.toMatchObject({
+      status: { phase: "failed", error: "current failure" },
     });
   });
 

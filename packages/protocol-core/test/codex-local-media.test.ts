@@ -58,6 +58,9 @@ describe("agent media code spans", () => {
         .map(({ params }) => (params as JsonObject).delta)
         .join("");
       expect(expected.startsWith(published)).toBe(true);
+      expect(live.snapshotTurn().items).toMatchObject(
+        published ? [{ type: "agentMessage", text: published }] : [],
+      );
     }
     wire.push(
       ...live.project({
@@ -75,6 +78,7 @@ describe("agent media code spans", () => {
     expect(wire.filter(({ method }) => method === "item/completed")).toMatchObject([
       { params: { item: { type: "agentMessage", text: expected } } },
     ]);
+    expect(live.snapshotTurn().items).toMatchObject([{ type: "agentMessage", text: expected }]);
     expect(
       live.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } })
         .completedTurn,

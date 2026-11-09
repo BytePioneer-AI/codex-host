@@ -105,7 +105,7 @@ describe("Renderer trigger chip squeeze layout", () => {
   );
 
   it("exposes max-width budgets that fit a squeezed composer footer", () => {
-    expect(rendererModelTriggerMaxWidth()).toBe("min(200px, 26vw)");
+    expect(rendererModelTriggerMaxWidth()).toBe("min(280px, 36vw)");
     expect(rendererPermissionModeTriggerMaxWidth()).toBe("min(160px, 24vw)");
     expect(rendererUsageTriggerMaxWidth()).toBe("min(240px, 30vw)");
     expect(rendererCreditsTriggerMaxWidth()).toBe("min(72px, 16vw)");

@@ -13,6 +13,7 @@ import { ClientChannelRequestError } from "./client-channel-error.js";
 import { compactClientSnapshot } from "./client-snapshot-compaction.js";
 import { nativeThreadConfiguration } from "./codex-runtime/native-thread-controls.js";
 import { sendNativeQueuedMessage } from "./native-queued-steering.js";
+import { submitNativeQueuedInput } from "./native-queued-input.js";
 import { NativeClientItems } from "./native-client-items.js";
 
 export type NativeClientReply =
@@ -522,11 +523,32 @@ export class NativeClientChannel {
       this.observeResponse("thread/resume", { threadId }, resumed);
       if ("error" in resumed) return resumed;
     }
+    if (method === "turn/start" && params.delivery === "queue") {
+      return submitNativeQueuedInput(
+        (method, params) =>
+          generation === this.#generationToken
+            ? this.request(method, params)
+            : Promise.resolve(stale()),
+        params,
+      );
+    }
     let reply = await this.#host.request(
       method,
       method === "thread/resume" ? { ...params, excludeTurns: true } : params,
     );
     if (generation !== this.#generationToken) return stale();
+    // A native Thread exists before its first user message materializes history.
+    // Only that explicit initial-page response means empty history, not a failed read.
+    if (
+      method === "thread/turns/list" &&
+      threadId &&
+      (params.cursor === undefined || params.cursor === null) &&
+      "error" in reply &&
+      reply.error.code === -32600 &&
+      reply.error.message ===
+        `thread ${threadId} is not materialized yet; thread/turns/list is unavailable before first user message`
+    )
+      reply = { result: { data: [], nextCursor: null } };
     if (
       method === "thread/turns/list" &&
       threadId &&

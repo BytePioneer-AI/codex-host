@@ -34,7 +34,18 @@ it("routes official and external fork, queue, configuration, command, pin and us
   const home = mkdtempSync(path.join(tmpdir(), "official-create-"));
   cleanup.push(() => rmSync(home, { recursive: true, force: true }));
   const request = vi.fn(async (method: string): Promise<NativeClientReply> => ({
-    result: method === "thread/turns/list" ? { data: [], nextCursor: null } : {},
+    result:
+      method === "thread/read"
+        ? { thread: { id: "official", status: { type: "idle" } } }
+        : method === "thread/turns/list"
+          ? { data: [], nextCursor: null }
+          : method === "thread/queue/list"
+            ? { data: [{ id: "native-queued", clientUserMessageId: "web-message", input: [] }] }
+            : method === "thread/queue/add"
+              ? { queuedSubmission: { id: "native-queued", input: [] } }
+              : method === "thread/queue/start"
+                ? { turn: { id: "started", status: "inProgress", items: [] } }
+                : {},
   }));
   const submit = vi.fn(async () => ({ result: {} }));
   const events = new ClientChannelEvents();
@@ -176,15 +187,20 @@ it("routes official and external fork, queue, configuration, command, pin and us
     { threadId: external },
     undefined,
   );
-  await host.handleClientRequest("turn/start", {
+  const queuedInput = {
     threadId: "official",
     delivery: "queue",
     input: [],
+    clientUserMessageId: "web-message",
+  };
+  const acceptedQueue = await host.handleClientRequest("turn/start", queuedInput);
+  expect(request).toHaveBeenLastCalledWith("thread/queue/start", {
+    threadId: "official",
+    queuedSubmissionId: "native-queued",
   });
-  expect(request).toHaveBeenLastCalledWith(
-    "thread/queue/add",
-    expect.objectContaining({ threadId: "official" }),
-  );
+  const calls = request.mock.calls.length;
+  expect(await host.handleClientRequest("turn/start", queuedInput)).toEqual(acceptedQueue);
+  expect(request).toHaveBeenCalledTimes(calls);
   await host.handleClientRequest("thread/start", {
     model: encodeOfficialCodexModelRef("gpt/test"),
     projectlessWorkspace: { prompt: "a new task" },
@@ -436,6 +452,7 @@ it("keeps writer-conflicted snapshots readable and falls back to queue IDs for m
     turns: [],
   };
   let occupied = true;
+  let latestStatus: string | undefined;
   const request = vi.fn<NativeClientChannelDependencies["request"]>(
     async (method): Promise<NativeClientReply> => {
       if (method === "thread/resume")
@@ -450,7 +467,13 @@ it("keeps writer-conflicted snapshots readable and falls back to queue IDs for m
               },
             };
       if (method === "thread/read") return { result: { thread } };
-      if (method === "thread/turns/list") return { result: { data: [], nextCursor: null } };
+      if (method === "thread/turns/list")
+        return {
+          result: {
+            data: latestStatus ? [{ id: "latest", status: latestStatus, items: [] }] : [],
+            nextCursor: null,
+          },
+        };
       if (method === "thread/queue/list")
         return {
           result: {
@@ -512,82 +535,125 @@ it("keeps writer-conflicted snapshots readable and falls back to queue IDs for m
     threadId: "official",
     excludeTurns: true,
   });
+  for (const status of ["interrupted", "failed", "inProgress", "completed"]) {
+    latestStatus = status;
+    const snapshot = await host.clientSnapshot("official");
+    expect(snapshot.queue?.pausedReason).toBe(
+      status === "interrupted" || status === "failed" ? status : null,
+    );
+    expect(snapshot.queue?.items).toHaveLength(2);
+  }
 });
 
-it("pairs official Web submissions with their snapshot user Items before fingerprinting", async () => {
-  const events = new ClientChannelEvents();
-  const turns: JsonObject[] = [];
-  const thread = {
-    id: "official",
-    cwd: "/workspace",
-    modelProvider: "openai",
-    createdAt: 1,
-    updatedAt: 1,
-    status: { type: "idle" },
-    turns: [],
-  };
-  const request: NativeClientChannelDependencies["request"] = async (method, params) => {
-    if (method === "thread/resume" || method === "thread/read") return { result: { thread } };
-    if (method === "thread/queue/list") return { result: { data: [] } };
-    if (method === "thread/turns/list")
-      return { result: { data: structuredClone([...turns].reverse()), nextCursor: null } };
-    if (method === "turn/start") {
-      const id = `turn-${turns.length + 1}`;
-      // Official history does not echo the Web's clientUserMessageId.
-      turns.push({
-        id,
-        status: "completed",
-        items: [{ id: `${id}-user`, type: "userMessage", content: params.input ?? [] }],
-      });
-      return { result: { turn: { id, status: "inProgress", items: [] } } };
+it.each(["direct", "queue"])(
+  "opens a fresh official Thread and pairs %s Web submissions with snapshot Items",
+  async (delivery) => {
+    const events = new ClientChannelEvents();
+    const turns: JsonObject[] = [];
+    const queued: JsonObject[] = [];
+    const thread = {
+      id: "official",
+      cwd: "/workspace",
+      modelProvider: "openai",
+      createdAt: 1,
+      updatedAt: 1,
+      status: { type: "idle" },
+      turns: [],
+    };
+    const request: NativeClientChannelDependencies["request"] = async (method, params) => {
+      if (["thread/start", "thread/resume", "thread/read"].includes(method))
+        return { result: { thread } };
+      if (method === "thread/queue/list") return { result: { data: structuredClone(queued) } };
+      if (method === "thread/turns/list")
+        return turns.length > 0
+          ? { result: { data: structuredClone([...turns].reverse()), nextCursor: null } }
+          : {
+              error: {
+                code: -32600,
+                message: `thread ${thread.id} is not materialized yet; thread/turns/list is unavailable before first user message`,
+              },
+            };
+      if (method === "thread/queue/add") {
+        const item = {
+          id: String(params.clientUserMessageId),
+          input: params.input ?? [],
+          clientUserMessageId: String(params.clientUserMessageId),
+        };
+        queued.push(item);
+        return { result: { queuedSubmission: item } };
+      }
+      if (method === "turn/start" || method === "thread/queue/start") {
+        const input = method === "turn/start" ? params.input : queued.shift()?.input;
+        const id = `turn-${turns.length + 1}`;
+        // Official history does not echo the Web's clientUserMessageId.
+        turns.push({
+          id,
+          status: "completed",
+          items: [{ id: `${id}-user`, type: "userMessage", content: input ?? [] }],
+        });
+        return { result: { turn: { id, status: "inProgress", items: [] } } };
+      }
+      throw new Error(`Unexpected native method ${method}`);
+    };
+    const host = new ClientChannelHost({
+      events,
+      environment: () => ({}),
+      waitForPlugins: async () => {},
+      listRecords: async () => [],
+      listSectionPlacements: async () => [],
+      locateExternalThread: async () => ({ kind: "official" }),
+      loadedThread: () => undefined,
+      clientHistoryTurns: () => [],
+      queueSnapshot: () => ({ items: [], pausedReason: null }),
+      interactions: {
+        approvals: new Map(),
+        questions: new Map(),
+        isApprovalRequestId: (value): value is number => typeof value === "number",
+        isQuestionRequestId: (value): value is number => typeof value === "number",
+        respondApproval: async () => false,
+        respondQuestion: async () => false,
+      },
+      native: { events, request, respond: async () => {} },
+      submit: async () => {
+        throw new Error("Must use the official client");
+      },
+    });
+    expect(await host.handleClientRequest("thread/start", { cwd: thread.cwd })).toHaveProperty(
+      "result",
+    );
+    const empty = await host.clientSnapshot(thread.id);
+    expect(empty.turnsPage).toEqual({ data: [], nextCursor: null });
+    expect(empty.queue?.items).toEqual([]);
+    expect(turns).toEqual([]);
+    for (const [index, text] of ["你好", "你在做是什么"].entries()) {
+      expect(
+        await host.handleClientRequest("turn/start", {
+          threadId: thread.id,
+          ...(delivery === "queue" ? { delivery } : {}),
+          clientUserMessageId: `web-${index + 1}`,
+          input: [{ type: "text", text }],
+        }),
+      ).toHaveProperty("result");
     }
-    throw new Error(`Unexpected native method ${method}`);
-  };
-  const host = new ClientChannelHost({
-    events,
-    environment: () => ({}),
-    waitForPlugins: async () => {},
-    listRecords: async () => [],
-    listSectionPlacements: async () => [],
-    locateExternalThread: async () => ({ kind: "official" }),
-    loadedThread: () => undefined,
-    clientHistoryTurns: () => [],
-    queueSnapshot: () => ({ items: [], pausedReason: null }),
-    interactions: {
-      approvals: new Map(),
-      questions: new Map(),
-      isApprovalRequestId: (value): value is number => typeof value === "number",
-      isQuestionRequestId: (value): value is number => typeof value === "number",
-      respondApproval: async () => false,
-      respondQuestion: async () => false,
-    },
-    native: { events, request, respond: async () => {} },
-    submit: async () => {
-      throw new Error("Must use the official client");
-    },
-  });
-  for (const [index, text] of ["你好", "你在做是什么"].entries()) {
-    expect(
-      await host.handleClientRequest("turn/start", {
-        threadId: thread.id,
-        clientUserMessageId: `web-${index + 1}`,
-        input: [{ type: "text", text }],
-      }),
-    ).toHaveProperty("result");
-  }
-  const snapshot = await host.clientSnapshot(thread.id, { knownTurns: [] });
-  expect(snapshot.turnsPage.data.map((turn) => turn.items[0]?.clientId)).toEqual([
-    "web-2",
-    "web-1",
-  ]);
-  expect(snapshot.activeTurnId).toBeUndefined();
-  const knownTurns = snapshot.turnsPage.data.map((turn) => ({
-    id: String(turn.id),
-    fingerprint: String(turn.fingerprint),
-  }));
-  const compacted = await host.clientSnapshot(thread.id, { knownTurns });
-  expect(compacted.turnsPage.data.every((turn) => turn.unchanged === true)).toBe(true);
-});
+    const snapshot = await host.clientSnapshot(thread.id, { knownTurns: [] });
+    expect(snapshot.turnsPage.data.map((turn) => turn.items[0]?.clientId)).toEqual([
+      "web-2",
+      "web-1",
+    ]);
+    expect(snapshot.activeTurnId).toBeUndefined();
+    expect(snapshot.queue?.items).toEqual([]);
+    expect(snapshot.turnsPage.data.map((turn) => turn.items[0]?.content)).toEqual([
+      [{ type: "text", text: "你在做是什么" }],
+      [{ type: "text", text: "你好" }],
+    ]);
+    const knownTurns = snapshot.turnsPage.data.map((turn) => ({
+      id: String(turn.id),
+      fingerprint: String(turn.fingerprint),
+    }));
+    const compacted = await host.clientSnapshot(thread.id, { knownTurns });
+    expect(compacted.turnsPage.data.every((turn) => turn.unchanged === true)).toBe(true);
+  },
+);
 
 it("only reports official admission failures as notInstalled and preserves other inspection errors", async () => {
   const fixture = createFixture();

@@ -72,6 +72,83 @@ it("captures the native snapshot cursor before resume/read I/O and keeps real co
   expect(calls.filter((method) => method === "thread/resume")).toHaveLength(2);
 });
 
+it("projects a newly created Thread's unmaterialized history as empty without caching it", async () => {
+  const { channel, request } = snapshotChannel();
+  const implementation = request.getMockImplementation();
+  if (!implementation) throw new Error("Missing native fixture");
+  let materialized = false;
+  request.mockImplementation(async (method) => {
+    if (method === "thread/turns/list")
+      return materialized
+        ? {
+            result: {
+              data: [{ id: "first-turn", status: "completed", items: [] }],
+              nextCursor: null,
+            },
+          }
+        : {
+            error: {
+              code: -32600,
+              message: `thread ${thread.id} is not materialized yet; thread/turns/list is unavailable before first user message`,
+            },
+          };
+    return implementation(method);
+  });
+  const empty = await channel.snapshot("native-thread", {});
+  expect(empty.thread.id).toBe(thread.id);
+  expect(empty.turnsPage).toEqual({ data: [], nextCursor: null });
+  expect(empty.activeTurnId).toBeUndefined();
+  expect(request.mock.calls.map(([method]) => method)).toEqual([
+    "thread/resume",
+    "thread/read",
+    "thread/turns/list",
+  ]);
+  materialized = true;
+  expect((await channel.snapshot("native-thread", {})).turnsPage.data[0]?.id).toBe("first-turn");
+});
+
+it.each([
+  { code: -32600, message: "no rollout found for thread id native-thread" },
+  { code: -32093, message: "Timeout" },
+  {
+    code: -32603,
+    message:
+      "thread native-thread is not materialized yet; thread/turns/list is unavailable before first user message",
+  },
+  {
+    code: -32600,
+    message:
+      "thread other-thread is not materialized yet; thread/turns/list is unavailable before first user message",
+  },
+])("does not hide other native history errors: %j", async (error) => {
+  const { channel, request } = snapshotChannel();
+  const implementation = request.getMockImplementation();
+  if (!implementation) throw new Error("Missing native fixture");
+  request.mockImplementation(async (method) =>
+    method === "thread/turns/list" ? { error } : implementation(method),
+  );
+  await expect(channel.snapshot("native-thread", {})).rejects.toMatchObject(error);
+});
+
+it("normalizes only the initial turns page, not other methods or an older-page cursor", async () => {
+  const { channel, request } = snapshotChannel();
+  const reply = {
+    error: {
+      code: -32600,
+      message:
+        "thread native-thread is not materialized yet; thread/turns/list is unavailable before first user message",
+    },
+  };
+  request.mockResolvedValue(reply);
+  expect(
+    await channel.request("thread/turns/list", { threadId: "native-thread", cursor: null }),
+  ).toEqual({ result: { data: [], nextCursor: null } });
+  expect(
+    await channel.request("thread/turns/list", { threadId: "native-thread", cursor: "older" }),
+  ).toEqual(reply);
+  expect(await channel.request("thread/read", { threadId: "native-thread" })).toEqual(reply);
+});
+
 it("serves client inspection and snapshots from confirmed configuration without repeated resume", async () => {
   const { channel, request, calls } = snapshotChannel();
   const before = {

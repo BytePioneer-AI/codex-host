@@ -337,12 +337,7 @@ export class ClientChannelHost {
           delete nativeParams.projectlessWorkspace;
         }
       }
-      return normalize(
-        await nativeChannel.request(
-          method === "turn/start" && params.delivery === "queue" ? "thread/queue/add" : method,
-          nativeParams,
-        ),
-      );
+      return normalize(await nativeChannel.request(method, nativeParams));
     };
     const operation = native ? nativeSubmit : submit;
     if (native && method === "codexhost/thread/queue/send-now")
@@ -391,10 +386,17 @@ export class ClientChannelHost {
         const user = turn.items.find((item) => item.type === "userMessage");
         if (clientId && user && typeof user.clientId !== "string") user.clientId = clientId;
       }
+      const latestStatus = snapshot.turnsPage.data[0]?.status;
+      const pausedReason =
+        items.length > 0 &&
+        !snapshot.activeTurnId &&
+        (latestStatus === "interrupted" || latestStatus === "failed")
+          ? latestStatus
+          : null;
       return compactClientSnapshot(
         clientThreadSnapshotSchema.parse({
           ...snapshot,
-          queue: { items, pausedReason: null },
+          queue: { items, pausedReason },
         }),
         options,
       );

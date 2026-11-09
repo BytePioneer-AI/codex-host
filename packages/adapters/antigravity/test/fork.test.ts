@@ -489,6 +489,34 @@ describe("Antigravity Fork Session Branching", () => {
     }
   });
 
+  it("registers the summary for an existing db when the summaries db was deleted", async () => {
+    const fakeHome = await mkdtemp(path.join(os.tmpdir(), "codexhost-fakehome-ensure-"));
+    const sessionId = "2b6f4a3f-0c3a-4c1e-9a64-1559e9606f10";
+    try {
+      const { DatabaseSync } = await import("node:sqlite");
+      expect(await seedNativeConversationDb(sessionId, fakeHome)).toBe(true);
+      const summariesDbPath = nativeConversationSummariesDbPath(fakeHome);
+      await rm(summariesDbPath, { force: true });
+
+      expect(await ensureNativeConversationDb(sessionId, fakeHome, true)).toEqual({
+        seeded: false,
+        emptySteps: true,
+      });
+
+      const reader = new DatabaseSync(summariesDbPath);
+      try {
+        const row = reader
+          .prepare("SELECT raw_summary FROM conversation_summaries WHERE conversation_id = ?")
+          .get(sessionId) as { raw_summary: Uint8Array } | undefined;
+        expect(Buffer.from(row?.raw_summary ?? []).toString("utf8")).toContain(sessionId);
+      } finally {
+        reader.close();
+      }
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true });
+    }
+  });
+
   describe("Boundary & Error Cases", () => {
     it("rejects fork when checkpoint does not match source session", async () => {
       const { command, cwd, cleanup } = await fakeStreamingAgy([]);

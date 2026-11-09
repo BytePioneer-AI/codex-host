@@ -358,20 +358,24 @@ export async function seedNativeConversationDb(
     return false;
   }
 
-  const existingSummary =
-    templateSummaryRow ??
-    ((await pathExists(summariesDbPath))
-      ? readConversationSummaryRow(DatabaseSync, summariesDbPath, nativeSessionId)
-      : undefined);
-  upsertConversationSummaryRow(
-    DatabaseSync,
-    summariesDbPath,
-    nativeSessionId,
-    trajectoryId,
-    metadataBlob,
-    0,
-    existingSummary,
-  );
+  // The trajectory database is already written; a summary that cannot be read or written must
+  // not turn the seed into a failure.
+  try {
+    const existingSummary =
+      templateSummaryRow ??
+      ((await pathExists(summariesDbPath))
+        ? readConversationSummaryRow(DatabaseSync, summariesDbPath, nativeSessionId)
+        : undefined);
+    upsertConversationSummaryRow(
+      DatabaseSync,
+      summariesDbPath,
+      nativeSessionId,
+      trajectoryId,
+      metadataBlob,
+      0,
+      existingSummary,
+    );
+  } catch {}
   return true;
 }
 
@@ -436,13 +440,13 @@ export async function ensureNativeConversationDb(
         db.close();
       }
       if (validTrajectory) {
-        const summariesDbPath = nativeConversationSummariesDbPath(homedir);
-        if (await pathExists(summariesDbPath)) {
-          const existingRow = readConversationSummaryRow(
-            DatabaseSync,
-            summariesDbPath,
-            nativeSessionId,
-          );
+        // Register the summary even when the whole summaries database is missing, matching the
+        // seed path: without a usable raw_summary `agy --conversation <id>` may start afresh.
+        try {
+          const summariesDbPath = nativeConversationSummariesDbPath(homedir);
+          const existingRow = (await pathExists(summariesDbPath))
+            ? readConversationSummaryRow(DatabaseSync, summariesDbPath, nativeSessionId)
+            : undefined;
           if (!existingRow || !existingRow.raw_summary) {
             upsertConversationSummaryRow(
               DatabaseSync,
@@ -454,7 +458,7 @@ export async function ensureNativeConversationDb(
               existingRow,
             );
           }
-        }
+        } catch {}
         return { seeded: false, emptySteps: stepCount === 0 };
       }
     } catch {
@@ -473,10 +477,17 @@ export async function ensureNativeConversationDb(
     return { seeded: false, emptySteps: false };
   }
   const summariesDbPath = nativeConversationSummariesDbPath(homedir);
-  const existingSummary = (await pathExists(summariesDbPath))
-    ? readConversationSummaryRow(DatabaseSync, summariesDbPath, nativeSessionId)
-    : undefined;
-  const hasBrainDir = await pathExists(nativeBrainDirPath(nativeSessionId, homedir));
+  let existingSummary: ReturnType<typeof readConversationSummaryRow>;
+  let hasBrainDir: boolean;
+  try {
+    existingSummary = (await pathExists(summariesDbPath))
+      ? readConversationSummaryRow(DatabaseSync, summariesDbPath, nativeSessionId)
+      : undefined;
+    hasBrainDir = await pathExists(nativeBrainDirPath(nativeSessionId, homedir));
+  } catch {
+    // Unreadable evidence is no evidence: do not seed, and do not fail the Turn.
+    return { seeded: false, emptySteps: false };
+  }
   if (!hasPriorHistory && !existingSummary && !hasBrainDir) {
     return { seeded: false, emptySteps: false };
   }

@@ -206,7 +206,9 @@ export class FileDelegationWatchStore implements DelegationWatchStore {
     // live record, so hand it back instead of adopting it a second time. `link`
     // does not replace a record its owner has written since.
     if ((await readFile(claim, "utf8").catch(() => undefined)) !== text) {
-      await link(claim, source).catch(() => undefined);
+      await link(claim, source).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "EEXIST") throw error;
+      });
       await rm(claim, { force: true });
       return undefined;
     }

@@ -17,9 +17,9 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use codexhost_platform::process_executable_path;
 #[cfg(not(target_os = "windows"))]
-use codexhost_platform::{PlatformError, process_snapshot};
-use codexhost_platform::{process_executable_path, process_exists};
+use codexhost_platform::{PlatformError, process_exists, process_snapshot};
 #[cfg(target_os = "windows")]
 use codexhost_platform::{process_instance_exists, process_started_at_micros};
 use codexhost_updater::UpdateHandoff;

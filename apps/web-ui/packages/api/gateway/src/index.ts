@@ -135,7 +135,7 @@ interface PendingRemoteEvent {
 type ConnectionRpcResult = Awaited<ReturnType<ConnectionRpcHandler>>;
 type ConnectionRpcError = Extract<ConnectionRpcResult, { readonly ok: false }>["error"];
 const NEVER_ABORTED_SIGNAL = new AbortController().signal;
-const DEFAULT_WEBSOCKET_HEARTBEAT_INTERVAL_MS = 2_000;
+const DEFAULT_WEBSOCKET_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_STREAM_INBOX_BYTES = 262_144;
 const EMPTY_ASYNC_ITERABLE: AsyncIterable<never> = {
   [Symbol.asyncIterator]: () => ({ next: () => Promise.resolve({ value: undefined, done: true }) }),

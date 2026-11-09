@@ -47,7 +47,7 @@ Web 在插件列表之外调用 `codexhost/harness/inspect {harnessId: "codex"}`
 
 官方 Fork 使用既有 `thread/fork {threadId, lastTurnId, excludeTurns: true}`，保留指定轮次及之前的原生上下文；不传模型、权限或 cwd 默认值覆盖。新 Thread 的订阅与实际配置按响应中的 `thread.id` 登记，不覆盖来源 Thread 的配置。新身份仍由官方持久化并与 Desktop 共用，不创建 Mapping Store 记录；通知使客户端目录失效重读。GUI 的原生 Fork 转发路径保持不变，结果未知不自动重试。
 
-官方命令的开始和输出通知可能早于原生历史分页中的 Item。Host 在当前原生后端代次内保留 `commandExecution` 通知，补入原生 full Turn 页，已持久化的完成记录优先；不填充 summary/notLoaded 页，也不凭工具事件虚构 Turn。仅当全页 Item 都有原生 `startedAtMs` 时稳定排序，使完成时才追加的命令仍位于后来输入之前；缺失时间戳时保留原生顺序。Thread 关闭或后端换代清空临时状态，不持久化第二份历史。
+官方命令的开始和输出通知可能早于原生历史分页中的 Item。Host 在当前原生后端代次内保留 `commandExecution` 通知，补入原生 full Turn 页，已持久化的完成记录优先；不填充 summary/notLoaded 页，也不凭工具事件虚构 Turn。原生 `contextCompaction` Item 没有 `status`，客户端快照根据 `item/started` 和 `item/completed` 补齐压缩状态；原生历史仅持久化已完成的压缩，回放时标为完成，不重新打开压缩展示。未确认完成的压缩在所属 Turn 结束时按失败或中止收尾，不冒充成功。这些状态只补入客户端投影，不修改 Desktop 原生通知或历史。仅当全页 Item 都有原生 `startedAtMs` 时稳定排序，使完成时才追加的命令仍位于后来输入之前；缺失时间戳时保留原生顺序。Thread 关闭或后端换代清空临时状态，不持久化第二份历史。
 
 官方停止使用 `turn/interrupt`，不等价于终止该 Thread 的后台终端。原生后台命令可以在 Turn 中断后继续运行，与显式启动的下一 Turn 重叠；终端清理属于独立的原生操作，Host 不在停止 Turn 时追加全量清理或进程强杀。
 

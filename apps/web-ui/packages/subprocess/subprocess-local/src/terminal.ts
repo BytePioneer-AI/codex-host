@@ -54,7 +54,9 @@ function signalName(number: number | undefined): NodeJS.Signals | null {
  * the tracking a remote provider needs.
  */
 export class LocalTerminalHandle implements SubprocessTerminalHandle {
-  readonly pid: number;
+  get pid(): number {
+    return this.terminal.pid;
+  }
   readonly output = new PassThrough();
   readonly done: Promise<SubprocessOutcome>;
 
@@ -71,7 +73,8 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
   private quiescent = false;
   private managedRangeEmpty = false;
   /** The spawned shell's start identity; scans stop adopting members once the root pid no longer carries it. */
-  private readonly rootIdentity: ProcessIdentity | undefined;
+  private rootIdentity: ProcessIdentity | undefined;
+  private rootIdentityObserved = false;
 
   /**
    * @param terminal - allocated node-pty process.
@@ -90,15 +93,7 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
     private readonly onQuiescence?: () => void,
     private readonly observeShellExit = false,
   ) {
-    this.pid = terminal.pid;
-    try {
-      this.rootIdentity = inspector
-        .snapshot()
-        .tree(this.pid)
-        .find((member) => member.pid === this.pid);
-    } catch (_rootIdentityUnavailable) {
-      this.rootIdentity = undefined;
-    }
+    this.captureRootIdentity();
     this.done = this.outcome.promise;
     const resume = (): void => {
       if (!this.outputPaused) return;
@@ -110,6 +105,10 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
       this.output.off("drain", resume);
     });
     this.dataDisposable = terminal.onData((data) => {
+      // ConPTY publishes its PID asynchronously, before the first output.
+      if (this.pid > 0) {
+        this.captureRootIdentity();
+      }
       if (
         !this.output.write(Buffer.from(data, "utf8")) &&
         this.cleanup === undefined &&
@@ -143,6 +142,19 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
         this.outcome.reject(error);
       }
     });
+  }
+
+  private captureRootIdentity(): void {
+    if (this.exited || this.rootIdentityObserved || this.pid <= 0) return;
+    this.rootIdentityObserved = true;
+    try {
+      this.rootIdentity = this.inspector
+        .snapshot()
+        .tree(this.pid)
+        .find((member) => member.pid === this.pid);
+    } catch (_rootIdentityUnavailable) {
+      // Unidentified processes remain on node-pty's fallback cleanup path.
+    }
   }
 
   /** Whether node-pty has not yet published the top-level exit event. */
@@ -454,6 +466,15 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
   }
 
   private async closeOnce(): Promise<void> {
+    if (this.platform === "win32" && !this.exited && this.pid <= 0) {
+      // Startup and termination have separate budgets: node-pty defers kill()
+      // until its first output, which can exceed the termination grace on CI.
+      const deadline = Date.now() + 10_000;
+      while (!this.exited && this.pid <= 0 && Date.now() < deadline) await delay(25);
+      if (!this.exited && this.pid <= 0)
+        throw new Error("terminal cleanup failed; Windows terminal startup timed out");
+    }
+    this.captureRootIdentity();
     if (this.managedOwner !== undefined) {
       try {
         await this.closeManagedRange(this.managedOwner);

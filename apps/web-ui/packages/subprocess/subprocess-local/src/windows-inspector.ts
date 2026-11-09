@@ -10,6 +10,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { join } from "node:path";
 import type { SubprocessTerminalSignal } from "@deepseek-ai/dsh-subprocess";
 import { createLazyRequire } from "@deepseek-ai/dsh-lazy-require";
 import type { ProcessIdentity, ProcessInspector, ProcessSnapshot } from "./process-inspector.ts";
@@ -151,10 +152,14 @@ function taskkillTree(pid: number, force: boolean): void {
   if (pid <= 0) return;
   // Outcome deliberately unchecked: an already-absent tree, exit races, and a
   // missing taskkill binary are as tolerable here as ESRCH is for POSIX.
-  spawnSync("taskkill", ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])], {
-    stdio: "ignore",
-    windowsHide: true,
-  });
+  spawnSync(
+    join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
+    ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])],
+    {
+      stdio: "ignore",
+      windowsHide: true,
+    },
+  );
 }
 
 declare const nativePtr: unique symbol;

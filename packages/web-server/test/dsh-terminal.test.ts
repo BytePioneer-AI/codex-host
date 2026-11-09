@@ -82,10 +82,11 @@ it(
     });
     assert.equal(homeTerminal.result.ok, true, JSON.stringify(homeTerminal));
     assert.equal(homeTerminal.result.value?.cwd, home);
-    assert.equal(
-      (await call("terminal/close", { agentId: draftId, id: "home-terminal" })).result.ok,
-      true,
-    );
+    const closedHomeTerminal = await call("terminal/close", {
+      agentId: draftId,
+      id: "home-terminal",
+    });
+    assert.equal(closedHomeTerminal.result.ok, true, JSON.stringify(closedHomeTerminal));
     assert.equal(
       host.requests.some(({ method }) => method === "thread/start"),
       false,

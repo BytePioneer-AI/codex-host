@@ -13,6 +13,10 @@ import { SingleNativeCodexAccount } from "./account/codex-account-control.js";
 import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
 import { createOwnedUnixBackend } from "./codex-runtime/owned-official-backends.js";
 import { DelegationControlRegistry } from "./delegation-control-registry.js";
+import {
+  FileDelegationWatchStore,
+  defaultDelegationWatchDirectory,
+} from "./delegation-watch-store.js";
 import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 import { startDelegationControlServer } from "./delegation-control-server.js";
 import { installDelegationSkills } from "./delegation-skill.js";
@@ -152,12 +156,17 @@ export async function prepareDelegationRuntime(input: {
     registry: DelegationControlRegistry,
   ): Promise<number>;
 }): Promise<number> {
+  const diagnoseWatch = (error: unknown) =>
+    process.stderr.write(
+      `codexhost delegation watch: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+    );
   const registry = new DelegationControlRegistry({
     remoteRead: (request) => readRemoteDelegationThread(input.environment, request),
-    diagnose: (error) =>
-      process.stderr.write(
-        `codexhost delegation watch: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
-      ),
+    diagnose: diagnoseWatch,
+    watchStore: new FileDelegationWatchStore(
+      defaultDelegationWatchDirectory(input.environment),
+      diagnoseWatch,
+    ),
   });
   const token = randomBytes(32).toString("hex");
   const server = await startDelegationControlServer({ token, api: registry, watchApi: registry });

@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import { AntigravityAdapter } from "../src/index.js";
 import {
   copyNativeConversationDbIfExists,
+  ensureNativeConversationDb,
   nativeConversationDbPath,
   nativeConversationSummariesDbPath,
   seedNativeConversationDb,
@@ -449,6 +450,39 @@ describe("Antigravity Fork Session Branching", () => {
         } finally {
           sumDb.close();
         }
+      }
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a trajectory metadata blob it cannot parse when ensuring an existing db", async () => {
+    const fakeHome = await mkdtemp(path.join(os.tmpdir(), "codexhost-fakehome-ensure-"));
+    const sessionId = "1559e960-0c3a-4c1e-9a64-2b6f4a3f6f10";
+    try {
+      const { DatabaseSync } = await import("node:sqlite");
+      expect(await seedNativeConversationDb(sessionId, fakeHome)).toBe(true);
+      // Wire type 3 (start group) is not understood by the rewriter.
+      const unparseable = Buffer.from([0x1b, 0x01, 0x02, 0x03]);
+      const writer = new DatabaseSync(nativeConversationDbPath(sessionId, fakeHome));
+      try {
+        writer
+          .prepare("INSERT OR REPLACE INTO trajectory_metadata_blob (id, data) VALUES ('main', ?)")
+          .run(unparseable);
+      } finally {
+        writer.close();
+      }
+
+      await ensureNativeConversationDb(sessionId, fakeHome, true);
+
+      const reader = new DatabaseSync(nativeConversationDbPath(sessionId, fakeHome));
+      try {
+        const row = reader
+          .prepare("SELECT data FROM trajectory_metadata_blob WHERE id = 'main'")
+          .get() as { data: Uint8Array };
+        expect(Buffer.from(row.data).equals(unparseable)).toBe(true);
+      } finally {
+        reader.close();
       }
     } finally {
       await rm(fakeHome, { recursive: true, force: true });

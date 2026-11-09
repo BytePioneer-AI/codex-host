@@ -2,9 +2,9 @@ import { consumesNextArgument } from "./delegation-cli-options.js";
 
 const COMMAND_HELP = {
   "client add": `codexhost client add <name>
-Register an external client: a process the Host did not start, such as a script, a desktop app, or a bot's local agent. Prints the client token once; it is not stored in a readable form and cannot be shown again.
+Register a named external client for HTTP/MCP or a separate CLI identity. Normal same-user CLI calls authenticate automatically and do not need registration. Prints the client token once; it is not stored in a readable form and cannot be shown again.
 The client sets CODEXHOST_CLIENT_TOKEN (or CODEXHOST_CLIENT_TOKEN_FILE) and then uses the same delegate, thread and harness commands, or the MCP endpoint, against the external client listener (127.0.0.1:4398 unless CODEXHOST_EXTERNAL_CLIENT_PORT says otherwise).
-Names use lowercase letters, digits and hyphens.`,
+Names use lowercase letters, digits and hyphens; local-cli is reserved.`,
   events: `codexhost events [--after <id>] [--limit <n>] [--follow true|false]
 For external clients: read the client's event log. Without --after, every retained event is returned, oldest first; keep the cursor to read only new ones. An event reports that a Thread the client watches stopped (outcome, Thread, Turn, Harness, deep link, references); it never carries Thread content, so read the Thread for results.
 Without --follow, prints {events, cursor} once; pass cursor back as --after. With --follow true, prints one JSON line per event until interrupted.
@@ -90,7 +90,7 @@ export const DELEGATION_HELP = `usage:
   codexhost events
 
 Use <command> --help for its options. Use harness list to discover targets.
-Outside a codexhost session, register with client add and set CODEXHOST_CLIENT_TOKEN.
+Outside a codexhost session, the CLI reads private cli-credentials.json from the local data directory automatically. The Host and its external listener must be running. No client add or token environment variable is needed; these calls share the local-cli identity. Explicit client credentials override discovery.
 ${COMMON_HELP}
 `;
 

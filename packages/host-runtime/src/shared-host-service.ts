@@ -113,6 +113,7 @@ export async function runSharedHostService(
   try {
     return await prepareDelegationRuntime({
       environment: env,
+      externalClients: environment.CODEXHOST_REMOTE_SSH_MANAGED !== "1",
       createHost: async (delegationEnvironment, _register, registry) => {
         const remote = createRemoteControlAppServerPlan({
           arguments: ["app-server"],

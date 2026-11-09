@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { cliCredentialsPath, readCliCredentials } from "./cli-credentials.js";
 
 import {
   DELEGATION_RUNTIME_ENDPOINT_ENV,
@@ -39,7 +40,10 @@ async function clientToken(environment: NodeJS.ProcessEnv): Promise<string | und
 function missingHostEnvironment(missing: string[], outsideHost: boolean): DelegationControlError {
   return new DelegationControlError(
     "RUNTIME_UNREACHABLE",
-    `${missing.join(" and ")} ${missing.length === 1 ? "is" : "are"} required. If this command runs inside native Codex, shell_environment_policy may have filtered the Host-provided CODEXHOST_* variables. Prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only allowlist that contains "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools; do not use unconstrained inherit = "all".`,
+    outsideHost
+      ? "No local CLI credentials were found. Start or update the local Host with its external listener enabled, or configure an external client token."
+      : `${missing.join(" and ")} ${missing.length === 1 ? "is" : "are"} required. If this command runs inside native Codex, shell_environment_policy may have filtered the Host-provided CODEXHOST_* variables. Prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only allowlist that contains "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools; do not use unconstrained inherit = "all".`,
+
     {
       reason: "missing_runtime_environment",
       missingEnvironmentVariables: missing,
@@ -63,20 +67,22 @@ function missingHostEnvironment(missing: string[], outsideHost: boolean): Delega
   );
 }
 
-/** Whether the CLI will connect as an external client; decided from the environment alone. */
-export function usesExternalClient(environment: NodeJS.ProcessEnv): boolean {
+/** Explicit client credentials or the current user's private local CLI credentials. */
+export async function usesExternalClient(environment: NodeJS.ProcessEnv): Promise<boolean> {
   return (
     !environment[DELEGATION_RUNTIME_ENDPOINT_ENV] &&
     !environment[DELEGATION_RUNTIME_TOKEN_ENV] &&
     Boolean(
-      environment[EXTERNAL_CLIENT_TOKEN_ENV]?.trim() || environment[EXTERNAL_CLIENT_TOKEN_FILE_ENV],
+      environment[EXTERNAL_CLIENT_TOKEN_ENV]?.trim() ||
+      environment[EXTERNAL_CLIENT_TOKEN_FILE_ENV] ||
+      (await readCliCredentials(cliCredentialsPath(environment))),
     )
   );
 }
 
 /**
  * Host-provided parameters win, so processes the Host started behave as before.
- * Only without them does a client token select the external client listener.
+ * Otherwise explicit client credentials win over local CLI discovery.
  * Nothing is looked up on PATH.
  */
 export async function resolveRuntimeConnection(
@@ -92,7 +98,11 @@ export async function resolveRuntimeConnection(
   // A partial Host environment is a broken Host session, not an external client.
   if (endpoint || token) throw missingHostEnvironment(missing, false);
   const client = await clientToken(environment);
-  if (!client) throw missingHostEnvironment(missing, true);
+  if (!client) {
+    const local = await readCliCredentials(cliCredentialsPath(environment));
+    if (!local) throw missingHostEnvironment(missing, true);
+    return { endpoint: local.endpoint, token: local.token, kind: "client" };
+  }
   const descriptor = await readExternalClientDescriptor(externalClientDescriptorPath(environment));
   const port = externalClientPort(environment);
   if (!descriptor && port === undefined)

@@ -70,8 +70,8 @@ vi.mock("../src/model-prices.js", () => ({
 }));
 vi.mock("../src/usage-statistics.js", () => ({ UsageStatistics: vi.fn() }));
 vi.mock("../src/remote-control-app-server.js", () => ({
-  createRemoteControlAppServerPlan: () => ({
-    environment: {},
+  createRemoteControlAppServerPlan: ({ environment }: { environment: NodeJS.ProcessEnv }) => ({
+    environment,
     officialArguments: [],
     pipePath: "\\\\.\\pipe\\synthetic-catalog-test",
   }),

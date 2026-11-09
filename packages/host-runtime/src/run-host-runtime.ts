@@ -25,6 +25,7 @@ import {
   defaultExternalClientsPath,
 } from "./external-clients.js";
 import { ClientEventLog, eventRetentionDays } from "./external-client-events.js";
+import { cliCredentialsPath } from "./cli-credentials.js";
 import { externalClientMcp } from "./external-client-mcp.js";
 import { externalClientEventStream, externalClientRouter } from "./external-client-routes.js";
 import { FileThreadRefsStore } from "./thread-refs.js";
@@ -243,7 +244,8 @@ async function startExternalClients(
 ): Promise<ExternalClientServer | undefined> {
   const port = externalClientPort(environment);
   if (port === undefined) return undefined;
-  const clients = new ExternalClientRegistry(defaultExternalClientsPath(environment));
+  const cliToken = `chc_${randomBytes(32).toString("base64url")}`;
+  const clients = new ExternalClientRegistry(defaultExternalClientsPath(environment), cliToken);
   const route = externalClientRouter({ api: registry, watchApi: registry, events });
   return startExternalClientServer({
     port,
@@ -254,6 +256,7 @@ async function startExternalClients(
       "/mcp": externalClientMcp(route),
     },
     descriptorPath: externalClientDescriptorPath(environment),
+    cliCredentials: { path: cliCredentialsPath(environment), token: cliToken },
     diagnose: (message) => process.stderr.write(`codexhost external clients: ${message}\n`),
   });
 }

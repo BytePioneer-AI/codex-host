@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import path from "node:path";
 
 import { errorBody, jsonBody, writeJson } from "./delegation-control-server.js";
+import { readCliCredentials } from "./cli-credentials.js";
 import { DelegationControlError, EXTERNAL_CLIENT_PORT_ENV } from "./delegation-types.js";
 import {
   bearerToken,
@@ -107,6 +108,7 @@ export async function startExternalClientServer(input: {
   route: ExternalClientRouter;
   streams?: Record<string, ExternalClientStreamHandler>;
   descriptorPath: string;
+  cliCredentials?: { path: string; token: string };
   diagnose?: (message: string) => void;
 }): Promise<ExternalClientServer | undefined> {
   const server = createServer((request, response) => {
@@ -161,19 +163,43 @@ export async function startExternalClientServer(input: {
     pid: process.pid,
     startedAt: new Date().toISOString(),
   };
+  const removePublishedFiles = async () => {
+    // A newer Runtime may have published its own connection information.
+    const current = await readExternalClientDescriptor(input.descriptorPath);
+    if (
+      current?.pid === descriptor.pid &&
+      current.startedAt === descriptor.startedAt &&
+      current.endpoint === descriptor.endpoint
+    )
+      await rm(input.descriptorPath, { force: true });
+    if (input.cliCredentials) {
+      const credentials = await readCliCredentials(input.cliCredentials.path).catch(
+        () => undefined,
+      );
+      if (credentials?.token === input.cliCredentials.token)
+        await rm(input.cliCredentials.path, { force: true });
+    }
+  };
   try {
     await writePrivateJson(input.descriptorPath, descriptor);
+    if (input.cliCredentials)
+      await writePrivateJson(input.cliCredentials.path, {
+        ...descriptor,
+        token: input.cliCredentials.token,
+      });
   } catch (error) {
     await closeServer(server);
+    await removePublishedFiles();
     throw error;
   }
   return {
     endpoint,
     close: async () => {
-      await closeServer(server);
-      // Another Runtime may have taken over the port and written its own descriptor since.
-      const current = await readExternalClientDescriptor(input.descriptorPath);
-      if (current?.pid === process.pid) await rm(input.descriptorPath, { force: true });
+      try {
+        await closeServer(server);
+      } finally {
+        await removePublishedFiles();
+      }
     },
   };
 }

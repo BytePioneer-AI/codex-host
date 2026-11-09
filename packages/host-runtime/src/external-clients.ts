@@ -23,6 +23,7 @@ interface ClientsFile {
 }
 
 const CLIENT_NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
+export const LOCAL_CLI_CLIENT_NAME = "local-cli";
 
 export function isValidClientName(name: string): boolean {
   return CLIENT_NAME.test(name);
@@ -73,10 +74,12 @@ function parseClientsFile(text: string): ClientsFile {
  */
 export class ExternalClientRegistry {
   readonly #filePath: string;
+  readonly #cliTokenHash: string | undefined;
   #cache: { mtimeMs: number; size: number; clients: StoredClient[] } | undefined;
 
-  constructor(filePath: string) {
+  constructor(filePath: string, localCliToken?: string) {
     this.#filePath = filePath;
+    this.#cliTokenHash = localCliToken ? hashToken("", localCliToken) : undefined;
   }
 
   async add(
@@ -87,6 +90,11 @@ export class ExternalClientRegistry {
       throw new DelegationControlError(
         "INVALID_ARGUMENT",
         "Client name must use lowercase letters, digits and hyphens, start and end with a letter or digit, and be at most 64 characters",
+      );
+    if (name === LOCAL_CLI_CLIENT_NAME)
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "Client name 'local-cli' is reserved for the local CLI",
       );
     const clients = await this.#read();
     if (clients.some((client) => client.name === name))
@@ -117,7 +125,10 @@ export class ExternalClientRegistry {
   /** The client the token belongs to, or undefined. Every entry is compared, so timing reveals nothing. */
   async authenticate(token: string | undefined): Promise<string | undefined> {
     if (!token?.startsWith(TOKEN_PREFIX)) return undefined;
-    let match: string | undefined;
+    let match =
+      this.#cliTokenHash && sameHash(hashToken("", token), this.#cliTokenHash)
+        ? LOCAL_CLI_CLIENT_NAME
+        : undefined;
     for (const client of await this.#current()) {
       if (sameHash(hashToken(client.salt, token), client.tokenHash)) match = client.name;
     }
@@ -126,7 +137,10 @@ export class ExternalClientRegistry {
 
   /** Whether a client is still registered; used to end connections of removed clients. */
   async has(name: string): Promise<boolean> {
-    return (await this.#current()).some((client) => client.name === name);
+    return (
+      (name === LOCAL_CLI_CLIENT_NAME && this.#cliTokenHash !== undefined) ||
+      (await this.#current()).some((client) => client.name === name)
+    );
   }
 
   async #current(): Promise<StoredClient[]> {

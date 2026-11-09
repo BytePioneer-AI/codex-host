@@ -8,7 +8,7 @@ GUI、Web 和其他 App 的共享外部 Threads 由一个独立后台中的 `App
 
 原生快照用 `thread/resume {threadId, excludeTurns: true}` 建立订阅，再调用官方 `thread/read` 与 `thread/turns/list`；没有模型、权限或沙箱默认值覆盖。新 Thread 在首条用户消息前可以尚未生成历史；官方 `thread/turns/list` 对初始页明确返回这一状态时，客户端通道投影为空历史，不标记连接故障、不缓存为空，也不触发写操作。其他历史错误及旧页游标错误保持原样。客户端通道保存 start／resume／fork 响应及 `thread/settings/updated` 确认的配置，快照直接携带 `configuration.effectiveModel`、`effectiveThinkingOptionId`、`effectivePermissionModeId`，Model Ref 与官方目录一致。客户端 inspect 仅在配置缺失时尝试恢复；恢复失败仍返回 `{owner: "codex", locked: false, history: …}`，不带配置字段，不阻止历史查看；已确认配置不随快照反复恢复；Desktop inspect 保持只读的 `{owner: "codex", locked: true}`，不恢复 Thread。游标在异步读取前捕获；读取中后台换代会拒绝快照，不能确认尚未包含的事件。后台退出清空原生订阅、配置与交互状态，并使已观察的会话失效。遇到官方 writer 冲突时退回只读历史，快照标记不可发送并跳过队列读取；再次发送保留官方错误并提示先在另一端关闭会话，不绕过锁或自动 Fork。
 
-原生命令／文件审批和提问可由 Web 回答。审批严格保留原生可选 decision；Web 使用代次限定的不透明请求 ID，服务端再映射到官方 ID，旧页面不能回答重启后复用编号的新请求。首次有效回应后删除待处理项，不自动重放结果未知的响应。未支持的原生权限授予请求不转换成通用允许／拒绝；Web 提问卡片没有密码输入契约，因此含 `isSecret` 的提问也不降级成明文字段。对 Web 不能回答的官方请求，有 Desktop 连接时交由 Desktop；没有 Desktop 连接时立即返回错误并投影原因，不让 Turn 悬挂。
+原生命令／文件审批和提问可由 Web 回答。MCP 的空字段表单以确认审批呈现，保留 `message`、风险提示与工具参数，不投影为空问题列表；带 `codex_approval_kind: "mcp_tool_call"` 的请求只提供原生 `_meta.persist` 声明的会话／永久授权范围，普通空表单只提供单次允许与拒绝。审批响应在认领请求前校验 action、空 content 与授权范围，不自动批准，也不接受未声明的持久化权限。审批严格保留原生可选 decision；Web 使用代次限定的不透明请求 ID，服务端再映射到官方 ID，旧页面不能回答重启后复用编号的新请求。首次有效回应后删除待处理项，不自动重放结果未知的响应。未支持的原生权限授予请求不转换成通用允许／拒绝；Web 提问卡片没有密码输入契约，因此含 `isSecret` 的提问也不降级成明文字段。对 Web 不能回答的官方请求，有 Desktop 连接时交由 Desktop；没有 Desktop 连接时立即返回错误并投影原因，不让 Turn 悬挂。
 
 - `shared-contracts/client-channel` 定义浏览器安全的版本、游标、快照和交互契约。
 - `host-runtime` 提供本地认证 HTTP 通道，复用原请求分派、投影器、配置观察器和交互响应路径。

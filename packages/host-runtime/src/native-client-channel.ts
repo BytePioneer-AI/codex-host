@@ -15,6 +15,10 @@ import { nativeThreadConfiguration } from "./codex-runtime/native-thread-control
 import { sendNativeQueuedMessage } from "./native-queued-steering.js";
 import { submitNativeQueuedInput } from "./native-queued-input.js";
 import { NativeClientItems } from "./native-client-items.js";
+import {
+  nativeElicitationApproval,
+  nativeElicitationApprovalResponse,
+} from "./native-elicitation.js";
 
 export type NativeClientReply =
   { result: JsonValue } | { error: { code: number; message: string } };
@@ -237,7 +241,7 @@ function schemaQuestions(params: JsonObject): ClientQuestion | undefined {
         };
     questions.push(question);
   }
-  return { type: "question", questions };
+  return questions.length > 0 ? { type: "question", questions } : undefined;
 }
 
 function nativeInteraction(
@@ -257,8 +261,11 @@ function nativeInteraction(
     return interaction ? { kind: "question", interaction } : undefined;
   }
   if (method === "mcpServer/elicitation/request") {
-    // A form-shaped elicitation can be answered through the existing Web question card.
-    // Permission grants are deliberately not treated as this generic approval shape.
+    if (params.mode !== undefined && params.mode !== "form") return undefined;
+    const approval = nativeElicitationApproval(params);
+    if (approval) return { kind: "approval", interaction: approval };
+    const meta = isRecord(params._meta) ? params._meta : {};
+    if (meta.codex_approval_kind === "mcp_tool_call") return undefined;
     const interaction = schemaQuestions(params);
     return interaction ? { kind: "question", interaction } : undefined;
   }
@@ -325,6 +332,8 @@ function nativeResponse(pending: PendingNativeInteraction, value: JsonValue): Js
   if (pending.method === "item/fileChange/requestApproval") {
     return validatedDecision(pending, value);
   }
+  if (pending.method === "mcpServer/elicitation/request" && pending.kind === "approval")
+    return nativeElicitationApprovalResponse(pending.params, value);
   if (pending.method === "mcpServer/elicitation/request" && isRecord(value)) {
     if (typeof value.action === "string") return value as JsonObject;
     if (isRecord(value.answers)) {

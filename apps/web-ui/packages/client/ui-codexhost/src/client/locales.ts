@@ -16,7 +16,7 @@ export const en = {
   "discovery.retry": "Retry native commands",
   "discovery.failed": "Native command catalog unavailable:",
 
-  "settings.connectDevices": "Connect devices",
+  remoteAccess: "Remote access",
   "settings.extensions": "Interface extensions",
   "settings.connections": "Connections",
   "settings.resources": "Resources",
@@ -94,7 +94,6 @@ export const en = {
   "usage.unit.seconds": "s",
   "connectDevices.title": "Connect this computer",
   "connectDevices.subtitle": "Scan with your phone camera to continue in the browser.",
-  "connectDevices.recommended": "Recommended",
   "connectDevices.httpsSummary": "Across networks · Tailscale required on your phone",
   "connectDevices.lanSummary": "Connect on the same network, with no extra app",
   "connectDevices.address": "Connection address",
@@ -457,7 +456,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "discovery.retry": "重试原生命令目录",
   "discovery.failed": "原生命令目录不可用：",
 
-  "settings.connectDevices": "连接设备",
+  remoteAccess: "远程访问",
   "settings.extensions": "界面扩展",
   "settings.connections": "连接",
   "settings.resources": "资源管理",
@@ -534,7 +533,6 @@ export const zh: Record<ImportLocaleKey, string> = {
   "usage.unit.seconds": "秒",
   "connectDevices.title": "连接这台电脑",
   "connectDevices.subtitle": "用手机相机扫码，在浏览器中继续使用。",
-  "connectDevices.recommended": "推荐",
   "connectDevices.httpsSummary": "跨网络访问 · 手机需开启 Tailscale",
   "connectDevices.lanSummary": "使用局域网地址连接，无需额外安装",
   "connectDevices.address": "连接地址",

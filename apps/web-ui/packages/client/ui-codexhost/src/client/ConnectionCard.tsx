@@ -164,9 +164,6 @@ export function ConnectionCard({
       <span className={css.routeText}>
         <span className={css.routeTitle}>
           {t(LABEL[kind])}
-          {(kind === "relay" || kind === "tailscale-https") && (
-            <span className={css.badge}>{t("connectDevices.recommended")}</span>
-          )}
           {isRelay(kind) && relay?.enabled && kind === relayMethod && (
             <span className={css.badge}>{t("connectDevices.relay.inUse")}</span>
           )}

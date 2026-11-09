@@ -7,7 +7,10 @@ import { serveStatus, SERVE_HOST } from "../support/tailscale.ts";
 
 async function openConnect(page: Page) {
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByText("Connect devices", { exact: true }).first().click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Remote access", exact: true })
+    .click();
   await page.locator("[data-connect-devices]").waitFor();
 }
 async function choose(page: Page, kind: string) {
@@ -127,7 +130,10 @@ it(
     await phone.goto(`http://phone.example:4474/#token=${secret}`);
     await phone.getByRole("button", { name: "Open sidebar" }).click();
     await phone.getByRole("button", { name: "Settings", exact: true }).click();
-    await phone.getByText("Connect devices", { exact: true }).first().click();
+    await phone
+      .getByRole("dialog")
+      .getByRole("button", { name: "Remote access", exact: true })
+      .click();
     await phone.locator('[data-connect-notice="non-local"]').waitFor();
     assert.equal(await phone.getByRole("button", { name: "Copy token" }).count(), 0);
     const before = cli.mutations();

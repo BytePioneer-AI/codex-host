@@ -15,50 +15,44 @@ afterEach(() => {
 it.each([
   { locale: en, official: "Official encrypted relay", selfHosted: "Self-hosted encrypted relay" },
   { locale: zh, official: "官方加密中转", selfHosted: "自建加密中转" },
-])(
-  "orders and recommends connection methods with $official first",
-  ({ locale, official, selfHosted }) => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    const container = document.createElement("div");
-    const root = createRoot(container);
-    cleanups.push(() => act(() => root.unmount()));
-    const props: Props = {
-      data: {
-        secret: "test-token",
-        lastUsedAt: null,
-        networkUrls: [],
-        tailscale: { status: "not-installed" },
-        relay: {
-          kind: "official",
-          enabled: true,
-          officialHost: "relay.chost.dev",
-          state: { status: "connecting" },
-        },
+])("orders connection methods with $official first", ({ locale, official, selfHosted }) => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  cleanups.push(() => act(() => root.unmount()));
+  const props: Props = {
+    data: {
+      secret: "test-token",
+      lastUsedAt: null,
+      networkUrls: [],
+      tailscale: { status: "not-installed" },
+      relay: {
+        kind: "official",
+        enabled: true,
+        officialHost: "relay.chost.dev",
+        state: { status: "connecting" },
       },
-      busy: false,
-      restarting: false,
-      onEnable: vi.fn(),
-      onRelay: vi.fn(),
-      onRefresh: vi.fn(),
-      t: ((key: keyof typeof en) => locale[key]) as Props["t"],
-    };
-    act(() => root.render(createElement(ConnectionCard, props)));
-    const routes = [...container.querySelectorAll("[data-connect-route]")];
-    expect(routes.map((route) => route.getAttribute("data-connect-route"))).toEqual([
-      "relay",
-      "self-hosted-relay",
-      "tailscale-https",
-      "lan",
-    ]);
-    expect(routes[0].textContent).toContain(official);
-    expect(routes[1].textContent).toContain(selfHosted);
-    const recommended = locale["connectDevices.recommended"];
-    expect(routes[0].textContent).toContain(recommended);
-    expect(routes[0].textContent).toContain(locale["connectDevices.relay.inUse"]);
-    expect(routes[1].textContent).not.toContain(recommended);
-    expect(routes[2].textContent).toContain(recommended);
-    expect(routes[3].textContent).not.toContain(recommended);
-    expect(routes[0].querySelector<HTMLInputElement>("input")!.checked).toBe(true);
-    expect(props.onRelay).not.toHaveBeenCalled();
-  },
-);
+    },
+    busy: false,
+    restarting: false,
+    onEnable: vi.fn(),
+    onRelay: vi.fn(),
+    onRefresh: vi.fn(),
+    t: ((key: keyof typeof en) => locale[key]) as Props["t"],
+  };
+  act(() => root.render(createElement(ConnectionCard, props)));
+  const routes = [...container.querySelectorAll("[data-connect-route]")];
+  expect(routes.map((route) => route.getAttribute("data-connect-route"))).toEqual([
+    "relay",
+    "self-hosted-relay",
+    "tailscale-https",
+    "lan",
+  ]);
+  expect(routes[0].textContent).toContain(official);
+  expect(routes[1].textContent).toContain(selfHosted);
+  expect(routes[0].textContent).toContain(locale["connectDevices.relay.inUse"]);
+  expect(routes[0].textContent).not.toMatch(/推荐|Recommended/u);
+  expect(routes[2].textContent).not.toMatch(/推荐|Recommended/u);
+  expect(routes[0].querySelector<HTMLInputElement>("input")!.checked).toBe(true);
+  expect(props.onRelay).not.toHaveBeenCalled();
+});

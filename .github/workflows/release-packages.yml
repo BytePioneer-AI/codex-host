@@ -15,6 +15,11 @@ on:
         required: false
         default: false
         type: boolean
+      skip_ci:
+        description: "Skip waiting for and validating CI (build and release validations still apply)"
+        required: false
+        default: false
+        type: boolean
       skip_npm:
         description: "Skip npm publication and publish GitHub installers only"
         required: false
@@ -49,6 +54,7 @@ jobs:
       automation_sha: ${{ steps.release.outputs.automation_sha }}
       ci_run_id: ${{ steps.release.outputs.ci_run_id }}
       ci_run_attempt: ${{ steps.release.outputs.ci_run_attempt }}
+      ci_skipped: ${{ steps.release.outputs.ci_skipped }}
     steps:
       # Validation code is from the trusted default branch, not the requested tag.
       - name: Checkout trusted release automation
@@ -59,9 +65,11 @@ jobs:
           persist-credentials: false
           sparse-checkout: packages/repository-automation
 
-      - name: Validate tag, version, release notes, and exact-commit CI
+      - name: Validate release metadata and selected CI policy
         id: release
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          SKIP_CI: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_ci }}
         with:
           script: |
             if (context.eventName === 'workflow_dispatch' && context.ref !== `refs/heads/${context.payload.repository.default_branch}`) {
@@ -76,17 +84,23 @@ jobs:
               tag: process.env.SOURCE_TAG,
               expectedRefSha: context.eventName === 'push' ? context.payload.after : undefined,
               waitForCi: true,
+              skipCi: process.env.SKIP_CI === 'true',
             });
             for (const [name, value] of Object.entries({
               tag: result.tag, version: result.version, prerelease: result.prerelease,
               npm_tag: result.npmTag, commit_sha: result.sha,
               tag_object_sha: result.tagObjectSha, automation_sha: result.automationSha,
-              ci_run_id: result.ciRunId, ci_run_attempt: result.ciRunAttempt,
+              ci_run_id: result.ciRunId ?? '', ci_run_attempt: result.ciRunAttempt ?? '',
+              ci_skipped: result.ciSkipped,
             })) core.setOutput(name, value);
             await writeFile('release-notes.md', result.notes);
             const { notes, ...evidence } = result;
             await writeFile('release-evidence.json', JSON.stringify(evidence, null, 2) + '\n');
-            await core.summary.addRaw(`Release ${result.tag}\n\nCommit: ${result.sha}\n\nCI: ${result.ciUrl} (attempt ${result.ciRunAttempt})\n`).write();
+            const ciSummary = result.ciSkipped
+              ? 'Explicitly skipped by manual release input'
+              : `${result.ciUrl} (attempt ${result.ciRunAttempt})`;
+            if (result.ciSkipped) core.warning('CI validation was explicitly skipped for this release.');
+            await core.summary.addRaw(`Release ${result.tag}\n\nCommit: ${result.sha}\n\nCI: ${ciSummary}\n`).write();
 
       - name: Upload release notes and evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -261,7 +275,7 @@ jobs:
           path: build/npm-publish
           merge-multiple: true
 
-      - name: Revalidate tag and CI immediately before npm publication
+      - name: Revalidate tag and selected CI policy immediately before npm publication
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
@@ -269,6 +283,7 @@ jobs:
           TAG_OBJECT_SHA: ${{ needs.prepare.outputs.tag_object_sha }}
           CI_RUN_ID: ${{ needs.prepare.outputs.ci_run_id }}
           CI_RUN_ATTEMPT: ${{ needs.prepare.outputs.ci_run_attempt }}
+          CI_SKIPPED: ${{ needs.prepare.outputs.ci_skipped }}
         with:
           script: |
             const { pathToFileURL } = await import('node:url');
@@ -278,6 +293,7 @@ jobs:
               tag: process.env.RELEASE_TAG, sha: process.env.RELEASE_SHA,
               tagObjectSha: process.env.TAG_OBJECT_SHA,
               ciRunId: process.env.CI_RUN_ID, ciRunAttempt: process.env.CI_RUN_ATTEMPT,
+              skipCi: process.env.CI_SKIPPED === 'true',
             });
 
       - name: Publish platform packages and meta package
@@ -332,7 +348,7 @@ jobs:
           name: release-notes
           path: release-metadata
 
-      - name: Revalidate tag and CI immediately before GitHub publication
+      - name: Revalidate tag and selected CI policy immediately before GitHub publication
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
@@ -340,6 +356,7 @@ jobs:
           TAG_OBJECT_SHA: ${{ needs.prepare.outputs.tag_object_sha }}
           CI_RUN_ID: ${{ needs.prepare.outputs.ci_run_id }}
           CI_RUN_ATTEMPT: ${{ needs.prepare.outputs.ci_run_attempt }}
+          CI_SKIPPED: ${{ needs.prepare.outputs.ci_skipped }}
         with:
           script: |
             const { pathToFileURL } = await import('node:url');
@@ -349,6 +366,7 @@ jobs:
               tag: process.env.RELEASE_TAG, sha: process.env.RELEASE_SHA,
               tagObjectSha: process.env.TAG_OBJECT_SHA,
               ciRunId: process.env.CI_RUN_ID, ciRunAttempt: process.env.CI_RUN_ATTEMPT,
+              skipCi: process.env.CI_SKIPPED === 'true',
             });
 
       - name: Validate artifacts and publish the release

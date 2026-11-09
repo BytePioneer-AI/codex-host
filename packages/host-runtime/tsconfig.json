@@ -8,6 +8,7 @@
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
   "references": [
+    { "path": "../session-runtime/tsconfig.json" },
     { "path": "../desktop-control/tsconfig.json" },
     { "path": "../harness-adapter/tsconfig.json" },
     { "path": "../harness-broker/tsconfig.json" },

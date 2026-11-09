@@ -269,11 +269,14 @@ export class ModernSessionImportAdapter extends FakeHarnessAdapter {
 export function createFixture(
   options: {
     sharedThreads?: SharedThreadBridge;
+    externalOnly?: boolean;
     environment?: NodeJS.ProcessEnv;
     pluginDirectory?: string;
     codexUsage?: boolean;
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
-    mappingStore?: MappingStore;
+    /** Adapters without Fake Session state, e.g. a real plugin used by an integration test. */
+    additionalAdapters?: ReadonlyMap<ExternalHarnessId, HarnessAdapter>;
+    mappingStore?: AppServerHostOptions["mappingStore"];
     mappingStoreDirectory?: string;
     closeMappingStoreOnExit?: boolean;
     desktopOutput?: PassThrough;
@@ -283,6 +286,7 @@ export function createFixture(
     updateCoordinator?: HostUpdateCoordinator;
     runtimeMaintenance?: RuntimeMaintenance;
     consoleOpener?: HostConsoleOpener;
+    webOpener?: AppServerHostOptions["webOpener"];
     accountControl?: CodexAccountControl;
     officialRuntimeScope?: OfficialRuntimeScope;
     onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
@@ -332,6 +336,7 @@ export function createFixture(
     ...(options.sharedThreads ? { sharedThreads: options.sharedThreads } : {}),
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
+    ...(options.externalOnly !== undefined ? { externalOnly: options.externalOnly } : {}),
     desktopInput,
     desktopOutput,
     diagnosticOutput,
@@ -344,8 +349,11 @@ export function createFixture(
       ...(options.environment ?? {}),
     },
     ...(pluginDirectory ? { pluginRoots: [pluginDirectory] } : {}),
-    externalAdapters:
-      options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
+    externalAdapters: new Map<ExternalHarnessId, HarnessAdapter>([
+      ...(options.externalAdapters ??
+        new Map<ExternalHarnessId, FakeHarnessAdapter>([["pi", adapter]])),
+      ...(options.additionalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>()),
+    ]),
     spawnOfficial: spawnOfficial as unknown as typeof spawn,
     // The fake process exits synchronously on kill; real-time grace only slows tests.
     officialCloseTimeoutMs: 50,
@@ -360,6 +368,7 @@ export function createFixture(
     ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
     ...(options.runtimeMaintenance ? { runtimeMaintenance: options.runtimeMaintenance } : {}),
     ...(options.consoleOpener ? { consoleOpener: options.consoleOpener } : {}),
+    ...(options.webOpener ? { webOpener: options.webOpener } : {}),
     ...(options.modelPrices ? { modelPrices: options.modelPrices } : {}),
     ...(options.usageStatistics ? { usageStatistics: options.usageStatistics } : {}),
     ...(options.accountControl ? { accountControl: options.accountControl } : {}),

@@ -242,6 +242,45 @@ fn recorded_launcher_is_current<E>(inspected: Result<PathBuf, E>, expected: &Pat
         .is_some_and(|path| path == expected)
 }
 
+pub(super) fn managed_processes(
+    data: &Path,
+) -> Result<
+    Option<(
+        codexhost_platform::ProcessSnapshot,
+        codexhost_platform::ProcessSnapshot,
+    )>,
+    Box<dyn Error>,
+> {
+    let Some(descriptor) = read_descriptor(&default_descriptor_path()?)? else {
+        return Ok(None);
+    };
+    if !endpoint_ready(descriptor.control_port, Duration::from_millis(300)) {
+        return Ok(None);
+    }
+    let document: serde_json::Value = serde_json::from_slice(&std::fs::read(
+        data.join("diagnostics/desktop-controller-v1.json"),
+    )?)?;
+    let pid = document["pid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .ok_or("Invalid Desktop Controller pid")?;
+    let launcher = codexhost_platform::process_snapshot(descriptor.launcher_pid)?;
+    let controller = codexhost_platform::process_snapshot(pid)?;
+    if controller.parent_id != launcher.id {
+        return Err("Desktop Controller does not belong to the recorded Launcher".into());
+    }
+    Ok(Some((launcher, controller)))
+}
+
+pub(super) fn stop_managed(data: &Path) -> Result<bool, Box<dyn Error>> {
+    let Some((launcher, controller)) = managed_processes(data)? else {
+        return Ok(false);
+    };
+    codexhost_platform::terminate_process_instance(&controller, false)?;
+    crate::host_service::wait_for_shutdown(None, Some(&launcher), Duration::from_secs(10))?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

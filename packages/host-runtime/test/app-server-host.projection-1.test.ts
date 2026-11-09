@@ -1477,6 +1477,50 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(remote);
   });
 
+  it("opens Web locally and rejects remote requests, invalid params and launch failures", async () => {
+    const webOpener = {
+      open: vi
+        .fn()
+        .mockResolvedValueOnce({})
+        .mockRejectedValueOnce(new Error("Web startup failed")),
+    };
+    const local = createFixture({ webOpener });
+    const officialWrite = vi.fn();
+    local.official.stdin.on("data", officialWrite);
+    writeRequest(local.desktopInput, { id: 30, method: "codexhost/web/open", params: {} });
+    await expect(local.collector.waitFor((message) => requestId(message, 30))).resolves.toEqual({
+      id: 30,
+      result: {},
+    });
+    writeRequest(local.desktopInput, {
+      id: 31,
+      method: "codexhost/web/open",
+      params: { url: "https://example.com" },
+    });
+    await expect(
+      local.collector.waitFor((message) => requestId(message, 31)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    expect(webOpener.open).toHaveBeenCalledOnce();
+    writeRequest(local.desktopInput, { id: 32, method: "codexhost/web/open", params: {} });
+    await expect(
+      local.collector.waitFor((message) => requestId(message, 32)),
+    ).resolves.toMatchObject({ error: { code: -32092, message: "Web startup failed" } });
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(local);
+
+    const remote = createFixture();
+    const remoteWrite = vi.fn();
+    remote.official.stdin.on("data", remoteWrite);
+    writeRequest(remote.desktopInput, { id: 33, method: "codexhost/web/open", params: {} });
+    await expect(
+      remote.collector.waitFor((message) => requestId(message, 33)),
+    ).resolves.toMatchObject({
+      error: { code: -32090, message: "Web can be opened on the local Host only" },
+    });
+    expect(remoteWrite).not.toHaveBeenCalled();
+    await stopFixture(remote);
+  });
+
   it("answers console requests through Desktop handling without writing to Desktop", async () => {
     const updateCoordinator = {
       check: vi.fn(async () => ({

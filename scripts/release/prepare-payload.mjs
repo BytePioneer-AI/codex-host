@@ -1,3 +1,4 @@
+import { expectedWebPaths, isWebResource, webBuildCommand } from "./web-resources.mjs";
 import { spawn } from "node:child_process";
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -262,6 +263,16 @@ export async function writeThirdPartyNotices(root, payloadRoot) {
     "License text: licenses/create-dmg-background-LICENSE.txt",
     "",
   );
+  await copyReleaseFile(
+    path.join(root, "scripts/release/licenses/desktop-screenshot-NOTICES.txt"),
+    path.join(licensesDirectory, "DesktopScreenshot-NOTICES.txt"),
+    "desktop screenshot native dependency notices",
+  );
+  notices.push(
+    "Desktop screenshot native dependencies (Windows/macOS)",
+    "License and copyright texts: licenses/DesktopScreenshot-NOTICES.txt",
+    "",
+  );
   await writeFile(
     path.join(payloadRoot, "THIRD_PARTY_NOTICES.txt"),
     `${notices.join("\n").trimEnd()}\n`,
@@ -271,6 +282,7 @@ export async function writeThirdPartyNotices(root, payloadRoot) {
 
 export function expectedPayloadPaths(target) {
   const paths = [
+    ...expectedWebPaths(target),
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
     ...(target.hostPlatform === "win32" ? ["libexec/codexhost-node-repl.exe"] : []),
@@ -304,6 +316,7 @@ export function expectedPayloadPaths(target) {
     "licenses/tailwindcss-LICENSE.txt",
     "licenses/ws-LICENSE.txt",
     "licenses/zod-LICENSE.txt",
+    "licenses/DesktopScreenshot-NOTICES.txt",
     "THIRD_PARTY_NOTICES.txt",
   ];
   if (target.hostPlatform === "win32") {
@@ -334,7 +347,9 @@ export async function validatePayload({ payloadRoot, target, root }) {
   const files = await walkFiles(payloadRoot);
   const actual = files.map((file) => file.relative).sort();
   const missing = expected.filter((relative) => !actual.includes(relative));
-  const extra = actual.filter((relative) => !expected.includes(relative));
+  const extra = actual.filter(
+    (relative) => !expected.includes(relative) && !isWebResource(relative, target),
+  );
   if (missing.length > 0)
     throw new Error(`release Payload is missing files: ${missing.join(", ")}`);
   if (extra.length > 0) {
@@ -473,6 +488,7 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     cacheDirectory: path.join(root, ".codexhost", "release-cache", "node"),
   });
   await extractNodeRuntime({ target, archivePath, payloadRoot });
+  await runCommand(webBuildCommand(path.join(payloadRoot, "app"), target), root);
   await writeThirdPartyNotices(root, payloadRoot);
   await validatePayload({ payloadRoot, target, root });
   return { version, installerVersion, outputRoot, payloadRoot };

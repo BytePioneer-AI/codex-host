@@ -39,7 +39,6 @@ import CircleHelp from "lucide/dist/esm/icons/circle-question-mark.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
 import Users from "lucide/dist/esm/icons/users.mjs";
 import Plus from "lucide/dist/esm/icons/plus.mjs";
-import codexhostLogoUrl from "../assets/codexhost-app-icon.svg";
 
 export const RENDERER_SETTINGS_ICON_NAMES = [
   "settings",
@@ -158,9 +157,8 @@ export function createRendererSettingsIcon(name: RendererSettingsIconName, size 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 
 /**
- * Line brand mark in `currentColor` for native icon surfaces such as the rail:
- * the app icon's open ring and core square without its plate. The ring is a
- * little heavier than native strokes so the mark stays recognizable at 20px.
+ * Historical rail-v1 geometry in currentColor, with a lighter C ring.
+ * The 40-unit viewBox gives a 1.6px ring at 20px and a 1.76px ring at the rail's 22px.
  */
 export function createRendererSettingsBrandGlyph(size = 20): SVGElement {
   const svg = document.createElementNS(SVG_NAMESPACE, "svg");
@@ -169,35 +167,22 @@ export function createRendererSettingsBrandGlyph(size = 20): SVGElement {
   svg.setAttribute("height", String(size));
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("focusable", "false");
+  svg.setAttribute("data-codexhost-mark", "ch-navigation");
   const ring = document.createElementNS(SVG_NAMESPACE, "path");
   ring.setAttribute("d", "M 44.55 23.97 A 14.35 14.35 0 1 0 44.55 40.43");
   ring.setAttribute("fill", "none");
   ring.setAttribute("stroke", "currentColor");
-  ring.setAttribute("stroke-width", "4.4");
+  ring.setAttribute("stroke-width", "3.2");
   ring.setAttribute("stroke-linecap", "round");
-  const core = document.createElementNS(SVG_NAMESPACE, "rect");
-  core.setAttribute("x", "27.6");
-  core.setAttribute("y", "27");
-  core.setAttribute("width", "10.4");
-  core.setAttribute("height", "10.4");
-  core.setAttribute("rx", "2.4");
-  core.setAttribute("fill", "currentColor");
-  svg.append(ring, core);
+  const module = document.createElementNS(SVG_NAMESPACE, "rect");
+  module.setAttribute("x", "27.6");
+  module.setAttribute("y", "27");
+  module.setAttribute("width", "10.4");
+  module.setAttribute("height", "10.4");
+  module.setAttribute("rx", "2.4");
+  module.setAttribute("fill", "currentColor");
+  module.setAttribute("stroke", "none");
+  svg.append(ring, module);
   svg.classList.add("codexhost-settings-icon");
   return svg;
-}
-
-export function createRendererSettingsBrandIcon(size = 22): HTMLImageElement {
-  const icon = document.createElement("img");
-  icon.src = codexhostLogoUrl;
-  icon.alt = "";
-  icon.width = size;
-  icon.height = size;
-  icon.draggable = false;
-  icon.setAttribute("aria-hidden", "true");
-  icon.style.width = `${size}px`;
-  icon.style.height = `${size}px`;
-  icon.style.objectFit = "contain";
-  icon.classList.add("codexhost-settings-icon");
-  return icon;
 }

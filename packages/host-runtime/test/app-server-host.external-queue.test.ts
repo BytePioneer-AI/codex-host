@@ -39,7 +39,7 @@ describe("External Thread follow-up queue", () => {
       ).queuedSubmission;
       expect(first).toEqual({
         id: expect.any(String),
-        input: text("first"),
+        input: [{ type: "text", text: "first", text_elements: [] }],
         clientUserMessageId: "message-1",
       });
       await fixture.collector.waitFor(
@@ -289,7 +289,77 @@ describe("External Thread follow-up queue", () => {
       await expect(
         fixture.collector.waitFor((message) => requestId(message, 21)),
       ).resolves.toMatchObject({ result: { data: [submission], nextCursor: null } });
+      expect((await fixture.host.clientSnapshot(threadId)).queue?.pausedReason).toBeNull();
       expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("restores and pauses the only queued submission when its replacement fails to start", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      writeRequest(fixture.desktopInput, {
+        id: 10,
+        method: "thread/queue/add",
+        params: { threadId, input: text("replacement"), clientUserMessageId: "message" },
+      });
+      const added = await fixture.collector.waitFor((message) => requestId(message, 10));
+      const submission = (added.result as { queuedSubmission: { id: string } }).queuedSubmission;
+      session.completeCancellationOnRequest();
+      session.rejectNextTurn({
+        code: "internalError",
+        message: "Replacement start failed",
+        retryable: false,
+      });
+      const execute = vi.spyOn(session, "execute");
+      const changed = vi.fn();
+      const unsubscribe = fixture.host.clientEvents.subscribe(changed);
+      const messageCount = fixture.collector.messages.length;
+      try {
+        writeRequest(fixture.desktopInput, {
+          id: 20,
+          method: "turn/steer",
+          params: {
+            threadId,
+            expectedTurnId: turnId,
+            input: text("replacement"),
+            clientUserMessageId: "message",
+            codexhostSteerDelivery: "newTurn",
+          },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, 20)),
+        ).resolves.toMatchObject({ error: { message: "Replacement start failed" } });
+        expect((await fixture.host.clientSnapshot(threadId)).queue).toMatchObject({
+          pausedReason: "failed",
+          items: [
+            { id: submission.id, clientUserMessageId: "message", input: text("replacement") },
+          ],
+        });
+        expect(changed).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "changed",
+            threadId,
+            method: "codexhost/thread/queue/updated",
+          }),
+        );
+        expect(fixture.collector.messages.slice(messageCount)).toContainEqual({
+          method: "thread/queue/changed",
+          params: { threadId },
+        });
+        expect(
+          execute.mock.calls.filter(
+            ([command]) => (command as { type: string }).type === "turn.start",
+          ),
+        ).toHaveLength(1);
+      } finally {
+        unsubscribe();
+      }
     } finally {
       await stopFixture(fixture);
     }

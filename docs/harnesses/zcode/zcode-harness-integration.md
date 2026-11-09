@@ -30,6 +30,7 @@ AppImage 格式因没有固定安装路径而不作自动检测；用户可自�
 
 - `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`：已装 App 的 `config/provider/zcode-builtin.json`（环境中已显式设置时沿用）。
 - `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`：`{ZCODE_DATA_BASE_DIR || HOME}/.zcode/v2/provider_config.json`（已显式设置时沿用）。
+- `ZCODE_APP_VERSION`：已装 App 的版本。Desktop 启动 CLI 时注入同样的版本；缺失时 CLI 在请求指纹头（`User-Agent`、`X-ZCode-App-Version`）里以自身内部版本自报，Start Plan 网关会把这种请求按异常活动拒绝。
 
 两者都显式传入，CLI 才直接使用这份内置配置，账号配置的 revision 才能对上。
 

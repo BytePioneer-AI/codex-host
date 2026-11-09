@@ -63,7 +63,7 @@ git commit -m "chore: prepare v<version>"
 git push origin main
 ```
 
-在推送 Tag 前，必须确认该版本提交对应的 `CI`（`main` 的 push run）已成功。可以在 CI 运行期间编写 Release Notes 并等待用户确认，但不得因本地 `npm run check` 已通过而跳过远端 CI。Tag 触发的发布工作流也会最多等待 30 分钟，以避免 CI 尚在运行时产生错误的失败发布；远端 CI 失败或超时仍会阻止发布。
+默认在推送 Tag 前，必须确认该版本提交对应的 `CI`（`main` 的 push run）已成功。可以在 CI 运行期间编写 Release Notes 并等待用户确认，但不得因本地 `npm run check` 已通过而自行跳过远端 CI。Tag 触发的发布工作流也会最多等待 30 分钟；远端 CI 失败或超时仍会阻止默认发布。用户明确选择不等待且不校验 CI 时，使用下述手动发布的 `skip_ci=true`，不能通过普通 Tag push 选择跳过。
 
 5. 编写 Release Notes 到临时文件 `.git/release-notes-v<version>.md`。正文必须非空。What's New 先写中英摘要，再按 Features / Fixes 分节；中文完整列表放在英文列表之后，不要逐条中英夹杂。用户可见条目如有明确对应的 Issue 或已合入 PR，在条目末尾添加 `#编号`。Installation 及其后的 Contributors 只写英文。例如：
 
@@ -143,7 +143,7 @@ Thanks to everyone who contributed to this release:
 
 6. Release Notes 完成后，必须向用户展示全文并取得明确确认。用户未确认或要求修改时，必须暂停，不得创建或推送 Tag。
 
-7. 用户确认并确认确切提交远端 CI 成功后，选择发布入口。
+7. 用户确认文案，并确认确切提交远端 CI 成功或明确选择手动发布的 `skip_ci=true` 后，选择发布入口。
 
 ### 正式发布或 SemVer 预发布
 
@@ -171,6 +171,14 @@ skip_npm=false
 
 该输入只影响新建 GitHub Release 的状态，不改变 npm dist-tag，不修改已有 Release。恢复此类发布时不能直接重跑旧的 tag push run，必须重新手动 dispatch 并保持 `github_prerelease=true`。
 
+### 手动发布的可选 CI 门禁
+
+手动运行 `Release packages` 时，`skip_ci` 默认是 `false`：最多等待 30 分钟并要求确切提交的四项基线 CI job 成功，发布前复验同一 run / attempt。
+
+用户明确授权后可设为 `true`：不等待、不查询或校验 CI；即使没有 CI、CI 未完成或失败，也继续执行其余发布流程。版本、annotated Tag、Release Notes、提交在 `main`、构建及产物校验保持不变。跳过记录写入 `release-evidence.json` 和 Actions Summary，并发出警告，不视为 CI 通过。此设置可与 `github_prerelease` 和 `skip_npm` 组合，恢复或重启发布时需重新传入。
+
+该选项要求从 `main` 手动发布已有的正确 annotated Tag。新 Tag push 自动触发的发布仍要求 CI；若要新 Tag 仅走手动发布，必须先取得用户对临时禁用整个发布工作流的授权，按静默预览发行相同的禁用、推送、恢复、手动运行步骤操作，不先推 Tag 再取消。此选项不免除本地验证、Release Notes 确认或 Tag 操作授权。
+
 ## 自动发布结果
 
 Tag 推送后，GitHub Actions 会自动：
@@ -184,7 +192,7 @@ Tag 推送后，GitHub Actions 会自动：
 
 ## 失败处理
 
-- 构建或最终发布失败：先查看失败步骤，核实原因与已发布产物，再决定是否重跑失败 jobs；不默认放宽测试超时或绕过 CI。
+- 构建或最终发布失败：先查看失败步骤，核实原因与已发布产物，再决定是否重跑失败 jobs；不默认放宽测试超时；跳过 CI 必须由用户明确选择手动发布的 `skip_ci=true`。
 - 用户要求暂停时取消当前运行，核实 jobs 已停止及是否部分发布，不默认禁用整个工作流。GitHub Actions 不支持原地暂停后续跑。
 - 手动发布的模式输入必须保持一致；原 tag push 的默认正式发布不能作为静默预览发行的恢复入口。
 - npm 已接受某个版本后，不得修改内容并重新发布同一版本。

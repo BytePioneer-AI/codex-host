@@ -1,0 +1,151 @@
+/* Form layout adapted from DSH ui-plugin-manager's PluginManagerPage (MIT). */
+.dialog {
+  width: min(560px, 100%);
+  max-height: min(800px, 100%);
+}
+
+.content {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.body,
+.footer,
+.field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.body {
+  gap: 12px;
+}
+
+.footer {
+  flex: 1;
+  gap: 20px;
+}
+
+.field {
+  gap: 6px;
+  font-size: 13px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.field input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 0 14px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  outline: none;
+  background: var(--dsw-alias-bg-layer-3);
+  font: inherit;
+  font-size: 13px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.field input:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  box-shadow: inset 0 0 0 0.5px var(--dsw-alias-state-business-primary);
+}
+
+.field input[aria-invalid="true"] {
+  border-color: var(--dsw-alias-state-error-primary);
+}
+
+.field input:disabled,
+.registry select:disabled {
+  opacity: 0.6;
+}
+
+.options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.guideToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.guideToggle:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+.guideToggle[aria-expanded="true"] .chevron {
+  transform: rotate(180deg);
+}
+
+.registry {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 8px 0 10px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-2);
+  font-size: 12.5px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.registry select {
+  max-width: 100%;
+  min-height: 32px;
+  border: 0;
+  background: var(--dsw-alias-bg-layer-2);
+  font: inherit;
+  color: var(--dsw-alias-label-primary);
+}
+
+.guide {
+  padding: 8px 14px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-bg-layer-1);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.guide p {
+  margin: 8px 0 4px;
+}
+
+.guide code {
+  color: var(--dsw-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.scope,
+.hint,
+.error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  overflow-wrap: anywhere;
+}
+
+.error {
+  color: var(--dsw-alias-state-error-primary, #d92d20);
+}
+
+.wide {
+  width: 100%;
+}

@@ -12,7 +12,14 @@ describe("native RPC steering readiness", () => {
       policy: { state: "ready", hostId: "local", select: vi.fn(), clear: vi.fn() },
     };
     const listeners = new Map<string, () => void>();
+    const fakeDocument = {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      querySelector: vi.fn(),
+      documentElement: {},
+    };
     const fakeWindow: Record<string, unknown> = {
+      document: fakeDocument,
       __codexhostHostRoutingV1: {
         forComposer: () => route,
         forHost: () => route,
@@ -27,12 +34,7 @@ describe("native RPC steering readiness", () => {
       clearInterval: vi.fn(),
     };
     vi.stubGlobal("window", fakeWindow);
-    vi.stubGlobal("document", {
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      querySelector: vi.fn(),
-      documentElement: {},
-    });
+    vi.stubGlobal("document", fakeDocument);
     vi.stubGlobal(
       "CustomEvent",
       class {

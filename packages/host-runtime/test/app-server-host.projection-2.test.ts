@@ -1195,6 +1195,10 @@ describe("AppServerHost HarnessAdapter projection", () => {
           defaultModel: xaiModel,
           thinkingOptions: [{ id: "high", label: "High" }],
         },
+        capabilities: {
+          configuration: { selectPermissionMode: false },
+          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+        },
       },
     });
 

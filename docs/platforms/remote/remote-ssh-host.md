@@ -56,6 +56,8 @@ This binding follows the attachment storage and request interfaces in Desktop 26
 
 ## Manage connections
 
+While the connections page is visible, it checks stable state every 30 seconds and checks every 5 seconds during operations, updates, or failed checks. Periodic checks pause while hidden or after leaving the page. Returning to the page refreshes immediately; manual refresh and post-operation checks remain available.
+
 Use **Remote connections** to edit connection details, disconnect, or remove a connection you no longer use.
 
 - **Disconnect** stops automatic connection to that computer. Tasks already started remotely can continue. Click **Connect** when you want to use it again.

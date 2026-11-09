@@ -389,5 +389,17 @@ describe("background update manager", () => {
       }),
     );
     await expect(manager.readStatus(statusPath)).rejects.toThrow("unknown fields");
+    const result = {
+      schemaVersion: 1,
+      version: "1.2.3",
+      installation: "npm",
+      phase: "succeeded",
+      updatedAt: 10,
+      serviceStopOutput: "Host stopped; interrupted 7 running task(s)\n",
+    };
+    await writeFile(statusPath, JSON.stringify(result));
+    await expect(manager.readStatus(statusPath)).resolves.toEqual(result);
+    await writeFile(statusPath, JSON.stringify({ ...result, serviceStopOutput: 7 }));
+    await expect(manager.readStatus(statusPath)).rejects.toThrow("invalid");
   });
 });

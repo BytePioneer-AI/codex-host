@@ -231,6 +231,96 @@ it("preserves the optional V4 plan-review intent callId", async () => {
   await gateway.close();
 });
 
+/** DSH 0.2.2 computer-use consent: one blocking question whose options are its fixed actions. */
+function approvalQuestion(overrides: Readonly<Record<string, unknown>> = {}) {
+  return {
+    id: "consent",
+    question: "Allow Calculator?",
+    detail: "Calculator: view and control",
+    options: [{ label: "Allow once" }, { label: "Deny" }, { label: "Always allow" }],
+    intent: {
+      kind: "approval",
+      approve: "Allow once",
+      reject: "Deny",
+      always: "Always allow",
+      subject: { name: "Calculator", icon: "file:///Applications/Calculator.app" },
+      display: { question: { en: "Allow Calculator?", zh: "允许 Calculator？" } },
+    },
+    ...overrides,
+  };
+}
+
+it("delivers a DSH 0.2.2 approval intent as fixed actions", async () => {
+  const feed = new EventFeed();
+  const remote = new FakeRemote(feed);
+  const gateway = await startGateway(remote, feed);
+  const sink = sinkProbe();
+  const detach = gateway.attach("session-1", sink);
+  feed.push({ ...question("question-approval"), request: { questions: [approvalQuestion()] } });
+  await vi.waitFor(() => expect(sink.deliveries).toHaveLength(1));
+  expect(sink.deliveries[0]?.request).toEqual({
+    questions: [
+      {
+        id: "consent",
+        question: "Allow Calculator?",
+        detail: "Calculator: view and control",
+        options: [{ label: "Allow once" }, { label: "Deny" }, { label: "Always allow" }],
+        intent: { kind: "approval", approve: "Allow once", reject: "Deny", always: "Always allow" },
+      },
+    ],
+  });
+  expect(sink.faults).toEqual([]);
+  await detach();
+  await gateway.close();
+});
+
+it("rejects approval intents that DSH itself would refuse", async () => {
+  const feed = new EventFeed();
+  const remote = new FakeRemote(feed);
+  const gateway = await startGateway(remote, feed);
+  const intent = approvalQuestion().intent;
+  const malformedRequests: Readonly<Record<string, unknown>>[] = [
+    { questions: [approvalQuestion({ detail: undefined })] },
+    { questions: [approvalQuestion({ multiSelect: true })] },
+    { questions: [approvalQuestion({ options: [{ label: "Allow once" }, { label: "Deny" }] })] },
+    {
+      questions: [
+        approvalQuestion({
+          options: [
+            { label: "Allow once" },
+            { label: "Deny" },
+            { label: "Always allow" },
+            { label: "Ask" },
+          ],
+        }),
+      ],
+    },
+    { questions: [approvalQuestion({ intent: { ...intent, reject: "Allow once" } })] },
+    { questions: [approvalQuestion({ intent: { ...intent, reject: "" } })] },
+    { questions: [approvalQuestion({ intent: { ...intent, subject: { icon: "x" } } })] },
+    {
+      questions: [approvalQuestion({ intent: { ...intent, display: { question: { zh: "?" } } } })],
+    },
+    { questions: [approvalQuestion({ intent: { ...intent, callId: "call-1" } })] },
+    { questions: [approvalQuestion(), approvalQuestion({ id: "second" })] },
+    { questions: [approvalQuestion()], wait: { callId: "call-1" } },
+  ];
+  const broken = malformedRequests.map((request, index) => {
+    const sink = sinkProbe();
+    const sessionId = `session-broken-${index}`;
+    gateway.attach(sessionId, sink);
+    feed.push({ ...question(`event-malformed-${index}`, sessionId), request });
+    return sink;
+  });
+
+  await vi.waitFor(() => expect(broken.every(({ faults }) => faults.length === 1)).toBe(true));
+  for (const sink of broken) {
+    expect(sink.deliveries).toEqual([]);
+    expect(sink.faults[0]).toMatchObject({ code: "protocolError" });
+  }
+  await gateway.close();
+});
+
 function captureRejection(promise: Promise<unknown>): Promise<unknown> {
   return promise.then(
     () => {

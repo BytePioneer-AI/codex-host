@@ -412,6 +412,7 @@ describe("DSH V4 journal wire", () => {
       request: {
         address: { kind: "session", sessionId: SESSION_ID },
         maxMessages: 200,
+        activate: true,
         assistantStream: true,
       },
     });

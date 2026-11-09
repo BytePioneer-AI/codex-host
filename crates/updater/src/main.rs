@@ -1,40 +1,29 @@
 #![forbid(unsafe_code)]
 
+mod handoff;
 mod install;
 mod prepare_install;
 mod remote;
 mod request;
+mod restart;
+mod services;
 mod ssh;
 mod status;
 
 use std::env;
 use std::error::Error;
-use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use codexhost_platform::{process_executable_path, process_exists};
-use serde::Deserialize;
 
-use install::{install, relaunch};
+use install::install;
 use request::UpdateRequest;
 use status::write_status;
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(180);
-const RELAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_RUNTIME_DESCRIPTOR_BYTES: u64 = 4 * 1024;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RuntimeDescriptorProbe {
-    schema_version: u8,
-    launcher_pid: u32,
-    control_port: u16,
-    nonce: String,
-}
-
 fn same_executable(left: &Path, right: &Path) -> bool {
     let normalize = |path: &Path| {
         let value = path.to_string_lossy().replace('/', "\\");
@@ -62,7 +51,10 @@ fn wait_for_launcher_exit(request: &UpdateRequest) -> Result<(), Box<dyn Error>>
     }
     // This is the handoff acknowledgement: the owner must remain alive until
     // its identity has been checked, not merely until this process was spawned.
-    write_status(request, "waiting-for-exit", None)?;
+    write_status(request, "waiting-for-exit", None, None)?;
+    if request.service_managed {
+        return handoff::wait_for_ownership(&request.status_path, Duration::from_secs(10));
+    }
     let started = Instant::now();
     while process_exists(request.wait_pid) {
         if started.elapsed() >= WAIT_TIMEOUT {
@@ -73,68 +65,41 @@ fn wait_for_launcher_exit(request: &UpdateRequest) -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
-fn relaunched_launcher_is_ready(
-    descriptor_launcher_pid: u32,
-    previous_launcher_pid: u32,
-    process_is_alive: impl FnOnce(u32) -> bool,
-) -> bool {
-    descriptor_launcher_pid != previous_launcher_pid && process_is_alive(descriptor_launcher_pid)
-}
-
-fn wait_for_relaunch(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
-    let descriptor_path = &request.runtime_descriptor_path;
-    let started = Instant::now();
-    while started.elapsed() < RELAUNCH_TIMEOUT {
-        let bytes = match fs::symlink_metadata(descriptor_path) {
-            Ok(metadata)
-                if metadata.is_file()
-                    && !metadata.file_type().is_symlink()
-                    && metadata.len() <= MAX_RUNTIME_DESCRIPTOR_BYTES =>
-            {
-                fs::read(descriptor_path)?
-            }
-            Ok(_) => return Err("runtime descriptor is not a bounded regular file".into()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                thread::sleep(Duration::from_millis(100));
-                continue;
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let descriptor = serde_json::from_slice::<RuntimeDescriptorProbe>(&bytes)?;
-        if descriptor.schema_version != 1
-            || descriptor.launcher_pid == 0
-            || descriptor.control_port == 0
-            || descriptor.nonce.len() != 32
-            || !descriptor
-                .nonce
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        {
-            return Err("runtime descriptor is invalid".into());
-        }
-        if relaunched_launcher_is_ready(descriptor.launcher_pid, request.wait_pid, process_exists) {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    Err("updated codexhost did not become ready after relaunch".into())
-}
-
 fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
     let request = UpdateRequest::parse(request_path)?;
+    let _independent = request
+        .service_managed
+        .then(codexhost_platform::register_independent_service)
+        .transpose()?;
+    let mut service_stop_output = None;
+    let mut stopping_started = false;
     let result = (|| -> Result<(), Box<dyn Error>> {
         wait_for_launcher_exit(&request)?;
-        write_status(&request, "installing", None)?;
+        stopping_started = true;
+        service_stop_output = services::stop(&request)?;
+        write_status(&request, "installing", None, service_stop_output.as_deref())?;
         install(&request)?;
-        write_status(&request, "restarting", None)?;
-        relaunch(&request)?;
-        wait_for_relaunch(&request)?;
-        write_status(&request, "succeeded", None)?;
+        write_status(&request, "restarting", None, service_stop_output.as_deref())?;
+        restart::restore(&request, Some(&request.version))?;
+        write_status(&request, "succeeded", None, service_stop_output.as_deref())?;
         Ok(())
     })();
     if let Err(error) = &result {
-        let message = error.to_string();
-        let _ = write_status(&request, "failed", Some(&message));
+        let mut message = error.to_string();
+        if stopping_started {
+            match restart::restore(&request, None) {
+                Ok(()) => message.push_str("; service recovery succeeded"),
+                Err(recovery) => {
+                    message.push_str(&format!("; service recovery failed: {recovery}"))
+                }
+            }
+        }
+        let _ = write_status(
+            &request,
+            "failed",
+            Some(&message),
+            service_stop_output.as_deref(),
+        );
     }
     result
 }
@@ -176,7 +141,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{relaunched_launcher_is_ready, wait_for_launcher_exit};
+    use super::wait_for_launcher_exit;
     use crate::request::{Installation, NpmInstallation, UpdateRequest};
 
     #[test]
@@ -194,6 +159,9 @@ mod tests {
             wait_pid: std::process::id(),
             wait_executable: wrong_executable.clone(),
             runtime_descriptor_path: directory.join("runtime.json"),
+            restart_target: Default::default(),
+            data_directory: None,
+            service_managed: false,
             status_path: status_path.clone(),
             installation: Installation::Npm(NpmInstallation {
                 node_path: wrong_executable.clone(),
@@ -206,20 +174,5 @@ mod tests {
         assert!(error.to_string().contains("not the expected Launcher"));
         assert_eq!(std::fs::read_to_string(status_path).unwrap(), "prepared");
         std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn accepts_a_live_relaunched_launcher_without_executable_path_matching() {
-        assert!(relaunched_launcher_is_ready(42, 41, |pid| pid == 42));
-    }
-
-    #[test]
-    fn rejects_the_previous_launcher_descriptor() {
-        assert!(!relaunched_launcher_is_ready(41, 41, |_| true));
-    }
-
-    #[test]
-    fn rejects_a_relaunched_launcher_that_has_exited() {
-        assert!(!relaunched_launcher_is_ready(42, 41, |_| false));
     }
 }

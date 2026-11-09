@@ -11,8 +11,10 @@ import {
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
+  hostTurnIdSchema,
   hostThreadIdSchema,
   nativeSessionRefSchema,
+  nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import {
   encodeGrokTransportModel,
@@ -85,6 +87,66 @@ describe("ExternalThreadRuntime delete", () => {
     }
     expect(removeThread).toHaveBeenCalledWith(hostThreadId);
     expect(runtime.get(hostThreadId)).toBeUndefined();
+  });
+});
+
+describe("ExternalThreadRuntime terminal identity", () => {
+  it("reports the persistence cause and recovers after a transient failure", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const persistTurn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Turn identity mapping conflicts"))
+      .mockResolvedValueOnce(record());
+    const diagnostics: unknown[] = [];
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository: { persistTurn } as unknown as ExternalThreadRepository,
+      consumeOutputs: async () => undefined,
+      diagnose: (error) => diagnostics.push(error),
+    });
+    const thread = runtime.register({
+      record: record(),
+      session: opened.value,
+      sessionId: hostThreadId,
+      thread: { id: hostThreadId },
+      turns: [],
+    });
+    const nativeTurnRef = nativeTurnRefSchema.parse({
+      harnessId,
+      nativeSessionId: "native-1",
+      nativeTurnKey: "turn:1",
+      formatVersion: 1,
+    });
+
+    const first = await runtime.persistTerminalIdentity(thread, {
+      type: "turn.completed",
+      turnId: hostTurnIdSchema.parse("turn-1"),
+      nativeTurnRef,
+      outcome: { status: "succeeded" },
+    });
+
+    expect(first).toBeInstanceOf(Error);
+    expect(first?.message).toContain(
+      "External Turn identity could not be persisted: Turn identity mapping conflicts",
+    );
+    expect(thread.persistenceError).toBe(first);
+    expect(diagnostics).toEqual([first]);
+
+    const retry = await runtime.persistTerminalIdentity(thread, {
+      type: "turn.completed",
+      turnId: hostTurnIdSchema.parse("turn-2"),
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        ...nativeTurnRef,
+        nativeTurnKey: "turn:2",
+      }),
+      outcome: { status: "succeeded" },
+    });
+
+    expect(retry).toBeNull();
+    expect(persistTurn).toHaveBeenCalledTimes(2);
+    expect(thread.persistenceError).toBeNull();
   });
 });
 

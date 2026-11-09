@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "./packages/session-runtime/tsconfig.json" },
     { "path": "./packages/shared-contracts/tsconfig.json" },
     { "path": "./packages/harness-adapter/tsconfig.json" },
     { "path": "./packages/harness-broker/tsconfig.json" },
@@ -11,6 +12,7 @@
     { "path": "./packages/desktop-control/tsconfig.json" },
     { "path": "./packages/update-manager/tsconfig.json" },
     { "path": "./packages/console-server/tsconfig.json" },
+    { "path": "./packages/remote-relay/tsconfig.json" },
     { "path": "./packages/adapters/pi/tsconfig.json" },
     { "path": "./packages/adapters/claude-code/tsconfig.json" },
     { "path": "./packages/adapters/deepseek-harness/tsconfig.json" },
@@ -32,6 +34,7 @@
     { "path": "./packages/adapters/copilot/tsconfig.json" },
     { "path": "./packages/adapters/codex-usage/tsconfig.json" },
     { "path": "./packages/host-runtime/tsconfig.json" },
+    { "path": "./packages/web-server/tsconfig.json" },
     { "path": "./packages/renderer-extension/tsconfig.json" }
   ]
 }

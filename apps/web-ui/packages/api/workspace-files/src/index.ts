@@ -118,10 +118,11 @@ function integerAtLeast(value: number, min: number, name: string): number {
  * Drop the POSIX-style drive prefix (`/D:/…`) harness-written links carry.
  * Windows resolution would otherwise read the prefix as a `D:` directory under
  * the workspace root and miss the target; the Desktop renderer applies the
- * same canonicalization to such links before opening them.
+ * same canonicalization to such links before opening them. A directory named
+ * `D:` is legal on POSIX, so the prefix is preserved there.
  */
 function stripPosixDrivePrefix(path: string): string {
-  return path.replace(/^\/(?=[A-Za-z]:[/\\])/u, "");
+  return process.platform === "win32" ? path.replace(/^\/(?=[A-Za-z]:[/\\])/u, "") : path;
 }
 
 /**
@@ -306,10 +307,12 @@ export class WorkspaceFiles extends TypertRemoteService {
     path = stripPosixDrivePrefix(path);
     const window =
       options.range === undefined ? undefined : this.resolveWindow(options.range, path);
+    const baseFile =
+      options.baseFile === undefined ? undefined : stripPosixDrivePrefix(options.baseFile);
     const resolved =
-      options.baseFile === undefined
+      baseFile === undefined
         ? path
-        : await this.relativePath(workspaceFileScope, options.baseFile, path, signal);
+        : await this.relativePath(workspaceFileScope, baseFile, path, signal);
     const { target, info } = await this.locateFile(workspaceFileScope, resolved, signal);
     if (window !== undefined) {
       const { offset, length } = window;

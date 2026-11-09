@@ -354,4 +354,15 @@ describe("workspaceFiles.read — POSIX-style drive prefixes", () => {
       expect(result.bytes).toBe(12);
     },
   );
+
+  it.runIf(process.platform !== "win32")(
+    "keeps the `/D:/` prefix on POSIX, where a `D:` directory is legal",
+    async () => {
+      const failure = await failureOf(
+        endpoint().read(harness.scope, "/D:/notes.txt", {}, signal()),
+      );
+      expect(failure.code).toBe("workspace-file/not-found");
+      expect(failure.details).toMatchObject({ path: "/D:/notes.txt" });
+    },
+  );
 });

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FsVersion } from "@deepseek-ai/dsh-fs";
-import { failureOf, openWorkspace, signal, type Harness } from "./harness.ts";
+import { failureOf, openWorkspace, posixPrefixed, signal, type Harness } from "./harness.ts";
 
 let harness: Harness;
 
@@ -109,6 +109,24 @@ describe("workspaceFiles.readBytes — complete files", () => {
 });
 
 describe("workspaceFiles.readBytes — base file", () => {
+  it.runIf(process.platform === "win32")(
+    "resolves relative paths from a base file written with the `/D:/`-style prefix harness links carry",
+    async () => {
+      await mkdir(join(harness.workspace, "nested"));
+      await writeFile(join(harness.workspace, "nested/base.txt"), "base");
+      await writeFile(join(harness.workspace, "nested/near.txt"), "near");
+      const result = await harness
+        .endpoint()
+        .readBytes(
+          harness.scope,
+          "./near.txt",
+          { baseFile: posixPrefixed(harness.workspace, "nested", "base.txt") },
+          signal(),
+        );
+      expect(Buffer.from(result.data).toString()).toBe("near");
+    },
+  );
+
   it("resolves relative paths from the base file directory on the Host", async () => {
     await mkdir(join(harness.workspace, "nested"));
     await writeFile(join(harness.workspace, "nested/base.txt"), "base");

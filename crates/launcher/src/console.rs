@@ -28,6 +28,10 @@ const CONSOLE_URL_PREFIX: &str = "codexhost console: ";
 const CONTROLLER_STATUS_FILE: &str = "desktop-controller-v1.json";
 const INTEGRATION_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const PERSISTENT_INTEGRATION_FAILURE_MS: u64 = 60_000;
+/// Upper bound on how long update handoff waits for the launch `ensure` task
+/// while it holds the handoff lock.
+#[cfg(any(target_os = "windows", test))]
+const UPDATE_ENSURE_JOIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConsoleCommand {
@@ -288,7 +292,24 @@ pub fn stop_for_update(command: &ConsoleCommand) -> Result<(), Box<dyn Error>> {
         .as_mut()
         .and_then(|console| console.ensure.take());
     if let Some(ensure) = ensure {
-        ensure.join().map_err(|_| "console ensure task panicked")?;
+        match join_within(ensure, UPDATE_ENSURE_JOIN_TIMEOUT) {
+            EnsureJoin::Finished => {}
+            EnsureJoin::Panicked => return Err("console ensure task panicked".into()),
+            EnsureJoin::TimedOut(ensure) => {
+                // Keep the task so a later `show` still waits for it, and fail
+                // the handoff: stopping now could race a Console it starts.
+                if let Ok(mut slot) = LAUNCH_CONSOLE.lock()
+                    && let Some(console) = slot.as_mut()
+                {
+                    console.ensure = Some(ensure);
+                }
+                return Err(format!(
+                    "console ensure task did not finish within {}s",
+                    UPDATE_ENSURE_JOIN_TIMEOUT.as_secs()
+                )
+                .into());
+            }
+        }
     }
     drop(handoff);
     if !command.console_server.is_file() {
@@ -304,6 +325,29 @@ pub fn stop_for_update(command: &ConsoleCommand) -> Result<(), Box<dyn Error>> {
         return Err("codexhost console could not be stopped for update".into());
     }
     Ok(())
+}
+
+#[cfg(any(target_os = "windows", test))]
+enum EnsureJoin {
+    Finished,
+    Panicked,
+    TimedOut(JoinHandle<()>),
+}
+
+/// Joins `handle` if it finishes within `timeout`; otherwise hands it back.
+#[cfg(any(target_os = "windows", test))]
+fn join_within(handle: JoinHandle<()>, timeout: Duration) -> EnsureJoin {
+    let started = std::time::Instant::now();
+    while !handle.is_finished() {
+        if started.elapsed() >= timeout {
+            return EnsureJoin::TimedOut(handle);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    match handle.join() {
+        Ok(()) => EnsureJoin::Finished,
+        Err(_) => EnsureJoin::Panicked,
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -537,5 +581,30 @@ mod tests {
         assert_eq!(document["schemaVersion"], 1);
         assert!(document["desktop"].is_null());
         assert_eq!(document["desktopError"], "Codex Desktop was not found");
+    }
+
+    #[test]
+    fn join_within_returns_a_task_that_outlives_the_timeout() {
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let task = thread::spawn(move || {
+            let _ = wait.recv();
+        });
+        let EnsureJoin::TimedOut(task) = join_within(task, Duration::from_millis(50)) else {
+            panic!("a blocked ensure task must time out");
+        };
+        release.send(()).expect("release ensure task");
+        assert!(matches!(
+            join_within(task, UPDATE_ENSURE_JOIN_TIMEOUT),
+            EnsureJoin::Finished
+        ));
+    }
+
+    #[test]
+    fn join_within_reports_a_panicked_task() {
+        let task = thread::spawn(|| panic!("ensure failed"));
+        assert!(matches!(
+            join_within(task, UPDATE_ENSURE_JOIN_TIMEOUT),
+            EnsureJoin::Panicked
+        ));
     }
 }

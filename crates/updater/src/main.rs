@@ -14,6 +14,8 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(not(target_os = "windows"))]
+use codexhost_platform::{PlatformError, process_snapshot};
 use codexhost_platform::{process_executable_path, process_exists};
 #[cfg(target_os = "windows")]
 use codexhost_platform::{process_instance_exists, process_started_at_micros};
@@ -49,14 +51,32 @@ fn same_executable(left: &Path, right: &Path) -> bool {
     normalize(left) == normalize(right)
 }
 
+/// Start time of the live process `process_id`, or `None` once it has exited.
+/// Inspection failure while the PID still exists is an error, never an exit.
+#[cfg(not(target_os = "windows"))]
+fn process_started_at_micros(process_id: u32) -> Result<Option<u64>, PlatformError> {
+    match process_snapshot(process_id) {
+        Ok(snapshot) => Ok(Some(snapshot.started_at_micros)),
+        Err(_) if !process_exists(process_id) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether the exact process instance that started at `started_at_micros` is
+/// still live, so a reused PID is not mistaken for the waiting Launcher.
+#[cfg(not(target_os = "windows"))]
+fn process_instance_exists(process_id: u32, started_at_micros: u64) -> Result<bool, PlatformError> {
+    Ok(process_started_at_micros(process_id)? == Some(started_at_micros))
+}
+
 fn wait_for_launcher_exit(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
     #[cfg(target_os = "windows")]
     let launcher_started_at = process_started_at_micros(request.wait_pid)?;
-    #[cfg(target_os = "windows")]
-    let launcher_exists = process_instance_exists(request.wait_pid, launcher_started_at)?;
     #[cfg(not(target_os = "windows"))]
-    let launcher_exists = process_exists(request.wait_pid);
-    if !launcher_exists {
+    let Some(launcher_started_at) = process_started_at_micros(request.wait_pid)? else {
+        return Err("Launcher exited before the background Updater started".into());
+    };
+    if !process_instance_exists(request.wait_pid, launcher_started_at)? {
         return Err("Launcher exited before the background Updater started".into());
     }
     let expected = request.wait_executable.canonicalize()?;
@@ -68,7 +88,6 @@ fn wait_for_launcher_exit(request: &UpdateRequest) -> Result<(), Box<dyn Error>>
         )
         .into());
     }
-    #[cfg(target_os = "windows")]
     if !process_instance_exists(request.wait_pid, launcher_started_at)? {
         return Err("Launcher exited before the background Updater was ready".into());
     }
@@ -76,11 +95,7 @@ fn wait_for_launcher_exit(request: &UpdateRequest) -> Result<(), Box<dyn Error>>
     write_status(request, "waiting-for-exit", None)?;
     let started = Instant::now();
     loop {
-        #[cfg(target_os = "windows")]
-        let launcher_exists = process_instance_exists(request.wait_pid, launcher_started_at)?;
-        #[cfg(not(target_os = "windows"))]
-        let launcher_exists = process_exists(request.wait_pid);
-        if !launcher_exists {
+        if !process_instance_exists(request.wait_pid, launcher_started_at)? {
             break;
         }
         if started.elapsed() >= WAIT_TIMEOUT {
@@ -225,6 +240,35 @@ mod tests {
     use std::time::{Duration, Instant};
 
     static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn binds_the_launcher_wait_to_its_process_start_time() {
+        let pid = std::process::id();
+        let started_at = super::process_started_at_micros(pid)
+            .expect("inspect current process")
+            .expect("current process is live");
+        assert!(super::process_instance_exists(pid, started_at).expect("same instance"));
+        // A reused PID has a different start time and must count as an exit.
+        assert!(
+            !super::process_instance_exists(pid, started_at.wrapping_add(1))
+                .expect("different instance")
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn reports_an_exited_process_as_gone() {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn short-lived child");
+        let pid = child.id();
+        child.wait().expect("reap child");
+        assert_eq!(
+            super::process_started_at_micros(pid).expect("inspect exited PID"),
+            None
+        );
+    }
 
     #[test]
     fn accepts_a_live_relaunched_launcher_without_executable_path_matching() {

@@ -3,6 +3,7 @@ import { it, vi } from "vitest";
 import type { IPty } from "node-pty";
 import { LocalTerminalHandle } from "../../../apps/web-ui/packages/subprocess/subprocess-local/src/terminal.ts";
 import type { ProcessInspector } from "../../../apps/web-ui/packages/subprocess/subprocess-local/src/process-inspector.ts";
+import { windowsPtyAgent } from "./windows-pty-fixture.ts";
 
 it.each(["output", "silent", "exit", "timeout"])(
   "closes a Windows terminal after delayed initialization (%s)",
@@ -13,7 +14,11 @@ it.each(["output", "silent", "exit", "timeout"])(
     let alive = true;
     const signals: number[] = [];
     let fallbackKills = 0;
-    const terminal: IPty = {
+    const terminal: IPty & { _agent: ReturnType<typeof windowsPtyAgent> } = {
+      _agent: windowsPtyAgent(() => {
+        fallbackKills++;
+        assert.ok(mode === "timeout" || !alive || mode === "exit");
+      }),
       get pid() {
         return pid;
       },
@@ -35,9 +40,7 @@ it.each(["output", "silent", "exit", "timeout"])(
       pause() {},
       resume() {},
       kill() {
-        fallbackKills++;
-        if (mode === "timeout" || !alive || mode === "exit") return;
-        throw new Error("Unidentified ConPTY cleanup must not be used");
+        assert.fail("PID-based ConPTY cleanup must not be used");
       },
     };
     const identity = { pid: 42, started: "original" };

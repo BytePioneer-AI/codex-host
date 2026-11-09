@@ -16,6 +16,9 @@ function presentation(pending: ClientInteraction): {
 } {
   const interaction = pending.interaction;
   if (interaction.type === "approval") {
+    const nativeApproval =
+      pending.request.method === "item/commandExecution/requestApproval" ||
+      pending.request.method === "item/fileChange/requestApproval";
     const labels = interaction.actions.map((action, index) =>
       interaction.actions.filter((other) => other.label === action.label).length > 1
         ? `${action.label} (${index + 1})`
@@ -26,16 +29,15 @@ function presentation(pending: ClientInteraction): {
         {
           id: "approval",
           question: interaction.title,
-          ...(interaction.description ? { detail: interaction.description } : {}),
+          ...(!nativeApproval && interaction.description
+            ? { detail: interaction.description }
+            : {}),
           options: labels.map((label) => ({ label })),
           multiSelect: false,
           allowOther: false,
         },
       ],
       result(value) {
-        const nativeApproval =
-          pending.request.method === "item/commandExecution/requestApproval" ||
-          pending.request.method === "item/fileChange/requestApproval";
         const answer = (value as Answer | undefined)?.answers?.find(
           (entry) => entry.id === "approval",
         );

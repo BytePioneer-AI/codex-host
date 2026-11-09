@@ -60,10 +60,10 @@ for (const method of ["item/commandExecution/requestApproval", "item/fileChange/
       assert.deepEqual(host.answers[0]?.result, { decision });
     });
 
-for (const [method, description, subject] of [
+for (const [method, description, subject, expectedDetail] of [
   [
     "item/commandExecution/requestApproval",
-    "/bin/zsh -lc \"printf 'test\\n' > a.txt\"",
+    "/bin/zsh -lc \"printf 'test\\n' > a.txt\"\n\nWorking directory: /synthetic/project",
     {
       kind: "command",
       threadId: "native",
@@ -74,11 +74,17 @@ for (const [method, description, subject] of [
       command: "/bin/zsh -lc \"printf 'test\\n' > a.txt\"",
       availableDecisions: ["accept", "cancel"],
     },
+    undefined,
   ],
-  ["item/fileChange/requestApproval", undefined, { threadId: "native", itemId: "internal-item" }],
-  ["mcpServer/elicitation/request", "Create a.txt", { type: "nativeAction" }],
+  [
+    "item/fileChange/requestApproval",
+    "Working directory: /synthetic/project",
+    { threadId: "native", itemId: "internal-item" },
+    undefined,
+  ],
+  ["mcpServer/elicitation/request", "Create a.txt", { type: "nativeAction" }, "Create a.txt"],
 ] as const)
-  it(`shows only the approval title and supporting content for ${method}`, async (t) => {
+  it(`shows only the approval explanation and relevant options for ${method}`, async (t) => {
     const host = new FakeChChannel();
     host.add("native", "/synthetic");
     host.pending = [
@@ -118,7 +124,7 @@ for (const [method, description, subject] of [
       {
         id: "approval",
         question: "Allow creating a.txt?",
-        ...(description ? { detail: description } : {}),
+        ...(expectedDetail ? { detail: expectedDetail } : {}),
         options: [{ label: "Allow once" }],
         multiSelect: false,
         allowOther: false,

@@ -1496,6 +1496,8 @@ export class PiRpcSession {
         if (this.#extensionStatuses.get(value.statusKey) === value.statusText) return true;
         this.#extensionStatuses.set(value.statusKey, value.statusText);
       }
+      // Native footer updates are ephemeral; progress messages create permanent Items.
+      return true;
     }
     const text = piStatusText(value);
     if (!text) return false;

@@ -7,6 +7,7 @@ import {
   type DelegationStartInput,
   type DelegationWatchApi,
   type HarnessInspectInput,
+  type HarnessListInput,
   type ThreadCancelInput,
   type ThreadListInput,
   type ThreadSendInput,
@@ -19,7 +20,7 @@ import type { LocalPreviewManager } from "./local-preview.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
-function errorBody(error: unknown): {
+export function errorBody(error: unknown): {
   error: { code: string; message: string; details?: unknown };
 } {
   if (error instanceof DelegationControlError) {
@@ -39,12 +40,12 @@ function errorBody(error: unknown): {
   };
 }
 
-function writeJson(response: ServerResponse, status: number, value: unknown): void {
+export function writeJson(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(`${JSON.stringify(value)}\n`);
 }
 
-async function jsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+export async function jsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -114,6 +115,60 @@ async function startWithWatch(
   return { ...result, watch };
 }
 
+/** The delegation routes shared by the Host control server and the external client listener. */
+export async function routeDelegationRequest(
+  handlers: { api: DelegationControlApi; watchApi?: DelegationWatchApi },
+  route: string | undefined,
+  body: Record<string, unknown>,
+): Promise<unknown> {
+  switch (route) {
+    case "/v1/harness/list":
+      return handlers.api.listHarnesses(body as HarnessListInput);
+    case "/v1/harness/inspect":
+      return handlers.api.inspect(body as unknown as HarnessInspectInput);
+    case "/v1/delegate/start":
+      return body.watchTimeoutMs === undefined
+        ? handlers.api.start(body as unknown as DelegationStartInput)
+        : startWithWatch(handlers.api, watchApi(handlers.watchApi), body);
+    case "/v1/thread/send":
+      return handlers.api.send(body as unknown as ThreadSendInput);
+    case "/v1/thread/cancel":
+      return handlers.api.cancel(body as unknown as ThreadCancelInput);
+    case "/v1/thread/read":
+      return handlers.api.read(body as unknown as ThreadReadInput);
+    case "/v1/thread/wait":
+      return handlers.api.wait(body as unknown as ThreadWaitInput);
+    case "/v1/thread/watch":
+      return watchApi(handlers.watchApi).watch(body as unknown as ThreadWatchInput);
+    case "/v1/thread/watches":
+      return watchApi(handlers.watchApi).watches();
+    case "/v1/thread/list":
+      return handlers.api.list(body as unknown as ThreadListInput);
+    default:
+      throw new DelegationControlError("INVALID_ARGUMENT", "Unknown Runtime control route");
+  }
+}
+
+/** Preview routes are served only by the Host control server, not the external client listener. */
+async function routePreviewRequest(
+  manager: LocalPreviewManager | undefined,
+  route: string,
+  body: Record<string, unknown>,
+): Promise<unknown> {
+  switch (route) {
+    case "/v1/preview/open":
+      return preview(manager).open(body as { path: string; cwd: string; threadId?: string });
+    case "/v1/preview/list":
+      return preview(manager).list();
+    case "/v1/preview/show":
+      return preview(manager).show(String(body.previewId));
+    case "/v1/preview/close":
+      return preview(manager).close(String(body.previewId));
+    default:
+      throw new DelegationControlError("INVALID_ARGUMENT", "Unknown Runtime control route");
+  }
+}
+
 export async function startDelegationControlServer(input: {
   token: string;
   api: DelegationControlApi;
@@ -136,68 +191,14 @@ export async function startDelegationControlServer(input: {
         return;
       }
       const body = await jsonBody(request);
-      switch (request.url) {
-        case "/v1/harness/list":
-          writeJson(response, 200, await input.api.listHarnesses());
-          return;
-        case "/v1/harness/inspect":
-          writeJson(response, 200, await input.api.inspect(body as unknown as HarnessInspectInput));
-          return;
-        case "/v1/delegate/start":
-          writeJson(
-            response,
-            200,
-            body.watchTimeoutMs === undefined
-              ? await input.api.start(body as unknown as DelegationStartInput)
-              : await startWithWatch(input.api, watchApi(input.watchApi), body),
-          );
-          return;
-        case "/v1/thread/send":
-          writeJson(response, 200, await input.api.send(body as unknown as ThreadSendInput));
-          return;
-        case "/v1/thread/cancel":
-          writeJson(response, 200, await input.api.cancel(body as unknown as ThreadCancelInput));
-          return;
-        case "/v1/thread/read":
-          writeJson(response, 200, await input.api.read(body as unknown as ThreadReadInput));
-          return;
-        case "/v1/thread/wait":
-          writeJson(response, 200, await input.api.wait(body as unknown as ThreadWaitInput));
-          return;
-        case "/v1/thread/watch":
-          writeJson(
-            response,
-            200,
-            await watchApi(input.watchApi).watch(body as unknown as ThreadWatchInput),
-          );
-          return;
-        case "/v1/thread/watches":
-          writeJson(response, 200, await watchApi(input.watchApi).watches());
-          return;
-        case "/v1/thread/list":
-          writeJson(response, 200, await input.api.list(body as unknown as ThreadListInput));
-          return;
-        case "/v1/preview/open":
-          writeJson(
-            response,
-            200,
-            await preview(input.preview).open(
-              body as { path: string; cwd: string; threadId?: string },
-            ),
-          );
-          return;
-        case "/v1/preview/list":
-          writeJson(response, 200, preview(input.preview).list());
-          return;
-        case "/v1/preview/show":
-          writeJson(response, 200, await preview(input.preview).show(String(body.previewId)));
-          return;
-        case "/v1/preview/close":
-          writeJson(response, 200, await preview(input.preview).close(String(body.previewId)));
-          return;
-        default:
-          throw new DelegationControlError("INVALID_ARGUMENT", "Unknown Runtime control route");
-      }
+      const route = request.url;
+      writeJson(
+        response,
+        200,
+        await (route?.startsWith("/v1/preview/")
+          ? routePreviewRequest(input.preview, route, body)
+          : routeDelegationRequest(input, route, body)),
+      );
     })().catch((error) => {
       writeJson(response, error instanceof DelegationControlError ? 400 : 500, errorBody(error));
     });

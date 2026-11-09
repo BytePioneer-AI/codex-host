@@ -136,6 +136,25 @@ describe("external direction changes use normal Desktop start presentation", () 
     f.dispose();
   });
 
+  it("preserves native admission and current-request callbacks in replacement start context", async () => {
+    const f = fixture();
+    const beforeSendRequest = vi.fn();
+    const assertRequestCurrent = vi.fn();
+    f.args.push(beforeSendRequest, assertRequestCurrent);
+    try {
+      await f.manager.steerTurn(...f.args);
+      expect(f.manager.startTurn).toHaveBeenCalledWith(
+        "thread",
+        expect.objectContaining({
+          context: expect.objectContaining({ beforeSendRequest, assertRequestCurrent }),
+        }),
+        f.args[8],
+      );
+    } finally {
+      f.dispose();
+    }
+  });
+
   it("keeps Desktop's own steer for an external Thread that steers natively", async () => {
     const f = fixture("activeTurn");
     await expect(f.manager.steerTurn(...f.args)).resolves.toEqual({ turnId: "official" });

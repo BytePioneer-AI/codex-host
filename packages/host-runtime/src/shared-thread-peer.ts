@@ -7,6 +7,9 @@ import {
   type JsonObject,
   type JsonRpcId,
 } from "@codexhost/protocol-core";
+import { harnessInstallationRequestTimeoutMs } from "@codexhost/shared-contracts";
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 
 export function object(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -51,14 +54,17 @@ export class StreamThreadPeer implements SharedThreadPeer {
     if (this.#stopped) throw new Error("Shared Thread Host is disconnected");
     const id = `${this.#prefix}${++this.#sequence}`;
     const result = new Promise<JsonObject>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.#pending.delete(id);
-        reject(
-          new Error(
-            "Shared Thread request timed out; outcome is unknown; do not retry automatically",
-          ),
-        );
-      }, 120_000);
+      const timer = setTimeout(
+        () => {
+          this.#pending.delete(id);
+          reject(
+            new Error(
+              "Shared Thread request timed out; outcome is unknown; do not retry automatically",
+            ),
+          );
+        },
+        harnessInstallationRequestTimeoutMs(method, params) ?? DEFAULT_REQUEST_TIMEOUT_MS,
+      );
       this.#pending.set(id, { resolve, reject, timer });
     });
     // Attach the rejection handler before a write can yield or fail.

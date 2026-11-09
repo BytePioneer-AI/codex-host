@@ -36,6 +36,61 @@ function accountControl(accountId: string | null) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Usage inspection request routing", () => {
+  it("loads identity and session credits on demand without an initial account notification", async () => {
+    let currentAccountId: string | null = null;
+    const snapshot = () => accountControl(currentAccountId).snapshot();
+    const refresh = vi.fn(async () => {
+      currentAccountId = "a";
+      return snapshot();
+    });
+    const fixture = createFixture({
+      accountControl: { currentAccountId: () => currentAccountId, snapshot, refresh },
+    });
+    const native = new JsonLineCollector(fixture.official.stdin);
+    fixture.official.stdin.on("data", (chunk: Buffer) => {
+      for (const line of chunk.toString("utf8").split("\n")) {
+        if (!line) continue;
+        const message = JSON.parse(line) as JsonObject;
+        if (message.method === "initialize" || message.method === "account/rateLimits/read") {
+          writeRequest(fixture.official.stdout, {
+            id: requiredMessageId(message),
+            result:
+              message.method === "initialize"
+                ? { userAgent: "synthetic-codex" }
+                : { rateLimits: { primary: { usedPercent: 12, windowDurationMins: 300 } } },
+          });
+        }
+      }
+    });
+    try {
+      await fixture.ready;
+      writeRequest(fixture.desktopInput, {
+        id: 1,
+        method: "initialize",
+        params: { clientInfo: { name: "synthetic-desktop", version: "1" } },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 1));
+      await setImmediate();
+      expect(refresh).not.toHaveBeenCalled();
+      expect(currentAccountId).toBeNull();
+
+      writeRequest(fixture.desktopInput, { id: 2, method: "codexhost/account/list", params: {} });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 2))).toMatchObject({
+        result: { currentAccountId: "a", accounts: [{ accountId: "a" }] },
+      });
+      writeRequest(fixture.desktopInput, { id: 3, method: usageMethod, params: { threadId } });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
+        result: { accountCredits: { usedPercent: 12, periodType: "five_hour" } },
+      });
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(
+        native.messages.filter((message) => method(message, "account/rateLimits/read")),
+      ).toHaveLength(1);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it.each(["credits", "history"] as const)(
     "lets steering inspection, native steer and read finish while %s is pending",
     async (stage) => {
@@ -47,15 +102,22 @@ describe("Usage inspection request routing", () => {
           return history.promise;
         });
       }
+      const control = accountControl(stage === "credits" ? "a" : null);
+      const refreshAccount = vi.fn(async () => control.snapshot());
       const fixture = createFixture({
-        accountControl: accountControl(stage === "credits" ? "a" : null),
+        accountControl: { ...control, refresh: refreshAccount },
       });
       const native = new JsonLineCollector(fixture.official.stdin);
       fixture.official.stdin.on("data", (chunk: Buffer) => {
         for (const line of chunk.toString("utf8").split("\n")) {
           if (!line) continue;
           const message = JSON.parse(line) as JsonObject;
-          if (message.method === "turn/steer" || message.method === "thread/read") {
+          if (message.method === "initialize") {
+            writeRequest(fixture.official.stdout, {
+              id: requiredMessageId(message),
+              result: { userAgent: "synthetic-codex" },
+            });
+          } else if (message.method === "turn/steer" || message.method === "thread/read") {
             writeRequest(fixture.official.stdout, {
               id: requiredMessageId(message),
               result: { nativeMethod: message.method },
@@ -78,6 +140,17 @@ describe("Usage inspection request routing", () => {
       };
       try {
         await fixture.ready;
+        writeRequest(fixture.desktopInput, {
+          id: 9,
+          method: "initialize",
+          params: { clientInfo: { name: "synthetic-desktop", version: "1" } },
+        });
+        expect(await fixture.collector.waitFor((message) => requestId(message, 9))).toEqual({
+          id: 9,
+          result: { userAgent: "synthetic-codex" },
+        });
+        await setImmediate();
+        expect(refreshAccount).not.toHaveBeenCalled();
         writeRequest(fixture.desktopInput, { id: 10, method: usageMethod, params: { threadId } });
         if (stage === "credits") {
           quotaRequest = await native.waitFor((message) =>
@@ -116,9 +189,14 @@ describe("Usage inspection request routing", () => {
         expect(released).toBe(false);
         expect(fixture.collector.messages.some((message) => requestId(message, 10))).toBe(false);
         release();
-        expect(
-          await fixture.collector.waitFor((message) => requestId(message, 10)),
-        ).not.toHaveProperty("error");
+        const usageReply = await fixture.collector.waitFor((message) => requestId(message, 10));
+        expect(usageReply).not.toHaveProperty("error");
+        if (stage === "credits") {
+          expect(usageReply).toMatchObject({
+            result: { accountCredits: { usedPercent: 12, periodType: "five_hour" } },
+          });
+        }
+        expect(refreshAccount).not.toHaveBeenCalled();
       } finally {
         release();
         await stopFixture(fixture);

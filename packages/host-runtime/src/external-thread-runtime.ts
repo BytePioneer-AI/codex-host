@@ -41,7 +41,7 @@ import {
   ExternalSessionReleaseError,
   ExternalThreadLifecycle,
 } from "./external-thread-lifecycle.js";
-import { UsageMeter } from "./usage-metering.js";
+import { UsageMeter } from "@codexhost/session-runtime/usage-metering";
 
 export interface TurnProjectionGate {
   promise: Promise<void>;
@@ -80,6 +80,8 @@ export interface ExternalThread {
   responseGates: Map<HostTurnId, TurnProjectionGate>;
   pendingSteerProjections: Set<Promise<void>>;
   ephemeralTurnIds: Set<HostTurnId>;
+  /** Latest explicit command, retained only for client lifecycle presentation. */
+  clientCommand?: { name: string; turn: JsonObject };
   persistenceError: Error | null;
   ignoredInteractionIds: Set<HostInteractionId>;
   /** Native Session faulted or closed; idle Threads should restore instead of reuse. */
@@ -257,7 +259,10 @@ export class ExternalThreadRuntime {
         !thread.sessionUnavailable &&
         !this.#lifecycle.busy(thread.id) &&
         (input.idleRelease?.canRelease(thread) ?? false),
-      ...(input.idleRelease?.onClosed ? { onClosed: input.idleRelease.onClosed } : {}),
+      onClosed: async (thread) => {
+        await this.persistUsageMeasurements(thread);
+        await input.idleRelease?.onClosed?.(thread);
+      },
       diagnose: input.diagnose,
     });
   }
@@ -304,6 +309,16 @@ export class ExternalThreadRuntime {
     return this.#lifecycle.drain();
   }
 
+  async adoptImported(record: StoredThreadRecordV1, session: HarnessSession): Promise<void> {
+    await this.#withLifecycle(record.hostThreadId, async () => {
+      if (this.#threads.has(record.hostThreadId)) {
+        await session.close();
+        return;
+      }
+      await this.#restore(record, session);
+    });
+  }
+
   #withLifecycle<T>(threadId: string, operation: () => Promise<T>): Promise<T> {
     return this.#lifecycle.run(threadId, async () => {
       // Idle release may already own the Session. New idle releases are excluded by busy().
@@ -328,6 +343,7 @@ export class ExternalThreadRuntime {
     thread.sessionUnavailable = true;
     await this.#lifecycle.release(thread.id, thread.session, thread.outputTask);
     if (this.#threads.get(thread.id) !== thread) return;
+    await this.persistUsageMeasurements(thread);
     await this.#retireSubagents(thread);
     if (this.#threads.get(thread.id) === thread) this.#threads.delete(thread.id);
   }
@@ -429,6 +445,7 @@ export class ExternalThreadRuntime {
       sessionUnavailable: false,
       steeredTurnIds,
     };
+    this.#restoreUsageMeasurements(externalThread);
     this.idleRelease.touch(externalThread);
     externalThread.outputTask = this.#consumeOutputs(externalThread);
     this.#threads.set(externalThread.id, externalThread);
@@ -756,6 +773,7 @@ export class ExternalThreadRuntime {
       thread.stateObserver = new SessionStateObserver(observerState);
       thread.latestUsage = session.initialUsage;
       thread.usageMeter = new UsageMeter();
+      this.#restoreUsageMeasurements(thread);
       thread.usageTurnId = null;
       thread.thread = externalThreadValue({
         record: aligned.record,
@@ -775,12 +793,82 @@ export class ExternalThreadRuntime {
     }
   }
 
+  /** Persist first accepted input before replying, never on the output/token path. */
+  async capturePreview(thread: ExternalThread, turn: JsonObject): Promise<void> {
+    if (
+      thread.record.preview !== undefined ||
+      thread.record.turnMappings.length !== 0 ||
+      thread.turns.length !== 0
+    )
+      return;
+    try {
+      thread.record = await this.#repository.updatePreview(thread.record, [turn]);
+      thread.thread.preview = thread.record.preview ?? "";
+    } catch (error) {
+      // A display hint must not turn accepted native work into a rejected send.
+      // A later native history read can backfill it.
+      this.#diagnose(error);
+    }
+  }
+
+  #restoreUsageMeasurements(thread: ExternalThread): void {
+    const saved = thread.record.usageMeasurements;
+    if (
+      !saved ||
+      JSON.stringify(saved.nativeSessionRef) !== JSON.stringify(thread.record.nativeSessionRef)
+    )
+      return;
+    const retained = new Set<string>(
+      thread.record.turnMappings.map((mapping) => mapping.hostTurnId),
+    );
+    for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
+      const value = saved.values[field];
+      if (value && retained.has(value.turnId))
+        thread.usageMeter.restoreMeasurements({ [field]: value.value }, value.turnId, value.at);
+    }
+  }
+
+  /** Save display telemetry at lifecycle boundaries; optional failures cannot fail native work. */
+  async persistUsageMeasurements(thread: ExternalThread): Promise<void> {
+    if (this.#threads.get(thread.id) !== thread || thread.record.state !== "ready") return;
+    const snapshot = thread.usageMeter.measurementSnapshot(
+      thread.latestUsage,
+      thread.usageTurnId ?? thread.record.turnMappings.at(-1)?.hostTurnId,
+    );
+    const previous = thread.record.usageMeasurements;
+    if (
+      previous &&
+      JSON.stringify(previous.nativeSessionRef) === JSON.stringify(thread.record.nativeSessionRef)
+    ) {
+      for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
+        const before = previous.values[field],
+          next = snapshot[field];
+        if (before && next && before.value === next.value && before.turnId === next.turnId)
+          snapshot[field] = before;
+      }
+    }
+    if (!Object.keys(snapshot).length && !previous) return;
+    try {
+      const saved = await this.#repository.saveUsageMeasurements(thread.record, snapshot);
+      if (
+        this.#threads.get(thread.id) !== thread ||
+        JSON.stringify(saved.nativeSessionRef) !== JSON.stringify(thread.record.nativeSessionRef)
+      )
+        return;
+      if (saved.usageMeasurements)
+        thread.record = { ...thread.record, usageMeasurements: saved.usageMeasurements };
+      else delete thread.record.usageMeasurements;
+    } catch (error) {
+      this.#diagnose(error);
+    }
+  }
+
   async persistTerminalIdentity(
     thread: ExternalThread,
     event: TurnCompletedEvent,
   ): Promise<Error | null> {
-    if (thread.persistenceError) return thread.persistenceError;
     if (!event.nativeTurnRef) {
+      await this.persistUsageMeasurements(thread);
       return event.outcome.status === "succeeded"
         ? new Error("Successful external Turn has no Native Turn identity")
         : null;
@@ -792,17 +880,25 @@ export class ExternalThreadRuntime {
         event.nativeTurnRef,
         event.outcome.checkpoint,
       );
+      thread.persistenceError = null;
+      await this.persistUsageMeasurements(thread);
       return null;
     } catch (error) {
-      const failure = error instanceof Error ? error : new Error(errorMessage(error));
+      const failure = new Error(
+        `External Turn identity could not be persisted: ${errorMessage(error)}`,
+        { cause: error },
+      );
       thread.persistenceError = failure;
       thread.stateObserver.fault(failure);
-      this.#diagnose("External Turn identity could not be persisted");
+      this.#diagnose(failure);
       return failure;
     }
   }
 
-  async #restore(record: StoredThreadRecordV1): Promise<ExternalThread> {
+  async #restore(
+    record: StoredThreadRecordV1,
+    preparedSession?: HarnessSession,
+  ): Promise<ExternalThread> {
     const harnessId = record.harnessId as ExternalHarnessId;
     const adapter = this.#adapters.get(harnessId);
     if (!adapter || !record.nativeSessionRef) {
@@ -860,20 +956,22 @@ export class ExternalThreadRuntime {
       });
     }
     const restoredSelection = decodeExternalTransportSelection(harnessId, record.transportModelId);
-    const opened = await adapter.open({
-      kind: "resume",
-      cwd: record.cwd,
-      environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: record.hostThreadId },
-      nativeRef: record.nativeSessionRef as NativeSessionRef,
-      knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
-      ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
-      ...(restoredSelection?.thinkingOptionId
-        ? { thinkingOptionId: restoredSelection.thinkingOptionId }
-        : {}),
-      ...(restoredSelection?.permissionModeId
-        ? { permissionModeId: restoredSelection.permissionModeId }
-        : {}),
-    });
+    const opened = preparedSession
+      ? { ok: true as const, value: preparedSession }
+      : await adapter.open({
+          kind: "resume",
+          cwd: record.cwd,
+          environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: record.hostThreadId },
+          nativeRef: record.nativeSessionRef as NativeSessionRef,
+          knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
+          ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
+          ...(restoredSelection?.thinkingOptionId
+            ? { thinkingOptionId: restoredSelection.thinkingOptionId }
+            : {}),
+          ...(restoredSelection?.permissionModeId
+            ? { permissionModeId: restoredSelection.permissionModeId }
+            : {}),
+        });
     if (!opened.ok) {
       throw new ExternalThreadOpenError(mapExternalThreadHarnessError(opened.error, "resume"));
     }

@@ -79,7 +79,11 @@ const { outputFiles } = await build({
       const content = document.createElement("div");
       content.className = "settings-page__content";
       shadow.append(style, content);
-      createRemoteConnectionsPage(rendererSettingsMessages("zh-CN"), () => control).mount({content,signal:new AbortController().signal});
+      const openWeb = new URLSearchParams(location.search).get("web") === "1" ? async () => {
+        window.webOpenCalls = (window.webOpenCalls ?? 0) + 1;
+        if (window.webOpenCalls === 1) throw new Error("Background Web is unavailable in a development build; run npm start web");
+      } : undefined;
+      createRemoteConnectionsPage(rendererSettingsMessages("zh-CN"), () => control, () => openWeb).mount({content,signal:new AbortController().signal});
     `,
     resolveDir: path.resolve(import.meta.dirname, "../.."),
     loader: "ts",
@@ -104,6 +108,47 @@ const css = (
 ).join("\n");
 const pageHtml = `<!doctype html><html lang="zh-CN" style="color-scheme:light dark"><head><style id="settings-css" media="not all">${css}</style><style>body{margin:0}</style></head><body><main></main></body></html>`;
 const shots = path.resolve(import.meta.dirname, "../../test-results/remote-connections");
+test("Desktop shows Web before SSH while Console keeps the SSH-only page", async ({ page }) => {
+  await page.route("http://localhost/remote-settings*", (route) =>
+    route.fulfill({ contentType: "text/html", body: pageHtml }),
+  );
+  await page.goto("http://localhost/remote-settings?web=1");
+  await page.addScriptTag({ content: outputFiles[0]?.text ?? "" });
+  await expect(page.getByRole("heading", { level: 2 })).toHaveText([
+    "手机和其他设备（Web）",
+    "其他电脑（SSH）",
+  ]);
+  await expect(
+    page.getByText("这台电脑通过 SSH 连接另一台 Mac 或 Linux 电脑。连接配置与 Codex 共用。", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "公司", exact: true })).toBeVisible();
+  const open = page.getByRole("button", { name: "打开连接设备页", exact: true });
+  await open.click();
+  const error = page.getByRole("alert").filter({ hasText: "Background Web is unavailable" });
+  await expect(error).toBeVisible();
+  const buttonBox = await open.boundingBox();
+  const errorBox = await error.boundingBox();
+  if (!buttonBox || !errorBox) throw new Error("Web button and error must have visible bounds");
+  expect(errorBox.y).toBeGreaterThanOrEqual(buttonBox.y + buttonBox.height);
+  await open.click();
+  await expect(error).toBeHidden();
+  await expect(open).toBeEnabled();
+  expect(
+    await page.evaluate(() => (window as Window & { webOpenCalls?: number }).webOpenCalls),
+  ).toBe(2);
+
+  await page.goto("http://localhost/remote-settings");
+  await page.addScriptTag({ content: outputFiles[0]?.text ?? "" });
+  await expect(page.getByRole("heading", { name: "公司", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2 })).toHaveCount(0);
+  await expect(open).toHaveCount(0);
+  await expect(
+    page.getByText("通过 SSH 连接你的 Mac 或 Linux 电脑。连接配置与 Codex 共用。", { exact: true }),
+  ).toBeVisible();
+});
+
 test("SSH settings save, connection toggle, version display, and immediate update", async ({
   page,
 }) => {

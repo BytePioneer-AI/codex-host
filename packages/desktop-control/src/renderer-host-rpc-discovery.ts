@@ -88,7 +88,10 @@ export function findRendererHostRpcFamily(
     if (!record(definition) || definition.kind !== "signal-family") continue;
     if (!record(members) || typeof members.get !== "function") continue;
     for (const [hostId, member] of members) {
-      if (typeof hostId !== "string" || !record(member)) continue;
+      // Reading a signal mounts it, so members keyed by Thread or hash stay unread.
+      // Every connection family has `local`, so unknown Host kinds still find it.
+      if (typeof hostId !== "string" || !/^(?:local$|durable$|remote[-:])/u.test(hostId)) continue;
+      if (!record(member)) continue;
       const signal = member.value;
       if (!record(signal) || typeof signal.get !== "function") continue;
       let value: unknown;
@@ -119,6 +122,7 @@ export function resolveRendererHostRpc(
   discovery: RendererHostRpcDiscovery,
   hostId: string,
 ): RendererHostRpc | null {
+  if (hostId === "durable") return null;
   const record = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null;
   const signal = discovery.family.get(hostId)?.value;
@@ -142,7 +146,30 @@ export function resolveRendererHostRpc(
 }
 
 export function rendererHostRpcHostIds(discovery: RendererHostRpcDiscovery): string[] {
-  return [...discovery.family.keys()].filter(
-    (hostId): hostId is string => typeof hostId === "string",
-  );
+  const record = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null;
+  const hostIds: string[] = [];
+  for (const [hostId, member] of discovery.family) {
+    // Desktop touches every cataloged connection and its reserved `durable` cloud
+    // Host during bootstrap; only ready non-durable RPC connections are active Hosts.
+    if (typeof hostId !== "string" || hostId === "durable" || !record(member)) continue;
+    const signal = member.value;
+    if (!record(signal) || typeof signal.get !== "function") continue;
+    let value: unknown;
+    try {
+      value = signal.get();
+    } catch {
+      continue;
+    }
+    if (
+      record(value) &&
+      value.status === "ready" &&
+      record(value.client) &&
+      value.client.hostId === hostId &&
+      (typeof value.client.rpc === "function" || record(value.client.rpc))
+    ) {
+      hostIds.push(hostId);
+    }
+  }
+  return hostIds;
 }

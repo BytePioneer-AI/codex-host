@@ -17,7 +17,7 @@
 
 - **客户端是独立身份，不是 Thread。** 外部调用方没有 Turn 可以接收通知，借用某个 Thread 当父会混淆血缘，通知也到不了调用方本人。
 - **外部监听与 Host 内部控制端口分开。** 内部端口和令牌继续只给 Host 拉起的进程，现有安全边界不变；外部监听需要固定地址，才能写进 MCP 客户端配置，后续远程提案也只放开这一个监听。
-- **来源与引用另存，不改委派关系的记录格式。** 委派记录是严格的 v1 格式，回滚到旧版本时 v2 记录会被视为无效。另存后，旧版本忽略新记录，回滚安全。
+- **客户端以 `client:<name>` 作为父来源，写进普通的 Delegation 关系；引用另存。** 幂等、`--client` 列举与回滚兼容都沿用既有路径，不新增记录格式：Delegation 记录是严格的 v1 格式，标识本身是不透明字符串，旧版本读到的只是一个不存在的父 Thread。同一个 `client:<name>` 也是客户端 watch 的被通知方。引用需要新字段，因此按 Thread 另存，旧版本忽略。
 - **SSE 为主，long-poll 保底，二者共用同一份持久日志。** 主动推送更符合 agent 协作的节奏；断线、休眠或 Runtime 重启后，按游标补拉即可，不丢事件。
 - **事件只报告执行状态，与 watch 通知同一原则。** 不带会话内容，客户端需要结果时再 `thread read`。
 - 不在本提案内：tailnet 与公网访问、权限范围、webhook 推送（见 `add-remote-client-access`），以及客户端分组显示。
@@ -34,4 +34,4 @@
 
 ## Impact
 
-`packages/host-runtime`（外部监听、客户端登记、事件日志、MCP、CLI 子命令）、`packages/mapping-store`（来源与引用记录）、`shared-contracts`（事件与 MCP 工具结构），以及委派帮助文本与随附 Skill。依赖 `persist-thread-watches`：客户端 watch 同样需要持久化。新增 MCP 服务端依赖，只在 Host Runtime 内使用。
+`packages/host-runtime`（外部监听、客户端登记、事件日志、MCP、CLI 子命令）、Thread 引用的私有存储、`shared-contracts`（事件与 MCP 工具结构），以及委派帮助文本与随附 Skill。依赖 `persist-thread-watches`：客户端 watch 同样需要持久化。MCP 服务端按 Streamable HTTP 的最小子集自行实现，不给 Host 核心新增依赖。

@@ -17,7 +17,7 @@
 
 #### Scenario: 非委派产生的 Thread
 - **WHEN** 读取一个不由委派产生的 Thread
-- **THEN** 其引用 SHALL 为空列表
+- **THEN** 结果 SHALL 不含引用字段，既有输出保持不变
 
 ## MODIFIED Requirements
 
@@ -75,7 +75,7 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 - **AND** 失败输出 SHALL 携带可辨识的错误代码
 
 ### Requirement: 委派关系独立持久化且重复请求幂等
-Host SHALL 独立于 Thread 记录持久化委派来源：父 Thread 发起时记录 Delegation 关系（Delegation 标识、父子 Thread、父与目标 Harness、状态、可选 Request ID）；客户端发起时记录客户端来源。引用随来源保存。调用方 SHALL 可以省略 Request ID；省略时 Host SHALL 在一个有界时间窗内依据来源（父 Thread 或客户端）与任务文本判定重复。Host MUST NOT 依据委派层级拒绝委派。
+Host SHALL 独立于 Thread 记录持久化委派来源：记录 Delegation 关系：Delegation 标识、父来源、子 Thread、父与目标 Harness、状态、可选 Request ID。父来源是父 Thread，或客户端发起时的 `client:<name>`。引用按 Thread 另存。调用方 SHALL 可以省略 Request ID；省略时 Host SHALL 在一个有界时间窗内依据来源（父 Thread 或客户端）与任务文本判定重复。Host MUST NOT 依据委派层级拒绝委派。
 
 #### Scenario: 调用方提供重复的 Request ID
 - **WHEN** 调用方以一个已经成功使用过的 Request ID 再次发起委派
@@ -105,7 +105,7 @@ Host SHALL 独立于 Thread 记录持久化委派来源：父 Thread 发起时�
 #### Scenario: 回滚到不认识客户端来源的版本
 - **WHEN** 用户把 codexhost 回滚到本变更之前的版本
 - **THEN** 既有 Delegation 关系 SHALL 仍可被旧版本读取
-- **AND** 客户端来源与引用记录 MUST NOT 导致旧版本丢弃或改写 Delegation 关系
+- **AND** 以 `client:<name>` 为父来源的关系与引用记录 MUST NOT 导致旧版本丢弃或改写 Delegation 关系
 
 ### Requirement: Thread 观察与列举命令接受用户提供的标识并覆盖两类 Thread
 Thread 观察命令 SHALL 接受裸 Thread 标识与 Codex 深度链接，并可作用于外部 Harness Thread 与原生 Codex Thread，不限于调用方自己委派的 Thread。读取原生 Codex Thread SHALL 经官方 App Server 带外请求，MUST NOT 改变其状态。`thread list [--cwd] [--parent <thread>] [--client <name>] [--ref <uri>] [--limit] [--cursor] [--sort]` SHALL 返回结构化会话页；`--parent` 只列该父 Thread 的子 Thread，`--client` 只列该客户端发起的 Thread，`--ref` 只列携带该引用的 Thread。
@@ -234,6 +234,13 @@ Thread 观察命令 SHALL 接受裸 Thread 标识与 Codex 深度链接，并可
 - **THEN** 这期间的读取失败 MUST NOT 计入 60 秒 `unreadable` 宽限，也 MUST NOT 报告 `notFound` 或 `timedOut`
 - **AND** 宽限 SHALL 从 Runtime 重新具备读取该 Thread 的会话后开始计算；会话 5 分钟内仍未注册时，从 5 分钟期满起计算
 - **AND** 恢复的待投递通知 SHALL 等被通知 Thread 可读后再投递
+
+#### Scenario: 重启中断了正在运行的 Turn
+- **WHEN** 被观察 Thread 在 Host Runtime 重启前正在运行，恢复后第一次成功读取时已是终态
+- **THEN** 通知结果 SHALL 为 `interrupted`，并说明 Host Runtime 重启时它正在运行、之后读到的状态
+- **AND** MUST NOT 报告为 `completed`，即使恢复出的 Turn 换了标识
+- **AND** 恢复宽限结束后 Thread 仍无法打开时，SHALL 同样报告 `interrupted` 并说明无法重新打开，而不是 `notFound`
+- **AND** 恢复后第一次读取时仍在运行的 Thread，之后停下时 SHALL 按实际终态报告
 
 #### Scenario: 多个 Runtime 共用数据目录
 - **WHEN** 同一 OS 用户同时运行多个 Host Runtime 进程，例如 Desktop 与远程监听

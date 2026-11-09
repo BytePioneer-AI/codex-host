@@ -137,6 +137,23 @@ describe("Codex thread/fork protocol boundary", () => {
     ).toEqual({ code: -32077, message: "External Harness is unavailable" });
   });
 
+  it("explains a busy native resume without exposing diagnostics or changing active-Turn errors", () => {
+    const error = {
+      code: "sessionBusy" as const,
+      message: "private native Session path and diagnostics",
+      retryable: true,
+    };
+    expect(mapExternalThreadHarnessError(error, "resume")).toEqual({
+      code: -32072,
+      message:
+        "External Native Session is busy. Close it in the other client or wait for its active operation to finish, then retry.",
+    });
+    expect(mapExternalThreadHarnessError(error, "turn")).toEqual({
+      code: -32072,
+      message: "External Thread has an active operation",
+    });
+  });
+
   it("builds the paginated ThreadRevertResponse without embedding history", () => {
     expect(threadRevertResult({ id: "thread-1", turns: [{ id: "turn-1" }] })).toEqual({
       thread: { id: "thread-1", turns: [] },

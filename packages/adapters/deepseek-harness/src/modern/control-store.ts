@@ -98,15 +98,19 @@ interface ParsedControlBaseline {
   readonly projections: Readonly<Record<string, ParsedProjectionBaseline>>;
 }
 
+interface ParsedProjectionChange {
+  readonly key: string;
+  readonly value: ModernControlJsonValue;
+  readonly bytes: number;
+}
+
 type ParsedControlFrame =
   | { readonly type: "baseline"; readonly value: ParsedControlBaseline }
   | {
       readonly type: "projection";
       readonly sessionId: string;
-      readonly key: string;
-      readonly value: ModernControlJsonValue;
       readonly seq: number;
-      readonly bytes: number;
+      readonly changes: readonly ParsedProjectionChange[];
     };
 
 const DEFAULT_MAX_SESSIONS = 1_024;
@@ -465,13 +469,49 @@ function parseControlFrame(
     return {
       type: "projection",
       sessionId: value.sessionId,
-      key: value.key,
-      value: projection.value,
       seq: value.seq,
-      bytes: projection.bytes,
+      changes: [{ key: value.key, value: projection.value, bytes: projection.bytes }],
+    };
+  }
+  // DSH 0.2.2 sends every key one committed event changed in a single frame.
+  if (
+    value.type === "projection" &&
+    hasExactKeys(value, ["type", "sessionId", "seq", "changes"]) &&
+    validIdentifier(value.sessionId) &&
+    validSeq(value.seq)
+  ) {
+    return {
+      type: "projection",
+      sessionId: value.sessionId,
+      seq: value.seq,
+      changes: parseProjectionChanges(value.changes, maxKeys),
     };
   }
   throw storeError("protocolError", "DeepSeek Harness control stream emitted an invalid frame");
+}
+
+function parseProjectionChanges(value: unknown, maxKeys: number): ParsedProjectionChange[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw storeError("protocolError", "DeepSeek Harness control stream emitted an invalid frame");
+  }
+  if (value.length > maxKeys) {
+    throw storeError("resourceLimit", "DeepSeek Harness projection key limit was exceeded");
+  }
+  const keys = new Set<string>();
+  const budget = { nodes: 0 };
+  return value.map((change: unknown) => {
+    if (
+      !isRecord(change) ||
+      !hasExactKeys(change, ["key", "val"]) ||
+      !validProjectionKey(change.key) ||
+      keys.has(change.key)
+    ) {
+      throw storeError("protocolError", "DeepSeek Harness control stream emitted an invalid frame");
+    }
+    keys.add(change.key);
+    const projection = measureProjection(change.key, change.val, budget);
+    return { key: change.key, value: projection.value, bytes: projection.bytes };
+  });
 }
 
 function parseSeed(value: ModernProjectionSeed, maxKeys: number): ParsedProjectionBaseline {
@@ -779,8 +819,10 @@ export class ModernControlStore {
               this.#readyResolve?.();
             }
           } else {
-            this.#apply(frame.sessionId, frame.key, frame.value, frame.seq, frame.bytes);
-            if (this.#fault) return;
+            for (const change of frame.changes) {
+              this.#apply(frame.sessionId, change.key, change.value, frame.seq, change.bytes);
+              if (this.#fault) return;
+            }
           }
         }
       } catch (error) {

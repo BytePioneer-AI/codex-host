@@ -16,6 +16,7 @@ const { outputFiles } = await build({
 
       let hostId = globalThis.startRemote ? "remote" : "local";
       let routeReady = !globalThis.delayedHost;
+      let clientReady = !globalThis.delayedClient;
       const calls = [];
       const pending = new Map();
       const paused = new Set();
@@ -130,7 +131,7 @@ const { outputFiles } = await build({
         method, (...args) => clients[hostId][method](...args),
       ]));
       facade.currentHostId = () => routeReady ? hostId : null;
-      facade.clientForHost = (host) => clients[host];
+      facade.clientForHost = (host) => routeReady && clientReady ? clients[host] : null;
       const installPolicy = () => {
         const owner = hostId;
         const policy = {
@@ -138,7 +139,12 @@ const { outputFiles } = await build({
           select: () => true,
           clear: () => request(owner, "clear", () => undefined),
         };
-        window.__codexhostHostRoutingV1 = { forComposer: () => routeReady ? { hostId: owner, policy } : null };
+        window.__codexhostHostRoutingV1 = {
+          forComposer: () => routeReady ? { hostId: owner, policy } : null,
+          forHost: (id) => routeReady && clients[id]
+            ? { hostId: id, manager: {}, policy: { ...policy, hostId: id } }
+            : null,
+        };
       };
       installPolicy();
       const composer = document.createElement("form");
@@ -178,7 +184,7 @@ const { outputFiles } = await build({
         event.preventDefault();
         calls.push({ host: hostId, method: "submit" });
       });
-      document.body.append(composer);
+      if (!globalThis.delayedComposer) document.body.append(composer);
       const binding = installRendererBindingProbe({ enabledAgents: ["codex", "pi", "grok"], defaultAgent: "codex" });
       const adapterStatus = { state: routeReady ? "ready" : "installing", reason: "ready", modelUpdates: 0, hook: "request-bridge" };
       binding.setAdapter(
@@ -187,8 +193,11 @@ const { outputFiles } = await build({
       );
       globalThis.accountsFixture = {
         calls,
+        mount: () => document.body.append(composer),
+        scan: () => composer.setAttribute("data-codex-composer-root", "true"),
         ready: (event) => {
           routeReady = true;
+          clientReady = true;
           adapterStatus.state = "ready";
           window.dispatchEvent(new Event(event));
         },
@@ -261,7 +270,7 @@ async function setup(page: Page, options: Record<string, boolean> = {}): Promise
   if ((await page.evaluate(() => Reflect.get(globalThis, "accountsFixture"))) === undefined) {
     throw new Error(pageErrors.join("\n") || "Account isolation fixture did not initialize");
   }
-  if (options.delayedHost) return;
+  if (options.delayedHost || options.delayedClient || options.delayedComposer) return;
   if (!options.ownershipError) {
     await expect(page.locator(trigger)).toHaveAttribute("title", /local-default@example.com/);
   }
@@ -287,6 +296,92 @@ async function selectOtherAccount(page: Page): Promise<void> {
 async function calls(page: Page): Promise<Array<{ host: string; method: string }>> {
   return page.evaluate(() => Reflect.get(globalThis, "accountsFixture").calls);
 }
+
+for (const host of ["local", "remote"]) {
+  test(`a late ${host} Codex draft loads identity and quota without opening the Agent menu`, async ({
+    page,
+  }) => {
+    await setup(page, {
+      delayedComposer: true,
+      withCredits: true,
+      startRemote: host === "remote",
+    });
+    expect((await calls(page)).filter(({ method }) => method === "accounts")).toHaveLength(0);
+    await action(page, "mount");
+
+    const credits = page.locator("[data-codexhost-credits-control]");
+    await expect(credits).toBeVisible();
+    await expect(credits).toHaveText(host === "local" ? "83%" : "17%");
+    await expect(page.locator(trigger)).toHaveAttribute("aria-expanded", "false");
+    expect((await calls(page)).filter(({ method }) => method === "accounts")).toEqual([
+      { host, method: "accounts" },
+    ]);
+    expect((await calls(page)).filter(({ method }) => method.startsWith("usage:"))).toEqual([
+      { host, method: "usage:default" },
+    ]);
+  });
+}
+
+for (const delay of ["delayedHost", "delayedClient"]) {
+  test(`a Codex draft recovers ${delay} through reconciliation without a readiness event`, async ({
+    page,
+  }) => {
+    await setup(page, { [delay]: true, withCredits: true });
+    await action(page, "ready", "unobserved-ready");
+    await action(page, "scan");
+    await expect(page.locator("[data-codexhost-credits-control]")).toBeVisible();
+    await expect(page.locator("[data-codexhost-credits-control]")).toHaveText("83%");
+    expect((await calls(page)).filter(({ method }) => method === "accounts")).toHaveLength(1);
+  });
+}
+
+test("a late draft coalesces identity and quota loading with a concurrent focus refresh", async ({
+  page,
+}) => {
+  await setup(page, { delayedComposer: true, withCredits: true });
+  await action(page, "pause", "local:accounts");
+  await action(page, "mount");
+  await waitForPending(page, "local:accounts");
+  await action(page, "focus");
+  await action(page, "release", "local:accounts");
+  await expect(page.locator("[data-codexhost-credits-control]")).toHaveText("83%");
+  expect((await calls(page)).filter(({ method }) => method === "accounts")).toHaveLength(1);
+  expect((await calls(page)).filter(({ method }) => method.startsWith("usage:"))).toHaveLength(1);
+});
+
+test("a late draft rejects its initial Account response after switching Hosts", async ({
+  page,
+}) => {
+  await setup(page, { delayedComposer: true, withCredits: true });
+  await action(page, "pause", "local:accounts");
+  await action(page, "mount");
+  await waitForPending(page, "local:accounts");
+  await action(page, "switchHost", "remote");
+  const credits = page.locator("[data-codexhost-credits-control]");
+  await expect(credits).toHaveText("17%");
+  await action(page, "release", "local:accounts");
+  await expect(credits).toHaveText("17%");
+  expect(
+    (await calls(page)).filter(
+      ({ host, method }) => host === "local" && method.startsWith("usage:"),
+    ),
+  ).toEqual([]);
+});
+
+test("a late remote draft without Account support never reads local quota", async ({ page }) => {
+  await setup(page, {
+    delayedComposer: true,
+    withCredits: true,
+    startRemote: true,
+    remoteUnsupported: true,
+  });
+  await action(page, "mount");
+  await expect
+    .poll(async () => (await calls(page)).filter(({ method }) => method === "accounts"))
+    .toEqual([{ host: "remote", method: "accounts" }]);
+  await expect(page.locator("[data-codexhost-credits-control]")).toBeHidden();
+  expect((await calls(page)).filter(({ method }) => method.startsWith("usage:"))).toEqual([]);
+});
 
 test("Usage stays hidden without token data when the current Account or Host changes", async ({
   page,

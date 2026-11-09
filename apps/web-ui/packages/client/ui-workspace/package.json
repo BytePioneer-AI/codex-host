@@ -1,0 +1,50 @@
+{
+  "name": "@deepseek-ai/dsh-client-ui-workspace",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "test:sidebar": "node --import tsx --test test/sidebar-window.test.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./client": {
+      "types": "./src/client/index.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-client-store": "*",
+    "react": "^18.2.0",
+    "@deepseek-ai/dsh-client-ui-primitives": "*",
+    "@deepseek-ai/dsh-api-workspace-controller": "*",
+    "@deepseek-ai/dsh-util-values": "*",
+    "clsx": "^2.0.0",
+    "@deepseek-ai/dsh-util-workspace-path": "*",
+    "@deepseek-ai/cordis": "*"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-api-workspace-controller",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-shortcuts",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ],
+      "platform": "web"
+    }
+  }
+}

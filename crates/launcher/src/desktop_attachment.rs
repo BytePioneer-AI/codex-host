@@ -9,7 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use codexhost_platform::{
-    DesktopInstallation, descendant_executable_exists, desktop_root_process_ids_for_installation,
+    DesktopInstallation, ProcessSnapshot, descendant_executable_pair_exists,
+    desktop_root_process_ids_for_installation,
 };
 #[cfg(target_os = "windows")]
 use codexhost_platform::{process_executable_path, process_exists, terminate_process_by_id};
@@ -107,15 +108,13 @@ pub(super) fn endpoint_ready(port: u16, timeout: Duration) -> bool {
 }
 
 pub(super) fn wait_for_host_chain(
-    desktop_pid: u32,
+    desktop: &ProcessSnapshot,
     options: &ResolvedLaunchOptions,
     timeout: Duration,
 ) -> Result<bool, Box<dyn Error>> {
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if descendant_executable_exists(desktop_pid, &options.shim)?
-            && descendant_executable_exists(desktop_pid, &options.node)?
-        {
+        if descendant_executable_pair_exists(desktop, &options.shim, &options.node)? {
             return Ok(true);
         }
         thread::sleep(Duration::from_millis(100));
@@ -243,6 +242,45 @@ fn recorded_launcher_is_current<E>(inspected: Result<PathBuf, E>, expected: &Pat
         .is_some_and(|path| path == expected)
 }
 
+pub(super) fn managed_processes(
+    data: &Path,
+) -> Result<
+    Option<(
+        codexhost_platform::ProcessSnapshot,
+        codexhost_platform::ProcessSnapshot,
+    )>,
+    Box<dyn Error>,
+> {
+    let Some(descriptor) = read_descriptor(&default_descriptor_path()?)? else {
+        return Ok(None);
+    };
+    if !endpoint_ready(descriptor.control_port, Duration::from_millis(300)) {
+        return Ok(None);
+    }
+    let document: serde_json::Value = serde_json::from_slice(&std::fs::read(
+        data.join("diagnostics/desktop-controller-v1.json"),
+    )?)?;
+    let pid = document["pid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .ok_or("Invalid Desktop Controller pid")?;
+    let launcher = codexhost_platform::process_snapshot(descriptor.launcher_pid)?;
+    let controller = codexhost_platform::process_snapshot(pid)?;
+    if controller.parent_id != launcher.id {
+        return Err("Desktop Controller does not belong to the recorded Launcher".into());
+    }
+    Ok(Some((launcher, controller)))
+}
+
+pub(super) fn stop_managed(data: &Path) -> Result<bool, Box<dyn Error>> {
+    let Some((launcher, controller)) = managed_processes(data)? else {
+        return Ok(false);
+    };
+    codexhost_platform::terminate_process_instance(&controller, false)?;
+    crate::host_service::wait_for_shutdown(None, Some(&launcher), Duration::from_secs(10))?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +289,93 @@ mod tests {
     fn descriptor(port: u16) -> RuntimeDescriptor {
         RuntimeDescriptor::new(10, port, "0123456789abcdef0123456789abcdef".into())
             .expect("runtime descriptor")
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn host_chain_does_not_accept_unrelated_sibling_processes() {
+        use codexhost_platform::{process_snapshot, spawn_supervised};
+        use std::process::{Command, Stdio};
+
+        let sleep = Path::new("/bin/sleep").canonicalize().unwrap();
+        let mut command = Command::new("/bin/bash");
+        command
+            .args(["-c", "\"$1\" 30 & \"$1\" 30 & wait", "fixture"])
+            .arg(&sleep)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut root = spawn_supervised(&mut command).unwrap();
+        let snapshot = process_snapshot(root.id()).unwrap();
+        let started = Instant::now();
+        while codexhost_platform::process_snapshots()
+            .unwrap()
+            .iter()
+            .filter(|process| process.parent_id == snapshot.id && process.executable == sleep)
+            .count()
+            < 2
+        {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "sibling fixture did not start"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let options = ResolvedLaunchOptions {
+            shim: sleep.clone(),
+            node: sleep.clone(),
+            host_runtime: sleep.clone(),
+            desktop_controller: sleep.clone(),
+            renderer_extension: sleep,
+            pi: None,
+        };
+        // A pair of sibling executables is not a parent -> child runtime chain.
+        let ready = wait_for_host_chain(&snapshot, &options, Duration::from_millis(200)).unwrap();
+        root.force_terminate().unwrap();
+        root.wait().unwrap();
+        assert!(
+            !ready,
+            "unrelated descendants must not satisfy Host chain readiness"
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn host_chain_accepts_the_selected_child_of_a_descendant() {
+        use codexhost_platform::{process_snapshot, spawn_supervised};
+        use std::process::{Command, Stdio};
+
+        let shell = Path::new("/bin/bash").canonicalize().unwrap();
+        let sleep = Path::new("/bin/sleep").canonicalize().unwrap();
+        let mut command = Command::new(&shell);
+        command
+            .args([
+                "-c",
+                "\"$1\" -c '\"$1\" 30 & wait' fixture \"$2\" & wait",
+                "fixture",
+            ])
+            .arg(&shell)
+            .arg(&sleep)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut root = spawn_supervised(&mut command).unwrap();
+        let snapshot = process_snapshot(root.id()).unwrap();
+        let options = ResolvedLaunchOptions {
+            shim: shell,
+            node: sleep.clone(),
+            host_runtime: sleep.clone(),
+            desktop_controller: sleep.clone(),
+            renderer_extension: sleep,
+            pi: None,
+        };
+        let ready = wait_for_host_chain(&snapshot, &options, Duration::from_secs(2)).unwrap();
+        root.force_terminate().unwrap();
+        root.wait().unwrap();
+        assert!(
+            ready,
+            "the selected parent and child must satisfy Host chain readiness"
+        );
     }
 
     #[test]

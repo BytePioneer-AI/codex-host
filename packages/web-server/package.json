@@ -1,0 +1,46 @@
+{
+  "name": "@codexhost/web-server",
+  "version": "0.0.0",
+  "description": "Web gateway for the shared CodexHost service",
+  "private": true,
+  "type": "module",
+  "license": "LGPL-3.0-only",
+  "scripts": {
+    "start": "node --import tsx src/main.ts",
+    "preview": "node --import tsx scripts/preview.ts",
+    "pretest": "npm --prefix ../.. run build:web:ui",
+    "test": "node --import tsx --test test/*.test.ts",
+    "test:browser": "node --import tsx --test test/browser/*.test.ts",
+    "test:distribution": "node --import tsx --test test/distribution/*.test.ts",
+    "pack": "node --import tsx scripts/pack.ts"
+  },
+  "dependencies": {
+    "@codexhost/desktop-control": "0.0.0",
+    "@codexhost/dsh-web-backend": "0.0.0",
+    "@codexhost/harness-discovery": "0.0.0",
+    "@codexhost/remote-relay": "0.0.0",
+    "@codexhost/session-runtime": "0.0.0",
+    "@codexhost/shared-contracts": "0.0.0",
+    "@deepseek-ai/dsh-file-reference": "*",
+    "acme-client": "5.4.0",
+    "image-size": "2.0.2",
+    "diff": "8.0.2",
+    "import-meta-resolve": "^4.2.0",
+    "playwright-core": "1.62.0",
+    "qrcode-terminal": "0.12.0",
+    "semver": "7.8.5",
+    "web-push": "3.6.7",
+    "ws": "8.21.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@codexhost/harness-adapter": "0.0.0",
+    "@codexhost/harness-plugin-files": "0.0.0",
+    "@codexhost/host-runtime": "0.0.0",
+    "@types/semver": "^7.8.0",
+    "@types/ws": "8.18.1",
+    "esbuild": "0.28.1",
+    "playwright": "^1.49.0",
+    "tsx": "4.22.4"
+  }
+}

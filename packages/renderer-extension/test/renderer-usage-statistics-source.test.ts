@@ -72,7 +72,12 @@ describe("desktop usage statistics transport", () => {
 
   it("offers connected and configured machines under their connection names", async () => {
     const source = createRendererUsageStatisticsSource({
-      routing: () => routing({ local: vi.fn(), "remote-ssh-codex-managed:fixture": vi.fn() }),
+      routing: () =>
+        routing({
+          local: vi.fn(),
+          durable: vi.fn(),
+          "remote-ssh-codex-managed:fixture": vi.fn(),
+        }),
       listConnections: async () => [
         connection("remote-ssh-codex-managed:fixture", "Build machine"),
         connection("remote-ssh-codex-managed:second", "Laptop"),

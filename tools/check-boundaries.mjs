@@ -112,6 +112,19 @@ export function findSourceBoundaryViolations({
       violations.push(`${filePath}: Shared Contracts cannot import '${specifier}'`);
     }
 
+    if (
+      isInside(filePath, resolve(packagesDirectory, "remote-relay", "src")) &&
+      !specifier.startsWith(".") &&
+      !isAbsolute(specifier) &&
+      !builtins.has(specifier.replace(/^node:/u, "")) &&
+      specifier !== "ws" &&
+      specifier !== "acme-client"
+    ) {
+      violations.push(
+        `${filePath}: Remote Relay can only import Node built-ins, 'ws' and 'acme-client', not '${specifier}'`,
+      );
+    }
+
     if (specifier.startsWith(".") || isAbsolute(specifier)) {
       const importedPath = resolve(dirname(filePath), specifier);
       if (isInside(importedPath, packagesDirectory) && !isInside(importedPath, packageRoot)) {
@@ -137,6 +150,7 @@ async function sourceFiles(directory) {
   for (const entry of entries) {
     const entryPath = resolve(directory, entry.name);
     if (entry.isDirectory()) {
+      if (entry.name === "dist" || entry.name === "node_modules") continue;
       files.push(...(await sourceFiles(entryPath)));
     } else if (entry.isFile() && /\.tsx?$/u.test(entry.name)) {
       files.push(entryPath);

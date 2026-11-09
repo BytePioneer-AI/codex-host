@@ -8,7 +8,6 @@ import { encodeOfficialCodexModelRef } from "../src/official-codex-model-ref.js"
 import { updateNativeThreadSettings } from "../src/codex-runtime/native-thread-controls.js";
 import { createFixture, stopFixture } from "./app-server-host-fixture.js";
 import type { DelegationControlApi } from "../src/delegation-types.js";
-import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -190,8 +189,8 @@ it("uses native Model and priority parameters when the shared official catalog i
     parentThreadId: "parent",
     task: "test",
     cwd: "/synthetic",
-    model: fast,
-    thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    model: fast.id,
+    thinking: "high",
   });
   for (const method of ["thread/start", "turn/start"])
     expect(calls.find((call) => call.method === method)).toMatchObject({

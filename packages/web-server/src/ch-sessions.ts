@@ -1161,13 +1161,9 @@ export class ChSessions {
             ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
           });
         } else {
-          // DSH steering is best-effort: when the busy window closed before
-          // admission, retain the message as the next canonical follow-up.
           await this.host.request("turn/start", {
             threadId,
             input,
-            delivery: "queue",
-            presentationInput: presentation,
             ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
           });
         }

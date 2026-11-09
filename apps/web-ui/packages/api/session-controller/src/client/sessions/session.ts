@@ -919,7 +919,7 @@ export class Session implements SessionFace {
           };
       }
       this.observeSubmissionInsertions(target, inserted, start, event.seq);
-      for (const message of inserted) this.observeSubmissionMessage(message, false);
+      for (const message of inserted) this.observeSubmissionMessage(message, false, target);
       return;
     }
     if (event.type === "request/context" || event.type === "turn/end") {
@@ -962,13 +962,18 @@ export class Session implements SessionFace {
     }
   }
 
-  private observeSubmissionMessage(message: UserMessage, admitted: boolean): void {
+  private observeSubmissionMessage(
+    message: UserMessage,
+    admitted: boolean,
+    target?: InboxTarget,
+  ): void {
     const source = message.source;
     if (source.kind !== "user" || !("rpcId" in source)) return;
     const settlement = this.submissionSettlements.get(source.rpcId);
     if (settlement === undefined || settlement.retiring) return;
     if (!admitted) {
-      if (settlement.placement === "queued")
+      // Host admission can queue a send that looked idle in this browser.
+      if (settlement.placement === "queued" || target === "next-turn")
         this.scheduleObservedRetirement(source.rpcId, attachmentRefsIn(message.content));
       return;
     }
@@ -993,7 +998,7 @@ export class Session implements SessionFace {
     const seq = this.projections.seqOf("inbox");
     for (const target of ["next-turn", "next-step"] as const) {
       if (seq !== undefined) this.observeSubmissionInsertions(target, inbox[target], 0, seq);
-      for (const message of inbox[target]) this.observeSubmissionMessage(message, false);
+      for (const message of inbox[target]) this.observeSubmissionMessage(message, false, target);
     }
     for (const requestId of this.submissionSettlements.keys())
       this.retireAdmittedSubmission(requestId);

@@ -178,7 +178,7 @@ it("searches the displayed title at every fallback level", async (t) => {
   }
 });
 
-it("keeps a late steer as the next queued follow-up when CH is already idle", async (t) => {
+it("starts a late steer directly when CH is already idle, preserving its delivery policy", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-late-steer-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const host = new FakeChHost();
@@ -209,8 +209,6 @@ it("keeps a late steer as the next queued follow-up when CH is already idle", as
   assert.deepEqual(host.requests.find((request) => request.method === "turn/start")?.params, {
     threadId: "idle-thread",
     input: [{ type: "text", text: "keep this message", text_elements: [] }],
-    delivery: "queue",
-    presentationInput: [{ type: "text", text: "keep this message" }],
     clientUserMessageId: "late-steer",
   });
 });

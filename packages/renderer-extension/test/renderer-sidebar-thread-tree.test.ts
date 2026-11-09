@@ -13,6 +13,8 @@ import {
   layoutSidebarThreadTree,
   planSidebarThreadForest,
   sidebarThreadDescendantKeys,
+  sidebarListRetainsNativePlacement,
+  sidebarSectionHeadingForList,
   SIDEBAR_THREAD_TREE_INDENT_PX,
   SIDEBAR_THREAD_TREE_TOGGLE_STYLE,
   type SidebarThreadTreeDom,
@@ -52,8 +54,16 @@ class FakeList implements SidebarThreadTreeList {
     return this.mounted;
   }
 
-  mirror(mirrors: readonly SidebarThreadTreeMirror[]): void {
-    this.mirrors = mirrors;
+  mirror(
+    mirrors: readonly SidebarThreadTreeMirror[],
+    retain: ReadonlyMap<string, SidebarThreadTreeLayout> = new Map(),
+  ): void {
+    const retained: SidebarThreadTreeMirror[] = [];
+    for (const previous of this.mirrors) {
+      const layout = retain.get(previous.key);
+      if (layout) retained.push({ key: previous.key, source: previous.source, layout });
+    }
+    this.mirrors = [...mirrors, ...retained];
   }
 }
 
@@ -405,6 +415,84 @@ describe("Renderer sidebar Thread tree", () => {
     control.dispose();
   });
 
+  it("keeps mirrored children under a remaining parent when Recents unmounts the sources", async () => {
+    const pinned = new FakeList([new FakeItem("parent")]);
+    const recents = new FakeList([new FakeItem("fork")]);
+    const dom = new FakeDom([pinned, recents]);
+    const client = clientWith({ forks: { fork: "parent" } });
+    const control = installRendererSidebarThreadTree({ getClient: () => client, dom });
+    await settle();
+    expect(mirrorSummary(pinned)).toEqual([[forkKey, "fork", 1, 1, false, null]]);
+    expect(summary(pinned.mounted)).toEqual([
+      ["parent", 0, 0, false, { collapsed: false, children: 1 }],
+    ]);
+
+    // Recents section collapses: fork row unmounts; pinned parent stays visible.
+    recents.mounted = [];
+    dom.change();
+    await settle();
+
+    expect(mirrorSummary(pinned)).toEqual([[forkKey, "fork", 1, 1, false, null]]);
+    expect(summary(pinned.mounted)).toEqual([
+      ["parent", 0, 0, false, { collapsed: false, children: 1 }],
+    ]);
+    control.dispose();
+  });
+
+  it("keeps a mirrored subtree when Recents unmounts nested sources", async () => {
+    const childKey = JSON.stringify(["local", "child"]);
+    const grandKey = JSON.stringify(["local", "grandchild"]);
+    const pinned = new FakeList([new FakeItem("parent")]);
+    const recents = new FakeList([new FakeItem("child"), new FakeItem("grandchild")]);
+    const dom = new FakeDom([pinned, recents]);
+    const client = clientWith({
+      relations: {
+        child: { parent: "parent" },
+        grandchild: { parent: "child" },
+      },
+    });
+    const control = installRendererSidebarThreadTree({ getClient: () => client, dom });
+    await settle();
+    expect(mirrorSummary(pinned)).toEqual([
+      [childKey, "child", 1, 1, false, { collapsed: false, children: 1 }],
+      [grandKey, "grandchild", 2, 2, false, null],
+    ]);
+
+    recents.mounted = [];
+    dom.change();
+    await settle();
+
+    expect(mirrorSummary(pinned)).toEqual([
+      [childKey, "child", 1, 1, false, { collapsed: false, children: 1 }],
+      [grandKey, "grandchild", 2, 2, false, null],
+    ]);
+    expect(summary(pinned.mounted)).toEqual([
+      ["parent", 0, 0, false, { collapsed: false, children: 1 }],
+    ]);
+    control.dispose();
+  });
+
+  it("hides sticky mirrors when the remaining parent is collapsed", async () => {
+    const pinned = new FakeList([new FakeItem("parent")]);
+    const recents = new FakeList([new FakeItem("fork")]);
+    const dom = new FakeDom([pinned, recents]);
+    const client = clientWith({ forks: { fork: "parent" } });
+    const control = installRendererSidebarThreadTree({ getClient: () => client, dom });
+    await settle();
+
+    recents.mounted = [];
+    dom.change();
+    await settle();
+    pinned.mounted[0]?.layout?.toggle?.onToggle();
+    await settle();
+
+    expect(summary(pinned.mounted)).toEqual([
+      ["parent", 0, 0, false, { collapsed: true, children: 1 }],
+    ]);
+    expect(mirrorSummary(pinned)).toEqual([[forkKey, "fork", 1, 1, true, null]]);
+    control.dispose();
+  });
+
   it("returns a mirrored child to its own list when the parent leaves the sidebar", async () => {
     const pinned = new FakeList([new FakeItem("parent")]);
     const recents = new FakeList([new FakeItem("fork")]);
@@ -646,6 +734,130 @@ describe("planSidebarThreadForest", () => {
       { items: null, mirrors: [] },
       { items: null, mirrors: [] },
     ]);
+  });
+
+  it("keeps a pinned child in Pinned when its parent lives in Recents", () => {
+    // Pinning a child alone must not be undone by mirroring it back under an
+    // unpinned ancestor (the bug that made only the root appear pinnable).
+    const withoutRetain = planSidebarThreadForest([
+      [entry("child", "parent"), entry("other-pinned")],
+      [entry("parent"), entry("recent")],
+    ]);
+    // Without retain, the pinned child is hidden and mirrored under Recents parent.
+    expect(withoutRetain[0]?.items?.map(({ mirrored }) => mirrored)).toEqual([true, false]);
+    expect(withoutRetain[1]?.mirrors.map(({ index, plan }) => [index, plan.depth])).toEqual([
+      [0, 1],
+    ]);
+
+    const [pinned, recents] = planSidebarThreadForest(
+      [
+        [entry("child", "parent"), entry("other-pinned")],
+        [entry("parent"), entry("recent")],
+      ],
+      new Set(),
+      { retainNativeList: [true, false] },
+    );
+
+    // With retain on Pinned: native layout kept (nothing nests inside Pinned),
+    // and Recents does not grow a mirror of the pinned child.
+    expect(pinned).toEqual({ items: null, mirrors: [] });
+    expect(recents).toEqual({ items: null, mirrors: [] });
+  });
+
+  it("still mirrors a Recents child under its pinned parent when Pinned retains", () => {
+    // Inbound nest-forks must keep working: only outbound yank is suppressed.
+    const [pinned, recents] = planSidebarThreadForest(
+      [
+        [entry("parent"), entry("other-pinned")],
+        [entry("child", "parent"), entry("recent")],
+      ],
+      new Set(),
+      { retainNativeList: [true, false] },
+    );
+
+    expect(pinned?.mirrors.map(({ list, index, plan }) => [list, index, plan.depth])).toEqual([
+      [1, 0, 1],
+    ]);
+    expect(recents?.items?.map(({ mirrored }) => mirrored)).toEqual([true, false]);
+  });
+
+  it("still nests a pinned child under a pinned parent in the same list", () => {
+    const [pinned] = planSidebarThreadForest(
+      [[entry("parent"), entry("child", "parent")]],
+      new Set(),
+      { retainNativeList: [true] },
+    );
+    expect(pinned?.items?.map(({ depth, mirrored }) => [depth, mirrored])).toEqual([
+      [0, false],
+      [1, false],
+    ]);
+    expect(pinned?.mirrors).toEqual([]);
+  });
+});
+
+describe("sidebarListRetainsNativePlacement", () => {
+  it("treats the Desktop Pinned section as retain-native", () => {
+    const doc = {
+      querySelectorAll(selector: string) {
+        if (!selector.includes("section")) return [] as HTMLElement[];
+        return [pinnedHeading, recentsHeading];
+      },
+    } as unknown as Document;
+    const pinnedHeading = {
+      getAttribute(name: string) {
+        return name.includes("heading") ? "Pinned" : null;
+      },
+      compareDocumentPosition() {
+        return 4; // FOLLOWING relative to later lists
+      },
+      ownerDocument: doc,
+      getRootNode() {
+        return doc;
+      },
+    } as unknown as HTMLElement;
+    const recentsHeading = {
+      getAttribute(name: string) {
+        return name.includes("heading") ? "Recents" : null;
+      },
+      compareDocumentPosition(other: Node) {
+        // Only the Recents list follows this heading.
+        return other === recentsList ? 4 : 0;
+      },
+      ownerDocument: doc,
+      getRootNode() {
+        return doc;
+      },
+    } as unknown as HTMLElement;
+    const pinnedList = {
+      ownerDocument: doc,
+      getRootNode() {
+        return doc;
+      },
+      compareDocumentPosition() {
+        return 0;
+      },
+    } as unknown as Element;
+    const recentsList = {
+      ownerDocument: doc,
+      getRootNode() {
+        return doc;
+      },
+      compareDocumentPosition() {
+        return 0;
+      },
+    } as unknown as Element;
+
+    // Patch compareDocumentPosition on pinned heading to mark both lists as following
+    // in document order: pinned heading precedes both; recents heading only precedes recents.
+    (
+      pinnedHeading as unknown as { compareDocumentPosition: (n: Node) => number }
+    ).compareDocumentPosition = (other: Node) =>
+      other === pinnedList || other === recentsList ? 4 : 0;
+
+    expect(sidebarSectionHeadingForList(pinnedList)).toBe(pinnedHeading);
+    expect(sidebarSectionHeadingForList(recentsList)).toBe(recentsHeading);
+    expect(sidebarListRetainsNativePlacement(pinnedList)).toBe(true);
+    expect(sidebarListRetainsNativePlacement(recentsList)).toBe(false);
   });
 });
 

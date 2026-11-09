@@ -13,6 +13,7 @@ The Host retains shared cards in the same pending-question lifecycle as native q
 - Cancellation must contain no answers. A rejected validation leaves the card pending. Answer delivery uses the existing per-Thread request queue, so it cannot overlap a queued interruption; unrelated Threads remain responsive. Duplicate submissions are rejected after the first delivery. Successful delivery retires the question; ambiguous Adapter exceptions retire it rather than allowing a second write.
 - Native withdrawal, Turn completion, Session cleanup and existing Host `expiresAt` handling retire pending cards. Late/replayed responses are rejected. A guessed native response ID cannot answer a shared card.
 - Existing shared-Thread routing carries these methods to the Session owner; multiple GUI viewers do not create multiple native questions or permit duplicate answers.
+- Authenticated Web clients read the same pending interactions through Client Channel snapshots. Their label-based answers are decoded by the existing question projection and sent through the shared response handler, preserving the same validation and first-writer ownership as Desktop. Shared-question changes invalidate client snapshots without publishing a native single-choice request.
 
 Secret text remains unsupported and fails closed, including in a mixed multi-select group. This feature does not expose Grok-specific countdowns, activity resets, plan actions or native preview controls. It does not change what Pi, OMP or another single-choice-only Harness can ask.
 

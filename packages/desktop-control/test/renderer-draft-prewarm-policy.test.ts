@@ -7,11 +7,67 @@ import {
   requestManagerFromHookState,
 } from "../src/renderer-draft-prewarm-policy.js";
 import {
+  createDraftPrewarmPolicyBridge,
   type DraftPrewarmPolicyTarget,
   type RendererHostRequestBridge,
   type RendererHostRequestManager,
 } from "../src/renderer-draft-prewarm-runtime.js";
 import { installDraftPrewarmPolicyBridge } from "./renderer-draft-prewarm-fixture.js";
+
+it("keeps RPC tunnel control frames outside the native logical request queue", async () => {
+  const manager = requestManagerFixture();
+  const { bridge, directSend } = remoteRequestBridgeFixture();
+  directSend.mockImplementation((method?: string) => {
+    if (method?.startsWith("process/"))
+      return Promise.reject(new Error("logical request queue is occupied"));
+    return Promise.resolve({ native: true });
+  });
+  const control = vi.fn(async (method: string, params: Record<string, unknown>) => {
+    const handle = String(params.processHandle);
+    if (method === "process/spawn") {
+      queueMicrotask(() =>
+        emitBridgeOutput(manager, handle, {
+          method: "codexhost/remote-control-bridge/ready",
+          params: { protocolVersion: 1 },
+        }),
+      );
+    } else if (method === "process/writeStdin") {
+      const frame = JSON.parse(Buffer.from(String(params.deltaBase64), "base64").toString());
+      if (frame.id !== undefined)
+        queueMicrotask(() =>
+          emitBridgeOutput(manager, handle, { id: frame.id, result: { ok: true } }),
+        );
+    }
+    return {};
+  });
+  const policy = Reflect.apply(createDraftPrewarmPolicyBridge, undefined, [
+    manager,
+    bridge,
+    "remote-control:fixture-host",
+    {},
+    { discardAllPrewarmedThreads: vi.fn() },
+    undefined,
+    undefined,
+    undefined,
+    control,
+  ]);
+  try {
+    await expect(bridge.sendRequest("codexhost/harness/inspect", {})).resolves.toEqual({
+      ok: true,
+    });
+    await expect(bridge.sendRequest("model/list", {})).resolves.toEqual({ native: true });
+    expect(directSend).toHaveBeenCalledExactlyOnceWith("model/list", {});
+  } finally {
+    policy.dispose();
+  }
+  expect(control.mock.calls.map(([method]) => method)).toEqual([
+    "process/spawn",
+    "process/writeStdin",
+    "process/writeStdin",
+    "process/writeStdin",
+    "process/kill",
+  ]);
+});
 
 function requestManagerFixture(): RendererHostRequestManager {
   return {

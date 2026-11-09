@@ -1,5 +1,6 @@
 import {
   CdpClient,
+  CdpConnectionClosedError,
   listCdpTargets,
   type CdpClientOptions,
   type CdpFetch,
@@ -15,6 +16,8 @@ import {
   installRendererLoadedModules,
   type RendererModuleCdpClient,
 } from "./renderer-loaded-modules.js";
+import { installNativeRpcRemoteControlDirect } from "./renderer-native-rpc-install.js";
+import { installRendererRpcSteeringDirect } from "./renderer-rpc-steering.js";
 
 export interface ProductionRendererStatus {
   version: 2;
@@ -243,6 +246,7 @@ async function waitForBinding(
       if (value !== null) return validateBindingStatus(value, enabledAgents);
     } catch (error) {
       lastError = error;
+      if (error instanceof CdpConnectionClosedError) throw error;
       if (error instanceof RendererAdapterReadinessError && error.state !== "installing") {
         throw error;
       }
@@ -381,7 +385,12 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
 const defaultOperations: RendererCdpControlOperations = {
   listTargets: (endpoint, signal) => listCdpTargets(endpoint, fetch, signal),
   connect: (webSocketDebuggerUrl) => CdpClient.connect(webSocketDebuggerUrl),
-  installDraftPrewarmPolicy: installRendererDraftPrewarmPolicyDirect,
+  async installDraftPrewarmPolicy(renderer) {
+    const status = await installRendererDraftPrewarmPolicyDirect(renderer);
+    await installNativeRpcRemoteControlDirect(renderer);
+    await installRendererRpcSteeringDirect(renderer);
+    return status;
+  },
 };
 
 export async function createRendererCdpControlSession(

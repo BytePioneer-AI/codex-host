@@ -1,0 +1,5 @@
+<!-- Historical CH navigation mark (v1). Retained for reference; not used by the current UI. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="12.8 12.2 40 40" width="20" height="20">
+  <path d="M 44.55 23.97 A 14.35 14.35 0 1 0 44.55 40.43" fill="none" stroke="currentColor" stroke-width="4.4" stroke-linecap="round"/>
+  <rect x="27.6" y="27" width="10.4" height="10.4" rx="2.4" fill="currentColor"/>
+</svg>

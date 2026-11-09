@@ -2,7 +2,7 @@
 export const CI_WORKFLOW = "ci.yml";
 export const CI_JOBS = [
   "Check ubuntu-22.04",
-  "Check macos-15",
+  "Check macos-26",
   "Check windows-latest",
   "Check Linux ARM64",
 ];

@@ -12,6 +12,16 @@
 
 以上实现归各 Harness 插件所有，不在公共 Adapter、Host 或 Renderer 中添加 Harness 专用分支。跨插件参考实现不等于共用原生协议；各自保留配置确认、取消、持久化和权限语义。
 
+## Kimi 接收委派
+
+委派创建会话时的 `unattended-full-access` 映射到 Kimi ACP 原生 `mode=yolo`，并核对 `set_config_option` 返回的 `currentValue`。原生未确认时关闭 Transport 并返回错误；显式指定其他权限模式时拒绝创建。普通会话未指定权限模式时保留原生默认值。CLI 启动参数与 ACP 模式 ID 分别遵守各自接口，不互相替代。
+
+## Kimi 计划审批
+
+Kimi Code ACP 的 `ExitPlanMode` 请求包含原生 `plan_approve` / `plan_opt_N`、`plan_revise` 和 `plan_reject_and_exit` 选项时，Adapter 使用公共 Question 交互投影到 Codex 原生选择界面。计划正文、选项顺序和标签保留，选中结果原样回传 ACP `optionId`；修改计划、拒绝并退出和取消保持各自语义，不合并成同一个拒绝动作。
+
+识别依赖工具名和完整的计划选项格式。其他工具审批、未知选项、重复标签或不完整格式仍走既有审批路径；普通会话权限、其他提问和公共审批投影不受此映射影响。
+
 ## Kimi Thinking 配置
 
 Kimi 通过 ACP `configOptions` 提供当前会话、当前 Model 的 Thinking 列表和选中值。插件在创建、恢复、配置命令响应及 `config_option_update` 通知中读取这些事实，将列表保存在会话内存状态的 `availableThinkingOptions` 中，沿公共状态事件更新 Desktop；不轮询，也不在启动检查时遍历切换 Model。不同会话或 Host 不共享可变列表。
@@ -46,7 +56,7 @@ Pi 当前 Model 同时具备 Codex OAuth、Codex API 和本地 `priority` 元数
 
 已核对本机 agy `1.2.5` 的 `--help` 及 `-p /help --output-format json`。headless 输入接受 Prompt，不接受双向工具权限回答；官方说明需要交互批准的操作在 headless 下被 soft-denied。现有插件的 Skip permissions 仍是原生启动选项，官方 PreToolUse Hook 支持 allow/deny/ask 等决策，但它在工具执行前触发，并非原生审批请求/应答通道；headless 中 ask 仍被 soft-denied，不能将 Hook 拦截重建为另一套工具权限策略。提问 Hook 仅用于 ask_question，不等于普通工具审批。Python SDK 的 [ask_user policy](https://antigravity.google/docs/sdk/policies/) 是独立 runtime 的能力，不是已登录 CLI Session 的审批回传入口。
 
-原生 headless 命令目录未公布 `/compact` 或 `/compress`，也没有经验证的压缩命令或自动压缩开始/完成事件。SDK/交互终端中存在压缩实现不能证明当前 CLI Session 暴露等价调用入口。后续需原生 headless/RPC 增加可确认的会话压缩操作与结果，再在 Antigravity 插件内映射为命令与 contextCompaction Item；不发送普通“请总结”Prompt 伪装上下文压缩。当前 Python SDK 的 token_threshold 控制自动阈值，官方[按需压缩请求](https://github.com/google-antigravity/antigravity-sdk-python/issues/63)仍未关闭。
+压缩：agy `1.2.5` 的 headless 命令目录未公布 `/compact`，当时没有接入。已核对本机 agy `1.4.12`：`--input-format stream-json` 的 print 模式会展开 `/compact`（日志 `Print mode: expanded slash command "compact"`），并以 `step_type: "checkpoint"` 的 `step_update` 报告压缩，`DONE`/`ERROR` 为完成或失败；`/compact <说明>` 压缩后继续回答。插件因此在命令目录公布 `antigravity.compact`（`/compact`），并把任一 Turn 内的 `checkpoint` 步骤（显式 `/compact` 或 agy 自动压缩）映射为 contextCompaction Item；Host 据显式 `/compact` 命令 Turn 将其标为手动压缩。不发送普通“请总结”Prompt 伪装上下文压缩。
 
 依据：[官方 Hooks 文档](https://antigravity.google/docs/hooks)、[官方 headless 文档](https://antigravity.google/docs/cli/headless/)、[官方权限文档](https://antigravity.google/docs/cli/permissions)、[现有插件权限边界](antigravity/antigravity-tool-approval.md)。此次 `/help` 原生探针返回 num_turns=0，没有发起模型请求。
 

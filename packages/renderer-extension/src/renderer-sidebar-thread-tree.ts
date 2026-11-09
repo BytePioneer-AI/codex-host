@@ -19,6 +19,7 @@ export const SIDEBAR_THREAD_TREE_TOGGLE_ATTRIBUTE = "data-codexhost-sidebar-thre
 export const SIDEBAR_THREAD_TREE_MIRROR_ATTRIBUTE = "data-codexhost-sidebar-thread-mirror";
 export const SIDEBAR_THREAD_TREE_INDENT_PX = 14;
 const SIDEBAR_THREAD_TREE_MAX_INDENT_DEPTH = 6;
+const SIDEBAR_THREAD_TREE_MAX_ANCESTRY = 64;
 const RELATION_RETRY_DELAYS_MS = [1_000, 3_000, 10_000] as const;
 const NATIVE_FORK_READ_CONCURRENCY = 4;
 
@@ -53,6 +54,55 @@ export type SidebarThreadTreeLayoutPlan = Omit<SidebarThreadTreeLayout, "toggle"
  * duplicate key, or a cycle leaves the entry at the top level.
  * @returns One plan per entry, or null when nothing in the list is nested.
  */
+/**
+ * When a mirrored child unmounts (e.g. Recents collapsed) but an ancestor stays
+ * mounted in this list, keep that mirror under the ancestor instead of clearing it.
+ * Cold start with the child never mounted cannot create a mirror (no source DOM).
+ */
+export function stickyMirrorLayouts(input: {
+  listKeys: readonly (string | null)[];
+  mountedKeys: ReadonlySet<string>;
+  previousMirrors: ReadonlyMap<string, SidebarThreadTreeLayout>;
+  parentKeyOf: (key: string) => string | null;
+  collapsed: ReadonlySet<string>;
+}): Map<string, SidebarThreadTreeLayout> {
+  const listKeySet = new Set(input.listKeys.filter((key): key is string => key !== null));
+  const result = new Map<string, SidebarThreadTreeLayout>();
+
+  const canStick = (key: string, visiting: Set<string>): boolean => {
+    const parent = input.parentKeyOf(key);
+    if (parent === null) return false;
+    if (listKeySet.has(parent) && input.mountedKeys.has(parent)) return true;
+    if (!input.previousMirrors.has(parent) || input.mountedKeys.has(parent)) return false;
+    if (visiting.has(parent)) return false;
+    visiting.add(parent);
+    return canStick(parent, visiting);
+  };
+
+  const hiddenUnderCollapsedAncestor = (key: string): boolean => {
+    let walk: string | null = key;
+    for (let depth = 0; walk !== null && depth < SIDEBAR_THREAD_TREE_MAX_ANCESTRY; depth += 1) {
+      const parent = input.parentKeyOf(walk);
+      if (parent === null) return false;
+      if (input.mountedKeys.has(parent) && input.collapsed.has(parent)) return true;
+      walk = parent;
+    }
+    return false;
+  };
+
+  for (const [key, previous] of input.previousMirrors) {
+    if (input.mountedKeys.has(key)) continue;
+    if (!canStick(key, new Set())) continue;
+    result.set(key, {
+      order: previous.order,
+      depth: previous.depth,
+      hidden: hiddenUnderCollapsedAncestor(key),
+      toggle: previous.toggle,
+    });
+  }
+  return result;
+}
+
 export function layoutSidebarThreadTree(
   entries: readonly SidebarThreadTreeEntry[],
   collapsed: ReadonlySet<string> = new Set(),
@@ -122,6 +172,16 @@ export interface SidebarThreadForestListPlan {
   mirrors: SidebarThreadForestMirrorPlan[];
 }
 
+export interface SidebarThreadForestOptions {
+  /**
+   * Per-list flag: when true, native entries of that list never leave for a
+   * cross-list parent (same-list nesting still applies). Mirrors *into* the
+   * list from elsewhere are unchanged. Used for Desktop's Pinned section so
+   * pinning a child alone is not undone by an unpinned ancestor in Recents.
+   */
+  retainNativeList?: readonly boolean[];
+}
+
 /**
  * Lay out all native lists together. Desktop files every Thread in exactly one
  * list, and a new Fork is not pinned, so the Fork of a pinned Thread lands in
@@ -130,11 +190,17 @@ export interface SidebarThreadForestListPlan {
  * where Desktop placed it; inside each list `layoutSidebarThreadTree` applies.
  * A parent in the same list wins over one elsewhere. Only a key shown once
  * across all lists can move, and a cross-list cycle keeps its entries in place.
+ *
+ * Lists marked in `retainNativeList` (Pinned) keep their native rows even when
+ * the parent lives elsewhere, so a pinned child stays visible in Pinned on its
+ * own. Inbound mirrors from Recents into a pinned parent still work.
  */
 export function planSidebarThreadForest(
   lists: readonly (readonly SidebarThreadTreeEntry[])[],
   collapsed: ReadonlySet<string> = new Set(),
+  options: SidebarThreadForestOptions = {},
 ): SidebarThreadForestListPlan[] {
+  const retainNative = options.retainNativeList ?? [];
   const counts = new Map<string, number>();
   const first = new Map<string, { list: number; index: number }>();
   const indexByKey = lists.map((entries, list) => {
@@ -153,6 +219,8 @@ export function planSidebarThreadForest(
     if (entry.parentKey === entry.key || indexByKey[list]?.get(entry.key) !== index) return null;
     const sameList = indexByKey[list]?.get(entry.parentKey);
     if (sameList !== undefined) return { list, index: sameList };
+    // Outbound retain: do not yank a pinned (etc.) row under an unpinned parent.
+    if (retainNative[list]) return null;
     if (counts.get(entry.key) !== 1) return null;
     return first.get(entry.parentKey) ?? null;
   };
@@ -232,8 +300,21 @@ export interface SidebarThreadTreeMirror {
 export interface SidebarThreadTreeList {
   /** Every direct native list entry, in DOM order, without mirrors. */
   items(): readonly SidebarThreadTreeItem[];
-  /** Show exactly these mirrors in this list; mirrors not listed are removed. */
-  mirror(mirrors: readonly SidebarThreadTreeMirror[]): void;
+  /**
+   * Show exactly these mirrors in this list. `retain` keeps existing mirrors
+   * whose keys are listed (with the given layout) even when their native source
+   * row is gone — used when Recents collapses but the parent stays mounted.
+   * Keys not in `mirrors` or `retain` are removed.
+   */
+  mirror(
+    mirrors: readonly SidebarThreadTreeMirror[],
+    retain?: ReadonlyMap<string, SidebarThreadTreeLayout>,
+  ): void;
+  /**
+   * When true, native rows stay in this list even if their parent lives
+   * elsewhere (Pinned). Defaults to false when omitted.
+   */
+  retainNativePlacement?(): boolean;
 }
 
 export interface SidebarThreadTreeDom {
@@ -253,8 +334,6 @@ export interface RendererSidebarThreadTree {
   refresh(): void;
   dispose(): void;
 }
-
-const SIDEBAR_THREAD_TREE_MAX_ANCESTRY = 64;
 
 /** Keys from `liveKeys` whose parent chain reaches `rootKey`, in input order. */
 export function sidebarThreadDescendantKeys(
@@ -606,11 +685,55 @@ function sidebarListItem(row: Element): HTMLElement | null {
   return item?.parentElement?.getAttribute("role") === "list" ? item : null;
 }
 
+const SIDEBAR_SECTION_KEY_ATTRS = [
+  "data-app-action-sidebar-section-heading",
+  "data-app-action-sidebar-section",
+] as const;
+
+/**
+ * Closest preceding Desktop section heading/key node for a sidebar list.
+ * Sections are sequential in the scroll container (Pinned, then Recents, …),
+ * so the last heading that the list follows is this list's section.
+ */
+export function sidebarSectionHeadingForList(list: Element): HTMLElement | null {
+  const root = list.getRootNode();
+  const scope =
+    typeof Document !== "undefined" && root instanceof Document
+      ? root
+      : (list.ownerDocument as Document | null);
+  if (!scope || typeof scope.querySelectorAll !== "function") return null;
+  let best: HTMLElement | null = null;
+  const following = typeof Node !== "undefined" ? Node.DOCUMENT_POSITION_FOLLOWING : 4;
+  for (const heading of scope.querySelectorAll<HTMLElement>(
+    "[data-app-action-sidebar-section-heading], [data-app-action-sidebar-section]",
+  )) {
+    const position = heading.compareDocumentPosition(list);
+    if (position & following) best = heading;
+  }
+  return best;
+}
+
+/** True when the list is Desktop's Pinned section (native pin placement wins). */
+export function sidebarListRetainsNativePlacement(list: Element): boolean {
+  const heading = sidebarSectionHeadingForList(list);
+  if (!heading) return false;
+  for (const attr of SIDEBAR_SECTION_KEY_ATTRS) {
+    const raw = heading.getAttribute(attr);
+    if (!raw) continue;
+    if (raw.trim().toLowerCase() === "pinned") return true;
+  }
+  return false;
+}
+
 class BrowserSidebarThreadTreeList implements SidebarThreadTreeList {
   constructor(
     private readonly element: HTMLElement,
     private readonly itemFor: (element: HTMLElement) => BrowserSidebarThreadTreeItem,
   ) {}
+
+  retainNativePlacement(): boolean {
+    return sidebarListRetainsNativePlacement(this.element);
+  }
 
   items(): readonly SidebarThreadTreeItem[] {
     return [...this.element.children]
@@ -621,7 +744,10 @@ class BrowserSidebarThreadTreeList implements SidebarThreadTreeList {
       .map((child) => this.itemFor(child));
   }
 
-  mirror(mirrors: readonly SidebarThreadTreeMirror[]): void {
+  mirror(
+    mirrors: readonly SidebarThreadTreeMirror[],
+    retain: ReadonlyMap<string, SidebarThreadTreeLayout> = new Map(),
+  ): void {
     const existing = new Map<string, HTMLElement>();
     for (const child of [...this.element.children]) {
       const key = child.getAttribute(SIDEBAR_THREAD_TREE_MIRROR_ATTRIBUTE);
@@ -643,6 +769,18 @@ class BrowserSidebarThreadTreeList implements SidebarThreadTreeList {
       }
       // The source is hidden by layout; show the mirror with its original display.
       applyItemLayout(mirror, layout, savedItemStyles.get(source.element));
+      applyToggle(
+        mirror,
+        mirror.querySelector<HTMLElement>("[data-thread-title-trigger]"),
+        layout.toggle,
+      );
+    }
+    // Recents collapsed: keep clones that already show under a still-mounted parent.
+    for (const [key, layout] of retain) {
+      const mirror = existing.get(key);
+      if (!mirror) continue;
+      existing.delete(key);
+      applyItemLayout(mirror, layout, savedItemStyles.get(mirror));
       applyToggle(
         mirror,
         mirror.querySelector<HTMLElement>("[data-thread-title-trigger]"),
@@ -789,6 +927,11 @@ export function installRendererSidebarThreadTree(options: {
   const retryAttempts = new Map<string, number>();
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const collapsed = new Set<string>();
+  /** Last applied mirror layouts per list; retained when sources unmount. */
+  const previousMirrors = new WeakMap<
+    SidebarThreadTreeList,
+    Map<string, SidebarThreadTreeLayout>
+  >();
   let nativeActive = 0;
   let disposed = false;
   let scanScheduled = false;
@@ -967,23 +1110,84 @@ export function installRendererSidebarThreadTree(options: {
             }
           : null,
     });
-    const plans = planSidebarThreadForest(entries, collapsed);
+    const retainNativeList = lists.map((list) => list.retainNativePlacement?.() === true);
+    const plans = planSidebarThreadForest(entries, collapsed, { retainNativeList });
+    const mountedKeys = new Set<string>();
+    for (const listEntries of entries) {
+      for (const entry of listEntries) {
+        if (entry.key !== null) mountedKeys.add(entry.key);
+      }
+    }
+    const parentKeyFromMirrorKey = (key: string): string | null => {
+      let hostId: string;
+      try {
+        hostId = (JSON.parse(key) as [string, string])[0] ?? "";
+      } catch {
+        return null;
+      }
+      return hostId === "" ? null : parentKeyOf(hostId, key);
+    };
+    const retainByList = lists.map((list, listIndex) => {
+      const retain = stickyMirrorLayouts({
+        listKeys: (entries[listIndex] ?? []).map((entry) => entry.key),
+        mountedKeys,
+        previousMirrors: previousMirrors.get(list) ?? new Map(),
+        parentKeyOf: parentKeyFromMirrorKey,
+        collapsed,
+      });
+      for (const planned of plans[listIndex]?.mirrors ?? []) {
+        const key = entries[planned.list]?.[planned.index]?.key;
+        if (key) retain.delete(key);
+      }
+      return retain;
+    });
     // Lay out native entries first so every mirror clones its settled source.
+    // When Recents unmounts every child, forest may return items:null; still
+    // apply a parent layout if sticky mirrors remain under that parent.
     listItems.forEach((items, listIndex) => {
       const listPlan = plans[listIndex]?.items ?? null;
+      const retain = retainByList[listIndex] ?? new Map();
+      const stickyDirectByParent = new Map<string, number>();
+      for (const stickyKey of retain.keys()) {
+        const parent = parentKeyFromMirrorKey(stickyKey);
+        if (parent === null) continue;
+        stickyDirectByParent.set(parent, (stickyDirectByParent.get(parent) ?? 0) + 1);
+      }
       items.forEach((item, index) => {
+        const key = entries[listIndex]?.[index]?.key ?? null;
         const plan = listPlan?.[index];
-        item.apply(plan ? layoutOf(plan, entries[listIndex]?.[index]?.key ?? null) : null);
+        const stickyDirect = key !== null ? (stickyDirectByParent.get(key) ?? 0) : 0;
+        if (!plan && stickyDirect === 0) {
+          item.apply(null);
+          return;
+        }
+        const childCount = (plan?.childCount ?? 0) + stickyDirect;
+        item.apply(
+          layoutOf(
+            {
+              order: plan?.order ?? index,
+              depth: plan?.depth ?? 0,
+              hidden: plan?.hidden ?? false,
+              childCount,
+              collapsed: key !== null && childCount > 0 && collapsed.has(key),
+            },
+            key,
+          ),
+        );
       });
     });
     lists.forEach((list, listIndex) => {
-      list.mirror(
-        (plans[listIndex]?.mirrors ?? []).flatMap(({ list: from, index, plan }) => {
-          const source = listItems[from]?.[index];
-          const key = entries[from]?.[index]?.key;
-          return source && key ? [{ key, source, layout: layoutOf(plan, key) }] : [];
-        }),
-      );
+      const live = (plans[listIndex]?.mirrors ?? []).flatMap(({ list: from, index, plan }) => {
+        const source = listItems[from]?.[index];
+        const key = entries[from]?.[index]?.key;
+        return source && key ? [{ key, source, layout: layoutOf(plan, key) }] : [];
+      });
+      const retain = retainByList[listIndex] ?? new Map();
+      list.mirror(live, retain);
+      const nextPrevious = new Map<string, SidebarThreadTreeLayout>();
+      for (const mirror of live) nextPrevious.set(mirror.key, mirror.layout);
+      for (const [key, layout] of retain) nextPrevious.set(key, layout);
+      previousMirrors.set(list, nextPrevious);
     });
     for (const [hostId, ids] of unresolved) {
       const client = options.getClient(hostId);

@@ -82,6 +82,7 @@ describe("Antigravity Slash Commands Capability", () => {
         "/boost",
         "/learn",
         "/schedule",
+        "/compact",
         "/help",
       ];
       for (const expected of expectedInvocations) {
@@ -101,6 +102,7 @@ describe("Antigravity Slash Commands Capability", () => {
       expect(findAntigravityCommandDescriptor("/plan")?.id).toBe("antigravity.plan");
       expect(findAntigravityCommandDescriptor("plan")?.id).toBe("antigravity.plan");
       expect(findAntigravityCommandDescriptor("/grill-me")?.id).toBe("antigravity.grill-me");
+      expect(findAntigravityCommandDescriptor("compact")?.invocation).toBe("/compact");
       expect(findAntigravityCommandDescriptor("unknown")).toBeUndefined();
     });
   });
@@ -421,6 +423,225 @@ describe("Antigravity Slash Commands Capability", () => {
           expect(result2.error.retryable).toBe(true);
         }
 
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+  });
+
+  describe("Context Compaction", () => {
+    const step = (
+      conversationId: string,
+      stepIndex: number,
+      stepType: string,
+      state: string,
+      extra: Record<string, unknown> = {},
+    ): string =>
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          conversation_id: conversationId,
+          step_index: stepIndex,
+          state,
+          step_type: stepType,
+          ...extra,
+        },
+      });
+    const result = (conversationId: string, response: string, status = "SUCCESS"): string =>
+      JSON.stringify({
+        event: "result",
+        result: { conversation_id: conversationId, status, num_turns: 1, response },
+      });
+
+    it("runs /compact through agy and projects its checkpoint as a Context Compaction", async () => {
+      // Recorded from agy 1.4.12 answering `/compact` in stream-json print mode.
+      const streamLines = [
+        JSON.stringify({ event: "init", conversation_id: "conv-compact-1" }),
+        step("conv-compact-1", 2, "user_input", "DONE"),
+        step("conv-compact-1", 3, "system_message", "DONE"),
+        step("conv-compact-1", 4, "checkpoint", "DONE", { duration_seconds: 3.3 }),
+        result("conv-compact-1", ""),
+      ];
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+        const session = opened.value;
+        const commands = session.commands;
+        expect(commands).toBeDefined();
+        if (!commands) return;
+        const turnId = hostTurnIdSchema.parse("turn-compact-1");
+
+        const drainPromise = drainEvents(session.outputs);
+        const executed = await commands.execute({
+          turnId,
+          commandId: "antigravity.compact",
+        });
+        expect(executed).toEqual({ ok: true, value: { turnId } });
+        const events = await drainPromise;
+
+        const started = events.find(
+          (event) => event.type === "item.started" && event.item.type === "contextCompaction",
+        );
+        expect(started).toBeDefined();
+        const completed = events.find(
+          (event) =>
+            event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+        );
+        expect(completed).toMatchObject({ snapshot: { outcome: { status: "succeeded" } } });
+        expect(
+          events.some(
+            (event) => event.type === "item.started" && event.item.type === "agentMessage",
+          ),
+        ).toBe(false);
+        expect(events.at(-1)).toMatchObject({
+          type: "turn.completed",
+          outcome: { status: "succeeded" },
+        });
+
+        const snapshot = await session.readSnapshot();
+        expect(snapshot.ok).toBe(true);
+        if (snapshot.ok) {
+          const turn = snapshot.value.turns[0];
+          expect(turn?.input).toEqual([{ type: "text", text: "/compact" }]);
+          expect(turn?.items.map(({ item }) => item.type)).toEqual(["contextCompaction"]);
+        }
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("passes /compact instructions to agy", async () => {
+      const streamLines = [
+        JSON.stringify({ event: "init", conversation_id: "conv-compact-2" }),
+        step("conv-compact-2", 4, "checkpoint", "DONE"),
+        step("conv-compact-2", 5, "agent_response", "DONE", { text_delta: "Kept the plan." }),
+        result("conv-compact-2", "Kept the plan."),
+      ];
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+        const session = opened.value;
+        const commands = session.commands;
+        expect(commands).toBeDefined();
+        if (!commands) return;
+        const turnId = hostTurnIdSchema.parse("turn-compact-2");
+
+        const drainPromise = drainEvents(session.outputs);
+        await commands.execute({
+          turnId,
+          commandId: "/compact",
+          arguments: { text: "keep the migration plan" },
+        });
+        await drainPromise;
+
+        const snapshot = await session.readSnapshot();
+        expect(snapshot.ok).toBe(true);
+        if (snapshot.ok) {
+          const turn = snapshot.value.turns[0];
+          expect(turn?.input).toEqual([{ type: "text", text: "/compact keep the migration plan" }]);
+          expect(turn?.items.map(({ item }) => item.type)).toEqual([
+            "contextCompaction",
+            "agentMessage",
+          ]);
+        }
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("projects compaction agy starts on its own inside an ordinary Turn", async () => {
+      const streamLines = [
+        JSON.stringify({ event: "init", conversation_id: "conv-compact-3" }),
+        step("conv-compact-3", 1, "agent_response", "ACTIVE", { text_delta: "Reading. " }),
+        step("conv-compact-3", 2, "checkpoint", "ACTIVE"),
+        step("conv-compact-3", 2, "checkpoint", "DONE"),
+        step("conv-compact-3", 3, "agent_response", "DONE", { text_delta: "Done." }),
+        result("conv-compact-3", "Reading. Done."),
+      ];
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+        const session = opened.value;
+        const turnId = hostTurnIdSchema.parse("turn-compact-3");
+
+        const drainPromise = drainEvents(session.outputs);
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "summarize the repo" }],
+        });
+        const events = await drainPromise;
+
+        expect(
+          events.filter(
+            (event) => event.type === "item.started" && event.item.type === "contextCompaction",
+          ),
+        ).toHaveLength(1);
+        const snapshot = await session.readSnapshot();
+        expect(snapshot.ok).toBe(true);
+        if (snapshot.ok) {
+          const items = snapshot.value.turns[0]?.items ?? [];
+          expect(items.map(({ item }) => item.type)).toEqual([
+            "agentMessage",
+            "contextCompaction",
+            "agentMessage",
+          ]);
+          expect(items.every(({ outcome }) => outcome.status === "succeeded")).toBe(true);
+        }
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("fails a compaction agy reports as an error and closes one the Turn left open", async () => {
+      const streamLines = [
+        JSON.stringify({ event: "init", conversation_id: "conv-compact-4" }),
+        step("conv-compact-4", 2, "checkpoint", "ERROR"),
+        step("conv-compact-4", 3, "checkpoint", "ACTIVE"),
+        result("conv-compact-4", "", "ERROR"),
+      ];
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+        const session = opened.value;
+        const commands = session.commands;
+        expect(commands).toBeDefined();
+        if (!commands) return;
+        const turnId = hostTurnIdSchema.parse("turn-compact-4");
+
+        const drainPromise = drainEvents(session.outputs);
+        await commands.execute({ turnId, commandId: "antigravity.compact" });
+        await drainPromise;
+
+        const snapshot = await session.readSnapshot();
+        expect(snapshot.ok).toBe(true);
+        if (snapshot.ok) {
+          const items = snapshot.value.turns[0]?.items ?? [];
+          expect(items.map(({ item, outcome }) => [item.type, outcome.status])).toEqual([
+            ["contextCompaction", "failed"],
+            ["contextCompaction", "failed"],
+          ]);
+        }
         await session.close();
       } finally {
         await adapter.close();

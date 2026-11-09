@@ -1,11 +1,42 @@
-import { describe, expect, it } from "vitest";
-import { findSourceBoundaryViolations } from "./check-boundaries.mjs";
+import { readdir } from "node:fs/promises";
+import { resolve } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import {
+  findRepositoryBoundaryViolations,
+  findSourceBoundaryViolations,
+} from "./check-boundaries.mjs";
+
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...(await importOriginal()),
+  readdir: vi.fn(),
+}));
 
 const packagesDirectory = "/repo/packages";
 const rendererDirectory = "/repo/packages/renderer-extension";
 const sharedContractsDirectory = "/repo/packages/shared-contracts/src";
 
 describe("source boundary checks", () => {
+  it("walks workspace sources without scanning bundled output or installed dependencies", async () => {
+    const root = resolve(import.meta.dirname, "../packages");
+    const entry = (name) => ({ name, isDirectory: () => true });
+    const tree = new Map([
+      [root, [entry("web-server")]],
+      [resolve(root, "web-server"), [entry("src"), entry("dist"), entry("node_modules")]],
+      [resolve(root, "web-server/src"), []],
+    ]);
+    vi.mocked(readdir).mockImplementation(async (directory) => tree.get(directory) ?? []);
+    try {
+      expect(await findRepositoryBoundaryViolations()).toEqual([]);
+      expect(vi.mocked(readdir).mock.calls.map(([directory]) => directory)).toEqual([
+        root,
+        resolve(root, "web-server"),
+        resolve(root, "web-server/src"),
+      ]);
+    } finally {
+      vi.mocked(readdir).mockReset();
+    }
+  });
+
   it.each([
     'import { createHarnessAdapter } from "@codexhost/adapter-pi/plugin";',
     'export { packageMetadata } from "@codexhost/adapter-claude-code";',
@@ -151,6 +182,32 @@ describe("source boundary checks", () => {
 
     expect(violations).toHaveLength(1);
     expect(violations[0]).toContain("cross-package source import");
+  });
+
+  it.each(["@codexhost/host-runtime", "@codexhost/web-server", "zod"])(
+    "rejects Remote Relay dependency '%s'",
+    (specifier) => {
+      expect(
+        findSourceBoundaryViolations({
+          filePath: "/repo/packages/remote-relay/src/index.ts",
+          packageRoot: "/repo/packages/remote-relay",
+          packagesDirectory,
+          sourceText: `import value from "${specifier}";`,
+        })[0],
+      ).toContain("Remote Relay can only import");
+    },
+  );
+
+  it("allows Remote Relay built-ins, ws, acme-client and local modules", () => {
+    expect(
+      findSourceBoundaryViolations({
+        filePath: "/repo/packages/remote-relay/src/index.ts",
+        packageRoot: "/repo/packages/remote-relay",
+        packagesDirectory,
+        sourceText:
+          'import "node:http2"; import "ws"; import "acme-client"; import "./protocol.js";',
+      }),
+    ).toEqual([]);
   });
 
   it("allows imports through public Workspace package names", () => {

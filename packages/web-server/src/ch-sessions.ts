@@ -17,13 +17,6 @@ import {
 } from "@codexhost/shared-contracts";
 import type { ChHostClient, ChProjectSnapshot } from "./ch-host-client.ts";
 import { ChHarnessCatalog, type ModelSelection } from "./ch-harness-catalog.ts";
-/** Out-of-band Web Push notification for one Session. */
-export interface SessionNotification {
-  kind: "turn" | "approval" | "question" | "error";
-  sessionId: string;
-  title: string;
-  body: string;
-}
 import type { ChThread } from "./ch-thread-view.ts";
 import type { Inspection } from "./harnesses.ts";
 import { nativePermissionView } from "./session-presentation.ts";
@@ -101,7 +94,6 @@ export class ChSessions {
   private readonly interactions: ChInteractions | undefined;
   private hostOnline = true;
   private hostEpoch: string | undefined;
-  notifier: ((notification: SessionNotification) => void) | undefined;
   constructor(
     private readonly host: ChHostClient,
     private readonly workspaces: Workspaces,

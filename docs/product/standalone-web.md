@@ -20,6 +20,12 @@ Web「设置 → 通用设置 → 其他设置」提供「安装 CodexHost 应�
 
 指引按当前设备说明安卓浏览器菜单、iOS/iPadOS Safari「添加到主屏幕」、macOS Safari「添加到程序坞」及桌面 Chrome/Edge 的入口；应用内浏览器建议改用外部浏览器。PWA 需要 HTTPS 安全上下文，本机 localhost 除外；普通局域网或 Tailscale IP 的 HTTP 访问会提示使用「连接设备」中已配置的 HTTPS 地址，不自动改写或跳转地址。是否提供安装及其形式由浏览器决定，创建快捷方式不等于安装 PWA；页面不能绕过用户确认。安装不下载原生 CodexHost、不请求通知权限，也不提供离线 Agent 执行，仍需连接运行中的 Web 与 Host。原生 Desktop 壳不显示此入口。
 
+## Web Push 通知
+
+Web「设置 → 通用设置 → 通知」为当前浏览器开启通知，并提供测试推送。需要浏览器授权、HTTPS 安全上下文（localhost 除外）和可用的系统通知设置；iPhone／iPad 需先添加到主屏幕，再在主屏幕应用内开启。电脑上的 Web 与 Host 必须保持运行且能连接浏览器推送服务，浏览器页面不必保持打开或订阅会话正文。
+
+网关直接监听共享 Host 的回合完成和待交互事件，读取有界快照，向有效订阅推送原生 Codex／外部 Harness 的完成、失败、待审批或待回答通知；通知不代替用户回答交互。停止或取消的回合不发送完成通知。没有推送订阅时不为通知读取快照，正文增量也不触发通知读取。同一 Host 代次内近期回合／交互按身份去重；断线续接按事件日志处理，启动或无法续接的完整重置不扫描旧历史补发，通知不保证持久送达。点击通知打开对应会话。Web 页面可见且获得焦点时，Service Worker 静默处理普通完成通知；测试、失败和待交互通知不受此规则影响。
+
 ## 安装版后台 Web
 
 安装包和 npm 包均包含 Web，无须源码或运行中的 Codex Desktop。npm 用户可直接运行以下命令；macOS 安装包将 `codexhost` 替换为 `/Applications/codexhost.app/Contents/MacOS/codexhost`（按实际安装位置调整），Windows PowerShell 使用 `& "$env:LOCALAPPDATA\Programs\codexhost\bin\codexhost.exe"`。

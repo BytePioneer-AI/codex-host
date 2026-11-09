@@ -54,8 +54,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * branch. Claude can attach a later prompt to a system record before the prior
  * assistant terminal, which makes that otherwise valid branch omit prior
  * assistant messages. History recovery needs every persisted main-session
- * message in transcript order instead. Like the native SDK, resolve repeated
- * UUIDs to their last record (including metadata), retaining first-seen order.
+ * message and attachment in transcript order instead. Like the native SDK, resolve
+ * repeated UUIDs to their last record (including metadata), retaining first-seen order.
  */
 export async function readClaudeTranscript(input: {
   cwd: string;
@@ -76,9 +76,9 @@ export async function readClaudeTranscript(input: {
     }
     if (
       !isRecord(entry) ||
-      (entry.type !== "user" && entry.type !== "assistant") ||
+      (entry.type !== "user" && entry.type !== "assistant" && entry.type !== "attachment") ||
       typeof entry.uuid !== "string" ||
-      !isRecord(entry.message)
+      (entry.type !== "attachment" && !isRecord(entry.message))
     ) {
       continue;
     }

@@ -1,0 +1,204 @@
+.root {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+}
+
+/* The stage is sized and rotated as a whole so landscape works on a portrait
+   phone without orientation locking, which iOS Safari does not allow. */
+.stage {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+}
+
+/* The image owns the whole stage; the control bars float over it and a tap on
+   the image shows or hides them. */
+.top,
+.bottom {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 2;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+
+.top *,
+.bottom * {
+  pointer-events: auto;
+}
+
+.top {
+  top: 0;
+  padding-top: env(safe-area-inset-top);
+  background: linear-gradient(rgba(0, 0, 0, 0.7), transparent);
+}
+
+.bottom {
+  bottom: 0;
+  padding-bottom: env(safe-area-inset-bottom);
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+}
+
+.hidden {
+  visibility: hidden;
+  opacity: 0;
+}
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.text,
+.primary {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.12);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.text[aria-pressed="true"] {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.text:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.primary {
+  background: var(--dsw-alias-button-info-fill, #3964fe);
+}
+
+.swatch {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.swatch[aria-pressed="true"] {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.6);
+}
+
+.area {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.area[data-annotating] {
+  cursor: crosshair;
+}
+
+.zoomBadge {
+  position: absolute;
+  z-index: 3;
+  top: 72px;
+  right: 12px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.2);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.canvas {
+  display: block;
+  max-width: none;
+  background: #000;
+}
+
+.error {
+  margin: 0;
+  padding: 4px 12px;
+  color: #ff8a80;
+  font-size: 13px;
+}
+
+.compose {
+  display: flex;
+  flex: 1 0 100%;
+  gap: 8px;
+}
+
+.message {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.1);
+  color: inherit;
+  /* 16px keeps iOS Safari from zooming the page on focus. */
+  font: inherit;
+  font-size: 16px;
+}
+
+.message::placeholder {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.hint {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.2);
+  font-size: 13px;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.cropHint,
+.cropSize {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.cropSize {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Rotated, the bottom bar spans the long edge: keep it to one row. */
+.wide .compose {
+  flex: 1 1 320px;
+}

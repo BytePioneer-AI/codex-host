@@ -58,6 +58,17 @@ describe("official Codex passthrough", () => {
     { method: "thread/list", params: { limit: "future-limit-shape" } },
     { method: "thread/archive", params: { thread: { id: "future-nested-id" } } },
     { method: "thread/unarchive" },
+    { method: "thread/fork", params: { threadId: "official-thread" } },
+    {
+      method: "thread/fork",
+      params: {
+        threadId: "official-thread",
+        lastTurnId: "native-cut",
+        excludeTurns: true,
+        cwd: "/native/worktree",
+        futureForkOption: { preserve: true },
+      },
+    },
     { method: "thread/delete", params: { threadId: "official-thread" } },
     { method: "thread/delete", params: { thread: { id: "future-nested-id" } } },
     {

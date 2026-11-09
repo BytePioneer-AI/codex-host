@@ -62,6 +62,7 @@ describe("delegation Skill installation", () => {
     ["v4 Skill shipped in v0.4.0-v0.6.0", "codexhost-delegation-v4.md"],
     ["v8 Skill that ran codexhost from PATH", "codexhost-delegation-v8.md"],
     ["v9 Skill without child-session name guidance", "codexhost-delegation-v9.md"],
+    ["v10 Skill without external-client credentials", "codexhost-delegation-v10.md"],
   ])("updates the %s", async (_name, fixture) => {
     const root = await home();
     const shipped = await readFile(new URL(`./fixtures/${fixture}`, import.meta.url), "utf8");
@@ -90,6 +91,17 @@ describe("delegation Skill installation", () => {
     await expect(readFile(agents, "utf8")).resolves.toBe("user content\n");
   });
 
+  it("briefly explains external integration and credentials without replacing Host access", () => {
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("suggest the external CLI, HTTP or MCP");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("~/.codexhost/cli-credentials.json");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("same-user CLI calls read them automatically");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("Authorization: Bearer <token>");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("codexhost client add <name>");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain(
+      "Host-started sessions keep their injected credentials",
+    );
+  });
+
   it("uses existing Threads directly and keeps viewing requests read-only", () => {
     expect(CODEXHOST_DELEGATION_SKILL).toContain("For a new delegation, create an independent");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("operate on that Thread\ndirectly");
@@ -99,7 +111,7 @@ describe("delegation Skill installation", () => {
   });
 
   it("routes natural agent requests and points execution to the authoritative help", () => {
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 10");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 11");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("@agent) to independently perform a task");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session's content, progress, or results");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("Not for recapping the current conversation");

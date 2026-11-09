@@ -682,6 +682,61 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
+  it.each(["result", "messages"] as const)(
+    "preserves history recovery errors when reading %s",
+    async (view) => {
+      const value = await fixture();
+      try {
+        const started = await value.coordinator.start({
+          harnessId: "pi",
+          task: "synthetic history recovery",
+          parentThreadId: "parent",
+        });
+        const session = value.adapter.sessions[0];
+        if (!session) throw new Error("Missing delegated Session");
+        session.succeedTurn();
+        const message = "Synthetic history active branch references a missing Entry";
+        vi.spyOn(session, "readSnapshot").mockResolvedValue({
+          ok: false,
+          error: { code: "nativeFailure", message, retryable: true },
+        });
+        value.runtime.clear();
+        await expect(value.repository.find(started.threadId)).resolves.toMatchObject({
+          state: "ready",
+        });
+        const recoveryError = {
+          code: "INTERNAL_ERROR",
+          message: "External Thread read failed",
+        };
+        await expect(
+          value.coordinator.read({ threadId: started.threadId, view }),
+        ).rejects.toMatchObject(recoveryError);
+        await expect(
+          value.coordinator.wait({ threadId: started.threadId, view, timeoutMs: 100 }),
+        ).rejects.toMatchObject(recoveryError);
+      } finally {
+        await value.close();
+      }
+    },
+  );
+
+  it("retains a missing-Thread error if an external mapping vanishes during resolution", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "synthetic missing mapping",
+        parentThreadId: "parent",
+      });
+      vi.spyOn(value.runtime, "resolve").mockResolvedValue({ kind: "official" });
+      await expect(
+        value.coordinator.read({ threadId: started.threadId, view: "result" }),
+      ).rejects.toMatchObject({ code: "THREAD_NOT_FOUND", message: "Thread was not found" });
+    } finally {
+      await value.close();
+    }
+  });
+
   it("reads the projected terminal Turn when a dead Harness cannot serve its history", async () => {
     const value = await fixture();
     try {
@@ -759,6 +814,49 @@ describe("HarnessDelegationCoordinator", () => {
       await expect(
         value.repository.getDelegationByChild(hostThreadIdSchema.parse(started.threadId)),
       ).resolves.toMatchObject({ status: "running" });
+    } finally {
+      await value.close();
+    }
+  });
+  it("starts work for an external client as its own origin and lists it by that origin", async () => {
+    const metadata = vi.fn(async () => undefined);
+    const value = await fixture(undefined, metadata);
+    try {
+      await expect(
+        value.coordinator.start({
+          harnessId: "pi",
+          task: "triage",
+          parentThreadId: "client:grok-bot",
+        }),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: expect.stringContaining("--cwd"),
+      });
+
+      const input = {
+        harnessId: "pi" as const,
+        task: "triage issue 12",
+        cwd: "/synthetic",
+        parentThreadId: "client:grok-bot",
+      };
+      const result = await value.coordinator.start(input);
+      expect(result).toMatchObject({ parentThreadId: "client:grok-bot", status: "running" });
+      // No parent title exists, so the client's name takes its place.
+      await expect(value.repository.find(result.threadId)).resolves.toMatchObject({
+        title: "triage issue 12 · grok-bot",
+      });
+      expect(metadata).not.toHaveBeenCalled();
+      // A retry from the same client within the window returns the same child.
+      await expect(value.coordinator.start(input)).resolves.toMatchObject({
+        threadId: result.threadId,
+      });
+      await expect(
+        value.coordinator.list({
+          parentThreadId: "client:grok-bot",
+          limit: 25,
+          sort: "created-desc",
+        }),
+      ).resolves.toMatchObject({ threads: [{ threadId: result.threadId }] });
     } finally {
       await value.close();
     }

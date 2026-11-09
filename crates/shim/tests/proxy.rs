@@ -188,6 +188,8 @@ fn run_shim(
     let mut command = Command::new(shim_path());
     command
         .args(arguments)
+        .env_remove("CODEXHOST_LAUNCHER_PID")
+        .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
         .env_remove(HOST_NODE_PATH_ENV)
         .env_remove(HOST_RUNTIME_PATH_ENV)
         .env_remove(REMOTE_SSH_MANAGED_ENV)
@@ -958,6 +960,8 @@ fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
     let ready = directory.join("ready");
     let started = Instant::now();
     let child = Command::new(shim_path())
+        .env_remove("CODEXHOST_LAUNCHER_PID")
+        .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
         .args([
             "-c",
             "features.code_mode_host=true",
@@ -1035,6 +1039,8 @@ fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
     let original_socket = fs::metadata(&socket).expect("read original listener socket identity");
     let repeated_started = Instant::now();
     let repeated = Command::new(shim_path())
+        .env_remove("CODEXHOST_LAUNCHER_PID")
+        .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
         .args([
             "-c",
             "features.code_mode_host=true",
@@ -1071,6 +1077,8 @@ fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
     let alternate_stock = directory.join("alternate-fake-codex");
     fs::copy(fake_codex_path(), &alternate_stock).expect("copy alternate stock Codex fixture");
     let mismatched = Command::new(shim_path())
+        .env_remove("CODEXHOST_LAUNCHER_PID")
+        .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
         .args([
             "-c",
             "features.code_mode_host=true",
@@ -1226,6 +1234,8 @@ fn managed_remote_listener_replaces_a_stale_socket_before_the_startup_timeout() 
 
     let started = Instant::now();
     let output = Command::new(shim_path())
+        .env_remove("CODEXHOST_LAUNCHER_PID")
+        .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
         .args([
             "-c",
             "features.code_mode_host=true",

@@ -32,7 +32,7 @@ PR 维护只做两件事：**明确标题自动标签、CI 结束后更新一条
 > 提交 abc1234。
 
 - 只读取 `.github/workflows/ci.yml` 中与 PR 当前 HEAD 对应的可信运行。等待工作流和所有 jobs 结束；排队、运行中或尚无运行时不新发评论。
-- 只有工作流和所有 jobs 成功，且四项基线 job 均有唯一成功证据，才报告全部通过：`Check ubuntu-22.04`、`Check macos-15`、`Check windows-latest`、`Check Linux ARM64`。
+- 只有工作流和所有 jobs 成功，且四项基线 job 均有唯一成功证据，才报告全部通过：`Check ubuntu-22.04`、`Check macos-26`、`Check windows-latest`、`Check Linux ARM64`。
 - 等待批准、取消、跳过、超时、结果不完整分别说明，不能当作通过。CI API 读取失败不发布猜测结果。
 - 每个 PR 只更新一条 `github-actions[bot]` 自有评论，兼容此前摘要标记；不会接管人工伪造的同名标记。结果未变化不重复写入，失败恢复后用成功结果替换。
 - 评论显示短提交 SHA 并链接完整 SHA，避免新提交尚在运行时把上一轮结果误当成新结果；不会为了更新结果要求作者手填 SHA。
@@ -56,7 +56,7 @@ PR 维护只做两件事：**明确标题自动标签、CI 结束后更新一条
 
 ## CI 执行范围和发布校验
 
-`ci.yml` 保留四项基线 job，不配置分支保护。为减少重复工作，执行范围如下：
+`ci.yml` 保留四项基线 job，不配置分支保护。macOS CI 和 ARM64 发行包使用 `macos-26` 原生 ARM64 runner；macOS x64 发行包使用 `macos-15-intel`。为减少重复工作，执行范围如下：
 
 | 检查 | Linux x64 | macOS / Windows | Linux ARM64 |
 | --- | --- | --- | --- |
@@ -101,13 +101,16 @@ CODEXHOST_TEST_SCOPE=platform npm run test:typescript -- \
 
 1. 标签必须是合法 SemVer 的 annotated tag，正文包含 Release Notes；提交在 `main` 历史上。
 2. `package.json`、`package-lock.json` 根版本及 Cargo workspace 版本必须与标签一致。
-3. 确切发布 SHA 的主仓库 `main push` CI 和四项基线 job 必须成功。
-4. 构建和发布固定 commit SHA；发布前再次验证远端 tag object SHA、提交仍在 `main`、CI run ID / attempt 和结果。
-5. 校验失败就停止发布，不自动改版本、等待后重试或放宽条件；维护者核实后手动重新准备发布。
+3. 默认等待确切发布 SHA 的主仓库 `main push` CI，最多 30 分钟，并要求四项基线 job 全部成功；CI 已失败则立即停止，不等待重试。
+4. 构建和发布固定 commit SHA；发布前再次验证远端 tag object SHA、提交仍在 `main`，默认还校验绑定的 CI run ID / attempt 和结果。
+5. 手动发布可显式启用 `skip_ci`，跳过准备阶段的 CI 等待和发布前的 CI 复验；默认关闭，Tag push 不能启用。该选择记录在 `release-evidence.json` 和 Actions Summary，并产生警告，不伪造 CI 成功证据。Tag、版本、Release Notes、提交归属、构建和产物校验仍执行。
+6. 未明确跳过的校验失败就停止发布，不自动改版本或放宽条件；维护者核实后手动重新准备发布。
 
-如需让用户手动获取新版、但不向现有安装推送更新提示，可从默认分支手动运行 `Release packages`，指定原 annotated tag 并启用 `github_prerelease`。此选项只将新建的 GitHub Release 标记为 Prerelease 且不设为 latest；npm dist-tag 仍由版本决定，稳定 SemVer 发布到 `latest`。现有更新检查只读取 GitHub 正式 latest Release，因此不会提示这个预览发行。它不修改已有 Release 的状态，也不移动标签，仍要求确切标签提交的 CI 成功。
+从默认分支手动运行 `Release packages`，指定已有 annotated tag：`skip_ci=false`（默认）等待并校验 CI，`skip_ci=true` 不查询 CI，即使 CI 缺失、运行中、失败或仅有手动单平台结果，也可继续构建发布。后者不代表通过 CI。此选项可与 `github_prerelease`、`skip_npm` 组合，重启发布时需重新明确选择。新 Tag 推送仍自动触发默认门禁；若要让新 Tag 只走手动发布，须经维护者授权临时禁用发布工作流后推送 Tag、恢复工作流，再手动运行，不靠推送后取消规避竞态。
 
-npm 发布受阻时，可从默认分支手动运行 `Release packages`，指定原 annotated tag 并启用 `skip_npm`。该模式跳过 npm 发布，仍从标签的固定提交构建安装包，保留全部版本、Tag 和确切提交 CI 校验，通过后只发布 GitHub Release。无需移动或重建标签；默认发布仍要求 npm 发布成功。
+如需让用户手动获取新版、但不向现有安装推送更新提示，可从默认分支手动运行 `Release packages`，指定原 annotated tag 并启用 `github_prerelease`。此选项只将新建的 GitHub Release 标记为 Prerelease 且不设为 latest；npm dist-tag 仍由版本决定，稳定 SemVer 发布到 `latest`。现有更新检查只读取 GitHub 正式 latest Release，因此不会提示这个预览发行。它不修改已有 Release 的状态，也不移动标签；默认要求确切标签提交的 CI 成功，显式选择 `skip_ci` 时例外。
+
+npm 发布受阻时，可从默认分支手动运行 `Release packages`，指定原 annotated tag 并启用 `skip_npm`。该模式跳过 npm 发布，仍从标签的固定提交构建安装包，保留全部版本和 Tag 校验，默认保留确切提交 CI 校验（显式选择 `skip_ci` 时例外），通过后只发布 GitHub Release。无需移动或重建标签；默认发布仍要求 npm 发布成功。
 
 标签推送使用标签提交里的工作流定义，新校验不会追溯改写旧标签的发布逻辑。这不是不可绕过的权限控制；未设置分支、标签或发布环境保护。
 

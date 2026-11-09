@@ -1,4 +1,4 @@
-import { request as httpRequest } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -83,7 +83,12 @@ function fakeHarnesses(): ConsoleHarnesses {
 }
 
 async function start(
-  options: { codexRunning?: boolean; launch?: () => void; host?: ConsoleHostClient } = {},
+  options: {
+    codexRunning?: boolean;
+    launch?: () => void;
+    host?: ConsoleHostClient;
+    service?: (command: string, args: string[], environment: NodeJS.ProcessEnv) => Promise<void>;
+  } = {},
 ) {
   const updates = fakeUpdates();
   const onExit = vi.fn();
@@ -102,6 +107,7 @@ async function start(
     host: options.host ?? { available: vi.fn(async () => false), request: vi.fn() },
     inspect: async () => inspectDocument(options.codexRunning ?? false),
     launch: options.launch ?? vi.fn(),
+    service: options.service ?? vi.fn(async () => {}),
     onExit,
   });
   const base = `http://127.0.0.1:${running.port}`;
@@ -110,17 +116,28 @@ async function start(
 
 const CHANGE = { "x-codexhost-console": "1" };
 
-function rawRequest(port: number, host: string): Promise<number> {
+function rawRequest(
+  port: number,
+  host: string,
+  requestPath = "/api/health",
+  body?: string,
+): Promise<number> {
   return new Promise((resolve, reject) => {
     const request = httpRequest(
-      { host: "127.0.0.1", port, path: "/api/health", headers: { host } },
+      {
+        host: "127.0.0.1",
+        port,
+        path: requestPath,
+        method: body === undefined ? "GET" : "POST",
+        headers: { host, ...CHANGE },
+      },
       (response) => {
         response.resume();
         resolve(response.statusCode ?? 0);
       },
     );
     request.on("error", reject);
-    request.end();
+    request.end(body);
   });
 }
 
@@ -324,6 +341,141 @@ describe("console server", () => {
     expect(invalid.status).toBe(400);
   });
 
+  it("opens Web through Launcher and reports stop completion before exiting", async () => {
+    let base = "";
+    const service = vi.fn(
+      async (_command: string, args: string[], environment: NodeJS.ProcessEnv) => {
+        expect(environment.CODEXHOST_DATA_DIR).toBe(directory);
+        expect(environment.CODEXHOST_CONSOLE_PORT).toBe(new URL(base).port);
+        if (args[0] === "stop") {
+          const shutdown = await fetch(`${base}/api/shutdown`, { method: "POST", headers: CHANGE });
+          expect(shutdown.ok).toBe(true);
+          expect(onExit).not.toHaveBeenCalled();
+          const health = await (await fetch(`${base}/api/health`)).json();
+          expect(health.service).toBe("codexhost-console-stopping");
+        }
+      },
+    );
+    const started = await start({ service });
+    base = started.base;
+    const { onExit } = started;
+    for (const action of ["web/open", "stop"]) {
+      const blocked = await fetch(`${base}/api/${action}`, { method: "POST" });
+      expect(blocked.status).toBe(403);
+      expect(service).not.toHaveBeenCalled();
+    }
+    expect((await fetch(`${base}/api/web/open`, { method: "POST", headers: CHANGE })).ok).toBe(
+      true,
+    );
+    expect(service.mock.calls[0]?.[1][0]).toBe("web");
+    const stopped = await fetch(`${base}/api/stop`, { method: "POST", headers: CHANGE });
+    expect(await stopped.json()).toEqual({ stopped: true });
+    expect(service.mock.calls[1]?.[1][0]).toBe("stop");
+    await vi.waitFor(() => expect(onExit).toHaveBeenCalledOnce());
+  });
+
+  it("does not claim a partial or failed stop succeeded", async () => {
+    let base = "";
+    const started = await start({
+      service: async () => {
+        await fetch(`${base}/api/shutdown`, { method: "POST", headers: CHANGE });
+        throw new Error("Host: fixture failure");
+      },
+    });
+    base = started.base;
+    const { onExit } = started;
+    const stopped = await fetch(`${base}/api/stop`, { method: "POST", headers: CHANGE });
+    expect(stopped.status).toBe(500);
+    expect(await stopped.json()).toEqual({ error: "Host: fixture failure" });
+    expect(onExit).not.toHaveBeenCalled();
+    expect(await (await fetch(`${base}/api/health`)).json()).toHaveProperty(
+      "service",
+      "codexhost-console",
+    );
+  });
+
+  it("guards token reads and every connection write, and only forwards the allowlist", async () => {
+    const calls: string[] = [];
+    const upstream = createServer((request, response) => {
+      expect(request.headers.authorization).toBe("Bearer fixture-local-only");
+      calls.push(request.url ?? "");
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ result: { ok: true, value: { fixture: true } } }));
+    });
+    await new Promise<void>((done) => upstream.listen(0, "127.0.0.1", done));
+    try {
+      const address = upstream.address();
+      if (!address || typeof address === "string") throw new Error("missing address");
+      await writeFile(
+        path.join(directory, "web-service-ready.json"),
+        JSON.stringify({
+          pid: process.pid,
+          web_pid: process.pid,
+          loginUrl: `http://127.0.0.1:${address.port}/?token=fixture-local-only`,
+        }),
+      );
+      const { base, port } = await start();
+      for (const method of [
+        "accessTokenGet",
+        "accessTokenRegenerate",
+        "lanSet",
+        "autostartSet",
+        "tailscaleServeSet",
+      ]) {
+        const before = calls.length;
+        for (const headers of [
+          {},
+          { ...CHANGE, origin: "https://attacker.example" },
+          { ...CHANGE, "x-forwarded-for": "198.51.100.4" },
+          { ...CHANGE, forwarded: "for=198.51.100.4" },
+          { ...CHANGE, "sec-fetch-site": "cross-site" },
+        ]) {
+          const response = await fetch(`${base}/api/web/request`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ method: `codexhost/${method}`, params: { enabled: true } }),
+          });
+          expect([403, 421], JSON.stringify(headers)).toContain(response.status);
+        }
+        expect(calls).toHaveLength(before);
+        const response = await fetch(`${base}/api/web/request`, {
+          method: "POST",
+          headers: { ...CHANGE, origin: base },
+          body: JSON.stringify({ method: `codexhost/${method}`, params: { enabled: true } }),
+        });
+        expect(await response.json()).toEqual({ fixture: true });
+      }
+      expect(
+        await rawRequest(
+          port,
+          "attacker.example",
+          "/api/web/request",
+          JSON.stringify({ method: "codexhost/accessTokenGet" }),
+        ),
+      ).toBe(421);
+      expect(calls).toHaveLength(5);
+      const invalid = await fetch(`${base}/api/web/request`, {
+        method: "POST",
+        headers: CHANGE,
+        body: JSON.stringify({ method: "thread/start" }),
+      });
+      expect(invalid.status).toBe(400);
+      expect((await fetch(`${base}/api/web/request`)).status).toBe(404);
+      expect(calls).toHaveLength(5);
+      await rm(path.join(directory, "web-service-ready.json"));
+      const missing = await fetch(`${base}/api/web/request`, {
+        method: "POST",
+        headers: CHANGE,
+        body: JSON.stringify({ method: "codexhost/accessTokenGet" }),
+      });
+      expect(missing.status).toBe(500);
+      expect(await missing.text()).toContain("Web 未运行");
+    } finally {
+      upstream.closeAllConnections();
+      await new Promise<void>((done) => upstream.close(() => done()));
+    }
+  });
+
   it("forwards only console Host methods and reports a missing Host", async () => {
     const request = vi.fn(async () => ({ result: { accounts: [] } }));
     const { base } = await start({ host: { available: vi.fn(async () => true), request } });
@@ -383,18 +535,64 @@ describe("console server", () => {
     expect(response.status).toBe(503);
   });
 
-  it("updates through the Host while codexhost runs", async () => {
-    const request = vi.fn(async () => ({ result: { status: { phase: "prepared" } } }));
-    const { base, updates } = await start({
-      codexRunning: true,
-      host: { available: vi.fn(async () => true), request },
-    });
-    const response = await fetch(`${base}/api/update/start`, {
-      method: "POST",
-      headers: { origin: base, ...CHANGE },
-    });
-    expect(response.status).toBe(200);
-    expect(request).toHaveBeenCalledWith("codexhost/update/start", {});
-    expect(updates.start).not.toHaveBeenCalled();
+  it.each([true, false])(
+    "updates through the Host with Desktop running: %s",
+    async (codexRunning) => {
+      const request = vi.fn(async () => ({ result: { status: { phase: "prepared" } } }));
+      const { base, updates } = await start({
+        codexRunning,
+        host: { available: vi.fn(async () => true), request },
+      });
+      const response = await fetch(`${base}/api/update/start`, {
+        method: "POST",
+        headers: { origin: base, ...CHANGE },
+      });
+      expect(response.status).toBe(200);
+      expect(request).toHaveBeenCalledWith("codexhost/update/start", {});
+      expect(updates.start).not.toHaveBeenCalled();
+    },
+  );
+});
+
+it("proxies Host display notifications and aborts upstream on browser disconnect", async () => {
+  let upstreamSignal: AbortSignal | undefined;
+  const { base } = await start({
+    host: {
+      available: async () => true,
+      request: async () => ({ result: {} }),
+      displayEvents: async (signal) => {
+        upstreamSignal = signal;
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode('data: {"type":"display-settings-changed"}\n\n'),
+              );
+              signal.addEventListener("abort", () => controller.close());
+            },
+          }),
+        );
+      },
+    },
+  });
+  expect(await (await fetch(`${base}/api/host/display-capabilities`)).json()).toEqual({
+    events: true,
+  });
+  const controller = new AbortController();
+  const response = await fetch(`${base}/api/host/display-events`, { signal: controller.signal });
+  expect(response.headers.get("content-type")).toBe("text/event-stream");
+  if (!response.body) throw new Error("Missing event stream");
+  const reader = response.body.getReader();
+  expect(new TextDecoder().decode((await reader.read()).value)).toContain(
+    "display-settings-changed",
+  );
+  controller.abort();
+  await vi.waitFor(() => expect(upstreamSignal?.aborted).toBe(true));
+});
+
+it("explicitly reports missing Console event transport for legacy fallback", async () => {
+  const { base } = await start();
+  expect(await (await fetch(`${base}/api/host/display-capabilities`)).json()).toEqual({
+    events: false,
   });
 });

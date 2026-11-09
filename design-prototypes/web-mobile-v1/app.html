@@ -1,0 +1,832 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <meta name="theme-color" content="#FFFFFF" />
+    <meta name="color-scheme" content="light" />
+    <title>codexhost · 移动适配原型</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="sidebar-controls.js" defer></script>
+    <script src="prototype.js" defer></script>
+  </head>
+  <body>
+    <svg class="icon-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <symbol id="i-panel" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="16" rx="3" />
+          <path d="M9 4v16" />
+        </symbol>
+        <symbol id="i-new" viewBox="0 0 24 24">
+          <path
+            d="M12 4H6a3 3 0 0 0-3 3v11a3 3 0 0 0 3 3h11a3 3 0 0 0 3-3v-6M15 4l4 4M10 13l1-4 7-7 4 4-7 7Z"
+          />
+        </symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+        <symbol id="i-back" viewBox="0 0 24 24"><path d="m14 5-7 7 7 7" /></symbol>
+        <symbol id="i-next" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" /></symbol>
+        <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></symbol>
+        <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6" /></symbol>
+        <symbol id="i-search" viewBox="0 0 24 24">
+          <circle cx="10.5" cy="10.5" r="6.5" />
+          <path d="m16 16 4 4" />
+        </symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24">
+          <path
+            d="m9 3-1 3-3 1 .5 3L3 12l2.5 2L5 17l3 1 1 3h6l1-3 3-1-.5-3 2.5-2-2.5-2 .5-3-3-1-1-3Z"
+          />
+          <circle cx="12" cy="12" r="3" />
+        </symbol>
+        <symbol id="i-branch" viewBox="0 0 24 24">
+          <circle cx="6" cy="5" r="2" />
+          <circle cx="6" cy="19" r="2" />
+          <circle cx="18" cy="6" r="2" />
+          <path d="M6 7v10m0-3c0-5 12 0 12-6" />
+        </symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24">
+          <path d="M3 7V5a2 2 0 0 1 2-2h5l3 3h6a2 2 0 0 1 2 2v11H3V7Z" />
+          <path d="M3 9h18" />
+        </symbol>
+        <symbol id="i-file" viewBox="0 0 24 24">
+          <path d="M14 3H5v18h14V8Zm0 0v5h5M8 12h8M8 16h6" />
+        </symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></symbol>
+        <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6" /></symbol>
+        <symbol id="i-shield" viewBox="0 0 24 24">
+          <path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Zm-4 9 3 3 5-6" />
+        </symbol>
+        <symbol id="i-terminal" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="16" rx="3" />
+          <path d="m7 9 3 3-3 3m6 0h4" />
+        </symbol>
+        <symbol id="i-host" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="13" rx="2" />
+          <path d="M8 21h8m-4-4v4" />
+        </symbol>
+        <symbol id="i-refresh" viewBox="0 0 24 24">
+          <path d="M20 8a8 8 0 1 0 0 8M20 3v5h-5" />
+        </symbol>
+        <symbol id="i-mic" viewBox="0 0 24 24">
+          <rect x="9" y="2" width="6" height="13" rx="3" />
+          <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
+        </symbol>
+        <symbol id="i-model" viewBox="0 0 24 24">
+          <ellipse cx="12" cy="5" rx="8" ry="3" />
+          <path d="M4 5v13c0 4 16 4 16 0V5M4 11c0 4 16 4 16 0" />
+        </symbol>
+        <symbol id="i-pin" viewBox="0 0 24 24">
+          <path d="m15 3 6 6-3 1-4 4v4l-3-3-7 7 7-7-3-3h4l4-4Z" />
+        </symbol>
+        <symbol id="i-sliders" viewBox="0 0 24 24">
+          <path d="M3 7h5m4 0h9M3 17h9m4 0h5" />
+          <circle cx="10" cy="7" r="2" />
+          <circle cx="14" cy="17" r="2" />
+        </symbol>
+        <symbol id="i-folder-plus" viewBox="0 0 24 24">
+          <path d="M3 7V5a2 2 0 0 1 2-2h5l3 3h6a2 2 0 0 1 2 2v11H3V7Z" />
+          <path d="M8 13h8m-4-4v8" />
+        </symbol>
+        <symbol id="i-more" viewBox="0 0 24 24">
+          <circle cx="5" cy="12" r="1" />
+          <circle cx="12" cy="12" r="1" />
+          <circle cx="19" cy="12" r="1" />
+        </symbol>
+        <symbol id="i-import" viewBox="0 0 24 24">
+          <path d="M4 15v5h16v-5M12 3v12m-5-5 5 5 5-5" />
+        </symbol>
+        <symbol id="i-signal" viewBox="0 0 24 24">
+          <path d="M4 17v3m5-7v7m5-12v12m5-17v17" />
+        </symbol>
+        <symbol id="i-battery" viewBox="0 0 24 24">
+          <rect x="2" y="7" width="18" height="10" rx="2" />
+          <path d="M23 10v4M5 10h12v4H5Z" />
+        </symbol>
+      </defs>
+    </svg>
+    <div class="app">
+      <header class="app-header glass">
+        <div class="statusbar" aria-hidden="true">
+          <b>9:41</b
+          ><span
+            ><svg><use href="#i-signal" /></svg><svg><use href="#i-battery" /></svg
+          ></span>
+        </div>
+        <div class="titlebar">
+          <button class="icon-button" data-action="sidebar" aria-label="打开侧栏">
+            <svg><use href="#i-panel" /></svg></button
+          ><a class="icon-button" href="#new" aria-label="新对话"
+            ><svg><use href="#i-new" /></svg
+          ></a>
+          <div class="title-copy">
+            <h1>
+              <button
+                class="title-switcher"
+                data-overlay="recents"
+                aria-label="切换最近访问的对话"
+                aria-haspopup="dialog"
+              >
+                <span class="title-line"
+                  ><span id="thread-title">修复移动端输入框遮挡</span
+                  ><span id="current-status" class="dot" aria-hidden="true" hidden></span
+                  ><svg><use href="#i-down" /></svg
+                ></span>
+              </button>
+            </h1>
+          </div>
+          <button class="icon-button" data-overlay="files" aria-label="打开文件面板">
+            <svg><use href="#i-folder" /></svg>
+          </button>
+        </div>
+        <nav class="recent-strip" aria-label="最近访问的其他对话，左右滑动浏览，点选切换" hidden>
+          <span class="recent-label">最近</span>
+          <div id="recent-shortcuts" class="recent-shortcuts"></div>
+          <button
+            class="recent-more"
+            data-overlay="recents"
+            aria-label="查看全部最近访问的对话"
+            aria-haspopup="dialog"
+          >
+            更多
+          </button>
+        </nav>
+      </header>
+
+      <main class="transcript scroll" id="messages" tabindex="-1">
+        <div class="conversation-time">今天 09:32 <span>· 示例 Thread</span></div>
+        <article class="user-message">
+          <p>iPhone 打开键盘后，发送按钮被挡住了。请修复，保留现有桌面行为。</p>
+        </article>
+        <article class="agent-message">
+          <div class="author">
+            <span class="harness-mark claude">Cl</span><strong>Claude Code</strong
+            ><time>09:34</time>
+          </div>
+          <p>已定位到固定视口高度的问题。我只调整了移动端样式，桌面端的结构保持不变。</p>
+          <details class="activity">
+            <summary>
+              <svg><use href="#i-check" /></svg><span>读取了 3 个文件</span
+              ><span class="muted push">完成</span><svg class="chevron"><use href="#i-down" /></svg>
+            </summary>
+            <div class="activity-content">
+              <p>读取 <code>Composer.tsx</code></p>
+              <p>读取 <code>InputBar.module.css</code></p>
+              <p>检查可视视口与安全区</p>
+            </div>
+          </details>
+          <p class="result-heading">调整内容</p>
+          <ul>
+            <li>Composer 跟随可视视口高度。</li>
+            <li>发送按钮避开底部安全区。</li>
+            <li>输入框保留 16px 字号，不触发缩放。</li>
+          </ul>
+          <details class="diff-card" id="inline-diff">
+            <summary>
+              <svg><use href="#i-file" /></svg><span>Composer.module.css</span
+              ><span class="diff-count push"><b class="green">+12</b> <b class="red">−4</b></span
+              ><svg class="chevron"><use href="#i-down" /></svg>
+            </summary>
+            <div class="code-scroll" tabindex="0" aria-label="代码差异，长行可横向滚动">
+              <pre><span class="hunk">@@ −24,7 +24,15 @@</span><span> 24 .mobile-layout {</span><span class="removed">−25   height: 100vh;</span><span class="added">+25   height: 100dvh;</span><span class="added">+26   min-height: 0;</span><span> 27 }</span><span class="added">+28 .composer {</span><span class="added">+29   padding-bottom: max(12px, env(safe-area-inset-bottom));</span><span class="added">+30 }</span></pre>
+            </div>
+            <p class="diff-note">节选示例，非真实仓库变更</p>
+          </details>
+          <p class="after-diff">修改已准备好。建议在真实 iPhone 上补充键盘弹出、收起和横屏验证。</p>
+          <div class="message-footer">
+            <span>1 个文件已更改</span
+            ><button class="text-button" data-action="show-diff">
+              查看变更<svg><use href="#i-next" /></svg>
+            </button>
+          </div>
+        </article>
+      </main>
+
+      <section class="empty-content" hidden>
+        <h2>今天想做点什么？</h2>
+        <button class="workspace-choice" data-overlay="workspace">
+          <svg><use href="#i-folder" /></svg><span id="workspace-choice-label">codex-host-web</span
+          ><svg><use href="#i-down" /></svg>
+        </button>
+        <p>描述你想要构建的内容，<br />或从左侧继续已有对话。</p>
+      </section>
+
+      <div class="composer-dock" id="composer-dock">
+        <div class="connection-notice glass" id="connection-notice" hidden role="status">
+          <div><span class="dot red"></span><strong>与 Host 的连接已断开</strong></div>
+          <p id="connection-copy">草稿仍在当前页面；任务状态暂不可确认。</p>
+          <button class="text-button" data-action="retry">
+            <svg><use href="#i-refresh" /></svg><span>重新连接</span>
+          </button>
+        </div>
+        <section class="voice-notice glass" id="voice-notice" hidden aria-label="语音输入演示结果">
+          <p id="voice-notice-copy"></p>
+          <div class="voice-actions">
+            <button class="text-button" data-action="voice-discard">丢弃</button
+            ><button class="text-button" data-action="voice-insert">插入当前草稿</button
+            ><button class="text-button" data-action="voice-retry" hidden>再试一次</button>
+          </div>
+        </section>
+        <form class="composer glass" id="composer-form">
+          <label class="sr-only" for="draft">发消息或创建任务</label
+          ><textarea
+            id="draft"
+            rows="2"
+            placeholder="发消息或创建任务，\n/ 调用指令，@ 文件或对话"
+            enterkeyhint="enter"
+          ></textarea>
+          <div class="attachment-list" hidden>
+            <svg><use href="#i-file" /></svg><span>viewport-notes.txt</span
+            ><button
+              type="button"
+              class="icon-button push"
+              data-action="remove-attachment"
+              aria-label="移除附件"
+            >
+              <svg><use href="#i-close" /></svg>
+            </button>
+          </div>
+          <div class="screenshot-attachment" hidden>
+            <img src="assets/sample-desktop.png" alt="静态示例截图缩略图" /><span
+              >desktop-example.png<small>示例截图 · 未上传</small></span
+            ><button
+              type="button"
+              class="icon-button push"
+              data-action="remove-screenshot"
+              aria-label="移除截图"
+            >
+              <svg><use href="#i-close" /></svg>
+            </button>
+          </div>
+          <div class="composer-tools">
+            <div id="voice-controls" hidden>
+              <button
+                class="icon-button"
+                type="button"
+                data-action="voice-discard"
+                aria-label="取消语音演示"
+              >
+                <svg><use href="#i-close" /></svg></button
+              ><span class="voice-reading"
+                ><span id="voice-phase">模拟录音</span
+                ><small id="voice-clock">00:00 · 未录音</small></span
+              ><button class="voice-stop" type="button" data-action="voice-stop">结束并填入</button>
+            </div>
+            <button
+              class="icon-button"
+              type="button"
+              data-overlay="attachments"
+              aria-label="添加文件或调用指令"
+            >
+              <svg><use href="#i-plus" /></svg></button
+            ><button
+              class="icon-button"
+              id="screenshot-entry"
+              type="button"
+              data-overlay="screenshot"
+              aria-label="Host 电脑桌面截图（演示）"
+            >
+              <svg><use href="#i-host" /></svg></button
+            ><button
+              class="icon-button"
+              id="voice-entry"
+              type="button"
+              data-action="voice-start"
+              aria-label="语音输入（演示，不启用麦克风）"
+            >
+              <svg><use href="#i-mic" /></svg></button
+            ><button
+              class="icon-button"
+              type="button"
+              data-overlay="permission"
+              aria-label="查看当前权限"
+            >
+              <svg><use href="#i-shield" /></svg></button
+            ><button class="model-control" type="button" data-overlay="model" aria-label="选择模型">
+              <svg class="compact-model-icon"><use href="#i-model" /></svg
+              ><span id="model-label">Sonnet 4.6</span><svg><use href="#i-down" /></svg></button
+            ><button
+              class="harness-control"
+              type="button"
+              data-overlay="harness"
+              aria-label="查看 Harness"
+            >
+              <span id="composer-harness" class="harness-mark claude">Cl</span></button
+            ><button class="icon-button send" type="submit" aria-label="发送消息" disabled>
+              <svg><use href="#i-arrow" /></svg>
+            </button>
+          </div>
+        </form>
+        <div class="dock-meta usage-dock">
+          <span id="harness-caption" class="sr-only">Claude Code</span
+          ><button class="usage-summary" data-overlay="usage" aria-label="查看用量统计（示例）">
+            <span class="sample-label">示例</span><span id="usage-summary"></span></button
+          ><button
+            class="context-summary"
+            data-overlay="context"
+            aria-label="查看上下文占用（示例）"
+          >
+            <svg class="context-ring" viewBox="0 0 20 20" aria-hidden="true">
+              <circle class="ring-track" cx="10" cy="10" r="7" />
+              <circle
+                id="context-arc"
+                cx="10"
+                cy="10"
+                r="7"
+                pathLength="100"
+                stroke-dasharray="66 100"
+                transform="rotate(-90 10 10)"
+              /></svg
+            ><span id="context-summary">66%</span></button
+          ><span id="usage-unavailable" hidden>仅本地演示 · 暂无统计</span>
+        </div>
+      </div>
+
+      <section class="approval-dock glass" id="approval-dock" aria-label="等待审批" hidden>
+        <div class="dock-status">
+          <span class="dot amber"></span>等待你的批准<span class="push">Claude Code</span>
+        </div>
+        <div class="approval-content scroll">
+          <h2>允许执行测试命令？</h2>
+          <p>验证移动端输入框的布局修改。</p>
+          <div class="command">
+            <code>npm run test -- Composer</code><span>~/work/codex-host-web</span>
+          </div>
+          <button class="text-button" data-overlay="approval-detail">
+            查看命令详情<svg><use href="#i-next" /></svg>
+          </button>
+          <p class="scope-note">
+            <svg><use href="#i-shield" /></svg>仅此一次，不更改会话权限。
+          </p>
+        </div>
+        <div class="approval-actions">
+          <button class="secondary" data-decision="reject">拒绝</button
+          ><button class="primary" data-decision="approve">允许一次</button>
+        </div>
+      </section>
+      <section class="question-dock glass" id="question-dock" aria-label="等待回答" hidden>
+        <div class="dock-status">
+          <span class="dot amber"></span>需要你的回答<span class="push">Claude Code</span>
+        </div>
+        <div class="approval-content scroll">
+          <h2>这次覆盖哪些设备？</h2>
+          <fieldset>
+            <legend class="sr-only">设备范围</legend>
+            <label class="choice-row"
+              ><input type="radio" name="device" value="iPhone Safari" checked /><span
+                >iPhone Safari<small>先验证当前问题</small></span
+              ></label
+            ><label class="choice-row"
+              ><input type="radio" name="device" value="iPhone 与 Android" /><span
+                >iPhone 与 Android<small>同时检查两端的键盘行为</small></span
+              ></label
+            >
+          </fieldset>
+        </div>
+        <div class="question-actions">
+          <button class="primary" data-action="answer">发送回答</button>
+        </div>
+      </section>
+      <div class="home-indicator" aria-hidden="true"></div>
+    </div>
+
+    <dialog id="sidebar" class="sidebar glass" aria-labelledby="sidebar-title">
+      <div class="drawer-status" aria-hidden="true">9:41</div>
+      <div class="sidebar-drag-edge" aria-hidden="true"></div>
+      <div class="sidebar-head" tabindex="-1" aria-label="项目与对话">
+        <a class="wordmark" id="sidebar-title" href="index.html" target="_top">codexhost</a
+        ><button class="icon-button" data-action="close-sidebar" aria-label="关闭侧栏">
+          <svg><use href="#i-panel" /></svg>
+        </button>
+      </div>
+      <div id="sidebar-home">
+        <a class="sidebar-new" href="#new"
+          ><svg><use href="#i-new" /></svg>新对话</a
+        ><button class="sidebar-nav" data-overlay="import">
+          <svg><use href="#i-import" /></svg>导入 Thread
+        </button>
+        <div class="sidebar-section-title sidebar-toolbar">
+          <h2>会话</h2>
+          <div class="sidebar-header-actions">
+            <button
+              class="icon-button"
+              data-side-action="search"
+              aria-label="搜索会话"
+              aria-expanded="false"
+              aria-controls="sidebar-search"
+            >
+              <svg><use href="#i-search" /></svg></button
+            ><button
+              class="icon-button"
+              data-side-action="view-options"
+              aria-label="视图选项"
+              aria-controls="sidebar-detail"
+            >
+              <svg><use href="#i-sliders" /></svg></button
+            ><button
+              class="icon-button"
+              data-side-action="add-workspace"
+              aria-label="添加工作区"
+              aria-controls="sidebar-detail"
+            >
+              <svg><use href="#i-folder-plus" /></svg>
+            </button>
+          </div>
+        </div>
+        <label id="sidebar-search" class="search" hidden
+          ><svg><use href="#i-search" /></svg
+          ><input
+            id="search"
+            type="search"
+            placeholder="搜索对话或工作区"
+            aria-label="搜索对话" /></label
+        ><button class="sidebar-filter text-button" data-side-action="view-options" hidden></button>
+        <div class="sidebar-list scroll">
+          <details class="project-group" open>
+            <summary>
+              <svg><use href="#i-folder" /></svg>codex-host-web<svg class="chevron push">
+                <use href="#i-down" />
+              </svg>
+            </summary>
+            <a class="thread-row selected" href="#thread" data-thread="main"
+              ><span class="harness-mark claude">Cl</span
+              ><span class="thread-copy"><strong>修复移动端输入框遮挡</strong></span
+              ><span class="row-status" aria-label="空闲">空闲</span></a
+            ><a class="thread-row" href="#running" data-thread="running"
+              ><span class="harness-mark codex">Co</span
+              ><span class="thread-copy"><strong>检查 Relay 重连逻辑</strong></span
+              ><span class="dot green" aria-label="运行中"></span></a
+            ><a class="thread-row" href="#pi" data-thread="pi"
+              ><span class="harness-mark pi">Pi</span
+              ><span class="thread-copy"><strong>梳理 Adapter 生命周期</strong></span
+              ><span class="dot green" aria-label="运行中"></span></a
+            ><a class="thread-row" href="#approval" data-thread="approval"
+              ><span class="harness-mark claude">Cl</span
+              ><span class="thread-copy"><strong>运行移动端测试</strong></span
+              ><span class="dot amber" aria-label="等待批准"></span></a
+            ><a class="thread-row" href="#question" data-thread="question"
+              ><span class="harness-mark claude">Cl</span
+              ><span class="thread-copy"><strong>移动端测试范围</strong></span
+              ><span class="dot amber" aria-label="等待回答"></span
+            ></a>
+          </details>
+          <details class="project-group" open>
+            <summary>
+              <svg><use href="#i-folder" /></svg>console-ui<svg class="chevron push">
+                <use href="#i-down" />
+              </svg>
+            </summary>
+            <a class="thread-row" href="#error" data-thread="error"
+              ><span class="harness-mark cursor">Cu</span
+              ><span class="thread-copy"><strong>整理设置页交互</strong></span
+              ><span class="dot red" aria-label="连接错误"></span
+            ></a>
+          </details>
+          <p class="search-empty" hidden>没有匹配的对话。<br />请试试其他关键词。</p>
+        </div>
+      </div>
+      <section id="sidebar-detail" hidden aria-labelledby="sidebar-detail-title">
+        <header class="sidebar-detail-header">
+          <button class="icon-button" data-side-action="back" aria-label="返回会话列表">
+            <svg><use href="#i-back" /></svg>
+          </button>
+          <h2 id="sidebar-detail-title" tabindex="-1"></h2>
+        </header>
+        <div id="sidebar-detail-body" class="scroll"></div>
+      </section>
+      <footer class="sidebar-footer">
+        <button class="sidebar-nav" data-overlay="settings">
+          <svg><use href="#i-settings" /></svg>设置<span class="connection-dot push"
+            ><span class="dot green"></span>已连接</span
+          ></button
+        ><span class="sidebar-prototype">移动适配原型 · 示例数据</span>
+      </footer>
+    </dialog>
+
+    <dialog id="overlay" aria-labelledby="overlay-title" class="sheet glass">
+      <div class="sheet-handle" aria-hidden="true"><span></span></div>
+      <header class="overlay-header">
+        <h2 id="overlay-title" tabindex="-1"></h2>
+        <button class="icon-button" data-action="close-overlay" aria-label="关闭面板">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </header>
+      <div id="overlay-content"></div>
+    </dialog>
+    <template id="sidebar-thread-options"
+      ><div class="sidebar-options">
+        <h3 id="row-detail-name"></h3>
+        <dl class="row-detail-meta">
+          <div>
+            <dt>Harness</dt>
+            <dd id="row-detail-harness"></dd>
+          </div>
+          <div>
+            <dt>工作区</dt>
+            <dd id="row-detail-project"></dd>
+          </div>
+          <div>
+            <dt>状态</dt>
+            <dd id="row-detail-status"></dd>
+          </div>
+          <div>
+            <dt>更新于</dt>
+            <dd id="row-detail-time"></dd>
+          </div>
+        </dl>
+        <a class="choice-button" id="row-open-link"
+          >打开会话<svg><use href="#i-next" /></svg></a
+        ><button class="choice-button" data-side-action="pin-thread"></button
+        ><button class="choice-button" data-side-action="archive-thread"></button>
+        <p class="helper">会话、时间和操作均为本地演示，不提交到 Host。</p>
+      </div></template
+    >
+    <template id="sidebar-view-options"
+      ><div class="sidebar-options">
+        <fieldset>
+          <legend>分组方式</legend>
+          <label
+            ><span>按工作区</span
+            ><input type="radio" name="sidebar-group" value="workspace" /></label
+          ><label
+            ><span>按工作区树</span><input type="radio" name="sidebar-group" value="tree" /></label
+          ><label
+            ><span>单列表</span><input type="radio" name="sidebar-group" value="list"
+          /></label>
+        </fieldset>
+        <fieldset>
+          <legend>排序方式</legend>
+          <label
+            ><span>手动排序</span><input type="radio" name="sidebar-order" value="manual" /></label
+          ><label
+            ><span>最近更新</span><input type="radio" name="sidebar-order" value="updated"
+          /></label>
+        </fieldset>
+        <fieldset>
+          <legend>筛选会话</legend>
+          <label
+            ><span>隐藏已归档</span
+            ><input type="radio" name="sidebar-archive" value="hide" /></label
+          ><label
+            ><span>全部对话（显示已归档）</span
+            ><input type="radio" name="sidebar-archive" value="all" /></label
+          ><label
+            ><span>仅显示已归档</span><input type="radio" name="sidebar-archive" value="only"
+          /></label>
+        </fieldset>
+        <p class="helper">
+          仅改变侧栏示例列表，不改变顶部最近访问。手动排序使用预设顺序，不演示拖拽。
+        </p>
+        <button class="primary" data-side-action="back">完成</button>
+      </div></template
+    >
+    <template id="sidebar-add-workspace"
+      ><div class="sidebar-options">
+        <div class="sidebar-host">
+          <svg><use href="#i-host" /></svg><span>Studio Mac<small>Host 电脑 · 示例</small></span>
+        </div>
+        <p class="helper">选择电脑上的已有目录，不是手机文件夹。</p>
+        <p class="host-directory"><code>/Users/demo/work</code></p>
+        <fieldset id="host-folders"><legend class="sr-only">Host 示例目录</legend></fieldset>
+        <p class="helper">静态目录示例，不读取磁盘、不创建文件夹，也不连接 Host。</p>
+        <button class="primary" data-side-action="confirm-workspace" disabled>
+          添加并新建对话 · 演示
+        </button>
+      </div></template
+    >
+    <template id="panel-usage"
+      ><div class="sheet-body">
+        <p class="helper">当前会话 · 示例数据，不是实时统计</p>
+        <dl class="metric-details">
+          <div data-metric="cache">
+            <dt>最近缓存命中率 · CH</dt>
+            <dd></dd>
+          </div>
+          <div data-metric="tps">
+            <dt>输出速度</dt>
+            <dd></dd>
+          </div>
+          <div data-metric="cost">
+            <dt>会话费用估算</dt>
+            <dd></dd>
+          </div>
+        </dl>
+        <p class="helper">费用示例按公开价格估算，不是账单；没有数据的字段不显示，也不显示为 0。</p>
+        <p class="metric-empty" hidden>当前会话没有可用的统计数据。</p>
+      </div></template
+    >
+    <template id="panel-context"
+      ><div class="sheet-body">
+        <p class="helper">当前会话 · 示例数据</p>
+        <div class="context-heading">
+          <h3>上下文已用 <span id="context-percent"></span></h3>
+          <span id="context-tokens"></span>
+        </div>
+        <progress id="context-progress" max="100" aria-label="上下文占用"></progress>
+        <p class="helper">
+          这是上下文占用，不是账号剩余额度。上下文容量由当前路由提供；没有容量信息时不显示百分比。
+        </p>
+        <p class="metric-empty" hidden>当前会话没有可用的上下文数据。</p>
+      </div></template
+    >
+    <template id="panel-screenshot"
+      ><div class="sheet-body">
+        <p class="helper">截取运行 Host 的 Windows / macOS 电脑桌面，不是手机屏幕。</p>
+        <figure class="desktop-example">
+          <img src="assets/sample-desktop.png" alt="示例画面：原型评审页，非实时电脑桌面截图" />
+          <figcaption>静态示例画面 · 未连接电脑或请求截图权限</figcaption>
+        </figure>
+        <div class="capture-error" hidden>
+          <h3>电脑端未授予截图权限</h3>
+          <p>
+            示例：请在运行 Host 的 Mac
+            上为实际启动程序允许屏幕录制，再手动重试。这不是手机的权限设置。
+          </p>
+        </div>
+        <p class="helper">此原型演示预览与附加；真实查看器还支持放大、旋转和标注。</p>
+      </div>
+      <div class="sheet-actions">
+        <button class="primary" data-action="attach-screenshot">附加示例截图到草稿</button
+        ><button class="secondary" data-action="refresh-screenshot">重新截图 · 演示</button
+        ><button class="text-button" data-action="screenshot-error">查看权限失败示例</button>
+      </div></template
+    >
+    <template id="panel-recents"
+      ><div class="recent-panel-body">
+        <p class="recent-explanation">按你的访问顺序排列，不随后台消息跳动。</p>
+        <label class="search recent-search"
+          ><svg><use href="#i-search" /></svg
+          ><input
+            id="recent-search"
+            type="search"
+            placeholder="搜索标题或项目"
+            aria-label="搜索最近访问的对话"
+            enterkeyhint="search"
+        /></label>
+        <div class="recent-list scroll" id="recent-list" aria-label="最近访问的对话列表"></div>
+        <p class="recent-no-results" hidden>
+          没有匹配的最近对话。<br />可以换个关键词，或到侧栏找更早的对话。
+        </p>
+        <div class="recent-empty" hidden>
+          <svg aria-hidden="true"><use href="#i-panel" /></svg>
+          <h3>还没有访问记录</h3>
+          <p>从侧栏打开对话后，就能在这里快速返回。</p>
+        </div>
+        <footer class="recent-panel-footer">
+          <span id="recent-count" role="status"></span
+          ><button class="text-button" data-action="browse-sidebar">
+            去侧栏找<svg><use href="#i-next" /></svg>
+          </button>
+        </footer></div
+    ></template>
+    <template id="panel-settings"
+      ><nav class="settings-nav" aria-label="设置分类">
+        <button data-section="general" aria-pressed="true">通用</button
+        ><button data-section="devices" aria-pressed="false">连接设备</button
+        ><button data-section="connections" aria-pressed="false">连接</button
+        ><button data-section="accounts" aria-pressed="false">账号</button
+        ><button data-section="resources" aria-pressed="false">资源管理</button
+        ><button data-section="usage" aria-pressed="false">用量统计</button
+        ><button data-section="extensions" aria-pressed="false">界面扩展</button
+        ><button data-section="updates" aria-pressed="false">更新</button
+        ><button data-section="about" aria-pressed="false">关于</button>
+      </nav>
+      <div class="settings-body scroll">
+        <div data-settings="general">
+          <h3>通用</h3>
+          <div class="settings-row">
+            <span>外观<small>当前原型使用浅色</small></span
+            ><span class="muted">浅色</span>
+          </div>
+          <div class="settings-row"><span>语言</span><span class="muted">简体中文</span></div>
+          <button class="settings-row" data-action="font">
+            <span>会话字号</span><span class="muted" id="font-label">标准</span
+            ><svg><use href="#i-next" /></svg></button
+          ><button class="settings-row" data-action="fold" role="switch" aria-checked="true">
+            <span>折叠工具活动<small>先看结果，按需展开</small></span
+            ><span class="switch"></span>
+          </button>
+          <h3>界面材质 · 原型预览</h3>
+          <div class="material-options">
+            <button data-material="glass" aria-pressed="true">磨砂玻璃</button
+            ><button data-material="solid" aria-pressed="false">实色对照</button>
+          </div>
+          <p class="helper">仅改变材质，不改变导航、功能位置或内容。</p>
+        </div>
+        <div data-settings="other" hidden>
+          <h3 id="settings-section-title"></h3>
+          <div class="settings-context">
+            <svg><use href="#i-host" /></svg>
+            <div><strong>Studio Mac</strong><small>当前 Host · 示例</small></div>
+            <span class="dot green push"></span>
+          </div>
+          <p id="settings-section-copy" class="helper"></p>
+        </div>
+        <p class="settings-footnote">分类与入口沿用现有 Web；原型未连接真实设置。</p>
+      </div></template
+    >
+    <template id="panel-harness"
+      ><div class="sheet-body">
+        <p class="helper" id="harness-note">为新 Thread 选择 Harness，Model 单独选择。</p>
+        <div class="harness-options" role="radiogroup" aria-label="Harness">
+          <button role="radio" data-harness="Claude Code" aria-checked="true">
+            <span class="harness-mark claude">Cl</span
+            ><span>Claude Code<small>已就绪 · 示例</small></span
+            ><span class="radio-dot push"></span></button
+          ><button role="radio" data-harness="Codex" aria-checked="false">
+            <span class="harness-mark codex">Co</span><span>Codex<small>已就绪 · 示例</small></span
+            ><span class="radio-dot push"></span></button
+          ><button role="radio" data-harness="Pi" aria-checked="false">
+            <span class="harness-mark pi">Pi</span><span>Pi<small>已就绪 · 示例</small></span
+            ><span class="radio-dot push"></span></button
+          ><button role="radio" data-harness="Cursor" aria-checked="false">
+            <span class="harness-mark cursor">Cu</span
+            ><span>Cursor<small>已就绪 · 示例</small></span
+            ><span class="radio-dot push"></span>
+          </button>
+        </div>
+      </div>
+      <div class="sheet-actions">
+        <button class="primary" data-action="confirm-harness">使用所选 Harness</button
+        ><a class="secondary" id="new-with-harness" href="#new" hidden
+          >新建对话以使用其他 Harness</a
+        >
+      </div></template
+    >
+    <template id="panel-model"
+      ><div class="sheet-body">
+        <p class="helper">示例模型列表；不改变 Thread 的 Harness。</p>
+        <button class="choice-button" data-model="Sonnet 4.6">
+          Sonnet 4.6<svg><use href="#i-check" /></svg></button
+        ><button class="choice-button" data-model="Opus 4.6">Opus 4.6</button>
+      </div></template
+    >
+    <template id="panel-attachments"
+      ><div class="sheet-body">
+        <p class="helper">添加文件或调用指令</p>
+        <button class="choice-button" data-overlay="permission">
+          <svg><use href="#i-shield" /></svg
+          ><span>会话权限<small>窄屏也可从这里打开</small></span></button
+        ><button class="choice-button" data-action="attach">
+          <svg><use href="#i-file" /></svg
+          ><span>添加示例文件<small>viewport-notes.txt · 不上传</small></span></button
+        ><button class="choice-button" data-action="command">
+          <svg><use href="#i-terminal" /></svg>在 Composer 中输入 /
+        </button>
+      </div></template
+    >
+    <template id="panel-permission"
+      ><div class="sheet-body">
+        <p class="helper">当前 Harness 的会话权限</p>
+        <div class="settings-context">
+          <svg><use href="#i-shield" /></svg>
+          <div><strong>默认权限</strong><small>示例显示，不修改真实配置</small></div>
+        </div>
+        <p class="helper">权限语义由 Harness 定义。批准一次操作不会更改这里的会话权限。</p>
+      </div></template
+    >
+    <template id="panel-workspace"
+      ><div class="sheet-body">
+        <p class="helper">选择现有工作区</p>
+        <button class="choice-button" data-workspace="codex-host-web">
+          <svg><use href="#i-folder" /></svg>codex-host-web</button
+        ><button class="choice-button" data-workspace="console-ui">
+          <svg><use href="#i-folder" /></svg>console-ui
+        </button>
+        <p class="helper">演示已有项目，不访问或创建本地目录。</p>
+      </div></template
+    >
+    <template id="panel-files"
+      ><div class="sheet-body">
+        <p class="helper">codex-host-web</p>
+        <button class="choice-button" data-action="show-diff">
+          <svg><use href="#i-file" /></svg
+          ><span>Composer.module.css<small>示例变更 · +12 −4</small></span
+          ><svg class="push"><use href="#i-next" /></svg>
+        </button>
+        <p class="helper">窄屏显示原文件侧面板；变更在会话中展开。</p>
+      </div></template
+    >
+    <template id="panel-import"
+      ><div class="sheet-body">
+        <p class="helper">导入已有 Harness Thread</p>
+        <p>这是现有侧栏的入口。此原型不扫描真实会话，也不导入文件。</p>
+      </div></template
+    >
+    <template id="panel-approval-detail"
+      ><div class="sheet-body">
+        <p class="helper">Claude Code 请求执行</p>
+        <div class="command">
+          <code>npm run test -- Composer</code><span>~/work/codex-host-web</span>
+        </div>
+        <p>命令会执行项目测试脚本，可能生成测试缓存。请确认后返回 Composer 区域批准或拒绝。</p>
+        <p class="helper">本原型不会执行任何命令。</p>
+      </div></template
+    >
+    <div class="toast" role="status" hidden></div>
+    <noscript
+      ><p class="noscript">此静态原型需要 JavaScript 才能切换视图；不会连接 Host。</p></noscript
+    >
+  </body>
+</html>

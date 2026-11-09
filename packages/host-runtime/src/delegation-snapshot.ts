@@ -23,6 +23,12 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function threadTitle(thread: JsonObject): string | null {
+  if (typeof thread.name === "string" && thread.name.trim()) return thread.name;
+  if (typeof thread.preview === "string" && thread.preview.trim()) return thread.preview;
+  return null;
+}
+
 function textFromUserItem(item: JsonObject): string {
   if (!Array.isArray(item.content)) return "";
   return item.content
@@ -191,9 +197,11 @@ export function projectDelegationThreadSnapshot(input: {
       if (message?.text.trim()) page.push(message);
     }
   }
+  const title = threadTitle(input.thread);
   return {
     threadId: input.threadId,
     harnessId: input.harnessId,
+    ...(title ? { title } : {}),
     status,
     turn:
       latestTurnId && latestTurnStatus ? { turnId: latestTurnId, status: latestTurnStatus } : null,

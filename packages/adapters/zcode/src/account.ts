@@ -272,6 +272,7 @@ export async function providerRuntimeHeaders(
 ) {
   const mode = z.object({ mode: z.string() }).safeParse(request.accountAccess).data?.mode;
   try {
+    signal.throwIfAborted();
     if (mode === "individual-coding-plan")
       return { headersApplied: true, requestAuth: await codingPlan.requestAuth(request, signal) };
     if (mode !== "start-plan")
@@ -285,6 +286,7 @@ export async function providerRuntimeHeaders(
     const headers = await verifier().verify(signal);
     return { headersApplied: true, requestAuth: { apiKey, headers } };
   } catch (error) {
+    if (signal.aborted) return { headersApplied: false };
     return {
       headersApplied: false,
       errorMessage:

@@ -24,11 +24,20 @@ export interface ModernQuestionOption {
   readonly description?: string;
 }
 
-export interface ModernQuestionIntent {
-  readonly kind: "plan-review";
-  readonly approve: string;
-  readonly callId?: string;
-}
+/** A question whose answer is one fixed action; neither kind accepts free text. */
+export type ModernQuestionIntent =
+  | {
+      readonly kind: "plan-review";
+      readonly approve: string;
+      readonly callId?: string;
+    }
+  | {
+      /** DSH 0.2.2 permission decision, such as a computer-use application consent. */
+      readonly kind: "approval";
+      readonly approve: string;
+      readonly reject: string;
+      readonly always?: string;
+    };
 
 export interface ModernQuestionItem {
   readonly id: string;
@@ -1015,6 +1024,13 @@ function parseQuestionRequest(value: Readonly<Record<string, unknown>>): ModernQ
   const questions = value.questions.map(parseQuestionItem);
   if (new Set(questions.map(({ id }) => id)).size !== questions.length) throw invalidFrame();
   const wait = Object.hasOwn(value, "wait") ? parseQuestionWait(value.wait) : undefined;
+  // DSH asks a permission decision alone and blocks until it is answered.
+  if (
+    questions.some(({ intent }) => intent?.kind === "approval") &&
+    (questions.length !== 1 || wait !== undefined)
+  ) {
+    throw invalidFrame();
+  }
   return { questions, ...(wait ? { wait } : {}) };
 }
 
@@ -1058,11 +1074,20 @@ function parseQuestionItem(value: unknown): ModernQuestionItem {
   }
   let intent: ModernQuestionIntent | undefined;
   if (Object.hasOwn(value, "intent")) intent = parseQuestionIntent(value.intent);
-  if (
-    intent &&
-    (typeof value.detail !== "string" || !options?.some(({ label }) => label === intent.approve))
-  ) {
+  if (intent && typeof value.detail !== "string") throw invalidFrame();
+  if (intent?.kind === "plan-review" && !options?.some(({ label }) => label === intent.approve)) {
     throw invalidFrame();
+  }
+  if (intent?.kind === "approval") {
+    const labels = [intent.approve, intent.reject, ...(intent.always ? [intent.always] : [])];
+    if (
+      value.multiSelect === true ||
+      new Set(labels).size !== labels.length ||
+      options?.length !== labels.length ||
+      !labels.every((label) => options.some((option) => option.label === label))
+    ) {
+      throw invalidFrame();
+    }
   }
   return {
     id: value.id,
@@ -1091,6 +1116,7 @@ function parseQuestionOption(value: unknown): ModernQuestionOption {
 }
 
 function parseQuestionIntent(value: unknown): ModernQuestionIntent {
+  if (isPlainRecord(value) && value.kind === "approval") return parseApprovalIntent(value);
   if (
     !isPlainRecord(value) ||
     !hasOnlyKeys(value, ["kind", "approve"], ["callId"]) ||
@@ -1105,6 +1131,48 @@ function parseQuestionIntent(value: unknown): ModernQuestionIntent {
     approve: value.approve,
     ...(typeof value.callId === "string" ? { callId: value.callId } : {}),
   };
+}
+
+/** Subject and localized display are presentation data; codexhost shows the native question. */
+function parseApprovalIntent(value: Record<string, unknown>): ModernQuestionIntent {
+  if (
+    !hasOnlyKeys(value, ["kind", "approve", "reject"], ["always", "subject", "display"]) ||
+    !nonBlankString(value.approve) ||
+    !nonBlankString(value.reject) ||
+    (Object.hasOwn(value, "always") && !nonBlankString(value.always)) ||
+    (Object.hasOwn(value, "subject") && !validApprovalSubject(value.subject)) ||
+    (Object.hasOwn(value, "display") && !validApprovalDisplay(value.display))
+  ) {
+    throw invalidFrame();
+  }
+  return {
+    kind: "approval",
+    approve: value.approve,
+    reject: value.reject,
+    ...(typeof value.always === "string" ? { always: value.always } : {}),
+  };
+}
+
+function validApprovalSubject(value: unknown): boolean {
+  return (
+    isPlainRecord(value) &&
+    hasOnlyKeys(value, ["name"], ["icon"]) &&
+    nonBlankString(value.name) &&
+    (!Object.hasOwn(value, "icon") || boundedString(value.icon))
+  );
+}
+
+function validApprovalDisplay(value: unknown): boolean {
+  return (
+    isPlainRecord(value) &&
+    hasOnlyKeys(value, ["question"], ["detail", "approve"]) &&
+    Object.values(value).every(
+      (text) =>
+        isPlainRecord(text) &&
+        Object.hasOwn(text, "en") &&
+        Object.values(text).every((variant) => boundedString(variant)),
+    )
+  );
 }
 
 function parseQuestionAnswer(value: unknown): ModernQuestionAnswer {

@@ -18,6 +18,7 @@ Harness 常按工作目录写相对路径，因此由 Host 共享投影层补全
 - 唯一基准是 **Thread cwd**，不猜子目录、会话目录或工具命令中的 `cd`。如果图片实际基于另一个目录，可能找不到；若 Thread cwd 下恰有同名文件，也可能显示错图。此规则不保证解析所有原生工作目录下的相对路径。
 - 解析出目的地后，在 resolve、文件检查及 percent 编码之前，跳过 POSIX 绝对路径、盘符、UNC、`file:` 及任何 URL，保持其原文。Grok/DSH Adapter 已改成绝对路径的目标不会再次编码。
 - reasoning、工具输出、官方 Codex Thread 不进入这项改写。delegation 读取既有的已投影可见消息，因此也会读到改写后的 Markdown。
+- 共享 Host 的实时快照与历史条目在显示文本不同于原始文本时附带 `codexhostNativeText`。Web 优先使用此字段，自行按 Thread cwd 解析 Markdown，避免把 Desktop 的双重百分号编码用于 Web；没有此字段时沿用 `text`。快照的 `text` 与 Desktop 流式输出共用显示缓存，原始文本保留追加语义。
 
 `@codexhost/harness-adapter/local-media-markdown` 的 `relativeImagesOnly` 模式提供上述窄范围；默认行为保持不变，供 Grok/DSH Adapter 处理额外目录与行内路径：
 

@@ -1,4 +1,5 @@
 import { consolePost } from "../api.js";
+import { confirmAction } from "../confirm.js";
 import { button, h } from "../dom.js";
 import type { ConsoleMessages } from "../messages.js";
 import type { ConsoleOverview, ConsoleState } from "../state.js";
@@ -59,6 +60,7 @@ export function createOverviewPage(
       const document = context.content.ownerDocument;
       let launching = false;
       const render = (): void => {
+        if (context.content.querySelector("dialog")) return;
         const overview = state.overview;
         if (!overview) return;
         const summary = summaryView(overview, messages);
@@ -92,6 +94,36 @@ export function createOverviewPage(
           start.disabled = launching || !overview.launchAvailable;
           actions.append(start);
         }
+        const chinese = locale.startsWith("zh");
+        const actionError = h(document, "p", { role: "alert" });
+        const web = button(document, chinese ? "打开 Web" : "Open Web", () => {
+          web.disabled = true;
+          void consolePost("/api/web/open")
+            .catch((cause: unknown) => {
+              actionError.textContent = cause instanceof Error ? cause.message : String(cause);
+            })
+            .finally(() => {
+              web.disabled = false;
+            });
+        });
+        actions.append(
+          web,
+          button(document, chinese ? "停止" : "Stop", () => {
+            confirmAction(
+              context.content,
+              context.signal,
+              chinese ? "停止 codexhost？" : "Stop codexhost?",
+              chinese
+                ? "将关闭所有 codexhost 服务，包括此控制台。运行中的任务和 Web 终端会被中断，会话数据保留。"
+                : "Stop all codexhost services, including this console. Running tasks and Web terminals will be interrupted; session data is kept.",
+              async () => {
+                await consolePost("/api/stop");
+                state.markStopped();
+              },
+              chinese,
+            );
+          }),
+        );
         if (state.update?.updateAvailable) {
           actions.append(
             button(document, `${messages.viewUpdate} · ${state.update.latestVersion ?? ""}`, () =>
@@ -151,6 +183,7 @@ export function createOverviewPage(
             ),
             actions,
           ),
+          actionError,
           versions,
           ...renderStartupDiagnostics(document, messages, overview, locale),
           h(document, "h2", { className: "console-section-title" }, messages.quickActions),

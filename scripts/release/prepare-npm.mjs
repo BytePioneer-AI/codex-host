@@ -1,3 +1,4 @@
+import { expectedWebPaths, isWebResource, webBuildCommand } from "./web-resources.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
@@ -272,6 +273,7 @@ export function npmPackageCpu(target) {
 
 export function expectedNpmPackagePaths(target) {
   return [
+    ...expectedWebPaths(target),
     "package.json",
     "README.md",
     `bin/codexhost${target.executableSuffix}`,
@@ -301,6 +303,7 @@ export function expectedNpmPackagePaths(target) {
     "licenses/tailwindcss-LICENSE.txt",
     "licenses/ws-LICENSE.txt",
     "licenses/zod-LICENSE.txt",
+    "licenses/DesktopScreenshot-NOTICES.txt",
     "THIRD_PARTY_NOTICES.txt",
   ].sort();
 }
@@ -582,8 +585,15 @@ if (userArguments.length === 0) {
   launchArguments = ["launch"];
 } else if (userArguments[0] === "launch") {
   launchArguments = userArguments;
-} else if (userArguments[0] === "inspect") {
+} else if (userArguments[0] === "inspect" || userArguments[0] === "status" || userArguments[0] === "autostart") {
   launchArguments = userArguments;
+} else if (userArguments[0] === "web" || userArguments[0] === "stop") {
+  launchArguments = [userArguments[0], "--node", process.execPath, "--host-runtime", hostRuntime,
+    "--web-runtime", path.join(packageRoot, "app", "web-server.mjs"), ...userArguments.slice(1)];
+} else if (userArguments[0] === "host") {
+  if (userArguments[1] !== "ensure" && userArguments[1] !== "stop") fail("host expects ensure or stop");
+  launchArguments = ["host", userArguments[1], "--node", process.execPath, "--host-runtime", hostRuntime,
+    "--data", updateEnvironment.CODEXHOST_DATA_DIR || path.join(homedir(), ".codexhost"), ...userArguments.slice(2)];
 } else if (userArguments[0] === "console" || userArguments[0] === "update") {
   launchArguments = null;
   consoleArguments = userArguments.slice(1);
@@ -598,7 +608,9 @@ if (userArguments.length === 0) {
 } else if (
   userArguments[0] === "harness" ||
   userArguments[0] === "delegate" ||
-  userArguments[0] === "thread"
+  userArguments[0] === "thread" ||
+  userArguments[0] === "client" ||
+  userArguments[0] === "events"
 ) {
   launchArguments = null;
   delegationArguments = userArguments;
@@ -609,18 +621,25 @@ if (userArguments.length === 0) {
       "  codexhost",
       "  codexhost --version",
       "  codexhost inspect",
+      "  codexhost web [--host address] [--port port] [--public-url url] [--trusted-proxy addresses]",
+      "  codexhost stop",
+      "  codexhost status",
+      "  codexhost autostart on|off|status",
       "  codexhost console",
       "  codexhost update",
       "  codexhost launch [launcher options]",
       "  codexhost remote install|start|stop|status|uninstall",
       "  codexhost broker install|status|stop|uninstall",
+      "  codexhost host ensure|stop [--data directory]",
       "  codexhost delegate --help",
       "  codexhost harness inspect ...",
       "  codexhost delegate start ...",
-      "  codexhost thread send|cancel|read|wait|list ...",
+      "  codexhost thread send|cancel|read|wait|watch|watches|list ...",
+      "  codexhost client add|list|remove ...",
+      "  codexhost events [--after <id>] [--limit <n>] [--follow true|false]",
       "",
       "This npm package uses the current Node.js runtime and the packaged",
-      "Rust launcher/shim. Codex Desktop must already be installed.",
+      "Rust launcher/shim. Without Codex Desktop, codexhost opens Web.",
     ].join("\\n"),
   );
   process.exit(0);
@@ -821,7 +840,8 @@ if (consoleArguments !== null) {
     if (finished) return;
     finished = true;
     startupTrace("Launcher finished startup with code " + code);
-    process.exit(code);
+    // Flush queued startup output without waiting for the supervising Launcher.
+    process.stdout.end((error) => process.exit(error ? code || 1 : code));
   };
   child.stdout.setEncoding("utf8");
   let ready = false;
@@ -830,14 +850,17 @@ if (consoleArguments !== null) {
   child.stdout.on("data", (chunk) => {
     if (ready) return;
     const output = launcherOutput + chunk;
-    if (output.includes(readyMarker)) {
+    const marker = output.indexOf(readyMarker);
+    if (marker !== -1) {
+      process.stdout.write(output.slice(0, marker));
       ready = true;
       launcherOutput = "";
       startupTrace("received Launcher ready");
       if (!keepLauncherForeground) finish(0);
       return;
     }
-    // Only retain the tail needed to recognize a marker split across chunks.
+    // Retain only a possible split readiness marker; forward service results unchanged.
+    process.stdout.write(output.slice(0, Math.max(0, output.length - readyMarker.length + 1)));
     launcherOutput = output.slice(1 - readyMarker.length);
   });
   child.on("error", (error) => {
@@ -846,6 +869,7 @@ if (consoleArguments !== null) {
   });
   child.on("exit", (code, signal) => {
     startupTrace(ready ? "Launcher exited after ready" : "Launcher exited before ready");
+    if (!ready) process.stdout.write(launcherOutput);
     if (signal) {
       process.kill(process.pid, signal);
       return;
@@ -895,6 +919,11 @@ codexhost
 codexhost --version
 codexhost inspect
 codexhost launch
+codexhost web
+codexhost status
+codexhost autostart on
+codexhost autostart status
+codexhost stop
 codexhost remote install
 codexhost remote start
 codexhost remote stop
@@ -905,13 +934,35 @@ codexhost broker status
 
 The \`codexhost\` command launches the packaged Rust launcher with:
 
-- the current Node.js executable as Host Runtime
-- packaged \`host-runtime\`, Desktop Controller, Renderer, and Shim binaries
+- the current Node.js executable for Web; Host may use Desktop's bundled Node for native integration
+- packaged \`host-runtime\`, Desktop Controller, Renderer, Shim and Web resources
+
+\`codexhost\` starts background Web alongside Desktop, or opens Web when Desktop is not installed. \`codexhost web\` ensures Host and Web run in the background and opens a browser; over SSH or without a graphical session it only prints a local login link. Closing the terminal or interface does not stop the services. \`CODEXHOST_WEB_SERVICE=0\` disables Web startup alongside \`codexhost\`.
+
+Web initially listens on \`127.0.0.1:4400\`. The local Connect devices page controls LAN access and Tailscale Serve. \`codexhost web --host 0.0.0.0 --port 4500\` enables LAN access on another port; \`--host\`, \`--port\`, \`--public-url\` and \`--trusted-proxy\` are validated and saved for later starts, with an empty value clearing the option. Changes restart only Web, disconnecting Web terminals but preserving Host tasks. Port conflicts fail without killing the listener or choosing another port. LAN HTTP is unencrypted.
+
+Matching services are reused; a version or installation mismatch replaces them, interrupting Host tasks when Host is replaced. \`codexhost status\` reads Host/Web status and versions, a token-free address, the last Web failure and autostart state. \`codexhost stop\` stops managed Desktop, Web, Host, remote services, Broker and Console, without confirmation, and reports interrupted Host tasks. Session data, autostart and Serve configuration remain; independently opened Desktop is not closed. Remote services return when another computer reconnects, but interrupted tasks do not resume automatically.
+
+\`codexhost autostart on|off|status\` manages current-user login startup, off by default. Login starts Host and Web without opening an interface. Linux requires systemd user services; linger is user-managed. Running \`codexhost\` refreshes enabled autostart with the current Node and CLI paths. The computer must remain awake and connected for phone access.
+
+Office preview components download from the npm registry on first use on the Web computer; documents are not uploaded. Download failures do not affect other features and can be retried.
+
+## Uninstall or downgrade
+
+Before removing the package or switching to a version without background Web support:
+
+\`\`\`bash
+codexhost stop
+codexhost autostart off
+npm uninstall -g ${NPM_PACKAGE_NAME}
+\`\`\`
+
+Serve configuration is retained. Check \`tailscale serve status\`; if the HTTPS 443 root path still points to this Web, use \`tailscale serve --https=443 --set-path=/ off\` (substitute the actual HTTPS port). Do not remove another service's root path or omit \`--set-path=/\`. The local Connect devices page can also disable Serve while Web is running.
 
 ## Requirements
 
 - ${NPM_NODE_REQUIREMENT} (other releases lack parts of the built-in \`node:sqlite\` module)
-- Official ChatGPT/Codex Desktop for macOS, Windows, or Linux
+- Official ChatGPT/Codex Desktop only when using the Desktop interface; Web works without it
 - Pi on \`PATH\` when using the Pi agent
 - Claude Code installed when using the Claude Code adapter
 
@@ -957,6 +1008,16 @@ export async function writeThirdPartyNotices(root, packageRoot) {
       "",
     );
   }
+  await copyReleaseFile(
+    path.join(root, "scripts/release/licenses/desktop-screenshot-NOTICES.txt"),
+    path.join(licensesDirectory, "DesktopScreenshot-NOTICES.txt"),
+    "desktop screenshot native dependency notices",
+  );
+  notices.push(
+    "Desktop screenshot native dependencies (Windows/macOS)",
+    "License and copyright texts: licenses/DesktopScreenshot-NOTICES.txt",
+    "",
+  );
   await writeFile(
     path.join(packageRoot, "THIRD_PARTY_NOTICES.txt"),
     `${notices.join("\n").trimEnd()}\n`,
@@ -987,7 +1048,9 @@ export async function validateNpmPackage({ packageRoot, target, root }) {
   const files = await walkFiles(packageRoot);
   const actual = files.map((file) => file.relative).sort();
   const missing = expected.filter((relative) => !actual.includes(relative));
-  const extra = actual.filter((relative) => !expected.includes(relative));
+  const extra = actual.filter(
+    (relative) => !expected.includes(relative) && !isWebResource(relative, target),
+  );
   if (missing.length > 0) {
     throw new Error(`npm package is missing files: ${missing.join(", ")}`);
   }
@@ -1008,7 +1071,12 @@ export async function validateNpmPackage({ packageRoot, target, root }) {
     ) {
       forbiddenReferences.push("@anthropic-ai/", "@codexhost/adapter-claude-code");
     }
-    if (file.relative !== "package.json" && text.includes("runtime/node")) {
+    // Match the executable path, not an esbuild source label such as
+    // packages/host-runtime/node_modules/@deepseek-ai/cordis/lib/index.js.
+    if (
+      file.relative !== "package.json" &&
+      /(?:^|[^\w.-])runtime[/\\]+node(?:\.exe)?(?![\w.-])/u.test(text)
+    ) {
       throw new Error(`npm package must not embed a private Node runtime: ${file.relative}`);
     }
     if (forbiddenReferences.some((reference) => text.includes(reference))) {
@@ -1221,6 +1289,7 @@ export async function prepareNpmPackage({
     createNpmReadme({ version: packageVersion, target }),
     "utf8",
   );
+  await runCommand(webBuildCommand(path.join(packageRoot, "app"), target), root);
   await writeThirdPartyNotices(root, packageRoot);
   await validateNpmPackage({ packageRoot, target, root });
 

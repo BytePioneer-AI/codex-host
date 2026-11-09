@@ -1443,10 +1443,20 @@ mod tests {
                 configure_managed_desktop_environment(
                     &mut command,
                     inherited,
-                    &[(
-                        OsString::from("CODEXHOST_HOST_RUNTIME_PATH"),
-                        OsString::from(runtime),
-                    )],
+                    &[
+                        (
+                            OsString::from("CODEXHOST_HOST_RUNTIME_PATH"),
+                            OsString::from(runtime),
+                        ),
+                        (
+                            OsString::from("CODEXHOST_HOST_NODE_PATH"),
+                            OsString::from("/local/selected-node"),
+                        ),
+                        (
+                            OsString::from("CODEXHOST_NPM_NODE_PATH"),
+                            OsString::from("/local/npm-node"),
+                        ),
+                    ],
                 );
                 // Match the remote bootstrap guard evaluated by Desktop's child shell.
                 command.args([
@@ -1454,15 +1464,19 @@ mod tests {
                     r#"
                     if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_CLIENT:-}" ]; then
                         export CODEXHOST_HOST_RUNTIME_PATH=/remote/app/host-runtime.mjs
+                        export CODEXHOST_HOST_NODE_PATH=/remote/node
+                        export CODEXHOST_REMOTE_SSH_MANAGED=1
                     fi
-                    printf '%s\n' "$CODEXHOST_HOST_RUNTIME_PATH" "${SSH_TTY:-}" "$SSH_AUTH_SOCK"
+                    printf '%s\n' "$CODEXHOST_HOST_RUNTIME_PATH" "$CODEXHOST_HOST_NODE_PATH" "$CODEXHOST_NPM_NODE_PATH" "${CODEXHOST_REMOTE_SSH_MANAGED:-}" "${SSH_TTY:-}" "$SSH_AUTH_SOCK"
                 "#,
                 ]);
                 let output = command.output().expect("run managed child shell");
                 assert!(output.status.success());
                 assert_eq!(
                     String::from_utf8(output.stdout).expect("UTF-8 environment"),
-                    format!("{runtime}\n\n/local/agent.sock\n"),
+                    format!(
+                        "{runtime}\n/local/selected-node\n/local/npm-node\n\n\n/local/agent.sock\n"
+                    ),
                     "remote profile reactivated through {ssh_marker}",
                 );
             }

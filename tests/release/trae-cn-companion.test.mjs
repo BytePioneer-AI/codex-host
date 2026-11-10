@@ -9,6 +9,7 @@ import { buildCompanion } from "../../packages/adapters/trae-cn/scripts/build-co
 const packageRoot = new URL("../../packages/adapters/trae-cn/", import.meta.url);
 const { openPromise } = createRequire(new URL("package.json", packageRoot))("yauzl");
 
+// Real vsce packaging plus archive reads can exceed Vitest's 5s default under CI disk contention.
 test("TRAE CN Companion VSIX contains the complete source resources and license", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-trae-vsix-test-"));
   let archive;
@@ -70,4 +71,4 @@ test("TRAE CN Companion VSIX contains the complete source resources and license"
     assert.ok(relative.startsWith("codexhost-trae-vsix-test-") && !relative.includes(path.sep));
     await rm(directory, { recursive: true, force: true });
   }
-});
+}, 20_000);

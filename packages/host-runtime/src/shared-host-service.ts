@@ -204,6 +204,10 @@ export async function runSharedHostService(
           channel = await startClientChannelServer({
             environment: env,
             owner: "service",
+            externalSession: (streams) => {
+              if (stopping) throw new Error("Shared Host is stopping");
+              return owner.createSession(streams);
+            },
             shutdown: {
               runningTasks: () =>
                 new Set([host, ...desktops].flatMap((owner) => owner.runningThreadIds())).size,

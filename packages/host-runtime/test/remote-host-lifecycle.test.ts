@@ -462,3 +462,21 @@ describe("remote Host lifecycle", () => {
     },
   );
 });
+
+it("passes the persisted shared directory to a fresh SSH listener without replacing its own store", async () => {
+  restore = setRemoteHostLifecycleDependenciesForTest({
+    inspectInstallation: vi
+      .fn()
+      .mockResolvedValue({ ...readyInstallation, sharedDataDirectory: "/custom/shared-host" }),
+    probeProtocol: vi.fn().mockResolvedValue(runtime("stopped")),
+    waitForRuntime: vi.fn().mockResolvedValue(runtime("running", "codexhost")),
+  });
+  await startRemoteHost({
+    platform: "linux",
+    environment: { HOME: home, CODEXHOST_SHARED_DATA_DIR: "/stale/inherited" },
+  });
+  expect(vi.mocked(spawn).mock.calls[0]?.[2]?.env).toMatchObject({
+    CODEXHOST_SHARED_DATA_DIR: "/custom/shared-host",
+    CODEXHOST_DATA_DIR: manifest.dataDirectory,
+  });
+});

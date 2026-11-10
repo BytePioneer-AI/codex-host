@@ -43,7 +43,11 @@ In the remote project's composer, choose your Harness and model from the **Agent
 
 You can work in local and remote projects at the same time. Each shows the tools and models available on its own computer.
 
+New external Harness conversations on the remote computer share the same independent Host as that computer’s local Desktop and Web clients. They keep the same Thread ID and native session when opened or continued over SSH. Existing conversations in the older SSH-only store remain readable through SSH; they are not copied or silently reassigned. Update and restart both the shared Host and SSH listener together. An unavailable shared owner produces an error instead of creating a native Codex conversation.
+
 If you only use Codex's built-in remote coding features, you do not need codexhost on the remote computer.
+
+If Desktop or Web uses a custom Host data directory, run `codexhost remote install --shared-data /absolute/path/to/host-data` on that computer, then restart the SSH listener. Installation captures `CODEXHOST_SHARED_DATA_DIR` (or a non-SSH `CODEXHOST_DATA_DIR`) when no option is supplied and preserves the saved selection on reinstall. This shared directory is stored in the remote manifest and SSH profile; it never replaces the separate SSH-only data directory. Native agents use the shared owner for delegation reads, sends, cancellation and waits too; historical SSH-owned parents keep their local delegation owner.
 
 ### Image and file attachments
 

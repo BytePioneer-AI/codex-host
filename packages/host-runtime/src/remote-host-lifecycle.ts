@@ -242,6 +242,9 @@ function managedEnvironment(
     CODEXHOST_HOST_NODE_PATH: manifest.nodePath,
     CODEXHOST_HOST_RUNTIME_PATH: manifest.hostRuntimePath,
     CODEXHOST_DATA_DIR: manifest.dataDirectory,
+    ...(manifest.sharedDataDirectory
+      ? { CODEXHOST_SHARED_DATA_DIR: manifest.sharedDataDirectory }
+      : {}),
     CODEXHOST_REMOTE_SSH_MANAGED: "1",
     CODEXHOST_REMOTE_EXECUTION_SESSION: manifest.executionSession ?? "ssh",
     PATH: `${path.dirname(manifest.wrapperPath)}${path.delimiter}${path.dirname(manifest.stockCodexPath)}${path.delimiter}${environment.PATH ?? "/usr/bin:/bin"}`,

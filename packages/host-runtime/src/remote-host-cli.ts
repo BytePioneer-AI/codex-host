@@ -46,6 +46,9 @@ function parseRemoteCliArguments(arguments_: readonly string[]): {
       case "--install-root":
         options.installRoot = value;
         break;
+      case "--shared-data":
+        options.sharedDataDirectory = value;
+        break;
       case "--profile":
         options.profilePath = value;
         break;
@@ -84,7 +87,7 @@ export async function runRemoteHostCli(input: {
       output.write(
         [
           "usage:",
-          "  codexhost remote install [--stock-codex PATH] [--session ssh|desktop]",
+          "  codexhost remote install [--stock-codex PATH] [--shared-data DIRECTORY] [--session ssh|desktop]",
           "  codexhost remote start",
           "  codexhost remote stop",
           "  codexhost remote status",

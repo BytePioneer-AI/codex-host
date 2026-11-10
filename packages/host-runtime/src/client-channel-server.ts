@@ -48,6 +48,7 @@ export async function startClientChannelServer(options: {
   directory?: string;
   owner?: "service";
   shutdown?: { runningTasks(): number; stop(): void };
+  externalSession?: (streams: RemoteAppServerSessionStreams) => RemoteAppServerSession;
   desktopSession?: (
     streams: RemoteAppServerSessionStreams,
     request: IncomingMessage,
@@ -137,8 +138,13 @@ export async function startClientChannelServer(options: {
   const desktopSessions = new Set<ReturnType<typeof attachRemoteAppServerSession>>();
   let closing: Promise<void> | undefined;
   server.on("upgrade", (request, socket, head) => {
-    const session = options.desktopSession;
-    if (closing || !session || request.url !== "/v1/desktop" || !authorized(request)) {
+    const session =
+      request.url === "/v1/external"
+        ? options.externalSession
+        : request.url === "/v1/desktop"
+          ? options.desktopSession
+          : undefined;
+    if (closing || !session || !authorized(request)) {
       socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       return;
     }

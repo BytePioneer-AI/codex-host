@@ -34,6 +34,7 @@
 - 这类委派写入普通的 v1 Delegation 关系，父标识为 `client:<name>`。幂等重试、`thread list --client <name>`（即按该父标识列举）沿用既有路径；旧版本读取时只是一个不存在的父 Thread，不会丢弃记录。
 - 客户端没有自己的工作目录，所以无父委派必须给出 `--cwd`；Registry 把它交给共享 catalog 或唯一的 Host 会话，无法唯一确定时返回 `PARENT_THREAD_AMBIGUOUS`。
 - 经外部监听且未给 `--cwd` 的 `thread list` 不限定工作目录。
+- 开启[委派并发上限](delegation-capacity.md)时，客户端发起的委派同样受限：超出时 `delegate start`（MCP `delegate_start`）返回 `queued` 与排队位置，watch 照常等到 Thread 开始后真正停下。
 
 ## 引用
 

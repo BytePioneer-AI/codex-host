@@ -30,24 +30,26 @@ Reuse --request-id for an idempotent retry. Identical recent parent/target/task/
 --watch true also registers thread watch on the child with the resolved parent as the notified Thread; the response's watch field reports whether it was registered. --stall-after-ms requires --watch true and enables the optional silence notification described by thread watch.
 --ref records where the work came from, such as an issue URL; repeat it for several. Absolute URIs only, at most 16 per Thread; credentials in a URI are removed. A child inherits its parent Thread's references.
 An external client that omits --parent-thread starts the work as itself (parent client:<name>) and must pass --cwd.
+When the local limit on running delegations is on (Codex Desktop settings; off by default) and reached, or other starts are already waiting, the start is queued: the response still returns at once with the Thread reference, status queued and queue.position (compact: queuePosition). Queued starts begin in order as running top-level Threads finish, including manually opened ones; the queue survives a Host Runtime restart. This applies to every Harness, --harness codex included. Wait and watch timeouts include time spent queued.
 The response confirms cwd and parent. Use its Thread reference with thread read, wait, send, cancel, or watch.`,
   "thread send": `codexhost thread send <thread> --message <text> [--format json|compact]
 Start a new Turn in an idle writable Thread and return immediately.
-THREAD_BUSY means the current Turn is still active: wait or cancel before sending. Messages are not queued.
+THREAD_BUSY means the current Turn is still active, or the Thread is still queued: wait or cancel before sending. Messages are not queued.
 To be notified when that Turn ends, run thread watch after sending.`,
   "thread cancel": `codexhost thread cancel <thread> [--format json|compact]
 Request cancellation of the active Turn while preserving the Thread and history.
-cancelled=true (compact: cancelRequested=true) means the cancellation request was accepted. Read or wait to confirm the terminal state. An idle Thread returns false.`,
+cancelled=true (compact: cancelRequested=true) means the cancellation request was accepted. Read or wait to confirm the terminal state. An idle Thread returns false.
+A queued Thread is removed from the queue instead and never starts; it then reads as interrupted.`,
   "thread read": `codexhost thread read <thread> [--host <hostId>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact]
 Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the existing Desktop connection, never local fallback. Requires updated local and remote codexhost; remote send/wait/watch are not supported.
-The default result view reports the latest Turn's status and result.
+The default result view reports the latest Turn's status and result. A queued Thread reports status queued with queue.position (compact: queuePosition) and no Turn, then creating while its start runs.
 The messages view pages visible user/Agent messages, oldest first. Default limit 25, maximum 100; --cursor and --limit require --view messages.
 hasMore describes remaining messages now. Save nextCursor for later incremental reads even when hasMore=false.
 Compact messages output contains only the message page and status; compact result output includes the latest nonempty progress while running.
 Full JSON retains the complete snapshot. Tool calls/output, file activity, and reasoning are not included in either format.`,
   "thread wait": `codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact]
 Wait until the Thread is terminal or the timeout expires (default 30000 ms), then return the same snapshot as thread read plus timedOut.
-timedOut=true is a running checkpoint: the child keeps running. The response already includes the result when available; another read is unnecessary unless more information is needed.
+timedOut=true is a running checkpoint: the child keeps running. The response already includes the result when available; another read is unnecessary unless more information is needed. A queued Thread is waited for through the queue; queued time counts toward the timeout.
 Message pagination uses --view messages, default limit 25, maximum 100. hasMore is for current pages; nextCursor also supports future incremental reads.`,
   "thread watch": `codexhost thread watch <thread> [--notify <thread>] [--timeout-ms <n>] [--stall-after-ms <n>] [--format json|compact]
 Ask the Host to notify one Thread, once, when the watched Thread stops. Returns immediately; no waiting or polling by the caller is needed, and the caller may end its Turn.
@@ -56,6 +58,7 @@ The notification starts a new Turn in the notified Thread with the watched Threa
 --timeout-ms defaults to 1740000 (29 min). timedOut means the Thread had not reached a terminal state, which also covers a Harness that stopped without reporting it; watch again to keep waiting. unreadable means reads failed for 60 s, so the state is unknown.
 --stall-after-ms is disabled by default. A positive integer enables stalled notifications when a running Thread has no observed Harness event for that many milliseconds. Tool output, reasoning, file changes, interactions, and Harness subagent events all count as activity; polling reads do not. Each silence episode notifies once; new activity rearms it. A stalled alert does not stop the Thread or end the watch, and does not prove a failure. The silence clock starts at registration and restarts after a Host Runtime restart, which drops stalled alerts not yet delivered; only live events already received by this Host are observable.
 state=watching means registered. state=alreadyTerminal means the Thread was not running: nothing was registered and nothing will be sent.
+A queued Thread is watched through the queue until it stops after starting; queued time counts toward --timeout-ms but is not silence for --stall-after-ms. Removing it from the queue reports interrupted.
 A busy notified Thread is notified after its Turn ends (retried for up to 6 hours); notifications due together arrive as one message. THREAD_BUSY is never treated as delivered.
 The final stop/expiry notification is one-shot; optional stalled alerts keep the watch active. Watches cannot be cancelled. Watching the same pair again while it is still watched returns that watch with its original timeout and silence threshold; once it has stopped, a new watch covers the next stop and any pending notification is still delivered. Watches are stored and resume after a Host Runtime restart; a notification whose delivery was in progress when the Runtime stopped is sent again, so a restart may repeat one. A Turn that was running when the Runtime restarted is reported as interrupted, because the restart ended its Harness process.`,
   "thread watches": `codexhost thread watches [--format json|compact]
@@ -64,7 +67,8 @@ List watches that have not been delivered: watching, pendingDelivery (waiting fo
 Find existing Threads by workspace, or use --parent to list a Thread's delegated children.
 Workspace listing defaults to the caller process cwd. Default limit 25 (maximum 100), sorted created-desc.
 --parent uses Delegation relationships. --client lists what an external client started without a parent Thread. --ref lists Threads carrying that reference, newest first, across workspaces. An external client lists all workspaces unless --cwd is given. A null nextCursor ends the list.
-Compact output keeps task links, Harness, status, title, and workspace.`,
+Queued Threads lead the first page in queue order, beyond --limit, with status queued and queue.position.
+Compact output keeps task links, Harness, status, queue position, title, and workspace.`,
 } as const;
 
 export type DelegationCliCommand = keyof typeof COMMAND_HELP;

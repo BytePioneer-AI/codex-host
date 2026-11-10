@@ -443,6 +443,9 @@ export class DelegationWatchService {
         };
       }
       delete watch.unreadableSince;
+      // Waiting in the capacity queue or being created is not Harness silence.
+      if (snapshot.status !== "running" && watch.stallAfterMs !== undefined)
+        watch.lastActivityAt = Date.now();
       if (
         snapshot.status === "running" &&
         Date.now() < watch.deadline &&

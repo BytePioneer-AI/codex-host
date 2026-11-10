@@ -24,6 +24,11 @@ export class ThreadActivity {
     return () => this.#listeners.delete(listener);
   }
 
+  /** Whether an event has shown the Thread to be a subagent of another Thread. */
+  isSubagent(threadId: string): boolean {
+    return this.#parents.has(threadId);
+  }
+
   note(threadId: string, parentThreadId?: string): void {
     this.#closed.delete(threadId);
     const previous = this.#parents.get(threadId);

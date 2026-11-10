@@ -39,6 +39,8 @@ watch 首次持久化失败时不保留内存注册，`thread watch` 返回错�
 
 注册时 Thread 已是终态则返回 `alreadyTerminal`：不注册、不通知，调用方直接读取即可。
 
+被观察 Thread 还在[委派队列](delegation-capacity.md)中时照常注册：排队与创建都不算停下，也不计入卡住提醒的静默；Thread 开始后真正停下才通知，开始前被移出队列则通知 `interrupted`。排队时间计入观察期限。
+
 ## 送达
 
 - 通知通过普通的 `send` 在被通知 Thread 中启动一个新 Turn，外部 Harness 与原生 Codex 使用同一路径；不做同轮注入。

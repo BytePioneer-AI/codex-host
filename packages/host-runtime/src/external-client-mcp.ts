@@ -93,7 +93,7 @@ const TOOLS: Tool[] = [
   {
     name: "delegate_start",
     description:
-      "Start a task in a new Thread and return at once. Without parentThread the work belongs to this client and cwd is required. watch=true records an event for this client when the Thread stops (read it with events_poll or the SSE stream).",
+      "Start a task in a new Thread and return at once. Without parentThread the work belongs to this client and cwd is required. watch=true records an event for this client when the Thread stops (read it with events_poll or the SSE stream). When the local limit on running delegations is reached, the Thread is queued (status queued, queue.position) and starts by itself later.",
     inputSchema: {
       type: "object",
       properties: {

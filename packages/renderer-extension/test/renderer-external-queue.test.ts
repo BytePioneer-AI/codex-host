@@ -1,5 +1,7 @@
 import {
+  DELEGATION_CAPACITY_SETTINGS_METHOD,
   IDLE_RELEASE_SETTINGS_METHOD,
+  delegationCapacitySettingsSchema,
   idleReleaseSettingsSchema,
 } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -77,6 +79,9 @@ function fixture() {
     async sendRequest(method: string, params: unknown) {
       // Settings sync shares the connection but is not a queue operation.
       if (method === IDLE_RELEASE_SETTINGS_METHOD) return idleReleaseSettingsSchema.parse(params);
+      if (method === DELEGATION_CAPACITY_SETTINGS_METHOD) {
+        return delegationCapacitySettingsSchema.parse(params);
+      }
       if (
         method.startsWith("thread/queue/") &&
         params !== null &&

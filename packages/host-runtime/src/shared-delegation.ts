@@ -79,27 +79,43 @@ export function sharedDelegationRegistration(
   }
   return {
     ...local,
-    list: (input) =>
-      !input.parentThreadId
-        ? local.list(input)
-        : mergeThreadListPages(
-            [(page) => local.list(page), (page) => call("list", page)],
-            input,
-            (a, b) => {
-              const field = input.sort.startsWith("created")
-                ? "createdAt"
-                : input.sort.startsWith("recency")
-                  ? "recencyAt"
-                  : "updatedAt";
-              const time = (item: typeof a) =>
-                listSortSeconds(item, field) ?? listSortSeconds(item, "updatedAt") ?? 0;
-              return (
-                (input.sort.endsWith("asc") ? 1 : -1) * (time(a) - time(b)) ||
-                a.threadId.localeCompare(b.threadId)
-              );
-            },
-            `${generation}:${input.parentThreadId}`,
-          ),
+    ownsThread: async (threadId) =>
+      (await owner.ownership([threadId])).has(threadId) || local.ownsThread(threadId),
+    canHandleStart: async (input) =>
+      (input.parentThreadId !== undefined &&
+        (await owner.ownership([input.parentThreadId])).has(input.parentThreadId)) ||
+      local.canHandleStart(input),
+    list: async (input) => {
+      if (!input.parentThreadId) {
+        const page = await local.list(input);
+        const shared = await owner.ownership(page.threads.map((thread) => thread.threadId));
+        return {
+          ...page,
+          threads: page.threads.map((thread) => {
+            const harnessId = shared.get(thread.threadId);
+            return harnessId ? { ...thread, harnessId } : thread;
+          }),
+        };
+      }
+      return mergeThreadListPages(
+        [(page) => local.list(page), (page) => call("list", page)],
+        input,
+        (a, b) => {
+          const field = input.sort.startsWith("created")
+            ? "createdAt"
+            : input.sort.startsWith("recency")
+              ? "recencyAt"
+              : "updatedAt";
+          const time = (item: typeof a) =>
+            listSortSeconds(item, field) ?? listSortSeconds(item, "updatedAt") ?? 0;
+          return (
+            (input.sort.endsWith("asc") ? 1 : -1) * (time(a) - time(b)) ||
+            a.threadId.localeCompare(b.threadId)
+          );
+        },
+        `${generation}:${input.parentThreadId}`,
+      );
+    },
     listHarnesses: (input) => call("listHarnesses", input),
     inspect: (input) =>
       input.harnessId === "codex" ? local.inspect(input) : call("inspect", input),

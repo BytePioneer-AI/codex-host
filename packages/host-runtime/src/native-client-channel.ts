@@ -12,6 +12,13 @@ import type { ClientChannelEvents } from "./client-channel-events.js";
 import { ClientChannelRequestError } from "./client-channel-error.js";
 import { compactClientSnapshot } from "./client-snapshot-compaction.js";
 import { nativeThreadConfiguration } from "./codex-runtime/native-thread-controls.js";
+import { sendNativeQueuedMessage } from "./native-queued-steering.js";
+import { submitNativeQueuedInput } from "./native-queued-input.js";
+import { NativeClientItems } from "./native-client-items.js";
+import {
+  nativeElicitationApproval,
+  nativeElicitationApprovalResponse,
+} from "./native-elicitation.js";
 
 export type NativeClientReply =
   { result: JsonValue } | { error: { code: number; message: string } };
@@ -123,6 +130,10 @@ function approvalInteraction(
     effect: decisionEffect(id),
   }));
   const command = stringValue(params.command);
+  const cwd = stringValue(params.cwd);
+  const description = [command, cwd ? `Working directory: ${cwd}` : undefined]
+    .filter(Boolean)
+    .join("\n\n");
   const reason = stringValue(params.reason);
   return {
     kind: "approval",
@@ -133,7 +144,7 @@ function approvalInteraction(
         (method === "item/commandExecution/requestApproval"
           ? "Allow command execution?"
           : "Allow file changes?"),
-      ...(command ? { description: command } : {}),
+      ...(description ? { description } : {}),
       subject: params,
       actions,
     },
@@ -234,7 +245,7 @@ function schemaQuestions(params: JsonObject): ClientQuestion | undefined {
         };
     questions.push(question);
   }
-  return { type: "question", questions };
+  return questions.length > 0 ? { type: "question", questions } : undefined;
 }
 
 function nativeInteraction(
@@ -254,8 +265,11 @@ function nativeInteraction(
     return interaction ? { kind: "question", interaction } : undefined;
   }
   if (method === "mcpServer/elicitation/request") {
-    // A form-shaped elicitation can be answered through the existing Web question card.
-    // Permission grants are deliberately not treated as this generic approval shape.
+    if (params.mode !== undefined && params.mode !== "form") return undefined;
+    const approval = nativeElicitationApproval(params);
+    if (approval) return { kind: "approval", interaction: approval };
+    const meta = isRecord(params._meta) ? params._meta : {};
+    if (meta.codex_approval_kind === "mcp_tool_call") return undefined;
     const interaction = schemaQuestions(params);
     return interaction ? { kind: "question", interaction } : undefined;
   }
@@ -322,6 +336,8 @@ function nativeResponse(pending: PendingNativeInteraction, value: JsonValue): Js
   if (pending.method === "item/fileChange/requestApproval") {
     return validatedDecision(pending, value);
   }
+  if (pending.method === "mcpServer/elicitation/request" && pending.kind === "approval")
+    return nativeElicitationApprovalResponse(pending.params, value);
   if (pending.method === "mcpServer/elicitation/request" && isRecord(value)) {
     if (typeof value.action === "string") return value as JsonObject;
     if (isRecord(value.answers)) {
@@ -373,6 +389,7 @@ export class NativeClientChannel {
   readonly #knownThreads = new Set<string>();
   readonly #resumedThreads = new Set<string>();
   readonly #configuration = new Map<string, ReturnType<typeof nativeThreadConfiguration>>();
+  readonly #items = new NativeClientItems();
   readonly #pending = new Map<string, PendingNativeInteraction>();
   readonly #pendingNativeIds = new Map<string, string>();
   readonly #unconfirmedResponses = new Set<string>();
@@ -390,6 +407,7 @@ export class NativeClientChannel {
   observeMessage(value: JsonValue): void {
     if (!isRecord(value) || typeof value.method !== "string") return;
     const params = isRecord(value.params) ? (value.params as JsonObject) : {};
+    this.#items.observe(value.method, params);
     const threadId = threadIdFromParams(params);
     if (threadId) {
       this.noteThread(threadId);
@@ -449,10 +467,11 @@ export class NativeClientChannel {
   private observeResponse(method: string, params: JsonObject, reply: NativeClientReply): void {
     if ("error" in reply) return;
     const thread = resultThread(reply);
+    const opensThread = ["thread/resume", "thread/start", "thread/fork"].includes(method);
+    if (method === "thread/fork" && thread?.id === params.threadId) return;
     if (thread && typeof thread.id === "string") {
       this.noteThread(thread.id);
-      if (method === "thread/resume" || method === "thread/start")
-        this.#resumedThreads.add(thread.id);
+      if (opensThread) this.#resumedThreads.add(thread.id);
     }
     const threadId = threadIdFromParams(params);
     if (threadId) {
@@ -460,10 +479,12 @@ export class NativeClientChannel {
       if (method === "thread/resume") this.#resumedThreads.add(threadId);
       if (method === "thread/archive") this.#resumedThreads.delete(threadId);
     }
-    const configuredThreadId = threadId ?? (typeof thread?.id === "string" ? thread.id : undefined);
-    if ((method === "thread/resume" || method === "thread/start") && configuredThreadId) {
+    const configuredThreadId =
+      typeof thread?.id === "string" ? thread.id : method === "thread/fork" ? undefined : threadId;
+    if (opensThread && configuredThreadId) {
       const result = resultObject(reply);
       this.#configuration.set(configuredThreadId, nativeThreadConfiguration(result ?? {}));
+      if (method === "thread/fork") this.#host.events.changed(configuredThreadId, method);
     }
     if (method === "thread/list") {
       const data = resultObject(reply)?.data;
@@ -483,6 +504,18 @@ export class NativeClientChannel {
       },
     });
     const threadId = threadIdFromParams(params);
+    if (method === "codexhost/thread/queue/send-now") {
+      if (!threadId || typeof params.itemId !== "string" || !params.itemId)
+        return { error: { code: -32602, message: "threadId and itemId are required" } };
+      return sendNativeQueuedMessage(
+        (method, params) =>
+          generation === this.#generationToken
+            ? this.request(method, params)
+            : Promise.resolve(stale()),
+        threadId,
+        params.itemId,
+      );
+    }
     if (method === "codexhost/thread/inspect") {
       if (!threadId) return { error: { code: -32602, message: "threadId is required" } };
       if (!this.#configuration.has(threadId)) {
@@ -493,7 +526,7 @@ export class NativeClientChannel {
           owner: "codex",
           locked: false,
           ...this.#configuration.get(threadId),
-          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+          history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
         }),
       };
     }
@@ -503,11 +536,39 @@ export class NativeClientChannel {
       this.observeResponse("thread/resume", { threadId }, resumed);
       if ("error" in resumed) return resumed;
     }
-    const reply = await this.#host.request(
+    if (method === "turn/start" && params.delivery === "queue") {
+      return submitNativeQueuedInput(
+        (method, params) =>
+          generation === this.#generationToken
+            ? this.request(method, params)
+            : Promise.resolve(stale()),
+        params,
+      );
+    }
+    let reply = await this.#host.request(
       method,
       method === "thread/resume" ? { ...params, excludeTurns: true } : params,
     );
     if (generation !== this.#generationToken) return stale();
+    // A native Thread exists before its first user message materializes history.
+    // Only that explicit initial-page response means empty history, not a failed read.
+    if (
+      method === "thread/turns/list" &&
+      threadId &&
+      (params.cursor === undefined || params.cursor === null) &&
+      "error" in reply &&
+      reply.error.code === -32600 &&
+      reply.error.message ===
+        `thread ${threadId} is not materialized yet; thread/turns/list is unavailable before first user message`
+    )
+      reply = { result: { data: [], nextCursor: null } };
+    if (
+      method === "thread/turns/list" &&
+      threadId &&
+      "result" in reply &&
+      isJsonObject(reply.result)
+    )
+      reply = { result: this.#items.project(threadId, reply.result) };
     this.observeResponse(method, params, reply);
     if (threadId && CHANGED_METHODS.has(method) && !("error" in reply))
       this.#host.events.changed(threadId, method);
@@ -626,6 +687,7 @@ export class NativeClientChannel {
     this.#unconfirmedResponses.clear();
     this.#interactionErrors.clear();
     this.#configuration.clear();
+    this.#items.clear();
     for (const threadId of threads) this.#host.events.changed(threadId, "thread/status/changed");
   }
 

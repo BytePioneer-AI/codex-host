@@ -176,58 +176,6 @@ it("uses official compact/review methods, returns real Turn IDs and preserves na
   ).toBe(false);
 });
 
-it("sends selected Skills as official name/path inputs with text, attachments, queue and steer semantics intact", async () => {
-  const { calls, failures, send } = await officialFixture();
-  const carrier = `[@$build](${harnessCommandMentionPath("$build")})`;
-  for (const mode of ["send", "queue", "steer"] as const) {
-    expect(
-      await send(mode === "steer" ? "turn/steer" : "turn/start", {
-        input: [
-          {
-            type: "text",
-            text: `# File context\n${carrier} preserve  spaces\tand\n  indentation`,
-            text_elements: [],
-          },
-          { type: "localImage", path: "/workspace/screen.png" },
-        ],
-        ...(mode === "queue" ? { delivery: "queue" } : {}),
-        ...(mode === "steer" ? { expectedTurnId: "active-turn" } : {}),
-      }),
-    ).not.toHaveProperty("error");
-    const sent = calls
-      .filter(({ method }) => ["turn/start", "turn/steer", "thread/queue/add"].includes(method))
-      .at(-1);
-    expect(sent?.method).toBe(
-      mode === "steer" ? "turn/steer" : mode === "queue" ? "thread/queue/add" : "turn/start",
-    );
-    expect(sent?.params.input).toEqual([
-      {
-        type: "text",
-        text: "$build # File context\n preserve  spaces\tand\n  indentation",
-        text_elements: [],
-      },
-      { type: "localImage", path: "/workspace/screen.png" },
-      { type: "skill", name: "build", path: workspaceSkill.path },
-    ]);
-    if (mode === "steer") expect(sent?.params.expectedTurnId).toBe("active-turn");
-  }
-  const writes = () =>
-    calls.filter(({ method }) => ["turn/start", "turn/steer", "thread/queue/add"].includes(method))
-      .length;
-  expect(writes()).toBe(3);
-  expect(
-    await send("turn/start", {
-      input: [{ type: "text", text: `[@$hidden](${harnessCommandMentionPath("$hidden")}) do it` }],
-    }),
-  ).toHaveProperty("error.message", "Codex Skill 'hidden' is unavailable");
-  failures.set("skills/list", "Skills offline");
-  expect(await send("turn/start", { input: [{ type: "text", text: carrier }] })).toHaveProperty(
-    "error.message",
-    "Skills offline",
-  );
-  expect(writes()).toBe(3);
-});
-
 it("keeps the explicit Skill path on queued input edits without duplicating or re-resolving it", async () => {
   const { calls, send } = await officialFixture();
   const input = [

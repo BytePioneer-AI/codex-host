@@ -69,18 +69,19 @@ function messages(
 }
 
 function assertBalancedSteps(events: readonly WireEvent[]): void {
-  let open = 0;
+  const open = new Set<number>();
   for (const event of events) {
     if (event.type === "step/start") {
-      assert.equal(open, 0, `step opened while another is open at seq ${String(event.seq)}`);
-      open += 1;
+      const { step } = event.data as { step: number };
+      assert.ok(!open.has(step), `step opened twice at seq ${String(event.seq)}`);
+      open.add(step);
     }
     if (event.type === "step/end") {
-      assert.equal(open, 1, `step closed without an open step at seq ${String(event.seq)}`);
-      open -= 1;
+      const { step } = event.data as { step: number };
+      assert.ok(open.delete(step), `step closed without an open step at seq ${String(event.seq)}`);
     }
   }
-  assert.equal(open, 0);
+  assert.equal(open.size, 0);
   assert.deepEqual(
     events.map((event) => event.seq),
     events.map((_, index) => index),
@@ -89,6 +90,53 @@ function assertBalancedSteps(events: readonly WireEvent[]): void {
 }
 
 describe("TurnProjector", () => {
+  it("keeps tools in their original open Step across multiple steers", () => {
+    const log = newLog();
+    const projector = new TurnProjector(log, { live: true });
+    projector.begin([{ type: "text", text: "run" }], "opening");
+    const first: HostItem = { type: "commandExecution", itemId: "a", command: "sleep 1" };
+    const second: HostItem = { type: "commandExecution", itemId: "b", command: "sleep 2" };
+    projector.itemStarted(first);
+    projector.itemStarted(second);
+    projector.steer([{ type: "text", text: "steer one" }], "steer-one");
+    projector.steer([{ type: "text", text: "steer two" }], "steer-two");
+    const ended = () =>
+      log.events
+        .filter((event) => event.type === "step/end")
+        .map((event) => (event.data as { step: number }).step);
+    assert.deepEqual(ended(), [2], "the tool Step must not be closed by steering");
+    projector.itemCompleted(first, { status: "succeeded" });
+    assert.deepEqual(ended(), [2], "another tool in the same Step is still running");
+    projector.itemCompleted(second, { status: "succeeded" });
+    assert.deepEqual(ended(), [2, 1]);
+    assert.deepEqual(
+      log.events
+        .filter((event) => event.type === "tool/result")
+        .map((event) => (event.data as { step: number }).step),
+      [1, 1],
+    );
+    projector.finish({ status: "succeeded" });
+    assertBalancedSteps(log.events);
+  });
+
+  for (const status of ["succeeded", "cancelled"] as const)
+    it(`settles tools and deferred Steps when a steered Turn ends (${status})`, () => {
+      const log = newLog();
+      const projector = new TurnProjector(log, { live: true });
+      projector.begin([], "opening");
+      projector.itemStarted({ type: "commandExecution", itemId: "a", command: "sleep 1" });
+      projector.steer([{ type: "text", text: "next" }], "steer");
+      projector.itemStarted({ type: "commandExecution", itemId: "b", command: "sleep 2" });
+      projector.finish({ status });
+      assertBalancedSteps(log.events);
+      assert.deepEqual(
+        log.events
+          .filter((event) => event.type === "tool/result")
+          .map((event) => (event.data as { step: number }).step),
+        [1, 2],
+      );
+    });
+
   it("keeps text a Harness appends to a message Item that spans a tool call (recorded Claude Code turn)", () => {
     const log = newLog();
     const projector = new TurnProjector(log, { live: true });

@@ -56,6 +56,7 @@ import {
 } from "./contract/slots.ts";
 import { createWorkspaceShortcutControls, installWorkspaceShortcuts } from "./shortcuts.ts";
 import { UiWorkspaceService } from "./navigation.ts";
+import { registerRecentNavigation } from "./recent-navigation.ts";
 import { createWorkspaceViewStore } from "./stores.ts";
 import { WorkspaceBrowser } from "./rows/WorkspaceBrowser.tsx";
 import {
@@ -76,6 +77,7 @@ import { RowActionToast } from "./session-actions/RowActionToast.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { en, zh, type WorkspaceKey } from "./locales.ts";
 
+export { ReferenceSessionMenuItem } from "./session-actions/ReferenceSession.tsx";
 export type { StartSessionOptions, UiWorkspace } from "./navigation.ts";
 export type {
   DirectoryFlowOwnerProps,
@@ -84,6 +86,8 @@ export type {
   DirectoryPickingInjected,
   MenuOpenState,
   RowToast,
+  ReferenceSessionInjected,
+  SessionDraftReference,
   SessionRenameTarget,
   SessionRowOwnerProps,
   UseMenuOpenState,
@@ -133,6 +137,7 @@ export const inject = [
   "remote.directoryPicker",
   "layout",
   "shortcuts",
+  "configForms",
 ];
 
 /**
@@ -175,6 +180,7 @@ export function apply(ctx: Context): void {
     viewInstance.actions,
     notify,
   );
+  registerRecentNavigation(ctx, uiWorkspace);
   ctx.slots.provideRoot({ hooks: { workspaces: workspaces.list } });
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-workspace: dictionaries");
   const shortcutControls = createWorkspaceShortcutControls();
@@ -350,6 +356,12 @@ export function apply(ctx: Context): void {
     },
     open: openSession,
     searchSessions,
+    refreshSessions: () => {
+      void sessions.refresh();
+    },
+    loadMoreSessions: () => {
+      void sessions.loadMore();
+    },
     searchResultLimit: sessions.searchResultLimit,
     requestSessionRename,
     notifyArchivedNotOpenable: () => {

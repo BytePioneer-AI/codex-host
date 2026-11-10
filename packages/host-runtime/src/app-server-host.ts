@@ -2520,6 +2520,7 @@ export class AppServerHost {
     try {
       const result = await readThreadCatalog({
         includeArchived: parsed.data.includeArchived ?? false,
+        ...(parsed.data.officialCursor ? { officialCursor: parsed.data.officialCursor } : {}),
         readLocal: async () => {
           const [records, placements] = await Promise.all([
             this.#repository.list(),
@@ -3021,7 +3022,7 @@ export class AppServerHost {
                 ...inspection.capabilities.configuration,
                 selectPermissionMode: modes.length > 0,
               },
-              history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+              history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
             },
             ...(modes.length ? { permissionModes: { modes, defaultModeId: modes[0]?.id } } : {}),
           });

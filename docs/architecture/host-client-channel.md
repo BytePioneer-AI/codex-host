@@ -4,11 +4,11 @@
 
 GUI、Web 和其他 App 的共享外部 Threads 由一个独立后台中的 `AppServerHost` 执行。Adapter、原生引用、Mapping Store 和 Thread/Turn 执行只属于该所有者；Desktop 的协议前端与 Web 网关不另开会话或第二份可写存储，也不保存共享 transcript。官方 Codex 路径仍使用原生协议与原生历史，不变成 Web 的外部 Harness。
 
-客户端通道也支持本机原生 Codex Thread。共享服务通过已有 `OfficialRuntimeClient` 连接与 Desktop 相同的 `OfficialRuntimeScope`，按 Mapping Store 归属区分 external 与 native，保留官方 Thread ID。`thread/list` 沿用原生／外部合并分页。Web 的完整目录使用 `codexhost/thread/catalog/read { includeArchived?: boolean }`：本地元数据和官方列表并行读取，各来源只遍历一次，统一去重排序后返回 `{ threads, ownership, archivedThreadIds }`，不逐个混合页重复查询官方候选。默认仅枚举未归档记录；用户请求归档时才读取官方归档列表。本地 Mapping Store 已知的归档 ID 可随元数据一起返回，不表示已枚举官方归档目录。原生不可用不影响外部目录，协议错误仍报错。官方 Codex 不经 Adapter，也不提供专用会话导入。Web 使用聚合响应中的归属，不再为整份目录分批查询所有权。
+客户端通道也支持本机原生 Codex Thread。共享服务通过已有 `OfficialRuntimeClient` 连接与 Desktop 相同的 `OfficialRuntimeScope`，按 Mapping Store 归属区分 external 与 native，保留官方 Thread ID。`thread/list` 沿用原生／外部合并分页。Web 使用 `codexhost/thread/catalog/read { includeArchived?: boolean, officialCursor?: {live: string|null, archived?: string|null} }`：本地外部元数据完整读取，官方每个请求分支仅查询一页 `limit:20 / sortKey:updated_at / sortDirection:desc`，不经过混合分页聚合器。统一去重排序后返回 `{ threads, ownership, archivedThreadIds, officialCursor }`；续页 cursor 直接来自原生页，不从合并结果或置顶推算。请求不带 cursor 表示首批；分支值为 `null` 表示已结束，不再查询；仅显式续页才读取下一页。默认不查询官方归档；`includeArchived:true` 分别对 live／archived 读取独立一页。本地 Mapping Store 已知的归档 ID 可随元数据一起返回，官方归档 ID 仅描述已返回页，不表示全部成员。Web 并行读取原生 `pins/list` 及完整项目定义，置顶缺失摘要按 ID 有界补读，首批完成后才响应，不为置顶或项目枚举全局历史。Web `session/list` 返回绑定归档 scope 的 `nextCursor`，浏览器独立持有加载状态；续页合并去重，普通刷新只更新首批，局部遗漏不作删除或归档证据，也不触发逐行补读。直接链接可用 `session/list {sessionId}` 按 ID 查询。搜索仅查询已加载会话。原生不可用不影响外部目录，协议错误仍报错。官方 Codex 不经 Adapter，也不提供专用会话导入。Web 使用聚合响应中的归属，不再为整份目录分批查询所有权。
 
-原生快照用 `thread/resume {threadId, excludeTurns: true}` 建立订阅，再调用官方 `thread/read` 与 `thread/turns/list`；没有模型、权限或沙箱默认值覆盖。客户端通道保存 resume 响应及 `thread/settings/updated` 确认的配置，快照直接携带 `configuration.effectiveModel`、`effectiveThinkingOptionId`、`effectivePermissionModeId`，Model Ref 与官方目录一致。客户端 inspect 仅在配置缺失时尝试恢复；恢复失败仍返回 `{owner: "codex", locked: false, history: …}`，不带配置字段，不阻止历史查看；已确认配置不随快照反复恢复；Desktop inspect 保持只读的 `{owner: "codex", locked: true}`，不恢复 Thread。游标在异步读取前捕获；读取中后台换代会拒绝快照，不能确认尚未包含的事件。后台退出清空原生订阅、配置与交互状态，并使已观察的会话失效。遇到官方 writer 冲突时退回只读历史，快照标记不可发送并跳过队列读取；再次发送保留官方错误并提示先在另一端关闭会话，不绕过锁或自动 Fork。
+原生快照用 `thread/resume {threadId, excludeTurns: true}` 建立订阅，再调用官方 `thread/read` 与 `thread/turns/list`；没有模型、权限或沙箱默认值覆盖。新 Thread 在首条用户消息前可以尚未生成历史；官方 `thread/turns/list` 对初始页明确返回这一状态时，客户端通道投影为空历史，不标记连接故障、不缓存为空，也不触发写操作。其他历史错误及旧页游标错误保持原样。客户端通道保存 start／resume／fork 响应及 `thread/settings/updated` 确认的配置，快照直接携带 `configuration.effectiveModel`、`effectiveThinkingOptionId`、`effectivePermissionModeId`，Model Ref 与官方目录一致。客户端 inspect 仅在配置缺失时尝试恢复；恢复失败仍返回 `{owner: "codex", locked: false, history: …}`，不带配置字段，不阻止历史查看；已确认配置不随快照反复恢复；Desktop inspect 保持只读的 `{owner: "codex", locked: true}`，不恢复 Thread。游标在异步读取前捕获；读取中后台换代会拒绝快照，不能确认尚未包含的事件。后台退出清空原生订阅、配置与交互状态，并使已观察的会话失效。遇到官方 writer 冲突时退回只读历史，快照标记不可发送并跳过队列读取；再次发送保留官方错误并提示先在另一端关闭会话，不绕过锁或自动 Fork。
 
-原生命令／文件审批和提问可由 Web 回答。审批严格保留原生可选 decision；Web 使用代次限定的不透明请求 ID，服务端再映射到官方 ID，旧页面不能回答重启后复用编号的新请求。首次有效回应后删除待处理项，不自动重放结果未知的响应。未支持的原生权限授予请求不转换成通用允许／拒绝；Web 提问卡片没有密码输入契约，因此含 `isSecret` 的提问也不降级成明文字段。对 Web 不能回答的官方请求，有 Desktop 连接时交由 Desktop；没有 Desktop 连接时立即返回错误并投影原因，不让 Turn 悬挂。
+原生命令／文件审批和提问可由 Web 回答。MCP 的空字段表单以确认审批呈现，保留 `message`、风险提示与工具参数，不投影为空问题列表；带 `codex_approval_kind: "mcp_tool_call"` 的请求只提供原生 `_meta.persist` 声明的会话／永久授权范围，普通空表单只提供单次允许与拒绝。审批响应在认领请求前校验 action、空 content 与授权范围，不自动批准，也不接受未声明的持久化权限。审批严格保留原生可选 decision；Web 使用代次限定的不透明请求 ID，服务端再映射到官方 ID，旧页面不能回答重启后复用编号的新请求。首次有效回应后删除待处理项，不自动重放结果未知的响应。未支持的原生权限授予请求不转换成通用允许／拒绝；Web 提问卡片没有密码输入契约，因此含 `isSecret` 的提问也不降级成明文字段。对 Web 不能回答的官方请求，有 Desktop 连接时交由 Desktop；没有 Desktop 连接时立即返回错误并投影原因，不让 Turn 悬挂。
 
 - `shared-contracts/client-channel` 定义浏览器安全的版本、游标、快照和交互契约。
 - `host-runtime` 提供本地认证 HTTP 通道，复用原请求分派、投影器、配置观察器和交互响应路径。
@@ -41,9 +41,19 @@ Web / App → Web 网关 → 客户端通道 ───────────�
 
 Web 在插件列表之外调用 `codexhost/harness/inspect {harnessId: "codex"}`，就绪时显示一个“Codex”；不可用时不影响其他 Harness。`codex` 是保留 ID，不是插件描述符。新建传官方 Model Ref，由 Host 转为官方 `thread/start` 参数，直接返回官方 Thread ID，不创建 Mapping Store 记录。无项目时由 Host 分配默认生成目录再传 `cwd`，Web 不分配目录。
 
-客户端统一使用现有方法，Host 的方法表按所有者分发。官方 `thread/queue/*` 同名转发，`codexhost/thread/queue/send-now` 转为 `thread/queue/start`；排队发送进入官方队列，Web 与 Desktop 可操作同一队列。模型、Thinking 与权限选择转为 `thread/settings/update`，仅在匹配的 `thread/settings/updated` 通知确认后发布结果，空响应不表示已生效。权限选项来自 `permissionProfile/list` 中允许选择的档案，保留官方 ID。
+客户端统一使用现有方法，Host 的方法表按所有者分发。官方 `thread/queue/*` 同名转发；排队发送进入官方队列，Web 与 Desktop 可操作同一队列。
 
-官方 Thread 的客户端命令目录提供 `/compact`、`/review` 和 `skills/list` 返回的启用 Skill，Desktop 的 Host 命令目录仍为空，使用其官方菜单。菜单中的压缩和默认审查分别调用 `thread/compact/start`、`review/start`（`uncommittedChanges`）；显式发送 `/review 指令` 使用 `custom` target。压缩不接受文本参数，这两类操作不能排队或 Steer，不降级成普通 Prompt。Skill 同名时保留官方列表中首个有效启用项，目录通过 `warnings` 报告忽略的条目、解析错误或 Skills 加载失败，不影响有效入口；Skills 不可用时仍保留压缩和审查。`$name` carrier 保留原生前缀，发送时按当前工作区官方目录解析为 `type: "skill"` 的 `name/path` 输入，原有文本、附件及队列／Steer 语义保留；Skill 已失效或目录读取失败则拒绝发送，不退化为普通提示词。命令回执只在官方返回 Turn ID 时携带 `turnId`，压缩的空响应不生成虚构 Turn；执行进度仍以官方通知与历史为准。置顶和用量复用 Host 已有官方实现。官方 Thread 不开放 Web Fork 或历史回退，控件按能力显示。
+Web 的排队提交通过 `thread/read {includeTurns: false}` 读取运行态，不依赖历史是否已经生成。仅提交前原生状态明确为 `idle`，且入队后读取的队首仍为本条时，才尝试原生 `thread/queue/start`；其他运行态只入队。该原生操作拒绝活动或待启动 Turn，因此并发 Desktop 提交不会把排队变为 Steer。读取到已有队首时不启动本条，不因追加输入主动恢复暂停积压。读取与启动不是跨客户端原子事务，不承诺锁定队列顺序或停止边界；最终接受与否以原生操作结果为准，不回退到 `turn/start` 或 Steer。入队已确认而启动结果未知时明确提示不要重发；中断或失败后的非空队列投影对应暂停原因。插队请求保留本次提交策略，空闲时启动本条，不转为排队。浏览器以实际 `next-turn` 队列投影结束本地发送回显，即使发送时本地看起来空闲，也不会隐藏队列项并持续显示正在处理。
+
+`codexhost/thread/queue/send-now` 在空闲时调用 `thread/queue/start`，活动 Turn 内则读取原队列项，以其完整输入和 `clientUserMessageId` 调用带 `expectedTurnId` 的 `turn/steer`，确认接受后才删除队列项。拒绝或结果未知不回退启动新 Turn；已接受但删除未确认时返回 `-32095`，保留“输入已接受，不要重发”的明确错误信息，不把它归为发送结果完全未知。相同 Thread／队列项的该操作复用当前 Host 的有界进程内回执，不承诺跨重启去重，也不能将两次原生写入变成原子操作。模型、Thinking 与权限选择转为 `thread/settings/update`，仅在匹配的 `thread/settings/updated` 通知确认后发布结果，空响应不表示已生效。权限选项来自 `permissionProfile/list` 中允许选择的档案，保留官方 ID。
+
+官方 Thread 的客户端命令目录提供 `/compact`、`/review` 和 `skills/list` 返回的启用 Skill，Desktop 的 Host 命令目录仍为空，使用其官方菜单。菜单中的压缩和默认审查分别调用 `thread/compact/start`、`review/start`（`uncommittedChanges`）；显式发送 `/review 指令` 使用 `custom` target。压缩不接受文本参数，这两类操作不能排队或 Steer，不降级成普通 Prompt。Skill 同名时保留官方列表中首个有效启用项，目录通过 `warnings` 报告忽略的条目、解析错误或 Skills 加载失败，不影响有效入口；Skills 不可用时仍保留压缩和审查。`$name` carrier 保留原生前缀，发送时按当前工作区官方目录解析为 `type: "skill"` 的 `name/path` 输入，原有文本、附件及队列／Steer 语义保留；Skill 已失效或目录读取失败则拒绝发送，不退化为普通提示词。命令回执只在官方返回 Turn ID 时携带 `turnId`，压缩的空响应不生成虚构 Turn；执行进度仍以官方通知与历史为准。置顶和用量复用 Host 已有官方实现。官方 Thread 支持同目录 Web Fork，不开放 Web 历史回退。
+
+官方 Fork 使用既有 `thread/fork {threadId, lastTurnId, excludeTurns: true}`，保留指定轮次及之前的原生上下文；不传模型、权限或 cwd 默认值覆盖。新 Thread 的订阅与实际配置按响应中的 `thread.id` 登记，不覆盖来源 Thread 的配置。新身份仍由官方持久化并与 Desktop 共用，不创建 Mapping Store 记录；通知使客户端目录失效重读。GUI 的原生 Fork 转发路径保持不变，结果未知不自动重试。
+
+官方命令的开始和输出通知可能早于原生历史分页中的 Item。Host 在当前原生后端代次内保留 `commandExecution` 通知，补入原生 full Turn 页，已持久化的完成记录优先；不填充 summary/notLoaded 页，也不凭工具事件虚构 Turn。原生 `contextCompaction` Item 没有 `status`，客户端快照根据 `item/started` 和 `item/completed` 补齐压缩状态；原生历史仅持久化已完成的压缩，回放时标为完成，不重新打开压缩展示。未确认完成的压缩在所属 Turn 结束时按失败或中止收尾，不冒充成功。这些状态只补入客户端投影，不修改 Desktop 原生通知或历史。仅当全页 Item 都有原生 `startedAtMs` 时稳定排序，使完成时才追加的命令仍位于后来输入之前；缺失时间戳时保留原生顺序。Thread 关闭或后端换代清空临时状态，不持久化第二份历史。
+
+官方停止使用 `turn/interrupt`，不等价于终止该 Thread 的后台终端。原生后台命令可以在 Turn 中断后继续运行，与显式启动的下一 Turn 重叠；终端清理属于独立的原生操作，Host 不在停止 Turn 时追加全量清理或进程强杀。
 
 ## 应用更新
 
@@ -64,7 +74,7 @@ Host 只监听 `127.0.0.1`，使用随机 Bearer token，拒绝带 Origin 的直
 
 服务还提供认证的 Host-private `/v1/desktop` WebSocket 和 `/v1/shutdown` 管理入口，不通过 Web 网关公开。Desktop 连接携带有界、版本化的运行时上下文，不能改写后台的存储目录、Codex home 或委派认证。Web 发行包携带原生 Launcher 和同一 Host bundle；它不是纯浏览器即可启动的后台，也不包含 Node 或 Harness CLI。
 
-POST 使用 JSON，正文上限 128 MiB（`CLIENT_REQUEST_LIMIT_BYTES`，与桌面 WebSocket 一致，可容纳内联图片）；返回 `{result: …}` 或 `{error: {code, message}}`。RPC 参数为 `{method, params}`，快照参数为 `{threadId, knownTurns?, truncateToolOutput?}`（可选项见下文“快照的可选精简”），回答参数为 `{epoch, threadId, requestId, result}`。可用 RPC 在 `CLIENT_CHANNEL_METHODS` 中；支持官方 Codex 创建、恢复及本地 external Thread 操作，不开放官方 Fork 或回退。具体 Harness 能力仍须通过已有 inspect 契约查询，不能因 RPC 在名单内便假定该 Harness 支持它。
+POST 使用 JSON，正文上限 128 MiB（`CLIENT_REQUEST_LIMIT_BYTES`，与桌面 WebSocket 一致，可容纳内联图片）；返回 `{result: …}` 或 `{error: {code, message}}`。RPC 参数为 `{method, params}`，快照参数为 `{threadId, knownTurns?, truncateToolOutput?}`（可选项见下文“快照的可选精简”），回答参数为 `{epoch, threadId, requestId, result}`。可用 RPC 在 `CLIENT_CHANNEL_METHODS` 中；支持官方 Codex 创建、恢复、Fork 及本地 external Thread 操作，不开放官方历史回退。具体 Harness 能力仍须通过已有 inspect 契约查询，不能因 RPC 在名单内便假定该 Harness 支持它。
 
 client channel 透传既有的 `thread/revert {threadId, beforeTurnId}`。它与 GUI 共用分页历史回退路由；请求携带 canonical Turn ID，过期边界或活动 Turn 由 Host 拒绝。Web 编辑只对当前 Thread 声明 `history.rollbackLastTurn` 的最后一轮开放，回退确认后再通过 `turn/start` 重跑；这两个操作不构成新的原子编辑契约，结果未知不重试。详见[独立 Web 的已发送消息编辑](../product/standalone-web.md#编辑已发送消息)。
 

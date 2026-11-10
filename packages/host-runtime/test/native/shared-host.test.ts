@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createServer } from "node:net";
 import { pathToFileURL } from "node:url";
 import { it } from "node:test";
 import { build } from "esbuild";
@@ -28,13 +29,13 @@ async function until(check: () => Promise<boolean>) {
   }
 }
 
-for (const first of ["Web", "Desktop"])
+for (const first of ["Web", "Desktop", "CLI"])
   it(
     `${first}-first startup reuses the running Host, survives client exit, and cleans up on stop`,
     { timeout: 90_000 },
     async (t) => {
       const root = await mkdtemp(path.join(tmpdir(), "codexhost-independent-"));
-      const data = path.join(root, "data"),
+      const data = path.join(root, first === "CLI" ? ".codexhost" : "data"),
         plugins = path.join(root, "plugins"),
         codexHome = path.join(root, "codex");
       await mkdir(path.join(plugins, "fixture"), { recursive: true });
@@ -64,17 +65,28 @@ for (const first of ["Web", "Desktop"])
           entry: "./plugin.mjs",
         }),
       );
+      const portProbe = createServer();
+      await new Promise<void>((resolve) => portProbe.listen(0, "127.0.0.1", resolve));
+      const address = portProbe.address();
+      assert.ok(address && typeof address !== "string");
+      const port = address.port;
+      await new Promise<void>((resolve, reject) =>
+        portProbe.close((error) => (error ? reject(error) : resolve())),
+      );
       const env = {
         ...Object.fromEntries(
           Object.entries(process.env).filter(
             ([key]) =>
               !key.toUpperCase().startsWith("CODEXHOST_") &&
-              !["NODE_OPTIONS", "NODE_PATH", "NODE_USE_ENV_PROXY"].includes(key.toUpperCase()),
+              !["NODE_OPTIONS", "NODE_PATH", "NODE_USE_ENV_PROXY", "CODEX_THREAD_ID"].includes(
+                key.toUpperCase(),
+              ),
           ),
         ),
         HOME: root,
         USERPROFILE: root,
         LOCALAPPDATA: path.join(root, "local-app-data"),
+        CODEXHOST_EXTERNAL_CLIENT_PORT: String(port),
       };
       const args = [
         "--node",
@@ -137,6 +149,34 @@ for (const first of ["Web", "Desktop"])
       await assert.rejects(readFile(path.join(data, "shared-host-process.lock")), {
         code: "ENOENT",
       });
+      const cli = async (arguments_: string[]) =>
+        JSON.parse(
+          (
+            await exec(process.execPath, [runtime, "--codexhost-delegation-cli", ...arguments_], {
+              env,
+              timeout: 15_000,
+            })
+          ).stdout,
+        );
+      const cliStarted =
+        first === "CLI"
+          ? await cli([
+              "delegate",
+              "start",
+              "--harness",
+              "fixture",
+              "--cwd",
+              root,
+              "--task",
+              "continue without a UI",
+              "--watch",
+              "true",
+            ])
+          : undefined;
+      if (cliStarted) {
+        assert.equal(cliStarted.parentThreadId, "client:local-cli");
+        assert.equal(cliStarted.watch.state, "watching");
+      }
       const connect = async () => {
         const descriptor = await discoverHostClientChannel(path.join(data, "client-hosts"));
         assert.ok(descriptor);
@@ -154,17 +194,19 @@ for (const first of ["Web", "Desktop"])
       t.after(() => desktop.close());
       const id =
         desktopThreadId ??
+        cliStarted?.threadId ??
         (
           await web.request<{ thread: { id: string } }>("thread/start", {
             model: encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("fixture") }),
             cwd: root,
           })
         ).thread.id;
-      await web.request("turn/start", {
-        threadId: id,
-        input: [{ type: "text", text: "continue without a UI" }],
-        clientUserMessageId: "once",
-      });
+      if (!cliStarted)
+        await web.request("turn/start", {
+          threadId: id,
+          input: [{ type: "text", text: "continue without a UI" }],
+          clientUserMessageId: "once",
+        });
       assert.ok(
         (await desktop.request("thread/read", { threadId: id, includeTurns: false })).result,
       );
@@ -186,6 +228,19 @@ for (const first of ["Web", "Desktop"])
         (await discoverHostClientChannel(path.join(data, "client-hosts")))?.pid,
         endpoint.pid,
       );
+      if (cliStarted) {
+        assert.equal(
+          (await cli(["thread", "read", id])).result.text,
+          "completed without either viewer",
+        );
+        await until(async () =>
+          (await cli(["events"])).events.some(
+            (event: { threadId: string; outcome: string }) =>
+              event.threadId === id && event.outcome === "completed",
+          ),
+        );
+        assert.equal((await cli(["client", "list"])).clients.length, 0);
+      }
       const descendant = JSON.parse(
         await readFile(path.join(data, "fixture-native/descendant.json"), "utf8"),
       ) as { pid: number };
@@ -224,6 +279,8 @@ for (const first of ["Web", "Desktop"])
         endpoint.epoch,
       );
       await exec(launcher, ["host", "stop", ...args], { env, timeout: 15_000 });
+      if (cliStarted)
+        await assert.rejects(readFile(path.join(data, "cli-credentials.json")), { code: "ENOENT" });
       if (childInstance) {
         assert.ok(
           await childInstance.hasExited(),

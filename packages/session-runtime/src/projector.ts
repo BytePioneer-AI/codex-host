@@ -109,6 +109,7 @@ interface NarrationBlock {
 }
 
 interface ToolState {
+  step: number;
   callId: string;
   name: string;
   args: unknown;
@@ -477,7 +478,10 @@ export class TurnProjector {
     if (!this.messageCommitted && this.blocks.some((block) => block.text !== ""))
       this.commitMessage([]);
     else this.log.endAttempt(undefined);
-    this.log.append("step/end", { turn: this.turn, step: this.step });
+    // A steer or new narration can start another Step while this one's tool is
+    // still running. Closing it now would make clients synthesize an interruption.
+    if (![...this.tools.values()].some((tool) => tool.step === this.step))
+      this.log.append("step/end", { turn: this.turn, step: this.step });
     this.stepOpen = false;
   }
 
@@ -616,6 +620,7 @@ export class TurnProjector {
     const early = this.earlyOutput.get(item.itemId) ?? "";
     this.earlyOutput.delete(item.itemId);
     this.tools.set(item.itemId, {
+      step: this.step,
       callId,
       name: call.name,
       args: call.args,
@@ -666,7 +671,7 @@ export class TurnProjector {
       tool.args = call.args;
       this.log.append("tool/call", {
         turn: this.turn,
-        step: this.step,
+        step: tool.step,
         callId: tool.callId,
         name: call.name,
         arguments: JSON.stringify(call.args),
@@ -727,7 +732,7 @@ export class TurnProjector {
       "tool/result",
       {
         turn: this.turn,
-        step: this.step,
+        step: tool.step,
         message: {
           role: "tool",
           source: { kind: "tool", callId: tool.callId },
@@ -752,6 +757,11 @@ export class TurnProjector {
       },
       { surfaceOp: "append", sourceEventSeqs: [tool.callSeq] },
     );
+    if (
+      (tool.step !== this.step || !this.stepOpen) &&
+      ![...this.tools.values()].some((pending) => pending.step === tool.step)
+    )
+      this.log.append("step/end", { turn: this.turn, step: tool.step });
   }
 
   /** Close the Turn, optionally carrying the source's final reply identity. */

@@ -61,7 +61,7 @@ it(
 
 for (const width of [1280, 375]) {
   it(
-    `opens Connect devices once for fresh and signed-in browsers at ${width}px`,
+    `opens Remote access once for fresh and signed-in browsers at ${width}px`,
     { timeout: 60_000 },
     async (t) => {
       const { login, browser } = await start(t);
@@ -79,13 +79,11 @@ for (const width of [1280, 375]) {
         const section = page.locator("[data-connect-devices]");
         await section.waitFor();
         await page.getByRole("dialog", { name: "Settings", exact: true }).waitFor();
-        await page.getByRole("button", { name: "Connect devices", exact: true }).waitFor();
-        assert.equal(
-          await page
-            .getByRole("button", { name: "Connect devices", exact: true })
-            .getAttribute("aria-current"),
-          "true",
-        );
+        const nav = page
+          .getByRole("dialog")
+          .getByRole("button", { name: "Remote access", exact: true });
+        await nav.waitFor();
+        assert.equal(await nav.getAttribute("aria-current"), "true");
         assert.equal(new URL(page.url()).hash, "");
         assert.equal(new URL(page.url()).search, "");
         const bounds = await section.boundingBox();

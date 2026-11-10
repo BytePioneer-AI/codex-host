@@ -70,6 +70,14 @@ export interface SessionListState {
   byId: Record<SessionId, SessionSummary>;
   /** Arrival lifecycle projected 1:1 from the manager snapshot (see SessionListPhase): empty-with-ready means "truly no sessions". */
   phase: SessionListPhase;
+  hasMore?: boolean;
+  loading?: boolean;
+  listError?: string | null;
+  listErrorPage?: "head" | "more" | null;
+  /** Successful accepted head pulls in this Client lifetime; pages and incremental events do not advance it. */
+  headRefreshRevision?: number;
+  /** Known only through a direct metadata read, until a real catalog page/event confirms them. */
+  summaryOnlyIds?: readonly SessionId[];
   /** Shared projection values and explicit-read state, including unopened Sessions. */
   projectionsBySession: Readonly<Record<SessionId, SessionProjectionSnapshot>>;
 }
@@ -280,6 +288,8 @@ export class ClientSessions implements ISessions {
       ids: [],
       byId: {},
       phase: "pending",
+      headRefreshRevision: 0,
+      summaryOnlyIds: [],
       projectionsBySession: {},
     });
     const disposeManagerProjection = this.manager.subscribe(() => {
@@ -386,6 +396,14 @@ export class ClientSessions implements ISessions {
   }
 
   /** Set the browser-local list scope without changing Session ownership or selection. */
+  loadSummary(sessionId: SessionId): Promise<void> {
+    return this.manager.loadSummary(sessionId);
+  }
+
+  loadMore(): Promise<void> {
+    return this.manager.loadMore();
+  }
+
   setIncludeArchived(includeArchived: boolean): Promise<void> {
     return this.manager.setIncludeArchived(includeArchived);
   }
@@ -667,7 +685,17 @@ export class ClientSessions implements ISessions {
   /** Project the manager's list snapshot into the store (title derivation is display-only). */
   private projectList(): void {
     const previousById = this.list.getSnapshot().byId;
-    const { items, phase, projectionsBySession } = this.manager.getListSnapshot();
+    const {
+      items,
+      phase,
+      projectionsBySession,
+      hasMore,
+      state,
+      error,
+      errorPage,
+      headRefreshRevision,
+      summaryOnlyIds,
+    } = this.manager.getListSnapshot();
     const ids: SessionId[] = [];
     const byId: Record<SessionId, SessionSummary> = {};
     for (const entry of items) {
@@ -746,7 +774,18 @@ export class ClientSessions implements ISessions {
         ...(title === undefined ? {} : { title, displayTitle: title }),
       };
     }
-    this.list.set({ ids, byId, phase, projectionsBySession });
+    this.list.set({
+      ids,
+      byId,
+      phase,
+      projectionsBySession,
+      hasMore,
+      loading: state === "loading",
+      listError: error?.message ?? null,
+      listErrorPage: errorPage,
+      headRefreshRevision: headRefreshRevision ?? 0,
+      summaryOnlyIds: summaryOnlyIds ?? [],
+    });
   }
 
   private startScopeDrop(

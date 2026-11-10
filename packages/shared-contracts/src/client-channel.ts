@@ -19,6 +19,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/thread/catalog/read",
   "thread/read",
   "thread/resume",
+  "thread/fork",
   "thread/turns/list",
   "thread/revert",
   "thread/items/list",

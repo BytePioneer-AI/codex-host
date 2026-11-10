@@ -19,6 +19,7 @@ const PhoneSidebarContext = createContext<{
   target: HTMLElement | null;
   backLabel: string;
   open: boolean;
+  close: () => void;
   enterView: () => () => void;
   returnFocus: MutableRefObject<HTMLElement | null>;
 } | null>(null);
@@ -27,19 +28,21 @@ export function PhoneSidebarProvider({
   target,
   backLabel,
   open,
+  close,
   enterView,
   children,
 }: {
   target: HTMLElement | null;
   backLabel: string;
   open: boolean;
+  close: () => void;
   enterView: () => () => void;
   children: ReactNode;
 }) {
   const returnFocus = useRef<HTMLElement | null>(null);
   const value = useMemo(
-    () => (target === null ? null : { target, backLabel, open, enterView, returnFocus }),
-    [target, backLabel, open, enterView],
+    () => (target === null ? null : { target, backLabel, open, close, enterView, returnFocus }),
+    [target, backLabel, open, close, enterView],
   );
   return <PhoneSidebarContext.Provider value={value}>{children}</PhoneSidebarContext.Provider>;
 }

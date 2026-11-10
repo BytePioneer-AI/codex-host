@@ -20,7 +20,7 @@ export async function forkChThread(
   const owner = threadInspectionSchema.parse(
     await host.request("codexhost/thread/inspect", { threadId }),
   );
-  if (owner.owner !== "external" || !owner.history.fork)
+  if (owner.history?.fork === false)
     return forkUnavailable(threadId, "This Thread does not support native forking.");
   // Resolve after inspection so a retired view cannot authorize a stale boundary.
   const lastTurnId = view.forkTurnId(atSeq);
@@ -29,9 +29,24 @@ export async function forkChThread(
       threadId,
       "No completed Turn exists at this fork point. Reopen the conversation.",
     );
+  // No cwd/worktree overrides, history copying, or write retries in the Web gateway.
+  if (owner.owner === "codex") {
+    const result = await host.request<{ thread?: { id?: unknown } }>("thread/fork", {
+      threadId,
+      lastTurnId,
+      excludeTurns: true,
+    });
+    const id = result?.thread?.id;
+    if (typeof id !== "string" || !id.trim() || id === threadId)
+      throw new RpcError(
+        "session/fork-unconfirmed",
+        "Codex did not confirm a distinct forked Thread. Do not retry automatically.",
+        { sessionId: threadId },
+      );
+    return { sessionId: id };
+  }
   const result = externalThreadForkResultSchema.parse(
     await host.request("codexhost/thread/fork", { threadId, lastTurnId }),
   );
-  // No cwd/worktree overrides, history copying, or write retries in the Web gateway.
   return { sessionId: result.threadId };
 }

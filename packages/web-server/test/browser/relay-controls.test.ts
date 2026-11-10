@@ -143,7 +143,10 @@ it(
     await phone.goto(url.href);
     await phone.getByRole("button", { name: "Open sidebar" }).click();
     await phone.getByRole("button", { name: "Settings", exact: true }).click();
-    await phone.getByText("Connect devices", { exact: true }).first().click();
+    await phone
+      .getByRole("dialog")
+      .getByRole("button", { name: "Remote access", exact: true })
+      .click();
     await phone.locator('[data-connect-notice="non-local"]').waitFor();
     assert.equal(await phone.locator('[data-connect-route="relay"]').count(), 0);
   },

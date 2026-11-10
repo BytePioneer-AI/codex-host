@@ -23,6 +23,8 @@ it("routes pins through the shared Host protocol and does not repeat no-op write
   });
   // Also prove IDs are JSON data, not executable Renderer source.
   const id = 'canonical-";throw new Error("injected");';
+  host.add("other-host-pin", "/project");
+  host.add(id, "/project");
   host.pinnedIds = ["other-host-pin"];
   assert.deepEqual(await client.pins(), ["other-host-pin"]);
   assert.deepEqual(await client.pins({ threadId: id, pinned: true }), ["other-host-pin", id]);
@@ -43,6 +45,8 @@ it("uses Host pin RPC with a main-process request manager that has no runtime", 
   });
   host.pinnedIds = ["official"];
   const id = 'external-";throw new Error("injected");';
+  host.add("official", "/project");
+  host.add(id, "/project");
   assert.deepEqual(await client.pins(), ["official"]);
   assert.deepEqual(await client.pins({ threadId: id, pinned: true }), ["official", id]);
   await client.pins({ threadId: id, pinned: true });
@@ -80,6 +84,7 @@ it("preserves RPC service refusals and never replays a write after confirmation 
 
 it("does not require a Renderer pin service", async (t) => {
   const host = new FakeChHost();
+  host.add("external", "/project");
   const debuggerServer = await startFakeChDebugger(host, {
     rpc: true,
     pinServiceAvailable: false,
@@ -173,7 +178,10 @@ it("projects only shared external pins, synchronizes changes and never overwrite
     "old Web-only pins are not shown at startup",
   );
   assert.ok((await rpc.dispatch("session/list", { args: {} })).ok);
-  assert.deepEqual(frames.at(-1)?.pinnedSessionIds, ["b", "a"]);
+  assert.deepEqual(frames.findLast((frame) => frame.type === "pinned")?.pinnedSessionIds, [
+    "b",
+    "a",
+  ]);
   const before = frames.length;
   await rpc.dispatch("session/list", { args: {} });
   assert.equal(frames.length, before, "unchanged pins do not rebroadcast");
@@ -302,7 +310,8 @@ it("serializes polling with pin changes so a slow old snapshot cannot undo a con
   workspaces.setReferencePins = (ids) => {
     observed.push([...ids]);
   };
-  const pins = new ChPinnedThreads(host, workspaces, () => true);
+  host.add("new", root);
+  const pins = new ChPinnedThreads(host, workspaces);
   const read = Promise.withResolvers<string[]>();
   const original = host.pins.bind(host);
   host.pins = (change) => (change ? original(change) : read.promise);

@@ -66,6 +66,7 @@ function equalBreadcrumbs(left: readonly Breadcrumb[], right: readonly Breadcrum
 export function ConversationSessionHeader({
   sessionId,
   hideChrome,
+  titleNavigation,
   useSessions,
   useConversationViews,
   useStore,
@@ -149,6 +150,7 @@ export function ConversationSessionHeader({
                 })}
                 {ancestry.length === 0 && <span className={css.crumbCurrent}>{sessionId}</span>}
               </nav>
+              {titleNavigation}
               <div className={css.headerActions}>
                 {renderSlot("conversation.session.header.actions", {})}
               </div>
@@ -158,6 +160,7 @@ export function ConversationSessionHeader({
             </div>
           </>
         )}
+        {hideChrome && titleNavigation}
         <div className={css.headerCorner} data-conversation-header-corner="">
           {renderSlot("conversation.session.header.corner", {})}
         </div>

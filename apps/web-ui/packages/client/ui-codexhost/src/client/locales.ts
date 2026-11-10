@@ -2,6 +2,7 @@
 export const en = {
   "discovery.agents": "Delegation Agents",
   "discovery.sessions": "Sessions",
+  "reference.addedToDraft": "Added to the current draft",
   "discovery.commands": "Native commands",
   "discovery.skills": "Skills",
   "discovery.offline": "Host disconnected",
@@ -30,6 +31,8 @@ export const en = {
   "connection.offline": "Network appears offline. Showing previously synced content.",
   "connection.host": "Host unavailable; reconnecting…",
   "connection.error": "Could not sync messages. Retry the connection.",
+  "opening.loading": "Opening conversation…",
+  "opening.error": "Could not open conversation",
   "connection.checking": "Checking the connection…",
   "connection.computer": "Cannot reach your computer. Check that it is on and Web is running.",
   "connection.lastSynced": "Last synced at {time}",
@@ -443,6 +446,7 @@ export type ImportLocaleKey = keyof typeof en;
 export const zh: Record<ImportLocaleKey, string> = {
   "discovery.agents": "委派 Agent",
   "discovery.sessions": "会话",
+  "reference.addedToDraft": "已加入当前草稿",
   "discovery.commands": "原生命令",
   "discovery.skills": "Skills",
   "discovery.offline": "Host 已断线",
@@ -470,6 +474,8 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connection.offline": "网络可能已断开，当前显示上次同步内容。",
   "connection.host": "Host 暂不可用，正在重连…",
   "connection.error": "消息同步失败，请重试连接。",
+  "opening.loading": "正在打开会话…",
+  "opening.error": "无法打开会话",
   "connection.checking": "正在检查连接…",
   "connection.computer": "无法连接到电脑，请确认电脑已开机且 Web 正在运行。",
   "connection.lastSynced": "上次同步于 {time}",

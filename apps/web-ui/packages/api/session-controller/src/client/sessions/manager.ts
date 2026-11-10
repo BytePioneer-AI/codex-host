@@ -60,6 +60,13 @@ export interface SessionListSnapshot {
   /** Arrival lifecycle (see {@link SessionListPhase}); `state` stays the pull-activity axis. */
   phase: SessionListPhase;
   error: RemoteFailure | null;
+  /** Which existing list operation retries the failed request, independent of hasMore. */
+  errorPage: "head" | "more" | null;
+  hasMore: boolean;
+  /** Accepted successful head refreshes only; not a catalog-membership completeness claim. */
+  headRefreshRevision?: number;
+  /** Header-only discoveries are not automatic background-history discovery. */
+  summaryOnlyIds?: readonly SessionId[];
   projectionsBySession: Readonly<Record<SessionId, SessionProjectionSnapshot>>;
 }
 
@@ -106,13 +113,17 @@ export class SessionManager {
    *  same store so history-baseline seeding and frames converge on one row set. */
   private readonly projectionStores = new Map<SessionId, ProjectionValueStore>();
   private summaries: SessionSummary[] = [];
+  private readonly summaryOnlyIds = new Set<SessionId>();
   private listState: "idle" | "loading" | "error" = "idle";
   /** Arrival phase; the pending → ready edge fires on the first successful pull (see SessionListPhase). */
   private listPhase: SessionListPhase = "pending";
   private listError: RemoteFailure | null = null;
+  private listRequestIsMore = false;
+  private headRefreshRevision = 0;
   private listInflight: Promise<void> | null = null;
   /** Browser-local query scope, retained across reconnects and automatic refreshes. */
   private includeArchived = false;
+  private nextCursor: string | null | undefined;
   /** Active list request's mutation log; its identity also fences completion after reconnect. */
   private listMutations: SessionListMutation[] | null = null;
   private readonly addresses = new Map<SessionId, SubagentAddress>();
@@ -424,36 +435,64 @@ export class SessionManager {
   setIncludeArchived(includeArchived: boolean): Promise<void> {
     if (this.includeArchived === includeArchived) return this.listInflight ?? Promise.resolve();
     this.includeArchived = includeArchived;
+    this.nextCursor = undefined;
     this.listMutations = null;
     this.listInflight = null;
     return this.refreshList();
   }
 
-  /** Refresh via session.list, single-flight within one connection and query scope. */
-  refreshList(): Promise<void> {
+  /** Resolve a direct link without loading any preceding catalog pages. */
+  async loadSummary(sessionId: SessionId): Promise<void> {
+    if (this.summaries.some((row) => row.sessionId === sessionId)) return;
+    const result = await this.remote.session.list({ sessionId });
+    if (!result.ok) throw result.error;
+    if (this.disposed) return;
+    for (const summary of result.value.items) {
+      if (!this.summaries.some((row) => row.sessionId === summary.sessionId))
+        this.summaryOnlyIds.add(summary.sessionId);
+      this.handleSessionAdded(summary, false);
+    }
+  }
+
+  /** Fetch exactly one older native page in this browser's current scope. */
+  loadMore(): Promise<void> {
+    if (!this.nextCursor) return Promise.resolve();
+    return this.refreshList(this.nextCursor);
+  }
+
+  /** Refresh the head or an explicit page, single-flight within this browser and scope. */
+  refreshList(cursor?: string): Promise<void> {
     if (this.disposed) return Promise.resolve();
     if (this.listInflight !== null) return this.listInflight;
     const includeArchived = this.includeArchived;
     this.listState = "loading";
     this.listError = null;
+    this.listRequestIsMore = cursor !== undefined;
     const established = this.summaries;
     const mutations: SessionListMutation[] = [];
     this.listMutations = mutations;
     this.notifier.markDirty();
     this.listInflight = (async () => {
       try {
-        const result = await this.remote.session.list({ includeArchived });
+        const result = await this.remote.session.list({
+          includeArchived,
+          ...(cursor ? { cursor } : {}),
+        });
         if (this.listMutations !== mutations) return;
         if (result.ok) {
           const archived = new Set(result.value.archivedSessionIds);
           const received = new Set(result.value.items.map((summary) => summary.sessionId));
-          // A scoped omission is not deletion. Only explicitly archived, already-loaded
-          // rows survive it; missing ordinary rows still leave the catalog.
+          const partial = result.value.nextCursor !== undefined;
+          if (cursor !== undefined || this.nextCursor === undefined)
+            this.nextCursor = result.value.nextCursor ?? null;
+          // Partial pages cannot remove already-loaded identities, including hidden archives.
           const rows = [
             ...result.value.items,
-            ...(!includeArchived
-              ? established.filter((s) => archived.has(s.sessionId) && !received.has(s.sessionId))
-              : []),
+            ...established.filter(
+              (s) =>
+                !received.has(s.sessionId) &&
+                (partial || (!includeArchived && archived.has(s.sessionId))),
+            ),
           ];
           const baseline =
             this.listPhase === "pending"
@@ -470,6 +509,10 @@ export class SessionManager {
           }
           const summaries = mutations.reduce(applyMutation, baseline);
           this.summaries = summaries;
+          const knownIds = new Set(summaries.map((summary) => summary.sessionId));
+          for (const id of this.summaryOnlyIds) {
+            if (received.has(id) || !knownIds.has(id)) this.summaryOnlyIds.delete(id);
+          }
           // A full list can remove identities without a removal frame.
           const retained = this.retainedIds(summaries);
           for (const sessionId of this.engagedSessions) this.pruneEngagement(sessionId, retained);
@@ -490,6 +533,8 @@ export class SessionManager {
           for (const s of result.value.items) {
             if (s.projections !== undefined) this.applyListBlock(s.sessionId, s.projections);
           }
+          if (cursor === undefined && this.listMutations === mutations)
+            this.headRefreshRevision += 1;
         } else {
           this.listState = "error";
           this.listError = result.error;
@@ -526,7 +571,9 @@ export class SessionManager {
     return {
       ok: true,
       value: {
-        items: [...result.value.items],
+        items: result.value.items.filter((item) =>
+          this.summaries.some((row) => row.sessionId === item.sessionId),
+        ),
         hasMore: result.value.hasMore,
       },
     };
@@ -723,8 +770,10 @@ export class SessionManager {
   /**
    * Apply one Session-list addition forwarded through `ctx.remote.$on`.
    * @param summary - current Host summary for the added Session.
+   * @param catalogEntry - false for the direct metadata lookup path, not catalog discovery.
    */
-  handleSessionAdded(summary: SessionSummary): void {
+  handleSessionAdded(summary: SessionSummary, catalogEntry = true): void {
+    if (catalogEntry) this.summaryOnlyIds.delete(summary.sessionId);
     this.mergeSummary(summary);
     if (!this.disposed && summary.running) this.engagedSessions.add(summary.sessionId);
     const session = this.sessions.get(summary.sessionId);
@@ -763,6 +812,7 @@ export class SessionManager {
    * @param sessionId - removed Session identity.
    */
   handleSessionRemoved(sessionId: SessionId): void {
+    this.summaryOnlyIds.delete(sessionId);
     const durableSubagent =
       this.subagentAddress(sessionId) !== undefined ||
       this.summaries.some(
@@ -836,6 +886,7 @@ export class SessionManager {
     for (const store of this.projectionStores.values()) store.clear();
     this.listMutations = null;
     this.listInflight = null;
+    this.nextCursor = undefined;
     void this.refreshList();
     const parents = new Set(this.projectionLoads.keys());
     for (const id of this.sessions.keys()) {
@@ -893,9 +944,13 @@ export class SessionManager {
     if (!sameOrder) this.itemsCache = items;
     return {
       items: this.itemsCache,
+      hasMore: !!this.nextCursor,
+      headRefreshRevision: this.headRefreshRevision,
+      summaryOnlyIds: [...this.summaryOnlyIds],
       state: this.listState,
       phase: this.listPhase,
       error: this.listError,
+      errorPage: this.listError ? (this.listRequestIsMore ? "more" : "head") : null,
       projectionsBySession: Object.fromEntries(
         [...this.projectionStores].map(([sessionId, store]) => [
           sessionId,

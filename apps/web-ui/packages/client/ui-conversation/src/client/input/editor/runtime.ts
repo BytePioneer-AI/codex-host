@@ -354,14 +354,15 @@ export class DraftEditorRuntime {
   /**
    * Insert an ordered file-reference batch after the live selection without deleting it.
    * @param references - validated references in source order.
-   * @returns whether the live insertion position accepted the batch.
+   * @param span - optional owner-validated captured selection.
+   * @returns whether the insertion position accepted the batch.
    */
-  insertFileReferences(references: readonly ReferenceInsert[]): boolean {
+  insertFileReferences(references: readonly ReferenceInsert[], span?: DetectSpan): boolean {
     if (references.length === 0) return true;
     let applied = false;
     this.applyEdit(() => {
       const projection = $projectComposer((key) => this.occurrenceIdOf(key));
-      const at = projection.selection?.end ?? projection.detectText.length;
+      const at = span?.end ?? projection.selection?.end ?? projection.detectText.length;
       const before = projection.detectText.slice(0, at);
       const nodes = references.flatMap((ref) => [
         $createReferenceChipNode(ref),

@@ -16,6 +16,9 @@ function presentation(pending: ClientInteraction): {
 } {
   const interaction = pending.interaction;
   if (interaction.type === "approval") {
+    const nativeApproval =
+      pending.request.method === "item/commandExecution/requestApproval" ||
+      pending.request.method === "item/fileChange/requestApproval";
     const labels = interaction.actions.map((action, index) =>
       interaction.actions.filter((other) => other.label === action.label).length > 1
         ? `${action.label} (${index + 1})`
@@ -25,23 +28,16 @@ function presentation(pending: ClientInteraction): {
       questions: [
         {
           id: "approval",
-          header: interaction.title,
-          question: [
-            interaction.title,
-            interaction.description,
-            interaction.subject ? JSON.stringify(interaction.subject, null, 2) : undefined,
-          ]
-            .filter(Boolean)
-            .join("\n\n"),
+          question: interaction.title,
+          ...(!nativeApproval && interaction.description
+            ? { detail: interaction.description }
+            : {}),
           options: labels.map((label) => ({ label })),
           multiSelect: false,
           allowOther: false,
         },
       ],
       result(value) {
-        const nativeApproval =
-          pending.request.method === "item/commandExecution/requestApproval" ||
-          pending.request.method === "item/fileChange/requestApproval";
         const answer = (value as Answer | undefined)?.answers?.find(
           (entry) => entry.id === "approval",
         );

@@ -344,6 +344,25 @@ export class SessionInputShell implements SessionInput {
     );
   }
 
+  /** A mounted, visible Composer may accept references even when a drawer holds DOM focus. */
+  canInsertReferences(): boolean {
+    const root = this.editor.getRootElement();
+    return (
+      !this.disposed &&
+      this.editor.isEditable() &&
+      root !== null &&
+      root.isConnected &&
+      root.getClientRects().length > 0 &&
+      (this.snapshot.phase === "plain" || this.snapshot.phase === "claimed")
+    );
+  }
+
+  /** Insert at a captured draft position through the same chip/spacing/undo path as drop. */
+  insertReferences(references: readonly ReferenceInsert[], span: TokenSpan): boolean {
+    if (!this.canInsertReferences() || span.draftRev !== this.rev) return false;
+    return this.draftEditor.insertFileReferences(references, span);
+  }
+
   /** Append ordered attachment ids unless an admission transaction is locked. */
   addAttachments(ids: readonly DraftAttachmentId[]): boolean {
     if (this.snapshot.phase === "adjudicating" || this.snapshot.phase === "submitting")

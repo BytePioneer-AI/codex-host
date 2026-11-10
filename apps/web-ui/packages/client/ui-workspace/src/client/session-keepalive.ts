@@ -91,12 +91,19 @@ export class SessionKeepalive {
   private update(): void {
     const list = this.sessions.list.getSnapshot();
     const catalog = new Set(list.ids);
+    const summaryOnly = new Set(list.summaryOnlyIds ?? []);
     const archived = new Set(this.workspaces.list.getSnapshot().archivedSessionIds);
     const running = new Set<SessionId>();
     for (const id of list.ids) {
       const row = list.byId[id];
-      // Projected subagent trees are not a discovery surface for background opening.
-      if (row?.running && row.origin !== "subagent" && !archived.has(id)) running.add(id);
+      // Child catalogs and metadata-only lookups do not discover new history subscriptions.
+      if (
+        row?.running &&
+        row.origin !== "subagent" &&
+        !archived.has(id) &&
+        (!summaryOnly.has(id) || this.recent.has(id))
+      )
+        running.add(id);
     }
     if (list.phase === "pending") {
       for (const id of this.running) if (!archived.has(id)) running.add(id);

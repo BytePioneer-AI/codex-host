@@ -4,7 +4,7 @@ export interface StreamHeartbeatOptions {
   readonly intervalMs?: number;
   /** Deadline for the matching reply. Default: 10000ms. */
   readonly timeoutMs?: number;
-  /** Foreground probe deadline; defaults to timeoutMs (10000ms). */
+  /** Foreground probe deadline, independent of timeoutMs. Default: 2500ms. */
   readonly restoreTimeoutMs?: number;
 }
 
@@ -31,7 +31,7 @@ export class StreamHeartbeat {
   ) {
     this.interval = options.intervalMs ?? 25_000;
     this.timeout = options.timeoutMs ?? 10_000;
-    this.restoreTimeout = options.restoreTimeoutMs ?? this.timeout;
+    this.restoreTimeout = options.restoreTimeoutMs ?? 2_500;
     if (typeof document !== "undefined")
       document.addEventListener("visibilitychange", this.visibilityChanged);
     this.schedule(this.interval);

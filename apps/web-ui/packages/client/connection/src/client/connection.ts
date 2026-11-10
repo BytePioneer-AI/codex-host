@@ -125,9 +125,10 @@ export class ConnectionController {
     this.retryDelay?.abort(MANUAL_RECONNECT);
   }
 
-  /** Keep a connection that can still answer; anything else retries immediately. */
+  /** Check an established carrier or recover an absent one, without interrupting ongoing recovery. */
   revalidate(): void {
-    if (!this.running) return;
+    // An in-flight attempt or its backoff already owns recovery.
+    if (!this.running || this.lastState === undefined || this.lastState === "connecting") return;
     let probing = false;
     if (this.lastState === "connected") {
       this.callSink(() => {
@@ -145,7 +146,7 @@ export class ConnectionController {
     if (this.networkAvailable === available) return;
     this.networkAvailable = available;
     this.attempt = 0;
-    this.immediateRetry = false;
+    this.immediateRetry = available;
     if (!this.running) return;
     this.emitState(available ? "connecting" : "disconnected");
     if (!this.isRunning()) return;
@@ -194,7 +195,8 @@ export class ConnectionController {
 
       let manualAttempt = false;
       if (retry) {
-        const immediate = this.immediateRetry;
+        // Only the first attempt after an established connection is lost skips backoff.
+        const immediate = this.immediateRetry || this.lastState === "connected";
         this.immediateRetry = false;
         if (immediate) this.attempt = 0;
         manualAttempt = immediate;

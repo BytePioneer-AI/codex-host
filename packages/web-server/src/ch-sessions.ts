@@ -12,8 +12,6 @@ import {
   threadInspectionSchema,
   threadUsageInspectionSchema,
   type HarnessDisplayEntries,
-  THREAD_CATALOG_READ_METHOD,
-  type ThreadCatalogReadResult,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient, ChProjectSnapshot } from "./ch-host-client.ts";
 import { ChHarnessCatalog, type ModelSelection } from "./ch-harness-catalog.ts";
@@ -51,6 +49,7 @@ import { applyUsageProjections } from "./usage-projection.ts";
 import { readToolOutput, toolOutputRecords, toolOutputSink } from "./tool-output.ts";
 import type { WireEvent } from "./session-log.ts";
 import { SessionListTiming } from "./session-list-timing.ts";
+import { readSessionPage, nextCatalogCursor, type CatalogPage } from "./ch-session-page.ts";
 
 function globalProjectionValues(values: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -77,12 +76,11 @@ export class ChSessions {
   private readonly fileInputs: ChFileInputs | undefined;
   private rows = new Map<string, ChThread>();
   private publishedCatalog: Map<string, string> | undefined;
-  /** Everything derived per Thread. Rows (replaced as a whole by each catalog read)
-   * and drafts (not yet Host Threads) keep their own lifecycles. */
+  /** Loaded rows accumulate across partial official pages; drafts are not Host Threads. */
   private readonly threads = new WebThreadStates();
   private drafts = new Map<string, Draft>();
   private controls = new Set<StreamSink>();
-  private refreshing: Promise<void> | undefined;
+  private refreshing: Promise<CatalogPage | undefined> | undefined;
   private refreshingCatalog = false;
   private refreshingArchives = false;
   private refreshingArchiveChanges: Map<string, boolean> | undefined;
@@ -124,7 +122,7 @@ export class ChSessions {
             return id;
           })
         : undefined;
-    this.pins = new ChPinnedThreads(host, workspaces, (id) => this.threads.hasHarness(id));
+    this.pins = new ChPinnedThreads(host, workspaces);
     workspaces.setReferenceArchives([]);
     this.interactions = host.realtime
       ? new ChInteractions(host.realtime, events, (id, message) => {
@@ -134,7 +132,9 @@ export class ChSessions {
     this.realtime = host.realtime
       ? new ChRealtime(host.realtime, {
           thread: (id) => this.view(id),
-          catalog: () => this.refresh(),
+          catalog: async () => {
+            await this.refresh();
+          },
           archived: (id, archived) => this.updateArchive(id, archived),
           connection: (online) => {
             this.hostOnline = online;
@@ -166,20 +166,26 @@ export class ChSessions {
   private id(id: string): string {
     return this.drafts.get(id)?.canonicalId ?? id;
   }
-  private async refresh(timing?: SessionListTiming, includeArchived = false): Promise<void> {
+  private async refresh(
+    timing?: SessionListTiming,
+    includeArchived = false,
+    cursor?: string,
+  ): Promise<CatalogPage | undefined> {
     if (this.closed) return;
     if (
       this.refreshing &&
-      (!this.refreshingCatalog || (includeArchived && !this.refreshingArchives))
+      (cursor !== undefined ||
+        !this.refreshingCatalog ||
+        includeArchived !== this.refreshingArchives)
     ) {
       const stage = this.refreshingCatalog ? "catalog_wait" : "workspace_wait";
       const pending = this.refreshing.catch(() => undefined);
       await (timing ? timing.measure(stage, () => pending) : pending);
-      return this.refresh(timing, includeArchived);
+      return this.refresh(timing, includeArchived, cursor);
     }
     const mode = this.refreshing ? "joined" : "started";
     if (!this.refreshing) {
-      this.refreshingCatalog = true;
+      this.refreshingCatalog = cursor === undefined;
       this.refreshingArchives = includeArchived;
       this.refreshingTiming = new SessionListTiming();
       const archiveChanges = new Map<string, boolean>();
@@ -188,6 +194,7 @@ export class ChSessions {
         this.refreshingTiming,
         includeArchived,
         archiveChanges,
+        cursor,
       ).finally(() => {
         this.refreshing = undefined;
         this.refreshingCatalog = false;
@@ -199,7 +206,7 @@ export class ChSessions {
     const pending = this.refreshing;
     const catalogTiming = this.refreshingTiming;
     try {
-      await (timing ? timing.measure("catalog_wait", () => pending) : pending);
+      return await (timing ? timing.measure("catalog_wait", () => pending) : pending);
     } finally {
       if (timing && catalogTiming) timing.catalog = { mode, ...catalogTiming.snapshot() };
     }
@@ -208,23 +215,27 @@ export class ChSessions {
     timing: SessionListTiming,
     includeArchived: boolean,
     archiveChanges: ReadonlyMap<string, boolean>,
-  ): Promise<void> {
-    // Threads created during the read and archives outside its scope must survive it.
+    cursor?: string,
+  ): Promise<CatalogPage | undefined> {
     const known = new Set(this.rows.keys());
-    const snapshot = await timing.measure("host_catalog", () =>
-      this.host.request<Omit<ThreadCatalogReadResult, "threads"> & { threads: ChThread[] }>(
-        THREAD_CATALOG_READ_METHOD,
-        { includeArchived },
+    const [{ page: snapshot }, definitions] = await Promise.all([
+      readSessionPage(this.host, timing, includeArchived, cursor, () =>
+        this.pins.refresh().catch((error: unknown) => {
+          console.error("[session/list] native pins unavailable", error);
+          return [...this.workspaces.pinnedSessionIds()];
+        }),
       ),
-    );
+      timing.measure("project_definitions", () => this.host.projects([])),
+    ]);
     if (this.closed) return;
     const found = new Map(snapshot.threads.map((row) => [row.id, row]));
-    const projects = await timing.measure("projects", () =>
+    const assignments = await timing.measure("projects", () =>
       this.host.projects([...new Set([...found.keys(), ...this.rows.keys()])]),
     );
+    const projects = { ...assignments, projects: definitions.projects };
     if (this.closed) return;
     const snapshotArchives = new Set<string>(snapshot.archivedThreadIds);
-    const archivedIds = new Set(includeArchived ? [] : this.workspaces.archivedSessionIds());
+    const archivedIds = new Set(this.workspaces.archivedSessionIds());
     for (const id of snapshotArchives) archivedIds.add(id);
     for (const id of found.keys()) if (!snapshotArchives.has(id)) archivedIds.delete(id);
     // Notifications received after the pull began supersede its archive membership.
@@ -255,23 +266,15 @@ export class ChSessions {
     for (const [id, row] of this.rows) {
       const harnessId = this.threads.harnessId(id);
       if (found.has(id) || !harnessId) continue;
-      if (known.has(id) && !archiveChanges.has(id) && (includeArchived || !archivedIds.has(id))) {
-        if (harnessId === "codex") {
-          try {
-            const refreshed = await this.host.request<{ thread: ChThread }>("thread/read", {
-              threadId: id,
-              includeTurns: false,
-            });
-            if (refreshed.thread.id === id) {
-              rows.set(id, refreshed.thread);
-              ownership.set(id, harnessId);
-            }
-          } catch {
-            // A missing native Thread is removed below with the rest of this catalog generation.
-          }
-        }
+      // Omission from an official page is not deletion or archive evidence.
+      // External metadata is complete for this scope, so its missing rows may leave.
+      if (
+        harnessId !== "codex" &&
+        known.has(id) &&
+        !archiveChanges.has(id) &&
+        (includeArchived || !archivedIds.has(id))
+      )
         continue;
-      }
       rows.set(id, row);
       ownership.set(id, harnessId);
     }
@@ -283,10 +286,9 @@ export class ChSessions {
     timing.measureSync("archive_sync", () =>
       this.workspaces.setReferenceArchives([...archivedIds].sort()),
     );
-    await timing.measure("catalog_publish", () => this.publishCatalogChanges());
-    // Native pins are optional and cannot delay publishing the confirmed catalog.
-    void this.pins.refresh().catch(() => undefined);
+    await timing.measure("catalog_publish", () => this.publishCatalogChanges(cursor !== undefined));
     this.catalogReadAt = Date.now();
+    return snapshot;
   }
   private async syncWorkspace(
     timing = new SessionListTiming(),
@@ -324,7 +326,7 @@ export class ChSessions {
         if (!draft.cwd) projectless.add(draft.id);
       }
       timing.count("workspaceReferences", references.length);
-      this.workspaces.syncReferencedSessions(references, groups, projectless);
+      this.workspaces.syncReferencedSessions(references, groups, projectless, projects.projects);
     });
   }
   /** Only fields used by the list summary; projections have their own
@@ -343,7 +345,7 @@ export class ChSessions {
       this.threads.harnessId(row.id),
     ]);
   }
-  private async publishCatalogChanges(): Promise<void> {
+  private async publishCatalogChanges(explicitPage = false): Promise<void> {
     const before = this.publishedCatalog;
     const next = new Map([...this.rows].map(([id, row]) => [id, this.catalogKey(row)]));
     // First load is already delivered by session/list. Subsequent refreshes,
@@ -353,7 +355,10 @@ export class ChSessions {
         ? []
         : await Promise.all(
             [...this.rows.values()]
-              .filter((row) => before.get(row.id) !== next.get(row.id))
+              .filter(
+                (row) =>
+                  before.get(row.id) !== next.get(row.id) && (!explicitPage || before.has(row.id)),
+              )
               .map((row) => this.summary(row)),
           );
     this.publishedCatalog = next;
@@ -965,17 +970,53 @@ export class ChSessions {
       });
     }
     rpc.register("session/list", async (args, context) => {
-      const { includeArchived = false } = requestOf<{ includeArchived?: boolean }>(args);
+      const {
+        includeArchived = false,
+        cursor,
+        sessionId,
+      } = requestOf<{ includeArchived?: boolean; cursor?: string; sessionId?: string }>(args);
+      if (sessionId !== undefined) {
+        if (typeof sessionId !== "string" || !sessionId || cursor !== undefined)
+          throw new RpcError("session/list-invalid", "Invalid direct-link identity.");
+        const draft = this.drafts.get(sessionId);
+        if (draft && !draft.canonicalId)
+          return {
+            items: [await this.draftSummary(draft, false)],
+            archivedSessionIds: this.workspaces.archivedSessionIds(),
+          };
+        const id = this.id(sessionId);
+        const owner = await this.owner(id);
+        const { thread } = await this.host.request<{ thread: ChThread }>("thread/read", {
+          threadId: id,
+          includeTurns: false,
+        });
+        if (
+          thread.id !== id ||
+          (owner.owner === "external" && thread.modelProvider !== "codexhost")
+        )
+          throw new RpcError("session/ownership-unconfirmed", "Thread identity was not confirmed.");
+        this.rows.set(thread.id, thread);
+        this.threads.setHarness(thread.id, owner.harnessId);
+        // Catalog/organization refreshes reconcile project grouping for these retained rows.
+        return {
+          items: [await this.summary(thread)],
+          archivedSessionIds: this.workspaces.archivedSessionIds(),
+        };
+      }
       if (typeof includeArchived !== "boolean")
         throw new RpcError("session/list-invalid", "includeArchived must be a boolean.");
       const timing = context.sessionListTiming ?? new SessionListTiming();
-      await this.refresh(timing, includeArchived);
+      if (cursor !== undefined && typeof cursor !== "string")
+        throw new RpcError("session/list-invalid", "cursor must be a string.");
+      // Explicit pages are request-local and are never joined to another browser's refresh.
+      const page = await this.refresh(timing, includeArchived, cursor);
+      const pageIds = new Set(page?.threads.map((row) => row.id));
       const archivedSessionIds = this.workspaces.archivedSessionIds();
       const archived = new Set(archivedSessionIds);
       const items = await timing.measure("summaries", async () => [
         ...(await Promise.all(
           [...this.rows.values()]
-            .filter((row) => includeArchived || !archived.has(row.id))
+            .filter((row) => pageIds.has(row.id) && (includeArchived || !archived.has(row.id)))
             .map((row) => this.summary(row)),
         )),
         ...(await Promise.all(
@@ -985,7 +1026,11 @@ export class ChSessions {
         )),
       ]);
       timing.count("resultRows", items.length);
-      return { items, archivedSessionIds };
+      return {
+        items,
+        archivedSessionIds,
+        nextCursor: page ? nextCatalogCursor(page, includeArchived) : null,
+      };
     });
     rpc.register("session/create", (args) => this.create(args));
     rpc.register("session/fork", async (args) => {
@@ -1277,7 +1322,6 @@ export class ChSessions {
       return { title: request.title, seq: view.log.lastSeq };
     });
     rpc.register("session/search", async (args) => {
-      await this.refresh();
       const needle = requestOf<{ query: string }>(args).query.toLowerCase();
       return {
         items: [...this.rows.values()]
@@ -1415,6 +1459,7 @@ export class ChSessions {
         this.refreshing = this.syncWorkspace()
           .then(() => {
             if (!this.closed) void this.pins.refresh().catch(() => undefined);
+            return undefined;
           })
           .finally(() => {
             this.refreshing = undefined;

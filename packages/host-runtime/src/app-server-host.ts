@@ -2525,6 +2525,7 @@ export class AppServerHost {
     try {
       const result = await readThreadCatalog({
         includeArchived: parsed.data.includeArchived ?? false,
+        ...(parsed.data.officialCursor ? { officialCursor: parsed.data.officialCursor } : {}),
         readLocal: async () => {
           const [records, placements] = await Promise.all([
             this.#repository.list(),

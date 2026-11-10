@@ -116,6 +116,8 @@ function plainNoticeText(
       return t("toast.sessionLinkCopied");
     case "sessionLinkCopyFailed":
       return t("toast.sessionLinkCopyFailed");
+    case "recentVisitsStorageFailed":
+      return t("recent.cache.error");
     /* v8 ignore next 2 -- closed-union backstop; only reached if a notice kind is forged */
     default:
       return assertNever(toast);

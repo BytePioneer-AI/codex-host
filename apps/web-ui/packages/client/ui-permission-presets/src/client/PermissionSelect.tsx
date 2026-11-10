@@ -69,7 +69,12 @@ export function PermissionSelect({ locked, select, useProjection, t }: Permissio
       : mode;
   });
   const current = modes.find((mode) => mode.id === selection.currentValue);
-  const label = current?.label ?? t("native.configuration");
+  const followsCodexSettings = native.harnessId === "codex" && selection.currentValue === "";
+  const label =
+    current?.label ?? t(followsCodexSettings ? "codex.configuration" : "native.configuration");
+  const unmatchedDescription = t(
+    followsCodexSettings ? "codex.configuration.description" : "native.configuration.description",
+  );
   const busy = pick !== null || confirmation !== null;
   const closeConfirmation = () => {
     setAcknowledged(false);
@@ -130,7 +135,7 @@ export function PermissionSelect({ locked, select, useProjection, t }: Permissio
                 ? t("native.atCreate")
                 : current
                   ? current.description
-                  : t("native.configuration.description")
+                  : unmatchedDescription
             }
             disabled={unavailable || busy}
             onClick={() => setOpen(!open)}

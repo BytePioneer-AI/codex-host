@@ -717,7 +717,11 @@ export class ChSessions {
         ?.configuration(selection.provider)
         .catch(() => undefined);
       const inspection = await this.catalog.inspect(selection.provider, cwd);
-      const permissionModeId = draftPermissionMode(inspection, config?.permissionModeId);
+      const permissionModeId = draftPermissionMode(
+        selection.provider,
+        inspection,
+        config?.permissionModeId,
+      );
       if (permissionModeId) draft.permissionModeId = permissionModeId;
     }
     if (this.closed) throw new RpcError("session/closed", "Web sessions are closing.");
@@ -1070,7 +1074,11 @@ export class ChSessions {
           const inspection = await this.catalog.inspect(request.provider, draft.cwd);
           if (draft.creating || draft.selection !== before)
             throw new RpcError("session/busy", "Draft selection changed.");
-          const permissionModeId = draftPermissionMode(inspection, config?.permissionModeId);
+          const permissionModeId = draftPermissionMode(
+            request.provider,
+            inspection,
+            config?.permissionModeId,
+          );
           delete draft.permissionModeId;
           if (permissionModeId) draft.permissionModeId = permissionModeId;
         }

@@ -112,7 +112,6 @@ export class InputHub implements SessionInputResolver {
         shell.canInsertReferences()
       );
     };
-    if (!available()) return;
     return {
       getSnapshot: available,
       subscribe: (listener) => {

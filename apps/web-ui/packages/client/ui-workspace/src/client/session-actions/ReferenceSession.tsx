@@ -34,8 +34,8 @@ function PhoneReferenceSessionMenuItem({
   const attempted = useRef(false);
   const [failed, setFailed] = useState(false);
   const [, setMenuOpen] = useMenuOpenState();
-  // Invalid sources and non-editable drafts have no actionable-looking entry.
-  if (!failed && !available) return null;
+  // Keep a captured action visible but disabled while its Composer is unavailable.
+  if (action === undefined) return null;
   return (
     <>
       <MenuItemButton

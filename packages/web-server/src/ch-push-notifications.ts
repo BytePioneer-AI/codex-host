@@ -94,7 +94,7 @@ export class ChPushNotifications {
           message: {
             kind: turn.status === "failed" ? "error" : "turn",
             title,
-            body: turn.status === "failed" ? "Turn failed." : "Turn completed.",
+            body: turn.status === "failed" ? "运行失败" : "已回复",
           },
         });
     }
@@ -104,9 +104,7 @@ export class ChPushNotifications {
         message: {
           kind: pending.kind,
           title,
-          body:
-            pending.interaction.title ??
-            (pending.kind === "approval" ? "Approval required." : "Your answer is needed."),
+          body: pending.kind === "approval" ? "待授权" : "待回答",
         },
       });
     for (const { key, message } of messages) {

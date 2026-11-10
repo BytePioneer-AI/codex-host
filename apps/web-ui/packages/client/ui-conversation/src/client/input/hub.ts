@@ -5,6 +5,7 @@
  * returns; Session-scope disposal releases the shell and its resources.
  */
 import type {} from "@deepseek-ai/dsh-client-product-analytics/client";
+import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 import type { ModelSelectionProjection } from "@deepseek-ai/dsh-api-session-controller/types";
 import type { PlanProjection } from "@deepseek-ai/dsh-plan-mode/types";
 import type { GoalProjection } from "@deepseek-ai/dsh-goal/types";
@@ -23,6 +24,7 @@ import type {
   DraftAttachmentSerializationResult,
   DraftInitializationOptions,
   DraftInitializationResult,
+  DraftReferenceInsertion,
   InputTriggerController,
   SessionInputResolver,
   SessionInput,
@@ -87,6 +89,50 @@ export class InputHub implements SessionInputResolver {
       throw new Error("conversation.input.for requires a retained Session scope");
     }
     return this.shellFor(binding);
+  }
+
+  captureReferenceInsertion(binding: SessionBinding): DraftReferenceInsertion | undefined {
+    const sessions = this.sessions();
+    const shell = this.shells.get(binding);
+    if (sessions.binding(binding.sessionId) !== binding || shell === undefined) return;
+    const span = shell.actions.captureInsertion();
+    const blocks = this.rootCtx.conversation.blocks.storeFor(binding.sessionId);
+    const status = this.rootCtx.uiSession.sessionStatus;
+    let used = false;
+    const available = (): boolean => {
+      const state = binding.session.getSnapshot();
+      return (
+        !used &&
+        sessions.binding(binding.sessionId) === binding &&
+        state.openState === "open" &&
+        !state.removed &&
+        blocks.getSnapshot() === undefined &&
+        status.getSnapshot().get(binding.sessionId)?.pendingInteraction === undefined &&
+        shell.snapshot.draftRev === span.draftRev &&
+        shell.canInsertReferences()
+      );
+    };
+    if (!available()) return;
+    return {
+      getSnapshot: available,
+      subscribe: (listener) => {
+        const off = [
+          sessions.list.subscribe(listener),
+          binding.session.subscribe(listener),
+          shell.state.subscribe(listener),
+          blocks.subscribe(listener),
+          status.subscribe(listener),
+          shell.editor.registerEditableListener(listener),
+          shell.editor.registerRootListener(listener),
+        ];
+        return () => off.forEach((dispose) => dispose());
+      },
+      insert: (reference) => {
+        const allowed = available();
+        used = true;
+        return allowed && shell.insertReferences([reference], span);
+      },
+    };
   }
 
   requestDraftInitialization(

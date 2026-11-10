@@ -72,7 +72,7 @@ describe("source-separated Thread catalog", () => {
     },
   );
 
-  it("starts native and local reads together, drains each 100-row page once, and defaults to live only", async () => {
+  it("starts native and local reads together, reads exactly the latest 20 once, and defaults to live only", async () => {
     const localStarted = Promise.withResolvers<undefined>();
     const nativeStarted = Promise.withResolvers<undefined>();
     const nativeRows = Array.from({ length: 301 }, (_, n) => row(`private-native-${n}`, 400 - n));
@@ -86,36 +86,34 @@ describe("source-separated Thread catalog", () => {
       nativeStarted.resolve(undefined);
       await localStarted.promise;
       const offset = params.cursor === null ? 0 : Number(params.cursor);
-      return page(
-        nativeRows.slice(offset, offset + 100),
-        offset < 300 ? String(offset + 100) : null,
-      );
+      return page(nativeRows.slice(offset, offset + 20), offset < 300 ? String(offset + 20) : null);
     });
     options.requestOfficialPage = request;
     const result = await readThreadCatalog(options);
     expect(options.readLocal).toHaveBeenCalledTimes(1);
     expect(request.mock.calls.map(([params]) => params)).toEqual(
-      [null, "100", "200", "300"].map((cursor) => ({
+      [null].map((cursor) => ({
         cursor,
         archived: false,
-        limit: 100,
-        sortKey: "created_at",
+        limit: 20,
+        sortKey: "updated_at",
         sortDirection: "desc",
       })),
     );
-    expect(result.threads).toHaveLength(302);
+    expect(result.threads).toHaveLength(21);
+    expect(result.officialCursor).toEqual({ live: "20" });
     expect(result.threads[0]?.id).toBe("private-external");
     expect(result.archivedThreadIds).toEqual([]);
     expect(threadCatalogReadResultSchema.parse(result)).toEqual(result);
     expect(options.diagnose).toHaveBeenCalledWith(expect.stringContaining('"official":{"ms":'));
     const log = vi.mocked(options.diagnose).mock.calls[0]?.[0] ?? "";
-    expect(log).toContain('"requests":4');
+    expect(log).toContain('"requests":1');
     expect(log).not.toMatch(
       /private-native|private-external|private-title|private-workspace|cursor/i,
     );
   });
 
-  it("explicitly drains archived in parallel, deduplicates pages and archive branches, and keeps row ownership aligned", async () => {
+  it("reads one archived page in parallel, deduplicates archive branches, and keeps ownership aligned", async () => {
     const liveStarted = Promise.withResolvers<undefined>();
     const archivedStarted = Promise.withResolvers<undefined>();
     const request = vi.fn(async (params: JsonObject) => {
@@ -135,11 +133,11 @@ describe("source-separated Thread catalog", () => {
       includeArchived: true,
       requestOfficialPage: request,
     });
-    expect(request).toHaveBeenCalledTimes(3);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(result.officialCursor).toEqual({ live: "next", archived: null });
     expect(result.threads.map((thread) => thread.id)).toEqual([
       "local-live",
       "native-live",
-      "native-other",
       "native-archived",
       "local-archived",
     ]);
@@ -184,16 +182,16 @@ describe("source-separated Thread catalog", () => {
     expect(request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ archived: false }));
   });
 
-  it("sorts native and external rows by stable creation time, not changing activity timestamps", async () => {
+  it("sorts native and external rows by last update rather than creation time", async () => {
     const record = { ...external("external", 20), updatedAt: new Date(1_000).toISOString() };
     const result = await readThreadCatalog({
       ...input([record]),
       requestOfficialPage: async (params) => {
-        expect(params.sortKey).toBe("created_at");
+        expect(params.sortKey).toBe("updated_at");
         return page([{ ...row("native", 10), updatedAt: 1000 }]);
       },
     });
-    expect(result.threads.map((thread) => thread.id)).toEqual(["external", "native"]);
+    expect(result.threads.map((thread) => thread.id)).toEqual(["native", "external"]);
   });
 
   it("shares lazy initialization between archive branches and only degrades admission unavailable", async () => {
@@ -240,10 +238,11 @@ describe("source-separated Thread catalog", () => {
         readThreadCatalog({
           ...input(),
           initializeOfficial: async () => {},
+          ...(afterPage ? { officialCursor: { live: "next" } } : {}),
           requestOfficialPage: request,
         }),
       ).rejects.toBe(failure);
-      expect(request).toHaveBeenCalledTimes(afterPage ? 2 : 1);
+      expect(request).toHaveBeenCalledTimes(1);
     });
   }
 
@@ -294,30 +293,70 @@ describe("source-separated Thread catalog", () => {
     expect(threadCatalogReadResultSchema.parse(result).ownership).toHaveLength(201);
   });
 
-  for (const cursors of [
-    ["A", "A"],
-    ["A", "B", "A"],
-  ]) {
-    it(`rejects repeated cursor sequence ${cursors.join("/")} without requesting a page twice`, async () => {
-      const request = vi.fn(async () => page([], cursors.shift() ?? null));
-      const count = cursors.length;
-      await expect(readThreadCatalog({ ...input(), requestOfficialPage: request })).rejects.toThrow(
-        "did not advance",
-      );
-      expect(request).toHaveBeenCalledTimes(count);
-    });
-  }
+  it("rejects a non-advancing native cursor without requesting another page", async () => {
+    const request = vi.fn(async () => page([], "A"));
+    await expect(
+      readThreadCatalog({
+        ...input(),
+        officialCursor: { live: "A" },
+        requestOfficialPage: request,
+      }),
+    ).rejects.toThrow("did not advance");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
 
-  it("follows advancing empty pages and propagates native failures instead of returning partial metadata", async () => {
+  it("returns empty advancing pages without prefetch and propagates explicit next-page failures", async () => {
     const error = new Error("private upstream details");
     const request = vi.fn(async (params: JsonObject) => {
       if (params.cursor === null) return page([], "next");
       throw error;
     });
+    const result = await readThreadCatalog({
+      ...input([external("external", 1)]),
+      requestOfficialPage: request,
+    });
+    expect(result.officialCursor).toEqual({ live: "next" });
+    expect(request).toHaveBeenCalledTimes(1);
     await expect(
-      readThreadCatalog({ ...input([external("external", 1)]), requestOfficialPage: request }),
+      readThreadCatalog({
+        ...input(),
+        officialCursor: result.officialCursor,
+        requestOfficialPage: request,
+      }),
     ).rejects.toBe(error);
     expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("continues only explicit native branches and keeps all external metadata even after native exhaustion", async () => {
+    const records = Array.from({ length: 41 }, (_, i) => external(`external-${i}`, i));
+    const request = vi.fn(async (params: JsonObject) => {
+      expect(params).toMatchObject({
+        archived: true,
+        cursor: "archive20",
+        limit: 20,
+        sortKey: "updated_at",
+        sortDirection: "desc",
+      });
+      return page([row("old-archive", 1)]);
+    });
+    const result = await readThreadCatalog({
+      ...input(records),
+      includeArchived: true,
+      officialCursor: { live: null, archived: "archive20" },
+      requestOfficialPage: request,
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(result.threads).toHaveLength(42);
+    expect(result.archivedThreadIds).toEqual(["old-archive"]);
+    expect(result.officialCursor).toEqual({ live: null, archived: null });
+    const ended = await readThreadCatalog({
+      ...input(records),
+      includeArchived: true,
+      officialCursor: result.officialCursor,
+      requestOfficialPage: request,
+    });
+    expect(ended.threads).toHaveLength(41);
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it("does not let logging fail the catalog read", async () => {

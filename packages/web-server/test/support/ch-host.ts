@@ -28,7 +28,13 @@ export class FakeChHost implements ChHostClient {
       this.pinnedIds = this.pinnedIds.filter((id) => id !== change.threadId);
       if (change.pinned) this.pinnedIds.push(change.threadId);
     }
-    return [...this.pinnedIds];
+    return this.pinnedIds.filter(
+      (id) =>
+        this.threads.has(id) &&
+        !this.archivedIds.has(id) &&
+        (this.threadOwnership(id).owner === "codex" ||
+          this.threads.get(id)?.modelProvider === "codexhost"),
+    );
   }
   closed = false;
   historyError: string | undefined;
@@ -123,6 +129,10 @@ export class FakeChHost implements ChHostClient {
         value = {
           threads: threads.map((thread) => ({ ...structuredClone(thread), turns: [] })),
           ownership: threads.map((thread) => this.threadOwnership(thread.id)),
+          officialCursor: {
+            live: null,
+            ...(params.includeArchived === true ? { archived: null } : {}),
+          },
           archivedThreadIds: [...this.archivedIds].filter((id) => {
             const owner = this.threadOwnership(id);
             return params.includeArchived === true

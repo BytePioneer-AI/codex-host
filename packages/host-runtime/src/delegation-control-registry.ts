@@ -42,6 +42,7 @@ function only<T>(values: readonly T[], message: string): T {
 
 export class DelegationControlRegistry implements DelegationControlApi, DelegationWatchApi {
   readonly #registrations = new Set<DelegationControlRegistration>();
+  readonly #sharedBackend = new Set<DelegationControlRegistration>();
   // Changes whenever the session set changes, so a merged list cursor cannot outlive it. The
   // instance id keeps a cursor from matching a rebuilt Registry at the same count.
   readonly #instanceId = randomUUID();
@@ -78,12 +79,16 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
 
   register(
     registration: DelegationControlRegistration,
-    options: { harnessCatalog?: boolean } = {},
+    options: { harnessCatalog?: boolean; sharedBackend?: boolean } = {},
   ): () => void {
     this.#registrations.add(registration);
+    if (options.harnessCatalog || options.sharedBackend) {
+      this.#sharedBackend.add(registration);
+    }
     this.#registrationGeneration += 1;
     if (options.harnessCatalog) this.#harnessCatalog = registration;
     return () => {
+      this.#sharedBackend.delete(registration);
       if (this.#registrations.delete(registration)) this.#registrationGeneration += 1;
       if (this.#harnessCatalog === registration) this.#harnessCatalog = undefined;
     };
@@ -296,6 +301,22 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       );
     }
     const matches = await this.#matching((registration) => registration.canHandleStart(input));
+    // In a shared-backend Runtime, attached GUI sessions observe the same native
+    // Codex notifications and store as the catalog.
+    if (matches.length !== 1) {
+      if (this.#harnessCatalog && (matches.length > 1 || Boolean(input.parentThreadId))) {
+        return matches.includes(this.#harnessCatalog)
+          ? this.#harnessCatalog
+          : (matches[0] ?? this.#harnessCatalog);
+      }
+      if (
+        matches.length > 1 &&
+        Boolean(input.parentThreadId) &&
+        matches.every((registration) => this.#sharedBackend.has(registration))
+      ) {
+        return matches[0] as DelegationControlRegistration;
+      }
+    }
     return only(
       matches,
       input.parentThreadId
@@ -308,6 +329,17 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     const registrations = [...this.#registrations];
     const matches = await this.#matching((registration) => registration.ownsThread(threadId));
     if (matches.length === 1) return matches[0] as DelegationControlRegistration;
+    if (this.#harnessCatalog) {
+      return matches.includes(this.#harnessCatalog)
+        ? this.#harnessCatalog
+        : (matches[0] ?? this.#harnessCatalog);
+    }
+    if (
+      matches.length > 1 &&
+      matches.every((registration) => this.#sharedBackend.has(registration))
+    ) {
+      return matches[0] as DelegationControlRegistration;
+    }
     if (matches.length > 1) {
       throw new DelegationControlError(
         "PARENT_THREAD_AMBIGUOUS",
@@ -315,7 +347,6 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         { matchingRuntimeCount: matches.length },
       );
     }
-    if (this.#harnessCatalog) return this.#harnessCatalog;
     if (registrations.length === 0) {
       throw new DelegationControlError(
         "PARENT_THREAD_AMBIGUOUS",

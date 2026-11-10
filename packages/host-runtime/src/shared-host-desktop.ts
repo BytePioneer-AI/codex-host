@@ -94,7 +94,6 @@ export function sharedHostDesktop(
   const runtime = environment.CODEXHOST_HOST_RUNTIME_PATH;
   const runtimePath = runtime && path.isAbsolute(runtime) ? runtime : undefined;
   const entry = runtimePath ? consoleEntrypoint(runtimePath) : null;
-  const delegation = options.delegation();
   const webOpener = createHostWebOpener(options.environment);
   const host = new AppServerHost({
     stockCodexPath: options.stockCodex,
@@ -113,7 +112,7 @@ export function sharedHostDesktop(
       delegateCreates: true,
       diagnose: (error) => streams.diagnosticOutput.write(`Shared Host: ${String(error)}\n`),
     }),
-    ...(delegation ? { sharedDelegation: delegation } : {}),
+    sharedDelegation: options.delegation,
     ...installedHarnessPluginOptions(
       environment,
       false,

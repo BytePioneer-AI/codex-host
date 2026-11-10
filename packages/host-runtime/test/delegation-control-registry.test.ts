@@ -140,6 +140,51 @@ describe("DelegationControlRegistry", () => {
     await registry.listHarnesses();
     expect(native.listHarnesses).toHaveBeenCalledOnce();
   });
+  it("resolves shared native parent Threads through the catalog when multiple sessions observe the same Thread", async () => {
+    const registry = new DelegationControlRegistry();
+    const owner = registration("native-parent");
+    const sessionA = registration("native-parent");
+    const sessionB = registration("native-parent");
+    registry.register(sessionA);
+    registry.register(owner, { harnessCatalog: true });
+    registry.register(sessionB);
+
+    await registry.start({
+      harnessId: "pi" as const,
+      task: "review",
+      cwd: "/synthetic",
+      parentThreadId: "native-parent",
+    });
+    await registry.read({ threadId: "native-parent", view: "result" });
+    await registry.send({ threadId: "native-parent", message: "continue" });
+
+    expect(owner.start).toHaveBeenCalledOnce();
+    expect(sessionA.start).not.toHaveBeenCalled();
+    expect(sessionB.start).not.toHaveBeenCalled();
+    expect(owner.read).toHaveBeenCalledOnce();
+    expect(owner.send).toHaveBeenCalledOnce();
+  });
+  it("resolves shared-backend WebSocket sessions observing the same parent Thread in peer mode", async () => {
+    const registry = new DelegationControlRegistry();
+    const sessionA = registration("native-parent");
+    const sessionB = registration("native-parent");
+    registry.register(sessionA, { sharedBackend: true });
+    registry.register(sessionB, { sharedBackend: true });
+
+    await registry.start({
+      harnessId: "codex" as const,
+      task: "review",
+      cwd: "/synthetic",
+      parentThreadId: "native-parent",
+    });
+    await registry.read({ threadId: "native-parent", view: "result" });
+    await registry.send({ threadId: "native-parent", message: "continue" });
+
+    expect(sessionA.start).toHaveBeenCalledOnce();
+    expect(sessionB.start).not.toHaveBeenCalled();
+    expect(sessionA.read).toHaveBeenCalledOnce();
+    expect(sessionA.send).toHaveBeenCalledOnce();
+  });
   it("discovers targets from the active session without inspecting Models", async () => {
     const registry = new DelegationControlRegistry();
     const session = registration("parent");

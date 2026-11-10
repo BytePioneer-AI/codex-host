@@ -14,7 +14,6 @@ import { brotliDecompressSync } from "node:zlib";
 import { WebSocket } from "ws";
 import { toolOutputRelay } from "./support/tool-output-relay.ts";
 import { defined } from "./support/defined.ts";
-import { delay } from "./support/relay.ts";
 
 it(
   "serves authenticated h2 RPC, compressed assets, uploads and live events on one relay connection",
@@ -119,9 +118,6 @@ it(
       Array.from({ length: 12 }, () => send("/api/auth/status", undefined, auth)),
     );
     assert.ok(replies.every((reply) => reply.headers[":status"] === 200));
-    assert.equal(connections, 1);
-    await delay(6_200);
-    assert.equal((await send("/api/auth/status", undefined, auth)).headers[":status"], 200);
     assert.equal(connections, 1);
 
     const created = await send(

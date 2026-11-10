@@ -436,7 +436,7 @@ it.each(["request", "send"] as const)(
           ? { result: { turn: { id: "turn", status: "inProgress" } } }
           : {
               result: {
-                thread: { id: (request.params as JsonObject).threadId },
+                thread: { id: String((request.params as JsonObject).threadId) },
                 model: "latest-child-model",
               },
             }),

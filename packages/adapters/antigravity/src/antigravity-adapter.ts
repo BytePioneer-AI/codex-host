@@ -811,7 +811,8 @@ class AntigravitySession implements HarnessSession {
       };
     }
 
-    let questions: AntigravityQuestionBridge;
+    let questions: AntigravityQuestionBridge | undefined;
+    let includeRecoveredHistory = false;
     const hookDirectory = antigravityHookDirectory(this.#environment);
     // The Thread's Hook directory outlives each Turn, while the previous Turn's agy may still be
     // exiting and its bridge closing; the next bridge rewrites the directory after that cleanup,
@@ -846,12 +847,22 @@ class AntigravitySession implements HarnessSession {
     );
     try {
       questions = await this.#preparingQuestions;
+      if (!this.#closed && this.#nativeRef) {
+        const priorTurns = this.#history.snapshot();
+        const ensured = await ensureNativeConversationDb(
+          this.#nativeRef.nativeSessionId,
+          antigravityHome({ ...this.#environment, ...questions.environment }),
+          priorTurns.length > 0,
+        );
+        includeRecoveredHistory = ensured.emptySteps && priorTurns.length > 0;
+      }
     } catch (error) {
+      await questions?.dispose();
       return {
         ok: false,
         error: {
           code: "nativeFailure",
-          message: `Question bridge setup failed: ${errorMessage(error)}`,
+          message: `Antigravity Turn setup failed: ${errorMessage(error)}`,
           retryable: true,
         },
       };
@@ -863,8 +874,6 @@ class AntigravitySession implements HarnessSession {
       return { ok: false, error: invalidState("Antigravity Session is closed") };
     }
     const environment = { ...this.#environment, ...questions.environment };
-    const homedir = antigravityHome(environment);
-    let includeRecoveredHistory = false;
     const logPath = path.join(os.tmpdir(), `codexhost-antigravity-${randomUUID()}.log`);
     const arguments_ = [
       "--input-format",
@@ -875,13 +884,6 @@ class AntigravitySession implements HarnessSession {
       this.#printTimeout,
     ];
     if (this.#nativeRef) {
-      const priorTurns = this.#history.snapshot();
-      const ensured = await ensureNativeConversationDb(
-        this.#nativeRef.nativeSessionId,
-        homedir,
-        priorTurns.length > 0,
-      );
-      includeRecoveredHistory = ensured.emptySteps && priorTurns.length > 0;
       arguments_.unshift("--conversation", this.#nativeRef.nativeSessionId);
     }
     arguments_.push(...antigravityModelArguments(this.#model, this.#thinkingOptionId));

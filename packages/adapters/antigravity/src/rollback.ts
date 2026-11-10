@@ -13,8 +13,13 @@ import {
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
-import { copyNativeBrainDirIfExists, copyNativeConversationDbIfExists } from "./fork.js";
+import {
+  copyNativeBrainDirIfExists,
+  copyNativeConversationDbIfExists,
+  nativeConversationDbPath,
+} from "./fork.js";
 import { AntigravityHistory, type AntigravityTurn } from "./history.js";
+import { nativeTurnBoundaryError } from "./native-turn-boundaries.js";
 import type { AntigravityPermissionMode } from "./permission-modes.js";
 import { antigravityHome } from "./usage-statistics.js";
 
@@ -102,6 +107,13 @@ export async function rollbackAntigravityLastTurn(
     };
   }
 
+  const homedir = antigravityHome(sessionEnvironment);
+  const boundaryError = await nativeTurnBoundaryError(
+    nativeConversationDbPath(sourceRef.nativeSessionId, homedir),
+    sourceTurns.length,
+  );
+  if (boundaryError) return { ok: false, error: boundaryError };
+
   const truncatedTurns = sourceTurns.slice(0, -1);
   const derivedNativeSessionId = randomUUID();
   const mappedTurns: AntigravityTurn[] = truncatedTurns.map((turn) => ({
@@ -132,7 +144,6 @@ export async function rollbackAntigravityLastTurn(
     ...(thinkingOptionId ? { thinkingOptionId } : {}),
   });
 
-  const homedir = antigravityHome(sessionEnvironment);
   await Promise.all([
     copyNativeConversationDbIfExists(
       sourceRef.nativeSessionId,

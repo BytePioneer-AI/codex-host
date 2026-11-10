@@ -165,7 +165,7 @@ export function checkClientRuntimeVersions(
     if (version === undefined) {
       if (optional) continue;
       throw new Error(
-        `web-assets: ${id} requires ${name}@${range}, but the browser Host version is unknown`,
+        `web-assets: ${id} requires ${name}@${range}, but the browser Host does not provide ${name}`,
       );
     }
     if (

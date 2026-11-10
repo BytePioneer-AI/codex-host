@@ -60,6 +60,14 @@ export function cursorModels(info: CursorSessionInfo) {
   const models = option.options.flatMap((entry) => ("value" in entry ? [entry] : entry.options));
   return { models, current: option.currentValue };
 }
+function isCursorFastOption(option: SessionConfigOption): boolean {
+  if (option.id !== "fast" || option.category !== "model_config" || option.type !== "select")
+    return false;
+  const values = option.options.flatMap((entry) =>
+    "value" in entry ? [entry.value] : entry.options.map(({ value }) => value),
+  );
+  return values.includes("true") && values.includes("false");
+}
 export function cursorCatalog(info: CursorSessionInfo): HarnessModelCatalog {
   const native = cursorModels(info);
   const thinking = new Map<
@@ -73,12 +81,26 @@ export function cursorCatalog(info: CursorSessionInfo): HarnessModelCatalog {
       : info.nativeModels?.find((entry) => entry.value === model.value)?.configOptions;
     const options = cursorThinking(config);
     for (const { id, label } of options) thinking.set(id, { id, label });
+    // Only the live model's parameters reflect the user's Cursor settings. The parameterized
+    // catalog reports Cursor's built-in defaults for every other model (for example
+    // `fast=true`), so pinning them would override the user's remembered per-model parameters.
+    // Other models pin only `fast`, which the Fast pair must state explicitly to switch it off.
+    const fast = config?.find(isCursorFastOption);
+    const pinned = live ? config : fast ? [fast] : undefined;
+    const withFast = (value: string) =>
+      cursorConfiguredModelRef(
+        model.value,
+        pinned?.map((option) =>
+          option === fast ? ({ ...option, currentValue: value } as SessionConfigOption) : option,
+        ),
+      );
     return {
-      // Only the live model's parameters reflect the user's Cursor settings. The parameterized
-      // catalog reports Cursor's built-in defaults for every other model (for example
-      // `fast=true`), so pinning them would override the user's remembered per-model parameters.
-      // A bare Ref selects only the model and lets Cursor apply those parameters itself.
-      ref: live ? cursorConfiguredModelRef(model.value, config) : cursorModelRef(model.value),
+      ref: fast
+        ? withFast("false")
+        : live
+          ? cursorConfiguredModelRef(model.value, config)
+          : cursorModelRef(model.value),
+      ...(fast ? { fastModel: withFast("true") } : {}),
       label: model.name,
       supportedThinkingOptionIds: options.map(({ id }) => id),
     };

@@ -64,7 +64,9 @@ describe("external clients", () => {
 
     const listed = await cli(["client", "list"], environment);
     expect(listed.body).toEqual({
-      clients: [{ name: "grok-bot", createdAt: expect.any(String) }],
+      clients: [
+        { name: "grok-bot", createdAt: expect.any(String), scope: "dispatch", networks: ["local"] },
+      ],
     });
     expect(JSON.stringify(listed.body)).not.toContain(token);
   });
@@ -77,7 +79,34 @@ describe("external clients", () => {
     const again = await cli(["client", "add", "bot"], environment);
     expect(again.body).toMatchObject({ error: { code: "INVALID_ARGUMENT" } });
     const registry = new ExternalClientRegistry(defaultExternalClientsPath(environment));
-    await expect(registry.authenticate(first.body?.token as string)).resolves.toBe("bot");
+    await expect(registry.authenticate(first.body?.token as string)).resolves.toMatchObject({
+      name: "bot",
+    });
+  });
+
+  it("preserves concurrent registration, revocation and access restrictions while recording access", async () => {
+    const filePath = defaultExternalClientsPath(environment);
+    const runtime = new ExternalClientRegistry(filePath);
+    const cliRegistry = new ExternalClientRegistry(filePath);
+    const [alpha, beta] = await Promise.all([
+      runtime.add("alpha", { scope: "dispatch", networks: ["public"] }),
+      cliRegistry.add("beta", { scope: "dispatch", networks: ["public"] }),
+    ]);
+    expect((await cliRegistry.list()).map(({ name }) => name).sort()).toEqual(["alpha", "beta"]);
+
+    await Promise.all([runtime.recordAccess("alpha", "public"), cliRegistry.remove("alpha")]);
+    await expect(runtime.authenticate(alpha.token)).resolves.toBeUndefined();
+    expect((await cliRegistry.list()).map(({ name }) => name)).toEqual(["beta"]);
+
+    await Promise.all([
+      runtime.recordAccess("beta", "public"),
+      cliRegistry.setAccess("beta", { scope: "read", networks: ["local"] }),
+    ]);
+    await expect(runtime.authenticate(beta.token)).resolves.toEqual({
+      name: "beta",
+      scope: "read",
+      networks: ["local"],
+    });
   });
 
   it("authenticates tokens and sees a removal made by another process", async () => {
@@ -85,7 +114,11 @@ describe("external clients", () => {
     const cliRegistry = new ExternalClientRegistry(filePath);
     const runtimeRegistry = new ExternalClientRegistry(filePath);
     const { token } = await cliRegistry.add("script");
-    await expect(runtimeRegistry.authenticate(token)).resolves.toBe("script");
+    await expect(runtimeRegistry.authenticate(token)).resolves.toEqual({
+      name: "script",
+      scope: "dispatch",
+      networks: ["local"],
+    });
     await expect(runtimeRegistry.authenticate(`${token}x`)).resolves.toBeUndefined();
     await expect(runtimeRegistry.authenticate(undefined)).resolves.toBeUndefined();
 

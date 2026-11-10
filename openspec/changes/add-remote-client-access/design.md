@@ -23,12 +23,23 @@ Funnel :443 /codexhost/*     ─┘    （客户端令牌或 OAuth 访问令牌 
 ### 3. Tailscale 集成
 
 - 地址发现与 Funnel 都通过本机 `tailscale` CLI 的 JSON 输出与 `serve`/`funnel` 子命令完成，不链接 Tailscale 库。
-- codexhost 只添加自己的路径映射 `/codexhost`，关闭时只删除这一条；启动时核对映射是否仍指向当前端口，并修正指向 codexhost 端口的过期条目。
+- codexhost 只添加自己的路径映射，关闭时只删除这些条目；启动时核对映射是否仍指向当前端口，并修正指向 codexhost 端口的过期条目。
+- `tailscale funnel --set-path <前缀>` 会剥离前缀，后端收到的是去掉前缀后的路径。公网 loopback 端口因此按“去前缀后的路径”路由，不依赖前缀。
+- OAuth 发现请求打在根路径的 `/.well-known/...` 下。codexhost 只额外映射以自身路径为后缀的发现地址（`/.well-known/oauth-protected-resource/codexhost/mcp` 与 `/.well-known/oauth-authorization-server/codexhost`，按 RFC 9728 / RFC 8414 的路径插入规则），不占用整个根路径。实测确认 `tailscale funnel --bg --set-path=<路径> http://127.0.0.1:<端口>/<后端路径>` 支持直接转发到同一公网 loopback 端口的指定路径。
+- 首次开启 Funnel 时证书签发约需 1 分钟，其间 TLS 握手失败；控制台显示“证书签发中”，不判定为失败。
 - tailnet 地址变化（重新登录、切换 tailnet）时重新绑定；不可用时只影响该入口。
 
 ### 4. OAuth 只服务公网入口
 
-实现 MCP 授权规范所需的最小集合：受保护资源元数据、授权服务器元数据、动态客户端注册、授权码 + PKCE、刷新令牌。授权页由 Runtime 在公网路径下提供，只有一个配对码输入框。配对码由本机 CLI 生成，与客户端绑定，因此“谁授权给谁”始终由本机用户决定。访问令牌有效期 1 小时，刷新令牌 30 天，均以哈希形式保存。如果前置验证表明 Grok Bot 支持静态 Bearer header，OAuth 仍保留给 ChatGPT、Claude 等只支持 OAuth 的托管 connector，但不阻塞 Grok Bot 的接入。
+实现 MCP 授权规范所需的最小集合：受保护资源元数据、授权服务器元数据、动态客户端注册、授权码 + PKCE、刷新令牌。授权页由 Runtime 在公网路径下提供，只有一个配对码输入框。配对码由本机 CLI 生成，与客户端绑定，因此“谁授权给谁”始终由本机用户决定。访问令牌有效期 1 小时，刷新令牌 30 天，均以哈希形式保存。
+
+前置验证（2026-11-03）表明：Grok Bot 的自定义 connector 既可以配置静态 `headers`，也支持标准 MCP OAuth（动态客户端注册，或预注册的 client id）；客户端只在收到 401 后才开始发现流程。因此：
+
+- **Grok Bot 先用静态 Bearer 客户端令牌接入**，不依赖 OAuth，PR 可以先交付范围、监听与 webhook。
+- 公网入口对未认证请求返回 `401` + `WWW-Authenticate: Bearer resource_metadata="…"`，供需要 OAuth 的 connector（ChatGPT、Claude 等）走发现流程。
+- OAuth 支持 DCR（`/register`），不另做预注册 client 管理。
+
+公网调用方来自轮换的云端出口 IP，会频繁重建 MCP 会话（多次 initialize / `DELETE /mcp`、并发 SSE 流）。认证只看令牌，不做来源 IP 白名单；MCP 会话层容忍频繁重建，同一客户端的第二条 SSE 流不报错。
 
 ### 5. webhook adapter
 
@@ -45,6 +56,18 @@ interface WebhookAdapter {
 
 投递状态（最后确认的事件标识、每条事件的重试计数和下次时间）按客户端持久化，与 PR 1 的 watch 持久化放在同一个私有状态目录。退避从 5 秒起每次翻倍，上限 15 分钟，总期限 24 小时。webhook 只做唤醒，payload 只含事件字段；bot 被唤醒后通过 MCP `thread_read` 获取结果。
 
+前置验证（2026-11-03）表明：Grok Bot 的 webhook 触发器实际上是 Cursor Automations 的 `POST` 入口，契约为：
+
+| 项目 | 行为 |
+|---|---|
+| 认证 | `Authorization: Bearer <key>`，密钥由用户配置，按客户端仅当前用户可读保存，不出现在日志与控制台 |
+| 签名 | 目标不校验签名，adapter 不签名 |
+| body | `application/json`，只含事件标识、Thread、结果、Harness、深度链接与引用，上限 4 KB（目标只向 bot 展示前几 KB）|
+| 幂等 | 目标不去重；adapter 以 `Idempotency-Key: <客户端>:<事件标识>` 透传事件标识，供 bot 自行去重 |
+| 分类 | 2xx 为已投递（目标只表示已排队）；401/403/400 为 `drop` 并在控制台提示配置错误；429、5xx、超时为 `retry` |
+
+adapter 标识用 `grok-bot`，实现上只依赖这个 webhook 契约。
+
 ## Risks / Trade-offs
 
 - [公网入口暴露可驱动本机 agent 的接口] → 默认关闭、按客户端开放、OAuth 授权需本机配对码、可随时吊销；控制台显示每个客户端最近一次访问的入口与时间。
@@ -58,4 +81,5 @@ interface WebhookAdapter {
 
 ## Open Questions
 
-- Grok Bot 自定义 MCP connector 的认证方式，以及 webhook 触发器的 URL 形式、payload 与签名要求，待前置验证（tasks 0.1、0.2）。
+- tailscale serve 能否把 `/.well-known/...` 下的指定路径转发到后端的指定路径：**成立**（MacPro 实测 `tailscale funnel --bg --set-path=/.well-known/oauth-authorization-server/codexhost http://127.0.0.1:<端口>/.well-known/oauth-authorization-server` 可直接映射并转发）。
+- Grok Bot 走 OAuth 时实际请求的端点序列：前置验证中测试服务不返回 401，客户端未发起发现；在实现 OAuth 后用真实 Grok Bot 复测。

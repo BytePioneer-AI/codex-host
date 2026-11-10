@@ -87,6 +87,16 @@
 - **WHEN** Runtime 在事件推送成功前重启
 - **THEN** 恢复后 SHALL 继续推送尚未确认的事件
 
+#### Scenario: 目标拒绝认证
+- **WHEN** 目标以 401 或 403 拒绝推送
+- **THEN** 系统 SHALL 停止重试该事件并在控制台提示 webhook 配置错误
+- **AND** 事件日志 SHALL 不受影响，客户端仍可按游标读取
+
+#### Scenario: payload 保持精简
+- **WHEN** adapter 构造推送请求
+- **THEN** 请求体 SHALL 不超过 4 KB，只含事件标识、Thread、结果、Harness、深度链接与引用
+- **AND** 请求 SHALL 携带可供接收方去重的事件标识
+
 #### Scenario: 换用其他 bot
 - **WHEN** 用户把客户端的 adapter 改为另一家
 - **THEN** 后续事件 SHALL 按新 adapter 推送，事件日志与游标不变

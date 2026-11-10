@@ -72,8 +72,34 @@
 
   修改后重启 Claude Desktop。token 放在 `env` 中，避免出现在进程参数里时被拆分。
 
+## 权限范围与网络
+
+- 每个客户端有权限范围 `read`（读取、列举、等待、watch 列表、事件）或 `dispatch`（另含委派、发送、取消、注册 watch），以及允许的网络 `local`、`tailnet`、`public`。没有这两个字段的旧登记视为 `dispatch` + `local`。`client add|set --scope --network` 修改，下一次请求生效。
+- 请求的网络由它到达的监听决定，不看请求内容。不允许的网络返回与未知令牌相同的 `UNAUTHORIZED`；`read` 客户端调用派发路由返回 `FORBIDDEN`（HTTP 403，MCP 中为工具错误）。事件流在心跳时检查网络，收窄后关闭。
+- 客户端通过校验的请求会记录最近访问网络与时间（`lastAccess`，按 5 秒节流写入 `external-clients.json`），供 `client list` 与控制台展示。
+- 登记、权限修改、撤销与访问时间回写使用同一跨进程文件事务；访问记录不会恢复已删除的客户端或覆盖收紧后的权限。
+
+## tailnet 与公网
+
+- `client access --tailnet on|off --public on|off` 或控制台外部客户端页面写入 `<数据目录>/external-client-access.json`，两者默认关闭。运行中的 Runtime 每 30 秒按它和 Tailscale 状态调整监听，并把实际状态写入 `external-client-access-status.json`，`client access` 与控制台外部客户端页面会一起显示。
+- 控制台外部客户端页面（`/api/external-clients`、`/api/external-clients/access`）直接读写数据目录中的状态与登记文件，展示本机、tailnet、公网监听状态与 Funnel MCP URL、开关、已登记客户端的权限/网络范围、最近访问及 webhook 投递状态，不返回任何令牌或密钥，且在 Desktop 未运行时同样可用。
+- tailnet：在本机 Tailscale IPv4 地址上使用与本机监听相同的端口；地址变化时重新绑定，Tailscale 不可用时报告原因。
+- 公网：一个独立的 loopback 端口，只由 Tailscale Funnel 的 `/codexhost` 路径转发过来，因此公网请求不可能被当作本机请求。Funnel 会剥离前缀，后端收到 `/mcp`、`/v1/...`。公网 MCP 地址是 `https://<机器>.<tailnet>.ts.net/codexhost/mcp`。codexhost 只添加和删除自己的路径，路径已指向非 loopback 目标时报告不可用而不替换；关闭公网后，或新 Runtime 发现上次留下的映射时删除它。
+- Tailscale 通过其 CLI 操作（macOS 上也查找 `Tailscale.app` 内的 CLI，可用 `CODEXHOST_TAILSCALE` 指定）；两个开关都关闭时 Runtime 不调用它。
+- 公网入口同时支持静态 `Authorization: Bearer <token>`（Grok Bot 等支持静态 header 的 connector）和基于一次性配对码的 OAuth 2.1 + PKCE（供只支持 OAuth 的托管 MCP connector 使用）：
+  - 未认证请求返回 `401` 与 `WWW-Authenticate: Bearer resource_metadata=".../.well-known/oauth-protected-resource"`，并在公网入口提供 `/.well-known/oauth-protected-resource`、`/.well-known/oauth-authorization-server`、`/oauth/register`（动态客户端注册）、`/oauth/authorize`、`/oauth/token`。
+  - 用户在本机运行 `codexhost client pair <name>` 生成 10 分钟有效、仅可使用一次的配对码（保存在 `<数据目录>/external-client-oauth.json`，仅存加盐 SHA-256 摘要）；授权页只包含配对码输入框，不显示任何客户端、Thread 或工作目录列表；连续 5 次配对失败会使当前配对码立即失效。
+  - 授权成功后签发的访问令牌（1 小时）与刷新令牌（30 天，轮换制）均以哈希保存并绑定到对应客户端，继承其权限范围；执行 `codexhost client remove <name>` 会立即使该客户端的全部访问令牌与刷新令牌失效。
+  - 配对码与授权码的消费、刷新令牌轮换和撤销使用跨进程文件事务串行处理，CLI 与监听共用存储时不会覆盖彼此的修改。
+
+## webhook 推送
+
+- `client webhook <name> --adapter grok-bot --url <url>`，密钥来自 `--key-file` 或 `CODEXHOST_WEBHOOK_KEY`，保存在 `<数据目录>/client-webhooks/<name>.json`（0600），不显示也不写日志。新建的 webhook 从最新事件之后开始，不重放历史。
+- Runtime 每 2 秒检查各客户端的新事件，按顺序推送；投递游标、重试次数与最近失败保存在 `<name>.state.json`，重启后继续。
+- `grok-bot` adapter：`Authorization: Bearer <key>`，JSON 正文不超过 4 KB（引用过多时省略并标 `refsOmitted`），`Idempotency-Key: <client>:<事件标识>`。2xx 为已投递；429、5xx 与网络错误按 5 秒起翻倍、最长 15 分钟退避，最多 24 小时；其余 4xx 立即作为配置错误放弃该事件。推送失败不影响事件日志，客户端仍可按游标读取。
+
 ## 边界
 
-- 本地监听只绑定 `127.0.0.1`，所有客户端拥有完整的委派权限；tailnet、公网、权限范围与 webhook 推送见 `openspec/changes/add-remote-client-access`。
+- 本地监听只绑定 `127.0.0.1`；tailnet 与公网监听只在用户打开开关后存在，见上文。
 - 外部客户端发起的 Thread 与其他 Thread 一样出现在 Desktop 侧栏；按客户端分组尚未提供。
 - npm 安装没有自带 Node：在 codexhost 会话之外运行 `codexhost client`、`codexhost events` 等命令时，需要 `CODEXHOST_CLI_NODE_PATH` 指向一个 Node。MCP 与 HTTP 客户端不受影响。

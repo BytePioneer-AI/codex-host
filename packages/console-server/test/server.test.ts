@@ -596,3 +596,133 @@ it("explicitly reports missing Console event transport for legacy fallback", asy
     events: false,
   });
 });
+
+it("reads external client access status, clients, and webhooks without secrets and toggles network access", async () => {
+  const { base } = await start();
+  await writeFile(
+    path.join(directory, "external-client-endpoint.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      endpoint: "http://127.0.0.1:41900",
+      pid: process.pid,
+      startedAt: "2026-11-04T00:00:00Z",
+    }),
+  );
+  await writeFile(
+    path.join(directory, "external-client-access-status.json"),
+    JSON.stringify({
+      tailnet: {
+        state: "on",
+        endpoint: "http://100.64.0.1:41901",
+      },
+      public: {
+        state: "on",
+        endpoint: "http://127.0.0.1:41902",
+        mcpUrl: "https://host.example.ts.net/codexhost/mcp",
+      },
+      updatedAt: "2026-11-04T00:05:00Z",
+    }),
+  );
+  await writeFile(
+    path.join(directory, "external-clients.json"),
+    JSON.stringify({
+      formatVersion: 1,
+      clients: [
+        {
+          name: "grok-bot",
+          createdAt: "2026-11-04T00:00:00Z",
+          salt: "secret-salt",
+          tokenHash: "secret-hash",
+          scope: "dispatch",
+          networks: ["local", "public"],
+          lastAccess: { network: "public", at: "2026-11-04T01:00:00Z" },
+        },
+      ],
+    }),
+  );
+  const webhooksDir = path.join(directory, "client-webhooks");
+  await mkdir(webhooksDir, { recursive: true });
+  await writeFile(
+    path.join(webhooksDir, "grok-bot.json"),
+    JSON.stringify({
+      formatVersion: 1,
+      adapter: "grok-bot",
+      url: "https://bot.example/webhook",
+      key: "super-secret-hmac-key",
+      updatedAt: "2026-11-04T00:00:00Z",
+    }),
+  );
+  await writeFile(
+    path.join(webhooksDir, "grok-bot.state.json"),
+    JSON.stringify({
+      delivered: 12,
+      lastSuccessAt: "2026-11-04T01:02:00Z",
+    }),
+  );
+
+  const response = await fetch(`${base}/api/external-clients`);
+  expect(response.status).toBe(200);
+  const text = await response.text();
+  expect(text).not.toContain("secret-salt");
+  expect(text).not.toContain("secret-hash");
+  expect(text).not.toContain("super-secret-hmac-key");
+  const status = JSON.parse(text) as {
+    settings: { tailnet: boolean; public: boolean };
+    listeners: {
+      local: { state: string; endpoint: string };
+      tailnet: { state: string; endpoint: string };
+      public: { state: string; mcpUrl: string };
+    };
+    clients: {
+      name: string;
+      scope: string;
+      networks: string[];
+      lastAccess: { network: string; at: string };
+      webhook: {
+        adapter: string;
+        url: string;
+        keyConfigured: boolean;
+        state: { delivered: number };
+      };
+    }[];
+  };
+  expect(status.settings).toEqual({ tailnet: false, public: false });
+  expect(status.listeners.local).toEqual({ state: "on", endpoint: "http://127.0.0.1:41900" });
+  expect(status.listeners.tailnet).toEqual({
+    state: "on",
+    endpoint: "http://100.64.0.1:41901",
+  });
+  expect(status.listeners.public).toMatchObject({
+    state: "on",
+    mcpUrl: "https://host.example.ts.net/codexhost/mcp",
+  });
+  expect(status.clients).toEqual([
+    {
+      name: "grok-bot",
+      createdAt: "2026-11-04T00:00:00Z",
+      scope: "dispatch",
+      networks: ["local", "public"],
+      lastAccess: { network: "public", at: "2026-11-04T01:00:00Z" },
+      webhook: {
+        adapter: "grok-bot",
+        url: "https://bot.example/webhook",
+        keyConfigured: true,
+        state: {
+          delivered: 12,
+          lastSuccessAt: "2026-11-04T01:02:00Z",
+        },
+      },
+    },
+  ]);
+
+  const toggled = await fetch(`${base}/api/external-clients/access`, {
+    method: "POST",
+    headers: { origin: base, ...CHANGE, "content-type": "application/json" },
+    body: JSON.stringify({ tailnet: true, public: false }),
+  });
+  expect(toggled.status).toBe(200);
+  const updated = (await toggled.json()) as {
+    settings: { tailnet: boolean; public: boolean };
+  };
+  expect(updated.settings).toEqual({ tailnet: true, public: false });
+});

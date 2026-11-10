@@ -1,17 +1,32 @@
 import { consumesNextArgument } from "./delegation-cli-options.js";
 
 const COMMAND_HELP = {
-  "client add": `codexhost client add <name>
+  "client add": `codexhost client add <name> [--scope read|dispatch] [--network local,tailnet,public]
 Register a named external client for HTTP/MCP or a separate CLI identity. Normal same-user CLI calls authenticate automatically and do not need registration. Prints the client token once; it is not stored in a readable form and cannot be shown again.
 The client sets CODEXHOST_CLIENT_TOKEN (or CODEXHOST_CLIENT_TOKEN_FILE) and then uses the same delegate, thread and harness commands, or the MCP endpoint, against the external client listener (127.0.0.1:4398 unless CODEXHOST_EXTERNAL_CLIENT_PORT says otherwise).
-Names use lowercase letters, digits and hyphens; local-cli is reserved.`,
+Names use lowercase letters, digits and hyphens; local-cli is reserved.
+--scope read allows reading, listing, waiting and events only; dispatch (default) also allows delegate start, thread send, cancel and watch.
+--network lists where the client may connect from: local (127.0.0.1, default), tailnet (this machine's Tailscale address), public (the Tailscale Funnel URL). Turn the tailnet and public listeners on with codexhost client access.`,
+  "client set": `codexhost client set <name> [--scope read|dispatch] [--network local,tailnet,public]
+Change a client's scope or networks. Takes effect on its next request; event streams on networks it may no longer use are closed.`,
+  "client pair": `codexhost client pair <name>
+Generate a one-time pairing code (valid for 10 minutes) for authorizing a hosted MCP connector over OAuth 2.1 + PKCE on the public listener.
+The code can be used once and is invalidated after 5 failed attempts. Issued access and refresh tokens are bound to the client and revoked when the client is removed.`,
   events: `codexhost events [--after <id>] [--limit <n>] [--follow true|false]
 For external clients: read the client's event log. Without --after, every retained event is returned, oldest first; keep the cursor to read only new ones. An event reports that a Thread the client watches stopped (outcome, Thread, Turn, Harness, deep link, references); it never carries Thread content, so read the Thread for results.
 Without --follow, prints {events, cursor} once; pass cursor back as --after. With --follow true, prints one JSON line per event until interrupted.
 Events are kept for 7 days (CODEXHOST_CLIENT_EVENT_RETENTION_DAYS). CURSOR_EXPIRED means older events were removed: reconcile with thread list --client <name>.
 The listener also serves GET /v1/events as server-sent events (resume with Last-Event-ID) and POST /v1/events/poll for long-polling.`,
+  "client access": `codexhost client access [--tailnet on|off] [--public on|off]
+Show or change whether codexhost also listens on this machine's Tailscale address (tailnet, same port as local) and through Tailscale Funnel (public HTTPS at https://<machine>.<tailnet>.ts.net/codexhost, MCP at .../codexhost/mcp). Both are off by default; only clients whose --network includes them can use them.
+Requires Tailscale to be installed and logged in; public also needs MagicDNS, HTTPS certificates and Funnel allowed for this machine. codexhost only adds and removes its own /codexhost Funnel path. A running codexhost applies changes within 30 seconds; status shows what it is actually serving and why something is unavailable.`,
+  "client webhook": `codexhost client webhook <name> [--adapter grok-bot --url <url> [--key-file <path>] | --clear true]
+Push the client's events to a bot as they happen, through a vendor adapter, so the bot is woken instead of polling. Without options, shows the webhook and its delivery state.
+The key comes from --key-file or CODEXHOST_WEBHOOK_KEY, never from the command line, and is never shown. A new webhook starts after the latest event; it does not replay history.
+grok-bot: the Grok Bot (Cursor Automations) webhook trigger URL and its key. Each request carries Idempotency-Key <client>:<event id> and a body under 4 KB with no Thread content; read results with thread read.
+Failures retry with backoff (5 s up to 15 min) for 24 hours; 400, 401 and 403 stop at once as configuration errors. The event log is unaffected either way.`,
   "client list": `codexhost client list
-List registered external clients with their registration time. Tokens are never shown.`,
+List registered external clients with their registration time, scope and networks. Tokens are never shown.`,
   "client remove": `codexhost client remove <name>
 Revoke a client immediately. Its later requests are rejected with UNAUTHORIZED and its open event streams are closed. Threads it started remain.`,
   "harness list": `codexhost harness list [--format json|compact]
@@ -86,7 +101,7 @@ export const DELEGATION_HELP = `usage:
   codexhost thread watch <thread>
   codexhost thread watches
   codexhost thread list
-  codexhost client add|list|remove
+  codexhost client add|list|set|pair|remove|access|webhook
   codexhost events
 
 Use <command> --help for its options. Use harness list to discover targets.

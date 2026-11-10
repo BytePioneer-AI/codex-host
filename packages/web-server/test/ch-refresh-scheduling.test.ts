@@ -114,7 +114,7 @@ it("waits for an organization read before satisfying a concurrent full refresh",
   release();
   assert.ok((await full).ok);
   assert.equal(b.directoryReads().length, 1);
-  assert.equal(reads, 2, "the requested full refresh still reads its own current snapshot");
+  assert.equal(reads, 3, "the requested head refresh reads definitions and loaded-ID assignments");
 });
 
 it("retains confirmed organization on failure and ignores a read after close", async (t) => {
@@ -156,7 +156,7 @@ it("keeps the ten-second full catalog check for legacy CDP", async (t) => {
   assert.ok(b.directoryReads().every((r) => r.params.includeArchived === false));
 });
 
-it("publishes confirmed catalog changes before an optional pin service answers", async (t) => {
+it("waits for native pins before publishing a complete first-page result", async (t) => {
   const b = await setup(t);
   const emitted: unknown[] = [];
   b.events.emit = (event, ...args) => {
@@ -172,7 +172,8 @@ it("publishes confirmed catalog changes before an optional pin service answers",
   b.row.name = "Updated";
   const full = b.list();
   await settle();
-  assert.equal(emitted.length, 1);
+  assert.equal(emitted.length, 0);
   release();
   assert.ok((await full).ok);
+  assert.equal(emitted.length, 1);
 });

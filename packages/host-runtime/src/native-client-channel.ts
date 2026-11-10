@@ -130,6 +130,10 @@ function approvalInteraction(
     effect: decisionEffect(id),
   }));
   const command = stringValue(params.command);
+  const cwd = stringValue(params.cwd);
+  const description = [command, cwd ? `Working directory: ${cwd}` : undefined]
+    .filter(Boolean)
+    .join("\n\n");
   const reason = stringValue(params.reason);
   return {
     kind: "approval",
@@ -140,7 +144,7 @@ function approvalInteraction(
         (method === "item/commandExecution/requestApproval"
           ? "Allow command execution?"
           : "Allow file changes?"),
-      ...(command ? { description: command } : {}),
+      ...(description ? { description } : {}),
       subject: params,
       actions,
     },

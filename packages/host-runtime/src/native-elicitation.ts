@@ -30,7 +30,17 @@ export function nativeElicitationApproval(params: JsonObject): Approval | undefi
   const title = text(params.message);
   if (!title) return undefined;
   const meta = isRecord(params._meta) ? params._meta : {};
-  const description = [text(meta.reason), text(meta.subtitle)].filter(Boolean).join("\n\n");
+  const tool = text(meta.tool_name);
+  const args = isRecord(meta.tool_params) ? meta.tool_params : undefined;
+  const description = [
+    text(meta.reason),
+    text(meta.subtitle),
+    tool || args
+      ? `\`\`\`json\n${JSON.stringify({ ...(tool ? { tool } : {}), ...(args ? { arguments: args } : {}) }, null, 2)}\n\`\`\``
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   const scopes = persistence(params);
   return {
     type: "approval",
@@ -38,8 +48,8 @@ export function nativeElicitationApproval(params: JsonObject): Approval | undefi
     ...(description ? { description } : {}),
     subject: {
       serverName: params.serverName,
-      ...(text(meta.tool_name) ? { tool: meta.tool_name } : {}),
-      ...(isRecord(meta.tool_params) ? { arguments: meta.tool_params } : {}),
+      ...(tool ? { tool } : {}),
+      ...(args ? { arguments: args } : {}),
     },
     actions: [
       { id: "accept", label: "Allow once", effect: "allowOnce" },

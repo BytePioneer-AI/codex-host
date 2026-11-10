@@ -11,18 +11,20 @@ import {
 } from "@deepseek-ai/dsh-client-ui-conversation/thread-reference";
 import type {} from "@deepseek-ai/dsh-client-ui-input-trigger/client";
 
+export function supportsThreadReferences(ctx: Context, id: SessionId): boolean {
+  const row = ctx.sessions.list.getSnapshot().byId[id];
+  return (
+    row !== undefined &&
+    ctx.sessions.subagentAddress(id) === undefined &&
+    (threadReferenceOf(row) !== undefined ||
+      (row.blank && row.projectionValues?.harnessIdentity != null))
+  );
+}
+
 export function registerThreadReferenceDiscovery(ctx: Context): void {
   const t = ctx.locale.bind("codexhostImport");
   const openings = new WeakMap<object, Promise<void>>();
-  const supported = (id: SessionId) => {
-    const row = ctx.sessions.list.getSnapshot().byId[id];
-    return (
-      row !== undefined &&
-      ctx.sessions.subagentAddress(id) === undefined &&
-      (threadReferenceOf(row) !== undefined ||
-        (row.blank && row.projectionValues?.harnessIdentity != null))
-    );
-  };
+  const supported = (id: SessionId) => supportsThreadReferences(ctx, id);
   ctx.effect(
     () =>
       ctx.inputTriggers.registerSource({

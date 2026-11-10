@@ -14,7 +14,7 @@ import type {
   SessionTarget,
   SessionListState,
 } from "@deepseek-ai/dsh-api-session-controller/client";
-import { createSnapshotStore } from "@deepseek-ai/dsh-client-store";
+import { createSnapshotStore, type ObservableSnapshot } from "@deepseek-ai/dsh-client-store";
 import type { SubagentAddress } from "@deepseek-ai/dsh-subagent/client";
 import type {
   IWorkspaces,
@@ -29,6 +29,7 @@ import type { RowToast } from "./contract/slots.ts";
 import { pinOrderAccounts, pinOrderSource } from "./pin-order.ts";
 import type { WorkspaceViewStoreActions } from "./stores.ts";
 import { SessionKeepalive } from "./session-keepalive.ts";
+import { RecentVisits } from "./recent-visits.ts";
 
 interface MainSelection {
   readonly sessionId?: SessionId;
@@ -38,13 +39,24 @@ interface MainSelection {
 /** Optional content preparation for the resolved target Session. */
 export type StartSessionOptions = DraftInitializationOptions;
 
+/** Local target resolution; it is independent of sidebar and configuration loading. */
+export type SessionOpeningState =
+  | { readonly state: "idle" }
+  | { readonly state: "loading"; readonly sessionId: SessionId }
+  | { readonly state: "error"; readonly sessionId: SessionId; readonly message: string };
+
 /** Workspace archive and directory operations consumed by Client UI domains. */
 export interface UiWorkspace {
   /**
    * Select a Session and show its Conversation as one UI navigation action.
-   * @param target - known Session identity or durable direct-parent subagent address to display.
+   * Unknown IDs resolve through their own summary read; failures surface in `opening`.
+   * @param target - Session identity or durable direct-parent subagent address to display.
    */
   openSession(target: SessionTarget): void;
+  /** Current ID-resolution progress or failure, not conversation-history readiness. */
+  readonly opening: ObservableSnapshot<SessionOpeningState>;
+  /** Retry only the current failed target; never resubmit a write. */
+  retryOpening(): void;
   /**
    * Connect a Workspace and open its Session unless a later navigation supersedes it.
    * @param workspaceId - target Workspace.
@@ -152,7 +164,12 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     { persist: { name: "dsh.sessions.current" } },
   );
   private mainReference: SessionReference | undefined;
+  readonly opening = createSnapshotStore<SessionOpeningState>({ state: "idle" });
+  private retryOpen: (() => void) | undefined;
+  private openingLoad: { readonly stop: () => void } | undefined;
   private readonly keepalive: SessionKeepalive;
+  /** Small visit-only working set; does not own Session references. */
+  readonly recentVisits: RecentVisits;
 
   /**
    * @param ctx - Client root Context.
@@ -172,13 +189,25 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   ) {
     super(ctx, "uiWorkspace");
     this.keepalive = new SessionKeepalive(sessions, workspaces);
+    const remote = ctx.get("remote");
+    this.recentVisits = new RecentVisits(
+      sessions,
+      workspaces,
+      remote === undefined ? undefined : (listener) => remote.$on("api-session/removed", listener),
+      () => notify({ kind: "recentVisitsStorageFailed" }),
+    );
     ctx.effect(() => {
+      const saved = this.selection.getSnapshot();
+      const stopVisits = this.recentVisits.start(
+        saved.subagentAddress?.childSessionId ?? saved.sessionId,
+      );
       const stopKeepalive = this.keepalive.start();
       const stop = this.watchNavigation();
       return () => {
         stop();
         this.lifetime.abort();
         stopKeepalive();
+        stopVisits();
         const reference = this.mainReference;
         this.mainReference = undefined;
         reference?.release();
@@ -231,7 +260,61 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   }
 
   openSession(target: SessionTarget): void {
-    this.replaceMain(target, this.lifetime.signal, "reveal");
+    const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal]);
+    this.opening.set({ state: "idle" });
+    this.retryOpen = undefined;
+    if (typeof target !== "string" || this.sessions.list.getSnapshot().byId[target] !== undefined) {
+      this.replaceMain(target, navigation, "reveal");
+      return;
+    }
+    void this.resolveSession(
+      target,
+      navigation,
+      () => {
+        this.replaceMain(target, navigation, "reveal");
+      },
+      () => this.openSession(target),
+    );
+  }
+
+  retryOpening(): void {
+    this.retryOpen?.();
+  }
+
+  private async resolveSession(
+    sessionId: SessionId,
+    signal: AbortSignal,
+    resolved: () => void,
+    retry: () => void,
+  ): Promise<void> {
+    if (signal.aborted) return;
+    this.openingLoad?.stop();
+    this.retryOpen = undefined;
+    // Cordis traces function-valued service properties; a plain holder preserves request identity.
+    const load = { stop: (): void => signal.removeEventListener("abort", clear) };
+    const clear = (): void => {
+      load.stop();
+      if (this.openingLoad !== load) return;
+      this.openingLoad = undefined;
+      this.opening.set({ state: "idle" });
+      this.retryOpen = undefined;
+    };
+    signal.addEventListener("abort", clear, { once: true });
+    this.openingLoad = load;
+    this.opening.set({ state: "loading", sessionId });
+    try {
+      if (signal.aborted || this.openingLoad !== load) return;
+      await this.sessions.loadSummary(sessionId);
+      if (signal.aborted || this.openingLoad !== load) return;
+      if (this.sessions.list.getSnapshot().byId[sessionId] === undefined)
+        throw new Error(`Session not found: ${sessionId}`);
+      resolved();
+      clear();
+    } catch (error: unknown) {
+      if (signal.aborted || this.openingLoad !== load) return;
+      this.retryOpen = retry;
+      this.opening.set({ state: "error", sessionId, message: creationFailureMessage(error) });
+    }
   }
 
   async openWorkspace(
@@ -288,6 +371,8 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     const target =
       workspaceId ?? (workspace.canStartProjectless ? null : (currentWorkspaceId ?? recent));
     if (target === undefined) {
+      // An explicit New Session supersedes an ID lookup even when no project can be chosen yet.
+      this.ctx.layout.beginNavigation();
       if (initializeDraft) {
         this.notify({
           kind: "createFailed",
@@ -374,24 +459,33 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
   private watchNavigation(): () => void {
     let initial: "waiting" | "connecting" | "done" = "waiting";
+    const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal]);
+    // Explicit navigation supersedes startup, including an unresolved direct link.
+    navigation.addEventListener(
+      "abort",
+      () => {
+        initial = "done";
+      },
+      { once: true },
+    );
     const reconcile = (): void => {
       if (this.lifetime.signal.aborted) return;
       if (this.clearArchivedCurrent()) return;
       if (initial !== "waiting") return;
       const workspace = this.workspaces.list.getSnapshot();
       const sessions = this.sessions.list.getSnapshot();
-      if (workspace.phase !== "ready" || sessions.phase !== "ready") return;
       if (this.mainReference !== undefined) {
         initial = "done";
         return;
       }
+      if (workspace.phase !== "ready" || sessions.phase !== "ready") return;
       initial = "connecting";
-      void this.restoreSelection(workspace, sessions).then(
+      void this.restoreSelection(workspace, sessions, navigation).then(
         () => {
           initial = "done";
         },
         (reason: unknown) => {
-          if (this.lifetime.signal.aborted) return;
+          if (navigation.aborted) return;
           initial = "waiting";
           console.warn("initial Session restoration failed:", reason);
         },
@@ -400,6 +494,34 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
     const disposeWorkspaces = this.workspaces.list.subscribe(reconcile);
     const disposeSessions = this.sessions.list.subscribe(reconcile);
+    const saved = this.selection.getSnapshot();
+    if (saved.sessionId !== undefined || saved.subagentAddress !== undefined) {
+      initial = "connecting";
+      if (saved.subagentAddress !== undefined) {
+        this.replaceMain(saved.subagentAddress, navigation, "preserve");
+        initial = "done";
+      } else if (saved.sessionId !== undefined) {
+        const id = saved.sessionId;
+        const restore = (): void => {
+          void this.resolveSession(
+            id,
+            navigation,
+            () => {
+              if (this.sessions.list.getSnapshot().byId[id]?.blank === true) {
+                // Reusing a draft still needs authoritative Workspace membership/writer checks.
+                initial = "waiting";
+                reconcile();
+              } else {
+                this.replaceMain(id, navigation, "preserve");
+                initial = "done";
+              }
+            },
+            restore,
+          );
+        };
+        restore();
+      }
+    }
     reconcile();
     return () => {
       this.lifetime.abort();
@@ -411,10 +533,11 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   private async restoreSelection(
     workspaces: WorkspaceSnapshot,
     sessions: SessionListState,
+    navigation: AbortSignal,
   ): Promise<void> {
     const saved = this.selection.getSnapshot();
     if (saved.subagentAddress !== undefined) {
-      this.replaceMain(saved.subagentAddress, this.lifetime.signal, "preserve");
+      this.replaceMain(saved.subagentAddress, navigation, "preserve");
       return;
     }
     const summary = saved.sessionId === undefined ? undefined : sessions.byId[saved.sessionId];
@@ -423,10 +546,9 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         ? undefined
         : workspaces.items.find((item) => item.sessionIds.includes(summary.id));
     if (summary !== undefined && (!summary.blank || workspace === undefined)) {
-      this.replaceMain(summary.id, this.lifetime.signal, "preserve");
+      this.replaceMain(summary.id, navigation, "preserve");
       return;
     }
-    const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal]);
     let sessionId: SessionId | undefined;
     if (
       summary !== undefined &&
@@ -480,6 +602,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   private clearMain(): void {
     const previous = this.mainReference;
     this.mainReference = undefined;
+    this.recentVisits.clearCurrent();
     this.selection.set({});
     previous?.release();
     this.ctx.layout.selectPanel(null);
@@ -513,6 +636,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     const previous = this.mainReference;
     this.mainReference = reference;
     this.keepalive.visit(reference, target);
+    this.recentVisits.visit(reference.sessionId, target);
     previous?.release();
     if (panel === "reveal") this.ctx.layout.selectPanel(null);
   }

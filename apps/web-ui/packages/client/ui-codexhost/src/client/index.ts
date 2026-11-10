@@ -14,6 +14,7 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import { registerHarnessDiscovery } from "./harness-discovery.tsx";
 import { registerThreadReferenceDiscovery } from "./thread-reference-discovery.ts";
+import { registerThreadReferenceAction } from "./thread-reference-action.ts";
 import { desktopScreenshotApi, sentMessageEditApi, turnDiffsApi, voiceApi } from "./api.ts";
 import { DesktopScreenshot } from "./desktop-screenshot.ts";
 import {
@@ -37,6 +38,7 @@ import { RemoteAccessAction, type RemoteAccessActionFace } from "./RemoteAccessA
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
 import { HostConnectionStatus } from "./HostConnectionStatus.tsx";
+import { SessionOpeningNotice } from "./SessionOpeningNotice.tsx";
 import { HostUsageDock } from "./HostUsageDock.tsx";
 import type {
   ComposerAttachment,
@@ -124,6 +126,7 @@ export function apply(ctx: ClientContext): void {
   ctx.provide("chatMessageEditing", sentMessageEditApi);
   ctx.provide("chatTurnDiffs", turnDiffsApi);
   ctx.inject(["conversation"], (scope) => {
+    registerThreadReferenceAction(scope);
     const screenshot = new DesktopScreenshot(desktopScreenshotApi.capture);
     const conversation = scope.conversation as ConversationController;
     const drafts: DesktopScreenshotFace["drafts"] = {
@@ -260,7 +263,7 @@ export function apply(ctx: ClientContext): void {
           openSession: async (threadId, signal) => {
             const id = threadId as SessionId;
             if (ctx.sessions.list.getSnapshot().byId[id] === undefined)
-              await ctx.sessions.refresh();
+              await ctx.sessions.loadSummary(id);
             signal.throwIfAborted();
             if (ctx.sessions.list.getSnapshot().byId[id] === undefined)
               throw new Error(t("catalogPending"));
@@ -360,16 +363,21 @@ export function apply(ctx: ClientContext): void {
     );
   });
 
-  ctx.slots.inject("sidebar.session.row.identity", () =>
-    ctx.slots.register(
-      {
-        name: "sidebar.session.row.identity",
-        id: "codexhost.harness",
-        inject: () => ({ list: ctx.sessions.list }),
-      },
-      SessionHarnessIcon,
-    ),
-  );
+  for (const name of [
+    "sidebar.session.row.identity",
+    "workspace.recent.shortcut.identity",
+  ] as const) {
+    ctx.slots.inject(name, () =>
+      ctx.slots.register(
+        {
+          name,
+          id: "codexhost.harness",
+          inject: () => ({ list: ctx.sessions.list }),
+        },
+        SessionHarnessIcon,
+      ),
+    );
+  }
 
   ctx.slots.inject("conversation.header.notice", () =>
     ctx.slots.register(
@@ -383,6 +391,17 @@ export function apply(ctx: ClientContext): void {
         }),
       },
       HostConnectionStatus,
+    ),
+  );
+  ctx.slots.inject("conversation.header.notice", () =>
+    ctx.slots.register(
+      {
+        name: "conversation.header.notice",
+        id: "codexhost.session-opening",
+        locale: NS,
+        inject: () => ({ navigation: ctx.uiWorkspace }),
+      },
+      SessionOpeningNotice,
     ),
   );
   ctx.slots.inject("conversation.composer.dock", () =>
@@ -421,10 +440,7 @@ export function apply(ctx: ClientContext): void {
     if (sessionId === null) return;
     url.searchParams.delete("session");
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
-    // Give the Session list a moment to load before revealing the target.
-    setTimeout(() => {
-      face.openSession(sessionId);
-    }, 600);
+    face.openSession(sessionId);
   };
   openFromUrl();
   const onMessage = (event: MessageEvent): void => {

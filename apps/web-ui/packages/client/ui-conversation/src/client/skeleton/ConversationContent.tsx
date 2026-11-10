@@ -173,8 +173,10 @@ export function ConversationContent(props: ConversationContentProps) {
   // Keep the resident textarea mounted across both states.
   const workspaceRequired =
     workspaces.phase === "ready" && !workspaces.canStartProjectless && chipTitle === undefined;
-  const preparingSession = sessionId === undefined && !workspaceRequired;
-  const inert = sessionId === undefined || (hero && workspaceRequired);
+  const preparingSession =
+    (sessionId === undefined || session?.openState !== "open") && !workspaceRequired;
+  const inert =
+    sessionId === undefined || session?.openState !== "open" || (hero && workspaceRequired);
   // A raised block is the same inert posture with the blocker's own reason:
   // one disabled textarea, never a second tree. The no-workspace state wins
   // when both hold — picking a workspace is the earlier prerequisite.

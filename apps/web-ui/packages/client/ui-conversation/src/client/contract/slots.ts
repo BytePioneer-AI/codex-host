@@ -150,6 +150,18 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
     };
     /** Resident navigation container, including when no Session is selected. */
     "conversation.header": { kind: "single"; scope: "session-maybe" };
+    /** Title-adjacent navigation, independent of the current title's own behavior. */
+    "conversation.header.navigation": {
+      kind: "single";
+      scope: "session-maybe";
+      owner: ConversationHeaderNavigationOwnerProps;
+    };
+    /** Optional navigation row below the title, outside the conversation scrollport. */
+    "conversation.header.shortcuts": {
+      kind: "single";
+      scope: "session-maybe";
+      owner: ConversationHeaderNavigationOwnerProps;
+    };
     /** Persistent product notices below navigation, including without a selected Session. */
     "conversation.header.notice": { kind: "list"; scope: "session-maybe" };
     /** Strict per-Session title, actions, and View navigation. */
@@ -159,6 +171,8 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
       owner: {
         /** Parent-owned visibility shared with the header container styling. */
         hideChrome: boolean;
+        /** Resident header-owned control; title and lineage keep their own click behavior. */
+        titleNavigation?: ReactNode;
       };
     };
     /** Optional replacement for one Session breadcrumb title. */
@@ -341,6 +355,12 @@ export interface ConversationHeaderCornerOwnerProps {
 export interface ConversationHeaderLeadingOwnerProps {
   /** Marker field: the occupant receives no owner-specific values. */
   children?: never;
+}
+
+/** Focus lifetime shared by resident navigation controls, independent of Session incarnations. */
+export interface ConversationHeaderNavigationOwnerProps {
+  /** Return to the visible data-navigation-focus-return control, or the header if absent. */
+  restoreNavigationFocus: () => void;
 }
 
 /** Plain breadcrumb data handed to the optional lineage renderer. */
@@ -550,7 +570,12 @@ export type ConversationSessionSlotProps = PropsRuntime<"conversation.session"> 
 
 /** Full props of the resident navigation header. */
 export type ConversationHeaderProps = PropsRuntime<"conversation.header"> &
-  PropsRenderSlots<"conversation.header.leading" | "conversation.session.header">;
+  PropsRenderSlots<
+    | "conversation.header.leading"
+    | "conversation.header.navigation"
+    | "conversation.header.shortcuts"
+    | "conversation.session.header"
+  >;
 
 /** Full props of the strict Session header. */
 export type ConversationSessionHeaderSlotProps = PropsRuntime<"conversation.session.header"> &

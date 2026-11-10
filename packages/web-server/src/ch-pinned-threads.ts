@@ -10,7 +10,6 @@ export class ChPinnedThreads {
   constructor(
     private readonly host: ChHostClient,
     private readonly workspaces: Workspaces,
-    private readonly visible: (threadId: string) => boolean,
   ) {
     // Ignore legacy Web-only pins from the moment shared mode starts.
     workspaces.setReferencePins([]);
@@ -19,7 +18,7 @@ export class ChPinnedThreads {
   sync(change?: ChPinChange): Promise<string[]> {
     const next = this.pending.then(async () => {
       if (this.closed) return [];
-      const ids = (await this.host.pins(change)).filter(this.visible);
+      const ids = await this.host.pins(change);
       if (!this.closed) this.workspaces.setReferencePins(ids);
       return ids;
     });

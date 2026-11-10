@@ -72,6 +72,83 @@ it("captures the native snapshot cursor before resume/read I/O and keeps real co
   expect(calls.filter((method) => method === "thread/resume")).toHaveLength(2);
 });
 
+it("projects a newly created Thread's unmaterialized history as empty without caching it", async () => {
+  const { channel, request } = snapshotChannel();
+  const implementation = request.getMockImplementation();
+  if (!implementation) throw new Error("Missing native fixture");
+  let materialized = false;
+  request.mockImplementation(async (method) => {
+    if (method === "thread/turns/list")
+      return materialized
+        ? {
+            result: {
+              data: [{ id: "first-turn", status: "completed", items: [] }],
+              nextCursor: null,
+            },
+          }
+        : {
+            error: {
+              code: -32600,
+              message: `thread ${thread.id} is not materialized yet; thread/turns/list is unavailable before first user message`,
+            },
+          };
+    return implementation(method);
+  });
+  const empty = await channel.snapshot("native-thread", {});
+  expect(empty.thread.id).toBe(thread.id);
+  expect(empty.turnsPage).toEqual({ data: [], nextCursor: null });
+  expect(empty.activeTurnId).toBeUndefined();
+  expect(request.mock.calls.map(([method]) => method)).toEqual([
+    "thread/resume",
+    "thread/read",
+    "thread/turns/list",
+  ]);
+  materialized = true;
+  expect((await channel.snapshot("native-thread", {})).turnsPage.data[0]?.id).toBe("first-turn");
+});
+
+it.each([
+  { code: -32600, message: "no rollout found for thread id native-thread" },
+  { code: -32093, message: "Timeout" },
+  {
+    code: -32603,
+    message:
+      "thread native-thread is not materialized yet; thread/turns/list is unavailable before first user message",
+  },
+  {
+    code: -32600,
+    message:
+      "thread other-thread is not materialized yet; thread/turns/list is unavailable before first user message",
+  },
+])("does not hide other native history errors: %j", async (error) => {
+  const { channel, request } = snapshotChannel();
+  const implementation = request.getMockImplementation();
+  if (!implementation) throw new Error("Missing native fixture");
+  request.mockImplementation(async (method) =>
+    method === "thread/turns/list" ? { error } : implementation(method),
+  );
+  await expect(channel.snapshot("native-thread", {})).rejects.toMatchObject(error);
+});
+
+it("normalizes only the initial turns page, not other methods or an older-page cursor", async () => {
+  const { channel, request } = snapshotChannel();
+  const reply = {
+    error: {
+      code: -32600,
+      message:
+        "thread native-thread is not materialized yet; thread/turns/list is unavailable before first user message",
+    },
+  };
+  request.mockResolvedValue(reply);
+  expect(
+    await channel.request("thread/turns/list", { threadId: "native-thread", cursor: null }),
+  ).toEqual({ result: { data: [], nextCursor: null } });
+  expect(
+    await channel.request("thread/turns/list", { threadId: "native-thread", cursor: "older" }),
+  ).toEqual(reply);
+  expect(await channel.request("thread/read", { threadId: "native-thread" })).toEqual(reply);
+});
+
 it("serves client inspection and snapshots from confirmed configuration without repeated resume", async () => {
   const { channel, request, calls } = snapshotChannel();
   const before = {
@@ -81,7 +158,14 @@ it("serves client inspection and snapshots from confirmed configuration without 
   };
   expect(
     await channel.request("codexhost/thread/inspect", { threadId: "native-thread" }),
-  ).toMatchObject({ result: { owner: "codex", locked: false, ...before } });
+  ).toMatchObject({
+    result: {
+      owner: "codex",
+      locked: false,
+      ...before,
+      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+    },
+  });
   expect(request).toHaveBeenCalledExactlyOnceWith("thread/resume", {
     threadId: "native-thread",
     excludeTurns: true,
@@ -113,6 +197,86 @@ it("serves client inspection and snapshots from confirmed configuration without 
   expect(calls.filter((method) => method === "thread/resume")).toHaveLength(1);
 });
 
+it("registers a native fork's subscription and actual configuration on the child, not the source", async () => {
+  const { channel, request, events } = snapshotChannel();
+  const inspect = (threadId: string) => channel.request("codexhost/thread/inspect", { threadId });
+  const source = await inspect("native-thread");
+  const changed = vi.spyOn(events, "changed");
+  const params = { threadId: "native-thread", lastTurnId: "turn-1", excludeTurns: true };
+  const fork = {
+    result: {
+      thread: { ...thread, id: "forked-thread", forkedFromId: "native-thread" },
+      model: "child-model",
+      serviceTier: "priority",
+      reasoningEffort: "low",
+      activePermissionProfile: { id: ":read-only" },
+    },
+  };
+  request.mockResolvedValueOnce(fork);
+  expect(await channel.request("thread/fork", params)).toEqual(fork);
+  expect(request).toHaveBeenLastCalledWith("thread/fork", params);
+  expect(changed).toHaveBeenCalledExactlyOnceWith("forked-thread", "thread/fork");
+  expect(await inspect("forked-thread")).toMatchObject({
+    result: {
+      effectiveModel: encodeOfficialCodexModelRef("child-model", "priority"),
+      effectiveThinkingOptionId: "low",
+      effectivePermissionModeId: ":read-only",
+    },
+  });
+  expect(await inspect("native-thread")).toEqual(source);
+  expect(request).toHaveBeenCalledTimes(2);
+  request.mockResolvedValueOnce({ result: { turn: { id: "child-turn", status: "inProgress" } } });
+  await channel.request("turn/start", { threadId: "forked-thread", input: [] });
+  expect(request).toHaveBeenLastCalledWith("turn/start", { threadId: "forked-thread", input: [] });
+  expect(request.mock.calls.filter(([method]) => method === "thread/resume")).toHaveLength(1);
+});
+
+it.each<NativeClientReply>([
+  { error: { code: -32602, message: "Unknown fork boundary" } },
+  { result: {} },
+  { result: { thread, model: "must-not-replace-source" } },
+])(
+  "does not replace source configuration or publish a child without a distinct fork identity",
+  async (reply) => {
+    const { channel, request, events } = snapshotChannel();
+    const source = await channel.request("codexhost/thread/inspect", { threadId: "native-thread" });
+    const changed = vi.spyOn(events, "changed");
+    request.mockResolvedValueOnce(reply);
+    expect(
+      await channel.request("thread/fork", { threadId: "native-thread", lastTurnId: "turn-1" }),
+    ).toEqual(reply);
+    expect(changed).not.toHaveBeenCalled();
+    expect(
+      await channel.request("codexhost/thread/inspect", { threadId: "native-thread" }),
+    ).toEqual(source);
+    expect(request).toHaveBeenCalledTimes(2);
+  },
+);
+
+it("does not retain or retry a fork response from a retired native generation", async () => {
+  const { channel, request, events } = snapshotChannel();
+  const changed = vi.spyOn(events, "changed");
+  request.mockImplementationOnce(async () => {
+    channel.resetGeneration();
+    return { result: { thread: { ...thread, id: "forked-thread" }, model: "retired-model" } };
+  });
+  expect(
+    await channel.request("thread/fork", { threadId: "native-thread", lastTurnId: "turn-1" }),
+  ).toMatchObject({ error: { code: -32094, message: expect.stringContaining("Do not retry") } });
+  expect(changed).not.toHaveBeenCalled();
+  expect(request).toHaveBeenCalledOnce();
+  request.mockResolvedValueOnce({
+    result: { thread: { ...thread, id: "forked-thread" }, model: "confirmed-model" },
+  });
+  expect(
+    await channel.request("codexhost/thread/inspect", { threadId: "forked-thread" }),
+  ).toMatchObject({ result: { effectiveModel: encodeOfficialCodexModelRef("confirmed-model") } });
+  expect(request).toHaveBeenLastCalledWith("thread/resume", {
+    threadId: "forked-thread",
+    excludeTurns: true,
+  });
+});
+
 it.each([
   { code: -32600, message: "thread native-thread already has a live local writer" },
   { code: -32000, message: "resume unavailable" },
@@ -123,7 +287,7 @@ it.each([
     result: {
       owner: "codex",
       locked: false,
-      history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
     },
   });
   expect(request).toHaveBeenCalledExactlyOnceWith("thread/resume", {
@@ -133,6 +297,30 @@ it.each([
   expect(
     await channel.request("codexhost/thread/inspect", { threadId: "native-thread" }),
   ).toMatchObject({ result: { effectiveThinkingOptionId: "high" } });
+});
+
+it("includes the command and working directory in native approval content", () => {
+  const channel = new NativeClientChannel({
+    events: new ClientChannelEvents(),
+    request: vi.fn(async () => ({ result: {} })),
+    respond: vi.fn(async () => undefined),
+  });
+  channel.observeMessage({
+    id: "command-display",
+    method: "item/commandExecution/requestApproval",
+    params: {
+      threadId: "native-thread",
+      reason: "Allow creating a.txt?",
+      command: "printf 'test\\n' > a.txt",
+      cwd: "/synthetic/project",
+      availableDecisions: ["accept", "cancel"],
+    },
+  });
+  expect(channel.interactions("native-thread")[0]?.interaction).toMatchObject({
+    type: "approval",
+    title: "Allow creating a.txt?",
+    description: "printf 'test\\n' > a.txt\n\nWorking directory: /synthetic/project",
+  });
 });
 
 it("validates native command decisions and preserves first-answer semantics", async () => {

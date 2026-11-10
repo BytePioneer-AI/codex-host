@@ -7,6 +7,7 @@ import { chromium, type Page } from "playwright";
 import { startFakeChDebugger } from "../support/ch-host.ts";
 import { FakeChChannel, startFakeChChannel } from "../support/ch-channel.ts";
 import { startServer } from "../support/server.ts";
+import { nativeCodex } from "../support/native-codex.ts";
 
 async function shot(page: Page, name: string) {
   const directory = process.env.CODEXHOST_TEST_SCREENSHOTS;
@@ -15,14 +16,23 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: join(directory, `fork-${name}.png`), animations: "allow" });
 }
 
-for (const supported of [true, false])
+for (const kind of ["external", "unsupported", "codex", "codex-cdp"])
   it(
-    `Web ordinary fork through sidebar and message actions (supported=${supported})`,
+    `Web ordinary fork through sidebar and message actions (${kind})`,
     { timeout: 60_000 },
     async (t) => {
-      const host = new FakeChChannel();
+      const supported = kind !== "unsupported";
+      const native = kind.startsWith("codex");
+      const host = native ? nativeCodex(new FakeChChannel()) : new FakeChChannel();
       host.inspection.capabilities.history.fork = supported;
-      const source = host.add("source", "/computer/project", "Fork source");
+      const source = host.add(
+        native ? "native-source" : "source",
+        "/computer/project",
+        "Fork source",
+      );
+      if (native) source.modelProvider = "openai";
+      const childId = native ? "native-fork-" : "fork-";
+      const forkMethod = native ? "thread/fork" : "codexhost/thread/fork";
       source.turns.push({
         id: "second-native-turn",
         status: "completed",
@@ -47,7 +57,9 @@ for (const supported of [true, false])
           "codexhost",
           "--ch-cdp",
           debug.endpoint,
-          ...(supported ? ["--ch-control-directory", controlDirectory] : []),
+          ...(supported && kind !== "codex-cdp"
+            ? ["--ch-control-directory", controlDirectory]
+            : []),
         ],
       );
       const browser = await chromium.launch();
@@ -60,22 +72,22 @@ for (const supported of [true, false])
       const folder = page.getByRole("treeitem").filter({ hasText: /^project$/ });
       await folder.waitFor();
       if ((await folder.getAttribute("aria-expanded")) === "false") await folder.click();
-      const row = page.locator('[data-row-key="session:source"]');
+      const row = page.locator(`[data-row-key="session:${source.id}"]`);
       await row.click();
       await page.getByText("Second answer", { exact: true }).waitFor();
       await row.hover();
       await row.getByRole("button", { name: /^Session actions for/ }).click();
-      await shot(page, `sidebar-before-${supported}`);
+      await shot(page, `sidebar-before-${kind}`);
       await page.getByRole("menuitem", { name: /^Fork session/ }).click();
       if (supported) {
-        await page.locator('[data-row-key="session:fork-1"][aria-selected="true"]').waitFor();
+        await page.locator(`[data-row-key="session:${childId}1"][aria-selected="true"]`).waitFor();
         await page.getByText("Second answer", { exact: true }).waitFor();
-        assert.equal(host.threads.get("fork-1")?.turns.length, 2);
+        assert.equal(host.threads.get(`${childId}1`)?.turns.length, 2);
       } else {
         await page.getByText(/Fork did not complete:.*does not support native forking/).waitFor();
         assert.equal(host.threads.size, 1);
       }
-      await shot(page, `sidebar-after-${supported}`);
+      await shot(page, `sidebar-after-${kind}`);
       await row.click();
       await page.getByText("existing CH answer", { exact: true }).waitFor();
       const tail = page.locator("[data-turn-tail]").first();
@@ -84,20 +96,21 @@ for (const supported of [true, false])
         name: "Branch into a new conversation",
         exact: true,
       });
-      await shot(page, `message-before-${supported}`);
+      await shot(page, `message-before-${kind}`);
       await branch.click();
       if (supported) {
-        await page.locator('[data-row-key="session:fork-2"][aria-selected="true"]').waitFor();
+        await page.locator(`[data-row-key="session:${childId}2"][aria-selected="true"]`).waitFor();
         await page.getByText("existing CH answer", { exact: true }).waitFor();
         assert.equal(await page.getByText("Second answer", { exact: true }).count(), 0);
-        assert.equal(host.threads.get("fork-2")?.turns.length, 1);
-        assert.equal(host.threads.get("fork-2")?.cwd, source.cwd);
+        assert.equal(host.threads.get(`${childId}2`)?.turns.length, 1);
+        assert.equal(host.threads.get(`${childId}2`)?.cwd, source.cwd);
         assert.deepEqual(
-          host.requests.filter((r) => r.method === "codexhost/thread/fork").map((r) => r.params),
-          [
-            { threadId: "source", lastTurnId: "second-native-turn" },
-            { threadId: "source", lastTurnId: "history-source" },
-          ],
+          host.requests.filter((r) => r.method === forkMethod).map((r) => r.params),
+          ["second-native-turn", `history-${source.id}`].map((lastTurnId) => ({
+            threadId: source.id,
+            lastTurnId,
+            ...(native ? { excludeTurns: true } : {}),
+          })),
         );
         await page.reload();
         await page.getByText("existing CH answer", { exact: true }).waitFor();
@@ -107,11 +120,11 @@ for (const supported of [true, false])
           .filter({ hasText: /does not support native forking/ })
           .waitFor();
         assert.equal(
-          host.requests.some((r) => r.method === "codexhost/thread/fork"),
+          host.requests.some((r) => r.method === forkMethod),
           false,
         );
       }
-      await shot(page, `message-after-${supported}`);
+      await shot(page, `message-after-${kind}`);
       assert.deepEqual(source, original);
       assert.deepEqual(errors, []);
     },

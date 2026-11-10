@@ -29,7 +29,7 @@ export function nativeCodex<T extends FakeChHost>(host: T): T {
             selectPermissionMode: true,
             permissionModeScope: "live",
           },
-          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+          history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
         },
       } as R;
     }
@@ -44,6 +44,25 @@ export function nativeCodex<T extends FakeChHost>(host: T): T {
       row.modelProvider = "openai";
       row.turns = [];
       return { thread: structuredClone(row) } as R;
+    }
+    if (method === "thread/fork") {
+      host.requests.push({ method, params: structuredClone(params) });
+      if (host.forkError) throw new Error(host.forkError);
+      const source = host.threads.get(String(params.threadId));
+      const index = source?.turns.findIndex((turn) => turn.id === params.lastTurnId) ?? -1;
+      if (!source || index < 0) throw new Error("Native fork checkpoint unavailable");
+      const child = host.add(
+        `native-fork-${host.threads.size}`,
+        source.cwd,
+        source.name ?? "",
+        false,
+      );
+      child.modelProvider = source.modelProvider;
+      if (source.historyMode) child.historyMode = source.historyMode;
+      child.turns = structuredClone(source.turns.slice(0, index + 1));
+      const project = host.projectSnapshot.assignments[source.id];
+      if (project) host.projectSnapshot.assignments[child.id] = project;
+      return { thread: { ...structuredClone(child), turns: [] } } as R;
     }
     if (method === "codexhost/thread/ownership/list") {
       host.requests.push({ method, params });
@@ -63,7 +82,7 @@ export function nativeCodex<T extends FakeChHost>(host: T): T {
         effectiveModel: { id: "gpt-5.4" },
         effectiveThinkingOptionId: "high",
         effectivePermissionModeId: ":workspace",
-        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
       } as R;
     }
     return request<R>(method, params);

@@ -44,7 +44,10 @@ async function start(
 
 async function openConnectPage(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByText("Connect devices", { exact: true }).first().click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Remote access", exact: true })
+    .click();
 }
 
 /** The token stays out of the main page and is only copied. */

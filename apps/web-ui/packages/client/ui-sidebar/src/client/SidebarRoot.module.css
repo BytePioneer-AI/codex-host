@@ -545,6 +545,10 @@
   margin-bottom: 16px;
 }
 
+.panelList:empty {
+  display: none;
+}
+
 /* Panel entries share the New Session bar's 12px radius and 2px inset, the
    session rows' hover/selected surface, and the primary ink. */
 .panelRow {

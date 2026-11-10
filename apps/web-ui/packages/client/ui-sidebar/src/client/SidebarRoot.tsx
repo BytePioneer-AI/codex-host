@@ -341,21 +341,32 @@ export function SidebarRoot({
         </button>
       </Tooltip>
 
-      {panels.length > 0 && (
-        <nav className={css.panelList} aria-label={t("panels.label")}>
-          {panels.map(({ id, label }) => (
-            <PanelRow
-              key={id}
-              id={id}
-              label={label}
-              wide={wide}
-              usePanelInfo={usePanelInfo}
-              selectPanel={selectPanel}
-              renderSlot={renderSlot}
-            />
-          ))}
-        </nav>
-      )}
+      <nav className={css.panelList} aria-label={t("panels.label")}>
+        {panels.map(({ id, label }) => (
+          <PanelRow
+            key={id}
+            id={id}
+            label={label}
+            wide={wide}
+            usePanelInfo={usePanelInfo}
+            selectPanel={selectPanel}
+            renderSlot={renderSlot}
+          />
+        ))}
+        {renderSlot("sidebar.primary.action", {
+          size: wide ? 16 : 18,
+          renderAction: ({ label, icon, onClick }) => (
+            <Tooltip label={label} delayMs={500} disabled={wide}>
+              <button type="button" className={css.panelRow} aria-label={label} onClick={onClick}>
+                <span className={css.panelGlyph} aria-hidden="true">
+                  {icon}
+                </span>
+                {wide && <span className={clsx(css.panelTitle, css.wide)}>{label}</span>}
+              </button>
+            </Tooltip>
+          ),
+        })}
+      </nav>
 
       {/* The browsing region fills the column between the controls and the
           foot in both states; its rail icon column rides the same slot. */}

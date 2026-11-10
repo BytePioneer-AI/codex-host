@@ -45,13 +45,14 @@ type BoundStreamOpener = (
 /** Convert an invocation or carrier failure to a stable wire value. */
 export type RemoteStreamFailureMapper = (error: unknown) => RemoteStreamFailure;
 
-const MAX_MISSED_HEARTBEATS = 2;
+// Mobile browsers may suspend network replies while backgrounded.
+const HEARTBEAT_TIMEOUT_MS = 10 * 60_000;
 
 /** Own the no-server WebSocket acceptor and every active logical stream. */
 export class RemoteStreamMuxServer {
   private readonly server = new WebSocketServer({ noServer: true });
   private readonly connections = new Set<Promise<void>>();
-  private readonly missedHeartbeats = new WeakMap<WebSocket, number>();
+  private readonly lastPongAt = new WeakMap<WebSocket, number>();
   private heartbeatTimer: NodeJS.Timeout | undefined;
 
   /**
@@ -80,9 +81,9 @@ export class RemoteStreamMuxServer {
     this.server.handleUpgrade(req, socket, head, (websocket) => {
       const release = bindPeer(websocket, peer);
       if (release === undefined) return;
-      this.missedHeartbeats.set(websocket, 0);
+      this.lastPongAt.set(websocket, performance.now());
       websocket.on("pong", () => {
-        this.missedHeartbeats.set(websocket, 0);
+        this.lastPongAt.set(websocket, performance.now());
       });
       this.startHeartbeat();
       const bound: BoundStreamOpener = (endpoint, payload, uplink, control, window) =>
@@ -122,16 +123,17 @@ export class RemoteStreamMuxServer {
     this.heartbeatTimer = setInterval(() => {
       for (const socket of this.server.clients) {
         if (socket.readyState !== WebSocket.OPEN) continue;
-        const missed = this.missedHeartbeats.get(socket) as number;
-        if (missed >= MAX_MISSED_HEARTBEATS) {
+        if (performance.now() - (this.lastPongAt.get(socket) as number) >= HEARTBEAT_TIMEOUT_MS) {
           setImmediate(() => {
-            if ((this.missedHeartbeats.get(socket) as number) >= MAX_MISSED_HEARTBEATS) {
+            if (
+              socket.readyState === WebSocket.OPEN &&
+              performance.now() - (this.lastPongAt.get(socket) as number) >= HEARTBEAT_TIMEOUT_MS
+            ) {
               socket.terminate();
             }
           });
           continue;
         }
-        this.missedHeartbeats.set(socket, missed + 1);
         socket.ping();
       }
     }, this.heartbeatIntervalMs);

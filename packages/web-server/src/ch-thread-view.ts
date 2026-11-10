@@ -154,6 +154,10 @@ function itemOf(item: ChItem, reasoningPreviewIds: ReadonlySet<string>): HostIte
       return undefined;
   }
 }
+function userMessageIdentity(item: ChItem): string {
+  return JSON.stringify([item.content, item.clientId ?? null]);
+}
+
 function nativeTime(seconds: number | null | undefined): number | undefined {
   return typeof seconds === "number" && Number.isFinite(seconds) && seconds >= 0
     ? seconds * 1000
@@ -181,6 +185,7 @@ export class ChThreadView {
     {
       projector: TurnProjector;
       items: Map<string, HostItem>;
+      userMessages: Map<string, string>;
       started: Set<string>;
       completed: Set<string>;
       done: boolean;
@@ -296,17 +301,53 @@ export class ChThreadView {
 
   update(thread: ChThread): void {
     this.ensureCurrent();
-    // The journal is append-only. Reopen if native input arrives after begin()
-    // or persisted history replaces live Items, so input stays before its output.
+    // The journal is append-only. Same-Turn input can append in place; input
+    // replacement or insertion before displayed output needs a fresh history view.
     for (const turn of thread.turns) {
       const view = this.turns.get(turn.id);
       if (!view) continue;
-      const previous = this.thread.turns.find((item) => item.id === turn.id);
-      const ids = new Set(conversationItems(turn).map((item) => item.id));
+      const items = conversationItems(turn);
+      const ids = new Set(items.map((item) => item.id));
+      const users = items.filter((item) => item.type === "userMessage");
+      const published = [...view.started];
+      const lastUser = published.findLastIndex((id) => view.userMessages.has(id));
+      const reasoningPreviewIds = new Set(
+        items.filter((item) => item.type === "reasoning").map((item) => item.id),
+      );
+      const projections = new Map(
+        items.map((item) => [item.id, itemOf(item, reasoningPreviewIds)]),
+      );
+      const retained = items.filter((item) => {
+        const projected = projections.get(item.id);
+        return (
+          view.started.has(item.id) ||
+          (projected && (projected.type !== "fileChange" || hasFileChangePath(projected)))
+        );
+      });
+      const firstNewUser = items.findIndex(
+        (item) => item.type === "userMessage" && !view.userMessages.has(item.id),
+      );
       if (
         (!view.done && [...view.items.keys()].some((id) => !ids.has(id))) ||
-        JSON.stringify(previous?.items.filter((item) => item.type === "userMessage")) !==
-          JSON.stringify(turn.items.filter((item) => item.type === "userMessage"))
+        published.slice(0, lastUser + 1).some((id, index) => retained[index]?.id !== id) ||
+        [...view.userMessages].some(([id, identity], index) => {
+          const user = users[index];
+          return !user || user.id !== id || userMessageIdentity(user) !== identity;
+        }) ||
+        (view.done &&
+          (users.length !== view.userMessages.size ||
+            items.some((item) => {
+              const projected = projections.get(item.id);
+              return (
+                projected &&
+                (JSON.stringify(projected) !== JSON.stringify(view.items.get(item.id)) ||
+                  (typeof item.status === "string" &&
+                    ["completed", "failed", "declined", "interrupted"].includes(item.status) &&
+                    !view.completed.has(item.id)))
+              );
+            }))) ||
+        (firstNewUser !== -1 &&
+          items.slice(firstNewUser + 1).some((item) => view.started.has(item.id)))
       )
         throw new RpcError("host/items-replaced", "CH replaced already projected Items.");
     }
@@ -391,6 +432,7 @@ export class ChThreadView {
   private projectTurns(thread: ChThread): void {
     let previousEnd = thread.createdAt * 1000;
     for (const turn of thread.turns) {
+      const items = conversationItems(turn);
       let view = this.turns.get(turn.id);
       const complete = finished(turn.status);
       const start = nativeTime(turn.startedAt) ?? (complete ? previousEnd : Date.now());
@@ -412,20 +454,18 @@ export class ChThreadView {
             else this.liveOutput.set(id, output.slice(-8000));
           },
         });
-        const input = turn.items
-          .filter((item) => item.type === "userMessage")
-          .flatMap((item) => (Array.isArray(item.content) ? item.content : []));
-        const clientId = turn.items.find(
-          (item) => item.type === "userMessage" && typeof item.clientId === "string",
-        )?.clientId;
-        projector.begin(
-          this.projectInput(input),
-          typeof clientId === "string" ? clientId : undefined,
-        );
+        const opening = items[0]?.type === "userMessage" ? items[0] : undefined;
+        if (opening) {
+          projector.begin(
+            this.projectInput(Array.isArray(opening.content) ? opening.content : []),
+            typeof opening.clientId === "string" ? opening.clientId : undefined,
+          );
+        } else projector.beginAutonomous([]);
         view = {
           projector,
           items: new Map(),
-          started: new Set(),
+          userMessages: new Map(opening ? [[opening.id, userMessageIdentity(opening)]] : []),
+          started: new Set(opening ? [opening.id] : []),
           completed: new Set(),
           done: false,
         };
@@ -433,11 +473,21 @@ export class ChThreadView {
       }
       if (!complete) this.log.clock = undefined;
       if (view.done) continue;
-      const items = conversationItems(turn);
       const reasoningPreviewIds = new Set(
         items.filter((item) => item.type === "reasoning").map((item) => item.id),
       );
       for (const item of items) {
+        if (item.type === "userMessage") {
+          if (!view.userMessages.has(item.id)) {
+            view.projector.steer(
+              this.projectInput(Array.isArray(item.content) ? item.content : []),
+              typeof item.clientId === "string" ? item.clientId : undefined,
+            );
+            view.userMessages.set(item.id, userMessageIdentity(item));
+            view.started.add(item.id);
+          }
+          continue;
+        }
         const projected = itemOf(item, reasoningPreviewIds);
         if (!projected) continue;
         if (view.completed.has(item.id)) continue;

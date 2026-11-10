@@ -191,6 +191,18 @@ async function captureOnce(
   }
 }
 
+/** The server's request-trust decision, also used by local-only configuration RPCs. */
+export async function isLocalWebAccess(signal: AbortSignal): Promise<boolean> {
+  const response = await fetch("api/auth/status", {
+    credentials: "same-origin",
+    cache: "no-store",
+    signal,
+  });
+  if (!response.ok) return false;
+  const status = (await response.json()) as { authenticated?: unknown; local?: unknown };
+  return status.authenticated === true && status.local === true;
+}
+
 export const accessTokenApi = {
   relay: async (
     enabled: boolean,

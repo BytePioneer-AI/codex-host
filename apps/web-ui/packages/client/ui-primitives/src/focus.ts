@@ -24,10 +24,13 @@ export function isMobileDevice(): boolean {
 /**
  * Decide whether the current browser device permits automatic text-input focus.
  * This policy does not restrict focus requested by a user gesture or keyboard navigation.
- * @returns false for identified phones and tablets; true for other devices, including unrecognized UAs.
+ * Narrow, coarse-pointer browsers without hover also require explicit focus,
+ * covering phones that report a desktop or unrecognized user agent.
+ * @returns false for mobile devices and narrow touch surfaces; true for other devices.
  */
 export function shouldAutoFocusTextInput(): boolean {
-  return !isMobileDevice();
+  if (isMobileDevice()) return false;
+  return !window.matchMedia?.("(width < 640px) and (pointer: coarse) and (hover: none)").matches;
 }
 
 /**

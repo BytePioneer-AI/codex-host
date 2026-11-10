@@ -31,6 +31,17 @@ export type {
   SettingsMirrorSnapshot,
 } from "./settings-mirror.ts";
 
+/** Navigation into the existing settings dialog without changing the main panel. */
+export interface SettingsNavigation {
+  openSection(id: string): void;
+}
+
+declare module "@deepseek-ai/cordis" {
+  interface Context {
+    settingsNavigation: SettingsNavigation;
+  }
+}
+
 /**
  * Required services: the Remote namespace the mirror reads through and the
  * forwarded settings invalidation it refreshes on.

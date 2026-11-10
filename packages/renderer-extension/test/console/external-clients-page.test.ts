@@ -149,4 +149,47 @@ describe("external clients console page", () => {
       expect(consolePost).toHaveBeenCalledWith("/api/external-clients/access", { public: true });
     });
   });
+
+  it("names a 401 or 403 rejection as a webhook configuration error", async () => {
+    const rejected = snapshot();
+    const client = rejected.clients[0];
+    if (!client?.webhook) throw new Error("fixture has a webhook");
+    client.webhook.state = {
+      delivered: 42,
+      lastFailure: { eventId: 43, at: "2026-11-04T01:03:00Z", reason: "HTTP 401", final: true },
+    };
+    const other = snapshot();
+    const otherClient = other.clients[0];
+    if (!otherClient?.webhook) throw new Error("fixture has a webhook");
+    otherClient.webhook.state = {
+      delivered: 42,
+      lastFailure: { eventId: 44, at: "2026-11-04T01:03:00Z", reason: "HTTP 404", final: true },
+    };
+    const render = async (value: ExternalClientsSnapshot) => {
+      consoleGet.mockResolvedValueOnce(value);
+      const children: unknown[] = [];
+      const context = {
+        content: {
+          ownerDocument: {},
+          replaceChildren(...items: unknown[]) {
+            children.splice(0, children.length, ...items);
+          },
+        },
+        async runLatest<T>(
+          load: (signal: AbortSignal) => Promise<T>,
+          handlers: { success(value: T): void; failure(error: unknown): void },
+        ) {
+          handlers.success(await load(new AbortController().signal));
+        },
+      } as unknown as RendererSettingsPageMountContext;
+      createExternalClientsPage(consoleMessages("zh-CN"), "zh-CN").mount(context);
+      await vi.waitFor(() => expect(JSON.stringify(children)).toContain("grok-bot"));
+      return JSON.stringify(children);
+    };
+    const misconfigured = await render(rejected);
+    expect(misconfigured).toContain("事件 #43 被目标拒绝（HTTP 401）：webhook 配置有误");
+    const generic = await render(other);
+    expect(generic).toContain("事件 #44 投递失败：HTTP 404");
+    expect(generic).not.toContain("配置有误");
+  });
 });

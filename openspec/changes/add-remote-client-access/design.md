@@ -64,7 +64,7 @@ interface WebhookAdapter {
 | 签名 | 目标不校验签名，adapter 不签名 |
 | body | `application/json`，只含事件标识、Thread、结果、Harness、深度链接与引用，上限 4 KB（目标只向 bot 展示前几 KB）|
 | 幂等 | 目标不去重；adapter 以 `Idempotency-Key: <客户端>:<事件标识>` 透传事件标识，供 bot 自行去重 |
-| 分类 | 2xx 为已投递（目标只表示已排队）；401/403/400 为 `drop` 并在控制台提示配置错误；429、5xx、超时为 `retry` |
+| 分类 | 2xx 为已投递（目标只表示已排队）；429、5xx、超时与网络错误为 `retry`；其余 4xx（含 404、408、409）为 `drop`，401/403 在控制台提示配置错误 |
 
 adapter 标识用 `grok-bot`，实现上只依赖这个 webhook 契约。
 

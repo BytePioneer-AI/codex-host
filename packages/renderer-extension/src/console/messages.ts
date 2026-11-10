@@ -225,6 +225,8 @@ const ENGLISH = {
     webhookLastSuccess: "Last delivered {time}",
     webhookRetrying: "Retrying event #{id} ({attempts} attempts): {reason}",
     webhookDropped: "Event #{id} failed: {reason}",
+    webhookRejected:
+      "Event #{id} was rejected ({reason}): the webhook is misconfigured; check its URL and key",
   },
 };
 
@@ -452,6 +454,7 @@ const CHINESE: ConsoleMessages = {
     webhookLastSuccess: "最近成功：{time}",
     webhookRetrying: "正在重试事件 #{id}（第 {attempts} 次）：{reason}",
     webhookDropped: "事件 #{id} 投递失败：{reason}",
+    webhookRejected: "事件 #{id} 被目标拒绝（{reason}）：webhook 配置有误，请检查地址与密钥",
   },
 };
 

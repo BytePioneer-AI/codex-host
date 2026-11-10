@@ -24,7 +24,7 @@ Requires Tailscale to be installed and logged in; public also needs MagicDNS, HT
 Push the client's events to a bot as they happen, through a vendor adapter, so the bot is woken instead of polling. Without options, shows the webhook and its delivery state.
 The key comes from --key-file or CODEXHOST_WEBHOOK_KEY, never from the command line, and is never shown. A new webhook starts after the latest event; it does not replay history.
 grok-bot: the Grok Bot (Cursor Automations) webhook trigger URL and its key. Each request carries Idempotency-Key <client>:<event id> and a body under 4 KB with no Thread content; read results with thread read.
-Failures retry with backoff (5 s up to 15 min) for 24 hours; 400, 401 and 403 stop at once as configuration errors. The event log is unaffected either way.`,
+429, 5xx and network failures retry with backoff (5 s up to 15 min) for 24 hours; any other 4xx (for example 400, 401, 403, 404, 408 or 409) stops that event at once as a configuration error. The event log is unaffected either way.`,
   "client list": `codexhost client list
 List registered external clients with their registration time, scope and networks. Tokens are never shown.`,
   "client remove": `codexhost client remove <name>

@@ -56,6 +56,23 @@ describe("Grok Bot webhook adapter", () => {
     );
     expect(Buffer.byteLength(large.body)).toBeLessThanOrEqual(4_096);
     expect(JSON.parse(large.body)).toMatchObject({ refsOmitted: true });
+
+    const noisy = grokBotWebhookAdapter.request(
+      "grok-bot",
+      {
+        id: 7,
+        time: "t",
+        ...event("t1", many),
+        note: "n".repeat(5_000),
+        extra: "not part of the payload",
+      } as unknown as Parameters<typeof grokBotWebhookAdapter.request>[1],
+      { adapter: "grok-bot", url: URL_, key: KEY },
+    );
+    expect(Buffer.byteLength(noisy.body)).toBeLessThanOrEqual(4_096);
+    const parsed = JSON.parse(noisy.body) as Record<string, unknown>;
+    expect(parsed).toMatchObject({ id: 7, refsOmitted: true, noteOmitted: true });
+    expect(parsed).not.toHaveProperty("extra");
+    expect(parsed.deepLink).toBe("codex://threads/t1");
   });
 
   it("classifies answers and validates its configuration", () => {
@@ -123,6 +140,18 @@ describe("webhook dispatcher", () => {
   });
   afterEach(async () => {
     await rm(directory, { recursive: true, force: true });
+  });
+
+  it("starts from zero only when no delivery state exists, and reports a damaged one", async () => {
+    await expect(store.state("bot")).resolves.toEqual({ delivered: 0 });
+    await store.saveState("bot", { delivered: 3 });
+    await expect(store.state("bot")).resolves.toEqual({ delivered: 3 });
+    const { writeFile } = await import("node:fs/promises");
+    const statePath = path.join(directory, "hooks", "bot.state.json");
+    await writeFile(statePath, "{not json");
+    await expect(store.state("bot")).rejects.toThrow();
+    await writeFile(statePath, JSON.stringify({ delivered: -1 }));
+    await expect(store.state("bot")).rejects.toThrow(/invalid/u);
   });
 
   it("starts after the latest event, then pushes new ones in order", async () => {

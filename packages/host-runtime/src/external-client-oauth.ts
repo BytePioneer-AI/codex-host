@@ -93,6 +93,27 @@ function isValidRedirectUri(value: string): boolean {
   }
 }
 
+/** Unauthenticated registrations are capped so the file cannot grow without bound. */
+const MAX_DYNAMIC_CLIENTS = 64;
+
+/**
+ * Appends a registration, evicting the oldest ones that no token or authorization code
+ * uses once the cap is reached. Registrations in use are always kept.
+ */
+function boundedDynamicClients(data: OAuthFile, added: StoredDynamicClient): StoredDynamicClient[] {
+  const inUse = new Set<string>([
+    ...data.tokens.flatMap((token) => (token.oauthClientId ? [token.oauthClientId] : [])),
+    ...(data.authorizationCodes ?? []).map((code) => code.oauthClientId),
+  ]);
+  const clients = [...(data.dynamicClients ?? []), added];
+  let excess = clients.length - MAX_DYNAMIC_CLIENTS;
+  return clients.filter((client) => {
+    if (excess <= 0 || client === added || inUse.has(client.clientId)) return true;
+    excess -= 1;
+    return false;
+  });
+}
+
 /**
  * Persistent store for one-time pairing codes, authorization codes, dynamic
  * OAuth client registrations, and hashed access/refresh tokens.
@@ -173,10 +194,11 @@ export class ExternalClientOAuthStore {
       }
       const data = await this.#read(now);
       const clientId = `dyn_${randomBytes(16).toString("base64url")}`;
-      const dynamicClients = [
-        ...(data.dynamicClients ?? []),
-        { clientId, redirectUris, createdAt: now.toISOString() },
-      ];
+      const dynamicClients = boundedDynamicClients(data, {
+        clientId,
+        redirectUris,
+        createdAt: now.toISOString(),
+      });
       await this.#write({ ...data, dynamicClients });
       return {
         clientId,
@@ -282,8 +304,9 @@ export class ExternalClientOAuthStore {
       );
       await this.#write(data);
 
-      if (input.oauthClientId && input.oauthClientId !== matched.oauthClientId) return undefined;
-      if (input.redirectUri && input.redirectUri !== matched.redirectUri) return undefined;
+      // Both were bound when the code was issued; a missing value must not skip the check.
+      if (input.oauthClientId !== matched.oauthClientId) return undefined;
+      if (input.redirectUri !== matched.redirectUri) return undefined;
       if (pkceChallengeS256(input.codeVerifier) !== matched.codeChallenge) return undefined;
 
       const registered = (await input.clients.list()).find((item) => item.name === matched.client);

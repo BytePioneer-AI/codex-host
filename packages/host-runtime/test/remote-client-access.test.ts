@@ -103,6 +103,69 @@ describe("client scopes and networks", () => {
     ).toMatchObject({ name: "concurrent" });
   }, 20_000);
 
+  it("requires the bound client and redirect URI when exchanging an authorization code", async () => {
+    const clients = new ExternalClientRegistry(file);
+    await clients.add("bound", { scope: "dispatch", networks: ["public"] });
+    const oauth = new ExternalClientOAuthStore(path.join(directory, "oauth.json"));
+    const codeVerifier = "w".repeat(64);
+    const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url");
+    const binding = { oauthClientId: "bound-mcp", redirectUri: "http://127.0.0.1/callback" };
+    const issue = async () => {
+      const { code: pairingCode } = await oauth.createPairingCode("bound");
+      const code = await oauth.redeemPairingCode({ ...binding, pairingCode, codeChallenge });
+      if (!code) throw new Error("pairing code was not redeemed");
+      return code;
+    };
+    await expect(
+      oauth.exchangeAuthorizationCode({
+        code: await issue(),
+        codeVerifier,
+        oauthClientId: binding.oauthClientId,
+        clients,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      oauth.exchangeAuthorizationCode({
+        code: await issue(),
+        codeVerifier,
+        redirectUri: binding.redirectUri,
+        clients,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      oauth.exchangeAuthorizationCode({ code: await issue(), codeVerifier, ...binding, clients }),
+    ).resolves.toHaveProperty("accessToken");
+  });
+
+  it("caps dynamic client registrations without dropping ones in use", async () => {
+    const oauth = new ExternalClientOAuthStore(path.join(directory, "oauth.json"));
+    const first = await oauth.registerDynamicClient(["http://127.0.0.1/first"]);
+    const clients = new ExternalClientRegistry(file);
+    await clients.add("dyn", { scope: "dispatch", networks: ["public"] });
+    const codeVerifier = "z".repeat(64);
+    const { code: pairingCode } = await oauth.createPairingCode("dyn");
+    await oauth.redeemPairingCode({
+      oauthClientId: first.clientId,
+      redirectUri: "http://127.0.0.1/first",
+      pairingCode,
+      codeChallenge: createHash("sha256").update(codeVerifier).digest("base64url"),
+    });
+    const second = await oauth.registerDynamicClient(["http://127.0.0.1/second"]);
+    for (let index = 0; index < 70; index += 1) {
+      await oauth.registerDynamicClient([`http://127.0.0.1/${index}`]);
+    }
+    await expect(oauth.validateRedirectUri(first.clientId, "http://127.0.0.1/first")).resolves.toBe(
+      true,
+    );
+    const stored = JSON.parse(
+      await (await import("node:fs/promises")).readFile(path.join(directory, "oauth.json"), "utf8"),
+    ) as { dynamicClients: Array<{ clientId: string }> };
+    const ids = stored.dynamicClients.map((client) => client.clientId);
+    expect(ids).toContain(first.clientId);
+    expect(ids).not.toContain(second.clientId);
+    expect(stored.dynamicClients.length).toBeLessThanOrEqual(64);
+  }, 20_000);
+
   it("keeps clients registered before scopes at dispatch on the local network", async () => {
     await writeFile(
       file,

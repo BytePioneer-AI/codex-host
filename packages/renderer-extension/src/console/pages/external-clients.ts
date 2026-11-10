@@ -179,7 +179,7 @@ export function createExternalClientsPage(
         if (state.lastFailure) {
           const failure = state.lastFailure;
           const text = failure.final
-            ? copy.webhookDropped
+            ? (/^HTTP 40[13]$/u.test(failure.reason) ? copy.webhookRejected : copy.webhookDropped)
                 .replace("{id}", String(failure.eventId))
                 .replace("{reason}", failure.reason)
             : copy.webhookRetrying

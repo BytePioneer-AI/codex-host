@@ -49,13 +49,39 @@ export interface WebhookAdapter {
   classify(status: number): Classification;
 }
 
-/** Keeps the body small: the target shows bots only its first few KB. */
+/**
+ * Keeps the body small: the target shows bots only its first few KB. Only the documented
+ * event fields are sent; refs, then the note, then the deep link give way to stay in bounds,
+ * while the event id used for deduplication is always kept.
+ */
 function compactBody(event: ClientEvent): string {
-  const body = JSON.stringify(event);
-  if (Buffer.byteLength(body) <= MAX_BODY_BYTES) return body;
-  const rest: Partial<ClientEvent> = { ...event };
-  delete rest.refs;
-  return JSON.stringify({ ...rest, refsOmitted: true });
+  const payload: Record<string, unknown> = {
+    id: event.id,
+    time: event.time,
+    type: event.type,
+    threadId: event.threadId,
+    outcome: event.outcome,
+    ...(event.turnId !== undefined ? { turnId: event.turnId } : {}),
+    ...(event.harnessId !== undefined ? { harnessId: event.harnessId } : {}),
+    deepLink: event.deepLink,
+    ...(event.refs !== undefined ? { refs: event.refs } : {}),
+    ...(event.note !== undefined ? { note: event.note } : {}),
+  };
+  const fits = () => Buffer.byteLength(JSON.stringify(payload)) <= MAX_BODY_BYTES;
+  if (fits()) return JSON.stringify(payload);
+  if ("refs" in payload) {
+    delete payload.refs;
+    payload.refsOmitted = true;
+  }
+  if (!fits() && "note" in payload) {
+    delete payload.note;
+    payload.noteOmitted = true;
+  }
+  if (!fits()) {
+    delete payload.deepLink;
+    payload.deepLinkOmitted = true;
+  }
+  return JSON.stringify(payload);
 }
 
 /**
@@ -144,8 +170,29 @@ export class WebhookStore {
     return readJson<WebhookConfig>(this.#path(client, ".json"));
   }
 
+  /**
+   * Only a missing state file starts from zero; an unreadable or invalid one throws, so a
+   * damaged cursor is reported instead of replaying every retained event to the target.
+   */
   async state(client: string): Promise<WebhookState> {
-    return (await readJson<WebhookState>(this.#path(client, ".state.json"))) ?? { delivered: 0 };
+    let text: string;
+    try {
+      text = await readFile(this.#path(client, ".state.json"), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return { delivered: 0 };
+      throw error;
+    }
+    const value = JSON.parse(text) as unknown;
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      !Number.isSafeInteger((value as { delivered?: unknown }).delivered) ||
+      (value as { delivered: number }).delivered < 0
+    ) {
+      throw new Error(`Webhook delivery state for ${client} is invalid`);
+    }
+    return value as WebhookState;
   }
 
   /** A new webhook starts after `startAfter`, so setting one up does not replay history. */

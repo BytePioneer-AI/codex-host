@@ -152,8 +152,19 @@ export class ExternalAccessSupervisor {
     await this.#running;
     await this.#tailnet?.server.close();
     this.#tailnet = undefined;
-    // The Funnel mapping is left in place: it is re-pointed or removed by the next Runtime,
-    // and nothing answers on the old port meanwhile.
+    // Remove the Funnel mapping before releasing its ephemeral port, so public traffic never
+    // reaches whatever binds that port next. If removal fails, the next Runtime still
+    // re-points or removes the mapping it finds.
+    if (this.#funnelMayExist) {
+      try {
+        await this.#removeFunnel();
+        this.#funnelMayExist = false;
+      } catch (error) {
+        this.#diagnose(
+          `access: Funnel ${FUNNEL_PATH} was not removed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
     await this.#public?.close();
     this.#public = undefined;
   }

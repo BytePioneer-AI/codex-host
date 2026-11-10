@@ -246,6 +246,16 @@ describe("external access supervisor", () => {
     });
   });
 
+  it("removes its Funnel mapping before closing the public listener", async () => {
+    await writeAccessSettings(settingsPath(), { tailnet: false, public: true });
+    await create().reconcile();
+    expect(tailscale.mapping).toBeDefined();
+    await supervisor?.close();
+    supervisor = undefined;
+    expect(tailscale.clearFunnel).toHaveBeenCalledOnce();
+    expect(tailscale.mapping).toBeUndefined();
+  });
+
   it("removes a mapping left by a previous Runtime once public access is off", async () => {
     await writeAccessSettings(settingsPath(), { tailnet: false, public: true });
     await create().reconcile();

@@ -53,6 +53,10 @@
 
 外部监听在 `/mcp` 以 Streamable HTTP 提供 MCP：每个 POST 携带一条 JSON-RPC 消息并以 JSON 应答；`GET` 返回 405（不提供服务端主动流，推送用 `/v1/events`），`DELETE` 视为结束会话。工具与 CLI 一一对应：`harness_list`、`harness_inspect`、`delegate_start`、`thread_read`、`thread_wait`（最多 60 秒）、`thread_list`、`thread_send`、`thread_cancel`、`thread_watch`、`thread_watches`、`events_poll`。工具结果同时以文本和 `structuredContent` 返回 CLI 的 JSON；委派错误作为 `isError` 结果返回相同的错误代码。实现不依赖 MCP SDK。
 
+`thread_read` 在已知时返回执行主机上的 `cwd`。MCP 另提供 `thread_file_read(thread, path, offset?, limit?, revision?)`，对应外部 HTTP 的 `POST /v1/thread/file`（使用 `threadId`）。该只读接口仅导出最新最终报告中 Markdown 链接明确引用、且位于该 Thread 实际工作区内的普通文件；解析符号链接后仍须位于工作区。没有最终结果或工作区时拒绝读取，不扫描目录，也不导出报告中的远程 URL。
+
+文件结果含 `filename`、`mimeType`、`size`、`encoding: "base64"`、`data`、`offset`、`nextOffset`、`eof` 与 `revision`。默认每块 256 KiB，上限 1 MiB；续读必须携带首块的 `revision`，文件变化时重新开始。客户端应将工具结果直接保存为文件，在自己的电脑上解码，再以其原生附件工具交付成品，不在聊天中打印 Base64 或主机路径。源文件按用户要求读取。文件传输沿用客户端认证与网络策略，不创建公开下载链接。
+
 ## 接入示例
 
 - Claude Code：`claude mcp add --transport http codexhost http://127.0.0.1:4398/mcp --header "Authorization: Bearer <token>"`。

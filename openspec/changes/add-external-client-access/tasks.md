@@ -24,3 +24,4 @@
 
 - [ ] 4.1 `/mcp` 工具集，参数与结果复用 CLI 结构。验证：官方 MCP SDK 客户端完成列举、派发、等待上限 60 秒、事件读取与错误代码（已完成）；真实 Claude Desktop 或 Claude Code 作为 MCP 客户端完成一次派发、等待与读取（待在 Mac 上验收）。
 - [x] 4.2 更新 `codexhost delegate --help`（`client`、`events`、`--ref`、`--client`）与 `docs/architecture/external-clients.md`、`thread-watch.md`、`docs/index.md`。验证：帮助与 CLI 测试。
+- [ ] 4.3 MCP 读取任务最终结果引用的文件。验证：二进制逐字节往返、分块与文件变更检测；拒绝未引用文件、目录、工作区外路径和符号链接逃逸；缺少工作目录或最终结果时不读取；以真实 Bot 私聊验证成品附件及来源 Bot 回传。

@@ -148,6 +148,32 @@ const TOOLS: Tool[] = [
     }),
   },
   {
+    name: "thread_file_read",
+    description:
+      "Read a binary result file linked in a Thread's latest final report, inside that Thread's workspace. Returns base64 chunks, never a public URL. Save the tool response to a file (write_to_file when supported), decode data on your computer, then attach the real file to the user's original conversation. Continue with nextOffset and the same revision until eof=true; do not paste base64 into chat. Fetch final deliverables only unless the user asks for sources.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        thread,
+        path: string(
+          "File path linked in the final report; absolute or relative to the Thread workspace",
+        ),
+        offset: integer("Byte offset; default 0"),
+        limit: integer("Bytes per chunk; default 262144, at most 1048576"),
+        revision: string("Revision from the first chunk; required when offset is greater than 0"),
+      },
+      required: ["thread", "path"],
+    },
+    call: (args) => ({
+      route: "/v1/thread/file",
+      body: {
+        threadId: threadId(args),
+        path: text(args, "path", true),
+        ...pick(args, ["offset", "limit", "revision"]),
+      },
+    }),
+  },
+  {
     name: "thread_wait",
     description:
       "Wait up to timeoutMs (at most 60000) for a Thread to stop, then return the same snapshot as thread_read plus timedOut.",

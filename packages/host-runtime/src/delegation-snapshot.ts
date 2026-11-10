@@ -201,6 +201,7 @@ export function projectDelegationThreadSnapshot(input: {
   return {
     threadId: input.threadId,
     harnessId: input.harnessId,
+    ...(typeof input.thread.cwd === "string" && input.thread.cwd ? { cwd: input.thread.cwd } : {}),
     ...(title ? { title } : {}),
     status,
     turn:

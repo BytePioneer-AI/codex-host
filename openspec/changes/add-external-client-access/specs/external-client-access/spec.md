@@ -117,3 +117,15 @@ Host Runtime SHALL 在 `127.0.0.1` 的固定端口上提供外部客户端监听
 #### Scenario: MCP 读取事件
 - **WHEN** MCP 客户端以游标调用事件工具
 - **THEN** 结果 SHALL 与 long-poll 的结果一致
+
+### Requirement: MCP 客户端可以读取任务最终报告中的文件
+系统 SHALL 提供按 Thread 与文件路径读取二进制成品的只读接口，并在已知时返回 Thread 的执行工作目录。文件 MUST 是最新最终报告通过 Markdown 链接引用的普通文件，且实际路径 MUST 位于该 Thread 工作区内。无最终结果、工作目录未知、未引用或越界的路径 SHALL 被拒绝。传输 SHALL 使用现有认证连接，MUST NOT 创建公开下载链接。
+
+#### Scenario: 读取与续读成品
+- **WHEN** 客户端读取被最终报告引用的工作区内文件
+- **THEN** 系统 SHALL 返回 Base64 字节块、文件名、媒体类型、总字节数、下一偏移和文件版本
+- **AND** 每块 MUST NOT 超过 1 MiB；续读 SHALL 校验首块版本，文件变化时拒绝拼接
+
+#### Scenario: 拒绝符号链接逃逸
+- **WHEN** 报告引用的工作区内路径经符号链接指向工作区外
+- **THEN** 系统 SHALL 拒绝导出文件

@@ -48,6 +48,7 @@ export interface DelegationThreadSnapshot {
   hostId?: string;
   threadId: string;
   harnessId: RoutedHarnessId;
+  cwd?: string;
   title?: string;
   status: DelegationThreadStatus;
   turn: { turnId: string; status: DelegationThreadStatus } | null;
@@ -281,6 +282,10 @@ export type DelegationControlErrorCode =
   | "RESPONSE_TOO_LARGE"
   | "RUNTIME_UNREACHABLE"
   | "DELEGATION_FAILED"
+  /** A result file is outside the Thread's exportable files. */
+  | "FORBIDDEN"
+  /** The operation requires a known local execution workspace. */
+  | "UNSUPPORTED"
   /** The external client token is missing, unknown, or revoked. */
   | "UNAUTHORIZED"
   /** The event cursor is older than the oldest retained event. */

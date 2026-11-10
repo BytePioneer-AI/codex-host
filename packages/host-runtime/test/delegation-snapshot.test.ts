@@ -92,13 +92,14 @@ describe("delegation snapshot", () => {
     const snapshot = projectDelegationThreadSnapshot({
       threadId: "thread-1",
       harnessId: "pi",
-      thread: { status: { type: "idle" } },
+      thread: { status: { type: "idle" }, cwd: "/workspace" },
       turns: completedTurns,
       running: false,
       view: "result",
     });
 
     expect(snapshot).toMatchObject({
+      cwd: "/workspace",
       status: "completed",
       progress: [{ id: "progress-1", text: "Checking auth." }],
       result: { availability: "available", text: "Found two issues." },

@@ -138,6 +138,12 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
       scope: "root";
       owner: DirectoryFlowOwnerProps;
     };
+    /** Same per-session identity presentation, owned by the separate horizontal shortcuts entry. */
+    "workspace.recent.shortcut.identity": {
+      kind: "list";
+      scope: "root";
+      owner: SessionRowScheduleOwnerProps;
+    };
     /** Persistent identity decoration, independent of transient activity and available on archived rows. */
     "sidebar.session.row.identity": {
       kind: "list";
@@ -287,6 +293,10 @@ export type WorkspaceBrowserInjected = {
     query: string,
     signal: AbortSignal,
   ) => Promise<{ items: readonly SessionSearchResultItem[]; hasMore: boolean }>;
+  /** Refresh only the list head without reopening the current conversation. */
+  refreshSessions: () => void;
+  /** Explicitly load one older official catalog page; never drains a project. */
+  loadMoreSessions: () => void;
   /** Maximum number of merged rows rendered for one search. */
   searchResultLimit: number;
   /** Open the Session rename dialog (a row title double-click); the rename action entry raises the same request. */
@@ -344,7 +354,8 @@ export type RowToast =
    * a report can be searched by it — and any other failure's own message.
    */
   | { kind: "createFailed"; message: string }
-  | { kind: "forkFailed"; message: string };
+  | { kind: "forkFailed"; message: string }
+  | { kind: "recentVisitsStorageFailed" };
 
 /** The notice on display; `seq` keys remounts so a repeated notice restarts its hold. */
 export type RowToastState = RowToast & { seq: number };
@@ -426,6 +437,17 @@ export interface SessionArchiveConfirmInjected {
 /** Clipboard action uses list metadata only. */
 export interface CopySessionLinkInjected {
   copySessionLink: (sessionId: SessionId) => void;
+}
+
+/** A menu-local action bound to its source and the draft that was current on opening. */
+export interface SessionDraftReference extends HostObservable<boolean> {
+  /** Synchronous, single-use insertion; false must not close the drawer or announce success. */
+  insert(): boolean;
+}
+
+export interface ReferenceSessionInjected {
+  /** Product-owned eligibility and structured insertion; must not navigate or acquire history. */
+  prepareDraftReference(sessionId: SessionId): SessionDraftReference | undefined;
 }
 
 /** Fork action share. */

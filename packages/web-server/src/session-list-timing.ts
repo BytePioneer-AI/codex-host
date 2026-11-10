@@ -4,6 +4,8 @@ type ListTimingStage =
   | "workspace_wait"
   | "catalog_wait"
   | "host_catalog"
+  | "pins"
+  | "project_definitions"
   | "projects"
   | "workspace_sync"
   | "archive_sync"

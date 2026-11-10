@@ -51,6 +51,14 @@ it("keeps the optional archive fields through the generated wire codecs", () => 
     archivedSessionIds: [archived],
   });
   expect(response.create().parse({ items: [] })).toEqual({ items: [] });
+  expect(response.create().parse({ items: [], nextCursor: "native-next" })).toEqual({
+    items: [],
+    nextCursor: "native-next",
+  });
+  expect(request.create().parse({ sessionId: ordinary, cursor: "native-next" })).toEqual({
+    sessionId: ordinary,
+    cursor: "native-next",
+  });
 });
 
 it("defaults to active-only and reuses only same-scope in-flight refreshes", async () => {
@@ -109,6 +117,88 @@ it("preserves loaded known archives and resident/running state, but drops missin
   list.mockResolvedValueOnce(ok([row(ordinary)]));
   await manager.setIncludeArchived(true);
   expect(ids(manager)).toEqual([ordinary]);
+  await manager.dispose();
+});
+
+const paged = (
+  items: readonly SessionSummary[],
+  nextCursor: string | null,
+  archivedSessionIds: readonly SessionId[] = [],
+): RemoteResult<SessionListValue> => ({
+  ok: true,
+  value: { items, nextCursor, archivedSessionIds },
+});
+
+it("merges native pages, deduplicates reordering and keeps an independent continuation across head refreshes", async () => {
+  const { manager, list } = fixture();
+  list.mockResolvedValueOnce(paged([row(ordinary)], "20"));
+  await manager.refreshList();
+  expect(manager.getListSnapshot().hasMore).toBe(true);
+  list.mockResolvedValueOnce(paged([row(ordinary), row(archived)], "40"));
+  await manager.loadMore();
+  expect(list).toHaveBeenLastCalledWith({ includeArchived: false, cursor: "20" });
+  expect(ids(manager)).toEqual([ordinary, archived]);
+  list.mockResolvedValueOnce(paged([{ ...row(archived), updatedAt: 100 }], "20"));
+  await manager.refreshList();
+  expect(ids(manager)).toEqual([ordinary, archived]);
+  list.mockResolvedValueOnce(paged([row(deleted)], null));
+  await manager.loadMore();
+  expect(list).toHaveBeenLastCalledWith({ includeArchived: false, cursor: "40" });
+  expect(new Set(ids(manager)).size).toBe(3);
+  const count = list.mock.calls.length;
+  await manager.loadMore();
+  expect(list).toHaveBeenCalledTimes(count);
+  expect(manager.getListSnapshot().hasMore).toBe(false);
+  await manager.dispose();
+});
+
+it("does not let another browser or an old archive-scope page overwrite the current continuation", async () => {
+  const a = fixture(),
+    b = fixture();
+  a.list.mockResolvedValueOnce(paged([row(ordinary)], "a20"));
+  b.list.mockResolvedValueOnce(paged([row(ordinary)], "b20"));
+  await Promise.all([a.manager.refreshList(), b.manager.refreshList()]);
+  const old = Promise.withResolvers<RemoteResult<SessionListValue>>();
+  a.list.mockReturnValueOnce(old.promise);
+  const page = a.manager.loadMore();
+  a.list.mockResolvedValueOnce(paged([row(archived)], "archive20", [archived]));
+  await a.manager.setIncludeArchived(true);
+  old.resolve(paged([row(deleted)], null));
+  await page;
+  expect(ids(a.manager)).not.toContain(deleted);
+  expect(a.manager.getListSnapshot().hasMore).toBe(true);
+  a.list.mockResolvedValueOnce(paged([row(archived)], null, [archived]));
+  await a.manager.loadMore();
+  expect(a.list).toHaveBeenLastCalledWith({ includeArchived: true, cursor: "archive20" });
+  b.list.mockResolvedValueOnce(paged([row(deleted)], null));
+  await b.manager.loadMore();
+  expect(b.list).toHaveBeenLastCalledWith({ includeArchived: false, cursor: "b20" });
+  await Promise.all([a.manager.dispose(), b.manager.dispose()]);
+});
+
+it("keeps the page cursor on errors, replays explicit removals, and resolves direct links without scanning", async () => {
+  const { manager, list } = fixture();
+  list.mockResolvedValueOnce(paged([row(ordinary)], "20"));
+  await manager.refreshList();
+  list.mockResolvedValueOnce({
+    ok: false,
+    error: { code: "test/offline", message: "offline" },
+  } as RemoteResult<SessionListValue>);
+  await manager.loadMore();
+  expect(manager.getListSnapshot().state).toBe("error");
+  expect(manager.getListSnapshot().hasMore).toBe(true);
+  expect(ids(manager)).toEqual([ordinary]);
+  const gate = Promise.withResolvers<RemoteResult<SessionListValue>>();
+  list.mockReturnValueOnce(gate.promise);
+  const page = manager.loadMore();
+  manager.handleSessionRemoved(ordinary);
+  gate.resolve(paged([row(ordinary), row(deleted)], null));
+  await page;
+  expect(ids(manager)).toEqual([deleted]);
+  list.mockResolvedValueOnce(ok([row(archived)]));
+  await manager.loadSummary(archived);
+  expect(list).toHaveBeenLastCalledWith({ sessionId: archived });
+  manager.resolveTarget(archived);
   await manager.dispose();
 });
 

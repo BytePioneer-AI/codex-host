@@ -18,6 +18,7 @@ export default [
     ignores: [
       ".codexhost/**",
       ".pi/**",
+      ".work/**",
       "build/**",
       "coverage/**",
       "node_modules/**",
@@ -26,6 +27,8 @@ export default [
       "reference/**",
       "target/**",
       "test-results/**",
+      // Imported DSH test sources keep their upstream lint rules.
+      "tests/dsh/**",
       "**/dist/**",
     ],
   },

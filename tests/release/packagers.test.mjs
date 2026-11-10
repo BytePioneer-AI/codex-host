@@ -50,8 +50,12 @@ describe("platform packagers", () => {
     expect(workflow).toContain("npm_tag: result.npmTag");
     expect(workflow).toContain("ref: ${{ needs.prepare.outputs.commit_sha }}");
     expect(workflow).not.toContain("ref: ${{ needs.prepare.outputs.tag }}");
-    expect(workflow).toContain("Revalidate tag and CI immediately before npm publication");
-    expect(workflow).toContain("Revalidate tag and CI immediately before GitHub publication");
+    expect(workflow).toContain(
+      "Revalidate tag and selected CI policy immediately before npm publication",
+    );
+    expect(workflow).toContain(
+      "Revalidate tag and selected CI policy immediately before GitHub publication",
+    );
 
     expect(workflow).toContain("codexhost-*.dmg");
     expect(workflow).toContain("codexhost-*.exe");
@@ -134,6 +138,23 @@ describe("platform packagers", () => {
     expect(code).toContain("Could not close the running codexhost installation");
     expect(installer).not.toMatch(/CloseApplications\s*=\s*no/i);
     expect(installer).not.toMatch(/taskkill|powershell|\[Run\]/i);
+  });
+
+  it("runs service shutdown and autostart removal only during uninstall, before deleting files", async () => {
+    const installer = await readFile(
+      path.join(root, "scripts/release/windows/Installer.iss"),
+      "utf8",
+    );
+    const uninstall = installer.split(/\[UninstallRun\]\r?\n/u)[1].split(/\r?\n\[/u)[0];
+    expect(uninstall.trim().split(/\r?\n/u)).toEqual([
+      'Filename: "{app}\\bin\\codexhost.exe"; Parameters: "stop"; Flags: runhidden; RunOnceId: "StopCodexhostServices"',
+      'Filename: "{app}\\bin\\codexhost.exe"; Parameters: "autostart off"; Flags: runhidden; RunOnceId: "DisableCodexhostAutostart"',
+    ]);
+    expect(installer.split("[Code]")[1]).not.toMatch(/autostart|unins|Serve/u);
+    expect(installer).not.toMatch(/\[Registry\]|RegDelete|taskkill|powershell/iu);
+    expect(installer).toContain("UninstalledAll=%1 was successfully removed");
+    expect(installer).toContain("Tailscale Serve configuration is still retained");
+    expect(installer).toContain("tailscale serve --https=443 --set-path=/ off");
   });
 
   it("statically links the MSVC runtime so Windows executables need no VC++ Redistributable", async () => {

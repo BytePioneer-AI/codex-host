@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import net, { type AddressInfo } from "node:net";
 import path from "node:path";
+import { PassThrough } from "node:stream";
+import { runRemoteHostCli } from "../src/remote-host-cli.js";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
@@ -250,6 +252,38 @@ describe("remote Host lifecycle", () => {
       { HOME: home },
     );
   });
+
+  it.skipIf(process.platform === "win32").each(["running", "stopped"] as const)(
+    "CLI stop uses the installed manifest without --shim (%s)",
+    async (state) => {
+      const terminate = vi.fn();
+      const inspect = vi.fn().mockResolvedValue(readyInstallation);
+      restore = setRemoteHostLifecycleDependenciesForTest({
+        inspectInstallation: inspect,
+        probeProtocol: vi.fn().mockResolvedValue(runtime(state, "codexhost")),
+        runTerminator: terminate,
+        socketExists: vi.fn().mockResolvedValue(false),
+      });
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      expect(
+        await runRemoteHostCli({
+          arguments: ["stop"],
+          environment: { HOME: home },
+          output: stdout,
+          diagnosticOutput: stderr,
+        }),
+      ).toBe(0);
+      expect(JSON.parse(stdout.read().toString())).toEqual({
+        state: "stopped",
+        changed: state === "running",
+        socketPath,
+      });
+      expect(stderr.read()).toBeNull();
+      expect(inspect).toHaveBeenCalledWith({ environment: { HOME: home } });
+      expect(terminate).toHaveBeenCalledTimes(state === "running" ? 1 : 0);
+    },
+  );
 
   it("allows stopping an outdated installation but still refuses to start it", async () => {
     const terminate = vi.fn();

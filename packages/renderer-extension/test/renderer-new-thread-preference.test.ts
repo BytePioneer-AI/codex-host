@@ -5,7 +5,7 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   RENDERER_NEW_THREAD_PREFERENCE_KEY,
@@ -49,38 +49,19 @@ const permissionModes = harnessPermissionModeCatalogSchema.parse({
 });
 
 describe("Renderer new-Thread external configuration preference", () => {
-  it("keeps unknown plugin preferences isolated by Host and retains the local v1 key", () => {
+  it("keeps explicit legacy storage readable for migration", () => {
     const storage = memoryStorage();
-    vi.stubGlobal("window", { localStorage: storage });
-    try {
-      const local = rendererNewThreadPreferenceStorage("local");
-      const remote = rendererNewThreadPreferenceStorage("remote:ssh");
-      writeNewThreadAgentPreference("third-party", local);
-      writeNewThreadExternalConfigurationPreference(
-        "third-party",
-        model,
-        undefined,
-        undefined,
-        local,
-      );
-      expect(storage.values.has(RENDERER_NEW_THREAD_PREFERENCE_KEY)).toBe(true);
-      expect(readNewThreadAgentPreference(undefined, local)).toBe("third-party");
-      expect(readNewThreadAgentPreference(undefined, remote)).toBeUndefined();
-      expect(
-        readNewThreadExternalConfigurationPreference(
-          "third-party",
-          modelCatalog,
-          undefined,
-          remote,
-        ),
-      ).toBeUndefined();
-      writeNewThreadAgentPreference("other-plugin", remote);
-      expect(readNewThreadAgentPreference(undefined, remote)).toBe("other-plugin");
-      expect(readNewThreadAgentPreference(undefined, local)).toBe("third-party");
-      expect(rendererNewThreadPreferenceStorage(null)).toBeNull();
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    writeNewThreadAgentPreference("third-party", storage);
+    writeNewThreadExternalConfigurationPreference(
+      "third-party",
+      model,
+      undefined,
+      undefined,
+      storage,
+    );
+    expect(storage.values.has(RENDERER_NEW_THREAD_PREFERENCE_KEY)).toBe(true);
+    expect(readNewThreadAgentPreference(undefined, storage)).toBe("third-party");
+    expect(rendererNewThreadPreferenceStorage(null)).toBeNull();
   });
   it("restores Model and Thinking but keeps Fast off for a new Thread", () => {
     const storage = memoryStorage();

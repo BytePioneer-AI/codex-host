@@ -986,6 +986,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       (error: unknown) => outcomes.push(error),
     );
     try {
+      await fixture.ready;
       await vi.waitFor(() => expect(stopProcess).toHaveBeenCalled());
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(outcomes).toEqual([]);
@@ -1180,7 +1181,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const fixture = createFixture();
 
     try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      await fixture.ready;
+      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
       fixture.official.stdout.end();
 
       const outcome = await Promise.race([
@@ -1204,7 +1206,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const fixture = createFixture({ desktopOutput: new PassThrough({ highWaterMark: 1 }) });
 
     try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      await fixture.ready;
+      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
       fixture.desktopOutput.pause();
       fixture.official.stdout.write(
         `${JSON.stringify({ method: "synthetic/event", params: { payload: "x".repeat(32_768) } })}\n`,
@@ -1236,7 +1239,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const fixture = createFixture();
 
     try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      await fixture.ready;
+      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
       expect(
         fixture.official.stdin.write(Buffer.alloc(fixture.official.stdin.writableHighWaterMark)),
       ).toBe(false);
@@ -1270,7 +1274,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const fixture = createFixture();
 
     try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      await fixture.ready;
+      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
       fixture.desktopInput.end();
 
       await expect(fixture.running).resolves.toBe(0);
@@ -1469,6 +1474,50 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await expect(
       remote.collector.waitFor((message) => requestId(message, 29)),
     ).resolves.toMatchObject({ error: { code: -32090 } });
+    await stopFixture(remote);
+  });
+
+  it("opens Web locally and rejects remote requests, invalid params and launch failures", async () => {
+    const webOpener = {
+      open: vi
+        .fn()
+        .mockResolvedValueOnce({})
+        .mockRejectedValueOnce(new Error("Web startup failed")),
+    };
+    const local = createFixture({ webOpener });
+    const officialWrite = vi.fn();
+    local.official.stdin.on("data", officialWrite);
+    writeRequest(local.desktopInput, { id: 30, method: "codexhost/web/open", params: {} });
+    await expect(local.collector.waitFor((message) => requestId(message, 30))).resolves.toEqual({
+      id: 30,
+      result: {},
+    });
+    writeRequest(local.desktopInput, {
+      id: 31,
+      method: "codexhost/web/open",
+      params: { url: "https://example.com" },
+    });
+    await expect(
+      local.collector.waitFor((message) => requestId(message, 31)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    expect(webOpener.open).toHaveBeenCalledOnce();
+    writeRequest(local.desktopInput, { id: 32, method: "codexhost/web/open", params: {} });
+    await expect(
+      local.collector.waitFor((message) => requestId(message, 32)),
+    ).resolves.toMatchObject({ error: { code: -32092, message: "Web startup failed" } });
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(local);
+
+    const remote = createFixture();
+    const remoteWrite = vi.fn();
+    remote.official.stdin.on("data", remoteWrite);
+    writeRequest(remote.desktopInput, { id: 33, method: "codexhost/web/open", params: {} });
+    await expect(
+      remote.collector.waitFor((message) => requestId(message, 33)),
+    ).resolves.toMatchObject({
+      error: { code: -32090, message: "Web can be opened on the local Host only" },
+    });
+    expect(remoteWrite).not.toHaveBeenCalled();
     await stopFixture(remote);
   });
 

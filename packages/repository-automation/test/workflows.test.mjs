@@ -40,7 +40,7 @@ describe("workflow and form contracts", () => {
   it("builds macOS packages on supported runners with matching architectures", async () => {
     const workflow = await read(".github/workflows/release-packages.yml");
     expect(workflow).toMatch(
-      /- target: macos-arm64\s+runner: macos-15\s+rustTarget: aarch64-apple-darwin/u,
+      /- target: macos-arm64\s+runner: macos-26\s+rustTarget: aarch64-apple-darwin/u,
     );
     expect(workflow).toMatch(
       /- target: macos-x64\s+runner: macos-15-intel\s+rustTarget: x86_64-apple-darwin/u,
@@ -84,6 +84,26 @@ describe("workflow and form contracts", () => {
       "github.event_name == 'workflow_dispatch' && inputs.skip_npm && needs.publish-npm.result == 'skipped'",
     );
     expect(publishRelease).toContain("await verifyRelease(");
+  });
+
+  it("limits CI skipping to explicit manual input and carries it through publication checks", async () => {
+    const workflow = await read(".github/workflows/release-packages.yml");
+    expect(workflow).toMatch(
+      /skip_ci:\s+description: [^\n]+\s+required: false\s+default: false\s+type: boolean/u,
+    );
+    expect(workflow).toContain(
+      "SKIP_CI: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_ci }}",
+    );
+    expect(workflow).toContain("skipCi: process.env.SKIP_CI === 'true'");
+    expect(workflow).toContain("ci_skipped: result.ciSkipped");
+    expect(workflow).toContain("ci_skipped: ${{ steps.release.outputs.ci_skipped }}");
+    expect(
+      workflow.match(/CI_SKIPPED: \$\{\{ needs\.prepare\.outputs\.ci_skipped \}\}/gu),
+    ).toHaveLength(2);
+    expect(workflow.match(/skipCi: process\.env\.CI_SKIPPED === 'true'/gu)).toHaveLength(2);
+    expect(workflow).toContain(
+      "core.warning('CI validation was explicitly skipped for this release.')",
+    );
   });
 
   it("pins external Actions and release build/publish checkouts to immutable SHAs", async () => {

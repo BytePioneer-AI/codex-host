@@ -203,40 +203,45 @@ export interface ExternalThreadListInput {
   placementOf?(threadId: string): StoredSectionPlacementV1 | undefined;
 }
 
+/** The list visibility predicate without runtime lookup or row projection. */
+export function filterExternalThreadListRecords(
+  input: Pick<ExternalThreadListInput, "records" | "query" | "placementOf">,
+): StoredThreadRecordV1[] {
+  const byId = new Map(input.records.map((record) => [record.hostThreadId, record]));
+  return input.records.filter((record) =>
+    includesExternalRecord(
+      record,
+      input.query,
+      byId,
+      input.placementOf?.(record.hostThreadId)?.section.id ?? null,
+    ),
+  );
+}
+
 /** External Threads that match a list query's filters, projected as list rows (unsorted). */
 export function externalThreadListEntries(input: ExternalThreadListInput): ThreadListEntry[] {
   const sessionIds = resolveExternalSessionTreeIds(input.records);
-  const byId = new Map(input.records.map((record) => [record.hostThreadId, record]));
-  return input.records
-    .filter((record) =>
-      includesExternalRecord(
-        record,
-        input.query,
-        byId,
-        input.placementOf?.(record.hostThreadId)?.section.id ?? null,
-      ),
-    )
-    .map((record): ThreadListEntry => {
-      const runtime = input.runtimeFor(record.hostThreadId);
-      const sessionId = sessionIds.get(record.hostThreadId);
-      if (!sessionId) throw new Error("External Thread Session tree could not be resolved");
-      const placement = input.placementOf?.(record.hostThreadId);
-      const thread = externalThreadValue({
-        record,
-        turns: [],
-        sessionId,
-        ...(runtime ? { running: runtime.running } : { loaded: false }),
-        ...(placement ? { placement } : {}),
-      });
-      return {
-        source: "external",
-        thread,
-        timestamp:
-          input.query.sortKey === "created_at"
-            ? unixTimestamp(record.createdAt, "createdAt")
-            : unixTimestamp(record.updatedAt, "updatedAt"),
-      };
+  return filterExternalThreadListRecords(input).map((record): ThreadListEntry => {
+    const runtime = input.runtimeFor(record.hostThreadId);
+    const sessionId = sessionIds.get(record.hostThreadId);
+    if (!sessionId) throw new Error("External Thread Session tree could not be resolved");
+    const placement = input.placementOf?.(record.hostThreadId);
+    const thread = externalThreadValue({
+      record,
+      turns: [],
+      sessionId,
+      ...(runtime ? { running: runtime.running } : { loaded: false }),
+      ...(placement ? { placement } : {}),
     });
+    return {
+      source: "external",
+      thread,
+      timestamp:
+        input.query.sortKey === "created_at"
+          ? unixTimestamp(record.createdAt, "createdAt")
+          : unixTimestamp(record.updatedAt, "updatedAt"),
+    };
+  });
 }
 
 export function listExternalThreadMetadata(

@@ -5,16 +5,40 @@ private native-tool app-servers to the official CLI. Tool policy, authentication
 and approvals remain owned by the official CLI and Desktop.
 
 When the selected Desktop bundles `Contents/Resources/cua_node/bin/node`, the
-Launcher uses that signed Node for the Host and Desktop Controller by default.
+Launcher uses that signed Node for the Desktop bridge and Desktop Controller by default.
 The Desktop authenticates the native-tool peer, its parent and its grandparent;
 an ad-hoc-signed Host Node breaks that chain even when the tool itself uses the
 official runtime. The Launcher resolves the Node from the selected Desktop on
 each start. An explicit `--node` still takes precedence. The npm wrapper leaves
 the automatic choice to the Launcher instead of overriding it with its own Node;
 older Desktops without a bundled runtime keep the installer Node or npm Node.
+
+The Shim uses the `CODEXHOST_HOST_NODE_PATH` and `CODEXHOST_HOST_RUNTIME_PATH`
+pair selected by the Launcher. npm update metadata does not override that pair,
+including an explicit `--node` or `--host-runtime`. Local startup removes SSH
+session markers and remote bootstrap settings before launching Desktop; a
+managed main app-server that still receives the remote bootstrap marker fails
+instead of selecting a different runtime. Remote installations without a local
+Launcher continue using their own configured pair.
+
+Launcher startup requires the selected Node to be a direct child of a matching
+Shim in the owned Desktop process tree. An unrelated Node process cannot satisfy
+this check; process start times prevent a reused Desktop or parent PID from
+providing stale evidence. This verifies the native process chain, not Account or
+Harness readiness, and does not issue authentication probes.
+
 The Desktop's peer authorization remains enabled and rejects untrusted runtimes.
 The recovery console starts before Desktop discovery and uses the explicit Node
 override, installer Node, or npm Node so it can report an incomplete installation.
+
+The independent shared Host keeps the Node chosen by the caller that first
+starts it. Desktop and Web reuse an online Host without replacing its process or
+interrupting its tasks. A new Host started by the Desktop bridge inherits the
+bridge's Node; Web startup uses its own Node and does not require Desktop to be
+installed. Selecting the Desktop's signed Node for the bridge does not change an
+already-running shared Host, so it alone does not guarantee native app-tool
+compatibility when Web started the Host first. See [standalone Web](../../product/standalone-web.md)
+for shared-Host startup and explicit restart behavior.
 
 Three independent macOS helper paths need different handling:
 
@@ -54,6 +78,9 @@ as evidence of IAB success. Report an unavailable IAB independently.
 Focused macOS regressions:
 
 ```sh
+cargo test --locked -p codexhost-shim --features test-utils --test host_runtime_selection
+cargo test --locked -p codexhost-launcher host_chain_
+cargo test --locked -p codexhost-platform process_chain
 cargo test --locked -p codexhost-shim --features test-utils --test proxy macos_
 cargo test --locked -p codexhost-shim --features test-utils --test proxy browser_helper
 cargo test --locked -p codexhost-shim --features test-utils --test proxy rejects_missing_stock_cli

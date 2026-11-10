@@ -2,13 +2,14 @@
 
 ## 当前范围
 
-设置 → 会话导入可登记 **Claude Code、Pi、Hermes、Cursor CLI ACP、Kiro CLI、Grok、CodeBuddy、WorkBuddy、OMP、Kimi Code、OpenCode（v2）、Qoder、Qoder CN** 和 **DSH** 的原生 Session（已验证 `0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2`；命令和限制见 [DSH 验证记录](../harnesses/deepseek/dsh-version-validation.md)）。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
+设置 → 会话导入可登记 **Claude Code、Pi、Hermes、Cursor CLI ACP、Kiro CLI、Grok、CodeBuddy、WorkBuddy、OMP、Kimi Code、OpenCode（v2）、Qoder、Qoder CN** 和 **DSH** 的原生 Session（已验证 `0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2` / `0.2.1-rc.3` / `0.2.1-rc.4` / `0.2.1-rc.5` / `0.2.2-rc.1`；命令和限制见 [DSH 验证记录](../harnesses/deepseek/dsh-version-validation.md)）。普通导入建立 Host Thread 与原生 Session 的映射，打开后通过对应 Adapter 恢复历史；支持导入准备的 Adapter 可先恢复或原生派生会话，再提交实际身份。Host 不复制 Transcript、不转换 Harness、不发送用户 Turn。
 
 - Desktop 设置页提供明确的 Host 选择器。未手动选择时使用可唯一确定的 Composer Host；多个本地/远程标签页导致归属不明确时，要求先选择 Host，不显示为协议不支持。手动选择后，刷新仍使用该 Host，不随 Composer 改变。每次加载列表时捕获目标客户端，导入、打开及导航重试始终使用该列表所属 Host；切换 Host 清空旧列表并使在途结果失效，导入和导航重试期间禁止切换。目标 Host 不可用时不回退本地。独立控制台仍使用其连接的本地 Host。
+- Web 侧栏导入页使用同一共享 Host 的公共契约；官方 Codex Thread 无需导入。来源、候选列表、提交结果分别使用 `{ harnesses }`、`{ candidates, total }`、`{ threadId }`；Harness 身份来自当前列表所属来源，不从候选行推断。分页、迟到响应和导入后重试约束见[独立 Web 应用](../product/standalone-web.md#原生会话导入)。
 - 可选 Harness 来自该 Host 已加载、同时提供发现和解析能力的 Adapter，不使用 Renderer 内置 Harness 名单。
 - Desktop 内置的 `durable` Host 不作为外部 Harness 导入来源；默认客户端属于该 Host 时，导入页选择本地。此规则按完整 Host ID 匹配，不影响名称为 durable 的远程连接。
 - Host 的目录表示“实现了导入接口”，不保证当前原生运行时可用。导入页优先复用目标 Host 的连接检测缓存，隐藏确认“未安装”的 Harness。缓存缺失、目录读取失败或相关 Harness 仍在检测时，复用连接页的目标 Host 检测，等待完成后重新读取缓存再展示选项；检测结果仍不完整时显示加载失败，不直接展示全部插件。手动刷新重新检测当前 Host，搜索、翻页和切换 Harness 复用完整缓存。认证失败、协议不兼容等已返回的检测错误不等于未安装，保留其导入入口，由原生导入接口判断历史是否可读。没有连接诊断接口的客户端沿用 Host 返回的导入来源。
-- DSH 仅允许本机、codexhost 托管的 Web；`0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-rc.1` 和 `0.2.1-rc.2` 已验证，低于 `0.1.7-rc.1` 的版本在启动 Web 前拒绝。其他 SemVer 版本可尝试连接及导入，须通过原生 Web 与历史协议校验；Legacy 协议与 V0/V3 已移除。不把版本号当作兼容保证。
+- DSH 仅允许本机、codexhost 托管的 Web；`0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4`、`0.2.1-rc.5` 和 `0.2.2-rc.1` 已验证，低于 `0.1.7-rc.1` 的版本在启动 Web 前拒绝。其他 SemVer 版本可尝试连接及导入，须通过原生 Web 与历史协议校验；Legacy 协议与 V0/V3 已移除。不把版本号当作兼容保证。
 - 远程导入复用目标 Host 的公共导入 RPC，由其 Adapter 读取原生存储，不把 Transcript 复制到本机。远端需支持相应 RPC 和原生导入能力；既有 Harness 运行时限制保持不变。macOS 托管远程的 Claude Code、Cursor CLI、CodeBuddy 和 WorkBuddy 通过 Aqua Broker 转发导入能力，需同时更新远程 Host 与 Broker。
 - **Antigravity 未接入**：其 CLI 不向 headless 客户端提供已持久化的 Assistant 历史，codexhost 展示的历史来自按 Host Thread 保存的插件侧记录。导入的原生 Conversation 打开后没有可展示的历史，不满足“打开后恢复历史”的前提。
 
@@ -20,6 +21,10 @@
 interface HarnessSessionImportCapability {
   listCandidates(): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>>;
   resolveCandidate?(nativeSessionId: string): Promise<HarnessResult<HarnessSessionImportSource>>;
+  prepareImport?(input: {
+    source: HarnessSessionImportSource;
+    environment?: Record<string, string | undefined>;
+  }): Promise<HarnessResult<{ nativeRef: NativeSessionRef; session?: HarnessSession }>>;
 }
 
 interface HarnessSessionImportSource {
@@ -33,7 +38,8 @@ interface HarnessSessionImportSource {
 - `listCandidates`：只返回有界的 ID、标题、更新时间、cwd 和运行状态。不能夹带 locator、凭据、Transcript 或原生 RPC payload。
 - `resolveCandidate`：只读地重新发现/验证选中的 ID，确认可恢复的项目和完整原生引用。会话消失返回 `sessionNotFound`，当前协议不支持返回 `unsupported`；不能信任上次列表的缓存元数据。
 - `candidate.nativeSessionId`、`nativeRef.nativeSessionId` 和所属 Harness 必须相符。
-- `running: true` 表示已知忙碌，Host 拒绝；`false` 表示可可靠确认空闲；`null` 表示无法可靠确认。未知不能降为 false。
+- `prepareImport` 可选，由 Adapter 使用原生协议取得可用身份，可以返回已打开的 Session。失败返回值保证未创建派生会话；结果不明确时抛异常，Host 保留待确认记录。已经取得新 ID 时必须返回成功身份，即使后续配置初始化失败、无法返回 Session。
+- `running: true` 表示已知忙碌，未提供 `prepareImport` 时 Host 拒绝；提供者自行处理原生占用语义。`false` 表示可可靠确认空闲；`null` 表示无法可靠确认。未知不能降为 false。
 - Adapter 关闭后不能启动新的发现；正在进行的本地扫描要取消并收尾。插件不得直接操作 Host 映射库。
 
 对于已经接入 Desktop 的 Harness，以后增加这两个方法、验证原生 resume 并补齐 Adapter 测试即可复用目标 Host/RPC/导入页面；无需再创建专属导入器或 Renderer 开关。新的插件整体产品接入仍受 [Renderer 边界](harness-plugin-runtime.md) 约束。
@@ -68,10 +74,14 @@ interface HarnessSessionImportSource {
 1. 列表过滤同 Harness 已 ready 的普通 Thread 映射；Subagent 映射不冒充普通会话所有者。同时过滤“被替换的旧会话”：编辑或回滚消息会让 Harness 派生新的原生 Session，Thread 改指向新会话，旧会话留在原生存储里且不再有映射。Mapping Store 在替换成功后把旧会话 ID 记入 `superseded-sessions/sessions.json`（独立于 Thread 记录，旧版本会忽略它；写入失败不影响替换），导入列表和导入请求都据此拒绝，避免同一段对话出现两条 Thread。Thread 被删除后这些旧版本仍保持隐藏。该记录只覆盖此功能上线之后发生的替换，此前留下的旧会话无法识别，仍会作为候选出现。
 2. 按 `(harnessId, nativeSessionId)` 合并重复请求，并优先复用已存在映射。
 3. 调用 Adapter resolver，检查新鲜元数据和身份，再检查并发提交者是否已胜出。
-4. 创建 provisional，提交完整 `nativeRef`，保留 `notLoaded` 状态；持久化失败清理 provisional，唯一性冲突复用胜出映射。
+4. 普通导入创建 provisional，提交完整 `nativeRef`，保留 `notLoaded` 状态；持久化失败清理 provisional，唯一性冲突复用胜出映射。提供 `prepareImport` 时，先以稳定创建请求 ID 和 `importSourceRef` 保存 provisional，再调用 Adapter；提交返回身份之后才读取历史和接管已打开的 Session，避免关闭重开造成占用竞争。
 5. 返回 Host Thread ID。Renderer 导航失败不能回滚已提交的映射；保留项目路径、重试打开，重挂载和过期请求不能重复导航。
 
-Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有跨进程 Session 所有权转移协议。
+准备导入的来源和实际身份都参与去重及候选过滤。携带 `importSourceRef` 的 creating 记录在重启后保留：请求结果未知或创建后的持久化失败均停止，不自动再次派生；明确未创建派生会话的失败才清理 provisional。已保存身份后的历史加载失败保留 ready 映射，再次打开只恢复该身份。已有 ready 映射不会因后来遇到占用而更换身份。Host 不提供跨进程 Session 所有权转移协议。
+
+## 官方 Codex Thread
+
+同一 Codex home 中的官方 Thread 直接出现在 Web 与 Desktop，无需导入。它们保留官方 Thread ID，由共享 Host 使用官方协议读取和操作，不创建外部 Harness 映射。被其他后台占用时仍可读取历史，发送返回占用错误，不自动 Fork。
 
 ## Pi 原生规则
 

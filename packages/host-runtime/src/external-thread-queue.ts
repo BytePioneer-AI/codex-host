@@ -1,14 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-import type { JsonObject, JsonValue } from "@codexhost/protocol-core";
+import type { JsonObject } from "@codexhost/protocol-core";
 import { externalTurnInputText } from "./external-turn-input.js";
-
-/** Official app-server `QueuedSubmission`. */
-export interface QueuedSubmission {
-  id: string;
-  input: JsonValue[];
-  clientUserMessageId: string;
-}
 
 export class ExternalQueueError extends Error {
   constructor(
@@ -19,188 +12,268 @@ export class ExternalQueueError extends Error {
   }
 }
 
-interface QueueEntry extends QueuedSubmission {
-  sourceHostId: string | undefined;
+export type ExternalQueuePausedReason = "interrupted" | "outcome-unknown" | "failed";
+
+export interface ExternalQueuedSubmission extends JsonObject {
+  id: string;
+  clientUserMessageId: string;
+  input: JsonObject[];
+  presentationInput: JsonObject[] | null;
+  sourceHostId: string | null;
 }
+
+export interface ExternalThreadQueueSnapshot {
+  items: ExternalQueuedSubmission[];
+  pausedReason: ExternalQueuePausedReason | null;
+}
+
 interface TakenSubmission {
-  submission: QueuedSubmission;
+  submission: ExternalQueuedSubmission;
   sourceHostId: string | undefined;
   index: number;
+  pausedReason: ExternalQueuePausedReason | null;
 }
 
-/** Keep Host context out of every official queue response, including add/update. */
-const publicSubmission = ({
-  id,
-  input,
-  clientUserMessageId,
-}: QueuedSubmission): QueuedSubmission => ({
-  id,
-  input,
-  clientUserMessageId,
-});
+export function nativeQueuedSubmission(item: ExternalQueuedSubmission): JsonObject {
+  return {
+    id: item.id,
+    clientUserMessageId: item.clientUserMessageId,
+    // Desktop's queue parser requires text_elements; preserve explicit native annotations.
+    input: item.input.map((part) =>
+      part.type === "text" ? { ...part, text_elements: part.text_elements ?? [] } : part,
+    ),
+  };
+}
 
-const DEFAULT_PAGE_SIZE = 50;
+const MAX_QUEUED_SUBMISSIONS = 32;
 
-/**
- * Follow-ups Desktop queues on an External Thread through the official `thread/queue/*`
- * protocol. Desktop keeps no local copy: it lists the queue after every
- * `thread/queue/changed` and leaves the next submission to the Host once a Turn completes.
- * Entries live for the Host process; the Harness Session holds no queued input.
- */
+function sameInput(left: JsonObject[], right: JsonObject[]): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** Process-owned queue for external Threads. Desktop and Web mutate this same state. */
 export class ExternalThreadQueue {
-  readonly #queues = new Map<string, QueueEntry[]>();
+  readonly #receipts = new Map<string, ExternalQueuedSubmission>();
   readonly #acceptedSteers = new Map<string, string>();
-  readonly #notifyChanged: (threadId: string) => Promise<void>;
-  readonly #createId: () => string;
+  readonly #states = new Map<
+    string,
+    { items: ExternalQueuedSubmission[]; pausedReason: ExternalQueuePausedReason | null }
+  >();
 
-  constructor(options: {
-    notifyChanged(threadId: string): Promise<void>;
-    createId?: () => string;
-  }) {
-    this.#notifyChanged = options.notifyChanged;
-    this.#createId = options.createId ?? randomUUID;
-  }
-
-  has(threadId: string): boolean {
-    return (this.#queues.get(threadId)?.length ?? 0) > 0;
+  snapshot(threadId: string): ExternalThreadQueueSnapshot {
+    const state = this.#states.get(threadId);
+    return {
+      items: state?.items.map((item) => structuredClone(item)) ?? [],
+      pausedReason: state?.pausedReason ?? null,
+    };
   }
 
   list(threadId: string, params: JsonObject): JsonObject {
-    const items = this.#queues.get(threadId) ?? [];
+    const items = this.#states.get(threadId)?.items ?? [];
     const start = params.cursor == null ? 0 : Number(params.cursor);
-    if (!Number.isSafeInteger(start) || start < 0 || start > items.length) {
+    if (!Number.isSafeInteger(start) || start < 0 || start > items.length)
       throw new ExternalQueueError(-32602, "Invalid thread/queue/list cursor");
-    }
     const limit =
       typeof params.limit === "number" && Number.isSafeInteger(params.limit) && params.limit > 0
         ? params.limit
-        : DEFAULT_PAGE_SIZE;
+        : 50;
     const end = Math.min(items.length, start + limit);
     return {
-      data: items.slice(start, end).map((item) => publicSubmission(item) as unknown as JsonObject),
+      data: items.slice(start, end).map((item) => nativeQueuedSubmission(structuredClone(item))),
       nextCursor: end < items.length ? String(end) : null,
     };
   }
 
-  async add(
+  add(
     threadId: string,
-    input: JsonValue[],
-    clientUserMessageId: string,
-    sourceHostId?: string,
-  ): Promise<QueuedSubmission> {
-    const submission = { id: this.#createId(), input, clientUserMessageId, sourceHostId };
-    this.#items(threadId).push(submission);
-    await this.#notifyChanged(threadId);
-    return publicSubmission(submission);
+    input: JsonObject[],
+    clientUserMessageId?: string,
+    presentationInput?: JsonObject[],
+    sourceHostId?: unknown,
+  ): ExternalQueuedSubmission {
+    if (clientUserMessageId) {
+      const existing = this.#receipts.get(this.#receiptKey(threadId, clientUserMessageId));
+      if (existing) {
+        if (
+          !sameInput(existing.input, input) ||
+          JSON.stringify(existing.presentationInput) !== JSON.stringify(presentationInput ?? null)
+        )
+          throw new Error("Message ID was already used with different input");
+        return structuredClone(existing);
+      }
+    }
+    const state = this.#state(threadId);
+    if (state.items.length >= MAX_QUEUED_SUBMISSIONS)
+      throw new Error("External Thread queue is full");
+    const item: ExternalQueuedSubmission = {
+      id: randomUUID(),
+      clientUserMessageId: clientUserMessageId ?? randomUUID(),
+      input: structuredClone(input),
+      presentationInput: presentationInput ? structuredClone(presentationInput) : null,
+      sourceHostId: typeof sourceHostId === "string" ? sourceHostId : null,
+    };
+    state.items.push(item);
+    if (clientUserMessageId) {
+      this.#receipts.set(this.#receiptKey(threadId, clientUserMessageId), item);
+      if (this.#receipts.size > 256) {
+        const oldest = this.#receipts.keys().next();
+        if (!oldest.done) this.#receipts.delete(oldest.value);
+      }
+    }
+    return structuredClone(item);
   }
 
-  async update(threadId: string, id: string, input: JsonValue[]): Promise<QueuedSubmission> {
-    const items = this.#queues.get(threadId) ?? [];
-    const index = items.findIndex((item) => item.id === id);
-    const current = items[index];
-    if (!current) throw new ExternalQueueError(-32602, "Queued submission was not found");
-    const submission = { ...current, input };
-    items[index] = submission;
-    await this.#notifyChanged(threadId);
-    return publicSubmission(submission);
+  update(
+    threadId: string,
+    itemId: string,
+    input: JsonObject[],
+    presentationInput?: JsonObject[],
+  ): ExternalQueuedSubmission | null {
+    const state = this.#states.get(threadId);
+    const item = state?.items.find((candidate) => candidate.id === itemId);
+    if (!item) return null;
+    item.input = structuredClone(input);
+    item.presentationInput = presentationInput ? structuredClone(presentationInput) : null;
+    const receipt = this.#receipts.get(this.#receiptKey(threadId, item.clientUserMessageId));
+    if (receipt) {
+      receipt.input = structuredClone(input);
+      receipt.presentationInput = presentationInput ? structuredClone(presentationInput) : null;
+    }
+    return structuredClone(item);
   }
 
-  async delete(threadId: string, id: string): Promise<boolean> {
-    const items = this.#queues.get(threadId);
-    const index = items?.findIndex((item) => item.id === id) ?? -1;
-    if (!items || index === -1) return this.#acceptedSteers.get(id) === threadId;
-    items.splice(index, 1);
-    this.#prune(threadId);
-    await this.#notifyChanged(threadId);
+  delete(threadId: string, itemId: string): boolean {
+    const state = this.#states.get(threadId);
+    if (!state) return this.#acceptedSteers.get(itemId) === threadId;
+    const index = state.items.findIndex((item) => item.id === itemId);
+    if (index < 0) return this.#acceptedSteers.get(itemId) === threadId;
+    state.items.splice(index, 1);
+    this.#prune(threadId, state);
     return true;
   }
 
-  /** Listed IDs move to the front in the given order; unlisted entries keep their order. */
-  async reorder(threadId: string, ids: readonly string[]): Promise<void> {
-    const items = this.#queues.get(threadId);
-    if (!items) return;
-    const byId = new Map(items.map((item) => [item.id, item]));
-    const ordered = ids.flatMap((id) => {
+  reorder(threadId: string, itemIds: string[]): boolean {
+    const state = this.#states.get(threadId);
+    if (!state) return itemIds.length === 0;
+    if (itemIds.length > state.items.length) return false;
+    const byId = new Map(state.items.map((item) => [item.id, item]));
+    if (new Set(itemIds).size !== itemIds.length) return false;
+    const reordered: ExternalQueuedSubmission[] = [];
+    for (const id of itemIds) {
       const item = byId.get(id);
+      if (!item) return false;
+      reordered.push(item);
       byId.delete(id);
-      return item ? [item] : [];
-    });
-    items.splice(0, items.length, ...ordered, ...byId.values());
-    await this.#notifyChanged(threadId);
+    }
+    state.items = [...reordered, ...byId.values()];
+    return true;
   }
 
-  /** Removes the submission a Turn is about to start; `restore` returns it if the start fails. */
-  take(threadId: string, id?: string | null): TakenSubmission {
-    const items = this.#queues.get(threadId) ?? [];
-    const index = id == null ? 0 : items.findIndex((item) => item.id === id);
-    const submission = index === -1 ? undefined : items[index];
-    if (!submission) throw new ExternalQueueError(-32602, "Queued submission was not found");
-    items.splice(index, 1);
-    this.#prune(threadId);
-    return {
-      submission: publicSubmission(submission),
-      sourceHostId: submission.sourceHostId,
-      index,
-    };
+  find(threadId: string, itemId: string): ExternalQueuedSubmission | null {
+    const item = this.#states.get(threadId)?.items.find((candidate) => candidate.id === itemId);
+    return item ? structuredClone(item) : null;
   }
 
-  /** Reserve the exact queued input before steering can finish a replacement Turn.
-   * Otherwise automatic queue advancement can deliver that input a second time. */
+  head(threadId: string): ExternalQueuedSubmission | null {
+    const item = this.#states.get(threadId)?.items[0];
+    return item ? structuredClone(item) : null;
+  }
+
+  /** Reserve queued input so automatic advancement cannot deliver it during steering. */
   takeSteered(
     threadId: string,
     clientUserMessageId: unknown,
     input: unknown,
   ): TakenSubmission | undefined {
     if (typeof clientUserMessageId !== "string") return;
-    const matches = (this.#queues.get(threadId) ?? []).filter(
-      (item) => item.clientUserMessageId === clientUserMessageId,
-    );
-    if (matches.length === 0) return;
-    const item = matches[0] as QueueEntry;
+    const state = this.#states.get(threadId);
+    if (!state) return;
+    const matches = state.items.filter((item) => item.clientUserMessageId === clientUserMessageId);
+    const item = matches[0];
+    if (!item) return;
     if (matches.length !== 1 || externalTurnInputText(item.input) !== externalTurnInputText(input))
       throw new ExternalQueueError(-32602, "Queued steering input changed before delivery");
-    return this.take(threadId, item.id);
+    const index = state.items.indexOf(item);
+    state.items.splice(index, 1);
+    this.#prune(threadId, state);
+    return {
+      submission: structuredClone(item),
+      sourceHostId: item.sourceHostId ?? undefined,
+      index,
+      pausedReason: state.pausedReason,
+    };
   }
 
-  async acceptSteered(threadId: string, taken: TakenSubmission): Promise<void> {
-    // Desktop may still acknowledge removal after the accepted input has completed.
+  acceptSteered(threadId: string, taken: TakenSubmission): void {
+    // Desktop may acknowledge removal after the accepted input has completed.
     this.#acceptedSteers.set(taken.submission.id, threadId);
     while (this.#acceptedSteers.size > 128) {
       this.#acceptedSteers.delete(this.#acceptedSteers.keys().next().value as string);
     }
-    await this.#notifyChanged(threadId);
   }
 
   restore(threadId: string, taken: TakenSubmission): void {
-    const items = this.#items(threadId);
-    if (items.some((item) => item.id === taken.submission.id)) return;
-    items.splice(Math.min(taken.index, items.length), 0, {
-      ...taken.submission,
-      sourceHostId: taken.sourceHostId,
-    });
+    let state = this.#states.get(threadId);
+    if (!state) {
+      state = { items: [], pausedReason: taken.pausedReason };
+      this.#states.set(threadId, state);
+    }
+    if (state.items.some((item) => item.id === taken.submission.id)) return;
+    state.items.splice(
+      Math.min(taken.index, state.items.length),
+      0,
+      structuredClone(taken.submission),
+    );
   }
 
-  notifyChanged(threadId: string): Promise<void> {
-    return this.#notifyChanged(threadId);
+  pause(threadId: string, reason: ExternalQueuePausedReason): boolean {
+    const state = this.#states.get(threadId);
+    if (!state?.items.length || state.pausedReason === reason) return false;
+    state.pausedReason = reason;
+    return true;
   }
 
-  forget(threadId: string): void {
-    this.#queues.delete(threadId);
+  resume(threadId: string): boolean {
+    const state = this.#states.get(threadId);
+    if (!state || state.pausedReason === null) return false;
+    state.pausedReason = null;
+    return true;
+  }
+
+  isPaused(threadId: string): boolean {
+    return this.#states.get(threadId)?.pausedReason != null;
+  }
+
+  has(threadId: string): boolean {
+    return (this.#states.get(threadId)?.items.length ?? 0) > 0;
+  }
+
+  clear(threadId: string): void {
+    this.#states.delete(threadId);
+    const prefix = `${threadId}\u0000`;
+    for (const key of this.#receipts.keys()) if (key.startsWith(prefix)) this.#receipts.delete(key);
     for (const [id, owner] of this.#acceptedSteers) {
       if (owner === threadId) this.#acceptedSteers.delete(id);
     }
   }
 
-  #items(threadId: string): QueueEntry[] {
-    let items = this.#queues.get(threadId);
-    if (!items) {
-      items = [];
-      this.#queues.set(threadId, items);
-    }
-    return items;
+  #receiptKey(threadId: string, clientUserMessageId: string): string {
+    return `${threadId}\u0000${clientUserMessageId}`;
   }
 
-  #prune(threadId: string): void {
-    if (this.#queues.get(threadId)?.length === 0) this.#queues.delete(threadId);
+  #state(threadId: string) {
+    let state = this.#states.get(threadId);
+    if (!state) {
+      state = { items: [], pausedReason: null };
+      this.#states.set(threadId, state);
+    }
+    return state;
+  }
+
+  #prune(
+    threadId: string,
+    state: { items: ExternalQueuedSubmission[]; pausedReason: ExternalQueuePausedReason | null },
+  ): void {
+    if (state.items.length === 0) this.#states.delete(threadId);
   }
 }

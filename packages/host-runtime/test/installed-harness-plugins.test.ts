@@ -125,6 +125,7 @@ describe("installed Harness composition", () => {
         "/boost",
         "/learn",
         "/schedule",
+        "/compact",
         "/help",
       ],
       "kiro-cli": [

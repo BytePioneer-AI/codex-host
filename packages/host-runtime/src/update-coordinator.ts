@@ -10,6 +10,7 @@ import {
   compareSemanticVersions,
   createBackgroundUpdateManager,
   discoverActiveUpdateStatus,
+  discoverRecentCompletedUpdateStatus,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
   recoverUpdateOperationLock,
@@ -53,6 +54,9 @@ function publicStatus(status: BackgroundUpdateStatus): UpdateStatus {
     ...(status.downloadedBytes === undefined ? {} : { downloadedBytes: status.downloadedBytes }),
     ...(status.totalBytes === undefined ? {} : { totalBytes: status.totalBytes }),
     error: status.error?.slice(0, ERROR_MAX_LENGTH) ?? null,
+    ...(status.serviceStopOutput === undefined
+      ? {}
+      : { serviceStopOutput: status.serviceStopOutput }),
   };
 }
 
@@ -90,7 +94,10 @@ export function createHostUpdateCoordinator(
   async function latestStatus(context: InstalledUpdateContext): Promise<UpdateStatus | null> {
     if (!currentStatusPath) {
       const active = await discoverActiveUpdateStatus(context.common.stateDirectory);
-      if (!active) return null;
+      if (!active) {
+        const completed = await discoverRecentCompletedUpdateStatus(context.common.stateDirectory);
+        return completed ? publicStatus(completed.status) : null;
+      }
       currentStatusPath = active.statusPath;
     }
     const status = await manager.readStatus(currentStatusPath);
@@ -252,7 +259,8 @@ export function createHostUpdateCoordinator(
             // The Launcher starts the Updater on macOS and Windows. On Windows the
             // Host Runtime runs in the Shim's kill-on-close Job, so an Updater it
             // started would be killed together with the Desktop it waits for.
-            if (platform !== "darwin" && platform !== "win32") await manager.start(prepared);
+            if (!context.common.serviceManaged && platform !== "darwin" && platform !== "win32")
+              await manager.start(prepared, (pid) => lock.transferTo(pid));
           } catch (error) {
             await lock.release();
             rejectPrepared(error);

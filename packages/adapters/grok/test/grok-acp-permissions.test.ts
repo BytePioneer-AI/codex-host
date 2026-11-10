@@ -39,7 +39,10 @@ createInterface({input:process.stdin}).on('line', line => {
  }
  else if(req.method==='_x.ai/session/info') {
   if(!changed) throw new Error('must send notification before confirmation barrier');
-  setTimeout(() => reply({result:{sessionId:scenario==='foreign'?'foreign':'fixture'}}), 90);
+  setTimeout(() => {
+   reply({result:{sessionId:scenario==='foreign'?'foreign':'fixture'}});
+   log('permission confirmation barrier reached');
+  }, 90);
  }
  else if(req.method==='session/close') { if(scenario!=='close-hang') reply({}); }
  else if(req.id!==undefined) send({id:req.id,error:{code:-32601,message:'Method not found'}});
@@ -57,7 +60,6 @@ createInterface({input:process.stdin}).on('line', line => {
       GROK_PERMISSION_RECORDS: records,
       RUST_LOG: "warn",
     },
-    commandTimeoutMs: 2_000,
     closeTimeoutMs: 50,
     onFault: fault,
   });
@@ -129,15 +131,36 @@ describe.skipIf(process.platform === "win32")("Grok ACP permission wire", () => 
     ["exit", "auto"],
   ] as const)("fails and retires the Transport on %s confirmation", async (scenario, mode) => {
     const f = await fixture(scenario);
+    const timesOut = scenario === "silent" || scenario === "partial";
     try {
-      await expect(
-        f.transport.setPermissionMode(harnessPermissionModeIdSchema.parse(mode)),
-      ).rejects.toThrow("could not be confirmed");
+      if (timesOut) vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const selection = f.transport.setPermissionMode(harnessPermissionModeIdSchema.parse(mode));
+      const rejected = expect(selection).rejects.toThrow("could not be confirmed");
+      if (timesOut) {
+        // Let the real child finish its barrier and log writes before expiring the host timer.
+        await vi.waitFor(() =>
+          expect(f.transport.stderrTail).toContain("permission confirmation barrier reached"),
+        );
+        if (scenario === "partial") {
+          expect(f.transport.stderrTail).toContain("always-approve set to: false");
+          expect(f.transport.stderrTail).not.toContain("auto permission mode set to:");
+        }
+        expect(f.fault).not.toHaveBeenCalled();
+        await vi.advanceTimersToNextTimerAsync();
+        vi.useRealTimers();
+      }
+      await rejected;
+      if (timesOut) {
+        await expect(selection).rejects.toMatchObject({
+          cause: { message: "Grok Permission Mode confirmation timed out" },
+        });
+      }
       expect(f.fault).toHaveBeenCalled();
       await expect(
         f.transport.setPermissionMode(harnessPermissionModeIdSchema.parse("ask")),
       ).rejects.toThrow("unavailable");
     } finally {
+      vi.useRealTimers();
       await f.close();
     }
   });

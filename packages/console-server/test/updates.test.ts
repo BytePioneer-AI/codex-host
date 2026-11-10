@@ -74,6 +74,47 @@ describe("console updates", () => {
     });
   });
 
+  it.each(["failed", "succeeded"])(
+    "displays %s service stop output after Console restarts",
+    async (phase) => {
+      const { target, environment } = await npmLayout();
+      const stateDirectory = path.join(root, "state");
+      const operation = path.join(stateDirectory, "update-result");
+      await mkdir(operation, { recursive: true });
+      const serviceStopOutput = "Shared Host stopped; interrupted 7 running task(s)\n";
+      await writeFile(
+        path.join(operation, "status-v1.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          version: "1.1.0",
+          installation: "npm",
+          phase,
+          updatedAt: Math.floor(Date.now() / 1000),
+          serviceStopOutput,
+        }),
+      );
+      const updates = createConsoleUpdates({
+        onHandedOff: vi.fn(),
+        environment,
+        stateDirectory,
+        fetchLatest: async () => release,
+      });
+      await expect(updates.check(target)).resolves.toMatchObject({
+        status: { phase, serviceStopOutput },
+      });
+      await expect(updates.status()).resolves.toMatchObject({
+        status: { phase, serviceStopOutput },
+      });
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 86_401_000);
+      try {
+        await expect(updates.status()).resolves.toEqual({ status: null });
+        await expect(updates.check(target)).resolves.toMatchObject({ status: null });
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
   it.each(["failed", "succeeded", "prepared"])(
     "does not display historical %s state",
     async (phase) => {
@@ -88,7 +129,7 @@ describe("console updates", () => {
           version: "1.1.0",
           installation: "npm",
           phase,
-          updatedAt: Math.floor(Date.now() / 1000),
+          updatedAt: Math.floor(Date.now() / 1000) - 86_401,
           error: "old failure",
         }),
       );
@@ -139,11 +180,15 @@ describe("console updates", () => {
     await expect(updates.status()).resolves.toMatchObject({
       status: { phase: "failed", error: "current failure" },
     });
-    await expect(createConsoleUpdates(options).status()).resolves.toEqual({ status: null });
+    await expect(createConsoleUpdates(options).status()).resolves.toMatchObject({
+      status: { phase: "failed", error: "current failure" },
+    });
   });
 
   it("hands off to the Updater before returning", async () => {
     const { target, environment } = await npmLayout("linux");
+    target.dataDirectory = path.join(root, "custom-data");
+    target.restartTarget = "web";
     const spawnUpdater = vi.fn<(executable: string, requestPath: string) => never>(
       () => Object.assign(new EventEmitter(), { pid: 4321, kill: vi.fn() }) as never,
     );
@@ -183,7 +228,12 @@ describe("console updates", () => {
       wait_pid: 777,
       wait_executable: process.execPath,
       runtime_descriptor_path: target.runtimeDescriptorPath,
+      data_directory: target.dataDirectory,
+      restart_target: "web",
     });
+    expect(
+      JSON.parse(await readFile(path.join(root, "state", "active-update-v1.lock"), "utf8")),
+    ).toMatchObject({ ownerPid: 4321 });
   });
 
   it("shows the current preparation failure and replaces it when retrying", async () => {

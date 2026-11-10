@@ -57,7 +57,11 @@ export function externalTurnInputText(input: unknown): string {
   const request = /^# Files mentioned by the user:[ \t]*\r?$/mu.test(text)
     ? (text.split(/^## My request:[ \t]*\r?$/mu)[1] ?? text)
     : text;
+  // A command chip moves the complete text (including attachment context) into
+  // native command arguments. A plain slash command has no such context carrier.
+  const hasCommandCarrier = restoreHarnessCommandMentions(text) !== text;
   if (
+    !hasCommandCarrier &&
     (localImages.length || inlineImages || references.length) &&
     isExternalCommandCandidate(restoreHarnessCommandMentions(request))
   ) {

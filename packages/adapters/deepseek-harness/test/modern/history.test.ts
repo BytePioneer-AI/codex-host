@@ -396,6 +396,53 @@ describe("DeepSeek Harness Modern history projection", () => {
     expect(JSON.stringify(projection.snapshot)).not.toContain("answer_to_pending_question");
   });
 
+  it("accepts the DSH 0.2.2 message sources without widening the human transcript", () => {
+    const sourced = (seq: number, text: string, source: Record<string, unknown>) =>
+      event(
+        seq,
+        "user/message",
+        { id: `user-${seq}`, role: "user", content: [{ type: "text", text }], source },
+        true,
+      );
+    const projection = projectModernHistory({
+      sessionId: SESSION_ID,
+      events: [
+        event(0, "turn/start", { turn: 1 }),
+        event(1, "step/start", { turn: 1, step: 1 }),
+        // A LiveShare reader's prompt keeps kind `user`; the principal is attribution only.
+        sourced(2, "reader prompt", {
+          kind: "user",
+          rpcId: "request-1",
+          principal: {
+            kind: "share-viewer",
+            shareId: "share-1",
+            actor: { providerId: "github", tenantId: "t", subjectId: "s", displayName: "Reader" },
+          },
+        }),
+        sourced(3, "SKILL CATALOG", {
+          kind: "skill-catalog",
+          form: "catalog",
+          incomplete: true,
+          entries: [{ name: "readable", description: "found" }],
+        }),
+        sourced(4, "ACTION CARD STATUS", {
+          kind: "action-cards",
+          through: 3,
+          form: "notice",
+          summary: "Action card status updated",
+        }),
+        assistantMessage(5, 1, 1, "answer", "thought"),
+        event(6, "step/end", { turn: 1, step: 1 }),
+        event(7, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+      ],
+    });
+
+    expect(projection.snapshot.turns.map(({ input }) => input)).toEqual([
+      [{ type: "text", text: "reader prompt" }],
+    ]);
+    expect(JSON.stringify(projection.snapshot)).not.toMatch(/SKILL CATALOG|ACTION CARD STATUS/u);
+  });
+
   it.each([
     [
       "a range outside the current surface",

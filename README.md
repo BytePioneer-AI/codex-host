@@ -30,11 +30,12 @@ But **Codex** isn't the only great **Agent Harness** — **Claude Code** and **P
   <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="docs/imgs/badge-hermes.svg" /></a>
   <a href="https://qoder.com/cli"><img alt="Qoder" src="docs/imgs/badge-qoder.svg" /></a>
   <a href="https://moonshotai.github.io/kimi-code/"><img alt="Kimi Code" src="docs/imgs/badge-kimi.svg" /></a>
+  <a href="https://zcode.z.ai/"><img alt="ZCode" src="docs/imgs/badge-zcode.svg" /></a>
   <a href="docs/harnesses/copilot/copilot-harness-integration.md"><img alt="GitHub Copilot" src="https://img.shields.io/badge/Copilot-181717?logo=githubcopilot&logoColor=white" /></a>
 </p>
 <br />
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>Download</strong></a> · <a href="#cross-agent-collaboration">Cross-Agent Collaboration</a> · <a href="#remote-harness">Remote</a> · <a href="#join-the-community">微信交流群</a> · <a href="docs/project/README.zh-CN.md">简体中文</a> · <a href="docs/project/README.ko.md">한국어</a></p>
+<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>Download</strong></a> · <a href="#web">Web &amp; Mobile</a> · <a href="#cross-agent-collaboration">Cross-Agent Collaboration</a> · <a href="#remote-harness">Remote</a> · <a href="#join-the-community">微信交流群</a> · <a href="docs/project/README.zh-CN.md">简体中文</a> · <a href="docs/project/README.ko.md">한국어</a></p>
 
 <br />
 
@@ -87,7 +88,7 @@ Run `codexhost update` to check for the latest release and prepare an upgrade fr
 
 **codexhost does not start, or Codex opens without codexhost features**
 
-Run `codexhost console` (Windows: Start Menu → "codexhost console") to open the local console at `http://127.0.0.1:4399/`. It shows why the last start failed, the Codex Desktop version, Host Runtime logs, and can update codexhost while Codex is not running. It starts together with codexhost: installer launches open it in your browser, and terminal launches print its address.
+Run `codexhost console` (Windows: Start Menu → "codexhost console") to open the local console at `http://127.0.0.1:4399/`. It shows why the last start failed, the Codex Desktop version, Host Runtime logs, and can update codexhost while Codex is not running. It starts together with codexhost: installer launches open the console overview in your default browser, while terminal launches do not open a browser and print both the console address and the Web login link on success or failure (the Web line is omitted when disabled or not ready). The overview can open Web and stop codexhost after confirmation; “Connect devices” manages Web remote access using the same settings as Web; see [Use in your browser and on your phone](#web).
 
 **macOS: "App can't be verified" on first launch**
 
@@ -106,6 +107,23 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 2. Quit Codex Desktop completely, open a new terminal, and run `codexhost`.
 
 </details>
+
+<a id="web"></a>
+
+### Use in your browser and on your phone (Web)
+
+Keep working away from your desk. codexhost **Web** lets you use Pi, Claude Code, and other Harnesses from a browser or your phone, with conversations synced live with Codex Desktop: follow a task you started on your computer from your phone, answer its questions, and handle approvals.
+
+```bash
+codexhost web      # start Web and open it in your browser
+codexhost stop     # stop all codexhost background services
+```
+
+Web runs in the background and does not need Codex Desktop to be open.
+
+**On your phone:** in Web, open **Settings → Connect devices**, choose a connection method, and scan the QR code with your phone. Same Wi-Fi, Tailscale, the codexhost relay, and a [self-hosted relay](docs/product/self-hosted-relay.md) are supported; see [Web remote access](docs/product/web-remote-access.md) for how they differ. Use **Add to Home Screen** in your phone's browser to open it like an app.
+
+> Login links and QR codes contain an access token: anyone who has one can operate this computer. Keep them as safe as a password.
 
 ### Highlights
 
@@ -188,8 +206,6 @@ Harnesses integrate with Codex Desktop's native UI according to their capabiliti
 | Context compaction | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | — | — |
 | Slash commands | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — |
 | Edit previous message | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ◐ |
-
-Devin: ◐ indicates conditional support or pending native validation. Thinking requires an advertised native selector; Fork and message editing require the negotiated revert extension and support only the same workspace. Delegation reception is implemented, but full delegation remains unverified. Thinking and history operations still need authenticated native acceptance; see the [integration guide](docs/harnesses/devin/devin-cli-acp-integration.md).
 
 </details>
 
@@ -303,7 +319,12 @@ npm ci
 npm start
 ```
 
-To run the current source with a specific runtime version, use `npm start 0.12.0` (prereleases such as `0.13.0-rc.1` are also accepted). Host status, console version and update-check version reporting use this value. Without a version argument the version remains `<workspace-version>-dev`; `npm start 0.12.0 -- --no-build` reuses artifacts after building once. The override lasts for this launch and does not modify version files or publish packages. Source installations still lack packaged self-update resources; remote npm installation downloads the published package with that version, not the local source.
+| Command | Purpose |
+| --- | --- |
+| `npm start` | Build and start Desktop. |
+| `npm start web` | Build and start Web with Web UI hot reload (default). |
+| `npm start web -- --no-watch` | Build and start Web without hot reload. |
+| `npm stop` | Stop the current user's local codexhost services across worktrees. |
 
 
 ### Runtime Architecture
@@ -324,6 +345,7 @@ Tip: point your coding Agent at the in-repo [codexhost-add-harness Skill](.agent
 
 - Thanks to the [LINUX DO](https://linux.do/) community for their ongoing support.
 - Thanks to [Paseo](https://github.com/getpaseo/paseo), whose approach to multi-Harness integration and architecture inspired ours.
+- Thanks to [DSH (DeepSeek Harness)](https://github.com/deepseek-ai/deepseek-harness); CodexHost's Web client is built on DSH Web.
 
 ## Contributors
 

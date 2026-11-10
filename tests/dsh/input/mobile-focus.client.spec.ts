@@ -89,16 +89,20 @@ it.each(devices)(
         else Object.defineProperty(navigator, name, descriptor);
       });
     }
-    const input = new SessionInputShell({
-      actx: {} as never,
-      defaultSink: async () => ({ kind: "success" }),
-      commandAttachments: {
-        serialize: async () => [],
-        release: () => {},
-        unsupportedNotice: () => "unsupported",
-      },
-    });
+    const createInput = () =>
+      new SessionInputShell({
+        actx: {} as never,
+        defaultSink: async () => ({ kind: "success" }),
+        commandAttachments: {
+          serialize: async () => [],
+          release: () => {},
+          unsupportedNotice: () => "unsupported",
+        },
+      });
+    const input = createInput();
+    const secondInput = createInput();
     input.actions.setDraft("draft");
+    secondInput.actions.setDraft("second draft");
     const outside = document.createElement("input");
     const container = document.createElement("div");
     document.body.append(outside, container);
@@ -107,6 +111,7 @@ it.each(devices)(
     cleanup.push(() => {
       act(() => root.unmount());
       input.dispose();
+      secondInput.dispose();
       outside.remove();
       container.remove();
     });
@@ -149,5 +154,26 @@ it.each(devices)(
       editor?.focus();
     });
     expect(document.activeElement).toBe(editor);
+
+    // Touch navigation may leave the resident textbox focused while replacing its editor.
+    await render({
+      sessionId: "two" as never,
+      keyboard: secondInput,
+      inputActions: secondInput.actions,
+      useInput: ((select: (state: typeof secondInput.snapshot) => unknown) =>
+        select(
+          useSyncExternalStore(secondInput.state.subscribe, secondInput.state.getSnapshot),
+        )) as typeof props.useInput,
+    });
+    expect(document.activeElement).toBe(automatic ? editor : document.body);
+    expect(editor?.textContent).toBe("second draft");
+    await act(async () => secondInput.focus());
+    expect(document.activeElement).toBe(editor);
+    await act(async () => secondInput.actions.setDraft("edited second draft"));
+    expect(document.activeElement).toBe(editor);
+    await act(async () => outside.focus());
+    await render();
+    expect(document.activeElement).toBe(automatic ? editor : outside);
+    expect(editor?.textContent).toBe("draft");
   },
 );

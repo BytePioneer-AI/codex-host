@@ -4,9 +4,70 @@ import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MarkdownText } from "@deepseek-ai/dsh-client-ui-primitives/src/markdown/MarkdownText.tsx";
 import { MarkdownDelegateProvider } from "@deepseek-ai/dsh-client-ui-primitives/src/markdown/MarkdownDelegate.tsx";
+import {
+  AssistantMarkdown,
+  type AssistantMarkdownProps,
+} from "@deepseek-ai/dsh-client-ui-chat/src/client/chat/AssistantMarkdown.tsx";
 
 const labels = { code: { copyLabel: "Copy", copiedLabel: "Copied" }, footnotes: "Footnotes" };
 afterEach(() => vi.unstubAllGlobals());
+
+it("honors the owner's image policy without falling back to local paths", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const source = [
+    "![posix](/tmp/image.png)",
+    "![file](file:///tmp/image.png)",
+    "![windows](C:/image.png)",
+    "![suffix](/tmp/image.png?version=1)",
+    "![http](https://example.com/image.png)",
+  ].join("\n\n");
+  const props = {
+    blocks: [{ kind: "text", text: source }],
+    streaming: false,
+    t: (key: string) => key,
+  } as AssistantMarkdownProps;
+  const render = (allowLocal: boolean) =>
+    act(async () => {
+      root.render(
+        createElement(MarkdownDelegateProvider, {
+          fileImages: {
+            resolve: (path) =>
+              allowLocal ? `https://host/api/file?path=${encodeURIComponent(path)}` : undefined,
+            labels: {
+              open: "Open",
+              loading: "Loading",
+              failed: "Failed",
+              dialog: "Image",
+              close: "Close",
+            },
+          },
+          children: createElement(AssistantMarkdown, props),
+        }),
+      );
+    });
+  try {
+    await render(true);
+    expect(container.querySelectorAll("img")).toHaveLength(5);
+    expect(
+      new URL(container.querySelector<HTMLImageElement>('img[alt="suffix"]')!.src).searchParams.get(
+        "path",
+      ),
+    ).toBe("/tmp/image.png");
+    await render(false);
+    expect(container.querySelectorAll("img")).toHaveLength(1);
+    expect(container.querySelector<HTMLImageElement>("img")?.src).toBe(
+      "https://example.com/image.png",
+    );
+    expect(container.innerHTML).not.toContain("/api/file");
+    expect(container.textContent).toContain("suffix");
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
 
 it.each(["pathImages", "fileImages"] as const)(
   "keeps %s load tags across rerenders but not remounts",

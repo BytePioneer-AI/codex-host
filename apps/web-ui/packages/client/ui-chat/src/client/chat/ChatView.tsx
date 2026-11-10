@@ -224,9 +224,11 @@ export function ChatView({
   const inbox = useProjection("inbox") as unknown as InboxState | undefined;
   // Workspace root off the session list row: path summaries display relative to it.
   const cwd = useSessions((s) => s.byId[sessionId]?.cwd);
+  const remote = useSessions((s) => Boolean(s.byId[sessionId]?.projectionValues?.remoteHost));
   const fileImages = useMemo(
     () => ({
-      resolve: (path: string) => fileMediaUrl(document.baseURI, resolveWorkspacePath(cwd, path)),
+      resolve: (path: string) =>
+        remote ? undefined : fileMediaUrl(document.baseURI, resolveWorkspacePath(cwd, path)),
       labels: {
         open: t("image.open"),
         loading: t("image.loading"),
@@ -235,7 +237,7 @@ export function ChatView({
         close: t("image.close"),
       },
     }),
-    [cwd, t],
+    [cwd, remote, t],
   );
   const running = useSession((s) => s.running);
   const carrier = useSyncExternalStore(connection.state.subscribe, connection.state.getSnapshot);

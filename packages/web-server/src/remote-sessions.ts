@@ -482,6 +482,18 @@ export class RemoteSessions {
   install(rpc: RpcRegistry, streams: StreamRegistry): void {
     rpc.routeSessions(async (method, args, next) => {
       if (method === "session/list") {
+        const request = requestOf<{ sessionId?: unknown; cursor?: unknown }>(args);
+        if (request.sessionId !== undefined) {
+          const id = request.sessionId;
+          if (typeof id !== "string" || !id.startsWith(PREFIX)) return next();
+          remoteSessionIdentity(id);
+          if (request.cursor !== undefined)
+            throw new RpcError("session/list-invalid", "Invalid direct-link identity.");
+          if (!this.entries.has(id)) await this.refresh();
+          const entry = this.entries.get(id);
+          if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
+          return { items: [this.summary(id, entry)], archivedSessionIds: this.syncArchives() };
+        }
         void this.refresh().catch(() => undefined);
         const local = await next();
         return {

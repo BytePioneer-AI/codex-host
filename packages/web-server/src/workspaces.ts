@@ -203,13 +203,13 @@ export class Workspaces {
   isArchived(sessionId: string): boolean {
     return this.archivedSessionIds().includes(sessionId);
   }
+  /** Local owner facts used for local catalog reconciliation and archive notifications. */
+  localArchivedSessionIds(): string[] {
+    return [...(this.referenceArchives ?? this.state.archivedSessionIds)];
+  }
+  /** Combined navigation projection; never an input to either owner's reconciliation. */
   archivedSessionIds(): string[] {
-    return [
-      ...new Set([
-        ...(this.referenceArchives ?? this.state.archivedSessionIds),
-        ...this.remoteArchives,
-      ]),
-    ];
+    return [...new Set([...this.localArchivedSessionIds(), ...this.remoteArchives])];
   }
 
   create(path: string, referenceOnly = false): { workspace: WorkspaceView; created: boolean } {

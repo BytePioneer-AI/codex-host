@@ -37,7 +37,17 @@ it(
               type: "userMessage",
               content: [{ type: "text", text: `Question on ${hostId}` }],
             },
-            { id: "answer", type: "agentMessage", text: `Answer from ${hostId}` },
+            {
+              id: "answer",
+              type: "agentMessage",
+              text: [
+                `Answer from ${hostId}`,
+                "![remote-posix](/tmp/remote-only.png)",
+                "![remote-file](file:///tmp/remote-only.png)",
+                "![remote-windows](C:/remote-only.png)",
+                "![remote-fallback](/tmp/remote-only.png?version=1)",
+              ].join("\n\n"),
+            },
           ],
         },
         ...(sent.has(hostId)
@@ -164,6 +174,17 @@ it(
     const browser = await chromium.launch();
     t.after(() => browser.close());
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
+    const localMediaRequests: string[] = [];
+    await page.route("**/api/file?**", async (route) => {
+      localMediaRequests.push(route.request().url());
+      await route.fulfill({
+        contentType: "image/png",
+        body: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=",
+          "base64",
+        ),
+      });
+    });
     await page.goto(url);
     await page.waitForLoadState("networkidle");
     for (const [hostId, label] of [
@@ -193,7 +214,18 @@ it(
       });
       await item.click();
       await page.getByText(`Answer from ${hostId}`, { exact: true }).waitFor();
+      await page
+        .locator('img[alt="remote-fallback"]')
+        .or(page.getByText("remote-fallback", { exact: true }))
+        .first()
+        .waitFor({ state: "attached" });
+      assert.equal(
+        await page.locator('img[alt^="remote-"]').count(),
+        0,
+        "remote image paths must render as text, not local image elements",
+      );
     }
+    assert.deepEqual(localMediaRequests, [], "remote paths must not request local image bytes");
     assert.ok(
       await page
         .locator("[data-native-codex-icon]")

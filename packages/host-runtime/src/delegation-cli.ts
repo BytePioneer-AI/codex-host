@@ -310,6 +310,7 @@ export async function runDelegationCli(input: {
         "--watch",
         "--watch-timeout-ms",
         "--ref",
+        "--stall-after-ms",
       ]);
       if (parsed.positionals.length > 0)
         throw new DelegationControlError(
@@ -328,6 +329,11 @@ export async function runDelegationCli(input: {
         throw new DelegationControlError(
           "INVALID_ARGUMENT",
           "--watch-timeout-ms requires --watch true",
+        );
+      if (watch !== "true" && value(parsed, "--stall-after-ms") !== undefined)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "--stall-after-ms requires --watch true",
         );
       writeResult(
         "delegate start",
@@ -353,6 +359,14 @@ export async function runDelegationCli(input: {
                   watchTimeoutMs: value(parsed, "--watch-timeout-ms")
                     ? positiveInteger(value(parsed, "--watch-timeout-ms"), "--watch-timeout-ms")
                     : DEFAULT_WATCH_TIMEOUT_MS,
+                  ...(value(parsed, "--stall-after-ms") !== undefined
+                    ? {
+                        stallAfterMs: positiveInteger(
+                          value(parsed, "--stall-after-ms"),
+                          "--stall-after-ms",
+                        ),
+                      }
+                    : {}),
                 }
               : {}),
           },
@@ -483,7 +497,7 @@ export async function runDelegationCli(input: {
       return 0;
     }
     if (group === "thread" && command === "watch") {
-      rejectUnknown(parsed, ["--notify", "--timeout-ms"]);
+      rejectUnknown(parsed, ["--notify", "--timeout-ms", "--stall-after-ms"]);
       if (parsed.positionals.length !== 1)
         throw new DelegationControlError(
           "INVALID_ARGUMENT",
@@ -511,6 +525,14 @@ export async function runDelegationCli(input: {
             timeoutMs: value(parsed, "--timeout-ms")
               ? positiveInteger(value(parsed, "--timeout-ms"), "--timeout-ms")
               : DEFAULT_WATCH_TIMEOUT_MS,
+            ...(value(parsed, "--stall-after-ms") !== undefined
+              ? {
+                  stallAfterMs: positiveInteger(
+                    value(parsed, "--stall-after-ms"),
+                    "--stall-after-ms",
+                  ),
+                }
+              : {}),
           },
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
         }),

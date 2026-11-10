@@ -227,7 +227,7 @@ describe("delegation control server", () => {
     try {
       const response = await fetch(
         `${server.endpoint}/v1/delegate/start`,
-        authorized({ harnessId: "pi", task: "work", watchTimeoutMs: 5_000 }),
+        authorized({ harnessId: "pi", task: "work", watchTimeoutMs: 5_000, stallAfterMs: 1_000 }),
       );
       await expect(response.json()).resolves.toMatchObject({
         threadId: "child",
@@ -239,6 +239,7 @@ describe("delegation control server", () => {
         threadId: "child",
         notifyThreadId: "parent",
         timeoutMs: 5_000,
+        stallAfterMs: 1_000,
       });
 
       watch.mockRejectedValueOnce(new Error("synthetic watch failure"));
@@ -273,6 +274,17 @@ describe("delegation control server", () => {
         authorized({ threadId: "child", notifyThreadId: "parent", timeoutMs: 5_000 }),
       );
       expect(rejected.status).toBe(400);
+
+      const starts = start.mock.calls.length;
+      const withoutWatch = await fetch(
+        `${server.endpoint}/v1/delegate/start`,
+        authorized({ harnessId: "pi", task: "work", stallAfterMs: 1_000 }),
+      );
+      expect(withoutWatch.status).toBe(400);
+      await expect(withoutWatch.json()).resolves.toMatchObject({
+        error: { code: "INVALID_ARGUMENT", message: "stallAfterMs requires a watch" },
+      });
+      expect(start).toHaveBeenCalledTimes(starts);
     } finally {
       await server.close();
       await unsupported.close();

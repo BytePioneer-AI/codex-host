@@ -24,6 +24,12 @@ interface Tool {
 const string = (description: string) => ({ type: "string", description });
 const integer = (description: string) => ({ type: "integer", minimum: 0, description });
 const thread = string("Thread id or codex://threads/<id> link");
+const stallAfterMs = {
+  type: "integer",
+  minimum: 1,
+  description:
+    "Optional silence threshold in ms; disabled by default. A stalled event keeps the watch active and does not prove failure. Live Harness and subagent events reset the clock.",
+};
 
 function text(args: Arguments, name: string, required = false): string | undefined {
   const value = args[name];
@@ -49,6 +55,13 @@ function pick(args: Arguments, names: readonly string[]): Arguments {
   return Object.fromEntries(
     names.filter((name) => args[name] !== undefined).map((name) => [name, args[name]]),
   );
+}
+
+function stallOption(args: Arguments): { stallAfterMs?: number } {
+  if (args.stallAfterMs === undefined) return {};
+  if (!Number.isSafeInteger(args.stallAfterMs) || (args.stallAfterMs as number) <= 0)
+    throw new DelegationControlError("INVALID_ARGUMENT", "stallAfterMs must be a positive integer");
+  return { stallAfterMs: args.stallAfterMs as number };
 }
 
 /** Each tool is one delegation route; parameters and results match the CLI's JSON. */
@@ -99,30 +112,38 @@ const TOOLS: Tool[] = [
         },
         watch: { type: "boolean", description: "Record an event when the Thread stops" },
         watchTimeoutMs: integer("How long to watch; default 29 minutes"),
+        stallAfterMs,
       },
       required: ["harnessId", "task"],
     },
-    call: (args) => ({
-      route: "/v1/delegate/start",
-      body: {
-        harnessId: text(args, "harnessId", true),
-        task: text(args, "task", true),
-        ...pick(args, ["taskName", "cwd", "requestId", "refs"]),
-        ...(args.model !== undefined ? { model: { id: text(args, "model") } } : {}),
-        ...(args.thinking !== undefined ? { thinkingOptionId: text(args, "thinking") } : {}),
-        ...(args.parentThread !== undefined ? { parentThreadId: text(args, "parentThread") } : {}),
-        ...(args.watch === true
-          ? {
-              watchTimeoutMs: bounded(
-                args,
-                "watchTimeoutMs",
-                DEFAULT_WATCH_TIMEOUT_MS,
-                Number.MAX_SAFE_INTEGER,
-              ),
-            }
-          : {}),
-      },
-    }),
+    call: (args) => {
+      if (args.stallAfterMs !== undefined && args.watch !== true)
+        throw new DelegationControlError("INVALID_ARGUMENT", "stallAfterMs requires watch=true");
+      return {
+        route: "/v1/delegate/start",
+        body: {
+          harnessId: text(args, "harnessId", true),
+          task: text(args, "task", true),
+          ...pick(args, ["taskName", "cwd", "requestId", "refs"]),
+          ...(args.model !== undefined ? { model: { id: text(args, "model") } } : {}),
+          ...(args.thinking !== undefined ? { thinkingOptionId: text(args, "thinking") } : {}),
+          ...(args.parentThread !== undefined
+            ? { parentThreadId: text(args, "parentThread") }
+            : {}),
+          ...(args.watch === true
+            ? {
+                watchTimeoutMs: bounded(
+                  args,
+                  "watchTimeoutMs",
+                  DEFAULT_WATCH_TIMEOUT_MS,
+                  Number.MAX_SAFE_INTEGER,
+                ),
+                ...stallOption(args),
+              }
+            : {}),
+        },
+      };
+    },
   },
   {
     name: "thread_read",
@@ -227,10 +248,11 @@ const TOOLS: Tool[] = [
   },
   {
     name: "thread_watch",
-    description: "Record one event for this client when the Thread stops or the watch expires.",
+    description:
+      "Record an event for this client when the Thread stops or the watch expires. Optional stallAfterMs also records one stalled event per silence episode without ending the watch.",
     inputSchema: {
       type: "object",
-      properties: { thread, timeoutMs: integer("Default 29 minutes") },
+      properties: { thread, timeoutMs: integer("Default 29 minutes"), stallAfterMs },
       required: ["thread"],
     },
     call: (args) => ({
@@ -239,6 +261,7 @@ const TOOLS: Tool[] = [
         threadId: threadId(args),
         timeoutMs:
           bounded(args, "timeoutMs", DEFAULT_WATCH_TIMEOUT_MS, Number.MAX_SAFE_INTEGER) || 1,
+        ...stallOption(args),
       },
     }),
   },

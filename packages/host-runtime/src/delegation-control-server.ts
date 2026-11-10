@@ -95,12 +95,13 @@ async function startWithWatch(
   watches: DelegationWatchApi,
   body: Record<string, unknown>,
 ): Promise<unknown> {
-  const { watchTimeoutMs, ...start } = body;
+  const { watchTimeoutMs, stallAfterMs, ...start } = body;
   const result = await api.start(start as unknown as DelegationStartInput);
   const watch = await watchStartedTurn(watches, {
     threadId: result.threadId,
     notifyThreadId: result.parentThreadId ?? "",
     timeoutMs: watchTimeoutMs as number,
+    ...(stallAfterMs !== undefined ? { stallAfterMs: stallAfterMs as number } : {}),
   });
   return { ...result, watch };
 }
@@ -117,6 +118,8 @@ export async function routeDelegationRequest(
     case "/v1/harness/inspect":
       return handlers.api.inspect(body as unknown as HarnessInspectInput);
     case "/v1/delegate/start":
+      if (body.stallAfterMs !== undefined && body.watchTimeoutMs === undefined)
+        throw new DelegationControlError("INVALID_ARGUMENT", "stallAfterMs requires a watch");
       return body.watchTimeoutMs === undefined
         ? handlers.api.start(body as unknown as DelegationStartInput)
         : startWithWatch(handlers.api, watchApi(handlers.watchApi), body);

@@ -6,7 +6,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DelegationControlError, type DelegationControlApi } from "../src/delegation-types.js";
+import {
+  DelegationControlError,
+  type DelegationControlApi,
+  type ThreadWatchInput,
+} from "../src/delegation-types.js";
 import { ClientEventLog } from "../src/external-client-events.js";
 import { externalClientMcp } from "../src/external-client-mcp.js";
 import { externalClientRouter } from "../src/external-client-routes.js";
@@ -20,6 +24,11 @@ describe("external client MCP endpoint", () => {
   let directory: string;
   let server: ExternalClientServer | undefined;
   let token: string;
+  const watch = vi.fn(async (input: ThreadWatchInput) => ({
+    ...input,
+    state: "watching" as const,
+    status: "running" as const,
+  }));
   const api = {
     listHarnesses: vi.fn(async () => ({ harnesses: ["codex", "pi"] })),
     start: vi.fn(async (input: Record<string, unknown>) => ({
@@ -60,7 +69,11 @@ describe("external client MCP endpoint", () => {
     await events.append("grok-bot", [
       { type: "watch", threadId: "t0", outcome: "completed", deepLink: "codex://threads/t0" },
     ]);
-    const route = externalClientRouter({ api: api as unknown as DelegationControlApi, events });
+    const route = externalClientRouter({
+      api: api as unknown as DelegationControlApi,
+      watchApi: { watch, watches: vi.fn(async () => ({ watches: [] })) },
+      events,
+    });
     server = await startExternalClientServer({
       port: 0,
       clients,
@@ -90,6 +103,11 @@ describe("external client MCP endpoint", () => {
       "thread_watches",
       "events_poll",
     ]);
+    for (const name of ["thread_watch", "delegate_start"]) {
+      expect(
+        tools.find((tool) => tool.name === name)?.inputSchema.properties?.stallAfterMs,
+      ).toMatchObject({ type: "integer", minimum: 1 });
+    }
     await client.close();
   });
 
@@ -144,6 +162,55 @@ describe("external client MCP endpoint", () => {
     expect(JSON.parse((result.content as Array<{ text: string }>)[0]?.text ?? "{}")).toEqual({
       error: { code: "THREAD_BUSY", message: "Thread already has an active Turn" },
     });
+    await client.close();
+  });
+
+  it("passes optional silence thresholds to watches and rejects them without watch=true", async () => {
+    const client = await connect();
+    await expect(
+      client.callTool({
+        name: "thread_watch",
+        arguments: { thread: "codex://threads/t1", stallAfterMs: 3_000 },
+      }),
+    ).resolves.toMatchObject({
+      isError: false,
+      structuredContent: { stallAfterMs: 3_000, notifyThreadId: "client:grok-bot" },
+    });
+    expect(watch).toHaveBeenLastCalledWith({
+      threadId: "t1",
+      notifyThreadId: "client:grok-bot",
+      timeoutMs: 1_740_000,
+      stallAfterMs: 3_000,
+    });
+    await expect(
+      client.callTool({
+        name: "delegate_start",
+        arguments: { harnessId: "pi", task: "work", cwd: "/w", watch: true, stallAfterMs: 5_000 },
+      }),
+    ).resolves.toMatchObject({
+      isError: false,
+      structuredContent: { watch: { stallAfterMs: 5_000 } },
+    });
+    expect(api.start).toHaveBeenLastCalledWith({
+      harnessId: "pi",
+      task: "work",
+      cwd: "/w",
+      parentThreadId: "client:grok-bot",
+    });
+    const starts = api.start.mock.calls.length;
+    for (const args of [
+      { stallAfterMs: 3_000 },
+      { watch: false, stallAfterMs: 3_000 },
+      { watch: true, stallAfterMs: 0 },
+    ]) {
+      await expect(
+        client.callTool({
+          name: "delegate_start",
+          arguments: { harnessId: "pi", task: "work", cwd: "/w", ...args },
+        }),
+      ).resolves.toMatchObject({ isError: true });
+    }
+    expect(api.start).toHaveBeenCalledTimes(starts);
     await client.close();
   });
 

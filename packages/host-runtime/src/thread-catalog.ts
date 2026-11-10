@@ -25,8 +25,7 @@ import {
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import { OfficialAdmissionError } from "./codex-runtime/official-work-gate.js";
 
-const OFFICIAL_PAGE_SIZE = 100;
-const MAX_OFFICIAL_PAGES = 10_000;
+const OFFICIAL_PAGE_SIZE = 20;
 
 interface CatalogEntry {
   entry: ThreadListEntry;
@@ -36,6 +35,7 @@ interface CatalogEntry {
 
 export interface ThreadCatalogInput {
   includeArchived?: boolean;
+  officialCursor?: ThreadCatalogReadResult["officialCursor"];
   readLocal(): Promise<{
     records: readonly StoredThreadRecordV1[];
     placements: readonly StoredSectionPlacementV1[];
@@ -55,7 +55,7 @@ function listQuery(archived: boolean): DecodedThreadListRequest {
     params: {
       archived,
       limit: OFFICIAL_PAGE_SIZE,
-      sortKey: "created_at",
+      sortKey: "updated_at",
       sortDirection: "desc",
     },
   });
@@ -67,7 +67,7 @@ function rowId(row: JsonObject): HostThreadId {
   return hostThreadIdSchema.parse(row.id);
 }
 
-/** Each source is drained independently, without mixed-page slicing or cursor repair. */
+/** External metadata is complete; official branches read one native page each. */
 export async function readThreadCatalog(
   input: ThreadCatalogInput,
 ): Promise<ThreadCatalogReadResult> {
@@ -77,6 +77,10 @@ export async function readThreadCatalog(
   let ok = false;
   let returnedRows = 0;
   let officialUnavailable = false;
+  const officialCursor: NonNullable<ThreadCatalogReadResult["officialCursor"]> = {
+    live: null,
+    ...(input.includeArchived ? { archived: null } : {}),
+  };
   const measure = async <T>(source: string, work: (count: () => void) => Promise<T>) => {
     const metric: { ms: number; requests: number; ok: boolean } = {
       ms: 0,
@@ -113,30 +117,19 @@ export async function readThreadCatalog(
 
   const readOfficial = (query: DecodedThreadListRequest): Promise<CatalogEntry[]> =>
     measure(query.archived ? "officialArchived" : "official", async (count) => {
-      const rows: CatalogEntry[] = [];
-      const request = input.requestOfficialPage;
-      if (!(await prepareOfficial())) return rows;
-      let cursor: string | null = null;
-      const seen = new Set<string>();
-      for (let pageNumber = 0; pageNumber < MAX_OFFICIAL_PAGES; pageNumber++) {
-        count();
-        const page = await request({ ...query.params, cursor });
-        for (const thread of page.data) {
-          const threadId = rowId(thread);
-          rows.push({
-            entry: officialThreadListEntry(thread, "created_at"),
-            ownership: { threadId, owner: "codex" },
-            archived: query.archived,
-          });
-        }
-        if (page.nextCursor === null) return rows;
-        if (seen.has(page.nextCursor)) {
-          throw new Error("Official Thread catalog pagination did not advance");
-        }
-        seen.add(page.nextCursor);
-        cursor = page.nextCursor;
-      }
-      throw new Error("Official Thread catalog pagination exceeded its request bound");
+      const branch = query.archived ? "archived" : "live";
+      const cursor = input.officialCursor?.[branch];
+      if (cursor === null || !(await prepareOfficial())) return [];
+      count();
+      const page = await input.requestOfficialPage({ ...query.params, cursor: cursor ?? null });
+      if (page.nextCursor !== null && page.nextCursor === cursor)
+        throw new Error("Official Thread catalog pagination did not advance");
+      officialCursor[branch] = page.nextCursor;
+      return page.data.map((thread) => ({
+        entry: officialThreadListEntry(thread, "updated_at"),
+        ownership: { threadId: rowId(thread), owner: "codex" as const },
+        archived: query.archived,
+      }));
     });
 
   const readExternal = async () => {
@@ -230,6 +223,7 @@ export async function readThreadCatalog(
       compareThreadListEntries(left.entry, right.entry, "desc"),
     );
     const result: ThreadCatalogReadResult = {
+      officialCursor,
       threads: rows.map(({ entry }) => ({ ...entry.thread, turns: [] })),
       ownership: rows.map((row) => row.ownership),
       archivedThreadIds: [

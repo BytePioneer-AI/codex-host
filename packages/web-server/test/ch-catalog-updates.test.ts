@@ -57,7 +57,7 @@ it("deduplicates displayed titles while publishing fallback and cwd changes", as
   await refresh([]);
 });
 
-it("keeps an official Codex Thread when the catalog briefly omits it", async (t) => {
+it("retains an omitted official Thread without probing it or broadcasting deletion", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-catalog-codex-gap-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const host = nativeCodex(new FakeChHost());
@@ -92,11 +92,8 @@ it("keeps an official Codex Thread when the catalog briefly omits it", async (t)
   omit = true;
   const retained = await list();
   assert.ok(retained.ok);
-  assert.ok(
-    (retained.value as { items: Array<{ sessionId: string }> }).items.some(
-      (item) => item.sessionId === row.id,
-    ),
-  );
+  assert.deepEqual((retained.value as { items: unknown[] }).items, []);
+  assert.equal(host.requests.filter((r) => r.method === "thread/read").length, 0);
   assert.equal(
     emitted.some((entry) => entry.event === "api-session/removed"),
     false,
@@ -106,7 +103,15 @@ it("keeps an official Codex Thread when the catalog briefly omits it", async (t)
   assert.ok((await list()).ok);
   assert.deepEqual(
     emitted.filter((entry) => entry.event === "api-session/removed").map((entry) => entry.args[0]),
-    [row.id],
+    [],
+  );
+  const direct = await rpc.dispatch("session/projections", {
+    args: { request: { sessionId: row.id } },
+  });
+  assert.equal(
+    direct.ok,
+    false,
+    "a direct read, not page omission, observes a missing native Thread",
   );
 });
 

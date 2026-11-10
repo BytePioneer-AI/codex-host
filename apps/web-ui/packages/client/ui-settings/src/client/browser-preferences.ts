@@ -5,7 +5,14 @@ import type {
 } from "@deepseek-ai/dsh-api-remotes/client";
 import type { SettingsSchemaService } from "./schema.ts";
 
-const NAMESPACES = new Set(["ui-theme", "locale", "ui-chat", "ui-conversation", "ui-settings"]);
+const NAMESPACES = new Set([
+  "ui-theme",
+  "locale",
+  "ui-chat",
+  "ui-conversation",
+  "ui-settings",
+  "ui-workspace",
+]);
 
 export function isBrowserPreference(namespace: string): boolean {
   return NAMESPACES.has(namespace);

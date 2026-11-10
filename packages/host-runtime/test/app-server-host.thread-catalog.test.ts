@@ -28,12 +28,13 @@ it("routes the public catalog through existing client and Desktop/CDP entry poin
     threads: [{ id: "native", createdAt: 1, updatedAt: 1, turns: [] }],
     ownership: [{ threadId: "native", owner: "codex" }],
     archivedThreadIds: [],
+    officialCursor: { live: null },
   });
   expect(request).toHaveBeenCalledExactlyOnceWith("thread/list", {
     archived: false,
-    limit: 100,
+    limit: 20,
     cursor: null,
-    sortKey: "created_at",
+    sortKey: "updated_at",
     sortDirection: "desc",
   });
   expect(fixture.spawnOfficial).toHaveBeenCalledTimes(1);
@@ -139,9 +140,9 @@ it("lazily initializes the existing managed scope on a cold external Host and re
   expect(
     requests.filter((request) => request.method === "thread/list").map((request) => request.params),
   ).toEqual([
-    { archived: false, cursor: null, limit: 100, sortKey: "created_at", sortDirection: "desc" },
-    { archived: true, cursor: null, limit: 100, sortKey: "created_at", sortDirection: "desc" },
-    { archived: false, cursor: null, limit: 100, sortKey: "created_at", sortDirection: "desc" },
+    { archived: false, cursor: null, limit: 20, sortKey: "updated_at", sortDirection: "desc" },
+    { archived: true, cursor: null, limit: 20, sortKey: "updated_at", sortDirection: "desc" },
+    { archived: false, cursor: null, limit: 20, sortKey: "updated_at", sortDirection: "desc" },
   ]);
 });
 

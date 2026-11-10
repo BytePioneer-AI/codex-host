@@ -40,7 +40,7 @@ for (const owner of ["external", "codex"])
       {
         kind: "turn",
         title: "My task",
-        body: "Turn completed.",
+        body: "已回复",
         tag: f.row.id,
         sessionId: f.row.id,
         url: "./?session=thread%2Fid",
@@ -61,6 +61,8 @@ it("reports failures, ignores interrupted turns and deduplicates terminal invali
     f.messages.map((message) => message.kind),
     ["error"],
   );
+  assert.equal(f.messages[0]?.title, "My task");
+  assert.equal(f.messages[0]?.body, "运行失败");
   f.row.turns = [{ id: "cancelled", status: "interrupted", items: [] }];
   f.host.changed(f.row.id, "turn/completed");
   await delay(0);
@@ -104,7 +106,8 @@ for (const [method, kind] of [
     await delay(0);
     assert.equal(f.messages.length, 1);
     assert.equal(f.messages[0]?.kind, kind);
-    assert.equal(f.messages[0]?.body, pending.interaction.title);
+    assert.equal(f.messages[0]?.title, "My task");
+    assert.equal(f.messages[0]?.body, kind === "approval" ? "待授权" : "待回答");
     assert.equal(f.host.answers.length, 0);
     f.host.pending = [];
     f.host.changed(f.row.id, method);

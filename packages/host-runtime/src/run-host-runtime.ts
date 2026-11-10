@@ -125,6 +125,28 @@ export function resolveHostRuntimePaths(input: {
   };
 }
 
+/** New SSH external Threads always require the independent owner, including source launches. */
+export function createRemoteSharedExternalBridge(
+  runtime: string | undefined,
+  environment: NodeJS.ProcessEnv,
+  stockCodex: string,
+): SharedThreadBridge {
+  return new SharedThreadBridge({
+    connect: async () => {
+      if (!runtime) throw new Error("Shared external Host runtime path is unavailable");
+      return connectLocalSharedExternalHost({
+        launcher: sharedHostLauncherPath(runtime, environment),
+        runtime,
+        stockCodex,
+        dataDirectory: sharedHostDataDirectory(environment),
+        ...(environment.CODEX_HOME ? { codexHome: environment.CODEX_HOME } : {}),
+      });
+    },
+    delegateCreates: true,
+    diagnose: (error) => process.stderr.write(`codexhost shared external Host: ${String(error)}\n`),
+  });
+}
+
 function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
   stockCodexPath: string;
 } {
@@ -534,25 +556,11 @@ export async function runHostRuntime(input: {
         desktopOutput: sharedOwner.output,
         diagnosticOutput: process.stderr,
         externalOnly: true,
-        ...(maintenanceRuntimePath
-          ? {
-              sharedThreads: new SharedThreadBridge({
-                connect: () =>
-                  connectLocalSharedExternalHost({
-                    launcher: sharedHostLauncherPath(maintenanceRuntimePath, delegationEnvironment),
-                    runtime: maintenanceRuntimePath,
-                    stockCodex: stockCodexPath,
-                    dataDirectory: sharedHostDataDirectory(delegationEnvironment),
-                    ...(delegationEnvironment.CODEX_HOME
-                      ? { codexHome: delegationEnvironment.CODEX_HOME }
-                      : {}),
-                  }),
-                delegateCreates: true,
-                diagnose: (error) =>
-                  process.stderr.write(`codexhost shared external Host: ${String(error)}\n`),
-              }),
-            }
-          : {}),
+        sharedThreads: createRemoteSharedExternalBridge(
+          maintenanceRuntimePath,
+          delegationEnvironment,
+          stockCodexPath,
+        ),
         ...installedHarnessPluginOptions(delegationEnvironment, true, input.hostRuntimeUrl),
         mappingStore,
         closeMappingStoreOnExit: false,

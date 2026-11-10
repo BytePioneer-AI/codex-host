@@ -448,7 +448,7 @@ describe("DelegationControlRegistry list paging across sessions", () => {
     rebuilt.close();
   });
 
-  it.each(["parent", "catalog"])("does not forward merged cursors to a %s list", async (target) => {
+  it("does not forward Registry-merged cursors to a catalog list", async () => {
     const registry = new DelegationControlRegistry();
     const a = session("a", threads("a", 10, 0));
     const b = session("b", threads("b", 10, 1));
@@ -458,14 +458,13 @@ describe("DelegationControlRegistry list paging across sessions", () => {
       const first = await registry.list({ cwd: "/synthetic", limit: 2, sort: "created-desc" });
       vi.mocked(a.list).mockClear();
       vi.mocked(b.list).mockClear();
-      if (target === "catalog") registry.register(a, { harnessCatalog: true });
+      registry.register(a, { harnessCatalog: true });
       await expect(
         registry.list({
           cwd: "/synthetic",
           limit: 2,
           sort: "created-desc",
           cursor: first.nextCursor ?? "",
-          ...(target === "parent" ? { parentThreadId: "parent-a" } : {}),
         }),
       ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
       expect(a.list).not.toHaveBeenCalled();

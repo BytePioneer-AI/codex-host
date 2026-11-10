@@ -75,7 +75,12 @@ import { createHostWebOpener } from "./web-opener.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 import { ModelPriceCatalog, defaultModelPriceDirectory } from "./model-prices.js";
 import { UsageStatistics } from "./usage-statistics.js";
-import { runLocalDesktopBridge } from "./local-shared-host.js";
+import {
+  runLocalDesktopBridge,
+  connectLocalSharedExternalHost,
+  sharedHostLauncherPath,
+  sharedHostDataDirectory,
+} from "./local-shared-host.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
 export const MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE = "codexhost remote app-server listener";
@@ -121,6 +126,28 @@ export function resolveHostRuntimePaths(input: {
     packaged,
     maintenance: packaged ?? input.environment.CODEXHOST_HOST_RUNTIME_PATH,
   };
+}
+
+/** New SSH external Threads always require the independent owner, including source launches. */
+export function createRemoteSharedExternalBridge(
+  runtime: string | undefined,
+  environment: NodeJS.ProcessEnv,
+  stockCodex: string,
+): SharedThreadBridge {
+  return new SharedThreadBridge({
+    connect: async () => {
+      if (!runtime) throw new Error("Shared external Host runtime path is unavailable");
+      return connectLocalSharedExternalHost({
+        launcher: sharedHostLauncherPath(runtime, environment),
+        runtime,
+        stockCodex,
+        dataDirectory: sharedHostDataDirectory(environment),
+        ...(environment.CODEX_HOME ? { codexHome: environment.CODEX_HOME } : {}),
+      });
+    },
+    delegateCreates: true,
+    diagnose: (error) => process.stderr.write(`codexhost shared external Host: ${String(error)}\n`),
+  });
 }
 
 function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
@@ -171,8 +198,6 @@ export async function prepareDelegationRuntime(input: {
   hostRuntimePath?: string;
   /** Only the local Runtime can show pages in Codex Desktop. */
   preview?: LocalPreviewManager;
-  /** Only the local Runtime serves external clients; a managed remote Host does not. */
-  externalClients?: boolean;
   createHost(
     environment: NodeJS.ProcessEnv,
     onDelegationApi: (api: DelegationControlRegistration) => (() => void) | undefined,
@@ -206,19 +231,17 @@ export async function prepareDelegationRuntime(input: {
     watchApi: registry,
     ...(input.preview ? { preview: input.preview } : {}),
   });
-  const externalServer = input.externalClients
-    ? await startExternalClients(input.environment, registry, events).then(
-        (started) => {
-          if (started)
-            process.stderr.write(`codexhost external clients: listening on ${started.endpoint}\n`);
-          return started;
-        },
-        (error: unknown) => {
-          process.stderr.write(`codexhost external clients: ${String(error)}\n`);
-          return undefined;
-        },
-      )
-    : undefined;
+  const externalServer = await startExternalClients(input.environment, registry, events).then(
+    (started) => {
+      if (started)
+        process.stderr.write(`codexhost external clients: listening on ${started.endpoint}\n`);
+      return started;
+    },
+    (error: unknown) => {
+      process.stderr.write(`codexhost external clients: ${String(error)}\n`);
+      return undefined;
+    },
+  );
   const environment = {
     ...input.environment,
     ...delegationCliEnvironment(input.environment, input.hostRuntimePath),
@@ -388,7 +411,6 @@ export async function runHostRuntime(input: {
       environment,
       ...(hostRuntimePath ? { hostRuntimePath } : {}),
       preview,
-      externalClients: true,
       createHost: async (delegationEnvironment, onDelegationApi, registry) => {
         const official = await prepareLocalCodex({
           stockCodexPath,
@@ -551,6 +573,11 @@ export async function runHostRuntime(input: {
         desktopOutput: sharedOwner.output,
         diagnosticOutput: process.stderr,
         externalOnly: true,
+        sharedThreads: createRemoteSharedExternalBridge(
+          maintenanceRuntimePath,
+          delegationEnvironment,
+          stockCodexPath,
+        ),
         ...installedHarnessPluginOptions(delegationEnvironment, true, input.hostRuntimeUrl),
         mappingStore,
         closeMappingStoreOnExit: false,

@@ -1737,6 +1737,7 @@ export class AppServerHost {
         request.method === LOADED_SESSIONS_METHOD ||
         request.method === IDLE_RELEASE_SETTINGS_METHOD ||
         request.method === USAGE_STATISTICS_METHOD ||
+        request.method === DELEGATION_CAPACITY_SETTINGS_METHOD ||
         // Settings requests from Web clients; the shared service owns these handlers too.
         request.method.startsWith("codexhost/account/") ||
         request.method.startsWith("codexhost/update/") ||
@@ -1810,12 +1811,19 @@ export class AppServerHost {
     frame: Buffer<ArrayBufferLike>,
   ): Promise<Buffer<ArrayBufferLike>> {
     const claimed = await this.#claimQueuedOfficialStart(request);
-    return claimed
-      ? this.#rewriteOfficialDelegationMentions(
-          claimed,
-          encodeJsonFrame(claimed as unknown as JsonObject),
-        )
-      : this.#rewriteOfficialDelegationMentions(request, frame);
+    if (!claimed) return this.#rewriteOfficialDelegationMentions(request, frame);
+    try {
+      return await this.#rewriteOfficialDelegationMentions(
+        claimed,
+        encodeJsonFrame(claimed as unknown as JsonObject),
+      );
+    } catch (error) {
+      // The backend never saw this Turn start, so the queued task must stay startable.
+      const claim = this.#pendingQueuedClaims.get(request.id);
+      this.#pendingQueuedClaims.delete(request.id);
+      void claim?.settle("rejected");
+      throw error;
+    }
   }
 
   /**

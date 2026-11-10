@@ -1,6 +1,6 @@
 # 官方流量归属
 
-Host 夹在 Codex Desktop 与官方 app-server 之间。官方协议的方法和参数持续演进，Host 无法枚举，因此采用"默认放行、显式截获"：只处理确认归 codexhost 所有的请求，其余原样转发给官方，由官方自行校验。
+Host 夹在 Codex Desktop 与官方 app-server 之间。官方协议的方法和参数持续演进，Host 无法枚举，因此采用"默认放行、显式截获"：只处理确认归 codexhost 所有的请求。除下述原生 Fork 的模型继承外，其余原样转发给官方，由官方自行校验。
 
 ## 归属判别
 
@@ -12,6 +12,14 @@ Host 夹在 Codex Desktop 与官方 app-server 之间。官方协议的方法和
 - `thread/list.params.cursor` 是 Host 合并分页产生的游标（`carriesHostThreadListCursor`）。
 
 只有确认归属后才做严格校验并返回 `-32602` 等错误。带 codexhost 前缀但格式非法的标记或游标直接报错，不回落官方。
+
+## 原生 Codex Fork 的模型继承
+
+Desktop 可能在 `thread/fork` 中省略 Model，原生 app-server 因此使用全局默认配置，而不是来源 Thread 的配置。共享原生通道对 Desktop 与 Web 一致补齐省略的 Model、Provider、Thinking 和 Fast：来源只取当前原生进程通过 `thread/start`、`thread/resume`、`thread/fork` 响应或 `thread/settings/updated` 确认的设置，不读取 Host 的最后一次草稿选择，也不复制权限、指令或其他配置。
+
+显式指定 Model 或 Provider（包括 `config.model`、`config.model_provider`）时整条请求保持原样，避免为另一个 Model 注入不适用的 Thinking。只覆盖 Thinking 或 Fast 时保留该覆盖；`model: null` / `modelProvider: null` 仍表示省略。带 `path` 或 `history` 的 Fork、未知来源和无法识别的配置形状保持原生行为。`cwd`、精确轮次边界和未来协议字段均保留；继承的是来源 Thread 当前已确认的设置，不反推历史轮次当时的 Model。
+
+确认的设置只存在于当前原生进程的内存中，关闭、归档、取消订阅或删除 Thread 时清除，进程换代后也不沿用。已有客户端订阅在换代后的首次 Fork 前按既有恢复参数重新 `thread/resume`，以新响应确认设置；没有订阅或确认时仍直接交给原生处理。Fork 的身份、历史、执行和最终配置继续以官方响应为准，不创建外部映射，也不自动重试失败的请求。
 
 ## Desktop 创建入口
 

@@ -7,6 +7,7 @@
  * `sidebar.settings` registrant's (ui-settings), followed by optional footer
  * actions in `sidebar.footer.action`.
  */
+import type { ReactNode } from "react";
 import type {
   InjectFace,
   PropsLocale,
@@ -38,6 +39,12 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
      * the sidebar owns the button and resolves its label from list metadata.
      */
     "sidebar.panellist": { kind: "list"; scope: "root"; owner: SidebarPanelIconOwnerProps };
+    /** Actions after the global panels; they do not select a main panel. */
+    "sidebar.primary.action": {
+      kind: "list";
+      scope: "root";
+      owner: SidebarPrimaryActionOwnerProps;
+    };
     /**
      * The workspace/session browsing region: section header, search, the
      * grouped/flat session list, and every workspace dialog. Declared by this
@@ -77,6 +84,14 @@ export interface SidebarPanelIconOwnerProps {
   size: number;
   /** Whether this panel is selected in the main column. */
   active: boolean;
+}
+
+/** Shell-owned button chrome for actions beside the global panel entries. */
+export interface SidebarPrimaryActionOwnerProps {
+  /** Requested icon size; the shell owns wide/rail presentation. */
+  size: number;
+  /** Render a navigation action without changing the active main panel. */
+  renderAction: (action: { label: string; icon: ReactNode; onClick: () => void }) => ReactNode;
 }
 
 /** Serializable metadata for one active global panel list registration. */
@@ -148,6 +163,7 @@ export type SidebarRootComponentProps = PropsRuntime<"sidebar"> &
     | "sidebar.brand.name"
     | "sidebar.toggle.badge"
     | "sidebar.panellist"
+    | "sidebar.primary.action"
     | "sidebar.workspaces"
     | "sidebar.settings"
     | "sidebar.footer.action"

@@ -608,7 +608,9 @@ if (userArguments.length === 0) {
 } else if (
   userArguments[0] === "harness" ||
   userArguments[0] === "delegate" ||
-  userArguments[0] === "thread"
+  userArguments[0] === "thread" ||
+  userArguments[0] === "client" ||
+  userArguments[0] === "events"
 ) {
   launchArguments = null;
   delegationArguments = userArguments;
@@ -632,7 +634,9 @@ if (userArguments.length === 0) {
       "  codexhost delegate --help",
       "  codexhost harness inspect ...",
       "  codexhost delegate start ...",
-      "  codexhost thread send|cancel|read|wait|list ...",
+      "  codexhost thread send|cancel|read|wait|watch|watches|list ...",
+      "  codexhost client add|list|remove ...",
+      "  codexhost events [--after <id>] [--limit <n>] [--follow true|false]",
       "",
       "This npm package uses the current Node.js runtime and the packaged",
       "Rust launcher/shim. Without Codex Desktop, codexhost opens Web.",

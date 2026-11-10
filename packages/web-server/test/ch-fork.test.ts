@@ -12,13 +12,15 @@ import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { FakeChHost } from "./support/ch-host.ts";
 import { defined } from "./support/defined.ts";
+import { nativeCodex } from "./support/native-codex.ts";
 
-function fixture(t: TestContext, count = 12) {
+function fixture(t: TestContext, count = 12, native = false) {
   const root = mkdtempSync(join(tmpdir(), "ch-fork-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const host = new FakeChHost();
+  const host = native ? nativeCodex(new FakeChHost()) : new FakeChHost();
   host.inspection.capabilities.history.fork = true;
-  const source = host.add("source", join(root, "not-created"));
+  const source = host.add(native ? "native-source" : "source", join(root, "not-created"));
+  if (native) source.modelProvider = "custom-provider";
   const initial = defined(source.turns[0]);
   source.turns = Array.from({ length: count }, (_, i) => ({ ...initial, id: `native-${i}` }));
   const sessions = new ChSessions(
@@ -34,7 +36,7 @@ function fixture(t: TestContext, count = 12) {
     assert.ok(result.ok, result.ok ? undefined : result.error.message);
     return result.value as T;
   };
-  const fork = (request: object = { sessionId: "source" }) =>
+  const fork = (request: object = { sessionId: source.id }) =>
     rpc.dispatch("session/fork", { args: { request } });
   return { root, host, source, call, fork };
 }
@@ -145,6 +147,132 @@ it("returns a confirmed fork even when the subsequent catalog refresh fails", as
   };
   assert.deepEqual(await call("session/fork", { sessionId: "source" }), { sessionId: "fork-1" });
   assert.equal(host.requests.filter((r) => r.method === "codexhost/thread/fork").length, 1);
+});
+
+it("forks native Codex at the latest or paginated exact boundary and continues the child", async (t) => {
+  const { root, host, source, call } = fixture(t, 12, true);
+  const latest = await call<{ sessionId: string }>("session/fork", { sessionId: source.id });
+  assert.equal(latest.sessionId, "native-fork-1");
+  const page = (beforeSeq?: number) =>
+    call<{ records: Array<{ event: WireEvent }> }>("session/page", {
+      address: { sessionId: source.id },
+      throughSeq: Number.MAX_SAFE_INTEGER,
+      ...(beforeSeq === undefined ? {} : { beforeSeq }),
+      maxMessages: 1000,
+    });
+  const tail = await page();
+  const tailEnd = defined(tail.records.filter((r) => r.event.type === "turn/end")[1]).event.seq;
+  const older = await page(defined(tail.records[0]).event.seq);
+  const oldEnd = defined(older.records.find((r) => r.event.type === "turn/end")).event.seq;
+  source.turns.push({ id: "later-active-turn", status: "inProgress", items: [] });
+  source.status.type = "active";
+  source.updatedAt++;
+  const original = structuredClone(source);
+  const child = await call<{ sessionId: string }>("session/fork", {
+    sessionId: source.id,
+    atSeq: oldEnd,
+  });
+  await call("session/fork", { sessionId: source.id, atSeq: tailEnd });
+  assert.deepEqual(
+    host.requests.filter((r) => r.method === "thread/fork").map((r) => r.params),
+    ["native-11", "native-2", "native-8"].map((lastTurnId) => ({
+      threadId: source.id,
+      lastTurnId,
+      excludeTurns: true,
+    })),
+  );
+  assert.equal(host.threads.get(child.sessionId)?.turns.length, 3);
+  assert.equal(host.threads.get("native-fork-3")?.turns.length, 9);
+  assert.equal(host.threads.get(child.sessionId)?.cwd, source.cwd);
+  const list = await call<{ items: Array<{ sessionId: string }> }>("session/list");
+  assert.ok(list.items.some((row) => row.sessionId === child.sessionId));
+  await call("session/prompt", {
+    sessionId: child.sessionId,
+    content: [{ type: "text", text: "continue the fork" }],
+  });
+  assert.equal(
+    host.requests.findLast((r) => r.method === "turn/start")?.params.threadId,
+    child.sessionId,
+  );
+  assert.deepEqual(source, original);
+  assert.equal(
+    host.requests.some((r) => r.method === "codexhost/thread/fork" || r.method === "thread/start"),
+    false,
+  );
+  assert.equal(existsSync(source.cwd), false);
+  assert.deepEqual(readdirSync(root), ["workspaces.json"]);
+});
+
+it("supports read-only Desktop inspection but honors an explicit native fork capability refusal", async (t) => {
+  const { host, source, call, fork } = fixture(t, 1, true);
+  const request = host.request.bind(host);
+  let supported = true;
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/thread/inspect")
+      return {
+        owner: "codex",
+        locked: true,
+        ...(supported
+          ? {}
+          : { history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false } }),
+      } as T;
+    return request<T>(method, params);
+  };
+  assert.deepEqual(await call("session/fork", { sessionId: source.id }), {
+    sessionId: "native-fork-1",
+  });
+  supported = false;
+  const result = await fork();
+  assert.ok(!result.ok);
+  assert.equal(result.error.code, "session/fork-unavailable");
+  assert.equal(host.requests.filter((r) => r.method === "thread/fork").length, 1);
+});
+
+it("does not retry an unknown native Codex fork outcome or fall back to an external fork", async (t) => {
+  const { host, fork } = fixture(t, 1, true);
+  host.forkError = "Connection lost; fork outcome unknown";
+  const result = await fork();
+  assert.ok(!result.ok);
+  assert.match(result.error.message, /fork outcome unknown/);
+  assert.equal(host.requests.filter((r) => r.method === "thread/fork").length, 1);
+  assert.equal(
+    host.requests.some((r) => r.method === "codexhost/thread/fork"),
+    false,
+  );
+});
+
+it("returns a confirmed native Codex fork even when catalog refresh fails", async (t) => {
+  const { host, source, call } = fixture(t, 1, true);
+  await call("session/list");
+  const request = host.request.bind(host);
+  let created = false;
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (created && method === "codexhost/thread/catalog/read")
+      throw new Error("Catalog unavailable");
+    const result = await request<T>(method, params);
+    if (method === "thread/fork") created = true;
+    return result;
+  };
+  assert.deepEqual(await call("session/fork", { sessionId: source.id }), {
+    sessionId: "native-fork-1",
+  });
+  assert.equal(host.requests.filter((r) => r.method === "thread/fork").length, 1);
+});
+
+it("does not report a native Codex fork as confirmed without a distinct child ID", async (t) => {
+  const { host, source, fork } = fixture(t, 1, true);
+  const request = host.request.bind(host);
+  for (const id of [undefined, "", "  ", 7, source.id]) {
+    host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+      if (method === "thread/fork") return { thread: { id } } as T;
+      return request<T>(method, params);
+    };
+    const result = await fork();
+    assert.ok(!result.ok);
+    assert.equal(result.error.code, "session/fork-unconfirmed");
+    assert.match(result.error.message, /Do not retry automatically/);
+  }
+  assert.equal(host.threads.size, 1);
 });
 
 it("rejects a retired rendering window rather than forking a stale coordinate", async () => {

@@ -33,16 +33,19 @@ it(
     const browser = await chromium.launch();
     t.after(() => browser.close());
     const profiles = [
-      { name: "desktop", automatic: true },
+      { name: "desktop", automatic: true, hasTouch: false },
+      { name: "desktop-UA touch device", automatic: true, hasTouch: true },
       {
         name: "iPhone",
         automatic: false,
+        hasTouch: true,
         userAgent:
           "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1",
       },
       {
         name: "desktop-mode iPad",
         automatic: false,
+        hasTouch: true,
         userAgent:
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.6 Safari/605.1.15",
       },
@@ -53,7 +56,7 @@ it(
       const context = await browser.newContext({
         viewport: { width: 1440, height: 1000 },
         ...(profile.userAgent === undefined ? {} : { userAgent: profile.userAgent }),
-        hasTouch: !profile.automatic,
+        hasTouch: profile.hasTouch,
       });
       try {
         if (profile.name === "desktop-mode iPad") {
@@ -119,6 +122,70 @@ it(
           profile.automatic,
           `${profile.name}: session switch`,
         );
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.reload();
+        await page.locator("[data-phone]").waitFor();
+        await input.waitFor();
+        await page.evaluate(
+          () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+        );
+        assert.equal(
+          await input.evaluate((node) => node === document.activeElement),
+          !profile.hasTouch,
+          `${profile.name}: narrow viewport focus policy`,
+        );
+        if (profile.hasTouch) {
+          await input.click();
+          // Safari touch activation need not focus the drawer button, leaving
+          // the composer as the modal's previous focus destination.
+          await page
+            .getByRole("button", { name: "Open sidebar", exact: true })
+            .dispatchEvent("click");
+          await page.locator("[data-phone-drawer][data-open]").waitFor();
+          await page.evaluate(() => {
+            document.body.dataset.automaticFocusCount = "0";
+            document.addEventListener("focusin", (event) => {
+              if (
+                event.target instanceof HTMLElement &&
+                event.target.matches("[data-composer-input]")
+              )
+                document.body.dataset.automaticFocusCount = String(
+                  Number(document.body.dataset.automaticFocusCount) + 1,
+                );
+            });
+          });
+          await page.locator('[data-row-key="session:one"]').click();
+          await page.getByText("First conversation answer", { exact: true }).waitFor();
+          await page.waitForFunction(
+            () => !document.querySelector("[data-phone-drawer][data-open]"),
+          );
+          await page.evaluate(
+            () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+          );
+          assert.equal(
+            await input.evaluate((node) => node === document.activeElement),
+            false,
+            `${profile.name}: drawer session switch must not restore composer focus`,
+          );
+          assert.equal(
+            await page.locator("body").getAttribute("data-automatic-focus-count"),
+            "0",
+            `${profile.name}: no transient focus that could raise the keyboard`,
+          );
+          await page.getByRole("button", { name: "New session", exact: true }).click();
+          await page.getByText("What should we build today?", { exact: true }).waitFor();
+          await input.waitFor();
+          await page.evaluate(
+            () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+          );
+          assert.equal(
+            await page.locator("body").getAttribute("data-automatic-focus-count"),
+            "0",
+            `${profile.name}: new session must not focus the composer`,
+          );
+          await input.click();
+          assert.equal(await input.evaluate((node) => node === document.activeElement), true);
+        }
         assert.deepEqual(errors, []);
       } finally {
         await context.close();

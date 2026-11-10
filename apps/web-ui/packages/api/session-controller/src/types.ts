@@ -289,6 +289,8 @@ export interface SkillListValue {
 
 /** Session list request. */
 export interface SessionListRequest {
+  /** Resolve one direct-link identity without enumerating its historical page. */
+  readonly sessionId?: SessionId;
   readonly cursor?: string;
   /** Include archived summaries in this request; defaults to false. */
   readonly includeArchived?: boolean;
@@ -297,6 +299,8 @@ export interface SessionListRequest {
 /** Session list response value. */
 export interface SessionListValue {
   readonly items: readonly SessionSummary[];
+  /** Present for partial catalogs; null means both native branches are exhausted. */
+  readonly nextCursor?: string | null;
   /** Server-known archive IDs, including previously discovered IDs; not a full discovery. */
   readonly archivedSessionIds?: readonly SessionId[];
 }

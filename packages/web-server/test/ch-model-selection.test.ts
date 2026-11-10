@@ -16,6 +16,7 @@ import {
   type StreamSink,
 } from "../src/transport.ts";
 import { FakeChChannel } from "./support/ch-channel.ts";
+import { nativeCodex } from "./support/native-codex.ts";
 
 class Streams extends StreamRegistry {
   readonly endpoints = new Map<string, StreamHandler>();
@@ -25,11 +26,11 @@ class Streams extends StreamRegistry {
   }
 }
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, native = false) {
   const root = mkdtempSync(join(tmpdir(), "ch-model-selection-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const host = new FakeChChannel();
-  host.add("source", root);
+  const host = native ? nativeCodex(new FakeChChannel()) : new FakeChChannel();
+  const source = host.add(native ? "native-source" : "source", root);
   let configuration = harnessModelSelectionStateSchema.parse({
     effectiveModel: { id: "native" },
     effectiveThinkingOptionId: "auto",
@@ -40,6 +41,8 @@ async function fixture(t: TestContext) {
     if (method === "codexhost/thread/model/select") {
       host.requests.push({ method, params });
       if (behavior.rejectModel) throw new RpcError("model/rejected", "Model rejected");
+      if (native && (params.model as { id: string }).id === configuration.effectiveModel?.id)
+        throw new RpcError("host/rejected", "Codex settings confirmation timed out");
       configuration = harnessModelSelectionStateSchema.parse({
         ...configuration,
         effectiveModel: { id: behavior.modelId },
@@ -75,7 +78,7 @@ async function fixture(t: TestContext) {
   const streams = new Streams();
   sessions.register(rpc, streams);
   const read = () =>
-    rpc.dispatch("session/projections", { args: { request: { sessionId: "source" } } });
+    rpc.dispatch("session/projections", { args: { request: { sessionId: source.id } } });
   assert.ok((await read()).ok);
   await new Promise<void>((resolve) => setImmediate(resolve));
   const frames: Array<Record<string, unknown>> = [];
@@ -94,13 +97,13 @@ async function fixture(t: TestContext) {
   };
   await streams.endpoints.get("session/control")?.({}, sink);
   t.after(() => sink.end());
-  const select = (reasoningEffort?: string) =>
+  const select = (reasoningEffort?: string, model = "requested-model") =>
     rpc.dispatch("session/selectModel", {
       args: {
         request: {
-          sessionId: "source",
-          provider: "fake",
-          model: "requested-model",
+          sessionId: source.id,
+          provider: native ? "codex" : "fake",
+          model,
           ...(reasoningEffort ? { reasoningEffort } : {}),
         },
       },
@@ -110,8 +113,8 @@ async function fixture(t: TestContext) {
   return { host, sessions, read, select, selections, behavior };
 }
 
-function expectedSelection(model: string, reasoningEffort = "auto") {
-  const selection = { provider: "fake", model, reasoningEffort };
+function expectedSelection(model: string, reasoningEffort = "auto", provider = "fake") {
+  const selection = { provider, model, reasoningEffort };
   return { lastUsed: selection, next: selection };
 }
 
@@ -143,6 +146,52 @@ it(
     );
   },
 );
+
+it("changes native Thinking without resubmitting the unchanged Model", async (t) => {
+  const f = await fixture(t, true);
+  const before = f.host.requests.length;
+  assert.ok((await f.select("high", "native")).ok);
+  assert.deepEqual(
+    f.host.requests.slice(before).map(({ method }) => method),
+    ["codexhost/thread/inspect", "codexhost/thread/thinking/select"],
+  );
+  assert.deepEqual(f.selections().at(-1)?.value, expectedSelection("native", "high", "codex"));
+  const confirmed = f.host.requests.length;
+  assert.ok((await f.select("high", "native")).ok);
+  assert.deepEqual(
+    f.host.requests.slice(confirmed).map(({ method }) => method),
+    ["codexhost/thread/inspect"],
+  );
+});
+
+it("does not submit settings when native Model and Thinking are already selected", async (t) => {
+  const f = await fixture(t, true);
+  const before = f.host.requests.length;
+  assert.ok((await f.select("auto", "native")).ok);
+  assert.deepEqual(
+    f.host.requests.slice(before).map(({ method }) => method),
+    ["codexhost/thread/inspect"],
+  );
+  assert.deepEqual(f.selections(), []);
+});
+
+it("still submits a changed native Model before changing Thinking", async (t) => {
+  const f = await fixture(t, true);
+  const before = f.host.requests.length;
+  assert.ok((await f.select("high")).ok);
+  assert.deepEqual(
+    f.host.requests.slice(before).map(({ method }) => method),
+    [
+      "codexhost/thread/inspect",
+      "codexhost/thread/model/select",
+      "codexhost/thread/thinking/select",
+    ],
+  );
+  assert.deepEqual(
+    f.selections().at(-1)?.value,
+    expectedSelection("confirmed-model", "high", "codex"),
+  );
+});
 
 it("does not reapply Thinking already confirmed by the Model switch", async (t) => {
   const f = await fixture(t);

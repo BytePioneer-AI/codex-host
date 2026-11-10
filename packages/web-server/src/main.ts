@@ -50,6 +50,7 @@ import { SIDEBAR_BROWSER_PATH } from "@codexhost/shared-contracts/sidebar-browse
 import { SidebarBrowser } from "./sidebar-browser.ts";
 import { registerMisc } from "./misc.ts";
 import { PushNotifier } from "./push.ts";
+import { ChPushNotifications } from "./ch-push-notifications.ts";
 import { CLIENT_GLOBALS, CLIENT_PLUGINS, HMR_CLIENT_PLUGIN } from "./plugins.ts";
 import { ChSessions } from "./ch-sessions.ts";
 import { WebHarnessDisplaySettings } from "./harness-display-settings.ts";
@@ -297,16 +298,9 @@ if (accessTokens !== undefined) {
     push.dropOwner(id);
   });
 }
-sessions.notifier = (notification) => {
-  void push.notify({
-    kind: notification.kind,
-    title: notification.title,
-    body: notification.body,
-    tag: notification.sessionId,
-    sessionId: notification.sessionId,
-    url: `./?session=${encodeURIComponent(notification.sessionId)}`,
-  });
-};
+const pushNotifications = chHost.realtime
+  ? new ChPushNotifications(chHost.realtime, push)
+  : undefined;
 const devWebUi = values["dev-web-ui"] === undefined ? undefined : resolve(values["dev-web-ui"]);
 const assetOptions: WebAssetOptions =
   PACKED && devWebUi === undefined
@@ -814,6 +808,7 @@ async function shutdown(exitCode = 0): Promise<void> {
   await sidebarBrowser.close();
   await dsh?.close();
   await extensions.cleanup(true);
+  pushNotifications?.close();
   await sessions.close();
   await preferences?.close();
   displaySettings.close();

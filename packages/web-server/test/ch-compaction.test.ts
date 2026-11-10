@@ -98,6 +98,36 @@ it("recognizes native compression inside another explicit command without labell
   );
 });
 
+it("finishes native compaction presentation before the Turn ends and keeps it finished on reopen", async () => {
+  const host = new FakeChChannel();
+  const row = host.add("codex-compaction", "/project");
+  const item = { id: "compact", type: "contextCompaction", status: "inProgress" };
+  row.turns = [{ id: "turn", status: "inProgress", items: [item] }];
+  row.status = { type: "active" };
+  const view = new ChThreadHistory(host, row, "codex", () => {});
+  await view.refresh();
+  assert.equal(view.log.projections.compacting, true);
+  item.status = "completed";
+  await view.refresh(true);
+  await view.refresh(true);
+  assert.equal(view.log.projections.compacting, false);
+  assert.equal(view.log.events.filter((event) => event.type === "tool/call").length, 1);
+  assert.equal(view.log.events.filter((event) => event.type === "tool/result").length, 1);
+  assert.equal(
+    view.log.events.some((event) => event.type === "turn/end"),
+    false,
+  );
+
+  const reopened = new ChThreadHistory(host, row, "codex", () => {});
+  await reopened.refresh();
+  assert.equal(reopened.log.projections.compacting, false);
+  assert.equal(reopened.log.events.filter((event) => event.type === "tool/result").length, 1);
+  assert.equal(
+    reopened.log.events.some((event) => event.type === "command/run"),
+    false,
+  );
+});
+
 it("settles an automatic compaction row while the ordinary Turn keeps running", async () => {
   const host = new FakeChChannel();
   const row = host.add("automatic", "/project");

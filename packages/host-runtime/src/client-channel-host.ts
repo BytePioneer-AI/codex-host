@@ -36,6 +36,7 @@ import { nativeThreadSkillInput } from "./codex-runtime/native-thread-controls.j
 const OFFICIAL_METHODS: Readonly<Record<string, "native" | "host">> = {
   "thread/read": "native",
   "thread/resume": "native",
+  "thread/fork": "native",
   "thread/turns/list": "native",
   "thread/items/list": "native",
   "thread/name/set": "native",
@@ -314,12 +315,6 @@ export class ClientChannelHost {
           );
         }
       }
-      if (method === "codexhost/thread/queue/send-now") {
-        if (typeof params.itemId !== "string" || !params.itemId)
-          return { error: { code: -32602, message: "itemId is required" } };
-        nativeParams = { ...nativeParams, queuedSubmissionId: params.itemId };
-        delete nativeParams.itemId;
-      }
       if (method === "thread/start") {
         nativeParams = { ...params };
         if (typeof params.model === "object" && params.model && !Array.isArray(params.model)) {
@@ -342,18 +337,15 @@ export class ClientChannelHost {
           delete nativeParams.projectlessWorkspace;
         }
       }
-      return normalize(
-        await nativeChannel.request(
-          method === "codexhost/thread/queue/send-now"
-            ? "thread/queue/start"
-            : method === "turn/start" && params.delivery === "queue"
-              ? "thread/queue/add"
-              : method,
-          nativeParams,
-        ),
-      );
+      return normalize(await nativeChannel.request(method, nativeParams));
     };
     const operation = native ? nativeSubmit : submit;
+    if (native && method === "codexhost/thread/queue/send-now")
+      return this.#clientReceipts.run(
+        JSON.stringify([method, params.threadId, params.itemId]),
+        params,
+        operation,
+      );
     return method === "turn/start" && typeof params.clientUserMessageId === "string"
       ? this.#clientReceipts.run(
           JSON.stringify([params.threadId, params.clientUserMessageId]),
@@ -394,10 +386,17 @@ export class ClientChannelHost {
         const user = turn.items.find((item) => item.type === "userMessage");
         if (clientId && user && typeof user.clientId !== "string") user.clientId = clientId;
       }
+      const latestStatus = snapshot.turnsPage.data[0]?.status;
+      const pausedReason =
+        items.length > 0 &&
+        !snapshot.activeTurnId &&
+        (latestStatus === "interrupted" || latestStatus === "failed")
+          ? latestStatus
+          : null;
       return compactClientSnapshot(
         clientThreadSnapshotSchema.parse({
           ...snapshot,
-          queue: { items, pausedReason: null },
+          queue: { items, pausedReason },
         }),
         options,
       );

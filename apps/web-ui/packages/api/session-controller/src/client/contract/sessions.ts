@@ -111,6 +111,10 @@ export interface ISessions {
    * @returns completion of the current or newly started Session-list refresh.
    */
   refresh(): Promise<void>;
+  /** Load one older native catalog page in this browser's archive scope. */
+  loadMore(): Promise<void>;
+  /** Read one direct-link identity without walking the catalog. */
+  loadSummary(sessionId: SessionId): Promise<void>;
   /**
    * Set this browser's archive query scope and refresh when it changes.
    * Reconnects and automatic refreshes reuse the choice; no Host-global setting is written.

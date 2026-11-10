@@ -14,6 +14,7 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import { registerHarnessDiscovery } from "./harness-discovery.tsx";
 import { registerThreadReferenceDiscovery } from "./thread-reference-discovery.ts";
+import { registerThreadReferenceAction } from "./thread-reference-action.ts";
 import { desktopScreenshotApi, sentMessageEditApi, turnDiffsApi, voiceApi } from "./api.ts";
 import { DesktopScreenshot } from "./desktop-screenshot.ts";
 import {
@@ -33,9 +34,11 @@ import {
   type VoiceInputFace,
 } from "./VoiceInput.tsx";
 import { ImportIcon } from "./ImportIcon.tsx";
+import { RemoteAccessAction, type RemoteAccessActionFace } from "./RemoteAccessAction.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
 import { HostConnectionStatus } from "./HostConnectionStatus.tsx";
+import { SessionOpeningNotice } from "./SessionOpeningNotice.tsx";
 import { HostUsageDock } from "./HostUsageDock.tsx";
 import type {
   ComposerAttachment,
@@ -90,12 +93,12 @@ export const inject = [
 
 /** Console settings pages shown in Web settings, after General. */
 const HOST_SETTINGS_PAGES = [
-  ["connections", "settings.connections"],
-  ["resources", "settings.resources"],
-  ["accounts", "settings.accounts"],
-  ["usage-statistics", "settings.usage"],
-  ["updates", "settings.updates"],
-  ["about", "settings.about"],
+  ["accounts", "settings.accounts", 2],
+  ["connections", "settings.connections", 3],
+  ["usage-statistics", "settings.usage", 4],
+  ["resources", "settings.resources", 5],
+  ["updates", "settings.updates", 7],
+  ["about", "settings.about", 8],
 ] as const;
 
 /**
@@ -123,6 +126,7 @@ export function apply(ctx: ClientContext): void {
   ctx.provide("chatMessageEditing", sentMessageEditApi);
   ctx.provide("chatTurnDiffs", turnDiffsApi);
   ctx.inject(["conversation"], (scope) => {
+    registerThreadReferenceAction(scope);
     const screenshot = new DesktopScreenshot(desktopScreenshotApi.capture);
     const conversation = scope.conversation as ConversationController;
     const drafts: DesktopScreenshotFace["drafts"] = {
@@ -259,7 +263,7 @@ export function apply(ctx: ClientContext): void {
           openSession: async (threadId, signal) => {
             const id = threadId as SessionId;
             if (ctx.sessions.list.getSnapshot().byId[id] === undefined)
-              await ctx.sessions.refresh();
+              await ctx.sessions.loadSummary(id);
             signal.throwIfAborted();
             if (ctx.sessions.list.getSnapshot().byId[id] === undefined)
               throw new Error(t("catalogPending"));
@@ -282,6 +286,21 @@ export function apply(ctx: ClientContext): void {
       ImportIcon,
     ),
   );
+  ctx.inject(["settingsNavigation"], (scope) => {
+    scope.slots.inject("sidebar.primary.action", () =>
+      scope.slots.register(
+        {
+          name: "sidebar.primary.action",
+          id: "codexhost-remote-access",
+          locale: NS,
+          inject: (): RemoteAccessActionFace => ({
+            openSection: (id) => scope.settingsNavigation.openSection(id),
+          }),
+        },
+        RemoteAccessAction,
+      ),
+    );
+  });
   ctx.slots.inject("settings.general.item", () =>
     ctx.slots.register(
       {
@@ -308,7 +327,7 @@ export function apply(ctx: ClientContext): void {
       {
         name: "settings.section",
         id: "codexhost-ui-extensions",
-        order: 8,
+        order: 6,
         label: () => t("settings.extensions"),
         locale: NS,
         inject: (): WebExtensionsFace => ({ resolveText: (text) => ctx.locale.resolveText(text) }),
@@ -321,20 +340,20 @@ export function apply(ctx: ClientContext): void {
       {
         name: "settings.section",
         id: "codexhost-connect-devices",
-        order: 9,
-        label: () => t("settings.connectDevices"),
+        order: 1,
+        label: () => t("remoteAccess"),
         locale: NS,
       },
       ConnectDevicesSection,
     ),
   );
-  HOST_SETTINGS_PAGES.forEach(([pageId, label], index) => {
+  HOST_SETTINGS_PAGES.forEach(([pageId, label, order]) => {
     ctx.slots.inject("settings.section", () =>
       ctx.slots.register(
         {
           name: "settings.section",
           id: `codexhost-${pageId}`,
-          order: 10 + index,
+          order,
           label: () => t(label),
           locale: NS,
           inject: (): HostSettingsSectionFace => ({ pageId, locale, colorScheme }),
@@ -344,16 +363,21 @@ export function apply(ctx: ClientContext): void {
     );
   });
 
-  ctx.slots.inject("sidebar.session.row.identity", () =>
-    ctx.slots.register(
-      {
-        name: "sidebar.session.row.identity",
-        id: "codexhost.harness",
-        inject: () => ({ list: ctx.sessions.list }),
-      },
-      SessionHarnessIcon,
-    ),
-  );
+  for (const name of [
+    "sidebar.session.row.identity",
+    "workspace.recent.shortcut.identity",
+  ] as const) {
+    ctx.slots.inject(name, () =>
+      ctx.slots.register(
+        {
+          name,
+          id: "codexhost.harness",
+          inject: () => ({ list: ctx.sessions.list }),
+        },
+        SessionHarnessIcon,
+      ),
+    );
+  }
 
   ctx.slots.inject("conversation.header.notice", () =>
     ctx.slots.register(
@@ -367,6 +391,17 @@ export function apply(ctx: ClientContext): void {
         }),
       },
       HostConnectionStatus,
+    ),
+  );
+  ctx.slots.inject("conversation.header.notice", () =>
+    ctx.slots.register(
+      {
+        name: "conversation.header.notice",
+        id: "codexhost.session-opening",
+        locale: NS,
+        inject: () => ({ navigation: ctx.uiWorkspace }),
+      },
+      SessionOpeningNotice,
     ),
   );
   ctx.slots.inject("conversation.composer.dock", () =>
@@ -405,10 +440,7 @@ export function apply(ctx: ClientContext): void {
     if (sessionId === null) return;
     url.searchParams.delete("session");
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
-    // Give the Session list a moment to load before revealing the target.
-    setTimeout(() => {
-      face.openSession(sessionId);
-    }, 600);
+    face.openSession(sessionId);
   };
   openFromUrl();
   const onMessage = (event: MessageEvent): void => {

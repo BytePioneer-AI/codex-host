@@ -75,7 +75,6 @@ it(
         const frame = JSON.parse(String(message));
         if (rejected.has(frame.streamId)) return;
         if (failHistory && follows.has(frame.streamId)) {
-          failHistory = false;
           rejected.add(frame.streamId);
           socket.send(
             JSON.stringify({
@@ -146,13 +145,15 @@ it(
     pending.splice(0).forEach((send) => send());
     await page.locator("[data-web-connection]").waitFor({ state: "hidden", timeout: 5000 });
     assert.equal(await composer.innerText(), "Keep this mobile draft");
-    // Restoring a cached page revalidates the carrier. A terminal history failure
-    // must remain visible and the retry action must actually reopen that history.
+    // A terminal history failure on reconnect must remain visible. Cached-page
+    // restoration alone keeps healthy subscriptions, so request an actual recovery.
     failHistory = true;
-    await page.evaluate(() =>
-      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })),
-    );
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("offline"));
+      window.dispatchEvent(new Event("online"));
+    });
     await page.locator('[data-web-connection="error"]').waitFor({ timeout: 5000 });
+    failHistory = false;
     assert.equal(await page.getByText("existing CH answer", { exact: true }).count(), 1);
     await page.locator('[data-web-connection="error"] button').click();
     await page.locator("[data-web-connection]").waitFor({ state: "hidden", timeout: 5000 });
@@ -248,12 +249,15 @@ it(
     `);
     let sockets = 0;
     let pings = 0;
+    let subscriptions = 0;
     let dropPongs = false;
     await page.routeWebSocket("**/api/remote.mux", (socket) => {
       sockets++;
       const server = socket.connectToServer();
       socket.onMessage((message) => {
-        if (JSON.parse(String(message)).type === "ping") pings++;
+        const frame = JSON.parse(String(message));
+        if (frame.type === "ping") pings++;
+        if (frame.type === "open") subscriptions++;
         server.send(message);
       });
       server.onMessage((message) => {
@@ -267,6 +271,7 @@ it(
         document.dispatchEvent(new Event("visibilitychange"));
         window.__visibility = "visible";
         document.dispatchEvent(new Event("visibilitychange"));
+        window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
       `);
     const statuses = () => page.evaluate<string[]>("window.__statuses");
     await page.goto(url);
@@ -276,12 +281,17 @@ it(
     await page.locator('[data-row-key^="session:"]').filter({ hasText: "Tab return" }).click();
     await page.getByText("existing CH answer", { exact: true }).waitFor();
     await page.locator("[data-chat-running]").first().waitFor();
-    await page.evaluate("window.__statuses = []");
+    await page.evaluate("window.__statuses = []; window.__samePage = true");
+    const composer = page.locator("[data-composer-input]");
+    await composer.fill("Keep this tab draft");
+    const originalSubscriptions = subscriptions;
 
     await returnToTab();
     await page.waitForTimeout(500);
     assert.equal(sockets, 1);
     assert.equal(pings, 1);
+    assert.equal(subscriptions, originalSubscriptions);
+    assert.equal(await composer.innerText(), "Keep this tab draft");
     assert.ok(
       (await statuses()).every((status) => status.startsWith("Working")),
       `unexpected status: ${JSON.stringify(await statuses())}`,
@@ -291,11 +301,15 @@ it(
     await page.evaluate("window.__statuses = []");
     dropPongs = true;
     await returnToTab();
-    const deadline = Date.now() + 8000;
+    const started = Date.now();
+    const deadline = started + 4000;
     while (sockets < 2 && Date.now() < deadline) await page.waitForTimeout(50);
     dropPongs = false;
     assert.equal(sockets, 2);
+    assert.ok(Date.now() - started < 4000, "foreground recovery must use the short deadline");
     await page.locator("[data-web-connection]").waitFor({ state: "hidden", timeout: 5000 });
+    assert.equal(await composer.innerText(), "Keep this tab draft");
+    assert.equal(await page.evaluate("window.__samePage"), true);
     assert.equal(await page.getByText("existing CH answer", { exact: true }).count(), 1);
     assert.equal(
       host.requests.some(({ method }) => method === "turn/start" || method === "turn/interrupt"),

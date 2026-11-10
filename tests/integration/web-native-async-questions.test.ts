@@ -134,6 +134,31 @@ it.each(["Keep", "Use the existing behavior"])(
   },
 );
 
+it("skips a Web question without sending native input or reopening the card", async () => {
+  const { native, events, invoke, request, web, error } = fixture();
+  try {
+    web.update(await native.snapshot(threadId, {}));
+    const invocation = invoke.mock.results[0]?.value as ReturnType<EventHub["invoke"]> | undefined;
+    if (!invocation) throw new Error("Web did not present the native question");
+    events.settle({
+      eventId: invocation.eventId,
+      outcome: {
+        kind: "resolved",
+        value: { answers: [{ id: questionId, selected: [] }] },
+      },
+    });
+    await vi.waitFor(() => expect(native.interactions(threadId)).toEqual([]));
+    web.update(await native.snapshot(threadId, {}));
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(
+      request.mock.calls.some(([method]) => method === "turn/steer" || method === "turn/start"),
+    ).toBe(false);
+    expect(error.mock.calls.every(([, message]) => message === null)).toBe(true);
+  } finally {
+    web.clear();
+  }
+});
+
 it("withdraws a Web card when the same async question is answered in Desktop", async () => {
   const { native, items, invoke, web } = fixture();
   try {

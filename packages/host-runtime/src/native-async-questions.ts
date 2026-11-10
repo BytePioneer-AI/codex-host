@@ -19,13 +19,13 @@ const publicId = (prefix: string, pending: Pending) =>
  * Keep only a volatile interaction projection; native history remains authoritative. */
 export class NativeAsyncQuestions {
   readonly #pending = new Map<string, Pending>();
-  readonly #answered = new Map<string, Set<string>>();
+  readonly #settled = new Map<string, Set<string>>();
   readonly #unconfirmed = new Set<string>();
 
   #settle(threadId: string, questionId: string): void {
-    let answered = this.#answered.get(threadId);
-    if (!answered) this.#answered.set(threadId, (answered = new Set()));
-    answered.add(questionId);
+    let settled = this.#settled.get(threadId);
+    if (!settled) this.#settled.set(threadId, (settled = new Set()));
+    settled.add(questionId);
     this.#pending.delete(keyOf(threadId, questionId));
   }
 
@@ -70,7 +70,7 @@ export class NativeAsyncQuestions {
       )
         return;
       const id = JSON.stringify(["request_user_input_async", item.id, index]);
-      if (this.#answered.get(threadId)?.has(id)) return;
+      if (this.#settled.get(threadId)?.has(id)) return;
       const options = (value.options ?? []) as string[];
       const question: Question = options.length
         ? {
@@ -90,7 +90,7 @@ export class NativeAsyncQuestions {
     if (typeof params.threadId !== "string") return false;
     const before = this.#pending.size;
     if (method === "thread/closed") {
-      this.#answered.delete(params.threadId);
+      this.#settled.delete(params.threadId);
       for (const [key, pending] of this.#pending)
         if (pending.threadId === params.threadId) this.#pending.delete(key);
     } else if ((method === "item/started" || method === "item/completed") && object(params.item)) {
@@ -145,11 +145,18 @@ export class NativeAsyncQuestions {
       Object.keys(answers).length !== 1 ||
       !object(answer) ||
       !Array.isArray(answer.answers) ||
-      answer.answers.length !== 1 ||
-      typeof answer.answers[0] !== "string" ||
-      !answer.answers[0].trim()
+      answer.answers.length > 1 ||
+      (answer.answers.length === 1 &&
+        (typeof answer.answers[0] !== "string" || !answer.answers[0].trim()))
     )
       throw new Error("Provide one answer to the native async question");
+
+    // The Web card encodes Skip as an empty answer list. Dismiss only this
+    // volatile projection; no native answer or cancellation is submitted.
+    if (answer.answers.length === 0) {
+      this.#settle(threadId, pending.question.id);
+      return true;
+    }
 
     // Desktop may have answered since the card was rendered. Read before claiming;
     // concurrent Web responders then compete in one synchronous claim below.
@@ -206,7 +213,7 @@ export class NativeAsyncQuestions {
 
   clear(): void {
     this.#pending.clear();
-    this.#answered.clear();
+    this.#settled.clear();
     this.#unconfirmed.clear();
   }
 }

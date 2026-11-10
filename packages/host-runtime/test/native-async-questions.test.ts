@@ -143,6 +143,27 @@ it("withdraws Desktop answers and does not resurrect them from a late history pa
   expect((await channel.snapshot(threadId, {})).interactions).toEqual([]);
 });
 
+it.each(["inProgress", "completed"])(
+  "skips a native async question locally while the Turn is %s",
+  async (status) => {
+    const { channel, request, respond, turns } = fixture(status);
+    const pending = defined((await channel.snapshot(threadId, {})).interactions[0]);
+    const original = structuredClone(turns);
+    request.mockClear();
+    await expect(
+      channel.respond(pending.requestId, threadId, {
+        answers: { [questionId()]: { answers: [] } },
+      }),
+    ).resolves.toBe(true);
+    expect(request).not.toHaveBeenCalled();
+    expect(respond).not.toHaveBeenCalled();
+    expect((await channel.snapshot(threadId, {})).interactions).toEqual([]);
+    expect(turns).toEqual(original);
+    channel.resetGeneration();
+    expect((await channel.snapshot(threadId, {})).interactions).toHaveLength(1);
+  },
+);
+
 it("checks native history before delivering an answer that Desktop already supplied", async () => {
   const { channel, request, turns, answer } = fixture();
   const pending = defined((await channel.snapshot(threadId, {})).interactions[0]);
@@ -175,6 +196,11 @@ it("rejects wrong-Thread and invalid answers without consuming the question", as
     "does not belong",
   );
   await expect(channel.respond(pending.requestId, threadId, { answers: {} })).rejects.toThrow();
+  await expect(
+    channel.respond(pending.requestId, threadId, {
+      answers: { [questionId()]: { answers: [" "] } },
+    }),
+  ).rejects.toThrow();
   expect(channel.interactions(threadId)).toHaveLength(1);
   expect(request.mock.calls.some(([method]) => method === "turn/steer")).toBe(false);
 });

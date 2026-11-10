@@ -46,14 +46,63 @@ fn treats_verbatim_and_regular_windows_executable_paths_as_equal() {
     );
 }
 
+const SCAN_TARGET_HELPER: &str = "process::windows_tests::scan_target_helper";
+
 #[test]
-fn finds_the_current_windows_process_by_executable() {
-    // Use this test binary rather than cmd.exe: parallel tests may launch
-    // unrelated cmd.exe children whose images are not always inspectable.
-    let current = process_snapshot(std::process::id()).expect("current process snapshot");
-    let matching =
-        running_executable_snapshots(&[&current.executable]).expect("scan the current executable");
-    assert!(matching.iter().any(|snapshot| snapshot.id == current.id));
+#[ignore = "child process helper for finds_a_running_windows_process_by_executable"]
+fn scan_target_helper() {
+    if std::env::var_os("CODEXHOST_SCAN_TARGET_HELPER").is_none() {
+        return;
+    }
+    // Stay alive until the parent closes stdin.
+    let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
+}
+
+#[test]
+fn finds_a_running_windows_process_by_executable() {
+    // Scan a uniquely named copy of this test binary. Other tests in this
+    // binary spawn children from the shared test executable, and a child that
+    // is starting or exiting can deny image inspection, which the scan
+    // correctly treats as fail-closed.
+    let directory =
+        std::env::temp_dir().join(format!("codexhost-scan-target-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create scan target directory");
+    let executable = directory.join(format!("codexhost-scan-target-{}.exe", std::process::id()));
+    std::fs::copy(
+        std::env::current_exe().expect("test executable"),
+        &executable,
+    )
+    .expect("copy scan target executable");
+
+    let mut child = Command::new(&executable)
+        .arg("--exact")
+        .arg(SCAN_TARGET_HELPER)
+        .arg("--ignored")
+        .env("CODEXHOST_SCAN_TARGET_HELPER", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn scan target");
+    let child_id = child.id();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let found = loop {
+        let matching = running_executable_snapshots(&[&executable]);
+        match matching {
+            Ok(matching) if matching.iter().any(|snapshot| snapshot.id == child_id) => break Ok(()),
+            Ok(_) | Err(_) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Ok(matching) => break Err(format!("scan target not found: {matching:?}")),
+            Err(error) => break Err(format!("scan failed: {error}")),
+        }
+    };
+
+    drop(child.stdin.take());
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&directory);
+    found.expect("find the scan target by executable");
 }
 
 #[test]

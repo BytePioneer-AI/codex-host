@@ -70,6 +70,8 @@ import { pinOrderSource } from "../pin-order.ts";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
 import { PinnedSection } from "./PinnedSection.tsx";
+import { SessionListError } from "./SessionListError.tsx";
+import { SessionListExpansion } from "./SessionListExpansion.tsx";
 import { SectionHeading } from "./SectionHeading.tsx";
 import {
   GROUP_INITIAL_ROWS,
@@ -289,7 +291,13 @@ function workspaceGroupHalf(e: {
 
 type SessionTreeProps = Pick<
   WorkspaceBrowserProps,
-  "useSessionStatus" | "startSession" | "open" | "insertWorkspaceBefore" | "t" | "usePanelInfo"
+  | "useSessionStatus"
+  | "startSession"
+  | "open"
+  | "insertWorkspaceBefore"
+  | "loadMoreSessions"
+  | "t"
+  | "usePanelInfo"
 > &
   PropsRenderSlots<
     | "sidebar.workspaces.session.menu.item"
@@ -344,8 +352,9 @@ type SessionTreeProps = Pick<
 function EmptySessions({
   rowState,
   onLeaveArchivedOnly,
+  partial,
   t,
-}: Pick<SessionTreeProps, "rowState" | "onLeaveArchivedOnly" | "t">) {
+}: Pick<SessionTreeProps, "rowState" | "onLeaveArchivedOnly" | "t"> & { partial?: boolean }) {
   const archivedOnly = rowState.archivedFilter === "only";
   return (
     <div className={css.emptyState} data-row-key="empty">
@@ -354,7 +363,13 @@ function EmptySessions({
       ) : (
         <IconQueueOutlineRegular size={24} />
       )}
-      <div>{archivedOnly ? t("empty.noneArchived") : t("empty.none")}</div>
+      <div>
+        {partial
+          ? t("sessions.notLoaded")
+          : archivedOnly
+            ? t("empty.noneArchived")
+            : t("empty.none")}
+      </div>
       {archivedOnly && (
         <button type="button" className={css.emptyAction} onClick={onLeaveArchivedOnly}>
           {t("empty.viewOthers")}
@@ -394,6 +409,7 @@ function SessionTree({
   revealSessionId,
   onSessionRevealed,
   shortcuts,
+  loadMoreSessions,
 }: SessionTreeProps) {
   const panelActive = usePanelInfo((info) => info.activePanelId !== null);
   const statuses = useSessionStatus((s) => s);
@@ -447,7 +463,10 @@ function SessionTree({
       expandedGroups,
       excludePinned: true,
     });
-    if (canStartProjectless && !result.some((group) => group.key === UNGROUPED_KEY))
+    if (
+      (canStartProjectless || (list.hasMore && result.length === 0)) &&
+      !result.some((group) => group.key === UNGROUPED_KEY)
+    )
       result.push({
         key: UNGROUPED_KEY,
         workspaceId: undefined,
@@ -601,7 +620,8 @@ function SessionTree({
     const sessions = visible.rows;
     for (const node of sessions)
       rowKeys.push(`${workspaceId === undefined ? "recent" : "session"}:${node.id}`);
-    if (visible.hiddenCount > 0) rowKeys.push(`overflow:${group.key}`);
+    const canExpand = group.expanded && (visible.hiddenCount > 0 || list.hasMore);
+    if (canExpand) rowKeys.push(`overflow:${group.key}`);
     const workspaceMarker =
       workspaceId !== undefined && workspaceDrag?.over?.id === workspaceId
         ? workspaceDrag.over.half
@@ -740,7 +760,7 @@ function SessionTree({
           />
         )}
         {childRows.length > 0 && <div role="group">{childRows}</div>}
-        {(sessions.length > 0 || visible.hiddenCount > 0) && (
+        {(sessions.length > 0 || canExpand) && (
           <div
             role="group"
             className={css.groupSessions}
@@ -816,20 +836,21 @@ function SessionTree({
                 />
               );
             })}
-            {visible.hiddenCount > 0 && (
-              <button
-                type="button"
-                className={css.sessionOverflowButton}
-                data-row-key={`overflow:${group.key}`}
-                onClick={() => {
+            {canExpand && (
+              <SessionListExpansion
+                rowKey={`overflow:${group.key}`}
+                hiddenCount={visible.hiddenCount}
+                hasMore={list.hasMore}
+                loading={list.loading}
+                expand={() => {
                   setSessionLimits((limits) => ({
                     ...limits,
                     [group.key]: (limits[group.key] ?? GROUP_INITIAL_ROWS) + SIDEBAR_PAGE_ROWS,
                   }));
                 }}
-              >
-                {t("sessions.expand", { n: Math.min(SIDEBAR_PAGE_ROWS, visible.hiddenCount) })}
-              </button>
+                loadMoreSessions={loadMoreSessions}
+                t={t}
+              />
             )}
           </div>
         )}
@@ -894,7 +915,12 @@ function SessionTree({
           t={t}
         />
         {groups.length === 0 && pinnedRows.length === 0 && (
-          <EmptySessions rowState={rowState} onLeaveArchivedOnly={onLeaveArchivedOnly} t={t} />
+          <EmptySessions
+            rowState={rowState}
+            onLeaveArchivedOnly={onLeaveArchivedOnly}
+            partial={list.hasMore}
+            t={t}
+          />
         )}
         {workspaceRoots.length > 0 && (
           <SectionHeading
@@ -932,6 +958,7 @@ function FlatList({
   revealSessionId,
   onSessionRevealed,
   renderSlot,
+  loadMoreSessions,
   t,
 }: Pick<
   SessionTreeProps,
@@ -949,6 +976,7 @@ function FlatList({
   | "onSessionRevealed"
   | "rowState"
   | "onLeaveArchivedOnly"
+  | "loadMoreSessions"
   | "t"
 > & {
   list: SessionListState;
@@ -992,7 +1020,7 @@ function FlatList({
           ...(pinnedSectionExpanded ? pinnedRows.map((row) => `session:${row.id}`) : []),
           ...(rows.length === 0 && pinnedRows.length === 0 ? ["empty"] : []),
           ...visible.rows.map((row) => `session:${row.id}`),
-          ...(hasOverflow ? ["overflow:flat"] : []),
+          ...(hasOverflow || list.hasMore ? ["overflow:flat"] : []),
         ]}
         ready={list.phase === "ready" && workspaceReady && drag === null}
         resetKey={`${animationResetKey}/${limit}/${String(pinnedSectionExpanded)}`}
@@ -1013,7 +1041,12 @@ function FlatList({
         />
         {pinnedRows.length > 0 && <SectionHeading label={t("section.sessions")} />}
         {rows.length === 0 && pinnedRows.length === 0 && (
-          <EmptySessions rowState={rowState} onLeaveArchivedOnly={onLeaveArchivedOnly} t={t} />
+          <EmptySessions
+            rowState={rowState}
+            onLeaveArchivedOnly={onLeaveArchivedOnly}
+            partial={list.hasMore}
+            t={t}
+          />
         )}
         {visible.rows.map((node) => {
           const active = drag !== null && drag.pinned === node.pinned;
@@ -1071,21 +1104,17 @@ function FlatList({
             />
           );
         })}
-        {hasOverflow && (
-          <button
-            type="button"
-            data-row-key="overflow:flat"
-            className={css.sessionOverflowButton}
-            aria-expanded={limit > SIDEBAR_PAGE_ROWS}
-            onClick={() =>
-              setLimit(visible.hiddenCount > 0 ? limit + SIDEBAR_PAGE_ROWS : SIDEBAR_PAGE_ROWS)
-            }
-          >
-            {visible.hiddenCount > 0
-              ? t("sessions.expand", { n: Math.min(SIDEBAR_PAGE_ROWS, visible.hiddenCount) })
-              : t("sessions.collapse")}
-          </button>
-        )}
+        <SessionListExpansion
+          rowKey="overflow:flat"
+          hiddenCount={visible.hiddenCount}
+          hasMore={list.hasMore}
+          loading={list.loading}
+          expanded={limit > SIDEBAR_PAGE_ROWS}
+          expand={() => setLimit(limit + SIDEBAR_PAGE_ROWS)}
+          collapse={hasOverflow ? () => setLimit(SIDEBAR_PAGE_ROWS) : undefined}
+          loadMoreSessions={loadMoreSessions}
+          t={t}
+        />
       </AnimatedRows>
       <span className={css.fade} />
     </div>
@@ -1238,6 +1267,8 @@ export function WorkspaceBrowser({
   closeAddWorkspace,
   setDirectoryBusy,
   dismissForkError,
+  refreshSessions,
+  loadMoreSessions,
   renderSlot,
   t,
 }: WorkspaceBrowserProps) {
@@ -1837,6 +1868,7 @@ export function WorkspaceBrowser({
             />
           ) : groupBy === "flat" ? (
             <FlatList
+              loadMoreSessions={loadMoreSessions}
               usePanelInfo={usePanelInfo}
               list={list}
               sessionIds={orderedFlatSessionIds}
@@ -1857,6 +1889,7 @@ export function WorkspaceBrowser({
             />
           ) : (
             <SessionTree
+              loadMoreSessions={loadMoreSessions}
               usePanelInfo={usePanelInfo}
               list={list}
               shortcuts={shortcuts}
@@ -1900,6 +1933,15 @@ export function WorkspaceBrowser({
             />
           ))}
       </div>
+
+      {wide && (
+        <SessionListError
+          list={list}
+          refreshSessions={refreshSessions}
+          loadMoreSessions={loadMoreSessions}
+          t={t}
+        />
+      )}
 
       <Modal
         open={renameTarget !== null}

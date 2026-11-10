@@ -475,6 +475,7 @@ let _deepseek_ai_dsh_api_session_controller_session_initializeDefaultModel_resul
 const _deepseek_ai_dsh_api_session_controller_session_initializeDefaultModel_result$schema = () => (_deepseek_ai_dsh_api_session_controller_session_initializeDefaultModel_result$schema$value ??= z.void())
 let _deepseek_ai_dsh_api_session_controller_session_list_parameter_0$schema$value
 const _deepseek_ai_dsh_api_session_controller_session_list_parameter_0$schema = () => (_deepseek_ai_dsh_api_session_controller_session_list_parameter_0$schema$value ??= z.object({
+  'sessionId': z.intersection(z.string(), z.unknown()).readonly().optional(),
   'cursor': z.string().readonly().optional(),
   'includeArchived': z.boolean().readonly().optional(),
 }))
@@ -631,6 +632,7 @@ const _deepseek_ai_dsh_api_session_controller_session_list_result$schema = () =>
 }), z.record(z.string(), z.union([z.literal(null), z.string(), z.number(), z.literal(false), z.literal(true), z.array(z.lazy(() => JsonValueRemoteCodec$schema())), z.record(z.string(), z.lazy(() => JsonValueRemoteCodec$schema()))])).readonly()).readonly(),
 }).readonly().optional(),
 })).readonly(),
+  'nextCursor': z.string().nullable().readonly().optional(),
   'archivedSessionIds': z.array(z.intersection(z.string(), z.unknown())).readonly().optional(),
 }))
 let _deepseek_ai_dsh_api_session_controller_session_modelCatalog_result$schema$value

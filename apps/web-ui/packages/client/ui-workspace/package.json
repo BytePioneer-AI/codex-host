@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@deepseek-ai/dsh-client-store": "*",
+    "@deepseek-ai/schemastery": "*",
     "react": "^18.2.0",
     "@deepseek-ai/dsh-client-ui-primitives": "*",
     "@deepseek-ai/dsh-api-workspace-controller": "*",
@@ -42,6 +43,7 @@
         "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-sidebar"
       ],
       "platform": "web"

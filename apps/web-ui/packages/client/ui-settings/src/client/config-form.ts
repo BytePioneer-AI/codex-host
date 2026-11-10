@@ -123,6 +123,14 @@ export class ConfigFormController<T> implements ConfigForm<T> {
     return this.store.subscribe(listener);
   }
 
+  /** Refresh feature-owned browser defaults/schema while retaining the existing form and saved values. */
+  updateBrowserView(view: SettingsNamespaceView): void {
+    if (this.browser === undefined || view.ns !== this.spec.namespace)
+      throw new Error("ui-settings: browser view does not belong to this form");
+    this.spec.browserView = view;
+    this.derive();
+  }
+
   /**
    * Queue one field write; see {@link ConfigForm.set} for the ordering,
    * revision, and recovery contract.
@@ -347,7 +355,7 @@ export class ConfigForms extends Service {
     return form;
   }
 
-  /** Register a feature-owned, allowlisted browser form without a Host namespace or RPC. */
+  /** Register or refresh a feature-owned, allowlisted browser form without a Host namespace or RPC. */
   registerBrowser<T>(
     namespace: string,
     schema: unknown,
@@ -355,8 +363,6 @@ export class ConfigForms extends Service {
   ): ConfigForm<T> {
     if (!isBrowserPreference(namespace))
       throw new Error(`ui-settings: ${namespace} is not a browser preference namespace`);
-    const existing = this.forms.get(namespace);
-    if (existing !== undefined) return existing as ConfigFormController<T>;
     const browserView: SettingsNamespaceView = {
       ns: namespace,
       autoGenerate: false,
@@ -368,6 +374,11 @@ export class ConfigForms extends Service {
       value: defaults,
       revision: 0,
     };
+    const existing = this.forms.get(namespace);
+    if (existing !== undefined) {
+      existing.updateBrowserView(browserView);
+      return existing as ConfigFormController<T>;
+    }
     const form = new ConfigFormController<T>(
       this.owner,
       { namespace, browserView },

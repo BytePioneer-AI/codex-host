@@ -1,5 +1,6 @@
-/** Phone working-set navigation and its shared browser visibility preference. */
-import { useRef, useState } from "react";
+/** Stable phone session tabs and their shared browser visibility preference. */
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { SessionTarget } from "@deepseek-ai/dsh-api-session-controller/client";
 import type { ConfigFormSnapshot } from "@deepseek-ai/dsh-client-ui-settings/client";
 import type {
@@ -23,6 +24,9 @@ export interface RecentNavigationInjected {
     recentNavigationSettings: HostObservable<ConfigFormSnapshot<RecentNavigationSettings>>;
   };
   open: (target: SessionTarget) => void;
+  close: (sessionId: SessionId) => void;
+  /** Root-owned presentation state survives Session-maybe header remounts. */
+  viewport: { scrollLeft: number };
   setEnabled: (enabled: boolean) => Promise<boolean>;
 }
 
@@ -35,7 +39,6 @@ function useVisitedRows({
   useSessions,
   useWorkspaces,
   useSessionStatus,
-  sessionId,
   t,
 }: NavigationProps) {
   const visits = useVisits((value) => value);
@@ -44,13 +47,7 @@ function useVisitedRows({
   const statuses = useSessionStatus((value) => value);
   return visits.flatMap((visit) => {
     const summary = list.byId[visit.sessionId];
-    if (
-      summary === undefined ||
-      summary.blank ||
-      archived.includes(visit.sessionId) ||
-      visit.sessionId === sessionId
-    )
-      return [];
+    if (summary === undefined || summary.blank || archived.includes(visit.sessionId)) return [];
     return [
       {
         visit,
@@ -65,38 +62,101 @@ function useVisitedRows({
   });
 }
 
-/** Native horizontal scrolling over the owner's already bounded working set. */
+/** Session switching changes selection, never tab order or the saved horizontal viewport. */
 export function RecentShortcuts(
   props: PropsRuntime<"conversation.header.shortcuts"> &
     PropsLocale<"workspace"> &
     InjectFace<RecentNavigationInjected> &
     PropsRenderSlots<"workspace.recent.shortcut.identity">,
 ) {
-  const { useRecentNavigationSettings, open, restoreNavigationFocus, renderSlot, t } = props;
+  const {
+    useRecentNavigationSettings,
+    open,
+    close,
+    viewport,
+    restoreNavigationFocus,
+    renderSlot,
+    t,
+  } = props;
   const enabled = useRecentNavigationSettings((value) => value.value?.showRecentVisits ?? true);
   const rows = useVisitedRows(props);
-  if (!enabled || rows.length === 0) return null;
+  const visible = enabled && rows.length > 0;
+  const strip = useRef<HTMLElement | null>(null);
+  const [closeFailed, setCloseFailed] = useState(false);
+  const rememberScroll = useCallback(
+    (node: HTMLElement | null = strip.current) => {
+      if (node?.isConnected && node.clientWidth > 0) {
+        viewport.scrollLeft = Math.max(
+          0,
+          Math.min(node.scrollLeft, node.scrollWidth - node.clientWidth),
+        );
+      }
+    },
+    [viewport],
+  );
+  useLayoutEffect(() => {
+    const node = strip.current;
+    if (node === null) return;
+    // The header is Session-scoped: restore before paint, without focusing or revealing a tab.
+    node.scrollLeft = viewport.scrollLeft;
+    let width = node.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (node.clientWidth === width) return;
+      width = node.clientWidth;
+      node.scrollLeft = viewport.scrollLeft;
+    });
+    observer.observe(node);
+    return () => {
+      rememberScroll(node);
+      observer.disconnect();
+    };
+  }, [visible, viewport, rememberScroll]);
+  if (!visible) return null;
   return (
-    <nav className={css.shortcuts} aria-label={t("recent.navigation")}>
-      {rows.map(({ visit, summary, statuses }) => (
-        <RecentShortcut
-          key={visit.sessionId}
-          visit={visit}
-          summary={summary}
-          identity={renderSlot("workspace.recent.shortcut.identity", {
-            sessionId: visit.sessionId,
-          })}
-          activityLabel={
-            statuses[0].state === "idle"
-              ? undefined
-              : statuses.map((status) => status.label).join(" · ")
-          }
-          activity={statuses[0].state === "idle" ? null : <SessionStatusDots statuses={statuses} />}
-          open={open}
-          restoreNavigationFocus={restoreNavigationFocus}
-        />
-      ))}
-    </nav>
+    <>
+      <nav
+        ref={strip}
+        className={css.shortcuts}
+        aria-label={t("recent.navigation")}
+        onScroll={(event) => rememberScroll(event.currentTarget)}
+      >
+        {rows.map(({ visit, summary, statuses }) => (
+          <RecentShortcut
+            key={visit.sessionId}
+            visit={visit}
+            summary={summary}
+            identity={renderSlot("workspace.recent.shortcut.identity", {
+              sessionId: visit.sessionId,
+            })}
+            activityLabel={
+              statuses[0].state === "idle"
+                ? undefined
+                : statuses.map((status) => status.label).join(" · ")
+            }
+            activity={
+              statuses[0].state === "idle" ? null : <SessionStatusDots statuses={statuses} />
+            }
+            active={props.sessionId === visit.sessionId}
+            closeLabel={t("recent.close", { name: summary.displayTitle })}
+            closeHint={t("recent.closeHint")}
+            open={(target) => {
+              rememberScroll();
+              open(target);
+            }}
+            close={(sessionId) => {
+              rememberScroll();
+              try {
+                close(sessionId);
+              } catch {
+                setCloseFailed(true);
+              }
+            }}
+            restoreNavigationFocus={restoreNavigationFocus}
+          />
+        ))}
+      </nav>
+      {closeFailed && <Toast text={t("recent.closeFailed")} onDone={() => setCloseFailed(false)} />}
+    </>
   );
 }
 

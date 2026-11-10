@@ -46,6 +46,8 @@
   margin-inline: -12px -20px;
   padding-inline-end: 16px;
   overflow-x: auto;
+  overflow-anchor: none;
+  scroll-behavior: auto;
   overscroll-behavior-x: contain;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;

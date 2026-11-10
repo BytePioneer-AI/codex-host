@@ -357,6 +357,8 @@ const externalThreadInspectionSchema = z
     effectiveThinkingOptionId: harnessThinkingOptionIdSchema.optional(),
     availableThinkingOptions: harnessThinkingOptionsSchema.optional(),
     effectivePermissionModeId: harnessPermissionModeIdSchema.optional(),
+    /** Live Session catalog when it, not the Adapter inspection, contains `effectiveModel`. */
+    catalog: harnessModelCatalogSchema.optional(),
     history: harnessHistoryCapabilitiesSchema,
     usage: threadUsageSnapshotSchema.optional(),
     locked: z.literal(true),

@@ -470,6 +470,10 @@ export class CursorSession implements HarnessSession {
   get capabilities() {
     return cursorCapabilities(this.info);
   }
+  /** The live Session catalog, including parameters the inspection Session does not pin. */
+  modelCatalog() {
+    return cursorCatalog(this.info);
+  }
   readonly initialUsage = null;
   readonly commands: HarnessCommandCapability = {
     list: async () =>
@@ -709,6 +713,14 @@ export class CursorSession implements HarnessSession {
           return rejected("invalidRequest", "Unknown Cursor execution mode");
         selections = [["mode", command.permissionModeId]];
       }
+      let published = false;
+      const publish = (): void => {
+        published = true;
+        this.#channel.emit({
+          kind: "event",
+          event: { type: "session.state.changed", state: structuredClone(this.initialState) },
+        });
+      };
       for (const [configId, value] of selections) {
         // Recheck after each response: selecting a model may change other configuration values.
         if (
@@ -739,11 +751,10 @@ export class CursorSession implements HarnessSession {
           );
         delete this.initialState.effectiveThinkingOptionId;
         Object.assign(this.initialState, cursorThinkingState(this.info));
-        this.#channel.emit({
-          kind: "event",
-          event: { type: "session.state.changed", state: structuredClone(this.initialState) },
-        });
+        publish();
       }
+      // An already-applied selection is still a confirmation. Desktop waits for this event.
+      if (!published) publish();
       return { ok: true, value: { completed: true } };
     } catch (error) {
       return { ok: false, error: cursorError(error) };

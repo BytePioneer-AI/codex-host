@@ -76,6 +76,7 @@ export class OfficialRuntimeOwner {
   readonly #diagnosticOutput: Writable;
   readonly #clients = new Set<Client>();
   readonly #activeTurns = new Set<string>();
+  readonly #threadModelSettings = new Map<string, JsonObject & { model: string }>();
   #backend: OwnedOfficialBackend | undefined;
   #generation = 0;
   #phase: "stopped" | "starting" | "running" | "stopping" | "unavailable" = "stopped";
@@ -113,6 +114,7 @@ export class OfficialRuntimeOwner {
     }
     this.#backend = backend;
     const generation = ++this.#generation;
+    this.#threadModelSettings.clear();
     void backend.closed.then(() => {
       if (this.#backend !== backend || this.#phase === "stopping") return;
       // Keep ownership until the backend stop path completes.
@@ -349,6 +351,7 @@ export class OfficialRuntimeOwner {
     try {
       const runtime = await this.#connection(client);
       await this.#restore(client, runtime, method, params);
+      if (method === "thread/fork") params = this.#forkParams(params);
       response = await runtime.request(method, params);
       if (
         client.runtime !== runtime ||
@@ -380,20 +383,25 @@ export class OfficialRuntimeOwner {
     if (value.method === "initialized") return;
     if (typeof value.id !== "string" && typeof value.id !== "number")
       throw new Error("Official methods require a request ID");
-    const params = object(value.params) ? value.params : {};
-    this.#checkMethod(value.method);
+    const method = value.method;
+    let params = object(value.params) ? value.params : {};
+    this.#checkMethod(method);
     const finish = this.gate.admit();
     let pendingKey: string | undefined;
     try {
       const runtime = await this.#connection(client);
-      await this.#restore(client, runtime, value.method, params);
+      await this.#restore(client, runtime, method, params);
+      if (method === "thread/fork" && object(value.params)) {
+        params = this.#forkParams(params);
+        value = { ...value, params };
+      }
       if (typeof value.id === "string" || typeof value.id === "number") {
         const key = requestKey(value.id);
         if (client.pending.has(key)) throw new Error("Duplicate official request ID");
         pendingKey = key;
         client.pending.set(pendingKey, {
           id: value.id,
-          method: value.method,
+          method,
           params,
           finish,
         });
@@ -426,7 +434,12 @@ export class OfficialRuntimeOwner {
       if (value.method === "turn/started") this.#activeTurns.add(value.params.threadId);
       if (value.method === "turn/completed" || value.method === "thread/closed")
         this.#activeTurns.delete(value.params.threadId);
-      if (value.method === "thread/closed") client.threads.delete(value.params.threadId);
+      if (value.method === "thread/closed") {
+        client.threads.delete(value.params.threadId);
+        this.#threadModelSettings.delete(value.params.threadId);
+      }
+      if (value.method === "thread/settings/updated" && object(value.params.threadSettings))
+        this.#rememberModelSettings(value.params.threadId, value.params.threadSettings);
     }
     if (value.method === "serverRequest/resolved" && object(value.params)) {
       const nativeId = value.params.requestId;
@@ -474,10 +487,12 @@ export class OfficialRuntimeOwner {
         this.#activeTurns.add(params.threadId);
     }
     if (
-      ["thread/archive", "thread/unsubscribe"].includes(method) &&
+      ["thread/archive", "thread/unsubscribe", "thread/delete"].includes(method) &&
       typeof params.threadId === "string"
-    )
+    ) {
       client.threads.delete(params.threadId);
+      this.#threadModelSettings.delete(params.threadId);
+    }
     if (
       !["thread/start", "thread/resume", "thread/fork"].includes(method) ||
       !object(response.result) ||
@@ -485,7 +500,8 @@ export class OfficialRuntimeOwner {
     )
       return;
     const id = response.result.thread.id;
-    if (typeof id !== "string") return;
+    if (typeof id !== "string" || (method === "thread/fork" && id === params.threadId)) return;
+    this.#rememberModelSettings(id, response.result);
     // Do not retain history/path: native resume can ignore threadId when those are supplied.
     const resume = Object.fromEntries(
       Object.entries(params).filter(([key]) => RESUME_FIELDS.has(key)),
@@ -494,6 +510,60 @@ export class OfficialRuntimeOwner {
       params: { ...structuredClone(resume), threadId: id, excludeTurns: true },
       generation: this.#generation,
     });
+  }
+
+  #rememberModelSettings(threadId: string, settings: JsonObject): void {
+    if (typeof settings.model !== "string" || !settings.model.trim()) return;
+    const previous = this.#threadModelSettings.get(threadId);
+    const sameModel = previous?.model === settings.model;
+    const confirmed: JsonObject & { model: string } = { model: settings.model };
+    for (const field of ["modelProvider", "serviceTier"] as const) {
+      const fallback = field === "modelProvider" || sameModel ? previous?.[field] : undefined;
+      const value = settings[field] === undefined ? fallback : settings[field];
+      if (typeof value === "string" || (field === "serviceTier" && value === null))
+        confirmed[field] = value;
+    }
+    const effort =
+      settings.reasoningEffort !== undefined ? settings.reasoningEffort : settings.effort;
+    if (typeof effort === "string") confirmed.effort = effort;
+    else if (effort === undefined && sameModel && previous?.effort !== undefined)
+      confirmed.effort = previous.effort;
+    this.#threadModelSettings.set(threadId, confirmed);
+  }
+
+  #canInheritForkModel(params: JsonObject): boolean {
+    return (
+      typeof params.threadId === "string" &&
+      params.path == null &&
+      params.history == null &&
+      params.model == null &&
+      params.modelProvider == null &&
+      (params.config == null ||
+        (object(params.config) &&
+          params.config.model == null &&
+          params.config.model_provider == null))
+    );
+  }
+
+  #forkParams(params: JsonObject): JsonObject {
+    // Desktop can omit its source Model from Fork, making native Codex use the
+    // global default. Only fill omitted settings from this generation's native
+    // confirmations; explicit selections and path/history forks remain native.
+    if (!this.#canInheritForkModel(params) || typeof params.threadId !== "string") return params;
+    const config = object(params.config) ? params.config : {};
+    const source = this.#threadModelSettings.get(params.threadId);
+    if (!source) return params;
+    const inherited: JsonObject = { ...params, model: source.model };
+    if (source.modelProvider !== undefined) inherited.modelProvider = source.modelProvider;
+    if (
+      params.serviceTier === undefined &&
+      !Object.hasOwn(config, "service_tier") &&
+      source.serviceTier !== undefined
+    )
+      inherited.serviceTier = source.serviceTier;
+    if (source.effort !== undefined && !Object.hasOwn(config, "model_reasoning_effort"))
+      inherited.config = { ...config, model_reasoning_effort: source.effort };
+    return inherited;
   }
 
   async #restore(
@@ -511,6 +581,7 @@ export class OfficialRuntimeOwner {
         method === "thread/queue/start" ||
         method === "thread/shellCommand" ||
         method === "thread/settings/update" ||
+        (method === "thread/fork" && this.#canInheritForkModel(params)) ||
         method === "thread/rollback" ||
         method === "thread/revert" ||
         method.startsWith("thread/backgroundTerminals/")
@@ -533,6 +604,7 @@ export class OfficialRuntimeOwner {
         throw new Error("Official Thread restoration failed");
       if (client.runtime !== runtime || runtime.generation !== this.#generation)
         throw new OfficialAdmissionError("unavailable");
+      this.#rememberModelSettings(threadId, response.result);
       subscription.generation = runtime.generation;
     })();
     subscription.restoring = restoring;

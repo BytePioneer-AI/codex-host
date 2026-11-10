@@ -59,6 +59,28 @@ function runtime(
 }
 
 describe("remote Host lifecycle", () => {
+  it.each(["ssh", "desktop"] as const)(
+    "uses the installed %s execution session instead of an inherited selection",
+    async (executionSession) => {
+      restore = setRemoteHostLifecycleDependenciesForTest({
+        inspectInstallation: vi.fn().mockResolvedValue({ ...readyInstallation, executionSession }),
+        probeProtocol: vi.fn().mockResolvedValue(runtime("stopped")),
+        waitForRuntime: vi.fn().mockResolvedValue(runtime("running", "codexhost")),
+      });
+      await startRemoteHost({
+        platform: "darwin",
+        environment: { HOME: home, CODEXHOST_REMOTE_EXECUTION_SESSION: "stale" },
+      });
+      expect(spawn).toHaveBeenCalledWith(
+        manifest.wrapperPath,
+        expect.any(Array),
+        expect.objectContaining({
+          env: expect.objectContaining({ CODEXHOST_REMOTE_EXECUTION_SESSION: executionSession }),
+        }),
+      );
+    },
+  );
+
   it("uses the lightweight update status method to identify the managed Host", () => {
     expect(
       classifyRemoteHostProbeResponse(

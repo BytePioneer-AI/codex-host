@@ -243,6 +243,7 @@ function managedEnvironment(
     CODEXHOST_HOST_RUNTIME_PATH: manifest.hostRuntimePath,
     CODEXHOST_DATA_DIR: manifest.dataDirectory,
     CODEXHOST_REMOTE_SSH_MANAGED: "1",
+    CODEXHOST_REMOTE_EXECUTION_SESSION: manifest.executionSession ?? "ssh",
     PATH: `${path.dirname(manifest.wrapperPath)}${path.delimiter}${path.dirname(manifest.stockCodexPath)}${path.delimiter}${environment.PATH ?? "/usr/bin:/bin"}`,
   };
 }
@@ -361,6 +362,12 @@ export async function startRemoteHost(
     throw new Error(`Remote Host installation is degraded: ${installation.issues.join("; ")}`);
   }
   const manifest = installedManifest(installation);
+  if (
+    manifest.executionSession === "desktop" &&
+    (options.platform ?? process.platform) !== "darwin"
+  ) {
+    throw new Error("Desktop execution session requires macOS");
+  }
   const socketPath = socketPathFor(environment);
   const current = await lifecycle.probeProtocol(manifest, socketPath, environment);
   if (current.state === "running") {

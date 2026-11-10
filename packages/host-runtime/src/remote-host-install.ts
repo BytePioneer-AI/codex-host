@@ -30,11 +30,13 @@ export interface RemoteHostManifestV1 {
   shimPath: string;
   hostRuntimePath: string;
   dataDirectory: string;
+  executionSession?: "ssh" | "desktop";
   entrypointSha256?: string;
   profileBackupPath?: string;
 }
 
 export interface RemoteHostInstallOptions {
+  executionSession?: "ssh" | "desktop";
   home?: string;
   installRoot?: string;
   profilePath?: string;
@@ -242,6 +244,9 @@ function installManagedProfileBlock(contents: string, manifest: RemoteHostManife
     `export CODEXHOST_HOST_RUNTIME_PATH=${shellQuote(manifest.hostRuntimePath)}`,
     `export CODEXHOST_DATA_DIR=${shellQuote(manifest.dataDirectory)}`,
     "export CODEXHOST_REMOTE_SSH_MANAGED='1'",
+    ...(manifest.executionSession
+      ? [`export CODEXHOST_REMOTE_EXECUTION_SESSION=${shellQuote(manifest.executionSession)}`]
+      : []),
   ];
   const block = [
     PROFILE_START,
@@ -320,6 +325,7 @@ async function readManifest(filePath: string): Promise<RemoteHostManifestV1 | nu
     "entrypointSha256",
     "claudeCommand", // Inert metadata accepted from older format-1 manifests.
     "profileBackupPath",
+    "executionSession",
   ]);
   const requiredPaths = [
     "wrapperPath",
@@ -333,6 +339,9 @@ async function readManifest(filePath: string): Promise<RemoteHostManifestV1 | nu
   const optionalPaths = ["claudeCommand", "profileBackupPath"] as const;
   if (
     manifest.format !== MANIFEST_FORMAT ||
+    (manifest.executionSession !== undefined &&
+      manifest.executionSession !== "ssh" &&
+      manifest.executionSession !== "desktop") ||
     Object.keys(manifest).some((key) => !allowed.has(key)) ||
     requiredPaths.some(
       (key) => typeof manifest[key] !== "string" || !path.isAbsolute(manifest[key]),
@@ -373,6 +382,13 @@ export async function installRemoteHost(
   const environment = options.environment ?? process.env;
   const paths = resolvePaths(options);
   const previousManifest = await readManifest(paths.manifestPath);
+  const executionSession = options.executionSession ?? previousManifest?.executionSession ?? "ssh";
+  if (executionSession !== "ssh" && executionSession !== "desktop") {
+    throw new Error("Remote execution session must be ssh or desktop");
+  }
+  if (executionSession === "desktop" && platform !== "darwin") {
+    throw new Error("Desktop execution session requires macOS");
+  }
   const previousManifestFile = previousManifest
     ? {
         contents: await readFile(paths.manifestPath),
@@ -438,6 +454,7 @@ export async function installRemoteHost(
     shimPath,
     hostRuntimePath,
     dataDirectory: paths.dataDirectory,
+    ...(executionSession === "desktop" ? { executionSession } : {}),
     ...(previousManifest?.profileBackupPath
       ? { profileBackupPath: previousManifest.profileBackupPath }
       : {}),

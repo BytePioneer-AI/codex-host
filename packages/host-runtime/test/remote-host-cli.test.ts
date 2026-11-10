@@ -21,6 +21,23 @@ function textSink(): { output: Writable; text(): string } {
 }
 
 describe("remote SSH Host CLI", () => {
+  it.each([
+    ["install", "--session", "invalid"],
+    ["start", "--session", "desktop"],
+  ])("rejects invalid or misplaced execution-session options: %s", async (...arguments_) => {
+    const stdout = textSink();
+    const stderr = textSink();
+    expect(
+      await runRemoteHostCli({
+        arguments: arguments_,
+        output: stdout.output,
+        diagnosticOutput: stderr.output,
+      }),
+    ).toBe(1);
+    expect(stdout.text()).toBe("");
+    expect(stderr.text()).toContain("remote install --session ssh|desktop");
+  });
+
   it("prints a bounded command summary", async () => {
     const stdout = textSink();
     const stderr = textSink();

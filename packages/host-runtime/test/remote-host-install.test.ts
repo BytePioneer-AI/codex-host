@@ -55,6 +55,53 @@ function shellQuote(value: string): string {
 }
 
 describe("remote SSH Host installation", () => {
+  it("preserves the selected desktop session across updates and allows switching back to SSH", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "remote-session-"));
+    try {
+      const options = {
+        home,
+        stockCodexPath: await executable(path.join(home, "codex")),
+        nodePath: await executable(path.join(home, "node")),
+        shimPath: await executable(path.join(home, "shim")),
+        hostRuntimePath: await regularFile(path.join(home, "runtime.mjs")),
+        platform: "darwin" as const,
+        environment: { HOME: home, SHELL: "/bin/zsh" },
+      };
+      const original = await installRemoteHost(options);
+      expect(original.executionSession).toBeUndefined();
+      expect(await readFile(original.profilePath, "utf8")).not.toContain(
+        "REMOTE_EXECUTION_SESSION",
+      );
+      await installRemoteHost({ ...options, executionSession: "desktop" });
+      const updated = await installRemoteHost(options);
+      expect(updated.executionSession).toBe("desktop");
+      expect(await inspectRemoteHostInstallation(options)).toMatchObject({
+        state: "ready",
+        executionSession: "desktop",
+      });
+      expect(await readFile(updated.profilePath, "utf8")).toContain(
+        "CODEXHOST_REMOTE_EXECUTION_SESSION='desktop'",
+      );
+      const reset = await installRemoteHost({ ...options, executionSession: "ssh" });
+      expect(reset.executionSession).toBeUndefined();
+      expect(await readFile(reset.profilePath, "utf8")).not.toContain("REMOTE_EXECUTION_SESSION");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects desktop execution on Linux before creating installation files", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "remote-session-linux-"));
+    try {
+      await expect(
+        installRemoteHost({ home, platform: "linux", executionSession: "desktop" }),
+      ).rejects.toThrow("requires macOS");
+      await expect(lstat(path.join(home, ".codexhost"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("uses the startup file read by non-interactive zsh SSH commands", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-zsh-"));
     try {

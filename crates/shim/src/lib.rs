@@ -566,7 +566,8 @@ fn stop_detached_listener(child: &mut std::process::Child) {
     };
     let process_id = Pid::from_raw(raw_process_id);
     let _ = kill(process_id, Signal::SIGTERM);
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // The listener supervisor needs its own two-second grace to kill descendants.
+    let deadline = Instant::now() + Duration::from_secs(5);
     while child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(20));
     }

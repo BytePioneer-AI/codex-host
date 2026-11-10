@@ -87,7 +87,8 @@ impl Drop for RemoteListenerProcess {
             #[cfg(target_os = "macos")]
             Process::Desktop(expected) => {
                 let _ = codexhost_platform::terminate_process_instance(expected, false);
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                // Outlast the supervisor's two-second descendant termination grace.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
                 while std::time::Instant::now() < deadline {
                     if codexhost_platform::process_snapshot(expected.id).is_err() {
                         return;

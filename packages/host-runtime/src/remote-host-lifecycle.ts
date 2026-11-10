@@ -72,7 +72,7 @@ interface RemoteHostLifecycleDependencies {
     role: "stock" | "managed",
     environment: NodeJS.ProcessEnv,
   ): Promise<void>;
-  launch(manifest: RemoteHostManifestV1, environment: NodeJS.ProcessEnv): void;
+  launch(manifest: RemoteHostManifestV1, environment: NodeJS.ProcessEnv): void | Promise<void>;
   waitForRuntime(
     manifest: RemoteHostManifestV1,
     socketPath: string,
@@ -302,13 +302,38 @@ async function defaultWaitForRuntime(
   throw new Error(last.message ?? `Remote Host did not become ready at ${socketPath}`);
 }
 
-function defaultLaunch(manifest: RemoteHostManifestV1, environment: NodeJS.ProcessEnv): void {
+async function defaultLaunch(
+  manifest: RemoteHostManifestV1,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
   const child = spawn(
     manifest.wrapperPath,
     ["-c", "features.code_mode_host=true", "app-server", "--listen", "unix://"],
-    { env: managedEnvironment(manifest, environment), stdio: "ignore", detached: true },
+    {
+      env: managedEnvironment(manifest, environment),
+      stdio: ["ignore", "ignore", "pipe"],
+      detached: true,
+    },
   );
-  child.unref();
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) => {
+    stderr = `${stderr}${chunk}`.slice(-2_000);
+  });
+  // The startup shim exits after handing off the listener, not with the daemon.
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) resolve();
+      else {
+        reject(
+          new Error(
+            stderr.trim() || `Remote Host startup failed (${signal ?? `exit code ${code}`})`,
+          ),
+        );
+      }
+    });
+  });
 }
 
 function dependencies(): RemoteHostLifecycleDependencies {
@@ -378,7 +403,7 @@ export async function startRemoteHost(
     await lifecycle.runTerminator(manifest, socketPath, "stock", environment);
     replacedStockCodex = true;
   }
-  lifecycle.launch(manifest, environment);
+  await lifecycle.launch(manifest, environment);
   await lifecycle.waitForRuntime(manifest, socketPath, environment);
   return { state: "running", changed: true, socketPath, replacedStockCodex };
 }

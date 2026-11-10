@@ -86,7 +86,7 @@ impl Drop for Handoff {
     fn drop(&mut self) {
         // On a rejected handoff the helper must see the closed socket and finish
         // stopping its unacknowledged child before launchd unloads the helper.
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + Duration::from_secs(6);
         while Instant::now() < deadline {
             let running = Command::new("/bin/launchctl")
                 .args(["print", &self.target])
@@ -331,7 +331,9 @@ pub fn run_aqua_spawn_helper(socket: &Path) -> Result<(), PlatformError> {
         if let Ok(snapshot) = process_snapshot(child.id()) {
             let _ = crate::terminate_process_instance(&snapshot, false);
         }
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // The listener supervisor first gives its descendants two seconds to exit.
+        // Keep it alive through escalation, and finish before Handoff unloads us.
+        let deadline = Instant::now() + Duration::from_secs(5);
         while child.try_wait()?.is_none() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(20));
         }

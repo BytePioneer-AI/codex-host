@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FsVersion } from "@deepseek-ai/dsh-fs";
-import { failureOf, openWorkspace, signal, type Harness } from "./harness.ts";
+import { failureOf, openWorkspace, posixPrefixed, signal, type Harness } from "./harness.ts";
 
 let harness: Harness;
 
@@ -27,6 +27,18 @@ describe("workspaceFiles.stat", () => {
     expect(result.version.length).toBeGreaterThan(0);
     expect(result.bytes).toBe(6);
   });
+
+  it.runIf(process.platform === "win32")(
+    "resolves a Windows absolute path written with the `/D:/`-style prefix harness links carry",
+    async () => {
+      await writeFile(join(harness.workspace, "notes.txt"), "hello\n", "utf8");
+      const result = await harness
+        .endpoint()
+        .stat(harness.scope, posixPrefixed(harness.workspace, "notes.txt"), signal());
+      expect(result.absolutePath.endsWith("notes.txt")).toBe(true);
+      expect(result.bytes).toBe(6);
+    },
+  );
 
   it("answers with the version a read of the same file reports, and a new one after a write", async () => {
     const path = join(harness.workspace, "notes.txt");

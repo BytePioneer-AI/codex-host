@@ -50,8 +50,8 @@ it("does not infer shared ownership from a Harness, UUID, or uncreated draft", (
   for (const session of [
     { id: "isolated-codex", blank: false, projectionValues: {} },
     { id: "official-thread", blank: false },
-    { id: "draft", blank: true, projectionValues: { threadReference: { hostId: "local" } } },
     { id: "remote", blank: false, projectionValues: { threadReference: { hostId: "remote" } } },
+    { id: "draft", blank: true, projectionValues: { threadReference: { hostId: "local" } } },
   ])
     assert.equal(threadReferenceOf(session), undefined);
 });
@@ -81,11 +81,11 @@ it("finds bare Thread URLs without swallowing prose punctuation or embedded sche
   assert.equal(THREAD_LINK_PATTERN.lastIndex, 0);
 });
 
-it("rejects remote, ambiguous, malformed and unrelated message destinations", () => {
+it("rejects ambiguous, malformed and unrelated message destinations", () => {
   for (const href of [
     "target",
     "thread://target",
-    "thread://target?hostId=remote-explicit",
+    "thread://target?hostId=durable",
     "thread://target?hostId=local&hostId=other",
     "thread://target?hostId=local&extra=true",
     "thread://target?hostId=local#fragment",
@@ -106,4 +106,21 @@ it("rejects remote, ambiguous, malformed and unrelated message destinations", ()
     "data:text/html,hello",
   ])
     assert.equal(localThreadId(href), undefined, href);
+});
+
+it("round trips native remote references without using the encoded Web ID as a native ID", () => {
+  const threadId = "线程/one",
+    hostId = "remote-control:机器";
+  const reference = threadReferenceOf({
+    id: "web-remote:opaque",
+    blank: false,
+    projectionValues: { threadReference: { hostId, threadId } },
+  });
+  assert.ok(reference);
+  assert.equal(reference.threadId, threadId);
+  assert.equal(
+    localThreadId(threadReferenceUri(reference)),
+    "web-remote:" + Buffer.from(JSON.stringify([hostId, threadId])).toString("base64url"),
+  );
+  assert.deepEqual(parseThreadReferenceDrag(JSON.stringify(reference)), reference);
 });

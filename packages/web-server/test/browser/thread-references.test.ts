@@ -31,6 +31,7 @@ async function setup(t: TestContext, width = 1280) {
   const browser = await chromium.launch();
   t.after(() => browser.close());
   const page = await browser.newPage({
+    locale: "en-US",
     viewport: { width, height: 900 },
     permissions: ["clipboard-read", "clipboard-write"],
   });
@@ -204,7 +205,7 @@ for (const width of [390, 1280])
       await options.first().waitFor();
       assert.equal(await options.count(), 5);
       await menu.getByRole("option", { name: /^File\b/u }).waitFor();
-      assert.equal(await menu.locator('[id*="codexhost-delegation"]').count(), 0);
+      assert.equal(await menu.locator('[id*="codexhost-delegation"]').count(), 3);
       assert.equal(await composer.innerText(), "before after");
       await search.fill("Plus target");
       await page.waitForFunction(
@@ -639,8 +640,10 @@ it(
     );
     await page.getByRole("button", { name: "Send message", exact: true }).click();
     await response;
+    const submitted = host.requests.find((request) => request.method === "turn/start")?.params
+      .input as Array<{ text: string; type: string; text_elements: unknown[] }>;
     assert.deepEqual(
-      host.requests.find((request) => request.method === "turn/start")?.params.input,
+      submitted.map((item) => ({ ...item, text: item.text.replaceAll("\r\n", "\n") })),
       [{ type: "text", text, text_elements: [] }],
     );
     assert.equal(host.threads.get("reference-a")?.turns.length, 1);

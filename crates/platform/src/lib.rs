@@ -24,7 +24,13 @@ mod independent_service;
 mod installation;
 #[cfg(target_os = "linux")]
 mod linux_installation;
+#[cfg(target_os = "macos")]
+mod macos_aqua_process;
 mod macos_native_harness_broker;
+#[cfg(target_os = "macos")]
+pub use macos_aqua_process::{
+    AQUA_SPAWN_ARGUMENT, run_aqua_spawn_helper, spawn_in_desktop_session,
+};
 #[cfg(target_os = "macos")]
 mod macos_process_observation;
 mod process;

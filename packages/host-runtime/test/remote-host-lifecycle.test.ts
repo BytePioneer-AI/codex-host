@@ -1,4 +1,8 @@
 import { spawn } from "node:child_process";
+import type * as ChildProcessModule from "node:child_process";
+import { EventEmitter } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import net, { type AddressInfo } from "node:net";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -8,7 +12,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 
 vi.mock("node:child_process", () => ({
-  spawn: vi.fn(() => ({ unref: vi.fn() })),
+  spawn: vi.fn(() => {
+    const child = Object.assign(new EventEmitter(), { stderr: new PassThrough() });
+    queueMicrotask(() => child.emit("close", 0, null));
+    return child;
+  }),
 }));
 
 import type {
@@ -59,6 +67,105 @@ function runtime(
 }
 
 describe("remote Host lifecycle", () => {
+  it.each(["ssh", "desktop"] as const)(
+    "uses the installed %s execution session instead of an inherited selection",
+    async (executionSession) => {
+      restore = setRemoteHostLifecycleDependenciesForTest({
+        inspectInstallation: vi.fn().mockResolvedValue({ ...readyInstallation, executionSession }),
+        probeProtocol: vi.fn().mockResolvedValue(runtime("stopped")),
+        waitForRuntime: vi.fn().mockResolvedValue(runtime("running", "codexhost")),
+      });
+      await startRemoteHost({
+        platform: "darwin",
+        environment: { HOME: home, CODEXHOST_REMOTE_EXECUTION_SESSION: "stale" },
+      });
+      expect(spawn).toHaveBeenCalledWith(
+        manifest.wrapperPath,
+        expect.any(Array),
+        expect.objectContaining({
+          env: expect.objectContaining({ CODEXHOST_REMOTE_EXECUTION_SESSION: executionSession }),
+        }),
+      );
+    },
+  );
+
+  it.skipIf(process.platform === "win32").each([
+    {
+      name: "desktop launch diagnostics",
+      script:
+        'process.stderr.write("x".repeat(4000) + "\\ndesktop launch failed: desktop session unavailable\\n"); process.exitCode = 1;',
+      message: "desktop launch failed: desktop session unavailable",
+    },
+    {
+      name: "exit code without stderr",
+      script: "process.exitCode = 7;",
+      message: "exit code 7",
+    },
+    {
+      name: "signal without stderr",
+      script: 'process.kill(process.pid, "SIGTERM");',
+      message: "SIGTERM",
+    },
+  ])(
+    "returns early startup errors from the real launch path ($name)",
+    async ({ script, message }) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "remote-start-"));
+      const wrapperPath = path.join(directory, "codex");
+      await writeFile(wrapperPath, `#!${process.execPath}\n${script}\n`, { mode: 0o700 });
+      const { spawn: realSpawn } =
+        await vi.importActual<typeof ChildProcessModule>("node:child_process");
+      vi.mocked(spawn).mockImplementationOnce(realSpawn);
+      const probe = vi.fn().mockResolvedValue(runtime("stopped"));
+      restore = setRemoteHostLifecycleDependenciesForTest({
+        inspectInstallation: vi.fn().mockResolvedValue({
+          ...readyInstallation,
+          wrapperPath,
+          executionSession: "desktop",
+        }),
+        probeProtocol: probe,
+      });
+      try {
+        const error = await startRemoteHost({
+          platform: "darwin",
+          environment: { HOME: home },
+        }).catch((error: Error) => error);
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toContain(message);
+        expect((error as Error).message.length).toBeLessThanOrEqual(2_000);
+        expect(probe).toHaveBeenCalledOnce();
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+    3_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "returns spawn errors through CLI remote start",
+    async () => {
+      const { spawn: realSpawn } =
+        await vi.importActual<typeof ChildProcessModule>("node:child_process");
+      vi.mocked(spawn).mockImplementationOnce(realSpawn);
+      restore = setRemoteHostLifecycleDependenciesForTest({
+        inspectInstallation: vi.fn().mockResolvedValue({
+          ...readyInstallation,
+          wrapperPath: path.join(tmpdir(), "missing-remote-start", "codex"),
+        }),
+        probeProtocol: vi.fn().mockResolvedValue(runtime("stopped")),
+      });
+      const stderr = new PassThrough();
+      expect(
+        await runRemoteHostCli({
+          arguments: ["start"],
+          environment: { HOME: home },
+          output: new PassThrough(),
+          diagnosticOutput: stderr,
+        }),
+      ).toBe(1);
+      expect(stderr.read().toString()).toContain("ENOENT");
+    },
+  );
+
   it("uses the lightweight update status method to identify the managed Host", () => {
     expect(
       classifyRemoteHostProbeResponse(
@@ -190,7 +297,9 @@ describe("remote Host lifecycle", () => {
       runTerminator: vi.fn(async (_manifest, _socket, role) => {
         operations.push(`terminate:${role}`);
       }),
-      launch: vi.fn(() => operations.push("launch")),
+      launch: vi.fn(() => {
+        operations.push("launch");
+      }),
       waitForRuntime: vi.fn(async () => {
         operations.push("ready");
         return runtime("running", "codexhost");
@@ -352,4 +461,22 @@ describe("remote Host lifecycle", () => {
       expect(terminate).not.toHaveBeenCalled();
     },
   );
+});
+
+it("passes the persisted shared directory to a fresh SSH listener without replacing its own store", async () => {
+  restore = setRemoteHostLifecycleDependenciesForTest({
+    inspectInstallation: vi
+      .fn()
+      .mockResolvedValue({ ...readyInstallation, sharedDataDirectory: "/custom/shared-host" }),
+    probeProtocol: vi.fn().mockResolvedValue(runtime("stopped")),
+    waitForRuntime: vi.fn().mockResolvedValue(runtime("running", "codexhost")),
+  });
+  await startRemoteHost({
+    platform: "linux",
+    environment: { HOME: home, CODEXHOST_SHARED_DATA_DIR: "/stale/inherited" },
+  });
+  expect(vi.mocked(spawn).mock.calls[0]?.[2]?.env).toMatchObject({
+    CODEXHOST_SHARED_DATA_DIR: "/custom/shared-host",
+    CODEXHOST_DATA_DIR: manifest.dataDirectory,
+  });
 });

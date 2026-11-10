@@ -402,6 +402,99 @@ it("requires current native confirmation after restart before inheriting a Fork'
   }
 });
 
+it.each(["request", "send"] as const)(
+  "keeps inherited settings out of a Fork child's recovery params through %s",
+  async (transport) => {
+    const f = fixture();
+    const { client, output } = f.attach();
+    try {
+      await f.owner.start();
+      await client.initialize(initialization);
+      f.gate.initialized();
+      f.connection().setResponse((request) => ({
+        id: request.id ?? null,
+        result: {
+          thread: { id: request.method === "thread/fork" ? "child" : "source" },
+          model: "source-model",
+          reasoningEffort: "high",
+        },
+      }));
+      await client.request("thread/resume", { threadId: "source" });
+      const params = { threadId: "source", lastTurnId: "source-turn" };
+      if (transport === "request") await client.request("thread/fork", params);
+      else {
+        await client.send({ id: "fork", method: "thread/fork", params });
+        await vi.waitFor(() => expect(output.some(({ id }) => id === "fork")).toBe(true));
+      }
+
+      await f.owner.stop();
+      await f.owner.start();
+      f.gate.initialized();
+      f.connection(1).setResponse((request) => ({
+        id: request.id ?? null,
+        ...(request.method === "turn/start"
+          ? { result: { turn: { id: "turn", status: "inProgress" } } }
+          : {
+              result: {
+                thread: { id: (request.params as JsonObject).threadId },
+                model: "latest-child-model",
+              },
+            }),
+      }));
+      await client.request("turn/start", { threadId: "child", input: [] });
+      const resume = f.connection(1).requests.find((request) => request.method === "thread/resume");
+      expect(resume?.params).toEqual({ threadId: "child", excludeTurns: true });
+    } finally {
+      await f.owner.stop();
+      client.close();
+    }
+  },
+);
+
+it("falls back to the native Fork when source settings cannot be restored", async () => {
+  const f = fixture();
+  const { client } = f.attach();
+  try {
+    await f.owner.start();
+    await client.initialize(initialization);
+    f.gate.initialized();
+    f.connection().setResponse((request) => ({
+      id: request.id ?? null,
+      result: { thread: { id: "source" }, model: "retired-model" },
+    }));
+    await client.request("thread/resume", { threadId: "source" });
+
+    await f.owner.stop();
+    await f.owner.start();
+    f.gate.initialized();
+    f.connection(1).setResponse((request) => ({
+      id: request.id ?? null,
+      ...(request.method === "thread/resume"
+        ? { error: { code: -32600, message: "Source is not available" } }
+        : { result: { thread: { id: "child" }, model: "native-default" } }),
+    }));
+    const params = { threadId: "source", lastTurnId: "source-turn" };
+    await expect(client.request("thread/fork", params)).resolves.toMatchObject({
+      result: { thread: { id: "child" } },
+    });
+    expect(
+      f
+        .connection(1)
+        .requests.filter(({ method }) => method === "thread/resume" || method === "thread/fork")
+        .map(({ method, params: requestParams }) => ({ method, params: requestParams })),
+    ).toEqual([
+      {
+        method: "thread/resume",
+        params: { threadId: "source", excludeTurns: true },
+      },
+      { method: "thread/fork", params },
+    ]);
+  } finally {
+    await f.owner.stop();
+    client.close();
+  }
+});
+
 it("leaves explicit and alternate-source Forks alone after a native restart", async () => {
   const f = fixture();
   const { client } = f.attach();

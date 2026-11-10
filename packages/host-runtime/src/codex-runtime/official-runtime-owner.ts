@@ -53,6 +53,7 @@ export interface OfficialRuntimeOwnerOptions {
 const object = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const requestKey = (id: string | number): string => JSON.stringify([typeof id, id]);
+class OfficialThreadRestorationError extends Error {}
 const RESUME_FIELDS = new Set([
   "model",
   "modelProvider",
@@ -350,9 +351,9 @@ export class OfficialRuntimeOwner {
     let response: JsonObject | undefined;
     try {
       const runtime = await this.#connection(client);
-      await this.#restore(client, runtime, method, params);
-      if (method === "thread/fork") params = this.#forkParams(params);
-      response = await runtime.request(method, params);
+      await this.#restoreBeforeRequest(client, runtime, method, params);
+      const forwarded = method === "thread/fork" ? this.#forkParams(params) : params;
+      response = await runtime.request(method, forwarded);
       if (
         client.runtime !== runtime ||
         runtime.generation !== this.#generation ||
@@ -384,17 +385,15 @@ export class OfficialRuntimeOwner {
     if (typeof value.id !== "string" && typeof value.id !== "number")
       throw new Error("Official methods require a request ID");
     const method = value.method;
-    let params = object(value.params) ? value.params : {};
+    const params = object(value.params) ? value.params : {};
     this.#checkMethod(method);
     const finish = this.gate.admit();
     let pendingKey: string | undefined;
     try {
       const runtime = await this.#connection(client);
-      await this.#restore(client, runtime, method, params);
-      if (method === "thread/fork" && object(value.params)) {
-        params = this.#forkParams(params);
-        value = { ...value, params };
-      }
+      await this.#restoreBeforeRequest(client, runtime, method, params);
+      if (method === "thread/fork" && object(value.params))
+        value = { ...value, params: this.#forkParams(params) };
       if (typeof value.id === "string" || typeof value.id === "number") {
         const key = requestKey(value.id);
         if (client.pending.has(key)) throw new Error("Duplicate official request ID");
@@ -566,6 +565,24 @@ export class OfficialRuntimeOwner {
     return inherited;
   }
 
+  async #restoreBeforeRequest(
+    client: Client,
+    runtime: CodexRuntime,
+    method: string,
+    params: JsonObject,
+  ): Promise<void> {
+    try {
+      await this.#restore(client, runtime, method, params);
+    } catch (error) {
+      if (
+        method !== "thread/fork" ||
+        !this.#canInheritForkModel(params) ||
+        !(error instanceof OfficialThreadRestorationError)
+      )
+        throw error;
+    }
+  }
+
   async #restore(
     client: Client,
     runtime: CodexRuntime,
@@ -601,7 +618,7 @@ export class OfficialRuntimeOwner {
         !object(response.result.thread) ||
         response.result.thread.id !== params.threadId
       )
-        throw new Error("Official Thread restoration failed");
+        throw new OfficialThreadRestorationError("Official Thread restoration failed");
       if (client.runtime !== runtime || runtime.generation !== this.#generation)
         throw new OfficialAdmissionError("unavailable");
       this.#rememberModelSettings(threadId, response.result);

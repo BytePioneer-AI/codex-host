@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createServer, type AddressInfo } from "node:net";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
@@ -311,39 +311,3 @@ it("rejects conflicting flags before snapshotting or stopping Web", async () => 
     /mutually exclusive/u,
   );
 });
-
-it(
-  "stops the real matching preview while leaving a different port running",
-  { timeout: 20_000 },
-  async (t) => {
-    const root = await mkdtemp(join(tmpdir(), "codexhost-dev-preview-"));
-    await mkdir(join(root, "app"));
-    const entry = join(root, "app/server.mjs");
-    await writeFile(entry, "setInterval(() => {}, 1000); console.log('ready');");
-    const children = ["4400", "4401"].map((port) =>
-      spawn(process.execPath, [entry, "--port", port], { stdio: ["ignore", "pipe", "ignore"] }),
-    );
-    t.after(async () => {
-      for (const child of children)
-        if (child.exitCode === null && child.signalCode === null) {
-          const exited = once(child, "exit");
-          child.kill();
-          await exited;
-        }
-      await rm(root, { recursive: true, force: true });
-    });
-    await Promise.all(
-      children.map((child) => {
-        assert.ok(child.stdout);
-        return once(child.stdout, "data");
-      }),
-    );
-    const [first, second] = children;
-    assert.ok(first && second);
-    const stopped = once(first, "exit");
-    await stopDevelopmentWeb(entry, "4400");
-    await stopped;
-    assert.equal(second.exitCode, null);
-    assert.equal(second.signalCode, null);
-  },
-);

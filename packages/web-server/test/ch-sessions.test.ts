@@ -3,6 +3,7 @@ import { mkdtempSync, readdirSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
+import { decodeHarnessPluginRoute } from "@codexhost/shared-contracts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { EventHub, RpcRegistry, StreamRegistry, type StreamHandler } from "../src/transport.ts";
@@ -90,6 +91,108 @@ it("shares canonical CH identity and cwd without a Web index/history or physical
   assert.ok(again.items.some((row) => row.sessionId === created.id));
   assert.ok(!again.items.some((row) => row.sessionId === draft.sessionId));
   assert.deepEqual(readdirSync(root), ["workspaces.json"]);
+});
+
+it("resolves an existing unbound draft summary without native reads, then follows its bound alias", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-direct-draft-"));
+  const host = new FakeChHost();
+  host.add("unrelated", root);
+  const sessions = new ChSessions(
+    host,
+    new Workspaces(new DataDir(root), root),
+    new EventHub(root),
+  );
+  t.after(async () => {
+    await sessions.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const rpc = new RpcRegistry();
+  sessions.register(rpc, new StreamRegistry());
+  sessions.registerCommands(rpc);
+  const call = async <T>(method: string, args: object): Promise<T> => {
+    const result = await rpc.dispatch(method, { args });
+    assert.ok(result.ok, result.ok ? undefined : result.error.message);
+    return result.value as T;
+  };
+  interface Summary {
+    sessionId: string;
+    blank: boolean;
+    cwd?: string;
+    projections: { values: Record<string, unknown> };
+  }
+  const draft = await call<{ sessionId: string }>("session/create", { request: { cwd: root } });
+  assert.match(draft.sessionId, /^draft-[0-9a-f-]+$/u);
+  const projectless = await call<{ sessionId: string }>("session/create", { request: {} });
+  await call("commands/execute", { agentId: draft.sessionId, line: "/permission auto" });
+  const controls = t.mock.method(sessions.catalog, "inspect", async () => {
+    throw new Error("Draft controls must not be read for a summary");
+  });
+  const projects = t.mock.method(host, "projects", async () => {
+    throw new Error("Projects must not be read for a direct summary");
+  });
+  host.requests.length = 0;
+  const direct = await call<{ items: Summary[] }>("session/list", {
+    request: { sessionId: draft.sessionId },
+  });
+  assert.equal(direct.items.length, 1);
+  assert.equal(direct.items[0]?.sessionId, draft.sessionId);
+  assert.equal(direct.items[0]?.blank, true);
+  assert.equal(direct.items[0]?.cwd, root);
+  assert.deepEqual(direct.items[0]?.projections.values.harnessIdentity, {
+    id: "fake",
+    name: "CH Harness",
+  });
+  assert.equal(direct.items[0]?.projections.values.nativePermissions, undefined);
+  assert.equal(direct.items[0]?.projections.values.permissions, undefined);
+  const loose = await call<{ items: Summary[] }>("session/list", {
+    request: { sessionId: projectless.sessionId },
+  });
+  assert.deepEqual(
+    loose.items.map((row) => ({ id: row.sessionId, blank: row.blank, cwd: row.cwd })),
+    [{ id: projectless.sessionId, blank: true, cwd: undefined }],
+  );
+  assert.equal(
+    host.requests.length,
+    0,
+    "an unbound draft never requests native ownership, thread/read or the catalog",
+  );
+  assert.equal(controls.mock.callCount(), 0);
+  assert.equal(projects.mock.callCount(), 0);
+  assert.equal(host.threads.size, 1, "summary recovery must not create a native Thread");
+
+  controls.mock.restore();
+  await call("session/prompt", {
+    request: {
+      sessionId: draft.sessionId,
+      content: [{ type: "text", text: "first message" }],
+      mode: "queue",
+    },
+  });
+  const start = host.requests.find((req) => req.method === "thread/start");
+  assert.ok(start);
+  assert.equal(
+    decodeHarnessPluginRoute(start.params.model)?.permissionModeId,
+    "auto",
+    "reading the summary preserves the draft's selected permission mode",
+  );
+  const canonical = [...host.threads.keys()].find((id) => id !== "unrelated");
+  assert.ok(canonical);
+  host.requests.length = 0;
+  const bound = await call<{ items: Summary[] }>("session/list", {
+    request: { sessionId: draft.sessionId },
+  });
+  assert.deepEqual(
+    bound.items.map((row) => ({ id: row.sessionId, blank: row.blank })),
+    [{ id: canonical, blank: false }],
+  );
+  assert.deepEqual(
+    host.requests.map((req) => ({ method: req.method, threadId: req.params.threadId })),
+    [
+      { method: "codexhost/thread/inspect", threadId: canonical },
+      { method: "thread/read", threadId: canonical },
+    ],
+  );
+  assert.equal(projects.mock.callCount(), 0);
 });
 
 it("projects imported branch provenance in both list rows and opened history", async (t) => {
@@ -453,12 +556,15 @@ it("workspace mirror: preserves Web information and identities across native tit
   assert.equal(updated.createdAt, second.createdAt);
   assert.equal(updated.title, project.name);
   assert.deepEqual(updated.sessionIds, ["second-root", "moving"]);
-  assert.deepEqual(workspaces.get(first.workspaceId), first, "hidden source records are retained");
-  assert.ok(!workspaces.list().some((workspace) => workspace.workspaceId === first.workspaceId));
+  const firstProject = workspaces
+    .list()
+    .find((workspace) => workspace.workspaceId === first.workspaceId);
+  assert.ok(firstProject, "complete project definitions survive without loaded members");
+  assert.equal(firstProject.title, project.name);
+  assert.deepEqual(firstProject.sessionIds, []);
   assert.deepEqual(frames, [
-    { type: "remove", workspaceId: first.workspaceId },
+    { type: "upsert", workspace: firstProject },
     { type: "upsert", workspace: updated },
-    { type: "order", workspaceIds: [explicit.workspaceId, second.workspaceId] },
   ]);
   writes.mock.resetCalls();
   frames.length = 0;
@@ -469,6 +575,7 @@ it("workspace mirror: preserves Web information and identities across native tit
     .find((workspace) => workspace.workspaceId === explicit.workspaceId);
   assert.deepEqual(visibleExplicit?.sessionIds, savedExplicit.sessionIds);
   assert.deepEqual(frames, [
+    { type: "remove", workspaceId: first.workspaceId },
     { type: "remove", workspaceId: second.workspaceId },
     { type: "upsert", workspace: visibleExplicit },
     { type: "order", workspaceIds: [explicit.workspaceId] },
@@ -536,11 +643,9 @@ it("keeps a Thread created during an in-flight catalog read for its first histor
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const host = new FakeChHost();
   host.add("existing", root);
-  const sessions = new ChSessions(
-    host,
-    new Workspaces(new DataDir(root), root),
-    new EventHub(root),
-  );
+  const events = new EventHub(root);
+  const emitted = t.mock.method(events, "emit");
+  const sessions = new ChSessions(host, new Workspaces(new DataDir(root), root), events);
   t.after(() => sessions.close());
   const rpc = new RpcRegistry();
   sessions.register(rpc, new StreamRegistry());
@@ -600,4 +705,10 @@ it("keeps a Thread created during an in-flight catalog read for its first histor
   const result = await history;
   assert.ok(result.ok, result.ok ? undefined : result.error.message);
   assert.ok((await staleList).ok);
+  assert.ok(
+    !emitted.mock.calls.some(
+      (call) => call.arguments[0] === "api-session/removed" && call.arguments[1] === created.id,
+    ),
+    "an external Thread created after the snapshot must not be removed by it",
+  );
 });

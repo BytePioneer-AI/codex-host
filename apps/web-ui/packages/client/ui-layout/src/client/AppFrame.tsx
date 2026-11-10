@@ -230,6 +230,7 @@ export function AppFrame({
     },
     [actions, sidebarCollapsed],
   );
+  const closePhoneSidebar = useCallback(() => setPhoneOpen(false), [setPhoneOpen]);
   const drawerPresent = usePhoneDrawerMotion(
     frameRef,
     drawerRef,
@@ -520,6 +521,7 @@ export function AppFrame({
     <PhoneSidebarProvider
       target={phone ? phoneViewTarget : null}
       open={drawerPresent}
+      close={closePhoneSidebar}
       backLabel={t("back")}
       enterView={enterPhoneView}
     >

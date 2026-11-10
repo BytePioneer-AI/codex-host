@@ -40,7 +40,10 @@ it("presents the native Computer Use consent as an actionable approval, not an e
     interaction: {
       type: "approval",
       title: 'Allow Computer Use to use "Safari"?',
-      description: "Monitor the app for prompt injection risks.",
+      description: [
+        "Monitor the app for prompt injection risks.",
+        '```json\n{\n  "tool": "get_app_state",\n  "arguments": {\n    "app": "com.apple.Safari"\n  }\n}\n```',
+      ].join("\n\n"),
       subject: {
         serverName: "cua_repl",
         tool: "get_app_state",
@@ -80,6 +83,7 @@ it("presents a message-only form as one-time consent without inventing persisten
   expect(pending?.kind).toBe("approval");
   if (pending?.interaction.type !== "approval") throw new Error("Missing approval");
   expect(pending.interaction.actions.map((action) => action.effect)).toEqual(["allowOnce", "deny"]);
+  expect(pending.interaction.description).toBeUndefined();
 });
 
 it.each([

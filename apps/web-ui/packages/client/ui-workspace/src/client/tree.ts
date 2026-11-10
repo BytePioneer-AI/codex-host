@@ -391,6 +391,22 @@ function runningChildCount(
   );
 }
 
+/** Existing list/status facts shared by sidebar and visit-only navigation, without opening a Session. */
+export function sessionActivity(
+  summary: SessionSummary,
+  list: SessionListState,
+  statuses: SessionStatuses,
+): Pick<SessionNode, "pendingInteraction" | "running" | "runningSubagentCount" | "completed"> {
+  const status = statuses.get(summary.id);
+  const pendingInteraction = visiblePendingKind(status?.pendingInteraction?.kind);
+  return {
+    running: status?.running ?? summary.running,
+    runningSubagentCount: runningChildCount(list, summary.id, statuses),
+    completed: status?.completionUnread === true,
+    ...(pendingInteraction === undefined ? {} : { pendingInteraction }),
+  };
+}
+
 function sessionNode(
   s: SessionSummary,
   list: SessionListState,
@@ -398,20 +414,15 @@ function sessionNode(
   pinned: ReadonlySet<SessionId>,
   archived: ReadonlySet<SessionId>,
 ): SessionNode {
-  const status = statuses.get(s.id);
-  const pendingInteraction = visiblePendingKind(status?.pendingInteraction?.kind);
   return {
     id: s.id,
     reference: threadReferenceOf(s),
     title: sessionTitle(s),
     blank: s.blank,
-    running: status?.running ?? s.running,
-    runningSubagentCount: runningChildCount(list, s.id, statuses),
-    completed: status?.completionUnread === true,
+    ...sessionActivity(s, list, statuses),
     pinned: !archived.has(s.id) && pinned.has(s.id),
     archived: archived.has(s.id),
     updatedAt: s.updatedAt,
-    ...(pendingInteraction === undefined ? {} : { pendingInteraction }),
   };
 }
 

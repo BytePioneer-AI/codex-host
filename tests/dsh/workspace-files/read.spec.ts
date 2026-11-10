@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FsError } from "@deepseek-ai/dsh-fs";
-import { failureOf, openWorkspace, signal, type Harness } from "./harness.ts";
+import { failureOf, openWorkspace, posixPrefixed, signal, type Harness } from "./harness.ts";
 
 let harness: Harness;
 let workspace: string;
@@ -336,4 +336,33 @@ describe("workspaceFiles.read — the file changing under its gate", () => {
       code: "FS_IO_ERROR",
     });
   });
+});
+
+describe("workspaceFiles.read — POSIX-style drive prefixes", () => {
+  it.runIf(process.platform === "win32")(
+    "reads a Windows absolute path written with the `/D:/`-style prefix harness links carry",
+    async () => {
+      await writeFile(join(workspace, "notes.txt"), "hello\nworld\n", "utf8");
+      const result = await endpoint().read(
+        harness.scope,
+        posixPrefixed(workspace, "notes.txt"),
+        {},
+        signal(),
+      );
+      expect(result.text).toBe("hello\nworld");
+      expect(result.eof).toBe(true);
+      expect(result.bytes).toBe(12);
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "keeps the `/D:/` prefix on POSIX, where a `D:` directory is legal",
+    async () => {
+      const failure = await failureOf(
+        endpoint().read(harness.scope, "/D:/notes.txt", {}, signal()),
+      );
+      expect(failure.code).toBe("workspace-file/not-found");
+      expect(failure.details).toMatchObject({ path: "/D:/notes.txt" });
+    },
+  );
 });

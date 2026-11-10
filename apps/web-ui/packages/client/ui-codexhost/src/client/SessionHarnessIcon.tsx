@@ -40,13 +40,23 @@ export function SessionHarnessIcon({
         color: "inherit",
       }}
     >
-      <RemotePluginIcon
-        id={identity.id}
-        src={`/harness-icons/${encodeURIComponent(identity.id)}`}
-        presentationUrl="/harness-icons/presentation.json"
-        size={SIDEBAR_ICON_SIZE}
-        fallback={<IconDataOutlineRegular size={SIDEBAR_ICON_SIZE} />}
-      />
+      {identity.id === "codex" ? (
+        <img
+          src="/harness-icons/codex"
+          width={SIDEBAR_ICON_SIZE}
+          height={SIDEBAR_ICON_SIZE}
+          alt=""
+          data-native-codex-icon
+        />
+      ) : (
+        <RemotePluginIcon
+          id={identity.id}
+          src={`/harness-icons/${encodeURIComponent(identity.id)}`}
+          presentationUrl="/harness-icons/presentation.json"
+          size={SIDEBAR_ICON_SIZE}
+          fallback={<IconDataOutlineRegular size={SIDEBAR_ICON_SIZE} />}
+        />
+      )}
     </span>
   );
 }

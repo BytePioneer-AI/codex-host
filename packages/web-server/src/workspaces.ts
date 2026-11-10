@@ -9,6 +9,7 @@ import { type DataDir, requestOf } from "./store.ts";
 import { RpcError, type RpcRegistry, type StreamRegistry, type StreamSink } from "./transport.ts";
 
 export interface WorkspaceView {
+  remote?: { hostId: string; displayName: string; state: string };
   workspaceId: string;
   path: string;
   title: string;
@@ -34,6 +35,27 @@ export class Workspaces {
   private referencePins: string[] | undefined;
   private referenceProjectRoots: ReadonlySet<string> = new Set();
   private referenceArchives: string[] | undefined;
+  private remoteArchives: readonly string[] = [];
+  private remoteGroups: WorkspaceView[] = [];
+
+  setRemoteGroups(groups: WorkspaceView[]): void {
+    const previous = new Map(this.remoteGroups.map((group) => [group.workspaceId, group]));
+    this.remoteGroups = groups;
+    const current = new Set(groups.map((group) => group.workspaceId));
+    for (const id of previous.keys())
+      if (!current.has(id)) this.broadcast({ type: "remove", workspaceId: id });
+    for (const workspace of groups)
+      if (JSON.stringify(previous.get(workspace.workspaceId)) !== JSON.stringify(workspace))
+        this.broadcast({ type: "upsert", workspace });
+    if (
+      JSON.stringify([...previous.keys()]) !==
+      JSON.stringify(groups.map((group) => group.workspaceId))
+    )
+      this.broadcast({
+        type: "order",
+        workspaceIds: this.list().map((group) => group.workspaceId),
+      });
+  }
 
   constructor(
     private readonly data: DataDir,
@@ -65,36 +87,39 @@ export class Workspaces {
   list(): readonly WorkspaceView[] {
     const references = this.referenceGroups;
     const items = this.state.items;
-    if (!references) return items;
+    if (!references) return [...this.remoteGroups, ...items];
     const allowedRoots = new Set(
       [...references.values()].filter((path): path is string => path !== undefined),
     );
-    return items
-      .filter((workspace) => {
-        // Legacy automatic rows from the previous build are hidden, not deleted.
-        const legacyReference =
-          workspace.origin === undefined &&
-          workspace.sessionIds.length > 0 &&
-          workspace.sessionIds.some((id) => references.has(id)) &&
-          workspace.sessionIds.every((id) => references.has(id) || id.startsWith("draft-"));
-        return (
-          workspace.origin === "web" ||
-          !(workspace.origin === "codexhost" || legacyReference) ||
-          allowedRoots.has(workspace.path) ||
-          this.referenceProjectRoots.has(workspace.path)
-        );
-      })
-      .map((workspace) => ({
-        ...workspace,
-        sessionIds: workspace.sessionIds.filter(
-          (id) =>
-            !references.has(id) ||
-            references.get(id) === workspace.path ||
-            (workspace.origin === "web" &&
-              references.get(id) === undefined &&
-              !this.referenceProjectless.has(id)),
-        ),
-      }));
+    return [
+      ...this.remoteGroups,
+      ...items
+        .filter((workspace) => {
+          // Legacy automatic rows from the previous build are hidden, not deleted.
+          const legacyReference =
+            workspace.origin === undefined &&
+            workspace.sessionIds.length > 0 &&
+            workspace.sessionIds.some((id) => references.has(id)) &&
+            workspace.sessionIds.every((id) => references.has(id) || id.startsWith("draft-"));
+          return (
+            workspace.origin === "web" ||
+            !(workspace.origin === "codexhost" || legacyReference) ||
+            allowedRoots.has(workspace.path) ||
+            this.referenceProjectRoots.has(workspace.path)
+          );
+        })
+        .map((workspace) => ({
+          ...workspace,
+          sessionIds: workspace.sessionIds.filter(
+            (id) =>
+              !references.has(id) ||
+              references.get(id) === workspace.path ||
+              (workspace.origin === "web" &&
+                references.get(id) === undefined &&
+                !this.referenceProjectless.has(id)),
+          ),
+        })),
+    ];
   }
 
   /** Replace only the shared navigation view; never delete user records or any directories. */
@@ -143,6 +168,14 @@ export class Workspaces {
     this.broadcast({ type: "archived", archivedSessionIds: this.archivedSessionIds() });
   }
 
+  /** Confirmed remote archives augment, never replace, the local owner's projection. */
+  setRemoteArchives(ids: readonly string[]): void {
+    const next = [...new Set(ids)];
+    if (JSON.stringify(next) === JSON.stringify(this.remoteArchives)) return;
+    this.remoteArchives = next;
+    this.broadcast({ type: "archived", archivedSessionIds: this.archivedSessionIds() });
+  }
+
   /** Authoritative visible pin list used by both the stream and RPC replies. */
   pinnedSessionIds(): string[] {
     return this.referencePins === undefined
@@ -151,6 +184,11 @@ export class Workspaces {
   }
 
   get(workspaceId: string): WorkspaceView | undefined {
+    if (this.remoteGroups.some((group) => group.workspaceId === workspaceId))
+      throw new RpcError(
+        "workspace/remote-read-only",
+        "Open an existing remote Thread; remote project creation and local tools are unavailable.",
+      );
     return this.state.items.find((item) => item.workspaceId === workspaceId);
   }
 
@@ -165,10 +203,13 @@ export class Workspaces {
   isArchived(sessionId: string): boolean {
     return this.archivedSessionIds().includes(sessionId);
   }
+  /** Local owner facts used for local catalog reconciliation and archive notifications. */
+  localArchivedSessionIds(): string[] {
+    return [...(this.referenceArchives ?? this.state.archivedSessionIds)];
+  }
+  /** Combined navigation projection; never an input to either owner's reconciliation. */
   archivedSessionIds(): string[] {
-    return this.referenceArchives === undefined
-      ? this.state.archivedSessionIds
-      : [...new Set(this.referenceArchives)];
+    return [...new Set([...this.localArchivedSessionIds(), ...this.remoteArchives])];
   }
 
   create(path: string, referenceOnly = false): { workspace: WorkspaceView; created: boolean } {

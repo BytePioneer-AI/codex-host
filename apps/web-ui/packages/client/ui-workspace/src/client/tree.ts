@@ -21,7 +21,8 @@ import {
 /** Only the shared external catalog advertises this capability; absence is unsupported. */
 declare module "@deepseek-ai/dsh-session-projection/types" {
   interface SessionProjectionMap {
-    threadReference: { hostId: "local" } | null;
+    threadReference: { hostId: string; threadId?: string } | null;
+    remoteHost: { hostId: string; displayName: string; state: string } | null;
   }
 }
 
@@ -51,6 +52,7 @@ function mainSessionId(list: SessionListState): SessionId | undefined {
 
 /** One top-level session row in a group or the flat list. */
 export interface SessionNode {
+  remote?: WorkspaceView["remote"];
   id: SessionId;
   reference?: ThreadReference | undefined;
   /** Stored title, or empty; the renderer localizes blank and unnamed row labels. */
@@ -76,6 +78,7 @@ export type SessionOrderBy = "manual" | "updated";
 
 /** One workspace group section: header row facts + visible top-level session rows. */
 export interface GroupNode {
+  remote?: WorkspaceView["remote"];
   /** Group key: the workspace id or {@link UNGROUPED_KEY}. */
   key: string;
   /** Backing Workspace id; absent for Recents. */
@@ -95,6 +98,7 @@ export interface GroupNode {
 
 /** One flat search row combining list metadata with an optional content match. */
 export interface SearchResultNode {
+  remote?: WorkspaceView["remote"];
   id: SessionId;
   title: string;
   workspace: string;
@@ -124,6 +128,7 @@ export interface TreeView {
 }
 
 interface Group {
+  remote?: WorkspaceView["remote"];
   key: string;
   workspaceId: WorkspaceId | undefined;
   cwd: string | undefined;
@@ -315,8 +320,9 @@ function buildGroup(
   createdAt: number | undefined,
   label: string,
   members: readonly SessionSummary[],
+  remote?: WorkspaceView["remote"],
 ): Group {
-  return { key, workspaceId, cwd, createdAt, label, sessions: [...members] };
+  return { key, workspaceId, cwd, createdAt, label, sessions: [...members], remote };
 }
 
 /**
@@ -350,6 +356,7 @@ function groupByWorkspace(
         Date.parse(workspace.createdAt),
         workspace.title,
         members,
+        workspace.remote,
       ),
     );
   }
@@ -417,6 +424,7 @@ function sessionNode(
   return {
     id: s.id,
     reference: threadReferenceOf(s),
+    remote: s.projectionValues?.remoteHost ?? undefined,
     title: sessionTitle(s),
     blank: s.blank,
     ...sessionActivity(s, list, statuses),
@@ -465,6 +473,7 @@ export function deriveGroups(
       cwd: g.cwd,
       createdAt: g.createdAt,
       label: g.label,
+      remote: g.remote,
       sessionCount: members.length,
       expanded,
       containsCurrent: g.sessions.some((session) => session.id === current),
@@ -632,6 +641,7 @@ export function deriveSearchResults(
         id: summary.id,
         title: sessionTitle(summary),
         workspace: labelOf(summary),
+        remote: summary.projectionValues?.remoteHost ?? undefined,
         running: status?.running ?? summary.running,
         runningSubagentCount: runningChildCount(list, summary.id, statuses),
         ...(pendingInteraction === undefined ? {} : { pendingInteraction }),

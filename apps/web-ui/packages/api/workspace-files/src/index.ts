@@ -6,7 +6,9 @@
  * File reads follow the composed filesystem's read access, including paths
  * outside the workspace. The selected Session header supplies the base for
  * relative paths, with the sandbox policy root as its no-cwd fallback, not a
- * read-containment restriction. Directory listings and change observations
+ * read-containment restriction. Requested paths may carry the POSIX-style
+ * drive prefix (`/D:/…`) harness-written links use; it is canonicalized away
+ * before resolution. Directory listings and change observations
  * remain workspace-scoped. File-kind checks and configured read caps apply to
  * every preview; this service exposes no mutations.
  *
@@ -110,6 +112,17 @@ function integerAtLeast(value: number, min: number, name: string): number {
     );
   }
   return value;
+}
+
+/**
+ * Drop the POSIX-style drive prefix (`/D:/…`) harness-written links carry.
+ * Windows resolution would otherwise read the prefix as a `D:` directory under
+ * the workspace root and miss the target; the Desktop renderer applies the
+ * same canonicalization to such links before opening them. A directory named
+ * `D:` is legal on POSIX, so the prefix is preserved there.
+ */
+function stripPosixDrivePrefix(path: string): string {
+  return process.platform === "win32" ? path.replace(/^\/(?=[A-Za-z]:[/\\])/u, "") : path;
 }
 
 /**
@@ -260,6 +273,7 @@ export class WorkspaceFiles extends TypertRemoteService {
     range: WorkspaceFileRange,
     signal: AbortSignal,
   ): Promise<WorkspaceFileText> {
+    path = stripPosixDrivePrefix(path);
     const { offset, limit } = this.resolvePage(range);
     const { target, info } = await this.locateFile(workspaceFileScope, path, signal);
     const page = await this.cutPage(target, offset, limit, signal, path);
@@ -290,12 +304,15 @@ export class WorkspaceFiles extends TypertRemoteService {
     options: WorkspaceByteReadOptions,
     signal: AbortSignal,
   ): Promise<WorkspaceFileBytes> {
+    path = stripPosixDrivePrefix(path);
     const window =
       options.range === undefined ? undefined : this.resolveWindow(options.range, path);
+    const baseFile =
+      options.baseFile === undefined ? undefined : stripPosixDrivePrefix(options.baseFile);
     const resolved =
-      options.baseFile === undefined
+      baseFile === undefined
         ? path
-        : await this.relativePath(workspaceFileScope, options.baseFile, path, signal);
+        : await this.relativePath(workspaceFileScope, baseFile, path, signal);
     const { target, info } = await this.locateFile(workspaceFileScope, resolved, signal);
     if (window !== undefined) {
       const { offset, length } = window;
@@ -337,6 +354,7 @@ export class WorkspaceFiles extends TypertRemoteService {
     path: string,
     signal: AbortSignal,
   ): Promise<WorkspaceFileStat> {
+    path = stripPosixDrivePrefix(path);
     const { target, info } = await this.locateFile(workspaceFileScope, path, signal);
     return this.statOf(target, info);
   }
@@ -354,6 +372,7 @@ export class WorkspaceFiles extends TypertRemoteService {
     path: string,
     signal: AbortSignal,
   ): Promise<WorkspaceDirectoryListing> {
+    path = stripPosixDrivePrefix(path);
     const { root, workspaceRoot, entry } = await this.inspect(workspaceFileScope, path, signal);
     // A final link — a Windows junction or a symlink — is listed through the
     // directory it resolves to, matching the child type `listDir` reports for
@@ -398,6 +417,7 @@ export class WorkspaceFiles extends TypertRemoteService {
     path: string,
     signal: AbortSignal,
   ): AsyncIterable<WorkspaceFileWatchFrame> {
+    path = stripPosixDrivePrefix(path);
     return this.feed.follow(workspaceFileScope.workspaceRoot, path, signal);
   }
 

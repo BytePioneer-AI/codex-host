@@ -988,14 +988,21 @@ describe("Renderer fixed Model request client", () => {
       { plain: false, availability: true },
       { plain: true, availability: false },
       { plain: true, availability: true },
-    ].flatMap((entry) => ["code", "jsonRpcCode"].map((codeField) => ({ ...entry, codeField }))),
+    ].flatMap((entry) =>
+      ["code", "jsonRpcCode"].flatMap((codeField) =>
+        [
+          { code: -32602, message: "Harness inspection scope does not match the Thread" },
+          { code: -32088, message: "Wrapped or translated scope error" },
+          { code: -32088, message: "" },
+        ].map((error) => ({ ...entry, codeField, ...error })),
+      ),
+    ),
   )(
     "does not drop Thread scope after an ownership mismatch: %j",
-    async ({ plain, availability, codeField }) => {
-      const message = "Harness inspection scope does not match the Thread";
+    async ({ plain, availability, codeField, code, message }) => {
       const failure = plain
-        ? { [codeField]: -32602, message }
-        : Object.assign(new Error(message), { [codeField]: -32602 });
+        ? { [codeField]: code, message }
+        : Object.assign(new Error(message), { [codeField]: code });
       const sendRequest = vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce(inspection);
       const client = createRendererModelClient([{ sendRequest }]);
       if (!client) throw new Error("Renderer client was not created");

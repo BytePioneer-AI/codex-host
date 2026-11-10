@@ -352,6 +352,8 @@ export function createRendererModelClient(
     } catch (error) {
       // Older Hosts only understand unscoped/full inspection. Preserve that
       // legacy behavior when an optional selector is rejected explicitly.
+      // Current Hosts use -32088 for scope mismatch, so message text is irrelevant.
+      // Keep the message guard only for older scoped Hosts that returned -32602.
       if (
         (!params.purpose && !params.threadId) ||
         !isInvalidParams(error) ||

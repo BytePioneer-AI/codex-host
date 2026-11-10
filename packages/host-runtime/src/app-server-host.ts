@@ -3069,7 +3069,7 @@ export class AppServerHost {
         (inspectionCwd !== undefined && inspectionCwd !== location.record.cwd)
       ) {
         await this.#writer.json(
-          rpcError(request, -32602, "Harness inspection scope does not match the Thread"),
+          rpcError(request, -32088, "Harness inspection scope does not match the Thread"),
         );
         return;
       }

@@ -132,7 +132,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
           writeRequest(fixture.desktopInput, { id, method: "codexhost/harness/inspect", params });
           await expect(
             fixture.collector.waitFor((message) => requestId(message, id)),
-          ).resolves.toMatchObject({ error: { code: -32602 } });
+          ).resolves.toMatchObject({ error: { code: -32088 } });
         }
         expect(inspect.mock.calls).toHaveLength(calls);
         expect(claude.inspectionCalls).toBe(0);

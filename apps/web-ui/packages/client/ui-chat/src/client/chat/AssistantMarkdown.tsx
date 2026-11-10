@@ -1,7 +1,11 @@
 import { Fragment, memo, useMemo } from "react";
 import { fileMediaUrl } from "@deepseek-ai/dsh-util-workspace-path";
 import type { ReactNode } from "react";
-import { JsonBlock, MarkdownText } from "@deepseek-ai/dsh-client-ui-primitives";
+import {
+  JsonBlock,
+  MarkdownText,
+  useMarkdownDelegate,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import type {
   MarkdownFileMentions,
   MarkdownPathImages,
@@ -25,17 +29,22 @@ import css from "./AssistantMarkdown.module.css";
  * Resolve an authored absolute image path against the document's file API.
  * @param base - canonical `document.baseURI` at render time.
  * @param value - authored Markdown destination; URL escapes are decoded once.
+ * @param resolve - Owning view's local-image policy, when present; a miss cannot fall back locally.
  * @returns an absolute Web or Desktop file-API URL, or undefined for unsupported
  * protocols and non-local paths.
  */
-export function localPathMediaUrl(base: string, value: string): string | undefined {
+export function localPathMediaUrl(
+  base: string,
+  value: string,
+  resolve?: (path: string) => string | undefined,
+): string | undefined {
   let path: string;
   try {
     path = decodeURIComponent(value.split(/[?#]/u)[0] ?? "");
   } catch {
     return undefined;
   } // Malformed URL escapes cannot identify a file.
-  return fileMediaUrl(base, path);
+  return resolve === undefined ? fileMediaUrl(base, path) : resolve(path);
 }
 
 export interface AssistantMarkdownProps {
@@ -78,10 +87,11 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
   // Stable per locale revision (t identity changes on switch): a fresh object
   // per render would rebuild MarkdownText's component table every chunk.
   const labels = useMemo(() => markdownLabels(t), [t]);
+  const { fileImages } = useMarkdownDelegate();
   // MarkdownText memoizes its vocabulary; keep its identity stable across renders.
   const pathImages = useMemo<MarkdownPathImages>(() => {
-    return { resolve: (value) => localPathMediaUrl(document.baseURI, value) };
-  }, []);
+    return { resolve: (value) => localPathMediaUrl(document.baseURI, value, fileImages?.resolve) };
+  }, [fileImages]);
   const last = blocks.length - 1;
   // Tool-call heads render as tool rows in the chat view's grouping pass, so
   // a node that is only those heads (or empty) would paint an empty root

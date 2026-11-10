@@ -235,6 +235,38 @@ export function installRendererHostRpcRouting(
     const manager: RendererHostRpcManager = Object.freeze({
       kind: "main-process-rpc" as const,
       getHostId: () => hostId,
+      ...(typeof rpc.getConversation === "function"
+        ? {
+            getConversation: async (threadId: string) => {
+              if (!isCurrent()) throw new Error("Remote manager retired");
+              return rpc.getConversation?.(threadId);
+            },
+          }
+        : {}),
+      ...(typeof rpc.replyWithCommandExecutionApprovalDecision === "function"
+        ? {
+            replyWithCommandExecutionApprovalDecision: async (
+              threadId: string,
+              requestId: string | number,
+              decision: string,
+            ) => {
+              if (!isCurrent()) throw new Error("Remote manager retired");
+              return rpc.replyWithCommandExecutionApprovalDecision?.(threadId, requestId, decision);
+            },
+          }
+        : {}),
+      ...(typeof rpc.replyWithFileChangeApprovalDecision === "function"
+        ? {
+            replyWithFileChangeApprovalDecision: async (
+              threadId: string,
+              requestId: string | number,
+              decision: string,
+            ) => {
+              if (!isCurrent()) throw new Error("Remote manager retired");
+              return rpc.replyWithFileChangeApprovalDecision?.(threadId, requestId, decision);
+            },
+          }
+        : {}),
       sendRequest(method: string, params: unknown, options?: unknown): Promise<unknown> {
         if (!isCurrent())
           return Promise.reject(new Error(`Renderer request manager is retired for ${hostId}`));

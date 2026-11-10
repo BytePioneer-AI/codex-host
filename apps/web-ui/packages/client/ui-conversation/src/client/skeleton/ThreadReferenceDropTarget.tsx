@@ -8,6 +8,8 @@ import {
   THREAD_REFERENCE_MIME,
   parseThreadReferenceDrag,
   threadReferenceOf,
+  localThreadId,
+  threadReferenceUri,
   type ThreadReference,
 } from "../thread-reference.ts";
 import css from "./ThreadReferenceDropTarget.module.css";
@@ -43,7 +45,8 @@ export function ThreadReferenceDropTarget({
         : null;
     };
     const supported = (candidate: ThreadReference | undefined) => {
-      const session = candidate === undefined ? undefined : catalog.current[candidate.threadId];
+      const id = candidate === undefined ? undefined : localThreadId(threadReferenceUri(candidate));
+      const session = id === undefined ? undefined : catalog.current[id];
       return session !== undefined && threadReferenceOf(session) !== undefined;
     };
     const inside = (target: EventTarget | null) => {
@@ -92,7 +95,12 @@ export function ThreadReferenceDropTarget({
       const transfer = transferOf(event);
       if (transfer !== null && inside(event.target)) {
         const candidate = parseThreadReferenceDrag(transfer.getData(THREAD_REFERENCE_MIME));
-        if (editable() && supported(candidate) && candidate?.threadId === dragged?.threadId) {
+        if (
+          editable() &&
+          supported(candidate) &&
+          candidate?.threadId === dragged?.threadId &&
+          candidate?.hostId === dragged?.hostId
+        ) {
           editor.dispatchCommand(DROP_COMMAND, event);
         } else {
           event.preventDefault();

@@ -22,6 +22,11 @@ export type {
 
 /** One durable Workspace projected for browser consumers. */
 export interface WorkspaceView {
+  readonly remote?: {
+    readonly hostId: string;
+    readonly displayName: string;
+    readonly state: string;
+  };
   readonly workspaceId: WorkspaceId;
   /** Canonical host directory path. */
   readonly path: string;

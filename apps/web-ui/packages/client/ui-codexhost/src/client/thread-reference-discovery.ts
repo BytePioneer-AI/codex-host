@@ -1,4 +1,4 @@
-/** Search the shared local Thread catalog and insert the same reference as sidebar drag. */
+/** Search the shared Thread catalog and insert the same reference as sidebar drag. */
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import type {} from "@deepseek-ai/dsh-api-workspace-controller/client";
@@ -75,7 +75,7 @@ export function registerThreadReferenceDiscovery(ctx: Context): void {
                 !workspace.toLowerCase().includes(query)
               )
                 return [];
-              return [{ reference, workspace, updatedAt: row.updatedAt }];
+              return [{ id, reference, workspace, updatedAt: row.updatedAt }];
             })
             .sort(
               (a, b) =>
@@ -83,10 +83,10 @@ export function registerThreadReferenceDiscovery(ctx: Context): void {
                 a.reference.threadId.localeCompare(b.reference.threadId),
             )
             .slice(0, query === "" ? 5 : undefined)
-            .map(({ reference, workspace }) => ({
-              name: reference.threadId,
+            .map(({ id, reference, workspace }) => ({
+              name: id,
               label: reference.title,
-              value: reference.threadId,
+              value: id,
               showAlias: false,
               section: t("discovery.sessions"),
               description: [workspace, reference.threadId].filter(Boolean).join(" · "),

@@ -235,7 +235,7 @@ export class ChSessions {
     const projects = { ...assignments, projects: definitions.projects };
     if (this.closed) return;
     const snapshotArchives = new Set<string>(snapshot.archivedThreadIds);
-    const archivedIds = new Set(this.workspaces.archivedSessionIds());
+    const archivedIds = new Set(this.workspaces.localArchivedSessionIds());
     for (const id of snapshotArchives) archivedIds.add(id);
     for (const id of found.keys()) if (!snapshotArchives.has(id)) archivedIds.delete(id);
     // Notifications received after the pull began supersede its archive membership.
@@ -872,7 +872,7 @@ export class ChSessions {
 
   private updateArchive(id: string, archived: boolean): void {
     this.refreshingArchiveChanges?.set(id, archived);
-    const ids = new Set(this.workspaces.archivedSessionIds());
+    const ids = new Set(this.workspaces.localArchivedSessionIds());
     if (archived) ids.add(id);
     else ids.delete(id);
     this.workspaces.setReferenceArchives([...ids].sort());

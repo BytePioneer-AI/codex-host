@@ -42,6 +42,7 @@ it(
     const browser = await chromium.launch();
     t.after(() => browser.close());
     const page = await browser.newPage({
+      locale: "en-US",
       viewport: { width: 1280, height: 900 },
       permissions: ["clipboard-read", "clipboard-write"],
     });
@@ -78,7 +79,10 @@ it(
     assert.ok(visible.includes(plain));
     assert.equal(visible.includes(first), false);
     await page.getByRole("button", { name: "Copy", exact: true }).first().click();
-    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), text);
+    assert.equal(
+      (await page.evaluate(() => navigator.clipboard.readText())).replaceAll("\r\n", "\n"),
+      text,
+    );
     if (process.env.CODEXHOST_TEST_SCREENSHOTS) {
       mkdirSync(process.env.CODEXHOST_TEST_SCREENSHOTS, { recursive: true });
       await page.screenshot({

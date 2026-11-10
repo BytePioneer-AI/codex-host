@@ -2252,7 +2252,7 @@ export class AppServerHost {
         }
       }
     }
-    const started = await this.#officialRuntime.request("thread/start", {
+    const started = await this.#requestOfficial("thread/start", {
       cwd: input.cwd,
       ...nativeSelection,
       approvalPolicy: "never",

@@ -193,8 +193,6 @@ export function delegationCliEnvironment(
 export async function prepareDelegationRuntime(input: {
   environment: NodeJS.ProcessEnv;
   hostRuntimePath?: string;
-  /** Only the local Runtime serves external clients; a managed remote Host does not. */
-  externalClients?: boolean;
   createHost(
     environment: NodeJS.ProcessEnv,
     onDelegationApi: (api: DelegationControlRegistration) => (() => void) | undefined,
@@ -223,19 +221,17 @@ export async function prepareDelegationRuntime(input: {
   });
   const token = randomBytes(32).toString("hex");
   const server = await startDelegationControlServer({ token, api: registry, watchApi: registry });
-  const externalServer = input.externalClients
-    ? await startExternalClients(input.environment, registry, events).then(
-        (started) => {
-          if (started)
-            process.stderr.write(`codexhost external clients: listening on ${started.endpoint}\n`);
-          return started;
-        },
-        (error: unknown) => {
-          process.stderr.write(`codexhost external clients: ${String(error)}\n`);
-          return undefined;
-        },
-      )
-    : undefined;
+  const externalServer = await startExternalClients(input.environment, registry, events).then(
+    (started) => {
+      if (started)
+        process.stderr.write(`codexhost external clients: listening on ${started.endpoint}\n`);
+      return started;
+    },
+    (error: unknown) => {
+      process.stderr.write(`codexhost external clients: ${String(error)}\n`);
+      return undefined;
+    },
+  );
   const environment = {
     ...input.environment,
     ...delegationCliEnvironment(input.environment, input.hostRuntimePath),
@@ -396,7 +392,6 @@ export async function runHostRuntime(input: {
     return prepareDelegationRuntime({
       environment,
       ...(hostRuntimePath ? { hostRuntimePath } : {}),
-      externalClients: true,
       createHost: async (delegationEnvironment, onDelegationApi, registry) => {
         const official = await prepareLocalCodex({
           stockCodexPath,

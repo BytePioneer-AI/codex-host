@@ -7,7 +7,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { FileSystem, FsObservation, FsTarget } from "@deepseek-ai/dsh-fs";
 import { FsVersion } from "@deepseek-ai/dsh-fs";
 import { WorkspaceFiles } from "@deepseek-ai/dsh-api-workspace-files";
-import { failureOf, openWorkspace, type Harness } from "./harness.ts";
+import { failureOf, openWorkspace, posixPrefixed, type Harness } from "./harness.ts";
 
 let harness: Harness;
 let watch: MockInstance<FileSystem["watch"]>;
@@ -134,6 +134,26 @@ describe("workspaceFiles.changes — target frames", () => {
       release.resolve(undefined);
     }
   });
+
+  it.runIf(process.platform === "win32")(
+    "watches a target whose path carries the `/D:/`-style drive prefix harness links use",
+    async () => {
+      const path = join(harness.workspace, "prefixed.txt");
+      await writeFile(path, "current contents");
+      const service = harness.endpoint();
+      const current = await service.stat(harness.scope, path, new AbortController().signal);
+      const stream = open(service, posixPrefixed(harness.workspace, "prefixed.txt"));
+      await ready(stream);
+      await observe(path, present("changed"));
+      await expect(stream.next()).resolves.toEqual({
+        done: false,
+        value: {
+          kind: "change",
+          change: { absolutePath: current.absolutePath, version: current.version },
+        },
+      });
+    },
+  );
 
   it("waits for watcher readiness and retains invalidations delivered during initialization", async () => {
     const path = join(harness.workspace, "initializing.txt");

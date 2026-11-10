@@ -60,6 +60,24 @@ function fixture(initial: unknown[] = [connection], unsupported = false) {
   };
 }
 describe("native SSH configuration", () => {
+  it("exports display-only SSH and Remote Control catalog without credentials", async () => {
+    const f = fixture([
+      connection,
+      {
+        hostId: "remote-control:fixture",
+        displayName: "custom-gateway",
+        source: "remote-control",
+        autoConnect: true,
+        credential: "private",
+      },
+      { hostId: "wsl:linux", displayName: "WSL", autoConnect: true },
+    ]);
+    expect(await f.client.catalog?.()).toEqual([
+      { hostId: connection.hostId, displayName: "Office", autoConnect: false },
+      { hostId: "remote-control:fixture", displayName: "custom-gateway", autoConnect: true },
+    ]);
+    expect(f.sent.map((item) => item.url)).toEqual(["vscode://codex/refresh-remote-connections"]);
+  });
   function services() {
     const native = {
       sshConnections: {

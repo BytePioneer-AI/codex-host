@@ -3,6 +3,7 @@ import type { CodexSshConnection, CodexSshDraft } from "@codexhost/shared-contra
 import { loadCodexSshServices, type CodexSshServices } from "./codex-ssh-services.js";
 export type { CodexSshConnection, CodexSshDraft } from "@codexhost/shared-contracts";
 export interface CodexSshClient {
+  catalog?(): Promise<Array<{ hostId: string; displayName: string; autoConnect: boolean }>>;
   list(signal?: AbortSignal): Promise<CodexSshConnection[]>;
   save(
     draft: CodexSshDraft,
@@ -247,6 +248,25 @@ export function createCodexSshClient(ownerWindow: Window): CodexSshClient {
   }
   return {
     list,
+    async catalog() {
+      const result = await request("refresh-remote-connections", {});
+      if (!record(result) || !Array.isArray(result.remoteConnections))
+        throw new Error("Native remote catalog unavailable");
+      return result.remoteConnections.flatMap((item: unknown) =>
+        record(item) &&
+        typeof item.hostId === "string" &&
+        /^remote-(?:ssh(?:-|:)|control:)/u.test(item.hostId) &&
+        typeof item.displayName === "string"
+          ? [
+              {
+                hostId: item.hostId,
+                displayName: item.displayName,
+                autoConnect: item.autoConnect === true,
+              },
+            ]
+          : [],
+      );
+    },
     save: (draft, previous, signal) => mutate(previous, draft, signal),
     remove: (previous, signal) => mutate(previous, null, signal),
     async connect(hostId, enabled, signal) {

@@ -27,6 +27,9 @@ function setup(
   } = {},
 ) {
   const rpc = {
+    getConversation: vi.fn(async () => ({ requests: [] })),
+    replyWithCommandExecutionApprovalDecision: vi.fn(async () => undefined),
+    replyWithFileChangeApprovalDecision: vi.fn(async () => undefined),
     sendRequest: vi.fn(async () => ({ entries: [] })),
     clearPrewarmedThreads: vi.fn(async () => undefined),
   };
@@ -153,6 +156,31 @@ async function install(fixture: ReturnType<typeof setup>): Promise<Routing> {
   await installRendererDraftPrewarmPolicyDirect(fixture.renderer);
   return fixture.target.__codexhostHostRoutingV1 as Routing;
 }
+
+it("forwards remote approvals through native owner coordination and rejects retired RPC managers", async () => {
+  const f = setup({ hosts: ["local", "ssh:a", "ssh:b"] });
+  const routing = await install(f);
+  try {
+    const route = routing.forHost("ssh:a");
+    if (!route || !("kind" in route.manager)) throw new Error("RPC route missing");
+    await expect(route.manager.getConversation?.("same")).resolves.toEqual({ requests: [] });
+    await route.manager.replyWithCommandExecutionApprovalDecision?.("same", 7, "accept");
+    expect(f.rpc.replyWithCommandExecutionApprovalDecision).toHaveBeenCalledWith(
+      "same",
+      7,
+      "accept",
+    );
+    const connection = f.connections.get("ssh:a");
+    if (!connection) throw new Error("Fixture connection missing");
+    connection.status = "disconnected";
+    await expect(
+      route.manager.replyWithFileChangeApprovalDecision?.("same", 7, "decline"),
+    ).rejects.toThrow("retired");
+    expect(f.rpc.replyWithFileChangeApprovalDecision).not.toHaveBeenCalled();
+  } finally {
+    routing.dispose();
+  }
+});
 
 it("does not search Composer trees when reading or sending through a known RPC Host", async () => {
   vi.useFakeTimers();

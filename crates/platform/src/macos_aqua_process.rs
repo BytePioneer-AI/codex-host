@@ -302,7 +302,18 @@ pub fn run_aqua_spawn_helper(socket: &Path) -> Result<(), PlatformError> {
         }
     };
     let reply = (|| {
-        let snapshot = process_snapshot(child.id())?;
+        // A listener that exits before its snapshot is read is a failed launch: say so,
+        // instead of closing the socket and leaving the caller with a bare EOF.
+        let snapshot = match process_snapshot(child.id()) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let failed = Reply::Failed(error.to_string().chars().take(600).collect());
+                if let Ok(encoded) = serde_json::to_vec(&failed) {
+                    let _ = write_frame(&stream, &encoded);
+                }
+                return Err(error);
+            }
+        };
         let reply = Reply::Started {
             pid: snapshot.id,
             started_at_micros: snapshot.started_at_micros,

@@ -32,6 +32,7 @@ export class Workspaces {
   private referenceGroups: Map<string, string | undefined> | undefined;
   private referenceProjectless: ReadonlySet<string> = new Set();
   private referencePins: string[] | undefined;
+  private referenceProjectRoots: ReadonlySet<string> = new Set();
   private referenceArchives: string[] | undefined;
 
   constructor(
@@ -79,7 +80,8 @@ export class Workspaces {
         return (
           workspace.origin === "web" ||
           !(workspace.origin === "codexhost" || legacyReference) ||
-          allowedRoots.has(workspace.path)
+          allowedRoots.has(workspace.path) ||
+          this.referenceProjectRoots.has(workspace.path)
         );
       })
       .map((workspace) => ({
@@ -246,6 +248,7 @@ export class Workspaces {
     sessions: readonly { sessionId: string; cwd: string; title?: string }[],
     groups: Map<string, string | undefined>,
     projectless: ReadonlySet<string> = new Set(),
+    projects: readonly { name: string; rootPaths: string[] }[] = [],
   ): void {
     const before = new Map(
       this.list().map((workspace) => [workspace.workspaceId, JSON.stringify(workspace)]),
@@ -257,6 +260,27 @@ export class Workspaces {
     const byPath = new Map(items.map((workspace) => [workspace.path, workspace]));
     const members = new Map<string, Set<string>>();
     const now = new Date().toISOString();
+    const projectRoots = new Set<string>();
+    for (const project of projects) {
+      for (const root of project.rootPaths) {
+        const path = resolve(root);
+        projectRoots.add(path);
+        let workspace = byPath.get(path);
+        if (!workspace) {
+          workspace = {
+            workspaceId: randomUUID(),
+            path,
+            title: project.name,
+            sessionIds: [],
+            createdAt: now,
+            updatedAt: now,
+            origin: "codexhost",
+          };
+          items.push(workspace);
+          byPath.set(path, workspace);
+        } else if (workspace.origin !== "web") workspace.title = project.name;
+      }
+    }
     for (const { sessionId, cwd, title } of sessions) {
       let workspace = byPath.get(resolve(cwd));
       if (!workspace) {
@@ -313,6 +337,7 @@ export class Workspaces {
       this.data.writeJson(FILE, state);
       this.state = state;
     }
+    this.referenceProjectRoots = projectRoots;
     this.referenceGroups = groups;
     this.referenceProjectless = projectless;
     const after = this.list();

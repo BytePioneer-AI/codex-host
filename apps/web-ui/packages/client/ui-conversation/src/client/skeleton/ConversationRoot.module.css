@@ -80,6 +80,17 @@
   padding-inline-start: max(0px, calc(var(--dsh-frame-leading-clearance, 0px) - 20px));
 }
 
+/* A phone title control owns a full touch row, aligned with the frame's leading controls. */
+:global([data-phone]) .header:has(:global([data-slot="conversation.header.navigation"]) button) {
+  padding-top: env(safe-area-inset-top);
+}
+
+:global([data-phone])
+  .header:has(:global([data-slot="conversation.header.navigation"]) button)
+  .titleRow {
+  min-height: 44px;
+}
+
 .titleCluster {
   display: flex;
   flex: 1;

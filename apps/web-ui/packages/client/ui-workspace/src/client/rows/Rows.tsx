@@ -29,7 +29,6 @@ import {
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ShortcutCatalogEntry } from "@deepseek-ai/dsh-client-shortcuts/client";
-import type { StateDotState } from "@deepseek-ai/dsh-client-ui-primitives";
 import { abbreviateHomePath } from "@deepseek-ai/dsh-util-workspace-path";
 import type { MenuOpenState, WorkspaceBrowserProps } from "../contract/slots.ts";
 import type { GroupNode, SearchResultNode, SessionNode } from "../tree.ts";
@@ -37,6 +36,8 @@ import {
   THREAD_REFERENCE_MIME,
   threadReferenceInsert,
 } from "@deepseek-ai/dsh-client-ui-conversation/thread-reference";
+import { SessionRowContent } from "./SessionRowContent.tsx";
+import { sessionStatuses, SessionStatusDots } from "./session-status.tsx";
 import css from "./Rows.module.css";
 
 /** The standard locale seat, prop-passed from the browser root. */
@@ -298,95 +299,6 @@ export function ProjectRowItem({
       copyLabel={t("copy")}
       copiedLabel={t("hover.copied")}
     />
-  );
-}
-
-/* v8 ignore next 3 -- closed-union backstop; only reached if the status is forged */
-function assertNever(value: never): never {
-  throw new Error(`unknown pending interaction: ${String(value)}`);
-}
-
-interface SessionStatus {
-  state: StateDotState;
-  label: string;
-  /** Compact text that replaces the Session row's update time. */
-  trailingLabel?: string;
-}
-
-/**
- * Session status presentation; pending interaction is primary and live activity
- * outranks completion reminders.
- */
-function sessionStatuses(
-  node: Pick<SessionNode, "pendingInteraction" | "running" | "runningSubagentCount" | "completed">,
-  t: RowTranslate,
-): readonly [SessionStatus, ...SessionStatus[]] {
-  const subagents: SessionStatus | undefined =
-    node.runningSubagentCount === 0
-      ? undefined
-      : {
-          state: "ongoing",
-          label: t(
-            node.runningSubagentCount === 1
-              ? "status.subagentsRunning.one"
-              : "status.subagentsRunning.other",
-            { n: node.runningSubagentCount },
-          ),
-        };
-  let pending: SessionStatus | undefined;
-  switch (node.pendingInteraction) {
-    case "approval":
-      pending = {
-        state: "warning",
-        label: t("status.waitingApproval"),
-        trailingLabel: t("status.compact.approval"),
-      };
-      break;
-    case "plan-review":
-      pending = {
-        state: "warning",
-        label: t("status.planReview"),
-        trailingLabel: t("status.compact.planReview"),
-      };
-      break;
-    case "question":
-      pending = {
-        state: "warning",
-        label: t("status.waitingAnswer"),
-        trailingLabel: t("status.compact.answer"),
-      };
-      break;
-    case undefined:
-      break;
-    /* v8 ignore next -- closed PendingInteractionStatus union */
-    default:
-      return assertNever(node.pendingInteraction);
-  }
-  if (pending !== undefined) return subagents === undefined ? [pending] : [pending, subagents];
-  if (node.running) {
-    const primary: SessionStatus = { state: "ongoing", label: t("status.running") };
-    return subagents === undefined ? [primary] : [primary, subagents];
-  }
-  if (subagents !== undefined) return [subagents];
-  if (node.completed) return [{ state: "done", label: t("status.completed") }];
-  return [{ state: "idle", label: t("status.idle") }];
-}
-
-/** Primary status dot plus every status's screen-reader label, shared by the search and session rows. */
-function SessionStatusDots({
-  statuses,
-}: {
-  statuses: readonly [SessionStatus, ...SessionStatus[]];
-}) {
-  return (
-    <>
-      <StateDot state={statuses[0].state} size={statuses[0].state === "ongoing" ? 16 : undefined} />
-      {statuses.map((status) => (
-        <span className={css.visuallyHidden} key={status.label}>
-          {status.label}
-        </span>
-      ))}
-    </>
   );
 }
 
@@ -667,21 +579,16 @@ export function SessionNodeItem({
             }
       }
     >
-      {/* Identity never changes with activity. Keep the existing ambient
-          decoration idle-only; transient status is rendered at the right. */}
-      <span className={css.slot}>
-        {renderSlot("sidebar.session.row.identity", { sessionId: node.id })}
-        <span className={css.statusOverlay}>
-          {!row.archived &&
-            !row.blank &&
-            !showStatus &&
-            renderSlot("sidebar.session.row.leading", { sessionId: node.id })}
-        </span>
-      </span>
-      <span
-        data-session-title
-        className={css.title}
-        onDoubleClick={
+      <SessionRowContent
+        identity={renderSlot("sidebar.session.row.identity", { sessionId: node.id })}
+        ambient={
+          !row.archived &&
+          !row.blank &&
+          !showStatus &&
+          renderSlot("sidebar.session.row.leading", { sessionId: node.id })
+        }
+        title={title}
+        onTitleDoubleClick={
           row.blank
             ? undefined
             : (e) => {
@@ -690,86 +597,85 @@ export function SessionNodeItem({
               }
         }
       >
-        {title}
-      </span>
-      <span className={css.trailing}>
-        {/* A blank New Session row is a provisional placeholder: nothing has
+        <span className={css.trailing}>
+          {/* A blank New Session row is a provisional placeholder: nothing has
           happened in it yet, so a "now" timestamp and the row verbs
           (rename/fork/archive) would all act on content that does not
           exist — both trailing cells stay off until the first prompt. */}
-        {!row.blank && (
-          <span
-            className={clsx(css.time, showStatus && css.timeStatus)}
-            data-session-status={showStatus ? primaryStatus.state : undefined}
-          >
-            {showStatus ? (
-              <>
-                <SessionStatusDots statuses={statuses} />
-                {primaryStatus.trailingLabel !== undefined && (
-                  <span aria-hidden="true">{primaryStatus.trailingLabel}</span>
-                )}
-              </>
-            ) : (
-              timeLabel(row.updatedAt, now, t)
-            )}
-          </span>
-        )}
-        {/* The strip's clicks stay in the strip: the trigger and every
+          {!row.blank && (
+            <span
+              className={clsx(css.time, showStatus && css.timeStatus)}
+              data-session-status={showStatus ? primaryStatus.state : undefined}
+            >
+              {showStatus ? (
+                <>
+                  <SessionStatusDots statuses={statuses} />
+                  {primaryStatus.trailingLabel !== undefined && (
+                    <span aria-hidden="true">{primaryStatus.trailingLabel}</span>
+                  )}
+                </>
+              ) : (
+                timeLabel(row.updatedAt, now, t)
+              )}
+            </span>
+          )}
+          {/* The strip's clicks stay in the strip: the trigger and every
           row.action entry act without also opening the row, so an entry's
           button needs no propagation handling of its own. */}
-        {!row.blank && (
-          <span
-            className={css.rowActions}
-            onClick={(e) => {
-              e.stopPropagation();
-            }}
-          >
-            <Menu
-              open={menuOpen}
-              onClose={() => {
-                setMenuOpen(false);
+          {!row.blank && (
+            <span
+              className={css.rowActions}
+              onClick={(e) => {
+                e.stopPropagation();
               }}
-              portal
-              autoFocus
-              phoneSidebarTitle={title}
-              phoneSidebarFooterBackLabel={t("session.backToList")}
-              phoneSidebarDetails={
-                <div className={css.phoneDetails}>
-                  <SessionHoverContent node={node} now={now} renderSlot={renderSlot} t={t} />
-                </div>
-              }
-              getAnchorRect={contextPoint === null ? undefined : () => contextPoint}
-              anchor={
-                <button
-                  type="button"
-                  className={css.iconButton}
-                  aria-label={t("actions.session.aria", { name: title })}
-                  aria-haspopup="menu"
-                  aria-expanded={menuOpen}
-                  onClick={() => {
-                    setContextPoint(null);
-                    setMenuOpen((v) => !v);
-                  }}
-                >
-                  <IconEllipsisOutlineRegular />
-                </button>
-              }
             >
-              {renderSlot(
-                "sidebar.workspaces.session.menu.item",
-                { sessionId: node.id, displayTitle: row.title },
-                { hookContext: menuOpenState },
-              )}
-            </Menu>
-            <span className={css.quickActions}>
-              {renderSlot("sidebar.workspaces.session.row.action", {
-                sessionId: node.id,
-                displayTitle: row.title,
-              })}
+              <Menu
+                open={menuOpen}
+                onClose={() => {
+                  setMenuOpen(false);
+                }}
+                portal
+                autoFocus
+                phoneSidebarTitle={title}
+                phoneSidebarFooterBackLabel={t("session.backToList")}
+                phoneSidebarDetails={
+                  <div className={css.phoneDetails}>
+                    <SessionHoverContent node={node} now={now} renderSlot={renderSlot} t={t} />
+                  </div>
+                }
+                getAnchorRect={contextPoint === null ? undefined : () => contextPoint}
+                anchor={
+                  <button
+                    type="button"
+                    className={css.iconButton}
+                    aria-label={t("actions.session.aria", { name: title })}
+                    aria-haspopup="menu"
+                    aria-expanded={menuOpen}
+                    onClick={() => {
+                      setContextPoint(null);
+                      setMenuOpen((v) => !v);
+                    }}
+                  >
+                    <IconEllipsisOutlineRegular />
+                  </button>
+                }
+              >
+                {renderSlot(
+                  "sidebar.workspaces.session.menu.item",
+                  { sessionId: node.id, displayTitle: row.title },
+                  { hookContext: menuOpenState },
+                )}
+              </Menu>
+              <span className={css.quickActions}>
+                {renderSlot("sidebar.workspaces.session.row.action", {
+                  sessionId: node.id,
+                  displayTitle: row.title,
+                })}
+              </span>
             </span>
-          </span>
-        )}
-      </span>
+          )}
+        </span>
+      </SessionRowContent>
     </div>
   );
   return (

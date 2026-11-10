@@ -299,6 +299,30 @@ it.each([
   ).toMatchObject({ result: { effectiveThinkingOptionId: "high" } });
 });
 
+it("includes the command and working directory in native approval content", () => {
+  const channel = new NativeClientChannel({
+    events: new ClientChannelEvents(),
+    request: vi.fn(async () => ({ result: {} })),
+    respond: vi.fn(async () => undefined),
+  });
+  channel.observeMessage({
+    id: "command-display",
+    method: "item/commandExecution/requestApproval",
+    params: {
+      threadId: "native-thread",
+      reason: "Allow creating a.txt?",
+      command: "printf 'test\\n' > a.txt",
+      cwd: "/synthetic/project",
+      availableDecisions: ["accept", "cancel"],
+    },
+  });
+  expect(channel.interactions("native-thread")[0]?.interaction).toMatchObject({
+    type: "approval",
+    title: "Allow creating a.txt?",
+    description: "printf 'test\\n' > a.txt\n\nWorking directory: /synthetic/project",
+  });
+});
+
 it("validates native command decisions and preserves first-answer semantics", async () => {
   const events = new ClientChannelEvents();
   const respond = vi.fn(async () => undefined);

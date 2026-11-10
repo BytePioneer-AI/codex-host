@@ -72,6 +72,18 @@ export interface RendererSettingsMessages {
   readonly idleReleasePending: string;
   readonly idleReleaseUnavailable: string;
   readonly idleReleaseFailed: string;
+  readonly delegationCapacitySection: string;
+  readonly delegationCapacityTitle: string;
+  readonly delegationCapacityDescription: string;
+  readonly delegationCapacityHelpLabel: string;
+  readonly delegationCapacityHelp: readonly string[];
+  readonly delegationCapacityLimit: string;
+  readonly delegationCapacityLimitDescription: string;
+  readonly delegationCapacityUnit: string;
+  readonly delegationCapacityInvalid: string;
+  readonly delegationCapacityPending: string;
+  readonly delegationCapacityUnavailable: string;
+  readonly delegationCapacityFailed: string;
   readonly reasoningSoftWrapTitle: string;
   readonly reasoningSoftWrapDescription: string;
   readonly pageUnavailable: string;
@@ -343,6 +355,22 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   idleReleasePending: "Syncing…",
   idleReleaseUnavailable: "Not supported by this Host",
   idleReleaseFailed: "Sync failed, try again",
+  delegationCapacitySection: "Delegation",
+  delegationCapacityTitle: "Limit running delegations",
+  delegationCapacityDescription:
+    "When the limit is reached, new delegations wait in a queue and start in order.",
+  delegationCapacityHelpLabel: "About the delegation limit",
+  delegationCapacityHelp: Object.freeze([
+    "Counts top-level sessions running on this computer, including ones you opened yourself. Subagents are not counted.",
+    "Only new delegations wait. Your messages and follow-up messages to existing sessions are never held back. Queued delegations are kept across Host restarts and can be cancelled.",
+  ]),
+  delegationCapacityLimit: "Running limit",
+  delegationCapacityLimitDescription: "1–32 sessions.",
+  delegationCapacityUnit: "sessions",
+  delegationCapacityInvalid: "Enter a whole number from 1 to 32.",
+  delegationCapacityPending: "Syncing…",
+  delegationCapacityUnavailable: "Not supported by this Host",
+  delegationCapacityFailed: "Sync failed, try again",
   reasoningSoftWrapTitle: "Wrap thinking text",
   reasoningSoftWrapDescription: "Wrap long lines in thinking blocks. Shell output is unaffected.",
   pageUnavailable: "Page unavailable",
@@ -657,6 +685,21 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   idleReleasePending: "同步中…",
   idleReleaseUnavailable: "当前 Host 不支持",
   idleReleaseFailed: "同步失败，请重试",
+  delegationCapacitySection: "委派",
+  delegationCapacityTitle: "限制同时运行的委派",
+  delegationCapacityDescription: "达到上限后，新的委派排队等待，有空位时按先后自动开始。",
+  delegationCapacityHelpLabel: "同时运行的委派上限说明",
+  delegationCapacityHelp: Object.freeze([
+    "计入本机正在运行的顶层会话，包括你手动打开的会话；子代理不计入。",
+    "只有新的委派会排队；你发送的消息和对已有会话的后续消息不受限制。排队中的委派在 Host 重启后保留，也可以取消。",
+  ]),
+  delegationCapacityLimit: "同时运行上限",
+  delegationCapacityLimitDescription: "1～32 个会话。",
+  delegationCapacityUnit: "个",
+  delegationCapacityInvalid: "请输入 1～32 之间的整数。",
+  delegationCapacityPending: "同步中…",
+  delegationCapacityUnavailable: "当前 Host 不支持",
+  delegationCapacityFailed: "同步失败，请重试",
   reasoningSoftWrapTitle: "换行显示思考文本",
   reasoningSoftWrapDescription: "思考块中的长行自动换行，不影响 Shell 输出。",
   pageUnavailable: "页面不可用",

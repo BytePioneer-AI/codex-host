@@ -83,6 +83,73 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     vi.useRealTimers();
   });
 
+  it("persists the silence threshold but not its suppression, then starts a fresh silence clock after restart", async () => {
+    const store = memoryStore();
+    const before = runtime({ child: { status: "running" }, parent: { status: "completed" } });
+    const first = service(before, store);
+    await first.watch({
+      threadId: "child",
+      notifyThreadId: "parent",
+      timeoutMs: 60 * 60_000,
+      stallAfterMs: 3_000,
+    });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(before.sent).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(before.sent).toHaveLength(1);
+    const records = [...store.records.values()];
+    expect(records).toMatchObject([{ state: "watching", stallAfterMs: 3_000 }]);
+    expect(records[0]).not.toHaveProperty("stallNotified");
+    expect(records[0]).not.toHaveProperty("lastActivityAt");
+    first.close();
+    await vi.advanceTimersByTimeAsync(60_000);
+    const after = runtime({ child: { status: "running" }, parent: { status: "completed" } });
+    const second = service(after, store);
+    await second.watches();
+    await vi.advanceTimersByTimeAsync(2_999);
+    expect(after.sent).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(after.sent).toHaveLength(1);
+    expect(after.sent[0]?.message).toContain(": stalled");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(after.sent).toHaveLength(1);
+    second.close();
+  });
+
+  it("never stores a pending silence alert and measures silence again after a restart", async () => {
+    const store = memoryStore();
+    const before = runtime({ child: { status: "running" }, parent: { status: "running" } });
+    before.send.mockRejectedValue(new DelegationControlError("THREAD_BUSY", "busy"));
+    const first = service(before, store);
+    await first.watch({
+      threadId: "child",
+      notifyThreadId: "parent",
+      timeoutMs: 60_000,
+      stallAfterMs: 3_000,
+    });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect((await first.watches()).watches).toMatchObject([
+      { state: "watching" },
+      { state: "pendingDelivery", outcome: "stalled" },
+    ]);
+    expect([...store.records.values()]).toMatchObject([{ state: "watching", stallAfterMs: 3_000 }]);
+    first.close();
+    const after = runtime({ child: { status: "running" }, parent: { status: "completed" } });
+    const second = service(after, store);
+    await second.watches();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(after.sent).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(after.sent).toHaveLength(1);
+    expect(after.sent[0]?.message).toContain(": stalled");
+    expect([...store.records.values()]).toMatchObject([{ state: "watching", stallAfterMs: 3_000 }]);
+    after.update("child", { status: "completed" });
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(after.sent).toHaveLength(2);
+    expect(after.sent[1]?.message).toContain(": completed");
+    expect(store.records.size).toBe(0);
+  });
+
   it("stores a watch while it is pending and removes it once delivered", async () => {
     const store = memoryStore();
     const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });

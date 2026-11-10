@@ -34,6 +34,7 @@
 - 这类委派写入普通的 v1 Delegation 关系，父标识为 `client:<name>`。幂等重试、`thread list --client <name>`（即按该父标识列举）沿用既有路径；旧版本读取时只是一个不存在的父 Thread，不会丢弃记录。
 - 客户端没有自己的工作目录，所以无父委派必须给出 `--cwd`；Registry 把它交给共享 catalog 或唯一的 Host 会话，无法唯一确定时返回 `PARENT_THREAD_AMBIGUOUS`。
 - 经外部监听且未给 `--cwd` 的 `thread list` 不限定工作目录。
+- 开启[委派并发上限](delegation-capacity.md)时，客户端发起的委派同样受限：超出时 `delegate start`（MCP `delegate_start`）返回 `queued` 与排队位置，watch 照常等到 Thread 开始后真正停下。
 
 ## 引用
 
@@ -43,7 +44,7 @@
 
 ## 事件
 
-- 被通知方为客户端的 watch 停下时，Host 不启动 Turn，而是在 `<数据目录>/client-events/<name>/<UTC 日期>.jsonl` 追加事件，写入并 fsync 后才算投递。事件只含标识、时间、结果、来源 Turn、Harness、深度链接与引用，不含会话内容。
+- 被通知方为客户端的 watch 触发通知时，Host 不启动 Turn，而是在 `<数据目录>/client-events/<name>/<UTC 日期>.jsonl` 追加事件，写入并 fsync 后才算投递。事件只含标识、时间、结果、来源 Turn、Harness、深度链接、引用与结果原因，不含会话内容。可选 `--stall-after-ms`（MCP 中为 `stallAfterMs`）产生 `outcome: "stalled"`，`note` 说明 Thread 仍在运行、Host 未观察到事件和静默阈值；提醒不结束观察，新活动后可再次触发。默认关闭，恢复后的静默重新计时，见 [Thread watch](thread-watch.md)。
 - 事件标识由时钟（微秒）派生，在进程内严格递增，重启后从已有最大值之上继续。多个 Runtime 共用数据目录时标识可能交错，但不会重复使用同一进程内的值。
 - 整日超过保留期（默认 7 天，`CODEXHOST_CLIENT_EVENT_RETENTION_DAYS`）的文件被删除，删除范围记在 `pruned.json`；早于该范围的游标返回 `CURSOR_EXPIRED` 与当前最早事件标识，客户端用 `thread list --client` 对账。
 - 崩溃留下的半行被跳过，下一次追加先补换行，不会吞掉新事件。

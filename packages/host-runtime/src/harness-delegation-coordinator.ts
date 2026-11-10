@@ -21,12 +21,17 @@ import {
   harnessIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
+  type HostThreadId,
+  type HostTurnId,
 } from "@codexhost/shared-contracts";
 
 import {
   DELEGATION_THREAD_ID_ENV,
   DelegationControlError,
+  type DelegationAdmission,
+  type DelegationAdmissionRequest,
   type DelegationConfigurationResult,
+  type DelegationStartIdentity,
   type DelegationStartInput,
   type DelegationStartResult,
   type DelegationThreadListResult,
@@ -153,11 +158,14 @@ export class HarnessDelegationCoordinator {
   readonly #cancelOfficial: (input: ThreadCancelInput) => Promise<ThreadCancelResult>;
   readonly #startOfficial: (
     input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
+    admitted?: DelegationStartIdentity,
   ) => Promise<DelegationStartResult>;
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
   readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata>;
   readonly #activeOfficialParents: () => string[];
   readonly #externalThreadBusy: (thread: ExternalThread) => boolean;
+  readonly #admitDelegation:
+    ((request: DelegationAdmissionRequest) => Promise<DelegationAdmission> | undefined) | undefined;
 
   constructor(input: {
     adapters: Map<ExternalHarnessId, HarnessAdapter>;
@@ -180,13 +188,17 @@ export class HarnessDelegationCoordinator {
     readOfficial(input: ThreadReadInput): Promise<DelegationThreadSnapshot>;
     sendOfficial(input: ThreadSendInput): Promise<ThreadSendResult>;
     cancelOfficial(input: ThreadCancelInput): Promise<ThreadCancelResult>;
+    /** Native Codex starts apply the capacity limit themselves: their Thread exists while queued. */
     startOfficial(
       input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
+      admitted?: DelegationStartIdentity,
     ): Promise<DelegationStartResult>;
     listOfficial(input: ThreadListInput): Promise<DelegationThreadListResult>;
     officialThreadMetadata(threadId: string): Promise<ParentMetadata>;
     activeOfficialParents(): string[];
     externalThreadBusy(thread: ExternalThread): boolean;
+    /** The capacity limit for external Harness starts; undefined admits at once. */
+    admitDelegation?(request: DelegationAdmissionRequest): Promise<DelegationAdmission> | undefined;
   }) {
     this.#adapters = input.adapters;
     this.#environment = input.environment;
@@ -204,6 +216,7 @@ export class HarnessDelegationCoordinator {
     this.#officialThreadMetadata = input.officialThreadMetadata;
     this.#activeOfficialParents = input.activeOfficialParents;
     this.#externalThreadBusy = input.externalThreadBusy;
+    this.#admitDelegation = input.admitDelegation;
   }
 
   async listHarnesses(): Promise<HarnessListResult> {
@@ -229,7 +242,10 @@ export class HarnessDelegationCoordinator {
     };
   }
 
-  async start(input: DelegationStartInput): Promise<DelegationStartResult> {
+  async start(
+    input: DelegationStartInput,
+    admitted?: DelegationStartIdentity,
+  ): Promise<DelegationStartResult> {
     validateStart(input);
     // An external client has no workspace of its own for the child to inherit.
     if (originClientName(input.parentThreadId) && !input.cwd)
@@ -242,12 +258,10 @@ export class HarnessDelegationCoordinator {
     const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
     const title = delegationTitle(parent.title, input);
     if (input.harnessId === "codex") {
-      const result = await this.#startOfficial({
-        ...input,
-        parentThreadId,
-        cwd: selectedCwd,
-        title,
-      });
+      const result = await this.#startOfficial(
+        { ...input, parentThreadId, cwd: selectedCwd, title },
+        admitted,
+      );
       return {
         ...result,
         parentThreadId,
@@ -265,14 +279,17 @@ export class HarnessDelegationCoordinator {
     }
     const targetHarnessId = input.harnessId as ExternalHarnessId;
     const digest = taskDigest(startInput);
-    const duplicate = input.requestId
-      ? await this.#repository.findDelegationByRequest(input.requestId)
-      : await this.#repository.findRecentDelegation({
-          parentHostThreadId: hostThreadIdSchema.parse(parentThreadId),
-          targetHarnessId: harnessIdSchema.parse(targetHarnessId),
-          taskDigest: digest,
-          since: new Date(Date.now() - IMPLICIT_DEDUPLICATION_MS),
-        });
+    // A queued start was deduplicated when it was queued.
+    const duplicate = admitted
+      ? null
+      : input.requestId
+        ? await this.#repository.findDelegationByRequest(input.requestId)
+        : await this.#repository.findRecentDelegation({
+            parentHostThreadId: hostThreadIdSchema.parse(parentThreadId),
+            targetHarnessId: harnessIdSchema.parse(targetHarnessId),
+            taskDigest: digest,
+            since: new Date(Date.now() - IMPLICIT_DEDUPLICATION_MS),
+          });
     if (
       duplicate &&
       input.requestId &&
@@ -302,16 +319,86 @@ export class HarnessDelegationCoordinator {
       });
       this.#validateConfiguration(inspected.inspection, input.model, input.thinkingOptionId);
     }
-    const delegationId = hostThreadIdSchema.parse(randomUUID());
-    const childThreadId = hostThreadIdSchema.parse(randomUUID());
-    const turnId = hostTurnIdSchema.parse(randomUUID());
+    const delegationId = hostThreadIdSchema.parse(admitted?.delegationId ?? randomUUID());
+    const childThreadId = hostThreadIdSchema.parse(admitted?.threadId ?? randomUUID());
+    const turnId = hostTurnIdSchema.parse(admitted?.turnId ?? randomUUID());
+    const admission =
+      admitted || !originClientName(parentThreadId)
+        ? undefined
+        : await this.#admitDelegation?.({
+            input: startInput,
+            title,
+            taskDigest: digest,
+            identity: { delegationId, threadId: childThreadId, turnId },
+          });
+    if (admission?.state === "queued") {
+      const { identity } = admission;
+      return {
+        ...this.#result(
+          identity.delegationId,
+          identity.threadId,
+          identity.turnId,
+          targetHarnessId,
+          admission.status,
+        ),
+        ...(admission.position ? { queue: { position: admission.position } } : {}),
+        cwd: admission.cwd,
+        title: admission.title,
+        parentThreadId: admission.parentThreadId,
+      };
+    }
+    try {
+      return await this.#create({
+        input,
+        parent,
+        parentThreadId,
+        cwd: startInput.cwd,
+        title,
+        digest,
+        adapter,
+        targetHarnessId,
+        delegationId,
+        childThreadId,
+        turnId,
+      });
+    } finally {
+      admission?.release();
+    }
+  }
+
+  async #create(context: {
+    input: DelegationStartInput;
+    parent: { harnessId: RoutedHarnessId };
+    parentThreadId: string;
+    cwd: string;
+    title: string;
+    digest: string;
+    adapter: HarnessAdapter;
+    targetHarnessId: ExternalHarnessId;
+    delegationId: HostThreadId;
+    childThreadId: HostThreadId;
+    turnId: HostTurnId;
+  }): Promise<DelegationStartResult> {
+    const {
+      input,
+      parent,
+      parentThreadId,
+      cwd,
+      title,
+      digest,
+      adapter,
+      targetHarnessId,
+      delegationId,
+      childThreadId,
+      turnId,
+    } = context;
     const createRequestId = input.requestId ? `delegation:${input.requestId}` : randomUUID();
     let record = await this.#repository.createProvisional(
       createExternalThreadRecordInput({
         hostThreadId: childThreadId,
         createRequestId,
         harnessId: harnessIdSchema.parse(targetHarnessId),
-        cwd: startInput.cwd,
+        cwd,
         title,
         transportModelId:
           input.model || input.thinkingOptionId

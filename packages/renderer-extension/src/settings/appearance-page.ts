@@ -5,6 +5,7 @@ import {
 } from "../renderer-transcript-dom.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import type { RendererSettingsMessages } from "./localization.js";
+import { mountDelegationCapacityControls } from "./delegation-capacity-controls.js";
 import { mountIdleReleaseControls } from "./idle-release-controls.js";
 import type { LoadedSessionsClient } from "./loaded-sessions-table.js";
 import {
@@ -59,9 +60,11 @@ export function createAppearanceSettingsPage(
         messages,
         getLoadedSessionsClient,
       );
+      const disposeDelegationCapacity = mountDelegationCapacityControls(context, messages);
       return () => {
         ownerWindow.removeEventListener(REASONING_SOFT_WRAP_CHANGE_EVENT, sync);
         disposeIdleRelease();
+        disposeDelegationCapacity();
       };
     },
   });

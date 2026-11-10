@@ -152,4 +152,71 @@ describe("compact delegation output", () => {
       nextCursor: null,
     });
   });
+
+  it("keeps the queue position of a queued Thread", () => {
+    const queue = { position: 2 };
+    expect(
+      compactDelegationOutput("delegate start", {
+        delegationId: "private-delegation",
+        threadId: "child",
+        turnId: "private-turn",
+        harnessId: "pi",
+        deepLink: "codex://threads/child",
+        status: "queued",
+        queue,
+        cwd: "/project",
+        next: {},
+      }),
+    ).toEqual({
+      thread: "codex://threads/child",
+      harnessId: "pi",
+      status: "queued",
+      queuePosition: 2,
+      cwd: "/project",
+    });
+    expect(
+      compactDelegationOutput("thread read", {
+        threadId: "child",
+        harnessId: "pi",
+        status: "queued",
+        queue,
+        turn: null,
+        progress: [],
+        result: { availability: "pending" },
+        nextCursor: "bookmark",
+      }),
+    ).toEqual({
+      thread: "codex://threads/child",
+      harnessId: "pi",
+      status: "queued",
+      queuePosition: 2,
+      result: { availability: "pending" },
+    });
+    expect(
+      compactDelegationOutput("thread list", {
+        threads: [
+          {
+            threadId: "child",
+            deepLink: "codex://threads/child",
+            harnessId: "pi",
+            status: "queued",
+            queue,
+            title: "Task",
+          },
+        ],
+        nextCursor: null,
+      }),
+    ).toEqual({
+      threads: [
+        {
+          thread: "codex://threads/child",
+          harnessId: "pi",
+          status: "queued",
+          queuePosition: 2,
+          title: "Task",
+        },
+      ],
+      nextCursor: null,
+    });
+  });
 });

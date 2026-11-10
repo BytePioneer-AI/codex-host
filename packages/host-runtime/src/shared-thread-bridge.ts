@@ -8,6 +8,7 @@ import {
   LOADED_SESSIONS_METHOD,
   IDLE_RELEASE_SETTINGS_METHOD,
   USAGE_STATISTICS_METHOD,
+  DELEGATION_CAPACITY_SETTINGS_METHOD,
 } from "@codexhost/shared-contracts";
 import {
   storedSectionPlacementV1Schema,
@@ -143,9 +144,12 @@ export class SharedThreadBridge {
   handlesControl(method: string): boolean {
     return (
       this.options.delegateCreates &&
-      [LOADED_SESSIONS_METHOD, IDLE_RELEASE_SETTINGS_METHOD, USAGE_STATISTICS_METHOD].some(
-        (value) => value === method,
-      )
+      [
+        LOADED_SESSIONS_METHOD,
+        IDLE_RELEASE_SETTINGS_METHOD,
+        USAGE_STATISTICS_METHOD,
+        DELEGATION_CAPACITY_SETTINGS_METHOD,
+      ].some((value) => value === method)
     );
   }
 

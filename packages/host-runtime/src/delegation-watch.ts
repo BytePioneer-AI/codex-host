@@ -31,6 +31,10 @@ const UNREADABLE_GRACE_MS = 60_000;
 const DEFAULT_RESTORE_GRACE_MS = 5 * 60_000;
 
 interface Watch extends PersistedWatch {
+  /** Live event clock. Never restored from disk: downtime is not Harness silence. */
+  lastActivityAt?: number;
+  /** This silence episode already alerted. Not stored either: a restart starts a new episode. */
+  stallNotified?: boolean;
   unreadableSince?: number;
   lastReadError?: string;
   /** Restored watch: read failures mean the owning session is not back yet. */
@@ -58,6 +62,7 @@ function persisted(watch: Watch): PersistedWatch {
     restartNote,
     harnessId,
     refs,
+    stallAfterMs,
   } = watch;
   return {
     id,
@@ -75,6 +80,7 @@ function persisted(watch: Watch): PersistedWatch {
     ...(restartNote ? { restartNote } : {}),
     ...(harnessId ? { harnessId } : {}),
     ...(refs?.length ? { refs } : {}),
+    ...(stallAfterMs !== undefined ? { stallAfterMs } : {}),
   };
 }
 
@@ -112,11 +118,20 @@ function duration(milliseconds: number): string {
     : `${Math.round(milliseconds / 60_000)} min`;
 }
 
+/** Never rounded: a stalled alert claims at least this much silence. */
+function exactDuration(milliseconds: number): string {
+  if (milliseconds % 60_000 === 0) return `${milliseconds / 60_000} min`;
+  if (milliseconds % 1_000 === 0) return `${milliseconds / 1_000} s`;
+  return `${milliseconds} ms`;
+}
+
 function describe(watch: Watch): string {
   const link = threadLink(watch.threadId);
   if (watch.outcome === "interrupted" && watch.restartNote)
     return `${link}: interrupted${watch.turnId ? ` (Turn ${watch.turnId})` : ""}. ${watch.restartNote}`;
   switch (watch.outcome) {
+    case "stalled":
+      return `${link}: stalled${watch.turnId ? ` (Turn ${watch.turnId})` : ""}. It was still running, but no Harness event had been observed for at least ${exactDuration(watch.stallAfterMs ?? 0)}. This may be a long operation; read the Thread for its latest progress before deciding whether to intervene. The watch continues.`;
     case "timedOut":
       return `${link} has not reached a terminal state after ${duration(watch.timeoutMs)}; this watch expired. Run 'codexhost thread watch' again to keep waiting.`;
     case "unreadable":
@@ -132,16 +147,19 @@ function describe(watch: Watch): string {
 }
 
 function notification(watches: readonly Watch[]): string {
+  const event = watches.some((watch) => watch.outcome === "stalled")
+    ? "Watched Threads stopped, the watch expired, or an enabled silence threshold was reached."
+    : "Watched Threads stopped or the watch expired.";
   return [
-    "[codexhost thread watch] Watched Threads stopped or the watch expired. This reports execution state only, not that the work is correct or accepted. Inspect each Thread with 'codexhost thread read <thread>' before relying on it.",
+    `[codexhost thread watch] ${event} This reports execution state only, not that the work is correct or accepted. Inspect each Thread with 'codexhost thread read <thread>' before relying on it.`,
     ...watches.map((watch) => `- ${describe(watch)}`),
   ].join("\n");
 }
 
 /**
- * One-shot notifications when a watched Thread stops, built only on the public
- * `read` and `send` operations, so it is independent of Harness, Desktop and
- * delegation lineage. With a store, watches survive a Host Runtime restart: a
+ * One-shot stop notifications plus optional silence alerts. State and delivery
+ * use public `read`/`send`; Host event subscriptions supply activity without
+ * coupling observation to Harness or delegation lineage. Watches survive a restart: a
  * send whose outcome was not recorded before the restart is made again, so a
  * restart may repeat a notification but does not lose one.
  */
@@ -191,6 +209,14 @@ export class DelegationWatchService {
       throw new DelegationControlError("INVALID_ARGUMENT", "A Thread cannot watch itself");
     if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs <= 0)
       throw new DelegationControlError("INVALID_ARGUMENT", "timeoutMs must be a positive integer");
+    if (
+      input.stallAfterMs !== undefined &&
+      (!Number.isSafeInteger(input.stallAfterMs) || input.stallAfterMs <= 0)
+    )
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "stallAfterMs must be a positive integer",
+      );
 
     const client = originClientName(input.notifyThreadId);
     if (client !== undefined && (!isValidClientName(client) || !this.#clientEvents))
@@ -208,14 +234,23 @@ export class DelegationWatchService {
       status: target.status,
       timeoutMs: input.timeoutMs,
     };
-    if (terminal(target.status)) return { ...result, state: "alreadyTerminal" };
+    const stallOption =
+      input.stallAfterMs !== undefined ? { stallAfterMs: input.stallAfterMs } : {};
+    if (terminal(target.status)) return { ...result, ...stallOption, state: "alreadyTerminal" };
     const existing = this.#watches.find(
       (watch) =>
         watch.state === "watching" &&
         watch.threadId === input.threadId &&
         watch.notifyThreadId === input.notifyThreadId,
     );
-    if (existing) return { ...result, state: "watching", timeoutMs: existing.timeoutMs };
+    if (existing) {
+      return {
+        ...result,
+        state: "watching",
+        timeoutMs: existing.timeoutMs,
+        ...(existing.stallAfterMs !== undefined ? { stallAfterMs: existing.stallAfterMs } : {}),
+      };
+    }
     if (this.#closed) throw new DelegationControlError("INTERNAL_ERROR", "Host Runtime is closing");
     const watch: Watch = {
       id: randomUUID(),
@@ -225,6 +260,9 @@ export class DelegationWatchService {
       registeredAt: new Date().toISOString(),
       timeoutMs: input.timeoutMs,
       deadline: Date.now() + input.timeoutMs,
+      ...(input.stallAfterMs !== undefined
+        ? { stallAfterMs: input.stallAfterMs, lastActivityAt: Date.now() }
+        : {}),
     };
     this.#watches.push(watch);
     try {
@@ -238,14 +276,23 @@ export class DelegationWatchService {
       );
     }
     this.#schedule();
-    return { ...result, state: "watching" };
+    return { ...result, ...stallOption, state: "watching" };
   }
 
   async watches(): Promise<ThreadWatchListResult> {
     await this.#ready;
     return {
       watches: this.#watches.map(
-        ({ threadId, notifyThreadId, state, outcome, turnId, reason, registeredAt }) => ({
+        ({
+          threadId,
+          notifyThreadId,
+          state,
+          outcome,
+          turnId,
+          reason,
+          registeredAt,
+          stallAfterMs,
+        }) => ({
           threadId,
           notifyThreadId,
           state,
@@ -253,9 +300,25 @@ export class DelegationWatchService {
           ...(turnId ? { turnId } : {}),
           ...(reason ? { reason } : {}),
           registeredAt,
+          ...(stallAfterMs !== undefined ? { stallAfterMs } : {}),
         }),
       ),
     };
+  }
+
+  /** Any live Harness event, including subagent activity; polling reads never call this. */
+  noteActivity(threadIds: readonly string[]): void {
+    const now = Date.now();
+    for (const watch of this.#watches) {
+      if (
+        watch.state !== "watching" ||
+        watch.stallAfterMs === undefined ||
+        !threadIds.includes(watch.threadId)
+      )
+        continue;
+      watch.lastActivityAt = now;
+      delete watch.stallNotified;
+    }
   }
 
   /** Stops work in this process. Stored watches stay on disk for the next Runtime. */
@@ -284,6 +347,7 @@ export class DelegationWatchService {
       if (watch.state === "watching") {
         watch.observeGraceUntil = graceUntil;
         watch.crossedRestart = true;
+        if (watch.stallAfterMs !== undefined) watch.lastActivityAt = now;
       }
       if (watch.state === "pendingDelivery" && now >= (watch.deliveryDeadline ?? 0)) {
         watch.state = "undeliverable";
@@ -320,6 +384,20 @@ export class DelegationWatchService {
       const observed = await this.#observe(watch);
       if (!observed) continue;
       const { outcome, turnId, restartNote } = observed;
+      if (outcome === "stalled") {
+        // Keep the original watch observing; a silence alert is an independent delivery.
+        const alert: Watch = {
+          ...persisted(watch),
+          id: randomUUID(),
+          state: "pendingDelivery",
+          outcome,
+          ...(turnId ? { turnId } : {}),
+          deliveryDeadline: Date.now() + DELIVERY_WINDOW_MS,
+        };
+        watch.stallNotified = true;
+        this.#watches.push(alert);
+        continue;
+      }
       if (restartNote) watch.restartNote = restartNote;
       watch.state = "pendingDelivery";
       watch.outcome = outcome;
@@ -365,6 +443,17 @@ export class DelegationWatchService {
         };
       }
       delete watch.unreadableSince;
+      // Waiting in the capacity queue or being created is not Harness silence.
+      if (snapshot.status !== "running" && watch.stallAfterMs !== undefined)
+        watch.lastActivityAt = Date.now();
+      if (
+        snapshot.status === "running" &&
+        Date.now() < watch.deadline &&
+        watch.stallAfterMs !== undefined &&
+        !watch.stallNotified &&
+        Date.now() - (watch.lastActivityAt ?? Date.now()) >= watch.stallAfterMs
+      )
+        return { outcome: "stalled", ...(turnId ? { turnId } : {}) };
     } catch (error) {
       if (watch.observeGraceUntil !== undefined) {
         // Until the session that owns the Thread registers again, a failed read says nothing.
@@ -443,7 +532,11 @@ export class DelegationWatchService {
           ...(watch.turnId ? { turnId: watch.turnId } : {}),
           ...(watch.harnessId ? { harnessId: watch.harnessId } : {}),
           ...(watch.refs?.length ? { refs: watch.refs } : {}),
-          ...(watch.restartNote ? { note: watch.restartNote } : {}),
+          ...(watch.outcome === "stalled"
+            ? { note: describe(watch) }
+            : watch.restartNote
+              ? { note: watch.restartNote }
+              : {}),
         })),
       );
       for (const watch of pending) this.#remove(watch);
@@ -475,6 +568,8 @@ export class DelegationWatchService {
   }
 
   #persist(watch: Watch, required = false): Promise<void> {
+    // Silence is measured again after a restart, and older Runtimes set a stalled record aside as unreadable.
+    if (watch.outcome === "stalled") return Promise.resolve();
     const record = persisted(watch);
     return this.#write((store) => store.save(record), required);
   }

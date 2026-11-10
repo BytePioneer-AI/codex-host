@@ -33,6 +33,7 @@ function watchOutput(watch: DelegationStartResult["watch"]): { watch?: unknown }
             state: watch.state,
             notify: targetLink(watch.notifyThreadId),
             timeoutMs: watch.timeoutMs,
+            ...(watch.stallAfterMs !== undefined ? { stallAfterMs: watch.stallAfterMs } : {}),
           },
   };
 }
@@ -67,6 +68,7 @@ function snapshotOutput(
       : threadLink(snapshot.threadId),
     harnessId: snapshot.harnessId,
     status: snapshot.status,
+    ...(snapshot.queue ? { queuePosition: snapshot.queue.position } : {}),
     ...(snapshot.timedOut !== undefined ? { timedOut: snapshot.timedOut } : {}),
   };
   if (view === "messages") {
@@ -115,6 +117,7 @@ export function compactDelegationOutput(
         thread: result.deepLink,
         harnessId: result.harnessId,
         status: result.status,
+        ...(result.queue ? { queuePosition: result.queue.position } : {}),
         ...(result.cwd ? { cwd: result.cwd } : {}),
         ...(result.parentThreadId
           ? {
@@ -155,27 +158,32 @@ export function compactDelegationOutput(
         state: result.state,
         status: result.status,
         timeoutMs: result.timeoutMs,
+        ...(result.stallAfterMs !== undefined ? { stallAfterMs: result.stallAfterMs } : {}),
       };
     }
     case "thread watches": {
       const result = body as ThreadWatchListResult;
       return {
-        watches: result.watches.map(({ threadId, notifyThreadId, state, outcome, reason }) => ({
-          thread: threadLink(threadId),
-          notify: targetLink(notifyThreadId),
-          state,
-          ...(outcome ? { outcome } : {}),
-          ...(reason ? { reason } : {}),
-        })),
+        watches: result.watches.map(
+          ({ threadId, notifyThreadId, state, outcome, reason, stallAfterMs }) => ({
+            thread: threadLink(threadId),
+            notify: targetLink(notifyThreadId),
+            state,
+            ...(outcome ? { outcome } : {}),
+            ...(reason ? { reason } : {}),
+            ...(stallAfterMs !== undefined ? { stallAfterMs } : {}),
+          }),
+        ),
       };
     }
     case "thread list": {
       const result = body as DelegationThreadListResult;
       return {
-        threads: result.threads.map(({ deepLink, harnessId, status, title, cwd }) => ({
+        threads: result.threads.map(({ deepLink, harnessId, status, queue, title, cwd }) => ({
           thread: deepLink,
           harnessId,
           status,
+          ...(queue ? { queuePosition: queue.position } : {}),
           ...(title ? { title } : {}),
           ...(cwd ? { cwd } : {}),
         })),

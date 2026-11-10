@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { ThreadWatchEntry, ThreadWatchOutcome } from "./delegation-types.js";
+import { withRemoteAppServerSocketInitializationLock as withFileMutationLock } from "./remote-socket-lock.js";
 
 /** A watch as kept on disk. Holds identifiers, deadlines and reasons only, never Thread content. */
 export interface PersistedWatch extends ThreadWatchEntry {
@@ -16,7 +17,7 @@ export interface PersistedWatch extends ThreadWatchEntry {
   delivering?: boolean;
   /** Why an `interrupted` outcome was decided after a restart, for the notification. */
   restartNote?: string;
-  /** Recorded when the watched Thread stops, for client events. */
+  /** Recorded when an outcome is observed, for client events. */
   harnessId?: string;
   refs?: string[];
 }
@@ -109,6 +110,8 @@ function parseWatchFile(text: string): WatchFile {
     !optionalString(watch.reason) ||
     !Number.isSafeInteger(watch.timeoutMs) ||
     !Number.isFinite(watch.deadline) ||
+    (watch.stallAfterMs !== undefined &&
+      (!Number.isSafeInteger(watch.stallAfterMs) || watch.stallAfterMs <= 0)) ||
     !optionalNumber(watch.deliveryDeadline) ||
     (watch.delivering !== undefined && typeof watch.delivering !== "boolean") ||
     !optionalString(watch.restartNote) ||
@@ -153,7 +156,9 @@ export class FileDelegationWatchStore implements DelegationWatchStore {
       const claimer =
         claimAt >= 0 ? Number(name.slice(claimAt + CLAIM_MARKER.length).split(".")[0]) : NaN;
       if (!isRecord && !(Number.isSafeInteger(claimer) && !processAlive(claimer))) continue;
-      const watch = await this.#adoptFile(name).catch((error: unknown) => {
+      const watch = await withFileMutationLock(`${this.#directory}.adoption`, () =>
+        this.#adoptFile(name),
+      ).catch((error: unknown) => {
         this.#diagnose(error);
         return undefined;
       });

@@ -36,6 +36,14 @@ export {
   type IdleReleaseSettings,
 } from "./idle-release.js";
 export {
+  DELEGATION_CAPACITY_SETTINGS_METHOD,
+  DELEGATION_CAPACITY_MAX_RUNNING_MAX,
+  DELEGATION_CAPACITY_MAX_RUNNING_MIN,
+  DEFAULT_DELEGATION_CAPACITY_SETTINGS,
+  delegationCapacitySettingsSchema,
+  type DelegationCapacitySettings,
+} from "./delegation-capacity.js";
+export {
   LOADED_SESSIONS_METHOD,
   loadedSessionsSchema,
   type LoadedSession,

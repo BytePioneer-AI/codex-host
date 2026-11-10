@@ -120,7 +120,7 @@ test("General groups appearance and idle release controls without dialogs or lon
     )
     .toBe(6);
   // Successful sync is silent; the scope badge is no longer shown.
-  await expect(page.getByText("同步中…")).toBeHidden();
+  await expect(page.getByRole("region", { name: "资源管理" }).getByText("同步中…")).toBeHidden();
   await expect(page.getByText("仅本地 Host", { exact: true })).toHaveCount(0);
   expect(
     await page.evaluate(() =>

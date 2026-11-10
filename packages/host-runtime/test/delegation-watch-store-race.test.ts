@@ -43,7 +43,7 @@ describe("FileDelegationWatchStore adoption race", () => {
   });
 
   it.each([undefined, "EEXIST", "EIO"])(
-    "preserves another adopter's record when returning a claim encounters %s",
+    "preserves an active owner's record when returning a claim encounters %s",
     async (linkError) => {
       await mkdir(directory, { recursive: true });
       const dead = spawnSync(process.execPath, ["-e", ""]).pid;
@@ -51,7 +51,7 @@ describe("FileDelegationWatchStore adoption race", () => {
         id: "race",
         threadId: "child",
         notifyThreadId: "parent",
-        state: "watching",
+        state: "watching" as const,
         registeredAt: "2026-11-03T00:00:00.000Z",
         timeoutMs: 60_000,
         deadline: 1_000,
@@ -61,13 +61,11 @@ describe("FileDelegationWatchStore adoption race", () => {
         `${JSON.stringify({ formatVersion: 1, owner: { pid: dead, boot: bootSeconds() }, watch: record })}\n`,
       );
       const first = new FileDelegationWatchStore(directory);
-      let firstAdopted: unknown[] = [];
-      // The late adopter has read the exited owner's record. Before its claim
-      // rename runs, another adopter takes the record and saves it as its own.
+      // A live Runtime writes the record after the adopter read its previous owner.
       hooks.beforeRename = async (_from, to) => {
         if (!to.includes(".claim-")) return;
         hooks.beforeRename = undefined;
-        firstAdopted = await first.adopt();
+        await first.save(record);
       };
       hooks.beforeLink = async (from, to) => {
         if (linkError === "EEXIST") await writeFile(to, await readFile(from));
@@ -76,7 +74,6 @@ describe("FileDelegationWatchStore adoption race", () => {
       const diagnose = vi.fn();
       const late = await new FileDelegationWatchStore(directory, diagnose).adopt();
 
-      expect(firstAdopted).toEqual([record]);
       expect(late).toEqual([]);
       const files = await readdir(directory);
       expect(files).toHaveLength(1);

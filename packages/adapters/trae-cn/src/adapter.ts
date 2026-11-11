@@ -6,14 +6,9 @@ import type {
   HostUsage,
   InspectHarnessInput,
   OpenSessionInput,
+  HostTurnSnapshot,
 } from "@codexhost/harness-adapter";
-import {
-  harnessKnownTurnSchema,
-  type HarnessModelRef,
-  type HarnessTurnRecovery,
-  type HarnessThinkingOptionId,
-} from "@codexhost/shared-contracts";
-import type { HostThreadSnapshot } from "@codexhost/harness-adapter";
+import { type HarnessModelRef, type HarnessThinkingOptionId } from "@codexhost/shared-contracts";
 import { BridgeClient } from "./bridge.js";
 import { sameDirectory, type BridgeOptions } from "./discovery.js";
 import { harnessError, record, TraeError } from "./errors.js";
@@ -31,7 +26,6 @@ import { hasBackgroundCommandHistory } from "./commands.js";
 export type TraeCnAdapterOptions = Omit<BridgeOptions, "cwd"> & { cwd?: string };
 
 export class TraeCnAdapter implements HarnessAdapter {
-  readonly activeTurnRecovery = true;
   readonly harnessId = TRAE_CN_ID;
   #closed = false;
   #sessions = new Set<TraeCnSession>();
@@ -110,8 +104,8 @@ export class TraeCnAdapter implements HarnessAdapter {
       let effectiveModel: HarnessModelRef | undefined;
       let effectiveThinking: HarnessThinkingOptionId | undefined;
       let recoveringThinking: HarnessThinkingOptionId | undefined;
-      let recoveringTurn: HarnessTurnRecovery | undefined;
-      let recoverySnapshot: HostThreadSnapshot | undefined;
+      let pendingTurn: HostTurnSnapshot | undefined;
+      let initialTurns: HostTurnSnapshot[] = [];
       let initialUsage: HostUsage | null = null;
       let historyHasFileEdits = false;
       let historyHasBackgroundCommands = false;
@@ -156,37 +150,15 @@ export class TraeCnAdapter implements HarnessAdapter {
         );
         const pending = snapshot.turns.filter((turn) => turn.outcome.status === "unknown");
         historyTurnCount = snapshot.turns.length;
-        const pendingTurn = pending[0];
+        const lastPending = pending[0];
         if (
           [3, 8, 10].includes(Number(native.status)) &&
           pending.length === 1 &&
-          pendingTurn &&
-          pendingTurn === snapshot.turns.at(-1)
+          lastPending &&
+          lastPending === snapshot.turns.at(-1)
         ) {
-          const parsed = harnessKnownTurnSchema.array().safeParse(input.knownTurns ?? []);
-          if (
-            !parsed.success ||
-            parsed.data.some(
-              (entry) =>
-                entry.nativeTurnRef.harnessId !== TRAE_CN_ID ||
-                entry.nativeTurnRef.nativeSessionId !== input.nativeRef.nativeSessionId,
-            ) ||
-            new Set(parsed.data.map((entry) => entry.turnId)).size !== parsed.data.length ||
-            new Set(parsed.data.map((entry) => entry.nativeTurnRef.nativeTurnKey)).size !==
-              parsed.data.length
-          )
-            throw new TraeError("invalidRequest", "Invalid confirmed Host Turn mappings");
-          const known = parsed.data.find(
-            (entry) =>
-              entry.nativeTurnRef.nativeTurnKey === pendingTurn.nativeTurnRef.nativeTurnKey,
-          );
-          if (!known)
-            throw new TraeError(
-              "configurationRequired",
-              "The native task is still active but its original Host Turn identity was not confirmed; do not send it again",
-            );
-          recoveringTurn = { ...known, input: pendingTurn.input };
-          recoverySnapshot = snapshot;
+          pendingTurn = lastPending;
+          initialTurns = snapshot.turns.slice(0, -1);
         } else if ([2, 3, 8, 9, 10].includes(Number(native.status)) || pending.length)
           throw new TraeError(
             "sessionBusy",
@@ -199,25 +171,23 @@ export class TraeCnAdapter implements HarnessAdapter {
       if (this.#closed) throw new TraeError("invalidState", "TRAE CN Adapter closed during open");
       const selected = input.model ?? effectiveModel;
       const selectedThinking =
-        input.thinkingOptionId ??
-        (selected?.id === effectiveModel?.id ? effectiveThinking : undefined);
+        input.model || input.thinkingOptionId ? input.thinkingOptionId : effectiveThinking;
       // A saved Host selection is configuration for the next native request,
       // not a relabeling of the historical Turn that used the previous model.
-      if (
-        selected &&
-        (input.thinkingOptionId ||
+      if (selected && (input.thinkingOptionId || (input.model && input.kind === "resume"))) {
+        if (
+          input.thinkingOptionId ||
           (input.model &&
-            input.kind === "resume" &&
             input.model.id !== effectiveModel?.id &&
-            (inspection.configuration?.modelSelection === "per-request" || effectiveModel)))
-      ) {
-        await prepareModelSelection(
-          client,
-          inspection,
-          selected,
-          input.kind === "resume" ? input.nativeRef.nativeSessionId : undefined,
-          selectedThinking,
-        );
+            (inspection.configuration?.modelSelection === "per-request" || effectiveModel))
+        )
+          await prepareModelSelection(
+            client,
+            inspection,
+            selected,
+            input.kind === "resume" ? input.nativeRef.nativeSessionId : undefined,
+            selectedThinking,
+          );
         effectiveModel = selected;
         effectiveThinking = selectedThinking;
       }
@@ -250,7 +220,7 @@ export class TraeCnAdapter implements HarnessAdapter {
         historyHasFileEdits,
         historyHasBackgroundCommands,
         historyTurnCount,
-        ...(recoveringTurn && recoverySnapshot ? { recoveringTurn, recoverySnapshot } : {}),
+        ...(pendingTurn ? { pendingTurn, initialTurns } : {}),
         onClose: () => this.#sessions.delete(session),
       });
       this.#sessions.add(session);

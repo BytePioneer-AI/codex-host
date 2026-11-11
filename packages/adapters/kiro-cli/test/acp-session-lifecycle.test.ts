@@ -232,11 +232,7 @@ function verifyProjection(): void {
           output.interaction,
           hostItemIdSchema.parse(`question-${output.interaction.interactionId}`),
         );
-    } else if (
-      "turnId" in output.event &&
-      output.event.type !== "turn.autonomous.started" &&
-      output.event.type !== "turn.identity.confirmed"
-    ) {
+    } else if ("turnId" in output.event && output.event.type !== "turn.autonomous.started") {
       projector.project(output.event);
     }
   }

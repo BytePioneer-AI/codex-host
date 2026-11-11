@@ -196,8 +196,7 @@ async function setup(
       agentType: "builder_v3",
     },
   });
-  const recovery = {
-    turnId: hostTurnIdSchema.parse("recovering-host"),
+  const pendingTurn = {
     nativeTurnRef: nativeTurnRefSchema.parse({
       harnessId: "trae-cn",
       nativeSessionId: "native-session",
@@ -205,6 +204,8 @@ async function setup(
       formatVersion: 1,
     }),
     input: [{ type: "text" as const, text: "hello" }],
+    items: [],
+    outcome: { status: "unknown" as const, reason: "Native pending task" },
   };
   const session = new TraeCnSession({
     client: new BridgeClient(server.endpoint),
@@ -214,17 +215,8 @@ async function setup(
     ...(recovering
       ? {
           nativeRef: reference,
-          recoveringTurn: recovery,
-          recoverySnapshot: {
-            turns: [
-              {
-                nativeTurnRef: recovery.nativeTurnRef,
-                input: recovery.input,
-                items: [],
-                outcome: { status: "unknown", reason: "Native pending task" },
-              },
-            ],
-          },
+          pendingTurn,
+          initialTurns: [],
         }
       : {}),
   });
@@ -456,8 +448,10 @@ describe("TRAE CN public Session core", () => {
   it("uses the native-confirmed model after recovery when pending history had no model yet", async () => {
     const test = await setup(false, false, false, true, { recovering: true });
     try {
-      expect((await completed(test.iterator)).at(-1)).toMatchObject({
-        event: { turnId: "recovering-host", outcome: { status: "succeeded" } },
+      const outputs = await completed(test.iterator);
+      expect(outputs[0]).toMatchObject({ event: { type: "turn.autonomous.started" } });
+      expect(outputs.at(-1)).toMatchObject({
+        event: { outcome: { status: "succeeded" } },
       });
       expect(await test.session.execute(command("continued"))).toMatchObject({ ok: true });
       await completed(test.iterator);

@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { harnessInspectionSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
 import { TraeCnAdapter } from "../src/adapter.js";
-import { hostTurnIdSchema, nativeTurnRefSchema } from "@codexhost/shared-contracts";
+import type { HarnessOutput } from "@codexhost/harness-adapter";
 import { modelRef, thinkingOptionId } from "../src/models.js";
 import { permissionModeRef } from "../src/permissions.js";
 
@@ -429,51 +429,138 @@ describe("TRAE CN public Adapter core", () => {
       await test.close();
     }
   });
-  it("reattaches only an active native task with its confirmed original Host identity", async () => {
-    const test = await setup();
-    try {
-      test.pending(true);
-      const nativeTurnRef = nativeTurnRefSchema.parse({
-        harnessId: "trae-cn",
-        nativeSessionId: "native-session",
-        nativeTurnKey: "user",
-        formatVersion: 1,
-      });
-      expect(
-        await test.adapter.open({ kind: "resume", cwd: test.cwd, nativeRef: test.reference }),
-      ).toMatchObject({ ok: false, error: { code: "configurationRequired" } });
-      test.service.subscribe.mockImplementation(async () => () => undefined);
-      const turnId = hostTurnIdSchema.parse("original-host-turn");
-      const opened = await test.adapter.open({
-        kind: "resume",
-        cwd: test.cwd,
-        nativeRef: test.reference,
-        knownTurns: [{ turnId, nativeTurnRef }],
-      });
-      if (!opened.ok) throw new Error(opened.error.message);
-      expect(opened.value.recoveringTurn).toMatchObject({
-        turnId,
-        nativeTurnRef,
-        input: [{ type: "text", text: "hello" }],
-      });
-      const snapshot = await opened.value.readSnapshot();
-      expect(snapshot).toMatchObject({
-        ok: true,
-        value: { turns: [{ nativeTurnRef, outcome: { status: "unknown" } }] },
-      });
-      await vi.waitFor(() => expect(test.service.subscribe).toHaveBeenCalledOnce());
-      expect(test.service.call.mock.calls.every((args) => args[0] === "snapshot")).toBe(true);
-      await opened.value.close();
-      const outputs = [];
-      for await (const output of opened.value.outputs) outputs.push(output);
-      expect(outputs[0]).toMatchObject({ event: { type: "turn.started", turnId } });
-      expect(outputs.at(-1)).toMatchObject({
-        event: { type: "turn.completed", turnId, nativeTurnRef, outcome: { status: "failed" } },
-      });
-    } finally {
-      await test.close();
-    }
-  });
+  it.each([3, 8, 10])(
+    "observes native status %s as a new autonomous Turn without resending",
+    async (status) => {
+      const test = await setup();
+      try {
+        const terminal = await test.service.call("snapshot");
+        test.service.call.mockResolvedValue({ ...terminal, status, items: [terminal.items[0]] });
+        let listener: { data(value: unknown): void; end(): void } | undefined;
+        test.service.subscribe.mockImplementation(async (_input, observer) => {
+          listener = observer;
+          return () => undefined;
+        });
+        const opened = await test.adapter.open({
+          kind: "resume",
+          cwd: test.cwd,
+          nativeRef: test.reference,
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        expect(session.capabilities.autonomousTurns.observe).toBe(true);
+        // Native work may finish while Host is aligning the initial history.
+        // Observation must not start until Host consumes outputs.
+        expect(await session.readSnapshot()).toMatchObject({ ok: true, value: { turns: [] } });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(test.service.subscribe).not.toHaveBeenCalled();
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const started = await iterator.next();
+        expect(started.value).toMatchObject({
+          kind: "event",
+          event: { type: "turn.autonomous.started", input: [{ type: "text", text: "hello" }] },
+        });
+        if (
+          started.value?.kind !== "event" ||
+          started.value.event.type !== "turn.autonomous.started"
+        )
+          throw new Error("Missing autonomous Turn");
+        const turnId = started.value.event.turnId;
+        expect(turnId).toMatch(/^[0-9a-f-]{36}$/);
+        await vi.waitFor(() => expect(listener).toBeDefined());
+        expect(await session.readSnapshot()).toMatchObject({ ok: true, value: { turns: [] } });
+        test.service.call.mockResolvedValue(terminal);
+        listener?.data({
+          event: "plan_item",
+          payload: {
+            id: "answer",
+            tool_call_info: {
+              name: "finish",
+              params: { summary: "OK" },
+              result: { status: "success" },
+            },
+          },
+        });
+        listener?.data({ event: "done", payload: {} });
+        listener?.end();
+        const outputs: HarnessOutput[] = [started.value];
+        while (true) {
+          const next = await iterator.next();
+          if (next.done) throw new Error("Missing completion");
+          outputs.push(next.value);
+          if (next.value.kind === "event" && next.value.event.type === "turn.completed") break;
+        }
+        expect(outputs[1]).toMatchObject({ event: { type: "turn.started", turnId } });
+        expect(outputs).toContainEqual(
+          expect.objectContaining({
+            event: expect.objectContaining({
+              type: "item.started",
+              turnId,
+              item: expect.objectContaining({ type: "agentMessage", text: "OK" }),
+            }),
+          }),
+        );
+        expect(outputs.at(-1)).toMatchObject({
+          event: {
+            type: "turn.completed",
+            turnId,
+            nativeTurnRef: { nativeTurnKey: "user" },
+            outcome: { status: "succeeded" },
+          },
+        });
+        expect(
+          outputs.filter(
+            (output) => output.kind === "event" && output.event.type === "turn.autonomous.started",
+          ),
+        ).toHaveLength(1);
+        expect(await session.readSnapshot()).toMatchObject({
+          ok: true,
+          value: {
+            turns: [{ nativeTurnRef: { nativeTurnKey: "user" }, outcome: { status: "succeeded" } }],
+          },
+        });
+        expect(test.service.call.mock.calls.every(([method]) => method === "snapshot")).toBe(true);
+      } finally {
+        await test.close();
+      }
+    },
+  );
+  it.each(["status-2", "status-9", "idle-pending", "multiple-pending", "not-last"])(
+    "refuses unsafe native recovery: %s",
+    async (kind) => {
+      const test = await setup();
+      try {
+        const terminal = await test.service.call("snapshot");
+        const user = terminal.items[0] as Record<string, unknown>;
+        const second = { ...user, message_id: "second", message_index: 3 };
+        const items =
+          kind === "not-last"
+            ? [
+                user,
+                second,
+                {
+                  ...(terminal.items[1] as Record<string, unknown>),
+                  message_id: "second-answer",
+                  message_index: 4,
+                  reply_to_message_id: "second",
+                },
+              ]
+            : kind === "multiple-pending"
+              ? [user, second]
+              : [user];
+        const status =
+          kind === "status-2" ? 2 : kind === "status-9" ? 9 : kind === "idle-pending" ? 5 : 3;
+        test.service.call.mockResolvedValue({ ...terminal, status, items });
+        expect(
+          await test.adapter.open({ kind: "resume", cwd: test.cwd, nativeRef: test.reference }),
+        ).toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+        expect(test.service.subscribe).not.toHaveBeenCalled();
+        expect(test.service.call.mock.calls.every(([method]) => method === "snapshot")).toBe(true);
+      } finally {
+        await test.close();
+      }
+    },
+  );
   it("reads the current scoped native model catalog without creating Sessions", async () => {
     const test = await setup();
     try {

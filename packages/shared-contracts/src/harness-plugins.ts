@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { harnessIdSchema } from "./ids.js";
 
-export const HARNESS_PLUGIN_API_VERSION = 2;
+export const HARNESS_PLUGIN_API_VERSION = 1;
 export const HARNESS_PLUGIN_MANIFEST_MAX_BYTES = 32 * 1024;
 export const HARNESS_PLUGIN_ICON_MAX_BYTES = 128 * 1024;
 export const HARNESS_PLUGIN_LIMIT = 128;

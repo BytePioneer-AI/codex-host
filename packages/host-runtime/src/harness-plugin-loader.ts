@@ -95,8 +95,6 @@ function isAdapter(value: unknown): value is HarnessAdapter {
   if (!value || typeof value !== "object") return false;
   return (
     hasValidSessionUsage(value) &&
-    (Reflect.get(value, "activeTurnRecovery") === undefined ||
-      Reflect.get(value, "activeTurnRecovery") === true) &&
     ["inspect", "open", "close"].every((key) => typeof Reflect.get(value, key) === "function") &&
     ["credits", "refreshCredits"].every(
       (key) =>
@@ -327,7 +325,7 @@ export async function loadHarnessPlugins(
       });
       let adapter: PluginAdapter;
       let failure: HarnessPluginDiagnosticCode | undefined;
-      if (manifest.adapterApiVersion > HARNESS_PLUGIN_API_VERSION) {
+      if (manifest.adapterApiVersion !== HARNESS_PLUGIN_API_VERSION) {
         failure = "incompatibleVersion";
         adapter = unavailableAdapter(descriptor, failure);
       } else {

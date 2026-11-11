@@ -12,8 +12,6 @@ import type {
   HarnessSessionImportCandidate,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
-  HarnessKnownTurn,
-  HarnessTurnRecovery,
   HostInteractionId,
   HostItemId,
   HostTurnId,
@@ -106,8 +104,6 @@ export interface ResumeSessionInput {
   cwd: string;
   environment?: Record<string, string | undefined>;
   knownTurnRefs?: NativeTurnRef[];
-  /** API 2: confirmed Host/native mappings for adapters opting into active recovery. */
-  knownTurns?: HarnessKnownTurn[];
   permissionModeId?: HarnessPermissionModeId;
 }
 
@@ -513,13 +509,6 @@ export interface TurnStartedEvent {
   turnId: HostTurnId;
 }
 
-/** Confirmed native admission identity; not a completion or model-success signal. */
-export interface TurnIdentityConfirmedEvent {
-  type: "turn.identity.confirmed";
-  turnId: HostTurnId;
-  nativeTurnRef: NativeTurnRef;
-}
-
 export interface AutonomousTurnStartedEvent {
   type: "turn.autonomous.started";
   turnId: HostTurnId;
@@ -584,7 +573,6 @@ export type HostEvent =
   | SubagentStateChangedEvent
   | SubagentTranscriptChangedEvent
   | TurnStartedEvent
-  | TurnIdentityConfirmedEvent
   | AutonomousTurnStartedEvent
   | ItemStartedEvent
   | ItemUpdatedEvent
@@ -598,8 +586,6 @@ export type HarnessOutput =
   { kind: "event"; event: HostEvent } | { kind: "interaction"; interaction: HostInteraction };
 
 export interface HarnessSession {
-  /** API 2: existing native work associated with the original confirmed Host Turn. */
-  readonly recoveringTurn?: HarnessTurnRecovery | undefined;
   readonly harnessId: HarnessId;
   readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
@@ -679,8 +665,6 @@ export interface HarnessSessionImportCapability {
 }
 
 export interface HarnessAdapter {
-  /** API 2: opts into knownTurns input and initial active-Turn restoration. */
-  readonly activeTurnRecovery?: true;
   /** Native CLI version checks and explicit updates. Never updates the Host plugin,
    * starts a model Turn, or restarts existing Sessions. Commands are Adapter-owned.
    */

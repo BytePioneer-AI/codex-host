@@ -155,8 +155,8 @@ describe("native message file snapshots", () => {
     const events: HostEvent[] = [];
     const live = new LiveItems(hostTurnIdSchema.parse("turn"), (e) => events.push(e));
     const snapshots = [{ item, outcome: { status: "succeeded" as const } }];
-    live.acceptFileChanges(snapshots);
-    live.acceptFileChanges(snapshots);
+    live.acceptHistory(snapshots);
+    live.acceptHistory(snapshots);
     live.settle({ status: "succeeded" });
     expect(events.map((e) => e.type)).toEqual(["item.started", "item.completed"]);
   });

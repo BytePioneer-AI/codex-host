@@ -48,8 +48,6 @@ import {
   harnessInspectionSchema,
   harnessSessionCapabilitiesSchema,
   type HarnessCommandCatalog,
-  type HarnessTurnRecovery,
-  harnessTurnRecoverySchema,
 } from "@codexhost/shared-contracts";
 
 import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
@@ -76,7 +74,6 @@ import {
 } from "./validation.js";
 
 interface SessionMetadata {
-  recoveringTurn?: HarnessTurnRecovery;
   sessionId: string;
   sessionGeneration: number;
   capabilities: HarnessSessionCapabilities;
@@ -160,9 +157,6 @@ function parseSessionMetadata(value: unknown): SessionMetadata {
     capabilities: harnessSessionCapabilitiesSchema.parse(candidate.capabilities),
     readCapabilities: candidate.readCapabilities === true,
     initialState: state,
-    ...(candidate.recoveringTurn
-      ? { recoveringTurn: harnessTurnRecoverySchema.parse(candidate.recoveringTurn) }
-      : {}),
     initialUsage: candidate.initialUsage === null ? null : parseHostUsage(candidate.initialUsage),
     commands: candidate.commands === true,
   };
@@ -529,9 +523,6 @@ class BrokeredHarnessSession implements HarnessSession {
   get initialState(): HarnessSessionState {
     return this.#metadata.initialState;
   }
-  get recoveringTurn(): HarnessTurnRecovery | undefined {
-    return this.#metadata.recoveringTurn;
-  }
   get initialUsage(): HostUsage | null {
     return this.#metadata.initialUsage;
   }
@@ -726,7 +717,6 @@ class BrokeredHarnessSession implements HarnessSession {
 }
 
 export class BrokeredHarnessAdapter implements HarnessAdapter {
-  readonly activeTurnRecovery?: true;
   readonly #sessions = new Set<BrokeredHarnessSession>();
   readonly commandCatalog?: HarnessCommandCatalog;
   readonly liveCommandCatalog?: boolean;
@@ -765,8 +755,6 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
       accountCredits?: boolean;
       /** Enable only when the plugin implements native Session import in its broker. */
       sessionImport?: boolean;
-      /** Opt in only when the broker's native adapter implements API 2 active recovery. */
-      activeTurnRecovery?: true;
       forwardDelegationEnvironment?: boolean;
       descriptorPath?: string;
       environment?: NodeJS.ProcessEnv;
@@ -783,7 +771,6 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
     } = {},
   ) {
     this.harnessId = harnessPluginIdSchema.parse(input.harnessId ?? "claude-code");
-    if (input.activeTurnRecovery) this.activeTurnRecovery = true;
     if (input.sessionImport) {
       this.sessionImport = createBrokerSessionImportCapability({
         harnessId: this.harnessId,

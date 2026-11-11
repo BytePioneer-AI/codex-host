@@ -34,9 +34,8 @@ import {
   type HarnessThinkingOptionId,
   type HarnessPermissionModeId,
   type NativeSessionRef,
-  type HarnessTurnRecovery,
   type HostTurnId,
-  harnessTurnRecoverySchema,
+  hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 import type { BridgeClient } from "./bridge.js";
 import type { BridgeEvent, BridgeInspection } from "./protocol.js";
@@ -70,7 +69,7 @@ export const SESSION_CAPABILITIES: HarnessSessionCapabilities = {
     permissionModeScope: "live",
   },
   history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
-  autonomousTurns: { observe: false },
+  autonomousTurns: { observe: true },
 };
 
 export function sessionCapabilities(
@@ -131,8 +130,8 @@ export interface SessionOptions {
   historyHasFileEdits?: boolean;
   historyHasBackgroundCommands?: boolean;
   historyTurnCount?: number;
-  recoveringTurn?: HarnessTurnRecovery;
-  recoverySnapshot?: HostThreadSnapshot;
+  pendingTurn?: HostTurnSnapshot;
+  initialTurns?: HostTurnSnapshot[];
   onClose?: () => void;
 }
 
@@ -147,7 +146,6 @@ type CommandResult =
 
 /** A session owns its HTTP observers; the desktop owns native execution. */
 export class TraeCnSession implements HarnessSession {
-  readonly recoveringTurn?: HarnessTurnRecovery;
   readonly harnessId = TRAE_CN_ID;
   get capabilities(): HarnessSessionCapabilities {
     return sessionCapabilities(
@@ -167,7 +165,6 @@ export class TraeCnSession implements HarnessSession {
   #faulted = false;
   #detach: (() => void) | undefined;
   #observerFail: ((error: unknown) => void) | undefined;
-  #recoverySnapshot: HostThreadSnapshot | undefined;
   #usage: HostUsage | null;
   #historyHasFileEdits = false;
   #historyHasBackgroundCommands = false;
@@ -216,36 +213,34 @@ export class TraeCnSession implements HarnessSession {
     this.#historyTurnCount = options.historyTurnCount ?? 0;
     this.outputs = this.#channel.outputs;
     if (options.model) nativeModelId(options.inspection, options.model);
-    if (options.recoveringTurn) {
-      const recovery = harnessTurnRecoverySchema.parse(options.recoveringTurn);
-      if (
-        !options.nativeRef ||
-        recovery.nativeTurnRef.harnessId !== this.harnessId ||
-        recovery.nativeTurnRef.nativeSessionId !== options.nativeRef.nativeSessionId ||
-        !options.recoverySnapshot
-      )
-        throw new TraeError("invalidRequest", "Recovery does not belong to this native Session");
-      this.recoveringTurn = recovery;
-      this.#recoverySnapshot = structuredClone(options.recoverySnapshot);
+    if (options.pendingTurn) {
+      const pending = options.pendingTurn;
+      const turnId = hostTurnIdSchema.parse(randomUUID());
       const turn: ActiveTurn = {
-        command: { type: "turn.start", turnId: recovery.turnId, input: recovery.input },
-        model: options.recoverySnapshot.turns.at(-1)?.model ?? options.model,
+        command: { type: "turn.start", turnId, input: pending.input },
+        model: pending.model ?? options.model,
         configurationRevision: this.#configurationRevision,
         thinking: undefined,
         thinkingOptionId: options.recoveringThinkingOptionId,
         permissionModeId: undefined,
         permissionRevision: this.#permissionRevision,
-        messageId: recovery.nativeTurnRef.nativeTurnKey,
+        messageId: pending.nativeTurnRef.nativeTurnKey,
         cancelRequested: false,
         admitted: true,
         stopRequested: false,
-        items: this.#liveItems(recovery.turnId, recovery.nativeTurnRef.nativeTurnKey),
+        items: this.#liveItems(turnId, pending.nativeTurnRef.nativeTurnKey),
         interactions: undefined,
       };
       this.#active = turn;
-      queueMicrotask(() => {
-        void this.#run(turn, true);
-      });
+      // Host reads the initial history before it subscribes to outputs. Do not
+      // let native completion race that read and appear both in history and live.
+      this.outputs = {
+        [Symbol.asyncIterator]: () => {
+          const iterator = this.#channel.outputs[Symbol.asyncIterator]();
+          if (!this.#closed) void this.#run(turn, true);
+          return iterator;
+        },
+      };
     }
   }
 
@@ -312,10 +307,13 @@ export class TraeCnSession implements HarnessSession {
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed) return this.#snapshot();
-    if (this.#active && this.#recoverySnapshot)
+    if (
+      this.#active &&
+      this.#active.messageId === this.options.pendingTurn?.nativeTurnRef.nativeTurnKey
+    )
       return {
         ok: true,
-        value: { ...structuredClone(this.#recoverySnapshot), state: this.#state },
+        value: { turns: structuredClone(this.options.initialTurns ?? []), state: this.#state },
       };
     if (this.#active)
       return {
@@ -538,6 +536,12 @@ export class TraeCnSession implements HarnessSession {
   }
 
   async #run(turn: ActiveTurn, recovering = false): Promise<void> {
+    if (recovering)
+      this.#emit({
+        type: "turn.autonomous.started",
+        turnId: turn.command.turnId,
+        input: turn.command.input,
+      });
     this.#emit({ type: "turn.started", turnId: turn.command.turnId });
     try {
       if (!recovering) {
@@ -598,11 +602,6 @@ export class TraeCnSession implements HarnessSession {
             "Native Turn admission is uncertain; read history before retrying",
           );
         turn.admitted = true;
-        this.#emit({
-          type: "turn.identity.confirmed",
-          turnId: turn.command.turnId,
-          nativeTurnRef: confirmedNativeTurnRef(nativeRef.nativeSessionId, turn.messageId),
-        });
         if (turn.permissionModeId && turn.permissionRevision === this.#permissionRevision) {
           this.#selectedPermission = permissionModeRef(turn.permissionModeId);
           this.#setState({ ...this.#state, effectivePermissionModeId: this.#selectedPermission });
@@ -632,7 +631,7 @@ export class TraeCnSession implements HarnessSession {
       const completed = await this.#readTerminal(turn.messageId);
       if (completed.outcome.status === "unknown")
         throw new TraeError("unavailable", "Native history has not confirmed completion");
-      turn.items.acceptFileChanges(completed.items);
+      turn.items.acceptHistory(completed.items);
       turn.items.settle(completed.outcome);
       turn.interactions?.close(completed.outcome.status === "cancelled" ? "cancelled" : "expired");
       this.#emit({
@@ -669,7 +668,6 @@ export class TraeCnSession implements HarnessSession {
       this.#detach?.();
       this.#detach = undefined;
       if (this.#active === turn) this.#active = undefined;
-      this.#recoverySnapshot = undefined;
     }
   }
 

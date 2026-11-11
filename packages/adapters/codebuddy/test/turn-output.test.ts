@@ -16,12 +16,7 @@ function fixture() {
   projector.project({ type: "turn.started", turnId });
   const output = new CodeBuddyTurnOutput(turnId, "/work", (event) => {
     events.push(event);
-    if (
-      "turnId" in event &&
-      event.type !== "turn.autonomous.started" &&
-      event.type !== "turn.identity.confirmed"
-    )
-      projector.project(event);
+    if ("turnId" in event && event.type !== "turn.autonomous.started") projector.project(event);
   });
   return {
     output,

@@ -202,11 +202,7 @@ function projectOutputs(outputs: HarnessOutput[]): void {
       if (output.interaction.type === "approval")
         projector.projectApproval(output.interaction, "kiro-cli");
       else projector.projectQuestion(output.interaction, hostItemIdSchema.parse("question-item"));
-    } else if (
-      "turnId" in output.event &&
-      output.event.type !== "turn.autonomous.started" &&
-      output.event.type !== "turn.identity.confirmed"
-    )
+    } else if ("turnId" in output.event && output.event.type !== "turn.autonomous.started")
       projector.project(output.event);
   }
 }

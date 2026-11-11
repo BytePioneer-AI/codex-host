@@ -17,12 +17,7 @@ function fixture() {
   projector.project({ type: "turn.started", turnId });
   const output = new CursorTurnOutput(turnId, (event) => {
     events.push(structuredClone(event));
-    if (
-      "turnId" in event &&
-      event.type !== "turn.autonomous.started" &&
-      event.type !== "turn.identity.confirmed"
-    )
-      projector.project(event);
+    if ("turnId" in event && event.type !== "turn.autonomous.started") projector.project(event);
   });
   return {
     events,

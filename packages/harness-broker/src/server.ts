@@ -197,7 +197,6 @@ function sessionMetadata(record: ServerSession): object {
         : {}),
     },
     initialUsage: record.session.initialUsage,
-    ...(record.session.recoveringTurn ? { recoveringTurn: record.session.recoveringTurn } : {}),
     commands: record.session.commands !== undefined,
   };
 }

@@ -3,7 +3,7 @@
   "id": "trae-cn",
   "name": "TRAE CN",
   "version": "0.0.0",
-  "adapterApiVersion": 2,
+  "adapterApiVersion": 1,
   "launchCommand": true,
   "entry": "./dist/plugin.js",
   "iconStyle": {

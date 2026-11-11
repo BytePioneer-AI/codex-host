@@ -5513,11 +5513,6 @@ export class AppServerHost {
       }
       return;
     }
-    if (event.type === "turn.identity.confirmed") {
-      const failure = await this.#externalRuntime.persistConfirmedTurnIdentity(thread, event);
-      if (failure) throw failure;
-      return;
-    }
     if (event.type === "session.faulted") {
       this.#queuedTurnStarts.delete(thread.id);
       this.#retireSharedQuestions(thread);

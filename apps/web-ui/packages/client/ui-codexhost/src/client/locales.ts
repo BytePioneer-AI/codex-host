@@ -184,6 +184,9 @@ export const en = {
   "connectDevices.relay.hint":
     "Connect across networks without an extra phone app. An access token is required.",
   "connectDevices.relay.off": "The official codexhost relay. It only forwards encrypted traffic.",
+  "connectDevices.relay.beta":
+    "Currently in private beta. For early access, follow the README to join the group chat and contact me.",
+  "connectDevices.relay.betaLink": "README community instructions",
   "connectDevices.relay.name": "Address name (optional)",
   "connectDevices.relay.nameHint":
     "4–20 lowercase letters or digits. Leave blank to let the relay assign a name.",
@@ -620,6 +623,9 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.relay.summary": "任何网络 · 手机无需安装应用",
   "connectDevices.relay.hint": "跨网络连接，手机无需额外安装应用，登录需要访问令牌。",
   "connectDevices.relay.off": "codexhost 官方中转，只转发加密内容。",
+  "connectDevices.relay.beta":
+    "目前正在内测中，想提前体验，欢迎按 README 中的说明加入交流群联系我～",
+  "connectDevices.relay.betaLink": "查看 README 加群说明",
   "connectDevices.relay.name": "地址名（可选）",
   "connectDevices.relay.nameHint": "4–20 位小写字母和数字，留空由中转分配。",
   "connectDevices.relay.inviteLabel": "邀请码",

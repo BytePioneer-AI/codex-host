@@ -44,7 +44,7 @@ export class TraeCnAdapter implements HarnessAdapter {
     try {
       if (this.#closed) throw new TraeError("invalidState", "TRAE CN Adapter is closed");
       const options = this.#bridgeOptions(input.cwd);
-      const connected = await BridgeClient.connect(options);
+      const connected = await BridgeClient.connect(options, false);
       client = connected.client;
       const inspection = input.refresh ? await client.inspect(true) : connected.inspection;
       if (this.#closed)

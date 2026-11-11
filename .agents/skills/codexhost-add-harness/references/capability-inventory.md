@@ -37,7 +37,7 @@
 | A5 | 执行 Turn | 必做 | P0 | `execute(turn.start)` + `outputs` 事件流（TS） | [输出与交互](spec-output-interactions.md#turn-生命周期) | 被拒绝的 Turn 不发事件；每个 Turn 只有一个终态；流式文本与完成文本一致 |
 | A6 | 取消 | 必做 | P0 | `execute(turn.cancel)` | [输出与交互](spec-output-interactions.md#取消与后续-turn) | 取消后能立即开始下一轮；迟到的输出不污染新一轮 |
 | A7 | 只读快照 | 必做 | P0 | `session.readSnapshot()` → `HostThreadSnapshot` | [身份与历史](spec-history.md#只读快照) | 不触发 Agent；重复读取时 Turn/Item 身份稳定 |
-| A8 | 持久身份 + resume | 必做 | P0 | `state.nativeRef` + `open({kind:"resume"})`；API 2 可选 `activeTurnRecovery` / `knownTurns` / `recoveringTurn` / `turn.identity.confirmed` | [身份与历史](spec-history.md#resume) | Host 重启或空闲释放后能恢复同一会话；活动恢复复用已确认的原 Turn，不重复发输入 |
+| A8 | 持久身份 + resume | 必做 | P0 | `state.nativeRef` + `open({kind:"resume"})` | [身份与历史](spec-history.md#resume) | Host 重启或空闲释放后能恢复同一会话并继续写入 |
 | A9 | 错误与并发 | 必做 | P0 | `HarnessResult` / `HarnessErrorCode`（TS） | [会话核心](spec-session-core.md#命令并发与错误) | 忙碌时返回 `sessionBusy`；close 或 fault 之后返回 `invalidState`；诊断信息已脱敏 |
 | A10 | 关闭 | 必做 | P0 | `adapter.close()`、`session.close()` | [会话核心](spec-session-core.md#命令并发与错误) | 幂等；结束 outputs；60 秒内完成；不残留进程或订阅 |
 

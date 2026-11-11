@@ -84,64 +84,6 @@ async function expectNoFurtherOfficialRequest(stream: PassThrough): Promise<void
 }
 
 describe("AppServerHost HarnessAdapter projection", () => {
-  it.each([false, true])(
-    "inspects an owned Thread without opening a Session and rejects foreign scope (cold: %s)",
-    async (cold) => {
-      let pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-      let claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-      let fixture = createFixture({
-        externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-          ["pi", pi],
-          ["claude-code", claude],
-        ]),
-      });
-      try {
-        const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
-          cwd: "/thread-owned",
-        });
-        if (cold) {
-          await closeFixture(fixture);
-          pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-          claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-          fixture = createFixture({
-            mappingStoreDirectory: fixture.mappingStoreDirectory,
-            externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-              ["pi", pi],
-              ["claude-code", claude],
-            ]),
-          });
-        }
-        const open = vi
-          .spyOn(pi, "open")
-          .mockRejectedValue(new Error("Inspection must not restore a Session"));
-        const inspect = vi.spyOn(pi, "inspect");
-        writeRequest(fixture.desktopInput, {
-          id: 31,
-          method: "codexhost/harness/inspect",
-          params: { harnessId: "pi", threadId },
-        });
-        await expect(
-          fixture.collector.waitFor((message) => requestId(message, 31)),
-        ).resolves.toMatchObject({ result: { status: "ready" } });
-        expect(inspect).toHaveBeenLastCalledWith({ cwd: "/thread-owned" });
-        const calls = inspect.mock.calls.length;
-        for (const [id, params] of [
-          [32, { harnessId: "claude-code", threadId }],
-          [33, { harnessId: "pi", threadId, cwd: "/other-draft" }],
-        ] as const) {
-          writeRequest(fixture.desktopInput, { id, method: "codexhost/harness/inspect", params });
-          await expect(
-            fixture.collector.waitFor((message) => requestId(message, id)),
-          ).resolves.toMatchObject({ error: { code: -32088 } });
-        }
-        expect(inspect.mock.calls).toHaveLength(calls);
-        expect(claude.inspectionCalls).toBe(0);
-        expect(open).not.toHaveBeenCalled();
-      } finally {
-        await stopFixture(fixture);
-      }
-    },
-  );
   it("dispatches inspection by registered Harness ID and rejects unknown Harnesses", async () => {
     const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
     const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));

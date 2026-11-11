@@ -22,12 +22,7 @@ export interface NativeScheduleWorkspaceThread {
 }
 
 /** Desktop 26.1023 sidebar project catalog includes collapsed groups. */
-export function readNativeScheduleWorkspaces(
-  root: RendererHostRoot,
-  ancestors: typeof committedReactAncestors = committedReactAncestors,
-): NativeScheduleWorkspace[] {
-  const record = (value: unknown): value is Record<string, unknown> =>
-    typeof value === "object" && value !== null && !Array.isArray(value);
+export function readNativeScheduleWorkspaces(root: RendererHostRoot): NativeScheduleWorkspace[] {
   const projects = new Map<string, NativeScheduleWorkspace>();
   const ambiguous = new Set<string>();
   const seen = new Set<unknown>();
@@ -52,15 +47,13 @@ export function readNativeScheduleWorkspaces(
     if (previous && previous.cwd !== next.cwd) ambiguous.add(next.id);
     else projects.set(next.id, next);
   };
-  for (const element of root.querySelectorAll(
-    "aside [data-sidebar-cycle-item], aside [data-app-action-sidebar-project-row]",
-  )) {
+  for (const element of root.querySelectorAll("aside [data-sidebar-cycle-item]")) {
     const keys = Object.getOwnPropertyNames(element).filter((key) =>
       key.startsWith("__reactFiber$"),
     );
     const key = keys[0];
     if (keys.length !== 1 || !key) continue;
-    for (const fiber of ancestors(Reflect.get(element, key))) {
+    for (const fiber of committedReactAncestors(Reflect.get(element, key))) {
       if (seen.has(fiber)) break;
       seen.add(fiber);
       const props = fiber.memoizedProps;

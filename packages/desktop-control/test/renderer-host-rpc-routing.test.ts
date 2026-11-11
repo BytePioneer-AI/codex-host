@@ -7,7 +7,6 @@ import {
 import { expect, it, vi } from "vitest";
 import { installRendererDraftPrewarmPolicyDirect } from "../src/renderer-draft-prewarm-policy.js";
 import type { RendererHostRouting as Routing } from "../src/renderer-host-routing.js";
-import { installNativeRpcRemoteControl } from "../src/renderer-native-rpc-runtime.js";
 
 const carrier = encodeHarnessPluginRoute(
   harnessPluginRouteSchema.parse({
@@ -100,7 +99,6 @@ function setup(
     },
   ];
   const queryEditors = vi.fn(() => editors);
-  const sidebar: unknown[] = [];
   const sent: unknown[] = [];
   class MessagePort {
     postMessage(message: unknown): void {
@@ -112,8 +110,7 @@ function setup(
     async evaluate<T>(expression: string): Promise<T> {
       return await runInNewContext(expression, {
         document: {
-          querySelectorAll: (selector: string) =>
-            selector.startsWith("aside ") ? sidebar : queryEditors(),
+          querySelectorAll: queryEditors,
           getElementById: (id: string) => (id === "root" ? container : null),
         },
         window: target,
@@ -124,7 +121,6 @@ function setup(
         Uint8Array,
         setTimeout,
         clearTimeout,
-        CustomEvent,
       });
     },
   };
@@ -144,124 +140,14 @@ function setup(
     editors,
     composerFiber,
     familyBindings,
-    sidebar,
     queryEditors,
   };
 }
-
-it("publishes and revokes the selected native project before a prewarm is dispatched", async () => {
-  const fixture = setup();
-  const project = (id: string, cwd: string) => ({
-    source: "codex",
-    group: {
-      projectKind: "local",
-      projectId: id,
-      label: id,
-      path: cwd,
-      rootPaths: [cwd],
-    },
-  });
-  Object.assign(fixture.composerFiber.memoizedProps, {
-    browserConversationId: "client-new-thread:draft",
-    selectedProject: { type: "local", projectId: "a" },
-  });
-  const projectFiber = { memoizedProps: { project: project("a", "/project/a") }, return: null };
-  fixture.sidebar.push({ __reactFiber$project: projectFiber });
-  const events: unknown[] = [];
-  fixture.target.dispatchEvent = (e: CustomEvent) => {
-    if (e.type === "codexhost:draft-workspace") events.push(e.detail);
-    return true;
-  };
-  const routing = await install(fixture);
-  expect(fixture.target.__codexhostDraftWorkspacesV1).toEqual({ local: "/project/a" });
-  expect(fixture.sent).toEqual([]);
-  Object.assign(fixture.composerFiber.memoizedProps, {
-    selectedProject: { type: "local", projectId: "b" },
-  });
-  projectFiber.memoizedProps.project = project("b", "/project/b");
-  routing.forComposer();
-  expect(fixture.target.__codexhostDraftWorkspacesV1).toEqual({ local: "/project/b" });
-  Object.assign(fixture.composerFiber.memoizedProps, { selectedProject: null });
-  routing.forComposer();
-  expect(fixture.target.__codexhostDraftWorkspacesV1).toEqual({ local: null });
-  expect(events).toEqual([
-    { hostId: "local", cwd: "/project/a" },
-    { hostId: "local", cwd: "/project/b" },
-    { hostId: "local", cwd: null },
-  ]);
-  Object.defineProperty(fixture.composerFiber.memoizedProps, "selectedProject", {
-    get() {
-      throw new Error("Native selection unavailable");
-    },
-  });
-  expect(() => routing.forComposer()).not.toThrow();
-  expect(fixture.target.__codexhostDraftWorkspacesV1).toEqual({ local: null });
-  routing.dispose();
-});
 
 function policyOf(route: ReturnType<Routing["forHost"]>) {
   if (!route) throw new Error("Host route is unavailable");
   return route.policy;
 }
-
-it.each([false, true])(
-  "refreshes the native project after replay routing takes over the Composer (scoped: %s)",
-  async (scoped) => {
-    const f = setup();
-    Object.assign(f.composerFiber.memoizedProps, {
-      browserConversationId: "client-new-thread:replay",
-      selectedProject: { type: "local", projectId: "a" },
-    });
-    const group = {
-      projectKind: "local",
-      projectId: "a",
-      label: "A",
-      path: "/project/a",
-      rootPaths: ["/project/a"],
-    };
-    f.sidebar.push({
-      __reactFiber$project: { memoizedProps: { project: { source: "codex", group } } },
-    });
-    const routing = await install(f);
-    const originalComposer = vi.spyOn(routing, "forComposer");
-    const replayRoute = { hostId: "local", manager: { kind: "replay" }, policy: {} };
-    const controller = {
-      dispose: vi.fn(),
-      forHost: vi.fn(),
-      collectAppStateSnapshot: vi.fn(),
-      getReviewPaneSnapshotMetrics: vi.fn(),
-    };
-    expect(
-      installNativeRpcRemoteControl(
-        {
-          controller,
-          scope: {},
-          services: { appServerManagers: {} },
-          createController: () => ({ ...controller }),
-        } as never,
-        f.target,
-        {
-          createService: () => ({ service: { [Symbol.dispose]() {} }, route: () => replayRoute }),
-          createManager: vi.fn(),
-          createPolicy: vi.fn(),
-          createChannel: vi.fn(),
-          retainInteractions: vi.fn(),
-        } as never,
-      ),
-    ).toBe(true);
-    const scans = f.queryEditors.mock.calls.length;
-    const composer = scoped ? f.editors[0] : undefined;
-    Object.assign(group, { path: "/project/moved", rootPaths: ["/project/moved"] });
-    expect(routing.forComposer(composer)).toBe(replayRoute);
-    expect(originalComposer).not.toHaveBeenCalled();
-    expect(f.target.__codexhostDraftWorkspacesV1).toEqual({ local: "/project/moved" });
-    Object.assign(f.composerFiber.memoizedProps, { selectedProject: null });
-    expect(routing.forComposer(composer)).toBe(replayRoute);
-    expect(f.target.__codexhostDraftWorkspacesV1).toEqual({ local: null });
-    if (scoped) expect(f.queryEditors).toHaveBeenCalledTimes(scans);
-    routing.dispose();
-  },
-);
 
 async function install(fixture: ReturnType<typeof setup>): Promise<Routing> {
   await installRendererDraftPrewarmPolicyDirect(fixture.renderer);

@@ -5,19 +5,20 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { BridgeClient } from "../src/bridge.js";
+import { TraeCnAdapter } from "../src/adapter.js";
 import { discoverBridges, sameDirectory } from "../src/discovery.js";
 import type { Endpoint } from "../src/protocol.js";
 
 const { startServer } = createRequire(import.meta.url)("../assets/companion/server.cjs");
 
-async function setup() {
+async function setup(discoveryDirectory?: string) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "trae-cn-client-"));
   const appRoot =
     process.platform === "darwin"
       ? path.join(directory, "installation", "Trae CN.app", "Contents", "Resources", "app")
       : path.join(directory, "installation", "resources", "app");
   const workspace = path.join(directory, "workspace");
-  const discovery = path.join(directory, "discovery");
+  const discovery = discoveryDirectory ?? path.join(directory, "discovery");
   await mkdir(appRoot, { recursive: true });
   await mkdir(workspace);
   await writeFile(
@@ -80,6 +81,80 @@ describe("TRAE CN desktop bridge client", () => {
         client.close();
       }
     } finally {
+      await test.close();
+    }
+  });
+
+  it("inspects a sole Bridge from another workspace but still rejects opening that workspace", async () => {
+    const test = await setup();
+    const adapter = new TraeCnAdapter({ environment: test.options.environment });
+    try {
+      for (const input of [{}, { cwd: test.directory }]) {
+        expect(await adapter.inspect(input)).toMatchObject({
+          status: "ready",
+          catalog: { models: [{ label: "Seed" }] },
+        });
+      }
+      expect(await adapter.open({ kind: "create", cwd: test.directory })).toMatchObject({
+        ok: false,
+        error: {
+          code: "configurationRequired",
+          message: "Open this workspace in TRAE CN with the CodexHost Companion enabled",
+        },
+      });
+      expect(test.service.call).not.toHaveBeenCalled();
+      expect(test.service.subscribe).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+      await test.close();
+    }
+  });
+
+  it("prefers a matching workspace for inspection, otherwise retaining discovery order", async () => {
+    const first = await setup();
+    const second = await setup(first.options.environment.CODEXHOST_TRAE_CN_BRIDGE_DIR);
+    const adapter = new TraeCnAdapter({ environment: first.options.environment });
+    try {
+      const endpoints = await discoverBridges(first.options, false);
+      expect(endpoints).toHaveLength(2);
+      const last = endpoints.at(-1);
+      if (!last) throw new Error("Missing fixture Bridge");
+      const preferred = last.port === first.bridge.endpoint.port ? first : second;
+      const fallback = preferred === first ? second : first;
+      expect(await adapter.inspect({ cwd: preferred.options.cwd })).toMatchObject({
+        status: "ready",
+      });
+      expect(preferred.service.inspect).toHaveBeenCalledOnce();
+      expect(fallback.service.inspect).not.toHaveBeenCalled();
+      preferred.service.inspect.mockClear();
+      expect(await adapter.inspect({ cwd: first.directory })).toMatchObject({ status: "ready" });
+      expect(fallback.service.inspect).toHaveBeenCalledOnce();
+      expect(preferred.service.inspect).not.toHaveBeenCalled();
+      expect(first.service.call).not.toHaveBeenCalled();
+      expect(second.service.call).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+      await second.close();
+      await first.close();
+    }
+  });
+
+  it("keeps the connected workspace recheck on Session paths only", async () => {
+    const test = await setup();
+    const adapter = new TraeCnAdapter({ environment: test.options.environment });
+    try {
+      test.service.inspect.mockResolvedValue({
+        ...(await test.service.inspect()),
+        workspaceFolders: [test.directory],
+      });
+      expect(await adapter.inspect({ cwd: test.options.cwd })).toMatchObject({ status: "ready" });
+      expect(await adapter.open({ kind: "create", cwd: test.options.cwd })).toMatchObject({
+        ok: false,
+        error: { code: "configurationRequired", message: "The TRAE CN workspace changed" },
+      });
+      expect(test.service.call).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
       await test.close();
     }
   });

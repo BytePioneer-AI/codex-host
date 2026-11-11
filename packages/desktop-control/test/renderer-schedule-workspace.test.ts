@@ -81,17 +81,6 @@ function fixture() {
 }
 
 describe("native workspace task preparation", () => {
-  it("reads project rows from Desktop's app-action sidebar attributes", () => {
-    const row = {
-      querySelectorAll: () => [],
-      __reactFiber$fixture: { memoizedProps: { project: project() } },
-    };
-    const root = {
-      querySelectorAll: (selector: string) =>
-        selector.includes("[data-app-action-sidebar-project-row]") ? [row] : [],
-    };
-    expect(readNativeScheduleWorkspaces(root)).toEqual([workspace]);
-  });
   it("uses the native project-aware empty-chat API without task CRUD or changing the Model", async () => {
     const f = fixture();
     const thread = await f.start();

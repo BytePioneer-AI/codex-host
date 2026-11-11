@@ -29,7 +29,6 @@
 - 完成快照与累计的流式内容一致。原生同时返回 delta 和完整消息时，避免文本重复。
 - 工具失败不自动等于 Turn 失败，Agent 恢复后仍可能成功；outcome 以原生最终状态为准。
 - 成功的 Turn 需要 `nativeTurnRef`。
-- API 2 的 `turn.identity.confirmed` 在原生准入确认后发布，供 Host 提前持久化原 Host/native 映射；不结束 Turn，不代表模型成功，终态不能改变该身份。
 - NativeTurnRef 和 checkpoint 的要求见[身份与历史](spec-history.md)。
 
 ## 取消与后续 Turn
@@ -76,7 +75,7 @@
 
 - Interaction ID 唯一，且属于当前活动上下文。迟到的、重复的、跨 Session 的或类型不对的响应都要明确拒绝。
 - 关闭原因用 `responded`、`cancelled`、`expired`、`superseded`；`expiresAt` 只在原生有超时的情况下设置，不把超时说成用户回答。
-- Turn 取消时关闭待处理交互并解除原生等待；超时、Session fault 和 close 也必须关闭本次公共作用域的交互。原生任务由独立桌面服务持有且允许恢复时，观察作用域关闭不能隐式取消原生等待，应按[故障规则](#session-状态usage-与故障)报告并保留恢复身份。
+- Turn 取消时关闭待处理交互并解除原生等待；超时、Session fault 和 close 也必须关闭本次公共作用域的交互。原生任务由独立桌面服务持有时，观察作用域关闭不能隐式取消原生等待，应按[故障规则](#session-状态usage-与故障)报告。
 - 响应失败与取消发生竞态时，不能把答案交给下一次交互；每个交互只关闭一次。
 - 原生没有审批，不代表要伪造审批 UI；原生确实有交互，也不能退化成普通文本或自动作答。
 

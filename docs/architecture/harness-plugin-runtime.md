@@ -87,7 +87,7 @@ Desktop / CH 的公开插件目录、外部 Harness 路由、Broker 和会话导
 ```
 
 - ID 为最长 128 字符的小写可移植标识；通用安装身份允许 `codex`，外部 Harness 身份仍将其保留给 GUI 官方路径。
-- `manifestVersion` 当前为 `1`；Host API 当前为 `2`，接纳 `adapterApiVersion` 为 `1` 或 `2` 的插件，拒绝更新的版本。插件声明其所需的 API 版本；依赖 API 2 活动恢复能力的插件不能由旧 API 1 Host 加载。
+- `manifestVersion` 当前为 `1`；`adapterApiVersion` 与 Host 的整数 API 版本精确匹配。尚未采用版本范围协商。
 - `entry` 是插件内的 `.js` 或 `.mjs` ESM 文件；`.js` 需要按 Node.js ESM 规则声明所属包。Manifest 不负责安装依赖。
 - 资源只能是插件内部相对路径；拒绝目录遍历和解析后逃出根目录的符号链接。
 - `links.website/documentation/installation` 只接受不带用户凭据的 HTTPS 地址。
@@ -95,18 +95,6 @@ Desktop / CH 的公开插件目录、外部 Harness 路由、Broker 和会话导
 - 能力继续由 `HarnessAdapter.inspect()`、Session 能力和公共可选接口提供，不在 Manifest 复制第二份运行时能力真相。
 - `codexhost/harness/inspect` 可带 `purpose: "availability"`，表示调用方只使用状态和错误。Renderer 启动时对所有已注册 Harness 的后台可用性检测使用该标记；用户选中 Harness 后加载 Model 目录仍做完整 inspection。Adapter 可据此不启动原生 Session 回答，避免用户未选用的 Harness 执行 Session 启动副作用；这种结果可以缺少原生默认 Model 和 Thinking 选项，不得写入完整 inspection 的缓存。未处理该标记的 Adapter 照常做完整 inspection。旧版 Host 按未知参数以 -32602 拒绝时，Renderer 去掉该标记重试一次。目前 OMP 用 `omp models --json` 回答（不创建 Session，因此不触发 OMP 的 Provider 连接预热）；命令不可用、输出无法识别或列表为空时回到 Session inspection，由原生启动报告原因。
 - 命令目录由可选的静态 `HarnessAdapter.commandCatalog` 声明，通过 `codexhost/harness/commands/inspect` 查询；读取目录不检查原生运行时、不连接原生服务、不创建或恢复 Session。未声明时返回空目录，不通过启动会话回退发现。执行仍走 `session.commands`。
-
-Harness inspection 的工作区由请求作用域决定：新建页将已发布的草稿 cwd 传给可用性和模型目录检查；目录改变时废弃旧检查与旧模型请求，刷新新目录的可用性和模型。已有外部 Thread 可传可选 threadId，Host 校验其 Harness 归属后使用持久记录中的 cwd；显式 cwd 冲突、官方 Thread 或其他 Harness 的 Thread 均以独立错误码 `-32088` 拒绝，不将当前草稿目录借给已有会话；Renderer 不对该错误执行无作用域重试，不依赖错误文案。兼容早期已支持 threadId 但使用 `-32602` 的 Host 时，仍保留旧作用域错误文案的拒绝判断。省略 threadId 保持原有请求行为；旧 Host 明确以 -32602 拒绝该字段时，Renderer 去掉可选选择器重试一次，沿用旧版本未按 Thread 定位目录的行为，不声称它提供了新的作用域保证。当前 Thread 自己的目录检查成功后，其控件不受同一 Host 上其他草稿目录不可用的影响；插件目录缺失仍为不可用。
-
-### 活动 Turn 恢复（API 2）
-
-公共可选扩展允许插件重新观察已准入的原生任务，不重新发送输入。Adapter 声明 `activeTurnRecovery: true` 后，Host 才在 resume 时传入 `knownTurns: [{ turnId, nativeTurnRef }]`；未声明的插件保留原有输入和行为。
-
-Session 在原生确认准入后可以发布 `turn.identity.confirmed`，Host 将原始 Host Turn ID 与 NativeTurnRef 提前持久化。它不是完成事件，不作为模型调用成功或 UI 终态。已确认的身份不能在该 Turn 中或完成时改写。普通成功终态仍必须携带同一 NativeTurnRef。
-
-恢复时，插件只有在原生活动任务匹配已确认映射后，才能返回 `recoveringTurn: { turnId, nativeTurnRef, input }`。Host 校验映射、Harness 与 Session 所有权，恢复原 Turn 的投影并消费 outputs；快照中的同一待完成 Turn 不重复作为历史显示。插件继续输出原 Host Turn ID，并重新发布当前有效的交互实例。恢复描述和快照读取都不能触发新任务；身份不确定时返回明确错误，不用重新发送输入作为恢复。
-
-Broker 转发可选的 knownTurns、恢复描述和身份确认事件；插件创建 BrokeredHarnessAdapter 时需显式传 activeTurnRecovery: true，与服务端 Adapter 的能力一致。旧 API 插件继续加载，Renderer 仍消费既有的公共 Turn、Item 与 Interaction 投影；没有 Harness 专用分支。
 
 入口导出 [`HarnessPluginModule`](../../packages/harness-adapter/src/plugin.ts) 定义的工厂，不通过模块全局副作用注册：
 

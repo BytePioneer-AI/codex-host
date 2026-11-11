@@ -61,14 +61,24 @@ export class BridgeClient {
 
   static async connect(
     options: BridgeOptions,
+    matchWorkspace = true,
   ): Promise<{ client: BridgeClient; inspection: BridgeInspection }> {
-    const endpoints = await discoverBridges(options);
+    const endpoints = await discoverBridges(options, matchWorkspace);
+    if (!matchWorkspace)
+      endpoints.sort(
+        (left, right) =>
+          Number(right.workspaceFolders.some((folder) => sameDirectory(folder, options.cwd))) -
+          Number(left.workspaceFolders.some((folder) => sameDirectory(folder, options.cwd))),
+      );
     let failure: TraeError | undefined;
     for (const endpoint of endpoints) {
       const client = new BridgeClient(endpoint, options.timeoutMs);
       try {
         const inspection = await client.inspect();
-        if (!inspection.workspaceFolders.some((folder) => sameDirectory(folder, options.cwd)))
+        if (
+          matchWorkspace &&
+          !inspection.workspaceFolders.some((folder) => sameDirectory(folder, options.cwd))
+        )
           throw new TraeError("configurationRequired", "The TRAE CN workspace changed");
         return { client, inspection };
       } catch (error) {

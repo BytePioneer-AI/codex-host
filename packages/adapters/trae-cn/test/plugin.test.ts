@@ -59,28 +59,36 @@ describe("TRAE CN plugin factory", () => {
     expect(typeof first.installation).toBe("function");
     environment.CODEXHOST_TRAE_CN_BRIDGE_DIR = "/changed-bridge";
     expect((await first.inspect({ cwd: "/workspace" })).status).toBe("ready");
-    expect(connect).toHaveBeenNthCalledWith(1, {
-      cwd: "/workspace",
-      environment: {
-        CODEXHOST_TRAE_CN_BRIDGE_DIR: "/original-bridge",
-        CODEXHOST_TRAE_CN_APP: "/fallback-app",
+    expect(connect).toHaveBeenNthCalledWith(
+      1,
+      {
+        cwd: "/workspace",
+        environment: {
+          CODEXHOST_TRAE_CN_BRIDGE_DIR: "/original-bridge",
+          CODEXHOST_TRAE_CN_APP: "/fallback-app",
+        },
+        app: "/selected-app",
       },
-      app: "/selected-app",
-    });
+      false,
+    );
     await first.close();
     expect(await first.inspect()).toMatchObject({
       status: "unavailable",
       error: { code: "invalidState" },
     });
     expect((await second.inspect({ cwd: "/workspace" })).status).toBe("ready");
-    expect(connect).toHaveBeenNthCalledWith(2, {
-      cwd: "/workspace",
-      environment: {
-        CODEXHOST_TRAE_CN_BRIDGE_DIR: "/original-bridge",
-        CODEXHOST_TRAE_CN_APP: "/fallback-app",
+    expect(connect).toHaveBeenNthCalledWith(
+      2,
+      {
+        cwd: "/workspace",
+        environment: {
+          CODEXHOST_TRAE_CN_BRIDGE_DIR: "/original-bridge",
+          CODEXHOST_TRAE_CN_APP: "/fallback-app",
+        },
+        app: "/fallback-app",
       },
-      app: "/fallback-app",
-    });
+      false,
+    );
     await second.close();
     expect(close).toHaveBeenCalledTimes(2);
   });

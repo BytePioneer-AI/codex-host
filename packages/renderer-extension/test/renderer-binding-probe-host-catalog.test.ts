@@ -17,14 +17,12 @@ import type { installRendererSidebarAgentIcons } from "../src/renderer-sidebar-a
 import type { RendererConnectionDiagnostics } from "../src/settings/connections-page.js";
 import type { RendererSessionImportClient } from "../src/settings/session-import-page.js";
 import type * as VersionedRendererAdapter from "../src/versioned-renderer-adapter.js";
-import { writeNewThreadExternalConfigurationPreference } from "../src/renderer-new-thread-preference.js";
 
 const testState = vi.hoisted(() => ({
   composer: null as unknown as Element,
   editor: null as unknown as Element,
   sendButton: null as unknown as HTMLButtonElement,
   renderedModelViews: [] as RendererModelControlView[],
-  renderedAvailability: [] as Record<string, string>[],
   selectModel: null as null | ((modelId: string) => void),
   selectThinking: null as null | ((thinkingOptionId: string) => void),
   getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
@@ -86,7 +84,6 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
       modelView: RendererModelControlView,
     ) => {
       testState.renderedModelViews.push({ ...modelView });
-      testState.renderedAvailability.push({ ...(_availability as Record<string, string>) });
     },
     reconcileComposerNativeControls: vi.fn(),
     disposeComposerAgentControl: vi.fn(),
@@ -217,7 +214,6 @@ function installFakeBrowser(): void {
   testState.editor = editor;
   testState.sendButton = sendButton;
   testState.renderedModelViews = [];
-  testState.renderedAvailability = [];
   testState.selectModel = null;
   testState.selectThinking = null;
   testState.getConnectionDiagnostics = null;
@@ -278,9 +274,6 @@ function installFakeBrowser(): void {
       ) {
         super(type);
       }
-      get detail(): unknown {
-        return this.init?.detail;
-      }
     },
   );
 }
@@ -296,209 +289,66 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it.each([false, true])(
-  "offers a catalog without a default until an explicit choice (saved=%s)",
-  async (saved) => {
-    installFakeBrowser();
-    testState.modelTarget = ["default"];
-    const inspection = readyInspection();
-    const { defaultModel: chosen, ...catalog } = inspection.catalog;
-    if (saved) {
-      const values = new Map<string, string>();
-      const storage = {
-        getItem: (key: string) => values.get(key) ?? null,
-        setItem: (key: string, value: string) => {
-          values.set(key, value);
-        },
-      };
-      Reflect.set(window, "localStorage", storage);
-      writeNewThreadExternalConfigurationPreference(
-        "claude-code",
-        chosen,
-        undefined,
-        undefined,
-        storage,
-      );
-    }
-    const local = {
-      listHarnessPlugins,
-      inspectHarness: vi.fn(async () => ({ ...inspection, catalog })),
-    };
-    const applyAgent = vi.fn<(...args: unknown[]) => boolean>(() => true);
-    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
-    const probe = installRendererBindingProbe({
-      enabledAgents: ["codex", "claude-code"],
-      defaultAgent: "claude-code",
-    });
-    probe.setAdapter(
-      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
-      undefined,
-      applyAgent,
-      {
-        currentHostId: () => "local",
-        clientForHost: () => local,
-      } as never,
-    );
-    const blocked = () => {
-      const preventDefault = vi.fn();
-      const listener = testState.documentListeners.get("submit");
-      assert(listener);
-      listener({
-        target: testState.composer,
-        preventDefault,
-        stopImmediatePropagation: vi.fn(),
-      } as unknown as Event);
-      return preventDefault.mock.calls.length > 0;
-    };
-    try {
-      await vi.waitFor(() =>
-        expect(testState.renderedModelViews.at(-1)).toMatchObject({ status: "ready", catalog }),
-      );
-      const view = testState.renderedModelViews.at(-1);
-      assert(view);
-      expect(view.selected).toBeUndefined();
-      expect(isRendererModelPickerDisabled(view)).toBe(false);
-      expect(blocked()).toBe(true);
-      expect(applyAgent.mock.calls.every((call) => call[1] === undefined)).toBe(true);
-      assert(testState.selectModel);
-      testState.selectModel(chosen.id);
-      await vi.waitFor(() =>
-        expect(testState.renderedModelViews.at(-1)).toMatchObject({
-          status: "ready",
-          selected: chosen,
-        }),
-      );
-      expect(blocked()).toBe(false);
-    } finally {
-      probe.dispose();
-    }
-  },
-);
-
-describe("Renderer binding Host-scoped Claude catalogs", () => {
-  it("keeps a Thread's own catalog usable when a different draft workspace is unavailable", async () => {
-    installFakeBrowser();
-    Reflect.set(window, "__codexhostDraftWorkspacesV1", { local: "/other-draft" });
-    const local = {
-      listHarnessPlugins,
-      inspectHarness: vi.fn(async (input: { threadId?: string }) =>
-        input.threadId === "thread-a"
-          ? readyInspection()
-          : {
-              status: "unavailable",
-              error: {
-                code: "configurationRequired",
-                message: "Wrong draft workspace",
-                retryable: true,
-              },
-            },
-      ),
-      inspectThread: vi.fn(async () => ({
-        owner: "external",
-        harnessId: "claude-code",
-        transportModelId:
-          "codexhost/claude-code-native@claude-model-v1.b3B1cw@bypassPermissions@auto",
-        effectiveModel: harnessModelRefSchema.parse({ id: "claude-model-v1.b3B1cw" }),
-        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
-        locked: true,
-      })),
-      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
-      inspectThreadUsage: vi.fn(async () => ({ threadId: "thread-a", usage: null })),
-    };
-    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
-    const probe = installRendererBindingProbe({ enabledAgents: ["codex", "claude-code"] });
-    probe.setAdapter(
-      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
-      undefined,
-      () => true,
-      {
-        currentHostId: () => "local",
-        clientForHost: () => local,
-        subscribeThreadUsage: () => () => undefined,
-      } as never,
-    );
-    try {
-      await vi.waitFor(() =>
-        expect(probe.status().availability["claude-code"]).toBe("unavailable"),
-      );
-      await vi.waitFor(() => expect(testState.renderedModelViews.at(-1)?.status).toBe("ready"));
-      expect(local.inspectHarness).toHaveBeenCalledWith({
-        harnessId: "claude-code",
-        threadId: "thread-a",
-      });
-      expect(testState.renderedAvailability.at(-1)?.["claude-code"]).toBe("ready");
-    } finally {
-      probe.dispose();
-    }
+it("offers a catalog without a default until an explicit choice", async () => {
+  installFakeBrowser();
+  testState.modelTarget = ["default"];
+  const inspection = readyInspection();
+  const { defaultModel: chosen, ...catalog } = inspection.catalog;
+  const local = {
+    listHarnessPlugins,
+    inspectHarness: vi.fn(async () => ({ ...inspection, catalog })),
+  };
+  const applyAgent = vi.fn<(...args: unknown[]) => boolean>(() => true);
+  const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+  const probe = installRendererBindingProbe({
+    enabledAgents: ["codex", "claude-code"],
+    defaultAgent: "claude-code",
   });
-  it("uses the published draft workspace and ignores a late catalog after switching folders", async () => {
-    installFakeBrowser();
-    testState.modelTarget = ["default"];
-    Reflect.set(window, "__codexhostDraftWorkspacesV1", { local: "/draft-a" });
-    const previous = Promise.withResolvers<ReturnType<typeof readyInspection>>();
-    const nextModel = "claude-model-v1.next-workspace";
-    const inspectHarness = vi.fn(async (input: { cwd?: string; purpose?: string }) => {
-      if (input.purpose === "availability") return readyInspection();
-      return input.cwd === "/draft-a" ? previous.promise : readyInspection(nextModel);
-    });
-    const local = { listHarnessPlugins, inspectHarness };
-    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
-    const probe = installRendererBindingProbe({
-      enabledAgents: ["codex", "claude-code"],
-      defaultAgent: "claude-code",
-    });
-    probe.setAdapter(
-      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
-      undefined,
-      () => true,
-      {
-        currentHostId: () => "local",
-        clientForHost: (id: string) => (id === "local" ? local : null),
-      } as never,
+  probe.setAdapter(
+    { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+    undefined,
+    applyAgent,
+    {
+      currentHostId: () => "local",
+      clientForHost: () => local,
+    } as never,
+  );
+  const blocked = () => {
+    const preventDefault = vi.fn();
+    const listener = testState.documentListeners.get("submit");
+    assert(listener);
+    listener({
+      target: testState.composer,
+      preventDefault,
+      stopImmediatePropagation: vi.fn(),
+    } as unknown as Event);
+    return preventDefault.mock.calls.length > 0;
+  };
+  try {
+    await vi.waitFor(() =>
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({ status: "ready", catalog }),
     );
-    try {
-      await vi.waitFor(() =>
-        expect(inspectHarness).toHaveBeenCalledWith({ harnessId: "claude-code", cwd: "/draft-a" }),
-      );
-      window.dispatchEvent(
-        new CustomEvent("codexhost:draft-workspace", {
-          detail: { hostId: "local", cwd: "/draft-b" },
-        }),
-      );
-      await vi.waitFor(() =>
-        expect(inspectHarness).toHaveBeenCalledWith({ harnessId: "claude-code", cwd: "/draft-b" }),
-      );
-      await vi.waitFor(() =>
-        expect(testState.renderedModelViews.at(-1)).toMatchObject({
-          status: "ready",
-          catalog: { models: [{ ref: { id: nextModel } }] },
-        }),
-      );
-      previous.resolve(readyInspection("claude-model-v1.stale-workspace"));
-      await previous.promise;
-      await new Promise((resolve) => setTimeout(resolve, 0));
+    const view = testState.renderedModelViews.at(-1);
+    assert(view);
+    expect(view.selected).toBeUndefined();
+    expect(isRendererModelPickerDisabled(view)).toBe(false);
+    expect(blocked()).toBe(true);
+    expect(applyAgent.mock.calls.every((call) => call[1] === undefined)).toBe(true);
+    assert(testState.selectModel);
+    testState.selectModel(chosen.id);
+    await vi.waitFor(() =>
       expect(testState.renderedModelViews.at(-1)).toMatchObject({
         status: "ready",
-        catalog: { models: [{ ref: { id: nextModel } }] },
-      });
-      expect(
-        inspectHarness.mock.calls
-          .filter(([input]) => input.purpose === "availability")
-          .every(([input]) => input.cwd === "/draft-a" || input.cwd === "/draft-b"),
-      ).toBe(true);
-      window.dispatchEvent(
-        new CustomEvent("codexhost:draft-workspace", {
-          detail: { hostId: "local", cwd: null },
-        }),
-      );
-      await vi.waitFor(() =>
-        expect(inspectHarness).toHaveBeenCalledWith({ harnessId: "claude-code" }),
-      );
-    } finally {
-      previous.resolve(readyInspection());
-      probe.dispose();
-    }
-  });
+        selected: chosen,
+      }),
+    );
+    expect(blocked()).toBe(false);
+  } finally {
+    probe.dispose();
+  }
+});
+
+describe("Renderer binding Host-scoped Claude catalogs", () => {
   it("loads remote sidebar artwork before any Composer opens on that Host", async () => {
     installFakeBrowser();
     const plugin = harnessPluginDescriptorSchema.parse({
@@ -719,10 +569,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
         );
         await vi.waitFor(() => {
           expect(probe.lockedSelection()?.agent).toBe("claude-code");
-          expect(remote.inspectHarness).toHaveBeenCalledWith({
-            harnessId: "claude-code",
-            threadId: "thread-a",
-          });
+          expect(remote.inspectHarness).toHaveBeenCalledWith({ harnessId: "claude-code" });
           expect(testState.renderedModelViews.at(-1)).toMatchObject({
             status: modelFirst ? "ready" : "loading",
           });

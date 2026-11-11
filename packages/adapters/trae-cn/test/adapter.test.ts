@@ -49,6 +49,13 @@ async function setup(configurable = false, thinking = false, permissions = false
       content: '{"messages":[]}',
     },
   ];
+  const snapshot = () => ({
+    sessionId: "native-session",
+    projectId: "project",
+    workspaceFolders: [cwd],
+    status,
+    items,
+  });
   const service = {
     application,
     workspaceFolders: [cwd],
@@ -100,13 +107,7 @@ async function setup(configurable = false, thinking = false, permissions = false
           ...(input?.thinking ? { thinking: input.thinking } : {}),
         };
       if (method !== "snapshot") throw new Error("Unexpected native write during open");
-      return {
-        sessionId: "native-session",
-        projectId: "project",
-        workspaceFolders: [cwd],
-        status,
-        items,
-      };
+      return snapshot();
     }),
     subscribe: vi.fn(),
   };
@@ -126,6 +127,7 @@ async function setup(configurable = false, thinking = false, permissions = false
     service,
     reference,
     cwd,
+    snapshot,
     pending(active = false) {
       items = [user];
       if (active) status = 3;
@@ -346,8 +348,9 @@ describe("TRAE CN public Adapter core", () => {
           },
         ],
       ]);
-      const before = await test.service.call("snapshot");
-      expect(before.items).toMatchObject([{}, { model: { reasoning_effort_level: "light" } }]);
+      expect(await test.service.call("snapshot")).toMatchObject({
+        items: [{}, { model: { reasoning_effort_level: "light" } }],
+      });
       expect(
         await test.adapter.open({ kind: "create", cwd: test.cwd, thinkingOptionId: high }),
       ).toMatchObject({ ok: false, error: { code: "configurationRequired" } });
@@ -434,7 +437,7 @@ describe("TRAE CN public Adapter core", () => {
     async (status) => {
       const test = await setup();
       try {
-        const terminal = await test.service.call("snapshot");
+        const terminal = test.snapshot();
         test.service.call.mockResolvedValue({ ...terminal, status, items: [terminal.items[0]] });
         let listener: { data(value: unknown): void; end(): void } | undefined;
         test.service.subscribe.mockImplementation(async (_input, observer) => {
@@ -448,7 +451,7 @@ describe("TRAE CN public Adapter core", () => {
         });
         if (!opened.ok) throw new Error(opened.error.message);
         const session = opened.value;
-        expect(session.capabilities.autonomousTurns.observe).toBe(true);
+        expect(session.capabilities.autonomousTurns?.observe).toBe(true);
         // Native work may finish while Host is aligning the initial history.
         // Observation must not start until Host consumes outputs.
         expect(await session.readSnapshot()).toMatchObject({ ok: true, value: { turns: [] } });
@@ -530,7 +533,7 @@ describe("TRAE CN public Adapter core", () => {
     async (kind) => {
       const test = await setup();
       try {
-        const terminal = await test.service.call("snapshot");
+        const terminal = test.snapshot();
         const user = terminal.items[0] as Record<string, unknown>;
         const second = { ...user, message_id: "second", message_index: 3 };
         const items =

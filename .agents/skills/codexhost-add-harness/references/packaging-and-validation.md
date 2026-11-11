@@ -20,7 +20,7 @@
 
 按 `packages/shared-contracts/src/harness-plugins.ts` 校验：
 
-- 必填：`manifestVersion: 1`、`id`、`name`、`version`、`adapterApiVersion`、`entry`。API 版本表示插件所需的契约；当前 API 2 Host 继续接纳 API 1 插件，拒绝更新版本。使用活动恢复扩展的插件必须声明 API 2，不能在旧 Host 上执行。
+- 必填：`manifestVersion: 1`、`id`、`name`、`version`、`adapterApiVersion`（与当前 `HARNESS_PLUGIN_API_VERSION` 一致）、`entry`。
 - `id` 遵守专用的 schema（小写，可用 `.`、`_`、`-` 分隔），`codex` 是保留 ID。Manifest、Adapter、Session 和 Native Ref 中的身份必须一致。
 - 展示与安装相关的字段见[连接页](spec-connections.md#manifest-展示字段)。
 - Manifest 最大 32 KiB，图标最大 128 KiB。

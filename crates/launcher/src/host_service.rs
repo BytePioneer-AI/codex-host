@@ -68,6 +68,21 @@ fn publish_ready(data: &Path, pid: u32, runtime: &Path) -> Result<(), Box<dyn Er
     Ok(())
 }
 
+// A supervisor that failed before publishing, or whose record a newer service
+// replaced, must not erase the identity of a live Host. PID reuse is excluded
+// by the started_at_micros comparison.
+fn remove_ready_record_if_owned(data: &Path, child: &codexhost_platform::ProcessSnapshot) {
+    let owned = fs::read(data.join("shared-host-ready.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ReadyOwner>(&bytes).ok())
+        .is_some_and(|record| {
+            record.pid == child.id && record.started_at_micros == child.started_at_micros
+        });
+    if owned {
+        let _ = fs::remove_file(data.join("shared-host-ready.json"));
+    }
+}
+
 struct Options {
     node: PathBuf,
     runtime: PathBuf,
@@ -259,6 +274,9 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
         .envs(codexhost_platform::proxy_environment());
     configure_background_command(&mut command);
     let mut child = spawn_supervised(&mut command)?;
+    // Capture the child identity before it can exit: the ready record can only
+    // be cleared while its owner is still identifiable.
+    let child_identity = codexhost_platform::process_snapshot(child.id()).ok();
     let result = (|| -> Result<(), Box<dyn Error>> {
         let mut published = false;
         let mut started_update = None;
@@ -300,7 +318,9 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
         let _ = child.force_terminate();
         thread::sleep(Duration::from_millis(100));
     }
-    let _ = fs::remove_file(options.data.join("shared-host-ready.json"));
+    if let Some(identity) = &child_identity {
+        remove_ready_record_if_owned(&options.data, identity);
+    }
     result
 }
 

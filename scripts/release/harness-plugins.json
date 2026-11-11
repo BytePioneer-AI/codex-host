@@ -11,6 +11,7 @@
     "packages/adapters/kiro-cli",
     "packages/adapters/codebuddy",
     "packages/adapters/workbuddy",
+    "packages/adapters/trae-cn",
     "packages/adapters/cursor-cli",
     "packages/adapters/devin",
     "packages/adapters/hermes",

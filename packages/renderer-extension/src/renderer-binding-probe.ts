@@ -1726,7 +1726,25 @@ export function installRendererBindingProbe(
       const selected = previousModelAvailable
         ? previousModel
         : (preferredConfiguration?.model ?? inspection.catalog.defaultModel);
-      if (!selected) throw new Error("External Harness did not report its default Model");
+      if (!selected) {
+        // A nonempty catalog may intentionally require an explicit user choice.
+        // Keep the picker usable; configuration readiness still blocks sending.
+        mounted.modelView = {
+          status: "ready",
+          catalog: inspection.catalog,
+          thinkingSelectionSupported: inspection.capabilities.configuration.selectThinkingOption,
+        };
+        if (selectedPermissionModeId && mounted.permissionModeView.catalog) {
+          controller.setExternalPermissionMode(mounted.composer, agent, selectedPermissionModeId);
+          mounted.permissionModeView = {
+            status: "ready",
+            catalog: mounted.permissionModeView.catalog,
+            selected: selectedPermissionModeId,
+            ...permissionModeLock,
+          };
+        }
+        return;
+      }
       const effectiveCatalog =
         current.phase === "locked" && mounted.threadConfiguration
           ? catalogWithConfigurationState(inspection.catalog, selected, mounted.threadConfiguration)

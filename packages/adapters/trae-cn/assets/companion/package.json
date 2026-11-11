@@ -1,0 +1,60 @@
+{
+  "name": "trae-cn-bridge",
+  "publisher": "codexhost",
+  "displayName": "CodexHost TRAE CN Bridge",
+  "description": "Connect CodexHost to the native Agent in TRAE CN Desktop.",
+  "version": "0.1.11",
+  "license": "LGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BytePioneer-AI/codex-host.git"
+  },
+  "engines": {
+    "vscode": "^1.107.0"
+  },
+  "main": "./extension.cjs",
+  "files": [
+    "*.cjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "configuration": {
+      "title": "CodexHost TRAE CN",
+      "properties": {
+        "codexhost.traeCn.nativeAgent": {
+          "type": "string",
+          "enum": [
+            "builder_v3",
+            "solo_agent"
+          ],
+          "default": "builder_v3",
+          "enumDescriptions": [
+            "Builder conversation models",
+            "SOLO Agent conversation models and native MCP tools"
+          ],
+          "scope": "window",
+          "description": "Native Agent used by this Bridge. Finish active work and run CodexHost: Restart TRAE CN Bridge after changing it. Existing Sessions require their original Agent."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "codexhost.traeCn.restartBridge",
+        "title": "CodexHost: Restart TRAE CN Bridge"
+      }
+    ]
+  }
+}

@@ -6,6 +6,7 @@ const typeScriptFiles = ["packages/**/*.ts", "tests/**/*.ts"];
 const javaScriptFiles = [
   "*.config.js",
   "packages/**/scripts/**/*.mjs",
+  "packages/**/assets/**/*.cjs",
   "packages/repository-automation/**/*.mjs",
   "scripts/**/*.mjs",
   "tests/**/*.mjs",

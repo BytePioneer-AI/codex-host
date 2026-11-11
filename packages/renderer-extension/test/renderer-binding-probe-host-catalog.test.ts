@@ -289,6 +289,65 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+it("offers a catalog without a default until an explicit choice", async () => {
+  installFakeBrowser();
+  testState.modelTarget = ["default"];
+  const inspection = readyInspection();
+  const { defaultModel: chosen, ...catalog } = inspection.catalog;
+  const local = {
+    listHarnessPlugins,
+    inspectHarness: vi.fn(async () => ({ ...inspection, catalog })),
+  };
+  const applyAgent = vi.fn<(...args: unknown[]) => boolean>(() => true);
+  const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+  const probe = installRendererBindingProbe({
+    enabledAgents: ["codex", "claude-code"],
+    defaultAgent: "claude-code",
+  });
+  probe.setAdapter(
+    { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+    undefined,
+    applyAgent,
+    {
+      currentHostId: () => "local",
+      clientForHost: () => local,
+    } as never,
+  );
+  const blocked = () => {
+    const preventDefault = vi.fn();
+    const listener = testState.documentListeners.get("submit");
+    assert(listener);
+    listener({
+      target: testState.composer,
+      preventDefault,
+      stopImmediatePropagation: vi.fn(),
+    } as unknown as Event);
+    return preventDefault.mock.calls.length > 0;
+  };
+  try {
+    await vi.waitFor(() =>
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({ status: "ready", catalog }),
+    );
+    const view = testState.renderedModelViews.at(-1);
+    assert(view);
+    expect(view.selected).toBeUndefined();
+    expect(isRendererModelPickerDisabled(view)).toBe(false);
+    expect(blocked()).toBe(true);
+    expect(applyAgent.mock.calls.every((call) => call[1] === undefined)).toBe(true);
+    assert(testState.selectModel);
+    testState.selectModel(chosen.id);
+    await vi.waitFor(() =>
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({
+        status: "ready",
+        selected: chosen,
+      }),
+    );
+    expect(blocked()).toBe(false);
+  } finally {
+    probe.dispose();
+  }
+});
+
 describe("Renderer binding Host-scoped Claude catalogs", () => {
   it("loads remote sidebar artwork before any Composer opens on that Host", async () => {
     installFakeBrowser();

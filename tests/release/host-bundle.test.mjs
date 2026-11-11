@@ -215,6 +215,11 @@ describe("release Host and independent plugin Bundles", () => {
       const requests = [
         { id: 1, method: "codexhost/harness/plugins/list", params: {} },
         { id: 2, method: "initialize", params: {} },
+        {
+          id: 3,
+          method: "codexhost/harness/inspect",
+          params: { harnessId: "trae-cn", cwd: directory },
+        },
       ];
       const first = await runPackagedHost(
         path.join(relocated, "host-runtime.mjs"),
@@ -228,6 +233,12 @@ describe("release Host and independent plugin Bundles", () => {
           .sort(),
       ).toEqual([...desktopIds].sort());
       expect(first.lines.find(({ id }) => id === 2)).toMatchObject({ result: { official: true } });
+      expect(first.lines.find(({ id }) => id === 3)).toMatchObject({
+        result: {
+          status: "unavailable",
+          error: { code: "configurationRequired", retryable: true },
+        },
+      });
       expect(first.stderr).not.toMatch(/loadFailed|loadTimeout|Dynamic require/u);
 
       const userRoot = path.join(directory, "user-plugins");

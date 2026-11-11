@@ -296,10 +296,25 @@ fn serve(options: &Options) -> Result<(), Box<dyn Error>> {
             publish_status(ready, &error.to_string())?;
         }
     }
-    remove_file(&options.data.join(READY))?;
-    remove_file(&node_ready)?;
-    remove_file(&stop)?;
+    remove_ready_record_if_owned(&options.data, &supervisor);
+    remove_file(&options.data.join(node_ready))?;
+    remove_file(&options.data.join(stop))?;
     outcome
+}
+
+// A Web supervisor that failed before publishing, or whose record a newer
+// service replaced, must not erase the identity of a live Web service. PID
+// reuse is excluded by the started_at_micros comparison.
+fn remove_ready_record_if_owned(data: &Path, supervisor: &codexhost_platform::ProcessSnapshot) {
+    let owned = fs::read(data.join(READY))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ReadyOwner>(&bytes).ok())
+        .is_some_and(|record| {
+            record.pid == supervisor.id && record.started_at_micros == supervisor.started_at_micros
+        });
+    if owned {
+        let _ = fs::remove_file(data.join(READY));
+    }
 }
 
 pub(super) fn stop(options: &Options) -> Result<bool, Box<dyn Error>> {
@@ -363,5 +378,53 @@ pub fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         "serve" => serve(&options),
         "stop" => stop(&options).map(|_| ()),
         _ => Err("usage: codexhost web-service <ensure|stop> --node <file> --host-node <file> --web-runtime <file> --host-runtime <file> --data <directory>".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn ready_record_removal_requires_record_ownership() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let data = std::env::temp_dir().join(format!(
+            "codexhost-web-ready-owner-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&data).unwrap();
+        let record = data.join(READY);
+        let supervisor = codexhost_platform::process_snapshot(std::process::id()).unwrap();
+        let published = serde_json::json!({
+            "pid": supervisor.id,
+            "started_at_micros": supervisor.started_at_micros,
+            "executable": supervisor.executable,
+            "web_pid": 1,
+            "version": "test",
+            "runtime": "/test/web-server.mjs",
+            "address": "http://127.0.0.1:4400/",
+            "loginUrl": "http://127.0.0.1:4400/?token=test"
+        });
+        fs::write(&record, serde_json::to_vec(&published).unwrap()).unwrap();
+
+        // A foreign supervisor (failed startup, or a newer service that took
+        // over the record) must not clear the identity of the live service.
+        let foreign = codexhost_platform::ProcessSnapshot {
+            started_at_micros: 0,
+            ..supervisor.clone()
+        };
+        remove_ready_record_if_owned(&data, &foreign);
+        assert!(record.is_file());
+
+        // The supervisor that published the record clears it, and a missing
+        // record stays a no-op.
+        remove_ready_record_if_owned(&data, &supervisor);
+        assert!(!record.exists());
+        remove_ready_record_if_owned(&data, &supervisor);
+        fs::remove_dir_all(data).unwrap();
     }
 }

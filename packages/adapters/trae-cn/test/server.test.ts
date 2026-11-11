@@ -182,6 +182,27 @@ describe("TRAE CN local companion transport", () => {
     }
   });
 
+  it("redacts bare access and secret key pairs in error responses", async () => {
+    const test = await setup();
+    test.service.call.mockRejectedValue(
+      Object.assign(new Error("Provider rejected ak=fixture-access sk=fixture-secret"), {
+        code: "nativeFailure",
+      }),
+    );
+    try {
+      const response = await request(`${test.url}/call`, {
+        method: "POST",
+        headers: test.headers,
+        body: '{"method":"snapshot","input":{"sessionId":"session"}}',
+      });
+      const output = await response.text();
+      expect(output).not.toContain("fixture-access");
+      expect(output).not.toContain("fixture-secret");
+    } finally {
+      await test.close();
+    }
+  });
+
   it("removes only its own discovery file on shutdown", async () => {
     const test = await setup();
     try {

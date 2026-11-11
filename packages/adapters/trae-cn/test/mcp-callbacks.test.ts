@@ -56,6 +56,9 @@ describe("TRAE CN native MCP callback ownership", () => {
     { toolName: "other" },
     { args: { marker: "changed" } },
     { workspaceFolders: ["/other"] },
+    { rwFolders: ["/outside"] },
+    { rwFolders: ["/workspace", "/outside"] },
+    { rwFolders: "/workspace" },
     { source: "app" },
   ])("rejects a callback with mismatched or privileged selectors: %j", (change) => {
     const { executions } = setup();

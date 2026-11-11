@@ -303,15 +303,18 @@ export class Workspaces {
     const now = new Date().toISOString();
     const projectRoots = new Set<string>();
     for (const project of projects) {
-      for (const root of project.rootPaths) {
+      for (const [index, root] of project.rootPaths.entries()) {
         const path = resolve(root);
         projectRoots.add(path);
+        // One native project can hold several root folders; only the first root
+        // carries the project name so the Web sidebar never repeats it.
+        const title = index === 0 ? project.name : basename(path);
         let workspace = byPath.get(path);
         if (!workspace) {
           workspace = {
             workspaceId: randomUUID(),
             path,
-            title: project.name,
+            title,
             sessionIds: [],
             createdAt: now,
             updatedAt: now,
@@ -319,7 +322,7 @@ export class Workspaces {
           };
           items.push(workspace);
           byPath.set(path, workspace);
-        } else if (workspace.origin !== "web") workspace.title = project.name;
+        } else if (workspace.origin !== "web") workspace.title = title;
       }
     }
     for (const { sessionId, cwd, title } of sessions) {

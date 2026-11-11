@@ -519,6 +519,8 @@ it("workspace mirror: preserves Web information and identities across native tit
   const first = workspaces.byPath(firstRoot);
   const second = workspaces.byPath(secondRoot);
   assert.ok(first && second);
+  assert.equal(first.title, "Native title", "the project's first root keeps the project name");
+  assert.equal(second.title, "second", "extra roots fall back to their folder name");
   assert.deepEqual(
     first.sessionIds,
     ["moving"],
@@ -554,7 +556,7 @@ it("workspace mirror: preserves Web information and identities across native tit
   assert.ok(updated);
   assert.equal(updated.workspaceId, second.workspaceId);
   assert.equal(updated.createdAt, second.createdAt);
-  assert.equal(updated.title, project.name);
+  assert.equal(updated.title, "second", "extra roots keep their folder name after a rename");
   assert.deepEqual(updated.sessionIds, ["second-root", "moving"]);
   const firstProject = workspaces
     .list()

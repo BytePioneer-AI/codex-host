@@ -1,6 +1,7 @@
 import { draftPermissionMode, type DraftConfiguration } from "./draft-configuration.ts";
 /** CH-backed Web facade: canonical Threads are owned/persisted by CH, Web holds only rendering buffers. */
 import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
 import { homedir } from "node:os";
 import {
   WEB_FOLLOW_PROJECTION_KEYS,
@@ -312,7 +313,15 @@ export class ChSessions {
             : undefined;
         groups.set(row.id, root);
         if (root) {
-          const title = projects.projects.find((project) => project.rootPaths.includes(root))?.name;
+          // Only the project's first root keeps the native project name; other
+          // roots fall back to their folder name so titles never duplicate.
+          const project = projects.projects.find((project) => project.rootPaths.includes(root));
+          const title =
+            project === undefined
+              ? undefined
+              : project.rootPaths[0] === root
+                ? project.name
+                : basename(root);
           references.push({
             sessionId: row.id,
             cwd: root,

@@ -23,9 +23,9 @@
 | A4 | 创建 Session | 必做 | P0 | 支持 | src/session.ts；assets/companion/service.cjs | 公共 Session 首轮真实创建及文件读取 | 延迟至首轮；原生 Project 绑定目录 |
 | A5 | 执行 Turn | 必做 | P0 | 受限 | src/session.ts；src/live-items.ts；assets/companion/mcp.cjs | 公共普通对话、文件工具、提问、命令审批及持久历史一致；3.4.14 SOLO 的 run_mcp 实际执行一次并精确冷恢复 | Builder、Read、Edit、RunCommand、提问及 SOLO MCP 已验收；其他工具语义待补 |
 | A6 | 取消 | 必做 | P0 | 支持 | src/session.ts；assets/companion/service.cjs | 公共提问等待中 turn.cancel 后，公共与持久原生均 cancelled，同 Session 随后成功续聊 | Interaction 关闭一次；过期回复拒绝；不将请求回执当终态 |
-| A7 | 只读快照 | 必做 | P0 | 支持 | src/history.ts；src/session.ts | 重复读取真实历史的 Turn / Item 身份一致；恢复缓存 unknown 快照；原生历史提交延迟实测 | 普通活动读取返回 sessionBusy；终态确认短暂重读同一身份 |
-| A8 | 持久身份 + resume | 必做 | P0 | 受限 | src/adapter.ts；src/session.ts；src/history.ts | 跨进程普通恢复、活动提问 / 审批恢复；后台命令完成后，重建 Companion 与两个新 Host 的三轮完整冷读一致 | 后台仍运行时冷恢复明确返回 sessionBusy；不丢弃命令、不重发原任务；缺映射及不确定状态拒绝 |
-| A9 | 错误与并发 | 必做 | P0 | 受限 | src/session.ts；assets/companion/service.cjs | native / service / session 测试；真实跨进程活动恢复 | 本机准入串行；不确定回执无自动重试；仅恢复原身份，其他工具故障待补 |
+| A7 | 只读快照 | 必做 | P0 | 支持 | src/history.ts；src/session.ts | 重复读取真实历史的 Turn / Item 身份一致；原生历史提交延迟实测 | 普通活动读取返回 sessionBusy；重接运行中任务时初始历史不含该轮；终态确认短暂重读同一身份 |
+| A8 | 持久身份 + resume | 必做 | P0 | 受限 | src/adapter.ts；src/session.ts；src/native-turn.ts；src/history.ts | 跨进程普通恢复；后台命令完成后，重建 Companion 与两个新 Host 的三轮完整冷读一致；重接运行中任务、订阅前已完成补齐终态的自动测试 | 仍在运行的唯一末尾任务以自主 Turn 重新接上，Host Turn ID 与重启前不同；不重发原任务；后台仍运行或状态不确定时返回 sessionBusy；以自主 Turn 重接的真实桌面流程待验证 |
+| A9 | 错误与并发 | 必做 | P0 | 受限 | src/session.ts；src/native-turn.ts；assets/companion/service.cjs | native / service / session 测试 | 本机准入串行；不确定回执无自动重试；返回 Host 的原生错误只留首行并打码凭据形式；其他工具故障待补 |
 | A10 | 关闭 | 必做 | P0 | 支持 | src/session.ts；assets/companion/native.cjs | 公共关闭测试；真实观察者断开后原生 completed | 不把关闭观察者当作 native cancel |
 | B1 | 切换 Model | 原生有则必做 | P1 | 支持 | src/configuration.ts；src/session.ts；assets/companion/models.cjs | 公共 model.select；原生 Assistant 确认 Seed-Code → Seed-2.1-Turbo → Seed-2.1-Turbo → Seed-Code；活动时切换、冷恢复、模型存储哈希不变 | 下次请求生效；按桌面原生逐轮 DTO 配置；不修改全局偏好；旧 Companion 不声明支持；不把历史 Turn 改标为新模型 |
 | B2 | 切换 Thinking | 原生有则必做 | P1 | 支持 | src/models.ts；configuration.ts；session.ts；assets/companion/reasoning.cjs；models.cjs | MiniMax-M3.1-Flash 两次真实请求的持久配置为 light / high，回复匹配；活动切换、跨进程恢复、文本 Fork / Rollback、桌面偏好哈希不变 | 使用模型原生档位及字段；无隐式默认；选项按模型隔离；接受的 Turn 固定配置；旧 Companion 不声明支持 |
@@ -38,7 +38,7 @@
 | B9 | 审批 | 原生有则必做 | P0 | 受限 | src/interactions.ts；src/approvals.ts；assets/companion/interactions.cjs | RunCommand、Edit 与 DeleteFile 允许 / 拒绝原生验收；实际文件作用、原历史及新进程冷恢复一致，全局权限未变；MCP 与资源读取确认有原生界面源码与测试 | 文件允许使用事件拥有的 toolcall_id，命令 / MCP 使用 tool_name；仅允许一次 / 拒绝；旧 Companion 缺能力标记时明确提示升级；MCP 实时审批仍待验收；不支持持久授权 |
 | B10 | 提问 | 原生有则必做 | P0 | 支持 | src/interactions.ts；assets/companion/interactions.cjs；settings.cjs | 公共问题只发布一次；显式答复“停止”，持久完成回复 TRAE_CN_PUBLIC_QUESTION_OK_STOP | 复用桌面开关；实例校验；不使用预填答案；单选、多选、其他及跳过映射测试 |
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 待验证 | — | — | |
-| B12 | 自主 Turn | 原生有则必做 | P1 | 受限 | src/session.ts；src/background.ts | 3.4.13 原生 command 状态从 running 到 completed；toolcall/poll_pending_wakeups 实际返回 unknown route；后台结果未生成新用户消息 | autonomousTurns.observe=false；普通 Builder 当前后端无可用唤醒路由；不发送隐藏普通消息模拟自主续轮；Ralph / Goal 不在接入范围 |
+| B12 | 自主 Turn | 原生有则必做 | P1 | 受限 | src/session.ts；src/background.ts | 3.4.13 原生 command 状态从 running 到 completed；toolcall/poll_pending_wakeups 实际返回 unknown route；后台结果未生成新用户消息 | autonomousTurns.observe=true 仅用于重启后重接运行中的原生任务；普通 Builder 当前后端无可用唤醒路由；不发送隐藏普通消息模拟自主续轮；Ralph / Goal 不在接入范围 |
 | B13 | 会话用量 | 原生有则必做 | P1 | 受限 | src/usage.ts；src/session.ts；assets/companion/service.cjs | 原生历史数值白名单；同 Session / 新进程恢复的 initialUsage 一致；只读刷新仅调用 snapshot；实时映射测试 | 仅上下文占用 / 窗口；原生历史只保留末次请求，累计字段为占位 0，故不显示会话累计 tokens、费用或估算价格 |
 | B14 | 请求级计量 | 原生有则必做 | P2 | 待验证 | — | — | |
 | B15 | 接收委派 | 必做（验证项） | P1 | 受限 | src/adapter.ts | 3.4.13 真实 Host Coordinator.start 经已加载插件返回 DELEGATION_FAILED，未改变父会话历史；普通 Thread 跨进程可续聊 | 当前委派固定使用 unattended-full-access，插件明确拒绝；不能作为可接收无人值守任务的 Harness |
@@ -54,16 +54,16 @@
 | D1 | Workspace / 构建 | 预装时必做 | P1 | 支持 | package.json；scripts/build-plugin.mjs；scripts/build-companion.mjs | 根 build:typescript 生成预装插件；搬移 Host / 插件独立运行；payload / npm 文件集验证 | Companion 为单独安装的前提，不自动安装或随 Host 激活；本机一项 payload 符号链接用例受 Windows EPERM 限制 |
 | D2 | 预装清单 | 预装时必做 | P1 | 支持 | scripts/release/harness-plugins.json | 相邻插件根的启用列表、真实 Loader 和搬移发行 Host 目录均含 trae-cn | 不增加 Host / Renderer 静态注册 |
 | D3 | 加载测试 | 预装时必做 | P1 | 支持 | installed-harness-plugins.test.ts；tests/release/host-bundle.test.mjs；trae-cn-plugin.test.mjs；trae-cn-companion.test.mjs | 完整预装集合、仓库外 Host / Bundle、缺 Companion 的可重试 configurationRequired、独立实例和 VSIX 检验 | 3.4.13 预装插件经隔离 Host 完成两轮真实对话，第二轮由新进程恢复后复述原答复；不代表用户日常窗口已加载 |
-| D4 | 文档 | 预装时必做 | P1 | 支持 | docs/harnesses/trae-cn/trae-cn-desktop-integration.md；README 与中韩入口；capability-boundaries.md；assets/companion/README.md | 构建、预装 / 独立安装、API 版本、Companion 前提及实验性边界一致 | 完整 Desktop、审批和自主 / 后台能力的未验收状态仍保留 |
+| D4 | 文档 | 预装时必做 | P1 | 支持 | docs/harnesses/trae-cn/trae-cn-desktop-integration.md；README 与中韩入口；capability-boundaries.md；assets/companion/README.md | 构建、预装 / 独立安装、Companion 前提及实验性边界一致 | 完整 Desktop、审批和自主 / 后台能力的未验收状态仍保留 |
 | D5 | 其他 | 可选 | P2 | 不适用 | — | — | |
 
 ## 受限与已知缺口
 
 后台命令：Companion 0.1.9 用原消息拥有的 plan ID、llm tool-call ID 与 command ID 调用 check_toolhost_command_status，校验 Session / Project / 命令 / cwd，并白名单转出结果。已通过原生 running → completed、输出和退出码验证；不是以工具启动成功推定执行成功。公共 Item 通过 item.detached 继续存活，父轮和后续前台轮均可先完成，再由只读轮询终结原 Item；hasBackgroundWork 阻止空闲释放。只跟踪当前观察作用域已准入的命令，关闭或故障结束观察，不隐式取消原生进程。后台仍运行时冷恢复返回 sessionBusy，完成后可正常恢复；保留后台执行身份的历史派生在写入前拒绝。Native 输出窗口为 16,384 字符，实时窗口溢出明确故障，冷历史保留截断标志。普通 Builder 的后台唤醒路由在 3.4.13 实际返回 unknown route，故自主 Turn 保持关闭，不发送普通 Prompt 冒充原生唤醒。
 
-活动恢复的公共契约缺口与实现：原生实测可在断开观察者后重放同一问题实例，并继续同一用户消息；旧 Host 只在 turn.completed 持久化 NativeTurnRef，knownTurnRefs 没有原 Host Turn ID。API 2 新增可选 activeTurnRecovery、turn.identity.confirmed、knownTurns 和 recoveringTurn，Host 提前持久化原身份并按确认映射恢复原投影；Broker 转发，Renderer 沿用原公共投影，没有 TRAE 专用分支。旧 API 1 插件仍可加载且不接收新输入；TRAE 插件声明 API 2，拒绝在旧 Host 上执行。没有确认映射时不会猜测或重发任务。
+运行中任务的重启恢复：Companion 在桌面内持有原生任务，Host 重启后任务可能仍在运行。插件只读原生状态和历史，确认只有一个末尾待完成用户消息时，以新的 Host Turn ID 发布公共 `turn.autonomous.started` 并继续观察同一原生消息，终态从持久历史补齐答复与工具 Item。不使用公共契约扩展，插件 API 仍为 1；重启前后的 Host Turn ID 不同。
 
-当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。插件 Manifest / 工厂、Bundle、Companion VSIX、本机 HTTP、公共 Adapter、普通 Session、结构化提问、命令 / 文件 / MCP 单次审批映射、已确认身份的活动恢复、逐轮模型 / Thinking / 本地权限选择及受限的历史派生已实现；预装发行接线与搬移验证、隔离 Desktop 的真实新建 / 手动选模型 / 重启续聊已通过；MCP 审批及资源读取、其余能力和日常窗口部署验收尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接和确认状态的更新直至结束。
+当前处于开发阶段，尚无可交付的完整 TRAE CN Harness。插件 Manifest / 工厂、Bundle、Companion VSIX、本机 HTTP、公共 Adapter、普通 Session、结构化提问、命令 / 文件 / MCP 单次审批映射、运行中任务的重启恢复、逐轮模型 / Thinking / 本地权限选择及受限的历史派生已实现；预装发行接线与搬移验证、隔离 Desktop 的真实新建 / 手动选模型 / 重启续聊已通过；MCP 审批及资源读取、其余能力和日常窗口部署验收尚未完成。独立 Node 进程不能直接使用 Electron 内置 IPC。登录令牌只在应用进程内用于原生调用，不导出、不持久化。客户端分离观察者不会发送原生 rpc.stream.cancel，因为该通知实测会取消生成；Companion 保持原生连接和确认状态的更新直至结束。
 
 历史派生限制：3.4.12 的原生 fork_session 可以精确复制文本会话前缀，但不会为复制的文件编辑用户消息建立对应的快照 Git 标签。一次独立原生探测创建了可读消息但不可读文件快照的副本；源历史不变，副本已停止并保留供核查，没有重试或删除用户历史。插件在写入前拒绝含文件编辑的 Fork，以及需保留非空前缀的文件编辑 Rollback。只有一轮时，Rollback 创建独立空会话，无需复制快照。会话回退不回滚工作区文件。新会话身份、精确前缀和源历史均重新核对；不确定回执不自动重试，已知副本验证失败时报告其原生 ID。
 
@@ -87,15 +87,19 @@ Edit 参数清空：原生执行结束会清空 old_string / new_string。工具
 
 会话用量限制：已核对 3.4.12 的原生 token_usage 事件与持久历史；prompt_tokens / completion_tokens / total_tokens 是最后一次模型请求，prompt_tokens_total / completion_tokens_total 在实测中均为占位 0。当前只把 last_turn_total_tokens 和 max_tokens 映射成上下文占用及窗口，不把单次请求或格式化 input/output 字符串当作会话累计消耗。刷新失败不使普通 Turn 失败，活动时刷新不覆盖实时用量。
 
+本机信任边界：Companion 的随机令牌只隔离其他系统用户；同一用户的进程被视为可信，可以读取或伪造 Bridge 实例文件，与 codexhost 其他本机凭据相同。Windows 下不校验实例文件 ACL。MCP 回调中的可写目录只能是已观察工作区内的目录。
+
 ## 插件外改动
 
-Desktop 工作区缺口：同一真实 Renderer Host 请求带 cwd 时 TRAE 返回 ready 与 19 个模型，省略时返回工作区未打开。现有 Harness inspect 契约已有 cwd，但新建页可用性及模型目录请求未传已发布的草稿工作区，目录切换也只刷新命令。现已将通用 Renderer 的草稿检查绑定已有工作区事件；为 Harness inspect 增加可选 threadId，由 Host 校验 Harness 归属并使用该 Thread 的持久 cwd，不让当前草稿目录覆盖已有会话。目录切换废弃旧响应；已有会话自身的目录可用时，其控件不跟随其他草稿报错。旧 Host 明确拒绝新参数时，沿用其原来未按 Thread 定位的检查行为。没有 TRAE 专用 Renderer / Host 分支。166 项聚焦回归、4 项浏览器检查、根构建、Renderer 构建、测试类型检查、改动 ESLint / 格式与 boundaries 通过；后续真实隔离 Desktop 验收及补充修复见下。
+模型检查不依赖工作区：TRAE CN 的模型目录只取决于原生 Agent，插件检查时连接任一存活 Companion，优先选择打开了当前目录的窗口；创建、恢复和派生 Session 仍要求打开对应工作区。因此没有修改 Renderer 的草稿工作区或 Host 的 inspect 作用域。
 
-原生项目发现与手动模型：原生 RPC 安装器包装 forComposer 后会通过 hostIdForComposer 直接取得 Host，因此项目发布也必须发生在该入口；不能只在被绕过的旧方法中刷新。选定项目通过 committed 草稿的 projectId 与原生侧栏目录解析，未知 / 清除 / 不可读选择撤销旧 cwd。真实目录没有默认模型时，非空可选目录仍为 ready，模型按钮显示 Select model；不自动采用第一项或其他聊天的保存偏好，显式选择之前禁止提交，已有会话则恢复自身模型。实际 RPC 安装器回归先复现问题，再通过 123 项 / 7 文件检查；无默认模型及旧偏好回归通过 106 项 / 4 文件检查。集合有重叠，不累计。
+公共改动只有两处，均为通用行为、没有 TRAE 专用分支：Renderer 在非空模型目录没有默认项、也没有已保存的新建偏好时保持模型菜单可用，用户选择前禁止提交；Host 在模型切换后按确认的完整状态保存或清除 Thinking 提示，供 resume、Fork 与 Rollback 使用。
 
-预装清单、完整集合加载测试和搬移 Host 发行测试已加入 trae-cn。公共 API 2 扩展涉及 shared-contracts、harness-adapter、Host Runtime、Broker 及对应测试和文档；缺省兼容 API 1，无 Harness 专用公共分支。`package-lock.json` 注册 Workspace、三个公共契约依赖以及 Companion 打包 / ZIP 验证开发工具；根 `tsconfig.json` 加入该包的构建引用；`eslint.config.js` 为应用内 CommonJS 资源加入通用检查；`docs/index.md` 添加开发说明入口；`tests/release` 新增插件搬移和 VSIX 资源验证。开发工具不进入运行时 Bundle。先前独立 CLI 原型已从最终变更中撤回。
+发行接线：预装清单、完整集合加载测试和搬移 Host 发行测试已加入 trae-cn。`package-lock.json` 注册 Workspace、三个公共契约依赖以及 Companion 打包 / ZIP 验证开发工具；根 `tsconfig.json` 加入该包的构建引用；`eslint.config.js` 为应用内 CommonJS 资源加入通用检查；`docs/index.md` 添加开发说明入口；`tests/release` 新增插件搬移和 VSIX 资源验证。开发工具不进入运行时 Bundle。
 
 ## 验证记录
+
+公共改动收缩（2026-11-11）：撤回 API 2 活动恢复扩展和按工作区检查模型的 Renderer / Host 改动，运行中任务改以自主 Turn 重接；MCP 可写目录限定在工作区内，原生错误补充凭据打码；`session.ts` 拆出 `native-turn.ts` 与 `session-capabilities.ts`。typecheck（含测试类型）、lint / boundaries 与格式通过；TRAE 插件 270 项、受影响的 Renderer / desktop-control / Broker / Host 共 1897 项通过、1 项跳过。以下较早记录中依赖 API 2 的活动恢复证据（Host 集成、API 2 回归检查）不再代表当前实现；以自主 Turn 重接的真实桌面流程尚未验收。
 
 真实 Desktop UI（2026-11-04）：Windows 官方 Desktop 26.1027.3384.0 的独立副本，源代码 Host / Controller / Renderer，TRAE CN 3.4.14 / SOLO / 开发 Companion 0.1.11。在真实新建页选择 TRAE CN，读取 19 个原生对话模型，手动选择 Seed-Code 后发送，界面收到 TRAE_CN_DESKTOP_UI_OK。完全重启隔离 Desktop 后，新草稿仍要求 Select model；重新打开原 Thread，恢复同一模型与历史，再发送不含答案标记的“只复述上一次你的完整回复，不执行工具。”，界面收到同一标记。Host 保留同一个 NativeSessionRef 和两个唯一 Turn 映射；两个独立 Node 进程只读恢复的完整两轮快照 SHA-256 均为 f303aaa793f27a1b4418197337de777ca292d2f950af3d258931ee598f8784af，原首轮前缀精确不变，没有工具执行或重发。源码 Head 为 1608dc9d，其 Ubuntu / Windows / Linux ARM64 / macOS CI 全部通过，run 41781057146。证据为本地 ui-acceptance-v5.json、ui-cold-native-first.json、ui-cold-native-second.json 及界面截图，未提交本机日志 / 身份配置。日常 Desktop、当前较新 Desktop 版本、完整 MCP 审批与资源读取仍未验收。
 
@@ -148,8 +152,8 @@ MCP Head 9a19320c 的 Ubuntu / Windows / Linux ARM64 / macOS CI 全部通过，r
 | 插件加载 | 真实 Loader 加载仓库外 Bundle；独立 Node 进程导入 | 身份、资源、独立实例与关闭隔离均通过；无 Workspace 运行依赖 |
 | Companion 安装包 | 官方 vsce 打包；独立 ZIP 读取；TRAE CN 本地安装 | 身份与许可证完整，7 个 CJS 文件字节一致；实际安装版本 0.1.0 |
 | 已安装插件链路 | 已安装 Companion 的进程、扩展目录和 SHA-256；仓库外插件完成原生 Turn | 同一持久身份读到 TRAE_CN_INSTALLED_PLUGIN_OK；未作为当前 CodexHost / Renderer 验收 |
-| Host 集成 | 隔离 AppServerHost + 真实 Loader / Mapping Store，提问与审批等待时关闭，再由新 Node 进程 resume | 终态之前已持久化身份；原 Turn 恢复；唯一历史与映射；thread/read 读到真实回复，官方路径未启动；未作为用户当前 Desktop 验收 |
-| API 2 回归检查 | typecheck；lint / boundaries；185 项聚焦测试；142 项受影响 Agent / 打包测试；5 项 Loader / Broker 定向检查 | 均通过；测试集合存在重叠，不累加计数。Loader 全文件另有 3 项文件符号链接用例因本机 Windows EPERM 未通过；macOS 原生接口未验证 |
+| Host 集成 | 隔离 AppServerHost + 真实 Loader / Mapping Store，提问与审批等待时关闭，再由新 Node 进程 resume | 基于已撤回的 API 2 恢复路径，不代表当前实现；当时原 Turn 恢复、唯一历史与映射，thread/read 读到真实回复，官方路径未启动 |
+| API 2 回归检查（已撤回） | typecheck；lint / boundaries；185 项聚焦测试；142 项受影响 Agent / 打包测试；5 项 Loader / Broker 定向检查 | 针对已撤回的 API 2 路径，不代表当前实现 |
 | 文件快照回归检查 | typecheck；lint / boundaries；Adapter 全套与两个发行测试共 115 项 | 全部通过；Companion 0.1.1 资源清单、八个 CJS 字节及搬移 Bundle 均已核验；真实文件编辑使用开发窗口，未升级普通窗口的 Companion |
 | 上下文用量回归检查 | typecheck；lint / boundaries；119 项 Adapter 测试及两个发行测试；真实只读跨进程验收 | 均通过；不累计重叠测试数量。Companion 0.1.2 安装包已验证，普通窗口尚未升级 |
 | 跨平台 CI | ad21e0d9：GitHub Actions 41268028791 | Ubuntu、Windows、Linux ARM64、macOS 14 四项通过；该结果属于历史派生之前的基线，不代表 macOS 原生桌面接口已验证 |
@@ -164,4 +168,4 @@ MCP Head 9a19320c 的 Ubuntu / Windows / Linux ARM64 / macOS CI 全部通过，r
 | 预装发行与 3.4.13 执行 | 根 build:typescript；完整集合 Loader；搬移发行 Host；两进程真实会话 | 预装目录 / 启用 / 缺 Companion 诊断通过；3.4.13 两轮真实对话，冷恢复精确且上下文续聊成功；当前用户窗口仍未验收 |
 | 发行检查 | 46 项 Host Bundle / npm 检查；8 项 payload 检查；完整集合 Loader、独立插件 / VSIX 和工厂检查；typecheck、lint / boundaries | 均通过；初次两项 npm stderr 断言受到环境 UNDICI-EHPA 警告影响，关闭该警告后通过；payload 一项符号链接验证因本机 EPERM 未通过，定向检查中排除并单独记录 |
 | 扩展审批 CI | f298d2aa：GitHub Actions 41469773726 | Ubuntu、Windows、Linux ARM64、macOS 15 全部通过；预装接线之后需新 Head 的 CI |
-| Desktop / 委派 | 早期日常 Runtime 0.17.0 实测为插件 API 1；真实 Coordinator.start 使用 unattended-full-access；后续隔离源代码 Desktop 完成新建 / 手动模型 / 重启续聊 | 无人值守委派明确拒绝；本机 CLI 已更新至 0.17.1，但本 PR 的 API 2 源代码未部署到日常窗口，不能据此声称日常部署或完整委派支持 |
+| Desktop / 委派 | 真实 Coordinator.start 使用 unattended-full-access；隔离源代码 Desktop 完成新建 / 手动模型 / 重启续聊 | 无人值守委派明确拒绝；当前源码未部署到日常窗口，不能据此声称日常部署或完整委派支持 |

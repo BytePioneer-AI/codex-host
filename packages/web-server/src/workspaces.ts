@@ -364,9 +364,12 @@ export class Workspaces {
           items.push(workspace);
           byPath.set(path, workspace);
         } else if (workspace.origin !== "web") workspace.title = title;
-        else if (workspace.title === legacyProjectRootTitle(project, index, path))
-          // A Web workspace created before deduplication kept the old default
-          // title. Refresh it, but never touch a user-customized title.
+        else if (
+          workspace.title === project.name ||
+          workspace.title === legacyProjectRootTitle(project, index, path)
+        )
+          // Older builds used the project name for every root; the initial
+          // folder-title fix used basenames. Migrate either default, not custom titles.
           workspace.title = title;
       }
     }

@@ -613,25 +613,90 @@ it("workspace mirror: disambiguates conflicting project root titles", (t) => {
   );
 });
 
+it("workspace mirror: migrates legacy project names on Web roots and preserves custom titles", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-legacy-title-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const data = new DataDir(root);
+  const workspaces = new Workspaces(data, root);
+  const firstRoot = join(root, "first");
+  const extraRoot = join(root, "extra");
+  const customRoot = join(root, "custom");
+  const project = { name: "Native project", rootPaths: [firstRoot, extraRoot, customRoot] };
+  for (const path of project.rootPaths) {
+    workspaces.attachReferencedSession(`thread-${path}`, path, project.name);
+    workspaces.selectReferenceWorkspace(path);
+  }
+  const custom = workspaces.byPath(customRoot)!;
+  custom.title = "My custom title";
+  const before = structuredClone(workspaces.byPath(extraRoot)!);
+  workspaces.syncReferencedSessions([], new Map(), new Set(), [project]);
+  const migrated = workspaces.byPath(extraRoot)!;
+  assert.equal(migrated.title, "extra");
+  assert.equal(migrated.workspaceId, before.workspaceId);
+  assert.equal(migrated.createdAt, before.createdAt);
+  assert.deepEqual(migrated.sessionIds, before.sessionIds);
+  assert.equal(workspaces.byPath(firstRoot)?.title, project.name);
+  assert.equal(workspaces.byPath(customRoot)?.title, "My custom title");
+  assert.equal(new Workspaces(data, root).byPath(extraRoot)?.title, "extra");
+  const writes = t.mock.method(data, "writeJson");
+  workspaces.syncReferencedSessions([], new Map(), new Set(), [project]);
+  assert.equal(writes.mock.callCount(), 0, "the migration is idempotent");
+});
+
+it("workspace mirror: recreates deleted native roots on the next snapshot", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-recreate-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const projects = [{ name: "Native", rootPaths: [join(root, "first"), join(root, "extra")] }];
+  workspaces.syncReferencedSessions([], new Map(), new Set(), projects);
+  const extra = workspaces.byPath(projects[0]!.rootPaths[1]!)!;
+  const rpc = new RpcRegistry();
+  workspaces.register(rpc, new StreamRegistry());
+  assert.ok(
+    (
+      await rpc.dispatch("workspace/delete", {
+        args: { request: { workspaceId: extra.workspaceId } },
+      })
+    ).ok,
+  );
+  assert.equal(workspaces.byPath(extra.path), undefined);
+  workspaces.syncReferencedSessions([], new Map(), new Set(), projects);
+  const recreated = workspaces.byPath(extra.path)!;
+  assert.equal(recreated.title, "extra");
+  assert.notEqual(recreated.workspaceId, extra.workspaceId);
+});
+
 it("projectRootTitles: falls back to the full path when the basename is empty or conflicts", () => {
   const titles = projectRootTitles([
     { name: "app", rootPaths: ["/srv/app", "/"] },
     { name: "other", rootPaths: ["/a/other", "/b/dup", "/c/dup"] },
   ]);
-  assert.equal(titles.get("/srv/app"), "app");
-  assert.equal(titles.get("/"), "/", "an empty basename uses the full path");
-  assert.equal(titles.get("/a/other"), "other", "a project's first root keeps the project name");
-  assert.equal(titles.get("/b/dup"), "/b/dup", "a conflicting folder name uses the full path");
-  assert.equal(titles.get("/c/dup"), "/c/dup");
+  assert.equal(titles.get(resolve("/srv/app")), "app");
+  assert.equal(titles.get(resolve("/")), resolve("/"), "an empty basename uses the full path");
+  assert.equal(
+    titles.get(resolve("/a/other")),
+    "other",
+    "a project's first root keeps the project name",
+  );
+  assert.equal(
+    titles.get(resolve("/b/dup")),
+    resolve("/b/dup"),
+    "a conflicting folder name uses the full path",
+  );
+  assert.equal(titles.get(resolve("/c/dup")), resolve("/c/dup"));
   const sameName = projectRootTitles([
     { name: "app", rootPaths: ["/one", "/two"] },
     { name: "app", rootPaths: ["/three"] },
   ]);
-  assert.equal(sameName.get("/one"), "/one", "duplicate project names disambiguate by path");
-  assert.equal(sameName.get("/three"), "/three");
+  assert.equal(
+    sameName.get(resolve("/one")),
+    resolve("/one"),
+    "duplicate project names disambiguate by path",
+  );
+  assert.equal(sameName.get(resolve("/three")), resolve("/three"));
   const unique = projectRootTitles([{ name: "app", rootPaths: ["/srv/app", "/srv/extra"] }]);
-  assert.equal(unique.get("/srv/app"), "app");
-  assert.equal(unique.get("/srv/extra"), "extra", "unique titles keep the folder name");
+  assert.equal(unique.get(resolve("/srv/app")), "app");
+  assert.equal(unique.get(resolve("/srv/extra")), "extra", "unique titles keep the folder name");
 });
 
 it("workspace mirror: propagates a failed save without accepting the mirror", (t) => {

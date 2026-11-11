@@ -23,6 +23,7 @@ import {
 import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
 import {
   HARNESS_BROKER_MAX_PENDING_REQUESTS,
+  HARNESS_BROKER_MAX_RESPONSE_BYTES,
   HARNESS_BROKER_PROTOCOL_VERSION,
   HARNESS_BROKER_RETIRING_ERROR_CODE,
   harnessBrokerHelloSchema,
@@ -325,13 +326,18 @@ export async function startHarnessBrokerServer(input: {
     });
 
     const send = async (frame: object): Promise<void> => {
+      const writing = writeBrokerFrame(
+        socket,
+        {
+          version: HARNESS_BROKER_PROTOCOL_VERSION,
+          generation,
+          sequence: state.outputSequence + 1,
+          ...frame,
+        },
+        HARNESS_BROKER_MAX_RESPONSE_BYTES,
+      );
       state.outputSequence += 1;
-      await writeBrokerFrame(socket, {
-        version: HARNESS_BROKER_PROTOCOL_VERSION,
-        generation,
-        sequence: state.outputSequence,
-        ...frame,
-      });
+      await writing;
     };
     const respond = async (
       request: HarnessBrokerRequest,

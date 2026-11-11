@@ -2,10 +2,15 @@ import type { Socket } from "node:net";
 
 import { HARNESS_BROKER_MAX_FRAME_BYTES } from "./protocol.js";
 
-export function writeBrokerFrame(socket: Socket, value: unknown): Promise<void> {
+export function writeBrokerFrame(
+  socket: Socket,
+  value: unknown,
+  maxBytes = HARNESS_BROKER_MAX_FRAME_BYTES,
+): Promise<void> {
   const frame = `${JSON.stringify(value)}\n`;
-  if (Buffer.byteLength(frame) > HARNESS_BROKER_MAX_FRAME_BYTES) {
-    return Promise.reject(new Error("Harness broker frame exceeds the maximum size"));
+  if (Buffer.byteLength(frame) > maxBytes) {
+    // Reject before a caller commits its sequence to the socket's write queue.
+    throw new Error("Harness broker frame exceeds the maximum size");
   }
   return new Promise((resolve, reject) => {
     socket.write(frame, (error) => (error ? reject(error) : resolve()));
@@ -16,11 +21,12 @@ export function consumeBrokerFrames(
   socket: Socket,
   onFrame: (value: unknown) => void,
   onError: (error: Error) => void,
+  maxBytes = HARNESS_BROKER_MAX_FRAME_BYTES,
 ): void {
   let buffered = Buffer.alloc(0);
   socket.on("data", (chunk: Buffer) => {
     buffered = Buffer.concat([buffered, chunk]);
-    if (buffered.length > HARNESS_BROKER_MAX_FRAME_BYTES) {
+    if (buffered.length > maxBytes) {
       onError(new Error("Harness broker frame exceeds the maximum size"));
       socket.destroy();
       return;

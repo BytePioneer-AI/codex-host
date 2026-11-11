@@ -3,6 +3,8 @@ import { harnessPluginIdSchema, type HarnessId } from "@codexhost/shared-contrac
 
 export const HARNESS_BROKER_PROTOCOL_VERSION = 1 as const;
 export const HARNESS_BROKER_MAX_FRAME_BYTES = 8 * 1024 * 1024;
+/** Full native history is carried inside a broker response before Host pagination. */
+export const HARNESS_BROKER_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 export const HARNESS_BROKER_MAX_PENDING_REQUESTS = 32;
 export const HARNESS_BROKER_REQUEST_TIMEOUT_MS = 15_000;
 export const HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE = 100;

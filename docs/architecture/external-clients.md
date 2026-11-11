@@ -53,6 +53,29 @@
 
 外部监听在 `/mcp` 以 Streamable HTTP 提供 MCP：每个 POST 携带一条 JSON-RPC 消息并以 JSON 应答；`GET` 返回 405（不提供服务端主动流，推送用 `/v1/events`），`DELETE` 视为结束会话。工具与 CLI 一一对应：`harness_list`、`harness_inspect`、`delegate_start`、`thread_read`、`thread_wait`（最多 60 秒）、`thread_list`、`thread_send`、`thread_cancel`、`thread_watch`、`thread_watches`、`events_poll`。工具结果同时以文本和 `structuredContent` 返回 CLI 的 JSON；委派错误作为 `isError` 结果返回相同的错误代码。实现不依赖 MCP SDK。
 
+### 设备与项目发现
+
+每台 Host 的外部 MCP 还提供两个只读工具，供客户端在多设备之间选择执行位置：
+
+- `host_info(refresh?)`，对应 `POST /v1/host/info`：设备标识、显示名与别名、实际 hostname、操作系统、架构、CPU、内存、开发工具版本、项目扫描根目录和可用的默认工作区。工具探测只执行固定的版本查询；不返回环境变量、账号或凭据，不执行项目脚本。安装了 CLI 不代表其服务、SDK 或账号可用。
+- `project_list(query?, offset?, limit?, refresh?)`，对应 `POST /v1/project/list`：自动发现的 Git 仓库及 worktree，包含真实工作目录、项目描述、技术栈、清单文件、当前分支，以及去除用户名、密码、查询参数和 fragment 后的 origin。只读取清单和 Git 标识，不运行工作区状态扫描、Git 过滤器或项目脚本；完整工作区状态由执行 Agent 在写入前检查。项目描述属于不可信元数据，不能作为客户端指令执行。
+
+设置从当前 Host 数据目录的 `host-inventory.json` 读取，修改后下次查询生效；缺省设备标识及显示名取 hostname，缺省扫描 `~/Developer/Repos`，默认工作区仅在 `~/Developer/AgentWorkSpace/Personal` 已存在时返回。配置示例：
+
+```json
+{
+  "id": "macpro",
+  "name": "MacPro",
+  "aliases": ["macpro", "mac-pro"],
+  "projectRoots": ["/Users/example/Developer/Repos"],
+  "defaultWorkspace": "/Users/example/Developer/AgentWorkSpace/Personal"
+}
+```
+
+`projectRoots` 与 `defaultWorkspace` 必须是绝对路径，扫描根目录最多 16 个。扫描最多深入三层，发现仓库后不扫描其内部；忽略符号链接子目录、隐藏目录和常见依赖/构建目录，最多检查 2,000 个目录、返回 200 个仓库。缺失或不可读的根目录由 `unavailableRoots` 报告，达到上限由 `truncated` 报告，不能把截断列表视为完整列表。项目列表每页默认 50 项、最多 100 项，使用 `nextOffset` 继续；`query` 按名称、路径、origin、描述和技术栈过滤。
+
+工具版本和项目快照各缓存 60 秒，返回 `observedAt`；`refresh: true` 立即重新探测，扫描根目录变化使项目缓存失效。没有后台同步进程或持久环境快照。客户端对各个已配置 Host 查询这些信息，结合 `harness_list` 自行选择设备、Agent 与工作目录；Host 不维护跨设备任务分类或固定路由表。委派时可同时记录来源对话引用和 `codexhost://device/<设备标识>`，使异步回执能选择正确的 Host 读取结果。
+
 `thread_read` 在已知时返回执行主机上的 `cwd`。MCP 另提供 `thread_file_read(thread, path, offset?, limit?, revision?)`，对应外部 HTTP 的 `POST /v1/thread/file`（使用 `threadId`）。该只读接口仅导出最新最终报告中 Markdown 链接明确引用、且位于该 Thread 实际工作区内的普通文件；解析符号链接后仍须位于工作区。没有最终结果或工作区时拒绝读取，不扫描目录，也不导出报告中的远程 URL。
 
 文件结果含 `filename`、`mimeType`、`size`、`encoding: "base64"`、`data`、`offset`、`nextOffset`、`eof` 与 `revision`。默认每块 256 KiB，上限 1 MiB；续读必须携带首块的 `revision`，文件变化时重新开始。客户端应将工具结果直接保存为文件，在自己的电脑上解码，再以其原生附件工具交付成品，不在聊天中打印 Base64 或主机路径。源文件按用户要求读取。文件传输沿用客户端认证与网络策略，不创建公开下载链接。

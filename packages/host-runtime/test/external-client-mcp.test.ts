@@ -15,6 +15,7 @@ import {
   type ExternalClientServer,
 } from "../src/external-client-server.js";
 import { ExternalClientRegistry } from "../src/external-clients.js";
+import { HostInventory } from "../src/host-inventory.js";
 
 describe("external client MCP endpoint", () => {
   let directory: string;
@@ -67,7 +68,15 @@ describe("external client MCP endpoint", () => {
     await events.append("grok-bot", [
       { type: "watch", threadId: "t0", outcome: "completed", deepLink: "codex://threads/t0" },
     ]);
-    const route = externalClientRouter({ api: api as unknown as DelegationControlApi, events });
+    const route = externalClientRouter({
+      api: api as unknown as DelegationControlApi,
+      events,
+      inventory: new HostInventory({
+        ...process.env,
+        CODEXHOST_DATA_DIR: directory,
+        HOME: directory,
+      }),
+    });
     server = await startExternalClientServer({
       port: 0,
       clients,
@@ -85,6 +94,8 @@ describe("external client MCP endpoint", () => {
     const client = await connect();
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name)).toEqual([
+      "host_info",
+      "project_list",
       "harness_list",
       "harness_inspect",
       "delegate_start",
@@ -98,6 +109,26 @@ describe("external client MCP endpoint", () => {
       "thread_watches",
       "events_poll",
     ]);
+    await client.close();
+  });
+
+  it("allows authenticated clients to discover projects and validates arguments", async () => {
+    await writeFile(
+      path.join(directory, "host-inventory.json"),
+      JSON.stringify({
+        id: "test-host",
+        projectRoots: [],
+      }),
+    );
+    const clients = new ExternalClientRegistry(path.join(directory, "clients.json"));
+    const reader = await clients.add("inventory-reader");
+    const client = await connect(`Bearer ${reader.token}`);
+    await expect(client.callTool({ name: "project_list", arguments: {} })).resolves.toMatchObject({
+      isError: false,
+      structuredContent: { deviceId: "test-host", projects: [], total: 0, nextOffset: null },
+    });
+    const invalid = await client.callTool({ name: "project_list", arguments: { limit: 101 } });
+    expect(invalid.isError).toBe(true);
     await client.close();
   });
 

@@ -12,6 +12,7 @@ import type {
   ExternalClientStreamHandler,
 } from "./external-client-server.js";
 import type { ExternalClientRegistry } from "./external-clients.js";
+import type { HostInventory } from "./host-inventory.js";
 import { readThreadResultFile } from "./thread-result-file.js";
 
 const MAX_POLL_MS = 60_000;
@@ -80,12 +81,20 @@ export function externalClientRouter(handlers: {
   api: DelegationControlApi;
   watchApi?: DelegationWatchApi;
   events?: ClientEventLog;
+  inventory?: HostInventory;
 }): ExternalClientRouter {
   return async (call, route, body) => {
     if (route === "/v1/events/poll") {
       if (!handlers.events)
         throw new DelegationControlError("INVALID_ARGUMENT", "This Runtime keeps no client events");
       return pollEvents(handlers.events, call.client, body);
+    }
+    if (route === "/v1/host/info" || route === "/v1/project/list") {
+      if (!handlers.inventory)
+        throw new DelegationControlError("UNSUPPORTED", "Host inventory is unavailable");
+      return route === "/v1/host/info"
+        ? handlers.inventory.info(body)
+        : handlers.inventory.projects(body);
     }
     if (route === "/v1/thread/file") return readThreadResultFile(handlers.api, body);
     return routeDelegationRequest(handlers, route, forClient(call.client, route, body));

@@ -28,6 +28,7 @@ import { ClientEventLog, eventRetentionDays } from "./external-client-events.js"
 import { cliCredentialsPath } from "./cli-credentials.js";
 import { externalClientMcp } from "./external-client-mcp.js";
 import { externalClientEventStream, externalClientRouter } from "./external-client-routes.js";
+import { HostInventory } from "./host-inventory.js";
 import { FileThreadRefsStore } from "./thread-refs.js";
 import {
   externalClientDescriptorPath,
@@ -246,7 +247,12 @@ async function startExternalClients(
   if (port === undefined) return undefined;
   const cliToken = `chc_${randomBytes(32).toString("base64url")}`;
   const clients = new ExternalClientRegistry(defaultExternalClientsPath(environment), cliToken);
-  const route = externalClientRouter({ api: registry, watchApi: registry, events });
+  const route = externalClientRouter({
+    api: registry,
+    watchApi: registry,
+    events,
+    inventory: new HostInventory(environment),
+  });
   return startExternalClientServer({
     port,
     clients,

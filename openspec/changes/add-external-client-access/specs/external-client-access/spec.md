@@ -6,6 +6,24 @@
 
 ## ADDED Requirements
 
+### Requirement: 客户端可依据实时设备与项目事实选择执行位置
+每台 Host 的外部 MCP SHALL 提供只读的 `host_info` 和 `project_list`。设备信息 SHALL 包含实际操作系统、架构、硬件、可查询的开发工具版本、设备标识和已存在的默认工作目录。项目发现 SHALL 仅扫描配置根目录下的 Git 仓库与 worktree，返回真实工作目录、技术栈、分支和去除凭据的 origin。Host MUST NOT 维护跨设备固定任务路由；客户端依据各个已配置 Host 的事实选择设备与 Harness。
+
+#### Scenario: 环境与项目自动刷新
+- **WHEN** 客户端查询设备信息或项目列表，快照已超过 60 秒，或显式请求 `refresh: true`
+- **THEN** Host SHALL 重新探测并返回 `observedAt`
+- **AND** 项目扫描根目录配置变更 SHALL 在下次查询生效，无需重启
+
+#### Scenario: 有界扫描与元数据读取
+- **WHEN** 客户端调用 `project_list`
+- **THEN** Host SHALL 忽略符号链接子目录、隐藏目录及常见依赖与构建目录，发现仓库后不扫描其内部
+- **AND** SHALL 返回不可用目录与扫描截断标识，并支持过滤和分页
+- **AND** MUST NOT 执行项目脚本或 Git 过滤器，MUST NOT 返回 origin 中的用户名、密码、查询参数或 fragment
+
+#### Scenario: 原设备结果读取
+- **WHEN** 客户端向所选 Host 派发任务，并将其设备标识作为 `codexhost://device/<设备标识>` 保存到任务引用
+- **THEN** 原有 Thread 引用与事件机制 SHALL 保留该引用，使客户端可以回到原执行设备读取和交付结果
+
 ### Requirement: 外部客户端由用户显式登记并可随时吊销
 系统 SHALL 提供 `codexhost client add <name>`、`client list` 与 `client remove <name>`。登记 SHALL 生成随机令牌并只在登记时输出一次；系统 MUST NOT 以可还原的形式保存令牌。名称在本机唯一，只允许小写字母、数字和连字符。删除 SHALL 立即吊销：之后携带该令牌的请求 SHALL 被拒绝，已建立的事件推送连接 SHALL 被关闭。
 

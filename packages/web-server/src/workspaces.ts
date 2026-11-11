@@ -27,6 +27,46 @@ interface WorkspaceState {
 
 const FILE = "workspaces.json";
 
+/** Titles for native project roots: the first root carries the project name,
+ * later roots fall back to their folder name (or the full path when the folder
+ * name is empty, e.g. the filesystem root). When several roots would share the
+ * same title — the project name matching another root's folder name, or two
+ * roots with identical folder names — every conflicting root falls back to its
+ * full path so the Web sidebar keeps them apart. */
+export function projectRootTitles(
+  projects: readonly { name: string; rootPaths: string[] }[],
+): Map<string, string> {
+  const entries: { path: string; title: string; firstRoot: boolean }[] = [];
+  for (const project of projects)
+    for (const [index, root] of project.rootPaths.entries()) {
+      const path = resolve(root);
+      entries.push({
+        path,
+        title: index === 0 ? project.name : basename(path) || path,
+        firstRoot: index === 0,
+      });
+    }
+  const counts = new Map<string, number>();
+  for (const entry of entries) counts.set(entry.title, (counts.get(entry.title) ?? 0) + 1);
+  const nameCounts = new Map<string, number>();
+  for (const entry of entries)
+    if (entry.firstRoot) nameCounts.set(entry.title, (nameCounts.get(entry.title) ?? 0) + 1);
+  return new Map(
+    entries.map((entry) => {
+      // A project name only conflicts with another project name; a folder name
+      // conflicts with any other root title.
+      const conflicting =
+        (entry.firstRoot ? (nameCounts.get(entry.title) ?? 0) : (counts.get(entry.title) ?? 0)) > 1;
+      return [entry.path, conflicting ? entry.path : entry.title];
+    }),
+  );
+}
+
+/** Title the pre-deduplication logic assigned to a project root. */
+function legacyProjectRootTitle(project: { name: string }, index: number, path: string): string {
+  return index === 0 ? project.name : basename(path);
+}
+
 export class Workspaces {
   private state: WorkspaceState;
   private readonly followers = new Set<StreamSink>();
@@ -302,13 +342,14 @@ export class Workspaces {
     const members = new Map<string, Set<string>>();
     const now = new Date().toISOString();
     const projectRoots = new Set<string>();
+    const rootTitles = projectRootTitles(projects);
     for (const project of projects) {
       for (const [index, root] of project.rootPaths.entries()) {
         const path = resolve(root);
         projectRoots.add(path);
         // One native project can hold several root folders; only the first root
         // carries the project name so the Web sidebar never repeats it.
-        const title = index === 0 ? project.name : basename(path);
+        const title = rootTitles.get(path) ?? (index === 0 ? project.name : basename(path) || path);
         let workspace = byPath.get(path);
         if (!workspace) {
           workspace = {
@@ -323,6 +364,10 @@ export class Workspaces {
           items.push(workspace);
           byPath.set(path, workspace);
         } else if (workspace.origin !== "web") workspace.title = title;
+        else if (workspace.title === legacyProjectRootTitle(project, index, path))
+          // A Web workspace created before deduplication kept the old default
+          // title. Refresh it, but never touch a user-customized title.
+          workspace.title = title;
       }
     }
     for (const { sessionId, cwd, title } of sessions) {

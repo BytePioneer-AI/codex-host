@@ -111,10 +111,8 @@ pub(super) fn wait_for_host_chain(
     options: &ResolvedLaunchOptions,
     timeout: Duration,
 ) -> Result<bool, Box<dyn Error>> {
-    let nodes = host_runtime_node_candidates(
-        options.node.clone(),
-        env::var_os(crate::NPM_NODE_PATH_ENV),
-    );
+    let nodes =
+        host_runtime_node_candidates(options.node.clone(), env::var_os(crate::NPM_NODE_PATH_ENV));
     wait_for_host_chain_with_nodes(desktop, options, &nodes, timeout)
 }
 
@@ -529,8 +527,10 @@ mod tests {
             renderer_extension: sleep.clone(),
             pi: None,
         };
-        let nodes =
-            host_runtime_node_candidates(options.node.clone(), Some(sleep.clone().into_os_string()));
+        let nodes = host_runtime_node_candidates(
+            options.node.clone(),
+            Some(sleep.clone().into_os_string()),
+        );
         let ready =
             wait_for_host_chain_with_nodes(&snapshot, &options, &nodes, Duration::from_secs(2))
                 .unwrap();

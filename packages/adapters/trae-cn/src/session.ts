@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
 import {
   HarnessOutputChannel,
   type HarnessSession,
@@ -29,7 +28,6 @@ import {
   type HarnessError,
 } from "@codexhost/harness-adapter";
 import {
-  nativeSessionRefSchema,
   type HarnessModelRef,
   type HarnessThinkingOptionId,
   type HarnessPermissionModeId,
@@ -46,7 +44,6 @@ import {
   confirmedThinking,
   modelThinkingOptions,
   nativeThinkingSelection,
-  type NativeThinkingSelection,
 } from "./models.js";
 import { projectHistory, TRAE_CN_ID, nativeTurnRef as confirmedNativeTurnRef } from "./history.js";
 import { LiveItems } from "./live-items.js";
@@ -58,63 +55,17 @@ import { nativePermissionId, permissionModeRef } from "./permissions.js";
 import { validateReference } from "./reference.js";
 import { BackgroundCommands } from "./background.js";
 import { hasBackgroundCommandHistory } from "./commands.js";
+import { sessionCapabilities } from "./session-capabilities.js";
+import {
+  createdNativeSessionRef,
+  nativeTurnRequest,
+  confirmNativeTurnAdmission,
+  completeNativeTurn,
+  readTerminal,
+  type ActiveTurn,
+} from "./native-turn.js";
 
-// Older Companions do not expose model preparation or history feature flags.
-// These capabilities are derived from the negotiated native bridge below.
-export const SESSION_CAPABILITIES: HarnessSessionCapabilities = {
-  configuration: {
-    selectModel: false,
-    selectThinkingOption: false,
-    selectPermissionMode: false,
-    permissionModeScope: "live",
-  },
-  history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
-  autonomousTurns: { observe: true },
-};
-
-export function sessionCapabilities(
-  inspection: BridgeInspection,
-  hasFileEdits = false,
-  turnCount = 0,
-  hasBackgroundCommands = false,
-): HarnessSessionCapabilities {
-  const fork =
-    inspection.history?.forkFromMessage === true && !hasFileEdits && !hasBackgroundCommands;
-  return {
-    ...SESSION_CAPABILITIES,
-    configuration: {
-      ...SESSION_CAPABILITIES.configuration,
-      selectModel: inspection.configuration?.modelSelection === "per-request",
-      selectPermissionMode: !!inspection.permissions,
-      selectThinkingOption:
-        inspection.configuration?.thinkingSelection === "per-request" &&
-        inspection.models.some((model) => !!model.thinking?.options.length),
-    },
-    history: {
-      fork,
-      forkAcrossCwd: false,
-      rollbackLastTurn:
-        inspection.history?.forkFromMessage === true &&
-        ((!hasFileEdits && !hasBackgroundCommands) || turnCount <= 1),
-    },
-  };
-}
-
-interface ActiveTurn {
-  command: TurnStartCommand;
-  model: HarnessModelRef | undefined;
-  configurationRevision: number;
-  thinking: NativeThinkingSelection | undefined;
-  thinkingOptionId: HarnessThinkingOptionId | undefined;
-  permissionModeId: string | undefined;
-  permissionRevision: number;
-  messageId: string;
-  cancelRequested: boolean;
-  admitted: boolean;
-  stopRequested: boolean;
-  items: LiveItems;
-  interactions: NativeInteractions | undefined;
-}
+export { SESSION_CAPABILITIES, sessionCapabilities } from "./session-capabilities.js";
 
 export interface SessionOptions {
   client: BridgeClient;
@@ -547,23 +498,12 @@ export class TraeCnSession implements HarnessSession {
       if (!recovering) {
         if (!this.#state.nativeRef) {
           const created = await this.options.client.call("create", { cwd: this.options.cwd });
-          if (
-            !record(created) ||
-            typeof created.sessionId !== "string" ||
-            typeof created.projectId !== "string"
-          )
-            throw new TraeError("protocolError", "Invalid native Session creation receipt");
-          const nativeRef = nativeSessionRefSchema.parse({
-            harnessId: this.harnessId,
-            nativeSessionId: created.sessionId,
-            formatVersion: 1,
-            locator: {
-              applicationRoot: this.options.inspection.application.root,
-              projectId: created.projectId,
-              cwd: this.options.cwd,
-              agentType: this.options.inspection.agentType,
-            },
-          });
+          const nativeRef = createdNativeSessionRef(
+            created,
+            this.harnessId,
+            this.options.inspection,
+            this.options.cwd,
+          );
           this.#setState({ ...this.#state, nativeRef });
         }
         if (this.#closed) return;
@@ -579,28 +519,11 @@ export class TraeCnSession implements HarnessSession {
           });
           return;
         }
-        const model = turn.model;
-        if (!model) throw new TraeError("configurationRequired", "Choose a TRAE CN model");
-        const receipt = await this.options.client.call("start", {
-          sessionId: nativeRef.nativeSessionId,
-          messageId: turn.messageId,
-          modelId: nativeModelId(this.options.inspection, model),
-          ...(turn.thinking ? { thinking: turn.thinking } : {}),
-          ...(turn.permissionModeId ? { permissionModeId: turn.permissionModeId } : {}),
-          text: turn.command.input.map((part) => part.text).join("\n"),
-        });
-        if (
-          !record(receipt) ||
-          receipt.accepted !== true ||
-          receipt.messageId !== turn.messageId ||
-          receipt.fromAppend === true ||
-          (turn.permissionModeId !== undefined &&
-            receipt.permissionModeId !== turn.permissionModeId)
-        )
-          throw new TraeError(
-            "protocolError",
-            "Native Turn admission is uncertain; read history before retrying",
-          );
+        const receipt = await this.options.client.call(
+          "start",
+          nativeTurnRequest(this.options.inspection, nativeRef.nativeSessionId, turn),
+        );
+        confirmNativeTurnAdmission(receipt, turn.messageId, turn.permissionModeId);
         turn.admitted = true;
         if (turn.permissionModeId && turn.permissionRevision === this.#permissionRevision) {
           this.#selectedPermission = permissionModeRef(turn.permissionModeId);
@@ -628,18 +551,12 @@ export class TraeCnSession implements HarnessSession {
         if (!terminal && (!turn.cancelRequested || !turn.stopRequested)) throw error;
       }
       if (this.#closed) return;
-      const completed = await this.#readTerminal(turn.messageId);
-      if (completed.outcome.status === "unknown")
-        throw new TraeError("unavailable", "Native history has not confirmed completion");
-      turn.items.acceptHistory(completed.items);
-      turn.items.settle(completed.outcome);
-      turn.interactions?.close(completed.outcome.status === "cancelled" ? "cancelled" : "expired");
-      this.#emit({
-        type: "turn.completed",
-        turnId: turn.command.turnId,
-        nativeTurnRef: completed.nativeTurnRef,
-        outcome: completed.outcome,
-      });
+      const completed = await readTerminal(
+        turn.messageId,
+        () => this.#closed,
+        () => this.#snapshot(true),
+      );
+      completeNativeTurn(turn, completed, (event) => this.#emit(event));
       this.#background.activate(turn.command.turnId);
     } catch (error) {
       if (!this.#closed) {
@@ -669,27 +586,6 @@ export class TraeCnSession implements HarnessSession {
       this.#detach = undefined;
       if (this.#active === turn) this.#active = undefined;
     }
-  }
-
-  async #readTerminal(messageId: string): Promise<HostTurnSnapshot> {
-    const deadline = Date.now() + 5000;
-    while (!this.#closed) {
-      const snapshot = await this.#snapshot(true);
-      if (!snapshot.ok) throw new TraeError(snapshot.error.code, snapshot.error.message);
-      const turn = snapshot.value.turns.find(
-        (entry) => entry.nativeTurnRef.nativeTurnKey === messageId,
-      );
-      if (turn && turn.outcome.status !== "unknown") return turn;
-      if (Date.now() >= deadline)
-        throw new TraeError(
-          "unavailable",
-          "Native completion history is still pending; read the same Session before retrying",
-        );
-      // SSE EOF can precede the native history commit. Re-read this identity;
-      // never restart the task or treat the visibility delay as native failure.
-      await delay(100);
-    }
-    throw new TraeError("invalidState", "TRAE CN Session closed during history confirmation");
   }
 
   #observe(turn: ActiveTurn, sessionId: string): Promise<void> {

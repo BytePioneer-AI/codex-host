@@ -485,7 +485,7 @@ mod tests {
         let not_ready = wait_for_host_chain_with_nodes(
             &snapshot,
             &options,
-            &[options.node.clone()],
+            std::slice::from_ref(&options.node),
             Duration::from_millis(200),
         )
         .unwrap();

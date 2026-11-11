@@ -171,9 +171,15 @@ export class ClaudeSessionImportIndex {
   async #scan(signal: AbortSignal): Promise<HarnessSessionImportSource[]> {
     const next = new Map<string, { fingerprint: Stats; source: HarnessSessionImportSource }>();
     const identities = new Set<string>();
+    const ambiguous = new Set<string>();
     const sources: HarnessSessionImportSource[] = [];
     for (const file of await sessionFiles(this.#directory, signal)) {
       signal.throwIfAborted();
+      // Resolve uses filenames to reject ambiguous identities, even if one copy is invalid.
+      // Keep listing consistent with that check without blocking unrelated Sessions.
+      const nativeSessionId = path.basename(file, ".jsonl");
+      if (identities.has(nativeSessionId)) ambiguous.add(nativeSessionId);
+      identities.add(nativeSessionId);
       try {
         const fingerprint = await stat(file);
         const cached = this.#cache.get(file);
@@ -183,10 +189,6 @@ export class ClaudeSessionImportIndex {
             : await readCandidate(file, signal);
         if (!source) continue;
         if (!(await stat(source.candidate.cwd)).isDirectory()) continue;
-        if (identities.has(source.candidate.nativeSessionId)) {
-          throw new Error("Claude Code Session identity is ambiguous across files");
-        }
-        identities.add(source.candidate.nativeSessionId);
         next.set(file, { fingerprint, source });
         sources.push(source);
       } catch (error) {
@@ -197,7 +199,9 @@ export class ClaudeSessionImportIndex {
     }
     this.#cache = next;
     return structuredClone(
-      sources.sort((left, right) => right.candidate.updatedAt - left.candidate.updatedAt),
+      sources
+        .filter((source) => !ambiguous.has(source.candidate.nativeSessionId))
+        .sort((left, right) => right.candidate.updatedAt - left.candidate.updatedAt),
     );
   }
 

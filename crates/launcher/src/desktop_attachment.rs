@@ -439,7 +439,8 @@ mod tests {
             ),
             vec![default_node.clone()]
         );
-        let npm_node = PathBuf::from("/bin/sh");
+        let npm_node = env::temp_dir().join("codexhost-npm-node-fixture");
+        std::fs::write(&npm_node, b"node").expect("write npm node fixture");
         assert_eq!(
             host_runtime_node_candidates(
                 default_node.clone(),
@@ -447,6 +448,7 @@ mod tests {
             ),
             vec![default_node, npm_node]
         );
+        let _ = std::fs::remove_file(&npm_node);
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -524,7 +526,7 @@ mod tests {
             node: Path::new("/bin/cat").to_path_buf(),
             host_runtime: sleep.clone(),
             desktop_controller: sleep.clone(),
-            renderer_extension: sleep,
+            renderer_extension: sleep.clone(),
             pi: None,
         };
         let nodes =

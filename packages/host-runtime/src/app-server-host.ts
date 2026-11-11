@@ -1,4 +1,9 @@
 import {
+  SHARED_DELEGATION_METHOD,
+  sharedDelegationRegistration,
+  dispatchSharedDelegation,
+} from "./shared-delegation.js";
+import {
   THREAD_QUESTION_RESPOND_METHOD,
   threadQuestionsListParamsSchema,
   threadQuestionRespondParamsSchema,
@@ -657,6 +662,7 @@ export class AppServerHost {
   #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
   #delegationCoordinator: HarnessDelegationCoordinator;
   #sessionImportRequests: SessionImportRequests | undefined;
+  readonly #delegationApi: DelegationControlRegistration;
   #unregisterDelegationApi: (() => void) | undefined;
   #unsubscribeAccountState: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
@@ -908,42 +914,47 @@ export class AppServerHost {
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
       externalThreadBusy: (thread) => this.#externalThreadBusy(thread),
     });
+    options.sharedThreads?.setLocalOwnershipProbe((threadId) => this.#hasLocalThread(threadId));
     const maintenanceOperation = <T>(run: () => Promise<T>): Promise<T> =>
       options.runtimeMaintenance ? options.runtimeMaintenance.operation(run) : run();
-    const unregisterDelegationApi = options.onDelegationApi?.({
-      listHarnesses: () =>
-        this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
-      inspect: (input) =>
-        this.#waitForPlugins().then(() => this.#delegationCoordinator.inspect(input)),
-      start: (input) =>
-        maintenanceOperation(async () => {
-          if (options.sharedDelegation && input.harnessId !== "codex") {
-            const active = [...this.#activeOfficialTurns.keys()];
-            const parentThreadId =
-              input.parentThreadId ?? (active.length === 1 ? active[0] : undefined);
-            return options.sharedDelegation.start({
-              ...input,
-              ...(parentThreadId ? { parentThreadId } : {}),
-            });
-          }
-          return this.#waitForPlugins().then(() => this.#delegationCoordinator.start(input));
-        }),
-      send: (input) =>
-        maintenanceOperation(() =>
-          this.#waitForPlugins().then(() => this.#delegationCoordinator.send(input)),
-        ),
-      cancel: (input) =>
-        this.#waitForPlugins().then(() => this.#delegationCoordinator.cancel(input)),
-      read: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.read(input)),
-      wait: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.wait(input)),
-      list: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.list(input)),
-      canHandleStart: (input) => this.#canHandleDelegationStart(input),
-      ownsThread: (threadId) => this.#ownsDelegationThread(threadId),
-      executionHostId: (threadId) => {
-        const thread = this.#externalRuntime.get(threadId);
-        return thread ? this.#executionHosts.get(thread) : undefined;
+    this.#delegationApi = sharedDelegationRegistration(
+      {
+        listHarnesses: () =>
+          this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
+        inspect: (input) =>
+          this.#waitForPlugins().then(() => this.#delegationCoordinator.inspect(input)),
+        start: (input) =>
+          maintenanceOperation(async () => {
+            if (options.sharedDelegation && input.harnessId !== "codex") {
+              const active = [...this.#activeOfficialTurns.keys()];
+              const parentThreadId =
+                input.parentThreadId ?? (active.length === 1 ? active[0] : undefined);
+              return options.sharedDelegation.start({
+                ...input,
+                ...(parentThreadId ? { parentThreadId } : {}),
+              });
+            }
+            return this.#waitForPlugins().then(() => this.#delegationCoordinator.start(input));
+          }),
+        send: (input) =>
+          maintenanceOperation(() =>
+            this.#waitForPlugins().then(() => this.#delegationCoordinator.send(input)),
+          ),
+        cancel: (input) =>
+          this.#waitForPlugins().then(() => this.#delegationCoordinator.cancel(input)),
+        read: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.read(input)),
+        wait: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.wait(input)),
+        list: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.list(input)),
+        canHandleStart: (input) => this.#canHandleDelegationStart(input),
+        ownsThread: (threadId) => this.#ownsDelegationThread(threadId),
+        executionHostId: (threadId) => {
+          const thread = this.#externalRuntime.get(threadId);
+          return thread ? this.#executionHosts.get(thread) : undefined;
+        },
       },
-    });
+      options.externalOnly ? options.sharedThreads : undefined,
+    );
+    const unregisterDelegationApi = options.onDelegationApi?.(this.#delegationApi);
     this.#unregisterDelegationApi =
       typeof unregisterDelegationApi === "function" ? unregisterDelegationApi : undefined;
     this.#turnProjection = new ExternalTurnProjection({
@@ -1125,7 +1136,9 @@ export class AppServerHost {
     const plugins = await loadHarnessPlugins({
       roots: this.#options.pluginRoots,
       scope: "external",
-      sessionPlugins: this.#options.sharedThreads?.options.delegateCreates !== true,
+      sessionPlugins:
+        this.#options.externalOnly === true ||
+        this.#options.sharedThreads?.options.delegateCreates !== true,
       onUsageAdaptersLoaded: (adapters) => {
         if (!this.#pluginLoadAbort.signal.aborted) this.#usageOnlyAdapters = [...adapters.values()];
         usageReady();
@@ -1188,7 +1201,10 @@ export class AppServerHost {
           this.#displaySettings.close();
           this.#diagnose(error);
         });
-      if (this.#options.sharedThreads?.options.delegateCreates !== true) {
+      if (
+        this.#options.externalOnly ||
+        this.#options.sharedThreads?.options.delegateCreates !== true
+      ) {
         const apply = async () => {
           const snapshot = await this.#preferences.get();
           this.#applyHarnessPreferences(snapshot);
@@ -1568,6 +1584,26 @@ export class AppServerHost {
     origin: HostRequestOrigin,
   ): Promise<void> {
     if (this.#closeRequested) return;
+    // Desktop's extension create wraps the ordinary thread/start parameters.
+    // Only unwrap an explicit external carrier; native extensions stay byte-transparent.
+    if (
+      request.method === "thread/start" &&
+      isRecord(request.params) &&
+      isRecord(request.params.request)
+    ) {
+      const nested: JsonRpcRequest = {
+        id: request.id,
+        method: request.method,
+        params: request.params.request,
+      };
+      try {
+        const route = decodeCreateRoute(nested);
+        if (route && route.harnessId !== "codex") request = nested;
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+        return;
+      }
+    }
     if (
       request.method === RUNTIME_STATUS_METHOD ||
       request.method === REMOTE_UPDATE_METHOD ||
@@ -1593,6 +1629,11 @@ export class AppServerHost {
       await this.#writer.json(
         rpcError(request, -32090, "Remote service is updating; reconnect shortly"),
       );
+      return;
+    }
+    if (this.#options.externalOnly && request.method === SHARED_DELEGATION_METHOD) {
+      const result = await dispatchSharedDelegation(this.#delegationApi, requestObject(request));
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;
     }
     if (request.method === DELEGATION_READ_METHOD) {
@@ -1999,6 +2040,19 @@ export class AppServerHost {
     return externalActive || this.#activeOfficialTurns.size > 0;
   }
 
+  async #hasLocalThread(threadId: string): Promise<boolean> {
+    if (this.#externalRuntime.get(threadId)) return true;
+    const parsed = hostThreadIdSchema.safeParse(threadId);
+    if (parsed.success && (await this.#repository.find(parsed.data)) !== null) return true;
+    try {
+      const reply = await this.#requestOfficial("thread/read", { threadId, includeTurns: false });
+      const thread = isRecord(reply.result) ? reply.result.thread : undefined;
+      return isRecord(thread) && thread.id === threadId;
+    } catch {
+      return false;
+    }
+  }
+
   async #ownsDelegationThread(threadId: string): Promise<boolean> {
     if (await this.#options.sharedDelegation?.ownsThread(threadId)) return false;
     if (
@@ -2198,7 +2252,7 @@ export class AppServerHost {
         }
       }
     }
-    const started = await this.#officialRuntime.request("thread/start", {
+    const started = await this.#requestOfficial("thread/start", {
       cwd: input.cwd,
       ...nativeSelection,
       approvalPolicy: "never",

@@ -12,11 +12,34 @@ import {
   HARNESS_PREFERENCES_PATCH_METHOD,
 } from "@codexhost/shared-contracts";
 import { ChSessions } from "../src/ch-sessions.ts";
+import { draftPermissionMode } from "../src/draft-configuration.ts";
 import { WebHarnessPreferences } from "../src/harness-preferences.ts";
 import { DataDir } from "../src/store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { FakeChHost } from "./support/ch-host.ts";
+
+const permissionInspection = {
+  status: "ready",
+  permissionModes: {
+    modes: [{ id: "read-only" }, { id: "workspace-write" }],
+    defaultModeId: "read-only",
+  },
+};
+
+it("leaves Codex drafts on Codex settings until the user selects a profile", () => {
+  assert.equal(draftPermissionMode("codex", permissionInspection), undefined);
+  assert.equal(
+    draftPermissionMode("codex", permissionInspection, "workspace-write"),
+    "workspace-write",
+  );
+  assert.equal(draftPermissionMode("codex", permissionInspection, "removed-mode"), undefined);
+});
+
+it("keeps Adapter catalog defaults for external Harness drafts", () => {
+  assert.equal(draftPermissionMode("fake", permissionInspection), "read-only");
+  assert.equal(draftPermissionMode("fake", permissionInspection, "removed-mode"), "read-only");
+});
 
 function setup(t: TestContext, preferencesAvailable = true) {
   const root = mkdtempSync(join(tmpdir(), "ch-permissions-"));

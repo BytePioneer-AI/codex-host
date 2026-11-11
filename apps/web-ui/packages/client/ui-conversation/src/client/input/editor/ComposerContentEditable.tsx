@@ -9,6 +9,7 @@
 import { useLayoutEffect, useRef } from "react";
 import type { HTMLAttributes, ReactNode } from "react";
 import type { LexicalEditor } from "lexical";
+import { shouldAutoFocusTextInput } from "@deepseek-ai/dsh-client-ui-primitives";
 
 /** Host props: the editor binding plus the div passthroughs the bar owns. */
 export interface ComposerContentEditableProps extends HTMLAttributes<HTMLDivElement> {
@@ -31,7 +32,14 @@ export function ComposerContentEditable({
   const ref = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const el = ref.current;
-    if (editor === null || el === null) return;
+    if (el === null) return;
+    if (!shouldAutoFocusTextInput()) {
+      // Neither retained DOM focus nor Lexical's restored selection may raise the mobile keyboard.
+      if (el.ownerDocument.activeElement === el) el.blur();
+      // The editability effect below enables typing after the root is bound.
+      editor?.setEditable(false);
+    }
+    if (editor === null) return;
     editor.setRootElement(el);
     return () => {
       editor.setRootElement(null);

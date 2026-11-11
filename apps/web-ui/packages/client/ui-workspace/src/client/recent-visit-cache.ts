@@ -1,4 +1,4 @@
-/** Origin-local visit hints, never a title/history cache or proof of Host ownership. */
+/** Origin-local open-tab identities, never a title/history cache or proof of Host ownership. */
 import type { SessionTarget } from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionId } from "@deepseek-ai/dsh-session/types";
 
@@ -8,9 +8,11 @@ export interface RecentVisit {
   readonly lastVisitedAt: number;
 }
 
-export const OTHER_VISIT_LIMIT = 6;
-export const VISIT_MAX_AGE_MS = 30 * 60 * 1000;
-const CACHE_KEY = "codexhost.web.recent-visits.v1:local";
+const CACHE_KEY = "codexhost.web.session-tabs.v2:local";
+const PREVIOUS_CACHE_KEY = "codexhost.web.session-tabs.v1:local";
+const LEGACY_CACHE_KEY = "codexhost.web.recent-visits.v1:local";
+/** Corrupt or pathological payload protection, not a tab-count or eviction policy. */
+const MAX_CACHE_CHARS = 1024 * 1024;
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -43,67 +45,49 @@ function target(value: unknown, sessionId: SessionId): SessionTarget | undefined
   return { parentSessionId: parent, childSessionId: child, mode };
 }
 
-function decode(raw: string | null, now: number): readonly RecentVisit[] {
-  if (raw === null || raw.length > 32768) return [];
+function decode(raw: string | null, version: 1 | 2): readonly RecentVisit[] {
+  if (raw === null || raw.length > MAX_CACHE_CHARS) return [];
   try {
     const value: unknown = JSON.parse(raw);
     if (
       !record(value) ||
       Object.keys(value).length !== 2 ||
-      value.version !== 1 ||
-      !Array.isArray(value.entries) ||
-      value.entries.length > OTHER_VISIT_LIMIT + 1
+      value.version !== version ||
+      !Array.isArray(value.entries)
     )
       return [];
-    const visits: RecentVisit[] = [];
+    const entries: RecentVisit[] = [];
+    const seen = new Set<SessionId>();
+    const now = Date.now();
     for (const entry of value.entries) {
-      if (!record(entry) || Object.keys(entry).length !== 3) continue;
+      if (!record(entry)) continue;
+      const fields = Object.keys(entry);
+      if (version === 2 && fields.length !== 3) continue;
+      if (fields.length !== 2 && (fields.length !== 3 || !Object.hasOwn(entry, "lastVisitedAt")))
+        continue;
       const sessionId = id(entry.sessionId);
-      const lastVisitedAt = entry.lastVisitedAt;
+      if (sessionId === undefined || seen.has(sessionId)) continue;
+      // Untimed tab records receive a grace period; reading does not expire or reorder them.
+      const lastVisitedAt = Object.hasOwn(entry, "lastVisitedAt") ? entry.lastVisitedAt : now;
       if (
-        sessionId === undefined ||
         typeof lastVisitedAt !== "number" ||
         !Number.isSafeInteger(lastVisitedAt) ||
         lastVisitedAt < 0 ||
-        lastVisitedAt > now ||
-        now - lastVisitedAt >= VISIT_MAX_AGE_MS
+        lastVisitedAt > now
       )
         continue;
       const parsedTarget = target(entry.target, sessionId);
-      if (parsedTarget !== undefined)
-        visits.push({ sessionId, target: parsedTarget, lastVisitedAt });
+      if (parsedTarget === undefined) continue;
+      seen.add(sessionId);
+      entries.push({ sessionId, target: parsedTarget, lastVisitedAt });
     }
-    return newest(visits);
+    return entries;
   } catch {
     return [];
   }
 }
 
-function newest(entries: readonly RecentVisit[]): RecentVisit[] {
-  const seen = new Set<SessionId>();
-  return [...entries]
-    .sort((a, b) => b.lastVisitedAt - a.lastVisitedAt)
-    .filter((entry) => {
-      if (seen.has(entry.sessionId)) return false;
-      seen.add(entry.sessionId);
-      return true;
-    });
-}
-
-export function boundVisits(
-  entries: readonly RecentVisit[],
-  currentId?: SessionId,
-): readonly RecentVisit[] {
-  let others = 0;
-  const seen = new Set<SessionId>();
-  return entries.filter((entry) => {
-    if (seen.has(entry.sessionId)) return false;
-    seen.add(entry.sessionId);
-    return entry.sessionId === currentId || others++ < OTHER_VISIT_LIMIT;
-  });
-}
-
-/** No storage listeners: a passive old tab cannot replay its stale working set into another tab. */
+/** Passive tabs never replay their complete stale snapshot into another browser tab. */
 export class RecentVisitCache {
   private readonly enabled =
     typeof window !== "undefined" && /^https?:$/u.test(window.location.protocol);
@@ -111,43 +95,37 @@ export class RecentVisitCache {
 
   constructor(private readonly onFailure: () => void) {}
 
-  read(now = Date.now()): readonly RecentVisit[] {
+  read(): readonly RecentVisit[] {
     if (!this.enabled) return [];
     try {
-      return decode(localStorage.getItem(CACHE_KEY), now);
+      return this.latest();
     } catch {
       this.failed();
       return [];
     }
   }
 
-  /** Merge only actual visit mutations with the latest origin record, never the tab's whole stale snapshot. */
-  update(
-    visits: readonly RecentVisit[],
-    currentId?: SessionId,
-    remove?: (entry: RecentVisit) => boolean,
-  ): void {
+  /** Preserve stored order; update existing identities in place and append only explicit new opens. */
+  update(visits: readonly RecentVisit[], remove?: (entry: RecentVisit) => boolean): void {
     if (!this.enabled) return;
     try {
-      const now = Date.now();
-      const raw = localStorage.getItem(CACHE_KEY);
-      const validVisits = visits.filter(
-        (entry) => entry.lastVisitedAt <= now && now - entry.lastVisitedAt < VISIT_MAX_AGE_MS,
-      );
-      const merged = newest([...validVisits, ...decode(raw, now)]).filter(
-        (entry) => remove?.(entry) !== true,
-      );
-      // Passive expiry/invalidation must not re-cap another tab's six-plus-current set
-      // using this tab's different selection. Only an actual visit changes that cap.
-      const bounded =
-        validVisits.length === 0
-          ? merged.slice(0, OTHER_VISIT_LIMIT + 1)
-          : boundVisits(merged, currentId);
-      if (raw === null && bounded.length === 0) return;
+      const entries = this.latest().filter((entry) => remove?.(entry) !== true);
+      const positions = new Map(entries.map((entry, index) => [entry.sessionId, index]));
+      for (const entry of visits) {
+        if (remove?.(entry) === true) continue;
+        const index = positions.get(entry.sessionId);
+        if (index === undefined) {
+          positions.set(entry.sessionId, entries.length);
+          entries.push(entry);
+        } else {
+          entries[index] = entry;
+        }
+      }
       const next = JSON.stringify({
-        version: 1,
-        entries: bounded.map((entry) => ({
+        version: 2,
+        entries: entries.map((entry) => ({
           sessionId: entry.sessionId,
+          lastVisitedAt: entry.lastVisitedAt,
           target:
             typeof entry.target === "string"
               ? entry.target
@@ -156,13 +134,25 @@ export class RecentVisitCache {
                   childSessionId: entry.target.childSessionId,
                   mode: entry.target.mode,
                 },
-          lastVisitedAt: entry.lastVisitedAt,
         })),
       });
-      if (next !== raw) localStorage.setItem(CACHE_KEY, next);
+      if (next.length > MAX_CACHE_CHARS) {
+        this.failed();
+        return;
+      }
+      if (localStorage.getItem(CACHE_KEY) !== next) localStorage.setItem(CACHE_KEY, next);
+      localStorage.removeItem(PREVIOUS_CACHE_KEY);
+      localStorage.removeItem(LEGACY_CACHE_KEY);
     } catch {
       this.failed();
     }
+  }
+
+  private latest(): readonly RecentVisit[] {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (raw !== null) return decode(raw, 2);
+    const previous = localStorage.getItem(PREVIOUS_CACHE_KEY);
+    return decode(previous ?? localStorage.getItem(LEGACY_CACHE_KEY), 1);
   }
 
   private failed(): void {
@@ -171,7 +161,7 @@ export class RecentVisitCache {
     try {
       this.onFailure();
     } catch {
-      // Failure feedback must not turn an optional cache into a navigation failure.
+      // Failure feedback must not turn optional persistence into a navigation failure.
     }
   }
 }

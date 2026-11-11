@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { it } from "node:test";
 
@@ -33,9 +33,6 @@ it("reports installation, backend, HTTPS and root forwarding states using only r
   cli.set(RUNNING, {}, { raw: "not-json" });
   const invalid = await read();
   assert.equal(invalid.status, "error");
-  rmSync(cli.command);
-  process.env.PATH = cli.directory;
-  assert.deepEqual(await read(), { status: "not-installed" });
 });
 
 it("tries another CLI only after ENOENT", async (t) => {

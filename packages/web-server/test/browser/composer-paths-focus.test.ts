@@ -135,6 +135,39 @@ it(
           `${profile.name}: narrow viewport focus policy`,
         );
         if (profile.hasTouch) {
+          await page.evaluate(() => {
+            document.addEventListener("focusin", (event) => {
+              if (
+                event.target instanceof HTMLElement &&
+                event.target.matches("[data-composer-input]")
+              )
+                document.body.dataset.automaticFocusCount = String(
+                  Number(document.body.dataset.automaticFocusCount ?? 0) + 1,
+                );
+            });
+          });
+          for (const title of ["First conversation", "Second conversation"]) {
+            await input.click();
+            await page.evaluate(() => {
+              document.body.dataset.automaticFocusCount = "0";
+            });
+            // Safari touch activation can leave focus in the resident textbox.
+            await page.locator(`nav button[title="${title}"]`).dispatchEvent("click");
+            await page.getByText(`${title} answer`, { exact: true }).waitFor();
+            await page.evaluate(
+              () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+            );
+            assert.equal(
+              await input.evaluate((node) => node === document.activeElement),
+              false,
+              `${profile.name}: session tab switch must dismiss composer focus`,
+            );
+            assert.equal(
+              await page.locator("body").getAttribute("data-automatic-focus-count"),
+              "0",
+              `${profile.name}: session tab switch must not transiently focus the composer`,
+            );
+          }
           await input.click();
           // Safari touch activation need not focus the drawer button, leaving
           // the composer as the modal's previous focus destination.
@@ -144,15 +177,6 @@ it(
           await page.locator("[data-phone-drawer][data-open]").waitFor();
           await page.evaluate(() => {
             document.body.dataset.automaticFocusCount = "0";
-            document.addEventListener("focusin", (event) => {
-              if (
-                event.target instanceof HTMLElement &&
-                event.target.matches("[data-composer-input]")
-              )
-                document.body.dataset.automaticFocusCount = String(
-                  Number(document.body.dataset.automaticFocusCount) + 1,
-                );
-            });
           });
           await page.locator('[data-row-key="session:one"]').click();
           await page.getByText("First conversation answer", { exact: true }).waitFor();
@@ -172,7 +196,13 @@ it(
             "0",
             `${profile.name}: no transient focus that could raise the keyboard`,
           );
-          await page.getByRole("button", { name: "New session", exact: true }).click();
+          await input.click();
+          await page.evaluate(() => {
+            document.body.dataset.automaticFocusCount = "0";
+          });
+          await page
+            .getByRole("button", { name: "New session", exact: true })
+            .dispatchEvent("click");
           await page.getByText("What should we build today?", { exact: true }).waitFor();
           await input.waitFor();
           await page.evaluate(

@@ -277,7 +277,11 @@ pub(super) fn stop_managed(data: &Path) -> Result<bool, Box<dyn Error>> {
         return Ok(false);
     };
     codexhost_platform::terminate_process_instance(&controller, false)?;
-    crate::host_service::wait_for_shutdown(None, Some(&launcher), Duration::from_secs(10))?;
+    crate::host_service::wait_for_shutdown(
+        None,
+        Some(&(&launcher).into()),
+        Duration::from_secs(10),
+    )?;
     Ok(true)
 }
 

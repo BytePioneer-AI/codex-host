@@ -272,6 +272,12 @@ export const en = {
   "extensions.loading": "Loading extensions…",
   "extensions.loadFailed": "Could not load extensions: {message}",
   "extensions.actionFailed": "That did not work: {message}",
+  "extensions.unsupported":
+    "This Web cannot install this extension. It only supports themes, sidebar panels, and display components.",
+  "extensions.versionMismatch":
+    "This extension does not match this Web version, so it cannot be installed.",
+  "extensions.hostVersionSnapshotMissing":
+    "This Web cannot confirm whether the extension is compatible, so it cannot be installed.",
   "extensions.add": "Add extension",
   "extensions.installed": "Installed",
   "extensions.info": "About interface extensions",
@@ -692,6 +698,9 @@ export const zh: Record<ImportLocaleKey, string> = {
   "extensions.loading": "正在加载界面扩展…",
   "extensions.loadFailed": "无法加载界面扩展：{message}",
   "extensions.actionFailed": "操作失败：{message}",
+  "extensions.unsupported": "当前 Web 不支持这个扩展。这里只能安装主题、侧栏和展示组件。",
+  "extensions.versionMismatch": "这个扩展和当前 Web 版本不匹配，无法安装。",
+  "extensions.hostVersionSnapshotMissing": "当前 Web 无法确认这个扩展是否兼容，无法安装。",
   "extensions.add": "添加扩展",
   "extensions.installed": "已安装",
   "extensions.info": "界面扩展说明",

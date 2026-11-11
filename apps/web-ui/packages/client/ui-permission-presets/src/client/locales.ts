@@ -46,6 +46,8 @@ export const accessZh = {
   "codex.:read-only": "只读",
   "codex.:workspace": "工作区写入",
   "codex.:danger-full-access": "完全访问",
+  "codex.configuration": "跟随 Codex 设置",
+  "codex.configuration.description": "未选择权限档案，由 Codex 当前配置决定。",
   "native.configuration": "原生配置",
   "native.configuration.description": "使用 Harness 原生权限配置，尚未匹配到已确认的权限模式。",
   "native.atCreate": "此 Harness 仅允许在创建原生会话前选择权限模式。",
@@ -82,6 +84,9 @@ export const accessEn = {
   "codex.:read-only": "Read only",
   "codex.:workspace": "Workspace write",
   "codex.:danger-full-access": "Full access",
+  "codex.configuration": "Follow Codex settings",
+  "codex.configuration.description":
+    "No permission profile is selected; Codex applies its current configuration.",
   "native.configuration": "Native configuration",
   "native.configuration.description":
     "Using the Harness's native permissions; no confirmed permission mode matches the catalog.",

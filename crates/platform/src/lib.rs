@@ -24,12 +24,20 @@ mod independent_service;
 mod installation;
 #[cfg(target_os = "linux")]
 mod linux_installation;
+#[cfg(target_os = "macos")]
+mod macos_aqua_process;
 mod macos_native_harness_broker;
+#[cfg(target_os = "macos")]
+pub use macos_aqua_process::{
+    AQUA_SPAWN_ARGUMENT, run_aqua_spawn_helper, spawn_in_desktop_session,
+};
 #[cfg(target_os = "macos")]
 mod macos_process_observation;
 mod process;
 mod process_chain;
+mod process_identity;
 pub use independent_service::{IndependentServiceRegistration, register_independent_service};
+pub use process_identity::{ProcessIdentity, process_identity, process_instance};
 mod process_supervision;
 mod process_termination;
 mod proxy_environment;
@@ -93,7 +101,9 @@ pub use process::{
 };
 pub use process_chain::descendant_executable_pair_exists;
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
-pub use process_termination::{terminate_process_group_instance, terminate_process_instance};
+pub use process_termination::{
+    terminate_process_group_instance, terminate_process_identity, terminate_process_instance,
+};
 #[cfg(target_os = "windows")]
 pub use proxy_environment::desktop_helper_proxy_environment;
 pub use proxy_environment::proxy_environment;

@@ -154,12 +154,7 @@ self.addEventListener("push", (event) => {
   }
   event.waitUntil(
     (async () => {
-      // Skip the notification when the user is already looking at CodexHost.
-      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      const visible = windows.some(
-        (client) => client.visibilityState === "visible" && client.focused,
-      );
-      if (visible && message.kind === "turn") return;
+      // Web Push requires a visible notification even while the app is in the foreground.
       await self.registration.showNotification(message.title || "CodexHost", {
         body: message.body || "",
         tag: message.tag || undefined,

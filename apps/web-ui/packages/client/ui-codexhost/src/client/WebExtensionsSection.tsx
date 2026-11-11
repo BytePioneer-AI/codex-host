@@ -19,6 +19,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { ApiError } from "./api.ts";
 import { uiExtensionsApi } from "./ui-extensions-api.ts";
+import { formatWebExtensionError } from "./web-extension-errors.ts";
 import { InstallWebExtensionDialog } from "./InstallWebExtensionDialog.tsx";
 import { ExtensionProjectLink } from "./ExtensionProjectLink.tsx";
 import { ExtensionArtwork } from "./ExtensionArtwork.tsx";
@@ -94,7 +95,10 @@ export function WebExtensionsSection({
     } catch (cause) {
       const failure = errorView(cause);
       if (failure.kind === "non-local") setView(failure);
-      else setError(t("extensions.actionFailed", { message: failure.message }));
+      else
+        setError(
+          t("extensions.actionFailed", { message: formatWebExtensionError(failure.message, t) }),
+        );
       return false;
     } finally {
       running.current = false;
@@ -309,7 +313,9 @@ export function WebExtensionsSection({
           )}
           {selected.loadError !== undefined && (
             <p className={css.error} role="alert">
-              {t("extensions.extensionError", { message: selected.loadError })}
+              {t("extensions.extensionError", {
+                message: formatWebExtensionError(selected.loadError, t),
+              })}
             </p>
           )}
         </section>
@@ -369,7 +375,9 @@ export function WebExtensionsSection({
                   )}
                   {extension.loadError !== undefined && (
                     <p className={`${css.error} ${css.rowNotice}`} role="alert">
-                      {t("extensions.extensionError", { message: extension.loadError })}
+                      {t("extensions.extensionError", {
+                        message: formatWebExtensionError(extension.loadError, t),
+                      })}
                     </p>
                   )}
                   {extension.meta?.error !== undefined && (

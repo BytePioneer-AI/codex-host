@@ -121,8 +121,8 @@ export class PushNotifier {
     rpc.register("codexhost/pushTest", async () => {
       const sent = await this.notify({
         kind: "test",
-        title: "CodexHost",
-        body: "Notifications are working.",
+        title: "通知测试",
+        body: "这台设备可以正常接收通知。",
         tag: "codexhost-test",
       });
       return { sent };

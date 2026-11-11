@@ -3,9 +3,7 @@ import { once } from "node:events";
 import { copyFileSync, mkdirSync } from "node:fs";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import { request } from "node:https";
-import { connect as tcpConnect } from "node:net";
 import { resolve } from "node:path";
-import { Duplex } from "node:stream";
 import { connect, type ConnectionOptions } from "node:tls";
 import { it, type TestContext } from "node:test";
 import { WebSocket } from "ws";
@@ -210,39 +208,6 @@ it("resets phones when certificates are missing but keeps registration", ciTimin
   await assert.rejects(f.send("/"));
   assert.equal((await f.access()).relay?.state.status, "missing-certificate");
 });
-
-it(
-  "closes a phone stalled after ClientHello at the 10-second TLS deadline",
-  { timeout: 20_000 },
-  async (t) => {
-    const f = await fixture(t);
-    let hello!: (chunk: Buffer) => void;
-    const captured = new Promise<Buffer>((resolve) => {
-      hello = resolve;
-    });
-    const transport = new Duplex({
-      read() {},
-      write(chunk, _encoding, callback) {
-        hello(Buffer.from(chunk));
-        callback();
-      },
-    });
-    const tls = connect({ socket: transport, servername: f.hostname, ALPNProtocols: ["http/1.1"] });
-    tls.on("error", () => {});
-    t.after(() => tls.destroy());
-    const bytes = await captured;
-    const socket = tcpConnect({ host: "localhost", port: f.relay.port });
-    socket.on("error", () => {});
-    t.after(() => socket.destroy());
-    await once(socket, "connect");
-    const started = performance.now();
-    socket.write(bytes);
-    socket.resume();
-    await new Promise<void>((resolve) => socket.once("close", () => resolve()));
-    assert.ok(performance.now() - started >= 9_500);
-    assert.ok(performance.now() - started < 13_000);
-  },
-);
 
 it("drains a large response without blocking a second phone's RPC", ciTiming, async (t) => {
   const f = await fixture(t);

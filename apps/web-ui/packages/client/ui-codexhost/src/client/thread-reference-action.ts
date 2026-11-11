@@ -11,17 +11,13 @@ import {
   threadReferenceOf,
 } from "@deepseek-ai/dsh-client-ui-conversation/thread-reference";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
-import { supportsThreadReferences } from "./thread-reference-discovery.ts";
+import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 
 export function registerThreadReferenceAction(ctx: Context): void {
   const t = ctx.locale.bind("codexhostImport");
   const current = () => {
     if (ctx.layout.panelInfo.getSnapshot().activePanelId !== null) return;
-    const list = ctx.sessions.list.getSnapshot();
-    const ids = list.ids.filter(
-      (id) => list.byId[id]?.id === id && (list.byId[id]?.retainedBy.mainView ?? 0) > 0,
-    );
-    return ids.length === 1 ? ids[0] : undefined;
+    return ctx.uiSession.adapter.current.getSnapshot().key as SessionId | undefined;
   };
   const prepareDraftReference = (sourceId: SessionId): SessionDraftReference | undefined => {
     const targetId = current();
@@ -32,17 +28,15 @@ export function registerThreadReferenceAction(ctx: Context): void {
       const list = ctx.sessions.list.getSnapshot();
       const row = list.byId[sourceId];
       if (
-        !list.ids.includes(sourceId) ||
         row === undefined ||
         row.id !== sourceId ||
         ctx.sessions.binding(sourceId)?.session.getSnapshot().removed === true ||
-        ctx.sessions.subagentAddress(sourceId) !== undefined ||
         ctx.workspaces.list.getSnapshot().archivedSessionIds.includes(sourceId)
       )
         return;
       return threadReferenceOf(row);
     };
-    if (reference() === undefined || !supportsThreadReferences(ctx, targetId)) return;
+    if (reference() === undefined) return;
     const insertion = ctx.conversation.input.captureReferenceInsertion(binding);
     if (insertion === undefined) return;
     const input = ctx.conversation.input.for(binding.ctx);
@@ -51,15 +45,12 @@ export function registerThreadReferenceAction(ctx: Context): void {
       if (
         current() !== targetId ||
         ctx.sessions.binding(targetId) !== binding ||
-        !supportsThreadReferences(ctx, targetId) ||
         ctx.workspaces.list.getSnapshot().archivedSessionIds.includes(targetId) ||
-        reference() === undefined ||
-        !insertion.getSnapshot()
+        reference() === undefined
       )
         expired = true;
-      return !expired;
+      return !expired && insertion.getSnapshot();
     };
-    if (!available()) return;
     return {
       getSnapshot: available,
       subscribe: (listener) => {
@@ -70,6 +61,7 @@ export function registerThreadReferenceAction(ctx: Context): void {
         };
         const off = [
           ctx.sessions.list.subscribe(changed),
+          ctx.uiSession.adapter.current.subscribe(changed),
           ctx.workspaces.list.subscribe(changed),
           ctx.layout.panelInfo.subscribe(changed),
           insertion.subscribe(changed),

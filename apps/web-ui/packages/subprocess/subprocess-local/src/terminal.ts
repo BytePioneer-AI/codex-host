@@ -14,6 +14,7 @@ import type {
 import type { BoundProcessOwner } from "./managed-owner.ts";
 import type { ProcessIdentity, ProcessInspector, ProcessSnapshot } from "./process-inspector.ts";
 import type { ShellActivity } from "./shell-activity.ts";
+import { disposeWindowsPtyTransport } from "./windows-pty-transport.ts";
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -456,6 +457,8 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
       await this.waitForWindowsShellExit();
     }
     if (!shellGone()) throw new Error(`terminal cleanup failed; surviving pid: ${this.pid}`);
+    // Process termination and transport disposal are separate ownership checks.
+    disposeWindowsPtyTransport(this.terminal);
   }
 
   private async waitForWindowsShellExit(): Promise<void> {
@@ -472,8 +475,16 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
       const deadline = Date.now() + 5000;
       while (this.terminal.pid <= 0 && !this.exited && Date.now() < deadline) await delay(10);
       this.captureProcessIdentity();
-      if (this.processId === 0 && !this.exited)
+      if (this.processId === 0 && !this.exited) {
+        try {
+          // Queue cancellation even if ConPTY finishes starting after our budget.
+          // Retain observation and retryability until exit is actually confirmed.
+          disposeWindowsPtyTransport(this.terminal);
+        } catch (_startupCancellationUnavailable) {
+          // Cleanup still reports failure rather than claiming the process is gone.
+        }
         throw new Error("terminal cleanup failed; ConPTY process is not ready");
+      }
     }
     if (this.managedOwner !== undefined) {
       try {

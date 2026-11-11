@@ -49,6 +49,13 @@ export async function connectSharedThreads(
 /** A GUI keeps its native Codex connection and forwards only shared external Threads. */
 export class SharedThreadBridge {
   readonly #known = new Set<string>();
+  readonly #localKnown = new Set<string>();
+  #localProbe: ((threadId: string) => Promise<boolean>) | undefined;
+
+  setLocalOwnershipProbe(probe: (threadId: string) => Promise<boolean>): void {
+    this.#localProbe = probe;
+  }
+
   #peer: SharedThreadPeer | null = null;
   #connecting: Promise<SharedThreadPeer | null> | null = null;
   #closed = false;
@@ -118,26 +125,33 @@ export class SharedThreadBridge {
   }
 
   async ownership(threadIds: string[]): Promise<Map<string, string>> {
-    const peer = await this.#connect().catch((error: unknown) => {
-      if (this.options.delegateCreates || threadIds.some((id) => this.#known.has(id))) throw error;
+    if (threadIds.every((id) => this.#localKnown.has(id) && !this.#known.has(id))) return new Map();
+    try {
+      const peer = await this.#connect();
+      if (!peer) throw new Error("Shared Thread Host is disconnected");
+      const response = await peer.request("codexhost/thread/ownership/list", { threadIds });
+      const result = threadOwnershipListResultSchema.parse(response.result);
+      const owners = new Map<string, string>();
+      for (const thread of result.threads) {
+        if (thread.owner === "external") {
+          owners.set(thread.threadId, thread.harnessId);
+          this.#known.add(thread.threadId);
+        }
+      }
+      return owners;
+    } catch (error) {
+      if (threadIds.some((id) => this.#known.has(id))) throw error;
+      // A failed remote lookup is not proof of native ownership. Only an
+      // authoritative local store/native read can admit this fallback.
+      const probe = this.#localProbe;
+      if (probe && (await Promise.all(threadIds.map((id) => probe(id)))).every(Boolean)) {
+        for (const id of threadIds) this.#localKnown.add(id);
+        return new Map();
+      }
+      if (this.options.delegateCreates) throw error;
       this.options.diagnose(error);
-      return null;
-    });
-    if (!peer) {
-      if (threadIds.some((id) => this.#known.has(id)))
-        throw new Error("Shared Thread Host is disconnected");
       return new Map();
     }
-    const response = await peer.request("codexhost/thread/ownership/list", { threadIds });
-    const result = threadOwnershipListResultSchema.parse(response.result);
-    const owners = new Map<string, string>();
-    for (const thread of result.threads) {
-      if (thread.owner === "external") {
-        owners.set(thread.threadId, thread.harnessId);
-        this.#known.add(thread.threadId);
-      }
-    }
-    return owners;
   }
 
   handlesControl(method: string): boolean {
@@ -147,6 +161,12 @@ export class SharedThreadBridge {
         (value) => value === method,
       )
     );
+  }
+
+  async request(method: string, params: JsonObject): Promise<JsonObject> {
+    const peer = await this.#connect();
+    if (!peer) throw new Error("Shared Thread Host is disconnected");
+    return peer.request(method, params);
   }
 
   async route(request: JsonRpcRequest): Promise<JsonObject | null> {
@@ -193,20 +213,30 @@ export class SharedThreadBridge {
   }
 
   async list(params: JsonObject): Promise<JsonObject[]> {
-    const peer = await this.#connect();
-    return peer
-      ? this.#rows(
-          peer,
-          params.sortKey === "section_position" ? { ...params, sortKey: "updated_at" } : params,
-        )
-      : [];
+    try {
+      const peer = await this.#connect();
+      return peer
+        ? await this.#rows(
+            peer,
+            params.sortKey === "section_position" ? { ...params, sortKey: "updated_at" } : params,
+          )
+        : [];
+    } catch (error) {
+      this.options.diagnose(error);
+      return [];
+    }
   }
 
   async placements(): Promise<StoredSectionPlacementV1[]> {
-    const peer = await this.#connect();
-    if (!peer) return [];
-    const reply = await peer.request("codexhost/shared-threads/placements", {});
-    return storedSectionPlacementV1Schema.array().parse(reply.result);
+    try {
+      const peer = await this.#connect();
+      if (!peer) return [];
+      const reply = await peer.request("codexhost/shared-threads/placements", {});
+      return storedSectionPlacementV1Schema.array().parse(reply.result);
+    } catch (error) {
+      this.options.diagnose(error);
+      return [];
+    }
   }
 
   async respond(message: unknown): Promise<boolean> {

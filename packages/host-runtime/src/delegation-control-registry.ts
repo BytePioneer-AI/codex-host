@@ -243,18 +243,16 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async #list(input: ThreadListInput) {
-    if (
-      (input.parentThreadId || this.#harnessCatalog) &&
-      input.cursor &&
-      isMergedListCursor(input.cursor)
-    ) {
+    // Parent list owners validate their own source-bound continuation, including
+    // merged cursors when SSH combines legacy and shared children.
+    if (input.parentThreadId) {
+      return (await this.#registrationForThread(input.parentThreadId)).list(input);
+    }
+    if (this.#harnessCatalog && input.cursor && isMergedListCursor(input.cursor)) {
       throw new DelegationControlError(
         "INVALID_ARGUMENT",
         "List cursor does not match the current Thread list source",
       );
-    }
-    if (input.parentThreadId) {
-      return (await this.#registrationForThread(input.parentThreadId)).list(input);
     }
     // Shared-backend catalogs see all native and external Threads. Attached
     // clients are not independent list sources.

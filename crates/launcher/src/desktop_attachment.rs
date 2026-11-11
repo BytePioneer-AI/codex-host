@@ -444,7 +444,7 @@ mod tests {
                 default_node.clone(),
                 Some(npm_node.clone().into_os_string())
             ),
-            vec![default_node, npm_node]
+            vec![default_node, npm_node.clone()]
         );
         let _ = std::fs::remove_file(&npm_node);
     }

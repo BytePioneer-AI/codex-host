@@ -11,6 +11,70 @@ import { join } from "node:path";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
 
+it("keeps remote Harness identity in sidebar summaries and after opening metadata-only history", async (t) => {
+  const identity = { id: "claude-code", name: "Claude Code" };
+  const rows = ["external", "native"].map((id) => ({
+    id,
+    cwd: "/remote",
+    name: id,
+    modelProvider: id === "external" ? "codexhost" : "custom",
+    createdAt: 1,
+    updatedAt: 2,
+    status: { type: "idle" },
+    turns: [],
+  }));
+  const events = new EventHub("icons"),
+    rpc = new RpcRegistry();
+  rpc.register("session/list", () => ({ items: [] }));
+  rpc.register("session/projections", () => {
+    throw Error("Must not route locally");
+  });
+  const remote = new RemoteSessions(events, async (op) => {
+    if (op.kind === "hosts") return [{ hostId: "remote-control:a", online: true }];
+    if (op.kind === "list")
+      return {
+        data: rows.map((row) =>
+          row.id === "external" ? { ...row, harnessIdentity: identity } : row,
+        ),
+        nextCursor: null,
+      };
+    if (op.kind === "read")
+      return {
+        result: { thread: rows.find((row) => row.id === op.threadId) },
+        epoch: "epoch",
+        requests: [],
+      };
+    throw Error("No model sends or mutations are expected");
+  });
+  t.after(() => remote.close());
+  remote.install(rpc, new StreamRegistry());
+  const call = (method: string, request: object = {}) =>
+    rpc.dispatch(method, { args: { request } });
+  await remote.refresh();
+  const result = await call("session/list");
+  assert.ok(result.ok);
+  const items = (
+    result.value as {
+      items: Array<{ sessionId: string; projections: { values: Record<string, unknown> } }>;
+    }
+  ).items;
+  const id = remoteSessionId("remote-control:a", "external");
+  assert.deepEqual(
+    items.find((row) => row.sessionId === id)?.projections.values.harnessIdentity,
+    identity,
+  );
+  assert.deepEqual(items.find((row) => row.sessionId !== id)?.projections.values.harnessIdentity, {
+    id: "codex",
+    name: "Codex",
+  });
+  const opened = await call("session/projections", { sessionId: id });
+  assert.ok(opened.ok);
+  assert.deepEqual(
+    (opened.value as { values: Record<string, unknown> }).values.harnessIdentity,
+    identity,
+  );
+});
+
 it("archives and undoes through workspace RPCs without losing local archives or other hosts", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "remote-archive-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

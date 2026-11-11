@@ -10,7 +10,7 @@ function fixture() {
     { id: 7, method: "item/commandExecution/requestApproval", params: { threadId: "same" } },
   ];
   const manager = () => ({
-    sendRequest: vi.fn(async (method: string) =>
+    sendRequest: vi.fn(async (method: string): Promise<unknown> =>
       method === "thread/read" ? { thread: { id: "same" } } : {},
     ),
     getConversation: () => ({ requests }),
@@ -40,6 +40,57 @@ function fixture() {
   return { target, routes, read, requests, route };
 }
 describe("Desktop existing remote session boundary", () => {
+  it("carries authoritative external Harness identity without reading or resuming history", async () => {
+    const f = fixture();
+    const manager = f.route("remote-ssh-discovered:a").manager;
+    manager.sendRequest.mockImplementation(async (method: string) => {
+      if (method === "thread/list")
+        return {
+          data: [
+            { id: "native", modelProvider: "custom" },
+            { id: "external", modelProvider: "codexhost" },
+          ],
+          nextCursor: "next",
+        };
+      if (method === "codexhost/thread/ownership/list")
+        return { threads: [{ threadId: "external", owner: "external", harnessId: "claude-code" }] };
+      if (method === "codexhost/harness/plugins/list")
+        return { plugins: [{ id: "claude-code", name: "Claude Code" }] };
+      throw new Error("Unexpected history or mutation request");
+    });
+    const read = () =>
+      rendererRemoteSession(f.target, {
+        kind: "list",
+        hostId: "remote-ssh-discovered:a",
+        cursor: null,
+        archived: false,
+      });
+    expect(await read()).toEqual({
+      data: [
+        { id: "native", modelProvider: "custom" },
+        {
+          id: "external",
+          modelProvider: "codexhost",
+          harnessIdentity: { id: "claude-code", name: "Claude Code" },
+        },
+      ],
+      nextCursor: "next",
+    });
+    expect(manager.sendRequest.mock.calls.map(([method]) => method)).toEqual([
+      "thread/list",
+      "codexhost/thread/ownership/list",
+      "codexhost/harness/plugins/list",
+    ]);
+    manager.sendRequest.mockImplementation(async (method: string) => {
+      if (method === "thread/list")
+        return { data: [{ id: "external", modelProvider: "codexhost" }], nextCursor: null };
+      throw new Error("Older remote Host does not support ownership metadata");
+    });
+    expect(await read()).toEqual({
+      data: [{ id: "external", modelProvider: "codexhost" }],
+      nextCursor: null,
+    });
+  });
   it("shows configured offline hosts and restores only already-enabled connections once", async () => {
     const f = fixture();
     const writes: unknown[] = [];
@@ -195,6 +246,76 @@ describe("Desktop existing remote session boundary", () => {
       "thread/resume",
       "turn/start",
     ]);
+    expect(send).toHaveBeenNthCalledWith(2, "thread/resume", {
+      threadId: "same",
+      excludeTurns: true,
+    });
+  });
+  it("keeps other Threads reachable after resuming a large native history", async () => {
+    const f = fixture();
+    const send = f.route("remote-ssh-discovered:a").manager.sendRequest;
+    let connected = true;
+    const started: string[] = [];
+    send.mockImplementation(async (method: string, ...args: unknown[]) => {
+      const params = args[0] as { threadId: string; excludeTurns?: boolean };
+      if (!connected) throw new Error("Native connection closed");
+      if (method === "thread/resume" && params.excludeTurns !== true) {
+        connected = false;
+        throw new Error("Unbounded native resume exceeded transport limit");
+      }
+      if (method === "turn/start") started.push(params.threadId);
+      return method === "thread/read" ? { thread: { id: params.threadId } } : {};
+    });
+    const { epoch } = await f.read();
+    for (const threadId of ["large", "other"])
+      await rendererRemoteSession(f.target, {
+        kind: "prompt",
+        hostId: "remote-ssh-discovered:a",
+        threadId,
+        epoch,
+        text: "hello",
+      });
+    expect(started).toEqual(["large", "other"]);
+    await expect(f.read()).resolves.toHaveProperty("epoch", epoch);
+  });
+  it("reads paginated external history without requesting all Turns", async () => {
+    const f = fixture();
+    const send = f.route("remote-ssh-discovered:a").manager.sendRequest;
+    send.mockImplementation(async (method: string, ...args: unknown[]) => {
+      const params = args[0] as { includeTurns?: boolean };
+      if (method === "thread/read" && params.includeTurns)
+        throw new Error("Paginated External Threads require thread/turns/list");
+      return method === "thread/read"
+        ? { thread: { id: "same", historyMode: "paginated", turns: [] } }
+        : { data: [{ id: "newest" }], nextCursor: "older" };
+    });
+    const initial = await f.read();
+    const page = await rendererRemoteSession(f.target, {
+      kind: "turns",
+      hostId: "remote-ssh-discovered:a",
+      threadId: "same",
+      epoch: initial.epoch,
+      cursor: null,
+    });
+    expect(page).toEqual({ data: [{ id: "newest" }], nextCursor: "older" });
+    expect(send).toHaveBeenLastCalledWith("thread/turns/list", {
+      threadId: "same",
+      cursor: null,
+      limit: 5,
+      sortDirection: "desc",
+      itemsView: "full",
+    });
+    send.mockClear();
+    await rendererRemoteSession(f.target, {
+      kind: "read",
+      hostId: "remote-ssh-discovered:a",
+      threadId: "same",
+      metadataOnly: true,
+    });
+    expect(send).toHaveBeenCalledExactlyOnceWith("thread/read", {
+      threadId: "same",
+      includeTurns: false,
+    });
   });
   it("serializes data in the Controller expression and excludes local operations", async () => {
     const f = fixture();

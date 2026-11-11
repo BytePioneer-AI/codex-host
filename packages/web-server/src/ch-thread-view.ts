@@ -41,6 +41,7 @@ export interface ChThread {
   id: string;
   cwd: string;
   modelProvider: string;
+  harnessIdentity?: { id: string; name: string } | undefined;
   workspaceKind?: "projectless";
   projectId?: string | null;
   name?: string | null | undefined;

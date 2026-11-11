@@ -1,3 +1,5 @@
+import WebSocket from "ws";
+
 export interface CdpTarget {
   id: string;
   type: string;
@@ -138,7 +140,7 @@ function defaultFetch(url: string, init?: { signal?: AbortSignal }): Promise<Cdp
 }
 
 function defaultSocketFactory(url: string): CdpSocket {
-  return new WebSocket(url) as unknown as CdpSocket;
+  return new WebSocket(url, { maxPayload: 32 * 1024 * 1024 }) as unknown as CdpSocket;
 }
 
 function messageText(value: unknown): string {

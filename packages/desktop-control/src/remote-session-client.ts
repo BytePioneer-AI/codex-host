@@ -79,7 +79,8 @@ export async function requestRemoteSession(
     },
     { action: "session", operation: input },
   );
-  if ("error" in reply) throw new Error(reply.error.message);
+  if ("error" in reply)
+    throw Object.assign(new Error(reply.error.message), { code: reply.error.code });
   if (input.kind === "hosts" && Array.isArray(reply.result)) {
     const projects = await readRemoteProjectMetadata().catch(() => []);
     return reply.result.map((host) =>

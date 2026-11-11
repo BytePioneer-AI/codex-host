@@ -1229,6 +1229,45 @@ describe("mapping-store package", () => {
     await first.close();
   });
 
+  it("names the live owner when another process holds the lock", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({
+      directory,
+      instanceId: "listener",
+      ownerRole: "remote app-server listener",
+    });
+    const second = new MappingStore({ directory, instanceId: "desktop" });
+    await first.initialize();
+    try {
+      const lock = JSON.parse(await readFile(path.join(directory, "store.lock"), "utf8")) as {
+        pid: number;
+        role?: string;
+        startedAt: string;
+      };
+      expect(lock).toMatchObject({ pid: process.pid, role: "remote app-server listener" });
+      await expect(second.initialize()).rejects.toMatchObject({
+        code: "STORE_LOCKED",
+        message: `Another codexhost process owns Mapping Store at ${path.resolve(directory)} (PID ${process.pid}, remote app-server listener, started ${lock.startedAt})`,
+      });
+    } finally {
+      await first.close();
+    }
+  });
+
+  it("describes a live legacy lock owner without a recorded role", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory, instanceId: "legacy" });
+    const second = new MappingStore({ directory, instanceId: "desktop" });
+    await first.initialize();
+    try {
+      await expect(second.initialize()).rejects.toThrow(
+        new RegExp(`\\(PID ${process.pid}, started [^,)]+\\)$`, "u"),
+      );
+    } finally {
+      await first.close();
+    }
+  });
+
   it("removes lock files left aside by earlier runs", async () => {
     const directory = await temporaryStoreDirectory();
     await mkdir(directory, { recursive: true });

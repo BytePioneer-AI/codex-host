@@ -1221,7 +1221,8 @@ export class AppServerHost {
           .catch((error) => this.#diagnose(error));
       }
     } catch (error) {
-      this.#diagnose(`Host initialization failed: ${errorMessage(error)}`);
+      const failure = `Host initialization failed: ${errorMessage(error)}`;
+      this.#diagnose(failure);
       this.#pluginLoadAbort.abort();
       await this.#pluginLoading;
       await this.#closeAdapters();
@@ -1233,7 +1234,11 @@ export class AppServerHost {
         await this.#repository.close().catch((closeError) => this.#diagnose(closeError));
       }
       await this.#closeOfficialRuntime();
-      return this.#closeRequested ? 0 : 1;
+      if (this.#closeRequested) return 0;
+      // Desktop shows only the last stderr line of a failed app-server. Cleanup above may
+      // report secondary errors, so restate the cause that ends this Runtime.
+      this.#diagnose(`exiting: ${failure}`);
+      return 1;
     }
     try {
       if (!this.#options.externalOnly) await this.#officialRuntime.initialize();

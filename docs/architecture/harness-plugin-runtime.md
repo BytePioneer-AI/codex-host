@@ -212,7 +212,7 @@ Mapping Store 允许 Thread 主记录及独立元数据文件出现未知的顶�
 
 主记录和备份均无法恢复时，Mapping Store 先将独立元数据原样复制到 `quarantine/<id>.json.<时间戳>.invalid.metadata`，再将主记录移到同名的 `.invalid` 文件，不覆盖已有隔离文件。任一步失败只跳过该 Thread，保留源记录及元数据供后续启动重试，并将其元数据排除在孤儿清理之外；健康 Thread 仍可访问。成功隔离后才尽力清理源元数据，清理失败会在后续启动重试。隔离文件用于人工恢复，不会自动重新导入；Harness 原生会话不受此流程删除。
 
-Mapping Store 使用 `store.lock` 限制同一目录只有一个写入实例。Windows 发生锁冲突时，通过本机 CIM `Win32_Process` 查询进程路径和创建时间；创建时间显式转换为 UTC ISO 字符串，查询最多等待 5 秒。即使系统进程路径不可读，只要创建时间与锁中记录相差超过既有的 5 秒容差，也能识别 PID 复用并回收旧锁，不结束占用该 PID 的进程。查询失败、超时或身份信息不足时仍保留锁并报 `STORE_LOCKED`；旧锁缺少进程创建时间时，不以锁文件的创建时间代替进程身份。
+Mapping Store 使用 `store.lock` 限制同一目录只有一个写入实例。锁记录写入者的 PID、启动时间和角色（本机 Host Runtime 或远程 app-server listener）；遇到活跃持有者时，`STORE_LOCKED` 错误给出 Mapping Store 目录及持有者的 PID、角色和启动时间，未记录角色的旧锁只给出 PID 和启动时间。Host 初始化因此失败时，退出前把这一原因作为最后一行诊断再输出一次，Shim 随后在 Desktop 可见的最后一行重复它。远程 SSH listener 必须使用远程安装导出的 `CODEXHOST_DATA_DIR`；从本机 Launcher 会话或缺少该目录时，Shim 拒绝启动 listener，不会占用本机 Mapping Store。Windows 发生锁冲突时，通过本机 CIM `Win32_Process` 查询进程路径和创建时间；创建时间显式转换为 UTC ISO 字符串，查询最多等待 5 秒。即使系统进程路径不可读，只要创建时间与锁中记录相差超过既有的 5 秒容差，也能识别 PID 复用并回收旧锁，不结束占用该 PID 的进程。查询失败、超时或身份信息不足时仍保留锁并报 `STORE_LOCKED`；旧锁缺少进程创建时间时，不以锁文件的创建时间代替进程身份。
 
 ## 加载与关闭行为
 

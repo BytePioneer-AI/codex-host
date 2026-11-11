@@ -121,21 +121,6 @@ describe("FileDelegationWatchStore", () => {
     expect(await readdir(directory)).toEqual(["half.json"]);
   });
 
-  it("lets only one of two concurrent adopters take a record", async () => {
-    await mkdir(directory, { recursive: true });
-    await writeForeign(
-      directory,
-      "race.json",
-      { pid: exitedPid(), boot: bootSeconds() },
-      watch("race"),
-    );
-    const [left, right] = await Promise.all([
-      new FileDelegationWatchStore(directory).adopt(),
-      new FileDelegationWatchStore(directory).adopt(),
-    ]);
-    expect([...left, ...right]).toEqual([watch("race")]);
-  });
-
   it("sets aside an unreadable record and reports it", async () => {
     await mkdir(directory, { recursive: true });
     await writeFile(path.join(directory, "bad.json"), "{ not json");

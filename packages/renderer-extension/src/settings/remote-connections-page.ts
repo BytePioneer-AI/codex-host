@@ -34,7 +34,6 @@ const CONNECT_REQUEST_WAIT_MS = 3_000;
 export function createRemoteConnectionsPage(
   messages: RendererSettingsMessages,
   getControl: () => RemoteConnectionsControl | null,
-  getOpenWeb: () => (() => Promise<unknown>) | undefined = () => undefined,
 ): RendererSettingsPageDefinition {
   const zh = messages.locale === "zh-CN";
   const t: RemoteText = (cn, en) => (zh ? cn : en);
@@ -59,79 +58,18 @@ export function createRemoteConnectionsPage(
       };
 
       const root = el("div", "settings-remote");
-      const openWeb = getOpenWeb();
-      if (openWeb) {
-        root.append(el("h1", "settings-section-label", messages.pageLabels["remote-connections"]));
-        const web = el("section", "settings-remote");
-        const webHeader = el("div", "settings-remote__header");
-        const webCopy = el("div");
-        webCopy.append(
-          el(
-            "h2",
-            "settings-section-label",
-            t("手机和其他设备（Web）", "Phones and other devices (Web)"),
-          ),
-          el(
-            "p",
-            "settings-page-description",
-            t(
-              "在手机或其他设备的浏览器上使用这台电脑的 CodexHost，这台电脑需要保持开机和联网。",
-              "Use this computer's CodexHost from a browser on your phone or another device. This computer must stay on and connected to the network.",
-            ),
-          ),
-        );
-        webHeader.append(webCopy);
-        const actions = el("div", "settings-remote__toolbar");
-        const button = el(
-          "button",
-          "settings-command-button settings-command-button--secondary",
-          t("打开连接设备页", "Open Connect devices"),
-        );
-        button.type = "button";
-        const status = el("div", "settings-remote__banner");
-        status.setAttribute("role", "alert");
-        status.hidden = true;
-        button.addEventListener("click", () => {
-          button.disabled = true;
-          button.textContent = t("正在打开…", "Opening…");
-          status.hidden = true;
-          void openWeb()
-            .catch((error: unknown) => {
-              status.textContent = `${t("Web 打开失败", "Web could not be opened")}: ${remoteErrorMessage(error)}`;
-              status.hidden = false;
-            })
-            .finally(() => {
-              button.disabled = false;
-              button.textContent = t("打开连接设备页", "Open Connect devices");
-            });
-        });
-        actions.append(button);
-        web.append(webHeader, actions, status);
-        root.append(web);
-      }
       const header = el("div", "settings-remote__header");
       const headerCopy = el("div");
       const localVersion = el("p", "settings-remote__meta");
       headerCopy.append(
-        el(
-          openWeb ? "h2" : "h1",
-          "settings-section-label",
-          openWeb
-            ? t("其他电脑（SSH）", "Other computers (SSH)")
-            : messages.pageLabels["remote-connections"],
-        ),
+        el("h1", "settings-section-label", messages.pageLabels["remote-connections"]),
         el(
           "p",
           "settings-page-description",
-          openWeb
-            ? t(
-                "这台电脑通过 SSH 连接另一台 Mac 或 Linux 电脑。连接配置与 Codex 共用。",
-                "This computer connects to another Mac or Linux computer over SSH. Connection settings are shared with Codex.",
-              )
-            : t(
-                "通过 SSH 连接你的 Mac 或 Linux 电脑。连接配置与 Codex 共用。",
-                "Connect to a Mac or Linux computer over SSH. Connection settings are shared with Codex.",
-              ),
+          t(
+            "这台电脑通过 SSH 连接另一台 Mac 或 Linux 电脑。连接配置与 Codex 共用。",
+            "This computer connects to another Mac or Linux computer over SSH. Connection settings are shared with Codex.",
+          ),
         ),
         localVersion,
       );

@@ -2809,111 +2809,76 @@ describe("Renderer Updates page", () => {
   it.each([
     {
       locale: "zh-CN",
-      webTitle: "手机和其他设备（Web）",
-      sshTitle: "其他电脑（SSH）",
-      webDescription:
+      title: "手机与浏览器",
+      description:
         "在手机或其他设备的浏览器上使用这台电脑的 CodexHost，这台电脑需要保持开机和联网。",
-      sshDescription: "这台电脑通过 SSH 连接另一台 Mac 或 Linux 电脑。连接配置与 Codex 共用。",
-      open: "打开连接设备页",
-      opening: "正在打开…",
+      open: "在浏览器中打开连接设置",
       failed: "Web 打开失败",
     },
     {
       locale: "en",
-      webTitle: "Phones and other devices (Web)",
-      sshTitle: "Other computers (SSH)",
-      webDescription:
+      title: "Phone & browser",
+      description:
         "Use this computer's CodexHost from a browser on your phone or another device. This computer must stay on and connected to the network.",
-      sshDescription:
-        "This computer connects to another Mac or Linux computer over SSH. Connection settings are shared with Codex.",
-      open: "Open Connect devices",
-      opening: "Opening…",
+      open: "Open connection settings in browser",
       failed: "Web could not be opened",
     },
-  ] as const)(
-    "opens Connect devices from Remote connections, not About ($locale)",
-    async (copy) => {
-      const openWeb = vi
-        .fn()
-        .mockRejectedValueOnce(new Error("The local Host is unavailable"))
-        .mockResolvedValueOnce({});
-      const pages = createDefaultRendererSettingsPages(
-        rendererSettingsMessages(copy.locale),
-        () => ({
-          checkUpdate: vi.fn(),
-          startUpdate: vi.fn(),
-          readUpdateStatus: vi.fn(),
-          openWeb,
-        }),
-      );
-      const page = pages.find(({ id }) => id === "remote-connections");
-      const content = new FakeDocument().createElement("main");
-      const scope = new RendererSettingsPageScope();
-      page?.mount({
-        content: content as unknown as HTMLElement,
-        signal: scope.signal,
-        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
-      });
-      const button = descendants(content).find(
-        (element) => element.tagName === "button" && element.textContent === copy.open,
-      );
-      if (!button) throw new Error("Web button is missing");
-      expect(
-        descendants(content)
-          .filter((element) => element.tagName === "h2")
-          .map((element) => element.textContent),
-      ).toEqual([copy.webTitle, copy.sshTitle]);
-      expect(visibleText(content)).toContain(copy.webDescription);
-      expect(visibleText(content)).toContain(copy.sshDescription);
-      button.dispatch("click");
-      expect(button.disabled).toBe(true);
-      expect(button.textContent).toBe(copy.opening);
-      await vi.waitFor(() => {
-        expect(visibleText(content)).toContain(`${copy.failed}: The local Host is unavailable`);
-        expect(button.disabled).toBe(false);
-      });
-      const status = descendants(content).find(
-        (element) => element.getAttribute("role") === "alert",
-      );
-      expect(status?.hidden).toBe(false);
-      expect(button.parent?.parent?.children.at(-1)).toBe(status);
-      button.dispatch("click");
-      await vi.waitFor(() => expect(button.disabled).toBe(false));
-      expect(openWeb).toHaveBeenCalledTimes(2);
-      expect(button.textContent).toBe(copy.open);
-      expect(status?.hidden).toBe(true);
-      const about = new FakeDocument().createElement("main");
-      pages
-        .find(({ id }) => id === "about")
-        ?.mount({
-          content: about as unknown as HTMLElement,
-          signal: scope.signal,
-          runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
-        });
-      expect(visibleText(about)).not.toContain(copy.open);
-      expect(visibleText(about)).not.toContain(copy.webTitle);
-      scope.dispose();
-    },
-  );
+  ] as const)("opens Web connection settings from Phone & browser ($locale)", async (copy) => {
+    const openWeb = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("The local Host is unavailable"))
+      .mockResolvedValueOnce({});
+    const pages = createDefaultRendererSettingsPages(rendererSettingsMessages(copy.locale), () => ({
+      checkUpdate: vi.fn(),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+      openWeb,
+    }));
+    const page = pages.find(({ id }) => id === "mobile-web");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page?.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    const button = descendants(content).find(
+      (element) => element.tagName === "button" && element.textContent === copy.open,
+    );
+    if (!button) throw new Error("Web button is missing");
+    expect(page?.label).toBe(copy.title);
+    expect(visibleText(content)).toContain(copy.description);
+    button.dispatch("click");
+    expect(button.disabled).toBe(true);
+    await vi.waitFor(() => {
+      expect(visibleText(content)).toContain(`${copy.failed}: The local Host is unavailable`);
+      expect(button.disabled).toBe(false);
+    });
+    button.dispatch("click");
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    expect(openWeb).toHaveBeenCalledTimes(2);
+    scope.dispose();
+  });
 
   it.each([
     [
       "zh-CN",
-      "通过 SSH 连接你的 Mac 或 Linux 电脑。连接配置与 Codex 共用。",
+      "这台电脑通过 SSH 连接另一台 Mac 或 Linux 电脑。连接配置与 Codex 共用。",
       "此窗口无法管理 SSH 连接",
     ],
     [
       "en",
-      "Connect to a Mac or Linux computer over SSH. Connection settings are shared with Codex.",
+      "This computer connects to another Mac or Linux computer over SSH. Connection settings are shared with Codex.",
       "SSH connections are unavailable in this window",
     ],
   ] as const)(
-    "keeps the SSH-only page unchanged without openWeb (%s)",
+    "keeps the SSH page free of Web controls (%s)",
     (locale, description, unavailable) => {
       const page = createDefaultRendererSettingsPages(rendererSettingsMessages(locale), () => ({
         checkUpdate: vi.fn(),
         startUpdate: vi.fn(),
         readUpdateStatus: vi.fn(),
+        openWeb: vi.fn(),
       })).find(({ id }) => id === "remote-connections");
       const content = new FakeDocument().createElement("main");
       const scope = new RendererSettingsPageScope();
@@ -2925,7 +2890,6 @@ describe("Renderer Updates page", () => {
       expect(visibleText(content)).toContain(description);
       expect(visibleText(content)).toContain(unavailable);
       expect(visibleText(content)).not.toContain("Web");
-      expect(descendants(content).filter((element) => element.tagName === "h2")).toEqual([]);
       expect(descendants(content).filter((element) => element.tagName === "button")).toEqual([]);
       scope.dispose();
     },
@@ -2986,7 +2950,7 @@ describe("Renderer Updates page", () => {
       runLatest: (operation, handlers) => plainScope.runLatest(operation, handlers),
     });
     expect(visibleText(plain)).not.toContain("Open console");
-    expect(visibleText(plain)).not.toContain("Open Connect devices");
+    expect(visibleText(plain)).not.toContain("Open connection settings in browser");
     plainScope.dispose();
   });
 

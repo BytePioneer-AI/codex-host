@@ -1,5 +1,6 @@
 import type { IconNode } from "lucide";
 import createElement from "lucide/dist/esm/createElement.mjs";
+import Smartphone from "lucide/dist/esm/icons/smartphone.mjs";
 import Boxes from "lucide/dist/esm/icons/boxes.mjs";
 import CalendarClock from "lucide/dist/esm/icons/calendar-clock.mjs";
 import Check from "lucide/dist/esm/icons/circle-check.mjs";
@@ -53,6 +54,7 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "model-pool",
   "routes",
   "gateway",
+  "mobile",
   "updates",
   "schedules",
   "about",
@@ -108,6 +110,7 @@ const iconNodes = {
   "model-pool": Boxes,
   routes: Route,
   gateway: Network,
+  mobile: Smartphone,
   updates: CircleArrowUp,
   schedules: CalendarClock,
   about: Info,

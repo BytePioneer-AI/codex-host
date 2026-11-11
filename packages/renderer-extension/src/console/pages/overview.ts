@@ -96,18 +96,34 @@ export function createOverviewPage(
         }
         const chinese = locale.startsWith("zh");
         const actionError = h(document, "p", { role: "alert" });
-        const web = button(document, chinese ? "打开 Web" : "Open Web", () => {
-          web.disabled = true;
-          void consolePost("/api/web/open")
+        const openWeb = (target: HTMLButtonElement, connectDevices: boolean): void => {
+          target.disabled = true;
+          actionError.textContent = "";
+          void consolePost("/api/web/open", { connectDevices })
             .catch((cause: unknown) => {
               actionError.textContent = cause instanceof Error ? cause.message : String(cause);
             })
             .finally(() => {
-              web.disabled = false;
+              target.disabled = false;
             });
-        });
+        };
+        const web = button(
+          document,
+          chinese ? "打开 Web" : "Open Web",
+          () => openWeb(web, false),
+          "primary",
+        );
+        const remote = button(
+          document,
+          [
+            createRendererSettingsIcon("mobile", 14),
+            chinese ? "远程访问（手机 / 其他电脑）" : "Remote access (phone / other computers)",
+          ],
+          () => openWeb(remote, true),
+        );
+        web.className += " console-web__open";
+        remote.className += " console-web__remote";
         actions.append(
-          web,
           button(document, chinese ? "停止" : "Stop", () => {
             confirmAction(
               context.content,
@@ -182,6 +198,26 @@ export function createOverviewPage(
                 : null,
             ),
             actions,
+          ),
+          h(
+            document,
+            "section",
+            { className: "console-web" },
+            h(
+              document,
+              "div",
+              { className: "console-web__copy" },
+              h(document, "div", { className: "console-hero__title" }, "Web"),
+              h(
+                document,
+                "div",
+                { className: "console-hero__detail" },
+                chinese
+                  ? "在浏览器里使用同样的界面，也可以用手机或其他电脑远程访问本机的所有 Agent。"
+                  : "Use the same interface in a browser, or reach every local Agent from a phone or another computer.",
+              ),
+            ),
+            h(document, "div", { className: "console-web__buttons" }, web, remote),
           ),
           actionError,
           versions,

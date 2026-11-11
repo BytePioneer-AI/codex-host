@@ -1,4 +1,4 @@
-/** Product eligibility for the phone sidebar's explicit draft-reference action. */
+/** Product eligibility for the Web sidebar's explicit draft-reference action. */
 import type { Context } from "@deepseek-ai/cordis";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import {

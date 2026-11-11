@@ -125,8 +125,8 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.provide("chatMessageEditing", sentMessageEditApi);
   ctx.provide("chatTurnDiffs", turnDiffsApi);
+  ctx.inject(["conversation", "uiSession"], registerThreadReferenceAction);
   ctx.inject(["conversation"], (scope) => {
-    registerThreadReferenceAction(scope);
     const screenshot = new DesktopScreenshot(desktopScreenshotApi.capture);
     const conversation = scope.conversation as ConversationController;
     const drafts: DesktopScreenshotFace["drafts"] = {

@@ -88,7 +88,7 @@ export const zh = {
     "将把“{name}”从工作区列表中移除。文件夹与会话记录会保留，其会话将显示在“未分组”下。",
   "delete.pending": "正在删除工作区…",
   "menu.copySessionLink": "复制会话链接",
-  "menu.referenceSession": "引用到当前草稿",
+  "menu.referenceSession": "引用会话",
   "menu.referenceSessionFailed": "未加入草稿：编辑位置或会话已失效",
   "toast.sessionLinkCopied": "已复制",
   "toast.sessionLinkCopyFailed": "复制会话链接失败",
@@ -250,7 +250,7 @@ export const en = {
     "This removes “{name}” from the workspace list. The folder and session logs will be kept. Its sessions will appear under Ungrouped.",
   "delete.pending": "Deleting workspace…",
   "menu.copySessionLink": "Copy session link",
-  "menu.referenceSession": "Reference in the current draft",
+  "menu.referenceSession": "Reference session",
   "menu.referenceSessionFailed":
     "Not added: the editing position or session is no longer available",
   "toast.sessionLinkCopied": "Copied",

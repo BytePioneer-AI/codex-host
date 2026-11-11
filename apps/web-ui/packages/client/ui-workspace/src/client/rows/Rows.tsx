@@ -222,7 +222,7 @@ export function ProjectRowItem({
       <span className={css.projectText}>
         <span className={css.title}>{label}</span>
       </span>
-      {row.workspaceId !== undefined && <HostBadge host={row.remote} t={t} />}
+      {row.workspaceId !== undefined && row.remote && <HostBadge host={row.remote} t={t} />}
       <span className={css.rowActions}>
         {actions !== undefined && (
           <Menu

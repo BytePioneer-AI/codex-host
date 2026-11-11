@@ -2,13 +2,11 @@
 
 # CodexHost
 
-**在 Codex Desktop 中运行 Pi 和其他 Harness**
+**在 Codex Desktop 里用 Claude Code、Pi、Grok 等 15+ 个 Agent，不用来回切换应用**
 
-我们认为 **Codex Desktop** 提供了目前最好的桌面开发体验
+它们和 Codex 一样有 Diff 审查、Fork 和审批，还能互相派活。
 
-但 **Codex** 并不是唯一优秀的 **Agent Harness**，还有 **Claude Code**、**Pi**
-
-**CodexHost** 让你在 **Codex Desktop** 中原生使用其他 **Harness**，并让它们协作完成任务
+另有 **Web 端**：同样的 Codex 界面，占用内存更少，手机和任何电脑都能远程使用本机上的所有 Agent。
 
 ⭐ 如果这个项目对你有帮助，请给我们一个 Star！⭐
 
@@ -33,11 +31,10 @@
   <a href="https://zcode.z.ai/"><img alt="ZCode" src="../imgs/badge-zcode.svg" /></a>
   <a href="../harnesses/copilot/copilot-harness-integration.md"><img alt="GitHub Copilot" src="https://img.shields.io/badge/Copilot-181717?logo=githubcopilot&logoColor=white" /></a>
 </p>
-<br />
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>下载</strong></a> · <a href="#web">Web 与手机访问</a> · <a href="#跨-agent-协作">跨 Agent 协作</a> · <a href="#远程连接-harness">远程连接</a> · <a href="#加入交流群">微信交流群</a> · <a href="../../README.md">English</a> · <a href="README.ko.md">한국어</a></p>
+<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>下载</strong></a> · <a href="#快速开始">快速开始</a> · <a href="#在-codex-desktop-里用所有-agent">Desktop</a> · <a href="#多-agent-分工">多 Agent 分工</a> · <a href="#加入交流群">微信交流群</a> · <a href="../../README.md">English</a> · <a href="README.ko.md">한국어</a></p>
 
-<br />
+<img width="90%" src="../imgs/hero-desktop-phone.png" alt="Codex Desktop 中同一项目下的多个 Agent 会话与 Diff 审查面板，右下角是手机上打开的同一个会话">
 
 </div>
 
@@ -54,44 +51,33 @@
 </table>
 </details>
 
-## 界面预览
+<a id="快速开始"></a>
 
-无需切换应用，**Pi、Claude Code、Grok Build 等十余个 Harness** 都可以在同一个 Codex Desktop 窗口中直接使用。
-
-https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
-
-### 界面
-
-<div align="center">
-  <img width="90%" src="../imgs/codexhost-native-overview.png" alt="Claude Code、Pi、Grok Build、Oh My Pi 的会话运行在 Codex Desktop 中，并可使用 Diff 审查、Fork、Worktree 和 Agent 切换">
-</div>
-
-## 快速使用
+## 快速开始
 
 **方式一：npm**（macOS / Windows / Linux）
 
 ```bash
 npm install -g @codexhost/cli
-codexhost
-
+codexhost          # 启动 Codex Desktop
 codexhost web      # 启动 Web 并在浏览器中打开
-codexhost stop     # 停止 codexhost 的全部后台服务
+codexhost stop     # 停止 CodexHost 的全部后台服务
 ```
 
 **方式二：安装包**（macOS / Windows）
 
-从 [Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载对应平台的安装包。
+从 [Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载对应平台的安装包。Web 端：安装后打开 codexhost，本地访问 http://127.0.0.1:4400 。
 
 > Linux 支持 x64 / ARM64，详见 [Linux 说明](../platforms/linux/linux.zh-CN.md)。
 
-运行 `codexhost update` 可在终端检查并准备升级到最新版本。有更新时请先退出 Codex Desktop；准备完成后由后台更新器安装并重新启动 codexhost。已是最新版本时直接退出。
+**升级与停止**：运行 `codexhost update` 升级；`codexhost stop` 停止全部后台服务。用 npm 覆盖安装前，请先运行 `codexhost stop`。
 
 <details>
 <summary>安装问题排查</summary>
 
 **codexhost 启动失败，或 Codex 打开了但没有 codexhost 功能**
 
-运行 `codexhost console`（Windows：开始菜单 →“codexhost console”），打开本地控制台 `http://127.0.0.1:4399/`。可以查看上次启动失败的原因、Codex Desktop 版本、Host Runtime 日志，并在 Codex 未运行时更新 codexhost。控制台随 codexhost 一起启动：安装包启动时默认在浏览器打开控制台总览；终端启动不打开浏览器，成功和失败都输出控制台地址及已就绪的 Web 登录链接（Web 禁用或未就绪时省略 Web 行）。总览可打开 Web、确认后停止 codexhost；“连接设备”页与 Web 使用同一份远程访问设置，见[在浏览器和手机上使用](#web)。
+运行 `codexhost console`（Windows：开始菜单 →“codexhost console”），打开本地控制台 `http://127.0.0.1:4399/`，可以查看上次启动失败的原因、Codex Desktop 版本、Host Runtime 日志，并在 Codex 未运行时更新 codexhost。
 
 **macOS：首次打开提示「应用无法验证」**
 
@@ -111,89 +97,61 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 </details>
 
-<a id="web"></a>
+<a id="在-codex-desktop-里用所有-agent"></a>
 
-### 在浏览器和手机上使用（Web）
+## 在 Codex Desktop 里用所有 Agent
 
-离开电脑也能继续工作。codexhost **Web** 让你在浏览器或手机上使用 Pi、Claude Code 等 Harness，对话与 Codex Desktop 实时同步：在电脑上开始的任务，可以在手机上查看进度、回答提问、处理审批。
+不用切换应用：**Pi、Claude Code、Grok Build 等 15+ 个 Agent** 都在同一个 Codex Desktop 窗口里，每个会话都在左侧列表中，输入框右下角随时切换。
 
-```bash
-codexhost web      # 启动 Web 并在浏览器中打开
-codexhost stop     # 停止 codexhost 的全部后台服务
-```
-
-Web 在后台运行，不需要打开 Codex Desktop。
-
-**用手机访问**：在 Web 中打开「设置 → 连接设备」，选择连接方式后用手机扫码即可。支持同一 Wi-Fi、Tailscale、codexhost 中转和[自建中转](../product/self-hosted-relay.md)，各方式的区别见 [Web 远程访问](../product/web-remote-access.md)。在手机浏览器中「添加到主屏幕」，就能像 App 一样打开。
-
-> 登录链接和二维码包含访问令牌，拿到的人可以操作这台电脑，请像密码一样保管。
-
-### 功能介绍
+https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 <table>
   <tr>
-    <td colspan="2" valign="top">
-      <p><strong>完整工作界面</strong><br /><sub>不同 Harness 的会话在同一个侧边栏里，输入框右下角随时切换 Agent</sub></p>
-      <div align="center">
-        <img width="90%" src="../imgs/codexhost-full-workspace.png" alt="Codex Desktop 中 codexhost 的完整工作界面，展示项目结构、对话区域和多个 Agent 选择器">
-      </div>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <p><strong>Diff 审查面板</strong><br /><sub>每轮改动自动汇总，点「审核」在右侧查看完整 Diff</sub></p>
+    <td width="33%" valign="top">
+      <p><strong>Diff 审查面板</strong><br /><sub>每轮改动自动汇总，点「审核」查看完整 Diff</sub></p>
       <img src="../imgs/highlight-diff-review.png" alt="对话中的改动汇总卡片与右侧审查面板中的 Diff">
     </td>
-    <td width="50%" valign="top">
+    <td width="33%" valign="top">
       <p><strong>从任意消息 Fork</strong><br /><sub>在当前工作空间，或新建 Worktree 并行开发</sub></p>
       <img src="../imgs/highlight-fork-worktree.png" alt="从消息创建分支的菜单：在此工作空间或新工作树中创建分支">
     </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <p><strong>输入 # 委派给其他 Agent</strong><br /><sub>多个 Agent 各开独立会话，并行执行 · <a href="#跨-agent-协作">了解更多</a></sub></p>
-      <img src="../imgs/highlight-delegation.png" alt="输入 # 选择 Codex、Claude Code、Grok 等 Agent，任务分别在独立会话中并行运行">
-    </td>
-    <td width="50%" valign="top">
-      <p><strong>工具调用与思考过程</strong><br /><sub>每次 edit、命令、思考都可展开查看细节</sub></p>
-      <img src="../imgs/highlight-tool-details.png" alt="展开编辑记录后显示新建文件的 Diff">
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
+    <td width="33%" valign="top">
       <p><strong>Subagent 可见</strong><br /><sub>每个 Subagent 有独立图标，可在右侧查看完整对话</sub></p>
       <img src="../imgs/highlight-subagent.png" alt="主对话中显示 4 个 Subagent 的状态，右侧打开其中一个的完整对话">
     </td>
-    <td width="50%" valign="top">
-      <p><strong>远程开发</strong><br /><sub>把 VPS 添加为项目，Agent 直接在远程机器上执行 · <a href="#远程连接-harness">了解更多</a></sub></p>
-      <img src="../imgs/highlight-remote.png" alt="侧边栏中的远程 VPS 项目，对话返回远程机器的工作目录">
-    </td>
   </tr>
+</table>
+
+<details>
+<summary>更多：工具细节、用量、账号导入、图表渲染</summary>
+
+<table>
   <tr>
+    <td width="50%" valign="top">
+      <p><strong>工具调用与思考过程</strong><br /><sub>每次编辑、命令、思考都可展开查看细节</sub></p>
+      <img src="../imgs/highlight-tool-details.png" alt="展开编辑记录后显示新建文件的 Diff">
+    </td>
     <td width="50%" valign="top">
       <p><strong>用量一目了然</strong><br /><sub>缓存命中率、费用估算、上下文占用实时显示</sub></p>
       <img src="../imgs/highlight-usage.png" alt="用量浮层：上下文、缓存命中率、缓存读写、Token 总数、费用估算">
     </td>
+  </tr>
+  <tr>
     <td width="50%" valign="top">
       <p><strong>账号一键导入</strong><br /><sub>本机已登录的 Codex、Grok 凭证一键复制给 Pi，额度实时可见</sub></p>
       <img src="../imgs/highlight-account-import.png" alt="账号设置页：账号的 5 小时与 7 天剩余额度，以及已导入 Pi 的账号">
     </td>
-  </tr>
-  <tr>
-    <td colspan="2" valign="top">
-      <p><strong>Mermaid 图表可视化渲染</strong><br /><sub>左：Codex Desktop + Pi，图表直接渲染；右：Pi TUI，只能看到源码</sub></p>
+    <td width="50%" valign="top">
+      <p><strong>比终端更好看</strong><br /><sub>左：Codex Desktop + Pi，Mermaid 图表直接渲染；右：Pi TUI，只能看到源码</sub></p>
       <img src="../imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop 与 Pi Agent TUI 的 Mermaid 图表可视化渲染对比">
     </td>
   </tr>
 </table>
 
-
-## 功能状态
-
-各 Harness 根据自身能力接入 Codex Desktop 原生界面，具体支持情况见下表。
+</details>
 
 <details>
-<summary>查看完整功能矩阵</summary>
+<summary>各 Agent 功能支持情况</summary>
 
 | 能力 | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="../imgs/harness-icon-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="../imgs/harness-icon-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH" src="https://img.shields.io/badge/-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="../imgs/harness-icon-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/harness-icon-codebuddy.svg" width="24" height="24" /></a> | <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="../../packages/adapters/workbuddy/assets/icon.svg" width="24" height="24" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="../imgs/harness-icon-cursor.svg" /></a> | <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="../imgs/harness-icon-hermes.svg" /></a> | <a href="https://qoder.com/cli"><img alt="Qoder" src="../../packages/adapters/qoder/assets/icon.svg" width="28" height="28" /></a> | <a href="https://moonshotai.github.io/kimi-code/"><img alt="Kimi Code" src="../../packages/adapters/kimi-code/assets/icon.svg" width="28" height="28" /></a> | <a href="../harnesses/copilot/copilot-harness-integration.md"><img alt="Copilot" src="../../packages/adapters/copilot/assets/icon.png" width="28" height="28" /></a> | <a href="https://github.com/QwenLM/qwen-code"><img alt="Qwen Code" src="../../packages/adapters/qwen-code/assets/icon.svg" width="28" height="28" /></a> | <a href="../harnesses/devin/devin-cli-acp-integration.md"><img alt="Devin" src="../../packages/adapters/devin/assets/icon.svg" width="28" height="28" /></a> |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -213,26 +171,39 @@ Web 在后台运行，不需要打开 Codex Desktop。
 
 </details>
 
-## 跨 Agent 协作
+<a id="多-agent-分工"></a>
 
-在聊天输入框输入 `#`，可以选择要委派任务的 Agent，也可以查找当前所选 Harness 可用的命令和技能。
+## 多个 Agent 互相分工
 
-你可以让当前 Agent 把独立任务交给另一个 Harness。例如：
+在输入框输入 `#`，选一个 Agent，把一件独立的事交给它：
 
 > 让 `#claude-code` 独立审查这次修改，并指出兼容性风险。
 >
 > 让 `#pi` 调查这个测试为什么偶发失败。
 >
 > 让 `#omp` 实现这个功能，我继续整理文档。
->
-> 让 `#opencode` 在独立 Thread 中验证这个修复，并运行相关测试。
 
-CodexHost 会为目标 Harness 创建独立的 Native Session。委派会话将出现在 Codex Desktop 的会话列表中，你可以随时打开、查看进度或继续对话。
+每个被委派的任务都是目标 Agent 的一个独立原生会话，出现在会话列表里，随时可以打开查看或接着聊。任务做完，结果会回到发起它的会话。
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>多个 Agent 并行</strong><br /><sub>各自独立会话，互不打扰</sub></p>
+      <img src="../product/images/multi-agent-parallel-sessions.png" alt="多个 Agent 的委派会话在侧边栏中并行运行">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>做完自动汇报</strong><br /><sub>委派任务结束后通知发起的会话</sub></p>
+      <img src="../product/images/multi-agent-completion-notice.png" alt="委派任务完成后在发起会话中显示的通知">
+    </td>
+  </tr>
+</table>
+
+**给开发者**：终端脚本、Claude Desktop、常驻 bot 等本机程序，也能通过 `codexhost delegate` / `codexhost thread` 命令或 MCP 给这些 Agent 派任务、等结果，详见[外部客户端](../architecture/external-clients.md)。
 
 <details>
-<summary><h3 id="远程连接-harness">远程连接 Harness</h3></summary>
+<summary><h3 id="远程连接-harness">进阶：在本机界面里用另一台机器上的 Agent</h3></summary>
 
-在本机 Codex Desktop 中使用被控机器上的 Harness，任务在被控机器执行，界面仍在本地。两端需安装相同版本的 codexhost。
+任务在另一台机器上执行，界面仍是你本机的 Codex Desktop。两端需安装相同版本的 CodexHost。
 
 | 被控机器 | 连接方式 |
 | --- | --- |
@@ -257,31 +228,17 @@ CodexHost 会为目标 Harness 创建独立的 Native Session。委派会话将�
    ```
 
 2. 在本地通过 codexhost 启动 Codex Desktop，打开 SSH 工作区。
-3. 在输入框的 Agent / Model 选择器中选择目标 Harness。
+3. 在输入框的 Agent / Model 选择器中选择目标 Agent。
 
 [SSH 配置、诊断与卸载 →](../platforms/remote/remote-ssh-host.zh-CN.md)
 
 #### Remote Control 远程（实验）
 
-复用 Codex Desktop 官方 Remote Control 的配对与认证，在另一台电脑上使用 Windows 上的 Harness。
+复用 Codex Desktop 官方 Remote Control 的配对与认证，在另一台电脑上使用 Windows 上的 Agent。
 
-前提：官方 Remote Control 已能正常运行 Codex 任务。不新增公网服务或端口，Harness 凭据只保留在 Windows 上。
+前提：官方 Remote Control 已能正常运行 Codex 任务。不新增公网服务或端口，Agent 凭据只保留在 Windows 上。
 
 [Remote Control 配置、传输边界与诊断 →](../platforms/remote/remote-control-host.zh-CN.md)
-
-</details>
-
-<details>
-<summary><h3>怎么做的</h3></summary>
-
-多数「多 Agent 客户端」会自己重做一套聊天界面，再用统一协议接入不同 Harness。
-
-CodexHost 的做法不同：
-
-- **Desktop 侧**：通过 CDP / Electron Inspector 增强官方 Codex Desktop，不重做聊天界面，也不修改官方安装包
-- **协议侧**：通过 CLI Shim 接入官方 app-server，原生 Codex 请求原样转发，不受影响
-- **Harness 侧**：优先使用各自的原生接口（Pi 走 RPC，Claude Code 走 Agent SDK），没有原生接口的通过 [ACP](https://agentclientprotocol.com/) 接入；流式输出、工具状态、Diff、审批和提问统一投影到 Codex Desktop 的原生界面
-- **编排侧**：委派任务在目标 Harness 中作为独立的原生会话运行，发起方可以选择等待结果或让它在后台运行
 
 </details>
 
@@ -308,7 +265,20 @@ CodexHost 的做法不同：
   </tr>
 </table>
 
-## 开发
+<details>
+<summary><h3>架构与开发</h3></summary>
+
+#### 怎么做的
+
+多数「多 Agent 客户端」会自己重做一套聊天界面，再用统一协议接入不同 Agent。CodexHost 的做法不同：
+
+- **Desktop 侧**：通过 CDP / Electron Inspector 增强官方 Codex Desktop，不重做聊天界面，也不修改官方安装包
+- **协议侧**：通过 CLI Shim 接入官方 app-server，原生 Codex 请求原样转发，不受影响
+- **Agent 侧**：优先使用各自的原生接口（Pi 走 RPC，Claude Code 走 Agent SDK），没有原生接口的通过 [ACP](https://agentclientprotocol.com/) 接入；流式输出、工具状态、Diff、审批和提问统一投影到 Codex Desktop 的原生界面
+- **编排侧**：委派任务在目标 Agent 中作为独立的原生会话运行，发起方可以选择等待结果或让它在后台运行
+- **Web 侧**：Desktop 与 Web 连接同一个后台 Host，会话、审批和提问只有一份，两边看到的是同一个状态
+
+#### 开发
 
 提交 Issue 或 PR 前可阅读[贡献说明](../../CONTRIBUTING.md)；PR 标题标签、简短 CI 结果和发布前校验见[仓库维护自动化](../operations/repository-maintenance.md)。
 
@@ -328,8 +298,7 @@ npm start
 | `npm start web -- --no-watch` | 构建并启动 Web，不开启热更新 |
 | `npm stop` | 停止当前用户在所有工作树中的本地 codexhost 服务 |
 
-
-### 运行架构
+#### 运行架构
 
 以 Pi 为例。从左到右是一次请求的调用链：Desktop → 公共层 → Pi 插件 → 原生进程。
 
@@ -337,10 +306,12 @@ npm start
   <img width="100%" src="../imgs/pi-runtime-architecture.png" alt="以 Pi 为例的运行架构：Desktop 到公共层，再到 Pi 插件和原生进程">
 </div>
 
-### 新增 Harness
+#### 新增 Harness
 
 主要实现插件的 Manifest、工厂、Adapter、Session 及原生通信与转换逻辑。当前 Renderer 仍有静态接线，完整 Desktop 接入还需单独处理。
 新增 Harness 时，可以让编码 Agent 使用仓库内的 [codexhost-add-harness Skill](../../.agents/skills/codexhost-add-harness/SKILL.md)。它说明了插件结构、公共 Adapter 接口、能力实现与测试要求。
+
+</details>
 
 ## 鸣谢
 
@@ -365,3 +336,4 @@ npm start
     <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=bytepioneer-ai/codex-host&type=date&legend=top-left" />
   </picture>
 </a>
+

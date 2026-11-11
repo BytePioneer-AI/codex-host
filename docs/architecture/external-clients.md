@@ -55,6 +55,8 @@
 
 ### 设备与项目发现
 
+CLI 提供 `codexhost host info --refresh true|false` 和 `codexhost project list --query <文本> --offset <位置> --limit <数量> --refresh true|false`，与 MCP 使用相同的实现；内部控制连接和独立客户端连接都可使用。
+
 每台 Host 的外部 MCP 还提供两个只读工具，供客户端在多设备之间选择执行位置：
 
 - `host_info(refresh?)`，对应 `POST /v1/host/info`：设备标识、显示名与别名、实际 hostname、操作系统、架构、CPU、内存、开发工具版本、项目扫描根目录和可用的默认工作区。工具探测只执行固定的版本查询；不返回环境变量、账号或凭据，不执行项目脚本。安装了 CLI 不代表其服务、SDK 或账号可用。
@@ -82,6 +84,8 @@
 
 ## 接入示例
 
+CLI 用 `codexhost thread file <thread> --path <文件> --offset <位置> --limit <字节数> --revision <版本>` 读取同一套经过报告引用及工作区校验的文件分块。
+
 - Claude Code：`claude mcp add --transport http codexhost http://127.0.0.1:4398/mcp --header "Authorization: Bearer <token>"`。
 - Claude Desktop：设置里的自定义 connector 由 Anthropic 云端连接，访问不到 `127.0.0.1`；本机 `claude_desktop_config.json` 的 `mcpServers` 只支持 stdio。用 `mcp-remote` 桥接：
 
@@ -90,7 +94,13 @@
     "mcpServers": {
       "codexhost": {
         "command": "npx",
-        "args": ["-y", "mcp-remote", "http://127.0.0.1:4398/mcp", "--header", "Authorization:${CODEXHOST_AUTH}"],
+        "args": [
+          "-y",
+          "mcp-remote",
+          "http://127.0.0.1:4398/mcp",
+          "--header",
+          "Authorization:${CODEXHOST_AUTH}"
+        ],
         "env": { "CODEXHOST_AUTH": "Bearer <token>" }
       }
     }

@@ -61,6 +61,53 @@ describe("delegation CLI", () => {
     expect(String(vi.mocked(fetchImpl).mock.calls[0]?.[0])).toContain("/v1/harness/list");
   });
 
+  it.each([
+    {
+      arguments: ["host", "info", "--refresh", "true"],
+      route: "/v1/host/info",
+      body: { refresh: true },
+    },
+    {
+      arguments: ["project", "list", "--query", "bat", "--offset", "0", "--limit", "10"],
+      route: "/v1/project/list",
+      body: { query: "bat", offset: 0, limit: 10 },
+    },
+    {
+      arguments: [
+        "thread",
+        "file",
+        "codex://threads/t1",
+        "--path",
+        "outputs/image.png",
+        "--offset",
+        "0",
+      ],
+      route: "/v1/thread/file",
+      body: { threadId: "t1", path: "outputs/image.png", offset: 0 },
+    },
+  ])(
+    "exposes inventory and validated result-file routes: $route",
+    async ({ arguments: args, route, body }) => {
+      const fetchImpl = successfulFetch({ ok: true });
+      const output = new PassThrough();
+      expect(
+        await runDelegationCli({
+          arguments: args,
+          environment: {
+            [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+            [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+          },
+          output,
+          fetchImpl,
+        }),
+      ).toBe(0);
+      const call = vi.mocked(fetchImpl).mock.calls[0];
+      expect(String(call?.[0])).toContain(route);
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual(body);
+      expect(JSON.parse(outputText(output))).toEqual({ ok: true });
+    },
+  );
+
   it("prints the authoritative help", async () => {
     const output = new PassThrough();
     await expect(runDelegationCli({ arguments: ["delegate", "--help"], output })).resolves.toBe(0);

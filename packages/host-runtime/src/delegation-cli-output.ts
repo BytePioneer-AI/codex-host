@@ -104,6 +104,9 @@ export function compactDelegationOutput(
   view: "result" | "messages" = "result",
 ): unknown {
   switch (command) {
+    case "host info":
+    case "project list":
+    case "thread file":
     case "harness list":
       return body;
     case "harness inspect":

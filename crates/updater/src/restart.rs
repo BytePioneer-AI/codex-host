@@ -7,7 +7,9 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use codexhost_platform::{ProcessSnapshot, configure_background_command, process_snapshot};
+use codexhost_platform::{
+    ProcessIdentity, configure_background_command, process_identity, process_snapshot,
+};
 use serde::{Deserialize, de::DeserializeOwned};
 
 use crate::request::{Installation, RestartTarget, UpdateRequest};
@@ -64,15 +66,13 @@ fn matches_owner(
     owner: &ServiceOwner,
     expected_runtime: &Path,
     expected_version: Option<&str>,
-    live: Option<&ProcessSnapshot>,
+    live: Option<&ProcessIdentity>,
 ) -> bool {
     same_path(&owner.runtime, expected_runtime)
         && !owner.version.is_empty()
         && expected_version.is_none_or(|version| owner.version == version)
         && live.is_some_and(|live| {
-            live.id == owner.pid
-                && live.started_at_micros == owner.started_at_micros
-                && same_path(&live.executable, &owner.executable)
+            live.id == owner.pid && live.started_at_micros == owner.started_at_micros
         })
 }
 
@@ -107,7 +107,7 @@ fn verify_available_services(request: &UpdateRequest) -> Result<(), Box<dyn Erro
                     &owner,
                     &owner.runtime,
                     None,
-                    process_snapshot(owner.pid).ok().as_ref(),
+                    process_identity(owner.pid).ok().as_ref(),
                 )
                 && !same_path(&owner.runtime, &app.join(runtime))
             {
@@ -141,7 +141,7 @@ fn services_ready(
     request: &UpdateRequest,
     expected_version: Option<&str>,
     require_web: bool,
-    snapshot: impl Fn(u32) -> Option<ProcessSnapshot>,
+    snapshot: impl Fn(u32) -> Option<ProcessIdentity>,
     listening: impl Fn(&str) -> bool,
 ) -> Result<bool, Box<dyn Error>> {
     let Some(data) = &request.data_directory else {
@@ -287,7 +287,7 @@ pub(crate) fn restore(
                 request,
                 expected_version,
                 require_web,
-                |pid| process_snapshot(pid).ok(),
+                |pid| process_identity(pid).ok(),
                 web_listening,
             )?
         {
@@ -312,11 +312,9 @@ mod tests {
             runtime: runtime.clone(),
             version: "1.2.3".into(),
         };
-        let mut live = ProcessSnapshot {
+        let mut live = ProcessIdentity {
             id: 42,
             parent_id: 1,
-            process_group_id: 42,
-            executable: owner.executable.clone(),
             started_at_micros: 10,
         };
         assert!(matches_owner(&owner, &runtime, Some("1.2.3"), Some(&live)));
@@ -420,15 +418,9 @@ mod tests {
         let launcher = request.installation.launcher_path();
         let app = request.installation.resources_root().join("app");
         let snapshot = |pid| {
-            Some(ProcessSnapshot {
+            Some(ProcessIdentity {
                 id: pid,
                 parent_id: if pid == 43 { 42 } else { 1 },
-                process_group_id: pid,
-                executable: if pid == 42 {
-                    launcher.clone()
-                } else {
-                    root.join("node")
-                },
                 started_at_micros: 100,
             })
         };
@@ -483,7 +475,7 @@ mod tests {
             "installation":{"kind":"npm", "node_path":live.executable, "npm_cli_path":root.join("npm.js"), "npm_launcher_path":root.join("wrapper.js"), "npm_package_root":root.join("package")}
         })).unwrap();
         let mut owner = serde_json::json!({
-            "pid":live.id, "started_at_micros":live.started_at_micros, "executable":live.executable,
+            "pid":live.id, "started_at_micros":live.started_at_micros, "executable":root.join("deleted-package/node"),
             "runtime":root.join("other/app/host-runtime.mjs"), "version":"1.2.2"
         });
         fs::write(

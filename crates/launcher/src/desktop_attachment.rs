@@ -437,7 +437,8 @@ mod tests {
             ),
             vec![default_node.clone()]
         );
-        let npm_node = env::temp_dir().join("codexhost-npm-node-fixture");
+        let npm_node = env::temp_dir()
+            .join(format!("codexhost-npm-node-fixture-{}", std::process::id()));
         std::fs::write(&npm_node, b"node").expect("write npm node fixture");
         assert_eq!(
             host_runtime_node_candidates(

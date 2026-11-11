@@ -626,11 +626,15 @@ it("workspace mirror: migrates legacy project names on Web roots and preserves c
     workspaces.attachReferencedSession(`thread-${path}`, path, project.name);
     workspaces.selectReferenceWorkspace(path);
   }
-  const custom = workspaces.byPath(customRoot)!;
+  const custom = workspaces.byPath(customRoot);
+  assert.ok(custom);
   custom.title = "My custom title";
-  const before = structuredClone(workspaces.byPath(extraRoot)!);
+  const original = workspaces.byPath(extraRoot);
+  assert.ok(original);
+  const before = structuredClone(original);
   workspaces.syncReferencedSessions([], new Map(), new Set(), [project]);
-  const migrated = workspaces.byPath(extraRoot)!;
+  const migrated = workspaces.byPath(extraRoot);
+  assert.ok(migrated);
   assert.equal(migrated.title, "extra");
   assert.equal(migrated.workspaceId, before.workspaceId);
   assert.equal(migrated.createdAt, before.createdAt);
@@ -647,9 +651,11 @@ it("workspace mirror: recreates deleted native roots on the next snapshot", asyn
   const root = mkdtempSync(join(tmpdir(), "ch-workspace-recreate-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspaces = new Workspaces(new DataDir(root), root);
-  const projects = [{ name: "Native", rootPaths: [join(root, "first"), join(root, "extra")] }];
+  const extraRoot = join(root, "extra");
+  const projects = [{ name: "Native", rootPaths: [join(root, "first"), extraRoot] }];
   workspaces.syncReferencedSessions([], new Map(), new Set(), projects);
-  const extra = workspaces.byPath(projects[0]!.rootPaths[1]!)!;
+  const extra = workspaces.byPath(extraRoot);
+  assert.ok(extra);
   const rpc = new RpcRegistry();
   workspaces.register(rpc, new StreamRegistry());
   assert.ok(
@@ -661,7 +667,8 @@ it("workspace mirror: recreates deleted native roots on the next snapshot", asyn
   );
   assert.equal(workspaces.byPath(extra.path), undefined);
   workspaces.syncReferencedSessions([], new Map(), new Set(), projects);
-  const recreated = workspaces.byPath(extra.path)!;
+  const recreated = workspaces.byPath(extra.path);
+  assert.ok(recreated);
   assert.equal(recreated.title, "extra");
   assert.notEqual(recreated.workspaceId, extra.workspaceId);
 });

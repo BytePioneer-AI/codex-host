@@ -39,6 +39,8 @@ RPC 布局下的 Windows Remote Control 复用已加载模块中的原生 Manage
 
 该版本的官方模型目录可能过滤草稿中的外部 transport Model。RPC 路由依据已登记的 `clientThreadId`，在本次 `startConversation` 发出时把官方回退模型替换为外部 carrier（创建参数没有 Model 时同样写入 carrier），保留输入、工作区、Thinking、原生回调及传输参数；不修改原始模式对象。不属于已登记草稿的创建、无法识别的参数和明确指定另一个外部 carrier 的创建保持原样。可识别的外部预热请求一律带上预热标记：请求本身指定了外部 carrier 时保留其 Harness 与 Model，否则使用当前已选择的 carrier；Host 据此把它登记为可丢弃的预热，而不是发布新 Thread。没有外部选择的官方预热及无法识别的 carrier 保持原样。
 
+RPC 普通外部草稿同时把同一 carrier 写入本次创建的 `config.model`，保留其他配置覆盖。Desktop 26.1103 的主进程预热池按工作目录匹配，不比较 Model；原生准备遇到显式配置会直接创建 Thread，因此该外部提交不会复用官方或其他 Harness 的预热，包括选择后才返回的在途预热。代价是这条 RPC 创建路径使用冷启动；配置只作用于本次创建，不写入官方默认 Model。官方草稿、未登记的创建及原生 Renderer Manager 路径继续使用各自的预热策略。
+
 普通草稿的 transport Model 同时按本地 Host 连接和 `client-new-thread` 身份登记。原生 `startConversation` 进入时读取本次创建的 `clientThreadId`，在异步准备前捕获对应的路由，只替换这次创建的 Model，保留权限、工作区、输入、Thinking 和原生回调。后台发送派生新客户端身份时，通过同一草稿的原生 collaboration-mode 对象关联来源；该关联使用不进入 JSON 协议的 Symbol，并随原生浅复制保留。Codex 的备用额度模式不能改变外部 Thread 的 Harness。官方创建、其他草稿与显式定时任务没有该草稿关联时，保持传入配置；切回 Codex、Adapter 卸载和连接释放会清理路由。
 
 Desktop 26.1021 的原生预热池按工作目录匹配。每次创建使用独立的消费检查：官方创建不能消费外部预热，外部创建只能消费与本次 transport Model 一致的预热。检查读取本次创建参数，异步准备期间不依赖全局选择。错配的外部预热通过既有未提交预热释放接口清理；普通草稿的配置失效和预热接管规则保持不变。官方任务弹窗沿用原生创建链路，预热消费同样检查本次显式 Model，不额外提供独立任务创建操作。

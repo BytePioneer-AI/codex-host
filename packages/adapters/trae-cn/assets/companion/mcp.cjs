@@ -16,6 +16,18 @@ function foldersMatch(left, right) {
   );
 }
 
+/** Writable folders may only narrow the observed workspace, never widen it. */
+function foldersWithin(folders, allowed) {
+  return (
+    folders === undefined ||
+    (Array.isArray(folders) &&
+      folders.every(
+        (folder) =>
+          typeof folder === "string" && allowed.some((root) => foldersMatch([folder], [root])),
+      ))
+  );
+}
+
 function reject() {
   throw new Error("Native MCP callback does not match an observed execution");
 }
@@ -131,6 +143,7 @@ class NativeMcpExecutions {
       !session ||
       !record(input) ||
       !foldersMatch(input.workspaceFolders, session.folders) ||
+      !foldersWithin(input.rwFolders, session.folders) ||
       Object.keys(input).some(
         (key) =>
           ![

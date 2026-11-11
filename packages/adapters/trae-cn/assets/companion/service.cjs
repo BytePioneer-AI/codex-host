@@ -92,7 +92,10 @@ function publicError(value) {
     .slice(0, 240)
     .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
     .replace(/\bsk-[A-Za-z0-9_-]+/g, "[redacted]")
-    .replace(/((?:api[_ -]?key|token|authorization)\s*[:=]\s*)\S+/gi, "$1[redacted]");
+    .replace(
+      /\b((?:api[_ -]?key|access[_ -]?key|secret(?:[_ -]?key)?|token|authorization|ak|sk)\s*[:=]\s*)\S+/gi,
+      "$1[redacted]",
+    );
   return { ...(typeof code === "number" || typeof code === "string" ? { code } : {}), message };
 }
 

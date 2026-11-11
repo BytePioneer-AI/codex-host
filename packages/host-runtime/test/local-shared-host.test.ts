@@ -15,9 +15,17 @@ import { SharedThreadBridge } from "../src/shared-thread-bridge.js";
 import {
   connectLocalSharedHost,
   connectLocalSharedExternalHost,
+  runLocalDesktopBridge,
 } from "../src/local-shared-host.js";
+import {
+  CODEX_RUNTIME_REMOVED_MESSAGE,
+  CodexRuntimeFilesRemovedError,
+} from "../src/codex-runtime/backend-files.js";
 import { startClientChannelServer } from "../src/client-channel-server.js";
 import { runSharedHostService } from "../src/shared-host-service.js";
+import { sharedHostDesktop } from "../src/shared-host-desktop.js";
+import { prepareLocalCodex } from "../src/native-account-host.js";
+import { ModelPriceCatalog } from "../src/model-prices.js";
 import { readNativeWorkspaceSnapshot } from "../src/native-workspace-snapshot.js";
 import {
   createFixture,
@@ -31,7 +39,9 @@ afterEach(async () => {
   for (const run of cleanup.splice(0).reverse()) await run();
 });
 
-async function setup() {
+async function setup(
+  desktopSession?: Parameters<typeof startClientChannelServer>[0]["desktopSession"],
+) {
   const root = mkdtempSync(path.join(tmpdir(), "local-shared-owner-"));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const store = new MappingStore({ directory: path.join(root, "mapping-store") });
@@ -62,7 +72,7 @@ async function setup() {
     owner: "service",
     externalSession: (streams) => owner.createSession(streams),
     shutdown: { runningTasks: () => new Set(host.runningThreadIds()).size, stop },
-    desktopSession: (streams) => owner.createSession(streams),
+    desktopSession: desktopSession ?? ((streams) => owner.createSession(streams)),
   });
   cleanup.push(() => server.close());
   const web = new HostClientChannel(path.join(root, "client-hosts"), server.descriptor);
@@ -93,6 +103,69 @@ async function setup() {
   }
   return { root, owner, adapter, host, server, web, store, gui, stop };
 }
+
+it("returns an actionable failure when authenticated Desktop admission finds a removed runtime", async () => {
+  const register = vi.fn();
+  const connected = new Set<AppServerHost>();
+  const running = new Set<Promise<number>>();
+  const f = await setup((streams, request) => {
+    expect(request.headers["x-codexhost-desktop-context"]).toBeTypeOf("string");
+    return sharedHostDesktop(
+      {
+        environment: { CODEXHOST_DATA_DIR: f.root },
+        runtimeUrl: import.meta.url,
+        stockCodex: path.join(f.root, "codex.exe"),
+        official,
+        owner: f.owner,
+        store: f.store,
+        prices: new ModelPriceCatalog({
+          directory: path.join(f.root, "prices"),
+          diagnose: () => {},
+        }),
+        delegation: () => undefined,
+        register,
+        connected,
+        running,
+      },
+      streams,
+      request,
+    );
+  });
+  const official = await prepareLocalCodex({
+    stockCodexPath: path.join(f.root, "codex.exe"),
+    arguments: ["app-server"],
+    environment: { CODEX_HOME: path.join(f.root, "native-home"), CODEXHOST_DATA_DIR: f.root },
+    diagnosticOutput: new PassThrough(),
+    deferStart: true,
+  });
+  vi.spyOn(official, "configureStartup").mockRejectedValue(new CodexRuntimeFilesRemovedError());
+  const stdin = vi.spyOn(process.stdin, "pipe").mockImplementation((destination) => destination);
+  const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    const result = await runLocalDesktopBridge(
+      {
+        CODEXHOST_LAUNCHER_EXECUTABLE: path.join(f.root, "unused-launcher"),
+        CODEXHOST_DATA_DIR: f.root,
+      },
+      path.join(f.root, "unused-runtime.mjs"),
+      path.join(f.root, "codex.exe"),
+      ["app-server"],
+    );
+    expect(result).toBe(1);
+    expect(stderr.mock.calls.map(([message]) => String(message)).join("")).toContain(
+      CODEX_RUNTIME_REMOVED_MESSAGE,
+    );
+    expect(f.stop).not.toHaveBeenCalled();
+    expect(register).not.toHaveBeenCalled();
+    expect(connected.size).toBe(0);
+    expect(running.size).toBe(0);
+    await expect(f.web.request("thread/list", {})).resolves.toMatchObject({ data: [] });
+  } finally {
+    stdin.mockRestore();
+    stderr.mockRestore();
+    await official.close();
+  }
+});
 
 it("SSH and local clients create and resume the same external sessions across separate stores", async () => {
   const { root, web, adapter, store } = await setup();

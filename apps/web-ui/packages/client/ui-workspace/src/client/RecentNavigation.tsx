@@ -25,6 +25,7 @@ export interface RecentNavigationInjected {
   };
   open: (target: SessionTarget) => void;
   close: (sessionId: SessionId) => void;
+  closeAll: () => void;
   /** Root-owned presentation state survives Session-maybe header remounts. */
   viewport: { scrollLeft: number };
   setEnabled: (enabled: boolean) => Promise<boolean>;
@@ -73,6 +74,7 @@ export function RecentShortcuts(
     useRecentNavigationSettings,
     open,
     close,
+    closeAll,
     viewport,
     restoreNavigationFocus,
     renderSlot,
@@ -154,6 +156,25 @@ export function RecentShortcuts(
             restoreNavigationFocus={restoreNavigationFocus}
           />
         ))}
+        {rows.length >= 3 && (
+          <button
+            type="button"
+            className={css.clear}
+            aria-label={t("recent.clearAll")}
+            title={t("recent.clearAllHint")}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              restoreNavigationFocus();
+              try {
+                closeAll();
+              } catch {
+                setCloseFailed(true);
+              }
+            }}
+          >
+            {t("recent.clear")}
+          </button>
+        )}
       </nav>
       {closeFailed && <Toast text={t("recent.closeFailed")} onDone={() => setCloseFailed(false)} />}
     </>

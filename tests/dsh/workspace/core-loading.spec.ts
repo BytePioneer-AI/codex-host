@@ -45,6 +45,7 @@ function fixture(saved?: string) {
     createSnapshotStore({ activePanelId: null }),
   );
   const beginNavigation = vi.spyOn(layout, "beginNavigation");
+  const selectPanel = vi.spyOn(layout, "selectPanel");
   ctx.provide("layout", layout);
   ctx.provide("locale", { bind: () => (key: string) => key } as never);
   const generation = createSnapshotStore<{ id: number } | undefined>({ id: 1 });
@@ -134,9 +135,112 @@ function fixture(saved?: string) {
     create,
     read,
     beginNavigation,
+    selectPanel,
     notify,
   };
 }
+
+it("clears all tabs and their cache while keeping the current conversation open", async () => {
+  const f = fixture();
+  const ui = f.ui as UiWorkspaceService;
+  const ids = ["a", "b", "c", "d"].map(SessionId);
+  for (const id of ids) f.sessions.handleSessionAdded(summary(id));
+  f.workspace.update((s) => {
+    s.phase = "ready";
+  });
+  for (const id of ids) {
+    ui.openSession(id);
+    await flush();
+  }
+  expect(ui.recentVisits.entries.getSnapshot().map((entry) => entry.sessionId)).toEqual(ids);
+  const cacheKey = "codexhost.web.session-tabs.v2:local";
+  const cached = JSON.parse(localStorage.getItem(cacheKey)!);
+  cached.entries.push({ sessionId: "other-page", target: "other-page", lastVisitedAt: 1 });
+  localStorage.setItem(cacheKey, JSON.stringify(cached));
+  const requests = [...f.requests];
+  const selection = localStorage.getItem("dsh.sessions.current");
+  const binding = f.sessions.binding(SessionId("d"));
+  f.beginNavigation.mockClear();
+  f.selectPanel.mockClear();
+
+  ui.closeAllSessionTabs();
+  await flush();
+  expect(ui.recentVisits.entries.getSnapshot()).toEqual([]);
+  expect(JSON.parse(localStorage.getItem(cacheKey)!).entries).toEqual([
+    { sessionId: "other-page", target: "other-page", lastVisitedAt: 1 },
+  ]);
+  expect(f.requests).toEqual(requests);
+  for (const id of ids) {
+    expect(f.sessions.list.getSnapshot().byId[id]?.blank).toBe(false);
+    expect(f.sessions.retainInfo(id).getSnapshot().retainedBy.mainView).toBe(
+      id === "d" ? 1 : undefined,
+    );
+  }
+  expect(f.sessions.binding(SessionId("d"))).toBe(binding);
+  expect(localStorage.getItem("dsh.sessions.current")).toBe(selection);
+  expect(f.beginNavigation).not.toHaveBeenCalled();
+  expect(f.selectPanel).not.toHaveBeenCalled();
+  expect(f.create).not.toHaveBeenCalled();
+  // A later metadata update must not reinsert the just-closed current tab.
+  f.sessions.handleSessionAdded(summary("d"));
+  expect(ui.recentVisits.entries.getSnapshot()).toEqual([]);
+  ui.openSession(ids[0]!);
+  expect(ui.recentVisits.entries.getSnapshot().map((entry) => entry.sessionId)).toEqual([ids[0]]);
+});
+
+it("does not interrupt pending navigation when clearing tab entries", async () => {
+  const f = fixture();
+  const ui = f.ui as UiWorkspaceService;
+  ui.openSession(SessionId("slow"));
+  const opening = ui.opening.getSnapshot();
+  expect(opening.state).toBe("loading");
+  f.beginNavigation.mockClear();
+  ui.closeAllSessionTabs();
+  expect(ui.opening.getSnapshot()).toBe(opening);
+  expect(f.beginNavigation).not.toHaveBeenCalled();
+  f.read("slow").resolve(success([summary("slow")]));
+  await flush();
+  expect(ui.opening.getSnapshot().state).toBe("idle");
+  expect(f.requests).toEqual(["slow"]);
+  expect(f.sessions.retainInfo(SessionId("slow")).getSnapshot().retainedBy.mainView).toBe(1);
+});
+
+it("keeps the conversation open when its tab and then every remaining tab are closed", async () => {
+  const f = fixture();
+  const ui = f.ui as UiWorkspaceService;
+  const ids = ["a", "b", "c"].map(SessionId);
+  for (const id of ids) f.sessions.handleSessionAdded(summary(id));
+  f.workspace.update((s) => {
+    s.phase = "ready";
+  });
+  for (const id of ids) {
+    ui.openSession(id);
+    await flush();
+  }
+  const selection = localStorage.getItem("dsh.sessions.current");
+  const binding = f.sessions.binding(SessionId("c"));
+  const requests = [...f.requests];
+  f.beginNavigation.mockClear();
+  f.selectPanel.mockClear();
+
+  // Close the selected tab first while neighbors still exist, then close the last tab.
+  for (const id of [...ids].reverse()) {
+    ui.closeSessionTab(id);
+    await flush();
+    expect(f.sessions.retainInfo(SessionId("c")).getSnapshot().retainedBy.mainView).toBe(1);
+    expect(f.sessions.binding(SessionId("c"))).toBe(binding);
+    expect(localStorage.getItem("dsh.sessions.current")).toBe(selection);
+    expect(f.requests).toEqual(requests);
+    expect(f.beginNavigation).not.toHaveBeenCalled();
+    expect(f.selectPanel).not.toHaveBeenCalled();
+  }
+  expect(ui.recentVisits.entries.getSnapshot()).toEqual([]);
+  f.sessions.handleSessionAdded(summary("c"));
+  expect(ui.recentVisits.entries.getSnapshot()).toEqual([]);
+  // Leaving a conversation whose tab was closed must not reinsert that entry.
+  ui.openSession(SessionId("b"));
+  expect(ui.recentVisits.entries.getSnapshot().map((entry) => entry.sessionId)).toEqual(["b"]);
+});
 
 it("restores a saved ID and recent history while the head list and projects are still pending", async () => {
   const f = fixture("saved");

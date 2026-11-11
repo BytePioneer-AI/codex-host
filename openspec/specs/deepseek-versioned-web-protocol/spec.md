@@ -85,7 +85,7 @@ Adapter MUST 只接受单行规范 SemVer `--version` 输出，并以 `0.1.7-rc.
 
 #### Scenario: DSH 0.2.2-rc.2 names subagents and records the Team selection
 - **WHEN** 日志含第 3 版子代理目录项（带同级唯一的 `name`，mode 为 `continuable` 或 `external`）、记录 Team 模式选择的 `team/mode`，或任务带 `ownerName` 的 `team/task`
-- **THEN** Adapter SHALL 在历史与实时中按其精确形状接受，不生成新 Item，所在回合照常结束；同一日志中旧版目录项与第 3 版目录项并存时同样接受
+- **THEN** Adapter SHALL 在历史与实时中按其精确形状接受，不生成新 Item，所在回合照常结束；同一日志中旧版目录项（包括 v3 → v4 迁移为无法还原的子会话写入的、mode 为 `unknown` 的第 1 版）与第 3 版目录项并存时同样接受
 - **AND** 名称不符合 DSH 的命名规则（以小写字母开头、最多 32 个字符、不能是 `lead`）、第 3 版缺 `name` 或 mode 为其他取值、`team/mode` 缺少布尔 `enabled`，或 `ownerName` 没有 `ownerId` 时 MUST 报协议错误
 
 #### Scenario: A history page echoes its cut

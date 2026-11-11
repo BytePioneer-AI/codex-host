@@ -816,6 +816,17 @@ describe("DSH V4 durable protocol", () => {
       "subagent/catalog",
       { version: 0, childId: "child", childCreatedAt: 1, mode: "continuable", label: "worker" },
     ],
+    // The DSH v3-to-v4 Session format migration records a child it cannot describe as catalog v1.
+    ["subagent/catalog", { version: 1, childId: "child", childCreatedAt: 1, mode: "unknown" }],
+    [
+      "subagent/catalog",
+      { version: 1, childId: "child", childCreatedAt: 1, mode: "unknown", label: "worker" },
+    ],
+    ["subagent/catalog", { version: 1, childId: "child", childCreatedAt: 1, mode: "one-shot" }],
+    [
+      "subagent/catalog",
+      { version: 1, childId: "child", childCreatedAt: 1, mode: "continuable", label: "worker" },
+    ],
     // DSH 0.2.1-rc.1 records an external-agent child as catalog v2.
     [
       "subagent/catalog",
@@ -1070,13 +1081,41 @@ describe("DSH V4 durable protocol", () => {
     expect(() => project([event(0, type, { ...data, unsupported: true })])).toThrow();
   });
 
+  it("reads a parent catalog that mixes migrated unknown children with v0 and named v3 children", () => {
+    const catalog = [
+      { version: 0, childId: "old", childCreatedAt: 1, mode: "continuable", label: "worker" },
+      { version: 1, childId: "lost", childCreatedAt: 2, mode: "unknown" },
+      {
+        version: 3,
+        childId: "new",
+        childCreatedAt: 3,
+        mode: "continuable",
+        label: "worker",
+        name: "reviewer",
+      },
+    ];
+    expect(
+      project(catalog.map((data, seq) => event(seq, "subagent/catalog", data))).snapshot.turns,
+    ).toEqual([]);
+  });
+
   it.each([
     ["feedback/record", { category: "invalid" }],
     ["feedback/record", { text: " " }],
     ["deliverables/presented", { turn: 1, callId: "call", files: [{ path: "x", description: 1 }] }],
     ["deliverables/presented", { turn: 0, callId: "call", files: [] }],
     ["subagent/catalog", { version: 0, childId: "child", childCreatedAt: 1, mode: "continuable" }],
-    ["subagent/catalog", { version: 1, childId: "child", childCreatedAt: 1, mode: "one-shot" }],
+    ["subagent/catalog", { version: 0, childId: "child", childCreatedAt: 1, mode: "unknown" }],
+    ["subagent/catalog", { version: 1, childId: "child", childCreatedAt: 1, mode: "continuable" }],
+    ["subagent/catalog", { version: 1, childId: "child", childCreatedAt: 1, mode: "external" }],
+    [
+      "subagent/catalog",
+      { version: 1, childId: "child", childCreatedAt: 1, mode: "unknown", label: 1 },
+    ],
+    [
+      "subagent/catalog",
+      { version: 1, childId: "child", childCreatedAt: 1, mode: "unknown", name: "reviewer" },
+    ],
     ["subagent/catalog", { version: 2, childId: "child", childCreatedAt: 1, mode: "one-shot" }],
     ["subagent/catalog", { version: 0, childId: "child", childCreatedAt: 1, mode: "external" }],
     ...[

@@ -58,6 +58,8 @@ codexhost 只对接写 Session Format V4 的 DSH，最低版本为 `0.1.7-rc.1`�
 | `team/task` | 任务快照新增可选 `ownerName`，与 `ownerId` 一起记录（`v0.2.2-alpha.3/subagent-names`） | **需要**：接受 `ownerName`，必须同时带 `ownerId` 且为非空字符串 |
 | 消息来源 | 新增 `retry`；子代理结算通知新增 `stopReason`；运行时上下文的文本包在 `<system-reminder>` 中 | 无：来源只要求非空且不是 `plugin` 的 kind，只有 `kind: "user"` 投影为用户输入 |
 
+第 1 版目录项不是 rc.2 新增的：v3 → v4 会话格式迁移遇到无法还原描述的子会话时，写入 `{version: 1, mode: "unknown"}`（`session-format-v3-to-v4/src/migration.ts`），DSH 的 schema 允许第 1 版的 mode 为 `one-shot`、`continuable` 或 `unknown`。Adapter 以前只接受第 0、2 版，带这类子会话的旧会话迁移后打不开；现在按 DSH 的 schema 接受第 1 版，`continuable` 仍必须带 `label`。没有用真实 CLI 触发（需要旧版本写出、子会话描述无法还原的会话），由单元测试覆盖。
+
 ## 0.2.2-rc.2 真实 CLI 验证
 
 环境同 `0.2.2-rc.1`：macOS 27.0.1（arm64）、Node.js `v24.21.0`、npm `11.19.0`、Vitest `4.1.10`。`0.2.2-rc.2` 尚未发布到 npm，GitHub Release 也没有附件，因此从 tag 源码构建：`pnpm install --frozen-lockfile`，按 official 配置构建产物（`scripts/build.ts --scope artifacts --profile official`），`pnpm run release:pack --family dsh` 打出 374 个 tarball，再参照 DSH 的 `verify-packed-install` 以 `file:` 依赖隔离安装。`dsh --version` 为 `0.2.2-rc.2`，`@deepseek-ai/dsh` 及 373 个 `dsh-*` 子包版本一致。`0.2.2-rc.1` 从 npm 隔离安装（319 个子包）。npm 11 安装脚本的处理同 `0.2.1-rc.1`；另外不能加 `--omit=optional`，否则 koffi 缺少平台预编译包，改为从源码编译并失败。全部验证都用本地 Messages SSE 模型桩和隔离的 `DSH_HOME`，不调用真实计费模型。
@@ -356,26 +358,27 @@ CodeRabbit 在 #412 上建议拒绝 catalog `options` 中的 `auto`，本变更�
 
 ### 0.2.2-rc.2 对接
 
-在本次对接的最终代码上运行：**28 个文件、1034 项测试全部通过**。
+在本次对接的最终代码上运行：**28 个文件、1043 项测试全部通过**。
 
 | 指标 | 覆盖率 | 已覆盖 / 总数 |
 | --- | --- | --- |
 | 语句 | 88.19% | 6132 / 6953 |
-| 分支 | 83.82% | 5307 / 6331 |
+| 分支 | 83.83% | 5311 / 6335 |
 | 函数 | 93.93% | 960 / 1022 |
 | 行 | 91.12% | 5687 / 6241 |
 
-同一代码上，DSH Adapter 与设置页测试一起运行 46 个文件、1268 项通过；`npm run lint`、`npm run typecheck`、`prettier --check .`、`npm run build:renderer` 与 `git diff --check` 均通过。本机没有 Rust 工具链，未运行 `cargo fmt --check`（本次未改动 Rust）。
+同一代码上，DSH Adapter 与设置页测试一起运行 46 个文件、1277 项通过；`npm run lint`、`npm run typecheck`、`prettier --check .`、`npm run build:renderer` 与 `git diff --check` 均通过。本机没有 Rust 工具链，未运行 `cargo fmt --check`（本次未改动 Rust）。
 
 新增的定向测试：
 
 - 子代理目录：第 3 版的 `continuable`（带 `label`）与 `external`（带或不带 `label`）被接受，名称长度到 32 个字符；缺 `name`、名称为 `lead`、含大写字母、以数字开头、含 `/`、超过 32 个字符或不是字符串、`continuable` 缺 `label`、mode 为 `one-shot` 或 `unknown`、第 2 版带 `name` 都拒绝。
+- 第 1 版目录项：mode 为 `unknown`（带或不带 `label`）、`one-shot` 与带 `label` 的 `continuable` 被接受；`continuable` 缺 `label`、mode 为 `external`、`label` 不是字符串、带 `name` 都拒绝，第 0 版的 `unknown` 也拒绝。同一日志中第 0、1、3 版目录项并存时接受。
 - `team/mode`：`true` 与 `false` 被接受；缺 `enabled`、非布尔值、多余字段都拒绝。
 - Team 任务：带 `ownerId` 与 `ownerName` 的任务被接受；只有 `ownerName`、`ownerName` 为空字符串或非字符串都拒绝。
 - 实时回合：日志先写 `team/mode`，回合中再写第 3 版目录项与带 `ownerName` 的任务，回合照常成功，Session 不故障。
 - 版本：`0.2.2-rc.2` 被识别为已验证版本，低版本提示逐字列出十一个版本。
 
-在改动前的源码上保留这些测试（Adapter 源码、manifest 与 Renderer 文案换回 upstream main），共 19 项失败：协议相关 7 项（目录项 3、`team/mode` 2、Team 任务 1、实时回合 1），版本列表相关 12 项。
+在改动前的源码上保留这些测试（Adapter 源码、manifest 与 Renderer 文案换回 upstream main），共 24 项失败：协议相关 12 项（第 3 版目录项 3、第 1 版目录项 5、`team/mode` 2、Team 任务 1、实时回合 1），版本列表相关 12 项。
 
 ### 0.2.2 对接（0.2.1-rc.3 至 0.2.2-rc.1）
 
@@ -470,7 +473,7 @@ V4 回放夹具 `packages/adapters/deepseek-harness/test/fixtures/dsh-020rc2-too
 - `0.2.2-rc.2` 由源码打包安装，不是 npm 上发布的产物；npm 发布后的包没有复验。Team 模式只用 `defaultEnabled` 配置触发，没有在 DSH Web 中手动切换；`team/task` 的 `ownerName` 与 mode 为 `external` 的第 3 版目录项只由单元测试与快照回放覆盖。Desktop 中子代理结果投递触发的回合如何显示，没有手测。
 - `0.2.2-rc.1` 的 follow `activate` 在崩溃恢复与冷恢复后继续对话的探测中没有观察到可见差别，只按 DSH 升级指南与旧版本行为保留。
 - `0.2.1-rc.2` 的搜索探测使用默认的 `web-search-deepseek` 提供者和本地桩。新增的 DeepSeek Search/Fetch API（Web search 设置开关，默认关闭）没有用真实 CLI 触发，只有 `deepseek-fetch` 快照回放；两个版本之间的 schema 比对显示它没有新增记录类型。
-- `subagent/catalog` v1（DSH 迁移为未知子代理写入，0.1.7 起即存在）仍被拒绝，与 `0.2.1` 系列无关，未在本次对接中处理。
+- `subagent/catalog` 第 1 版（DSH 迁移为未知子代理写入，0.1.7 起即存在）只由单元测试覆盖，没有用真实 CLI 触发迁移出这类目录项。
 - `assistant/attempt` 的失败诊断带 `offloadImages`（图片超出路由预算、DSH 需要卸载最旧图片后重试，`IMAGE_OFFLOAD_REQUIRED`）会被拒绝：`profiles/validation.ts` 只允许 `message`、`code`、`status`、`providerRetryAfterMs`、`requestId`。该成员在 DSH `0.1.7-rc.2`、`0.2.0-rc.2`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.5`、`0.2.2-rc.1`、`0.2.2-rc.2` 的源码中都存在，`sdk` 目录的 `inline-image-prompt`、`minimal-image-compaction` 快照因此回放失败；它与本次版本变化无关，未在本次对接中处理，也没有用真实 CLI 触发。
 - 原生执行可能仍在时（例如托管 `dsh web` 被杀）关闭故障的 Session，`close()` 返回的拒绝要晚一步才有处理器，Node 先报告一次未处理的 Promise 拒绝（随后提示已异步处理）。`0.2.1-rc.5` 与 `0.2.2-rc.1` 上都复现，修复前的 Adapter 同样如此；在默认设置的独立 Node 进程中，它会使进程退出。Host Runtime 中的影响没有验证，未在本次对接中处理。
 - 未用真实 CLI 触发 PTC 模式、失败的 step，以及 Fork 种子里的补写结果；Auto review 插件未启用。

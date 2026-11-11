@@ -722,9 +722,12 @@ function validateV4Event(event: ModernJournalEvent): void {
         ["version", "childId", "childCreatedAt", "mode", ...(named ? ["name"] : [])],
         ["label"],
       );
-      // DSH 0.2.1 records executions delegated to an external agent as v2.
+      // v1 adds `unknown`, which the DSH v3-to-v4 Session format migration writes for a child it cannot
+      // describe; DSH 0.2.1 records executions delegated to an external agent as v2.
       if (!(
         (data.version === 0 && (data.mode === "one-shot" || data.mode === "continuable")) ||
+        (data.version === 1 &&
+          (data.mode === "one-shot" || data.mode === "continuable" || data.mode === "unknown")) ||
         (data.version === 2 && data.mode === "external") ||
         (named && (data.mode === "continuable" || data.mode === "external"))
       ))

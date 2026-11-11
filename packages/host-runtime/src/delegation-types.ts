@@ -205,9 +205,11 @@ export interface DelegationThreadListResult {
 export interface ThreadWatchInput {
   /** Thread observed until it stops. */
   threadId: string;
-  /** Thread that receives the single notification. */
+  /** Thread that receives stop/expiry and any enabled silence notifications. */
   notifyThreadId: string;
   timeoutMs: number;
+  /** Optional silence threshold; omitted disables stalled notifications. */
+  stallAfterMs?: number;
 }
 
 export type ThreadWatchOutcome =
@@ -216,6 +218,8 @@ export type ThreadWatchOutcome =
   | "interrupted"
   /** The Thread was still running when the watch expired. */
   | "timedOut"
+  /** Still running, with no observed Harness event for the configured threshold. */
+  | "stalled"
   /** Reads kept failing, so the state of the Thread is unknown. */
   | "unreadable"
   | "notFound";
@@ -227,6 +231,7 @@ export interface ThreadWatchResult {
   state: "watching" | "alreadyTerminal";
   status: DelegationThreadStatus;
   timeoutMs: number;
+  stallAfterMs?: number;
 }
 
 export interface ThreadWatchEntry {
@@ -234,11 +239,12 @@ export interface ThreadWatchEntry {
   notifyThreadId: string;
   state: "watching" | "pendingDelivery" | "undeliverable";
   outcome?: ThreadWatchOutcome;
-  /** Turn that reached the terminal outcome, when the Thread reported one. */
+  /** Turn associated with this outcome, when the Thread reported one. */
   turnId?: string;
   /** Present for `undeliverable`. */
   reason?: string;
   registeredAt: string;
+  stallAfterMs?: number;
 }
 
 export interface ThreadWatchListResult {
@@ -267,6 +273,8 @@ export interface DelegationControlApi {
 }
 
 export interface DelegationControlRegistration extends DelegationControlApi {
+  /** Thread and Harness subagent ancestors active in an incoming Harness event. */
+  subscribeActivity?(listener: (threadIds: readonly string[]) => void): () => void;
   executionHostId?(threadId: string): string | undefined;
   canHandleStart(input: DelegationStartInput): boolean | Promise<boolean>;
   ownsThread(threadId: string): boolean | Promise<boolean>;

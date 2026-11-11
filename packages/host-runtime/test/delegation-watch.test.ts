@@ -7,6 +7,7 @@ import {
   type ThreadSendInput,
 } from "../src/delegation-types.js";
 import { DelegationWatchService } from "../src/delegation-watch.js";
+import { ThreadActivity } from "../src/thread-activity.js";
 
 const POLL_MS = 1_000;
 
@@ -127,13 +128,16 @@ describe("DelegationWatchService", () => {
     expect(fake.sent[0]?.message).toContain("has not reached a terminal state after 29 min");
   });
 
-  it("states a timeout shorter than a minute in seconds", async () => {
+  it.each([
+    [15_000, "15 s"],
+    [700, "1 s"],
+  ])("states a %i ms timeout in whole seconds", async (timeoutMs, text) => {
     const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });
     const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
-    await service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 15_000 });
+    await service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs });
 
-    await vi.advanceTimersByTimeAsync(15_000 + POLL_MS);
-    expect(fake.sent[0]?.message).toContain("has not reached a terminal state after 15 s");
+    await vi.advanceTimersByTimeAsync(timeoutMs + POLL_MS);
+    expect(fake.sent[0]?.message).toContain(`has not reached a terminal state after ${text};`);
   });
 
   it("waits out a replacement Turn and notifies once when the Thread stops", async () => {
@@ -381,5 +385,219 @@ describe("DelegationWatchService", () => {
     await expect(
       service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 }),
     ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+  });
+
+  it("notifies once per silence episode, rearms on activity, and still reports the final stop", async () => {
+    const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    await service.watch({
+      threadId: "child",
+      notifyThreadId: "parent",
+      timeoutMs: 60_000,
+      stallAfterMs: 3_000,
+    });
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(2_999);
+    expect(fake.sent).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]?.message).toContain(
+      "codex://threads/child: stalled (Turn turn-child). It was still running, but no Harness event had been observed for at least 3 s.",
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fake.sent).toHaveLength(1);
+    service.noteActivity(["unrelated"]);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(fake.sent).toHaveLength(1);
+    service.noteActivity(["child"]);
+    await vi.advanceTimersByTimeAsync(2_999);
+    expect(fake.sent).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fake.sent).toHaveLength(2);
+    fake.update("child", { status: "completed" });
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(fake.sent).toHaveLength(3);
+    expect(fake.sent[2]?.message).toContain("completed (Turn turn-child)");
+    expect((await service.watches()).watches).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    [90_000, "90 s"],
+    [600_000, "10 min"],
+    [1_500, "1500 ms"],
+  ])(
+    "states a %i ms silence threshold exactly and leaves progress to thread read",
+    async (stallAfterMs, text) => {
+      const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });
+      const service = new DelegationWatchService(
+        {
+          read: async (input) => ({
+            ...(await fake.read(input)),
+            progress: [
+              { id: "progress-1", turnId: "turn-child", text: "Compiling the release build" },
+            ],
+          }),
+          send: fake.send,
+        },
+        { pollIntervalMs: 60_000 },
+      );
+      await service.watch({
+        threadId: "child",
+        notifyThreadId: "parent",
+        timeoutMs: 60 * 60_000,
+        stallAfterMs,
+      });
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(fake.sent).toHaveLength(1);
+      const message = fake.sent[0]?.message;
+      expect(message).toContain(`no Harness event had been observed for at least ${text}.`);
+      expect(message).toContain("read the Thread for its latest progress");
+      expect(message).not.toContain("Compiling the release build");
+      service.close();
+    },
+  );
+
+  it("counts Harness subagent events as parent activity without the parent sending progress", async () => {
+    const fake = runtime({ parent: { status: "running" }, subscriber: { status: "completed" } });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    const activity = new ThreadActivity();
+    activity.subscribe((threadIds) => service.noteActivity(threadIds));
+    await service.watch({
+      threadId: "parent",
+      notifyThreadId: "subscriber",
+      timeoutMs: 60_000,
+      stallAfterMs: 3_000,
+    });
+    activity.note("subagent", "parent");
+    for (let index = 0; index < 5; index += 1) {
+      await vi.advanceTimersByTimeAsync(2_000);
+      activity.observeOfficial({
+        method: "item/commandExecution/outputDelta",
+        params: { threadId: "subagent", delta: "tool output" },
+      });
+    }
+    expect(fake.sent).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fake.sent).toHaveLength(1);
+    service.close();
+  });
+
+  it("keeps counting a grandchild's activity after the intermediate native Thread closes", async () => {
+    const fake = runtime({ A: { status: "running" }, subscriber: { status: "completed" } });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    const activity = new ThreadActivity();
+    activity.subscribe((threadIds) => service.noteActivity(threadIds));
+    await service.watch({
+      threadId: "A",
+      notifyThreadId: "subscriber",
+      timeoutMs: 60_000,
+      stallAfterMs: 3_000,
+    });
+    for (const [id, parent] of [
+      ["B", "A"],
+      ["C", "B"],
+    ] as const) {
+      activity.observeOfficial({
+        method: "thread/started",
+        params: {
+          thread: { id, source: { subAgent: { thread_spawn: { parent_thread_id: parent } } } },
+        },
+      });
+    }
+    activity.observeOfficial({ method: "thread/closed", params: { threadId: "B" } });
+    for (let index = 0; index < 5; index += 1) {
+      await vi.advanceTimersByTimeAsync(2_000);
+      activity.observeOfficial({
+        method: "item/commandExecution/outputDelta",
+        params: { threadId: "C", delta: "tool output" },
+      });
+    }
+    expect(fake.sent).toHaveLength(0);
+    activity.observeOfficial({ method: "thread/closed", params: { threadId: "C" } });
+    expect(activity.size).toBe(0);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fake.sent[0]?.message).toContain(": stalled");
+    service.close();
+  });
+
+  it("keeps silence detection disabled when the threshold is omitted", async () => {
+    const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    const result = await service.watch({
+      threadId: "child",
+      notifyThreadId: "parent",
+      timeoutMs: 60_000,
+    });
+    expect(result).not.toHaveProperty("stallAfterMs");
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(fake.sent).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(fake.sent[0]?.message).toContain("watch expired");
+    expect(fake.sent[0]?.message).not.toContain(": stalled");
+  });
+
+  it("merges pending silence alerts and terminal notifications for the same subscriber", async () => {
+    const fake = runtime({
+      a: { status: "running" },
+      b: { status: "running" },
+      parent: { status: "running" },
+    });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    await service.watch({
+      threadId: "a",
+      notifyThreadId: "parent",
+      timeoutMs: 60_000,
+      stallAfterMs: 2_000,
+    });
+    await service.watch({ threadId: "b", notifyThreadId: "parent", timeoutMs: 60_000 });
+    fake.sendFailures.push(busy());
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect((await service.watches()).watches).toMatchObject([
+      { threadId: "a", state: "watching" },
+      { threadId: "b", state: "watching" },
+      { threadId: "a", state: "pendingDelivery", outcome: "stalled" },
+    ]);
+    fake.update("b", { status: "completed" });
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]?.message).toContain("codex://threads/a: stalled");
+    expect(fake.sent[0]?.message).toContain("codex://threads/b: completed");
+    expect((await service.watches()).watches).toMatchObject([{ threadId: "a", state: "watching" }]);
+    service.close();
+  });
+
+  it("preserves the original silence threshold on duplicate registration", async () => {
+    const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    await service.watch({
+      threadId: "child",
+      notifyThreadId: "parent",
+      timeoutMs: 60_000,
+      stallAfterMs: 3_000,
+    });
+    await expect(
+      service.watch({
+        threadId: "child",
+        notifyThreadId: "parent",
+        timeoutMs: 5_000,
+        stallAfterMs: 1_000,
+      }),
+    ).resolves.toMatchObject({ timeoutMs: 60_000, stallAfterMs: 3_000 });
+    service.close();
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])("rejects invalid stallAfterMs %s", async (stallAfterMs) => {
+    const service = new DelegationWatchService(
+      runtime({ child: { status: "running" }, parent: { status: "completed" } }),
+    );
+    await expect(
+      service.watch({
+        threadId: "child",
+        notifyThreadId: "parent",
+        timeoutMs: 60_000,
+        stallAfterMs,
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
   });
 });

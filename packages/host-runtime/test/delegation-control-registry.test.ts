@@ -72,6 +72,43 @@ function registration(threadId: string): DelegationControlRegistration {
 }
 
 describe("DelegationControlRegistry", () => {
+  it("forwards registered Harness activity to silence watches and unsubscribes on removal", async () => {
+    vi.useFakeTimers();
+    const registry = new DelegationControlRegistry();
+    try {
+      const target = registration("target");
+      const subscriber = registration("subscriber");
+      let noteActivity: ((threadIds: readonly string[]) => void) | undefined;
+      const unsubscribe = vi.fn();
+      target.subscribeActivity = (listener) => {
+        noteActivity = listener;
+        return unsubscribe;
+      };
+      const remove = registry.register(target);
+      registry.register(subscriber);
+      await registry.watch({
+        threadId: "target",
+        notifyThreadId: "subscriber",
+        timeoutMs: 60_000,
+        stallAfterMs: 3_000,
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      noteActivity?.(["subagent", "target"]);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(subscriber.send).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(subscriber.send).toHaveBeenCalledOnce();
+      expect(subscriber.send).toHaveBeenCalledWith({
+        threadId: "subscriber",
+        message: expect.stringContaining(": stalled"),
+      });
+      remove();
+      expect(unsubscribe).toHaveBeenCalledOnce();
+    } finally {
+      registry.close();
+      vi.useRealTimers();
+    }
+  });
   it("uses only the calling Thread's execution identity for same-Host reads", async () => {
     const caller = registration("caller");
     caller.executionHostId = (id) => (id === "caller" ? "ssh:mac" : undefined);

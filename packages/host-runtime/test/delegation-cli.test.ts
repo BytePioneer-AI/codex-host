@@ -42,6 +42,22 @@ describe("delegation CLI", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("lists stalled alerts in the watch and event help", async () => {
+    const help = async (...command: string[]) => {
+      const output = new PassThrough();
+      await expect(runDelegationCli({ arguments: [...command, "--help"], output })).resolves.toBe(
+        0,
+      );
+      return outputText(output);
+    };
+    expect(await help("thread", "watch")).toContain(
+      "unreadable, notFound, or stalled (only with --stall-after-ms; the watch continues)",
+    );
+    expect(await help("events")).toContain(
+      "(outcome stalled, explained in note; the watch continues)",
+    );
+  });
+
   it("discovers Harnesses without reading a Model catalog", async () => {
     const fetchImpl = successfulFetch({ harnesses: ["codex", "pi"] });
     const output = new PassThrough();
@@ -750,7 +766,15 @@ describe("delegation CLI", () => {
     const base = ["delegate", "start", "--harness", "pi", "--task", "work"];
     await runDelegationCli({ arguments: base, environment, output: new PassThrough(), fetchImpl });
     await runDelegationCli({
-      arguments: [...base, "--watch", "true", "--watch-timeout-ms", "5000"],
+      arguments: [
+        ...base,
+        "--watch",
+        "true",
+        "--watch-timeout-ms",
+        "5000",
+        "--stall-after-ms",
+        "1000",
+      ],
       environment,
       output: new PassThrough(),
       fetchImpl,
@@ -759,7 +783,7 @@ describe("delegation CLI", () => {
       .mocked(fetchImpl)
       .mock.calls.map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
     expect(bodies[0]).not.toHaveProperty("watchTimeoutMs");
-    expect(bodies[1]).toMatchObject({ watchTimeoutMs: 5_000 });
+    expect(bodies[1]).toMatchObject({ watchTimeoutMs: 5_000, stallAfterMs: 1_000 });
 
     const diagnosticOutput = new PassThrough();
     expect(
@@ -772,5 +796,53 @@ describe("delegation CLI", () => {
       }),
     ).toBe(1);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("accepts a positive optional silence threshold on thread watch", async () => {
+    const fetchImpl = successfulFetch({});
+    const environment = {
+      [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+      [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+      [DELEGATION_THREAD_ID_ENV]: "parent",
+    };
+    await expect(
+      runDelegationCli({
+        arguments: ["thread", "watch", "child", "--stall-after-ms", "3000"],
+        environment,
+        output: new PassThrough(),
+        fetchImpl,
+      }),
+    ).resolves.toBe(0);
+    expect(JSON.parse(String(vi.mocked(fetchImpl).mock.calls[0]?.[1]?.body))).toMatchObject({
+      stallAfterMs: 3_000,
+    });
+    for (const args of [
+      ["thread", "watch", "child", "--stall-after-ms", "0"],
+      ["thread", "watch", "child", "--stall-after-ms", "1.5"],
+      ["delegate", "start", "--harness", "pi", "--task", "work", "--stall-after-ms", "3000"],
+      [
+        "delegate",
+        "start",
+        "--harness",
+        "pi",
+        "--task",
+        "work",
+        "--watch",
+        "false",
+        "--stall-after-ms",
+        "3000",
+      ],
+    ]) {
+      await expect(
+        runDelegationCli({
+          arguments: args,
+          environment,
+          output: new PassThrough(),
+          diagnosticOutput: new PassThrough(),
+          fetchImpl,
+        }),
+      ).resolves.toBe(1);
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

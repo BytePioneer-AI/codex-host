@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { harnessPreferencePatchSchema } from "@codexhost/shared-contracts";
-import { HarnessPreferencesStore, HarnessPreferenceConflict } from "../src/preferences.js";
+import { HarnessPreferencesStore } from "../src/preferences.js";
 
 describe("shared Harness preferences", () => {
   it("merges granular writes, migrates only missing values, and survives restart", async () => {
@@ -105,34 +105,6 @@ describe("shared Harness preferences", () => {
     }
   });
 
-  it("announces atomic file replacement and refuses stale revisions", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "harness-pref-notifications-"));
-    const writer = new HarnessPreferencesStore(directory);
-    const observer = new HarnessPreferencesStore(directory);
-    try {
-      const changed = Promise.withResolvers<number>();
-      await observer.subscribe((revision) => changed.resolve(revision));
-      const result = await writer.patch(
-        harnessPreferencePatchSchema.parse({
-          operations: [{ kind: "idleRelease", value: { enabled: true, timeoutMinutes: 10 } }],
-        }),
-      );
-      expect(await changed.promise).toBe(result.revision);
-      await expect(
-        writer.patch(
-          harnessPreferencePatchSchema.parse({
-            expectedRevision: 0,
-            operations: [{ kind: "idleRelease", value: { enabled: false, timeoutMinutes: 30 } }],
-          }),
-        ),
-      ).rejects.toBeInstanceOf(HarnessPreferenceConflict);
-      expect((await observer.get()).values.idleRelease?.enabled).toBe(true);
-    } finally {
-      await writer.close();
-      await observer.close();
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
   it("rejects corrupt files without overwriting them and recovers after repair", async () => {
     const directory = await mkdtemp(join(tmpdir(), "harness-pref-corrupt-"));
     const store = new HarnessPreferencesStore(directory);

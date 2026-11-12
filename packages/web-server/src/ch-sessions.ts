@@ -2,6 +2,7 @@ import { draftPermissionMode, type DraftConfiguration } from "./draft-configurat
 /** CH-backed Web facade: canonical Threads are owned/persisted by CH, Web holds only rendering buffers. */
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
+import { resolve } from "node:path";
 import {
   WEB_FOLLOW_PROJECTION_KEYS,
   webTurnDiffsRequestSchema,
@@ -19,6 +20,7 @@ import type { ChThread } from "./ch-thread-view.ts";
 import type { Inspection } from "./harnesses.ts";
 import { nativePermissionView } from "./session-presentation.ts";
 import { projectGroupRoot } from "./ch-project-groups.ts";
+import { projectRootTitles } from "./workspaces.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { WebThreadStates, type UsageLoad } from "./web-thread-state.ts";
@@ -302,6 +304,7 @@ export class ChSessions {
     timing.measureSync("workspace_sync", () => {
       const groups = new Map<string, string | undefined>();
       const references: Array<{ sessionId: string; cwd: string; title?: string }> = [];
+      const rootTitles = projectRootTitles(projects.projects);
       const projectless = new Set(projects.projectless.filter((id) => !projects.assignments[id]));
       for (const row of this.rows.values()) {
         if (row.workspaceKind === "projectless" && !row.projectId && !projects.assignments[row.id])
@@ -312,7 +315,11 @@ export class ChSessions {
             : undefined;
         groups.set(row.id, root);
         if (root) {
-          const title = projects.projects.find((project) => project.rootPaths.includes(root))?.name;
+          // Only the project's first root keeps the native project name; other
+          // roots fall back to their folder name so titles never duplicate.
+          // Conflicting titles fall back to the full path, matching Workspaces.
+          const project = projects.projects.find((project) => project.rootPaths.includes(root));
+          const title = project === undefined ? undefined : rootTitles.get(resolve(root));
           references.push({
             sessionId: row.id,
             cwd: root,

@@ -41,28 +41,57 @@ function within(directory: string, file: string): boolean {
   );
 }
 
+/** Length of the line ending (LF, CR or CRLF) at `index`, or 0. */
+function lineEnding(text: string, index: number): number {
+  if (text[index] === "\n") return 1;
+  if (text[index] === "\r") return text[index + 1] === "\n" ? 2 : 1;
+  return 0;
+}
+
+/** Skips CommonMark link whitespace: spaces, tabs and at most one line ending. */
+function linkSpace(text: string, index: number): number {
+  let end = index;
+  let crossed = false;
+  for (;;) {
+    if (text[end] === " " || text[end] === "\t") end += 1;
+    else if (!crossed && lineEnding(text, end)) {
+      end += lineEnding(text, end);
+      crossed = true;
+    } else return end;
+  }
+}
+
 /** Index of the `)` closing a link after its destination, skipping an optional CommonMark title. */
 function closingParenthesis(text: string, index: number): number | undefined {
-  let end = index;
-  while (text[end] === " " || text[end] === "\t") end += 1;
+  // A second line ending here is a blank line, which ends the paragraph and the link.
+  let end = linkSpace(text, index);
   if (text[end] === ")") return end;
   if (end === index) return undefined;
   const open = text[end];
   const close = open === '"' ? '"' : open === "'" ? "'" : open === "(" ? ")" : undefined;
   if (!close) return undefined;
   for (end += 1; end < text.length && text[end] !== close; end += 1) {
-    if (text[end] === "\\") end += 1;
+    // A backslash before a line ending is literal, so the blank-line check still sees it.
+    if (text[end] === "\\" && !lineEnding(text, end + 1)) end += 1;
     else if (open === "(" && text[end] === "(") return undefined;
+    else if (lineEnding(text, end)) {
+      // A title may span lines but not a blank line.
+      const next = linkSpace(text, end);
+      if (lineEnding(text, next)) return undefined;
+      end = next - 1;
+    }
   }
   if (end >= text.length) return undefined;
-  for (end += 1; text[end] === " " || text[end] === "\t"; end += 1);
+  end = linkSpace(text, end + 1);
   return text[end] === ")" ? end : undefined;
 }
 
 /** Local path spellings of one link: percent-decoded or literal, with and without a `#fragment`. */
 function pathCandidates(target: string): string[] {
   const spellings = new Set<string>();
-  for (const value of [target, target.replace(/#[^#/]*$/u, "")]) {
+  // The literal spelling may name a file containing `#`; otherwise the fragment starts at the first `#`.
+  const fragment = target.indexOf("#");
+  for (const value of [target, fragment < 0 ? target : target.slice(0, fragment)]) {
     if (!value) continue;
     spellings.add(value);
     try {

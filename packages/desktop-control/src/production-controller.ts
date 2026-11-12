@@ -61,6 +61,7 @@ const TRANSIENT_INSTALL_ATTEMPTS = 3;
 const TRANSIENT_INSTALL_RETRY_MS = 250;
 const RECOVERY_RETRY_INITIAL_MS = 30_000;
 const RECOVERY_RETRY_MAX_MS = 300_000;
+const REMOTE_CONNECTION_RECOVERY_INTERVAL_MS = 5_000;
 const startupTraceStartedAt = Date.now();
 
 function startupTrace(stage: string, detail?: unknown): void {
@@ -269,6 +270,25 @@ export async function runDesktopController(
     );
     return next;
   };
+  let remoteRecovery: Promise<unknown> | undefined;
+  let nextRemoteRecoveryAt = 0;
+  const restoreRemoteConnections = (current: RendererCdpControlSession): void => {
+    if (signal.aborted || remoteRecovery || now() < nextRemoteRecoveryAt) return;
+    nextRemoteRecoveryAt = now() + REMOTE_CONNECTION_RECOVERY_INTERVAL_MS;
+    // Share the hosts recovery policy with Web; native SSH work must not block monitoring.
+    remoteRecovery = Promise.resolve()
+      .then(() => {
+        if (!signal.aborted && session === current)
+          return current.executeRenderer(
+            remoteConnectionsExpression({ action: "session", operation: { kind: "hosts" } }),
+          );
+        return undefined;
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        remoteRecovery = undefined;
+      });
+  };
   const resetSession = (): void => {
     session?.close();
     session = undefined;
@@ -329,6 +349,7 @@ export async function runDesktopController(
       try {
         session = await createSession();
         recordRecoverySuccess();
+        restoreRemoteConnections(session);
       } catch (error) {
         startupTrace("initial Renderer Session unavailable", error);
         session = undefined;
@@ -341,7 +362,7 @@ export async function runDesktopController(
       await useSession(async () => {
         if (!session && now() < nextRecoveryAt) return;
         try {
-          await recoverSession();
+          restoreRemoteConnections(await recoverSession());
         } catch {
           // Renderer integration remains unavailable until a later bounded retry succeeds.
         }

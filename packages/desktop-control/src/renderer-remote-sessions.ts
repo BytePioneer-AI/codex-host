@@ -37,7 +37,8 @@ export interface RemoteSessionTarget {
         >;
       }
     >;
-    reconnectAttempts?: Set<string>;
+    reconnectAttempts?:
+      Set<string> | Map<string, { failures: number; retryAt: number; loading?: Promise<void> }>;
   };
 }
 
@@ -61,21 +62,81 @@ export async function rendererRemoteSession(
     const connections = Array.isArray(configured)
       ? (configured as Array<{ hostId: string; displayName: string; autoConnect: boolean }>)
       : [];
-    const attempts = (state.reconnectAttempts ??= new Set<string>());
+    const previous = state.reconnectAttempts;
+    // An older Controller's one-shot attempts have unknown outcomes; preserve that guard.
+    const attempts = (state.reconnectAttempts =
+      previous && !("get" in previous)
+        ? new Map([...previous].map((id) => [id, { failures: 0, retryAt: Infinity }]))
+        : (previous ?? new Map()));
     return Promise.all(
       [...new Set([...ids, ...connections.map((c) => c.hostId)])].map(async (hostId) => {
         const connection = connections.find((c) => c.hostId === hostId);
         let status = (await api
           .remoteConnections({ action: "state", hostId })
           .catch(() => ({ state: "error" }))) as { state: string };
-        if (connection?.autoConnect === false) attempts.delete(hostId);
-        if (connection?.autoConnect && status.state === "disconnected" && !attempts.has(hostId)) {
-          // Restore an already-enabled native connection once per Desktop lifetime.
-          // Never enable a user-disabled connection or replay an unknown outcome.
-          attempts.add(hostId);
-          await api
-            .remoteConnections({ action: "connect", hostId, enabled: true })
-            .catch(() => undefined);
+        if (connection?.autoConnect === false || status.state === "connected")
+          attempts.delete(hostId);
+        if (connection?.autoConnect && status.state === "disconnected") {
+          let attempt = attempts.get(hostId);
+          if (!attempt || (!attempt.loading && Date.now() >= attempt.retryAt)) {
+            attempt ??= { failures: 0, retryAt: Infinity };
+            const current = attempt;
+            // Reserve before any asynchronous revalidation; unknown outcomes stay blocked.
+            current.retryAt = Infinity;
+            attempts.set(hostId, current);
+            current.loading = Promise.resolve().then(async () => {
+              try {
+                const latestStatus = (await api.remoteConnections({ action: "state", hostId })) as {
+                  state: string;
+                };
+                const latest = await api.remoteConnections({ action: "catalog" });
+                if (
+                  attempts.get(hostId) !== current ||
+                  !Array.isArray(latest) ||
+                  !latest.some((c) => c.hostId === hostId && c.autoConnect === true) ||
+                  latestStatus.state !== "disconnected"
+                ) {
+                  if (attempts.get(hostId) === current) attempts.delete(hostId);
+                  return;
+                }
+                let acknowledged = false;
+                let failureCode: unknown;
+                try {
+                  await api.remoteConnections({ action: "connect", hostId, enabled: true });
+                  acknowledged = true;
+                } catch (error) {
+                  failureCode = (error as { code?: unknown } | null)?.code;
+                }
+                const result = (await api.remoteConnections({ action: "state", hostId })) as {
+                  state: string;
+                  error?: unknown;
+                };
+                // A transport timeout or arbitrary rejection does not prove the write failed.
+                // Only acknowledged native completion or a definite network failure can retry.
+                const failed =
+                  acknowledged ||
+                  [
+                    "ECONNREFUSED",
+                    "ECONNRESET",
+                    "ENETUNREACH",
+                    "EHOSTUNREACH",
+                    "ENOTFOUND",
+                    "EAI_AGAIN",
+                  ].includes(String(failureCode));
+                if (failed && result.state === "disconnected" && result.error) {
+                  current.failures = Math.min(current.failures + 1, 4);
+                  current.retryAt =
+                    Date.now() + Math.min(30_000, 5_000 * 2 ** (current.failures - 1));
+                }
+              } catch {
+                // Failed observations cannot establish a safe retry outcome.
+              } finally {
+                delete current.loading;
+              }
+            });
+            attempt = current;
+          }
+          await attempt.loading;
           status = (await api
             .remoteConnections({ action: "state", hostId })
             .catch(() => ({ state: "error" }))) as { state: string };

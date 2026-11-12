@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { it } from "node:test";
 
 import { tailscaleServeState, tailscaleState } from "../src/tailscale-serve.ts";
+import { nodeCommand } from "./support/node-command.ts";
 import { fakeTailscale, RUNNING, serveStatus, SERVE_HOST } from "./support/tailscale.ts";
 
 it("reports installation, backend, HTTPS and root forwarding states using only read commands", async (t) => {
@@ -50,6 +51,33 @@ it("tries another CLI only after ENOENT", async (t) => {
     assert.equal((await read(4400, [cli.command, fallback.command])).status, "error");
   }
   assert.equal(readFileSync(fallback.log, "utf8"), "");
+});
+
+it("reads status from the macOS Tailscale app binary by forcing CLI mode", async () => {
+  const cli = nodeCommand(
+    "Tailscale",
+    `
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2).join(" ");
+if (args !== "status --json" && args !== "serve status --json") process.exit(99);
+if (process.env.TAILSCALE_BE_CLI !== "1") {
+  fs.writeSync(1, "The Tailscale GUI failed to start: The operation couldn't be completed. (Tailscale.CLIError error 3.)");
+  return;
+}
+const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "fixture.json"), "utf8"));
+fs.writeSync(1, JSON.stringify(args === "status --json" ? fixture.status : fixture.serve));
+`,
+  );
+  writeFileSync(
+    join(cli.directory, "fixture.json"),
+    JSON.stringify({ status: RUNNING, serve: serveStatus(4400) }),
+  );
+  assert.deepEqual(await tailscaleState(4400, [cli.command]), {
+    status: "serving",
+    url: `https://${SERVE_HOST}/`,
+    funnel: false,
+  });
 });
 
 it("recognizes an HTTPS root on 8443 before reporting an occupied 443 root", async (t) => {

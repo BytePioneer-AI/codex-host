@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import {
   connect as connectHttp2,
@@ -10,7 +11,8 @@ import {
 import { request as httpRequest } from "node:http";
 import { connect, type ConnectionOptions } from "node:tls";
 import { it } from "node:test";
-import { brotliDecompressSync } from "node:zlib";
+import { brotliDecompressSync, crc32 } from "node:zlib";
+import { streamWindowSize } from "@codexhost/remote-relay/protocol";
 import { WebSocket } from "ws";
 import { toolOutputRelay } from "./support/tool-output-relay.ts";
 import { defined } from "./support/defined.ts";
@@ -34,7 +36,14 @@ it(
         }),
     });
     cleanup.push(() => session.destroy());
+    const settings = once(session, "remoteSettings");
     await once(session, "connect");
+    await settings;
+    assert.equal(
+      session.remoteSettings.initialWindowSize,
+      streamWindowSize,
+      "the TLS-internal browser session must advertise the upload window, not the 64 KiB default",
+    );
     assert.equal(session.alpnProtocol, "h2");
     const send = (path: string, body?: string | Buffer, headers: OutgoingHttpHeaders = {}) =>
       new Promise<{ headers: IncomingHttpHeaders & IncomingHttpStatusHeader; body: Buffer }>(
@@ -70,6 +79,10 @@ it(
       origin: f.origin,
     });
     assert.equal(login.headers[":status"], 200);
+    assert.ok(
+      defined(session.state.remoteWindowSize) > streamWindowSize,
+      "connection credit covers uploads",
+    );
     const cookie = defined(login.headers["set-cookie"]?.[0]);
     assert.match(cookie, /^__Host-codexhost_token=.*; Secure$/);
     const auth = { cookie: defined(cookie.split(";")[0]), origin: f.origin };
@@ -166,6 +179,32 @@ it(
     const storedPath = /## notes.txt: (.+)\n/u.exec(input[0]?.text ?? "")?.[1];
     assert.ok(storedPath);
     assert.deepEqual(readFileSync(storedPath), bytes);
+
+    for (const size of [300 * 1024, 700 * 1024, 3 * 1024 * 1024]) {
+      const base = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=",
+        "base64",
+      );
+      const padding = randomBytes(size - base.length - 12);
+      const chunk = Buffer.alloc(padding.length + 12);
+      chunk.writeUInt32BE(padding.length);
+      chunk.write("raNd", 4);
+      padding.copy(chunk, 8);
+      chunk.writeUInt32BE(crc32(chunk.subarray(4, -4)), chunk.length - 4);
+      const body = Buffer.concat([base.subarray(0, -12), chunk, base.subarray(-12)]);
+      const started = performance.now();
+      const image = await send(`${path}&imageMediaType=image%2Fpng`, body, {
+        ...auth,
+        "content-type": "application/octet-stream",
+      });
+      const result = JSON.parse(image.body.toString());
+      assert.equal(result.ok, true);
+      assert.equal(result.value.file.bytes, size);
+      assert.match(result.value.file.attachmentId, /^web-image:/u);
+      t.diagnostic(
+        `${size} byte PNG through TLS/h2 relay: ${(performance.now() - started).toFixed(1)} ms`,
+      );
+    }
 
     const imagePath = f.data.path("sample.png");
     const png = Buffer.from(

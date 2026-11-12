@@ -257,7 +257,7 @@ const displaySettings: WebHarnessDisplaySettings = new WebHarnessDisplaySettings
 );
 const preferences: WebHarnessPreferences = new WebHarnessPreferences(chHost, events);
 const images = new WebImages(data);
-const files = new WebFiles(data);
+const files = new WebFiles(data, images);
 const sessions = new ChSessions(
   chHost,
   workspaces,
@@ -567,7 +567,7 @@ const server = createWebServer((request, response) => {
         return;
       }
       if (pathname === "/api/session/uploadFileBinary") {
-        await serveFileUpload(sessions, request, response);
+        await serveFileUpload(sessions, request, response, trust.relaySockets.has(request.socket));
         return;
       }
       const body = await readBody(request, response);

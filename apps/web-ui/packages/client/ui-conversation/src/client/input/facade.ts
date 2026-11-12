@@ -221,6 +221,8 @@ export class SessionInputShell implements SessionInput {
   private readonly failedDetached = new Map<number, DetachedDraft>();
   /** Revision of the last automatic failure restoration. */
   private failedRestoreRev: number | undefined;
+  /** New user input stays ahead of failed sends even when failures arrive out of order. */
+  private failedRestorePrefix: Pick<DetachedDraft, "draft" | "occurrences"> | undefined;
   private restoringFailures = false;
   private attachmentFlightSeq = 0;
   /** Attachment-only sends retained until admission settles or scope disposal releases their attachments. */
@@ -265,6 +267,7 @@ export class SessionInputShell implements SessionInput {
       this.rev += 1;
       if (!this.restoringFailures && this.failedRestoreRev !== undefined) {
         this.failedDetached.clear();
+        this.failedRestorePrefix = undefined;
         this.failedRestoreRev = undefined;
       }
       this.dispatchRun({ type: "draft-changed", draft: this.projection.clipboardText });
@@ -691,6 +694,7 @@ export class SessionInputShell implements SessionInput {
     this.unregister();
     this.detachedDrafts.clear();
     this.failedDetached.clear();
+    this.failedRestorePrefix = undefined;
     this.attachmentFlights.clear();
     return [...retained];
   }
@@ -821,6 +825,7 @@ export class SessionInputShell implements SessionInput {
     this.detachedDrafts.set(attempt.seq, record);
     if (this.failedRestoreRev === this.rev) {
       this.failedDetached.clear();
+      this.failedRestorePrefix = undefined;
       this.failedRestoreRev = undefined;
     }
     if (occurrences.length === 0) {
@@ -901,10 +906,13 @@ export class SessionInputShell implements SessionInput {
     if (record === undefined) return;
     this.detachedDrafts.delete(attempt.seq);
     this.restoreAttachments(record.attachmentIds);
-    this.failedDetached.set(attempt.seq, record);
-    if (this.projection.clipboardText === "" || this.failedRestoreRev === this.rev) {
-      this.restoreFailedDrafts();
+    const current = this.projection.clipboardText;
+    if (current !== "" && this.failedRestoreRev !== this.rev) {
+      this.failedDetached.clear();
+      this.failedRestorePrefix = { draft: current, occurrences: this.projection.occurrences };
     }
+    this.failedDetached.set(attempt.seq, record);
+    this.restoreFailedDrafts();
     this.dispatchRun({
       type: "sink-settled",
       attempt,
@@ -915,14 +923,16 @@ export class SessionInputShell implements SessionInput {
 
   /** Rebuild all currently failed snapshots in submission order. */
   private restoreFailedDrafts(): void {
-    const records = [...this.failedDetached.entries()]
-      .sort(([a], [b]) => a - b)
-      .map(([, record]) => record);
+    const records = [
+      ...(this.failedRestorePrefix === undefined ? [] : [this.failedRestorePrefix]),
+      ...[...this.failedDetached.entries()].sort(([a], [b]) => a - b).map(([, record]) => record),
+    ];
     if (records.length === 0) return;
     const separator = "\n\n";
     let draft = "";
     const occurrences: Occurrence[] = [];
     for (const record of records) {
+      if (record.draft === "") continue;
       const base = draft.length + (draft === "" ? 0 : separator.length);
       if (draft !== "") draft += separator;
       draft += record.draft;

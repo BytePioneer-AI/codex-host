@@ -47,3 +47,46 @@ it("Blob, Uint8Array and stream carriers all bypass the JSON RPC file-size ceili
   assert.equal(bodies.length, 3);
   for (const body of bodies) assert.deepEqual(body, bytes);
 });
+
+it("declares image uploads explicitly and keeps transport failures distinct from business refusals", async (t) => {
+  const scope = globalThis as typeof globalThis & { __DSH_FILE_UPLOAD__?: { fetch: typeof fetch } };
+  const previous = scope.__DSH_FILE_UPLOAD__;
+  t.after(() => {
+    if (previous) scope.__DSH_FILE_UPLOAD__ = previous;
+    else delete scope.__DSH_FILE_UPLOAD__;
+  });
+  let status = 503;
+  scope.__DSH_FILE_UPLOAD__ = {
+    fetch: async (path) => {
+      assert.equal(
+        new URL(String(path), "http://localhost/").searchParams.get("imageMediaType"),
+        "image/png",
+      );
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          error: {
+            code: "session/attachment-invalid",
+            message: "Invalid image",
+            details: { reason: "INVALID_IMAGE" },
+          },
+        }),
+        { status },
+      );
+    },
+  };
+  const runtime = new FileUploadRuntime(new Context());
+  const send = () =>
+    runtime.upload(
+      "thread" as never,
+      new Blob(["image"]),
+      "photo.png",
+      undefined,
+      undefined,
+      "image/png",
+    );
+  await assert.rejects(send(), /HTTP 503/u);
+  status = 200;
+  const rejected = await send();
+  assert.equal(rejected.ok, false);
+});

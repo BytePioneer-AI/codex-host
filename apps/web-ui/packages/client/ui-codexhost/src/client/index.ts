@@ -3,6 +3,7 @@
  * sessions each installed Harness can hand over (Claude Code, Pi, ...). Importing maps the
  * native session into a Web session; its history is replayed when the conversation opens.
  */
+import { createElement } from "react";
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
 import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
 import type {} from "@deepseek-ai/dsh-client-locale/client";
@@ -221,23 +222,37 @@ export function apply(ctx: ClientContext): void {
   ctx.inject(["connection", "modelDirectories", "commandUi"], (scope) =>
     registerHarnessDiscovery(scope),
   );
+  const localTarget = (href: string) => {
+    const threadId = localThreadId(href);
+    if (threadId === undefined) return;
+    const sessionId = threadId as SessionId;
+    const row = ctx.sessions.list.getSnapshot().byId[sessionId];
+    const reference = row === undefined ? undefined : threadReferenceOf(row);
+    if (reference === undefined) return;
+    return { sessionId, title: reference.title };
+  };
   ctx.provide("chatLinks", {
+    describe: (href) => {
+      const target = localTarget(href);
+      if (target === undefined) return;
+      return {
+        title: target.title,
+        icon: createElement(SessionHarnessIcon, {
+          sessionId: target.sessionId,
+          list: ctx.sessions.list,
+        }),
+      };
+    },
     resolve: Object.assign(
       (href: string) => {
-        const threadId = localThreadId(href);
-        if (threadId === undefined) return;
-        const targetId = threadId as SessionId;
-        const localTarget = () => {
-          const row = ctx.sessions.list.getSnapshot().byId[targetId];
-          return row === undefined ? undefined : threadReferenceOf(row);
-        };
-        if (localTarget() === undefined) return;
+        const target = localTarget(href);
+        if (target === undefined) return;
         const destination = new URL(window.location.href);
-        destination.searchParams.set("session", targetId);
+        destination.searchParams.set("session", target.sessionId);
         return {
           href: destination.href,
           open: () => {
-            if (localTarget() !== undefined) ctx.uiWorkspace.openSession(targetId);
+            if (localTarget(href) !== undefined) ctx.uiWorkspace.openSession(target.sessionId);
           },
         };
       },

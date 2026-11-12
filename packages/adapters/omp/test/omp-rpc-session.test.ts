@@ -441,6 +441,449 @@ describe("OMP RPC session", () => {
     },
   );
 
+  it("rechecks once when the settle notice shares the moment with a still-streaming state", async () => {
+    const process = new FakeOmpProcess();
+    const onFault = vi.fn();
+    // The settle notice arrives while the get_state snapshot still shows the
+    // background job streaming; the state flips idle just after the chunk.
+    let streaming = true;
+    let turnSeen = false;
+    process.handleCommand = (command) => {
+      if (command.type === "prompt") {
+        turnSeen = true;
+        process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+        const message = {
+          role: "assistant",
+          responseId: "assistant-1",
+          content: [{ type: "text", text: "PONG" }],
+        };
+        process.sendFrame({ type: "message_start", message });
+        process.sendFrame({ type: "message_end", message: { ...message, stopReason: "stop" } });
+        process.sendFrame({ type: "agent_end", isTerminal: true });
+        return true;
+      }
+      if (command.type === "get_state") {
+        // Only Turn confirmation probes participate; start() also reads state.
+        // The notification lands while confirmation awaits a busy snapshot.
+        const snapshotStreaming = streaming;
+        if (turnSeen && streaming) {
+          process.sendFrame({ type: "session_settled" });
+          streaming = false;
+        }
+        process.sendFrame({
+          type: "response",
+          id: command.id,
+          command: "get_state",
+          success: true,
+          data: {
+            sessionId: "omp-session",
+            model: { provider: "synthetic", id: "omp-model" },
+            isStreaming: snapshotStreaming,
+            hasPendingAsyncWork: snapshotStreaming,
+          },
+        });
+        return true;
+      }
+      return false;
+    };
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", onFault },
+      { spawn: () => process as never },
+    );
+    try {
+      await session.start();
+      let result: unknown;
+      void session
+        .runTurn("notice outruns state", () => undefined)
+        .then(
+          (value) => {
+            result = value;
+          },
+          () => undefined,
+        );
+      // No further notification arrives; the Turn must still complete.
+      await vi.waitFor(
+        () => expect(result).toEqual({ text: "PONG", cancelled: false, agentInvoked: true }),
+        { timeout: 2_000 },
+      );
+      expect(onFault).not.toHaveBeenCalled();
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("ignores a stale settle notice so a freshly admitted Turn is not settled early", async () => {
+    const process = new FakeOmpProcess();
+    const onFault = vi.fn();
+    // State is idle from the previous Turn, but the new Turn has not run yet.
+    process.handleCommand = (command) => {
+      if (command.type === "prompt") {
+        process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+        return true;
+      }
+      if (command.type === "get_state") {
+        process.sendFrame({
+          type: "response",
+          id: command.id,
+          command: "get_state",
+          success: true,
+          data: {
+            sessionId: "omp-session",
+            model: { provider: "synthetic", id: "omp-model" },
+            isStreaming: false,
+            isSettled: true,
+            hasPendingAsyncWork: false,
+          },
+        });
+        return true;
+      }
+      return false;
+    };
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", onFault },
+      { spawn: () => process as never },
+    );
+    try {
+      await session.start();
+      let result: unknown;
+      void session
+        .runTurn("fresh turn", () => undefined)
+        .then(
+          (value) => {
+            result = value;
+          },
+          () => undefined,
+        );
+      // A notice without this Turn's completion fact must not settle it,
+      // including after any bounded recheck window.
+      process.sendFrame({ type: "session_settled" });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(result).toBeUndefined();
+      expect(onFault).not.toHaveBeenCalled();
+      const message = {
+        role: "assistant",
+        responseId: "assistant-1",
+        content: [{ type: "text", text: "PONG" }],
+      };
+      process.sendFrame({ type: "message_start", message });
+      process.sendFrame({ type: "message_end", message: { ...message, stopReason: "stop" } });
+      process.sendFrame({ type: "agent_end", isTerminal: true });
+      await vi.waitFor(
+        () => expect(result).toEqual({ text: "PONG", cancelled: false, agentInvoked: true }),
+        { timeout: 2_000 },
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("waits for background work instead of faulting when agent_end lands while a background job still streams", async () => {
+    vi.useFakeTimers();
+    const process = new FakeOmpProcess();
+    const onFault = vi.fn();
+    let streaming = true;
+    let settled = false;
+    process.handleCommand = (command) => {
+      if (command.type === "prompt") {
+        process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+        const message = {
+          role: "assistant",
+          responseId: "assistant-1",
+          content: [{ type: "text", text: "PONG" }],
+        };
+        process.sendFrame({ type: "message_start", message });
+        process.sendFrame({
+          type: "message_update",
+          message,
+          assistantMessageEvent: { type: "text_delta", delta: "PONG" },
+        });
+        process.sendFrame({ type: "message_end", message: { ...message, stopReason: "stop" } });
+        process.sendFrame({ type: "agent_end", isTerminal: true });
+        return true;
+      }
+      if (command.type === "get_state") {
+        process.sendFrame({
+          type: "response",
+          id: command.id,
+          command: "get_state",
+          success: true,
+          data: {
+            sessionId: "omp-session",
+            model: { provider: "synthetic", id: "omp-model" },
+            isStreaming: streaming,
+            isSettled: settled,
+            hasPendingAsyncWork: streaming,
+          },
+        });
+        return true;
+      }
+      return false;
+    };
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", onFault },
+      { spawn: () => process as never },
+    );
+    try {
+      await session.start();
+      let result: unknown;
+      const turn = session.runTurn("background job keeps streaming", () => undefined);
+      void turn.then(
+        (value) => {
+          result = value;
+        },
+        () => undefined,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(result).toBeUndefined();
+      expect(onFault).not.toHaveBeenCalled();
+      streaming = false;
+      settled = true;
+      process.sendFrame({ type: "session_settled" });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(
+        () =>
+          expect(result).toEqual({
+            text: "PONG",
+            cancelled: false,
+            agentInvoked: true,
+          }),
+        { timeout: 200 },
+      );
+      expect(onFault).not.toHaveBeenCalled();
+      process.handleCommand = null;
+      await expect(session.runTurn("ping", () => undefined)).resolves.toEqual({
+        text: "PONG",
+        cancelled: false,
+        agentInvoked: true,
+      });
+    } finally {
+      vi.useRealTimers();
+      await session.close();
+    }
+  });
+
+  it.each(["agent", "local"])(
+    "requires native quiescence and bounds notice rechecks for a completed %s Turn",
+    async (completion) => {
+      vi.useFakeTimers();
+      const process = new FakeOmpProcess();
+      const onFault = vi.fn();
+      let state: Record<string, unknown> = { isStreaming: false, isSettled: false };
+      let checking = false;
+      let checks = 0;
+      process.promptHandler = (command) => {
+        checking = true;
+        process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+        if (completion === "local") {
+          process.sendFrame({
+            type: "prompt_result",
+            id: command.id,
+            agentInvoked: false,
+            status: "completed",
+          });
+        } else {
+          process.sendFrame({
+            type: "agent_end",
+            isTerminal: true,
+            messages: [{ role: "assistant", content: [{ type: "text", text: "PONG" }] }],
+          });
+        }
+      };
+      process.handleCommand = (command) => {
+        if (command.type !== "get_state" || !checking) return false;
+        checks += 1;
+        process.sendFrame({
+          type: "response",
+          id: command.id,
+          command: "get_state",
+          success: true,
+          data: { sessionId: "omp-session", ...state },
+        });
+        return true;
+      };
+      const session = new OmpRpcSession(
+        { cwd: "/synthetic", onFault },
+        { spawn: () => process as never },
+      );
+      try {
+        await session.start();
+        const startupTimers = vi.getTimerCount();
+        const completed = vi.fn();
+        const turn = session.runTurn("complete then drain", () => undefined);
+        void turn.then(completed, () => undefined);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(checks).toBe(1);
+        expect(completed).not.toHaveBeenCalled();
+        for (const busy of [
+          { isStreaming: false, isSettled: false },
+          { isStreaming: false, isSettled: true, hasPendingAsyncWork: true },
+          { isStreaming: false, isSettled: true, queuedMessageCount: 1 },
+          { isStreaming: false, isSettled: true, isCompacting: true },
+        ]) {
+          state = busy;
+          const before = checks;
+          process.sendFrame({ type: "session_settled" });
+          await vi.advanceTimersByTimeAsync(1_000);
+          expect(checks - before).toBe(2);
+          expect(completed).not.toHaveBeenCalled();
+          expect(onFault).not.toHaveBeenCalled();
+          expect(vi.getTimerCount()).toBe(startupTimers);
+        }
+        state = { isStreaming: false, isSettled: true };
+        process.sendFrame({ type: "session_settled" });
+        await expect(turn).resolves.toEqual({
+          text: completion === "local" ? "" : "PONG",
+          cancelled: false,
+          agentInvoked: completion === "agent",
+        });
+        expect(onFault).not.toHaveBeenCalled();
+      } finally {
+        await session.close();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["cancel", "close"])("clears a pending settlement recheck on %s", async (action) => {
+    vi.useFakeTimers();
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    const cleared = vi.spyOn(globalThis, "clearTimeout");
+    const process = new FakeOmpProcess();
+    const onFault = vi.fn();
+    let checking = false;
+    let idle = false;
+    let checks = 0;
+    process.promptHandler = (command) => {
+      checking = true;
+      process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+      process.sendFrame({ type: "agent_end", isTerminal: true });
+    };
+    process.handleCommand = (command) => {
+      if (command.type !== "get_state" || !checking) return false;
+      checks += 1;
+      process.sendFrame({
+        type: "response",
+        id: command.id,
+        command: "get_state",
+        success: true,
+        data: { sessionId: "omp-session", isStreaming: !idle, isSettled: idle },
+      });
+      return true;
+    };
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", onFault },
+      { spawn: () => process as never },
+    );
+    try {
+      await session.start();
+      const startupTimers = vi.getTimerCount();
+      const turn = session.runTurn("background", () => undefined);
+      void turn.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      process.sendFrame({ type: "session_settled" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(startupTimers + 1);
+      const recheckIndex = timers.mock.calls.findIndex((call) => call[1] === 50);
+      expect(recheckIndex).toBeGreaterThanOrEqual(0);
+      const recheck = timers.mock.results[recheckIndex]?.value;
+      if (action === "cancel") {
+        idle = true;
+        await session.abort();
+        await expect(turn).resolves.toEqual({ text: "", cancelled: true, agentInvoked: true });
+      } else {
+        await session.close();
+        await expect(turn).rejects.toThrow("Omp RPC Session closed");
+      }
+      expect(cleared).toHaveBeenCalledWith(recheck);
+      const after = checks;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(checks).toBe(after);
+      expect(onFault).not.toHaveBeenCalled();
+      if (action === "cancel") {
+        process.handleCommand = null;
+        process.promptHandler = null;
+        await expect(session.runTurn("next", () => undefined)).resolves.toEqual({
+          text: "PONG",
+          cancelled: false,
+          agentInvoked: true,
+        });
+      }
+    } finally {
+      await session.close();
+      timers.mockRestore();
+      cleared.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(
+    ["agent", "local"].flatMap((completion) =>
+      ["start-first", "snapshot-first"].map((order) => ({ completion, order })),
+    ),
+  )(
+    "requires a new completion fact when a background run starts during confirmation: $completion/$order",
+    async ({ completion, order }) => {
+      const process = new FakeOmpProcess();
+      const onFault = vi.fn();
+      if (completion === "local") {
+        process.promptHandler = (command) => {
+          process.sendFrame({ type: "response", id: command.id, command: "prompt", success: true });
+          process.sendFrame({ type: "command_output", text: "LOCAL" });
+          process.sendFrame({
+            type: "prompt_result",
+            id: command.id,
+            agentInvoked: false,
+            status: "completed",
+          });
+        };
+      }
+      const snapshots: Record<string, unknown>[] = [];
+      const hold = (command: Record<string, unknown>) => {
+        if (command.type !== "get_state") return false;
+        snapshots.push(command);
+        return true;
+      };
+      const session = new OmpRpcSession(
+        { cwd: "/synthetic", onFault },
+        { spawn: () => process as never },
+      );
+      try {
+        await session.start();
+        process.handleCommand = hold;
+        const completed = vi.fn();
+        const turn = session.runTurn("background wake", () => undefined);
+        void turn.then(completed, () => undefined);
+        await vi.waitFor(() => expect(snapshots).toHaveLength(1));
+        const start = { type: "agent_start" };
+        const snapshot = {
+          type: "response",
+          id: snapshots[0]?.id,
+          command: "get_state",
+          success: true,
+          data: { sessionId: "omp-session", isStreaming: false, isSettled: true },
+        };
+        // FIFO native output can coalesce an idle response and the next start.
+        // Both frames are handled before the confirmation's await resumes.
+        const frames = order === "start-first" ? [start, snapshot] : [snapshot, start];
+        process.stdout.write(frames.map((frame) => `${JSON.stringify(frame)}\n`).join(""));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(snapshots).toHaveLength(1);
+        expect(completed).not.toHaveBeenCalled();
+        expect(onFault).not.toHaveBeenCalled();
+        process.handleCommand = null;
+        process.sendFrame({ type: "agent_end", isTerminal: true });
+        await expect(turn).resolves.toEqual({
+          text: completion === "local" ? "LOCAL" : "PONG",
+          cancelled: false,
+          agentInvoked: completion === "agent",
+        });
+        expect(onFault).not.toHaveBeenCalled();
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
   it("waits through slow native cancellation and accepts another Turn afterwards", async () => {
     vi.useFakeTimers();
     const process = new FakeOmpProcess();

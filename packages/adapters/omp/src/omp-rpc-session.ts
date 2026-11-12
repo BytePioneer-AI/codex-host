@@ -239,13 +239,22 @@ interface ActiveTurn {
   tools: Map<string, string>;
   interactions: Map<string, { request: OmpInteractionRequest; timeout: NodeJS.Timeout | null }>;
   settlement: "pending" | "confirming" | "confirmed";
+  settledNotice: boolean;
+  settlementRecheck: NodeJS.Timeout | null;
   terminalEnd: boolean;
+  sawAgentStart: boolean;
   cancellation: "none" | "requesting" | "accepted";
   cancellationTimeout: NodeJS.Timeout | null;
   cancellationRecheck: NodeJS.Timeout | null;
   cancellationChecking: boolean;
   cancellationReloaded: boolean;
   abortPromise: Promise<void> | null;
+}
+
+function hasTurnCompletion(active: ActiveTurn): boolean {
+  // Local results retain their payload and identity, but cannot complete a
+  // native run that started afterwards; that run needs its own terminal end.
+  return active.terminalEnd || (active.localResult !== null && !active.sawAgentStart);
 }
 
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -317,11 +326,11 @@ function parseSessionStreaming(response: Record<string, unknown>): boolean {
   return isStreaming;
 }
 
-function cancellationSettled(response: Record<string, unknown>, terminalEnd: boolean): boolean {
+function sessionSettled(response: Record<string, unknown>, completed: boolean): boolean {
   const data = sessionStateData(response);
   return (
     !parseSessionStreaming(response) &&
-    (data.isSettled === true || (data.isSettled === undefined && terminalEnd)) &&
+    (data.isSettled === true || (data.isSettled === undefined && completed)) &&
     data.isCompacting !== true &&
     data.hasPendingAsyncWork !== true &&
     !(typeof data.queuedMessageCount === "number" && data.queuedMessageCount > 0)
@@ -935,7 +944,10 @@ export class OmpRpcSession {
         tools: new Map(),
         interactions: new Map(),
         settlement: "pending",
+        settledNotice: false,
+        settlementRecheck: null,
         terminalEnd: false,
+        sawAgentStart: false,
         cancellation: "none",
         cancellationTimeout: null,
         cancellationRecheck: null,
@@ -1186,12 +1198,24 @@ export class OmpRpcSession {
     const active = this.#activeTurn;
     if (this.#handleSubagentFrame(active, value)) return;
     this.#observeUsage(value);
-    if (value.type === "agent_start" && active) active.terminalEnd = false;
+    if (value.type === "agent_start" && active) {
+      active.terminalEnd = false;
+      active.sawAgentStart = true;
+    }
     if (
       (value.type === "session_settled" || value.type === "agent_start") &&
       active?.cancellation === "accepted"
     ) {
       void this.#confirmCancelledTurn(active);
+      return;
+    }
+    if (value.type === "session_settled") {
+      // The notice has no Turn identity; only this Turn's completion fact can
+      // authorize confirmation. Latch it even while a state query is in flight.
+      if (active && hasTurnCompletion(active)) {
+        active.settledNotice = true;
+        void this.#confirmSettledTurn(active);
+      }
       return;
     }
     if (!active) {
@@ -1322,8 +1346,6 @@ export class OmpRpcSession {
         if (active.cancellation === "accepted") void this.#confirmCancelledTurn(active);
         return;
       }
-      if (active.settlement !== "pending") return;
-      active.settlement = "confirming";
       void this.#confirmSettledTurn(active);
     }
   }
@@ -1760,7 +1782,7 @@ export class OmpRpcSession {
       }
       // isStreaming:false alone also describes a session waiting for background
       // jobs. Modern OMP supplies isSettled; older versions still need agent_end.
-      if (!cancellationSettled(response, active.terminalEnd)) {
+      if (!sessionSettled(response, active.terminalEnd)) {
         active.settlement = "pending";
         // A settle notification can precede an in-flight busy state response,
         // or no further terminal frame may arrive after cleanup. Reconfirm
@@ -1792,11 +1814,20 @@ export class OmpRpcSession {
   #settleLocalTurn(active: ActiveTurn, result: NonNullable<ActiveTurn["localResult"]>): void {
     if (this.#activeTurn !== active || active.settlement !== "pending") return;
     active.localResult = result;
-    active.settlement = "confirming";
     void this.#confirmSettledTurn(active);
   }
 
   async #confirmSettledTurn(active: ActiveTurn): Promise<void> {
+    if (
+      this.#activeTurn !== active ||
+      active.settlement !== "pending" ||
+      active.cancellation !== "none" ||
+      !hasTurnCompletion(active)
+    )
+      return;
+    if (active.settlementRecheck) clearTimeout(active.settlementRecheck);
+    active.settlementRecheck = null;
+    active.settlement = "confirming";
     try {
       const response = await this.#send("get_state", {});
       const state = parseSessionState(response);
@@ -1806,11 +1837,24 @@ export class OmpRpcSession {
         if (active.cancellation === "accepted") void this.#confirmCancelledTurn(active);
         return;
       }
-      if (parseSessionStreaming(response)) {
-        throw new OmpRpcFaultError(
-          "protocolError",
-          "Omp RPC completed Turn state is still Streaming",
-        );
+      // A background wake can start another native run during this query.
+      if (!hasTurnCompletion(active)) {
+        active.settlement = "pending";
+        active.settledNotice = false;
+        return;
+      }
+      if (!sessionSettled(response, hasTurnCompletion(active))) {
+        active.settlement = "pending";
+        // Each notice permits one delayed serial recheck if it outran the state
+        // snapshot. Otherwise wait for native completion, without idle polling.
+        if (active.settledNotice) {
+          active.settledNotice = false;
+          active.settlementRecheck = setTimeout(() => {
+            active.settlementRecheck = null;
+            void this.#confirmSettledTurn(active);
+          }, 50);
+        }
+        return;
       }
       this.#state = state;
       active.settlement = "confirmed";
@@ -1836,6 +1880,8 @@ export class OmpRpcSession {
     ) {
       return;
     }
+    if (active.settlementRecheck) clearTimeout(active.settlementRecheck);
+    active.settlementRecheck = null;
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
     active.cancellationTimeout = null;
     if (active.cancellationRecheck) clearTimeout(active.cancellationRecheck);
@@ -2020,6 +2066,7 @@ export class OmpRpcSession {
   #rejectActiveTurn(error: Error): void {
     const active = this.#activeTurn;
     if (!active) return;
+    if (active.settlementRecheck) clearTimeout(active.settlementRecheck);
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
     if (active.cancellationRecheck) clearTimeout(active.cancellationRecheck);
     this.#closeInteractions(active, "cancelled");

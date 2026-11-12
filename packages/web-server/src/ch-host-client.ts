@@ -89,6 +89,7 @@ const METHODS = new Set([
   "codexhost/thread/thinking/select",
   "codexhost/thread/permission-mode/select",
   "codexhost/thread/commands/inspect",
+  "codexhost/skills/list",
   "codexhost/thread/command/execute",
   "codexhost/thread/fork",
   "codexhost/harness/session-import/sources",

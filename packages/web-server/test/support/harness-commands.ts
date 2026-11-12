@@ -1,5 +1,5 @@
 /** Native command metadata and receipts, without launching any Harness. */
-import { harnessCommandCatalogSchema } from "@codexhost/shared-contracts";
+import { harnessCommandCatalogSchema, skillsListResultSchema } from "@codexhost/shared-contracts";
 import { RpcError } from "../../src/transport.ts";
 import type { FakeChHost } from "./ch-host.ts";
 
@@ -15,18 +15,39 @@ export function withDiscovery(host: FakeChHost) {
           invocation: "/native-skill",
           label: "Native skill",
           argumentMode: "text",
-          kind: "skill",
         },
         {
           id: "fake.bare-skill",
           invocation: "/bare-skill",
           label: "Bare skill",
           argumentMode: "none",
-          kind: "skill",
         },
         { id: "fake.model", invocation: "/model", label: "Native model", argumentMode: "none" },
       ],
     }),
+    skills: skillsListResultSchema.parse({
+      revision: 1,
+      complete: true,
+      skills: [
+        {
+          name: "library-review",
+          path: "/computer/skills/review/SKILL.md",
+          scope: "global",
+          source: "Agents",
+          description: "Review with care",
+        },
+        {
+          name: "eli5",
+          path: "/computer/skills/explain (simple)/SKILL.md",
+          scope: "project",
+          source: "Pi",
+          description: "Explain simply",
+        },
+      ],
+    }),
+    skillFailure: "",
+    beforeSkills: async () => {},
+    official: false,
     failure: "",
     executionFailure: "",
     beforeInspect: async () => {},
@@ -34,8 +55,21 @@ export function withDiscovery(host: FakeChHost) {
     extraHarnesses: false,
     withdrawn: false,
   };
+  const ownership = host.threadOwnership.bind(host);
+  host.threadOwnership = (threadId) =>
+    state.official ? { threadId, owner: "codex" } : ownership(threadId);
   const request = host.request.bind(host);
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (state.official && method === "codexhost/thread/inspect")
+      return { owner: "codex", locked: false, effectiveModel: { id: "native" } } as T;
+    if (state.official && method === "codexhost/harness/inspect" && params.harnessId === "codex")
+      return host.inspection as T;
+    if (method === "codexhost/skills/list") {
+      host.requests.push({ method, params: structuredClone(params) });
+      await state.beforeSkills();
+      if (state.skillFailure) throw new RpcError("skills/unavailable", state.skillFailure);
+      return structuredClone(state.skills) as T;
+    }
     if (method === "codexhost/thread/commands/inspect") {
       host.requests.push({ method, params });
       const catalog = structuredClone(state.catalog);

@@ -14,6 +14,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import { registerHarnessDiscovery } from "./harness-discovery.tsx";
+import { registerSkillLibrary } from "./skill-library.tsx";
 import { registerThreadReferenceDiscovery } from "./thread-reference-discovery.ts";
 import { registerThreadReferenceAction } from "./thread-reference-action.ts";
 import { desktopScreenshotApi, sentMessageEditApi, turnDiffsApi, voiceApi } from "./api.ts";
@@ -219,9 +220,10 @@ export function apply(ctx: ClientContext): void {
       return () => document.removeEventListener("keydown", onKey);
     }, "ui-codexhost: voice shortcuts");
   });
-  ctx.inject(["connection", "modelDirectories", "commandUi"], (scope) =>
-    registerHarnessDiscovery(scope),
-  );
+  ctx.inject(["connection", "modelDirectories", "commandUi"], (scope) => {
+    registerHarnessDiscovery(scope);
+    registerSkillLibrary(scope);
+  });
   const localTarget = (href: string) => {
     const threadId = localThreadId(href);
     if (threadId === undefined) return;

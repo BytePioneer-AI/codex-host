@@ -82,13 +82,13 @@ export function rendererPermissionModePresentation(
   return localizeHarnessPresentation(mode, locale);
 }
 
-/** Workspace commands and skills can require a running native Session. */
+/** Workspace commands can require a running native Session. */
 export function rendererLiveCommandsPendingNotice(
   locale: RendererSettingsLocale,
   harnessLabel: string,
 ): string {
   const harness = harnessLabel.replace(/\s*[(（][^)）]*[)）]\s*$/u, "").trim() || harnessLabel;
   return locale === "zh-CN"
-    ? `发送一条消息后，会加载 ${harness} 在当前项目的全部命令和技能`
-    : `Send a message to load all ${harness} commands and skills for this project`;
+    ? `发送一条消息后，会加载 ${harness} 在当前项目的全部命令`
+    : `Send a message to load all ${harness} commands for this project`;
 }

@@ -132,6 +132,7 @@ test("the command button explains the # trigger and opens the menu", async ({ pa
         invocation: "/compact",
         label: "Compact context",
         description: "Compact the current conversation context",
+        localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
         argumentMode: "text",
       },
     ],
@@ -170,7 +171,7 @@ test("a draft without its workspace's live catalog explains when it loads", asyn
   await setup(page, { commands: [], hasSession: false, locale: "zh-CN", source: "static" });
   const notice = menu(page).locator("[data-codexhost-command-notice]");
   await trigger(page).click();
-  await expect(notice).toHaveText("发送一条消息后，会加载 Cursor CLI 在当前项目的全部命令和技能");
+  await expect(notice).toHaveText("发送一条消息后，会加载 Cursor CLI 在当前项目的全部命令");
   await expect(menu(page)).toContainText("命令");
   // A query matching nothing closes the menu instead of keeping only the hint.
   await page.keyboard.type("zzz");
@@ -185,7 +186,6 @@ test("a live workspace catalog shows no loading hint", async ({ page }) => {
         invocation: "/review",
         label: "review",
         argumentMode: "text",
-        kind: "skill",
       },
     ],
     hasSession: false,

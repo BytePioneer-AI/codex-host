@@ -25,6 +25,8 @@ import { threadListTitle } from "./ch-thread-title.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { WebThreadStates, type UsageLoad } from "./web-thread-state.ts";
 import { ChHarnessCommands } from "./ch-harness-commands.ts";
+import { WebSkills } from "./skills.ts";
+import { hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { ChThreadEditing } from "./ch-thread-edit.ts";
 import { editedNativeInput } from "./native-user-input.ts";
 import { forkChThread, forkUnavailable } from "./ch-thread-fork.ts";
@@ -91,6 +93,7 @@ export class ChSessions {
   private timer?: NodeJS.Timeout;
   private closed = false;
   private readonly realtime: ChRealtime | undefined;
+  private readonly skills: WebSkills;
   private readonly interactions: ChInteractions | undefined;
   private hostOnline = true;
   private hostEpoch: string | undefined;
@@ -124,6 +127,25 @@ export class ChSessions {
             return id;
           })
         : undefined;
+    this.skills = new WebSkills(host, events, async (sessionId) => {
+      if (this.closed || !this.hostOnline)
+        throw new RpcError("host/offline", "The Host is disconnected.");
+      const id = this.id(sessionId);
+      const draft = this.drafts.get(id);
+      if (draft && !draft.canonicalId) {
+        if (draft.selection.provider === "codex")
+          throw new RpcError("skills/unavailable", "Codex uses its native Skills.");
+        return draft.cwd ? { cwd: draft.cwd } : {};
+      }
+      const owner = await this.owner(id);
+      const row = this.rows.get(id);
+      if (owner.harnessId === "codex" || row?.parentThreadId || row?.canAcceptDirectInput === false)
+        throw new RpcError(
+          "skills/unavailable",
+          "Skills require an editable local external Thread.",
+        );
+      return { threadId: hostThreadIdSchema.parse(id) };
+    });
     this.pins = new ChPinnedThreads(host, workspaces);
     workspaces.setReferenceArchives([]);
     this.interactions = host.realtime
@@ -734,6 +756,7 @@ export class ChSessions {
     if (this.closed) throw new RpcError("session/closed", "Web sessions are closing.");
     if (this.drafts.has(id)) return this.create(args, configuration);
     this.drafts.set(id, draft);
+    if (cwd && selection.provider !== "codex") this.skills.prepare(cwd);
     if (cwd) this.workspaces.attachReferencedSession(id, cwd);
     this.workspaces.addDraftReference(id, cwd);
     this.events.emit("api-session/added", await this.draftSummary(draft, false));
@@ -1492,6 +1515,7 @@ export class ChSessions {
   }
 
   registerCommands(rpc: RpcRegistry): void {
+    this.skills.register(rpc);
     const native = new ChHarnessCommands(this.host, async (sessionId) => {
       const id = this.id(sessionId);
       if (
@@ -1611,6 +1635,7 @@ export class ChSessions {
   }
   async close(): Promise<void> {
     this.fileReferences.close();
+    this.skills.close();
     this.closed = true;
     this.pins.close();
     this.realtime?.close();

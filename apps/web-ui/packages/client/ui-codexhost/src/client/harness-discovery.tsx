@@ -202,12 +202,15 @@ export function registerHarnessDiscovery(ctx: Context): void {
             const { catalog, reserved } = await entry.promise;
             if (cache.get(sessionId) !== entry || !supported(sessionId)) return [];
             const query = req.query.toLocaleLowerCase();
+            const codex =
+              ctx.sessions.list.getSnapshot().byId[sessionId]?.projectionValues?.harnessIdentity
+                ?.id === "codex";
             const rows: InputTriggerCandidate[] = catalog.commands
               .filter((command) =>
                 `${command.invocation} ${command.label}`.toLocaleLowerCase().includes(query),
               )
-              .toSorted((a, b) => Number(a.kind === "skill") - Number(b.kind === "skill"))
               .map((command) => {
+                const nativeCodexSkill = codex && command.kind === "skill";
                 const disabledReason = reserved.has(command.invocation)
                   ? t("discovery.conflict")
                   : command.argumentMode === "none" || command.invocation === "/compact"
@@ -215,13 +218,12 @@ export function registerHarnessDiscovery(ctx: Context): void {
                     : undefined;
                 const row: InputTriggerCandidate = {
                   name: command.invocation,
-                  label:
-                    command.kind === "skill"
-                      ? command.label.replace(/^\/?skill:/iu, "")
-                      : command.label,
-                  showAlias: command.kind !== "skill",
+                  label: nativeCodexSkill
+                    ? command.label.replace(/^\/?skill:/iu, "")
+                    : command.label,
+                  showAlias: !nativeCodexSkill,
                   value: command.id,
-                  section: t(command.kind === "skill" ? "discovery.skills" : "discovery.commands"),
+                  section: t(nativeCodexSkill ? "discovery.skills" : "discovery.commands"),
                   description: command.description,
                   ...(disabledReason ? { disabledReason } : {}),
                 };
@@ -247,11 +249,13 @@ export function registerHarnessDiscovery(ctx: Context): void {
                 disabledReason: t("discovery.empty"),
                 section: t("discovery.commands"),
               });
-            return rows.toSorted(
-              (a, b) =>
-                Number(a.section === t("discovery.skills")) -
-                Number(b.section === t("discovery.skills")),
-            );
+            return codex
+              ? rows.toSorted(
+                  (a, b) =>
+                    Number(a.section === t("discovery.skills")) -
+                    Number(b.section === t("discovery.skills")),
+                )
+              : rows;
           } catch (error) {
             if (cache.get(sessionId) !== entry) return [];
             return [

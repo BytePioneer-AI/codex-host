@@ -8,6 +8,7 @@ export const CLIENT_CHANNEL_VERSION = 1;
 /** Request-body ceiling of the channel's POST routes; large enough for an inline image prompt. */
 export const CLIENT_REQUEST_LIMIT_BYTES = 128 * 1024 * 1024;
 export const CLIENT_CHANNEL_METHODS = [
+  "codexhost/skills/list",
   "codexhost/voice/status",
   "codexhost/voice/transcribe",
   "codexhost/harness/display-settings/get",
@@ -103,6 +104,11 @@ export const clientChannelCursorSchema = z.object({
 });
 export type ClientChannelCursor = z.infer<typeof clientChannelCursorSchema>;
 export const clientChannelEventSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("skills-changed"),
+    cursor: clientChannelCursorSchema,
+    cwd: z.string().optional(),
+  }),
   z.object({ type: z.literal("display-settings-changed"), cursor: clientChannelCursorSchema }),
   z.object({
     type: z.literal("preferences-changed"),

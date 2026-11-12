@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { JsonObject } from "@codexhost/protocol-core";
-import { externalTurnInputText } from "./external-turn-input.js";
+import { externalTurnInputText, restoreExternalSkillInput } from "./external-turn-input.js";
 
 export class ExternalQueueError extends Error {
   constructor(
@@ -91,6 +91,8 @@ export class ExternalThreadQueue {
     presentationInput?: JsonObject[],
     sourceHostId?: unknown,
   ): ExternalQueuedSubmission {
+    input = restoreExternalSkillInput(input);
+    if (presentationInput) presentationInput = restoreExternalSkillInput(presentationInput);
     if (clientUserMessageId) {
       const existing = this.#receipts.get(this.#receiptKey(threadId, clientUserMessageId));
       if (existing) {
@@ -129,6 +131,8 @@ export class ExternalThreadQueue {
     input: JsonObject[],
     presentationInput?: JsonObject[],
   ): ExternalQueuedSubmission | null {
+    input = restoreExternalSkillInput(input);
+    if (presentationInput) presentationInput = restoreExternalSkillInput(presentationInput);
     const state = this.#states.get(threadId);
     const item = state?.items.find((candidate) => candidate.id === itemId);
     if (!item) return null;

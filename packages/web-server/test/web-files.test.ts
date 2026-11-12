@@ -108,7 +108,7 @@ it("combines files/images into native path context, checks receipts before image
   ];
   await assert.rejects(input.prepare("other", content), /not uploaded/u);
   assert.deepEqual(readdirSync(images.directory), []);
-  const prepared = await input.prepare("draft", content);
+  const { input: prepared } = await input.prepare("draft", content);
   assert.ok(prepared[0]?.text.includes("table.csv:"));
   assert.equal(prepared[0]?.text.includes(PNG), false);
   const projected = new ChAttachments(images, new WebFiles(data)).project(
@@ -122,7 +122,7 @@ it("combines files/images into native path context, checks receipts before image
   assert.equal(projected[2]?.text, "Review both");
   const literal = nativeImageInput("/old/desktop.png", "Keep the whole literal example")[0]?.text;
   assert.ok(literal);
-  const withLiteral = await input.prepare("draft", [
+  const { input: withLiteral } = await input.prepare("draft", [
     { type: "file", receiptId: upload.receiptId },
     { type: "text", text: literal },
   ]);
@@ -132,6 +132,76 @@ it("combines files/images into native path context, checks receipts before image
     "presentation parsing must not strip execution text",
   );
   assert.equal((await files.resolve("draft", Array(21).fill(upload.receiptId))).length, 21);
+});
+
+it("stages explicit images in images/, preserves native text and presentation, and enforces combined quotas", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "web-image-receipts-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const data = new DataDir(root),
+    images = new WebImages(data),
+    files = new WebFiles(data, images);
+  const input = new ChFileInputs(files, images, async (id) => id);
+  const bytes = Buffer.from(PNG, "base64");
+  const upload = await input.upload("draft", chunks(bytes), "photo.png", "image/png");
+  const content = [
+    { type: "file", receiptId: upload.receiptId },
+    { type: "text", text: "Look" },
+  ];
+  const prepared = await input.prepare("draft", content);
+  assert.deepEqual(
+    prepared.input,
+    images.prepare([{ type: "image", data: PNG, mediaType: "image/png" }, content[1]]),
+  );
+  assert.deepEqual(
+    prepared.presentation,
+    images.presentation([{ type: "image", data: PNG, mediaType: "image/png" }, content[1]]),
+  );
+  const saved = (await files.resolve("draft", [upload.receiptId]))[0];
+  assert.ok(saved);
+  assert.equal(saved.path.startsWith(images.directory), true);
+  assert.deepEqual(images.read(upload.file.attachmentId).data, PNG);
+  await assert.rejects(input.prepare("other", content), /not uploaded/u);
+  await assert.rejects(
+    input.upload("draft", chunks(Buffer.from("not an image")), "fake.png", "image/png"),
+    /Only PNG/u,
+  );
+  let exhausted = false;
+  await assert.rejects(
+    input.upload(
+      "draft",
+      (async function* () {
+        yield Buffer.alloc(20 * 1024 * 1024);
+        yield Buffer.alloc(1);
+        exhausted = true;
+        yield Buffer.alloc(1);
+      })(),
+      "large.png",
+      "image/png",
+    ),
+    /20 MiB/u,
+  );
+  assert.equal(exhausted, false);
+  await assert.rejects(input.prepare("draft", Array(21).fill(content[0])), /20 images/u);
+  const large = Buffer.concat([bytes, Buffer.alloc(17 * 1024 * 1024)]);
+  const bigger = await input.upload("draft", chunks(large), "big.png", "image/png");
+  await assert.rejects(
+    input.prepare("draft", [
+      { type: "file", receiptId: bigger.receiptId },
+      { type: "image", data: large.toString("base64"), mediaType: "image/png" },
+    ]),
+    /32 MiB/u,
+  );
+  const mixed = await input.prepare("draft", [
+    content[0],
+    { type: "image", data: PNG, mediaType: "image/png" },
+    content[0],
+  ]);
+  const firstInput = mixed.input[0];
+  assert.ok(firstInput);
+  assert.deepEqual(
+    [...firstInput.text.matchAll(/## (image-\d+.png):/gu)].map((match) => match[1]),
+    ["image-1.png", "image-2.png", "image-3.png"],
+  );
 });
 
 it("streams above 64 MiB, admits totals above 128 MiB, and does not cap pending file count", async (t) => {

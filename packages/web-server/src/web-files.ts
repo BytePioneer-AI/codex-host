@@ -6,6 +6,7 @@ import { mkdirSync, realpathSync, lstatSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type { DataDir } from "./store.ts";
 import { RpcError } from "./transport.ts";
+import { WebImages, inspectImage, WEB_IMAGE_LIMITS, type WebImageRef } from "./web-images.ts";
 
 export const WEB_FILE_INPUT = { enabled: true };
 export interface WebFileRef {
@@ -16,6 +17,7 @@ export interface WebFileRef {
 export interface SavedFile {
   path: string;
   file: WebFileRef;
+  image?: WebImageRef;
 }
 interface Receipt extends SavedFile {
   sessionId: string;
@@ -43,7 +45,10 @@ function safeName(name = "attachment"): string {
 export class WebFiles {
   readonly directory: string;
   private readonly receipts = new Map<string, Receipt>();
-  constructor(data: DataDir) {
+  constructor(
+    data: DataDir,
+    private readonly images = new WebImages(data),
+  ) {
     const path = data.path("attachments", "files");
     mkdirSync(path, { recursive: true, mode: 0o700 });
     if (lstatSync(path).isSymbolicLink())
@@ -58,8 +63,40 @@ export class WebFiles {
     for (const [id, receipt] of this.receipts)
       if (receipt.expiresAt <= Date.now()) this.receipts.delete(id);
   }
-  async upload(sessionId: string, chunks: AsyncIterable<Uint8Array>, name?: string) {
+  async upload(
+    sessionId: string,
+    chunks: AsyncIterable<Uint8Array>,
+    name?: string,
+    imageMediaType?: string,
+  ) {
     this.prune();
+    if (imageMediaType !== undefined) {
+      const parts: Buffer[] = [];
+      let length = 0;
+      for await (const chunk of chunks) {
+        length += chunk.byteLength;
+        if (length > WEB_IMAGE_LIMITS.maxImageBytes)
+          invalid("IMAGE_TOO_LARGE", "Image exceeds 20 MiB.");
+        parts.push(Buffer.from(chunk));
+      }
+      const image = inspectImage(Buffer.concat(parts), imageMediaType);
+      const path = this.images.store(image);
+      const file = {
+        attachmentId: image.ref.attachmentId,
+        name: name || `image.${image.leaf.split(".").at(-1)}`,
+        bytes: length,
+      };
+      const receiptId = randomUUID();
+      this.receipts.set(receiptId, {
+        sessionId,
+        path,
+        file,
+        image: image.ref,
+        hash: image.leaf.slice(0, 64),
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      });
+      return { receiptId, file };
+    }
     // UUID directories isolate incomplete streams; only completed objects receive a receipt.
     const pending = join(this.directory, randomUUID());
     await mkdir(pending, { mode: 0o700 });
@@ -120,7 +157,8 @@ export class WebFiles {
       const receipt = this.receipts.get(id);
       if (!receipt || receipt.sessionId !== sessionId)
         invalid("FILE_NOT_STAGED", "File was not uploaded for this session; select it again.");
-      await this.verify(receipt.path, receipt.hash, receipt.file.bytes);
+      if (receipt.image) this.images.readBytes(receipt.image.attachmentId);
+      else await this.verify(receipt.path, receipt.hash, receipt.file.bytes);
       files.push(receipt);
     }
     return files;

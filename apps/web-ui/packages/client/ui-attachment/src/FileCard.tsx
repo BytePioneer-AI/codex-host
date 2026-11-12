@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import {
   fileExtension,
   FileTypeIcon,
@@ -14,6 +15,7 @@ export interface FileCardLabels {
   readonly remove: string;
   /** Status line while the upload is in flight. */
   readonly uploading: string;
+  readonly uploadingPercent: (percent: number) => string;
   /** Status line and retry affordance after a failed upload. */
   readonly failed: string;
   /** Retry-button label. */
@@ -29,6 +31,7 @@ export function FileCard({
   bytes,
   state,
   progress,
+  preview,
   labels,
   onRemove,
   onRetry,
@@ -37,6 +40,7 @@ export function FileCard({
   bytes: number;
   state: FileCardState;
   progress?: number;
+  preview?: ReactNode;
   labels: FileCardLabels;
   onRemove: () => void;
   onRetry: () => void;
@@ -44,16 +48,20 @@ export function FileCard({
   const extension = fileExtension(name).toUpperCase().slice(0, 8);
   const meta =
     state === "uploading"
-      ? labels.uploading
+      ? progress === undefined
+        ? labels.uploading
+        : labels.uploadingPercent(Math.round(Math.min(1, Math.max(0, progress)) * 100))
       : state === "error"
         ? labels.failed
         : [extension, fileSizeText(bytes)].filter((part) => part !== "").join(" ");
   const retryable = state === "error";
   return (
     <div className={`${css.card}${retryable ? ` ${css.failed}` : ""}`} title={name}>
-      <span className={css.icon} aria-hidden>
-        {state === "uploading" ? <span className={css.spinner} /> : <FileTypeIcon path={name} />}
-      </span>
+      {preview ?? (
+        <span className={css.icon} aria-hidden>
+          {state === "uploading" ? <span className={css.spinner} /> : <FileTypeIcon path={name} />}
+        </span>
+      )}
       {retryable ? (
         <button
           type="button"

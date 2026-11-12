@@ -1,6 +1,9 @@
-import { Fragment, memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
-import type { PendingSubmission } from "@deepseek-ai/dsh-api-session-controller/client";
+import type {
+  PendingSubmission,
+  PendingSubmissionAttachment,
+} from "@deepseek-ai/dsh-api-session-controller/client";
 import type { MessageImageSource } from "@deepseek-ai/dsh-client-ui-conversation/client";
 import {
   IconEditOutlineRegular,
@@ -33,9 +36,30 @@ function nativeFilePath(file: UserFile["attachment"]): string | undefined {
   return "nativePath" in file && typeof file.nativePath === "string" ? file.nativePath : undefined;
 }
 
-type PresentedAttachment =
+type PresentedAttachment = (
   | { readonly type: "image"; readonly image: MessageImageSource }
-  | { readonly type: "file"; readonly file: UserFile["attachment"] };
+  | { readonly type: "file"; readonly file: UserFile["attachment"] }
+) & { readonly upload?: PendingSubmissionAttachment["upload"] };
+
+function AttachmentUploadProgress({
+  upload,
+  t,
+}: {
+  upload: NonNullable<PendingSubmissionAttachment["upload"]>;
+  t: ChatViewSlotProps["t"];
+}) {
+  const state = useSyncExternalStore(upload.subscribe, upload.getSnapshot);
+  if (state?.status !== "uploading") return null;
+  return (
+    <span className={css.fileMeta} role="status" data-upload-progress>
+      {state.total === undefined || state.total === 0
+        ? t("message.uploading")
+        : t("message.uploadingPercent", {
+            percent: Math.round(Math.min(1, (state.loaded ?? 0) / state.total) * 100),
+          })}
+    </span>
+  );
+}
 
 function contentParts(content: readonly unknown[]): {
   text: string;
@@ -223,38 +247,38 @@ function UserStyleBubble({
       <div className={css.userStack}>
         {attachments.length > 0 && (
           <div className={css.attachmentRow} data-message-attachments>
-            {attachments.map((attachment, index) =>
-              attachment.type === "image" ? (
-                <Fragment key={`image:${index}`}>
-                  {renderMessageImages({
+            {attachments.map((attachment, index) => (
+              <div className={css.pendingAttachment} key={index}>
+                {attachment.type === "image" ? (
+                  renderMessageImages({
                     images: [attachment.image],
                     align: "end",
                     compact: compactImages,
-                  })}
-                </Fragment>
-              ) : (
-                <span
-                  key={`file:${index}`}
-                  className={css.fileCard}
-                  title={nativeFilePath(attachment.file) ?? attachment.file.name}
-                >
-                  <FileTypeIcon path={attachment.file.name} className={css.fileIcon} />
-                  <span className={css.fileContent}>
-                    <span className={css.fileName}>{attachment.file.name}</span>
-                    <span className={css.fileMeta}>
-                      {[
-                        fileExtension(attachment.file.name).toUpperCase().slice(0, 8),
-                        nativeFilePath(attachment.file) === undefined
-                          ? fileSizeText(attachment.file.bytes)
-                          : undefined,
-                      ]
-                        .filter(Boolean)
-                        .join(" ")}
+                  })
+                ) : (
+                  <span
+                    className={css.fileCard}
+                    title={nativeFilePath(attachment.file) ?? attachment.file.name}
+                  >
+                    <FileTypeIcon path={attachment.file.name} className={css.fileIcon} />
+                    <span className={css.fileContent}>
+                      <span className={css.fileName}>{attachment.file.name}</span>
+                      <span className={css.fileMeta}>
+                        {[
+                          fileExtension(attachment.file.name).toUpperCase().slice(0, 8),
+                          nativeFilePath(attachment.file) === undefined
+                            ? fileSizeText(attachment.file.bytes)
+                            : undefined,
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                      </span>
                     </span>
                   </span>
-                </span>
-              ),
-            )}
+                )}
+                {attachment.upload && <AttachmentUploadProgress upload={attachment.upload} t={t} />}
+              </div>
+            ))}
           </div>
         )}
         {editor ??
@@ -335,10 +359,11 @@ export function PendingSubmissionBubble({
   );
   const previewAttachments = useMemo<readonly PresentedAttachment[]>(
     () =>
-      submission.attachments.map((attachment) =>
-        attachment.type === "image"
+      submission.attachments.map((attachment) => ({
+        upload: attachment.upload,
+        ...(attachment.type === "image"
           ? {
-              type: "image",
+              type: "image" as const,
               image: {
                 preview: {
                   url: attachment.value.previewUrl,
@@ -352,8 +377,8 @@ export function PendingSubmissionBubble({
                 },
               },
             }
-          : { type: "file", file: attachment.value },
-      ),
+          : { type: "file" as const, file: attachment.value }),
+      })),
     [submission.attachments],
   );
   return (

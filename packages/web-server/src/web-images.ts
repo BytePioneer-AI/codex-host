@@ -172,12 +172,16 @@ export class WebImages {
   }
 
   /** Validate the entire batch before saving. Retain files once dispatch can have happened. */
-  prepare(content: unknown): TextInput[] {
+  prepare(content: unknown, uploaded: readonly WebImageRef[] = []): TextInput[] {
     if (!Array.isArray(content))
       return invalid("INVALID_IMAGE", "Prompt content must be an array.");
     const texts: TextInput[] = [];
     const images: PreparedImage[] = [];
-    let total = 0;
+    let total = uploaded.reduce((sum, image) => sum + image.bytes, 0);
+    if (uploaded.length > WEB_IMAGE_LIMITS.maxImagesPerMessage)
+      return invalid("TOO_MANY_IMAGES", "At most 20 images can be attached.");
+    if (total > WEB_IMAGE_LIMITS.maxMessageImageBytes)
+      return invalid("IMAGES_TOO_LARGE", "Images exceed 32 MiB in one message.");
     for (const part of content) {
       if (!part || typeof part !== "object")
         return invalid("INVALID_IMAGE", "Invalid prompt content.");
@@ -190,7 +194,7 @@ export class WebImages {
           "UNSUPPORTED_ATTACHMENT",
           "This Web connection accepts images, not arbitrary file uploads.",
         );
-      if (images.length >= WEB_IMAGE_LIMITS.maxImagesPerMessage)
+      if (images.length + uploaded.length >= WEB_IMAGE_LIMITS.maxImagesPerMessage)
         return invalid("TOO_MANY_IMAGES", "At most 20 images can be attached.");
       if (!WEB_IMAGE_LIMITS.mediaTypes.includes(part.mediaType) || typeof part.data !== "string")
         return invalid("INVALID_IMAGE", "Unsupported image encoding or media type.");
@@ -212,15 +216,7 @@ export class WebImages {
     }
     if (!images.length) return texts;
     // Do not use supplied names or paths for any filesystem operation.
-    for (const image of images) {
-      const path = join(this.directory, image.leaf);
-      try {
-        writeFileSync(path, image.bytes, { flag: "wx", mode: 0o600 });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        this.readBytes(image.ref.attachmentId); // existing content must be the same immutable image, not a symlink
-      }
-    }
+    for (const image of images) this.store(image);
     const references = images
       .map(
         (image, index) =>
@@ -233,6 +229,18 @@ export class WebImages {
         text: HEADER + references + REQUEST + texts.map((part) => part.text).join("\n"),
       },
     ];
+  }
+
+  /** Save a validated image into the canonical, immutable image directory. */
+  store(image: PreparedImage): string {
+    const path = join(this.directory, image.leaf);
+    try {
+      writeFileSync(path, image.bytes, { flag: "wx", mode: 0o600 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      this.readBytes(image.ref.attachmentId);
+    }
+    return path;
   }
 
   /**

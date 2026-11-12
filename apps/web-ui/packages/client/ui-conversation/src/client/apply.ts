@@ -30,11 +30,7 @@ import type { ReferenceInsert } from "./contract/draft-editor.ts";
 import { createConversationStore, readConversationViewPreference } from "./stores.ts";
 import { formatFileMention } from "@deepseek-ai/dsh-file-reference/grammar";
 import { relativizeToCwd, workspaceTitleOf } from "@deepseek-ai/dsh-util-workspace-path";
-import {
-  ConversationController,
-  UnsupportedImageMediaTypeError,
-  isImageMediaType,
-} from "./service.ts";
+import { ConversationController, isImageMediaType } from "./service.ts";
 import type { IConversation } from "./service.ts";
 import { ComposerBlockRegistry } from "./input/blocks.ts";
 import type { ComposerBlock } from "./contract/composer-blocks.ts";
@@ -644,8 +640,6 @@ export function apply(ctx: Context, config: Config = Config({})): void {
                 }
                 return null;
               } catch (error: unknown) {
-                if (error instanceof UnsupportedImageMediaTypeError)
-                  return t("image.unsupportedType");
                 return error instanceof Error ? error.message : String(error);
               }
             },

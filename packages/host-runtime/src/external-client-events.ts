@@ -132,6 +132,11 @@ export class ClientEventLog {
     return { events, cursor: events.at(-1)?.id ?? after };
   }
 
+  /** The newest event id, or 0; a new webhook starts after it rather than replaying history. */
+  async lastEventId(client: string): Promise<number> {
+    return this.#lastId(client);
+  }
+
   /** Resolves when the client's log gains an event, or after the timeout. */
   waitForEvent(client: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve) => {

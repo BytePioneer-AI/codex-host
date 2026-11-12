@@ -308,7 +308,7 @@ describe("Thread references", () => {
       next: { read: "r", wait: "w" },
     }) as { watch?: { notify?: string } };
     expect(watched.watch?.notify).toBe("client:grok-bot");
-    expect(DELEGATION_HELP).toContain("codexhost client add|list|remove");
+    expect(DELEGATION_HELP).toContain("codexhost client add|list|set|pair|remove|access|webhook");
     expect(DELEGATION_HELP).toContain("codexhost events");
   });
 });

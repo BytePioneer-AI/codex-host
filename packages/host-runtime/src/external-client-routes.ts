@@ -29,6 +29,14 @@ function ownOrigin(client: string, value: unknown, field: string): string {
   return value as string;
 }
 
+/** Routes that change something; a `read` client may use every other route. */
+const DISPATCH_ROUTES = new Set([
+  "/v1/delegate/start",
+  "/v1/thread/send",
+  "/v1/thread/cancel",
+  "/v1/thread/watch",
+]);
+
 /** Applies the caller's identity: work and watches without a parent or target belong to the client. */
 function forClient(
   client: string,
@@ -81,6 +89,11 @@ export function externalClientRouter(handlers: {
   events?: ClientEventLog;
 }): ExternalClientRouter {
   return async (call, route, body) => {
+    if (call.scope === "read" && DISPATCH_ROUTES.has(route))
+      throw new DelegationControlError(
+        "FORBIDDEN",
+        `Client '${call.client}' has read scope and cannot use ${route}`,
+      );
     if (route === "/v1/events/poll") {
       if (!handlers.events)
         throw new DelegationControlError("INVALID_ARGUMENT", "This Runtime keeps no client events");
@@ -140,7 +153,7 @@ export function externalClientEventStream(
       if (page.events.length === MAX_EVENTS_PER_READ) continue;
       await events.waitForEvent(call.client, HEARTBEAT_MS, closed.signal);
       if (closed.signal.aborted) break;
-      if (!(await clients.has(call.client))) break;
+      if (!(await clients.has(call.client, call.network))) break;
       call.response.write(": ping\n\n");
     }
     call.response.end();

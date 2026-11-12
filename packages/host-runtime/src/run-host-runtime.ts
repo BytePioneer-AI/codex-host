@@ -29,6 +29,15 @@ import { cliCredentialsPath } from "./cli-credentials.js";
 import { externalClientMcp } from "./external-client-mcp.js";
 import { externalClientEventStream, externalClientRouter } from "./external-client-routes.js";
 import { FileThreadRefsStore } from "./thread-refs.js";
+import { ExternalAccessSupervisor, externalAccessPaths } from "./external-client-access.js";
+import {
+  ExternalClientOAuthStore,
+  defaultExternalClientOAuthPath,
+} from "./external-client-oauth.js";
+import { createTailscaleControl } from "./tailscale.js";
+import { WebhookDispatcher, WebhookStore } from "./external-client-webhooks.js";
+import { webhookDirectory } from "./external-client-cli.js";
+import type { ClientNetwork } from "./external-clients.js";
 import {
   externalClientDescriptorPath,
   externalClientPort,
@@ -269,19 +278,59 @@ async function startExternalClients(
   if (port === undefined) return undefined;
   const cliToken = `chc_${randomBytes(32).toString("base64url")}`;
   const clients = new ExternalClientRegistry(defaultExternalClientsPath(environment), cliToken);
+  const oauth = new ExternalClientOAuthStore(defaultExternalClientOAuthPath(environment));
   const route = externalClientRouter({ api: registry, watchApi: registry, events });
-  return startExternalClientServer({
-    port,
-    clients,
-    route,
-    streams: {
-      "/v1/events": externalClientEventStream(events, clients),
-      "/mcp": externalClientMcp(route),
-    },
-    descriptorPath: externalClientDescriptorPath(environment),
-    cliCredentials: { path: cliCredentialsPath(environment), token: cliToken },
-    diagnose: (message) => process.stderr.write(`codexhost external clients: ${message}\n`),
+  const diagnose = (message: string) =>
+    process.stderr.write(`codexhost external clients: ${message}\n`);
+  const start = (options: {
+    network: ClientNetwork;
+    host: string;
+    port: number;
+    publicBaseUrl?: () => string | undefined;
+  }) =>
+    startExternalClientServer({
+      ...options,
+      clients,
+      ...(options.network === "public" ? { oauth } : {}),
+      route,
+      streams: {
+        "/v1/events": externalClientEventStream(events, clients),
+        "/mcp": externalClientMcp(route),
+      },
+      ...(options.network === "local"
+        ? {
+            descriptorPath: externalClientDescriptorPath(environment),
+            cliCredentials: { path: cliCredentialsPath(environment), token: cliToken },
+          }
+        : {}),
+      diagnose,
+    });
+  const local = await start({ network: "local", host: "127.0.0.1", port });
+  if (!local) return undefined;
+  const paths = externalAccessPaths(environment);
+  const access = new ExternalAccessSupervisor({
+    settingsPath: paths.settings,
+    statusPath: paths.status,
+    tailscale: createTailscaleControl(environment),
+    start,
+    port: Number(new URL(local.endpoint).port),
+    diagnose,
   });
+  void access.start();
+  const webhooks = new WebhookDispatcher({
+    store: new WebhookStore(webhookDirectory(environment)),
+    events,
+    diagnose,
+  });
+  webhooks.start();
+  return {
+    endpoint: local.endpoint,
+    close: async () => {
+      await webhooks.close();
+      await access.close();
+      await local.close();
+    },
+  };
 }
 
 /**

@@ -281,6 +281,8 @@ export type DelegationControlErrorCode =
   | "RESPONSE_TOO_LARGE"
   | "RUNTIME_UNREACHABLE"
   | "DELEGATION_FAILED"
+  /** The client's scope does not allow the operation. */
+  | "FORBIDDEN"
   /** The external client token is missing, unknown, or revoked. */
   | "UNAUTHORIZED"
   /** The event cursor is older than the oldest retained event. */

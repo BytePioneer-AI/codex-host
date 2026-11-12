@@ -18,9 +18,16 @@ export async function runUpdateCommand(
   }
   if (!checked.installationAvailable) {
     // Windows and macOS Updaters require a Launcher cleanup handoff, which a terminal cannot grant.
+    // Linux installer targets have no in-app installer either, so only a manual install remains.
     const release = checked.releaseNotesUrl ? ` (${checked.releaseNotesUrl})` : "";
+    const linuxInstaller =
+      target.distribution?.distribution === "installer" &&
+      target.distribution.target.startsWith("linux-");
+    const next = linuxInstaller
+      ? "Install the release manually"
+      : "Update from Codex settings, or install the release manually";
     throw new Error(
-      `codexhost ${checked.latestVersion} is available but cannot be installed from the terminal here. Update from Codex settings, or install the release manually${release}.`,
+      `codexhost ${checked.latestVersion} is available but cannot be installed from the terminal here. ${next}${release}.`,
     );
   }
   write(`Updating codexhost ${checked.currentVersion} → ${checked.latestVersion}...`);

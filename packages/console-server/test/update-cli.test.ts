@@ -89,6 +89,25 @@ describe("update command", () => {
     expect(updates.start).not.toHaveBeenCalled();
   });
 
+  it("points Linux installer targets only to a manual install", async () => {
+    const updates = fixture();
+    const checked = await updates.check(target);
+    updates.check.mockResolvedValue({ ...checked, installationAvailable: false });
+    const linux: ConsoleUpdateTarget = {
+      ...target,
+      distribution: {
+        schemaVersion: 1,
+        version: "1.0.0",
+        distribution: "installer",
+        target: "linux-x64",
+      },
+    };
+    await expect(runUpdateCommand(linux, updates, vi.fn())).rejects.toThrow(
+      "codexhost 1.1.0 is available but cannot be installed from the terminal here. Install the release manually.",
+    );
+    expect(updates.start).not.toHaveBeenCalled();
+  });
+
   it("rejects unknown arguments before inspecting or updating", async () => {
     await expect(updateFromCommand("/unused", ["extra"])).rejects.toThrow("accepts no arguments");
   });

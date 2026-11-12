@@ -91,6 +91,9 @@ export async function prepareLocalCodex(input: {
   }
   startup.stockCodexPath =
     (await resolveOfficialCodexExecutable(startup.stockCodexPath, input.environment)) ?? "";
+  // `startup` is what the next backend generation uses; `running` is what the current one used.
+  // A preserved active Turn keeps `running` while `startup` already holds the newer request.
+  let running: typeof startup | undefined;
   let startupConfigured = false;
   let backendFiles: string[] = [];
   const scope = new OfficialRuntimeScope({
@@ -102,6 +105,7 @@ export async function prepareLocalCodex(input: {
       startupConfigured = true;
       if (!startup.stockCodexPath) throw new Error("Official Codex is unavailable");
       backendFiles = captureCodexRuntimeFiles(startup.stockCodexPath);
+      running = startup;
       return createOwnedLoopbackBackend({
         stockCodexPath: startup.stockCodexPath,
         cwd: home,
@@ -172,12 +176,16 @@ export async function prepareLocalCodex(input: {
           );
         }
       }
+      // Compare with the live generation when one is running; otherwise with the last request.
+      const current = scope.owner.running && running ? running : startup;
       const changed =
-        startup.stockCodexPath !== next.stockCodexPath ||
-        JSON.stringify(startup.arguments) !== JSON.stringify(next.arguments) ||
+        current.stockCodexPath !== next.stockCodexPath ||
+        JSON.stringify(current.arguments) !== JSON.stringify(next.arguments) ||
         // A reopened Desktop serves its app tools on a new pipe; the old one is gone.
-        startup.environment[DESKTOP_APP_TOOLS_PIPE_ENV] !==
+        current.environment[DESKTOP_APP_TOOLS_PIPE_ENV] !==
           next.environment[DESKTOP_APP_TOOLS_PIPE_ENV];
+      // Whatever happens to the running generation, the next one starts from this request.
+      startup = next;
       // The running generation, not the next requested invocation, owns these files.
       // An idle changed backend can still be replaced through the normal path below.
       if (scope.owner.running && (!changed || scope.owner.hasActiveWork))
@@ -188,7 +196,6 @@ export async function prepareLocalCodex(input: {
         );
         return;
       }
-      startup = next;
       if (changed && scope.owner.generation > 0) await scope.stop();
     },
     close: async () => {

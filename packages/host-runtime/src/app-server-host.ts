@@ -23,6 +23,7 @@ import {
   threadCatalogReadParamsSchema,
 } from "@codexhost/shared-contracts";
 import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
+import { listThreadRelations } from "./thread-relation-list.js";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { readThreadCatalog } from "./thread-catalog.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
@@ -124,6 +125,7 @@ import {
   threadPermissionModeSelectParamsSchema,
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
+  threadRelationListParamsSchema,
   threadOwnershipListResultSchema,
   threadSteeringInspectParamsSchema,
   threadSteeringInspectResultSchema,
@@ -1022,6 +1024,7 @@ export class AppServerHost {
       inspectThread: (request) => this.#inspectThread(request),
       inspectThreadUsage: (request) => this.#inspectThreadUsage(request),
       listThreadOwnership: (request) => this.#listThreadOwnership(request),
+      listThreadRelations: (request) => this.#listThreadRelations(request),
       inspectThreadSteering: (request) => this.#inspectThreadSteering(request),
       handleSharedQuestionRequest: (request) => this.#handleSharedQuestionRequest(request),
       selectThreadModel: (request) => this.#selectThreadModel(request),
@@ -3341,6 +3344,27 @@ export class AppServerHost {
     } catch {
       await this.#writer.json(
         rpcError(request, -32081, "Thread ownership metadata could not be read"),
+      );
+    }
+  }
+
+  /** Read persisted sidebar parents without restoring a Session or calling official Codex. */
+  async #listThreadRelations(request: JsonRpcRequest): Promise<void> {
+    const params = threadRelationListParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Thread relation-list params"));
+      return;
+    }
+    try {
+      const result = await listThreadRelations({
+        threadIds: params.data.threadIds,
+        source: this.#repository,
+        sharedThreadIds: await this.#options.sharedThreads?.ownership(params.data.threadIds),
+      });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+    } catch {
+      await this.#writer.json(
+        rpcError(request, -32081, "Thread relation metadata could not be read"),
       );
     }
   }

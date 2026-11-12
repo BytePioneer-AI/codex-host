@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { access, copyFile, cp, mkdir } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, copyFile, cp, mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType, SQLInputValue } from "node:sqlite";
@@ -16,8 +17,18 @@ import {
 
 import { AntigravityHistory, type AntigravityTurn } from "./history.js";
 import { nativeTurnBoundaryError } from "./native-turn-boundaries.js";
+import {
+  minimalRawSummaryBlob,
+  minimalTrajectoryMetadataBlob,
+  rewriteTrajectoryMetadataCascadeId,
+} from "./native-trajectory-metadata.js";
 import type { AntigravityPermissionMode } from "./permission-modes.js";
 import { antigravityHome } from "./usage-statistics.js";
+
+export {
+  minimalRawSummaryBlob,
+  minimalTrajectoryMetadataBlob,
+} from "./native-trajectory-metadata.js";
 
 const DEFAULT_CLI_PROJECT_ID = "default-cli-project";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
@@ -37,133 +48,6 @@ export function nativeBrainRoot(homedir = os.homedir()): string {
 
 export function nativeBrainDirPath(nativeSessionId: string, homedir = os.homedir()): string {
   return path.join(nativeBrainRoot(homedir), nativeSessionId);
-}
-
-function encodeVarint(value: number): Buffer {
-  const bytes: number[] = [];
-  let remaining = value >>> 0;
-  while (remaining >= 0x80) {
-    bytes.push((remaining & 0x7f) | 0x80);
-    remaining >>>= 7;
-  }
-  bytes.push(remaining);
-  return Buffer.from(bytes);
-}
-
-function decodeVarint(
-  buffer: Uint8Array,
-  startOffset: number,
-): [value: number, nextOffset: number] | null {
-  let value = 0;
-  let shift = 0;
-  let offset = startOffset;
-  while (offset < buffer.length) {
-    const byte = buffer[offset];
-    if (byte === undefined) return null;
-    offset += 1;
-    value += (byte & 0x7f) * 2 ** shift;
-    if ((byte & 0x80) === 0) return [value, offset];
-    shift += 7;
-    if (shift > 53) return null;
-  }
-  return null;
-}
-
-function encodeLengthDelimited(fieldNumber: number, payload: Uint8Array): Buffer {
-  return Buffer.concat([
-    encodeVarint((fieldNumber << 3) | 2),
-    encodeVarint(payload.length),
-    Buffer.from(payload),
-  ]);
-}
-
-export function minimalTrajectoryMetadataBlob(
-  cascadeId: string,
-  projectId = DEFAULT_CLI_PROJECT_ID,
-): Buffer {
-  return Buffer.concat([
-    encodeLengthDelimited(6, Buffer.from(cascadeId, "utf8")),
-    encodeLengthDelimited(18, Buffer.from(projectId, "utf8")),
-  ]);
-}
-
-export function minimalRawSummaryBlob(trajectoryId: string, metadataBlob: Uint8Array): Buffer {
-  return Buffer.concat([
-    encodeLengthDelimited(4, Buffer.from(trajectoryId, "utf8")),
-    Buffer.from([0x28, 0x01]),
-    encodeLengthDelimited(17, metadataBlob),
-    Buffer.from([0xb0, 0x01, 0x04]),
-  ]);
-}
-
-/**
- * Rewrites field 6 (`cascade_id`) in a serialized `CortexTrajectoryMetadata` protobuf while
- * preserving workspace URIs, timestamps, and project metadata. Falls back to a minimal blob
- * when the input is absent or malformed.
- */
-function updateTrajectoryMetadataCascadeId(
-  blob: Uint8Array | null | undefined,
-  cascadeId: string,
-): Buffer {
-  if (!blob || blob.length === 0) return minimalTrajectoryMetadataBlob(cascadeId);
-  return (
-    rewriteTrajectoryMetadataCascadeId(blob, cascadeId) ?? minimalTrajectoryMetadataBlob(cascadeId)
-  );
-}
-
-/** Like {@link updateTrajectoryMetadataCascadeId}, but returns null when `blob` cannot be parsed. */
-function rewriteTrajectoryMetadataCascadeId(blob: Uint8Array, cascadeId: string): Buffer | null {
-  const chunks: Buffer[] = [];
-  let offset = 0;
-  let wroteCascadeId = false;
-  let hasProjectId = false;
-  while (offset < blob.length) {
-    const fieldStart = offset;
-    const tagParsed = decodeVarint(blob, offset);
-    if (!tagParsed) return null;
-    const [tag, afterTag] = tagParsed;
-    const fieldNumber = tag >>> 3;
-    const wireType = tag & 0x07;
-    offset = afterTag;
-    if (wireType === 0) {
-      const valParsed = decodeVarint(blob, offset);
-      if (!valParsed) return null;
-      offset = valParsed[1];
-      chunks.push(Buffer.from(blob.subarray(fieldStart, offset)));
-    } else if (wireType === 1) {
-      if (offset + 8 > blob.length) return null;
-      offset += 8;
-      chunks.push(Buffer.from(blob.subarray(fieldStart, offset)));
-    } else if (wireType === 2) {
-      const lenParsed = decodeVarint(blob, offset);
-      if (!lenParsed) return null;
-      const [length, afterLen] = lenParsed;
-      if (afterLen + length > blob.length) return null;
-      offset = afterLen + length;
-      if (fieldNumber === 6) {
-        if (!wroteCascadeId) {
-          chunks.push(encodeLengthDelimited(6, Buffer.from(cascadeId, "utf8")));
-          wroteCascadeId = true;
-        }
-      } else {
-        if (fieldNumber === 18) hasProjectId = true;
-        chunks.push(Buffer.from(blob.subarray(fieldStart, offset)));
-      }
-    } else if (wireType === 5) {
-      if (offset + 4 > blob.length) return null;
-      offset += 4;
-      chunks.push(Buffer.from(blob.subarray(fieldStart, offset)));
-    } else {
-      return null;
-    }
-  }
-  if (!wroteCascadeId) {
-    chunks.push(encodeLengthDelimited(6, Buffer.from(cascadeId, "utf8")));
-  }
-  if (!hasProjectId) {
-    chunks.push(encodeLengthDelimited(18, Buffer.from(DEFAULT_CLI_PROJECT_ID, "utf8")));
-  }
-  return Buffer.concat(chunks);
 }
 
 /** Only a missing path is absent; other access errors (permissions, I/O) are rethrown. */
@@ -514,23 +398,8 @@ export async function cloneNativeConversationDb(
   const targetDb = nativeConversationDbPath(derivedSessionId, homedir);
   const summariesDbPath = nativeConversationSummariesDbPath(homedir);
 
-  let copiedFromDisk = false;
-  try {
-    await mkdir(path.dirname(targetDb), { recursive: true });
-    await copyFile(sourceDb, targetDb);
-    copiedFromDisk = true;
-  } catch {
-    copiedFromDisk = false;
-  }
-
-  let DatabaseSync: typeof DatabaseSyncType;
-  try {
-    ({ DatabaseSync } = await import("node:sqlite"));
-  } catch {
-    return copiedFromDisk;
-  }
-
-  if (!copiedFromDisk) {
+  const { DatabaseSync } = await import("node:sqlite");
+  if (!(await pathExists(sourceDb))) {
     const sourceSummary = (await pathExists(summariesDbPath))
       ? readConversationSummaryRow(DatabaseSync, summariesDbPath, sourceSessionId)
       : undefined;
@@ -538,8 +407,18 @@ export async function cloneNativeConversationDb(
     if (!UUID_PATTERN.test(sourceSessionId) && !sourceSummary && !sourceBrainExists) {
       return false;
     }
-    return seedNativeConversationDb(derivedSessionId, homedir, sourceSummary);
+    if (await pathExists(targetDb)) {
+      throw new Error("Antigravity derived native conversation database already exists");
+    }
+    if (!(await seedNativeConversationDb(derivedSessionId, homedir, sourceSummary))) {
+      await rm(targetDb, { force: true });
+      throw new Error("Antigravity could not seed the derived native conversation database");
+    }
+    return true;
   }
+
+  await mkdir(path.dirname(targetDb), { recursive: true });
+  await copyFile(sourceDb, targetDb, constants.COPYFILE_EXCL);
 
   let trajectoryId: string = randomUUID();
   let metadataBlob = minimalTrajectoryMetadataBlob(derivedSessionId);
@@ -548,79 +427,77 @@ export async function cloneNativeConversationDb(
     const db = new DatabaseSync(targetDb);
     try {
       db.prepare("UPDATE trajectory_meta SET cascade_id = ?").run(derivedSessionId);
-      try {
-        const metaRow = db.prepare("SELECT trajectory_id FROM trajectory_meta LIMIT 1").get() as
-          { trajectory_id?: string } | undefined;
-        if (metaRow?.trajectory_id) trajectoryId = metaRow.trajectory_id;
-      } catch {}
-      try {
-        const blobRow = db
-          .prepare("SELECT data FROM trajectory_metadata_blob WHERE id = 'main'")
-          .get() as { data?: Uint8Array } | undefined;
-        metadataBlob = updateTrajectoryMetadataCascadeId(blobRow?.data, derivedSessionId);
-        db.prepare(
-          "INSERT OR REPLACE INTO trajectory_metadata_blob (id, data) VALUES ('main', ?)",
-        ).run(metadataBlob);
-      } catch {}
+      const metaRow = db.prepare("SELECT trajectory_id FROM trajectory_meta LIMIT 1").get() as
+        { trajectory_id?: string } | undefined;
+      if (metaRow?.trajectory_id) trajectoryId = metaRow.trajectory_id;
+      const blobRow = db
+        .prepare("SELECT data FROM trajectory_metadata_blob WHERE id = 'main'")
+        .get() as { data?: Uint8Array } | undefined;
+      const rewritten = blobRow?.data?.length
+        ? rewriteTrajectoryMetadataCascadeId(blobRow.data, derivedSessionId)
+        : minimalTrajectoryMetadataBlob(derivedSessionId);
+      if (!rewritten) throw new Error("Antigravity could not parse source trajectory metadata");
+      metadataBlob = rewritten;
+      db.prepare(
+        "INSERT OR REPLACE INTO trajectory_metadata_blob (id, data) VALUES ('main', ?)",
+      ).run(metadataBlob);
       if (retainedTurnsCount !== undefined) {
-        try {
-          if (retainedTurnsCount === 0) {
-            db.prepare("DELETE FROM steps").run();
-          } else {
-            // In agy, each turn begins with a user_input step (step_type = 14)
-            const rows = db
-              .prepare("SELECT idx FROM steps WHERE step_type = 14 ORDER BY idx ASC")
-              .all() as Array<{ idx: number }>;
-            const cutoff = rows[retainedTurnsCount];
-            if (cutoff) {
-              db.prepare("DELETE FROM steps WHERE idx >= ?").run(cutoff.idx);
-            }
+        if (retainedTurnsCount === 0) {
+          db.prepare("DELETE FROM steps").run();
+        } else {
+          // In agy, each turn begins with a user_input step (step_type = 14)
+          const rows = db
+            .prepare("SELECT idx FROM steps WHERE step_type = 14 ORDER BY idx ASC")
+            .all() as Array<{ idx: number }>;
+          const cutoff = rows[retainedTurnsCount];
+          if (cutoff) db.prepare("DELETE FROM steps WHERE idx >= ?").run(cutoff.idx);
+        }
+        for (const table of [
+          "gen_metadata",
+          "executor_metadata",
+          "parent_references",
+          "battle_mode_infos",
+        ]) {
+          // Older native schemas may omit auxiliary tables, but write errors must still fail.
+          if (
+            db
+              .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+              .get(table)
+          ) {
+            db.prepare(`DELETE FROM ${table} WHERE idx >= ?`).run(retainedTurnsCount);
           }
-        } catch {}
-        try {
-          db.prepare("DELETE FROM gen_metadata WHERE idx >= ?").run(retainedTurnsCount);
-        } catch {}
-        try {
-          db.prepare("DELETE FROM executor_metadata WHERE idx >= ?").run(retainedTurnsCount);
-        } catch {}
-        try {
-          db.prepare("DELETE FROM parent_references WHERE idx >= ?").run(retainedTurnsCount);
-        } catch {}
-        try {
-          db.prepare("DELETE FROM battle_mode_infos WHERE idx >= ?").run(retainedTurnsCount);
-        } catch {}
+        }
       }
-      try {
-        const countRow = db.prepare("SELECT count(*) as c FROM steps").get() as
-          { c: number } | undefined;
-        if (countRow) remainingStepCount = countRow.c;
-      } catch {}
+      const countRow = db.prepare("SELECT count(*) as c FROM steps").get() as
+        { c: number } | undefined;
+      if (countRow) remainingStepCount = countRow.c;
     } finally {
       db.close();
     }
-  } catch {
-    // If table updating fails (for example a synthetic non-SQLite test file), keep the copied file
-    return true;
-  }
 
-  // Register in conversation_summaries.db so `agy` trajectory lookup succeeds
-  if (await pathExists(summariesDbPath)) {
-    const sourceRow = readConversationSummaryRow(DatabaseSync, summariesDbPath, sourceSessionId);
-    const effectiveStepCount =
-      retainedTurnsCount !== undefined
-        ? remainingStepCount
-        : typeof sourceRow?.step_count === "number"
-          ? sourceRow.step_count
-          : remainingStepCount;
-    upsertConversationSummaryRow(
-      DatabaseSync,
-      summariesDbPath,
-      derivedSessionId,
-      trajectoryId,
-      metadataBlob,
-      effectiveStepCount,
-      sourceRow,
-    );
+    // Register in conversation_summaries.db so `agy` trajectory lookup succeeds
+    if (await pathExists(summariesDbPath)) {
+      const sourceRow = readConversationSummaryRow(DatabaseSync, summariesDbPath, sourceSessionId);
+      const effectiveStepCount =
+        retainedTurnsCount !== undefined
+          ? remainingStepCount
+          : typeof sourceRow?.step_count === "number"
+            ? sourceRow.step_count
+            : remainingStepCount;
+      upsertConversationSummaryRow(
+        DatabaseSync,
+        summariesDbPath,
+        derivedSessionId,
+        trajectoryId,
+        metadataBlob,
+        effectiveStepCount,
+        sourceRow,
+      );
+    }
+  } catch (error) {
+    // Only this invocation's exclusive copy is disposable; never remove the source or other rows.
+    await rm(targetDb, { force: true });
+    throw error;
   }
 
   return true;
@@ -781,6 +658,26 @@ export async function forkAntigravitySession(
   const thinkingOptionId = sourceSession?.thinkingOptionId ?? sourceHistory.thinkingOptionId;
   const permissionMode = sourceSession?.permissionMode ?? "dangerously-skip-permissions";
 
+  try {
+    // A genuinely missing store may recover from sidecar history; preparation errors must fail.
+    await copyNativeConversationDbIfExists(
+      sourceRef.nativeSessionId,
+      derivedNativeSessionId,
+      retainedTurns.length,
+      homedir,
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: error instanceof Error ? error.message : String(error),
+        retryable: false,
+      },
+    };
+  }
+  await copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedNativeSessionId, homedir);
+
   const forkedHistory = await AntigravityHistory.createDerived({
     environment: sessionEnvironment,
     nativeSessionId: derivedNativeSessionId,
@@ -788,16 +685,6 @@ export async function forkAntigravitySession(
     ...(model ? { model } : {}),
     ...(thinkingOptionId ? { thinkingOptionId } : {}),
   });
-
-  await Promise.all([
-    copyNativeConversationDbIfExists(
-      sourceRef.nativeSessionId,
-      derivedNativeSessionId,
-      retainedTurns.length,
-      homedir,
-    ),
-    copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedNativeSessionId, homedir),
-  ]);
 
   const derivedNativeRef: NativeSessionRef = {
     harnessId,

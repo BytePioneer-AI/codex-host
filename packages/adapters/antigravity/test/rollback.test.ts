@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -13,7 +13,11 @@ import {
 import { describe, expect, it } from "vitest";
 
 import { AntigravityAdapter } from "../src/index.js";
-import { cloneNativeConversationDb, nativeConversationDbPath } from "../src/fork.js";
+import {
+  cloneNativeConversationDb,
+  nativeConversationDbPath,
+  seedNativeConversationDb,
+} from "../src/fork.js";
 import { AntigravityHistory } from "../src/history.js";
 
 const antigravityHarnessId = harnessIdSchema.parse("antigravity");
@@ -389,8 +393,15 @@ describe("Antigravity Rollback Last Turn Capability", () => {
 
     try {
       const sourceDb = nativeConversationDbPath("conv-rb-db", fakeHome);
-      await mkdir(path.dirname(sourceDb), { recursive: true });
-      await writeFile(sourceDb, "SQLite format 3\0rollback-test");
+      expect(await seedNativeConversationDb("conv-rb-db", fakeHome)).toBe(true);
+      const { DatabaseSync } = await import("node:sqlite");
+      const source = new DatabaseSync(sourceDb);
+      try {
+        source.exec("INSERT INTO steps (idx, step_type) VALUES (0, 14), (1, 15)");
+      } finally {
+        source.close();
+      }
+      const sourceBefore = await readFile(sourceDb);
 
       const history = await AntigravityHistory.open({
         environment: { CODEXHOST_DATA_DIR: dataDir, CODEXHOST_THREAD_ID: "thread-db" },
@@ -433,9 +444,20 @@ describe("Antigravity Rollback Last Turn Capability", () => {
       if (rolledBack.ok) {
         const derivedNativeId = rolledBack.value.initialState.nativeRef?.nativeSessionId;
         expect(derivedNativeId).toBeDefined();
+        if (!derivedNativeId) throw new Error("Missing derived identity");
+        const derived = new DatabaseSync(nativeConversationDbPath(derivedNativeId, fakeHome));
+        try {
+          expect(derived.prepare("SELECT count(*) AS n FROM steps").get()?.n).toBe(0);
+          expect(derived.prepare("SELECT cascade_id FROM trajectory_meta").get()?.cascade_id).toBe(
+            derivedNativeId,
+          );
+        } finally {
+          derived.close();
+        }
         await rolledBack.value.close();
       }
       await adapter.close();
+      expect(await readFile(sourceDb)).toEqual(sourceBefore);
     } finally {
       await cleanup();
       await rm(fakeHome, { recursive: true, force: true });
@@ -454,6 +476,7 @@ describe("Antigravity Rollback Last Turn Capability", () => {
         db.exec(`
           CREATE TABLE trajectory_meta (trajectory_id text primary key, cascade_id text);
           INSERT INTO trajectory_meta VALUES ('traj-1', 'source-prune-session');
+          CREATE TABLE trajectory_metadata_blob (id text primary key, data blob);
           CREATE TABLE steps (idx integer primary key, step_type integer);
           -- Turn 1: user (idx 0), agent (idx 1)
           INSERT INTO steps VALUES (0, 14), (1, 15);

@@ -212,6 +212,26 @@ it("retries transport failures once on foreground but not explicit rejections", 
   f.uploads[3]!.resolve({ ok: false, error: { message: "rejected" } });
 });
 
+it("releases a stalled concurrency slot on timeout and starts the next queued attachment", async () => {
+  const f = fixture();
+  const [third] = f.service.createDrafts(SessionId("one"), [new File(["third"], "third.txt")]);
+  expect(f.uploads).toHaveLength(2);
+  await flush();
+  expect(f.uploads).toHaveLength(2, "two unfinished uploads occupy both slots");
+  f.uploads[0]!.reject(new Error("Upload made no progress for 60 seconds."));
+  await flush();
+  expect(f.uploads).toHaveLength(3);
+  expect(f.service.fileUploads.getSnapshot()[f.drafts[0]!.id]).toMatchObject({
+    status: "error",
+    transport: true,
+  });
+  f.ready(1);
+  f.ready(2);
+  await flush();
+  expect(f.service.fileUploads.getSnapshot()[third!.id]?.status).toBe("ready");
+  expect(f.prompt).not.toHaveBeenCalled();
+});
+
 it("keeps new text ahead of concurrent failures restored in submission order", async () => {
   const first = Promise.withResolvers<never>(),
     second = Promise.withResolvers<never>();

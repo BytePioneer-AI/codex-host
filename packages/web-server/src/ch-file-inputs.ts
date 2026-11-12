@@ -4,6 +4,12 @@ import type { WebFiles, SavedFile } from "./web-files.ts";
 import { nativeUserInput } from "./native-user-input.ts";
 import { RpcError, type RpcRegistry } from "./transport.ts";
 
+export interface FileUploadTiming {
+  ownerBeforeMs?: number;
+  receiveStoreMs?: number;
+  ownerAfterMs?: number;
+}
+
 export class ChFileInputs {
   constructor(
     private readonly files: WebFiles,
@@ -15,10 +21,24 @@ export class ChFileInputs {
     chunks: AsyncIterable<Uint8Array>,
     name?: string,
     imageMediaType?: string,
+    timing?: FileUploadTiming,
   ) {
-    const before = await this.owner(id);
-    const value = await this.files.upload(before, chunks, name, imageMediaType);
-    const after = await this.owner(id);
+    const measure = async <T>(
+      stage: keyof FileUploadTiming,
+      work: () => Promise<T>,
+    ): Promise<T> => {
+      const started = performance.now();
+      try {
+        return await work();
+      } finally {
+        if (timing) timing[stage] = performance.now() - started;
+      }
+    };
+    const before = await measure("ownerBeforeMs", () => this.owner(id));
+    const value = await measure("receiveStoreMs", () =>
+      this.files.upload(before, chunks, name, imageMediaType),
+    );
+    const after = await measure("ownerAfterMs", () => this.owner(id));
     if (before !== after) this.files.bind(before, after);
     return value;
   }

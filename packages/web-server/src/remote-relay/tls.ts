@@ -6,7 +6,12 @@ import {
 } from "node:http2";
 import { createSecureContext, createServer as createTlsServer, type SecureContext } from "node:tls";
 import { readClientHello } from "@codexhost/remote-relay/client-hello";
-import { headers, paths } from "@codexhost/remote-relay/protocol";
+import {
+  connectionWindowSize,
+  headers,
+  paths,
+  streamWindowSize,
+} from "@codexhost/remote-relay/protocol";
 import type { RequestTrust } from "../request-trust.ts";
 import { HTTP_KEEP_ALIVE_TIMEOUT } from "../http-server.ts";
 
@@ -114,13 +119,19 @@ export class RelayTls {
           };
           this.trust.relaySockets.set(socket, peer);
           if (socket.alpnProtocol === "h2") {
-            const http2 = createHttp2Server((request, response) => {
-              // Compatibility requests expose a per-stream socket proxy. Bind
-              // this connection's relay identity before auth and shared routing.
-              this.trust.relaySockets.set(request.socket, peer);
-              this.server.emit("request", request, response);
-            });
+            // The inner browser connection needs upload credit too: the outer
+            // tunnel's window does not enlarge HTTP/2 windows inside TLS.
+            const http2 = createHttp2Server(
+              { settings: { initialWindowSize: streamWindowSize } },
+              (request, response) => {
+                // Compatibility requests expose a per-stream socket proxy. Bind
+                // this connection's relay identity before auth and shared routing.
+                this.trust.relaySockets.set(request.socket, peer);
+                this.server.emit("request", request, response);
+              },
+            );
             http2.on("session", (session) => {
+              session.setLocalWindowSize(connectionWindowSize);
               session.setTimeout(HTTP_KEEP_ALIVE_TIMEOUT, () => session.close());
             });
             http2.emit("connection", socket);

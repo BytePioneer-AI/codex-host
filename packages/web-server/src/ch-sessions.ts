@@ -29,7 +29,7 @@ import { forkChThread, forkUnavailable } from "./ch-thread-fork.ts";
 import { ChPinnedThreads } from "./ch-pinned-threads.ts";
 import { type WebImages, WEB_IMAGE_INPUT, WEB_IMAGE_LIMITS } from "./web-images.ts";
 import { ChAttachments } from "./ch-attachments.ts";
-import { ChFileInputs } from "./ch-file-inputs.ts";
+import { ChFileInputs, type FileUploadTiming } from "./ch-file-inputs.ts";
 import { WebFileReferences } from "./file-references.ts";
 import { type WebFiles, WEB_FILE_INPUT } from "./web-files.ts";
 import { ChRealtime } from "./ch-realtime.ts";
@@ -854,10 +854,11 @@ export class ChSessions {
     chunks: AsyncIterable<Uint8Array>,
     name?: string,
     imageMediaType?: string,
+    timing?: FileUploadTiming,
   ) {
     if (!this.fileInputs)
       throw new RpcError("session/attachment-invalid", "File uploads are unavailable.");
-    return this.fileInputs.upload(id, chunks, name, imageMediaType);
+    return this.fileInputs.upload(id, chunks, name, imageMediaType, timing);
   }
 
   /** Draft input support for the Web composition; it does not create a Thread. */

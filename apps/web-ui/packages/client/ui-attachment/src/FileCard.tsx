@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import {
   fileExtension,
   FileTypeIcon,
@@ -31,7 +30,6 @@ export function FileCard({
   bytes,
   state,
   progress,
-  preview,
   labels,
   onRemove,
   onRetry,
@@ -40,7 +38,6 @@ export function FileCard({
   bytes: number;
   state: FileCardState;
   progress?: number;
-  preview?: ReactNode;
   labels: FileCardLabels;
   onRemove: () => void;
   onRetry: () => void;
@@ -57,11 +54,9 @@ export function FileCard({
   const retryable = state === "error";
   return (
     <div className={`${css.card}${retryable ? ` ${css.failed}` : ""}`} title={name}>
-      {preview ?? (
-        <span className={css.icon} aria-hidden>
-          {state === "uploading" ? <span className={css.spinner} /> : <FileTypeIcon path={name} />}
-        </span>
-      )}
+      <span className={css.icon} aria-hidden>
+        {state === "uploading" ? <span className={css.spinner} /> : <FileTypeIcon path={name} />}
+      </span>
       {retryable ? (
         <button
           type="button"

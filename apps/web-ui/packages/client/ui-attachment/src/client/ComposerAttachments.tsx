@@ -4,6 +4,7 @@ import type {
   ComposerAttachmentsProps,
   ComposerImageAttachment,
 } from "@deepseek-ai/dsh-client-ui-conversation/client";
+import { IconCloseFillRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import { AttachmentRail } from "../AttachmentRail.tsx";
 import type { AttachmentRailItem } from "../AttachmentRail.tsx";
 import { DropOverlay } from "../DropOverlay.tsx";
@@ -74,7 +75,52 @@ export function ComposerAttachments({
             renderItem={(item) => {
               const attachment = item.attachment;
               const upload = uploads[attachment.id];
-              const image = attachment.kind === "image" ? attachment : undefined;
+              if (attachment.kind === "image") {
+                const name = attachment.file.name;
+                return (
+                  <div className={css.imageItem}>
+                    <button
+                      type="button"
+                      className={css.thumbnail}
+                      title={t("image.openOriginal")}
+                      onClick={() => {
+                        setPreview(attachment);
+                      }}
+                    >
+                      <img src={attachment.previewUrl} alt={name || t("image.pending")} />
+                    </button>
+                    {(upload === undefined || upload.status === "uploading") && (
+                      <span className={css.overlay} role="status">
+                        {upload?.total
+                          ? `${String(Math.round(Math.min(1, upload.loaded / upload.total) * 100))}%`
+                          : "…"}
+                      </span>
+                    )}
+                    {upload?.status === "error" && (
+                      <button
+                        type="button"
+                        className={`${css.overlay} ${css.failed}`}
+                        aria-label={t("file.retry", { name })}
+                        onClick={() => {
+                          onRetryFile(attachment.id);
+                        }}
+                      >
+                        {t("image.retry")}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className={css.remove}
+                      aria-label={t("image.remove", { name })}
+                      onClick={() => {
+                        onRemoveAttachment(attachment.id);
+                      }}
+                    >
+                      <IconCloseFillRegular size={12} />
+                    </button>
+                  </div>
+                );
+              }
               return (
                 <FileCard
                   name={attachment.file.name || t("file.label")}
@@ -91,22 +137,7 @@ export function ComposerAttachments({
                   upload.total > 0
                     ? { progress: upload.loaded / upload.total }
                     : {})}
-                  labels={{
-                    ...fileCardLabels(t, attachment.file.name),
-                    ...(image ? { remove: t("image.remove", { name: attachment.file.name }) } : {}),
-                  }}
-                  preview={
-                    image && (
-                      <button
-                        type="button"
-                        className={css.thumbnail}
-                        title={t("image.openOriginal")}
-                        onClick={() => setPreview(image)}
-                      >
-                        <img src={image.previewUrl} alt={image.file.name || t("image.pending")} />
-                      </button>
-                    )
-                  }
+                  labels={fileCardLabels(t, attachment.file.name)}
                   onRemove={() => {
                     onRemoveAttachment(attachment.id);
                   }}

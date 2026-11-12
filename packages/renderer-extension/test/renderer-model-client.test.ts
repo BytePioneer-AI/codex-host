@@ -419,6 +419,7 @@ describe("Renderer fixed Model request client", () => {
     if (!client) throw new Error("Synthetic Model client was not created");
     expect(Object.keys(client).sort()).toEqual([
       "checkUpdate",
+      "continueNativeWithConfiguredProvider",
       "credentialImports",
       "executeThreadCommand",
       "forkThread",
@@ -431,6 +432,7 @@ describe("Renderer fixed Model request client", () => {
       "inspectHarness",
       "inspectHarnessAccount",
       "inspectHarnessCommands",
+      "inspectNativeProviderContinuation",
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
@@ -464,6 +466,7 @@ describe("Renderer fixed Model request client", () => {
       "subscribeHarnessPreferences",
       "subscribeThreadUsage",
       "updateRemote",
+      "usesIndependentNativeInference",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(

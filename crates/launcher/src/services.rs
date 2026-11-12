@@ -54,15 +54,12 @@ fn resolve_options(
     host_node: Option<PathBuf>,
 ) -> Result<Options, Box<dyn Error>> {
     let installed = InstalledResources::from_current_executable()?;
-    let host_node = crate::select_host_node(
-        host_node,
-        desktop_root,
-        node.clone().unwrap_or(installed.node.clone()),
-    );
+    let node = node
+        .or_else(|| env::var_os(NPM_NODE_PATH_ENV).map(PathBuf::from))
+        .unwrap_or(installed.node);
+    let host_node = crate::select_host_node(host_node, desktop_root, node.clone());
     Ok(Options {
-        node: node
-            .or_else(|| env::var_os(NPM_NODE_PATH_ENV).map(PathBuf::from))
-            .unwrap_or(installed.node),
+        node,
         host_node,
         host_runtime: host.unwrap_or(installed.host_runtime),
         runtime: web.unwrap_or(installed.web_runtime),
@@ -467,6 +464,8 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "windows")]
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn finishing_without_output_waits_for_web_startup() {
@@ -494,6 +493,46 @@ mod tests {
             web_browser_url(login, true),
             "http://127.0.0.1:4478/?token=fixture-secret#connect-devices"
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn npm_node_is_shared_with_host_when_launch_options_omit_node() {
+        const TEST: &str =
+            "services::tests::npm_node_is_shared_with_host_when_launch_options_omit_node";
+        if let Some(npm_node) = env::var_os("CODEXHOST_NPM_NODE_TEST") {
+            let npm_node = PathBuf::from(npm_node);
+            let options = resolve_options(None, None, None, None, None).unwrap();
+            assert_eq!(options.node, npm_node);
+            assert_eq!(options.host_node, npm_node);
+
+            let explicit = PathBuf::from(r"C:\explicit\node.exe");
+            let explicit_options =
+                resolve_options(Some(explicit.clone()), None, None, None, None).unwrap();
+            assert_eq!(explicit_options.node, explicit);
+            assert_eq!(explicit_options.host_node, explicit);
+            return;
+        }
+
+        let root = env::temp_dir().join(format!(
+            "codexhost-service-npm-node-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let npm_node = root.join("node.exe");
+        fs::write(&npm_node, "fixture").unwrap();
+        let status = Command::new(env::current_exe().unwrap())
+            .args(["--exact", TEST])
+            .env("CODEXHOST_NPM_NODE_TEST", &npm_node)
+            .env(NPM_NODE_PATH_ENV, &npm_node)
+            .status()
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert!(status.success());
     }
 
     #[cfg(target_os = "macos")]

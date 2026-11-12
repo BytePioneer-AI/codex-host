@@ -64,7 +64,7 @@ codexhost stop
 
 Web 主列表合并当前 Codex Desktop 已知的 SSH / official Remote Control 连接上的未归档 Thread。侧栏项目显示原生主机名称与连接状态，本机项目显示“本机”；会话标题保持原名，最近列表及搜索结果也携带远程主机标识。引用保留 `{hostId, threadId}`；浏览器 Session ID 使用 `web-remote:` 加该二元组的 base64url 编码，因此不同主机上的同名 Thread 与本机 Thread 不会合并。此能力需要包含远程会话 Controller API 的 codexhost Desktop 正在运行；独立本机 Host 的运行不代表 Desktop 远程连接可用。
 
-Web 读取 Launcher 的私有本机 runtime descriptor，经已有 nonce 鉴权的 loopback Controller 通道访问 Desktop 原生 manager，不创建连接配置、不复制远程凭据、不修改网络设置。发现过程读取原生 SSH/RC 目录，展示已配置但离线的主机；仅对原生 autoConnect 已启用且处于 disconnected 的连接，在本次 Desktop 生命周期内请求一次原生连接恢复，不打开被用户禁用的连接，不重试结果未知的恢复请求。Relay、Tailscale 只解决浏览器到 Web 的入站访问，不提供远程主机目录。
+Web 读取 Launcher 的私有本机 runtime descriptor，经已有 nonce 鉴权的 loopback Controller 通道访问 Desktop 原生 manager，不创建连接配置、不复制远程凭据、不修改网络设置。发现过程读取原生 SSH/RC 目录，展示已配置但离线的主机。Controller 就绪后及既有监测周期复用同一恢复入口，不依赖打开 Web 列表；仅对原生 autoConnect 已启用且处于 disconnected 的连接请求恢复，合并进行中的尝试。原生调用明确失败且仍断开时，按 5、10、20、30 秒间隔退避，最长间隔 30 秒；不打开被用户禁用的连接，不重复连接已连接或连接中的主机，不重试结果未知的恢复请求。Relay、Tailscale 只解决浏览器到 Web 的入站访问，不提供远程主机目录。
 
 Linux 的 Web 与 Desktop 环境不同时，发现过程还检查当前用户标准 `/run/user/<uid>` 和 state 目录；每个候选都必须通过私有文件、所属用户和 Launcher 存活校验。存在多个不同的有效描述文件时拒绝选择。可为 Web 显式设置 `CODEXHOST_DESKTOP_RUNTIME_DESCRIPTOR` 为 Desktop 的私有 `desktop-runtime-v1.json` 绝对路径；发现失败会给出该诊断，不记录 nonce。选择在派发前完成，失去回执后不会换候选重发。
 

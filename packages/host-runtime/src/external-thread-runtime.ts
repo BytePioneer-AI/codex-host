@@ -227,12 +227,14 @@ export class ExternalThreadRuntime {
   readonly #steeredTurnIds = new Map<string, Set<HostTurnId>>();
   readonly #subagentRunning: (threadId: string) => boolean;
   readonly #threads = new Map<string, ExternalThread>();
+  readonly #onWorkspace: ((cwd: string) => void) | undefined;
 
   constructor(input: {
     adapters: Map<ExternalHarnessId, HarnessAdapter>;
     environment?: NodeJS.ProcessEnv;
     repository: ExternalThreadRepository;
     consumeOutputs(thread: ExternalThread): Promise<void>;
+    onWorkspace?(cwd: string): void;
     diagnose(error: unknown): void;
     subagentRunning?(threadId: string): boolean;
     hasRunningDescendants?(threadId: string): boolean;
@@ -246,6 +248,7 @@ export class ExternalThreadRuntime {
     this.#environment = input.environment ?? process.env;
     this.#repository = input.repository;
     this.#consumeOutputs = input.consumeOutputs;
+    this.#onWorkspace = input.onWorkspace;
     this.#diagnose = input.diagnose;
     this.#subagentRunning = input.subagentRunning ?? (() => false);
     this.#hasRunningDescendants = input.hasRunningDescendants ?? (() => false);
@@ -449,6 +452,7 @@ export class ExternalThreadRuntime {
     this.idleRelease.touch(externalThread);
     externalThread.outputTask = this.#consumeOutputs(externalThread);
     this.#threads.set(externalThread.id, externalThread);
+    this.#onWorkspace?.(externalThread.cwd);
     return externalThread;
   }
 

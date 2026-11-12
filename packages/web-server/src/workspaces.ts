@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 
+import { projectNavigationRoot } from "./ch-project-groups.ts";
 import { type DataDir, requestOf } from "./store.ts";
 import { RpcError, type RpcRegistry, type StreamRegistry, type StreamSink } from "./transport.ts";
 
@@ -26,46 +27,6 @@ interface WorkspaceState {
 }
 
 const FILE = "workspaces.json";
-
-/** Titles for native project roots: the first root carries the project name,
- * later roots fall back to their folder name (or the full path when the folder
- * name is empty, e.g. the filesystem root). When several roots would share the
- * same title — the project name matching another root's folder name, or two
- * roots with identical folder names — every conflicting root falls back to its
- * full path so the Web sidebar keeps them apart. */
-export function projectRootTitles(
-  projects: readonly { name: string; rootPaths: string[] }[],
-): Map<string, string> {
-  const entries: { path: string; title: string; firstRoot: boolean }[] = [];
-  for (const project of projects)
-    for (const [index, root] of project.rootPaths.entries()) {
-      const path = resolve(root);
-      entries.push({
-        path,
-        title: index === 0 ? project.name : basename(path) || path,
-        firstRoot: index === 0,
-      });
-    }
-  const counts = new Map<string, number>();
-  for (const entry of entries) counts.set(entry.title, (counts.get(entry.title) ?? 0) + 1);
-  const nameCounts = new Map<string, number>();
-  for (const entry of entries)
-    if (entry.firstRoot) nameCounts.set(entry.title, (nameCounts.get(entry.title) ?? 0) + 1);
-  return new Map(
-    entries.map((entry) => {
-      // A project name only conflicts with another project name; a folder name
-      // conflicts with any other root title.
-      const conflicting =
-        (entry.firstRoot ? (nameCounts.get(entry.title) ?? 0) : (counts.get(entry.title) ?? 0)) > 1;
-      return [entry.path, conflicting ? entry.path : entry.title];
-    }),
-  );
-}
-
-/** Title the pre-deduplication logic assigned to a project root. */
-function legacyProjectRootTitle(project: { name: string }, index: number, path: string): string {
-  return index === 0 ? project.name : basename(path);
-}
 
 export class Workspaces {
   private state: WorkspaceState;
@@ -342,36 +303,25 @@ export class Workspaces {
     const members = new Map<string, Set<string>>();
     const now = new Date().toISOString();
     const projectRoots = new Set<string>();
-    const rootTitles = projectRootTitles(projects);
     for (const project of projects) {
-      for (const [index, root] of project.rootPaths.entries()) {
-        const path = resolve(root);
-        projectRoots.add(path);
-        // One native project can hold several root folders; only the first root
-        // carries the project name so the Web sidebar never repeats it.
-        const title = rootTitles.get(path) ?? (index === 0 ? project.name : basename(path) || path);
-        let workspace = byPath.get(path);
-        if (!workspace) {
-          workspace = {
-            workspaceId: randomUUID(),
-            path,
-            title,
-            sessionIds: [],
-            createdAt: now,
-            updatedAt: now,
-            origin: "codexhost",
-          };
-          items.push(workspace);
-          byPath.set(path, workspace);
-        } else if (workspace.origin !== "web") workspace.title = title;
-        else if (
-          workspace.title === project.name ||
-          workspace.title === legacyProjectRootTitle(project, index, path)
-        )
-          // Older builds used the project name for every root; the initial
-          // folder-title fix used basenames. Migrate either default, not custom titles.
-          workspace.title = title;
-      }
+      // One navigation entry per GUI project. Its other folders are not separate projects.
+      const path = projectNavigationRoot(project.rootPaths);
+      if (path === undefined) continue;
+      projectRoots.add(path);
+      let workspace = byPath.get(path);
+      if (!workspace) {
+        workspace = {
+          workspaceId: randomUUID(),
+          path,
+          title: project.name,
+          sessionIds: [],
+          createdAt: now,
+          updatedAt: now,
+          origin: "codexhost",
+        };
+        items.push(workspace);
+        byPath.set(path, workspace);
+      } else if (workspace.origin !== "web") workspace.title = project.name;
     }
     for (const { sessionId, cwd, title } of sessions) {
       let workspace = byPath.get(resolve(cwd));

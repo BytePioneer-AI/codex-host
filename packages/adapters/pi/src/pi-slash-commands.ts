@@ -48,7 +48,7 @@ export function parsePiNativeCommands(response: unknown): PiNativeCommand[] {
   });
 }
 
-/** Built-ins plus the running Session's commands, prompt templates and skills. */
+/** Built-ins plus the running Session's commands and prompt templates. */
 export function piLiveCommandCatalog(
   builtIns: HarnessCommandCatalog,
   native: readonly PiNativeCommand[] | null,
@@ -56,11 +56,12 @@ export function piLiveCommandCatalog(
   return mergeLiveHarnessCommands(
     builtIns,
     DYNAMIC_ID_PREFIX,
-    native?.map((command) => ({
-      name: command.name,
-      ...(command.description ? { description: command.description } : {}),
-      kind: command.source === "skill" ? ("skill" as const) : ("command" as const),
-    })) ?? null,
+    native
+      ?.filter((command) => command.source !== "skill")
+      .map((command) => ({
+        name: command.name,
+        ...(command.description ? { description: command.description } : {}),
+      })) ?? null,
     { names: PI_EXCLUDED_COMMANDS },
   );
 }

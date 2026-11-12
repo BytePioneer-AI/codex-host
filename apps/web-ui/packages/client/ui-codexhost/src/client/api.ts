@@ -11,6 +11,7 @@ import {
   webAutostartStateSchema,
   webRelayStateSchema,
   webTurnDiffsResultSchema,
+  skillsListResultSchema,
   type HarnessCommandCatalog,
   type ThreadCommandExecuteResult,
   type HarnessSessionImportCandidate,
@@ -265,6 +266,11 @@ export const sentMessageEditApi = {
       "codexhost/editMessage",
       { request: { sessionId, atSeq, text } },
     ),
+};
+
+export const skillLibraryApi = {
+  list: async (sessionId: string) =>
+    skillsListResultSchema.parse(await call<unknown>("codexhost/skills/list", { sessionId })),
 };
 
 /** Thread-only discovery; never falls back to a draft Harness query. */

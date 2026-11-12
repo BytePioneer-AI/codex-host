@@ -62,11 +62,11 @@ export function commandCatalog(
   return {
     commands: rows(value).flatMap((entry) => {
       const name = text(entry.name).replace(/^\//u, "");
-      const skill = record(entry._meta).type === "skill";
       if (
+        record(entry._meta).type === "skill" ||
         excluded.has(name) ||
         seen.has(name) ||
-        isExcludedLiveCommand(name, skill ? "skill" : "command")
+        isExcludedLiveCommand(name)
       )
         return [];
       const parsed = harnessCommandCatalogSchema.safeParse({
@@ -75,7 +75,7 @@ export function commandCatalog(
             id: `${profile.harnessId}.${name}`,
             invocation: `/${name}`,
             label: name,
-            ...(name === "compact" && !skill
+            ...(name === "compact"
               ? {
                   localizations: {
                     "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" },
@@ -85,11 +85,7 @@ export function commandCatalog(
             ...(text(entry.description).trim()
               ? { description: text(entry.description).trim().slice(0, 512) }
               : {}),
-            argumentMode:
-              name === "compact" || record(entry.input).hint || record(entry._meta).type === "skill"
-                ? "text"
-                : "none",
-            ...(record(entry._meta).type === "skill" ? { kind: "skill" } : {}),
+            argumentMode: name === "compact" || record(entry.input).hint ? "text" : "none",
           },
         ],
       });

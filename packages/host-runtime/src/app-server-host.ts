@@ -26,6 +26,9 @@ import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { readThreadCatalog } from "./thread-catalog.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
+import { SkillLibrary } from "@codexhost/skill-library";
+import { SKILLS_LIST_METHOD, SKILLS_CHANGED_METHOD } from "@codexhost/shared-contracts";
+import { handleSkillsList } from "./skill-library-host.js";
 import { externalTurnInputText } from "./external-turn-input.js";
 import {
   HarnessLaunchSettingsStore,
@@ -654,6 +657,7 @@ export class AppServerHost {
   readonly #externalPrewarms = new ExternalThreadPrewarms();
   readonly #externalSteering = new ExternalTurnSteering();
   readonly #liveCommandCache = new LiveCommandCatalogCache();
+  readonly #skills: SkillLibrary | undefined;
   readonly #modelPrices: ModelPriceCatalog;
   readonly #observedSessionUsage: ObservedSessionUsage;
   #repository: ExternalThreadRepository;
@@ -780,6 +784,20 @@ export class AppServerHost {
       return this.#takeConsoleReply(value);
     });
     const environment = this.#options.environment ?? process.env;
+    const home = environment.HOME ?? os.homedir();
+    this.#skills =
+      options.sharedThreads?.options.delegateCreates === true
+        ? undefined
+        : new SkillLibrary({
+            home,
+            codexHome: environment.CODEX_HOME ?? path.join(home, ".codex"),
+          });
+    this.#skills?.subscribe((cwd) => {
+      this.clientEvents.skillsChanged(cwd);
+      void this.#writer
+        .json({ method: SKILLS_CHANGED_METHOD, params: cwd ? { cwd } : {} })
+        .catch((error) => this.#diagnose(error));
+    });
     this.#displaySettings = new HarnessDisplaySettingsStore(options.environment ?? process.env);
     this.#preferences = new HarnessPreferencesStore(
       path.resolve(
@@ -879,6 +897,7 @@ export class AppServerHost {
       environment: this.#options.environment ?? process.env,
       repository: this.#repository,
       consumeOutputs: (thread) => this.#consumeHarnessOutputs(thread),
+      onWorkspace: (cwd) => this.#skills?.prepare(cwd),
       diagnose: (error) => this.#diagnose(error),
       subagentRunning: (threadId) => this.#subagentThreadStatuses.get(threadId) === "active",
       hasRunningDescendants: (threadId) => this.#hasRunningSubagents(threadId),
@@ -1077,6 +1096,7 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    this.#skills?.dispose();
     this.#options.sharedThreads?.close();
     this.#externalRuntime.idleRelease.disable();
     this.#pluginLoadAbort.abort();
@@ -1189,6 +1209,7 @@ export class AppServerHost {
   }
 
   async run(): Promise<number> {
+    this.#skills?.start();
     try {
       await this.#repository.initialize();
       await this.#displaySettings
@@ -1223,6 +1244,7 @@ export class AppServerHost {
       }
     } catch (error) {
       this.#diagnose(`Host initialization failed: ${errorMessage(error)}`);
+      this.#skills?.dispose();
       this.#pluginLoadAbort.abort();
       await this.#pluginLoading;
       await this.#closeAdapters();
@@ -1265,6 +1287,7 @@ export class AppServerHost {
       await this.#closeOfficialRuntime();
       return this.#closeRequested ? 0 : 1;
     } finally {
+      this.#skills?.dispose();
       this.#options.sharedThreads?.close();
       this.#pluginLoadAbort.abort();
       // Stop replacement waiters before waiting for their tracked Host operations.
@@ -1688,6 +1711,13 @@ export class AppServerHost {
         await this.#writer.json(rpcError(request, -32090, errorMessage(error)));
         return;
       }
+    }
+    if (request.method === SKILLS_LIST_METHOD && this.#skills) {
+      await handleSkillsList(request, this.#skills, {
+        locate: (threadId) => this.#locateExternalThread(threadId),
+        write: (value) => this.#writer.json(value),
+      });
+      return;
     }
     if (
       this.#options.externalOnly &&

@@ -31,6 +31,7 @@ import {
 } from "../../thread-reference.ts";
 import { registerReferenceActivation } from "./reference-activation.ts";
 import { ReferenceChipNode, $createReferenceChipNode } from "./chip-node.tsx";
+import { registerSkillReferences } from "./skill-reference.ts";
 import { refreshClaimDecoration, registerClaimDecoration } from "./claim-decor.ts";
 import { registerTextRefDecoration, rescanTextRefs, TextRefNode } from "./text-ref.ts";
 import type { EditorProjection } from "./projection.ts";
@@ -165,6 +166,7 @@ export class DraftEditorRuntime {
       this.editor.registerUpdateListener(() => {
         this.deps.onUpdate();
       }),
+      registerSkillReferences(this.editor),
       registerClaimDecoration(this.editor, () => this.deps.activeClaimToken()),
       registerTextRefDecoration(
         this.editor,

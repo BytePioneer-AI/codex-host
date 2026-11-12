@@ -398,6 +398,37 @@ fn forwards_stderr_and_exit_code_without_polluting_stdout() {
     assert_eq!(output.stderr, b"official stderr");
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn preserves_failure_stderr_after_descendant_cleanup() {
+    for with_descendant in [false, true] {
+        let script = format!(
+            "{}printf 'first line\\noriginal child failure\\n' >&2; exit 23",
+            if with_descendant {
+                "sleep 10 >/dev/null 2>&1 & printf '%s\\n' \"$!\"; "
+            } else {
+                ""
+            }
+        );
+        let output = run_shim(b"", &["-c", &script], &[(STOCK_CODEX_PATH_ENV, "/bin/sh")]);
+        assert_eq!(output.status.code(), Some(23));
+        assert_eq!(output.stderr, b"first line\noriginal child failure\n");
+        if with_descendant {
+            let child_id = String::from_utf8(output.stdout)
+                .unwrap()
+                .trim()
+                .parse::<u32>()
+                .unwrap();
+            assert!(
+                !process_exists(child_id),
+                "descendant PID {child_id} survived failure cleanup"
+            );
+        } else {
+            assert!(output.stdout.is_empty());
+        }
+    }
+}
+
 #[test]
 fn drains_large_output_after_stdin_eof() {
     let input = vec![b'x'; 2 * 1024 * 1024];

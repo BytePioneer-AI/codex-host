@@ -1223,10 +1223,39 @@ describe("mapping-store package", () => {
     const first = new MappingStore({ directory, instanceId: "first" });
     const second = new MappingStore({ directory, instanceId: "second" });
     await first.initialize();
-    await expect(second.initialize()).rejects.toEqual(
-      expect.objectContaining<Partial<MappingStoreError>>({ code: "STORE_LOCKED" }),
-    );
-    await first.close();
+    try {
+      const lockPath = path.join(directory, "store.lock");
+      const lock = await readFile(lockPath, "utf8");
+      const { startedAt } = JSON.parse(lock) as { startedAt: string };
+      await expect(second.initialize()).rejects.toEqual(
+        expect.objectContaining<Partial<MappingStoreError>>({
+          code: "STORE_LOCKED",
+          message: expect.stringContaining(`PID ${process.pid}`),
+        }),
+      );
+      await expect(second.initialize()).rejects.toThrow(startedAt);
+      await expect(second.initialize()).rejects.toThrow(directory);
+      expect(await readFile(lockPath, "utf8")).toBe(lock);
+    } finally {
+      await second.close();
+      await first.close();
+    }
+  });
+
+  it("reports a live legacy lock without dumping unrelated lock fields", async () => {
+    const directory = await temporaryStoreDirectory();
+    const lockPath = path.join(directory, "store.lock");
+    const lock = JSON.stringify({ pid: process.pid, instanceId: "legacy", token: "not-for-logs" });
+    await writeFile(lockPath, lock);
+    const store = new MappingStore({ directory });
+    try {
+      await expect(store.initialize()).rejects.toThrow(
+        `Another codexhost process owns Mapping Store at ${directory} (owner PID ${process.pid}; startedAt: unknown)`,
+      );
+      expect(await readFile(lockPath, "utf8")).toBe(lock);
+    } finally {
+      await store.close();
+    }
   });
 
   it("removes lock files left aside by earlier runs", async () => {

@@ -27,18 +27,37 @@ interface Receipt extends SavedFile {
 function invalid(reason: string, message: string): never {
   throw new RpcError("session/attachment-invalid", message, { reason });
 }
-function safeName(name = "attachment"): string {
-  const clean = name
-    .normalize("NFC")
-    .replace(/[\\/<>:"|?*\u0000-\u001f\u007f]/gu, "_")
-    .trim()
-    .replace(/[. ]+$/gu, "");
+const MAX_NAME_BYTES = 160;
+const MAX_EXTENSION_BYTES = 32;
+/** Longest prefix of `value` within `bytes` UTF-8 bytes, never splitting a code point. */
+function truncateBytes(value: string, bytes: number): string {
   let result = "";
-  for (const char of clean) {
-    if (Buffer.byteLength(result + char) > 160) break;
+  for (const char of value) {
+    if (Buffer.byteLength(result + char) > bytes) break;
     result += char;
   }
-  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(result)) result = "_" + result;
+  return result;
+}
+const trimName = (value: string): string => value.trim().replace(/[. ]+$/gu, "");
+/** Idempotent: `reference()` accepts a stored object only when its name is already safe. */
+function safeName(name = "attachment"): string {
+  let clean = trimName(name.normalize("NFC").replace(/[\\/<>:"|?*\u0000-\u001f\u007f]/gu, "_"));
+  // Prefix reserved Windows device names before truncation so the limit still holds.
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(clean)) clean = "_" + clean;
+  let result = clean;
+  if (Buffer.byteLength(clean) > MAX_NAME_BYTES) {
+    // Keep a short extension so a long file name still opens as its type.
+    const extension = /\.[^. ]+$/u.exec(clean)?.[0] ?? "";
+    const kept = Buffer.byteLength(extension) <= MAX_EXTENSION_BYTES ? extension : "";
+    const stem = trimName(
+      truncateBytes(
+        clean.slice(0, clean.length - kept.length),
+        MAX_NAME_BYTES - Buffer.byteLength(kept),
+      ),
+    );
+    // A cut may end on a dot or space, which Windows drops and `trim` removes.
+    result = stem ? `${stem}${kept}` : trimName(truncateBytes(clean, MAX_NAME_BYTES));
+  }
   return result || "attachment";
 }
 

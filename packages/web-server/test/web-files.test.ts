@@ -56,6 +56,29 @@ it("streams arbitrary bytes, preserves names/extensions safely and scopes receip
   assert.equal(readdirSync(root).includes("sessions"), false);
 });
 
+it("stores long file names within 160 bytes, keeps their extension and never ends them on a dot or space", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "web-files-long-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = new WebFiles(new DataDir(root));
+  const bytes = Buffer.from("long name");
+  for (const [name, expected] of [
+    // The 160-byte cut used to end on the space or dot, so the stored name was refused.
+    [`${"报".repeat(53)} 第二部分.pdf`, `${"报".repeat(52)}.pdf`],
+    [`${"a".repeat(159)}.final.docx`, `${"a".repeat(155)}.docx`],
+    [`${"季度销售分析报告".repeat(8)}.xlsx`, `${"季度销售分析报告".repeat(8).slice(0, 51)}.xlsx`],
+    [`${"x".repeat(150)}.${"e".repeat(40)}`, `${"x".repeat(150)}.${"e".repeat(9)}`],
+    [`CON.${"c".repeat(200)}`, `_CON.${"c".repeat(155)}`],
+  ]) {
+    const result = await files.upload("draft", chunks(bytes), name);
+    assert.equal(result.file.name, expected);
+    assert.ok(Buffer.byteLength(result.file.name) <= 160);
+    const [stored] = await files.resolve("draft", [result.receiptId]);
+    assert.ok(stored);
+    assert.deepEqual(readFileSync(stored.path), bytes);
+    assert.deepEqual(files.reference(stored.path), result.file);
+  }
+});
+
 it("cleans failed streams and rejects tampered or symlink stored objects", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "web-files-invalid-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

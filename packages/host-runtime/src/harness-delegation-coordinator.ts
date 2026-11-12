@@ -732,7 +732,7 @@ export class HarnessDelegationCoordinator {
       return {
         harnessId: record.harnessId as RoutedHarnessId,
         cwd: record.cwd,
-        title: record.title,
+        title: record.title.trim() || record.preview || "",
       };
     const metadata = await this.#officialThreadMetadata(parentThreadId).catch(() => ({}));
     return { harnessId: "codex", ...metadata };

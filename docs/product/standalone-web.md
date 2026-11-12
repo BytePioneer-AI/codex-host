@@ -49,22 +49,28 @@ codexhost stop
 
 版本、安装位置及选项一致时复用服务。`codexhost` 或 `codexhost web` 发现 Host 或 Web 的版本、运行入口不一致时切换为当前安装；Host 被替换会中断任务并输出任务数，会话记录保留，任务不自动续跑。后台 Web 就绪后崩溃会退避重启，启动阶段失败不重试。`codexhost status` 只读显示 Host/Web 状态与版本、不含 token 的 Web 地址、最近失败原因和自启状态，不启动服务。
 
+每代官方 Codex 后台记录创建时存在的 CLI 文件及 Windows 工具宿主。Desktop 重连若要保留正在运行的后台，会先检查这些文件；文件已被 Desktop 更新或清理移除时，连接返回固定的恢复提示和失败状态，现有 Host 与任务继续保留。确认可以中断后台任务后，运行 `codexhost stop` 再启动 CodexHost，以当前 Desktop 缓存重建后台。空闲后台仍可按原有规则切换到 Desktop 提供的新配置，新的一代重新记录实际使用的文件；可选工具宿主在创建时不存在则不要求补齐。检查覆盖文件缺失，不检测同一路径内的文件版本替换。
+
 `codexhost stop` 不确认，按 GUI、Web、Host、远程服务、Broker、Console 的顺序停止，并报告本地 Host 被中断的任务数；用户自行打开的 Desktop 不关闭。远程服务停止后，其他电脑重新连接可恢复远程服务。自启项、Serve 配置和会话数据保留。前台开发 Web 不属于此命令的停止范围，开发者使用下文的 `npm stop`。
 
 
 ## Desktop 已有远程会话
 
+分页 external 历史通过所属远端 Host 的 `thread/turns/list` 按时间升序读取完整 items，并限制页数、总字节数和重复游标；读取期间连接代次变化会拒绝该快照。原生及旧版历史继续使用官方整段读取接口。
+
+远程 external 会话的 Harness 名称、模型目录、当前模型、思考等级与权限来自同一远端 Host；Web 不使用本机模型目录替代。远程模型菜单的目录请求携带 Session 身份，按会话隔离缓存；本机会话仍共享本机 Host 目录。模型、思考等级与权限选择分别路由到远端 Thread 的原生配置接口，每次只确认一个设置；重连后过期的设置请求会被拒绝，未知结果的写请求不重试。可选的 Harness 发现结果按连接缓存，临时失败经退避后允许重试，不影响历史读取。模型与思考等级组合选择按顺序确认；部分完成时报告失败，不自动重发已确认的写入。
+
 远程命令和文件审批复用 Web 的本地化审批组件，正文只展示命令、工作目录、文件路径和原因，不展示传输标识。远程工作区既不能作为本地工作区排序的拖动源，也不能作为放置目标。
 
 Web 主列表合并当前 Codex Desktop 已知的 SSH / official Remote Control 连接上的未归档 Thread。侧栏项目显示原生主机名称与连接状态，本机项目显示“本机”；会话标题保持原名，最近列表及搜索结果也携带远程主机标识。引用保留 `{hostId, threadId}`；浏览器 Session ID 使用 `web-remote:` 加该二元组的 base64url 编码，因此不同主机上的同名 Thread 与本机 Thread 不会合并。此能力需要包含远程会话 Controller API 的 codexhost Desktop 正在运行；独立本机 Host 的运行不代表 Desktop 远程连接可用。
 
-Web 读取 Launcher 的私有本机 runtime descriptor，经已有 nonce 鉴权的 loopback Controller 通道访问 Desktop 原生 manager，不创建连接配置、不复制远程凭据、不修改网络设置。发现过程读取原生 SSH/RC 目录，展示已配置但离线的主机；仅对原生 autoConnect 已启用且处于 disconnected 的连接，在本次 Desktop 生命周期内请求一次原生连接恢复，不打开被用户禁用的连接，不重试结果未知的恢复请求。Relay、Tailscale 只解决浏览器到 Web 的入站访问，不提供远程主机目录。
+Web 读取 Launcher 的私有本机 runtime descriptor，经已有 nonce 鉴权的 loopback Controller 通道访问 Desktop 原生 manager，不创建连接配置、不复制远程凭据、不修改网络设置。发现过程读取原生 SSH/RC 目录，展示已配置但离线的主机。Controller 就绪后及既有监测周期复用同一恢复入口，不依赖打开 Web 列表；仅对原生 autoConnect 已启用且处于 disconnected 的连接请求恢复，合并进行中的尝试。原生调用明确失败且仍断开时，按 5、10、20、30 秒间隔退避，最长间隔 30 秒；不打开被用户禁用的连接，不重复连接已连接或连接中的主机，不重试结果未知的恢复请求。Relay、Tailscale 只解决浏览器到 Web 的入站访问，不提供远程主机目录。
 
 Linux 的 Web 与 Desktop 环境不同时，发现过程还检查当前用户标准 `/run/user/<uid>` 和 state 目录；每个候选都必须通过私有文件、所属用户和 Launcher 存活校验。存在多个不同的有效描述文件时拒绝选择。可为 Web 显式设置 `CODEXHOST_DESKTOP_RUNTIME_DESCRIPTOR` 为 Desktop 的私有 `desktop-runtime-v1.json` 绝对路径；发现失败会给出该诊断，不记录 nonce。选择在派发前完成，失去回执后不会换候选重发。
 
 本机列表立即返回，远程目录在后台刷新并发布列表差量。侧栏归档/撤销使用原生远程归档操作，确认后合并本机与远程归档集合并广播给其他浏览器；已确认的远程归档行保留到本次 Web 进程结束，以便目录刷新后仍能撤销。远程归档状态不写入本机历史；完整远程归档目录的重新发现尚不提供。消息文本 `prompt.text` 最多为 8000 个 UTF-16 代码单元；发送前还会按完整 JSON 请求的 UTF-8 字节数（含转义、nonce 和分隔符）校验 16 KiB Controller 上限，两项限制均适用。超限提示缩短消息，不报告为已派发后的未知结果。
 
-支持读取会话、空闲时文本续聊、停止当前 Turn、改名、归档，以及 manager 提供原生 pending request 和 responder 时的命令/文件变更审批（允许一次、拒绝）。线程 resume 和 turn/start 使用原生 ID，owner 和鉴权由原生 manager 保持。缺少原生审批方法的旧 manager 或其他交互类型会提示回 Desktop 操作，不伪造权限能力。远程文件上传、终端、本机路径打开、模型/权限切换、fork、编辑、队列和 steering 不提供；这些请求不会落到本机 Thread handler。远程项目来自 Desktop 保存的 remote-projects，按 hostId+项目 ID 隔离；归属优先使用原生项目分配，其次在该主机已登记项目的路径范围内匹配，未匹配的会话保留在对应主机分组。分组仅用于只读导航，不把远程路径交给本机目录创建、终端或文件操作。
+支持读取会话、空闲时文本续聊、停止当前 Turn、改名、归档，以及 manager 提供原生 pending request 和 responder 时的命令/文件变更审批（允许一次、拒绝）。线程 resume 和 turn/start 使用原生 ID，owner 和鉴权由原生 manager 保持。缺少原生审批方法的旧 manager 或其他交互类型会提示回 Desktop 操作，不伪造权限能力。远程文件上传、终端、本机路径打开、fork、编辑、队列和 steering 不提供；远程原生 Codex Thread 也不提供模型、思考等级和权限切换。远程 external Thread 的配置支持取决于所属 Harness 的原生能力。这些请求均不会落到本机 Thread handler。远程项目来自 Desktop 保存的 remote-projects，按 hostId+项目 ID 隔离；归属优先使用原生项目分配，其次在该主机已登记项目的路径范围内匹配，未匹配的会话保留在对应主机分组。分组仅用于只读导航，不把远程路径交给本机目录创建、终端或文件操作。
 
 列表每个 Host 最多读取 100 页，每页 100 条；超过限制不发布不完整目录。打开的会话每 1.5 秒读取不消费事件的绝对快照，多个浏览器独立可见；关闭跟随即停止读取。快照保留原生 Turn/Item ID，单次 Controller 响应上限 16 MiB，超大完整历史当前不可用，应在 Codex Desktop 打开；远程快照尚无端到端分段读取能力，调整浏览器消息页大小不能绕过这一上限。连接失败保留已见列表并标记离线；已打开的跟随保留订阅，读取按指数退避重试，最长间隔 30 秒，连接恢复后无需重新打开。关闭视图后停止重试。连接代际变化会使旧审批失效，重建浏览器投影。所有写请求只发送一次，超时或断线报告结果未知，不自动重发消息或审批；读后同步失败不否认已确认的写入。
 

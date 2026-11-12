@@ -1,6 +1,12 @@
 import { consumesNextArgument } from "./delegation-cli-options.js";
 
 const COMMAND_HELP = {
+  "host info": `codexhost host info [--refresh true|false]
+Read this Host's environment, tools and workspace defaults. Cached observations expire after 60 seconds.`,
+  "project list": `codexhost project list [--query <text>] [--offset <n>] [--limit <n>] [--refresh true|false]
+Discover projects under this Host's configured roots. Returns live project metadata and pagination; no static project registry is required.`,
+  "thread file": `codexhost thread file <thread> --path <file> [--offset <n>] [--limit <bytes>] [--revision <revision>]
+Read a file explicitly linked in the latest final report, inside the Thread workspace. Returns a base64 chunk, revision, nextOffset and eof. Continue with the returned revision; restart if it changes. Maximum chunk size is 1 MiB. Read through the execution Host.`,
   "client add": `codexhost client add <name>
 Register a named external client for HTTP/MCP or a separate CLI identity. Normal same-user CLI calls authenticate automatically and do not need registration. Prints the client token once; it is not stored in a readable form and cannot be shown again.
 The client sets CODEXHOST_CLIENT_TOKEN (or CODEXHOST_CLIENT_TOKEN_FILE) and then uses the same delegate, thread and harness commands, or the MCP endpoint, against the external client listener (127.0.0.1:4398 unless CODEXHOST_EXTERNAL_CLIENT_PORT says otherwise).
@@ -76,6 +82,9 @@ read/wait are non-consuming. Native Codex callers need local Runtime access; RUN
 Native Codex shell commands also need the Host-provided CODEXHOST_* environment variables. If shell_environment_policy filters them, prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only containing "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools. Avoid unconstrained inherit = "all", which forwards unrelated ambient variables.`;
 
 export const DELEGATION_HELP = `usage:
+  codexhost host info
+  codexhost project list
+  codexhost thread file <thread> --path <file>
   codexhost harness list
   codexhost harness inspect <harness>
   codexhost delegate start --harness <id> --task <text>
@@ -110,7 +119,13 @@ export function delegationCliHelp(arguments_: readonly string[]): string | undef
     return `${COMMAND_HELP.events}\n\n${COMMON_HELP}\n`;
   if (!command || command === "--help" || command === "-h" || command === "help") {
     if (group === "delegate") return DELEGATION_HELP;
-    if (group === "harness" || group === "thread" || group === "client") {
+    if (
+      group === "host" ||
+      group === "project" ||
+      group === "harness" ||
+      group === "thread" ||
+      group === "client"
+    ) {
       const usages = Object.entries(COMMAND_HELP)
         .filter(([name]) => name.startsWith(`${group} `))
         .map(([, help]) => help.split("\n")[0]);

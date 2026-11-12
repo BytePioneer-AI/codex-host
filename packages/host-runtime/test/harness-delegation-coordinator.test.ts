@@ -217,6 +217,49 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
+  it.each([
+    { title: "", preview: "  现在有一个问题，\n帮我理解  ", expected: "现在有一个问题， 帮我理解" },
+    { title: " \n ", preview: "First message", expected: "First message" },
+    { title: undefined, preview: "First message", expected: "First message" },
+    { title: "Named parent", preview: "First message", expected: "Named parent" },
+    { title: "", preview: " \n ", expected: "Untitled Thread" },
+    { title: "", preview: undefined, expected: "Untitled Thread" },
+  ])(
+    "uses the parent preview only when its saved title is blank ($title, $preview)",
+    async ({ title, preview, expected }) => {
+      const value = await fixture();
+      try {
+        const parent = await value.repository.createProvisional({
+          hostThreadId: hostThreadIdSchema.parse("preview-parent"),
+          createRequestId: "preview-parent",
+          harnessId: harnessIdSchema.parse("pi"),
+          cwd: "/synthetic",
+          ...(title !== undefined ? { title } : {}),
+          transportModelId: "codexhost/pi-native",
+          ephemeral: false,
+          historyMode: "paginated",
+        });
+        if (preview !== undefined) {
+          await value.repository.updateMetadata(parent.hostThreadId, { preview });
+        }
+        const result = await value.coordinator.start({
+          harnessId: "pi",
+          task: "Full task instructions",
+          taskName: "删除 Skill 命令链路",
+          parentThreadId: parent.hostThreadId,
+        });
+        const childTitle = `删除 Skill 命令链路 · ${expected}`;
+        expect(result.title).toBe(childTitle);
+        expect(await value.repository.find(result.threadId)).toMatchObject({ title: childTitle });
+        expect(value.notifications[0]).toMatchObject({ name: childTitle });
+        expect((await value.repository.find(parent.hostThreadId))?.title).toBe(parent.title);
+        expect(value.delivered).toEqual(["Full task instructions"]);
+      } finally {
+        await value.close();
+      }
+    },
+  );
+
   it("uses native parent metadata and keeps the subtask name first for long Unicode titles", async () => {
     const value = await fixture(undefined, async () => ({ title: "🐙".repeat(150) }));
     try {

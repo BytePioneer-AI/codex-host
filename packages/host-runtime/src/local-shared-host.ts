@@ -7,6 +7,10 @@ import {
 } from "@codexhost/desktop-control";
 import { WebSocket, createWebSocketStream } from "ws";
 import { StreamThreadPeer, type SharedThreadPeer } from "./shared-thread-peer.js";
+import {
+  CODEX_RUNTIME_REMOVED_MESSAGE,
+  CodexRuntimeFilesRemovedError,
+} from "./codex-runtime/backend-files.js";
 
 /** Matches both npm payloads and the signed macOS app's Resources/MacOS split. */
 export function sharedHostLauncherPath(
@@ -81,6 +85,15 @@ async function connectStream(
     });
   });
   const stream = createWebSocketStream(socket);
+  socket.once("close", (code, reason) => {
+    if (code === 1000 || code === 1005) return;
+    // Only this fixed authenticated recovery reason is exposed to the Desktop.
+    const error =
+      code === 1011 && reason.toString() === CODEX_RUNTIME_REMOVED_MESSAGE
+        ? new CodexRuntimeFilesRemovedError()
+        : new Error("Independent Host connection closed unexpectedly");
+    stream.destroy(error);
+  });
   socket.on("error", () => stream.destroy());
   return stream;
 }
@@ -128,7 +141,11 @@ export async function runLocalDesktopBridge(
   );
   try {
     const closed = new Promise<number>((resolve) => {
-      stream.once("error", () => resolve(1));
+      stream.once("error", (error) => {
+        if (error instanceof CodexRuntimeFilesRemovedError)
+          process.stderr.write(`${error.message}\n`);
+        resolve(1);
+      });
       stream.once("close", () => resolve(0));
     });
     process.stdin.pipe(stream);

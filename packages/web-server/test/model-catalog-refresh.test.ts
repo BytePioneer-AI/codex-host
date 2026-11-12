@@ -6,6 +6,26 @@ import { runInNewContext } from "node:vm";
 import { createRequire } from "node:module";
 import { build } from "esbuild";
 
+// Load the pinned JavaScript wire snapshot without importing the unported upstream type graph.
+const { TYPERT_REMOTE } = (await import(
+  new URL(
+    "../../../apps/web-ui/packages/api/session-controller/generated/remote.js",
+    import.meta.url,
+  ).href
+)) as {
+  TYPERT_REMOTE: {
+    descriptors: Array<{
+      id: string;
+      parameters: Array<{
+        name: string;
+        wire: string;
+        acceptsUndefined?: boolean;
+        codec: { mode: string; create(): { parse(value: unknown): unknown } };
+      }>;
+    }>;
+  };
+};
+
 interface Value {
   harnessOrder: string[];
 }
@@ -43,8 +63,11 @@ runInNewContext(output.outputFiles[0]?.text ?? "", {
   setTimeout,
   clearTimeout,
 });
-const Constructor = (module.exports as { ModelCatalogDirectory: new (ctx: unknown) => Catalog })
-  .ModelCatalogDirectory;
+const Constructor = (
+  module.exports as {
+    ModelCatalogDirectory: new (ctx: unknown, sessionId?: string) => Catalog;
+  }
+).ModelCatalogDirectory;
 const response = (order: string[]): Result =>
   ({
     ok: true,
@@ -124,4 +147,67 @@ it("rejects late generation results and performs no reads after disposal", async
   assert.deepEqual(f.catalog.store.getSnapshot().value?.harnessOrder, ["grok", "pi"]);
   assert.equal(f.reads.length, 3);
   await assert.rejects(f.catalog.load(), /disposed/);
+});
+
+it("keeps the optional model catalog request in the pinned Remote wire descriptor", () => {
+  const descriptor = TYPERT_REMOTE.descriptors.find(
+    ({ id }) => id === "@deepseek-ai/dsh-api-session-controller#session/modelCatalog",
+  );
+  assert.ok(descriptor);
+  const parameter = descriptor.parameters[0];
+  assert.ok(parameter);
+  assert.equal(parameter.name, "request");
+  assert.equal(parameter.wire, "request");
+  assert.equal(parameter.acceptsUndefined, true);
+  assert.equal(parameter.codec.mode, "strict");
+  assert.equal(parameter.codec.create().parse(undefined), undefined);
+  assert.deepEqual(parameter.codec.create().parse({ sessionId: "web-remote:wire-test" }), {
+    sessionId: "web-remote:wire-test",
+  });
+  assert.throws(() => parameter.codec.create().parse({}), /sessionId/);
+});
+
+it("keeps the shared local catalog separate from per-remote session catalogs", async () => {
+  const remoteA = "web-remote:host-a/thread-a";
+  const remoteB = "web-remote:host-b/thread-b";
+  const calls: unknown[][] = [];
+  const modelCatalog = (...args: unknown[]) => {
+    calls.push(args);
+    const sessionId = (args[0] as { sessionId?: string } | undefined)?.sessionId;
+    const order = sessionId === undefined ? ["local"] : [sessionId];
+    return Promise.resolve(response(order));
+  };
+  const ctx = { remote: { session: { modelCatalog } } };
+  const local = new Constructor(ctx);
+  const scopedA = new Constructor(ctx, remoteA);
+  const scopedB = new Constructor(ctx, remoteB);
+
+  await local.load();
+  await local.load();
+  await scopedA.load();
+  await scopedA.load();
+  await scopedB.load();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    [null],
+    [{ sessionId: remoteA }],
+    [{ sessionId: remoteB }],
+  ]);
+  assert.deepEqual(local.store.getSnapshot().value?.harnessOrder, ["local"]);
+  assert.deepEqual(scopedA.store.getSnapshot().value?.harnessOrder, [remoteA]);
+  assert.deepEqual(scopedB.store.getSnapshot().value?.harnessOrder, [remoteB]);
+
+  scopedA.resetGeneration();
+  await flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    [null],
+    [{ sessionId: remoteA }],
+    [{ sessionId: remoteB }],
+    [{ sessionId: remoteA }],
+  ]);
+  assert.deepEqual(scopedA.store.getSnapshot().value?.harnessOrder, [remoteA]);
+
+  local.dispose();
+  scopedA.dispose();
+  scopedB.dispose();
 });

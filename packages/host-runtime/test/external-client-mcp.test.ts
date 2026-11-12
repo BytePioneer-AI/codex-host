@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -15,12 +15,20 @@ import {
   type ExternalClientServer,
 } from "../src/external-client-server.js";
 import { ExternalClientRegistry } from "../src/external-clients.js";
+import { HostInventory } from "../src/host-inventory.js";
 
 describe("external client MCP endpoint", () => {
   let directory: string;
   let server: ExternalClientServer | undefined;
   let token: string;
   const api = {
+    read: vi.fn(async () => ({
+      threadId: "t1",
+      harnessId: "codex",
+      cwd: directory,
+      status: "completed",
+      result: { availability: "available", text: "[result](result.bin)" },
+    })),
     listHarnesses: vi.fn(async () => ({ harnesses: ["codex", "pi"] })),
     start: vi.fn(async (input: Record<string, unknown>) => ({
       delegationId: "d1",
@@ -60,7 +68,15 @@ describe("external client MCP endpoint", () => {
     await events.append("grok-bot", [
       { type: "watch", threadId: "t0", outcome: "completed", deepLink: "codex://threads/t0" },
     ]);
-    const route = externalClientRouter({ api: api as unknown as DelegationControlApi, events });
+    const route = externalClientRouter({
+      api: api as unknown as DelegationControlApi,
+      events,
+      inventory: new HostInventory({
+        ...process.env,
+        CODEXHOST_DATA_DIR: directory,
+        HOME: directory,
+      }),
+    });
     server = await startExternalClientServer({
       port: 0,
       clients,
@@ -78,10 +94,13 @@ describe("external client MCP endpoint", () => {
     const client = await connect();
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name)).toEqual([
+      "host_info",
+      "project_list",
       "harness_list",
       "harness_inspect",
       "delegate_start",
       "thread_read",
+      "thread_file_read",
       "thread_wait",
       "thread_list",
       "thread_send",
@@ -90,6 +109,26 @@ describe("external client MCP endpoint", () => {
       "thread_watches",
       "events_poll",
     ]);
+    await client.close();
+  });
+
+  it("allows authenticated clients to discover projects and validates arguments", async () => {
+    await writeFile(
+      path.join(directory, "host-inventory.json"),
+      JSON.stringify({
+        id: "test-host",
+        projectRoots: [],
+      }),
+    );
+    const clients = new ExternalClientRegistry(path.join(directory, "clients.json"));
+    const reader = await clients.add("inventory-reader");
+    const client = await connect(`Bearer ${reader.token}`);
+    await expect(client.callTool({ name: "project_list", arguments: {} })).resolves.toMatchObject({
+      isError: false,
+      structuredContent: { deviceId: "test-host", projects: [], total: 0, nextOffset: null },
+    });
+    const invalid = await client.callTool({ name: "project_list", arguments: { limit: 101 } });
+    expect(invalid.isError).toBe(true);
     await client.close();
   });
 
@@ -131,6 +170,32 @@ describe("external client MCP endpoint", () => {
     ).resolves.toMatchObject({
       structuredContent: { events: [{ threadId: "t0", outcome: "completed" }] },
     });
+    await client.close();
+  });
+
+  it("transfers linked result bytes through the authenticated MCP endpoint", async () => {
+    const bytes = Buffer.from([0, 255, 10, 128]);
+    await writeFile(path.join(directory, "result.bin"), bytes);
+    const client = await connect();
+    const result = await client.callTool({
+      name: "thread_file_read",
+      arguments: { thread: "codex://threads/t1", path: "result.bin" },
+    });
+    expect(result).toMatchObject({
+      isError: false,
+      structuredContent: {
+        filename: "result.bin",
+        encoding: "base64",
+        data: bytes.toString("base64"),
+        eof: true,
+      },
+    });
+    const denied = await client.callTool({
+      name: "thread_file_read",
+      arguments: { thread: "t1", path: "clients.json" },
+    });
+    expect(denied.isError).toBe(true);
+    expect(denied.structuredContent).toBeUndefined();
     await client.close();
   });
 

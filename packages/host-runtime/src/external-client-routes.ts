@@ -12,6 +12,7 @@ import type {
   ExternalClientStreamHandler,
 } from "./external-client-server.js";
 import type { ExternalClientRegistry } from "./external-clients.js";
+import type { HostInventory } from "./host-inventory.js";
 
 const MAX_POLL_MS = 60_000;
 const MAX_EVENTS_PER_READ = 100;
@@ -79,6 +80,7 @@ export function externalClientRouter(handlers: {
   api: DelegationControlApi;
   watchApi?: DelegationWatchApi;
   events?: ClientEventLog;
+  inventory?: HostInventory;
 }): ExternalClientRouter {
   return async (call, route, body) => {
     if (route === "/v1/events/poll") {

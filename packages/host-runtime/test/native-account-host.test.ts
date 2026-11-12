@@ -105,13 +105,14 @@ async function startLocal(
   deferStart = false,
   savedStartup?: { stockCodexPath: string; arguments: string[] },
   diagnosticOutput = new PassThrough(),
+  stockCodexPath = "/synthetic/codex",
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-native-account-host-"));
   temporaryDirectories.add(directory);
   if (savedStartup)
     await writeFile(path.join(directory, "official-startup-v1.json"), JSON.stringify(savedStartup));
   const local = await prepareLocalCodex({
-    stockCodexPath: "/synthetic/codex",
+    stockCodexPath,
     arguments: ["app-server"],
     environment: {
       CODEX_HOME: path.join(directory, "missing-codex-home"),
@@ -125,6 +126,78 @@ async function startLocal(
 }
 
 describe("local Codex read-only identity startup", () => {
+  async function runtimeFiles(name: string, companion = true) {
+    const directory = await mkdtemp(path.join(os.tmpdir(), `native-runtime-${name}-`));
+    temporaryDirectories.add(directory);
+    const executable = path.join(directory, "codex.exe");
+    const tool = path.join(directory, "codex-code-mode-host.exe");
+    await writeFile(executable, "backend fixture");
+    if (companion) await writeFile(tool, "tool fixture");
+    return { executable, tool };
+  }
+
+  it("rejects a retained generation whose executable was removed without stopping active work", async () => {
+    const files = await runtimeFiles("active");
+    const first = nativeFixture();
+    const local = await startLocal(true, undefined, new PassThrough(), files.executable);
+    await local.officialRuntimeScope.start();
+    first.notify({
+      method: "turn/started",
+      params: { threadId: "active", turn: { id: "turn", status: "inProgress" } },
+    });
+    await vi.waitFor(() => expect(local.officialRuntimeScope.owner.hasActiveWork).toBe(true));
+    await rm(files.executable);
+    for (const executable of [files.executable, (await runtimeFiles("proposed")).executable]) {
+      await expect(
+        local.configureStartup({
+          stockCodexPath: executable,
+          arguments: ["-c", "features.code_mode_host=true", "app-server"],
+          environment: {},
+        }),
+      ).rejects.toThrow("codexhost stop");
+    }
+    expect(first.stop).not.toHaveBeenCalled();
+    expect(local.officialRuntimeScope.owner.hasActiveWork).toBe(true);
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
+  });
+
+  it.runIf(process.platform === "win32")(
+    "tracks the current generation's companion after an idle runtime replacement",
+    async () => {
+      const a = await runtimeFiles("a");
+      const b = await runtimeFiles("b");
+      const first = nativeFixture();
+      const local = await startLocal(true, undefined, new PassThrough(), a.executable);
+      await local.officialRuntimeScope.start();
+      await rm(a.executable);
+      nativeFixture();
+      const configuration = {
+        stockCodexPath: b.executable,
+        arguments: ["app-server"],
+        environment: {},
+      };
+      await local.configureStartup(configuration);
+      expect(first.stop).toHaveBeenCalledOnce();
+      await local.officialRuntimeScope.start();
+      await expect(local.configureStartup(configuration)).resolves.toBeUndefined();
+      await rm(b.tool);
+      await expect(local.configureStartup(configuration)).rejects.toThrow("codexhost stop");
+    },
+  );
+
+  it("keeps a companion optional when it was absent at generation creation", async () => {
+    const files = await runtimeFiles("custom", false);
+    const first = nativeFixture();
+    const local = await startLocal(true, undefined, new PassThrough(), files.executable);
+    await local.officialRuntimeScope.start();
+    await local.configureStartup({
+      stockCodexPath: files.executable,
+      arguments: ["-c", "features.code_mode_host=true", "app-server"],
+      environment: {},
+    });
+    expect(first.stop).not.toHaveBeenCalled();
+  });
+
   it("records the Desktop invocation for subsequent Web-first startup", async () => {
     const f = nativeFixture();
     const local = await startLocal(true);

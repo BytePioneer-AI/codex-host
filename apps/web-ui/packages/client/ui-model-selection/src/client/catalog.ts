@@ -1,10 +1,11 @@
-/** One Host-generation model catalog shared by every Session selector. */
+/** A shared local Host catalog, or one explicitly scoped remote Session catalog. */
 
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
 import type {
   ModelCatalog,
   ModelSelection,
   ModelProviderGroup,
+  SessionId,
 } from "@deepseek-ai/dsh-api-remotes/client";
 import { createSnapshotStore, type SnapshotStore } from "@deepseek-ai/dsh-client-store";
 
@@ -42,13 +43,17 @@ export class ModelCatalogDirectory {
 
   /**
    * @param ctx - the providing plugin's context, whose `remote.session`
-   * namespace carries the Host-generation catalog.
+   * namespace carries the model catalog.
+   * @param sessionId - remote Session whose Host owns this catalog; omitted for the shared local catalog.
    */
-  constructor(private readonly ctx: ClientContext) {}
+  constructor(
+    private readonly ctx: ClientContext,
+    private readonly sessionId?: SessionId,
+  ) {}
 
   /**
    * Return the current generation's catalog, sharing its one in-flight load.
-   * @returns the loaded global catalog.
+   * @returns the loaded catalog for this scope.
    */
   load(): Promise<ModelCatalog> {
     if (this.disposed) return Promise.reject(new Error("Model catalog disposed"));
@@ -67,7 +72,10 @@ export class ModelCatalogDirectory {
       do {
         this.refreshRequested = false;
         try {
-          response = await this.ctx.remote.session.modelCatalog();
+          response = await (this.sessionId === undefined
+            ? // The pinned gateway requires one argument slot; undefined is omitted on the wire.
+              this.ctx.remote.session.modelCatalog(undefined)
+            : this.ctx.remote.session.modelCatalog({ sessionId: this.sessionId }));
           failed = false;
         } catch (error) {
           failure = error;

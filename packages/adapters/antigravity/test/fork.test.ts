@@ -386,8 +386,9 @@ describe("Antigravity Fork Session Branching", () => {
     const fakeHome = await mkdtemp(path.join(os.tmpdir(), "codexhost-fakehome-"));
     try {
       const sourceDb = nativeConversationDbPath("source-conv-id", fakeHome);
-      await (await import("node:fs/promises")).mkdir(path.dirname(sourceDb), { recursive: true });
-      await writeFile(sourceDb, "SQLite format 3\0test-data");
+      expect(await seedNativeConversationDb("source-conv-id", fakeHome)).toBe(true);
+      const { readFile } = await import("node:fs/promises");
+      const before = await readFile(sourceDb);
 
       const copied = await copyNativeConversationDbIfExists(
         "source-conv-id",
@@ -397,8 +398,16 @@ describe("Antigravity Fork Session Branching", () => {
       expect(copied).toBe(true);
 
       const derivedDb = nativeConversationDbPath("derived-conv-id", fakeHome);
-      const content = await import("node:fs/promises").then((fs) => fs.readFile(derivedDb, "utf8"));
-      expect(content).toBe("SQLite format 3\0test-data");
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(derivedDb, { readOnly: true });
+      try {
+        expect(db.prepare("SELECT cascade_id FROM trajectory_meta").get()?.cascade_id).toBe(
+          "derived-conv-id",
+        );
+      } finally {
+        db.close();
+      }
+      expect(await readFile(sourceDb)).toEqual(before);
     } finally {
       await rm(fakeHome, { recursive: true, force: true });
     }

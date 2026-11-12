@@ -895,7 +895,12 @@ pub fn run_proxy_with_observer(
     if let Some(signal) = outcome.forwarded_signal {
         eprintln!("codexhost shim: forwarded shutdown signal {signal}");
     }
-    if outcome.terminated_descendants {
+    // Normal cleanup must not replace a failed child's last stderr line with a success notice.
+    let preserve_child_error = outcome.status.code().is_some_and(|code| code != 0)
+        && outcome.forwarded_signal.is_none()
+        && !outcome.desktop_input_closed
+        && !outcome.forced;
+    if outcome.terminated_descendants && !preserve_child_error {
         eprintln!("codexhost shim: terminated official CLI descendants after root exit");
     }
     if outcome.desktop_input_closed {

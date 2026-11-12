@@ -605,6 +605,7 @@ it("serves cached remote projections and pages without refreshing or cancelling 
 });
 
 interface ExternalControlsFixtureOptions {
+  modelThinkingAfterConfigure?: string;
   beforeConfigure?: (
     remote: RemoteSessions,
     operation: Extract<RemoteSessionOperation, { kind: "configure" }>,
@@ -724,7 +725,11 @@ function externalControlsFixture(options: ExternalControlsFixtureOptions = {}) {
     }
     if (operation.kind === "configure") {
       options.beforeConfigure?.(remote, operation);
-      if (operation.modelId !== undefined) modelId = operation.modelId;
+      if (operation.modelId !== undefined) {
+        modelId = operation.modelId;
+        if (options.modelThinkingAfterConfigure !== undefined)
+          thinkingOptionId = options.modelThinkingAfterConfigure;
+      }
       if (operation.thinkingOptionId !== undefined) thinkingOptionId = operation.thinkingOptionId;
       if (operation.permissionModeId !== undefined) permissionModeId = operation.permissionModeId;
       return configuration();
@@ -881,6 +886,54 @@ it("routes remote model and permission changes as single-setting configure opera
       },
     { permissionModeId: "bypassPermissions" },
   );
+});
+
+it("re-reads after model selection before comparing the requested thinking option", async (t) => {
+  const fixture = externalControlsFixture({ modelThinkingAfterConfigure: "high" });
+  t.after(() => fixture.remote.close());
+  await fixture.remote.read(fixture.id);
+  const result = await fixture.call("session/selectModel", {
+    provider: "claude-code",
+    model: "claude-model-v2",
+    reasoningEffort: "medium",
+  });
+  assert.ok(result.ok, JSON.stringify(result));
+  const configureOperations = fixture.calls.filter(
+    (operation): operation is Extract<RemoteSessionOperation, { kind: "configure" }> =>
+      operation.kind === "configure",
+  );
+  assert.deepEqual(
+    configureOperations.map(({ modelId, thinkingOptionId }) => ({ modelId, thinkingOptionId })),
+    [
+      { modelId: "claude-model-v2", thinkingOptionId: undefined },
+      { modelId: undefined, thinkingOptionId: "medium" },
+    ],
+  );
+});
+
+it("does not redundantly configure thinking already selected by the model switch", async (t) => {
+  const fixture = externalControlsFixture({ modelThinkingAfterConfigure: "high" });
+  t.after(() => fixture.remote.close());
+  await fixture.remote.read(fixture.id);
+  const result = await fixture.call("session/selectModel", {
+    provider: "claude-code",
+    model: "claude-model-v2",
+    reasoningEffort: "high",
+  });
+  assert.ok(result.ok, JSON.stringify(result));
+  const configureOperations = fixture.calls.filter(
+    (operation): operation is Extract<RemoteSessionOperation, { kind: "configure" }> =>
+      operation.kind === "configure",
+  );
+  assert.deepEqual(configureOperations, [
+    {
+      kind: "configure",
+      hostId: "remote-control:claude",
+      threadId: "claude-thread",
+      epoch: "claude-epoch",
+      modelId: "claude-model-v2",
+    },
+  ]);
 });
 
 it("does not let a pre-configure read overwrite an acknowledged model selection", async (t) => {

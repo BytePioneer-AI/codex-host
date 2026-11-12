@@ -200,18 +200,31 @@ export async function selectRemoteModel(
   )
     throw new RpcError("session/model-unavailable", "The remote thinking option is invalid.");
   let changed = false;
-  if (configuration.effectiveModel?.id !== request.model) {
+  let refreshedAfterModel = false;
+  let currentConfiguration = configuration;
+  if (currentConfiguration.effectiveModel?.id !== request.model) {
     await configure(entry, { modelId: request.model });
     changed = true;
+    if (typeof request.reasoningEffort === "string") {
+      try {
+        await refresh(id);
+        currentConfiguration = externalConfiguration(entry);
+        refreshedAfterModel = true;
+      } catch {
+        // Do not issue a thinking mutation against stale pre-model metadata.
+      }
+    }
   }
   if (
     typeof request.reasoningEffort === "string" &&
-    request.reasoningEffort !== configuration.effectiveThinkingOptionId
+    (!changed || refreshedAfterModel) &&
+    request.reasoningEffort !== currentConfiguration.effectiveThinkingOptionId
   ) {
     await configure(entry, { thinkingOptionId: request.reasoningEffort });
     changed = true;
+    refreshedAfterModel = false;
   }
-  if (changed) await refresh(id).catch(() => undefined);
+  if (changed && !refreshedAfterModel) await refresh(id).catch(() => undefined);
   return {};
 }
 

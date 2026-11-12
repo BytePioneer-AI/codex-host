@@ -116,6 +116,15 @@ export class RecentVisits {
     this.publish();
   }
 
+  /** Close this page's tabs without erasing unrelated tabs saved by another page. */
+  closeAll(): void {
+    const closed = new Set(this.records.map((entry) => entry.sessionId));
+    this.records = [];
+    this.awaitingFormalSession = false;
+    this.cache.update([], (entry) => closed.has(entry.sessionId));
+    this.publish();
+  }
+
   /** Expiry only removes idle UI entries, using existing metadata and genuine interaction status. */
   expireInactive(timeoutMs: number, statuses: SessionStatusSnapshot, now = Date.now()): boolean {
     const list = this.sessions.list.getSnapshot();

@@ -12,6 +12,10 @@ import { officialEnvironment } from "./app-server-host.js";
 import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
 import { createOwnedLoopbackBackend } from "./codex-runtime/owned-official-backends.js";
 import { resolveOfficialCodexExecutable } from "./codex-runtime/command.js";
+import {
+  captureCodexRuntimeFiles,
+  assertCodexRuntimeFilesPresent,
+} from "./codex-runtime/backend-files.js";
 
 export interface PreparedLocalCodex {
   officialRuntimeScope: OfficialRuntimeScope;
@@ -87,6 +91,7 @@ export async function prepareLocalCodex(input: {
   startup.stockCodexPath =
     (await resolveOfficialCodexExecutable(startup.stockCodexPath, input.environment)) ?? "";
   let startupConfigured = false;
+  let backendFiles: string[] = [];
   const scope = new OfficialRuntimeScope({
     permanentHome: home,
     diagnosticOutput: input.diagnosticOutput,
@@ -95,6 +100,7 @@ export async function prepareLocalCodex(input: {
     createBackend: () => {
       startupConfigured = true;
       if (!startup.stockCodexPath) throw new Error("Official Codex is unavailable");
+      backendFiles = captureCodexRuntimeFiles(startup.stockCodexPath);
       return createOwnedLoopbackBackend({
         stockCodexPath: startup.stockCodexPath,
         cwd: home,
@@ -168,6 +174,10 @@ export async function prepareLocalCodex(input: {
       const changed =
         startup.stockCodexPath !== next.stockCodexPath ||
         JSON.stringify(startup.arguments) !== JSON.stringify(next.arguments);
+      // The running generation, not the next requested invocation, owns these files.
+      // An idle changed backend can still be replaced through the normal path below.
+      if (scope.owner.running && (!changed || scope.owner.hasActiveWork))
+        assertCodexRuntimeFilesPresent(backendFiles);
       if (changed && scope.owner.generation > 0 && scope.owner.hasActiveWork) {
         input.diagnosticOutput.write(
           "codexhost: Desktop startup differs; preserving active official Codex work\n",

@@ -94,7 +94,7 @@ export function ConnectionCard({
     ) ??
     (addresses.some((entry) => entry.kind === "lan") ? "lan" : "tailscale-https");
   const [selectedUrl, setSelectedUrl] = useState<string>();
-  const [enlarged, setEnlarged] = useState(false);
+  const [enlargedLink, setEnlargedLink] = useState<string>();
   const [addressMenu, setAddressMenu] = useState(false);
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
   const group = useId();
@@ -131,6 +131,7 @@ export function ConnectionCard({
 
   useEffect(() => {
     setCopied("idle");
+    setEnlargedLink(undefined);
   }, [link]);
   useEffect(() => {
     if (copied === "idle") return;
@@ -185,11 +186,16 @@ export function ConnectionCard({
             <button
               type="button"
               className={css.qrButton}
-              aria-label={t("connectDevices.enlargeQr")}
+              aria-label={t("connectDevices.viewQr")}
               disabled={busy}
-              onClick={() => setEnlarged(true)}
+              onClick={() => setEnlargedLink(link)}
             >
               <QrCode value={link} label={t("connectDevices.qrLabel")} className={css.qr} />
+              <span className={css.qrCover} aria-hidden="true">
+                <IconShieldOutlineRegular size={24} />
+                <span>{t("connectDevices.viewQr")}</span>
+                <small>{t("connectDevices.qrSensitive")}</small>
+              </span>
             </button>
           ) : (
             <div className={css.qrPlaceholder}>
@@ -407,15 +413,19 @@ export function ConnectionCard({
           </details>
         )}
       </div>
-      {enlarged && link !== undefined && (
+      {link !== undefined && enlargedLink === link && (
         <Modal
           open
-          onClose={() => setEnlarged(false)}
+          onClose={() => setEnlargedLink(undefined)}
           title={t("connectDevices.scan")}
           closeLabel={t("connectDevices.close")}
           className={css.qrModal}
         >
+          <p className={css.notice}>{t("connectDevices.qrSensitive")}</p>
           <QrCode value={link} label={t("connectDevices.qrLabel")} className={css.largeQr} />
+          <Button variant="outline" onClick={() => setEnlargedLink(undefined)}>
+            {t("connectDevices.hideQr")}
+          </Button>
         </Modal>
       )}
     </section>

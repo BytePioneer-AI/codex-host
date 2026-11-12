@@ -2,13 +2,11 @@
 
 # CodexHost
 
-**Codex Desktop에서 Pi와 다른 Harness를 실행하세요**
+**Codex Desktop에서 Claude Code, Pi, Grok 등 15개 이상의 Agent를 앱 전환 없이 사용하세요**
 
-저희는 **Codex Desktop**이 현재 최고의 데스크톱 개발 경험을 제공한다고 생각합니다
+Codex와 똑같이 Diff 검토, Fork, 승인을 사용할 수 있고, 서로 작업을 넘겨줄 수도 있습니다.
 
-하지만 **Codex**만이 뛰어난 **Agent Harness**는 아닙니다. **Claude Code**, **Pi**도 있습니다
-
-**CodexHost**를 사용하면 **Codex Desktop**에서 다른 **Harness**를 네이티브로 사용하고, 서로 협업하게 할 수 있습니다
+**Web 버전**도 있습니다. 같은 Codex 화면을 더 적은 메모리로 사용하며, 휴대폰이나 다른 컴퓨터에서 이 컴퓨터의 모든 Agent를 원격으로 사용할 수 있습니다.
 
 ⭐ 이 프로젝트가 도움이 되었다면 Star를 눌러 주세요! ⭐
 
@@ -33,11 +31,10 @@
   <a href="https://zcode.z.ai/"><img alt="ZCode" src="../imgs/badge-zcode.svg" /></a>
   <a href="../harnesses/copilot/copilot-harness-integration.md"><img alt="GitHub Copilot" src="https://img.shields.io/badge/Copilot-181717?logo=githubcopilot&logoColor=white" /></a>
 </p>
-<br />
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>다운로드</strong></a> · <a href="#web">Web 및 모바일 접속</a> · <a href="#agent-간-협업">Agent 간 협업</a> · <a href="#원격-harness">원격 연결</a> · <a href="#교류-그룹-참여">微信交流群</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="../../README.md">English</a></p>
+<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>다운로드</strong></a> · <a href="#빠른-시작">빠른 시작</a> · <a href="#desktop">Desktop</a> · <a href="#agent-간-협업">Agent 간 협업</a> · <a href="#교류-그룹-참여">微信交流群</a> · <a href="../../README.md">English</a> · <a href="README.zh-CN.md">简体中文</a></p>
 
-<br />
+<img width="90%" src="../imgs/hero-desktop-phone.png" alt="Codex Desktop의 한 프로젝트에서 실행 중인 여러 Agent 세션과 Diff 검토 패널, 오른쪽 아래에는 휴대폰에서 연 같은 세션">
 
 </div>
 
@@ -54,17 +51,7 @@
 </table>
 </details>
 
-## 인터페이스 미리보기
-
-앱을 전환하지 않고도 **Pi, Claude Code, Grok Build 등 10개 이상의 Harness**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.
-
-https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
-
-### 인터페이스
-
-<div align="center">
-  <img width="90%" src="../imgs/codexhost-native-overview.png" alt="Codex Desktop에서 실행 중인 Claude Code, Pi, Grok Build, Oh My Pi 세션과 Diff 검토, Fork, Worktree, Agent 전환">
-</div>
+<a id="빠른-시작"></a>
 
 ## 빠른 시작
 
@@ -72,21 +59,25 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 ```bash
 npm install -g @codexhost/cli
-codexhost
+codexhost          # Codex Desktop 시작
+codexhost web      # Web을 시작하고 브라우저에서 열기
+codexhost stop     # CodexHost의 모든 백그라운드 서비스 중지
 ```
 
 **방법 2: 설치 프로그램** (macOS / Windows)
 
-[Releases](https://github.com/BytePioneer-AI/codex-host/releases)에서 플랫폼에 맞는 설치 프로그램을 다운로드하세요.
+[Releases](https://github.com/BytePioneer-AI/codex-host/releases)에서 플랫폼에 맞는 설치 프로그램을 다운로드하세요. Web: 설치 후 codexhost를 열고 로컬에서 http://127.0.0.1:4400 에 접속합니다.
 
 > Linux는 x64 / ARM64를 지원합니다. 자세한 내용은 [Linux 안내](../platforms/linux/linux.md)를 참고하세요.
+
+**업그레이드와 중지**: `codexhost update`로 업그레이드하고, `codexhost stop`으로 모든 백그라운드 서비스를 중지합니다. npm으로 덮어써 설치하기 전에는 먼저 `codexhost stop`을 실행하세요.
 
 <details>
 <summary>설치 문제 해결</summary>
 
 **codexhost가 시작되지 않거나, Codex는 열렸지만 codexhost 기능이 보이지 않는 경우**
 
-`codexhost console`(Windows: 시작 메뉴 → "codexhost console")을 실행하면 로컬 콘솔 `http://127.0.0.1:4399/`이 열립니다. 마지막 시작 실패 원인, Codex Desktop 버전, Host Runtime 로그를 확인할 수 있고, Codex가 실행 중이 아닐 때 codexhost를 업데이트할 수 있습니다. 콘솔은 codexhost와 함께 시작됩니다. 설치 패키지로 실행하면 기본 브라우저에서 콘솔 개요가 열립니다. 터미널 실행은 브라우저를 열지 않고 성공·실패 모두 콘솔 주소와 준비된 Web 로그인 링크를 출력합니다(Web 비활성화 또는 준비되지 않은 경우 Web 줄 생략). 개요에서 Web을 열거나 확인 후 codexhost를 중지할 수 있으며, 기기 연결 페이지는 Web과 같은 원격 접속 설정을 사용합니다. 자세한 내용은 [브라우저와 휴대폰에서 사용하기](#web)를 참고하세요.
+`codexhost console`(Windows: 시작 메뉴 → "codexhost console")을 실행하면 로컬 콘솔 `http://127.0.0.1:4399/`이 열립니다. 마지막 시작 실패 원인, Codex Desktop 버전, Host Runtime 로그를 확인할 수 있고, Codex가 실행 중이 아닐 때 codexhost를 업데이트할 수 있습니다.
 
 **macOS: 처음 열 때 "앱을 확인할 수 없음" 메시지가 표시됨**
 
@@ -106,88 +97,61 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 </details>
 
-<a id="web"></a>
+<a id="desktop"></a>
 
-### 브라우저와 휴대폰에서 사용하기 (Web)
+## Codex Desktop에서 모든 Agent 사용하기
 
-자리를 비워도 작업을 이어갈 수 있습니다. codexhost **Web**으로 브라우저나 휴대폰에서 Pi, Claude Code 등의 Harness를 사용할 수 있으며, 대화는 Codex Desktop과 실시간으로 동기화됩니다. 컴퓨터에서 시작한 작업의 진행 상황을 휴대폰에서 확인하고, 질문에 답하고, 승인을 처리할 수 있습니다.
+앱을 전환할 필요가 없습니다. **Pi, Claude Code, Grok Build 등 15개 이상의 Agent**가 하나의 Codex Desktop 창에서 실행되며, 모든 세션이 왼쪽 목록에 표시되고 입력창 오른쪽 아래에서 언제든 전환할 수 있습니다.
 
-```bash
-codexhost web      # Web을 시작하고 브라우저에서 열기
-codexhost stop     # codexhost의 모든 백그라운드 서비스 중지
-```
-
-Web은 백그라운드에서 실행되며 Codex Desktop을 열어 둘 필요가 없습니다.
-
-**휴대폰에서 접속**: Web에서 「설정 → 기기 연결」을 열고 연결 방식을 선택한 뒤 휴대폰으로 QR 코드를 스캔하세요. 같은 Wi-Fi, Tailscale, codexhost 중계, [자체 호스팅 중계](../product/self-hosted-relay.md)를 지원하며, 방식별 차이는 [Web 원격 접속](../product/web-remote-access.md)을 참고하세요. 휴대폰 브라우저에서 「홈 화면에 추가」하면 앱처럼 열 수 있습니다.
-
-> 로그인 링크와 QR 코드에는 액세스 토큰이 들어 있어, 가진 사람은 누구나 이 컴퓨터를 조작할 수 있습니다. 비밀번호처럼 안전하게 보관하세요.
-
-### 주요 기능
+https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 <table>
   <tr>
-    <td colspan="2" valign="top">
-      <p><strong>전체 작업 화면</strong><br /><sub>여러 Harness의 세션이 하나의 사이드바에 모이고, 입력창 오른쪽 아래에서 언제든 Agent를 전환</sub></p>
-      <div align="center">
-        <img width="90%" src="../imgs/codexhost-full-workspace.png" alt="Codex Desktop에서 실행 중인 codexhost 전체 작업 화면: 프로젝트 구조, 대화 영역, 여러 Agent 선택기">
-      </div>
+    <td width="33%" valign="top">
+      <p><strong>Diff 검토 패널</strong><br /><sub>매 턴의 변경 사항이 자동으로 요약되며, 검토를 누르면 전체 Diff를 볼 수 있습니다</sub></p>
+      <img src="../imgs/highlight-diff-review.png" alt="대화 속 변경 요약 카드와 검토 패널의 Diff">
+    </td>
+    <td width="33%" valign="top">
+      <p><strong>모든 메시지에서 Fork</strong><br /><sub>현재 작업 공간에서, 또는 새 Worktree에서 병렬로 개발합니다</sub></p>
+      <img src="../imgs/highlight-fork-worktree.png" alt="메시지에서 분기를 만드는 메뉴: 현재 작업 공간 또는 새 worktree">
+    </td>
+    <td width="33%" valign="top">
+      <p><strong>Subagent 확인</strong><br /><sub>각 Subagent에 고유 아이콘이 있고, 오른쪽에서 전체 대화를 볼 수 있습니다</sub></p>
+      <img src="../imgs/highlight-subagent.png" alt="메인 대화에 표시된 Subagent 4개의 상태와 오른쪽에서 열린 전체 대화">
+    </td>
+  </tr>
+</table>
+
+<details>
+<summary>더 보기: 도구 상세, 사용량, 계정 가져오기, 다이어그램 렌더링</summary>
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>도구 호출과 사고 과정</strong><br /><sub>모든 편집, 명령, 사고 단계를 펼쳐 상세 내용을 볼 수 있습니다</sub></p>
+      <img src="../imgs/highlight-tool-details.png" alt="편집 기록을 펼치면 새로 만든 파일의 Diff가 표시됨">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>사용량을 한눈에</strong><br /><sub>캐시 적중률, 비용 추정, 컨텍스트 사용량을 실시간으로 표시합니다</sub></p>
+      <img src="../imgs/highlight-usage.png" alt="사용량 팝오버: 컨텍스트, 캐시 적중률, 캐시 읽기/쓰기, 총 토큰, 비용 추정">
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <p><strong>Diff 검토 패널</strong><br /><sub>매 턴의 변경 사항을 자동으로 요약하고, 「검토」를 누르면 오른쪽에서 전체 Diff 확인</sub></p>
-      <img src="../imgs/highlight-diff-review.png" alt="대화의 변경 요약 카드와 오른쪽 검토 패널의 Diff">
+      <p><strong>계정 원클릭 가져오기</strong><br /><sub>로컬에 로그인된 Codex, Grok 자격 증명을 Pi로 복사하고, 할당량을 실시간으로 확인합니다</sub></p>
+      <img src="../imgs/highlight-account-import.png" alt="계정 설정: 5시간·7일 남은 할당량과 Pi로 가져온 계정">
     </td>
     <td width="50%" valign="top">
-      <p><strong>아무 메시지에서나 Fork</strong><br /><sub>현재 작업 공간에서, 또는 새 Worktree에서 병렬 개발</sub></p>
-      <img src="../imgs/highlight-fork-worktree.png" alt="메시지에서 브랜치를 만드는 메뉴: 현재 작업 공간 또는 새 워크트리">
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <p><strong># 입력으로 다른 Agent에 위임</strong><br /><sub>여러 Agent가 각자 독립 세션에서 병렬 실행 · <a href="#agent-간-협업">자세히 보기</a></sub></p>
-      <img src="../imgs/highlight-delegation.png" alt="# 입력으로 Codex, Claude Code, Grok 등 Agent를 선택하고 각 작업이 독립 세션에서 병렬 실행">
-    </td>
-    <td width="50%" valign="top">
-      <p><strong>도구 호출과 사고 과정</strong><br /><sub>모든 edit, 명령, 사고 과정을 펼쳐서 자세히 확인</sub></p>
-      <img src="../imgs/highlight-tool-details.png" alt="편집 기록을 펼쳐 새로 만든 파일의 Diff 표시">
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <p><strong>Subagent 가시화</strong><br /><sub>Subagent마다 고유 아이콘이 있고, 오른쪽에서 전체 대화 확인</sub></p>
-      <img src="../imgs/highlight-subagent.png" alt="메인 대화에 4개 Subagent 상태가 표시되고 오른쪽에 그중 하나의 전체 대화">
-    </td>
-    <td width="50%" valign="top">
-      <p><strong>원격 개발</strong><br /><sub>VPS를 프로젝트로 추가하면 Agent가 원격 머신에서 바로 실행 · <a href="#원격-harness">자세히 보기</a></sub></p>
-      <img src="../imgs/highlight-remote.png" alt="사이드바의 원격 VPS 프로젝트와 원격 머신의 작업 디렉터리를 반환하는 대화">
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <p><strong>사용량 한눈에 보기</strong><br /><sub>캐시 적중률, 예상 비용, 컨텍스트 사용량을 실시간 표시</sub></p>
-      <img src="../imgs/highlight-usage.png" alt="사용량 팝오버: 컨텍스트, 캐시 적중률, 캐시 읽기/쓰기, 총 Token, 예상 비용">
-    </td>
-    <td width="50%" valign="top">
-      <p><strong>계정 원클릭 가져오기</strong><br /><sub>로컬에 로그인된 Codex, Grok 자격 증명을 Pi로 바로 복사하고 한도를 실시간 확인</sub></p>
-      <img src="../imgs/highlight-account-import.png" alt="계정 설정: 5시간·7일 남은 한도와 Pi로 가져온 계정">
-    </td>
-  </tr>
-  <tr>
-    <td colspan="2" valign="top">
-      <p><strong>Mermaid 다이어그램 렌더링</strong><br /><sub>왼쪽: Codex Desktop + Pi는 다이어그램을 바로 렌더링, 오른쪽: Pi TUI는 소스만 표시</sub></p>
+      <p><strong>터미널보다 보기 좋게</strong><br /><sub>왼쪽: Codex Desktop + Pi에서 Mermaid 다이어그램이 바로 렌더링됨, 오른쪽: Pi TUI에서는 소스만 보임</sub></p>
       <img src="../imgs/codex-vs-pi-agent-tui.png" alt="Pi + Codex Desktop과 Pi Agent TUI의 Mermaid 다이어그램 렌더링 비교">
     </td>
   </tr>
 </table>
 
-## 기능 상태
-
-각 Harness는 자체 기능에 따라 Codex Desktop 네이티브 UI와 통합됩니다. 아래 매트릭스를 참고하세요.
+</details>
 
 <details>
-<summary>전체 기능 매트릭스 보기</summary>
+<summary>Agent별 기능 지원 현황</summary>
 
 | 기능 | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="../imgs/harness-icon-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="../imgs/harness-icon-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH" src="https://img.shields.io/badge/-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="../imgs/harness-icon-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/harness-icon-codebuddy.svg" width="24" height="24" /></a> | <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="../../packages/adapters/workbuddy/assets/icon.svg" width="24" height="24" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="../imgs/harness-icon-cursor.svg" /></a> | <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="../imgs/harness-icon-hermes.svg" /></a> | <a href="https://qoder.com/cli"><img alt="Qoder" src="../../packages/adapters/qoder/assets/icon.svg" width="28" height="28" /></a> | <a href="https://moonshotai.github.io/kimi-code/"><img alt="Kimi Code" src="../../packages/adapters/kimi-code/assets/icon.svg" width="28" height="28" /></a> | <a href="../harnesses/copilot/copilot-harness-integration.md"><img alt="Copilot" src="../../packages/adapters/copilot/assets/icon.png" width="28" height="28" /></a> | <a href="https://github.com/QwenLM/qwen-code"><img alt="Qwen Code" src="../../packages/adapters/qwen-code/assets/icon.svg" width="28" height="28" /></a> | <a href="../harnesses/devin/devin-cli-acp-integration.md"><img alt="Devin" src="../../packages/adapters/devin/assets/icon.svg" width="28" height="28" /></a> |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -207,41 +171,54 @@ Web은 백그라운드에서 실행되며 Codex Desktop을 열어 둘 필요가 
 
 </details>
 
-## Agent 간 협업
+<a id="agent-간-협업"></a>
 
-채팅 입력창에 `#`을 입력하면 작업을 위임할 Agent를 선택하거나 현재 선택한 Harness에서 사용할 수 있는 명령과 스킬을 찾을 수 있습니다.
+## Agent끼리 작업 나누기
 
-현재 Agent에게 독립 작업을 다른 Harness로 넘기도록 요청할 수 있습니다. 예를 들면 다음과 같습니다.
+채팅 입력창에 `#`을 입력하고 Agent를 선택해 독립적인 작업을 맡기세요:
 
 > `#claude-code`에게 이 변경 사항을 독립적으로 검토하고 호환성 위험을 지적하도록 요청하세요.
 >
 > `#pi`에게 이 테스트가 간헐적으로 실패하는 원인을 조사하도록 요청하세요.
 >
 > 제가 문서를 정리하는 동안 `#omp`에게 이 기능을 구현하도록 요청하세요.
->
-> `#opencode`에게 독립 Thread에서 이 수정을 검증하고 관련 테스트를 실행하도록 요청하세요.
 
-CodexHost는 대상 Harness를 위한 별도의 Native Session을 만듭니다. 위임된 Session은 Codex Desktop의 대화 목록에 표시되며, 언제든 열어서 진행 상황을 확인하거나 대화를 이어갈 수 있습니다.
+위임된 작업은 각각 대상 Agent의 독립적인 네이티브 세션으로 실행되고 대화 목록에 표시되므로, 언제든 열어서 진행 상황을 확인하거나 대화를 이어갈 수 있습니다. 작업이 끝나면 결과는 작업을 시작한 세션으로 돌아옵니다.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>여러 Agent를 병렬로</strong><br /><sub>각자 독립된 세션에서 서로 방해하지 않습니다</sub></p>
+      <img src="../product/images/multi-agent-parallel-sessions.png" alt="사이드바에서 병렬로 실행 중인 여러 Agent의 위임 세션">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>끝나면 자동 보고</strong><br /><sub>위임 작업이 끝나면 시작한 세션에 알려 줍니다</sub></p>
+      <img src="../product/images/multi-agent-completion-notice.png" alt="위임 작업이 끝난 뒤 시작한 세션에 표시되는 알림">
+    </td>
+  </tr>
+</table>
+
+**개발자용**: 터미널 스크립트, Claude Desktop, 상주 봇 같은 로컬 프로그램도 `codexhost delegate` / `codexhost thread` 명령이나 MCP로 이 Agent들에게 작업을 맡기고 결과를 기다릴 수 있습니다. 자세한 내용은 [외부 클라이언트](../architecture/external-clients.md)를 참고하세요.
 
 <details>
-<summary><h3 id="원격-harness">원격 Harness</h3></summary>
+<summary><h3 id="원격-harness">고급: 로컬 화면에서 다른 컴퓨터의 Agent 사용하기</h3></summary>
 
-로컬 Codex Desktop에서 제어 대상 컴퓨터의 Harness를 사용합니다. 작업은 제어 대상 컴퓨터에서 실행되고 UI는 로컬에 그대로 있습니다. 양쪽에 동일한 버전의 codexhost를 설치해야 합니다.
+작업은 다른 컴퓨터에서 실행되고 UI는 로컬 Codex Desktop에 그대로 있습니다. 양쪽에 동일한 버전의 CodexHost를 설치해야 합니다.
 
 | 제어 대상 컴퓨터 | 연결 방식 |
 | --- | --- |
 | macOS / Linux | [SSH 원격](#ssh-원격) |
-| Windows | [Remote Control 원격](#remote-control-원격-실험)(실험) |
+| Windows | [Remote Control 원격](#remote-control-원격-실험) (실험) |
 
 #### SSH 원격
 
-전제 조건: Codex Desktop의 **설정 → 연결 → SSH**에 제어 대상 컴퓨터가 추가되어 있어야 합니다. 클라이언트는 macOS / Linux / Windows를 지원합니다.
+전제 조건: Codex Desktop의 「설정 → 연결 → SSH」에서 제어 대상 컴퓨터를 추가해야 합니다. 클라이언트는 macOS / Linux / Windows를 지원합니다.
 
 <div align="center">
   <img width="70%" src="../imgs/remote-ssh-connections.png" alt="Codex Desktop 설정 → 연결 → SSH 페이지에 추가된 SSH 연결">
 </div>
 
-1. 제어 대상 컴퓨터에서 설치하고 시작합니다:
+1. 제어 대상 컴퓨터에 설치하고 시작합니다:
 
    ```bash
    npm install -g @codexhost/cli
@@ -250,32 +227,18 @@ CodexHost는 대상 Harness를 위한 별도의 Native Session을 만듭니다. 
    codexhost remote status
    ```
 
-2. 로컬에서 codexhost로 Codex Desktop을 시작하고 SSH 작업 공간을 엽니다.
-3. 입력창의 Agent / Model 선택기에서 대상 Harness를 선택합니다.
+2. 로컬에서 codexhost로 Codex Desktop을 실행하고 SSH 작업 공간을 엽니다.
+3. 입력창의 Agent / Model 선택기에서 대상 Agent를 선택합니다.
 
 [SSH 설정, 진단 및 제거 →](../platforms/remote/remote-ssh-host.md)
 
 #### Remote Control 원격 (실험)
 
-Codex Desktop 공식 Remote Control의 페어링과 인증을 재사용하여, 다른 컴퓨터에서 Windows의 Harness를 사용합니다.
+Codex Desktop 공식 Remote Control의 페어링과 인증을 재사용하여, 다른 컴퓨터에서 Windows의 Agent를 사용합니다.
 
-전제 조건: 공식 Remote Control에서 Codex 작업이 정상적으로 실행되어야 합니다. 공개 서비스나 포트를 추가하지 않으며, Harness 자격 증명은 Windows에만 유지됩니다.
+전제 조건: 공식 Remote Control에서 Codex 작업이 정상적으로 실행되어야 합니다. 공개 서비스나 포트를 추가하지 않으며, Agent 자격 증명은 Windows에만 유지됩니다.
 
 [Remote Control 설정, 전송 경계 및 진단 →](../platforms/remote/remote-control-host.md)
-
-</details>
-
-<details>
-<summary><h3>작동 방식</h3></summary>
-
-대부분의 멀티 에이전트 클라이언트는 자체 채팅 UI를 새로 만들고, 공통 프로토콜로 여러 Harness를 연결합니다.
-
-CodexHost는 다른 방식을 택합니다.
-
-- **Desktop 측**: CDP / Electron Inspector로 공식 Codex Desktop을 확장하며, 채팅 UI를 다시 만들거나 공식 설치 프로그램을 수정하지 않습니다
-- **프로토콜 측**: CLI Shim으로 공식 app-server에 연결하며, 네이티브 Codex 요청은 그대로 전달되어 영향을 받지 않습니다
-- **Harness 측**: 각 Harness의 네이티브 인터페이스를 우선 사용하고(Pi는 RPC, Claude Code는 Agent SDK), 네이티브 인터페이스가 없으면 [ACP](https://agentclientprotocol.com/)로 연결합니다. 스트리밍 출력, 도구 상태, Diff, 승인, 질문은 모두 Codex Desktop 네이티브 UI에 투영됩니다
-- **오케스트레이션 측**: 위임된 작업은 대상 Harness에서 독립적인 네이티브 세션으로 실행되며, 시작한 쪽은 결과를 기다리거나 백그라운드에서 실행하도록 선택할 수 있습니다
 
 </details>
 
@@ -302,11 +265,24 @@ CodexHost는 다른 방식을 택합니다.
   </tr>
 </table>
 
-## 개발
+<details>
+<summary><h3>아키텍처와 개발</h3></summary>
 
-Issue나 PR을 제출하기 전에 [기여 안내](../../CONTRIBUTING.md)를 읽어 주세요. PR 제목 라벨, 간단한 CI 결과, 릴리스 전 검증은 [저장소 유지 관리 자동화](../operations/repository-maintenance.md)를 참고하세요.
+#### 작동 방식
 
-환경 요구 사항: 공식 Codex Desktop, Node.js 22.19+ 또는 24, Rust.
+대부분의 멀티 에이전트 클라이언트는 자체 채팅 UI를 새로 만들고, 공통 프로토콜로 여러 Agent를 연결합니다. CodexHost는 다른 방식을 택합니다.
+
+- **Desktop 측**: CDP / Electron Inspector로 공식 Codex Desktop을 확장하며, 채팅 UI를 다시 만들거나 공식 설치 프로그램을 수정하지 않습니다
+- **프로토콜 측**: CLI Shim으로 공식 app-server에 연결하며, 네이티브 Codex 요청은 그대로 전달되어 영향을 받지 않습니다
+- **Agent 측**: 각 Agent의 네이티브 인터페이스를 우선 사용하고(Pi는 RPC, Claude Code는 Agent SDK), 네이티브 인터페이스가 없으면 [ACP](https://agentclientprotocol.com/)로 연결합니다. 스트리밍 출력, 도구 상태, Diff, 승인, 질문은 모두 Codex Desktop 네이티브 UI에 투영됩니다
+- **오케스트레이션 측**: 위임된 작업은 대상 Agent에서 독립적인 네이티브 세션으로 실행되며, 시작한 쪽은 결과를 기다리거나 백그라운드에서 실행하도록 선택할 수 있습니다
+- **Web 측**: Desktop과 Web은 같은 백그라운드 Host에 연결되므로 세션, 승인, 질문이 하나만 존재하고 양쪽에서 같은 상태를 봅니다
+
+#### 개발
+
+Issue나 PR을 제출하기 전에 [기여 가이드](../../CONTRIBUTING.md)를 읽어 주세요. PR 제목 라벨, CI 요약, 릴리스 전 검증은 [저장소 유지보수 자동화](../operations/repository-maintenance.md)를 참고하세요.
+
+요구 사항: 공식 Codex Desktop, Node.js 22.19+ 또는 24, Rust.
 
 ```bash
 git clone https://github.com/BytePioneer-AI/codex-host
@@ -317,13 +293,12 @@ npm start
 
 | 명령 | 용도 |
 | --- | --- |
-| `npm start` | Desktop을 빌드하고 시작 |
-| `npm start web` | Web을 빌드하고 시작, Web UI 핫 리로드 기본 활성화 |
-| `npm start web -- --no-watch` | Web을 빌드하고 시작, 핫 리로드 없음 |
-| `npm stop` | 현재 사용자의 모든 워크트리에서 로컬 codexhost 서비스 중지 |
+| `npm start` | Desktop을 빌드하고 시작합니다. |
+| `npm start web` | Web을 빌드하고 시작합니다. Web UI 핫 리로드가 기본으로 켜집니다. |
+| `npm start web -- --no-watch` | 핫 리로드 없이 Web을 빌드하고 시작합니다. |
+| `npm stop` | 현재 사용자의 모든 작업 트리에서 실행 중인 로컬 codexhost 서비스를 중지합니다. |
 
-
-### 실행 아키텍처
+#### 실행 아키텍처
 
 Pi를 예로 듭니다. 왼쪽에서 오른쪽이 한 번의 요청 호출 체인입니다: Desktop → 공용 계층 → Pi 플러그인 → 네이티브 프로세스.
 
@@ -331,10 +306,12 @@ Pi를 예로 듭니다. 왼쪽에서 오른쪽이 한 번의 요청 호출 체�
   <img width="100%" src="../imgs/pi-runtime-architecture.png" alt="Pi를 예로 든 실행 아키텍처: Desktop에서 공용 계층, 이어서 Pi 플러그인과 네이티브 프로세스">
 </div>
 
-### Harness 추가
+#### Harness 추가
 
 주요 작업은 플러그인의 Manifest, 팩토리, Adapter, Session 및 네이티브 통신과 변환 로직을 구현하는 것입니다. 현재 Renderer에는 여전히 정적 연결이 있어, 완전한 Desktop 연동은 별도로 처리해야 합니다.
 Harness를 추가할 때는 코딩 Agent가 저장소의 [codexhost-add-harness Skill](../../.agents/skills/codexhost-add-harness/SKILL.md)을 사용하도록 할 수 있습니다. 플러그인 구조, 공용 Adapter 인터페이스, 기능 구현과 테스트 요구 사항을 설명합니다.
+
+</details>
 
 ## 감사의 글
 
@@ -344,7 +321,7 @@ Harness를 추가할 때는 코딩 Agent가 저장소의 [codexhost-add-harness 
 
 ## 기여자
 
-CodexHost에 기여해 주신 모든 분께 감사드립니다.
+CodexHost에 기여해 주신 모든 개발자분들께 감사드립니다.
 
 <a href="https://github.com/BytePioneer-AI/codex-host/graphs/contributors">
   <img alt="CodexHost 기여자" src="https://contrib.rocks/image?repo=BytePioneer-AI/codex-host" />
@@ -359,3 +336,4 @@ CodexHost에 기여해 주신 모든 분께 감사드립니다.
     <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=bytepioneer-ai/codex-host&type=date&legend=top-left" />
   </picture>
 </a>
+

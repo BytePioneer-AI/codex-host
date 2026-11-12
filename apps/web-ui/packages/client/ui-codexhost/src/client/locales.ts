@@ -144,7 +144,9 @@ export const en = {
   "connectDevices.loadFailed": "Could not load this page: {message}",
   "connectDevices.actionFailed": "That did not work: {message}",
   "connectDevices.connectVia": "Connect through",
-  "connectDevices.enlargeQr": "Enlarge QR code",
+  "connectDevices.viewQr": "Click to view QR code",
+  "connectDevices.hideQr": "Hide QR code",
+  "connectDevices.qrSensitive": "Contains an access token. Do not share.",
   "connectDevices.qrLabel": "Sign-in QR code",
   "connectDevices.relay.inUse": "In use",
   "connectDevices.relay.closeFirst":
@@ -184,6 +186,9 @@ export const en = {
   "connectDevices.relay.hint":
     "Connect across networks without an extra phone app. An access token is required.",
   "connectDevices.relay.off": "The official codexhost relay. It only forwards encrypted traffic.",
+  "connectDevices.relay.beta":
+    "Currently in private beta. For early access, follow the README to join the group chat and contact me.",
+  "connectDevices.relay.betaLink": "README community instructions",
   "connectDevices.relay.name": "Address name (optional)",
   "connectDevices.relay.nameHint":
     "4–20 lowercase letters or digits. Leave blank to let the relay assign a name.",
@@ -585,7 +590,9 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.loadFailed": "无法加载此页面：{message}",
   "connectDevices.actionFailed": "操作失败：{message}",
   "connectDevices.connectVia": "连接方式",
-  "connectDevices.enlargeQr": "放大二维码",
+  "connectDevices.viewQr": "点击查看二维码",
+  "connectDevices.hideQr": "隐藏二维码",
+  "connectDevices.qrSensitive": "包含访问令牌，请勿泄露",
   "connectDevices.qrLabel": "登录二维码",
   "connectDevices.relay.inUse": "当前使用",
   "connectDevices.relay.closeFirst": "请先关闭当前中转，再切换中转或修改控制地址。",
@@ -620,6 +627,9 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.relay.summary": "任何网络 · 手机无需安装应用",
   "connectDevices.relay.hint": "跨网络连接，手机无需额外安装应用，登录需要访问令牌。",
   "connectDevices.relay.off": "codexhost 官方中转，只转发加密内容。",
+  "connectDevices.relay.beta":
+    "目前正在内测中，想提前体验，欢迎按 README 中的说明加入交流群联系我～",
+  "connectDevices.relay.betaLink": "查看 README 加群说明",
   "connectDevices.relay.name": "地址名（可选）",
   "connectDevices.relay.nameHint": "4–20 位小写字母和数字，留空由中转分配。",
   "connectDevices.relay.inviteLabel": "邀请码",

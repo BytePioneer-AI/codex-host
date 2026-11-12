@@ -171,6 +171,59 @@ it("binds the reviewed draft setter tuple to its exact client identity", () => {
   row[12] = vi.fn();
   expect(findScopedDraftModelBinding(element, "client-new-thread:a")).toBeNull();
 });
+it("binds the Desktop 26.1106 model tuple without changing another draft or native defaults", () => {
+  const original = { modelSettings: { model: "native" }, isManuallyChanged: false };
+  let draft: Record<string, unknown> = original;
+  const update = vi.fn((apply: (value: typeof draft) => typeof draft) => {
+    draft = apply(draft);
+  });
+  const identity = Array<unknown>(14).fill(null);
+  Object.assign(identity, {
+    6: "client-new-thread:mac",
+    7: "client-new-thread:mac",
+    9: update,
+    10: original,
+    11: true,
+    12: update,
+    13: { draftSettings: original, isNewThreadDraft: true, updateDraftSettings: update },
+  });
+  const context = { usesAccountPreferences: false };
+  const setModel = vi.fn();
+  const model = Array<unknown>(25).fill(null);
+  Object.assign(model, {
+    11: true,
+    13: context,
+    14: update,
+    15: setModel,
+    21: setModel,
+    22: context,
+    24: { ...context, setModelAndReasoningEffort: setModel },
+  });
+  const element = {
+    parentElement: null,
+    __reactFiber$test: {
+      updateQueue: { memoCache: { data: [identity, model] } },
+      return: null,
+    },
+  };
+  const binding = findScopedDraftModelBinding(element, "client-new-thread:mac");
+  expect(binding).toMatchObject({ update, usesAccountPreferences: false });
+  if (!binding) throw new Error("Missing current Desktop draft binding");
+  const writer = createScopedDraftModelWriter();
+  writer.apply("client-new-thread:mac", binding, "codexhost/claude-code-native");
+  expect(draft.modelSettings).toMatchObject({ model: "codexhost/claude-code-native" });
+  expect(draft.modelSettingsPersistAsDefault).toBe(false);
+  expect(setModel).not.toHaveBeenCalled();
+  writer.apply("client-new-thread:mac", binding, null);
+  expect(draft.modelSettings).toBe(original.modelSettings);
+  expect(findScopedDraftModelBinding(element, "client-new-thread:other")).toBeNull();
+  model[14] = vi.fn();
+  expect(findScopedDraftModelBinding(element, "client-new-thread:mac")).toBeNull();
+  model[14] = update;
+  model[21] = vi.fn();
+  expect(findScopedDraftModelBinding(element, "client-new-thread:mac")).toBeNull();
+});
+
 it("keeps drafts independent and restores native settings without default persistence", () => {
   const writer = createScopedDraftModelWriter();
   const original = {

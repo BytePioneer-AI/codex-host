@@ -204,6 +204,17 @@ export function RelayControl({
           )}
           {official && hostname === undefined && (
             <div className={css.relayFields}>
+              <p className={css.meta}>
+                {t("connectDevices.relay.beta")}{" "}
+                <a
+                  className={css.link}
+                  href="https://github.com/BytePioneer-AI/codex-host#join-the-community"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {t("connectDevices.relay.betaLink")}
+                </a>
+              </p>
               <label className={`${css.relayField} ${css.notice}`}>
                 {t("connectDevices.relay.name")}
                 <input

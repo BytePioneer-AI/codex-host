@@ -28,6 +28,7 @@ const VERIFIED_VERSIONS = [
   "0.2.1-rc.4",
   "0.2.1-rc.5",
   "0.2.2-rc.1",
+  "0.2.2-rc.2",
 ] as const;
 
 const readyInspection: HarnessInspection = {

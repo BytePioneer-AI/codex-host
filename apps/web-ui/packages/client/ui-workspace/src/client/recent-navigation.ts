@@ -79,6 +79,10 @@ export function registerRecentNavigation(ctx: Context, navigation: UiWorkspaceSe
       navigation.closeSessionTab(sessionId);
       if (navigation.recentVisits.entries.getSnapshot().length === 0) viewport.scrollLeft = 0;
     },
+    closeAll: () => {
+      navigation.closeAllSessionTabs();
+      viewport.scrollLeft = 0;
+    },
     viewport,
     setEnabled,
   });

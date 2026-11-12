@@ -193,10 +193,7 @@ export class CodeBuddySession implements HarnessSession {
                 contextWindowTokens: update.size,
                 contextUsagePercent: (update.used / update.size) * 100,
               };
-              this.#emit({
-                type: "session.usage.changed",
-                usage: { ...this.#usage, ...this.#context },
-              });
+              this.#emitUsage();
               void this.refreshUsage();
             }
             this.#active?.output.update(update);
@@ -301,6 +298,14 @@ export class CodeBuddySession implements HarnessSession {
     this.#channel.emit({ kind: "event", event });
   }
 
+  #emitUsage() {
+    const usage = { ...this.#usage, ...this.#context };
+    this.#emit({
+      type: "session.usage.changed",
+      usage: Object.keys(usage).length ? usage : null,
+    });
+  }
+
   /** Publishes native requests not yet metered; the first read also declares completeness. */
   #meterHistory(history: string, historical: boolean) {
     const { requests, complete } = historyUsageRequests(history, historical);
@@ -312,6 +317,15 @@ export class CodeBuddySession implements HarnessSession {
     if (historical || !complete) this.#emit({ type: "usage.history", complete });
   }
   #apply(config: ReturnType<typeof configuration>, emit = true) {
+    // Context belongs to the last confirmed Model. Reconfirming that Model must
+    // preserve usage received after its config update but before the response.
+    if (
+      this.#state.effectiveModel &&
+      this.#state.effectiveModel.id !== config.state.effectiveModel?.id
+    ) {
+      this.#context = {};
+      this.#emitUsage();
+    }
     this.#config = config;
     if (this.#ref && record(this.#ref.locator).codebuddyDerived === 1)
       this.#ref = nativeSessionRefSchema.parse({
@@ -395,7 +409,7 @@ export class CodeBuddySession implements HarnessSession {
         return;
       this.#usage = historyUsage(history);
       this.#meterHistory(history, false);
-      this.#emit({ type: "session.usage.changed", usage: { ...this.#usage, ...this.#context } });
+      this.#emitUsage();
     } catch {
       // The native file may not exist yet or may be mid-append. Telemetry must not fail a Turn;
       // the next native usage notification, explicit refresh or terminal snapshot retries.
@@ -644,8 +658,7 @@ export class CodeBuddySession implements HarnessSession {
         },
         nativeTurnRef,
       );
-      if (this.#usage)
-        this.#emit({ type: "session.usage.changed", usage: { ...this.#usage, ...this.#context } });
+      if (this.#usage) this.#emitUsage();
     } catch (error) {
       if (!active.done)
         this.#finish(active, { status: "failed", error: nativeError(error, this.profile) });

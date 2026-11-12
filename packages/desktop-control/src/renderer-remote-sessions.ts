@@ -31,7 +31,10 @@ export interface RemoteSessionTarget {
       {
         epoch: string;
         answered: Set<string>;
-        metadata?: Map<string, Promise<Record<string, unknown>>>;
+        metadata?: Map<
+          string,
+          { loading: Promise<Record<string, unknown>>; failures: number; retryAt: number }
+        >;
       }
     >;
     reconnectAttempts?: Set<string>;
@@ -176,9 +179,9 @@ export async function rendererRemoteSession(
           const harnessId = configuration.harnessId,
             key = JSON.stringify([harnessId, cwd]);
           const cache = (generation.metadata ??= new Map());
-          let loading = cache.get(key);
-          if (!loading) {
-            loading = Promise.all([
+          let discovery = cache.get(key);
+          if (!discovery || Date.now() >= discovery.retryAt) {
+            const loading = Promise.all([
               Promise.resolve().then(() => {
                 if (routing.forHost(operation.hostId) !== route)
                   throw new Error("Remote connection changed during read");
@@ -194,20 +197,34 @@ export async function rendererRemoteSession(
                   return manager.sendRequest("codexhost/harness/plugins/list", {});
                 })
                 .catch(() => null),
-            ]).then(([inspection, catalog]) => ({
-              inspection,
-              harness: (catalog as { plugins?: Array<{ id: string }> } | null)?.plugins?.find(
-                (p) => p.id === harnessId,
-              ),
-            }));
+            ]).then(([inspection, catalog]) => {
+              if ((inspection as { status?: string } | null)?.status !== "ready")
+                throw new Error("Remote Harness discovery is unavailable");
+              return {
+                inspection,
+                harness: (catalog as { plugins?: Array<{ id: string }> } | null)?.plugins?.find(
+                  (p) => p.id === harnessId,
+                ),
+              };
+            });
+            const attempt = {
+              loading,
+              failures: discovery?.failures ?? 0,
+              retryAt: Infinity,
+            };
+            void loading.catch(() => {
+              attempt.failures = Math.min(attempt.failures + 1, 4);
+              attempt.retryAt = Date.now() + Math.min(30_000, 5_000 * 2 ** (attempt.failures - 1));
+            });
+            discovery = attempt;
             // A Desktop can visit many workspaces during one connection lifetime.
-            if (cache.size >= 64) {
+            if (cache.size >= 64 && !cache.has(key)) {
               const oldest = cache.keys().next().value;
               if (oldest !== undefined) cache.delete(oldest);
             }
-            cache.set(key, loading);
+            cache.set(key, discovery);
           }
-          metadata = { ...metadata, ...(await loading) };
+          metadata = { ...metadata, ...(await discovery.loading) };
         }
       } catch {
         /* Optional controls never prevent reading history; failed discovery stays bounded. */
@@ -284,7 +301,10 @@ export async function rendererRemoteSession(
       }
       // An unconfirmed mutation is never replayed. Rediscover controls after any outcome.
       try {
-        return await manager.sendRequest(method, params);
+        const result = await manager.sendRequest(method, params);
+        if (routing.forHost(operation.hostId) !== route)
+          throw new Error("Remote connection changed during configuration");
+        return result;
       } finally {
         generation.metadata?.clear();
       }

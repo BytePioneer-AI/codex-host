@@ -211,7 +211,10 @@ export async function selectRemoteModel(
         currentConfiguration = externalConfiguration(entry);
         refreshedAfterModel = true;
       } catch {
-        // Do not issue a thinking mutation against stale pre-model metadata.
+        throw new RpcError(
+          "remote/configuration-incomplete",
+          "Model change was confirmed, but Thinking was not completed. Refresh before deciding whether to retry.",
+        );
       }
     }
   }

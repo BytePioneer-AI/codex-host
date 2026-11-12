@@ -2,6 +2,7 @@ import { remoteApprovalPresentation } from "./remote-approval.ts";
 import { requestRemoteSession } from "@codexhost/desktop-control";
 import { z } from "zod";
 import {
+  harnessConfigurationStateSchema,
   remoteSessionOperationSchema,
   remoteSessionRequestBytes,
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
@@ -306,12 +307,14 @@ export class RemoteSessions {
   }
   private async configureRemote(entry: Entry, setting: RemoteConfigurationSetting): Promise<void> {
     if (!entry.epoch) throw new RpcError("remote/offline", "Remote connection changed");
-    externalConfiguration(entry);
+    const configuration = externalConfiguration(entry);
+    const epoch = entry.epoch;
+    let result: unknown;
     try {
-      await this.invoke({
+      result = await this.invoke({
         kind: "configure",
         ...entry.identity,
-        epoch: entry.epoch,
+        epoch,
         ...setting,
       });
     } finally {
@@ -320,6 +323,20 @@ export class RemoteSessions {
       // overwritten by its pre-mutation snapshot.
       entry.configurationRevision++;
       await entry.reading?.catch(() => undefined);
+      if (entry.epoch === epoch && entry.controls) {
+        const confirmed = harnessConfigurationStateSchema.safeParse(result);
+        // Retain ownership, not pre-mutation effective settings. Missing or
+        // malformed confirmations leave those settings unknown until inspected.
+        entry.controls.configuration = {
+          owner: "external",
+          harnessId: configuration.harnessId,
+          transportModelId: configuration.transportModelId,
+          history: configuration.history,
+          locked: true,
+          ...(confirmed.success ? confirmed.data : {}),
+        };
+        if (entry.view) applyRemoteControls(entry, entry.view);
+      }
     }
   }
   private syncArchives(): string[] {

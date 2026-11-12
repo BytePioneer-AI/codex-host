@@ -606,6 +606,7 @@ it("serves cached remote projections and pages without refreshing or cancelling 
 
 interface ExternalControlsFixtureOptions {
   modelThinkingAfterConfigure?: string;
+  configureResult?: unknown;
   beforeConfigure?: (
     remote: RemoteSessions,
     operation: Extract<RemoteSessionOperation, { kind: "configure" }>,
@@ -732,7 +733,13 @@ function externalControlsFixture(options: ExternalControlsFixtureOptions = {}) {
       }
       if (operation.thinkingOptionId !== undefined) thinkingOptionId = operation.thinkingOptionId;
       if (operation.permissionModeId !== undefined) permissionModeId = operation.permissionModeId;
-      return configuration();
+      return (
+        options.configureResult ?? {
+          effectiveModel: { id: modelId },
+          effectiveThinkingOptionId: thinkingOptionId,
+          effectivePermissionModeId: permissionModeId,
+        }
+      );
     }
     return {};
   });
@@ -744,6 +751,7 @@ function externalControlsFixture(options: ExternalControlsFixtureOptions = {}) {
     remote,
     id,
     row,
+    configuration,
     dropMetadata: () => {
       includeMetadata = false;
     },
@@ -934,6 +942,103 @@ it("does not redundantly configure thinking already selected by the model switch
       modelId: "claude-model-v2",
     },
   ]);
+});
+
+it("reports partial completion when the post-model read fails without replaying the model", async (t) => {
+  let failRead = false;
+  const fixture = externalControlsFixture({
+    beforeConfigure: () => {
+      failRead = true;
+    },
+    takeNextReadGate: () => {
+      if (!failRead) return undefined;
+      failRead = false;
+      return Promise.reject(new Error("transient read failure"));
+    },
+  });
+  t.after(() => fixture.remote.close());
+  const result = await fixture.call("session/selectModel", {
+    provider: "claude-code",
+    model: "claude-model-v2",
+    reasoningEffort: "high",
+  });
+  assert.ok(!result.ok);
+  assert.equal(result.error.code, "remote/configuration-incomplete");
+  assert.match(result.error.message, /Model.*confirmed.*Thinking/u);
+  assert.deepEqual(
+    fixture.calls.filter((op) => op.kind === "configure"),
+    [
+      {
+        kind: "configure",
+        hostId: "remote-control:claude",
+        threadId: "claude-thread",
+        epoch: "claude-epoch",
+        modelId: "claude-model-v2",
+      },
+    ],
+  );
+  await fixture.remote.read(fixture.id);
+  assert.equal(fixture.configuration().effectiveModel.id, "claude-model-v2");
+  assert.equal(fixture.configuration().effectiveThinkingOptionId, "medium");
+});
+
+it("uses native confirmations when partial reads follow model changes in both directions", async (t) => {
+  const fixture = externalControlsFixture({ beforeConfigure: () => fixture.dropMetadata() });
+  t.after(() => fixture.remote.close());
+  for (const model of ["claude-model-v2", "claude-model-v1.ZmFibGU"]) {
+    const result = await fixture.call("session/selectModel", { provider: "claude-code", model });
+    assert.ok(result.ok, JSON.stringify(result));
+    assert.equal(fixture.configuration().effectiveModel.id, model);
+    const projections = await fixture.call("session/projections");
+    assert.ok(projections.ok);
+    const values = (projections.value as { values: Record<string, unknown> }).values;
+    assert.deepEqual(values.modelSelection, {
+      lastUsed: { provider: "claude-code", model, reasoningEffort: "medium" },
+      next: { provider: "claude-code", model, reasoningEffort: "medium" },
+    });
+  }
+  assert.deepEqual(
+    fixture.calls.filter((op) => op.kind === "configure").map((op) => op.modelId),
+    ["claude-model-v2", "claude-model-v1.ZmFibGU"],
+  );
+});
+
+for (const configureResult of [{}, { effectiveModel: { id: 42 } }])
+  it(`does not retain stale settings after an unconfirmed configuration response ${JSON.stringify(configureResult)}`, async (t) => {
+    const fixture = externalControlsFixture({
+      configureResult,
+      beforeConfigure: () => fixture.dropMetadata(),
+    });
+    t.after(() => fixture.remote.close());
+    for (const model of ["claude-model-v2", "claude-model-v1.ZmFibGU"]) {
+      const result = await fixture.call("session/selectModel", { provider: "claude-code", model });
+      assert.ok(result.ok, JSON.stringify(result));
+      assert.equal(fixture.configuration().effectiveModel.id, model);
+      const projections = await fixture.call("session/projections");
+      assert.ok(projections.ok);
+      const values = (projections.value as { values: Record<string, unknown> }).values;
+      assert.deepEqual(values.modelSelection, { lastUsed: null, next: null });
+    }
+    assert.equal(fixture.calls.filter((op) => op.kind === "configure").length, 2);
+  });
+
+it("compares Thinking with the model confirmation when optional read metadata is missing", async (t) => {
+  const fixture = externalControlsFixture({
+    modelThinkingAfterConfigure: "high",
+    beforeConfigure: () => fixture.dropMetadata(),
+  });
+  t.after(() => fixture.remote.close());
+  const result = await fixture.call("session/selectModel", {
+    provider: "claude-code",
+    model: "claude-model-v2",
+    reasoningEffort: "medium",
+  });
+  assert.ok(result.ok, JSON.stringify(result));
+  assert.equal(fixture.configuration().effectiveThinkingOptionId, "medium");
+  assert.deepEqual(
+    fixture.calls.filter((op) => op.kind === "configure").map((op) => op.thinkingOptionId),
+    [undefined, "medium"],
+  );
 });
 
 it("does not let a pre-configure read overwrite an acknowledged model selection", async (t) => {

@@ -174,6 +174,7 @@ import {
 import { ExternalSessionReleaseError } from "./external-thread-lifecycle.js";
 import {
   ExternalSteerError,
+  ExternalSteerOutcomeUnknownError,
   ExternalTurnSteering,
   externalSteeringDelivery,
   insertNativeSteer,
@@ -4790,7 +4791,8 @@ export class AppServerHost {
       this.#externalRuntime.get(thread.id) !== thread ||
       this.#externalThreadBusy(thread) ||
       this.#pendingExternalCommandRequests.has(thread.id) ||
-      this.#externalQueue.isPaused(thread.id)
+      this.#externalQueue.isPaused(thread.id) ||
+      !this.#externalQueue.canStartAutomatically(thread.id)
     )
       return;
     const next = this.#externalQueue.head(thread.id);
@@ -4995,7 +4997,15 @@ export class AppServerHost {
         started.gate.resolve();
       }
     } catch (error) {
-      if (!thread.running && !thread.activeTurnId && this.#externalQueue.pause(thread.id, "failed"))
+      if (error instanceof ExternalSteerOutcomeUnknownError) {
+        this.#externalQueue.preventAutomaticStart(thread.id, item.id);
+        if (this.#externalQueue.pause(thread.id, "outcome-unknown"))
+          await this.#publishExternalQueue(thread.id);
+      } else if (
+        !thread.running &&
+        !thread.activeTurnId &&
+        this.#externalQueue.pause(thread.id, "failed")
+      )
         await this.#publishExternalQueue(thread.id);
       await this.#writer.json(
         rpcError(
@@ -5087,8 +5097,15 @@ export class AppServerHost {
       }
     } catch (error) {
       if (queued && !accepted) {
+        if (error instanceof ExternalSteerOutcomeUnknownError) queued.automaticStartAllowed = false;
         this.#externalQueue.restore(thread.id, queued);
-        if (!thread.running && !thread.activeTurnId && !this.#externalQueue.isPaused(thread.id))
+        if (error instanceof ExternalSteerOutcomeUnknownError)
+          this.#externalQueue.pause(thread.id, "outcome-unknown");
+        else if (
+          !thread.running &&
+          !thread.activeTurnId &&
+          !this.#externalQueue.isPaused(thread.id)
+        )
           this.#externalQueue.pause(thread.id, "failed");
         await this.#publishExternalQueue(thread.id).catch((failure) => this.#diagnose(failure));
       }

@@ -90,6 +90,14 @@ export class ExternalSteerNotTakenError extends ExternalSteerError {
   }
 }
 
+/** The Harness may have taken the input; automatic replay could duplicate its effects. */
+export class ExternalSteerOutcomeUnknownError extends ExternalSteerError {
+  constructor(cause: unknown) {
+    super(-32074, cause instanceof Error ? cause.message : "Native steering outcome is unknown");
+    this.cause = cause;
+  }
+}
+
 interface SteeringInput {
   expectedTurnId: string;
   clientUserMessageId?: string;
@@ -153,11 +161,16 @@ export async function insertNativeSteer(
   const projectionDone = Promise.withResolvers<undefined>();
   thread.pendingSteerProjections.add(projectionDone.promise);
   try {
-    const result = await thread.session.execute({
-      type: "turn.steer",
-      turnId: input.turnId,
-      input: steered,
-    });
+    let result: HarnessResult<TurnSteerAccepted>;
+    try {
+      result = await thread.session.execute({
+        type: "turn.steer",
+        turnId: input.turnId,
+        input: steered,
+      });
+    } catch (error) {
+      throw new ExternalSteerOutcomeUnknownError(error);
+    }
     if (!result.ok) throw new ExternalSteerNotTakenError(result.error.message);
     thread.steeredTurnIds.add(input.turnId);
     const item: HostUserMessageItem = {

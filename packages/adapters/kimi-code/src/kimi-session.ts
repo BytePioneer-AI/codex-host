@@ -491,16 +491,10 @@ export class KimiSession implements HarnessSession {
   async #runTurnBody(command: TurnStartCommand): Promise<HarnessOutput> {
     const turnId = command.turnId;
     const startedAtMs = Date.now();
+    this.#channel.emit({ kind: "event", event: { type: "turn.started", turnId } });
+
     const inputText = command.input.map((i) => i.text).join("\n");
     const isCommandTurn = inputText.trim().startsWith("/");
-    this.#channel.emit({
-      kind: "event",
-      event: {
-        type: "turn.started",
-        turnId,
-        ...(isCommandTurn ? { ephemeral: true as const } : {}),
-      },
-    });
     let commandOutput = "";
     const completedItems: HostItemSnapshot[] = [];
     const completeItem = (snapshot: HostItemSnapshot) => {

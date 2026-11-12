@@ -42,7 +42,6 @@ import {
   ExternalThreadLifecycle,
 } from "./external-thread-lifecycle.js";
 import { UsageMeter } from "@codexhost/session-runtime/usage-metering";
-import { UserSubmissions } from "./user-submissions.js";
 
 export interface TurnProjectionGate {
   promise: Promise<void>;
@@ -77,14 +76,7 @@ export interface ExternalThread {
   /** Host metering for the current Session only; replaced with it. */
   usageMeter: UsageMeter;
   usageTurnId: HostTurnId | null;
-  projectedTurns: Map<
-    HostTurnId,
-    {
-      projector: CodexTurnProjector;
-      command?: { name: string; text: string; clientUserMessageId?: string; publishInput: boolean };
-    }
-  >;
-  submissions: UserSubmissions;
+  projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector }>;
   responseGates: Map<HostTurnId, TurnProjectionGate>;
   pendingSteerProjections: Set<Promise<void>>;
   ephemeralTurnIds: Set<HostTurnId>;
@@ -235,7 +227,6 @@ export class ExternalThreadRuntime {
   readonly #steeredTurnIds = new Map<string, Set<HostTurnId>>();
   readonly #subagentRunning: (threadId: string) => boolean;
   readonly #threads = new Map<string, ExternalThread>();
-  readonly #submissionReceipts = new Map<string, UserSubmissions>();
 
   constructor(input: {
     adapters: Map<ExternalHarnessId, HarnessAdapter>;
@@ -293,7 +284,6 @@ export class ExternalThreadRuntime {
   remove(threadId: string): void {
     this.#threads.delete(threadId);
     this.#steeredTurnIds.delete(threadId);
-    this.#submissionReceipts.delete(threadId);
   }
 
   /** Confirm release before forgetting either the Session owner or its persisted mapping. */
@@ -313,7 +303,6 @@ export class ExternalThreadRuntime {
   clear(): void {
     this.#threads.clear();
     this.#steeredTurnIds.clear();
-    this.#submissionReceipts.clear();
   }
 
   drain(): Promise<void> {
@@ -418,9 +407,6 @@ export class ExternalThreadRuntime {
       steeredTurnIds = new Set();
       this.#steeredTurnIds.set(input.record.hostThreadId, steeredTurnIds);
     }
-    const submissions =
-      this.#submissionReceipts.get(input.record.hostThreadId) ?? new UserSubmissions();
-    this.#submissionReceipts.set(input.record.hostThreadId, submissions);
     const externalThread: ExternalThread = {
       id: input.record.hostThreadId,
       cwd: input.record.cwd,
@@ -450,7 +436,6 @@ export class ExternalThreadRuntime {
       usageMeter: new UsageMeter(),
       usageTurnId: null,
       projectedTurns: new Map(),
-      submissions,
       responseGates: new Map(),
       pendingSteerProjections: new Set(),
       ephemeralTurnIds: new Set(),

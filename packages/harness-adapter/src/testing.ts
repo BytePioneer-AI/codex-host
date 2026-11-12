@@ -262,7 +262,7 @@ export class FakeHarnessSession implements HarnessSession {
 
   publishEphemeralCommand(turnId: HostTurnId, item: HostItem): void {
     if (this.#closed) throw new Error("Fake Harness Session is closed");
-    this.#event({ type: "turn.started", turnId, ephemeral: true });
+    this.#event({ type: "turn.started", turnId });
     this.#event({ type: "item.started", turnId, item });
     this.#event({
       type: "item.completed",

@@ -30,8 +30,6 @@ const THREAD_WIRE_RE =
 
 /** Explicit Harness identity; ordinary subagent links are not delegation mentions. */
 const HARNESS_WIRE_RE = /\[@([^\]\n]+)\]\(<?subagent:\/\/codexhost\.([a-z0-9][a-z0-9-]*)>?\)/gu;
-const COMMAND_WIRE_RE =
-  /\[@([^\]\n]+)\]\(<?subagent:\/\/codexhost-(command|skill)\.([^)\s>]+)>?\)/gu;
 
 /** Sentence punctuation a bare `@name` token may carry without being part of the reference. */
 const TRAILING_PUNCTUATION_RE = /[.,;:!?，。；：！？]+$/u;
@@ -41,7 +39,7 @@ interface DecorationRange {
   readonly end: number;
   /** Matched source text (hover title). */
   readonly label: string;
-  readonly kind: "session" | "harness" | "plain" | "skill" | "command";
+  readonly kind: "session" | "harness" | "plain";
   /** Pre-resolved display text (wire folds); derived from label when absent. */
   readonly display?: string;
 }
@@ -73,15 +71,6 @@ export function projectUserText(
   references?: UserTextReferences,
 ): ReactNode {
   const ranges: DecorationRange[] = [];
-  for (const mention of text.matchAll(COMMAND_WIRE_RE)) {
-    ranges.push({
-      start: mention.index,
-      end: mention.index + mention[0].length,
-      label: mention[0],
-      kind: mention[2] === "skill" ? "skill" : "command",
-      display: (mention[1] as string).trim(),
-    });
-  }
   for (const mention of text.matchAll(HARNESS_WIRE_RE)) {
     ranges.push({
       start: mention.index,
@@ -153,13 +142,11 @@ export function projectUserText(
         ? "harness"
         : kind === "session"
           ? "session"
-          : kind === "skill"
-            ? "skill"
-            : label.startsWith("@")
-              ? label.replace(/^@"|"$/gu, "").endsWith("/")
-                ? "folder"
-                : "file"
-              : undefined;
+          : label.startsWith("@")
+            ? label.replace(/^@"|"$/gu, "").endsWith("/")
+              ? "folder"
+              : "file"
+            : undefined;
     const displayLabel =
       range.display ??
       (referenceKind === undefined
@@ -188,7 +175,7 @@ export function projectUserText(
           ? () => {
               references.openFile(label.slice(1).replace(/^"|"$/gu, ""));
             }
-          : referenceKind === undefined && slashKind === "skill" && kind === "plain"
+          : referenceKind === undefined && slashKind === "skill"
             ? () => {
                 references.openSkill(label.slice(1));
               }
@@ -199,8 +186,8 @@ export function projectUserText(
         <span
           key={tokenStart}
           className={className}
-          data-ref-chip={kind === "command" ? "command" : (referenceKind ?? slashKind)}
-          title={range.display ?? label}
+          data-ref-chip={referenceKind ?? slashKind}
+          title={label}
         >
           {contents}
         </span>
@@ -209,8 +196,8 @@ export function projectUserText(
           key={tokenStart}
           type="button"
           className={clsx(className, markdownCss.fileMention)}
-          data-ref-chip={kind === "command" ? "command" : (referenceKind ?? slashKind)}
-          title={range.display ?? label}
+          data-ref-chip={referenceKind ?? slashKind}
+          title={label}
           onClick={(event) => {
             if (
               event.detail > 1 ||

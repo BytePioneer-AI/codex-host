@@ -62,7 +62,6 @@ The Composer `#` menu is the single command surface; it has no Harness-specific 
 
 - Selecting `/compact` or an `argumentMode: "none"` command executes it directly through `codexhost/thread/command/execute` with no text arguments, leaving the current draft and attachments untouched, even when the Harness supports optional compaction instructions. Direct commands execute only when a Thread exists; otherwise they are disabled with an explanation.
 - Selecting another text command inserts a native Composer mention chip in place of `#query` (`subagent://codexhost-command.<name>`), because literal `/command` text opens Desktop's own `/` menu. When Desktop's Composer controller is unavailable, the invocation is prefixed in the editor instead. On External Thread `turn/start` and `turn/steer` the Host restores the first chip to a leading `/command arguments` before the same catalog matching and command execution; other command chips are dropped. Only separators adjacent to removed chips are normalized; internal argument spaces, tabs and indentation are preserved. Steering retains the existing stop-then-start sequence, duplicate-message receipts and response-before-event ordering. Cancellation during command discovery prevents the replacement command from starting.
-- Selecting a Skill inserts a mention chip that shows only the Skill icon and name (`subagent://codexhost-skill.<name>`). On send, the Host restores the Harness-native invocation (official Codex keeps a leading `$name`); the sent item is an ordinary user message, and replies appear below it rather than in a command card.
 - When every listed command is disabled and nothing else matches, the menu stays open to show why; Enter is then left to the Composer.
 - The `#` menu groups entries into Commands, Skills (descriptors with `kind: "skill"`) and delegation Agents.
 
@@ -205,25 +204,16 @@ Invocation collisions with interface commands disable only the conflicting nativ
 Menu `/compact` and `argumentMode: "none"` selections execute without draft arguments,
 attachment submission, stopping or queueing. Busy/offline/in-flight requests disable direct
 execution. `accepted` means admission only; native progress and outcomes use the existing
-Thread projection. An uncertain write is never retried automatically. Other text command selections
+Thread projection. An uncertain write is never retried automatically. Other text selections
 insert an editable reference showing the native invocation, using the public
-`subagent://codexhost-command.<name>` carrier and the existing reference codec. Skill
-selections insert an editable icon-and-name reference with `subagent://codexhost-skill.<name>`;
-the label is the Skill name, not the internal carrier, a local path, or the native prefix.
-Text, other reference chips and attachments remain intact. Explicit send uses the ordinary
+`subagent://codexhost-command.<name>` carrier and the existing reference codec. Text, other
+reference chips and attachments remain intact. Explicit send uses the ordinary
 prompt/queue/Steer path; after Web attachment context is prepared, the existing Host
 `restoreHarnessCommandMentions` restores the invocation to the beginning before catalog
-matching. File and image context therefore remains in text-command arguments instead of
+matching. File and image context therefore remains in the command arguments instead of
 hiding a plain slash token behind `# Files mentioned by the user`. Internal argument
 spaces, tabs and indentation are preserved; carrier separators follow the existing Host
 normalization. Copy and saved drafts retain the carrier, and undo/removal stays local.
-A sent Skill is an ordinary user message with replies below it, not a command card.
-Sending confirmation is shown separately from AI-running status, and does not depend on a
-user-message echo alone. Adapter execution start classifies conversation versus temporary
-operation; directory labels are not the execution switch. Official Codex `/compact` keeps
-its native `thread/compact/start` acceptance, including receipts without a Turn ID, and does
-not enter the external submission-receipt loop. External `/compact` still uses
-`commands.execute` and, on success, the existing immediate command snapshot.
 Manual `/compact arguments` retains that ordinary submission behavior. Web neither registers
 native entries with the DSH interface command executor nor reads Skill bodies.
 

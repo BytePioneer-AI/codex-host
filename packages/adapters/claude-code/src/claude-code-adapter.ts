@@ -1095,14 +1095,10 @@ class ClaudeHarnessSession implements HarnessSession {
       command.commandId,
       typeof argumentText === "string" ? argumentText : undefined,
     );
-    if (dynamicPrompt !== null) {
-      return this.execute({
-        type: "turn.start",
-        turnId: command.turnId,
-        input: [{ type: "text", text: dynamicPrompt }],
-      });
-    }
-    const parsed = parseClaudeHarnessCommand(command);
+    const parsed: HarnessResult<ClaudeHarnessCommand> =
+      dynamicPrompt === null
+        ? parseClaudeHarnessCommand(command)
+        : { ok: true, value: { id: "slash", text: dynamicPrompt } };
     if (!parsed.ok) return parsed;
     if (this.#acceptingTurn || this.#active || this.#configurationTask || this.#readingHistory) {
       return {
@@ -1206,7 +1202,7 @@ class ClaudeHarnessSession implements HarnessSession {
     };
     this.#active = active;
     this.#submittedInput = true;
-    this.#event({ type: "turn.started", turnId: command.turnId, ephemeral: true });
+    this.#event({ type: "turn.started", turnId: command.turnId });
     if (item) this.#event({ type: "item.started", turnId: command.turnId, item });
     const running =
       parsed.value.id === "claude.compact"

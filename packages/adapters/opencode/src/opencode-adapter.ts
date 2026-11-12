@@ -557,10 +557,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       const active = this.#createActive("compact", command.turnId, null);
       this.#active = active;
       active.admissionBuffer.push({
-        output: {
-          kind: "event",
-          event: { type: "turn.started", turnId: command.turnId, ephemeral: true },
-        },
+        output: { kind: "event", event: { type: "turn.started", turnId: command.turnId } },
         sequence: active.admissionSequence++,
       });
       const item: HostContextCompactionItem = {

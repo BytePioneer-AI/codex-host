@@ -1,5 +1,4 @@
 /** Browser-safe request, result, and lifecycle vocabulary for the Session Remote service. */
-import type { ClientSubmission } from "@codexhost/shared-contracts";
 import type { NativeFileApplication } from "@deepseek-ai/dsh-native-command/types";
 
 import type {
@@ -28,7 +27,6 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
     modelSelection: ModelSelectionProjectionState;
   }
   interface SessionProjectionMap {
-    nativeSubmissions: readonly ClientSubmission[];
     /** Persisted facts used to summarize a Session without activating it. */
     sessionListMetadata: SessionListMetadata;
     /** Image-intake limits enforced by the Session prompt endpoint. */

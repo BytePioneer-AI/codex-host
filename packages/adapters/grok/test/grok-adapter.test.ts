@@ -2974,7 +2974,7 @@ describe("Grok Adapter ACP projection", () => {
       }),
     ).resolves.toEqual({ ok: true, value: { turnId } });
 
-    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId, ephemeral: true });
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
     transport.compactEvent({
       type: "compaction.started",
       tokensUsed: 401965,
@@ -3023,7 +3023,7 @@ describe("Grok Adapter ACP projection", () => {
     if (!session.commands) throw new Error("Grok Session did not expose commands");
 
     await session.commands.execute({ turnId, commandId: "grok.compact" });
-    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId, ephemeral: true });
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
     transport.compactEvent({ type: "compaction.started" });
     expect((await nextEvent(iterator)).type).toBe("item.started");
     transport.compactEvent({

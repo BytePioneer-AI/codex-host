@@ -637,11 +637,7 @@ export class HermesSession implements HarnessSession {
   }
 
   async #runTurn(active: ActiveTurn, text: string): Promise<void> {
-    this.#emit({
-      type: "turn.started",
-      turnId: active.turnId,
-      ...(!active.persistsHistory ? { ephemeral: true as const } : {}),
-    });
+    this.#emit({ type: "turn.started", turnId: active.turnId });
     if (active.compactionItem)
       this.#emit({ type: "item.started", turnId: active.turnId, item: active.compactionItem });
     let promptResponse: HermesPromptResponse | null = null;

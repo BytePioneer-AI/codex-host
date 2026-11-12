@@ -103,7 +103,6 @@ export type PiInteractionResponse =
   | { requestId: string; confirmed: boolean };
 
 export type PiTurnEvent =
-  | { type: "execution.started"; ephemeral?: true }
   | PiProgressMessage
   | {
       type: "text.delta";
@@ -144,7 +143,6 @@ export type PiTurnEvent =
 export interface PiTurnResult {
   text: string;
   cancelled: boolean;
-  ephemeral?: true;
 }
 
 export type PiAutonomousTurnResult =
@@ -1059,21 +1057,7 @@ export class PiRpcSession {
     });
     try {
       this.#drainProgress(onEvent);
-      const generation = this.#runGeneration;
-      const response = await this.#send("prompt", { message: text });
-      const active = this.#activeTurn;
-      if (
-        active?.origin === "requested" &&
-        active.runGeneration === generation &&
-        this.#runGeneration === generation &&
-        isRecord(response.data) &&
-        response.data.disposition === "handled"
-      ) {
-        this.#activeTurn = null;
-        active.onEvent({ type: "execution.started", ephemeral: true });
-        this.#closeInteractions(active, "superseded");
-        active.resolve({ text: active.text, cancelled: false, ephemeral: true });
-      }
+      await this.#send("prompt", { message: text });
     } catch (error) {
       this.#rejectActiveTurn(error instanceof Error ? error : new Error(message(error)));
     }
@@ -1259,10 +1243,8 @@ export class PiRpcSession {
       return;
     }
     if (value.type === "agent_start") {
-      if (this.#activeTurn) {
-        this.#activeTurn.runGeneration = generation;
-        this.#activeTurn.onEvent({ type: "execution.started" });
-      } else if (
+      if (this.#activeTurn) this.#activeTurn.runGeneration = generation;
+      else if (
         !this.#manualCompaction &&
         !this.#compactionActive &&
         (this.#autonomousTurnHandler || this.#autonomousLifecycleHandler)

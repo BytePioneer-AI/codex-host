@@ -76,7 +76,6 @@ export type OmpInteractionResponse =
   | { requestId: string; confirmed: boolean };
 
 export type OmpTurnEvent =
-  | { type: "execution.started"; ephemeral?: true }
   | { type: "text.delta"; messageId: string; delta: string }
   | { type: "reasoning.delta"; messageId: string; delta: string }
   | { type: "reasoning.completed"; messageId: string }
@@ -1187,10 +1186,7 @@ export class OmpRpcSession {
     const active = this.#activeTurn;
     if (this.#handleSubagentFrame(active, value)) return;
     this.#observeUsage(value);
-    if (value.type === "agent_start" && active) {
-      active.terminalEnd = false;
-      active.onEvent({ type: "execution.started" });
-    }
+    if (value.type === "agent_start" && active) active.terminalEnd = false;
     if (
       (value.type === "session_settled" || value.type === "agent_start") &&
       active?.cancellation === "accepted"
@@ -1211,7 +1207,6 @@ export class OmpRpcSession {
     }
     if (value.type === "command_output") {
       if (active.settlement !== "pending") return;
-      active.onEvent({ type: "execution.started", ephemeral: true });
       if (typeof value.text !== "string") {
         throw new OmpRpcFaultError("protocolError", "Omp RPC returned invalid command output");
       }
@@ -1797,7 +1792,6 @@ export class OmpRpcSession {
   #settleLocalTurn(active: ActiveTurn, result: NonNullable<ActiveTurn["localResult"]>): void {
     if (this.#activeTurn !== active || active.settlement !== "pending") return;
     active.localResult = result;
-    active.onEvent({ type: "execution.started", ephemeral: true });
     active.settlement = "confirming";
     void this.#confirmSettledTurn(active);
   }

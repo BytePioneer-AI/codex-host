@@ -295,9 +295,7 @@ export function registerHarnessDiscovery(ctx: Context): void {
             return "handled";
           }
           try {
-            return {
-              insert: harnessCommandReference(command.invocation, command.kind, command.label),
-            };
+            return { insert: harnessCommandReference(command.invocation) };
           } catch {
             notify(id, t("discovery.stale"));
             return "handled";

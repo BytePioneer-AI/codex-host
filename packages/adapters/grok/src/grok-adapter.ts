@@ -674,7 +674,7 @@ class GrokHarnessSession implements HarnessSession {
       resolveCompletion,
     };
     this.#active = active;
-    this.#event({ type: "turn.started", turnId: command.turnId, ephemeral: true });
+    this.#event({ type: "turn.started", turnId: command.turnId });
     void this.#transport
       .compact(userContext, (event) => this.#handleEvent(active, event))
       .then(

@@ -1785,7 +1785,6 @@ export class QoderSession implements HarnessSession {
     this.#emitEvent({
       type: "turn.started",
       turnId: command.turnId,
-      ...(isCompaction ? { ephemeral: true as const } : {}),
     });
 
     if (compactionItemId) {

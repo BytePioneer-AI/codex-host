@@ -15,7 +15,7 @@ export interface ReferenceInsert {
   readonly source: string;
   readonly ref: string;
   readonly label: string;
-  readonly appearance?: "session" | "file" | "folder" | "skill";
+  readonly appearance?: "session" | "file" | "folder";
   readonly clipboardText: string;
 }
 

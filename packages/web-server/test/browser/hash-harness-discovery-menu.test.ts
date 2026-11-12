@@ -90,7 +90,7 @@ for (const [trigger, width] of [
       await composer.press("ControlOrMeta+A");
       await composer.press("ControlOrMeta+C");
       const text = await page.evaluate(() => navigator.clipboard.readText());
-      assert.ok(text.includes("[@Native skill](subagent://codexhost-skill.native-skill)"));
+      assert.ok(text.includes("subagent://codexhost-command.native-skill"));
       assert.ok(text.includes("subagent://codexhost.alpha-agent"));
       assert.equal(text.includes(`${trigger}alpha-agent`), false);
       const submitted = page.waitForResponse((response) =>

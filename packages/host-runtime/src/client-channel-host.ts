@@ -440,11 +440,6 @@ export class ClientChannelHost {
         JSON.stringify({
           cursor: this.clientEvents.cursor,
           activeTurnId: thread.activeTurnId,
-          submissions: thread.submissions.snapshot(
-            thread.activeTurnId
-              ? thread.projectedTurns.get(thread.activeTurnId)?.projector.snapshotTurn()
-              : undefined,
-          ),
           command: thread.clientCommand
             ? {
                 ...thread.clientCommand,
@@ -480,8 +475,6 @@ export class ClientChannelHost {
         (item: unknown) => isRecord(item) && item.type === "userMessage",
       ) as Record<string, unknown> | undefined;
       if (clientId && user && typeof user.clientId !== "string") user.clientId = clientId;
-      const presentation = thread.submissions.input(turn.id, user?.clientId);
-      if (user && presentation !== undefined) user.content = [{ type: "text", text: presentation }];
     }
     return compactClientSnapshot(snapshot, options);
   }

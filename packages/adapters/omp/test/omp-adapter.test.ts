@@ -154,10 +154,6 @@ class FakeOmpTransport implements OmpTurnTransport {
   }
 
   completeWithoutHistory(result: OmpTurnResult): void {
-    this.onEvent?.({
-      type: "execution.started",
-      ...(!result.agentInvoked ? { ephemeral: true as const } : {}),
-    });
     if (result.text) {
       this.event({ type: "text.delta", messageId: "prompt-request-1", delta: result.text });
     }
@@ -166,7 +162,6 @@ class FakeOmpTransport implements OmpTurnTransport {
 
   runTurn(_text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult> {
     this.onEvent = onEvent;
-    if (_text !== "/context") onEvent({ type: "execution.started" });
     return new Promise((resolve) => {
       this.#resolveTurn = resolve;
       if (!this.autoCompleteTurn) return;
@@ -1232,20 +1227,16 @@ describe("OMP Adapter local command completion", () => {
       outcome,
       ephemeral: true,
     });
-    expect(events.filter((event) => event.type === "item.completed")).toEqual(
-      testCase.text
-        ? [
-            {
-              type: "item.completed",
-              turnId: "local-command",
-              snapshot: {
-                item: { type: "agentMessage", itemId: expect.any(String), text: testCase.text },
-                outcome,
-              },
-            },
-          ]
-        : [],
-    );
+    expect(events.filter((event) => event.type === "item.completed")).toEqual([
+      {
+        type: "item.completed",
+        turnId: "local-command",
+        snapshot: {
+          item: { type: "agentMessage", itemId: expect.any(String), text: testCase.text },
+          outcome,
+        },
+      },
+    ]);
     expect(
       events
         .flatMap((event) =>

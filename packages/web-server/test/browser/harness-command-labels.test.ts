@@ -86,9 +86,10 @@ for (const width of [390, 1280])
         await skill.click();
         const chip = composer.locator('[data-composer-chip="codexhost-native"]');
         await chip.waitFor();
-        assert.equal(await chip.getByText("codexhost-add-harness", { exact: true }).count(), 1);
-        assert.equal(await chip.locator("svg").count(), 1);
-        assert.doesNotMatch(await chip.innerText(), /\/skill:|subagent:\/\//u);
+        assert.equal(
+          await chip.getByText("/skill:codexhost-add-harness", { exact: true }).count(),
+          1,
+        );
         await page.keyboard.press("Escape");
       }
     },

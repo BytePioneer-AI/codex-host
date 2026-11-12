@@ -55,35 +55,6 @@ for (const status of ["completed", "failed", "interrupted"]) {
   });
 }
 
-it("closes a replaced command with an unknown outcome instead of leaving its card running", async () => {
-  const host = new FakeChChannel();
-  const row = host.add("replaced-command", "/project");
-  row.turns = [];
-  const view = new ChThreadHistory(host, row, "fake", () => {});
-  host.commands.set(row.id, {
-    name: "compact",
-    turn: { id: "old", status: "inProgress", items: [] },
-  });
-  await view.refresh();
-  host.commands.set(row.id, {
-    name: "compact",
-    turn: { id: "new", status: "completed", items: [] },
-  });
-  await view.refresh(true);
-  await view.refresh(true);
-  assert.deepEqual(
-    view.log.events.filter((event) => event.type === "command/done").map((event) => event.data),
-    [
-      {
-        commandId: "old",
-        kind: "error",
-        text: "The Host no longer reports the outcome of this command.",
-      },
-      { commandId: "new", kind: "success" },
-    ],
-  );
-});
-
 it("recovers a manual command completed between snapshots, even with unchanged idle history", async () => {
   const host = new FakeChChannel();
   const row = host.add("compaction", "/project");

@@ -1347,7 +1347,7 @@ export class KiroSession implements HarnessSession {
       : hostTurnIdSchema.parse(`cmd-${this.#randomUUID()}`);
     this.#channel.emit({
       kind: "event",
-      event: { type: "turn.started", turnId, ephemeral: true },
+      event: { type: "turn.started", turnId },
     });
     this.#activeTurnId = turnId;
     const stopped = new Promise<never>((_resolve, reject) => {

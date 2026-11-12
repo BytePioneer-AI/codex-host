@@ -183,7 +183,6 @@ class FakePiTransport implements PiTurnTransport {
   readonly runTurn = vi.fn((text: string, onEvent: (event: PiTurnEvent) => void) => {
     this.text = text;
     this.onEvent = onEvent;
-    onEvent({ type: "execution.started" });
     return new Promise<PiTurnResult>((resolve, reject) => {
       this.resolveTurn = resolve;
       this.rejectTurn = reject;
@@ -2150,7 +2149,6 @@ describe("Pi HarnessAdapter Session", () => {
     expect(await nextEvent(iterator)).toEqual({
       type: "turn.started",
       turnId: "manual-compact",
-      ephemeral: true,
     });
     const started = await nextEvent(iterator);
     if (started.type !== "item.started" || started.item.type !== "contextCompaction") {
@@ -2176,7 +2174,6 @@ describe("Pi HarnessAdapter Session", () => {
     expect(await nextEvent(iterator)).toEqual({
       type: "turn.completed",
       turnId: "manual-compact",
-      ephemeral: true,
       outcome: { status: "succeeded" },
     });
     expect(transports[0]?.compact).toHaveBeenCalledWith(

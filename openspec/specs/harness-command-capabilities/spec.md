@@ -95,12 +95,13 @@ The Adapter MUST translate a registered command into the Harness-native operatio
 
 ### Requirement: Command UI and lifecycle follow Host contracts
 
-A command MAY be discovered through the Host catalog. Renderer SHALL use an independent Composer control without changing Codex-native Slash lists. Its popover SHALL own layout, scrolling, focus and keyboard navigation. Adapter execution lifecycle MUST distinguish conversation from temporary operation before streaming output is presented. Conversation output SHALL use ordinary messages and native history; temporary operations MUST NOT create conversation history. Directory classification MUST NOT be the sole execution switch. Compact SHALL retain its existing command-acceptance path without waiting for `turn.started`.
+A command MAY be discovered by the Renderer through the Host command catalog. The Renderer SHALL present discovered commands through an independent Composer Harness Commands control rather than mutating the Codex-native Slash command list. Its popover SHALL own its layout, scrolling, focus, and keyboard navigation. If execution produces visible lifecycle events, those events MUST use existing Host projection contracts. Temporary command projection Turns MUST NOT be persisted as ordinary conversation history unless the command explicitly requires persistence.
 
 #### Scenario: Text command selection claims the Composer
 
-- **WHEN** the user selects a command with argument mode `text`
-- **THEN** Renderer preserves the draft and attachments, inserts the invocation reference and uses the ordinary submission path
+- **WHEN** the user selects a command with argument mode `text` from the Harness Commands popover
+- **THEN** Renderer prefixes its invocation and one space to the current Composer editor while preserving the existing draft and attachments
+- **AND** the command uses the ordinary Composer submission path instead of executing a bare invocation immediately
 
 #### Scenario: Argument-free command selection executes directly
 
@@ -109,31 +110,15 @@ A command MAY be discovered through the Host catalog. Renderer SHALL use an inde
 
 #### Scenario: Manual compaction is projected without a user Turn
 
-- **WHEN** an Adapter reports native compaction execution
-- **THEN** standard compaction progress and terminal outcome are displayed without adding an ordinary history Turn
-
-#### Scenario: Official Codex compact retains native confirmation
-
-- **WHEN** official Codex accepts `/compact` without returning a Turn ID
-- **THEN** the existing native command route confirms acceptance without requiring an external submission receipt
-- **AND** native compaction events keep their original presentation without a new correlation protocol or a terminal outcome inferred from another Turn
+- **WHEN** Pi, Grok, Claude Code, or DeepSeek emits native compaction start and end events for its compact command
+- **THEN** codexhost projects the standard context-compaction UI lifecycle
+- **AND** the temporary command Turn is not added to ordinary Thread history
 
 #### Scenario: DeepSeek command result text uses existing projection
 
-- **WHEN** a reviewed native command returns only operation result text
-- **THEN** the existing operation presentation displays the result and outcome without synthesizing native conversation history
-
-#### Scenario: Skill produces a conversation
-
-- **WHEN** a selected Skill starts a native conversation
-- **THEN** its user message displays an inline icon and name followed by ordinary body text
-- **AND** streaming replies and tools appear below it in conversation order, not inside a command card
-- **AND** internal links and source paths are not exposed as Skill labels
-
-#### Scenario: Native invocation remains unchanged
-
-- **WHEN** the same visual Skill reference is submitted to different Harnesses
-- **THEN** each Adapter retains its own native invocation and official Codex retains its native Skill input semantics
+- **WHEN** DeepSeek `/goal` or `/plan` returns native success or error text
+- **THEN** codexhost projects the text through the existing Command Execution Item and completes the temporary Turn with the native outcome
+- **AND** native log-only command lifecycle records do not become ordinary conversation Turns
 
 ### Requirement: Commands remain isolated by Harness ownership
 

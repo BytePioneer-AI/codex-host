@@ -125,7 +125,6 @@ export class ChThreadHistory extends ChThreadView {
       this.ensureCurrent();
       this.ownerSnapshot = snapshot;
       if (snapshot) {
-        this.log.setProjection("nativeSubmissions", snapshot.submissions ?? []);
         this.log.setProjection("inbox", {
           "next-turn": (snapshot.queue?.items ?? []).map((item) => ({
             id: item.id,
@@ -150,7 +149,7 @@ export class ChThreadHistory extends ChThreadView {
         Object.assign(this.thread, { ...thread, turns: this.thread.turns });
         this.log.setProjection("title", threadListTitle(thread));
         this.log.setProjection("codexhostImportSource", thread.codexhostImportSource ?? null);
-        this.commands.update(snapshot?.command, this.thread.turns, snapshot?.submissions);
+        this.commands.update(snapshot?.command, this.thread.turns);
         return;
       }
       const recent = snapshot ? snapshot.turnsPage : await this.page(null);
@@ -202,7 +201,7 @@ export class ChThreadHistory extends ChThreadView {
           ],
         });
       }
-      this.commands.update(snapshot?.command, this.thread.turns, snapshot?.submissions);
+      this.commands.update(snapshot?.command, this.thread.turns);
       this.lastHeadReadAt = Date.now();
     })().finally(() => {
       this.refreshing = undefined;

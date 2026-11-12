@@ -233,28 +233,12 @@ export const clientThreadImportSourceSchema = z.object({
   nativeSessionId: z.string().min(1),
 });
 export type ClientThreadImportSource = z.infer<typeof clientThreadImportSourceSchema>;
-export const clientCommandSnapshotSchema = z.object({
-  name: z.string().min(1),
-  turn: clientTurnSchema,
-});
-export const clientSubmissionSchema = z.object({
-  clientUserMessageId: z.string().min(1),
-  turnId: z.string().min(1),
-  status: z.enum(["accepted", "running", "completed", "failed", "cancelled", "rejected"]),
-  execution: z.enum(["pending", "conversation", "operation"]),
-  operation: clientCommandSnapshotSchema.optional(),
-  error: z.string().optional(),
-});
-export type ClientSubmission = z.infer<typeof clientSubmissionSchema>;
-
 export const clientThreadSnapshotSchema = z.object({
   cursor: clientChannelCursorSchema,
   /** Current interruptible Host Turn, including command Turns omitted from client history. */
   activeTurnId: z.string().min(1).nullable().optional(),
-  /** Bounded process-local submission receipts; independent of conversation messages. */
-  submissions: z.array(clientSubmissionSchema).optional(),
   /** Most recent explicit command in this Host process; not native conversation history. */
-  command: clientCommandSnapshotSchema.optional(),
+  command: z.object({ name: z.string().min(1), turn: clientTurnSchema }).optional(),
   thread: z
     .object({
       id: z.string().min(1),

@@ -212,9 +212,6 @@ interface ActiveTurn {
   agentMessageId: string | null;
   compactionItem: HostContextCompactionItem | null;
   sawAssistantMessage: boolean;
-  executionStarted?: true;
-  ephemeral?: true;
-  pendingExecutionEvents?: OmpTurnEvent[];
   reasoningItem: HostReasoningItem | null;
   tools: Map<string, ActiveTool>;
   interactions: Map<HostInteractionId, ActiveInteraction>;
@@ -991,6 +988,8 @@ class OmpHarnessSession implements HarnessSession {
         resolveCompletion,
       };
       this.#active = active;
+      this.#event({ type: "turn.started", turnId: command.turnId });
+      this.#event({ type: "item.started", turnId: command.turnId, item });
 
       void transport
         .runTurn(text, (event) => this.#handleTurnEvent(active, event))
@@ -1511,7 +1510,7 @@ class OmpHarnessSession implements HarnessSession {
         resolveCompletion,
       };
       this.#active = active;
-      this.#startExecution(active, true);
+      this.#event({ type: "turn.started", turnId: command.turnId });
       void transport
         .compact(customInstructions, (event) => this.#handleTurnEvent(active, event))
         .then((result) => {
@@ -1662,34 +1661,8 @@ class OmpHarnessSession implements HarnessSession {
     });
   }
 
-  #startExecution(active: ActiveTurn, ephemeral = false): void {
-    if (active.executionStarted) return;
-    active.executionStarted = true;
-    if (ephemeral) {
-      active.ephemeral = true;
-      active.agentItem = null;
-    }
-    this.#event({
-      type: "turn.started",
-      turnId: active.command.turnId,
-      ...(ephemeral ? { ephemeral: true as const } : {}),
-    });
-    if (active.agentItem)
-      this.#event({ type: "item.started", turnId: active.command.turnId, item: active.agentItem });
-    for (const event of active.pendingExecutionEvents ?? []) this.#handleTurnEvent(active, event);
-    delete active.pendingExecutionEvents;
-  }
-
   #handleTurnEvent(active: ActiveTurn, event: OmpTurnEvent): void {
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
-    if (event.type === "execution.started") {
-      this.#startExecution(active, event.ephemeral === true);
-      return;
-    }
-    if (!active.executionStarted && !event.type.startsWith("interaction.")) {
-      (active.pendingExecutionEvents ??= []).push(event);
-      return;
-    }
     switch (event.type) {
       case "text.delta":
         this.#activateAgentMessage(active, event.messageId);
@@ -2124,7 +2097,6 @@ class OmpHarnessSession implements HarnessSession {
     ephemeral?: true,
   ): void {
     if (this.#active !== active) return;
-    this.#startExecution(active, true);
     this.#active = null;
     const itemOutcome: HostItemOutcome =
       outcome.status === "failed"
@@ -2159,7 +2131,7 @@ class OmpHarnessSession implements HarnessSession {
       turnId: active.command.turnId,
       outcome,
       ...(nativeTurnRef ? { nativeTurnRef } : {}),
-      ...(ephemeral || active.ephemeral ? { ephemeral: true as const } : {}),
+      ...(ephemeral ? { ephemeral } : {}),
     });
     active.resolveCompletion();
     queueMicrotask(() => {

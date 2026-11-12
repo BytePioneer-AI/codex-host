@@ -431,13 +431,7 @@ export class ZcodeSession implements HarnessSession {
     if (this.#closed || this.#faulted)
       return failure("invalidState", "ZCode closed before confirming the turn");
     active.accepted = true;
-    this.#emit({
-      type: "turn.started",
-      turnId: id,
-      ...(method === "compactSession" || (method === "goalSession" && result.startedTurn !== true)
-        ? { ephemeral: true as const }
-        : {}),
-    });
+    this.#emit({ type: "turn.started", turnId: id });
     for (const message of active.pending.splice(0)) this.#message(message);
     if (method === "goalSession" && result.startedTurn !== true) {
       const response = text(result.response);

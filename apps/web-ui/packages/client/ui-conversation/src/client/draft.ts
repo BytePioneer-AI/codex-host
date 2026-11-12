@@ -13,7 +13,7 @@ const referenceSchema = z.object({
   offset: z.number().int().nonnegative(),
   length: z.number().int().positive(),
   label: z.string(),
-  appearance: z.enum(["session", "file", "folder", "skill"]).optional(),
+  appearance: z.enum(["session", "file", "folder"]).optional(),
   clipboardText: z.string(),
   invalid: z.boolean().optional(),
 });

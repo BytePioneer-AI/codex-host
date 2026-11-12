@@ -11,6 +11,18 @@
 - 每次注册各自兑现。同一对 Thread 仍在观察中时重复注册，返回已有的 watch；该 watch 已停下、通知仍在待送达时再次注册（例如 Thread 又开始了新一轮），会新建一个 watch 观察下一次停下，旧通知照常送达，不会被替换或丢弃。
 - 通知只报告执行状态：Thread 链接和结果；终态结果注明来自哪个 Turn，以便区分同一 Thread 不同轮次的通知。通知不包含会话正文或摘要，也不代表工作被验收。接收方应自行 `thread read`。
 
+## 通知格式
+
+格式由 `packages/shared-contracts/src/thread-watch-notice.ts` 定义，Host 生成、Web 解析都使用它。首行是固定的英文说明，随后每个 Thread 一行 Markdown 链接：
+
+```text
+- [<会话标题>](codex://threads/<id> "Turn <turnId>"): <结果>. <可选说明>
+```
+
+- 链接标签是观察期间读到的 Thread 标题，随 watch 记录持久化；从未读到标题时使用 Thread ID。Turn 写在链接的 title 属性里，模型可以读到，界面上不占正文。
+- 说明只在需要时出现：`timedOut` 提示重新注册，`unreadable` 附读取错误，`notFound` 说明 Thread 已不存在，重启导致的 `interrupted` 附重启说明。
+- 同一份原文给模型阅读，Desktop 按原生 Markdown 显示为可点击的会话链接，Web 解析后显示为通知卡片（见 [独立 Web](../product/standalone-web.md)）。不符合格式的文字（包括旧格式的历史通知）按普通用户消息显示。
+
 入口：
 
 | 命令 | 用途 |

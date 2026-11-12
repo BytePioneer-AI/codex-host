@@ -372,6 +372,15 @@ export {
 export { desktopImageAttachmentPaths } from "./desktop-attachments.js";
 
 export {
+  THREAD_WATCH_NOTICE_HEADER,
+  THREAD_WATCH_NOTICE_OUTCOMES,
+  formatThreadWatchNotice,
+  parseThreadWatchNotice,
+  type ThreadWatchNoticeEntry,
+  type ThreadWatchNoticeOutcome,
+} from "./thread-watch-notice.js";
+
+export {
   REMOTE_SSH_SETUP_METHOD,
   remoteSshSetupParamsSchema,
   remoteSshSetupResultSchema,

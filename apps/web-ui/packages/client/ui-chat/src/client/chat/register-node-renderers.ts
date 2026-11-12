@@ -31,13 +31,23 @@ export function registerChatNodeRenderers(
 ): void {
   ctx.slots.inject("conversation.chat.node", () =>
     ctx.slots.register(
-      { name: "conversation.chat.node", key: "user", locale: NS },
+      {
+        name: "conversation.chat.node",
+        key: "user",
+        locale: NS,
+        inject: () => ({ links: ctx.get("chatLinks") }),
+      },
       UserMessageNodeView,
     ),
   );
   ctx.slots.inject("conversation.chat.node", () =>
     ctx.slots.register(
-      { name: "conversation.chat.node", key: "steering", locale: NS },
+      {
+        name: "conversation.chat.node",
+        key: "steering",
+        locale: NS,
+        inject: () => ({ links: ctx.get("chatLinks") }),
+      },
       UserMessageNodeView,
     ),
   );

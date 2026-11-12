@@ -80,6 +80,7 @@
   min-width: 0;
 }
 .qrButton {
+  position: relative;
   display: block;
   padding: 8px;
   border: none;
@@ -87,12 +88,34 @@
   background: white;
   overflow: hidden;
   line-height: 0;
-  cursor: zoom-in;
+  cursor: pointer;
 }
 .qr {
   display: block;
   width: 144px;
   height: 144px;
+  filter: blur(10px);
+  opacity: 0.35;
+  pointer-events: none;
+  user-select: none;
+}
+.qrCover {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px;
+  background: rgb(255 255 255 / 65%);
+  color: #171717;
+  font-size: 13px;
+  line-height: 20px;
+}
+.qrCover small {
+  font-size: 11px;
+  line-height: 16px;
 }
 .qrPlaceholder {
   box-sizing: border-box;

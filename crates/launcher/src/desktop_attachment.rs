@@ -1,4 +1,3 @@
-#[cfg(target_os = "windows")]
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
@@ -112,10 +111,43 @@ pub(super) fn wait_for_host_chain(
     options: &ResolvedLaunchOptions,
     timeout: Duration,
 ) -> Result<bool, Box<dyn Error>> {
+    let nodes =
+        host_runtime_node_candidates(options.node.clone(), env::var_os(crate::NPM_NODE_PATH_ENV));
+    wait_for_host_chain_with_nodes(desktop, options, &nodes, timeout)
+}
+
+/// The Shim runs the Host Runtime on the Node selected at launch
+/// (`options.node`, the Desktop cua_node in installer layouts) — but on
+/// npm-managed installs it overrides the Host Runtime to
+/// `CODEXHOST_NPM_NODE_PATH` (the npm wrapper's `process.execPath`). Readiness
+/// must accept that Node too, or the wait blocks on a late, unrelated Desktop
+/// `cua_node` helper instead of the actual Host Runtime process.
+pub(super) fn host_runtime_node_candidates(
+    default_node: PathBuf,
+    npm_node: Option<OsString>,
+) -> Vec<PathBuf> {
+    let mut nodes = vec![default_node];
+    if let Some(npm_node) = npm_node
+        .map(PathBuf::from)
+        .filter(|node| node.is_file() && !nodes.contains(node))
+    {
+        nodes.push(npm_node);
+    }
+    nodes
+}
+
+pub(super) fn wait_for_host_chain_with_nodes(
+    desktop: &ProcessSnapshot,
+    options: &ResolvedLaunchOptions,
+    nodes: &[PathBuf],
+    timeout: Duration,
+) -> Result<bool, Box<dyn Error>> {
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if descendant_executable_pair_exists(desktop, &options.shim, &options.node)? {
-            return Ok(true);
+        for node in nodes {
+            if descendant_executable_pair_exists(desktop, &options.shim, node)? {
+                return Ok(true);
+            }
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -379,6 +411,133 @@ mod tests {
         assert!(
             ready,
             "the selected parent and child must satisfy Host chain readiness"
+        );
+    }
+
+    #[test]
+    fn npm_node_path_widens_host_runtime_node_candidates() {
+        let default_node = PathBuf::from("/bin/sleep");
+        assert_eq!(
+            host_runtime_node_candidates(default_node.clone(), None),
+            vec![default_node.clone()]
+        );
+        // A missing npm Node must not widen the accepted set.
+        assert_eq!(
+            host_runtime_node_candidates(
+                default_node.clone(),
+                Some(OsString::from("/nonexistent/codexhost-npm-node"))
+            ),
+            vec![default_node.clone()]
+        );
+        // An npm Node identical to the default adds nothing.
+        assert_eq!(
+            host_runtime_node_candidates(
+                default_node.clone(),
+                Some(default_node.clone().into_os_string())
+            ),
+            vec![default_node.clone()]
+        );
+        // Any existing file is sufficient; avoid a shared, writable temp fixture.
+        let npm_node = env::current_exe().expect("current test executable");
+        assert_eq!(
+            host_runtime_node_candidates(
+                default_node.clone(),
+                Some(npm_node.clone().into_os_string())
+            ),
+            vec![default_node, npm_node]
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn host_chain_accepts_the_npm_runtime_node_instead_of_the_default_node() {
+        use codexhost_platform::{process_snapshot, spawn_supervised};
+        use std::process::{Command, Stdio};
+
+        let shell = Path::new("/bin/bash").canonicalize().unwrap();
+        let sleep = Path::new("/bin/sleep").canonicalize().unwrap();
+        let mut command = Command::new(&shell);
+        command
+            .args([
+                "-c",
+                "\"$1\" -c '\"$1\" 30 & wait' fixture \"$2\" & wait",
+                "fixture",
+            ])
+            .arg(&shell)
+            .arg(&sleep)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut root = spawn_supervised(&mut command).unwrap();
+        let snapshot = process_snapshot(root.id()).unwrap();
+        // An npm launch resolves `options.node` to the Desktop cua_node while
+        // the Shim actually runs the Host Runtime on the npm Node; the cua_node
+        // under Desktop only appears later with unrelated MCP helpers.
+        let options = ResolvedLaunchOptions {
+            shim: shell.clone(),
+            node: Path::new("/bin/cat").to_path_buf(),
+            host_runtime: sleep.clone(),
+            desktop_controller: sleep.clone(),
+            renderer_extension: sleep,
+            pi: None,
+        };
+        let not_ready = wait_for_host_chain_with_nodes(
+            &snapshot,
+            &options,
+            std::slice::from_ref(&options.node),
+            Duration::from_millis(200),
+        )
+        .unwrap();
+        root.force_terminate().unwrap();
+        root.wait().unwrap();
+        assert!(
+            !not_ready,
+            "waiting only for the cua_node must not become ready"
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn host_chain_becomes_ready_once_the_npm_node_pair_exists() {
+        use codexhost_platform::{process_snapshot, spawn_supervised};
+        use std::process::{Command, Stdio};
+
+        let shell = Path::new("/bin/bash").canonicalize().unwrap();
+        let sleep = Path::new("/bin/sleep").canonicalize().unwrap();
+        let mut command = Command::new(&shell);
+        command
+            .args([
+                "-c",
+                "\"$1\" -c '\"$1\" 30 & wait' fixture \"$2\" & wait",
+                "fixture",
+            ])
+            .arg(&shell)
+            .arg(&sleep)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut root = spawn_supervised(&mut command).unwrap();
+        let snapshot = process_snapshot(root.id()).unwrap();
+        let options = ResolvedLaunchOptions {
+            shim: shell,
+            node: Path::new("/bin/cat").to_path_buf(),
+            host_runtime: sleep.clone(),
+            desktop_controller: sleep.clone(),
+            renderer_extension: sleep.clone(),
+            pi: None,
+        };
+        let nodes = host_runtime_node_candidates(
+            options.node.clone(),
+            Some(sleep.clone().into_os_string()),
+        );
+        let ready =
+            wait_for_host_chain_with_nodes(&snapshot, &options, &nodes, Duration::from_secs(2))
+                .unwrap();
+        root.force_terminate().unwrap();
+        root.wait().unwrap();
+        assert!(
+            ready,
+            "the Shim-selected npm Node must satisfy Host chain readiness"
         );
     }
 

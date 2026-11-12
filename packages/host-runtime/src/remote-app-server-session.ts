@@ -1,6 +1,10 @@
 import { PassThrough, type Writable } from "node:stream";
 import type { RawData, WebSocket } from "ws";
 import type { RemoteAppServerSession, RemoteAppServerSessionStreams } from "./remote-app-server.js";
+import {
+  CODEX_RUNTIME_REMOVED_MESSAGE,
+  CodexRuntimeFilesRemovedError,
+} from "./codex-runtime/backend-files.js";
 
 function bytes(data: RawData): Buffer {
   if (Buffer.isBuffer(data)) return data;
@@ -117,7 +121,13 @@ export function attachRemoteAppServerSession(options: {
     })
     .catch((error: unknown) => {
       diagnosticOutput.write(`codexhost app-server: ${String(error)}\n`);
-      if (socket.readyState === socket.OPEN) socket.close(1011, "Host Runtime failed");
+      if (socket.readyState === socket.OPEN)
+        socket.close(
+          1011,
+          error instanceof CodexRuntimeFilesRemovedError
+            ? CODEX_RUNTIME_REMOVED_MESSAGE
+            : "Host Runtime failed",
+        );
     })
     .finally(() => {
       finished = true;

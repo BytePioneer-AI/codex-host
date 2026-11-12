@@ -1,4 +1,5 @@
 /** Chat-owned Slot declarations and composed component props. */
+import type { ReactNode } from "react";
 import type { MessageId } from "@deepseek-ai/dsh-llm/brand";
 import type { SessionId, SessionSeq } from "@deepseek-ai/dsh-session/types";
 import type {
@@ -128,6 +129,12 @@ export type QuotaNoticeHostProps = PropsRuntime<"shell.overlay"> &
   PropsRenderSlots<"shell.quota-notice"> &
   InjectFace<QuotaNoticeInjected>;
 
+/** Product-owned application links and their directory presentation. */
+export interface ChatLinks {
+  resolve: MarkdownLinkResolver;
+  describe?: (href: string) => { title: string; icon: ReactNode } | undefined;
+}
+
 /** Optional prose file-mention provider consumed by Chat. */
 export interface ChatFileMentions {
   /**
@@ -144,7 +151,7 @@ declare module "@deepseek-ai/cordis" {
     /** Optional prose file-mention provider. */
     chatFileMentions: ChatFileMentions;
     /** Optional application-link resolver owned by the product integration. */
-    chatLinks: { resolve: MarkdownLinkResolver };
+    chatLinks: ChatLinks;
   }
 }
 

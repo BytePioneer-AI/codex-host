@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CursorTransport, type CursorCallbacks } from "../src/transport.js";
+import { CursorAdapter } from "../src/adapter.js";
 
 const state = vi.hoisted(() => ({ scenario: "normal", arguments: [] as string[][] }));
 vi.mock("../src/command.js", () => ({
@@ -105,8 +106,7 @@ it("reads history without waiting for a model catalog that never responds", asyn
   });
 });
 
-it("authenticates ahead of session adoption without creating or loading a session", async () => {
-  state.scenario = "prepare-once";
+it("prepares once and reuses native credentials without requesting interactive authentication", async () => {
   const native = transport();
   await Promise.all([native.prepare(), native.prepare()]);
   expect(native.sessionId).toBe("");
@@ -137,14 +137,35 @@ it("refreshes a cached catalog when the native session advertises different mode
   expect((await native.open()).nativeModels).toBeUndefined();
 });
 
-it("closes a process while authentication is pending without leaving a reusable transport", async () => {
-  state.scenario = "hang-auth";
+it("closes a process while initialization is pending without leaving a reusable transport", async () => {
+  state.scenario = "hang-startup";
   const native = transport();
   const preparing = native.prepare();
   const failed = expect(preparing).rejects.toThrow(/closed|exited/u);
   await native.close();
   await failed;
   await expect(native.open()).rejects.toThrow("reopened");
+});
+
+it.each([undefined, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"])(
+  "rejects an unauthenticated session without requesting login (session=%s)",
+  async (sessionId) => {
+    state.scenario = "unauthenticated";
+    await expect(transport().open(sessionId)).rejects.toThrow("Authentication required");
+  },
+);
+
+it("reports authenticationRequired during inspection without requesting login", async () => {
+  state.scenario = "unauthenticated";
+  const adapter = new CursorAdapter({ environment: isolatedEnvironment(), timeoutMs: 2_000 });
+  try {
+    expect(await adapter.inspect()).toMatchObject({
+      status: "unavailable",
+      error: { code: "authenticationRequired" },
+    });
+  } finally {
+    await adapter.close();
+  }
 });
 
 it("requests native Run Everything for unattended full access and for unrestricted CLI config", async () => {

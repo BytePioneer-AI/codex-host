@@ -301,7 +301,7 @@ export class ChSessions {
     if (this.closed) return;
     timing.measureSync("workspace_sync", () => {
       const groups = new Map<string, string | undefined>();
-      const references: Array<{ sessionId: string; cwd: string; title?: string }> = [];
+      const references: Array<{ sessionId: string; cwd: string }> = [];
       const projectless = new Set(projects.projectless.filter((id) => !projects.assignments[id]));
       for (const row of this.rows.values()) {
         if (row.workspaceKind === "projectless" && !row.projectId && !projects.assignments[row.id])
@@ -313,12 +313,7 @@ export class ChSessions {
         groups.set(row.id, root);
         if (root) {
           // Each GUI project mirrors once, at its first root, under the project name.
-          const title = projects.projects.find((project) => project.rootPaths.includes(root))?.name;
-          references.push({
-            sessionId: row.id,
-            cwd: root,
-            ...(title !== undefined ? { title } : {}),
-          });
+          references.push({ sessionId: row.id, cwd: root });
         }
       }
       for (const draft of this.drafts.values()) {

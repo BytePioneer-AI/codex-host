@@ -715,7 +715,7 @@ it("workspace mirror: mirrors a GUI project once and keeps Web workspace identit
     legacyWeb.workspaceId,
     "the pre-existing Web workspace keeps its identity",
   );
-  assert.equal(
+  assert.deepEqual(
     workspaces
       .list()
       .filter((w) => w.title === "app" && w.origin !== "web")

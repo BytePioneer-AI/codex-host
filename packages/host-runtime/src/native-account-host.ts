@@ -142,7 +142,17 @@ export async function prepareLocalCodex(input: {
     officialRuntimeScope: scope,
     accountControl: accounts,
     configureStartup: async (configuration) => {
-      if (!input.deferStart || scope.closed || (input.remoteControl && startupConfigured)) return;
+      // First-invocation-only applies while no generation was attempted or one
+      // is running. A generation that already failed to start never served a
+      // Desktop connection, so accept the valid reconfiguration (issue #815).
+      const failedGeneration =
+        scope.owner.generation > 0 && !scope.owner.running && !scope.owner.hasActiveWork;
+      if (
+        !input.deferStart ||
+        scope.closed ||
+        (input.remoteControl && startupConfigured && !failedGeneration)
+      )
+        return;
       const stockCodexPath = await resolveOfficialCodexExecutable(
         configuration.stockCodexPath,
         configuration.environment,

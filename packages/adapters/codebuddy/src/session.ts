@@ -546,7 +546,11 @@ export class CodeBuddySession implements HarnessSession {
         this.#active = active;
         this.subagents.begin(command.turnId);
         if (!nativeCommand) this.#hasTurn = true;
-        this.#emit({ type: "turn.started", turnId: command.turnId });
+        this.#emit({
+          type: "turn.started",
+          turnId: command.turnId,
+          ...(nativeCommand ? { ephemeral: true as const } : {}),
+        });
         active.completion = this.#run(active);
         return { ok: true, value: { turnId: command.turnId } };
       }

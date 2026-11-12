@@ -52,6 +52,15 @@ describe("Harness command carrier", () => {
     expect(() => harnessCommandMentionPath("/two words")).toThrow();
   });
 
+  it.each(["/skill:eli5", "/lead-delegation", "$build"])(
+    "keeps visual Skill names independent of native invocation %s",
+    (invocation) => {
+      const carrier = `[@Readable name](${harnessCommandMentionPath(invocation, "skill")}) Body:\n    keep  spaces`;
+      expect(restoreHarnessCommandMentions(carrier)).toBe(`${invocation} Body:\n    keep  spaces`);
+      expect(stripDelegationMentions(carrier).mentions).toEqual([]);
+    },
+  );
+
   it("restores the chip as a leading command with the remaining text as arguments", () => {
     expect(restoreHarnessCommandMentions(`${link("/review")} PR 42`)).toBe("/review PR 42");
     expect(restoreHarnessCommandMentions(`${link("$build")} check  tests`)).toBe(

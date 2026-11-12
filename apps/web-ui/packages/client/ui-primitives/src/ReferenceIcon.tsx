@@ -1,6 +1,12 @@
 import type { ReactNode } from "react";
 import { stripDelegationMentions } from "@codexhost/shared-contracts";
-import { ICON_MEDIUM_STROKE, ICON_REGULAR_STROKE, IconDataOutlineRegular } from "./icons/index.tsx";
+import {
+  ICON_MEDIUM_STROKE,
+  ICON_REGULAR_STROKE,
+  IconDataOutlineRegular,
+  IconSkillOutlineRegular,
+  IconSkillOutlineMedium,
+} from "./icons/index.tsx";
 import { RemotePluginIcon } from "./RemotePluginIcon.tsx";
 import type { IconProps } from "./icons/props.ts";
 import {
@@ -10,7 +16,7 @@ import {
 } from "./icons/shared-artwork.tsx";
 
 /** Reference domains with distinct composer and transcript glyphs. */
-export type ReferenceIconKind = "session" | "file" | "folder";
+export type ReferenceIconKind = "session" | "file" | "folder" | "skill";
 
 /** Props shared by inline reference glyphs. */
 export interface ReferenceIconProps extends IconProps {
@@ -52,6 +58,12 @@ function ReferenceIconArtwork({
     }
   }
   switch (kind) {
+    case "skill":
+      return strokeWidth === ICON_MEDIUM_STROKE ? (
+        <IconSkillOutlineMedium size={size} className={className} />
+      ) : (
+        <IconSkillOutlineRegular size={size} className={className} />
+      );
     case "session":
       return (
         <ChatLinesOutlineArtwork size={size} className={className} strokeWidth={strokeWidth} />

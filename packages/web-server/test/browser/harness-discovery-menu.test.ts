@@ -63,7 +63,7 @@ it(
     await menu.getByRole("option", { name: /^build\b/u }).click();
     await composer
       .locator('[data-composer-chip="codexhost-native"]')
-      .getByText("$build", { exact: true })
+      .getByText("build", { exact: true })
       .waitFor();
     await composer.press("Escape");
     const submitted = page.waitForResponse((response) =>
@@ -162,7 +162,7 @@ for (const width of [390, 1280])
     await menu.getByRole("option", { name: /^Native skill\b/ }).click();
     await composer
       .locator('[data-composer-chip="codexhost-native"]')
-      .getByText("/native-skill", { exact: true })
+      .getByText("Native skill", { exact: true })
       .waitFor();
     assert.ok((await composer.innerText()).includes("keep body"));
     assert.equal(writeMethods().length, 1);
@@ -181,7 +181,7 @@ for (const width of [390, 1280])
     );
     const sent = host.requests.filter((r) => r.method === "turn/start").at(-1);
     assert.ok(sent);
-    assert.match(JSON.stringify(sent.params.input), /subagent:\/\/codexhost-command\.native-skill/);
+    assert.match(JSON.stringify(sent.params.input), /subagent:\/\/codexhost-skill\.native-skill/);
     assert.match(JSON.stringify(sent.params.input), /kept\.txt/);
     const nativeText = restoreHarnessCommandMentions(
       (sent.params.input as Array<{ text: string }>).map((part) => part.text).join("\n"),
@@ -430,7 +430,9 @@ it(
     await composer.press("ControlOrMeta+A");
     await composer.press("ControlOrMeta+C");
     const clipboard = await page.evaluate(() => navigator.clipboard.readText());
-    assert.ok(clipboard.includes("[@/native-skill](subagent://codexhost-command.native-skill)"));
+    assert.ok(clipboard.includes("[@Native skill](subagent://codexhost-skill.native-skill)"));
+    assert.equal(await commands.locator("svg").count(), 1);
+    assert.doesNotMatch(await commands.innerText(), /subagent:\/\/|\/native-skill/u);
     assert.ok(clipboard.includes("subagent://codexhost.fake"));
     assert.ok(restoreHarnessCommandMentions(clipboard).includes(body), JSON.stringify(clipboard));
     assert.equal(writeMethods().length, 0);

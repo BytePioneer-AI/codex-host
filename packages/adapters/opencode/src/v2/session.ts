@@ -339,7 +339,11 @@ export class V2Session implements HarnessSession {
         throw new Error("OpenCode Session closed during admission");
       }
       active.admitted = true;
-      this.#emit({ type: "turn.started", turnId: active.turnId });
+      this.#emit({
+        type: "turn.started",
+        turnId: active.turnId,
+        ...(compact ? { ephemeral: true as const } : {}),
+      });
       for (const item of active.transient.values())
         this.#projectItem(active, { item, outcome: { status: "succeeded" } }, false);
       void this.#refresh();

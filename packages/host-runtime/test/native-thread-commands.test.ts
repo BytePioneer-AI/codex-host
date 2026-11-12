@@ -176,6 +176,45 @@ it("uses official compact/review methods, returns real Turn IDs and preserves na
   ).toBe(false);
 });
 
+it("accepts typed official compact without a Turn ID through the original native command route", async () => {
+  const { calls, send } = await officialFixture();
+  expect(
+    await send("turn/start", {
+      clientUserMessageId: "compact-message",
+      input: [{ type: "text", text: "/compact" }],
+    }),
+  ).toEqual({ result: { accepted: true } });
+  expect(
+    calls
+      .filter(({ method }) => method !== "initialize" && method !== "initialized")
+      .map(({ method }) => method),
+  ).toEqual(["thread/resume", "thread/compact/start"]);
+  expect(calls.at(-1)?.params).toEqual({ threadId: "official" });
+});
+
+it.each(["skill", "command"] as const)(
+  "restores a selected official Skill from a %s carrier with its native text and Skill input",
+  async (kind) => {
+    const { calls, send } = await officialFixture();
+    const carrier = `[@build](${harnessCommandMentionPath("$build", kind)})`;
+    expect(
+      await send("turn/start", {
+        input: [{ type: "text", text: `${carrier} keep  arguments`, text_elements: [] }],
+      }),
+    ).not.toHaveProperty("error");
+    expect(calls).toContainEqual({
+      method: "turn/start",
+      params: {
+        threadId: "official",
+        input: [
+          { type: "text", text: "$build keep  arguments", text_elements: [] },
+          { type: "skill", name: "build", path: workspaceSkill.path },
+        ],
+      },
+    });
+  },
+);
+
 it("keeps the explicit Skill path on queued input edits without duplicating or re-resolving it", async () => {
   const { calls, send } = await officialFixture();
   const input = [

@@ -50,6 +50,110 @@ function installCompactingCommand(session: FakeHarnessSession, descriptor = comp
 
 describe("manual compaction announcement", () => {
   it.each([
+    ["codexhost/thread/command/execute", "succeeded"],
+    ["codexhost/thread/command/execute", "failed"],
+    ["codexhost/thread/command/execute", "cancelled"],
+    ["turn/start", "succeeded"],
+    ["turn/start", "failed"],
+    ["turn/start", "cancelled"],
+  ] as const)(
+    "acknowledges compact through %s before start events and settles %s via the existing command Turn",
+    async (requestMethod, status) => {
+      const fixture = createFixture();
+      try {
+        const threadId = await startPiThread(fixture);
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Pi Session was not opened");
+        let commandTurnId = hostTurnIdSchema.parse("unused");
+        session.commands = {
+          list: async () => ({ ok: true, value: { commands: [compactCommand] } }),
+          execute: async ({ turnId }) => {
+            commandTurnId = turnId;
+            return { ok: true, value: { turnId } };
+          },
+        };
+        writeRequest(fixture.desktopInput, {
+          id: 2,
+          method: requestMethod,
+          params:
+            requestMethod === "turn/start"
+              ? {
+                  threadId,
+                  clientUserMessageId: "compact-message",
+                  input: [{ type: "text", text: "/compact" }],
+                }
+              : { threadId, commandId: compactCommand.id },
+        });
+        const response = await fixture.collector.waitFor((message) => requestId(message, 2));
+        expect(response.error).toBeUndefined();
+        const accepted = await fixture.host.clientSnapshot(threadId);
+        expect(accepted.command).toMatchObject({
+          name: "compact",
+          turn: { id: commandTurnId, status: "inProgress" },
+        });
+        expect(accepted.turnsPage.data).toEqual([]);
+        if (requestMethod === "turn/start")
+          expect(accepted.submissions).toMatchObject([
+            { clientUserMessageId: "compact-message", execution: "operation", status: "running" },
+          ]);
+        expect(
+          fixture.collector.messages.some((message) =>
+            method(message, THREAD_MANUAL_COMPACTION_STARTED_METHOD),
+          ),
+        ).toBe(false);
+
+        const item = {
+          type: "contextCompaction" as const,
+          itemId: hostItemIdSchema.parse("legacy-compact"),
+        };
+        const outcome =
+          status === "failed"
+            ? {
+                status,
+                error: {
+                  code: "nativeFailure" as const,
+                  message: "Compaction failed",
+                  retryable: false,
+                },
+              }
+            : { status };
+        session.emitEvent({ type: "turn.started", turnId: commandTurnId, ephemeral: true });
+        session.emitEvent({ type: "item.started", turnId: commandTurnId, item });
+        session.emitEvent({
+          type: "item.completed",
+          turnId: commandTurnId,
+          snapshot: { item, outcome },
+        });
+        session.emitEvent({ type: "turn.completed", turnId: commandTurnId, outcome });
+        await fixture.collector.waitFor((message) =>
+          turnEvent(message, "turn/completed", commandTurnId),
+        );
+        const finished = await fixture.host.clientSnapshot(threadId);
+        expect(finished.activeTurnId).toBeNull();
+        expect(finished.command?.turn.status).toBe(
+          status === "succeeded" ? "completed" : status === "cancelled" ? "interrupted" : "failed",
+        );
+        expect(finished.turnsPage.data).toEqual([]);
+        if (requestMethod === "turn/start")
+          expect(finished.submissions?.[0]?.status).toBe(
+            status === "succeeded" ? "completed" : status,
+          );
+        expect(
+          fixture.collector.messages.filter((message) =>
+            method(message, THREAD_MANUAL_COMPACTION_STARTED_METHOD),
+          ),
+        ).toEqual([
+          {
+            method: THREAD_MANUAL_COMPACTION_STARTED_METHOD,
+            params: { threadId, turnId: commandTurnId },
+          },
+        ]);
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+  it.each([
     ["the command menu", "codexhost/thread/command/execute"],
     ["a typed /compact", "turn/start"],
   ])(

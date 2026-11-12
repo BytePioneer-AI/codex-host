@@ -18,6 +18,7 @@ import type { ExternalTurnSteering } from "./external-turn-steering.js";
 
 export interface ProjectedTurn {
   projector: CodexTurnProjector;
+  command?: { name: string; text: string; clientUserMessageId?: string; publishInput: boolean };
 }
 
 export type ExternalThreadStatus = { type: "active"; activeFlags: [] } | { type: "idle" };
@@ -132,6 +133,40 @@ export class ExternalTurnProjection {
     ) {
       return;
     }
+    if (event.type === "turn.started") {
+      const command = projection.command;
+      if (event.ephemeral || command) {
+        const input =
+          command && !event.ephemeral ? [{ type: "text" as const, text: command.text }] : [];
+        projection.projector = new CodexTurnProjector({
+          threadId: thread.id,
+          turnId: event.turnId,
+          cwd: thread.cwd,
+          startedAtMs: Date.now(),
+          snapshotInput: input,
+          ...(command?.clientUserMessageId
+            ? { clientUserMessageId: command.clientUserMessageId }
+            : {}),
+          ...(command?.publishInput && !event.ephemeral ? { initialInput: input } : {}),
+        });
+      }
+      if (event.ephemeral) {
+        thread.ephemeralTurnIds.add(event.turnId);
+        thread.clientCommand = {
+          name: command?.name ?? "operation",
+          turn: projection.projector.snapshotTurn(),
+        };
+      } else {
+        thread.ephemeralTurnIds.delete(event.turnId);
+      }
+      thread.submissions.started(event.turnId, event.ephemeral === true);
+      if (event.ephemeral && thread.clientCommand)
+        thread.submissions.operation(
+          event.turnId,
+          thread.clientCommand.name,
+          projection.projector.snapshotTurn(),
+        );
+    }
     if (event.type === "turn.completed") this.#host.retireSharedQuestions(thread, event.turnId);
     if (event.type === "interaction.closed") {
       await this.#host.resolveDesktopApproval(event.interactionId, thread);
@@ -165,10 +200,25 @@ export class ExternalTurnProjection {
     if (event.type === "turn.completed") {
       this.#host.forgetQueuedTurnStart(thread.id);
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
+      thread.submissions.finish(
+        event.turnId,
+        event.outcome.status === "succeeded"
+          ? "completed"
+          : event.outcome.status === "cancelled"
+            ? "cancelled"
+            : "failed",
+        event.outcome.status === "failed" ? event.outcome.error.message : undefined,
+      );
       const completedAt = Math.floor(Date.now() / 1000);
       if (ephemeralTurn) {
-        if (thread.clientCommand?.turn.id === event.turnId)
+        if (thread.clientCommand?.turn.id === event.turnId) {
           thread.clientCommand.turn = projection.projector.snapshotTurn(result.completedTurn);
+          thread.submissions.operation(
+            event.turnId,
+            thread.clientCommand.name,
+            thread.clientCommand.turn,
+          );
+        }
         thread.ephemeralTurnIds.delete(event.turnId);
         this.#host.manualCompactionTurns.delete(thread);
       } else {

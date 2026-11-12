@@ -989,6 +989,23 @@ function session(
   );
 }
 
+describe("Pi local prompt settlement", () => {
+  it("settles an extension-handled prompt without waiting for an agent run", async () => {
+    const rpc = session("fast");
+    await rpc.start();
+    try {
+      const result = await Promise.race([
+        rpc.runTurn("/codexhost-fast-mode on regression", () => undefined),
+        new Promise((resolve) => setTimeout(() => resolve("still pending"), 100)),
+      ]);
+      expect(result).toMatchObject({ ephemeral: true, cancelled: false });
+      expect(rpc.isBusy).toBe(false);
+    } finally {
+      await rpc.close();
+    }
+  });
+});
+
 describe("Pi Fast command acknowledgement", () => {
   it("changes only Fast and keeps the confirmed state through Thinking refresh", async () => {
     const rpc = session("fast");

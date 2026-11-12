@@ -222,7 +222,7 @@ export interface SessionInput extends InputTarget {
   readonly state: SnapshotStore<InputState>;
 }
 
-/** One captured selection in an already-mounted draft; insertion is synchronous and single-use. */
+/** One captured position in an existing draft; readiness follows its Composer and insertion is single-use. */
 export interface DraftReferenceInsertion {
   /** Live availability, including the captured draft revision and Composer policy. */
   getSnapshot(): boolean;
@@ -233,7 +233,7 @@ export interface DraftReferenceInsertion {
 
 /** Session-addressed access to the per-session input facade. */
 export interface SessionInputResolver {
-  /** Capture an existing Composer without creating an input or moving DOM focus. */
+  /** Capture an existing input without creating one or moving focus; observe readiness through getSnapshot. */
   captureReferenceInsertion(binding: SessionBinding): DraftReferenceInsertion | undefined;
   /** Resolve the facade for one session-scope ctx. */
   for(actx: Context): SessionInput;

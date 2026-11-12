@@ -46,6 +46,36 @@ fn publishes_complete_private_status_before_readiness() {
 }
 
 #[test]
+fn ready_identity_ignores_the_image_and_cleanup_preserves_another_owner() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = env::temp_dir().join(format!("codexhost-owner-{}-{nonce}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("shared-host-ready.json");
+    publish_ready(&root, std::process::id(), &env::current_exe().unwrap()).unwrap();
+    let mut record: ReadyOwner = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    record.executable = root.join("deleted-package/node");
+    fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
+    assert!(super::owner_snapshot(&root).is_some());
+    assert!(super::current_runtime(&root).is_some());
+
+    let original = fs::read(&file).unwrap();
+    super::remove_ready(&root, record.pid + 1);
+    assert_eq!(fs::read(&file).unwrap(), original);
+
+    record.started_at_micros += 1;
+    fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
+    assert!(super::owner_snapshot(&root).is_none());
+    assert!(super::current_runtime(&root).is_none());
+
+    super::remove_ready(&root, record.pid);
+    assert!(!file.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn service_environment_preserves_opt_in_list_tracing() {
     const TEST: &str = "host_service::tests::service_environment_preserves_opt_in_list_tracing";
     if env::var_os("CODEXHOST_TRACE_ENV_TEST").is_some() {
@@ -107,7 +137,7 @@ fn stalled_shutdown_terminates_the_captured_fixture_process() {
         assert!(child.try_wait().unwrap().is_none());
         thread::sleep(Duration::from_millis(20));
     }
-    let owner = codexhost_platform::process_snapshot(child.id()).unwrap();
+    let owner = codexhost_platform::process_identity(child.id()).unwrap();
     assert!(wait_for_shutdown(Some(&owner), None, Duration::from_millis(1)).is_err());
     wait_for_shutdown(Some(&owner), None, Duration::from_secs(5)).unwrap();
     assert!(!child.wait().unwrap().success());

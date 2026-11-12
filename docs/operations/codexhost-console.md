@@ -3,7 +3,7 @@
 控制台是一个本地网页，不依赖 Codex Desktop 启动成功。左侧导航分为：
 
 - **总览**：当前状态与下一步操作、codexhost 版本 / Codex Desktop 版本 / 安装方式三个信息框、最近一次启动的结果；失败时说明卡在哪一步和错误原文，内部阶段时间线折叠在“详细信息”中；注入持续失败时显示原因。成功时不展示时间线，不显示启动历史表格。原启动诊断页已合并，旧的 `#diagnostics` 和 `?view=diagnostics` 链接显示总览。日志不在页面中展示，通过“导出诊断包（含日志）”获取。
-- **设置**：连接（Harness）、远程连接（SSH）、连接设备、账号、用量统计、更新。Harness、SSH、账号、用量与更新沿用 Codex 设置页和 Host 接口；会话导入请使用会话 Web，不在控制台提供重复入口。连接页支持通过运行中的本地 Host 安装 Harness CLI、检查版本和更新，复用安装进度、错误提示及安装后检测；不支持远程 Host 安装。WorkBuddy 仍通过官网手动下载安装桌面应用。Host 不可用时不提供一键安装。
+- **设置**：连接（Harness）、其他电脑（SSH）、手机与浏览器（连接设备）、账号、用量统计、更新。Harness、SSH、账号、用量与更新沿用 Codex 设置页和 Host 接口；会话导入请使用会话 Web，不在控制台提供重复入口。连接页支持通过运行中的本地 Host 安装 Harness CLI、检查版本和更新，复用安装进度、错误提示及安装后检测；不支持远程 Host 安装。WorkBuddy 仍通过官网手动下载安装桌面应用。Host 不可用时不提供一键安装。
 - **其他**：关于。
 
 外观（思考文本显示、空闲释放）由 Codex 界面保存，只能在 Codex 设置页修改。设计背景见 [`proposals/独立 Web 控制台方案.md`](../proposals/独立%20Web%20控制台方案.md)。
@@ -36,7 +36,7 @@ type: warning
 
 ## 与会话 Web 的区别
 
-Console 是仅本机访问的诊断和管理网页，默认端口 `4399`，可由 `codexhost console` 打开。总览的“打开 Web”通过同一安装的 Launcher `web` 命令确保服务运行，并在默认浏览器打开登录链接，不依赖 Desktop。`codexhost web` 打开的是独立会话 Web，首次默认监听 `127.0.0.1:4400`，需要访问令牌，可用于手机连接；Host 和 Web 脱离终端运行，关闭页面不停止服务。无 Desktop 时 `codexhost` 改为打开会话 Web，不把 Console 当作聊天界面。命令和安装包路径见[独立 Web 应用](../product/standalone-web.md#安装版后台-web)。
+Console 是仅本机访问的诊断和管理网页，默认端口 `4399`，可由 `codexhost console` 打开。总览的“打开 Web”和“远程访问”按钮通过同一安装的 Launcher `web` 命令确保服务运行，并在默认浏览器打开登录链接，不依赖 Desktop；“远程访问”附带 `--connect-devices`，直接定位到 Web 的连接设备设置页。`codexhost web` 打开的是独立会话 Web，首次默认监听 `127.0.0.1:4400`，需要访问令牌，可用于手机连接；Host 和 Web 脱离终端运行，关闭页面不停止服务。无 Desktop 时 `codexhost` 改为打开会话 Web，不把 Console 当作聊天界面。命令和安装包路径见[独立 Web 应用](../product/standalone-web.md#安装版后台-web)。
 
 `codexhost status` 只读查看后台 Host/Web 的状态、版本、Web 地址及自启状态；`codexhost stop` 依次停止托管 GUI、Web、Host、远程服务、Broker 和 Console，报告被中断的任务数，会话数据保留。自启项用 `codexhost autostart on|off|status` 管理，停止服务不关闭自启，也不撤销 Tailscale Serve。
 
@@ -129,7 +129,7 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 
 此页不需要 Desktop 或 Host 的设置通道，但需要已就绪的后台 Web；未运行时说明情况并提供“启动并打开 Web”。控制台从同一数据目录的 Web 就绪记录定位 loopback 服务，只代理固定的五个连接设置 RPC；Web 原有的状态、令牌、Tailscale、监听配置及自启实现仍是唯一读写方。无控制台本机请求校验的请求不能读取令牌或修改配置；登录链接和令牌不进入总览、公告或诊断包。
 
-## 远程连接（SSH）
+## 其他电脑（SSH）
 
 `#remote-connections` 与内置设置共用远程连接页面，支持添加、编辑、移除 SSH 连接、连接与断开、查看本机及远程版本、检测、安装、更新、修复和卸载远程服务。卸载可选择同时移除 codexhost 软件包，确认提示和缺失 Node.js、npm、Codex CLI 的错误提示与内置页一致。“连接”页仍用于 Harness 管理。
 

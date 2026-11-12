@@ -6,6 +6,7 @@ import { once } from "node:events";
 import { it } from "node:test";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
 import { startServer } from "./support/server.ts";
+import { PNG } from "./support/image.ts";
 
 it("raw file uploads retain auth/origin checks without file quotas, stay draft-only and pass only Session-owned paths to CH", async (t) => {
   const host = new FakeChHost();
@@ -130,8 +131,47 @@ it("raw file uploads retain auth/origin checks without file quotas, stay draft-o
     host.requests.some((r) => r.method === "thread/start"),
     false,
   );
+  const imageEndpoint = new URL(endpoint);
+  imageEndpoint.searchParams.set("name", "photo.png");
+  imageEndpoint.searchParams.set("imageMediaType", "image/png");
+  const invalidImage = await fetch(imageEndpoint, { method: "POST", headers, body: bytes });
+  assert.equal(((await invalidImage.json()) as { ok: boolean }).ok, false);
+  const oversize = await new Promise<{ ok: boolean; error: { details: { reason: string } } }>(
+    (done, reject) => {
+      const request = httpRequest(imageEndpoint, { method: "POST", headers }, (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          body += String(chunk);
+        });
+        response.on("end", () => {
+          // The response arrives before the client sends the chunked end marker.
+          request.end();
+          done(JSON.parse(body));
+        });
+      });
+      t.after(() => request.destroy());
+      request.on("error", reject);
+      void (async () => {
+        const block = Buffer.alloc(1024 * 1024);
+        for (let i = 0; i < 20; i++) if (!request.write(block)) await once(request, "drain");
+        request.write(Buffer.alloc(1));
+      })().catch(reject);
+    },
+  );
+  assert.equal(oversize.ok, false);
+  assert.equal(oversize.error.details.reason, "IMAGE_TOO_LARGE");
+  const imageBytes = Buffer.from(PNG, "base64");
+  const imageUpload = await fetch(imageEndpoint, { method: "POST", headers, body: imageBytes });
+  const image = (await imageUpload.json()) as {
+    ok: boolean;
+    value: { receiptId: string; file: { attachmentId: string } };
+  };
+  assert.equal(image.ok, true);
+  assert.match(image.value.file.attachmentId, /^web-image:/u);
   const content = [
     { type: "file", receiptId: stored.value.receiptId },
+    { type: "file", receiptId: image.value.receiptId },
     { type: "text", text: "Inspect it" },
   ];
   assert.equal((await call("session/prompt", { sessionId: "other", content })).result.ok, false);
@@ -147,6 +187,10 @@ it("raw file uploads retain auth/origin checks without file quotas, stay draft-o
   const path = /## notes.txt: (.+)\n/u.exec(input[0]?.text ?? "")?.[1];
   assert.ok(path);
   assert.deepEqual(readFileSync(path), bytes);
+  const imagePath = /## image-1.png: (.+)\nImage attachment: true/u.exec(input[0]?.text ?? "")?.[1];
+  assert.ok(imagePath);
+  assert.match(imagePath, /attachments[/\\]images[/\\]/u);
+  assert.deepEqual(readFileSync(imagePath), imageBytes);
   assert.equal(input[0]?.text.endsWith("## My request:\nInspect it"), true);
   assert.equal(
     (await call("session/prompt", { sessionId: String(sent.params.threadId), content })).result.ok,

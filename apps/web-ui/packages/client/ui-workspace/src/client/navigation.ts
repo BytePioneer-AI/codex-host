@@ -168,7 +168,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   private retryOpen: (() => void) | undefined;
   private openingLoad: { readonly stop: () => void } | undefined;
   private readonly keepalive: SessionKeepalive;
-  /** Small visit-only working set; does not own Session references. */
+  /** Stable browser tab order; does not own Session references. */
   readonly recentVisits: RecentVisits;
 
   /**
@@ -275,6 +275,16 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       },
       () => this.openSession(target),
     );
+  }
+
+  /** Remove only the tab entry; keep the current conversation and navigation unchanged. */
+  closeSessionTab(sessionId: SessionId): void {
+    this.recentVisits.close(sessionId);
+  }
+
+  /** Remove all tab entries without changing the current conversation or navigation. */
+  closeAllSessionTabs(): void {
+    this.recentVisits.closeAll();
   }
 
   retryOpening(): void {

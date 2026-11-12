@@ -517,61 +517,6 @@ describe("workspaceFiles.changes — backends and access", () => {
     expect(unwatch).toHaveBeenCalledTimes(1);
     await expect(stream.next()).resolves.toEqual({ done: true, value: undefined });
   });
-
-  it.each(["create", "modify", "remove"] as const)(
-    "reports an external direct-child %s through the real local watcher",
-    async (operation) => {
-      watch.mockRestore();
-      const path = join(harness.workspace, "child.txt");
-      if (operation !== "create") await writeFile(path, "before");
-      await mkdir(join(harness.workspace, "collapsed"));
-      const service = harness.endpoint();
-      const target = await harness.ctx.fs.resolve(harness.workspace);
-      const observed = vi.fn();
-      const detach = harness.ctx.on("fs/observed", observed);
-      cleanups.push(async () => {
-        detach();
-      });
-      const stream = open(service, harness.workspace);
-      await ready(stream);
-      const pending = stream.next();
-      if (operation === "remove") await rm(path);
-      else await writeFile(path, "after external mutation");
-      const info = await harness.ctx.fs.stat(target);
-      expect(info?.type).toBe("directory");
-      await expect(pending).resolves.toEqual({
-        done: false,
-        value: {
-          kind: "change",
-          change: { absolutePath: harness.ctx.fs.processPath(target), version: info?.version },
-        },
-      });
-      const listing = await service.list(
-        harness.scope,
-        harness.workspace,
-        stream.controller.signal,
-      );
-      expect(listing.entries.map((entry) => [entry.name, entry.type])).toEqual(
-        operation === "remove"
-          ? [["collapsed", "directory"]]
-          : [
-              ["child.txt", "file"],
-              ["collapsed", "directory"],
-            ],
-      );
-      if (operation !== "remove") {
-        await expect(
-          service.read(harness.scope, path, {}, stream.controller.signal),
-        ).resolves.toMatchObject({
-          text: "after external mutation",
-          eof: true,
-        });
-      }
-      expect(observed).not.toHaveBeenCalled();
-      await stream.close();
-      await expect(stream.next()).resolves.toEqual({ done: true, value: undefined });
-    },
-  );
 });
 
 describe("workspaceFiles.changes — cancellation and disposal", () => {

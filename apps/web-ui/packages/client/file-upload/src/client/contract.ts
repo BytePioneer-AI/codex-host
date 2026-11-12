@@ -29,5 +29,6 @@ export interface FileUploadService {
     name?: string,
     signal?: AbortSignal,
     onProgress?: (progress: FileUploadProgress) => void,
+    imageMediaType?: string,
   ): Promise<RemoteResult<FileUploadValue>>;
 }

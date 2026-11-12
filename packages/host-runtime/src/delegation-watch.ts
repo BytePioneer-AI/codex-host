@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { formatThreadWatchNotice } from "@codexhost/shared-contracts";
+
 import {
   DEFAULT_WATCH_TIMEOUT_MS,
   DelegationControlError,
@@ -56,6 +58,7 @@ function persisted(watch: Watch): PersistedWatch {
     deliveryDeadline,
     delivering,
     restartNote,
+    title,
     harnessId,
     refs,
   } = watch;
@@ -73,6 +76,7 @@ function persisted(watch: Watch): PersistedWatch {
     ...(deliveryDeadline !== undefined ? { deliveryDeadline } : {}),
     ...(delivering ? { delivering } : {}),
     ...(restartNote ? { restartNote } : {}),
+    ...(title ? { title } : {}),
     ...(harnessId ? { harnessId } : {}),
     ...(refs?.length ? { refs } : {}),
   };
@@ -112,30 +116,34 @@ function duration(milliseconds: number): string {
     : `${Math.round(milliseconds / 60_000)} min`;
 }
 
-function describe(watch: Watch): string {
-  const link = threadLink(watch.threadId);
-  if (watch.outcome === "interrupted" && watch.restartNote)
-    return `${link}: interrupted${watch.turnId ? ` (Turn ${watch.turnId})` : ""}. ${watch.restartNote}`;
+function noticeNote(watch: Watch): string | undefined {
   switch (watch.outcome) {
     case "timedOut":
-      return `${link} has not reached a terminal state after ${duration(watch.timeoutMs)}; this watch expired. Run 'codexhost thread watch' again to keep waiting.`;
+      return `Not stopped after ${duration(watch.timeoutMs)}; run 'codexhost thread watch' again to keep waiting.`;
     case "unreadable":
-      return `${link} could not be read for ${Math.round(UNREADABLE_GRACE_MS / 1_000)} s, so its state is unknown (${watch.lastReadError ?? "unknown error"}).`;
+      return `Could not be read for ${Math.round(UNREADABLE_GRACE_MS / 1_000)} s, so its state is unknown (${watch.lastReadError ?? "unknown error"}).`;
     case "notFound":
-      return `${link} no longer exists.`;
+      return "The Thread no longer exists.";
+    case "interrupted":
+      return watch.restartNote;
     default:
-      // The Turn tells a re-registered watch's notifications apart.
-      return watch.turnId
-        ? `${link}: ${watch.outcome} (Turn ${watch.turnId}).`
-        : `${link}: ${watch.outcome}.`;
+      return undefined;
   }
 }
 
 function notification(watches: readonly Watch[]): string {
-  return [
-    "[codexhost thread watch] Watched Threads stopped or the watch expired. This reports execution state only, not that the work is correct or accepted. Inspect each Thread with 'codexhost thread read <thread>' before relying on it.",
-    ...watches.map((watch) => `- ${describe(watch)}`),
-  ].join("\n");
+  return formatThreadWatchNotice(
+    watches.map((watch) => {
+      const note = noticeNote(watch);
+      return {
+        threadId: watch.threadId,
+        label: watch.title || watch.threadId,
+        // Only pending deliveries, whose outcome has been observed, are notified.
+        outcome: watch.outcome as ThreadWatchOutcome,
+        ...(note ? { note } : {}),
+      };
+    }),
+  );
 }
 
 /**
@@ -347,6 +355,7 @@ export class DelegationWatchService {
       const turnId = snapshot.turn?.turnId;
       const crossedRestart = watch.crossedRestart === true;
       delete watch.crossedRestart;
+      if (snapshot.title) watch.title = snapshot.title;
       watch.harnessId = snapshot.harnessId;
       if (snapshot.refs?.length) watch.refs = snapshot.refs;
       if (terminal(snapshot.status)) {

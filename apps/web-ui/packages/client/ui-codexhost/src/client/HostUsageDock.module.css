@@ -252,6 +252,6 @@
 
 @media (max-width: 640px) {
   .anchor {
-    max-width: 42vw;
+    max-width: min(280px, 56vw);
   }
 }

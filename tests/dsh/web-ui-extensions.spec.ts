@@ -6,7 +6,12 @@ import type { WebUiExtensionsState } from "@codexhost/shared-contracts";
 import { WebExtensionsSection } from "../../apps/web-ui/packages/client/ui-codexhost/src/client/WebExtensionsSection.tsx";
 import { ApiError } from "../../apps/web-ui/packages/client/ui-codexhost/src/client/api.ts";
 import { uiExtensionsApi } from "../../apps/web-ui/packages/client/ui-codexhost/src/client/ui-extensions-api.ts";
-import { en } from "../../apps/web-ui/packages/client/ui-codexhost/src/client/locales.ts";
+import { formatWebExtensionError } from "../../apps/web-ui/packages/client/ui-codexhost/src/client/web-extension-errors.ts";
+import {
+  en,
+  zh,
+  type ImportLocaleKey,
+} from "../../apps/web-ui/packages/client/ui-codexhost/src/client/locales.ts";
 
 vi.mock("../../apps/web-ui/packages/client/ui-codexhost/src/client/ui-extensions-api.ts", () => ({
   uiExtensionsApi: {
@@ -133,6 +138,37 @@ it("keeps saved enablement distinct from current server loading and confirms rem
   expect(container.textContent).toContain("No interface extensions installed.");
 });
 
+function locale(dict: Record<ImportLocaleKey, string>) {
+  return (key: ImportLocaleKey, args: Record<string, unknown> = {}) =>
+    dict[key].replace(/\{(\w+)\}/gu, (_match, name: string) => String(args[name] ?? ""));
+}
+
+it("explains a missing Host module instead of an unknown version", () => {
+  const message =
+    "web-assets: @changfenhuang/dsh-genui requires @deepseek-ai/dsh-agent@^0.2.0-rc.1 || ^0.2.1-rc.1 || ^0.2.2-alpha.2, but the browser Host does not provide @deepseek-ai/dsh-agent";
+  expect(formatWebExtensionError(message, locale(en))).toBe(
+    "This Web cannot install this extension. It only supports themes, sidebar panels, and display components.",
+  );
+  expect(formatWebExtensionError(message, locale(zh))).toBe(
+    "当前 Web 不支持这个扩展。这里只能安装主题、侧栏和展示组件。",
+  );
+  expect(
+    formatWebExtensionError(
+      "web-assets: addon requires react@^19.0.0, but the browser Host provides 18.3.1",
+      locale(en),
+    ),
+  ).toBe("This extension does not match this Web version, so it cannot be installed.");
+  expect(
+    formatWebExtensionError(
+      "web-assets: addon requires unavailable browser module react",
+      locale(zh),
+    ),
+  ).toBe("当前 Web 不支持这个扩展。这里只能安装主题、侧栏和展示组件。");
+  expect(formatWebExtensionError("web-assets: addon declares no web client", locale(en))).toBe(
+    "addon declares no web client",
+  );
+});
+
 it("keeps installation failures visible and preserves the source for retry", async () => {
   vi.mocked(uiExtensionsApi.list).mockResolvedValue({
     extensions: [],
@@ -150,8 +186,8 @@ it("keeps installation failures visible and preserves the source for retry", asy
     "test-theme",
     "https://registry.npmjs.org/",
   );
-  expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain(
-    "Package requires a backend service",
+  expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toBe(
+    "That did not work: Package requires a backend service",
   );
   expect(input.value).toBe("test-theme");
   expect(button("Install").disabled).toBe(false);
@@ -163,6 +199,26 @@ it("keeps installation failures visible and preserves the source for retry", asy
   expect(
     document.querySelector<HTMLInputElement>('input[aria-label="Package name or address"]')?.value,
   ).toBe("test-theme");
+});
+
+it("shows a missing Host module as an incompatible-extension failure", async () => {
+  vi.mocked(uiExtensionsApi.list).mockResolvedValue({
+    extensions: [],
+    loadedIds: [],
+    safeMode: false,
+  });
+  vi.mocked(uiExtensionsApi.install).mockRejectedValue(
+    new Error(
+      "web-assets: @changfenhuang/dsh-genui requires @deepseek-ai/dsh-agent@^0.2.0-rc.1 || ^0.2.1-rc.1 || ^0.2.2-alpha.2, but the browser Host does not provide @deepseek-ai/dsh-agent",
+    ),
+  );
+  const { button } = await mount();
+  await act(async () => button("Add extension").click());
+  await setInput("Package name or address", "@changfenhuang/dsh-genui");
+  await act(async () => button("Install").click());
+  expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toBe(
+    "That did not work: This Web cannot install this extension. It only supports themes, sidebar panels, and display components.",
+  );
 });
 
 it.each([

@@ -5,6 +5,7 @@ import {
 } from "../console/pages/usage-statistics.js";
 import { consoleMessages } from "../console/messages.js";
 import { createRemoteConnectionsPage } from "./remote-connections-page.js";
+import { createMobileWebPage } from "./mobile-web-page.js";
 import type { RemoteConnectionsControl } from "../remote-connections-control.js";
 import type {
   UpdateCheckResult,
@@ -88,6 +89,7 @@ function windowsInstallerDownloadUrl(window: Window | null | undefined, version:
 
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "connections",
+  "mobile-web",
   "remote-connections",
   "accounts",
   "session-import",
@@ -704,10 +706,11 @@ export function createDefaultRendererSettingsPages(
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections),
-    createRemoteConnectionsPage(messages, getRemoteConnections, () => {
+    createMobileWebPage(messages, () => {
       const client = getUpdateClient();
       return client?.openWeb?.bind(client);
     }),
+    createRemoteConnectionsPage(messages, getRemoteConnections),
     createAccountsSettingsPage(messages, getAccountClient),
     ...(harnessSchedules ? [createHarnessSchedulesPage(messages, harnessSchedules)] : []),
     createSessionImportSettingsPage(

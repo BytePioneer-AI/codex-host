@@ -48,6 +48,7 @@ interface UploadXhr {
   open(method: string, url: string): void;
   setRequestHeader(name: string, value: string): void;
   send(body: Blob): void;
+  abort(): void;
 }
 
 type UploadWorkerFetch = (
@@ -68,28 +69,52 @@ export function fileUploadWorker(
 ): void {
   scope.onmessage = (event: MessageEvent<UploadWorkerStart>) => {
     const request = event.data;
+    let settled = false;
+    let loaded = 0;
+    let cancel = (): void => {};
+    const finish = (output: UploadWorkerOutput, abort = false): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      if (abort) cancel();
+      scope.postMessage(output);
+    };
+    const timeout = (): void => {
+      finish({ kind: "error", message: "Upload made no progress for 60 seconds." }, true);
+    };
+    let deadline = setTimeout(timeout, 60_000);
+    const progress = (bytes: number, total?: number): void => {
+      if (settled) return;
+      if (bytes > loaded) {
+        loaded = bytes;
+        clearTimeout(deadline);
+        deadline = setTimeout(timeout, 60_000);
+      }
+      scope.postMessage({
+        kind: "progress",
+        loaded: bytes,
+        ...(total === undefined ? {} : { total }),
+      });
+    };
     if (request.body instanceof Blob) {
       const xhr = createXhr();
       xhr.open("POST", request.url);
       xhr.withCredentials = true;
       for (const [name, value] of Object.entries(request.headers))
         xhr.setRequestHeader(name, value);
-      xhr.upload.onprogress = (progress) => {
-        scope.postMessage({
-          kind: "progress",
-          loaded: progress.loaded,
-          ...(progress.lengthComputable ? { total: progress.total } : {}),
-        } satisfies UploadWorkerOutput);
+      cancel = () => xhr.abort();
+      xhr.upload.onprogress = (event) => {
+        progress(event.loaded, event.lengthComputable ? event.total : undefined);
       };
       xhr.onload = () => {
-        scope.postMessage({
+        finish({
           kind: "complete",
           status: xhr.status,
           body: xhr.responseText,
         } satisfies UploadWorkerOutput);
       };
       xhr.onerror = () => {
-        scope.postMessage({
+        finish({
           kind: "error",
           message: "background upload transport failed",
         } satisfies UploadWorkerOutput);
@@ -98,7 +123,7 @@ export function fileUploadWorker(
       return;
     }
     if (!(request.body instanceof ReadableStream)) {
-      scope.postMessage({
+      finish({
         kind: "error",
         message: "background upload worker received an invalid body",
       });
@@ -107,7 +132,12 @@ export function fileUploadWorker(
     const source = request.body;
     void (async () => {
       const reader = source.getReader();
-      let loaded = 0;
+      const controller = new AbortController();
+      cancel = () => {
+        controller.abort();
+        void reader.cancel().catch(() => {});
+      };
+      let bytes = 0;
       const body = new ReadableStream<Uint8Array>({
         async pull(controller) {
           const item = await reader.read();
@@ -118,8 +148,8 @@ export function fileUploadWorker(
           if (!(item.value instanceof Uint8Array)) {
             throw new TypeError("background upload stream produced a non-Uint8Array chunk");
           }
-          loaded += item.value.byteLength;
-          scope.postMessage({ kind: "progress", loaded });
+          bytes += item.value.byteLength;
+          progress(bytes);
           controller.enqueue(item.value);
         },
         async cancel(reason) {
@@ -132,14 +162,15 @@ export function fileUploadWorker(
         credentials: "include",
         body,
         duplex: "half",
+        signal: controller.signal,
       });
-      scope.postMessage({
+      finish({
         kind: "complete",
         status: response.status,
         body: await response.text(),
       });
     })().catch((error: unknown) => {
-      scope.postMessage({
+      finish({
         kind: "error",
         message: error instanceof Error ? error.message : String(error),
       });
@@ -190,9 +221,11 @@ export class FileUploadRuntime extends Service implements FileUploadService {
     name?: string,
     signal?: AbortSignal,
     onProgress?: (progress: { readonly loaded: number; readonly total?: number }) => void,
+    imageMediaType?: string,
   ): Promise<RemoteResult<FileUploadValue>> {
     const query = new URLSearchParams({ sessionId });
     if (name !== undefined) query.set("name", name);
+    if (imageMediaType !== undefined) query.set("imageMediaType", imageMediaType);
     // All browser carriers use raw-byte intake, never the bounded JSON RPC route.
     const body = data instanceof Uint8Array ? new Blob([Uint8Array.from(data).buffer]) : data;
     const response = await this.post({

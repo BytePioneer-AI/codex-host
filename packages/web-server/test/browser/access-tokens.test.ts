@@ -170,6 +170,11 @@ it(
 
     const qr = page.getByRole("img", { name: "Sign-in QR code" });
     await qr.waitFor();
+    assert.equal(await qr.evaluate((image) => getComputedStyle(image).filter), "blur(10px)");
+    const qrDialog = page.getByRole("dialog", { name: "Scan with your phone camera" });
+    assert.equal(await qrDialog.count(), 0);
+    const viewQr = page.getByRole("button", { name: "Click to view QR code" });
+    await viewQr.waitFor();
     const address = page.getByLabel("Connection address", { exact: true });
     const first = await addressValue(address);
     assert.equal(first.includes("#token="), false);
@@ -194,12 +199,30 @@ it(
     }
 
     const small = await qr.boundingBox();
-    await page.getByRole("button", { name: "Enlarge QR code" }).click();
-    const large = await page
-      .getByRole("dialog", { name: "Scan with your phone camera" })
-      .getByRole("img", { name: "Sign-in QR code" })
-      .boundingBox();
+    await viewQr.click();
+    const revealedQr = qrDialog.getByRole("img", { name: "Sign-in QR code" });
+    await revealedQr.waitFor();
+    const large = await revealedQr.boundingBox();
     assert.ok((large?.width ?? 0) > (small?.width ?? Infinity));
+    assert.equal(await revealedQr.evaluate((image) => getComputedStyle(image).filter), "none");
+    await qrDialog.getByText("Contains an access token. Do not share.").waitFor();
+    await qrDialog.getByRole("button", { name: "Hide QR code" }).click();
+    await qrDialog.waitFor({ state: "detached" });
+    assert.equal(await qr.evaluate((image) => getComputedStyle(image).filter), "blur(10px)");
+
+    // Revealing is keyboard accessible and never persists across page visits.
+    await viewQr.focus();
+    await page.keyboard.press("Enter");
+    await revealedQr.waitFor();
+    await page.keyboard.press("Escape");
+    await qrDialog.waitFor({ state: "detached" });
+    await viewQr.click();
+    await revealedQr.waitFor();
+    await page.reload();
+    await openConnectPage(page);
+    await viewQr.waitFor();
+    assert.equal(await qrDialog.count(), 0);
+    assert.equal(await qr.evaluate((image) => getComputedStyle(image).filter), "blur(10px)");
   },
 );
 

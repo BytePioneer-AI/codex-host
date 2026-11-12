@@ -116,10 +116,8 @@ export const InputBar = memo(function InputBar({
   );
   const empty = draft.trim() === "" && attachments.length === 0;
   const uploads = useFileUploads((snapshot) => snapshot);
-  // Send waits for every picked file: uploading and failed drafts both hold
-  // the gate (a failed upload is retried or removed, never silently dropped).
-  const uploadsPending = attachments.some(
-    (attachment) => attachment.kind === "file" && uploads[attachment.id]?.status !== "ready",
+  const uploadsFailed = attachments.some(
+    (attachment) => uploads[attachment.id]?.status === "error",
   );
   // Transient error banner (machine notices, image-intake rejections, and
   // prompt failures): the seq keys the Toast so an identical repeated message
@@ -324,7 +322,7 @@ export const InputBar = memo(function InputBar({
     steeringAvailable,
     busyEnter,
     intakeFiles,
-    uploadsPending,
+    uploadsFailed,
     showToast,
     t,
     canAcceptDrop,
@@ -338,7 +336,7 @@ export const InputBar = memo(function InputBar({
     steeringAvailable,
     busyEnter,
     intakeFiles,
-    uploadsPending,
+    uploadsFailed,
     showToast,
     t,
     canAcceptDrop,
@@ -383,7 +381,7 @@ export const InputBar = memo(function InputBar({
   // owner-blocked; an actionable draft gets the busy Send action, delivered
   // through the same mode plain Enter resolves to. The label names that mode
   // only when the click would deliver a plain message right now — an enabled
-  // button (no pending upload) over a non-empty draft that is neither a
+  // button over a non-empty draft that is neither a
   // claimed command nor a `/` line headed for adjudication — so it never
   // describes a delivery the click cannot or does not perform; every other
   // state keeps plain Send. A continuable child keeps Send primary and
@@ -393,10 +391,7 @@ export const InputBar = memo(function InputBar({
   // Disabled native buttons may omit mouseleave; their tooltip must close from state.
   const primaryDisabled = primaryStops
     ? stop === undefined
-    : (primaryAction === undefined ? empty : primaryAction.disabled) ||
-      disabled ||
-      machineBusy ||
-      uploadsPending;
+    : (primaryAction === undefined ? empty : primaryAction.disabled) || disabled || machineBusy;
   const interruptible = running && continuable;
   const primarySubmitMode = resolveSubmitMode(busyEnter, running, "enter", steeringAvailable);
   const plainMessageDraft =
@@ -407,7 +402,7 @@ export const InputBar = memo(function InputBar({
         running &&
         steeringAvailable &&
         !disabled &&
-        !uploadsPending &&
+        !uploadsFailed &&
         plainMessageDraft
       ? t(primarySubmitMode === "steer" ? "input.send.steer" : "input.send.queue")
       : t("input.send");
@@ -416,14 +411,16 @@ export const InputBar = memo(function InputBar({
       stop?.();
       return;
     }
+    if (uploadsFailed) {
+      showToast(t("file.retryOrRemove"));
+      return;
+    }
     if (primaryAction !== undefined) {
       if (!primaryDisabled) primaryAction.run();
       return;
     }
     if (keyboard === undefined) return; // absent machine: the button is disabled
-    /* v8 ignore next -- defensive: the primary button is disabled for empty, disabled, and pending-upload states. */
-    if (!empty && !disabled && !machineBusy && !uploadsPending)
-      keyboard.submit(primarySubmitMode, "click");
+    if (!empty && !disabled && !machineBusy) keyboard.submit(primarySubmitMode, "click");
   };
 
   // Claim ghost hint: rendered by CSS as generated content after the last

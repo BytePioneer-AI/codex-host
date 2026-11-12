@@ -29,7 +29,7 @@ import { forkChThread, forkUnavailable } from "./ch-thread-fork.ts";
 import { ChPinnedThreads } from "./ch-pinned-threads.ts";
 import { type WebImages, WEB_IMAGE_INPUT, WEB_IMAGE_LIMITS } from "./web-images.ts";
 import { ChAttachments } from "./ch-attachments.ts";
-import { ChFileInputs } from "./ch-file-inputs.ts";
+import { ChFileInputs, type FileUploadTiming } from "./ch-file-inputs.ts";
 import { WebFileReferences } from "./file-references.ts";
 import { type WebFiles, WEB_FILE_INPUT } from "./web-files.ts";
 import { ChRealtime } from "./ch-realtime.ts";
@@ -717,7 +717,11 @@ export class ChSessions {
         ?.configuration(selection.provider)
         .catch(() => undefined);
       const inspection = await this.catalog.inspect(selection.provider, cwd);
-      const permissionModeId = draftPermissionMode(inspection, config?.permissionModeId);
+      const permissionModeId = draftPermissionMode(
+        selection.provider,
+        inspection,
+        config?.permissionModeId,
+      );
       if (permissionModeId) draft.permissionModeId = permissionModeId;
     }
     if (this.closed) throw new RpcError("session/closed", "Web sessions are closing.");
@@ -845,10 +849,16 @@ export class ChSessions {
     return this.drafts.get(id)?.cwd ?? this.localWorkspaceRoot(id);
   }
 
-  uploadFile(id: string, chunks: AsyncIterable<Uint8Array>, name?: string) {
+  uploadFile(
+    id: string,
+    chunks: AsyncIterable<Uint8Array>,
+    name?: string,
+    imageMediaType?: string,
+    timing?: FileUploadTiming,
+  ) {
     if (!this.fileInputs)
       throw new RpcError("session/attachment-invalid", "File uploads are unavailable.");
-    return this.fileInputs.upload(id, chunks, name);
+    return this.fileInputs.upload(id, chunks, name, imageMediaType, timing);
   }
 
   /** Draft input support for the Web composition; it does not create a Thread. */
@@ -1070,7 +1080,11 @@ export class ChSessions {
           const inspection = await this.catalog.inspect(request.provider, draft.cwd);
           if (draft.creating || draft.selection !== before)
             throw new RpcError("session/busy", "Draft selection changed.");
-          const permissionModeId = draftPermissionMode(inspection, config?.permissionModeId);
+          const permissionModeId = draftPermissionMode(
+            request.provider,
+            inspection,
+            config?.permissionModeId,
+          );
           delete draft.permissionModeId;
           if (permissionModeId) draft.permissionModeId = permissionModeId;
         }
@@ -1163,13 +1177,13 @@ export class ChSessions {
       const draft = this.drafts.get(request.sessionId);
       if (!draft || draft.canonicalId) await this.owner(request.sessionId);
       // Validate/save before creating a native Thread. Only native path context crosses the Host channel.
-      const preparedInput = this.fileInputs
+      const prepared = this.fileInputs
         ? await this.fileInputs.prepare(this.id(request.sessionId), request.content)
-        : (this.images?.prepare(request.content) ?? request.content);
-      // Queued entries are presented from path references; base64 would exceed the Host request limit.
-      const presentation = this.images
-        ? this.images.presentation(request.content)
-        : request.content;
+        : {
+            input: this.images?.prepare(request.content) ?? request.content,
+            presentation: this.images?.presentation(request.content) ?? request.content,
+          };
+      const { input: preparedInput, presentation } = prepared;
       // Use native text inputs so Desktop can also render queue entries when
       // connected to an older Host that forwards their shape unchanged.
       const input = preparedInput.map((part) =>

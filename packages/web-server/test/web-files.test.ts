@@ -79,6 +79,78 @@ it("stores long file names within 160 bytes, keeps their extension and never end
   }
 });
 
+it("never leaves trailing whitespace or a reserved device name after a long name is cut", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "web-files-cut-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = new WebFiles(new DataDir(root));
+  const bytes = Buffer.from("cut name");
+  for (const [name, expected] of [
+    // The cut ends on "\u00a0."; dropping the dot used to expose the no-break space.
+    [`${"a".repeat(157)}\u00a0.${"b".repeat(40)}`, "a".repeat(157)],
+    [`${"a".repeat(150)} \u3000.\u2003. ${"b".repeat(40)}`, "a".repeat(150)],
+    // Trimming the cut stem used to reveal a device name after the prefix check.
+    [`CON${" ".repeat(160)}.txt`, "_CON.txt"],
+    [`lpt1${"\u00a0".repeat(80)}.log`, "_lpt1.log"],
+    [`nul.${"n".repeat(157)}`, `_nul.${"n".repeat(155)}`],
+  ]) {
+    const result = await files.upload("draft", chunks(bytes), name);
+    assert.equal(result.file.name, expected);
+    const [stored] = await files.resolve("draft", [result.receiptId]);
+    assert.ok(stored);
+    assert.deepEqual(files.reference(stored.path), result.file);
+  }
+});
+
+it("stores every sanitized name again unchanged, within 160 bytes", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "web-files-idempotent-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = new WebFiles(new DataDir(root));
+  const bytes = Buffer.from("idempotent");
+  const parts = [
+    "a",
+    "报",
+    "😀",
+    " ",
+    "\u00a0",
+    "\u2003",
+    "\u3000",
+    "\ufeff",
+    ".",
+    "..",
+    ".txt",
+    ":",
+    "e\u0301",
+    "CON",
+    "aux",
+    "com1",
+    "LPT9",
+  ];
+  let seed = 0x2545f491;
+  const random = (limit: number) => {
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    return (seed >>> 0) % limit;
+  };
+  const names: string[] = [];
+  for (const head of ["CON", "nul", "a", "报", " "])
+    for (const pad of ["", " ", "\u00a0", "."])
+      for (const length of [150, 155, 156, 157, 158, 159, 160, 161, 162])
+        names.push(`${head}${pad.repeat(Math.max(0, length - head.length - 4))}.txt`);
+  for (let index = 0; index < 300; index += 1) {
+    let name = "";
+    const count = 1 + random(120);
+    for (let part = 0; part < count; part += 1) name += parts[random(parts.length)];
+    names.push(name);
+  }
+  for (const name of names) {
+    const first = await files.upload("draft", chunks(bytes), name);
+    assert.ok(Buffer.byteLength(first.file.name) <= 160, JSON.stringify(name));
+    const second = await files.upload("draft", chunks(bytes), first.file.name);
+    assert.equal(second.file.name, first.file.name, JSON.stringify(name));
+  }
+});
+
 it("cleans failed streams and rejects tampered or symlink stored objects", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "web-files-invalid-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

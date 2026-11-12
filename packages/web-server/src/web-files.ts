@@ -38,26 +38,29 @@ function truncateBytes(value: string, bytes: number): string {
   }
   return result;
 }
-const trimName = (value: string): string => value.trim().replace(/[. ]+$/gu, "");
+// Windows drops trailing dots and spaces. Strip dots and every `trim()` whitespace in one
+// pass, so a cut ending in "\u00a0." cannot leave a no-break space that a second pass removes.
+const trimName = (value: string): string => value.trim().replace(/[.\s]+$/u, "");
+const RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
+/** Fits an already trimmed name within `limit` bytes, keeping a short extension. */
+function fitName(clean: string, limit: number): string {
+  if (Buffer.byteLength(clean) <= limit) return clean;
+  // Keep a short extension so a long file name still opens as its type.
+  const extension = /\.[^. ]+$/u.exec(clean)?.[0] ?? "";
+  const kept = Buffer.byteLength(extension) <= MAX_EXTENSION_BYTES ? extension : "";
+  const stem = trimName(
+    truncateBytes(clean.slice(0, clean.length - kept.length), limit - Buffer.byteLength(kept)),
+  );
+  // A cut may end on a dot or space, which Windows drops and `trimName` removes.
+  return stem ? `${stem}${kept}` : trimName(truncateBytes(clean, limit));
+}
 /** Idempotent: `reference()` accepts a stored object only when its name is already safe. */
 function safeName(name = "attachment"): string {
-  let clean = trimName(name.normalize("NFC").replace(/[\\/<>:"|?*\u0000-\u001f\u007f]/gu, "_"));
-  // Prefix reserved Windows device names before truncation so the limit still holds.
-  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(clean)) clean = "_" + clean;
-  let result = clean;
-  if (Buffer.byteLength(clean) > MAX_NAME_BYTES) {
-    // Keep a short extension so a long file name still opens as its type.
-    const extension = /\.[^. ]+$/u.exec(clean)?.[0] ?? "";
-    const kept = Buffer.byteLength(extension) <= MAX_EXTENSION_BYTES ? extension : "";
-    const stem = trimName(
-      truncateBytes(
-        clean.slice(0, clean.length - kept.length),
-        MAX_NAME_BYTES - Buffer.byteLength(kept),
-      ),
-    );
-    // A cut may end on a dot or space, which Windows drops and `trim` removes.
-    result = stem ? `${stem}${kept}` : trimName(truncateBytes(clean, MAX_NAME_BYTES));
-  }
+  const clean = trimName(name.normalize("NFC").replace(/[\\/<>:"|?*\u0000-\u001f\u007f]/gu, "_"));
+  let result = fitName(clean, MAX_NAME_BYTES);
+  // Check device names on the final name: trimming a cut can expose one ("CON   .txt").
+  // The prefix gets its byte from the name so the result stays within the limit.
+  if (RESERVED_NAME.test(result)) result = `_${fitName(result, MAX_NAME_BYTES - 1)}`;
   return result || "attachment";
 }
 

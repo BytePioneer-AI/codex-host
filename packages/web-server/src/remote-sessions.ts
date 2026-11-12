@@ -142,6 +142,7 @@ interface Entry {
   online: boolean;
   archived?: boolean;
   epoch?: string;
+  configurationRevision: number;
   view?: ChThreadView;
   viewHarnessId?: string;
   viewOrigin?: number;
@@ -251,6 +252,7 @@ export class RemoteSessions {
               identity: { hostId: host.hostId, threadId: row.id },
               row: { ...row, turns: [] } as ChThread,
               online: true,
+              configurationRevision: 0,
             });
           }
           cursor = page.nextCursor;
@@ -305,12 +307,20 @@ export class RemoteSessions {
   private async configureRemote(entry: Entry, setting: RemoteConfigurationSetting): Promise<void> {
     if (!entry.epoch) throw new RpcError("remote/offline", "Remote connection changed");
     externalConfiguration(entry);
-    await this.invoke({
-      kind: "configure",
-      ...entry.identity,
-      epoch: entry.epoch,
-      ...setting,
-    });
+    try {
+      await this.invoke({
+        kind: "configure",
+        ...entry.identity,
+        epoch: entry.epoch,
+        ...setting,
+      });
+    } finally {
+      // Invalidate a read that started before the native mutation settled. The
+      // caller refreshes after this wait, so an acknowledged write cannot be
+      // overwritten by its pre-mutation snapshot.
+      entry.configurationRevision++;
+      await entry.reading?.catch(() => undefined);
+    }
   }
   private syncArchives(): string[] {
     const ids = [...this.entries].filter(([, entry]) => entry.archived).map(([id]) => id);
@@ -381,6 +391,7 @@ export class RemoteSessions {
     }
     if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
     const current = entry;
+    const configurationRevision = current.configurationRevision;
     current.reading ??= (async () => {
       try {
         const snapshot = snapshotSchema.parse(
@@ -388,6 +399,11 @@ export class RemoteSessions {
         ) as Snapshot;
         if (this.closed || snapshot.result.thread.id !== identity.threadId)
           throw new Error("Remote identity mismatch");
+        if (configurationRevision !== current.configurationRevision) {
+          const view = current.view;
+          if (!view) throw new Error("Stale remote read has no current view");
+          return view;
+        }
         const sameEpoch = current.epoch === snapshot.epoch;
         if (current.epoch && current.epoch !== snapshot.epoch) {
           this.clearPending(id);

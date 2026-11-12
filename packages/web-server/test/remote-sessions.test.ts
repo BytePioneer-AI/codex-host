@@ -604,7 +604,16 @@ it("serves cached remote projections and pages without refreshing or cancelling 
   assert.equal(calls.includes("prompt"), false);
 });
 
-function externalControlsFixture() {
+interface ExternalControlsFixtureOptions {
+  beforeConfigure?: (
+    remote: RemoteSessions,
+    operation: Extract<RemoteSessionOperation, { kind: "configure" }>,
+  ) => void;
+  takeNextReadGate?: () => Promise<unknown> | undefined;
+  onReadGate?: () => void;
+}
+
+function externalControlsFixture(options: ExternalControlsFixtureOptions = {}) {
   const calls: RemoteSessionOperation[] = [];
   let includeMetadata = true;
   let modelId = "claude-model-v1.ZmFibGU";
@@ -699,14 +708,22 @@ function externalControlsFixture() {
         data: [{ ...row, status: { ...row.status }, turns: [...row.turns] }],
         nextCursor: null,
       };
-    if (operation.kind === "read")
-      return {
+    if (operation.kind === "read") {
+      const snapshot = {
         result: { thread: { ...row, status: { ...row.status }, turns: [...row.turns] } },
         epoch: "claude-epoch",
         ...(includeMetadata ? { configuration: configuration(), inspection, harness } : {}),
         requests: [],
       };
+      const gate = options.takeNextReadGate?.();
+      if (gate !== undefined) {
+        options.onReadGate?.();
+        await gate;
+      }
+      return snapshot;
+    }
     if (operation.kind === "configure") {
+      options.beforeConfigure?.(remote, operation);
       if (operation.modelId !== undefined) modelId = operation.modelId;
       if (operation.thinkingOptionId !== undefined) thinkingOptionId = operation.thinkingOptionId;
       if (operation.permissionModeId !== undefined) permissionModeId = operation.permissionModeId;
@@ -864,6 +881,50 @@ it("routes remote model and permission changes as single-setting configure opera
       },
     { permissionModeId: "bypassPermissions" },
   );
+});
+
+it("does not let a pre-configure read overwrite an acknowledged model selection", async (t) => {
+  const staleRead = Promise.withResolvers<undefined>();
+  const staleReadStarted = Promise.withResolvers<undefined>();
+  let armStaleRead = false;
+  const fixture = externalControlsFixture({
+    beforeConfigure: (remote, operation) => {
+      if (operation.modelId !== "claude-model-v2") return;
+      armStaleRead = true;
+      void remote.read(remoteSessionId("remote-control:claude", "claude-thread"));
+    },
+    takeNextReadGate: () => {
+      if (!armStaleRead) return undefined;
+      armStaleRead = false;
+      return staleRead.promise;
+    },
+    onReadGate: () => staleReadStarted.resolve(undefined),
+  });
+  t.after(() => fixture.remote.close());
+  await fixture.remote.read(fixture.id);
+
+  let settled = false;
+  const selection = fixture.call("session/selectModel", {
+    provider: "claude-code",
+    model: "claude-model-v2",
+  });
+  await staleReadStarted.promise;
+  void selection.then(() => {
+    settled = true;
+  });
+  await Promise.resolve();
+  assert.equal(settled, false, "configure waits for the overlapping stale read");
+
+  staleRead.resolve(undefined);
+  const result = await selection;
+  assert.ok(result.ok, JSON.stringify(result));
+  const projections = await fixture.call("session/projections");
+  assert.ok(projections.ok);
+  const values = (projections.value as { values: Record<string, unknown> }).values;
+  assert.deepEqual(values.modelSelection, {
+    lastUsed: { provider: "claude-code", model: "claude-model-v2", reasoningEffort: "medium" },
+    next: { provider: "claude-code", model: "claude-model-v2", reasoningEffort: "medium" },
+  });
 });
 
 it("retains same-epoch remote controls across partial reads and catalog refresh summaries", async (t) => {

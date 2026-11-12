@@ -147,7 +147,7 @@ export function installRendererHostRpcRouting(
       );
     }
   };
-  /** Rewrites only the Model of a Renderer-issued capnweb creation call. */
+  /** Applies the draft Model to a Renderer-issued capnweb creation call. */
   const routeCreationCall = (message: unknown): unknown => {
     if (!Array.isArray(message) || message.length !== 2 || message[0] !== "push") return message;
     const expression: unknown = message[1];
@@ -176,12 +176,17 @@ export function installRendererHostRpcRouting(
     }
     if (!model) return message;
     // A creation that names a different external carrier keeps it.
-    if (
-      path[0] === "startConversation" &&
-      nativeModel?.startsWith("codexhost/") &&
-      nativeModel !== model
-    )
-      return message;
+    if (path[0] === "startConversation" && nativeModel?.startsWith("codexhost/"))
+      model = nativeModel;
+    // The native pool is keyed by workspace, not Model. An explicit creation
+    // config keeps external drafts out of that pool even after a late prewarm.
+    // Caller overrides still belong to native preparation and take precedence.
+    const config =
+      input.config == null
+        ? { model }
+        : isRecord(input.config)
+          ? { model, ...input.config }
+          : input.config;
     return [
       "push",
       [
@@ -191,6 +196,7 @@ export function installRendererHostRpcRouting(
         [
           {
             ...input,
+            ...(path[0] === "startConversation" ? { config } : {}),
             collaborationMode: { ...input.collaborationMode, settings: { ...settings, model } },
           },
           ...args.slice(1),

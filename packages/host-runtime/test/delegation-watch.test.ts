@@ -80,7 +80,7 @@ describe("DelegationWatchService", () => {
       expect(fake.sent).toHaveLength(1);
       expect(fake.sent[0]?.threadId).toBe("parent");
       expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
-        { threadId: "child", label: "child", outcome: status, turnId: "turn-child" },
+        { threadId: "child", label: "child", outcome: status },
       ]);
       expect(fake.sent[0]?.message).toContain("execution state only");
 
@@ -102,11 +102,9 @@ describe("DelegationWatchService", () => {
 
       await vi.advanceTimersByTimeAsync(POLL_MS);
       expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
-        { threadId: "child", label: title ?? "child", outcome: "completed", turnId: "turn-child" },
+        { threadId: "child", label: title ?? "child", outcome: "completed" },
       ]);
-      expect(fake.sent[0]?.message).toContain(
-        `- [${title ?? "child"}](thread://child "Turn turn-child"): completed`,
-      );
+      expect(fake.sent[0]?.message).toContain(`- [${title ?? "child"}](thread://child): completed`);
     },
   );
 
@@ -189,7 +187,7 @@ describe("DelegationWatchService", () => {
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toHaveLength(1);
     expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
-      { threadId: "child", label: "child", outcome: "completed", turnId: "turn-2" },
+      { threadId: "child", label: "child", outcome: "completed" },
     ]);
   });
 
@@ -214,7 +212,7 @@ describe("DelegationWatchService", () => {
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toHaveLength(1);
     expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
-      { threadId: "child", label: "child", outcome: "completed", turnId: "turn-2" },
+      { threadId: "child", label: "child", outcome: "completed" },
     ]);
   });
 
@@ -232,8 +230,8 @@ describe("DelegationWatchService", () => {
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toHaveLength(1);
     expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
-      { threadId: "a", label: "a", outcome: "completed", turnId: "turn-a" },
-      { threadId: "b", label: "b", outcome: "failed", turnId: "turn-b" },
+      { threadId: "a", label: "a", outcome: "completed" },
+      { threadId: "b", label: "b", outcome: "failed" },
     ]);
   });
 
@@ -261,7 +259,7 @@ describe("DelegationWatchService", () => {
     fake.sendFailures.push(busy());
     await vi.advanceTimersByTimeAsync(POLL_MS);
     await expect(service.watches()).resolves.toMatchObject({
-      watches: [{ state: "pendingDelivery", outcome: "failed", turnId: "turn-1" }],
+      watches: [{ state: "pendingDelivery", outcome: "failed" }],
     });
 
     // A new run starts while the first notification still waits for the busy subscriber.
@@ -272,10 +270,7 @@ describe("DelegationWatchService", () => {
     ).resolves.toMatchObject({ state: "watching" });
     await vi.advanceTimersByTimeAsync(POLL_MS);
     await expect(service.watches()).resolves.toMatchObject({
-      watches: [
-        { state: "pendingDelivery", outcome: "failed", turnId: "turn-1" },
-        { state: "watching" },
-      ],
+      watches: [{ state: "pendingDelivery", outcome: "failed" }, { state: "watching" }],
     });
 
     fake.update("child", { status: "completed" });
@@ -283,8 +278,8 @@ describe("DelegationWatchService", () => {
     // Both stops arrive in one message and name their Turns; neither replaces the other.
     expect(fake.sent).toHaveLength(1);
     expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
-      { threadId: "child", label: "child", outcome: "failed", turnId: "turn-1" },
-      { threadId: "child", label: "child", outcome: "completed", turnId: "turn-2" },
+      { threadId: "child", label: "child", outcome: "failed" },
+      { threadId: "child", label: "child", outcome: "completed" },
     ]);
     await expect(service.watches()).resolves.toEqual({ watches: [] });
   });

@@ -25,13 +25,12 @@ export interface ThreadWatchNoticeEntry {
   /** Link label: the Thread title when known, otherwise the Thread id. */
   label: string;
   outcome: ThreadWatchNoticeOutcome;
-  turnId?: string;
   /** One-line explanation, such as why the outcome is uncertain. */
   note?: string;
 }
 
 const ENTRY_PATTERN = new RegExp(
-  String.raw`^- \[([^\]\n]+)\]\(thread://([^\s()<>"?#/]+)(?: "Turn ([^"\n]+)")?\): ` +
+  String.raw`^- \[([^\]\n]+)\]\(thread://([^\s()<>"?#/]+)\): ` +
     `(${THREAD_WATCH_NOTICE_OUTCOMES.join("|")})(?:\. (.+))?$`,
   "u",
 );
@@ -42,9 +41,8 @@ function oneLine(value: string, forbidden: RegExp): string {
 
 function formatEntry(entry: ThreadWatchNoticeEntry): string {
   const label = oneLine(entry.label, /[[\]]/gu) || entry.threadId;
-  const turn = entry.turnId ? ` "Turn ${oneLine(entry.turnId, /"/gu)}"` : "";
   const note = entry.note ? oneLine(entry.note, /\n/gu) : "";
-  return `- [${label}](thread://${entry.threadId}${turn}): ${entry.outcome}${note ? `. ${note}` : ""}`;
+  return `- [${label}](thread://${entry.threadId}): ${entry.outcome}${note ? `. ${note}` : ""}`;
 }
 
 export function formatThreadWatchNotice(entries: readonly ThreadWatchNoticeEntry[]): string {
@@ -60,12 +58,11 @@ export function parseThreadWatchNotice(text: string): ThreadWatchNoticeEntry[] |
     if (!line.trim()) continue;
     const match = ENTRY_PATTERN.exec(line);
     if (!match) return undefined;
-    const [, label = "", threadId = "", turnId, outcome, note] = match;
+    const [, label = "", threadId = "", outcome, note] = match;
     entries.push({
       threadId,
       label,
       outcome: outcome as ThreadWatchNoticeOutcome,
-      ...(turnId ? { turnId } : {}),
       ...(note ? { note } : {}),
     });
   }

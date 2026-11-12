@@ -8,7 +8,7 @@ import {
 } from "../src/index.js";
 
 const entries: ThreadWatchNoticeEntry[] = [
-  { threadId: "t-1", label: "审查最近PR · 委派", outcome: "completed", turnId: "turn-1" },
+  { threadId: "t-1", label: "审查最近PR · 委派", outcome: "completed" },
   {
     threadId: "t-2",
     label: "t-2",
@@ -23,7 +23,7 @@ describe("thread watch notice", () => {
       [
         THREAD_WATCH_NOTICE_HEADER,
         "",
-        '- [审查最近PR · 委派](thread://t-1 "Turn turn-1"): completed',
+        "- [审查最近PR · 委派](thread://t-1): completed",
         "- [t-2](thread://t-2): timedOut. Run 'codexhost thread watch' again to keep waiting.",
       ].join("\n"),
     );
@@ -33,13 +33,12 @@ describe("thread watch notice", () => {
     expect(parseThreadWatchNotice(formatThreadWatchNotice(entries))).toEqual(entries);
   });
 
-  it("keeps labels, turns and notes on one parseable line", () => {
+  it("keeps labels and notes on one parseable line", () => {
     const text = formatThreadWatchNotice([
       {
         threadId: "t-3",
         label: "a [b]\nc",
         outcome: "interrupted",
-        turnId: 'x"y',
         note: "first\nsecond",
       },
     ]);
@@ -48,7 +47,6 @@ describe("thread watch notice", () => {
         threadId: "t-3",
         label: "a b c",
         outcome: "interrupted",
-        turnId: "x y",
         note: "first second",
       },
     ]);

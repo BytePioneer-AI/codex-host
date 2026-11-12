@@ -140,7 +140,6 @@ function notification(watches: readonly Watch[]): string {
         label: watch.title || watch.threadId,
         // Only pending deliveries, whose outcome has been observed, are notified.
         outcome: watch.outcome as ThreadWatchOutcome,
-        ...(watch.turnId ? { turnId: watch.turnId } : {}),
         ...(note ? { note } : {}),
       };
     }),

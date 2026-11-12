@@ -121,7 +121,7 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(after.sent).toHaveLength(1);
     expect(parseThreadWatchNotice(after.sent[0]?.message ?? "")).toEqual([
-      { threadId: "child", label: "child", outcome: "completed", turnId: "turn-child" },
+      { threadId: "child", label: "child", outcome: "completed" },
     ]);
     expect(before.sent).toEqual([]);
     expect(store.records.size).toBe(0);
@@ -152,7 +152,7 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
       service(after, store);
       await vi.advanceTimersByTimeAsync(POLL_MS);
       expect(parseThreadWatchNotice(after.sent[0]?.message ?? "")).toEqual([
-        { threadId: "child", label: title ?? "child", outcome: "completed", turnId: "turn-child" },
+        { threadId: "child", label: title ?? "child", outcome: "completed" },
       ]);
       expect(store.records.size).toBe(0);
     },
@@ -179,7 +179,6 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
         threadId: "child",
         label: "child",
         outcome: "interrupted",
-        turnId: "turn-2",
         note: "The Host Runtime restarted while this Thread was running; afterwards it read as failed, so the work most likely did not finish. Read it, then continue it or start it again.",
       },
     ]);
@@ -210,7 +209,6 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
         threadId: "child",
         label: "child",
         outcome: "interrupted",
-        turnId: "909565f8",
         note: "The Host Runtime restarted while this Thread was running; afterwards it read as completed, so the work most likely did not finish. Read it, then continue it or start it again.",
       },
     ]);
@@ -271,7 +269,6 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
         threadId: "child",
         label: "child",
         outcome: "interrupted",
-        turnId: "turn-child",
         note: "The Host Runtime restarted while this Thread was running; afterwards it read as completed, so the work most likely did not finish. Read it, then continue it or start it again.",
       },
     ]);
@@ -324,7 +321,7 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(after.sent).toHaveLength(1);
     expect(parseThreadWatchNotice(after.sent[0]?.message ?? "")).toEqual([
-      { threadId: "child", label: "child", outcome: "completed", turnId: "turn-2" },
+      { threadId: "child", label: "child", outcome: "completed" },
     ]);
   });
 
@@ -380,7 +377,7 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(after.sent).toHaveLength(1);
     expect(parseThreadWatchNotice(after.sent[0]?.message ?? "")).toEqual([
-      { threadId: "child", label: "child", outcome: "completed", turnId: "turn-child" },
+      { threadId: "child", label: "child", outcome: "completed" },
     ]);
     expect(store.records.size).toBe(0);
   });

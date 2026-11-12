@@ -26,7 +26,6 @@ for (const width of [1280, 390])
           threadId: "watch-target",
           label: "Old title",
           outcome: "interrupted",
-          turnId: "raw-turn-uuid",
         },
         { threadId: "late-target", label: "尚未载入的会话", outcome: "timedOut", note },
         { threadId: "missing", label: "不存在的会话", outcome: "notFound" },
@@ -75,7 +74,6 @@ for (const width of [1280, 390])
       assert.equal(await card.locator("li").count(), 6);
       assert.equal(await body.locator('[class*="_bubble"]').count(), 0);
       assert.equal((await card.innerText()).includes(THREAD_WATCH_NOTICE_HEADER), false);
-      assert.equal((await body.innerText()).includes("raw-turn-uuid"), false);
       assert.equal((await card.innerText()).includes("Old title"), false);
       await known.locator('[data-harness-id="fake"] img').waitFor();
       const destination = await known

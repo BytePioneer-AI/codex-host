@@ -136,6 +136,25 @@ export async function rollbackAntigravityLastTurn(
   const thinkingOptionId = sourceSession?.thinkingOptionId ?? sourceHistory.thinkingOptionId;
   const permissionMode = sourceSession?.permissionMode ?? "dangerously-skip-permissions";
 
+  try {
+    await copyNativeConversationDbIfExists(
+      sourceRef.nativeSessionId,
+      derivedNativeSessionId,
+      mappedTurns.length,
+      homedir,
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: error instanceof Error ? error.message : String(error),
+        retryable: false,
+      },
+    };
+  }
+  await copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedNativeSessionId, homedir);
+
   const rolledBackHistory = await AntigravityHistory.createDerived({
     environment: sessionEnvironment,
     nativeSessionId: derivedNativeSessionId,
@@ -143,16 +162,6 @@ export async function rollbackAntigravityLastTurn(
     ...(model ? { model } : {}),
     ...(thinkingOptionId ? { thinkingOptionId } : {}),
   });
-
-  await Promise.all([
-    copyNativeConversationDbIfExists(
-      sourceRef.nativeSessionId,
-      derivedNativeSessionId,
-      mappedTurns.length,
-      homedir,
-    ),
-    copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedNativeSessionId, homedir),
-  ]);
 
   const derivedNativeRef: NativeSessionRef = {
     harnessId,

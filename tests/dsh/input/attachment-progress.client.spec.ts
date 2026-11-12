@@ -41,11 +41,11 @@ async function mount(element: ReactElement) {
 }
 
 it.each([
-  [en, "Uploading 25%", "Upload failed; click to retry"],
-  [zh, "上传中 25%", "上传失败，点击重试"],
+  [en, "Retry"],
+  [zh, "重试"],
 ] as const)(
-  "image FileCard shows localized progress and existing retry/remove actions",
-  async (dictionary, uploading, failed) => {
+  "image thumbnail overlays progress or localized retry and clears the overlay when ready",
+  async (dictionary, retryLabel) => {
     const retry = vi.fn(),
       remove = vi.fn();
     const props = {
@@ -65,18 +65,29 @@ it.each([
       t: translate(dictionary),
     } as unknown as ComponentProps<typeof ComposerAttachments>;
     const { container, render } = await mount(createElement(ComposerAttachments, props));
-    expect(container.textContent).toContain(uploading);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("25%");
     expect(container.querySelector("img")?.src).toBe("blob:photo");
+    await render(
+      createElement(ComposerAttachments, {
+        ...props,
+        uploads: { image: { status: "ready" } as never },
+      }),
+    );
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(container.querySelector("img")?.src).toBe("blob:photo");
+    expect(container.textContent).toBe("");
     await render(
       createElement(ComposerAttachments, {
         ...props,
         uploads: { image: { status: "error", message: "offline", transport: true } },
       }),
     );
-    expect(container.textContent).toContain(failed);
-    await act(async () =>
-      (container.querySelector("button[aria-label*='photo.png']") as HTMLButtonElement).click(),
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    const retryButton = container.querySelector<HTMLButtonElement>(
+      `button[aria-label="${dictionary["file.retry"].replace("{name}", "photo.png")}"]`,
     );
+    expect(retryButton?.textContent).toBe(retryLabel);
+    await act(async () => retryButton!.click());
     expect(retry).toHaveBeenCalledWith("image");
   },
 );

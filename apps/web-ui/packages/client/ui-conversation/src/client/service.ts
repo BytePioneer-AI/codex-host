@@ -40,6 +40,7 @@ import type {
   SubmitOutcome,
 } from "./contract/input.ts";
 import type { InputSubmitMode } from "./contract/composer-submission.ts";
+import { preparePhoto } from "./prepare-photo.ts";
 
 /**
  * The outward conversation face (`ctx.conversation`): the scope-addressed
@@ -141,6 +142,7 @@ export class ConversationController extends Service implements IConversation {
     Record<string, DraftFileUpload>
   >({});
   private readonly draftAttachments = new Map<DraftAttachmentId, ComposerAttachment>();
+  private readonly preparedPhotos = new WeakMap<ComposerImageAttachment, Promise<File>>();
   private readonly fileUploadOperations = new Map<
     DraftAttachmentId,
     {
@@ -406,10 +408,30 @@ export class ConversationController extends Service implements IConversation {
           this.fileUploadOperations.get(attachment.id)?.controller !== controller
         )
           return;
+        let file = attachment.file;
+        if (
+          attachment.kind === "image" &&
+          (file.type === "image/jpeg" || file.type === "image/webp")
+        ) {
+          let prepared = this.preparedPhotos.get(attachment);
+          if (prepared === undefined) {
+            prepared = preparePhoto(file);
+            this.preparedPhotos.set(attachment, prepared);
+          }
+          file = await prepared;
+          if (
+            controller.signal.aborted ||
+            this.fileUploadOperations.get(attachment.id)?.controller !== controller
+          )
+            return;
+          this.fileUploads.update((draft) => {
+            draft[attachment.id] = { status: "uploading", loaded: 0, total: file.size };
+          });
+        }
         const result = await this.ctx.fileUpload.upload(
           sessionId,
-          attachment.file,
-          attachment.file.name === "" ? undefined : attachment.file.name,
+          file,
+          file.name === "" ? undefined : file.name,
           controller.signal,
           (progress) => {
             if (this.fileUploadOperations.get(attachment.id)?.controller !== controller) return;
@@ -422,7 +444,7 @@ export class ConversationController extends Service implements IConversation {
               };
             });
           },
-          attachment.kind === "image" ? attachment.file.type : undefined,
+          attachment.kind === "image" ? file.type : undefined,
         );
         if (this.fileUploadOperations.get(attachment.id)?.controller !== controller) return;
         this.fileUploads.update((draft) => {

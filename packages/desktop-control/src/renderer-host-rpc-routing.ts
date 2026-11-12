@@ -192,6 +192,11 @@ export function installRendererHostRpcRouting(
           {
             ...input,
             collaborationMode: { ...input.collaborationMode, settings: { ...settings, model } },
+            // Desktop's main-process pool is cwd-keyed and does not compare Models.
+            // A per-start Model config makes native preparation bypass that pool.
+            ...(path[0] === "startConversation"
+              ? { config: { ...(isRecord(input.config) ? input.config : {}), model } }
+              : {}),
           },
           ...args.slice(1),
         ],

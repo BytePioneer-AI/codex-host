@@ -263,7 +263,12 @@ it("reconciles a mounted Composer through the Controller's existing installation
   }
 });
 
-function creation(method: string, model: string, options: Record<string, unknown>) {
+function creation(
+  method: string,
+  model: string,
+  options: Record<string, unknown>,
+  config?: Record<string, unknown>,
+) {
   return [
     "push",
     [
@@ -275,6 +280,7 @@ function creation(method: string, model: string, options: Record<string, unknown
           input: [[{ type: "text", text: "hello" }]],
           collaborationMode: { mode: "default", settings: { model, reasoning_effort: "high" } },
           cwd: "/work",
+          ...(config ? { config } : {}),
         },
         options,
       ],
@@ -620,11 +626,91 @@ it("applies an external draft's carrier only to that draft's creation call", asy
       mode: "default",
       settings: { model: carrier, reasoning_effort: "high" },
     });
+    expect(args[0]?.config).toEqual({ model: carrier });
     expect(args[1]).toEqual({ clientThreadId: "client-new-thread:external", onSettled: exported });
     expect(codex).toEqual(
       creation("startConversation", "gpt-6.1-sol", { clientThreadId: "client-new-thread:codex" }),
     );
     expect(request).toEqual(["push", ["pipeline", -188, ["sendRequest"], ["model/list", {}]]]);
+  } finally {
+    routing.dispose();
+  }
+});
+
+it.each(["local", "remote-ssh:other", "remote-control:legacy"])(
+  "keeps an external creation off %s's official prewarm after asynchronous preparation",
+  async (hostId) => {
+    const fixture = setup({ hosts: hostId === "local" ? ["local"] : ["local", hostId] });
+    const routing = await install(fixture);
+    try {
+      const policy = policyOf(routing.forHost(hostId));
+      policy.select(carrier, "client-new-thread:external");
+      // Model Desktop 26.1103's native admission: per-start config disables reuse.
+      // Clearing on selection cannot prevent this official prewarm arriving later.
+      const preparing = Promise.withResolvers<undefined>();
+      const consume = vi.fn(() => ({ thread: { id: "official-prewarm" }, model: "gpt-6.1-sol" }));
+      const create = vi.fn((model: string) => ({ thread: { id: "external-thread" }, model }));
+      const start = async (message: unknown[]) => {
+        const args = (message[1] as unknown[])[3] as [
+          {
+            config?: Record<string, unknown>;
+            collaborationMode: { settings: { model: string } };
+          },
+        ];
+        await preparing.promise;
+        return !args[0].config || Object.keys(args[0].config).length === 0
+          ? consume()
+          : create(args[0].collaborationMode.settings.model);
+      };
+      const request = creation("startConversation", "gpt-6.1-sol", {
+        clientThreadId: "client-new-thread:external",
+      });
+      fixture.post(request);
+      const external = start(fixture.sent.at(-1) as unknown[]);
+      // Another draft's selection must not change an already-dispatched creation.
+      policy.select("codexhost/pi-native", "client-new-thread:other");
+      const officialRequest = creation("startConversation", "gpt-6.1-sol", {
+        clientThreadId: "client-new-thread:official",
+      });
+      fixture.post(officialRequest);
+      const official = start(fixture.sent.at(-1) as unknown[]);
+      preparing.resolve(undefined);
+      await expect(external).resolves.toEqual({
+        thread: { id: "external-thread" },
+        model: carrier,
+      });
+      await expect(official).resolves.toEqual({
+        thread: { id: "official-prewarm" },
+        model: "gpt-6.1-sol",
+      });
+      expect(create).toHaveBeenCalledExactlyOnceWith(carrier);
+      expect(consume).toHaveBeenCalledOnce();
+      expect(fixture.sent.at(-1)).toBe(officialRequest);
+      expect(((request[1] as unknown[])[3] as unknown[])[0]).not.toHaveProperty("config");
+    } finally {
+      routing.dispose();
+    }
+  },
+);
+
+it("merges the external Model into per-start config without changing other overrides", async () => {
+  const fixture = setup();
+  const routing = await install(fixture);
+  try {
+    policyOf(routing.forComposer()).select(carrier, "client-new-thread:external");
+    const config = { model: "gpt-6.1-sol", "features.example": false };
+    const request = creation(
+      "startConversation",
+      "gpt-6.1-sol",
+      {
+        clientThreadId: "client-new-thread:external",
+      },
+      config,
+    );
+    fixture.post(request);
+    const args = ((fixture.sent.at(-1) as unknown[])[1] as unknown[])[3] as [{ config: unknown }];
+    expect(args[0].config).toEqual({ ...config, model: carrier });
+    expect(config).toEqual({ model: "gpt-6.1-sol", "features.example": false });
   } finally {
     routing.dispose();
   }
@@ -654,7 +740,12 @@ it.each(["disconnected", "replaced"])(
         creation("startConversation", "official", { clientThreadId: "client-new-thread:remote" }),
       );
       expect(fixture.sent.at(-1)).toEqual(
-        creation("startConversation", carrier, { clientThreadId: "client-new-thread:remote" }),
+        creation(
+          "startConversation",
+          carrier,
+          { clientThreadId: "client-new-thread:remote" },
+          { model: carrier },
+        ),
       );
       connection.status = "ready";
       const next = policyOf(routing.forHost("local"));
@@ -662,7 +753,12 @@ it.each(["disconnected", "replaced"])(
       oldPolicy.dispose();
       fixture.post(local);
       expect(fixture.sent.at(-1)).toEqual(
-        creation("startConversation", carrier, { clientThreadId: "client-new-thread:local" }),
+        creation(
+          "startConversation",
+          carrier,
+          { clientThreadId: "client-new-thread:local" },
+          { model: carrier },
+        ),
       );
       next.select(null);
       fixture.post(local);
@@ -671,7 +767,12 @@ it.each(["disconnected", "replaced"])(
         creation("startConversation", "official", { clientThreadId: "client-new-thread:remote" }),
       );
       expect(fixture.sent.at(-1)).toEqual(
-        creation("startConversation", carrier, { clientThreadId: "client-new-thread:remote" }),
+        creation(
+          "startConversation",
+          carrier,
+          { clientThreadId: "client-new-thread:remote" },
+          { model: carrier },
+        ),
       );
     } finally {
       routing.dispose();

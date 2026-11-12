@@ -32,7 +32,7 @@ export class ChThreadHistory extends ChThreadView {
   private readonly pagination: { cursor: string | null };
 
   constructor(
-    private readonly host: ChHostClient,
+    private readonly host: Pick<ChHostClient, "request" | "realtime">,
     thread: ChThread,
     harnessId: string,
     onProjection: ProjectionListener,

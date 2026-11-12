@@ -21,6 +21,7 @@
     "build:release": "node scripts/build-release.mjs"
   },
   "dependencies": {
-    "@codexhost/shared-contracts": "0.0.0"
+    "@codexhost/shared-contracts": "0.0.0",
+    "ws": "8.21.3"
   }
 }

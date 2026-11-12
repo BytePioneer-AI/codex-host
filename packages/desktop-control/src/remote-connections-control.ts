@@ -14,8 +14,16 @@ const MAX_REPLY_BYTES = 1024 * 1024;
 /** Fixed renderer API; user input is data, never executable JavaScript. */
 export function remoteConnectionsExpression(input: RemoteConnectionsRequest): string {
   const request = remoteConnectionsRequestSchema.parse(input);
-  if (request.action === "session")
-    return `(async () => { try { return {result:await (${rendererRemoteSession.toString()})(window,${JSON.stringify(request.operation)})}; } catch(error) {return {error:{code:-32090,message:String(error?.message ?? error)}};} })()`;
+  if (request.action === "session") {
+    const readOnly = ["hosts", "list", "read", "turns"].includes(request.operation.kind);
+    // Reject oversized history before it can close the shared CDP transport.
+    return `(async () => { try {
+      const reply = {result:await (${rendererRemoteSession.toString()})(window,${JSON.stringify(request.operation)})};
+      if (${readOnly} && new TextEncoder().encode(JSON.stringify(reply)).byteLength + 1 > ${REMOTE_THREAD_REPLY_MAX_BYTES})
+        return {error:{code:-32094,message:"Remote history response exceeds the 16 MiB limit; open this Thread in Codex Desktop."}};
+      return reply;
+    } catch(error) {return {error:{code:-32090,message:String(error?.message ?? error)}};} })()`;
+  }
   return `(async () => {
     try {
       const api = window.__codexhostRendererBindingProbeV1;

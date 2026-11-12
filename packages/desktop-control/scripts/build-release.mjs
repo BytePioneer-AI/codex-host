@@ -49,6 +49,9 @@ export async function buildDesktopControllerBundle({ repositoryRoot, outputPath 
     bundle: true,
     platform: "node",
     format: "esm",
+    banner: {
+      js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);',
+    },
     target: "node22",
     packages: "bundle",
     sourcemap: false,

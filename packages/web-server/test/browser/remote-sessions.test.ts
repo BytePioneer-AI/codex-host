@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { createServer } from "node:net";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 import { startServer } from "../support/server.ts";
+import { FakeChHost, startFakeChDebugger } from "../support/ch-host.ts";
 
 it(
   "shows colliding remote sessions in the real Web shell and opens their own transcript",
@@ -16,6 +17,7 @@ it(
     const nonce = "a".repeat(32);
     const calls: Array<{ kind: string; hostId?: string }> = [];
     const sent = new Map<string, string>();
+    const sentTurns = new Map<string, Array<{ text: string; requestId: string }>>();
     const archived = new Set<string>();
     const requestIds = new Map<string, string>();
     const timestamp = Math.floor(Date.now() / 1000);
@@ -23,9 +25,13 @@ it(
       id: "same",
       cwd: "/remote/private",
       name: `Session ${hostId}`,
-      modelProvider: "openai",
+      modelProvider: hostId.startsWith("remote-ssh") ? "codexhost" : "openai",
+      ...(hostId.startsWith("remote-ssh")
+        ? { harnessIdentity: { id: "claude-code", name: "Claude Code" } }
+        : {}),
+      historyMode: hostId.startsWith("remote-ssh") ? "paginated" : "legacy",
       createdAt: timestamp,
-      updatedAt: timestamp + (sent.has(hostId) ? 1 : 0),
+      updatedAt: timestamp + (sentTurns.get(hostId)?.length ?? 0),
       status: { type: "idle" },
       turns: [
         {
@@ -50,27 +56,23 @@ it(
             },
           ],
         },
-        ...(sent.has(hostId)
-          ? [
-              {
-                id: "follow-up",
-                status: "completed",
-                items: [
-                  {
-                    id: "follow-user",
-                    type: "userMessage",
-                    clientId: requestIds.get(hostId),
-                    content: [{ type: "text", text: sent.get(hostId) }],
-                  },
-                  {
-                    id: "follow-answer",
-                    type: "agentMessage",
-                    text: `Follow-up accepted on ${hostId}`,
-                  },
-                ],
-              },
-            ]
-          : []),
+        ...(sentTurns.get(hostId) ?? []).map((turn, index) => ({
+          id: `follow-up-${index}`,
+          status: "completed",
+          items: [
+            {
+              id: `follow-user-${index}`,
+              type: "userMessage",
+              clientId: turn.requestId,
+              content: [{ type: "text", text: turn.text }],
+            },
+            {
+              id: `follow-answer-${index}`,
+              type: "agentMessage",
+              text: `Follow-up accepted on ${hostId}${index ? ` #${index + 1}` : ""}`,
+            },
+          ],
+        })),
       ],
     });
     const controller = createServer((socket) => {
@@ -89,6 +91,9 @@ it(
         if (operation.kind === "prompt") {
           sent.set(operation.hostId, operation.text);
           requestIds.set(operation.hostId, operation.requestId);
+          const history = sentTurns.get(operation.hostId) ?? [];
+          history.push({ text: operation.text, requestId: operation.requestId });
+          sentTurns.set(operation.hostId, history);
         }
         const result =
           operation.kind === "hosts"
@@ -105,11 +110,17 @@ it(
                 }
               : operation.kind === "read"
                 ? {
-                    result: { thread: row(operation.hostId) },
+                    result: {
+                      thread: operation.metadataOnly
+                        ? { ...row(operation.hostId), turns: [] }
+                        : row(operation.hostId),
+                    },
                     epoch: "fixture-epoch",
                     requests: [],
                   }
-                : {};
+                : operation.kind === "turns"
+                  ? { data: [...row(operation.hostId).turns].reverse(), nextCursor: null }
+                  : {};
         socket.end(JSON.stringify({ result }) + "\n");
       });
     });
@@ -156,12 +167,33 @@ it(
         ],
       }),
     );
+    const localHost = new FakeChHost();
+    const nativeRequest = localHost.request.bind(localHost);
+    localHost.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+      const result = await nativeRequest<T>(method, params);
+      if (method !== "codexhost/harness/plugins/list") return result;
+      const manifest = JSON.parse(
+        readFileSync(
+          resolve(import.meta.dirname, "../../../adapters/claude-code/manifest.json"),
+          "utf8",
+        ),
+      );
+      return {
+        plugins: [
+          ...(result as { plugins: unknown[] }).plugins,
+          { id: "claude-code", name: "Claude Code", version: "1", iconStyle: manifest.iconStyle },
+        ],
+      } as T;
+    };
+    const debug = await startFakeChDebugger(localHost);
+    t.after(() => debug.close());
     const url = await startServer(
       t,
       resolve(import.meta.dirname, "../.."),
       ["--import", "tsx", "src/main.ts"],
-      [],
+      ["--ch-cdp", debug.endpoint],
       {
+        authenticated: true,
         environment: {
           HOME: directory,
           USERPROFILE: directory,
@@ -171,8 +203,49 @@ it(
         },
       },
     );
-    const browser = await chromium.launch();
+    const browser = await chromium.launch({
+      ...(process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH
+        ? { executablePath: process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH }
+        : {}),
+    });
     t.after(() => browser.close());
+    const phone = await browser.newPage({
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
+      locale: "en-US",
+    });
+    await phone.goto(url);
+    for (const hostId of ["remote-ssh-discovered:a", "remote-control:b"]) {
+      await phone.getByRole("button", { name: "Open sidebar", exact: true }).first().click();
+      const group = phone
+        .locator('[data-row-key^="workspace:remote-workspace:"]')
+        .filter({ has: phone.locator(`[data-host-id="${hostId}"]`) });
+      await group.waitFor();
+      if ((await group.getAttribute("aria-expanded")) === "false") await group.click();
+      const item = phone.getByText(`Session ${hostId}`, { exact: true }).first();
+      await item.waitFor();
+      if (hostId.startsWith("remote-ssh"))
+        await item
+          .locator("xpath=ancestor::*[@data-row-key][1]")
+          .locator('[data-harness-id="claude-code"] svg')
+          .waitFor();
+      await item.click();
+      await phone.getByText(`Answer from ${hostId}`, { exact: true }).waitFor();
+    }
+    if (process.env.CODEXHOST_TEST_SCREENSHOTS) {
+      mkdirSync(process.env.CODEXHOST_TEST_SCREENSHOTS, { recursive: true });
+      await phone.getByRole("button", { name: "Open sidebar", exact: true }).first().click();
+      await phone.waitForFunction(() => {
+        const drawer = document.querySelector("[data-phone-drawer]");
+        return drawer && drawer.getBoundingClientRect().left >= -1;
+      });
+      await phone.screenshot({
+        path: join(process.env.CODEXHOST_TEST_SCREENSHOTS, "remote-sessions-phone.png"),
+        animations: "disabled",
+      });
+    }
+    await phone.close();
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
     const localMediaRequests: string[] = [];
     await page.route("**/api/file?**", async (route) => {
@@ -224,6 +297,15 @@ it(
         0,
         "remote image paths must render as text, not local image elements",
       );
+      const row = item.locator("xpath=ancestor::*[@data-row-key][1]");
+      if (hostId.startsWith("remote-ssh")) {
+        const icon = row.locator('[data-harness-id="claude-code"]');
+        await icon.waitFor();
+        assert.equal(await icon.locator("svg").getAttribute("viewBox"), "0 0 24 24");
+        assert.equal(await row.locator("[data-native-codex-icon]").count(), 0);
+      } else {
+        assert.equal(await row.locator("[data-native-codex-icon]").count(), 1);
+      }
     }
     assert.deepEqual(localMediaRequests, [], "remote paths must not request local image bytes");
     assert.ok(
@@ -258,6 +340,24 @@ it(
     assert.equal(sent.has("remote-ssh-discovered:a"), false);
     assert.equal(calls.filter((call) => call.kind === "prompt").length, 1);
     assert.equal(await page.getByText("remote follow-up", { exact: true }).count(), 1);
+    for (const [hostId, text] of [
+      ["remote-ssh-discovered:a", "second conversation"],
+      ["remote-control:b", "back to first conversation"],
+    ] as const) {
+      const nextCount = (sentTurns.get(hostId)?.length ?? 0) + 1;
+      await page.getByText(`Session ${hostId}`, { exact: true }).first().click();
+      await page.getByText(`Answer from ${hostId}`, { exact: true }).waitFor();
+      await page.locator('[contenteditable="true"][role="textbox"]').fill(text);
+      await page.getByRole("button", { name: /Send message|发送消息/ }).click();
+      await page
+        .getByText(`Follow-up accepted on ${hostId}${nextCount > 1 ? ` #${nextCount}` : ""}`, {
+          exact: true,
+        })
+        .waitFor();
+    }
+    assert.equal(calls.filter((call) => call.kind === "prompt").length, 3);
+    assert.equal(sent.get("remote-ssh-discovered:a"), "second conversation");
+    assert.equal(sent.get("remote-control:b"), "back to first conversation");
     const remoteId =
       "web-remote:" +
       Buffer.from(JSON.stringify(["remote-control:b", "same"])).toString("base64url");
@@ -271,7 +371,10 @@ it(
     await remoteRow.waitFor();
     assert.equal(archived.size, 0);
     await remoteRow.click();
-    await page.getByText("Follow-up accepted on remote-control:b", { exact: true }).waitFor();
+    await page
+      .getByText("Follow-up accepted on remote-control:b", { exact: true })
+      .last()
+      .waitFor();
     assert.deepEqual(
       calls.filter((call) => call.kind === "archive").map((call) => call.hostId),
       ["remote-control:b", "remote-control:b"],

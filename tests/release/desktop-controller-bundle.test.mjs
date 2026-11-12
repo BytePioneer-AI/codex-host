@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 
@@ -59,6 +60,14 @@ describe("Desktop Controller release Bundle", () => {
       expect(source).not.toContain('process.stdout.write("ready\\n")');
       expect(source).not.toContain("tools/renderer-binding");
       expect(source).not.toContain("@anthropic-ai/");
+      const startup = spawnSync(process.execPath, [outputPath, "--codexhost-bundle-check"], {
+        encoding: "utf8",
+        timeout: 5_000,
+        windowsHide: true,
+      });
+      expect(startup.status).toBe(1);
+      expect(startup.stderr).toContain("unknown Desktop Controller option");
+      expect(startup.stderr).not.toContain("Dynamic require");
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

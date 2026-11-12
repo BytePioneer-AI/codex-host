@@ -23,7 +23,13 @@ export const remoteSessionOperationSchema = z.discriminatedUnion("kind", [
     cursor: z.string().nullable(),
     archived: z.boolean(),
   }),
-  z.strictObject({ kind: z.literal("read"), ...thread }),
+  z.strictObject({ kind: z.literal("read"), ...thread, metadataOnly: z.boolean().optional() }),
+  z.strictObject({
+    kind: z.literal("turns"),
+    ...thread,
+    epoch: identity,
+    cursor: z.string().max(4096).nullable(),
+  }),
   z.strictObject({
     kind: z.literal("prompt"),
     ...thread,

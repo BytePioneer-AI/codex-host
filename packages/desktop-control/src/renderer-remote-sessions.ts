@@ -95,13 +95,60 @@ export async function rendererRemoteSession(
   }
   if ("epoch" in operation && operation.epoch !== generation.epoch)
     throw new Error("Remote connection changed; refresh before operating");
-  if (operation.kind === "list")
-    return manager.sendRequest("thread/list", {
+  if (operation.kind === "list") {
+    const page = (await manager.sendRequest("thread/list", {
       cursor: operation.cursor,
       archived: operation.archived,
       limit: 100,
-    });
+    })) as { data: Array<{ id: string; modelProvider: string }>; nextCursor: string | null };
+    const threadIds = page.data
+      .filter((row) => row.modelProvider === "codexhost")
+      .map((row) => row.id);
+    if (!threadIds.length) return page;
+    // Ownership is independent of model/provider names, and never requires history reads.
+    const [ownership, catalog] = await Promise.all([
+      Promise.resolve(manager.sendRequest("codexhost/thread/ownership/list", { threadIds })).catch(
+        () => null,
+      ),
+      Promise.resolve(manager.sendRequest("codexhost/harness/plugins/list", {})).catch(() => null),
+    ]);
+    if (routing.forHost(operation.hostId) !== route)
+      throw new Error("Remote connection changed during ownership read");
+    const owners = (
+      ownership as {
+        threads?: Array<{ threadId: string; owner: string; harnessId?: string }>;
+      } | null
+    )?.threads;
+    const plugins = (catalog as { plugins?: Array<{ id: string; name: string }> } | null)?.plugins;
+    return {
+      ...page,
+      data: page.data.map((row) => {
+        const owner = Array.isArray(owners)
+          ? owners.find((entry) => entry?.threadId === row.id && entry.owner === "external")
+          : undefined;
+        const id = owner?.harnessId;
+        if (row.modelProvider !== "codexhost" || typeof id !== "string" || !id) return row;
+        const plugin = Array.isArray(plugins)
+          ? plugins.find((entry) => entry?.id === id)
+          : undefined;
+        const name = typeof plugin?.name === "string" && plugin.name ? plugin.name : id;
+        return { ...row, harnessIdentity: { id, name } };
+      }),
+    };
+  }
   const threadId = operation.threadId;
+  if (operation.kind === "turns") {
+    const page = await manager.sendRequest("thread/turns/list", {
+      threadId,
+      cursor: operation.cursor,
+      limit: 5,
+      sortDirection: "desc",
+      itemsView: "full",
+    });
+    if (routing.forHost(operation.hostId) !== route)
+      throw new Error("Remote connection changed during history read");
+    return page;
+  }
   const pendingRequests = async (): Promise<Request[]> => {
     const conversation = (await manager.getConversation?.(threadId)) as
       { requests?: Request[] } | undefined;
@@ -110,7 +157,21 @@ export async function rendererRemoteSession(
     return Array.isArray(conversation?.requests) ? conversation.requests : [];
   };
   if (operation.kind === "read") {
-    const result = await manager.sendRequest("thread/read", { threadId, includeTurns: true });
+    let result;
+    try {
+      result = await manager.sendRequest("thread/read", {
+        threadId,
+        includeTurns: operation.metadataOnly !== true,
+      });
+    } catch (error) {
+      if (
+        operation.metadataOnly ||
+        !(error instanceof Error) ||
+        !error.message.includes("Paginated External Threads require thread/turns/list")
+      )
+        throw error;
+      result = await manager.sendRequest("thread/read", { threadId, includeTurns: false });
+    }
     if (routing.forHost(operation.hostId) !== route)
       throw new Error("Remote connection changed during read");
     const requests = await pendingRequests();
@@ -161,7 +222,10 @@ export async function rendererRemoteSession(
   }
   switch (operation.kind) {
     case "prompt":
-      await manager.sendRequest("thread/resume", { threadId });
+      // Resuming is required before a native turn, but Web already reads history
+      // in pages. Returning every old Turn here can overwhelm the shared native
+      // connection before the new message is even dispatched.
+      await manager.sendRequest("thread/resume", { threadId, excludeTurns: true });
       if (routing.forHost(operation.hostId) !== route)
         throw new Error("Remote connection changed during resume");
       return manager.sendRequest("turn/start", {

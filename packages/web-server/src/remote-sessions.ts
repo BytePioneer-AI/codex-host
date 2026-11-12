@@ -9,6 +9,7 @@ import {
   type RemoteSessionOperation,
 } from "@codexhost/shared-contracts";
 import { ChThreadView, type ChThread } from "./ch-thread-view.ts";
+import { ChThreadHistory } from "./ch-thread-history.ts";
 import { defaultProjections } from "./session-log.ts";
 import { requestOf } from "./store.ts";
 import {
@@ -50,6 +51,7 @@ const rowSchema = z
     id: z.string().min(1),
     cwd: z.string(),
     modelProvider: z.string(),
+    harnessIdentity: z.object({ id: z.string().min(1), name: z.string().min(1) }).optional(),
     createdAt: z.number(),
     updatedAt: z.number(),
     status: z.object({ type: z.string() }),
@@ -169,8 +171,10 @@ export class RemoteSessions {
       );
     try {
       return await this.call(parsed.data);
-    } catch {
-      const write = !["hosts", "list", "read"].includes(operation.kind);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === -32094)
+        throw new RpcError("remote/too-large", error.message);
+      const write = !["hosts", "list", "read", "turns"].includes(operation.kind);
       throw new RpcError(
         write ? "remote/outcome-unknown" : "remote/offline",
         write
@@ -308,7 +312,9 @@ export class RemoteSessions {
           },
           ...(entry.row.modelProvider !== "codexhost"
             ? { harnessIdentity: { id: "codex", name: "Codex" } }
-            : {}),
+            : entry.row.harnessIdentity
+              ? { harnessIdentity: entry.row.harnessIdentity }
+              : {}),
           threadReference: this.reference(entry),
           nativeConnection: { state: entry.online ? "connected" : "reconnecting" },
           nativeDiscovery: false,
@@ -349,7 +355,13 @@ export class RemoteSessions {
     current.reading ??= (async () => {
       try {
         const snapshot = snapshotSchema.parse(
-          await this.invoke({ kind: "read", ...identity }),
+          await this.invoke({
+            kind: "read",
+            ...identity,
+            ...(current.row.historyMode === "paginated" || current.view instanceof ChThreadHistory
+              ? { metadataOnly: true }
+              : {}),
+          }),
         ) as Snapshot;
         if (this.closed || snapshot.result.thread.id !== identity.threadId)
           throw new Error("Remote identity mismatch");
@@ -359,11 +371,20 @@ export class RemoteSessions {
         }
         current.epoch = snapshot.epoch;
         current.online = true;
-        current.row = snapshot.result.thread;
+        current.row = {
+          ...snapshot.result.thread,
+          ...(snapshot.result.thread.modelProvider === "codexhost" && current.row.harnessIdentity
+            ? {
+                harnessIdentity:
+                  snapshot.result.thread.harnessIdentity ?? current.row.harnessIdentity,
+              }
+            : {}),
+        };
         const row = { ...current.row, id, cwd: "" };
-        current.view ??= this.createView(row, current.viewOrigin);
+        current.view ??= this.createView(row, current.viewOrigin, current);
         try {
-          current.view.update(row);
+          if (current.view instanceof ChThreadHistory) await current.view.refresh();
+          else current.view.update(row);
         } catch (error) {
           if (
             !(error instanceof RpcError) ||
@@ -371,9 +392,12 @@ export class RemoteSessions {
           )
             throw error;
           this.retireView(current);
-          current.view = this.createView(row, current.viewOrigin);
-          current.view.update(row);
+          current.view = this.createView(row, current.viewOrigin, current);
+          if (current.view instanceof ChThreadHistory) await current.view.refresh();
+          else current.view.update(row);
         }
+        if (current.view instanceof ChThreadHistory)
+          current.row = { ...current.row, turns: current.view.thread.turns };
         for (const [key, value] of Object.entries(this.summary(id, current).projections.values))
           if (
             [
@@ -404,7 +428,8 @@ export class RemoteSessions {
           );
         return current.view;
       } catch (error) {
-        this.offline(current);
+        if (!(error instanceof RpcError) || error.code !== "remote/too-large")
+          this.offline(current);
         throw error;
       }
     })().finally(() => {
@@ -419,18 +444,38 @@ export class RemoteSessions {
     entry.view.log.reconnectFollowers();
     delete entry.view;
   }
-  private createView(row: ChThread, origin = 0): ChThreadView {
-    const view = new ChThreadView(
-      row,
-      row.modelProvider === "codexhost" ? "remote" : "codex",
-      (sessionId, key, value, seq) => {
-        view.log.pushProjection(key, value, seq);
-        for (const sink of this.controls)
-          sink.push({ type: "projection", sessionId, key, value, seq });
-      },
-      0,
-      origin,
-    );
+  private createView(row: ChThread, origin: number | undefined, entry: Entry): ChThreadView {
+    const onProjection = (sessionId: string, key: string, value: unknown, seq: number) => {
+      view.log.pushProjection(key, value, seq);
+      for (const sink of this.controls)
+        sink.push({ type: "projection", sessionId, key, value, seq });
+    };
+    const harness = row.modelProvider === "codexhost" ? "remote" : "codex";
+    const view =
+      row.historyMode === "paginated"
+        ? new ChThreadHistory(
+            {
+              request: async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+                if (params.threadId !== row.id)
+                  throw new RpcError("remote/identity-invalid", "Remote history identity mismatch");
+                if (method === "thread/read")
+                  return { thread: { ...entry.row, id: row.id, cwd: "", turns: [] } } as T;
+                if (method !== "thread/turns/list" || !entry.epoch)
+                  throw new RpcError("remote/unsupported", "Remote history operation unavailable");
+                return (await this.invoke({
+                  kind: "turns",
+                  ...entry.identity,
+                  epoch: entry.epoch,
+                  cursor: typeof params.cursor === "string" ? params.cursor : null,
+                })) as T;
+              },
+            },
+            row,
+            harness,
+            onProjection,
+            origin,
+          )
+        : new ChThreadView(row, harness, onProjection, 0, origin ?? 0);
     return view;
   }
   private interactions(id: string, entry: Entry, requests: PendingRequest[]): void {
@@ -582,12 +627,19 @@ export class RemoteSessions {
     const cached = readOnly ? this.entries.get(id)?.view : undefined;
     const view = cached ?? (await this.read(id));
     if (method === "session/projections") return view.log.projectionBaseline();
-    if (method === "session/page")
+    if (method === "session/page") {
+      if (view instanceof ChThreadHistory)
+        return view.olderPage(
+          Number(request.throughSeq),
+          typeof request.beforeSeq === "number" ? request.beforeSeq : undefined,
+          typeof request.maxMessages === "number" ? request.maxMessages : 20,
+        );
       return view.log.page(
         Number(request.throughSeq),
         typeof request.beforeSeq === "number" ? request.beforeSeq : undefined,
         { maxMessages: typeof request.maxMessages === "number" ? request.maxMessages : 20 },
       );
+    }
     if (method === "session/toolOutput")
       return readToolOutput(view.log, webToolOutputReferenceSchema.parse(request));
     const entry = this.entries.get(id);

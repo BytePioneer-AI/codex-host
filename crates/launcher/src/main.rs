@@ -15,7 +15,6 @@ mod secure_storage;
 mod service_update;
 mod services;
 mod startup_record;
-#[cfg(target_os = "macos")]
 mod system_proxy_environment;
 mod web_service;
 
@@ -1536,6 +1535,10 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         }
         Some("host") => host_service::run(&arguments[1..]),
         Some("web-service") => web_service::run(&arguments[1..]),
+        Some("proxy-environment") if arguments.len() == 1 => {
+            system_proxy_environment::print_proxy_environment()
+        }
+        Some("proxy-environment") => Err("proxy-environment accepts no arguments".into()),
         Some("broker") => run_native_harness_broker_cli(&arguments[1..]),
         Some("project") | Some("harness") | Some("delegate") | Some("thread") | Some("client")
         | Some("events") => run_delegation_cli(arguments),

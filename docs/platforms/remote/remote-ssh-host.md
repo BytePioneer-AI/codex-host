@@ -81,6 +81,8 @@ While the connections page is visible, it checks stable state every 30 seconds a
 
 Use **Remote connections** to edit connection details, disconnect, or remove a connection you no longer use.
 
+When Codex Desktop starts through codexhost, an SSH connection that is set to connect automatically is opened if it is disconnected or failed. codexhost turns that setting off and back on, because turning it on again does not reopen a connection that already has the setting, then checks again a few times during startup. A connection that is already connecting is left alone. A connection you turned off stays off. If the connection state cannot be read, the setting is not changed. If this recovery turns the setting off and turning it back on does not succeed, later checks keep trying to turn it back on until that succeeds.
+
 - **Disconnect** stops automatic connection to that computer. Tasks already started remotely can continue. Click **Connect** when you want to use it again.
 - **Remove** removes the computer from the connection list without deleting remote files or conversations.
 

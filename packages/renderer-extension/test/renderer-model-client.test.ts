@@ -451,6 +451,7 @@ describe("Renderer fixed Model request client", () => {
       "readDelegationThread",
       "readUpdateStatus",
       "refreshCodexAccounts",
+      "releaseUnsupportedMethods",
       "runtimeStatus",
       "selectThreadModel",
       "selectThreadPermissionMode",

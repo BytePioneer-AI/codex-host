@@ -1,4 +1,5 @@
 import type { RemoteSessionOperation } from "@codexhost/shared-contracts";
+import type { autoConnectMemory, restoreDisconnectedAutoConnect } from "./remote-auto-connect.js";
 
 interface Request {
   id: string | number;
@@ -39,6 +40,10 @@ export interface RemoteSessionTarget {
     >;
     reconnectAttempts?:
       Set<string> | Map<string, { failures: number; retryAt: number; loading?: Promise<void> }>;
+    /** SSH hosts connected at the end of the last completed restore pass. */
+    autoConnectedHosts?: Set<string>;
+    /** Releases already performed for the current connected streak. */
+    autoConnectReleases?: Map<string, number>;
   };
 }
 
@@ -47,6 +52,9 @@ export interface RemoteSessionTarget {
 export async function rendererRemoteSession(
   target: RemoteSessionTarget,
   operation: RemoteSessionOperation,
+  restore?: typeof restoreDisconnectedAutoConnect,
+  memoryOf?: typeof autoConnectMemory,
+  releasePasses = 5,
 ): Promise<unknown> {
   const routing = target.__codexhostHostRoutingV1;
   if (!routing) throw new Error("Desktop remote session routing is unavailable");
@@ -68,7 +76,32 @@ export async function rendererRemoteSession(
       previous && !("get" in previous)
         ? new Map([...previous].map((id) => [id, { failures: 0, retryAt: Infinity }]))
         : (previous ?? new Map()));
-    return Promise.all(
+    const memory = memoryOf?.(target);
+    let reported: readonly string[] | null = null;
+    if (restore && memory) {
+      reported = await restore(
+        {
+          async list() {
+            return connections.flatMap((item) =>
+              item && typeof item.hostId === "string" && typeof item.autoConnect === "boolean"
+                ? [{ hostId: item.hostId, autoConnect: item.autoConnect }]
+                : [],
+            );
+          },
+          async state(hostId) {
+            const status = (await api.remoteConnections({ action: "state", hostId })) as {
+              state?: unknown;
+            };
+            return status && typeof status.state === "string" ? { state: status.state } : null;
+          },
+          async connect(hostId, enabled) {
+            await api.remoteConnections({ action: "connect", hostId, enabled });
+          },
+        },
+        memory,
+      );
+    }
+    const listed = await Promise.all(
       [...new Set([...ids, ...connections.map((c) => c.hostId)])].map(async (hostId) => {
         const connection = connections.find((c) => c.hostId === hostId);
         let status = (await api
@@ -76,7 +109,12 @@ export async function rendererRemoteSession(
           .catch(() => ({ state: "error" }))) as { state: string };
         if (connection?.autoConnect === false || status.state === "connected")
           attempts.delete(hostId);
-        if (connection?.autoConnect && status.state === "disconnected") {
+        // Remote Control opens when auto-connect is enabled. SSH is restored above.
+        if (
+          hostId.startsWith("remote-control:") &&
+          connection?.autoConnect &&
+          status.state === "disconnected"
+        ) {
           let attempt = attempts.get(hostId);
           if (!attempt || (!attempt.loading && Date.now() >= attempt.retryAt)) {
             attempt ??= { failures: 0, retryAt: Infinity };
@@ -153,6 +191,35 @@ export async function rendererRemoteSession(
         };
       }),
     );
+    // Release each SSH host this completed pass already sees connected, at most
+    // once in the pass. The streak stops after releasePasses while it stays
+    // connected. A host that connects after this read waits for a later read.
+    if (reported && memory) {
+      const now = new Set(reported);
+      for (const row of listed)
+        if (row.state === "connected" && /^remote-ssh(?:-|:)/u.test(row.hostId))
+          now.add(row.hostId);
+      const previous = state.autoConnectedHosts ?? new Set<string>();
+      const releases = (state.autoConnectReleases ??= new Map<string, number>());
+      for (const hostId of [...releases.keys()]) if (!now.has(hostId)) releases.delete(hostId);
+      state.autoConnectedHosts = now;
+      const notify = memory.onConnected;
+      if (notify) {
+        for (const hostId of now) {
+          if (!previous.has(hostId)) releases.delete(hostId);
+          const used = releases.get(hostId) ?? 0;
+          if (used >= releasePasses) continue;
+          try {
+            notify(hostId);
+          } catch {
+            // The host list still returns. The next read can release this host.
+            continue;
+          }
+          releases.set(hostId, used + 1);
+        }
+      }
+    }
+    return listed;
   }
   if (!ids.includes(operation.hostId))
     throw new Error("Remote Host is offline or no longer known to Desktop");

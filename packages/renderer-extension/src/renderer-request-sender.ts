@@ -41,6 +41,13 @@ export function isUnsupportedMethod(error: unknown, method: string): boolean {
   );
 }
 
+export interface RendererRequestSender {
+  (method: string, params: unknown, options?: RendererRequestOptions): Promise<unknown>;
+  /** Drop remembered method absences. A remote control channel can start answering
+   * after the SSH host is up; a refusal from before that must not stick. */
+  releaseUnsupported(): void;
+}
+
 /** One sender per request client. Only explicit method absence is remembered;
  * successes, params, Harness availability and transient failures are not cached. */
 export function createRendererRequestSender(
@@ -49,9 +56,9 @@ export function createRendererRequestSender(
     params: unknown,
     options?: RendererRequestOptions,
   ) => Promise<unknown> | unknown,
-): (method: string, params: unknown, options?: RendererRequestOptions) => Promise<unknown> {
+): RendererRequestSender {
   const unsupported = new Map<string, RendererMethodUnavailableError>();
-  return async (method, params, options) => {
+  const sender: RendererRequestSender = async (method, params, options) => {
     const known = unsupported.get(method);
     if (known) throw known;
     try {
@@ -63,4 +70,8 @@ export function createRendererRequestSender(
       throw unavailable;
     }
   };
+  sender.releaseUnsupported = () => {
+    unsupported.clear();
+  };
+  return sender;
 }

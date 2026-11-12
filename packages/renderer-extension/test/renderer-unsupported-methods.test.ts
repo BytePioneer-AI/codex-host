@@ -188,6 +188,21 @@ describe("unsupported methods on one Host connection", () => {
     expect(sendRequest).toHaveBeenCalledTimes(2);
   });
 
+  it("drops a remembered method refusal when the control channel is released", async () => {
+    const sendRequest = vi
+      .fn()
+      .mockRejectedValueOnce(unsupported(HARNESS_INSPECT_METHOD))
+      .mockResolvedValueOnce(readyHarness);
+    const client = clientFor(sendRequest);
+    const input = { harnessId: harnessIdSchema.parse("pi") };
+    await expect(client.inspectHarness(input)).rejects.toThrow("unsupported");
+    await expect(client.inspectHarness(input)).rejects.toThrow("unsupported");
+    expect(sendRequest).toHaveBeenCalledTimes(1);
+    client.releaseUnsupportedMethods?.();
+    await expect(client.inspectHarness(input)).resolves.toEqual(readyHarness);
+    expect(sendRequest).toHaveBeenCalledTimes(2);
+  });
+
   it("a replacement connection rechecks methods that were unsupported", async () => {
     const sendRequest = vi
       .fn()

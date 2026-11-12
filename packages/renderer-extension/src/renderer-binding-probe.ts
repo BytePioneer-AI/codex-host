@@ -120,6 +120,7 @@ import { compatibleRendererPluginPresentation, rendererAgentLabel } from "./rend
 import {
   createNativeScheduleWorkspaceThread,
   isNativeProjectThreadCreator,
+  startAutoConnectRestore,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { loadCodexNativeServices } from "./codex-native-services.js";
 import { openCodexSchedules } from "./codex-schedule-navigation.js";
@@ -850,6 +851,42 @@ export function installRendererBindingProbe(
   });
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const remoteConnections = createRemoteConnectionsControl(window, modelClientForHost);
+  const autoConnectRestore = startAutoConnectRestore(
+    window,
+    {
+      async list() {
+        const connections = await remoteConnections.ssh.list();
+        return connections.map((connection) => ({
+          hostId: connection.hostId,
+          autoConnect: connection.autoConnect,
+        }));
+      },
+      async state(hostId) {
+        const status = await remoteConnections.ssh.state(hostId);
+        return { state: status.state };
+      },
+      connect(hostId, enabled) {
+        return remoteConnections.ssh.connect(hostId, enabled);
+      },
+    },
+    {
+      setTimeout: (handler, delayMs) => {
+        const id = window.setTimeout(handler, delayMs);
+        if (typeof id === "object" && id !== null && "unref" in id) {
+          const timer = id as { unref?: () => void };
+          timer.unref?.();
+        }
+        return id;
+      },
+      clearTimeout: (id) => window.clearTimeout(id as number),
+    },
+    {
+      onConnected(hostId) {
+        modelClientForHost(hostId)?.releaseUnsupportedMethods?.();
+        void refreshHarnessAvailabilityForHost(hostId, true, false, true);
+      },
+    },
+  );
   const usageStatistics = createRendererUsageStatisticsSource({
     routing: () => window.__codexhostHostRoutingV1,
     listConnections: () => remoteConnections.ssh.list(),
@@ -3608,6 +3645,7 @@ export function installRendererBindingProbe(
     dispose() {
       if (disposed) return;
       disposed = true;
+      autoConnectRestore.dispose();
       pendingDefaultPreferences.clear();
       window.removeEventListener(HARNESS_PREFERENCES_UPDATED_EVENT, onPreferencesChanged);
       questions.dispose();

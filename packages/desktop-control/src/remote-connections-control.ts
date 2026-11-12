@@ -1,4 +1,9 @@
 import { createConnection } from "node:net";
+import {
+  AUTO_CONNECT_RESTORE_ATTEMPTS,
+  autoConnectMemory,
+  restoreDisconnectedAutoConnect,
+} from "./remote-auto-connect.js";
 import { rendererRemoteSession } from "./renderer-remote-sessions.js";
 import {
   REMOTE_THREAD_REPLY_MAX_BYTES,
@@ -15,7 +20,7 @@ const MAX_REPLY_BYTES = 1024 * 1024;
 export function remoteConnectionsExpression(input: RemoteConnectionsRequest): string {
   const request = remoteConnectionsRequestSchema.parse(input);
   if (request.action === "session")
-    return `(async () => { try { return {result:await (${rendererRemoteSession.toString()})(window,${JSON.stringify(request.operation)})}; } catch(error) {return {error:{code:-32090,message:String(error?.message ?? error)}};} })()`;
+    return `(async () => { const restore=${restoreDisconnectedAutoConnect.toString()}; const memoryOf=${autoConnectMemory.toString()}; try { return {result:await (${rendererRemoteSession.toString()})(window,${JSON.stringify(request.operation)},restore,memoryOf,${AUTO_CONNECT_RESTORE_ATTEMPTS})}; } catch(error) {return {error:{code:-32090,message:String(error?.message ?? error)}};} })()`;
   return `(async () => {
     try {
       const api = window.__codexhostRendererBindingProbeV1;

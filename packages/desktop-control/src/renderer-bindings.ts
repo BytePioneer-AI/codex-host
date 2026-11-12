@@ -24,3 +24,13 @@ export {
   type NativeScheduleWorkspace,
   type NativeScheduleWorkspaceThread,
 } from "./renderer-schedule-workspace.js";
+export {
+  AUTO_CONNECT_RESTORE_ATTEMPTS,
+  AUTO_CONNECT_RESTORE_DELAYS_MS,
+  autoConnectMemory,
+  restoreDisconnectedAutoConnect,
+  startAutoConnectRestore,
+  type AutoConnectControl,
+  type AutoConnectMemory,
+  type AutoConnectRecord,
+} from "./remote-auto-connect.js";

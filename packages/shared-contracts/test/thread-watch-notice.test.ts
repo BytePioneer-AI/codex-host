@@ -23,8 +23,8 @@ describe("thread watch notice", () => {
       [
         THREAD_WATCH_NOTICE_HEADER,
         "",
-        '- [审查最近PR · 委派](codex://threads/t-1 "Turn turn-1"): completed',
-        "- [t-2](codex://threads/t-2): timedOut. Run 'codexhost thread watch' again to keep waiting.",
+        '- [审查最近PR · 委派](thread://t-1 "Turn turn-1"): completed',
+        "- [t-2](thread://t-2): timedOut. Run 'codexhost thread watch' again to keep waiting.",
       ].join("\n"),
     );
   });
@@ -58,11 +58,11 @@ describe("thread watch notice", () => {
     expect(parseThreadWatchNotice("hello")).toBeUndefined();
     expect(parseThreadWatchNotice(THREAD_WATCH_NOTICE_HEADER)).toBeUndefined();
     expect(
-      parseThreadWatchNotice(`${THREAD_WATCH_NOTICE_HEADER}\n\n- [a](codex://threads/t): done`),
+      parseThreadWatchNotice(`${THREAD_WATCH_NOTICE_HEADER}\n\n- [a](thread://t): done`),
     ).toBeUndefined();
     expect(
       parseThreadWatchNotice(
-        `${THREAD_WATCH_NOTICE_HEADER}\n\n- [a](codex://threads/t): completed\nextra text`,
+        `${THREAD_WATCH_NOTICE_HEADER}\n\n- [a](thread://t): completed\nextra text`,
       ),
     ).toBeUndefined();
   });

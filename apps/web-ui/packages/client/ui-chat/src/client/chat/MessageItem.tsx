@@ -289,7 +289,7 @@ function UserStyleBubble({
           </div>
         )}
       </div>
-      {actions?.(text)}
+      {!notice && actions?.(text)}
     </div>
   );
 }

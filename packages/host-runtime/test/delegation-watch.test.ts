@@ -105,7 +105,7 @@ describe("DelegationWatchService", () => {
         { threadId: "child", label: title ?? "child", outcome: "completed", turnId: "turn-child" },
       ]);
       expect(fake.sent[0]?.message).toContain(
-        `- [${title ?? "child"}](codex://threads/child "Turn turn-child"): completed`,
+        `- [${title ?? "child"}](thread://child "Turn turn-child"): completed`,
       );
     },
   );

@@ -16,12 +16,13 @@
 格式由 `packages/shared-contracts/src/thread-watch-notice.ts` 定义，Host 生成、Web 解析都使用它。首行是固定的英文说明，随后每个 Thread 一行 Markdown 链接：
 
 ```text
-- [<会话标题>](codex://threads/<id> "Turn <turnId>"): <结果>. <可选说明>
+- [<会话标题>](thread://<id> "Turn <turnId>"): <结果>. <可选说明>
 ```
 
 - 链接标签是观察期间读到的 Thread 标题，随 watch 记录持久化；从未读到标题时使用 Thread ID。Turn 写在链接的 title 属性里，模型可以读到，界面上不占正文。
 - 说明只在需要时出现：`timedOut` 提示重新注册，`unreadable` 附读取错误，`notFound` 说明 Thread 已不存在，重启导致的 `interrupted` 附重启说明。
-- 同一份原文给模型阅读，Desktop 按原生 Markdown 显示为可点击的会话链接，Web 解析后显示为通知卡片（见 [独立 Web](../product/standalone-web.md)）。不符合格式的文字（包括旧格式的历史通知）按普通用户消息显示。
+- 链接使用 Desktop 原生的会话引用形式 `[标题](thread://<id>)`，Desktop 将其显示为会话引用标签；普通的 `codex://threads/<id>` 链接在 Desktop 用户消息中不会被渲染。`codexhost thread read` 同样接受该形式。
+- 同一份原文给模型阅读，Web 解析后显示为通知卡片（见 [独立 Web](../product/standalone-web.md)）。不符合格式的文字（包括旧格式的历史通知）按普通用户消息显示。
 
 入口：
 

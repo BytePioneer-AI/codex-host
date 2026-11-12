@@ -1,9 +1,9 @@
 /**
  * Thread watch notice: the message a watch sends into the notified Thread.
  *
- * The same text is read by the model, shown by Codex Desktop as Markdown (each
- * watched Thread is a `codex://threads/<id>` link labelled with its title), and
- * folded by Web into a notice card. Text that does not parse stays an ordinary
+ * The same text is read by the model, shown by Codex Desktop with each watched
+ * Thread as its native `[title](thread://<id>)` session mention, and folded by
+ * Web into a notice card. Text that does not parse stays an ordinary
  * user message.
  */
 export const THREAD_WATCH_NOTICE_HEADER =
@@ -31,7 +31,7 @@ export interface ThreadWatchNoticeEntry {
 }
 
 const ENTRY_PATTERN = new RegExp(
-  String.raw`^- \[([^\]\n]+)\]\(codex://threads/([^\s()<>"]+)(?: "Turn ([^"\n]+)")?\): ` +
+  String.raw`^- \[([^\]\n]+)\]\(thread://([^\s()<>"?#/]+)(?: "Turn ([^"\n]+)")?\): ` +
     `(${THREAD_WATCH_NOTICE_OUTCOMES.join("|")})(?:\. (.+))?$`,
   "u",
 );
@@ -44,7 +44,7 @@ function formatEntry(entry: ThreadWatchNoticeEntry): string {
   const label = oneLine(entry.label, /[[\]]/gu) || entry.threadId;
   const turn = entry.turnId ? ` "Turn ${oneLine(entry.turnId, /"/gu)}"` : "";
   const note = entry.note ? oneLine(entry.note, /\n/gu) : "";
-  return `- [${label}](codex://threads/${entry.threadId}${turn}): ${entry.outcome}${note ? `. ${note}` : ""}`;
+  return `- [${label}](thread://${entry.threadId}${turn}): ${entry.outcome}${note ? `. ${note}` : ""}`;
 }
 
 export function formatThreadWatchNotice(entries: readonly ThreadWatchNoticeEntry[]): string {

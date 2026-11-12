@@ -1,4 +1,4 @@
-/** Watch notices are display-only cards; navigation and clipboard keep their native semantics. */
+/** Watch notices are display-only cards without message actions; navigation keeps its native semantics. */
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -114,8 +114,8 @@ for (const width of [1280, 390])
           animations: "disabled",
         });
       }
-      await page.getByRole("button", { name: "Copy", exact: true }).first().click();
-      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), text);
+      // The card has no message actions; only the assistant answer keeps its Copy button.
+      assert.equal(await page.getByRole("button", { name: "Copy", exact: true }).count(), 1);
       // Directory updates alone make an unresolved entry openable, without reading it.
       host.add("late-target", "/computer/project", "New directory title");
       await late.getByText("New directory title", { exact: true }).waitFor({ timeout: 15_000 });

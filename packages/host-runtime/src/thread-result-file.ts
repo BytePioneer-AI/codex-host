@@ -41,6 +41,39 @@ function within(directory: string, file: string): boolean {
   );
 }
 
+/** Index of the `)` closing a link after its destination, skipping an optional CommonMark title. */
+function closingParenthesis(text: string, index: number): number | undefined {
+  let end = index;
+  while (text[end] === " " || text[end] === "\t") end += 1;
+  if (text[end] === ")") return end;
+  if (end === index) return undefined;
+  const open = text[end];
+  const close = open === '"' ? '"' : open === "'" ? "'" : open === "(" ? ")" : undefined;
+  if (!close) return undefined;
+  for (end += 1; end < text.length && text[end] !== close; end += 1) {
+    if (text[end] === "\\") end += 1;
+    else if (open === "(" && text[end] === "(") return undefined;
+  }
+  if (end >= text.length) return undefined;
+  for (end += 1; text[end] === " " || text[end] === "\t"; end += 1);
+  return text[end] === ")" ? end : undefined;
+}
+
+/** Local path spellings of one link: percent-decoded or literal, with and without a `#fragment`. */
+function pathCandidates(target: string): string[] {
+  const spellings = new Set<string>();
+  for (const value of [target, target.replace(/#[^#/]*$/u, "")]) {
+    if (!value) continue;
+    spellings.add(value);
+    try {
+      spellings.add(decodeURIComponent(value));
+    } catch {
+      // A literal `%` in a file name is not an escape.
+    }
+  }
+  return [...spellings];
+}
+
 /** Only explicit file links in the latest final report are exportable. */
 function linkedFiles(text: string, cwd: string): Set<string> {
   const files = new Set<string>();
@@ -51,10 +84,12 @@ function linkedFiles(text: string, cwd: string): Set<string> {
     let target: string;
     if (text[start] === "<") {
       end = text.indexOf(">", start + 1);
-      if (end < 0 || text[end + 1] !== ")") continue;
+      if (end < 0) continue;
+      const close = closingParenthesis(text, end + 1);
+      if (close === undefined) continue;
       target = text.slice(start + 1, end);
       if (/[\r\n]/u.test(target)) continue;
-      links.lastIndex = end + 2;
+      links.lastIndex = close + 1;
     } else {
       let depth = 0;
       while (end < text.length && !/\s/u.test(text[end] as string)) {
@@ -70,23 +105,26 @@ function linkedFiles(text: string, cwd: string): Set<string> {
         }
         end += 1;
       }
-      links.lastIndex = end + 1;
-      if (text[end] !== ")" || depth !== 0) continue;
+      const close = depth === 0 ? closingParenthesis(text, end) : undefined;
+      links.lastIndex = (close ?? end) + 1;
+      if (close === undefined) continue;
       target = text.slice(start, end).replace(/\\([\\()])/gu, "$1");
     }
     if (!target) continue;
     try {
-      let file: string;
+      let candidates: string[];
       if (target.startsWith("file:")) {
         const url = new URL(target);
         if (url.username || url.password || url.search || url.hash) continue;
-        file = fileURLToPath(url);
+        candidates = [fileURLToPath(url)];
       } else {
         if (!path.isAbsolute(target) && /^[a-z][a-z0-9+.-]*:/iu.test(target)) continue;
-        file = decodeURIComponent(target);
+        candidates = pathCandidates(target);
       }
-      const resolved = path.resolve(cwd, file);
-      if (within(cwd, resolved)) files.add(resolved);
+      for (const file of candidates) {
+        const resolved = path.resolve(cwd, file);
+        if (within(cwd, resolved)) files.add(resolved);
+      }
     } catch {
       // Remote URLs and malformed file links do not authorize a filesystem read.
     }

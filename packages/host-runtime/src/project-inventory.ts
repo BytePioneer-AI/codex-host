@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
+import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 
@@ -40,19 +40,64 @@ export interface ProjectScan {
   observedAt: string;
 }
 
+interface ScanDirectory {
+  cwd: string;
+  root: string;
+  rootInfo: BigIntStats;
+  info: BigIntStats;
+  depth: number;
+}
+
+function sameDirectory(current: BigIntStats | undefined, expected: BigIntStats): boolean {
+  return (
+    current?.isDirectory() === true && current.dev === expected.dev && current.ino === expected.ino
+  );
+}
+
+/** Rechecks directory identity and symlinks; this is not an atomic openat traversal. */
+async function directoryUnchanged(directory: ScanDirectory): Promise<boolean> {
+  const [info, rootInfo, resolved] = await Promise.all([
+    lstat(directory.cwd, { bigint: true }).catch(() => undefined),
+    lstat(directory.root, { bigint: true }).catch(() => undefined),
+    realpath(directory.cwd).catch(() => undefined),
+  ]);
+  const relative = path.relative(directory.root, directory.cwd);
+  return (
+    sameDirectory(info, directory.info) &&
+    sameDirectory(rootInfo, directory.rootInfo) &&
+    resolved === directory.cwd &&
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
 /** Reads a small regular manifest without following a symlink or executing project code. */
-async function packageMetadata(file: string): Promise<Record<string, unknown> | undefined> {
-  if (!(await lstat(file).catch(() => undefined))?.isFile()) return undefined;
+async function packageMetadata(
+  file: string,
+  directory: ScanDirectory,
+): Promise<Record<string, unknown> | undefined> {
+  if (!(await directoryUnchanged(directory))) return undefined;
+  const expected = await lstat(file, { bigint: true }).catch(() => undefined);
+  if (!expected?.isFile()) return undefined;
   const handle = await open(
     file,
     constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
   ).catch(() => undefined);
   if (!handle) return undefined;
   try {
+    const opened = await handle.stat({ bigint: true });
+    if (
+      opened.dev !== expected.dev ||
+      opened.ino !== expected.ino ||
+      !(await directoryUnchanged(directory))
+    )
+      return undefined;
     const info = await handle.stat();
     if (!info.isFile() || info.size > 65_536) return undefined;
     const bytes = Buffer.alloc(info.size);
     await handle.read(bytes, 0, bytes.length, 0);
+    if (!(await directoryUnchanged(directory))) return undefined;
     const value: unknown = JSON.parse(bytes.toString("utf8"));
     return value && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
@@ -97,8 +142,14 @@ export function repositoryRemote(value: string | undefined): string | undefined 
   }
 }
 
-async function summarize(cwd: string, environment: NodeJS.ProcessEnv): Promise<ProjectSummary> {
+async function summarize(
+  directory: ScanDirectory,
+  environment: NodeJS.ProcessEnv,
+): Promise<ProjectSummary | undefined> {
+  if (!(await directoryUnchanged(directory))) return undefined;
+  const { cwd } = directory;
   const entries = await readdir(cwd, { withFileTypes: true }).catch(() => []);
+  if (!(await directoryUnchanged(directory))) return undefined;
   const names = entries.filter((entry) => !entry.isSymbolicLink()).map((entry) => entry.name);
   const manifests = entries
     .filter((entry) => entry.isFile() && MANIFESTS[entry.name] !== undefined)
@@ -106,10 +157,13 @@ async function summarize(cwd: string, environment: NodeJS.ProcessEnv): Promise<P
   const technologies = new Set(manifests.map((name) => MANIFESTS[name] as string));
   if (names.some((name) => /\.(xcodeproj|xcworkspace)$/u.test(name))) technologies.add("xcode");
   const [metadata, branch, origin] = await Promise.all([
-    names.includes("package.json") ? packageMetadata(path.join(cwd, "package.json")) : undefined,
+    names.includes("package.json")
+      ? packageMetadata(path.join(cwd, "package.json"), directory)
+      : undefined,
     git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"], environment),
     git(cwd, ["config", "--get", "remote.origin.url"], environment),
   ]);
+  if (!(await directoryUnchanged(directory))) return undefined;
   const dependencies = { ...Object(metadata?.dependencies), ...Object(metadata?.devDependencies) };
   for (const framework of FRAMEWORKS) if (framework in dependencies) technologies.add(framework);
   const remote = repositoryRemote(origin);
@@ -131,17 +185,19 @@ export async function discoverProjects(
   roots: string[],
   environment: NodeJS.ProcessEnv,
 ): Promise<ProjectScan> {
-  const queue: Array<{ cwd: string; depth: number }> = [];
+  const queue: ScanDirectory[] = [];
   const unavailableRoots: string[] = [];
   for (const root of roots) {
     const resolved = await realpath(root).catch(() => undefined);
-    if (!resolved || !(await lstat(resolved).catch(() => undefined))?.isDirectory())
-      unavailableRoots.push(root);
+    const info = resolved
+      ? await lstat(resolved, { bigint: true }).catch(() => undefined)
+      : undefined;
+    if (!resolved || !info?.isDirectory()) unavailableRoots.push(root);
     else if (!queue.some((entry) => entry.cwd === resolved))
-      queue.push({ cwd: resolved, depth: 0 });
+      queue.push({ cwd: resolved, root: resolved, rootInfo: info, info, depth: 0 });
   }
   const seen = new Set<string>();
-  const repositories: string[] = [];
+  const repositories: ScanDirectory[] = [];
   let visited = 0;
   let truncated = false;
   for (let cursor = 0; cursor < queue.length; cursor += 1) {
@@ -149,17 +205,22 @@ export async function discoverProjects(
       truncated = true;
       break;
     }
-    const { cwd, depth } = queue[cursor] as { cwd: string; depth: number };
+    const directory = queue[cursor] as ScanDirectory;
+    const { cwd, depth } = directory;
     if (seen.has(cwd)) continue;
     seen.add(cwd);
     visited += 1;
+    if (!(await directoryUnchanged(directory))) {
+      unavailableRoots.push(cwd);
+      continue;
+    }
     const marker = await lstat(path.join(cwd, ".git")).catch(() => undefined);
     if (marker?.isDirectory() || marker?.isFile()) {
-      repositories.push(cwd);
+      repositories.push(directory);
       continue;
     }
     const children = await readdir(cwd, { withFileTypes: true }).catch(() => undefined);
-    if (!children) {
+    if (!children || !(await directoryUnchanged(directory))) {
       unavailableRoots.push(cwd);
       continue;
     }
@@ -173,7 +234,9 @@ export async function discoverProjects(
         truncated = true;
         break;
       }
-      queue.push({ cwd: path.join(cwd, child.name), depth: depth + 1 });
+      const childCwd = path.join(cwd, child.name);
+      const info = await lstat(childCwd, { bigint: true }).catch(() => undefined);
+      if (info?.isDirectory()) queue.push({ ...directory, cwd: childCwd, info, depth: depth + 1 });
     }
   }
   const projects: ProjectSummary[] = [];
@@ -181,8 +244,10 @@ export async function discoverProjects(
   await Promise.all(
     Array.from({ length: Math.min(4, repositories.length) }, async () => {
       while (next < repositories.length) {
-        const cwd = repositories[next++] as string;
-        projects.push(await summarize(cwd, environment));
+        const directory = repositories[next++] as ScanDirectory;
+        const project = await summarize(directory, environment);
+        if (project) projects.push(project);
+        else unavailableRoots.push(directory.cwd);
       }
     }),
   );

@@ -24,6 +24,12 @@ interface ToolVersion {
   version?: string;
 }
 
+interface ProjectCache {
+  key: string;
+  expires?: number;
+  value: Promise<ProjectScan>;
+}
+
 function text(value: unknown, field: string, fallback?: string): string {
   const result = value ?? fallback;
   if (typeof result !== "string" || !result.trim() || result.length > 256)
@@ -102,7 +108,7 @@ export class HostInventory {
   readonly #settingsPath: string;
   #tools:
     { expires: number; value: Promise<{ observedAt: string; tools: ToolVersion[] }> } | undefined;
-  #projects: { key: string; expires: number; value: Promise<ProjectScan> } | undefined;
+  #projects: ProjectCache | undefined;
 
   constructor(environment: NodeJS.ProcessEnv) {
     this.#environment = environment;
@@ -122,16 +128,16 @@ export class HostInventory {
     }
     const defaultWorkspace =
       settings.defaultWorkspace === undefined
-        ? path.join(this.#home, "Developer", "AgentWorkSpace", "Personal")
+        ? undefined
         : absolute(text(settings.defaultWorkspace, "defaultWorkspace"), "defaultWorkspace");
     return {
       id: text(settings.id, "id", os.hostname()),
       name: text(settings.name, "name", os.hostname()),
       aliases: strings(settings.aliases, "aliases", []),
-      projectRoots: strings(settings.projectRoots, "projectRoots", [
-        path.join(this.#home, "Developer", "Repos"),
-      ]).map((root) => absolute(root, "projectRoots")),
-      ...((await directory(defaultWorkspace)) ? { defaultWorkspace } : {}),
+      projectRoots: strings(settings.projectRoots, "projectRoots", []).map((root) =>
+        absolute(root, "projectRoots"),
+      ),
+      ...(defaultWorkspace && (await directory(defaultWorkspace)) ? { defaultWorkspace } : {}),
     };
   }
 
@@ -175,16 +181,24 @@ export class HostInventory {
     const settings = await this.#settings();
     const key = JSON.stringify(settings.projectRoots);
     if (
-      force ||
       !this.#projects ||
       this.#projects.key !== key ||
-      this.#projects.expires <= Date.now()
+      (this.#projects.expires !== undefined && (force || this.#projects.expires <= Date.now()))
     ) {
-      this.#projects = {
+      // A pending scan has no expiry and is shared even by explicit refreshes.
+      const entry: ProjectCache = {
         key,
-        expires: Date.now() + CACHE_MS,
         value: discoverProjects(settings.projectRoots, this.#environment),
       };
+      this.#projects = entry;
+      void entry.value.then(
+        () => {
+          entry.expires = Date.now() + CACHE_MS;
+        },
+        () => {
+          if (this.#projects === entry) this.#projects = undefined;
+        },
+      );
     }
     const scan = await this.#projects.value;
     const query = typeof input.query === "string" ? input.query.trim().toLocaleLowerCase() : "";

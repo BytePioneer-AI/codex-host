@@ -44,8 +44,36 @@ function within(directory: string, file: string): boolean {
 /** Only explicit file links in the latest final report are exportable. */
 function linkedFiles(text: string, cwd: string): Set<string> {
   const files = new Set<string>();
-  for (const match of text.matchAll(/\[[^\]\r\n]*\]\((?:<([^>\r\n]+)>|([^\s)\r\n]+))\)/gu)) {
-    const target = match[1] ?? match[2];
+  const links = /\[[^\]\r\n]*\]\(/gu;
+  for (let match = links.exec(text); match; match = links.exec(text)) {
+    const start = links.lastIndex;
+    let end = start;
+    let target: string;
+    if (text[start] === "<") {
+      end = text.indexOf(">", start + 1);
+      if (end < 0 || text[end + 1] !== ")") continue;
+      target = text.slice(start + 1, end);
+      if (/[\r\n]/u.test(target)) continue;
+      links.lastIndex = end + 2;
+    } else {
+      let depth = 0;
+      while (end < text.length && !/\s/u.test(text[end] as string)) {
+        const character = text[end];
+        if (character === "\\" && /[\\()]/u.test(text[end + 1] ?? "")) {
+          end += 2;
+          continue;
+        }
+        if (character === "(") depth += 1;
+        else if (character === ")") {
+          if (depth === 0) break;
+          depth -= 1;
+        }
+        end += 1;
+      }
+      links.lastIndex = end + 1;
+      if (text[end] !== ")" || depth !== 0) continue;
+      target = text.slice(start, end).replace(/\\([\\()])/gu, "$1");
+    }
     if (!target) continue;
     try {
       let file: string;
@@ -144,14 +172,41 @@ export async function readThreadResultFile(
         "Result file resolves outside the Thread workspace",
       );
     }
-    if (!(await stat(resolved)).isFile()) {
+    const [workspaceInfo, authorized] = await Promise.all([
+      stat(workspace, { bigint: true }),
+      stat(resolved, { bigint: true }),
+    ]);
+    if (!authorized.isFile()) {
       throw new DelegationControlError("INVALID_ARGUMENT", "Result must be a regular file");
     }
+    const checkPaths = async () => {
+      const [currentWorkspace, currentFile, currentWorkspaceInfo] = await Promise.all([
+        realpath(cwd),
+        realpath(file),
+        stat(workspace, { bigint: true }),
+      ]);
+      if (
+        currentWorkspace !== workspace ||
+        currentFile !== resolved ||
+        currentWorkspaceInfo.dev !== workspaceInfo.dev ||
+        currentWorkspaceInfo.ino !== workspaceInfo.ino
+      ) {
+        throw new DelegationControlError("FORBIDDEN", "Result file path changed during the read");
+      }
+    };
+    await checkPaths();
     const handle = await open(
       resolved,
       constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
     );
     try {
+      // O_NOFOLLOW covers only the last component. Pin the authorized object before
+      // reading; path rechecks detect persistent directory swaps, not arbitrary ABA races.
+      const opened = await handle.stat({ bigint: true });
+      if (opened.dev !== authorized.dev || opened.ino !== authorized.ino) {
+        throw new DelegationControlError("FORBIDDEN", "Result file changed before it was opened");
+      }
+      await checkPaths();
       const before = await handle.stat();
       if (!before.isFile()) {
         throw new DelegationControlError("INVALID_ARGUMENT", "Result must be a regular file");
@@ -184,6 +239,7 @@ export async function readThreadResultFile(
           "Result file changed; restart the download",
         );
       }
+      await checkPaths();
       const nextOffset = offset + bytesRead;
       return {
         threadId: snapshot.threadId,

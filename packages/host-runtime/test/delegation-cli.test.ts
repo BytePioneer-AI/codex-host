@@ -108,6 +108,17 @@ describe("delegation CLI", () => {
     },
   );
 
+  it.each(["--help", "-h", "help"])(
+    "shows Host group help for %s without connecting",
+    async (help) => {
+      const output = new PassThrough();
+      const fetchImpl = successfulFetch({});
+      expect(await runDelegationCli({ arguments: ["host", help], output, fetchImpl })).toBe(0);
+      expect(outputText(output)).toContain("codexhost host info");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
   it("prints the authoritative help", async () => {
     const output = new PassThrough();
     await expect(runDelegationCli({ arguments: ["delegate", "--help"], output })).resolves.toBe(0);

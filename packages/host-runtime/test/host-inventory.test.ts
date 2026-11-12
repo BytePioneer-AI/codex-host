@@ -1,12 +1,37 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import type * as FsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HostInventory } from "../src/host-inventory.js";
-import { repositoryRemote } from "../src/project-inventory.js";
+import * as projectInventory from "../src/project-inventory.js";
+import { repositoryRemote, type ProjectScan } from "../src/project-inventory.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>();
+  return {
+    ...actual,
+    open: vi.fn(actual.open),
+    readdir: vi.fn(actual.readdir),
+    readFile: vi.fn(actual.readFile),
+  };
+});
+
+const actualFs = await vi.importActual<typeof FsPromises>("node:fs/promises");
 
 describe("Host inventory", () => {
   let directory: string;
@@ -30,6 +55,9 @@ describe("Host inventory", () => {
   }
 
   beforeEach(async () => {
+    vi.mocked(open).mockImplementation(actualFs.open);
+    vi.mocked(readdir).mockImplementation(actualFs.readdir);
+    vi.mocked(readFile).mockImplementation(actualFs.readFile);
     directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "codexhost-inventory-")));
     repos = path.join(directory, "Developer", "Repos");
     await mkdir(repos, { recursive: true });
@@ -40,12 +68,29 @@ describe("Host inventory", () => {
       GIT_CONFIG_GLOBAL: path.join(directory, "no-global-config"),
       GIT_CONFIG_NOSYSTEM: "1",
     };
+    await settings({ projectRoots: [repos] });
     inventory = new HostInventory(environment);
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.mocked(open).mockReset();
+    vi.mocked(readdir).mockReset();
+    vi.mocked(readFile).mockReset();
     await rm(directory, { recursive: true, force: true });
+  });
+
+  it("does not discover personal directories or infer a workspace without explicit settings", async () => {
+    await rm(path.join(directory, "host-inventory.json"));
+    await repository("personal-project");
+    await mkdir(path.join(directory, "Developer", "AgentWorkSpace", "Personal"), {
+      recursive: true,
+    });
+    const host = new HostInventory({ ...environment, PATH: "" });
+    expect(await host.projects()).toMatchObject({ projectRoots: [], projects: [], total: 0 });
+    const info = await host.info();
+    expect(info.projectRoots).toEqual([]);
+    expect(info).not.toHaveProperty("defaultWorkspace");
   });
 
   it("reports configured identity and an existing workspace without exposing environment secrets", async () => {
@@ -194,6 +239,136 @@ describe("Host inventory", () => {
     expect((await inventory.projects()).total).toBe(1);
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
     expect((await inventory.projects()).total).toBe(2);
+  });
+
+  it("shares pending scans across refreshes and starts their TTL on success", async () => {
+    const started = Promise.withResolvers<undefined>();
+    const pending = Promise.withResolvers<ProjectScan>();
+    const scan: ProjectScan = {
+      projects: [],
+      unavailableRoots: [],
+      truncated: false,
+      observedAt: "fixture",
+    };
+    const discover = vi.spyOn(projectInventory, "discoverProjects").mockImplementation(() => {
+      started.resolve(undefined);
+      return pending.promise;
+    });
+    vi.mocked(readFile).mockResolvedValue(JSON.stringify({ projectRoots: [repos] }));
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const first = inventory.projects();
+    await started.promise;
+    clock.mockReturnValue(1_061_000);
+    const refreshes = [
+      inventory.projects({ refresh: true }),
+      inventory.projects({ refresh: true }),
+      inventory.projects(),
+    ];
+    // These callers finish reading the same settings before the scan completes.
+    await Promise.resolve();
+    await Promise.resolve();
+    pending.resolve(scan);
+    await Promise.all([first, ...refreshes]);
+    expect(discover).toHaveBeenCalledTimes(1);
+    clock.mockReturnValue(1_120_999);
+    await inventory.projects();
+    expect(discover).toHaveBeenCalledTimes(1);
+    clock.mockReturnValue(1_121_000);
+    await inventory.projects();
+    expect(discover).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a failed scan without evicting a newer roots entry", async () => {
+    const started = Promise.withResolvers<undefined>();
+    const failed = Promise.withResolvers<ProjectScan>();
+    const scan: ProjectScan = {
+      projects: [],
+      unavailableRoots: [],
+      truncated: false,
+      observedAt: "fixture",
+    };
+    const discover = vi
+      .spyOn(projectInventory, "discoverProjects")
+      .mockImplementationOnce(() => {
+        started.resolve(undefined);
+        return failed.promise;
+      })
+      .mockResolvedValue(scan);
+    const first = inventory.projects();
+    const rejected = expect(first).rejects.toThrow("fixture failure");
+    await started.promise;
+    await settings({ projectRoots: [] });
+    await inventory.projects();
+    failed.reject(new Error("fixture failure"));
+    await rejected;
+    await inventory.projects();
+    expect(discover).toHaveBeenCalledTimes(2);
+
+    discover.mockRejectedValueOnce(new Error("retryable failure"));
+    await expect(inventory.projects({ refresh: true })).rejects.toThrow("retryable failure");
+    await inventory.projects();
+    expect(discover).toHaveBeenCalledTimes(4);
+  });
+
+  it("rejects a queued directory replaced after its Dirent was read", async () => {
+    const queued = path.join(repos, "queued");
+    const outside = await repository("outside", path.join(directory, "elsewhere"));
+    await writeFile(
+      path.join(outside, "package.json"),
+      JSON.stringify({ description: "outside fixture" }),
+    );
+    await mkdir(queued);
+    vi.mocked(readdir).mockImplementationOnce(async (...args) => {
+      const entries = await actualFs.readdir(...args);
+      await rename(queued, path.join(repos, "saved"));
+      await symlink(outside, queued, process.platform === "win32" ? "junction" : "dir");
+      return entries;
+    });
+    const result = await inventory.projects();
+    expect(result.projects).toEqual([]);
+  });
+
+  it("rechecks directory identity when visiting an already queued child", async () => {
+    const first = path.join(repos, "a-first");
+    await mkdir(first);
+    const queued = await repository("b-queued");
+    const outside = await repository("outside", path.join(directory, "elsewhere"));
+    await writeFile(
+      path.join(outside, "package.json"),
+      JSON.stringify({ description: "outside fixture" }),
+    );
+    vi.mocked(readdir).mockImplementation(async (...args) => {
+      const entries = await actualFs.readdir(...args);
+      if (args[0] === first) {
+        await rename(queued, path.join(repos, "saved"));
+        await symlink(outside, queued, process.platform === "win32" ? "junction" : "dir");
+      }
+      return entries;
+    });
+    const result = await inventory.projects();
+    expect(result.projects).toEqual([]);
+    expect(result.unavailableRoots).toContain(queued);
+  });
+
+  it("omits a repository replaced while opening its manifest", async () => {
+    const project = await repository("project");
+    await writeFile(
+      path.join(project, "package.json"),
+      JSON.stringify({ description: "inside fixture" }),
+    );
+    const outside = await repository("outside", path.join(directory, "elsewhere"));
+    await writeFile(
+      path.join(outside, "package.json"),
+      JSON.stringify({ description: "outside fixture" }),
+    );
+    vi.mocked(open).mockImplementationOnce(async (...args) => {
+      await rename(project, path.join(repos, "saved"));
+      await symlink(outside, project, process.platform === "win32" ? "junction" : "dir");
+      return actualFs.open(...args);
+    });
+    const result = await inventory.projects();
+    expect(result.projects).toEqual([]);
+    expect(result.unavailableRoots).toContain(project);
   });
 
   it("rejects invalid settings and request arguments before scanning", async () => {

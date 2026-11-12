@@ -651,9 +651,12 @@ describe("npm package release", () => {
 
   it.each([
     ["host", "info", "--refresh", "true"],
+    ["host", "--help"],
+    ["host", "-h"],
+    ["host", "help"],
     ["project", "list", "--query", "bat"],
     ["thread", "file", "thread-id", "--path", "outputs/result.png"],
-  ])("routes discovery and file reads through the npm CLI: %j", async (...args) => {
+  ])("routes discovery, file reads and help through the npm CLI: %j", async (...args) => {
     const { result, calls } = await runGeneratedWrapperLifecycle("darwin", args, [0]);
     expect(result.status, result.stderr).toBe(0);
     expect(calls).toHaveLength(1);

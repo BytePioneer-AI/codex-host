@@ -590,7 +590,7 @@ if (userArguments.length === 0) {
 } else if (userArguments[0] === "web" || userArguments[0] === "stop") {
   launchArguments = [userArguments[0], "--node", process.execPath, "--host-runtime", hostRuntime,
     "--web-runtime", path.join(packageRoot, "app", "web-server.mjs"), ...userArguments.slice(1)];
-} else if (userArguments[0] === "host" && userArguments[1] !== "info") {
+} else if (userArguments[0] === "host" && !["info", "--help", "-h", "help"].includes(userArguments[1])) {
   if (userArguments[1] !== "ensure" && userArguments[1] !== "stop") fail("host expects info, ensure or stop");
   launchArguments = ["host", userArguments[1], "--node", process.execPath, "--host-runtime", hostRuntime,
     "--data", updateEnvironment.CODEXHOST_DATA_DIR || path.join(homedir(), ".codexhost"), ...userArguments.slice(2)];

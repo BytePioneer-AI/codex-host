@@ -50,6 +50,7 @@ async function startPicker(t: TestContext, width: number, fast = false): Promise
   const browser = await chromium.launch();
   t.after(() => browser.close());
   const page = await browser.newPage({
+    locale: "en-US",
     viewport: { width, height: 900 },
     isMobile: width < 600,
     hasTouch: width < 600,
@@ -244,6 +245,8 @@ for (const width of [390, 1280]) {
         await composer.fill("keep typing");
         await page.getByRole("menu", { name: "Model", exact: true }).waitFor({ state: "hidden" });
         if (destination === "reopened menu") await openModels(page, "Other Alternate");
+        // Touch menus focus a model row while desktop menus focus search.
+        const focusBeforeReply = await page.evaluateHandle(() => document.activeElement);
 
         responseGate.resolve(undefined);
         await trigger(page).and(page.locator('[aria-busy="false"]')).waitFor();
@@ -262,9 +265,7 @@ for (const width of [390, 1280]) {
           );
           assert.equal(await trigger(page).getAttribute("aria-expanded"), "true");
           assert.equal(
-            await page
-              .getByRole("searchbox", { name: "Search models…", exact: true })
-              .evaluate((element) => element === document.activeElement),
+            await focusBeforeReply.evaluate((element) => element === document.activeElement),
             true,
           );
         }

@@ -33,7 +33,7 @@ Show or change whether codexhost also listens on this machine's Tailscale addres
 Requires Tailscale to be installed and logged in; public also needs MagicDNS, HTTPS certificates and Funnel allowed for this machine. codexhost only adds and removes its own /codexhost Funnel path. A running codexhost applies changes within 30 seconds; status shows what it is actually serving and why something is unavailable.`,
   "client webhook": `codexhost client webhook <name> [--adapter grok-bot --url <url> [--key-file <path>] | --clear true]
 Push the client's events to a bot as they happen, through a vendor adapter, so the bot is woken instead of polling. Without options, shows the webhook and its delivery state.
-The key comes from --key-file or CODEXHOST_WEBHOOK_KEY, never from the command line, and is never shown. A new webhook starts after the latest event; it does not replay history.
+The key comes from --key-file or CODEXHOST_WEBHOOK_KEY, never from the command line, and is never shown. A new webhook starts after the latest event; updating an existing webhook preserves its pending events and retry cursor.
 grok-bot: the Grok Bot (Cursor Automations) webhook trigger URL and its key. Each request carries Idempotency-Key <client>:<event id> and a body under 4 KB with no Thread content; read results with thread read.
 429, 5xx and network failures retry with backoff (5 s up to 15 min) for 24 hours; any other 4xx (for example 400, 401, 403, 404, 408 or 409) stops that event at once as a configuration error. The event log is unaffected either way.`,
   "client list": `codexhost client list

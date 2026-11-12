@@ -192,7 +192,7 @@ CLI 用 `codexhost thread file <thread> --path <文件> --offset <位置> --limi
 
 ## webhook 推送
 
-- `client webhook <name> --adapter grok-bot --url <url>`，密钥来自 `--key-file` 或 `CODEXHOST_WEBHOOK_KEY`，保存在 `<数据目录>/client-webhooks/<name>.json`（0600），不显示也不写日志。新建的 webhook 从最新事件之后开始，不重放历史。
+- `client webhook <name> --adapter grok-bot --url <url>`，密钥来自 `--key-file` 或 `CODEXHOST_WEBHOOK_KEY`，保存在 `<数据目录>/client-webhooks/<name>.json`（0600），不显示也不写日志。新建的 webhook 从最新事件之后开始，不重放历史；更新已有 webhook（例如更换地址或密钥）保留尚未投递的事件和重试进度，`--clear true` 后再配置才重新从最新事件开始。
 - Runtime 每 2 秒检查各客户端的新事件，按顺序推送；投递游标、重试次数与最近失败保存在 `<name>.state.json`，重启后继续。
 - `grok-bot` adapter：`Authorization: Bearer <key>`，JSON 正文不超过 4 KB（引用过多时省略并标 `refsOmitted`），`Idempotency-Key: <client>:<事件标识>`。2xx 为已投递；429、5xx 与网络错误按 5 秒起翻倍、最长 15 分钟退避，最多 24 小时；其余 4xx 立即作为配置错误放弃该事件。推送失败不影响事件日志，客户端仍可按游标读取。
 

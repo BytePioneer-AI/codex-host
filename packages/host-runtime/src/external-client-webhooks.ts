@@ -195,7 +195,7 @@ export class WebhookStore {
     return value as WebhookState;
   }
 
-  /** A new webhook starts after `startAfter`, so setting one up does not replay history. */
+  /** Only the first configuration starts after `startAfter`; repairs preserve pending events. */
   async set(client: string, config: WebhookConfig, startAfter: number): Promise<void> {
     const adapter = WEBHOOK_ADAPTERS.get(config.adapter);
     if (!adapter)
@@ -204,8 +204,15 @@ export class WebhookStore {
         `Unknown webhook adapter '${config.adapter}'; available: ${[...WEBHOOK_ADAPTERS.keys()].join(", ")}`,
       );
     adapter.validate(config);
+    const existingState = await readFile(this.#path(client, ".state.json")).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      },
+    );
+    if (!existingState) await this.saveState(client, { delivered: startAfter });
     await writePrivateJson(this.#path(client, ".json"), { formatVersion: 1, ...config });
-    await this.saveState(client, { delivered: startAfter });
   }
 
   async clear(client: string): Promise<void> {

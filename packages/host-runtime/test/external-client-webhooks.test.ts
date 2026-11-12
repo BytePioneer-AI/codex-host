@@ -172,6 +172,25 @@ describe("webhook dispatcher", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it("preserves pending events and retry state when repairing webhook credentials", async () => {
+    await store.set("bot", { adapter: "grok-bot", url: URL_, key: KEY }, 0);
+    const [pending] = await events.append("bot", [event("pending")]);
+    statuses.push(503);
+    await dispatcher().tick();
+    const state = await store.state("bot");
+    await rm(path.join(directory, "hooks", "bot.json"));
+    await store.set(
+      "bot",
+      { adapter: "grok-bot", url: URL_, key: "replacement-key" },
+      await events.lastEventId("bot"),
+    );
+    expect(await store.state("bot")).toEqual(state);
+    now += 5_001;
+    await dispatcher().tick();
+    expect(pushedIds()).toEqual([pending?.id, pending?.id]);
+    expect(fetchImpl.mock.calls[1]?.[1]?.headers.authorization).toBe("Bearer replacement-key");
+  });
+
   it("backs off on failures, keeps later events waiting, and resumes after a restart", async () => {
     await store.set("bot", { adapter: "grok-bot", url: URL_, key: KEY }, 0);
     const [a, b] = await events.append("bot", [event("a"), event("b")]);

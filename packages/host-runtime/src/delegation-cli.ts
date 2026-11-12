@@ -244,6 +244,76 @@ export async function runDelegationCli(input: {
       writeJson(output, await runClientCommand(command, parsed.positionals, environment));
       return 0;
     }
+    if ((group === "host" && command === "info") || (group === "project" && command === "list")) {
+      rejectUnknown(
+        parsed,
+        group === "host" ? ["--refresh"] : ["--refresh", "--query", "--offset", "--limit"],
+      );
+      if (parsed.positionals.length)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "This command accepts no positional arguments",
+        );
+      const refresh = value(parsed, "--refresh");
+      if (refresh !== undefined && refresh !== "true" && refresh !== "false")
+        throw new DelegationControlError("INVALID_ARGUMENT", "--refresh must be true or false");
+      const offset = value(parsed, "--offset");
+      if (offset !== undefined && (!/^\d+$/u.test(offset) || !Number.isSafeInteger(Number(offset))))
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "--offset must be a non-negative integer",
+        );
+      writeJson(
+        output,
+        await requestRuntime({
+          environment,
+          path: group === "host" ? "/v1/host/info" : "/v1/project/list",
+          body: {
+            ...(refresh !== undefined ? { refresh: refresh === "true" } : {}),
+            ...(value(parsed, "--query") !== undefined ? { query: value(parsed, "--query") } : {}),
+            ...(offset !== undefined ? { offset: Number(offset) } : {}),
+            ...(value(parsed, "--limit")
+              ? { limit: positiveInteger(value(parsed, "--limit"), "--limit", MAX_LIMIT) }
+              : {}),
+          },
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }),
+      );
+      return 0;
+    }
+    if (group === "thread" && command === "file") {
+      rejectUnknown(parsed, ["--path", "--offset", "--limit", "--revision"]);
+      const threadId = parsed.positionals[0];
+      if (parsed.positionals.length !== 1 || !threadId || !value(parsed, "--path"))
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "thread file requires one Thread and --path",
+        );
+      const offset = value(parsed, "--offset");
+      if (offset !== undefined && (!/^\d+$/u.test(offset) || !Number.isSafeInteger(Number(offset))))
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "--offset must be a non-negative integer",
+        );
+      writeJson(
+        output,
+        await requestRuntime({
+          environment,
+          path: "/v1/thread/file",
+          body: {
+            threadId: normalizeThreadId(threadId),
+            path: value(parsed, "--path"),
+            ...(offset !== undefined ? { offset: Number(offset) } : {}),
+            ...(value(parsed, "--limit")
+              ? { limit: positiveInteger(value(parsed, "--limit"), "--limit", 1_048_576) }
+              : {}),
+            ...(value(parsed, "--revision") ? { revision: value(parsed, "--revision") } : {}),
+          },
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }),
+      );
+      return 0;
+    }
     if (group === "harness" && command === "list") {
       rejectUnknown(parsed, []);
       if (parsed.positionals.length > 0) {

@@ -24,6 +24,22 @@ export const remoteSessionOperationSchema = z.discriminatedUnion("kind", [
     archived: z.boolean(),
   }),
   z.strictObject({ kind: z.literal("read"), ...thread }),
+  z
+    .strictObject({
+      kind: z.literal("configure"),
+      ...thread,
+      epoch: identity,
+      modelId: identity.optional(),
+      thinkingOptionId: identity.optional(),
+      permissionModeId: identity.optional(),
+    })
+    .refine(
+      (value) =>
+        [value.modelId, value.thinkingOptionId, value.permissionModeId].filter(
+          (v) => v !== undefined,
+        ).length === 1,
+      "Select exactly one remote setting",
+    ),
   z.strictObject({
     kind: z.literal("prompt"),
     ...thread,

@@ -35,6 +35,7 @@ export async function serveFileUpload(
       id,
       request.iterator({ destroyOnReturn: false }),
       url.searchParams.get("name") ?? undefined,
+      url.searchParams.get("imageMediaType") ?? undefined,
     );
     send(200, { ok: true, value });
   } catch (error) {

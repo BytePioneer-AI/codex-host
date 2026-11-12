@@ -849,10 +849,15 @@ export class ChSessions {
     return this.drafts.get(id)?.cwd ?? this.localWorkspaceRoot(id);
   }
 
-  uploadFile(id: string, chunks: AsyncIterable<Uint8Array>, name?: string) {
+  uploadFile(
+    id: string,
+    chunks: AsyncIterable<Uint8Array>,
+    name?: string,
+    imageMediaType?: string,
+  ) {
     if (!this.fileInputs)
       throw new RpcError("session/attachment-invalid", "File uploads are unavailable.");
-    return this.fileInputs.upload(id, chunks, name);
+    return this.fileInputs.upload(id, chunks, name, imageMediaType);
   }
 
   /** Draft input support for the Web composition; it does not create a Thread. */
@@ -1171,13 +1176,13 @@ export class ChSessions {
       const draft = this.drafts.get(request.sessionId);
       if (!draft || draft.canonicalId) await this.owner(request.sessionId);
       // Validate/save before creating a native Thread. Only native path context crosses the Host channel.
-      const preparedInput = this.fileInputs
+      const prepared = this.fileInputs
         ? await this.fileInputs.prepare(this.id(request.sessionId), request.content)
-        : (this.images?.prepare(request.content) ?? request.content);
-      // Queued entries are presented from path references; base64 would exceed the Host request limit.
-      const presentation = this.images
-        ? this.images.presentation(request.content)
-        : request.content;
+        : {
+            input: this.images?.prepare(request.content) ?? request.content,
+            presentation: this.images?.presentation(request.content) ?? request.content,
+          };
+      const { input: preparedInput, presentation } = prepared;
       // Use native text inputs so Desktop can also render queue entries when
       // connected to an older Host that forwards their shape unchanged.
       const input = preparedInput.map((part) =>

@@ -257,7 +257,7 @@ const displaySettings: WebHarnessDisplaySettings = new WebHarnessDisplaySettings
 );
 const preferences: WebHarnessPreferences = new WebHarnessPreferences(chHost, events);
 const images = new WebImages(data);
-const files = new WebFiles(data);
+const files = new WebFiles(data, images);
 const sessions = new ChSessions(
   chHost,
   workspaces,

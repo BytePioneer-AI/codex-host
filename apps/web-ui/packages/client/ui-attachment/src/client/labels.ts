@@ -60,6 +60,7 @@ export function fileCardLabels(t: TranslateNS<"conversation">, name: string): Fi
     label: t("file.pending"),
     remove: t("file.remove", { name }),
     uploading: t("file.uploading"),
+    uploadingPercent: (percent) => t("file.uploadingPercent", { percent }),
     failed: t("file.uploadFailed"),
     retry: t("file.retry", { name }),
   };

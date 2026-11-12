@@ -190,9 +190,11 @@ export class FileUploadRuntime extends Service implements FileUploadService {
     name?: string,
     signal?: AbortSignal,
     onProgress?: (progress: { readonly loaded: number; readonly total?: number }) => void,
+    imageMediaType?: string,
   ): Promise<RemoteResult<FileUploadValue>> {
     const query = new URLSearchParams({ sessionId });
     if (name !== undefined) query.set("name", name);
+    if (imageMediaType !== undefined) query.set("imageMediaType", imageMediaType);
     // All browser carriers use raw-byte intake, never the bounded JSON RPC route.
     const body = data instanceof Uint8Array ? new Blob([Uint8Array.from(data).buffer]) : data;
     const response = await this.post({

@@ -4,7 +4,6 @@ import type {
   ComposerAttachmentsProps,
   ComposerImageAttachment,
 } from "@deepseek-ai/dsh-client-ui-conversation/client";
-import { IconCloseFillRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import { AttachmentRail } from "../AttachmentRail.tsx";
 import type { AttachmentRailItem } from "../AttachmentRail.tsx";
 import { DropOverlay } from "../DropOverlay.tsx";
@@ -74,60 +73,47 @@ export function ComposerAttachments({
             labels={attachmentRailLabels(t)}
             renderItem={(item) => {
               const attachment = item.attachment;
-              if (attachment.kind === "file") {
-                const upload = uploads[attachment.id];
-                return (
-                  <FileCard
-                    name={attachment.file.name || t("file.label")}
-                    bytes={attachment.file.size}
-                    state={
-                      upload === undefined || upload.status === "uploading"
-                        ? "uploading"
-                        : upload.status === "ready"
-                          ? "ready"
-                          : "error"
-                    }
-                    {...(upload?.status === "uploading" &&
-                    upload.total !== undefined &&
-                    upload.total > 0
-                      ? { progress: upload.loaded / upload.total }
-                      : {})}
-                    labels={fileCardLabels(t, attachment.file.name)}
-                    onRemove={() => {
-                      onRemoveAttachment(attachment.id);
-                    }}
-                    onRetry={() => {
-                      onRetryFile(attachment.id);
-                    }}
-                  />
-                );
-              }
+              const upload = uploads[attachment.id];
+              const image = attachment.kind === "image" ? attachment : undefined;
               return (
-                <div className={css.imageItem}>
-                  <button
-                    type="button"
-                    className={css.thumbnail}
-                    title={t("image.openOriginal")}
-                    onClick={() => {
-                      setPreview(attachment);
-                    }}
-                  >
-                    <img
-                      src={attachment.previewUrl}
-                      alt={attachment.file.name || t("image.pending")}
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    className={css.remove}
-                    aria-label={t("image.remove", { name: attachment.file.name })}
-                    onClick={() => {
-                      onRemoveAttachment(attachment.id);
-                    }}
-                  >
-                    <IconCloseFillRegular size={12} />
-                  </button>
-                </div>
+                <FileCard
+                  name={attachment.file.name || t("file.label")}
+                  bytes={attachment.file.size}
+                  state={
+                    upload === undefined || upload.status === "uploading"
+                      ? "uploading"
+                      : upload.status === "ready"
+                        ? "ready"
+                        : "error"
+                  }
+                  {...(upload?.status === "uploading" &&
+                  upload.total !== undefined &&
+                  upload.total > 0
+                    ? { progress: upload.loaded / upload.total }
+                    : {})}
+                  labels={{
+                    ...fileCardLabels(t, attachment.file.name),
+                    ...(image ? { remove: t("image.remove", { name: attachment.file.name }) } : {}),
+                  }}
+                  preview={
+                    image && (
+                      <button
+                        type="button"
+                        className={css.thumbnail}
+                        title={t("image.openOriginal")}
+                        onClick={() => setPreview(image)}
+                      >
+                        <img src={image.previewUrl} alt={image.file.name || t("image.pending")} />
+                      </button>
+                    )
+                  }
+                  onRemove={() => {
+                    onRemoveAttachment(attachment.id);
+                  }}
+                  onRetry={() => {
+                    onRetryFile(attachment.id);
+                  }}
+                />
               );
             }}
           />

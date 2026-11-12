@@ -330,9 +330,17 @@
   gap: 8px;
 }
 
+.pendingAttachment {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
 .fileCard {
   display: inline-flex;
-  flex: 0 0 240px;
+  flex: none;
   align-items: center;
   gap: 10px;
   width: 240px;

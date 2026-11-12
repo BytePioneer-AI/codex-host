@@ -347,6 +347,8 @@ export function createFixture(
       ? { closeMappingStoreOnExit: options.closeMappingStoreOnExit }
       : {}),
     environment: {
+      HOME: mappingStoreDirectory,
+      CODEX_HOME: path.join(mappingStoreDirectory, ".codex"),
       CODEXHOST_DATA_DIR: mappingStoreDirectory,
       ...(options.environment ?? {}),
     },

@@ -50,7 +50,7 @@ const HERMES_EXCLUSIONS = new Set([
 ]);
 
 export function isExcludedHermesCommand(name: string): boolean {
-  return isExcludedLiveCommand(name.toLowerCase(), "command", { names: HERMES_EXCLUSIONS });
+  return isExcludedLiveCommand(name.toLowerCase(), { names: HERMES_EXCLUSIONS });
 }
 
 export function hermesCommandCatalog(
@@ -129,8 +129,8 @@ export function hermesCommandsFromCompletion(
     const key = pair[0];
     const name = key.replace(/^\//u, "").toLowerCase();
     const meta = gatewayRecord(metadata[key]);
-    // Quick aliases can reach excluded commands. Skills need pending-input/origin
-    // handling. Unreviewed built-ins and native-only desktop surfaces fail closed.
+    // Quick aliases and Skills are excluded. Unreviewed built-ins and
+    // native-only desktop surfaces fail closed.
     if (
       !/^[a-z0-9][\w-]*$/u.test(name) ||
       commands.has(name) ||

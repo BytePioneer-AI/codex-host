@@ -31,11 +31,12 @@ export function parseKiroAvailableCommands(value: unknown): KiroAvailableCommand
   });
 }
 
-/** Live Composer entries for Kiro's advertised steering, agent and skill commands. */
+/** Live Composer entries for Kiro's advertised steering and agent commands. */
 export function kiroLiveCommands(native: readonly KiroAvailableCommand[]): LiveHarnessCommand[] {
-  return native.map((command) => ({
-    name: command.name,
-    description: command.description,
-    kind: command.type === "skill" ? "skill" : "command",
-  }));
+  return native
+    .filter((command) => command.type !== "skill")
+    .map((command) => ({
+      name: command.name,
+      description: command.description,
+    }));
 }

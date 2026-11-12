@@ -15,6 +15,8 @@ it(
   async (t) => {
     const { host, state, page, composer, openCommands, menu, open, attach } =
       await discoveryBrowser(t);
+    state.official = true;
+    await page.reload();
     state.catalog = harnessCommandCatalogSchema.parse({
       source: "live",
       commands: [
@@ -231,7 +233,7 @@ it(
       await gate.promise;
     };
     await openCommands();
-    await menu.locator('[role="status"]').waitFor();
+    await menu.locator('[role="status"][data-source="codexhost-native"]').waitFor();
     defined(state.catalog.commands[0]).label = "Destination compact";
     await open("destination");
     state.beforeInspect = async () => {};
@@ -372,7 +374,7 @@ it(
       await gate.promise;
     };
     await openCommands();
-    await menu.locator('[role="status"]').waitFor();
+    await menu.locator('[role="status"][data-source="codexhost-native"]').waitFor();
     while (!blocked) await page.waitForTimeout(10);
     defined(state.catalog.commands[0]).label = "After reconnect";
     state.beforeInspect = async () => {};

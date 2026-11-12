@@ -21,6 +21,13 @@ export class ClientChannelEvents {
     };
     this.publish(event);
   }
+  skillsChanged(cwd?: string): void {
+    this.publish({
+      type: "skills-changed",
+      cursor: { epoch: this.epoch, sequence: ++this.sequence },
+      ...(cwd ? { cwd } : {}),
+    });
+  }
   displaySettingsChanged(): void {
     this.publish({
       type: "display-settings-changed",

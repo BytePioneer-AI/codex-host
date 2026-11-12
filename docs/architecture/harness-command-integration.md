@@ -28,7 +28,7 @@ Declare a static `HarnessAdapter.commandCatalog`. Reading this metadata must not
 
 Do not add a generic raw-RPC passthrough.
 
-Descriptors may set `kind: "skill"` when the Harness itself reports the entry as a skill; otherwise omit `kind` (treated as a command). Never infer skills from names.
+External Harness catalogs contain commands only. Entries the Harness itself reports as skills are dropped by the owning Adapter (see the Skill signal column below); never infer skills from names. External Harness Skills come from the [Skill library](skill-library.md). `kind: "skill"` is used only by the official Codex native Skill catalog.
 
 ## 3. Add the native translation
 
@@ -52,38 +52,38 @@ Catalog reads never open or resume a Session:
 
 For Harnesses whose Adapter sets `liveCommandCatalog: true`, inspection results carry `source`: `live` when they include what a native Session reported for the workspace, `static` when they are the Adapter built-ins only. Other Harnesses leave `source` unset.
 
-Every live result is remembered in memory per Harness and workspace (at most 64 workspaces, least recently used first out), so a new draft in a workspace that already had a running Session shows its project commands and skills. The cache never crosses workspaces and never survives a Host restart; the Host never starts a native process to fill it.
+Every live result is remembered in memory per Harness and workspace (at most 64 workspaces, least recently used first out), so a new draft in a workspace that already had a running Session shows its project commands. The cache never crosses workspaces and never survives a Host restart; the Host never starts a native process to fill it.
 
 A draft's workspace reaches the Host only through Desktop's `thread/start` prewarm. The desktop-control draft bridge publishes that `cwd` per Host (`window.__codexhostDraftWorkspacesV1` and the `codexhost:draft-workspace` event, once when the prewarm starts and again when it settles); the Renderer passes it to the draft read and refreshes the draft's catalog when it changes. A draft with no workspace uses the static catalog.
 
-When the result is `static`, the `#` menu adds a hint under the commands that the project's commands and skills load after a message is sent. The hint shows on a bare `#` even when no command is listed, and is dropped once the query matches nothing.
+When the result is `static`, the `#` menu adds a hint under the commands that the project's commands load after a message is sent. The hint shows on a bare `#` even when no command is listed, and is dropped once the query matches nothing.
 
 The Composer `#` menu is the single command surface; it has no Harness-specific catalog branches. The command (⌘) button is its discoverable entry: hovering explains the `#` trigger, and clicking types `#` at the caret (spaced from a preceding word) to open the menu. The button holds the Harness command catalog the menu reads.
 
 - Selecting `/compact` or an `argumentMode: "none"` command executes it directly through `codexhost/thread/command/execute` with no text arguments, leaving the current draft and attachments untouched, even when the Harness supports optional compaction instructions. Direct commands execute only when a Thread exists; otherwise they are disabled with an explanation.
 - Selecting another text command inserts a native Composer mention chip in place of `#query` (`subagent://codexhost-command.<name>`), because literal `/command` text opens Desktop's own `/` menu. When Desktop's Composer controller is unavailable, the invocation is prefixed in the editor instead. On External Thread `turn/start` and `turn/steer` the Host restores the first chip to a leading `/command arguments` before the same catalog matching and command execution; other command chips are dropped. Only separators adjacent to removed chips are normalized; internal argument spaces, tabs and indentation are preserved. Steering retains the existing stop-then-start sequence, duplicate-message receipts and response-before-event ordering. Cancellation during command discovery prevents the replacement command from starting.
 - When every listed command is disabled and nothing else matches, the menu stays open to show why; Enter is then left to the Composer.
-- The `#` menu groups entries into Commands, Skills (descriptors with `kind: "skill"`) and delegation Agents.
+- The `#` menu groups entries into Commands, Skills (from the [Skill library](skill-library.md#desktop), inserted as a separate `subagent://codexhost-skill.*` carrier that the Host restores in place to the canonical Skill link, not to a command) and delegation Agents.
 
 The command button belongs to the active external Harness controls, near the Composer's left-side actions. It stays visible and enabled before a Thread exists and whatever the catalog or execution state, because the `#` menu also lists delegation targets. Switching to Codex hides it. The `#` menu MUST remain outside the Codex React-managed Slash command list; it owns its own focus, keyboard navigation, positioning, and scrolling.
 
-For typed submission, the Host first checks for a leading slash-command token (ignoring leading whitespace). Only command candidates have trailing whitespace removed before catalog matching; ordinary prompts retain their original text and skip command catalog inspection. Unknown slash commands are rejected, except while a `liveCommandCatalog` Harness's Session still reports only its built-ins (its native process has not started, typically a Thread's first message): the Composer may already list the workspace's live commands from another Session or the cache, so the text goes to the Harness as an ordinary prompt and the native Harness resolves it, as live commands always execute. Commonly excluded commands stay rejected.
+For typed submission, the Host first checks for a leading slash-command token (ignoring leading whitespace). Only command candidates have trailing whitespace removed before catalog matching; ordinary prompts retain their original text and skip command catalog inspection. Unknown slash commands are rejected, except while a `liveCommandCatalog` Harness's Session still reports only its built-ins (its native process has not started, typically a Thread's first message): the Composer may already list the workspace's live commands from another Session or the cache, so the text goes to the Harness as an ordinary prompt and the native Harness resolves it, as live commands always execute. Commonly excluded commands stay rejected. Because external catalogs contain no skills, a typed `/skill-name` is likewise rejected once the live catalog is loaded.
 
 Only add Renderer-specific code when the command needs a new presentation or interaction.
 
 ## Live native catalogs
 
-When a running native Session reports its own commands and skills, the Adapter appends them to its built-ins with `LiveHarnessCommandCatalog` / `mergeLiveHarnessCommands` from `@codexhost/harness-adapter`:
+When a running native Session reports its own commands, the Adapter appends them to its built-ins with `LiveHarnessCommandCatalog` / `mergeLiveHarnessCommands` from `@codexhost/harness-adapter`:
 
 - built-ins keep their dedicated handling and win on name clashes;
-- live entries get a namespaced id (`<harness>.slash.<name>`), `argumentMode: "text"` so the Composer claims them for the user to complete, and `kind` from native metadata;
-- names containing whitespace are skipped;
+- live entries get a namespaced id (`<harness>.slash.<name>`), `argumentMode: "text"` so the Composer claims them for the user to complete;
+- entries the Harness reports as skills and names containing whitespace are skipped;
 - execution sends the native slash text (`/name arguments`) as an ordinary prompt Turn;
 - the listing never starts a native process; before the Session's process starts only built-ins are reported.
 
-Live commands are filtered by a blocklist, never an allowlist. `COMMON_EXCLUDED_LIVE_COMMANDS` in `@codexhost/harness-adapter` lists native commands that replace or reset the Session behind the Host's history, change Desktop-owned configuration (Model, effort, permissions), change trust or approval policy, need a native login or terminal UI, manage plugins or MCP, or start work that outlives the Turn (loops, schedules, background jobs, goals); names starting with `__` or `hooks-` are excluded too. The common list never hides skills, so a user skill is not lost to a name clash; each Adapter adds its own names, which apply to skills as well. Curated Adapter built-ins are not filtered. Because the Host only runs catalog commands, an excluded command is also rejected when typed.
+Live commands are filtered by a blocklist, never an allowlist. `COMMON_EXCLUDED_LIVE_COMMANDS` in `@codexhost/harness-adapter` lists native commands that replace or reset the Session behind the Host's history, change Desktop-owned configuration (Model, effort, permissions), change trust or approval policy, need a native login or terminal UI, manage plugins or MCP, or start work that outlives the Turn (loops, schedules, background jobs, goals); names starting with `__` or `hooks-` are excluded too. Each Adapter adds its own names. Curated Adapter built-ins are not filtered. Because the Host only runs catalog commands, an excluded command is also rejected when typed.
 
-| Harness | Native source | Skill signal | Adapter exclusions beyond the common list |
+| Harness | Native source | Skill signal (entries dropped) | Adapter exclusions beyond the common list |
 | --- | --- | --- | --- |
 | Claude Code | SDK `initializationResult().commands`, `commands_changed` | `init` system message `skills` | account and usage settings, `doctor`, `ultrareview`, removed or renamed commands, workflow entry points |
 | Pi | RPC `get_commands` on each listing | `source: "skill"` | pi-subagents run management and profile rewriting, Host-internal `subagents-inspect-rpc` |
@@ -176,7 +176,9 @@ The public `/dsh-goal` invocation avoids Codex Desktop's built-in `/goal` comman
 
 Web shares one menu engine across `/`, `@` and `#`. Slash lists interface operations,
 current-Harness native commands and Skills. At and hash are equivalent: delegation
-Agents, native commands, Skills, then workspace files. The composer's plus launcher
+Agents, native commands, Skills, then workspace files. For external Harness sessions,
+including drafts with a selected Harness, Skills come from the [Skill library](skill-library.md#web)
+and insert the canonical Skill link text; official Codex keeps its native Skill entries. The composer's plus launcher
 opens the existing slash menu; its File action, paste and drop retain attachment intake. Sources register once
 with aliases, sharing catalogs, codecs, subscriptions and disposal. At and hash use
 the same whitespace-boundary and quoted-path grammar, including numeric filenames

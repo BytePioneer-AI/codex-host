@@ -13,7 +13,9 @@
 
 ## 通知格式
 
-格式由 `packages/shared-contracts/src/thread-watch-notice.ts` 定义，Host 生成、Web 解析都使用它。首行是固定的英文说明，随后每个 Thread 一行 Markdown 链接：
+格式由 `packages/shared-contracts/src/thread-watch-notice.ts` 定义，Host 生成、Web 解析都使用它。首行是固定的英文提示 `[codexhost thread watch] Read each Thread's result, then continue your task:`，随后每个 Thread 一行 Markdown 链接：
+
+通知的作用是唤醒被通知 Thread 的 Agent 继续完成原来的任务。结果已写在每行，首行不再复述状态，只要求先读取实际结果、再继续，以免 Agent 仅凭状态汇报完成，或收到通知后停在原地。
 
 ```text
 - [<会话标题>](thread://<id>): <结果>. <可选说明>

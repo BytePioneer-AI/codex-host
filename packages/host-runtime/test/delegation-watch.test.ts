@@ -82,7 +82,7 @@ describe("DelegationWatchService", () => {
       expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
         { threadId: "child", label: "child", outcome: status },
       ]);
-      expect(fake.sent[0]?.message).toContain("execution state only");
+      expect(fake.sent[0]?.message).toContain("Read each Thread's result, then continue your task");
 
       // The terminal state stays readable, but the one-shot watch is gone.
       await vi.advanceTimersByTimeAsync(POLL_MS * 10);

@@ -6,8 +6,12 @@
  * Web into a notice card. Text that does not parse stays an ordinary
  * user message.
  */
+/**
+ * Wakes the notified Thread's agent: each entry states its outcome, so the
+ * header only asks it to judge the actual work and carry on with its task.
+ */
 export const THREAD_WATCH_NOTICE_HEADER =
-  "[codexhost thread watch] These Threads stopped or their watch expired. This reports execution state only, not accepted work: read each Thread with `codexhost thread read <thread>` before relying on it.";
+  "[codexhost thread watch] Read each Thread's result, then continue your task:";
 
 export const THREAD_WATCH_NOTICE_OUTCOMES = [
   "completed",

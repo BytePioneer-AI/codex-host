@@ -65,16 +65,58 @@ async def _bridge():
             raise SystemExit("[bridge-exit] gateway protocol mismatch; update/restart required")
 
         loop = asyncio.get_running_loop()
-        # A full prompt rides on ONE JSON-RPC line; StreamReader's default 64 KiB
-        # line limit aborts the bridge on large pastes (LimitOverrunError), so the
-        # stdin side matches the WebSocket side's 8 MiB frame ceiling.
-        reader = asyncio.StreamReader(limit=8 * 1024 * 1024)
-        await loop.connect_read_pipe(
-            lambda: asyncio.StreamReaderProtocol(reader), sys.stdin
-        )
+        # A full prompt rides on ONE JSON-RPC line, and StreamReader's default
+        # 64 KiB line limit aborts the bridge on large pastes (LimitOverrunError),
+        # so the cap matches the WebSocket side's 8 MiB frame ceiling. On Windows
+        # the Proactor loop cannot connect_read_pipe() a stdio file object
+        # (bpo-26832), so stdin is read in a worker thread there instead.
+        LINE_LIMIT = 8 * 1024 * 1024
+
+        async def _read_line(stream):
+            """Read one newline-terminated line, or fail past LINE_LIMIT."""
+            chunk = await asyncio.to_thread(stream.readline, LINE_LIMIT)
+            if not chunk:
+                return None
+            if isinstance(chunk, str):
+                chunk = chunk.encode("utf-8", "replace")
+            line = bytearray(chunk)
+            # readline(limit) stops at the cap without a newline; keep reading so
+            # an oversized frame is one line (and one error), never two sends.
+            while not line.endswith(b"\\n") and len(line) < LINE_LIMIT:
+                more = await asyncio.to_thread(
+                    stream.readline, LINE_LIMIT - len(line) or 1
+                )
+                if not more:
+                    break
+                if isinstance(more, str):
+                    more = more.encode("utf-8", "replace")
+                line.extend(more)
+            if len(line) >= LINE_LIMIT and not line.endswith(b"\\n"):
+                raise SystemExit(
+                    "[bridge-exit] stdin line exceeds the 8 MiB bridge limit"
+                )
+            return bytes(line)
+
+        if sys.platform == "win32":
+            async def read_stdin():
+                stream = getattr(sys.stdin, "buffer", sys.stdin)
+                while True:
+                    raw = await _read_line(stream)
+                    if raw is None:
+                        break
+                    yield raw
+        else:
+            reader = asyncio.StreamReader(limit=LINE_LIMIT)
+            await loop.connect_read_pipe(
+                lambda: asyncio.StreamReaderProtocol(reader), sys.stdin
+            )
+
+            async def read_stdin():
+                async for raw in reader:
+                    yield raw
 
         async def pump_in():
-            async for raw in reader:
+            async for raw in read_stdin():
                 line = raw.decode("utf-8", "replace").strip()
                 if line:
                     await ws.send(line)

@@ -3647,6 +3647,7 @@ export class AppServerHost {
     arguments_: JsonObject | undefined,
     requestedTurnId?: HostTurnId,
     sourceHostId?: unknown,
+    submission?: { text: string; clientUserMessageId?: string; publishInput: boolean },
   ): Promise<{ turnId: HostTurnId; turn: JsonObject; gate: TurnProjectionGate }> {
     const commands = thread.session.commands;
     if (!commands) {
@@ -3668,6 +3669,15 @@ export class AppServerHost {
         cwd: thread.cwd,
         startedAtMs: Date.now(),
       }),
+      command: {
+        name: descriptor.invocation.slice(1),
+        text:
+          submission?.text ?? [descriptor.invocation, arguments_?.text].filter(Boolean).join(" "),
+        ...(submission?.clientUserMessageId
+          ? { clientUserMessageId: submission.clientUserMessageId }
+          : {}),
+        publishInput: this.#options.externalOnly || (submission?.publishInput ?? true),
+      },
     };
     const gate = turnProjectionGate();
     thread.running = true;
@@ -3675,7 +3685,9 @@ export class AppServerHost {
     thread.projectedTerminalTurnId = null;
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, gate);
+    // Hide an unresolved execution from history until its Adapter starts it.
     thread.ephemeralTurnIds.add(turnId);
+    thread.submissions.accept(submission?.clientUserMessageId, turnId, submission?.text);
     if (descriptor.invocation === "/compact") this.#manualCompactionTurns.set(thread, turnId);
     else this.#manualCompactionTurns.delete(thread);
 
@@ -3690,10 +3702,15 @@ export class AppServerHost {
         ...(arguments_ ? { arguments: arguments_ } : {}),
       });
       if (!result.ok) throw new ExternalCommandError(-32073, result.error.message);
-      thread.clientCommand = {
-        name: descriptor.invocation.slice(1),
-        turn: projection.projector.snapshotTurn(),
-      };
+      // Compact retains its command-acceptance path without waiting for turn.started.
+      if (descriptor.invocation === "/compact") {
+        thread.clientCommand = {
+          name: "compact",
+          turn: projection.projector.snapshotTurn(),
+        };
+        thread.submissions.started(turnId, true);
+        thread.submissions.operation(turnId, "compact", thread.clientCommand.turn);
+      }
       return { turnId, turn: projection.projector.pendingTurn(), gate };
     } catch (error) {
       restoreExecutionHost();
@@ -3702,6 +3719,7 @@ export class AppServerHost {
       thread.projectedTurns.delete(turnId);
       thread.responseGates.delete(turnId);
       thread.ephemeralTurnIds.delete(turnId);
+      thread.submissions.finish(turnId, "rejected", errorMessage(error));
       this.#manualCompactionTurns.delete(thread);
       gate.resolve();
       this.#signalActiveWorkChanged();
@@ -5115,6 +5133,8 @@ export class AppServerHost {
   ): Promise<{ turnId: HostTurnId; gate: TurnProjectionGate }> {
     await insertNativeSteer(thread, input, {
       project: async (turnId, item, clientUserMessageId) => {
+        thread.submissions.accept(clientUserMessageId, turnId, input.text);
+        thread.submissions.started(turnId, false);
         const projection = projectedTurn(thread, turnId);
         if (clientUserMessageId) {
           projection.projector.bindUserMessageClientId(item.itemId, clientUserMessageId);
@@ -5180,6 +5200,7 @@ export class AppServerHost {
         command.arguments,
         undefined,
         sourceHostId,
+        { text: inputText, ...(clientUserMessageId ? { clientUserMessageId } : {}), publishInput },
       );
     } catch (error) {
       if (error instanceof ExternalCommandError || error instanceof ExternalSteerError) throw error;
@@ -5260,6 +5281,7 @@ export class AppServerHost {
     thread.projectedTerminalTurnId = null;
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, gate);
+    thread.submissions.accept(clientUserMessageId, turnId, text);
 
     const restoreExecutionHost = this.#setExecutionHost(thread, sourceHostId);
     try {
@@ -5280,6 +5302,7 @@ export class AppServerHost {
       thread.activeTurnId = null;
       thread.projectedTurns.delete(turnId);
       thread.responseGates.delete(turnId);
+      thread.submissions.finish(turnId, "rejected", errorMessage(error));
       gate.resolve();
       this.#signalActiveWorkChanged();
       throw error;

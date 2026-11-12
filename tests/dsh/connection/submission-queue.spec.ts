@@ -68,6 +68,36 @@ it("keeps a steering echo until admission, rather than retiring it on next-step 
   expect(onRetire).not.toHaveBeenCalled();
 });
 
+it.each(["running", "completed", "failed", "cancelled"] as const)(
+  "retires an acknowledged %s operation without a conversation message and keeps other submissions",
+  async (status) => {
+    const { session, onRetire, submission } = fixture();
+    const other = session.beginSubmission({ mode: "queue", text: "unrelated", attachments: [] });
+    session.projections.applyLive(
+      "nativeSubmissions",
+      [
+        {
+          clientUserMessageId: submission.requestId,
+          turnId: "native-operation",
+          execution: "operation",
+          status,
+        },
+      ],
+      SessionSeq(8),
+    );
+    await vi.waitFor(() =>
+      expect(onRetire).toHaveBeenCalledExactlyOnceWith({ reason: "observed", attachments: [] }),
+    );
+    expect(session.getSnapshot().pendingSubmissions.map((entry) => entry.requestId)).toEqual([
+      other.requestId,
+    ]);
+    session.handleRunning(false);
+    expect(session.getSnapshot().pendingSubmissions.map((entry) => entry.requestId)).toEqual([
+      other.requestId,
+    ]);
+  },
+);
+
 it("does not retire a local echo when another client's message is queued", async () => {
   const { session, onRetire, submission, message } = fixture();
   session.projections.applyLive(

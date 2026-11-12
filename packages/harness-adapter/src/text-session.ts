@@ -507,6 +507,8 @@ export interface SubagentTranscriptChangedEvent {
 export interface TurnStartedEvent {
   type: "turn.started";
   turnId: HostTurnId;
+  /** A native operation, not a conversation. Must precede all operation Items. */
+  ephemeral?: true;
 }
 
 export interface AutonomousTurnStartedEvent {

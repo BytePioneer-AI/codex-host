@@ -235,9 +235,20 @@ export class Session implements SessionFace {
       this.snapshotCache = this.buildSnapshot();
     });
     this.snapshotCache = this.buildSnapshot();
-    this.stopObservingInbox = this.projections.faceOf("inbox").subscribe(() => {
+    const stopInbox = this.projections.faceOf("inbox").subscribe(() => {
       this.observeSubmissionInbox();
     });
+    const stopReceipts = this.projections.faceOf("nativeSubmissions").subscribe(() => {
+      for (const receipt of this.projections.get("nativeSubmissions") ?? []) {
+        const id = receipt.clientUserMessageId as SessionRequestId;
+        if (receipt.status === "rejected") this.retireFailedSubmission(id);
+        else if (receipt.execution === "operation") this.scheduleObservedRetirement(id, []);
+      }
+    });
+    this.stopObservingInbox = () => {
+      stopInbox();
+      stopReceipts();
+    };
   }
 
   /**

@@ -737,7 +737,20 @@ export class CursorSession implements HarnessSession {
     );
     this.#subagentOutput = output.subagents;
     this.#unattendedApproval = false;
-    this.#channel.emit({ kind: "event", event: { type: "turn.started", turnId: command.turnId } });
+    const administrative =
+      command.input
+        .map((part) => part.text)
+        .join("\n")
+        .trim()
+        .toLowerCase() === "/copy-request-id";
+    this.#channel.emit({
+      kind: "event",
+      event: {
+        type: "turn.started",
+        turnId: command.turnId,
+        ...(administrative ? { ephemeral: true as const } : {}),
+      },
+    });
     let outcome: TurnOutcome = {
       status: "failed",
       error: { code: "nativeFailure", message: "Cursor turn failed", retryable: false },
@@ -805,12 +818,6 @@ export class CursorSession implements HarnessSession {
     try {
       const after = this.#native(this.#fresh);
       const added = after.filter((turn) => !before.some((old) => old.id === turn.id));
-      const administrative =
-        command.input
-          .map((part) => part.text)
-          .join("\n")
-          .trim()
-          .toLowerCase() === "/copy-request-id";
       if (administrative && JSON.stringify(before) === JSON.stringify(after)) {
         // This native command returns a local message without persisting a user Turn.
       } else {

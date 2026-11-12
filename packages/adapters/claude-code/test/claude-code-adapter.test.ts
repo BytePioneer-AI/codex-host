@@ -2175,6 +2175,7 @@ describe("Claude Code HarnessAdapter", () => {
     expect(await nextEvent(iterator)).toEqual({
       type: "turn.started",
       turnId: "manual-compact",
+      ephemeral: true,
     });
     const transport = transports[0];
     if (!transport) throw new Error("Fake Claude transport was not created");
@@ -2275,7 +2276,7 @@ describe("Claude Code HarnessAdapter", () => {
 
     await commands.execute({ turnId, commandId: "claude.compact" });
     expect((await nextEvent(iterator)).type).toBe("session.state.changed");
-    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId, ephemeral: true });
     const transport = transports[0];
     if (!transport) throw new Error("Fake Claude transport was not created");
     transport.event({ type: "compaction.started" });
@@ -2315,7 +2316,7 @@ describe("Claude Code HarnessAdapter", () => {
       value: { turnId },
     });
     expect((await nextEvent(iterator)).type).toBe("session.state.changed");
-    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId, ephemeral: true });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "item.started",
       turnId,
@@ -2357,7 +2358,7 @@ describe("Claude Code HarnessAdapter", () => {
       value: { turnId },
     });
     expect((await nextEvent(iterator)).type).toBe("session.state.changed");
-    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId, ephemeral: true });
     expect((await nextEvent(iterator)).type).toBe("item.started");
     const transport = transports[0];
     if (!transport) throw new Error("Fake Claude transport was not created");

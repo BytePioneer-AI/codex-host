@@ -1537,7 +1537,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       this.#activeCommand = active;
       this.#acceptedTurnIds.add(command.turnId);
       this.#operationControllers.add(active.abort);
-      this.#emit({ type: "turn.started", turnId: command.turnId });
+      this.#emit({ type: "turn.started", turnId: command.turnId, ephemeral: true });
       this.#emit({ type: "item.started", turnId: command.turnId, item });
       void this.#runHarnessCommand(active);
       return { ok: true, value: { turnId: command.turnId } };

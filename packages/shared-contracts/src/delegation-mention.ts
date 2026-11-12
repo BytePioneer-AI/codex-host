@@ -74,12 +74,17 @@ export function stripDelegationMentions(text: string): DelegationMentionRewrite 
 export const HARNESS_COMMAND_MENTION_PATH_PREFIX = "subagent://codexhost-command.";
 
 const COMMAND_LINK_PATTERN =
-  /([ \t]*)\[@([^\]\n]+)\]\(<?subagent:\/\/codexhost-command\.([^)\s>]+)>?\)([ \t]*)/gu;
+  /([ \t]*)\[@([^\]\n]+)\]\(<?subagent:\/\/codexhost-(?:command|skill)\.([^)\s>]+)>?\)([ \t]*)/gu;
 
-export function harnessCommandMentionPath(invocation: string): string {
+export function harnessCommandMentionPath(
+  invocation: string,
+  kind: "command" | "skill" = "command",
+): string {
   const name = invocation.trim().replace(/^\//u, "");
   if (!name || /\s/u.test(name)) throw new Error(`Invalid Harness command: ${invocation}`);
-  return `${HARNESS_COMMAND_MENTION_PATH_PREFIX}${encodeURIComponent(name).replace(
+  const prefix =
+    kind === "skill" ? "subagent://codexhost-skill." : HARNESS_COMMAND_MENTION_PATH_PREFIX;
+  return `${prefix}${encodeURIComponent(name).replace(
     /[()]/gu,
     (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
   )}`;

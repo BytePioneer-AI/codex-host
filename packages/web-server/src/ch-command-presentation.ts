@@ -1,19 +1,30 @@
-/** Ephemeral Host commands use command cards, never synthetic conversation Turns. */
-import type { ClientThreadSnapshot } from "@codexhost/shared-contracts";
+/** Native operations use command cards, never synthetic conversation Turns. */
+import type { ClientSubmission, ClientThreadSnapshot } from "@codexhost/shared-contracts";
 import type { ChTurn } from "./ch-thread-view.ts";
 import type { SessionLog } from "./session-log.ts";
 
+type Command = NonNullable<ClientThreadSnapshot["command"]>;
+
 export class ChCommandPresentation {
-  private current: { id: string; done: boolean } | undefined;
+  private readonly commands = new Map<string, boolean>();
   private compacting: boolean | undefined;
 
   constructor(private readonly log: SessionLog) {}
 
-  update(command: ClientThreadSnapshot["command"], turns: readonly ChTurn[]): void {
-    const commandRunning = command?.turn.status === "inProgress";
-    const compactingTurns = command ? [...turns, command.turn] : turns;
+  update(
+    command: Command | undefined,
+    turns: readonly ChTurn[],
+    submissions: readonly ClientSubmission[] = [],
+  ): void {
+    const operations = new Map<string, Command>();
+    for (const submission of submissions)
+      if (submission.operation) operations.set(submission.operation.turn.id, submission.operation);
+    if (command) operations.set(command.turn.id, command);
+    const compactingTurns = [...turns, ...[...operations.values()].map((entry) => entry.turn)];
     const compacting =
-      (command?.name === "compact" && commandRunning) ||
+      [...operations.values()].some(
+        (entry) => entry.name === "compact" && entry.turn.status === "inProgress",
+      ) ||
       compactingTurns.some(
         (turn) =>
           (turn.status === "inProgress" || turn.status === "running") &&
@@ -27,23 +38,26 @@ export class ChCommandPresentation {
       this.log.setProjection("compacting", compacting);
       this.compacting = compacting;
     }
-    if (!command) return;
-    const { turn, name } = command;
-    if (this.current?.id !== turn.id) {
-      if (this.current && !this.current.done)
+    if (command) {
+      for (const [id, done] of this.commands) {
+        if (done || operations.has(id)) continue;
         this.log.append("command/done", {
-          commandId: this.current.id,
+          commandId: id,
           kind: "error",
           text: "The Host no longer reports the outcome of this command.",
         });
-      this.log.append("command/run", {
-        commandId: turn.id,
-        name,
-        source: { kind: "user" },
-      });
-      this.current = { id: turn.id, done: false };
+        this.commands.set(id, true);
+      }
     }
-    if (commandRunning || this.current.done) return;
+    for (const operation of operations.values()) this.updateOperation(operation);
+  }
+
+  private updateOperation({ turn, name }: Command): void {
+    if (!this.commands.has(turn.id)) {
+      this.log.append("command/run", { commandId: turn.id, name, source: { kind: "user" } });
+      this.commands.set(turn.id, false);
+    }
+    if (turn.status === "inProgress" || this.commands.get(turn.id)) return;
     const success = turn.status === "completed";
     const text = success
       ? turn.items
@@ -57,6 +71,6 @@ export class ChCommandPresentation {
       kind: success ? "success" : "error",
       ...(text === undefined ? {} : { text }),
     });
-    this.current.done = true;
+    this.commands.set(turn.id, true);
   }
 }

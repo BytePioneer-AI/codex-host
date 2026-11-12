@@ -17,7 +17,7 @@ export function cursorCommands(native: AvailableCommand[]): HarnessCommandCatalo
   for (const command of native) {
     // Cursor does not tell skills and commands apart, so the common command
     // exclusions apply to every entry.
-    if (isExcludedLiveCommand(command.name, "command", CURSOR_EXCLUSIONS)) continue;
+    if (isExcludedLiveCommand(command.name, CURSOR_EXCLUSIONS)) continue;
     const result = harnessCommandDescriptorSchema.safeParse({
       id: `cursor.${command.name}`,
       invocation: `/${command.name}`,

@@ -22,19 +22,21 @@ describe("Claude live command catalog", () => {
     "not-an-object",
   ]);
 
-  it("keeps built-ins and appends live commands and skills", () => {
+  it("keeps built-ins and live commands while excluding native skills", () => {
     const catalog = claudeLiveCommandCatalog(builtIns, {
       commands,
       skillNames: new Set(["frontend-design:frontend-design"]),
     });
     expect(catalog.commands.map(({ invocation, kind }) => [invocation, kind])).toEqual([
       ["/compact", undefined],
-      ["/review", "command"],
-      ["/frontend-design:frontend-design", "skill"],
+      ["/review", undefined],
     ]);
     expect(catalog.commands.slice(1).every(({ argumentMode }) => argumentMode === "text")).toBe(
       true,
     );
+    expect(
+      claudeDynamicCommandPrompt(catalog, "claude.slash.frontend-design:frontend-design", "UI"),
+    ).toBeNull();
   });
 
   it("uses built-ins alone before the native Session starts", () => {

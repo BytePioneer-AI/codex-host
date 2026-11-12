@@ -1,7 +1,7 @@
 /**
  * Per-session model directory: the ONE state both selection entries share.
- * The /model popup and composer seat combine one shared Host catalog with the
- * Session's durable selection projection, then submit through the same
+ * The /model popup and composer seat combine this Session's catalog scope with
+ * its durable selection projection, then submit through the same
  * selectModel call. A switch made in either entry updates this shared state.
  */
 import type { TrackProductEvent } from "@deepseek-ai/dsh-client-product-analytics/client";
@@ -71,7 +71,7 @@ export class ModelDirectory {
    * @param sessions - the session wire face (captured from the plugin's root connection).
    * @param sessionId - the owning session.
    * @param available - whether this session may use Agent-bound model RPCs.
-   * @param catalog - Host-generation catalog shared by every Session.
+   * @param catalog - shared local catalog or this remote Session's scoped catalog.
    * @param projected - durable model selection projected from Session history.
    * @param isBlank - whether this Session has no first message yet.
    * @param track - desktop-only callback after a successful user selection.
@@ -95,7 +95,7 @@ export class ModelDirectory {
   }
 
   /**
-   * Ensure the Host generation's shared available catalog is loaded.
+   * Ensure this Session's local or remote catalog scope is loaded.
    * @returns the fresh directory value.
    */
   async load(): Promise<ModelDirectoryState> {

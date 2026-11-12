@@ -40,6 +40,7 @@ export class ModelDirectoryResolver extends Service {
 
   private readonly live: LiveState = { directories: new WeakMapWithValues() };
   private readonly catalog: ModelCatalogDirectory;
+  private readonly remoteCatalogs = new Set<ModelCatalogDirectory>();
 
   /** Existing ready Harness groups, shared with discovery surfaces without another catalog read. */
   get harnessCatalog() {
@@ -53,12 +54,12 @@ export class ModelDirectoryResolver extends Service {
     super(ctx, "modelDirectories");
     this.catalog = new ModelCatalogDirectory(ctx);
     void this.migrateLegacyFavorites().catch(() => {});
-    ctx.remote.$on("codexhost/preferences-changed", () => this.catalog.refresh());
-    ctx.remote.$on("codexhost/display-settings-changed", () => this.catalog.refresh());
+    ctx.remote.$on("codexhost/preferences-changed", () => this.refreshCatalogs());
+    ctx.remote.$on("codexhost/display-settings-changed", () => this.refreshCatalogs());
     ctx.effect(() => {
-      const focus = () => this.catalog.refresh();
+      const focus = () => this.refreshCatalogs();
       const visible = () => {
-        if (document.visibilityState === "visible") this.catalog.refresh();
+        if (document.visibilityState === "visible") this.refreshCatalogs();
       };
       window.addEventListener("focus", focus);
       document.addEventListener("visibilitychange", visible);
@@ -66,6 +67,8 @@ export class ModelDirectoryResolver extends Service {
         window.removeEventListener("focus", focus);
         document.removeEventListener("visibilitychange", visible);
         this.catalog.dispose();
+        for (const catalog of this.remoteCatalogs) catalog.dispose();
+        this.remoteCatalogs.clear();
       };
     }, "ui-model-selection: catalog lifecycle");
     void this.catalog.load().catch(() => {
@@ -73,20 +76,25 @@ export class ModelDirectoryResolver extends Service {
     });
     ctx.on("connection/reset", () => {
       this.catalog.resetGeneration();
+      for (const catalog of this.remoteCatalogs) catalog.resetGeneration();
       for (const directory of this.live.directories.values) directory.resetConnected();
     });
     ctx.remote.$on("llm/adapters-updated", () => {
-      this.catalog.refresh();
+      this.refreshCatalogs();
     });
     ctx.remote.$on("settings/document-updated", () => {
-      this.catalog.refresh();
+      this.refreshCatalogs();
     });
     ctx.remote.$on("credentials/record-updated", () => {
-      this.catalog.refresh();
+      this.refreshCatalogs();
     });
     ctx.remote.$on("credentials/reference-updated", () => {
-      this.catalog.refresh();
+      this.refreshCatalogs();
     });
+  }
+  private refreshCatalogs(): void {
+    this.catalog.refresh();
+    for (const catalog of this.remoteCatalogs) catalog.refresh();
   }
   private async migrateLegacyFavorites() {
     const grouped = new Map<string, string[]>();
@@ -112,13 +120,13 @@ export class ModelDirectoryResolver extends Service {
     await preferenceCall("migrate", {
       favorites: [...grouped].map(([provider, modelIds]) => ({ provider, modelIds })),
     });
-    this.catalog.refresh();
+    this.refreshCatalogs();
   }
   async setFavorite(provider: string, modelId: string, enabled: boolean) {
     await preferenceCall("patch", {
       operation: { kind: "favorite", harnessId: provider, modelId, enabled },
     });
-    this.catalog.refresh();
+    this.refreshCatalogs();
     await this.catalog.load();
   }
 
@@ -139,11 +147,15 @@ export class ModelDirectoryResolver extends Service {
       throw new Error(`ui-model-selection: session "${String(sessionId)}" resolved no binding`);
     const existing = live.directories.get(binding);
     if (existing !== undefined) return existing;
+    // Remote identities must never consume the local Host's model catalog.
+    const remote = String(sessionId).startsWith("web-remote:");
+    const catalog = remote ? new ModelCatalogDirectory(this.ctx, sessionId) : this.catalog;
+    if (remote) this.remoteCatalogs.add(catalog);
     const directory = new ModelDirectory(
       this.ctx.remote.session,
       sessionId,
       () => sessions.subagentAddress(sessionId) === undefined,
-      this.catalog,
+      catalog,
       binding.session.projections.faceOf("modelSelection"),
       () => binding.session.getSnapshot().blank,
       (name, attributes) => this.ctx.get("productAnalytics")?.track(name, attributes),
@@ -152,10 +164,19 @@ export class ModelDirectoryResolver extends Service {
     actx.effect(
       () => () => {
         directory.dispose();
+        if (remote) {
+          catalog.dispose();
+          this.remoteCatalogs.delete(catalog);
+        }
         live.directories.delete(binding);
       },
       "ui-model-selection: session directory",
     );
+    if (remote) {
+      void catalog.load().catch(() => {
+        /* The directory exposes the failure; opening its menu can retry. */
+      });
+    }
     return directory;
   }
 }

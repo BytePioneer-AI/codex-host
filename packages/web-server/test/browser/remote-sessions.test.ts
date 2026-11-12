@@ -4,8 +4,135 @@ import { createServer } from "node:net";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { chromium } from "playwright";
+import { chromium, type Page } from "playwright";
+import { remoteSessionId } from "../../src/remote-sessions.ts";
 import { startServer } from "../support/server.ts";
+
+interface Model {
+  id: string;
+  label: string;
+}
+
+interface RemoteModelState {
+  harnessId: string;
+  models: readonly [Model, Model];
+  currentModel: string;
+}
+
+interface RequestBody {
+  rpcId: string;
+  payload?: { args?: { request?: Record<string, unknown> } };
+}
+
+type RemoteCall = {
+  kind: string;
+  hostId?: string;
+  modelId?: string;
+  [key: string]: unknown;
+};
+
+const localCatalog = {
+  default: { provider: "local-only", model: "local-only-model" },
+  routableProviders: ["local-only"],
+  groups: [
+    {
+      id: "local-only",
+      name: "Local Only",
+      models: [{ id: "local-only-model", name: "Local Only Model" }],
+    },
+  ],
+  failures: [],
+};
+
+const remoteModels = new Map<string, RemoteModelState>([
+  [
+    "remote-ssh-discovered:a",
+    {
+      harnessId: "fable-mac",
+      models: [
+        { id: "mac-primary", label: "Mac Primary" },
+        { id: "mac-alternate", label: "Mac Alternate" },
+      ],
+      currentModel: "mac-primary",
+    },
+  ],
+  [
+    "remote-control:b",
+    {
+      harnessId: "fable-gateway",
+      models: [
+        { id: "gateway-primary", label: "Gateway Primary" },
+        { id: "gateway-alternate", label: "Gateway Alternate" },
+      ],
+      currentModel: "gateway-primary",
+    },
+  ],
+]);
+
+function requestOf(body: RequestBody): Record<string, unknown> {
+  return body.payload?.args?.request ?? {};
+}
+
+function remoteControls(hostId: string) {
+  const state = remoteModels.get(hostId);
+  assert.ok(state);
+  const current = state.models.find((model) => model.id === state.currentModel);
+  assert.ok(current);
+  return {
+    configuration: {
+      owner: "external",
+      harnessId: state.harnessId,
+      transportModelId: state.currentModel,
+      effectiveModel: { id: state.currentModel },
+      resolvedModelLabel: current.label,
+      effectiveThinkingOptionId: "high",
+      availableThinkingOptions: [{ id: "high", label: "High" }],
+      effectivePermissionModeId: "ask",
+      history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+      locked: true,
+    },
+    inspection: {
+      status: "ready",
+      catalog: {
+        models: state.models.map((model) => ({
+          ref: { id: model.id },
+          label: model.label,
+          supportedThinkingOptionIds: ["high"],
+        })),
+        defaultModel: { id: state.models[0].id },
+        thinkingOptions: [{ id: "high", label: "High" }],
+        defaultThinkingOptionId: "high",
+      },
+      permissionModes: {
+        modes: [{ id: "ask", label: "Ask" }],
+        defaultModeId: "ask",
+      },
+      capabilities: {
+        configuration: {
+          selectModel: true,
+          selectThinkingOption: true,
+          selectPermissionMode: true,
+          permissionModeScope: "live",
+        },
+        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+      },
+    },
+    harness: { id: state.harnessId, name: state.harnessId },
+  };
+}
+
+function modelTrigger(page: Page) {
+  return page.getByRole("button", { name: /^Select model, current /u });
+}
+
+async function openModels(page: Page, current: string): Promise<void> {
+  await modelTrigger(page).click();
+  await page
+    .getByRole("menu", { name: "Thinking", exact: true })
+    .getByRole("menuitem", { name: current, exact: true })
+    .click();
+  await page.getByRole("menu", { name: "Model", exact: true }).waitFor();
+}
 
 it(
   "shows colliding remote sessions in the real Web shell and opens their own transcript",
@@ -14,7 +141,7 @@ it(
     const directory = mkdtempSync(join(tmpdir(), "remote-web-browser-"));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const nonce = "a".repeat(32);
-    const calls: Array<{ kind: string; hostId?: string }> = [];
+    const calls: RemoteCall[] = [];
     const sent = new Map<string, string>();
     const archived = new Set<string>();
     const requestIds = new Map<string, string>();
@@ -23,7 +150,7 @@ it(
       id: "same",
       cwd: "/remote/private",
       name: `Session ${hostId}`,
-      modelProvider: "openai",
+      modelProvider: remoteModels.get(hostId)?.harnessId ?? "openai",
       createdAt: timestamp,
       updatedAt: timestamp + (sent.has(hostId) ? 1 : 0),
       status: { type: "idle" },
@@ -90,6 +217,11 @@ it(
           sent.set(operation.hostId, operation.text);
           requestIds.set(operation.hostId, operation.requestId);
         }
+        if (operation.kind === "configure") {
+          const state = remoteModels.get(operation.hostId);
+          assert.ok(state);
+          if (typeof operation.modelId === "string") state.currentModel = operation.modelId;
+        }
         const result =
           operation.kind === "hosts"
             ? ["remote-ssh-discovered:a", "remote-control:b"].map((hostId) => ({
@@ -107,6 +239,7 @@ it(
                 ? {
                     result: { thread: row(operation.hostId) },
                     epoch: "fixture-epoch",
+                    ...remoteControls(operation.hostId),
                     requests: [],
                   }
                 : {};
@@ -174,6 +307,38 @@ it(
     const browser = await chromium.launch();
     t.after(() => browser.close());
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
+    const catalogSessionIds: Array<string | undefined> = [];
+    const selectionRequests: Array<Record<string, unknown>> = [];
+    let localCatalogCalls = 0;
+    page.on("request", (request) => {
+      if (request.method() !== "POST") return;
+      if (request.url().endsWith("/api/session/modelCatalog")) {
+        const sessionId = requestOf(request.postDataJSON() as RequestBody).sessionId;
+        catalogSessionIds.push(typeof sessionId === "string" ? sessionId : undefined);
+      }
+      if (request.url().endsWith("/api/session/selectModel"))
+        selectionRequests.push(requestOf(request.postDataJSON() as RequestBody));
+    });
+    await page.route("**/api/session/modelCatalog", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      const body = route.request().postDataJSON() as RequestBody;
+      const request = requestOf(body);
+      if (request.sessionId === undefined) {
+        localCatalogCalls++;
+        await route.fulfill({
+          json: {
+            type: "server-response",
+            rpcId: body.rpcId,
+            result: { ok: true, value: localCatalog },
+          },
+        });
+        return;
+      }
+      await route.continue();
+    });
     const localMediaRequests: string[] = [];
     await page.route("**/api/file?**", async (route) => {
       localMediaRequests.push(route.request().url());
@@ -224,14 +389,79 @@ it(
         0,
         "remote image paths must render as text, not local image elements",
       );
+
+      const modelState = remoteModels.get(hostId);
+      assert.ok(modelState);
+      const sessionId = remoteSessionId(hostId, "same");
+      await page
+        .getByRole("button", {
+          name: `Select Harness, current ${modelState.harnessId}`,
+          exact: true,
+        })
+        .waitFor();
+      await page.getByRole("button", { name: "Access mode, current: Ask", exact: true }).waitFor();
+      await modelTrigger(page).waitFor();
+      await openModels(page, modelState.models[0].label);
+      const modelMenu = page.getByRole("menu", { name: "Model", exact: true });
+      await modelMenu
+        .getByRole("menuitemradio", { name: modelState.models[0].label, exact: true })
+        .waitFor();
+      assert.equal(
+        await modelMenu
+          .getByRole("menuitemradio", { name: "Local Only Model", exact: true })
+          .count(),
+        0,
+        "the remote menu must not render the local Host catalog",
+      );
+      assert.equal(
+        await modelMenu
+          .getByRole("menuitemradio", { name: modelState.models[1].label, exact: true })
+          .count(),
+        1,
+      );
+      assert.ok(
+        catalogSessionIds.includes(sessionId),
+        `modelCatalog must carry ${sessionId}; got ${JSON.stringify(catalogSessionIds)}`,
+      );
+      assert.ok(localCatalogCalls > 0, "the shared local catalog should still use the no-arg call");
+      const knownSessionIds = new Set(
+        [...remoteModels.keys()].map((id) => remoteSessionId(id, "same")),
+      );
+      assert.ok(
+        catalogSessionIds
+          .filter((value): value is string => value !== undefined)
+          .every((value) => knownSessionIds.has(value)),
+      );
+      await modelMenu
+        .getByRole("menuitemradio", { name: modelState.models[1].label, exact: true })
+        .click();
+      await page
+        .getByRole("button", {
+          name: new RegExp(`^Select model, current ${modelState.models[1].label}\\b`),
+        })
+        .waitFor();
+      assert.deepEqual(
+        selectionRequests.findLast(
+          (request) => request.sessionId === sessionId && request.model === modelState.models[1].id,
+        ),
+        {
+          sessionId,
+          provider: modelState.harnessId,
+          model: modelState.models[1].id,
+        },
+      );
+      assert.ok(
+        calls.some(
+          (operation) =>
+            operation.kind === "configure" &&
+            operation.hostId === hostId &&
+            operation.modelId === modelState.models[1].id,
+        ),
+      );
     }
     assert.deepEqual(localMediaRequests, [], "remote paths must not request local image bytes");
-    assert.ok(
-      await page
-        .locator("[data-native-codex-icon]")
-        .first()
-        .evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0),
-    );
+    for (const state of remoteModels.values())
+      assert.ok(await page.locator(`[data-harness-id="${state.harnessId}"]`).count());
     assert.ok(calls.some((call) => call.kind === "read" && call.hostId === "remote-control:b"));
     const transfer = await page.evaluateHandle(() => {
       const value = new DataTransfer();

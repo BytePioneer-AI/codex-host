@@ -603,3 +603,359 @@ it("serves cached remote projections and pages without refreshing or cancelling 
   assert.equal(reads, 2);
   assert.equal(calls.includes("prompt"), false);
 });
+
+function externalControlsFixture() {
+  const calls: RemoteSessionOperation[] = [];
+  let includeMetadata = true;
+  let modelId = "claude-model-v1.ZmFibGU";
+  let thinkingOptionId = "medium";
+  let permissionModeId = "default";
+  const row = {
+    id: "claude-thread",
+    cwd: "/private/remote",
+    name: "Claude remote",
+    modelProvider: "codexhost",
+    createdAt: 1,
+    updatedAt: 2,
+    status: { type: "idle" },
+    turns: [],
+  };
+  const configuration = () => ({
+    owner: "external" as const,
+    harnessId: "claude-code",
+    transportModelId: modelId,
+    effectiveModel: { id: modelId },
+    resolvedModelLabel: "Claude Code",
+    effectiveThinkingOptionId: thinkingOptionId,
+    availableThinkingOptions: [
+      { id: "medium", label: "Medium" },
+      { id: "high", label: "High" },
+    ],
+    effectivePermissionModeId: permissionModeId,
+    history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+    locked: true as const,
+  });
+  const inspection = {
+    status: "ready" as const,
+    catalog: {
+      models: [
+        {
+          ref: { id: "claude-model-v1.ZmFibGU" },
+          label: "Claude model one",
+          supportedThinkingOptionIds: ["medium", "high"],
+        },
+        {
+          ref: { id: "claude-model-v2" },
+          label: "Claude model two",
+          supportedThinkingOptionIds: ["medium", "high"],
+        },
+      ],
+      defaultModel: { id: "claude-model-v1.ZmFibGU" },
+      thinkingOptions: [
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High" },
+      ],
+      defaultThinkingOptionId: "medium",
+    },
+    permissionModes: {
+      modes: [
+        { id: "default", label: "Default" },
+        { id: "bypassPermissions", label: "Bypass permissions" },
+      ],
+      defaultModeId: "default",
+    },
+    capabilities: {
+      configuration: {
+        selectModel: true,
+        selectThinkingOption: true,
+        selectPermissionMode: true,
+        permissionModeScope: "live" as const,
+      },
+      history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+    },
+  };
+  const harness = {
+    id: "claude-code",
+    name: "Claude Code",
+    version: "1.0.0",
+    icon: "data:image/png;base64,AA==",
+  };
+  const events = new EventHub("external-controls");
+  const rpc = new RpcRegistry();
+  for (const method of [
+    "session/projections",
+    "session/modelCatalog",
+    "session/selectModel",
+    "commands/execute",
+  ])
+    rpc.register(method, () => {
+      throw new Error("must not route locally");
+    });
+  const remote = new RemoteSessions(events, async (operation) => {
+    calls.push(operation);
+    if (operation.kind === "hosts") return [{ hostId: "remote-control:claude", online: true }];
+    if (operation.kind === "list")
+      return {
+        data: [{ ...row, status: { ...row.status }, turns: [...row.turns] }],
+        nextCursor: null,
+      };
+    if (operation.kind === "read")
+      return {
+        result: { thread: { ...row, status: { ...row.status }, turns: [...row.turns] } },
+        epoch: "claude-epoch",
+        ...(includeMetadata ? { configuration: configuration(), inspection, harness } : {}),
+        requests: [],
+      };
+    if (operation.kind === "configure") {
+      if (operation.modelId !== undefined) modelId = operation.modelId;
+      if (operation.thinkingOptionId !== undefined) thinkingOptionId = operation.thinkingOptionId;
+      if (operation.permissionModeId !== undefined) permissionModeId = operation.permissionModeId;
+      return configuration();
+    }
+    return {};
+  });
+  remote.install(rpc, new StreamRegistry());
+  const id = remoteSessionId("remote-control:claude", row.id);
+  return {
+    calls,
+    events,
+    remote,
+    id,
+    row,
+    dropMetadata: () => {
+      includeMetadata = false;
+    },
+    call: (method: string, request: object = {}) =>
+      rpc.dispatch(method, { args: { request: { sessionId: id, ...request } } }),
+  };
+}
+
+it("projects remote Harness controls and derives its catalog from remote inspection", async (t) => {
+  const fixture = externalControlsFixture();
+  t.after(() => fixture.remote.close());
+  await fixture.remote.read(fixture.id);
+
+  const projections = await fixture.call("session/projections");
+  assert.ok(projections.ok, JSON.stringify(projections));
+  const values = (projections.value as { values: Record<string, unknown> }).values;
+  assert.deepEqual(values.harnessIdentity, {
+    id: "claude-code",
+    name: "Claude Code",
+    icon: "data:image/png;base64,AA==",
+  });
+  assert.deepEqual(values.modelSelection, {
+    lastUsed: {
+      provider: "claude-code",
+      model: "claude-model-v1.ZmFibGU",
+      reasoningEffort: "medium",
+    },
+    next: {
+      provider: "claude-code",
+      model: "claude-model-v1.ZmFibGU",
+      reasoningEffort: "medium",
+    },
+  });
+  assert.deepEqual(values.permissions, { currentValue: "default" });
+  assert.deepEqual(
+    (values.nativePermissions as { harnessId: string; selectable: boolean }).harnessId,
+    "claude-code",
+  );
+  assert.equal(
+    (values.nativePermissions as { harnessId: string; selectable: boolean }).selectable,
+    true,
+  );
+
+  const catalog = await fixture.call("session/modelCatalog");
+  assert.ok(catalog.ok);
+  assert.deepEqual((catalog.value as { groups: unknown[] }).groups, [
+    {
+      id: "claude-code",
+      name: "Claude Code",
+      models: [
+        {
+          id: "claude-model-v1.ZmFibGU",
+          name: "Claude model one",
+          reasoning: {
+            efforts: [
+              { id: "medium", name: "Medium" },
+              { id: "high", name: "High" },
+            ],
+            defaultEffort: "medium",
+          },
+        },
+        {
+          id: "claude-model-v2",
+          name: "Claude model two",
+          reasoning: {
+            efforts: [
+              { id: "medium", name: "Medium" },
+              { id: "high", name: "High" },
+            ],
+            defaultEffort: "medium",
+          },
+        },
+      ],
+    },
+  ]);
+});
+
+it("routes remote model and permission changes as single-setting configure operations", async (t) => {
+  const fixture = externalControlsFixture();
+  t.after(() => fixture.remote.close());
+  await fixture.remote.read(fixture.id);
+  const before = fixture.calls.length;
+
+  const modelResult = await fixture.call("session/selectModel", {
+    provider: "claude-code",
+    model: "claude-model-v2",
+    reasoningEffort: "high",
+  });
+  assert.ok(modelResult.ok, JSON.stringify(modelResult));
+  const modelOperations = fixture.calls
+    .slice(before)
+    .filter(
+      (operation): operation is Extract<RemoteSessionOperation, { kind: "configure" }> =>
+        operation.kind === "configure",
+    );
+  assert.equal(modelOperations.length, 2);
+  assert.deepEqual(
+    modelOperations.map(({ kind, epoch, hostId, threadId, ...settings }) => ({
+      kind,
+      epoch,
+      hostId,
+      threadId,
+      settings,
+    })),
+    [
+      {
+        kind: "configure",
+        epoch: "claude-epoch",
+        hostId: "remote-control:claude",
+        threadId: "claude-thread",
+        settings: { modelId: "claude-model-v2" },
+      },
+      {
+        kind: "configure",
+        epoch: "claude-epoch",
+        hostId: "remote-control:claude",
+        threadId: "claude-thread",
+        settings: { thinkingOptionId: "high" },
+      },
+    ],
+  );
+  for (const operation of modelOperations)
+    assert.equal(
+      [operation.modelId, operation.thinkingOptionId, operation.permissionModeId].filter(
+        (value) => value !== undefined,
+      ).length,
+      1,
+    );
+
+  const permissionResult = await fixture.call("commands/execute", {
+    line: "/permission bypassPermissions",
+  });
+  assert.ok(permissionResult.ok);
+  const permissionOperation = fixture.calls.at(-2);
+  assert.equal(permissionOperation?.kind, "configure");
+  assert.deepEqual(
+    permissionOperation &&
+      "permissionModeId" in permissionOperation && {
+        permissionModeId: permissionOperation.permissionModeId,
+      },
+    { permissionModeId: "bypassPermissions" },
+  );
+});
+
+it("retains same-epoch remote controls across partial reads and catalog refresh summaries", async (t) => {
+  const fixture = externalControlsFixture();
+  t.after(() => fixture.remote.close());
+  const summaries: Array<{ projections: { values: Record<string, unknown> }; running: boolean }> =
+    [];
+  fixture.events.emit = (event, ...args) => {
+    if (event === "api-session/added") summaries.push(args[0] as (typeof summaries)[number]);
+  };
+  await fixture.remote.read(fixture.id);
+  fixture.dropMetadata();
+  await fixture.remote.read(fixture.id);
+  const projections = await fixture.call("session/projections");
+  assert.ok(projections.ok);
+  const values = (projections.value as { values: Record<string, unknown> }).values;
+  assert.deepEqual(values.harnessIdentity, {
+    id: "claude-code",
+    name: "Claude Code",
+    icon: "data:image/png;base64,AA==",
+  });
+  assert.equal((values.nativePermissions as { harnessId: string }).harnessId, "claude-code");
+
+  summaries.length = 0;
+  fixture.row.status.type = "active";
+  await fixture.remote.refresh();
+  assert.equal(summaries.length, 1);
+  assert.equal(summaries[0]?.running, true);
+  assert.deepEqual(summaries[0]?.projections.values.harnessIdentity, {
+    id: "claude-code",
+    name: "Claude Code",
+    icon: "data:image/png;base64,AA==",
+  });
+});
+
+it("keeps remote history readable and controls unavailable without optional metadata", async (t) => {
+  const row = {
+    id: "metadata-less",
+    cwd: "/private/remote",
+    name: "Metadata-less remote",
+    modelProvider: "codexhost",
+    createdAt: 1,
+    updatedAt: 2,
+    status: { type: "idle" },
+    turns: [
+      {
+        id: "turn-1",
+        status: "completed",
+        items: [{ id: "item-1", type: "text", text: "history" }],
+      },
+    ],
+  };
+  const calls: RemoteSessionOperation[] = [];
+  const remote = new RemoteSessions(new EventHub("metadata-less"), async (operation) => {
+    calls.push(operation);
+    if (operation.kind === "hosts") return [{ hostId: "remote-control:plain", online: true }];
+    if (operation.kind === "list") return { data: [row], nextCursor: null };
+    if (operation.kind === "read")
+      return { result: { thread: row }, epoch: "plain-epoch", requests: [] };
+    return {};
+  });
+  t.after(() => remote.close());
+  const rpc = new RpcRegistry();
+  for (const method of ["session/projections", "session/page", "session/selectModel"])
+    rpc.register(method, () => {
+      throw new Error("must not route locally");
+    });
+  remote.install(rpc, new StreamRegistry());
+  const id = remoteSessionId("remote-control:plain", row.id);
+  await remote.read(id);
+  const projections = await rpc.dispatch("session/projections", {
+    args: { request: { sessionId: id } },
+  });
+  assert.ok(projections.ok);
+  const values = (projections.value as { values: Record<string, unknown> }).values;
+  assert.equal(values.nativePermissions, null);
+  assert.deepEqual(values.modelSelection, { lastUsed: null, next: null });
+  assert.equal(values.harnessIdentity, null);
+  assert.ok(
+    (
+      await rpc.dispatch("session/page", {
+        args: { request: { sessionId: id, throughSeq: 0 } },
+      })
+    ).ok,
+  );
+  const rejected = await rpc.dispatch("session/selectModel", {
+    args: { request: { sessionId: id, provider: "claude-code", model: "claude-model-v2" } },
+  });
+  assert.ok(!rejected.ok);
+  assert.equal(rejected.error.code, "remote/unsupported");
+  assert.equal(
+    calls.some((operation) => operation.kind === "configure"),
+    false,
+  );
+});

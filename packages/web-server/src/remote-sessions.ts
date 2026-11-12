@@ -10,6 +10,20 @@ import {
 } from "@codexhost/shared-contracts";
 import { ChThreadView, type ChThread } from "./ch-thread-view.ts";
 import { defaultProjections } from "./session-log.ts";
+import {
+  applyRemoteControls,
+  executeRemoteCommand,
+  externalConfiguration,
+  mergeRemoteControls,
+  parseRemoteControls,
+  remoteHarnessIdentity,
+  remoteModelCatalog,
+  selectRemoteModel,
+  viewHarnessId,
+  type RemoteConfigurationSetting,
+  type RemoteControls,
+  type RemoteControlsSnapshot,
+} from "./remote-session-controls.ts";
 import { requestOf } from "./store.ts";
 import {
   RpcError,
@@ -71,6 +85,11 @@ const snapshotSchema = z.object({
     }),
   }),
   epoch: z.string().min(1),
+  // Optional metadata is parsed independently below. A malformed optional
+  // control payload must not make the remote history unreadable.
+  configuration: z.unknown().optional(),
+  inspection: z.unknown().optional(),
+  harness: z.unknown().optional(),
   interactionsAvailable: z.boolean().optional(),
   requests: z.array(
     z.object({
@@ -112,6 +131,9 @@ interface Snapshot {
   result: { thread: ChThread };
   epoch: string;
   requests: PendingRequest[];
+  configuration?: RemoteControlsSnapshot["configuration"];
+  inspection?: RemoteControlsSnapshot["inspection"];
+  harness?: RemoteControlsSnapshot["harness"];
   interactionsAvailable?: boolean;
 }
 interface Entry {
@@ -121,8 +143,10 @@ interface Entry {
   archived?: boolean;
   epoch?: string;
   view?: ChThreadView;
+  viewHarnessId?: string;
   viewOrigin?: number;
   reading?: Promise<ChThreadView>;
+  controls?: RemoteControls;
 }
 type Call = (operation: RemoteSessionOperation) => Promise<unknown>;
 
@@ -248,13 +272,11 @@ export class RemoteSessions {
             !previous ||
             !previous.online ||
             JSON.stringify(previous.row) !== JSON.stringify(entry.row);
-          this.entries.set(
-            id,
-            previous
-              ? Object.assign(previous, { row: entry.row, online: true, archived: false })
-              : entry,
-          );
-          if (changed) this.events.emit("api-session/added", this.summary(id, entry));
+          const current = previous
+            ? Object.assign(previous, { row: entry.row, online: true, archived: false })
+            : entry;
+          this.entries.set(id, current);
+          if (changed) this.events.emit("api-session/added", this.summary(id, current));
         }
         this.syncArchives();
       } catch {
@@ -279,6 +301,16 @@ export class RemoteSessions {
   }
   private reference(entry: Entry) {
     return { ...entry.identity };
+  }
+  private async configureRemote(entry: Entry, setting: RemoteConfigurationSetting): Promise<void> {
+    if (!entry.epoch) throw new RpcError("remote/offline", "Remote connection changed");
+    externalConfiguration(entry);
+    await this.invoke({
+      kind: "configure",
+      ...entry.identity,
+      epoch: entry.epoch,
+      ...setting,
+    });
   }
   private syncArchives(): string[] {
     const ids = [...this.entries].filter(([, entry]) => entry.archived).map(([id]) => id);
@@ -308,6 +340,9 @@ export class RemoteSessions {
           },
           ...(entry.row.modelProvider !== "codexhost"
             ? { harnessIdentity: { id: "codex", name: "Codex" } }
+            : {}),
+          ...(remoteHarnessIdentity(entry)
+            ? { harnessIdentity: remoteHarnessIdentity(entry) }
             : {}),
           threadReference: this.reference(entry),
           nativeConnection: { state: entry.online ? "connected" : "reconnecting" },
@@ -353,6 +388,7 @@ export class RemoteSessions {
         ) as Snapshot;
         if (this.closed || snapshot.result.thread.id !== identity.threadId)
           throw new Error("Remote identity mismatch");
+        const sameEpoch = current.epoch === snapshot.epoch;
         if (current.epoch && current.epoch !== snapshot.epoch) {
           this.clearPending(id);
           this.retireView(current);
@@ -360,8 +396,18 @@ export class RemoteSessions {
         current.epoch = snapshot.epoch;
         current.online = true;
         current.row = snapshot.result.thread;
+        current.controls = mergeRemoteControls(
+          current.controls,
+          parseRemoteControls(snapshot),
+          sameEpoch,
+        );
         const row = { ...current.row, id, cwd: "" };
-        current.view ??= this.createView(row, current.viewOrigin);
+        const harnessId = viewHarnessId(current);
+        if (!current.view || current.viewHarnessId !== harnessId) {
+          if (current.view) this.retireView(current);
+          current.view = this.createView(row, harnessId, current.viewOrigin);
+          current.viewHarnessId = harnessId;
+        }
         try {
           current.view.update(row);
         } catch (error) {
@@ -371,7 +417,8 @@ export class RemoteSessions {
           )
             throw error;
           this.retireView(current);
-          current.view = this.createView(row, current.viewOrigin);
+          current.view = this.createView(row, harnessId, current.viewOrigin);
+          current.viewHarnessId = harnessId;
           current.view.update(row);
         }
         for (const [key, value] of Object.entries(this.summary(id, current).projections.values))
@@ -387,6 +434,8 @@ export class RemoteSessions {
             ].includes(key)
           )
             current.view.log.setProjection(key, value);
+        current.view.log.setProjection("harnessIdentity", remoteHarnessIdentity(current) ?? null);
+        applyRemoteControls(current, current.view);
         this.interactions(id, current, snapshot.requests);
         if (
           snapshot.interactionsAvailable === false ||
@@ -418,11 +467,12 @@ export class RemoteSessions {
     entry.view.retire();
     entry.view.log.reconnectFollowers();
     delete entry.view;
+    delete entry.viewHarnessId;
   }
-  private createView(row: ChThread, origin = 0): ChThreadView {
+  private createView(row: ChThread, harnessId: string, origin = 0): ChThreadView {
     const view = new ChThreadView(
       row,
-      row.modelProvider === "codexhost" ? "remote" : "codex",
+      harnessId,
       (sessionId, key, value, seq) => {
         view.log.pushProjection(key, value, seq);
         for (const sink of this.controls)
@@ -578,7 +628,12 @@ export class RemoteSessions {
     id: string,
     request: Record<string, unknown>,
   ): Promise<unknown> {
-    const readOnly = ["session/projections", "session/page", "session/toolOutput"].includes(method);
+    const readOnly = [
+      "session/projections",
+      "session/page",
+      "session/toolOutput",
+      "session/modelCatalog",
+    ].includes(method);
     const cached = readOnly ? this.entries.get(id)?.view : undefined;
     const view = cached ?? (await this.read(id));
     if (method === "session/projections") return view.log.projectionBaseline();
@@ -592,6 +647,23 @@ export class RemoteSessions {
       return readToolOutput(view.log, webToolOutputReferenceSchema.parse(request));
     const entry = this.entries.get(id);
     if (!entry?.epoch) throw new RpcError("remote/offline", "Remote connection changed");
+    if (method === "session/modelCatalog") return remoteModelCatalog(entry);
+    if (method === "session/selectModel")
+      return selectRemoteModel(
+        id,
+        entry,
+        request,
+        (target, setting) => this.configureRemote(target as Entry, setting),
+        (sessionId) => this.read(sessionId),
+      );
+    if (method === "commands/execute")
+      return executeRemoteCommand(
+        id,
+        entry,
+        request,
+        (target, setting) => this.configureRemote(target as Entry, setting),
+        (sessionId) => this.read(sessionId),
+      );
     const base = { ...entry.identity, epoch: entry.epoch };
     let operation: RemoteSessionOperation;
     switch (method) {

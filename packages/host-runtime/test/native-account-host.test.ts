@@ -354,6 +354,66 @@ describe("local Codex read-only identity startup", () => {
     );
   });
 
+  it("replaces an idle backend when only Desktop's app tools pipe changes", async () => {
+    const first = nativeFixture();
+    const local = await startLocal(true);
+    const configuration = {
+      stockCodexPath: "/synthetic/codex",
+      arguments: ["-c", "features.code_mode_host=true", "app-server"],
+      environment: { CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-1" },
+    };
+    await local.configureStartup(configuration);
+    await local.officialRuntimeScope.start();
+    expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-1",
+        }),
+      }),
+    );
+    nativeFixture();
+    // A reopened Desktop creates a new pipe; the idle backend must not keep the stale one.
+    await local.configureStartup({
+      ...configuration,
+      environment: { CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-2" },
+    });
+    expect(first.stop).toHaveBeenCalledOnce();
+    await local.officialRuntimeScope.start();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledTimes(2);
+    expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-2",
+        }),
+      }),
+    );
+  });
+
+  it("preserves an active Turn when only Desktop's app tools pipe changes", async () => {
+    const first = nativeFixture();
+    const diagnostics = new PassThrough();
+    const local = await startLocal(true, undefined, diagnostics);
+    const configuration = {
+      stockCodexPath: "/synthetic/codex",
+      arguments: ["-c", "features.code_mode_host=true", "app-server"],
+      environment: { CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-1" },
+    };
+    await local.configureStartup(configuration);
+    await local.officialRuntimeScope.start();
+    first.notify({
+      method: "turn/started",
+      params: { threadId: "active-thread", turn: { id: "active-turn", status: "inProgress" } },
+    });
+    await vi.waitFor(() => expect(local.officialRuntimeScope.owner.hasActiveWork).toBe(true));
+    await local.configureStartup({
+      ...configuration,
+      environment: { CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-2" },
+    });
+    expect(first.stop).not.toHaveBeenCalled();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
+    expect(diagnostics.read()?.toString()).toContain("preserving active official Codex work");
+  });
+
   it("preserves an active Turn when Desktop arguments differ", async () => {
     const first = nativeFixture();
     const diagnostics = new PassThrough();

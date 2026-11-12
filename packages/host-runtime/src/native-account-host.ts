@@ -12,6 +12,7 @@ import { officialEnvironment } from "./app-server-host.js";
 import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
 import { createOwnedLoopbackBackend } from "./codex-runtime/owned-official-backends.js";
 import { resolveOfficialCodexExecutable } from "./codex-runtime/command.js";
+import { DESKTOP_APP_TOOLS_PIPE_ENV } from "./desktop-context-environment.js";
 import {
   captureCodexRuntimeFiles,
   assertCodexRuntimeFilesPresent,
@@ -173,7 +174,10 @@ export async function prepareLocalCodex(input: {
       }
       const changed =
         startup.stockCodexPath !== next.stockCodexPath ||
-        JSON.stringify(startup.arguments) !== JSON.stringify(next.arguments);
+        JSON.stringify(startup.arguments) !== JSON.stringify(next.arguments) ||
+        // A reopened Desktop serves its app tools on a new pipe; the old one is gone.
+        startup.environment[DESKTOP_APP_TOOLS_PIPE_ENV] !==
+          next.environment[DESKTOP_APP_TOOLS_PIPE_ENV];
       // The running generation, not the next requested invocation, owns these files.
       // An idle changed backend can still be replaced through the normal path below.
       if (scope.owner.running && (!changed || scope.owner.hasActiveWork))

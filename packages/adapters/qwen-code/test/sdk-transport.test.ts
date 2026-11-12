@@ -1,4 +1,9 @@
-import type { query as sdkQuery, Query, SDKMessage, SDKUserMessage } from "@qwen-code/sdk";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import { query as sdkQuery } from "@qwen-code/sdk";
+import type { Query, SDKMessage, SDKUserMessage } from "@qwen-code/sdk";
 import { describe, expect, it, vi } from "vitest";
 
 import { QwenCodeSdkTransport } from "../src/sdk-transport.js";
@@ -517,6 +522,63 @@ describe("QwenCodeSdkTransport", () => {
       diagnostic: "No auth type is selected. Please configure an auth type.",
     });
   });
+
+  it("puts the Host Node.js runtime on the Qwen child PATH", async () => {
+    const query = new FakeQuery();
+    let options: { env?: Record<string, string> } | undefined;
+    const transport = new QwenCodeSdkTransport({
+      cwd: process.cwd(),
+      command: process.execPath,
+      environment: { PATH: "/usr/bin:/bin" },
+      queryFactory: vi.fn(({ options: received }) => {
+        options = received;
+        return query as unknown as Query;
+      }) as unknown as typeof sdkQuery,
+    });
+
+    await transport.open({ kind: "create", permissionMode: "default" as never });
+
+    expect(options?.env?.PATH?.split(path.delimiter)).toEqual([
+      "/usr/bin",
+      "/bin",
+      path.dirname(process.execPath),
+    ]);
+    await transport.close();
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "keeps a closed Qwen child stdin from becoming an uncaught EPIPE",
+    async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "qwen-stdin-"));
+      const executable = path.join(directory, "qwen");
+      await writeFile(executable, "#!/bin/sh\ncat >/dev/null\n", { mode: 0o755 });
+      let session: Query | undefined;
+      const transport = new QwenCodeSdkTransport({
+        cwd: directory,
+        command: executable,
+        commandTimeoutMs: 5_000,
+        queryFactory: ((input: Parameters<typeof sdkQuery>[0]) => {
+          session = sdkQuery(input);
+          return session;
+        }) as typeof sdkQuery,
+      });
+      const opening = transport
+        .open({ kind: "create", permissionMode: "default" as never })
+        .catch((error: unknown) => error);
+      try {
+        await vi.waitFor(() => expect(session).toBeDefined());
+        // The SDK keeps its child stdin on the process transport (patched dependency).
+        const stdin = (session as unknown as { transport: { childStdin: NodeJS.WritableStream } })
+          .transport.childStdin;
+        const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+        expect(() => stdin.emit("error", epipe)).not.toThrow();
+      } finally {
+        await transport.close();
+        await opening;
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("reports an unresolved Qwen command as not installed", async () => {
     const transport = new QwenCodeSdkTransport({

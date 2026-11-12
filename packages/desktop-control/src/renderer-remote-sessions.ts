@@ -26,7 +26,17 @@ export interface RemoteSessionTarget {
     forHost(id: string): { manager: Manager } | null;
   };
   __codexhostRemoteSessionsV1?: {
-    managers: WeakMap<object, { epoch: string; answered: Set<string> }>;
+    managers: WeakMap<
+      object,
+      {
+        epoch: string;
+        answered: Set<string>;
+        metadata?: Map<
+          string,
+          { loading: Promise<Record<string, unknown>>; failures: number; retryAt: number }
+        >;
+      }
+    >;
     reconnectAttempts?: Set<string>;
   };
 }
@@ -110,12 +120,122 @@ export async function rendererRemoteSession(
     return Array.isArray(conversation?.requests) ? conversation.requests : [];
   };
   if (operation.kind === "read") {
-    const result = await manager.sendRequest("thread/read", { threadId, includeTurns: true });
+    // Paginated external history rejects includeTurns=true. Read its header first;
+    // native/legacy history keeps the official full-read behavior.
+    let result = await manager.sendRequest("thread/read", { threadId, includeTurns: false });
+    if (routing.forHost(operation.hostId) !== route)
+      throw new Error("Remote connection changed during read");
+    const header = result as {
+      thread?: { historyMode?: string; modelProvider?: string; cwd?: string };
+    };
+    if (header.thread?.historyMode === "paginated") {
+      const turns: unknown[] = [],
+        cursors = new Set<string>();
+      let cursor: string | null = null,
+        bytes = 0,
+        complete = false;
+      for (let page = 0; page < 100; page++) {
+        if (routing.forHost(operation.hostId) !== route)
+          throw new Error("Remote connection changed during read");
+        const response = (await manager.sendRequest("thread/turns/list", {
+          threadId,
+          cursor,
+          limit: 50,
+          sortDirection: "asc",
+          itemsView: "full",
+        })) as { data?: unknown[]; nextCursor?: string | null };
+        if (
+          !Array.isArray(response.data) ||
+          (response.nextCursor !== null && typeof response.nextCursor !== "string")
+        )
+          throw new Error("Invalid remote history page");
+        bytes += new TextEncoder().encode(JSON.stringify(response.data)).byteLength;
+        if (bytes > 14 * 1024 * 1024) throw new Error("Remote history exceeds the snapshot limit");
+        turns.push(...response.data);
+        cursor = response.nextCursor;
+        if (cursor === null) {
+          complete = true;
+          break;
+        }
+        if (cursors.has(cursor)) throw new Error("Remote history cursor repeated");
+        cursors.add(cursor);
+      }
+      if (!complete) throw new Error("Remote history exceeds the page limit");
+      result = { ...(result as object), thread: { ...header.thread, turns } };
+    } else result = await manager.sendRequest("thread/read", { threadId, includeTurns: true });
+    if (routing.forHost(operation.hostId) !== route)
+      throw new Error("Remote connection changed during read");
+    let metadata: Record<string, unknown> = {};
+    if (header.thread?.modelProvider === "codexhost") {
+      const cwd = header.thread.cwd;
+      try {
+        const configuration = (await manager.sendRequest("codexhost/thread/inspect", {
+          threadId,
+        })) as { owner?: string; harnessId?: string };
+        if (routing.forHost(operation.hostId) !== route)
+          throw new Error("Remote connection changed during read");
+        metadata = { configuration };
+        if (configuration.owner === "external" && configuration.harnessId) {
+          const harnessId = configuration.harnessId,
+            key = JSON.stringify([harnessId, cwd]);
+          const cache = (generation.metadata ??= new Map());
+          let discovery = cache.get(key);
+          if (!discovery || Date.now() >= discovery.retryAt) {
+            const loading = Promise.all([
+              Promise.resolve().then(() => {
+                if (routing.forHost(operation.hostId) !== route)
+                  throw new Error("Remote connection changed during read");
+                return manager.sendRequest("codexhost/harness/inspect", {
+                  harnessId,
+                  ...(cwd ? { cwd: cwd } : {}),
+                });
+              }),
+              Promise.resolve()
+                .then(() => {
+                  if (routing.forHost(operation.hostId) !== route)
+                    throw new Error("Remote connection changed during read");
+                  return manager.sendRequest("codexhost/harness/plugins/list", {});
+                })
+                .catch(() => null),
+            ]).then(([inspection, catalog]) => {
+              if ((inspection as { status?: string } | null)?.status !== "ready")
+                throw new Error("Remote Harness discovery is unavailable");
+              return {
+                inspection,
+                harness: (catalog as { plugins?: Array<{ id: string }> } | null)?.plugins?.find(
+                  (p) => p.id === harnessId,
+                ),
+              };
+            });
+            const attempt = {
+              loading,
+              failures: discovery?.failures ?? 0,
+              retryAt: Infinity,
+            };
+            void loading.catch(() => {
+              attempt.failures = Math.min(attempt.failures + 1, 4);
+              attempt.retryAt = Date.now() + Math.min(30_000, 5_000 * 2 ** (attempt.failures - 1));
+            });
+            discovery = attempt;
+            // A Desktop can visit many workspaces during one connection lifetime.
+            if (cache.size >= 64 && !cache.has(key)) {
+              const oldest = cache.keys().next().value;
+              if (oldest !== undefined) cache.delete(oldest);
+            }
+            cache.set(key, discovery);
+          }
+          metadata = { ...metadata, ...(await discovery.loading) };
+        }
+      } catch {
+        /* Optional controls never prevent reading history; failed discovery stays bounded. */
+      }
+    }
     if (routing.forHost(operation.hostId) !== route)
       throw new Error("Remote connection changed during read");
     const requests = await pendingRequests();
     return {
       result,
+      ...metadata,
       epoch: generation.epoch,
       interactionsAvailable:
         !!manager.getConversation &&
@@ -160,6 +280,35 @@ export async function rendererRemoteSession(
     return { accepted: true };
   }
   switch (operation.kind) {
+    case "configure": {
+      const configuration = (await manager.sendRequest("codexhost/thread/inspect", {
+        threadId,
+      })) as { owner?: string };
+      if (routing.forHost(operation.hostId) !== route)
+        throw new Error("Remote connection changed during configuration");
+      if (configuration.owner !== "external")
+        throw new Error("Remote Thread configuration is unavailable");
+      let method: string, params: Record<string, unknown>;
+      if (operation.modelId !== undefined) {
+        method = "codexhost/thread/model/select";
+        params = { threadId, model: { id: operation.modelId } };
+      } else if (operation.thinkingOptionId !== undefined) {
+        method = "codexhost/thread/thinking/select";
+        params = { threadId, thinkingOptionId: operation.thinkingOptionId };
+      } else {
+        method = "codexhost/thread/permission-mode/select";
+        params = { threadId, permissionModeId: operation.permissionModeId };
+      }
+      // An unconfirmed mutation is never replayed. Rediscover controls after any outcome.
+      try {
+        const result = await manager.sendRequest(method, params);
+        if (routing.forHost(operation.hostId) !== route)
+          throw new Error("Remote connection changed during configuration");
+        return result;
+      } finally {
+        generation.metadata?.clear();
+      }
+    }
     case "prompt":
       await manager.sendRequest("thread/resume", { threadId });
       if (routing.forHost(operation.hostId) !== route)

@@ -127,7 +127,7 @@ describe("Desktop existing remote session boundary", () => {
         text: "hello",
       }),
     ).rejects.toThrow(/changed/);
-    expect(old.manager.sendRequest).toHaveBeenCalledTimes(1);
+    expect(old.manager.sendRequest).toHaveBeenCalledTimes(2);
   });
   it("does not replay an approval after an unknown native dispatch outcome", async () => {
     const f = fixture(),
@@ -191,6 +191,7 @@ describe("Desktop existing remote session boundary", () => {
       }),
     ).rejects.toThrow("lost result");
     expect(send.mock.calls.map(([method]) => method)).toEqual([
+      "thread/read",
       "thread/read",
       "thread/resume",
       "turn/start",

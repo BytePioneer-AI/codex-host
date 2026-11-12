@@ -14,6 +14,16 @@ The listener also serves GET /v1/events as server-sent events (resume with Last-
 List registered external clients with their registration time. Tokens are never shown.`,
   "client remove": `codexhost client remove <name>
 Revoke a client immediately. Its later requests are rejected with UNAUTHORIZED and its open event streams are closed. Threads it started remain.`,
+  "preview open": `codexhost preview open <file>
+Show a local HTML file (for example a design mockup) in Codex's built-in browser, next to the conversation, and reload it whenever files in its directory change.
+The file must be inside the current working directory. Its directory is served read-only on a loopback port; relative links to styles, scripts and images work.
+Opening the same file again brings its existing tab to the front. Returns previewId, url and opened: builtInBrowser, or systemBrowser with the reason when the built-in browser is unavailable. UNSUPPORTED on a managed remote Host.`,
+  "preview list": `codexhost preview list
+List open previews with their file, URL and Thread.`,
+  "preview show": `codexhost preview show <preview>
+Bring a preview to the front, reopening its tab if it was closed.`,
+  "preview close": `codexhost preview close <preview>
+Stop serving a preview and close its tab. Previews also close when their Thread is archived or codexhost exits.`,
   "harness list": `codexhost harness list [--format json|compact]
 List Harnesses available in the active Runtime.`,
   "harness inspect": `codexhost harness inspect <harness> [--cwd <path>] [--refresh true|false] [--format json|compact]
@@ -88,6 +98,7 @@ export const DELEGATION_HELP = `usage:
   codexhost thread list
   codexhost client add|list|remove
   codexhost events
+  codexhost preview open|list|show|close
 
 Use <command> --help for its options. Use harness list to discover targets.
 Outside a codexhost session, the CLI reads private cli-credentials.json from the local data directory automatically. The Host and its external listener must be running. No client add or token environment variable is needed; these calls share the local-cli identity. Explicit client credentials override discovery.
@@ -110,7 +121,7 @@ export function delegationCliHelp(arguments_: readonly string[]): string | undef
     return `${COMMAND_HELP.events}\n\n${COMMON_HELP}\n`;
   if (!command || command === "--help" || command === "-h" || command === "help") {
     if (group === "delegate") return DELEGATION_HELP;
-    if (group === "harness" || group === "thread" || group === "client") {
+    if (group === "harness" || group === "thread" || group === "client" || group === "preview") {
       const usages = Object.entries(COMMAND_HELP)
         .filter(([name]) => name.startsWith(`${group} `))
         .map(([, help]) => help.split("\n")[0]);

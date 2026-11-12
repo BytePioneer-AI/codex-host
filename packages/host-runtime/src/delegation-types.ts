@@ -285,6 +285,8 @@ export type DelegationControlErrorCode =
   | "UNAUTHORIZED"
   /** The event cursor is older than the oldest retained event. */
   | "CURSOR_EXPIRED"
+  /** The operation needs something this Host cannot provide, such as a local Desktop. */
+  | "UNSUPPORTED"
   | "INTERNAL_ERROR";
 
 export class DelegationControlError extends Error {

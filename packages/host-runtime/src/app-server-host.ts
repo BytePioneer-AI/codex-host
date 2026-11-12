@@ -395,6 +395,8 @@ export interface AppServerHostOptions {
   consoleOpener?: HostConsoleOpener;
   webOpener?: HostWebOpener;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
+  /** Desktop asked to archive a Thread; resources tied to it (such as previews) can be released. */
+  onThreadArchived?: (threadId: string) => void;
   /** Shared by all Hosts of one runtime; defaults to the bundled snapshot only. */
   modelPrices?: ModelPriceCatalog;
   /** Machine-wide usage statistics; one per runtime, read from the loaded Harness plugins. */
@@ -1022,6 +1024,7 @@ export class AppServerHost {
       inspectThread: (request) => this.#inspectThread(request),
       inspectThreadUsage: (request) => this.#inspectThreadUsage(request),
       listThreadOwnership: (request) => this.#listThreadOwnership(request),
+      threadArchived: (threadId) => this.#options.onThreadArchived?.(threadId),
       inspectThreadSteering: (request) => this.#inspectThreadSteering(request),
       handleSharedQuestionRequest: (request) => this.#handleSharedQuestionRequest(request),
       selectThreadModel: (request) => this.#selectThreadModel(request),

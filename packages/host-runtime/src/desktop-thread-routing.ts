@@ -95,6 +95,8 @@ export interface DesktopThreadRoutingHost {
   inspectThread(request: JsonRpcRequest): Promise<void>;
   inspectThreadUsage(request: JsonRpcRequest): Promise<void>;
   listThreadOwnership(request: JsonRpcRequest): Promise<void>;
+  /** Desktop asked to archive a Thread; resources tied to it (such as previews) can be released. */
+  threadArchived?(threadId: string): void;
   inspectThreadSteering(request: JsonRpcRequest): Promise<void>;
   handleSharedQuestionRequest(request: JsonRpcRequest): Promise<void>;
   selectThreadModel(request: JsonRpcRequest): Promise<void>;
@@ -370,6 +372,8 @@ export class DesktopThreadRouting {
     }
     if (request.method === "thread/archive" || request.method === "thread/unarchive") {
       const threadId = routingParams(request).threadId;
+      if (request.method === "thread/archive" && typeof threadId === "string")
+        this.#host.threadArchived?.(threadId);
       const location =
         typeof threadId === "string"
           ? await this.#host.locateExternalThread(threadId)

@@ -16,6 +16,7 @@ import {
   type ThreadWatchInput,
 } from "./delegation-types.js";
 import { matchesBearerToken } from "./bearer-token.js";
+import type { LocalPreviewManager } from "./local-preview.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
@@ -81,6 +82,15 @@ function watchApi(api: DelegationWatchApi | undefined): DelegationWatchApi {
   return api;
 }
 
+function preview(manager: LocalPreviewManager | undefined): LocalPreviewManager {
+  if (!manager)
+    throw new DelegationControlError(
+      "UNSUPPORTED",
+      "Preview needs the local Codex Desktop; this Host cannot open pages",
+    );
+  return manager;
+}
+
 /** The Turn already started, so a watch failure is reported beside it, not thrown. */
 function watchStartedTurn(watches: DelegationWatchApi, input: ThreadWatchInput) {
   return watches.watch(input).catch((error: unknown) => ({
@@ -139,10 +149,32 @@ export async function routeDelegationRequest(
   }
 }
 
+/** Preview routes are served only by the Host control server, not the external client listener. */
+async function routePreviewRequest(
+  manager: LocalPreviewManager | undefined,
+  route: string,
+  body: Record<string, unknown>,
+): Promise<unknown> {
+  switch (route) {
+    case "/v1/preview/open":
+      return preview(manager).open(body as { path: string; cwd: string; threadId?: string });
+    case "/v1/preview/list":
+      return preview(manager).list();
+    case "/v1/preview/show":
+      return preview(manager).show(String(body.previewId));
+    case "/v1/preview/close":
+      return preview(manager).close(String(body.previewId));
+    default:
+      throw new DelegationControlError("INVALID_ARGUMENT", "Unknown Runtime control route");
+  }
+}
+
 export async function startDelegationControlServer(input: {
   token: string;
   api: DelegationControlApi;
   watchApi?: DelegationWatchApi;
+  /** Absent on a Host without a local Desktop; preview routes then report UNSUPPORTED. */
+  preview?: LocalPreviewManager;
 }): Promise<DelegationControlServer> {
   const server = createServer((request, response) => {
     void (async () => {
@@ -159,7 +191,14 @@ export async function startDelegationControlServer(input: {
         return;
       }
       const body = await jsonBody(request);
-      writeJson(response, 200, await routeDelegationRequest(input, request.url, body));
+      const route = request.url;
+      writeJson(
+        response,
+        200,
+        await (route?.startsWith("/v1/preview/")
+          ? routePreviewRequest(input.preview, route, body)
+          : routeDelegationRequest(input, route, body)),
+      );
     })().catch((error) => {
       writeJson(response, error instanceof DelegationControlError ? 400 : 500, errorBody(error));
     });

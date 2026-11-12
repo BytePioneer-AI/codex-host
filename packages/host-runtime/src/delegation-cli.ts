@@ -198,6 +198,44 @@ export async function runDelegationCli(input: {
       view: "result" | "messages" = "result",
     ): void =>
       writeJson(output, format === "json" ? body : compactDelegationOutput(name, body, view));
+    if (group === "preview") {
+      rejectUnknown(parsed, []);
+      const [target, ...extra] = parsed.positionals;
+      const request = (route: string, body: Record<string, unknown>) =>
+        requestRuntime({
+          environment,
+          path: route,
+          body,
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        });
+      if (command === "list" && !target) {
+        writeJson(output, await request("/v1/preview/list", {}));
+        return 0;
+      }
+      if (
+        (command === "open" || command === "show" || command === "close") &&
+        target &&
+        !extra.length
+      ) {
+        const caller = callerThreadId(environment);
+        writeJson(
+          output,
+          command === "open"
+            ? await request("/v1/preview/open", {
+                // Resolved here: the Runtime's own cwd is not the caller's workspace.
+                path: path.resolve(process.cwd(), target),
+                cwd: process.cwd(),
+                ...(caller ? { threadId: normalizeThreadId(caller) } : {}),
+              })
+            : await request(`/v1/preview/${command}`, { previewId: target }),
+        );
+        return 0;
+      }
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "Usage: codexhost preview open <file> | list | show <preview> | close <preview>",
+      );
+    }
     if (group === "events") {
       // events has no subcommand, so its options start right after the group.
       const options = parseDelegationArguments(input.arguments.slice(1));

@@ -49,6 +49,8 @@ codexhost stop
 
 版本、安装位置及选项一致时复用服务。`codexhost` 或 `codexhost web` 发现 Host 或 Web 的版本、运行入口不一致时切换为当前安装；Host 被替换会中断任务并输出任务数，会话记录保留，任务不自动续跑。后台 Web 就绪后崩溃会退避重启，启动阶段失败不重试。`codexhost status` 只读显示 Host/Web 状态与版本、不含 token 的 Web 地址、最近失败原因和自启状态，不启动服务。
 
+每代官方 Codex 后台记录创建时存在的 CLI 文件及 Windows 工具宿主。Desktop 重连若要保留正在运行的后台，会先检查这些文件；文件已被 Desktop 更新或清理移除时，连接返回固定的恢复提示和失败状态，现有 Host 与任务继续保留。确认可以中断后台任务后，运行 `codexhost stop` 再启动 CodexHost，以当前 Desktop 缓存重建后台。空闲后台仍可按原有规则切换到 Desktop 提供的新配置，新的一代重新记录实际使用的文件；可选工具宿主在创建时不存在则不要求补齐。检查覆盖文件缺失，不检测同一路径内的文件版本替换。
+
 `codexhost stop` 不确认，按 GUI、Web、Host、远程服务、Broker、Console 的顺序停止，并报告本地 Host 被中断的任务数；用户自行打开的 Desktop 不关闭。远程服务停止后，其他电脑重新连接可恢复远程服务。自启项、Serve 配置和会话数据保留。前台开发 Web 不属于此命令的停止范围，开发者使用下文的 `npm stop`。
 
 

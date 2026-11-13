@@ -37,23 +37,23 @@ async function begin(page: Page, source: Locator): Promise<JSHandle<DataTransfer
   return data;
 }
 
-async function over(target: Locator, data: JSHandle<DataTransfer>, fraction = 0.5) {
+async function over(target: Locator, data: JSHandle<DataTransfer>, fraction = 0.5, offsetX = 0) {
   await target.scrollIntoViewIfNeeded();
   return target.evaluate(
-    (element, { data, fraction }) => {
+    (element, { data, fraction, offsetX }) => {
       const rect = element.getBoundingClientRect();
       element.dispatchEvent(
         new DragEvent("dragover", {
           bubbles: true,
           cancelable: true,
           dataTransfer: data,
-          clientX: rect.left + rect.width / 2,
+          clientX: rect.left + rect.width / 2 + offsetX,
           clientY: rect.top + rect.height * fraction,
         }),
       );
       return data.dropEffect;
     },
-    { data, fraction },
+    { data, fraction, offsetX },
   );
 }
 
@@ -101,7 +101,7 @@ async function savedOrder(page: Page) {
 }
 
 it(
-  "row centers attach roots and children, expand target ancestry, and persist across reload",
+  "a stable middle dwell attaches children, shows intent, expands ancestry and persists",
   { timeout: 60_000 },
   async (t) => {
     const { page, host } = await threadTreeBrowser(t);
@@ -111,10 +111,16 @@ it(
     await expand(page, "target-root");
     const source = threadRow(page, "child"),
       target = threadRow(page, "target");
-    const before = await savedOrder(page);
     const data = await begin(page, source);
     assert.equal(await over(target, data), "move");
+    assert.equal(await target.getAttribute("data-thread-drop"), "after");
+    assert.equal(await target.getAttribute("data-thread-dwell"), "true");
+    await page.waitForTimeout(550);
     assert.equal(await target.getAttribute("data-thread-drop"), "under");
+    assert.equal(
+      await target.getAttribute("data-thread-drop-label"),
+      "Release to become a child of Move target",
+    );
     assert.notEqual(await target.evaluate((row) => getComputedStyle(row).outlineStyle), "none");
     await treeShot(page, "thread-tree-drag-row-highlight");
     await release(source, target, data);
@@ -122,19 +128,29 @@ it(
     assert.equal(host.placements.get("child"), "target");
     assert.equal(await target.getAttribute("aria-expanded"), "true");
     assert.equal(await threadRow(page, "target-root").getAttribute("aria-expanded"), "true");
-    assert.deepEqual(await savedOrder(page), before, "a child drag never changes manual order");
+    assert.deepEqual((await savedOrder(page))["thread:target"], ["child"]);
     assert.equal(await page.locator("[data-thread-drop]").count(), 0);
     await page.reload();
     await page.getByText("Native Model", { exact: true }).waitFor();
     await waitParent(page, "child", "target");
-    // Updated ordering uses the entire row, including its outer edge, for placement.
+    // Updated ordering has no insertion line and defaults to the target's displayed parent.
     await viewOption(page, "Last updated");
     const root = threadRow(page, "destination");
     const rootData = await begin(page, root);
+    await over(target, rootData);
+    await page.waitForTimeout(200);
+    const progress = await target.evaluate((row) =>
+      parseFloat(getComputedStyle(row).backgroundSize),
+    );
+    assert.ok(progress > 0 && progress < 100, "updated ordering also shows dwell progress");
     assert.equal(await over(target, rootData, 0.05), "move");
-    assert.equal(await target.getAttribute("data-thread-drop"), "under");
+    assert.equal(await target.getAttribute("data-thread-drop"), "sibling");
+    assert.equal(
+      await page.locator('[data-thread-drop="before"], [data-thread-drop="after"]').count(),
+      0,
+    );
     await release(root, target, rootData, 0.05);
-    await waitParent(page, "destination", "target");
+    await waitParent(page, "destination", "target-root");
     assert.equal(
       await page.evaluate(() => {
         const event = new DragEvent("dragover", {
@@ -148,7 +164,10 @@ it(
       false,
       "a moved source must not leave native sorting acceptance active",
     );
-    await source.dragTo(root);
+    const attach = await begin(page, source);
+    await over(root, attach);
+    await page.waitForTimeout(550);
+    await release(source, root, attach);
     await waitParent(page, "child", "destination");
     assert.equal(host.placements.get("child"), "destination");
   },
@@ -160,6 +179,7 @@ it(
   async (t) => {
     const { page, host } = await threadTreeBrowser(t);
     await viewOption(page, "All conversations (show archived)");
+    await viewOption(page, "Manual");
     await expand(page, "parent");
     await expand(page, "child");
     const writes: string[] = [];
@@ -178,8 +198,11 @@ it(
       const source = threadRow(page, sourceId),
         target = threadRow(page, targetId);
       const data = await begin(page, source);
-      assert.equal(await over(target, data), "none", targetId);
-      assert.equal(await target.getAttribute("data-thread-drop"), null);
+      for (const fraction of [0.1, 0.5, 0.9]) {
+        assert.equal(await over(target, data, fraction), "none", targetId);
+        assert.equal(await target.getAttribute("data-thread-drop"), null);
+        assert.equal(await target.getAttribute("data-thread-dwell"), null);
+      }
       await release(source, target, data);
     }
     assert.deepEqual(writes, []);
@@ -189,60 +212,93 @@ it(
 );
 
 it(
-  "manual edges still reorder roots, but children cannot reorder and entering a rejected center clears stale markers",
+  "manual halves move a three-level subtree to a specified root slot, reorder children and retain both after reload",
   { timeout: 60_000 },
   async (t) => {
     const { page, host } = await threadTreeBrowser(t);
     await viewOption(page, "In one list");
     await viewOption(page, "Manual");
-    const roots = page.locator('[role="tree"] [data-thread-depth="0"]');
-    const sourceKey = await roots.last().getAttribute("data-row-key");
-    const targetKey = await roots.first().getAttribute("data-row-key");
-    assert.ok(sourceKey && targetKey && sourceKey !== targetKey);
-    const source = page.locator(`[data-row-key="${sourceKey}"]`);
-    const target = page.locator(`[data-row-key="${targetKey}"]`);
-    const before = await savedOrder(page);
-    const data = await begin(page, source);
-    assert.equal(await over(target, data, 0.1), "move");
-    assert.equal(await target.getAttribute("data-thread-drop"), null);
-    await release(source, target, data, 0.1);
-    await page.waitForFunction(
-      (before) =>
-        JSON.stringify(
-          JSON.parse(localStorage.getItem("dsh.workspace.view.v5") ?? "{}").sessionOrderByAccount,
-        ) !== before,
-      JSON.stringify(before),
-    );
-    assert.equal(host.placements.size, 0);
-    const insertedBefore = await savedOrder(page);
-    const bottom = await begin(page, source);
-    assert.equal(await over(target, bottom, 0.9), "move");
-    assert.equal(await target.getAttribute("data-thread-drop"), null);
-    await release(source, target, bottom, 0.9);
-    await page.waitForFunction(
-      (before) =>
-        JSON.stringify(
-          JSON.parse(localStorage.getItem("dsh.workspace.view.v5") ?? "{}").sessionOrderByAccount,
-        ) !== before,
-      JSON.stringify(insertedBefore),
-    );
-    assert.equal(host.placements.size, 0);
     await expand(page, "parent");
+    await expand(page, "child");
+    const source = threadRow(page, "grandchild");
+    const target = threadRow(page, "parent");
+    const data = await begin(page, source);
+    assert.equal(await over(target, data, 0.75), "move");
+    assert.equal(await target.getAttribute("data-thread-drop"), "after");
+    assert.equal(await page.locator("[data-thread-drop]").count(), 1);
+    await treeShot(page, "thread-tree-drag-insertion-line");
+    await release(source, target, data, 0.75);
+    await waitParent(page, "grandchild", null);
+    await page.waitForFunction(() => {
+      const order =
+        JSON.parse(localStorage.getItem("dsh.workspace.view.v5") ?? "{}").sessionOrderByAccount
+          ?.__flat_session_order__ ?? [];
+      return order.indexOf("grandchild") === order.indexOf("parent") + 1;
+    });
+    assert.equal(host.placements.get("grandchild"), null);
+    assert.equal(await source.getAttribute("data-thread-depth"), "0");
+    await treeShot(page, "thread-tree-drag-three-level-to-root");
+
+    // Immediate center release means sibling, not child; this also creates a second child to reorder.
+    const destination = threadRow(page, "destination");
     const child = threadRow(page, "child");
+    const quick = await begin(page, destination);
+    assert.equal(await over(child, quick), "move");
+    assert.equal(await child.getAttribute("data-thread-drop"), "after");
+    await release(destination, child, quick);
+    await waitParent(page, "destination", "parent");
+    assert.equal(host.placements.get("destination"), "parent");
+    const reorder = await begin(page, destination);
+    await over(child, reorder, 0.25);
+    await release(destination, child, reorder, 0.25);
+    await page.waitForFunction(() => {
+      const order = JSON.parse(localStorage.getItem("dsh.workspace.view.v5") ?? "{}")
+        .sessionOrderByAccount?.["thread:parent"];
+      return order?.[0] === "destination" && order?.[1] === "child";
+    });
     const after = await savedOrder(page);
-    const childData = await begin(page, child);
-    assert.equal(await over(source, childData, 0.05), "none");
-    await release(child, source, childData, 0.05);
+    await page.reload();
+    await page.getByText("Native Model", { exact: true }).waitFor();
+    await waitParent(page, "grandchild", null);
+    await waitParent(page, "destination", "parent");
     assert.deepEqual(await savedOrder(page), after);
+    const ids = await page
+      .locator('[role="tree"] [data-thread-depth]')
+      .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-row-key")?.split(":")[1]));
+    assert.equal(ids.indexOf("grandchild"), ids.indexOf("child") + 1);
+    assert.ok(ids.indexOf("destination") < ids.indexOf("child"));
     const canceled = await begin(page, source);
     await over(target, canceled, 0.1);
     assert.equal(await over(source, canceled), "none");
     await release(source, source, canceled);
-    assert.deepEqual(
-      await savedOrder(page),
-      after,
-      "the last sort marker must not commit on a rejected drop",
-    );
+    assert.deepEqual(await savedOrder(page), after, "rejected drops clear insertion markers");
+  },
+);
+
+it(
+  "moving beyond the dwell anchor restarts progress and leaving the middle cancels child intent",
+  { timeout: 60_000 },
+  async (t) => {
+    const { page, host } = await threadTreeBrowser(t);
+    await viewOption(page, "In one list");
+    await viewOption(page, "Manual");
+    const source = threadRow(page, "destination");
+    const target = threadRow(page, "parent");
+    const data = await begin(page, source);
+    await over(target, data);
+    await page.waitForTimeout(300);
+    await over(target, data, 0.5, 7);
+    await page.waitForTimeout(250);
+    assert.equal(await target.getAttribute("data-thread-drop"), "after");
+    assert.equal(await target.getAttribute("data-thread-dwell"), "true");
+    await page.waitForTimeout(300);
+    assert.equal(await target.getAttribute("data-thread-drop"), "under");
+    await over(target, data, 0.1);
+    assert.equal(await target.getAttribute("data-thread-drop"), "before");
+    assert.equal(await target.getAttribute("data-thread-dwell"), null);
+    await release(source, target, data, 0.1);
+    assert.equal(host.placements.size, 0);
+    assert.equal(await source.getAttribute("data-thread-parent"), null);
   },
 );
 
@@ -313,6 +369,7 @@ it(
     // Restore through the same row gesture, then release on the group's actual list container.
     const attach = await begin(page, child);
     await over(threadRow(page, "parent"), attach);
+    await page.waitForTimeout(550);
     await release(child, threadRow(page, "parent"), attach);
     await waitParent(page, "child", "parent");
     const whitespace = own
@@ -409,6 +466,8 @@ it(
     assert.equal(await target.getAttribute("aria-expanded"), "false");
     await threadRow(page, "child").waitFor();
     assert.equal(await target.getAttribute("aria-expanded"), "true");
+    await over(threadRow(page, "child"), data);
+    await page.waitForTimeout(550);
     await release(source, threadRow(page, "child"), data);
     await waitParent(page, "destination", "child");
     assert.equal(host.placements.get("destination"), "child");
@@ -426,7 +485,9 @@ it(
     const types = await data.evaluate((data) => [...data.types]);
     assert.ok(types.some((type) => type.includes("thread")));
     const content = page.locator('[data-conversation-session="destination"]');
+    await over(threadRow(page, "destination"), data, 0.1);
     await over(content, data);
+    assert.equal(await page.locator("[data-thread-drop]").count(), 0);
     await page.locator("[data-thread-reference-drop]").waitFor();
     await release(source, content, data);
     const chip = content.locator('[data-composer-chip="codexhost-thread"]');
@@ -454,7 +515,12 @@ for (const touch of [false, true])
         );
         await openSidebar(page);
         await expand(page, "parent");
+        assert.equal(
+          await threadRow(page, "child").getAttribute("draggable"),
+          touch ? "false" : "true",
+        );
         await threadMenu(page, "child");
+        if (touch && width === 390) await treeShot(page, "thread-tree-drag-phone-menu");
         const move = page.getByRole("menuitem", { name: "Move under…", exact: true });
         const top = page.getByRole("menuitem", { name: "Move to top level", exact: true });
         assert.equal(await move.count(), touch ? 1 : 0);

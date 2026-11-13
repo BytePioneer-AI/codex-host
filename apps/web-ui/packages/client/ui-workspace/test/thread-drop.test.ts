@@ -6,6 +6,7 @@ import type {
 } from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionId } from "@deepseek-ai/dsh-session/types";
 import {
+  threadDropDwell,
   threadDropRegion,
   threadDropTargets,
   threadGroupDrop,
@@ -32,13 +33,31 @@ function catalog(...rows: SessionSummary[]): SessionListState {
   };
 }
 
-it("reserves the outer quarters for manual ordering and the center for placement", () => {
+it("uses half rows for insertion, never attaching without a confirmed dwell", () => {
   const rect = { top: 100, height: 40 };
-  for (const y of [100, 109.99]) assert.equal(threadDropRegion(y, rect, true), "before");
-  for (const y of [110, 120, 129.99]) assert.equal(threadDropRegion(y, rect, true), "under");
-  for (const y of [130, 140]) assert.equal(threadDropRegion(y, rect, true), "after");
-  for (const y of [100, 110, 130, 140]) assert.equal(threadDropRegion(y, rect, false), "under");
-  assert.equal(threadDropRegion(100, { top: 100, height: 0 }, true), "under");
+  for (const y of [100, 110, 119.99]) assert.equal(threadDropRegion(y, rect, true), "before");
+  for (const y of [120, 129, 140]) assert.equal(threadDropRegion(y, rect, true), "after");
+  for (const y of [100, 110, 130, 140]) assert.equal(threadDropRegion(y, rect, false), "sibling");
+  assert.equal(threadDropRegion(100, { top: 100, height: 0 }, true), "sibling");
+});
+
+it("confirms only after 500ms within the middle 40%, tolerates 6px and resets larger drift", () => {
+  const rect = { top: 100, height: 40 };
+  const point = { id: "target", x: 100, y: 120, now: 1000 };
+  const dwell = threadDropDwell(null, point, rect);
+  assert.ok(dwell);
+  assert.equal(threadDropRegion(120, rect, true, dwell, 1499), "after");
+  for (const manual of [true, false])
+    assert.equal(threadDropRegion(120, rect, manual, dwell, 1500), "under");
+  assert.equal(threadDropDwell(dwell, { ...point, x: 106, now: 1500 }, rect), dwell);
+  const moved = threadDropDwell(dwell, { ...point, x: 106.01, now: 1500 }, rect);
+  assert.equal(moved?.since, 1500);
+  assert.equal(threadDropRegion(120, rect, true, moved, 1500), "after");
+  assert.equal(threadDropDwell(dwell, { ...point, y: 111.9 }, rect), null);
+  assert.equal(threadDropDwell(dwell, { ...point, y: 128.1 }, rect), null);
+  assert.equal(threadDropDwell(dwell, { ...point, id: "other", now: 1600 }, rect)?.since, 1600);
+  assert.equal(threadDropDwell(null, { ...point, now: 1800 }, rect)?.since, 1800);
+  assert.equal(threadDropDwell(dwell, point, { top: 100, height: 0 }), null);
 });
 
 it("uses catalog placement rules for self, descendants, current parent, archive, remote, draft and Subagent", () => {

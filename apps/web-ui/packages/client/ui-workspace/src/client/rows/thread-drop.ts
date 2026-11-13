@@ -2,14 +2,37 @@
 import type { SessionListState } from "@deepseek-ai/dsh-api-session-controller/client";
 import { threadPlacementCandidates } from "../thread-tree-catalog.ts";
 
+export const THREAD_DWELL_MS = 500;
+export const THREAD_DWELL_SLOP = 6;
+
+export type ThreadDwell = { id: string; x: number; y: number; since: number };
+
+/** Leaving the middle or moving beyond the anchor resets the entire dwell. */
+export function threadDropDwell(
+  previous: ThreadDwell | null,
+  point: { id: string; x: number; y: number; now: number },
+  rect: { top: number; height: number },
+): ThreadDwell | null {
+  const fraction = (point.y - rect.top) / rect.height;
+  if (rect.height <= 0 || fraction < 0.3 || fraction > 0.7) return null;
+  if (
+    previous?.id === point.id &&
+    Math.hypot(point.x - previous.x, point.y - previous.y) <= THREAD_DWELL_SLOP
+  )
+    return previous;
+  return { id: point.id, x: point.x, y: point.y, since: point.now };
+}
+
 export function threadDropRegion(
   clientY: number,
   rect: { top: number; height: number },
   manual: boolean,
-): "before" | "after" | "under" {
-  if (!manual || rect.height <= 0) return "under";
-  const fraction = (clientY - rect.top) / rect.height;
-  return fraction < 0.25 ? "before" : fraction >= 0.75 ? "after" : "under";
+  dwell: ThreadDwell | null = null,
+  now = 0,
+): "before" | "after" | "under" | "sibling" {
+  if (dwell !== null && now - dwell.since >= THREAD_DWELL_MS) return "under";
+  if (!manual || rect.height <= 0) return "sibling";
+  return clientY < rect.top + rect.height / 2 ? "before" : "after";
 }
 
 export function threadDropTargets(

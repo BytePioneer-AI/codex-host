@@ -17,10 +17,13 @@ import {
   type SessionNode,
 } from "../tree.ts";
 import { PINNED_SECTION_KEY, WORKSPACES_SECTION_KEY } from "../stores.ts";
+import { visibleThreadRows } from "../thread-tree.ts";
+import { orderedThreadChildren } from "../thread-tree-order.ts";
 
 const EMPTY_EXPANSION: Readonly<Record<string, boolean>> = {};
 const ThreadTreeContext = createContext<{
   expansion: Readonly<Record<string, boolean>>;
+  rows: (roots: readonly SessionNode[]) => SessionNode[];
   toggle: (id: string, expanded: boolean) => void;
   rootId: (id: SessionId) => SessionId;
   reveal: (id: SessionId) => void;
@@ -28,6 +31,7 @@ const ThreadTreeContext = createContext<{
   isSidebarSelection: (id: SessionId) => boolean;
 }>({
   expansion: EMPTY_EXPANSION,
+  rows: (roots) => visibleThreadRows(roots, EMPTY_EXPANSION),
   toggle: () => {},
   rootId: (id) => id,
   reveal: () => {},
@@ -51,6 +55,8 @@ export function ThreadTreeViewProvider({
   const workspaceState = useWorkspaces((state) => state);
   const expansion = useStore((state) => state.threadExpansion ?? EMPTY_EXPANSION);
   const archivedFilter = useStore((state) => state.archivedFilter ?? "default");
+  const manual = useStore((state) => state.orderBy === "manual");
+  const orders = useStore((state) => state.sessionOrderByAccount);
   const forest = useMemo(
     () =>
       deriveThreadForest(
@@ -136,13 +142,29 @@ export function ThreadTreeViewProvider({
   const value = useMemo(
     () => ({
       expansion,
+      rows: (roots: readonly SessionNode[]) =>
+        visibleThreadRows(
+          roots,
+          expansion,
+          manual ? (node) => orderedThreadChildren(node, orders, list.byId) : undefined,
+        ),
       toggle: (id: string, expanded: boolean) => actions.setThreadsExpanded([id], expanded),
       rootId: (id: SessionId) => targets.get(id)?.root.id ?? id,
       reveal,
       selectSidebarRow,
       isSidebarSelection,
     }),
-    [actions, expansion, targets, reveal, selectSidebarRow, isSidebarSelection],
+    [
+      actions,
+      expansion,
+      manual,
+      orders,
+      list.byId,
+      targets,
+      reveal,
+      selectSidebarRow,
+      isSidebarSelection,
+    ],
   );
   return <ThreadTreeContext.Provider value={value}>{children}</ThreadTreeContext.Provider>;
 }

@@ -130,6 +130,8 @@ export interface TreeView {
   expandedGroups: readonly string[];
   /** Omit active pins when a separate Pinned section renders them. Membership is unchanged. */
   excludePinned?: boolean;
+  /** Browser-local root order for the Recents projection; absent means recency. */
+  recentOrder?: readonly SessionId[];
 }
 
 interface Group {
@@ -518,7 +520,10 @@ export function deriveGroups(
       const root = roots.get(session.id);
       return root === undefined || (view.excludePinned && root.pinned) ? [] : [root];
     });
-    if (g.key === UNGROUPED_KEY)
+    if (g.key === UNGROUPED_KEY && view.recentOrder) {
+      const rank = new Map(view.recentOrder.map((id, index) => [id, index]));
+      members.sort((a, b) => (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity));
+    } else if (g.key === UNGROUPED_KEY)
       members.sort(
         (a, b) =>
           (b.tree?.updatedAt ?? b.updatedAt) - (a.tree?.updatedAt ?? a.updatedAt) ||

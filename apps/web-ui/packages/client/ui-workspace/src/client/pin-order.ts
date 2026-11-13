@@ -38,6 +38,7 @@ export function pinOrderSource(
   const accounted = new Set(workspaces.flatMap((workspace) => workspace.sessionIds));
   return {
     members: Object.fromEntries([
+      ...Object.entries(treeOrder.childMembers),
       ...workspaces.map(
         (workspace) => [workspace.workspaceId, rootMembers(workspace.sessionIds)] as const,
       ),

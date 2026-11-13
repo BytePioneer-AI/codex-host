@@ -526,7 +526,7 @@ async function dragInto(page: Page, source: Locator, target: Locator): Promise<v
 }
 
 it(
-  "children cannot reorder or pin but retain native reference dragging into chat",
+  "children hide pin actions and retain native reference dragging into chat",
   { timeout: 60_000 },
   async (t) => {
     const { page, host } = await threadTreeBrowser(t, 1280, "destination");
@@ -543,15 +543,6 @@ it(
           JSON.parse(localStorage.getItem("dsh.workspace.view.v5") ?? "{}").sessionOrderByAccount,
       );
     const before = await savedOrder();
-    const rows = () =>
-      page
-        .locator('[role="tree"] [data-row-key]')
-        .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-row-key")));
-    const order = await rows();
-    await child.dragTo(threadRow(page, "destination"), { targetPosition: { x: 100, y: 1 } });
-    assert.deepEqual(await savedOrder(), before);
-    assert.deepEqual(await rows(), order);
-    assert.equal(host.placements.size, 0);
     const content = page.locator('[data-conversation-session="destination"]');
     const composer = content.locator("[data-composer-input]");
     await dragInto(page, child, content);
@@ -561,6 +552,7 @@ it(
     await chip.waitFor();
     assert.equal(await chip.innerText(), "Delegated implementation");
     assert.deepEqual(await savedOrder(), before);
+    assert.equal(host.placements.size, 0);
     assert.deepEqual(host.pinnedIds, ["child"]);
     assert.equal(
       host.requests.some((request) => request.method === "turn/start"),

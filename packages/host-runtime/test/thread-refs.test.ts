@@ -29,7 +29,6 @@ function session(): DelegationControlRegistration & { starts: DelegationStartInp
     turn: null,
     progress: [],
     result: { availability: "pending" },
-    nextCursor: null,
   });
   return {
     starts,

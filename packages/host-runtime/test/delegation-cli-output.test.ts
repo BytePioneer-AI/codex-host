@@ -21,7 +21,6 @@ describe("compact delegation output", () => {
           { id: "latest", turnId: "private-turn", text: "Latest update" },
           { id: "blank", turnId: "private-turn", text: "\n " },
         ],
-        nextCursor: "internal-bookmark",
         timedOut: status === "running",
       }),
     ).toEqual({
@@ -34,24 +33,7 @@ describe("compact delegation output", () => {
     });
   });
 
-  it("does not invent a pagination end when connected to an older Runtime", () => {
-    expect(() =>
-      compactDelegationOutput(
-        "thread read",
-        {
-          threadId: "thread",
-          harnessId: "pi",
-          status: "completed",
-          messages: [],
-          result: { availability: "unavailable" },
-          nextCursor: "bookmark",
-        },
-        "messages",
-      ),
-    ).toThrow("updated Host Runtime");
-  });
-
-  it("preserves failure details on message pages", () => {
+  it("preserves failure details on Turn ranges", () => {
     expect(
       compactDelegationOutput(
         "thread read",
@@ -60,9 +42,10 @@ describe("compact delegation output", () => {
           harnessId: "pi",
           status: "failed",
           result: { availability: "unavailable", message: "Model unavailable" },
-          messages: [],
-          hasMore: false,
-          nextCursor: "bookmark",
+          turns: [],
+          totalTurns: 0,
+          from: null,
+          to: null,
         },
         "messages",
       ),
@@ -70,9 +53,10 @@ describe("compact delegation output", () => {
       thread: "codex://threads/thread",
       harnessId: "pi",
       status: "failed",
-      messages: [],
-      hasMore: false,
-      nextCursor: "bookmark",
+      turns: [],
+      totalTurns: 0,
+      from: null,
+      to: null,
       error: "Model unavailable",
     });
   });

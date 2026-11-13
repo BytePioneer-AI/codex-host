@@ -13,7 +13,6 @@ function runtime() {
     turn: null,
     progress: [],
     result: { availability: "pending" },
-    nextCursor: null,
   };
   const read = vi.fn(async () => target);
   const send = vi.fn();

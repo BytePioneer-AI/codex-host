@@ -24,6 +24,26 @@ export function consumesNextArgument(argument: string, next: string | undefined)
   return next !== undefined && !next.startsWith("--");
 }
 
+export function parseDelegationTurnRange(options: ReadonlyMap<string, string>): {
+  from?: number;
+  to?: number;
+} {
+  const range: { from?: number; to?: number } = {};
+  for (const name of ["from", "to"] as const) {
+    const raw = options.get(`--${name}`);
+    if (raw === undefined) continue;
+    const value = Number(raw);
+    if (!/^[0-9]+$/u.test(raw) || !Number.isSafeInteger(value) || value < 1) {
+      throw new DelegationControlError("INVALID_ARGUMENT", `--${name} must be a positive integer`);
+    }
+    range[name] = value;
+  }
+  if (range.from !== undefined && range.to !== undefined && range.from > range.to) {
+    throw new DelegationControlError("INVALID_ARGUMENT", "from must not exceed to");
+  }
+  return range;
+}
+
 export function parseDelegationArguments(arguments_: readonly string[]): DelegationCliArguments {
   const positionals: string[] = [];
   const parsed = new Map<string, string>();

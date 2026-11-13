@@ -119,7 +119,6 @@ describe("watches that notify an external client", () => {
           turn: { turnId: "turn-1", status: status.child },
           progress: [],
           result: { availability: "pending" },
-          nextCursor: null,
           refs: ["https://github.com/o/r/issues/12"],
         } as DelegationThreadSnapshot;
       }),

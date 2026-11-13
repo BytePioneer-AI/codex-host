@@ -36,7 +36,6 @@ describe("Thread result files", () => {
       turn: { turnId: "turn-1", status: "completed" },
       progress: [],
       result: { availability: "available", text: "" },
-      nextCursor: null,
     };
   });
 

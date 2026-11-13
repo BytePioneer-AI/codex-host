@@ -56,7 +56,6 @@ async function foldStyle(page: Page, id: string) {
         border: getComputedStyle(node).borderWidth,
         color: getComputedStyle(node).color,
         chevron: getComputedStyle(chevron).transform,
-        count: content.textContent?.trim(),
       };
     });
 }
@@ -67,28 +66,24 @@ async function foldLayout(page: Page, id: string): Promise<void> {
     const toggle = row.querySelector("[data-thread-toggle]");
     const trailing = row.lastElementChild;
     const content = toggle?.firstElementChild;
-    const count = content?.querySelector("span:not([data-thread-tree-activity])");
     const chevron = toggle?.querySelector("svg");
-    if (!title || !toggle || !trailing || !content || !count || !chevron)
+    if (!title || !toggle || !trailing || !content || !chevron)
       throw new Error("Missing fold layout elements");
     const dot = content.querySelector("[data-thread-tree-activity]");
     return {
       gap: toggle.getBoundingClientRect().left - title.getBoundingClientRect().right,
       metadataGap: trailing.getBoundingClientRect().left - toggle.getBoundingClientRect().right,
-      smaller:
-        parseFloat(getComputedStyle(count).fontSize) < parseFloat(getComputedStyle(title).fontSize),
       contentFits: content.scrollWidth <= content.clientWidth + 1,
       chevronWidth: chevron.getBoundingClientRect().width,
-      dotBeforeCount:
-        !dot || dot.getBoundingClientRect().right < count.getBoundingClientRect().left,
+      dotBeforeChevron:
+        !dot || dot.getBoundingClientRect().right <= chevron.getBoundingClientRect().left,
     };
   });
   assert.ok(layout.gap >= 0 && layout.gap <= 1, "the control follows the title, not the row edge");
   assert.ok(layout.metadataGap >= 6, "metadata and actions do not overlap the fold target");
-  assert.equal(layout.smaller, true);
-  assert.equal(layout.contentFits, true, "the count and chevron do not shrink or clip");
+  assert.equal(layout.contentFits, true, "the chevron and dot do not shrink or clip");
   assert.equal(layout.chevronWidth, 10);
-  assert.equal(layout.dotBeforeCount, true);
+  assert.equal(layout.dotBeforeChevron, true);
 }
 
 async function rowAlignment(page: Page, id: string) {
@@ -130,7 +125,7 @@ for (const width of [1280, 390]) {
       assert.equal(collapsedStyle.background, "rgba(0, 0, 0, 0)");
       assert.equal(collapsedStyle.contentBackground, "rgba(0, 0, 0, 0)");
       assert.equal(collapsedStyle.border, "0px");
-      assert.equal(collapsedStyle.count, "4");
+      assert.equal(await parent.locator("[data-thread-toggle]").innerText(), "");
       assert.notEqual(collapsedStyle.chevron, "none");
       await foldLayout(page, "parent");
       assert.equal(
@@ -165,7 +160,6 @@ for (const width of [1280, 390]) {
       const expandedStyle = await foldStyle(page, "parent");
       assert.equal(expandedStyle.background, "rgba(0, 0, 0, 0)");
       assert.equal(expandedStyle.contentBackground, "rgba(0, 0, 0, 0)");
-      assert.equal(expandedStyle.count, collapsedStyle.count);
       assert.equal(expandedStyle.chevron, "none");
       assert.notEqual(expandedStyle.color, collapsedStyle.color);
       const expandedBounds = await parent.locator("[data-thread-toggle]").boundingBox();

@@ -50,9 +50,6 @@ export function ThreadTreeToggle({
             title={t(`threadTree.${state}`)}
           />
         )}
-        <span className={css.count} aria-hidden="true">
-          {count > 999 ? "999+" : count}
-        </span>
         <IconChevronDownOutlineRegular size={10} className={expanded ? undefined : css.collapsed} />
       </span>
     </button>

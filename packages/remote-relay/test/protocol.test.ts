@@ -21,6 +21,7 @@ describe("relay protocol", () => {
     expect(paths).toEqual({
       agent: "/v1/agent",
       authenticated: "/v1/authenticated",
+      externalAccount: "/v1/external-account",
       register: "/v1/register",
       tcp: "/v1/tcp",
       notice: "/v1/notice",

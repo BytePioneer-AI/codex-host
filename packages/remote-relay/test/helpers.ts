@@ -21,6 +21,8 @@ import {
   streamWindowSize,
   connectionWindowSize,
   maxPayload,
+  type RegistrationResponse,
+  type RelayNotice,
 } from "../src/protocol.js";
 
 export const certPath = fileURLToPath(new URL("./fixtures/cert.pem", import.meta.url));
@@ -92,7 +94,11 @@ export async function fakeAgent(
   });
   const streams: ServerHttp2Stream[] = [];
   const challenges: string[] = [];
-  const notices: { quota: string; until: string }[] = [];
+  const notices: RelayNotice[] = [];
+  let resolveRegistration!: (response: RegistrationResponse) => void;
+  const registration = new Promise<RegistrationResponse>((resolve) => {
+    resolveRegistration = resolve;
+  });
   const registered = new Promise<string>((resolve) => {
     http2.on("stream", (stream, request) => {
       stream.on("error", () => {});
@@ -117,7 +123,11 @@ export async function fakeAgent(
           body += chunk;
         });
         stream.on("end", () => {
-          if (body) resolve(JSON.parse(body).hostname);
+          if (body) {
+            const response: RegistrationResponse = JSON.parse(body);
+            resolveRegistration(response);
+            resolve(response.hostname);
+          }
           stream.end();
         });
       } else if (request[":path"] === paths.notice) {
@@ -153,6 +163,7 @@ export async function fakeAgent(
     ws,
     closed,
     registered,
+    registration,
     privateKey,
     hostname,
     streams,

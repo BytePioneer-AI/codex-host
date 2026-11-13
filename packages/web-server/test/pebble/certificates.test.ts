@@ -14,6 +14,7 @@ import { connect, createSecureContext } from "node:tls";
 import { it } from "node:test";
 import { AcmeFailure, AcmeRound, issueCertificate } from "../../src/remote-relay/acme.ts";
 import { environment, httpProxy, pebble } from "../support/pebble.ts";
+import { certificateRelay } from "../support/certificate-relay.ts";
 
 it(
   "pauses after two real validation failures and does not retry on re-registration",
@@ -222,3 +223,52 @@ it(
     );
   },
 );
+
+for (const realRelay of [false, true]) {
+  it(
+    `issues and renews with required EAB through the ${realRelay ? "real relay" : "protocol double"} when direct CA access is unavailable`,
+    { timeout: 60_000 },
+    async (t) => {
+      const account = {
+        keyId: "pebble-external-account",
+        hmacKey: Buffer.from("local-pebble-external-account-key").toString("base64url"),
+        contact: ["mailto:ops@example.com"],
+      };
+      const f = await pebble(t, 0, { throughRelay: realRelay, externalAccount: account });
+      const double = realRelay
+        ? undefined
+        : await certificateRelay(t, f.directory, { status: 200, account });
+      if (realRelay) assert.equal(f.registration.certificateAuthority?.directory, f.directory);
+      const token = double?.token ?? f.registration.token;
+      assert.ok(token);
+      const claims = double ? () => double.requests.length : f.externalAccounts;
+      const direct = t.mock.method(acme.axios.defaults.httpsAgent, "createConnection", () => {
+        throw new Error("Direct CA access is unavailable");
+      });
+      await assert.rejects(acme.axios.get(f.directory), /Direct CA access is unavailable/);
+      const issue = async () => {
+        const round = new AcmeRound(f.tls, {
+          host: double?.host ?? `localhost:${f.relay.port}`,
+          token,
+        });
+        try {
+          return await issueCertificate(round, f.data, f.hostname, f.directory, () => {});
+        } finally {
+          round.stop();
+        }
+      };
+      const first = new X509Certificate(await issue());
+      assert.ok(first.checkHost(f.hostname));
+      assert.equal(claims(), 1);
+      const renewed = new X509Certificate(await issue());
+      assert.ok(renewed.checkHost(f.hostname));
+      assert.notEqual(renewed.serialNumber, first.serialNumber);
+      assert.equal(claims(), 1, "renewal uses the existing account without claiming EAB");
+      assert.equal(
+        direct.mock.callCount(),
+        1,
+        "only the explicit direct-access probe uses the blocked agent",
+      );
+    },
+  );
+}

@@ -92,9 +92,13 @@ ALPN 恰好为 `acme-tls/1` 时，连接与用量始终标记 `acme: true`（不
 
 认证报告只通过已签名注册的电脑控制会话传输：`POST /v1/tcp` 带中转生成的 `relay-connection-id`；电脑校验访问凭据后，使用该 HTTP/2 会话的 server push 发送 `GET /v1/authenticated`，带相同 ID，响应 204 且正文为空。核心只接受该电脑仍存活的非 ACME 连接 ID，忽略未知、其他电脑或已关闭连接的 ID，并按 UTC 日去重。不增加公网认证报告路由，也不传输令牌、Cookie、请求路径或转发内容。旧 Relay 不提供连接 ID，电脑不报告；统计失败不影响登录。此事件是电脑端的认证观测，不代表人数、登录操作次数或应用请求成功。
 
-`onRequest` 接收控制地址上未升级为 WebSocket 的 HTTP 请求，可用于提供部署者自定路径的页面，由处理函数完成响应；未提供时返回 404。同步抛错或返回的 Promise 被拒绝时，尚未发送响应头则返回 500，否则关闭该响应，不影响 Relay 进程。WebSocket 升级路径和按地址名的 SNI 转发不经过该回调。
+`onRequest` 接收控制地址上未升级为 WebSocket 的 HTTP 请求，可用于提供部署者自定路径的页面，由处理函数完成响应；未提供时返回 404。同步抛错或返回的 Promise 被拒绝时，尚未发送响应头则返回 500，否则关闭该响应，不影响 Relay 进程。WebSocket 升级路径、证书请求通道、外部账户凭据请求和按地址名的 SNI 转发不经过该回调。
 
-返回值包含 `server`、`close()` 和 `disconnect(name)`。调用者自行 `server.listen(port)`；`disconnect` 立即注销地址并关闭其控制和手机连接，未知名字无操作。再次连接须重新经过 `check`，可借此使新额度或停用规则生效。
+### 证书机构
+
+电脑的证书机构由中转下发。`certificateDirectory` 指定初始 ACME 目录（`https:`），默认 Let's Encrypt 生产环境（`defaultCertificateDirectory`）。`externalAccount({ id, name })` 可选，为没有账户的电脑生成一次性外部账户凭据：返回 `{ keyId, hmacKey }`（hmacKey 为 base64url）表示提供，`undefined` 表示当前证书机构不需要，`{ retryAfter?: 秒 }` 表示稍后再试；抛错按暂时不可用处理。凭据不写日志。自建 CLI 不提供这两项，使用 Let's Encrypt 且不提供凭据。
+
+返回值包含 `server`、`close()`、`disconnect(name)` 和 `setCertificateDirectory(directory)`。调用者自行 `server.listen(port)`；`disconnect` 立即注销地址并关闭其控制和手机连接，未知名字无操作。`setCertificateDirectory` 只接受 `https:` 目录，值变化时通知所有在线电脑，不断开连接。再次连接须重新经过 `check`，可借此使新额度或停用规则生效。
 
 `check` 抛错或返回非法 DNS 标签时，注册失败，以普通关闭码 `1000` 关闭，不返回注册正文；检查也受从连接建立起的 10 秒注册时限约束，超时为 `4408`，迟到的检查结果不生效。
 
@@ -103,7 +107,7 @@ ALPN 恰好为 `acme-tls/1` 时，连接与用量始终标记 `acme: true`（不
 协议导出为 `@codexhost/remote-relay/protocol`，完整契约见 [design.md](../../openspec/changes/archive/2026-11-06-add-remote-relay-server/design.md)。
 
 - Ed25519 公钥的 SHA-256 前 16 字节编码为 26 位小写 base32 ID。
-- 每个控制连接一次 32 字节挑战，签名绑定小写、无端口、无末尾点的控制主机名。电脑在回复挑战的同一个响应中，除 `relay-public-key`、`relay-signature` 外，可带 `relay-name`、`relay-invite`。注册通过仍返回 `{ hostname }`；注册前不转发手机。
+- 每个控制连接一次 32 字节挑战，签名绑定小写、无端口、无末尾点的控制主机名。电脑在回复挑战的同一个响应中，除 `relay-public-key`、`relay-signature` 外，可带 `relay-name`、`relay-invite`。注册通过返回 `{ hostname, token, certificateAuthority: { directory } }`；`token` 是只属于本次注册的 32 字节随机凭证，注册被替换、断开或超时后立即失效。旧电脑只读取 `hostname`。注册前不转发手机。
 - 注册拒绝直接关闭控制连接，不发送注册正文。关闭码：`4401` 无效签名，`4408` 10 秒注册超时，`4409` 同地址名的新连接替换，`4410` 邀请码无效（`invite`），`4411` 名字已被占用（`name-taken`），`4412` 已被停用（`banned`），`4413` 容量已满（`full`）。
 - WSS 只协商 `http/1.1`，不压缩，单消息上限 1 MiB；其上 Relay 是 HTTP/2 客户端，电脑是服务端。
 - 每条手机连接对应 `POST /v1/tcp`，传递来源 IP/端口；FIN 独立传递，异常中断两端。
@@ -113,6 +117,9 @@ ALPN 恰好为 `acme-tls/1` 时，连接与用量始终标记 `acme: true`（不
 - 达到总 TCP 上限时直接关闭新连接，已有连接不受影响；连接关闭后释放名额。被拒绝的电脑沿用随机退避重连。
 - 日额度达到后关闭该地址名现有手机连接。仅 ALPN 列表恰为 `acme-tls/1` 的新连接可例外转发：每条双向合计 64 KiB、10 秒，每地址名每 UTC 整点小时合计 1 MiB；仍受 32 条并发与带宽限制。
 - 首次达到当天额度时，通过控制连接发送 `POST /v1/notice`，正文为 `{"quota":"exhausted","until":"<下一个 UTC 日的 ISO 时间>"}`，例如 `{"quota":"exhausted","until":"2026-11-07T00:00:00.000Z"}`。注册时已超额也会发送通知。控制连接保持，次日恢复访问；旧电脑拒绝通知流不影响控制连接。
+- 证书机构变更时，通过 `POST /v1/notice` 发送 `{"certificateAuthority":{"directory":"<目录>"}}`。
+- 证书请求通道：控制地址接受 `CONNECT <目录主机>:<目录端口>`（目录未写端口时为 443），带 `Proxy-Authorization: Bearer <token>`。返回 200 建立通道；407 凭证无效；403 目标与当前目录不符；429 该凭证已有 4 条通道；502 连不上目标（连接限时 10 秒）。双向 60 秒无数据或注册失效时关闭；切换目录只拒绝之后的新通道。通道只转发字节，不计入地址限速和日额度，不产生用量或连接事件。
+- 外部账户凭据：控制地址接受 `POST /v1/external-account`，带 `Authorization: Bearer <token>`。返回 200 `{ keyId, hmacKey }`；404 不提供；429 带 `Retry-After`（秒）；503 暂时不可用；401 凭证无效或调用期间注册已失效。这两类请求不交给 `onRequest`。
 - 字节计数为手机侧转发的加密字节，两个方向相加。日额度和验证小时额度按地址名留在内存，重连不清零；重启后可通过 `usedToday` 恢复当天用量，否则从零起算。UTC 日期/小时变化时按需清零。
 - 每小时清理早于 UTC 当天、且对应电脑当前未注册的用量记录；当天的离线记录保留，断开后重连不能清零当天额度。当前已注册电脑的记录也保留。
 - 不提供 `check` 时，任何持有有效签名的电脑都能注册，依次更换身份可获得新 ID 的每日额度。准入、注册数量限制和封禁规则不在核心中。

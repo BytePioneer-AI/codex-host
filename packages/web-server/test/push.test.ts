@@ -23,10 +23,11 @@ function proxyEnvironment(t: TestContext, values: NodeJS.ProcessEnv) {
   ];
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   const apply = (environment: NodeJS.ProcessEnv) => {
-    for (const name of names) {
-      const value = environment[name];
-      if (value === undefined) Reflect.deleteProperty(process.env, name);
-      else process.env[name] = value;
+    // Windows environment names are case-insensitive: clear first, then
+    // apply the supplied values so deletion of an alias cannot erase a value.
+    for (const name of names) Reflect.deleteProperty(process.env, name);
+    for (const [name, value] of Object.entries(environment)) {
+      if (value !== undefined) process.env[name] = value;
     }
   };
   apply(values);

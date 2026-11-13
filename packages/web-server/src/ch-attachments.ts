@@ -57,7 +57,9 @@ export class ChAttachments {
     if (!("url" in source)) return unavailable();
     // Never fetch HTTP/HTTPS, app: or blob: URLs from the server (including SSRF targets).
     if (source.url.length > Math.ceil(WEB_IMAGE_LIMITS.maxImageBytes / 3) * 4 + 64)
-      return unavailable();
+      throw new RpcError("session/attachment-invalid", "Image exceeds 50 MiB.", {
+        reason: "IMAGE_TOO_LARGE",
+      });
     const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$/u.exec(
       source.url,
     );

@@ -183,7 +183,7 @@ it("bounds native image reads and separates ordinary files without reading them"
     code: "session/attachment-invalid",
     details: { reason: "IMAGE_TOO_MANY_PIXELS" },
   });
-  const padded = Buffer.alloc(17 * 1024 * 1024);
+  const padded = Buffer.alloc(26 * 1024 * 1024);
   Buffer.from(PNG, "base64").copy(padded);
   const large = ["first.png", "second.png"].map((name) => {
     const path = join(root, name);

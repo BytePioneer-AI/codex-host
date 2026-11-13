@@ -281,8 +281,6 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   ): Promise<CredentialImportsResult>;
   listCodexAccounts(): Promise<CodexAccountListResult>;
   refreshCodexAccounts(): Promise<CodexAccountListResult>;
-  /** Allow codexhost methods refused before this Host's control channel was ready. */
-  releaseUnsupportedMethods?(): void;
   subscribeCodexAccounts?(listener: (state: CodexAccountChanged) => void): () => void;
 }
 
@@ -335,6 +333,7 @@ export function createThreadUsageSubscriptionRelay(): {
 
 export function createRendererModelClient(
   candidates: readonly RequestManagerCandidate[],
+  captureInvalidation?: (release: () => void) => void,
 ): RendererModelClient | null {
   const managers = candidates.filter(
     (
@@ -351,6 +350,7 @@ export function createRendererModelClient(
       : source.sendRequest(method, params, options),
   );
   const manager = { sendRequest };
+  captureInvalidation?.(() => sendRequest.releaseUnsupported());
 
   const inspectHarness = async (
     input: HarnessInspectParams,
@@ -420,9 +420,6 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
-    releaseUnsupportedMethods() {
-      sendRequest.releaseUnsupported();
-    },
     async getHarnessPreferences(scope = "external") {
       return harnessPreferenceSnapshotSchema.parse(
         await manager.sendRequest(

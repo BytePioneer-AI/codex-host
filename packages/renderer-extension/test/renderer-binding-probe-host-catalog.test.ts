@@ -1,3 +1,7 @@
+import type {
+  RendererHostRoute,
+  RendererHostRouting,
+} from "@codexhost/desktop-control/renderer-bindings";
 import {
   harnessIdSchema,
   harnessPluginDescriptorSchema,
@@ -296,6 +300,79 @@ afterEach(() => {
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {
+  it("rechecks a connected SSH client's refused directory through the recovery hook", async () => {
+    installFakeBrowser();
+    const { createRendererHostClients } = await import("../src/renderer-host-clients.js");
+    const remoteModule = await import("../src/remote-connections-control.js");
+    const original = remoteModule.createRemoteConnectionsControl;
+    const restore = vi.fn(async () => true);
+    const spy = vi
+      .spyOn(remoteModule, "createRemoteConnectionsControl")
+      .mockImplementation((...args) => {
+        const control = original(...args);
+        control.ssh.restoreAutoConnect = restore;
+        return control;
+      });
+    let ready = false;
+    const hostId = "remote-ssh-discovered:recovered";
+    const sendRequest = vi.fn(async (method: string) => {
+      if (method === "codexhost/harness/plugins/list") {
+        if (!ready) throw Object.assign(new Error("method not found"), { code: -32601 });
+        return listHarnessPlugins();
+      }
+      return readyInspection();
+    });
+    const route = {
+      hostId,
+      manager: { sendRequest },
+      policy: {},
+    } as unknown as RendererHostRoute;
+    const routing = {
+      forHost: () => route,
+    } as unknown as RendererHostRouting;
+    const clients = createRendererHostClients(() => routing);
+    const remote = clients.forHost(hostId);
+    assert(remote);
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({ enabledAgents: ["codex"] });
+    try {
+      await expect(remote.listHarnessPlugins?.()).rejects.toThrow("unsupported");
+      ready = true;
+      probe.setAdapter(
+        { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+        undefined,
+        undefined,
+        {
+          currentHostId: () => null,
+          knownHostIds: () => [],
+          clientForHost: (id: string) => (id === hostId ? remote : null),
+        } as never,
+      );
+      assert(probe.restoreSshConnection);
+      await probe.restoreSshConnection(hostId);
+      const directoryCalls = () =>
+        sendRequest.mock.calls.filter(([method]) => method === "codexhost/harness/plugins/list")
+          .length;
+      expect(directoryCalls()).toBe(2);
+      await probe.restoreSshConnection(hostId);
+      expect(directoryCalls()).toBe(2);
+      ready = false;
+      restore.mockResolvedValueOnce(false);
+      await probe.restoreSshConnection(hostId);
+      await expect(remote.listHarnessPlugins?.()).rejects.toThrow("unsupported");
+      ready = true;
+      await probe.restoreSshConnection(hostId);
+      expect(directoryCalls()).toBe(4);
+      probe.dispose();
+      await probe.restoreSshConnection(hostId);
+      expect(restore).toHaveBeenCalledTimes(4);
+    } finally {
+      probe.dispose();
+      clients.dispose();
+      spy.mockRestore();
+    }
+  });
+
   it("loads remote sidebar artwork before any Composer opens on that Host", async () => {
     installFakeBrowser();
     const plugin = harnessPluginDescriptorSchema.parse({

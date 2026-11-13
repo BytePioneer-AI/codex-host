@@ -5,7 +5,7 @@ import {
 } from "../src/renderer-remote-sessions.js";
 
 function fixture() {
-  const hostId = "remote-ssh-discovered:recovery";
+  const hostId = "remote-control:recovery";
   let enabled = true;
   let status: { state: string; error: string | null } = {
     state: "disconnected",
@@ -45,7 +45,7 @@ function fixture() {
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("enabled native remote connection recovery", () => {
+describe("Remote Control native connection recovery", () => {
   it("retries a confirmed failure only after backoff and coalesces concurrent hosts reads", async () => {
     let now = 0;
     vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -125,7 +125,7 @@ describe("enabled native remote connection recovery", () => {
     const f = fixture();
     f.target.__codexhostRemoteSessionsV1 = {
       managers: new WeakMap(),
-      reconnectAttempts: new Set(["remote-ssh-discovered:recovery"]),
+      reconnectAttempts: new Set(["remote-control:recovery"]),
     };
     await f.hosts();
     expect(f.connect).not.toHaveBeenCalled();

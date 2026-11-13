@@ -22,6 +22,13 @@ import {
   type RendererMessageTarget,
 } from "./renderer-manual-compaction.js";
 
+const methodInvalidators = new WeakMap<RendererModelClient, () => void>();
+
+/** Connection recovery invalidates only the captured client, including wrapped clients. */
+export function releaseRendererHostMethods(client: RendererModelClient): void {
+  methodInvalidators.get(client)?.();
+}
+
 /** Model clients follow native connection identities, never the active Composer.
  * A captured client may finish an in-flight request after replacement, but may
  * not dispatch another request through a retired manager. */
@@ -56,80 +63,86 @@ export function createRendererHostClients(
     retire(route.hostId);
     const target = route.manager;
     const cleanups = new Set<() => void>();
-    const nativeClient = createRendererModelClient([
-      {
-        sendRequest(method, params, options) {
-          if (disposed || readRouting()?.forHost(route.hostId) !== route) {
-            throw new Error(`Renderer request manager is unavailable for Host ${route.hostId}`);
-          }
-          return options === undefined
-            ? target.sendRequest(method, params)
-            : target.sendRequest(method, params, options);
-        },
-        ...(target.addNotificationCallback
-          ? {
-              addNotificationCallback(
-                methods: string | readonly string[],
-                listener: (notification: unknown) => void,
-              ) {
-                const unsubscribe = target.addNotificationCallback?.(methods, listener);
-                if (
-                  !messages ||
-                  !(typeof methods === "string" ? [methods] : methods).some((method) =>
-                    [
-                      THREAD_USAGE_UPDATED_METHOD,
-                      HARNESS_PREFERENCES_CHANGED_METHOD,
-                      HARNESS_DISPLAY_CHANGED_METHOD,
-                      SKILLS_CHANGED_METHOD,
-                    ].includes(method),
-                  )
-                )
-                  return () => unsubscribe?.();
-                // Like manual compaction, observe the real Host frame before Desktop's
-                // app-server method table drops custom notifications. No synthetic Tokens.
-                const onMessage: Parameters<RendererMessageTarget["addEventListener"]>[1] = (
-                  event,
-                ) => {
-                  if (event.source != null && event.source !== messages) return;
-                  const message = event.data;
-                  if (
-                    disposed ||
-                    !message ||
-                    typeof message !== "object" ||
-                    !("type" in message) ||
-                    message.type !== "mcp-notification" ||
-                    !("hostId" in message) ||
-                    message.hostId !== route.hostId ||
-                    !("method" in message) ||
-                    ![
-                      THREAD_USAGE_UPDATED_METHOD,
-                      HARNESS_PREFERENCES_CHANGED_METHOD,
-                      HARNESS_DISPLAY_CHANGED_METHOD,
-                      SKILLS_CHANGED_METHOD,
-                    ].includes(String(message.method)) ||
-                    !(typeof methods === "string" ? [methods] : methods).includes(
-                      String(message.method),
-                    ) ||
-                    readRouting()?.forHost(route.hostId) !== route
-                  )
-                    return;
-                  listener(message);
-                };
-                const remove = () => {
-                  messages.removeEventListener("message", onMessage);
-                  cleanups.delete(remove);
-                };
-                messages.addEventListener("message", onMessage);
-                cleanups.add(remove);
-                return () => {
-                  remove();
-                  unsubscribe?.();
-                };
-              },
+    let releaseMethods: (() => void) | undefined;
+    const nativeClient = createRendererModelClient(
+      [
+        {
+          sendRequest(method, params, options) {
+            if (disposed || readRouting()?.forHost(route.hostId) !== route) {
+              throw new Error(`Renderer request manager is unavailable for Host ${route.hostId}`);
             }
-          : {}),
+            return options === undefined
+              ? target.sendRequest(method, params)
+              : target.sendRequest(method, params, options);
+          },
+          ...(target.addNotificationCallback
+            ? {
+                addNotificationCallback(
+                  methods: string | readonly string[],
+                  listener: (notification: unknown) => void,
+                ) {
+                  const unsubscribe = target.addNotificationCallback?.(methods, listener);
+                  if (
+                    !messages ||
+                    !(typeof methods === "string" ? [methods] : methods).some((method) =>
+                      [
+                        THREAD_USAGE_UPDATED_METHOD,
+                        HARNESS_PREFERENCES_CHANGED_METHOD,
+                        HARNESS_DISPLAY_CHANGED_METHOD,
+                        SKILLS_CHANGED_METHOD,
+                      ].includes(method),
+                    )
+                  )
+                    return () => unsubscribe?.();
+                  // Like manual compaction, observe the real Host frame before Desktop's
+                  // app-server method table drops custom notifications. No synthetic Tokens.
+                  const onMessage: Parameters<RendererMessageTarget["addEventListener"]>[1] = (
+                    event,
+                  ) => {
+                    if (event.source != null && event.source !== messages) return;
+                    const message = event.data;
+                    if (
+                      disposed ||
+                      !message ||
+                      typeof message !== "object" ||
+                      !("type" in message) ||
+                      message.type !== "mcp-notification" ||
+                      !("hostId" in message) ||
+                      message.hostId !== route.hostId ||
+                      !("method" in message) ||
+                      ![
+                        THREAD_USAGE_UPDATED_METHOD,
+                        HARNESS_PREFERENCES_CHANGED_METHOD,
+                        HARNESS_DISPLAY_CHANGED_METHOD,
+                        SKILLS_CHANGED_METHOD,
+                      ].includes(String(message.method)) ||
+                      !(typeof methods === "string" ? [methods] : methods).includes(
+                        String(message.method),
+                      ) ||
+                      readRouting()?.forHost(route.hostId) !== route
+                    )
+                      return;
+                    listener(message);
+                  };
+                  const remove = () => {
+                    messages.removeEventListener("message", onMessage);
+                    cleanups.delete(remove);
+                  };
+                  messages.addEventListener("message", onMessage);
+                  cleanups.add(remove);
+                  return () => {
+                    remove();
+                    unsubscribe?.();
+                  };
+                },
+              }
+            : {}),
+        },
+      ],
+      (release) => {
+        releaseMethods = release;
       },
-    ]);
+    );
     if (!nativeClient) return null;
     const client = restoreThreadReferenceCapability(
       nativeClient,
@@ -137,6 +150,7 @@ export function createRendererHostClients(
       () => !disposed && readRouting()?.forHost(route.hostId) === route,
       messages,
     );
+    if (releaseMethods) methodInvalidators.set(client, releaseMethods);
     entries.set(route.hostId, { route, client, cleanups });
     try {
       for (const install of [

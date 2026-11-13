@@ -1,3 +1,11 @@
+import type {
+  RendererHostRoute,
+  RendererHostRouting,
+} from "@codexhost/desktop-control/renderer-bindings";
+import {
+  createRendererHostClients,
+  releaseRendererHostMethods,
+} from "../src/renderer-host-clients.js";
 import {
   harnessIdSchema,
   hostThreadIdSchema,
@@ -52,9 +60,14 @@ const readyHarness: HarnessInspection = {
   },
 };
 
+const invalidators = new WeakMap<object, () => void>();
 function clientFor(sendRequest: (method: string, params: unknown) => Promise<unknown>) {
-  const client = createRendererModelClient([{ sendRequest }]);
+  let invalidate = () => {};
+  const client = createRendererModelClient([{ sendRequest }], (release) => {
+    invalidate = release;
+  });
   if (!client) throw new Error("Synthetic client unavailable");
+  invalidators.set(client, invalidate);
   return client;
 }
 
@@ -188,6 +201,48 @@ describe("unsupported methods on one Host connection", () => {
     expect(sendRequest).toHaveBeenCalledTimes(2);
   });
 
+  it("releases the captured sender of a wrapped Host client without a public client method", async () => {
+    const sendRequest = vi
+      .fn()
+      .mockRejectedValueOnce(unsupported(HARNESS_INSPECT_METHOD))
+      .mockResolvedValue(readyHarness);
+    const route = {
+      hostId: "remote-ssh-discovered:a",
+      manager: { sendRequest },
+      policy: {},
+    } as unknown as RendererHostRoute;
+    const routing = { forHost: () => route } as unknown as RendererHostRouting;
+    const clients = createRendererHostClients(() => routing);
+    try {
+      const client = clients.forHost(route.hostId);
+      if (!client) throw new Error("Missing Host client");
+      const input = { harnessId: harnessIdSchema.parse("pi") };
+      await expect(client.inspectHarness(input)).rejects.toThrow("unsupported");
+      releaseRendererHostMethods(client);
+      await expect(client.inspectHarness(input)).resolves.toEqual(readyHarness);
+      expect(sendRequest).toHaveBeenCalledTimes(2);
+      expect(client).not.toHaveProperty("releaseUnsupportedMethods");
+    } finally {
+      clients.dispose();
+    }
+  });
+
+  it("does not restore a released refusal from an older in-flight request", async () => {
+    const pending = Promise.withResolvers<unknown>();
+    const sendRequest = vi
+      .fn()
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue(readyHarness);
+    const client = clientFor(sendRequest);
+    const input = { harnessId: harnessIdSchema.parse("pi") };
+    const old = expect(client.inspectHarness(input)).rejects.toThrow("unsupported");
+    invalidators.get(client)?.();
+    pending.reject(unsupported(HARNESS_INSPECT_METHOD));
+    await old;
+    await expect(client.inspectHarness(input)).resolves.toEqual(readyHarness);
+    expect(sendRequest).toHaveBeenCalledTimes(2);
+  });
+
   it("drops a remembered method refusal when the control channel is released", async () => {
     const sendRequest = vi
       .fn()
@@ -198,7 +253,7 @@ describe("unsupported methods on one Host connection", () => {
     await expect(client.inspectHarness(input)).rejects.toThrow("unsupported");
     await expect(client.inspectHarness(input)).rejects.toThrow("unsupported");
     expect(sendRequest).toHaveBeenCalledTimes(1);
-    client.releaseUnsupportedMethods?.();
+    invalidators.get(client)?.();
     await expect(client.inspectHarness(input)).resolves.toEqual(readyHarness);
     expect(sendRequest).toHaveBeenCalledTimes(2);
   });

@@ -58,19 +58,22 @@ export function createRendererRequestSender(
   ) => Promise<unknown> | unknown,
 ): RendererRequestSender {
   const unsupported = new Map<string, RendererMethodUnavailableError>();
+  let generation = 0;
   const sender: RendererRequestSender = async (method, params, options) => {
     const known = unsupported.get(method);
     if (known) throw known;
+    const sentGeneration = generation;
     try {
       return await (options === undefined ? send(method, params) : send(method, params, options));
     } catch (error) {
       if (!method.startsWith("codexhost/") || !isUnsupportedMethod(error, method)) throw error;
       const unavailable = new RendererMethodUnavailableError(method, error);
-      unsupported.set(method, unavailable);
+      if (sentGeneration === generation) unsupported.set(method, unavailable);
       throw unavailable;
     }
   };
   sender.releaseUnsupported = () => {
+    generation += 1;
     unsupported.clear();
   };
   return sender;

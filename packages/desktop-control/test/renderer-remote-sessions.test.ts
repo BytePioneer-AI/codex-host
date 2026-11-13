@@ -1,10 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  autoConnectMemory,
-  restoreDisconnectedAutoConnect,
-  startAutoConnectRestore,
-} from "../src/remote-auto-connect.js";
-import {
   rendererRemoteSession,
   type RemoteSessionTarget,
 } from "../src/renderer-remote-sessions.js";
@@ -45,18 +40,13 @@ function fixture() {
   return { target, routes, read, requests, route };
 }
 describe("Desktop existing remote session boundary", () => {
-  const hosts = (target: RemoteSessionTarget) =>
-    rendererRemoteSession(
-      target,
-      { kind: "hosts" },
-      restoreDisconnectedAutoConnect,
-      autoConnectMemory,
-    );
+  const hosts = (target: RemoteSessionTarget) => rendererRemoteSession(target, { kind: "hosts" });
 
-  it("shows configured offline hosts and retries a disconnected auto-connect SSH host", async () => {
+  it("shows configured offline hosts and delegates SSH recovery", async () => {
     const f = fixture();
     const writes: unknown[] = [];
     f.target.__codexhostRendererBindingProbeV1 = {
+      restoreSshConnection: vi.fn(async () => {}),
       async remoteConnections(input) {
         const op = input as { action: string; hostId?: string };
         if (op.action === "catalog")
@@ -77,12 +67,10 @@ describe("Desktop existing remote session boundary", () => {
     };
     const listed = await hosts(f.target);
     await hosts(f.target);
-    expect(writes).toEqual([
-      { action: "connect", hostId: "remote-ssh-discovered:a", enabled: false },
-      { action: "connect", hostId: "remote-ssh-discovered:a", enabled: true },
-      { action: "connect", hostId: "remote-ssh-discovered:a", enabled: false },
-      { action: "connect", hostId: "remote-ssh-discovered:a", enabled: true },
-    ]);
+    expect(writes).toEqual([]);
+    expect(f.target.__codexhostRendererBindingProbeV1.restoreSshConnection).toHaveBeenCalledWith(
+      "remote-ssh-discovered:a",
+    );
     expect(listed).toContainEqual({
       hostId: "remote-ssh-discovered:a",
       displayName: "mac",
@@ -213,172 +201,26 @@ describe("Desktop existing remote session boundary", () => {
       "turn/start",
     ]);
   });
-  it("restores a disconnected SSH host from the injected controller expression", async () => {
+  it("uses the same SSH recovery hook from the injected Controller expression", async () => {
     const f = fixture();
-    const writes: unknown[] = [];
+    const restoreSshConnection = vi.fn(async () => {});
     f.target.__codexhostRendererBindingProbeV1 = {
+      restoreSshConnection,
       async remoteConnections(input) {
-        const op = input as { action: string; hostId?: string; enabled?: boolean };
-        if (op.action === "catalog")
-          return [{ hostId: "remote-ssh-discovered:a", displayName: "mac", autoConnect: true }];
-        if (op.action === "connect") {
-          writes.push({ hostId: op.hostId, enabled: op.enabled });
-          return null;
-        }
-        return { state: op.hostId === "remote-ssh-discovered:a" ? "disconnected" : "connected" };
+        return (input as { action: string }).action === "catalog"
+          ? [{ hostId: "remote-ssh-discovered:a", displayName: "mac", autoConnect: true }]
+          : { state: "disconnected" };
       },
     };
     const expression = remoteConnectionsExpression({
       action: "session",
       operation: { kind: "hosts" },
     });
-    const evaluate = new Function("window", `return ${expression}`) as (
-      window: RemoteSessionTarget,
-    ) => Promise<unknown>;
+    const evaluate = new Function("window", `return ${expression}`);
     await evaluate(f.target);
-    expect(writes).toEqual([
-      { hostId: "remote-ssh-discovered:a", enabled: false },
-      { hostId: "remote-ssh-discovered:a", enabled: true },
-    ]);
+    expect(restoreSshConnection).toHaveBeenCalledExactlyOnceWith("remote-ssh-discovered:a");
   });
-  it("releases a connected SSH host from the injected controller expression", async () => {
-    const f = fixture();
-    const released: string[] = [];
-    autoConnectMemory(f.target).onConnected = (hostId) => released.push(hostId);
-    let connected = false;
-    f.target.__codexhostRendererBindingProbeV1 = {
-      async remoteConnections(input) {
-        const op = input as { action: string; hostId?: string; enabled?: boolean };
-        if (op.action === "catalog")
-          return [{ hostId: "remote-ssh-discovered:a", displayName: "mac", autoConnect: true }];
-        if (op.action === "connect") {
-          if (op.enabled) connected = true;
-          return null;
-        }
-        return {
-          state:
-            op.hostId === "remote-ssh-discovered:a" && !connected ? "disconnected" : "connected",
-        };
-      },
-    };
-    const expression = remoteConnectionsExpression({
-      action: "session",
-      operation: { kind: "hosts" },
-    });
-    const evaluate = new Function("window", `return ${expression}`) as (
-      window: RemoteSessionTarget,
-    ) => Promise<unknown>;
-    await evaluate(f.target);
-    expect(released).toEqual(["remote-ssh-discovered:a"]);
-  });
-  it("releases a recovered SSH host through the startup hook, then stops until it drops", async () => {
-    const f = fixture();
-    const released: string[] = [];
-    const stop = startAutoConnectRestore(
-      f.target,
-      { list: async () => [], state: async () => null, connect: async () => undefined },
-      {
-        setTimeout() {
-          return 0;
-        },
-        clearTimeout() {
-          return undefined;
-        },
-      },
-      { delaysMs: [], onConnected: (hostId) => released.push(hostId) },
-    );
-    const script: Array<readonly string[] | null> = [
-      ["remote-ssh-discovered:a"],
-      null,
-      ["remote-ssh-discovered:a"],
-      [],
-      ["remote-ssh-discovered:a"],
-    ];
-    const restore: typeof restoreDisconnectedAutoConnect = async () => {
-      const next = script.shift();
-      return next === undefined ? [] : next;
-    };
-    f.target.__codexhostRendererBindingProbeV1 = {
-      async remoteConnections() {
-        return [];
-      },
-    };
-    const read = () =>
-      rendererRemoteSession(f.target, { kind: "hosts" }, restore, autoConnectMemory, 1);
-    await read();
-    await read();
-    await read();
-    expect(released).toEqual(["remote-ssh-discovered:a"]);
-    await read();
-    await read();
-    expect(released).toEqual(["remote-ssh-discovered:a", "remote-ssh-discovered:a"]);
-    stop.dispose();
-    await read();
-    expect(released).toEqual(["remote-ssh-discovered:a", "remote-ssh-discovered:a"]);
-  });
-  it("releases an SSH host the state read finds connected after restore missed it", async () => {
-    const f = fixture();
-    const released: string[] = [];
-    autoConnectMemory(f.target).onConnected = (hostId) => released.push(hostId);
-    let sshConnected = false;
-    f.target.__codexhostRendererBindingProbeV1 = {
-      async remoteConnections(input) {
-        const op = input as { action: string; hostId?: string };
-        if (op.action === "catalog") return [];
-        if (op.action === "state")
-          return {
-            state:
-              op.hostId === "remote-ssh-discovered:a" && !sshConnected
-                ? "disconnected"
-                : "connected",
-          };
-        return null;
-      },
-    };
-    const restore: typeof restoreDisconnectedAutoConnect = async () => [];
-    const read = () =>
-      rendererRemoteSession(f.target, { kind: "hosts" }, restore, autoConnectMemory, 1);
-    const first = (await read()) as Array<{ hostId: string; state: string }>;
-    expect(first.find((row) => row.hostId === "remote-ssh-discovered:a")?.state).toBe(
-      "disconnected",
-    );
-    expect(released).toEqual([]);
-    sshConnected = true;
-    await read();
-    expect(released).toEqual(["remote-ssh-discovered:a"]);
-  });
-  it("still lists hosts when the startup release hook throws", async () => {
-    const f = fixture();
-    let calls = 0;
-    autoConnectMemory(f.target).onConnected = () => {
-      calls += 1;
-      if (calls === 1) throw new Error("release failed");
-    };
-    f.target.__codexhostRendererBindingProbeV1 = {
-      async remoteConnections(input) {
-        const op = input as { action: string; hostId?: string };
-        if (op.action === "catalog")
-          return [{ hostId: "remote-ssh-discovered:a", displayName: "mac", autoConnect: true }];
-        if (op.action === "state") return { state: "connected" };
-        return null;
-      },
-    };
-    const read = () =>
-      rendererRemoteSession(
-        f.target,
-        { kind: "hosts" },
-        restoreDisconnectedAutoConnect,
-        autoConnectMemory,
-        1,
-      );
-    await expect(read()).resolves.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ hostId: "remote-ssh-discovered:a", state: "connected" }),
-      ]),
-    );
-    await read();
-    expect(calls).toBe(2);
-  });
+
   it("serializes data in the Controller expression and excludes local operations", async () => {
     const f = fixture();
     const expression = remoteConnectionsExpression({

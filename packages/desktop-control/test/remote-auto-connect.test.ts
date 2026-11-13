@@ -1,240 +1,224 @@
-import { describe, expect, it, vi } from "vitest";
-import {
-  AUTO_CONNECT_RESTORE_ATTEMPTS,
-  autoConnectMemory,
-  restoreDisconnectedAutoConnect,
-  startAutoConnectRestore,
-  type AutoConnectControl,
-  type AutoConnectRecord,
-} from "../src/remote-auto-connect.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createAutoConnectRestore } from "../src/remote-auto-connect.js";
 
-function control(options: {
-  hosts: AutoConnectRecord[];
-  state: Record<string, string | "throw">;
-  onConnect?: (hostId: string, enabled: boolean) => void;
-}): AutoConnectControl & { writes: Array<{ hostId: string; enabled: boolean }> } {
-  const writes: Array<{ hostId: string; enabled: boolean }> = [];
+function fixture() {
+  const hostId = "remote-ssh-discovered:a";
+  let enabled = true;
+  let status = { state: "disconnected", error: "ECONNREFUSED" as string | null };
+  const control = {
+    list: vi.fn(async () => [{ hostId, autoConnect: enabled }]),
+    state: vi.fn(async () => status),
+    connect: vi.fn(async (_hostId: string, next: boolean) => {
+      enabled = next;
+    }),
+  };
+  const recovery = createAutoConnectRestore(control);
   return {
-    writes,
-    async list() {
-      return options.hosts;
+    hostId,
+    control,
+    recovery,
+    enable(value: boolean) {
+      enabled = value;
     },
-    async state(hostId) {
-      const value = options.state[hostId];
-      if (value === "throw") throw new Error("state unavailable");
-      return value ? { state: value } : null;
+    status(state: string, error: string | null = null) {
+      status = { state, error };
     },
-    async connect(hostId, enabled) {
-      writes.push({ hostId, enabled });
-      options.onConnect?.(hostId, enabled);
-    },
+    restore: () => recovery.restore(hostId),
   };
 }
 
-describe("SSH auto-connect restore", () => {
-  it("toggles a disconnected or failed auto-connect host and leaves the others", async () => {
-    const owner = {};
-    const api = control({
-      hosts: [
-        { hostId: "remote-ssh-discovered:down", autoConnect: true },
-        { hostId: "remote-ssh-discovered:failed", autoConnect: true },
-        { hostId: "remote-ssh-discovered:busy", autoConnect: true },
-        { hostId: "remote-ssh-discovered:up", autoConnect: true },
-        { hostId: "remote-ssh-discovered:off", autoConnect: false },
-        { hostId: "remote-control:phone", autoConnect: true },
-      ],
-      state: {
-        "remote-ssh-discovered:down": "disconnected",
-        "remote-ssh-discovered:failed": "error",
-        "remote-ssh-discovered:busy": "connecting",
-        "remote-ssh-discovered:up": "connected",
-        "remote-ssh-discovered:off": "disconnected",
-        "remote-control:phone": "disconnected",
-      },
-    });
-    const connected = await restoreDisconnectedAutoConnect(api, autoConnectMemory(owner));
-    expect(api.writes).toEqual([
-      { hostId: "remote-ssh-discovered:down", enabled: false },
-      { hostId: "remote-ssh-discovered:down", enabled: true },
-      { hostId: "remote-ssh-discovered:failed", enabled: false },
-      { hostId: "remote-ssh-discovered:failed", enabled: true },
-    ]);
-    expect(connected).toEqual(["remote-ssh-discovered:up"]);
-  });
-
-  it("does not switch a host whose state cannot be read", async () => {
-    const api = control({
-      hosts: [{ hostId: "remote-ssh-discovered:a", autoConnect: true }],
-      state: { "remote-ssh-discovered:a": "throw" },
-    });
-    await restoreDisconnectedAutoConnect(api, autoConnectMemory({}));
-    expect(api.writes).toEqual([]);
-  });
-
-  it("retries while the host stays disconnected and then stops", async () => {
-    const owner = {};
-    const api = control({
-      hosts: [{ hostId: "remote-ssh-discovered:a", autoConnect: true }],
-      state: { "remote-ssh-discovered:a": "disconnected" },
-    });
-    const memory = autoConnectMemory(owner);
-    for (let pass = 0; pass < AUTO_CONNECT_RESTORE_ATTEMPTS + 1; pass += 1)
-      await restoreDisconnectedAutoConnect(api, memory, 2);
-    expect(api.writes).toEqual([
-      { hostId: "remote-ssh-discovered:a", enabled: false },
-      { hostId: "remote-ssh-discovered:a", enabled: true },
-      { hostId: "remote-ssh-discovered:a", enabled: false },
-      { hostId: "remote-ssh-discovered:a", enabled: true },
+afterEach(() => vi.restoreAllMocks());
+describe("SSH recovery on shared host reads", () => {
+  it.each(["disconnected", "error"])("toggles an enabled SSH host in %s", async (state) => {
+    const f = fixture();
+    f.status(state, "native connection failed");
+    await f.restore();
+    expect(f.control.connect.mock.calls).toEqual([
+      [f.hostId, false],
+      [f.hostId, true],
     ]);
   });
 
-  it("turns auto-connect back on when the off request lands and the on request does not", async () => {
-    const owner = {};
-    let enabled = true;
-    const api = control({
-      hosts: [],
-      state: { "remote-ssh-discovered:a": "disconnected" },
-      onConnect(hostId, next) {
-        if (hostId === "remote-ssh-discovered:a" && next === false) enabled = false;
-        if (next === true) throw new Error("on request lost");
-      },
-    });
-    api.list = async () => [{ hostId: "remote-ssh-discovered:a", autoConnect: enabled }];
-    const memory = autoConnectMemory(owner);
-    await restoreDisconnectedAutoConnect(api, memory);
-    await restoreDisconnectedAutoConnect(api, memory);
-    expect(api.writes.map((write) => write.enabled)).toEqual([false, true, true]);
-    expect(enabled).toBe(false);
+  it("retries failed observations before any native write", async () => {
+    const f = fixture();
+    f.control.state.mockRejectedValueOnce(new Error("not ready"));
+    await f.restore();
+    await f.restore();
+    expect(f.control.connect).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps turning the flag on after the toggle cap when the on request failed", async () => {
-    const hostId = "remote-ssh-discovered:a";
-    let enabled = true;
-    let allowOn = false;
-    const api = control({
-      hosts: [],
-      state: { [hostId]: "disconnected" },
-      onConnect(_id, next) {
-        if (next === false) enabled = false;
-        if (next === true) {
-          if (!allowOn) throw new Error("on request lost");
-          enabled = true;
-        }
-      },
+  it("backs off indefinitely and reconnects after a late network recovery", async () => {
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const f = fixture();
+    await f.restore();
+    let calls = 2;
+    for (const delay of [5_000, 10_000, 20_000, 30_000, 30_000, 30_000]) {
+      now += delay - 1;
+      await f.restore();
+      expect(f.control.connect).toHaveBeenCalledTimes(calls);
+      now += 1;
+      await f.restore();
+      calls += 2;
+      expect(f.control.connect).toHaveBeenCalledTimes(calls);
+    }
+    now += 30_000;
+    f.control.connect.mockImplementation(async (_id, next) => {
+      if (next) f.status("connected");
     });
-    api.list = async () => [{ hostId, autoConnect: enabled }];
-    const memory = autoConnectMemory({});
-    await restoreDisconnectedAutoConnect(api, memory, 1);
-    await restoreDisconnectedAutoConnect(api, memory, 1);
-    await restoreDisconnectedAutoConnect(api, memory, 1);
-    expect(memory.attempts.get(hostId)).toBe(1);
-    expect(memory.reenable.has(hostId)).toBe(true);
-    expect(enabled).toBe(false);
-    expect(api.writes.map((write) => write.enabled)).toEqual([false, true, true, true]);
-    allowOn = true;
-    await restoreDisconnectedAutoConnect(api, memory, 1);
-    expect(enabled).toBe(true);
-    expect(memory.reenable.has(hostId)).toBe(false);
-    const writes = api.writes.length;
-    await restoreDisconnectedAutoConnect(api, memory, 1);
-    expect(api.writes).toHaveLength(writes);
-    expect(enabled).toBe(true);
+    expect(await f.restore()).toBe(true);
+    expect(f.control.connect.mock.calls.slice(-2)).toEqual([
+      [f.hostId, false],
+      [f.hostId, true],
+    ]);
   });
 
-  it("does not run a second pass while the first pass is still reading", async () => {
-    let release: (() => void) | undefined;
-    const pending = new Promise<void>((resolve) => {
-      release = resolve;
+  it("does not let an old state observation invalidate a newer recovery", async () => {
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const f = fixture();
+    await f.restore();
+    const oldState = Promise.withResolvers<{ state: string; error: string | null }>();
+    const off = Promise.withResolvers<undefined>();
+    f.control.state.mockReturnValueOnce(oldState.promise);
+    now = 1_000;
+    const observing = f.restore();
+    now = 5_000;
+    f.control.connect.mockImplementation(async (_id, enabled) => {
+      if (!enabled) await off.promise;
     });
-    const api: AutoConnectControl = {
-      async list() {
-        await pending;
-        return [{ hostId: "remote-ssh-discovered:a", autoConnect: true }];
-      },
-      async state() {
-        return { state: "disconnected" };
-      },
-      connect: vi.fn(async () => undefined),
-    };
-    const memory = autoConnectMemory({});
-    const first = restoreDisconnectedAutoConnect(api, memory);
-    await Promise.resolve();
-    await expect(restoreDisconnectedAutoConnect(api, memory)).resolves.toBeNull();
-    expect(api.connect).not.toHaveBeenCalled();
-    release?.();
-    await first;
-    expect(api.connect).toHaveBeenCalledTimes(2);
+    const recovering = f.restore();
+    await vi.waitFor(() => expect(f.control.connect).toHaveBeenCalledTimes(3));
+    oldState.resolve({ state: "connected", error: null });
+    expect(await observing).toBe(false);
+    off.resolve(undefined);
+    await recovering;
+    expect(f.control.connect).toHaveBeenCalledTimes(4);
   });
 
-  it("rechecks a connected host on each startup pass and stops when disposed", async () => {
-    const seen: string[] = [];
-    const api = control({
-      hosts: [{ hostId: "remote-ssh-discovered:a", autoConnect: true }],
-      state: { "remote-ssh-discovered:a": "connected" },
+  it("coalesces concurrent restores of one host", async () => {
+    const f = fixture();
+    const pending = Promise.withResolvers<undefined>();
+    f.control.connect.mockImplementation(async () => {
+      await pending.promise;
     });
-    const timers = new Map<number, () => void>();
-    const stop = startAutoConnectRestore(
-      {},
-      api,
-      {
-        setTimeout(handler) {
-          const id = timers.size + 1;
-          timers.set(id, handler);
-          return id;
-        },
-        clearTimeout(id) {
-          timers.delete(Number(id));
-        },
-      },
-      { delaysMs: [0, 0], onConnected: (hostId) => seen.push(hostId) },
-    );
-    timers.get(1)?.();
-    await vi.waitFor(() => expect(timers.size).toBe(2));
-    expect(seen).toEqual(["remote-ssh-discovered:a"]);
-    const second = timers.get(2);
-    stop.dispose();
-    second?.();
-    await Promise.resolve();
-    expect(seen).toEqual(["remote-ssh-discovered:a"]);
-    expect(api.writes).toEqual([]);
+    const first = f.restore();
+    await vi.waitFor(() => expect(f.control.connect).toHaveBeenCalledTimes(1));
+    const second = f.restore();
+    expect(second).toBe(first);
+    pending.resolve(undefined);
+    await Promise.all([first, second]);
+    expect(f.control.connect).toHaveBeenCalledTimes(2);
   });
 
-  it("notifies later hosts and schedules the next round when one notification throws", async () => {
-    const seen: string[] = [];
-    const api = control({
-      hosts: [
-        { hostId: "remote-ssh-discovered:a", autoConnect: true },
-        { hostId: "remote-ssh-discovered:b", autoConnect: true },
-      ],
-      state: {
-        "remote-ssh-discovered:a": "connected",
-        "remote-ssh-discovered:b": "connected",
-      },
+  it.each(["disabled", "connected", "connecting", "no SSH", "unreadable"])(
+    "does not toggle %s",
+    async (mode) => {
+      const f = fixture();
+      if (mode === "disabled") f.enable(false);
+      if (mode === "connected" || mode === "connecting") f.status(mode);
+      if (mode === "no SSH") f.control.list.mockResolvedValue([]);
+      if (mode === "unreadable") f.control.state.mockRejectedValue(new Error("unavailable"));
+      await f.restore();
+      expect(f.control.connect).not.toHaveBeenCalled();
+      expect(await f.recovery.restore("remote-control:b")).toBe(false);
+    },
+  );
+
+  it("revalidates the catalog after awaiting state", async () => {
+    const f = fixture();
+    f.control.state.mockImplementation(async () => {
+      f.enable(false);
+      return { state: "disconnected", error: null };
     });
-    const timers = new Map<number, () => void>();
-    startAutoConnectRestore(
-      {},
-      api,
-      {
-        setTimeout(handler) {
-          const id = timers.size + 1;
-          timers.set(id, handler);
-          return id;
-        },
-        clearTimeout(id) {
-          timers.delete(Number(id));
-        },
-      },
-      {
-        delaysMs: [0, 0],
-        onConnected(hostId) {
-          seen.push(hostId);
-          if (hostId.endsWith(":a")) throw new Error("release failed");
-        },
-      },
-    );
-    timers.get(1)?.();
-    await vi.waitFor(() => expect(timers.size).toBe(2));
-    expect(seen).toEqual(["remote-ssh-discovered:a", "remote-ssh-discovered:b"]);
+    await f.restore();
+    expect(f.control.connect).not.toHaveBeenCalled();
+  });
+
+  it.each(["state", "off"])(
+    "does not reopen after explicit cancellation while awaiting %s",
+    async (phase) => {
+      const f = fixture();
+      const pending = Promise.withResolvers<undefined>();
+      if (phase === "state")
+        f.control.state.mockImplementation(async () => {
+          await pending.promise;
+          return { state: "disconnected", error: null };
+        });
+      else
+        f.control.connect.mockImplementation(async () => {
+          await pending.promise;
+        });
+      const running = f.restore();
+      await vi.waitFor(() =>
+        expect(phase === "state" ? f.control.state : f.control.connect).toHaveBeenCalledTimes(1),
+      );
+      const closing = f.recovery.runExplicit(f.hostId, async () => {
+        f.enable(false);
+      });
+      pending.resolve(undefined);
+      await Promise.all([running, closing]);
+      await f.restore();
+      expect(f.control.connect.mock.calls.some(([, next]) => next)).toBe(false);
+    },
+  );
+
+  it("does not replay unknown writes or keep a reenable debt", async () => {
+    const f = fixture();
+    f.control.connect.mockImplementation(async (_id, next) => {
+      f.enable(next);
+      if (next) throw new Error("Codex SSH request timed out; refresh before retrying");
+    });
+    await f.restore();
+    await f.restore();
+    expect(f.control.connect).toHaveBeenCalledTimes(2);
+    await f.recovery.runExplicit(f.hostId, async () => {
+      f.enable(false);
+    });
+    await f.restore();
+    expect(f.control.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it("queues explicit off behind an already dispatched on and blocks further recovery", async () => {
+    const f = fixture();
+    const pending = Promise.withResolvers<undefined>();
+    f.control.connect.mockImplementation(async (_id, enabled) => {
+      if (enabled) await pending.promise;
+      f.enable(enabled);
+    });
+    const running = f.restore();
+    await vi.waitFor(() => expect(f.control.connect).toHaveBeenCalledTimes(2));
+    const closing = f.recovery.runExplicit(f.hostId, () => f.control.connect(f.hostId, false));
+    const concurrent = f.restore();
+    expect(f.control.connect).toHaveBeenCalledTimes(2);
+    pending.resolve(undefined);
+    await Promise.all([running, closing, concurrent]);
+    await f.restore();
+    expect(f.control.connect.mock.calls.map(([, enabled]) => enabled)).toEqual([
+      false,
+      true,
+      false,
+    ]);
+  });
+
+  it("does not issue on after an unknown off outcome", async () => {
+    const f = fixture();
+    f.control.connect.mockRejectedValue(new Error("timed out"));
+    await f.restore();
+    await f.restore();
+    expect(f.control.connect.mock.calls).toEqual([[f.hostId, false]]);
+  });
+
+  it("disposal invalidates an awaiting attempt", async () => {
+    const f = fixture();
+    const pending = Promise.withResolvers<{ state: string; error: string | null }>();
+    f.control.state.mockReturnValue(pending.promise);
+    const running = f.restore();
+    await vi.waitFor(() => expect(f.control.state).toHaveBeenCalled());
+    f.recovery.dispose();
+    pending.resolve({ state: "disconnected", error: null });
+    await running;
+    await f.restore();
+    expect(f.control.connect).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,5 @@
 /** Fixed native Codex SSH operations. Configuration stays owned by Codex. */
+import { createAutoConnectRestore } from "@codexhost/desktop-control/renderer-bindings";
 import type { CodexSshConnection, CodexSshDraft } from "@codexhost/shared-contracts";
 import { loadCodexSshServices, type CodexSshServices } from "./codex-ssh-services.js";
 export type { CodexSshConnection, CodexSshDraft } from "@codexhost/shared-contracts";
@@ -12,6 +13,8 @@ export interface CodexSshClient {
   ): Promise<void>;
   remove(previous: CodexSshConnection, signal?: AbortSignal): Promise<void>;
   connect(hostId: string, enabled: boolean, signal?: AbortSignal): Promise<void>;
+  restoreAutoConnect?(hostId: string): Promise<boolean>;
+  dispose?(): void;
   state(hostId: string, signal?: AbortSignal): Promise<{ state: string; error: string | null }>;
 }
 
@@ -246,6 +249,27 @@ export function createCodexSshClient(ownerWindow: Window): CodexSshClient {
     }
     await request("save-codex-managed-remote-ssh-connections", { remoteConnections: next }, signal);
   }
+  const state: CodexSshClient["state"] = async (hostId, signal) => {
+    const result = await request("app-server-connection-state", { hostId }, signal);
+    if (!record(result) || typeof result.state !== "string")
+      throw new Error("Invalid Codex connection state");
+    return {
+      state: result.state,
+      error:
+        typeof result.error === "string"
+          ? result.error
+          : record(result.error) && typeof result.error.message === "string"
+            ? result.error.message
+            : null,
+    };
+  };
+  const recovery = createAutoConnectRestore({
+    list,
+    state,
+    async connect(hostId, enabled) {
+      await request("set-remote-connection-auto-connect", { hostId, autoConnect: enabled });
+    },
+  });
   return {
     list,
     async catalog() {
@@ -268,23 +292,28 @@ export function createCodexSshClient(ownerWindow: Window): CodexSshClient {
       );
     },
     save: (draft, previous, signal) => mutate(previous, draft, signal),
-    remove: (previous, signal) => mutate(previous, null, signal),
+    remove: (previous, signal) => {
+      return recovery.runExplicit(previous.hostId, () => mutate(previous, null, signal));
+    },
+    restoreAutoConnect: (hostId) => recovery.restore(hostId),
+    dispose: () => recovery.dispose(),
     async connect(hostId, enabled, signal) {
-      await request("set-remote-connection-auto-connect", { hostId, autoConnect: enabled }, signal);
+      if (!/^remote-ssh(?:-|:)/u.test(hostId)) {
+        await request(
+          "set-remote-connection-auto-connect",
+          { hostId, autoConnect: enabled },
+          signal,
+        );
+        return;
+      }
+      await recovery.runExplicit(hostId, async () => {
+        await request(
+          "set-remote-connection-auto-connect",
+          { hostId, autoConnect: enabled },
+          signal,
+        );
+      });
     },
-    async state(hostId, signal) {
-      const result = await request("app-server-connection-state", { hostId }, signal);
-      if (!record(result) || typeof result.state !== "string")
-        throw new Error("Invalid Codex connection state");
-      return {
-        state: result.state,
-        error:
-          typeof result.error === "string"
-            ? result.error
-            : record(result.error) && typeof result.error.message === "string"
-              ? result.error.message
-              : null,
-      };
-    },
+    state,
   };
 }

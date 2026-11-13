@@ -93,6 +93,46 @@ describe("native SSH configuration", () => {
     return native;
   }
 
+  it.each(["off", "on"])(
+    "keeps explicit disconnect after an awaiting recovery %s",
+    async (phase) => {
+      const native = services();
+      const hostId = connection.hostId;
+      let enabled = true;
+      native.sshConnections.refresh.mockImplementation(async () => ({
+        remoteConnections: [{ ...connection, autoConnect: enabled }],
+      }));
+      native.remoteConnections.getState.mockResolvedValue({
+        state: "disconnected",
+        error: "ECONNREFUSED",
+      });
+      const pending = Promise.withResolvers<undefined>();
+      native.remoteConnections.setAutoConnect.mockImplementation(
+        async (input: { autoConnect: boolean }) => {
+          if (input.autoConnect === (phase === "on")) await pending.promise;
+          enabled = input.autoConnect;
+          return {};
+        },
+      );
+      const f = fixture();
+      const restoring = f.client.restoreAutoConnect?.(hostId);
+      await vi.waitFor(() =>
+        expect(native.remoteConnections.setAutoConnect).toHaveBeenCalledTimes(
+          phase === "off" ? 1 : 2,
+        ),
+      );
+      const closing = f.client.connect(hostId, false);
+      const anotherRead = f.client.restoreAutoConnect?.(hostId);
+      pending.resolve(undefined);
+      await Promise.all([restoring, closing, anotherRead]);
+      await f.client.restoreAutoConnect?.(hostId);
+      expect(enabled).toBe(false);
+      expect(
+        native.remoteConnections.setAutoConnect.mock.calls.map(([input]) => input.autoConnect),
+      ).toEqual(phase === "off" ? [false, false] : [false, true, false]);
+    },
+  );
+
   it("reads through the native service when the legacy Electron handler is absent", async () => {
     const native = services();
     const f = fixture([], true);

@@ -5,12 +5,10 @@
   justify-content: center;
   flex: none;
   box-sizing: border-box;
-  width: 56px;
-  height: 28px;
-  margin-inline-end: 4px;
-  padding: 0;
+  margin-inline-end: 6px;
+  padding: 6px 4px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 4px;
   color: var(--dsw-alias-label-tertiary);
   background: transparent;
   cursor: pointer;
@@ -22,31 +20,23 @@
   align-items: center;
   justify-content: center;
   gap: 3px;
-  box-sizing: border-box;
-  width: 56px;
-  height: 20px;
-  padding-inline: 4px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent);
+  line-height: 16px;
 }
 
-.toggle[aria-expanded="true"] .badge {
-  background: color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent);
+.toggle[aria-expanded="true"] {
+  color: var(--dsw-alias-label-secondary);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .toggle:hover .badge {
-    background: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
+  .toggle:hover {
+    background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent);
   }
 }
 
 .toggle:focus-visible {
   outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: -2px;
-}
-
-.toggle:focus-visible .badge {
-  background: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent);
 }
 
 .collapsed {
@@ -54,10 +44,8 @@
 }
 
 .count {
-  max-width: 24px;
-  overflow: hidden;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 16px;
   font-variant-numeric: tabular-nums;
 }
@@ -80,6 +68,6 @@
 
 @media (hover: none), (pointer: coarse) {
   .toggle {
-    height: 44px;
+    padding-block: 8px;
   }
 }

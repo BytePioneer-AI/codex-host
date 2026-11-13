@@ -1,4 +1,4 @@
-/** Title-trailing fold badge with one priority-ordered descendant activity dot. */
+/** Title-trailing fold control with one priority-ordered descendant activity dot. */
 import { IconChevronDownOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
 import type { SessionNode } from "../tree.ts";
@@ -53,7 +53,7 @@ export function ThreadTreeToggle({
         <span className={css.count} aria-hidden="true">
           {count > 999 ? "999+" : count}
         </span>
-        <IconChevronDownOutlineRegular size={12} className={expanded ? undefined : css.collapsed} />
+        <IconChevronDownOutlineRegular size={10} className={expanded ? undefined : css.collapsed} />
       </span>
     </button>
   );

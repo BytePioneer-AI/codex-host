@@ -43,6 +43,54 @@ async function noHorizontalOverflow(page: Page): Promise<void> {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
 }
 
+async function foldStyle(page: Page, id: string) {
+  return threadRow(page, id)
+    .locator("[data-thread-toggle]")
+    .evaluate((node) => {
+      const content = node.firstElementChild;
+      const chevron = node.querySelector("svg");
+      if (!content || !chevron) throw new Error("Missing fold content or chevron");
+      return {
+        background: getComputedStyle(node).backgroundColor,
+        contentBackground: getComputedStyle(content).backgroundColor,
+        border: getComputedStyle(node).borderWidth,
+        color: getComputedStyle(node).color,
+        chevron: getComputedStyle(chevron).transform,
+        count: content.textContent?.trim(),
+      };
+    });
+}
+
+async function foldLayout(page: Page, id: string): Promise<void> {
+  const layout = await threadRow(page, id).evaluate((row) => {
+    const title = row.querySelector("[data-session-title]");
+    const toggle = row.querySelector("[data-thread-toggle]");
+    const trailing = row.lastElementChild;
+    const content = toggle?.firstElementChild;
+    const count = content?.querySelector("span:not([data-thread-tree-activity])");
+    const chevron = toggle?.querySelector("svg");
+    if (!title || !toggle || !trailing || !content || !count || !chevron)
+      throw new Error("Missing fold layout elements");
+    const dot = content.querySelector("[data-thread-tree-activity]");
+    return {
+      gap: toggle.getBoundingClientRect().left - title.getBoundingClientRect().right,
+      metadataGap: trailing.getBoundingClientRect().left - toggle.getBoundingClientRect().right,
+      smaller:
+        parseFloat(getComputedStyle(count).fontSize) < parseFloat(getComputedStyle(title).fontSize),
+      contentFits: content.scrollWidth <= content.clientWidth + 1,
+      chevronWidth: chevron.getBoundingClientRect().width,
+      dotBeforeCount:
+        !dot || dot.getBoundingClientRect().right < count.getBoundingClientRect().left,
+    };
+  });
+  assert.ok(layout.gap >= 0 && layout.gap <= 1, "the control follows the title, not the row edge");
+  assert.ok(layout.metadataGap >= 6, "metadata and actions do not overlap the fold target");
+  assert.equal(layout.smaller, true);
+  assert.equal(layout.contentFits, true, "the count and chevron do not shrink or clip");
+  assert.equal(layout.chevronWidth, 10);
+  assert.equal(layout.dotBeforeCount, true);
+}
+
 async function rowAlignment(page: Page, id: string) {
   return threadRow(page, id).evaluate((node) => {
     const icon = node.querySelector("[data-harness-id]");
@@ -75,16 +123,24 @@ for (const width of [1280, 390]) {
       assert.equal(await parent.locator("[data-thread-toggle] svg").count(), 1);
       const toggleBounds = await parent.locator("[data-thread-toggle]").boundingBox();
       assert.ok(
-        toggleBounds &&
-          toggleBounds.width >= 44 &&
-          toggleBounds.height >= (width === 390 ? 44 : 24),
+        toggleBounds && toggleBounds.width < 44 && toggleBounds.height >= (width === 390 ? 32 : 28),
+        "a content-sized control keeps transparent padding for its hit target",
       );
+      const collapsedStyle = await foldStyle(page, "parent");
+      assert.equal(collapsedStyle.background, "rgba(0, 0, 0, 0)");
+      assert.equal(collapsedStyle.contentBackground, "rgba(0, 0, 0, 0)");
+      assert.equal(collapsedStyle.border, "0px");
+      assert.equal(collapsedStyle.count, "4");
+      assert.notEqual(collapsedStyle.chevron, "none");
+      await foldLayout(page, "parent");
       assert.equal(
         await parent
-          .locator("[data-thread-toggle]")
-          .evaluate((node) => getComputedStyle(node).backgroundColor),
-        "rgba(0, 0, 0, 0)",
+          .locator("[data-session-title]")
+          .evaluate((node) => node.scrollWidth <= node.clientWidth),
+        true,
+        "a short title does not lose space to a fixed-width badge",
       );
+      await treeShot(page, `thread-tree-${width}-collapsed`);
       assert.equal(await threadRow(page, "child").count(), 0);
       assert.equal(await page.locator('[data-row-key="section:pinned"]').count(), 0);
       await parent.getByRole("img", { name: "Child sessions are running", exact: true }).waitFor();
@@ -105,6 +161,20 @@ for (const width of [1280, 390]) {
         0,
         "expanded rows show their own state only",
       );
+      await page.mouse.move(width - 10, 850);
+      const expandedStyle = await foldStyle(page, "parent");
+      assert.equal(expandedStyle.background, "rgba(0, 0, 0, 0)");
+      assert.equal(expandedStyle.contentBackground, "rgba(0, 0, 0, 0)");
+      assert.equal(expandedStyle.count, collapsedStyle.count);
+      assert.equal(expandedStyle.chevron, "none");
+      assert.notEqual(expandedStyle.color, collapsedStyle.color);
+      const expandedBounds = await parent.locator("[data-thread-toggle]").boundingBox();
+      assert.ok(
+        expandedBounds && expandedBounds.width < toggleBounds.width,
+        "the control width follows its content when the summary dot disappears",
+      );
+      await foldLayout(page, "parent");
+      await foldLayout(page, "child");
       const rootPosition = await rowAlignment(page, "parent");
       const childPosition = await rowAlignment(page, "child");
       const grandchildPosition = await rowAlignment(page, "grandchild");
@@ -120,6 +190,30 @@ for (const width of [1280, 390]) {
           "touch focus does not leave a filled toggle",
         );
       await treeShot(page, `thread-tree-${width}-expanded`);
+      if (width === 1280) {
+        await threadRow(page, "child").locator("[data-thread-toggle]").hover();
+        assert.notEqual((await foldStyle(page, "child")).background, "rgba(0, 0, 0, 0)");
+        await foldLayout(page, "child");
+        await treeShot(page, "thread-tree-1280-expanded-hover");
+        await page.mouse.move(width - 10, 850);
+      }
+      await parent.focus();
+      await page.keyboard.press("Tab");
+      assert.equal(
+        await parent
+          .locator("[data-thread-toggle]")
+          .evaluate((node) => node.matches(":focus-visible")),
+        true,
+      );
+      assert.notEqual((await foldStyle(page, "parent")).background, "rgba(0, 0, 0, 0)");
+      await page.keyboard.press("Enter");
+      assert.equal(await parent.getAttribute("aria-expanded"), "false");
+      await page.keyboard.press("Space");
+      assert.equal(await parent.getAttribute("aria-expanded"), "true");
+      await parent
+        .getByRole("button", { name: "Collapse 4 child sessions", exact: true })
+        .waitFor();
+      assert.equal(await parent.getAttribute("aria-selected"), selectionBefore);
       await page.reload();
       await page.getByText("Native Model", { exact: true }).waitFor();
       await openSidebar(page);
@@ -191,6 +285,7 @@ it(
         { ellipsis: "ellipsis", clipped: true },
       );
     }
+    for (const id of ["parent", "child", "grandchild", "deep"]) await foldLayout(page, id);
     assert.deepEqual(await rowAlignment(page, "deep"), await rowAlignment(page, "deepest"));
     await noHorizontalOverflow(page);
     await treeShot(page, "thread-tree-390-expanded-long-titles");

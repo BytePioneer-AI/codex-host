@@ -281,6 +281,16 @@
   flex: 1;
 }
 
+/* Fold controls follow the text; only the title yields to trailing metadata. */
+.sessionRow:has([data-thread-toggle]) .title {
+  flex: 0 1 auto;
+  margin-inline-end: 0;
+}
+
+.sessionRow:has([data-thread-toggle]) .trailing {
+  margin-inline-start: auto;
+}
+
 .meta {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -395,7 +405,7 @@
     border-radius: var(--dsw-radius-sm);
   }
 
-  /* A fold badge is interactive: hover actions must take space after it,
+  /* A fold control is interactive: hover actions must take space after it,
      rather than covering its pointer target as they cover title text. */
   .sessionRow:has([data-thread-toggle]):is(:hover, :focus-visible, :has(:focus-visible), .menuOpen)
     .rowActions {

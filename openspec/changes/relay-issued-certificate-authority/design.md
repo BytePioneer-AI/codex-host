@@ -7,7 +7,7 @@
 - 控制地址的 HTTPS 请求都交给部署者的 `onRequest`（官方中转的管理页）。核心目前没有监听 CONNECT。
 - 电脑端 `Certificates` 在构造时固定目录（`acmeDirectory()`：环境变量或 Let's Encrypt 生产环境），失败记录按 `(hostname, directory)` 区分。`acme.ts` 用全局 `acme.axios`，已有请求和响应拦截器按轮次记录失败。`acme-client` 5.4.0 的 `Client` 支持 `externalAccountBinding`。
 - 控制连接已支持经 `HTTPS_PROXY`（`http://`）的 CONNECT（`client.ts`）。
-- 官方中转（私有仓库 `codexhost-cloud/relay/server`）：`runtime.mjs` 用 `createRelay` 组合运营数据库；配置存在 `settings` 表，每 10 秒一次 `tick`；管理页“运行配置”统一保存。控制地址证书由 certbot 提供（`--cert/--key`）。官方电脑地址为 `<名>.r.chost.dev`。
+- 官方中转（官方中转的私有运营程序）：`runtime.mjs` 用 `createRelay` 组合运营数据库；配置存在 `settings` 表，每 10 秒一次 `tick`；管理页“运行配置”统一保存。控制地址证书由 certbot 提供（`--cert/--key`）。官方电脑地址为 `<名>.r.chost.dev`。
 
 ## Decisions
 
@@ -42,7 +42,7 @@
 - 账户：仍先 `onlyReturnExisting` 查询；不存在且有凭证时向中转领取 EAB，200 则带 EAB 及返回的 `contact` 创建账户，404 则不带。电脑不提交用户自己的联系方式。429/503 作为本轮失败，`Retry-After` 计入记录的 `retryAfter`；不计为验证失败，不暂停。
 - 不新增持久化文件，不改账户私钥和证书私钥的位置。
 
-### 官方中转（`codexhost-cloud`）
+### 官方中转（私有运营程序）
 
 - 启动参数：`--gts-credentials <服务账号 JSON 路径>` 与必须同时提供的 `--gts-contact <邮箱>`（作为 GTS 账户联系方式随 EAB 下发，GTS 拒绝没有联系方式的账户）；`--gts-staging`（只用于测试部署，使用 GTS staging 目录 `https://dv.acme-v02.test-api.pki.goog/directory` 和 `preprod-publicca.googleapis.com`）。生产 GTS 目录 `https://dv.acme-v02.api.pki.goog/directory`。
 - 设置 `certificate_authority`：`letsencrypt`（默认）| `gts`。没有 `--gts-credentials` 时不能设为 `gts`（管理页禁用该选项，CLI 报错）。启动时用当前值作为 `certificateDirectory`；`tick` 发现变化时调用 `setCertificateDirectory`，最迟 10 秒生效。

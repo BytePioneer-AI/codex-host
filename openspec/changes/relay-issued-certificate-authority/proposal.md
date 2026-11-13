@@ -10,7 +10,7 @@
 - 中转在控制地址上为已注册电脑提供证书请求通道：电脑经中转建立到证书机构的 TCP 隧道，TLS 在电脑与证书机构之间端到端，中转只看到目标主机。目标只允许当前证书机构的主机。
 - 证书机构要求外部账户绑定（EAB）时，电脑向中转按需领取一次性凭据；中转把生成凭据交给部署者提供的处理函数。
 - 电脑端：连到支持以上能力的中转时，按下发的目录申请、所有 ACME 请求走通道、按需领取 EAB；证书机构变更时作废进行中的申请并按新目录重新判断。连到旧中转时行为不变。
-- 官方中转（私有运营仓库 `codexhost-cloud`）：用 GCP 服务账号为电脑生成 GTS 的一次性 EAB，按身份限流；管理页“运行配置”增加证书机构选择（Let's Encrypt / Google Trust Services），保存后最迟 10 秒生效。
+- 官方中转（私有运营程序）：用 GCP 服务账号为电脑生成 GTS 的一次性 EAB，按身份限流；管理页“运行配置”增加证书机构选择（Let's Encrypt / Google Trust Services），保存后最迟 10 秒生效。
 
 ## Decisions
 
@@ -35,6 +35,6 @@
 
 - `packages/remote-relay`：协议常量与类型、注册响应、控制地址上的通道与凭据接口、运行时切换证书机构；README。
 - `packages/web-server/src/remote-relay`：注册结果解析、证书机构跟随、经中转的 ACME 连接、EAB。
-- 私有仓库 `codexhost-cloud/relay/server`：GTS 凭据生成、证书机构设置与管理页、部署文档与服务参数。
+- 官方中转的私有运营程序：GTS 凭据生成、证书机构设置与管理页、部署文档与服务参数。
 - 文档：`docs/product/web-remote-access.md`、`docs/product/self-hosted-relay.md`。
 - 兼容：新电脑 + 旧中转、旧电脑 + 新中转都按原 Let's Encrypt 直连方式工作。

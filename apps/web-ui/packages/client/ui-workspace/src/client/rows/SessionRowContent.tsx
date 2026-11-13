@@ -43,6 +43,7 @@ export function SessionRowContent({
           aria-controls={identityControls}
         >
           {content}
+          <span className={css.foldChevron} aria-hidden="true" />
         </button>
       ) : (
         <span className={css.slot}>{content}</span>

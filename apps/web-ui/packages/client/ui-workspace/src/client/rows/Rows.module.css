@@ -207,6 +207,40 @@
   cursor: pointer;
 }
 
+.foldChevron {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.foldChevron::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateX(-1px) rotate(-45deg);
+}
+
+.identityButton[aria-expanded="true"] .foldChevron::before {
+  transform: translateY(-1px) rotate(45deg);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .identityButton:hover > :not(.foldChevron),
+  .identityButton:focus-visible > :not(.foldChevron) {
+    visibility: hidden;
+  }
+
+  .identityButton:hover .foldChevron,
+  .identityButton:focus-visible .foldChevron {
+    display: flex;
+    color: var(--dsw-alias-text-secondary, currentColor);
+  }
+}
+
 .identityButton:focus-visible {
   outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: 2px;

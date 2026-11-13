@@ -120,20 +120,27 @@ async function guides(
       pointerEvents: bridge.pointerEvents,
       color: bridge.backgroundColor,
       elbows: branches.map((branch, index) => {
-        const arc = getComputedStyle(branch, "::after");
         const stem = getComputedStyle(branch, "::before");
+        const elbowTop = parseFloat(stem.maskPosition.split(",")[1]?.trim().split(" ")[1] ?? "");
+        const elbowHeight = stem.maskSize.split(",")[1]?.trim().split(" ")[1] ?? "";
         const rect = branch.getBoundingClientRect();
         const childIcon = branch.querySelector("[data-harness-id]")?.getBoundingClientRect();
         return {
-          top: rect.top + parseFloat(arc.top),
-          bottom: rect.top + parseFloat(arc.top) + parseFloat(arc.height),
+          top: rect.top + elbowTop,
+          bottom: rect.top + elbowTop + parseFloat(elbowHeight),
           center: childIcon && childIcon.top + childIcon.height / 2,
           iconGap:
-            childIcon && childIcon.left - rect.left - parseFloat(arc.left) - parseFloat(arc.width),
-          mask: arc.maskImage,
-          height: arc.height,
-          color: arc.backgroundColor,
-          stemBottom: rect.top + parseFloat(stem.top) + parseFloat(stem.height),
+            childIcon &&
+            childIcon.left - rect.left - parseFloat(stem.left) - parseFloat(stem.width),
+          mask: stem.maskImage,
+          height: elbowHeight,
+          color: stem.backgroundColor,
+          separateElbow: getComputedStyle(branch, "::after").content,
+          stemBottom:
+            rect.top +
+            parseFloat(stem.top) +
+            parseFloat(stem.height) -
+            parseFloat(stem.getPropertyValue("--dsh-thread-guide-stem-end")),
           nextTop: branches[index + 1]?.getBoundingClientRect().top,
           overlay: stem.zIndex,
         };
@@ -153,7 +160,12 @@ async function guides(
     assert.equal(geometry.color, await tokenColor(page, id, "--dsw-alias-border-l2"));
     for (const arc of geometry.elbows) {
       assert.equal(arc.bottom, arc.center, "each elbow points at its direct child's icon");
-      assert.match(arc.mask, /data:image\/svg\+xml/);
+      assert.match(arc.mask, /^linear-gradient.*data:image\/svg\+xml/);
+      assert.equal(
+        arc.separateElbow,
+        "none",
+        "stem and elbow share a single translucent paint layer",
+      );
       assert.equal(arc.height, "8px");
       assert.equal(arc.color, geometry.color);
       assert.equal(arc.iconGap, 6);

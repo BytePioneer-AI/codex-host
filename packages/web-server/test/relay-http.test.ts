@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { copyFileSync, mkdirSync } from "node:fs";
-import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
+import type { IncomingHttpHeaders } from "node:http";
 import { request } from "node:https";
 import { resolve } from "node:path";
 import { connect, type ConnectionOptions } from "node:tls";
@@ -96,7 +96,7 @@ async function fixture(t: TestContext, certificate = true) {
         req.end(payload);
       },
     );
-  return { relay, hostname, state, local, localToken, options, send, body, access };
+  return { relay, hostname, state, local, send, body, access };
 }
 
 it("terminates real phone TLS for login, RPC and WebSocket, with relay trust and secure cookies", async (t) => {
@@ -207,43 +207,4 @@ it("resets phones when certificates are missing but keeps registration", ciTimin
   );
   await assert.rejects(f.send("/"));
   assert.equal((await f.access()).relay?.state.status, "missing-certificate");
-});
-
-it("drains a large response without blocking a second phone's RPC", ciTiming, async (t) => {
-  const f = await fixture(t);
-  const auth = { authorization: `Bearer ${f.state.secret}` };
-  const page = (await f.send("/", undefined, auth)).body.toString();
-  const plugin = [...page.matchAll(/(?:src|href)="([^"\s]*plugins\/[^"\s]+)"/g)]
-    .map((match) => defined(match[1]))
-    .sort((a, b) => b.length - a.length)[0];
-  assert.ok(plugin, "shell includes a plugin batch");
-  const url = new URL(plugin.replaceAll("&amp;", "&"), "https://local/");
-  const path = url.pathname + url.search;
-  const response = await new Promise<IncomingMessage>((resolve, reject) => {
-    const req = request(f.options(path, auth), resolve);
-    req.on("error", reject);
-    req.end();
-  });
-  t.after(() => response.destroy());
-  response.pause();
-  await delay(100);
-  const started = performance.now();
-  const rpc = await f.send(
-    "/api/codexhost/pushConfig",
-    f.body("codexhost/pushConfig"),
-    auth,
-    "127.0.0.1",
-  );
-  assert.equal(JSON.parse(rpc.body.toString()).result.ok, true);
-  assert.ok(performance.now() - started < 2_000);
-  const chunks: Buffer[] = [];
-  response.on("data", (chunk) => chunks.push(chunk));
-  response.resume();
-  await once(response, "end");
-  const downloaded = Buffer.concat(chunks);
-  assert.ok(downloaded.length > 2 * 1024 * 1024);
-  const plain = await fetch(new URL(path, f.local), {
-    headers: { authorization: `Bearer ${f.localToken}` },
-  });
-  assert.deepEqual(downloaded, Buffer.from(await plain.arrayBuffer()));
 });

@@ -147,6 +147,7 @@ export class HarnessDelegationCoordinator {
     turnId: string,
   ) => Promise<void>;
   readonly #notifyThreadStarted: (thread: JsonObject) => Promise<void>;
+  readonly #notifyTreeChanged: (threadId: string) => void;
   readonly #inspectOfficial: (input: HarnessInspectInput) => Promise<HarnessInspectResult>;
   readonly #readOfficial: (input: ThreadReadInput) => Promise<DelegationThreadSnapshot>;
   readonly #sendOfficial: (input: ThreadSendInput) => Promise<ThreadSendResult>;
@@ -176,6 +177,7 @@ export class HarnessDelegationCoordinator {
     }): ExternalThread;
     startExternalTurn(thread: ExternalThread, text: string, turnId: string): Promise<void>;
     notifyThreadStarted(thread: JsonObject): Promise<void>;
+    notifyTreeChanged(threadId: string): void;
     inspectOfficial(input: HarnessInspectInput): Promise<HarnessInspectResult>;
     readOfficial(input: ThreadReadInput): Promise<DelegationThreadSnapshot>;
     sendOfficial(input: ThreadSendInput): Promise<ThreadSendResult>;
@@ -195,6 +197,7 @@ export class HarnessDelegationCoordinator {
     this.#registerExternalThread = input.registerExternalThread;
     this.#startExternalTurn = input.startExternalTurn;
     this.#notifyThreadStarted = input.notifyThreadStarted;
+    this.#notifyTreeChanged = input.notifyTreeChanged;
     this.#inspectOfficial = input.inspectOfficial;
     this.#readOfficial = input.readOfficial;
     this.#sendOfficial = input.sendOfficial;
@@ -338,6 +341,7 @@ export class HarnessDelegationCoordinator {
           ...(input.requestId ? { requestId: input.requestId } : {}),
           taskDigest: digest,
         });
+        this.#notifyTreeChanged(childThreadId);
         const opened = await adapter.open({
           kind: "create",
           cwd: record.cwd,

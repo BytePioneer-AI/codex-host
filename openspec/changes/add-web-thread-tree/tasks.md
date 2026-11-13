@@ -2,13 +2,13 @@
 
 ## 1. Host 树关系（契约、持久化、方法）
 
-- [ ] 1.1 在 `shared-contracts` 定义 `codexhost/thread/tree/read` 与 `codexhost/thread/tree/place` 的参数和结果 schema；在 `mapping-store` 新增独立的放置文件读写（版本化、原子替换、读取失败时按无放置处理、旧版本可忽略），不修改 Thread 记录与委派记录的格式。验证：仿照 `packages/mapping-store/test/section-placements.test.ts` 新增聚焦测试，覆盖写入后重启恢复、明确顶层、删除记录、损坏文件不影响 Thread 记录；用 `npx vitest run --config tests/vitest.config.js packages/mapping-store/test/<新文件>` 运行。
-- [ ] 1.2 在 `host-runtime` 的独立模块中实现两个方法并接入 Host 路由：合并“手动放置 ?? 委派父 Thread”，校验归属确认、非 Subagent、不是自身或后代，不满足时返回 `INVALID_ARGUMENT` 且不写入。验证：新增聚焦测试，覆盖委派自动成为父 Thread、手动放置覆盖委派、移到顶层后不回到委派父 Thread、多层链、成环与 Subagent 被拒绝、官方 Thread 与外部 Thread 都可放置，并确认 `codexhost thread list --parent` 的结果不受放置影响；运行相关 vitest 文件和 `node tools/check-boundaries.mjs`。
+- [x] 1.1 在 `shared-contracts` 定义 `codexhost/thread/tree/read` 与 `codexhost/thread/tree/place` 的参数和结果 schema；在 `mapping-store` 新增独立的放置文件读写（版本化、原子替换、读取失败时按无放置处理、旧版本可忽略），不修改 Thread 记录与委派记录的格式。验证：仿照 `packages/mapping-store/test/section-placements.test.ts` 新增聚焦测试，覆盖写入后重启恢复、明确顶层、删除记录、损坏文件不影响 Thread 记录；用 `npx vitest run --config tests/vitest.config.js packages/mapping-store/test/<新文件>` 运行。
+- [x] 1.2 在 `host-runtime` 的独立模块中实现两个方法并接入 Host 路由：合并“手动放置 ?? 委派父 Thread”，校验归属确认、非 Subagent、不是自身或后代，不满足时返回 `INVALID_ARGUMENT` 且不写入。验证：新增聚焦测试，覆盖委派自动成为父 Thread、手动放置覆盖委派、移到顶层后不回到委派父 Thread、多层链、成环与 Subagent 被拒绝、官方 Thread 与外部 Thread 都可放置，并确认 `codexhost thread list --parent` 的结果不受放置影响；运行相关 vitest 文件和 `node tools/check-boundaries.mjs`。
 
 ## 2. Web Server
 
-- [ ] 2.1 在 `ch-host-client.ts` 白名单加入两个方法；列表刷新时读取树关系，摘要的 `projectionValues` 加入 `threadTreeParent`（不复用 `parentSessionId`、`origin`），`catalogKey` 纳入该字段；补齐已加载行缺失的祖先（去重、深度上限、遇到环时停止）；新增 `session/place` RPC，拒绝远程和草稿 ID。验证：在 `packages/web-server/test` 新增 Node 聚焦测试，覆盖子 Thread 在第一页而父 Thread 未加载时祖先被补入、关系变化触发 catalog 推送、委派子 Thread 仍保留输入能力和 `nativeDiscovery`、远程 ID 被拒绝；用 `node --import tsx --test <文件>` 运行。
-- [ ] 2.2 `session/archive` / `session/unarchive` 按树关系级联到全部后代（包括未加载的），先父后子，逐个复用现有归档路径，部分失败时返回失败 ID 且不回滚已成功的项。验证：聚焦测试覆盖多层级联、恢复级联、单独归档子 Thread、部分失败报告；在 Desktop 路径（直接调用 Host `thread/archive`）中不发生级联。
+- [x] 2.1 在 `ch-host-client.ts` 白名单加入两个方法；列表刷新时读取树关系，摘要的 `projectionValues` 加入 `threadTreeParent`（不复用 `parentSessionId`、`origin`），`catalogKey` 纳入该字段；补齐已加载行缺失的祖先（去重、深度上限、遇到环时停止）；新增 `session/place` RPC，拒绝远程和草稿 ID。验证：在 `packages/web-server/test` 新增 Node 聚焦测试，覆盖子 Thread 在第一页而父 Thread 未加载时祖先被补入、关系变化触发 catalog 推送、委派子 Thread 仍保留输入能力和 `nativeDiscovery`、远程 ID 被拒绝；用 `node --import tsx --test <文件>` 运行。
+- [x] 2.2 `session/archive` / `session/unarchive` 按树关系级联到全部后代（包括未加载的），先父后子，逐个复用现有归档路径，部分失败时返回失败 ID 且不回滚已成功的项。验证：聚焦测试覆盖多层级联、恢复级联、单独归档子 Thread、部分失败报告；在 Desktop 路径（直接调用 Host `thread/archive`）中不发生级联。
 
 ## 3. Web UI 侧栏
 

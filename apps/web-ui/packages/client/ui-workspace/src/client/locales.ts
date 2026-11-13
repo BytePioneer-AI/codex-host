@@ -104,7 +104,7 @@ export const zh = {
   "threadTree.expandSummary": "{title}，{summary}，展开",
   "threadTree.running": "{n} 运行中",
   "threadTree.pending": "{n} 待批准",
-  "threadTree.completed": "{n} 完成未读",
+  "threadTree.completed": "{n} 未读",
   "archive.confirm.thread": "正在运行的会话：{title}",
   "menu.pinSession": "置顶会话",
   "menu.unpinSession": "取消置顶",

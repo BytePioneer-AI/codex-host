@@ -5,6 +5,11 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, type Page } from "playwright";
+import {
+  encodeOfficialCodexModelRef,
+  decodeOfficialCodexModelRef,
+  harnessModelRefSchema,
+} from "@codexhost/shared-contracts";
 import { remoteSessionId } from "../../src/remote-sessions.ts";
 import { startServer } from "../support/server.ts";
 
@@ -48,12 +53,12 @@ const remoteModels = new Map<string, RemoteModelState>([
   [
     "remote-ssh-discovered:a",
     {
-      harnessId: "fable-mac",
+      harnessId: "codex",
       models: [
-        { id: "mac-primary", label: "Mac Primary" },
-        { id: "mac-alternate", label: "Mac Alternate" },
+        { id: encodeOfficialCodexModelRef("gpt-6-astra").id, label: "Astra" },
+        { id: encodeOfficialCodexModelRef("gpt-other").id, label: "Other Remote" },
       ],
-      currentModel: "mac-primary",
+      currentModel: encodeOfficialCodexModelRef("gpt-6-astra").id,
     },
   ],
   [
@@ -79,18 +84,31 @@ function remoteControls(hostId: string) {
   const current = state.models.find((model) => model.id === state.currentModel);
   assert.ok(current);
   return {
-    configuration: {
-      owner: "external",
-      harnessId: state.harnessId,
-      transportModelId: state.currentModel,
-      effectiveModel: { id: state.currentModel },
-      resolvedModelLabel: current.label,
-      effectiveThinkingOptionId: "high",
-      availableThinkingOptions: [{ id: "high", label: "High" }],
-      effectivePermissionModeId: "ask",
-      history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
-      locked: true,
-    },
+    ...(state.harnessId === "codex"
+      ? {
+          nativeSettings: {
+            model: decodeOfficialCodexModelRef(
+              harnessModelRefSchema.parse({ id: state.currentModel }),
+            ),
+            reasoningEffort: "high",
+          },
+        }
+      : {}),
+    configuration:
+      state.harnessId === "codex"
+        ? { owner: "codex", locked: true }
+        : {
+            owner: "external",
+            harnessId: state.harnessId,
+            transportModelId: state.currentModel,
+            effectiveModel: { id: state.currentModel },
+            resolvedModelLabel: current.label,
+            effectiveThinkingOptionId: "high",
+            availableThinkingOptions: [{ id: "high", label: "High" }],
+            effectivePermissionModeId: "ask",
+            history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+            locked: true,
+          },
     inspection: {
       status: "ready",
       catalog: {
@@ -395,11 +413,14 @@ it(
       const sessionId = remoteSessionId(hostId, "same");
       await page
         .getByRole("button", {
-          name: `Select Harness, current ${modelState.harnessId}`,
+          name: `Select Harness, current ${modelState.harnessId === "codex" ? "Codex" : modelState.harnessId}`,
           exact: true,
         })
         .waitFor();
-      await page.getByRole("button", { name: "Access mode, current: Ask", exact: true }).waitFor();
+      if (modelState.harnessId !== "codex")
+        await page
+          .getByRole("button", { name: "Access mode, current: Ask", exact: true })
+          .waitFor();
       await modelTrigger(page).waitFor();
       await openModels(page, modelState.models[0].label);
       const modelMenu = page.getByRole("menu", { name: "Model", exact: true });

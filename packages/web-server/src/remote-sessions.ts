@@ -14,7 +14,7 @@ import { defaultProjections } from "./session-log.ts";
 import {
   applyRemoteControls,
   executeRemoteCommand,
-  externalConfiguration,
+  modelConfiguration,
   mergeRemoteControls,
   parseRemoteControls,
   remoteHarnessIdentity,
@@ -88,6 +88,7 @@ const snapshotSchema = z.object({
   epoch: z.string().min(1),
   // Optional metadata is parsed independently below. A malformed optional
   // control payload must not make the remote history unreadable.
+  nativeSettings: z.unknown().optional(),
   configuration: z.unknown().optional(),
   inspection: z.unknown().optional(),
   harness: z.unknown().optional(),
@@ -307,7 +308,7 @@ export class RemoteSessions {
   }
   private async configureRemote(entry: Entry, setting: RemoteConfigurationSetting): Promise<void> {
     if (!entry.epoch) throw new RpcError("remote/offline", "Remote connection changed");
-    const configuration = externalConfiguration(entry);
+    const configuration = modelConfiguration(entry);
     const epoch = entry.epoch;
     let result: unknown;
     try {
@@ -328,10 +329,14 @@ export class RemoteSessions {
         // Retain ownership, not pre-mutation effective settings. Missing or
         // malformed confirmations leave those settings unknown until inspected.
         entry.controls.configuration = {
-          owner: "external",
-          harnessId: configuration.harnessId,
-          transportModelId: configuration.transportModelId,
-          history: configuration.history,
+          ...(configuration.owner === "external"
+            ? {
+                owner: "external" as const,
+                harnessId: configuration.harnessId,
+                transportModelId: configuration.transportModelId,
+                history: configuration.history,
+              }
+            : { owner: "codex" as const }),
           locked: true,
           ...(confirmed.success ? confirmed.data : {}),
         };

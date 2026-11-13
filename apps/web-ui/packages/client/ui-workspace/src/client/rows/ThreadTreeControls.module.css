@@ -1,29 +1,46 @@
+.slot,
 .toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
-  gap: 2px;
-  min-width: 28px;
+  box-sizing: border-box;
+  width: 28px;
   height: 28px;
-  padding: 0 3px;
+}
+
+.toggle {
+  appearance: none;
+  gap: 2px;
+  padding: 0;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--dsw-radius-sm);
   color: var(--dsw-alias-label-tertiary);
   background: transparent;
   cursor: pointer;
 }
 
-.toggle:hover {
-  background: var(--dsw-alias-button-elevated-fill);
+@media (hover: hover) and (pointer: fine) {
+  .toggle:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 
 .toggle:focus-visible {
-  outline: 2px solid var(--dsw-alias-state-business-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: -2px;
 }
 
+.collapsed {
+  transform: rotate(-90deg);
+}
+
 .count {
+  max-width: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 10px;
 }
 

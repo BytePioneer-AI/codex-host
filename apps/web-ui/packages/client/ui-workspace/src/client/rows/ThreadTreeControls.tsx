@@ -1,5 +1,5 @@
 /** Explicit fold control and descendant-only status, without replacing the row's own status. */
-import { StateDot } from "@deepseek-ai/dsh-client-ui-primitives";
+import { IconChevronDownOutlineRegular, StateDot } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
 import type { SessionNode } from "../tree.ts";
 import css from "./ThreadTreeControls.module.css";
@@ -15,7 +15,7 @@ export function ThreadTreeToggle({
   toggle: () => void;
   t: WorkspaceBrowserProps["t"];
 }) {
-  if (!node.tree?.descendantCount) return null;
+  if (!node.tree?.descendantCount) return <span className={css.slot} aria-hidden="true" />;
   return (
     <button
       type="button"
@@ -30,7 +30,7 @@ export function ThreadTreeToggle({
         toggle();
       }}
     >
-      <span aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+      <IconChevronDownOutlineRegular size={12} className={expanded ? undefined : css.collapsed} />
       <span className={css.count} aria-hidden="true">
         {node.tree.descendantCount}
       </span>

@@ -506,6 +506,7 @@ export class ChSessions {
       );
       view = history;
       view.log.setProjection("threadReference", { hostId: "local" });
+      view.log.setProjection("threadTreeParent", this.tree.parent(id));
       if (this.images) {
         view.log.setProjection("attachmentInput", this.files ? WEB_FILE_INPUT : WEB_IMAGE_INPUT);
         view.log.setProjection("imageLimits", WEB_IMAGE_LIMITS);
@@ -931,11 +932,7 @@ export class ChSessions {
     this.workspaces.setReferenceArchives([...ids].sort());
   }
 
-  private async setArchived(
-    sessionId: string,
-    archived: boolean,
-    refreshCatalog = true,
-  ): Promise<void> {
+  private async setArchived(sessionId: string, archived: boolean): Promise<void> {
     const id = this.id(sessionId);
     if (this.drafts.has(id))
       throw new RpcError(
@@ -953,7 +950,6 @@ export class ChSessions {
     // A read failure cannot turn an acknowledged mutation into a rejected write.
     await this.refreshing?.catch(() => undefined);
     this.updateArchive(id, archived);
-    if (refreshCatalog) await this.refresh().catch(() => undefined);
   }
 
   private async readThread(id: string) {
@@ -1014,15 +1010,6 @@ export class ChSessions {
         },
       });
     });
-    for (const [method, archived] of [
-      ["workspace/archiveSession", true],
-      ["workspace/unarchiveSession", false],
-    ] as const)
-      rpc.register(method, async (args) => {
-        const { sessionId } = requestOf<{ sessionId: string }>(args);
-        await this.setArchived(sessionId, archived);
-        return { archivedSessionIds: this.workspaces.archivedSessionIds() };
-      });
     for (const [method, pinned] of [
       ["workspace/pinSession", true],
       ["workspace/unpinSession", false],
@@ -1454,23 +1441,26 @@ export class ChSessions {
       );
     });
     for (const [method, archived] of [
+      ["workspace/archiveSession", true],
+      ["workspace/unarchiveSession", false],
       ["session/archive", true],
       ["session/unarchive", false],
     ] as const)
       rpc.register(method, async (args) => {
         const { sessionId } = requestOf<{ sessionId: string }>(args);
-        await this.refreshing?.catch(() => undefined);
         try {
           await this.tree.archive(
             this.id(sessionId),
             archived,
             new Set(this.workspaces.localArchivedSessionIds()),
-            (id) => this.setArchived(id, archived, false),
+            (id) => this.setArchived(id, archived),
           );
         } finally {
           await this.refresh().catch(() => undefined);
         }
-        return {};
+        return method.startsWith("workspace/")
+          ? { archivedSessionIds: this.workspaces.archivedSessionIds() }
+          : {};
       });
     streams.register("session/control", async (_args, sink) => {
       const projections: Record<string, unknown> = {};

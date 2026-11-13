@@ -522,7 +522,7 @@ export function SessionNodeItem({
       data-row-key={rowKey}
       data-thread-parent={node.tree?.parentId ?? undefined}
       data-thread-depth={depth}
-      style={{ "--dsh-thread-indent": `${Math.min(depth, 3) * 12}px` } as CSSProperties}
+      style={{ "--dsh-thread-indent": `${Math.min(depth, 3) * 16}px` } as CSSProperties}
       className={clsx(
         css.sessionRow,
         selected && css.selected,

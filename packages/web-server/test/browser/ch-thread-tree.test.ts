@@ -175,7 +175,7 @@ for (const width of [1280, 390]) {
       await treeShot(page, `thread-tree-${width}-expanded`);
       if (width === 1280) {
         await threadRow(page, "child").locator("[data-thread-toggle]").hover();
-        assert.notEqual((await foldStyle(page, "child")).background, "rgba(0, 0, 0, 0)");
+        assert.equal((await foldStyle(page, "child")).background, "rgba(0, 0, 0, 0)");
         await foldLayout(page, "child");
         await treeShot(page, "thread-tree-1280-expanded-hover");
         await page.mouse.move(width - 10, 850);
@@ -188,7 +188,7 @@ for (const width of [1280, 390]) {
           .evaluate((node) => node.matches(":focus-visible")),
         true,
       );
-      assert.notEqual((await foldStyle(page, "parent")).background, "rgba(0, 0, 0, 0)");
+      assert.equal((await foldStyle(page, "parent")).background, "rgba(0, 0, 0, 0)");
       await page.keyboard.press("Enter");
       assert.equal(await parent.getAttribute("aria-expanded"), "false");
       await page.keyboard.press("Space");

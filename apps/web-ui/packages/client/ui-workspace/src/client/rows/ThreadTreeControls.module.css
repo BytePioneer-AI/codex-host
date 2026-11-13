@@ -41,14 +41,13 @@
 
 @media (hover: hover) and (pointer: fine) {
   .toggle:hover {
-    background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent);
+    color: var(--dsw-alias-label-primary);
   }
 }
 
 .toggle:focus-visible {
   outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: -2px;
-  background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent);
 }
 
 .collapsed {
